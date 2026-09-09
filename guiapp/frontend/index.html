@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8"/>
+    <meta content="width=device-width, initial-scale=1.0, viewport-fit=cover" name="viewport"/>
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; img-src 'self' data: blob: https: http:; connect-src 'self' https: http: wss: ws:; style-src 'self' 'unsafe-inline' https:; font-src 'self' data: https:;">
+    <title>MaClaw</title>
+    <link rel="preload" as="image" href="./src/assets/images/maclaw-gui-mark.svg" type="image/svg+xml"/>
+    <!-- Paint an opaque themed canvas before the WebView's native #0b1220
+         chrome can show through. Keep these values in sync with App.css
+         --theme-page-bg. Runs in <head> so the first frame is never black. -->
+    <script>
+      try {
+        var d = localStorage.getItem('ai_assistant_theme_mode') === 'dark';
+        var c;
+        if (d) {
+          var s = localStorage.getItem('maclaw.ai.darkScheme');
+          c = s === 'aurora' ? '#071018'
+            : s === 'classic' ? '#0b1220'
+            : s === 'ember' ? '#140e0a'
+            : s === 'violet' ? '#0e0a18'
+            : '#0f141b';
+        } else {
+          var l = localStorage.getItem('maclaw.ai.lightScheme');
+          c = l === 'default' ? '#f4f7fb'
+            : l === 'notion' || l === 'stripe' || l === 'vercel' ? '#ffffff'
+            : l === 'linear' ? '#fbfbfd'
+            : l === 'github' ? '#f6f8fa'
+            : '#f7f8fa'; /* fluent (default) */
+        }
+        document.documentElement.style.backgroundColor = c;
+        document.documentElement.style.colorScheme = d ? 'dark' : 'light';
+        document.documentElement.style.setProperty('--theme-page-bg', c);
+        document.documentElement.setAttribute('data-boot-theme', d ? 'dark' : 'light');
+      } catch(e) {}
+    </script>
+    <style>
+      html, body, #root { margin: 0; width: 100%; height: 100%; min-height: 100%; background-color: var(--theme-page-bg, #f7f8fa); }
+      #maclaw-boot-splash {
+        position: fixed; inset: 0; z-index: 2147483000;
+        display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start;
+        box-sizing: border-box; padding: 16px 20px; text-align: left;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", sans-serif;
+        background: linear-gradient(180deg, #f7f9fc 0%, #e8eef6 100%); color: #1c1c1e;
+      }
+      html[data-boot-theme="dark"] #maclaw-boot-splash {
+        background: linear-gradient(180deg, #121926 0%, #0c1118 100%); color: #e3e9f1;
+      }
+      #maclaw-boot-splash .boot-card {
+        width: 100%; height: 100%; box-sizing: border-box; padding: 0;
+        display: flex; flex-direction: column; gap: 10px; background: transparent;
+      }
+      #maclaw-boot-splash .boot-hero {
+        display: flex; flex: 1 1 0; align-items: stretch; gap: 12px; min-height: 0;
+      }
+      #maclaw-boot-splash .boot-mascot {
+        flex: 0 1 auto; width: auto; height: 100%; max-width: 48%; max-height: 100%;
+        aspect-ratio: 192 / 220; align-self: center;
+      }
+      #maclaw-boot-splash .boot-mascot svg,
+      #maclaw-boot-splash .boot-mascot img { width: 100%; height: 100%; display: block; object-fit: contain; }
+      #maclaw-boot-splash .boot-copy { flex: 1 1 0; display: flex; flex-direction: column; justify-content: center; min-width: 0; }
+      #maclaw-boot-splash h1 { margin: 0 0 8px; font-size: 1.42rem; letter-spacing: -0.03em; line-height: 1.2; }
+      html[data-boot-theme="dark"] #maclaw-boot-splash h1 { color: #f2f5f8; }
+      #maclaw-boot-splash .boot-sub { margin: 0 0 12px; color: #5f6b7a; font-size: 0.84rem; line-height: 1.4; }
+      html[data-boot-theme="dark"] #maclaw-boot-splash .boot-sub { color: #8b97a8; }
+      #maclaw-boot-splash .boot-progress {
+        width: 100%; height: 10px; overflow: hidden; margin-bottom: 10px;
+        border-radius: 999px; background: #e6e8ec;
+      }
+      html[data-boot-theme="dark"] #maclaw-boot-splash .boot-progress { background: #2b3444; }
+      #maclaw-boot-splash .boot-progress > span {
+        display: block; width: 8%; height: 100%; border-radius: inherit; background: #34c759;
+        position: relative; overflow: hidden;
+      }
+      #maclaw-boot-splash .boot-progress > span::after {
+        content: ""; position: absolute; inset: 0;
+        background: linear-gradient(90deg, transparent, rgba(255,255,255,0.48), transparent);
+        animation: boot-shimmer 1.6s ease-in-out infinite;
+      }
+      #maclaw-boot-splash .boot-status { margin: 0; color: #5f6b7a; font-size: 0.82rem; }
+      html[data-boot-theme="dark"] #maclaw-boot-splash .boot-status { color: #8b97a8; }
+      #maclaw-boot-splash .boot-runtimes {
+        display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px;
+        flex: 1 1 0; min-height: 0; margin: 0; padding: 0; list-style: none;
+      }
+      #maclaw-boot-splash .boot-runtime {
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        gap: 4px; min-height: 0; padding: 10px 8px 8px; overflow: hidden; border-radius: 18px;
+      }
+      #maclaw-boot-splash .boot-runtime svg { width: 88%; max-width: none; min-height: 84px; aspect-ratio: 1; }
+      #maclaw-boot-splash .boot-runtime--node { background: linear-gradient(180deg, #f3fbf6 0%, #e7f6ec 100%); }
+      #maclaw-boot-splash .boot-runtime--git { background: linear-gradient(180deg, #fff7f1 0%, #ffeee4 100%); }
+      #maclaw-boot-splash .boot-runtime--python { background: linear-gradient(180deg, #f2f7fd 0%, #e4eef9 100%); }
+      html[data-boot-theme="dark"] #maclaw-boot-splash .boot-runtime--node { background: linear-gradient(180deg, #163024 0%, #10241c 100%); }
+      html[data-boot-theme="dark"] #maclaw-boot-splash .boot-runtime--git { background: linear-gradient(180deg, #2a1c16 0%, #1f1410 100%); }
+      html[data-boot-theme="dark"] #maclaw-boot-splash .boot-runtime--python { background: linear-gradient(180deg, #162030 0%, #101820 100%); }
+      #maclaw-boot-splash .boot-runtime strong { font-size: 0.86rem; letter-spacing: -0.02em; }
+      #maclaw-boot-splash .boot-runtime span { color: #6b7785; font-size: 0.68rem; font-weight: 500; }
+      #maclaw-boot-splash .boot-runtime-state { color: #8a94a0; font-size: 0.66rem; font-weight: 700; }
+      html[data-boot-theme="dark"] #maclaw-boot-splash .boot-runtime span { color: #8b97a8; }
+      @keyframes boot-shimmer { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+      @media (prefers-reduced-motion: reduce) {
+        #maclaw-boot-splash .boot-progress > span::after { animation: none; }
+      }
+
+      /* Match the React startup surface so the first frame does not jump from
+         a split runtime dashboard to the centered environment card. */
+      #maclaw-boot-splash {
+        align-items: center;
+        justify-content: center;
+        padding: 12px clamp(12px, 3vw, 48px);
+        text-align: center;
+        background:
+          radial-gradient(circle at 50% 18%, rgba(255,255,255,.92), transparent 48%),
+          linear-gradient(180deg, #eef3f8 0%, #e6edf5 100%);
+      }
+      html[data-boot-theme="dark"] #maclaw-boot-splash {
+        background:
+          radial-gradient(circle at 50% 18%, rgba(53,79,106,.28), transparent 48%),
+          linear-gradient(180deg, #111b27 0%, #0b121b 100%);
+      }
+      #maclaw-boot-splash .boot-card {
+        position: relative;
+        width: min(1200px, 100%);
+        height: min(750px, 100%);
+        max-height: 100%;
+        box-sizing: border-box;
+        align-items: center;
+        justify-content: center;
+        padding: clamp(28px, 6vh, 78px) clamp(24px, 7vw, 108px);
+        overflow: hidden;
+        border: 1px solid rgba(177,190,207,.72);
+        border-radius: 18px;
+        background: rgba(255,255,255,.97);
+        box-shadow: 0 20px 54px rgba(35,55,79,.16), 0 2px 8px rgba(35,55,79,.08);
+      }
+      html[data-boot-theme="dark"] #maclaw-boot-splash .boot-card {
+        border-color: rgba(93,116,142,.62);
+        background: rgba(20,30,43,.98);
+        box-shadow: 0 24px 68px rgba(0,0,0,.46);
+      }
+      #maclaw-boot-splash .boot-hero {
+        width: min(100%, 920px);
+        flex: 0 0 auto;
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+        gap: 0;
+      }
+      #maclaw-boot-splash .boot-mascot {
+        width: clamp(164px, 20vh, 252px);
+        height: auto;
+        max-width: none;
+        max-height: none;
+        margin: 0 0 clamp(12px, 2vh, 24px);
+      }
+      #maclaw-boot-splash .boot-copy {
+        width: 100%;
+        flex: 0 0 auto;
+        align-items: center;
+        text-align: center;
+      }
+      #maclaw-boot-splash h1 {
+        width: 100%;
+        margin: 0 0 14px;
+        color: #14253a;
+        font-size: clamp(2rem, 4vw, 3rem);
+        font-weight: 760;
+        letter-spacing: -.045em;
+        line-height: 1.15;
+      }
+      html[data-boot-theme="dark"] #maclaw-boot-splash h1 { color: #f0f5fb; }
+      #maclaw-boot-splash .boot-sub {
+        max-width: 44em;
+        margin: 0 0 clamp(24px, 4vh, 40px);
+        color: #56677c;
+        font-size: clamp(1rem, 1.65vw, 1.34rem);
+        line-height: 1.5;
+      }
+      html[data-boot-theme="dark"] #maclaw-boot-splash .boot-sub { color: #aab9ca; }
+      #maclaw-boot-splash .boot-progress {
+        width: min(900px, 100%);
+        height: 10px;
+        margin: 0 0 16px;
+        background: #e3e7ec;
+      }
+      #maclaw-boot-splash .boot-progress > span { background: #22c58b; }
+      #maclaw-boot-splash .boot-status {
+        width: 100%;
+        min-height: 24px;
+        margin: 0;
+        color: #75869a;
+        font-size: clamp(.9rem, 1.2vw, 1.08rem);
+      }
+      html[data-boot-theme="dark"] #maclaw-boot-splash .boot-status { color: #9eafc1; }
+      #maclaw-boot-splash .boot-runtimes { display: none; }
+      @media (max-width: 720px) {
+        #maclaw-boot-splash { padding: 8px; }
+        #maclaw-boot-splash .boot-card { height: min(720px, 100%); padding: 28px 20px; border-radius: 15px; }
+        #maclaw-boot-splash .boot-mascot { width: clamp(132px, 22vh, 190px); }
+        #maclaw-boot-splash h1 { font-size: clamp(1.7rem, 8vw, 2.25rem); }
+        #maclaw-boot-splash .boot-sub { font-size: .96rem; }
+        #maclaw-boot-splash .boot-progress { height: 8px; }
+      }
+    </style>
+</head>
+<body>
+<script>
+  try {
+    document.body.style.backgroundColor = document.documentElement.style.backgroundColor;
+  } catch(e) {}
+</script>
+<!-- Static environment-check chrome. Stays visible until React EnvCheckSplash
+     mounts, so a slow/failed App render cannot leave the compact startup
+     window as a native-black hole. -->
+<div id="maclaw-boot-splash" class="app-loading-shell" aria-busy="true">
+    <div class="boot-card">
+        <div class="boot-hero">
+            <div class="boot-mascot" aria-hidden="true">
+                <img src="./src/assets/images/maclaw-gui-mark.svg" alt="" width="192" height="220" draggable="false" decoding="sync" />
+            </div>
+            <div class="boot-copy">
+                <h1 id="boot-title">Preparing Environment</h1>
+                <p class="boot-sub" id="boot-sub">Preparing the runtime environment. Please wait — the app will open automatically when ready.</p>
+                <div class="boot-progress" role="progressbar" aria-label="Preparing Environment"><span></span></div>
+                <p class="boot-status" id="boot-status">Preparing runtime...</p>
+            </div>
+        </div>
+        <ul class="boot-runtimes">
+            <li class="boot-runtime boot-runtime--node">
+                <svg viewBox="0 0 128 128" fill="none" aria-hidden="true">
+                    <path d="M64 6 118 38v52L64 122 10 90V38Z" fill="#34C759"/>
+                    <path d="M64 18 106 43.5v41L64 110 22 84.5v-41Z" stroke="#F0FFF4" stroke-width="3.2" opacity=".42"/>
+                    <path d="M50 50v36l28-16V58" stroke="#F7FFF9" stroke-width="6.5" stroke-linejoin="round" stroke-linecap="round"/>
+                    <circle cx="78" cy="56" r="5" fill="#F7FFF9"/>
+                </svg>
+                <strong>Node.js</strong>
+                <span id="boot-node-desc">JavaScript runtime</span>
+                <span class="boot-runtime-state" id="boot-node-state">Waiting</span>
+            </li>
+            <li class="boot-runtime boot-runtime--git">
+                <svg viewBox="0 0 128 128" fill="none" aria-hidden="true">
+                    <path d="M40 18v92" stroke="#F97316" stroke-width="12" stroke-linecap="round"/>
+                    <path d="M40 58c4-6 22-24 60-22" stroke="#F97316" stroke-width="12" stroke-linecap="round" fill="none"/>
+                    <circle cx="40" cy="22" r="16" fill="#F97316"/>
+                    <circle cx="40" cy="106" r="16" fill="#F97316"/>
+                    <circle cx="102" cy="40" r="16" fill="#F97316"/>
+                    <circle cx="40" cy="22" r="7" fill="#FFF7ED"/>
+                    <circle cx="40" cy="106" r="7" fill="#FFF7ED"/>
+                    <circle cx="102" cy="40" r="7" fill="#FFF7ED"/>
+                </svg>
+                <strong>Git</strong>
+                <span id="boot-git-desc">Source control</span>
+                <span class="boot-runtime-state" id="boot-git-state">Waiting</span>
+            </li>
+            <li class="boot-runtime boot-runtime--python">
+                <svg viewBox="0 0 128 128" fill="none" aria-hidden="true">
+                    <path d="M36 10h36c16 0 28 12 28 28v12c0 9-7 16-16 16H52c-9 0-16 7-16 16v8c0 7-7 14-16 14h-2C7 104 0 95 0 82V38C0 20 16 10 36 10Z" fill="#2B6CB0"/>
+                    <circle cx="48" cy="28" r="7" fill="#EFF6FF"/>
+                    <path d="M92 118H56c-16 0-28-12-28-28V78c0-9 7-16 16-16h30c9 0 16-7 16-16v-8c0-7 7-14 16-14h2c11 0 18 9 18 22v44c0 18-16 28-34 28Z" fill="#D97706"/>
+                    <circle cx="80" cy="100" r="7" fill="#1F2937" opacity=".5"/>
+                </svg>
+                <strong>Python</strong>
+                <span id="boot-python-desc">Python runtime</span>
+                <span class="boot-runtime-state" id="boot-python-state">Waiting</span>
+            </li>
+        </ul>
+    </div>
+</div>
+<script>
+  try {
+    var nav = (navigator.language || '').toLowerCase();
+    var hans = nav === 'zh' || nav === 'zh-cn' || nav.indexOf('zh-hans') === 0 || nav === 'zh-sg';
+    var hant = nav === 'zh-tw' || nav === 'zh-hk' || nav === 'zh-mo' || nav.indexOf('zh-hant') === 0;
+    if (hans || hant) {
+      document.documentElement.lang = hans ? 'zh-Hans' : 'zh-Hant';
+      document.getElementById('boot-title').textContent = hans ? '环境准备中' : '環境準備中';
+      document.getElementById('boot-sub').textContent = hans
+        ? '正在准备运行环境，请稍候，完成后自动进入主界面。'
+        : '正在準備運行環境，請稍候，完成後自動進入主界面。';
+      document.getElementById('boot-status').textContent = 'Preparing runtime...';
+      document.getElementById('boot-node-desc').textContent = hans ? 'JavaScript 运行时' : 'JavaScript 運行時';
+      document.getElementById('boot-git-desc').textContent = hans ? '代码版本管理' : '代碼版本管理';
+      document.getElementById('boot-python-desc').textContent = hans ? 'Python 运行时' : 'Python 運行時';
+      document.getElementById('boot-node-state').textContent = '等待中';
+      document.getElementById('boot-git-state').textContent = '等待中';
+      document.getElementById('boot-python-state').textContent = '等待中';
+    }
+  } catch(e) {}
+  try { fetch('/maclaw-boot/ping?stage=html'); } catch(e) {}
+  (function () {
+    function aliasGoMain() {
+      try {
+        if (window.go && window.go.guiapp && !window.go.main) window.go.main = window.go.guiapp;
+      } catch (e) {}
+    }
+    aliasGoMain();
+    var n = 0;
+    var t = setInterval(function () {
+      aliasGoMain();
+      if (++n > 200 || (window.go && window.go.main && window.go.main.App)) clearInterval(t);
+    }, 20);
+  })();
+  window.addEventListener('error', function (ev) {
+    window.__MACLAW_LAST_ERROR = String((ev && ev.message) || ev);
+  });
+  window.addEventListener('unhandledrejection', function (ev) {
+    window.__MACLAW_LAST_ERROR = String((ev && ev.reason) || ev);
+  });
+</script>
+<div id="root"></div>
+<script src="./src/main.tsx" type="module"></script>
+</body>
+</html>

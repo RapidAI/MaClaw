@@ -1,0 +1,952 @@
+package guiapp
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+	"unicode"
+	"unicode/utf8"
+
+	"encoding/json"
+
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+)
+
+var ErrRemoteSessionsUnavailable = errors.New("remote sessions are not initialized")
+
+type RemoteConnectionStatus struct {
+	Enabled      bool   `json:"enabled"`
+	HubURL       string `json:"hub_url"`
+	MachineID    string `json:"machine_id"`
+	Connected    bool   `json:"connected"`
+	LastError    string `json:"last_error"`
+	SessionCount int    `json:"session_count"`
+}
+
+type RemoteSmokeSnapshot struct {
+	Exists bool               `json:"exists"`
+	Path   string             `json:"path"`
+	Report *RemoteSmokeReport `json:"report,omitempty"`
+}
+
+type ProviderView struct {
+	Name      string `json:"name"`
+	ModelID   string `json:"model_id"`
+	IsDefault bool   `json:"is_default"`
+}
+
+type RemoteSessionView struct {
+	ID             string                   `json:"id"`
+	Tool           string                   `json:"tool"`
+	Title          string                   `json:"title"`
+	LaunchSource   string                   `json:"launch_source,omitempty"`
+	ProjectPath    string                   `json:"project_path"`
+	WorkspacePath  string                   `json:"workspace_path"`
+	WorkspaceRoot  string                   `json:"workspace_root"`
+	WorkspaceMode  WorkspaceMode            `json:"workspace_mode"`
+	WorkspaceIsGit bool                     `json:"workspace_is_git"`
+	ModelID        string                   `json:"model_id"`
+	Provider       string                   `json:"provider,omitempty"`
+	JobID          string                   `json:"job_id,omitempty"`
+	RunID          string                   `json:"run_id,omitempty"`
+	CurrentURL     string                   `json:"current_url,omitempty"`
+	CurrentTitle   string                   `json:"current_title,omitempty"`
+	ReadyState     string                   `json:"ready_state,omitempty"`
+	LastSnapshotID string                   `json:"last_snapshot_id,omitempty"`
+	ExecutionMode  string                   `json:"execution_mode"`
+	Status         SessionStatus            `json:"status"`
+	RuntimeStatus  agentruntime.JobStatus   `json:"runtime_status"`
+	Thinking       bool                     `json:"thinking"`
+	ThinkingSince  int64                    `json:"thinking_since,omitempty"`
+	PID            int                      `json:"pid"`
+	CreatedAt      time.Time                `json:"created_at"`
+	UpdatedAt      time.Time                `json:"updated_at"`
+	Summary        SessionSummary           `json:"summary"`
+	Preview        SessionPreview           `json:"preview"`
+	Events         []ImportantEvent         `json:"events"`
+	RawOutputLines []string                 `json:"raw_output_lines"`
+	OutputImages   []SessionOutputImage     `json:"output_images,omitempty"`
+	TokenUsage     *RemoteSessionTokenUsage `json:"token_usage,omitempty"`
+}
+
+func toRemoteSessionView(s *RemoteSession) RemoteSessionView {
+	s.mu.RLock()
+	summary := s.Summary
+	preview := s.Preview
+	pendingQuestion := clonePendingQuestionView(s.Summary.PendingQuestion)
+	if pendingQuestion != nil {
+		summary.PendingQuestion = pendingQuestion
+	}
+	events := append([]ImportantEvent(nil), s.Events...)
+	rawLines := append([]string(nil), s.RawOutputLines...)
+	outputImages := append([]SessionOutputImage(nil), s.OutputImages...)
+	tokenUsage := s.TokenUsage
+	status := s.Status
+	runtimeStatus := sessionSummaryRuntimeStatus(status.String())
+	jobID := s.JobID
+	runID := s.RunID
+	pid := s.PID
+	updatedAt := s.UpdatedAt
+	createdAt := s.CreatedAt
+	exec := s.Exec
+	thinking := s.ThinkingState == ThinkingActive
+	var thinkingSince int64
+	if thinking && !s.ThinkingSince.IsZero() {
+		thinkingSince = s.ThinkingSince.UnixMilli()
+	}
+	s.mu.RUnlock()
+
+	sanitizeSessionSummary(&summary)
+	sanitizeSessionPreview(&preview)
+	sanitizeImportantEvents(events)
+
+	for i := range rawLines {
+		rawLines[i] = sanitizeRawOutputLine(rawLines[i])
+	}
+
+	execMode := "sdk"
+	if _, isSDK := exec.(*SDKExecutionHandle); isSDK {
+		execMode = "sdk"
+	} else if _, isCodex := exec.(*CodexSDKExecutionHandle); isCodex {
+		execMode = "codex-sdk"
+	} else if _, isIFlow := exec.(*IFlowSDKExecutionHandle); isIFlow {
+		execMode = "iflow-acp"
+	}
+
+	return RemoteSessionView{
+		ID:             s.ID,
+		Tool:           s.Tool,
+		Title:          s.Title,
+		LaunchSource:   string(normalizeRemoteLaunchSource(s.LaunchSource)),
+		ProjectPath:    s.ProjectPath,
+		WorkspacePath:  s.WorkspacePath,
+		WorkspaceRoot:  s.WorkspaceRoot,
+		WorkspaceMode:  s.WorkspaceMode,
+		WorkspaceIsGit: s.WorkspaceIsGit,
+		ModelID:        s.ModelID,
+		Provider:       s.ModelName,
+		JobID:          jobID,
+		RunID:          runID,
+		ExecutionMode:  execMode,
+		Status:         status,
+		RuntimeStatus:  runtimeStatus,
+		Thinking:       thinking,
+		ThinkingSince:  thinkingSince,
+		PID:            pid,
+		CreatedAt:      createdAt,
+		UpdatedAt:      updatedAt,
+		Summary:        summary,
+		Preview:        preview,
+		Events:         events,
+		RawOutputLines: rawLines,
+		OutputImages:   outputImages,
+		TokenUsage:     remoteSessionTokenUsageView(tokenUsage),
+	}
+}
+
+func remoteSessionTokenUsageView(usage RemoteSessionTokenUsage) *RemoteSessionTokenUsage {
+	if usage.IsZero() {
+		return nil
+	}
+	copy := usage
+	return &copy
+}
+
+func sanitizeSessionSummary(summary *SessionSummary) {
+	if summary == nil {
+		return
+	}
+
+	summary.SessionID = sanitizeRemoteText(summary.SessionID)
+	summary.MachineID = sanitizeRemoteText(summary.MachineID)
+	summary.Tool = sanitizeRemoteText(summary.Tool)
+	summary.Title = sanitizeRemoteText(summary.Title)
+	summary.Source = sanitizeRemoteText(summary.Source)
+	summary.Status = sanitizeRemoteText(summary.Status)
+	if summary.RuntimeStatus == "" {
+		summary.RuntimeStatus = sessionSummaryRuntimeStatus(summary.Status)
+	} else {
+		summary.RuntimeStatus = agentruntime.NormalizeJobStatus(summary.RuntimeStatus)
+	}
+	summary.Severity = sanitizeRemoteText(summary.Severity)
+	summary.CurrentTask = sanitizeRemoteText(summary.CurrentTask)
+	summary.ProgressSummary = sanitizeRemoteText(summary.ProgressSummary)
+	summary.StepProgress = sanitizeRemoteText(summary.StepProgress)
+	summary.LastResult = sanitizeRemoteText(summary.LastResult)
+	summary.SuggestedAction = sanitizeRemoteText(summary.SuggestedAction)
+	summary.LastCommand = sanitizeRemoteText(summary.LastCommand)
+
+	for i := range summary.ImportantFiles {
+		summary.ImportantFiles[i] = sanitizeRemoteText(summary.ImportantFiles[i])
+	}
+	if summary.PendingQuestion != nil {
+		sanitizePendingQuestionView(summary.PendingQuestion)
+	}
+}
+
+func sessionSummaryRuntimeStatus(status string) agentruntime.JobStatus {
+	return normalizeSessionStatus(status).RuntimeStatusValue()
+}
+
+func sanitizePendingQuestionView(question *PendingQuestionView) {
+	if question == nil {
+		return
+	}
+	question.ToolUseID = sanitizeRemoteText(question.ToolUseID)
+	question.ToolName = sanitizeRemoteText(question.ToolName)
+	question.Header = sanitizeRemoteText(question.Header)
+	question.Question = sanitizeRemoteText(question.Question)
+	question.Hint = sanitizeRemoteText(question.Hint)
+	for i := range question.Options {
+		question.Options[i].Label = sanitizeRemoteText(question.Options[i].Label)
+		question.Options[i].Description = sanitizeRemoteText(question.Options[i].Description)
+		question.Options[i].Preview = sanitizeRemoteText(question.Options[i].Preview)
+	}
+}
+
+func clonePendingQuestionView(question *PendingQuestionView) *PendingQuestionView {
+	if question == nil {
+		return nil
+	}
+	clone := *question
+	if len(question.Options) > 0 {
+		clone.Options = append([]PendingQuestionOption(nil), question.Options...)
+	}
+	return &clone
+}
+
+func sanitizeSessionPreview(preview *SessionPreview) {
+	if preview == nil {
+		return
+	}
+
+	preview.SessionID = sanitizeRemoteText(preview.SessionID)
+	for i := range preview.PreviewLines {
+		preview.PreviewLines[i] = sanitizeRemoteText(preview.PreviewLines[i])
+	}
+}
+
+func sanitizeImportantEvents(events []ImportantEvent) {
+	for i := range events {
+		events[i].EventID = sanitizeRemoteText(events[i].EventID)
+		events[i].SessionID = sanitizeRemoteText(events[i].SessionID)
+		events[i].MachineID = sanitizeRemoteText(events[i].MachineID)
+		events[i].Type = sanitizeRemoteText(events[i].Type)
+		events[i].Severity = sanitizeRemoteText(events[i].Severity)
+		events[i].Title = sanitizeRemoteText(events[i].Title)
+		events[i].Summary = sanitizeRemoteText(events[i].Summary)
+		events[i].RelatedFile = sanitizeRemoteText(events[i].RelatedFile)
+		events[i].Command = sanitizeRemoteText(events[i].Command)
+	}
+}
+
+func sanitizeRemoteText(value string) string {
+	if value == "" {
+		return ""
+	}
+
+	if !utf8.ValidString(value) {
+		value = strings.ToValidUTF8(value, "?")
+	}
+
+	value = strings.Map(func(r rune) rune {
+		switch {
+		case r == '\n' || r == '\r' || r == '\t':
+			return ' '
+		case unicode.IsControl(r):
+			return -1
+		default:
+			return r
+		}
+	}, value)
+
+	value = strings.TrimSpace(value)
+	value = strings.Join(strings.Fields(value), " ")
+	return value
+}
+
+// sanitizeRawOutputLine performs minimal sanitization for raw terminal
+// output lines - only ensures valid UTF-8 and strips remaining control
+// characters.  Unlike sanitizeRemoteText it does NOT collapse whitespace
+// or replace newlines, preserving the original terminal layout.
+func sanitizeRawOutputLine(value string) string {
+	if value == "" {
+		return ""
+	}
+	if !utf8.ValidString(value) {
+		value = strings.ToValidUTF8(value, "?")
+	}
+	value = strings.Map(func(r rune) rune {
+		if r == '\t' {
+			return r // preserve tabs
+		}
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, value)
+	return value
+}
+
+func (a *App) GetRemoteConnectionStatus() RemoteConnectionStatus {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return RemoteConnectionStatus{
+			LastError: err.Error(),
+		}
+	}
+
+	status := RemoteConnectionStatus{
+		Enabled:   cfg.RemoteEnabled,
+		HubURL:    cfg.RemoteHubURL,
+		MachineID: cfg.RemoteMachineID,
+	}
+
+	if a.remoteSessions != nil {
+		status.SessionCount = len(a.remoteSessions.List())
+	}
+
+	if a.remoteSessions != nil && a.remoteSessions.hubClient != nil {
+		status.Connected = a.remoteSessions.hubClient.IsConnected()
+		status.LastError = a.remoteSessions.hubClient.LastError()
+	}
+
+	return status
+}
+
+func (a *App) ListRemoteToolMetadata() []RemoteToolMetadataView {
+	return listRemoteToolMetadataForApp(a)
+}
+
+func (a *App) ListValidProviders(toolName string) ([]ProviderView, error) {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return nil, err
+	}
+	toolCfg, err := remoteToolConfig(cfg, toolName)
+	if err != nil {
+		return nil, err
+	}
+	valid := validProviders(toolCfg)
+	out := make([]ProviderView, 0, len(valid))
+	for _, m := range valid {
+		out = append(out, ProviderView{
+			Name:      m.ModelName,
+			ModelID:   m.ModelId,
+			IsDefault: strings.EqualFold(m.ModelName, toolCfg.CurrentModel),
+		})
+	}
+	return out, nil
+}
+
+func (a *App) emitRemoteStateChanged() {
+	a.emitEvent("remote-state-changed")
+}
+
+func (a *App) ensureWorkflowAllowsRemoteToolCall(toolName string, args map[string]interface{}) error {
+	return a.ensureWorkflowAllowsRemoteToolCallForOwner(a.defaultManualPolicyOwnerID(), toolName, args)
+}
+
+const (
+	remoteSessionStartPolicyToolName = "remote_session_start"
+	remoteTemplatePolicyToolName     = "remote_template_manage"
+)
+
+func (a *App) ensureWorkflowAllowsRemoteToolCallForOwner(ownerID, toolName string, args map[string]interface{}) error {
+	if a == nil {
+		return nil
+	}
+	h := &IMMessageHandler{app: a}
+	policyUserID := strings.TrimSpace(ownerID)
+	if policyUserID == "" || isSystemBackgroundWorkflowPolicyBypass(policyUserID, toolName, args) {
+		return nil
+	}
+	if !h.isWorkflowToolAllowedForOwner(policyUserID, toolName) {
+		return errors.New(workflowPolicyToolRejectedText(toolName))
+	}
+	data, err := json.Marshal(args)
+	if err != nil {
+		return err
+	}
+	if allowed, reason := h.isWorkflowToolCallAllowedForOwner(policyUserID, toolName, string(data)); !allowed {
+		return fmt.Errorf("[system rejected] %s", reason)
+	}
+	return nil
+}
+
+func (a *App) defaultManualPolicyOwnerID() string {
+	return ""
+}
+
+func isSystemBackgroundWorkflowPolicyBypass(ownerID, toolName string, args map[string]interface{}) bool {
+	ownerID = strings.TrimSpace(ownerID)
+	toolName = strings.TrimSpace(toolName)
+	switch ownerID {
+	case capabilityManagedSyncOwnerID:
+		return toolName == "manage_skill" && strings.TrimSpace(nonEmptyStringFromAny(args["action"])) == "sync_capabilities"
+	case scheduledTaskExecutorOwnerID:
+		return toolName == "delegate_task" && strings.TrimSpace(nonEmptyStringFromAny(args["agent"])) == "scheduled_task"
+	default:
+		return false
+	}
+}
+
+func (a *App) remoteSessionPolicyOwnerID(sessionID string) string {
+	if a == nil {
+		return a.defaultManualPolicyOwnerID()
+	}
+	sessions := a.remoteSessionManagerIfReady()
+	if sessions == nil {
+		return a.defaultManualPolicyOwnerID()
+	}
+	if session, ok := sessions.Get(strings.TrimSpace(sessionID)); ok && session != nil {
+		return remoteLaunchPolicyOwnerIDForProject(session.LaunchSource, session.ProjectPath)
+	}
+	return a.defaultManualPolicyOwnerID()
+}
+
+func (a *App) GetRemoteClaudeReadiness(projectDir string, useProxy bool) RemoteToolReadiness {
+	return a.CheckRemoteClaudeReadiness(projectDir, useProxy)
+}
+
+func (a *App) GetRemoteToolReadiness(toolName, projectDir string, useProxy bool) RemoteToolReadiness {
+	return a.CheckRemoteToolReadiness(toolName, projectDir, useProxy)
+}
+
+func (a *App) GetRemotePTYProbe() RemotePTYProbeResult {
+	return a.CheckRemotePTYProbe()
+}
+
+func (a *App) GetLastRemoteSmokeReport() (RemoteSmokeSnapshot, error) {
+	root, err := os.Getwd()
+	if err != nil || root == "" {
+		root = "."
+	}
+	path := filepath.Join(root, ".last_remote_demo.json")
+	snapshot := RemoteSmokeSnapshot{
+		Exists: false,
+		Path:   path,
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return snapshot, nil
+		}
+		return snapshot, err
+	}
+
+	var report RemoteSmokeReport
+	if err := json.Unmarshal(data, &report); err != nil {
+		return snapshot, err
+	}
+
+	snapshot.Exists = true
+	snapshot.Report = &report
+	return snapshot, nil
+}
+
+func (a *App) GetRemoteClaudeLaunchProbe(projectDir string, useProxy bool) RemoteToolLaunchProbeResult {
+	return a.CheckRemoteClaudeLaunchProbe(projectDir, useProxy)
+}
+
+func (a *App) GetRemoteToolLaunchProbe(toolName, projectDir string, useProxy bool) RemoteToolLaunchProbeResult {
+	return a.CheckRemoteToolLaunchProbe(toolName, projectDir, useProxy)
+}
+
+func (a *App) ensureRemoteLaunchToolInstalled(toolName string, launchSource RemoteLaunchSource) error {
+	toolName = normalizeRemoteToolName(toolName)
+	if toolName == "browser" {
+		return nil
+	}
+	if !remoteToolSupported(toolName) {
+		return fmt.Errorf("tool %q does not support remote mode", toolName)
+	}
+	status := NewToolManager(a).GetToolStatus(toolName)
+	if status.Installed && strings.TrimSpace(status.Path) != "" {
+		return nil
+	}
+	if !remoteToolAutoInstallSupported(toolName) {
+		return fmt.Errorf("%s is not installed", toolName)
+	}
+	a.log(fmt.Sprintf("Remote launch: %s is not installed, installing on demand...", toolName))
+	return a.installToolOnDemandUnchecked(toolName)
+}
+
+func (a *App) RunRemoteClaudeSmoke(projectDir string, useProxy bool) (RemoteSmokeReport, error) {
+	return a.RunRemoteToolSmoke("claude", projectDir, useProxy)
+}
+
+func (a *App) RunRemoteToolSmoke(toolName, projectDir string, useProxy bool) (RemoteSmokeReport, error) {
+	toolName = normalizeRemoteToolName(toolName)
+	if projectDir == "" {
+		projectDir = a.GetCurrentProjectPath()
+	}
+	projectDir = normalizeProjectSessionPath(projectDir)
+
+	report := RemoteSmokeReport{
+		Tool:        toolName,
+		ProjectPath: projectDir,
+		UseProxy:    useProxy,
+	}
+	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(remoteLaunchPolicyOwnerIDForProject(RemoteLaunchSourceDesktop, projectDir), remoteSessionStartPolicyToolName, map[string]interface{}{"tool": toolName, "project_dir": projectDir}); err != nil {
+		return report, err
+	}
+	report.Connection = a.GetRemoteConnectionStatus()
+	report.Readiness = a.GetRemoteToolReadiness(toolName, projectDir, useProxy)
+
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return report, err
+	}
+	if cfg.RemoteEmail == "" {
+		return report, fmt.Errorf("remote email is required before running full smoke")
+	}
+
+	if cfg.RemoteMachineID == "" || cfg.RemoteMachineToken == "" {
+		activation, err := a.ActivateRemote(cfg.RemoteEmail, "", "")
+		if err != nil {
+			return report, err
+		}
+		report.Activation = &activation
+	}
+
+	if err := a.ensureRemoteLaunchToolInstalled(toolName, RemoteLaunchSourceDesktop); err != nil {
+		return report, err
+	}
+
+	report.Connection = a.GetRemoteConnectionStatus()
+	report.Readiness = a.GetRemoteToolReadiness(toolName, projectDir, useProxy)
+
+	ptyProbe := a.GetRemotePTYProbe()
+	report.PTYProbe = &ptyProbe
+
+	launchProbe := a.GetRemoteToolLaunchProbe(toolName, projectDir, useProxy)
+	report.LaunchProbe = &launchProbe
+	if !launchProbe.Ready {
+		return report, fmt.Errorf("%s launch probe failed: %s", toolName, launchProbe.Message)
+	}
+
+	session, err := a.StartRemoteSession(toolName, projectDir, useProxy, "", RemoteLaunchSourceDesktop)
+	report.StartedSession = &session
+	if err != nil {
+		return report, err
+	}
+
+	visibility, verifyErr := verifyRemoteHubVisibility(a, report, 20*time.Second)
+	report.HubVisibility = &visibility
+	if verifyErr != nil {
+		return report, verifyErr
+	}
+
+	return report, nil
+}
+
+func (a *App) ListRemoteSessions() []RemoteSessionView {
+	out := make([]RemoteSessionView, 0)
+	if a.remoteSessions != nil {
+		sessions := a.remoteSessions.List()
+		for _, s := range sessions {
+			if s == nil {
+				continue
+			}
+			view := toRemoteSessionView(s)
+			a.log(fmt.Sprintf("[remote-list] session %s: status=%s, preview_lines=%d, raw_lines=%d", view.ID, view.Status, len(view.Preview.PreviewLines), len(view.RawOutputLines)))
+			out = append(out, view)
+		}
+	}
+	if a.browserSessions != nil {
+		for _, sess := range a.browserSessions.List() {
+			out = append(out, RemoteSessionView{
+				ID:             sess.ID,
+				Tool:           sess.Tool,
+				Title:          sess.Title,
+				LaunchSource:   "browser",
+				ProjectPath:    sess.CurrentURL,
+				WorkspacePath:  sess.CurrentURL,
+				WorkspaceRoot:  sess.CurrentURL,
+				ModelID:        "browser-agent",
+				RunID:          sess.RunID,
+				CurrentURL:     sess.CurrentURL,
+				CurrentTitle:   sess.CurrentTitle,
+				ReadyState:     sess.ReadyState,
+				LastSnapshotID: sess.LastSnapshotID,
+				ExecutionMode:  "browser-agent",
+				Status:         sess.Status,
+				CreatedAt:      sess.CreatedAt,
+				UpdatedAt:      sess.UpdatedAt,
+				Summary:        sess.Summary,
+				Preview:        sess.Preview,
+				Events:         sess.Events,
+				RawOutputLines: sess.RawOutputLines,
+				OutputImages:   sess.OutputImages,
+			})
+		}
+	}
+	return out
+}
+
+func (a *App) StartRemoteClaudeSession(projectDir string, useProxy bool) (RemoteSessionView, error) {
+	return a.StartRemoteSession("claude", projectDir, useProxy, "", RemoteLaunchSourceDesktop)
+}
+
+func (a *App) StartRemoteSession(toolName, projectDir string, useProxy bool, provider string, launchSource RemoteLaunchSource) (RemoteSessionView, error) {
+	if normalizeRemoteLaunchSource(launchSource) != RemoteLaunchSourceDesktop {
+		return RemoteSessionView{}, fmt.Errorf("StartRemoteSession only accepts desktop launch source")
+	}
+	launchSource = RemoteLaunchSourceDesktop
+	toolName = normalizeRemoteToolName(toolName)
+	if !remoteToolSupported(toolName) {
+		return RemoteSessionView{}, fmt.Errorf("tool %q does not support remote mode", toolName)
+	}
+	if err := rejectAIExternalCodingSessionLaunch(LaunchSpec{Tool: toolName, LaunchSource: launchSource}); err != nil {
+		return RemoteSessionView{}, err
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return RemoteSessionView{}, err
+	}
+	if !cfg.RemoteEnabled && normalizeRemoteLaunchSource(launchSource) == RemoteLaunchSourceDesktop {
+		return RemoteSessionView{}, fmt.Errorf("remote mode is disabled")
+	}
+
+	if projectDir == "" {
+		projectDir = a.GetCurrentProjectPath()
+	}
+	projectDir = normalizeProjectSessionPath(projectDir)
+	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(remoteLaunchPolicyOwnerIDForProject(launchSource, projectDir), remoteSessionStartPolicyToolName, map[string]interface{}{"tool": toolName, "project_dir": projectDir, "provider": provider, "launch_source": string(launchSource)}); err != nil {
+		return RemoteSessionView{}, err
+	}
+	if err := a.ensureRemoteLaunchToolInstalled(toolName, launchSource); err != nil {
+		return RemoteSessionView{}, err
+	}
+
+	if a.remoteSessions == nil {
+		a.ensureRemoteInfra()
+	}
+
+	hubClient := a.ensureHubClient()
+
+	if cfg.RemoteHubURL != "" && cfg.RemoteMachineID != "" && cfg.RemoteMachineToken != "" && !hubClient.IsConnected() {
+		if err := hubClient.Connect(); err != nil {
+			a.log("remote hub connect before launch failed: " + err.Error())
+		}
+	}
+
+	spec, err := a.buildRemoteLaunchSpec(toolName, cfg, false, false, "", projectDir, useProxy, provider, persistNativeToolConfig)
+	if err != nil {
+		return RemoteSessionView{}, err
+	}
+	spec.LaunchSource = launchSource
+
+	session, err := a.remoteSessions.CreateUserSession(spec)
+	if err != nil && session == nil {
+		return RemoteSessionView{}, err
+	}
+
+	a.emitRemoteStateChanged()
+	if session == nil {
+		return RemoteSessionView{}, err
+	}
+	return toRemoteSessionView(session), err
+}
+
+func (a *App) StartRemoteHandoffSession(toolName, projectDir string, useProxy bool, provider string, launchSource RemoteLaunchSource) (RemoteSessionView, error) {
+	if normalizeRemoteLaunchSource(launchSource) != RemoteLaunchSourceHandoff {
+		return RemoteSessionView{}, fmt.Errorf("StartRemoteHandoffSession only accepts handoff launch source")
+	}
+	launchSource = RemoteLaunchSourceHandoff
+	toolName = normalizeRemoteToolName(toolName)
+	if !remoteToolSupported(toolName) {
+		return RemoteSessionView{}, fmt.Errorf("tool %q does not support remote mode", toolName)
+	}
+	if err := rejectAIExternalCodingSessionLaunch(LaunchSpec{Tool: toolName, LaunchSource: launchSource}); err != nil {
+		return RemoteSessionView{}, err
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return RemoteSessionView{}, err
+	}
+	if !cfg.RemoteEnabled && normalizeRemoteLaunchSource(launchSource) == RemoteLaunchSourceDesktop {
+		return RemoteSessionView{}, fmt.Errorf("remote mode is disabled")
+	}
+
+	if projectDir == "" {
+		projectDir = a.GetCurrentProjectPath()
+	}
+	projectDir = normalizeProjectSessionPath(projectDir)
+	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(remoteLaunchPolicyOwnerIDForProject(launchSource, projectDir), remoteSessionStartPolicyToolName, map[string]interface{}{"tool": toolName, "project_dir": projectDir, "provider": provider, "launch_source": string(launchSource)}); err != nil {
+		return RemoteSessionView{}, err
+	}
+	if err := a.ensureRemoteLaunchToolInstalled(toolName, launchSource); err != nil {
+		return RemoteSessionView{}, err
+	}
+
+	if a.remoteSessions == nil {
+		a.ensureRemoteInfra()
+	}
+
+	hubClient := a.ensureHubClient()
+
+	if cfg.RemoteHubURL != "" && cfg.RemoteMachineID != "" && cfg.RemoteMachineToken != "" && !hubClient.IsConnected() {
+		if err := hubClient.Connect(); err != nil {
+			a.log("remote hub connect before handoff failed: " + err.Error())
+		}
+	}
+
+	spec, err := a.buildRemoteLaunchSpec(toolName, cfg, false, false, "", projectDir, useProxy, provider, persistNativeToolConfig)
+	if err != nil {
+		return RemoteSessionView{}, err
+	}
+	spec.LaunchSource = launchSource
+
+	session, err := a.remoteSessions.CreateUserSession(spec)
+	if err != nil && session == nil {
+		return RemoteSessionView{}, err
+	}
+
+	a.emitRemoteStateChanged()
+	if session == nil {
+		return RemoteSessionView{}, err
+	}
+	return toRemoteSessionView(session), err
+}
+
+func (a *App) ReconnectRemoteHub() error {
+	if a.remoteSessions == nil {
+		a.ensureRemoteInfra()
+	}
+
+	hubClient := a.ensureHubClient()
+
+	_ = hubClient.Disconnect()
+	return hubClient.Connect()
+}
+
+func (a *App) SendRemoteSessionInput(sessionID, text string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(a.remoteSessionPolicyOwnerID(sessionID), "send_input", map[string]interface{}{"session_id": sessionID, "text": text}); err != nil {
+		return err
+	}
+	if a.remoteSessions == nil {
+		return ErrRemoteSessionsUnavailable
+	}
+	a.log(fmt.Sprintf("[remote-input] writing to session %s: %q", sessionID, text))
+	err := a.remoteSessions.WriteInput(sessionID, text)
+	if err != nil {
+		a.log(fmt.Sprintf("[remote-input] write failed for session %s: %v", sessionID, err))
+	} else {
+		// Log post-write state for debugging
+		if s, ok := a.remoteSessions.Get(sessionID); ok {
+			a.log(fmt.Sprintf("[remote-input] write OK session=%s, status=%s, raw_lines=%d, pid=%d",
+				sessionID, s.Status, len(s.RawOutputLines), s.PID))
+		} else {
+			a.log(fmt.Sprintf("[remote-input] write OK but session %s not found in map", sessionID))
+		}
+	}
+	return err
+}
+
+// SendRemoteSessionRawInput writes raw bytes to the PTY without any
+// line-ending normalization.  Use this for sending individual keystrokes
+// or control sequences to TUI applications like Claude Code.
+// For SDK sessions, raw input is not supported - use SendRemoteSessionInput instead.
+func (a *App) SendRemoteSessionRawInput(sessionID, text string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(a.remoteSessionPolicyOwnerID(sessionID), "send_input", map[string]interface{}{"session_id": sessionID, "text": text, "raw": true}); err != nil {
+		return err
+	}
+	if a.remoteSessions == nil {
+		return ErrRemoteSessionsUnavailable
+	}
+	s, ok := a.remoteSessions.Get(sessionID)
+	if !ok {
+		return fmt.Errorf("session not found: %s", sessionID)
+	}
+	if s.Exec == nil {
+		return fmt.Errorf("session execution not available: %s", sessionID)
+	}
+
+	// SDK sessions don't support raw keystroke input - route through
+	// the normal WriteInput path which wraps text in a JSON user message.
+	if _, isSDK := s.Exec.(*SDKExecutionHandle); isSDK {
+		a.log(fmt.Sprintf("[remote-raw-input] session=%s is SDK, routing to WriteInput", sessionID))
+		return a.remoteSessions.WriteInput(sessionID, text)
+	}
+	if _, isCodex := s.Exec.(*CodexSDKExecutionHandle); isCodex {
+		a.log(fmt.Sprintf("[remote-raw-input] session=%s is Codex SDK, routing to WriteInput", sessionID))
+		return a.remoteSessions.WriteInput(sessionID, text)
+	}
+	a.log(fmt.Sprintf("[remote-raw-input] session=%s, input_len=%d", sessionID, len([]rune(text))))
+	return s.Exec.Write([]byte(text))
+}
+
+func (a *App) InterruptRemoteSession(sessionID string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(a.remoteSessionPolicyOwnerID(sessionID), "interrupt_session", map[string]interface{}{"session_id": sessionID}); err != nil {
+		return err
+	}
+	if a.remoteSessions == nil {
+		return ErrRemoteSessionsUnavailable
+	}
+	return a.remoteSessions.Interrupt(sessionID)
+}
+
+// SendRemoteSessionImage sends an image to a Claude Code SDK session.
+// The image is injected as a multi-part user message so Claude can see it.
+func (a *App) SendRemoteSessionImage(sessionID, mediaType, base64Data string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(a.remoteSessionPolicyOwnerID(sessionID), "send_input", map[string]interface{}{"session_id": sessionID, "media_type": mediaType, "image": true}); err != nil {
+		return err
+	}
+	if a.remoteSessions == nil {
+		return ErrRemoteSessionsUnavailable
+	}
+	a.log(fmt.Sprintf("[remote-image-input] session=%s, media_type=%s, b64_len=%d", sessionID, mediaType, len(base64Data)))
+	img := ImageTransferMessage{
+		SessionID: sessionID,
+		MediaType: mediaType,
+		Data:      base64Data,
+	}
+	return a.remoteSessions.WriteImageInput(sessionID, img)
+}
+
+// CaptureRemoteScreenshot captures a full-screen screenshot and sends it
+// to the PWA via the image transfer pipeline.
+func (a *App) CaptureRemoteScreenshot(sessionID string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(a.remoteSessionPolicyOwnerID(sessionID), "screenshot", map[string]interface{}{"session_id": sessionID}); err != nil {
+		return err
+	}
+	if a.remoteSessions == nil {
+		return ErrRemoteSessionsUnavailable
+	}
+	return a.remoteSessions.CaptureScreenshot(sessionID)
+}
+
+// CaptureRemoteWindowScreenshot captures a screenshot of a specific window
+// (matched by title substring) and sends it to the PWA.
+func (a *App) CaptureRemoteWindowScreenshot(sessionID, windowTitle string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(a.remoteSessionPolicyOwnerID(sessionID), "screenshot", map[string]interface{}{"session_id": sessionID, "window_title": windowTitle}); err != nil {
+		return err
+	}
+	if a.remoteSessions == nil {
+		return ErrRemoteSessionsUnavailable
+	}
+	return a.remoteSessions.CaptureWindowScreenshot(sessionID, windowTitle)
+}
+
+func (a *App) GetBrowserSessionTrace(runID string) (*AIAssistantTraceView, error) {
+	if a.browserSessions == nil {
+		a.ensureRemoteInfra()
+	}
+	if a.browserSessions == nil {
+		return nil, fmt.Errorf("browser session manager not initialized")
+	}
+	return a.browserSessions.Trace(runID)
+}
+
+func (a *App) StartBrowserSession(args map[string]interface{}) (RemoteSessionView, error) {
+	if err := a.ensureWorkflowAllowsRemoteToolCall("browser", args); err != nil {
+		return RemoteSessionView{}, err
+	}
+	if a.browserSessions == nil {
+		a.ensureRemoteInfra()
+	}
+	if a.browserSessions == nil {
+		return RemoteSessionView{}, fmt.Errorf("browser session manager not initialized")
+	}
+	view, err := a.browserSessions.Start(args)
+	if err != nil {
+		return RemoteSessionView{}, err
+	}
+	return RemoteSessionView{
+		ID:             view.ID,
+		Tool:           view.Tool,
+		Title:          view.Title,
+		LaunchSource:   "browser",
+		ProjectPath:    view.CurrentURL,
+		WorkspacePath:  view.CurrentURL,
+		WorkspaceRoot:  view.CurrentURL,
+		ModelID:        "browser-agent",
+		RunID:          view.RunID,
+		ExecutionMode:  "browser-agent",
+		Status:         view.Status,
+		CreatedAt:      view.CreatedAt,
+		UpdatedAt:      view.UpdatedAt,
+		Summary:        view.Summary,
+		Preview:        view.Preview,
+		Events:         view.Events,
+		RawOutputLines: view.RawOutputLines,
+		OutputImages:   view.OutputImages,
+	}, nil
+}
+
+func (a *App) StopBrowserSession(sessionID string, closeBrowser bool) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(a.remoteSessionPolicyOwnerID(sessionID), "kill_session", map[string]interface{}{"session_id": sessionID, "browser": true, "close_browser": closeBrowser}); err != nil {
+		return err
+	}
+	if a.browserSessions == nil {
+		a.ensureRemoteInfra()
+	}
+	if a.browserSessions == nil {
+		return fmt.Errorf("browser session manager not initialized")
+	}
+	return a.browserSessions.Stop(sessionID, closeBrowser)
+}
+
+func (a *App) GetBrowserSessionSnapshot(sessionID string) (map[string]interface{}, error) {
+	if a.browserSessions == nil {
+		a.ensureRemoteInfra()
+	}
+	if a.browserSessions == nil {
+		return nil, fmt.Errorf("browser session manager not initialized")
+	}
+	view, ok := a.browserSessions.Get(sessionID)
+	if !ok {
+		return nil, fmt.Errorf("browser session not found: %s", sessionID)
+	}
+	return map[string]interface{}{
+		"session_id":              view.ID,
+		"run_id":                  view.RunID,
+		"current_url":             view.CurrentURL,
+		"current_title":           view.CurrentTitle,
+		"ready_state":             view.ReadyState,
+		"last_snapshot_id":        view.LastSnapshotID,
+		"latest_refs":             view.LatestRefs,
+		"browser_tabs":            view.BrowserTabs,
+		"browser_frames":          view.BrowserFrames,
+		"browser_active_tab_id":   view.ActiveTabID,
+		"browser_active_frame_id": view.ActiveFrameID,
+		"preview_lines":           view.Preview.PreviewLines,
+		"raw_output_lines":        view.RawOutputLines,
+		"events":                  view.Events,
+		"output_images":           view.OutputImages,
+		"summary":                 view.Summary,
+	}, nil
+}
+
+func (a *App) InvokeBrowserTool(toolName string, args map[string]interface{}) (string, error) {
+	policyOwnerID := a.defaultManualPolicyOwnerID()
+	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(policyOwnerID, toolName, args); err != nil {
+		return "", err
+	}
+	if a.remoteSessions == nil {
+		a.ensureRemoteInfra()
+	}
+	handler := NewIMMessageHandler(a, a.remoteSessions)
+	handler.SetTraceService(a.aiTrace)
+	payload, err := json.Marshal(args)
+	if err != nil {
+		return "", err
+	}
+	return handler.executeToolDetailedWithPolicyUserText(policyOwnerID, toolName, string(payload), "", nil).Text, nil
+}
+
+func (a *App) KillRemoteSession(sessionID string) error {
+	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(a.remoteSessionPolicyOwnerID(sessionID), "kill_session", map[string]interface{}{"session_id": sessionID}); err != nil {
+		return err
+	}
+	if a.remoteSessions == nil {
+		return ErrRemoteSessionsUnavailable
+	}
+	return a.remoteSessions.Kill(sessionID)
+}

@@ -1,0 +1,428 @@
+package guiapp
+
+import (
+	"fmt"
+	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib/intent"
+)
+
+// makeDynamicTool creates a tool definition with the given name and description.
+func makeDynamicTool(name, desc string) map[string]interface{} {
+	return toolDef(name, desc, nil, nil)
+}
+
+// makeAllTools creates a slice of current builtins + n dynamic tools.
+func makeAllTools(dynamicCount int) []map[string]interface{} {
+	builtins := makeBuiltinDefs()
+	for i := 0; i < dynamicCount; i++ {
+		builtins = append(builtins, makeDynamicTool(
+			fmt.Sprintf("dynamic_tool_%d", i),
+			fmt.Sprintf("Dynamic tool number %d for testing", i),
+		))
+	}
+	return builtins
+}
+
+func TestFilterToolsForSkillPreference_RemovesFallbackHeavyTools(t *testing.T) {
+	tools := []map[string]interface{}{
+		toolDef("run_skill", "run local skill", nil, nil),
+		toolDef("craft_tool", "craft script", nil, nil),
+		toolDef("bash", "run bash", nil, nil),
+		toolDef("create_session", "create coding session", nil, nil),
+		toolDef("send_file", "send file", nil, nil),
+	}
+	filtered := filterToolsForSkillPreference(tools)
+	resultNames := make(map[string]bool)
+	for _, tool := range filtered {
+		resultNames[extractToolName(tool)] = true
+	}
+	if resultNames["craft_tool"] || resultNames["bash"] || resultNames["create_session"] {
+		t.Fatalf("filtered tools should remove craft/bash/create_session, got %#v", resultNames)
+	}
+	if !resultNames["run_skill"] || !resultNames["send_file"] {
+		t.Fatalf("filtered tools should keep run_skill and send_file, got %#v", resultNames)
+	}
+}
+
+func TestFilterToolsForRemoteSkillSearch_RestrictsToSkillSearchPath(t *testing.T) {
+	tools := []map[string]interface{}{
+		toolDef("run_skill", "run local skill", nil, nil),
+		toolDef("get_skill_run", "check run status", nil, nil),
+		toolDef("list_skills", "list skills", nil, nil),
+		toolDef("search_and_install_skill", "search skillmarket", nil, nil),
+		toolDef("search_skill_hub", "search hub", nil, nil),
+		toolDef("install_skill_hub", "install hub skill", nil, nil),
+		toolDef("craft_tool", "craft script", nil, nil),
+		toolDef("bash", "run bash", nil, nil),
+		toolDef("send_file", "send file", nil, nil),
+	}
+	filtered := filterToolsForRemoteSkillSearch(tools)
+	resultNames := make(map[string]bool)
+	for _, tool := range filtered {
+		resultNames[extractToolName(tool)] = true
+	}
+	for _, name := range []string{"run_skill", "get_skill_run", "list_skills", "search_and_install_skill", "search_skill_hub", "install_skill_hub"} {
+		if !resultNames[name] {
+			t.Fatalf("expected %s to be kept, got %#v", name, resultNames)
+		}
+	}
+	for _, name := range []string{"craft_tool", "bash", "send_file"} {
+		if resultNames[name] {
+			t.Fatalf("expected %s to be removed, got %#v", name, resultNames)
+		}
+	}
+}
+
+func TestToolRouter_BelowBudget(t *testing.T) {
+	// Use a subset of builtins (fewer than maxToolBudget). The router always
+	// applies its core-set selection — there is no below-budget bypass — but a
+	// generic message must keep the core tools and drop gated ones (screenshot).
+	allTools := makeBuiltinDefs()[:20]
+	router := NewToolRouter(nil)
+	result := router.Route("hello world", allTools)
+
+	resultNames := make(map[string]bool)
+	for _, tool := range result {
+		resultNames[extractToolName(tool)] = true
+	}
+	if resultNames["screenshot"] {
+		t.Fatalf("screenshot should be filtered without explicit screenshot request: %#v", resultNames)
+	}
+	for _, name := range []string{"bash", "read_file"} {
+		if !resultNames[name] {
+			t.Fatalf("core tool %s should survive routing: %#v", name, resultNames)
+		}
+	}
+	if len(result) >= len(allTools) {
+		t.Errorf("router should trim below-budget input to the core set, kept %d of %d", len(result), len(allTools))
+	}
+}
+
+func TestToolRouter_ChineseBrowserPublicationKeepsStableBrowserOnly(t *testing.T) {
+	allTools := []map[string]interface{}{
+		toolDef("browser", "Browser automation merged tool", nil, nil),
+		toolDef("bash", "Run shell commands", nil, nil),
+		toolDef("screenshot", "Capture screen", nil, nil),
+		toolDef("manage_skill", "Manage skills", nil, nil),
+		toolDef("discover_tool", "Discover tools", nil, nil),
+		toolDef("call_mcp_tool", "Call MCP", nil, nil),
+		toolDef("web_search", "Search web", nil, nil),
+	}
+	router := NewToolRouter(nil)
+	// Publication wording alone must never promote browser; activation comes
+	// from the semantic classifier. With a browser-intent UIC the merged
+	// browser surface stays stable and generic fallbacks are suppressed.
+	router.SetUnifiedClassifier(intent.New(intent.Config{LLMFunc: func(systemPrompt, userText string) (string, error) {
+		return `{"top":[{"skill":"browser","score":0.95}]}`, nil
+	}}))
+	result := router.Route("\u627e\u7bc7\u6700\u65b0\u8bba\u6587\uff0c\u5199\u5b8c\u540e\u53d1\u5e03\u5230\u77e5\u4e4e", allTools)
+
+	resultNames := make(map[string]bool)
+	for _, tool := range result {
+		resultNames[extractToolName(tool)] = true
+	}
+	if !resultNames["browser"] {
+		t.Fatalf("browser should be kept for browser-intent publication task, got %#v", resultNames)
+	}
+	for _, name := range []string{"bash", "screenshot", "manage_skill", "discover_tool", "call_mcp_tool"} {
+		if resultNames[name] {
+			t.Fatalf("%s should be suppressed for browser publication task, got %#v", name, resultNames)
+		}
+	}
+}
+
+func TestToolRouter_ExactlyAtBudget(t *testing.T) {
+	allTools := makeAllTools(0)
+	router := NewToolRouter(nil)
+	result := router.Route("test message", allTools)
+
+	if len(allTools) > maxToolBudget {
+		if len(result) > maxToolBudget {
+			t.Errorf("expected at most %d tools, got %d", maxToolBudget, len(result))
+		}
+		return
+	}
+	if len(result) != len(allTools) {
+		t.Errorf("expected %d tools (unchanged under budget), got %d", len(allTools), len(result))
+	}
+}
+
+func TestToolRouter_AboveBudget_KeepsBootstrapSurface(t *testing.T) {
+	// 29 builtins + 20 dynamic = 49 total, above maxToolBudget.
+	allTools := makeAllTools(20)
+	router := NewToolRouter(nil)
+	result := router.Route("some query", allTools)
+
+	if len(result) > maxToolBudget {
+		t.Errorf("expected at most %d tools, got %d", maxToolBudget, len(result))
+	}
+
+	// Current contract: only the bootstrap/loop-control surface is
+	// unconditional. Legacy business tools (write_file, memory, web_fetch)
+	// compete on retrieval score and must not leak into a generic query's
+	// surface; manage_skill is a host-controlled gateway and is never emitted.
+	resultNames := make(map[string]bool)
+	for _, tool := range result {
+		resultNames[extractToolName(tool)] = true
+	}
+	for _, name := range []string{"task", "async_wait"} {
+		if !resultNames[name] {
+			t.Errorf("bootstrap tool %q missing from result: %#v", name, resultNames)
+		}
+	}
+	for _, name := range []string{"write_file", "memory", "web_fetch", "manage_skill"} {
+		if resultNames[name] {
+			t.Errorf("legacy business tool %q leaked into a generic-query surface: %#v", name, resultNames)
+		}
+	}
+}
+
+func TestToolRouter_AboveBudget_LimitsDynamic(t *testing.T) {
+	// 29 builtins + 25 dynamic = 54 total.
+	allTools := makeAllTools(25)
+	router := NewToolRouter(nil)
+	result := router.Route("some query", allTools)
+
+	// Count dynamic tools in result.
+	dynamicCount := 0
+	for _, tool := range result {
+		if !isBuiltinToolName(extractToolName(tool)) {
+			dynamicCount++
+		}
+	}
+	if dynamicCount > maxDynamicRouted {
+		t.Errorf("expected at most %d dynamic tools, got %d", maxDynamicRouted, dynamicCount)
+	}
+}
+
+func TestToolRouter_RelevanceRanking(t *testing.T) {
+	builtins := makeBuiltinDefs()
+	router := NewToolRouter(nil)
+	result := router.Route("search the web for golang tutorials", builtins)
+
+	if len(builtins) > maxToolBudget {
+		if len(result) > maxToolBudget {
+			t.Errorf("expected routed tools to stay within budget %d, got %d", maxToolBudget, len(result))
+		}
+		return
+	}
+	if len(result) != len(builtins) {
+		t.Errorf("expected %d tools, got %d", len(builtins), len(result))
+	}
+}
+
+func TestToolRouter_RelevanceRanking_AboveBudget(t *testing.T) {
+	builtins := makeBuiltinDefs()
+	// Add enough dynamic tools to exceed budget regardless of builtin count.
+	var dynamic []map[string]interface{}
+	dynamic = append(dynamic, makeDynamicTool("search_web", "Search the web for information"))
+	for i := 0; i < 30; i++ {
+		dynamic = append(dynamic, makeDynamicTool(
+			fmt.Sprintf("filler_%d", i),
+			fmt.Sprintf("Filler tool %d does nothing useful", i),
+		))
+	}
+	allTools := append(builtins, dynamic...)
+
+	router := NewToolRouter(nil)
+	result := router.Route("search the web for golang tutorials", allTools)
+
+	// search_web should be included due to high relevance.
+	found := false
+	for _, tool := range result {
+		if extractToolName(tool) == "search_web" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("search_web tool should be included due to high relevance")
+	}
+}
+
+func TestToolRouter_NonCoreBuiltinCompetes(t *testing.T) {
+	// Non-core builtins like config tools should be included when relevant.
+	builtins := makeBuiltinDefs()
+	// Add config tools (non-core builtins) — both merged and legacy names.
+	builtins = append(builtins,
+		toolDef("manage_config", "配置管理（get/set/batch/schema/export/import）", nil, nil),
+		toolDef("get_config", "获取配置", nil, nil),
+		toolDef("update_config", "修改配置", nil, nil),
+		toolDef("craft_tool", "自动生成脚本", nil, nil),
+		toolDef("manage_schedule", "定时任务管理", nil, nil),
+	)
+	// Add enough dynamic tools to exceed budget regardless of builtin count.
+	for i := 0; i < maxToolBudget+5; i++ {
+		builtins = append(builtins, makeDynamicTool(
+			fmt.Sprintf("filler_%d", i),
+			fmt.Sprintf("Filler tool %d", i),
+		))
+	}
+
+	router := NewToolRouter(nil)
+	result := router.Route("帮我修改配置", builtins)
+
+	// At least one config-related tool should rank high due to "配置" match.
+	resultNames := make(map[string]bool)
+	for _, tool := range result {
+		resultNames[extractToolName(tool)] = true
+	}
+	if !resultNames["manage_config"] && !resultNames["update_config"] && !resultNames["get_config"] {
+		t.Error("expected at least one config-related tool to remain in the routed result")
+	}
+}
+
+func TestToolRouter_PDFWorkflowKeepsDocumentDeliveryTools(t *testing.T) {
+	allTools := makeAllTools(20)
+	router := NewToolRouter(nil)
+	router.SetUnifiedClassifier(intent.New(intent.Config{LLMFunc: func(systemPrompt, userText string) (string, error) {
+		return `{"top":[{"skill":"search","score":0.94},{"skill":"document_delivery","score":0.88},{"skill":"non_coding","score":0.72}]}`, nil
+	}}))
+	result := router.Route("搜索 huggingface daily papers，生成每日论文综述，生成pdf发我", allTools)
+
+	resultNames := make(map[string]bool)
+	for _, tool := range result {
+		resultNames[extractToolName(tool)] = true
+	}
+	// UIC affinity activates search (web_search/web_fetch/download_file) and
+	// document_delivery (send_file/send_to_im/im_message) tools.
+	for _, name := range []string{"web_search", "send_file"} {
+		if !resultNames[name] {
+			t.Fatalf("expected %s to be routed for PDF workflow, got %#v", name, resultNames)
+		}
+	}
+	// open and craft_tool are sensitive conditional tools: neither the UIC
+	// affinity for these intents nor local wording may activate them.
+	for _, name := range []string{"open", "craft_tool"} {
+		if resultNames[name] {
+			t.Fatalf("sensitive conditional tool %s must not leak for PDF workflow, got %#v", name, resultNames)
+		}
+	}
+	// generate_pdf is score-eligible at the raw router level: its description
+	// matches the query, so it competes and wins a slot here. Managed turns
+	// still strip it downstream (routingMissPrivilegeTools) unless the host
+	// adapter pins it — that governance is not exercised at this layer.
+	if !resultNames["generate_pdf"] {
+		t.Fatalf("score-eligible generate_pdf should be routed on retrieval score, got %#v", resultNames)
+	}
+}
+
+func TestToolRouter_MarkdownWorkflowKeepsFileEditingTools(t *testing.T) {
+	allTools := makeAllTools(20)
+	// Non-bootstrap core tools compete on retrieval score: give write_file a
+	// description that matches the task wording, as the production enrichment
+	// store does, so the BM25 channel can select it.
+	for i, td := range allTools {
+		if extractToolName(td) == "write_file" {
+			allTools[i] = toolDef("write_file", "写入并保存本地文件", nil, nil)
+		}
+	}
+	router := NewToolRouter(nil)
+	result := router.Route("把搜索结果整理成 markdown 文档并保存到本地文件，后续按我的意见继续修改", allTools)
+
+	resultNames := make(map[string]bool)
+	for _, tool := range result {
+		resultNames[extractToolName(tool)] = true
+	}
+	for _, name := range []string{"read_file", "write_file", "edit_file"} {
+		if !resultNames[name] {
+			t.Fatalf("expected %s to be routed for markdown workflow, got %#v", name, resultNames)
+		}
+	}
+}
+
+func TestToolRouter_EmptyMessage(t *testing.T) {
+	allTools := makeAllTools(20)
+	router := NewToolRouter(nil)
+	result := router.Route("", allTools)
+
+	// Empty message → should cap at maxToolBudget.
+	if len(result) > maxToolBudget {
+		t.Errorf("expected at most %d tools, got %d", maxToolBudget, len(result))
+	}
+}
+
+func TestToolRouter_EmptyTools(t *testing.T) {
+	router := NewToolRouter(nil)
+	result := router.Route("hello", nil)
+
+	if len(result) != 0 {
+		t.Errorf("expected 0 tools for nil input, got %d", len(result))
+	}
+
+	result = router.Route("hello", []map[string]interface{}{})
+	if len(result) != 0 {
+		t.Errorf("expected 0 tools for empty input, got %d", len(result))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tokenization tests (now using bm25.Tokenize)
+// ---------------------------------------------------------------------------
+
+func TestExtractToolDescription(t *testing.T) {
+	def := toolDef("my_tool", "A useful tool", nil, nil)
+	desc := extractToolDescription(def)
+	if desc != "A useful tool" {
+		t.Errorf("expected 'A useful tool', got %q", desc)
+	}
+
+	// Invalid definition.
+	desc = extractToolDescription(map[string]interface{}{})
+	if desc != "" {
+		t.Errorf("expected empty string, got %q", desc)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Hub recommendation matching tests
+// ---------------------------------------------------------------------------
+
+func TestToolRouter_SetHubClient(t *testing.T) {
+	router := NewToolRouter(nil)
+	if router.hubClient != nil {
+		t.Error("expected nil hubClient initially")
+	}
+
+	router.SetHubClient(nil)
+	if router.hubClient != nil {
+		t.Error("expected nil hubClient after SetHubClient(nil)")
+	}
+}
+
+func TestToolRouter_MatchRecommendations_NilHubClient(t *testing.T) {
+	// When hubClient is nil, Route should not append any hint.
+	allTools := makeAllTools(20)
+	router := NewToolRouter(nil)
+	result := router.Route("deploy my application", allTools)
+
+	for _, tool := range result {
+		if extractToolName(tool) == "search_and_install_skill" {
+			t.Error("should not have search_and_install_skill hint when hubClient is nil")
+		}
+	}
+}
+
+func TestToolRouter_MatchRecommendations_NoTokens(t *testing.T) {
+	// matchRecommendations with empty tokens should return nil.
+	router := NewToolRouter(nil)
+	hint := router.matchRecommendations(nil)
+	if hint != nil {
+		t.Error("expected nil hint for empty tokens")
+	}
+}
+
+func TestSearchAndInstallSkillHint(t *testing.T) {
+	hint := searchAndInstallSkillHint()
+
+	name := extractToolName(hint)
+	if name != "search_and_install_skill" {
+		t.Errorf("expected name 'search_and_install_skill', got %q", name)
+	}
+
+	desc := extractToolDescription(hint)
+	if desc == "" {
+		t.Error("expected non-empty description for hint")
+	}
+}

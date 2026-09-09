@@ -1,0 +1,38 @@
+name: Agent Architecture
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-agent-architecture:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Check shared Runtime architecture
+        run: node scripts/check-agent-architecture.mjs
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25.5'
+          cache: true
+
+      - name: Run Runtime/service/HTTP contract tests
+        run: >-
+          go test ./corelib/agentruntime ./corelib/agentservice ./MaClawSrv
+          -run 'Test(ModuleRegistry|RuntimeExecutor|RuntimeSurfaceDigest|DescribeRuntimeCapabilities|RuntimeCapabilitiesEndpoint|RuntimeCallbacks|CoreAgentCallbacks|RegisterBuiltinModules|ResolveRole|AdaptiveRetry|HeadlessScreenshot|GUIAndSrv|SQLiteRunEventStoreConcurrent|RunEventsStream|OpenAPIDocument)'
+          -count=1 -race
+
+      - name: Compile GUI host contract tests
+        run: go test ./guiapp -run 'Test(SharedAgentLoopCallbacksEmitRuntimeEvents|RunAgentLoopSharedDelegatesThroughRuntimeContract|GUIRuntimeDescribesDeterministicToolSurface|GUIAndSrv)' -count=1 -race

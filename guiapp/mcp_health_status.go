@@ -1,0 +1,31 @@
+package guiapp
+
+import "strings"
+
+type mcpHealthStatus string
+
+const (
+	mcpHealthStatusUnknown     mcpHealthStatus = "unknown"
+	mcpHealthStatusHealthy     mcpHealthStatus = "healthy"
+	mcpHealthStatusSlow        mcpHealthStatus = "slow"
+	mcpHealthStatusUnavailable mcpHealthStatus = "unavailable"
+)
+
+func normalizeMCPHealthStatus(status mcpHealthStatus) mcpHealthStatus {
+	switch mcpHealthStatus(strings.ToLower(strings.TrimSpace(status.String()))) {
+	case mcpHealthStatusHealthy:
+		return mcpHealthStatusHealthy
+	case mcpHealthStatusSlow:
+		return mcpHealthStatusSlow
+	case mcpHealthStatusUnavailable:
+		return mcpHealthStatusUnavailable
+	case mcpHealthStatusUnknown:
+		return mcpHealthStatusUnknown
+	default:
+		return mcpHealthStatusUnknown
+	}
+}
+
+func (status mcpHealthStatus) String() string {
+	return string(status)
+}

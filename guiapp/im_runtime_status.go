@@ -1,0 +1,117 @@
+package guiapp
+
+import (
+	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+)
+
+type runtimeTaskSource string
+
+const (
+	runtimeTaskSourceLocal runtimeTaskSource = "local"
+	runtimeTaskSourceSSH   runtimeTaskSource = "ssh"
+)
+
+type runtimeSessionSource string
+
+const (
+	runtimeSessionSourceCoding runtimeSessionSource = "coding"
+	runtimeSessionSourceSSH    runtimeSessionSource = "ssh"
+)
+
+type runtimeSessionStatus string
+
+const (
+	runtimeSessionStatusUnknown      runtimeSessionStatus = ""
+	runtimeSessionStatusStarting     runtimeSessionStatus = "starting"
+	runtimeSessionStatusRunning      runtimeSessionStatus = "running"
+	runtimeSessionStatusBusy         runtimeSessionStatus = "busy"
+	runtimeSessionStatusWaitingInput runtimeSessionStatus = "waiting_input"
+	runtimeSessionStatusError        runtimeSessionStatus = "error"
+	runtimeSessionStatusExited       runtimeSessionStatus = "exited"
+)
+
+func normalizeRuntimeSessionStatus(status interface{}) runtimeSessionStatus {
+	switch runtimeSessionStatus(strings.TrimSpace(statusString(status))) {
+	case runtimeSessionStatusStarting:
+		return runtimeSessionStatusStarting
+	case runtimeSessionStatusRunning:
+		return runtimeSessionStatusRunning
+	case runtimeSessionStatusBusy:
+		return runtimeSessionStatusBusy
+	case runtimeSessionStatusWaitingInput:
+		return runtimeSessionStatusWaitingInput
+	case runtimeSessionStatusError:
+		return runtimeSessionStatusError
+	case runtimeSessionStatusExited:
+		return runtimeSessionStatusExited
+	default:
+		return runtimeSessionStatusUnknown
+	}
+}
+
+func (s runtimeSessionStatus) String() string {
+	return string(s)
+}
+
+func (s runtimeSessionStatus) RuntimeStatusValue() agentruntime.JobStatus {
+	return agentruntime.ProjectLegacyJobStatus(s.String())
+}
+
+type runtimeTaskStatus string
+
+const (
+	runtimeTaskStatusPending   runtimeTaskStatus = "pending"
+	runtimeTaskStatusRunning   runtimeTaskStatus = "running"
+	runtimeTaskStatusCompleted runtimeTaskStatus = "completed"
+	runtimeTaskStatusFailed    runtimeTaskStatus = "failed"
+	runtimeTaskStatusKilled    runtimeTaskStatus = "killed"
+	runtimeTaskStatusUnknown   runtimeTaskStatus = "unknown"
+)
+
+func normalizeRuntimeTaskStatus(status interface{}) runtimeTaskStatus {
+	switch runtimeTaskStatus(strings.TrimSpace(statusString(status))) {
+	case runtimeTaskStatusPending:
+		return runtimeTaskStatusPending
+	case runtimeTaskStatusRunning:
+		return runtimeTaskStatusRunning
+	case runtimeTaskStatusCompleted:
+		return runtimeTaskStatusCompleted
+	case runtimeTaskStatusFailed:
+		return runtimeTaskStatusFailed
+	case runtimeTaskStatusKilled:
+		return runtimeTaskStatusKilled
+	default:
+		return runtimeTaskStatusUnknown
+	}
+}
+
+func (s runtimeTaskStatus) String() string { return string(s) }
+
+func (s runtimeTaskStatus) IsActive() bool {
+	return s == runtimeTaskStatusRunning || s == runtimeTaskStatusPending
+}
+
+func (s runtimeTaskStatus) RuntimeStatusValue() agentruntime.JobStatus {
+	return agentruntime.ProjectLegacyJobStatus(s.String())
+}
+
+func (s runtimeTaskStatus) HasExitCode() bool {
+	return s == runtimeTaskStatusCompleted || s == runtimeTaskStatusFailed
+}
+
+func (s runtimeTaskStatus) Icon() string {
+	switch s {
+	case runtimeTaskStatusRunning, runtimeTaskStatusPending:
+		return "[..]"
+	case runtimeTaskStatusCompleted:
+		return "[OK]"
+	case runtimeTaskStatusFailed:
+		return "[ERR]"
+	case runtimeTaskStatusKilled:
+		return "[STOP]"
+	default:
+		return "[?]"
+	}
+}

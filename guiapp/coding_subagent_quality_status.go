@@ -1,0 +1,44 @@
+package guiapp
+
+import "strings"
+
+type codingSubAgentQualityStatus string
+
+const (
+	codingSubAgentQualityUnknown   codingSubAgentQualityStatus = ""
+	codingSubAgentQualityNone      codingSubAgentQualityStatus = "none"
+	codingSubAgentQualityPassed    codingSubAgentQualityStatus = "passed"
+	codingSubAgentQualityFailed    codingSubAgentQualityStatus = "failed"
+	codingSubAgentQualityWarning   codingSubAgentQualityStatus = "warning"
+	codingSubAgentQualityMissing   codingSubAgentQualityStatus = "missing"
+	codingSubAgentQualityNotNeeded codingSubAgentQualityStatus = "not_needed"
+	codingSubAgentQualityExplored  codingSubAgentQualityStatus = "explored"
+	codingSubAgentQualityReadOnly  codingSubAgentQualityStatus = "read_only"
+)
+
+func normalizeCodingSubAgentQualityStatus(status string) codingSubAgentQualityStatus {
+	switch codingSubAgentQualityStatus(strings.TrimSpace(status)) {
+	case codingSubAgentQualityNone:
+		return codingSubAgentQualityNone
+	case codingSubAgentQualityPassed:
+		return codingSubAgentQualityPassed
+	case codingSubAgentQualityFailed:
+		return codingSubAgentQualityFailed
+	case codingSubAgentQualityWarning:
+		return codingSubAgentQualityWarning
+	case codingSubAgentQualityMissing:
+		return codingSubAgentQualityMissing
+	case codingSubAgentQualityNotNeeded:
+		return codingSubAgentQualityNotNeeded
+	case codingSubAgentQualityExplored:
+		return codingSubAgentQualityExplored
+	case codingSubAgentQualityReadOnly:
+		return codingSubAgentQualityReadOnly
+	default:
+		return codingSubAgentQualityUnknown
+	}
+}
+
+func (status codingSubAgentQualityStatus) String() string {
+	return string(status)
+}

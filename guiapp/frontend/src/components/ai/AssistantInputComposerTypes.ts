@@ -1,0 +1,91 @@
+import type { ClipboardEvent, CSSProperties, Dispatch, DragEvent, KeyboardEvent, MouseEvent, PointerEvent, ReactNode, Ref, SetStateAction } from "react";
+import type { AttachmentInfo } from "./useBufferQueue";
+import type { ComposeAction, FireSlashCommand, PlusMenuActionId } from "./composeAction";
+import type { UseVoiceInputResult } from "./useVoiceInput";
+import type { Theme } from "./aiAssistantPanelTheme";
+
+/** request=interactive; workspace=session path trust (pure coding); full=global full access */
+export type AssistantPermissionMode = "request" | "workspace" | "full";
+
+export interface AssistantInputComposerProps {
+    /** Whether the retained assistant panel is visible in the app shell. */
+    active?: boolean;
+    browseFile: () => void;
+    canSend: boolean;
+    attachButtonTestId?: string;
+    composeAction?: ComposeAction | null;
+    onComposeActionChange?: (action: ComposeAction | null) => void;
+    onFireSlashCommand?: (command: FireSlashCommand) => void;
+    onInsertTemplate?: (template: string) => void;
+    onPlusMenuAction?: (actionId: PlusMenuActionId) => void;
+    cancelPending: boolean;
+    cancelSession?: unknown;
+    clearSelectedFile?: () => void;
+    exitHistoryBrowsing: () => boolean;
+    finishVoicePointer: (event: PointerEvent<HTMLButtonElement>) => void;
+    handleCancel: () => void;
+    handleClearInput: () => void;
+    handleDragOver: (event: DragEvent<HTMLElement>) => void;
+    handleDrop: (event: DragEvent<HTMLElement>) => void;
+    handlePaste: (event: ClipboardEvent<HTMLTextAreaElement>) => void;
+    handleSend: () => void;
+    handleTextareaClick?: (event: MouseEvent<HTMLTextAreaElement>) => void;
+    handleTextareaKeyDownBefore?: (event: KeyboardEvent<HTMLTextAreaElement>) => boolean;
+    handleTextareaKeyUp?: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
+    handleVoiceClick: () => void;
+    handleVoicePointerDown: (event: PointerEvent<HTMLButtonElement>) => void;
+    handleVoicePointerLeave: (event: PointerEvent<HTMLButtonElement>) => void;
+    inputAreaHeight: number | null;
+    inputLocked: boolean;
+    /**
+     * Stronger lock than inputLocked: disables the textarea itself (no type-ahead).
+     * Used while an interactive record_audio session is live.
+     */
+    hardLockInput?: boolean;
+    inputBarTestId?: string;
+    inputRef: Ref<HTMLTextAreaElement>;
+    inputOverlay?: ReactNode;
+    inputRowTestId?: string;
+    inputValue: string;
+    inline: boolean;
+    /**
+     * Drop floating-card bottom margin when a footer (quick-settings bar)
+     * sits directly under the composer. Main chat and VE/group tabs pass true;
+     * default false keeps breathing room when no footer chrome is present.
+     */
+    flushBottom?: boolean;
+    isBusy: boolean;
+    isSelectionCollapsedAtBoundary: (direction: "up" | "down") => boolean;
+    lang: string;
+    pendingAttachments: AttachmentInfo[];
+    permissionMode?: AssistantPermissionMode;
+    /** Hide the generic coding-agent permission selector for constrained chat surfaces. */
+    showPermissionMode?: boolean;
+    showWorkspacePermissionOption?: boolean;
+    onPermissionModeChange?: (mode: AssistantPermissionMode) => void;
+    pendingAttachmentsTestId?: string;
+    placeholderText: string;
+    ready: boolean;
+    recallHistory: (direction: "up" | "down") => boolean;
+    rememberHistoryEdit: (value: string) => void;
+    removeSelectedFile?: (filePath: string) => void;
+    resizeInput: () => void;
+    selectedFilePaths: string[];
+    setPendingAttachments: Dispatch<SetStateAction<AttachmentInfo[]>>;
+    showBusySpinner: boolean;
+    showMemoryUsage?: boolean;
+    showVoiceInput?: boolean;
+    /** Recent submitted prompts used for prefix autocomplete. */
+    submittedPrompts?: string[];
+    sendButtonTestId?: string;
+    sendButtonStyle?: CSSProperties;
+    textareaAriaLabel?: string;
+    textareaTestId?: string;
+    theme: Theme;
+    themeMode: "light" | "dark";
+    toolbarTestId?: string;
+    /** Extra content rendered in the left toolbar group, after the permission-mode button. */
+    trailingToolbarContent?: ReactNode;
+    updateInputValue: (value: string) => void;
+    voiceInput: UseVoiceInputResult;
+}

@@ -1,0 +1,568 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><title>MaClaw 设计预览</title><style>
+*{box-sizing:border-box}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;color:#1f2937;background:#f7f9fc}button{font:inherit}.app{display:grid;grid-template-columns:112px var(--task-pane-width,308px) 10px minmax(0,1fr);grid-template-rows:minmax(0,1fr);height:100vh;min-height:0}.rail{background:#f0f6ff;border-right:1px solid #e1e8f1;padding:14px 10px;display:flex;flex-direction:column;gap:9px;align-items:center}.logo{width:40px;height:40px;border-radius:12px;background:linear-gradient(145deg,#2b7cf4 0%,#1769e8 58%,#1059c9 100%);border:1px solid rgba(255,255,255,.22);box-shadow:0 5px 12px rgba(23,105,232,.2),inset 0 1px 0 rgba(255,255,255,.18);color:#fff;display:grid;place-items:center;font-size:0;font-weight:800;margin-bottom:14px}.logo svg{width:32px;height:32px;display:block}.rail > .logo{display:grid!important}.nav{width:64px;min-height:62px;border-radius:12px;display:grid;place-items:center;gap:3px;padding:8px 2px;color:#526174;font-size:12px}.nav.active{background:#fff;color:#1769e8;box-shadow:0 3px 12px #cfe0f5}.nav span:first-child{font-size:22px}.spacer{flex:1}.tasks{background:#fff;border-right:1px solid #e5eaf1;padding:20px 14px;display:flex;flex-direction:column;min-height:0;overflow:hidden}.task-title{font-size:20px;line-height:1.25;margin:0 8px 14px;color:#1f2937}.new{height:46px;width:100%;border:0;border-radius:10px;background:#1769e8;color:#fff;font-size:16px;margin-bottom:22px}.tasks h3{font-size:15px;margin:20px 8px 10px}.group{display:flex;align-items:center;justify-content:space-between;padding:12px 10px;border-radius:9px;color:#475569}.group.active{background:#f1f6ff;color:#1769e8}.count{background:#eef4fb;border-radius:99px;padding:3px 9px;font-size:12px}.recent{border-top:1px solid #edf1f5;margin-top:18px;padding-top:12px}.recent div{display:flex;align-items:center;gap:8px;padding:9px 5px;font-size:13px}.recent div small{margin-left:auto;white-space:nowrap;color:#8a98aa}.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#2f80ed;margin-right:9px}.green{background:#18b875}.orange{background:#f39a24}.status{margin-top:auto;border:1px solid #e0e7ef;border-radius:14px;padding:14px;font-size:12px;color:#64748b}.status strong{display:block;color:#243447;font-size:14px;margin-bottom:12px}.meter{height:6px;background:#e7eef7;border-radius:99px;margin:8px 0 14px}.meter i{display:block;width:68%;height:100%;background:#1769e8;border-radius:99px}.task-pane-resize-handle{position:relative;z-index:40;width:10px;min-width:10px;height:100%;margin:0;cursor:col-resize;touch-action:none;user-select:none;background:transparent;isolation:isolate;-webkit-app-region:no-drag;transition:background .15s ease}.task-pane-resize-handle::before{content:"";position:absolute;top:0;bottom:0;left:4px;width:1px;border-radius:999px;background:#dfe6ef;transition:width .15s ease,background .15s ease,box-shadow .15s ease}.task-pane-resize-handle:hover::before,.task-pane-resize-handle:focus-visible::before{left:3px;width:3px;background:#2f80ed;box-shadow:0 0 0 3px rgba(47,128,237,.12)}.task-pane-resize-handle:focus-visible{outline:2px solid #2f80ed;outline-offset:-1px}body.task-pane-resizing{cursor:col-resize!important;user-select:none!important}body.task-pane-resizing *{cursor:col-resize!important;user-select:none!important}.main{background:#fff;display:flex;flex-direction:column;min-width:0;min-height:0}.top{height:64px;flex:0 0 64px;border-bottom:1px solid #e5eaf1;display:flex;align-items:center;padding:0 24px;gap:18px}.brand{display:inline-flex;align-items:center;gap:8px;font-size:21px;font-weight:700;color:#1e293b;margin-right:auto}.brand-mark{width:30px;height:30px;display:inline-grid;place-items:center;border-radius:9px;background:linear-gradient(145deg,#2b7cf4 0%,#1769e8 58%,#1059c9 100%);color:#fff;border:1px solid rgba(255,255,255,.22);box-shadow:0 5px 12px rgba(23,105,232,.2),inset 0 1px 0 rgba(255,255,255,.18)}.brand-mark svg{width:25px;height:25px;display:block}.brand b{color:#1769e8;font-size:30px;margin-right:8px}.search{width:300px;height:36px;border:1px solid #dce5ef;border-radius:10px;padding:0 13px;color:#8692a2}.search:focus{outline:none;border-color:#2f78d0;box-shadow:0 0 0 3px #eef5ff}.ready{font-size:12px;color:#64748b}.ready i{display:inline-block;width:8px;height:8px;background:#18b875;border-radius:50%;margin-right:6px}.content{max-width:850px;width:100%;margin:0 auto;min-height:0;padding:clamp(92px,12vh,150px) 24px 48px}.content h1{text-align:center;font-size:34px;margin:0 0 24px;letter-spacing:-.04em}.composer{border:1px solid #dfe6ef;border-radius:16px;padding:22px 22px 14px;box-shadow:0 8px 26px #dfe7f0}.composer p{margin:0 0 35px;color:#8a95a3;font-size:16px}.composer textarea{display:block;width:100%;height:48px;margin:0 0 22px;border:0;outline:0;resize:none;background:transparent;color:#334155;font-size:16px;line-height:1.5;font-family:inherit}.composer textarea::placeholder{color:#8a95a3}.composer-foot{display:flex;justify-content:space-between;color:#7d8998;font-size:23px}.send{background:#1769e8;color:#fff;border-radius:50%;width:38px;height:38px;display:grid;place-items:center}.content h2{font-size:16px;margin:36px 0 12px}.quick{display:flex;gap:12px}.quick button{background:#fff;border:1px solid #e1e8f0;border-radius:12px;padding:13px 18px;color:#334155}.quick button:hover{border-color:#2f78d0;color:#1769e8}.recent-list{border:1px solid #e1e8f0;border-radius:12px;overflow:hidden}.recent-list div{height:50px;padding:0 16px;display:flex;align-items:center;border-bottom:1px solid #edf1f5}.recent-list div:last-child{border:0}.state{margin-left:auto;font-size:12px;color:#1769e8}.done{color:#18a665}.wait{color:#e58b18}.task-origin-badge{display:inline-flex;align-items:center;gap:4px;flex:0 0 auto;margin-left:8px;padding:3px 7px;border:1px solid #d9c5ff;border-radius:999px;background:#f5f0ff;color:#7441c8;font-size:11px;font-weight:600;line-height:1;white-space:nowrap}.task-origin-badge svg{width:12px;height:12px;display:block}.recent-task-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}@media(max-width:700px){.recent-list div{min-width:0}.recent-task-name{flex:0 1 auto}.task-origin-badge{display:inline-flex;max-width:92px;margin-left:4px;padding:2px 4px;font-size:9px;overflow:hidden;text-overflow:ellipsis}.task-origin-badge svg{width:10px;height:10px;flex:0 0 10px}}
+@media (max-width:1100px){.app{grid-template-columns:72px 1fr}.tasks{display:none}.main{min-width:0}.content{max-width:760px;padding:72px 18px 40px}.top{padding:0 16px;flex-basis:64px}.search{width:min(260px,34vw)}.content h1{font-size:30px}.quick{flex-wrap:wrap}.quick button{flex:1 1 150px}}
+@media (max-width:700px){.app{grid-template-columns:64px 1fr}.rail{padding:12px 6px}.nav{width:52px}.brand{font-size:18px}.search{display:none}.content{padding-top:40px}.content h1{font-size:26px}.composer{padding:16px}.recent-list div{font-size:13px}}.task-pane-resize-handle{display:none}@media(min-width:1101px){.task-pane-resize-handle{display:block}}body.monitor-mode .task-pane-resize-handle{display:none}</style><style id="reference-proportion-overrides">.rail{padding:20px 12px}.logo{width:40px;height:40px;border-radius:12px;font-size:0;margin-bottom:14px}.nav{width:88px;min-height:66px;border-radius:13px;padding:9px 2px;font-size:13px}.nav span:first-child{font-size:23px}.tasks{padding:24px 16px}.new{height:52px;border-radius:11px;font-size:17px;margin-bottom:24px;flex:0 0 auto}.top{height:72px;flex-basis:72px;padding:0 28px}.search{height:38px;border-radius:11px}@media (max-width:1100px){.rail{padding:14px 10px}.nav{width:64px;min-height:62px;font-size:12px}.logo{width:40px;height:40px;font-size:0;margin-bottom:12px}.tasks{padding:20px 14px}.new{height:46px;font-size:16px;margin-bottom:22px}.top{height:64px;flex-basis:64px;padding:0 16px}}</style><style>.top-actions{display:flex;align-items:center;gap:8px;margin-left:10px}.top-action{width:36px;height:36px;border:1px solid #dce5ef;border-radius:10px;background:#fff;color:#526174;display:grid;place-items:center;cursor:pointer;font-size:16px;line-height:1}.top-action:hover,.top-action:focus-visible{border-color:#9fc3f4;color:#1769e8;background:#f5f9ff;outline:none}.top-divider{width:1px;height:28px;background:#e8edf3;margin:0 5px}@media(max-width:900px){.top-actions{gap:4px}.top-action:nth-child(n+4),.top-divider{display:none}}</style><style id="reference-suggestions-style">
+.main{overflow:auto}
+.top{position:sticky;top:0;z-index:4;background:#fff}
+.reference-suggestions{width:100%;margin-top:30px;padding-bottom:28px}
+.reference-categories{display:flex;align-items:center;gap:7px;overflow-x:auto;padding:2px 0 8px;scrollbar-width:none}
+.reference-categories::-webkit-scrollbar{display:none}
+.reference-category{flex:0 0 auto;min-height:32px;padding:5px 12px;border:1px solid #dfe7f0;border-radius:9px;background:#fff;color:#64748b;font-size:12px;cursor:pointer;transition:background .16s,border-color .16s,color .16s,box-shadow .16s}
+.reference-category:hover,.reference-category:focus-visible{border-color:#9fc3f4;color:#1769e8;background:#f5f9ff;outline:none}
+.reference-category.active{border-color:#b8d4fb;background:#eef5ff;color:#1769e8;box-shadow:none}
+.suggestion-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.suggestion-card{min-height:78px;display:flex;align-items:center;gap:12px;width:100%;padding:13px 15px;border:1px solid #e1e8f0;border-radius:14px;background:#fff;color:#334155;text-align:left;cursor:pointer;box-shadow:0 4px 15px rgba(43,76,112,.05);transition:border-color .16s,box-shadow .16s,transform .16s}
+.suggestion-card:hover,.suggestion-card:focus-visible{border-color:#9fc3f4;box-shadow:0 8px 20px rgba(43,104,190,.12);transform:translateY(-1px);outline:none}
+.suggestion-icon{width:30px;height:30px;flex:0 0 30px;display:grid;place-items:center;border-radius:8px;background:#edf5ff;color:#1769e8;font-size:17px;font-weight:700}
+.suggestion-copy{min-width:0;display:flex;flex-direction:column;gap:5px}
+.suggestion-copy strong{font-size:14px;font-weight:650;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#243447}
+.suggestion-copy small{font-size:12px;line-height:1.3;color:#8290a0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.suggestion-arrow{margin-left:auto;flex:0 0 auto;color:#9aa8b7;font-size:22px;line-height:1}
+@media (max-width:700px){.reference-suggestions{margin-top:24px}.suggestion-grid{grid-template-columns:1fr;gap:9px}.suggestion-card{min-height:70px}.suggestion-copy strong{font-size:13px}.suggestion-copy small{font-size:11px}}
+@media (prefers-color-scheme:dark){body{background:#111827;color:#e5edf8}.main,.top,.suggestion-card,.reference-category{background:#172235;color:#e5edf8}.top{border-color:#2b3c53}.reference-category{border-color:#334862;color:#a9b8ca}.reference-category.active{border-color:#4f91f7;background:#1d3b67;color:#dceaff}.suggestion-card{border-color:#31435b;box-shadow:none}.suggestion-card:hover,.suggestion-card:focus-visible{border-color:#4f91f7}.suggestion-icon{background:#1d3b67;color:#8fbcff}.suggestion-copy strong{color:#e5edf8}.suggestion-copy small,.suggestion-arrow{color:#9cafc4}}
+.composer-foot{align-items:center}.composer-tools{display:flex;align-items:center;gap:8px}.composer-tool{width:34px;height:34px;border:1px solid transparent;border-radius:9px;background:transparent;color:#7d8998;display:grid;place-items:center;cursor:pointer;font-size:20px;padding:0}.composer-tool:hover,.composer-tool:focus-visible{border-color:#b8d4fb;background:#f5f9ff;color:#1769e8;outline:none}.composer .send{border:0;padding:0;cursor:pointer;box-shadow:0 3px 8px rgba(23,105,232,.2)}.composer .send:hover,.composer .send:focus-visible{filter:brightness(1.06);outline:3px solid rgba(47,128,237,.2);outline-offset:2px}.preview-toast{position:fixed;right:24px;bottom:24px;z-index:10;padding:10px 14px;border:1px solid #cfe0fb;border-radius:10px;background:#fff;color:#1769e8;box-shadow:0 8px 22px rgba(35,66,105,.14);font-size:13px;opacity:0;transform:translateY(8px);pointer-events:none;transition:opacity .18s ease,transform .18s ease}.preview-toast.show{opacity:1;transform:translateY(0)}@media(prefers-color-scheme:dark){.composer-tool{color:#a9b8ca}.composer-tool:hover,.composer-tool:focus-visible{background:#1d3b67;border-color:#4f91f7;color:#dceaff}.preview-toast{background:#172235;border-color:#334862;color:#dceaff}}/* Final static workbench parity: keep the reference header intentionally quiet. */
+.top-actions .top-action[aria-label="搜索"],
+.top-actions .top-action[aria-label="刷新"],
+.top-actions .top-action[aria-label="更多"] { display:none; }
+/* Match the reference header rhythm: search, notification, then readiness. */
+.top .brand{order:0}.top .brand-mark{display:none}
+.top .search{order:1}
+.top .top-actions{order:2}
+.top .ready{order:3;margin-left:0}
+.rail-avatar { position:relative; width:48px; height:48px; margin:10px 0 2px; border:1px solid rgba(255,255,255,.24); border-radius:14px; background:linear-gradient(145deg,#2b7cf4 0%,#1769e8 58%,#1059c9 100%); color:#fff; display:grid; place-items:center; box-shadow:0 7px 16px rgba(23,105,232,.24),inset 0 1px 0 rgba(255,255,255,.18); }.rail-avatar svg { width:40px; height:40px; display:block; }
+.rail-avatar--system svg { width:25px; height:25px; }
+.rail-avatar i { position:absolute; right:1px; bottom:1px; width:10px; height:10px; border:2px solid #fff; border-radius:50%; background:#18b875; }
+@media(max-width:900px){.rail-avatar{width:40px;height:40px}.rail-avatar svg{width:33px;height:33px}.rail-avatar i{width:9px;height:9px}}</style>
+<style id="preview-notifications-style">
+.preview-notification-panel{display:none;position:fixed;top:78px;right:24px;z-index:20;width:min(360px,calc(100vw - 32px));border:1px solid #dce5ef;border-radius:14px;background:#fff;box-shadow:0 18px 44px rgba(35,66,105,.18);overflow:hidden}
+body.notifications-open .preview-notification-panel{display:block}
+.preview-notification-head{display:flex;align-items:center;justify-content:space-between;padding:15px 16px;border-bottom:1px solid #edf1f5;color:#243447;font-size:15px;font-weight:700}
+.preview-notification-head button{width:26px;height:26px;border:0;border-radius:7px;background:transparent;color:#7d8998;font-size:18px;cursor:pointer}.preview-notification-head button:hover{background:#f1f6ff;color:#1769e8}
+.preview-notification-item{display:flex;gap:10px;padding:14px 16px;border-bottom:1px solid #f0f3f7}.preview-notification-item:last-of-type{border-bottom:0}.preview-notification-dot{width:8px;height:8px;flex:0 0 8px;margin-top:6px;border-radius:50%;background:#1769e8}.preview-notification-item strong{display:block;color:#243447;font-size:13px;line-height:1.4}.preview-notification-item small{display:block;margin-top:4px;color:#8290a0;font-size:11px;line-height:1.45}.preview-notification-foot{padding:10px 16px;background:#f8fbff;border-top:1px solid #edf1f5;text-align:right}.preview-notification-foot button{border:0;background:transparent;color:#1769e8;font-size:12px;cursor:pointer}.group[data-action="notifications"]{cursor:pointer}.group[data-action="notifications"]:focus-visible{outline:3px solid rgba(47,128,237,.22);outline-offset:2px}
+@media(max-width:700px){.preview-notification-panel{top:68px;right:16px}}
+</style>
+<style id="rail-viewport-fit">.logo{flex:0 0 40px}.rail-avatar{flex:0 0 48px}@media (max-height:760px) and (min-width:701px){.rail{overflow-y:auto;scrollbar-width:none}.rail::-webkit-scrollbar{display:none}.logo{width:40px;height:40px;flex-basis:40px;margin-bottom:8px}.nav{min-height:58px}.rail-avatar{width:42px;height:42px;flex-basis:42px}}</style><style id="composer-scrollbar-style">.composer textarea,.composer input{scrollbar-width:none;-ms-overflow-style:none}.composer textarea::-webkit-scrollbar,.composer input::-webkit-scrollbar{width:0;height:0;display:none}</style><style id="preview-icon-rhythm">.nav span:first-child,.nav b,.top-action,.composer-tool,.suggestion-icon{font-family:"Segoe UI Symbol","Segoe UI",sans-serif;font-variant-emoji:text;line-height:1}.nav span:first-child,.nav b{display:block;min-height:22px;line-height:1.05}</style><style id="system-preview-menu-style">.rail{position:relative}.rail-avatar{padding:0;cursor:pointer;font:inherit}.rail-avatar:focus-visible{outline:3px solid rgba(47,128,237,.28);outline-offset:3px}.system-preview-menu{position:absolute;left:calc(100% + 8px);bottom:12px;z-index:30;display:flex;align-items:stretch;gap:2px;padding:6px 8px;border:1px solid #dce5ef;border-radius:12px;background:#fff;box-shadow:0 14px 34px rgba(35,66,105,.18);white-space:nowrap}.system-preview-menu[hidden]{display:none}.system-preview-menu button{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;min-width:52px;padding:7px 9px;border:0;border-radius:8px;background:transparent;color:#526174;font-size:11px;cursor:pointer}.system-preview-menu button:hover,.system-preview-menu button:focus-visible{background:#f1f6ff;color:#1769e8;outline:none}.system-preview-menu button:focus-visible{box-shadow:0 0 0 2px #9fc3f4 inset}.system-preview-menu .system-preview-icon{font-size:18px;line-height:1;font-weight:700}@media(prefers-color-scheme:dark){.system-preview-menu{border-color:#334862;background:#172235;box-shadow:0 14px 34px rgba(0,0,0,.35)}.system-preview-menu button{color:#a9b8ca}.system-preview-menu button:hover,.system-preview-menu button:focus-visible{background:#1d3b67;color:#dceaff}}@media(max-width:700px){.system-preview-menu{left:calc(100% + 5px);bottom:8px}.system-preview-menu button{min-width:46px;padding-inline:7px}}</style><style id="moved-brand-mark-style">.rail > .logo{width:48px;height:48px;flex-basis:48px;border-radius:14px;margin-bottom:10px}.rail > .logo svg{width:39px;height:39px;display:block}@media(max-width:900px){.rail > .logo{width:40px;height:40px;flex-basis:40px;border-radius:12px}.rail > .logo svg{width:33px;height:33px}}</style><style id="system-menu-overflow-fix">/* Keep the flyout from forcing the scrollable rail to auto-scroll when its first item receives focus. */.rail{overflow:visible!important}</style><style id="narrow-desktop-shell-parity">
+@media (min-width:901px) and (max-width:1200px) {
+  .app { grid-template-columns:84px var(--task-pane-width,280px) 10px minmax(0,1fr); }
+  .tasks { display:flex; padding:20px 14px; }
+  body:not(.monitor-mode) .task-pane-resize-handle { display:block; }
+  .rail { padding:14px 10px; }
+  .nav { width:64px; min-height:58px; font-size:12px; }
+  .logo { width:40px; height:40px; flex-basis:40px; }
+  .top { padding:0 16px; }
+  .content { max-width:760px; padding:72px 18px 40px; }
+  .content h1 { font-size:30px; }
+  .quick { flex-wrap:wrap; }
+  .quick button { flex:1 1 150px; }
+}
+@media (min-width:561px) and (max-width:900px) {
+  .app { grid-template-columns:84px 1fr; }
+  .tasks { display:none; }
+  .task-pane-resize-handle { display:none; }
+}
+</style><style id="brand-mark-parity">.logo{width:48px;height:48px;border-radius:14px}.logo svg{width:39px;height:39px}@media(max-width:900px){.logo{width:40px;height:40px;border-radius:12px}.logo svg{width:33px;height:33px}}</style><style id="dark-theme-parity">
+@media (prefers-color-scheme: dark) {
+  :root { color-scheme: dark; }
+  body, .app { background: #0f172a; color: #e5edf8; }
+  .rail { background: #111c2e; border-color: #2b3c53; }
+  .nav { color: #a9b8ca; }
+  .nav.active { background: #1d3b67; color: #8fbcff; box-shadow: 0 3px 12px rgba(0,0,0,.28); }
+  .tasks { background: #172235; border-color: #2b3c53; }
+  .task-title, .tasks h3, .content h1, .content h2, .brand { color: #e5edf8; }
+  .group { color: #a9b8ca; }
+  .group.active { background: #1d3b67; color: #dceaff; }
+  .count { background: #223654; color: #b9cbe4; }
+  .recent { border-color: #2b3c53; }
+  .recent div { color: #cbd7e6; }
+  .recent div small, .ready, .composer p, .composer textarea::placeholder { color: #9cafc4; }
+  .status { border-color: #334862; background: #172235; color: #a9b8ca; }
+  .status strong { color: #e5edf8; }
+  .meter { background: #2b3c53; }
+  .main, .top { background: #172235; color: #e5edf8; }
+  .top { border-color: #2b3c53; }
+  .search { background: #172235; border-color: #334862; color: #e5edf8; }
+  .search:focus { border-color: #4f91f7; box-shadow: 0 0 0 3px rgba(79,145,247,.2); }
+  .composer { background: #172235; border-color: #334862; box-shadow: 0 8px 26px rgba(0,0,0,.25); }
+  .composer textarea { color: #e5edf8; }
+  .quick button, .recent-list { background: #172235; border-color: #334862; color: #dceaff; }
+  .quick button:hover, .quick button:focus-visible { background: #1d3b67; border-color: #4f91f7; color: #dceaff; }
+  .recent-list div { border-color: #2b3c53; }
+  .state { color: #8fbcff; }
+  .done { color: #52d69b; }
+  .wait { color: #f4b45e; }
+  .reference-category { background: #172235; border-color: #334862; color: #a9b8ca; }
+  .reference-category.active { background: #1d3b67; border-color: #4f91f7; color: #dceaff; }
+  .suggestion-card { background: #172235; border-color: #334862; color: #dceaff; box-shadow: none; }
+  .suggestion-card:hover, .suggestion-card:focus-visible { background: #1d3b67; border-color: #4f91f7; }
+  .suggestion-copy strong { color: #e5edf8; }
+  .suggestion-copy small, .suggestion-arrow { color: #9cafc4; }
+  .suggestion-icon { background: #1d3b67; color: #8fbcff; }
+  .task-pane-resize-handle::before { background: #334862; }
+  .task-pane-resize-handle:hover::before, .task-pane-resize-handle:focus-visible::before { background: #4f91f7; }
+  .preview-notification-panel { background: #172235; border-color: #334862; box-shadow: 0 18px 44px rgba(0,0,0,.4); }
+  .preview-notification-head { border-color: #2b3c53; color: #e5edf8; }
+  .preview-notification-head button:hover { background: #1d3b67; }
+  .preview-notification-item { border-color: #2b3c53; }
+  .preview-notification-item strong { color: #e5edf8; }
+  .preview-notification-item small { color: #9cafc4; }
+  .preview-notification-foot { background: #111c2e; border-color: #2b3c53; }
+}
+</style><style id="production-breakpoint-parity">
+/* Match the Wails shell: collapse the task pane at tablet width and retain the compact navigation rail. */
+@media (min-width:561px) and (max-width:900px) {
+  .app { grid-template-columns:84px minmax(0,1fr) !important; }
+  .tasks { display:none !important; }
+  .task-pane-resize-handle { display:none !important; }
+  .rail { padding:14px 10px; }
+  .nav { width:64px; min-height:62px; font-size:12px; }
+  .logo { width:40px; height:40px; flex-basis:40px; border-radius:12px; }
+  .top { padding:0 16px; }
+  .content { max-width:760px; padding:72px 18px 40px; }
+}
+@media (max-width:560px) {
+  .app { grid-template-columns:64px minmax(0,1fr) !important; }
+  .rail { padding:12px 6px; }
+  .nav { width:52px; min-height:56px; }
+  .content { padding:40px 14px 32px; }
+  .content h1 { font-size:26px; }
+}
+</style><style id="cloud-task-creation-preview-style">.task-create-actions{display:flex;align-items:stretch;gap:8px;margin-bottom:22px}.task-create-actions .new{flex:1;min-width:0;margin-bottom:0}.cloud-create-action{width:48px;flex:0 0 48px;border:1px solid #b9d4fb;border-radius:10px;background:#eef5ff;color:#1769e8;font-size:21px;line-height:1;cursor:pointer;box-shadow:0 3px 10px rgba(47,128,237,.12)}.cloud-create-action:hover,.cloud-create-action:focus-visible{border-color:#1769e8;background:#e3efff;outline:none}.cloud-task-modal{position:fixed;inset:0;z-index:30;display:grid;place-items:center;padding:20px;background:rgba(20,35,55,.24);backdrop-filter:blur(2px)}.cloud-task-modal[hidden]{display:none}.cloud-task-dialog{width:min(460px,calc(100vw - 32px));padding:20px;border:1px solid #dbe5f0;border-radius:16px;background:#fff;box-shadow:0 18px 48px rgba(30,60,100,.22)}.cloud-task-dialog-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.cloud-task-dialog-head h2{margin:0;font-size:20px;color:#1f2937}.cloud-task-dialog-close{width:30px;height:30px;border:1px solid #dfe7f0;border-radius:8px;background:#fff;color:#64748b;cursor:pointer}.cloud-task-dialog p{margin:7px 0 14px;color:#64748b;font-size:13px}.cloud-task-types{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.cloud-task-type{display:flex;flex-direction:column;align-items:flex-start;gap:4px;padding:12px;border:1px solid #dfe7f0;border-radius:11px;background:#fff;color:#334155;text-align:left;cursor:pointer}.cloud-task-type strong{font-size:13px}.cloud-task-type small{color:#8290a0;font-size:11px}.cloud-task-type:hover,.cloud-task-type:focus-visible{border-color:#9fc3f4;background:#f5f9ff;outline:none}.cloud-task-type.selected{border-color:#1769e8;background:#eef5ff;box-shadow:0 0 0 2px rgba(23,105,232,.12)}.cloud-task-type[data-task-kind="cloud"] strong{color:#7441c8}.cloud-task-dialog-foot{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}.cloud-task-dialog-foot button{min-width:78px;padding:8px 13px;border:1px solid #dfe7f0;border-radius:9px;background:#fff;color:#526174;cursor:pointer}.cloud-task-dialog-foot button.primary{border-color:#1769e8;background:#1769e8;color:#fff}.cloud-task-dialog-foot button:focus-visible{outline:2px solid rgba(47,128,237,.32);outline-offset:2px}@media(max-width:560px){.cloud-task-types{grid-template-columns:1fr}.cloud-create-action{width:44px;flex-basis:44px}}</style>
+<style id="split-surface-preview-style">
+.surface-title{display:none;color:#1f2937;font-size:18px;font-weight:700;margin-left:4px;white-space:nowrap}
+.main[data-preview-surface="tools"] .surface-title,.main[data-preview-surface="experts"] .surface-title{display:inline}
+.split-surface{height:100%;min-height:0;overflow:auto;padding:clamp(48px,8vh,96px) clamp(24px,5vw,72px) 56px;background:#f7f9fc;color:#1f2937}
+.split-surface[hidden]{display:none}
+.split-surface__head{max-width:1100px;margin:0 auto 26px}.split-surface__head h1{margin:0 0 8px;font-size:30px;letter-spacing:-.03em}.split-surface__head p{margin:0;color:#6b7a90;font-size:14px;line-height:1.6}.split-surface__status{display:inline-flex;align-items:center;gap:7px;margin-top:14px;padding:6px 12px;border:1px solid #dfe8f3;border-radius:999px;background:#fff;color:#5c6d82;font-size:12px}.split-surface__status i{width:8px;height:8px;border-radius:50%;background:#18b875}.split-surface__grid{max-width:1100px;margin:0 auto;display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px}.split-surface__card{display:flex;flex-direction:column;align-items:flex-start;min-height:174px;padding:20px;border:1px solid #dfe7f0;border-radius:15px;background:#fff;box-shadow:0 5px 18px rgba(41,75,118,.07);color:#1f2937;text-align:left;cursor:pointer;transition:border-color .16s ease,box-shadow .16s ease,transform .16s ease}.split-surface__card:hover,.split-surface__card:focus-visible{border-color:#9fc3f4;box-shadow:0 10px 24px rgba(41,75,118,.12);transform:translateY(-2px);outline:none}.split-surface__card-icon{display:grid;place-items:center;width:38px;height:38px;margin-bottom:15px;border-radius:11px;background:#edf5ff;color:#1769e8;font-size:21px}.split-surface__card strong{font-size:16px;line-height:1.35}.split-surface__card small{margin-top:7px;color:#6b7a90;font-size:13px;line-height:1.55}.split-surface__card span:last-child{margin-top:auto;padding-top:14px;color:#1769e8;font-size:13px;font-weight:700}.split-surface__expert{min-height:142px}.split-surface__expert .split-surface__card-icon{background:#f1f5ff}.split-surface__expert small{display:-webkit-box;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:2}.split-surface__back{display:inline-flex;align-items:center;gap:6px;margin-top:24px;border:0;background:transparent;color:#1769e8;font-size:13px;cursor:pointer}.split-surface__back:hover{text-decoration:underline}
+@media(max-width:700px){.split-surface{padding:36px 18px}.split-surface__head h1{font-size:26px}.split-surface__grid{grid-template-columns:1fr}.split-surface__card{min-height:142px}}
+</style><style id="app-update-preview-style">
+.app-update-float{position:fixed;left:24px;bottom:20px;z-index:40;display:flex;align-items:center;gap:14px;width:min(510px,calc(100vw - 48px));min-height:62px;padding:10px 12px 10px 14px;box-sizing:border-box;border:1px solid #dbe5ef;border-radius:14px;background:#fff;color:#243447;box-shadow:0 10px 28px rgba(30,58,95,.16),0 2px 7px rgba(30,58,95,.08);font-size:13px;-webkit-app-region:no-drag}
+.app-update-float__identity{display:flex;align-items:center;gap:9px;min-width:0;flex:1 1 auto;padding-right:4px}.app-update-float__icon{display:grid;place-items:center;width:30px;height:30px;flex:0 0 30px;border-radius:9px;background:#effaf5;color:#36a97f;font-size:22px;font-weight:700;line-height:1}.app-update-float__copy{display:flex;min-width:0;flex-direction:column;gap:2px}.app-update-float__copy strong{font-size:14px;font-weight:750;line-height:1.25;white-space:nowrap}.app-update-float__copy span{color:#8795a5;font-size:11px;line-height:1.2}.app-update-float__actions{display:flex;align-items:center;gap:8px;flex:0 0 auto;padding-right:22px}.app-update-float__button{min-height:34px;padding:0 13px;border:1px solid #36b98a;border-radius:8px;background:#fff;color:#249a72;font:inherit;font-size:12px;font-weight:650;line-height:1;white-space:nowrap;cursor:pointer}.app-update-float__button--primary{background:#36b98a;color:#fff;box-shadow:0 2px 7px rgba(54,185,138,.24)}.app-update-float__button:hover{filter:brightness(1.04);transform:translateY(-1px)}.app-update-float__button:focus-visible,.app-update-float__close:focus-visible{outline:2px solid rgba(47,128,237,.5);outline-offset:2px}.app-update-float__close{position:absolute;top:5px;right:5px;display:grid;place-items:center;width:22px;height:22px;padding:0;border:0;border-radius:6px;background:transparent;color:#8795a5;cursor:pointer;font-size:17px;line-height:1}.app-update-float__close:hover{background:#f1f5f9;color:#243447}@media(max-width:560px){.app-update-float{left:12px;right:12px;bottom:12px;width:auto;gap:8px;padding-left:11px}.app-update-float__actions{gap:5px;padding-right:20px}.app-update-float__button{padding-inline:9px}}@media(max-width:390px){.app-update-float{align-items:flex-start}.app-update-float__actions{flex-direction:column;align-items:stretch}.app-update-float__button{min-height:30px}}
+</style><style id="expert-market-preview-style">
+.split-surface__title-row{display:flex;align-items:center;gap:12px;margin-bottom:8px}
+.split-surface__title-row h1{margin:0}
+.split-surface__market-button{display:inline-flex;align-items:center;gap:7px;min-height:34px;padding:7px 12px;border:1px solid #cfe0f5;border-radius:10px;background:#fff;color:#1769e8;font:inherit;font-size:13px;font-weight:650;cursor:pointer;box-shadow:0 3px 10px rgba(41,75,118,.06)}
+.split-surface__market-button:hover,.split-surface__market-button:focus-visible{border-color:#8ebaf3;background:#f5f9ff;outline:none;box-shadow:0 0 0 3px rgba(47,128,237,.12)}
+.expert-market-preview{position:fixed;inset:0;z-index:35;display:grid;place-items:center;padding:24px;background:rgba(20,35,55,.24);backdrop-filter:blur(2px)}
+.expert-market-preview[hidden]{display:none}
+.expert-market-preview__dialog{width:min(760px,calc(100vw - 32px));max-height:min(640px,calc(100vh - 48px));overflow:auto;border:1px solid #dbe5f0;border-radius:18px;background:#fff;box-shadow:0 22px 60px rgba(30,60,100,.24)}
+.expert-market-preview__head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:22px 24px 16px;border-bottom:1px solid #edf1f5}
+.expert-market-preview__head h2{margin:0;color:#1f2937;font-size:20px}
+.expert-market-preview__head p{margin:6px 0 0;color:#6b7a90;font-size:13px}
+.expert-market-preview__close{width:32px;height:32px;border:1px solid #dfe7f0;border-radius:9px;background:#fff;color:#64748b;font-size:18px;cursor:pointer}
+.expert-market-preview__close:hover,.expert-market-preview__close:focus-visible{border-color:#9fc3f4;color:#1769e8;outline:none}
+.expert-market-preview__grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding:18px 24px 24px}
+.expert-market-preview__card{display:flex;flex-direction:column;gap:8px;min-height:132px;padding:15px;border:1px solid #e0e8f2;border-radius:13px;background:#fbfdff}
+.expert-market-preview__card strong{color:#1f2937;font-size:14px}
+.expert-market-preview__card p{margin:0;color:#6b7a90;font-size:12px;line-height:1.55}
+.expert-market-preview__card button{align-self:flex-start;margin-top:auto;padding:6px 10px;border:1px solid #b9d4fb;border-radius:8px;background:#eef5ff;color:#1769e8;font-size:12px;cursor:pointer}
+.expert-market-preview__card button:hover,.expert-market-preview__card button:focus-visible{background:#e3efff;outline:none}
+@media(max-width:560px){.split-surface__title-row{align-items:flex-start;flex-direction:column;gap:8px}.expert-market-preview__grid{grid-template-columns:1fr;padding-inline:16px}.expert-market-preview__head{padding-inline:16px}}
+</style><style id="single-brand-parity">
+/* Keep the primary app mark in the rail; the content header carries the wordmark. */
+.rail > .logo { display:grid !important; }
+.top .brand-mark { display:none !important; }
+</style><style id="inner-surface-parity">
+.quick button:focus-visible,.recent-list > div:focus-visible,.split-surface__back:focus-visible,.split-surface__market-button:focus-visible,.cloud-task-dialog-close:focus-visible,.expert-market-preview__close:focus-visible,.expert-market-preview__card button:focus-visible,.preview-notification-head button:focus-visible,.preview-notification-foot button:focus-visible{outline:3px solid rgba(47,128,237,.28);outline-offset:2px}
+@media (prefers-color-scheme:dark){
+.split-surface{background:#0f172a;color:#e5edf8}
+.split-surface__head p,.split-surface__card small,.expert-market-preview__head p,.expert-market-preview__card p{color:#9cafc4}
+.split-surface__status,.split-surface__card,.expert-market-preview__dialog,.expert-market-preview__card,.cloud-task-dialog{background:#172235;border-color:#334862;color:#e5edf8;box-shadow:0 10px 28px rgba(0,0,0,.28)}
+.split-surface__card-icon{background:#1d3b67;color:#8fbcff}
+.split-surface__back,.split-surface__card span:last-child,.split-surface__market-button,.expert-market-preview__card button{color:#8fbcff}
+.split-surface__market-button,.expert-market-preview__close,.expert-market-preview__card button,.cloud-task-dialog-close{background:#172235;border-color:#4f91f7}
+.cloud-task-dialog p,.cloud-task-type small{color:#9cafc4}
+.cloud-task-type{background:#172235;border-color:#334862;color:#e5edf8}
+.cloud-task-type.selected{background:#1d3b67;border-color:#4f91f7}
+}
+@media (max-height:760px) and (min-width:701px){.rail{overflow-x:visible!important;overflow-y:auto!important;scrollbar-width:none}.rail::-webkit-scrollbar{display:none}}
+@media (max-width:560px){.top-actions .top-action[aria-label="搜索"],.top-actions .top-action[aria-label="刷新"]{display:none}}
+</style>
+<style id="app-update-dark-parity">@media (prefers-color-scheme:dark){.app-update-float{border-color:#334862;background:#172235;color:#e5edf8;box-shadow:0 10px 28px rgba(0,0,0,.38),0 2px 7px rgba(0,0,0,.24)}.app-update-float__icon{background:#173b34;color:#72d6ae}.app-update-float__copy span{color:#9cafc4}.app-update-float__button{border-color:#4f91f7;background:#172235;color:#8fbcff}.app-update-float__button--primary{background:#36b98a;border-color:#36b98a;color:#071d17}.app-update-float__close{color:#9cafc4}.app-update-float__close:hover{background:#223654;color:#e5edf8}}</style>
+</head><body><div class="app"><aside class="rail"><div class="logo" aria-label="MaClaw"><svg viewBox="0 0 80 80" focusable="false" aria-hidden="true"><path d="M14 58V22l26 25 26-25v36" fill="none" stroke="currentColor" stroke-width="10.5" stroke-linecap="round" stroke-linejoin="round"/></svg></div><div class="nav active" role="link" tabindex="0" data-nav="workbench"><span>⌂</span>工作台</div><div class="nav" role="link" tabindex="0" data-nav="tasks"><span>✓</span>任务</div><div class="nav"><span>▦</span>小程序</div><div class="nav" role="link" tabindex="0" data-nav="experts" aria-label="AI 专家"><span>♙</span>AI 专家</div><div class="nav" role="link" tabindex="0" data-nav="tools" aria-label="工具"><span>⚒</span>工具</div><div class="nav"><span>♙</span>数字员工</div><div class="nav" role="link" tabindex="0" data-nav="schedule"><span>▣</span>日程</div><div class="nav"><span>□</span>文件</div><div class="spacer"></div><div class="nav"><span>⚙</span>设置</div><button type="button" class="rail-avatar rail-avatar--system" aria-label="系统菜单" aria-haspopup="menu" aria-expanded="false" data-system-trigger><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68 1.65 1.65 0 0 0 10 3.17V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button><div class="system-preview-menu" data-system-menu role="menu" aria-label="系统菜单" hidden><button type="button" role="menuitem" data-system-item="about"><span class="system-preview-icon">ⓘ</span><span>关于</span></button><button type="button" role="menuitem" data-system-item="skills"><span class="system-preview-icon">✦</span><span>技能</span></button><button type="button" role="menuitem" data-system-item="mcp"><span class="system-preview-icon">⌘</span><span>MCP</span></button><button type="button" role="menuitem" data-system-item="gossip"><span class="system-preview-icon">♧</span><span>八卦</span></button></div></aside><aside class="tasks"><div class="task-create-actions"><button class="new" type="button">＋ 新建任务</button><button class="cloud-create-action" type="button" data-cloud-create aria-label="创建云端工作区任务" title="创建云端工作区任务">☁</button></div><div class="group" role="button" tabindex="0" data-action="notifications" aria-controls="preview-notifications" aria-expanded="false" aria-label="打开通知中心">♧ 通知中心 <span class="count" data-notification-count>3</span></div><div class="group active">▷ 进行中 <span class="count">2</span></div><div class="group">◷ 待处理 <span class="count">4</span></div><div class="group">✓ 已完成 <span class="count">12</span></div><div class="recent"><h3>最近任务</h3><div><i class="dot"></i>整理本周会议纪要 <small>10:30</small></div><div><i class="dot green"></i>准备季度汇报材料 <small>昨天</small></div><div aria-label="人工智能数学基础，云端工作区"><i class="dot green"></i><span class="recent-task-name">人工智能数学基础</span><span class="task-origin-badge" title="云端工作区">☁ 云端工作区</span><small>昨天</small></div><div><i class="dot orange"></i>汇总客户反馈 <small>昨天</small></div></div><div class="status"><strong>状态 <span style="float:right;color:#18b875">● 在线</span></strong>模型 <span style="float:right">GPT-6 Astra</span><br><br>本月 Token <span style="float:right">68%</span><div class="meter"><i></i></div>点卡余额 <span style="float:right">2,480</span><br><br>套餐 <span style="float:right">Pro</span></div></aside><div class="task-pane-resize-handle" data-testid="task-pane-resize-handle" role="separator" aria-orientation="vertical" aria-valuemin="180" aria-valuemax="460" aria-valuenow="308" aria-label="调整任务面板宽度" tabindex="0" title="拖动调整任务面板宽度"></div><main class="main"><header class="top"><div class="brand"><span class="brand-mark" aria-hidden="true"><svg width="30" height="30" viewBox="0 0 80 80" focusable="false"><path d="M14 58V22l26 25 26-25v36" fill="none" stroke="currentColor" stroke-width="10.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span>MaClaw</span><span class="surface-title" data-surface-title hidden aria-live="polite"></span></div><input class="search" aria-label="搜索任务、文件、知识" placeholder="搜索任务、文件、知识…"><div class="ready"><i></i>准备就绪</div><div class="top-actions" aria-label="全局操作"><button class="top-action" type="button" aria-label="通知" aria-controls="preview-notifications" aria-expanded="false" title="通知">♧</button><button class="top-action" type="button" aria-label="搜索" title="搜索">⌕</button><button class="top-action" type="button" aria-label="刷新" title="刷新">⟳</button><span class="top-divider" aria-hidden="true"></span><button class="top-action" type="button" aria-label="更多" title="更多">＋</button></div></header><section class="content" data-surface="workbench"><h1>今天要完成什么？</h1><div class="composer"><textarea id="previewComposer" aria-label="任务输入" placeholder="告诉 MaClaw 你要完成什么办公任务……"></textarea><div class="composer-foot"><div class="composer-tools"><button type="button" class="composer-tool composer-attachment" aria-label="添加附件" title="添加附件">📎</button><button type="button" class="composer-tool composer-voice" aria-label="语音输入" title="语音输入">♩</button></div><button type="button" class="send" aria-label="发送任务" title="发送任务">➤</button></div></div><h2>快捷任务</h2><div class="quick"><button data-prompt="整理本周会议纪要，提炼关键决策、行动项、负责人和截止时间。">▤　整理会议纪要</button><button data-prompt="回复客户邮件：根据附件或上下文拟定礼貌、清晰的回复。">✉　回复客户邮件</button><button data-prompt="制作本周工作周报，包含进展、风险和下周计划。">▥　制作周报</button><button data-prompt="安排会议：根据参与人、时间偏好和议题给出会议安排建议。">□　安排会议</button></div><h2>最近任务</h2><div class="recent-list"><div data-task-title="整理本周会议纪要" data-task-status="进行中" data-task-prompt="请整理本周三产品周会的会议纪要，重点提炼关键决策、行动项和负责人。"><i class="dot"></i>整理本周会议纪要 <span class="state">进行中　›</span></div><div data-task-title="准备季度汇报材料" data-task-status="已完成" data-task-prompt="准备季度汇报材料，整理进展、风险和下一步计划。"><i class="dot green"></i>准备季度汇报材料 <span class="state done">已完成　›</span></div><div data-task-title="人工智能数学基础" data-task-status="已完成" data-task-prompt="整理人工智能数学基础云端工作区中的资料并输出学习提纲。" data-task-origin="cloud_workspace" aria-label="人工智能数学基础，云端工作区，已完成"><i class="dot green"></i><span class="recent-task-name">人工智能数学基础</span><span class="task-origin-badge" title="云端工作区"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.2 18.2h9.3a4.3 4.3 0 0 0 .7-8.55A6 6 0 0 0 5.8 8.2a4.1 4.1 0 0 0 1.4 10Z"/></svg>云端工作区</span><span class="state done">已完成　›</span></div><div data-task-title="汇总客户反馈" data-task-status="待处理" data-task-prompt="汇总客户反馈，提炼共性问题并给出改进建议。"><i class="dot orange"></i>汇总客户反馈 <span class="state wait">待处理　›</span></div><div data-task-title="安排下周团队会议" data-task-status="已完成" data-task-prompt="安排下周团队会议，协调参与人、时间和议题。"><i class="dot green"></i>安排下周团队会议 <span class="state done">已完成　›</span></div></div><div class="reference-suggestions" data-reference-suggestions>
+
+<div class="reference-categories" role="tablist" aria-label="任务分类">
+<button type="button" class="reference-category active" role="tab" aria-selected="true" data-category="business">经营分析</button><button type="button" class="reference-category" role="tab" aria-selected="false" data-category="ops">运营排障</button><button type="button" class="reference-category" role="tab" aria-selected="false" data-category="research">科研资料</button><button type="button" class="reference-category" role="tab" aria-selected="false" data-category="grant">科研申报</button><button type="button" class="reference-category" role="tab" aria-selected="false" data-category="writing">写作/沟通</button><button type="button" class="reference-category" role="tab" aria-selected="false" data-category="knowledge">知识文档</button><button type="button" class="reference-category" role="tab" aria-selected="false" data-category="workflow">自动化流程</button><button type="button" class="reference-category" role="tab" aria-selected="false" data-category="data">数据表格</button>
+</div><div class="suggestion-grid" data-suggestion-grid role="tabpanel" aria-label="推荐任务">
+<button type="button" class="suggestion-card" data-prompt="做一份可汇报的竞品分析，给出结论、对比表、机会和下一步。"><span class="suggestion-icon">▥</span><span class="suggestion-copy"><strong>做一份可汇报的竞品分析</strong><small>结论、对比表、机会与下一步</small></span><span class="suggestion-arrow" aria-hidden="true">›</span></button>
+<button type="button" class="suggestion-card" data-prompt="把这些零散想法整理成项目方案，明确目标、范围、里程碑和风险。"><span class="suggestion-icon">⌘</span><span class="suggestion-copy"><strong>把零散想法整理成项目方案</strong><small>目标、范围、里程碑、风险</small></span><span class="suggestion-arrow" aria-hidden="true">›</span></button>
+<button type="button" class="suggestion-card" data-prompt="审查这份合同，按风险等级列出谈判要点和可修改条款。"><span class="suggestion-icon">▧</span><span class="suggestion-copy"><strong>审查合同并列出谈判要点</strong><small>按风险等级给可改条款</small></span><span class="suggestion-arrow" aria-hidden="true">›</span></button>
+<button type="button" class="suggestion-card" data-prompt="制定季度经营复盘，梳理指标、原因和下一步动作。"><span class="suggestion-icon">⌁</span><span class="suggestion-copy"><strong>制定季度经营复盘</strong><small>指标、原因、下步动作</small></span><span class="suggestion-arrow" aria-hidden="true">›</span></button>
+</div></div></section><section class="split-surface" data-surface="tools" hidden aria-labelledby="toolsSurfaceTitle"><div class="split-surface__head"><h1 id="toolsSurfaceTitle">工具</h1><p>面向群场景与日常办公的轻量工具，集中管理虚拟仓库、问卷、会议记录与 VS Code 集成。</p><span class="split-surface__status"><i></i>ACP Mode B：运行中 · GUI AI 助手 = 编程 agent</span></div><div class="split-surface__grid"><button type="button" class="split-surface__card"><span class="split-surface__card-icon">▣</span><strong>虚拟仓库</strong><small>将 Git、SVN 与编译输出等本地目录组织成可移植的虚拟目录树。</small><span>进入 →</span></button><button type="button" class="split-surface__card"><span class="split-surface__card-icon">▤</span><strong>调查问卷</strong><small>创建问卷、绑定蓝信群、查看结果并导出 Excel。</small><span>进入 →</span></button><button type="button" class="split-surface__card"><span class="split-surface__card-icon">♩</span><strong>会议记录</strong><small>打开新的 Agent 会话并开始录制会议内容。</small><span>开始 →</span></button><button type="button" class="split-surface__card"><span class="split-surface__card-icon">&lt;&gt;</span><strong>启动 VS Code</strong><small>自动开启 Gateway、配置 ACP Bridge，在 VS Code 中调用 MaClaw 能力。</small><span>配置并启动 →</span></button><button type="button" class="split-surface__card"><span class="split-surface__card-icon">&lt;&gt;</span><strong>启动 VS Code（扩展）</strong><small>安装 MaClaw 一方扩展，聊天固定在 VS Code 底部面板。</small><span>配置并启动 →</span></button></div><button type="button" class="split-surface__back" data-surface-back>← 返回工作台</button></section><section class="split-surface" data-surface="experts" hidden aria-labelledby="expertsSurfaceTitle"><div class="split-surface__head"><div class="split-surface__title-row"><h1 id="expertsSurfaceTitle">AI 专家</h1><button type="button" class="split-surface__market-button" data-expert-market aria-haspopup="dialog">✦ 专家市场</button></div><p>点击卡片与专家对话，也可以创建自己的专家。</p></div><div class="split-surface__grid"><button type="button" class="split-surface__card split-surface__expert"><span class="split-surface__card-icon">📝</span><strong>论文润色专家</strong><small>学术语言润色，保持原意与术语一致。</small><span>开始对话 →</span></button><button type="button" class="split-surface__card split-surface__expert"><span class="split-surface__card-icon">🌐</span><strong>论文翻译专家</strong><small>中英学术互译，术语一致，保留引用。</small><span>开始对话 →</span></button><button type="button" class="split-surface__card split-surface__expert"><span class="split-surface__card-icon">▥</span><strong>PPT 制作专家</strong><small>从主题到大纲到成稿，快速生成演示文稿。</small><span>开始对话 →</span></button><button type="button" class="split-surface__card split-surface__expert"><span class="split-surface__card-icon">🎓</span><strong>博士论文评审专家</strong><small>从必要性、系统性、完整性与创新性给出建议。</small><span>开始对话 →</span></button></div><button type="button" class="split-surface__back" data-surface-back>← 返回工作台</button></section></main><aside id="preview-notifications" class="preview-notification-panel" data-notification-panel role="dialog" aria-label="系统通知" aria-modal="false" aria-hidden="true"><div class="preview-notification-head"><span>系统通知</span><button type="button" data-close-notifications aria-label="关闭通知">×</button></div><div class="preview-notification-item"><i class="preview-notification-dot"></i><div><strong>系统已准备就绪</strong><small>MaClaw 工作台已连接，任务状态会在这里同步。</small></div></div><div class="preview-notification-item"><i class="preview-notification-dot" style="background:#18b875"></i><div><strong>任务执行完成</strong><small>最近任务已有新的结果可以查看。</small></div></div><div class="preview-notification-foot"><button type="button" data-mark-notifications>全部标记已读</button></div></aside></div><div class="cloud-task-modal" data-cloud-task-modal hidden><div class="cloud-task-dialog" role="dialog" aria-modal="true" aria-labelledby="cloud-task-modal-title"><div class="cloud-task-dialog-head"><h2 id="cloud-task-modal-title">新建任务</h2><button type="button" class="cloud-task-dialog-close" data-cloud-task-close aria-label="关闭">×</button></div><p>选择任务类型，创建后可在 AI 助手中继续输入任务要求。</p><div class="cloud-task-types" role="group" aria-label="任务类型"><button type="button" class="cloud-task-type selected" data-task-kind="chat"><strong>对话</strong><small>通用助手</small></button><button type="button" class="cloud-task-type" data-task-kind="coding"><strong>本地编程</strong><small>本地工作目录</small></button><button type="button" class="cloud-task-type" data-task-kind="remote"><strong>远程编程</strong><small>SSH 工作目录</small></button><button type="button" class="cloud-task-type" data-task-kind="cloud" data-testid="task-workspace-kind-cloud"><strong>云端工作区</strong><small>Hub 同步，换电脑继续</small></button></div><div class="cloud-task-dialog-foot"><button type="button" data-cloud-task-cancel>取消</button><button type="button" class="primary" data-cloud-task-confirm>创建任务</button></div></div></div><div class="expert-market-preview" data-expert-market-modal hidden><div class="expert-market-preview__dialog" role="dialog" aria-modal="true" aria-labelledby="expert-market-preview-title"><div class="expert-market-preview__head"><div><h2 id="expert-market-preview-title">专家市场</h2><p>发现并安装适合你工作流的 AI 专家。</p></div><button type="button" class="expert-market-preview__close" data-expert-market-close aria-label="关闭专家市场">×</button></div><div class="expert-market-preview__grid"><article class="expert-market-preview__card"><strong>论文润色专家</strong><p>保持原意与术语一致，优化学术表达。</p><button type="button" data-expert-market-select>查看详情</button></article><article class="expert-market-preview__card"><strong>PPT 制作专家</strong><p>从主题到大纲快速生成演示文稿。</p><button type="button" data-expert-market-select>查看详情</button></article><article class="expert-market-preview__card"><strong>文献搜索专家</strong><p>定位核心论文并整理引用与主题脉络。</p><button type="button" data-expert-market-select>查看详情</button></article><article class="expert-market-preview__card"><strong>合同审查专家</strong><p>按风险等级列出谈判要点和可改条款。</p><button type="button" data-expert-market-select>查看详情</button></article></div></div></div><div class="app-update-float" data-update-float role="status" aria-live="polite"><div class="app-update-float__identity"><span class="app-update-float__icon" aria-hidden="true">↑</span><div class="app-update-float__copy"><strong>新版本就绪</strong><span>MaClaw 更新可用</span></div></div><div class="app-update-float__actions"><button type="button" class="app-update-float__button" data-update-float-action="notes">更新日志</button><button type="button" class="app-update-float__button app-update-float__button--primary" data-update-float-action="restart">重启升级</button></div><button type="button" class="app-update-float__close" data-update-float-close aria-label="关闭更新提示" title="关闭">×</button></div><script>
+(() => {
+  const updateFloat = document.querySelector('[data-update-float]');
+  updateFloat?.querySelector('[data-update-float-close]')?.addEventListener('click', () => updateFloat.remove());
+  updateFloat?.querySelectorAll('[data-update-float-action]').forEach((button) => button.addEventListener('click', () => {
+    const message = button.getAttribute('data-update-float-action') === 'restart' ? '已打开升级流程' : '已打开更新日志';
+    let feedback = document.querySelector('.preview-toast');
+    if (!feedback) { feedback = document.createElement('div'); feedback.className = 'preview-toast'; document.body.appendChild(feedback); }
+    feedback.textContent = message;
+    feedback.classList.add('show');
+    window.clearTimeout(feedback.__updateTimer);
+    feedback.__updateTimer = window.setTimeout(() => feedback.classList.remove('show'), 1800);
+  }));
+  const resizeRoot = document.querySelector(".app");
+  const taskResizeHandle = document.querySelector(".task-pane-resize-handle");
+  const taskPaneMinWidth = 180;
+  const taskPaneMaxWidth = 460;
+  let taskPaneResizeStartX = 0;
+  let taskPaneResizeStartWidth = 308;
+  let taskPaneResizePointerId = null;
+  const readTaskPaneWidth = () => {
+    const raw = getComputedStyle(document.documentElement).getPropertyValue("--task-pane-width").trim();
+    const parsed = Number.parseFloat(raw);
+    return Number.isFinite(parsed) ? parsed : 308;
+  };
+  const setTaskPaneWidth = (width) => {
+    const next = Math.min(taskPaneMaxWidth, Math.max(taskPaneMinWidth, Number(width) || 308));
+    document.documentElement.style.setProperty("--task-pane-width", next + "px");
+    taskResizeHandle?.setAttribute("aria-valuenow", String(Math.round(next)));
+  };
+  const stopTaskPaneResize = () => {
+    taskPaneResizePointerId = null;
+    document.body.classList.remove("task-pane-resizing");
+  };
+  const applyTaskPaneResize = (clientX) => {
+    setTaskPaneWidth(taskPaneResizeStartWidth + clientX - taskPaneResizeStartX);
+  };
+  if (taskResizeHandle && resizeRoot) {
+    taskResizeHandle.addEventListener("pointerdown", (event) => {
+      if (document.body.classList.contains("monitor-mode")) return;
+      event.preventDefault();
+      taskPaneResizeStartX = event.clientX;
+      taskPaneResizeStartWidth = readTaskPaneWidth();
+      taskPaneResizePointerId = event.pointerId;
+      document.body.classList.add("task-pane-resizing");
+      try { taskResizeHandle.setPointerCapture(event.pointerId); } catch (_) {}
+    });
+    taskResizeHandle.addEventListener("pointermove", (event) => {
+      if (taskPaneResizePointerId === null || event.pointerId !== taskPaneResizePointerId) return;
+      event.preventDefault();
+      applyTaskPaneResize(event.clientX);
+    }, { passive: false });
+    taskResizeHandle.addEventListener("pointerup", (event) => {
+      if (taskPaneResizePointerId !== null && event.pointerId === taskPaneResizePointerId) {
+        try { taskResizeHandle.releasePointerCapture(event.pointerId); } catch (_) {}
+        stopTaskPaneResize();
+      }
+    });
+    taskResizeHandle.addEventListener("pointercancel", stopTaskPaneResize);
+    taskResizeHandle.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        event.preventDefault();
+        setTaskPaneWidth(readTaskPaneWidth() + (event.key === "ArrowRight" ? 16 : -16));
+      } else if (event.key === "Home" || event.key === "End") {
+        event.preventDefault();
+        setTaskPaneWidth(event.key === "Home" ? taskPaneMinWidth : taskPaneMaxWidth);
+      }
+    });
+  }
+  const composer = document.getElementById("previewComposer");
+  if (!composer) return;
+  const preservePreviewRevision = (href) => {
+    const rev = new URLSearchParams(window.location.search).get("rev");
+    return rev && href ? `${href}${href.includes("?") ? "&" : "?"}rev=${encodeURIComponent(rev)}` : href;
+  };
+  const suggestionSets = {
+    business: [
+      ["▥", "做一份可汇报的竞品分析", "结论、对比表、机会与下一步", "做一份可汇报的竞品分析，给出结论、对比表、机会和下一步。"],
+      ["⌘", "把零散想法整理成项目方案", "目标、范围、里程碑、风险", "把这些零散想法整理成项目方案，明确目标、范围、里程碑和风险。"],
+      ["▧", "审查合同并列出谈判要点", "按风险等级给可改条款", "审查这份合同，按风险等级列出谈判要点和可修改条款。"],
+      ["⌁", "制定季度经营复盘", "指标、原因、下步动作", "制定季度经营复盘，梳理指标、原因和下一步动作。"]
+    ],
+    ops: [["◌", "整理线上故障复盘", "影响、时间线、根因、改进", "整理这次线上故障复盘，输出影响、时间线、根因和改进项。"], ["⌘", "生成一份运维排障手册", "现象、检查、回滚、值班交接", "根据现有资料生成运维排障手册，包含检查、回滚和交接步骤。"]],
+    research: [["⌕", "整理文献并提炼研究空白", "主题、方法、结论、空白", "整理这些文献，按主题、方法和结论提炼研究空白。"], ["◇", "设计一份实验方案", "变量、样本、步骤、评价指标", "设计一份可执行的实验方案，明确变量、样本、步骤和评价指标。"]],
+    grant: [["▤", "搭建科研申报书框架", "立项依据、目标、方法、预算", "搭建科研申报书框架，覆盖立项依据、目标、方法和预算。"], ["✎", "润色项目摘要", "突出创新点与可行性", "润色项目摘要，突出创新点、可行性和预期成果。"]],
+    writing: [["✎", "写一封清晰有说服力的邮件", "重点、语气、行动请求", "写一封清晰有说服力的邮件，突出重点、语气和行动请求。"], ["▤", "把长文改成汇报提纲", "结构、要点、演讲提示", "把这篇长文整理成汇报提纲，提炼结构、要点和演讲提示。"]],
+    knowledge: [["▤", "把资料整理成知识库条目", "摘要、标签、关联文档", "把这些资料整理成知识库条目，生成摘要、标签和关联文档。"], ["⌘", "生成一份项目知识地图", "主题、关系、待补信息", "生成一份项目知识地图，标出主题、关系和待补信息。"]],
+    workflow: [["⚙", "设计一个自动化工作流", "触发器、步骤、异常处理", "设计一个自动化工作流，明确触发器、步骤和异常处理。"], ["↗", "把重复工作改成批处理", "输入、规则、输出、验收", "把这项重复工作改成批处理流程，明确输入、规则、输出和验收。"]],
+    data: [["▦", "清洗并汇总一份数据表", "字段、异常、汇总口径", "清洗并汇总这份数据表，说明字段、异常和汇总口径。"], ["▥", "制作一份可读的经营看板", "指标、趋势、异常、结论", "制作一份可读的经营看板，包含指标、趋势、异常和结论。"]]
+  };
+  const suggestionGrid = document.querySelector("[data-suggestion-grid]");
+  const renderSuggestions = (category) => {
+    if (!suggestionGrid) return;
+    const items = suggestionSets[category] || suggestionSets.business;
+    suggestionGrid.innerHTML = items.map(([icon, title, detail, prompt]) => `<button type="button" class="suggestion-card" data-prompt="${prompt.replace(/\"/g, '&quot;')}"><span class="suggestion-icon">${icon}</span><span class="suggestion-copy"><strong>${title}</strong><small>${detail}</small></span><span class="suggestion-arrow" aria-hidden="true">›</span></button>`).join("");
+    suggestionGrid.querySelectorAll(".suggestion-card[data-prompt]").forEach(bindPromptButton);
+  };
+  const bindPromptButton = (button) => {
+    button.addEventListener("click", () => {
+      composer.value = button.dataset.prompt || "";
+      composer.focus();
+      composer.setSelectionRange(composer.value.length, composer.value.length);
+    });
+  };
+  document.querySelectorAll(".reference-category[data-category]").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      const category = tab.dataset.category || "business";
+      document.querySelectorAll(".reference-category[data-category]").forEach((item) => {
+        const selected = item === tab;
+        item.classList.toggle("active", selected);
+        item.setAttribute("aria-selected", String(selected));
+      });
+      renderSuggestions(category);
+    });
+  });
+  document.querySelectorAll(".suggestion-card[data-prompt]").forEach(bindPromptButton);
+  const toast = (message) => {
+    let el = document.querySelector(".preview-toast");
+    if (!el) { el = document.createElement("div"); el.className = "preview-toast"; document.body.appendChild(el); }
+    el.textContent = message;
+    el.classList.add("show");
+    clearTimeout(toast.timer);
+    toast.timer = setTimeout(() => el.classList.remove("show"), 1800);
+  };
+
+  const taskModal = document.querySelector("[data-cloud-task-modal]");
+  const taskKindButtons = taskModal ? Array.from(taskModal.querySelectorAll("[data-task-kind]")) : [];
+  let selectedTaskKind = "chat";
+  const setTaskKind = (kind) => {
+    selectedTaskKind = kind || "chat";
+    taskKindButtons.forEach((button) => {
+      const selected = button.dataset.taskKind === selectedTaskKind;
+      button.classList.toggle("selected", selected);
+      button.setAttribute("aria-pressed", String(selected));
+    });
+  };
+  const closeTaskModal = () => {
+    if (!taskModal) return;
+    taskModal.hidden = true;
+    document.body.classList.remove("cloud-task-modal-open");
+  };
+  const openTaskModal = (kind = "chat") => {
+    if (!taskModal) return;
+    setTaskKind(kind);
+    taskModal.hidden = false;
+    document.body.classList.add("cloud-task-modal-open");
+    taskKindButtons.find((button) => button.dataset.taskKind === selectedTaskKind)?.focus();
+  };
+  taskKindButtons.forEach((button) => button.addEventListener("click", () => setTaskKind(button.dataset.taskKind)));
+  document.querySelector(".new")?.addEventListener("click", () => openTaskModal("chat"));
+  document.querySelector("[data-cloud-create]")?.addEventListener("click", () => openTaskModal("cloud"));
+  document.querySelector("[data-cloud-task-close]")?.addEventListener("click", closeTaskModal);
+  document.querySelector("[data-cloud-task-cancel]")?.addEventListener("click", closeTaskModal);
+  taskModal?.addEventListener("click", (event) => { if (event.target === taskModal) closeTaskModal(); });
+  document.querySelector("[data-cloud-task-confirm]")?.addEventListener("click", () => {
+    const labels = { chat: "对话", coding: "本地编程", remote: "远程编程", cloud: "云端工作区" };
+    composer.value = selectedTaskKind === "cloud" ? "创建一个云端工作区任务：" : "";
+    closeTaskModal();
+    composer.focus();
+    toast(`已选择${labels[selectedTaskKind] || "对话"}任务类型`);
+  });
+  const previewTaskKind = new URLSearchParams(window.location.search).get("cloud");
+  if (previewTaskKind === "1" || previewTaskKind === "cloud") openTaskModal("cloud");
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && taskModal && !taskModal.hidden) { event.preventDefault(); closeTaskModal(); }
+  });
+  const sendButton = document.querySelector(".composer .send");
+  const attachmentButton = document.querySelector(".composer .composer-attachment");
+  const voiceButton = document.querySelector(".composer .composer-voice");
+  const searchInput = document.querySelector(".search");
+  const searchAction = document.querySelector('.top-action[aria-label="搜索"]');
+  const notificationAction = document.querySelector('.top-action[aria-label="通知"]');
+  const notificationPanel = document.querySelector('[data-notification-panel]');
+  const notificationCount = document.querySelector('[data-notification-count]');
+  const notificationTriggers = [notificationAction, document.querySelector('[data-action="notifications"]')].filter(Boolean);
+  let notificationOpener = notificationAction;
+  const setNotificationsOpen = (open) => {
+    document.body.classList.toggle('notifications-open', open);
+    notificationTriggers.forEach((trigger) => trigger.setAttribute('aria-expanded', String(open)));
+    notificationPanel?.setAttribute('aria-hidden', String(!open));
+    if (!open) {
+      const opener = notificationOpener || notificationAction;
+      window.requestAnimationFrame(() => opener?.focus());
+    }
+  };
+  const closeNotificationPanel = () => setNotificationsOpen(false);
+  const openNotificationCenter = () => setNotificationsOpen(true);
+  const toggleNotificationCenter = () => setNotificationsOpen(!document.body.classList.contains('notifications-open'));
+  const refreshAction = document.querySelector('.top-action[aria-label="刷新"]');
+  const moreAction = document.querySelector('.top-action[aria-label="更多"]');
+  const submit = () => {
+    const value = composer.value.trim();
+    if (!value) { composer.focus(); return; }
+    window.location.href = preservePreviewRevision(`task-preview.html?prompt=${encodeURIComponent(value)}`);
+  };
+  sendButton?.addEventListener("click", submit);
+  composer.addEventListener("keydown", (event) => {
+    // Enter sends; Ctrl/⌘+Enter remains available for a newline like the live composer.
+    if (event.key === "Enter" && !event.shiftKey && !event.ctrlKey && !event.metaKey) {
+      event.preventDefault();
+      submit();
+    }
+  });
+  attachmentButton?.addEventListener("click", () => toast("附件入口已打开"));
+  voiceButton?.addEventListener("click", () => toast("语音输入已准备"));
+  searchAction?.addEventListener("click", () => { searchInput?.focus(); });
+  searchInput?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      const value = searchInput.value.trim();
+      if (value) toast(`正在搜索：${value}`); else searchInput.focus();
+    }
+  });
+  notificationAction?.addEventListener("click", () => { notificationOpener = notificationAction; toggleNotificationCenter(); });
+  document.querySelector('[data-action="notifications"]')?.addEventListener('click', (event) => { notificationOpener = event.currentTarget; openNotificationCenter(); });
+  document.querySelector('[data-action="notifications"]')?.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); notificationOpener = event.currentTarget; openNotificationCenter(); }
+  });
+  document.querySelector('[data-close-notifications]')?.addEventListener('click', closeNotificationPanel);
+  document.querySelector('[data-mark-notifications]')?.addEventListener('click', () => {
+    if (notificationCount) notificationCount.textContent = '0';
+    closeNotificationPanel();
+    toast('系统通知已全部标记为已读');
+  });
+  notificationPanel?.addEventListener('click', (event) => event.stopPropagation());
+  document.addEventListener('click', (event) => {
+    if (document.body.classList.contains('notifications-open') && !(event.target instanceof Element && (event.target.closest('[data-notification-panel]') || event.target.closest('[data-action="notifications"]') || event.target.closest('.top-action[aria-label="通知"]')))) closeNotificationPanel();
+  });
+  document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !(systemMenu && !systemMenu.hidden)) closeNotificationPanel(); });
+  refreshAction?.addEventListener("click", () => toast("工作台已刷新"));
+  moreAction?.addEventListener("click", () => toast("更多全局操作"));
+  document.querySelector('[data-nav="workbench"]')?.addEventListener("click", () => { window.location.href = preservePreviewRevision("design-preview.html"); });
+  document.querySelector('[data-nav="workbench"]')?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") { event.preventDefault(); window.location.href = preservePreviewRevision("design-preview.html"); }
+  });
+  const taskNav = document.querySelector('[data-nav="tasks"]');
+  const openBackgroundMonitor = () => { window.location.href = preservePreviewRevision("task-preview.html?monitor=background"); };
+  taskNav?.addEventListener("click", openBackgroundMonitor);
+  taskNav?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openBackgroundMonitor(); }
+  });
+
+  const expertMarketModal = document.querySelector('[data-expert-market-modal]');
+  const expertMarketTrigger = document.querySelector('[data-expert-market]');
+  const closeExpertMarket = (restoreFocus = false) => {
+    if (!expertMarketModal) return;
+    expertMarketModal.hidden = true;
+    document.body.classList.remove('expert-market-open');
+    if (restoreFocus) expertMarketTrigger?.focus();
+  };
+  const openExpertMarket = () => {
+    if (!expertMarketModal) return;
+    expertMarketModal.hidden = false;
+    document.body.classList.add('expert-market-open');
+    expertMarketModal.querySelector('.expert-market-preview__close')?.focus();
+  };
+  expertMarketTrigger?.addEventListener('click', openExpertMarket);
+  expertMarketModal?.querySelector('[data-expert-market-close]')?.addEventListener('click', () => closeExpertMarket(true));
+  expertMarketModal?.querySelectorAll('[data-expert-market-select]').forEach((button) => button.addEventListener('click', () => toast('专家详情入口已打开')));
+  expertMarketModal?.addEventListener('click', (event) => { if (event.target === expertMarketModal) closeExpertMarket(true); });
+  document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && expertMarketModal && !expertMarketModal.hidden) { event.preventDefault(); closeExpertMarket(true); } });  const surfaceTitle = document.querySelector('[data-surface-title]');
+  const mainRoot = document.querySelector('.main');
+  const surfaceNodes = {
+    workbench: document.querySelector('[data-surface="workbench"]'),
+    tools: document.querySelector('[data-surface="tools"]'),
+    experts: document.querySelector('[data-surface="experts"]')
+  };
+  const setPreviewSurface = (surface, push = true) => {
+    const next = surfaceNodes[surface] ? surface : 'workbench';
+    Object.entries(surfaceNodes).forEach(([name, node]) => { if (node) node.hidden = name !== next; });
+    document.querySelectorAll('.rail [data-nav]').forEach((item) => item.classList.toggle('active', item.dataset.nav === (next === 'workbench' ? 'workbench' : next)));
+    if (mainRoot) mainRoot.dataset.previewSurface = next;
+    if (surfaceTitle) { surfaceTitle.textContent = next === 'tools' ? '工具' : next === 'experts' ? 'AI 专家' : ''; surfaceTitle.hidden = next === 'workbench'; }
+    if (push) {
+      const params = new URLSearchParams(window.location.search);
+      if (next === 'workbench') params.delete('surface'); else params.set('surface', next);
+      const query = params.toString();
+      window.history.pushState({ surface: next }, '', window.location.pathname + (query ? '?' + query : ''));
+    }
+    document.title = next === 'tools' ? 'MaClaw 工具' : next === 'experts' ? 'MaClaw AI 专家' : 'MaClaw 设计预览';
+  };
+  setPreviewSurface(new URLSearchParams(window.location.search).get('surface') || 'workbench', false);
+  window.addEventListener('popstate', () => setPreviewSurface(new URLSearchParams(window.location.search).get('surface') || 'workbench', false));
+  document.querySelectorAll('[data-surface-back]').forEach((button) => button.addEventListener('click', () => setPreviewSurface('workbench')));
+
+  const toolsNav = document.querySelector('[data-nav="tools"]');
+  toolsNav?.addEventListener('click', () => setPreviewSurface('tools'));
+  toolsNav?.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setPreviewSurface('tools'); }
+  });
+  const expertsNav = document.querySelector('[data-nav="experts"]');
+  expertsNav?.addEventListener('click', () => setPreviewSurface('experts'));
+  expertsNav?.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setPreviewSurface('experts'); }
+  });
+  const scheduleNav = document.querySelector('[data-nav="schedule"]');
+  const openScheduledMonitor = () => { window.location.href = preservePreviewRevision("task-preview.html?monitor=scheduled"); };
+  scheduleNav?.addEventListener("click", openScheduledMonitor);
+  scheduleNav?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openScheduledMonitor(); }
+  });
+  document.querySelectorAll(".quick button[data-prompt]").forEach((button) => {
+    button.addEventListener("click", () => {
+      composer.value = button.dataset.prompt || "";
+      composer.focus();
+      composer.setSelectionRange(composer.value.length, composer.value.length);
+    });
+  });
+  document.querySelectorAll(".recent-list > div").forEach((row) => {
+    row.tabIndex = 0;
+    const openTask = () => {
+      const params = new URLSearchParams({
+        title: row.dataset.taskTitle || "整理本周会议纪要",
+        status: row.dataset.taskStatus || "进行中",
+        prompt: row.dataset.taskPrompt || row.dataset.taskTitle || "整理本周会议纪要"
+      });
+      window.location.href = preservePreviewRevision(`task-preview.html?${params.toString()}`);
+    };
+    row.addEventListener("click", openTask);
+    row.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        openTask();
+      }
+    });
+  });
+  const systemTrigger = document.querySelector('[data-system-trigger]');
+  const systemMenu = document.querySelector('[data-system-menu]');
+  const systemItems = systemMenu ? Array.from(systemMenu.querySelectorAll('[data-system-item]')) : [];
+  const setSystemMenuOpen = (open, focusTrigger = false) => {
+    if (!systemMenu || !systemTrigger) return;
+    systemMenu.hidden = !open;
+    systemTrigger.setAttribute('aria-expanded', String(open));
+    if (open) systemItems[0]?.focus();
+    else if (focusTrigger) systemTrigger.focus();
+  };
+  systemTrigger?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    setSystemMenuOpen(!!systemMenu?.hidden);
+  });
+  systemMenu?.addEventListener('click', (event) => {
+    const item = event.target instanceof Element ? event.target.closest('[data-system-item]') : null;
+    if (!item) return;
+    const labels = { about: '关于', skills: '技能', mcp: 'MCP', gossip: '八卦' };
+    toast(`已打开${labels[item.dataset.systemItem] || '系统功能'}`);
+    setSystemMenuOpen(false, true);
+  });
+  systemMenu?.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setSystemMenuOpen(false, true); return; }
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+    const current = systemItems.indexOf(document.activeElement);
+    if (current < 0 || systemItems.length < 2) return;
+    event.preventDefault();
+    const next = (current + (event.key === 'ArrowRight' ? 1 : -1) + systemItems.length) % systemItems.length;
+    systemItems[next].focus();
+  });
+  document.addEventListener('click', (event) => {
+    if (systemMenu?.hidden) return;
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target?.closest('[data-system-menu], [data-system-trigger]')) setSystemMenuOpen(false);
+  });
+})();
+</script>
+<style id="visual-audit-header-parity">
+/* Keep the wordmark, search field, notification, and ready state in one
+   left-to-right group. The rail owns the primary M mark in this preview. */
+.top .brand { margin-right: 0; }
+.top .top-divider { display: none; }
+@media (max-height: 760px) and (min-width: 701px) {
+  /* Preserve the full rail at compact desktop heights. */
+  .rail > .logo { width: 48px; height: 48px; flex-basis: 48px; }
+  .rail > .logo svg { width: 39px; height: 39px; }
+  .rail .nav { min-height: 52px; }
+  .rail { gap: 7px; }
+  .rail-avatar { width: 38px; height: 38px; flex-basis: 38px; margin-top: 4px; }
+  .rail-avatar svg { width: 24px; height: 24px; }
+}
+</style>
+</body></html>

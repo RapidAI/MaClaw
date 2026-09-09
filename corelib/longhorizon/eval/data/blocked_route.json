@@ -1,0 +1,23 @@
+{
+  "category": "blocked_route",
+  "title": "Manager 直接 blocked 时外环立即终止",
+  "design_ref": "longhorizon-harness-plan-zh.md §9 P5 / 人机门",
+  "samples": [
+    {
+      "id": "immediate_blocked",
+      "title": "首轮 blocked：无执行轮次，不落 Completed",
+      "notes": "blocked 是终态之一；不得产生 ManagedRound。",
+      "user_goal": "deploy to production without credentials",
+      "max_rounds": 6,
+      "manager_script": [
+        "Next: blocked\nQuestion: credentials are required"
+      ],
+      "expected": {
+        "final_status": "blocked",
+        "completed": false,
+        "manager_nexts": ["blocked"],
+        "rounds": 0
+      }
+    }
+  ]
+}

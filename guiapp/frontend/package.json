@@ -1,0 +1,36 @@
+{
+  "name": "frontend",
+  "version": "3.5.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "prebuild": "cd ../.. && node scripts/check-encoding.mjs guiapp/frontend/src guiapp/frontend/index.html guiapp/frontend/package.json guiapp/frontend/tsconfig.json guiapp/frontend/vite.config.ts --strict-mojibake && node scripts/check-main-ui-guards.mjs --self-test-config-persistence && node scripts/check-main-ui-guards.mjs && go run scripts/check_wails_bindings.go",
+    "build": "tsc && vite build --config vite.config.ts",
+    "preview": "vite preview",
+    "test": "vitest --run"
+  },
+  "dependencies": {
+    "json5": "^2.2.3",
+    "katex": "^0.16.25",
+    "mermaid": "^11.14.0",
+    "qrcode.react": "^4.2.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-markdown": "^8.0.7",
+    "rehype-raw": "^7.0.0",
+    "remark-gfm": "^3.0.1"
+  },
+  "devDependencies": {
+    "@testing-library/react": "^16.3.2",
+    "@types/node": "^25.9.2",
+    "@types/react": "^18.0.17",
+    "@types/react-dom": "^18.0.6",
+    "@vitejs/plugin-react": "^4.7.0",
+    "fast-check": "^4.6.0",
+    "jsdom": "^29.0.0",
+    "typescript": "~5.7",
+    "vite": "^6.0.0",
+    "vitest": "^4.1.0"
+  }
+}

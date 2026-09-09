@@ -1,0 +1,1064 @@
+package guiapp
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"net/http"
+	"reflect"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
+)
+
+const (
+	hubServiceProviderName            = "MaClaw\u5b98\u65b9"
+	hubServiceAutoModel               = "auto"
+	hubServiceStatusTimeout           = 5 * time.Second
+	hubServiceAccountStatusMaxTimeout = 8 * time.Second
+	hubViewerTokenRecoveryRetryDelay  = 5 * time.Minute
+
+	// hubServiceStatusLocalCacheTTL controls how long the client caches a
+	// successful Hub LLM service status response before re-fetching.
+	// This prevents the "1429 context deadline exceeded" pattern where every
+	// GetMaclawLLMProviders call (triggered by sidebar refresh, token usage
+	// events, etc.) hits the Hub network endpoint.
+	hubServiceStatusLocalCacheTTL = 30 * time.Second
+)
+
+// ensureViewerTokenMu serializes re-enroll attempts when multiple callers
+// discover a missing viewer token concurrently.
+var ensureViewerTokenMu sync.Mutex
+
+// hubServiceStatusCache caches the last successful Hub LLM service status
+// response on the client side. This avoids hitting the Hub server on every
+// GetMaclawLLMProviders call (which happens on every sidebar refresh, every
+// token usage event, every LLM call completion, etc.).
+//
+// Cache entries are keyed by hubURL+viewerToken so switching Hub endpoints
+// (or test isolation with different mock servers) never returns another
+// environment's status.
+var hubServiceStatusCache struct {
+	mu        sync.RWMutex
+	status    HubLLMServiceStatus
+	fetchedAt time.Time
+	valid     bool
+	hubURL    string
+	viewerTok string
+}
+
+// clearHubServiceStatusCache invalidates the process-local Hub LLM status cache.
+// Used by tests and by config paths that change Hub identity.
+func clearHubServiceStatusCache() {
+	hubServiceStatusCache.mu.Lock()
+	hubServiceStatusCache.valid = false
+	hubServiceStatusCache.status = HubLLMServiceStatus{}
+	hubServiceStatusCache.fetchedAt = time.Time{}
+	hubServiceStatusCache.hubURL = ""
+	hubServiceStatusCache.viewerTok = ""
+	hubServiceStatusCache.mu.Unlock()
+}
+
+func hubServiceStatusCacheSameIdentity(hubURL, viewerToken string) bool {
+	hubServiceStatusCache.mu.RLock()
+	defer hubServiceStatusCache.mu.RUnlock()
+	return hubServiceStatusCache.valid &&
+		hubServiceStatusCache.hubURL == strings.TrimSpace(hubURL) &&
+		hubServiceStatusCache.viewerTok == strings.TrimSpace(viewerToken)
+}
+
+func hubServiceStatusCacheMatches(hubURL, viewerToken string) bool {
+	hubServiceStatusCache.mu.RLock()
+	defer hubServiceStatusCache.mu.RUnlock()
+	return hubServiceStatusCache.valid &&
+		hubServiceStatusCache.hubURL == strings.TrimSpace(hubURL) &&
+		hubServiceStatusCache.viewerTok == strings.TrimSpace(viewerToken) &&
+		time.Since(hubServiceStatusCache.fetchedAt) < hubServiceStatusLocalCacheTTL
+}
+
+// storeHubServiceStatusCache stores the latest Hub status and reports whether
+// an existing cache entry for the same signed-in Hub account changed. Keeping
+// this comparison at the cache boundary lets callers notify the GUI about
+// entitlement-only changes without persisting a policy snapshot to config.
+func storeHubServiceStatusCache(hubURL, viewerToken string, status HubLLMServiceStatus) bool {
+	hubServiceStatusCache.mu.Lock()
+	sameIdentity := hubServiceStatusCache.valid &&
+		hubServiceStatusCache.hubURL == strings.TrimSpace(hubURL) &&
+		hubServiceStatusCache.viewerTok == strings.TrimSpace(viewerToken)
+	changed := sameIdentity && !hubLLMServiceStatusDisplayEqual(hubServiceStatusCache.status, status)
+	hubServiceStatusCache.status = status
+	hubServiceStatusCache.fetchedAt = time.Now()
+	hubServiceStatusCache.valid = true
+	hubServiceStatusCache.hubURL = strings.TrimSpace(hubURL)
+	hubServiceStatusCache.viewerTok = strings.TrimSpace(viewerToken)
+	hubServiceStatusCache.mu.Unlock()
+	return changed
+}
+
+// hubLLMServiceStatusDisplayEqual ignores the countdown-only retry field. Hub
+// may decrease it on every poll while the actual entitlement, including the
+// stable retry deadline, is unchanged; emitting for that would needlessly
+// re-render the status area every cache cycle.
+func hubLLMServiceStatusDisplayEqual(left, right HubLLMServiceStatus) bool {
+	left.ActiveGrants = append([]HubLLMActiveGrant(nil), left.ActiveGrants...)
+	left.CreditGrants = append([]HubLLMActiveGrant(nil), left.CreditGrants...)
+	right.ActiveGrants = append([]HubLLMActiveGrant(nil), right.ActiveGrants...)
+	right.CreditGrants = append([]HubLLMActiveGrant(nil), right.CreditGrants...)
+	for i := range left.ActiveGrants {
+		left.ActiveGrants[i].RetryAfterSeconds = 0
+	}
+	for i := range left.CreditGrants {
+		left.CreditGrants[i].RetryAfterSeconds = 0
+	}
+	for i := range right.ActiveGrants {
+		right.ActiveGrants[i].RetryAfterSeconds = 0
+	}
+	for i := range right.CreditGrants {
+		right.CreditGrants[i].RetryAfterSeconds = 0
+	}
+	return reflect.DeepEqual(left, right)
+}
+
+// notifyHubLLMServiceStatusChanged emits the runtime-status update only when
+// config synchronization did not already emit the same frontend event.
+func (a *App) notifyHubLLMServiceStatusChanged(statusChanged, configChanged bool) {
+	if statusChanged && !configChanged && a != nil && a.ctx != nil {
+		a.emitEvent("hub-llm-service-changed")
+	}
+}
+
+// hubLLMSyncRespectLogThrottle suppresses the repetitive "respecting user
+// provider choice" log message. It fires at most once per minute.
+var hubLLMSyncRespectLogThrottle struct {
+	mu   sync.Mutex
+	last time.Time
+}
+
+// ensureViewerToken checks whether the config has a RemoteViewerToken. If it
+// is missing but the registration credentials (RemoteEmail + RemoteHubURL) are
+// present, it performs a re-enroll to obtain a fresh viewer token.
+//
+// This is a **startup recovery** mechanism, not a workaround. It covers:
+//   - Users who registered with an older Hub/client that did not issue viewer
+//     tokens at enrollment time.
+//   - WebSocket connection failures after registration (the auth.ok path that
+//     normally delivers the viewer token never executed).
+//   - Any historical config corruption that lost the token.
+//
+// The re-enroll itself uses PatchConfig for atomic persistence, so the token
+// cannot be lost to a concurrent SaveConfig race.
+func (a *App) ensureViewerToken(cfg corelib.AppConfig) (corelib.AppConfig, error) {
+	if strings.TrimSpace(cfg.RemoteViewerToken) != "" {
+		return cfg, nil
+	}
+	if strings.TrimSpace(cfg.RemoteEmail) == "" || strings.TrimSpace(cfg.RemoteHubURL) == "" {
+		return cfg, fmt.Errorf("hub access token is missing")
+	}
+	// Only attempt re-enroll if machine credentials are still present.
+	// If machine_id is empty, the user was unbound by admin — don't recreate.
+	if strings.TrimSpace(cfg.RemoteMachineID) == "" {
+		return cfg, fmt.Errorf("hub access token is missing (machine credentials cleared)")
+	}
+	if !a.shouldAttemptHubViewerTokenRecovery() {
+		return cfg, fmt.Errorf("hub access token is missing (recovery throttled)")
+	}
+
+	ensureViewerTokenMu.Lock()
+	defer ensureViewerTokenMu.Unlock()
+
+	// Double-check after lock; another goroutine may have completed recovery.
+	freshCfg, err := a.LoadConfig()
+	if err != nil {
+		return cfg, fmt.Errorf("hub access token is missing")
+	}
+	if strings.TrimSpace(freshCfg.RemoteViewerToken) != "" {
+		return freshCfg, nil
+	}
+	if !a.shouldAttemptHubViewerTokenRecovery() {
+		return cfg, fmt.Errorf("hub access token is missing (recovery throttled)")
+	}
+
+	log.Printf("[hub-llm-service] viewer token missing, re-enrolling email=%s", freshCfg.RemoteEmail)
+	result, err := a.ActivateRemote(freshCfg.RemoteEmail, "", "")
+	if err != nil {
+		a.deferHubViewerTokenRecovery(hubViewerTokenRecoveryRetryDelay)
+		log.Printf("[hub-llm-service] re-enroll failed: %v", err)
+		return cfg, fmt.Errorf("hub access token is missing (recovery failed: %v)", err)
+	}
+	if result.ViewerToken == "" {
+		a.deferHubViewerTokenRecovery(hubViewerTokenRecoveryRetryDelay)
+		log.Printf("[hub-llm-service] re-enroll succeeded but hub did not issue viewer token")
+		return cfg, fmt.Errorf("hub access token is missing (hub did not issue token)")
+	}
+
+	a.hubViewerTokenRecoveryNextAttempt.Store(time.Time{})
+	log.Printf("[hub-llm-service] viewer token recovered via re-enroll")
+	// ActivateRemote persisted via PatchConfig; reload to get the fresh copy.
+	updated, err := a.LoadConfig()
+	if err != nil {
+		return cfg, err
+	}
+	return updated, nil
+}
+
+func (a *App) shouldAttemptHubViewerTokenRecovery() bool {
+	if a == nil {
+		return false
+	}
+	if next, ok := a.hubViewerTokenRecoveryNextAttempt.Load().(time.Time); ok && !next.IsZero() && time.Now().Before(next) {
+		return false
+	}
+	return true
+}
+
+func (a *App) deferHubViewerTokenRecovery(delay time.Duration) {
+	if a == nil {
+		return
+	}
+	if delay <= 0 {
+		delay = hubViewerTokenRecoveryRetryDelay
+	}
+	a.hubViewerTokenRecoveryNextAttempt.Store(time.Now().Add(delay))
+}
+
+type HubLLMAuthorizedModel struct {
+	Name            string   `json:"name"`
+	ProviderIDs     []string `json:"provider_ids,omitempty"`
+	ServiceGroupIDs []string `json:"service_group_ids,omitempty"`
+}
+
+type HubLLMActiveGrant struct {
+	ID                string              `json:"id,omitempty"`
+	ServiceGroupID    string              `json:"service_group_id"`
+	Source            string              `json:"source"`
+	CardID            string              `json:"card_id,omitempty"`
+	CardOrderID       string              `json:"card_order_id,omitempty"`
+	StartsAt          string              `json:"starts_at"`
+	ExpiresAt         string              `json:"expires_at"`
+	Permanent         bool                `json:"permanent,omitempty"`
+	RollingFiveHour   bool                `json:"rolling_five_hour,omitempty"`
+	Active            bool                `json:"active"`
+	Status            string              `json:"status,omitempty"`
+	StatusReason      string              `json:"status_reason,omitempty"`
+	CreditsTotal      float64             `json:"credits_total,omitempty"`
+	CreditsUsed       float64             `json:"credits_used,omitempty"`
+	CreditsAvailable  float64             `json:"credits_available,omitempty"`
+	RetryAfterSeconds int64               `json:"retry_after_seconds,omitempty"`
+	RetryAfterAt      string              `json:"retry_after_at,omitempty"`
+	CreditsRemaining  float64             `json:"credits_remaining,omitempty"`
+	PeriodLimits      *HubLLMPeriodLimits `json:"period_limits,omitempty"`
+	PeriodUsage       *HubLLMPeriodUsage  `json:"period_usage,omitempty"`
+}
+
+type HubLLMPeriodLimits struct {
+	FiveHour float64 `json:"five_hour,omitempty"`
+	Daily    float64 `json:"daily,omitempty"`
+	Weekly   float64 `json:"weekly,omitempty"`
+	Monthly  float64 `json:"monthly,omitempty"`
+}
+
+type HubLLMPeriodUsageWindow struct {
+	WindowStart string  `json:"window_start,omitempty"`
+	WindowEnd   string  `json:"window_end,omitempty"`
+	CreditsUsed float64 `json:"credits_used,omitempty"`
+	Rolling     bool    `json:"rolling,omitempty"`
+}
+
+type HubLLMPeriodUsage struct {
+	FiveHour HubLLMPeriodUsageWindow `json:"five_hour,omitempty"`
+	Daily    HubLLMPeriodUsageWindow `json:"daily,omitempty"`
+	Weekly   HubLLMPeriodUsageWindow `json:"weekly,omitempty"`
+	Monthly  HubLLMPeriodUsageWindow `json:"monthly,omitempty"`
+}
+
+type HubLLMServiceStatus struct {
+	Active             bool                    `json:"active"`
+	SkipLLMConfig      bool                    `json:"skip_llm_config"`
+	AuthMode           string                  `json:"auth_mode"`
+	ServiceGroupIDs    []string                `json:"service_group_ids,omitempty"`
+	ServiceGroupNames  []string                `json:"service_group_names,omitempty"`
+	AvailableModels    []string                `json:"available_models,omitempty"`
+	AuthorizedModels   []HubLLMAuthorizedModel `json:"authorized_models,omitempty"`
+	ActiveGrants       []HubLLMActiveGrant     `json:"active_grants,omitempty"`
+	CreditGrants       []HubLLMActiveGrant     `json:"credit_grants,omitempty"`
+	InactiveReasons    []string                `json:"inactive_reasons,omitempty"`
+	NearestExpiresAt   string                  `json:"nearest_expires_at,omitempty"`
+	EffectiveExpiresAt string                  `json:"effective_expires_at,omitempty"`
+	DefaultModel       string                  `json:"default_model,omitempty"`
+	HubLLMBaseURL      string                  `json:"hub_llm_base_url,omitempty"`
+	CreditsTotal       float64                 `json:"credits_total,omitempty"`
+	CreditsUsed        float64                 `json:"credits_used,omitempty"`
+	CreditsRemaining   float64                 `json:"credits_remaining,omitempty"`
+	CreditsAvailable   float64                 `json:"credits_available,omitempty"`
+	TokensPerCredit    int                     `json:"tokens_per_credit,omitempty"`
+	ResetVouchers      []HubLLMResetVoucher    `json:"reset_vouchers,omitempty"`
+}
+
+type HubLLMResetVoucher struct {
+	ID         string `json:"id"`
+	ExpiresAt  string `json:"expires_at"`
+	RedeemedAt string `json:"redeemed_at,omitempty"`
+}
+
+type hubLLMServiceRedeemResponse struct {
+	Success       bool                `json:"success"`
+	ServiceStatus HubLLMServiceStatus `json:"service_status"`
+}
+
+type hubLLMServiceAccountResponse struct {
+	Status        HubLLMServiceStatus `json:"status"`
+	ServiceStatus HubLLMServiceStatus `json:"service_status"`
+}
+
+func (a *App) GetHubLLMServiceStatus() (HubLLMServiceStatus, error) {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return HubLLMServiceStatus{}, err
+	}
+	// Return cached status if fresh enough for this Hub identity. This avoids a
+	// 30-second network request on every sidebar refresh (every 60s + debounced
+	// token events). The cache is populated/refreshed by:
+	// - syncHubLLMServiceStatusIntoConfig (first call on startup)
+	// - RedeemHubLLMService (after redeem)
+	// - RefreshHubLLMServiceStatus (user-initiated explicit refresh)
+	if hubServiceStatusCacheMatches(cfg.RemoteHubURL, cfg.RemoteViewerToken) {
+		hubServiceStatusCache.mu.RLock()
+		cached := hubServiceStatusCache.status
+		hubServiceStatusCache.mu.RUnlock()
+		return cached, nil
+	}
+
+	// Cache expired, empty, or for a different Hub — fetch fresh from Hub.
+	// Auto-recover missing viewer token before querying status.
+	cfg, err = a.ensureViewerToken(cfg)
+	if err != nil {
+		return HubLLMServiceStatus{}, err
+	}
+	status, err := a.fetchHubLLMServiceStatus(cfg)
+	if err != nil {
+		// On transient failure, return stale cache for the same Hub identity only
+		// (even if the TTL has expired — better a recent snapshot than hard fail).
+		if hubServiceStatusCacheSameIdentity(cfg.RemoteHubURL, cfg.RemoteViewerToken) {
+			hubServiceStatusCache.mu.RLock()
+			stale := hubServiceStatusCache.status
+			hubServiceStatusCache.mu.RUnlock()
+			return stale, nil
+		}
+		// Stale cache from a different Hub must not mask auth/network errors.
+		return HubLLMServiceStatus{}, err
+	}
+	// Cache first so a config-change event emitted during synchronization can
+	// never make the GUI re-read an older entitlement snapshot.
+	statusChanged := storeHubServiceStatusCache(cfg.RemoteHubURL, cfg.RemoteViewerToken, status)
+	configChanged, err := a.syncHubLLMServiceStatusToConfig(status, false)
+	a.notifyHubLLMServiceStatusChanged(statusChanged, configChanged)
+	if err != nil {
+		return status, err
+	}
+	return status, nil
+}
+
+// RefreshHubLLMServiceStatus forces a fresh fetch from Hub, bypassing local
+// cache. Used by explicit user actions (e.g. opening Redeem panel, clicking
+// refresh button) where stale data is unacceptable.
+func (a *App) RefreshHubLLMServiceStatus() (HubLLMServiceStatus, error) {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return HubLLMServiceStatus{}, err
+	}
+	cfg, err = a.ensureViewerToken(cfg)
+	if err != nil {
+		return HubLLMServiceStatus{}, err
+	}
+	status, err := a.fetchHubLLMServiceStatus(cfg)
+	if err != nil {
+		return HubLLMServiceStatus{}, err
+	}
+	// This method fetches directly, so it bypasses the cache without discarding
+	// the previous snapshot needed to detect a changed entitlement view.
+	statusChanged := storeHubServiceStatusCache(cfg.RemoteHubURL, cfg.RemoteViewerToken, status)
+	configChanged, err := a.syncHubLLMServiceStatusToConfig(status, false)
+	a.notifyHubLLMServiceStatusChanged(statusChanged, configChanged)
+	if err != nil {
+		return status, err
+	}
+	return status, nil
+}
+
+func (a *App) syncedMaclawLLMProviders(cfg corelib.AppConfig) []corelib.MaclawLLMProvider {
+	a.syncHubLLMServiceStatusIntoConfig(&cfg)
+	return append([]corelib.MaclawLLMProvider(nil), cfg.MaclawLLMProviders...)
+}
+
+func (a *App) RedeemHubLLMService(code string) (HubLLMServiceStatus, error) {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return HubLLMServiceStatus{}, err
+	}
+	if strings.TrimSpace(cfg.RemoteHubURL) == "" {
+		return HubLLMServiceStatus{}, fmt.Errorf("hub URL is not configured")
+	}
+	// Auto-recover missing viewer token via re-enroll before giving up.
+	cfg, err = a.ensureViewerToken(cfg)
+	if err != nil {
+		return HubLLMServiceStatus{}, err
+	}
+	payload, err := json.Marshal(map[string]string{"code": strings.TrimSpace(code)})
+	if err != nil {
+		return HubLLMServiceStatus{}, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, hubLLMServiceURL(cfg.RemoteHubURL, "/api/llm/service/redeem"), bytes.NewReader(payload))
+	if err != nil {
+		return HubLLMServiceStatus{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(cfg.RemoteViewerToken))
+	req.Header.Set("Cache-Control", "no-cache")
+	resp, err := hubHTTPClient.Do(req)
+	if err != nil {
+		return HubLLMServiceStatus{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		var failure map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&failure); err == nil {
+			if msg, _ := failure["message"].(string); strings.TrimSpace(msg) != "" {
+				return HubLLMServiceStatus{}, fmt.Errorf("%s", msg)
+			}
+		}
+		return HubLLMServiceStatus{}, fmt.Errorf("redeem failed: %s", resp.Status)
+	}
+	var result hubLLMServiceRedeemResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return HubLLMServiceStatus{}, err
+	}
+	serviceStatus := result.ServiceStatus
+	if refreshed, err := a.fetchHubLLMServiceStatus(cfg); err == nil || hubLLMServiceStatusEmpty(serviceStatus) {
+		if err != nil {
+			return HubLLMServiceStatus{}, err
+		}
+		serviceStatus = refreshed
+	}
+	// Store the runtime response before synchronizing config so a config-change
+	// event can immediately re-read the current entitlement view.
+	_ = storeHubServiceStatusCache(cfg.RemoteHubURL, cfg.RemoteViewerToken, serviceStatus)
+	changed, err := a.syncHubLLMServiceStatusToConfig(serviceStatus, false)
+	if err != nil {
+		return serviceStatus, err
+	}
+	// Redeem is an explicit user action. Always refresh the status surfaces even
+	// when the Hub returns an identical entitlement; for background refreshes,
+	// only material status changes emit an event. The cache was updated before
+	// config synchronization, so any emitted event can re-read this response.
+	if !changed && a != nil && a.ctx != nil {
+		a.emitEvent("hub-llm-service-changed")
+	}
+	return serviceStatus, nil
+}
+
+// RedeemHubLLMResetVoucher consumes a one-time quota reset voucher.
+func (a *App) RedeemHubLLMResetVoucher(voucherID string) (HubLLMServiceStatus, error) {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return HubLLMServiceStatus{}, err
+	}
+	cfg, err = a.ensureViewerToken(cfg)
+	if err != nil {
+		return HubLLMServiceStatus{}, err
+	}
+	payload, _ := json.Marshal(map[string]string{"voucher_id": strings.TrimSpace(voucherID)})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, hubLLMServiceURL(cfg.RemoteHubURL, "/api/llm/service/reset-voucher/redeem"), bytes.NewReader(payload))
+	if err != nil {
+		return HubLLMServiceStatus{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(cfg.RemoteViewerToken))
+	resp, err := hubHTTPClient.Do(req)
+	if err != nil {
+		return HubLLMServiceStatus{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		var f map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&f)
+		if m, _ := f["message"].(string); m != "" {
+			return HubLLMServiceStatus{}, errors.New(m)
+		}
+		return HubLLMServiceStatus{}, fmt.Errorf("reset voucher failed: %s", resp.Status)
+	}
+	status, err := a.RefreshHubLLMServiceStatus()
+	return status, err
+}
+
+func (a *App) syncHubLLMServiceStatusIntoConfig(cfg *corelib.AppConfig) {
+	if cfg == nil {
+		return
+	}
+	if cfg.MaclawLLMProviders == nil {
+		cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{}
+	}
+	if strings.TrimSpace(cfg.RemoteHubURL) == "" {
+		return
+	}
+	if strings.TrimSpace(cfg.RemoteViewerToken) == "" {
+		// Attempt auto-recovery of viewer token before giving up.
+		recovered, err := a.ensureViewerToken(*cfg)
+		if err == nil && strings.TrimSpace(recovered.RemoteViewerToken) != "" {
+			*cfg = recovered
+			// Fall through to the normal status-fetch path below.
+		} else {
+			// Viewer token recovery failed. This is a transient condition
+			// (network issue, hub temporarily down, token expired and re-enroll
+			// not possible right now). Do NOT clear the hub provider from config
+			// — that would destructively switch the user's active LLM provider
+			// and require manual reconfiguration. The hub provider entry stays
+			// in the list; next heartbeat/connect will retry recovery.
+			log.Printf("[hub-llm-service] viewer token recovery failed, preserving existing provider config: %v", err)
+			return
+		}
+	}
+	// Use local cache (keyed by Hub URL + viewer token) to avoid hammering the
+	// Hub on every GetMaclawLLMProviders call. The cache is invalidated after
+	// hubServiceStatusLocalCacheTTL (30s), when Hub identity changes, or
+	// explicitly by redeem/provider-switch operations.
+	if hubServiceStatusCacheMatches(cfg.RemoteHubURL, cfg.RemoteViewerToken) {
+		// Cache hit: config was already synced when the cache was populated.
+		// Just reload config to pick up any concurrent PatchConfig changes.
+		if freshCfg, err := a.LoadConfig(); err == nil {
+			*cfg = freshCfg
+		}
+		return
+	}
+
+	status, err := a.fetchHubLLMServiceStatusWithTimeout(*cfg, hubServiceStatusTimeout)
+	if err != nil {
+		// Transient failure (503, timeout, network error). Preserve existing
+		// config — do not remove the hub provider on transient errors.
+		log.Printf("[hub-llm-service] status fetch failed (transient), preserving config: %v", err)
+		return
+	}
+	// Only apply status if Hub explicitly returned a response.
+	// An empty/zero status (Active=false, no grants, no base URL) from a
+	// successful HTTP 200 response means the entitlement was genuinely revoked.
+	statusChanged := storeHubServiceStatusCache(cfg.RemoteHubURL, cfg.RemoteViewerToken, status)
+	configChanged, _ := a.syncHubLLMServiceStatusToConfig(status, false)
+	a.notifyHubLLMServiceStatusChanged(statusChanged, configChanged)
+	if freshCfg, err := a.LoadConfig(); err == nil {
+		// Update the caller's copy so syncedMaclawLLMProviders returns fresh data.
+		*cfg = freshCfg
+	}
+}
+
+func (a *App) fetchHubLLMServiceStatus(cfg corelib.AppConfig) (HubLLMServiceStatus, error) {
+	return a.fetchHubLLMServiceStatusWithTimeout(cfg, 30*time.Second)
+}
+
+// ReportHubLLMBillingTimezone sends the GUI runtime's IANA timezone after the
+// user has authenticated. The Hub treats it as a one-time account attribute;
+// this call is safe to repeat on every desktop launch.
+func (a *App) ReportHubLLMBillingTimezone(timezone string) error {
+	timezone = strings.TrimSpace(timezone)
+	if timezone == "" || (timezone != "UTC" && !strings.Contains(timezone, "/")) {
+		return fmt.Errorf("timezone must be an IANA location")
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(cfg.RemoteHubURL) == "" {
+		return fmt.Errorf("hub URL is not configured")
+	}
+	if strings.TrimSpace(cfg.RemoteViewerToken) == "" {
+		if cfg, err = a.ensureViewerToken(cfg); err != nil {
+			return err
+		}
+	}
+	body, err := json.Marshal(map[string]string{"timezone": timezone})
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), hubServiceStatusTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, hubLLMServiceURL(cfg.RemoteHubURL, "/api/llm/service/timezone"), bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(cfg.RemoteViewerToken))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := hubHTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("billing timezone update failed: %s", resp.Status)
+	}
+	return nil
+}
+
+func (a *App) fetchHubLLMServiceStatusWithTimeout(cfg corelib.AppConfig, timeout time.Duration) (HubLLMServiceStatus, error) {
+	if strings.TrimSpace(cfg.RemoteHubURL) == "" {
+		return HubLLMServiceStatus{}, fmt.Errorf("hub URL is not configured")
+	}
+	// Auto-recover missing viewer token via re-enroll.
+	if strings.TrimSpace(cfg.RemoteViewerToken) == "" {
+		recovered, err := a.ensureViewerToken(cfg)
+		if err != nil {
+			return HubLLMServiceStatus{}, err
+		}
+		cfg = recovered
+	}
+	if status, err := a.fetchHubLLMServiceAccountStatus(cfg, hubLLMServiceAccountStatusTimeout(timeout)); err == nil {
+		if hubLLMServiceStatusNeedsRouteDetails(status) {
+			if routeStatus, routeErr := a.fetchHubLLMServiceLegacyStatus(cfg, timeout); routeErr == nil {
+				status = mergeHubLLMServiceRouteDetails(status, routeStatus)
+			}
+		}
+		return status, nil
+	} else if !isHubLLMServiceAccountFallbackError(err) {
+		return HubLLMServiceStatus{}, err
+	}
+	return a.fetchHubLLMServiceLegacyStatus(cfg, timeout)
+}
+
+func (a *App) fetchHubLLMServiceLegacyStatus(cfg corelib.AppConfig, timeout time.Duration) (HubLLMServiceStatus, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, hubLLMServiceURL(cfg.RemoteHubURL, "/api/llm/service/status"), nil)
+	if err != nil {
+		return HubLLMServiceStatus{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(cfg.RemoteViewerToken))
+	req.Header.Set("Cache-Control", "no-cache")
+	resp, err := hubHTTPClient.Do(req)
+	if err != nil {
+		return HubLLMServiceStatus{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		var failure map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&failure); err == nil {
+			if msg, _ := failure["message"].(string); strings.TrimSpace(msg) != "" {
+				return HubLLMServiceStatus{}, fmt.Errorf("%s", msg)
+			}
+		}
+		return HubLLMServiceStatus{}, fmt.Errorf("status query failed: %s", resp.Status)
+	}
+	var status HubLLMServiceStatus
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		return HubLLMServiceStatus{}, err
+	}
+	return status, nil
+}
+
+func hubLLMServiceStatusNeedsRouteDetails(status HubLLMServiceStatus) bool {
+	return strings.TrimSpace(status.HubLLMBaseURL) == "" || len(status.AvailableModels) == 0 || strings.TrimSpace(status.DefaultModel) == ""
+}
+
+func mergeHubLLMServiceRouteDetails(accountStatus, routeStatus HubLLMServiceStatus) HubLLMServiceStatus {
+	merged := accountStatus
+	if strings.TrimSpace(merged.HubLLMBaseURL) == "" {
+		merged.HubLLMBaseURL = routeStatus.HubLLMBaseURL
+	}
+	if strings.TrimSpace(merged.DefaultModel) == "" {
+		merged.DefaultModel = routeStatus.DefaultModel
+	}
+	if len(merged.AvailableModels) == 0 {
+		merged.AvailableModels = append([]string(nil), routeStatus.AvailableModels...)
+	}
+	if len(merged.AuthorizedModels) == 0 {
+		merged.AuthorizedModels = append([]HubLLMAuthorizedModel(nil), routeStatus.AuthorizedModels...)
+	}
+	if len(merged.InactiveReasons) == 0 {
+		merged.InactiveReasons = append([]string(nil), routeStatus.InactiveReasons...)
+	}
+	return merged
+}
+
+func (a *App) fetchHubLLMServiceAccountStatus(cfg corelib.AppConfig, timeout time.Duration) (HubLLMServiceStatus, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, hubLLMServiceURL(cfg.RemoteHubURL, "/api/llm/service/account"), nil)
+	if err != nil {
+		return HubLLMServiceStatus{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(cfg.RemoteViewerToken))
+	req.Header.Set("Cache-Control", "no-cache")
+	resp, err := hubHTTPClient.Do(req)
+	if err != nil {
+		return HubLLMServiceStatus{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		var failure map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&failure); err == nil {
+			if msg, _ := failure["message"].(string); strings.TrimSpace(msg) != "" {
+				return HubLLMServiceStatus{}, fmt.Errorf("account status query failed: %s: %s", resp.Status, msg)
+			}
+		}
+		return HubLLMServiceStatus{}, fmt.Errorf("account status query failed: %s", resp.Status)
+	}
+	var raw json.RawMessage
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return HubLLMServiceStatus{}, fmt.Errorf("account status query failed: decode response: %w", err)
+	}
+	status, err := decodeHubLLMServiceAccountStatus(raw)
+	if err != nil {
+		return HubLLMServiceStatus{}, err
+	}
+	if hubLLMServiceStatusEmpty(status) {
+		return HubLLMServiceStatus{}, fmt.Errorf("account status query failed: empty status")
+	}
+	return status, nil
+}
+
+func decodeHubLLMServiceAccountStatus(raw json.RawMessage) (HubLLMServiceStatus, error) {
+	var result hubLLMServiceAccountResponse
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return HubLLMServiceStatus{}, fmt.Errorf("account status query failed: decode response: %w", err)
+	}
+	if !hubLLMServiceStatusEmpty(result.Status) {
+		return result.Status, nil
+	}
+	if !hubLLMServiceStatusEmpty(result.ServiceStatus) {
+		return result.ServiceStatus, nil
+	}
+	var status HubLLMServiceStatus
+	if err := json.Unmarshal(raw, &status); err != nil {
+		return HubLLMServiceStatus{}, fmt.Errorf("account status query failed: decode response: %w", err)
+	}
+	return status, nil
+}
+
+func hubLLMServiceURL(baseURL, path string) string {
+	return strings.TrimRight(strings.TrimSpace(baseURL), "/") + path + "?t=" + strconv.FormatInt(time.Now().UnixNano(), 10)
+}
+
+func hubLLMServiceStatusEmpty(status HubLLMServiceStatus) bool {
+	return strings.TrimSpace(status.HubLLMBaseURL) == "" && len(status.ServiceGroupIDs) == 0 && len(status.ServiceGroupNames) == 0 && len(status.CreditGrants) == 0 && len(status.ActiveGrants) == 0 && len(status.AvailableModels) == 0 && len(status.AuthorizedModels) == 0 && status.CreditsTotal <= 0 && status.CreditsUsed <= 0 && status.CreditsRemaining <= 0 && status.CreditsAvailable <= 0
+}
+
+func hubLLMServiceAccountStatusTimeout(timeout time.Duration) time.Duration {
+	if timeout <= 0 || timeout > hubServiceAccountStatusMaxTimeout {
+		return hubServiceAccountStatusMaxTimeout
+	}
+	return timeout
+}
+
+func isHubLLMServiceAccountFallbackError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "401") || strings.Contains(msg, "403") {
+		return false
+	}
+	if strings.Contains(msg, "404") || strings.Contains(msg, "405") || strings.Contains(msg, "decode response") || strings.Contains(msg, "empty status") {
+		return true
+	}
+	for code := http.StatusInternalServerError; code <= 599; code++ {
+		if strings.Contains(msg, strconv.Itoa(code)) {
+			return true
+		}
+	}
+	return false
+}
+
+func isHubLLMServiceAuthorizationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "401") || strings.Contains(msg, "403")
+}
+
+func (a *App) applyHubLLMServiceStatusToConfig(cfg *corelib.AppConfig, status HubLLMServiceStatus) bool {
+	if cfg == nil {
+		return false
+	}
+	changed := false
+	projectAssistantCompatibility := func() {
+		if cfg == nil || cfg.MaclawLLMProfiles == nil {
+			return
+		}
+		profiles := *cfg.MaclawLLMProfiles
+		if validateMaclawLLMProfiles(profiles, cfg.MaclawLLMProviders) == nil {
+			_ = applyAssistantProfileCompatibilityProjection(cfg, profiles)
+		}
+	}
+	originalProviders := append([]corelib.MaclawLLMProvider(nil), cfg.MaclawLLMProviders...)
+	providers := normalizeMaclawLLMProviders(originalProviders)
+	if !maclawLLMProvidersEqual(originalProviders, providers) {
+		changed = true
+	}
+	providerIndex := -1
+	for i := range providers {
+		if isHubServiceProviderName(providers[i].Name) {
+			providerIndex = i
+			break
+		}
+	}
+	hasEntitlement := hubLLMServiceStatusHasEntitlement(status)
+	if !hasEntitlement || strings.TrimSpace(cfg.RemoteViewerToken) == "" || strings.TrimSpace(status.HubLLMBaseURL) == "" {
+		if providerIndex >= 0 {
+			removedProviderID := maclawLLMProviderIDForRead(providers[providerIndex])
+			// Provider sync is not an assignment transaction. In particular, it
+			// must not remove the assistant's selected provider and leave a
+			// persisted profile dangling: there is no safe alternate model to
+			// infer. Keep the catalog entry until the user chooses a replacement
+			// in Model assignments. A later health probe will accurately report
+			// whether that retained connection is usable.
+			assistantUsesHub := cfg.MaclawLLMProfiles != nil &&
+				strings.TrimSpace(cfg.MaclawLLMProfiles.Assistant.ProviderID) == removedProviderID
+			if assistantUsesHub {
+				// Keep any normalization performed above; otherwise returning a
+				// changed result here would make callers persist a change that was
+				// never applied to the config object.
+				if changed {
+					cfg.MaclawLLMProviders = providers
+					projectAssistantCompatibility()
+				}
+				return changed
+			}
+			providers = append(providers[:providerIndex], providers[providerIndex+1:]...)
+			changed = true
+			if isHubServiceProviderName(cfg.MaclawLLMCurrentProvider) {
+				cfg.MaclawLLMCurrentProvider = ""
+				changed = true
+			}
+			// A follow-mode coding draft is safe to clear because it is not
+			// effective. An independent profile must never retain a dangling
+			// provider ID: the only safe automatic recovery is to follow the
+			// assistant, which itself is only valid when it points elsewhere.
+			if cfg.MaclawLLMProfiles != nil {
+				profiles := *cfg.MaclawLLMProfiles
+				if profiles.Coding.InheritAssistant && profiles.Coding.ProviderID == removedProviderID {
+					profiles.Coding.ProviderID = ""
+					profiles.Coding.Model = ""
+					changed = true
+				}
+				if !profiles.Coding.InheritAssistant && profiles.Coding.ProviderID == removedProviderID {
+					profiles.Coding.InheritAssistant = true
+					profiles.Coding.ProviderID = ""
+					profiles.Coding.Model = ""
+					changed = true
+				}
+				cfg.MaclawLLMProfiles = &profiles
+			}
+		}
+		if changed {
+			cfg.MaclawLLMProviders = providers
+			projectAssistantCompatibility()
+		}
+		return changed
+	}
+	model := hubServiceAutoModel
+	if providerIndex >= 0 {
+		existingModel := strings.TrimSpace(providers[providerIndex].Model)
+		if existingModel != "" && !strings.EqualFold(existingModel, hubServiceAutoModel) {
+			model = existingModel
+		}
+	}
+	provider := corelib.MaclawLLMProvider{
+		Name:                 hubServiceProviderName,
+		IsHubService:         true,
+		URL:                  strings.TrimRight(strings.TrimSpace(status.HubLLMBaseURL), "/"),
+		Key:                  strings.TrimSpace(cfg.RemoteViewerToken),
+		Model:                model,
+		Protocol:             "openai",
+		ContextLength:        corelib.DefaultContextTokens,
+		TimeoutSec:           corelib.DefaultLLMTimeoutSec,
+		AgentType:            "openclaw",
+		ConnectionTestPassed: true,
+	}
+	if providerIndex >= 0 {
+		// Replacing the service connection must retain its stable identity. Both
+		// profiles reference this ID, rather than the mutable display name.
+		provider.ID = providers[providerIndex].ID
+		if !reflect.DeepEqual(providers[providerIndex], provider) {
+			providers[providerIndex] = provider
+			changed = true
+		}
+	} else {
+		provider.ID = newMaclawLLMProviderID()
+		providers = append([]corelib.MaclawLLMProvider{provider}, providers...)
+		changed = true
+	}
+	profilesBacked := cfg.MaclawLLMProfiles != nil
+	if !profilesBacked {
+		if canonicalCurrent := canonicalHubServiceProviderName(cfg.MaclawLLMCurrentProvider); canonicalCurrent != cfg.MaclawLLMCurrentProvider {
+			cfg.MaclawLLMCurrentProvider = canonicalCurrent
+			changed = true
+		}
+	}
+	if !profilesBacked && (cfg.MaclawLLMCurrentProvider == "" || cfg.MaclawLLMCurrentProvider == hubServiceProviderName) {
+		if cfg.MaclawLLMCurrentProvider != hubServiceProviderName {
+			cfg.MaclawLLMCurrentProvider = hubServiceProviderName
+			changed = true
+		}
+	} else if !profilesBacked {
+		// User has selected a third-party provider — respect their choice.
+		// Only forceCurrentProvider (ActivateRemote) can override this.
+		// Throttle this log: hub sync fires every ~10s, this message is purely informational.
+		hubLLMSyncRespectLogThrottle.mu.Lock()
+		if time.Since(hubLLMSyncRespectLogThrottle.last) > time.Minute {
+			hubLLMSyncRespectLogThrottle.last = time.Now()
+			log.Printf("[hub-llm-sync] respecting user provider choice: %q (not overriding to hub)", cfg.MaclawLLMCurrentProvider)
+		}
+		hubLLMSyncRespectLogThrottle.mu.Unlock()
+	}
+	if !profilesBacked && (cfg.MaclawLLMUrl != provider.URL || cfg.MaclawLLMKey != provider.Key || cfg.MaclawLLMModel != provider.Model || cfg.MaclawLLMProtocol != provider.Protocol || cfg.MaclawLLMTimeoutSec != provider.TimeoutSec || cfg.MaclawLLMContextLength != provider.ContextLength) {
+		cfg.MaclawLLMUrl = provider.URL
+		cfg.MaclawLLMKey = provider.Key
+		cfg.MaclawLLMModel = provider.Model
+		cfg.MaclawLLMProtocol = provider.Protocol
+		cfg.MaclawLLMTimeoutSec = provider.TimeoutSec
+		cfg.MaclawLLMContextLength = provider.ContextLength
+		changed = true
+	}
+	if changed {
+		cfg.MaclawLLMProviders = providers
+		// Provider/entitlement synchronization is not a model-assignment write.
+		// In a migrated configuration the flat fields remain an assistant-only
+		// compatibility projection, so adding or refreshing the Hub catalog must
+		// never make old consumers observe Hub while the assistant profile still
+		// selects a third-party provider.
+		projectAssistantCompatibility()
+	}
+	return changed
+}
+
+func hubLLMServiceStatusHasEntitlement(status HubLLMServiceStatus) bool {
+	return status.Active || len(status.CreditGrants) > 0 || len(status.ActiveGrants) > 0
+}
+
+func (a *App) syncHubLLMServiceStatusToConfig(status HubLLMServiceStatus, forceCurrentProvider bool) (bool, error) {
+	if cfg, err := a.LoadConfig(); err == nil {
+		preview := cfg
+		if !a.applyHubLLMServiceStatusPatchToConfig(&preview, status, forceCurrentProvider) {
+			return false, nil
+		}
+	}
+	changed, err := a.PatchConfigIfChanged(func(cfg *corelib.AppConfig) bool {
+		return a.applyHubLLMServiceStatusPatchToConfig(cfg, status, forceCurrentProvider)
+	})
+	if err != nil {
+		return false, err
+	}
+	if !changed {
+		return false, nil
+	}
+	// Hub synchronization can add, remove, or change the effective assistant
+	// provider. Profile health belongs to that effective selection, not to the
+	// prior Hub snapshot.
+	a.invalidateMaclawLLMProfileHealth()
+	if a.ctx != nil {
+		a.emitEvent("hub-llm-service-changed")
+		a.emitEvent("llm-profiles-changed", map[string]string{"changed": "hub-provider"})
+	}
+	return true, nil
+}
+
+func (a *App) applyHubLLMServiceStatusPatchToConfig(cfg *corelib.AppConfig, status HubLLMServiceStatus, forceCurrentProvider bool) bool {
+	changed := a.applyHubLLMServiceStatusToConfig(cfg, status)
+	// In dual-profile configs current is only an assistant compatibility mirror;
+	// forcing it to Hub would make legacy readers disagree with the effective
+	// assistant selection. The explicit model-assignment flow owns that change.
+	if forceCurrentProvider && cfg.MaclawLLMProfiles == nil && hubLLMServiceStatusHasEntitlement(status) && strings.TrimSpace(cfg.RemoteViewerToken) != "" && strings.TrimSpace(status.HubLLMBaseURL) != "" && cfg.MaclawLLMCurrentProvider != hubServiceProviderName {
+		cfg.MaclawLLMCurrentProvider = hubServiceProviderName
+		changed = true
+	}
+	return changed
+}
+
+func hubLLMServiceMissingProviderMessage(status HubLLMServiceStatus) string {
+	grant := primaryHubLLMServiceGrant(status)
+	switch normalizeHubLLMServiceGrantStatusKind(grant.Status) {
+	case hubLLMServiceGrantStatusPeriodLimited:
+		if retry := formatHubLLMServiceRetry(grant); retry != "" {
+			return "MaClaw 官方周期限流：当前周期额度已用尽，约 " + retry + " 后恢复；请刷新 Hub 服务状态。"
+		}
+		return "MaClaw 官方周期限流：当前周期额度已用尽；请刷新 Hub 服务状态。"
+	case hubLLMServiceGrantStatusQueued:
+		if retry := formatHubLLMServiceRetry(grant); retry != "" {
+			return "MaClaw 官方授权尚未生效：约 " + retry + " 后生效；请刷新 Hub 服务状态。"
+		}
+		return "MaClaw 官方授权尚未生效；请刷新 Hub 服务状态。"
+	case hubLLMServiceGrantStatusExhausted:
+		return "MaClaw 官方额度已用尽：请兑换或等待新的授权额度。"
+	case hubLLMServiceGrantStatusExpired:
+		return "MaClaw 官方授权已过期：请兑换新的授权额度。"
+	}
+	return "MaClaw 官方服务商暂不可用：Hub 未返回可用服务入口，请刷新 Hub 服务状态后重试。"
+}
+
+func primaryHubLLMServiceGrant(status HubLLMServiceStatus) HubLLMActiveGrant {
+	grants := status.CreditGrants
+	if len(grants) == 0 {
+		grants = status.ActiveGrants
+	}
+	var best HubLLMActiveGrant
+	bestRank := 99
+	for _, grant := range grants {
+		rank := hubLLMServiceGrantStatusRank(grant.Status)
+		if rank < bestRank {
+			best = grant
+			bestRank = rank
+		}
+	}
+	return best
+}
+
+func hubLLMServiceGrantStatusRank(status string) int {
+	return normalizeHubLLMServiceGrantStatusKind(status).Rank()
+}
+
+func formatHubLLMServiceRetry(grant HubLLMActiveGrant) string {
+	seconds := grant.RetryAfterSeconds
+	if seconds <= 0 && strings.TrimSpace(grant.RetryAfterAt) != "" {
+		if retryAt, err := time.Parse(time.RFC3339, strings.TrimSpace(grant.RetryAfterAt)); err == nil {
+			seconds = int64(time.Until(retryAt).Seconds())
+		}
+	}
+	if seconds <= 0 {
+		return ""
+	}
+	if seconds >= int64(24*time.Hour/time.Second) {
+		return fmt.Sprintf("%d 天", (seconds+int64(24*time.Hour/time.Second)-1)/int64(24*time.Hour/time.Second))
+	}
+	if seconds >= int64(time.Hour/time.Second) {
+		return fmt.Sprintf("%d 小时", (seconds+int64(time.Hour/time.Second)-1)/int64(time.Hour/time.Second))
+	}
+	return fmt.Sprintf("%d 分钟", maxInt64(1, (seconds+int64(time.Minute/time.Second)-1)/int64(time.Minute/time.Second)))
+}
+
+func maxInt64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func (a *App) isMaclawLLMConfiguredWithConfig(cfg corelib.AppConfig) bool {
+	current := canonicalHubServiceProviderName(cfg.MaclawLLMCurrentProvider)
+	for _, p := range cfg.MaclawLLMProviders {
+		if canonicalHubServiceProviderName(p.Name) != current {
+			continue
+		}
+		return strings.TrimSpace(p.URL) != "" && strings.TrimSpace(p.Model) != ""
+	}
+	return strings.TrimSpace(cfg.MaclawLLMUrl) != "" && strings.TrimSpace(cfg.MaclawLLMModel) != ""
+}

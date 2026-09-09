@@ -1,0 +1,1475 @@
+package guiapp
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"net"
+	"net/http"
+	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	"github.com/RapidAI/CodeClaw/corelib/database"
+	"github.com/RapidAI/CodeClaw/corelib/goal"
+	"github.com/RapidAI/CodeClaw/corelib/intent"
+	"github.com/RapidAI/CodeClaw/corelib/memory"
+	"github.com/RapidAI/CodeClaw/corelib/nudge"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
+	"github.com/RapidAI/CodeClaw/corelib/scheduler"
+	"github.com/RapidAI/CodeClaw/corelib/security"
+	"github.com/RapidAI/CodeClaw/corelib/steering"
+	"github.com/RapidAI/CodeClaw/corelib/task"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
+)
+
+type IMMessageHandler struct {
+	app     *App
+	manager *RemoteSessionManager
+	// sharedRuntime is the transport-neutral Runtime seam. During migration it
+	// delegates to the existing GUI-hosted turn implementation; subsequent
+	// phases can replace that implementation with corelib/agentruntime without
+	// changing Wails/IM call sites.
+	sharedRuntimeMu sync.Mutex
+	sharedRuntime   agentruntime.Runtime
+	memory          *agent.ConversationMemory
+	// Populated only on a private Lansenger profile runtime; not sourced from
+	// model tool arguments.
+	lansengerBotProfileID string
+	client                *http.Client // chat-priority HTTP client (optimised transport)
+	taskClient            *http.Client // background-task HTTP client (separate pool)
+	databaseManager       *database.Manager
+
+	// --- Extracted App dependencies (agent-unification Phase 1) ---
+	// These fields are wired from App at construction time (GUI) or from
+	// standalone components (TUI). Code should use h.getWorkflowEngine()
+	// and h.getUnifiedClassifier() instead of h.app.XXX. The h.app field
+	// is retained for not-yet-extracted deps.
+	//
+	// For GUI: these may be nil at construction (late-init goroutines) and
+	// the accessor methods fall through to h.app.XXX as a bridge.
+	// For TUI: h.app is nil, these fields are the sole source.
+
+	// workflowEngine removed — V2 is the sole workflow engine.
+	unifiedClassifier *intent.UnifiedIntentClassifier
+	steeringStore     *steering.Store
+
+	// workflowV2Adapters owns durable document bridges for V2 workflows when
+	// the host has not installed the legacy engine callback adapter. Adapters
+	// retain workflow-instance state, so they must be scoped per owner rather
+	// than shared across concurrent desktop/IM workflows.
+	workflowV2Adapters sync.Map // map[string]*GUIWorkflowAdapter
+
+	// standaloneConfig holds the config from NewIMMessageHandlerStandalone.
+	// nil when constructed via NewIMMessageHandler (GUI mode).
+	standaloneConfig *StandaloneConfig
+
+	// Unified tool registry and dynamic builder (Phase 1 upgrade).
+	registry    *ToolRegistry
+	toolBuilder *DynamicToolBuilder
+	// legacyCatalogAudit logs host tools that are registered but have no
+	// reviewed legacy provision. Once per handler: first unmanaged turn.
+	legacyCatalogAudit sync.Once
+	// clientToolDispatcher delegates a per-message dynamic tool call to the
+	// originating third-party client. The dispatcher must return quickly; the
+	// authoritative result arrives asynchronously through tool-result.
+	clientToolDispatcher func(context.Context, agent.ClientToolContext, agent.ClientToolDefinition, string, map[string]any) error
+
+	// Injectable dependency for search_and_install_skill execution. The default
+	// implementation uses SkillMarket; tests can replace the dependency without
+	// hijacking the registry dispatch path.
+	skillSearchInstallHandler func(args map[string]interface{}, onProgress tool.ProgressCallback) searchAndInstallSkillResult
+	// semanticTrustedAudioTranscribe is a host-owned test/runtime hook for
+	// managed speech transcription. It never reads model path arguments.
+	semanticTrustedAudioTranscribe func(mime string, data []byte) (string, error)
+	// semanticTrustedAuditRead is a host-owned test/runtime hook for the
+	// managed audit+history reader. It never reads tool_name or project_path.
+	semanticTrustedAuditRead func(userID, query string) (string, error)
+	// semanticTrustedKnowledgeAdmin is a host-owned test/runtime hook for
+	// managed knowledge-source administration. It never reads action soup.
+	semanticTrustedKnowledgeAdmin func(userID, id, status string, refresh, hasRefresh bool) (string, error)
+	// semanticTrustedKnowledgeIngest is a host-owned test/runtime hook for
+	// managed knowledge ingest. It never reads action/title/labels/save_scope.
+	semanticTrustedKnowledgeIngest func(userID, text, url, path string) (string, error)
+	// semanticTrustedKnowledgeRead is a host-owned test/runtime hook for
+	// managed knowledge retrieval. It never reads search_scope/source_ids soup.
+	semanticTrustedKnowledgeRead func(userID, query string) (string, error)
+	// semanticTrustedFileWrite is a host-owned test/runtime hook for managed
+	// workspace file writes. It never reads phase_id/doc_type/file_path soup.
+	semanticTrustedFileWrite func(userID, path, content, mode string) (string, error)
+	// semanticTrustedFileEdit is a host-owned test/runtime hook for managed
+	// single-passage replacement. It never reads replace_all/line-number soup.
+	semanticTrustedFileEdit func(userID, path, oldString, newString string) (string, error)
+	// semanticTrustedFileRead is a host-owned test/runtime hook for managed
+	// workspace inspect. It never reads lines/start_line/file_path soup.
+	semanticTrustedFileRead func(userID, path, query, filePattern string) (string, error)
+	// semanticTrustedRepoInspect is a host-owned test/runtime hook for managed
+	// workspace git inspect. It never reads project_path/staged soup.
+	semanticTrustedRepoInspect func(userID string) (string, error)
+	// semanticTrustedWebFetch is a host-owned test/runtime hook for managed
+	// single-URL fetch. It never reads save_path/offset/render_js soup.
+	semanticTrustedWebFetch func(userID, url string) (string, error)
+	// semanticTrustedWebSearch is a host-owned test/runtime hook for managed
+	// public web search. It never reads max_results/provider soup.
+	semanticTrustedWebSearch func(userID, query string) (string, error)
+	// semanticTrustedArtifactAcquire is a host-owned test/runtime hook for
+	// managed remote acquisition. It never reads save_path/headers/via_browser.
+	semanticTrustedArtifactAcquire func(userID, url string) (string, error)
+	// semanticTrustedClock is a host-owned test/runtime hook for managed
+	// local clock reads. It never reads timezone/format soup.
+	semanticTrustedClock func(userID string) (string, error)
+	// semanticTrustedConfig is a host-owned test/runtime hook for managed
+	// agent-self config. It never switches provider/url/key/model.
+	semanticTrustedConfig func(userID string, maxIterations int, hasMax bool, thinkingMode string, hasThinking bool) (string, error)
+	// semanticTrustedMemory is a host-owned test/runtime hook for managed
+	// agent memory. It never reads action/surgery/themes soup.
+	semanticTrustedMemory func(userID, content, query, id string) (string, error)
+	// semanticTrustedTask is a host-owned test/runtime hook for managed
+	// local todos. It never reads action/task_id/delegate_to.
+	semanticTrustedTask func(userID, title, description, id, status, note string) (string, error)
+	// semanticTrustedGoal is a host-owned test/runtime hook for managed
+	// long-running goals. It never starts continuation or pause/resume.
+	semanticTrustedGoal func(userID, objective, status, note string) (string, error)
+	// semanticTrustedTemplate is a host-owned test/runtime hook for managed
+	// session templates. It never launches a coding session.
+	semanticTrustedTemplate func(userID, name, codingTool string) (string, error)
+	// semanticTrustedSession is a host-owned test/runtime hook for managed
+	// coding-session inspect. It never sends input, interrupts, or launches.
+	semanticTrustedSession func(userID, id string) (string, error)
+	// semanticTrustedSchedule is a host-owned test/runtime hook for managed
+	// local schedule records. It never binds delivery or starts a fire.
+	semanticTrustedSchedule    func(userID string, args semanticTrustedScheduleArgs) (string, error)
+	semanticTrustedOfficeWrite func(userID, path string, data map[string]interface{}) (string, error)
+	semanticTrustedShell       func(userID, command string, timeout time.Duration) (string, error)
+	semanticTrustedDelegate    func(userID, task string) (string, error)
+	semanticTrustedSSH         func(userID, command string) (string, error)
+	semanticTrustedBrowser     func(userID, action, url string) (string, error)
+	semanticTrustedComputerUse func(userID, action string) (string, error)
+	semanticTrustedRepoMutate  func(userID, action, message string) (string, error)
+	// semanticTrustedBuildVerify is a host-owned test/runtime hook for managed
+	// build/test/lint verification. It receives a reviewed task name and an
+	// optional workspace subdirectory, never a command line.
+	semanticTrustedBuildVerify func(userID, task, target string) (string, error)
+
+	// surfaceSecurityConfig is a test/runtime seam for the policy-rejected
+	// surface filter. Nil means the app's effective Hub security config.
+	surfaceSecurityConfig func() corelib.AppConfig
+
+	// Security firewall (Phase 2 upgrade).
+	firewall *SecurityFirewall
+
+	// Dynamic tool generation and routing (lazily initialized via setters).
+	toolDefGen       *ToolDefinitionGenerator
+	toolRouter       *ToolRouter
+	usageTracker     *tool.UsageTracker
+	taskStore        *task.Store
+	goalStore        *goal.Store
+	cachedTools      []map[string]interface{}
+	cachedToolDefGen *ToolDefinitionGenerator
+	toolsCacheTime   time.Time
+	toolsMu          sync.RWMutex
+
+	// Capability gap detection (lazily initialized via setter).
+	capabilityGapDetector *CapabilityGapDetector
+
+	// Long-term memory store (lazily initialized via setter).
+	memoryStore *memory.Store
+
+	// Session-start memory extractor: extracts knowledge from the previous
+	// session's conversation history when a new session begins. Inspired by
+	// Codex CLI's memories/phase1.rs which processes old rollouts at startup.
+	sessionStartExtractor *memory.SessionStartExtractor
+
+	// Pending confirmation store for pre-execution confirmation gating.
+	confirmationStore *aiConfirmationStore
+
+	// Session template manager (lazily initialized via setter).
+	templateManager *remote.SessionTemplateManager
+
+	// Scheduled task manager (lazily initialized via setter).
+	scheduledTaskManagerMu sync.RWMutex
+	scheduledTaskManager   *scheduler.Manager
+	// semanticLastAdministeredTaskID is host-observed from a managed
+	// schedule.administer create/update in this process. Dispatch consumes it
+	// to bind a trusted destination; it is never a model argument.
+	semanticAdministeredTaskMu     sync.Mutex
+	semanticLastAdministeredTaskID string
+	scheduleDispatchBindings       *scheduleDispatchBindingStore
+
+	traceService *AITraceService
+
+	// Smart session startup components (lazily initialized via setters).
+	contextResolver *SessionContextResolver
+	sessionPrecheck *SessionPrecheck
+	startupFeedback *SessionStartupFeedback
+
+	// Configuration manager (lazily initialized via setter).
+	configManager *ConfigManager
+
+	// moaSessions arms one-shot multi-model council (/moa) per user.
+	moaSessions *moaSessionStore
+
+	// --- Per-session loop state ---
+	// Each userID (desktop-user, desktop-user:{path}, IM users) gets its own
+	// mutex and loop context. This allows project tabs to run agent loops
+	// concurrently with the local tab without data races.
+	sessionLoops sync.Map // map[string]*sessionLoopState
+
+	// horizonSessions is independent of sessionLoops. A LongHorizon supervisor
+	// must not look like an IM agent loop or follow-up text is serialized/interrupted.
+	horizonSessions        sync.Map // map[string]*horizonSession
+	horizonRunning         sync.Map // map[string]*horizonSession; supervisor goroutine still alive
+	horizonProjectPathFn   func(userID string) string
+	horizonStartSupervisor func(*horizonSession)
+
+	// loopMaxOverride is a legacy bridge — set by "set_max_iterations" tool.
+	// Kept for backward compat; new code should use LoopContext.MaxIterations.
+	loopMaxOverride int
+
+	// currentLoopCtx is DEPRECATED — kept only for code paths that don't have
+	// access to the userID (will be removed incrementally). When sessionLoops
+	// is used, this points to the LAST started loop (non-deterministic under
+	// concurrency). Prefer getSessionLoopCtx(userID) instead.
+	//
+	// Protected by globalLoopMu to prevent data races under concurrent loops.
+	globalLoopMu   sync.RWMutex
+	currentLoopCtx *LoopContext
+	lastUserText   string
+	lastUserID     string
+
+	// Background loop manager and session monitor (lazily initialized via setters).
+	bgManager      *BackgroundLoopManager
+	sessionMonitor *SessionMonitor
+
+	// SSH session manager (lazily initialized on first SSH tool call).
+	sshMgrOnce sync.Once
+	sshMgr     *remote.SSHSessionManager
+	bgTaskMgr  *remote.SSHBackgroundTaskManager
+
+	sshMirrorWatchMu sync.Mutex
+	sshMirrorWatch   map[string]struct{}
+
+	// Local background task manager for long-running local processes.
+	// Mirrors the SSH BackgroundTaskManager pattern: Submit/Check/Wait/Kill.
+	localBgTaskMgr *tool.LocalBackgroundTaskManager
+
+	// imFileSender is an optional callback that forwards a file to the user's
+	// IM channels (Feishu/WeChat/etc.) via the Hub WebSocket. Set by the
+	// desktop GUI after connecting to the Hub. When nil, IM forwarding is
+	// silently skipped.
+	imFileSender           func(b64Data, fileName, mimeType, message string) error
+	structuredIMFileSender func(agent.IMFileDeliveryRequest) error
+
+	// agentActivity is a process-local shared store that lets the GUI AI
+	// assistant and IM channels see each other's active tasks.
+	agentActivity *AgentActivityStore
+
+	// lastScreenshotAt records the time of the last successful screenshot
+	// to enforce a cooldown period and prevent accidental rapid-fire captures.
+	lastScreenshotAt time.Time
+	// screenshotCooldowns scopes screenshot cooldowns by runtime owner/request so
+	// desktop, IM, third-party, and ownerless isolated runtimes do not throttle
+	// each other.
+	screenshotCooldowns sync.Map // map[string]time.Time
+
+	// topicDetector automatically detects topic switches and clears stale
+	// conversation context so users don't need to manually /new.
+	topicDetector *topicSwitchDetector
+
+	// --- First-layer Harness modules (lazily initialized via setters) ---
+
+	// goalAnchor periodically re-injects the original user goal into the
+	// LLM context to prevent drift during long-running agent loops.
+	goalAnchor *GoalAnchor
+
+	// driftDetector analyzes recent tool_call sequences to detect loop
+	// patterns and trigger re-planning when the agent is stuck.
+	driftDetector *DriftDetector
+
+	// sessionDriftReplanCount tracks the cumulative drift replan count
+	// across agent loops for each user. When a loop exits due to drift
+	// (NeedHumanHelp), the replan count is saved here so the next loop
+	// inherits it 鈥?preventing the detector from re-walking the full
+	// "first drift 鈫?recover 鈫?second drift 鈫?human help" cycle.
+	// Keyed by userID, value is int.
+	sessionDriftReplanCount sync.Map
+
+	// sessionDriftTool tracks the tool name that caused the last drift
+	// exit for each user. Injected into the next loop's system prompt
+	// so the LLM knows not to repeat the same tool.
+	// Keyed by userID, value is string.
+	sessionDriftTool sync.Map
+
+	// harnessProgressTracker maintains a structured task checklist that is
+	// injected into the LLM context before each iteration.
+	harnessProgressTracker *HarnessProgressTracker
+
+	// adaptiveRetry classifies tool_call failures and decides retry
+	// strategy, supplementing the existing isRetryableLLMError logic.
+	adaptiveRetry *AdaptiveRetry
+
+	trajectoryRecorderFactory func() *TrajectoryRecorder
+
+	// stashedPhasePrompt holds the custom PhasePrompt from HandleInput
+	// (e.g. modify requests) so the system-prompt builder can use it
+	// instead of rebuilding a generic one. Keyed by userID.
+	stashedPhasePrompt sync.Map
+
+	// workflowOriginalRequest holds the user's original task request text
+	// when a workflow starts via multi-round IUM. The message that triggers
+	// StartWorkflow is the IUM completion message (e.g. "娌℃湁鍏跺畠淇℃伅浜?),
+	// not the original request (e.g. "鏍规嵁 readme.md 鍋?PPT"). Without
+	// this stash, the agent loop's userText would be the IUM completion
+	// message, which carries no task semantics and causes the LLM to drift.
+	// Consumed (LoadAndDelete) by runAgentLoop to replace msg.Text.
+	workflowOriginalRequest sync.Map
+
+	// workflowAgentLoopMarker is set by handleActiveWorkflow when the
+	// workflow engine returns RunAgentLoop=true. Consumed (LoadAndDelete)
+	// by handleIMMessageWithLoop to enable phase prompt injection and
+	// doc capture when the agent loop is running on behalf of the workflow.
+	//
+	// This marker is set for ALL RunAgentLoop=true responses, including
+	// DefaultInput=true (first phase execution). The phase prompt guides
+	// the LLM to produce the phase deliverable, and doc capture saves it
+	// so the workflow can advance via NeedsConfirm.
+	workflowAgentLoopMarker sync.Map
+
+	// pendingV2SubAgentExecution is set when the V2 workflow advances to an
+	// execution phase (implementation). It signals executePreparedIMEntry to
+	// run CodingSubAgent instead of the normal agent loop. Using a dedicated
+	// map avoids conflicts with stashedPhasePrompt (which gets consumed by
+	// the system prompt builder's LoadAndDelete).
+	pendingV2SubAgentExecution sync.Map
+
+	// pendingTemplateCodingProjectPath stores the project path after the
+	// pure coding (coding_dev) is armed; the next agent loop runs
+	// CodingSubAgent instead of the normal chat loop.
+	pendingTemplateCodingProjectPath sync.Map
+
+	// pendingTemplateRemoteCoding stores context after pure remote coding
+	// (remote_coding_dev) arms SSH; the next agent loop runs RemoteCodingSubAgent.
+	pendingTemplateRemoteCoding sync.Map
+
+	// codingWorkflowRemoteCreds holds session-only SSH secrets for coding
+	// workflow remote variant (password/key). Keyed by userID; never persisted.
+	// Non-secret host/user/port/workdir live in phase FormData + sticky memory.
+	codingWorkflowRemoteCreds sync.Map
+
+	// codingExecCheckpoint stores last coding implementation results so the user
+	// can 重试失败 / 继续执行 after cancel or partial failure. Keyed by userID.
+	codingExecCheckpoint sync.Map
+
+	// pendingCodingExecRetryAction is set when the user asks to retry failed or
+	// resume incomplete coding tasks. Values: "failed" | "resume". Keyed by userID.
+	pendingCodingExecRetryAction sync.Map
+
+	// stickyCodingWorkbenchMemory holds multi-turn plan/result context for pure
+	// coding environments (create-task local/remote) so follow-up messages share
+	// prior summaries and touched files.
+	stickyCodingWorkbenchMemory sync.Map
+
+	// pendingWorkflowChoice stores the original message and route result while
+	// waiting for the user to choose how to handle a detected workflow task
+	// (enter full workflow / skip to normal agent). Keyed by userID.
+	pendingWorkflowChoice sync.Map
+
+	// workflowReviewExperienceContext carries the trace/task context of the
+	// phase output currently awaiting review. Keyed by userID; consumed by
+	// review-intent events so user feedback can update the same injected
+	// experience candidates that shaped the phase output.
+	workflowReviewExperienceContext sync.Map
+
+	// workflowPendingConfirmOther is set by handlePendingConfirm when the
+	// LLM classifies the user's message as "other" (unrelated to the active
+	// workflow's pending confirmation). Consumed (LoadAndDelete) by the
+	// agent loop to skip the NeedsConfirm gate 鈥?otherwise the unrelated
+	// LLM output (e.g. weather query result) would be captured as a phase
+	// document and emitted to the doc preview panel.
+	workflowPendingConfirmOther sync.Map
+
+	// pendingCancelExecuteRequest stores the original task request when user
+	// cancels a workflow but wants direct execution (e.g. "取消，直接处理").
+	// Consumed (LoadAndDelete) by the agent loop to replace the cancel message
+	// with the original task text.
+	pendingCancelExecuteRequest sync.Map
+
+	// pendingCriticalConfirm stores response channels for critical-risk
+	// skill installation confirmations. Keyed by a unique confirmation ID
+	// (string), value is chan criticalRiskConfirmResponse. Cleaned up after
+	// use or timeout.
+	pendingCriticalConfirm sync.Map
+
+	// pendingCriticalConfirmIM maps "platform:userID" to the active
+	// critical-risk confirmation ID. When an IM user responds with
+	// "纭瀹夎" or "鎷掔粷瀹夎", handleIMMessageWithLoop checks this map
+	// to route the answer to ResolveCriticalConfirm.
+	pendingCriticalConfirmIM sync.Map
+
+	// pendingAskUser tracks ask_user questions that are waiting for user
+	// responses. When the agent loop returns early due to ask_user, the
+	// question is stored here so the next user message can be identified
+	// as a response (not a new request) and the context is preserved.
+	// Keyed by userID, value is *pendingAskUserState.
+	pendingAskUser sync.Map
+
+	// pendingRecordAudio tracks interactive record_audio sessions waiting for
+	// the user to stop recording. The next user message carries the saved path
+	// and duration summary and is treated as a continuation of the same task.
+	// Keyed by userID, value is *pendingRecordAudioState.
+	pendingRecordAudio sync.Map
+
+	// pendingPostRecording tracks a completed recording that is waiting for the
+	// user to pick a post-processing action via engine-injected GUI buttons
+	// (minutes / transcribe / keep_only). Keyed by userID, value is
+	// *pendingPostRecordingState.
+	pendingPostRecording sync.Map
+
+	// pendingSpeakerEstimates caches CAM++ speaker-count estimates for the open
+	// post-recording choice (userID -> int). Kept separate from
+	// pendingPostRecording so background pre-estimate never races with the
+	// step-2 confirm state machine via copy-on-write Store.
+	pendingSpeakerEstimates sync.Map
+
+	// pendingUserReply tracks plain-text assistant questions that expect the
+	// next user message to continue the same task. Keyed by userID, value is
+	// *pendingUserReplyState.
+	pendingUserReply sync.Map
+
+	// suppressPendingUserReplyUpdate preserves pendingUserReply for the current
+	// request when intent classification was inconclusive. Keyed by userID.
+	suppressPendingUserReplyUpdate sync.Map
+
+	// deferredSessionExtraction stores prepared messages for session-start
+	// extraction. Set during preflight, consumed after agent loop completes.
+	// This ensures the extraction LLM call never competes with the main
+	// agent loop for API bandwidth. Keyed by userID, value is
+	// []memory.ConversationMessage.
+	deferredSessionExtraction sync.Map
+
+	// backgroundLLMCancel is the legacy single-session fallback. New agent
+	// loops use backgroundLLMCancelByUser so one tab never cancels another tab's
+	// background extraction work.
+	backgroundLLMMu     sync.Mutex
+	backgroundLLMCancel context.CancelFunc
+	// Keyed by userID, value is context.CancelFunc for owner-scoped background
+	// LLM work (online extraction, session-start extraction, semantic dedup).
+	backgroundLLMCancelByUser sync.Map
+
+	// postConversationScheduler runs non-visible post-loop work outside the
+	// foreground response path. It is owner-scoped: same owner serializes and can
+	// be canceled/replaced, different owners run independently.
+	postConversationSchedulerMu sync.Mutex
+	postConversationScheduler   *postConversationScheduler
+
+	// Optional test hooks for pending-reply intent classification. Production
+	// uses LLMClassify; tests inject deterministic classifiers without keyword
+	// matching hidden in the implementation.
+	pendingReplyPromptClassifier func(assistantText string) (bool, error)
+	pendingReplyAnswerClassifier func(question, answer string) (bool, error)
+	noToolReplyClassifier        func(text string) (agentNoToolReplyIntent, error)
+
+	// pendingCapabilityGap stores the result of an async capability gap
+	// resolution (skill search + install) that completed after the response
+	// was already returned to the user. The result is injected into the
+	// system prompt of the next conversation turn.
+	// Keyed by userID, value is *pendingCapabilityGapResult.
+	pendingCapabilityGap sync.Map
+
+	// stickyAgentGuidedSkill is the last agent-guided workflow this owner
+	// named. Follow-up turns ("保存大纲", "继续") do not repeat the skill
+	// name; without this they fall through to remote skill search.
+	// Keyed by userID, value is the skill name string.
+	stickyAgentGuidedSkill sync.Map
+
+	// pendingSlotUserText stores the user's original task text when it was
+	// intercepted by the unfinished-slot hint. When the user clicks a slot
+	// action button (dismiss / start-new), the saved text replaces the
+	// synthetic placeholder so the original task is executed after the
+	// state change, instead of being silently dropped.
+	// Keyed by userID, value is *pendingSlotText.
+	pendingSlotUserText sync.Map
+
+	// pendingContextCompression stores a compression request from the
+	// compress_context tool. Applied by the agent loop after the tool
+	// result is appended to conversation.
+	// Keyed by userID, value is *contextCompressionRequest.
+	pendingContextCompression sync.Map
+
+	// compactionCount tracks how many times conversation compaction has
+	// occurred for each user in the current session. Used to warn users
+	// when quality may degrade due to repeated compaction (Codex CLI
+	// pattern: "Long threads and multiple compactions can cause the model
+	// to be less accurate").
+	// Keyed by userID, value is int.
+	compactionCount sync.Map
+
+	// frozenMemorySnapshots caches the memory section of the system prompt
+	// per user. On the first message of a session, the memory section is
+	// generated via appendMemorySection and cached. Subsequent system prompt
+	// constructions reuse the cached snapshot instead of regenerating,
+	// keeping the LLM's KV cache prefix stable.
+	// Keyed by userID, value is string (the cached memory section text).
+	frozenMemorySnapshots sync.Map
+
+	// snapshotInitialized tracks whether a frozen memory snapshot has been
+	// generated for a given user in the current session.
+	// Keyed by userID, value is bool.
+	snapshotInitialized sync.Map
+
+	// snapshotWarmInflight singleflights static snapshot builds per userID.
+	// Keyed by userID, value is chan struct{} (closed when the builder finishes).
+	snapshotWarmInflight sync.Map
+
+	// snapshotEpoch invalidates in-flight builds after RefreshMemorySnapshot:
+	// a builder that started under gen N discards its result if gen advanced.
+	// Keyed by userID, value is *atomic.Uint64.
+	snapshotEpoch sync.Map
+
+	// taskOrchestrator manages per-task execution during the coding
+	// workflow's Execution Phase. When active, it injects per-task system
+	// messages and constructs focused prompts for the internal CodingSubAgent
+	// instead of letting the LLM dump the entire project description at once.
+	// Uses a per-user registry to isolate concurrent workflows in maclawsrv.
+	taskOrchestratorRegistry *TaskOrchestratorRegistry
+
+	// nudgeTracker manages the post-use skill nudge system per session.
+	// It tracks cooldown timing, deduplication, and iteration thresholds
+	// to inject low-priority system messages encouraging skill creation
+	// or improvement after complex tasks, skill failures, or user corrections.
+	// Lazily initialized on first use via ensureNudgeTracker().
+	nudgeTracker *nudge.NudgeTracker
+
+	// taskContextManager is the unified decision point for task switching.
+	// It determines whether a new message continues the current task,
+	// starts a new task, or recalls a past task 鈥?replacing the scattered
+	// logic across looksLikeFreshTaskRequest, TopicSwitchDetector, and
+	// shouldAutoClearIncompleteTaskContext.
+	taskContextManager *agent.TaskContextManager
+
+	// taskArchive stores completed/abandoned tasks for potential recall.
+	taskArchive *agent.TaskArchive
+
+	// steeringContextFiles accumulates file paths from tool calls
+	// (read_file, write_file, edit_file, etc.) during the current
+	// conversation. Used by fileMatch steering resolution.
+	// Keyed by "userID\x00filePath" (string), value is bool.
+	steeringContextFiles sync.Map
+
+	// pendingInjection stores supplementary messages to inject into the
+	// running agent loop. Set by the interrupt handler when a Merge decision
+	// is made, consumed by the agent loop at the start of each iteration.
+	// Keyed by userID, value is string.
+	pendingInjection sync.Map
+
+	// pendingPreLoopGuide stores guide-launch text that arrived before the
+	// agent loop started (during preflight/intent-classification). Unlike
+	// pendingInjection (consumed as system role with replan instruction),
+	// this is consumed at iteration 0 as a user-role supplement — because
+	// there is no "current plan" to re-evaluate yet.
+	// Keyed by userID, value is *preLoopGuideEntry.
+	pendingPreLoopGuide sync.Map
+
+	// acceptedGuideLaunchIDs makes GUI guide-launch RPC retries idempotent. A
+	// call can be accepted by the loop even if its response is lost; retrying
+	// the durable queue entry must not inject the interjection twice. Keyed by
+	// "userID\x00launchID", value is *guideLaunchAcceptance.
+	acceptedGuideLaunchIDs sync.Map
+
+	// cancelledTaskBoundary records that a user explicitly cancelled the
+	// current task. The next normal user message must start a new task instead
+	// of being merged into or classified as a continuation of the cancelled
+	// task's history.
+	// Keyed by userID, value is time.Time.
+	cancelledTaskBoundary sync.Map
+
+	// inFlightTurns tracks a request that has prepared a LoopContext but has
+	// not yet published it via beginAgentLoopRuntime (the UIC / pre-loop
+	// window). Cancel must find this context; otherwise the GUI stop button is
+	// a no-op and the next user message is merged into the still-running turn.
+	// Keyed by userID, value is *inFlightTurn.
+	inFlightTurns sync.Map
+
+	// interruptHandler bridges IM gateways to the running agent loop's
+	// cancel/merge/status mechanisms. Set during construction.
+	interruptHandler *imInterruptHandler
+
+	// activeBtwSubAgents tracks running /btw SubAgents by owner. This is the
+	// primary cancellation registry for concurrent channels.
+	// Keyed by userID, value is *BtwSubAgent.
+	activeBtwSubAgents sync.Map
+
+	// activeBtwSubAgent holds the most recent /btw SubAgent for legacy callers.
+	// New cancellation paths must use activeBtwSubAgents.
+	activeBtwSubAgent atomic.Pointer[BtwSubAgent]
+
+	// activeLoopCallbacksByOwner tracks running /loop callbacks by owner.
+	// Keyed by userID, value is *guiLoopCommandCallbacks.
+	activeLoopCallbacksByOwner sync.Map
+
+	// activeLoopCallbacks holds the most recent /loop callbacks for legacy callers.
+	// New cancellation paths must use activeLoopCallbacksByOwner.
+	activeLoopCallbacks atomic.Pointer[guiLoopCommandCallbacks]
+
+	// activeExperimentOrchestrator holds a running RemoteExperimentOrchestrator
+	// for the paper_reproduction workflow's iterative_improvement phase.
+	// Keyed by userID, value is *RemoteExperimentOrchestrator.
+	activeExperimentOrchestrator sync.Map
+
+	// pendingExperimentNotification stores notifications from a background
+	// experiment orchestrator that should be delivered to the user on their
+	// next interaction.
+	// Keyed by userID, value is string.
+	pendingExperimentNotification sync.Map
+
+	// sessionGovernedTasks stores the last granted semantic needs for a
+	// channel-scoped user session. Continuation replay reads this map; /new
+	// and other session resets must clear it. Keyed by
+	// sessionGovernedTaskKey(userID, channel, destination).
+	sessionGovernedTasks sync.Map
+
+	// activeLocalDocuments is a host-owned, owner/channel scoped reference to
+	// the current desktop-picker document. It is a resource context, not a
+	// sticky tool grant, and is revalidated before every semantic read.
+	activeLocalDocuments sync.Map // map[string][]activeLocalDocumentContext
+
+	// taskAnchors is the host-owned charter for the current tab/session
+	// (original request, person/source, work kind, primary files). It is
+	// derived from the user's message, not model memory, so "继续改进 ppt"
+	// cannot silently switch to another topic sharing the workspace.
+	taskAnchors sync.Map // map[string]taskIdentityAnchor
+}
+
+// NewIMMessageHandler creates a new handler.
+func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHandler {
+	return NewIMMessageHandlerWithRuntime(app, manager, nil)
+}
+
+// NewIMMessageHandlerWithRuntime is the composition-root constructor for
+// hosts that provide a concrete transport-neutral Runtime. Keeping runtime
+// injection at construction time prevents transports from depending on the
+// handler's migration seam; nil retains the lazy compatibility adapter.
+func NewIMMessageHandlerWithRuntime(app *App, manager *RemoteSessionManager, runtime agentruntime.Runtime) *IMMessageHandler {
+	var conversationMemory *agent.ConversationMemory
+	var confirmationStore *aiConfirmationStore
+	if app != nil {
+		conversationMemory = app.ensureConversationMemory()
+		confirmationStore = app.ensureAIConfirmationStore()
+	}
+	h := newIMMessageHandler(app, manager, conversationMemory, confirmationStore)
+	h.SetSharedAgentRuntime(runtime)
+	return h
+}
+
+// newIMMessageHandler builds an IM handler with caller-owned state stores.
+// The public constructor supplies the App-wide stores. Hardware runtimes pass
+// their private stores instead, so construction never briefly attaches a
+// device runtime to desktop conversation or confirmation state.
+func newIMMessageHandler(app *App, manager *RemoteSessionManager, conversationMemory *agent.ConversationMemory, confirmationStore *aiConfirmationStore) *IMMessageHandler {
+	handlerStart := time.Now()
+	// Response-header timeout: how long to wait for the FIRST byte from the
+	// LLM API after sending the request. This is NOT the total streaming
+	// duration 鈥?once headers arrive, SSE streaming continues without this
+	// limit. The value follows the configured LLM timeout (default 600s,
+	// clamped to 240-600s).
+	//
+	// This is a fixed value rather than reading from LLM config because the
+	// transport outlives any single LLM provider configuration. The user may
+	// switch providers mid-session; the transport should not carry a stale
+	// timeout from the previous provider.
+	responseHeaderTimeout := imResponseHeaderTimeout(app)
+	// Optimised transport for interactive chat 鈥?larger connection pool
+	// so concurrent requests don't queue behind each other.
+	chatTransport := &http.Transport{
+		Proxy: llmOrEnvProxy,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout:   15 * time.Second,
+		ResponseHeaderTimeout: responseHeaderTimeout,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   20,
+		MaxConnsPerHost:       20,
+		IdleConnTimeout:       90 * time.Second,
+		DisableCompression:    true, // Disable automatic gzip for streaming responses.
+	}
+	// Separate transport for background tasks (scheduled tasks, auto-picked
+	// tasks) so they never starve the chat connection pool.
+	taskTransport := &http.Transport{
+		Proxy: llmOrEnvProxy,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout:   15 * time.Second,
+		ResponseHeaderTimeout: responseHeaderTimeout,
+		MaxIdleConns:          50,
+		MaxIdleConnsPerHost:   10,
+		MaxConnsPerHost:       10,
+		IdleConnTimeout:       90 * time.Second,
+		DisableCompression:    true,
+	}
+
+	chatClient := &http.Client{Transport: chatTransport}
+	taskClient := &http.Client{Transport: taskTransport}
+
+	if conversationMemory == nil {
+		conversationMemory = agent.NewConversationMemory()
+	}
+	databaseManager := database.NewManager(appConfigDatabaseProfiles(app), databaseKeyringSecret)
+	if app != nil {
+		databaseManager.SetWorkspaceRoot(app.GetCurrentProjectPath())
+	}
+	// Persist metadata-only audit events (and mutation receipts) so the audit
+	// trail survives the process; failures must never block startup.
+	auditPath := filepath.Join(app.getMaclawBaseDir(), "database_audit.jsonl")
+	if auditSink, err := database.NewFileAuditSink(auditPath); err == nil {
+		databaseManager.SetAuditSink(auditSink)
+	} else {
+		log.Printf("[newIMMessageHandler] WARNING: database audit sink init failed path=%s: %v", auditPath, err)
+	}
+	// Record the shared tool contract hash so cross-host schema drift is
+	// visible in startup diagnostics (doctor reports the same value).
+	log.Printf("[newIMMessageHandler] database tool schema %s", database.ToolSchemaHash())
+	// Strict, persistent one-time approvals: the task panel mints tokens via
+	// Manager.IssueApproval and commits consume them exactly once, even across
+	// restarts. Failure falls back to the legacy in-memory token flow.
+	pendingPath := filepath.Join(app.getMaclawBaseDir(), "database_pending.json")
+	if pendingStore, err := database.NewPendingStore(pendingPath); err == nil {
+		databaseManager.SetPendingStore(pendingStore)
+	} else {
+		log.Printf("[newIMMessageHandler] WARNING: database pending store init failed path=%s: %v", pendingPath, err)
+	}
+	databaseManager.SetResultStoreDir(filepath.Join(app.getMaclawBaseDir(), "database_results"))
+	if favStore, err := database.NewFavoriteStore(filepath.Join(app.getMaclawBaseDir(), "database_favorites.json")); err == nil {
+		databaseManager.SetFavoriteStore(favStore)
+	} else {
+		log.Printf("[newIMMessageHandler] WARNING: database favorites store init failed: %v", err)
+	}
+	databaseManager.SetCatalogNamePath(filepath.Join(app.getMaclawBaseDir(), "database_catalog_names.json"))
+	databaseManager.SetIssueGate(func(req database.ApprovalRequest) error {
+		engine := security.NewPolicyEngine()
+		if engine.Evaluate("database", map[string]interface{}{"action": "execute", "profile_id": req.ProfileID}, security.RiskHigh) == security.PolicyDeny {
+			return fmt.Errorf("permission: denied by policy engine")
+		}
+		return nil
+	})
+	if cfg, err := app.LoadConfig(); err == nil {
+		databaseManager.SetEnabled(cfg.DatabaseToolIsEnabled())
+	}
+	h := &IMMessageHandler{
+		app:               app,
+		manager:           manager,
+		memory:            conversationMemory,
+		confirmationStore: confirmationStore,
+		client:            chatClient,
+		taskClient:        taskClient,
+		databaseManager:   databaseManager,
+		agentActivity:     NewAgentActivityStore(),
+		unifiedClassifier: app.unifiedClassifier,
+		steeringStore:     app.steeringStore,
+	}
+	databaseManager.SetTunnelDialer(remote.SSHTunnelDialer(func() *remote.SSHSessionManager {
+		return h.ensureSSHManager()
+	}))
+	// Construction is intentionally side-effect free with respect to
+	// app.imHandler. Several paths create short-lived handlers (for example a
+	// manual browser-tool invocation or a local gateway); publishing each one
+	// here could replace the handler that owns an active task and disconnect its
+	// interrupt tracker. The long-lived Hub lifecycle publishes its handler
+	// explicitly after creation.
+	h.interruptHandler = newIMInterruptHandler(h)
+	// A handler can be created after the embedding model was activated (for
+	// example after a Hub reconnect). Inherit the already-loaded shared runtime
+	// immediately instead of waiting for a future activation event that may never
+	// occur during this process lifetime.
+	if emb := app.activeInterruptEmbedder(); emb != nil {
+		h.interruptHandler.SetEmbedder(emb)
+	}
+	// Initialize ToolRegistry and register builtin tools.
+	h.registry = NewToolRegistry()
+	registerBuiltinTools(h.registry, h)
+	// Register non-code tools (Git, file search, health check).
+	registerNonCodeTools(h.registry, app)
+	// Register browser automation tools (CDP-based).
+	registerBrowserTools(h.registry, app)
+	// Register the native OCR recognition tool.
+	registerOCRTools(h.registry, app)
+	// Register current-Hub MaClaw group discussion tools.
+	registerGroupDiscussionTools(h.registry, app, h)
+	// Knowledge retrieval is part of the baseline IM capability set. Local
+	// gateways (including Lansenger group chat) create their own handlers and
+	// may receive a message before the later desktop/Hub registration pass.
+	// Register it here so the group permission policy can expose the explicitly
+	// authorised knowledge_search tool instead of finding no registered tool.
+	registerKnowledgeTools(h.registry, app)
+	h.toolBuilder = NewDynamicToolBuilder(h.registry)
+	// Handlers may be recreated after full embedding activation (for example a
+	// Hub reconnect). In that case the activation callback will not run again,
+	// so restore tool routing here as well. Intent-only embedding deliberately
+	// does not enable tool vector search.
+	if app != nil && app.embeddingActivated.Load() {
+		if emb := app.activeInterruptEmbedder(); emb != nil {
+			h.toolBuilder.SetEmbedder(emb)
+		}
+	}
+
+	// Initialize automatic topic switch detector.
+	h.topicDetector = newTopicSwitchDetector(func() (*http.Client, corelib.MaclawLLMConfig) {
+		return h.client, h.getMaclawLLMConfig()
+	})
+
+	// Initialize task execution orchestrator for per-task coding workflow.
+	h.taskOrchestratorRegistry = NewTaskOrchestratorRegistry()
+	if h.sessionPrecheck != nil {
+		h.taskOrchestratorRegistry.SetExternalChecker(&sessionPrecheckAdapter{precheck: h.sessionPrecheck})
+	}
+
+	// Initialize the nudge tracker for post-use skill nudge system.
+	h.nudgeTracker = nudge.NewNudgeTracker()
+
+	log.Printf("[NewIMMessageHandler] constructed in %v", time.Since(handlerStart))
+	return h
+}
+
+func imResponseHeaderTimeout(app *App) time.Duration {
+	if app == nil {
+		return time.Duration(corelib.DefaultLLMTimeoutSec) * time.Second
+	}
+	return time.Duration(app.GetMaclawLLMConfig().EffectiveTimeoutSec()) * time.Second
+}
+
+// SetToolRegistry replaces the tool registry (for testing or late reconfiguration).
+func (h *IMMessageHandler) SetToolRegistry(r *ToolRegistry) {
+	h.toolsMu.Lock()
+	defer h.toolsMu.Unlock()
+	h.registry = r
+	h.toolBuilder = NewDynamicToolBuilder(r)
+	h.cachedTools = nil
+	h.cachedToolDefGen = nil
+	h.toolsCacheTime = time.Time{}
+}
+
+// SetSecurityFirewall configures the security firewall for tool execution checks.
+func (h *IMMessageHandler) SetSecurityFirewall(fw *SecurityFirewall) {
+	h.firewall = fw
+}
+
+// SetSkillSearchInstallHandler replaces the SkillMarket search/install executor.
+// Passing nil restores the production SkillMarket-backed implementation.
+func (h *IMMessageHandler) SetSkillSearchInstallHandler(fn func(map[string]interface{}, tool.ProgressCallback) searchAndInstallSkillResult) {
+	h.skillSearchInstallHandler = fn
+}
+
+// SetToolDefGenerator configures the dynamic tool definition generator.
+// When set, it replaces the hardcoded buildToolDefinitions() output.
+func (h *IMMessageHandler) SetToolDefGenerator(gen *ToolDefinitionGenerator) {
+	h.toolsMu.Lock()
+	defer h.toolsMu.Unlock()
+	h.toolDefGen = gen
+	// Invalidate cache so next call regenerates.
+	h.cachedTools = nil
+	h.cachedToolDefGen = nil
+	h.toolsCacheTime = time.Time{}
+}
+
+// SetCapabilityGapDetector configures the capability gap detector and wires
+// the confirmCallback so that CapabilityGapDetector.Resolve uses the shared
+// confirmCriticalRiskSkill mechanism for critical-risk user confirmation.
+func (h *IMMessageHandler) SetCapabilityGapDetector(detector *CapabilityGapDetector) {
+	h.capabilityGapDetector = detector
+	if detector != nil {
+		detector.SetConfirmCallbackWithContext(func(ctx context.Context, skillName, riskDetails string) bool {
+			platform, userID := capabilityGapRuntimeFromContext(ctx)
+			// Extract factors from riskDetails for the shared confirmation function.
+			// The riskDetails string is pre-formatted by the detector; pass it as a
+			// single-element factors slice so buildCriticalRiskPrompt includes it.
+			factors := []string{riskDetails}
+			return h.confirmRiskSkillInstall(
+				context.Background(), skillName, "capability_gap_auto", security.RiskHigh, factors, platform, userID,
+			)
+		})
+	}
+}
+
+// SetToolRouter configures the tool router for context-aware tool filtering.
+func (h *IMMessageHandler) SetToolRouter(router *ToolRouter) {
+	h.toolsMu.Lock()
+	defer h.toolsMu.Unlock()
+	h.toolRouter = router
+	// Wire the registry into the router so it can dynamically resolve
+	// builtin tool names and use tags for TF-IDF scoring.
+	if router != nil && h.registry != nil {
+		router.SetRegistry(h.registry)
+	}
+	if router != nil {
+		if uic := h.getUnifiedClassifier(); uic != nil {
+			router.SetUnifiedClassifier(uic)
+		}
+		h.publishDatabaseSearchText()
+	}
+}
+
+// SetContextResolver configures the session context resolver for auto-detecting
+// project paths and recommending tools.
+func (h *IMMessageHandler) SetContextResolver(resolver *SessionContextResolver) {
+	h.contextResolver = resolver
+}
+
+// SetUsageTracker configures the tool usage tracker for outcome recording.
+func (h *IMMessageHandler) SetUsageTracker(tracker *tool.UsageTracker) {
+	h.usageTracker = tracker
+}
+
+// SetSessionPrecheck configures the session precheck for environment validation.
+func (h *IMMessageHandler) SetSessionPrecheck(precheck *SessionPrecheck) {
+	h.sessionPrecheck = precheck
+	// Keep orchestrator's external tool checker in sync.
+	if h.taskOrchestratorRegistry != nil && precheck != nil {
+		h.taskOrchestratorRegistry.SetExternalChecker(&sessionPrecheckAdapter{precheck: precheck})
+	}
+}
+
+// SetStartupFeedback configures the startup feedback monitor.
+func (h *IMMessageHandler) SetStartupFeedback(feedback *SessionStartupFeedback) {
+	h.startupFeedback = feedback
+}
+
+// SetConfigManager configures the configuration manager for config tools.
+func (h *IMMessageHandler) SetConfigManager(cm *ConfigManager) {
+	h.configManager = cm
+}
+
+// SetMemoryStore configures the long-term memory store.
+func (h *IMMessageHandler) SetMemoryStore(ms *memory.Store) {
+	h.memoryStore = ms
+	if h.adaptiveRetry != nil {
+		h.adaptiveRetry.SetMemoryStore(ms)
+	}
+
+	// Initialize session-start memory extractor (Codex-inspired improvement #5).
+	// Uses the same LLM adapter pattern as ConversationArchiver.
+	if ms != nil && h.app != nil {
+		llmAdapter := &sessionStartLLMCaller{app: h.app}
+		h.sessionStartExtractor = memory.NewSessionStartExtractor(ms, llmAdapter)
+	}
+}
+
+// SetConfirmationStore configures the pending confirmation store.
+func (h *IMMessageHandler) SetConfirmationStore(store *aiConfirmationStore) {
+	h.confirmationStore = store
+}
+
+func (h *IMMessageHandler) SetTraceService(trace *AITraceService) {
+	h.traceService = trace
+}
+
+func (h *IMMessageHandler) traceContextResolver() *SessionContextResolver {
+	if h.contextResolver != nil {
+		return h.contextResolver
+	}
+	if h.app != nil {
+		_ = h.getContextResolver() // ensure
+		return h.getContextResolver()
+	}
+	return nil
+}
+
+// SetTemplateManager configures the session template manager.
+func (h *IMMessageHandler) SetTemplateManager(tm *remote.SessionTemplateManager) {
+	h.templateManager = tm
+}
+
+// SetScheduledTaskManager configures the scheduled task manager.
+func (h *IMMessageHandler) SetScheduledTaskManager(stm *scheduler.Manager) {
+	if h == nil {
+		return
+	}
+	h.scheduledTaskManagerMu.Lock()
+	defer h.scheduledTaskManagerMu.Unlock()
+	h.scheduledTaskManager = stm
+}
+
+// SetBackgroundLoopManager configures the background loop manager.
+func (h *IMMessageHandler) SetBackgroundLoopManager(blm *BackgroundLoopManager) {
+	h.bgManager = blm
+}
+
+// SetSessionMonitor configures the session monitor.
+func (h *IMMessageHandler) SetSessionMonitor(sm *SessionMonitor) {
+	h.sessionMonitor = sm
+}
+
+// SetIMFileSender configures the callback used to forward files to the user's
+// IM channels (Feishu/WeChat/etc.) when the agent is running on the desktop.
+func (h *IMMessageHandler) SetIMFileSender(fn func(b64Data, fileName, mimeType, message string) error) {
+	h.imFileSender = fn
+}
+
+// SetStructuredIMFileSender configures exact-target-aware IM file delivery.
+// SetIMFileSender remains as a source-compatible adapter for legacy hosts/tests.
+func (h *IMMessageHandler) SetStructuredIMFileSender(fn func(agent.IMFileDeliveryRequest) error) {
+	h.structuredIMFileSender = fn
+}
+
+// SetGoalAnchor configures the goal anchoring module for the agent loop.
+func (h *IMMessageHandler) SetGoalAnchor(ga *GoalAnchor) {
+	h.goalAnchor = ga
+}
+
+// SetDriftDetector configures the drift detection module for the agent loop.
+func (h *IMMessageHandler) SetDriftDetector(dd *DriftDetector) {
+	h.driftDetector = dd
+}
+
+// SetHarnessProgressTracker configures the progress tracking module for the agent loop.
+func (h *IMMessageHandler) SetHarnessProgressTracker(pt *HarnessProgressTracker) {
+	h.harnessProgressTracker = pt
+}
+
+// SetAdaptiveRetry configures the adaptive retry module for the agent loop.
+func (h *IMMessageHandler) SetAdaptiveRetry(ar *AdaptiveRetry) {
+	h.adaptiveRetry = ar
+	if h.adaptiveRetry != nil {
+		h.adaptiveRetry.SetMemoryStore(h.memoryStore)
+	}
+}
+
+func (h *IMMessageHandler) SetTrajectoryRecorderFactory(factory func() *TrajectoryRecorder) {
+	h.trajectoryRecorderFactory = factory
+}
+
+// getTools returns a request-local snapshot of the current tool definitions.
+// The five-second cache is an inventory cache only: its JSON-shaped definition
+// trees must never be handed to routing/rendering callers by reference. Those
+// callers annotate, filter and serialize definitions on a request path, and a
+// shared map would let one request mutate a later request's authority before
+// RunLoop can freeze and receipt it.
+func (h *IMMessageHandler) getTools() []map[string]interface{} {
+	var tools []map[string]interface{}
+
+	// --- Phase 1 upgrade: prefer DynamicToolBuilder from ToolRegistry ---
+	// Note: We use BuildAll() here intentionally 鈥?context-aware filtering
+	// is handled downstream by routeTools() / ToolRouter which uses TF-IDF.
+	// DynamicToolBuilder.Build(msg) is an alternative path for simpler setups
+	// without ToolRouter.
+	if h.toolBuilder != nil && h.registry != nil {
+		h.toolsMu.RLock()
+		cached := h.cachedTools
+		cachedGen := h.cachedToolDefGen
+		cacheTime := h.toolsCacheTime
+		h.toolsMu.RUnlock()
+
+		if cached != nil && cachedGen == nil && time.Since(cacheTime) < toolsCacheTTL {
+			tools = cached
+		} else {
+			// Sync dynamic tools (SkillHub) only on cache rebuild, not every call.
+			h.syncSkillHubTools()
+
+			tools = h.toolBuilder.BuildAll()
+			tools = h.filterInactiveDeferredTools(tools)
+
+			h.toolsMu.Lock()
+			h.cachedTools = tools
+			h.cachedToolDefGen = nil
+			h.toolsCacheTime = time.Now()
+			h.toolsMu.Unlock()
+		}
+	} else {
+		// --- Legacy path: ToolDefinitionGenerator or hardcoded ---
+		h.toolsMu.RLock()
+		gen := h.toolDefGen
+		cached := h.cachedTools
+		cachedGen := h.cachedToolDefGen
+		cacheTime := h.toolsCacheTime
+		h.toolsMu.RUnlock()
+
+		// Fallback: no generator configured 鈥?use hardcoded definitions.
+		if gen == nil {
+			tools = h.buildToolDefinitions()
+		} else if cached != nil && cachedGen == gen && time.Since(cacheTime) < toolsCacheTTL {
+			// Return cached tools if still fresh (within 5 seconds).
+			tools = cached
+		} else {
+			// Regenerate from the generator.
+			tools = gen.Generate()
+
+			h.toolsMu.Lock()
+			h.cachedTools = tools
+			h.cachedToolDefGen = gen
+			h.toolsCacheTime = time.Now()
+			h.toolsMu.Unlock()
+		}
+	}
+
+	// Agent coding now runs through the internal CodingSubAgent. External
+	// coding-session tools stay out of the agent tool list in every UI mode.
+	tools = filterCodingTools(tools)
+	tools = filterDisabledExternalCodingSessionToolDefs(tools)
+
+	return cloneToolDefinitionMaps(tools)
+}
+
+func (h *IMMessageHandler) filterInactiveDeferredTools(tools []map[string]interface{}) []map[string]interface{} {
+	if len(tools) == 0 || h == nil || h.toolDefGen == nil {
+		return tools
+	}
+	deferred := make(map[string]bool, len(DeferredToolNames))
+	for _, name := range DeferredToolNames {
+		deferred[name] = true
+	}
+	filtered := make([]map[string]interface{}, 0, len(tools))
+	for _, item := range tools {
+		name := extractToolName(item)
+		if deferred[name] && !h.toolDefGen.IsDeferredToolActivated(name) {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	return filtered
+}
+
+// routeTools applies the ToolRouter to filter tools based on user message.
+// It is retained for compatibility callers; interactive Agent turns should
+// use routeToolsForUser with their owner ID so routing remains local-only.
+// If no router is configured, conditional tools fail closed so high-cost or
+// sensitive tools such as ssh and browser automation are not exposed by a
+// missing router setup.
+func (h *IMMessageHandler) routeTools(userMessage string, allTools []map[string]interface{}) []map[string]interface{} {
+	return h.routeToolsForUser("", userMessage, allTools, true)
+}
+
+func (h *IMMessageHandler) routeToolsForUser(userID, userMessage string, allTools []map[string]interface{}, skipHeavySemantic bool) []map[string]interface{} {
+	_ = skipHeavySemantic
+	return h.routeSessionTools(userID, userMessage, allTools, false, nil)
+}
+
+func (h *IMMessageHandler) routeSessionTools(userID, userMessage string, allTools []map[string]interface{}, skipUnifiedClassifier bool, preResolved *intent.ClassificationResult) []map[string]interface{} {
+	routed, _ := h.routeSessionToolsWithRanking(userID, userMessage, allTools, skipUnifiedClassifier, preResolved, nil)
+	return routed
+}
+
+// routeSessionToolsWithRanking additionally returns the router's raw ranked
+// selection names (before the IM-management/ambient merges). The closed
+// legacy replacement uses them to grade routing evidence: only the router's
+// own tail is prunable under the plan count guard, while pipeline-mandated
+// additions (channel delivery, ambient retrieval, result reader) are never
+// silently removed.
+func (h *IMMessageHandler) routeSessionToolsWithRanking(userID, userMessage string, allTools []map[string]interface{}, skipUnifiedClassifier bool, preResolved *intent.ClassificationResult, ctx *LoopContext) ([]map[string]interface{}, []string) {
+	// A semantic-managed turn already owns a closed, grant-bound surface. Keep
+	// this boundary here as well as in prepareAgentLoopTools so future callers
+	// cannot accidentally re-enter the legacy name router and union tools onto
+	// that surface.
+	if loopContextBlocksLegacyToolRouter(ctx) || loopContextHasClassifierTimeoutLookup(ctx) {
+		// Timeout turns have a deterministic read-only lookup scope; never
+		// re-enter the broad legacy name/BM25 router while the tree verdict waits.
+		return nil, nil
+	}
+	h.toolsMu.RLock()
+	router := h.toolRouter
+	h.toolsMu.RUnlock()
+
+	if router == nil {
+		filtered := make([]map[string]interface{}, 0, len(allTools))
+		for _, item := range allTools {
+			name := extractToolName(item)
+			if name == "set_nickname" {
+				if isExplicitNicknameRequest(userMessage) {
+					filtered = append(filtered, item)
+				}
+				continue
+			}
+			if tool.IsConditionalTool(name) {
+				continue
+			}
+			filtered = append(filtered, item)
+		}
+		// The router can be unavailable briefly during startup. Explicit IM task
+		// management must still work in that window; otherwise conditional tools
+		// such as manage_schedule and im_message are silently hidden. The fallback
+		// catalog order doubles as the deterministic pruning order for the closed
+		// replacement's count guard; the mandatory merges below stay unranked.
+		rankedNames := agentLoopToolNamesForLog(filtered)
+		if isIMManagementRequest(userMessage) {
+			filtered = ensureIMManagementToolsRouted(filtered, allTools, userMessage)
+		}
+		return mergeAmbientRetrievalTools(filtered, allTools), rankedNames
+	}
+	// IM task and message management are safe, shared-state tools. Keep them
+	// available for the current request when its intent is explicit, so every
+	// local IM gateway (蓝信、微信、Telegram、QQ、第三方) can use them. Do not
+	// pin them on ToolRouter: App shares that router across IM handlers, and a
+	// pin from one conversation must never leak into another conversation.
+	if uic := h.getUnifiedClassifier(); uic != nil {
+		router.SetUnifiedClassifier(uic)
+	}
+	// Tool selection is an affordance, not an authority. Never issue a second
+	// LLM request just to rewrite a message before the main Agent can respond.
+	// BM25 plus optional local embedding provides enough pruning; uncertain
+	// conditional tools stay hidden and can be discovered explicitly later.
+	routeOpts := tool.RouteOptions{
+		SkipUnifiedClassifier: skipUnifiedClassifier,
+		PreferEmbeddingOnly:   true,
+		PreResolved:           preResolved,
+		CacheMessage:          classificationCacheMessageForTurn(ctx, userID, userMessage, loopHistory(ctx)),
+		HostKeepTools:         h.hostKeepToolsForMessage(userMessage),
+	}
+	routed := router.RouteForSession(userID, userMessage, allTools, routeOpts)
+	// Capture the router's raw ranked selection before the mandatory merges
+	// below; it is the closed replacement's pruning order, not an authority.
+	rankedNames := agentLoopToolNamesForLog(routed)
+	if isIMManagementRequest(userMessage) {
+		routed = ensureIMManagementToolsRouted(routed, allTools, userMessage)
+	}
+	// An explicit knowledge-write turn narrows writers and suppresses memory
+	// inside the router so the model cannot save to the wrong store. The
+	// ambient merge must not silently re-add it.
+	knowledgeWriteTurn := preResolved != nil && !preResolved.Degraded &&
+		preResolved.Primary == intent.LabelKnowledgeWrite && preResolved.Confidence >= 0.50
+	if isExplicitNicknameRequest(userMessage) {
+		routed = mergeAmbientRetrievalTools(routed, allTools)
+	} else {
+		filtered := make([]map[string]interface{}, 0, len(routed))
+		for _, item := range routed {
+			if extractToolName(item) == "set_nickname" {
+				continue
+			}
+			filtered = append(filtered, item)
+		}
+		routed = mergeAmbientRetrievalTools(filtered, allTools)
+	}
+	if knowledgeWriteTurn {
+		kept := make([]map[string]interface{}, 0, len(routed))
+		for _, item := range routed {
+			if extractToolName(item) == "memory" {
+				continue
+			}
+			kept = append(kept, item)
+		}
+		routed = kept
+	}
+	return routed, rankedNames
+}
+
+func (h *IMMessageHandler) hostKeepToolsForMessage(userMessage string) []string {
+	if h == nil || h.databaseManager == nil || !h.databaseManager.HostReadGrant(userMessage) {
+		return nil
+	}
+	return append([]string{}, database.HostReadToolNames...)
+}
+
+// unmanagedRetrievalToolForNeed is the host-owned name that satisfies an
+// ambient retrieval Need on unmanaged chat. coding_knowledge_search stays
+// out: it is not knowledge.read.local.
+func unmanagedRetrievalToolForNeed(capability tool.CapabilityID) string {
+	switch capability {
+	case tool.CapabilityKnowledgeReadLocal:
+		return "knowledge_search"
+	case tool.CapabilityMemoryRecallAgent, tool.CapabilityMemoryManageAgent:
+		// Unmanaged chat still uses the host `memory` tool. Write stays
+		// available there so "记住…" on a non_coding turn is not blocked;
+		// managed ambient uses the ReadOnly recall adapter instead.
+		return "memory"
+	default:
+		return ""
+	}
+}
+
+var (
+	unmanagedRetrievalNeedsOnce sync.Once
+	unmanagedRetrievalNeeds     []tool.CapabilityNeed
+)
+
+func ambientRetrievalNeedsForUnmanaged() []tool.CapabilityNeed {
+	unmanagedRetrievalNeedsOnce.Do(func() {
+		unmanagedRetrievalNeeds = agentservice.AppendAmbientRetrievalNeeds(newIMSemanticCapabilityRegistry(), nil)
+	})
+	return unmanagedRetrievalNeeds
+}
+
+var classifierTimeoutWebLookupToolNames = []string{"web_search", "web_fetch"}
+
+func keepClassifierTimeoutLookupTools(tools []map[string]interface{}) []map[string]interface{} {
+	if len(tools) == 0 { return tools }
+	wanted := map[string]bool{"web_search": true, "web_fetch": true}
+	out := make([]map[string]interface{}, 0, 2)
+	for _, t := range tools { if wanted[extractToolName(t)] { out = append(out, t) } }
+	return out
+}
+
+func (h *IMMessageHandler) pinClassifierTimeoutWebLookup(userID string, ctx *LoopContext, tools, catalog []map[string]interface{}) []map[string]interface{} {
+	if !loopContextHasClassifierTimeoutLookup(ctx) {
+		return tools
+	}
+	before := namedToolPresence(tools, classifierTimeoutWebLookupToolNames)
+	tools = ensureNamedToolsPresent(tools, catalog, classifierTimeoutWebLookupToolNames)
+	after := namedToolPresence(tools, classifierTimeoutWebLookupToolNames)
+	added := false
+	for _, name := range classifierTimeoutWebLookupToolNames {
+		if after[name] && !before[name] {
+			added = true
+			break
+		}
+	}
+	if !added {
+		return tools
+	}
+	// Allow-lists already ran on the pre-pin surface. Re-apply only if this
+	// leftover actually introduced web_search/web_fetch. Length is not a
+	// reliable signal: the budget guard may evict as many tail tools as it adds.
+	tools = h.filterToolsForExpertUser(userID, tools)
+	if ctx != nil && ctx.LansengerGroupPermissions != nil {
+		tools = filterToolsForLansengerGroupPermissions(tools, *ctx.LansengerGroupPermissions)
+	}
+	return tools
+}
+
+func namedToolPresence(tools []map[string]interface{}, names []string) map[string]bool {
+	present := make(map[string]bool, len(names))
+	if len(names) == 0 {
+		return present
+	}
+	wanted := make(map[string]bool, len(names))
+	for _, name := range names {
+		wanted[name] = true
+	}
+	for _, item := range tools {
+		name := extractToolName(item)
+		if wanted[name] {
+			present[name] = true
+		}
+	}
+	return present
+}
+
+func ensureNamedToolsPresent(routed, allTools []map[string]interface{}, names []string) []map[string]interface{} {
+	if len(allTools) == 0 || len(names) == 0 {
+		return routed
+	}
+	available := make(map[string]map[string]interface{}, len(allTools))
+	for _, item := range allTools {
+		if name := extractToolName(item); name != "" {
+			available[name] = item
+		}
+	}
+	selected := make(map[string]bool, len(routed))
+	for _, item := range routed {
+		selected[extractToolName(item)] = true
+	}
+	required := make(map[string]bool, len(names))
+	missing := make([]map[string]interface{}, 0, len(names))
+	for _, name := range names {
+		required[name] = true
+		item, ok := available[name]
+		if !ok || selected[name] {
+			continue
+		}
+		missing = append(missing, item)
+	}
+	if len(missing) == 0 {
+		return routed
+	}
+	// Make room for every missing required tool before appending any of them.
+	// Replacing the tail one-by-one can evict a just-appended required tool
+	// when several names are needed.
+	toRemove := len(routed) + len(missing) - maxToolBudget
+	if toRemove > 0 {
+		keptReversed := make([]map[string]interface{}, 0, len(routed)-toRemove)
+		removed := 0
+		for i := len(routed) - 1; i >= 0; i-- {
+			name := extractToolName(routed[i])
+			if removed < toRemove && !required[name] {
+				removed++
+				continue
+			}
+			keptReversed = append(keptReversed, routed[i])
+		}
+		routed = make([]map[string]interface{}, len(keptReversed))
+		for i := range keptReversed {
+			routed[len(keptReversed)-1-i] = keptReversed[i]
+		}
+	}
+	return append(routed, missing...)
+}
+
+// mergeAmbientRetrievalTools is the unmanaged retrieval Need path. It walks
+// AppendAmbientRetrievalNeeds and adds the matching host tool when present.
+// It does not pin tool names that are not a Need.
+func mergeAmbientRetrievalTools(routed, allTools []map[string]interface{}) []map[string]interface{} {
+	if len(allTools) == 0 {
+		return routed
+	}
+	needs := ambientRetrievalNeedsForUnmanaged()
+	if len(needs) == 0 {
+		return routed
+	}
+	available := make(map[string]map[string]interface{}, len(allTools))
+	for _, item := range allTools {
+		if name := extractToolName(item); name != "" {
+			available[name] = item
+		}
+	}
+	selected := make(map[string]bool, len(routed))
+	for _, item := range routed {
+		selected[extractToolName(item)] = true
+	}
+	for _, need := range needs {
+		name := unmanagedRetrievalToolForNeed(need.Capability)
+		item, ok := available[name]
+		if !ok || name == "" || selected[name] {
+			continue
+		}
+		routed = append(routed, item)
+		selected[name] = true
+	}
+	return routed
+}
+
+func ensureIMManagementToolsRouted(routed, allTools []map[string]interface{}, userMessage string) []map[string]interface{} {
+	return ensureNamedToolsPresent(routed, allTools, imManagementToolNames(userMessage))
+}
+
+func imManagementToolNames(userMessage string) []string {
+	s := strings.ToLower(strings.TrimSpace(userMessage))
+	if s == "" {
+		return nil
+	}
+	var names []string
+	for _, marker := range []string{"定时", "日程", "提醒", "cron", "schedule", "timer", "任务管理", "执行任务", "暂停任务", "恢复任务"} {
+		if strings.Contains(s, marker) {
+			names = append(names, "manage_schedule")
+			break
+		}
+	}
+	for _, marker := range []string{"推送", "发到", "发送到", "im_message"} {
+		if strings.Contains(s, marker) {
+			names = append(names, "im_message")
+			break
+		}
+	}
+	// File delivery needs both target discovery and the artifact sender. Short
+	// voice transcripts are often classified as light turns, so mark these tools
+	// explicitly instead of relying only on semantic retrieval.
+	fileIntent := false
+	for _, marker := range []string{"文件", "报告", "文档", "附件", "表格", "图片", "照片", "录音", "音频", "pdf", "docx", "xlsx", "pptx", "file", "attachment", "report", "document"} {
+		if strings.Contains(s, marker) {
+			fileIntent = true
+			break
+		}
+	}
+	if fileIntent && len(names) > 0 {
+		names = append(names, "send_to_im", "send_file")
+	}
+	return names
+}
+
+func isIMManagementRequest(userMessage string) bool {
+	return len(imManagementToolNames(userMessage)) > 0
+}

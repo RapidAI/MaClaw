@@ -333,9 +333,7 @@ func (m *Manager) UpdateConfig(section, key, value string) (string, error) {
 		return "", fmt.Errorf("failed to load config: %w", err)
 	}
 
-	if err := m.validateChange(section, key, value); err != nil {
-		return "", err
-	}
+	// default_launch_mode 已从 schema 退役，走专用 setter 路径，不参与 schema 校验。
 	if isDefaultLaunchModeChange(section, key) {
 		oldValue := cfg.DefaultLaunchMode
 		if setter, ok := m.store.(defaultLaunchModeSetter); ok {
@@ -344,6 +342,10 @@ func (m *Manager) UpdateConfig(section, key, value string) (string, error) {
 			}
 			return maskIfSensitive(key, oldValue), nil
 		}
+	}
+
+	if err := m.validateChange(section, key, value); err != nil {
+		return "", err
 	}
 
 	oldValue, err := m.applyChange(&cfg, section, key, value)
@@ -364,6 +366,10 @@ func (m *Manager) UpdateConfig(section, key, value string) (string, error) {
 
 func (m *Manager) BatchUpdate(changes []ConfigChange) error {
 	for _, c := range changes {
+		// default_launch_mode 已退役出 schema，跳过校验
+		if isDefaultLaunchModeChange(c.Section, c.Key) {
+			continue
+		}
 		if err := m.validateChange(c.Section, c.Key, c.Value); err != nil {
 			return fmt.Errorf("validation failed for %s.%s: %w", c.Section, c.Key, err)
 		}

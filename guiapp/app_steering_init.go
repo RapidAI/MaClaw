@@ -1,0 +1,49 @@
+package guiapp
+
+import (
+	"log"
+	"os"
+	"path/filepath"
+
+	"github.com/RapidAI/CodeClaw/corelib/steering"
+)
+
+// initSteeringStore initializes the steering file store.
+// User-level: ~/.maclaw/steering/
+// Project-level: <workingDir>/.maclaw/steering/ (if a working directory is set)
+//
+// Called during app startup. Creates default files on first run.
+func (a *App) initSteeringStore() {
+	userDir := filepath.Join(a.getMaclawBaseDir(), "steering")
+
+	// Remove legacy coding-workflow.md — V2 workflow engine replaces it
+	// with phase prompts. The file causes LLM to self-advance through phases.
+	legacyCodingWorkflow := filepath.Join(userDir, "coding-workflow.md")
+	if _, err := os.Stat(legacyCodingWorkflow); err == nil {
+		os.Remove(legacyCodingWorkflow)
+		log.Printf("[steering] removed legacy coding-workflow.md")
+	}
+
+	// Ensure default steering files exist.
+	if err := steering.EnsureDefaults(userDir); err != nil {
+		log.Printf("[steering] EnsureDefaults: %v", err)
+	}
+
+	// Project-level directory: derived from the current working directory.
+	// This may be empty if no project is open.
+	projectDir := ""
+	if wd, err := os.Getwd(); err == nil {
+		candidate := filepath.Join(wd, ".maclaw", "steering")
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+			projectDir = candidate
+		}
+	}
+
+	a.steeringStore = steering.NewStore(userDir, projectDir)
+	if err := a.steeringStore.Load(); err != nil {
+		log.Printf("[steering] initial load: %v", err)
+	}
+
+	log.Printf("[steering] initialized (user=%s, project=%s, files=%d)",
+		userDir, projectDir, a.steeringStore.FileCount())
+}

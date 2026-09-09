@@ -1,0 +1,132 @@
+package guiapp
+
+import (
+	"fmt"
+	"log"
+
+	"github.com/RapidAI/CodeClaw/corelib/swarm"
+)
+
+var errSwarmNotInit = fmt.Errorf("swarm orchestrator not initialised")
+
+// ---------------------------------------------------------------------------
+// Wails frontend bindings for SwarmOrchestrator
+// ---------------------------------------------------------------------------
+
+// StartSwarmRun starts a new swarm run (exposed to frontend).
+func (a *App) StartSwarmRun(req swarm.SwarmRunRequest) (*swarm.SwarmRun, error) {
+	// Only an explicit project path on the request binds swarm to a project
+	// workflow policy. Filling ProjectPath from the current desktop project for
+	// execution must not inherit an unrelated desktop-owner workflow gate.
+	explicitProjectPath := normalizeProjectSessionPath(req.ProjectPath)
+	req.ProjectPath = explicitProjectPath
+	if req.ProjectPath == "" {
+		req.ProjectPath = normalizeProjectSessionPath(a.GetCurrentProjectPath())
+	}
+	policyOwnerID := a.defaultManualPolicyOwnerID()
+	if explicitProjectPath != "" {
+		policyOwnerID = projectSessionOwnerID(explicitProjectPath)
+	}
+	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(policyOwnerID, "delegate_task", map[string]interface{}{"agent": "swarm", "request": req.Requirements, "project_path": req.ProjectPath}); err != nil {
+		return nil, err
+	}
+	a.ensureSwarmOrchestrator()
+	return a.swarmOrchestrator.StartSwarmRun(req)
+}
+
+// PauseSwarmRun pauses the active swarm run.
+func (a *App) PauseSwarmRun(runID string) error {
+	if a.swarmOrchestrator == nil {
+		return errSwarmNotInit
+	}
+	return a.swarmOrchestrator.PauseSwarmRun(runID)
+}
+
+// ResumeSwarmRun resumes a paused swarm run.
+func (a *App) ResumeSwarmRun(runID string) error {
+	if a.swarmOrchestrator == nil {
+		return errSwarmNotInit
+	}
+	return a.swarmOrchestrator.ResumeSwarmRun(runID)
+}
+
+// CancelSwarmRun cancels a swarm run.
+func (a *App) CancelSwarmRun(runID string) error {
+	if a.swarmOrchestrator == nil {
+		return errSwarmNotInit
+	}
+	return a.swarmOrchestrator.CancelSwarmRun(runID)
+}
+
+// ListSwarmRuns returns summaries of all swarm runs.
+func (a *App) ListSwarmRuns() []swarm.SwarmRunSummary {
+	if a.swarmOrchestrator == nil {
+		return nil
+	}
+	return a.swarmOrchestrator.ListSwarmRuns()
+}
+
+// GetSwarmRun returns details of a specific swarm run.
+func (a *App) GetSwarmRun(runID string) (*swarm.SwarmRun, error) {
+	if a.swarmOrchestrator == nil {
+		return nil, errSwarmNotInit
+	}
+	return a.swarmOrchestrator.GetSwarmRun(runID)
+}
+
+// ProvideSwarmUserInput sends user input to a waiting swarm run.
+func (a *App) ProvideSwarmUserInput(runID, input string) error {
+	if a.swarmOrchestrator == nil {
+		return errSwarmNotInit
+	}
+	return a.swarmOrchestrator.ProvideUserInput(runID, input)
+}
+
+// ensureSwarmOrchestrator lazily initialises the SwarmOrchestrator (thread-safe).
+func (a *App) ensureSwarmOrchestrator() {
+	if a == nil {
+		return
+	}
+	a.swarmInitOnce.Do(func() {
+		a.ensureInteractionInfra()
+		llmCfg := a.GetMaclawLLMConfig()
+
+		sessionAdapter := &guiSessionAdapter{manager: a.remoteSessions}
+		appCtx := &guiAppContext{app: a}
+		llmCaller := &guiLLMCaller{cfg: llmCfg}
+		notifier := swarm.NewDefaultNotifier(func(name string, data ...interface{}) {
+			a.emitEvent(name, data...)
+		})
+
+		a.swarmOrchestrator = swarm.NewSwarmOrchestrator(
+			sessionAdapter,
+			notifier,
+			swarm.WithAppContext(appCtx),
+			swarm.WithLLMCaller(llmCaller),
+		)
+
+		// 自动接入 IM 文件投递
+		a.wireSwarmIMDelivery()
+	})
+}
+
+// wireSwarmIMDelivery 将 Swarm 通知接入 IM 管道，使 PDF 文档能通过 IM 发送给用户。
+func (a *App) wireSwarmIMDelivery() {
+	if a.swarmOrchestrator == nil {
+		return
+	}
+	hc := a.ensureHubClient()
+	if hc == nil {
+		return
+	}
+	a.swarmOrchestrator.SetIMDelivery(
+		func(b64Data, fileName, mimeType, message string) {
+			if err := hc.SendIMProactiveFile(b64Data, fileName, mimeType, message); err != nil {
+				log.Printf("[SwarmIMDelivery] 发送 PDF 到 IM 失败: %v", err)
+			}
+		},
+		func(text string) {
+			_ = hc.SendIMProactiveMessage(text)
+		},
+	)
+}

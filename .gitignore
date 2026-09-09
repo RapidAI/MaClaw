@@ -293,3 +293,9 @@ graphify-out/
 .tmp-*
 /iot-agentos/hub-com3-*-result.json
 /iot-agentos/review-hotspots.txt
+
+# guiapp junk (build copy scratch files)
+guiapp/LegacyTask*
+guiapp/*.csv
+guiapp/Microsoft/
+guiapp/_*

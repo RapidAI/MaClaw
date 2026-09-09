@@ -1,0 +1,63 @@
+{
+  "category": "incomplete_audit_retry",
+  "title": "审计未完成时外环继续调度，而不是完成",
+  "design_ref": "longhorizon-harness-plan-zh.md §9 P5 / §10 CLI 行",
+  "samples": [
+    {
+      "id": "failed_tests_keep_loop_alive",
+      "title": "Executor 声称成功但审计 incomplete，下一轮修复后才完成",
+      "notes": "Executor 自述不写入可信进度；incomplete 审计后 Manager 再派一轮 CLI。",
+      "user_goal": "fix the failing test",
+      "max_rounds": 8,
+      "manager_script": [
+        "Next: cli\nGoal: fix the failing test\nAcceptance: go test passes",
+        "Next: cli\nGoal: actually fix the failing test\nAcceptance: go test passes",
+        "Next: done"
+      ],
+      "executor_script": [
+        "status=passed\nfixed, tests pass",
+        "status=passed\nfixed for real, tests pass"
+      ],
+      "auditor_script": [
+        "Status: incomplete\nIntegrity: clean\nAlignment: drifted\nSummary: go test still fails",
+        "Status: complete\nIntegrity: clean\nAlignment: aligned\nSummary: go test passes"
+      ],
+      "probe_script": [
+        "git status: M foo.go\nFAIL: TestFoo",
+        "git status: M foo.go\nok all tests"
+      ],
+      "expected": {
+        "final_status": "done",
+        "completed": true,
+        "manager_nexts": ["cli", "cli", "done"],
+        "rounds": 2
+      }
+    },
+    {
+      "id": "gui_round_completes",
+      "title": "GUI 轮次走 gui_executor/gui_auditor 后正常完成",
+      "notes": "覆盖 gui 路由映射与 observe digest 探针。",
+      "user_goal": "save the open document",
+      "max_rounds": 6,
+      "manager_script": [
+        "Next: gui\nGoal: save the document\nAcceptance: title bar shows saved state",
+        "Next: done"
+      ],
+      "executor_script": [
+        "status=passed\npressed ctrl+s"
+      ],
+      "auditor_script": [
+        "Status: complete\nIntegrity: clean\nAlignment: aligned\nSummary: observe shows no unsaved marker"
+      ],
+      "probe_script": [
+        "observe: window title \"Document - Saved\""
+      ],
+      "expected": {
+        "final_status": "done",
+        "completed": true,
+        "manager_nexts": ["gui", "done"],
+        "rounds": 1
+      }
+    }
+  ]
+}
