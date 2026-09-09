@@ -41,7 +41,7 @@ export const ProjectManagerPage = ({
     selectedProjectForLaunch,
     setSelectedProjectForLaunch,
 }: ProjectManagerPageProps) => (
-                        <div className="project-manager-panel">
+                        <div className="secondary-page-shell project-manager-panel">
                             <div className="project-manager-toolbar">
                                 <input
                                     type="text"

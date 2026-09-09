@@ -50,6 +50,9 @@ func StripXMLToolCalls(s string) string {
 	s = reDSMLToolCallBlock.ReplaceAllString(s, "")
 	s = reDSMLInvokeBlock.ReplaceAllString(s, "")
 	s = reDSMLToolCallOpen.ReplaceAllString(s, "")
+	if idx := leakedLineOrientedToolMarkerIndex(s); idx >= 0 {
+		s = s[:idx]
+	}
 	return strings.TrimSpace(s)
 }
 

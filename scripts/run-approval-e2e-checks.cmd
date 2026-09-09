@@ -16,7 +16,7 @@ if errorlevel 1 exit /b 1
 
 echo.
 echo === GUI (attention / directory / reconcile / escalation merge) ===
-go test ./gui/ -count=1 -timeout 180s -run "TestApplyHubWorkflowStatusAttention|TestMaclawAppApprovalInstanceFromHubDirectoryItem|TestReconcile|TestMergeMaclawAppApprovalEscalation"
+go test ./guiapp/ -count=1 -timeout 180s -run "TestApplyHubWorkflowStatusAttention|TestMaclawAppApprovalInstanceFromHubDirectoryItem|TestReconcile|TestMergeMaclawAppApprovalEscalation"
 if errorlevel 1 exit /b 1
 
 echo.
@@ -31,8 +31,8 @@ if errorlevel 1 exit /b 1
 
 echo.
 echo === Frontend escalation display helpers ===
-if exist "gui\frontend\node_modules\vitest\vitest.mjs" (
-  pushd gui\frontend
+if exist "guiapp\frontend\node_modules\vitest\vitest.mjs" (
+  pushd guiapp\frontend
   node node_modules\vitest\vitest.mjs run src\components\pages\__tests__\approvalEscalationDisplay.test.ts
   if errorlevel 1 (
     popd
@@ -40,7 +40,7 @@ if exist "gui\frontend\node_modules\vitest\vitest.mjs" (
   )
   popd
 ) else (
-  echo vitest not installed under gui\frontend; skip
+  echo vitest not installed under guiapp\frontend; skip
 )
 
 echo.

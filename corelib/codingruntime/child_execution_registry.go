@@ -95,3 +95,25 @@ func (r *ChildExecutionRegistry) CancelParent(parentTaskID string) {
 		cancel()
 	}
 }
+
+// CancelAll interrupts every live child during host shutdown. Entries are
+// cleared before invoking callbacks so late release functions remain harmless.
+func (r *ChildExecutionRegistry) CancelAll() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	cancels := make([]context.CancelFunc, 0)
+	for parent, children := range r.byParent {
+		for _, entry := range children {
+			if entry != nil && entry.cancel != nil {
+				cancels = append(cancels, entry.cancel)
+			}
+		}
+		delete(r.byParent, parent)
+	}
+	r.mu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
+}

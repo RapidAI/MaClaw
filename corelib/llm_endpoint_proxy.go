@@ -339,12 +339,13 @@ func (c *LLMProviderConcurrencyController) Acquire(ctx context.Context, provider
 	c.mu.Lock()
 	state := c.stateForProviderLocked(providerID, maxConcurrency, maxQueueWaiters, queueTimeoutMS)
 	// stateForProvider defers a configuration replacement until current work
-	// drains. Apply that active state's complete policy consistently: using the
-	// caller's newer queue settings here would otherwise change admission or
-	// timeout behavior before the replacement is safe.
+	// drains. Apply that active state's admission policy consistently: using the
+	// caller's newer concurrency/queue settings here would otherwise change
+	// admission before the replacement is safe. The queue timeout, however, is
+	// this caller's own wait budget — retaining the state's older value could
+	// turn a finite caller timeout into an unbounded wait.
 	maxConcurrency = state.maxConcurrency
 	maxQueueWaiters = state.maxQueueWaiters
-	queueTimeoutMS = state.queueTimeoutMS
 	if len(state.sema) < cap(state.sema) {
 		state.sema <- struct{}{}
 		state.inFlight++

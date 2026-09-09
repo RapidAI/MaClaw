@@ -215,6 +215,10 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 	lookupCatalog := h.filterPolicyRejectedSurfaceTools(allTools)
 	tools = h.pinClassifierTimeoutWebLookup(userID, ctx, tools, lookupCatalog)
 	baseTools = h.pinClassifierTimeoutWebLookup(userID, ctx, baseTools, lookupCatalog)
+	if loopContextHasClassifierTimeoutLookup(ctx) {
+		tools = keepClassifierTimeoutLookupTools(tools)
+		baseTools = keepClassifierTimeoutLookupTools(baseTools)
+	}
 
 	toolsForLLM := stripExecutionContractMetadataForLLM(tools)
 	baseToolsForLLM := stripExecutionContractMetadataForLLM(baseTools)

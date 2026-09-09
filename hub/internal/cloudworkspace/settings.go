@@ -32,6 +32,11 @@ const (
 	defaultTenantMaxTotalBytes = 50 << 30 // 50GiB
 	minTenantMaxTotalBytes     = 1 << 30  // 1GiB
 	maxTenantMaxTotalBytes     = 1 << 40  // 1TiB
+
+	// Bandwidth limits are hourly transfer quotas. Zero keeps the pre-11.30
+	// behavior (unlimited); they only clamp an upper bound so an admin can
+	// never configure a negative or absurdly large window.
+	maxBandwidthBytesPerHour = 1 << 40 // 1TiB/h
 )
 
 var (
@@ -46,7 +51,12 @@ type Settings struct {
 	DepartmentIDs       []string `json:"department_ids"`
 	MaxWorkspaceBytes   int64    `json:"max_workspace_bytes"`
 	TenantMaxTotalBytes int64    `json:"tenant_max_total_bytes"`
-	UpdatedAt           string   `json:"updated_at"`
+	// Bandwidth*BytesPerHour cap cross-device transfer per UTC hour window.
+	// Zero means unlimited (the pre-quota default); both levels can be set
+	// independently and the tenant cap aggregates every user in the window.
+	BandwidthUserBytesPerHour   int64 `json:"bandwidth_user_bytes_per_hour"`
+	BandwidthTenantBytesPerHour int64 `json:"bandwidth_tenant_bytes_per_hour"`
+	UpdatedAt                   string `json:"updated_at"`
 }
 
 // OverQuotaUser is one user whose active workspace count exceeds the current quota.
@@ -58,10 +68,15 @@ type OverQuotaUser struct {
 
 // Preview is the admin GET payload's live org-tree stats.
 type Preview struct {
-	DepartmentCount int             `json:"department_count"`
-	UserCount       int             `json:"user_count"`
-	OverQuotaUsers  []OverQuotaUser `json:"over_quota_users"`
-	UsedBytes       int64           `json:"used_bytes"`
+	DepartmentCount   int             `json:"department_count"`
+	UserCount         int             `json:"user_count"`
+	OverQuotaUsers    []OverQuotaUser `json:"over_quota_users"`
+	UsedBytes         int64           `json:"used_bytes"`
+	LogicalBytes      int64           `json:"logical_bytes"`
+	RetainedBytes     int64           `json:"retained_bytes"`
+	SnapshotBytes     int64           `json:"snapshot_retained_bytes"`
+	StagingBytes      int64           `json:"staging_bytes"`
+	UnreferencedBytes int64           `json:"unreferenced_retained_bytes"`
 }
 
 // SettingsView is the admin GET/PUT response (settings plus preview).
@@ -158,6 +173,18 @@ func clampInt64(v, defaultV, minV, maxV int64) int64 {
 	return v
 }
 
+// clampBandwidthLimit keeps zero as the explicit "unlimited" default, maps
+// negative input back to unlimited, and only clamps the upper bound.
+func clampBandwidthLimit(v int64) int64 {
+	if v < 0 {
+		return 0
+	}
+	if v > maxBandwidthBytesPerHour {
+		return maxBandwidthBytesPerHour
+	}
+	return v
+}
+
 func normalizeDepartmentIDs(ids []string) []string {
 	if len(ids) == 0 {
 		return []string{}
@@ -203,6 +230,8 @@ func fillSettingsDefaults(s Settings) Settings {
 	out.DepartmentIDs = normalizeDepartmentIDs(out.DepartmentIDs)
 	out.MaxWorkspaceBytes = clampInt64(out.MaxWorkspaceBytes, defaultMaxWorkspaceBytes, minMaxWorkspaceBytes, maxMaxWorkspaceBytes)
 	out.TenantMaxTotalBytes = clampInt64(out.TenantMaxTotalBytes, defaultTenantMaxTotalBytes, minTenantMaxTotalBytes, maxTenantMaxTotalBytes)
+	out.BandwidthUserBytesPerHour = clampBandwidthLimit(out.BandwidthUserBytesPerHour)
+	out.BandwidthTenantBytesPerHour = clampBandwidthLimit(out.BandwidthTenantBytesPerHour)
 	out.UpdatedAt = strings.TrimSpace(out.UpdatedAt)
 	return out
 }
@@ -221,6 +250,8 @@ func prepareForWrite(s Settings) (Settings, error) {
 	out.DepartmentIDs = normalizeDepartmentIDs(out.DepartmentIDs)
 	out.MaxWorkspaceBytes = clampInt64(out.MaxWorkspaceBytes, defaultMaxWorkspaceBytes, minMaxWorkspaceBytes, maxMaxWorkspaceBytes)
 	out.TenantMaxTotalBytes = clampInt64(out.TenantMaxTotalBytes, defaultTenantMaxTotalBytes, minTenantMaxTotalBytes, maxTenantMaxTotalBytes)
+	out.BandwidthUserBytesPerHour = clampBandwidthLimit(out.BandwidthUserBytesPerHour)
+	out.BandwidthTenantBytesPerHour = clampBandwidthLimit(out.BandwidthTenantBytesPerHour)
 	if out.Mode == ModeDepartments && len(out.DepartmentIDs) == 0 {
 		return Settings{}, fmt.Errorf("%w: department_ids required when mode is departments", ErrInvalidInput)
 	}
@@ -273,12 +304,25 @@ func (s *Service) now() time.Time {
 	return time.Now().UTC()
 }
 
+// NowUTC returns the service clock for maintenance handlers and tests while
+// keeping the injectable clock semantics in one place.
+func (s *Service) NowUTC() time.Time {
+	return s.now()
+}
+
 func (s *Service) fillUsagePreview(ctx context.Context, tenantID string, settings Settings, preview *Preview) {
 	if s == nil || s.Workspaces == nil || preview == nil {
 		return
 	}
 	if n, err := s.Workspaces.TenantUsedBytes(ctx, tenantID); err == nil {
 		preview.UsedBytes = n
+	}
+	if usage, err := s.Workspaces.TenantRetainedUsage(ctx, tenantID); err == nil {
+		preview.LogicalBytes = usage.LogicalBytes
+		preview.RetainedBytes = usage.RetainedBytes
+		preview.SnapshotBytes = usage.SnapshotRetainedBytes
+		preview.StagingBytes = usage.StagingBytes
+		preview.UnreferencedBytes = usage.UnreferencedRetainedBytes
 	}
 	if users, err := s.Workspaces.ListOverQuotaUsers(ctx, tenantID, settings.Quota); err == nil && users != nil {
 		preview.OverQuotaUsers = users

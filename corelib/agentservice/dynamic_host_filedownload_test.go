@@ -204,7 +204,7 @@ func TestReviewedDynamicIntentRulesResolveFileDownloadWithoutFetchOrWrite(t *tes
 		Registry: registry, Rules: ReviewedDynamicIntentCapabilityNeedRules(),
 	}
 	resolution, err := resolver.ResolveDynamicCapabilityNeeds(context.Background(), DynamicCapabilityNeedRequest{UserText: "把这个链接的文件下载到本地"})
-	if err != nil || !resolution.Managed || len(resolution.Needs) != 1 || resolution.Needs[0].Capability != CapabilityFileDownload {
+	if err != nil || !resolution.Managed || requiredNeedCount(resolution.Needs) != 1 || resolution.Needs[0].Capability != CapabilityFileDownload {
 		t.Fatalf("resolution=%#v err=%v", resolution, err)
 	}
 	if resolution.Needs[0].Capability == CapabilityWebFetch || resolution.Needs[0].Capability == CapabilityFileWrite {

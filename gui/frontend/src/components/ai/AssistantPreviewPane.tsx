@@ -37,7 +37,7 @@ interface AssistantPreviewPaneProps {
     conflictCount?: number;
     onCloseConflict?: () => void;
     splitRatio: number;
-    startPreviewResize: () => void;
+    startPreviewResize: (startEvent?: MouseEvent | PointerEvent | number) => void;
     onToggleMaximize?: () => void;
     theme: Theme;
     workflowState: WorkflowUIState;
@@ -66,6 +66,50 @@ function previewTabTooltip(mode: PreviewPaneMode, lang: string, cloudMode = fals
     return cloudMode
         ? (lang === "en" ? "Cloud files" : "\u4e91\u7aef\u6587\u4ef6")
         : (lang === "en" ? "Source" : "\u6e90\u7801\u67e5\u770b");
+}
+
+function previewSurfaceVars(theme: Theme): React.CSSProperties {
+    return {
+        "--mc-preview-pane-bg": theme.bg,
+        "--mc-preview-surface-bg": theme.titleBarBg,
+        "--mc-preview-surface-border": theme.titleBarBorder || theme.divider,
+        "--mc-preview-surface-shadow": theme.isDark
+            ? "0 1px 2px rgba(0, 0, 0, 0.32), 0 12px 32px -12px rgba(0, 0, 0, 0.45)"
+            : "0 1px 2px rgba(30, 58, 95, 0.05), 0 12px 32px -12px rgba(30, 58, 95, 0.12)",
+    } as React.CSSProperties;
+}
+
+function previewRailStyle(theme: Theme): React.CSSProperties {
+    return {
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        padding: "8px 4px",
+        borderLeft: `1px solid ${theme.divider}`,
+        background: theme.titleBarBg,
+        flexShrink: 0,
+        width: "32px",
+    };
+}
+
+function previewCloseButtonStyle(theme: Theme, extra?: React.CSSProperties): React.CSSProperties {
+    return {
+        width: "26px",
+        height: "26px",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "none",
+        border: "none",
+        cursor: "pointer",
+        fontSize: "14px",
+        padding: 0,
+        borderRadius: "8px",
+        color: theme.textMuted,
+        lineHeight: 1,
+        transition: "background 120ms ease, color 120ms ease",
+        ...extra,
+    };
 }
 
 /**
@@ -119,38 +163,14 @@ function PreviewTabRail({
     };
     return (
         <div
+            className="mc-assistant-preview-mode-tabs"
             data-testid="assistant-preview-mode-tabs"
-            style={{
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                gap: "4px",
-                padding: "8px 4px",
-                borderLeft: `1px solid ${theme.divider}`,
-                background: theme.titleBarBg,
-                flexShrink: 0,
-                width: "32px",
-            }}
+            style={{ ...previewRailStyle(theme), gap: "4px" }}
         >
             <button
                 type="button"
                 onClick={onClose}
-                style={{
-                    width: "26px",
-                    height: "26px",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    background: "none",
-                    border: "none",
-                    cursor: "pointer",
-                    fontSize: "14px",
-                    padding: 0,
-                    borderRadius: "4px",
-                    color: theme.textMuted,
-                    lineHeight: 1,
-                    marginBottom: "4px",
-                }}
+                style={previewCloseButtonStyle(theme, { marginBottom: "4px" })}
                 title={lang === "en" ? "Close preview" : "\u5173\u95ed\u9884\u89c8"}
                 aria-label={lang === "en" ? "Close preview" : "\u5173\u95ed\u9884\u89c8"}
             >
@@ -191,16 +211,21 @@ function PreviewTabRail({
                             display: "flex",
                             alignItems: "center",
                             justifyContent: "center",
-                            border: `1px solid ${active ? (mode === "conflict" ? theme.errorBorder : theme.headingColor) : "transparent"}`,
-                            background: active ? (mode === "conflict" ? theme.errorBg : theme.codeBg) : "transparent",
-                            color: active ? (mode === "conflict" ? theme.errorText : theme.headingColor) : theme.textMuted,
-                            borderRadius: "6px",
+                            border: `1px solid ${active ? (mode === "conflict" ? theme.errorBorder : theme.btnColor) : "transparent"}`,
+                            background: active
+                                ? (mode === "conflict"
+                                    ? theme.errorBg
+                                    : `color-mix(in srgb, ${theme.btnColor} ${theme.isDark ? 18 : 10}%, ${theme.titleBarBg})`)
+                                : "transparent",
+                            color: active ? (mode === "conflict" ? theme.errorText : theme.btnColor) : theme.textMuted,
+                            borderRadius: "8px",
                             cursor: "pointer",
                             fontSize: "9px",
                             fontWeight: 700,
-                            letterSpacing: "0",
+                            letterSpacing: "0.02em",
                             lineHeight: 1,
                             padding: 0,
+                            transition: "background 120ms ease, color 120ms ease, border-color 120ms ease",
                         }}
                         title={label}
                         aria-label={label}
@@ -399,43 +424,91 @@ export function AssistantPreviewPane({
     // Agent-only: no tab rail needed, render standalone
     if (availableModes.length === 1 && availableModes[0] === "agent") {
         return (
-            <div style={paneStyle}>
-                <AgentTaskPanel
-                    view={agentView!}
-                    onDismiss={dismissAgentView}
-                    onResizeStart={startPreviewResize}
-                    onToggleMaximize={onToggleMaximize}
-                    onSubmit={submitAgentView}
-                    theme={theme}
-                    lang={lang}
-                />
+            <div
+                className="mc-assistant-preview-pane"
+                data-preview-mode="agent"
+                style={{ ...paneStyle, ...previewSurfaceVars(theme) }}
+            >
+                <div className="mc-assistant-preview-surface mc-assistant-preview-surface--agent">
+                    <AgentTaskPanel
+                        view={agentView!}
+                        onDismiss={dismissAgentView}
+                        onResizeStart={startPreviewResize}
+                        splitRatio={splitRatio}
+                        onToggleMaximize={onToggleMaximize}
+                        onSubmit={submitAgentView}
+                        theme={theme}
+                        lang={lang}
+                    />
+                </div>
             </div>
         );
     }
 
     return (
-        <div style={paneStyle}>
+        <div
+            className="mc-assistant-preview-pane"
+            data-preview-mode={effectiveMode}
+            style={{ ...paneStyle, ...previewSurfaceVars(theme) }}
+        >
+            <div className="mc-assistant-preview-surface">
             {/* ── Drag handle for resizing ── */}
             <div
-                onMouseDown={(e) => { e.preventDefault(); startPreviewResize(); }}
+                className="mc-assistant-preview-resize-handle"
+                data-testid="assistant-preview-resize-handle"
+                role="separator"
+                aria-orientation="vertical"
+                aria-label={lang === "en" ? "Resize preview panel" : "调整预览面板宽度"}
+                aria-valuemin={20}
+                aria-valuemax={80}
+                aria-valuenow={Math.round(splitRatio * 100)}
+                tabIndex={0}
+                onPointerDown={(e) => {
+                    e.preventDefault();
+                    // Pointer dragging cancels the browser's default focus step;
+                    // keep the handle focused so Arrow/Home/End resizing remains
+                    // available immediately after a mouse or touch drag starts.
+                    e.currentTarget.focus({ preventScroll: true });
+                    e.currentTarget.setPointerCapture?.(e.pointerId);
+                    startPreviewResize(e.nativeEvent);
+                }}
+                onPointerUp={(e) => {
+                    if (e.currentTarget.hasPointerCapture?.(e.pointerId)) e.currentTarget.releasePointerCapture?.(e.pointerId);
+                }}
+                onKeyDown={(e) => {
+                    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight" && e.key !== "Home" && e.key !== "End") return;
+                    e.preventDefault();
+                    const delta = e.key === "ArrowLeft" ? -0.02 : e.key === "ArrowRight" ? 0.02 : 0;
+                    const nextRatio = e.key === "Home" ? 0.2 : e.key === "End" ? 0.8 : Math.max(0.2, Math.min(0.8, splitRatio + delta));
+                    startPreviewResize(nextRatio);
+                }}
                 style={{
                     position: "absolute",
-                    left: 0,
+                    // Keep most of the hit target inside the rounded preview
+                    // surface. The surface clips overflow, so a -10px offset
+                    // would leave only half of the drag zone reachable.
+                    left: "-4px",
                     top: 0,
                     bottom: 0,
-                    width: "6px",
+                    width: "24px",
                     cursor: "col-resize",
-                    background: theme.divider,
-                    transition: "background 0.15s",
-                    zIndex: 1,
-                }}
-                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = theme.headingColor; }}
-                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = theme.divider; }}
+                    background: "transparent",
+                    transition: "background 0.15s, box-shadow 0.15s",
+                    zIndex: 20,
+                    touchAction: "none",
+                    userSelect: "none",
+                    WebkitAppRegion: "no-drag",
+                    "--wails-draggable": "no-drag",
+                    pointerEvents: "auto",
+                } as any}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = `color-mix(in srgb, ${theme.headingColor} 24%, transparent)`; }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
             />
             {/* ── Content area ──
                 Conflict panel stays mounted (hidden) when switching to SRC so scroll / draft state
                 and Esc-focus scoping survive tab switches. */}
             <div
+                className="mc-assistant-preview-content"
                 id={`assistant-preview-panel-${effectiveMode}`}
                 role="tabpanel"
                 aria-labelledby={`assistant-preview-tab-${effectiveMode}`}
@@ -460,8 +533,10 @@ export function AssistantPreviewPane({
                     <AgentTaskPanel
                         view={agentView}
                         onDismiss={dismissAgentView}
+                        onResizeStart={startPreviewResize}
                         onToggleMaximize={onToggleMaximize}
                         onSubmit={submitAgentView}
+                        splitRatio={splitRatio}
                         theme={theme}
                         lang={lang}
                     />
@@ -519,34 +594,11 @@ export function AssistantPreviewPane({
             )}
             {/* ── Close button when only one mode (no tab rail) ── */}
             {availableModes.length === 1 && (
-                <div style={{
-                    display: "flex",
-                    flexDirection: "column",
-                    alignItems: "center",
-                    padding: "8px 4px",
-                    borderLeft: `1px solid ${theme.divider}`,
-                    background: theme.titleBarBg,
-                    flexShrink: 0,
-                    width: "32px",
-                }}>
+                <div className="mc-assistant-preview-mode-tabs mc-assistant-preview-mode-tabs--single" style={previewRailStyle(theme)}>
                     <button
                         type="button"
                         onClick={handleClose}
-                        style={{
-                            width: "26px",
-                            height: "26px",
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            background: "none",
-                            border: "none",
-                            cursor: "pointer",
-                            fontSize: "14px",
-                            padding: 0,
-                            borderRadius: "4px",
-                            color: theme.textMuted,
-                            lineHeight: 1,
-                        }}
+                        style={previewCloseButtonStyle(theme)}
                         title={lang === "en" ? "Close preview" : "\u5173\u95ed\u9884\u89c8"}
                         aria-label={lang === "en" ? "Close preview" : "\u5173\u95ed\u9884\u89c8"}
                     >
@@ -554,6 +606,7 @@ export function AssistantPreviewPane({
                     </button>
                 </div>
             )}
+            </div>
         </div>
     );
 }

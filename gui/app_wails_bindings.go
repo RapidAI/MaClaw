@@ -214,26 +214,6 @@ func extractRemoteIP(args map[string]interface{}, sessionID string) string {
 	return "-"
 }
 
-// RecommendTool suggests the best programming tool for a task (Wails binding).
-func (a *App) RecommendTool(taskDescription string) (string, string) {
-	a.ensureRemoteInfra()
-	if a.toolSelector == nil {
-		return "", "tool selector not initialized"
-	}
-	// Get installed tools by checking which known tools have their binary available.
-	var installed []string
-	for _, tool := range []string{"claude", "codex", "opencode", "iflow", "kilo"} {
-		meta, ok := remoteToolCatalog[tool]
-		if !ok {
-			continue
-		}
-		if _, err := exec.LookPath(meta.BinaryName); err == nil {
-			installed = append(installed, tool)
-		}
-	}
-	return a.toolSelector.Recommend(taskDescription, installed)
-}
-
 // SearchSkillHub searches configured SkillHubs for Skills matching the query (Wails binding).
 func (a *App) SearchSkillHub(query string) ([]HubSkillMeta, error) {
 	hubURL := NewSkillMarketClient(a).baseURL()

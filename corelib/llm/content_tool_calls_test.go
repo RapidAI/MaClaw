@@ -551,6 +551,185 @@ func TestParseContentToolCallsDetailed_FencedBareJSONToolCall(t *testing.T) {
 	}
 }
 
+func TestParseContentToolCallsDetailed_LineOrientedLeakedGlob(t *testing.T) {
+	content := "截图里高亮的是「几何图像」中 `R^n` 没进公式渲染。正在定位第16页源文件并修复。\n terc3 glob_file_search_tool\npath\nC:\\Users\\ma139\\.maclaw\\workspace\\ai-math-handbook\nglob_pattern\n**/*.{html,md,json}<|eos|>"
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed {
+		t.Fatal("expected leaked line-oriented glob call to parse")
+	}
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 tool call, got %#v", calls)
+	}
+	if calls[0].Function.Name != "glob_file_search_tool" {
+		t.Fatalf("tool name = %q", calls[0].Function.Name)
+	}
+	if !strings.Contains(calls[0].Function.Arguments, `"path":"C:\\Users\\ma139\\.maclaw\\workspace\\ai-math-handbook"`) {
+		t.Fatalf("path missing: %q", calls[0].Function.Arguments)
+	}
+	if !strings.Contains(calls[0].Function.Arguments, `"glob_pattern":"**/*.{html,md,json}"`) {
+		t.Fatalf("glob_pattern missing: %q", calls[0].Function.Arguments)
+	}
+	if strings.Contains(calls[0].Function.Arguments, "<|eos|>") {
+		t.Fatalf("special token leaked into args: %q", calls[0].Function.Arguments)
+	}
+}
+
+func TestParseContentToolCallsDetailed_LineOrientedColonArgs(t *testing.T) {
+	content := "search_files\npath: src\npattern: **/*.go"
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed || len(calls) != 1 || calls[0].Function.Name != "search_files" {
+		t.Fatalf("colon args = calls=%#v malformed=%v", calls, malformed)
+	}
+	if !strings.Contains(calls[0].Function.Arguments, `"pattern":"**/*.go"`) {
+		t.Fatalf("arguments = %q", calls[0].Function.Arguments)
+	}
+}
+
+func TestParseContentToolCallsDetailed_LineOrientedWebSearch(t *testing.T) {
+	content := "请稍等，我先查询实时信息。\nweb_search\nquery\n北京今天的天气\nmax_results\n5<|eos|>"
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed || len(calls) != 1 || calls[0].Function.Name != "web_search" {
+		t.Fatalf("web search line call = calls=%#v malformed=%v", calls, malformed)
+	}
+	if !strings.Contains(calls[0].Function.Arguments, `"query":"北京今天的天气"`) {
+		t.Fatalf("arguments = %q", calls[0].Function.Arguments)
+	}
+}
+
+func TestParseContentToolCallsDetailed_LineOrientedLastCallWins(t *testing.T) {
+	content := "read_file\npath\nC:\\tmp\\old.md\nglob_file_search_tool\npath\nC:\\tmp\\book\nglob_pattern\n**/*.md"
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed || len(calls) != 1 || calls[0].Function.Name != "glob_file_search_tool" {
+		t.Fatalf("last call = calls=%#v malformed=%v", calls, malformed)
+	}
+	if !strings.Contains(calls[0].Function.Arguments, `"path":"C:\\tmp\\book"`) {
+		t.Fatalf("wanted trailing glob path, got %q", calls[0].Function.Arguments)
+	}
+}
+
+func TestParseContentToolCallsDetailed_LineOrientedBlankValueLine(t *testing.T) {
+	content := "glob_file_search_tool\npath\n\nC:\\tmp\\book\nglob_pattern\n**/*.md"
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed || len(calls) != 1 {
+		t.Fatalf("blank value line = calls=%#v malformed=%v", calls, malformed)
+	}
+	if !strings.Contains(calls[0].Function.Arguments, `"path":"C:\\tmp\\book"`) {
+		t.Fatalf("path missing after blank line: %q", calls[0].Function.Arguments)
+	}
+}
+
+func TestParseContentToolCallsDetailed_LineOrientedTrailingProseStillParses(t *testing.T) {
+	content := "glob_file_search_tool\npath\nC:\\tmp\\book\nglob_pattern\n**/*.md\n接下来会读取源文件。"
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed || len(calls) != 1 || calls[0].Function.Name != "glob_file_search_tool" {
+		t.Fatalf("trailing prose = calls=%#v malformed=%v", calls, malformed)
+	}
+	if !strings.Contains(calls[0].Function.Arguments, `"glob_pattern":"**/*.md"`) {
+		t.Fatalf("arguments = %q", calls[0].Function.Arguments)
+	}
+}
+
+func TestParseContentToolCallsDetailed_UseReadFileIsNotAToolCall(t *testing.T) {
+	content := "Use read_file\npath\nto the workspace"
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed || len(calls) != 0 {
+		t.Fatalf("english prefix stole a tool call: calls=%#v malformed=%v", calls, malformed)
+	}
+}
+
+func TestHoldContentToolCallStream_BareGlobLineIsNotSuppressed(t *testing.T) {
+	content := "Next I will use\nGlob\nto find markdown files."
+	visible, hold, suppress := HoldContentToolCallStream(content, true)
+	if suppress || hold != "" || visible != content {
+		t.Fatalf("bare Glob line suppressed prose: visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+}
+
+func TestParseContentToolCallsDetailed_NameOnlyLeakedToolIsMalformed(t *testing.T) {
+	content := "正在定位源文件。\n glob_file_search_tool"
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if !malformed || len(calls) != 0 {
+		t.Fatalf("name-only leaked tool = calls=%#v malformed=%v", calls, malformed)
+	}
+}
+
+func TestStripAllExtraRemovesLineOrientedGlobTail(t *testing.T) {
+	input := "正在定位第16页源文件并修复。\n terc3 glob_file_search_tool\npath\nC:\\tmp\\book\nglob_pattern\n**/*.md<|eos|>"
+	got := StripAllExtra(input)
+	if strings.Contains(got, "glob_file_search_tool") || strings.Contains(got, "terc3") || strings.Contains(got, "glob_pattern") {
+		t.Fatalf("StripAllExtra leaked line-oriented tool call: %q", got)
+	}
+	if got != "正在定位第16页源文件并修复。" {
+		t.Fatalf("StripAllExtra() = %q", got)
+	}
+}
+
+func TestParseContentToolCallsDetailed_LineOrientedProseIsNotAToolCall(t *testing.T) {
+	content := "Please use glob_file_search_tool if you need to find files by pattern."
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if malformed || len(calls) != 0 {
+		t.Fatalf("prose mention parsed as tool call: calls=%#v malformed=%v", calls, malformed)
+	}
+}
+
+func TestParseContentToolCallsDetailed_LineOrientedUnparsedEOSIsMalformed(t *testing.T) {
+	content := "正在定位源文件。\n glob_file_search_tool\n<path\n<|eos|>"
+	calls, malformed := ParseContentToolCallsDetailed(content)
+	if !malformed || len(calls) != 0 {
+		t.Fatalf("unparsed leaked tool markup = calls=%#v malformed=%v", calls, malformed)
+	}
+}
+
+func TestHoldContentToolCallStream_DoesNotHoldOrdinaryGlobProse(t *testing.T) {
+	for _, content := range []string{"Please use glob", "use glob", "That is global"} {
+		visible, hold, suppress := HoldContentToolCallStream(content, true)
+		if suppress || hold != "" || visible != content {
+			t.Fatalf("ordinary prose %q was treated as a leaked tool line: visible=%q hold=%q suppress=%v", content, visible, hold, suppress)
+		}
+	}
+}
+
+func TestHoldContentToolCallStream_HoldsDigitJunkGlobPrefix(t *testing.T) {
+	visible, hold, suppress := HoldContentToolCallStream("正在定位。\n terc3 glob", false)
+	if suppress || strings.Contains(visible, "terc3") {
+		t.Fatalf("digit-junk glob prefix should be held: visible=%q hold=%q suppress=%v", visible, hold, suppress)
+	}
+	if !strings.Contains(hold, "terc3 glob") {
+		t.Fatalf("expected hold of terc3 glob prefix, hold=%q", hold)
+	}
+}
+
+func TestHoldContentToolCallStream_HoldsIncompleteLeakedGlobLine(t *testing.T) {
+	visible, hold, suppress := HoldContentToolCallStream("正在定位第16页源文件并修复。\n terc3 glob_", false)
+	if suppress {
+		t.Fatal("incomplete leaked glob line should be held, not suppressed yet")
+	}
+	if strings.Contains(visible, "terc3") || strings.Contains(visible, "glob_") {
+		t.Fatalf("incomplete leaked glob line was visible: %q hold=%q", visible, hold)
+	}
+	if !strings.Contains(hold, "glob_") {
+		t.Fatalf("expected hold of incomplete glob line, hold=%q", hold)
+	}
+}
+
+func TestFirstContentToolCallMarkerIndex_LineOrientedGlob(t *testing.T) {
+	content := "正在定位第16页源文件并修复。\n terc3 glob_file_search_tool\npath\nC:\\tmp"
+	idx := FirstContentToolCallMarkerIndex(content)
+	if idx < 0 || !strings.Contains(content[idx:], "glob_file_search_tool") {
+		t.Fatalf("marker index = %d, want leaked tool line", idx)
+	}
+	visible, _, suppress := HoldContentToolCallStream(content, true)
+	if !suppress {
+		t.Fatal("leaked glob tool call must be suppressed from the stream")
+	}
+	if strings.Contains(visible, "glob_file_search_tool") || strings.Contains(visible, "terc3") {
+		t.Fatalf("leaked tool text visible: %q", visible)
+	}
+	if !strings.Contains(visible, "正在定位第16页源文件并修复。") {
+		t.Fatalf("prose before leaked tool was dropped: %q", visible)
+	}
+}
+
 func TestParseContentToolCallsDetailed_BareJSONDoesNotMisclassifyData(t *testing.T) {
 	for _, content := range []string{
 		`{"name":"Alice","city":"Beijing"}`,
@@ -563,6 +742,26 @@ func TestParseContentToolCallsDetailed_BareJSONDoesNotMisclassifyData(t *testing
 		if len(calls) != 0 {
 			t.Fatalf("ordinary JSON parsed as tool call: %#v", calls)
 		}
+	}
+}
+
+func TestParseNonStreamOpenAIResponseBody_ConvertsLineOrientedGlob(t *testing.T) {
+	body := []byte(`{"choices":[{"message":{"role":"assistant","content":"正在定位第16页源文件并修复。\n terc3 glob_file_search_tool\npath\nC:\\tmp\\book\nglob_pattern\n**/*.md<|eos|>"},"finish_reason":"stop"}]}`)
+	resp, err := ParseNonStreamOpenAIResponseBody(body)
+	if err != nil {
+		t.Fatalf("ParseNonStreamOpenAIResponseBody: %v", err)
+	}
+	if len(resp.Choices) != 1 || len(resp.Choices[0].Message.ToolCalls) != 1 {
+		t.Fatalf("expected converted tool call, got %#v", resp.Choices)
+	}
+	if got := resp.Choices[0].FinishReason; got != "tool_calls" {
+		t.Fatalf("finish_reason = %q, want tool_calls", got)
+	}
+	if got := resp.Choices[0].Message.ToolCalls[0].Function.Name; got != "glob_file_search_tool" {
+		t.Fatalf("tool name = %q", got)
+	}
+	if strings.TrimSpace(resp.Choices[0].Message.Content) != "" {
+		t.Fatalf("leaked tool text remained in content: %q", resp.Choices[0].Message.Content)
 	}
 }
 

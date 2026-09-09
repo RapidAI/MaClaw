@@ -280,7 +280,7 @@ func BuiltinCapabilityOntology() []CapabilityDescriptor {
 		},
 		{
 			ID: CapabilityBusinessDataRead, Version: "v1", Owner: builtinCapabilityOntologyOwner,
-			Summary: "Query business data through the MIS integration without changing it.",
+			Summary: "Query business or SQL data sources without changing them.",
 			Effects: []EffectClass{EffectReadOnly},
 		},
 		{

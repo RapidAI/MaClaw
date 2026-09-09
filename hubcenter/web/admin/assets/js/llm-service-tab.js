@@ -8,10 +8,10 @@
  */
 
 if (typeof I18N_EN !== 'undefined') {
-  Object.assign(I18N_EN, {sgRouteHint:'Exposed model alias with provider failover',providerProbeModels:'Probe',providerProbing:'Probing models...',providerProbeEmpty:'No models returned.',providerProbeFailed:'Probe failed',providerCapabilityPreset:'Preset capabilities'});
+  Object.assign(I18N_EN, {sgRouteHint:'Exposed model alias with provider failover',providerProbeModels:'Probe',providerProbing:'Probing models...',providerProbeEmpty:'No models returned.',providerProbeFailed:'Probe failed',providerCapabilityPreset:'Preset capabilities',fieldCacheReadCredits:'Cache Read Credits / 10k',fieldCacheWriteCredits:'Cache Write Credits / 10k',fieldCacheReadRMB:'Cache Read RMB / 10k',fieldCacheWriteRMB:'Cache Write RMB / 10k',sgPricingOverride:'Override provider base price for this service group'});
 }
 if (typeof I18N_ZH !== 'undefined') {
-  Object.assign(I18N_ZH, {sgRouteHint:'\u66b4\u9732\u6a21\u578b\u522b\u540d\uff0c\u6309\u670d\u52a1\u5546\u4f18\u5148\u7ea7\u5b9e\u73b0\u6545\u969c\u8f6c\u79fb',providerProbeModels:'\u63a2\u6d4b',providerProbing:'\u6b63\u5728\u63a2\u6d4b\u6a21\u578b...',providerProbeEmpty:'\u672a\u8fd4\u56de\u6a21\u578b\u5217\u8868\u3002',providerProbeFailed:'\u63a2\u6d4b\u5931\u8d25',providerCapabilityPreset:'\u9884\u7f6e\u80fd\u529b'});
+  Object.assign(I18N_ZH, {sgRouteHint:'\u66b4\u9732\u6a21\u578b\u522b\u540d\uff0c\u6309\u670d\u52a1\u5546\u4f18\u5148\u7ea7\u5b9e\u73b0\u6545\u969c\u8f6c\u79fb',providerProbeModels:'\u63a2\u6d4b',providerProbing:'\u6b63\u5728\u63a2\u6d4b\u6a21\u578b...',providerProbeEmpty:'\u672a\u8fd4\u56de\u6a21\u578b\u5217\u8868\u3002',providerProbeFailed:'\u63a2\u6d4b\u5931\u8d25',providerCapabilityPreset:'\u9884\u7f6e\u80fd\u529b',fieldCacheReadCredits:'\u7f13\u5b58\u8bfb\u53d6 Credits / \u4e07',fieldCacheWriteCredits:'\u7f13\u5b58\u5199\u5165 Credits / \u4e07',fieldCacheReadRMB:'\u7f13\u5b58\u8bfb\u53d6 RMB / \u4e07',fieldCacheWriteRMB:'\u7f13\u5b58\u5199\u5165 RMB / \u4e07',sgPricingOverride:'\u8986\u76d6\u8be5\u670d\u52a1\u7ec4\u7684\u670d\u52a1\u5546\u57fa\u51c6\u4ef7\u683c'});
 }
 
 (function() {
@@ -977,7 +977,7 @@ if (typeof I18N_ZH !== 'undefined') {
       start: normalizeProviderBillingClock(window && window.start),
       end: normalizeProviderBillingClock(window && window.end)
     };
-    ['input_credits_per_10k','output_credits_per_10k','input_rmb_per_10k','output_rmb_per_10k','minimum_request_credits'].forEach(function(key) {
+    ['input_credits_per_10k','output_credits_per_10k','cache_read_credits_per_10k','cache_write_credits_per_10k','input_rmb_per_10k','output_rmb_per_10k','cache_read_rmb_per_10k','cache_write_rmb_per_10k','minimum_request_credits'].forEach(function(key) {
       var value = window && window[key];
       if (value === '' || value === undefined || value === null) return;
       var number = Number(value);
@@ -1000,7 +1000,7 @@ if (typeof I18N_ZH !== 'undefined') {
     if (!start || !end || start === end) return true;
     var hasPrice = false;
     var invalidPrice = false;
-    ['input_credits_per_10k','output_credits_per_10k','input_rmb_per_10k','output_rmb_per_10k','minimum_request_credits'].forEach(function(key) {
+    ['input_credits_per_10k','output_credits_per_10k','cache_read_credits_per_10k','cache_write_credits_per_10k','input_rmb_per_10k','output_rmb_per_10k','cache_read_rmb_per_10k','cache_write_rmb_per_10k','minimum_request_credits'].forEach(function(key) {
       if (window[key] === undefined || window[key] === null || window[key] === '') return;
       var number = Number(window[key]);
       if (isFinite(number) && number >= 0) hasPrice = true;
@@ -1033,8 +1033,12 @@ if (typeof I18N_ZH !== 'undefined') {
         + '<div class="provider-billing-fields">'
         + numberField('input_credits_per_10k', t('fieldInputCredits'))
         + numberField('output_credits_per_10k', t('fieldOutputCredits'))
+        + numberField('cache_read_credits_per_10k', t('fieldCacheReadCredits'))
+        + numberField('cache_write_credits_per_10k', t('fieldCacheWriteCredits'))
         + numberField('input_rmb_per_10k', t('fieldInputRMB'))
         + numberField('output_rmb_per_10k', t('fieldOutputRMB'))
+        + numberField('cache_read_rmb_per_10k', t('fieldCacheReadRMB'))
+        + numberField('cache_write_rmb_per_10k', t('fieldCacheWriteRMB'))
         + numberField('minimum_request_credits', t('fieldMinimumCredits'))
         + '</div></div>';
     }).join('');
@@ -1051,7 +1055,7 @@ if (typeof I18N_ZH !== 'undefined') {
       return isFinite(n) && n >= 0 ? n : NaN;
     }
     var tp = {};
-    var fields = { llmPrvTpIn: 'input_credits_per_10k', llmPrvTpOut: 'output_credits_per_10k', llmPrvTpRmbIn: 'input_rmb_per_10k', llmPrvTpRmbOut: 'output_rmb_per_10k', llmPrvTpMin: 'minimum_request_credits' };
+    var fields = { llmPrvTpIn: 'input_credits_per_10k', llmPrvTpOut: 'output_credits_per_10k', llmPrvTpCacheRead: 'cache_read_credits_per_10k', llmPrvTpCacheWrite: 'cache_write_credits_per_10k', llmPrvTpRmbIn: 'input_rmb_per_10k', llmPrvTpRmbOut: 'output_rmb_per_10k', llmPrvTpRmbCacheRead: 'cache_read_rmb_per_10k', llmPrvTpRmbCacheWrite: 'cache_write_rmb_per_10k', llmPrvTpMin: 'minimum_request_credits' };
     for (var id in fields) {
       if (!fields.hasOwnProperty(id)) continue;
       var n = num(id);
@@ -1077,13 +1081,17 @@ if (typeof I18N_ZH !== 'undefined') {
     function numField(id, label, key, placeholder) {
       return '<div><label for="' + id + '">' + esc(label) + '</label><input id="' + id + '" type="number" min="0" step="0.01" value="' + esc(providerTokenPricingValue(p, key)) + '" placeholder="' + esc(placeholder) + '"></div>';
     }
-    return '<div class="provider-billing" style="margin-top:12px"><div class="provider-billing-head"><div><div class="provider-billing-title"><strong>' + esc(t('tokenPricingTitle')) + '</strong></div>'
+    return '<div class="provider-billing provider-billing-top-compact"><div class="provider-billing-head"><div><div class="provider-billing-title"><strong>' + esc(t('tokenPricingTitle')) + '</strong></div>'
       + '<div class="provider-billing-hint">' + esc(t('tokenPricingHint')) + '</div></div></div>'
       + '<div class="provider-billing-fields">'
       + numField('llmPrvTpIn', t('fieldInputCredits'), 'input_credits_per_10k', '1')
       + numField('llmPrvTpOut', t('fieldOutputCredits'), 'output_credits_per_10k', '4')
+      + numField('llmPrvTpCacheRead', t('fieldCacheReadCredits'), 'cache_read_credits_per_10k', 'input × 0.1')
+      + numField('llmPrvTpCacheWrite', t('fieldCacheWriteCredits'), 'cache_write_credits_per_10k', 'input')
       + numField('llmPrvTpRmbIn', t('fieldInputRMB'), 'input_rmb_per_10k', '0.02')
       + numField('llmPrvTpRmbOut', t('fieldOutputRMB'), 'output_rmb_per_10k', '0.08')
+      + numField('llmPrvTpRmbCacheRead', t('fieldCacheReadRMB'), 'cache_read_rmb_per_10k', 'input × 0.1')
+      + numField('llmPrvTpRmbCacheWrite', t('fieldCacheWriteRMB'), 'cache_write_rmb_per_10k', 'input')
       + numField('llmPrvTpMin', t('fieldMinimumCredits'), 'minimum_request_credits', '0.1')
       + '<div><label for="llmPrvTpTimezone">' + esc(t('fieldPricingTimezone')) + '</label><select id="llmPrvTpTimezone"><option value="">-</option>'
       + options.map(function(v){ return '<option value="' + esc(v) + '"' + (v === tz ? ' selected' : '') + '>' + esc(v) + '</option>'; }).join('')
@@ -1527,8 +1535,12 @@ if (typeof I18N_ZH !== 'undefined') {
     var v;
     v=num('input_credits_per_10k'); if(v!==undefined) out.input_credits_per_10k=v;
     v=num('output_credits_per_10k'); if(v!==undefined) out.output_credits_per_10k=v;
+    v=num('cache_read_credits_per_10k'); if(v!==undefined) out.cache_read_credits_per_10k=v;
+    v=num('cache_write_credits_per_10k'); if(v!==undefined) out.cache_write_credits_per_10k=v;
     v=num('input_rmb_per_10k'); if(v!==undefined) out.input_rmb_per_10k=v;
     v=num('output_rmb_per_10k'); if(v!==undefined) out.output_rmb_per_10k=v;
+    v=num('cache_read_rmb_per_10k'); if(v!==undefined) out.cache_read_rmb_per_10k=v;
+    v=num('cache_write_rmb_per_10k'); if(v!==undefined) out.cache_write_rmb_per_10k=v;
     v=num('minimum_request_credits'); if(v!==undefined) out.minimum_request_credits=v;
     if(p.timezone) out.timezone=String(p.timezone).trim();
     if(p.version) out.version=String(p.version).trim();
@@ -1544,7 +1556,7 @@ if (typeof I18N_ZH !== 'undefined') {
     return (inC!==undefined?String(inC):'-')+'/'+(outC!==undefined?String(outC):'-')+' Credits/10k';
   }
   function sgProviderConfigsFromModel(m){
-    var configs=(m&&m.provider_configs||[]).map(function(c){return{provider_id:(c.provider_id||'').trim(),model:(c.model||'').trim(),billing_mode:String(c.billing_mode||'').trim(),capability_tags:(c.capability_tags||[]).slice(),priority:c.priority||0,resolution_tier:c.resolution_tier||0,credit_multiplier:c.credit_multiplier||1,token_pricing:sgNormalizeTokenPricing(c.token_pricing)};}).filter(function(c){return c.provider_id;});
+    var configs=(m&&m.provider_configs||[]).map(function(c){return{provider_id:(c.provider_id||'').trim(),model:(c.model||'').trim(),billing_mode:String(c.billing_mode||'').trim(),capability_tags:(c.capability_tags||[]).slice(),priority:c.priority||0,resolution_tier:c.resolution_tier||0,credit_multiplier:c.credit_multiplier||1,token_pricing_override:c.token_pricing_override===true,token_pricing:sgNormalizeTokenPricing(c.token_pricing)};}).filter(function(c){return c.provider_id;});
     if(!configs.length) configs=(m&&m.provider_ids||[]).map(function(pid){return{provider_id:pid,model:'',billing_mode:'',capability_tags:[],priority:0,resolution_tier:0,credit_multiplier:1,token_pricing:{}};});
     return configs;
   }
@@ -1620,7 +1632,7 @@ if (typeof I18N_ZH !== 'undefined') {
     sgOfficialBandNames().forEach(function(name){
       var m=sgEnsureModel(d,name);
       if((m.provider_configs||[]).length)return;
-      m.provider_configs=src.map(function(c){return{provider_id:c.provider_id,model:c.model,billing_mode:c.billing_mode,capability_tags:(c.capability_tags||[]).slice(),priority:c.priority,resolution_tier:c.resolution_tier,credit_multiplier:c.credit_multiplier,token_pricing:sgNormalizeTokenPricing(c.token_pricing)};});
+      m.provider_configs=src.map(function(c){return{provider_id:c.provider_id,model:c.model,billing_mode:c.billing_mode,capability_tags:(c.capability_tags||[]).slice(),priority:c.priority,resolution_tier:c.resolution_tier,credit_multiplier:c.credit_multiplier,token_pricing_override:c.token_pricing_override===true,token_pricing:sgNormalizeTokenPricing(c.token_pricing)};});
       m.provider_ids=sgProviderIDsFromModel(m);
     });
   }
@@ -1753,11 +1765,11 @@ if (typeof I18N_ZH !== 'undefined') {
   window.sgRemoveProvider=function(i,routeIndex){var m=sgDraft&&sgDraft.models&&sgDraft.models[i];if(!m)return;m.provider_configs=sgProviderConfigsFromModel(m);m.provider_configs.splice(routeIndex,1);m.provider_ids=sgProviderIDsFromModel(m);sgRenderGroupDialog();};
   function sgClonePricingForDraft(tp){
     var p=sgNormalizeTokenPricing(tp||{});
-    var out={input_credits_per_10k:p.input_credits_per_10k,output_credits_per_10k:p.output_credits_per_10k,input_rmb_per_10k:p.input_rmb_per_10k,output_rmb_per_10k:p.output_rmb_per_10k,minimum_request_credits:p.minimum_request_credits,timezone:p.timezone||'',version:p.version||''};
+    var out={input_credits_per_10k:p.input_credits_per_10k,output_credits_per_10k:p.output_credits_per_10k,cache_read_credits_per_10k:p.cache_read_credits_per_10k,cache_write_credits_per_10k:p.cache_write_credits_per_10k,input_rmb_per_10k:p.input_rmb_per_10k,output_rmb_per_10k:p.output_rmb_per_10k,cache_read_rmb_per_10k:p.cache_read_rmb_per_10k,cache_write_rmb_per_10k:p.cache_write_rmb_per_10k,minimum_request_credits:p.minimum_request_credits,timezone:p.timezone||'',version:p.version||''};
     if(p.price_schedule) out.price_schedule=p.price_schedule;
     return out;
   }
-  window.sgEditProviderConfig=function(rowIndex,routeIndex){var model=sgDraft&&sgDraft.models&&sgDraft.models[rowIndex];var cfg=sgGetProviderConfig(model,routeIndex);if(!cfg)return;sgOpenKind='provider-config';sgProviderDraft={rowIndex:rowIndex,routeIndex:routeIndex,providerID:cfg.provider_id,draft:{model:cfg&&cfg.model||'',billing_mode:String(cfg&&cfg.billing_mode||'').trim(),capability_tags:(cfg&&cfg.capability_tags||[]).slice(),priority:cfg&&cfg.priority||0,resolution_tier:cfg&&cfg.resolution_tier||0,credit_multiplier:cfg&&cfg.credit_multiplier||1,token_pricing:sgClonePricingForDraft(cfg.token_pricing)}};sgRenderProviderDialog();};
+  window.sgEditProviderConfig=function(rowIndex,routeIndex){var model=sgDraft&&sgDraft.models&&sgDraft.models[rowIndex];var cfg=sgGetProviderConfig(model,routeIndex);if(!cfg)return;sgOpenKind='provider-config';sgProviderDraft={rowIndex:rowIndex,routeIndex:routeIndex,providerID:cfg.provider_id,draft:{model:cfg&&cfg.model||'',billing_mode:String(cfg&&cfg.billing_mode||'').trim(),capability_tags:(cfg&&cfg.capability_tags||[]).slice(),priority:cfg&&cfg.priority||0,resolution_tier:cfg&&cfg.resolution_tier||0,credit_multiplier:cfg&&cfg.credit_multiplier||1,token_pricing_override:cfg&&cfg.token_pricing_override===true,token_pricing:sgClonePricingForDraft(cfg.token_pricing)}};sgRenderProviderDialog();};
   function sgRenderProviderDialog(){
     if(!sgProviderDraft)return;var d=sgProviderDraft.draft;
     var tp=d.token_pricing||{};
@@ -1776,13 +1788,16 @@ if (typeof I18N_ZH !== 'undefined') {
       +'<div class="sg-form-grid"><div><label class="sg-label-sm">'+esc(t('sgPriority'))+'</label><select onchange="sgSetProviderField(\'priority\',Number(this.value))">'+sgPriorityOptions.map(function(v){return'<option value="'+v+'"'+(d.priority===v?' selected':'')+'>'+v+'</option>';}).join('')+'</select></div>'
       +'<div><label class="sg-label-sm">'+esc(t('sgResolutionTier'))+'</label><select onchange="sgSetProviderField(\'resolution_tier\',Number(this.value))">'+sgResolutionOptions.map(function(v){return'<option value="'+v+'"'+(d.resolution_tier===v?' selected':'')+'>'+v+'</option>';}).join('')+'</select></div></div>'
       +'<div class="sg-block-xs"><label class="sg-label-sm">'+esc(t('sgCreditMultiplier'))+'</label><select onchange="sgSetProviderField(\'credit_multiplier\',Number(this.value))">'+sgMultiplierOptions.map(function(v){return'<option value="'+v+'"'+(d.credit_multiplier===v?' selected':'')+'>'+v+'</option>';}).join('')+'</select></div>'
-      +'<div class="sg-block-sm" style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px"><div class="sg-label-strong">'+esc(t('tokenPricingTitle'))+'</div><div class="hint">'+esc(t('tokenPricingHint'))+'</div>'
-      +'<div class="sg-form-grid" style="margin-top:8px"><div><label class="sg-label-sm">'+esc(t('sgBillingMode'))+'</label><select onchange="sgSetProviderField(\'billing_mode\',this.value)"><option value=""'+(billingMode===''?' selected':'')+'>'+esc(t('sgBillingModeLegacy'))+'</option><option value="paid"'+(billingMode==='paid'?' selected':'')+'>'+esc(t('sgBillingModePaid'))+'</option><option value="free"'+(billingMode==='free'?' selected':'')+'>'+esc(t('sgBillingModeFree'))+'</option></select><div class="hint">'+esc(t('sgBillingModeHint'))+'</div></div>'
+      +'<div class="sg-block-sm sg-token-pricing-section"><div class="sg-label-strong">'+esc(t('tokenPricingTitle'))+'</div><div class="hint">'+esc(t('tokenPricingHint'))+'</div>'
+      +'<label class="sg-feature-check"><input type="checkbox"'+(d.token_pricing_override?' checked':'')+' onchange="sgSetProviderField(\'token_pricing_override\',this.checked)">'+esc(t('sgPricingOverride'))+'</label>'
+       +'<div class="sg-form-grid sg-form-grid-tight"><div><label class="sg-label-sm">'+esc(t('sgBillingMode'))+'</label><select onchange="sgSetProviderField(\'billing_mode\',this.value)"><option value=""'+(billingMode===''?' selected':'')+'>'+esc(t('sgBillingModeLegacy'))+'</option><option value="paid"'+(billingMode==='paid'?' selected':'')+'>'+esc(t('sgBillingModePaid'))+'</option><option value="free"'+(billingMode==='free'?' selected':'')+'>'+esc(t('sgBillingModeFree'))+'</option></select><div class="hint">'+esc(t('sgBillingModeHint'))+'</div></div>'
       +'<div><label class="sg-label-sm">'+esc(t('fieldPricingTimezone'))+'</label><input class="sg-field-full" value="'+esc(tp.timezone||'')+'" placeholder="Asia/Shanghai" oninput="sgSetTokenPricingField(\'timezone\',this.value)"></div></div>'
       +'<div class="sg-form-grid"><div><label class="sg-label-sm">'+esc(t('fieldInputCredits'))+'</label><input type="number" min="0" step="0.01" value="'+esc(tp.input_credits_per_10k!==undefined?String(tp.input_credits_per_10k):'')+'" placeholder="1" oninput="sgSetTokenPricingField(\'input_credits_per_10k\',this.value)"></div>'
       +'<div><label class="sg-label-sm">'+esc(t('fieldOutputCredits'))+'</label><input type="number" min="0" step="0.01" value="'+esc(tp.output_credits_per_10k!==undefined?String(tp.output_credits_per_10k):'')+'" placeholder="4" oninput="sgSetTokenPricingField(\'output_credits_per_10k\',this.value)"></div></div>'
+      +'<div class="sg-form-grid"><div><label class="sg-label-sm">'+esc(t('fieldCacheReadCredits'))+'</label><input type="number" min="0" step="0.01" value="'+esc(tp.cache_read_credits_per_10k!==undefined?String(tp.cache_read_credits_per_10k):'')+'" placeholder="input × 0.1" oninput="sgSetTokenPricingField(\'cache_read_credits_per_10k\',this.value)"></div><div><label class="sg-label-sm">'+esc(t('fieldCacheWriteCredits'))+'</label><input type="number" min="0" step="0.01" value="'+esc(tp.cache_write_credits_per_10k!==undefined?String(tp.cache_write_credits_per_10k):'')+'" placeholder="input" oninput="sgSetTokenPricingField(\'cache_write_credits_per_10k\',this.value)"></div></div>'
       +'<div class="sg-form-grid"><div><label class="sg-label-sm">'+esc(t('fieldInputRMB'))+'</label><input type="number" min="0" step="0.01" value="'+esc(tp.input_rmb_per_10k!==undefined?String(tp.input_rmb_per_10k):'')+'" placeholder="0.02" oninput="sgSetTokenPricingField(\'input_rmb_per_10k\',this.value)"></div>'
       +'<div><label class="sg-label-sm">'+esc(t('fieldOutputRMB'))+'</label><input type="number" min="0" step="0.01" value="'+esc(tp.output_rmb_per_10k!==undefined?String(tp.output_rmb_per_10k):'')+'" placeholder="0.08" oninput="sgSetTokenPricingField(\'output_rmb_per_10k\',this.value)"></div></div>'
+      +'<div class="sg-form-grid"><div><label class="sg-label-sm">'+esc(t('fieldCacheReadRMB'))+'</label><input type="number" min="0" step="0.01" value="'+esc(tp.cache_read_rmb_per_10k!==undefined?String(tp.cache_read_rmb_per_10k):'')+'" placeholder="input × 0.1" oninput="sgSetTokenPricingField(\'cache_read_rmb_per_10k\',this.value)"></div><div><label class="sg-label-sm">'+esc(t('fieldCacheWriteRMB'))+'</label><input type="number" min="0" step="0.01" value="'+esc(tp.cache_write_rmb_per_10k!==undefined?String(tp.cache_write_rmb_per_10k):'')+'" placeholder="input" oninput="sgSetTokenPricingField(\'cache_write_rmb_per_10k\',this.value)"></div></div>'
       +'<div class="sg-form-grid"><div><label class="sg-label-sm">'+esc(t('fieldMinimumCredits'))+'</label><input type="number" min="0" step="0.01" value="'+esc(tp.minimum_request_credits!==undefined?String(tp.minimum_request_credits):'')+'" placeholder="0.1" oninput="sgSetTokenPricingField(\'minimum_request_credits\',this.value)"></div>'
       +'<div><label class="sg-label-sm">'+esc(t('fieldPricingVersion'))+'</label><input class="sg-field-full" value="'+esc(tp.version||'')+'" placeholder="2026-08-23-v1" oninput="sgSetTokenPricingField(\'version\',this.value)"></div></div>'
       +'</div>',
@@ -1806,16 +1821,16 @@ if (typeof I18N_ZH !== 'undefined') {
     var next={provider_id:cfg.provider_id,model:(sgProviderDraft.draft.model||'').trim()};if(sgRouteDuplicateIndex(model,next,sgProviderDraft.routeIndex)>=0){toast(sgDuplicateRouteMessage(next),'error');return;}
     // validate token pricing numbers
     var tp=sgProviderDraft.draft.token_pricing||{};
-    for(var kk in tp){ if(tp.hasOwnProperty(kk) && (kk==='input_credits_per_10k'||kk==='output_credits_per_10k'||kk==='input_rmb_per_10k'||kk==='output_rmb_per_10k'||kk==='minimum_request_credits')){ if(tp[kk]!==''&&tp[kk]!==undefined){ var nn=Number(tp[kk]); if(!isFinite(nn)||nn<0){ toast(t('billingInvalid'),'error'); return; } } } }
+    for(var kk in tp){ if(tp.hasOwnProperty(kk) && (kk==='input_credits_per_10k'||kk==='output_credits_per_10k'||kk==='cache_read_credits_per_10k'||kk==='cache_write_credits_per_10k'||kk==='input_rmb_per_10k'||kk==='output_rmb_per_10k'||kk==='cache_read_rmb_per_10k'||kk==='cache_write_rmb_per_10k'||kk==='minimum_request_credits')){ if(tp[kk]!==''&&tp[kk]!==undefined){ var nn=Number(tp[kk]); if(!isFinite(nn)||nn<0){ toast(t('billingInvalid'),'error'); return; } } } }
     var billingMode=String(sgProviderDraft.draft.billing_mode||'').trim();
     if(billingMode==='paid'){
-      var hasCredits = (tp.input_credits_per_10k!==undefined&&isFinite(tp.input_credits_per_10k)&&tp.input_credits_per_10k>0) || (tp.output_credits_per_10k!==undefined&&isFinite(tp.output_credits_per_10k)&&tp.output_credits_per_10k>0) || (tp.minimum_request_credits!==undefined&&isFinite(tp.minimum_request_credits)&&tp.minimum_request_credits>0);
+      var hasCredits = (tp.input_credits_per_10k!==undefined&&isFinite(tp.input_credits_per_10k)&&tp.input_credits_per_10k>0) || (tp.output_credits_per_10k!==undefined&&isFinite(tp.output_credits_per_10k)&&tp.output_credits_per_10k>0) || (tp.cache_read_credits_per_10k!==undefined&&isFinite(tp.cache_read_credits_per_10k)&&tp.cache_read_credits_per_10k>0) || (tp.cache_write_credits_per_10k!==undefined&&isFinite(tp.cache_write_credits_per_10k)&&tp.cache_write_credits_per_10k>0) || (tp.minimum_request_credits!==undefined&&isFinite(tp.minimum_request_credits)&&tp.minimum_request_credits>0);
       if(!hasCredits){ toast(t('billingPaidNeedsCredits'),'error'); return; }
     }
-    cfg.model=next.model;cfg.billing_mode=billingMode;cfg.capability_tags=(sgProviderDraft.draft.capability_tags||[]).slice();cfg.priority=sgProviderDraft.draft.priority||0;cfg.resolution_tier=sgProviderDraft.draft.resolution_tier||0;cfg.credit_multiplier=sgProviderDraft.draft.credit_multiplier||1;
+    cfg.model=next.model;cfg.billing_mode=billingMode;cfg.capability_tags=(sgProviderDraft.draft.capability_tags||[]).slice();cfg.priority=sgProviderDraft.draft.priority||0;cfg.resolution_tier=sgProviderDraft.draft.resolution_tier||0;cfg.credit_multiplier=sgProviderDraft.draft.credit_multiplier||1;cfg.token_pricing_override=sgProviderDraft.draft.token_pricing_override===true;
     var cleaned={}; for(var k in tp){ if(tp.hasOwnProperty(k)){ var val=tp[k]; if(val!==''&&val!==undefined&&val!==null){ if(k==='timezone'||k==='version'){ if(String(val).trim()) cleaned[k]=String(val).trim(); } else if(k==='price_schedule' && Array.isArray(val) && val.length){ try{ cleaned[k]=JSON.parse(JSON.stringify(val)); }catch(e){ cleaned[k]=val.slice(); } } else if(isFinite(Number(val))) cleaned[k]=Number(val); } } }
     if(cleaned.price_schedule && !cleaned.timezone) cleaned.timezone='Asia/Shanghai';
-    if(cleaned.input_credits_per_10k===undefined && cleaned.output_credits_per_10k===undefined && cleaned.minimum_request_credits===undefined && cleaned.input_rmb_per_10k===undefined && cleaned.output_rmb_per_10k===undefined && !cleaned.timezone && !cleaned.version && !cleaned.price_schedule){
+    if(cleaned.input_credits_per_10k===undefined && cleaned.output_credits_per_10k===undefined && cleaned.cache_read_credits_per_10k===undefined && cleaned.cache_write_credits_per_10k===undefined && cleaned.minimum_request_credits===undefined && cleaned.input_rmb_per_10k===undefined && cleaned.output_rmb_per_10k===undefined && cleaned.cache_read_rmb_per_10k===undefined && cleaned.cache_write_rmb_per_10k===undefined && !cleaned.timezone && !cleaned.version && !cleaned.price_schedule){
       // keep empty object for legacy; omit pricing entirely to stay legacy-compatible
       // but preserve an explicit empty to avoid sending stray keys
     }

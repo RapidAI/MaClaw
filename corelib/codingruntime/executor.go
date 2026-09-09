@@ -222,22 +222,44 @@ func (r Runner) RunWithContinuation(ctx context.Context, task Task, policy Polic
 	// cannot drift from the ledger fact.
 	policy = attempt.Policy
 	_, _ = r.Store.AppendEvent(attempt.AttemptID, r.LeaseOwner, "attempt_started", policy.Digest, now)
+	// A final-workspace gate is an execution precondition, not merely a
+	// completion check.  Before this guard, a writer could advertise
+	// FinalWorkspaceGateRequired while the host forgot to provide a prober (or
+	// the baseline probe failed), then still invoke the model and mutating
+	// tools.  That is precisely the unsafe shape observed in the runtime audit:
+	// an unknown write set had no trustworthy workspace baseline but the attempt
+	// was allowed to run.  Keep the attempt in the ledger as blocked so callers
+	// receive a durable, reviewable decision and no executor is started.
+	requiresWorkspaceGate := attempt.Policy.FinalWorkspaceGateRequired && !attempt.Policy.ReadOnly
+	if requiresWorkspaceGate && r.WorkspaceProber == nil {
+		return r.blockBeforeExecution(created, attempt, "workspace_probe_unavailable", "writer completion requires a read-only workspace probe before execution")
+	}
 	if r.WorkspaceProber != nil {
 		probe, probeErr := r.WorkspaceProber.ProbeWorkspace(ctx, *created, *attempt)
 		if probeErr != nil || probe == nil {
-			// Baseline capture is diagnostic, not authorization. A host may lack
-			// git/SSH reachability at this instant; retain the failure as bounded
-			// evidence while never inventing a baseline.
+			// A failed baseline remains useful bounded evidence for recovery, but
+			// it cannot authorize a mutating attempt when the final workspace gate
+			// is enabled.  Read-only and legacy non-gated callers retain the old
+			// diagnostic-only behavior.
 			digest := "workspace_before_probe_failed"
 			if probeErr != nil {
 				digest = codingRuntimeErrorDigest(probeErr.Error())
 			}
 			_, _ = r.Store.AppendEvent(attempt.AttemptID, r.LeaseOwner, "workspace_before_probe_failed", digest, r.now())
+			if requiresWorkspaceGate {
+				return r.blockBeforeExecution(created, attempt, "workspace_before_probe_failed", "writer execution requires a successful read-only workspace baseline")
+			}
 		} else if updatedAttempt, recordErr := r.Store.RecordWorkspaceBefore(attempt.AttemptID, r.LeaseOwner, probe, r.now()); recordErr == nil {
 			attempt = updatedAttempt
 			_, _ = r.Store.AppendEvent(attempt.AttemptID, r.LeaseOwner, "workspace_before_probed", workspaceProbeDigest(*probe), r.now())
+			// A probe that was returned but could not be durably recorded is not a
+			// usable baseline for a gated writer.  Do not let a transient ledger
+			// write failure turn into an untracked mutation.
 		} else {
 			_, _ = r.Store.AppendEvent(attempt.AttemptID, r.LeaseOwner, "workspace_before_probe_record_failed", codingRuntimeErrorDigest(recordErr.Error()), r.now())
+			if requiresWorkspaceGate {
+				return r.blockBeforeExecution(created, attempt, "workspace_before_probe_record_failed", "writer execution requires a durably recorded workspace baseline")
+			}
 		}
 	}
 
@@ -355,6 +377,32 @@ func (r Runner) RunWithContinuation(ctx context.Context, task Task, policy Polic
 	finished, err := r.Store.FinishAttempt(attempt.AttemptID, r.LeaseOwner, FinishInput{
 		Status: result.Status, SideEffectState: result.SideEffectState, WorkspaceAfter: result.WorkspaceAfter,
 		ErrorCode: result.ErrorCode, ErrorSummary: result.ErrorSummary,
+	}, r.now())
+	if err != nil {
+		return created, attempt, err
+	}
+	updated, err := r.Store.GetTask(created.TaskID)
+	if err != nil {
+		return created, finished, err
+	}
+	return updated, finished, nil
+}
+
+// blockBeforeExecution closes a just-started Attempt without invoking its
+// executor.  It is used for safety-critical preconditions which are known
+// before a model/tool call (for example, a missing or failed workspace
+// baseline).  Keeping the transition in Runner makes MemoryStore and
+// SQLiteStore callers observe the same durable blocked state.
+func (r Runner) blockBeforeExecution(created *Task, attempt *Attempt, code, summary string) (*Task, *Attempt, error) {
+	if attempt == nil {
+		return created, nil, fmt.Errorf("coding runtime pre-execution block requires an attempt")
+	}
+	code = boundedLedgerText(code, maxErrorCodeRunes)
+	summary = boundedLedgerText(summary, maxErrorSummaryRunes)
+	_, _ = r.Store.AppendEvent(attempt.AttemptID, r.LeaseOwner, "workspace_gate_blocked", codingRuntimeErrorDigest(code), r.now())
+	_, _ = r.Store.AppendEvent(attempt.AttemptID, r.LeaseOwner, "attempt_terminal_"+string(TaskBlocked), code, r.now())
+	finished, err := r.Store.FinishAttempt(attempt.AttemptID, r.LeaseOwner, FinishInput{
+		Status: TaskBlocked, SideEffectState: SideEffectNone, ErrorCode: code, ErrorSummary: summary,
 	}, r.now())
 	if err != nil {
 		return created, attempt, err

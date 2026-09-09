@@ -82,8 +82,8 @@ func TestMobilePushOnRealtimeEventEnqueuesWhenOffline(t *testing.T) {
 	mobilePushState.Unlock()
 
 	mobilePushOnRealtimeEvent(tenant, user, map[string]any{
-		"type":   "ssh_task",
-		"status": "completed",
+		"type":    "ssh_task",
+		"status":  "completed",
 		"task_id": "t1",
 		"task": map[string]any{
 			"task_id": "t1",

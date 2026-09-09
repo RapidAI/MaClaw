@@ -29,14 +29,14 @@ type veGroupConfig struct {
 }
 
 type digitalEmployeeEntry struct {
-	ID                        string   `json:"id"`
-	MachineID                 string   `json:"machine_id"`
-	EmployeeType              string   `json:"employee_type,omitempty"`
-	PlatformID                string   `json:"platform_id,omitempty"`
-	PlatformEmployeeID        string   `json:"platform_employee_id,omitempty"`
-	RuntimeProviderID         string   `json:"runtime_provider_id,omitempty"`
-	OwnerUserID               string   `json:"owner_user_id"`
-	OwnerEmail                string   `json:"owner_email,omitempty"`
+	ID                 string `json:"id"`
+	MachineID          string `json:"machine_id"`
+	EmployeeType       string `json:"employee_type,omitempty"`
+	PlatformID         string `json:"platform_id,omitempty"`
+	PlatformEmployeeID string `json:"platform_employee_id,omitempty"`
+	RuntimeProviderID  string `json:"runtime_provider_id,omitempty"`
+	OwnerUserID        string `json:"owner_user_id"`
+	OwnerEmail         string `json:"owner_email,omitempty"`
 	// TwinSlot is the stable personal-twin slot for this physical user
 	// (default: "personal-default"). Multiple machines reclaim/bind slots
 	// instead of creating endless orphan VEs after reinstall.

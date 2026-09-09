@@ -91,26 +91,26 @@ func Run(onReady, onExit func()) {
 	nativeLoop()
 }
 
-//设置鼠标左键双击事件的时间间隔 默认500毫秒
+// 设置鼠标左键双击事件的时间间隔 默认500毫秒
 func SetDClickTimeMinInterval(value int64) {
 	dClickTimeMinInterval = value
 }
 
-//设置托盘鼠标左键点击事件
+// 设置托盘鼠标左键点击事件
 func SetOnClick(fn func(menu IMenu)) {
 	setOnClick(fn)
 }
 
-//设置托盘鼠标左键双击事件
+// 设置托盘鼠标左键双击事件
 func SetOnDClick(fn func(menu IMenu)) {
 	setOnDClick(fn)
 }
 
-//设置托盘鼠标右键事件反馈回调
-//支持windows 和 macosx，不支持linux
-//设置事件，菜单默认将不展示，通过menu.ShowMenu()函数显示
-//未设置事件，默认右键显示托盘菜单
-//macosx ShowMenu()只支持OnRClick函数内调用
+// 设置托盘鼠标右键事件反馈回调
+// 支持windows 和 macosx，不支持linux
+// 设置事件，菜单默认将不展示，通过menu.ShowMenu()函数显示
+// 未设置事件，默认右键显示托盘菜单
+// macosx ShowMenu()只支持OnRClick函数内调用
 func SetOnRClick(fn func(menu IMenu)) {
 	setOnRClick(fn)
 }

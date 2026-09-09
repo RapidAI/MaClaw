@@ -92,3 +92,64 @@ func TestPruneOlderThanNonPositiveAgeIsNoOp(t *testing.T) {
 		t.Fatalf("no-op prune must keep files: %v", err)
 	}
 }
+
+func TestPruneNeverRemovesStoreKey(t *testing.T) {
+	root := t.TempDir()
+	secret := "sealed payload 42"
+	handle, err := Spill(SpillOptions{
+		ToolName:   "database",
+		SessionKey: "s",
+		Content:    secret,
+		Root:       root,
+		Encrypt:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The key file is written once and never modified, so in a real store it
+	// is always the oldest file present. Simulate that age explicitly.
+	keyPath := filepath.Join(root, storeKeyFile)
+	old := time.Now().Add(-365 * 24 * time.Hour)
+	if err := os.Chtimes(keyPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := PruneOlderThan(root, 24*time.Hour); err != nil {
+		t.Fatalf("PruneOlderThan: %v", err)
+	}
+	if _, err := os.Stat(keyPath); err != nil {
+		t.Fatalf("prune deleted the store key: %v", err)
+	}
+	// The still-fresh encrypted handle must remain decryptable with the
+	// surviving key.
+	res, err := Read(ReadOptions{ID: handle.ID, SessionKey: "s", Root: root, Limit: MaxReadLimit})
+	if err != nil || res.Content != secret {
+		t.Fatalf("encrypted handle unreadable after prune: %q %v", res.Content, err)
+	}
+
+	// Stale non-handle files (anything that is not .txt/.enc) survive too;
+	// stale handles are still pruned.
+	notes := filepath.Join(root, "notes.log")
+	if err := os.WriteFile(notes, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(notes, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(handle.Path, old, old); err != nil {
+		t.Fatal(err)
+	}
+	result, err := PruneOlderThan(root, 24*time.Hour)
+	if err != nil {
+		t.Fatalf("PruneOlderThan: %v", err)
+	}
+	if result.RemovedFiles != 1 {
+		t.Fatalf("RemovedFiles = %d, want 1 (only the stale .enc handle)", result.RemovedFiles)
+	}
+	if _, err := os.Stat(notes); err != nil {
+		t.Fatalf("non-handle file must survive prune: %v", err)
+	}
+	if _, err := os.Stat(keyPath); err != nil {
+		t.Fatalf("store key must survive prune: %v", err)
+	}
+}

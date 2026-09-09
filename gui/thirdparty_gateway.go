@@ -67,6 +67,12 @@ type thirdPartyGatewayManager struct {
 	// request costs a full local ASR inference, so an unauthenticated LAN
 	// caller must not be able to spin the CPU with WAV uploads.
 	voicePairAttempts map[string][]time.Time
+	// Per-IP sliding-window attempts for the six-digit pairing-code endpoint.
+	// The code is only 10^6 wide and stays valid for 30 minutes, so without a
+	// window an unauthenticated LAN caller can enumerate the whole space and
+	// walk away with the gateway bearer token in seconds (measured: 123,457
+	// guesses in 0.72s on 2026-09-09).
+	pairAttempts map[string][]time.Time
 }
 
 // thirdPartyDevicePairing is deliberately short lived and single use.  It is
@@ -535,6 +541,12 @@ func (m *thirdPartyGatewayManager) handleDevicePair(w http.ResponseWriter, r *ht
 		writeGatewayError(w, http.StatusBadRequest, "bad_request", "clientId and a six-digit pairCode are required")
 		return
 	}
+	// Counted only once the request is well formed: malformed traffic must not
+	// be able to exhaust a legitimate device's window.
+	if !m.allowPairCodeAttempt(clientRemoteIP(r)) {
+		writeGatewayError(w, http.StatusTooManyRequests, "rate_limited", "too many pairing attempts; retry later")
+		return
+	}
 	m.exchangeDevicePairing(w, httplessDevicePairRequest{PairCode: pairCode, ClientID: req.ClientID})
 }
 
@@ -545,6 +557,22 @@ const (
 	voicePairWindow       = time.Minute
 	voicePairMaxAttempts  = 5
 	voicePairMaxTrackedIP = 1024
+)
+
+// pairAttempt* rate-limit the six-digit pairing-code endpoint. The code is the
+// only thing standing between an unauthenticated caller and the gateway bearer
+// token, so it needs an explicit window of its own: the voice limiter above is
+// sized for CPU cost (5/min) and was never applied to this handler.
+//
+// The Hub-side DeviceGateway already applies exactly this control
+// (deviceCodePairAttemptWindow / deviceCodePairAttemptLimit = 12/min) — the two
+// implementations of the same pairing protocol had drifted apart, and only the
+// local GUI handler was left open. The limit is deliberately kept identical so
+// they cannot drift again unnoticed.
+const (
+	pairAttemptWindow       = time.Minute
+	pairAttemptMaxAttempts  = 12
+	pairAttemptMaxTrackedIP = 4096
 )
 
 // clientRemoteIP extracts the host part of the request's remote address.
@@ -563,32 +591,50 @@ func (m *thirdPartyGatewayManager) allowVoicePairAttempt(ip string) bool {
 	if m == nil {
 		return true
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return allowSlidingWindowAttempt(&m.voicePairAttempts, ip, voicePairWindow, voicePairMaxAttempts, voicePairMaxTrackedIP)
+}
+
+// allowPairCodeAttempt bounds how fast one source can guess pairing codes.
+// Attempts are counted after the request is well formed, so malformed traffic
+// cannot be used to exhaust a legitimate caller's window.
+func (m *thirdPartyGatewayManager) allowPairCodeAttempt(ip string) bool {
+	if m == nil {
+		return true
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return allowSlidingWindowAttempt(&m.pairAttempts, ip, pairAttemptWindow, pairAttemptMaxAttempts, pairAttemptMaxTrackedIP)
+}
+
+// allowSlidingWindowAttempt records one attempt for ip and reports whether it
+// fits the window. The map is bounded so spoofed source IPs cannot grow it
+// without limit. Callers must hold m.mu.
+func allowSlidingWindowAttempt(attempts *map[string][]time.Time, ip string, window time.Duration, maxAttempts, maxTrackedIP int) bool {
 	if ip == "" {
 		ip = "unknown"
 	}
 	now := time.Now()
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.voicePairAttempts == nil {
-		m.voicePairAttempts = make(map[string][]time.Time)
+	if *attempts == nil {
+		*attempts = make(map[string][]time.Time)
 	}
-	attempts := m.voicePairAttempts[ip]
-	kept := attempts[:0]
-	for _, at := range attempts {
-		if now.Sub(at) < voicePairWindow {
+	kept := (*attempts)[ip][:0]
+	for _, at := range (*attempts)[ip] {
+		if now.Sub(at) < window {
 			kept = append(kept, at)
 		}
 	}
-	if len(kept) >= voicePairMaxAttempts {
-		m.voicePairAttempts[ip] = kept
+	if len(kept) >= maxAttempts {
+		(*attempts)[ip] = kept
 		return false
 	}
-	m.voicePairAttempts[ip] = append(kept, now)
+	(*attempts)[ip] = append(kept, now)
 	// Bound the map itself: spoofed source IPs must not grow it forever.
-	if len(m.voicePairAttempts) > voicePairMaxTrackedIP {
-		for candidate, list := range m.voicePairAttempts {
-			if len(list) == 0 || now.Sub(list[len(list)-1]) >= voicePairWindow {
-				delete(m.voicePairAttempts, candidate)
+	if len(*attempts) > maxTrackedIP {
+		for candidate, list := range *attempts {
+			if len(list) == 0 || now.Sub(list[len(list)-1]) >= window {
+				delete(*attempts, candidate)
 			}
 		}
 	}

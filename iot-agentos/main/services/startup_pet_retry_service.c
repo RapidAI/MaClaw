@@ -113,8 +113,24 @@ device_status_t startup_pet_retry_service_schedule(uint64_t delay_us) {
     }
     const esp_err_t start_err = timer ? esp_timer_start_once(timer, delay_us)
                                       : (ensure_err == ESP_OK ? ESP_ERR_INVALID_STATE : ensure_err);
+    esp_err_t final_status = start_err;
+    if (start_err == ESP_OK) {
+        /* PREPARE/stop can close admission after the timer snapshot but
+         * before this start call.  Recheck after the ESP timer operation and
+         * retire a late start so a closed generation cannot receive a retry
+         * callback after its parent transaction has stopped the timer. */
+        taskENTER_CRITICAL(&s_lock);
+        const bool still_admitted = s_initialized && s_callback_admission_open &&
+                                    !s_system_sleep_preparing && !s_stopped &&
+                                    s_timer == timer;
+        taskEXIT_CRITICAL(&s_lock);
+        if (!still_admitted) {
+            (void)esp_timer_stop(timer);
+            final_status = ESP_ERR_INVALID_STATE;
+        }
+    }
     xSemaphoreGive(s_timer_mutex);
-    return status_from_esp_err(start_err);
+    return status_from_esp_err(final_status);
 }
 
 bool startup_pet_retry_service_take_due(void) {

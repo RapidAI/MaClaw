@@ -38,8 +38,13 @@ type llmEndpointAccessLogEntry struct {
 	TotalTokens       int64          `json:"total_tokens,omitempty"`
 	CachedInputTokens int64          `json:"cached_input_tokens,omitempty"`
 	CacheWriteTokens  int64          `json:"cache_write_tokens,omitempty"`
+	CacheUsageSource  string         `json:"cache_usage_source,omitempty"`
+	UsageAnomaly      string         `json:"usage_anomaly,omitempty"`
+	PricingSource     string         `json:"pricing_source,omitempty"`
 	InputCostRMB      float64        `json:"input_cost_rmb,omitempty"`
 	OutputCostRMB     float64        `json:"output_cost_rmb,omitempty"`
+	CacheReadCostRMB  float64        `json:"cache_read_cost_rmb,omitempty"`
+	CacheWriteCostRMB float64        `json:"cache_write_cost_rmb,omitempty"`
 	TotalCostRMB      float64        `json:"total_cost_rmb,omitempty"`
 	CreditMultiplier  float64        `json:"credit_multiplier,omitempty"`
 	Credits           float64        `json:"credits,omitempty"`
@@ -77,8 +82,13 @@ type llmEndpointAccessLogView struct {
 	TotalTokens       int64          `json:"total_tokens,omitempty"`
 	CachedInputTokens int64          `json:"cached_input_tokens,omitempty"`
 	CacheWriteTokens  int64          `json:"cache_write_tokens,omitempty"`
+	CacheUsageSource  string         `json:"cache_usage_source,omitempty"`
+	UsageAnomaly      string         `json:"usage_anomaly,omitempty"`
+	PricingSource     string         `json:"pricing_source,omitempty"`
 	InputCostRMB      float64        `json:"input_cost_rmb,omitempty"`
 	OutputCostRMB     float64        `json:"output_cost_rmb,omitempty"`
+	CacheReadCostRMB  float64        `json:"cache_read_cost_rmb,omitempty"`
+	CacheWriteCostRMB float64        `json:"cache_write_cost_rmb,omitempty"`
 	TotalCostRMB      float64        `json:"total_cost_rmb,omitempty"`
 	CreditMultiplier  float64        `json:"credit_multiplier,omitempty"`
 	Credits           float64        `json:"credits,omitempty"`
@@ -567,6 +577,10 @@ func GetLLMEndpointAccessLogsHandler(system store.SystemSettingsRepository) http
 		}
 		views := make([]llmEndpointAccessLogView, 0, end-offset)
 		for _, item := range entries[offset:end] {
+			totalCost := item.TotalCostRMB
+			if item.InputCostRMB != 0 || item.OutputCostRMB != 0 || item.CacheReadCostRMB != 0 || item.CacheWriteCostRMB != 0 {
+				totalCost = item.InputCostRMB + item.CacheReadCostRMB + item.CacheWriteCostRMB + item.OutputCostRMB
+			}
 			views = append(views, llmEndpointAccessLogView{
 				ID:                item.ID,
 				Email:             item.Email,
@@ -581,9 +595,14 @@ func GetLLMEndpointAccessLogsHandler(system store.SystemSettingsRepository) http
 				TotalTokens:       item.TotalTokens,
 				CachedInputTokens: item.CachedInputTokens,
 				CacheWriteTokens:  item.CacheWriteTokens,
+				CacheUsageSource:  item.CacheUsageSource,
+				UsageAnomaly:      item.UsageAnomaly,
+				PricingSource:     item.PricingSource,
 				InputCostRMB:      item.InputCostRMB,
 				OutputCostRMB:     item.OutputCostRMB,
-				TotalCostRMB:      item.TotalCostRMB,
+				CacheReadCostRMB:  item.CacheReadCostRMB,
+				CacheWriteCostRMB: item.CacheWriteCostRMB,
+				TotalCostRMB:      totalCost,
 				CreditMultiplier:  item.CreditMultiplier,
 				Credits:           item.Credits,
 				BillingRecorded:   item.BillingRecorded,

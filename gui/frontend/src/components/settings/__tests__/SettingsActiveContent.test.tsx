@@ -32,7 +32,6 @@ vi.mock('../../../appLazyComponents', () => ({
     KnowledgeSettingsPanel: () => <div>Knowledge</div>,
     MISDataSettingsPanel: () => <div>MIS</div>,
     UISettingsPanel: () => <div>UI</div>,
-    ProgrammingToolsSettingsPanel: () => <div>Display</div>,
     SystemSettingsPanel: () => <div>System</div>,
     MigrationSettingsPanel: () => <div>Migration</div>,
     ProxySettingsPanel: () => <div>Proxy</div>,

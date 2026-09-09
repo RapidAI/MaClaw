@@ -1,6 +1,6 @@
 # Computer Use：按 LongHorizon MEA 改进（第五次审查修订）
 
-> 状态：第五次对照代码审查后修订，**未实施**。不提交。
+> 状态：第五次对照代码审查后修订。**WP2b 已实施**（`corelib/agent/computer_use_observe_fold.go` + `computer_use_observe_fold_test.go`，2026-09-02）；其余工作包未实施。不提交。
 > Caption / OmniParser 已完成，本方案不改感知栈。
 > R1–R53 已吸收为正文约束；本节只保留本轮新缺陷。
 
@@ -155,6 +155,8 @@ P0 没有 Acceptance 生产者、也不打 HorizonRole → 永远走「空契约
 `cuSession()` 已按 owner 分 Session。测两个 SessionKey 交错 observe 不串图。Sticky 仍全局。不拆 `cuLastObserveMetrics`。
 
 ### WP2b — 跨轮 observe 折叠
+
+> 状态：**已实施**（2026-09-02）。`FoldComputerUseObserves`（`corelib/agent/computer_use_observe_fold.go`）只保留最后一条 `computer_observe` 全文，更早的压成 `[computer_observe fingerprint]` 指纹并丢弃过期截图；单测见 `computer_use_observe_fold_test.go`。
 
 接到现有 `trimConversation` / `CheckpointConversation`，不要只压当前 loop。历史 `computer_observe` 只留最后一条全文；更早的压成指纹。最后一张视觉图保留。`StructuredPreview` 可加 `computer_observe` 分支作第一刀，但不能代替跨轮折叠。
 

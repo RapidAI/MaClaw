@@ -15,8 +15,8 @@ import (
 )
 
 type systemFreeUpdateRequest struct {
-	Name        string                        `json:"name"`
-	Description string                        `json:"description"`
+	Name        string                         `json:"name"`
+	Description string                         `json:"description"`
 	Models      []llmservice.ModelServiceModel `json:"models"`
 }
 

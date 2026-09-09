@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -67,6 +68,9 @@ func TestCreateInspectRestore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Inspect() error = %v", err)
 	}
+	if manifest.Version != ArchiveVersion || manifest.GenerationID == "" || manifest.Consistency != cloudWorkspaceConsistency {
+		t.Fatalf("manifest generation metadata = %+v", manifest)
+	}
 	assertEntry(t, manifest, "configs/config.yaml", "config")
 	assertEntry(t, manifest, "data/hub.db", "sqlite_snapshot")
 	assertEntry(t, manifest, "data/rsa_private.pem", "certificate")
@@ -107,6 +111,126 @@ func TestCreateInspectRestore(t *testing.T) {
 	if _, err := Restore(RestoreOptions{ArchivePath: archivePath, TargetRoot: restoreDir}); err == nil {
 		t.Fatal("Restore() without force should refuse overwrites")
 	}
+	writeFile(t, filepath.Join(restoreDir, "data", "keep-local.log"), "keep")
+	writeFile(t, filepath.Join(restoreDir, "data", "hub.db-wal"), "stale-wal")
+	if _, err := Restore(RestoreOptions{ArchivePath: archivePath, TargetRoot: restoreDir, Force: true}); err != nil {
+		t.Fatalf("Restore() force error = %v", err)
+	}
+	if raw, err := os.ReadFile(filepath.Join(restoreDir, "data", "keep-local.log")); err != nil || string(raw) != "keep" {
+		t.Fatalf("unbacked local file was not preserved: %q err=%v", raw, err)
+	}
+	if _, err := os.Stat(filepath.Join(restoreDir, "data", "hub.db-wal")); !os.IsNotExist(err) {
+		t.Fatalf("stale sqlite WAL survived generation switch: %v", err)
+	}
+}
+
+func TestCreateUsesWriteBarrierAsBackupCut(t *testing.T) {
+	root := t.TempDir()
+	dataDir := filepath.Join(root, "data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(dataDir, "hub.db")
+	seedSQLite(t, dbPath)
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(`PRAGMA busy_timeout=5000`); err != nil {
+		t.Fatal(err)
+	}
+
+	barrierAcquired := make(chan struct{})
+	releaseBarrier := make(chan struct{})
+	consistentGenerationBarrierHook = func() {
+		close(barrierAcquired)
+		<-releaseBarrier
+	}
+	defer func() { consistentGenerationBarrierHook = nil }()
+	cfg := config.Default()
+	cfg.Database.DSN = dbPath
+	archivePath := filepath.Join(root, "barrier.tar.gz")
+	createDone := make(chan error, 1)
+	go func() {
+		_, err := Create(context.Background(), cfg, CreateOptions{OutputPath: archivePath, Now: time.Now()})
+		createDone <- err
+	}()
+	<-barrierAcquired
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := db.Exec(`INSERT INTO items(name) VALUES ('after-cut')`)
+		writeDone <- err
+	}()
+	select {
+	case err := <-writeDone:
+		t.Fatalf("writer crossed backup barrier early: %v", err)
+	case <-time.After(75 * time.Millisecond):
+	}
+	close(releaseBarrier)
+	if err := <-createDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-writeDone; err != nil {
+		t.Fatal(err)
+	}
+
+	restoreRoot := filepath.Join(root, "restore-cut")
+	if _, err := Restore(RestoreOptions{ArchivePath: archivePath, TargetRoot: restoreRoot}); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := sql.Open("sqlite", filepath.Join(restoreRoot, "data", "hub.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Close()
+	var count int
+	if err := restored.QueryRow(`SELECT COUNT(*) FROM items`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("backup crossed its declared cut: item count=%d want=1", count)
+	}
+}
+
+func TestCreateExcludesBackupOutputDirectoryContents(t *testing.T) {
+	root := t.TempDir()
+	dataDir := filepath.Join(root, "data")
+	if err := os.MkdirAll(filepath.Join(dataDir, "backups"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(dataDir, "hub.db")
+	seedSQLite(t, dbPath)
+	writeFile(t, filepath.Join(dataDir, "backups", "maclaw-hub-backup-old.tar.gz"), "old archive")
+	writeFile(t, filepath.Join(dataDir, "backups", "notes.json"), "{\"note\":\"x\"}")
+	cfg := config.Default()
+	cfg.Database.DSN = dbPath
+	archivePath := filepath.Join(dataDir, "backups", "maclaw-hub-backup-new.tar.gz")
+	if _, err := Create(context.Background(), cfg, CreateOptions{OutputPath: archivePath}); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := Inspect(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNoEntry(t, manifest, "data/backups/maclaw-hub-backup-old.tar.gz")
+	assertNoEntry(t, manifest, "data/backups/notes.json")
+}
+
+func TestCreateRejectsOutputBesideLiveDatabase(t *testing.T) {
+	root := t.TempDir()
+	dataDir := filepath.Join(root, "data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(dataDir, "hub.db")
+	seedSQLite(t, dbPath)
+	cfg := config.Default()
+	cfg.Database.DSN = dbPath
+	if _, err := Create(context.Background(), cfg, CreateOptions{OutputPath: filepath.Join(dataDir, "backup.tar.gz")}); err == nil || !strings.Contains(err.Error(), "must not be Hub data directory") {
+		t.Fatalf("output beside database error=%v", err)
+	}
 }
 
 func seedSQLite(t *testing.T, path string) {
@@ -134,7 +258,7 @@ func writeFile(t *testing.T, path, value string) {
 func assertEntry(t *testing.T, manifest *Manifest, path, kind string) {
 	t.Helper()
 	for _, entry := range manifest.Entries {
-		if entry.Path == path && entry.Kind == kind {
+		if entry.Path == path && entry.Kind == kind && validDigest(entry.SHA256) {
 			return
 		}
 	}

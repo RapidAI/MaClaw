@@ -1,4 +1,4 @@
-import type { Dispatch, MouseEvent as ReactMouseEvent, SetStateAction } from 'react';
+import { useState, type Dispatch, type MouseEvent as ReactMouseEvent, type SetStateAction } from 'react';
 import { getAllToolOptions, isToolTab, normalizeToolTab } from '../../config/toolCatalog';
 import { getHeaderTitle } from './mainTopHeaderTitle';
 import { MainTopHeaderActions } from './MainTopHeaderActions';
@@ -66,6 +66,15 @@ export const MainTopHeader = ({
     handleWindowMaximizeToggle,
     windowMaximized,
 }: MainTopHeaderProps) => {
+    const [searchText, setSearchText] = useState('');
+    const openTaskSearch = () => {
+        window.dispatchEvent(new CustomEvent('maclaw:open-task-search', { detail: { query: searchText } }));
+    };
+    const openNotifications = () => {
+        // The title-bar bell is a toggle.  Sidebar notification rows still
+        // dispatch the plain event below to open the panel without closing it.
+        window.dispatchEvent(new CustomEvent('maclaw:open-system-notifications', { detail: { toggle: true } }));
+    };
     const safeActiveTool = normalizeToolTab(activeTool);
     const toolOptions = getAllToolOptions();
     const showToolSwitcher = isToolTab(navTab);
@@ -73,7 +82,15 @@ export const MainTopHeader = ({
     <div className="top-header" data-window-drag style={{ '--wails-draggable': 'drag', userSelect: 'none' } as any} onDoubleClick={() => handleWindowMaximizeToggle()}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
             <h2 style={{ margin: 0, fontSize: '1.05rem', color: 'var(--theme-text-primary)', fontWeight: 'bold', marginLeft: '20px', '--wails-draggable': 'drag', flex: 1, display: 'flex', alignItems: 'center' } as any}>
-                {showToolSwitcher ? (
+                <span className="mc-header-brand" aria-label="MaClaw">
+                    <span className="mc-header-brand-mark" aria-hidden="true">
+                        <svg viewBox="0 0 80 80" focusable="false">
+                            <path d="M14 58V22l26 25 26-25v36" fill="none" stroke="currentColor" strokeWidth="10.5" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                    </span>
+                    <span>MaClaw</span>
+                </span>
+                {navTab !== 'ai' && (showToolSwitcher ? (
                     <select
                         className="top-header-tool-select"
                         value={safeActiveTool}
@@ -88,8 +105,8 @@ export const MainTopHeader = ({
                         ))}
                     </select>
                 ) : (
-                    <span>{getHeaderTitle(navTab, lang, t)}</span>
-                )}
+                    <span>{getHeaderTitle(navTab, lang, t, true)}</span>
+                ))}
                 <MainTopHeaderActions
                     navTab={navTab}
                     lang={lang}
@@ -106,6 +123,12 @@ export const MainTopHeader = ({
                 />
             </h2>
             <div className="top-header-window-controls" style={{ display: 'flex', gap: '4px', '--wails-draggable': 'no-drag', marginRight: '5px', pointerEvents: 'auto', position: 'relative', zIndex: 10000 } as any}>
+                <span className="mc-header-search-wrap">
+                    <svg className="mc-header-search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4.5 4.5" /></svg>
+                    <input className="mc-header-search" value={searchText} onChange={(event) => setSearchText(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') openTaskSearch(); }} placeholder={lang === 'en' ? 'Search tasks, files, knowledge...' : '搜索任务、文件、知识…'} aria-label={lang === 'en' ? 'Search' : '搜索'} />
+                </span>
+                <button className="mc-header-notification" data-testid="main-header-notifications" type="button" onClick={openNotifications} aria-label={lang === 'en' ? 'Notifications' : '通知'} title={lang === 'en' ? 'Notifications' : '通知'}><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" /><path d="M10 21h4" /></svg></button>
+                <span className="mc-header-ready"><i aria-hidden="true" />{lang === 'en' ? 'Ready' : '准备就绪'}</span>
                 <button
                     onMouseDown={handleWindowHide}
                     aria-label={lang === 'en' ? 'Hide window' : zhHans.hideWindow}

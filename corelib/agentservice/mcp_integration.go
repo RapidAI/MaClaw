@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	mcphttp "github.com/RapidAI/CodeClaw/corelib/mcp"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -185,7 +186,9 @@ func (b *MCPToolBridge) SetMCPDynamicContractResolver(resolver MCPDynamicContrac
 func NewMCPToolBridge(svc *Service) *MCPToolBridge {
 	bridge := &MCPToolBridge{
 		svc:       svc,
-		client:    &http.Client{Timeout: 30 * time.Second},
+		// Tools are actually invoked through this client, so it carries the
+		// same SSRF guard as the probe path (2026-09-09 re-review).
+		client:    mcphttp.NewPrivateHTTPClient(30 * time.Second),
 		readiness: NewMCPReadinessManager(svc),
 	}
 	if svc != nil {

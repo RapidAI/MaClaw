@@ -2,7 +2,6 @@ package agentservice
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -10,7 +9,6 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
-	"github.com/RapidAI/CodeClaw/corelib/tooldef"
 )
 
 // DynamicCapabilityNeedRequest is the bounded input to a trusted semantic
@@ -224,6 +222,126 @@ type IntentCapabilityNeedTemplate struct {
 	MaxInvocations int
 }
 
+// CoveredCapabilitiesFromNeedTemplates projects a label→need rule table onto
+// the identity set FilterGrantedNeedsStillCovered consults. GUI IM rules and
+// headless reviewed rules share this so a retired mapping cannot revive a grant.
+func CoveredCapabilitiesFromNeedTemplates(rules map[intent.IntentLabel][]IntentCapabilityNeedTemplate) map[coretool.CapabilityID]bool {
+	if len(rules) == 0 {
+		return nil
+	}
+	covered := make(map[coretool.CapabilityID]bool)
+	for _, templates := range rules {
+		for _, template := range templates {
+			if cap := template.Capability; cap != "" {
+				covered[cap] = true
+			}
+		}
+	}
+	return covered
+}
+
+// IntentRuleCoverage is the migration gate for one classification against an
+// owner-published intent→need table. Managed and Unmapped are independent:
+// a search+unmigrated secondary is both managed and unmapped, so hosts fail
+// closed instead of planning only the migrated subset.
+type IntentRuleCoverage struct {
+	Managed  bool
+	Unmapped intent.IntentLabel
+}
+
+// IntentRuleCoverageFromClassification scans primary then secondary labels.
+// Generic classifier states (non_coding/continuation/unknown/ambiguous) are
+// not coverage gaps. GUI IM routing and the headless intent resolver share
+// this so they cannot disagree on whether a turn is managed.
+func IntentRuleCoverageFromClassification(result intent.ClassificationResult, rules map[intent.IntentLabel][]IntentCapabilityNeedTemplate) IntentRuleCoverage {
+	var coverage IntentRuleCoverage
+	for _, label := range result.Labels() {
+		if len(rules[label]) > 0 {
+			coverage.Managed = true
+			continue
+		}
+		if coverage.Unmapped == "" && !label.IsNonCapabilityLabel() {
+			coverage.Unmapped = label
+		}
+	}
+	return coverage
+}
+
+func needTemplatePolarity(template IntentCapabilityNeedTemplate) coretool.NeedPolarity {
+	if template.Polarity == "" {
+		return coretool.NeedRequire
+	}
+	return template.Polarity
+}
+
+// NeedTemplateIdentityKey is the sibling-dedup key for one reviewed template.
+// GUI coding catalog and the intent-label resolver must agree so a repeated
+// mapping cannot mint a second family.
+func NeedTemplateIdentityKey(template IntentCapabilityNeedTemplate) string {
+	return string(template.Capability) + "\x00" + string(needTemplatePolarity(template)) + "\x00" + coretool.NeedQualifierKey(template.Qualifiers)
+}
+
+// ExpandNeedTemplateOptions names how one reviewed template becomes plan
+// siblings. IDPrefix is "need:" for intent resolution and "need:coding:" for
+// the Coding workbench so journal lineage cannot collide.
+type ExpandNeedTemplateOptions struct {
+	IDPrefix      string
+	Confidence    float64
+	EvidenceIDs   []string
+	ForceOptional bool
+}
+
+// ExpandNeedTemplateSiblings emits one CapabilityNeed per permitted
+// invocation. MaxInvocations is an exposure ceiling, not an obligation:
+// only the first sibling inherits Required (unless ForceOptional). Later
+// siblings stay optional so after-edges unlock after the declared
+// invocation rather than waiting for unused refinements.
+func ExpandNeedTemplateSiblings(template IntentCapabilityNeedTemplate, opts ExpandNeedTemplateOptions) []coretool.CapabilityNeed {
+	polarity := needTemplatePolarity(template)
+	key := NeedTemplateIdentityKey(template)
+	prefix := strings.TrimSpace(opts.IDPrefix)
+	if prefix == "" {
+		prefix = "need:"
+	}
+	baseID := prefix + string(template.Capability) + ":" + coretool.SchemaDigest([]byte(key))[:12]
+	budget := coretool.RepeatSiblingBudget(template.MaxInvocations)
+	evidence := append([]string(nil), opts.EvidenceIDs...)
+	required := false
+	if !opts.ForceOptional {
+		required = coretool.RepeatSiblingRequired(template.Required, 0)
+	}
+	base := coretool.CapabilityNeed{
+		ID:          baseID,
+		Capability:  template.Capability,
+		Qualifiers:  coretool.CloneNeedQualifiers(template.Qualifiers),
+		Polarity:    polarity,
+		Required:    required,
+		Confidence:  opts.Confidence,
+		EvidenceIDs: append([]string(nil), evidence...),
+	}
+	out := make([]coretool.CapabilityNeed, 0, budget)
+	out = append(out, base)
+	out = append(out, coretool.ExtendRepeatFamily(base, 1, budget, opts.Confidence, evidence)...)
+	return out
+}
+
+// ExpandNeedTemplates expands a reviewed template list, dropping duplicate
+// capability+polarity+qualifier identities. GUI coding policy uses this so
+// it cannot drift from the intent-label resolver's sibling scheme.
+func ExpandNeedTemplates(templates []IntentCapabilityNeedTemplate, opts ExpandNeedTemplateOptions) []coretool.CapabilityNeed {
+	out := make([]coretool.CapabilityNeed, 0, len(templates))
+	seen := make(map[string]bool, len(templates))
+	for _, template := range templates {
+		key := NeedTemplateIdentityKey(template)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, ExpandNeedTemplateSiblings(template, opts)...)
+	}
+	return out
+}
+
 // IntentLabelCapabilityNeedResolver turns semantic UIC labels into typed
 // needs. It is reusable for any dynamic capability family, but deliberately
 // requires an owner-published mapping and an already-governed capability
@@ -240,21 +358,24 @@ type IntentLabelCapabilityNeedResolver struct {
 	// do not grow knowledge/memory tools. Tests that pin exact intent→need
 	// maps leave this off.
 	AmbientRetrieval bool
+	// ArchetypeBundles expands companion needs from SemanticArchetypeBundles.
+	// Tests that pin exact intent→need maps leave this off.
+	ArchetypeBundles bool
 }
 
-func (r *IntentLabelCapabilityNeedResolver) ResolveDynamicCapabilityNeeds(_ context.Context, request DynamicCapabilityNeedRequest) (DynamicCapabilityNeedResolution, error) {
+func (r *IntentLabelCapabilityNeedResolver) ResolveDynamicCapabilityNeeds(ctx context.Context, request DynamicCapabilityNeedRequest) (DynamicCapabilityNeedResolution, error) {
 	if r == nil || r.Classifier == nil || r.Registry == nil {
 		return DynamicCapabilityNeedResolution{}, fmt.Errorf("intent capability need resolver is unavailable")
 	}
 	classification := r.Classifier.Classify(intent.MessageContext{Text: request.UserText, UserID: request.Principal.UserID})
 	if resolution, ok := r.SessionGoverned.ReplayContinuation(request, r.Rules, r.Registry, classification); ok {
-		return applyAmbientRetrieval(r.Registry, r.AmbientRetrieval, classification.Primary, resolution), nil
+		return finishIntentNeedResolution(ctx, r.Registry, r.Rules, r.AmbientRetrieval, r.ArchetypeBundles, classification, resolution), nil
 	}
 	resolution, err := resolveIntentLabelCapabilityNeeds(r.Registry, r.Rules, r.MinimumConfidence, classification)
 	if err != nil {
 		return resolution, err
 	}
-	return applyAmbientRetrieval(r.Registry, r.AmbientRetrieval, classification.Primary, resolution), nil
+	return finishIntentNeedResolution(ctx, r.Registry, r.Rules, r.AmbientRetrieval, r.ArchetypeBundles, classification, resolution), nil
 }
 
 // PrincipalIntentLabelCapabilityNeedResolver applies the same reviewed
@@ -270,6 +391,7 @@ type PrincipalIntentLabelCapabilityNeedResolver struct {
 	MinimumConfidence float64
 	SessionGoverned   *SessionGovernedTaskStore
 	AmbientRetrieval  bool
+	ArchetypeBundles  bool
 }
 
 func (r *PrincipalIntentLabelCapabilityNeedResolver) ResolveDynamicCapabilityNeeds(ctx context.Context, request DynamicCapabilityNeedRequest) (DynamicCapabilityNeedResolution, error) {
@@ -281,13 +403,21 @@ func (r *PrincipalIntentLabelCapabilityNeedResolver) ResolveDynamicCapabilityNee
 		return DynamicCapabilityNeedResolution{}, err
 	}
 	if resolution, ok := r.SessionGoverned.ReplayContinuation(request, r.Rules, r.Registry, classification); ok {
-		return applyAmbientRetrieval(r.Registry, r.AmbientRetrieval, classification.Primary, resolution), nil
+		return finishIntentNeedResolution(ctx, r.Registry, r.Rules, r.AmbientRetrieval, r.ArchetypeBundles, classification, resolution), nil
 	}
 	resolution, err := resolveIntentLabelCapabilityNeeds(r.Registry, r.Rules, r.MinimumConfidence, classification)
 	if err != nil {
 		return resolution, err
 	}
-	return applyAmbientRetrieval(r.Registry, r.AmbientRetrieval, classification.Primary, resolution), nil
+	return finishIntentNeedResolution(ctx, r.Registry, r.Rules, r.AmbientRetrieval, r.ArchetypeBundles, classification, resolution), nil
+}
+
+func finishIntentNeedResolution(ctx context.Context, registry *coretool.CapabilityRegistry, rules map[intent.IntentLabel][]IntentCapabilityNeedTemplate, ambient, bundles bool, classification intent.ClassificationResult, resolution DynamicCapabilityNeedResolution) DynamicCapabilityNeedResolution {
+	resolution = applyAmbientRetrieval(registry, ambient, classification.Primary, resolution)
+	if bundles {
+		resolution.Needs = ExpandArchetypeBundleNeeds(registry, rules, classification, resolution.Managed, resolution.Needs, ArchetypeBundleKeyFor(ctx, classification))
+	}
+	return resolution
 }
 
 func resolveIntentLabelCapabilityNeeds(registry *coretool.CapabilityRegistry, rules map[intent.IntentLabel][]IntentCapabilityNeedTemplate, minimumConfidence float64, classification intent.ClassificationResult) (DynamicCapabilityNeedResolution, error) {
@@ -296,97 +426,50 @@ func resolveIntentLabelCapabilityNeeds(registry *coretool.CapabilityRegistry, ru
 	}
 	threshold := minimumConfidence
 	if threshold <= 0 {
-		threshold = 0.78
+		threshold = ReviewedIntentMinimumConfidence
 	}
 	if classification.Degraded || classification.Confidence < threshold {
 		return DynamicCapabilityNeedResolution{}, nil
 	}
-	labels := classification.Labels()
-	seen := make(map[string]bool)
-	needs := make([]coretool.CapabilityNeed, 0)
-	managed := false
-	unmapped := false
-	for _, label := range labels {
-		templates := rules[label]
-		if len(templates) == 0 {
-			// Generic classifier states are not capability requests. Skipping
-			// them keeps a non_coding Q&A on the legacy tool surface, and keeps
-			// a governed primary (search/live_data) from being discarded when a
-			// generic secondary is also present.
-			if label.IsNonCapabilityLabel() {
-				continue
-			}
-			// Any other confident label without an owner-published mapping is a
-			// migration coverage gap. Scan the rest of the labels first so a
-			// coding-only turn is unmanaged, while search+document_delivery
-			// still fail closed instead of running only the migrated subset.
-			unmapped = true
-			continue
-		}
-		managed = true
-		for _, template := range templates {
-			if _, exists := registry.Lookup(template.Capability); !exists {
-				return DynamicCapabilityNeedResolution{}, fmt.Errorf("intent capability rule %q references unknown capability %q", label, template.Capability)
-			}
-			polarity := template.Polarity
-			if polarity == "" {
-				polarity = coretool.NeedRequire
-			}
-			key := string(template.Capability) + "\x00" + string(polarity) + "\x00" + dynamicNeedQualifierKey(template.Qualifiers)
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-			baseID := "need:" + string(template.Capability) + ":" + coretool.SchemaDigest([]byte(key))[:12]
-			// MaxInvocations is an exposure ceiling, not an obligation.
-			// Required on the template means "this meaning must happen at
-			// least once" — only the first sibling inherits it. Later
-			// siblings stay optional so after-edges (lookup→generate,
-			// lookup→render) unlock after the declared invocation rather
-			// than waiting for unused refinements. An optional template
-			// stays optional as a whole, so a missing provider still
-			// omits the family together.
-			for index := 0; index < coretool.RepeatSiblingBudget(template.MaxInvocations); index++ {
-				needs = append(needs, coretool.CapabilityNeed{
-					ID:         coretool.RepeatSiblingNeedID(baseID, index),
-					Capability: template.Capability, Qualifiers: cloneDynamicNeedQualifiers(template.Qualifiers), Polarity: polarity,
-					Required: coretool.RepeatSiblingRequired(template.Required, index), Confidence: classification.Confidence, EvidenceIDs: []string{"intent:" + string(label)},
-				})
-			}
-		}
-	}
-	if unmapped {
-		if managed {
+	coverage := IntentRuleCoverageFromClassification(classification, rules)
+	if coverage.Unmapped != "" {
+		// Any confident label without an owner-published mapping is a
+		// migration coverage gap. A coding-only turn stays unmanaged; a
+		// search+document_delivery mix fails closed instead of running
+		// only the migrated subset.
+		if coverage.Managed {
 			return DynamicCapabilityNeedResolution{Managed: true}, nil
 		}
 		return DynamicCapabilityNeedResolution{}, nil
 	}
+	if !coverage.Managed {
+		return DynamicCapabilityNeedResolution{}, nil
+	}
+	seen := make(map[string]bool)
+	needs := make([]coretool.CapabilityNeed, 0)
+	for _, label := range classification.Labels() {
+		templates := rules[label]
+		if len(templates) == 0 {
+			continue
+		}
+		for _, template := range templates {
+			if _, exists := registry.Lookup(template.Capability); !exists {
+				return DynamicCapabilityNeedResolution{}, fmt.Errorf("intent capability rule %q references unknown capability %q", label, template.Capability)
+			}
+			key := NeedTemplateIdentityKey(template)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			needs = append(needs, ExpandNeedTemplateSiblings(template, ExpandNeedTemplateOptions{
+				IDPrefix:    "need:",
+				Confidence:  classification.Confidence,
+				EvidenceIDs: []string{"intent:" + string(label)},
+			})...)
+		}
+	}
 	sort.Slice(needs, func(i, j int) bool { return needs[i].ID < needs[j].ID })
-	return DynamicCapabilityNeedResolution{Managed: managed, Needs: needs}, nil
-}
-
-func dynamicNeedQualifierKey(values map[string]string) string {
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	parts := make([]string, 0, len(keys))
-	for _, key := range keys {
-		parts = append(parts, strings.TrimSpace(key)+"="+strings.TrimSpace(values[key]))
-	}
-	return strings.Join(parts, "\x1f")
-}
-
-func cloneDynamicNeedQualifiers(values map[string]string) map[string]string {
-	if len(values) == 0 {
-		return nil
-	}
-	clone := make(map[string]string, len(values))
-	for key, value := range values {
-		clone[key] = value
-	}
-	return clone
+	return DynamicCapabilityNeedResolution{Managed: true, Needs: needs}, nil
 }
 
 // DynamicSemanticRouting supplies the shared semantic routing primitives for
@@ -709,13 +792,11 @@ func dynamicCapabilityConstraintEffectAllowed(effect string) bool {
 }
 
 func cloneDynamicRoutingFact(fact coretool.RoutingFact) coretool.RoutingFact {
-	fact.Attributes = cloneDynamicNeedQualifiers(fact.Attributes)
-	return fact
+	return coretool.CloneRoutingFact(fact)
 }
 
 func cloneDynamicRoutingConstraint(constraint coretool.RoutingConstraint) coretool.RoutingConstraint {
-	constraint.Attributes = cloneDynamicNeedQualifiers(constraint.Attributes)
-	return constraint
+	return coretool.CloneRoutingConstraint(constraint)
 }
 
 func (r DynamicSemanticRouting) validate() error {
@@ -811,11 +892,7 @@ func newCoreDynamicSemanticSurfaceForTenantWithParentAndAmendment(routing Dynami
 	publishRequest := coretool.RouteRevisionPublishRequest{Scope: scope, Plan: plan, ExpectedParent: parent, SnapshotDigest: plan.SnapshotDigest, Amendment: amendment}
 	var state coretool.RouteState
 	var initialGrants []coretool.InvocationGrant
-	if routing.Coordinator != nil {
-		state, initialGrants, err = routing.Coordinator.PublishSurface(coretool.SurfacePublishRequest{Revision: publishRequest, TenantID: tenantID, Issuer: routing.Issuer, GrantTTL: routing.GrantTTL, Now: time.Now().UTC()})
-	} else {
-		state, err = routing.RouteState.PublishRevision(publishRequest, time.Now().UTC())
-	}
+	state, initialGrants, err = coretool.PublishCurrentSurface(routing.Coordinator, routing.RouteState, coretool.NewSurfacePublishRequest(publishRequest, tenantID, routing.Issuer, routing.GrantTTL, time.Now().UTC()))
 	if err != nil {
 		return nil, fmt.Errorf("open dynamic semantic route state: %w", err)
 	}
@@ -847,68 +924,31 @@ func newCoreDynamicSemanticSurfaceForTenantWithParentAndAmendment(routing Dynami
 	}
 	for _, materialization := range state.Materializations {
 		surface.issued[materialization.Grant.SelectionID] = true
-		name := coretool.RenderedSemanticFunctionName(materialization.Grant.AdapterName, materialization.Grant.Token)
-		if materialization.State == coretool.RouteMaterializationExposed {
-			// A terminal execution has consumed its one-time grant. Do not
-			// re-render it after a restart: receipt reconciliation owns awaiting
-			// effects, while failed/unknown selections require an explicit new
-			// route revision under the original capability constraints.
-			execution, executionErr := executor.Execution(scope, materialization.Grant.SelectionID)
-			if executionErr == nil && dynamicSemanticExecutionConsumesModelGrant(execution.State) {
-				surface.retiredGrants[name] = materialization.Grant
-				if _, err := routing.RouteState.RetireMaterialization(scope, plan.ID, materialization.Grant.Token, time.Now().UTC()); err != nil {
-					return nil, fmt.Errorf("retire terminal dynamic semantic materialization: %w", err)
-				}
-				continue
-			}
-			if executionErr != nil && !errors.Is(executionErr, coretool.ErrPlanExecutionNotFound) {
-				return nil, fmt.Errorf("recover dynamic semantic execution state: %w", executionErr)
-			}
-			if existing, exists := surface.grants[name]; exists && existing.Token != materialization.Grant.Token {
-				return nil, fmt.Errorf("function-name collision for grant %q", materialization.Grant.SelectionID)
-			}
-			surface.grants[name] = materialization.Grant
-		} else {
-			surface.retiredGrants[name] = materialization.Grant
+		if err := coretool.PlaceMaterializedGrant(materialization, surface.grants, surface.retiredGrants); err != nil {
+			return nil, err
 		}
 	}
 	for _, grant := range initialGrants {
-		name := coretool.RenderedSemanticFunctionName(grant.AdapterName, grant.Token)
+		if _, err := coretool.BindIssuedGrant(grant, surface.grants); err != nil {
+			return nil, err
+		}
 		surface.issued[grant.SelectionID] = true
-		surface.grants[name] = grant
 	}
-	completed, err := executor.Completed(scope)
+	if err := coretool.RetireConsumedLiveGrants(surface.grants, surface.retiredGrants, executor, scope, func(grant coretool.InvocationGrant) error {
+		_, err := routing.RouteState.RetireMaterialization(scope, plan.ID, grant.Token, time.Now().UTC())
+		if err != nil {
+			return fmt.Errorf("retire terminal dynamic semantic materialization: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	completed, err := coretool.LoadCompletedSelections(executor, routing.RouteState, scope)
 	if err != nil {
 		return nil, fmt.Errorf("recover dynamic semantic completion: %w", err)
 	}
-	projected, err := routing.RouteState.CompletedSelections(scope)
-	if err != nil {
-		return nil, fmt.Errorf("recover projected dynamic semantic completion: %w", err)
-	}
-	for selectionID := range projected {
-		completed[selectionID] = true
-	}
 	surface.completed = completed
 	return surface, nil
-}
-
-// nextExposedSelections states this host's exposure closure in the shared
-// vocabulary. The choice itself lives in coretool so the two hosts cannot
-// diverge on it: a need declaring an invocation budget is planned as sibling
-// selections, and a host that granted them all at once would hand the model
-// its whole allowance in one round.
-func (s *coreDynamicSemanticSurface) nextExposedSelections(ready []coretool.PlannedSelection, completed map[string]bool) map[string]bool {
-	live := make(map[string]bool, len(s.grants))
-	for _, grant := range s.grants {
-		live[grant.SelectionID] = true
-	}
-	return coretool.NextRepeatSelections(coretool.RepeatExposure{
-		Ready:     ready,
-		Completed: completed,
-		Granted:   s.issued,
-		Live:      live,
-		Unsettled: s.selectionIsUnsettled,
-	})
 }
 
 // selectionIsUnsettled reads the durable execution record for a spent
@@ -916,19 +956,10 @@ func (s *coreDynamicSemanticSurface) nextExposedSelections(ready []coretool.Plan
 // moves on — while awaiting-receipt, running, or lost outcomes are not, and a
 // family must not step past them.
 func (s *coreDynamicSemanticSurface) selectionIsUnsettled(selectionID string) bool {
-	if s == nil || s.executor == nil {
+	if s == nil {
 		return false
 	}
-	record, err := s.executor.Execution(s.scope, selectionID)
-	if err != nil {
-		return false
-	}
-	switch record.State {
-	case coretool.PlanExecutionAwaitingReceipt, coretool.PlanExecutionUnknown, coretool.PlanExecutionRunning:
-		return true
-	default:
-		return false
-	}
+	return coretool.SelectionUnsettled(s.executor, s.scope, selectionID)
 }
 
 // Definitions materializes precisely the current DAG exposure closure. It
@@ -938,79 +969,32 @@ func (s *coreDynamicSemanticSurface) Definitions() ([]map[string]interface{}, er
 	if s == nil {
 		return nil, fmt.Errorf("dynamic semantic call surface is unavailable")
 	}
-	completed, err := s.executor.Completed(s.scope)
+	index := map[string]map[string]interface{}{}
+	out, err := coretool.MaterializeReadySurface(coretool.ReadySurfaceRequest{
+		Coordinator:  s.routing.Coordinator,
+		RouteState:   s.routeState,
+		Issuer:       s.routing.Issuer,
+		Executor:     s.executor,
+		Registry:     s.registry,
+		Plan:         s.plan,
+		Scope:        s.scope,
+		TTL:          s.routing.GrantTTL,
+		TrustedFacts: s.trustedFacts,
+		Completed:    s.completed,
+		Unsettled:    s.selectionIsUnsettled,
+		Grants:       s.grants,
+		Issued:       s.issued,
+		Schemas:      s.catalog.Definitions,
+		IndexByName:  index,
+		Now:          time.Now().UTC(),
+	})
 	if err != nil {
-		return nil, fmt.Errorf("load dynamic semantic completion: %w", err)
+		return nil, fmt.Errorf("issue dynamic semantic grants: %w", err)
 	}
-	projected, err := s.routeState.CompletedSelections(s.scope)
-	if err != nil {
-		return nil, fmt.Errorf("load projected dynamic semantic completion: %w", err)
-	}
-	for selectionID := range projected {
-		completed[selectionID] = true
-	}
-	s.completed = completed
-	ready := s.plan.ReadySelections(s.withTrustedFacts(completed))
-	needed := s.nextExposedSelections(ready, completed)
-	if len(needed) > 0 {
-		partial := dynamicSemanticPlanSelections(s.plan, needed)
-		var grants []coretool.InvocationGrant
-		var err error
-		if s.routing.Coordinator != nil {
-			_, grants, err = s.routing.Coordinator.MaterializeReadySurface(s.scope, s.routing.Issuer, s.routing.GrantTTL, s.withTrustedFacts(completed), needed, time.Now().UTC())
-		} else {
-			grants, err = s.routing.Issuer.IssueReady(partial, s.scope, s.routing.GrantTTL, s.withTrustedFacts(completed))
-		}
-		if err != nil {
-			return nil, fmt.Errorf("issue dynamic semantic grants: %w", err)
-		}
-		for _, grant := range grants {
-			name := coretool.RenderedSemanticFunctionName(grant.AdapterName, grant.Token)
-			if name == "" {
-				return nil, fmt.Errorf("dynamic semantic grant %q has no model function name", grant.SelectionID)
-			}
-			if existing, exists := s.grants[name]; exists && existing.Token != grant.Token {
-				return nil, fmt.Errorf("function-name collision for grant %q", grant.SelectionID)
-			}
-			if s.routing.Coordinator == nil {
-				if _, err := s.routeState.RecordMaterialization(s.scope, s.plan.ID, coretool.RouteMaterialization{
-					FunctionName: grant.Token, Grant: grant, State: coretool.RouteMaterializationExposed,
-				}, time.Now().UTC()); err != nil {
-					return nil, fmt.Errorf("record dynamic semantic materialization: %w", err)
-				}
-			}
-			s.grants[name] = grant
-			s.issued[grant.SelectionID] = true
-		}
-	}
-
-	visible := make(map[string]bool, len(ready))
-	grants := make([]coretool.InvocationGrant, 0, len(ready))
-	for _, selection := range ready {
-		if completed[selection.ID] {
-			continue
-		}
-		for _, grant := range s.grants {
-			if grant.SelectionID == selection.ID {
-				visible[selection.ID] = true
-				grants = append(grants, grant)
-				break
-			}
-		}
-	}
-	if len(visible) == 0 {
+	if len(out) == 0 {
 		return nil, nil
 	}
-	rendered, err := coretool.NewCatalogRenderer(s.registry).RenderReady(dynamicSemanticPlanSelections(s.plan, visible), grants, s.catalog.Definitions, s.withTrustedFacts(completed))
-	if err != nil {
-		return nil, fmt.Errorf("render dynamic semantic surface: %w", err)
-	}
-	out := make([]map[string]interface{}, 0, len(rendered))
-	s.definitions = make(map[string]map[string]interface{}, len(rendered))
-	for _, item := range rendered {
-		s.definitions[item.FunctionName] = item.Definition
-		out = append(out, item.Definition)
-	}
+	s.definitions = index
 	return out, nil
 }
 
@@ -1049,7 +1033,7 @@ func (s *coreDynamicSemanticSurface) Execute(ctx context.Context, principal Prin
 	identity := coretool.HostCallIdentity{
 		Protocol: "core-agent-loop/v1", ConnectionID: s.scope.SessionID + "\x00" + s.scope.TurnID, CallID: strings.TrimSpace(callID),
 	}
-	fingerprint := coretool.InvocationGrantFingerprint(grant)
+	fingerprint := s.routing.Issuer.Fingerprint(grant)
 	if s.routing.Coordinator != nil {
 		return s.executeCoordinated(ctx, principal, mcpProvider, skillProvider, grant, selection, canonical, canonicalErr, identity, requestDigest)
 	}
@@ -1059,25 +1043,8 @@ func (s *coreDynamicSemanticSurface) Execute(ctx context.Context, principal Prin
 	}
 	acquired := action
 	action = coretool.ResolveHostCallAcquireAction(action, record, requestDigest)
-	switch action {
-	case coretool.HostCallAcquireReplay:
-		if acquired == coretool.HostCallAcquireConflict {
-			return dynamicSemanticRecordedResultFallback(record.Result), true
-		}
-		return s.dynamicSemanticReplayedResult(selection.ID, record.Result), true
-	case coretool.HostCallAcquireConflict:
-		return coretool.SelectionExecutionResult{Result: "[system rejected] host_call_conflict", ReasonCode: "host_call_conflict"}, true
-	case coretool.HostCallAcquireInProgress:
-		return coretool.SelectionExecutionResult{Result: "[system rejected] host_call_in_progress", ReasonCode: "host_call_in_progress"}, true
-	case coretool.HostCallAcquireUnknown:
-		// The journal recorded that this call may have reached its provider.
-		// Reporting a definite failure here would invite a retry of an effect
-		// that might already hold, so the uncertainty is carried outward.
-		return coretool.SelectionExecutionResult{Result: "[system rejected] host_call_unknown", Unknown: true, ReasonCode: "host_call_unknown"}, true
-	case coretool.HostCallAcquireAdmit:
-		// Continue below.
-	default:
-		return coretool.SelectionExecutionResult{Result: "[system rejected] host_call_unavailable", ReasonCode: "host_call_unavailable"}, true
+	if result, done := coretool.HostCallAcquireTerminal(acquired, action, record, s.routing.ExecutionStore, s.scope, selection.ID); done {
+		return result, true
 	}
 	if _, err := s.hostCalls.MarkAdmitted(identity, fingerprint, requestDigest, time.Now().UTC()); err != nil {
 		return coretool.SelectionExecutionResult{Result: "[system rejected] " + err.Error(), ReasonCode: err.Error()}, true
@@ -1116,7 +1083,7 @@ func (s *coreDynamicSemanticSurface) Execute(ctx context.Context, principal Prin
 	if err := s.retireAfterAttempt(grant); err != nil {
 		return coretool.SelectionExecutionResult{Result: "[system rejected] route_state_retire_failed", ReasonCode: "route_state_retire_failed"}, true
 	}
-	return result, true
+	return s.withSpentBudgetNote(result, selected.ID), true
 }
 
 func (s *coreDynamicSemanticSurface) executeCoordinated(ctx context.Context, principal Principal, mcpProvider MCPToolProvider, skillProvider SkillToolProvider, grant coretool.InvocationGrant, selection coretool.PlannedSelection, canonical coretool.CanonicalRequest, canonicalErr error, identity coretool.HostCallIdentity, requestDigest string) (coretool.SelectionExecutionResult, bool) {
@@ -1125,7 +1092,7 @@ func (s *coreDynamicSemanticSurface) executeCoordinated(ctx context.Context, pri
 	}
 	if canonicalErr != nil {
 		result := "[system rejected] parameter_schema_invalid"
-		if _, err := s.routing.Issuer.Validate(grant, s.scope, s.plan, s.withTrustedFacts(s.completed)); err != nil {
+		if _, err := s.routing.Issuer.ValidateWithCanonicalScope(grant, s.scope, s.plan, s.withTrustedFacts(s.completed)); err != nil {
 			return coretool.SelectionExecutionResult{Result: "[system rejected] " + err.Error(), ReasonCode: err.Error()}, true
 		}
 		admission := coretool.SemanticExecutionAdmission{Identity: identity, Grant: grant, RequestDigest: requestDigest, Scope: s.scope, Selection: selection, Now: time.Now().UTC()}
@@ -1135,25 +1102,15 @@ func (s *coreDynamicSemanticSurface) executeCoordinated(ctx context.Context, pri
 		}
 		acquired := action
 		action = coretool.ResolveHostCallAcquireAction(action, record, requestDigest)
-		switch action {
-		case coretool.HostCallAcquireReplay:
-			if acquired == coretool.HostCallAcquireConflict {
-				return dynamicSemanticRecordedResultFallback(record.Result), true
-			}
-			return s.dynamicSemanticReplayedResult(selection.ID, record.Result), true
-		case coretool.HostCallAcquireConflict:
-			return coretool.SelectionExecutionResult{Result: "[system rejected] host_call_conflict", ReasonCode: "host_call_conflict"}, true
-		case coretool.HostCallAcquireInProgress:
-			return coretool.SelectionExecutionResult{Result: "[system rejected] host_call_in_progress", ReasonCode: "host_call_in_progress"}, true
-		case coretool.HostCallAcquireUnknown:
-			return coretool.SelectionExecutionResult{Result: "[system rejected] host_call_unknown", Unknown: true, ReasonCode: "host_call_unknown"}, true
+		if result, done := coretool.HostCallAcquireTerminal(acquired, action, record, s.routing.ExecutionStore, s.scope, selection.ID); done {
+			return result, true
 		}
 		if err := s.retireAfterAttempt(grant); err != nil {
 			return coretool.SelectionExecutionResult{Result: "[system rejected] route_state_retire_failed", ReasonCode: "route_state_retire_failed"}, true
 		}
 		return coretool.SelectionExecutionResult{Result: result, ReasonCode: "parameter_schema_invalid"}, true
 	}
-	if _, err := s.routing.Issuer.Validate(grant, s.scope, s.plan, s.withTrustedFacts(s.completed)); err != nil {
+	if _, err := s.routing.Issuer.ValidateWithCanonicalScope(grant, s.scope, s.plan, s.withTrustedFacts(s.completed)); err != nil {
 		return coretool.SelectionExecutionResult{Result: "[system rejected] " + err.Error(), ReasonCode: err.Error()}, true
 	}
 	admission := coretool.SemanticExecutionAdmission{Identity: identity, Grant: grant, RequestDigest: canonical.Digest, Scope: s.scope, Selection: selection, Now: time.Now().UTC()}
@@ -1163,18 +1120,8 @@ func (s *coreDynamicSemanticSurface) executeCoordinated(ctx context.Context, pri
 	}
 	acquired := action
 	action = coretool.ResolveHostCallAcquireAction(action, record, admission.RequestDigest)
-	switch action {
-	case coretool.HostCallAcquireReplay:
-		if acquired == coretool.HostCallAcquireConflict {
-			return dynamicSemanticRecordedResultFallback(record.Result), true
-		}
-		return s.dynamicSemanticReplayedResult(selection.ID, record.Result), true
-	case coretool.HostCallAcquireConflict:
-		return coretool.SelectionExecutionResult{Result: "[system rejected] host_call_conflict", ReasonCode: "host_call_conflict"}, true
-	case coretool.HostCallAcquireInProgress:
-		return coretool.SelectionExecutionResult{Result: "[system rejected] host_call_in_progress", ReasonCode: "host_call_in_progress"}, true
-	case coretool.HostCallAcquireUnknown:
-		return coretool.SelectionExecutionResult{Result: "[system rejected] host_call_unknown", Unknown: true, ReasonCode: "host_call_unknown"}, true
+	if result, done := coretool.HostCallAcquireTerminal(acquired, action, record, s.routing.ExecutionStore, s.scope, selection.ID); done {
+		return result, true
 	}
 	executionContext := WithDynamicSemanticAdmission(ctx, admission)
 	result := s.catalog.ExecuteSelectionWithEffects(executionContext, s.scope, principal, mcpProvider, skillProvider, s.routing.EffectCoordinator, selection, string(canonical.CanonicalJSON))
@@ -1188,16 +1135,9 @@ func (s *coreDynamicSemanticSurface) executeCoordinated(ctx context.Context, pri
 		if err := s.retireAfterAttempt(grant); err != nil {
 			return coretool.SelectionExecutionResult{Result: "[system rejected] route_state_retire_failed", ReasonCode: "route_state_retire_failed"}, true
 		}
-		return result, true
+		return s.withSpentBudgetNote(result, selection.ID), true
 	}
-	state := coretool.PlanExecutionSucceeded
-	if result.Unknown {
-		state, result.Succeeded = coretool.PlanExecutionUnknown, false
-	} else if result.AwaitingReceipt {
-		state, result.Succeeded = coretool.PlanExecutionAwaitingReceipt, false
-	} else if !result.Succeeded {
-		state = coretool.PlanExecutionFailed
-	}
+	state, result := coretool.PlanExecutionStateFromResult(result)
 	if _, err := s.routing.Coordinator.Complete(admission, state, result.Result, result.ReasonCode, time.Now().UTC()); err != nil {
 		_ = s.retireAfterAttempt(grant)
 		return coretool.SelectionExecutionResult{Result: "[system rejected] " + err.Error(), ReasonCode: err.Error()}, true
@@ -1208,7 +1148,14 @@ func (s *coreDynamicSemanticSurface) executeCoordinated(ctx context.Context, pri
 	if err := s.retireAfterAttempt(grant); err != nil {
 		return coretool.SelectionExecutionResult{Result: "[system rejected] route_state_retire_failed", ReasonCode: "route_state_retire_failed"}, true
 	}
-	return result, true
+	return s.withSpentBudgetNote(result, selection.ID), true
+}
+
+func (s *coreDynamicSemanticSurface) withSpentBudgetNote(result coretool.SelectionExecutionResult, selectionID string) coretool.SelectionExecutionResult {
+	if s == nil {
+		return result
+	}
+	return coretool.ApplySpentBudgetNote(result, s.plan, selectionID, s.issued, s.grants)
 }
 
 // dynamicSemanticReplayedResult reconstructs the outcome of a host call that
@@ -1226,39 +1173,10 @@ func (s *coreDynamicSemanticSurface) executeCoordinated(ctx context.Context, pri
 // selection in the meantime, and the execution row carries that resolution
 // while the frozen text never could.
 func (s *coreDynamicSemanticSurface) dynamicSemanticReplayedResult(selectionID, result string) coretool.SelectionExecutionResult {
-	if s != nil && s.routing.ExecutionStore != nil {
-		if record, err := s.routing.ExecutionStore.Execution(s.scope, selectionID); err == nil {
-			switch record.State {
-			case coretool.PlanExecutionSucceeded:
-				return coretool.SelectionExecutionResult{Result: result, Succeeded: true, ReasonCode: record.ReasonCode}
-			case coretool.PlanExecutionFailed:
-				return coretool.SelectionExecutionResult{Result: result, ReasonCode: record.ReasonCode}
-			case coretool.PlanExecutionUnknown:
-				return coretool.SelectionExecutionResult{Result: result, Unknown: true, ReasonCode: record.ReasonCode}
-			case coretool.PlanExecutionAwaitingReceipt:
-				return coretool.SelectionExecutionResult{Result: result, AwaitingReceipt: true, ReasonCode: record.ReasonCode}
-			}
-		}
+	if s == nil {
+		return coretool.RecordedSelectionResultFallback(result)
 	}
-	return dynamicSemanticRecordedResultFallback(result)
-}
-
-// dynamicSemanticRecordedResultFallback is the last resort for a recorded host
-// call whose durable verdict cannot be read: no execution store, a lost row,
-// or a state that is not terminal. Text says far less than the execution row,
-// so this only recognizes the shapes that are certainly not success — the two
-// failure prefixes the executor uses, and the marker trusted adapters emit
-// when they could not observe their own effect.
-func dynamicSemanticRecordedResultFallback(result string) coretool.SelectionExecutionResult {
-	trimmed := strings.TrimSpace(result)
-	switch {
-	case strings.HasPrefix(trimmed, "[system unknown]"):
-		return coretool.SelectionExecutionResult{Result: result, Unknown: true}
-	case strings.HasPrefix(trimmed, "[system rejected]"), strings.HasPrefix(trimmed, "error:"):
-		return coretool.SelectionExecutionResult{Result: result}
-	default:
-		return coretool.SelectionExecutionResult{Result: result, Succeeded: true}
-	}
+	return coretool.ReplayedSelectionResult(s.routing.ExecutionStore, s.scope, selectionID, result)
 }
 
 func (s *coreDynamicSemanticSurface) retireGrant(grant coretool.InvocationGrant) error {
@@ -1270,10 +1188,10 @@ func (s *coreDynamicSemanticSurface) retireGrant(grant coretool.InvocationGrant)
 	// stale model retry; recovery remains fail-closed because a later process
 	// will have to reconcile the durable state rather than dispatching again.
 	name := coretool.RenderedSemanticFunctionName(grant.AdapterName, grant.Token)
-	_, err := s.routeState.RetireMaterialization(s.scope, s.plan.ID, grant.Token, time.Now().UTC())
-	delete(s.grants, name)
-	s.retiredGrants[name] = grant
-	return err
+	return coretool.RetireConsumedGrant(s.grants, s.retiredGrants, name, grant, func() error {
+		_, err := s.routeState.RetireMaterialization(s.scope, s.plan.ID, grant.Token, time.Now().UTC())
+		return err
+	})
 }
 
 // retireAfterAttempt requests a new host surface even when the provider or
@@ -1287,41 +1205,22 @@ func (s *coreDynamicSemanticSurface) retireAfterAttempt(grant coretool.Invocatio
 	return s.retireGrant(grant)
 }
 
-func dynamicSemanticExecutionConsumesModelGrant(state coretool.PlanExecutionState) bool {
-	switch state {
-	case coretool.PlanExecutionAwaitingReceipt, coretool.PlanExecutionFailed, coretool.PlanExecutionUnknown:
-		return true
-	default:
-		return false
-	}
-}
-
 func dynamicSemanticSelectionByID(plan coretool.ToolPlan, selectionID string) (coretool.PlannedSelection, bool) {
-	for _, selection := range plan.Selections {
-		if selection.ID == selectionID {
-			return selection, true
-		}
-	}
-	return coretool.PlannedSelection{}, false
+	return coretool.PlanSelectionByID(plan, selectionID)
 }
 
 func (s *coreDynamicSemanticSurface) HasGrant(name string) bool {
 	if s == nil {
 		return false
 	}
-	_, ok := s.grants[strings.TrimSpace(name)]
-	return ok
+	return coretool.HasLiveGrant(s.grants, name)
 }
 
 func (s *coreDynamicSemanticSurface) HasKnownGrant(name string) bool {
 	if s == nil {
 		return false
 	}
-	if s.HasGrant(name) {
-		return true
-	}
-	_, ok := s.retiredGrants[strings.TrimSpace(name)]
-	return ok
+	return coretool.HasKnownGrant(s.grants, s.retiredGrants, name)
 }
 
 func (s *coreDynamicSemanticSurface) ConsumeRefreshPending() bool {
@@ -1333,44 +1232,11 @@ func (s *coreDynamicSemanticSurface) ConsumeRefreshPending() bool {
 }
 
 func (s *coreDynamicSemanticSurface) withTrustedFacts(completed map[string]bool) map[string]bool {
-	merged := make(map[string]bool, len(completed)+len(s.trustedFacts))
-	for id, satisfied := range completed {
-		if satisfied {
-			merged[id] = true
-		}
-	}
-	for id, satisfied := range s.trustedFacts {
-		if satisfied {
-			merged[id] = true
-		}
-	}
-	return merged
+	return coretool.UnionSatisfiedIDs(completed, s.trustedFacts)
 }
 
 func closedManagedSemanticDefinitions(defs []map[string]interface{}) []map[string]interface{} {
-	if len(defs) == 0 {
-		return nil
-	}
-	out := make([]map[string]interface{}, 0, len(defs))
-	for _, def := range defs {
-		name := strings.TrimSpace(tooldef.Name(def))
-		if name == "" || coretool.IsLegacyDynamicGatewayName(name) {
-			continue
-		}
-		out = append(out, def)
-	}
-	return out
-}
-
-func dynamicSemanticPlanSelections(plan coretool.ToolPlan, allowed map[string]bool) coretool.ToolPlan {
-	filtered := plan
-	filtered.Selections = make([]coretool.PlannedSelection, 0, len(allowed))
-	for _, selection := range plan.Selections {
-		if allowed[selection.ID] {
-			filtered.Selections = append(filtered.Selections, selection)
-		}
-	}
-	return filtered
+	return coretool.ClosedManagedDefinitions(defs, nil)
 }
 
 // ensureDynamicSemanticInitialized plans the request-scoped surface once.
@@ -1603,38 +1469,15 @@ func observeDynamicSemanticInventory(ctx context.Context, principal Principal, m
 }
 
 func cloneDynamicCapabilityNeeds(needs []coretool.CapabilityNeed) []coretool.CapabilityNeed {
-	if len(needs) == 0 {
-		return nil
-	}
-	out := make([]coretool.CapabilityNeed, 0, len(needs))
-	for _, need := range needs {
-		cloned := need
-		cloned.Qualifiers = cloneDynamicNeedQualifiers(need.Qualifiers)
-		out = append(out, cloned)
-	}
-	return out
+	return coretool.CloneCapabilityNeeds(needs)
 }
 
 func cloneDynamicRoutingFacts(facts []coretool.RoutingFact) []coretool.RoutingFact {
-	if len(facts) == 0 {
-		return nil
-	}
-	out := make([]coretool.RoutingFact, 0, len(facts))
-	for _, fact := range facts {
-		out = append(out, cloneDynamicRoutingFact(fact))
-	}
-	return out
+	return coretool.CloneRoutingFacts(facts)
 }
 
 func cloneDynamicRoutingConstraints(constraints []coretool.RoutingConstraint) []coretool.RoutingConstraint {
-	if len(constraints) == 0 {
-		return nil
-	}
-	out := make([]coretool.RoutingConstraint, 0, len(constraints))
-	for _, constraint := range constraints {
-		out = append(out, cloneDynamicRoutingConstraint(constraint))
-	}
-	return out
+	return coretool.CloneRoutingConstraints(constraints)
 }
 
 func (s *coreDynamicSemanticSurface) ReplanAfterBindingFailure(ctx context.Context, principal Principal, mcp MCPToolProvider, skill SkillToolProvider, reasonCode string) (*coreDynamicSemanticSurface, error) {
@@ -1674,7 +1517,7 @@ func (s *coreDynamicSemanticSurface) ReplanAfterBindingFailure(ctx context.Conte
 	if err != nil {
 		return nil, fmt.Errorf("publish dynamic semantic replan catalog: %w", err)
 	}
-	turnID := "replan:" + coretool.SchemaDigest([]byte(strings.TrimSpace(s.scope.TurnID) + fmt.Sprintf(":%d", s.replan.Attempts+1)))[:24]
+	turnID := coretool.ReplanTurnID(s.scope.TurnID, s.replan.Attempts+1)
 	plan, err := coretool.NewToolPlanner(s.routing.Registry).Plan(coretool.RouteRequest{
 		RootTaskID: s.replan.RootTaskID, SessionID: s.replan.SessionID, TurnID: turnID, ChannelScope: s.replan.ChannelScope,
 		Snapshot: snapshot, Needs: s.replan.Needs, Facts: s.replan.Facts, Constraints: s.replan.Constraints,
@@ -1698,7 +1541,7 @@ func (s *coreDynamicSemanticSurface) replanAfterPrepared(plan coretool.ToolPlan,
 	}
 	childScope := s.scope
 	childScope.PlanID = plan.ID
-	childScope.TurnID = "replan:" + coretool.SchemaDigest([]byte(strings.TrimSpace(s.scope.TurnID) + fmt.Sprintf(":%d", s.replan.Attempts+1)))[:24]
+	childScope.TurnID = coretool.ReplanTurnID(s.scope.TurnID, s.replan.Attempts+1)
 	plan.Trace.Events = append(plan.Trace.Events, coretool.TraceEvent{
 		Stage: coretool.TraceStageRecovery, Subject: "replan", Event: "child_published", ReasonCode: strings.TrimSpace(reasonCode),
 	})

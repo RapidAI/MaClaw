@@ -1,8 +1,11 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -142,6 +145,115 @@ func TestManageSkillHandler_SetEvolutionEnabledPersist(t *testing.T) {
 	}
 	if cfg.IsSkillEvolutionEnabled() {
 		t.Fatal("config should be disabled")
+	}
+}
+
+func TestInstallTUISkillTransactionalStagesHubDirectory(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("MACLAW_DATA_DIR", dataDir)
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(dataDir)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/skills/demo/download" {
+			http.NotFound(w, r)
+			return
+		}
+		payload := map[string]interface{}{
+			"id":          "hub-demo",
+			"skill_id":    "publisher.demo",
+			"name":        "demo",
+			"description": "transactional demo",
+			"files": map[string]string{
+				"SKILL.md": base64.StdEncoding.EncodeToString([]byte("# Demo\n\nRun demo.")),
+			},
+		}
+		_ = json.NewEncoder(w).Encode(payload)
+	}))
+	defer server.Close()
+
+	app := &TUIApp{}
+	entry, already, err := installTUISkillTransactional(app, "skillhub", "demo", "", server.URL)
+	if err != nil {
+		t.Fatalf("installTUISkillTransactional() error = %v", err)
+	}
+	if already != nil || entry == nil {
+		t.Fatalf("unexpected install result entry=%#v already=%#v", entry, already)
+	}
+	root, err := skill.PrimarySkillsDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	finalDir := filepath.Join(root, "demo")
+	if entry.SkillDir != finalDir {
+		t.Fatalf("entry.SkillDir = %q, want %q", entry.SkillDir, finalDir)
+	}
+	if _, err := os.Stat(filepath.Join(finalDir, "SKILL.md")); err != nil {
+		t.Fatalf("published Skill file missing: %v", err)
+	}
+	cfg, err := commands.NewFileConfigStore(dataDir).LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.NLSkills) != 1 || cfg.NLSkills[0].SkillDir != finalDir {
+		t.Fatalf("config after install = %#v", cfg.NLSkills)
+	}
+	items, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range items {
+		if strings.HasPrefix(item.Name(), ".tui-skill-stage-") {
+			t.Fatalf("staging directory leaked after commit: %s", item.Name())
+		}
+	}
+}
+
+func TestSkillUninstallQuarantinesBeforeConfigCommit(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("MACLAW_DATA_DIR", dataDir)
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(dataDir)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+
+	root, err := skill.PrimarySkillsDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	skillDir := filepath.Join(root, "txn-uninstall")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# uninstall me\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := corelib.AppConfig{NLSkills: []corelib.NLSkillEntry{{
+		Name: "txn-uninstall", Source: "file", SkillDir: skillDir, Status: "active",
+	}}}
+	store := commands.NewFileConfigStore(dataDir)
+	if err := store.SaveConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	app := &TUIApp{appConfig: cfg}
+	got := skillUninstall(app, map[string]interface{}{"name": "txn-uninstall"})
+	if !strings.Contains(got, "已卸载") {
+		t.Fatalf("skillUninstall() = %q", got)
+	}
+	if _, err := os.Stat(skillDir); !os.IsNotExist(err) {
+		t.Fatalf("skill directory still exists after uninstall: %v", err)
+	}
+	stored, err := store.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.NLSkills) != 0 {
+		t.Fatalf("config after uninstall = %#v, want empty", stored.NLSkills)
+	}
+	if summaries, err := skill.ListEvolutionCompensationSummaries(); err != nil {
+		t.Fatal(err)
+	} else if len(summaries) != 0 {
+		t.Fatalf("uninstall left compensation records: %#v", summaries)
 	}
 }
 
@@ -2032,5 +2144,61 @@ func TestFormatTUISkillSearchResultsRecommendsBuiltInDownloadWhenEmpty(t *testin
 	got := tuiNoSkillSearchResultsMessage("下载 PDF", "")
 	if !strings.Contains(got, "web_fetch(save_path=...)") {
 		t.Fatalf("empty download search message = %q", got)
+	}
+}
+
+func TestCommitTUIPatchCompareAndSwapPreventsConcurrentOverwrite(t *testing.T) {
+	dir := t.TempDir()
+	defPath := filepath.Join(dir, "skill.yaml")
+	original := []byte("name: cas-skill\nsteps: []\n")
+	if err := os.WriteFile(defPath, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := commitTUIPatch(defPath, dir, "cas-skill", original, []byte("name: cas-skill\nsteps: [{action: noop}]\n"), tuiPatchRecord{Find: "steps: []", Replace: "steps: [{action: noop}]"}); err != nil {
+		t.Fatalf("first patch failed: %v", err)
+	}
+	if err := commitTUIPatch(defPath, dir, "cas-skill", original, []byte("name: cas-skill\nsteps: [{action: bash}]\n"), tuiPatchRecord{Find: "steps: []", Replace: "steps: [{action: bash}]"}); err == nil || !strings.Contains(err.Error(), "changed concurrently") {
+		t.Fatalf("second stale patch error = %v, want compare-and-swap rejection", err)
+	}
+	history, err := os.ReadFile(filepath.Join(dir, ".patches.json"))
+	if err != nil || !strings.Contains(string(history), "noop") {
+		t.Fatalf("patch history after stale write = %s (err=%v)", history, err)
+	}
+}
+
+func TestCommitTUIPatchRejectsCorruptHistoryBeforeDefinitionWrite(t *testing.T) {
+	dir := t.TempDir()
+	defPath := filepath.Join(dir, "skill.yaml")
+	original := []byte("name: corrupt-history\nsteps: []\n")
+	if err := os.WriteFile(defPath, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".patches.json"), []byte("not-json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	modified := []byte("name: corrupt-history\nsteps: [{action: noop}]\n")
+	if err := commitTUIPatch(defPath, dir, "corrupt-history", original, modified, tuiPatchRecord{Find: "steps: []", Replace: "noop"}); err == nil || !strings.Contains(err.Error(), "解析 patch 历史失败") {
+		t.Fatalf("corrupt history error = %v", err)
+	}
+	got, _ := os.ReadFile(defPath)
+	if string(got) != string(original) {
+		t.Fatalf("definition changed despite corrupt history: %s", got)
+	}
+}
+
+func TestCommitTUIPatchRejectsIdentityChange(t *testing.T) {
+	dir := t.TempDir()
+	defPath := filepath.Join(dir, "skill.yaml")
+	original := []byte("name: stable-name\nsteps: []\n")
+	if err := os.WriteFile(defPath, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := commitTUIPatch(defPath, dir, "stable-name", original, []byte("name: other-name\nsteps: []\n"), tuiPatchRecord{Find: "stable-name", Replace: "other-name"})
+	if err == nil || !strings.Contains(err.Error(), "changes skill identity") {
+		t.Fatalf("identity-change error = %v", err)
+	}
+	got, _ := os.ReadFile(defPath)
+	if string(got) != string(original) {
+		t.Fatalf("definition changed after identity rejection: %s", got)
 	}
 }

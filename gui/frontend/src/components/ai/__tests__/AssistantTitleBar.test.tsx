@@ -44,10 +44,11 @@ vi.mock('../useNotifications', () => ({
     useNotifications: () => notificationState.current,
 }));
 
-const renderTitleBar = () => render(
+const renderTitleBar = (active = true, inline = false) => render(
     <AssistantTitleBar
+        active={active}
         clearHistory={vi.fn()}
-        inline={false}
+        inline={inline}
         lang="zh"
         maximized={false}
         onClose={vi.fn()}
@@ -113,6 +114,15 @@ describe('AssistantTitleBar', () => {
         expect(actions.previousElementSibling).toBe(title);
     });
 
+    it('renders the inline wordmark with the moved M mark', () => {
+        renderTitleBar(true, true);
+
+        const brand = screen.getByTestId('ai-titlebar-brand');
+        expect(brand.textContent).toContain('MaClaw');
+        expect(brand.querySelector('.mc-header-brand-mark')).toBeTruthy();
+        expect(brand.querySelector('.mc-header-brand-mark svg path')?.getAttribute('d')).toBe('M14 58V22l26 25 26-25v36');
+    });
+
     it('shows the Preview toggle for cloud workspaces even when the panel is closed', () => {
         render(
             <AssistantTitleBar
@@ -136,6 +146,43 @@ describe('AssistantTitleBar', () => {
         );
         expect(screen.getByTestId('workflow-preview-toggle-btn')).toBeTruthy();
         expect(screen.getByTestId('workflow-preview-toggle-btn').getAttribute('aria-checked')).toBe('false');
+    });
+
+    it('opens the shared system notification panel from the redesigned notification center event', () => {
+        renderTitleBar();
+        window.dispatchEvent(new CustomEvent('maclaw:open-system-notifications'));
+        expect(notificationState.current.togglePanel).toHaveBeenCalledTimes(1);
+    });
+
+    it('toggles the shared notification panel for the legacy sidebar event', () => {
+        renderTitleBar();
+        window.dispatchEvent(new CustomEvent('maclaw:open-system-notifications'));
+        window.dispatchEvent(new CustomEvent('maclaw:open-system-notifications'));
+        expect(notificationState.current.togglePanel).toHaveBeenCalledTimes(2);
+        expect(notificationState.current.panelOpen).toBe(false);
+    });
+
+    it('ignores notification events while the assistant shell is hidden on another page', () => {
+        renderTitleBar(false);
+        window.dispatchEvent(new CustomEvent('maclaw:open-system-notifications'));
+        expect(notificationState.current.togglePanel).not.toHaveBeenCalled();
+    });
+
+    it('closes and hides an open notification panel when the assistant shell becomes inactive', () => {
+        notificationState.current.panelOpen = true;
+        renderTitleBar(false);
+
+        expect(notificationState.current.togglePanel).toHaveBeenCalledTimes(1);
+        expect(screen.getByTestId('notification-bell-btn').getAttribute('aria-expanded')).toBe('false');
+        expect(screen.getByTestId('notification-panel').getAttribute('aria-hidden')).toBe('true');
+    });
+
+    it('keeps an already-open panel open for an explicit cross-page open request', () => {
+        notificationState.current.panelOpen = true;
+        renderTitleBar();
+        window.dispatchEvent(new CustomEvent('maclaw:open-system-notifications', { detail: { toggle: false } }));
+        expect(notificationState.current.togglePanel).not.toHaveBeenCalled();
+        expect(notificationState.current.panelOpen).toBe(true);
     });
 
     it('opens the full notification text from the list', () => {

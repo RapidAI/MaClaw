@@ -17,6 +17,7 @@ func NewToolAffinityRegistry() *ToolAffinityRegistry {
 			LabelDocumentDelivery: {"send_file", "send_to_im", "im_message"},
 			LabelDocumentGenerate: {},
 			LabelBusinessData:     {"mis_data"},
+			LabelDatabase:         {"database", "database_query"},
 			LabelBrowser: {
 				"browser",
 			},

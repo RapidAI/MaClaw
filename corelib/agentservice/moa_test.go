@@ -37,7 +37,7 @@ func TestResolveMoAPresetForRequest(t *testing.T) {
 			DefaultPreset: "review",
 			Presets: map[string]corelib.MoAPresetConfig{
 				"review": {
-					Enabled: true,
+					Enabled:    true,
 					Aggregator: corelib.MoAModelRef{UsePrimary: true},
 					ReferenceModels: []corelib.MoAModelRef{
 						{Provider: "advisor"},

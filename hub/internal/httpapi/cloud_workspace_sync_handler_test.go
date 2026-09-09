@@ -31,8 +31,9 @@ func doCloudWorkspaceBytes(t *testing.T, h http.Handler, method, path, machineID
 		rdr = bytes.NewReader(body)
 	}
 	req := httptest.NewRequest(method, path, rdr)
-	req.Header.Set("Authorization", "Bearer secret")
-	req.Header.Set("X-Machine-ID", machineID)
+	if failed := setCloudWorkspaceHTTPTestAuth(t, h, req, machineID, "secret"); failed != nil {
+		return failed
+	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/octet-stream")
 	}
@@ -46,11 +47,11 @@ func cloudWorkspaceSHA256Hex(body []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func TestCloudWorkspaceManifestAndObjectLeaseRequired(t *testing.T) {
+func TestCloudWorkspaceManifestReadIsLeaseFreeButObjectWriteRequiresLease(t *testing.T) {
 	_, h, _ := newCloudWorkspaceUserEnv(t, cloudworkspace.ModeAllUsers, 5, nil)
 	id := createCloudWorkspace(t, h, "m1", "A")
 	rec := doCloudWorkspaceRequest(t, h, http.MethodGet, "/api/v1/cloud-workspaces/"+id+"/manifest", "m1", "secret", nil)
-	if rec.Code != http.StatusForbidden || cloudWorkspaceErrCode(t, rec) != "CLOUD_WORKSPACE_LEASE_REQUIRED" {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("get manifest=%d %s", rec.Code, rec.Body.String())
 	}
 	putMan := doCloudWorkspaceRequest(t, h, http.MethodPut, "/api/v1/cloud-workspaces/"+id+"/manifest", "m1", "secret", map[string]any{
@@ -65,6 +66,33 @@ func TestCloudWorkspaceManifestAndObjectLeaseRequired(t *testing.T) {
 	put := doCloudWorkspaceBytes(t, h, http.MethodPut, "/api/v1/cloud-workspaces/"+id+"/objects/"+sum, "m1", body)
 	if put.Code != http.StatusForbidden || cloudWorkspaceErrCode(t, put) != "CLOUD_WORKSPACE_LEASE_REQUIRED" {
 		t.Fatalf("put object=%d %s", put.Code, put.Body.String())
+	}
+}
+
+func TestCloudWorkspaceDelayedOldInstanceWriteRejectedAfterTakeover(t *testing.T) {
+	_, h, _ := newCloudWorkspaceUserEnv(t, cloudworkspace.ModeAllUsers, 5, nil)
+	id := createCloudWorkspace(t, h, "m1", "late-write")
+	leasePath := "/api/v1/cloud-workspaces/" + id + "/leases"
+	first := doCloudWorkspaceRequest(t, h, http.MethodPost, leasePath, "m1", "secret", map[string]any{"force": false})
+	if first.Code != http.StatusOK {
+		t.Fatalf("first lease=%d %s", first.Code, first.Body.String())
+	}
+	second := doCloudWorkspaceRequest(t, h, http.MethodPost, leasePath, "m1b", "secret", map[string]any{"force": true})
+	if second.Code != http.StatusOK {
+		t.Fatalf("takeover=%d %s", second.Code, second.Body.String())
+	}
+
+	stale := doCloudWorkspaceRequest(t, h, http.MethodPut, "/api/v1/cloud-workspaces/"+id+"/manifest", "m1", "secret", map[string]any{
+		"if_match_revision": "", "entries": []any{},
+	})
+	if stale.Code != http.StatusConflict || cloudWorkspaceErrCode(t, stale) != "FENCED" {
+		t.Fatalf("stale write=%d %s", stale.Code, stale.Body.String())
+	}
+	current := doCloudWorkspaceRequest(t, h, http.MethodPut, "/api/v1/cloud-workspaces/"+id+"/manifest", "m1b", "secret", map[string]any{
+		"if_match_revision": "", "entries": []any{},
+	})
+	if current.Code != http.StatusOK {
+		t.Fatalf("current write=%d %s", current.Code, current.Body.String())
 	}
 }
 
@@ -178,6 +206,42 @@ func TestCloudWorkspaceObjectPutIsPlaintextAndManifestUpdatesUsage(t *testing.T)
 	mismatch := doCloudWorkspaceBytes(t, h, http.MethodPut, "/api/v1/cloud-workspaces/"+id+"/objects/"+sum, "m1", []byte("other"))
 	if mismatch.Code != http.StatusBadRequest {
 		t.Fatalf("hash mismatch=%d %s", mismatch.Code, mismatch.Body.String())
+	}
+}
+
+func TestCloudWorkspaceObjectIdempotencyReplaysExactHTTPResponse(t *testing.T) {
+	_, h, _ := newCloudWorkspaceUserEnv(t, cloudworkspace.ModeAllUsers, 5, nil)
+	id := createCloudWorkspace(t, h, "m1", "object-replay")
+	acquireCloudWorkspaceLease(t, h, id, "m1")
+	body := []byte("exact-response")
+	sha := cloudWorkspaceSHA256Hex(body)
+	path := "/api/v1/cloud-workspaces/" + id + "/objects/" + sha
+	doPut := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPut, path, bytes.NewReader(body))
+		mustSetCloudWorkspaceHTTPTestAuth(t, h, req, "m1", "secret")
+		req.Header.Set("Content-Type", "application/octet-stream")
+		req.Header.Set("Idempotency-Key", "object-exact-response")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+	first := doPut()
+	second := doPut()
+	if first.Code != http.StatusOK || second.Code != http.StatusOK {
+		t.Fatalf("first=%d %s second=%d %s", first.Code, first.Body.String(), second.Code, second.Body.String())
+	}
+	if second.Header().Get("Idempotency-Replayed") != "true" {
+		t.Fatalf("replay header=%q", second.Header().Get("Idempotency-Replayed"))
+	}
+	if first.Body.String() != second.Body.String() {
+		t.Fatalf("response changed: first=%s second=%s", first.Body.String(), second.Body.String())
+	}
+	var response map[string]any
+	if err := json.Unmarshal(second.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response["sha256"] != sha || response["size"] != float64(len(body)) || response["existed"] != false {
+		t.Fatalf("response=%v", response)
 	}
 }
 

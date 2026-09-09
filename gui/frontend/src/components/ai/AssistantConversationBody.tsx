@@ -143,7 +143,7 @@ export function AssistantConversationBody({
     }, [ready, onboardingIncomplete]);
 
     return (
-        <>
+        <div className="mc-conversation-body">
             {onboardingIncomplete ? (
                 <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", gap: "16px" }}>
                     <div style={{ color: t.textMuted, fontSize: "13px" }}>
@@ -183,6 +183,6 @@ export function AssistantConversationBody({
             {ready && !onboardingIncomplete ? busyAccessory : null}
             {showThinkingState && <div role="status" aria-live="polite" style={{ color: t.textMuted, fontSize: "11px", padding: "4px 0", fontStyle: "italic" }}>{thinkingText}</div>}
             {showProcessingState && <div role="status" aria-live="polite" style={{ color: t.textMuted, fontSize: "11px", padding: "4px 0", fontStyle: "italic" }}>{processingText}</div>}
-        </>
+        </div>
     );
 }

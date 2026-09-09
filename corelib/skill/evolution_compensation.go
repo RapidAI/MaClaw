@@ -7,9 +7,13 @@ package skill
 
 import (
 	"bufio"
+	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -45,9 +49,12 @@ type EvolutionCompensationRecord struct {
 	YAMLBackup     string                 `json:"yaml_backup_b64,omitempty"`
 	YAMLExists     bool                   `json:"yaml_exists"`
 	ConfigBackup   []corelib.NLSkillEntry `json:"config_backup,omitempty"`
-	DraftPath      string                 `json:"draft_path,omitempty"`
-	DraftBackup    string                 `json:"draft_backup_b64,omitempty"`
-	DraftExists    bool                   `json:"draft_exists,omitempty"`
+	// ConfigBackupCaptured distinguishes an intentionally captured empty
+	// registry from legacy records that never carried a config pre-image.
+	ConfigBackupCaptured bool   `json:"config_backup_captured,omitempty"`
+	DraftPath            string `json:"draft_path,omitempty"`
+	DraftBackup          string `json:"draft_backup_b64,omitempty"`
+	DraftExists          bool   `json:"draft_exists,omitempty"`
 	// Directory movement is used by recoverable rename/delete operations. The
 	// queue stores paths only (the directory contents remain on disk), so a
 	// restart can move the staged directory back without embedding arbitrary
@@ -95,7 +102,13 @@ type EvolutionCompensationRecord struct {
 	// before config/index recovery; callers must use it only for bounded JSON
 	// metadata, never for arbitrary package contents.
 	FileSnapshots []EvolutionFileSnapshot `json:"file_snapshots,omitempty"`
-	FailureReason string                  `json:"failure_reason,omitempty"`
+	// SkipIndexRefresh marks a configuration-only compensation record whose
+	// authoritative state has no Skill routing index to rebuild (for example a
+	// marketplace settings file). It defaults to false for backwards
+	// compatibility; directory/config transactions continue to require the
+	// checked index callback during recovery.
+	SkipIndexRefresh bool   `json:"skip_index_refresh,omitempty"`
+	FailureReason    string `json:"failure_reason,omitempty"`
 	// FinalAuditKind identifies the strict audit event that crosses this
 	// transaction's business boundary. It is persisted with the prepared
 	// record so crash recovery can distinguish "audit written, committed marker
@@ -132,6 +145,13 @@ type EvolutionFileSnapshot struct {
 	Path      string `json:"path,omitempty"`
 	BackupB64 string `json:"backup_b64,omitempty"`
 	Exists    bool   `json:"exists,omitempty"`
+	// PostImageSHA256/PostImageCaptured let recovery detect a concurrent
+	// writer after the transaction published its file. If the target is
+	// neither the recorded post-image nor the original pre-image, restore is
+	// rejected rather than overwriting an unrelated change.
+	PostImageSHA256   string `json:"post_image_sha256,omitempty"`
+	PostImageExists   bool   `json:"post_image_exists,omitempty"`
+	PostImageCaptured bool   `json:"post_image_captured,omitempty"`
 }
 
 // EvolutionCompensationSummary is the operator-safe view of a pending
@@ -154,16 +174,82 @@ type EvolutionCompensationSummary struct {
 const evolutionCompensationMaxAttempts = 3
 
 var evolutionCompensationMu sync.Mutex
+var evolutionCompensationQuarantineMu sync.Mutex
+var evolutionCompensationQuarantined map[string]struct{}
 
 func DefaultEvolutionCompensationPath() string {
 	return filepath.Join(corelib.MaclawBaseDir(), "skill_evolution", "audit_pending.jsonl")
+}
+
+// quarantineCorruptEvolutionCompensationQueue keeps a forensic copy of a
+// malformed queue without replacing or deleting the canonical file. This is
+// deliberately best-effort and rate-limited by the source file's metadata:
+// callers still receive the original parse error, while repeated admission
+// checks do not create an unbounded stream of duplicate quarantine files.
+func quarantineCorruptEvolutionCompensationQueue(cause error) error {
+	path := DefaultEvolutionCompensationPath()
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	key := fmt.Sprintf("%s|%d|%d", path, info.Size(), info.ModTime().UnixNano())
+	evolutionCompensationQuarantineMu.Lock()
+	if evolutionCompensationQuarantined == nil {
+		evolutionCompensationQuarantined = make(map[string]struct{})
+	}
+	if _, seen := evolutionCompensationQuarantined[key]; seen {
+		evolutionCompensationQuarantineMu.Unlock()
+		return nil
+	}
+	evolutionCompensationQuarantineMu.Unlock()
+
+	in, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	quarantinePath := fmt.Sprintf("%s.corrupt-%s.jsonl", path, time.Now().UTC().Format("20060102T150405.000000000Z"))
+	out, err := os.OpenFile(quarantinePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	copyErr := error(nil)
+	if _, copyErr = io.Copy(out, in); copyErr == nil {
+		copyErr = out.Sync()
+	}
+	closeErr := out.Close()
+	if copyErr != nil {
+		_ = os.Remove(quarantinePath)
+		return copyErr
+	}
+	if closeErr != nil {
+		_ = os.Remove(quarantinePath)
+		return closeErr
+	}
+	// Keep a small, human-readable reason beside the raw copy. It is local
+	// operator evidence only; API summaries continue to redact parser details.
+	reasonPath := quarantinePath + ".reason"
+	reason := "corrupt evolution compensation queue"
+	if cause != nil {
+		reason += ": " + cause.Error()
+	}
+	if err := os.WriteFile(reasonPath, []byte(reason+"\n"), 0o600); err != nil {
+		return err
+	}
+	evolutionCompensationQuarantineMu.Lock()
+	evolutionCompensationQuarantined[key] = struct{}{}
+	evolutionCompensationQuarantineMu.Unlock()
+	return nil
 }
 
 func newEvolutionCompensationRecord(requestID, skillName, action string, yamlPath string, yamlBackup []byte, yamlExists bool, config []corelib.NLSkillEntry, reason string) EvolutionCompensationRecord {
 	record := EvolutionCompensationRecord{
 		SchemaVersion: evolutionCompensationSchemaVersion,
 		RequestID:     strings.TrimSpace(requestID), Skill: strings.TrimSpace(skillName), Action: strings.TrimSpace(action),
-		YAMLPath: yamlPath, YAMLExists: yamlExists, ConfigBackup: cloneSkillEntries(config),
+		YAMLPath: yamlPath, YAMLExists: yamlExists, ConfigBackup: cloneSkillEntries(config), ConfigBackupCaptured: config != nil,
 		FailureReason: strings.TrimSpace(reason), Attempts: 0, CreatedAt: time.Now().UTC().Format(time.RFC3339),
 		CleanupStatus: "pending",
 	}
@@ -185,6 +271,30 @@ func (r *EvolutionCompensationRecord) SetDraftBackup(path string, data []byte, e
 	if exists {
 		r.DraftBackup = base64.StdEncoding.EncodeToString(data)
 	}
+}
+
+// SetFileSnapshotPostImage records the digest of the file after publication.
+// Recovery uses it as a compare-before-restore fence against unrelated
+// concurrent writers.
+func (r *EvolutionCompensationRecord) SetFileSnapshotPostImage(path string, data []byte, exists bool) error {
+	if r == nil {
+		return fmt.Errorf("compensation record is nil")
+	}
+	path = filepath.Clean(strings.TrimSpace(path))
+	if path == "" || !filepath.IsAbs(path) {
+		return fmt.Errorf("post-image path must be absolute")
+	}
+	sum := sha256.Sum256(data)
+	digest := hex.EncodeToString(sum[:])
+	for i := range r.FileSnapshots {
+		if filepath.Clean(strings.TrimSpace(r.FileSnapshots[i].Path)) == path {
+			r.FileSnapshots[i].PostImageSHA256 = digest
+			r.FileSnapshots[i].PostImageExists = exists
+			r.FileSnapshots[i].PostImageCaptured = true
+			return nil
+		}
+	}
+	return fmt.Errorf("file snapshot path not found: %s", path)
 }
 
 // SetDirectoryBackup records a directory move that must be reversed during
@@ -301,6 +411,16 @@ func (r *EvolutionCompensationRecord) SetFileSnapshots(snapshots []EvolutionFile
 	r.FileSnapshots = append([]EvolutionFileSnapshot(nil), snapshots...)
 }
 
+// SetSkipIndexRefresh declares that rollback restores configuration-only
+// state and must not invoke a Skill routing index refresher. The flag is
+// explicit so generic recovery remains conservative for legacy records.
+func (r *EvolutionCompensationRecord) SetSkipIndexRefresh(skip bool) {
+	if r == nil {
+		return
+	}
+	r.SkipIndexRefresh = skip
+}
+
 // SetAffectedSkills records all Skill identities covered by a batch commit.
 // Empty values and duplicates are removed while preserving input order.
 func (r *EvolutionCompensationRecord) SetAffectedSkills(skills []string) {
@@ -351,15 +471,10 @@ func normalizeRecoveryScope(scope string) string {
 	return scope
 }
 
-// compensationRecordMatchesScope proves ownership of a legacy record that
-// predates RecoveryScope. Every durable path present in the record must be
-// under the candidate scope; records without any path cannot be safely
-// attributed and therefore remain pending (fail-closed).
-func compensationRecordMatchesScope(record EvolutionCompensationRecord, scope string) bool {
-	scope = normalizeRecoveryScope(scope)
-	if scope == "" {
-		return false
-	}
+// compensationRecordPaths returns every persisted filesystem target carried
+// by a record. Keeping this inventory centralized ensures new recovery paths
+// are subjected to the same absolute-path validation and scope checks.
+func compensationRecordPaths(record EvolutionCompensationRecord) []string {
 	paths := make([]string, 0, 8+len(record.DirectoryMoves)+len(record.CreatedDirs)+len(record.PostCommitCleanupPaths)+len(record.RollbackCleanupPaths)+len(record.FileSnapshots))
 	paths = append(paths, record.YAMLPath, record.DraftPath, record.DirPath, record.DirBackupPath)
 	for _, move := range record.DirectoryMoves {
@@ -371,6 +486,32 @@ func compensationRecordMatchesScope(record EvolutionCompensationRecord, scope st
 	for _, snapshot := range record.FileSnapshots {
 		paths = append(paths, snapshot.Path)
 	}
+	return paths
+}
+
+func validateCompensationRecordPaths(record EvolutionCompensationRecord) error {
+	if scope := strings.TrimSpace(record.RecoveryScope); scope != "" && !filepath.IsAbs(scope) {
+		return fmt.Errorf("compensation record recovery scope must be absolute")
+	}
+	for _, raw := range compensationRecordPaths(record) {
+		raw = strings.TrimSpace(raw)
+		if raw != "" && !filepath.IsAbs(raw) {
+			return fmt.Errorf("compensation record path must be absolute")
+		}
+	}
+	return nil
+}
+
+// compensationRecordMatchesScope proves ownership of a legacy record that
+// predates RecoveryScope. Every durable path present in the record must be
+// under the candidate scope; records without any path cannot be safely
+// attributed and therefore remain pending (fail-closed).
+func compensationRecordMatchesScope(record EvolutionCompensationRecord, scope string) bool {
+	scope = normalizeRecoveryScope(scope)
+	if scope == "" {
+		return false
+	}
+	paths := compensationRecordPaths(record)
 	found := false
 	for _, raw := range paths {
 		raw = strings.TrimSpace(raw)
@@ -395,17 +536,7 @@ func compensationRecordContainsPathInScope(record EvolutionCompensationRecord, s
 	if scope == "" {
 		return false
 	}
-	paths := make([]string, 0, 8+len(record.DirectoryMoves)+len(record.CreatedDirs)+len(record.PostCommitCleanupPaths)+len(record.RollbackCleanupPaths)+len(record.FileSnapshots))
-	paths = append(paths, record.YAMLPath, record.DraftPath, record.DirPath, record.DirBackupPath)
-	for _, move := range record.DirectoryMoves {
-		paths = append(paths, move.OriginalPath, move.BackupPath)
-	}
-	paths = append(paths, record.CreatedDirs...)
-	paths = append(paths, record.PostCommitCleanupPaths...)
-	paths = append(paths, record.RollbackCleanupPaths...)
-	for _, snapshot := range record.FileSnapshots {
-		paths = append(paths, snapshot.Path)
-	}
+	paths := compensationRecordPaths(record)
 	for _, raw := range paths {
 		raw = strings.TrimSpace(raw)
 		if raw == "" || !filepath.IsAbs(raw) {
@@ -434,6 +565,9 @@ func cloneSkillEntries(src []corelib.NLSkillEntry) []corelib.NLSkillEntry {
 }
 
 func appendEvolutionCompensation(record EvolutionCompensationRecord) error {
+	if err := validateCompensationRecordPaths(record); err != nil {
+		return err
+	}
 	path := DefaultEvolutionCompensationPath()
 	record.SchemaVersion = evolutionCompensationSchemaVersion
 	if strings.TrimSpace(record.CreatedAt) == "" {
@@ -472,7 +606,9 @@ func PersistEvolutionCompensation(record EvolutionCompensationRecord) error {
 // lifecycle operation changes from prepared to rolled_back/committed without
 // leaving duplicate live records in the queue.
 func ReplaceEvolutionCompensation(record EvolutionCompensationRecord) error {
-	return replaceEvolutionCompensation(record)
+	evolutionCompensationMu.Lock()
+	defer evolutionCompensationMu.Unlock()
+	return replaceEvolutionCompensationUnlocked(record)
 }
 
 // replaceEvolutionCompensation replaces the latest durable snapshot for one
@@ -481,11 +617,20 @@ func ReplaceEvolutionCompensation(record EvolutionCompensationRecord) error {
 // must not leave multiple live snapshots for the same request: recovery and
 // operator views need one authoritative record.
 func replaceEvolutionCompensation(record EvolutionCompensationRecord) error {
+	evolutionCompensationMu.Lock()
+	defer evolutionCompensationMu.Unlock()
+	return replaceEvolutionCompensationUnlocked(record)
+}
+
+func replaceEvolutionCompensationUnlocked(record EvolutionCompensationRecord) error {
+	if err := validateCompensationRecordPaths(record); err != nil {
+		return err
+	}
 	requestID := strings.TrimSpace(record.RequestID)
 	if requestID == "" {
 		return fmt.Errorf("compensation request_id is required")
 	}
-	records, err := readEvolutionCompensations()
+	records, err := readEvolutionCompensationsLocked()
 	if err != nil {
 		return err
 	}
@@ -497,18 +642,25 @@ func replaceEvolutionCompensation(record EvolutionCompensationRecord) error {
 		remaining = append(remaining, existing)
 	}
 	remaining = append(remaining, record)
-	return writeEvolutionCompensations(remaining)
+	return writeEvolutionCompensationsUnlocked(remaining)
 }
 
 // ClearEvolutionCompensation removes the durable snapshot for one completed
 // transaction. Callers must only use it after the transaction's final audit
-// and post-commit cleanup have succeeded. If cleanup fails, the caller should
-// roll the transaction back and leave the record pending.
+// and post-commit cleanup have succeeded. A committed transaction must never
+// be rolled back when this queue delete fails; persist the committed/pending
+// state with MarkEvolutionCompensationCleanupFailure instead.
 func ClearEvolutionCompensation(requestID, skillName, action string) error {
+	evolutionCompensationMu.Lock()
+	defer evolutionCompensationMu.Unlock()
+	return clearEvolutionCompensationUnlocked(requestID, skillName, action)
+}
+
+func clearEvolutionCompensationUnlocked(requestID, skillName, action string) error {
 	requestID = strings.TrimSpace(requestID)
 	skillName = strings.TrimSpace(skillName)
 	action = strings.TrimSpace(action)
-	records, err := readEvolutionCompensations()
+	records, err := readEvolutionCompensationsLocked()
 	if err != nil {
 		return err
 	}
@@ -524,7 +676,101 @@ func ClearEvolutionCompensation(requestID, skillName, action string) error {
 		}
 		remaining = append(remaining, record)
 	}
-	return writeEvolutionCompensations(remaining)
+	return writeEvolutionCompensationsUnlocked(remaining)
+}
+
+// MarkEvolutionCompensationCleanupFailure persists a post-commit cleanup
+// failure without crossing back into rollback semantics. Cleanup is retried
+// only a bounded number of times; after the limit the record becomes an
+// explicit operator-review item and remains an admission blocker.
+func MarkEvolutionCompensationCleanupFailure(record *EvolutionCompensationRecord, cause error) error {
+	evolutionCompensationMu.Lock()
+	defer evolutionCompensationMu.Unlock()
+	return markEvolutionCompensationCleanupFailureUnlocked(record, cause)
+}
+
+func markEvolutionCompensationCleanupFailureUnlocked(record *EvolutionCompensationRecord, cause error) error {
+	if record == nil {
+		return fmt.Errorf("compensation record is nil")
+	}
+	// needs_review is a terminal operator state. Keep it stable when a caller
+	// reports the same artifact again before manual intervention; otherwise a
+	// repeated callback could inflate attempts or duplicate audit events.
+	if strings.EqualFold(strings.TrimSpace(record.CleanupStatus), "needs_review") || strings.EqualFold(strings.TrimSpace(record.Status), "needs_review") {
+		return nil
+	}
+	record.TransactionState = "committed"
+	record.CleanupStatus = "pending"
+	record.FailureReason = "post_commit_cleanup_failed"
+	record.Attempts++
+	if cause != nil {
+		record.LastError = cause.Error()
+	}
+	if record.Attempts >= evolutionCompensationMaxAttempts {
+		record.Status = "needs_review"
+		record.CleanupStatus = "needs_review"
+	}
+	if err := replaceEvolutionCompensationUnlocked(*record); err != nil {
+		return err
+	}
+	if record.CleanupStatus == "needs_review" {
+		if err := RecordEvolutionEventStrict(EventSkillCompensationNeedsReview, map[string]string{
+			"skill": record.Skill, "action": record.Action, "request_id": record.RequestID,
+			"attempt": fmt.Sprintf("%d", record.Attempts), "decision": "needs_review",
+			"reason": "post_commit_cleanup_retry_exhausted", "failure_reason": record.LastError,
+			"transaction_state": "committed", "cleanup_status": "needs_review", "schema_version": "2",
+		}, "desktop"); err != nil {
+			// The queue state is already durable and remains fail-closed. Surface
+			// the audit sink failure so callers can expose degraded observability.
+			return err
+		}
+	}
+	return nil
+}
+
+// MarkEvolutionCompensationRollbackFailure persists a failure while removing
+// an uncommitted compensation record. Unlike post-commit cleanup, this path
+// must remain recoverable as a rollback and must never be upgraded to
+// transaction_state=committed merely because queue deletion failed.
+func MarkEvolutionCompensationRollbackFailure(record *EvolutionCompensationRecord, cause error) error {
+	evolutionCompensationMu.Lock()
+	defer evolutionCompensationMu.Unlock()
+	return markEvolutionCompensationRollbackFailureUnlocked(record, cause)
+}
+
+func markEvolutionCompensationRollbackFailureUnlocked(record *EvolutionCompensationRecord, cause error) error {
+	if record == nil {
+		return fmt.Errorf("compensation record is nil")
+	}
+	if strings.EqualFold(strings.TrimSpace(record.Status), "needs_review") {
+		return nil
+	}
+	if strings.TrimSpace(record.TransactionState) == "" || strings.EqualFold(strings.TrimSpace(record.TransactionState), "committed") {
+		record.TransactionState = "audit_pending"
+	}
+	record.CleanupStatus = "pending"
+	record.FailureReason = "rollback_cleanup_failed"
+	record.Attempts++
+	if cause != nil {
+		record.LastError = cause.Error()
+	}
+	if record.Attempts >= evolutionCompensationMaxAttempts {
+		record.Status = "needs_review"
+	}
+	if err := replaceEvolutionCompensationUnlocked(*record); err != nil {
+		return err
+	}
+	if record.Status == "needs_review" {
+		if err := RecordEvolutionEventStrict(EventSkillCompensationNeedsReview, map[string]string{
+			"skill": record.Skill, "action": record.Action, "request_id": record.RequestID,
+			"attempt": fmt.Sprintf("%d", record.Attempts), "decision": "needs_review",
+			"reason": "rollback_cleanup_retry_exhausted", "failure_reason": record.LastError,
+			"transaction_state": record.TransactionState, "cleanup_status": record.CleanupStatus, "schema_version": "2",
+		}, "desktop"); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ListEvolutionCompensationSummaries returns an operator-safe snapshot of the
@@ -536,13 +782,256 @@ func ListEvolutionCompensationSummaries() ([]EvolutionCompensationSummary, error
 	}
 	out := make([]EvolutionCompensationSummary, 0, len(records))
 	for _, record := range records {
-		out = append(out, EvolutionCompensationSummary{
-			RequestID: record.RequestID, Skill: record.Skill, Action: record.Action,
-			Attempts: record.Attempts, Status: record.Status, FailureReason: record.FailureReason,
-			LastError: safeCompensationText(record.LastError), CreatedAt: record.CreatedAt, NextRetryAt: record.NextRetryAt, CleanupStatus: record.CleanupStatus, TransactionState: record.TransactionState,
-		})
+		out = append(out, evolutionCompensationSummary(record))
 	}
 	return out, nil
+}
+
+func evolutionCompensationSummary(record EvolutionCompensationRecord) EvolutionCompensationSummary {
+	return EvolutionCompensationSummary{
+		RequestID: record.RequestID, Skill: record.Skill, Action: record.Action,
+		Attempts: record.Attempts, Status: record.Status, FailureReason: record.FailureReason,
+		LastError: safeCompensationText(record.LastError), CreatedAt: record.CreatedAt, NextRetryAt: record.NextRetryAt,
+		CleanupStatus: record.CleanupStatus, TransactionState: record.TransactionState,
+	}
+}
+
+// RetryEvolutionCompensation performs one explicit, identity-scoped retry.
+// The caller must have obtained an operator confirmation before invoking it.
+// Unlike startup recovery this function may re-arm a needs_review record, but
+// it never accepts a broad skill/action filter and never edits snapshot bytes.
+func RetryEvolutionCompensation(requestID, skillName, action string, pipeline *EvolutionPipeline) (EvolutionCompensationSummary, bool, error) {
+	requestID = strings.TrimSpace(requestID)
+	skillName = strings.TrimSpace(skillName)
+	action = strings.TrimSpace(action)
+	if requestID == "" || skillName == "" || action == "" {
+		return EvolutionCompensationSummary{}, false, fmt.Errorf("request_id, skill and action are required")
+	}
+	if pipeline == nil {
+		return EvolutionCompensationSummary{}, false, fmt.Errorf("evolution pipeline is unavailable")
+	}
+	evolutionCompensationMu.Lock()
+	records, err := readEvolutionCompensationsLocked()
+	if err != nil {
+		evolutionCompensationMu.Unlock()
+		return EvolutionCompensationSummary{}, false, err
+	}
+	var record EvolutionCompensationRecord
+	found := 0
+	requestMatches := 0
+	for _, candidate := range records {
+		if strings.EqualFold(strings.TrimSpace(candidate.RequestID), requestID) {
+			requestMatches++
+		}
+		if strings.EqualFold(strings.TrimSpace(candidate.RequestID), requestID) &&
+			strings.EqualFold(strings.TrimSpace(candidate.Skill), skillName) &&
+			strings.EqualFold(strings.TrimSpace(candidate.Action), action) {
+			record = candidate
+			found++
+		}
+	}
+	if found == 0 {
+		evolutionCompensationMu.Unlock()
+		return EvolutionCompensationSummary{}, false, fmt.Errorf("compensation not found for request_id=%q skill=%q action=%q", requestID, skillName, action)
+	}
+	if found > 1 || requestMatches > 1 {
+		evolutionCompensationMu.Unlock()
+		return EvolutionCompensationSummary{}, false, fmt.Errorf("ambiguous compensation identity for request_id=%q", requestID)
+	}
+	if err := validateManualCompensationPaths(record); err != nil {
+		evolutionCompensationMu.Unlock()
+		return evolutionCompensationSummary(record), false, err
+	}
+	// Record the operator intent before changing the queue state. If the audit
+	// sink is unavailable, fail closed and leave needs_review untouched.
+	previousAttempts := record.Attempts
+	if err := RecordEvolutionEventStrict(EventSkillCompensationManualRetry, map[string]string{
+		"request_id": requestID, "skill": skillName, "action": action,
+		"decision": "requested", "reason": "operator_retry", "attempt": fmt.Sprintf("%d", previousAttempts),
+		"via": "desktop_ui", "schema_version": "2",
+	}, "desktop"); err != nil {
+		evolutionCompensationMu.Unlock()
+		return EvolutionCompensationSummary{}, false, fmt.Errorf("record manual retry audit: %w", err)
+	}
+	record.Status = "pending"
+	record.CleanupStatus = "pending"
+	if strings.TrimSpace(record.TransactionState) == "" {
+		record.TransactionState = "prepared"
+	}
+	record.Attempts = 0
+	record.NextRetryAt = ""
+	record.LastError = ""
+	record.FailureReason = "manual_retry_requested"
+	if err := replaceEvolutionCompensationUnlocked(record); err != nil {
+		evolutionCompensationMu.Unlock()
+		return EvolutionCompensationSummary{}, false, fmt.Errorf("persist manual retry state: %w", err)
+	}
+	evolutionCompensationMu.Unlock()
+
+	recovered, pending, err := pipeline.RecoverPendingCompensationByIdentity(requestID, skillName, action, pipeline.ExternalRecovery)
+	if err != nil {
+		// Recovery may have persisted an updated retry budget (or needs_review)
+		// before returning the error. Prefer that durable state over the
+		// pre-retry snapshot so the GUI does not display stale attempts/status.
+		if latest, ok, readErr := findEvolutionCompensationSummaryByIdentity(requestID, skillName, action); readErr == nil && ok {
+			return latest, false, err
+		}
+		return evolutionCompensationSummary(record), false, err
+	}
+	if recovered > 0 && pending == 0 {
+		// A successful recovery removes the queue row, so there is no durable
+		// summary to read back. Return an explicit terminal view instead of the
+		// old pending snapshot that was used to initiate the retry.
+		record.Status = ""
+		record.Attempts = 0
+		record.NextRetryAt = ""
+		record.LastError = ""
+		record.FailureReason = "recovered"
+		record.CleanupStatus = "clear"
+		if strings.EqualFold(strings.TrimSpace(record.TransactionState), "committed") {
+			record.TransactionState = "committed"
+		} else {
+			record.TransactionState = "rolled_back"
+		}
+		return evolutionCompensationSummary(record), true, nil
+	}
+	// Failed recovery normally leaves the exact record in the queue. Read it
+	// back so attempts, retry scheduling and needs_review escalation are
+	// reflected immediately in the operator UI.
+	if latest, ok, readErr := findEvolutionCompensationSummaryByIdentity(requestID, skillName, action); readErr == nil && ok {
+		return latest, false, nil
+	}
+	return evolutionCompensationSummary(record), false, nil
+}
+
+// findEvolutionCompensationSummaryByIdentity reads one exact queue identity
+// without exposing the durable snapshot body. It is intentionally used only
+// after an explicit retry, where presenting the post-recovery attempt/status
+// is more useful than echoing the pre-retry request row.
+func findEvolutionCompensationSummaryByIdentity(requestID, skillName, action string) (EvolutionCompensationSummary, bool, error) {
+	items, err := ListEvolutionCompensationSummaries()
+	if err != nil {
+		return EvolutionCompensationSummary{}, false, err
+	}
+	for _, item := range items {
+		if strings.EqualFold(strings.TrimSpace(item.RequestID), strings.TrimSpace(requestID)) &&
+			strings.EqualFold(strings.TrimSpace(item.Skill), strings.TrimSpace(skillName)) &&
+			strings.EqualFold(strings.TrimSpace(item.Action), strings.TrimSpace(action)) {
+			return item, true, nil
+		}
+	}
+	return EvolutionCompensationSummary{}, false, nil
+}
+
+// ClearEvolutionCompensationManually clears one committed compensation only
+// after all declared post-commit artifacts are gone. Uncommitted or
+// needs-review rollback records are never silently discarded.
+func ClearEvolutionCompensationManually(requestID, skillName, action string) (EvolutionCompensationSummary, error) {
+	requestID = strings.TrimSpace(requestID)
+	skillName = strings.TrimSpace(skillName)
+	action = strings.TrimSpace(action)
+	if requestID == "" || skillName == "" || action == "" {
+		return EvolutionCompensationSummary{}, fmt.Errorf("request_id, skill and action are required")
+	}
+	evolutionCompensationMu.Lock()
+	defer evolutionCompensationMu.Unlock()
+	records, err := readEvolutionCompensationsLocked()
+	if err != nil {
+		return EvolutionCompensationSummary{}, err
+	}
+	var record EvolutionCompensationRecord
+	found := 0
+	requestMatches := 0
+	for _, candidate := range records {
+		if strings.EqualFold(strings.TrimSpace(candidate.RequestID), requestID) {
+			requestMatches++
+		}
+		if strings.EqualFold(strings.TrimSpace(candidate.RequestID), requestID) &&
+			strings.EqualFold(strings.TrimSpace(candidate.Skill), skillName) &&
+			strings.EqualFold(strings.TrimSpace(candidate.Action), action) {
+			record = candidate
+			found++
+		}
+	}
+	if found == 0 {
+		return EvolutionCompensationSummary{}, fmt.Errorf("compensation not found for request_id=%q skill=%q action=%q", requestID, skillName, action)
+	}
+	if found > 1 || requestMatches > 1 {
+		return EvolutionCompensationSummary{}, fmt.Errorf("ambiguous compensation identity for request_id=%q", requestID)
+	}
+	if err := validateManualCompensationPaths(record); err != nil {
+		return evolutionCompensationSummary(record), err
+	}
+	if !strings.EqualFold(strings.TrimSpace(record.TransactionState), "committed") {
+		return evolutionCompensationSummary(record), fmt.Errorf("manual clear requires committed transaction state")
+	}
+	// Manual clear is deliberately non-destructive: retry is the operation that
+	// removes declared artifacts. Clear only proves that every target is already
+	// absent, then removes the queue row. This prevents a tampered queue entry
+	// from turning a UI action into an arbitrary filesystem delete.
+	for _, path := range committedCompensationCleanupTargets(record) {
+		if _, statErr := os.Stat(path); statErr == nil {
+			return evolutionCompensationSummary(record), fmt.Errorf("cleanup target still exists")
+		} else if !os.IsNotExist(statErr) {
+			return evolutionCompensationSummary(record), fmt.Errorf("verify cleanup target: %w", statErr)
+		}
+	}
+	if err := RecordEvolutionEventStrict(EventSkillCompensationManualClear, map[string]string{
+		"request_id": requestID, "skill": skillName, "action": action,
+		"decision": "requested", "reason": "operator_clear_after_cleanup", "attempt": fmt.Sprintf("%d", record.Attempts),
+		"via": "desktop_ui", "schema_version": "2",
+	}, "desktop"); err != nil {
+		return evolutionCompensationSummary(record), fmt.Errorf("record manual clear audit: %w", err)
+	}
+	if err := clearEvolutionCompensationUnlocked(requestID, skillName, action); err != nil {
+		_ = markEvolutionCompensationCleanupFailureUnlocked(&record, err)
+		return evolutionCompensationSummary(record), fmt.Errorf("clear compensation queue entry: %w", err)
+	}
+	// The queue row is gone, so report a terminal operator outcome rather than
+	// echoing its previous pending/needs_review cleanup state. This mirrors the
+	// retry endpoint and keeps API consumers from rendering a successfully
+	// cleared record as still blocked.
+	record.Status = ""
+	record.Attempts = 0
+	record.NextRetryAt = ""
+	record.LastError = ""
+	record.FailureReason = "cleared_manually"
+	record.CleanupStatus = "clear"
+	return evolutionCompensationSummary(record), nil
+}
+
+func committedCompensationCleanupTargets(record EvolutionCompensationRecord) []string {
+	targets := make([]string, 0, len(record.DirectoryMoves)+len(record.PostCommitCleanupPaths)+1)
+	for _, move := range record.DirectoryMoves {
+		if move.Moved && strings.TrimSpace(move.BackupPath) != "" {
+			targets = append(targets, strings.TrimSpace(move.BackupPath))
+		}
+	}
+	if record.DirMoved && strings.TrimSpace(record.DirBackupPath) != "" {
+		targets = append(targets, strings.TrimSpace(record.DirBackupPath))
+	}
+	for _, path := range record.PostCommitCleanupPaths {
+		if path = strings.TrimSpace(path); path != "" {
+			targets = append(targets, path)
+		}
+	}
+	return targets
+}
+
+func validateManualCompensationPaths(record EvolutionCompensationRecord) error {
+	paths := append([]string(nil), record.PostCommitCleanupPaths...)
+	paths = append(paths, record.RollbackCleanupPaths...)
+	paths = append(paths, record.CreatedDirs...)
+	paths = append(paths, record.DirPath, record.DirBackupPath)
+	for _, move := range record.DirectoryMoves {
+		paths = append(paths, move.OriginalPath, move.BackupPath)
+	}
+	for _, raw := range paths {
+		if strings.TrimSpace(raw) != "" && !filepath.IsAbs(strings.TrimSpace(raw)) {
+			return fmt.Errorf("manual compensation rejected relative path")
+		}
+	}
+	return nil
 }
 
 // CheckEvolutionCompensationQueue validates the durable queue without
@@ -550,8 +1039,74 @@ func ListEvolutionCompensationSummaries() ([]EvolutionCompensationSummary, error
 // should use this instead of probing HasPendingCompensation with a sentinel
 // Skill name.
 func CheckEvolutionCompensationQueue() error {
-	_, err := readEvolutionCompensations()
-	return err
+	return MigrateEvolutionCompensationQueue()
+}
+
+// MigrateEvolutionCompensationQueue upgrades legacy records that predate the
+// schema_version field. The migration is intentionally narrow and monotonic:
+// malformed or explicitly unsupported records still fail closed and are never
+// rewritten. A successful migration atomically replaces the queue with the
+// normalized current representation, preserving one authoritative snapshot per
+// request.
+func MigrateEvolutionCompensationQueue() error {
+	path := DefaultEvolutionCompensationPath()
+	// Hold the queue mutex across read/validate/rewrite.  Without one critical
+	// section, a concurrent transaction could append a record after the
+	// migration read and have that record overwritten by the stale normalized
+	// snapshot.
+	evolutionCompensationMu.Lock()
+	defer evolutionCompensationMu.Unlock()
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	needsMigration, err := compensationQueueNeedsSchemaMigration(data)
+	if err != nil {
+		return err
+	}
+	records, err := readEvolutionCompensationsRawUnlocked()
+	if err != nil {
+		return err
+	}
+	if !needsMigration {
+		return nil
+	}
+	return writeEvolutionCompensationsUnlocked(records)
+}
+
+func compensationQueueNeedsSchemaMigration(data []byte) (bool, error) {
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	scanner.Buffer(make([]byte, 64*1024), 8*1024*1024)
+	for scanner.Scan() {
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		var envelope map[string]json.RawMessage
+		if err := json.Unmarshal(line, &envelope); err != nil {
+			// Let the canonical reader produce the detailed validation error and
+			// forensic quarantine copy; migration must not mask corruption.
+			return false, nil
+		}
+		rawVersion, ok := envelope["schema_version"]
+		if !ok || len(bytes.TrimSpace(rawVersion)) == 0 || bytes.Equal(bytes.TrimSpace(rawVersion), []byte("null")) {
+			return true, nil
+		}
+		// Treat an explicitly encoded empty string like a missing legacy field.
+		// Non-string values are left for the canonical reader, which rejects them
+		// fail-closed instead of rewriting an ambiguous record.
+		var version string
+		if err := json.Unmarshal(rawVersion, &version); err == nil && strings.TrimSpace(version) == "" {
+			return true, nil
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return false, err
+	}
+	return false, nil
 }
 
 // safeCompensationText keeps operator diagnostics bounded and avoids exposing
@@ -574,6 +1129,18 @@ func safeCompensationText(value string) string {
 	return value
 }
 
+// SummarizeEvolutionCompensationError returns an operator-safe diagnostic for
+// a queue/read/recovery error. Public callers (Wails/TUI/IM) must use this
+// instead of exposing raw filesystem errors, which may contain absolute paths
+// or provider-specific details. The original error remains available to local
+// logs and is never needed for an admission decision.
+func SummarizeEvolutionCompensationError(err error) string {
+	if err == nil {
+		return ""
+	}
+	return safeCompensationText(err.Error())
+}
+
 // NewEvolutionCompensationRecord creates a durable rollback snapshot for a
 // platform-specific transaction that cannot use persistDefinitionChange.
 func NewEvolutionCompensationRecord(requestID, skillName, action, yamlPath string, yamlBackup []byte, yamlExists bool, config []corelib.NLSkillEntry, reason string) EvolutionCompensationRecord {
@@ -587,10 +1154,43 @@ func RestoreEvolutionCompensation(record EvolutionCompensationRecord, skillSaver
 	return restoreEvolutionCompensation(record, skillSaver, indexRefresher)
 }
 
+// readEvolutionCompensations is the fail-closed public queue reader. When the
+// canonical JSONL is malformed, retain a non-destructive forensic copy before
+// returning the error. The original queue is intentionally left in place so
+// admission remains blocked and an operator can repair it without losing the
+// evidence that caused the block.
 func readEvolutionCompensations() ([]EvolutionCompensationRecord, error) {
-	path := DefaultEvolutionCompensationPath()
+	records, err := readEvolutionCompensationsRaw()
+	if err != nil {
+		if quarantineErr := quarantineCorruptEvolutionCompensationQueue(err); quarantineErr != nil {
+			return nil, fmt.Errorf("%w; quarantine copy failed: %v", err, quarantineErr)
+		}
+	}
+	return records, err
+}
+
+// readEvolutionCompensationsLocked is used by queue mutations that already
+// hold evolutionCompensationMu.  It preserves the same forensic-copy behavior
+// as readEvolutionCompensations without attempting to acquire the mutex a
+// second time.
+func readEvolutionCompensationsLocked() ([]EvolutionCompensationRecord, error) {
+	records, err := readEvolutionCompensationsRawUnlocked()
+	if err != nil {
+		if quarantineErr := quarantineCorruptEvolutionCompensationQueue(err); quarantineErr != nil {
+			return nil, fmt.Errorf("%w; quarantine copy failed: %v", err, quarantineErr)
+		}
+	}
+	return records, err
+}
+
+func readEvolutionCompensationsRaw() ([]EvolutionCompensationRecord, error) {
 	evolutionCompensationMu.Lock()
 	defer evolutionCompensationMu.Unlock()
+	return readEvolutionCompensationsRawUnlocked()
+}
+
+func readEvolutionCompensationsRawUnlocked() ([]EvolutionCompensationRecord, error) {
+	path := DefaultEvolutionCompensationPath()
 	f, err := os.Open(path)
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -643,6 +1243,9 @@ func readEvolutionCompensations() ([]EvolutionCompensationRecord, error) {
 			// the conservative interpretation during schema-compatible reads.
 			record.TransactionState = "audit_pending"
 		}
+		if len(record.ExternalApplied) > 0 && len(record.ExternalSnapshots) == 0 {
+			return nil, fmt.Errorf("compensation record external transitions have no snapshots for skill %q", record.Skill)
+		}
 		if len(record.ExternalSnapshots) > 0 {
 			for key, value := range record.ExternalSnapshots {
 				if strings.TrimSpace(key) == "" || strings.TrimSpace(value) == "" {
@@ -658,10 +1261,23 @@ func readEvolutionCompensations() ([]EvolutionCompensationRecord, error) {
 		if scope := strings.TrimSpace(record.RecoveryScope); scope != "" && !filepath.IsAbs(scope) {
 			return nil, fmt.Errorf("compensation record recovery_scope must be absolute for skill %q", record.Skill)
 		}
+		// Every filesystem target in a durable record is an ownership boundary.
+		// Reject relative paths at read time so global/startup recovery can never
+		// interpret a tampered or malformed queue entry relative to the process
+		// working directory (for example, deleting `.` via CreatedDirs).
+		if err := validateCompensationRecordPaths(record); err != nil {
+			return nil, fmt.Errorf("%w for skill %q", err, record.Skill)
+		}
+		seenSnapshotPaths := make(map[string]struct{}, len(record.FileSnapshots))
 		for _, snapshot := range record.FileSnapshots {
 			if strings.TrimSpace(snapshot.Path) == "" || !filepath.IsAbs(snapshot.Path) {
 				return nil, fmt.Errorf("compensation record file snapshot path must be absolute for skill %q", record.Skill)
 			}
+			snapshotPath := filepath.Clean(snapshot.Path)
+			if _, exists := seenSnapshotPaths[snapshotPath]; exists {
+				return nil, fmt.Errorf("compensation record contains duplicate file snapshot path %q for skill %q", snapshotPath, record.Skill)
+			}
+			seenSnapshotPaths[snapshotPath] = struct{}{}
 			if snapshot.Exists {
 				data, decodeErr := base64.StdEncoding.DecodeString(snapshot.BackupB64)
 				if decodeErr != nil || len(data) > 2*1024*1024 {
@@ -700,9 +1316,13 @@ func readEvolutionCompensations() ([]EvolutionCompensationRecord, error) {
 }
 
 func writeEvolutionCompensations(records []EvolutionCompensationRecord) error {
-	path := DefaultEvolutionCompensationPath()
 	evolutionCompensationMu.Lock()
 	defer evolutionCompensationMu.Unlock()
+	return writeEvolutionCompensationsUnlocked(records)
+}
+
+func writeEvolutionCompensationsUnlocked(records []EvolutionCompensationRecord) error {
+	path := DefaultEvolutionCompensationPath()
 	if len(records) == 0 {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			return err
@@ -773,6 +1393,16 @@ func writeEvolutionCompensations(records []EvolutionCompensationRecord) error {
 // restores config before rebuilding the derived index; a failed config write
 // therefore leaves the record pending rather than claiming recovery.
 func restoreEvolutionCompensation(record EvolutionCompensationRecord, skillSaver func([]corelib.NLSkillEntry) error, indexRefresher func() error) error {
+	if err := validateCompensationRecordPaths(record); err != nil {
+		return err
+	}
+	// Preflight every durable payload and target before mutating any directory,
+	// YAML, draft or snapshot file. A corrupt queue row must remain a pure
+	// admission failure; it must never produce a partially-restored state that
+	// is harder to repair than the original crash.
+	if err := preflightEvolutionCompensationRestore(record); err != nil {
+		return err
+	}
 	if len(record.DirectoryMoves) > 0 {
 		// Multi-package directory transactions are restored in reverse order.
 		// An intent-only move is deliberately left untouched when both paths
@@ -807,6 +1437,49 @@ func restoreEvolutionCompensation(record EvolutionCompensationRecord, skillSaver
 				if err := removeCompensationPath(original); err != nil && !os.IsNotExist(err) {
 					return fmt.Errorf("remove created directory: %w", err)
 				}
+			}
+		}
+		// Multi-package records also carry CreatedDirs for newly published
+		// directories.  The historical branch above only restored DirectoryMoves
+		// and consequently skipped those paths whenever the record contained any
+		// move at all.  A crash after publishing a new directory but before the
+		// per-move durability update could therefore leave an orphaned executable
+		// package.  Remove only paths that are not protected by a HadPrevious move;
+		// update transactions retain their restored prior directory and are handled
+		// exclusively through the backup move above.
+		protectedCreated := make(map[string]struct{}, len(record.DirectoryMoves)*2)
+		unpublishedCreated := make(map[string]struct{}, len(record.DirectoryMoves))
+		for _, move := range record.DirectoryMoves {
+			path := filepath.Clean(strings.TrimSpace(move.OriginalPath))
+			if !move.HadPrevious && !move.Published && path != "" && path != "." {
+				// The target was only recorded in the pre-publication intent.  It
+				// may have been created by another concurrent actor after the
+				// snapshot was persisted; do not infer ownership and delete it.
+				unpublishedCreated[path] = struct{}{}
+			}
+			if !move.HadPrevious {
+				continue
+			}
+			if path != "" && path != "." {
+				protectedCreated[path] = struct{}{}
+			}
+			if path := filepath.Clean(strings.TrimSpace(move.BackupPath)); path != "" && path != "." {
+				protectedCreated[path] = struct{}{}
+			}
+		}
+		for _, path := range record.CreatedDirs {
+			path = filepath.Clean(strings.TrimSpace(path))
+			if path == "" || path == "." {
+				continue
+			}
+			if _, protected := protectedCreated[path]; protected {
+				continue
+			}
+			if _, unpublished := unpublishedCreated[path]; unpublished {
+				continue
+			}
+			if err := removeCompensationPath(path); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("remove created directory: %w", err)
 			}
 		}
 	} else {
@@ -971,7 +1644,7 @@ func restoreEvolutionCompensation(record EvolutionCompensationRecord, skillSaver
 		len(record.DirectoryMoves) > 0 || len(record.CreatedDirs) > 0 ||
 		strings.TrimSpace(record.YAMLPath) != "" || strings.TrimSpace(record.DraftPath) != "" ||
 		strings.TrimSpace(record.DirPath) != "" || strings.TrimSpace(record.DirBackupPath) != ""
-	if len(record.ConfigBackup) > 0 || !hasRestorePayload {
+	if record.ConfigBackupCaptured || len(record.ConfigBackup) > 0 || !hasRestorePayload {
 		if skillSaver == nil {
 			return fmt.Errorf("skill saver unavailable")
 		}
@@ -979,7 +1652,7 @@ func restoreEvolutionCompensation(record EvolutionCompensationRecord, skillSaver
 			return fmt.Errorf("restore config: %w", err)
 		}
 	}
-	if indexRefresher != nil {
+	if indexRefresher != nil && !record.SkipIndexRefresh {
 		if err := indexRefresher(); err != nil {
 			return fmt.Errorf("refresh index: %w", err)
 		}
@@ -990,30 +1663,141 @@ func restoreEvolutionCompensation(record EvolutionCompensationRecord, skillSaver
 	return nil
 }
 
+// preflightEvolutionCompensationRestore validates all restore inputs that can
+// otherwise fail after an earlier target has already been changed.  The
+// checks are intentionally read-only; the durable queue remains untouched on
+// failure and callers can safely retain it for a later retry/manual review.
+func preflightEvolutionCompensationRestore(record EvolutionCompensationRecord) error {
+	if record.YAMLExists {
+		if strings.TrimSpace(record.YAMLPath) == "" {
+			return fmt.Errorf("restore YAML: path required when snapshot exists")
+		}
+		if err := preflightEvolutionRestoreFileTarget(record.YAMLPath, "YAML"); err != nil {
+			return err
+		}
+		data, err := base64.StdEncoding.DecodeString(record.YAMLBackup)
+		if err != nil {
+			return fmt.Errorf("decode YAML backup: %w", err)
+		}
+		if len(data) > 8*1024*1024 {
+			return fmt.Errorf("YAML backup exceeds size limit")
+		}
+	} else if strings.TrimSpace(record.YAMLPath) != "" {
+		if err := preflightEvolutionRestoreFileTarget(record.YAMLPath, "YAML"); err != nil {
+			return err
+		}
+	}
+	if record.DraftExists {
+		if strings.TrimSpace(record.DraftPath) == "" {
+			return fmt.Errorf("restore draft: path required when snapshot exists")
+		}
+		if err := preflightEvolutionRestoreFileTarget(record.DraftPath, "draft"); err != nil {
+			return err
+		}
+		data, err := base64.StdEncoding.DecodeString(record.DraftBackup)
+		if err != nil {
+			return fmt.Errorf("decode draft backup: %w", err)
+		}
+		if len(data) > 8*1024*1024 {
+			return fmt.Errorf("draft backup exceeds size limit")
+		}
+	} else if strings.TrimSpace(record.DraftPath) != "" {
+		if err := preflightEvolutionRestoreFileTarget(record.DraftPath, "draft"); err != nil {
+			return err
+		}
+	}
+	if err := preflightEvolutionFileSnapshots(record.FileSnapshots); err != nil {
+		return err
+	}
+	// DirectoryMoves is also used by the legacy GUI delete adapter to quarantine
+	// package ZIP files. Do not require these paths to be directories; the
+	// restore operation itself preserves the recorded file/directory shape.
+	for _, move := range record.DirectoryMoves {
+		for label, path := range map[string]string{"directory original": move.OriginalPath, "directory backup": move.BackupPath} {
+			if strings.TrimSpace(path) == "" {
+				continue
+			}
+			if err := preflightEvolutionParentPath(path, label); err != nil {
+				return err
+			}
+		}
+	}
+	for label, path := range map[string]string{"directory": record.DirPath, "directory backup": record.DirBackupPath} {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		if err := preflightEvolutionParentPath(path, label); err != nil {
+			return err
+		}
+		info, err := os.Stat(path)
+		if err == nil {
+			if !info.IsDir() {
+				return fmt.Errorf("restore %s target is not a directory: %s", label, path)
+			}
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("inspect restore %s target: %w", label, err)
+		}
+	}
+	return nil
+}
+
+func preflightEvolutionParentPath(rawPath, label string) error {
+	path := strings.TrimSpace(rawPath)
+	if path == "" || !filepath.IsAbs(path) {
+		return fmt.Errorf("restore %s: absolute path required", label)
+	}
+	parent := filepath.Dir(filepath.Clean(path))
+	for {
+		info, err := os.Stat(parent)
+		if err == nil {
+			if !info.IsDir() {
+				return fmt.Errorf("restore %s: parent is not a directory: %s", label, parent)
+			}
+			return nil
+		}
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("inspect restore %s parent: %w", label, err)
+		}
+		next := filepath.Dir(parent)
+		if next == parent {
+			return nil
+		}
+		parent = next
+	}
+}
+
+func preflightEvolutionRestoreFileTarget(rawPath, label string) error {
+	path := strings.TrimSpace(rawPath)
+	if path == "" || !filepath.IsAbs(path) {
+		return fmt.Errorf("restore %s: absolute path required", label)
+	}
+	if info, err := os.Stat(path); err == nil && info.IsDir() {
+		return fmt.Errorf("restore %s: target is a directory: %s", label, path)
+	} else if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("inspect restore %s target: %w", label, err)
+	}
+	return preflightEvolutionParentPath(path, label)
+}
+
 // restoreEvolutionFileSnapshots restores bounded, explicitly captured files
 // such as a legacy metadata registry. It is intentionally independent from
 // SkillSaver because those files are not part of NLSkillEntry config. Missing
 // pre-images remove only the exact target; no parent or sibling path is ever
 // touched.
 func restoreEvolutionFileSnapshots(snapshots []EvolutionFileSnapshot) error {
+	if err := preflightEvolutionFileSnapshots(snapshots); err != nil {
+		return err
+	}
 	for _, snapshot := range snapshots {
 		path := strings.TrimSpace(snapshot.Path)
-		if path == "" || !filepath.IsAbs(path) {
-			return fmt.Errorf("restore file snapshot: absolute path required")
-		}
 		if !snapshot.Exists {
 			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 				return fmt.Errorf("remove restored file snapshot: %w", err)
 			}
 			continue
 		}
-		data, err := base64.StdEncoding.DecodeString(snapshot.BackupB64)
-		if err != nil {
-			return fmt.Errorf("decode file snapshot: %w", err)
-		}
-		if len(data) > 2*1024*1024 {
-			return fmt.Errorf("file snapshot exceeds size limit")
-		}
+		data, _ := base64.StdEncoding.DecodeString(snapshot.BackupB64)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return err
 		}
@@ -1047,6 +1831,100 @@ func restoreEvolutionFileSnapshots(snapshots []EvolutionFileSnapshot) error {
 			}
 		}
 		ok = true
+	}
+	return nil
+}
+
+// preflightEvolutionFileSnapshots validates every file snapshot without
+// mutating a target. It is called both by the full compensation preflight and
+// by the standalone restore helper so direct callers retain the same safety
+// guarantee.
+func preflightEvolutionFileSnapshots(snapshots []EvolutionFileSnapshot) error {
+	// Preflight every snapshot before mutating any target. Without this pass a
+	// corrupt second snapshot could leave the first file restored while the
+	// durable record remains pending, creating a new mixed pre/post-image state.
+	seenPaths := make(map[string]struct{}, len(snapshots))
+	for _, snapshot := range snapshots {
+		path := strings.TrimSpace(snapshot.Path)
+		if path == "" || !filepath.IsAbs(path) {
+			return fmt.Errorf("restore file snapshot: absolute path required")
+		}
+		path = filepath.Clean(path)
+		if _, exists := seenPaths[path]; exists {
+			return fmt.Errorf("restore file snapshot: duplicate target path: %s", path)
+		}
+		seenPaths[path] = struct{}{}
+		// Validate the target shape before touching any snapshot. A parent path
+		// that is a regular file (or a directory target) would otherwise allow
+		// earlier snapshots to be restored before a later one fails, leaving a
+		// mixed pre/post-image while the compensation row remains pending.
+		if info, err := os.Stat(path); err == nil && info.IsDir() {
+			return fmt.Errorf("restore file snapshot: target is a directory: %s", path)
+		} else if err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("inspect file snapshot target: %w", err)
+		}
+		parent := filepath.Dir(path)
+		for {
+			info, err := os.Stat(parent)
+			if err == nil {
+				if !info.IsDir() {
+					return fmt.Errorf("restore file snapshot: parent is not a directory: %s", parent)
+				}
+				break
+			}
+			if !os.IsNotExist(err) {
+				return fmt.Errorf("inspect file snapshot parent: %w", err)
+			}
+			next := filepath.Dir(parent)
+			if next == parent {
+				break
+			}
+			parent = next
+		}
+		if snapshot.Exists {
+			data, err := base64.StdEncoding.DecodeString(snapshot.BackupB64)
+			if err != nil {
+				return fmt.Errorf("decode file snapshot: %w", err)
+			}
+			if len(data) > 2*1024*1024 {
+				return fmt.Errorf("file snapshot exceeds size limit")
+			}
+		}
+		if snapshot.PostImageCaptured {
+			current, readErr := os.ReadFile(path)
+			currentExists := readErr == nil
+			if readErr != nil && !os.IsNotExist(readErr) {
+				return fmt.Errorf("inspect file snapshot post-image: %w", readErr)
+			}
+			if currentExists != snapshot.PostImageExists {
+				// A previous recovery attempt may already have restored the exact
+				// pre-image before failing on a later index/audit step. Treat that
+				// state as idempotently recoverable instead of rejecting the record
+				// because it no longer matches the forward post-image.
+				if !snapshot.Exists && !currentExists {
+					continue
+				}
+				return fmt.Errorf("file snapshot post-image changed: %s", path)
+			}
+			if currentExists {
+				sum := sha256.Sum256(current)
+				currentDigest := hex.EncodeToString(sum[:])
+				if strings.EqualFold(snapshot.PostImageSHA256, currentDigest) {
+					continue
+				}
+				// Recovery is allowed to resume after the file was already restored
+				// to its captured pre-image. Any other digest indicates a concurrent
+				// writer and must remain fail-closed.
+				preImage, decodeErr := base64.StdEncoding.DecodeString(snapshot.BackupB64)
+				if decodeErr == nil {
+					preSum := sha256.Sum256(preImage)
+					if hex.EncodeToString(preSum[:]) == currentDigest {
+						continue
+					}
+				}
+				return fmt.Errorf("file snapshot post-image digest changed: %s", path)
+			}
+		}
 	}
 	return nil
 }
@@ -1145,7 +2023,22 @@ func (p *EvolutionPipeline) RecoverPendingCompensations() (recovered int, pendin
 	if p == nil {
 		return 0, 0, nil
 	}
-	return p.recoverPendingCompensations("", "", "", p.ExternalRecovery)
+	return p.recoverPendingCompensations("", "", "", "", "", "", p.ExternalRecovery)
+}
+
+// RecoverPendingCompensationByIdentity replays exactly one durable record.
+// It is reserved for explicit operator actions; startup recovery must continue
+// using the broader, policy-scoped entry points below. Matching requires the
+// request ID plus the primary Skill/action identity so a stale UI row cannot
+// accidentally claim a newer transaction that reused a request ID.
+func (p *EvolutionPipeline) RecoverPendingCompensationByIdentity(requestID, skillName, action string, externalRecovery func(EvolutionCompensationRecord) error) (recovered int, pending int, err error) {
+	requestID = strings.TrimSpace(requestID)
+	skillName = strings.TrimSpace(skillName)
+	action = strings.TrimSpace(action)
+	if requestID == "" || skillName == "" || action == "" {
+		return 0, 0, fmt.Errorf("request_id, skill and action are required")
+	}
+	return p.recoverPendingCompensations("", "", "", requestID, skillName, action, externalRecovery)
 }
 
 func compensationRecordMatchesSkill(record EvolutionCompensationRecord, skillName string) bool {
@@ -1190,8 +2083,24 @@ func compensationFinalAuditExists(record EvolutionCompensationRecord) bool {
 		if skillName := strings.TrimSpace(record.Skill); skillName != "" && !strings.EqualFold(strings.TrimSpace(event.Skill), skillName) {
 			continue
 		}
-		if action := strings.TrimSpace(record.Action); action != "" && !strings.EqualFold(strings.TrimSpace(event.Action), action) {
-			continue
+		if action := strings.TrimSpace(record.Action); action != "" {
+			eventAction := strings.TrimSpace(event.Action)
+			if !strings.EqualFold(eventAction, action) {
+				// TUI action prefixes were introduced after early records had
+				// already been emitted with the unprefixed audit action. Accept
+				// only the exact suffix alias for backward compatibility; never
+				// broaden matching to an arbitrary prefix.
+				alias := ""
+				switch {
+				case strings.HasPrefix(action, "tui_cli_"):
+					alias = strings.TrimPrefix(action, "tui_cli_")
+				case strings.HasPrefix(action, "tui_"):
+					alias = strings.TrimPrefix(action, "tui_")
+				}
+				if alias == "" || !strings.EqualFold(eventAction, alias) {
+					continue
+				}
+			}
 		}
 		decision := strings.ToLower(strings.TrimSpace(event.Decision))
 		// Only the two terminal success decisions currently emitted by
@@ -1212,7 +2121,7 @@ func compensationFinalAuditExists(record EvolutionCompensationRecord) bool {
 // directory transactions without touching another host's Skill registry.
 func RecoverPendingEvolutionCompensationsForActionPrefix(prefix string, skillSaver func([]corelib.NLSkillEntry) error, indexRefresher func() error) (recovered int, pending int, err error) {
 	p := &EvolutionPipeline{SkillSaver: skillSaver, IndexRefresher: indexRefresher}
-	return p.recoverPendingCompensations(strings.TrimSpace(prefix), "", "", nil)
+	return p.recoverPendingCompensations(strings.TrimSpace(prefix), "", "", "", "", "", nil)
 }
 
 // RecoverPendingEvolutionCompensationsForActionPrefixAndSkill is the narrow
@@ -1223,7 +2132,7 @@ func RecoverPendingEvolutionCompensationsForActionPrefix(prefix string, skillSav
 // matching the requested Skill.
 func RecoverPendingEvolutionCompensationsForActionPrefixAndSkill(prefix, skillName string, skillSaver func([]corelib.NLSkillEntry) error, indexRefresher func() error) (recovered int, pending int, err error) {
 	p := &EvolutionPipeline{SkillSaver: skillSaver, IndexRefresher: indexRefresher}
-	return p.recoverPendingCompensations(strings.TrimSpace(prefix), "", strings.TrimSpace(skillName), nil)
+	return p.recoverPendingCompensations(strings.TrimSpace(prefix), "", strings.TrimSpace(skillName), "", "", "", nil)
 }
 
 // RecoverPendingEvolutionCompensationsForActionPrefixAndScope replays only
@@ -1241,16 +2150,33 @@ func RecoverPendingEvolutionCompensationsForActionPrefixAndScope(prefix, scope s
 // pre-image before filesystem/config rollback is attempted.
 func RecoverPendingEvolutionCompensationsForActionPrefixAndScopeWithExternalRecovery(prefix, scope string, skillSaver func([]corelib.NLSkillEntry) error, indexRefresher func() error, externalRecovery func(EvolutionCompensationRecord) error) (recovered int, pending int, err error) {
 	p := &EvolutionPipeline{SkillSaver: skillSaver, IndexRefresher: indexRefresher}
-	return p.recoverPendingCompensations(strings.TrimSpace(prefix), normalizeRecoveryScope(scope), "", externalRecovery)
+	return p.RecoverPendingCompensationsForActionPrefixAndScopeWithExternalRecovery(prefix, scope, externalRecovery)
 }
 
-func (p *EvolutionPipeline) recoverPendingCompensations(actionPrefix string, recoveryScope string, skillFilter string, externalRecovery func(EvolutionCompensationRecord) error) (recovered int, pending int, err error) {
+// RecoverPendingCompensationsForActionPrefixAndScopeWithExternalRecovery
+// replays scoped records using this pipeline's recovery hooks. Keeping the
+// hook on the pipeline lets services inject deterministic cleanup failures in
+// tests without weakening the production fail-closed path.
+func (p *EvolutionPipeline) RecoverPendingCompensationsForActionPrefixAndScopeWithExternalRecovery(prefix, scope string, externalRecovery func(EvolutionCompensationRecord) error) (recovered int, pending int, err error) {
+	if p == nil {
+		return 0, 0, fmt.Errorf("pipeline is unavailable")
+	}
+	return p.recoverPendingCompensations(strings.TrimSpace(prefix), normalizeRecoveryScope(scope), "", "", "", "", externalRecovery)
+}
+
+func (p *EvolutionPipeline) recoverPendingCompensations(actionPrefix string, recoveryScope string, skillFilter string, requestFilter string, requestSkillFilter string, requestActionFilter string, externalRecovery func(EvolutionCompensationRecord) error) (recovered int, pending int, err error) {
 	if p == nil {
 		return 0, 0, nil
 	}
 	p.compensationRecoveryMu.Lock()
 	defer p.compensationRecoveryMu.Unlock()
-	records, err := readEvolutionCompensations()
+	// Recovery performs a queue-wide read/modify/write compaction. Serialize the
+	// entire operation with appends and state transitions; otherwise a concurrent
+	// transaction could append a record after this snapshot is read and have it
+	// silently discarded by the final compaction write.
+	evolutionCompensationMu.Lock()
+	defer evolutionCompensationMu.Unlock()
+	records, err := readEvolutionCompensationsLocked()
 	if err != nil {
 		return 0, 0, err
 	}
@@ -1259,8 +2185,43 @@ func (p *EvolutionPipeline) recoverPendingCompensations(actionPrefix string, rec
 	}
 	remaining := make([]EvolutionCompensationRecord, 0, len(records))
 	matchedRemaining := 0
-	for _, record := range records {
+	var strictNeedsReviewAuditErr error
+	// Persist a failed recovery attempt before continuing the queue pass.  The
+	// final compaction write below is still required, but relying on it alone
+	// leaves a crash window in which Attempts/needs_review changes exist only in
+	// memory and the next process starts from the old retry budget.  Keep the
+	// current record in the same queue snapshot as all records already retained
+	// by this pass; the operation runs under evolutionCompensationMu, so the
+	// write cannot race an append or another state transition.
+	persistRecoveryFailure := func(index int, record EvolutionCompensationRecord) error {
+		snapshot := append([]EvolutionCompensationRecord(nil), remaining...)
+		snapshot = append(snapshot, record)
+		// Preserve records that have not reached the current iteration yet.  An
+		// immediate retry-state write must be crash-safe for the whole queue, not
+		// just for the failed row; omitting the tail would silently drop unrelated
+		// transactions if the process exits before the final compaction pass.
+		if index+1 < len(records) {
+			snapshot = append(snapshot, records[index+1:]...)
+		}
+		if err := writeEvolutionCompensationsUnlocked(snapshot); err != nil {
+			return fmt.Errorf("persist recovery failure state: %w", err)
+		}
+		return nil
+	}
+	for index, record := range records {
 		if actionPrefix != "" && !strings.HasPrefix(strings.TrimSpace(record.Action), actionPrefix) {
+			remaining = append(remaining, record)
+			continue
+		}
+		if requestFilter != "" && !strings.EqualFold(strings.TrimSpace(record.RequestID), requestFilter) {
+			remaining = append(remaining, record)
+			continue
+		}
+		if requestSkillFilter != "" && !strings.EqualFold(strings.TrimSpace(record.Skill), requestSkillFilter) {
+			remaining = append(remaining, record)
+			continue
+		}
+		if requestActionFilter != "" && !strings.EqualFold(strings.TrimSpace(record.Action), requestActionFilter) {
 			remaining = append(remaining, record)
 			continue
 		}
@@ -1310,25 +2271,46 @@ func (p *EvolutionPipeline) recoverPendingCompensations(actionPrefix string, rec
 		// leave only post-commit cleanup pending; retry that cleanup idempotently
 		// and keep the Skill blocked until the queue entry is removed.
 		if strings.EqualFold(strings.TrimSpace(record.TransactionState), "committed") {
+			// Once bounded cleanup retries have exhausted, the record is an
+			// operator-review item. Do not automatically retry or remove it on a
+			// later startup merely because the committed directory is still
+			// present; doing so would bypass the explicit needs_review gate.
+			if strings.EqualFold(strings.TrimSpace(record.CleanupStatus), "needs_review") || strings.EqualFold(strings.TrimSpace(record.Status), "needs_review") {
+				remaining = append(remaining, record)
+				matchedRemaining++
+				continue
+			}
+			// Run an adapter-specific cleanup hook first, then always apply the
+			// declarative cleanup targets carried by the durable record. Hooks may
+			// clean some or all targets themselves; the generic pass is idempotent
+			// and closes the queue-clear/orphan-artifact window for every adapter.
+			if p != nil && p.CommittedCleanup != nil {
+				if err := p.CommittedCleanup(record); err != nil {
+					// Persist each failed attempt immediately.  Otherwise a crash
+					// between this callback and the final queue compaction would reset
+					// the retry budget on the next startup.
+					if markErr := markEvolutionCompensationCleanupFailureUnlocked(&record, err); markErr != nil {
+						record.LastError = strings.TrimSpace(record.LastError + "; persist cleanup failure: " + markErr.Error())
+					}
+					remaining = append(remaining, record)
+					matchedRemaining++
+					continue
+				}
+			}
 			if err := cleanupCommittedCompensation(record); err != nil {
-				record.Attempts++
-				record.LastError = err.Error()
-				record.CleanupStatus = "pending"
-				if record.Attempts >= evolutionCompensationMaxAttempts {
-					record.Status = "needs_review"
-					record.CleanupStatus = "needs_review"
+				// Persist each failed attempt immediately.  Otherwise a crash
+				// between this cleanup and the final queue compaction would reset
+				// the retry budget on the next startup.
+				if markErr := markEvolutionCompensationCleanupFailureUnlocked(&record, err); markErr != nil {
+					record.LastError = strings.TrimSpace(record.LastError + "; persist cleanup failure: " + markErr.Error())
 				}
 				remaining = append(remaining, record)
 				matchedRemaining++
 				continue
 			}
-			if clearErr := ClearEvolutionCompensation(record.RequestID, record.Skill, record.Action); clearErr != nil {
-				record.Attempts++
-				record.LastError = clearErr.Error()
-				record.CleanupStatus = "pending"
-				if record.Attempts >= evolutionCompensationMaxAttempts {
-					record.Status = "needs_review"
-					record.CleanupStatus = "needs_review"
+			if clearErr := clearEvolutionCompensationUnlocked(record.RequestID, record.Skill, record.Action); clearErr != nil {
+				if markErr := markEvolutionCompensationCleanupFailureUnlocked(&record, clearErr); markErr != nil {
+					record.LastError = strings.TrimSpace(record.LastError + "; persist queue cleanup failure: " + markErr.Error())
 				}
 				remaining = append(remaining, record)
 				matchedRemaining++
@@ -1359,9 +2341,27 @@ func (p *EvolutionPipeline) recoverPendingCompensations(actionPrefix string, rec
 			record.LastError = err.Error()
 			if record.Attempts >= evolutionCompensationMaxAttempts {
 				record.Status = "needs_review"
+				// External contract restoration is a security boundary. Once the
+				// bounded retry budget is exhausted, persist the terminal marker and
+				// emit the same strict audit event used by filesystem rollback paths;
+				// a best-effort log must not hide an operator action requirement.
+				if markErr := p.markCompensationNeedsReview(record); markErr != nil {
+					record.LastError = strings.TrimSpace(record.LastError + "; mark needs_review: " + markErr.Error())
+				}
+				if auditErr := RecordEvolutionEventStrict(EventSkillCompensationNeedsReview, map[string]string{
+					"skill": record.Skill, "action": record.Action, "request_id": record.RequestID,
+					"attempt": fmt.Sprintf("%d", record.Attempts), "decision": "needs_review",
+					"reason": "external_compensation_retry_exhausted", "failure_reason": record.LastError,
+					"transaction_state": record.TransactionState, "cleanup_status": record.CleanupStatus, "schema_version": "2",
+				}, "desktop"); auditErr != nil {
+					strictNeedsReviewAuditErr = auditErr
+				}
 			}
 			remaining = append(remaining, record)
 			matchedRemaining++
+			if persistErr := persistRecoveryFailure(index, record); persistErr != nil {
+				return recovered, len(remaining), persistErr
+			}
 			continue
 		}
 		if err := restoreEvolutionCompensation(record, p.SkillSaver, p.IndexRefresher); err != nil {
@@ -1387,6 +2387,9 @@ func (p *EvolutionPipeline) recoverPendingCompensations(actionPrefix string, rec
 			}
 			remaining = append(remaining, record)
 			matchedRemaining++
+			if persistErr := persistRecoveryFailure(index, record); persistErr != nil {
+				return recovered, len(remaining), persistErr
+			}
 			continue
 		}
 		recovered++
@@ -1396,13 +2399,34 @@ func (p *EvolutionPipeline) recoverPendingCompensations(actionPrefix string, rec
 			"reason": "durable_compensation_applied", "schema_version": "2",
 		}, "desktop")
 	}
-	if err := writeEvolutionCompensations(remaining); err != nil {
+	if err := writeEvolutionCompensationsUnlocked(remaining); err != nil {
 		return recovered, len(remaining), err
 	}
-	if recoveryScope != "" || skillFilter != "" {
+	if strictNeedsReviewAuditErr != nil {
+		return recovered, len(remaining), fmt.Errorf("record compensation needs_review audit: %w", strictNeedsReviewAuditErr)
+	}
+	if recoveryScope != "" || skillFilter != "" || requestFilter != "" {
 		return recovered, matchedRemaining, nil
 	}
 	return recovered, len(remaining), nil
+}
+
+// emitCompensationNeedsReview records the bounded-retry terminal state for
+// post-commit cleanup failures.  Cleanup failures must never roll back an
+// already audited business result, but they must remain visible and keep the
+// affected Skill fail-closed until an operator resolves the artifacts.
+func (p *EvolutionPipeline) emitCompensationNeedsReview(record EvolutionCompensationRecord, reason string) {
+	if p != nil {
+		if markErr := p.markCompensationNeedsReview(record); markErr != nil {
+			record.LastError = strings.TrimSpace(record.LastError + "; mark needs_review: " + markErr.Error())
+		}
+	}
+	RecordEvolutionEvent(EventSkillCompensationNeedsReview, map[string]string{
+		"skill": record.Skill, "action": record.Action, "request_id": record.RequestID,
+		"attempt": fmt.Sprintf("%d", record.Attempts), "decision": "needs_review",
+		"reason": reason, "failure_reason": record.LastError, "transaction_state": "committed",
+		"cleanup_status": "needs_review", "schema_version": "2",
+	}, "desktop")
 }
 
 // cleanupCommittedCompensation only removes artifacts explicitly marked as
@@ -1432,6 +2456,18 @@ func cleanupCommittedCompensation(record EvolutionCompensationRecord) error {
 		}
 	}
 	return nil
+}
+
+// CleanupCommittedEvolutionCompensation removes only artifacts explicitly
+// marked as safe post-commit cleanup. It never restores YAML/config or
+// refreshes the index, so callers can use it after a strict final audit without
+// accidentally rolling back an already-committed business result.
+//
+// The exported wrapper is intentionally narrow: legacy adapters may reuse the
+// same cleanup semantics, but they still own their transaction and result
+// classification. A cleanup error must leave the durable record pending.
+func CleanupCommittedEvolutionCompensation(record EvolutionCompensationRecord) error {
+	return cleanupCommittedCompensation(record)
 }
 
 // HasPendingCompensation is a fail-closed admission check used by execution
@@ -1513,7 +2549,7 @@ func (p *EvolutionPipeline) markCompensationNeedsReview(record EvolutionCompensa
 	skills := p.SkillLoader()
 	changed := false
 	for i := range skills {
-		matches := strings.EqualFold(strings.TrimSpace(skills[i].Name), strings.TrimSpace(record.Skill))
+		matches := strings.EqualFold(strings.TrimSpace(skills[i].Name), strings.TrimSpace(record.Skill)) || skills[i].MatchesName(record.Skill)
 		if !matches {
 			for _, affected := range record.AffectedSkills {
 				if strings.EqualFold(strings.TrimSpace(skills[i].Name), strings.TrimSpace(affected)) {
@@ -1526,7 +2562,10 @@ func (p *EvolutionPipeline) markCompensationNeedsReview(record EvolutionCompensa
 			continue
 		}
 		if strings.EqualFold(strings.TrimSpace(skills[i].Status), "needs_review") {
-			return nil
+			// A batch record can cover several Skills.  Do not return early when
+			// one member is already demoted; every affected member must remain
+			// blocked until the shared compensation record is resolved.
+			continue
 		}
 		skills[i].Status = "needs_review"
 		message := "audit_pending compensation requires review"
@@ -1538,7 +2577,6 @@ func (p *EvolutionPipeline) markCompensationNeedsReview(record EvolutionCompensa
 		}
 		skills[i].LastError = message
 		changed = true
-		break
 	}
 	if !changed {
 		return nil

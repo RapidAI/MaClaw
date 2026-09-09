@@ -34,6 +34,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/configfile"
+	"github.com/RapidAI/CodeClaw/corelib/database"
 	"github.com/RapidAI/CodeClaw/corelib/doctor"
 	"github.com/RapidAI/CodeClaw/corelib/experience/lifecycle"
 	"github.com/RapidAI/CodeClaw/corelib/goal"
@@ -54,7 +55,16 @@ import (
 	"github.com/RapidAI/CodeClaw/tui/commands"
 	"github.com/RapidAI/CodeClaw/tui/views"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/zalando/go-keyring"
 )
+
+func tuiDatabaseSecret(ctx context.Context, ref string) (string, error) {
+	u, err := url.Parse(strings.TrimSpace(ref))
+	if err != nil || u.Scheme != "keyring" || u.Host == "" || strings.Trim(u.Path, "/") == "" {
+		return "", fmt.Errorf("invalid secret_ref")
+	}
+	return keyring.Get(u.Host, strings.Trim(u.Path, "/"))
+}
 
 // runConfigUI starts a config-only terminal UI. It is intentionally usable
 // before LLM setup, so headless Linux users can configure the first provider
@@ -86,6 +96,7 @@ func runTUI(forceInitialTab ...int) {
 }
 
 func runTUIWithOptions(startup tuiStartupOptions) {
+	runTUIStartupRecovery(commands.ResolveDataDir())
 	logger := NewTUILogger()
 	startupIndicator := startTUIStartupIndicator()
 	defer startupIndicator.Stop()
@@ -140,6 +151,18 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 	experienceSink := &lifecycle.AttributingEventSink{Sink: experienceEvents, Provider: memory.NewExperienceProvider(memStore)}
 	if memStore != nil {
 		memStore.SetExperienceEventSink(experienceSink)
+		// Async CompactForm backfill: new long entries get a compact form within
+		// seconds instead of waiting for the 6-hourly pipeline pass. The adapter
+		// resolves LLM credentials lazily from the shared config file.
+		memStore.SetCompactFormGenerator(memory.NewLLMCompactFormGenerator(&tuiEvolutionLLMAdapter{
+			loadCfg: func() corelib.AppConfig {
+				cfg, err := configStore.LoadConfig()
+				if err != nil {
+					return corelib.AppConfig{}
+				}
+				return cfg
+			},
+		}))
 	}
 
 	// Initialize SSH manager.
@@ -166,6 +189,35 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 	startupIndicator.Stage(55, "装配运行时")
 	// HubCenter failover uses the shared singleton cache and persister from
 	// tui/commands/skill_search_api.go 鈥?no need to create local instances.
+	databaseManager := database.NewManager(appCfg.DatabaseProfiles, tuiDatabaseSecret)
+	databaseManager.SetEnabled(appCfg.DatabaseToolIsEnabled())
+	if auditSink, err := database.NewFileAuditSink(filepath.Join(dataDir, "data", "database_audit.jsonl")); err == nil {
+		databaseManager.SetAuditSink(auditSink)
+	} else {
+		log.Printf("[TUI] WARNING: database audit sink init failed: %v", err)
+	}
+	if pendingStore, err := database.NewPendingStore(filepath.Join(dataDir, "data", "database_pending.json")); err == nil {
+		databaseManager.SetPendingStore(pendingStore)
+	} else {
+		log.Printf("[TUI] WARNING: database pending store init failed: %v", err)
+	}
+	databaseManager.SetResultStoreDir(filepath.Join(dataDir, "data", "database_results"))
+	databaseManager.SetTunnelDialer(remote.SSHTunnelDialer(func() *remote.SSHSessionManager { return sshMgr }))
+	if favStore, err := database.NewFavoriteStore(filepath.Join(dataDir, "data", "database_favorites.json")); err == nil {
+		databaseManager.SetFavoriteStore(favStore)
+	} else {
+		log.Printf("[TUI] WARNING: database favorites store init failed: %v", err)
+	}
+	databaseManager.SetCatalogNamePath(filepath.Join(dataDir, "data", "database_catalog_names.json"))
+	// Record the shared tool contract hash so cross-host schema drift is
+	// visible in startup diagnostics (doctor reports the same value).
+	log.Printf("[TUI] database tool schema %s", database.ToolSchemaHash())
+	for _, project := range appCfg.Projects {
+		if project.Id == appCfg.CurrentProject && strings.TrimSpace(project.Path) != "" {
+			databaseManager.SetWorkspaceRoot(project.Path)
+			break
+		}
+	}
 	app := &TUIApp{
 		logger:           logger,
 		llmConfig:        llmCfg,
@@ -177,6 +229,7 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 		history:          convMemory,
 		taskStore:        task.NewStore(),
 		toolRegistry:     agent.NewCoreToolRegistry(),
+		databaseManager:  databaseManager,
 		ttsManager:       initTUITTSManager(),
 		costTracker:      llm.NewCostTracker(appCfg.DailyLLMBudgetUSD),
 	}
@@ -222,6 +275,14 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 	}
 	goalStore := goal.NewStore(filepath.Join(dataDir, "data", "goals"))
 	app.goalStore = goalStore
+	tuiDB := newTUIDatabaseRuntime(databaseManager, func() corelib.AppConfig { return app.appConfig }, func() string {
+		for _, project := range app.appConfig.Projects {
+			if project.Id == app.appConfig.CurrentProject && strings.TrimSpace(project.Path) != "" {
+				return project.Path
+			}
+		}
+		return ""
+	}, "tui:default", "tui:default", true)
 	agent.RegisterCoreTools(app.toolRegistry, agent.CoreToolDeps{
 		MemoryStore: memStore,
 		TaskStore:   app.taskStore,
@@ -230,6 +291,9 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 			return app.appConfig
 		}),
 		SSHHandler: sshHandler,
+		ExtraHandlersCtx: map[string]agent.ToolHandlerCtx{
+			"database": tuiDB.handlerCtx(),
+		},
 		ExtraHandlers: map[string]agent.ToolHandler{
 			"manage_skill":           newManageSkillHandler(app),
 			"manage_schedule":        newManageScheduleHandler(app),
@@ -434,6 +498,7 @@ type TUIApp struct {
 	history          *agent.ConversationMemory
 	taskStore        *task.Store
 	goalStore        *goal.Store
+	databaseManager  *database.Manager
 	toolRegistry     *agent.CoreToolRegistry
 	ttsManager       *tts.Manager
 	// costTracker tracks daily LLM $ (fleet-persisted) for budget gates.
@@ -2172,62 +2237,16 @@ func (m *tuiModel) installSkill(skillID, hubURL string, source string, installRe
 			}
 			recordTUIDeveloperSkillRisk(m.app.appConfig, effectiveSource, "install", guardArgs)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
-		client := skill.DefaultHubClient()
-
-		var entry *corelib.NLSkillEntry
-		var err error
-
 		if existing, installed := tuiInstalledSkillEntryForInstallRequest(effectiveSource, skillID, installRef, m.app.appConfig.NLSkills); installed {
 			return views.ToolOperationResultMsg{Tab: views.ToolSubSkill, Success: true, Message: tuiFormat(lang, "skillAlreadyInstalled", existing.Name), InstalledName: existing.Name, InstalledSearchResult: searchResultKey}
 		}
-
-		switch effectiveSource {
-		case "clawhub":
-			entry, err = client.DownloadClawHub(ctx, skillID)
-		case "github":
-			if installRef == "" {
-				return views.ToolOperationResultMsg{
-					Tab: views.ToolSubSkill, Success: false,
-					Message: tuiText(lang, "githubSkillMissingRef"),
-				}
-			}
-			entry, err = client.DownloadGitHub(ctx, installRef)
-		default:
-			entry, err = client.DownloadSkillHub(ctx, hubURL, skillID)
-		}
-
+		entry, existing, err := installTUISkillTransactional(m.app, effectiveSource, skillID, installRef, hubURL)
 		if err != nil {
-			return views.ToolOperationResultMsg{
-				Tab: views.ToolSubSkill, Success: false,
-				Message: err.Error(),
-			}
+			return views.ToolOperationResultMsg{Tab: views.ToolSubSkill, Success: false, Message: err.Error()}
 		}
-
-		store := commands.NewFileConfigStore(commands.ResolveDataDir())
-		cfg, err := store.LoadConfig()
-		if err != nil {
-			return views.ToolOperationResultMsg{
-				Tab: views.ToolSubSkill, Success: false,
-				Message: tuiFormat(lang, "configLoadFailed", err.Error()),
-			}
-		}
-		// Re-read before persisting because another TUI/CLI process may have
-		// installed the same skill while this network download was in flight.
-		if existing, installed := tuiInstalledSkillEntryForInstallRequest(effectiveSource, skillID, installRef, cfg.NLSkills); installed {
-			m.app.appConfig = cfg
+		if existing != nil {
 			return views.ToolOperationResultMsg{Tab: views.ToolSubSkill, Success: true, Message: tuiFormat(lang, "skillAlreadyInstalled", existing.Name), InstalledName: existing.Name, InstalledSearchResult: searchResultKey}
 		}
-		cfg.NLSkills = append(cfg.NLSkills, *entry)
-		if err := store.SaveConfig(cfg); err != nil {
-			return views.ToolOperationResultMsg{
-				Tab: views.ToolSubSkill, Success: false,
-				Message: tuiFormat(lang, "saveFailed", err.Error()),
-			}
-		}
-		m.app.appConfig = cfg
 
 		sourceLabel := "SkillHub"
 		switch effectiveSource {

@@ -63,6 +63,18 @@ function renderPane(status: any, overrides: Partial<React.ComponentProps<typeof 
 }
 
 describe('SidebarAiPane digital employee tabs', () => {
+    it('exposes a wide pointer-capture resize handle for the task pane', () => {
+        const onResize = vi.fn();
+        renderPane({ visible: false, reason: 'no_digital_employees', actual_count: 0 }, { handleTaskManagementResizeStart: onResize });
+
+        const handle = screen.getByTestId('task-pane-resize-handle');
+        expect(handle.getAttribute('role')).toBe('separator');
+        expect(handle.getAttribute('aria-valuemin')).toBe('180');
+        expect(handle.getAttribute('aria-valuemax')).toBe('460');
+        fireEvent.pointerDown(handle, { clientX: 260, pointerId: 7 });
+        expect(onResize).toHaveBeenCalled();
+    });
+
     it('shows only task management when feature status is hidden', () => {
         renderPane({ visible: false, reason: 'no_digital_employees', actual_count: 0 });
 
@@ -95,7 +107,7 @@ describe('SidebarAiPane digital employee tabs', () => {
     it('restores digital employee navigation when the app shell knows Hub entries are reachable', () => {
         renderPane({ visible: false, reason: 'no_digital_employees', actual_count: 0 }, { showDigitalEmployeeNavigation: true });
 
-        fireEvent.click(screen.getByText('Digital Employees'));
+        fireEvent.click(screen.getByText('AI Experts'));
         expect(screen.getByTestId('digital-employees')).toBeTruthy();
 
         fireEvent.click(screen.getByText('History'));
@@ -115,7 +127,7 @@ describe('SidebarAiPane digital employee tabs', () => {
     it('shows digital employees and history tabs when feature status is visible', () => {
         renderPane({ visible: true, actual_count: 1, authorization: { active: true, quota: 1, expires_at: '2999-01-01T00:00:00Z' } });
 
-        fireEvent.click(screen.getByText('Digital Employees'));
+        fireEvent.click(screen.getByText('AI Experts'));
         expect(screen.getByTestId('digital-employees')).toBeTruthy();
 
         fireEvent.click(screen.getByText('History'));
@@ -137,7 +149,7 @@ describe('SidebarAiPane digital employee tabs', () => {
     it('insets digital employee content so the pane does not press against the divider', () => {
         renderPane({ visible: true, actual_count: 1, authorization: { active: true, quota: 1, expires_at: '2999-01-01T00:00:00Z' } });
 
-        fireEvent.click(screen.getByText('Digital Employees'));
+        fireEvent.click(screen.getByText('AI Experts'));
 
         const middlePane = screen.getByTestId('sidebar-middle-pane-employees');
         expect(middlePane.style.paddingLeft).toBe('6px');
@@ -159,7 +171,7 @@ describe('SidebarAiPane digital employee tabs', () => {
     it('keeps task management mounted while other middle tabs are active', () => {
         renderPane({ visible: true, actual_count: 1, authorization: { active: true, quota: 1, expires_at: '2999-01-01T00:00:00Z' } });
 
-        fireEvent.click(screen.getByText('Digital Employees'));
+        fireEvent.click(screen.getByText('AI Experts'));
         // Hidden but still mounted so welcome coding-task events can open create dialog.
         expect(screen.getByTestId('task-management')).toBeTruthy();
         expect(screen.getByTestId('sidebar-middle-pane-tasks').style.display).toBe('none');

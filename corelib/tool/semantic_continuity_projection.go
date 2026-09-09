@@ -1,11 +1,13 @@
 package tool
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -103,26 +105,13 @@ func continuityStateKey(scope ContinuityScope) string {
 }
 
 func cloneContinuityNeed(value CapabilityNeed) CapabilityNeed {
-	result := value
-	result.Qualifiers = make(map[string]string, len(value.Qualifiers))
-	for key, entry := range value.Qualifiers {
-		result.Qualifiers[key] = entry
-	}
-	result.EvidenceIDs = append([]string(nil), value.EvidenceIDs...)
-	return result
+	return CloneCapabilityNeed(value)
 }
 
 func continuityNeedFacts(plan ToolPlan) []continuityNeedFact {
 	values := make([]continuityNeedFact, 0, len(plan.Selections))
 	for _, selection := range plan.Selections {
-		need := CapabilityNeed{ID: strings.TrimSpace(selection.NeedID), Capability: selection.FitProof.MatchedCapability, Qualifiers: map[string]string{}, Polarity: NeedRequire, Required: true}
-		if need.ID == "" {
-			need.ID = strings.TrimSpace(selection.ID)
-		}
-		for key, value := range selection.FitProof.QualifierBindings {
-			need.Qualifiers[key] = value
-		}
-		values = append(values, continuityNeedFact{SelectionID: selection.ID, Need: need})
+		values = append(values, continuityNeedFact{SelectionID: selection.ID, Need: GrantedNeedFromSelection(selection)})
 	}
 	sort.Slice(values, func(i, j int) bool { return values[i].SelectionID < values[j].SelectionID })
 	return values
@@ -304,6 +293,222 @@ func (c *SQLiteSemanticExecutionCoordinator) DrainContinuityProjections(tenantID
 		applied++
 	}
 	return applied, nil
+}
+
+// PendingContinuityTenants returns the tenant partitions that have durable
+// projection work waiting. It is deliberately a directory query over the
+// outbox, rather than a caller supplied tenant list: a background consumer may
+// discover work after a restart without guessing a tenant identity. Empty
+// tenant rows are excluded because startup migration marks those legacy events
+// obsolete and they cannot be safely attributed.
+func (c *SQLiteSemanticExecutionCoordinator) PendingContinuityTenants(limit int) ([]string, error) {
+	if c == nil || c.db == nil {
+		return nil, fmt.Errorf("semantic execution coordinator is unavailable")
+	}
+	if limit <= 0 {
+		limit = 64
+	}
+	rows, err := c.db.Query(`SELECT DISTINCT tenant_id
+		FROM semantic_continuity_projection_outbox
+		WHERE state='pending' AND trim(tenant_id)<>''
+		ORDER BY tenant_id LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	tenants := make([]string, 0, limit)
+	for rows.Next() {
+		var tenant string
+		if err := rows.Scan(&tenant); err != nil {
+			return nil, err
+		}
+		if tenant = strings.TrimSpace(tenant); tenant != "" {
+			tenants = append(tenants, tenant)
+		}
+	}
+	return tenants, rows.Err()
+}
+
+// ContinuityProjectionWorker is the process-level consumer for the semantic
+// continuity outbox. Route publication remains the authorization authority;
+// this worker only applies already committed fact events. It discovers tenant
+// partitions from durable rows, drains a bounded batch, and leaves failures
+// pending for a later tick. No model text, provider name, grant, or dispatch
+// closure enters the worker.
+type ContinuityProjectionWorker struct {
+	coordinator *SQLiteSemanticExecutionCoordinator
+	interval    time.Duration
+	batchSize   int
+	now         func() time.Time
+	logf        func(string, ...interface{})
+
+	mu     sync.Mutex
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
+const (
+	defaultContinuityProjectionInterval = 5 * time.Second
+	defaultContinuityProjectionBatch    = 32
+)
+
+// NewContinuityProjectionWorker creates a bounded consumer. A non-positive
+// interval or batch selects conservative defaults.
+func NewContinuityProjectionWorker(coordinator *SQLiteSemanticExecutionCoordinator, interval time.Duration, batchSize int) *ContinuityProjectionWorker {
+	if interval <= 0 {
+		interval = defaultContinuityProjectionInterval
+	}
+	if batchSize <= 0 {
+		batchSize = defaultContinuityProjectionBatch
+	}
+	return &ContinuityProjectionWorker{
+		coordinator: coordinator,
+		interval:    interval,
+		batchSize:   batchSize,
+		now:         time.Now,
+		logf:        func(string, ...interface{}) {},
+	}
+}
+
+// SetLogger installs a non-sensitive diagnostic sink. It is safe to call
+// before Start; nil restores a no-op logger.
+func (w *ContinuityProjectionWorker) SetLogger(logf func(string, ...interface{})) {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if logf == nil {
+		w.logf = func(string, ...interface{}) {}
+	} else {
+		w.logf = logf
+	}
+}
+
+// Start launches the worker and performs one immediate bounded drain. A
+// worker can be started at most once for its lifetime; callers should create a
+// new worker after a full stop if they need a new context.
+func (w *ContinuityProjectionWorker) Start(ctx context.Context) error {
+	if w == nil || w.coordinator == nil {
+		return fmt.Errorf("continuity projection worker is unavailable")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	w.mu.Lock()
+	if w.cancel != nil {
+		w.mu.Unlock()
+		return nil
+	}
+	workerCtx, cancel := context.WithCancel(ctx)
+	w.cancel = cancel
+	w.done = make(chan struct{})
+	done := w.done
+	w.mu.Unlock()
+	go func() {
+		defer close(done)
+		w.run(workerCtx)
+	}()
+	return nil
+}
+
+// Stop waits for the worker goroutine before its coordinator is closed. It is
+// idempotent and safe to call from deferred shutdown paths.
+func (w *ContinuityProjectionWorker) Stop() {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	cancel, done := w.cancel, w.done
+	w.mu.Unlock()
+	if cancel == nil {
+		return
+	}
+	cancel()
+	if done != nil {
+		<-done
+	}
+	w.mu.Lock()
+	if w.done == done {
+		w.cancel = nil
+		w.done = nil
+	}
+	w.mu.Unlock()
+}
+
+// DrainOnce consumes one bounded batch per discovered tenant. It is exported
+// for startup probes and deterministic tests; callers can use the returned
+// count to expose backlog progress without inspecting provider state.
+func (w *ContinuityProjectionWorker) DrainOnce(ctx context.Context) (int, error) {
+	if w == nil || w.coordinator == nil {
+		return 0, fmt.Errorf("continuity projection worker is unavailable")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	tenants, err := w.coordinator.PendingContinuityTenants(0)
+	if err != nil {
+		return 0, err
+	}
+	applied := 0
+	for _, tenant := range tenants {
+		if err := ctx.Err(); err != nil {
+			return applied, err
+		}
+		now := time.Now().UTC()
+		w.mu.Lock()
+		if w.now != nil {
+			now = w.now().UTC()
+		}
+		logf := w.logf
+		batchSize := w.batchSize
+		w.mu.Unlock()
+		count, drainErr := w.coordinator.DrainContinuityProjections(tenant, batchSize, now)
+		applied += count
+		if drainErr != nil {
+			if logf != nil {
+				logf("tenant=%s applied=%d error=%v", tenant, count, drainErr)
+			}
+			// A single tenant's version conflict or corrupt event must not starve
+			// other partitions. Leave the failed row pending and continue.
+			continue
+		}
+		if count > 0 && logf != nil {
+			logf("tenant=%s applied=%d", tenant, count)
+		}
+	}
+	return applied, nil
+}
+
+func (w *ContinuityProjectionWorker) run(ctx context.Context) {
+	w.mu.Lock()
+	interval := w.interval
+	w.mu.Unlock()
+	if _, err := w.DrainOnce(ctx); err != nil && ctx.Err() == nil {
+		w.mu.Lock()
+		logf := w.logf
+		w.mu.Unlock()
+		if logf != nil {
+			logf("initial drain error=%v", err)
+		}
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if _, err := w.DrainOnce(ctx); err != nil && ctx.Err() == nil {
+				w.mu.Lock()
+				logf := w.logf
+				w.mu.Unlock()
+				if logf != nil {
+					logf("drain error=%v", err)
+				}
+			}
+		}
+	}
 }
 
 type continuityProjectionQuerier interface {

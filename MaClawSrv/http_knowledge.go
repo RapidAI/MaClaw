@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/archiveutil"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
@@ -111,41 +112,54 @@ func (s *HTTPServer) handleKnowledgeImportFile(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Create async job for import
-	job := s.jobs.createUserJob("knowledge_import_file", p, func(ctx context.Context) (any, error) {
-		store := s.knowledgeMgr.Store()
-		importReq := knowledge.DirectoryImportRequest{
-			OwnerID:          p.UserID,
-			TenantID:         p.TenantID,
-			TopicHint:        topicHint,
-			Labels:           splitLabels(labels),
-			OfficeReadConfig: officeReadConfig,
-		}
-		result, err := importKnowledgeUploadedFiles(ctx, store, uploads, tmpDir, maxSize, importReq)
-		if err != nil {
-			return nil, err
-		}
-		// Apply user-provided title to the imported source if available.
-		if title != "" && len(result.Items) > 0 {
-			for _, item := range result.Items {
-				if item.SourceID != "" {
-					_, _ = store.UpdateSourceMetadata(ctx, knowledge.SourceUpdateRequest{
-						ID:    item.SourceID,
-						Title: title,
-					})
-					break
+	uploadDigest, err := knowledgeUploadDigest(uploads)
+	if err != nil {
+		removeUploadedKnowledgeFiles(uploads)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to stage uploaded files"})
+		return
+	}
+	job, admissionErr := s.admitUserJob(r, p, "knowledge_import_file", agentruntime.JobRecoveryPolicyReconcile, agentruntime.JobRetryPolicy{}, map[string]any{"upload_digest": uploadDigest, "filenames": uploadedKnowledgeFileNames(uploads), "title": title, "topic_hint": topicHint, "labels": labels}, func(ctx context.Context) (any, error) {
+		return executeRecordedJobEffect(ctx, "knowledge.import.file", map[string]any{"operation": "import_file", "filenames": uploadedKnowledgeFileNames(uploads)}, true, func(ctx context.Context) (any, string, error) {
+			store := s.knowledgeMgr.Store()
+			importReq := knowledge.DirectoryImportRequest{OwnerID: p.UserID, TenantID: p.TenantID, TopicHint: topicHint, Labels: splitLabels(labels), OfficeReadConfig: officeReadConfig}
+			result, err := importKnowledgeUploadedFiles(ctx, store, uploads, tmpDir, maxSize, importReq)
+			if err != nil {
+				return nil, knowledgeEffectResourceID(result), err
+			}
+			// Apply user-provided title to the imported source if available.
+			if title != "" && len(result.Items) > 0 {
+				for _, item := range result.Items {
+					if item.SourceID != "" {
+						_, _ = store.UpdateSourceMetadata(ctx, knowledge.SourceUpdateRequest{ID: item.SourceID, Title: title})
+						break
+					}
 				}
 			}
-		}
-		return sanitizeKnowledgeDirectoryImportResultForAPI(s.svc.DataRoot(), result), nil
+			resourceID := knowledgeEffectResourceID(result)
+			return sanitizeKnowledgeDirectoryImportResultForAPI(s.svc.DataRoot(), result), resourceID, nil
+		})
 	})
+	if admissionErr != nil {
+		removeUploadedKnowledgeFiles(uploads)
+		writeAsyncJobAdmissionError(w, admissionErr)
+		return
+	}
+	if job.IdempotentReplay || (job.Status == asyncJobStatusFailed && job.ErrorCode == agentruntime.JobErrorCodePersistenceFailed) {
+		// The canonical worker already owns the original upload paths. A replay
+		// request still had to parse and stage its multipart body, but must not
+		// leak those temporary files when it does not start another worker.
+		removeUploadedKnowledgeFiles(uploads)
+	}
 
 	writeJSON(w, http.StatusAccepted, map[string]interface{}{
-		"job_id":     job.ID,
-		"filename":   uploads[0].Name,
-		"filenames":  uploadedKnowledgeFileNames(uploads),
-		"file_count": len(uploads),
-		"status":     string(job.Status),
+		"job_id":             job.ID,
+		"filename":           uploads[0].Name,
+		"filenames":          uploadedKnowledgeFileNames(uploads),
+		"file_count":         len(uploads),
+		"status":             string(job.Status),
+		"idempotent_replay":  job.IdempotentReplay,
+		"idempotency_digest": job.IdempotencyDigest,
+		"request_digest":     job.RequestDigest,
 	})
 }
 
@@ -297,52 +311,44 @@ func (s *HTTPServer) handleKnowledgeImportURLs(w http.ResponseWriter, r *http.Re
 		sameDomainOnly = *req.SameDomainOnly
 	}
 
-	job := s.jobs.createUserJob("knowledge_import_urls", p, func(ctx context.Context) (any, error) {
-		store := s.knowledgeMgr.Store()
-		labels := splitLabels(req.Labels)
-		if req.MaxDepth == 0 {
-			result := store.SaveURLs(ctx, knowledge.URLBatchSaveRequest{
-				URLs:      urls,
-				OwnerID:   p.UserID,
-				TenantID:  p.TenantID,
-				TopicHint: req.TopicHint,
-				Labels:    labels,
-			})
-			return result, nil
-		}
-		results := make([]knowledge.DeepCrawlResult, 0, len(urls))
-		for _, rawURL := range urls {
-			engine := knowledge.NewDeepCrawlEngine(store, nil)
-			result, err := engine.StartCrawl(ctx, knowledge.DeepCrawlRequest{
-				SeedURL:        rawURL,
-				MaxDepth:       req.MaxDepth,
-				SameDomainOnly: sameDomainOnly,
-				OwnerID:        p.UserID,
-				TenantID:       p.TenantID,
-				TopicHint:      req.TopicHint,
-				Labels:         labels,
-			})
-			if err != nil {
-				if ctx.Err() != nil {
-					return nil, err
-				}
-				results = append(results, knowledge.DeepCrawlResult{
-					Status: "failed",
-					Failed: 1,
-					Items:  []knowledge.DeepCrawlItem{{URL: rawURL, Status: "failed", Error: err.Error()}},
-				})
-				continue
+	job, admissionErr := s.admitUserJob(r, p, "knowledge_import_urls", agentruntime.JobRecoveryPolicyReconcile, agentruntime.JobRetryPolicy{}, map[string]any{"urls": urls, "max_depth": req.MaxDepth, "same_domain_only": sameDomainOnly, "topic_hint": req.TopicHint, "labels": req.Labels}, func(ctx context.Context) (any, error) {
+		return executeRecordedJobEffect(ctx, "knowledge.import.urls", map[string]any{"operation": "import_urls", "url_count": len(urls), "max_depth": req.MaxDepth}, true, func(ctx context.Context) (any, string, error) {
+			store := s.knowledgeMgr.Store()
+			labels := splitLabels(req.Labels)
+			if req.MaxDepth == 0 {
+				result := store.SaveURLs(ctx, knowledge.URLBatchSaveRequest{URLs: urls, OwnerID: p.UserID, TenantID: p.TenantID, TopicHint: req.TopicHint, Labels: labels})
+				return sanitizeKnowledgeJobResult(s.svc.DataRoot(), result), knowledgeEffectResourceID(result), nil
 			}
-			results = append(results, result)
-		}
-		return map[string]any{"results": results}, nil
+			results := make([]knowledge.DeepCrawlResult, 0, len(urls))
+			for _, rawURL := range urls {
+				engine := knowledge.NewDeepCrawlEngine(store, nil)
+				result, err := engine.StartCrawl(ctx, knowledge.DeepCrawlRequest{SeedURL: rawURL, MaxDepth: req.MaxDepth, SameDomainOnly: sameDomainOnly, OwnerID: p.UserID, TenantID: p.TenantID, TopicHint: req.TopicHint, Labels: labels})
+				if err != nil {
+					if ctx.Err() != nil {
+						return nil, knowledgeEffectResourceID(results), err
+					}
+					results = append(results, knowledge.DeepCrawlResult{Status: "failed", Failed: 1, Items: []knowledge.DeepCrawlItem{{URL: rawURL, Status: "failed", Error: err.Error()}}})
+					continue
+				}
+				results = append(results, result)
+			}
+			result := map[string]any{"results": results}
+			return sanitizeKnowledgeJobResult(s.svc.DataRoot(), result), knowledgeEffectResourceID(result), nil
+		})
 	})
+	if admissionErr != nil {
+		writeAsyncJobAdmissionError(w, admissionErr)
+		return
+	}
 
 	writeJSON(w, http.StatusAccepted, map[string]interface{}{
-		"job_id":    job.ID,
-		"status":    string(job.Status),
-		"url_count": len(urls),
-		"max_depth": req.MaxDepth,
+		"job_id":             job.ID,
+		"status":             string(job.Status),
+		"url_count":          len(urls),
+		"max_depth":          req.MaxDepth,
+		"idempotent_replay":  job.IdempotentReplay,
+		"idempotency_digest": job.IdempotencyDigest,
+		"request_digest":     job.RequestDigest,
 	})
 }
 
@@ -566,24 +572,25 @@ func (s *HTTPServer) handleKnowledgeImportDirectory(w http.ResponseWriter, r *ht
 		return
 	}
 
-	job := s.jobs.createUserJob("knowledge_import_directory", p, func(ctx context.Context) (any, error) {
-		store := s.knowledgeMgr.Store()
-		result, err := store.ImportDirectory(ctx, knowledge.DirectoryImportRequest{
-			RootPath:         req.Path,
-			OwnerID:          p.UserID,
-			TenantID:         p.TenantID,
-			TopicHint:        req.TopicHint,
-			Labels:           splitLabels(req.Labels),
-			Recursive:        true,
-			OfficeReadConfig: officeReadConfig,
+	job, admissionErr := s.admitUserJob(r, p, "knowledge_import_directory", agentruntime.JobRecoveryPolicyReconcile, agentruntime.JobRetryPolicy{}, map[string]any{"path": req.Path, "topic_hint": req.TopicHint, "labels": req.Labels}, func(ctx context.Context) (any, error) {
+		return executeRecordedJobEffect(ctx, "knowledge.import.directory", map[string]any{"operation": "import_directory", "path_digest": shortSkillArchiveDigest(req.Path)}, true, func(ctx context.Context) (any, string, error) {
+			store := s.knowledgeMgr.Store()
+			result, err := store.ImportDirectory(ctx, knowledge.DirectoryImportRequest{RootPath: req.Path, OwnerID: p.UserID, TenantID: p.TenantID, TopicHint: req.TopicHint, Labels: splitLabels(req.Labels), Recursive: true, OfficeReadConfig: officeReadConfig})
+			return sanitizeKnowledgeDirectoryImportResultForAPI(s.svc.DataRoot(), result), knowledgeEffectResourceID(result), err
 		})
-		return sanitizeKnowledgeDirectoryImportResultForAPI(s.svc.DataRoot(), result), err
 	})
+	if admissionErr != nil {
+		writeAsyncJobAdmissionError(w, admissionErr)
+		return
+	}
 
 	writeJSON(w, http.StatusAccepted, map[string]interface{}{
-		"job_id": job.ID,
-		"path":   redactSupportBundleValue(s.svc.DataRoot(), req.Path),
-		"status": string(job.Status),
+		"job_id":             job.ID,
+		"path":               redactSupportBundleValue(s.svc.DataRoot(), req.Path),
+		"status":             string(job.Status),
+		"idempotent_replay":  job.IdempotentReplay,
+		"idempotency_digest": job.IdempotencyDigest,
+		"request_digest":     job.RequestDigest,
 	})
 }
 
@@ -701,8 +708,12 @@ func (s *HTTPServer) handleKnowledgeImportPackage(w http.ResponseWriter, r *http
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "package has no sources"})
 		return
 	}
-	job := s.startKnowledgePackageImportJob("knowledge_import_package", p, pkg)
-	writeJSON(w, http.StatusAccepted, map[string]interface{}{"job_id": job.ID, "status": string(job.Status), "package_id": pkg.Manifest.PackageID})
+	job, admissionErr := s.startKnowledgePackageImportJob(r, "knowledge_import_package", p, pkg)
+	if admissionErr != nil {
+		writeAsyncJobAdmissionError(w, admissionErr)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]interface{}{"job_id": job.ID, "status": string(job.Status), "package_id": pkg.Manifest.PackageID, "idempotent_replay": job.IdempotentReplay, "idempotency_digest": job.IdempotencyDigest, "request_digest": job.RequestDigest})
 }
 
 func (s *HTTPServer) handleKnowledgeImportShare(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
@@ -757,8 +768,12 @@ func (s *HTTPServer) handleKnowledgeImportShare(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	job := s.startKnowledgePackageImportJob("knowledge_import_share", p, pkg)
-	writeJSON(w, http.StatusAccepted, map[string]interface{}{"job_id": job.ID, "status": string(job.Status), "knowledge_id": knowledgeID, "api_url": apiURL, "package_url": packageURL, "package_id": pkg.Manifest.PackageID, "share": share})
+	job, admissionErr := s.startKnowledgePackageImportJob(r, "knowledge_import_share", p, pkg)
+	if admissionErr != nil {
+		writeAsyncJobAdmissionError(w, admissionErr)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]interface{}{"job_id": job.ID, "status": string(job.Status), "knowledge_id": knowledgeID, "api_url": apiURL, "package_url": packageURL, "package_id": pkg.Manifest.PackageID, "share": share, "idempotent_replay": job.IdempotentReplay, "idempotency_digest": job.IdempotencyDigest, "request_digest": job.RequestDigest})
 }
 
 func validateKnowledgePackage(pkg knowledgePackage) error {
@@ -771,44 +786,20 @@ func validateKnowledgePackage(pkg knowledgePackage) error {
 	return nil
 }
 
-func (s *HTTPServer) startKnowledgePackageImportJob(kind string, p agentservice.Principal, pkg knowledgePackage) *asyncJobRecord {
-	return s.jobs.createUserJob(kind, p, func(ctx context.Context) (any, error) {
-		store := s.knowledgeMgr.Store()
-		// Convert package sources to the canonical shared type.
-		sources := make([]knowledge.PackageSource, 0, len(pkg.Sources))
-		for _, item := range pkg.Sources {
-			sources = append(sources, knowledge.PackageSource{
-				ID:               item.ID,
-				Kind:             item.Kind,
-				URI:              item.URI,
-				CanonicalURI:     item.CanonicalURI,
-				Title:            item.Title,
-				TopicHint:        item.TopicHint,
-				Labels:           item.Labels,
-				Content:          item.Content,
-				ContentTruncated: item.ContentTruncated,
-			})
-		}
-		importResult := knowledge.ImportPackageSources(ctx, store, sources, knowledge.PackageImportOptions{
-			OwnerID:   p.UserID,
-			TenantID:  p.TenantID,
-			TopicHint: pkg.Manifest.Title,
-			RootPath:  "share://" + pkg.Manifest.PackageID,
+func (s *HTTPServer) startKnowledgePackageImportJob(r *http.Request, kind string, p agentservice.Principal, pkg knowledgePackage) (*asyncJobRecord, error) {
+	identity := map[string]any{"package_id": pkg.Manifest.PackageID, "package_digest": shortKnowledgePackageDigest(pkg), "source_count": len(pkg.Sources)}
+	return s.admitUserJob(r, p, kind, agentruntime.JobRecoveryPolicyReconcile, agentruntime.JobRetryPolicy{}, identity, func(ctx context.Context) (any, error) {
+		return executeRecordedJobEffect(ctx, "knowledge.import.package", map[string]any{"operation": "import_package", "package_id": pkg.Manifest.PackageID}, true, func(ctx context.Context) (any, string, error) {
+			store := s.knowledgeMgr.Store()
+			// Convert package sources to the canonical shared type.
+			sources := make([]knowledge.PackageSource, 0, len(pkg.Sources))
+			for _, item := range pkg.Sources {
+				sources = append(sources, knowledge.PackageSource{ID: item.ID, Kind: item.Kind, URI: item.URI, CanonicalURI: item.CanonicalURI, Title: item.Title, TopicHint: item.TopicHint, Labels: item.Labels, Content: item.Content, ContentTruncated: item.ContentTruncated})
+			}
+			importResult := knowledge.ImportPackageSources(ctx, store, sources, knowledge.PackageImportOptions{OwnerID: p.UserID, TenantID: p.TenantID, TopicHint: pkg.Manifest.Title, RootPath: "share://" + pkg.Manifest.PackageID})
+			result := map[string]interface{}{"import_status": importResult.Status, "package_id": pkg.Manifest.PackageID, "title": pkg.Manifest.Title, "imported": importResult.Imported, "skipped": importResult.Skipped, "failed": importResult.Failed, "total": importResult.Total, "imported_source_ids": importResult.ImportedSourceIDs, "skipped_source_ids": importResult.SkippedSourceIDs, "failed_source_ids": importResult.FailedSourceIDs, "retry_source_ids": importResult.RetrySourceIDs, "warnings": importResult.Warnings}
+			return sanitizeKnowledgeJobResult(s.svc.DataRoot(), result), knowledgeEffectResourceID(importResult), nil
 		})
-		return map[string]interface{}{
-			"import_status":       importResult.Status,
-			"package_id":          pkg.Manifest.PackageID,
-			"title":               pkg.Manifest.Title,
-			"imported":            importResult.Imported,
-			"skipped":             importResult.Skipped,
-			"failed":              importResult.Failed,
-			"total":               importResult.Total,
-			"imported_source_ids": importResult.ImportedSourceIDs,
-			"skipped_source_ids":  importResult.SkippedSourceIDs,
-			"failed_source_ids":   importResult.FailedSourceIDs,
-			"retry_source_ids":    importResult.RetrySourceIDs,
-			"warnings":            importResult.Warnings,
-		}, nil
 	})
 }
 
@@ -1188,6 +1179,11 @@ func (s *HTTPServer) handleKnowledgeImportJobStatus(w http.ResponseWriter, r *ht
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "job not found"})
 		return
+	}
+	if job.Status == asyncJobStatusUnknown {
+		if reconciled, found, reconcileErr := s.jobs.reconcileUserJob(r.Context(), job.ID, p, knowledgeJobReconciler{server: s}); reconcileErr == nil && found {
+			job = reconciled
+		}
 	}
 	writeJSON(w, http.StatusOK, job)
 }
@@ -2395,6 +2391,36 @@ func (s *HTTPServer) handleAdminPublicKnowledgeImportText(w http.ResponseWriter,
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "text is required"})
 		return
 	}
+	// Keep the historical synchronous response for clients that do not opt in
+	// to idempotency. New GUI/srv callers should send Idempotency-Key, which
+	// admits the same durable Job + protected effect contract as URL/file
+	// imports while remaining backward compatible with existing integrations.
+	if len(r.Header.Values("Idempotency-Key")) > 0 {
+		principal := agentservice.Principal{TenantID: library.TenantID, UserID: library.OwnerID}
+		job, admissionErr := s.admitUserJob(r, principal, "public_knowledge_import_text", agentruntime.JobRecoveryPolicyReconcile, agentruntime.JobRetryPolicy{}, map[string]any{
+			"library_id": library.ID, "text": req.Text, "title": req.Title, "topic_hint": req.TopicHint, "labels": req.Labels,
+		}, func(ctx context.Context) (any, error) {
+			return executeRecordedJobEffect(ctx, "knowledge.public.import.text", map[string]any{"operation": "public_import_text", "library_id": library.ID}, false, func(ctx context.Context) (any, string, error) {
+				source, err := s.knowledgeMgr.Store().SaveText(ctx, knowledge.TextSaveRequest{Text: req.Text, Title: req.Title, OwnerID: library.OwnerID, TenantID: library.TenantID, TopicHint: req.TopicHint, Labels: splitLabels(req.Labels)})
+				if err != nil {
+					return nil, "", err
+				}
+				return sanitizeKnowledgeJobResult(s.svc.DataRoot(), source), source.ID, nil
+			})
+		})
+		if admissionErr != nil {
+			writeAsyncJobAdmissionError(w, admissionErr)
+			return
+		}
+		if !job.IdempotentReplay && !(job.Status == asyncJobStatusFailed && job.ErrorCode == agentruntime.JobErrorCodePersistenceFailed) {
+			s.recordPublicKnowledgeAudit(r, "admin.public_knowledge_import_text", library, map[string]string{"job_id": job.ID, "title": strings.TrimSpace(req.Title), "async": "true"})
+		}
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"job_id": job.ID, "status": string(job.Status), "library": library,
+			"idempotent_replay": job.IdempotentReplay, "idempotency_digest": job.IdempotencyDigest, "request_digest": job.RequestDigest,
+		})
+		return
+	}
 	source, err := s.knowledgeMgr.Store().SaveText(r.Context(), knowledge.TextSaveRequest{Text: req.Text, Title: req.Title, OwnerID: library.OwnerID, TenantID: library.TenantID, TopicHint: req.TopicHint, Labels: splitLabels(req.Labels)})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
@@ -2437,28 +2463,39 @@ func (s *HTTPServer) handleAdminPublicKnowledgeImportURLs(w http.ResponseWriter,
 	if req.SameDomainOnly != nil {
 		sameDomainOnly = *req.SameDomainOnly
 	}
-	job := s.jobs.createUserJob("public_knowledge_import_urls", agentservice.Principal{TenantID: library.TenantID, UserID: library.OwnerID}, func(ctx context.Context) (any, error) {
-		store := s.knowledgeMgr.Store()
-		labels := splitLabels(req.Labels)
-		if req.MaxDepth == 0 {
-			return store.SaveURLs(ctx, knowledge.URLBatchSaveRequest{URLs: urls, OwnerID: library.OwnerID, TenantID: library.TenantID, TopicHint: req.TopicHint, Labels: labels}), nil
-		}
-		results := make([]knowledge.DeepCrawlResult, 0, len(urls))
-		for _, rawURL := range urls {
-			result, err := knowledge.NewDeepCrawlEngine(store, nil).StartCrawl(ctx, knowledge.DeepCrawlRequest{SeedURL: rawURL, MaxDepth: req.MaxDepth, SameDomainOnly: sameDomainOnly, OwnerID: library.OwnerID, TenantID: library.TenantID, TopicHint: req.TopicHint, Labels: labels})
-			if err != nil {
-				if ctx.Err() != nil {
-					return nil, err
-				}
-				results = append(results, knowledge.DeepCrawlResult{Status: "failed", Failed: 1, Items: []knowledge.DeepCrawlItem{{URL: rawURL, Status: "failed", Error: err.Error()}}})
-				continue
+	principal := agentservice.Principal{TenantID: library.TenantID, UserID: library.OwnerID}
+	job, admissionErr := s.admitUserJob(r, principal, "public_knowledge_import_urls", agentruntime.JobRecoveryPolicyReconcile, agentruntime.JobRetryPolicy{}, map[string]any{"library_id": library.ID, "urls": urls, "max_depth": req.MaxDepth, "same_domain_only": sameDomainOnly, "topic_hint": req.TopicHint, "labels": req.Labels}, func(ctx context.Context) (any, error) {
+		return executeRecordedJobEffect(ctx, "knowledge.public.import.urls", map[string]any{"operation": "public_import_urls", "url_count": len(urls), "max_depth": req.MaxDepth, "library_id": library.ID}, true, func(ctx context.Context) (any, string, error) {
+			store := s.knowledgeMgr.Store()
+			labels := splitLabels(req.Labels)
+			if req.MaxDepth == 0 {
+				result := store.SaveURLs(ctx, knowledge.URLBatchSaveRequest{URLs: urls, OwnerID: library.OwnerID, TenantID: library.TenantID, TopicHint: req.TopicHint, Labels: labels})
+				return sanitizeKnowledgeJobResult(s.svc.DataRoot(), result), knowledgeEffectResourceID(result), nil
 			}
-			results = append(results, result)
-		}
-		return map[string]any{"results": results}, nil
+			results := make([]knowledge.DeepCrawlResult, 0, len(urls))
+			for _, rawURL := range urls {
+				result, err := knowledge.NewDeepCrawlEngine(store, nil).StartCrawl(ctx, knowledge.DeepCrawlRequest{SeedURL: rawURL, MaxDepth: req.MaxDepth, SameDomainOnly: sameDomainOnly, OwnerID: library.OwnerID, TenantID: library.TenantID, TopicHint: req.TopicHint, Labels: labels})
+				if err != nil {
+					if ctx.Err() != nil {
+						return nil, knowledgeEffectResourceID(results), err
+					}
+					results = append(results, knowledge.DeepCrawlResult{Status: "failed", Failed: 1, Items: []knowledge.DeepCrawlItem{{URL: rawURL, Status: "failed", Error: err.Error()}}})
+					continue
+				}
+				results = append(results, result)
+			}
+			result := map[string]any{"results": results}
+			return sanitizeKnowledgeJobResult(s.svc.DataRoot(), result), knowledgeEffectResourceID(result), nil
+		})
 	})
-	s.recordPublicKnowledgeAudit(r, "admin.public_knowledge_import_urls", library, map[string]string{"job_id": job.ID, "url_count": strconv.Itoa(len(urls)), "max_depth": strconv.Itoa(req.MaxDepth)})
-	writeJSON(w, http.StatusAccepted, map[string]any{"job_id": job.ID, "status": string(job.Status), "library": library, "url_count": len(urls), "max_depth": req.MaxDepth})
+	if admissionErr != nil {
+		writeAsyncJobAdmissionError(w, admissionErr)
+		return
+	}
+	if !job.IdempotentReplay && !(job.Status == asyncJobStatusFailed && job.ErrorCode == agentruntime.JobErrorCodePersistenceFailed) {
+		s.recordPublicKnowledgeAudit(r, "admin.public_knowledge_import_urls", library, map[string]string{"job_id": job.ID, "url_count": strconv.Itoa(len(urls)), "max_depth": strconv.Itoa(req.MaxDepth)})
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"job_id": job.ID, "status": string(job.Status), "library": library, "url_count": len(urls), "max_depth": req.MaxDepth, "idempotent_replay": job.IdempotentReplay, "idempotency_digest": job.IdempotencyDigest, "request_digest": job.RequestDigest})
 }
 
 func (s *HTTPServer) handleAdminPublicKnowledgeImportFile(w http.ResponseWriter, r *http.Request) {
@@ -2485,17 +2522,39 @@ func (s *HTTPServer) handleAdminPublicKnowledgeImportFile(w http.ResponseWriter,
 	labels := strings.TrimSpace(r.FormValue("labels"))
 	officeReadConfig, err := s.knowledgeOfficeReadConfigForPrincipal(r.Context(), agentservice.Principal{TenantID: library.TenantID, UserID: library.OwnerID})
 	if err != nil {
+		removeUploadedKnowledgeFiles(uploads)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load knowledge import policy"})
 		return
 	}
-	job := s.jobs.createUserJob("public_knowledge_import_file", agentservice.Principal{TenantID: library.TenantID, UserID: library.OwnerID}, func(ctx context.Context) (any, error) {
-		store := s.knowledgeMgr.Store()
-		importReq := knowledge.DirectoryImportRequest{OwnerID: library.OwnerID, TenantID: library.TenantID, TopicHint: topicHint, Labels: splitLabels(labels), OfficeReadConfig: officeReadConfig}
-		result, err := importKnowledgeUploadedFiles(ctx, store, uploads, tmpDir, maxSize, importReq)
-		return sanitizeKnowledgeDirectoryImportResultForAPI(s.svc.DataRoot(), result), err
+	uploadDigest, err := knowledgeUploadDigest(uploads)
+	if err != nil {
+		removeUploadedKnowledgeFiles(uploads)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to stage uploaded files"})
+		return
+	}
+	principal := agentservice.Principal{TenantID: library.TenantID, UserID: library.OwnerID}
+	job, admissionErr := s.admitUserJob(r, principal, "public_knowledge_import_file", agentruntime.JobRecoveryPolicyReconcile, agentruntime.JobRetryPolicy{}, map[string]any{"library_id": library.ID, "upload_digest": uploadDigest, "filenames": uploadedKnowledgeFileNames(uploads), "topic_hint": topicHint, "labels": labels}, func(ctx context.Context) (any, error) {
+		return executeRecordedJobEffect(ctx, "knowledge.public.import.file", map[string]any{"operation": "public_import_file", "filenames": uploadedKnowledgeFileNames(uploads), "library_id": library.ID}, true, func(ctx context.Context) (any, string, error) {
+			store := s.knowledgeMgr.Store()
+			importReq := knowledge.DirectoryImportRequest{OwnerID: library.OwnerID, TenantID: library.TenantID, TopicHint: topicHint, Labels: splitLabels(labels), OfficeReadConfig: officeReadConfig}
+			result, err := importKnowledgeUploadedFiles(ctx, store, uploads, tmpDir, maxSize, importReq)
+			return sanitizeKnowledgeDirectoryImportResultForAPI(s.svc.DataRoot(), result), knowledgeEffectResourceID(result), err
+		})
 	})
-	s.recordPublicKnowledgeAudit(r, "admin.public_knowledge_import_file", library, map[string]string{"job_id": job.ID, "filename": uploads[0].Name, "file_count": strconv.Itoa(len(uploads))})
-	writeJSON(w, http.StatusAccepted, map[string]any{"job_id": job.ID, "status": string(job.Status), "library": library, "filename": uploads[0].Name, "filenames": uploadedKnowledgeFileNames(uploads), "file_count": len(uploads)})
+	if admissionErr != nil {
+		removeUploadedKnowledgeFiles(uploads)
+		writeAsyncJobAdmissionError(w, admissionErr)
+		return
+	}
+	if job.IdempotentReplay || (job.Status == asyncJobStatusFailed && job.ErrorCode == agentruntime.JobErrorCodePersistenceFailed) {
+		// A replay still parses and stages its multipart body, but the canonical
+		// worker owns the original paths. Never retain duplicate staging files.
+		removeUploadedKnowledgeFiles(uploads)
+	}
+	if !job.IdempotentReplay && !(job.Status == asyncJobStatusFailed && job.ErrorCode == agentruntime.JobErrorCodePersistenceFailed) {
+		s.recordPublicKnowledgeAudit(r, "admin.public_knowledge_import_file", library, map[string]string{"job_id": job.ID, "filename": uploads[0].Name, "file_count": strconv.Itoa(len(uploads))})
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"job_id": job.ID, "status": string(job.Status), "library": library, "filename": uploads[0].Name, "filenames": uploadedKnowledgeFileNames(uploads), "file_count": len(uploads), "idempotent_replay": job.IdempotentReplay, "idempotency_digest": job.IdempotencyDigest, "request_digest": job.RequestDigest})
 }
 
 func (s *HTTPServer) handleAdminKnowledgeStats(w http.ResponseWriter, r *http.Request) {

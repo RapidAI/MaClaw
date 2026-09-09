@@ -172,7 +172,19 @@ func runServer(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	server := &http.Server{Addr: addr, Handler: a.HTTPHandler}
+	// P1 (2026-09-09 review): the server previously set no timeouts at all,
+	// so a single slow-reading client (Slowloris) could hold a connection
+	// open indefinitely. WriteTimeout stays generous because LLM proxy
+	// responses stream for a long time.
+	server := &http.Server{
+		Addr:              addr,
+		Handler:           a.HTTPHandler,
+		ReadHeaderTimeout: 15 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		WriteTimeout:      300 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- server.ListenAndServe()

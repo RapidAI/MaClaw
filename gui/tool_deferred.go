@@ -36,8 +36,6 @@ var DeferredToolNames = []string{
 	"update_scheduled_task",
 	// Queued remote execution
 	"parallel_execute",
-	// Tool recommendation
-	"recommend_tool",
 	// LLM provider switch
 	"switch_llm_provider",
 	// Structured question tool — deferred because LLM tends to misuse it

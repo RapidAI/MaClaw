@@ -367,6 +367,13 @@ done:
 // compactOneEntry asks the LLM to produce a minimal representation of a memory
 // entry for context injection. The result should be ≤50% of the original length.
 func (mc *Compressor) compactOneEntry(ctx context.Context, content string, cat Category) (string, error) {
+	return generateCompactForm(ctx, mc.llm, content, cat)
+}
+
+// generateCompactForm holds the shared compaction prompt used by both the
+// pipeline's backfillCompactForms pass and the async post-Save backfill
+// (Store.SetCompactFormGenerator), so the two paths never diverge.
+func generateCompactForm(ctx context.Context, llm LLMChatCaller, content string, cat Category) (string, error) {
 	select {
 	case <-ctx.Done():
 		return "", ctx.Err()
@@ -388,7 +395,7 @@ Bad: "服务器→api.rapidai.tech→OmniRoute→Docker; 模型→GLM-5.1; 端�
 
 	userPrompt := fmt.Sprintf("[%s] %s", cat, content)
 
-	resp, err := chatCallWithContext(ctx, mc.llm, []map[string]string{
+	resp, err := chatCallWithContext(ctx, llm, []map[string]string{
 		{"role": "system", "content": systemPrompt},
 		{"role": "user", "content": userPrompt},
 	})
@@ -396,6 +403,32 @@ Bad: "服务器→api.rapidai.tech→OmniRoute→Docker; 模型→GLM-5.1; 端�
 		return "", err
 	}
 	return strings.TrimSpace(resp), nil
+}
+
+// llmCompactFormGenerator adapts an LLMChatCaller to Store.CompactFormGenerator
+// for the async post-Save CompactForm backfill. It reuses generateCompactForm
+// so the prompt stays identical to the pipeline's compactOneEntry.
+type llmCompactFormGenerator struct {
+	llm LLMChatCaller
+}
+
+// NewLLMCompactFormGenerator builds a CompactFormGenerator backed by the given
+// LLM caller. It returns nil when llm is nil so hosts can pass their caller
+// unconditionally.
+func NewLLMCompactFormGenerator(llm LLMChatCaller) CompactFormGenerator {
+	if llm == nil {
+		return nil
+	}
+	return &llmCompactFormGenerator{llm: llm}
+}
+
+func (g *llmCompactFormGenerator) Generate(content string, cat Category) (string, error) {
+	if g.llm == nil || !g.llm.IsConfigured() {
+		return "", nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	return generateCompactForm(ctx, g.llm, content, cat)
 }
 
 // ---------------------------------------------------------------------------

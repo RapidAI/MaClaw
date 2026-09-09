@@ -44,7 +44,7 @@ export const AboutPage = ({
     const buildNumber = versionParts[versionParts.length - 1] || appVersion;
 
     return (
-        <div className="about-page" style={{ color: 'var(--theme-text-primary)' }}>
+        <div className="secondary-page-shell about-page" style={{ color: 'var(--theme-text-primary)' }}>
             <div className="about-page__container">
                 <section className="about-card about-hero-card">
                     <div className="about-hero-card__icon-wrap">

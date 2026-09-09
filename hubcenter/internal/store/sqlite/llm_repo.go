@@ -46,10 +46,16 @@ func EnsureLLMTables(db *sql.DB) error {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			hub_id TEXT NOT NULL,
 			tenant_id TEXT NOT NULL,
+			request_id TEXT NOT NULL DEFAULT '',
 			model TEXT NOT NULL,
 			provider_id TEXT NOT NULL,
 			input_tokens INTEGER NOT NULL DEFAULT 0,
 			output_tokens INTEGER NOT NULL DEFAULT 0,
+			cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+			cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+			cache_usage_source TEXT NOT NULL DEFAULT '',
+			usage_anomaly TEXT NOT NULL DEFAULT '',
+			pricing_source TEXT NOT NULL DEFAULT '',
 			credits_deducted REAL NOT NULL DEFAULT 0,
 			cache_hit INTEGER NOT NULL DEFAULT 0,
 			auth_id TEXT NOT NULL DEFAULT '',
@@ -165,6 +171,11 @@ func ensureLLMUsageClassColumns(db *sql.DB) error {
 			return fmt.Errorf("ensure llm_usage_records.service_group_id: %w", err)
 		}
 	}
+	if !columns["request_id"] {
+		if _, err := db.Exec(`ALTER TABLE llm_usage_records ADD COLUMN request_id TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("ensure llm_usage_records.request_id: %w", err)
+		}
+	}
 	if !columns["workload_class"] {
 		if _, err := db.Exec(`ALTER TABLE llm_usage_records ADD COLUMN workload_class TEXT NOT NULL DEFAULT ''`); err != nil {
 			return fmt.Errorf("ensure llm_usage_records.workload_class: %w", err)
@@ -180,11 +191,39 @@ func ensureLLMUsageClassColumns(db *sql.DB) error {
 			return fmt.Errorf("ensure llm_usage_records.request_preview: %w", err)
 		}
 	}
+	if !columns["cached_input_tokens"] {
+		if _, err := db.Exec(`ALTER TABLE llm_usage_records ADD COLUMN cached_input_tokens INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("ensure llm_usage_records.cached_input_tokens: %w", err)
+		}
+	}
+	if !columns["cache_write_tokens"] {
+		if _, err := db.Exec(`ALTER TABLE llm_usage_records ADD COLUMN cache_write_tokens INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("ensure llm_usage_records.cache_write_tokens: %w", err)
+		}
+	}
+	if !columns["cache_usage_source"] {
+		if _, err := db.Exec(`ALTER TABLE llm_usage_records ADD COLUMN cache_usage_source TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("ensure llm_usage_records.cache_usage_source: %w", err)
+		}
+	}
+	if !columns["usage_anomaly"] {
+		if _, err := db.Exec(`ALTER TABLE llm_usage_records ADD COLUMN usage_anomaly TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("ensure llm_usage_records.usage_anomaly: %w", err)
+		}
+	}
+	if !columns["pricing_source"] {
+		if _, err := db.Exec(`ALTER TABLE llm_usage_records ADD COLUMN pricing_source TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("ensure llm_usage_records.pricing_source: %w", err)
+		}
+	}
 	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_llm_usage_group_class_time ON llm_usage_records(service_group_id, workload_class, created_at)`); err != nil {
 		return fmt.Errorf("ensure llm usage group/class index: %w", err)
 	}
 	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_llm_usage_time_group ON llm_usage_records(created_at, service_group_id)`); err != nil {
 		return fmt.Errorf("ensure llm usage time/group index: %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_llm_usage_hub_tenant_request ON llm_usage_records(hub_id, tenant_id, request_id)`); err != nil {
+		return fmt.Errorf("ensure llm usage hub/tenant/request index: %w", err)
 	}
 	return nil
 }
@@ -640,13 +679,14 @@ func (r *llmUsageRepo) Insert(ctx context.Context, record *llmservice.TenantUsag
 		createdAt = time.Now()
 	}
 	_, err := r.write.ExecContext(ctx,
-		`INSERT INTO llm_usage_records (hub_id, tenant_id, model, provider_id, service_group_id, workload_class, class_source, request_preview, input_tokens, output_tokens, credits_deducted, cache_hit, auth_id, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO llm_usage_records (hub_id, tenant_id, request_id, model, provider_id, service_group_id, workload_class, class_source, request_preview, input_tokens, output_tokens, cached_input_tokens, cache_write_tokens, cache_usage_source, usage_anomaly, pricing_source, credits_deducted, cache_hit, auth_id, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		strings.TrimSpace(record.HubID), strings.TrimSpace(record.TenantID),
+		strings.TrimSpace(record.RequestID),
 		strings.TrimSpace(record.Model), strings.TrimSpace(record.ProviderID),
 		strings.TrimSpace(record.ServiceGroupID), strings.TrimSpace(record.WorkloadClass),
 		strings.TrimSpace(record.ClassSource), record.Preview,
-		record.InputTokens, record.OutputTokens, record.Credits,
+		record.InputTokens, record.OutputTokens, record.CachedInputTokens, record.CacheWriteTokens, strings.TrimSpace(record.CacheUsageSource), strings.TrimSpace(record.UsageAnomaly), strings.TrimSpace(record.PricingSource), record.Credits,
 		boolToInt(record.CacheHit), strings.TrimSpace(record.AuthID), createdAt.UTC().Format(time.RFC3339),
 	)
 	return err
@@ -662,7 +702,14 @@ func (r *llmUsageRepo) QuerySummary(ctx context.Context, filter llmservice.Usage
 	}
 	periodExpr, periodLabel := usagePeriodSQL(filter.Period, loc, offsetAt)
 
-	query := `SELECT TRIM(hub_id), TRIM(tenant_id), ` + periodExpr + ` as period_start, SUM(input_tokens), SUM(output_tokens), SUM(credits_deducted), COUNT(*), SUM(CASE WHEN cache_hit=1 THEN 1 ELSE 0 END) FROM llm_usage_records WHERE 1=1`
+	aggs := periodExpr + ` as period_start, SUM(input_tokens), SUM(output_tokens), SUM(cached_input_tokens), SUM(cache_write_tokens), SUM(credits_deducted), COUNT(*), SUM(CASE WHEN cache_hit=1 THEN 1 ELSE 0 END)`
+	selectCols := `TRIM(hub_id), TRIM(tenant_id), ` + aggs
+	groupBy := `TRIM(hub_id), TRIM(tenant_id), ` + periodExpr
+	if filter.GroupByServiceGroup {
+		selectCols = `TRIM(hub_id), TRIM(tenant_id), TRIM(service_group_id), ` + aggs
+		groupBy += `, TRIM(service_group_id)`
+	}
+	query := `SELECT ` + selectCols + ` FROM llm_usage_records WHERE 1=1`
 	var args []any
 	if hubID := strings.TrimSpace(filter.HubID); hubID != "" {
 		query += ` AND hub_id = ?`
@@ -686,14 +733,20 @@ func (r *llmUsageRepo) QuerySummary(ctx context.Context, filter llmservice.Usage
 	}
 	if hasStart {
 		query += ` AND ` + usageCreatedAtWindowPred
-		args = append(args, usageCreatedAtScanBound(start), sqliteUTCDateTime(start))
+		args = append(args,
+			usageCreatedAtScanBound(start),
+			sqliteUTCDateTime(start.UTC().Add(-24*time.Hour)),
+			sqliteUTCDateTime(start),
+		)
 	}
 	if hasEnd {
 		endExclusive := end.AddDate(0, 0, 1)
-		query += ` AND created_at < ? AND datetime(created_at) < ?`
-		args = append(args, endExclusive.UTC().Add(24*time.Hour).Format(time.RFC3339), sqliteUTCDateTime(endExclusive))
+		// Compare the normalized value so legacy space-separated timestamps are
+		// included alongside the current RFC3339 representation.
+		query += ` AND datetime(created_at) < ?`
+		args = append(args, sqliteUTCDateTime(endExclusive))
 	}
-	query += ` GROUP BY TRIM(hub_id), TRIM(tenant_id), ` + periodExpr + ` ORDER BY period_start DESC`
+	query += ` GROUP BY ` + groupBy + ` ORDER BY period_start DESC`
 	if filter.Limit > 0 {
 		query += ` LIMIT ?`
 		args = append(args, filter.Limit)
@@ -709,7 +762,13 @@ func (r *llmUsageRepo) QuerySummary(ctx context.Context, filter llmservice.Usage
 	for rows.Next() {
 		var s llmservice.TenantUsageSummary
 		var cacheHits int64
-		if err := rows.Scan(&s.HubID, &s.TenantID, &s.PeriodStart, &s.InputTokens, &s.OutputTokens, &s.TotalCredits, &s.TotalRequests, &cacheHits); err != nil {
+		var err error
+		if filter.GroupByServiceGroup {
+			err = rows.Scan(&s.HubID, &s.TenantID, &s.ServiceGroupID, &s.PeriodStart, &s.InputTokens, &s.OutputTokens, &s.CachedInputTokens, &s.CacheWriteTokens, &s.TotalCredits, &s.TotalRequests, &cacheHits)
+		} else {
+			err = rows.Scan(&s.HubID, &s.TenantID, &s.PeriodStart, &s.InputTokens, &s.OutputTokens, &s.CachedInputTokens, &s.CacheWriteTokens, &s.TotalCredits, &s.TotalRequests, &cacheHits)
+		}
+		if err != nil {
 			return nil, err
 		}
 		s.Period = periodLabel
@@ -726,7 +785,7 @@ func (r *llmUsageRepo) QueryRecent(ctx context.Context, hubID, tenantID string, 
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := r.read.QueryContext(ctx, `SELECT id, hub_id, tenant_id, model, provider_id, input_tokens, output_tokens, credits_deducted, cache_hit, auth_id, created_at FROM llm_usage_records WHERE hub_id=? AND tenant_id=? ORDER BY datetime(created_at) DESC, id DESC LIMIT ?`, strings.TrimSpace(hubID), strings.TrimSpace(tenantID), limit)
+	rows, err := r.read.QueryContext(ctx, `SELECT id, hub_id, tenant_id, request_id, model, provider_id, input_tokens, output_tokens, cached_input_tokens, cache_write_tokens, cache_usage_source, usage_anomaly, pricing_source, credits_deducted, cache_hit, auth_id, created_at FROM llm_usage_records WHERE hub_id=? AND tenant_id=? ORDER BY datetime(created_at) DESC, id DESC LIMIT ?`, strings.TrimSpace(hubID), strings.TrimSpace(tenantID), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -736,11 +795,11 @@ func (r *llmUsageRepo) QueryRecent(ctx context.Context, hubID, tenantID string, 
 		var rec llmservice.TenantUsageRecord
 		var cacheHit int
 		var createdAt string
-		if err := rows.Scan(&rec.ID, &rec.HubID, &rec.TenantID, &rec.Model, &rec.ProviderID, &rec.InputTokens, &rec.OutputTokens, &rec.Credits, &cacheHit, &rec.AuthID, &createdAt); err != nil {
+		if err := rows.Scan(&rec.ID, &rec.HubID, &rec.TenantID, &rec.RequestID, &rec.Model, &rec.ProviderID, &rec.InputTokens, &rec.OutputTokens, &rec.CachedInputTokens, &rec.CacheWriteTokens, &rec.CacheUsageSource, &rec.UsageAnomaly, &rec.PricingSource, &rec.Credits, &cacheHit, &rec.AuthID, &createdAt); err != nil {
 			return nil, err
 		}
 		rec.CacheHit = cacheHit == 1
-		rec.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+		rec.CreatedAt, _ = parseStoredUsageTime(createdAt)
 		records = append(records, &rec)
 	}
 	return records, rows.Err()
@@ -762,10 +821,33 @@ func addTokenTraffic(a, b llmservice.TokenTraffic) llmservice.TokenTraffic {
 	}
 }
 
-const usageCreatedAtWindowPred = `created_at >= ? AND datetime(created_at) >= ?`
+// usageCreatedAtWindowPred keeps the indexed lexical lower bound for current
+// RFC3339 rows while also admitting legacy space-separated timestamps. The
+// normalized datetime check remains authoritative for the actual window.
+const usageCreatedAtWindowPred = `(created_at >= ? OR datetime(created_at) >= ?) AND datetime(created_at) >= ?`
 
 func sqliteUTCDateTime(t time.Time) string {
 	return t.UTC().Format("2006-01-02 15:04:05")
+}
+
+// parseStoredUsageTime accepts both the current RFC3339 representation and
+// the space-separated SQLite datetime format emitted by older installations.
+// Legacy values without an explicit offset are interpreted as UTC, matching
+// the normalized storage contract used for new records.
+func parseStoredUsageTime(value string) (time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, fmt.Errorf("empty usage timestamp")
+	}
+	if t, err := time.Parse(time.RFC3339Nano, value); err == nil {
+		return t.UTC(), nil
+	}
+	for _, layout := range []string{"2006-01-02 15:04:05.999999999", "2006-01-02 15:04:05"} {
+		if t, err := time.ParseInLocation(layout, value, time.UTC); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("unsupported usage timestamp %q", value)
 }
 
 func usageCreatedAtScanBound(since time.Time) string {
@@ -848,8 +930,12 @@ func (r *llmUsageRepo) queryTokenPeriodTraffic(ctx context.Context, keyExpr stri
 	weekBound := sqliteUTCDateTime(weekStart)
 	monthBound := sqliteUTCDateTime(monthStart)
 	// Widen the indexed scan by a day so offset-formatted legacy rows still enter the
-	// datetime() filter. New writes are UTC RFC3339 and compare directly.
+	// datetime() filter. Some older databases also contain SQLite's
+	// space-separated timestamp form ("YYYY-MM-DD HH:MM:SS"). A lexical
+	// comparison against RFC3339 would exclude those rows before datetime() can
+	// normalize them, which made provider traffic appear to be permanently zero.
 	scanBound := usageCreatedAtScanBound(monthStart)
+	scanDateTimeBound := sqliteUTCDateTime(monthStart.UTC().Add(-24 * time.Hour))
 	rows, err := r.read.QueryContext(ctx, `
 		SELECT traffic_key,
 		       SUM(CASE WHEN ts >= ? THEN input_tokens ELSE 0 END),
@@ -861,10 +947,10 @@ func (r *llmUsageRepo) queryTokenPeriodTraffic(ctx context.Context, keyExpr stri
 		  FROM (
 		        SELECT `+keyExpr+` AS traffic_key, input_tokens, output_tokens, datetime(created_at) AS ts
 		          FROM llm_usage_records
-		         WHERE created_at >= ?`+extraWhere+`
+		         WHERE (created_at >= ? OR datetime(created_at) >= ?)`+extraWhere+`
 		       ) AS usage
 		 GROUP BY traffic_key`,
-		dayBound, dayBound, weekBound, weekBound, monthBound, monthBound, scanBound,
+		dayBound, dayBound, weekBound, weekBound, monthBound, monthBound, scanBound, scanDateTimeBound,
 	)
 	if err != nil {
 		return nil, err
@@ -902,7 +988,7 @@ func (r *llmUsageRepo) QueryClassTraffic(ctx context.Context, serviceGroupID str
 		 WHERE `+usageCreatedAtWindowPred+`
 		   AND TRIM(service_group_id) = ?
 		 GROUP BY TRIM(workload_class), TRIM(class_source)`,
-		usageCreatedAtScanBound(since), sqliteUTCDateTime(since), groupID,
+		usageCreatedAtScanBound(since), sqliteUTCDateTime(since.UTC().Add(-24*time.Hour)), sqliteUTCDateTime(since), groupID,
 	)
 	if err != nil {
 		return nil, nil, nil, err
@@ -958,7 +1044,7 @@ func (r *llmUsageRepo) queryClassTrafficSamples(ctx context.Context, serviceGrou
 		   AND TRIM(request_preview) != ''
 		 ORDER BY datetime(created_at) DESC, id DESC
 		 LIMIT 20`,
-		usageCreatedAtScanBound(since), sqliteUTCDateTime(since), strings.TrimSpace(serviceGroupID), "hint",
+		usageCreatedAtScanBound(since), sqliteUTCDateTime(since.UTC().Add(-24*time.Hour)), sqliteUTCDateTime(since), strings.TrimSpace(serviceGroupID), "hint",
 	)
 	if err != nil {
 		return nil, err
@@ -973,7 +1059,7 @@ func (r *llmUsageRepo) queryClassTrafficSamples(ctx context.Context, serviceGrou
 		if class == "" {
 			class = "unclassified"
 		}
-		at, _ := time.Parse(time.RFC3339, createdAt)
+		at, _ := parseStoredUsageTime(createdAt)
 		samples = append(samples, llmservice.ClassTrafficSample{
 			At:      at,
 			Class:   class,

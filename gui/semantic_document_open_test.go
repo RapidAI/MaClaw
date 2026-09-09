@@ -67,4 +67,3 @@ func TestIMSemanticDocumentDeliveryStillUnmapped(t *testing.T) {
 		t.Fatal("GUI rule set must map document_open")
 	}
 }
-

@@ -27,9 +27,9 @@ set "NPM_CMD=C:\Program Files\nodejs\npm.cmd"
 set "GO_EXE=C:\Program Files\Go\bin\go.exe"
 
 REM -- Icon: the OEM resource is kept with the GUI build assets. --
-set "ICON_PATH=%~dp0gui\build\tigerclaw.ico"
+set "ICON_PATH=%~dp0guiapp\build\tigerclaw.ico"
 if not exist "%ICON_PATH%" (
-    echo [WARN] gui\build\tigerclaw.ico not found, falling back to default icon.ico
+    echo [WARN] guiapp\build\tigerclaw.ico not found, falling back to default icon.ico
     set "ICON_PATH=%~dp0build\windows\icon.ico"
 )
 
@@ -82,11 +82,11 @@ echo [INFO] Building TigerClaw Version: %VERSION%
 
 REM -- Sync version with frontend --
 echo [Step 3/10] Syncing version with frontend...
-"%POWERSHELL_EXE%" -NoProfile -Command "@('export const buildNumber = ''%BUILD_NUM%'';','export const appVersion = ''%VERSION%'';') | Set-Content -Path '%~dp0gui\frontend\src\version.ts' -Encoding Utf8"
+"%POWERSHELL_EXE%" -NoProfile -Command "@('export const buildNumber = ''%BUILD_NUM%'';','export const appVersion = ''%VERSION%'';') | Set-Content -Path '%~dp0guiapp\frontend\src\version.ts' -Encoding Utf8"
 
 REM -- Build Frontend --
 echo [Step 4/10] Building frontend...
-cd /d "%~dp0gui\frontend"
+cd /d "%~dp0guiapp\frontend"
 if not exist "node_modules" (
     call "%NPM_CMD%" install --cache ./.npm_cache
     if !errorlevel! neq 0 (
@@ -103,7 +103,7 @@ if !errorlevel! neq 0 (
 cd /d "%~dp0"
 REM OEM shares MaClaw frontend embed - fail local builds if welcome page is stale/old.
 echo [INFO] Verifying AI assistant welcome page in frontend dist...
-node "%~dp0scripts\verify-frontend-welcome.mjs" --dist "%~dp0gui\frontend\dist"
+node "%~dp0scripts\verify-frontend-welcome.mjs" --dist "%~dp0guiapp\frontend\dist"
 if !errorlevel! neq 0 (
     echo [ERROR] Frontend welcome verification failed.
     goto :error
@@ -112,7 +112,7 @@ cd "%~dp0"
 
 REM -- Generate Windows Resources (icon + version info) --
 echo [Step 5/10] Generating Windows resources...
-del /q "%~dp0gui\resource_windows_*.syso" 2>nul
+del /q "%~dp0guiapp\resource_windows_*.syso" 2>nul
 del /q "%~dp0resource_windows_*.syso" 2>nul
 del /q "%~dp0tmp*.syso" 2>nul
 del /q "%~dp0tmp*.json" 2>nul
@@ -143,12 +143,12 @@ echo [Step 6/10] Compiling TigerClaw GUI binaries...
 set "GOOS=windows"
 set "GOARCH=amd64"
 set "CGO_ENABLED=%GUI_AMD64_CGO%"
-"%GOVERSIONINFO_PATH%" -64 -icon "%ICON_PATH%" -application-icon "%ICON_PATH%" -manifest "%~dp0build\windows\wails.exe.manifest.tmp" -o "%~dp0gui\resource_windows_amd64.syso" "%~dp0build\windows\versioninfo.json.tmp"
+"%GOVERSIONINFO_PATH%" -64 -icon "%ICON_PATH%" -application-icon "%ICON_PATH%" -manifest "%~dp0build\windows\wails.exe.manifest.tmp" -o "%~dp0guiapp\resource_windows_amd64.syso" "%~dp0build\windows\versioninfo.json.tmp"
 if !errorlevel! neq 0 (
     echo [ERROR] Failed to generate amd64 resources.
     goto :error
 )
-"%GO_EXE%" build -tags %GUI_AMD64_TAGS% -ldflags "-s -w -H windowsgui -X main.version=%VERSION%" -o "%OUTPUT_DIR%\%APP_NAME%_amd64.exe" ./gui/
+"%GO_EXE%" build -tags %GUI_AMD64_TAGS% -ldflags "-s -w -H windowsgui -X main.version=%VERSION%" -o "%OUTPUT_DIR%\%APP_NAME%_amd64.exe" ./cmd/maclaw-gui/
 if !errorlevel! neq 0 (
     echo [ERROR] Go build for TigerClaw GUI amd64 failed.
     goto :error
@@ -158,15 +158,15 @@ if !errorlevel! neq 0 (
     echo [ERROR] TigerClaw GUI amd64 welcome embed verification failed.
     goto :error
 )
-del "%~dp0gui\resource_windows_amd64.syso"
+del "%~dp0guiapp\resource_windows_amd64.syso"
 set "GOARCH=arm64"
 set "CGO_ENABLED=%GUI_ARM64_CGO%"
-"%GOVERSIONINFO_PATH%" -64 -arm -icon "%ICON_PATH%" -application-icon "%ICON_PATH%" -manifest "%~dp0build\windows\wails.exe.manifest.tmp" -o "%~dp0gui\resource_windows_arm64.syso" "%~dp0build\windows\versioninfo.json.tmp"
+"%GOVERSIONINFO_PATH%" -64 -arm -icon "%ICON_PATH%" -application-icon "%ICON_PATH%" -manifest "%~dp0build\windows\wails.exe.manifest.tmp" -o "%~dp0guiapp\resource_windows_arm64.syso" "%~dp0build\windows\versioninfo.json.tmp"
 if !errorlevel! neq 0 (
     echo [ERROR] Failed to generate arm64 resources.
     goto :error
 )
-"%GO_EXE%" build -tags %GUI_ARM64_TAGS% -ldflags "-s -w -H windowsgui -X main.version=%VERSION%" -o "%OUTPUT_DIR%\%APP_NAME%_arm64.exe" ./gui/
+"%GO_EXE%" build -tags %GUI_ARM64_TAGS% -ldflags "-s -w -H windowsgui -X main.version=%VERSION%" -o "%OUTPUT_DIR%\%APP_NAME%_arm64.exe" ./cmd/maclaw-gui/
 if !errorlevel! neq 0 (
     echo [ERROR] Go build for TigerClaw GUI arm64 failed.
     goto :error
@@ -176,7 +176,7 @@ if !errorlevel! neq 0 (
     echo [ERROR] TigerClaw GUI arm64 welcome embed verification failed.
     goto :error
 )
-del "%~dp0gui\resource_windows_arm64.syso"
+del "%~dp0guiapp\resource_windows_arm64.syso"
 del "%~dp0build\windows\wails.exe.manifest.tmp"
 del "%~dp0build\windows\versioninfo.json.tmp"
 

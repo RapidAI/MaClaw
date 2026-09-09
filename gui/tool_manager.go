@@ -891,12 +891,5 @@ func (a *App) UpdateTool(name string) error {
 }
 
 func (a *App) CheckToolsStatus() []ToolStatus {
-	tm := NewToolManager(a)
-	// Check kilo first, then other tools
-	tools := []string{"kilo", "claude", "codex", "opencode", "codebuddy", "iflow"}
-	statuses := make([]ToolStatus, len(tools))
-	for i, name := range tools {
-		statuses[i] = tm.GetToolStatus(name)
-	}
-	return statuses
+	return nil
 }

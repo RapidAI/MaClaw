@@ -98,6 +98,7 @@ func (c *SQLiteSemanticExecutionCoordinator) initModelRequestSurfaces() error {
 		session_id TEXT NOT NULL,
 		turn_id TEXT NOT NULL,
 		principal_id TEXT NOT NULL,
+		tool_snapshot_id TEXT NOT NULL DEFAULT '',
 		protocol TEXT NOT NULL,
 		connection_id TEXT NOT NULL,
 		response_id TEXT NOT NULL DEFAULT '',
@@ -119,7 +120,17 @@ func (c *SQLiteSemanticExecutionCoordinator) initModelRequestSurfaces() error {
 	);
 	CREATE INDEX IF NOT EXISTS idx_semantic_model_request_aliases_grant
 		ON semantic_model_request_aliases(grant_nonce, grant_fingerprint);`)
-	return err
+	if err != nil {
+		return err
+	}
+	// Existing coordinator databases predate the explicit tool snapshot
+	// column. Keep those rows readable (the grant JSON remains the legacy
+	// fallback source) while ensuring every newly published surface stores the
+	// scope identity in its own durable record.
+	if _, err := c.db.Exec(`ALTER TABLE semantic_model_request_surfaces ADD COLUMN tool_snapshot_id TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+		return err
+	}
+	return nil
 }
 
 // PublishModelRequestSurface writes a prepared presentation record before the
@@ -215,6 +226,32 @@ func (c *SQLiteSemanticExecutionCoordinator) publishModelRequestSurfaceTx(tx *sq
 	if tx == nil {
 		return ModelRequestSurface{}, fmt.Errorf("semantic execution transaction is unavailable")
 	}
+	// Include trusted signed grants when binding a legacy route row.  An older
+	// host may omit ToolSnapshotID from both the request scope and the surface
+	// column even though the grant already carries the concrete identity.
+	// Derive only the migration binding; never rewrite the signed grant.
+	bindingScope := request.Scope
+	for _, grant := range request.Aliases {
+		if strings.TrimSpace(bindingScope.ToolSnapshotID) == "" && strings.TrimSpace(grant.Scope.ToolSnapshotID) != "" {
+			var bindErr error
+			bindingScope, bindErr = canonicalInvocationScope(bindingScope, grant.Scope)
+			if bindErr != nil {
+				return ModelRequestSurface{}, fmt.Errorf("model_request_surface_alias_invalid")
+			}
+		}
+	}
+	// The route row is the durable owner of ToolSnapshotID.  A request-surface
+	// caller may be an older host and omit that field, but a newly persisted
+	// surface must still carry the canonical route identity.  Resolve it inside
+	// this transaction so the route fence and surface write observe one value.
+	canonicalScope, err := canonicalRouteScope(tx, bindingScope)
+	if err != nil {
+		return ModelRequestSurface{}, err
+	}
+	request.Scope = canonicalScope
+	if err := validateModelRequestSurfaceInput(request); err != nil {
+		return ModelRequestSurface{}, err
+	}
 	if err := routeRevisionIsCurrent(tx, request.Scope); err != nil {
 		return ModelRequestSurface{}, err
 	}
@@ -225,8 +262,8 @@ func (c *SQLiteSemanticExecutionCoordinator) publishModelRequestSurfaceTx(tx *sq
 	if err != nil {
 		return ModelRequestSurface{}, err
 	}
-	if _, err := tx.Exec(`INSERT INTO semantic_model_request_surfaces(surface_id, route_key, root_task_id, plan_id, session_id, turn_id, principal_id, protocol, connection_id, epoch, state, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'prepared', ?, ?)`, surfaceID, routeStateKey(request.Scope), request.Scope.RootTaskID, request.Scope.PlanID, request.Scope.SessionID, request.Scope.TurnID, request.Scope.PrincipalID, request.Protocol, request.ConnectionID, request.Epoch, routeStateTime(now), routeStateTime(now)); err != nil {
+	if _, err := tx.Exec(`INSERT INTO semantic_model_request_surfaces(surface_id, route_key, root_task_id, plan_id, session_id, turn_id, principal_id, tool_snapshot_id, protocol, connection_id, epoch, state, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'prepared', ?, ?)`, surfaceID, routeStateKey(request.Scope), request.Scope.RootTaskID, request.Scope.PlanID, request.Scope.SessionID, request.Scope.TurnID, request.Scope.PrincipalID, strings.TrimSpace(request.Scope.ToolSnapshotID), request.Protocol, request.ConnectionID, request.Epoch, routeStateTime(now), routeStateTime(now)); err != nil {
 		return ModelRequestSurface{}, err
 	}
 	aliases := sortedModelRequestAliases(request.Aliases)
@@ -290,9 +327,9 @@ func (c *SQLiteSemanticExecutionCoordinator) ResolveModelRequestAlias(epoch, pro
 		return InvocationGrant{}, InvocationScope{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	var surfaceID, state, storedResponse string
+	var surfaceID, state, storedResponse, storedToolSnapshotID string
 	var scope InvocationScope
-	err = tx.QueryRow(`SELECT surface_id, root_task_id, plan_id, session_id, turn_id, principal_id, state, response_id FROM semantic_model_request_surfaces WHERE epoch=? AND protocol=? AND connection_id=?`, epoch, protocol, connectionID).Scan(&surfaceID, &scope.RootTaskID, &scope.PlanID, &scope.SessionID, &scope.TurnID, &scope.PrincipalID, &state, &storedResponse)
+	err = tx.QueryRow(`SELECT surface_id, root_task_id, plan_id, session_id, turn_id, principal_id, COALESCE(tool_snapshot_id, ''), state, response_id FROM semantic_model_request_surfaces WHERE epoch=? AND protocol=? AND connection_id=?`, epoch, protocol, connectionID).Scan(&surfaceID, &scope.RootTaskID, &scope.PlanID, &scope.SessionID, &scope.TurnID, &scope.PrincipalID, &storedToolSnapshotID, &state, &storedResponse)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return InvocationGrant{}, InvocationScope{}, fmt.Errorf("stale_surface")
@@ -302,9 +339,7 @@ func (c *SQLiteSemanticExecutionCoordinator) ResolveModelRequestAlias(epoch, pro
 	if state != string(modelRequestSurfaceActive) || storedResponse != responseID {
 		return InvocationGrant{}, InvocationScope{}, fmt.Errorf("stale_surface")
 	}
-	if err := routeRevisionIsCurrent(tx, scope); err != nil {
-		return InvocationGrant{}, InvocationScope{}, fmt.Errorf("stale_surface")
-	}
+	scope.ToolSnapshotID = strings.TrimSpace(storedToolSnapshotID)
 	var encoded []byte
 	if err := tx.QueryRow(`SELECT grant_json FROM semantic_model_request_aliases WHERE surface_id=? AND alias=?`, surfaceID, alias).Scan(&encoded); err != nil {
 		if err == sql.ErrNoRows {
@@ -313,7 +348,26 @@ func (c *SQLiteSemanticExecutionCoordinator) ResolveModelRequestAlias(epoch, pro
 		return InvocationGrant{}, InvocationScope{}, err
 	}
 	grant, err := unmarshalModelRequestGrant(encoded)
-	if err != nil || grant.Scope != scope {
+	if err != nil {
+		return InvocationGrant{}, InvocationScope{}, fmt.Errorf("stale_surface")
+	}
+	// Rows written before tool_snapshot_id was added can still carry the
+	// authoritative value inside their signed grant JSON. Hydrate that value
+	// exactly once, then re-run the route-current check so a stale/mismatched
+	// route cannot be accepted through the legacy blank column.
+	if strings.TrimSpace(scope.ToolSnapshotID) == "" {
+		scope.ToolSnapshotID = strings.TrimSpace(grant.Scope.ToolSnapshotID)
+	}
+	// Canonicalize against the route after considering the signed grant.  This
+	// handles both migration shapes: a legacy surface/grant with empty
+	// snapshots is hydrated from the route, while a concrete grant can bind a
+	// legacy route row before the currentness check.  The grant remains
+	// untouched because its historical signature covers the empty field.
+	scope, err = canonicalRouteScope(tx, scope)
+	if err != nil || !invocationScopesCompatible(grant.Scope, scope) {
+		return InvocationGrant{}, InvocationScope{}, fmt.Errorf("stale_surface")
+	}
+	if err := routeRevisionIsCurrent(tx, scope); err != nil {
 		return InvocationGrant{}, InvocationScope{}, fmt.Errorf("stale_surface")
 	}
 	if err := tx.Commit(); err != nil {
@@ -349,12 +403,12 @@ func (c *SQLiteSemanticExecutionCoordinator) RecoverBoundModelRequestSurface(req
 	defer func() { _ = tx.Rollback() }()
 	var surface ModelRequestSurface
 	var state, createdAt, updatedAt, tenantID string
-	err = tx.QueryRow(`SELECT s.surface_id, s.root_task_id, s.plan_id, s.session_id, s.turn_id, s.principal_id,
+	err = tx.QueryRow(`SELECT s.surface_id, s.root_task_id, s.plan_id, s.session_id, s.turn_id, s.principal_id, COALESCE(s.tool_snapshot_id, ''),
 		s.protocol, s.connection_id, s.response_id, s.epoch, s.state, s.created_at, s.updated_at, rs.tenant_id
 		FROM semantic_model_request_surfaces s
 		JOIN semantic_route_states rs ON rs.route_key=s.route_key
 		WHERE s.epoch=? AND s.protocol=? AND s.connection_id=?`, request.Epoch, request.Protocol, request.ConnectionID).Scan(
-		&surface.ID, &surface.Scope.RootTaskID, &surface.Scope.PlanID, &surface.Scope.SessionID, &surface.Scope.TurnID, &surface.Scope.PrincipalID,
+		&surface.ID, &surface.Scope.RootTaskID, &surface.Scope.PlanID, &surface.Scope.SessionID, &surface.Scope.TurnID, &surface.Scope.PrincipalID, &surface.Scope.ToolSnapshotID,
 		&surface.Protocol, &surface.ConnectionID, &surface.ResponseID, &surface.Epoch, &state, &createdAt, &updatedAt, &tenantID,
 	)
 	if err != nil {
@@ -373,6 +427,13 @@ func (c *SQLiteSemanticExecutionCoordinator) RecoverBoundModelRequestSurface(req
 		return ModelRequestSurface{}, fmt.Errorf("stale_surface")
 	}
 	surface.State = modelRequestSurfaceActive
+	// Recover through the route row rather than trusting a possibly legacy
+	// request-surface column.  This also persists the first concrete snapshot
+	// when the route itself predates the binding field.
+	surface.Scope, err = canonicalRouteScope(tx, surface.Scope)
+	if err != nil {
+		return ModelRequestSurface{}, fmt.Errorf("stale_surface")
+	}
 	if err := routeRevisionIsCurrent(tx, surface.Scope); err != nil {
 		return ModelRequestSurface{}, fmt.Errorf("stale_surface")
 	}
@@ -389,7 +450,13 @@ func (c *SQLiteSemanticExecutionCoordinator) RecoverBoundModelRequestSurface(req
 			return ModelRequestSurface{}, err
 		}
 		grant, err := unmarshalModelRequestGrant(encoded)
-		if err != nil || strings.TrimSpace(alias) == "" || grant.Scope != surface.Scope {
+		if err != nil || strings.TrimSpace(alias) == "" {
+			return ModelRequestSurface{}, fmt.Errorf("stale_surface")
+		}
+		if strings.TrimSpace(surface.Scope.ToolSnapshotID) == "" {
+			surface.Scope.ToolSnapshotID = strings.TrimSpace(grant.Scope.ToolSnapshotID)
+		}
+		if !invocationScopesCompatible(grant.Scope, surface.Scope) {
 			return ModelRequestSurface{}, fmt.Errorf("stale_surface")
 		}
 		surface.Aliases[alias] = grant
@@ -398,6 +465,16 @@ func (c *SQLiteSemanticExecutionCoordinator) RecoverBoundModelRequestSurface(req
 		return ModelRequestSurface{}, err
 	}
 	if len(surface.Aliases) == 0 {
+		return ModelRequestSurface{}, fmt.Errorf("stale_surface")
+	}
+	// A pre-snapshot route and surface may both be blank until the first signed
+	// grant is inspected.  Bind that concrete value now, then check the route
+	// fence again.  No grant bytes are rewritten, preserving old HMACs.
+	surface.Scope, err = canonicalRouteScope(tx, surface.Scope)
+	if err != nil {
+		return ModelRequestSurface{}, fmt.Errorf("stale_surface")
+	}
+	if err := routeRevisionIsCurrent(tx, surface.Scope); err != nil {
 		return ModelRequestSurface{}, fmt.Errorf("stale_surface")
 	}
 	if err := tx.Commit(); err != nil {
@@ -540,7 +617,7 @@ func validateModelRequestSurfaceInput(request ModelRequestSurfacePublish) error 
 		return fmt.Errorf("model_request_surface_aliases_required")
 	}
 	for alias, grant := range request.Aliases {
-		if strings.TrimSpace(alias) == "" || grant.Scope != request.Scope || strings.TrimSpace(grant.Nonce) == "" {
+		if strings.TrimSpace(alias) == "" || !invocationScopesCompatible(grant.Scope, request.Scope) || strings.TrimSpace(grant.Nonce) == "" {
 			return fmt.Errorf("model_request_surface_alias_invalid")
 		}
 	}
@@ -551,7 +628,6 @@ func ensureModelRequestAliasesMaterializedTx(tx *sql.Tx, scope InvocationScope, 
 	routeKey := routeStateKey(scope)
 	for _, alias := range sortedModelRequestAliases(aliases) {
 		grant := aliases[alias]
-		fingerprint := InvocationGrantFingerprint(grant)
 		var materialized, state string
 		err := tx.QueryRow(`SELECT m.grant_json, m.state FROM semantic_route_materializations m WHERE m.route_key=? AND m.state='exposed' AND m.grant_json IS NOT NULL AND json_extract(m.grant_json, '$.Nonce')=?`, routeKey, grant.Nonce).Scan(&materialized, &state)
 		if err != nil {
@@ -561,11 +637,17 @@ func ensureModelRequestAliasesMaterializedTx(tx *sql.Tx, scope InvocationScope, 
 			return err
 		}
 		stored, err := unmarshalModelRequestGrant([]byte(materialized))
-		if err != nil || InvocationGrantFingerprint(stored) != fingerprint || stored.Scope != scope {
+		if err != nil || !invocationGrantFingerprintEquivalent(stored, grant) || !invocationScopesCompatible(stored.Scope, scope) {
 			return fmt.Errorf("model_request_surface_grant_mismatch")
 		}
 		var grantState string
-		if err := tx.QueryRow(`SELECT state FROM invocation_grants WHERE nonce=? AND fingerprint=? AND expires_at>?`, grant.Nonce, fingerprint, routeStateTime(now)).Scan(&grantState); err != nil {
+		placeholders, fingerprintArgs := invocationGrantFingerprintSQLArgs(grant)
+		args := make([]interface{}, 0, len(fingerprintArgs)+2)
+		args = append(args, grant.Nonce)
+		args = append(args, fingerprintArgs...)
+		args = append(args, routeStateTime(now))
+		query := `SELECT state FROM invocation_grants WHERE nonce=? AND fingerprint IN (` + placeholders + `) AND expires_at>?`
+		if err := tx.QueryRow(query, args...).Scan(&grantState); err != nil {
 			if err == sql.ErrNoRows {
 				return fmt.Errorf("model_request_surface_grant_unavailable")
 			}
@@ -641,7 +723,13 @@ func revokeExposedRouteGrantsTx(tx *sql.Tx, routeKey string) error {
 		if err != nil {
 			return err
 		}
-		if _, err := tx.Exec(`UPDATE invocation_grants SET state='revoked' WHERE nonce=? AND fingerprint=? AND state='issued'`, grant.Nonce, InvocationGrantFingerprint(grant)); err != nil {
+		placeholders, fingerprintArgs := invocationGrantFingerprintSQLArgs(grant)
+		args := make([]interface{}, 0, len(fingerprintArgs)+2)
+		args = append(args, grant.Nonce)
+		args = append(args, fingerprintArgs...)
+		args = append(args, "issued")
+		query := `UPDATE invocation_grants SET state='revoked' WHERE nonce=? AND fingerprint IN (` + placeholders + `) AND state=?`
+		if _, err := tx.Exec(query, args...); err != nil {
 			return err
 		}
 	}

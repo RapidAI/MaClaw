@@ -18,9 +18,24 @@ func TestValidateManifestPath(t *testing.T) {
 		".maclaw-cloud/state.json",
 		"foo//bar",
 		"./x",
+		"CON.txt",
+		"folder/trailing.",
+		"folder/trailing ",
 	} {
 		if _, err := ValidateManifestPath(p); err != ErrInvalidPath {
 			t.Fatalf("path %q err=%v", p, err)
+		}
+	}
+}
+
+func TestNormalizeEntriesRejectsPortablePathCollisions(t *testing.T) {
+	sha := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	for _, entries := range [][]ManifestEntry{
+		{{Path: "README.md", SHA256: sha}, {Path: "readme.md", SHA256: sha}},
+		{{Path: "cafe\u0301.txt", SHA256: sha}, {Path: "caf\u00e9.txt", SHA256: sha}},
+	} {
+		if _, err := normalizeEntries(entries); err != ErrInvalidPath {
+			t.Fatalf("entries=%+v err=%v, want ErrInvalidPath", entries, err)
 		}
 	}
 }

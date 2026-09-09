@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"math"
 	"strings"
 	"testing"
 
@@ -46,6 +47,17 @@ func TestTurnUsageFromLLM(t *testing.T) {
 	}
 	if TurnUsageFromLLM(corelib.MaclawLLMConfig{}, nil).Requests != 0 {
 		t.Fatal("nil usage should be empty")
+	}
+}
+
+func TestTurnUsageFromLLMSeparatesPromptCacheCost(t *testing.T) {
+	u := TurnUsageFromLLM(corelib.MaclawLLMConfig{}, &llm.Usage{
+		PromptTokens: 1_000_000, CompletionTokens: 500_000,
+		CachedInputTokens: 200_000, CacheWriteTokens: 100_000,
+	})
+	// Defaults: input ¥1/M, cache read ¥0.1/M, cache write ¥1/M, output ¥2/M.
+	if math.Abs(u.EstCostRMB-1.82) > 1e-12 {
+		t.Fatalf("estimated cost = %.12f, want 1.82", u.EstCostRMB)
 	}
 }
 

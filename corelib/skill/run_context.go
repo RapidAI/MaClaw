@@ -554,7 +554,7 @@ func BuildRunCheckContextForRunnerWithDataDir(dataDir string, entry *corelib.NLS
 		if len(proxyProbeSteps) == 0 && len(entry.Steps) > 0 {
 			proxyRequiredEnv = nil
 		}
-		if corelib.NeedsOpenAIProxyAuto(proxyRequiredEnv, extraEnv, proxyProbeSteps, entry.SkillDir) {
+		if corelib.NeedsOpenAIProxyAuto(proxyRequiredEnv, extraEnv, proxyProbeSteps, entry.SkillDir, entry.NoLLMAPI) {
 			markProvidedEnvVar(ctx, "OPENAI_API_KEY")
 			markProvidedEnvVar(ctx, "OPENAI_BASE_URL")
 			markProvidedEnvVar(ctx, "OPENAI_MODEL")
@@ -612,6 +612,9 @@ func HydrateRunMetadata(dst, src *corelib.NLSkillEntry) {
 	}
 	if !dstIsKnowledge && len(dst.RequiredEnv) == 0 {
 		dst.RequiredEnv = append([]string(nil), src.RequiredEnv...)
+	}
+	if !dst.NoLLMAPI {
+		dst.NoLLMAPI = src.NoLLMAPI
 	}
 	if len(dst.RequiresPython) == 0 {
 		dst.RequiresPython = append([]string(nil), src.RequiresPython...)

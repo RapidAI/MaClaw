@@ -84,21 +84,25 @@ func Resolve(id, path, sessionKey, root string) (string, error) {
 	if id == "" {
 		return "", fmt.Errorf("toolresult: id or path is required")
 	}
-	// Strip accidental .txt suffix from models.
+	// Strip accidental suffixes from models.
 	id = strings.TrimSuffix(id, ".txt")
+	id = strings.TrimSuffix(id, encryptedSuffix)
 	id = sanitizePathSegment(id)
 	if id == "" || id == "x" {
 		return "", fmt.Errorf("toolresult: invalid id")
 	}
 
 	session := SessionDirectoryName(sessionKey)
-	candidates := make([]string, 0, 3)
+	candidates := make([]string, 0, 6)
 	if session != "" {
 		candidates = append(candidates, filepath.Join(rootAbs, session, id+".txt"))
+		candidates = append(candidates, filepath.Join(rootAbs, session, id+encryptedSuffix))
 	} else {
 		candidates = append(candidates, filepath.Join(rootAbs, "default", id+".txt"))
+		candidates = append(candidates, filepath.Join(rootAbs, "default", id+encryptedSuffix))
 		// Direct join when session was empty in spill but id path known.
 		candidates = append(candidates, filepath.Join(rootAbs, id+".txt"))
+		candidates = append(candidates, filepath.Join(rootAbs, id+encryptedSuffix))
 	}
 
 	for _, c := range candidates {
@@ -119,7 +123,7 @@ func Resolve(id, path, sessionKey, root string) (string, error) {
 		return "", fmt.Errorf("toolresult: handle %q not found", id)
 	}
 
-	// Fallback: walk one level of session dirs for id.txt (bounded).
+	// Fallback: walk one level of session dirs for id handles (bounded).
 	entries, err := os.ReadDir(rootAbs)
 	if err != nil {
 		return "", fmt.Errorf("toolresult: handle %q not found", id)
@@ -128,12 +132,14 @@ func Resolve(id, path, sessionKey, root string) (string, error) {
 		if !e.IsDir() {
 			continue
 		}
-		c := filepath.Join(rootAbs, e.Name(), id+".txt")
-		if st, err := os.Stat(c); err == nil && !st.IsDir() {
-			if err := validateResolvedStorePath(rootAbs, c, ""); err != nil {
-				continue
+		for _, suffix := range []string{".txt", encryptedSuffix} {
+			c := filepath.Join(rootAbs, e.Name(), id+suffix)
+			if st, err := os.Stat(c); err == nil && !st.IsDir() {
+				if err := validateResolvedStorePath(rootAbs, c, ""); err != nil {
+					continue
+				}
+				return c, nil
 			}
-			return c, nil
 		}
 	}
 	return "", fmt.Errorf("toolresult: handle %q not found", id)
@@ -195,6 +201,14 @@ func Read(opts ReadOptions) (ReadResult, error) {
 	if err != nil || !os.SameFile(info, current) {
 		return ReadResult{}, fmt.Errorf("toolresult: file changed during open")
 	}
+	// From here on, ONLY the already-validated descriptor is read. Closing it
+	// and reopening by path would invalidate the SameFile check above and
+	// reopen the TOCTOU window it was meant to close.
+	if strings.HasSuffix(path, encryptedSuffix) {
+		// Encrypted handles are bounded (spills cap payload size), so a
+		// whole-file decrypt is safe and keeps the read path simple.
+		return readEncryptedSlice(rootAbs, path, file, info.Size(), opts)
+	}
 	maxInt := int64(^uint(0) >> 1)
 	if info.Size() < 0 || info.Size() > maxInt {
 		return ReadResult{}, fmt.Errorf("toolresult: file is too large to address")
@@ -252,6 +266,49 @@ func Read(opts ReadOptions) (ReadResult, error) {
 	}
 	if out.Truncated {
 		out.NextOffset = end
+	}
+	return out, nil
+}
+
+// readEncryptedSlice decrypts an encrypted handle in full and returns the
+// requested bounded page. Encrypted payloads are spill-bounded (database
+// results are capped at the tool's byte budget), so whole-file decryption
+// here does not create an unbounded memory path. r must be the descriptor
+// already validated by Read (SameFile-checked), and size its stat size.
+func readEncryptedSlice(rootAbs, path string, r io.Reader, size int64, opts ReadOptions) (ReadResult, error) {
+	plain, err := readStorePayload(rootAbs, path, r, size)
+	if err != nil {
+		return ReadResult{}, err
+	}
+	total := len(plain)
+	offset := min(max(opts.Offset, 0), total)
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = DefaultReadLimit
+	}
+	if limit > MaxReadLimit {
+		limit = MaxReadLimit
+	}
+	end := total
+	if limit < total-offset {
+		end = offset + limit
+	}
+	start, alignedEnd := alignUTF8ReadWindow(plain, offset, end)
+	chunk := plain[start:alignedEnd]
+	out := ReadResult{
+		Content:       string(chunk),
+		Path:          path,
+		ID:            strings.TrimSpace(opts.ID),
+		Offset:        start,
+		ReturnedBytes: len(chunk),
+		TotalBytes:    total,
+		Truncated:     alignedEnd < total,
+	}
+	if base := filepath.Base(path); strings.HasSuffix(base, encryptedSuffix) {
+		out.ID = strings.TrimSuffix(base, encryptedSuffix)
+	}
+	if out.Truncated {
+		out.NextOffset = alignedEnd
 	}
 	return out, nil
 }

@@ -164,10 +164,12 @@ int32_t gateway_transport_download_frame(const char *url, uint32_t expected_byte
 void gateway_transport_release_media(uint8_t *data);
 void gateway_transport_response_release(gateway_transport_response_t *response);
 
-/* Bounded cancellation for active Wi-Fi ESP HTTP requests owned by this
- * service.  `mask` is composed from the lane bits below.  A busy or failed
- * guard is fail-closed: callers must not proceed into an electrical sleep or
- * destroy a dependent worker while a borrowed client might still be live. */
+/* Bounded cancellation for active Gateway requests owned by this service.
+ * Wi-Fi requests expose ESP HTTP clients; cellular asset/meeting streams use
+ * opaque profile-owner tokens. `mask` is composed from the lane bits below.
+ * A busy or failed guard is fail-closed: callers must not proceed into an
+ * electrical sleep or destroy a dependent worker while a borrower might
+ * still be live. */
 typedef uint32_t gateway_transport_cancel_mask_t;
 enum {
     GATEWAY_TRANSPORT_CANCEL_STARTUP = 1u << 0,
@@ -175,11 +177,13 @@ enum {
     GATEWAY_TRANSPORT_CANCEL_FOREGROUND = 1u << 2,
     GATEWAY_TRANSPORT_CANCEL_POLL = 1u << 3,
     GATEWAY_TRANSPORT_CANCEL_ASSET = 1u << 4,
+    GATEWAY_TRANSPORT_CANCEL_MEETING_STREAM = 1u << 5,
     GATEWAY_TRANSPORT_CANCEL_ALL = GATEWAY_TRANSPORT_CANCEL_STARTUP |
                                    GATEWAY_TRANSPORT_CANCEL_CAPABILITY_REFRESH |
                                    GATEWAY_TRANSPORT_CANCEL_FOREGROUND |
                                    GATEWAY_TRANSPORT_CANCEL_POLL |
-                                   GATEWAY_TRANSPORT_CANCEL_ASSET,
+                                   GATEWAY_TRANSPORT_CANCEL_ASSET |
+                                   GATEWAY_TRANSPORT_CANCEL_MEETING_STREAM,
 };
 device_status_t gateway_transport_cancel_active_requests(
     gateway_transport_cancel_mask_t mask, uint32_t timeout_ms);

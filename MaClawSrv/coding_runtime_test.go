@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -15,7 +17,7 @@ import (
 )
 
 func TestHTTPServerInitializesSharedCodingRuntimeLedger(t *testing.T) {
-	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), &agentservice.CoreAgentExecutor{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,9 +32,26 @@ func TestHTTPServerInitializesSharedCodingRuntimeLedger(t *testing.T) {
 	}
 }
 
+func TestHTTPServerSkipsCodingRuntimeLedgerForUnsupportedExecutor(t *testing.T) {
+	root := t.TempDir()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: root, TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	defer server.Close()
+	if server.codingRuntimeStore != nil {
+		t.Fatal("unsupported executor acquired a coding runtime ledger")
+	}
+	if _, err := os.Stat(filepath.Join(root, "coding_runtime.db")); !os.IsNotExist(err) {
+		t.Fatalf("unsupported executor created coding runtime state: %v", err)
+	}
+}
+
 func TestCodingRuntimeRecoveryAPIConfirmsWithoutReplayingExecutor(t *testing.T) {
 	const tokenSecret = "test-token-secret-0123456789012345"
-	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: tokenSecret}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: tokenSecret}, agentservice.NewMemoryStore(), &agentservice.CoreAgentExecutor{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +131,7 @@ func TestCodingRuntimeRecoveryAPIConfirmsWithoutReplayingExecutor(t *testing.T) 
 
 func TestCodingRuntimeRecoveryAPIQueuesConfirmedAttemptWithoutReplay(t *testing.T) {
 	const tokenSecret = "test-token-secret-0123456789012345"
-	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: tokenSecret}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: tokenSecret}, agentservice.NewMemoryStore(), &agentservice.CoreAgentExecutor{})
 	if err != nil {
 		t.Fatal(err)
 	}

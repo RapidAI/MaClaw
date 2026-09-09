@@ -1395,8 +1395,8 @@ func overRigPixelPix(dstPix []uint8, i int, sr, sg, sb, sa8 uint8) {
 		return
 	}
 	inv := 1 / oa
-	dstPix[i] = uint8(((float64(sr)/255)*sa + (float64(dstPix[i])/255)*da*(1-sa)) * inv * 255 + 0.5)
-	dstPix[i+1] = uint8(((float64(sg)/255)*sa + (float64(dstPix[i+1])/255)*da*(1-sa)) * inv * 255 + 0.5)
-	dstPix[i+2] = uint8(((float64(sb)/255)*sa + (float64(dstPix[i+2])/255)*da*(1-sa)) * inv * 255 + 0.5)
+	dstPix[i] = uint8(((float64(sr)/255)*sa+(float64(dstPix[i])/255)*da*(1-sa))*inv*255 + 0.5)
+	dstPix[i+1] = uint8(((float64(sg)/255)*sa+(float64(dstPix[i+1])/255)*da*(1-sa))*inv*255 + 0.5)
+	dstPix[i+2] = uint8(((float64(sb)/255)*sa+(float64(dstPix[i+2])/255)*da*(1-sa))*inv*255 + 0.5)
 	dstPix[i+3] = uint8(oa*255 + 0.5)
 }

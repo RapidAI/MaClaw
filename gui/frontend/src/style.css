@@ -1,15 +1,16 @@
 html {
     /* background-color is set dynamically by index.html inline script and
-       App.tsx useEffect to match the active theme.  Do NOT set it here —
-       a static value would flash the wrong colour on theme mismatch. */
+       App.tsx useEffect to match the active theme.  Do NOT set a static
+       page colour here — a hardcoded value would flash on theme mismatch.
+       App.css owns `background-color: var(--theme-page-bg)`. */
     /* Default left for product UI; set center only on heroes/empty states. */
     text-align: left;
-    color: white;
+    color: var(--theme-text-primary, #1a1c1e);
 }
 
 body {
     margin: 0;
-    color: white;
+    color: var(--theme-text-primary, #1a1c1e);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", "Roboto",
     "Oxygen", "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue",
     sans-serif;
@@ -38,21 +39,21 @@ body {
 
 /* Global selection color */
 ::selection {
-    background-color: rgba(99, 102, 241, 0.2);
+    background-color: color-mix(in srgb, var(--theme-primary) 22%, transparent);
     color: inherit;
 }
 
 /* Smooth focus transitions */
 *:focus-visible {
-    outline: 2px solid rgba(99, 102, 241, 0.5);
+    outline: 2px solid color-mix(in srgb, var(--theme-primary) 50%, transparent);
     outline-offset: 2px;
-    border-radius: 4px;
+    border-radius: var(--radius-xs, 4px);
 }
 
 input:focus-visible,
 select:focus-visible,
 textarea:focus-visible,
 button:focus-visible {
-    outline: 2px solid rgba(99, 102, 241, 0.4);
+    outline: 2px solid color-mix(in srgb, var(--theme-primary) 40%, transparent);
     outline-offset: 1px;
 }

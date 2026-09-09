@@ -116,6 +116,15 @@ func ApplyTargetedMaintenanceAction(
 			res.Error = "allow_duplicate_retire=true is required to retire a duplicate"
 			return out, res
 		}
+		// A merge must operate on two distinct identities.  Name aliases can
+		// otherwise resolve both arguments to the same entry and the retire step
+		// would disable the very Skill the operator intended to keep.
+		primaryIndex := findMaintenanceSkill(out, skillName)
+		relatedIndex := findMaintenanceSkill(out, relatedSkill)
+		if primaryIndex >= 0 && relatedIndex >= 0 && primaryIndex == relatedIndex {
+			res.Error = "merge_duplicate requires two distinct skills"
+			return out, res
+		}
 	}
 
 	plan := SkillMaintenancePlan{

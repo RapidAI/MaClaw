@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -158,5 +159,77 @@ func TestHardwareEnableRequiresConnectedHub(t *testing.T) {
 	}
 	if cfg.HardwareEnabled || cfg.ThirdPartyGatewayEnabled || !cfg.IsThirdPartyGatewayLocalMode() || cfg.ThirdPartyGatewayToken != "" {
 		t.Fatalf("rejected hardware enable mutated IM or hardware transport settings: %#v", cfg)
+	}
+}
+
+// TestThirdPartyGatewayRateLimitsPairCodeGuessing locks the brute-force guard
+// on the six-digit pairing endpoint.
+//
+// The pairing code is the only thing between an unauthenticated LAN caller and
+// the gateway bearer token, and it stays valid for 30 minutes. Before the fix
+// this handler had no window at all: a probe enumerated 123,457 codes in 0.72s
+// and walked away with the token. The voice endpoint was rate limited; the code
+// endpoint simply was not.
+func TestThirdPartyGatewayRateLimitsPairCodeGuessing(t *testing.T) {
+	manager := newThirdPartyGatewayManager(&App{})
+	manager.pairings["123456"] = thirdPartyDevicePairing{
+		Token:     "gateway-bearer-secret",
+		ExpiresAt: time.Now().Add(30 * time.Minute),
+	}
+
+	attempt := func(code, remoteAddr string) int {
+		req := httptest.NewRequest(http.MethodPost, "/api/device-gateway/v1/pair",
+			bytes.NewBufferString(`{"pairCode":"`+code+`","clientId":"pet-a"}`))
+		req.RemoteAddr = remoteAddr
+		recorder := httptest.NewRecorder()
+		manager.handleDevicePair(recorder, req)
+		return recorder.Code
+	}
+
+	// A legitimate device must still be able to pair.
+	if status := attempt("123456", "10.0.0.1:5000"); status != http.StatusCreated {
+		t.Fatalf("valid pairing code was rejected: status=%d", status)
+	}
+
+	// An attacker enumerating the space must be cut off long before the 10^6
+	// keyspace is reachable.
+	limited := 0
+	for i := 0; i < 5000; i++ {
+		if status := attempt(fmt.Sprintf("%06d", i), "10.0.0.99:5000"); status == http.StatusTooManyRequests {
+			limited = i + 1
+			break
+		}
+	}
+	if limited == 0 {
+		t.Fatal("pairing code guessing was never rate limited")
+	}
+	if limited > 64 {
+		t.Fatalf("rate limiter allowed %d guesses before cutting off", limited)
+	}
+
+	// The window is per source IP: another device must not be collateral damage.
+	if status := attempt("999999", "10.0.0.2:5000"); status == http.StatusTooManyRequests {
+		t.Fatal("a different source IP was blocked by another IP's attempts")
+	}
+}
+
+// Malformed requests must not consume a well-behaved caller's window.
+func TestThirdPartyGatewayMalformedPairRequestsDoNotConsumeWindow(t *testing.T) {
+	manager := newThirdPartyGatewayManager(&App{})
+	req := httptest.NewRequest(http.MethodPost, "/api/device-gateway/v1/pair", bytes.NewBufferString(`{"pairCode":"abc"}`))
+	req.RemoteAddr = "10.0.0.3:5000"
+	for i := 0; i < 200; i++ {
+		recorder := httptest.NewRecorder()
+		manager.handleDevicePair(recorder, httptest.NewRequest(http.MethodPost, "/api/device-gateway/v1/pair", bytes.NewBufferString(`{"pairCode":"abc"}`)))
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("malformed pair request status=%d", recorder.Code)
+		}
+	}
+	valid := httptest.NewRequest(http.MethodPost, "/api/device-gateway/v1/pair", bytes.NewBufferString(`{"pairCode":"123456","clientId":"pet-a"}`))
+	valid.RemoteAddr = "10.0.0.3:5000"
+	recorder := httptest.NewRecorder()
+	manager.handleDevicePair(recorder, valid)
+	if recorder.Code == http.StatusTooManyRequests {
+		t.Fatal("malformed traffic exhausted the caller's pairing window")
 	}
 }

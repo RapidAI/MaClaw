@@ -100,26 +100,7 @@ func GetPublicUserRankingsHandler(sessions userUsageSummarizer, users store.User
 
 		// Support daily/weekly/monthly periods (default: monthly)
 		period := normalizePublicRankingPeriod(r.URL.Query().Get("period"))
-		var start, end time.Time
-		var periodLabel string
-		switch period {
-		case "daily":
-			start = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-			end = start.AddDate(0, 0, 1)
-			periodLabel = start.Format("2006-01-02")
-		case "weekly":
-			weekday := int(now.Weekday())
-			if weekday == 0 {
-				weekday = 7
-			}
-			start = time.Date(now.Year(), now.Month(), now.Day()-(weekday-1), 0, 0, 0, 0, time.UTC)
-			end = start.AddDate(0, 0, 7)
-			periodLabel = start.Format("2006-01-02")
-		default: // monthly
-			start = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
-			end = start.AddDate(0, 1, 0)
-			periodLabel = start.Format("2006-01")
-		}
+		start, end, periodLabel := userRankingRange(r.URL.Query(), period, now)
 
 		// Try pre-computed cache first for instant response.
 		var merged []userRankingRow

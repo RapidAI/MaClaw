@@ -1,12 +1,14 @@
 package main
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // The discovery meta-tool must ride every governed surface render, so the
@@ -175,6 +177,42 @@ func TestSemanticToolsSearchStatusesAreHonestAboutThisTurn(t *testing.T) {
 // A name whose grant was retired must not be advertised as petitionable: the
 // petition gate rejects retired names, so discovery inviting the call would
 // send the model into the same hard denial twice.
+func TestSemanticToolsSearchDoesNotMarkCapabilityAliasAsPlanned(t *testing.T) {
+	cb := guiSemanticToolsSearchRegressionCallbacks(0)
+	cb.semanticSurface.plan.Selections = []tool.PlannedSelection{{
+		AdapterName: "read_file",
+		FitProof:    tool.FitProof{MatchedCapability: tool.CapabilityFSReadLocal},
+	}}
+	got := semanticToolsSearchRun(cb, "{\"scope_id\":\"scope-search\",\"catalog_digest\":\"catalog-search\",\"query\":\"list directory\"}")
+	for _, line := range strings.Split(got, "\n") {
+		if strings.HasPrefix(line, "- list_directory — ") && strings.Contains(line, "[已列入本轮计划") {
+			t.Fatalf("same-capability alias was falsely marked planned: %s", got)
+		}
+	}
+	if !strings.Contains(got, "- list_directory — ") || !strings.Contains(got, "[本轮不可用：不要调用") {
+		t.Fatalf("unselected alias must remain unavailable: %s", got)
+	}
+}
+func TestSemanticToolsSearchUsesRenderedNameForDynamicGrant(t *testing.T) {
+	cb := guiSemanticToolsSearchRegressionCallbacks(0)
+	cb.semanticSurface.plan.Selections = []tool.PlannedSelection{{
+		ID: "dynamic-selection", AdapterName: "dynamic_mcp_internal",
+		FitProof: tool.FitProof{MatchedCapability: "information.search.web"},
+	}}
+	cb.semanticSurface.schemas = map[string]map[string]interface{}{
+		"dynamic_mcp_internal": {"type": "function", "function": map[string]interface{}{"name": "dynamic_mcp_internal", "description": "internal"}},
+	}
+	cb.semanticSurface.grants = map[string]tool.InvocationGrant{
+		"invoke_opaque_token": {SelectionID: "dynamic-selection", AdapterName: "dynamic_mcp_internal"},
+	}
+	got := semanticToolsSearchRun(cb, `{"scope_id":"scope-search","catalog_digest":"catalog-search","query":"search"}`)
+	if !strings.Contains(got, "- invoke_opaque_token — ") || !strings.Contains(got, "[已在当前工具面]") {
+		t.Fatalf("search omitted rendered dynamic grant name: %s", got)
+	}
+	if strings.Contains(got, "- dynamic_mcp_internal — ") {
+		t.Fatalf("search leaked unrendered dynamic adapter name: %s", got)
+	}
+}
 func TestSemanticToolsSearchRetiredGrantIsNotPetitionable(t *testing.T) {
 	cb := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: .98})
 	name := "office"
@@ -188,4 +226,141 @@ func TestSemanticToolsSearchRetiredGrantIsNotPetitionable(t *testing.T) {
 	if !strings.Contains(got, "[本轮授权已用尽，不要调用]") {
 		t.Fatalf("retired grant must be marked exhausted: %s", got)
 	}
+}
+
+func TestSemanticToolsSearchQueryDoesNotChangeCollection(t *testing.T) {
+	cb := guiSemanticToolsSearchRegressionCallbacks(12)
+	left := semanticToolsSearchRun(cb, `{"scope_id":"scope-search","catalog_digest":"catalog-search","query":"weather in Nanjing"}`)
+	right := semanticToolsSearchRun(cb, `{"scope_id":"scope-search","catalog_digest":"catalog-search","query":"unrelated nonsense"}`)
+	if got, want := guiSemanticSearchResultNames(left), guiSemanticSearchResultNames(right); !guiEqualStringSlices(got, want) {
+		t.Fatalf("query changed directory collection: left=%v right=%v", got, want)
+	}
+}
+
+func TestSemanticToolsSearchRejectsScopeAndCatalogMismatch(t *testing.T) {
+	cb := guiSemanticToolsSearchRegressionCallbacks(1)
+	if got := semanticToolsSearchRun(cb, `{"scope_id":"scope-other","catalog_digest":"catalog-search","query":"list"}`); !strings.Contains(got, "tools_search_scope_mismatch") {
+		t.Fatalf("foreign scope accepted: %s", got)
+	}
+	if got := semanticToolsSearchRun(cb, `{"scope_id":"scope-search","catalog_digest":"catalog-other","query":"list"}`); !strings.Contains(got, "tools_search_scope_mismatch") {
+		t.Fatalf("foreign catalog accepted: %s", got)
+	}
+}
+
+func TestSemanticToolsSearchAllowsEmptyQueryOnBoundSurface(t *testing.T) {
+	cb := guiSemanticToolsSearchRegressionCallbacks(1)
+	got := semanticToolsSearchRun(cb, `{"scope_id":"scope-search","catalog_digest":"catalog-search"}`)
+	if strings.Contains(got, "tools_search_query_required") || strings.Contains(got, "tools_search_scope_unavailable") {
+		t.Fatalf("bound directory page with empty query was rejected: %s", got)
+	}
+	if !strings.Contains(got, "dynamic_000") {
+		t.Fatalf("bound directory page omitted the catalog entry: %s", got)
+	}
+}
+
+func TestSemanticToolsSearchRejectsMalformedNeedsInsteadOfBroadening(t *testing.T) {
+	cb := guiSemanticToolsSearchRegressionCallbacks(1)
+	for _, args := range []string{
+		`{"scope_id":"scope-search","catalog_digest":"catalog-search","query":"list","needs":"information.search.web"}`,
+		`{"scope_id":"scope-search","catalog_digest":"catalog-search","query":"list","needs":["information.search.web",7]}`,
+		`{"scope_id":"scope-search","catalog_digest":"catalog-search","query":"list","needs":[" "]}`,
+	} {
+		if got := semanticToolsSearchRun(cb, args); !strings.Contains(got, "tools_search_needs_invalid") {
+			t.Fatalf("malformed needs broadened discovery: args=%s result=%s", args, got)
+		}
+	}
+}
+
+func TestSemanticToolsSearchRejectsDetachedScopeIdentity(t *testing.T) {
+	for _, args := range []string{
+		`{"scope_id":"scope-search","catalog_digest":"catalog-search","query":"list"}`,
+		`{"query":"list"}`,
+	} {
+		if got := semanticToolsSearchRun(nil, args); !strings.Contains(got, "tools_search_scope_unavailable") {
+			t.Fatalf("detached discovery request was accepted: args=%s result=%s", args, got)
+		}
+	}
+}
+
+func TestSemanticToolsSearchPaginationClosure(t *testing.T) {
+	cb := guiSemanticToolsSearchRegressionCallbacks(320)
+	first := semanticToolsSearchRun(cb, `{"scope_id":"scope-search","catalog_digest":"catalog-search","query":"first"}`)
+	token := guiSemanticSearchNextPageToken(first)
+	if !strings.HasPrefix(token, "v1:") {
+		t.Fatalf("page token is not bound: %q", token)
+	}
+	second := semanticToolsSearchRun(cb, `{"scope_id":"scope-search","catalog_digest":"catalog-search","query":"second","page_token":"`+token+`"}`)
+	all := append(guiSemanticSearchResultNames(first), guiSemanticSearchResultNames(second)...)
+	if len(all) != len(guiUniqueStrings(all)) || len(all) != len(semanticToolsSearchCatalog(cb)) {
+		t.Fatalf("pagination closure broken: got=%d unique=%d catalog=%d", len(all), len(guiUniqueStrings(all)), len(semanticToolsSearchCatalog(cb)))
+	}
+	foreign := guiSemanticToolsSearchRegressionCallbacks(320)
+	foreign.semanticSurface.scopePlan.ScopeID = "scope-foreign"
+	if got := semanticToolsSearchRun(foreign, `{"scope_id":"scope-foreign","catalog_digest":"catalog-search","query":"second","page_token":"`+token+`"}`); !strings.Contains(got, "tools_search_page_token_invalid") {
+		t.Fatalf("continuation escaped scope: %s", got)
+	}
+}
+
+func guiSemanticToolsSearchRegressionCallbacks(extra int) *sharedAgentLoopCallbacks {
+	schemas := make(map[string]map[string]interface{}, extra)
+	for i := 0; i < extra; i++ {
+		name := fmt.Sprintf("dynamic_%03d", i)
+		schemas[name] = map[string]interface{}{"type": "function", "function": map[string]interface{}{"name": name, "description": "regression provider"}}
+	}
+	return &sharedAgentLoopCallbacks{semanticSurface: &semanticCallSurface{
+		plan:      tool.ToolPlan{ID: "plan-search", CatalogDigest: "catalog-search", CatalogGeneration: 1},
+		scopePlan: tool.ToolScopePlan{ScopeID: "scope-search", CatalogDigest: "catalog-search", CatalogGeneration: 1},
+		schemas:   schemas, grants: map[string]tool.InvocationGrant{}, retiredGrants: map[string]tool.InvocationGrant{},
+	}}
+}
+
+func guiSemanticSearchResultNames(result string) []string {
+	var names []string
+	for _, line := range strings.Split(result, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "- ") {
+			continue
+		}
+		name := strings.TrimPrefix(line, "- ")
+		if idx := strings.Index(name, " — "); idx >= 0 {
+			name = name[:idx]
+		}
+		if strings.TrimSpace(name) != "" {
+			names = append(names, strings.TrimSpace(name))
+		}
+	}
+	return names
+}
+
+func guiSemanticSearchNextPageToken(result string) string {
+	for _, line := range strings.Split(result, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "next_page_token=") {
+			return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "next_page_token="))
+		}
+	}
+	return ""
+}
+
+func guiUniqueStrings(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	var out []string
+	for _, value := range values {
+		if !seen[value] {
+			seen[value] = true
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func guiEqualStringSlices(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
 }

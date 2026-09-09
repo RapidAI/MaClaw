@@ -385,6 +385,9 @@ func codingWorkbenchWriteClaimContains(declared, changed codingruntime.WriteClai
 	}
 	base := strings.Trim(strings.ReplaceAll(declared.Path, "\\", "/"), "/")
 	path := strings.Trim(strings.ReplaceAll(changed.Path, "\\", "/"), "/")
+	if base == "" || base == "." {
+		return path != "" && path != "."
+	}
 	return strings.HasPrefix(strings.ToLower(path), strings.ToLower(base)+"/")
 }
 

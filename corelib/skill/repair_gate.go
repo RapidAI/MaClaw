@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/experience/lifecycle"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -122,7 +123,29 @@ func NewRepairGate(cfg RepairGateConfig, executor SandboxExecutor) *RepairGate {
 //
 // Missing runtime evidence is reported as unverified and is never an
 // automatic approval.
+//
+// When a repair event sink is wired (SetRepairEventSink), the gate verdict is
+// recorded as repair_attempted lifecycle evidence. The same gate also backs
+// optimizer candidate checks; the Reason prefix "repair_gate:" keeps the
+// provenance explicit for downstream distillers either way.
 func (g *RepairGate) Verify(ctx context.Context, skill *corelib.NLSkillEntry, newSteps []corelib.NLSkillStep, historicalArgs []map[string]string) (*GateResult, error) {
+	result, err := g.verify(ctx, skill, newSteps, historicalArgs)
+	if err == nil && result != nil {
+		skillName := ""
+		if skill != nil {
+			skillName = strings.TrimSpace(skill.Name)
+		}
+		emitRepairEvent(lifecycle.Event{
+			EventType: lifecycle.EventRepairAttempted,
+			ToolName:  skillName,
+			Outcome:   result.Status,
+			Reason:    repairEventReason("repair_gate: " + result.Reason),
+		})
+	}
+	return result, err
+}
+
+func (g *RepairGate) verify(ctx context.Context, skill *corelib.NLSkillEntry, newSteps []corelib.NLSkillStep, historicalArgs []map[string]string) (*GateResult, error) {
 	if g == nil || g.Executor == nil {
 		return &GateResult{Status: "unverified", Passed: false, EvidenceMode: "none", Reason: "no sandbox executor configured; runtime verification unavailable"}, nil
 	}

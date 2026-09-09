@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -12,7 +13,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	"github.com/RapidAI/CodeClaw/corelib/logx"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/internal/servicehost"
@@ -23,6 +26,19 @@ var (
 	serviceCommit  = ""
 	serviceBuiltAt = ""
 )
+
+// srvLogger is the production structured logger. It is initialized to a
+// redacting stderr logger at declaration and replaced by
+// configureServiceLogging once the log file is open. configureServiceLogging
+// runs before ListenAndServe, so the goroutine serving requests observes the
+// file logger via the goroutine-start happens-before edge. Note the log file
+// handle is intentionally kept open for the process lifetime (no rotation
+// support yet).
+var srvLogger = logx.NewFromEnv(nil)
+
+func srvLog() *slog.Logger {
+	return srvLogger
+}
 
 func main() {
 	if err := servicehost.Run("MaClawSrv", runServer); err != nil {
@@ -52,22 +68,76 @@ func runServer(ctx context.Context) error {
 	if err := validateCredentialPepper(credentialPepper); err != nil {
 		return fmt.Errorf("invalid credential pepper configuration: %w", err)
 	}
+	runtimeRate, err := parseRuntimeRateLimitRate()
+	if err != nil {
+		return err
+	}
+	runtimeBurst, err := parseRuntimeRateLimitInt(runtimeRateLimitBurstEnv, 0, 1_000_000)
+	if err != nil {
+		return err
+	}
+	runtimeTenantLimit, err := parseRuntimeRateLimitInt(runtimeRateLimitTenantEnv, 0, 1_000_000)
+	if err != nil {
+		return err
+	}
+	runtimeShared, err := parseRuntimeRateLimitShared()
+	if err != nil {
+		return err
+	}
+	var distributedLimiter agentservice.DistributedRateLimiter
+	if runtimeShared && runtimeRate > 0 {
+		limiter, limiterErr := agentservice.NewSQLiteDistributedRateLimiter(filepath.Join(dataRoot, "runtime_rate_limit.db"), runtimeRate, runtimeBurst)
+		if limiterErr != nil {
+			return fmt.Errorf("shared runtime rate limiter: %w", limiterErr)
+		}
+		distributedLimiter = limiter
+	}
 	svc, err := agentservice.NewService(agentservice.Config{
 		DataRoot:         dataRoot,
 		TokenSecret:      tokenSecret,
 		TokenTTL:         12 * time.Hour,
 		CredentialPepper: credentialPepper,
+		// The headless server uses the ACID repository so user message, run
+		// state and durable runtime events cannot diverge across a crash or
+		// concurrent retry. GUI/tests may continue selecting the JSON backend.
+		StoreBackend:                getenv("MACLAW_STORE_BACKEND", "sqlite"),
+		RequireAtomicLifecycle:      true,
+		RuntimeRateLimitRate:        runtimeRate,
+		RuntimeRateLimitBurst:       runtimeBurst,
+		RuntimeRateLimitTenantLimit: runtimeTenantLimit,
+		DistributedRateLimiter:      distributedLimiter,
 	}, nil, executor)
 	if err != nil {
 		return fmt.Errorf("create service: %w", err)
 	}
-	if err := configureSrvDynamicSemanticRouting(svc); err != nil {
+	// srv is a headless host: desktop/audio side effects are explicitly
+	// unavailable while server-side capabilities remain discoverable.
+	svc.SetRuntimeHostCapabilities(agentruntime.HeadlessHostCapabilities{Capabilities: map[string]bool{
+		"sessions":          true,
+		"http":              true,
+		"bash":              executor.AllowLocalBash,
+		"ssh":               executor.AllowDirectSSH,
+		"ssh_file_transfer": executor.AllowSSHFileTransfer,
+	}})
+	// Every return path after service creation must release the executor and
+	// durable stores. HTTPServer.Close is idempotent and is wired once the
+	// transport is initialized below.
+	var server *HTTPServer
+	var knowledgeMgr *knowledgeStoreManager
+	defer func() {
+		if server != nil {
+			server.Close()
+		}
+		if knowledgeMgr != nil {
+			knowledgeMgr.Close()
+		}
 		_ = svc.Close()
+	}()
+	if err := configureSrvDynamicSemanticRouting(svc); err != nil {
 		return err
 	}
 	receiptWorker, err := startSrvDynamicEffectReceiptWorker(ctx, svc)
 	if err != nil {
-		_ = svc.Close()
 		return err
 	}
 	defer receiptWorker.Stop()
@@ -78,14 +148,13 @@ func runServer(ctx context.Context) error {
 	wireSkillSourceFilter(svc, skillSourceSvc)
 
 	// Initialize knowledge store (non-fatal: degrades to no-knowledge mode).
-	var knowledgeMgr *knowledgeStoreManager
 	km, kmErr := newKnowledgeStoreManager(dataRoot)
 	if kmErr != nil {
-		log.Printf("[knowledge] initialization failed (non-fatal, knowledge features disabled): %v", kmErr)
+		srvLog().Warn("knowledge initialization failed (non-fatal, knowledge features disabled)", slog.String("error", kmErr.Error()))
 	} else {
 		knowledgeMgr = km
 		executor.SetKnowledgeStore(km.AgentStore())
-		log.Printf("[knowledge] initialized successfully")
+		srvLog().Info("knowledge initialized")
 	}
 
 	// Hub→local enterprise digital assets sync (per-user data dirs; non-fatal).
@@ -103,16 +172,23 @@ func runServer(ctx context.Context) error {
 	// installed via the REST API.
 	executor.SetSkillToolProvider(agentservice.NewSkillToolBridge(svc))
 
-	server := NewHTTPServer(svc, adminSecret, knowledgeMgr, skillSourceSvc)
-	if server != nil {
-		server.enterpriseSync = enterpriseSync
-		wireSrvReviewedHostSpeechTranscriber(executor, server)
-		wireSrvReviewedHostSpeechSynthesizer(executor, server)
-		wireSrvReviewedHostSpeechPlayer(executor)
-		wireSrvReviewedHostDesktopCapturer(executor)
-		wireSrvReviewedHostDocumentLauncher(executor)
-		wireSrvReviewedHostURLLauncher(executor)
+	server, err = NewHTTPServerWithError(svc, adminSecret, knowledgeMgr, skillSourceSvc)
+	if err != nil {
+		return fmt.Errorf("create HTTP server: %w", err)
 	}
+	server.enterpriseSync = enterpriseSync
+	// Wire the admin database profile configuration API to the runtime executor
+	// so profile CRUD/rotation hot-refreshes cached per-user managers.
+	server.SetDatabaseProfileRuntime(executor, executor.DatabaseSecretResolver)
+	// Route database tool audit events into the central tenant audit chain
+	// (replaces the per-user JSONL fallback inside the executor).
+	wireDatabaseAuditSink(svc, executor)
+	wireSrvReviewedHostSpeechTranscriber(executor, server)
+	wireSrvReviewedHostSpeechSynthesizer(executor, server)
+	wireSrvReviewedHostSpeechPlayer(executor)
+	wireSrvReviewedHostDesktopCapturer(executor)
+	wireSrvReviewedHostDocumentLauncher(executor)
+	wireSrvReviewedHostURLLauncher(executor)
 	addr := getenv("MACLAW_HTTP_ADDR", "127.0.0.1:18080")
 
 	// Wire WeChat proactive push + catalog peers for scheduled-task delivery.
@@ -176,7 +252,7 @@ func runServer(ctx context.Context) error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("MaClawSrv listening on %s with data root %s", addr, svc.DataRoot())
+		srvLog().Info("maclawsrv listening", slog.String("addr", addr), slog.String("data_root", svc.DataRoot()))
 		if tlsCertFile != "" || tlsKeyFile != "" {
 			if tlsCertFile == "" || tlsKeyFile == "" {
 				errCh <- errors.New("both MACLAW_TLS_CERT_FILE and MACLAW_TLS_KEY_FILE are required when TLS is enabled")
@@ -194,7 +270,7 @@ func runServer(ctx context.Context) error {
 			return err
 		}
 	case <-ctx.Done():
-		log.Printf("shutdown requested, stopping MaClawSrv")
+		srvLog().Info("shutdown requested, stopping maclawsrv")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		if err := httpServer.Shutdown(shutdownCtx); err != nil {
@@ -202,11 +278,6 @@ func runServer(ctx context.Context) error {
 		}
 		if err := <-errCh; err != nil && !errors.Is(err, http.ErrServerClosed) {
 			return err
-		}
-		server.Close()
-		// Close knowledge store after HTTP server has drained all in-flight requests.
-		if knowledgeMgr != nil {
-			knowledgeMgr.Close()
 		}
 	}
 	return nil
@@ -247,7 +318,9 @@ func configureServiceLogging(dataRoot string) error {
 		return err
 	}
 	log.SetOutput(f)
-	log.Printf("MaClawSrv logging initialized path=%s", logPath)
+	srvLogger = logx.NewFromEnv(f)
+	slog.SetDefault(srvLogger)
+	srvLog().Info("maclawsrv logging initialized", slog.String("path", logPath))
 	return nil
 }
 

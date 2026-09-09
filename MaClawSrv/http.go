@@ -3,30 +3,31 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
-	"reflect"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	transporthttp "github.com/RapidAI/CodeClaw/MaClawSrv/transport/http"
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
+	coreconfig "github.com/RapidAI/CodeClaw/corelib/config"
+	"github.com/RapidAI/CodeClaw/corelib/database"
 	"github.com/RapidAI/CodeClaw/corelib/qqbot"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/weixin"
-	qrcode "github.com/skip2/go-qrcode"
 )
 
 type configEnvelope struct {
@@ -66,10 +67,19 @@ type adminRiskEvent struct {
 }
 
 type HTTPServer struct {
-	svc                  *agentservice.Service
-	adminSecret          string
-	mux                  *http.ServeMux
-	authLimiter          *authLimiter
+	svc         *agentservice.Service
+	adminSecret string
+	mux         *http.ServeMux
+	authLimiter *authLimiter
+	// databaseAdminLimiter throttles the admin database profile configuration
+	// endpoints independently of the login limiter; see admin_database.go.
+	databaseAdminLimiter     *authLimiter
+	databaseProfileRefresher databaseProfileRefresher
+	databaseSecretResolver   database.SecretResolver
+	databaseApprovalIssuer   databaseApprovalIssuer
+	// databaseAdminIdemMu serializes idempotency check-and-store for profile
+	// writes so concurrent retries of the same key cannot both commit.
+	databaseAdminIdemMu  sync.Mutex
 	launchTokens         *launchTokenStore
 	weixinQRTokens       *weixinQRTokenStore
 	qqbotQRTokens        *weixinQRTokenStore
@@ -99,79 +109,31 @@ type HTTPServer struct {
 	// local, read-only workspace probe. Production leaves it nil and uses the
 	// local Git prober below; it must never supply a mutating probe.
 	codingRuntimeRecoveryProber func(codingruntime.Task) codingruntime.WorkspaceProber
-}
-
-type weixinQRTokenRecord struct {
-	TenantID  string
-	UserID    string
-	BaseURL   string
-	ExpiresAt time.Time
-}
-
-type weixinQRTokenStore struct {
-	mu     sync.Mutex
-	tokens map[string]weixinQRTokenRecord
+	closeOnce                   sync.Once
 }
 
 func newWeixinQRTokenStore() *weixinQRTokenStore {
 	return &weixinQRTokenStore{tokens: map[string]weixinQRTokenRecord{}}
 }
 
-func (s *weixinQRTokenStore) Put(token string, rec weixinQRTokenRecord, now time.Time) []string {
-	if s == nil || strings.TrimSpace(token) == "" {
+// NewHTTPServer keeps the historical nil-on-error API used by tests and
+// embedders. New production code should prefer NewHTTPServerWithError so an
+// initialization failure cannot turn into a nil-pointer panic in main.
+func NewHTTPServer(svc *agentservice.Service, adminSecret string, knowledgeMgr *knowledgeStoreManager, skillSourceSvc ...*cskill.SourceControlService) *HTTPServer {
+	server, err := NewHTTPServerWithError(svc, adminSecret, knowledgeMgr, skillSourceSvc...)
+	if err != nil {
 		return nil
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.pruneLocked(now)
-	replaced := s.deletePrincipalLocked(rec.TenantID, rec.UserID)
-	s.tokens[strings.TrimSpace(token)] = rec
-	return replaced
+	return server
 }
 
-func (s *weixinQRTokenStore) Get(token string, p agentservice.Principal, now time.Time) (weixinQRTokenRecord, bool) {
-	if s == nil || strings.TrimSpace(token) == "" {
-		return weixinQRTokenRecord{}, false
+// NewHTTPServerWithError constructs the HTTP transport and reports failures
+// from reviewed capability registry/publisher initialization to the caller.
+// A partially initialized server must never start accepting requests.
+func NewHTTPServerWithError(svc *agentservice.Service, adminSecret string, knowledgeMgr *knowledgeStoreManager, skillSourceSvc ...*cskill.SourceControlService) (*HTTPServer, error) {
+	if svc == nil {
+		return nil, errors.New("service is required")
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.pruneLocked(now)
-	rec, ok := s.tokens[strings.TrimSpace(token)]
-	if !ok || rec.TenantID != p.TenantID || rec.UserID != p.UserID {
-		return weixinQRTokenRecord{}, false
-	}
-	return rec, true
-}
-
-func (s *weixinQRTokenStore) Delete(token string) {
-	if s == nil || strings.TrimSpace(token) == "" {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.tokens, strings.TrimSpace(token))
-}
-
-func (s *weixinQRTokenStore) pruneLocked(now time.Time) {
-	for token, rec := range s.tokens {
-		if !rec.ExpiresAt.IsZero() && !rec.ExpiresAt.After(now) {
-			delete(s.tokens, token)
-		}
-	}
-}
-
-func (s *weixinQRTokenStore) deletePrincipalLocked(tenantID, userID string) []string {
-	var replaced []string
-	for token, rec := range s.tokens {
-		if rec.TenantID == tenantID && rec.UserID == userID {
-			replaced = append(replaced, token)
-			delete(s.tokens, token)
-		}
-	}
-	return replaced
-}
-
-func NewHTTPServer(svc *agentservice.Service, adminSecret string, knowledgeMgr *knowledgeStoreManager, skillSourceSvc ...*cskill.SourceControlService) *HTTPServer {
 	var sourceSvc *cskill.SourceControlService
 	if len(skillSourceSvc) > 0 {
 		sourceSvc = skillSourceSvc[0]
@@ -182,19 +144,19 @@ func NewHTTPServer(svc *agentservice.Service, adminSecret string, knowledgeMgr *
 	wireSkillSourceFilter(svc, sourceSvc)
 	reviewedRegistry, err := agentservice.NewReviewedDynamicCapabilityRegistry()
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("create reviewed capability registry: %w", err)
 	}
 	publisher, err := agentservice.NewDynamicCapabilityContractPublisher(svc, reviewedRegistry)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("create dynamic capability publisher: %w", err)
 	}
-	s := &HTTPServer{svc: svc, adminSecret: adminSecret, mux: http.NewServeMux(), authLimiter: newAuthLimiter(20, time.Minute), launchTokens: newLaunchTokenStore(), weixinQRTokens: newWeixinQRTokenStore(), qqbotQRTokens: newWeixinQRTokenStore(), qqbotQR: qqbot.NewQRClient(), devicePairings: newSrvDevicePairingStore(), devicePairLimit: newAuthLimiter(6, time.Minute), deviceUpdateBindings: newSrvDeviceUpdateBindingStore(svc.DataRoot()), deviceUpdateCatalog: newSrvDeviceUpdateCatalog(svc.DataRoot()), hardwareBindings: newSrvDeviceAgentBindingStore(svc.DataRoot()), jobs: newAsyncJobManager(svc.DataRoot()), knowledgeMgr: knowledgeMgr, skillSourceSvc: sourceSvc, aiModels: newSrvAIModelManager(svc.DataRoot()), dynamicCapabilityPublisher: publisher}
+	s := &HTTPServer{svc: svc, adminSecret: adminSecret, mux: http.NewServeMux(), authLimiter: newAuthLimiter(20, time.Minute), databaseAdminLimiter: newAuthLimiter(30, time.Minute), launchTokens: newLaunchTokenStore(), weixinQRTokens: newWeixinQRTokenStore(), qqbotQRTokens: newWeixinQRTokenStore(), qqbotQR: qqbot.NewQRClient(), devicePairings: newSrvDevicePairingStore(), devicePairLimit: newAuthLimiter(6, time.Minute), deviceUpdateBindings: newSrvDeviceUpdateBindingStore(svc.DataRoot()), deviceUpdateCatalog: newSrvDeviceUpdateCatalog(svc.DataRoot()), hardwareBindings: newSrvDeviceAgentBindingStore(svc.DataRoot()), jobs: newAsyncJobManager(svc.DataRoot()), knowledgeMgr: knowledgeMgr, skillSourceSvc: sourceSvc, aiModels: newSrvAIModelManager(svc.DataRoot()), dynamicCapabilityPublisher: publisher}
 	s.initCodingRuntimeStore()
 	if releaseCatalog, err := newSrvGitHubReleaseCatalogFromEnv(s.deviceUpdateCatalog); err != nil {
 		// An invalid trust anchor must disable this optional provider rather than
 		// silently accepting an unsigned/local substitute. Existing local
 		// metadata remains bounded by its own expiry policy.
-		fmt.Printf("[release-catalog] disabled: %v\n", err)
+		srvLog().Warn("release catalog disabled", slog.String("error", err.Error()))
 	} else if releaseCatalog != nil {
 		s.githubReleaseCatalog = releaseCatalog
 		releaseCatalog.start()
@@ -217,420 +179,69 @@ func NewHTTPServer(svc *agentservice.Service, adminSecret string, knowledgeMgr *
 	s.startConfiguredIMRuntimes(context.Background())
 	s.routes()
 	s.startSandboxStartupDiagnoseIfEnabled()
-	return s
+	return s, nil
 }
 
 func (s *HTTPServer) Close() {
 	if s == nil {
 		return
 	}
-	if s.weixinRuntime != nil {
-		s.weixinRuntime.StopAll()
-	}
-	if s.imRuntime != nil {
-		s.imRuntime.StopAll()
-	}
-	if s.thirdPartyIM != nil {
-		s.thirdPartyIM.StopAll()
-	}
-	if s.githubReleaseCatalog != nil {
-		s.githubReleaseCatalog.close()
-	}
-	if s.aiModels != nil {
-		s.aiModels.Close()
-	}
-	if s.codingRuntimeStore != nil {
-		_ = s.codingRuntimeStore.Close()
-	}
+	s.closeOnce.Do(func() {
+		if s.jobs != nil {
+			s.jobs.close()
+		}
+		if s.weixinRuntime != nil {
+			s.weixinRuntime.StopAll()
+		}
+		if s.imRuntime != nil {
+			s.imRuntime.StopAll()
+		}
+		if s.thirdPartyIM != nil {
+			s.thirdPartyIM.StopAll()
+		}
+		if s.githubReleaseCatalog != nil {
+			s.githubReleaseCatalog.close()
+		}
+		if s.aiModels != nil {
+			s.aiModels.Close()
+		}
+		if s.codingRuntimeStore != nil {
+			_ = s.codingRuntimeStore.Close()
+		}
+	})
 }
 
-// initCodingRuntimeStore opens the shared corelib ledger once per server. It
-// marks only expired leases at startup; recovery must be initiated by an
-// authenticated host adapter using the read-only recovery protocol.
+// initCodingRuntimeStore opens the shared corelib ledger only when the Service
+// executor can actually consume it. Most control-plane/test executors do not
+// support coding workflows; eagerly opening a database for those servers
+// wastes a connection and makes transport shutdown own a resource it cannot
+// use. Recovery must be initiated by an authenticated host adapter using the
+// read-only recovery protocol.
 func (s *HTTPServer) initCodingRuntimeStore() {
-	if s == nil || s.svc == nil || s.codingRuntimeStore != nil {
+	if s == nil || s.svc == nil || s.codingRuntimeStore != nil || !s.svc.CodingRuntimeStoreSupported() {
 		return
 	}
 	store, err := codingruntime.NewSQLiteStore(filepath.Join(s.svc.DataRoot(), "coding_runtime.db"))
 	if err != nil {
-		fmt.Printf("[coding-runtime] disabled: %v\n", err)
+		srvLog().Warn("coding runtime disabled", slog.String("error", err.Error()))
 		return
 	}
 	if expired, err := store.ExpireLeases(time.Now().UTC()); err != nil {
-		fmt.Printf("[coding-runtime] stale lease sweep failed: %v\n", err)
+		srvLog().Warn("coding runtime stale lease sweep failed", slog.String("error", err.Error()))
 	} else if len(expired) > 0 {
-		fmt.Printf("[coding-runtime] marked %d stale attempt(s) interrupted; recovery requires a read-only probe\n", len(expired))
+		srvLog().Warn("coding runtime stale attempts interrupted; recovery requires a read-only probe", slog.Int("count", len(expired)))
 	}
 	if interrupted, err := store.InterruptUnstartedChildren(time.Now().UTC()); err != nil {
-		fmt.Printf("[coding-runtime] unstarted child reconciliation failed: %v\n", err)
+		srvLog().Warn("coding runtime unstarted child reconciliation failed", slog.String("error", err.Error()))
 	} else if len(interrupted) > 0 {
-		fmt.Printf("[coding-runtime] marked %d waiting parent attempt(s) interrupted; child dispatch is not replayed\n", len(interrupted))
+		srvLog().Warn("coding runtime waiting parent attempts interrupted; child dispatch is not replayed", slog.Int("count", len(interrupted)))
+	}
+	if !s.svc.SetCodingRuntimeStore(store) {
+		_ = store.Close()
+		srvLog().Warn("coding runtime adapter no longer supported by executor during initialization")
+		return
 	}
 	s.codingRuntimeStore = store
-	if s.svc.CodingRuntimeStoreSupported() {
-		if !s.svc.SetCodingRuntimeStore(store) {
-			fmt.Printf("[coding-runtime] executor does not support explicit coding workflow runtime adapter\n")
-		}
-	}
-}
-
-func (s *HTTPServer) startConfiguredAIModelDownloads(ctx context.Context) {
-	if s == nil {
-		return
-	}
-	s.ensureConfiguredAIModelsAsync(s.defaultConfigForAIModels(ctx))
-}
-
-func (s *HTTPServer) startConfiguredIMRuntimes(ctx context.Context) {
-	if s == nil || s.imRuntime == nil || s.svc == nil {
-		return
-	}
-	activeTenants, err := s.activeTenantSet(ctx)
-	if err != nil {
-		return
-	}
-	users, err := s.svc.ListAllUsers(ctx, agentservice.ListAllUsersAdminInput{Status: agentservice.UserStatusActive})
-	if err != nil {
-		return
-	}
-	for _, user := range users {
-		p := agentservice.Principal{TenantID: user.TenantID, UserID: user.ID}
-		if _, ok := activeTenants[p.TenantID]; !ok {
-			s.stopIMRuntimeForPrincipal(p)
-			continue
-		}
-		cfg, err := s.svc.GetRawUserConfig(ctx, p)
-		if err != nil || cfg == nil {
-			continue
-		}
-		s.imRuntime.SyncPrincipal(ctx, p, cfg.AppConfig)
-	}
-}
-
-func (s *HTTPServer) startConfiguredIMRuntimesForTenant(ctx context.Context, tenantID string) {
-	if s == nil || s.imRuntime == nil || s.svc == nil || strings.TrimSpace(tenantID) == "" {
-		return
-	}
-	users, err := s.svc.ListUsers(ctx, tenantID, agentservice.ListUsersAdminInput{Status: agentservice.UserStatusActive})
-	if err != nil {
-		return
-	}
-	for _, user := range users {
-		s.syncIMRuntimeFromRawConfig(ctx, agentservice.Principal{TenantID: tenantID, UserID: user.ID})
-	}
-}
-
-func (s *HTTPServer) startConfiguredWeixinRuntimes(ctx context.Context) {
-	if s == nil || s.weixinRuntime == nil || s.svc == nil {
-		return
-	}
-	activeTenants, err := s.activeTenantSet(ctx)
-	if err != nil {
-		return
-	}
-	users, err := s.svc.ListAllUsers(ctx, agentservice.ListAllUsersAdminInput{Status: agentservice.UserStatusActive})
-	if err != nil {
-		return
-	}
-	for _, user := range users {
-		if _, ok := activeTenants[user.TenantID]; !ok {
-			continue
-		}
-		p := agentservice.Principal{TenantID: user.TenantID, UserID: user.ID}
-		cfg, err := s.svc.GetRawUserConfig(ctx, p)
-		if err != nil || cfg == nil || !cfg.AppConfig.WeixinEnabled || strings.TrimSpace(cfg.AppConfig.WeixinToken) == "" {
-			continue
-		}
-		s.weixinRuntime.SyncPrincipal(ctx, p, cfg.AppConfig)
-	}
-}
-
-func (s *HTTPServer) activeTenantSet(ctx context.Context) (map[string]struct{}, error) {
-	if s == nil || s.svc == nil {
-		return nil, errors.New("service is not available")
-	}
-	tenants, err := s.svc.ListTenants(ctx, agentservice.ListTenantsInput{Status: agentservice.TenantStatusActive})
-	if err != nil {
-		return nil, err
-	}
-	out := make(map[string]struct{}, len(tenants))
-	for _, tenant := range tenants {
-		out[tenant.ID] = struct{}{}
-	}
-	return out, nil
-}
-
-func (s *HTTPServer) startConfiguredWeixinRuntimesForTenant(ctx context.Context, tenantID string) {
-	if s == nil || s.weixinRuntime == nil || s.svc == nil || strings.TrimSpace(tenantID) == "" {
-		return
-	}
-	tenant, err := s.svc.GetTenant(ctx, tenantID)
-	if err != nil || tenant == nil || tenant.Status != agentservice.TenantStatusActive {
-		return
-	}
-	users, err := s.svc.ListUsers(ctx, tenantID, agentservice.ListUsersAdminInput{Status: agentservice.UserStatusActive})
-	if err != nil {
-		return
-	}
-	for _, user := range users {
-		p := agentservice.Principal{TenantID: tenantID, UserID: user.ID}
-		cfg, err := s.svc.GetRawUserConfig(ctx, p)
-		if err != nil || cfg == nil || !cfg.AppConfig.WeixinEnabled || strings.TrimSpace(cfg.AppConfig.WeixinToken) == "" {
-			continue
-		}
-		s.weixinRuntime.SyncPrincipal(ctx, p, cfg.AppConfig)
-	}
-}
-
-func (s *HTTPServer) syncWeixinRuntimeFromRawConfig(ctx context.Context, p agentservice.Principal) {
-	if s == nil || s.weixinRuntime == nil || s.svc == nil {
-		return
-	}
-	if !s.isActivePrincipal(ctx, p) {
-		s.stopWeixinRuntimeForPrincipal(p)
-		return
-	}
-	cfg, err := s.svc.GetRawUserConfig(ctx, p)
-	if err != nil || cfg == nil {
-		return
-	}
-	s.weixinRuntime.SyncPrincipal(ctx, p, cfg.AppConfig)
-}
-
-func (s *HTTPServer) syncIMRuntimeFromRawConfig(ctx context.Context, p agentservice.Principal) {
-	if s == nil || s.imRuntime == nil || s.svc == nil {
-		return
-	}
-	if !s.isActivePrincipal(ctx, p) {
-		s.stopIMRuntimeForPrincipal(p)
-		return
-	}
-	cfg, err := s.svc.GetRawUserConfig(ctx, p)
-	if err != nil || cfg == nil {
-		return
-	}
-	s.imRuntime.SyncPrincipal(ctx, p, cfg.AppConfig)
-}
-
-func (s *HTTPServer) isActivePrincipal(ctx context.Context, p agentservice.Principal) bool {
-	if s == nil || s.svc == nil {
-		return false
-	}
-	tenant, err := s.svc.GetTenant(ctx, p.TenantID)
-	if err != nil || tenant == nil || tenant.Status != agentservice.TenantStatusActive {
-		return false
-	}
-	user, err := s.svc.GetUser(ctx, p.TenantID, p.UserID)
-	if err != nil || user == nil || user.Status != agentservice.UserStatusActive {
-		return false
-	}
-	return true
-}
-
-func (s *HTTPServer) stopWeixinRuntimeForPrincipal(p agentservice.Principal) {
-	if s == nil || s.weixinRuntime == nil {
-		return
-	}
-	s.weixinRuntime.StopPrincipal(p)
-}
-
-func (s *HTTPServer) stopIMRuntimeForPrincipal(p agentservice.Principal) {
-	if s == nil || s.imRuntime == nil {
-		return
-	}
-	s.imRuntime.StopPrincipal(p)
-}
-
-func (s *HTTPServer) stopThirdPartyIMForPrincipal(p agentservice.Principal) {
-	if s == nil || s.thirdPartyIM == nil {
-		return
-	}
-	s.thirdPartyIM.StopPrincipal(p)
-}
-
-func (s *HTTPServer) syncThirdPartyIMFromRawConfig(ctx context.Context, p agentservice.Principal) {
-	if s == nil || s.thirdPartyIM == nil || s.svc == nil {
-		return
-	}
-	if !s.isActivePrincipal(ctx, p) {
-		s.stopThirdPartyIMForPrincipal(p)
-		return
-	}
-	cfg, err := s.svc.GetRawUserConfig(ctx, p)
-	if err != nil || cfg == nil || !cfg.AppConfig.ThirdPartyGatewayEnabled || strings.TrimSpace(cfg.AppConfig.ThirdPartyGatewayToken) == "" {
-		s.stopThirdPartyIMForPrincipal(p)
-	}
-}
-
-func (s *HTTPServer) syncThirdPartyIMConfigTransition(p agentservice.Principal, before, after corelib.AppConfig) {
-	if s == nil || s.thirdPartyIM == nil {
-		return
-	}
-	beforeToken := strings.TrimSpace(before.ThirdPartyGatewayToken)
-	afterToken := strings.TrimSpace(after.ThirdPartyGatewayToken)
-	if !after.ThirdPartyGatewayEnabled || afterToken == "" || beforeToken != afterToken {
-		s.stopThirdPartyIMForPrincipal(p)
-	}
-}
-
-func (s *HTTPServer) stopWeixinRuntimesForTenant(ctx context.Context, tenantID string) {
-	if s == nil || s.weixinRuntime == nil || s.svc == nil {
-		return
-	}
-	users, err := s.svc.ListUsers(ctx, tenantID, agentservice.ListUsersAdminInput{})
-	if err != nil {
-		return
-	}
-	for _, user := range users {
-		s.stopWeixinRuntimeForPrincipal(agentservice.Principal{TenantID: tenantID, UserID: user.ID})
-	}
-}
-
-func (s *HTTPServer) stopIMRuntimesForTenant(ctx context.Context, tenantID string) {
-	if s == nil || s.imRuntime == nil || s.svc == nil {
-		return
-	}
-	users, err := s.svc.ListUsers(ctx, tenantID, agentservice.ListUsersAdminInput{})
-	if err != nil {
-		return
-	}
-	for _, user := range users {
-		s.stopIMRuntimeForPrincipal(agentservice.Principal{TenantID: tenantID, UserID: user.ID})
-	}
-}
-
-func (s *HTTPServer) stopThirdPartyIMForTenant(tenantID string) {
-	if s == nil || s.thirdPartyIM == nil {
-		return
-	}
-	s.thirdPartyIM.StopTenant(tenantID)
-}
-
-func (s *HTTPServer) rawWeixinAppConfig(ctx context.Context, p agentservice.Principal) (corelib.AppConfig, error) {
-	if s == nil || s.svc == nil {
-		return corelib.AppConfig{}, errors.New("service is not available")
-	}
-	cfg, err := s.svc.GetRawUserConfig(ctx, p)
-	if err != nil {
-		if errors.Is(err, agentservice.ErrUserConfigNotFound) {
-			return corelib.AppConfig{}, nil
-		}
-		return corelib.AppConfig{}, err
-	}
-	if cfg == nil {
-		return corelib.AppConfig{}, nil
-	}
-	return cfg.AppConfig, nil
-}
-
-type authFailureState struct {
-	Count        int
-	BlockedUntil time.Time
-	LastFailure  time.Time
-}
-
-type authLimiter struct {
-	mu                sync.Mutex
-	limit             int
-	window            time.Duration
-	failureThreshold  int
-	baseBlockDuration time.Duration
-	maxBlockDuration  time.Duration
-	buckets           map[string][]time.Time
-	failures          map[string]authFailureState
-}
-
-func newAuthLimiter(limit int, window time.Duration) *authLimiter {
-	return &authLimiter{
-		limit:             limit,
-		window:            window,
-		failureThreshold:  5,
-		baseBlockDuration: time.Minute,
-		maxBlockDuration:  15 * time.Minute,
-		buckets:           map[string][]time.Time{},
-		failures:          map[string]authFailureState{},
-	}
-}
-
-func (l *authLimiter) Allow(key string, now time.Time) bool {
-	allowed, _ := l.AllowWithRetry(key, now)
-	return allowed
-}
-
-func (l *authLimiter) AllowWithRetry(key string, now time.Time) (bool, time.Duration) {
-	if l == nil || strings.TrimSpace(key) == "" {
-		return true, 0
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if retry := l.blockedRetryLocked(key, now); retry > 0 {
-		return false, retry
-	}
-	cutoff := now.Add(-l.window)
-	items := l.buckets[key][:0]
-	for _, ts := range l.buckets[key] {
-		if ts.After(cutoff) {
-			items = append(items, ts)
-		}
-	}
-	if len(items) >= l.limit {
-		l.buckets[key] = items
-		return false, l.window
-	}
-	l.buckets[key] = append(items, now)
-	return true, 0
-}
-
-func (l *authLimiter) RegisterFailure(key string, now time.Time) time.Duration {
-	if l == nil || strings.TrimSpace(key) == "" {
-		return 0
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	state := l.failures[key]
-	if !state.LastFailure.IsZero() && now.Sub(state.LastFailure) > l.window {
-		state = authFailureState{}
-	}
-	state.Count++
-	state.LastFailure = now
-	if state.Count >= l.failureThreshold {
-		steps := state.Count - l.failureThreshold
-		block := l.baseBlockDuration << steps
-		if block > l.maxBlockDuration {
-			block = l.maxBlockDuration
-		}
-		state.BlockedUntil = now.Add(block)
-		l.failures[key] = state
-		return block
-	}
-	l.failures[key] = state
-	return 0
-}
-
-func (l *authLimiter) ResetFailures(key string) {
-	if l == nil || strings.TrimSpace(key) == "" {
-		return
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	delete(l.failures, key)
-}
-
-func (l *authLimiter) blockedRetryLocked(key string, now time.Time) time.Duration {
-	state, ok := l.failures[key]
-	if !ok {
-		return 0
-	}
-	if !state.BlockedUntil.After(now) {
-		if !state.LastFailure.IsZero() && now.Sub(state.LastFailure) > l.window {
-			delete(l.failures, key)
-		} else {
-			state.BlockedUntil = time.Time{}
-			l.failures[key] = state
-		}
-		return 0
-	}
-	return time.Until(state.BlockedUntil)
 }
 
 const maxJSONBodyBytes int64 = 1 << 20
@@ -639,362 +250,16 @@ func (s *HTTPServer) Handler() http.Handler {
 	if s == nil {
 		return http.NewServeMux()
 	}
-	return s.mux
+	return withRequestID(s.mux)
 }
 
 func (s *HTTPServer) routes() {
-	s.mux.HandleFunc("GET /health", s.handleHealth)
-	s.mux.HandleFunc("GET /livez", s.handleLive)
-	s.mux.HandleFunc("GET /readyz", s.handleReady)
-	s.mux.HandleFunc("GET /version", s.handleVersion)
-	s.mux.HandleFunc("GET /metrics", s.handleMetrics)
-	s.mux.HandleFunc("GET /openapi.json", s.handleOpenAPI)
-	s.mux.HandleFunc("GET /api/v1/openapi.json", s.handleOpenAPI)
-	s.mux.HandleFunc("GET /admin", s.handleAdminWeb)
-	s.mux.HandleFunc("GET /admin/", s.handleAdminWeb)
-	s.mux.HandleFunc("GET /app", s.handleUserWeb)
-	s.mux.HandleFunc("GET /app/", s.handleUserWeb)
-	s.mux.HandleFunc("POST /api/v1/web/refresh", s.handleWebAccessTokenRefresh)
-	s.mux.HandleFunc("GET /api/v1/admin/bootstrap/status", s.withAdminSecurityHeaders(s.handleAdminBootstrapStatus))
-	s.mux.HandleFunc("POST /api/v1/admin/bootstrap/initialize", s.withAdminSecurityHeaders(s.handleAdminBootstrapInitialize))
-	s.mux.HandleFunc("POST /api/v1/admin/auth/login", s.withAdminSecurityHeaders(s.handleAdminAuthLogin))
-	s.mux.HandleFunc("POST /api/v1/admin/auth/logout", s.withAdmin(s.handleAdminAuthLogout))
-	s.mux.HandleFunc("GET /api/v1/admin/auth/me", s.withAdmin(s.handleAdminAuthMe))
-	s.mux.HandleFunc("POST /api/v1/admin/auth/change-password", s.withAdmin(s.handleAdminAuthChangePassword))
-	s.mux.HandleFunc("POST /api/v1/admin/auth/reveal-admin-secret", s.withAdmin(s.handleAdminAuthRevealAdminSecret))
-	s.mux.HandleFunc("GET /api/v1/admin/auth/users", s.withAdmin(s.handleAdminAuthUsers))
-	s.mux.HandleFunc("POST /api/v1/admin/auth/users", s.withAdmin(s.handleAdminAuthCreateUser))
-	s.mux.HandleFunc("PATCH /api/v1/admin/auth/users/{adminUserId}", s.withAdmin(s.handleAdminAuthUpdateUser))
-	s.mux.HandleFunc("GET /api/v1/admin/auth/sessions", s.withAdmin(s.handleAdminAuthSessions))
-	s.mux.HandleFunc("DELETE /api/v1/admin/auth/sessions/{sessionId}", s.withAdmin(s.handleAdminAuthRevokeSession))
-	s.mux.HandleFunc("GET /api/v1/admin/system/readiness", s.withAdmin(s.handleGetAdminReadiness))
-	s.mux.HandleFunc("GET /api/v1/admin/overview", s.withAdmin(s.handleGetAdminOverview))
-	s.mux.HandleFunc("GET /api/v1/admin/dashboard", s.withAdmin(s.handleGetAdminDashboard))
-	s.mux.HandleFunc("GET /api/v1/admin/support-bundle", s.withAdmin(s.handleAdminSupportBundle))
-	s.mux.HandleFunc("GET /api/v1/admin/insights", s.withAdmin(s.handleGetAdminInsights))
-	s.mux.HandleFunc("GET /api/v1/admin/alerts", s.withAdmin(s.handleGetAdminAlerts))
-	s.mux.HandleFunc("GET /api/v1/admin/security/summary", s.withAdmin(s.handleAdminSecuritySummary))
-	s.mux.HandleFunc("GET /api/v1/admin/security/risk-events", s.withAdmin(s.handleAdminSecurityRiskEvents))
-	s.mux.HandleFunc("GET /api/v1/admin/runtime/status", s.withAdmin(s.handleAdminRuntimeStatus))
-	s.mux.HandleFunc("POST /api/v1/admin/runtime/gc", s.withAdmin(s.handleAdminRuntimeGC))
-	s.mux.HandleFunc("GET /api/v1/admin/runtime/goroutines", s.withAdmin(s.handleAdminRuntimeGoroutines))
-	s.mux.HandleFunc("GET /api/v1/admin/runtime/profiles/{profileName}", s.withAdmin(s.handleAdminRuntimeProfile))
-	s.mux.HandleFunc("GET /api/v1/admin/scheduler/status", s.withAdmin(s.handleAdminSchedulerStatus))
-	s.mux.HandleFunc("GET /api/v1/admin/scheduler/delivery-targets", s.withAdmin(s.handleAdminSchedulerDeliveryTargets))
-	s.mux.HandleFunc("GET /api/v1/admin/scheduler/delivery-audit", s.withAdmin(s.handleAdminSchedulerDeliveryAudit))
-	s.mux.HandleFunc("GET /api/v1/admin/scheduler/tasks", s.withAdmin(s.handleAdminSchedulerTasks))
-	s.mux.HandleFunc("POST /api/v1/admin/scheduler/tasks", s.withAdmin(s.handleAdminSchedulerCreateTask))
-	s.mux.HandleFunc("PATCH /api/v1/admin/scheduler/tasks/{taskId}", s.withAdmin(s.handleAdminSchedulerUpdateTask))
-	s.mux.HandleFunc("DELETE /api/v1/admin/scheduler/tasks/{taskId}", s.withAdmin(s.handleAdminSchedulerDeleteTask))
-	s.mux.HandleFunc("POST /api/v1/admin/scheduler/tasks/{taskId}/trigger", s.withAdmin(s.handleAdminSchedulerTriggerTask))
-	s.mux.HandleFunc("POST /api/v1/admin/scheduler/tasks/{taskId}/pause", s.withAdmin(s.handleAdminSchedulerPauseTask))
-	s.mux.HandleFunc("POST /api/v1/admin/scheduler/tasks/{taskId}/resume", s.withAdmin(s.handleAdminSchedulerResumeTask))
-	s.mux.HandleFunc("GET /api/v1/admin/jobs", s.withAdmin(s.handleAdminJobs))
-	s.mux.HandleFunc("GET /api/v1/admin/jobs/{jobId}", s.withAdmin(s.handleAdminJob))
-	s.mux.HandleFunc("POST /api/v1/admin/jobs/{jobId}/cancel", s.withAdmin(s.handleAdminCancelJob))
-	s.mux.HandleFunc("GET /api/v1/admin/logs/sources", s.withAdmin(s.handleAdminLogSources))
-	s.mux.HandleFunc("GET /api/v1/admin/logs/errors/recent", s.withAdmin(s.handleAdminRecentLogErrors))
-	s.mux.HandleFunc("POST /api/v1/admin/logs/search", s.withAdmin(s.handleAdminLogSearch))
-	s.mux.HandleFunc("GET /api/v1/admin/logs/{sourceId}/download", s.withAdmin(s.handleAdminLogDownload))
-	s.mux.HandleFunc("POST /api/v1/admin/logs/{sourceId}/rotate", s.withAdmin(s.handleAdminLogRotate))
-	s.mux.HandleFunc("GET /api/v1/admin/logs/{sourceId}/tail", s.withAdmin(s.handleAdminLogRead))
-	s.mux.HandleFunc("GET /api/v1/admin/logs/{sourceId}", s.withAdmin(s.handleAdminLogRead))
-	s.mux.HandleFunc("GET /api/v1/admin/service-config/effective", s.withAdmin(s.handleGetAdminServiceConfigEffective))
-	s.mux.HandleFunc("GET /api/v1/admin/service-config/schema", s.withAdmin(s.handleAdminServiceConfigSchema))
-	s.mux.HandleFunc("GET /api/v1/admin/service-config/environment", s.withAdmin(s.handleAdminServiceConfigEnvironment))
-	s.mux.HandleFunc("GET /api/v1/admin/service-config/diff", s.withAdmin(s.handleAdminServiceConfigDiff))
-	s.mux.HandleFunc("GET /api/v1/admin/service-config/draft", s.withAdmin(s.handleAdminServiceConfigDraft))
-	s.mux.HandleFunc("PATCH /api/v1/admin/service-config/draft", s.withAdmin(s.handleUpdateAdminServiceConfigDraft))
-	s.mux.HandleFunc("DELETE /api/v1/admin/service-config/draft", s.withAdmin(s.handleClearAdminServiceConfigDraft))
-	s.mux.HandleFunc("POST /api/v1/admin/service-config/validate", s.withAdmin(s.handleValidateAdminServiceConfig))
-	s.mux.HandleFunc("POST /api/v1/admin/service-config/export-plan", s.withAdmin(s.handleExportAdminServiceConfigPlan))
-	s.mux.HandleFunc("GET /api/v1/admin/client-config/schema", s.withAdmin(s.handleAdminGetClientConfigSchema))
-	s.mux.HandleFunc("GET /api/v1/admin/client-config/default", s.withAdmin(s.handleAdminGetDefaultClientConfig))
-	s.mux.HandleFunc("PUT /api/v1/admin/client-config/default", s.withAdmin(s.handleAdminUpdateDefaultClientConfig))
-	s.mux.HandleFunc("POST /api/v1/admin/client-config/default/validate", s.withAdmin(s.handleAdminValidateDefaultClientConfig))
-	s.mux.HandleFunc("GET /api/v1/admin/ai-models/status", s.withAdmin(s.handleAdminAIModelsStatus))
-	s.mux.HandleFunc("POST /api/v1/admin/ai-models/{model}/download", s.withAdmin(s.handleAdminAIModelDownload))
-	s.mux.HandleFunc("POST /api/v1/admin/ai-models/embedding/embed", s.withAdmin(s.handleAdminAIModelEmbeddingEmbed))
-	s.mux.HandleFunc("POST /api/v1/admin/ai-models/asr/transcribe", s.withAdmin(s.handleAdminAIModelASRTranscribe))
-	s.mux.HandleFunc("POST /api/v1/admin/ai-models/tts/synthesize", s.withAdmin(s.handleAdminAIModelTTSSynthesize))
-	s.mux.HandleFunc("GET /api/v1/admin/i18n/locales", s.withAdmin(s.handleAdminI18NLocales))
-	s.mux.HandleFunc("GET /api/v1/admin/i18n/messages", s.withAdmin(s.handleAdminI18NMessages))
-	s.mux.HandleFunc("GET /api/v1/admin/sandbox/status", s.withAdmin(s.handleAdminSandboxStatus))
-	s.mux.HandleFunc("GET /api/v1/admin/sandbox/config", s.withAdmin(s.handleAdminSandboxConfig))
-	s.mux.HandleFunc("PUT /api/v1/admin/sandbox/config", s.withAdmin(s.handleUpdateAdminSandboxConfig))
-	s.mux.HandleFunc("POST /api/v1/admin/sandbox/rollback", s.withAdmin(s.handleRollbackAdminSandboxConfig))
-	s.mux.HandleFunc("POST /api/v1/admin/sandbox/switch", s.withAdmin(s.handleSwitchAdminSandbox))
-	s.mux.HandleFunc("POST /api/v1/admin/sandbox/detect", s.withAdmin(s.handleAdminSandboxDetect))
-	s.mux.HandleFunc("POST /api/v1/admin/sandbox/smoke-test", s.withAdmin(s.handleAdminSandboxSmokeTest))
-	s.mux.HandleFunc("POST /api/v1/admin/sandbox/diagnose", s.withAdmin(s.handleAdminSandboxDiagnose))
-	s.mux.HandleFunc("GET /api/v1/admin/sandbox/events", s.withAdmin(s.handleAdminSandboxEvents))
-	s.mux.HandleFunc("GET /api/v1/admin/sandbox/support-bundle", s.withAdmin(s.handleAdminSandboxSupportBundle))
-	s.mux.HandleFunc("GET /api/v1/admin/sandbox/profiles", s.withAdmin(s.handleAdminSandboxProfiles))
-	s.mux.HandleFunc("GET /api/v1/admin/sandbox/profiles/{profileName}", s.withAdmin(s.handleAdminSandboxProfile))
-	s.mux.HandleFunc("PUT /api/v1/admin/sandbox/profiles/{profileName}", s.withAdmin(s.handleUpdateAdminSandboxProfile))
-	s.mux.HandleFunc("DELETE /api/v1/admin/sandbox/profiles/{profileName}", s.withAdmin(s.handleDeleteAdminSandboxProfile))
-	s.mux.HandleFunc("POST /api/v1/admin/sandbox/profiles/{profileName}/validate", s.withAdmin(s.handleValidateAdminSandboxProfile))
-	s.mux.HandleFunc("GET /api/v1/admin/sandbox/reports", s.withAdmin(s.handleAdminSandboxReports))
-	s.mux.HandleFunc("GET /api/v1/admin/sandbox/reports/{reportId}", s.withAdmin(s.handleAdminSandboxReport))
-	s.mux.HandleFunc("DELETE /api/v1/admin/sandbox/reports/{reportId}", s.withAdmin(s.handleDeleteAdminSandboxReport))
-	s.mux.HandleFunc("GET /api/v1/admin/sandbox/install-plan", s.withAdmin(s.handleAdminSandboxInstallPlan))
-	s.mux.HandleFunc("POST /api/v1/admin/sandbox/install", s.withAdmin(s.handleAdminSandboxInstall))
-	s.mux.HandleFunc("GET /api/v1/admin/tenants", s.withAdmin(s.handleListTenants))
-	s.mux.HandleFunc("GET /api/v1/admin/audit-events", s.withAdmin(s.handleListAuditEvents))
-	s.mux.HandleFunc("GET /api/platform/runtime/report", s.withPlatformAdmin(s.handlePlatformRuntimeReport))
-	s.mux.HandleFunc("POST /api/platform/virtual-employees", s.withPlatformAdmin(s.handlePlatformCreateVirtualEmployee))
-	s.mux.HandleFunc("POST /api/platform/virtual-employees/{employeeId}/config", s.withPlatformAdmin(s.handlePlatformUpdateVirtualEmployeeConfig))
-	s.mux.HandleFunc("DELETE /api/platform/virtual-employees/{employeeId}", s.withPlatformAdmin(s.handlePlatformDeleteVirtualEmployee))
-	s.mux.HandleFunc("POST /api/runtime/virtual-employees/{employeeId}/discussion-messages", s.withPlatformAdmin(s.handleRuntimeVirtualEmployeeDiscussionMessage))
-	s.mux.HandleFunc("POST /api/platform/source-users/runtime-status", s.withPlatformAdmin(s.handlePlatformSourceUsersRuntimeStatus))
-	s.mux.HandleFunc("GET /api/platform/source-users/{sourceUserId}/runtime-status", s.withPlatformAdmin(s.handlePlatformSourceUserRuntimeStatus))
-	s.mux.HandleFunc("GET /api/platform/source-users/{sourceUserId}/assistant-instances", s.withPlatformAdmin(s.handlePlatformSourceUserAssistantInstances))
-	s.mux.HandleFunc("POST /api/platform/source-users/{sourceUserId}/assistant-instances", s.withPlatformAdmin(s.handlePlatformCreateSourceUserAssistantInstance))
-	s.mux.HandleFunc("POST /api/platform/source-users/{sourceUserId}/assistant-link", s.withPlatformAdmin(s.handlePlatformSourceUserAssistantLink))
-	s.mux.HandleFunc("POST /api/platform/source-users/{sourceUserId}/knowledge-link", s.withPlatformAdmin(s.handlePlatformSourceUserKnowledgeLink))
-	s.mux.HandleFunc("POST /api/platform/source-users/{sourceUserId}/settings-link", s.withPlatformAdmin(s.handlePlatformSourceUserSettingsLink))
-	s.mux.HandleFunc("POST /api/platform/virtual-employees/{employeeId}/knowledge/imports", s.withPlatformAdmin(s.handlePlatformKnowledgeImport))
-	s.mux.HandleFunc("POST /api/platform/virtual-employees/{employeeId}/migrations/imports", s.withPlatformAdmin(s.handlePlatformMigrationImport))
-	s.mux.HandleFunc("POST /api/platform/sync/jobs/{jobId}/run", s.withPlatformAdmin(s.handlePlatformSyncJobRun))
-	s.mux.HandleFunc("POST /api/platform/sync/conflicts/{conflictId}/resolve", s.withPlatformAdmin(s.handlePlatformSyncConflictResolve))
-	s.mux.HandleFunc("GET /api/v1/admin/export", s.withAdmin(s.handleExportServiceState))
-	s.mux.HandleFunc("POST /api/v1/admin/import", s.withAdmin(s.handleImportServiceState))
-	s.mux.HandleFunc("GET /api/v1/admin/snapshots", s.withAdmin(s.handleListServiceSnapshots))
-	s.mux.HandleFunc("POST /api/v1/admin/snapshots", s.withAdmin(s.handleCreateServiceSnapshot))
-	s.mux.HandleFunc("POST /api/v1/admin/snapshots/prune", s.withAdmin(s.handlePruneServiceSnapshots))
-	s.mux.HandleFunc("GET /api/v1/admin/snapshots/{snapshotId}", s.withAdmin(s.handleGetServiceSnapshot))
-	s.mux.HandleFunc("POST /api/v1/admin/snapshots/{snapshotId}/restore", s.withAdmin(s.handleRestoreServiceSnapshot))
-	s.mux.HandleFunc("DELETE /api/v1/admin/snapshots/{snapshotId}", s.withAdmin(s.handleDeleteServiceSnapshot))
-	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}/retire-plan", s.withAdmin(s.handleGetTenantRetirePlan))
-	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}/users/{userId}/retire-plan", s.withAdmin(s.handleGetUserRetirePlan))
-	s.mux.HandleFunc("POST /api/v1/admin/tenants", s.withAdmin(s.handleCreateTenant))
-	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}", s.withAdmin(s.handleGetTenant))
-	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}/summary", s.withAdmin(s.handleGetTenantSummary))
-	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}/delete-check", s.withAdmin(s.handleGetTenantDeleteCheck))
-	s.mux.HandleFunc("PATCH /api/v1/admin/tenants/{tenantId}", s.withAdmin(s.handleUpdateTenant))
-	s.mux.HandleFunc("POST /api/v1/admin/tenants/{tenantId}/pause", s.withAdmin(s.handlePauseTenant))
-	s.mux.HandleFunc("POST /api/v1/admin/tenants/{tenantId}/resume", s.withAdmin(s.handleResumeTenant))
-	s.mux.HandleFunc("DELETE /api/v1/admin/tenants/{tenantId}", s.withAdmin(s.handleDeleteTenant))
-	s.mux.HandleFunc("GET /api/v1/admin/users", s.withAdmin(s.handleListAllUsers))
-	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}/users", s.withAdmin(s.handleListUsers))
-	s.mux.HandleFunc("POST /api/v1/admin/tenants/{tenantId}/users", s.withAdmin(s.handleCreateUser))
-	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}/users/{userId}", s.withAdmin(s.handleGetUser))
-	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}/users/{userId}/config/schema", s.withAdmin(s.handleAdminGetUserConfigSchema))
-	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}/users/{userId}/config", s.withAdmin(s.handleAdminGetUserConfig))
-	s.mux.HandleFunc("PUT /api/v1/admin/tenants/{tenantId}/users/{userId}/config", s.withAdmin(s.handleAdminUpdateUserConfig))
-	s.mux.HandleFunc("POST /api/v1/admin/tenants/{tenantId}/users/{userId}/config/validate", s.withAdmin(s.handleAdminValidateUserConfig))
-	s.mux.HandleFunc("POST /api/v1/admin/tenants/{tenantId}/users/{userId}/config/test", s.withAdmin(s.handleAdminTestUserConfig))
-	s.mux.HandleFunc("POST /api/v1/admin/tenants/{tenantId}/users/{userId}/dynamic-capabilities/mcp/{serverId}/{toolName}", s.withAdmin(s.handlePublishDynamicMCPContract))
-	s.mux.HandleFunc("POST /api/v1/admin/tenants/{tenantId}/users/{userId}/dynamic-capabilities/skills/{stableId}", s.withAdmin(s.handlePublishDynamicSkillContract))
-	s.mux.HandleFunc("POST /api/v1/admin/dynamic-effects/{operationId}/resolve", s.withAdmin(s.handleResolveUnknownDynamicEffect))
-	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}/users/{userId}/delete-check", s.withAdmin(s.handleGetUserDeleteCheck))
-	s.mux.HandleFunc("PATCH /api/v1/admin/tenants/{tenantId}/users/{userId}", s.withAdmin(s.handleUpdateUser))
-	s.mux.HandleFunc("POST /api/v1/admin/tenants/{tenantId}/users/{userId}/pause", s.withAdmin(s.handlePauseUser))
-	s.mux.HandleFunc("POST /api/v1/admin/tenants/{tenantId}/users/{userId}/resume", s.withAdmin(s.handleResumeUser))
-	s.mux.HandleFunc("DELETE /api/v1/admin/tenants/{tenantId}/users/{userId}", s.withAdmin(s.handleDeleteUser))
-	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}/users/{userId}/credentials", s.withAdmin(s.handleListCredentials))
-	s.mux.HandleFunc("POST /api/v1/admin/tenants/{tenantId}/users/{userId}/credentials", s.withAdmin(s.handleCreateCredential))
-	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}/users/{userId}/credentials/{credentialId}", s.withAdmin(s.handleGetCredential))
-	s.mux.HandleFunc("PATCH /api/v1/admin/tenants/{tenantId}/users/{userId}/credentials/{credentialId}", s.withAdmin(s.handleUpdateCredential))
-	s.mux.HandleFunc("POST /api/v1/admin/tenants/{tenantId}/users/{userId}/credentials/{credentialId}/rotate-secret", s.withAdmin(s.handleRotateCredentialSecret))
-	s.mux.HandleFunc("POST /api/v1/admin/tenants/{tenantId}/users/{userId}/credentials/{credentialId}/rotate-key", s.withAdmin(s.handleRotateCredentialKey))
-	s.mux.HandleFunc("DELETE /api/v1/admin/tenants/{tenantId}/users/{userId}/credentials/{credentialId}", s.withAdmin(s.handleRevokeCredential))
-	s.mux.HandleFunc("POST /api/v1/auth/token", s.handleIssueToken)
-	s.mux.HandleFunc("POST /api/v1/web/exchange", s.handleWebLaunchExchange)
-	s.mux.HandleFunc("GET /api/v1/me", s.withPrincipal(s.handleGetMe))
-	s.mux.HandleFunc("GET /api/v1/config/schema", s.withPrincipal(s.handleGetConfigSchema))
-	s.mux.HandleFunc("GET /api/v1/config", s.withPrincipal(s.handleGetConfig))
-	s.mux.HandleFunc("PUT /api/v1/config", s.withPrincipal(s.handleUpdateConfig))
-	s.mux.HandleFunc("POST /api/v1/config/validate", s.withPrincipal(s.handleValidateConfig))
-	s.mux.HandleFunc("POST /api/v1/config/test", s.withPrincipal(s.handleTestConfig))
-	s.mux.HandleFunc("GET /api/v1/ai-models/status", s.withPrincipal(s.handleAIModelsStatus))
-	s.mux.HandleFunc("POST /api/v1/ai-models/{model}/download", s.withPrincipal(s.handleAIModelDownload))
-	s.mux.HandleFunc("POST /api/v1/ai-models/asr/transcribe", s.withPrincipal(s.handleAIModelASRTranscribe))
-	s.mux.HandleFunc("POST /api/v1/ai-models/tts/synthesize", s.withPrincipal(s.handleAIModelTTSSynthesize))
-	s.mux.HandleFunc("POST /api/v1/im/weixin/qr/start", s.withPrincipal(s.handleStartWeixinQRLogin))
-	s.mux.HandleFunc("GET /api/v1/im/weixin/qr/image", s.withPrincipal(s.handleProxyWeixinQRCodeImage))
-	s.mux.HandleFunc("POST /api/v1/im/weixin/qr/poll", s.withPrincipal(s.handlePollWeixinQRLogin))
-	s.mux.HandleFunc("POST /api/v1/im/qqbot/qr/start", s.withPrincipal(s.handleStartQQBotQRLogin))
-	s.mux.HandleFunc("GET /api/v1/im/qqbot/qr/image", s.withPrincipal(s.handleProxyQQBotQRCodeImage))
-	s.mux.HandleFunc("POST /api/v1/im/qqbot/qr/poll", s.withPrincipal(s.handlePollQQBotQRLogin))
-	s.mux.HandleFunc("GET /api/v1/im/weixin/status", s.withPrincipal(s.handleGetWeixinRuntimeStatus))
-	s.mux.HandleFunc("POST /api/v1/im/weixin/restart", s.withPrincipal(s.handleRestartWeixinRuntime))
-	s.mux.HandleFunc("GET /api/v1/im/status", s.withPrincipal(s.handleGetIMRuntimeStatuses))
-	s.mux.HandleFunc("GET /api/im-gateway/v1/health", s.handleThirdPartyGatewayHealth)
-	s.mux.HandleFunc("POST /api/v1/device-pairings", s.withPrincipal(s.handleCreateDevicePairing))
-	s.mux.HandleFunc("GET /api/v1/hardware-devices", s.withPrincipal(s.handleListHardwareDevices))
-	s.mux.HandleFunc("GET /api/v1/hardware-devices/tts-voices", s.withPrincipal(s.handleListHardwareTTSVoices))
-	s.mux.HandleFunc("GET /api/v1/hardware-devices/experts", s.withPrincipal(s.handleListHardwareExperts))
-	s.mux.HandleFunc("POST /api/v1/hardware-devices/experts", s.withPrincipal(s.handleUpsertHardwareExpert))
-	s.mux.HandleFunc("DELETE /api/v1/hardware-devices/experts/{expertId}", s.withPrincipal(s.handleDeleteHardwareExpert))
-	s.mux.HandleFunc("GET /api/v1/hardware-devices/{deviceId}", s.withPrincipal(s.handleGetHardwareDevice))
-	s.mux.HandleFunc("PATCH /api/v1/hardware-devices/{deviceId}/agent-binding", s.withPrincipal(s.handleUpdateHardwareDeviceBinding))
-	s.mux.HandleFunc("DELETE /api/v1/hardware-devices/{deviceId}", s.withPrincipal(s.handleDeleteHardwareDevice))
-	s.mux.HandleFunc("POST /api/device-gateway/v1/pair", s.handleDeviceGatewayPair)
-	s.mux.HandleFunc("POST /api/device-gateway/v1/pair/voice", s.handleDeviceGatewayVoicePair)
-	s.mux.HandleFunc("POST /api/im-gateway/v1/handshake", s.handleThirdPartyGatewayHandshake)
-	s.mux.HandleFunc("POST /api/im-gateway/v1/incoming", s.handleThirdPartyGatewayIncoming)
-	s.mux.HandleFunc("GET /api/im-gateway/v1/outgoing", s.handleThirdPartyGatewayOutgoing)
-	s.mux.HandleFunc("POST /api/im-gateway/v1/ack", s.handleThirdPartyGatewayAck)
-	s.mux.HandleFunc("POST /api/im-gateway/v1/tool-result", s.handleThirdPartyGatewayToolResult)
-	s.mux.HandleFunc("POST /api/im-gateway/v1/media/upload-url", s.handleThirdPartyGatewayMediaUploadURL)
-	s.mux.HandleFunc("PUT /api/im-gateway/v1/media/{mediaId}/upload", s.handleThirdPartyGatewayMediaUpload)
-	s.mux.HandleFunc("GET /api/im-gateway/v1/media/{mediaId}", s.handleThirdPartyGatewayMediaDownload)
-	s.mux.HandleFunc("GET /api/v1/im-audit/contacts", s.withPrincipal(s.handleListIMAuditContacts))
-	s.mux.HandleFunc("GET /api/v1/im-audit/messages", s.withPrincipal(s.handleListIMAuditMessages))
-	s.mux.HandleFunc("GET /api/v1/im-audit/stats", s.withPrincipal(s.handleGetIMAuditStats))
-	s.mux.HandleFunc("GET /api/v1/im-audit/export.csv", s.withPrincipal(s.handleExportIMAuditCSV))
-	s.mux.HandleFunc("DELETE /api/v1/im-audit/messages", s.withPrincipal(s.handleDeleteIMAuditMessages))
-	s.mux.HandleFunc("GET /api/v1/memory", s.withPrincipal(s.handleListMemory))
-	s.mux.HandleFunc("POST /api/v1/memory", s.withPrincipal(s.handleCreateMemory))
-	s.mux.HandleFunc("PUT /api/v1/memory/{id}", s.withPrincipal(s.handleUpdateMemory))
-	s.mux.HandleFunc("DELETE /api/v1/memory/{id}", s.withPrincipal(s.handleDeleteMemory))
-	s.mux.HandleFunc("GET /api/v1/migration/status", s.withPrincipal(s.handleMigrationStatus))
-	s.mux.HandleFunc("GET /api/v1/migration/instances", s.withPrincipal(s.handleMigrationInstances))
-	s.mux.HandleFunc("POST /api/v1/migration/export", s.withPrincipal(s.handleMigrationExport))
-	s.mux.HandleFunc("POST /api/v1/migration/import", s.withPrincipal(s.handleMigrationImport))
-	s.mux.HandleFunc("GET /api/v1/usage/summary", s.withPrincipal(s.handleGetUsageSummary))
-	s.mux.HandleFunc("GET /api/v1/mcp/servers", s.withPrincipal(s.handleListMCPServers))
-	s.mux.HandleFunc("GET /api/v1/mcp/market", s.withPrincipal(s.handleSearchMCPMarket))
-	s.mux.HandleFunc("POST /api/v1/mcp/market/install", s.withPrincipal(s.handleInstallMCPMarket))
-	s.mux.HandleFunc("POST /api/v1/mcp/servers", s.withPrincipal(s.handleCreateMCPServer))
-	s.mux.HandleFunc("GET /api/v1/mcp/servers/{serverId}", s.withPrincipal(s.handleGetMCPServer))
-	s.mux.HandleFunc("PATCH /api/v1/mcp/servers/{serverId}", s.withPrincipal(s.handleUpdateMCPServer))
-	s.mux.HandleFunc("DELETE /api/v1/mcp/servers/{serverId}", s.withPrincipal(s.handleDeleteMCPServer))
-	s.mux.HandleFunc("POST /api/v1/mcp/servers/{serverId}/start", s.withPrincipal(s.handleStartMCPServer))
-	s.mux.HandleFunc("POST /api/v1/mcp/servers/{serverId}/stop", s.withPrincipal(s.handleStopMCPServer))
-	s.mux.HandleFunc("POST /api/v1/mcp/servers/{serverId}/health-check", s.withPrincipal(s.handleCheckMCPServer))
-	s.mux.HandleFunc("GET /api/v1/mcp/servers/{serverId}/tools", s.withPrincipal(s.handleGetMCPServerTools))
-	s.mux.HandleFunc("GET /api/v1/skills", s.withPrincipal(s.handleListSkills))
-	s.mux.HandleFunc("POST /api/v1/skills/search", s.withPrincipal(s.handleSearchSkills))
-	s.mux.HandleFunc("POST /api/v1/skills/install", s.withPrincipal(s.handleInstallSkill))
-	s.mux.HandleFunc("POST /api/v1/skills/import", s.withPrincipal(s.handleImportSkill))
-	s.mux.HandleFunc("GET /api/v1/jobs", s.withPrincipal(s.handleListAsyncJobs))
-	s.mux.HandleFunc("DELETE /api/v1/jobs", s.withPrincipal(s.handleDeleteAsyncJobs))
-	s.mux.HandleFunc("GET /api/v1/jobs/{jobId}", s.withPrincipal(s.handleGetAsyncJob))
-	s.mux.HandleFunc("POST /api/v1/jobs/{jobId}/cancel", s.withPrincipal(s.handleCancelAsyncJob))
-	s.mux.HandleFunc("DELETE /api/v1/jobs/{jobId}", s.withPrincipal(s.handleDeleteAsyncJob))
-	s.mux.HandleFunc("GET /api/v1/records", s.withPrincipal(s.handleListStructuredRecords))
-	s.mux.HandleFunc("GET /api/v1/records/{collection}", s.withPrincipal(s.handleListStructuredRecords))
-	s.mux.HandleFunc("POST /api/v1/records/{collection}", s.withPrincipal(s.handleCreateStructuredRecord))
-	s.mux.HandleFunc("GET /api/v1/records/{collection}/{recordId}", s.withPrincipal(s.handleGetStructuredRecord))
-	s.mux.HandleFunc("PATCH /api/v1/records/{collection}/{recordId}", s.withPrincipal(s.handleUpdateStructuredRecord))
-	s.mux.HandleFunc("DELETE /api/v1/records/{collection}/{recordId}", s.withPrincipal(s.handleDeleteStructuredRecord))
-	s.mux.HandleFunc("GET /api/v1/skill-uploads/{submissionId}", s.withPrincipal(s.handleGetSkillUploadStatus))
-	s.mux.HandleFunc("GET /api/v1/skill-market/account", s.withPrincipal(s.handleGetSkillMarketAccount))
-	s.mux.HandleFunc("GET /api/v1/skills/{skillName}", s.withPrincipal(s.handleGetSkill))
-	s.mux.HandleFunc("DELETE /api/v1/skills/{skillName}", s.withPrincipal(s.handleDeleteSkill))
-	s.mux.HandleFunc("GET /api/v1/skills/{skillName}/export", s.withPrincipal(s.handleExportSkill))
-	s.mux.HandleFunc("POST /api/v1/skills/{skillName}/validate", s.withPrincipal(s.handleValidateSkill))
-	s.mux.HandleFunc("POST /api/v1/skills/{skillName}/improve", s.withPrincipal(s.handleImproveSkill))
-	s.mux.HandleFunc("POST /api/v1/skills/{skillName}/upload", s.withPrincipal(s.handleUploadSkill))
-	s.mux.HandleFunc("GET /api/v1/instances", s.withPrincipal(s.handleListInstances))
-	s.mux.HandleFunc("POST /api/v1/instances", s.withPrincipal(s.handleCreateInstance))
-	s.mux.HandleFunc("GET /api/v1/instances/{instanceId}", s.withPrincipal(s.handleGetInstance))
-	s.mux.HandleFunc("PATCH /api/v1/instances/{instanceId}", s.withPrincipal(s.handleUpdateInstance))
-	s.mux.HandleFunc("DELETE /api/v1/instances/{instanceId}", s.withPrincipal(s.handleDeleteInstance))
-	s.mux.HandleFunc("GET /api/v1/instances/{instanceId}/capabilities", s.withPrincipal(s.handleGetInstanceCapabilities))
-	s.mux.HandleFunc("POST /api/v1/instances/{instanceId}/stop", s.withPrincipal(s.handleStopInstance))
-	s.mux.HandleFunc("POST /api/v1/instances/{instanceId}/resume", s.withPrincipal(s.handleResumeInstance))
-	s.mux.HandleFunc("POST /api/v1/instances/{instanceId}/refresh-readiness", s.withPrincipal(s.handleRefreshInstanceReadiness))
-	s.mux.HandleFunc("GET /api/v1/instances/{instanceId}/summary", s.withPrincipal(s.handleGetInstanceSummary))
-	s.mux.HandleFunc("GET /api/v1/instances/{instanceId}/bootstrap", s.withPrincipal(s.handleGetInstanceBootstrap))
-	s.mux.HandleFunc("POST /api/v1/instances/{instanceId}/messages", s.withPrincipal(s.handleSendMessage))
-	s.mux.HandleFunc("GET /api/v1/instances/{instanceId}/sessions", s.withPrincipal(s.handleListSessions))
-	s.mux.HandleFunc("POST /api/v1/instances/{instanceId}/sessions", s.withPrincipal(s.handleCreateSession))
-	s.mux.HandleFunc("GET /api/v1/instances/{instanceId}/sessions/{sessionId}", s.withPrincipal(s.handleGetSession))
-	s.mux.HandleFunc("PATCH /api/v1/instances/{instanceId}/sessions/{sessionId}", s.withPrincipal(s.handleUpdateSession))
-	s.mux.HandleFunc("DELETE /api/v1/instances/{instanceId}/sessions/{sessionId}", s.withPrincipal(s.handleDeleteSession))
-	s.mux.HandleFunc("POST /api/v1/instances/{instanceId}/sessions/{sessionId}/archive", s.withPrincipal(s.handleArchiveSession))
-	s.mux.HandleFunc("POST /api/v1/instances/{instanceId}/sessions/{sessionId}/restore", s.withPrincipal(s.handleRestoreSession))
-	s.mux.HandleFunc("GET /api/v1/instances/{instanceId}/sessions/{sessionId}/messages", s.withPrincipal(s.handleListMessages))
-	s.mux.HandleFunc("POST /api/v1/instances/{instanceId}/sessions/{sessionId}/messages", s.withPrincipal(s.handlePostMessage))
-	s.mux.HandleFunc("POST /api/v1/instances/{instanceId}/sessions/{sessionId}/coding-runtime/remote", s.withPrincipal(s.handleStartRemoteCodingRuntime))
-	s.mux.HandleFunc("GET /api/v1/instances/{instanceId}/sessions/{sessionId}/coding-runtime/{taskId}/recovery", s.withPrincipal(s.handleGetCodingRuntimeRecovery))
-	s.mux.HandleFunc("POST /api/v1/instances/{instanceId}/sessions/{sessionId}/coding-runtime/{taskId}/recovery", s.withPrincipal(s.handleConfirmCodingRuntimeRecovery))
-	s.mux.HandleFunc("GET /api/v1/instances/{instanceId}/runs", s.withPrincipal(s.handleListRuns))
-	s.mux.HandleFunc("GET /api/v1/instances/{instanceId}/runs/{runId}", s.withPrincipal(s.handleGetRun))
-	s.mux.HandleFunc("GET /api/v1/instances/{instanceId}/runs/{runId}/events", s.withPrincipal(s.handleStreamRunEvents))
-	s.mux.HandleFunc("POST /api/v1/instances/{instanceId}/runs/{runId}/cancel", s.withPrincipal(s.handleCancelRun))
-
-	// Knowledge base endpoints
-	s.mux.HandleFunc("POST /api/v1/knowledge/import/file", s.withPrincipal(s.handleKnowledgeImportFile))
-	s.mux.HandleFunc("POST /api/v1/knowledge/import/url", s.withPrincipal(s.handleKnowledgeImportURL))
-	s.mux.HandleFunc("POST /api/v1/knowledge/import/urls", s.withPrincipal(s.handleKnowledgeImportURLs))
-	s.mux.HandleFunc("POST /api/v1/knowledge/import/text", s.withPrincipal(s.handleKnowledgeImportText))
-	s.mux.HandleFunc("POST /api/v1/knowledge/import/directory", s.withPrincipal(s.handleKnowledgeImportDirectory))
-	s.mux.HandleFunc("POST /api/v1/knowledge/import/package", s.withPrincipal(s.handleKnowledgeImportPackage))
-	s.mux.HandleFunc("POST /api/v1/knowledge/import/share", s.withPrincipal(s.handleKnowledgeImportShare))
-	s.mux.HandleFunc("POST /api/v1/knowledge/export", s.withPrincipal(s.handleKnowledgeExport))
-	s.mux.HandleFunc("GET /api/v1/knowledge/import/batches", s.withPrincipal(s.handleKnowledgeImportBatches))
-	s.mux.HandleFunc("DELETE /api/v1/knowledge/import/batches/{batchId}", s.withPrincipal(s.handleKnowledgeDeleteImportBatch))
-	s.mux.HandleFunc("GET /api/v1/knowledge/import/jobs/{jobId}", s.withPrincipal(s.handleKnowledgeImportJobStatus))
-	s.mux.HandleFunc("POST /api/v1/knowledge/search", s.withPrincipal(s.handleKnowledgeSearch))
-	s.mux.HandleFunc("POST /api/v1/knowledge/images/search", s.withPrincipal(s.handleKnowledgeImageSearch))
-	s.mux.HandleFunc("GET /api/v1/knowledge/capabilities", s.withPrincipal(s.handleKnowledgeCapabilities))
-	s.mux.HandleFunc("POST /api/v1/knowledge/search/structured", s.withPrincipal(s.handleKnowledgeSearchStructured))
-	s.mux.HandleFunc("POST /api/v1/knowledge/structured/catalog", s.withPrincipal(s.handleKnowledgeStructuredCatalog))
-	s.mux.HandleFunc("POST /api/v1/knowledge/context-pack", s.withPrincipal(s.handleKnowledgeContextPack))
-	s.mux.HandleFunc("GET /api/v1/knowledge/sources", s.withPrincipal(s.handleKnowledgeListSources))
-	s.mux.HandleFunc("GET /api/v1/knowledge/sources/{sourceId}", s.withPrincipal(s.handleKnowledgeGetSource))
-	s.mux.HandleFunc("DELETE /api/v1/knowledge/sources/{sourceId}", s.withPrincipal(s.handleKnowledgeDeleteSource))
-	s.mux.HandleFunc("PATCH /api/v1/knowledge/sources/{sourceId}", s.withPrincipal(s.handleKnowledgeUpdateSource))
-	s.mux.HandleFunc("POST /api/v1/knowledge/sources/{sourceId}/disable", s.withPrincipal(s.handleKnowledgeDisableSource))
-	s.mux.HandleFunc("POST /api/v1/knowledge/sources/{sourceId}/enable", s.withPrincipal(s.handleKnowledgeEnableSource))
-	s.mux.HandleFunc("POST /api/v1/knowledge/sources/{sourceId}/refresh", s.withPrincipal(s.handleKnowledgeRefreshSource))
-	s.mux.HandleFunc("GET /api/v1/knowledge/stats", s.withPrincipal(s.handleKnowledgeStats))
-	s.mux.HandleFunc("GET /api/v1/knowledge/access", s.withPrincipal(s.handleKnowledgeAccessGetMe))
-	s.mux.HandleFunc("DELETE /api/v1/knowledge", s.withPrincipal(s.handleKnowledgeClearAll))
-
-	// Enterprise digital assets (Hub→local cache per user data dir).
-	s.mux.HandleFunc("GET /api/v1/enterprise-knowledge/libraries", s.withPrincipal(s.handleEnterpriseKnowledgeListLibraries))
-	s.mux.HandleFunc("GET /api/v1/enterprise-knowledge/sync/status", s.withPrincipal(s.handleEnterpriseKnowledgeSyncStatus))
-	s.mux.HandleFunc("POST /api/v1/enterprise-knowledge/sync/now", s.withPrincipal(s.handleEnterpriseKnowledgeSyncNow))
-	s.mux.HandleFunc("POST /api/v1/enterprise-knowledge/libraries/{libraryId}/user-sync", s.withPrincipal(s.handleEnterpriseKnowledgeSetUserSync))
-	s.mux.HandleFunc("DELETE /api/v1/enterprise-knowledge/libraries/{libraryId}", s.withPrincipal(s.handleEnterpriseKnowledgePurgeLibrary))
-	s.mux.HandleFunc("GET /api/v1/admin/enterprise-knowledge/sync/status", s.withAdmin(s.handleAdminEnterpriseKnowledgeSyncStatus))
-	s.mux.HandleFunc("POST /api/v1/admin/enterprise-knowledge/sync/now", s.withAdmin(s.handleAdminEnterpriseKnowledgeSyncNow))
-	s.mux.HandleFunc("GET /api/v1/admin/enterprise-knowledge/tenants", s.withAdmin(s.handleAdminEnterpriseKnowledgeTenantProgress))
-	s.mux.HandleFunc("DELETE /api/v1/admin/enterprise-knowledge/tenants/{tenantId}/users/{userId}/libraries/{libraryId}", s.withAdmin(s.handleAdminEnterpriseKnowledgePurgeLibrary))
-	s.mux.HandleFunc("GET /api/v1/admin/public-knowledge-libraries", s.withAdmin(s.handleAdminPublicKnowledgeLibraries))
-	s.mux.HandleFunc("POST /api/v1/admin/public-knowledge-libraries", s.withAdmin(s.handleAdminPublicKnowledgeCreate))
-	s.mux.HandleFunc("DELETE /api/v1/admin/public-knowledge-libraries/{libraryId}", s.withAdmin(s.handleAdminPublicKnowledgeDelete))
-	s.mux.HandleFunc("GET /api/v1/admin/public-knowledge-libraries/{libraryId}/sources", s.withAdmin(s.handleAdminPublicKnowledgeSources))
-	s.mux.HandleFunc("POST /api/v1/admin/public-knowledge-libraries/{libraryId}/import/text", s.withAdmin(s.handleAdminPublicKnowledgeImportText))
-	s.mux.HandleFunc("POST /api/v1/admin/public-knowledge-libraries/{libraryId}/import/file", s.withAdmin(s.handleAdminPublicKnowledgeImportFile))
-	s.mux.HandleFunc("POST /api/v1/admin/public-knowledge-libraries/{libraryId}/import/urls", s.withAdmin(s.handleAdminPublicKnowledgeImportURLs))
-	s.mux.HandleFunc("GET /api/v1/admin/knowledge/stats", s.withAdmin(s.handleAdminKnowledgeStats))
-	s.mux.HandleFunc("GET /api/v1/admin/knowledge/sources", s.withAdmin(s.handleAdminKnowledgeListSources))
-	s.mux.HandleFunc("DELETE /api/v1/admin/tenants/{tenantId}/knowledge", s.withAdmin(s.handleAdminKnowledgeClearTenant))
-	s.mux.HandleFunc("GET /api/v1/admin/knowledge-access/cross-tenant", s.withAdmin(s.handleAdminKnowledgeAccessGetCrossTenant))
-	s.mux.HandleFunc("PUT /api/v1/admin/knowledge-access/cross-tenant", s.withAdmin(s.handleAdminKnowledgeAccessSetCrossTenant))
-	s.mux.HandleFunc("GET /api/v1/admin/knowledge-access/tenants/{tenantId}/users/{userId}", s.withAdmin(s.handleAdminKnowledgeAccessGetUser))
-	s.mux.HandleFunc("PUT /api/v1/admin/knowledge-access/tenants/{tenantId}/users/{userId}", s.withAdmin(s.handleAdminKnowledgeAccessSetUser))
-	s.mux.HandleFunc("DELETE /api/v1/admin/knowledge-access/tenants/{tenantId}/users/{userId}", s.withAdmin(s.handleAdminKnowledgeAccessDeleteUser))
-	s.mux.HandleFunc("POST /api/v1/admin/knowledge-access/tenants/{tenantId}/users/{userId}/public-libraries/{libraryId}", s.withAdmin(s.handleAdminKnowledgeAccessAttachPublicLibrary))
-	s.mux.HandleFunc("DELETE /api/v1/admin/knowledge-access/tenants/{tenantId}/users/{userId}/public-libraries/{libraryId}", s.withAdmin(s.handleAdminKnowledgeAccessDetachPublicLibrary))
-	s.mux.HandleFunc("GET /api/v1/admin/knowledge-access/tenants/{tenantId}/users/{userId}/resolve", s.withAdmin(s.handleAdminKnowledgeAccessResolveUser))
-
-	// Knowledge base image asset endpoints
-	s.mux.HandleFunc("GET /api/v1/knowledge/images/{assetId}/thumbnail", s.withPrincipal(s.handleKnowledgeImageThumbnail))
-	s.mux.HandleFunc("GET /api/v1/knowledge/images/{assetId}/preview", s.withPrincipal(s.handleKnowledgeImagePreview))
-	s.mux.HandleFunc("GET /api/v1/knowledge/images/{assetId}", s.withPrincipal(s.handleKnowledgeImageOriginal))
-	s.mux.HandleFunc("GET /api/v1/knowledge/sources/{sourceId}/thumbnail", s.withPrincipal(s.handleKnowledgeSourceThumbnail))
-	s.mux.HandleFunc("GET /api/v1/knowledge/sources/{sourceId}/image", s.withPrincipal(s.handleKnowledgeSourceImage))
-	s.mux.HandleFunc("POST /api/v1/knowledge/import/image", s.withPrincipal(s.handleKnowledgeImportImage))
-
-	// Skill source control admin API (global / tenant / user).
-	s.mux.HandleFunc("GET /api/v1/admin/skill-sources/available", s.withAdmin(s.handleSkillSourcesAvailable))
-	s.mux.HandleFunc("GET /api/v1/admin/skill-sources/global", s.withAdmin(s.handleSkillSourcesGetGlobal))
-	s.mux.HandleFunc("PUT /api/v1/admin/skill-sources/global", s.withAdmin(s.handleSkillSourcesSetGlobal))
-	s.mux.HandleFunc("GET /api/v1/admin/skill-sources/tenant/{id}", s.withAdmin(s.handleSkillSourcesGetTenant))
-	s.mux.HandleFunc("PUT /api/v1/admin/skill-sources/tenant/{id}", s.withAdmin(s.handleSkillSourcesSetTenant))
-	s.mux.HandleFunc("DELETE /api/v1/admin/skill-sources/tenant/{id}", s.withAdmin(s.handleSkillSourcesDeleteTenant))
-	s.mux.HandleFunc("GET /api/v1/admin/skill-sources/tenants/{tenantId}/users/{userId}", s.withAdmin(s.handleSkillSourcesGetTenantUser))
-	s.mux.HandleFunc("PUT /api/v1/admin/skill-sources/tenants/{tenantId}/users/{userId}", s.withAdmin(s.handleSkillSourcesSetTenantUser))
-	s.mux.HandleFunc("DELETE /api/v1/admin/skill-sources/tenants/{tenantId}/users/{userId}", s.withAdmin(s.handleSkillSourcesDeleteTenantUser))
-	s.mux.HandleFunc("GET /api/v1/admin/skill-sources/tenants/{tenantId}/users/{userId}/resolve", s.withAdmin(s.handleSkillSourcesResolveTenantUser))
+	s.registerOpsRoutes()
+	s.registerAdminRoutes()
+	s.registerPlatformRoutes()
+	s.registerUserAPIRoutes()
 }
+
 
 func (s *HTTPServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -1003,7 +268,11 @@ func (s *HTTPServer) handleLive(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "alive"})
 }
 func (s *HTTPServer) handleReady(w http.ResponseWriter, r *http.Request) {
-	report := buildReadinessReport(s.svc.DataRoot(), s.jobs.filePath)
+	report := buildReadinessReport(s.svc.DataRoot(), s.jobs.repositoryPath)
+	if s.jobs != nil && !s.jobs.persistenceHealthy() {
+		report.Status = "not_ready"
+		report.Checks = append(report.Checks, readinessCheck{Name: "jobs_store_persistence", Status: "fail", Error: "async job store persistence unavailable"})
+	}
 	if report.Status != "ready" {
 		errMsg := "service not ready"
 		for _, check := range report.Checks {
@@ -1018,16 +287,7 @@ func (s *HTTPServer) handleReady(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": report.Status})
 }
 
-func (s *HTTPServer) handleGetAdminReadiness(w http.ResponseWriter, r *http.Request) {
-	report := buildReadinessReport(s.svc.DataRoot(), s.jobs.filePath)
-	status := http.StatusOK
-	if report.Status != "ready" {
-		status = http.StatusServiceUnavailable
-	}
-	writeJSON(w, status, redactReadinessReport(report))
-}
-
-func buildReadinessReport(dataRoot, jobsFilePath string) readinessReport {
+func buildReadinessReport(dataRoot, jobsRepositoryPath string) readinessReport {
 	report := readinessReport{
 		Status:      "ready",
 		GeneratedAt: time.Now().UTC(),
@@ -1039,8 +299,8 @@ func buildReadinessReport(dataRoot, jobsFilePath string) readinessReport {
 			checkDirectoryWritable("state_dir_writable", filepath.Join(dataRoot, "state")),
 		},
 	}
-	if stringsTrim(jobsFilePath) != "" {
-		report.Checks = append(report.Checks, checkDirectoryWritable("jobs_store_parent_writable", filepath.Dir(jobsFilePath)))
+	if stringsTrim(jobsRepositoryPath) != "" {
+		report.Checks = append(report.Checks, checkDirectoryWritable("jobs_store_parent_writable", filepath.Dir(jobsRepositoryPath)))
 	}
 	for _, check := range report.Checks {
 		if check.Status != "pass" {
@@ -1052,7 +312,7 @@ func buildReadinessReport(dataRoot, jobsFilePath string) readinessReport {
 }
 
 func checkReadyDataRoot(dataRoot string) error {
-	report := buildReadinessReport(dataRoot, filepath.Join(dataRoot, "state", "jobs.json"))
+	report := buildReadinessReport(dataRoot, filepath.Join(dataRoot, "state", "jobs.db"))
 	for _, check := range report.Checks {
 		if check.Name == "data_root_exists" && check.Status != "pass" {
 			return errors.New("data root unavailable")
@@ -1289,199 +549,26 @@ func (s *HTTPServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	b.WriteString(strconv.FormatInt(int64(len(runFailed)), 10))
 	b.WriteString("\n# HELP maclaw_async_jobs_total Number of async jobs by lifecycle status\n")
 	b.WriteString("# TYPE maclaw_async_jobs_total gauge\n")
-	for _, status := range []asyncJobStatus{asyncJobStatusPending, asyncJobStatusRunning, asyncJobStatusSucceeded, asyncJobStatusFailed, asyncJobStatusCanceled} {
+	for _, status := range []asyncJobStatus{asyncJobStatusPending, asyncJobStatusRunning, asyncJobStatusSucceeded, asyncJobStatusFailed, asyncJobStatusCanceled, asyncJobStatusUnknown} {
 		b.WriteString("maclaw_async_jobs_total{status=\"")
 		b.WriteString(string(status))
 		b.WriteString("\"} ")
 		b.WriteString(strconv.FormatInt(int64(jobCounts[status]), 10))
 		b.WriteString("\n")
 	}
+	b.WriteString("# HELP maclaw_async_jobs_persistence_healthy Whether async job state can be durably persisted\n")
+	b.WriteString("# TYPE maclaw_async_jobs_persistence_healthy gauge\n")
+	if s.jobs == nil || s.jobs.persistenceHealthy() {
+		b.WriteString("maclaw_async_jobs_persistence_healthy 1\n")
+	} else {
+		b.WriteString("maclaw_async_jobs_persistence_healthy 0\n")
+	}
+	if s.svc != nil {
+		appendRuntimeMetricsPrometheus(&b, s.svc.RuntimeMetrics().Snapshot())
+	}
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(b.String()))
-}
-func (s *HTTPServer) handleGetAdminOverview(w http.ResponseWriter, r *http.Request) {
-	out, err := s.svc.GetAdminOverview(r.Context())
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-func (s *HTTPServer) handleGetAdminDashboard(w http.ResponseWriter, r *http.Request) {
-	out, err := s.svc.GetAdminDashboard(r.Context())
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	dashboard := redactAdminDashboardForAdminAPI(s.svc.DataRoot(), *out)
-	writeJSON(w, http.StatusOK, dashboard)
-}
-func (s *HTTPServer) handleGetAdminInsights(w http.ResponseWriter, r *http.Request) {
-	limit := 0
-	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
-		parsed, err := strconv.Atoi(raw)
-		if err != nil || parsed < 0 {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid limit"})
-			return
-		}
-		limit = parsed
-	}
-	inactiveForDays := 0
-	if raw := strings.TrimSpace(r.URL.Query().Get("inactive_for_days")); raw != "" {
-		parsed, err := strconv.Atoi(raw)
-		if err != nil || parsed < 0 {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid inactive_for_days"})
-			return
-		}
-		inactiveForDays = parsed
-	}
-	out, err := s.svc.GetAdminInsights(r.Context(), agentservice.AdminInsightsInput{InactiveForDays: inactiveForDays, Limit: limit})
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-func (s *HTTPServer) handleGetAdminAlerts(w http.ResponseWriter, r *http.Request) {
-	var since *time.Time
-	sinceRaw := strings.TrimSpace(r.URL.Query().Get("since"))
-	if sinceRaw != "" {
-		parsed, err := time.Parse(time.RFC3339Nano, sinceRaw)
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid since"})
-			return
-		}
-		since = &parsed
-	}
-	limit := 0
-	limitRaw := strings.TrimSpace(r.URL.Query().Get("limit"))
-	if limitRaw != "" {
-		parsed, err := strconv.Atoi(limitRaw)
-		if err != nil || parsed < 0 {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid limit"})
-			return
-		}
-		limit = parsed
-	}
-	expiryWindowDays := 0
-	expiryWindowRaw := strings.TrimSpace(r.URL.Query().Get("credential_expiry_window_days"))
-	if expiryWindowRaw != "" {
-		parsed, err := strconv.Atoi(expiryWindowRaw)
-		if err != nil || parsed < 0 {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid credential_expiry_window_days"})
-			return
-		}
-		expiryWindowDays = parsed
-	}
-	out, err := s.svc.GetAdminAlerts(r.Context(), agentservice.AdminAlertsInput{
-		TenantID:                   strings.TrimSpace(r.URL.Query().Get("tenant_id")),
-		UserID:                     strings.TrimSpace(r.URL.Query().Get("user_id")),
-		Kind:                       strings.TrimSpace(r.URL.Query().Get("kind")),
-		Since:                      since,
-		Limit:                      limit,
-		CredentialExpiryWindowDays: expiryWindowDays,
-	})
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, sanitizeAdminAlertsForAdminAPI(s.svc.DataRoot(), *out))
-}
-func (s *HTTPServer) handleAdminSecuritySummary(w http.ResponseWriter, r *http.Request) {
-	since, err := parseOptionalTimeQuery(r, "since")
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	until, err := parseOptionalTimeQuery(r, "until")
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	if err := validateOptionalTimeRange(since, until); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	items, err := s.loadAdminRiskEvents(r.Context(), since, until)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	counts := countRiskEventsBySeverity(items)
-	kindCounts := countRiskEventsByKind(items)
-	status := "ok"
-	if counts["high"] > 0 {
-		status = "critical"
-	} else if counts["medium"] > 0 {
-		status = "warn"
-	}
-	recent := items
-	if len(recent) > 10 {
-		recent = recent[:10]
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"generated_at": time.Now().UTC(),
-		"filters":      map[string]any{"since": since, "until": until},
-		"status":       status,
-		"total":        len(items),
-		"counts":       counts,
-		"kind_counts":  kindCounts,
-		"recent":       recent,
-	})
-}
-
-func (s *HTTPServer) handleAdminSecurityRiskEvents(w http.ResponseWriter, r *http.Request) {
-	since, err := parseOptionalTimeQuery(r, "since")
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	until, err := parseOptionalTimeQuery(r, "until")
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	if err := validateOptionalTimeRange(since, until); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	severity := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("severity")))
-	if severity != "" && !isValidRiskSeverity(severity) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid severity"})
-		return
-	}
-	limit := 100
-	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
-		parsed, err := strconv.Atoi(raw)
-		if err != nil || parsed < 1 {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid limit"})
-			return
-		}
-		limit = parsed
-	}
-	if limit > maxPageLimit {
-		limit = maxPageLimit
-	}
-	items, err := s.loadAdminRiskEvents(r.Context(), since, until)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	if severity != "" {
-		items = filterRiskEventsBySeverity(items, severity)
-	}
-	kind := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("kind")))
-	if kind != "" {
-		items = filterRiskEventsByKind(items, kind)
-	}
-	total := len(items)
-	counts := countRiskEventsBySeverity(items)
-	kindCounts := countRiskEventsByKind(items)
-	if limit > 0 && len(items) > limit {
-		items = items[:limit]
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"generated_at": time.Now().UTC(), "filters": map[string]any{"severity": severity, "kind": kind, "since": since, "until": until, "limit": limit}, "items": items, "total": total, "counts": counts, "kind_counts": kindCounts})
 }
 
 func (s *HTTPServer) loadAdminRiskEvents(ctx context.Context, since, until *time.Time) ([]adminRiskEvent, error) {
@@ -1634,329 +721,6 @@ func countRiskEventsByKind(items []adminRiskEvent) map[string]int {
 		out[item.Kind]++
 	}
 	return out
-}
-
-func (s *HTTPServer) handleListTenants(w http.ResponseWriter, r *http.Request) {
-	status, ok := parseTenantStatus(r.URL.Query().Get("status"))
-	if !ok {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid status"})
-		return
-	}
-	out, err := s.svc.ListTenants(r.Context(), agentservice.ListTenantsInput{
-		Status: status,
-		Name:   strings.TrimSpace(r.URL.Query().Get("name")),
-	})
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	page, err := parsePageQuery(r)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	items, meta := paginateTenants(out, page)
-	writeJSON(w, http.StatusOK, listResponse(items, meta))
-}
-func (s *HTTPServer) handleListAuditEvents(w http.ResponseWriter, r *http.Request) {
-	since, err := parseOptionalTimeQuery(r, "since")
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	until, err := parseOptionalTimeQuery(r, "until")
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	out, err := s.svc.ListAuditEvents(r.Context(), agentservice.ListAuditEventsInput{
-		TenantID:     strings.TrimSpace(r.URL.Query().Get("tenant_id")),
-		UserID:       strings.TrimSpace(r.URL.Query().Get("user_id")),
-		Action:       strings.TrimSpace(r.URL.Query().Get("action")),
-		ResourceType: strings.TrimSpace(r.URL.Query().Get("resource_type")),
-		ResourceID:   strings.TrimSpace(r.URL.Query().Get("resource_id")),
-		ActorType:    strings.TrimSpace(r.URL.Query().Get("actor_type")),
-		ActorTenant:  strings.TrimSpace(r.URL.Query().Get("actor_tenant_id")),
-		ActorUser:    strings.TrimSpace(r.URL.Query().Get("actor_user_id")),
-		Since:        since,
-		Until:        until,
-	})
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	page, err := parsePageQuery(r)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	items, meta := paginateAuditEvents(out, page)
-	items = redactAuditEventsForAdminAPI(s.svc.DataRoot(), items)
-	writeJSON(w, http.StatusOK, listResponse(items, meta))
-}
-func (s *HTTPServer) handleExportServiceState(w http.ResponseWriter, r *http.Request) {
-	includeMessages, err := parseOptionalBoolQuery(r, "include_messages")
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	includeRuns, err := parseOptionalBoolQuery(r, "include_runs")
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	includeAudit, err := parseOptionalBoolQuery(r, "include_audit")
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	includeSecrets, err := parseOptionalBoolQuery(r, "include_secrets")
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	if !s.requireSecretExportAccess(w, r, includeSecrets != nil && *includeSecrets) {
-		return
-	}
-	out, err := s.svc.ExportServiceState(r.Context(), agentservice.ExportServiceStateInput{
-		TenantID:        strings.TrimSpace(r.URL.Query().Get("tenant_id")),
-		UserID:          strings.TrimSpace(r.URL.Query().Get("user_id")),
-		IncludeMessages: includeMessages == nil || *includeMessages,
-		IncludeRuns:     includeRuns == nil || *includeRuns,
-		IncludeAudit:    includeAudit == nil || *includeAudit,
-		IncludeSecrets:  includeSecrets != nil && *includeSecrets,
-	})
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	_ = s.recordAdminAudit(r.Context(), "admin.service_state_exported", "service_state", out.Scope, map[string]string{"tenant_id": out.TenantID, "user_id": out.UserID, "include_secrets": strconv.FormatBool(out.IncludeSecrets), "include_messages": strconv.FormatBool(out.IncludeMessages), "include_runs": strconv.FormatBool(out.IncludeRuns), "include_audit": strconv.FormatBool(out.IncludeAudit), "users": strconv.Itoa(len(out.Users)), "remote_ip": requestClientIP(r)})
-	writeJSON(w, http.StatusOK, sanitizeExportServiceStateForAdminAPI(s.svc.DataRoot(), *out))
-}
-func (s *HTTPServer) handleImportServiceState(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdminOwner(w, r) {
-		return
-	}
-	in, ok := decodeImportStateRequest(w, r)
-	if !ok {
-		return
-	}
-	if overwrite, err := parseOptionalBoolQuery(r, "overwrite"); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	} else if overwrite != nil {
-		in.Overwrite = *overwrite
-	}
-	if dryRun, err := parseOptionalBoolQuery(r, "dry_run"); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	} else if dryRun != nil {
-		in.DryRun = *dryRun
-	}
-	if !in.DryRun {
-		if err := requireAdminConfirmation(r, "import operations"); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-			return
-		}
-	}
-	out, err := s.svc.ImportServiceState(r.Context(), *in)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	_ = s.recordAdminAudit(r.Context(), "admin.service_state_imported", "service_state", out.Scope, map[string]string{"tenant_id": out.TenantID, "user_id": out.UserID, "dry_run": strconv.FormatBool(out.DryRun), "overwrite": strconv.FormatBool(out.Overwrite), "tenants": strconv.Itoa(out.Tenants), "users": strconv.Itoa(out.Users), "credentials": strconv.Itoa(out.Credentials), "instances": strconv.Itoa(out.Instances), "remote_ip": requestClientIP(r)})
-	writeJSON(w, http.StatusOK, sanitizeImportServiceStateOutputForAdminAPI(s.svc.DataRoot(), out))
-}
-
-func (s *HTTPServer) handleListServiceSnapshots(w http.ResponseWriter, r *http.Request) {
-	since, err := parseOptionalTimeQuery(r, "since")
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	until, err := parseOptionalTimeQuery(r, "until")
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	items, err := s.svc.ListServiceSnapshots(r.Context(), agentservice.ListServiceSnapshotsInput{
-		TenantID: strings.TrimSpace(r.URL.Query().Get("tenant_id")),
-		UserID:   strings.TrimSpace(r.URL.Query().Get("user_id")),
-		Scope:    strings.TrimSpace(r.URL.Query().Get("scope")),
-		Name:     strings.TrimSpace(r.URL.Query().Get("name")),
-		Since:    since,
-		Until:    until,
-	})
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	page, err := parsePageQuery(r)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	window, meta := paginateServiceSnapshots(items, page)
-	writeJSON(w, http.StatusOK, listResponse(sanitizeServiceSnapshotsForAdminAPI(window), meta))
-}
-
-func (s *HTTPServer) handleCreateServiceSnapshot(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdminOwner(w, r) {
-		return
-	}
-	var in agentservice.CreateServiceSnapshotInput
-	if !decodeJSON(w, r, &in) {
-		return
-	}
-	if in.IncludeSecrets != nil && *in.IncludeSecrets {
-		if err := requireAdminConfirmation(r, "secret snapshot operations"); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-			return
-		}
-	}
-	out, err := s.svc.CreateServiceSnapshot(r.Context(), in)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	_ = s.recordAdminAudit(r.Context(), "admin.snapshot_created", "snapshot", out.Snapshot.ID, map[string]string{"scope": out.Snapshot.Scope, "tenant_id": out.Snapshot.TenantID, "user_id": out.Snapshot.UserID, "include_secrets": strconv.FormatBool(out.Snapshot.IncludeSecrets), "include_messages": strconv.FormatBool(out.Snapshot.IncludeMessages), "include_runs": strconv.FormatBool(out.Snapshot.IncludeRuns), "include_audit": strconv.FormatBool(out.Snapshot.IncludeAudit), "remote_ip": requestClientIP(r)})
-	writeJSON(w, http.StatusCreated, sanitizeServiceSnapshotEnvelopeForAdminAPI(s.svc.DataRoot(), out))
-}
-
-func (s *HTTPServer) handlePruneServiceSnapshots(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdminOwner(w, r) {
-		return
-	}
-	var in agentservice.PruneServiceSnapshotsInput
-	if !decodeOptionalJSON(w, r, &in) {
-		return
-	}
-	if tenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id")); tenantID != "" {
-		in.TenantID = tenantID
-	}
-	if userID := strings.TrimSpace(r.URL.Query().Get("user_id")); userID != "" {
-		in.UserID = userID
-	}
-	if olderThan, err := parseOptionalTimeQuery(r, "older_than"); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	} else if olderThan != nil {
-		in.OlderThan = olderThan
-	}
-	if keepLatestRaw := strings.TrimSpace(r.URL.Query().Get("keep_latest")); keepLatestRaw != "" {
-		keepLatest, err := strconv.Atoi(keepLatestRaw)
-		if err != nil || keepLatest < 0 {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "keep_latest must be greater than or equal to 0"})
-			return
-		}
-		in.KeepLatest = keepLatest
-	}
-	if dryRun, err := parseOptionalBoolQuery(r, "dry_run"); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	} else if dryRun != nil {
-		in.DryRun = *dryRun
-	}
-	out, err := s.svc.PruneServiceSnapshots(r.Context(), in)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, sanitizePruneServiceSnapshotsOutputForAdminAPI(out))
-}
-func (s *HTTPServer) handleGetServiceSnapshot(w http.ResponseWriter, r *http.Request) {
-	out, err := s.svc.GetServiceSnapshot(r.Context(), r.PathValue("snapshotId"))
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	if out.Snapshot.IncludeSecrets && !s.requireAdminOwner(w, r) {
-		return
-	}
-	writeJSON(w, http.StatusOK, sanitizeServiceSnapshotEnvelopeForAdminAPI(s.svc.DataRoot(), out))
-}
-
-func (s *HTTPServer) handleRestoreServiceSnapshot(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdminOwner(w, r) {
-		return
-	}
-	var in agentservice.RestoreServiceSnapshotInput
-	if !decodeOptionalJSON(w, r, &in) {
-		return
-	}
-	if overwrite, err := parseOptionalBoolQuery(r, "overwrite"); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	} else if overwrite != nil {
-		in.Overwrite = *overwrite
-	}
-	if dryRun, err := parseOptionalBoolQuery(r, "dry_run"); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	} else if dryRun != nil {
-		in.DryRun = *dryRun
-	}
-	if !in.DryRun {
-		if err := requireAdminConfirmation(r, "restore operations"); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-			return
-		}
-	}
-	out, err := s.svc.RestoreServiceSnapshot(r.Context(), r.PathValue("snapshotId"), in)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	_ = s.recordAdminAudit(r.Context(), "admin.snapshot_restored", "snapshot", out.Snapshot.ID, map[string]string{"scope": out.Snapshot.Scope, "tenant_id": out.Snapshot.TenantID, "user_id": out.Snapshot.UserID, "dry_run": strconv.FormatBool(in.DryRun), "overwrite": strconv.FormatBool(in.Overwrite), "remote_ip": requestClientIP(r)})
-	writeJSON(w, http.StatusOK, sanitizeRestoreServiceSnapshotOutputForAdminAPI(s.svc.DataRoot(), out))
-}
-func (s *HTTPServer) handleDeleteServiceSnapshot(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdminOwner(w, r) {
-		return
-	}
-	if err := requireDeleteConfirmation(r); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	out, err := s.svc.DeleteServiceSnapshot(r.Context(), r.PathValue("snapshotId"))
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, sanitizeServiceSnapshotForAdminAPI(*out))
-}
-func (s *HTTPServer) handleGetTenantRetirePlan(w http.ResponseWriter, r *http.Request) {
-	in, err := parseExportServiceStateInput(r)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	if !s.requireSecretExportAccess(w, r, in.IncludeSecrets) {
-		return
-	}
-	out, err := s.svc.GetTenantRetirePlan(r.Context(), r.PathValue("tenantId"), in)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, sanitizeTenantRetirePlanForAdminAPI(s.svc.DataRoot(), *out))
-}
-
-func (s *HTTPServer) handleGetUserRetirePlan(w http.ResponseWriter, r *http.Request) {
-	in, err := parseExportServiceStateInput(r)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	if !s.requireSecretExportAccess(w, r, in.IncludeSecrets) {
-		return
-	}
-	out, err := s.svc.GetUserRetirePlan(r.Context(), r.PathValue("tenantId"), r.PathValue("userId"), in)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, sanitizeUserRetirePlanForAdminAPI(s.svc.DataRoot(), *out))
 }
 
 func sanitizeExportServiceStateForAdminAPI(dataRoot string, in agentservice.ExportServiceStateOutput) agentservice.ExportServiceStateOutput {
@@ -2431,22 +1195,6 @@ func sanitizePruneServiceSnapshotsOutputForAdminAPI(in *agentservice.PruneServic
 	out.Snapshots = sanitizeServiceSnapshotsForAdminAPI(out.Snapshots)
 	return out
 }
-func (s *HTTPServer) handleCreateTenant(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdminOwner(w, r) {
-		return
-	}
-	var in agentservice.CreateTenantInput
-	if !decodeJSON(w, r, &in) {
-		return
-	}
-	out, err := s.svc.CreateTenant(r.Context(), in)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	_ = s.recordAdminAudit(r.Context(), "admin.tenant_created", "tenant", out.ID, tenantAuditMetadata(r, out))
-	writeJSON(w, http.StatusCreated, out)
-}
 func tenantAuditMetadata(r *http.Request, tenant *agentservice.Tenant) map[string]string {
 	return map[string]string{
 		"name":             tenant.Name,
@@ -2485,53 +1233,6 @@ func credentialAuditMetadata(r *http.Request, cred *agentservice.Credential) map
 	}
 	return metadata
 }
-func (s *HTTPServer) handleGetTenant(w http.ResponseWriter, r *http.Request) {
-	out, err := s.svc.GetTenant(r.Context(), r.PathValue("tenantId"))
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-func (s *HTTPServer) handleGetTenantSummary(w http.ResponseWriter, r *http.Request) {
-	out, err := s.svc.GetTenantSummary(r.Context(), r.PathValue("tenantId"))
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, sanitizeTenantSummaryForAdminAPI(*out))
-}
-func (s *HTTPServer) handleGetTenantDeleteCheck(w http.ResponseWriter, r *http.Request) {
-	out, err := s.svc.GetTenantDeleteCheck(r.Context(), r.PathValue("tenantId"))
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-func (s *HTTPServer) handleUpdateTenant(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdminOwner(w, r) {
-		return
-	}
-	var in agentservice.UpdateTenantInput
-	if !decodeJSON(w, r, &in) {
-		return
-	}
-	out, err := s.svc.UpdateTenant(r.Context(), r.PathValue("tenantId"), in)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	_ = s.recordAdminAudit(r.Context(), "admin.tenant_updated", "tenant", out.ID, tenantAuditMetadata(r, out))
-	writeJSON(w, http.StatusOK, out)
-}
-func (s *HTTPServer) handlePauseTenant(w http.ResponseWriter, r *http.Request) {
-	s.updateTenantLifecycleStatus(w, r, agentservice.TenantStatusDisabled, "admin.tenant_paused")
-}
-
-func (s *HTTPServer) handleResumeTenant(w http.ResponseWriter, r *http.Request) {
-	s.updateTenantLifecycleStatus(w, r, agentservice.TenantStatusActive, "admin.tenant_resumed")
-}
 
 func (s *HTTPServer) updateTenantLifecycleStatus(w http.ResponseWriter, r *http.Request, status agentservice.TenantStatus, action string) {
 	if !s.requireAdminOwner(w, r) {
@@ -2553,337 +1254,9 @@ func (s *HTTPServer) updateTenantLifecycleStatus(w http.ResponseWriter, r *http.
 	_ = s.recordAdminAudit(r.Context(), action, "tenant", out.ID, map[string]string{"status": string(out.Status), "remote_ip": requestClientIP(r)})
 	writeJSON(w, http.StatusOK, out)
 }
-func (s *HTTPServer) handleDeleteTenant(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdminOwner(w, r) {
-		return
-	}
-	if err := requireDeleteConfirmation(r); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	tenantID := r.PathValue("tenantId")
-	if strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("force")), "true") {
-		var in adminForceDeleteRequest
-		if !decodeJSON(w, r, &in) {
-			return
-		}
-		if !s.requireAdminForceDelete(w, r, in) {
-			return
-		}
-		check, err := s.svc.GetTenantDeleteCheck(r.Context(), tenantID)
-		if err != nil {
-			writeRedactedError(w, err, s.svc.DataRoot())
-			return
-		}
-		if blockers := nonDeleteProtectionBlockers(check.Blockers); len(blockers) > 0 {
-			writeJSON(w, http.StatusConflict, map[string]any{"error": "tenant has active delete blockers", "blockers": blockers})
-			return
-		}
-		unprotected := false
-		if _, err := s.svc.UpdateTenant(r.Context(), tenantID, agentservice.UpdateTenantInput{DeleteProtected: &unprotected}); err != nil {
-			writeRedactedError(w, err, s.svc.DataRoot())
-			return
-		}
-		users, err := s.svc.ListUsers(r.Context(), tenantID, agentservice.ListUsersAdminInput{})
-		if err != nil {
-			writeRedactedError(w, err, s.svc.DataRoot())
-			return
-		}
-		for _, user := range users {
-			if user.DeleteProtected {
-				if _, err := s.svc.UpdateUser(r.Context(), tenantID, user.ID, agentservice.UpdateUserInput{DeleteProtected: &unprotected}); err != nil {
-					writeRedactedError(w, err, s.svc.DataRoot())
-					return
-				}
-			}
-		}
-		s.stopWeixinRuntimesForTenant(r.Context(), tenantID)
-		s.stopIMRuntimesForTenant(r.Context(), tenantID)
-		s.stopThirdPartyIMForTenant(tenantID)
-		if err := s.svc.DeleteTenant(r.Context(), tenantID); err != nil {
-			writeRedactedError(w, err, s.svc.DataRoot())
-			return
-		}
-		_ = s.recordAdminAudit(r.Context(), "admin.tenant_force_deleted", "tenant", tenantID, map[string]string{"users": strconv.Itoa(len(users)), "remote_ip": requestClientIP(r)})
-		writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "forced": true, "users_deleted": len(users)})
-		return
-	}
-	s.stopWeixinRuntimesForTenant(r.Context(), tenantID)
-	s.stopIMRuntimesForTenant(r.Context(), tenantID)
-	s.stopThirdPartyIMForTenant(tenantID)
-	if err := s.svc.DeleteTenant(r.Context(), tenantID); err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	_ = s.recordAdminAudit(r.Context(), "admin.tenant_deleted", "tenant", tenantID, map[string]string{"remote_ip": requestClientIP(r)})
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
-}
-func (s *HTTPServer) handleListAllUsers(w http.ResponseWriter, r *http.Request) {
-	status, ok := parseUserStatus(r.URL.Query().Get("status"))
-	if !ok {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid status"})
-		return
-	}
-	out, err := s.svc.ListAllUsers(r.Context(), agentservice.ListAllUsersAdminInput{
-		TenantID: strings.TrimSpace(r.URL.Query().Get("tenant_id")),
-		Status:   status,
-		Name:     strings.TrimSpace(r.URL.Query().Get("name")),
-		Email:    strings.TrimSpace(r.URL.Query().Get("email")),
-	})
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	page, err := parsePageQuery(r)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	items, meta := paginateUsers(out, page)
-	writeJSON(w, http.StatusOK, listResponse(items, meta))
-}
-
-func (s *HTTPServer) handleListUsers(w http.ResponseWriter, r *http.Request) {
-	status, ok := parseUserStatus(r.URL.Query().Get("status"))
-	if !ok {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid status"})
-		return
-	}
-	out, err := s.svc.ListUsers(r.Context(), r.PathValue("tenantId"), agentservice.ListUsersAdminInput{
-		Status: status,
-		Name:   strings.TrimSpace(r.URL.Query().Get("name")),
-		Email:  strings.TrimSpace(r.URL.Query().Get("email")),
-	})
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	page, err := parsePageQuery(r)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	items, meta := paginateUsers(out, page)
-	writeJSON(w, http.StatusOK, listResponse(items, meta))
-}
-func (s *HTTPServer) handleCreateUser(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdminOwner(w, r) {
-		return
-	}
-	var in agentservice.CreateUserInput
-	if !decodeJSON(w, r, &in) {
-		return
-	}
-	in.TenantID = r.PathValue("tenantId")
-	out, err := s.svc.CreateUser(r.Context(), in)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	_ = s.recordAdminAudit(r.Context(), "admin.user_created", "user", out.ID, userAuditMetadata(r, out))
-	writeJSON(w, http.StatusCreated, out)
-}
-func (s *HTTPServer) handleGetUser(w http.ResponseWriter, r *http.Request) {
-	out, err := s.svc.GetUser(r.Context(), r.PathValue("tenantId"), r.PathValue("userId"))
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, out)
-}
 
 func (s *HTTPServer) adminUserPrincipal(r *http.Request) agentservice.Principal {
 	return agentservice.Principal{TenantID: r.PathValue("tenantId"), UserID: r.PathValue("userId")}
-}
-
-func (s *HTTPServer) handleAdminGetUserConfigSchema(w http.ResponseWriter, r *http.Request) {
-	out, err := s.svc.GetParameterDefinitions(r.Context(), s.adminUserPrincipal(r))
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": out})
-}
-
-func (s *HTTPServer) handleAdminGetUserConfig(w http.ResponseWriter, r *http.Request) {
-	out, err := s.svc.GetUserConfig(r.Context(), s.adminUserPrincipal(r))
-	if err != nil {
-		if errors.Is(err, agentservice.ErrUserConfigNotFound) {
-			writeJSON(w, http.StatusOK, map[string]any{"app_config": forceSrvAIAutoEnabledConfig(corelib.AppConfigDefaults())})
-			return
-		}
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	out.AppConfig = forceSrvAIAutoEnabledConfig(out.AppConfig)
-	writeJSON(w, http.StatusOK, out)
-}
-
-func (s *HTTPServer) handleAdminUpdateUserConfig(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdminOwner(w, r) {
-		return
-	}
-	inPtr, ok := decodeOptionalAppConfig(w, r)
-	if !ok {
-		return
-	}
-	if inPtr == nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "empty or invalid config body"})
-		return
-	}
-	p := s.adminUserPrincipal(r)
-	next := forceSrvAIAutoEnabledConfig(*inPtr)
-	if err := s.validateThirdPartyGatewayTokenUnique(r.Context(), p, next); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	before, _ := s.svc.GetRawUserConfig(r.Context(), p)
-	out, err := s.svc.UpdateUserConfig(r.Context(), p, next)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	s.syncWeixinRuntimeFromRawConfig(r.Context(), p)
-	s.syncIMRuntimeFromRawConfig(r.Context(), p)
-	beforeCfg := corelib.AppConfig{}
-	if before != nil {
-		beforeCfg = before.AppConfig
-	}
-	after, _ := s.svc.GetRawUserConfig(r.Context(), p)
-	afterCfg := next
-	if after != nil {
-		afterCfg = after.AppConfig
-	}
-	s.syncThirdPartyIMConfigTransition(p, beforeCfg, afterCfg)
-	s.ensureConfiguredAIModelsAsync(out.AppConfig)
-	_ = s.recordAdminAudit(r.Context(), "admin.user_config_updated", "user", r.PathValue("userId"), map[string]string{"tenant_id": r.PathValue("tenantId"), "remote_ip": requestClientIP(r)})
-	writeJSON(w, http.StatusOK, out)
-}
-
-func (s *HTTPServer) handleAdminValidateUserConfig(w http.ResponseWriter, r *http.Request) {
-	candidate, ok := decodeOptionalAppConfig(w, r)
-	if !ok {
-		return
-	}
-	out, err := s.svc.ValidateConfigCandidate(r.Context(), s.adminUserPrincipal(r), candidate)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-
-func (s *HTTPServer) handleAdminTestUserConfig(w http.ResponseWriter, r *http.Request) {
-	candidate, ok := decodeOptionalAppConfig(w, r)
-	if !ok {
-		return
-	}
-	out, err := s.svc.TestConfigCandidate(r.Context(), s.adminUserPrincipal(r), candidate)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, sanitizeConfigTestResultForAPI(s.svc.DataRoot(), out))
-}
-
-func (s *HTTPServer) handleAdminGetClientConfigSchema(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"items": agentservice.SharedClientParameterDefinitions()})
-}
-
-func (s *HTTPServer) handleAdminGetDefaultClientConfig(w http.ResponseWriter, r *http.Request) {
-	out, err := s.svc.GetDefaultClientConfig(r.Context())
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	cfg := *out
-	cfg.AppConfig = forceSrvAIAutoEnabledConfig(agentservice.SanitizeAppConfig(cfg.AppConfig))
-	writeJSON(w, http.StatusOK, cfg)
-}
-
-func (s *HTTPServer) handleAdminUpdateDefaultClientConfig(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdminOwner(w, r) {
-		return
-	}
-	current, err := s.svc.GetDefaultClientConfig(r.Context())
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	base := current.AppConfig
-	if current.UpdatedAt.IsZero() {
-		base = corelib.AppConfigDefaults()
-	}
-	inPtr, ok := decodeOptionalAppConfigWithBase(w, r, base)
-	if !ok {
-		return
-	}
-	if inPtr == nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "empty or invalid config body"})
-		return
-	}
-	next := forceSrvAIAutoEnabledConfig(*inPtr)
-	out, err := s.svc.UpdateDefaultClientConfig(r.Context(), next)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	_ = s.recordAdminAudit(r.Context(), "admin.default_client_config_updated", "default_client_config", "global", map[string]string{"remote_ip": requestClientIP(r)})
-	s.ensureConfiguredAIModelsAsync(out.AppConfig)
-	writeJSON(w, http.StatusOK, out)
-}
-
-func (s *HTTPServer) handleAdminValidateDefaultClientConfig(w http.ResponseWriter, r *http.Request) {
-	current, err := s.svc.GetDefaultClientConfig(r.Context())
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	base := current.AppConfig
-	if current.UpdatedAt.IsZero() {
-		base = corelib.AppConfigDefaults()
-	}
-	candidate, ok := decodeOptionalAppConfigWithBase(w, r, base)
-	if !ok {
-		return
-	}
-	cfg := corelib.AppConfig{}
-	if candidate != nil {
-		cfg = agentservice.SharedClientAppConfigOnly(*candidate)
-	}
-	writeJSON(w, http.StatusOK, agentservice.ValidateAppConfig(cfg))
-}
-
-func (s *HTTPServer) handleGetUserDeleteCheck(w http.ResponseWriter, r *http.Request) {
-	out, err := s.svc.GetUserDeleteCheck(r.Context(), r.PathValue("tenantId"), r.PathValue("userId"))
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-func (s *HTTPServer) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdminOwner(w, r) {
-		return
-	}
-	var in agentservice.UpdateUserInput
-	if !decodeJSON(w, r, &in) {
-		return
-	}
-	out, err := s.svc.UpdateUser(r.Context(), r.PathValue("tenantId"), r.PathValue("userId"), in)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	_ = s.recordAdminAudit(r.Context(), "admin.user_updated", "user", out.ID, userAuditMetadata(r, out))
-	writeJSON(w, http.StatusOK, out)
-}
-func (s *HTTPServer) handlePauseUser(w http.ResponseWriter, r *http.Request) {
-	s.updateUserLifecycleStatus(w, r, agentservice.UserStatusDisabled, "admin.user_paused")
-}
-
-func (s *HTTPServer) handleResumeUser(w http.ResponseWriter, r *http.Request) {
-	s.updateUserLifecycleStatus(w, r, agentservice.UserStatusActive, "admin.user_resumed")
 }
 
 func (s *HTTPServer) updateUserLifecycleStatus(w http.ResponseWriter, r *http.Request, status agentservice.UserStatus, action string) {
@@ -2907,59 +1280,6 @@ func (s *HTTPServer) updateUserLifecycleStatus(w http.ResponseWriter, r *http.Re
 	_ = s.recordAdminAudit(r.Context(), action, "user", out.ID, map[string]string{"tenant_id": out.TenantID, "status": string(out.Status), "remote_ip": requestClientIP(r)})
 	writeJSON(w, http.StatusOK, out)
 }
-func (s *HTTPServer) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdminOwner(w, r) {
-		return
-	}
-	if err := requireDeleteConfirmation(r); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	tenantID := r.PathValue("tenantId")
-	userID := r.PathValue("userId")
-	if strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("force")), "true") {
-		var in adminForceDeleteRequest
-		if !decodeJSON(w, r, &in) {
-			return
-		}
-		if !s.requireAdminForceDelete(w, r, in) {
-			return
-		}
-		check, err := s.svc.GetUserDeleteCheck(r.Context(), tenantID, userID)
-		if err != nil {
-			writeRedactedError(w, err, s.svc.DataRoot())
-			return
-		}
-		if blockers := nonDeleteProtectionBlockers(check.Blockers); len(blockers) > 0 {
-			writeJSON(w, http.StatusConflict, map[string]any{"error": "user has active delete blockers", "blockers": blockers})
-			return
-		}
-		unprotected := false
-		if _, err := s.svc.UpdateUser(r.Context(), tenantID, userID, agentservice.UpdateUserInput{DeleteProtected: &unprotected}); err != nil {
-			writeRedactedError(w, err, s.svc.DataRoot())
-			return
-		}
-		s.stopWeixinRuntimeForPrincipal(agentservice.Principal{TenantID: tenantID, UserID: userID})
-		s.stopIMRuntimeForPrincipal(agentservice.Principal{TenantID: tenantID, UserID: userID})
-		s.stopThirdPartyIMForPrincipal(agentservice.Principal{TenantID: tenantID, UserID: userID})
-		if err := s.svc.DeleteUser(r.Context(), tenantID, userID); err != nil {
-			writeRedactedError(w, err, s.svc.DataRoot())
-			return
-		}
-		_ = s.recordAdminAudit(r.Context(), "admin.user_force_deleted", "user", userID, map[string]string{"tenant_id": tenantID, "remote_ip": requestClientIP(r)})
-		writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "forced": true})
-		return
-	}
-	s.stopWeixinRuntimeForPrincipal(agentservice.Principal{TenantID: tenantID, UserID: userID})
-	s.stopIMRuntimeForPrincipal(agentservice.Principal{TenantID: tenantID, UserID: userID})
-	s.stopThirdPartyIMForPrincipal(agentservice.Principal{TenantID: tenantID, UserID: userID})
-	if err := s.svc.DeleteUser(r.Context(), tenantID, userID); err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	_ = s.recordAdminAudit(r.Context(), "admin.user_deleted", "user", userID, map[string]string{"tenant_id": tenantID, "remote_ip": requestClientIP(r)})
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
-}
 
 func nonDeleteProtectionBlockers(blockers []agentservice.DeleteBlocker) []agentservice.DeleteBlocker {
 	out := make([]agentservice.DeleteBlocker, 0, len(blockers))
@@ -2969,111 +1289,6 @@ func nonDeleteProtectionBlockers(blockers []agentservice.DeleteBlocker) []agents
 		}
 	}
 	return out
-}
-func (s *HTTPServer) handleListCredentials(w http.ResponseWriter, r *http.Request) {
-	out, err := s.svc.ListCredentials(r.Context(), r.PathValue("tenantId"), r.PathValue("userId"))
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	out, err = filterCredentialsByQuery(out, r)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	page, err := parsePageQuery(r)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	items, meta := paginateCredentials(out, page)
-	writeJSON(w, http.StatusOK, listResponse(items, meta))
-}
-func (s *HTTPServer) handleCreateCredential(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdminOwner(w, r) {
-		return
-	}
-	var in agentservice.CreateCredentialInput
-	if !decodeJSON(w, r, &in) {
-		return
-	}
-	in.TenantID = r.PathValue("tenantId")
-	in.UserID = r.PathValue("userId")
-	out, err := s.svc.CreateCredential(r.Context(), in)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	_ = s.recordAdminAudit(r.Context(), "admin.credential_created", "credential", out.ID, credentialAuditMetadata(r, out))
-	writeJSON(w, http.StatusCreated, out)
-}
-func (s *HTTPServer) handleGetCredential(w http.ResponseWriter, r *http.Request) {
-	out, err := s.svc.GetCredential(r.Context(), r.PathValue("tenantId"), r.PathValue("userId"), r.PathValue("credentialId"))
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-func (s *HTTPServer) handleUpdateCredential(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdminOwner(w, r) {
-		return
-	}
-	var in agentservice.UpdateCredentialInput
-	if !decodeJSON(w, r, &in) {
-		return
-	}
-	out, err := s.svc.UpdateCredential(r.Context(), r.PathValue("tenantId"), r.PathValue("userId"), r.PathValue("credentialId"), in)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	_ = s.recordAdminAudit(r.Context(), "admin.credential_updated", "credential", out.ID, credentialAuditMetadata(r, out))
-	writeJSON(w, http.StatusOK, out)
-}
-func (s *HTTPServer) handleRotateCredentialSecret(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdminOwner(w, r) {
-		return
-	}
-	var in agentservice.RotateCredentialSecretInput
-	if !decodeJSON(w, r, &in) {
-		return
-	}
-	out, err := s.svc.RotateCredentialSecret(r.Context(), r.PathValue("tenantId"), r.PathValue("userId"), r.PathValue("credentialId"), in)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	_ = s.recordAdminAudit(r.Context(), "admin.credential_secret_rotated", "credential", out.ID, credentialAuditMetadata(r, out))
-	writeJSON(w, http.StatusOK, out)
-}
-func (s *HTTPServer) handleRotateCredentialKey(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdminOwner(w, r) {
-		return
-	}
-	var in agentservice.RotateCredentialKeyInput
-	if !decodeJSON(w, r, &in) {
-		return
-	}
-	out, err := s.svc.RotateCredentialAPIKey(r.Context(), r.PathValue("tenantId"), r.PathValue("userId"), r.PathValue("credentialId"), in)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	_ = s.recordAdminAudit(r.Context(), "admin.credential_key_rotated", "credential", out.ID, credentialAuditMetadata(r, out))
-	writeJSON(w, http.StatusOK, out)
-}
-func (s *HTTPServer) handleRevokeCredential(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdminOwner(w, r) {
-		return
-	}
-	out, err := s.svc.RevokeCredential(r.Context(), r.PathValue("tenantId"), r.PathValue("userId"), r.PathValue("credentialId"))
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	_ = s.recordAdminAudit(r.Context(), "admin.credential_revoked", "credential", out.ID, credentialAuditMetadata(r, out))
-	writeJSON(w, http.StatusOK, out)
 }
 func (s *HTTPServer) handleIssueToken(w http.ResponseWriter, r *http.Request) {
 	var in agentservice.IssueTokenInput
@@ -3112,123 +1327,6 @@ func (s *HTTPServer) handleGetMe(w http.ResponseWriter, r *http.Request, p agent
 	}
 	writeJSON(w, http.StatusOK, out)
 }
-func (s *HTTPServer) handleGetConfigSchema(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	out, err := s.svc.GetParameterDefinitions(r.Context(), p)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	out = filterUserConfigSchema(out)
-	writeJSON(w, http.StatusOK, map[string]any{"items": out})
-}
-func (s *HTTPServer) handleGetConfig(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	out, err := s.svc.GetUserConfig(r.Context(), p)
-	if err != nil {
-		if errors.Is(err, agentservice.ErrUserConfigNotFound) {
-			writeUserConfigResponse(w, http.StatusOK, &agentservice.UserConfig{TenantID: p.TenantID, UserID: p.UserID, AppConfig: forceSrvAIAutoEnabledConfig(corelib.AppConfigDefaults())})
-			return
-		}
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeUserConfigResponse(w, http.StatusOK, out)
-}
-func (s *HTTPServer) handleUpdateConfig(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	// Accept both raw AppConfig JSON and {"app_config": {...}} envelope format.
-	inPtr, ok := decodeOptionalAppConfig(w, r)
-	if !ok {
-		return
-	}
-	if inPtr == nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "empty or invalid config body"})
-		return
-	}
-	next, err := s.userVisibleConfigUpdate(r.Context(), p, *inPtr)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	next = forceSrvAIAutoEnabledConfig(next)
-	if err := s.validateThirdPartyGatewayTokenUnique(r.Context(), p, next); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	before, _ := s.svc.GetRawUserConfig(r.Context(), p)
-	out, err := s.svc.UpdateUserConfig(r.Context(), p, next)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	s.syncWeixinRuntimeFromRawConfig(r.Context(), p)
-	s.syncIMRuntimeFromRawConfig(r.Context(), p)
-	beforeCfg := corelib.AppConfig{}
-	if before != nil {
-		beforeCfg = before.AppConfig
-	}
-	after, _ := s.svc.GetRawUserConfig(r.Context(), p)
-	afterCfg := next
-	if after != nil {
-		afterCfg = after.AppConfig
-	}
-	s.syncThirdPartyIMConfigTransition(p, beforeCfg, afterCfg)
-	s.ensureConfiguredAIModelsAsync(out.AppConfig)
-	writeUserConfigResponse(w, http.StatusOK, out)
-}
-
-func (s *HTTPServer) handleGetWeixinRuntimeStatus(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	cfg, err := s.rawWeixinAppConfig(r.Context(), p)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	s.syncWeixinRuntimeFromRawConfig(r.Context(), p)
-	status := srvWeixinRuntimeStatus{Status: srvWeixinStatusDisabled}
-	if s.weixinRuntime != nil {
-		status = s.weixinRuntime.Status(p)
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"enabled":    cfg.WeixinEnabled,
-		"bound":      strings.TrimSpace(cfg.WeixinToken) != "",
-		"account_id": strings.TrimSpace(cfg.WeixinAccountID),
-		"runtime":    status.Status,
-		"last_error": status.LastError,
-		"updated_at": status.UpdatedAt,
-	})
-}
-
-func (s *HTTPServer) handleRestartWeixinRuntime(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	cfg, err := s.rawWeixinAppConfig(r.Context(), p)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	if !cfg.WeixinEnabled || strings.TrimSpace(cfg.WeixinToken) == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "weixin is not bound or enabled"})
-		return
-	}
-	if s.weixinRuntime != nil {
-		s.weixinRuntime.RestartPrincipal(r.Context(), p, cfg)
-	}
-	status := srvWeixinRuntimeStatus{Status: srvWeixinStatusDisabled}
-	if s.weixinRuntime != nil {
-		status = s.weixinRuntime.Status(p)
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": "restarted", "runtime": status.Status, "last_error": status.LastError, "updated_at": status.UpdatedAt})
-}
-
-func (s *HTTPServer) handleGetIMRuntimeStatuses(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	items := map[string]srvIMRuntimeStatus{}
-	if s.imRuntime != nil {
-		items = s.imRuntime.Statuses(p)
-	}
-	for _, platform := range []string{"qq", "telegram", "lansenger"} {
-		if _, ok := items[platform]; !ok {
-			items[platform] = srvIMRuntimeStatus{Status: srvWeixinStatusDisabled}
-		}
-	}
-	items["thirdparty"] = s.thirdPartyRuntimeStatus(r.Context(), p)
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
-}
 
 func (s *HTTPServer) thirdPartyRuntimeStatus(ctx context.Context, p agentservice.Principal) srvIMRuntimeStatus {
 	now := time.Now().UTC()
@@ -3249,26 +1347,6 @@ func (s *HTTPServer) thirdPartyRuntimeStatus(ctx context.Context, p agentservice
 		return srvIMRuntimeStatus{Status: srvWeixinStatusError, LastError: err.Error(), UpdatedAt: now}
 	}
 	return srvIMRuntimeStatus{Status: srvWeixinStatusConnected, UpdatedAt: now}
-}
-
-func (s *HTTPServer) handleStartWeixinQRLogin(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	baseURL, err := s.weixinQRBaseURL(r.Context(), p)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-	defer cancel()
-	qrcodeURL, qrcodeToken, err := weixin.StartQRLogin(ctx, baseURL, weixin.DefaultBotType)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	if s.weixinQRTokens == nil {
-		s.weixinQRTokens = newWeixinQRTokenStore()
-	}
-	s.weixinQRTokens.Put(qrcodeToken, weixinQRTokenRecord{TenantID: p.TenantID, UserID: p.UserID, BaseURL: baseURL, ExpiresAt: time.Now().UTC().Add(10 * time.Minute)}, time.Now().UTC())
-	writeJSON(w, http.StatusOK, map[string]string{"qrcode_url": qrcodeURL, "qrcode_image_url": weixinQRCodeImageProxyURL(qrcodeURL), "qrcode_token": qrcodeToken})
 }
 
 func weixinQRCodeImageProxyURL(qrcodeURL string) string {
@@ -3301,127 +1379,7 @@ func validateWeixinQRCodeImageURL(rawURL string) (*url.URL, error) {
 	return u, nil
 }
 
-func (s *HTTPServer) handleProxyWeixinQRCodeImage(w http.ResponseWriter, r *http.Request, _ agentservice.Principal) {
-	if value := strings.TrimSpace(r.URL.Query().Get("value")); value != "" {
-		if len(value) > 4096 {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "qrcode value is too large"})
-			return
-		}
-		png, err := qrcode.Encode(value, qrcode.Medium, 360)
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "generate qrcode image failed"})
-			return
-		}
-		w.Header().Set("Content-Type", "image/png")
-		w.Header().Set("Cache-Control", "no-store")
-		_, _ = w.Write(png)
-		return
-	}
-	u, err := validateWeixinQRCodeImageURL(r.URL.Query().Get("url"))
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid qrcode url"})
-		return
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "fetch qrcode image failed"})
-		return
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": fmt.Sprintf("qrcode image returned %d", resp.StatusCode)})
-		return
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024+1))
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "read qrcode image failed"})
-		return
-	}
-	if len(body) > 2*1024*1024 {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "qrcode image is too large"})
-		return
-	}
-	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
-	if !strings.HasPrefix(strings.ToLower(contentType), "image/") {
-		contentType = http.DetectContentType(body)
-		if !strings.HasPrefix(strings.ToLower(contentType), "image/") {
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "qrcode response is not an image"})
-			return
-		}
-	}
-	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(body)
-}
-
 const userWeixinQRStatusPollTimeout = 5 * time.Second
-
-func (s *HTTPServer) handlePollWeixinQRLogin(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	var in struct {
-		QRCodeToken string `json:"qrcode_token"`
-	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	in.QRCodeToken = strings.TrimSpace(in.QRCodeToken)
-	if in.QRCodeToken == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "qrcode token is required"})
-		return
-	}
-	if s.weixinQRTokens == nil {
-		s.weixinQRTokens = newWeixinQRTokenStore()
-	}
-	rec, ok := s.weixinQRTokens.Get(in.QRCodeToken, p, time.Now().UTC())
-	if !ok {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "qrcode token is not active for this user", "status": "error"})
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), userWeixinQRStatusPollTimeout)
-	defer cancel()
-	result, status, err := weixin.PollQRStatus(ctx, rec.BaseURL, in.QRCodeToken)
-	if err != nil {
-		writeJSON(w, http.StatusOK, weixinQRPollErrorResponse(err))
-		return
-	}
-	status = normalizeWeixinQRPollStatus(status, result)
-	resp := map[string]any{"status": status.String()}
-	if msg := weixinQRPollMessage(status, result); msg != "" {
-		resp["message"] = msg
-	}
-	if status == weixin.QRLoginStatusConfirmed {
-		if result == nil || !result.Connected {
-			message := "weixin login was not connected"
-			if result != nil && strings.TrimSpace(result.Message) != "" {
-				message = strings.TrimSpace(result.Message)
-			}
-			resp["error"] = message
-			writeJSON(w, http.StatusOK, resp)
-			return
-		}
-		if err := s.saveWeixinQRLoginConfig(r.Context(), p, result); err != nil {
-			writeRedactedError(w, err, s.svc.DataRoot())
-			return
-		}
-		s.syncWeixinRuntimeFromRawConfig(r.Context(), p)
-		s.weixinQRTokens.Delete(in.QRCodeToken)
-		resp["account_id"] = result.AccountID
-		_ = s.svc.RecordAuditEvent(r.Context(), agentservice.AuditEvent{TenantID: p.TenantID, UserID: p.UserID, ActorType: "user", ActorTenant: p.TenantID, ActorUser: p.UserID, Action: "user.im.weixin_qr_bound", ResourceType: "config", ResourceID: "weixin", Metadata: map[string]string{"account_id": result.AccountID, "remote_ip": requestClientIP(r)}})
-	}
-	if status == weixin.QRLoginStatusExpired {
-		s.weixinQRTokens.Delete(in.QRCodeToken)
-	}
-	writeJSON(w, http.StatusOK, resp)
-}
 
 func weixinQRPollErrorResponse(err error) map[string]any {
 	if weixin.IsQRLoginRetryableError(err) {
@@ -3487,60 +1445,6 @@ func (s *HTTPServer) saveWeixinQRLoginConfig(ctx context.Context, p agentservice
 	return err
 }
 
-func (s *HTTPServer) handleValidateConfig(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	candidate, ok := decodeOptionalAppConfig(w, r)
-	if !ok {
-		return
-	}
-	candidate, err := s.userVisibleConfigCandidate(r.Context(), p, candidate)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	out, err := s.svc.ValidateConfigCandidate(r.Context(), p, candidate)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-func (s *HTTPServer) handleTestConfig(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	candidate, ok := decodeOptionalAppConfig(w, r)
-	if !ok {
-		return
-	}
-	candidate, err := s.userVisibleConfigCandidate(r.Context(), p, candidate)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	out, err := s.svc.TestConfigCandidate(r.Context(), p, candidate)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, sanitizeConfigTestResultForAPI(s.svc.DataRoot(), out))
-}
-
-func (s *HTTPServer) handleListIMAuditMessages(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	in, ok := parseIMAuditQuery(w, r)
-	if !ok {
-		return
-	}
-	out, err := s.svc.ListIMAuditMessages(r.Context(), p, in)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	page, err := parsePageQuery(r)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	items, meta := paginateIMAuditMessages(out, page)
-	writeJSON(w, http.StatusOK, listResponse(items, meta))
-}
-
 func parseIMAuditQuery(w http.ResponseWriter, r *http.Request) (agentservice.ListIMAuditMessagesInput, bool) {
 	since, err := parseOptionalTimeQuery(r, "since")
 	if err != nil {
@@ -3567,60 +1471,6 @@ func parseIMAuditQuery(w http.ResponseWriter, r *http.Request) (agentservice.Lis
 	}, true
 }
 
-func (s *HTTPServer) handleListIMAuditContacts(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	out, err := s.svc.ListIMAuditContacts(r.Context(), p, strings.TrimSpace(r.URL.Query().Get("platform")))
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": out})
-}
-
-func (s *HTTPServer) handleGetIMAuditStats(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	in, ok := parseIMAuditQuery(w, r)
-	if !ok {
-		return
-	}
-	out, err := s.svc.GetIMAuditStats(r.Context(), p, in)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-
-func (s *HTTPServer) handleExportIMAuditCSV(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	in, ok := parseIMAuditQuery(w, r)
-	if !ok {
-		return
-	}
-	out, err := s.svc.ListIMAuditMessages(r.Context(), p, in)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
-	w.Header().Set("Content-Disposition", `attachment; filename="im-audit.csv"`)
-	w.WriteHeader(http.StatusOK)
-	cw := csv.NewWriter(w)
-	_ = cw.Write([]string{"created_at", "platform", "contact_id", "role", "content", "instance_id", "instance_name", "session_id", "session_title", "message_id"})
-	for _, item := range out {
-		_ = cw.Write([]string{
-			csvSafeCell(item.CreatedAt.Format(time.RFC3339Nano)),
-			csvSafeCell(item.Platform),
-			csvSafeCell(item.ContactID),
-			csvSafeCell(string(item.Message.Role)),
-			csvSafeCell(item.Message.Content),
-			csvSafeCell(item.InstanceID),
-			csvSafeCell(item.InstanceName),
-			csvSafeCell(item.SessionID),
-			csvSafeCell(item.SessionTitle),
-			csvSafeCell(item.Message.Metadata["im_message_id"]),
-		})
-	}
-	cw.Flush()
-}
-
 func csvSafeCell(value string) string {
 	if trimmed := strings.TrimLeft(value, " \t\r\n"); trimmed != "" {
 		switch trimmed[0] {
@@ -3631,75 +1481,6 @@ func csvSafeCell(value string) string {
 	return value
 }
 
-func (s *HTTPServer) handleDeleteIMAuditMessages(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	if err := requireAdminConfirmation(r, "IM history cleanup"); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	in, ok := parseIMAuditQuery(w, r)
-	if !ok {
-		return
-	}
-	before, err := parseRequiredTimeQuery(r, "before")
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	out, err := s.svc.DeleteIMAuditMessagesBefore(r.Context(), p, in, before)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-
-func (s *HTTPServer) handleListMemory(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	limit, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("limit")))
-	offset, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("offset")))
-	out, err := s.svc.ListUserMemories(r.Context(), p, agentservice.UserMemoryListInput{Category: r.URL.Query().Get("category"), Query: r.URL.Query().Get("q"), Limit: limit, Offset: offset})
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-
-func (s *HTTPServer) handleCreateMemory(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	var in agentservice.UserMemorySaveInput
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid memory body"})
-		return
-	}
-	out, err := s.svc.SaveUserMemory(r.Context(), p, in)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusCreated, out)
-}
-
-func (s *HTTPServer) handleUpdateMemory(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	var in agentservice.UserMemorySaveInput
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid memory body"})
-		return
-	}
-	out, err := s.svc.UpdateUserMemory(r.Context(), p, r.PathValue("id"), in)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-
-func (s *HTTPServer) handleDeleteMemory(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	if err := s.svc.DeleteUserMemory(r.Context(), p, r.PathValue("id")); err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
-}
-
 func (s *HTTPServer) handleGetUsageSummary(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	out, err := s.svc.GetUsageSummary(r.Context(), p)
 	if err != nil {
@@ -3708,351 +1489,13 @@ func (s *HTTPServer) handleGetUsageSummary(w http.ResponseWriter, r *http.Reques
 	}
 	writeJSON(w, http.StatusOK, sanitizeUsageSummaryForAPI(out))
 }
-func (s *HTTPServer) handleListMCPServers(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	out, err := s.svc.ListMCPServers(r.Context(), p)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	page, err := parsePageQuery(r)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	items, meta := paginateMCPServers(sanitizeMCPServerViewsForAPI(s.svc.DataRoot(), out), page)
-	writeJSON(w, http.StatusOK, listResponse(items, meta))
-}
-func (s *HTTPServer) handleSearchMCPMarket(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	out, err := s.svc.SearchMCPMarket(r.Context(), p, strings.TrimSpace(r.URL.Query().Get("q")))
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": out})
-}
-func (s *HTTPServer) handleInstallMCPMarket(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	var in agentservice.MCPCapabilitySummary
-	if !decodeJSON(w, r, &in) {
-		return
-	}
-	out, err := s.svc.InstallMCPMarketCapability(r.Context(), p, in)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusCreated, sanitizeMCPServerViewPtrForAPI(s.svc.DataRoot(), out))
-}
-func (s *HTTPServer) handleCreateMCPServer(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	var in agentservice.MCPServerCreateInput
-	if !decodeJSON(w, r, &in) {
-		return
-	}
-	asyncMode, err := parseRequiredBoolLikeQuery(r, "async")
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	if asyncMode {
-		job := s.jobs.createUserJob("mcp.create", p, func(ctx context.Context) (any, error) {
-			return s.svc.CreateMCPServer(ctx, p, in)
-		})
-		writeJSON(w, http.StatusAccepted, job)
-		return
-	}
-	out, err := s.svc.CreateMCPServer(r.Context(), p, in)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusCreated, sanitizeMCPServerViewPtrForAPI(s.svc.DataRoot(), out))
-}
-func (s *HTTPServer) handleGetMCPServer(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	out, err := s.svc.GetMCPServer(r.Context(), p, r.PathValue("serverId"))
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, sanitizeMCPServerViewPtrForAPI(s.svc.DataRoot(), out))
-}
-func (s *HTTPServer) handleUpdateMCPServer(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	var in agentservice.MCPServerUpdateInput
-	if !decodeJSON(w, r, &in) {
-		return
-	}
-	asyncMode, err := parseRequiredBoolLikeQuery(r, "async")
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	if asyncMode {
-		job := s.jobs.createUserJob("mcp.update", p, func(ctx context.Context) (any, error) {
-			return s.svc.UpdateMCPServer(ctx, p, r.PathValue("serverId"), in)
-		})
-		writeJSON(w, http.StatusAccepted, job)
-		return
-	}
-	out, err := s.svc.UpdateMCPServer(r.Context(), p, r.PathValue("serverId"), in)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, sanitizeMCPServerViewPtrForAPI(s.svc.DataRoot(), out))
-}
-func (s *HTTPServer) handleDeleteMCPServer(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	if err := s.svc.DeleteMCPServer(r.Context(), p, r.PathValue("serverId")); err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
-}
-func (s *HTTPServer) handleStartMCPServer(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	asyncMode, err := parseRequiredBoolLikeQuery(r, "async")
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	if asyncMode {
-		job := s.jobs.createUserJob("mcp.start", p, func(ctx context.Context) (any, error) {
-			return s.svc.StartMCPServer(ctx, p, r.PathValue("serverId"))
-		})
-		writeJSON(w, http.StatusAccepted, job)
-		return
-	}
-	out, err := s.svc.StartMCPServer(r.Context(), p, r.PathValue("serverId"))
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, sanitizeMCPServerViewPtrForAPI(s.svc.DataRoot(), out))
-}
-func (s *HTTPServer) handleStopMCPServer(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	asyncMode, err := parseRequiredBoolLikeQuery(r, "async")
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	if asyncMode {
-		job := s.jobs.createUserJob("mcp.stop", p, func(ctx context.Context) (any, error) {
-			return s.svc.StopMCPServer(ctx, p, r.PathValue("serverId"))
-		})
-		writeJSON(w, http.StatusAccepted, job)
-		return
-	}
-	out, err := s.svc.StopMCPServer(r.Context(), p, r.PathValue("serverId"))
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, sanitizeMCPServerViewPtrForAPI(s.svc.DataRoot(), out))
-}
-func (s *HTTPServer) handleCheckMCPServer(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	asyncMode, err := parseRequiredBoolLikeQuery(r, "async")
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	if asyncMode {
-		job := s.jobs.createUserJob("mcp.health_check", p, func(ctx context.Context) (any, error) {
-			return s.svc.CheckMCPServer(ctx, p, r.PathValue("serverId"))
-		})
-		writeJSON(w, http.StatusAccepted, job)
-		return
-	}
-	out, err := s.svc.CheckMCPServer(r.Context(), p, r.PathValue("serverId"))
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, sanitizeMCPServerViewPtrForAPI(s.svc.DataRoot(), out))
-}
-func (s *HTTPServer) handleGetMCPServerTools(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	out, err := s.svc.GetMCPServerTools(r.Context(), p, r.PathValue("serverId"))
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": out})
-}
 
-func (s *HTTPServer) handleListSkills(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	out, err := s.svc.ListSkills(r.Context(), p)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	page, err := parseSkillPageQuery(r)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	items, meta := paginateSkills(sanitizeSkillEntriesForAPI(s.svc.DataRoot(), out), page)
-	writeJSON(w, http.StatusOK, listResponse(items, meta))
-}
-func (s *HTTPServer) handleGetSkill(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	out, err := s.svc.GetSkill(r.Context(), p, r.PathValue("skillName"))
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, sanitizeSkillEntryPtrForAPI(s.svc.DataRoot(), out))
-}
-func (s *HTTPServer) handleDeleteSkill(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	if err := s.svc.DeleteSkill(r.Context(), p, r.PathValue("skillName")); err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
-}
-func (s *HTTPServer) handleSearchSkills(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	var in agentservice.SkillSearchInput
-	if !decodeJSON(w, r, &in) {
-		return
-	}
-	out, err := s.svc.SearchSkills(r.Context(), p, in)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": sanitizeSkillSearchResultsForAPI(s.svc.DataRoot(), out)})
-}
-func (s *HTTPServer) handleInstallSkill(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	var in agentservice.SkillInstallInput
-	if !decodeJSON(w, r, &in) {
-		return
-	}
-	asyncMode, err := parseRequiredBoolLikeQuery(r, "async")
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	if asyncMode {
-		job := s.jobs.createUserJob("skill.install", p, func(ctx context.Context) (any, error) {
-			out, err := s.svc.InstallSkill(ctx, p, in)
-			if err != nil {
-				return nil, err
-			}
-			return map[string]any{"items": sanitizeSkillEntriesForAPI(s.svc.DataRoot(), out)}, nil
-		})
-		writeJSON(w, http.StatusAccepted, job)
-		return
-	}
-	out, err := s.svc.InstallSkill(r.Context(), p, in)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusCreated, map[string]any{"items": sanitizeSkillEntriesForAPI(s.svc.DataRoot(), out)})
-}
-func (s *HTTPServer) handleImportSkill(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	var in agentservice.SkillImportInput
-	if !decodeJSON(w, r, &in) {
-		return
-	}
-	asyncMode, err := parseRequiredBoolLikeQuery(r, "async")
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	if asyncMode {
-		job := s.jobs.createUserJob("skill.import", p, func(ctx context.Context) (any, error) {
-			out, err := s.svc.ImportSkillArchive(ctx, p, in)
-			if err != nil {
-				return nil, err
-			}
-			return map[string]any{"items": sanitizeSkillEntriesForAPI(s.svc.DataRoot(), out)}, nil
-		})
-		writeJSON(w, http.StatusAccepted, job)
-		return
-	}
-	out, err := s.svc.ImportSkillArchive(r.Context(), p, in)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusCreated, map[string]any{"items": sanitizeSkillEntriesForAPI(s.svc.DataRoot(), out)})
-}
-func (s *HTTPServer) handleExportSkill(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	out, err := s.svc.ExportSkill(r.Context(), p, r.PathValue("skillName"))
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-
-var userComplexConfigKeys = map[string]struct{}{
-	"maclaw_llm_protocol":         {},
-	"maclaw_llm_context_length":   {},
-	"maclaw_llm_timeout_sec":      {},
-	"skill_runner_timeout_sec":    {},
-	"maclaw_llm_current_provider": {},
-	"maclaw_llm_providers":        {},
-	"llm_prompt_cache":            {},
-	"auxiliary_llm":               {},
-	"model_routes":                {},
-}
-
-var userHiddenConfigKeys = map[string]struct{}{
-	"claude":                           {},
-	"codex":                            {},
-	"opencode":                         {},
-	"codebuddy":                        {},
-	"iflow":                            {},
-	"kilo":                             {},
-	"projects":                         {},
-	"current_project":                  {},
-	"active_tool":                      {},
-	"default_tool":                     {},
-	"default_tool_provider":            {},
-	"show_codex":                       {},
-	"show_opencode":                    {},
-	"show_codebuddy":                   {},
-	"show_iflow":                       {},
-	"show_kilo":                        {},
-	"extra_tool_configs":               {},
-	"default_proxy_scope_coding_tools": {},
-	"use_windows_terminal":             {},
-	"nl_skills":                        {},
-	"llm_token_usage":                  {},
-	"mcp_servers":                      {},
-	"local_mcp_servers":                {},
-	"ssh_hosts":                        {},
-	"skill_hub_urls":                   {},
-	"external_skill_dirs":              {},
-	"skill_sources_allowed":            {},
-	"remote_user_id":                   {},
-	"remote_tenant_id":                 {},
-	"remote_tenant_name":               {},
-	"remote_machine_id":                {},
-	"remote_machine_name":              {},
-	"remote_machine_token":             {},
-	"remote_viewer_token":              {},
-	"skill_market_session_token":       {},
-	"remote_client_id":                 {},
-	"remote_sn":                        {},
-	"env_check_done":                   {},
-	"last_env_check_time":              {},
-	"onboarding_done":                  {},
-	"floating_btn_x":                   {},
-	"floating_btn_y":                   {},
-	"floating_btn_position_set":        {},
-	"noise_floor_calibrated":           {},
-	"speech_level_calibrated":          {},
-}
-
-func init() {
-	for key := range userComplexConfigKeys {
-		userHiddenConfigKeys[key] = struct{}{}
-	}
-}
+var userHiddenConfigKeys = coreconfig.UserWebHiddenConfigKeys()
 
 func filterUserConfigSchema(defs []agentservice.ParameterDefinition) []agentservice.ParameterDefinition {
 	out := make([]agentservice.ParameterDefinition, 0, len(defs))
 	for _, def := range defs {
-		if _, hidden := userHiddenConfigKeys[def.Key]; hidden {
-			continue
-		}
-		if isUserWebRetiredSettingsKey(def.Key) {
+		if !coreconfig.IsUserWebVisibleField(def.Key) {
 			continue
 		}
 		out = append(out, def)
@@ -4142,14 +1585,10 @@ func (s *HTTPServer) currentUserConfigForVisibleMerge(ctx context.Context, p age
 func preserveUserComplexConfig(current, next corelib.AppConfig) corelib.AppConfig {
 	next = preserveUserFlatLLMConfig(current, next)
 	next = preserveUserSharedClientConfig(current, next)
-	next.MaclawLLMProtocol = current.MaclawLLMProtocol
-	next.MaclawLLMContextLength = current.MaclawLLMContextLength
-	next.MaclawLLMTimeoutSec = current.MaclawLLMTimeoutSec
-	next.MaclawLLMCurrentProvider = current.MaclawLLMCurrentProvider
-	next.MaclawLLMProviders = current.MaclawLLMProviders
-	next.LLMPromptCache = current.LLMPromptCache
-	next.AuxiliaryLLM = current.AuxiliaryLLM
-	next.ModelRoutes = current.ModelRoutes
+	// Complex fields are governed by the same corelib/config metadata used by
+	// the schema.  New structured AppConfig fields therefore get preserved
+	// automatically instead of requiring another MaClawSrv field assignment.
+	next = preserveAppConfigTaggedFields(current, next, coreconfig.IsUserWebComplexField)
 	next = preserveUserInvisibleConfig(current, next)
 	return next
 }
@@ -4168,48 +1607,24 @@ func preserveUserFlatLLMConfig(current, next corelib.AppConfig) corelib.AppConfi
 }
 
 func stripUserComplexConfig(cfg corelib.AppConfig) corelib.AppConfig {
-	cfg.MaclawLLMProtocol = ""
-	cfg.MaclawLLMContextLength = 0
-	cfg.MaclawLLMTimeoutSec = 0
-	cfg.MaclawLLMCurrentProvider = ""
-	cfg.MaclawLLMProviders = nil
-	cfg.LLMPromptCache = corelib.LLMPromptCacheConfig{}
-	cfg.AuxiliaryLLM = corelib.AuxiliaryLLMConfig{}
-	cfg.ModelRoutes = nil
+	cfg = preserveAppConfigTaggedFields(corelib.AppConfig{}, cfg, coreconfig.IsUserWebComplexField)
 	return stripUserInvisibleConfig(cfg)
 }
 
 func preserveUserSharedClientConfig(current, next corelib.AppConfig) corelib.AppConfig {
-	next.WebSearchProviders = current.WebSearchProviders
-	next.WebSearchCurrentProvider = current.WebSearchCurrentProvider
-	next.DefaultProxyEnabled = current.DefaultProxyEnabled
-	next.DefaultProxyProtocol = current.DefaultProxyProtocol
-	next.DefaultProxyHost = current.DefaultProxyHost
-	next.DefaultProxyPort = current.DefaultProxyPort
-	next.DefaultProxyUsername = current.DefaultProxyUsername
-	next.DefaultProxyPassword = current.DefaultProxyPassword
-	next.DefaultProxyBypass = current.DefaultProxyBypass
-	next.DefaultProxyScopeMaclaw = current.DefaultProxyScopeMaclaw
-	next.DefaultProxyScopeCodingTools = current.DefaultProxyScopeCodingTools
-	next.DefaultProxyScopeAgent = current.DefaultProxyScopeAgent
-	next.MCPServers = current.MCPServers
-	next.LocalMCPServers = current.LocalMCPServers
-	next.SkillHubURLs = current.SkillHubURLs
-	next.ExternalSkillDirs = current.ExternalSkillDirs
-	next.SecurityPolicyMode = current.SecurityPolicyMode
-	next.HubSecurityCentralized = current.HubSecurityCentralized
-	next.NetworkLevel = current.NetworkLevel
-	next.NetworkAllowlist = current.NetworkAllowlist
-	next.SkillSourcesAllowed = current.SkillSourcesAllowed
-	next.Language = current.Language
-	next.UIMode = current.UIMode
-	next.WorkingDirectory = current.WorkingDirectory
-	next.VectorSearchEnabled = current.VectorSearchEnabled
-	next.ASREnabled = current.ASREnabled
-	next.TTSEnabled = current.TTSEnabled
-	next.IMProgressNudgeEnabled = current.IMProgressNudgeEnabled
-	next.SSHHosts = current.SSHHosts
-	return next
+	return preserveAppConfigTaggedFields(current, next, isUserManagedSharedConfigField)
+}
+
+func isUserManagedSharedConfigField(key string) bool {
+	if !coreconfig.IsSharedClientField(key) || coreconfig.IsUserWebComplexField(key) {
+		return false
+	}
+	switch strings.TrimSpace(key) {
+	case "maclaw_llm_url", "maclaw_llm_key", "maclaw_llm_model":
+		return false
+	default:
+		return true
+	}
 }
 
 func forceSrvAIAutoEnabledConfig(cfg corelib.AppConfig) corelib.AppConfig {
@@ -4220,49 +1635,11 @@ func forceSrvAIAutoEnabledConfig(cfg corelib.AppConfig) corelib.AppConfig {
 }
 
 func stripUserSharedClientConfig(cfg corelib.AppConfig) corelib.AppConfig {
-	cfg.WebSearchProviders = nil
-	cfg.WebSearchCurrentProvider = ""
-	cfg.DefaultProxyEnabled = false
-	cfg.DefaultProxyProtocol = ""
-	cfg.DefaultProxyHost = ""
-	cfg.DefaultProxyPort = ""
-	cfg.DefaultProxyUsername = ""
-	cfg.DefaultProxyPassword = ""
-	cfg.DefaultProxyBypass = ""
-	cfg.DefaultProxyScopeMaclaw = false
-	cfg.DefaultProxyScopeCodingTools = false
-	cfg.DefaultProxyScopeAgent = false
-	cfg.MCPServers = nil
-	cfg.LocalMCPServers = nil
-	cfg.SkillHubURLs = nil
-	cfg.ExternalSkillDirs = nil
-	cfg.SecurityPolicyMode = ""
-	cfg.HubSecurityCentralized = false
-	cfg.NetworkLevel = ""
-	cfg.NetworkAllowlist = nil
-	cfg.SkillSourcesAllowed = nil
-	cfg.Language = ""
-	cfg.UIMode = ""
-	cfg.WorkingDirectory = ""
-	cfg.VectorSearchEnabled = false
-	cfg.ASREnabled = false
-	cfg.TTSEnabled = false
-	cfg.IMProgressNudgeEnabled = nil
-	cfg.SSHHosts = nil
-	return cfg
+	return preserveAppConfigTaggedFields(corelib.AppConfig{}, cfg, isUserManagedSharedConfigField)
 }
 
 func isUserWebRetiredSettingsKey(key string) bool {
-	key = strings.TrimSpace(key)
-	if key == "working_directory" || key == "data_dir" || key == "default_launch_mode" {
-		return true
-	}
-	for _, prefix := range []string{"pet_", "floating_", "hide_", "power_", "workstation_", "check_", "pause_", "env_", "remote_", "local_"} {
-		if strings.HasPrefix(key, prefix) {
-			return true
-		}
-	}
-	return false
+	return coreconfig.IsUserWebRetiredSettingsKey(key)
 }
 
 func isUserInvisibleConfigKey(key string) bool {
@@ -4281,498 +1658,19 @@ func stripUserInvisibleConfig(cfg corelib.AppConfig) corelib.AppConfig {
 }
 
 func preserveAppConfigTaggedFields(current, next corelib.AppConfig, keep func(string) bool) corelib.AppConfig {
-	currentValue := reflect.ValueOf(current)
-	nextValue := reflect.ValueOf(&next).Elem()
-	typ := nextValue.Type()
-	for i := 0; i < typ.NumField(); i++ {
-		field := typ.Field(i)
-		key := strings.Split(field.Tag.Get("json"), ",")[0]
-		if key == "" || key == "-" || !keep(key) {
-			continue
-		}
-		dst := nextValue.Field(i)
-		if dst.CanSet() {
-			dst.Set(currentValue.Field(i))
-		}
-	}
-	return next
+	return coreconfig.CopyAppConfigFields(current, next, keep)
 }
 
-func (s *HTTPServer) handleValidateSkill(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	out, err := s.svc.ValidateSkill(r.Context(), p, r.PathValue("skillName"))
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, sanitizeSkillValidateResultForAPI(s.svc.DataRoot(), out))
-}
-func (s *HTTPServer) handleImproveSkill(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	var in agentservice.SkillImproveInput
-	if !decodeJSON(w, r, &in) {
-		return
-	}
-	out, err := s.svc.ImproveSkill(r.Context(), p, r.PathValue("skillName"), in)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, sanitizeSkillImproveResultForAPI(s.svc.DataRoot(), out))
-}
-func (s *HTTPServer) handleUploadSkill(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	var in agentservice.SkillUploadInput
-	if !decodeJSON(w, r, &in) {
-		return
-	}
-	asyncMode, err := parseRequiredBoolLikeQuery(r, "async")
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	if asyncMode {
-		job := s.jobs.createUserJob("skill.upload", p, func(ctx context.Context) (any, error) {
-			out, err := s.svc.UploadSkill(ctx, p, r.PathValue("skillName"), in)
-			if err != nil {
-				return nil, err
-			}
-			return sanitizeSkillUploadResultForAPI(s.svc.DataRoot(), out), nil
-		})
-		writeJSON(w, http.StatusAccepted, job)
-		return
-	}
-	out, err := s.svc.UploadSkill(r.Context(), p, r.PathValue("skillName"), in)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, sanitizeSkillUploadResultForAPI(s.svc.DataRoot(), out))
-}
-func (s *HTTPServer) handleListAsyncJobs(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	page, err := parsePageQuery(r)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	kind := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("kind")))
-	status, ok := parseAsyncJobStatus(r.URL.Query().Get("status"), false)
-	if !ok {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid status"})
-		return
-	}
-	out := s.jobs.listUserJobs(p, kind, status)
-	items, meta := paginateAsyncJobs(out, page)
-	writeJSON(w, http.StatusOK, listResponse(items, meta))
+// prefersAsyncResponse implements RFC 7240 Prefer token matching while
+// accepting the common combined form (for example
+// "return=representation, respond-async"). Parameters are ignored and token
+// matching is case-insensitive.
+func prefersAsyncResponse(values []string) bool {
+	return transporthttp.PrefersAsyncResponse(values)
 }
 
-func (s *HTTPServer) handleDeleteAsyncJobs(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	kind := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("kind")))
-	statusRaw := strings.TrimSpace(r.URL.Query().Get("status"))
-	status, ok := parseAsyncJobStatus(statusRaw, true)
-	if !ok {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "status must be succeeded, failed, or canceled"})
-		return
-	}
-	before, err := parseOptionalTimeQuery(r, "before")
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	deleteAll, err := parseOptionalBoolQuery(r, "all")
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	if (deleteAll == nil || !*deleteAll) && kind == "" && statusRaw == "" && before == nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "specify kind, status, before, or all=true"})
-		return
-	}
-	items := s.jobs.deleteUserJobs(p, kind, status, before)
-	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "deleted": len(items), "items": items})
-}
-
-func (s *HTTPServer) handleGetAsyncJob(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	job, ok := s.jobs.getUserJob(r.PathValue("jobId"), p)
-	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "job not found"})
-		return
-	}
-	writeJSON(w, http.StatusOK, job)
-}
-
-func (s *HTTPServer) handleCancelAsyncJob(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	job, ok := s.jobs.cancelUserJob(r.PathValue("jobId"), p)
-	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "job not found"})
-		return
-	}
-	writeJSON(w, http.StatusOK, job)
-}
-
-func (s *HTTPServer) handleDeleteAsyncJob(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	job, found, deleted := s.jobs.deleteUserJob(r.PathValue("jobId"), p)
-	if !found {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "job not found"})
-		return
-	}
-	if !deleted {
-		writeJSON(w, http.StatusConflict, map[string]any{"error": "job is still active", "job": job})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "job": job})
-}
-
-func (s *HTTPServer) handleListStructuredRecords(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	page, err := parsePageQuery(r)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	out, err := s.svc.ListStructuredRecords(r.Context(), p, agentservice.ListStructuredRecordsInput{
-		Collection: r.PathValue("collection"),
-		Tag:        strings.TrimSpace(r.URL.Query().Get("tag")),
-		Q:          strings.TrimSpace(r.URL.Query().Get("q")),
-		Limit:      page.Limit,
-		Before:     formatOptionalCursorTime(page.Before),
-	})
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	items, meta := recordsPageMeta(out, page)
-	writeJSON(w, http.StatusOK, listResponse(items, meta))
-}
-
-func (s *HTTPServer) handleCreateStructuredRecord(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	var in agentservice.CreateStructuredRecordInput
-	if !decodeJSON(w, r, &in) {
-		return
-	}
-	in.Collection = r.PathValue("collection")
-	out, err := s.svc.CreateStructuredRecord(r.Context(), p, in)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusCreated, out)
-}
-
-func (s *HTTPServer) handleGetStructuredRecord(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	out, err := s.svc.GetStructuredRecord(r.Context(), p, r.PathValue("collection"), r.PathValue("recordId"))
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-
-func (s *HTTPServer) handleUpdateStructuredRecord(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	var in agentservice.UpdateStructuredRecordInput
-	if !decodeJSON(w, r, &in) {
-		return
-	}
-	out, err := s.svc.UpdateStructuredRecord(r.Context(), p, r.PathValue("collection"), r.PathValue("recordId"), in)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-
-func (s *HTTPServer) handleDeleteStructuredRecord(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	if err := s.svc.DeleteStructuredRecord(r.Context(), p, r.PathValue("collection"), r.PathValue("recordId")); err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
-}
-
-func (s *HTTPServer) handleGetSkillUploadStatus(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	out, err := s.svc.GetSkillUploadStatus(r.Context(), p, r.PathValue("submissionId"), strings.TrimSpace(r.URL.Query().Get("base_url")))
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, sanitizeSkillSubmissionStatusForAPI(s.svc.DataRoot(), out))
-}
-func (s *HTTPServer) handleGetSkillMarketAccount(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	out, err := s.svc.GetSkillMarketAccount(r.Context(), p, strings.TrimSpace(r.URL.Query().Get("base_url")), strings.TrimSpace(r.URL.Query().Get("email")))
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-func (s *HTTPServer) handleListInstances(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	out, err := s.svc.ListInstances(r.Context(), p)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	page, err := parsePageQuery(r)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	items, meta := paginateInstances(sanitizeInstancesForAPI(s.svc.DataRoot(), out), page)
-	writeJSON(w, http.StatusOK, listResponse(items, meta))
-}
-func (s *HTTPServer) handleCreateInstance(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	var in agentservice.CreateInstanceInput
-	if !decodeJSON(w, r, &in) {
-		return
-	}
-	out, err := s.svc.CreateInstance(r.Context(), p, in)
-	if err != nil {
-		if errors.Is(err, agentservice.ErrInvalidConfig) {
-			validation, vErr := s.svc.ValidateUserConfig(r.Context(), p)
-			if vErr == nil {
-				writeJSON(w, http.StatusBadRequest, map[string]any{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error()), "config_validation": sanitizeConfigValidationPtrForAPI(s.svc.DataRoot(), validation)})
-				return
-			}
-		}
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusCreated, sanitizeInstanceForAPI(s.svc.DataRoot(), out))
-}
-func (s *HTTPServer) handleGetInstance(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	out, err := s.svc.GetInstance(r.Context(), p, r.PathValue("instanceId"))
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, sanitizeInstanceForAPI(s.svc.DataRoot(), out))
-}
-func (s *HTTPServer) handleUpdateInstance(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	var in agentservice.UpdateInstanceInput
-	if !decodeJSON(w, r, &in) {
-		return
-	}
-	out, err := s.svc.UpdateInstance(r.Context(), p, r.PathValue("instanceId"), in)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, sanitizeInstanceForAPI(s.svc.DataRoot(), out))
-}
-func (s *HTTPServer) handleDeleteInstance(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	if err := s.svc.DeleteInstance(r.Context(), p, r.PathValue("instanceId")); err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
-}
-func (s *HTTPServer) handleGetInstanceCapabilities(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	out, err := s.svc.GetInstanceCapabilities(r.Context(), p, r.PathValue("instanceId"))
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, sanitizeAgentCapabilitiesForAPI(s.svc.DataRoot(), out))
-}
-func (s *HTTPServer) handleStopInstance(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	out, err := s.svc.StopInstance(r.Context(), p, r.PathValue("instanceId"))
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, sanitizeInstanceForAPI(s.svc.DataRoot(), out))
-}
-func (s *HTTPServer) handleResumeInstance(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	out, err := s.svc.ResumeInstance(r.Context(), p, r.PathValue("instanceId"))
-	if err != nil {
-		if errors.Is(err, agentservice.ErrInvalidConfig) && out != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error()), "instance": sanitizeInstanceForAPI(s.svc.DataRoot(), out), "config_validation": sanitizeConfigValidationForAPI(s.svc.DataRoot(), out.ConfigValidation)})
-			return
-		}
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, sanitizeInstanceForAPI(s.svc.DataRoot(), out))
-}
-func (s *HTTPServer) handleRefreshInstanceReadiness(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	out, err := s.svc.RefreshInstanceReadiness(r.Context(), p, r.PathValue("instanceId"))
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, sanitizeInstanceForAPI(s.svc.DataRoot(), out))
-}
-func (s *HTTPServer) handleGetInstanceSummary(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	out, err := s.svc.GetInstanceSummary(r.Context(), p, r.PathValue("instanceId"))
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, sanitizeInstanceSummaryForAPI(s.svc.DataRoot(), out))
-}
-func (s *HTTPServer) handleGetInstanceBootstrap(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	out, err := s.svc.GetInstanceBootstrap(r.Context(), p, r.PathValue("instanceId"))
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, sanitizeInstanceBootstrapForAPI(s.svc.DataRoot(), out))
-}
-func (s *HTTPServer) handleSendMessage(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	var in agentservice.SendMessageInput
-	if !decodeJSON(w, r, &in) {
-		return
-	}
-	if isReservedCodingRuntimeMetadata(in.Metadata) || isReservedCodingRuntimeMetadata(in.SessionMetadata) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "coding runtime metadata must be created by an explicit workflow runtime endpoint"})
-		return
-	}
-	sess, run, msg, err := s.svc.SendMessage(r.Context(), p, r.PathValue("instanceId"), in)
-	if err != nil {
-		if run != nil {
-			status := http.StatusBadGateway
-			if run.Status == agentservice.RunStatusCancelled {
-				status = http.StatusConflict
-			}
-			writeJSON(w, status, map[string]any{"session": sess, "run": sanitizeRunPtrForAPI(s.svc.DataRoot(), run), "message": msg, "error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
-			return
-		}
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"session": sess, "run": sanitizeRunPtrForAPI(s.svc.DataRoot(), run), "message": msg})
-}
-func (s *HTTPServer) handleListSessions(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	includeArchived, err := parseOptionalBoolQuery(r, "include_archived")
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	out, err := s.svc.ListSessions(r.Context(), p, r.PathValue("instanceId"), agentservice.ListSessionsInput{
-		IncludeArchived: includeArchived != nil && *includeArchived,
-	})
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	page, err := parsePageQuery(r)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	items, meta := paginateSessions(out, page)
-	writeJSON(w, http.StatusOK, listResponse(items, meta))
-}
-func (s *HTTPServer) handleCreateSession(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	var in agentservice.CreateSessionInput
-	if !decodeJSON(w, r, &in) {
-		return
-	}
-	out, err := s.svc.CreateSession(r.Context(), p, r.PathValue("instanceId"), in)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusCreated, out)
-}
-func (s *HTTPServer) handleGetSession(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	out, err := s.svc.GetSession(r.Context(), p, r.PathValue("instanceId"), r.PathValue("sessionId"))
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-func (s *HTTPServer) handleUpdateSession(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	var in agentservice.UpdateSessionInput
-	if !decodeJSON(w, r, &in) {
-		return
-	}
-	out, err := s.svc.UpdateSession(r.Context(), p, r.PathValue("instanceId"), r.PathValue("sessionId"), in)
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-func (s *HTTPServer) handleDeleteSession(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	if err := s.svc.DeleteSession(r.Context(), p, r.PathValue("instanceId"), r.PathValue("sessionId")); err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
-}
-func (s *HTTPServer) handleArchiveSession(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	out, err := s.svc.ArchiveSession(r.Context(), p, r.PathValue("instanceId"), r.PathValue("sessionId"))
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-func (s *HTTPServer) handleRestoreSession(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	out, err := s.svc.RestoreSession(r.Context(), p, r.PathValue("instanceId"), r.PathValue("sessionId"))
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-func (s *HTTPServer) handleListMessages(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	since, err := parseOptionalTimeQuery(r, "since")
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	until, err := parseOptionalTimeQuery(r, "until")
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	role, ok := parseMessageRole(r.URL.Query().Get("role"))
-	if !ok {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid role"})
-		return
-	}
-	out, err := s.svc.ListMessages(r.Context(), p, r.PathValue("instanceId"), r.PathValue("sessionId"), agentservice.ListMessagesInput{
-		Role:  role,
-		Since: since,
-		Until: until,
-	})
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	page, err := parsePageQuery(r)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	items, meta := paginateMessages(out, page)
-	writeJSON(w, http.StatusOK, listResponse(items, meta))
-}
-func (s *HTTPServer) handlePostMessage(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	var in agentservice.PostMessageInput
-	if !decodeJSON(w, r, &in) {
-		return
-	}
-	if isReservedCodingRuntimeMetadata(in.Metadata) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "coding runtime metadata must be created by an explicit workflow runtime endpoint"})
-		return
-	}
-	run, msg, err := s.svc.PostMessage(r.Context(), p, r.PathValue("instanceId"), r.PathValue("sessionId"), in)
-	if err != nil {
-		if run != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]any{"run": sanitizeRunPtrForAPI(s.svc.DataRoot(), run), "error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
-			return
-		}
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"run": sanitizeRunPtrForAPI(s.svc.DataRoot(), run), "message": msg})
-}
-func (s *HTTPServer) handleGetRun(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	out, err := s.svc.GetRun(r.Context(), p, r.PathValue("instanceId"), r.PathValue("runId"))
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, sanitizeRunPtrForAPI(s.svc.DataRoot(), out))
+func wantsAsyncResponse(r *http.Request) (bool, error) {
+	return transporthttp.WantsAsyncResponse(r)
 }
 
 type runStreamSnapshot struct {
@@ -4782,84 +1680,32 @@ type runStreamSnapshot struct {
 }
 
 type runStreamEnvelope struct {
-	Type     string             `json:"type"`
-	Snapshot *runStreamSnapshot `json:"snapshot,omitempty"`
+	Type     string                 `json:"type"`
+	Snapshot *runStreamSnapshot     `json:"snapshot,omitempty"`
+	Event    *agentservice.RunEvent `json:"event,omitempty"`
 }
 
-func (s *HTTPServer) handleStreamRunEvents(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "streaming unsupported"})
-		return
+func sanitizeRunEventForAPI(dataRoot string, event agentservice.RunEvent) agentservice.RunEvent {
+	if len(event.Payload) == 0 {
+		return event
 	}
-	instanceID := r.PathValue("instanceId")
-	runID := r.PathValue("runId")
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-
-	lastPayload := ""
-	sendSnapshot := func(eventType string, snap *runStreamSnapshot) bool {
-		payload, err := json.Marshal(runStreamEnvelope{Type: eventType, Snapshot: snap})
-		if err != nil {
-			return false
-		}
-		if eventType == "snapshot" && string(payload) == lastPayload {
-			return true
-		}
-		if eventType == "snapshot" {
-			lastPayload = string(payload)
-		}
-		if _, err := w.Write([]byte("event: " + eventType + "\n")); err != nil {
-			return false
-		}
-		if _, err := w.Write([]byte("data: ")); err != nil {
-			return false
-		}
-		if _, err := w.Write(payload); err != nil {
-			return false
-		}
-		if _, err := w.Write([]byte("\n\n")); err != nil {
-			return false
-		}
-		flusher.Flush()
-		return true
-	}
-
-	snapshot, err := s.loadRunStreamSnapshot(r.Context(), p, instanceID, runID)
+	raw, err := json.Marshal(event.Payload)
 	if err != nil {
-		writeSSEError(w, flusher, err, s.svc.DataRoot())
-		return
+		event.Payload = nil
+		return event
 	}
-	if !sendSnapshot("snapshot", snapshot) {
-		return
+	sanitized := sanitizeCommittedEffectPayload(dataRoot, raw)
+	if len(sanitized) == 0 {
+		event.Payload = nil
+		return event
 	}
-	if snapshot.Run != nil && snapshot.Run.Status != agentservice.RunStatusRunning {
-		_ = sendSnapshot("done", snapshot)
-		return
+	var payload map[string]any
+	if err := json.Unmarshal(sanitized, &payload); err != nil {
+		event.Payload = nil
+		return event
 	}
-
-	ticker := time.NewTicker(300 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-r.Context().Done():
-			return
-		case <-ticker.C:
-			snapshot, err := s.loadRunStreamSnapshot(r.Context(), p, instanceID, runID)
-			if err != nil {
-				writeSSEError(w, flusher, err, s.svc.DataRoot())
-				return
-			}
-			if !sendSnapshot("snapshot", snapshot) {
-				return
-			}
-			if snapshot.Run != nil && snapshot.Run.Status != agentservice.RunStatusRunning {
-				_ = sendSnapshot("done", snapshot)
-				return
-			}
-		}
-	}
+	event.Payload = payload
+	return event
 }
 
 func (s *HTTPServer) loadRunStreamSnapshot(ctx context.Context, p agentservice.Principal, instanceID, runID string) (*runStreamSnapshot, error) {
@@ -4902,48 +1748,6 @@ func writeSSEError(w http.ResponseWriter, flusher http.Flusher, err error, dataR
 	_, _ = w.Write(payload)
 	_, _ = w.Write([]byte("\n\n"))
 	flusher.Flush()
-}
-func (s *HTTPServer) handleListRuns(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	waitingForUser, err := parseOptionalBoolQuery(r, "waiting_for_user")
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	status, ok := parseRunStatus(r.URL.Query().Get("status"))
-	if !ok {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid status"})
-		return
-	}
-	responseSource, ok := parseRunResponseSource(r.URL.Query().Get("response_source"))
-	if !ok {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid response_source"})
-		return
-	}
-	out, err := s.svc.ListRuns(r.Context(), p, r.PathValue("instanceId"), agentservice.ListRunsInput{
-		Status:         status,
-		SessionID:      strings.TrimSpace(r.URL.Query().Get("session_id")),
-		ResponseSource: responseSource,
-		WaitingForUser: waitingForUser,
-	})
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	page, err := parsePageQuery(r)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	items, meta := paginateRuns(out, page)
-	writeJSON(w, http.StatusOK, listResponse(sanitizeRunsForAPI(s.svc.DataRoot(), items), meta))
-}
-func (s *HTTPServer) handleCancelRun(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	out, err := s.svc.CancelRun(r.Context(), p, r.PathValue("instanceId"), r.PathValue("runId"))
-	if err != nil {
-		writeRedactedError(w, err, s.svc.DataRoot())
-		return
-	}
-	writeJSON(w, http.StatusOK, sanitizeRunPtrForAPI(s.svc.DataRoot(), out))
 }
 
 func (s *HTTPServer) withAdmin(next http.HandlerFunc) http.HandlerFunc {
@@ -5310,14 +2114,14 @@ func parseAsyncJobStatus(raw string, terminalOnly bool) (asyncJobStatus, bool) {
 	status := asyncJobStatus(statusRaw)
 	if terminalOnly {
 		switch status {
-		case asyncJobStatusSucceeded, asyncJobStatusFailed, asyncJobStatusCanceled:
+		case asyncJobStatusSucceeded, asyncJobStatusFailed, asyncJobStatusCanceled, asyncJobStatusUnknown:
 			return status, true
 		default:
 			return "", false
 		}
 	}
 	switch status {
-	case asyncJobStatusPending, asyncJobStatusRunning, asyncJobStatusSucceeded, asyncJobStatusFailed, asyncJobStatusCanceled:
+	case asyncJobStatusPending, asyncJobStatusRunning, asyncJobStatusSucceeded, asyncJobStatusFailed, asyncJobStatusCanceled, asyncJobStatusUnknown:
 		return status, true
 	default:
 		return "", false
@@ -5394,34 +2198,15 @@ func parseUserStatus(raw string) (agentservice.UserStatus, bool) {
 }
 
 func parsePageLimit(r *http.Request) (int, error) {
-	limit := defaultPageLimit
-	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
-		parsed, err := strconv.Atoi(raw)
-		if err != nil || parsed <= 0 {
-			return 0, errors.New("limit must be a positive integer")
-		}
-		if parsed > maxPageLimit {
-			parsed = maxPageLimit
-		}
-		limit = parsed
-	}
-	return limit, nil
+	return transporthttp.ParsePageLimit(r)
 }
 
 func parsePageQuery(r *http.Request) (pageQuery, error) {
-	limit, err := parsePageLimit(r)
+	parsed, err := transporthttp.ParsePageQuery(r)
 	if err != nil {
 		return pageQuery{}, err
 	}
-	page := pageQuery{Limit: limit}
-	if raw := strings.TrimSpace(r.URL.Query().Get("before")); raw != "" {
-		before, err := time.Parse(time.RFC3339Nano, raw)
-		if err != nil {
-			return pageQuery{}, errors.New("before must be an RFC3339 timestamp")
-		}
-		page.Before = before
-	}
-	return page, nil
+	return pageQuery{Limit: parsed.Limit, Before: parsed.Before}, nil
 }
 
 func parseSkillPageQuery(r *http.Request) (skillPageQuery, error) {
@@ -5745,10 +2530,7 @@ func buildPageMeta(total, start, limit int, cursor func() time.Time) pageMeta {
 }
 
 func writeRateLimitError(w http.ResponseWriter, retryAfter time.Duration) {
-	seconds := int(retryAfter.Seconds())
-	if seconds <= 0 {
-		seconds = 1
-	}
+	seconds := retryAfterSeconds(retryAfter)
 	w.Header().Set("Retry-After", strconv.Itoa(seconds))
 	writeJSON(w, http.StatusTooManyRequests, map[string]any{
 		"error":               "too many token attempts",
@@ -5757,7 +2539,34 @@ func writeRateLimitError(w http.ResponseWriter, retryAfter time.Duration) {
 }
 
 func writeRedactedError(w http.ResponseWriter, err error, dataRoot string) {
-	writeJSON(w, errorStatusCode(err), map[string]string{"error": redactSupportBundleText(dataRoot, err.Error())})
+	if rateLimited := (*agentservice.RateLimitError)(nil); errors.As(err, &rateLimited) && rateLimited != nil {
+		seconds := retryAfterSeconds(rateLimited.RetryAfter)
+		w.Header().Set("Retry-After", strconv.Itoa(seconds))
+		writeJSON(w, http.StatusTooManyRequests, map[string]any{
+			"code":                agentservice.ErrorCode(err),
+			"error":               redactSupportBundleText(dataRoot, err.Error()),
+			"retry_after_seconds": seconds,
+		})
+		return
+	}
+	writeJSON(w, errorStatusCode(err), map[string]string{
+		"code":  agentservice.ErrorCode(err),
+		"error": redactSupportBundleText(dataRoot, err.Error()),
+	})
+}
+
+func retryAfterSeconds(retryAfter time.Duration) int {
+	if retryAfter <= 0 {
+		return 1
+	}
+	seconds := int(retryAfter / time.Second)
+	if retryAfter%time.Second != 0 {
+		seconds++
+	}
+	if seconds <= 0 {
+		return 1
+	}
+	return seconds
 }
 
 func errorStatusCode(err error) int {
@@ -5773,6 +2582,10 @@ func errorStatusCode(err error) int {
 		code = http.StatusConflict
 	case errors.Is(err, agentservice.ErrQuotaExceeded):
 		code = http.StatusTooManyRequests
+	case errors.Is(err, agentservice.ErrRateLimited):
+		code = http.StatusTooManyRequests
+	case errors.Is(err, agentservice.ErrJobPersistence):
+		code = http.StatusServiceUnavailable
 	}
 	return code
 }

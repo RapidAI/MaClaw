@@ -65,6 +65,10 @@ type SkillCommitter struct {
 	// PostCommitCleanup runs after final audit and committed-state persistence.
 	// Failure preserves the committed version but keeps cleanup_status pending.
 	PostCommitCleanup func() error
+	// CompensationClear optionally overrides queue removal for adapters/tests
+	// that need to make the cleanup boundary fail deterministically. Production
+	// callers should leave it nil so ClearEvolutionCompensation is used.
+	CompensationClear func(requestID, skillName, action string) error
 	ConfigRevision    string
 	// AllowCreate permits a transaction to append a new definition when the
 	// requested identity is absent. It is used by the explicit operator create
@@ -93,6 +97,25 @@ func (c *SkillCommitter) Commit(ctx context.Context, skillName string, after *co
 		result.FailureReason = "persistence_not_configured"
 		return result
 	}
+	if strings.TrimSpace(skillName) == "" {
+		result.FailureReason = "skill_name_required"
+		return result
+	}
+	// Create transactions must bind the requested identity to the candidate.
+	// Without this check a malformed caller could ask to create Skill "a" while
+	// supplying a definition named "b", leaving the durable audit/compensation
+	// keyed to one identity and the registry entry keyed to another. Existing
+	// updates may intentionally address a Skill through a stable alias, and
+	// full-list mutators own their identity mapping, so the strict check is
+	// limited to the simple AllowCreate path.
+	if c.AllowCreate && c.EntriesMutator == nil {
+		requested := strings.TrimSpace(skillName)
+		candidate := strings.TrimSpace(after.Name)
+		if requested != "" && candidate != "" && !strings.EqualFold(requested, candidate) {
+			result.FailureReason = "candidate_identity_mismatch"
+			return result
+		}
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -112,6 +135,15 @@ func (c *SkillCommitter) Commit(ctx context.Context, skillName string, after *co
 	if c.EntriesMutator != nil {
 		mutated, err := c.EntriesMutator(cloneSkillEntries(originalSkills))
 		if err != nil {
+			result.FailureReason = "candidate_mutation_failed"
+			return result
+		}
+		// A non-empty authoritative registry must never be replaced by a nil
+		// mutator result. Treat that shape as a planner failure instead of
+		// allowing the saver to persist an accidental "delete everything"
+		// snapshot. An intentionally empty registry remains valid and can still
+		// be populated by an AllowCreate transaction.
+		if mutated == nil && len(originalSkills) > 0 {
 			result.FailureReason = "candidate_mutation_failed"
 			return result
 		}
@@ -201,6 +233,11 @@ func (c *SkillCommitter) Commit(ctx context.Context, skillName string, after *co
 		action = strings.TrimSpace(auditData["action"])
 	}
 	record := newEvolutionCompensationRecord(requestID, skillName, action, yamlPath, yamlBackup, yamlExists, rollbackSkills, "skill_commit_pending")
+	// A nil loader result may mean the callback could not read the registry
+	// (many legacy adapters intentionally swallow loader errors). Only mark the
+	// snapshot authoritative when a concrete slice was returned; callers with a
+	// successfully loaded empty registry should return a non-nil empty slice.
+	record.ConfigBackupCaptured = originalSkills != nil
 	record.TransactionState = "prepared"
 	if strings.TrimSpace(event) != "" {
 		record.FinalAuditKind = KindFromEventName(event)
@@ -216,6 +253,10 @@ func (c *SkillCommitter) Commit(ctx context.Context, skillName string, after *co
 	result.BackupVersion = requestID
 	configCommitAttempted := false
 	externalCommitAttempted := false
+	clearCompensation := c.CompensationClear
+	if clearCompensation == nil {
+		clearCompensation = ClearEvolutionCompensation
+	}
 
 	rollback := func(cause error) EvolutionCommitResult {
 		var rollbackErr error
@@ -231,6 +272,17 @@ func (c *SkillCommitter) Commit(ctx context.Context, skillName string, after *co
 				} else {
 					rollbackErr = fmt.Errorf("restore YAML: %w", err)
 				}
+			}
+		}
+		// FileSnapshots cover bounded sidecar metadata written by a definition
+		// writer (for example .patches.json). Restore them during the synchronous
+		// rollback as well as startup recovery; otherwise an index/audit failure
+		// could leave the sidecar ahead of the authoritative config/YAML state.
+		if err := restoreEvolutionFileSnapshots(record.FileSnapshots); err != nil {
+			if rollbackErr != nil {
+				rollbackErr = fmt.Errorf("%v; restore file snapshots: %w", rollbackErr, err)
+			} else {
+				rollbackErr = fmt.Errorf("restore file snapshots: %w", err)
 			}
 		}
 		if configCommitAttempted {
@@ -271,16 +323,37 @@ func (c *SkillCommitter) Commit(ctx context.Context, skillName string, after *co
 			record.FailureReason = evolutionFailureReason(cause) + ":rollback_incomplete"
 			record.TransactionState = "audit_pending"
 			record.CleanupStatus = "pending"
-			_ = replaceEvolutionCompensation(record)
-			return EvolutionCommitResult{State: "audit_pending", RequestID: requestID, BackupVersion: requestID, ConfigRevision: c.ConfigRevision, FailureReason: record.FailureReason + ":" + rollbackErr.Error(), RollbackComplete: false, CleanupStatus: "pending"}
+			// Rollback itself did not complete. Persist through the bounded retry
+			// helper so the shared committer has the same attempts/needs_review
+			// semantics as legacy adapters and startup recovery. A raw replace here
+			// would leave attempts at zero and could retry forever without an
+			// operator-visible terminal state.
+			if persistErr := MarkEvolutionCompensationRollbackFailure(&record, rollbackErr); persistErr != nil {
+				// Keep the original rollback error, but surface queue persistence
+				// failure as part of the result. The in-memory record is not durable
+				// evidence and callers must not mistake an audit_pending result for a
+				// recoverable queue entry when the replacement itself failed.
+				rollbackErr = fmt.Errorf("%v; persist rollback compensation: %w", rollbackErr, persistErr)
+				record.LastError = rollbackErr.Error()
+			}
+			// Keep the original commit phase in the returned result even though the
+			// durable queue record uses the stable rollback_cleanup_failed marker.
+			// Callers need to distinguish an index/audit/YAML failure from the
+			// secondary rollback failure when presenting remediation guidance.
+			return EvolutionCommitResult{State: "audit_pending", RequestID: requestID, BackupVersion: requestID, ConfigRevision: c.ConfigRevision, FailureReason: evolutionFailureReason(cause) + ":rollback_incomplete:" + rollbackErr.Error(), RollbackComplete: false, CleanupStatus: record.CleanupStatus}
 		}
-		if err := ClearEvolutionCompensation(requestID, skillName, record.Action); err != nil {
+		if err := clearCompensation(requestID, skillName, record.Action); err != nil {
 			record.LastError = err.Error()
 			record.FailureReason = evolutionFailureReason(cause)
 			record.CleanupStatus = "pending"
 			record.TransactionState = "rolled_back"
-			_ = replaceEvolutionCompensation(record)
-			return EvolutionCommitResult{State: "rolled_back", RequestID: requestID, BackupVersion: requestID, ConfigRevision: c.ConfigRevision, FailureReason: record.FailureReason, RollbackComplete: true, CleanupStatus: "pending"}
+			// Queue cleanup is itself a recoverable rollback step. Do not merely
+			// replace the record: increment the bounded retry budget and retain a
+			// needs_review marker after exhaustion.
+			if persistErr := MarkEvolutionCompensationRollbackFailure(&record, err); persistErr != nil {
+				return EvolutionCommitResult{State: "rolled_back", RequestID: requestID, BackupVersion: requestID, ConfigRevision: c.ConfigRevision, FailureReason: fmt.Sprintf("%s; persist rollback compensation: %v", record.FailureReason, persistErr), RollbackComplete: true, CleanupStatus: record.CleanupStatus}
+			}
+			return EvolutionCommitResult{State: "rolled_back", RequestID: requestID, BackupVersion: requestID, ConfigRevision: c.ConfigRevision, FailureReason: record.FailureReason, RollbackComplete: true, CleanupStatus: record.CleanupStatus}
 		}
 		return EvolutionCommitResult{State: "rolled_back", RequestID: requestID, BackupVersion: requestID, ConfigRevision: c.ConfigRevision, FailureReason: evolutionFailureReason(cause), RollbackComplete: true, CleanupStatus: "clear"}
 	}
@@ -356,24 +429,32 @@ func (c *SkillCommitter) Commit(ctx context.Context, skillName string, after *co
 	}
 	if c.PostCommitCleanup != nil {
 		if err := c.PostCommitCleanup(); err != nil {
-			record.LastError = err.Error()
-			record.FailureReason = "post_commit_cleanup_failed"
-			record.CleanupStatus = "pending"
-			record.TransactionState = "committed"
-			_ = replaceEvolutionCompensation(record)
-			return EvolutionCommitResult{State: "committed", RequestID: requestID, BackupVersion: requestID, ConfigRevision: c.ConfigRevision, FailureReason: record.FailureReason, RollbackComplete: true, CleanupStatus: "pending"}
+			if markErr := MarkEvolutionCompensationCleanupFailure(&record, err); markErr != nil {
+				return EvolutionCommitResult{State: "committed", RequestID: requestID, BackupVersion: requestID, ConfigRevision: c.ConfigRevision, FailureReason: "post_commit_cleanup_state_persist_failed", RollbackComplete: true, CleanupStatus: "pending"}
+			}
+			return EvolutionCommitResult{State: "committed", RequestID: requestID, BackupVersion: requestID, ConfigRevision: c.ConfigRevision, FailureReason: record.FailureReason, RollbackComplete: true, CleanupStatus: record.CleanupStatus}
 		}
 	}
-	if err := ClearEvolutionCompensation(requestID, skillName, record.Action); err != nil {
+	// The durable record may contain cleanup targets discovered while publishing
+	// an external directory or definition artifact. Always execute that
+	// declarative cleanup before deleting the queue row; otherwise a crash after
+	// queue removal would permanently orphan staging files or .prev backups.
+	// Callbacks are allowed to clean the same targets themselves because this
+	// helper is idempotent and treats missing paths as already removed.
+	if err := CleanupCommittedEvolutionCompensation(record); err != nil {
+		if markErr := MarkEvolutionCompensationCleanupFailure(&record, err); markErr != nil {
+			return EvolutionCommitResult{State: "committed", RequestID: requestID, BackupVersion: requestID, ConfigRevision: c.ConfigRevision, FailureReason: "post_commit_cleanup_state_persist_failed", RollbackComplete: true, CleanupStatus: "pending"}
+		}
+		return EvolutionCommitResult{State: "committed", RequestID: requestID, BackupVersion: requestID, ConfigRevision: c.ConfigRevision, FailureReason: record.FailureReason, RollbackComplete: true, CleanupStatus: record.CleanupStatus}
+	}
+	if err := clearCompensation(requestID, skillName, record.Action); err != nil {
 		// The business commit is already audited. Keep the queue as an admission
 		// blocker and never reverse the audited definition merely because cleanup
 		// was unavailable.
-		record.LastError = err.Error()
-		record.FailureReason = "post_commit_cleanup_failed"
-		record.CleanupStatus = "pending"
-		record.TransactionState = "committed"
-		_ = replaceEvolutionCompensation(record)
-		return EvolutionCommitResult{State: "committed", RequestID: requestID, BackupVersion: requestID, ConfigRevision: c.ConfigRevision, FailureReason: record.FailureReason, RollbackComplete: true, CleanupStatus: "pending"}
+		if markErr := MarkEvolutionCompensationCleanupFailure(&record, err); markErr != nil {
+			return EvolutionCommitResult{State: "committed", RequestID: requestID, BackupVersion: requestID, ConfigRevision: c.ConfigRevision, FailureReason: "post_commit_cleanup_state_persist_failed", RollbackComplete: true, CleanupStatus: "pending"}
+		}
+		return EvolutionCommitResult{State: "committed", RequestID: requestID, BackupVersion: requestID, ConfigRevision: c.ConfigRevision, FailureReason: record.FailureReason, RollbackComplete: true, CleanupStatus: record.CleanupStatus}
 	}
 	return EvolutionCommitResult{State: "committed", RequestID: requestID, BackupVersion: requestID, ConfigRevision: c.ConfigRevision, RollbackComplete: true, CleanupStatus: "clear"}
 }

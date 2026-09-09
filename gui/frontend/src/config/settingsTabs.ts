@@ -1,6 +1,6 @@
 import { localizeText } from '../i18n';
 
-export type SettingsTabId = 'general' | 'proxy' | 'ui' | 'display' | 'pet' | 'searchEngine' | 'redeem' | 'skills' | 'mcp' | 'llm' | 'llmCache' | 'embedding' | 'memory' | 'knowledge' | 'misData' | 'virtualEmployee' | 'im' | 'security' | 'migration' | 'system' | 'hardware' | 'assetManagement';
+export type SettingsTabId = 'general' | 'proxy' | 'ui' | 'pet' | 'programmingTools' | 'searchEngine' | 'redeem' | 'skills' | 'mcp' | 'llm' | 'llmCache' | 'embedding' | 'memory' | 'knowledge' | 'misData' | 'virtualEmployee' | 'im' | 'security' | 'migration' | 'system' | 'hardware' | 'assetManagement';
 
 /**
  * Tabs that actually render a settings body panel (rail + SettingsActiveContent).
@@ -10,8 +10,8 @@ export const SETTINGS_CONTENT_TAB_IDS = [
     'general',
     'proxy',
     'ui',
-    'display',
     'pet',
+    'programmingTools',
     'searchEngine',
     'redeem',
     'llm',
@@ -71,8 +71,8 @@ const settingsTabGroupById: Partial<Record<SettingsTabId, SettingsTabGroupId>> =
     general: 'essentials',
     proxy: 'essentials',
     ui: 'essentials',
-    display: 'essentials',
     pet: 'essentials',
+    programmingTools: 'essentials',
     searchEngine: 'ai',
     llm: 'ai',
     llmCache: 'ai',
@@ -105,8 +105,8 @@ const settingsTabIcons: Record<SettingsTabId, string> = {
     general: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4h12M2 8h8M2 12h10"/><circle cx="13" cy="4" r="1.2" fill="currentColor" stroke="none"/><circle cx="11" cy="8" r="1.2" fill="currentColor" stroke="none"/><circle cx="13" cy="12" r="1.2" fill="currentColor" stroke="none"/></svg>',
     proxy: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><circle cx="4" cy="8" r="2"/><circle cx="12" cy="8" r="2"/><path d="M6 8h4"/></svg>',
     ui: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M2 6h12"/><circle cx="4" cy="4.5" r="0.7" fill="currentColor" stroke="none"/><circle cx="6" cy="4.5" r="0.7" fill="currentColor" stroke="none"/></svg>',
-    display: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="12" height="9" rx="1.5"/><path d="M8 12v2M5 14h6"/><path d="M5 7l2 1.5L5 10"/><path d="M9 10h3"/></svg>',
     pet: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="5" cy="4" rx="1.4" ry="2"/><ellipse cx="11" cy="4" rx="1.4" ry="2"/><ellipse cx="3" cy="8.5" rx="1.4" ry="1.8"/><ellipse cx="13" cy="8.5" rx="1.4" ry="1.8"/><ellipse cx="8" cy="11.5" rx="2.8" ry="2.2"/></svg>',
+    programmingTools: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h10v10H3z"/><path d="M5 6l2 2-2 2M8.5 10H11"/></svg>',
     searchEngine: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="7" r="4.5"/><path d="M10.2 10.2l3.3 3.3"/></svg>',
     redeem: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="12" height="9" rx="1.5"/><path d="M2 7.5h12"/><path d="M5.5 10.5h2"/></svg>',
     skills: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="2" width="10" height="12" rx="1.5"/><path d="M6 5h4M6 7.5h4M6 10h2"/></svg>',
@@ -149,16 +149,16 @@ export const getSettingsTabOptions = (lang: string, options: { hideVirtualEmploy
             icon: settingsTabIcons.ui,
         },
         {
-            id: 'display' as const,
-            label: textForLang(lang, 'Dev CLI', '编程工具', '程式工具'),
-            desc: textForLang(lang, 'Tool visibility and startup behavior', '工具显示与启动页行为', '工具顯示與啟動頁行為'),
-            icon: settingsTabIcons.display,
-        },
-        {
             id: 'pet' as const,
             label: textForLang(lang, 'Pet', '宠物', '寵物'),
             desc: textForLang(lang, 'Desktop pet appearance, actions, and interaction settings', '桌面宠物形象、动作与交互设置', '桌面寵物形象、動作與互動設定'),
             icon: settingsTabIcons.pet,
+        },
+        {
+            id: 'programmingTools' as const,
+            label: textForLang(lang, 'Coding Tools', '编程工具', '編程工具'),
+            desc: textForLang(lang, 'Built-in coding agent, ACP, and coding knowledge base', '内置编程子 Agent、ACP 与编程知识库', '內置編程子 Agent、ACP 與編程知識庫'),
+            icon: settingsTabIcons.programmingTools,
         },
         {
             id: 'searchEngine' as const,

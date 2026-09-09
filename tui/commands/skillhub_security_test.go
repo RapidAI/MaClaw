@@ -1,11 +1,13 @@
 package commands
 
 import (
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/clientsecurity"
+	"github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
 func TestSkillHubInstallHonorsHubSecurityPolicy(t *testing.T) {
@@ -24,6 +26,35 @@ func TestSkillHubInstallHonorsHubSecurityPolicy(t *testing.T) {
 	err := skillhubInstall([]string{"demo"})
 	if err == nil || !strings.Contains(err.Error(), "network") {
 		t.Fatalf("skillhubInstall err=%v, want network rejection", err)
+	}
+}
+
+func TestCommitSkillHubConfigBatchIsAtomicAndAudited(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("MACLAW_DATA_DIR", dataDir)
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(dataDir)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	store := NewFileConfigStore(dataDir)
+	if err := store.SaveConfig(corelib.AppConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	entries := []corelib.NLSkillEntry{{Name: "batch-a", Source: "github"}, {Name: "batch-b", Source: "github"}}
+	if err := commitSkillHubConfigBatch(store, entries, "github_install", "skill:cli_skillhub_github_installed"); err != nil {
+		t.Fatalf("batch commit failed: %v", err)
+	}
+	cfg, err := store.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.NLSkills) != len(entries) {
+		t.Fatalf("config entries = %d, want %d", len(cfg.NLSkills), len(entries))
+	}
+	if summaries, err := skill.ListEvolutionCompensationSummaries(); err != nil || len(summaries) != 0 {
+		t.Fatalf("compensation queue = %#v, err=%v", summaries, err)
+	}
+	if _, err := os.Stat(skill.DefaultEvolutionAuditPath()); err != nil {
+		t.Fatalf("strict final audit missing: %v", err)
 	}
 }
 

@@ -80,6 +80,12 @@ type Store struct {
 	pendingDedup []pendingDedupPair
 	llmDedup     LLMChatCaller // set via SetLLMDedup; nil = async dedup disabled
 
+	// --- Async CompactForm generation ---
+	// compactFormGenerator backfills Entry.CompactForm shortly after Save so new
+	// long entries don't spend up to 6h waiting for the pipeline's
+	// backfillCompactForms pass. Set via SetCompactFormGenerator; nil = disabled.
+	compactFormGenerator CompactFormGenerator
+
 	// --- Storage backend + cross-instance sync ---
 	backend StorageBackend // persistence layer (JSON or SQLite)
 	sync    *syncState     // nil if sync is disabled
@@ -426,6 +432,87 @@ func (s *Store) SaveWithContext(entry Entry, contextHint string) error {
 	}
 	if pendingEmbedding != nil {
 		s.updateEntryEmbeddingWhenReady(entry.ID, hash, embeddingGen, pendingEmbedding)
+	}
+	s.maybeGenerateCompactFormAsync(entry, hash)
+	return nil
+}
+
+// CompactFormGenerator produces a compressed representation of a memory entry
+// for context injection. Hosts (GUI/TUI) inject one at startup so Save can
+// backfill CompactForm asynchronously instead of waiting for the pipeline's
+// 6-hourly backfillCompactForms pass (see memory-architecture-improvement-plan
+// Phase 3.2 and memory-defects-improvement-plan defect 4).
+type CompactFormGenerator interface {
+	// Generate returns a compact form of content, or "" when compression is
+	// not useful. Errors are logged and swallowed by the async backfill.
+	Generate(content string, cat Category) (string, error)
+}
+
+// compactFormMinContentRunes is the minimum content length (in runes) that
+// justifies an async CompactForm generation on Save. Shorter entries are cheap
+// to inject as-is.
+const compactFormMinContentRunes = 300
+
+// SetCompactFormGenerator sets the generator used to backfill CompactForm
+// asynchronously after Save. Pass nil to disable.
+func (s *Store) SetCompactFormGenerator(g CompactFormGenerator) {
+	s.mu.Lock()
+	s.compactFormGenerator = g
+	s.mu.Unlock()
+}
+
+// maybeGenerateCompactFormAsync starts a background CompactForm generation for
+// a freshly saved long entry, following the same fire-and-forget pattern as
+// updateEntryEmbeddingWhenReady. The result is applied only if the entry still
+// exists, its content is unchanged, and it has no CompactForm yet.
+func (s *Store) maybeGenerateCompactFormAsync(entry Entry, contentHash string) {
+	if entry.CompactForm != "" || len([]rune(entry.Content)) <= compactFormMinContentRunes {
+		return
+	}
+	s.mu.RLock()
+	g := s.compactFormGenerator
+	s.mu.RUnlock()
+	if g == nil {
+		return
+	}
+	go func(id, hash, content string, cat Category) {
+		compact, err := g.Generate(content, cat)
+		if err != nil {
+			log.Printf("[memory_store] async compact form generation failed entry=%q: %v", id, err)
+			return
+		}
+		// Only use the compact form if it's actually shorter.
+		if compact == "" || len([]rune(compact)) >= len([]rune(content)) {
+			return
+		}
+		if err := s.applyCompactFormIfReady(id, hash, compact); err != nil {
+			log.Printf("[memory_store] async compact form update failed entry=%q: %v", id, err)
+		}
+	}(entry.ID, contentHash, entry.Content, entry.Category)
+}
+
+func (s *Store) applyCompactFormIfReady(entryID string, contentHash string, compact string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	idx := s.findEntryIndexByIDLocked(entryID)
+	if idx < 0 {
+		return nil
+	}
+	entry := s.entries[idx]
+	if entry.ContentHash != contentHash || entry.CompactForm != "" {
+		return nil
+	}
+	entry.CompactForm = compact
+	if s.backend != nil {
+		if err := s.backend.UpdateEntry(&entry); err != nil {
+			return err
+		}
+	}
+	s.entries[idx] = entry
+	s.bm25.updateEntry(entry)
+	if s.backend == nil {
+		s.markDirtyLocked()
 	}
 	return nil
 }

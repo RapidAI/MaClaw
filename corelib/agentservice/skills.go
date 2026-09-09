@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"sort"
@@ -190,7 +191,15 @@ func (s *Service) UserSkillsRoot(tenantID, userID string) string {
 }
 
 func (s *Service) ListSkills(ctx context.Context, p Principal) ([]corelib.NLSkillEntry, error) {
-	_ = ctx
+	if s == nil || s.store == nil {
+		return nil, fmt.Errorf("service is unavailable")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if _, err := s.store.GetUser(p.TenantID, p.UserID); err != nil {
 		return nil, err
 	}
@@ -206,7 +215,15 @@ func (s *Service) ListSkills(ctx context.Context, p Principal) ([]corelib.NLSkil
 }
 
 func (s *Service) GetSkill(ctx context.Context, p Principal, name string) (*corelib.NLSkillEntry, error) {
-	_ = ctx
+	if s == nil || s.store == nil {
+		return nil, fmt.Errorf("service is unavailable")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	entry, _, err := s.findSkill(p, name)
 	if err != nil {
 		return nil, err
@@ -216,14 +233,20 @@ func (s *Service) GetSkill(ctx context.Context, p Principal, name string) (*core
 }
 
 func (s *Service) DeleteSkill(ctx context.Context, p Principal, name string) error {
-	if s == nil {
+	if s == nil || s.store == nil {
 		return fmt.Errorf("service is unavailable")
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	s.skillInstallTxnMu.Lock()
 	defer s.skillInstallTxnMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if s.skillInstallRecoveryBlocked {
 		// A transient startup failure must be retried under the same transaction
 		// lock; keep the operation fail-closed if recovery still cannot prove
@@ -243,6 +266,13 @@ func (s *Service) DeleteSkill(ctx context.Context, p Principal, name string) err
 	}
 	if dir == "" {
 		return fmt.Errorf("skill directory not found")
+	}
+	if s.dynamicCapabilities == nil {
+		// Deletion revokes the reviewed dynamic contract before publishing the
+		// checked index. Without the registry we cannot prove that authorization
+		// was revoked or can be restored, so fail closed before moving the
+		// directory into quarantine.
+		return fmt.Errorf("dynamic capability registry is unavailable")
 	}
 	quarantine := filepath.Join(filepath.Dir(dir), fmt.Sprintf(".skill-delete-pending-%d", time.Now().UnixNano()))
 	requestID := fmt.Sprintf("agent_skill_delete_%d", time.Now().UnixNano())
@@ -360,6 +390,15 @@ func (s *Service) DeleteSkill(ctx context.Context, p Principal, name string) err
 }
 
 func (s *Service) SearchSkills(ctx context.Context, p Principal, in SkillSearchInput) ([]SkillSearchResult, error) {
+	if s == nil || s.store == nil {
+		return nil, fmt.Errorf("service is unavailable")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if _, err := s.store.GetUser(p.TenantID, p.UserID); err != nil {
 		return nil, err
 	}
@@ -457,6 +496,15 @@ func (s *Service) SearchSkills(ctx context.Context, p Principal, in SkillSearchI
 }
 
 func (s *Service) ImportSkillArchive(ctx context.Context, p Principal, in SkillImportInput) ([]corelib.NLSkillEntry, error) {
+	if s == nil || s.store == nil {
+		return nil, fmt.Errorf("service is unavailable")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(in.ZipBase64) == "" {
 		return nil, fmt.Errorf("zip_base64 is required")
 	}
@@ -468,6 +516,15 @@ func (s *Service) ImportSkillArchive(ctx context.Context, p Principal, in SkillI
 }
 
 func (s *Service) InstallSkill(ctx context.Context, p Principal, in SkillInstallInput) ([]corelib.NLSkillEntry, error) {
+	if s == nil || s.store == nil {
+		return nil, fmt.Errorf("service is unavailable")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	source := strings.ToLower(strings.TrimSpace(in.Source))
 	if source == "" {
 		return nil, fmt.Errorf("source is required")
@@ -633,6 +690,23 @@ func (s *Service) rememberUserHubCenterSelection(p Principal, selected string, c
 }
 
 func (s *Service) ExportSkill(ctx context.Context, p Principal, name string) (*SkillExportResult, error) {
+	if s == nil || s.store == nil {
+		return nil, fmt.Errorf("service is unavailable")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.skillInstallTxnMu.Lock()
+	defer s.skillInstallTxnMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if s.hasPendingSkillCompensationLocked(name) {
+		return nil, fmt.Errorf("skill %q is blocked by pending compensation", name)
+	}
 	entry, dir, err := s.findSkill(p, name)
 	if err != nil {
 		return nil, err
@@ -640,7 +714,7 @@ func (s *Service) ExportSkill(ctx context.Context, p Principal, name string) (*S
 	if err := s.scanSkillForOutbound(ctx, p, entry, dir, "export"); err != nil {
 		return nil, err
 	}
-	archive, err := zipDirectoryBytes(dir)
+	archive, err := zipSkillUploadArchiveBytes(dir)
 	if err != nil {
 		return nil, err
 	}
@@ -673,12 +747,25 @@ func (s *Service) scanSkillForOutbound(ctx context.Context, p Principal, entry c
 		level = report.FinalLevel
 		summary = report.Summary
 	}
-	_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "skill.rejected", ResourceType: "skill", ResourceID: entry.Name, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: map[string]string{"phase": phase, "risk_level": string(level), "summary": summary}})
-	return fmt.Errorf("skill %s blocked by security scan: level=%s summary=%s", phase, level, summary)
+	rejectionErr := fmt.Errorf("skill %s blocked by security scan: level=%s summary=%s", phase, level, summary)
+	if auditErr := s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "skill.rejected", ResourceType: "skill", ResourceID: entry.Name, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: map[string]string{"phase": phase, "risk_level": string(level), "summary": summary}}); auditErr != nil {
+		return fmt.Errorf("%w; record rejection audit: %v", rejectionErr, auditErr)
+	}
+	return rejectionErr
 }
 
 func (s *Service) ValidateSkill(ctx context.Context, p Principal, name string) (*SkillValidateResult, error) {
-	_ = ctx
+	if s == nil {
+		return nil, fmt.Errorf("service is unavailable")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.skillInstallTxnMu.Lock()
+	defer s.skillInstallTxnMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	_, dir, err := s.findSkill(p, name)
 	if err != nil {
 		return nil, err
@@ -691,8 +778,19 @@ func (s *Service) ValidateSkill(ctx context.Context, p Principal, name string) (
 }
 
 func (s *Service) ImproveSkill(ctx context.Context, p Principal, name string, in SkillImproveInput) (*SkillImproveResult, error) {
+	if s == nil {
+		return nil, fmt.Errorf("service is unavailable")
+	}
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	s.skillInstallTxnMu.Lock()
+	defer s.skillInstallTxnMu.Unlock()
+	if s.hasPendingSkillCompensationLocked(name) {
+		return nil, fmt.Errorf("skill %q is blocked by pending compensation", name)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	entry, dir, err := s.findSkill(p, name)
 	if err != nil {
@@ -712,11 +810,21 @@ func (s *Service) ImproveSkill(ctx context.Context, p Principal, name string, in
 	}
 	changes, err := skill.AutoFixPortability(dir)
 	if err != nil {
-		return nil, err
+		// AutoFixPortability may have written one file before discovering a
+		// later error (for example a documentation write failure).  Never leave
+		// a partially repaired Skill behind: restore the exact pre-image before
+		// returning the fixer error so a retry is deterministic.
+		if restoreErr := restoreSkillDirFromArchive(dir, snapshot); restoreErr != nil {
+			return nil, fmt.Errorf("auto-fix portability failed: %w; rollback failed: %v", err, restoreErr)
+		}
+		return nil, fmt.Errorf("auto-fix portability failed; changes rolled back: %w", err)
 	}
 	after, err := skill.ValidateSkillPortability(dir)
 	if err != nil {
-		return nil, err
+		if restoreErr := restoreSkillDirFromArchive(dir, snapshot); restoreErr != nil {
+			return nil, fmt.Errorf("validate improved skill: %w; rollback failed: %v", err, restoreErr)
+		}
+		return nil, fmt.Errorf("validate improved skill; changes rolled back: %w", err)
 	}
 	improvedEntry, loadErr := loadImportedSkillEntry(dir)
 	if loadErr != nil {
@@ -726,25 +834,54 @@ func (s *Service) ImproveSkill(ctx context.Context, p Principal, name string, in
 		return nil, fmt.Errorf("improved skill is no longer importable; changes rolled back: %w", loadErr)
 	}
 	if report, scanErr := scanImportedSkillBeforeInstall(ctx, improvedEntry, dir); scanErr != nil {
-		s.recordSkillScanRejection(p, improvedEntry, report, scanErr)
+		auditErr := s.recordSkillScanRejection(p, improvedEntry, report, scanErr)
 		if restoreErr := restoreSkillDirFromArchive(dir, snapshot); restoreErr != nil {
+			if auditErr != nil {
+				return nil, fmt.Errorf("skill improvement blocked by security scan: %w; rejection audit failed: %v; rollback failed: %v", scanErr, auditErr, restoreErr)
+			}
 			return nil, fmt.Errorf("skill improvement blocked by security scan: %w; rollback failed: %v", scanErr, restoreErr)
+		}
+		if auditErr != nil {
+			return nil, fmt.Errorf("skill improvement blocked by security scan: %w; rejection audit failed: %v", scanErr, auditErr)
 		}
 		return nil, fmt.Errorf("skill improvement blocked by security scan and rolled back: %w", scanErr)
 	}
 	result.Changes = changes
 	result.ReportAfter = after
 	result.SummaryText = skill.FormatPortabilityReport(after)
-	_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "skill.improved", ResourceType: "skill", ResourceID: entry.Name, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: map[string]string{"auto_fix": fmt.Sprintf("%v", in.AutoFix), "changes": fmt.Sprintf("%d", len(changes))}})
+	if len(changes) == 0 {
+		// Auto-fix found no effective rewrite.  Keep this probe side-effect free:
+		// repeated validation must not manufacture an "improved" audit event.
+		return result, nil
+	}
+	if err := s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "skill.improved", ResourceType: "skill", ResourceID: entry.Name, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: map[string]string{"auto_fix": fmt.Sprintf("%v", in.AutoFix), "changes": fmt.Sprintf("%d", len(changes))}}); err != nil {
+		// AutoFixPortability mutates the authoritative directory in place.  An
+		// audit failure must not be reported as a successful improvement; restore
+		// the exact pre-image before returning so the caller can safely retry once
+		// the audit sink is healthy.
+		if restoreErr := restoreSkillDirFromArchive(dir, snapshot); restoreErr != nil {
+			return nil, fmt.Errorf("skill improvement audit failed: %w; rollback failed: %v", err, restoreErr)
+		}
+		return nil, fmt.Errorf("skill improvement audit failed; changes rolled back: %w", err)
+	}
 	return result, nil
 }
 
 func (s *Service) UploadSkill(ctx context.Context, p Principal, name string, in SkillUploadInput) (*SkillUploadResult, error) {
-	if s == nil {
-		return nil, fmt.Errorf("skill %q is blocked by pending compensation", name)
+	if s == nil || s.store == nil {
+		return nil, fmt.Errorf("service is unavailable")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	s.skillInstallTxnMu.Lock()
 	defer s.skillInstallTxnMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if s.hasPendingSkillCompensationLocked(name) {
 		return nil, fmt.Errorf("skill %q is blocked by pending compensation", name)
 	}
@@ -771,18 +908,48 @@ func (s *Service) UploadSkill(ctx context.Context, p Principal, name string, in 
 		}
 		return nil, err
 	}
-	if !preflight.Portable() {
-		_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "skill.rejected", ResourceType: "skill", ResourceID: entry.Name, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: map[string]string{"phase": "upload_preflight", "summary": skill.PreflightSummaryLine(preflight)}})
-		if len(preflight.AutoFixed) > 0 {
+	if err := ctx.Err(); err != nil {
+		if preflight.Portable() || len(preflight.AutoFixed) > 0 {
 			if restoreErr := restoreSkillDirFromArchive(dir, snapshot); restoreErr != nil {
-				return nil, fmt.Errorf("%s; rollback failed: %v", skill.FormatUploadPreflight(preflight), restoreErr)
+				return nil, fmt.Errorf("upload canceled: %w; rollback failed: %v", err, restoreErr)
 			}
 		}
-		return nil, fmt.Errorf("%s", skill.FormatUploadPreflight(preflight))
+		return nil, err
+	}
+	// PrepareSkillForUpload performs in-place portability fixes and writes the
+	// package manifest.  Any failure before the remote boundary must restore the
+	// source pre-image; otherwise a failed upload attempt can silently publish a
+	// partial repair on disk.
+	restorePreflight := func(cause error) error {
+		if restoreErr := restoreSkillDirFromArchive(dir, snapshot); restoreErr != nil {
+			return fmt.Errorf("%w; rollback failed: %v", cause, restoreErr)
+		}
+		return cause
+	}
+	// A portable preflight also persists the package integrity manifest even
+	// when no portability rewrite was needed. Treat that manifest write as part
+	// of the local mutation boundary so later failures restore the exact
+	// pre-image instead of leaving an uncommitted manifest behind.
+	preflightChanged := preflight.Portable() || len(preflight.AutoFixed) > 0
+	if !preflight.Portable() {
+		rejectionErr := fmt.Errorf("%s", skill.FormatUploadPreflight(preflight))
+		auditErr := s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "skill.rejected", ResourceType: "skill", ResourceID: entry.Name, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: map[string]string{"phase": "upload_preflight", "summary": skill.PreflightSummaryLine(preflight)}})
+		if len(preflight.AutoFixed) > 0 {
+			if restoreErr := restoreSkillDirFromArchive(dir, snapshot); restoreErr != nil {
+				if auditErr != nil {
+					return nil, fmt.Errorf("%w; rejection audit failed: %v; rollback failed: %v", rejectionErr, auditErr, restoreErr)
+				}
+				return nil, fmt.Errorf("%w; rollback failed: %v", rejectionErr, restoreErr)
+			}
+		}
+		if auditErr != nil {
+			return nil, fmt.Errorf("%w; rejection audit failed: %v", rejectionErr, auditErr)
+		}
+		return nil, rejectionErr
 	}
 	uploadEntry, err := loadImportedSkillEntry(dir)
 	if err != nil {
-		if len(preflight.AutoFixed) > 0 {
+		if preflightChanged {
 			if restoreErr := restoreSkillDirFromArchive(dir, snapshot); restoreErr != nil {
 				return nil, fmt.Errorf("reload skill after upload preflight: %w; rollback failed: %v", err, restoreErr)
 			}
@@ -794,7 +961,7 @@ func (s *Service) UploadSkill(ctx context.Context, p Principal, name string, in 
 	}
 	uploadEntry.SkillDir = dir
 	if err := s.scanSkillForOutbound(ctx, p, *uploadEntry, dir, "upload"); err != nil {
-		if len(preflight.AutoFixed) > 0 {
+		if preflightChanged {
 			if restoreErr := restoreSkillDirFromArchive(dir, snapshot); restoreErr != nil {
 				return nil, fmt.Errorf("%w; rollback failed: %v", err, restoreErr)
 			}
@@ -803,6 +970,15 @@ func (s *Service) UploadSkill(ctx context.Context, p Principal, name string, in 
 	}
 	archive, err := zipSkillUploadArchiveBytes(dir)
 	if err != nil {
+		if preflightChanged {
+			return nil, restorePreflight(err)
+		}
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		if preflightChanged {
+			return nil, restorePreflight(err)
+		}
 		return nil, err
 	}
 	fileName := normalizeSkillDirName(uploadEntry.Name)
@@ -814,20 +990,50 @@ func (s *Service) UploadSkill(ctx context.Context, p Principal, name string, in 
 	}
 	submissionID, usedBaseURL, err := submitSkillArchiveCandidates(ctx, baseURLs, email, fileName+".zip", archive, strings.TrimSpace(in.AuthToken))
 	if err != nil {
+		if preflightChanged {
+			return nil, restorePreflight(err)
+		}
 		return nil, err
 	}
 	if strings.TrimSpace(in.SkillMarketURL) == "" {
 		s.rememberUserHubCenterSelection(p, usedBaseURL, baseURLs)
 	}
+	result := &SkillUploadResult{SubmissionID: submissionID, Status: "submitted"}
 	statusPath := filepath.Join(dir, "upload_status.json")
-	statusBody, _ := json.MarshalIndent(map[string]string{"submission_id": submissionID, "uploaded_at": s.now().Format(time.RFC3339)}, "", "  ")
-	_ = fileutil.AtomicWriteFile(statusPath, append(statusBody, '\n'), 0o600)
-	_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "skill.uploaded", ResourceType: "skill", ResourceID: uploadEntry.Name, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: map[string]string{"submission_id": submissionID}})
-	return &SkillUploadResult{SubmissionID: submissionID, Status: "submitted"}, nil
+	statusBody, marshalErr := json.MarshalIndent(map[string]string{"submission_id": submissionID, "uploaded_at": s.now().Format(time.RFC3339)}, "", "  ")
+	var statusErr error
+	if marshalErr != nil {
+		statusErr = fmt.Errorf("encode upload status: %w", marshalErr)
+	} else {
+		statusErr = fileutil.AtomicWriteFile(statusPath, append(statusBody, '\n'), 0o600)
+	}
+	auditErr := s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "skill.uploaded", ResourceType: "skill", ResourceID: uploadEntry.Name, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: map[string]string{"submission_id": submissionID}})
+	if statusErr != nil || auditErr != nil {
+		// The remote submission has already crossed an external boundary, so it
+		// cannot be rolled back locally.  Return the submission ID together with a
+		// degraded error instead of silently claiming a fully recorded upload.
+		var details []string
+		if statusErr != nil {
+			details = append(details, "persist upload status: "+statusErr.Error())
+		}
+		if auditErr != nil {
+			details = append(details, "record upload audit: "+auditErr.Error())
+		}
+		return result, fmt.Errorf("skill upload submitted but local finalization failed: %s", strings.Join(details, "; "))
+	}
+	return result, nil
 }
 
 func (s *Service) GetSkillUploadStatus(ctx context.Context, p Principal, submissionID, baseURL string) (*SkillSubmissionStatus, error) {
-	_ = ctx
+	if s == nil || s.store == nil {
+		return nil, fmt.Errorf("service is unavailable")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if _, err := s.store.GetUser(p.TenantID, p.UserID); err != nil {
 		return nil, err
 	}
@@ -839,7 +1045,15 @@ func (s *Service) GetSkillUploadStatus(ctx context.Context, p Principal, submiss
 }
 
 func (s *Service) GetSkillMarketAccount(ctx context.Context, p Principal, baseURL, email string) (*SkillMarketAccount, error) {
-	_ = ctx
+	if s == nil || s.store == nil {
+		return nil, fmt.Errorf("service is unavailable")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if _, err := s.store.GetUser(p.TenantID, p.UserID); err != nil {
 		return nil, err
 	}
@@ -899,7 +1113,9 @@ func (s *Service) installSkillArchiveBytes(ctx context.Context, p Principal, dat
 			return nil, err
 		}
 		if report, err := scanImportedSkillBeforeInstall(ctx, entry, root); err != nil {
-			s.recordSkillScanRejection(p, entry, report, err)
+			if auditErr := s.recordSkillScanRejection(p, entry, report, err); auditErr != nil {
+				return nil, fmt.Errorf("%w; record rejection audit: %v", err, auditErr)
+			}
 			return nil, err
 		}
 		scanned = append(scanned, scannedPackageRoot{entry: entry, root: root})
@@ -973,11 +1189,18 @@ func (s *Service) persistImportedEntries(ctx context.Context, p Principal, entri
 	seenNames := make(map[string]struct{}, len(entries))
 	seenDirs := make(map[string]struct{}, len(entries))
 	for _, entry := range entries {
+		if hydrated, hydrateErr := hydrateImportedEntryFromSource(entry); hydrateErr != nil {
+			return nil, hydrateErr
+		} else {
+			entry = hydrated
+		}
 		if strings.TrimSpace(entry.Name) == "" {
 			return nil, fmt.Errorf("skill name is required")
 		}
 		if report, err := scanImportedSkillBeforeInstall(ctx, &entry, entry.SkillDir); err != nil {
-			s.recordSkillScanRejection(p, &entry, report, err)
+			if auditErr := s.recordSkillScanRejection(p, &entry, report, err); auditErr != nil {
+				return nil, fmt.Errorf("%w; record rejection audit: %v", err, auditErr)
+			}
 			return nil, err
 		}
 		nameKey := strings.ToLower(strings.TrimSpace(entry.Name))
@@ -986,9 +1209,13 @@ func (s *Service) persistImportedEntries(ctx context.Context, p Principal, entri
 		}
 		seenNames[nameKey] = struct{}{}
 		if _, _, err := s.findSkill(p, entry.Name); err == nil {
-			if !overwrite {
-				return nil, fmt.Errorf("skill %q already exists", entry.Name)
-			}
+			// Defer the overwrite decision until the staged candidate has been
+			// normalized and compared.  Source archives often differ in YAML
+			// formatting from the installed representation while remaining the same
+			// authoritative definition, so comparing the raw source directory here
+			// would reject a legitimate idempotent retry.
+		} else if err != nil && !strings.Contains(strings.ToLower(err.Error()), "not found") {
+			return nil, err
 		}
 		dir := filepath.Join(root, normalizeSkillDirName(firstNonEmpty(entry.DirName, entry.Name)))
 		cleanDir := filepath.Clean(dir)
@@ -1003,6 +1230,170 @@ func (s *Service) persistImportedEntries(ctx context.Context, p Principal, entri
 		scanned = append(scanned, entry)
 	}
 	return s.persistImportedEntriesWithCommitter(ctx, p, root, scanned, overwrite)
+}
+
+// hydrateImportedEntryFromSource fills omitted contract fields from a source
+// directory's definition without allowing the source directory basename to
+// become an accidental published identity. Download adapters sometimes pass a
+// partially populated runtime entry while the package itself contains richer
+// id/version/requires/params/pipeline declarations.
+func hydrateImportedEntryFromSource(entry corelib.NLSkillEntry) (corelib.NLSkillEntry, error) {
+	src := strings.TrimSpace(entry.SkillDir)
+	if src == "" {
+		return entry, nil
+	}
+	// Markdown-only packages are parsed by the security scanner with their
+	// original content semantics. Hydrating those into a synthesized runtime
+	// entry before scanning can change the finding level/action; only structured
+	// YAML packages need this field-completion pass.
+	if _, yamlErr := os.Stat(filepath.Join(src, "skill.yaml")); os.IsNotExist(yamlErr) {
+		if _, ymlErr := os.Stat(filepath.Join(src, "skill.yml")); os.IsNotExist(ymlErr) {
+			return entry, nil
+		}
+	}
+	parsed, err := loadImportedSkillEntry(src)
+	if err != nil {
+		return entry, fmt.Errorf("parse imported Skill %q: %w", entry.Name, err)
+	}
+	name, dirName, source := entry.Name, entry.DirName, entry.Source
+	parsed.SkillDir = src
+	if strings.TrimSpace(name) != "" {
+		parsed.Name = name
+	}
+	if strings.TrimSpace(dirName) != "" {
+		parsed.DirName = dirName
+	} else {
+		parsed.DirName = ""
+	}
+	if strings.TrimSpace(entry.Description) != "" {
+		parsed.Description = entry.Description
+	}
+	if strings.TrimSpace(entry.Version) != "" {
+		parsed.Version = entry.Version
+	}
+	if len(entry.Triggers) > 0 {
+		parsed.Triggers = entry.Triggers
+	}
+	if len(entry.Steps) > 0 {
+		parsed.Steps = entry.Steps
+	}
+	if len(entry.Operations) > 0 {
+		parsed.Operations = entry.Operations
+	}
+	if len(entry.Params) > 0 {
+		parsed.Params = entry.Params
+	}
+	if strings.TrimSpace(source) != "" {
+		parsed.Source = source
+	}
+	if strings.TrimSpace(entry.ExperienceDomain) != "" {
+		parsed.ExperienceDomain = entry.ExperienceDomain
+	}
+	// Preserve transport metadata supplied by Hub/Market adapters. These fields
+	// are not part of skill.yaml but are needed for provenance, trust and
+	// dependency resolution after publication.
+	if strings.TrimSpace(entry.HubSkillID) != "" {
+		parsed.HubSkillID = entry.HubSkillID
+	}
+	if strings.TrimSpace(entry.HubVersion) != "" {
+		parsed.HubVersion = entry.HubVersion
+	}
+	if strings.TrimSpace(entry.TrustLevel) != "" {
+		parsed.TrustLevel = entry.TrustLevel
+	}
+	if strings.TrimSpace(entry.Publisher) != "" {
+		parsed.Publisher = entry.Publisher
+	}
+	if strings.TrimSpace(entry.SourceProject) != "" {
+		parsed.SourceProject = entry.SourceProject
+	}
+	if strings.TrimSpace(entry.SkillID) != "" {
+		parsed.SkillID = entry.SkillID
+	}
+	if entry.Capability != nil {
+		capability := *entry.Capability
+		parsed.Capability = &capability
+	}
+	if strings.TrimSpace(entry.Type) != "" {
+		parsed.Type = entry.Type
+	}
+	if strings.TrimSpace(entry.Content) != "" {
+		parsed.Content = entry.Content
+	}
+	if len(entry.Platforms) > 0 {
+		parsed.Platforms = entry.Platforms
+	}
+	if entry.RequiresGUI {
+		parsed.RequiresGUI = true
+	}
+	if len(entry.RequiredCredentialFiles) > 0 {
+		parsed.RequiredCredentialFiles = entry.RequiredCredentialFiles
+	}
+	if len(entry.RequiredArgs) > 0 {
+		parsed.RequiredArgs = entry.RequiredArgs
+	}
+	if len(entry.RequiredEnv) > 0 {
+		parsed.RequiredEnv = entry.RequiredEnv
+	}
+	if len(entry.RequiresPython) > 0 {
+		parsed.RequiresPython = entry.RequiresPython
+	}
+	if len(entry.RequiresNode) > 0 {
+		parsed.RequiresNode = entry.RequiresNode
+	}
+	if len(entry.RequiresBins) > 0 {
+		parsed.RequiresBins = entry.RequiresBins
+	}
+	if len(entry.RequiresTools) > 0 {
+		parsed.RequiresTools = entry.RequiresTools
+	}
+	if len(entry.FallbackForTools) > 0 {
+		parsed.FallbackForTools = entry.FallbackForTools
+	}
+	if len(entry.RequiresToolsets) > 0 {
+		parsed.RequiresToolsets = entry.RequiresToolsets
+	}
+	if len(entry.FallbackForToolsets) > 0 {
+		parsed.FallbackForToolsets = entry.FallbackForToolsets
+	}
+	if strings.TrimSpace(entry.PreferredShell) != "" {
+		parsed.PreferredShell = entry.PreferredShell
+	}
+	if strings.TrimSpace(entry.Mode) != "" {
+		parsed.Mode = entry.Mode
+	}
+	if strings.TrimSpace(entry.ExecMode) != "" {
+		parsed.ExecMode = entry.ExecMode
+	}
+	if entry.GlobalTimeout != 0 {
+		parsed.GlobalTimeout = entry.GlobalTimeout
+	}
+	if len(entry.Capabilities) > 0 {
+		parsed.Capabilities = entry.Capabilities
+	}
+	if len(entry.Pipeline) > 0 {
+		parsed.Pipeline = entry.Pipeline
+	}
+	if entry.Stateful {
+		parsed.Stateful = true
+	}
+	if strings.TrimSpace(entry.VerifiedAt) != "" {
+		parsed.VerifiedAt = entry.VerifiedAt
+	}
+	if strings.TrimSpace(entry.VerificationRunID) != "" {
+		parsed.VerificationRunID = entry.VerificationRunID
+	}
+	if strings.TrimSpace(entry.VerificationDigest) != "" {
+		parsed.VerificationDigest = entry.VerificationDigest
+	}
+	if strings.TrimSpace(entry.VerificationGateStatus) != "" {
+		parsed.VerificationGateStatus = entry.VerificationGateStatus
+	}
+	// ProducesArtifact has no tri-state representation in NLSkillEntry. When a
+	// source directory is available, the YAML declaration is authoritative (and
+	// the parser defaults an omitted field to true); do not let a zero-valued
+	// transport struct accidentally downgrade it to false.
+	return *parsed, nil
 }
 
 // persistImportedEntryWithCommitter is retained as a compatibility adapter for
@@ -1039,61 +1430,113 @@ func (s *Service) persistImportedEntriesWithCommitter(ctx context.Context, p Pri
 	if len(entries) == 0 {
 		return nil, nil
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	renameDir := skill.RetryDirectoryRename
+	if s.skillDirectoryRename != nil {
+		renameDir = s.skillDirectoryRename
+	}
 	items := make([]agentSkillInstallItem, 0, len(entries))
+	seenNames := make(map[string]struct{}, len(entries))
+	seenDirs := make(map[string]struct{}, len(entries))
+	cleanupPendingStages := func() {
+		for _, prior := range items {
+			if prior.stageDir != "" {
+				_ = os.RemoveAll(prior.stageDir)
+			}
+		}
+	}
+	cleanupStage := func(stage string) {
+		if stage != "" {
+			_ = os.RemoveAll(stage)
+		}
+		cleanupPendingStages()
+	}
 	for _, entry := range entries {
+		identity := strings.ToLower(strings.TrimSpace(entry.Name))
+		if identity == "" {
+			cleanupPendingStages()
+			return nil, fmt.Errorf("imported skill name is empty")
+		}
+		if _, duplicate := seenNames[identity]; duplicate {
+			// Two packages with the same logical identity cannot be committed as
+			// one batch: they would race for the same destination and make the
+			// compensation plan ambiguous. Require the caller to disambiguate or
+			// submit them separately.
+			cleanupPendingStages()
+			return nil, fmt.Errorf("duplicate skill identity in import batch: %s", entry.Name)
+		}
+		seenNames[identity] = struct{}{}
 		finalDir := filepath.Clean(filepath.Join(root, normalizeSkillDirName(firstNonEmpty(entry.DirName, entry.Name))))
+		dirKey := strings.ToLower(filepath.Clean(finalDir))
+		if _, duplicate := seenDirs[dirKey]; duplicate {
+			cleanupPendingStages()
+			return nil, fmt.Errorf("duplicate skill destination in import batch: %s", filepath.Base(finalDir))
+		}
+		seenDirs[dirKey] = struct{}{}
 		existing, _, findErr := s.findSkill(p, entry.Name)
 		item := agentSkillInstallItem{entry: entry, finalDir: finalDir}
 		if findErr == nil {
-			if !overwrite {
-				return nil, fmt.Errorf("skill %q already exists", entry.Name)
-			}
+			// Compare the parsed authoritative definition, not raw directory bytes:
+			// import sources commonly contain formatting or source-only files that
+			// are normalized during publication. Identical definitions are a
+			// side-effect-free no-op regardless of the overwrite flag.
 			if strings.TrimSpace(existing.SkillDir) != "" {
 				item.finalDir = filepath.Clean(existing.SkillDir)
 			}
-			item.backup = item.finalDir + ".prev"
-			item.hadPrev = true
-			if _, statErr := os.Stat(item.backup); statErr == nil {
-				return nil, fmt.Errorf("skill backup conflict: %s already exists", filepath.Base(item.backup))
-			} else if statErr != nil && !os.IsNotExist(statErr) {
-				return nil, statErr
-			}
 		} else if !strings.Contains(strings.ToLower(findErr.Error()), "not found") {
+			cleanupPendingStages()
 			return nil, findErr
 		} else if info, statErr := os.Stat(item.finalDir); statErr == nil && info.IsDir() {
+			cleanupPendingStages()
 			return nil, fmt.Errorf("skill directory %q already exists under a different identity", filepath.Base(item.finalDir))
 		} else if statErr != nil && !os.IsNotExist(statErr) {
+			cleanupPendingStages()
 			return nil, statErr
 		}
 		stageDir, err := os.MkdirTemp(root, ".skill-install-*")
 		if err != nil {
+			cleanupPendingStages()
 			return nil, err
 		}
 		item.stageDir = stageDir
 		if err := writeEntryToSkillDir(item.stageDir, entry); err != nil {
-			for _, prior := range items {
-				_ = os.RemoveAll(prior.stageDir)
-			}
-			_ = os.RemoveAll(item.stageDir)
+			cleanupStage(item.stageDir)
 			return nil, err
 		}
 		loaded, err := loadImportedSkillEntry(item.stageDir)
 		if err != nil || !loaded.MatchesName(entry.Name) {
-			for _, prior := range items {
-				_ = os.RemoveAll(prior.stageDir)
-			}
-			_ = os.RemoveAll(item.stageDir)
+			cleanupStage(item.stageDir)
 			if err == nil {
 				err = fmt.Errorf("parsed name %q does not match", loaded.Name)
 			}
 			return nil, fmt.Errorf("validate staged skill %q: %w", entry.Name, err)
 		}
-		if findErr == nil && sameImportedSkillDirectory(item.stageDir, existing.SkillDir) {
-			_ = os.RemoveAll(item.stageDir)
-			continue
+		if findErr == nil {
+			if sameImportedSkillDirectory(item.stageDir, existing.SkillDir) || sameImportedSkillDefinition(item.stageDir, existing.SkillDir) {
+				_ = os.RemoveAll(item.stageDir)
+				continue
+			}
+			if !overwrite {
+				cleanupStage(item.stageDir)
+				return nil, fmt.Errorf("skill %q already exists", entry.Name)
+			}
+			// Only changed content enters the replacement transaction. Check for a
+			// stale .prev after the no-op comparison so an idempotent retry is not
+			// blocked by an unrelated leftover backup.
+			item.backup = item.finalDir + ".prev"
+			item.hadPrev = true
+			if _, statErr := os.Stat(item.backup); statErr == nil {
+				cleanupStage(item.stageDir)
+				return nil, fmt.Errorf("skill backup conflict: %s already exists", filepath.Base(item.backup))
+			} else if statErr != nil && !os.IsNotExist(statErr) {
+				cleanupStage(item.stageDir)
+				return nil, statErr
+			}
 		}
 		items = append(items, item)
 	}
@@ -1117,6 +1560,9 @@ func (s *Service) persistImportedEntriesWithCommitter(ctx context.Context, p Pri
 	contractSnapshotPayloads := make(map[string]string)
 	for _, item := range items {
 		if existing, _, findErr := s.findSkill(p, item.entry.Name); findErr == nil {
+			if s.dynamicCapabilities == nil {
+				return nil, fmt.Errorf("dynamic capability registry is unavailable for existing Skill %q", item.entry.Name)
+			}
 			stableID := skillStableID(existing)
 			if contract, ok := s.dynamicCapabilities.ResolveSkillDynamicContract(ctx, p, stableID); ok {
 				previousContracts[stableID] = contract
@@ -1148,11 +1594,31 @@ func (s *Service) persistImportedEntriesWithCommitter(ctx context.Context, p Pri
 			}
 			return nil
 		},
+		// During rollback newly published directories are intentionally absent;
+		// the forward checked-index validator above would incorrectly treat that
+		// safe state as a failed publication.  Rebuild the filesystem-derived
+		// registry from whatever authoritative directories remain instead.  The
+		// legacy scanner intentionally skips unreadable/malformed directories;
+		// rollback cannot use that best-effort behavior because clearing the
+		// compensation row would falsely claim the restored registry is healthy.
+		RollbackIndexRefresher: func() error {
+			if err := validateAgentSkillRoot(root); err != nil {
+				return err
+			}
+			_ = skill.ScanSkillDirAll(root)
+			return nil
+		},
 		FinalAuditor: func(event string, data map[string]string) error {
 			return s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: event, ResourceType: "skill", ResourceID: first.Name, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: data})
 		},
 		ConfigRevision: "agentservice-skill-install-v1",
 		AllowCreate:    true,
+		// The AgentService registry is filesystem-derived. Directory publication
+		// is the authoritative mutation and there is no pre-existing YAML file
+		// for the synthetic first entry to restore; asking SkillCommitter to take
+		// a YAML backup would manufacture an empty rollback target and turn a
+		// valid batch failure into audit_pending.
+		SkipDefinitionBackup: true,
 		CompensationMutator: func(record *skill.EvolutionCompensationRecord) {
 			record.SetRecoveryScope(s.dataRoot)
 			created := make([]string, 0, len(items))
@@ -1174,7 +1640,7 @@ func (s *Service) persistImportedEntriesWithCommitter(ctx context.Context, p Pri
 			moves := append([]skill.EvolutionDirectoryMove(nil), record.DirectoryMoves...)
 			for i := range items {
 				if items[i].hadPrev {
-					if err := skill.RetryDirectoryRename(items[i].finalDir, items[i].backup); err != nil {
+					if err := renameDir(items[i].finalDir, items[i].backup); err != nil {
 						return fmt.Errorf("backup existing skill %s: %w", items[i].entry.Name, err)
 					}
 					items[i].moved = true
@@ -1183,7 +1649,7 @@ func (s *Service) persistImportedEntriesWithCommitter(ctx context.Context, p Pri
 						return err
 					}
 				}
-				if err := skill.RetryDirectoryRename(items[i].stageDir, items[i].finalDir); err != nil {
+				if err := renameDir(items[i].stageDir, items[i].finalDir); err != nil {
 					return fmt.Errorf("publish skill %s: %w", items[i].entry.Name, err)
 				}
 				items[i].published = true
@@ -1206,28 +1672,40 @@ func (s *Service) persistImportedEntriesWithCommitter(ctx context.Context, p Pri
 			return nil
 		},
 		ExternalRollback: func() error {
+			var rollbackErrs []error
 			for i := len(items) - 1; i >= 0; i-- {
+				canRestorePrevious := true
 				if items[i].published {
 					if err := os.RemoveAll(items[i].finalDir); err != nil && !os.IsNotExist(err) {
-						return err
+						rollbackErrs = append(rollbackErrs, fmt.Errorf("remove published skill %s: %w", items[i].entry.Name, err))
+						// Do not overwrite a directory that could not be removed, but
+						// keep recovering unrelated package directories and contracts.
+						canRestorePrevious = false
 					}
 				}
-				if items[i].moved {
-					if err := skill.RetryDirectoryRename(items[i].backup, items[i].finalDir); err != nil {
-						return err
+				if items[i].moved && canRestorePrevious {
+					if err := renameDir(items[i].backup, items[i].finalDir); err != nil {
+						rollbackErrs = append(rollbackErrs, fmt.Errorf("restore previous skill %s: %w", items[i].entry.Name, err))
 					}
 				}
 			}
 			for stableID := range revokedContracts {
 				if contract, ok := previousContracts[stableID]; ok {
 					if err := s.dynamicCapabilities.PublishSkillContract(p, stableID, contract); err != nil {
-						return fmt.Errorf("restore Skill dynamic capability contract: %w", err)
+						// Contract restoration is per stable identity. Continue after
+						// one failure so a bad external record cannot leave every
+						// sibling contract revoked; the joined error keeps the durable
+						// compensation record pending for the remaining failure.
+						rollbackErrs = append(rollbackErrs, fmt.Errorf("restore Skill dynamic capability contract %s: %w", stableID, err))
 					}
 				}
 			}
-			return nil
+			return errors.Join(rollbackErrs...)
 		},
 		PostCommitCleanup: func() error {
+			if s.skillPostCommitCleanup != nil {
+				return s.skillPostCommitCleanup()
+			}
 			for _, item := range items {
 				if !item.hadPrev || strings.TrimSpace(item.backup) == "" {
 					continue
@@ -1257,6 +1735,39 @@ func replaceAgentSkillCompensation(record *skill.EvolutionCompensationRecord, mo
 	return skill.ReplaceEvolutionCompensation(*record)
 }
 
+// validateAgentSkillRoot performs the strict counterpart to the normal
+// filesystem-derived scanner. ScanSkillDirAll is deliberately best-effort for
+// discovery and silently skips unreadable or malformed entries; a rollback
+// must not clear its durable compensation record when that happens. Only
+// visible immediate child directories are authoritative AgentService skills.
+func validateAgentSkillRoot(root string) error {
+	root = filepath.Clean(strings.TrimSpace(root))
+	if root == "" || root == "." {
+		return fmt.Errorf("skill root is empty")
+	}
+	entries, err := os.ReadDir(root)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read skill root: %w", err)
+	}
+	for _, entry := range entries {
+		name := strings.TrimSpace(entry.Name())
+		if name == "" || strings.HasPrefix(name, ".") || strings.HasSuffix(name, ".prev") {
+			continue
+		}
+		if !entry.IsDir() {
+			continue
+		}
+		dir := filepath.Join(root, name)
+		if _, err := loadImportedSkillEntry(dir); err != nil {
+			return fmt.Errorf("validate restored skill %q: %w", name, err)
+		}
+	}
+	return nil
+}
+
 func sameImportedSkillDirectory(left, right string) bool {
 	left = filepath.Clean(strings.TrimSpace(left))
 	right = filepath.Clean(strings.TrimSpace(right))
@@ -1266,6 +1777,129 @@ func sameImportedSkillDirectory(left, right string) bool {
 	leftDigest, leftErr := importedSkillDirectoryDigest(left)
 	rightDigest, rightErr := importedSkillDirectoryDigest(right)
 	return leftErr == nil && rightErr == nil && leftDigest == rightDigest
+}
+
+// sameImportedSkillDefinition compares the authoritative parsed definition
+// and the package payload while ignoring transport/source metadata and
+// filesystem location. Import publishers normalize YAML formatting, so a
+// byte-for-byte directory comparison alone is too strict; conversely,
+// comparing only the parsed definition would miss changed scripts/assets.
+func sameImportedSkillDefinition(candidateDir, installedDir string) bool {
+	candidate, err := loadImportedSkillEntry(candidateDir)
+	if err != nil {
+		return false
+	}
+	installed, err := loadImportedSkillEntry(installedDir)
+	if err != nil {
+		return false
+	}
+	normalize := func(entry *corelib.NLSkillEntry) {
+		entry.SkillDir = ""
+		entry.Source = ""
+		entry.Status = firstNonEmpty(entry.Status, "active")
+		entry.DirName = ""
+		// These fields are runtime/transport metadata and are either regenerated
+		// during import or intentionally omitted from the on-disk skill.yaml.
+		// Including them would turn an identical retry into a false update.
+		entry.CreatedAt = ""
+		entry.SourceProject = ""
+		// ExperienceDomain is an authoritative routing/visibility constraint,
+		// not transport metadata; retain it so a scope change is an update.
+		entry.HubSkillID = ""
+		// Version and HubVersion are loaded from the authoritative skill.yaml and
+		// therefore remain part of the definition comparison. A version-only
+		// change must not be silently collapsed into an idempotent retry.
+		entry.TrustLevel = ""
+		entry.Publisher = ""
+		entry.UsageCount = 0
+		entry.SuccessCount = 0
+		entry.FailureCount = 0
+		entry.WorkaroundCount = 0
+		entry.LastUsedAt = ""
+		entry.LastError = ""
+		entry.RepairAttemptCount = 0
+		entry.LastRepairAt = ""
+		entry.RepairHistory = nil
+		entry.OptimizationCount = 0
+		entry.LastOptimizedAt = ""
+		entry.DiscoveredFrom = ""
+		entry.VerifiedAt = ""
+		entry.VerificationRunID = ""
+		entry.VerificationDigest = ""
+		entry.VerificationGateStatus = ""
+		entry.TotalTokensCost = 0
+		entry.SolidificationCandidates = nil
+		entry.References = nil
+		// Requires*, Params, Capability, Stateful, Pipeline and the other
+		// contract fields are deliberately retained: changing any of them
+		// changes execution semantics and must not be treated as a no-op.
+	}
+	left, right := *candidate, *installed
+	normalize(&left)
+	normalize(&right)
+	if !reflect.DeepEqual(left, right) {
+		return false
+	}
+	return sameImportedSkillPayload(candidateDir, installedDir)
+}
+
+// sameImportedSkillPayload compares package files that are not generated
+// definition YAML. The YAML itself is compared through the normalized parsed
+// contract above, allowing harmless formatting differences while still
+// detecting changed scripts, markdown and assets.
+func sameImportedSkillPayload(leftDir, rightDir string) bool {
+	digest := func(root string) (string, error) {
+		h := sha256.New()
+		paths := make([]string, 0)
+		err := filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				return filepath.SkipDir
+			}
+			if info.IsDir() {
+				// Runtime state and scanner caches are generated after publication;
+				// they are not part of the imported package payload and must not turn
+				// an otherwise identical retry into an update.
+				if strings.EqualFold(info.Name(), ".state") || strings.EqualFold(info.Name(), ".git") {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			rel, err := filepath.Rel(root, path)
+			if err != nil {
+				return err
+			}
+			rootDef := filepath.ToSlash(rel)
+			if rootDef == "skill.yaml" || rootDef == "skill.yml" {
+				return nil
+			}
+			if strings.EqualFold(filepath.Base(rel), "skill_scan_cache.json") {
+				return nil
+			}
+			paths = append(paths, rel)
+			return nil
+		})
+		if err != nil {
+			return "", err
+		}
+		sort.Strings(paths)
+		for _, rel := range paths {
+			data, err := os.ReadFile(filepath.Join(root, rel))
+			if err != nil {
+				return "", err
+			}
+			_, _ = h.Write([]byte(filepath.ToSlash(rel)))
+			_, _ = h.Write([]byte{0})
+			_, _ = h.Write(data)
+			_, _ = h.Write([]byte{0})
+		}
+		return hex.EncodeToString(h.Sum(nil)), nil
+	}
+	left, leftErr := digest(leftDir)
+	right, rightErr := digest(rightDir)
+	return leftErr == nil && rightErr == nil && left == right
 }
 
 func importedSkillDirectoryDigest(root string) (string, error) {
@@ -1305,9 +1939,9 @@ func importedSkillDirectoryDigest(root string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-func (s *Service) recordSkillScanRejection(p Principal, entry *corelib.NLSkillEntry, report *skill.ScanReport, scanErr error) {
+func (s *Service) recordSkillScanRejection(p Principal, entry *corelib.NLSkillEntry, report *skill.ScanReport, scanErr error) error {
 	if s == nil || entry == nil {
-		return
+		return nil
 	}
 	level := ""
 	summary := ""
@@ -1320,7 +1954,7 @@ func (s *Service) recordSkillScanRejection(p Principal, entry *corelib.NLSkillEn
 	if summary == "" && scanErr != nil {
 		summary = scanErr.Error()
 	}
-	_ = s.recordAudit(auditRecord{
+	return s.recordAudit(auditRecord{
 		TenantID:      p.TenantID,
 		UserID:        p.UserID,
 		Action:        "skill.rejected",
@@ -1363,7 +1997,9 @@ func (s *Service) persistExtractedSkillDir(p Principal, entry corelib.NLSkillEnt
 	}
 	entry.SkillDir = dir
 	entry.Source = firstNonEmpty(entry.Source, "file")
-	_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "skill.imported", ResourceType: "skill", ResourceID: entry.Name, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: map[string]string{"source": entry.Source}})
+	if err := s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "skill.imported", ResourceType: "skill", ResourceID: entry.Name, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: map[string]string{"source": entry.Source}}); err != nil {
+		return corelib.NLSkillEntry{}, fmt.Errorf("record skill import audit: %w", err)
+	}
 	return entry, nil
 }
 
@@ -1874,12 +2510,45 @@ func writeEntryToSkillDir(dir string, entry corelib.NLSkillEntry) error {
 			_ = os.RemoveAll(src)
 		}
 	}
-	sf := &skill.SkillYAMLFile{Name: entry.Name, Description: entry.Description, Triggers: entry.Triggers, Status: firstNonEmpty(entry.Status, "active"), Platforms: entry.Platforms, RequiresGUI: entry.RequiresGUI, Type: entry.Type, Content: entry.Content, Mode: entry.Mode, ExecMode: entry.ExecMode, GlobalTimeout: entry.GlobalTimeout, RequiredArgs: entry.RequiredArgs, RequiredEnv: entry.RequiredEnv, PreferredShell: entry.PreferredShell, Capabilities: entry.Capabilities, RequiresTools: entry.RequiresTools, FallbackForTools: entry.FallbackForTools, RequiresToolsets: entry.RequiresToolsets, FallbackForToolsets: entry.FallbackForToolsets, RequiredCredentialFiles: entry.RequiredCredentialFiles}
+	sf := &skill.SkillYAMLFile{
+		ID: entry.SkillID, Name: entry.Name, Version: firstNonEmpty(entry.Version, entry.HubVersion),
+		Description: entry.Description, Triggers: entry.Triggers, Status: firstNonEmpty(entry.Status, "active"),
+		VerifiedAt: entry.VerifiedAt, VerificationRunID: entry.VerificationRunID,
+		VerificationDigest: entry.VerificationDigest, VerificationGateStatus: entry.VerificationGateStatus,
+		Source: entry.Source, ExperienceDomain: entry.ExperienceDomain, Platforms: entry.Platforms,
+		RequiresGUI: entry.RequiresGUI, Type: entry.Type, Content: entry.Content, Mode: entry.Mode,
+		ExecMode: entry.ExecMode, GlobalTimeout: entry.GlobalTimeout, RequiredArgs: entry.RequiredArgs,
+		RequiredEnv: entry.RequiredEnv, PreferredShell: entry.PreferredShell, Capabilities: entry.Capabilities,
+		RequiresTools: entry.RequiresTools, FallbackForTools: entry.FallbackForTools,
+		RequiresToolsets: entry.RequiresToolsets, FallbackForToolsets: entry.FallbackForToolsets,
+		RequiredCredentialFiles: entry.RequiredCredentialFiles, Stateful: entry.Stateful,
+		Pipeline: make([]skill.SkillYAMLPipelineStep, 0, len(entry.Pipeline)),
+	}
+	// NLSkillEntry is already parsed from the authoritative YAML before this
+	// writer runs, so its boolean value is resolved (the parser defaults an
+	// omitted field to true). Persist it explicitly to preserve an intentional
+	// `produces_artifact: false` declaration across an import round-trip.
+	producesArtifact := entry.ProducesArtifact
+	sf.ProducesArtifact = &producesArtifact
+	for _, p := range entry.Params {
+		sf.Params = append(sf.Params, skill.SkillYAMLParam{Name: p.Name, Description: p.Description, Type: p.Type, Aliases: p.Aliases, CLIFlag: p.CLIFlag, Default: p.Default, Required: p.Required})
+	}
+	sf.Requires = &skill.SkillYAMLRequires{Python: entry.RequiresPython, Node: entry.RequiresNode, Bins: entry.RequiresBins}
 	for _, op := range entry.Operations {
 		sf.Operations = append(sf.Operations, skill.SkillYAMLOperation{Name: op.Name, Description: op.Description, Params: op.Params, Labels: op.Labels})
 	}
 	for _, step := range entry.Steps {
-		sf.Steps = append(sf.Steps, skill.SkillYAMLStep{Action: step.Action, Params: step.Params, OnError: step.OnError, Name: step.Name, Condition: step.Condition, When: step.When, Label: step.Label, Capture: step.Capture})
+		yamlStep := skill.SkillYAMLStep{Action: step.Action, Params: step.Params, OnError: step.OnError, Name: step.Name, Condition: step.Condition, When: step.When, Label: step.Label, Capture: step.Capture}
+		if step.Poll != nil {
+			yamlStep.Poll = &skill.SkillYAMLStepPoll{Interval: step.Poll.Interval, MaxAttempts: step.Poll.MaxAttempts, UntilMatch: step.Poll.UntilMatch, UntilStatus: step.Poll.UntilStatus}
+		}
+		if step.Loop != nil {
+			yamlStep.Loop = &skill.SkillYAMLStepLoop{MaxIterations: step.Loop.MaxIterations, UntilStep: step.Loop.UntilStep, UntilMatch: step.Loop.UntilMatch, OnFailStep: step.Loop.OnFailStep}
+		}
+		sf.Steps = append(sf.Steps, yamlStep)
+	}
+	for _, pipelineStep := range entry.Pipeline {
+		sf.Pipeline = append(sf.Pipeline, skill.SkillYAMLPipelineStep{Skill: pipelineStep.Skill, Params: pipelineStep.Params, Checkpoint: pipelineStep.Checkpoint, CheckpointMessage: pipelineStep.CheckpointMessage, ContinueOnFail: pipelineStep.ContinueOnFail, TimeImpactOnReject: pipelineStep.TimeImpactOnReject})
 	}
 	if entry.Type == "knowledge" && strings.TrimSpace(entry.Content) != "" {
 		sf.Steps = nil
@@ -2051,12 +2720,49 @@ func loadSkillFromExtractedDir(skillDir string) (*corelib.NLSkillEntry, string, 
 		if err != nil {
 			return nil, "", err
 		}
-		entry := &corelib.NLSkillEntry{Name: firstNonEmpty(strings.TrimSpace(parsed.Name), filepath.Base(skillDir)), DirName: filepath.Base(skillDir), Description: parsed.Description, Triggers: parsed.Triggers, Status: firstNonEmpty(parsed.Status, "active"), Source: "file", Platforms: parsed.Platforms, RequiresGUI: parsed.RequiresGUI, Type: parsed.Type, Content: parsed.Content, Mode: parsed.Mode, ExecMode: parsed.ExecMode, GlobalTimeout: parsed.GlobalTimeout, RequiredArgs: parsed.RequiredArgs, RequiredEnv: parsed.RequiredEnv, PreferredShell: parsed.PreferredShell, Capabilities: parsed.Capabilities, RequiresTools: parsed.RequiresTools, FallbackForTools: parsed.FallbackForTools, RequiresToolsets: parsed.RequiresToolsets, FallbackForToolsets: parsed.FallbackForToolsets, RequiredCredentialFiles: parsed.RequiredCredentialFiles, CreatedAt: time.Now().Format(time.RFC3339)}
+		entry := &corelib.NLSkillEntry{
+			SkillID: strings.TrimSpace(parsed.ID),
+			Name:    firstNonEmpty(strings.TrimSpace(parsed.Name), filepath.Base(skillDir)), DirName: filepath.Base(skillDir),
+			Description: parsed.Description, Triggers: parsed.Triggers, Status: firstNonEmpty(parsed.Status, "active"),
+			Source:           skill.ResolveDiskSkillSource(parsed.Source, skillDir, parsed.Name),
+			ExperienceDomain: corelib.NormalizeSkillExperienceDomain(parsed.ExperienceDomain),
+			Version:          strings.TrimSpace(parsed.Version), HubVersion: strings.TrimSpace(parsed.Version),
+			VerifiedAt: strings.TrimSpace(parsed.VerifiedAt), VerificationRunID: strings.TrimSpace(parsed.VerificationRunID),
+			VerificationDigest: strings.TrimSpace(parsed.VerificationDigest), VerificationGateStatus: strings.TrimSpace(parsed.VerificationGateStatus),
+			Platforms: parsed.Platforms, RequiresGUI: parsed.RequiresGUI, Type: parsed.Type, Content: parsed.Content,
+			Mode: parsed.Mode, ExecMode: parsed.ExecMode, GlobalTimeout: parsed.GlobalTimeout,
+			RequiredArgs: parsed.RequiredArgs, RequiredEnv: parsed.RequiredEnv, PreferredShell: parsed.PreferredShell,
+			Capabilities: parsed.Capabilities, RequiresTools: parsed.RequiresTools, FallbackForTools: parsed.FallbackForTools,
+			RequiresToolsets: parsed.RequiresToolsets, FallbackForToolsets: parsed.FallbackForToolsets,
+			RequiredCredentialFiles: parsed.RequiredCredentialFiles, Stateful: parsed.Stateful,
+			ProducesArtifact: true, CreatedAt: time.Now().Format(time.RFC3339),
+		}
+		if parsed.ProducesArtifact != nil {
+			entry.ProducesArtifact = *parsed.ProducesArtifact
+		}
+		if parsed.Requires != nil {
+			entry.RequiresPython = append([]string(nil), parsed.Requires.Python...)
+			entry.RequiresNode = append([]string(nil), parsed.Requires.Node...)
+			entry.RequiresBins = append([]string(nil), parsed.Requires.Bins...)
+		}
+		for _, param := range parsed.Params {
+			entry.Params = append(entry.Params, corelib.NLSkillParam{Name: param.Name, Description: param.Description, Type: param.Type, Aliases: param.Aliases, CLIFlag: param.CLIFlag, Default: param.Default, Required: param.Required})
+		}
 		for _, op := range parsed.Operations {
 			entry.Operations = append(entry.Operations, corelib.NLSkillOperation{Name: op.Name, Description: op.Description, Params: op.Params, Labels: op.Labels})
 		}
 		for _, step := range parsed.Steps {
-			entry.Steps = append(entry.Steps, corelib.NLSkillStep{Action: step.Action, Params: step.Params, OnError: step.OnError, Name: step.Name, Condition: step.Condition, When: step.When, Label: step.Label, Capture: step.Capture})
+			runtimeStep := corelib.NLSkillStep{Action: step.Action, Params: step.Params, OnError: step.OnError, Name: step.Name, Condition: step.Condition, When: step.When, Label: step.Label, Capture: step.Capture}
+			if step.Poll != nil {
+				runtimeStep.Poll = &corelib.StepPollConfig{Interval: step.Poll.Interval, MaxAttempts: step.Poll.MaxAttempts, UntilMatch: step.Poll.UntilMatch, UntilStatus: step.Poll.UntilStatus}
+			}
+			if step.Loop != nil {
+				runtimeStep.Loop = &corelib.StepLoopConfig{MaxIterations: step.Loop.MaxIterations, UntilStep: step.Loop.UntilStep, UntilMatch: step.Loop.UntilMatch, OnFailStep: step.Loop.OnFailStep}
+			}
+			entry.Steps = append(entry.Steps, runtimeStep)
+		}
+		for _, pipelineStep := range parsed.Pipeline {
+			entry.Pipeline = append(entry.Pipeline, corelib.SkillPipelineStep{Skill: pipelineStep.Skill, Params: pipelineStep.Params, Checkpoint: pipelineStep.Checkpoint, CheckpointMessage: pipelineStep.CheckpointMessage, ContinueOnFail: pipelineStep.ContinueOnFail, TimeImpactOnReject: pipelineStep.TimeImpactOnReject})
 		}
 		if len(entry.Steps) == 0 {
 			if markdownEntry, err := skill.ImportMarkdownSkillDir(skillDir, skill.MarkdownSkillOptions{NameFallback: entry.Name, DescriptionFallback: entry.Description, Triggers: entry.Triggers, Source: "file", SkillDir: skillDir}); err == nil {
@@ -2114,6 +2820,16 @@ func zipSkillUploadArchiveBytes(srcDir string) ([]byte, error) {
 }
 
 func zipDirectoryBytesFiltered(srcDir string, skip func(rel string, info os.FileInfo) bool) ([]byte, error) {
+	if strings.TrimSpace(srcDir) == "" {
+		return nil, fmt.Errorf("skill directory is empty")
+	}
+	rootInfo, rootErr := os.Lstat(srcDir)
+	if rootErr != nil {
+		return nil, rootErr
+	}
+	if rootInfo.Mode()&os.ModeSymlink != 0 || !rootInfo.IsDir() {
+		return nil, fmt.Errorf("refusing to zip non-directory Skill root")
+	}
 	var buf bytes.Buffer
 	writer := zip.NewWriter(&buf)
 	err := filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
@@ -2136,6 +2852,9 @@ func zipDirectoryBytesFiltered(srcDir string, skip func(rel string, info os.File
 		if info.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("refusing to zip symlink %q", rel)
 		}
+		if !info.IsDir() && !info.Mode().IsRegular() {
+			return fmt.Errorf("refusing to zip non-regular file %q", rel)
+		}
 		header, err := zip.FileInfoHeader(info)
 		if err != nil {
 			return err
@@ -2157,9 +2876,12 @@ func zipDirectoryBytesFiltered(srcDir string, skip func(rel string, info os.File
 		if err != nil {
 			return err
 		}
-		defer f.Close()
-		_, err = io.Copy(w, f)
-		return err
+		_, copyErr := io.Copy(w, f)
+		closeErr := f.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		return closeErr
 	})
 	if err != nil {
 		_ = writer.Close()
@@ -2174,6 +2896,12 @@ func zipDirectoryBytesFiltered(srcDir string, skip func(rel string, info os.File
 func shouldSkipSkillUploadArchiveEntry(rel string, info os.FileInfo) bool {
 	if info.IsDir() {
 		return skill.IsSkillRuntimePackageDir(rel)
+	}
+	// Credential / secret files must never ship in a market package or export
+	// archive (P0 review 2026-09-09): a skill dir can hold a real `.env` or
+	// private key for local execution; bundling it leaks it to the recipient.
+	if skill.IsSkillCredentialFile(rel) {
+		return true
 	}
 	return skill.IsSkillRuntimePackageFile(rel)
 }

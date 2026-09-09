@@ -60,6 +60,34 @@ func TestApplyOfficialForwardMetaSendsFrozenClass(t *testing.T) {
 	}
 }
 
+func TestMaClawProviderClientUsageReconciliationUsesScopedMachineRequest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/llm/v1/usage/reconciliation" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.String())
+		}
+		if r.Header.Get("Authorization") != "Bearer secret" || r.Header.Get("X-Hub-ID") != "hub-1" || r.Header.Get("X-Tenant-ID") != "tenant-1" {
+			t.Fatalf("headers = %#v", r.Header)
+		}
+		if r.URL.Query().Get("date") != "2026-09-01" || r.URL.Query().Get("timezone") != "Asia/Shanghai" {
+			t.Fatalf("query = %s", r.URL.RawQuery)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"reconciliation":{"hub_id":"hub-1","tenant_id":"tenant-1","date":"2026-09-01","timezone":"Asia/Shanghai","upstream":{"input_tokens":12,"output_tokens":3,"cached_input_tokens":5,"total_credits":1.2,"total_requests":2},"service_groups":[{"service_group_id":"redeem","input_tokens":12,"output_tokens":3,"cached_input_tokens":5,"total_credits":1.2,"total_requests":2}]}}`))
+	}))
+	defer server.Close()
+	client := NewMaClawProviderClient(MaClawProviderConfig{HubCenterURL: server.URL, HubID: "hub-1", MachineToken: "secret"})
+	report, status, err := client.UsageReconciliation(context.Background(), "tenant-1", "2026-09-01", "Asia/Shanghai")
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("UsageReconciliation() status=%d err=%v", status, err)
+	}
+	if report.Upstream.InputTokens != 12 || report.Upstream.OutputTokens != 3 || report.Upstream.CachedInputTokens != 5 || report.Upstream.TotalRequests != 2 || report.Upstream.TotalCredits != 1.2 {
+		t.Fatalf("report = %#v", report)
+	}
+	if len(report.ServiceGroups) != 1 || report.ServiceGroups[0].ServiceGroupID != "redeem" || report.ServiceGroups[0].TotalCredits != 1.2 {
+		t.Fatalf("service groups = %#v", report.ServiceGroups)
+	}
+}
+
 func TestMaClawProviderClientForwardFailsOverToNextHubCenter(t *testing.T) {
 	failed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "unavailable", http.StatusBadGateway)

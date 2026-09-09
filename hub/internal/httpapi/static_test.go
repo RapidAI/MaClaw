@@ -535,7 +535,7 @@ func TestMaClawComputeStoreKeepsUserActivationForFirstClick(t *testing.T) {
 		"window.location.assign(url);",
 	} {
 		if !strings.Contains(handler, want) {
-			 t.Fatalf("MaClaw compute store is missing first-click fallback %s", want)
+			t.Fatalf("MaClaw compute store is missing first-click fallback %s", want)
 		}
 	}
 	if strings.Contains(handler, "if (storeWindow.closed) return;") {

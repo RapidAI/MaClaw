@@ -16,12 +16,14 @@ import (
 // message does not pay the cost of BuildAll.
 // Safe to call from a background goroutine.
 func (h *IMMessageHandler) WarmupTools() {
-	allTools := h.getTools()
-	if h.toolRouter != nil {
-		// Warmup must stay local: startup should never consume an LLM slot.
-		_ = h.routeToolsForUser("", "warmup", allTools, true)
-		log.Println("[WarmupTools] tool routing cache pre-warmed")
-	}
+	// Startup warmup is a definition/cache operation, not a user turn. Do not
+	// send the synthetic "warmup" message through the semantic or legacy
+	// router: that path records a fake intent, applies stale skill constraints,
+	// and can populate the routing experience cache with unrelated tools.
+	// getTools() materializes the definitions and is sufficient to warm the
+	// local registry without creating a route decision.
+	_ = h.getTools()
+	log.Println("[WarmupTools] tool definitions pre-warmed (routing skipped)")
 }
 
 // WarmupHTTPConn sends a lightweight probe request to the configured LLM

@@ -164,6 +164,12 @@ describe('AboutPanel', () => {
         expect(screen.getByText('Bob')).toBeTruthy();
     });
 
+    it('uses the shared secondary page surface so About matches the workbench shell', () => {
+        const { container } = render(<AboutPanel {...baseProps} />);
+
+        expect(container.querySelector('.about-page.secondary-page-shell')).toBeTruthy();
+    });
+
     it('opens markdown links through BrowserOpenURL', () => {
         render(
             <AboutPanel

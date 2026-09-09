@@ -928,11 +928,36 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 		searchRemover = smHandlers.SearchService()
 		skillAuthSvc = smHandlers.authSvc
 	}
-	skillHandlers := NewSkillHandlers(skillStore, searchRemover, skillAuthSvc)
+	var marketStore *skillmarket.Store
+	if smHandlers != nil {
+		marketStore = smHandlers.store
+	}
+	skillHandlers := NewSkillHandlers(skillStore, searchRemover, skillAuthSvc, marketStore)
 	mux.HandleFunc("GET /api/v1/skills/search", skillHandlers.SearchSkills)
 	mux.HandleFunc("GET /api/v1/skills/{id}", skillHandlers.GetSkill)
 	mux.HandleFunc("GET /api/v1/skills/{id}/download", skillHandlers.DownloadSkill)
 	mux.HandleFunc("GET /api/v1/skills/by-skill-id/{skill_id}/download", skillHandlers.DownloadBySkillID)
+	mux.HandleFunc("GET /api/v1/skill-suites", skillHandlers.ListSuites)
+	mux.HandleFunc("GET /api/v1/skillmarket/suites/search", skillHandlers.SearchSuites)
+	mux.HandleFunc("GET /api/v1/skill-suites/{id}", skillHandlers.GetSuite)
+	mux.HandleFunc("GET /api/v1/skill-suites/{id}/download", skillHandlers.DownloadSuite)
+	mux.HandleFunc("GET /api/v1/skillmarket/suites/{id}/download", skillHandlers.DownloadSuite)
+	mux.HandleFunc("GET /api/v1/skill-suites/{id}/versions", skillHandlers.ListSuiteVersions)
+	mux.HandleFunc("GET /api/v1/skillmarket/suites/{id}/versions", skillHandlers.ListSuiteVersions)
+	mux.HandleFunc("POST /api/v1/skill-suites/{id}/versions", RequireAdmin(adminService, skillHandlers.PublishSuiteVersion))
+	mux.HandleFunc("POST /api/v1/skill-suites/{id}/rollback", RequireAdmin(adminService, skillHandlers.RollbackSuite))
+	mux.HandleFunc("POST /api/v1/skillmarket/suites/{id}/versions", RequireAdmin(adminService, skillHandlers.PublishSuiteVersion))
+	mux.HandleFunc("POST /api/v1/skillmarket/suites/{id}/rollback", RequireAdmin(adminService, skillHandlers.RollbackSuite))
+	mux.HandleFunc("POST /api/v1/admin/skill-suites/{id}/visibility", RequireAdmin(adminService, skillHandlers.SetSuiteVisibility))
+	if smHandlers != nil {
+		mux.HandleFunc("GET /api/v1/skillmarket/suites/{id}/purchases", smHandlers.ListSuitePurchases)
+		mux.HandleFunc("GET /api/v1/skillmarket/suites/{id}/purchase", smHandlers.ListSuitePurchases)
+		mux.HandleFunc("GET /api/v1/skillmarket/suite-purchases/{purchase_id}", smHandlers.GetSuitePurchase)
+		mux.HandleFunc("GET /api/v1/admin/skillmarket/suite-purchases/{purchase_id}", RequireAdmin(adminService, smHandlers.GetSuitePurchase))
+		mux.HandleFunc("GET /api/v1/admin/skillmarket/suites/{id}/audit", RequireAdmin(adminService, smHandlers.ListSuiteAuditEvents))
+		mux.HandleFunc("GET /api/v1/admin/skillmarket/suites/{id}/purchases", RequireAdmin(adminService, smHandlers.ListSuitePurchases))
+		mux.HandleFunc("POST /api/v1/admin/skillmarket/suites/{id}/refund", RequireAdmin(adminService, smHandlers.RefundSuite))
+	}
 	mux.HandleFunc("GET /api/v1/skills/popular", skillHandlers.PopularSkills)
 	mux.HandleFunc("POST /api/v1/skills", skillHandlers.PublishSkill)
 	mux.HandleFunc("POST /api/v1/skills/{id}/rate", skillHandlers.RateSkill)
@@ -971,6 +996,8 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	registerStaticRoutes(mux, "./web/skillmarket", "/skillmarket")
 	registerStaticRoutes(mux, "./web/skillmarket", "/marketplace")
 	registerStaticRoutes(mux, "./web/skillmarket", "/capabilitymarket")
+	registerStaticRoutes(mux, "./web/developer", "/developer")
+	registerStaticRoutes(mux, "./web/expertmarket", "/expert-market")
 	// Pet packs are a distinct, buy-once product surface. It deliberately
 	// shares the Skill Market account and Credits wallet, but not its skill
 	// discovery page or package format.
@@ -1006,6 +1033,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	}
 	// SkillMarket API
 	if smHandlers != nil {
+		mux.HandleFunc("POST /api/v1/skillmarket/suites/{id}/purchase", smHandlers.PurchaseSkillSuite)
 		// Auth rate limiters
 		authLoginRL := newGossipRateLimiter(10, 5*time.Minute)    // 10 login attempts per 5 min per IP
 		authRegisterRL := newGossipRateLimiter(5, 10*time.Minute) // 5 registrations per 10 min per IP
@@ -1051,6 +1079,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 		mux.HandleFunc("POST /api/v1/auth/reset-password", smHandlers.ResetPassword)
 		// Existing endpoints
 		mux.HandleFunc("POST /api/v1/skills/submit", smHandlers.SubmitSkill)
+		mux.HandleFunc("POST /api/v1/skill-suites/submit", smHandlers.SubmitSkillSuite)
 		mux.HandleFunc("GET /api/v1/skill-submissions/{id}", smHandlers.GetSubmissionStatus)
 		mux.HandleFunc("POST /api/v1/account/ensure", smHandlers.EnsureAccount)
 		mux.HandleFunc("GET /api/v1/account/{email}", smHandlers.GetAccount)
@@ -1067,15 +1096,36 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 		mux.HandleFunc("POST /api/v1/credits/account/withdraw", smHandlers.CreditWithdraw)
 		mux.HandleFunc("POST /api/v1/credits/redeem", smHandlers.RedeemCreditCard)
 		mux.HandleFunc("GET /api/v1/crypto/pubkey", smHandlers.GetPublicKey)
-		mux.HandleFunc("GET /api/v1/skillmarket/{id}/download", smHandlers.DownloadSkillMarket)
+		// The legacy single-Skill download URL is /skillmarket/{id}/download.
+		// Register it through the subtree fallback instead of a wildcard pattern:
+		// the latter conflicts with the more specific Suite purchase route
+		// /skillmarket/suite-purchases/{purchase_id} under Go's ServeMux rules.
+		mux.HandleFunc("/api/v1/skillmarket/", func(w http.ResponseWriter, r *http.Request) {
+			const prefix = "/api/v1/skillmarket/"
+			rel := strings.TrimPrefix(r.URL.Path, prefix)
+			parts := strings.Split(strings.Trim(rel, "/"), "/")
+			if len(parts) == 2 && parts[0] != "" {
+				r.SetPathValue("id", parts[0])
+				switch {
+				case (r.Method == http.MethodGet || r.Method == http.MethodHead) && parts[1] == "download":
+					smHandlers.DownloadSkillMarket(w, r)
+					return
+				case r.Method == http.MethodPost && parts[1] == "rate":
+					smHandlers.RateSkill(w, r)
+					return
+				case (r.Method == http.MethodGet || r.Method == http.MethodHead) && parts[1] == "ratings":
+					smHandlers.GetRatingStats(w, r)
+					return
+				}
+			}
+			http.NotFound(w, r)
+		})
 		mux.HandleFunc("GET /api/capability-market/capabilities/{id}/download", smHandlers.DownloadSkillMarket)
 		// Rating & Trial API
 		mux.HandleFunc("GET /api/v1/skillmarket/search", smHandlers.SearchSkillMarket)
 		mux.HandleFunc("GET /api/capability-market/search", smHandlers.SearchSkillMarket)
 		mux.HandleFunc("GET /api/v1/skillmarket/my-skills", smHandlers.ListMySkills)
 		mux.HandleFunc("GET /api/v1/skillmarket/top", smHandlers.GetLeaderboard)
-		mux.HandleFunc("POST /api/v1/skillmarket/{id}/rate", smHandlers.RateSkill)
-		mux.HandleFunc("GET /api/v1/skillmarket/{id}/ratings", smHandlers.GetRatingStats)
 		// Admin review & config
 		mux.HandleFunc("GET /api/v1/admin/skillmarket/review", RequireAdmin(adminService, smHandlers.AdminReviewQueue))
 		mux.HandleFunc("POST /api/v1/admin/credits/redeem-cards", RequireAdmin(adminService, smHandlers.AdminIssueCreditRedeemCards))
@@ -1174,7 +1224,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 		llmRouteHook(mux, adminService, hubService)
 	}
 
-	return adminOpaqueHubIDCompat(mux, adminService, hubService)
+	return withInboundTraceParent(adminOpaqueHubIDCompat(mux, adminService, hubService))
 }
 
 func adminOpaqueHubIDCompat(next http.Handler, adminService *auth.AdminService, hubService *hubs.Service) http.Handler {

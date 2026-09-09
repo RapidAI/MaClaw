@@ -145,6 +145,17 @@ func (s *SSHPTYSession) IsAlive() bool {
 	}
 }
 
+// Client 返回底层池化 SSH 连接，供非 PTY 的 per-command exec channel 复用。
+// 会话已关闭或尚未启动时返回 nil；连接生命周期仍由 SSHPool 管理。
+func (s *SSHPTYSession) Client() *ssh.Client {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.started || s.closed {
+		return nil
+	}
+	return s.client
+}
+
 // Write 向远程 shell 写入数据。
 func (s *SSHPTYSession) Write(data []byte) error {
 	s.mu.Lock()

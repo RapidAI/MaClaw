@@ -15,6 +15,23 @@ func ReplanFailureEligible(reasonCode string) bool {
 		strings.HasSuffix(reasonCode, "_bound_execution_unavailable")
 }
 
+func childRevisionTurnID(prefix, parentTurnID, discriminator string) string {
+	return prefix + ":" + SchemaDigest([]byte(strings.TrimSpace(parentTurnID) + ":" + strings.TrimSpace(discriminator)))[:24]
+}
+
+// ReplanTurnID names a binding-recovery child turn. GUI IM replan and
+// headless ReplanAfterBindingFailure share this so journal lineage cannot
+// collide across hosts.
+func ReplanTurnID(parentTurnID string, attempt uint8) string {
+	return childRevisionTurnID("replan", parentTurnID, fmt.Sprintf("%d", attempt))
+}
+
+// PetitionTurnID names a petition-expansion child turn. It is distinct from
+// ReplanTurnID so a petition cannot consume the failure-replan attempt budget.
+func PetitionTurnID(parentTurnID, label string) string {
+	return childRevisionTurnID("petition", parentTurnID, label)
+}
+
 // SelectionIsDynamic reports whether a planned provider is a Skill or MCP
 // binding. Only those selections may be replaced on a restricted child.
 func SelectionIsDynamic(selection PlannedSelection) bool {
@@ -32,11 +49,11 @@ func ValidateReplanSubset(parent, child ToolPlan) error {
 	if strings.TrimSpace(parent.RootTaskID) == "" || parent.RootTaskID != child.RootTaskID {
 		return fmt.Errorf("semantic replan root task mismatch")
 	}
-	parentByNeed, ok := replanSelectionsByNeed(parent.Selections)
+	parentByNeed, ok := SelectionsByNeed(parent.Selections)
 	if !ok {
 		return fmt.Errorf("semantic replan parent needs are not unique")
 	}
-	childByNeed, ok := replanSelectionsByNeed(child.Selections)
+	childByNeed, ok := SelectionsByNeed(child.Selections)
 	if !ok {
 		return fmt.Errorf("semantic replan child needs are not unique")
 	}
@@ -59,11 +76,11 @@ func ReplanIsBindingOnlyReplacement(parent, child ToolPlan) bool {
 	if strings.TrimSpace(parent.RootTaskID) == "" || parent.RootTaskID != child.RootTaskID || len(parent.Selections) != len(child.Selections) || len(child.Unmet) > 0 {
 		return false
 	}
-	parentByNeed, ok := replanSelectionsByNeed(parent.Selections)
+	parentByNeed, ok := SelectionsByNeed(parent.Selections)
 	if !ok {
 		return false
 	}
-	childByNeed, ok := replanSelectionsByNeed(child.Selections)
+	childByNeed, ok := SelectionsByNeed(child.Selections)
 	if !ok || len(childByNeed) != len(parentByNeed) {
 		return false
 	}
@@ -76,10 +93,12 @@ func ReplanIsBindingOnlyReplacement(parent, child ToolPlan) bool {
 	return true
 }
 
-// replanSelectionsByNeed makes the need identity a one-to-one correspondence
+// SelectionsByNeed makes the need identity a one-to-one correspondence
 // across revisions. A count comparison alone is insufficient: a child could
 // otherwise repeat one valid need while silently omitting another one.
-func replanSelectionsByNeed(selections []PlannedSelection) (map[string]PlannedSelection, bool) {
+// Replan subset checks and petition expansion share this so they cannot
+// disagree on whether two plans name the same needs.
+func SelectionsByNeed(selections []PlannedSelection) (map[string]PlannedSelection, bool) {
 	byNeed := make(map[string]PlannedSelection, len(selections))
 	for _, selection := range selections {
 		needID := strings.TrimSpace(selection.NeedID)
@@ -101,10 +120,10 @@ func sameReplanSelectionAuthorityIgnoringProvider(parent, child PlannedSelection
 		parent.ConfirmationID == child.ConfirmationID &&
 		replanParametersDoNotExpand(parent.ParameterAuthorization, child.ParameterAuthorization) &&
 		parent.FitProof.MatchedCapability == child.FitProof.MatchedCapability &&
-		sameReplanQualifiers(parent.FitProof.QualifierBindings, child.FitProof.QualifierBindings) &&
-		sameReplanEffects(parent.Effects, child.Effects) &&
-		sameReplanArtifactContracts(parent.Consumes, child.Consumes) &&
-		sameReplanArtifactContracts(parent.Produces, child.Produces)
+		QualifiersEqual(parent.FitProof.QualifierBindings, child.FitProof.QualifierBindings) &&
+		EffectsEqual(parent.Effects, child.Effects) &&
+		ArtifactContractsEqual(parent.Consumes, child.Consumes) &&
+		ArtifactContractsEqual(parent.Produces, child.Produces)
 }
 
 func replanParametersDoNotExpand(parent, child ParameterAuthorization) bool {
@@ -130,10 +149,25 @@ func authorizedReferencesSubset(parent, child []string) bool {
 }
 
 func sameReplanSelectionAuthority(parent, child PlannedSelection) bool {
-	return parent.NeedID == child.NeedID && parent.Phase == child.Phase && parent.RequiresConfirm == child.RequiresConfirm && parent.ConfirmationID == child.ConfirmationID && parameterAuthorizationsEqual(parent.ParameterAuthorization, child.ParameterAuthorization) && parent.FitProof.MatchedCapability == child.FitProof.MatchedCapability && sameReplanQualifiers(parent.FitProof.QualifierBindings, child.FitProof.QualifierBindings) && sameReplanEffects(parent.Effects, child.Effects) && sameReplanArtifactContracts(parent.Consumes, child.Consumes) && sameReplanArtifactContracts(parent.Produces, child.Produces)
+	return SelectionAuthorityEqual(parent, child)
 }
 
-func sameReplanQualifiers(left, right map[string]string) bool {
+// SelectionAuthorityEqual reports whether parent and child keep the same
+// need/effect/qualifier/parameter authority, including the selected provider.
+func SelectionAuthorityEqual(parent, child PlannedSelection) bool {
+	return parent.NeedID == child.NeedID && parent.Phase == child.Phase && parent.RequiresConfirm == child.RequiresConfirm && parent.ConfirmationID == child.ConfirmationID && parameterAuthorizationsEqual(parent.ParameterAuthorization, child.ParameterAuthorization) && parent.FitProof.MatchedCapability == child.FitProof.MatchedCapability && QualifiersEqual(parent.FitProof.QualifierBindings, child.FitProof.QualifierBindings) && EffectsEqual(parent.Effects, child.Effects) && ArtifactContractsEqual(parent.Consumes, child.Consumes) && ArtifactContractsEqual(parent.Produces, child.Produces)
+}
+
+// SelectionAuthorityEqualIgnoringProvider is the binding-replacement
+// comparison: need, effect, artifact and parameter authority stay, the
+// selected dynamic implementation may change.
+func SelectionAuthorityEqualIgnoringProvider(parent, child PlannedSelection) bool {
+	return sameReplanSelectionAuthorityIgnoringProvider(parent, child)
+}
+
+// QualifiersEqual reports whether two qualifier maps carry the same keys and
+// values. GUI petition expansion and replan authority use this one comparison.
+func QualifiersEqual(left, right map[string]string) bool {
 	if len(left) != len(right) {
 		return false
 	}
@@ -145,7 +179,13 @@ func sameReplanQualifiers(left, right map[string]string) bool {
 	return true
 }
 
-func sameReplanEffects(left, right []EffectClass) bool {
+func sameReplanQualifiers(left, right map[string]string) bool {
+	return QualifiersEqual(left, right)
+}
+
+// EffectsEqual reports whether two effect lists carry the same multiset.
+// GUI petition expansion and replan authority use this one comparison.
+func EffectsEqual(left, right []EffectClass) bool {
 	if len(left) != len(right) {
 		return false
 	}
@@ -164,7 +204,13 @@ func sameReplanEffects(left, right []EffectClass) bool {
 	return true
 }
 
-func sameReplanArtifactContracts(left, right []ArtifactContract) bool {
+func sameReplanEffects(left, right []EffectClass) bool {
+	return EffectsEqual(left, right)
+}
+
+// ArtifactContractsEqual reports whether two artifact-contract lists carry
+// the same kind/MIME/required multiset.
+func ArtifactContractsEqual(left, right []ArtifactContract) bool {
 	if len(left) != len(right) {
 		return false
 	}

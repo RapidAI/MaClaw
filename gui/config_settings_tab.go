@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	coreconfig "github.com/RapidAI/CodeClaw/corelib/config"
 )
 
 // settingsTabFieldKeys lists AppConfig JSON keys needed by each settings content tab.
@@ -15,7 +16,7 @@ import (
 // empty slices so GetSettingsTabConfig returns nil without touching config.
 //
 // Keep in sync with SETTINGS_CONTENT_TAB_IDS / SETTINGS_TABS_NEEDING_CONFIG in
-// gui/frontend/src/config/settingsTabConfig.ts and settingsTabs.ts.
+// guiapp/frontend/src/config/settingsTabConfig.ts and settingsTabs.ts.
 var settingsTabFieldKeys = map[string][]string{
 	"general": {
 		"language",
@@ -48,26 +49,11 @@ var settingsTabFieldKeys = map[string][]string{
 		"default_proxy_password",
 		"default_proxy_bypass",
 		"default_proxy_scope_maclaw",
-		"default_proxy_scope_coding_tools",
 		"default_proxy_scope_agent",
 	},
 	"ui": {
 		"ui_zoom_factor",
 		"chat_font_size",
-	},
-	"display": {
-		"default_launch_mode",
-		"remote_enabled",
-		"show_coding_tool_entry",
-		"show_codex",
-		"show_opencode",
-		"show_codebuddy",
-		"show_iflow",
-		"show_kilo",
-		"ui_mode",
-		"acp_host_enabled",
-		"acp_host_mirror_ui",
-		"acp_host_port",
 	},
 	"pet": {
 		"pet_enabled",
@@ -93,17 +79,29 @@ var settingsTabFieldKeys = map[string][]string{
 		"tts_enabled",
 		"remote_hub_url",
 	},
+	"programmingTools": {
+		"acp_host_enabled",
+		"acp_host_mirror_ui",
+		"acp_host_port",
+		"coding_knowledge_auto_save_mode",
+		"coding_knowledge_save_strategy",
+		"coding_knowledge_max_per_project",
+		"coding_knowledge_max_total",
+		"coding_knowledge_max_reviewed_per_project",
+		"coding_knowledge_max_reviewed_tokens_per_project",
+	},
 	// Self-loading panels — empty DTO (dedicated APIs).
-	"searchEngine":    {},
-	"redeem":          {},
-	"memory":          {},
-	"knowledge":       {},
-	"misData":         {},
-	"embedding":       {},
-	"migration":       {},
-	"llm":             {"codex"}, // models list for optional codexModels prop
-	"llmCache":        {"llm_prompt_cache"},
-	"virtualEmployee": {"remote_machine_id", "favorite_employees", "favorite_employee_names"},
+	"searchEngine":     {},
+	"redeem":           {},
+	"memory":           {},
+	"knowledge":        {},
+	"misData":          {},
+	"databaseProfiles": {},
+	"embedding":        {},
+	"migration":        {},
+	"llm":              {"codex"}, // models list for optional codexModels prop
+	"llmCache":         {"llm_prompt_cache"},
+	"virtualEmployee":  {"remote_machine_id", "favorite_employees", "favorite_employee_names"},
 	"im": {
 		"qqbot_enabled",
 		"qqbot_app_id",
@@ -176,6 +174,7 @@ var settingsTabFieldKeys = map[string][]string{
 		"network_allowlist",
 		"yolo_mode_allowed",
 		"smart_route_enabled",
+		"semantic_tool_scope_routing",
 		"gossip_enabled",
 		"file_outbound_enabled",
 		"image_outbound_enabled",
@@ -195,6 +194,7 @@ var settingsTabFieldKeys = map[string][]string{
 		"remote_hubcenter_url",
 		"remote_tenant_id",
 		"remote_tenant_name",
+		"cloud_workspace_cache_encryption",
 		"remote_machine_name",
 		"remote_nickname",
 		"weixin_local_mode",
@@ -245,12 +245,7 @@ func buildAppConfigJSONFieldIndex() {
 		if sf.PkgPath != "" { // unexported
 			continue
 		}
-		tag := sf.Tag.Get("json")
-		if tag == "" || tag == "-" {
-			continue
-		}
-		name, _, _ := strings.Cut(tag, ",")
-		name = strings.TrimSpace(name)
+		name := coreconfig.JSONFieldName(sf)
 		if name == "" || name == "-" {
 			continue
 		}

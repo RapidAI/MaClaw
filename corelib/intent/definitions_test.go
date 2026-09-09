@@ -120,6 +120,21 @@ func TestBusinessDataDefinitionRoutesToMISData(t *testing.T) {
 	t.Fatalf("business_data label should route to mis_data, got %#v", tools)
 }
 
+func TestDatabaseDefinitionRoutesToDatabaseTools(t *testing.T) {
+	defs := DefaultDefinitions()
+	mapping := BuildToolAffinityFromDefinitions(defs)
+	tools := mapping[LabelDatabase]
+	want := map[string]bool{"database": true, "database_query": true}
+	if len(tools) != len(want) {
+		t.Fatalf("database label tools = %#v", tools)
+	}
+	for _, name := range tools {
+		if !want[name] {
+			t.Fatalf("database unexpected tool %q in %#v", name, tools)
+		}
+	}
+}
+
 func TestNonCodingDefinitionDoesNotClaimLiveDataOrSearch(t *testing.T) {
 	for _, def := range DefaultDefinitions() {
 		if def.Label != LabelNonCoding {

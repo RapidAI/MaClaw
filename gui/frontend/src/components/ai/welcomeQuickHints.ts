@@ -31,13 +31,6 @@ export const WELCOME_QUICK_HINTS: WelcomeQuickHint[] = [
         textEn: "Write a project weekly update",
     },
     {
-        id: "feature",
-        label: "实现功能",
-        labelEn: "Implement feature",
-        tabId: "dev",
-        textEn: "Implement a feature",
-    },
-    {
         id: "meeting",
         label: "会议纪要",
         labelEn: "Meeting notes",
@@ -50,13 +43,6 @@ export const WELCOME_QUICK_HINTS: WelcomeQuickHint[] = [
         labelEn: "Competitor brief",
         tabId: "business",
         textEn: "Prepare an executive competitor brief",
-    },
-    {
-        id: "bug",
-        label: "修 Bug",
-        labelEn: "Fix a bug",
-        tabId: "dev",
-        textEn: "Fix a bug",
     },
 ];
 

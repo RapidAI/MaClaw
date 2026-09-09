@@ -52,18 +52,18 @@ export const DataMigrationOverlay = () => {
             flexDirection: 'column',
             alignItems: 'center',
             justifyContent: 'center',
-            background: 'rgba(15, 23, 42, 0.88)',
+            background: 'var(--theme-overlay-strong, rgba(15, 23, 42, 0.88))',
             // Backdrop is a hardcoded dark scrim, so text must stay white —
             // --theme-on-primary flips to dark (#0f141b) under dark schemes and
             // would render dark-on-dark here.
-            color: '#ffffff',
+            color: 'var(--theme-overlay-text, #ffffff)',
             fontFamily: 'system-ui, -apple-system, sans-serif',
         }}>
             <div style={{ textAlign: 'center', maxWidth: '480px', padding: '32px' }}>
                 <h2 style={{ fontSize: '1.2rem', marginBottom: '16px', fontWeight: 500 }}>
                     数据目录迁移
                 </h2>
-                <p style={{ fontSize: '0.85rem', color: 'rgba(226, 232, 240, 0.78)', marginBottom: '24px' }}>
+                <p style={{ fontSize: '0.85rem', color: 'var(--theme-overlay-text-muted, rgba(226, 232, 240, 0.78))', marginBottom: '24px' }}>
                     {phaseText()}
                 </p>
 
@@ -71,7 +71,7 @@ export const DataMigrationOverlay = () => {
                 <div style={{
                     width: '100%',
                     height: '8px',
-                    background: 'rgba(148, 163, 184, 0.24)',
+                    background: 'var(--theme-overlay-track, rgba(148, 163, 184, 0.24))',
                     borderRadius: '4px',
                     overflow: 'hidden',
                     marginBottom: '12px',
@@ -87,13 +87,13 @@ export const DataMigrationOverlay = () => {
 
                 {/* Current file */}
                 {progress.phase === 'copying' && progress.currentFile && (
-                    <p style={{ fontSize: '0.7rem', color: 'rgba(203, 213, 225, 0.72)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <p style={{ fontSize: '0.7rem', color: 'var(--theme-overlay-text-subtle, rgba(203, 213, 225, 0.72))', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {progress.currentFile}
                     </p>
                 )}
 
                 {/* Percentage */}
-                <p style={{ fontSize: '0.8rem', color: 'rgba(203, 213, 225, 0.82)', marginTop: '8px' }}>
+                <p style={{ fontSize: '0.8rem', color: 'var(--theme-overlay-text-muted, rgba(203, 213, 225, 0.82))', marginTop: '8px' }}>
                     {Math.round(progress.percent)}%
                 </p>
             </div>

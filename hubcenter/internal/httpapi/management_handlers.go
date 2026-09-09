@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -57,6 +58,32 @@ type adminHubView struct {
 	Tenants                       []hubs.HubUserDashboardItem                      `json:"tenants,omitempty"`
 	DigitalEmployeeAuthorizations map[string]*corelib.DigitalEmployeeAuthorization `json:"digital_employee_authorizations,omitempty"`
 	RegistrationPolicy            hubs.HubRegistrationPolicyConfig                 `json:"registration_policy"`
+}
+
+// MarshalJSON strips the hub's bearer credential from admin API responses.
+//
+// P0 (2026-09-09 review): HubSecretHash is password-equivalent — the hub side
+// compares it directly against hashToken(secret) and it is also sent as
+// X-HubCenter-Verify on outbound calls. Embedding *store.HubInstance
+// marshalled it into every GET /api/admin/hubs response, so a leaked admin
+// token meant takeover of every registered hub.
+//
+// A shadowing field (`HubSecretHash string \`json:"-"\``) does NOT work here:
+// encoding/json drops the outer "-" field during field collection, so the
+// promoted embedded field wins and the secret is still emitted. Verified
+// empirically. The key is therefore removed after marshalling.
+func (v adminHubView) MarshalJSON() ([]byte, error) {
+	type plain adminHubView
+	encoded, err := json.Marshal(plain(v))
+	if err != nil {
+		return nil, err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		return nil, err
+	}
+	delete(fields, "hub_secret_hash")
+	return json.Marshal(fields)
 }
 
 const adminDefaultTenantID = "tenant_default"

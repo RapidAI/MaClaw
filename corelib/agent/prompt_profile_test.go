@@ -222,3 +222,15 @@ func TestPromptCorePrinciplesLookupDoesNotMandateWarehouseFirst(t *testing.T) {
 		t.Fatal("full principles should keep lookup evidence order")
 	}
 }
+
+func TestPromptCorePrinciplesTreatsMissingToolsAsRoutingSubset(t *testing.T) {
+	if !strings.Contains(PromptCorePrinciples, "本轮工具列表是路由子集") {
+		t.Fatal("full principles should explain that the listed tools are a routing subset")
+	}
+	if !strings.Contains(PromptCorePrinciples, "discover_tool") || !strings.Contains(PromptCorePrinciples, "不要对用户说「工具不可用」") {
+		t.Fatal("full principles should recover a routed-out tool instead of claiming it is missing")
+	}
+	if !strings.Contains(PromptCorePrinciplesLight, "不要对用户说工具不存在") {
+		t.Fatal("light principles must not treat a routed-out history tool as unavailable")
+	}
+}

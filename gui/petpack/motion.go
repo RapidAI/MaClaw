@@ -15,12 +15,12 @@ type EffectiveMotion struct {
 
 // EffectiveMotionInput is the control-plane input for motion resolution.
 type EffectiveMotionInput struct {
-	Pack           PetPackMotion
+	Pack            PetPackMotion
 	InteractionMode string // quiet | balanced | active
-	QuietMode      bool
-	ReducedMotion  bool
-	MotionEnabled  bool
-	SoundEnabled   bool
+	QuietMode       bool
+	ReducedMotion   bool
+	MotionEnabled   bool
+	SoundEnabled    bool
 }
 
 // EffectiveMotionFrom computes durations/amplitude/soundAllowed.

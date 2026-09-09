@@ -219,6 +219,7 @@ type ProxyQuote struct {
 	ProviderID         string                       `json:"provider_id"`
 	UpstreamModel      string                       `json:"upstream_model"`
 	Pricing            llmpool.ResolvedTokenPricing `json:"pricing"`
+	PricingSource      string                       `json:"pricing_source,omitempty"`
 	ProviderMultiplier float64                      `json:"provider_multiplier"`
 	ExpiresAt          time.Time                    `json:"expires_at"`
 }
@@ -243,6 +244,12 @@ func (s *ProxyQuoteStore) Put(quote ProxyQuote) (ProxyQuote, error) {
 		strings.TrimSpace(quote.RequestID) == "" || strings.TrimSpace(quote.ProviderID) == "" ||
 		strings.TrimSpace(quote.LogicalModel) == "" || strings.TrimSpace(quote.RequestDigest) == "" || quote.ExpiresAt.IsZero() {
 		return ProxyQuote{}, fmt.Errorf("invalid pricing quote")
+	}
+	if strings.TrimSpace(quote.PricingSource) == "" {
+		quote.PricingSource = llmpool.PricingSourceProvider
+	}
+	if quote.PricingSource != llmpool.PricingSourceProvider && quote.PricingSource != llmpool.PricingSourceServiceGroupOverride {
+		return ProxyQuote{}, fmt.Errorf("invalid pricing quote source")
 	}
 	buf := make([]byte, 24)
 	if _, err := rand.Read(buf); err != nil {
@@ -484,16 +491,20 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 			if provider := findProvider(reg, cached.ProviderID); provider != nil && !provider.Paused {
 				// Record cache hit usage (no credits deducted)
 				if cfg.Usage != nil {
-					_ = cfg.Usage.RecordUsage(ctx, &llmpool.UsageRecord{
-						ProviderID:     cached.ProviderID,
-						Model:          model,
-						ServiceGroupID: matchedGroup.ID,
-						WorkloadClass:  req.WorkloadClass,
-						ClassSource:    req.ClassSource,
-						Preview:        llmpool.RequestTextPreview(req.Body, 200),
-						CacheHit:       true,
-						Timestamp:      time.Now().UTC(),
-					})
+					if err := cfg.Usage.RecordUsage(ctx, &llmpool.UsageRecord{
+						RequestID:        req.RequestID,
+						ProviderID:       cached.ProviderID,
+						Model:            model,
+						ServiceGroupID:   matchedGroup.ID,
+						WorkloadClass:    req.WorkloadClass,
+						ClassSource:      req.ClassSource,
+						Preview:          llmpool.RequestTextPreview(req.Body, 200),
+						CacheUsageSource: "local_cache",
+						CacheHit:         true,
+						Timestamp:        time.Now().UTC(),
+					}); err != nil {
+						log.Printf("[llm-proxy] WARN: record cache-hit usage failed provider=%s model=%s: %v", cached.ProviderID, model, err)
+					}
 				}
 				recordProxyClassHeadSample(cfg, req, matchedGroup.ID)
 				return &ProxyResponse{
@@ -592,13 +603,13 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 		}
 
 		// Parse token usage from response
-		inputTokens, outputTokens, respBody := proxyResponseUsageWithFallback(req.Body, resp.Body)
+		inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, cacheReadObserved, cacheWriteObserved, respBody := proxyResponseUsageWithCacheFallback(req.Body, resp.Body)
 		resp.Body = respBody
 
 		// Directional provider pricing is frozen at request start and marked up
 		// once by the service-group route.  The legacy vendor multiplier path is
 		// retained only for routes which have not configured token pricing.
-		credits, multiplier, pricingSnapshot := proxyRequestBillingCredits(req, matchedGroup, provider, dispatchModel, route, providerID, upstreamModel, inputTokens, outputTokens, nil)
+		credits, multiplier, pricingSnapshot := proxyRequestBillingCredits(req, matchedGroup, provider, dispatchModel, route, providerID, upstreamModel, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, nil)
 
 		// Deduct credits
 		var deductions []CreditDeduction
@@ -618,20 +629,28 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 
 		// Record usage
 		if cfg.Usage != nil {
-			_ = cfg.Usage.RecordUsage(ctx, &llmpool.UsageRecord{
-				ProviderID:     providerID,
-				Model:          model,
-				ServiceGroupID: matchedGroup.ID,
-				WorkloadClass:  req.WorkloadClass,
-				ClassSource:    req.ClassSource,
-				Preview:        llmpool.RequestTextPreview(req.Body, 200),
-				InputTokens:    inputTokens,
-				OutputTokens:   outputTokens,
-				Credits:        recordCredits,
-				CacheHit:       false,
-				AuthID:         deductionAuthIDs(deductions),
-				Timestamp:      time.Now().UTC(),
-			})
+			if err := cfg.Usage.RecordUsage(ctx, &llmpool.UsageRecord{
+				RequestID:         req.RequestID,
+				ProviderID:        providerID,
+				Model:             model,
+				ServiceGroupID:    matchedGroup.ID,
+				WorkloadClass:     req.WorkloadClass,
+				ClassSource:       req.ClassSource,
+				Preview:           llmpool.RequestTextPreview(req.Body, 200),
+				InputTokens:       inputTokens,
+				OutputTokens:      outputTokens,
+				CachedInputTokens: cachedInputTokens,
+				CacheWriteTokens:  cacheWriteTokens,
+				CacheUsageSource:  proxyCacheUsageSourceObserved(cacheReadObserved, cacheWriteObserved, cachedInputTokens, cacheWriteTokens),
+				UsageAnomaly:      proxyCacheUsageAnomaly(inputTokens, cachedInputTokens, cacheWriteTokens),
+				PricingSource:     proxyPricingSource(pricingSnapshot),
+				Credits:           recordCredits,
+				CacheHit:          false,
+				AuthID:            deductionAuthIDs(deductions),
+				Timestamp:         time.Now().UTC(),
+			}); err != nil {
+				log.Printf("[llm-proxy] WARN: record usage failed provider=%s model=%s request=%s: %v", providerID, model, req.RequestID, err)
+			}
 		}
 		recordProxyClassHeadSample(cfg, req, matchedGroup.ID)
 
@@ -725,10 +744,23 @@ func proxyTokenPricingSnapshot(group *llmpool.ServiceGroup, provider *llmpool.Pr
 		ProviderID:         strings.TrimSpace(providerID),
 		UpstreamModel:      strings.TrimSpace(upstreamModel),
 		Pricing:            pricing,
+		PricingSource:      proxyTokenPricingSource(group, provider, providerID, upstreamModel),
 		ProviderMultiplier: providerMultiplier,
 		InputTokens:        inputTokens,
 		OutputTokens:       outputTokens,
 	}
+}
+
+func proxyTokenPricingSource(group *llmpool.ServiceGroup, provider *llmpool.ProviderConfig, providerID, upstreamModel string) string {
+	_, route, ok := findGroupProviderConfig(group, providerID, upstreamModel)
+	if !ok {
+		return llmpool.PricingSourceProvider
+	}
+	var base llmpool.ProviderConfig
+	if provider != nil {
+		base = *provider
+	}
+	return llmpool.EffectiveRouteTokenPricingSource(route, base)
 }
 
 func proxyRequestTokenPricingSnapshot(req *ProxyRequest, group *llmpool.ServiceGroup, provider *llmpool.ProviderConfig, providerID, upstreamModel string, inputTokens, outputTokens int64, startedAt time.Time) *llmpool.TokenPricingSnapshot {
@@ -737,6 +769,7 @@ func proxyRequestTokenPricingSnapshot(req *ProxyRequest, group *llmpool.ServiceG
 			ProviderID:         strings.TrimSpace(providerID),
 			UpstreamModel:      strings.TrimSpace(upstreamModel),
 			Pricing:            *pricing,
+			PricingSource:      proxyTokenPricingSource(group, provider, providerID, upstreamModel),
 			ProviderMultiplier: proxyProviderMultiplierForRequest(req, provider, providerID, startedAt),
 			InputTokens:        inputTokens,
 			OutputTokens:       outputTokens,
@@ -762,7 +795,7 @@ func proxyResolvedRequestTokenPricing(req *ProxyRequest, group *llmpool.ServiceG
 // belongs to the service group and is applied exactly once. Provider legacy
 // multipliers remain available only for legacy routes without directional
 // pricing, so migrating a provider cannot accidentally double-charge users.
-func proxyRequestBillingCredits(req *ProxyRequest, group *llmpool.ServiceGroup, provider *llmpool.ProviderConfig, model *llmpool.DispatchModel, route llmpool.DispatchProviderRoute, providerID, upstreamModel string, inputTokens, outputTokens int64, frozenPricing *llmpool.ResolvedTokenPricing) (credits, displayMultiplier float64, snapshot *llmpool.TokenPricingSnapshot) {
+func proxyRequestBillingCredits(req *ProxyRequest, group *llmpool.ServiceGroup, provider *llmpool.ProviderConfig, model *llmpool.DispatchModel, route llmpool.DispatchProviderRoute, providerID, upstreamModel string, inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens int64, frozenPricing *llmpool.ResolvedTokenPricing) (credits, displayMultiplier float64, snapshot *llmpool.TokenPricingSnapshot) {
 	startedAt := proxyRequestStartedAt(req)
 	// An explicit free route is terminal. It must never fall through to the
 	// legacy tokens × multiplier path merely because it intentionally has no
@@ -775,18 +808,31 @@ func proxyRequestBillingCredits(req *ProxyRequest, group *llmpool.ServiceGroup, 
 			ProviderID:         strings.TrimSpace(providerID),
 			UpstreamModel:      strings.TrimSpace(upstreamModel),
 			Pricing:            *frozenPricing,
+			PricingSource:      proxyTokenPricingSource(group, provider, providerID, upstreamModel),
 			ProviderMultiplier: proxyProviderMultiplierForRequest(req, provider, providerID, startedAt),
 			InputTokens:        inputTokens,
 			OutputTokens:       outputTokens,
+			CachedInputTokens:  cachedInputTokens,
+			CacheWriteTokens:   cacheWriteTokens,
 		}
 	} else {
 		snapshot = proxyRequestTokenPricingSnapshot(req, group, provider, providerID, upstreamModel, inputTokens, outputTokens, startedAt)
 	}
 	if snapshot != nil {
+		snapshot.InputTokens = inputTokens
+		snapshot.OutputTokens = outputTokens
+		snapshot.CachedInputTokens = cachedInputTokens
+		snapshot.CacheWriteTokens = cacheWriteTokens
 		// Directional pricing is the provider's base price. Its time-of-use
 		// multiplier and the route markup are both part of the final debit.
 		displayMultiplier = llmpool.CombineCreditMultipliers(snapshot.ProviderMultiplier, proxyCreditMultiplierForRoute(model, route))
-		if microcredits, ok := llmpool.EstimateTokenPricingMicrocredits(inputTokens, outputTokens, snapshot.Pricing, displayMultiplier); ok {
+		// An explicit successful response with all usage legs at zero is not a
+		// billable request. Do not apply the per-request minimum to empty usage;
+		// reservation settlement will release any admission hold.
+		if inputTokens <= 0 && outputTokens <= 0 && cachedInputTokens <= 0 && cacheWriteTokens <= 0 {
+			return 0, displayMultiplier, snapshot
+		}
+		if microcredits, ok := llmpool.EstimateTokenPricingMicrocreditsWithCache(inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, snapshot.Pricing, displayMultiplier); ok {
 			return llmpool.MicrocreditsToCredits(microcredits), displayMultiplier, snapshot
 		}
 		// A snapshot is only produced from validated pricing. Keep a defensive
@@ -801,6 +847,9 @@ func proxyRequestBillingCredits(req *ProxyRequest, group *llmpool.ServiceGroup, 
 	}
 
 	displayMultiplier = proxyEffectiveCreditMultiplier(provider, model, route, startedAt)
+	if inputTokens <= 0 && outputTokens <= 0 && cachedInputTokens <= 0 && cacheWriteTokens <= 0 {
+		return 0, displayMultiplier, nil
+	}
 	return estimateProxyCreditsWithFloor(inputTokens+outputTokens, displayMultiplier), displayMultiplier, nil
 }
 
@@ -986,8 +1035,10 @@ func recordProxyStreamUsage(ctx context.Context, cfg *ProxyConfig, req *ProxyReq
 	// its response trailer. It is request-local and never reused.
 	dispatch.billingInputTokens = inputTokens
 	dispatch.billingOutputTokens = outputTokens
+	dispatch.billingCachedInputTokens = result.cachedInputTokens
+	dispatch.billingCacheWriteTokens = result.cacheWriteTokens
 	upstreamModel := proxyUpstreamModelForRoute(dispatch.route, dispatch.provider, dispatch.model)
-	credits, _, _ := proxyRequestBillingCredits(req, dispatch.matchedGroup, dispatch.provider, dispatch.dispatchModel, dispatch.route, providerID, upstreamModel, inputTokens, outputTokens, dispatch.pricing)
+	credits, _, _ := proxyRequestBillingCredits(req, dispatch.matchedGroup, dispatch.provider, dispatch.dispatchModel, dispatch.route, providerID, upstreamModel, inputTokens, outputTokens, result.cachedInputTokens, result.cacheWriteTokens, dispatch.pricing)
 
 	var deductions []CreditDeduction
 	if credits > 0 && dispatch.requiresGrant && dispatch.auth != nil && cfg.AuthChecker != nil {
@@ -1005,26 +1056,35 @@ func recordProxyStreamUsage(ctx context.Context, cfg *ProxyConfig, req *ProxyReq
 	if dispatch.matchedGroup != nil {
 		groupID = dispatch.matchedGroup.ID
 	}
+	settledSnapshot := proxyDispatchTokenPricingSnapshot(req, dispatch, upstreamModel)
 	if cfg.Usage != nil {
-		_ = cfg.Usage.RecordUsage(ctx, &llmpool.UsageRecord{
-			ProviderID:     providerID,
-			Model:          dispatch.model,
-			ServiceGroupID: groupID,
-			WorkloadClass:  req.WorkloadClass,
-			ClassSource:    req.ClassSource,
-			Preview:        llmpool.RequestTextPreview(req.Body, 200),
-			InputTokens:    inputTokens,
-			OutputTokens:   outputTokens,
-			Credits:        recordCredits,
-			CacheHit:       false,
-			AuthID:         deductionAuthIDs(deductions),
-			Timestamp:      time.Now().UTC(),
-		})
+		if err := cfg.Usage.RecordUsage(ctx, &llmpool.UsageRecord{
+			RequestID:         req.RequestID,
+			ProviderID:        providerID,
+			Model:             dispatch.model,
+			ServiceGroupID:    groupID,
+			WorkloadClass:     req.WorkloadClass,
+			ClassSource:       req.ClassSource,
+			Preview:           llmpool.RequestTextPreview(req.Body, 200),
+			InputTokens:       inputTokens,
+			OutputTokens:      outputTokens,
+			CachedInputTokens: result.cachedInputTokens,
+			CacheWriteTokens:  result.cacheWriteTokens,
+			CacheUsageSource:  proxyCacheUsageSourceObserved(result.cacheReadObserved, result.cacheWriteObserved, result.cachedInputTokens, result.cacheWriteTokens),
+			UsageAnomaly:      proxyCacheUsageAnomaly(inputTokens, result.cachedInputTokens, result.cacheWriteTokens),
+			PricingSource:     proxyPricingSource(settledSnapshot),
+			Credits:           recordCredits,
+			CacheHit:          false,
+			AuthID:            deductionAuthIDs(deductions),
+			Timestamp:         time.Now().UTC(),
+		}); err != nil {
+			log.Printf("[llm-proxy] WARN: record stream usage failed provider=%s model=%s request=%s: %v", providerID, dispatch.model, req.RequestID, err)
+		}
 	}
 	recordProxyClassHeadSample(cfg, req, groupID)
 	if cfg.Attempts != nil {
-		if snapshot := proxyDispatchTokenPricingSnapshot(req, dispatch, upstreamModel); snapshot != nil {
-			if err := persistProxyBillingAttempt(cfg, ProxyBillingAttempt{HubID: req.HubID, TenantID: req.TenantID, RequestID: req.RequestID, StatusCode: http.StatusOK, ProviderID: providerID, PricingSnapshot: *snapshot, CompletedAt: time.Now().UTC()}); err != nil {
+		if settledSnapshot != nil {
+			if err := persistProxyBillingAttempt(cfg, ProxyBillingAttempt{HubID: req.HubID, TenantID: req.TenantID, RequestID: req.RequestID, StatusCode: http.StatusOK, ProviderID: providerID, PricingSnapshot: *settledSnapshot, CompletedAt: time.Now().UTC()}); err != nil {
 				// A streamed response may already have exposed business events, so do
 				// not manufacture a second response. Log the durable-fact failure for
 				// the operator instead.
@@ -1046,17 +1106,19 @@ func prepareProxyStreamDispatches(ctx context.Context, cfg *ProxyConfig, req *Pr
 }
 
 type proxyDispatch struct {
-	model               string
-	responseModel       string
-	matchedGroup        *llmpool.ServiceGroup
-	dispatchModel       *llmpool.DispatchModel
-	route               llmpool.DispatchProviderRoute
-	provider            *llmpool.ProviderConfig
-	auth                *TenantAuthorization
-	requiresGrant       bool
-	billingInputTokens  int64
-	billingOutputTokens int64
-	pricing             *llmpool.ResolvedTokenPricing
+	model                    string
+	responseModel            string
+	matchedGroup             *llmpool.ServiceGroup
+	dispatchModel            *llmpool.DispatchModel
+	route                    llmpool.DispatchProviderRoute
+	provider                 *llmpool.ProviderConfig
+	auth                     *TenantAuthorization
+	requiresGrant            bool
+	billingInputTokens       int64
+	billingOutputTokens      int64
+	billingCachedInputTokens int64
+	billingCacheWriteTokens  int64
+	pricing                  *llmpool.ResolvedTokenPricing
 }
 
 func prepareProxyDispatch(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest) (*proxyDispatch, error) {
@@ -1177,15 +1239,20 @@ func prepareProxyDispatches(ctx context.Context, cfg *ProxyConfig, req *ProxyReq
 }
 
 type providerStreamResult struct {
-	statusCode           int
-	errorBody            []byte
-	inputTokens          int64
-	outputTokens         int64
-	inputTokensObserved  bool
-	outputTokensObserved bool
-	outputText           string
-	wroteStream          bool
-	wroteBusinessStream  bool
+	statusCode            int
+	errorBody             []byte
+	inputTokens           int64
+	outputTokens          int64
+	cachedInputTokens     int64
+	cacheWriteTokens      int64
+	cacheReadObserved     bool
+	cacheWriteObserved    bool
+	inputTokensObserved   bool
+	outputTokensObserved  bool
+	outputText            string
+	wroteStream           bool
+	wroteBusinessStream   bool
+	estimatedUsageWritten bool
 }
 
 func streamProviderToWriter(ctx context.Context, client *http.Client, provider *llmpool.ProviderConfig, body map[string]any, upstreamModel, responseModel string, dst ProxyStreamWriter) (*providerStreamResult, error) {
@@ -1280,7 +1347,7 @@ func streamProviderToWriter(ctx context.Context, client *http.Client, provider *
 		result.errorBody, _ = io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 		return result, nil
 	}
-	if err := proxyProviderSSE(resp.Body, dst, responseModel, result); err != nil {
+	if err := proxyProviderSSE(resp.Body, dst, responseModel, result, body); err != nil {
 		return result, err
 	}
 	if !result.wroteBusinessStream {
@@ -1356,7 +1423,7 @@ func hasToolsInStreamBody(body map[string]any) bool {
 	}
 }
 
-func proxyProviderSSE(src io.Reader, dst ProxyStreamWriter, responseModel string, result *providerStreamResult) error {
+func proxyProviderSSE(src io.Reader, dst ProxyStreamWriter, responseModel string, result *providerStreamResult, reqBody map[string]any) error {
 	scanner := bufio.NewScanner(src)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	event := make([]string, 0, 4)
@@ -1375,6 +1442,9 @@ func proxyProviderSSE(src io.Reader, dst ProxyStreamWriter, responseModel string
 			if !result.wroteBusinessStream {
 				event = event[:0]
 				return nil
+			}
+			if err := proxyStreamWriteEstimatedUsageIfNeeded(dst, reqBody, result, responseModel); err != nil {
+				return err
 			}
 			if _, err := io.WriteString(dst, "data: [DONE]\n\n"); err != nil {
 				return err
@@ -1418,6 +1488,9 @@ func proxyProviderSSE(src io.Reader, dst ProxyStreamWriter, responseModel string
 				if data == "[DONE]" {
 					if !result.wroteBusinessStream {
 						continue
+					}
+					if err := proxyStreamWriteEstimatedUsageIfNeeded(dst, reqBody, result, responseModel); err != nil {
+						return err
 					}
 					if _, err := io.WriteString(dst, line+"\n"); err != nil {
 						return err
@@ -1474,6 +1547,11 @@ func proxyProviderSSE(src io.Reader, dst ProxyStreamWriter, responseModel string
 	}
 	if err := scanner.Err(); err != nil {
 		return err
+	}
+	if result != nil && result.wroteBusinessStream {
+		if err := proxyStreamWriteEstimatedUsageIfNeeded(dst, reqBody, result, responseModel); err != nil {
+			return err
+		}
 	}
 	dst.Flush()
 	return nil
@@ -1577,15 +1655,39 @@ func proxyStreamPatchAndMeasureData(data []byte, responseModel string, result *p
 	if strings.TrimSpace(responseModel) != "" {
 		payload["model"] = responseModel
 	}
-	if usage, _ := payload["usage"].(map[string]any); usage != nil {
-		input, output, inputObserved, outputObserved := extractTokenUsageFromMapWithPresence(usage)
-		if inputObserved {
-			result.inputTokens = input
-			result.inputTokensObserved = true
+	if result == nil {
+		patched, err := json.Marshal(payload)
+		if err != nil {
+			return data, err
 		}
-		if outputObserved {
-			result.outputTokens = output
+		return patched, nil
+	}
+	if usage, _ := payload["usage"].(map[string]any); usage != nil {
+		fields := corelib.ParseLLMUsageFields(usage)
+		if fields.InputObserved {
+			result.inputTokens = fields.Input
+			result.inputTokensObserved = true
+			rewriteProxyUsageToken(usage, "prompt_tokens", "input_tokens", fields.Input)
+		}
+		if fields.OutputObserved {
+			result.outputTokens = fields.Output
 			result.outputTokensObserved = true
+			rewriteProxyUsageToken(usage, "completion_tokens", "output_tokens", fields.Output)
+		}
+		if (fields.InputObserved || fields.OutputObserved) && hasProxyUsageKey(usage, "total_tokens") {
+			usage["total_tokens"] = fields.Input + fields.Output
+		}
+		// Usage can be emitted in more than one SSE event. Preserve the last
+		// provider-reported value, but do not overwrite it with zero merely
+		// because an intermediate event omitted cache details. Explicit zero is
+		// still a measured value and therefore marks the source as observed.
+		if fields.CachedObserved {
+			result.cachedInputTokens = fields.Cached
+			result.cacheReadObserved = true
+		}
+		if fields.WrittenObserved {
+			result.cacheWriteTokens = fields.Written
+			result.cacheWriteObserved = true
 		}
 	}
 	result.outputText += proxyStreamChunkText(payload)
@@ -1594,6 +1696,75 @@ func proxyStreamPatchAndMeasureData(data []byte, responseModel string, result *p
 		return nil, err
 	}
 	return patched, nil
+}
+
+func rewriteProxyUsageToken(usage map[string]any, primary, alias string, value int64) {
+	if usage == nil {
+		return
+	}
+	if _, ok := usage[primary]; ok {
+		usage[primary] = value
+	}
+	if _, ok := usage[alias]; ok {
+		usage[alias] = value
+	}
+}
+
+func hasProxyUsageKey(usage map[string]any, key string) bool {
+	if usage == nil {
+		return false
+	}
+	_, ok := usage[key]
+	return ok
+}
+
+func proxyStreamWriteEstimatedUsageIfNeeded(dst ProxyStreamWriter, reqBody map[string]any, result *providerStreamResult, responseModel string) error {
+	if dst == nil || result == nil || result.estimatedUsageWritten {
+		return nil
+	}
+	if result.inputTokensObserved && result.outputTokensObserved {
+		return nil
+	}
+	estimatedInput, estimatedOutput := estimateProxyTokenUsage(reqBody, []byte(result.outputText))
+	if !result.inputTokensObserved {
+		result.inputTokens = estimatedInput
+	}
+	if !result.outputTokensObserved {
+		result.outputTokens = estimatedOutput
+	}
+	if result.inputTokens == 0 && result.outputTokens == 0 {
+		return nil
+	}
+	if !result.inputTokensObserved {
+		result.inputTokensObserved = true
+	}
+	if !result.outputTokensObserved {
+		result.outputTokensObserved = true
+	}
+	payload := map[string]any{
+		"object":  "chat.completion.chunk",
+		"choices": []any{},
+		"usage": map[string]any{
+			"prompt_tokens":     result.inputTokens,
+			"completion_tokens": result.outputTokens,
+			"total_tokens":      result.inputTokens + result.outputTokens,
+			"estimated":         true,
+		},
+	}
+	if model := strings.TrimSpace(responseModel); model != "" {
+		payload["model"] = model
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	if _, err := io.WriteString(dst, "data: "+string(data)+"\n\n"); err != nil {
+		return err
+	}
+	result.estimatedUsageWritten = true
+	result.wroteStream = true
+	dst.Flush()
+	return nil
 }
 
 func proxyStreamChunkText(payload map[string]any) string {
@@ -2427,15 +2598,8 @@ func forwardToProvider(ctx context.Context, client *http.Client, provider *llmpo
 }
 
 func extractTokenUsage(respBody []byte) (inputTokens, outputTokens int64) {
-	var payload map[string]any
-	if err := json.Unmarshal(respBody, &payload); err != nil {
-		return 0, 0
-	}
-	usage, _ := payload["usage"].(map[string]any)
-	if usage == nil {
-		return 0, 0
-	}
-	return extractTokenUsageFromMap(usage)
+	stat := corelib.ParseLLMResponseUsage(respBody)
+	return stat.InputTokens, stat.OutputTokens
 }
 
 func proxyResponseUsageWithFallback(reqBody map[string]any, respBody []byte) (inputTokens, outputTokens int64, patchedBody []byte) {
@@ -2460,30 +2624,59 @@ func proxyResponseUsageWithFallback(reqBody map[string]any, respBody []byte) (in
 		}
 	}
 
-	inputTokens, outputTokens = extractTokenUsage(respBody)
-	if inputTokens > 0 || outputTokens > 0 {
-		return inputTokens, outputTokens, patchedBody
-	}
-
 	estimatedInput, estimatedOutput := estimateProxyTokenUsage(reqBody, respBody)
-	if inputTokens == 0 && outputTokens == 0 {
-		inputTokens, outputTokens = estimatedInput, estimatedOutput
-		if inputTokens > 0 || outputTokens > 0 {
-			patchedBody = ensureProxyResponseUsage(respBody, inputTokens, outputTokens)
-		}
-		return inputTokens, outputTokens, patchedBody
+	if estimatedInput > 0 || estimatedOutput > 0 {
+		patchedBody = ensureProxyResponseUsage(respBody, estimatedInput, estimatedOutput)
 	}
+	return estimatedInput, estimatedOutput, patchedBody
+}
 
-	if inputTokens == 0 {
-		inputTokens = estimatedInput
+func proxyResponseUsageWithCacheFallback(reqBody map[string]any, respBody []byte) (inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens int64, cacheReadObserved, cacheWriteObserved bool, patchedBody []byte) {
+	patchedBody = respBody
+	var payload map[string]any
+	if json.Unmarshal(respBody, &payload) == nil {
+		if usage, _ := payload["usage"].(map[string]any); usage != nil {
+			fields := corelib.ParseLLMUsageFields(usage)
+			inputTokens, outputTokens = fields.Input, fields.Output
+			cachedInputTokens, cacheWriteTokens = fields.Cached, fields.Written
+			cacheReadObserved, cacheWriteObserved = fields.CachedObserved, fields.WrittenObserved
+			if fields.InputObserved && fields.OutputObserved {
+				return
+			}
+			estimatedInput, estimatedOutput := estimateProxyTokenUsage(reqBody, respBody)
+			if !fields.InputObserved {
+				inputTokens = estimatedInput
+			}
+			if !fields.OutputObserved {
+				outputTokens = estimatedOutput
+			}
+			patchedBody = completeProxyResponseUsage(respBody, inputTokens, outputTokens)
+			return
+		}
 	}
-	if outputTokens == 0 {
-		outputTokens = estimatedOutput
+	inputTokens, outputTokens, patchedBody = proxyResponseUsageWithFallback(reqBody, respBody)
+	return
+}
+
+func proxyCacheUsageSourceObserved(cachedPresent, writtenPresent bool, cached, written int64) string {
+	if cachedPresent || writtenPresent || cached > 0 || written > 0 {
+		return "provider_reported"
 	}
-	if inputTokens > 0 && outputTokens > 0 {
-		patchedBody = completeProxyResponseUsage(respBody, inputTokens, outputTokens)
+	return "unavailable"
+}
+
+func proxyPricingSource(snapshot *llmpool.TokenPricingSnapshot) string {
+	if snapshot == nil {
+		return ""
 	}
-	return inputTokens, outputTokens, patchedBody
+	return strings.TrimSpace(snapshot.PricingSource)
+}
+
+func proxyCacheUsageAnomaly(input, cached, written int64) string {
+	if cached > input || written > input-cached {
+		return "cache_tokens_exceed_input"
+	}
+	return ""
 }
 
 func estimateProxyTokenUsage(reqBody map[string]any, respBody []byte) (inputTokens, outputTokens int64) {
@@ -2587,14 +2780,14 @@ func completeProxyResponseUsage(respBody []byte, inputTokens, outputTokens int64
 	if usage == nil {
 		return ensureProxyResponseUsage(respBody, inputTokens, outputTokens)
 	}
-	_, _, inputObserved, outputObserved := extractTokenUsageFromMapWithPresence(usage)
-	if !inputObserved {
+	fields := corelib.ParseLLMUsageFields(usage)
+	if !fields.InputObserved {
 		usage["prompt_tokens"] = inputTokens
 	}
-	if !outputObserved {
+	if !fields.OutputObserved {
 		usage["completion_tokens"] = outputTokens
 	}
-	if _, totalObserved := usageNumberPresent(usage["total_tokens"]); !totalObserved {
+	if !fields.TotalObserved {
 		usage["total_tokens"] = inputTokens + outputTokens
 	}
 	usage["estimated"] = true
@@ -2611,8 +2804,8 @@ func ensureProxyResponseUsage(respBody []byte, inputTokens, outputTokens int64) 
 		return respBody
 	}
 	if usage, ok := payload["usage"].(map[string]any); ok {
-		_, _, inputObserved, outputObserved := extractTokenUsageFromMapWithPresence(usage)
-		if inputObserved && outputObserved {
+		fields := corelib.ParseLLMUsageFields(usage)
+		if fields.InputObserved && fields.OutputObserved {
 			return respBody
 		}
 	}
@@ -2645,131 +2838,17 @@ func stripProxyResponseUsage(respBody []byte) []byte {
 	return data
 }
 
-func extractTokenUsageFromMap(usage map[string]any) (inputTokens, outputTokens int64) {
-	inputTokens, outputTokens, _, _ = extractTokenUsageFromMapWithPresence(usage)
-	return inputTokens, outputTokens
-}
-
 // extractTokenUsageFromMapWithPresence retains the distinction between an
 // upstream's explicit zero and a missing directional value. Explicit zero is
 // authoritative and must not be replaced by a local token estimate.
 func extractTokenUsageFromMapWithPresence(usage map[string]any) (inputTokens, outputTokens int64, inputObserved, outputObserved bool) {
-	if usage == nil {
-		return 0, 0, false, false
-	}
-	inputTokens, inputObserved = firstTokenUsageValue(usage, "prompt_tokens", "input_tokens")
-	outputTokens, outputObserved = firstTokenUsageValue(usage, "completion_tokens", "output_tokens")
-	totalTokens, totalObserved := usageNumberPresent(usage["total_tokens"])
-	if totalTokens > 0 {
-		switch {
-		case !inputObserved && !outputObserved:
-			// A total-only usage is a complete measurement. Record it as input
-			// and do not later fill the missing side with a local estimate,
-			// which would inflate the billed token total.
-			inputTokens = totalTokens
-			inputObserved = true
-			outputObserved = true
-		case !inputObserved && totalTokens > outputTokens:
-			inputTokens = totalTokens - outputTokens
-			inputObserved = true
-		case !outputObserved && totalTokens > inputTokens:
-			outputTokens = totalTokens - inputTokens
-			outputObserved = true
-		}
-	}
-	if totalObserved && totalTokens == 0 {
-		// A total of zero is an explicit upstream declaration. When one
-		// direction is explicitly zero and the other is absent, the absent
-		// direction is also known to be zero; do not turn it into an estimate.
-		switch {
-		case !inputObserved && !outputObserved:
-			return 0, 0, true, true
-		case !inputObserved && outputObserved && outputTokens == 0:
-			return 0, 0, true, true
-		case inputObserved && inputTokens == 0 && !outputObserved:
-			return 0, 0, true, true
-		}
-	}
-	if reasoning := reasoningTokensFromUsage(usage); reasoning > 0 {
-		accounted := inputTokens + outputTokens
-		switch {
-		case totalObserved && totalTokens == accounted+reasoning:
-			outputTokens += reasoning
-			outputObserved = true
-		case totalObserved && totalTokens == accounted:
-			// reasoning is already inside completion/output tokens
-		case totalObserved && totalTokens > accounted && totalTokens-accounted <= reasoning:
-			outputTokens += totalTokens - accounted
-			outputObserved = true
-		case !outputObserved:
-			outputTokens += reasoning
-			outputObserved = true
-		}
-	}
-	return inputTokens, outputTokens, inputObserved, outputObserved
+	fields := corelib.ParseLLMUsageFields(usage)
+	return fields.Input, fields.Output, fields.InputObserved, fields.OutputObserved
 }
 
-func reasoningTokensFromUsage(usage map[string]any) int64 {
-	if usage == nil {
-		return 0
-	}
-	if value, ok := usageNumberPresent(usage["reasoning_tokens"]); ok && value > 0 {
-		return value
-	}
-	for _, key := range []string{"completion_tokens_details", "output_tokens_details"} {
-		details, _ := usage[key].(map[string]any)
-		if details == nil {
-			continue
-		}
-		if value, ok := usageNumberPresent(details["reasoning_tokens"]); ok && value > 0 {
-			return value
-		}
-	}
-	return 0
-}
-
-func firstTokenUsageValue(usage map[string]any, keys ...string) (int64, bool) {
-	for _, key := range keys {
-		if value, ok := usageNumberPresent(usage[key]); ok {
-			return value, true
-		}
-	}
-	return 0, false
-}
-
-func usageNumber(v any) int64 {
-	value, _ := usageNumberPresent(v)
-	return value
-}
-
-func usageNumberPresent(v any) (int64, bool) {
-	switch n := v.(type) {
-	case int:
-		return int64(n), true
-	case int64:
-		return n, true
-	case float64:
-		return int64(n), true
-	case json.Number:
-		return usageJSONNumber(n), true
-	case string:
-		if strings.TrimSpace(n) == "" {
-			return 0, false
-		}
-		return usageJSONNumber(json.Number(strings.TrimSpace(n))), true
-	default:
-		return 0, false
-	}
-}
-
-func usageJSONNumber(n json.Number) int64 {
-	if i, err := n.Int64(); err == nil {
-		return i
-	}
-	if f, err := n.Float64(); err == nil {
-		return int64(f)
-	}
-	return 0
+func extractCacheTokenUsageWithPresence(usage map[string]any) (cached, written int64, cachedPresent, writtenPresent bool) {
+	fields := corelib.ParseLLMUsageFields(usage)
+	return fields.Cached, fields.Written, fields.CachedObserved, fields.WrittenObserved
 }
 
 func buildCacheKey(model string, body map[string]any) string {

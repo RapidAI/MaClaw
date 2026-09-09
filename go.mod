@@ -8,6 +8,7 @@ require (
 	github.com/VantageDataChat/GoExcel v0.0.0-20260626231344-644ce957794e
 	github.com/VantageDataChat/GoPDF2 v0.0.0-20260711230316-e8684adfd6f2
 	github.com/VantageDataChat/GoPPT v0.0.0-20260222023045-cf8c7d78702c
+	github.com/alexbrainman/odbc v0.0.0-20250601004241-49e6b2bc0cf0
 	github.com/braheezy/shine-mp3 v0.1.0
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
@@ -17,12 +18,15 @@ require (
 	github.com/go-audio/wav v1.1.0
 	github.com/go-ego/gse v1.0.2
 	github.com/go-lark/lark/v2 v2.0.0-beta.6
+	github.com/go-sql-driver/mysql v1.9.3
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/hajimehoshi/go-mp3 v0.3.4
+	github.com/jackc/pgx/v5 v5.7.6
 	github.com/ledongthuc/pdf v0.0.0-20250511090121-5959a4027728
 	github.com/mattn/go-isatty v0.0.20
 	github.com/mattn/go-runewidth v0.0.19
+	github.com/microsoft/go-mssqldb v1.9.7
 	github.com/openai/openai-go v1.12.0
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
 	github.com/pkg/sftp v1.13.10
@@ -36,12 +40,12 @@ require (
 	github.com/wailsapp/wails/v2 v2.11.0
 	github.com/wdvxdr1123/go-silk v0.0.0-20220304095002-f67345df09ea
 	github.com/zalando/go-keyring v0.2.8
-	golang.org/x/crypto v0.41.0
+	golang.org/x/crypto v0.45.0
 	golang.org/x/image v0.37.0
-	golang.org/x/net v0.42.0
+	golang.org/x/net v0.47.0
 	golang.org/x/sync v0.20.0
 	golang.org/x/sys v0.38.0
-	golang.org/x/term v0.34.0
+	golang.org/x/term v0.37.0
 	golang.org/x/text v0.35.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.46.1
@@ -49,9 +53,20 @@ require (
 )
 
 require (
+	filippo.io/edwards25519 v1.1.0 // indirect
+	github.com/golang-sql/civil v0.0.0-20220223132316-b832511892a9 // indirect
+	github.com/golang-sql/sqlexp v0.1.0 // indirect
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/puddle/v2 v2.2.2 // indirect
+	github.com/rogpeppe/go-internal v1.16.0 // indirect
+	github.com/shopspring/decimal v1.4.0 // indirect
+)
+
+require (
 	github.com/andybalholm/brotli v1.0.6 // indirect
 	github.com/danieljoos/wincred v1.2.3 // indirect
-	github.com/klauspost/compress v1.17.4 // indirect
+	github.com/klauspost/compress v1.17.4
 	github.com/richardlehane/mscfb v1.0.7
 	github.com/richardlehane/msoleps v1.0.3 // indirect
 )
@@ -129,7 +144,7 @@ require (
 	modernc.org/memory v1.11.0 // indirect
 )
 
-replace github.com/energye/systray v1.0.2 => ./gui/internal/systray
+replace github.com/energye/systray v1.0.2 => ./guiapp/internal/systray
 
 replace github.com/RapidAI/CodeClaw/datasrv => ./datasrv
 

@@ -9,7 +9,11 @@ import (
 )
 
 type recordingUsageRepo struct {
-	record *TenantUsageRecord
+	record         *TenantUsageRecord
+	summaries      []TenantUsageSummary
+	groupSummaries []TenantUsageSummary
+	filter         UsageFilter
+	groupFilter    UsageFilter
 }
 
 func (r *recordingUsageRepo) Insert(_ context.Context, record *TenantUsageRecord) error {
@@ -17,8 +21,81 @@ func (r *recordingUsageRepo) Insert(_ context.Context, record *TenantUsageRecord
 	return nil
 }
 
-func (r *recordingUsageRepo) QuerySummary(_ context.Context, _ UsageFilter) ([]TenantUsageSummary, error) {
-	return nil, nil
+func (r *recordingUsageRepo) QuerySummary(_ context.Context, filter UsageFilter) ([]TenantUsageSummary, error) {
+	if filter.GroupByServiceGroup {
+		r.groupFilter = filter
+		return r.groupSummaries, nil
+	}
+	r.filter = filter
+	return r.summaries, nil
+}
+
+func TestUsageReconciliationIsScopedToHubTenantAndCalendarDay(t *testing.T) {
+	repo := &recordingUsageRepo{
+		summaries: []TenantUsageSummary{{
+			HubID: "hub1", TenantID: "tenant1", Period: "daily", PeriodStart: "2026-09-01",
+			InputTokens: 10, OutputTokens: 20, CachedInputTokens: 5, CacheWriteTokens: 2, TotalCredits: 1.5, TotalRequests: 3,
+		}},
+		groupSummaries: []TenantUsageSummary{{
+			HubID: "hub1", TenantID: "tenant1", ServiceGroupID: "redeem", Period: "daily", PeriodStart: "2026-09-01",
+			InputTokens: 7, OutputTokens: 12, CachedInputTokens: 3, CacheWriteTokens: 1, TotalCredits: 1.1, TotalRequests: 2,
+		}, {
+			HubID: "hub1", TenantID: "tenant1", ServiceGroupID: "maclaw-official", Period: "daily", PeriodStart: "2026-09-01",
+			InputTokens: 3, OutputTokens: 8, CachedInputTokens: 2, CacheWriteTokens: 1, TotalCredits: 0.4, TotalRequests: 1,
+		}, {
+			HubID: "other-hub", TenantID: "tenant1", ServiceGroupID: "ignored", InputTokens: 99, TotalRequests: 9,
+		}},
+	}
+	report, err := NewStatsService(repo).QueryUsageReconciliation(context.Background(), "hub1", "tenant1", "2026-09-01", "Asia/Shanghai")
+	if err != nil {
+		t.Fatalf("QueryUsageReconciliation() error = %v", err)
+	}
+	if report == nil || report.Upstream.InputTokens != 10 || report.Upstream.CachedInputTokens != 5 || report.Upstream.TotalRequests != 3 || report.Upstream.TotalCredits != 1.5 {
+		t.Fatalf("reconciliation report = %#v", report)
+	}
+	if !repo.groupFilter.GroupByServiceGroup || repo.groupFilter.HubID != "hub1" || repo.groupFilter.TenantID != "tenant1" || repo.groupFilter.StartDate != "2026-09-01" || repo.groupFilter.EndDate != "2026-09-01" || repo.groupFilter.Timezone != "Asia/Shanghai" {
+		t.Fatalf("service-group filter = %#v", repo.groupFilter)
+	}
+	if len(report.ServiceGroups) != 2 {
+		t.Fatalf("service groups = %#v", report.ServiceGroups)
+	}
+	if report.ServiceGroups[0].ServiceGroupID != "maclaw-official" || report.ServiceGroups[0].TotalCredits != 0.4 {
+		t.Fatalf("first service group = %#v, want maclaw-official sorted first", report.ServiceGroups[0])
+	}
+	if report.ServiceGroups[1].ServiceGroupID != "redeem" || report.ServiceGroups[1].InputTokens != 7 {
+		t.Fatalf("second service group = %#v", report.ServiceGroups[1])
+	}
+}
+
+func TestUsageReconciliationMergesServiceGroupCaseVariants(t *testing.T) {
+	repo := &recordingUsageRepo{groupSummaries: []TenantUsageSummary{
+		{HubID: "hub1", TenantID: "tenant1", ServiceGroupID: "Redeem", InputTokens: 4, OutputTokens: 1, TotalCredits: 0.2, TotalRequests: 1, CacheHits: 0},
+		{HubID: "hub1", TenantID: "tenant1", ServiceGroupID: "redeem", InputTokens: 6, OutputTokens: 2, TotalCredits: 0.3, TotalRequests: 1, CacheHits: 1},
+	}}
+	report, err := NewStatsService(repo).QueryUsageReconciliation(context.Background(), "hub1", "tenant1", "2026-09-01", "Asia/Shanghai")
+	if err != nil {
+		t.Fatalf("QueryUsageReconciliation() error = %v", err)
+	}
+	if report.Upstream.InputTokens != 10 || report.Upstream.OutputTokens != 3 || report.Upstream.TotalCredits != 0.5 || report.Upstream.TotalRequests != 2 {
+		t.Fatalf("merged upstream = %#v", report.Upstream)
+	}
+	if len(report.ServiceGroups) != 1 || report.ServiceGroups[0].InputTokens != 10 || report.ServiceGroups[0].CacheHits != 1 {
+		t.Fatalf("merged groups = %#v", report.ServiceGroups)
+	}
+}
+
+func TestUsageReconciliationEmptyDayHasZeroTotalsAndNoGroups(t *testing.T) {
+	repo := &recordingUsageRepo{}
+	report, err := NewStatsService(repo).QueryUsageReconciliation(context.Background(), "hub1", "tenant1", "2026-09-01", "Asia/Shanghai")
+	if err != nil {
+		t.Fatalf("QueryUsageReconciliation() error = %v", err)
+	}
+	if report == nil || len(report.ServiceGroups) != 0 || report.Upstream.TotalRequests != 0 || report.Upstream.InputTokens != 0 {
+		t.Fatalf("empty day report = %#v", report)
+	}
+	if !repo.groupFilter.GroupByServiceGroup || repo.groupFilter.HubID != "hub1" || repo.groupFilter.TenantID != "tenant1" {
+		t.Fatalf("empty day still queries the grouped ledger: %#v", repo.groupFilter)
+	}
 }
 
 func (r *recordingUsageRepo) QueryRecent(_ context.Context, _, _ string, _ int) ([]*TenantUsageRecord, error) {
@@ -43,6 +120,7 @@ func TestUsageRecorderCopiesChargedAuthorizationID(t *testing.T) {
 	ts := time.Date(2026, 6, 21, 8, 0, 0, 0, time.UTC)
 
 	err := recorder.RecordUsage(WithUsageContext(context.Background(), "hub1", "tenant1"), &llmpool.UsageRecord{
+		RequestID:    "req-1",
 		ProviderID:   "p1",
 		Model:        "gpt-4",
 		InputTokens:  10,
@@ -57,7 +135,7 @@ func TestUsageRecorderCopiesChargedAuthorizationID(t *testing.T) {
 	if repo.record == nil {
 		t.Fatal("RecordUsage() did not insert a record")
 	}
-	if repo.record.HubID != "hub1" || repo.record.TenantID != "tenant1" || repo.record.AuthID != "auth-small,auth-large" {
+	if repo.record.HubID != "hub1" || repo.record.TenantID != "tenant1" || repo.record.RequestID != "req-1" || repo.record.AuthID != "auth-small,auth-large" {
 		t.Fatalf("inserted record = %#v, want hub/tenant/auth IDs copied", repo.record)
 	}
 }

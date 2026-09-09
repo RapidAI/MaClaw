@@ -1,11 +1,11 @@
-import React, { useMemo, useState, useEffect, useCallback, type Dispatch, type SetStateAction } from "react";
+import React, { useMemo, useState, useEffect, useCallback, useRef, type Dispatch, type SetStateAction } from "react";
 import { colors, radius } from "./styles";
 import { TERMINAL_SESSION_STATUSES, type RemoteSessionView } from "./types";
 import { RemoteSessionConsole } from "./RemoteSessionConsole";
 import { ScheduledTasksPanel } from "./ScheduledTasksPanel";
 import { PassthroughCommandsPanel } from "./PassthroughCommandsPanel";
 import { countActiveBackgroundLoops } from "../layout/backgroundTaskCount";
-import { ListBackgroundLoops, StopBackgroundLoop, StopAllBackgroundLoops, StopAllBackgroundTasks, DismissRemoteSession, ContinueBackgroundLoop, GetBackgroundLoopOutput } from "../../../wailsjs/go/main/App";
+import { ListBackgroundLoops, StopBackgroundLoop, StopAllBackgroundTasks, DismissRemoteSession, ContinueBackgroundLoop, GetBackgroundLoopOutput } from "../../../wailsjs/go/main/App";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 
 // Strip ANSI escape sequences and non-printable control characters from terminal output
@@ -40,6 +40,8 @@ type Props = {
     lang: string;
     /** The monitoring tab to show when this page is opened from another surface. */
     initialSessionTab?: "remote" | "background" | "scheduled" | "passthrough";
+    /** Keeps the left rail's active entry aligned when the user changes tabs here. */
+    onSessionTabChange?: (tab: SessionTab) => void;
 };
 
 const terminalStatuses = TERMINAL_SESSION_STATUSES;
@@ -79,6 +81,9 @@ const isAISession = (s: RemoteSessionView) => (s.launch_source || "") === "ai";
 const isLiveSession = (s: RemoteSessionView) =>
     !terminalStatuses.has(String(s.status || s.summary?.status || "").toLowerCase());
 
+const SESSION_TABS = ["remote", "background", "scheduled", "passthrough"] as const;
+type SessionTab = (typeof SESSION_TABS)[number];
+
 export function RemoteSessionList(props: Props) {
     const {
         remoteSessions,
@@ -93,9 +98,11 @@ export function RemoteSessionList(props: Props) {
         localizeText,
         lang,
         initialSessionTab = "remote",
+        onSessionTabChange,
     } = props;
 
-    const [sessionTab, setSessionTab] = useState<"remote" | "background" | "scheduled" | "passthrough">(initialSessionTab);
+    const [sessionTab, setSessionTab] = useState<SessionTab>(initialSessionTab);
+    const sessionTabRefs = useRef<Partial<Record<SessionTab, HTMLButtonElement | null>>>({});
     const [showHistory, setShowHistory] = useState(false);
     const [hiddenSessionIds, setHiddenSessionIds] = useState<string[]>([]);
     const [consoleSessionId, setConsoleSessionId] = useState<string | null>(null);
@@ -105,6 +112,39 @@ export function RemoteSessionList(props: Props) {
     const [scheduledRefreshKey, setScheduledRefreshKey] = useState(0);
     // SSH/background loop output lines (polled when console is open for a non-remote session)
     const [bgLoopOutputLines, setBgLoopOutputLines] = useState<string[]>([]);
+
+    // Keep the selected view in sync when the parent opens the monitor from a
+    // different surface. Only react to the prop itself; user tab clicks must
+    // remain free to switch away from the requested initial view.
+    useEffect(() => {
+        if (initialSessionTab) {
+            setSessionTab((current) => current === initialSessionTab ? current : initialSessionTab);
+            setShowHistory(false);
+        }
+    }, [initialSessionTab]);
+
+    // The left rail can be clicked repeatedly while this page is already
+    // mounted and the requested tab is still "background". Use a lightweight
+    // intent event for that repeated focus action without remounting the page.
+    useEffect(() => {
+        const focusBackgroundTasks = () => {
+            setSessionTab("background");
+            setShowHistory(false);
+            onSessionTabChange?.("background");
+        };
+        const focusScheduledTasks = () => {
+            setSessionTab("scheduled");
+            setShowHistory(false);
+            setScheduledRefreshKey((key) => key + 1);
+            onSessionTabChange?.("scheduled");
+        };
+        window.addEventListener("maclaw:focus-background-tasks", focusBackgroundTasks);
+        window.addEventListener("maclaw:focus-scheduled-tasks", focusScheduledTasks);
+        return () => {
+            window.removeEventListener("maclaw:focus-background-tasks", focusBackgroundTasks);
+            window.removeEventListener("maclaw:focus-scheduled-tasks", focusScheduledTasks);
+        };
+    }, [onSessionTabChange]);
 
     // Fetch background loops
     const refreshBgLoops = useCallback(async () => {
@@ -283,7 +323,14 @@ export function RemoteSessionList(props: Props) {
     };
 
     const renderTable = (sessions: RemoteSessionView[], muted = false, isAITab = false) => (
-        <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed" }}>
+        <div
+            className="remote-session-table-scroll"
+            role="region"
+            aria-label={localizeText("Task monitor results", "任务监控结果", "任務監控結果")}
+            tabIndex={0}
+            style={{ maxWidth: "100%", overflowX: "auto", overscrollBehaviorX: "contain" }}
+        >
+        <table style={{ width: "100%", minWidth: isAITab ? 720 : 640, borderCollapse: "collapse", tableLayout: "fixed" }}>
             <colgroup>
                 <col style={{ width: isAITab ? "20%" : "24%" }} />
                 <col style={{ width: isAITab ? "16%" : "18%" }} />
@@ -312,6 +359,11 @@ export function RemoteSessionList(props: Props) {
                     const previewLines = rawPreviewLines.map((l) => stripAnsi(l).trimEnd()).filter((l) => l.length > 0);
                     const hasPreview = previewLines.length > 0;
                     const isPreviewOpen = previewSessionIds.has(session.id);
+                    // Keep the preview trigger and its inline row associated for
+                    // keyboard and screen-reader users.  A terminal preview is
+                    // only useful when output exists; opening an empty preview
+                    // used to look like a broken action on freshly-started jobs.
+                    const previewRowId = `remote-session-preview-${session.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
 
                     return (
                         <React.Fragment key={session.id}>
@@ -353,11 +405,14 @@ export function RemoteSessionList(props: Props) {
                                 <td style={{ ...tdStyle, textAlign: "right" }}>
                                     <div style={{ display: "inline-flex", gap: "4px", alignItems: "center", flexWrap: "nowrap" }}>
                                         <button
-                                            style={{ ...iconBtnStyle, color: hasPreview ? colors.primary : colors.textMuted }}
+                                            style={{ ...iconBtnStyle, color: hasPreview ? colors.primary : colors.textMuted, opacity: hasPreview ? 1 : 0.55 }}
+                                            disabled={!hasPreview}
+                                            aria-expanded={hasPreview ? isPreviewOpen : undefined}
+                                            aria-controls={hasPreview ? previewRowId : undefined}
                                             title={isPreviewOpen ? localizeText("Collapse preview", "收起预览", "收起預覽") : localizeText("Expand preview", "展开预览", "展開預覽")}
                                             onClick={() => togglePreview(session.id)}
                                         >
-                                            {isPreviewOpen ? "HIDE" : "SHOW"}
+                                            {isPreviewOpen ? localizeText("Hide", "收起", "收起") : localizeText("Preview", "预览", "預覽")}
                                         </button>
                                         {!isTerminal && (
                                             <>
@@ -366,7 +421,7 @@ export function RemoteSessionList(props: Props) {
                                                     title={isAITab ? localizeText("View terminal", "查看终端", "查看終端") : localizeText("Open console", "打开控制台", "打開控制台")}
                                                     onClick={() => openConsole(session.id, isAITab)}
                                                 >
-                                                    OPEN
+                                                    {localizeText("Open", "打开", "打開")}
                                                 </button>
                                                 {!isAITab && (
                                                     <button
@@ -374,7 +429,7 @@ export function RemoteSessionList(props: Props) {
                                                         title={localizeText("Interrupt session", "中断实例", "中斷實例")}
                                                         onClick={() => handleInterrupt(session.id)}
                                                     >
-                                                        INT
+                                                        {localizeText("Interrupt", "中断", "中斷")}
                                                     </button>
                                                 )}
                                             </>
@@ -385,7 +440,7 @@ export function RemoteSessionList(props: Props) {
                                                 title={isTerminal ? localizeText("Remove", "移除", "移除") : localizeText("Stop session", "停止实例", "停止實例")}
                                                 onClick={() => isTerminal ? hideSession(session.id) : handleKill(session.id)}
                                             >
-                                                {isTerminal ? "X" : "STOP"}
+                                                {isTerminal ? localizeText("Remove", "移除", "移除") : localizeText("Stop", "停止", "停止")}
                                             </button>
                                         )}
                                         {isAITab && isTerminal && (
@@ -394,15 +449,15 @@ export function RemoteSessionList(props: Props) {
                                                 title={localizeText("Remove", "移除", "移除")}
                                                 onClick={() => hideSession(session.id)}
                                             >
-                                                X
+                                                {localizeText("Remove", "移除", "移除")}
                                             </button>
                                         )}
                                     </div>
                                 </td>
                             </tr>
                             {/* Inline preview row */}
-                            {isPreviewOpen && (
-                                <tr>
+                            {isPreviewOpen && hasPreview && (
+                                <tr id={previewRowId}>
                                     <td
                                         colSpan={isAITab ? 6 : 5}
                                         style={{
@@ -433,7 +488,7 @@ export function RemoteSessionList(props: Props) {
                                                     {session.tool || "terminal"} — {previewLines.length} {localizeText("lines", "行", "行")}
                                                 </span>
                                                 <span style={{ fontSize: "0.65rem", color: "var(--theme-success)", fontFamily: "monospace", flexShrink: 0 }}>
-                                                    OPEN {localizeText("Click fullscreen", "点击全屏", "點擊全螢幕")}
+                                                    {localizeText("OPEN", "打开", "打開")} {localizeText("Click fullscreen", "点击全屏", "點擊全螢幕")}
                                                 </span>
                                             </div>
                                             <div style={{
@@ -465,16 +520,24 @@ export function RemoteSessionList(props: Props) {
                 })}
             </tbody>
         </table>
+        </div>
     );
 
     const renderAgentLoops = () => {
         if (bgLoops.length === 0) return null;
         return (
             <div style={{ marginBottom: "8px" }}>
-                <div style={{ padding: "8px 14px 4px", fontSize: "0.72rem", color: colors.textMuted, fontWeight: 600 }}>
+                <div style={{ padding: "8px 0 4px", fontSize: "0.72rem", color: colors.textMuted, fontWeight: 600 }}>
                     {localizeText("Agent Loop tasks", "Agent Loop 任务", "Agent Loop 任務")}
                 </div>
-                <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed" }}>
+                <div
+                    className="remote-session-table-scroll"
+                    role="region"
+                    aria-label={localizeText("Agent Loop tasks", "Agent Loop 任务", "Agent Loop 任務")}
+                    tabIndex={0}
+                    style={{ maxWidth: "100%", overflowX: "auto", overscrollBehaviorX: "contain" }}
+                >
+                <table style={{ width: "100%", minWidth: 640, borderCollapse: "collapse", tableLayout: "fixed" }}>
                     <colgroup>
                         <col style={{ width: "12%" }} />
                         <col style={{ width: "30%" }} />
@@ -531,7 +594,7 @@ export function RemoteSessionList(props: Props) {
                                                     title={localizeText("View terminal", "查看终端", "查看終端")}
                                                     onClick={() => openConsole(loop.session_id, true)}
                                                 >
-                                                    OPEN
+                                                    {localizeText("Open", "打开", "打開")}
                                                 </button>
                                             )}
                                             {isPaused && (
@@ -540,7 +603,7 @@ export function RemoteSessionList(props: Props) {
                                                     title={localizeText("Extend by +20 rounds", "续命 +20 轮", "續命 +20 輪")}
                                                     onClick={() => handleContinueLoop(loop.id)}
                                                 >
-                                                    EXTEND {localizeText("Extend", "续命", "續命")}
+                                                    {localizeText("Extend", "续命", "續命")}
                                                 </button>
                                             )}
                                             <button
@@ -557,6 +620,7 @@ export function RemoteSessionList(props: Props) {
                         })}
                     </tbody>
                 </table>
+                </div>
             </div>
         );
     };
@@ -568,19 +632,44 @@ export function RemoteSessionList(props: Props) {
     const remoteLiveCount = useMemo(() => remoteSess.filter(isLiveSession).length, [remoteSess]);
     const bgTotalCount = countActiveBackgroundLoops(bgLoops) + aiSessions.filter(isLiveSession).length;
 
-    const openScheduledTab = () => {
-        setSessionTab("scheduled");
+    const selectSessionTab = useCallback((tab: SessionTab, refreshScheduled = false) => {
+        setSessionTab(tab);
         setShowHistory(false);
-        setScheduledRefreshKey((key) => key + 1);
-    };
+        if (tab === "scheduled" && refreshScheduled) setScheduledRefreshKey((key) => key + 1);
+        onSessionTabChange?.(tab);
+    }, [onSessionTabChange]);
+
+    const handleSessionTabKeyDown = useCallback((event: React.KeyboardEvent<HTMLButtonElement>, tab: SessionTab) => {
+        const currentIndex = SESSION_TABS.indexOf(tab);
+        let nextIndex = currentIndex;
+        if (event.key === "ArrowRight" || event.key === "ArrowDown") nextIndex = (currentIndex + 1) % SESSION_TABS.length;
+        else if (event.key === "ArrowLeft" || event.key === "ArrowUp") nextIndex = (currentIndex - 1 + SESSION_TABS.length) % SESSION_TABS.length;
+        else if (event.key === "Home") nextIndex = 0;
+        else if (event.key === "End") nextIndex = SESSION_TABS.length - 1;
+        else return;
+        event.preventDefault();
+        const nextTab = SESSION_TABS[nextIndex];
+        selectSessionTab(nextTab, nextTab === "scheduled");
+        window.requestAnimationFrame(() => sessionTabRefs.current[nextTab]?.focus());
+    }, [selectSessionTab]);
 
     return (
-        <div style={{ border: `1px solid ${colors.border}`, borderRadius: radius.lg, background: colors.surface, overflow: "hidden", textAlign: "left" }}>
+        <div className="remote-session-list" data-session-tab={sessionTab} style={{ border: `1px solid ${colors.border}`, borderRadius: radius.lg, background: colors.surface, overflow: "hidden", textAlign: "left" }}>
             {/* Header with tabs */}
-            <div style={{ padding: "12px 14px 0" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: "0", borderBottom: `1px solid ${colors.border}` }}>
+            <div className="remote-session-list__tabs-shell">
+                <div className="remote-session-tabbar">
+                <div role="tablist" className="remote-session-tablist" aria-orientation="horizontal" aria-label={localizeText("Task monitor views", "任务监控视图", "任務監控視圖")}>
+                    <div className="remote-session-tab-items">
                     <button
-                        onClick={() => { setSessionTab("remote"); setShowHistory(false); }}
+                        id="remote-session-tab-remote"
+                        className="remote-session-tab"
+                        ref={(element) => { sessionTabRefs.current.remote = element; }}
+                        role="tab"
+                        aria-selected={sessionTab === "remote"}
+                        aria-controls="remote-session-panel-remote"
+                        tabIndex={sessionTab === "remote" ? 0 : -1}
+                        onClick={() => selectSessionTab("remote")}
+                        onKeyDown={(event) => handleSessionTabKeyDown(event, "remote")}
                         style={{
                             border: "none",
                             background: sessionTab === "remote" ? colors.surface : "transparent",
@@ -601,7 +690,15 @@ export function RemoteSessionList(props: Props) {
                         )}
                     </button>
                     <button
-                        onClick={() => { setSessionTab("background"); setShowHistory(false); }}
+                        id="remote-session-tab-background"
+                        className="remote-session-tab"
+                        ref={(element) => { sessionTabRefs.current.background = element; }}
+                        role="tab"
+                        aria-selected={sessionTab === "background"}
+                        aria-controls="remote-session-panel-background"
+                        tabIndex={sessionTab === "background" ? 0 : -1}
+                        onClick={() => selectSessionTab("background")}
+                        onKeyDown={(event) => handleSessionTabKeyDown(event, "background")}
                         style={{
                             border: "none",
                             background: sessionTab === "background" ? colors.surface : "transparent",
@@ -622,7 +719,15 @@ export function RemoteSessionList(props: Props) {
                         )}
                     </button>
                     <button
-                        onClick={openScheduledTab}
+                        id="remote-session-tab-scheduled"
+                        className="remote-session-tab"
+                        ref={(element) => { sessionTabRefs.current.scheduled = element; }}
+                        role="tab"
+                        aria-selected={sessionTab === "scheduled"}
+                        aria-controls="remote-session-panel-scheduled"
+                        tabIndex={sessionTab === "scheduled" ? 0 : -1}
+                        onClick={() => selectSessionTab("scheduled", true)}
+                        onKeyDown={(event) => handleSessionTabKeyDown(event, "scheduled")}
                         style={{
                             border: "none",
                             background: sessionTab === "scheduled" ? colors.surface : "transparent",
@@ -638,7 +743,15 @@ export function RemoteSessionList(props: Props) {
                         {localizeText("Scheduled", "计划任务", "計劃任務")}
                     </button>
                     <button
-                        onClick={() => { setSessionTab("passthrough"); setShowHistory(false); }}
+                        id="remote-session-tab-passthrough"
+                        className="remote-session-tab"
+                        ref={(element) => { sessionTabRefs.current.passthrough = element; }}
+                        role="tab"
+                        aria-selected={sessionTab === "passthrough"}
+                        aria-controls="remote-session-panel-passthrough"
+                        tabIndex={sessionTab === "passthrough" ? 0 : -1}
+                        onClick={() => selectSessionTab("passthrough")}
+                        onKeyDown={(event) => handleSessionTabKeyDown(event, "passthrough")}
                         style={{
                             border: "none",
                             background: sessionTab === "passthrough" ? colors.surface : "transparent",
@@ -653,7 +766,9 @@ export function RemoteSessionList(props: Props) {
                     >
                         {localizeText("Passthrough Tasks", "直通任务", "直通任務")}
                     </button>
-                    <div style={{ flex: 1 }} />
+                    </div>
+                </div>
+                <div className="remote-session-tab-actions" role="group" aria-label={localizeText("Tab actions", "标签操作", "標籤操作")}>
                     {isBackgroundTab && bgTotalCount > 0 && (
                         <button
                             className="btn-link"
@@ -673,13 +788,14 @@ export function RemoteSessionList(props: Props) {
                         </button>
                     )}
                 </div>
+                </div>
             </div>
 
             {/* Remote tab content */}
             {isRemoteTab && (
-                <>
+                <div id="remote-session-panel-remote" className="remote-session-panel remote-session-panel--remote" role="tabpanel" aria-labelledby="remote-session-tab-remote" tabIndex={0}>
                     {liveSessions.length === 0 && !showHistory ? (
-                        <div style={{ padding: "20px 14px", textAlign: "center", fontSize: "0.76rem", color: colors.textMuted }}>
+                        <div className="remote-monitor-empty-state remote-monitor-empty-state--remote" role="status">
                             {localizeText("No running remote sessions", "当前没有运行中的远程实例", "目前沒有執行中的遠端實例")}
                         </div>
                     ) : (
@@ -687,50 +803,52 @@ export function RemoteSessionList(props: Props) {
                     )}
                     {showHistory && historySessions.length > 0 && (
                         <div style={{ borderTop: `1px solid ${colors.border}` }}>
-                            <div style={{ padding: "8px 14px 4px", fontSize: "0.72rem", color: colors.textMuted, fontWeight: 500 }}>
+                            <div style={{ padding: "8px 0 4px", fontSize: "0.72rem", color: colors.textMuted, fontWeight: 500 }}>
                                 {localizeText("Ended", "已结束", "已結束")}
                             </div>
                             {renderTable(historySessions, true, false)}
                         </div>
                     )}
-                </>
+                </div>
             )}
 
             {/* Background tab content */}
             {isBackgroundTab && (
-                <>
+                <div id="remote-session-panel-background" className="remote-session-panel remote-session-panel--background" role="tabpanel" aria-labelledby="remote-session-tab-background" tabIndex={0}>
                     {/* Agent Loop section */}
                     {renderAgentLoops()}
 
                     {/* AI coding sessions section */}
                     <div>
-                        <div style={{ padding: "8px 14px 4px", fontSize: "0.72rem", color: colors.textMuted, fontWeight: 600 }}>
+                        <div className="remote-session-list__section-label" style={{ padding: "8px 0 4px", fontSize: "0.72rem", color: colors.textMuted, fontWeight: 600 }}>
                             {localizeText("AI coding sessions", "AI 编程会话", "AI 編程會話")}
                         </div>
                         {aiSessions.length === 0 && bgLoops.length === 0 ? (
-                            <div style={{ padding: "20px 14px", textAlign: "center", fontSize: "0.76rem", color: colors.textMuted }}>
-                                {localizeText("No running background tasks", "当前没有运行中的后台任务", "目前沒有執行中的後台任務")}
+                            <div className="remote-monitor-empty-state" role="status">
+                                <span className="remote-monitor-empty-state__icon" aria-hidden="true">✓</span>
+                                <strong>{localizeText("No running background tasks", "当前没有运行中的后台任务", "目前沒有執行中的後台任務")}</strong>
+                                <span>{localizeText("Start a task or background workflow and its live status will appear here.", "新建任务或启动后台流程后，实时状态会显示在这里。", "新建任務或啟動後台流程後，實時狀態會顯示在這裡。")}</span>
                             </div>
                         ) : aiSessions.length === 0 ? (
-                            <div style={{ padding: "10px 14px", textAlign: "center", fontSize: "0.74rem", color: colors.textMuted }}>
+                            <div style={{ padding: "10px 0", textAlign: "center", fontSize: "0.74rem", color: colors.textMuted }}>
                                 {localizeText("No AI coding sessions", "暂无 AI 编程会话", "暫無 AI 編程會話")}
                             </div>
                         ) : (
                             renderTable(aiSessions, false, true)
                         )}
                     </div>
-                </>
+                </div>
             )}
 
             {/* Scheduled tab content */}
             {isScheduledTab && (
-                <div style={{ padding: "8px 14px" }}>
+                <div id="remote-session-panel-scheduled" className="remote-session-panel remote-session-panel--scheduled" role="tabpanel" aria-labelledby="remote-session-tab-scheduled" tabIndex={0}>
                     <ScheduledTasksPanel lang={lang} refreshKey={scheduledRefreshKey} />
                 </div>
             )}
 
             {isPassthroughTab && (
-                <div style={{ padding: "8px 14px" }}>
+                <div id="remote-session-panel-passthrough" className="remote-session-panel remote-session-panel--passthrough" role="tabpanel" aria-labelledby="remote-session-tab-passthrough" tabIndex={0}>
                     <PassthroughCommandsPanel lang={lang} />
                 </div>
             )}

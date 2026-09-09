@@ -417,7 +417,12 @@ func (s *Service) verifyHubSecret(ctx context.Context, hubID, rawSecret string) 
 	if hub == nil {
 		return ErrHubUnauthorized
 	}
-	if hub.HubSecretHash != hashToken(rawSecret) {
+	// P0 (2026-09-09 review): an empty secret must never satisfy the check.
+	// The previous `hub.HubSecretHash != hashToken(rawSecret)` alone also
+	// rejects empty, but only because no hub is registered with an empty
+	// hash; making the empty case explicit keeps the guard correct even if a
+	// record is ever created without a secret.
+	if rawSecret == "" || hub.HubSecretHash != hashToken(rawSecret) {
 		return ErrHubUnauthorized
 	}
 	if hub.IsDisabled || hub.Status == "disabled" {
@@ -926,7 +931,13 @@ func (s *Service) HeartbeatHubWithSecret(ctx context.Context, hubID, rawSecret s
 		}
 		return ErrHubUnauthorized
 	}
-	if rawSecret != "" && hub.HubSecretHash != hashToken(rawSecret) {
+	// P0 (2026-09-09 review): the previous guard short-circuited on an empty
+	// secret, so a heartbeat that simply omitted `hub_secret` was treated as
+	// authenticated. That let an unauthenticated caller rewrite the hub
+	// registration (base_url/host/port/visibility) and have the real hub's
+	// viewer tokens POSTed to an attacker-controlled URL. Align with the
+	// other call sites: an empty secret is always unauthorized.
+	if rawSecret == "" || hub.HubSecretHash != hashToken(rawSecret) {
 		return ErrHubUnauthorized
 	}
 	if hub.Status == "pending_confirmation" {

@@ -30,6 +30,23 @@ func TestEnrichmentStore_GetSearchText_Builtin(t *testing.T) {
 	}
 }
 
+func TestEnrichmentStore_GetSearchTextMergesBuiltinAndStored(t *testing.T) {
+	s, err := NewEnrichmentStore("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Set("database", []string{"rapidbi"}); err != nil {
+		t.Fatal(err)
+	}
+	text := s.GetSearchText(RegisteredTool{Name: "database", Description: "SQL data source", Tags: []string{"mysql"}})
+	if !containsSubstring(text, "查看库") {
+		t.Fatalf("expected builtin database enrichment, got %q", text)
+	}
+	if !containsSubstring(text, "rapidbi") {
+		t.Fatalf("expected stored overlay to merge with builtin, got %q", text)
+	}
+}
+
 func TestEnrichmentStore_GetSearchText_NoEnrichment(t *testing.T) {
 	s, err := NewEnrichmentStore("")
 	if err != nil {

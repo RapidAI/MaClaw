@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import { EVENT_OPEN_CREATE_CODING_TASK, type OpenCreateCodingTaskDetail } from "../../constants/events";
-import type { Theme } from "./aiAssistantPanelTheme";
+import { resolvePrimaryFilledColors, type Theme } from "./aiAssistantPanelTheme";
 import type { ChatMessage } from "./useAIAssistant";
 import { AssistantInputComposer } from "./AssistantInputComposer";
 import { AssistantPinnedNewsCards } from "./AssistantPinnedNewsCards";
@@ -15,7 +15,7 @@ import { getComposeActionPlaceholder, type ComposeAction, type FireSlashCommand,
 import type { AttachmentInfo } from "./useBufferQueue";
 import type { UseVoiceInputResult } from "./useVoiceInput";
 import type { AssistantPermissionMode } from "./AssistantInputComposerTypes";
-import { CODING_TASK_COMMAND_MAX_LEN, type PureCodingAgentMode } from "./codingTaskMode";
+import { CODING_TASK_COMMAND_MAX_LEN, isCloudWorkspaceTask, type PureCodingAgentMode } from "./codingTaskMode";
 import {
     getWelcomeOpsPrompt,
     getWelcomeOpsPrompts,
@@ -262,7 +262,94 @@ const SCENARIO_TAB_BY_ID = new Map(SCENARIO_TABS.map(tab => [tab.id, tab]));
 const isScenarioTabId = (value: string | null): value is string => !!value && SCENARIO_TAB_IDS.has(value);
 
 /** Max width for the main content column (input, tabs, cards). */
-const CONTENT_MAX_WIDTH = "720px";
+const CONTENT_MAX_WIDTH = "850px";
+
+/** Four task starters shown on the reference workbench home. Keep these as
+ * plain composer fills so a click never opens the legacy template wizard. */
+const REFERENCE_QUICK_TASKS = [
+    {
+        id: "meeting-notes",
+        label: "整理会议纪要",
+        labelEn: "Meeting notes",
+        prompt: "整理本周会议纪要，提炼关键决策、行动项、负责人和截止时间。",
+        promptEn: "Summarize this week's meeting notes, extracting decisions, action items, owners, and due dates.",
+        icon: "meeting",
+    },
+    {
+        id: "client-email",
+        label: "回复客户邮件",
+        labelEn: "Reply to client email",
+        prompt: "回复客户邮件：根据附件或上下文拟定礼貌、清晰的回复。",
+        promptEn: "Draft a polite, clear reply to the client email using the attached context.",
+        icon: "mail",
+    },
+    {
+        id: "weekly-report",
+        label: "制作周报",
+        labelEn: "Weekly report",
+        prompt: "制作本周工作周报，包含进展、风险和下周计划。",
+        promptEn: "Create this week's work update with progress, risks, and next week's plan.",
+        icon: "chart",
+    },
+    {
+        id: "schedule-meeting",
+        label: "安排会议",
+        labelEn: "Schedule a meeting",
+        prompt: "安排会议：根据参与人、时间偏好和议题给出会议安排建议。",
+        promptEn: "Schedule a meeting from the participants, preferred times, and agenda.",
+        icon: "schedule",
+    },
+] as const;
+
+/** Secondary task starters from the workbench reference. They stay local to
+ * the welcome surface and only fill the composer when selected. */
+const REFERENCE_TASK_CATEGORIES = [
+    { id: "business", label: "经营分析", labelEn: "Business" },
+    { id: "ops", label: "运营排障", labelEn: "Operations" },
+    { id: "research", label: "科研资料", labelEn: "Research" },
+    { id: "grant", label: "科研申报", labelEn: "Grant writing" },
+    { id: "writing", label: "写作/沟通", labelEn: "Writing" },
+    { id: "knowledge", label: "知识文档", labelEn: "Knowledge" },
+    { id: "workflow", label: "自动化流程", labelEn: "Automation" },
+    { id: "data", label: "数据表格", labelEn: "Data" },
+] as const;
+type ReferenceTaskCategory = typeof REFERENCE_TASK_CATEGORIES[number]["id"];
+const REFERENCE_TASK_SUGGESTIONS: Record<ReferenceTaskCategory, readonly { id: string; title: string; titleEn: string; detail: string; detailEn: string; prompt: string; promptEn: string; icon: string }[]> = {
+    business: [
+        { id: "competitor", title: "做一份可汇报的竞品分析", titleEn: "Create a presentation-ready competitor analysis", detail: "结论、对比表、机会与下一步", detailEn: "Conclusions, comparison table, opportunities", prompt: "做一份可汇报的竞品分析，给出结论、对比表、机会和下一步。", promptEn: "Create a presentation-ready competitor analysis with conclusions, comparisons, opportunities, and next steps.", icon: "chart" },
+        { id: "project-plan", title: "把零散想法整理成项目方案", titleEn: "Turn scattered ideas into a project plan", detail: "目标、范围、里程碑、风险", detailEn: "Goals, scope, milestones, and risks", prompt: "把这些零散想法整理成项目方案，明确目标、范围、里程碑和风险。", promptEn: "Turn these scattered ideas into a project plan with goals, scope, milestones, and risks.", icon: "strategy" },
+        { id: "contract-review", title: "审查合同并列出谈判要点", titleEn: "Review a contract and list negotiation points", detail: "按风险等级给可改条款", detailEn: "Suggested changes grouped by risk", prompt: "审查这份合同，按风险等级列出谈判要点和可修改条款。", promptEn: "Review this contract and list negotiation points and suggested changes by risk level.", icon: "contract" },
+        { id: "quarter-review", title: "制定季度经营复盘", titleEn: "Plan a quarterly business review", detail: "指标、原因、下步动作", detailEn: "Metrics, causes, and next actions", prompt: "制定季度经营复盘，梳理指标、原因和下一步动作。", promptEn: "Plan a quarterly business review covering metrics, causes, and next actions.", icon: "target" },
+    ],
+    ops: [
+        { id: "incident", title: "整理线上故障复盘", titleEn: "Summarize an incident review", detail: "影响、时间线、根因、改进", detailEn: "Impact, timeline, root cause, fixes", prompt: "整理这次线上故障复盘，输出影响、时间线、根因和改进项。", promptEn: "Summarize this production incident with impact, timeline, root cause, and fixes.", icon: "bug" },
+        { id: "runbook", title: "生成一份运维排障手册", titleEn: "Generate an operations runbook", detail: "现象、检查、回滚、值班交接", detailEn: "Symptoms, checks, rollback, handoff", prompt: "根据现有资料生成运维排障手册，包含检查、回滚和交接步骤。", promptEn: "Generate an operations runbook with checks, rollback, and handoff steps.", icon: "server" },
+    ],
+    research: [
+        { id: "literature", title: "整理文献并提炼研究空白", titleEn: "Organize literature and identify gaps", detail: "主题、方法、结论、空白", detailEn: "Themes, methods, findings, gaps", prompt: "整理这些文献，按主题、方法和结论提炼研究空白。", promptEn: "Organize these papers by theme, method, findings, and research gaps.", icon: "knowledge" },
+        { id: "experiment", title: "设计一份实验方案", titleEn: "Design an experiment plan", detail: "变量、样本、步骤、评价指标", detailEn: "Variables, samples, steps, metrics", prompt: "设计一份可执行的实验方案，明确变量、样本、步骤和评价指标。", promptEn: "Design an executable experiment plan with variables, samples, steps, and metrics.", icon: "diagram" },
+    ],
+    grant: [
+        { id: "proposal", title: "搭建科研申报书框架", titleEn: "Build a research proposal outline", detail: "立项依据、目标、方法、预算", detailEn: "Rationale, goals, methods, budget", prompt: "搭建科研申报书框架，覆盖立项依据、目标、方法和预算。", promptEn: "Build a research proposal outline covering rationale, goals, methods, and budget.", icon: "form" },
+        { id: "abstract", title: "润色项目摘要", titleEn: "Polish a project abstract", detail: "突出创新点与可行性", detailEn: "Highlight novelty and feasibility", prompt: "润色项目摘要，突出创新点、可行性和预期成果。", promptEn: "Polish this project abstract to highlight novelty, feasibility, and outcomes.", icon: "write" },
+    ],
+    writing: [
+        { id: "email", title: "把要点写成一封清晰邮件", titleEn: "Turn notes into a clear email", detail: "语气、结构、行动请求", detailEn: "Tone, structure, and call to action", prompt: "把这些要点写成一封清晰、礼貌并带有行动请求的邮件。", promptEn: "Turn these notes into a clear, polite email with a call to action.", icon: "mail" },
+        { id: "brief", title: "整理一页汇报提纲", titleEn: "Draft a one-page briefing", detail: "背景、结论、建议", detailEn: "Context, conclusions, recommendations", prompt: "整理一页汇报提纲，包含背景、结论和建议。", promptEn: "Draft a one-page briefing with context, conclusions, and recommendations.", icon: "write" },
+    ],
+    knowledge: [
+        { id: "faq", title: "把资料整理成知识库问答", titleEn: "Turn materials into a knowledge FAQ", detail: "概念、步骤、常见问题", detailEn: "Concepts, steps, FAQs", prompt: "把这些资料整理成知识库问答，覆盖概念、步骤和常见问题。", promptEn: "Turn these materials into a knowledge FAQ covering concepts, steps, and common questions.", icon: "qa" },
+        { id: "checklist", title: "生成一份可执行检查清单", titleEn: "Generate an actionable checklist", detail: "按阶段拆分并标注负责人", detailEn: "Stages with owners", prompt: "生成一份可执行检查清单，按阶段拆分并标注负责人。", promptEn: "Generate an actionable checklist split by stage with owners.", icon: "checklist" },
+    ],
+    workflow: [
+        { id: "workflow", title: "把重复工作做成自动化流程", titleEn: "Turn repetitive work into a workflow", detail: "触发器、步骤、异常处理", detailEn: "Triggers, steps, exception handling", prompt: "把这项重复工作设计成自动化流程，包含触发器、步骤和异常处理。", promptEn: "Design an automation workflow with triggers, steps, and exception handling.", icon: "workflow" },
+        { id: "schedule", title: "安排一组周期性任务", titleEn: "Schedule recurring tasks", detail: "频率、提醒、交付物", detailEn: "Frequency, reminders, deliverables", prompt: "安排一组周期性任务，明确频率、提醒和交付物。", promptEn: "Schedule recurring tasks with frequency, reminders, and deliverables.", icon: "schedule" },
+    ],
+    data: [
+        { id: "table", title: "把数据整理成可读表格", titleEn: "Turn data into a readable table", detail: "字段、口径、异常、结论", detailEn: "Fields, definitions, outliers, findings", prompt: "把这些数据整理成可读表格，统一字段口径并标出异常和结论。", promptEn: "Turn this data into a readable table with consistent fields, outliers, and findings.", icon: "chart" },
+        { id: "dashboard", title: "设计一页管理看板", titleEn: "Design a one-page management dashboard", detail: "核心指标、趋势、预警", detailEn: "KPIs, trends, alerts", prompt: "设计一页管理看板，突出核心指标、趋势和预警。", promptEn: "Design a one-page management dashboard with KPIs, trends, and alerts.", icon: "monitor" },
+    ],
+};
 
 const ROLE_LABELS_ZH: Record<WelcomeUserRole, string> = {
     auto: "自动",
@@ -350,6 +437,52 @@ export type WelcomePromptSubmitMeta = {
     taskKey?: string;
 };
 
+export type WelcomeRecentTask = {
+    id?: string;
+    name?: string;
+    project_path?: string;
+    projectPath?: string;
+    working_dir?: string;
+    workingDir?: string;
+    tags?: string[];
+    preview?: string;
+    created_at?: string;
+    last_activity?: string;
+    has_output?: boolean;
+    active_workflow?: {
+        status?: string;
+        phase?: string;
+        pending_review?: boolean;
+    };
+};
+
+function recentTaskStatus(task: WelcomeRecentTask, isZh: boolean): { label: string; tone: "running" | "completed" | "pending" | "failed" } {
+    const raw = `${task.active_workflow?.status || ""} ${task.active_workflow?.phase || ""}`.toLowerCase();
+    if (/(fail|error|blocked)/.test(raw)) return { label: isZh ? "失败" : "Failed", tone: "failed" };
+    if (task.active_workflow?.pending_review || /(review|confirm|approval|待确认)/.test(raw)) {
+        return { label: isZh ? "待处理" : "Pending", tone: "pending" };
+    }
+    if (/(running|execut|active|processing|进行)/.test(raw)) {
+        return { label: isZh ? "进行中" : "In progress", tone: "running" };
+    }
+    if (/(complete|finish|success|done|已完成)/.test(raw) || task.has_output === true) {
+        return { label: isZh ? "已完成" : "Completed", tone: "completed" };
+    }
+    return { label: isZh ? "待处理" : "Pending", tone: "pending" };
+}
+
+function formatRecentTaskTime(value: string | undefined, isZh: boolean): string {
+    if (!value) return "";
+    const parsed = Date.parse(value);
+    if (!Number.isFinite(parsed)) return "";
+    const date = new Date(parsed);
+    const now = new Date();
+    if (date.toDateString() === now.toDateString()) {
+        return date.toLocaleTimeString(isZh ? "zh-CN" : "en-US", { hour: "2-digit", minute: "2-digit" });
+    }
+    return date.toLocaleDateString(isZh ? "zh-CN" : "en-US", { month: "short", day: "numeric" });
+}
+
 interface AssistantWelcomeViewProps {
     lang: string;
     theme: Theme;
@@ -360,6 +493,10 @@ interface AssistantWelcomeViewProps {
     onPromptSelect: (text: string, meta?: WelcomePromptSubmitMeta) => void;
     /** Insert and immediately send (chat tasks only). */
     onPromptSend?: (text: string, meta?: WelcomePromptSubmitMeta) => void;
+    /** Existing task rows supplied by the live task index. */
+    recentTasks?: WelcomeRecentTask[];
+    /** Open a task row using the existing task restore flow. */
+    onRecentTaskSelect?: (task: WelcomeRecentTask) => void;
     pinnedNews?: ChatMessage[];
     composer: WelcomeComposerProps;
 }
@@ -371,6 +508,8 @@ export function AssistantWelcomeView({
     active = true,
     onPromptSelect,
     onPromptSend,
+    recentTasks = [],
+    onRecentTaskSelect,
     pinnedNews,
     composer: cp,
 }: AssistantWelcomeViewProps) {
@@ -401,6 +540,7 @@ export function AssistantWelcomeView({
     const [recentEntries, setRecentEntries] = useState<WelcomeRecentEntry[]>(() => loadWelcomeRecentEntries());
     const [customTemplates, setCustomTemplates] = useState<WelcomeCustomTemplate[]>(() => loadWelcomeCustomTemplates());
     const [opsMode, setOpsMode] = useState<WelcomeOpsMode>("local");
+    const [referenceTaskCategory, setReferenceTaskCategory] = useState<ReferenceTaskCategory>("business");
 
     useEffect(() => {
         if (!active) setParamDialog(null);
@@ -1373,6 +1513,13 @@ export function AssistantWelcomeView({
         const resolved = resolveWelcomeRecentPrompts(recentEntries);
         return filterWelcomeRecentForQuickAccess(resolved, customTemplates, 4);
     }, [recentEntries, customTemplates]);
+    const recentTaskRows = useMemo(() => {
+        return (Array.isArray(recentTasks) ? recentTasks : [])
+            .filter((task) => !!String(task?.name || task?.project_path || "").trim())
+            .slice()
+            .sort((a, b) => Date.parse(String(b.last_activity || b.created_at || "")) - Date.parse(String(a.last_activity || a.created_at || "")))
+            .slice(0, 4);
+    }, [recentTasks]);
     /** Cap custom chips so the quick row does not dominate the welcome screen. */
     const visibleCustomTemplates = useMemo(
         () => customTemplates.slice(0, Math.min(6, WELCOME_CUSTOM_TEMPLATES_MAX)),
@@ -1381,7 +1528,7 @@ export function AssistantWelcomeView({
     const quickHints = useMemo(() => resolveWelcomeQuickHints(), []);
     const showQuickHints = !(cp.inputValue || "").trim();
     const roleLabels = isZh ? ROLE_LABELS_ZH : ROLE_LABELS_EN;
-    const hasQuickAccess = visibleCustomTemplates.length > 0 || recentPrompts.length > 0;
+    const hasQuickAccess = recentTaskRows.length > 0 || visibleCustomTemplates.length > 0 || recentPrompts.length > 0;
     /** Always show the quick section header so users can import even with zero templates. */
     const showQuickSection = true;
     const handleScenarioTabKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
@@ -1405,10 +1552,16 @@ export function AssistantWelcomeView({
     };
 
     const hasNews = pinnedNews && pinnedNews.length > 0;
+    // Category tabs use a filled selected state. Resolve the pair from the
+    // theme's semantic send-button tokens so light accents never get paired
+    // with white text (the old btnColor + #fff combination was too faint).
+    const referenceCategorySelectedColors = resolvePrimaryFilledColors(t);
 
     return (
         <div
             role="region"
+            className="mc-welcome"
+            data-testid="mc-workbench-home"
             aria-label={isZh ? "工作台任务入口" : "Workbench task entry"}
             style={{
                 display: "flex",
@@ -1420,7 +1573,7 @@ export function AssistantWelcomeView({
         >
             {/* Pinned news cards pinned to top */}
             {hasNews && (
-                <div style={{ flexShrink: 0, padding: "12px 16px 0", display: "flex", justifyContent: "center" }}>
+                <div className="mc-welcome-pinned-news" data-testid="welcome-pinned-news" hidden style={{ flexShrink: 0, padding: "12px 16px 0", display: "flex", justifyContent: "center" }}>
                     <div style={{ width: "100%", maxWidth: "520px" }}>
                         <AssistantPinnedNewsCards messages={pinnedNews} theme={t} />
                     </div>
@@ -1430,18 +1583,21 @@ export function AssistantWelcomeView({
             {/* Main content centered in remaining space.
                 Uses margin:auto instead of justifyContent:center to avoid
                 top-clipping when content overflows a short panel. */}
-            <div style={{
+            <div className="mc-welcome-main-content" style={{
                 display: "flex",
                 flexDirection: "column",
                 alignItems: "center",
+                width: "100%",
+                minWidth: 0,
+                boxSizing: "border-box",
                 padding: "16px 16px 16px",
                 gap: "14px",
                 margin: "auto 0",
                 flexShrink: 0,
             }}>
 
-            {/* Title — invite the user to pick a starter task */}
-            <h2 style={{
+            {/* Workbench headline from the new home design */}
+            <h2 className="mc-welcome__title" style={{
                 margin: 0,
                 fontSize: "13px",
                 fontWeight: 600,
@@ -1454,81 +1610,37 @@ export function AssistantWelcomeView({
                 justifyContent: "center",
                 gap: "6px",
             }}>
-                <WelcomePromptIcon name="checklist" color={t.textMuted} />
-                {isZh ? "选择一个任务开始吧！" : "Pick a task to get started!"}
+                {isZh ? "今天要完成什么？" : "What do you want to finish today?"}
             </h2>
 
-            {/* Toolbar: role + clipboard scan on one row */}
-            <div
-                data-testid="welcome-toolbar"
-                style={{
+            {/* Legacy role/clipboard controls stay mounted for existing flows, but
+                are collapsed so the reference home has no toolbar placeholder. */}
+            <details className="mc-welcome-advanced-tools" data-testid="welcome-advanced-tools" hidden style={{ width: "100%", maxWidth: CONTENT_MAX_WIDTH }}>
+                <summary style={{ cursor: "pointer", color: t.textMuted, fontSize: 11, textAlign: "center", userSelect: "none" }}>
+                    {isZh ? "更多工作台工具" : "More workbench tools"}
+                </summary>
+                <div className="mc-welcome__composer" data-testid="welcome-toolbar" style={{
                     width: "100%",
-                    maxWidth: CONTENT_MAX_WIDTH,
                     display: "flex",
                     flexWrap: "wrap",
                     alignItems: "center",
                     justifyContent: "center",
                     gap: 10,
-                }}
-            >
-                <label
-                    data-testid="welcome-role-picker"
-                    style={{
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: 8,
-                        fontSize: 11,
-                        color: t.textMuted,
-                        fontFamily: "system-ui, -apple-system, sans-serif",
-                    }}
-                >
-                    <span>{isZh ? "角色" : "Role"}</span>
-                    <select
-                        aria-label={isZh ? "工作角色" : "Workbench role"}
-                        data-testid="welcome-role-select"
-                        value={userRole}
-                        onChange={(e) => applyUserRole(e.target.value as WelcomeUserRole)}
-                        style={{
-                            padding: "4px 8px",
-                            borderRadius: 6,
-                            border: `1px solid ${t.fieldBorder}`,
-                            background: t.fieldBg,
-                            color: t.text,
-                            fontSize: 12,
-                            fontFamily: "system-ui, -apple-system, sans-serif",
-                            cursor: "pointer",
-                            maxWidth: 160,
-                        }}
-                    >
-                        {(Object.keys(ROLE_LABELS_ZH) as WelcomeUserRole[]).map((role) => (
-                            <option key={role} value={role} data-testid={`welcome-role-${role}`}>
-                                {roleLabels[role]}
-                            </option>
-                        ))}
-                    </select>
-                </label>
-                <button
-                    type="button"
-                    data-testid="welcome-clipboard-refresh"
-                    title={isZh ? "根据剪贴板内容推荐任务" : "Suggest tasks from clipboard"}
-                    onClick={() => void refreshClipboardSuggestions({ force: true })}
-                    disabled={clipboardBusy}
-                    style={{
-                        padding: "4px 10px",
-                        borderRadius: 6,
-                        border: `1px solid ${t.fieldBorder}`,
-                        background: t.fieldBg,
-                        color: t.textMuted,
-                        fontSize: 11,
-                        cursor: clipboardBusy ? "wait" : "pointer",
-                        fontFamily: "system-ui, -apple-system, sans-serif",
-                    }}
-                >
-                    {clipboardBusy
-                        ? (isZh ? "识别中…" : "Scanning…")
-                        : (isZh ? "剪贴板识别" : "Scan clipboard")}
-                </button>
-            </div>
+                    paddingTop: 8,
+                }}>
+                    <label data-testid="welcome-role-picker" style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 11, color: t.textMuted, fontFamily: "system-ui, -apple-system, sans-serif" }}>
+                        <span>{isZh ? "角色" : "Role"}</span>
+                        <select aria-label={isZh ? "工作角色" : "Workbench role"} data-testid="welcome-role-select" value={userRole} onChange={(e) => applyUserRole(e.target.value as WelcomeUserRole)} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${t.fieldBorder}`, background: t.fieldBg, color: t.text, fontSize: 12, fontFamily: "system-ui, -apple-system, sans-serif", cursor: "pointer", maxWidth: 160 }}>
+                            {(Object.keys(ROLE_LABELS_ZH) as WelcomeUserRole[]).map((role) => (
+                                <option key={role} value={role} data-testid={`welcome-role-${role}`}>{roleLabels[role]}</option>
+                            ))}
+                        </select>
+                    </label>
+                    <button type="button" data-testid="welcome-clipboard-refresh" title={isZh ? "根据剪贴板内容推荐任务" : "Suggest tasks from clipboard"} onClick={() => void refreshClipboardSuggestions({ force: true })} disabled={clipboardBusy} style={{ padding: "4px 10px", borderRadius: 6, border: `1px solid ${t.fieldBorder}`, background: t.fieldBg, color: t.textMuted, fontSize: 11, cursor: clipboardBusy ? "wait" : "pointer", fontFamily: "system-ui, -apple-system, sans-serif" }}>
+                        {clipboardBusy ? (isZh ? "识别中…" : "Scanning…") : (isZh ? "剪贴板识别" : "Scan clipboard")}
+                    </button>
+                </div>
+            </details>
 
             {/* Centered input composer — workbench field, not chat bubble */}
             <div style={{
@@ -1572,7 +1684,7 @@ export function AssistantWelcomeView({
                     onPermissionModeChange={cp.onPermissionModeChange}
                     placeholderText={
                         getComposeActionPlaceholder(cp.composeAction, isZh)
-                            || (isZh ? "输入任务或指令…" : "Enter a task or command...")
+                            || (isZh ? "告诉 MaClaw 你要完成什么办公任务……" : "Tell MaClaw what work you need to finish...")
                     }
                     ready={cp.ready}
                     recallHistory={cp.recallHistory}
@@ -1584,6 +1696,18 @@ export function AssistantWelcomeView({
                     showBusySpinner={cp.showBusySpinner}
                     showMemoryUsage={false}
                     showVoiceInput={true}
+                    sendButtonStyle={{
+                        minWidth: 40,
+                        width: 40,
+                        height: 40,
+                        borderRadius: 12,
+                        flexShrink: 0,
+                        background: cp.canSend ? (t.sendBtnBg || t.btnColor) : (t.sendBtnBg || t.btnColor),
+                        borderColor: t.sendBtnBorder || t.sendBtnBg || t.btnColor,
+                        color: t.sendBtnColor || "#fff",
+                        opacity: cp.canSend ? 1 : 0.72,
+                        boxShadow: `0 3px 8px color-mix(in srgb, ${t.btnColor} 22%, transparent)`,
+                    }}
                     submittedPrompts={cp.submittedPrompts}
                     theme={t}
                     themeMode={themeMode}
@@ -1592,61 +1716,52 @@ export function AssistantWelcomeView({
                 />
             </div>
 
-            {/* Empty-input light hints */}
-            {showQuickHints && quickHints.length > 0 && (
-                <div
-                    data-testid="welcome-quick-hints"
-                    style={{
-                        width: "100%",
-                        maxWidth: CONTENT_MAX_WIDTH,
-                        display: "flex",
-                        flexWrap: "wrap",
-                        alignItems: "center",
-                        gap: 6,
-                    }}
-                >
-                    <span style={{
-                        fontSize: 11,
-                        color: t.textMuted,
-                        fontFamily: "system-ui, -apple-system, sans-serif",
-                    }}>
-                        {isZh ? "试试：" : "Try:"}
-                    </span>
-                    {quickHints.map((hint) => (
+            {/* Reference quick tasks: exactly four composer fills. */}
+            <div data-testid="welcome-reference-quick-tasks" style={{ width: "100%", maxWidth: CONTENT_MAX_WIDTH, display: "flex", flexDirection: "column", gap: 8 }}>
+                <h3 style={{ margin: 0, fontSize: 15, lineHeight: 1.3, fontWeight: 650, color: t.text, fontFamily: "system-ui, -apple-system, sans-serif" }}>
+                    {isZh ? "快捷任务" : "Quick tasks"}
+                </h3>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+                    {REFERENCE_QUICK_TASKS.map((task) => (
                         <button
-                            key={hint.id}
+                            key={task.id}
                             type="button"
-                            data-testid={`welcome-quick-hint-${hint.id}`}
-                            onClick={() => openPrompt(hint.prompt, hint.tabId)}
-                            style={{
-                                padding: "3px 9px",
-                                borderRadius: 999,
-                                border: `1px dashed ${t.fieldBorder}`,
-                                background: "transparent",
-                                color: t.textMuted,
-                                fontSize: 11,
-                                cursor: "pointer",
-                                fontFamily: "system-ui, -apple-system, sans-serif",
-                            }}
+                            data-testid={`welcome-reference-quick-task-${task.id}`}
+                            aria-label={isZh ? task.label : task.labelEn}
+                            onClick={() => onPromptSelect(isZh ? task.prompt : task.promptEn, { title: isZh ? task.label : task.labelEn, tabId: "reference" })}
+                            style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8, minHeight: 44, flex: "1 1 160px", padding: "9px 14px", borderRadius: 12, border: `1px solid ${t.fieldBorder}`, background: t.fieldBg, color: t.text, cursor: "pointer", fontSize: 13, fontWeight: 500, lineHeight: 1.3, fontFamily: "system-ui, -apple-system, sans-serif", textAlign: "left" }}
                         >
-                            {isZh ? hint.label : hint.labelEn}
+                            <WelcomePromptIcon name={task.icon} color={t.textMuted} />
+                            <span>{isZh ? task.label : task.labelEn}</span>
                         </button>
                     ))}
                 </div>
-            )}
+            </div>
 
-            {/* Clipboard hits only — scan control lives in the toolbar above */}
+            {/* Keep the former six hint cards available without occupying the
+                default workbench composition. */}
+            <details className="mc-welcome-legacy-hints" data-testid="welcome-legacy-quick-hints" hidden style={{ width: "100%", maxWidth: CONTENT_MAX_WIDTH }}>
+                <summary style={{ cursor: "pointer", color: t.textMuted, fontSize: 11, userSelect: "none" }}>
+                    {isZh ? "更多模板建议" : "More template suggestions"}
+                </summary>
+                {showQuickHints && quickHints.length > 0 && (
+                    <div data-testid="welcome-quick-hints" style={{ width: "100%", display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6, paddingTop: 8 }}>
+                        {quickHints.map((hint) => (
+                            <button key={hint.id} type="button" data-testid={`welcome-quick-hint-${hint.id}`} onClick={() => openPrompt(hint.prompt, hint.tabId)} style={{ padding: "3px 9px", borderRadius: 999, border: `1px dashed ${t.fieldBorder}`, background: "transparent", color: t.textMuted, fontSize: 11, cursor: "pointer", fontFamily: "system-ui, -apple-system, sans-serif" }}>
+                                {isZh ? hint.label : hint.labelEn}
+                            </button>
+                        ))}
+                    </div>
+                )}
+            </details>
+
+            {/* Clipboard hits stay available behind a collapsed disclosure. */}
             {clipboardHits.length > 0 && (
-                <div
-                    data-testid="welcome-clipboard-suggest"
-                    style={{
-                        width: "100%",
-                        maxWidth: CONTENT_MAX_WIDTH,
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: 8,
-                    }}
-                >
+                <details className="mc-welcome-legacy-clipboard" data-testid="welcome-legacy-clipboard" hidden style={{ width: "100%", maxWidth: CONTENT_MAX_WIDTH }}>
+                    <summary style={{ cursor: "pointer", color: t.textMuted, fontSize: 11, userSelect: "none" }}>
+                        {isZh ? "剪贴板推荐" : "Clipboard suggestions"}
+                    </summary>
+                    <div data-testid="welcome-clipboard-suggest" style={{ width: "100%", display: "flex", flexDirection: "column", gap: 8, paddingTop: 8 }}>
                     <div style={{
                         fontSize: 11,
                         fontWeight: 600,
@@ -1721,21 +1836,116 @@ export function AssistantWelcomeView({
                             </button>
                         ))}
                     </div>
-                </div>
+                    </div>
+                </details>
             )}
 
-            {/* Quick access: saved templates + recently used + export/import */}
+            {/* Reference recent-task list. Legacy templates remain available in
+                the collapsed quick-access disclosure below. */}
+            <div data-testid="welcome-reference-recent-tasks" style={{ width: "100%", maxWidth: CONTENT_MAX_WIDTH, display: "flex", flexDirection: "column", gap: 8 }}>
+                <h3 style={{ margin: "8px 0 0", fontSize: 15, lineHeight: 1.3, fontWeight: 650, color: t.text, fontFamily: "system-ui, -apple-system, sans-serif" }}>
+                    {isZh ? "最近任务" : "Recent tasks"}
+                </h3>
+                {recentTaskRows.length > 0 ? (
+                    <div className="mc-recent-task-list" data-testid="welcome-reference-recent-task-list" role="list" aria-label={isZh ? "最近任务列表" : "Recent task list"}>
+                        {recentTaskRows.map((task, index) => {
+                            const status = recentTaskStatus(task, isZh);
+                            const cloudWorkspace = isCloudWorkspaceTask(task);
+                            const title = String(task.name || task.project_path || (isZh ? "未命名任务" : "Untitled task"));
+                            const detail = String(task.preview || task.project_path || "").trim();
+                            const time = formatRecentTaskTime(task.last_activity || task.created_at, isZh);
+                            const taskKey = task.id || task.project_path || `${title}-${index}`;
+                            return (
+                                <button key={taskKey} type="button" role="listitem" className="mc-recent-task-row" data-testid={`welcome-reference-recent-task-${index}`} data-status={status.tone} title={detail || title} aria-label={`${title} · ${status.label}`} onClick={() => { if (onRecentTaskSelect) onRecentTaskSelect(task); else onPromptSelect(title); }}>
+                                    <span className="mc-recent-task-dot" aria-hidden="true" />
+                                    <span className="mc-recent-task-copy">
+                                        <span className="mc-recent-task-title-line">
+                                            <strong>{title}</strong>
+                                            {cloudWorkspace && (
+                                                <span
+                                                    className="mc-recent-task-cloud-badge"
+                                                    data-testid="welcome-reference-recent-cloud-workspace-badge"
+                                                    aria-label={isZh ? "云端工作区" : "Cloud workspace"}
+                                                    title={isZh ? "云端工作区任务" : "Cloud workspace task"}
+                                                >
+                                                    {isZh ? "云端工作区" : "Cloud workspace"}
+                                                </span>
+                                            )}
+                                        </span>
+                                        <small>{detail || (time ? time : isZh ? "最近更新" : "Recently updated")}</small>
+                                    </span>
+                                    <span className="mc-recent-task-status">{status.label}</span>
+                                    {time && <time dateTime={task.last_activity || task.created_at}>{time}</time>}
+                                    <span className="mc-recent-task-chevron" aria-hidden="true">›</span>
+                                </button>
+                            );
+                        })}
+                    </div>
+                ) : (
+                    <div style={{ padding: "14px", border: `1px solid ${t.fieldBorder}`, borderRadius: 10, color: t.textMuted, fontSize: 12 }}>
+                        {isZh ? "暂无最近任务" : "No recent tasks"}
+                    </div>
+                )}
+            </div>
+
+            {/* Reference category rail and secondary task starters. These cards
+                occupy the lower half of the workbench instead of leaving an
+                empty canvas when the recent-task list is short. */}
+            <div data-testid="welcome-reference-suggestions" style={{ width: "100%", maxWidth: CONTENT_MAX_WIDTH, display: "flex", flexDirection: "column", gap: 10 }}>
+                <div role="tablist" aria-label={isZh ? "任务分类" : "Task categories"} style={{ display: "flex", alignItems: "center", gap: 6, overflowX: "auto", padding: "2px 0 3px", scrollbarWidth: "none" }}>
+                    {REFERENCE_TASK_CATEGORIES.map((category) => {
+                        const selected = referenceTaskCategory === category.id;
+                        return (
+                            <button
+                                key={category.id}
+                                type="button"
+                                role="tab"
+                                aria-selected={selected}
+                                data-testid={`welcome-reference-category-${category.id}`}
+                                className="mc-welcome-reference-category"
+                                onClick={() => setReferenceTaskCategory(category.id)}
+                                style={{
+                                    flexShrink: 0,
+                                    minHeight: 32,
+                                    padding: "5px 12px",
+                                    borderRadius: 9,
+                                    border: `1px solid ${selected ? referenceCategorySelectedColors.bg : t.fieldBorder}`,
+                                    background: selected ? referenceCategorySelectedColors.bg : t.fieldBg,
+                                    color: selected ? referenceCategorySelectedColors.fg : t.textMuted,
+                                    cursor: "pointer",
+                                    fontSize: 12,
+                                    fontWeight: selected ? 650 : 500,
+                                    fontFamily: "system-ui, -apple-system, sans-serif",
+                                }}
+                            >{isZh ? category.label : category.labelEn}</button>
+                        );
+                    })}
+                </div>
+                <div className="mc-reference-suggestion-grid" role="tabpanel" aria-label={isZh ? "推荐任务" : "Suggested tasks"}>
+                    {(REFERENCE_TASK_SUGGESTIONS[referenceTaskCategory] || REFERENCE_TASK_SUGGESTIONS.business).map((suggestion) => (
+                        <button
+                            key={suggestion.id}
+                            type="button"
+                            data-testid={`welcome-reference-suggestion-${suggestion.id}`}
+                            onClick={() => onPromptSelect(isZh ? suggestion.prompt : suggestion.promptEn, { title: isZh ? suggestion.title : suggestion.titleEn, tabId: `reference-${referenceTaskCategory}` })}
+                            className="mc-reference-suggestion-card"
+                        >
+                            <span className="mc-reference-suggestion-card__icon"><WelcomePromptIcon name={suggestion.icon} color={t.btnColor || "#2f80ed"} /></span>
+                            <span className="mc-reference-suggestion-card__copy"><strong>{isZh ? suggestion.title : suggestion.titleEn}</strong><small>{isZh ? suggestion.detail : suggestion.detailEn}</small></span>
+                            <span className="mc-reference-suggestion-card__arrow" aria-hidden="true">›</span>
+                        </button>
+                    ))}
+                </div>
+            </div>
+
+            {/* Quick access: saved templates + recently used + export/import.
+                Keep the old controls mounted, but collapse their visual chrome. */}
             {showQuickSection && (
-                <div
-                    data-testid="welcome-quick-access"
-                    style={{
-                        width: "100%",
-                        maxWidth: CONTENT_MAX_WIDTH,
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: 8,
-                    }}
-                >
+                <details className="mc-welcome-legacy-quick-access" data-testid="welcome-quick-access" hidden style={{ width: "100%", maxWidth: CONTENT_MAX_WIDTH }}>
+                    <summary style={{ cursor: "pointer", color: t.textMuted, fontSize: 11, userSelect: "none" }}>
+                        {isZh ? "更多模板与同步" : "More templates and sync"}
+                    </summary>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8, paddingTop: 8 }}>
                     <div style={{
                         display: "flex",
                         flexWrap: "wrap",
@@ -1756,7 +1966,7 @@ export function AssistantWelcomeView({
                                 color: t.textMuted,
                                 fontFamily: "system-ui, -apple-system, sans-serif",
                             }}>
-                                {isZh ? "快捷" : "Quick access"}
+                                {isZh ? "最近任务" : "Recent tasks"}
                             </div>
                             {(cloudSync.loggedIn || cloudSync.unsupported) && (
                                 <span
@@ -2084,6 +2294,42 @@ export function AssistantWelcomeView({
                         aria-label={isZh ? "我的模板与最近任务" : "My templates and recent tasks"}
                         style={{ display: "flex", flexWrap: "wrap", gap: 8 }}
                     >
+                        {recentTaskRows.length > 0 && (
+                            <div className="mc-recent-task-list" data-testid="welcome-recent-task-list" role="list" aria-label={isZh ? "最近任务列表" : "Recent task list"}>
+                                {recentTaskRows.map((task, index) => {
+                                    const status = recentTaskStatus(task, isZh);
+                                    const title = String(task.name || task.project_path || (isZh ? "未命名任务" : "Untitled task"));
+                                    const detail = String(task.preview || task.project_path || "").trim();
+                                    const time = formatRecentTaskTime(task.last_activity || task.created_at, isZh);
+                                    const taskKey = task.id || task.project_path || `${title}-${index}`;
+                                    return (
+                                        <button
+                                            key={taskKey}
+                                            type="button"
+                                            role="listitem"
+                                            className="mc-recent-task-row"
+                                            data-testid={`welcome-recent-task-${index}`}
+                                            data-status={status.tone}
+                                            title={detail || title}
+                                            aria-label={`${title} · ${status.label}`}
+                                            onClick={() => {
+                                                if (onRecentTaskSelect) onRecentTaskSelect(task);
+                                                else onPromptSelect(title);
+                                            }}
+                                        >
+                                            <span className="mc-recent-task-dot" aria-hidden="true" />
+                                            <span className="mc-recent-task-copy">
+                                                <strong>{title}</strong>
+                                                <small>{detail || (time ? time : isZh ? "最近更新" : "Recently updated")}</small>
+                                            </span>
+                                            <span className="mc-recent-task-status">{status.label}</span>
+                                            {time && <time dateTime={task.last_activity || task.created_at}>{time}</time>}
+                                            <span className="mc-recent-task-chevron" aria-hidden="true">›</span>
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        )}
                         {visibleCustomTemplates.map((tpl) => {
                             const isRenaming = renamingTemplateId === tpl.id;
                             const fullIndex = customTemplates.findIndex((c) => c.id === tpl.id);
@@ -2292,8 +2538,16 @@ export function AssistantWelcomeView({
                         ))}
                     </div>
                 </div>
+                </details>
             )}
 
+            {/* Legacy scenario catalogue remains available on demand, while the
+                default workbench stays focused on the four reference starters. */}
+            <details className="mc-welcome-legacy-scenarios" data-testid="welcome-legacy-scenarios" hidden style={{ width: "100%", maxWidth: CONTENT_MAX_WIDTH }}>
+                <summary style={{ cursor: "pointer", color: t.textMuted, fontSize: 11, userSelect: "none" }}>
+                    {isZh ? "更多任务模板" : "More task templates"}
+                </summary>
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10, paddingTop: 8 }}>
             {/* Scenario tabs — outer scroll container + inner centering wrapper.
                 Using a wrapper div with margin:auto to center tabs when they fit,
                 while allowing left-aligned overflow scroll when they don't.
@@ -2523,6 +2777,8 @@ export function AssistantWelcomeView({
                     </button>
                 ))}
             </div>
+                </div>
+            </details>
             </div>
 
             <WelcomePromptParamDialog

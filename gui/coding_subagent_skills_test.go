@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -199,6 +200,56 @@ func TestSelectRelevantSkillsForTaskFullEnvKeepsRelevantSkill(t *testing.T) {
 	}
 	if matched[0].Score <= 0 {
 		t.Fatalf("matched skill must carry a positive score, got %v", matched[0].Score)
+	}
+}
+
+// Scope-based selection is governed by the host-admitted Coding catalog.  A
+// wording change must not make an admitted capability disappear, and the
+// catalog must not be truncated to the legacy top-K score budget.
+func TestScopeBasedSelectionKeepsCompleteSkillCatalog(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	app := &App{testHomeDir: tempHome}
+	entries := make([]corelib.NLSkillEntry, 9)
+	for i := range entries {
+		entries[i] = corelib.NLSkillEntry{
+			Name:        fmt.Sprintf("scope-skill-%02d", i),
+			SkillID:     fmt.Sprintf("scope-skill-id-%02d", i),
+			Status:      "active",
+			Description: fmt.Sprintf("capability with no relation to wording %d", i),
+			Steps:       []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo scope"}}},
+		}
+	}
+	if err := app.SaveConfig(corelib.AppConfig{NLSkills: entries}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{handler: &IMMessageHandler{app: app}}, scopeBasedSelection: true}
+	admitted := make([]codingSubAgentSkillMatch, len(entries))
+	for i := range entries {
+		admitted[i] = codingSubAgentSkillMatch{Name: entries[i].Name, StableID: entries[i].SkillID, QualifiedID: entries[i].SkillID}
+	}
+	cb.setHostAdmittedDynamicBindings(admitted, nil)
+	first := cb.selectRelevantSkillsForTask("alpha wording")
+	second := cb.selectRelevantSkillsForTask("entirely different beta wording")
+	if len(first) != len(entries) || len(second) != len(entries) {
+		t.Fatalf("scope selection truncated catalog: first=%d second=%d want=%d", len(first), len(second), len(entries))
+	}
+	names := func(values []codingSubAgentSkillMatch) map[string]bool {
+		out := make(map[string]bool, len(values))
+		for _, value := range values {
+			out[value.Name] = true
+			if value.Score != 1 {
+				t.Errorf("scope selection should use neutral host score, got %v for %s", value.Score, value.Name)
+			}
+		}
+		return out
+	}
+	for name := range names(first) {
+		if !names(second)[name] {
+			t.Fatalf("scope selection changed with wording: missing %q", name)
+		}
 	}
 }
 

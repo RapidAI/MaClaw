@@ -28,7 +28,7 @@ typedef struct {
     /* Value-only cancellation/admission probe. Physical HTTP ownership stays
      * behind the download callback; this is sampled before each phase. */
     bool (*transaction_admitted)(void *context);
-    void (*begin_optional_media_work)(void *context);
+    bool (*begin_optional_media_work)(void *context);
     void (*finish_optional_media_work)(void *context);
     bool (*capacity_available)(const pet_asset_descriptor_t *descriptor,
                                void *context);

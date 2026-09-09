@@ -102,6 +102,11 @@ if ((Test-Path -LiteralPath $runtimeH) -and (Test-Path -LiteralPath $runtimeC)) 
     if ($runtimeSource -match '\b(?:esp_http_client|psa_hash|heap_caps|xTask|SemaphoreHandle_t|scene_presenter|gateway_transport)\b') {
         $failures += 'pet asset runtime service absorbed HTTP/crypto/allocator/RTOS/renderer/transport ownership'
     }
+    if ($runtimeSource -notmatch 'optional_media_work_held\s*=\s*false' -or
+        $runtimeSource -notmatch 'optional_media_work_held\s*=\s*host->begin_optional_media_work' -or
+        $runtimeSource -notmatch 'if\s*\(\s*optional_media_work_held\s*\)\s*\{?\s*host->finish_optional_media_work') {
+        $failures += 'pet asset runtime must finish optional media work only after successful begin ownership'
+    }
 }
 
 if ((Test-Path -LiteralPath $admissionH) -and (Test-Path -LiteralPath $admissionC)) {

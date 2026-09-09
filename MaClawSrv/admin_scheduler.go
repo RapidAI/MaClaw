@@ -40,18 +40,18 @@ func (s *HTTPServer) handleAdminSchedulerTasks(w http.ResponseWriter, r *http.Re
 }
 
 type adminSchedulerTaskBody struct {
-	Name            string                 `json:"name"`
-	Action          string                 `json:"action"`
-	TaskAction      string                 `json:"task_action"`
-	Hour            *int                   `json:"hour"`
-	Minute          *int                   `json:"minute"`
-	DayOfWeek       *int                   `json:"day_of_week"`
-	DayOfMonth      *int                   `json:"day_of_month"`
-	IntervalMinutes *int                   `json:"interval_minutes"`
-	StartDate       *string                `json:"start_date"`
-	EndDate         *string                `json:"end_date"`
-	TaskType        *string                `json:"task_type"`
-	Delivery        json.RawMessage        `json:"delivery"`
+	Name            string          `json:"name"`
+	Action          string          `json:"action"`
+	TaskAction      string          `json:"task_action"`
+	Hour            *int            `json:"hour"`
+	Minute          *int            `json:"minute"`
+	DayOfWeek       *int            `json:"day_of_week"`
+	DayOfMonth      *int            `json:"day_of_month"`
+	IntervalMinutes *int            `json:"interval_minutes"`
+	StartDate       *string         `json:"start_date"`
+	EndDate         *string         `json:"end_date"`
+	TaskType        *string         `json:"task_type"`
+	Delivery        json.RawMessage `json:"delivery"`
 	// Shorthand delivery fields (same as agent tool).
 	Channel        string `json:"channel"`
 	GroupID        string `json:"group_id"`

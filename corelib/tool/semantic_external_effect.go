@@ -271,7 +271,7 @@ func (c *SQLiteSemanticExecutionCoordinator) PrepareExternalEffect(admission Sem
 	if err := admission.validate(); err != nil {
 		return SemanticExternalEffectOperation{}, false, err
 	}
-	if operation.Scope != admission.Scope || strings.TrimSpace(operation.SelectionID) != strings.TrimSpace(admission.Selection.ID) {
+	if !invocationScopesCompatible(operation.Scope, admission.Scope) || strings.TrimSpace(operation.SelectionID) != strings.TrimSpace(admission.Selection.ID) {
 		return SemanticExternalEffectOperation{}, false, fmt.Errorf("semantic_external_effect_scope_mismatch")
 	}
 	if err := validateSemanticExternalEffectOperation(operation); err != nil {
@@ -288,7 +288,12 @@ func (c *SQLiteSemanticExecutionCoordinator) PrepareExternalEffect(admission Sem
 	}
 	defer func() { _ = tx.Rollback() }()
 	var hostState string
-	if err := tx.QueryRow(`SELECT state FROM semantic_host_calls WHERE call_key=? AND grant_fingerprint=? AND request_digest=?`, hostCallKey(admission.Identity), InvocationGrantFingerprint(admission.Grant), admission.RequestDigest).Scan(&hostState); err != nil {
+	hostKey := hostCallKey(admission.Identity)
+	fingerprint, err := coordinatedHostCallFingerprint(tx, hostKey, admission.Grant)
+	if err != nil {
+		return SemanticExternalEffectOperation{}, false, err
+	}
+	if err := tx.QueryRow(`SELECT state FROM semantic_host_calls WHERE call_key=? AND grant_fingerprint=? AND request_digest=?`, hostKey, fingerprint, admission.RequestDigest).Scan(&hostState); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return SemanticExternalEffectOperation{}, false, fmt.Errorf("host_call_not_admitted")
 		}
@@ -388,7 +393,12 @@ func (c *SQLiteSemanticExecutionCoordinator) CompleteExternalEffectDispatch(admi
 	if n, _ := updated.RowsAffected(); n != 1 {
 		return SemanticExternalEffectOperation{}, fmt.Errorf("selection_execution_not_running")
 	}
-	updated, err = tx.Exec(`UPDATE semantic_host_calls SET state='completed', result=?, result_digest=?, updated_at=? WHERE call_key=? AND grant_fingerprint=? AND request_digest=? AND state='admitted'`, result, SchemaDigest([]byte(result)), now.Format(time.RFC3339Nano), hostCallKey(admission.Identity), InvocationGrantFingerprint(admission.Grant), admission.RequestDigest)
+	hostKey := hostCallKey(admission.Identity)
+	fingerprint, err := coordinatedHostCallFingerprint(tx, hostKey, admission.Grant)
+	if err != nil {
+		return SemanticExternalEffectOperation{}, err
+	}
+	updated, err = tx.Exec(`UPDATE semantic_host_calls SET state='completed', result=?, result_digest=?, updated_at=? WHERE call_key=? AND grant_fingerprint=? AND request_digest=? AND state='admitted'`, result, SchemaDigest([]byte(result)), now.Format(time.RFC3339Nano), hostKey, fingerprint, admission.RequestDigest)
 	if err != nil {
 		return SemanticExternalEffectOperation{}, err
 	}
@@ -476,7 +486,7 @@ func (c *SQLiteSemanticExecutionCoordinator) settleExternalEffectReceipt(scope I
 	}
 	existing.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
 	existing.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
-	if existing.Scope != scope || existing.SelectionID != selectionID || existing.SelectionDigest != selectionDigest || existing.BindingID != bindingID {
+	if !invocationScopesCompatible(existing.Scope, scope) || existing.SelectionID != selectionID || existing.SelectionDigest != selectionDigest || existing.BindingID != bindingID {
 		return SemanticExternalEffectOperation{}, fmt.Errorf("semantic_external_effect_operation_conflict")
 	}
 	if existing.State == outcome {
@@ -748,5 +758,9 @@ func (c *SQLiteSemanticExecutionCoordinator) ExternalEffectOperation(operationKe
 }
 
 func sameSemanticExternalEffectBinding(left, right SemanticExternalEffectOperation) bool {
-	return left.Scope == right.Scope && left.TenantID == right.TenantID && left.UserID == right.UserID && left.SelectionID == right.SelectionID && left.SelectionDigest == right.SelectionDigest && left.BindingID == right.BindingID && left.RequestDigest == right.RequestDigest
+	// External-effect rows predate ToolSnapshotID and therefore read back with
+	// an empty snapshot. Keep every other binding field exact while allowing
+	// only the narrow legacy scope compatibility used by trusted durable
+	// readers. Two concrete, different snapshots remain a conflict.
+	return invocationScopesCompatible(left.Scope, right.Scope) && left.TenantID == right.TenantID && left.UserID == right.UserID && left.SelectionID == right.SelectionID && left.SelectionDigest == right.SelectionDigest && left.BindingID == right.BindingID && left.RequestDigest == right.RequestDigest
 }

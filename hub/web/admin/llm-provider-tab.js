@@ -129,10 +129,14 @@ Object.assign(LLM_PROVIDER_I18N.en, {
   pricePerMShort: 'Price / 1M',
   inputPriceShort: 'In',
   outputPriceShort: 'Out',
-  inputCreditsPer10k: 'Input Credits / 10k',
-  outputCreditsPer10k: 'Output Credits / 10k',
-  inputRMBPer10k: 'Input RMB / 10k (ref)',
-  outputRMBPer10k: 'Output RMB / 10k (ref)',
+    inputCreditsPer10k: 'Input Credits / 10k',
+    outputCreditsPer10k: 'Output Credits / 10k',
+    cacheReadCreditsPer10k: 'Cache Read Credits / 10k',
+    cacheWriteCreditsPer10k: 'Cache Write Credits / 10k',
+    inputRMBPer10k: 'Input RMB / 10k (ref)',
+    outputRMBPer10k: 'Output RMB / 10k (ref)',
+    cacheReadRMBPer10k: 'Cache Read RMB / 10k (ref)',
+    cacheWriteRMBPer10k: 'Cache Write RMB / 10k (ref)',
   minimumRequestCredits: 'Minimum Credits / request',
   pricingTimezone: 'Pricing Timezone',
   pricingVersion: 'Pricing Version',
@@ -148,8 +152,12 @@ Object.assign(LLM_PROVIDER_I18N.zh, {
   outputPriceShort: '\u8f93\u51fa',
   inputCreditsPer10k: '\u8f93\u5165 Credits / \u4e07',
   outputCreditsPer10k: '\u8f93\u51fa Credits / \u4e07',
+  cacheReadCreditsPer10k: '\u7f13\u5b58\u8bfb\u53d6 Credits / \u4e07',
+  cacheWriteCreditsPer10k: '\u7f13\u5b58\u5199\u5165 Credits / \u4e07',
   inputRMBPer10k: '\u8f93\u5165 RMB / \u4e07\uff08\u53c2\u8003\uff09',
   outputRMBPer10k: '\u8f93\u51fa RMB / \u4e07\uff08\u53c2\u8003\uff09',
+  cacheReadRMBPer10k: '\u7f13\u5b58\u8bfb\u53d6 RMB / \u4e07\uff08\u53c2\u8003\uff09',
+  cacheWriteRMBPer10k: '\u7f13\u5b58\u5199\u5165 RMB / \u4e07\uff08\u53c2\u8003\uff09',
   minimumRequestCredits: '\u5355\u6b21\u6700\u4f4e\u6d88\u8d39 Credits',
   pricingTimezone: '\u8ba1\u8d39\u65f6\u533a',
   pricingVersion: '\u8ba1\u8d39\u7248\u672c',
@@ -167,8 +175,12 @@ function llmProviderNormalizeTokenPricing(src) {
   var tp = {};
   var inC = num('input_credits_per_10k'); if (inC !== undefined) tp.input_credits_per_10k = inC;
   var outC = num('output_credits_per_10k'); if (outC !== undefined) tp.output_credits_per_10k = outC;
+  var readC = num('cache_read_credits_per_10k'); if (readC !== undefined) tp.cache_read_credits_per_10k = readC;
+  var writeC = num('cache_write_credits_per_10k'); if (writeC !== undefined) tp.cache_write_credits_per_10k = writeC;
   var inRMB = num('input_rmb_per_10k'); if (inRMB !== undefined) tp.input_rmb_per_10k = inRMB;
   var outRMB = num('output_rmb_per_10k'); if (outRMB !== undefined) tp.output_rmb_per_10k = outRMB;
+  var readRMB = num('cache_read_rmb_per_10k'); if (readRMB !== undefined) tp.cache_read_rmb_per_10k = readRMB;
+  var writeRMB = num('cache_write_rmb_per_10k'); if (writeRMB !== undefined) tp.cache_write_rmb_per_10k = writeRMB;
   var minC = num('minimum_request_credits'); if (minC !== undefined) tp.minimum_request_credits = minC;
   if (p.timezone) tp.timezone = String(p.timezone).trim();
   if (p.version) tp.version = String(p.version).trim();
@@ -214,7 +226,12 @@ if (baseLpUsagePricing) {
     var out = baseLpUsagePricing(usage);
     out.input_cost_rmb = Number(usage && usage.input_cost_rmb || 0);
     out.output_cost_rmb = Number(usage && usage.output_cost_rmb || 0);
-    out.total_cost_rmb = Number(usage && usage.total_cost_rmb || 0);
+    out.cache_read_cost_rmb = Number(usage && usage.cache_read_cost_rmb || 0);
+    out.cache_write_cost_rmb = Number(usage && usage.cache_write_cost_rmb || 0);
+    const hasDirectionalCost = usage && (usage.input_cost_rmb !== undefined || usage.output_cost_rmb !== undefined || usage.cache_read_cost_rmb !== undefined || usage.cache_write_cost_rmb !== undefined);
+    out.total_cost_rmb = hasDirectionalCost
+      ? out.input_cost_rmb + out.cache_read_cost_rmb + out.cache_write_cost_rmb + out.output_cost_rmb
+      : Number(usage && usage.total_cost_rmb || 0);
     return out;
   };
 }
@@ -248,10 +265,18 @@ function llmProviderEnsurePricingInputs() {
   tpIn.innerHTML = '<label id="llmProviderInputCreditsLabel"></label><input id="llmProviderInputCredits10k" type="number" min="0" step="0.01" placeholder="1">';
   var tpOut = document.createElement('div');
   tpOut.innerHTML = '<label id="llmProviderOutputCreditsLabel"></label><input id="llmProviderOutputCredits10k" type="number" min="0" step="0.01" placeholder="4">';
+  var tpCacheRead = document.createElement('div');
+  tpCacheRead.innerHTML = '<label id="llmProviderCacheReadCreditsLabel"></label><input id="llmProviderCacheReadCredits10k" type="number" min="0" step="0.01" placeholder="input × 0.1">';
+  var tpCacheWrite = document.createElement('div');
+  tpCacheWrite.innerHTML = '<label id="llmProviderCacheWriteCreditsLabel"></label><input id="llmProviderCacheWriteCredits10k" type="number" min="0" step="0.01" placeholder="input">';
   var tpRMBIn = document.createElement('div');
   tpRMBIn.innerHTML = '<label id="llmProviderInputRMBLabel"></label><input id="llmProviderInputRMB10k" type="number" min="0" step="0.01" placeholder="0.02">';
   var tpRMBOut = document.createElement('div');
   tpRMBOut.innerHTML = '<label id="llmProviderOutputRMBLabel"></label><input id="llmProviderOutputRMB10k" type="number" min="0" step="0.01" placeholder="0.08">';
+  var tpCacheReadRMB = document.createElement('div');
+  tpCacheReadRMB.innerHTML = '<label id="llmProviderCacheReadRMBLabel"></label><input id="llmProviderCacheReadRMB10k" type="number" min="0" step="0.01" placeholder="input × 0.1">';
+  var tpCacheWriteRMB = document.createElement('div');
+  tpCacheWriteRMB.innerHTML = '<label id="llmProviderCacheWriteRMBLabel"></label><input id="llmProviderCacheWriteRMB10k" type="number" min="0" step="0.01" placeholder="input">';
   var tpMin = document.createElement('div');
   tpMin.innerHTML = '<label id="llmProviderMinCreditsLabel"></label><input id="llmProviderMinCredits" type="number" min="0" step="0.01" placeholder="0.1">';
   var tpTz = document.createElement('div');
@@ -260,8 +285,12 @@ function llmProviderEnsurePricingInputs() {
   tpVer.innerHTML = '<label id="llmProviderPricingVersionLabel"></label><input id="llmProviderPricingVersion" placeholder="2026-08-23-v1">';
   anchor.parentElement.appendChild(tpIn);
   anchor.parentElement.appendChild(tpOut);
+  anchor.parentElement.appendChild(tpCacheRead);
+  anchor.parentElement.appendChild(tpCacheWrite);
   anchor.parentElement.appendChild(tpRMBIn);
   anchor.parentElement.appendChild(tpRMBOut);
+  anchor.parentElement.appendChild(tpCacheReadRMB);
+  anchor.parentElement.appendChild(tpCacheWriteRMB);
   anchor.parentElement.appendChild(tpMin);
   anchor.parentElement.appendChild(tpTz);
   anchor.parentElement.appendChild(tpVer);
@@ -272,8 +301,12 @@ function llmProviderWriteTokenPricingForm(provider) {
   var tp = llmProviderNormalizeTokenPricing(provider.token_pricing);
   _s('llmProviderInputCredits10k', 'value', tp.input_credits_per_10k !== undefined ? String(tp.input_credits_per_10k) : '');
   _s('llmProviderOutputCredits10k', 'value', tp.output_credits_per_10k !== undefined ? String(tp.output_credits_per_10k) : '');
+  _s('llmProviderCacheReadCredits10k', 'value', tp.cache_read_credits_per_10k !== undefined ? String(tp.cache_read_credits_per_10k) : '');
+  _s('llmProviderCacheWriteCredits10k', 'value', tp.cache_write_credits_per_10k !== undefined ? String(tp.cache_write_credits_per_10k) : '');
   _s('llmProviderInputRMB10k', 'value', tp.input_rmb_per_10k !== undefined ? String(tp.input_rmb_per_10k) : '');
   _s('llmProviderOutputRMB10k', 'value', tp.output_rmb_per_10k !== undefined ? String(tp.output_rmb_per_10k) : '');
+  _s('llmProviderCacheReadRMB10k', 'value', tp.cache_read_rmb_per_10k !== undefined ? String(tp.cache_read_rmb_per_10k) : '');
+  _s('llmProviderCacheWriteRMB10k', 'value', tp.cache_write_rmb_per_10k !== undefined ? String(tp.cache_write_rmb_per_10k) : '');
   _s('llmProviderMinCredits', 'value', tp.minimum_request_credits !== undefined ? String(tp.minimum_request_credits) : '');
   _s('llmProviderPricingTimezone', 'value', tp.timezone || '');
   _s('llmProviderPricingVersion', 'value', tp.version || '');
@@ -283,8 +316,12 @@ function llmProviderReadTokenPricingForm() {
   return llmProviderNormalizeTokenPricing({
     input_credits_per_10k: document.getElementById('llmProviderInputCredits10k') && document.getElementById('llmProviderInputCredits10k').value,
     output_credits_per_10k: document.getElementById('llmProviderOutputCredits10k') && document.getElementById('llmProviderOutputCredits10k').value,
+    cache_read_credits_per_10k: document.getElementById('llmProviderCacheReadCredits10k') && document.getElementById('llmProviderCacheReadCredits10k').value,
+    cache_write_credits_per_10k: document.getElementById('llmProviderCacheWriteCredits10k') && document.getElementById('llmProviderCacheWriteCredits10k').value,
     input_rmb_per_10k: document.getElementById('llmProviderInputRMB10k') && document.getElementById('llmProviderInputRMB10k').value,
     output_rmb_per_10k: document.getElementById('llmProviderOutputRMB10k') && document.getElementById('llmProviderOutputRMB10k').value,
+    cache_read_rmb_per_10k: document.getElementById('llmProviderCacheReadRMB10k') && document.getElementById('llmProviderCacheReadRMB10k').value,
+    cache_write_rmb_per_10k: document.getElementById('llmProviderCacheWriteRMB10k') && document.getElementById('llmProviderCacheWriteRMB10k').value,
     minimum_request_credits: document.getElementById('llmProviderMinCredits') && document.getElementById('llmProviderMinCredits').value,
     timezone: document.getElementById('llmProviderPricingTimezone') && document.getElementById('llmProviderPricingTimezone').value,
     version: document.getElementById('llmProviderPricingVersion') && document.getElementById('llmProviderPricingVersion').value
@@ -313,8 +350,12 @@ if (baseApplyLLMProvidersI18nPricing) {
     _s('llmProviderOutputPricePerMLabel', 'textContent', lp('outputPricePerM'));
     _s('llmProviderInputCreditsLabel', 'textContent', lp('inputCreditsPer10k'));
     _s('llmProviderOutputCreditsLabel', 'textContent', lp('outputCreditsPer10k'));
+    _s('llmProviderCacheReadCreditsLabel', 'textContent', lp('cacheReadCreditsPer10k'));
+    _s('llmProviderCacheWriteCreditsLabel', 'textContent', lp('cacheWriteCreditsPer10k'));
     _s('llmProviderInputRMBLabel', 'textContent', lp('inputRMBPer10k'));
     _s('llmProviderOutputRMBLabel', 'textContent', lp('outputRMBPer10k'));
+    _s('llmProviderCacheReadRMBLabel', 'textContent', lp('cacheReadRMBPer10k'));
+    _s('llmProviderCacheWriteRMBLabel', 'textContent', lp('cacheWriteRMBPer10k'));
     _s('llmProviderMinCreditsLabel', 'textContent', lp('minimumRequestCredits'));
     _s('llmProviderPricingTimezoneLabel', 'textContent', lp('pricingTimezone'));
     _s('llmProviderPricingVersionLabel', 'textContent', lp('pricingVersion'));
@@ -1039,7 +1080,7 @@ function llmProviderNormalizeTokenPriceWindow(window, index) {
   window = window || {};
   var out = { id: String(window.id || 'price-' + (index + 1)).trim(), days: llmProviderUniqueWeekdays(window.days), start: llmProviderNormalizeScheduleClock(window.start), end: llmProviderNormalizeScheduleClock(window.end) };
   if (out.days.length === 7) out.days = [];
-  ['input_credits_per_10k','output_credits_per_10k','input_rmb_per_10k','output_rmb_per_10k','minimum_request_credits'].forEach(function(key) {
+  ['input_credits_per_10k','output_credits_per_10k','cache_read_credits_per_10k','cache_write_credits_per_10k','input_rmb_per_10k','output_rmb_per_10k','cache_read_rmb_per_10k','cache_write_rmb_per_10k','minimum_request_credits'].forEach(function(key) {
     if (window[key] === undefined || window[key] === null || window[key] === '') return;
     var number = Number(window[key]);
     if (Number.isFinite(number) && number >= 0) out[key] = number;
@@ -1077,12 +1118,12 @@ function llmProviderTokenPriceRowHTML(window, index) {
     + '<div style="display:flex;flex-wrap:wrap;gap:6px"><button type="button" onclick="llmProviderSetTokenPricePreset(' + index + ',\'everyday\')" class="btn-ghost">' + escapeHtml(lp('billingEveryday')) + '</button><button type="button" onclick="llmProviderSetTokenPricePreset(' + index + ',\'weekdays\')" class="btn-ghost">' + escapeHtml(lp('billingWeekdays')) + '</button></div>'
     + '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">' + chips + '</div>'
     + '<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr)) auto;gap:8px;align-items:end;margin-top:8px"><div><label>' + escapeHtml(lp('billingStart')) + '</label><input type="time" value="' + escapeHtml(window.start) + '" oninput="llmProviderSetTokenPriceField(' + index + ',\'start\',this.value)"></div><div><label>' + escapeHtml(lp('billingEnd')) + '</label><input type="time" value="' + escapeHtml(window.end) + '" oninput="llmProviderSetTokenPriceField(' + index + ',\'end\',this.value)"></div><div><label>' + escapeHtml(lp('tokenPriceWindowID')) + '</label><input value="' + escapeHtml(window.id) + '" oninput="llmProviderSetTokenPriceField(' + index + ',\'id\',this.value)"></div><button class="btn-ghost" type="button" onclick="llmProviderRemoveTokenPriceWindow(' + index + ')">' + escapeHtml(lp('tokenPriceRemove')) + '</button></div>'
-    + '<div class="grid2" style="margin-top:8px">' + priceField('input_credits_per_10k', lp('inputCreditsPer10k')) + priceField('output_credits_per_10k', lp('outputCreditsPer10k')) + priceField('input_rmb_per_10k', lp('inputRMBPer10k')) + priceField('output_rmb_per_10k', lp('outputRMBPer10k')) + priceField('minimum_request_credits', lp('minimumRequestCredits')) + '</div></div>';
+    + '<div class="grid2" style="margin-top:8px">' + priceField('input_credits_per_10k', lp('inputCreditsPer10k')) + priceField('output_credits_per_10k', lp('outputCreditsPer10k')) + priceField('cache_read_credits_per_10k', lp('cacheReadCreditsPer10k')) + priceField('cache_write_credits_per_10k', lp('cacheWriteCreditsPer10k')) + priceField('input_rmb_per_10k', lp('inputRMBPer10k')) + priceField('output_rmb_per_10k', lp('outputRMBPer10k')) + priceField('cache_read_rmb_per_10k', lp('cacheReadRMBPer10k')) + priceField('cache_write_rmb_per_10k', lp('cacheWriteRMBPer10k')) + priceField('minimum_request_credits', lp('minimumRequestCredits')) + '</div></div>';
 }
 function llmProviderRenderTokenPriceSchedule() { var root = document.getElementById('llmProviderTokenPriceScheduleList'); if (root) root.innerHTML = llmProviderTokenPriceSchedule.map(llmProviderTokenPriceRowHTML).join(''); }
 function llmProviderWriteTokenPriceSchedule(provider) { llmProviderEnsureTokenPriceSchedule(); llmProviderTokenPriceSchedule = llmProviderCloneTokenPriceSchedule(provider && provider.token_pricing && provider.token_pricing.price_schedule); llmProviderRenderTokenPriceSchedule(); }
 function llmProviderReadTokenPriceSchedule() { return llmProviderCloneTokenPriceSchedule(llmProviderTokenPriceSchedule); }
-window.llmProviderAddTokenPriceWindow = function() { var base = llmProviderReadTokenPricingForm(); llmProviderTokenPriceSchedule.push({ id: 'price-' + (llmProviderTokenPriceSchedule.length + 1), days: [], start: '00:00', end: '08:00', input_credits_per_10k: base.input_credits_per_10k, output_credits_per_10k: base.output_credits_per_10k, input_rmb_per_10k: base.input_rmb_per_10k, output_rmb_per_10k: base.output_rmb_per_10k }); llmProviderRenderTokenPriceSchedule(); };
+window.llmProviderAddTokenPriceWindow = function() { var base = llmProviderReadTokenPricingForm(); llmProviderTokenPriceSchedule.push({ id: 'price-' + (llmProviderTokenPriceSchedule.length + 1), days: [], start: '00:00', end: '08:00', input_credits_per_10k: base.input_credits_per_10k, output_credits_per_10k: base.output_credits_per_10k, cache_read_credits_per_10k: base.cache_read_credits_per_10k, cache_write_credits_per_10k: base.cache_write_credits_per_10k, input_rmb_per_10k: base.input_rmb_per_10k, output_rmb_per_10k: base.output_rmb_per_10k, cache_read_rmb_per_10k: base.cache_read_rmb_per_10k, cache_write_rmb_per_10k: base.cache_write_rmb_per_10k }); llmProviderRenderTokenPriceSchedule(); };
 window.llmProviderRemoveTokenPriceWindow = function(index) { llmProviderTokenPriceSchedule.splice(index, 1); llmProviderRenderTokenPriceSchedule(); };
 window.llmProviderSetTokenPricePreset = function(index, preset) { var window = llmProviderTokenPriceSchedule[index]; if (!window) return; window.days = preset === 'weekdays' ? [1,2,3,4,5] : []; llmProviderRenderTokenPriceSchedule(); };
 window.llmProviderToggleTokenPriceDay = function(index, day) { var window = llmProviderTokenPriceSchedule[index]; if (!window) return; var days = llmProviderUniqueWeekdays(window.days); if (!days.length) days = [0,1,2,3,4,5,6]; var position = days.indexOf(day); if (position >= 0) days.splice(position, 1); else days.push(day); window.days = llmProviderUniqueWeekdays(days); if (window.days.length === 7) window.days = []; llmProviderRenderTokenPriceSchedule(); };

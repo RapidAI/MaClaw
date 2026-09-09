@@ -805,7 +805,7 @@ func (r *SkillRunner) startRunForOwner(policyOwnerID, skillName string, preResol
 		selectedForProbe, _ := cskill.ResolveSelectedStepLabels(target, runArgs)
 		probeSteps := cskill.PrecheckExecutableSteps(
 			cskill.SelectedExecutableSteps(target.Steps, selectedForProbe), templateVars)
-		if corelib.NeedsOpenAIProxyAuto(target.RequiredEnv, extraEnv, probeSteps, target.SkillDir) {
+		if corelib.NeedsOpenAIProxyAuto(target.RequiredEnv, extraEnv, probeSteps, target.SkillDir, target.NoLLMAPI) {
 			llmCfg := r.executor.app.GetMaclawLLMConfig()
 			proxyCfg := corelib.OpenAIProxyConfig{
 				URL:             llmCfg.URL,
@@ -3083,7 +3083,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 	if len(proxyProbeSteps) == 0 && len(executionSteps) > 0 {
 		proxyRequiredEnv = nil
 	}
-	needsProxy := corelib.NeedsOpenAIProxyAuto(proxyRequiredEnv, run.extraEnv, proxyProbeSteps, skill.SkillDir)
+	needsProxy := corelib.NeedsOpenAIProxyAuto(proxyRequiredEnv, run.extraEnv, proxyProbeSteps, skill.SkillDir, skill.NoLLMAPI)
 	log.Printf("[skill-runner] run=%s owner=%q openai proxy check: needsProxy=%v required_env=%v extraEnv_keys=%v processEnv_OPENAI_API_KEY=%q",
 		run.status.RunID, run.status.OwnerID, needsProxy, skill.RequiredEnv, mapKeys(run.extraEnv), truncateEnvForLog(os.Getenv("OPENAI_API_KEY")))
 	if needsProxy {

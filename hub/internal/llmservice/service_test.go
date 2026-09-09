@@ -2,6 +2,7 @@ package llmservice
 
 import (
 	"context"
+	"errors"
 	"math"
 	"strings"
 	"testing"
@@ -179,6 +180,11 @@ func TestPurgeUserFromRegistryForUserRemovesCanonicalAndLegacyRecords(t *testing
 			{ID: "card-phone", RedeemedByEmail: "phone:19900001112", RedeemedAt: &redeemedAt},
 			{ID: "card-other", RedeemedByUserID: "other-user", RedeemedByEmail: "other@example.com", RedeemedAt: &redeemedAt},
 		},
+		ResetVouchers: []ResetVoucher{
+			{ID: "voucher-user-id", UserID: "user-123", Email: "old@example.com"},
+			{ID: "voucher-phone", Email: "phone:19900001112"},
+			{ID: "voucher-other", UserID: "other-user", Email: "other@example.com"},
+		},
 	}); err != nil {
 		t.Fatalf("SaveRegistry() error = %v", err)
 	}
@@ -198,6 +204,9 @@ func TestPurgeUserFromRegistryForUserRemovesCanonicalAndLegacyRecords(t *testing
 	}
 	if len(got.Cards) != 1 || got.Cards[0].RedeemedByUserID != "other-user" {
 		t.Fatalf("unexpected cards after purge: %#v", got.Cards)
+	}
+	if len(got.ResetVouchers) != 1 || got.ResetVouchers[0].UserID != "other-user" {
+		t.Fatalf("unexpected reset vouchers after purge: %#v", got.ResetVouchers)
 	}
 }
 
@@ -377,6 +386,127 @@ func TestSentBillingReservationKeepsFrozenOfficialDetails(t *testing.T) {
 	items := SentBillingReservationsForUserID(reg, "user", "user@example.com")
 	if len(items) != 1 || items[0].ProviderID != MaClawOfficialProviderID || items[0].ProviderMultiplier != 0.5 || items[0].BillingGroupMultiplier != 2 {
 		t.Fatalf("sent reservations=%#v", items)
+	}
+}
+
+func TestSentLocalBillingReservationAgesOutAsUsageUnresolved(t *testing.T) {
+	now := time.Now().UTC()
+	reg := &Registry{Grants: []Grant{{
+		ID: "g", UserID: "user", Email: "user@example.com", ServiceGroupID: "coding",
+		StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(2 * time.Hour), CreditsTotal: 10,
+	}}}
+	if _, ok := ReserveBillingCreditsForUserID(reg, "user", "user@example.com", []string{"coding"}, "local-request", 7, now.Add(time.Minute), now); !ok {
+		t.Fatal("reserve")
+	}
+	if !MarkBillingReservationSent(reg, "local-request", now) ||
+		!SetBillingReservationBillingDetails(reg, "local-request", "third-party", 1, 1) {
+		t.Fatal("freeze local reservation details")
+	}
+	// Inside the recovery window the hold still counts and no marker is set.
+	within := now.Add(SentLocalBillingReservationMaxAge - time.Minute)
+	pruneExpiredBillingReservations(reg, within)
+	if len(reg.BillingReservations) != 1 || reg.BillingReservations[0].Status != "" {
+		t.Fatalf("reservation marked inside recovery window: %#v", reg.BillingReservations)
+	}
+	if got := AvailableCreditsForServiceGroupsForUserID(reg, "user", "user@example.com", []string{"coding"}, within); got != 3 {
+		t.Fatalf("available inside recovery window = %v, want 3", got)
+	}
+	// Past the window the response is considered lost: the hold is released
+	// from the balance while the row stays as usage_unresolved evidence (design
+	// §8) instead of being silently deleted.
+	later := now.Add(SentLocalBillingReservationMaxAge + time.Minute)
+	pruneExpiredBillingReservations(reg, later)
+	if len(reg.BillingReservations) != 1 || reg.BillingReservations[0].Status != BillingReservationUsageUnresolved {
+		t.Fatalf("sent local reservation not marked usage_unresolved: %#v", reg.BillingReservations)
+	}
+	if got := AvailableCreditsForServiceGroupsForUserID(reg, "user", "user@example.com", []string{"coding"}, later); got != 10 {
+		t.Fatalf("available after usage_unresolved = %v, want 10", got)
+	}
+	if items := SentBillingReservations(reg); len(items) != 0 {
+		t.Fatalf("terminal reservation still scanned for reconciliation: %#v", items)
+	}
+	// A late settlement may still finalize the request; the marker row is then
+	// released by the normal path.
+	if !ReleaseBillingReservation(reg, "local-request", later) {
+		t.Fatal("late settlement release")
+	}
+	if len(reg.BillingReservations) != 0 {
+		t.Fatalf("marker row survived settlement: %#v", reg.BillingReservations)
+	}
+}
+
+func TestUsageUnresolvedReservationExpiresAfterRetentionAndDoesNotReviveHold(t *testing.T) {
+	now := time.Now().UTC()
+	reg := &Registry{Grants: []Grant{{
+		ID: "g", UserID: "user", Email: "user@example.com", ServiceGroupID: "coding",
+		StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(90 * 24 * time.Hour), CreditsTotal: 10,
+	}}}
+	if _, ok := ReserveBillingCreditsForUserID(reg, "user", "user@example.com", []string{"coding"}, "lost-request", 7, now.Add(time.Minute), now); !ok {
+		t.Fatal("reserve")
+	}
+	if !MarkBillingReservationSent(reg, "lost-request", now) ||
+		!SetBillingReservationBillingDetails(reg, "lost-request", "third-party", 1, 1) {
+		t.Fatal("freeze local reservation details")
+	}
+	aged := now.Add(SentLocalBillingReservationMaxAge + time.Minute)
+	pruneExpiredBillingReservations(reg, aged)
+	if len(reg.BillingReservations) != 1 || reg.BillingReservations[0].Status != BillingReservationUsageUnresolved {
+		t.Fatalf("reservation not marked usage_unresolved: %#v", reg.BillingReservations)
+	}
+	// A retry reusing the same request ID must not resurrect the released hold
+	// as if it were still live: the terminal row is skipped and a fresh hold is
+	// established against the (already released) balance instead.
+	if held, ok := ReserveBillingCreditsForUserID(reg, "user", "user@example.com", []string{"coding"}, "lost-request", 7, aged.Add(time.Minute), aged); !ok || held != 7 {
+		t.Fatalf("retry after usage_unresolved must establish a fresh hold: held=%v ok=%v", held, ok)
+	}
+	live, terminal := 0, 0
+	for _, reservation := range reg.BillingReservations {
+		if reservation.Status == "" {
+			live++
+		} else {
+			terminal++
+		}
+	}
+	if live != 1 || terminal != 1 {
+		t.Fatalf("expected one fresh hold plus the terminal evidence row: %#v", reg.BillingReservations)
+	}
+	// The fresh hold counts against the balance again.
+	if got := AvailableCreditsForServiceGroupsForUserID(reg, "user", "user@example.com", []string{"coding"}, aged); got != 3 {
+		t.Fatalf("available after retry = %v, want 3", got)
+	}
+	// Past the retention window the evidence row is dropped so the registry
+	// cannot grow without bound on lost responses.
+	pruneExpiredBillingReservations(reg, now.Add(BillingReservationTerminalRetention+time.Hour))
+	if len(reg.BillingReservations) != 0 {
+		t.Fatalf("terminal reservation kept past retention: %#v", reg.BillingReservations)
+	}
+}
+
+func TestSentOfficialBillingReservationNeverAgesOutLocally(t *testing.T) {
+	now := time.Now().UTC()
+	reg := &Registry{Grants: []Grant{{
+		ID: "g", UserID: "user", Email: "user@example.com", ServiceGroupID: "coding",
+		StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(3 * time.Hour), CreditsTotal: 10,
+	}}}
+	if _, ok := ReserveBillingCreditsForUserID(reg, "user", "user@example.com", []string{"coding"}, "official-request", 2, now.Add(time.Minute), now); !ok {
+		t.Fatal("reserve")
+	}
+	if !MarkBillingReservationSent(reg, "official-request", now) ||
+		!SetBillingReservationBillingDetails(reg, "official-request", MaClawOfficialProviderID, 1, 1) {
+		t.Fatal("freeze official reservation details")
+	}
+	// Official reservations keep waiting for HubCenter's authenticated
+	// reconciliation no matter how old the dispatch is.
+	later := now.Add(SentLocalBillingReservationMaxAge + time.Hour)
+	pruneExpiredBillingReservations(reg, later)
+	if len(reg.BillingReservations) != 1 || reg.BillingReservations[0].Status != "" {
+		t.Fatalf("official reservation aged out locally: %#v", reg.BillingReservations)
+	}
+	if got := AvailableCreditsForServiceGroupsForUserID(reg, "user", "user@example.com", []string{"coding"}, later); got != 8 {
+		t.Fatalf("available for old official reservation = %v, want 8", got)
+	}
+	if items := SentBillingReservations(reg); len(items) != 1 {
+		t.Fatalf("official reservation dropped from reconciliation scan: %#v", items)
 	}
 }
 
@@ -582,16 +712,20 @@ func TestGrantDefaultServiceForNewUserIssuesBindingLimitCard(t *testing.T) {
 		t.Fatal(err)
 	}
 	var card *Grant
+	limitCardCount := 0
 	for i := range saved.Grants {
 		if saved.Grants[i].Source == "new_user_limit_card" {
-			card = &saved.Grants[i]
+			limitCardCount++
+			if saved.Grants[i].ServiceGroupID == "welcome" {
+				card = &saved.Grants[i]
+			}
 		}
 	}
-	if card == nil || card.ServiceGroupID != "welcome" || !card.ExpiresAt.IsZero() || card.Permanent || card.PeriodLimits != (CreditPeriodLimits{}) || card.RollingFiveHour {
+	if limitCardCount != 2 || card == nil || !card.ExpiresAt.IsZero() || card.Permanent || card.PeriodLimits != (CreditPeriodLimits{}) || card.RollingFiveHour || card.AnchoredFiveHour {
 		t.Fatalf("unexpected new-user limit card: %#v", card)
 	}
 	effective := effectiveGrantForRegistry(saved, *card)
-	if !effective.Permanent || effective.PeriodLimits.FiveHour != 10 || effective.PeriodLimits.Daily != 25 || !effective.RollingFiveHour {
+	if !effective.Permanent || effective.PeriodLimits.FiveHour != 10 || effective.PeriodLimits.Daily != 25 || effective.RollingFiveHour || !effective.AnchoredFiveHour {
 		t.Fatalf("limit-card view did not apply current settings: %#v", effective)
 	}
 	now := time.Now().UTC()
@@ -731,11 +865,11 @@ func TestNewUserLimitCardExistingQualificationUsesCurrentPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	grant := updated.Grants[0]
-	if !grant.ExpiresAt.IsZero() || grant.Permanent || grant.RollingFiveHour || grant.PeriodLimits != (CreditPeriodLimits{}) || len(grant.UsageEvents) != 1 {
+	if !grant.ExpiresAt.IsZero() || grant.Permanent || grant.RollingFiveHour || grant.PeriodLimits != (CreditPeriodLimits{}) || len(grant.UsageEvents) != 0 {
 		t.Fatalf("qualification stored policy data after update: %#v", grant)
 	}
 	effective := effectiveGrantForRegistry(updated, grant)
-	if !effective.Permanent || effective.ExpiresAt.Year() != 9999 || !effective.RollingFiveHour || effective.PeriodLimits.FiveHour != 50 || effective.PeriodLimits.Daily != 80 {
+	if !effective.Permanent || effective.ExpiresAt.Year() != 9999 || effective.RollingFiveHour || !effective.AnchoredFiveHour || effective.PeriodLimits.FiveHour != 50 || effective.PeriodLimits.Daily != 80 {
 		t.Fatalf("qualification view did not follow current policy: %#v", effective)
 	}
 
@@ -756,7 +890,7 @@ func TestNewUserLimitCardExistingQualificationUsesCurrentPolicy(t *testing.T) {
 	}
 }
 
-func TestNewUserLimitCardUsesRollingFiveHourWindow(t *testing.T) {
+func TestNewUserLimitCardUsesAnchoredFiveHourWindow(t *testing.T) {
 	now := time.Date(2026, 8, 22, 10, 0, 0, 0, time.UTC)
 	reg := &Registry{
 		ModelServiceGroups:      []ModelServiceGroup{{ID: "welcome", AccessPolicy: AccessPolicyFree}},
@@ -767,10 +901,43 @@ func TestNewUserLimitCardUsesRollingFiveHourWindow(t *testing.T) {
 		t.Fatalf("first usage = %v, want 10", got)
 	}
 	if got := ApplyCreditUsageToRegistry(reg, "user@example.com", []string{"welcome"}, 1, now.Add(4*time.Hour+59*time.Minute)); got != 0 {
-		t.Fatalf("usage before rolling expiry = %v, want 0", got)
+		t.Fatalf("usage before anchored expiry = %v, want 0", got)
 	}
 	if got := ApplyCreditUsageToRegistry(reg, "user@example.com", []string{"welcome"}, 1, now.Add(5*time.Hour)); got != 1 {
-		t.Fatalf("usage after rolling expiry = %v, want 1", got)
+		t.Fatalf("usage after anchored expiry = %v, want 1", got)
+	}
+	// A later request must not move the next reset. The window remains anchored
+	// to the original first use (10:00), so it resets again at 20:00.
+	if got := ApplyCreditUsageToRegistry(reg, "user@example.com", []string{"welcome"}, 9, now.Add(6*time.Hour)); got != 9 {
+		t.Fatalf("usage within second anchored window = %v, want 9", got)
+	}
+	if got := ApplyCreditUsageToRegistry(reg, "user@example.com", []string{"welcome"}, 1, now.Add(9*time.Hour+59*time.Minute)); got != 0 {
+		t.Fatalf("usage before second anchored expiry = %v, want 0", got)
+	}
+	if got := ApplyCreditUsageToRegistry(reg, "user@example.com", []string{"welcome"}, 1, now.Add(10*time.Hour)); got != 1 {
+		t.Fatalf("usage after second anchored expiry = %v, want 1", got)
+	}
+}
+
+func TestNewUserLimitCardAnchorSurvivesNormalization(t *testing.T) {
+	anchor := time.Date(2026, 8, 22, 10, 0, 0, 0, time.UTC)
+	reg := &Registry{
+		ModelServiceGroups:      []ModelServiceGroup{{ID: "welcome", AccessPolicy: AccessPolicyFree}},
+		DefaultNewUserLimitCard: NewUserLimitCard{ServiceGroupIDs: []string{"welcome"}, PeriodLimits: CreditPeriodLimits{FiveHour: 10}},
+		Grants:                  []Grant{{ID: "card", Email: "user@example.com", ServiceGroupID: "welcome", Source: "new_user_limit_card", StartsAt: anchor.Add(-time.Hour)}},
+	}
+	if got := ApplyCreditUsageToRegistry(reg, "user@example.com", []string{"welcome"}, 10, anchor); got != 10 {
+		t.Fatalf("first usage = %v, want 10", got)
+	}
+	reg.Normalize()
+	if got := reg.Grants[0].PeriodUsage.FiveHour.WindowStart; !got.Equal(anchor) {
+		t.Fatalf("anchor changed during normalization: got %s want %s", got, anchor)
+	}
+	if got := AvailableCreditsForServiceGroups(reg, "user@example.com", []string{"welcome"}, anchor.Add(4*time.Hour+59*time.Minute)); got != 0 {
+		t.Fatalf("credits before persisted anchor expiry = %v, want 0", got)
+	}
+	if got := AvailableCreditsForServiceGroups(reg, "user@example.com", []string{"welcome"}, anchor.Add(5*time.Hour)); got != 10 {
+		t.Fatalf("credits after persisted anchor expiry = %v, want 10", got)
 	}
 }
 
@@ -789,6 +956,101 @@ func TestPermanentNewUserLimitCardDoesNotExpireWithLegacyStoredDate(t *testing.T
 	}
 	if got := ApplyCreditUsageToRegistry(reg, "user@example.com", []string{"welcome"}, 3, now); got != 3 {
 		t.Fatalf("permanent limit-card usage = %v, want 3", got)
+	}
+}
+
+func rechargeWelcomePointCardRegistry(now time.Time) *Registry {
+	return &Registry{
+		ModelServiceGroups:      []ModelServiceGroup{{ID: "redeem", Name: "充值服务组", AccessPolicy: AccessPolicyGrantRequired}},
+		DefaultNewUserLimitCard: NewUserLimitCard{ServiceGroupIDs: []string{"redeem"}, PeriodLimits: CreditPeriodLimits{FiveHour: 10, Daily: 25}},
+		Grants: []Grant{
+			{ID: "paid", Email: "user@example.com", ServiceGroupID: "redeem", Source: "card", StartsAt: now.Add(-time.Hour), ExpiresAt: now.AddDate(1, 0, 0), CreditsTotal: 1000},
+			{ID: "welcome", Email: "user@example.com", ServiceGroupID: "redeem", Source: "new_user_limit_card", StartsAt: now.Add(-time.Hour)},
+		},
+	}
+}
+
+func TestNewUserLimitCardOnRechargeGroupIsConsumedBeforePointCards(t *testing.T) {
+	now := time.Date(2026, 8, 22, 10, 0, 0, 0, time.UTC)
+	reg := rechargeWelcomePointCardRegistry(now)
+	if available := AvailableCreditsForServiceGroups(reg, "user@example.com", []string{"redeem"}, now); available != 1010 {
+		t.Fatalf("available before usage = %v, want 10 welcome + 1000 point card", available)
+	}
+	if got := ApplyCreditUsageToRegistry(reg, "user@example.com", []string{"redeem"}, 8, now); got != 8 {
+		t.Fatalf("first usage = %v, want 8", got)
+	}
+	if reg.Grants[1].PeriodUsage.FiveHour.CreditsUsed != 8 || reg.Grants[0].CreditsUsed != 0 {
+		t.Fatalf("welcome benefit must be charged first: paid=%#v welcome=%#v", reg.Grants[0], reg.Grants[1])
+	}
+	if available := AvailableCreditsForServiceGroups(reg, "user@example.com", []string{"redeem"}, now); available != 1002 {
+		t.Fatalf("available after partial welcome usage = %v, want 2 welcome + 1000 point card", available)
+	}
+	if got := ApplyCreditUsageToRegistry(reg, "user@example.com", []string{"redeem"}, 5, now); got != 5 {
+		t.Fatalf("overflow usage = %v, want 5", got)
+	}
+	if reg.Grants[1].PeriodUsage.FiveHour.CreditsUsed != 10 || reg.Grants[0].CreditsUsed != 3 {
+		t.Fatalf("remaining welcome then point card: paid used=%v welcome five-hour=%v", reg.Grants[0].CreditsUsed, reg.Grants[1].PeriodUsage.FiveHour.CreditsUsed)
+	}
+	if allowed, _, code, _, available, _, _ := BillingEligibilityForServiceGroups(reg, "user@example.com", []string{"redeem"}, now); !allowed || code != "" || available < 997 {
+		t.Fatalf("exhausted welcome period must fall back to point cards, allowed=%v code=%q available=%v", allowed, code, available)
+	}
+}
+
+func TestNewUserLimitCardOnRechargeGroupOverflowsInOneCharge(t *testing.T) {
+	now := time.Date(2026, 8, 22, 10, 0, 0, 0, time.UTC)
+	reg := rechargeWelcomePointCardRegistry(now)
+	if got := ApplyCreditUsageToRegistry(reg, "user@example.com", []string{"redeem"}, 15, now); got != 15 {
+		t.Fatalf("usage = %v, want 15", got)
+	}
+	if reg.Grants[1].PeriodUsage.FiveHour.CreditsUsed != 10 || reg.Grants[0].CreditsUsed != 5 {
+		t.Fatalf("one request must drain welcome then point card: paid used=%v welcome five-hour=%v", reg.Grants[0].CreditsUsed, reg.Grants[1].PeriodUsage.FiveHour.CreditsUsed)
+	}
+}
+
+func TestDuplicateExhaustedNewUserLimitCardDoesNotMintSecondAllowanceOnRechargeGroup(t *testing.T) {
+	now := time.Date(2026, 8, 22, 10, 0, 0, 0, time.UTC)
+	reg := rechargeWelcomePointCardRegistry(now)
+	reg.Grants = append([]Grant{{
+		ID: "welcome-exhausted", Email: "user@example.com", ServiceGroupID: "redeem", Source: "new_user_limit_card",
+		StartsAt:    now.Add(-time.Hour),
+		PeriodUsage: CreditPeriodUsage{FiveHour: GrantUsageWindow{WindowStart: now, CreditsUsed: 10}},
+	}}, reg.Grants...)
+	if got := ApplyCreditUsageToRegistry(reg, "user@example.com", []string{"redeem"}, 5, now); got != 5 {
+		t.Fatalf("usage = %v, want 5 from the point card", got)
+	}
+	if reg.Grants[2].PeriodUsage.FiveHour.CreditsUsed != 0 || reg.Grants[1].CreditsUsed != 5 {
+		t.Fatalf("exhausted duplicate must not mint a second welcome allowance: %#v", reg.Grants)
+	}
+	if available := AvailableCreditsForServiceGroups(reg, "user@example.com", []string{"redeem"}, now); available != 995 {
+		t.Fatalf("available after overflowing the exhausted duplicate = %v, want 995 point-card remainder", available)
+	}
+}
+
+func TestDuplicateExhaustedNewUserLimitCardDoesNotMintSecondAllowanceOnFreeGroup(t *testing.T) {
+	now := time.Date(2026, 8, 22, 10, 0, 0, 0, time.UTC)
+	reg := &Registry{
+		ModelServiceGroups:      []ModelServiceGroup{{ID: "welcome", AccessPolicy: AccessPolicyFree}},
+		DefaultNewUserLimitCard: NewUserLimitCard{ServiceGroupIDs: []string{"welcome"}, PeriodLimits: CreditPeriodLimits{FiveHour: 10, Daily: 25}},
+		Grants: []Grant{
+			{
+				ID: "exhausted", Email: "user@example.com", ServiceGroupID: "welcome", Source: "new_user_limit_card",
+				StartsAt:    now.Add(-time.Hour),
+				PeriodUsage: CreditPeriodUsage{FiveHour: GrantUsageWindow{WindowStart: now, CreditsUsed: 10}},
+			},
+			{
+				ID: "duplicate", Email: "user@example.com", ServiceGroupID: "welcome", Source: "new_user_limit_card",
+				StartsAt: now.Add(-time.Hour),
+			},
+		},
+	}
+	if got := ApplyCreditUsageToRegistry(reg, "user@example.com", []string{"welcome"}, 5, now); got != 0 {
+		t.Fatalf("usage = %v, want 0", got)
+	}
+	if reg.Grants[1].PeriodUsage.FiveHour.CreditsUsed != 0 {
+		t.Fatalf("duplicate qualification must not become a second allowance: %#v", reg.Grants)
+	}
+	if allowed, _, code, _, _, _, _ := BillingEligibilityForServiceGroups(reg, "user@example.com", []string{"welcome"}, now); allowed || code != "LLM_SERVICE_PERIOD_LIMITED" {
+		t.Fatalf("exhausted duplicate must stay period-limited, allowed=%v code=%q", allowed, code)
 	}
 }
 
@@ -961,7 +1223,7 @@ func TestNewUserLimitCardOnlyKeepsSupportedPeriodLimits(t *testing.T) {
 	}
 }
 
-func TestNewUserLimitCardViewDoesNotApplyToRechargeGroup(t *testing.T) {
+func TestNewUserLimitCardViewAppliesToRechargeGroup(t *testing.T) {
 	now := time.Date(2026, 8, 22, 10, 0, 0, 0, time.UTC)
 	reg := &Registry{
 		ModelServiceGroups: []ModelServiceGroup{{ID: "recharge", AccessPolicy: AccessPolicyGrantRequired}},
@@ -973,11 +1235,11 @@ func TestNewUserLimitCardViewDoesNotApplyToRechargeGroup(t *testing.T) {
 			ID: "qualification", Email: "user@example.com", ServiceGroupID: "recharge", Source: "new_user_limit_card", StartsAt: now.Add(-time.Hour),
 		}},
 	}
-	if effective := effectiveGrantForRegistry(reg, reg.Grants[0]); effective.PeriodLimits != (CreditPeriodLimits{}) || effective.Permanent || !effective.ExpiresAt.IsZero() {
-		t.Fatalf("recharge group must not receive a welcome-card policy projection: %#v", effective)
+	if effective := effectiveGrantForRegistry(reg, reg.Grants[0]); effective.PeriodLimits.FiveHour != 10 || effective.PeriodLimits.Daily != 20 || !effective.Permanent || effective.ExpiresAt.IsZero() {
+		t.Fatalf("recharge group should receive a welcome-card policy projection: %#v", effective)
 	}
-	if allowed, _, code, _, _, _, _ := BillingEligibilityForServiceGroups(reg, "user@example.com", []string{"recharge"}, now); allowed || code != "LLM_SERVICE_CREDITS_REQUIRED" {
-		t.Fatalf("recharge group must not be unlocked by a welcome qualification, allowed=%v code=%q", allowed, code)
+	if allowed, policy, code, _, credits, _, _ := BillingEligibilityForServiceGroups(reg, "user@example.com", []string{"recharge"}, now); !allowed || policy != AccessPolicyGrantRequired || code != "" || credits != 10 {
+		t.Fatalf("recharge group should be unlocked by a welcome qualification, allowed=%v policy=%q code=%q credits=%v", allowed, policy, code, credits)
 	}
 }
 
@@ -2598,6 +2860,309 @@ func TestResolveStatusKeepsPaidCreditsWhenUnlimitedGrantAlsoActive(t *testing.T)
 	}
 }
 
+func TestResolveStatusShowsWelcomeCardAlongsideExistingCard(t *testing.T) {
+	now := time.Now().UTC()
+	reg := &Registry{
+		ModelServiceGroups:      []ModelServiceGroup{{ID: "redeem", Name: "Redeem", AccessPolicy: AccessPolicyFree, Models: []ModelServiceModel{{Name: "auto", ProviderIDs: []string{"provider-a"}}}}},
+		DefaultNewUserLimitCard: NewUserLimitCard{ServiceGroupIDs: []string{"redeem"}, PeriodLimits: CreditPeriodLimits{FiveHour: 100, Daily: 200}},
+		Grants: []Grant{
+			{ID: "paid", Email: "user@example.com", ServiceGroupID: "redeem", Source: "card", StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(24 * time.Hour), CreditsTotal: 1000},
+			{ID: "welcome", Email: "user@example.com", ServiceGroupID: "redeem", Source: "new_user_limit_card", StartsAt: now.Add(-time.Hour)},
+		},
+	}
+	status, _, err := ResolveStatusFromRegistry(context.Background(), reg, nil, "user@example.com", "https://hub.example.com/api/llm/v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, grant := range status.CreditGrants {
+		if grant.Source == "new_user_limit_card" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("welcome card missing beside existing card: %#v", status.CreditGrants)
+	}
+}
+
+func TestResolveStatusShowsWelcomeCardAlongsideExistingRechargeCard(t *testing.T) {
+	now := time.Now().UTC()
+	reg := &Registry{
+		ModelServiceGroups:      []ModelServiceGroup{{ID: "redeem", Name: "Redeem", AccessPolicy: AccessPolicyGrantRequired, Models: []ModelServiceModel{{Name: "auto", ProviderIDs: []string{"provider-a"}}}}},
+		DefaultNewUserLimitCard: NewUserLimitCard{ServiceGroupIDs: []string{"redeem"}, PeriodLimits: CreditPeriodLimits{FiveHour: 100, Daily: 200}},
+		Grants: []Grant{
+			{ID: "paid", Email: "user@example.com", ServiceGroupID: "redeem", Source: "card", StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(24 * time.Hour), CreditsTotal: 1000},
+			{ID: "welcome", Email: "user@example.com", ServiceGroupID: "redeem", Source: "new_user_limit_card", StartsAt: now.Add(-time.Hour)},
+		},
+	}
+	status, _, err := ResolveStatusFromRegistry(context.Background(), reg, nil, "user@example.com", "https://hub.example.com/api/llm/v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var paid, welcome bool
+	for _, grant := range status.CreditGrants {
+		paid = paid || grant.Source == "card"
+		welcome = welcome || grant.Source == "new_user_limit_card"
+	}
+	if !paid || !welcome {
+		t.Fatalf("expected recharge and welcome cards together, got %#v", status.CreditGrants)
+	}
+	if !status.Active {
+		t.Fatalf("expected recharge route active with welcome card, got %#v", status)
+	}
+}
+
+func TestIssueNewUserLimitCardsAllowsGrantRequiredGroup(t *testing.T) {
+	now := time.Now().UTC()
+	reg := &Registry{
+		ModelServiceGroups:      []ModelServiceGroup{{ID: "redeem", AccessPolicy: AccessPolicyGrantRequired}},
+		DefaultNewUserLimitCard: NewUserLimitCard{ServiceGroupIDs: []string{"redeem"}, PeriodLimits: CreditPeriodLimits{FiveHour: 10}},
+		Grants:                  []Grant{{ID: "paid", Email: "user@example.com", ServiceGroupID: "redeem", Source: "card", StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour), CreditsTotal: 100}},
+	}
+	if issued := IssueNewUserLimitCards(reg, []VoucherUser{{ID: "u1", Email: "user@example.com"}}, now); issued != 1 {
+		t.Fatalf("issued = %d, want 1", issued)
+	}
+	if issued := IssueNewUserLimitCards(reg, []VoucherUser{{ID: "u1", Email: "user@example.com"}}, now); issued != 0 {
+		t.Fatalf("second issuance = %d, want idempotent 0", issued)
+	}
+	status, _, err := ResolveStatusFromRegistry(context.Background(), reg, nil, "user@example.com", "https://hub.example.com/api/llm/v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var paid, welcome bool
+	for _, grant := range status.CreditGrants {
+		paid = paid || grant.Source == "card"
+		welcome = welcome || grant.Source == "new_user_limit_card"
+	}
+	if !paid || !welcome {
+		t.Fatalf("expected both recharge and welcome cards after issue, got %#v", status.CreditGrants)
+	}
+}
+
+func TestIssueNewUserLimitCardsBackfillsUsersWhoAlreadyHaveCreditsCards(t *testing.T) {
+	now := time.Now().UTC()
+	reg := &Registry{
+		ModelServiceGroups:      []ModelServiceGroup{{ID: "redeem", Name: "充值服务组", AccessPolicy: AccessPolicyGrantRequired}},
+		DefaultNewUserLimitCard: NewUserLimitCard{ServiceGroupIDs: []string{"redeem"}, PeriodLimits: CreditPeriodLimits{FiveHour: 100, Daily: 200}},
+		Grants: []Grant{
+			{ID: "paid-1", Email: "user@example.com", ServiceGroupID: "redeem", Source: "card", StartsAt: now.Add(-40 * 24 * time.Hour), ExpiresAt: now.Add(300 * 24 * time.Hour), CreditsTotal: 50000, CreditsUsed: 18133.78},
+			{ID: "paid-2", Email: "user@example.com", ServiceGroupID: "redeem", Source: "card", StartsAt: now.Add(-50 * 24 * time.Hour), ExpiresAt: now.Add(290 * 24 * time.Hour), CreditsTotal: 10000, CreditsUsed: 10000},
+			{ID: "gift", Email: "user@example.com", ServiceGroupID: "redeem", Source: "new_user_default", StartsAt: now.Add(-60 * 24 * time.Hour), ExpiresAt: now.Add(-30 * 24 * time.Hour), CreditsTotal: 300, CreditsUsed: 300},
+		},
+	}
+	if issued := IssueNewUserLimitCards(reg, []VoucherUser{{ID: "u1", Email: "user@example.com"}}, now); issued != 1 {
+		t.Fatalf("issued = %d, want 1 for recharge-card holder with a historical credits gift", issued)
+	}
+	if issued := IssueNewUserLimitCards(reg, []VoucherUser{{ID: "u1", Email: "user@example.com"}}, now); issued != 0 {
+		t.Fatalf("second issuance = %d, want idempotent 0", issued)
+	}
+	status, _, err := ResolveStatusFromRegistry(context.Background(), reg, nil, "user@example.com", "https://hub.example.com/api/llm/v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var paid, welcome bool
+	for _, grant := range status.CreditGrants {
+		paid = paid || grant.Source == "card"
+		welcome = welcome || grant.Source == "new_user_limit_card"
+	}
+	if !paid || !welcome {
+		t.Fatalf("expected recharge cards and welcome card together after backfill, got %#v", status.CreditGrants)
+	}
+}
+
+func TestEnsureNewUserLimitCardShowsBesideStackedRechargeCards(t *testing.T) {
+	now := time.Now().UTC()
+	reg := &Registry{
+		ModelServiceGroups:        []ModelServiceGroup{{ID: "redeem", Name: "充值服务组", AccessPolicy: AccessPolicyGrantRequired}},
+		DefaultNewUserBenefitMode: NewUserBenefitModeLimitCard,
+		DefaultNewUserLimitCard:   NewUserLimitCard{ServiceGroupIDs: []string{"redeem"}, PeriodLimits: CreditPeriodLimits{FiveHour: 100, Daily: 200}},
+		Grants: []Grant{
+			{ID: "paid-1", Email: "user@example.com", ServiceGroupID: "redeem", Source: "card", StartsAt: now.Add(-40 * 24 * time.Hour), ExpiresAt: now.Add(300 * 24 * time.Hour), CreditsTotal: 50000, CreditsUsed: 18136.33},
+			{ID: "paid-2", Email: "user@example.com", ServiceGroupID: "redeem", Source: "card", StartsAt: now.Add(-50 * 24 * time.Hour), ExpiresAt: now.Add(290 * 24 * time.Hour), CreditsTotal: 10000, CreditsUsed: 10000},
+			{ID: "paid-3", Email: "user@example.com", ServiceGroupID: "redeem", Source: "card", StartsAt: now.Add(-45 * 24 * time.Hour), ExpiresAt: now.Add(295 * 24 * time.Hour), CreditsTotal: 10000, CreditsUsed: 10000},
+			{ID: "paid-4", Email: "user@example.com", ServiceGroupID: "redeem", Source: "card", StartsAt: now.Add(-44 * 24 * time.Hour), ExpiresAt: now.Add(296 * 24 * time.Hour), CreditsTotal: 10000, CreditsUsed: 10000},
+		},
+	}
+	issued, err := ensureNewUserLimitCardForRegistry(context.Background(), nil, reg, "u1", "user@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !issued {
+		t.Fatal("expected welcome card backfill for recharge-card holder")
+	}
+	status, _, err := ResolveStatusFromRegistryForUser(context.Background(), reg, nil, "u1", "user@example.com", "https://hub.example.com/api/llm/v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var welcome *ActiveGrant
+	for i := range status.CreditGrants {
+		if status.CreditGrants[i].Source == "new_user_limit_card" {
+			welcome = &status.CreditGrants[i]
+			break
+		}
+	}
+	if welcome == nil {
+		t.Fatalf("welcome card missing from service-exchange status: %#v", status.CreditGrants)
+	}
+	if welcome.PeriodLimits == nil || welcome.PeriodLimits.FiveHour != 100 || welcome.PeriodLimits.Daily != 200 {
+		t.Fatalf("welcome period limits = %#v", welcome.PeriodLimits)
+	}
+	if NeedsNewUserLimitCardBackfill(reg, "u1", "user@example.com") {
+		t.Fatal("backfill should be idempotent after a live welcome card exists")
+	}
+	issued, err = ensureNewUserLimitCardForRegistry(context.Background(), nil, reg, "u1", "user@example.com")
+	if err != nil || issued {
+		t.Fatalf("second backfill issued=%v err=%v, want issued=false", issued, err)
+	}
+}
+
+func TestNeedsNewUserLimitCardBackfillSkipsCreditsMode(t *testing.T) {
+	reg := &Registry{
+		ModelServiceGroups:        []ModelServiceGroup{{ID: "redeem", AccessPolicy: AccessPolicyGrantRequired}},
+		DefaultNewUserBenefitMode: NewUserBenefitModeCredits,
+		DefaultNewUserLimitCard:   NewUserLimitCard{ServiceGroupIDs: []string{"redeem"}, PeriodLimits: CreditPeriodLimits{FiveHour: 10}},
+	}
+	if NeedsNewUserLimitCardBackfill(reg, "u1", "user@example.com") {
+		t.Fatal("credits mode must not backfill a limit card")
+	}
+	issued, err := ensureNewUserLimitCardForRegistry(context.Background(), nil, reg, "u1", "user@example.com")
+	if err != nil || issued {
+		t.Fatalf("credits mode issued=%v err=%v, want issued=false", issued, err)
+	}
+	reg.DefaultNewUserBenefitMode = NewUserBenefitModeLimitCard
+	reg.DefaultNewUserLimitCard.ServiceGroupIDs = nil
+	if NeedsNewUserLimitCardBackfill(reg, "u1", "user@example.com") {
+		t.Fatal("empty policy groups must not backfill")
+	}
+	reg.DefaultNewUserLimitCard.ServiceGroupIDs = []string{"gone"}
+	if NeedsNewUserLimitCardBackfill(reg, "u1", "user@example.com") {
+		t.Fatal("missing policy groups must not backfill")
+	}
+}
+
+func TestIssueNewUserLimitCardsBackfillsWhenPriorLimitCardIsOnAnotherGroup(t *testing.T) {
+	now := time.Now().UTC()
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{
+			{ID: "welcome", AccessPolicy: AccessPolicyFree},
+			{ID: "redeem", Name: "充值服务组", AccessPolicy: AccessPolicyGrantRequired},
+		},
+		DefaultNewUserLimitCard: NewUserLimitCard{ServiceGroupIDs: []string{"redeem"}, PeriodLimits: CreditPeriodLimits{FiveHour: 100, Daily: 200}},
+		Grants: []Grant{
+			{ID: "old-welcome", Email: "user@example.com", ServiceGroupID: "welcome", Source: "new_user_limit_card", StartsAt: now.Add(-time.Hour)},
+			{ID: "paid", Email: "user@example.com", ServiceGroupID: "redeem", Source: "card", StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(24 * time.Hour), CreditsTotal: 1000},
+		},
+	}
+	if issued := IssueNewUserLimitCards(reg, []VoucherUser{{Email: "user@example.com"}}, now); issued != 1 {
+		t.Fatalf("issued = %d, want 1 so a prior free-group qualification does not block the recharge-group overlay", issued)
+	}
+	status, _, err := ResolveStatusFromRegistry(context.Background(), reg, nil, "user@example.com", "https://hub.example.com/api/llm/v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundRedeemWelcome := false
+	for _, grant := range status.CreditGrants {
+		if grant.Source == "new_user_limit_card" && grant.ServiceGroupID == "redeem" {
+			foundRedeemWelcome = true
+		}
+	}
+	if !foundRedeemWelcome {
+		t.Fatalf("expected welcome card on redeem beside existing credits card, got %#v", status.CreditGrants)
+	}
+}
+
+func TestIssueNewUserLimitCardsReissuesExpiredSameGroupQualification(t *testing.T) {
+	now := time.Now().UTC()
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{ID: "redeem", Name: "充值服务组", AccessPolicy: AccessPolicyGrantRequired}},
+		DefaultNewUserLimitCard: NewUserLimitCard{
+			ServiceGroupIDs: []string{"redeem"},
+			DurationDays:    30,
+			PeriodLimits:    CreditPeriodLimits{FiveHour: 100, Daily: 200},
+		},
+		Grants: []Grant{
+			{ID: "expired-welcome", Email: "user@example.com", ServiceGroupID: "redeem", Source: "new_user_limit_card", StartsAt: now.AddDate(0, 0, -60)},
+			{ID: "paid", Email: "user@example.com", ServiceGroupID: "redeem", Source: "card", StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(24 * time.Hour), CreditsTotal: 80000},
+		},
+	}
+	if issued := IssueNewUserLimitCards(reg, []VoucherUser{{Email: "user@example.com"}}, now); issued != 1 {
+		t.Fatalf("issued = %d, want 1 so an expired same-group qualification can be backfilled", issued)
+	}
+	status, _, err := ResolveStatusFromRegistry(context.Background(), reg, nil, "user@example.com", "https://hub.example.com/api/llm/v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundLiveWelcome := false
+	for _, grant := range status.CreditGrants {
+		if grant.Source == "new_user_limit_card" && grant.Status != "expired" {
+			foundLiveWelcome = true
+		}
+	}
+	if !foundLiveWelcome {
+		t.Fatalf("expected a live welcome card beside recharge credits after expired backfill, got %#v", status.CreditGrants)
+	}
+	limitCards := 0
+	for _, grant := range reg.Grants {
+		if grant.Source == "new_user_limit_card" {
+			limitCards++
+		}
+	}
+	if limitCards != 1 {
+		t.Fatalf("expired same-group qualification should be replaced, got %d limit cards", limitCards)
+	}
+}
+
+func TestHasNewUserLimitCardForServiceGroupIgnoresExpiredDuplicate(t *testing.T) {
+	now := time.Now().UTC()
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{ID: "redeem", AccessPolicy: AccessPolicyGrantRequired}},
+		DefaultNewUserLimitCard: NewUserLimitCard{
+			ServiceGroupIDs: []string{"redeem"},
+			DurationDays:    30,
+			PeriodLimits:    CreditPeriodLimits{FiveHour: 100, Daily: 200},
+		},
+		Grants: []Grant{
+			{ID: "expired-welcome", Email: "user@example.com", ServiceGroupID: "redeem", Source: "new_user_limit_card", StartsAt: now.AddDate(0, 0, -60)},
+			{ID: "live-welcome", Email: "user@example.com", ServiceGroupID: "redeem", Source: "new_user_limit_card", StartsAt: now.Add(-time.Hour)},
+		},
+	}
+	if !hasNewUserLimitCardForServiceGroup(reg, newUserAccountRef("", "user@example.com"), "redeem", now) {
+		t.Fatal("a later live welcome card must count even when an expired duplicate is stored first")
+	}
+}
+
+func TestCreditGrantSummariesPreferLaterLiveWelcomeCardOverExpiredDuplicate(t *testing.T) {
+	now := time.Now().UTC()
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{ID: "redeem", AccessPolicy: AccessPolicyGrantRequired}},
+		DefaultNewUserLimitCard: NewUserLimitCard{
+			ServiceGroupIDs: []string{"redeem"},
+			DurationDays:    30,
+			PeriodLimits:    CreditPeriodLimits{FiveHour: 100, Daily: 200},
+		},
+		Grants: []Grant{
+			{ID: "expired-welcome", Email: "user@example.com", ServiceGroupID: "redeem", Source: "new_user_limit_card", StartsAt: now.AddDate(0, 0, -60)},
+			{ID: "live-welcome", Email: "user@example.com", ServiceGroupID: "redeem", Source: "new_user_limit_card", StartsAt: now.Add(-time.Hour)},
+			{ID: "paid", Email: "user@example.com", ServiceGroupID: "redeem", Source: "card", StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(24 * time.Hour), CreditsTotal: 1000},
+		},
+	}
+	summaries := creditGrantSummariesForOwner(reg, newUserAccountRef("", "user@example.com"), now)
+	var liveWelcome, paid bool
+	for _, grant := range summaries {
+		if grant.Source == "new_user_limit_card" && grant.Status != "expired" {
+			liveWelcome = true
+		}
+		paid = paid || grant.Source == "card"
+	}
+	if !liveWelcome || !paid {
+		t.Fatalf("expected live welcome card and recharge card, got %#v", summaries)
+	}
+	if summaries[0].Source != "new_user_limit_card" {
+		t.Fatalf("welcome card should sort ahead of recharge cards, got %#v", summaries)
+	}
+}
+
 func TestRedeemCardStacksExistingGrantForSameServiceGroup(t *testing.T) {
 	ctx := context.Background()
 	system := newTestSystemSettings()
@@ -4079,5 +4644,268 @@ func TestRegistryNormalizeMergesDuplicateServiceBindings(t *testing.T) {
 	}
 	if got := reg.UserBindings[0].ServiceGroupIDs; len(got) != 2 || got[0] != "svc-a" || got[1] != "svc-c" {
 		t.Fatalf("user service ids = %#v, want svc-a, svc-c", got)
+	}
+}
+
+func TestResetNewUserLimitCardUsage(t *testing.T) {
+	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	oldFiveHourStart := fiveHourWindowStart(now)
+	reg := &Registry{Grants: []Grant{
+		{Source: "new_user_limit_card", Email: "a@example.com", UsageEvents: []CreditUsageEvent{{OccurredAt: now.Add(-time.Hour), CreditsUsed: 10}}, PeriodUsage: CreditPeriodUsage{
+			FiveHour: GrantUsageWindow{WindowStart: oldFiveHourStart, CreditsUsed: 8},
+			Daily:    GrantUsageWindow{CreditsUsed: 20},
+		}},
+		{Source: "credits", Email: "b@example.com", UsageEvents: []CreditUsageEvent{{OccurredAt: now.Add(-time.Hour), CreditsUsed: 5}}},
+	}}
+	if got := ResetNewUserLimitCardUsage(reg, now); got != 1 {
+		t.Fatalf("reset count = %d, want 1", got)
+	}
+	if got := reg.Grants[0]; len(got.UsageEvents) != 0 || got.PeriodUsage.Daily.CreditsUsed != 0 {
+		t.Fatalf("limit-card usage not reset: %#v", got)
+	}
+	if got := reg.Grants[0].PeriodUsage.FiveHour; got.CreditsUsed != 0 || !got.WindowStart.Equal(now) {
+		t.Fatalf("five-hour window not restarted: %#v want start=%s", got, now)
+	}
+	if len(reg.Grants[1].UsageEvents) != 1 {
+		t.Fatalf("non-limit grant usage was changed: %#v", reg.Grants[1])
+	}
+}
+
+func welcomeLimitCardRegistry(grants ...Grant) *Registry {
+	return &Registry{
+		ModelServiceGroups:      []ModelServiceGroup{{ID: "welcome", AccessPolicy: AccessPolicyFree}},
+		DefaultNewUserLimitCard: NewUserLimitCard{ServiceGroupIDs: []string{"welcome"}, PeriodLimits: CreditPeriodLimits{FiveHour: 10, Daily: 25}},
+		Grants:                  grants,
+	}
+}
+
+func TestResetVoucherIssueAndRedeem(t *testing.T) {
+	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	oldFiveHourStart := fiveHourWindowStart(now)
+	reg := welcomeLimitCardRegistry(Grant{
+		ID: "g1", UserID: "u1", Email: "a@example.com", ServiceGroupID: "welcome", Source: "new_user_limit_card",
+		StartsAt: now.Add(-time.Hour),
+		PeriodUsage: CreditPeriodUsage{
+			FiveHour: GrantUsageWindow{WindowStart: oldFiveHourStart, CreditsUsed: 10},
+			Daily:    GrantUsageWindow{CreditsUsed: 9},
+		},
+	})
+	if got := IssueResetVouchers(reg, []VoucherUser{{ID: "u1", Email: "a@example.com"}}, 7, now); got != 1 || len(reg.ResetVouchers) != 1 {
+		t.Fatalf("issue result=%d vouchers=%#v", got, reg.ResetVouchers)
+	}
+	voucherID := reg.ResetVouchers[0].ID
+	redeemAt := now.Add(time.Hour)
+	if ok, err := RedeemResetVoucher(reg, "u1", "a@example.com", voucherID, redeemAt); !ok || err != nil {
+		t.Fatalf("redeem = %v, %v", ok, err)
+	}
+	if reg.ResetVouchers[0].RedeemedAt == nil || reg.Grants[0].PeriodUsage.Daily.CreditsUsed != 0 {
+		t.Fatalf("voucher/usage not consumed: %#v %#v", reg.ResetVouchers[0], reg.Grants[0])
+	}
+	if got := reg.Grants[0].PeriodUsage.FiveHour; got.CreditsUsed != 0 || !got.WindowStart.Equal(redeemAt) {
+		t.Fatalf("five-hour window not restarted at redeem instant: %#v want start=%s used=0", got, redeemAt)
+	}
+	if ok, err := RedeemResetVoucher(reg, "u1", "a@example.com", voucherID, now.Add(2*time.Hour)); ok || err == nil {
+		t.Fatalf("second redeem = %v, %v", ok, err)
+	}
+}
+
+func TestResetVoucherRestartsAnchoredFiveHourWindow(t *testing.T) {
+	// 12:30 sits inside the UTC epoch window 10:00–15:00. Redeeming must not
+	// leave the next reset at 15:00; it must start a fresh five-hour cycle.
+	now := time.Date(2026, 9, 1, 12, 30, 0, 0, time.UTC)
+	reg := welcomeLimitCardRegistry(Grant{
+		ID: "g1", UserID: "u1", Email: "a@example.com", ServiceGroupID: "welcome", Source: "new_user_limit_card",
+		StartsAt: now.Add(-2 * time.Hour),
+		PeriodUsage: CreditPeriodUsage{
+			FiveHour: GrantUsageWindow{WindowStart: now.Add(-2 * time.Hour), CreditsUsed: 10},
+			Daily:    GrantUsageWindow{WindowStart: dayWindowStart(now), CreditsUsed: 10},
+		},
+	})
+	if got := IssueResetVouchers(reg, []VoucherUser{{ID: "u1", Email: "a@example.com"}}, 7, now); got != 1 {
+		t.Fatalf("issue result=%d", got)
+	}
+	if ok, err := RedeemResetVoucher(reg, "u1", "a@example.com", reg.ResetVouchers[0].ID, now); !ok || err != nil {
+		t.Fatalf("redeem = %v, %v", ok, err)
+	}
+	summaries := creditGrantSummariesForOwner(reg, newUserAccountRef("u1", "a@example.com"), now)
+	if len(summaries) != 1 || summaries[0].PeriodUsage == nil {
+		t.Fatalf("status grants = %#v", summaries)
+	}
+	if fh := summaries[0].PeriodUsage.FiveHour; !fh.WindowStart.Equal(now) || !fh.WindowEnd.Equal(now.Add(5*time.Hour)) || fh.CreditsUsed != 0 {
+		t.Fatalf("status five-hour window = %#v, want start=%s end=%s used=0", fh, now, now.Add(5*time.Hour))
+	}
+	if got := AvailableCreditsForServiceGroups(reg, "a@example.com", []string{"welcome"}, now); got != 10 {
+		t.Fatalf("credits immediately after redeem = %v, want 10", got)
+	}
+	if got := ApplyCreditUsageToRegistry(reg, "a@example.com", []string{"welcome"}, 10, now); got != 10 {
+		t.Fatalf("usage in new window = %v, want 10", got)
+	}
+	if got := ApplyCreditUsageToRegistry(reg, "a@example.com", []string{"welcome"}, 1, now.Add(4*time.Hour+59*time.Minute)); got != 0 {
+		t.Fatalf("usage before restarted window expiry = %v, want 0", got)
+	}
+	if got := ApplyCreditUsageToRegistry(reg, "a@example.com", []string{"welcome"}, 1, now.Add(5*time.Hour)); got != 1 {
+		t.Fatalf("usage after restarted window expiry = %v, want 1", got)
+	}
+}
+
+func TestResetVoucherDailyWindowUsesAccountTimezone(t *testing.T) {
+	now := time.Date(2026, 9, 1, 16, 30, 0, 0, time.UTC)
+	reg := welcomeLimitCardRegistry(Grant{
+		ID: "g1", UserID: "u1", Email: "a@example.com", ServiceGroupID: "welcome", Source: "new_user_limit_card",
+		StartsAt: now.Add(-time.Hour), PeriodUsage: CreditPeriodUsage{Daily: GrantUsageWindow{CreditsUsed: 9}},
+	})
+	reg.UserBillingTimezones = map[string]string{"a@example.com": "Asia/Shanghai"}
+	if got := IssueResetVouchers(reg, []VoucherUser{{ID: "u1", Email: "a@example.com"}}, 7, now); got != 1 {
+		t.Fatalf("issue result=%d", got)
+	}
+	if ok, err := RedeemResetVoucher(reg, "u1", "a@example.com", reg.ResetVouchers[0].ID, now); !ok || err != nil {
+		t.Fatalf("redeem = %v, %v", ok, err)
+	}
+	wantDay := grantDayWindowStart(effectiveGrantForRegistry(reg, reg.Grants[0]), now)
+	if got := reg.Grants[0].PeriodUsage.Daily.WindowStart; !got.Equal(wantDay) {
+		t.Fatalf("daily window start = %s, want %s", got, wantDay)
+	}
+}
+
+func TestResetVoucherRejectsWrongUserAndExpiry(t *testing.T) {
+	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	reg := welcomeLimitCardRegistry(Grant{
+		ID: "g1", UserID: "u1", Email: "a@example.com", ServiceGroupID: "welcome", Source: "new_user_limit_card", StartsAt: now.Add(-time.Hour),
+	})
+	IssueResetVouchers(reg, []VoucherUser{{ID: "u1", Email: "a@example.com"}}, 1, now)
+	id := reg.ResetVouchers[0].ID
+	if ok, err := RedeemResetVoucher(reg, "u2", "b@example.com", id, now); ok || err == nil {
+		t.Fatalf("wrong user redeem = %v, %v", ok, err)
+	}
+	if ok, err := RedeemResetVoucher(reg, "u1", "a@example.com", id, now.Add(2*24*time.Hour)); ok || err == nil {
+		t.Fatalf("expired redeem = %v, %v", ok, err)
+	}
+}
+
+func TestResetVoucherUserIDIsAuthoritative(t *testing.T) {
+	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	reg := welcomeLimitCardRegistry(Grant{
+		ID: "g1", UserID: "u1", Email: "shared@example.com", ServiceGroupID: "welcome", Source: "new_user_limit_card", StartsAt: now.Add(-time.Hour),
+	})
+	IssueResetVouchers(reg, []VoucherUser{{ID: "u1", Email: "shared@example.com"}}, 1, now)
+	if ok, err := RedeemResetVoucher(reg, "u2", "shared@example.com", reg.ResetVouchers[0].ID, now); ok || err == nil {
+		t.Fatalf("same-email different user redeemed voucher: %v, %v", ok, err)
+	}
+}
+
+func TestIssueResetVouchersKeepsIDOnlyUsersDistinct(t *testing.T) {
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	reg := welcomeLimitCardRegistry(
+		Grant{ID: "c1", UserID: "u1", ServiceGroupID: "welcome", Source: "new_user_limit_card", StartsAt: now.Add(-time.Hour)},
+		Grant{ID: "c2", UserID: "u2", ServiceGroupID: "welcome", Source: "new_user_limit_card", StartsAt: now.Add(-time.Hour)},
+	)
+	users := []VoucherUser{{ID: "u1"}, {ID: "u2"}}
+	if got := IssueResetVouchers(reg, users, 3, now); got != 2 || len(reg.ResetVouchers) != 2 {
+		t.Fatalf("issue result=%d vouchers=%#v", got, reg.ResetVouchers)
+	}
+	if reg.ResetVouchers[0].UserID == reg.ResetVouchers[1].UserID {
+		t.Fatalf("id-only users were merged: %#v", reg.ResetVouchers)
+	}
+}
+
+func TestIssueResetVouchersDeduplicatesTargetsWithinIssuance(t *testing.T) {
+	now := time.Now().UTC()
+	reg := welcomeLimitCardRegistry(Grant{
+		ID: "g1", UserID: "u1", Email: "a@example.com", ServiceGroupID: "welcome", Source: "new_user_limit_card", StartsAt: now.Add(-time.Hour),
+	})
+	if got := IssueResetVouchers(reg, []VoucherUser{{ID: "u1", Email: "a@example.com"}, {ID: "u1", Email: "a@example.com"}}, 1, now); got != 1 {
+		t.Fatalf("expected one voucher for duplicate target, got %d", got)
+	}
+}
+
+func TestIssueResetVouchersSkipsUsersWithoutLiveNewUserBenefit(t *testing.T) {
+	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	reg := welcomeLimitCardRegistry(
+		Grant{ID: "live", UserID: "live", Email: "live@example.com", ServiceGroupID: "welcome", Source: "new_user_limit_card", StartsAt: now.Add(-time.Hour)},
+		Grant{ID: "email-only", Email: "emailonly@example.com", ServiceGroupID: "welcome", Source: "new_user_limit_card", StartsAt: now.Add(-time.Hour)},
+		Grant{ID: "expired", UserID: "expired", Email: "expired@example.com", ServiceGroupID: "welcome", Source: "new_user_limit_card", StartsAt: now.AddDate(0, 0, -60)},
+		Grant{ID: "frozen", UserID: "frozen", Email: "frozen@example.com", ServiceGroupID: "welcome", Source: "new_user_limit_card", StartsAt: now.Add(-time.Hour), Frozen: true},
+		Grant{ID: "credits", UserID: "credits", Email: "credits@example.com", ServiceGroupID: "welcome", Source: "new_user_default", StartsAt: now.Add(-time.Hour), ExpiresAt: now.AddDate(0, 0, 30), CreditsTotal: 100},
+		Grant{ID: "removed", UserID: "removed", Email: "removed@example.com", ServiceGroupID: "gone", Source: "new_user_limit_card", StartsAt: now.Add(-time.Hour)},
+	)
+	reg.DefaultNewUserLimitCard.DurationDays = 30
+	users := []VoucherUser{
+		{ID: "live", Email: "live@example.com"},
+		{ID: "u-email", Email: "emailonly@example.com"},
+		{ID: "expired", Email: "expired@example.com"},
+		{ID: "frozen", Email: "frozen@example.com"},
+		{ID: "credits", Email: "credits@example.com"},
+		{ID: "removed", Email: "removed@example.com"},
+		{ID: "none", Email: "none@example.com"},
+	}
+	if got := IssueResetVouchers(reg, users, 7, now); got != 2 || len(reg.ResetVouchers) != 2 {
+		t.Fatalf("issue result=%d vouchers=%#v, want 2 for live welcome-card holders only", got, reg.ResetVouchers)
+	}
+	gotIDs := map[string]string{}
+	for _, voucher := range reg.ResetVouchers {
+		gotIDs[voucher.Email] = voucher.UserID
+	}
+	if gotIDs["live@example.com"] != "live" || gotIDs["emailonly@example.com"] != "u-email" {
+		t.Fatalf("issued vouchers to unexpected users: %#v", reg.ResetVouchers)
+	}
+}
+
+func TestRedeemResetVoucherRequiresLiveNewUserLimitCard(t *testing.T) {
+	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	expiredUsage := CreditPeriodUsage{Daily: GrantUsageWindow{CreditsUsed: 9}}
+	reg := welcomeLimitCardRegistry(
+		Grant{ID: "expired", UserID: "expired", Email: "expired@example.com", ServiceGroupID: "welcome", Source: "new_user_limit_card", StartsAt: now.AddDate(0, 0, -60), PeriodUsage: expiredUsage},
+		Grant{ID: "live", UserID: "live", Email: "live@example.com", ServiceGroupID: "welcome", Source: "new_user_limit_card", StartsAt: now.Add(-time.Hour), PeriodUsage: expiredUsage},
+		Grant{ID: "stale", UserID: "live", Email: "live@example.com", ServiceGroupID: "welcome", Source: "new_user_limit_card", StartsAt: now.AddDate(0, 0, -60), PeriodUsage: expiredUsage},
+	)
+	reg.DefaultNewUserLimitCard.DurationDays = 30
+	reg.ResetVouchers = []ResetVoucher{
+		{ID: "v-expired", UserID: "expired", Email: "expired@example.com", IssuedAt: now, ExpiresAt: now.AddDate(0, 0, 7)},
+		{ID: "v-live", UserID: "live", Email: "live@example.com", IssuedAt: now, ExpiresAt: now.AddDate(0, 0, 7)},
+	}
+
+	if ok, err := RedeemResetVoucher(reg, "expired", "expired@example.com", "v-expired", now); ok || !errors.Is(err, errNoActiveNewUserLimitCard) {
+		t.Fatalf("expired card redeem = %v, %v", ok, err)
+	}
+	if reg.ResetVouchers[0].RedeemedAt != nil {
+		t.Fatalf("expired-card voucher was consumed: %#v", reg.ResetVouchers[0])
+	}
+	if got := reg.Grants[0].PeriodUsage.Daily.CreditsUsed; got != 9 {
+		t.Fatalf("expired grant usage changed: %#v", reg.Grants[0].PeriodUsage)
+	}
+
+	if ok, err := RedeemResetVoucher(reg, "live", "live@example.com", "v-live", now); !ok || err != nil {
+		t.Fatalf("live card redeem = %v, %v", ok, err)
+	}
+	if reg.Grants[1].PeriodUsage.Daily.CreditsUsed != 0 {
+		t.Fatalf("live grant usage not reset: %#v", reg.Grants[1].PeriodUsage)
+	}
+	if got := reg.Grants[2].PeriodUsage.Daily.CreditsUsed; got != 9 {
+		t.Fatalf("stale grant on the same user was reset: %#v", reg.Grants[2].PeriodUsage)
+	}
+}
+
+func TestResetVoucherOmittedFromStatusWithoutLiveNewUserLimitCard(t *testing.T) {
+	now := time.Now().UTC()
+	reg := welcomeLimitCardRegistry(Grant{
+		ID: "expired", UserID: "u1", Email: "a@example.com", ServiceGroupID: "welcome", Source: "new_user_limit_card", StartsAt: now.AddDate(0, 0, -60),
+	})
+	reg.DefaultNewUserLimitCard.DurationDays = 30
+	reg.ResetVouchers = []ResetVoucher{{ID: "v1", UserID: "u1", Email: "a@example.com", IssuedAt: now, ExpiresAt: now.AddDate(0, 0, 7)}}
+	status, _, err := ResolveStatusFromRegistryForUser(context.Background(), reg, nil, "u1", "a@example.com", "https://hub.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.ResetVouchers) != 0 {
+		t.Fatalf("expired-card user still saw vouchers: %#v", status.ResetVouchers)
+	}
+
+	reg.Grants[0].StartsAt = now.Add(-time.Hour)
+	status, _, err = ResolveStatusFromRegistryForUser(context.Background(), reg, nil, "u1", "a@example.com", "https://hub.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(status.ResetVouchers) != 1 || status.ResetVouchers[0].ID != "v1" {
+		t.Fatalf("live-card user missing voucher: %#v", status.ResetVouchers)
 	}
 }

@@ -220,3 +220,14 @@ Click **"Manage Projects"** to add, rename, or delete projects.
 *   **Check Update**: Get the latest version of MaClaw
 *   **System Tray**: Right-click the tray icon for quick tool launching or quitting
 *   **Security Framework**: Risk assessment engine, audit logging, security firewall, and fine-grained permission control
+
+## 12. Database Connector
+
+The agent uses a single `database` tool for MySQL, PostgreSQL, SQL Server, Access, and Excel. Passwords stay in the OS keyring and never enter the chat or logs.
+
+1. Open **Settings → Data Sources** and add a profile (host, database, read-only / write). Public hosts require **Allow public/external hosts**. You can optionally set a read replica (reads go there, writes stay on the primary). Primary and replica can each bind an already-approved SSH session as a tunnel.
+2. Store the password in the secret field (keyring only). Copying a profile does not copy the secret.
+3. In chat, call `list_connections` / `inspect` first, then parameterized `query`. Writes must dry-run, then commit only after host approval.
+4. If a result is truncated, continue with the returned `cursor` / `result_handle` instead of repeating an unbounded query. Excel export can take `result_handle` directly so you do not have to resubmit every row. Large queries can set `async=true` and poll `job_status`.
+5. `explain` previews a read-only SQL plan. A `prompt` without SQL returns schema constraints; the tool does not generate and run SQL by itself. Save frequent parameterized reads with `save_favorite` / `list_favorites`.
+6. Turn the tool off with `database_tool_enabled` or disable a single profile to close live connections immediately. Access needs Windows plus the Access Database Engine; doctor reports a setup hint when the driver is missing. GUI, TUI, and MaClawSrv must share the same database tool contract or doctor reports a schema-hash mismatch.

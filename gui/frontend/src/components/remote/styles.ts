@@ -24,14 +24,18 @@ export const colors = {
     dangerBg: "var(--theme-danger-bg)",
     link: "var(--theme-link-color)",
     infoBg: "var(--theme-info-bg)",
-    overlay: "rgba(15, 23, 42, 0.5)",
+    overlay: "var(--theme-overlay, rgba(15, 23, 42, 0.5))",
 } as const;
 
 export const radius = {
-    sm: "4px",
-    md: "6px",
-    lg: "8px",
-    xl: "10px",
+    sm: "var(--radius-sm, 6px)",
+    md: "var(--radius-md, 10px)",
+    // Large cards use the same 14px corner language as the redesigned
+    // workbench surfaces.  Keep this token shared so remote/settings pages,
+    // scheduled tasks, and the system discussion page do not fall back to the
+    // older compact 8px cards.
+    lg: "var(--radius-lg, 14px)",
+    xl: "var(--radius-lg, 14px)",
     pill: "999px",
 } as const;
 
@@ -240,7 +244,7 @@ export const remoteModalCardStyle: CSSProperties = {
     padding: "24px 28px",
     maxWidth: "420px",
     width: "90%",
-    boxShadow: "0 16px 40px rgba(0,0,0,0.18)",
+    boxShadow: "var(--shadow-xl, 0 16px 40px rgba(0,0,0,0.18))",
     color: colors.text,
 };
 

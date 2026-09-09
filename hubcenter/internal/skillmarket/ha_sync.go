@@ -41,6 +41,8 @@ type Snapshot struct {
 	RedeemCards           []SnapshotRedeemCard     `json:"redeem_cards"`
 	Submissions           []SkillSubmission        `json:"submissions"`
 	Purchases             []PurchaseRecord         `json:"purchases"`
+	SuitePurchases        []SuitePurchaseRecord    `json:"suite_purchases,omitempty"`
+	SuiteAuditEvents      []SuiteAuditEvent        `json:"suite_audit_events,omitempty"`
 	Ratings               []Rating                 `json:"ratings"`
 	Configs               []AdminConfig            `json:"configs"`
 	Tiers                 []UploaderTier           `json:"tiers"`
@@ -208,6 +210,8 @@ func (s *Store) CountSnapshotRecords(ctx context.Context) (int64, error) {
 		"sm_credit_redeem_cards",
 		"sm_submissions",
 		"sm_purchase_records",
+		"sm_suite_purchases",
+		"sm_suite_audit_events",
 		"sm_ratings",
 		"sm_admin_config",
 		"sm_uploader_tiers",
@@ -253,6 +257,12 @@ func (s *Store) DumpSnapshot(ctx context.Context) (*Snapshot, error) {
 		return nil, err
 	}
 	if snap.Purchases, err = s.dumpPurchases(ctx); err != nil {
+		return nil, err
+	}
+	if snap.SuitePurchases, err = s.dumpSuitePurchases(ctx); err != nil {
+		return nil, err
+	}
+	if snap.SuiteAuditEvents, err = s.dumpSuiteAuditEvents(ctx); err != nil {
 		return nil, err
 	}
 	if snap.Ratings, err = s.dumpRatings(ctx); err != nil {
@@ -374,6 +384,18 @@ func (s *Store) LoadSnapshot(ctx context.Context, snap *Snapshot) error {
 			item.ID, item.HubID, item.TenantID, item.BuyerEmail, canonicalSnapshotUserID(userIDAliases, item.BuyerID), item.SkillID, item.PurchasedVersion, item.PurchaseType, item.AmountPaid, item.PlatformFee, item.SellerEarning, canonicalSnapshotUserID(userIDAliases, item.SellerID), item.KeyStatus, item.APIKeyID, item.Status, fmtTime(item.CreatedAt),
 		); err != nil {
 			return fmt.Errorf("insert sm_purchase_records: %w", err)
+		}
+	}
+	for _, item := range snap.SuitePurchases {
+		members, _ := json.Marshal(item.MemberSkillIDs)
+		if _, err := tx.ExecContext(ctx, `INSERT INTO sm_suite_purchases (id,suite_id,member_skill_ids,buyer_email,buyer_id,amount_paid,version,status,created_at) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=CASE WHEN sm_suite_purchases.status='refunded' AND excluded.status<>'refunded' THEN sm_suite_purchases.status ELSE excluded.status END`, item.ID, item.SuiteID, string(members), item.BuyerEmail, canonicalSnapshotUserID(userIDAliases, item.BuyerID), item.AmountPaid, item.Version, item.Status, fmtTime(item.CreatedAt)); err != nil {
+			return fmt.Errorf("insert sm_suite_purchases: %w", err)
+		}
+	}
+	for _, item := range snap.SuiteAuditEvents {
+		members, _ := json.Marshal(item.MemberSkillIDs)
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO sm_suite_audit_events (id,suite_id,member_skill_ids,event_type,actor_id,purchase_id,created_at) VALUES (?,?,?,?,?,?,?)`, item.ID, item.SuiteID, string(members), item.EventType, item.ActorID, item.PurchaseID, fmtTime(item.CreatedAt)); err != nil {
+			return fmt.Errorf("insert sm_suite_audit_events: %w", err)
 		}
 	}
 	for _, item := range snap.Ratings {
@@ -745,6 +767,46 @@ func (s *Store) dumpPurchases(ctx context.Context) ([]PurchaseRecord, error) {
 			return nil, err
 		}
 		out = append(out, *item)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) dumpSuitePurchases(ctx context.Context) ([]SuitePurchaseRecord, error) {
+	rows, err := s.readDB.QueryContext(ctx, `SELECT id,suite_id,member_skill_ids,buyer_email,buyer_id,amount_paid,version,status,created_at FROM sm_suite_purchases ORDER BY created_at,id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SuitePurchaseRecord
+	for rows.Next() {
+		var r SuitePurchaseRecord
+		var members, created string
+		if err := rows.Scan(&r.ID, &r.SuiteID, &members, &r.BuyerEmail, &r.BuyerID, &r.AmountPaid, &r.Version, &r.Status, &created); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal([]byte(members), &r.MemberSkillIDs)
+		r.CreatedAt = parseTime(created)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) dumpSuiteAuditEvents(ctx context.Context) ([]SuiteAuditEvent, error) {
+	rows, err := s.readDB.QueryContext(ctx, `SELECT id,suite_id,member_skill_ids,event_type,actor_id,purchase_id,created_at FROM sm_suite_audit_events ORDER BY created_at,id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SuiteAuditEvent
+	for rows.Next() {
+		var e SuiteAuditEvent
+		var members, created string
+		if err := rows.Scan(&e.ID, &e.SuiteID, &members, &e.EventType, &e.ActorID, &e.PurchaseID, &created); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal([]byte(members), &e.MemberSkillIDs)
+		e.CreatedAt = parseTime(created)
+		out = append(out, e)
 	}
 	return out, rows.Err()
 }

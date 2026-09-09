@@ -4,7 +4,7 @@ package main
 // CodingSubAgent. When executing a coding task, the SubAgent can optionally
 // call installed skills (e.g. UI optimization, lint fixing) via manage_skill.
 //
-// Selection mechanism:
+// Legacy selection mechanism (scope mode bypasses it):
 //   1. Scan all active installed skills
 //   2. Score each skill's (name + description + triggers) against the task description
 //      using character n-gram overlap (works for CJK without word segmentation)
@@ -76,6 +76,10 @@ type codingSubAgentSkillMatch struct {
 	Version        string
 	ContentDigest  string
 	ContractDigest string
+	// SchemaDigest is the observed invocation-schema identity when the host
+	// supplies one. Scope admission compares it when the planner commits one;
+	// an absent digest never widens a plan-bound match.
+	SchemaDigest string
 }
 
 func codingSubAgentSkillContentDigest(def NLSkillDefinition) string {
@@ -189,6 +193,7 @@ func (c *codingSubAgentCallbacks) selectRelevantSkillsForTask(taskDescription st
 		version        string
 		contentDigest  string
 		contractDigest string
+		schemaDigest   string
 	}
 	var candidates []candidate
 	skippedByTaskFit := 0
@@ -213,7 +218,7 @@ func (c *codingSubAgentCallbacks) selectRelevantSkillsForTask(taskDescription st
 			continue
 		}
 		doc := s.Name + " " + s.Description + " " + strings.Join(s.Triggers, " ")
-		if !codingSubAgentSkillFitsTask(taskDescription, doc) {
+		if !c.scopeBasedSelection && !codingSubAgentSkillFitsTask(taskDescription, doc) {
 			skippedByTaskFit++
 			continue
 		}
@@ -227,14 +232,42 @@ func (c *codingSubAgentCallbacks) selectRelevantSkillsForTask(taskDescription st
 			version:        strings.TrimSpace(s.HubVersion),
 			contentDigest:  codingSubAgentSkillContentDigest(s),
 			contractDigest: codingSubAgentSkillContractDigest(s),
+			schemaDigest:   codingSubAgentSkillScopeSchemaDigest(s),
 		})
 	}
 	if len(candidates) == 0 {
 		return nil
 	}
 
+	if c.scopeBasedSelection {
+		// Scope mode is an exact host-admission projection. It deliberately
+		// does not score, rank, or fill from the remaining registry: a missing
+		// plan/binding closes the family rather than exposing the whole catalog.
+		admitted := make([]codingSubAgentSkillMatch, 0, len(candidates))
+		for _, cand := range candidates {
+			desc := cand.description
+			if len([]rune(desc)) > 80 {
+				desc = string([]rune(desc)[:80]) + "..."
+			}
+			admitted = append(admitted, codingSubAgentSkillMatch{
+				Name: cand.name, QualifiedID: cand.qualifiedID, Description: desc,
+				Score: 1, RequiredArgs: append([]string(nil), cand.requiredArgs...),
+				StableID: cand.stableID, Version: cand.version, ContentDigest: cand.contentDigest,
+				ContractDigest: cand.contractDigest, SchemaDigest: cand.schemaDigest,
+			})
+		}
+		admitted = c.filterCodingScopeSkills(admitted)
+		if len(admitted) == 0 {
+			log.Printf("[coding-subagent] skill selection: task=%q scope_admission=closed candidates=%d skipped_other_domain=%d skipped_runner_incompatible=%d",
+				truncateLogText(taskDescription, 60), len(candidates), skippedByExperienceDomain, skippedByRunnerCompatibility)
+			return nil
+		}
+		log.Printf("[coding-subagent] skill selection: scope-admitted candidates=%d matched=%d", len(candidates), len(admitted))
+		return admitted
+	}
+
 	taskForScore := strings.TrimSpace(taskDescription)
-	if taskForScore == "" {
+	if taskForScore == "" && !c.scopeBasedSelection {
 		if !fullEnv {
 			return nil
 		}
@@ -248,7 +281,8 @@ func (c *codingSubAgentCallbacks) selectRelevantSkillsForTask(taskDescription st
 		docs[i] = cand.doc
 	}
 
-	// Three-signal scoring via shared infrastructure.
+	// Three-signal scoring via shared infrastructure for legacy callers. Scope
+	// callers returned above from the exact admission projection.
 	emb := getSubAgentEmbedder(c.subagent.handler)
 	scored := scoreAndSelectTopK(taskForScore, docs, emb, maxK, threshold)
 
@@ -281,6 +315,7 @@ func (c *codingSubAgentCallbacks) selectRelevantSkillsForTask(taskDescription st
 			Version:        cand.version,
 			ContentDigest:  cand.contentDigest,
 			ContractDigest: cand.contractDigest,
+			SchemaDigest:   cand.schemaDigest,
 		}
 	}
 

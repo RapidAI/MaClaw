@@ -500,6 +500,33 @@ func TestQualifiedCodingBoundDynamicRequestLifecycleRelayStaysAbsentForCurrentCa
 	}
 }
 
+func TestQualifiedCodingBoundDynamicRequestLifecycleRelayStaysAbsentForProductionResponsesWS(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(app.closeSemanticInvocationStore)
+	handler := &IMMessageHandler{app: app}
+	identity := &trustedCodingInvocationIdentity{TenantID: "tenant", PrincipalID: "principal", SessionID: "session", RootTaskID: "root", TurnID: "turn"}
+	cfg := corelib.MaclawLLMConfig{
+		URL:      "wss://provider.example/responses",
+		Key:      "should-not-be-used-by-gate",
+		Model:    "responses-model",
+		Protocol: "openai",
+		WireAPI:  "responses-ws",
+	}
+	if relay := newQualifiedCodingBoundDynamicRequestLifecycleRelay(handler, identity, cfg); relay != nil {
+		t.Fatalf("production Responses-WS identity unexpectedly attached dynamic relay: %#v", relay)
+	}
+	local := &codingSubAgentCallbacks{subagent: &CodingSubAgent{handler: handler, cfg: cfg, dynamicInvocationIdentity: identity}}
+	local.tryAttachQualifiedDynamicLifecycleRelay()
+	if local.dynamicLifecycleRelay != nil || local.codingDynamicAliasesMayMaterialize() {
+		t.Fatalf("production Responses-WS callback exposed dynamic aliases: relay=%#v", local.dynamicLifecycleRelay)
+	}
+	remote := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{handler: handler, cfg: cfg, dynamicInvocationIdentity: identity}}
+	remote.tryAttachQualifiedDynamicLifecycleRelay()
+	if remote.dynamicLifecycleRelay != nil || remote.codingDynamicAliasesMayMaterialize() {
+		t.Fatalf("production Responses-WS remote callback exposed dynamic aliases: relay=%#v", remote.dynamicLifecycleRelay)
+	}
+}
+
 func TestCodingCallbacksDoNotAttachDynamicLifecycleRelayWhileQualificationDisabled(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	t.Cleanup(app.closeSemanticInvocationStore)

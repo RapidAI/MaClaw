@@ -166,24 +166,25 @@ func DoOpenAIRequestStreamWithOptions(
 			return nil, fmt.Errorf("[%s] %w", endpoint, err)
 		}
 		log.Printf("[LLM-stream] done %s model=%s configured_model=%s status=%d elapsed=%s body_len=%d request=%s %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(startedAt).Round(time.Millisecond), len(body), SummarizeOpenAIChatRequestBody(reqBody), traceFields)
-		if !TransparentRequestRetriesDisabled(ctx) && statusCode != http.StatusOK && ShouldRetryOpenAIWithCompact(cfg, statusCode, messages, tools) {
-			compactMessages := CompactOpenAICompatMessagesForToollessRetry(cfg, messages)
-			log.Printf("[LLM-stream] retry_compact_without_tools %s model=%s configured_model=%s reason=conservative_openai_compat_400_direct %s", endpoint, upstreamModel, cfg.Model, traceFields)
-			endpoint, reqBody, err = BuildOpenAIChatRequestData(cfg, compactMessages, OpenAIChatRequestOptions{Stream: true})
-			if err != nil {
-				return nil, err
-			}
-			compactStartedAt := time.Now()
-			result, statusCode, body, err = openAISDKChatStream(ctx, cfg, reqBody, client, onToken, onReasoning)
-			if err != nil {
-				if statusCode == 0 {
-					log.Printf("[LLM-stream] retry_compact_without_tools done %s model=%s configured_model=%s status=error elapsed=%s err=%v %s", endpoint, upstreamModel, cfg.Model, time.Since(compactStartedAt).Round(time.Millisecond), err, traceFields)
-					return nil, fmt.Errorf("[%s] %w", endpoint, err)
+		if !TransparentRequestRetriesDisabled(ctx) {
+			if compactMessages, retryOpts, ok := compactRetryChatRequest(cfg, statusCode, messages, tools, opts, true); ok {
+				log.Printf("[LLM-stream] retry_compact_messages %s model=%s configured_model=%s reason=conservative_openai_compat_400_direct %s", endpoint, upstreamModel, cfg.Model, traceFields)
+				endpoint, reqBody, err = BuildOpenAIChatRequestData(cfg, compactMessages, retryOpts)
+				if err != nil {
+					return nil, err
 				}
-				log.Printf("[LLM-stream] retry_compact_without_tools done %s model=%s configured_model=%s status=%d elapsed=%s body_len=%d request=%s %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(compactStartedAt).Round(time.Millisecond), len(body), SummarizeOpenAIChatRequestBody(reqBody), traceFields)
-				return nil, streamHTTPStatusError(statusCode, body)
+				compactStartedAt := time.Now()
+				result, statusCode, body, err = openAISDKChatStream(ctx, cfg, reqBody, client, onToken, onReasoning)
+				if err != nil {
+					if statusCode == 0 {
+						log.Printf("[LLM-stream] retry_compact_messages done %s model=%s configured_model=%s status=error elapsed=%s err=%v %s", endpoint, upstreamModel, cfg.Model, time.Since(compactStartedAt).Round(time.Millisecond), err, traceFields)
+						return nil, fmt.Errorf("[%s] %w", endpoint, err)
+					}
+					log.Printf("[LLM-stream] retry_compact_messages done %s model=%s configured_model=%s status=%d elapsed=%s body_len=%d request=%s %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(compactStartedAt).Round(time.Millisecond), len(body), SummarizeOpenAIChatRequestBody(reqBody), traceFields)
+					return nil, streamHTTPStatusError(statusCode, body)
+				}
+				log.Printf("[LLM-stream] retry_compact_messages done %s model=%s configured_model=%s status=%d elapsed=%s %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(compactStartedAt).Round(time.Millisecond), traceFields)
 			}
-			log.Printf("[LLM-stream] retry_compact_without_tools done %s model=%s configured_model=%s status=%d elapsed=%s %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(compactStartedAt).Round(time.Millisecond), traceFields)
 		}
 		if err != nil {
 			// Prefer structured HTTP error only for real non-OK statuses.

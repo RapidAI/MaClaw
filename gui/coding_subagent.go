@@ -226,7 +226,7 @@ func (s *CodingSubAgent) prepareAdmittedReadOnlyChildSemanticState(request codin
 	s.dynamicInvocationIdentity = nil
 	s.verifiedInvocationIdentity = nil
 	s.staticWorkspaceBinding = codingStaticWorkspaceBinding{}
-	s.staticShadowPlan = nil
+	setCodingStaticShadowPlan(s, nil)
 	s.verifiedTaskRelationService = nil
 	s.verifiedTaskSubject = verifiedCodingSubject{}
 	s.verifiedTaskHandle = nil
@@ -241,7 +241,7 @@ func (s *CodingSubAgent) prepareAdmittedReadOnlyChildSemanticState(request codin
 		s.dynamicInvocationIdentity, _ = resolveTrustedCodingInvocationIdentity(s.runtimeStore, request)
 	}
 	if s.dynamicInvocationIdentity != nil && s.dynamicInvocationIdentity.complete() {
-		s.staticShadowPlan = prepareAdmittedLocalChildStaticShadowPlan(s, request)
+		setCodingStaticShadowPlan(s, prepareAdmittedLocalChildStaticShadowPlan(s, request))
 	}
 }
 
@@ -958,13 +958,51 @@ type codingSubAgentCallbacks struct {
 	// dynamic-tool prompt assembly on every LLM turn.
 	cachedSystemPrompt string
 
-	// matchedSkills holds skills selected for this task via BM25 matching.
+	// matchedSkills holds the exact dynamic Skill projection for this scope.
 	matchedSkills         []codingSubAgentSkillMatch
 	matchedSkillsSelected bool
+	// hostAdmittedSkills is an optional host-owned dynamic binding set. Scope
+	// selection may use it only when hostDynamicBindingsAdmitted is true; a
+	// model/task wording or a locally computed score can never populate this
+	// authority.
+	hostAdmittedSkills []codingSubAgentSkillMatch
 
-	// matchedMCPTools holds MCP tools selected for this task.
+	// matchedMCPTools holds the exact dynamic MCP projection for this scope.
 	matchedMCPTools         []codingSubAgentMCPToolMatch
 	matchedMCPToolsSelected bool
+	// hostAdmittedMCPTools is the MCP counterpart to hostAdmittedSkills.
+	hostAdmittedMCPTools []codingSubAgentMCPToolMatch
+	// hostDynamicBindingsAdmitted distinguishes an explicit empty admission
+	// (valid: this scope has no dynamic providers) from a missing admission
+	// (unsafe: discovery must fail closed).
+	hostDynamicBindingsAdmitted bool
+	toolSnapshotID              string
+	// toolSnapshotPlannerDigest records whether toolSnapshotID came from the
+	// trusted semantic planner. A locally derived fallback may be replaced by
+	// a planner digest which arrives later; an already adopted planner digest
+	// is immutable until explicit host invalidation.
+	toolSnapshotPlannerDigest bool
+	// toolSnapshotPlannerConflict is terminal until host invalidation. It keeps
+	// a stale planner result from silently falling back to a different local
+	// snapshot identity.
+	toolSnapshotPlannerConflict bool
+	// These fields fence a plan that was invalidated by a host capability or
+	// policy change. The old plan may remain attached briefly while the host
+	// prepares a replacement; adopting it again would resurrect stale scope.
+	toolSnapshotPlannerInvalidated       bool
+	toolSnapshotPlannerInvalidatedPlan   *codingStaticPlanPreparation
+	toolSnapshotPlannerInvalidatedDigest string
+	// toolSnapshotPlannerAdoptedPlan remembers the exact preparation object
+	// whose digest was accepted. It lets invalidation fence a stale plan even
+	// when the host temporarily detaches staticShadowPlan before notifying us.
+	toolSnapshotPlannerAdoptedPlan *codingStaticPlanPreparation
+	toolScopeSubscriptionID        uint64
+	toolScopeMu                    sync.RWMutex
+	toolScopeSelectionMu           sync.Mutex
+	// scopeBasedSelection makes dynamic capability discovery task-scope driven.
+	// It is false for legacy GUI callers until their host scope is explicitly
+	// prepared; the snapshot still binds the admitted set deterministically.
+	scopeBasedSelection bool
 
 	// dynamicSurface contains request-local opaque aliases for selected Skill/MCP
 	// invocations. It intentionally is not part of the static tool template:
@@ -1044,6 +1082,7 @@ func newCodingSubAgentCallbacks(s *CodingSubAgent, task *TaskItem, reqCtx, desig
 		prevOutputs:              prevOutputs,
 		workspaceWasEmptyAtStart: projectWorkspaceWasEmpty(projectPath),
 		dynamicSurface:           &codingDynamicSurface{},
+		scopeBasedSelection:      true,
 	}
 	callback.tryAttachQualifiedDynamicLifecycleRelay()
 	return callback
@@ -1445,27 +1484,117 @@ This request is running on the temporary uncorrelated Coding compatibility surfa
 }
 
 func (c *codingSubAgentCallbacks) ensureMatchedSkillsSelected() {
-	if c == nil || c.matchedSkillsSelected {
+	if c == nil {
 		return
 	}
-	if len(c.matchedSkills) > 0 {
+	if !c.ensureCodingPlannerSnapshotAdopted() {
+		return
+	}
+	if c.scopeBasedSelection {
+		if _, authoritative, reason := c.codingScopeDynamicAdmissions("skill"); !authoritative {
+			log.Printf("[coding-subagent] skill selection deferred reason=%s", reason)
+			return
+		}
+	}
+	c.toolScopeSelectionMu.Lock()
+	defer c.toolScopeSelectionMu.Unlock()
+	c.toolScopeMu.RLock()
+	selected := c.matchedSkillsSelected
+	preselected := len(c.matchedSkills) > 0
+	c.toolScopeMu.RUnlock()
+	if selected {
+		c.finalizeCodingToolScopeSnapshot()
+		return
+	}
+	if preselected {
+		if c.scopeBasedSelection {
+			c.toolScopeMu.RLock()
+			admitted := cloneCodingScopeSkillMatches(c.matchedSkills)
+			hostAdmission := c.hostDynamicBindingsAdmitted
+			c.toolScopeMu.RUnlock()
+			if !hostAdmission {
+				log.Printf("[coding-subagent] skill preselection rejected reason=host_admission_missing")
+				return
+			}
+			admitted = c.filterCodingScopeSkills(admitted)
+			if len(admitted) == 0 {
+				return
+			}
+			c.toolScopeMu.Lock()
+			c.matchedSkills = admitted
+			c.toolScopeMu.Unlock()
+		}
+		c.toolScopeMu.Lock()
 		c.matchedSkillsSelected = true
+		c.toolScopeMu.Unlock()
+		c.finalizeCodingToolScopeSnapshot()
 		return
 	}
-	c.matchedSkills = c.selectRelevantSkillsForTask(c.dynamicSelectionText())
-	c.matchedSkillsSelected = true
+	skills := c.selectRelevantSkillsForTask(c.dynamicSelectionText())
+	c.toolScopeMu.Lock()
+	if !c.matchedSkillsSelected {
+		c.matchedSkills = skills
+		c.matchedSkillsSelected = true
+	}
+	c.toolScopeMu.Unlock()
+	c.finalizeCodingToolScopeSnapshot()
 }
 
 func (c *codingSubAgentCallbacks) ensureMatchedMCPToolsSelected() {
-	if c == nil || c.matchedMCPToolsSelected {
+	if c == nil {
 		return
 	}
-	if len(c.matchedMCPTools) > 0 {
+	if !c.ensureCodingPlannerSnapshotAdopted() {
+		return
+	}
+	if c.scopeBasedSelection {
+		if _, authoritative, reason := c.codingScopeDynamicAdmissions("mcp"); !authoritative {
+			log.Printf("[coding-subagent] MCP selection deferred reason=%s", reason)
+			return
+		}
+	}
+	c.toolScopeSelectionMu.Lock()
+	defer c.toolScopeSelectionMu.Unlock()
+	c.toolScopeMu.RLock()
+	selected := c.matchedMCPToolsSelected
+	preselected := len(c.matchedMCPTools) > 0
+	c.toolScopeMu.RUnlock()
+	if selected {
+		c.finalizeCodingToolScopeSnapshot()
+		return
+	}
+	if preselected {
+		if c.scopeBasedSelection {
+			c.toolScopeMu.RLock()
+			admitted := cloneCodingScopeMCPMatches(c.matchedMCPTools)
+			hostAdmission := c.hostDynamicBindingsAdmitted
+			c.toolScopeMu.RUnlock()
+			if !hostAdmission {
+				log.Printf("[coding-subagent] MCP preselection rejected reason=host_admission_missing")
+				return
+			}
+			admitted = c.filterCodingScopeMCP(admitted)
+			if len(admitted) == 0 {
+				return
+			}
+			c.toolScopeMu.Lock()
+			c.matchedMCPTools = admitted
+			c.toolScopeMu.Unlock()
+		}
+		c.toolScopeMu.Lock()
 		c.matchedMCPToolsSelected = true
+		c.toolScopeMu.Unlock()
+		c.finalizeCodingToolScopeSnapshot()
 		return
 	}
-	c.matchedMCPTools = c.selectRelevantMCPToolsForTask(c.dynamicSelectionText())
-	c.matchedMCPToolsSelected = true
+	mcpTools := c.selectRelevantMCPToolsForTask(c.dynamicSelectionText())
+	c.toolScopeMu.Lock()
+	if !c.matchedMCPToolsSelected {
+		c.matchedMCPTools = mcpTools
+		c.matchedMCPToolsSelected = true
+	}
+	c.toolScopeMu.Unlock()
+	c.finalizeCodingToolScopeSnapshot()
 }
 
 func (c *codingSubAgentCallbacks) dynamicSelectionText() string {
@@ -1605,7 +1734,7 @@ func (c *codingSubAgentCallbacks) recordStaticCompatibilitySurface(definitions [
 	var handler *IMMessageHandler
 	userID := ""
 	if c.subagent != nil {
-		identity, prepared, handler = c.subagent.dynamicInvocationIdentity, c.subagent.staticShadowPlan, c.subagent.handler
+		identity, prepared, handler = c.subagent.dynamicInvocationIdentity, codingStaticShadowPlanOf(c.subagent), c.subagent.handler
 		if c.subagent.loopCtx != nil {
 			userID = c.subagent.loopCtx.UserID
 		}
@@ -15528,7 +15657,57 @@ func RunTaskWithSubAgent(
 	onToken func(string),
 	onProgress func(string),
 ) *CodingSubAgentResult {
-	return runTaskWithSubAgentRuntimeOptions(handler, cfg, httpClient, task, projectPath, reqCtx, designCtx, prevOutputs, loopCtx, onToken, onProgress, nil)
+	// Every production GUI coding turn enters the ledger with an explicit
+	// writer/read-only posture. Historically this call passed nil options,
+	// which normalized to ReadOnly=false + WriteSet.Unknown=true and allowed a
+	// mutating SubAgent to run without the final workspace gate. Derive the
+	// bounded declaration from the task plan before creating the executor.
+	return runTaskWithSubAgentRuntimeOptions(handler, cfg, httpClient, task, projectPath, reqCtx, designCtx, prevOutputs, loopCtx, onToken, onProgress, defaultGUICodingRuntimeOptions(task, projectPath))
+}
+
+// defaultGUICodingRuntimeOptions is the production admission policy for a
+// serial GUI turn. Inquiry turns are explicitly read-only. Implementation and
+// operational turns are serialized writers and therefore require a successful
+// before/after workspace probe. Planned files form the narrow write-set; a
+// dynamic one-shot task with no file list receives an explicit project-root
+// directory claim so it is known-but-conservative rather than Unknown.
+func defaultGUICodingRuntimeOptions(task *TaskItem, projectPath string) *guiCodingRuntimeOptions {
+	options := &guiCodingRuntimeOptions{}
+	if codingTaskLooksInquiry(task) {
+		options.ReadOnly = true
+		return options
+	}
+	options.RequireFinalWorkspaceGate = true
+	if task != nil {
+		options.DeclaredWrites = append(options.DeclaredWrites, task.Files...)
+		options.DeclaredWrites = append(options.DeclaredWrites, task.ActualFiles...)
+		options.DeclaredWrites = append(options.DeclaredWrites, task.ActualCreatedFiles...)
+	}
+	options.DeclaredWrites = uniqueSortedSubAgentStrings(options.DeclaredWrites)
+	if len(options.DeclaredWrites) == 0 {
+		if root := guiCodingProjectRootDirectoryClaim(projectPath); root != "" {
+			options.DeclaredWrites = []string{root}
+		}
+	}
+	return options
+}
+
+func guiCodingProjectRootDirectoryClaim(projectPath string) string {
+	root := strings.TrimSpace(projectPath)
+	if root == "" {
+		return ""
+	}
+	root = filepath.Clean(root)
+	if root == "." || root == string(filepath.Separator) {
+		return ""
+	}
+	if !filepath.IsAbs(root) {
+		// Claims are relative to the frozen project scope. A relative project
+		// path such as `repo` must not be repeated as a claim (`repo/`), which
+		// would normalize as a sibling path instead of the scope root.
+		return "." + string(filepath.Separator)
+	}
+	return root + string(filepath.Separator)
 }
 
 // runTaskWithSubAgentRuntimeOptions is the internal implementation boundary
@@ -15547,6 +15726,13 @@ func runTaskWithSubAgentRuntimeOptions(
 	onProgress func(string),
 	runtimeOptions *guiCodingRuntimeOptions,
 ) *CodingSubAgentResult {
+	// Keep the internal boundary fail-closed even if a future GUI caller omits
+	// options. The public production wrapper already supplies this snapshot,
+	// but normalizing nil here prevents a newly added ingress from recreating
+	// the historical unknown-write-set path by accident.
+	if runtimeOptions == nil {
+		runtimeOptions = defaultGUICodingRuntimeOptions(task, projectPath)
+	}
 	// OpenHuman-inspired + sticky RoutePref (auto/primary/reasoning/vision).
 	userID := ""
 	if loopCtx != nil {
@@ -15676,7 +15862,7 @@ func runTaskWithSubAgentRuntimeOptions(
 			if planErr != nil {
 				log.Printf("[coding-static-shadow] plan unavailable reason=catalog_incomplete")
 			} else {
-				sa.staticShadowPlan = prepared
+				setCodingStaticShadowPlan(sa, prepared)
 				log.Printf("[coding-static-shadow] root=%s turn=%s plan=%s selections=%d omitted=%d unmet=%d", sa.dynamicInvocationIdentity.RootTaskID, sa.dynamicInvocationIdentity.TurnID, prepared.Plan.ID, len(prepared.Plan.Selections), len(prepared.Plan.Omitted), len(prepared.Plan.Unmet))
 			}
 		}
@@ -15703,7 +15889,8 @@ func runTaskWithSubAgentRuntimeOptions(
 		unregisterRuntimeCancellation()
 	}
 	sa.runtimeStore, sa.runtimeAttempt, sa.dynamicInvocationIdentity, sa.verifiedInvocationIdentity = nil, nil, nil, nil
-	sa.staticWorkspaceBinding, sa.staticShadowPlan = codingStaticWorkspaceBinding{}, nil
+	sa.staticWorkspaceBinding = codingStaticWorkspaceBinding{}
+	setCodingStaticShadowPlan(sa, nil)
 	sa.correlatedLocalExecution = false
 	sa.verifiedTaskRelationService, sa.verifiedTaskHandle = nil, nil
 	sa.verifiedTaskSubject = verifiedCodingSubject{}

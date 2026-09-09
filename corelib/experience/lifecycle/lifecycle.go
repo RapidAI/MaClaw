@@ -75,10 +75,17 @@ type Entry struct {
 	SourceType  string          `json:"source_type,omitempty"`
 	SourceURL   string          `json:"source_url,omitempty"`
 	EvidenceIDs []string        `json:"evidence_ids,omitempty"`
-	Boundary    Boundary        `json:"boundary,omitempty"`
-	Priority    float64         `json:"priority,omitempty"`
-	Utility     UtilityStats    `json:"utility,omitempty"`
-	Governance  GovernanceState `json:"governance,omitempty"`
+	// Positive/negative path fields carry the paired-branch provenance of
+	// comparative_skill drafts so a promoted skill can be traced back to the
+	// trajectory and repair evidence that produced it.
+	PositivePath        string          `json:"positive_path,omitempty"`
+	NegativePath        string          `json:"negative_path,omitempty"`
+	PositiveEvidenceIDs []string        `json:"positive_evidence_ids,omitempty"`
+	NegativeEvidenceIDs []string        `json:"negative_evidence_ids,omitempty"`
+	Boundary            Boundary        `json:"boundary,omitempty"`
+	Priority            float64         `json:"priority,omitempty"`
+	Utility             UtilityStats    `json:"utility,omitempty"`
+	Governance          GovernanceState `json:"governance,omitempty"`
 }
 
 type EventType string
@@ -95,6 +102,8 @@ const (
 	EventUserFeedbackReceived   EventType = "user_feedback_received"
 	EventRepairAttempted        EventType = "repair_attempted"
 	EventRepairApplied          EventType = "repair_applied"
+	EventToolRecovered          EventType = "tool_recovered"
+	EventCounterfactualEvaluated EventType = "counterfactual_evaluated"
 )
 
 type Event struct {

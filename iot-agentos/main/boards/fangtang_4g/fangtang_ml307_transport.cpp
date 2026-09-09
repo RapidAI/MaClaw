@@ -1151,8 +1151,14 @@ extern "C" esp_err_t ml307_transport_http_request(
     char *response, size_t response_capacity, size_t *response_len,
     int *status_code, bool *truncated, int timeout_ms,
     const void *cancellation_owner, bool foreground) {
-    if (!method || !url || !response || response_capacity < 2 ||
-        !response_len || !status_code || !truncated) {
+    /* Public transport callers must provide an explicit finite budget.  The
+     * request object still has a defensive fallback for legacy internal
+     * construction, but allowing zero here would silently turn a caller
+     * timeout bug into a 30-second modem transaction that cannot participate
+     * in a parent PREPARE deadline. */
+    if (!method || !method[0] || !url || !url[0] || !response || response_capacity < 2 ||
+        !response_len || !status_code || !truncated || timeout_ms <= 0 ||
+        (body_len != 0u && !body)) {
         return ESP_ERR_INVALID_ARG;
     }
     *response_len = 0;
@@ -1205,9 +1211,10 @@ extern "C" esp_err_t ml307_transport_http_request_stream(
     char *response, size_t response_capacity, size_t *response_len,
     int *status_code, bool *truncated, int timeout_ms,
     const void *cancellation_owner, bool foreground) {
-    if (!method || !url || !body_reader || !stream_buffer ||
+    if (!method || !method[0] || !url || !url[0] || !body_reader || !stream_buffer ||
         stream_buffer_size < kHttpContentChunkSize || !response ||
-        response_capacity < 2 || !response_len || !status_code || !truncated) {
+        response_capacity < 2 || !response_len || !status_code || !truncated ||
+        timeout_ms <= 0) {
         return ESP_ERR_INVALID_ARG;
     }
     *response_len = 0;

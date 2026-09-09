@@ -31,7 +31,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/RapidAI/CodeClaw/gui/petpack"
+	"github.com/RapidAI/CodeClaw/guiapp/petpack"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skillmarket"
 	xdraw "golang.org/x/image/draw"
 	_ "golang.org/x/image/webp"

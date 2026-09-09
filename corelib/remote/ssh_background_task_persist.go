@@ -481,27 +481,45 @@ func (m *SSHBackgroundTaskManager) signalPersist() {
 	}
 
 	// 简单的异步 debounce：如果已有 pending 的写盘，不重复调度
+	m.persistMu.Lock()
+	if m.persistClosed {
+		m.persistMu.Unlock()
+		return
+	}
 	m.persistOnce.Do(func() {
 		m.persistCh = make(chan struct{}, 1)
-		go m.persistLoop()
+		m.persistStop = make(chan struct{})
+		go m.persistLoop(m.persistCh, m.persistStop)
 	})
+	persistCh := m.persistCh
+	m.persistMu.Unlock()
 
 	select {
-	case m.persistCh <- struct{}{}:
+	case persistCh <- struct{}{}:
 	default:
 	}
 }
 
-// persistLoop 是后台持久化 goroutine，使用 150ms debounce。
-// 此 goroutine 与进程同生命周期（persistCh 永不关闭）。
-// SSHBackgroundTaskManager 是进程级单例，不存在 GC 泄漏问题。
-func (m *SSHBackgroundTaskManager) persistLoop() {
-	for range m.persistCh {
-		time.Sleep(150 * time.Millisecond)
+// persistLoop 是后台持久化 goroutine，使用 150ms debounce；Close 会通过
+// stop channel 结束它，避免宿主退出后遗留进程级 worker。
+func (m *SSHBackgroundTaskManager) persistLoop(persistCh <-chan struct{}, stop <-chan struct{}) {
+	for {
+		select {
+		case <-stop:
+			return
+		case <-persistCh:
+		}
+		select {
+		case <-stop:
+			return
+		case <-time.After(150 * time.Millisecond):
+		}
 		// drain any additional signals during debounce
 		for {
 			select {
-			case <-m.persistCh:
+			case <-stop:
+				return
+			case <-persistCh:
 			default:
 				goto flush
 			}

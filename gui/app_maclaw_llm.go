@@ -4331,10 +4331,6 @@ func (a *App) ensureCodeGenToken() error {
 			log.Printf("[CodeGen] save refreshed token failed: %v", err)
 			return fmt.Errorf("CodeGen 认证刷新成功但保存失败: %w", err)
 		}
-		// Only update MaClaw's in-app tool model lists (config.json). Do not
-		// rewrite native CLI configs (~/.codex, ~/.claude, …) until the user
-		// explicitly launches that tool from the programming-tools UI.
-		a.syncCodeGenAPIKeysToToolConfigs(updated)
 		return nil
 	}
 
@@ -4485,9 +4481,6 @@ func (a *App) StartCodeGenSSO() (CodeGenSSOInfo, error) {
 			}
 		}
 	}
-
-	// 5. 将 CodeGen 注入到各编程工具的服务商列表中（仅 MaClaw config.json）
-	a.injectCodeGenModelIntoToolConfigs(result)
 
 	return CodeGenSSOInfo{
 		Message: "SSO 认证成功",
@@ -5066,10 +5059,6 @@ func (a *App) StartCodeGenSSOEmbedded() (CodeGenSSOEmbeddedResult, error) {
 				}
 			}
 		}
-
-		// Inject into MaClaw tool model lists only; native CLI configs are
-		// written later when the user launches a programming tool.
-		a.injectCodeGenModelIntoToolConfigs(result)
 
 		resultCh <- ssoPollingResult{
 			info: CodeGenSSOInfo{Message: "SSO 认证成功", Email: result.Email, ModelID: result.ModelID},

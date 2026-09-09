@@ -23,7 +23,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/RapidAI/CodeClaw/gui/petpack"
+	"github.com/RapidAI/CodeClaw/guiapp/petpack"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skillmarket"
 	_ "modernc.org/sqlite"
 )

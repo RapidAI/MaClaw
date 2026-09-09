@@ -23,10 +23,10 @@ import (
 // take precedence over env until process restart.
 
 const (
-	mobileCapDocFreeDefault         int64 = 100 * 1024 * 1024
-	mobileCapDocPaidDefault         int64 = 500 * 1024 * 1024
-	mobileCapExportFreeDefault            = 3
-	mobileCapExportPaidDefault            = 10
+	mobileCapDocFreeDefault    int64 = 100 * 1024 * 1024
+	mobileCapDocPaidDefault    int64 = 500 * 1024 * 1024
+	mobileCapExportFreeDefault       = 3
+	mobileCapExportPaidDefault       = 10
 	// Phase E: hub_exec can pull larger files via chunked base64 (default 32MiB absolute).
 	mobileCapHubFileDownloadDefault int64 = 32 * 1024 * 1024
 )
@@ -175,14 +175,14 @@ func mobileCapsRuntimeApply(docFree, docPaid, exportFree, exportPaid, hubDL int6
 
 // mobilePlanCaps is the effective product matrix for a viewer plan.
 type mobilePlanCaps struct {
-	Plan                   string
-	DocumentQuotaBytes     int64
-	MaxUploadBytes         int64
-	MaxExportJobs          int
-	SharedEmployees        bool
-	HubSSHExec             bool
-	MobileAgent            bool
-	DocumentAI             bool
+	Plan                    string
+	DocumentQuotaBytes      int64
+	MaxUploadBytes          int64
+	MaxExportJobs           int
+	SharedEmployees         bool
+	HubSSHExec              bool
+	MobileAgent             bool
+	DocumentAI              bool
 	HubFileDownloadMaxBytes int64
 }
 
@@ -270,20 +270,20 @@ func mobilePlanCapsFor(plan string, grant mobileServiceGrantSnapshot, officialEn
 
 func (c mobilePlanCaps) toEntitlementMap(grant mobileServiceGrantSnapshot, entitled bool) map[string]any {
 	return map[string]any{
-		"mobile_official":            entitled,
-		"mobile_agent":               c.MobileAgent,
-		"document_ai":                c.DocumentAI,
-		"shared_employees":           c.SharedEmployees,
-		"hub_ssh_exec":               c.HubSSHExec,
-		"plan":                       c.Plan,
-		"service_active":             grant.Active,
-		"credits_available":          grant.CreditsAvailable,
-		"credits_remaining":          grant.CreditsRemaining,
-		"service_group_count":        grant.ServiceGroupCount,
-		"has_service_card_grant":     grant.HasCardGrant,
-		"document_quota_bytes":       c.DocumentQuotaBytes,
-		"max_upload_bytes":           c.MaxUploadBytes,
-		"max_export_jobs":            c.MaxExportJobs,
+		"mobile_official":             entitled,
+		"mobile_agent":                c.MobileAgent,
+		"document_ai":                 c.DocumentAI,
+		"shared_employees":            c.SharedEmployees,
+		"hub_ssh_exec":                c.HubSSHExec,
+		"plan":                        c.Plan,
+		"service_active":              grant.Active,
+		"credits_available":           grant.CreditsAvailable,
+		"credits_remaining":           grant.CreditsRemaining,
+		"service_group_count":         grant.ServiceGroupCount,
+		"has_service_card_grant":      grant.HasCardGrant,
+		"document_quota_bytes":        c.DocumentQuotaBytes,
+		"max_upload_bytes":            c.MaxUploadBytes,
+		"max_export_jobs":             c.MaxExportJobs,
 		"hub_file_download_max_bytes": c.HubFileDownloadMaxBytes,
 	}
 }

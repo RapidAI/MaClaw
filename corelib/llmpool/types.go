@@ -83,6 +83,10 @@ type ModelProviderConfig struct {
 	Priority         int      `json:"priority,omitempty"`
 	ResolutionTier   int      `json:"resolution_tier,omitempty"`
 	CreditMultiplier float64  `json:"credit_multiplier,omitempty"`
+	// TokenPricingOverride explicitly opts this service-group route into its
+	// own commercial price. When false, provider/model pricing remains the
+	// source of truth and TokenPricing is only a legacy fallback.
+	TokenPricingOverride bool `json:"token_pricing_override,omitempty"`
 	// TokenPricing is a legacy per-model fallback input/output base price for
 	// providers without provider-level pricing. It is kept separate from
 	// CreditMultiplier, which remains a dispatch compatibility field until all
@@ -163,16 +167,25 @@ type CacheStats struct {
 
 // UsageRecord represents a single LLM request's usage for billing/statistics.
 type UsageRecord struct {
-	ProviderID     string    `json:"provider_id"`
-	Model          string    `json:"model"`
-	ServiceGroupID string    `json:"service_group_id,omitempty"`
-	WorkloadClass  string    `json:"workload_class,omitempty"`
-	ClassSource    string    `json:"class_source,omitempty"`
-	Preview        string    `json:"preview,omitempty"`
-	InputTokens    int64     `json:"input_tokens"`
-	OutputTokens   int64     `json:"output_tokens"`
-	Credits        float64   `json:"credits"`
-	CacheHit       bool      `json:"cache_hit"`
-	AuthID         string    `json:"auth_id,omitempty"`
-	Timestamp      time.Time `json:"timestamp"`
+	// RequestID is the Hub-generated idempotency/correlation key.  It lets the
+	// upstream usage ledger be reconciled to Hub's settled debit without using
+	// a lossy time/token heuristic.
+	RequestID         string    `json:"request_id,omitempty"`
+	ProviderID        string    `json:"provider_id"`
+	Model             string    `json:"model"`
+	ServiceGroupID    string    `json:"service_group_id,omitempty"`
+	WorkloadClass     string    `json:"workload_class,omitempty"`
+	ClassSource       string    `json:"class_source,omitempty"`
+	Preview           string    `json:"preview,omitempty"`
+	InputTokens       int64     `json:"input_tokens"`
+	OutputTokens      int64     `json:"output_tokens"`
+	CachedInputTokens int64     `json:"cached_input_tokens,omitempty"`
+	CacheWriteTokens  int64     `json:"cache_write_tokens,omitempty"`
+	CacheUsageSource  string    `json:"cache_usage_source,omitempty"`
+	UsageAnomaly      string    `json:"usage_anomaly,omitempty"`
+	PricingSource     string    `json:"pricing_source,omitempty"`
+	Credits           float64   `json:"credits"`
+	CacheHit          bool      `json:"cache_hit"`
+	AuthID            string    `json:"auth_id,omitempty"`
+	Timestamp         time.Time `json:"timestamp"`
 }

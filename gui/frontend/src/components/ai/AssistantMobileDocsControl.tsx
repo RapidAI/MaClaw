@@ -1,4 +1,4 @@
-import { useState, type MouseEvent } from "react";
+import { useEffect, useState, type MouseEvent } from "react";
 import { MobileDocumentsPanel } from "../layout/MobileDocumentsPanel";
 import { localizeText } from "./aiAssistantI18n";
 import { getTitleBarToolButtonStyle, type Theme } from "./aiAssistantPanelTheme";
@@ -19,6 +19,11 @@ const stopMouse = (handler: () => void) => (e: MouseEvent) => {
 /** AI title-bar entry for shared Hub Mobile document library. */
 export function AssistantMobileDocsControl({ lang, theme: t, inline }: Props) {
     const [open, setOpen] = useState(false);
+    useEffect(() => {
+        const openFromRail = () => setOpen(true);
+        window.addEventListener("maclaw:open-files", openFromRail);
+        return () => window.removeEventListener("maclaw:open-files", openFromRail);
+    }, []);
     const title = localizeText(
         lang,
         "Mobile documents (shared Hub library)",

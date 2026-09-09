@@ -352,7 +352,7 @@ func (a *App) installToolsInBackground() {
 // InstallToolOnDemand installs a specific tool when user clicks on it
 // Returns error if installation fails
 func (a *App) InstallToolOnDemand(toolName string) error {
-	return a.installToolOnDemandForOwner(a.defaultManualPolicyOwnerID(), toolName)
+	return fmt.Errorf("external programming tools are disabled")
 }
 
 func (a *App) updatePathForNode() {

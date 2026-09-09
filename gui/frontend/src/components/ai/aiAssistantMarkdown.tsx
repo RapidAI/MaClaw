@@ -1699,6 +1699,7 @@ export function renderMessage(
             return (
                 <div key={msg.id} role="group" data-testid={`assistant-chat-user-${msg.id}`} aria-label={isGuideInjection ? (lang === "en" ? "Your injected guidance" : "我已注入的引导") : (lang === "en" ? "Your message" : "我的消息")} style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", margin: "10px 0" }}>
                     <span style={{ display: "inline-flex", alignItems: "center", gap: 6, margin: `0 4px ${CHAT_SPEAKER_LABEL_GAP}px`, color: t.textMuted, fontSize: 11, lineHeight: 1.2 }}>
+                        <span className="mc-message-avatar mc-message-avatar--user" aria-hidden="true">{lang === "en" ? "U" : "我"}</span>
                         <span>{lang === "en" ? "You" : "我"}</span>
                         {isGuideInjection && (
                             <span
@@ -1719,6 +1720,7 @@ export function renderMessage(
                     </span>
                     <ChatBubbleFrame
                         side="right"
+                        tailPlacement="side"
                         background={userChatBubbleBackground(t.sendBtnBg, t.fieldBg)}
                         borderColor={t.sendBtnBorder}
                         data-testid={`assistant-chat-user-bubble-${msg.id}`}
@@ -1761,13 +1763,14 @@ export function renderMessage(
                     justifyContent: "flex-start",
                     margin: "10px 0",
                 }}>
-                    <span style={{ margin: `0 4px ${CHAT_SPEAKER_LABEL_GAP}px`, color: t.textMuted, fontSize: 11, lineHeight: 1.2 }}>{localAssistantTabTitle(lang)}</span>
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, margin: `0 4px ${CHAT_SPEAKER_LABEL_GAP}px`, color: t.textMuted, fontSize: 11, lineHeight: 1.2 }}><span className="mc-message-avatar mc-message-avatar--assistant" aria-hidden="true">M</span><span>{localAssistantTabTitle(lang)}</span></span>
                     {(() => {
                         const copyPayload = buildAssistantReplyCopyText(msg.content, msg.unfinishedSlot, lang);
                         const showCopy = copyPayload.trim().length > 0;
                         return (
                     <ChatBubbleFrame
                         side="left"
+                        tailPlacement="side"
                         background={t.fieldBg}
                         borderColor={t.fieldBorder}
                         data-testid={`assistant-chat-ai-bubble-${msg.id}`}
@@ -1886,12 +1889,18 @@ export function renderMessage(
                                 }}
                             />
                         )}
-                        {savedPaths.length > 0 && <div style={{ margin: "4px 0" }}>{savedPaths.map((fp, i) => {
-                            const label = cloudSafePathLabel(fp, lang === "en" ? "Cloud file" : "云端文件");
-                            return (
-                            <div key={i} style={{ padding: "2px 0" }}><a href="#" onClick={(event) => openFileInFolder(event, fp)} style={{ color: t.pathColor, textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: "2px", cursor: "pointer", wordBreak: "break-all" }} title={label}>{savedFileLabel}: {label}</a></div>
-                            );
-                        })}</div>}
+                        {savedPaths.length > 0 && <div className="mc-task-result-card" data-testid={`task-result-card-${msg.id}`}>
+                            <div className="mc-task-result-card__heading"><span className="mc-task-result-card__icon" aria-hidden="true">▤</span><strong>{lang === "en" ? "Task result" : "任务结果"}</strong><span>{lang === "en" ? "Document" : "文档"}</span></div>
+                            <div className="mc-task-result-card__files">{savedPaths.map((fp, i) => {
+                                const label = cloudSafePathLabel(fp, lang === "en" ? "Cloud file" : "云端文件");
+                                return <div key={i} className="mc-task-result-card__file"><a href="#" onClick={(event) => openFileInFolder(event, fp)} title={label}>{savedFileLabel}: {label}</a></div>;
+                            })}</div>
+                            <div className="mc-task-result-card__actions">
+                                <button type="button" onClick={(event) => openFileInFolder(event, savedPaths[0])}>{lang === "en" ? "View document" : "查看文档"}</button>
+                                <button type="button" onClick={(event) => { event.stopPropagation(); window.dispatchEvent(new CustomEvent("maclaw:export-task-result", { detail: { path: savedPaths[0], messageId: msg.id } })); openFileInFolder(event, savedPaths[0]); }}>{lang === "en" ? "Export" : "导出"}</button>
+                                <button type="button" onClick={() => { (document.querySelector('[data-testid="ai-input"]') as HTMLTextAreaElement | null)?.focus(); }}>{lang === "en" ? "Continue editing" : "继续修改"}</button>
+                            </div>
+                        </div>}
                         {(() => {
                             const visibleFields = (msg.fields || []).filter((f) => {
                                 const label = String(f?.label || "").toLowerCase();

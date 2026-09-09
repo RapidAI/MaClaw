@@ -72,6 +72,19 @@ func MoACheck(cfg corelib.AppConfig) Check {
 		status = StatusWarn
 		msg = "moa enabled but default preset has no reference models"
 	}
+	// Temperature knobs are honored by request builders (K21 Phase 2): validate
+	// the configured range instead of ignoring the fields.
+	invalidTemp := 0
+	for pname, p := range m.Presets {
+		if corelib.InvalidMoATemperature(p) {
+			invalidTemp++
+			detail["invalid_temperature_preset"] = pname
+		}
+	}
+	if invalidTemp > 0 {
+		status = StatusWarn
+		msg += fmt.Sprintf("; %d preset(s) with temperature out of range [0,2]", invalidTemp)
+	}
 	// Runtime stats (today's process/disk snapshot).
 	st := moa.LoadStats()
 	if st.Fanouts > 0 {

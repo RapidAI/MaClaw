@@ -115,6 +115,7 @@ export function AITabBar({ tabs, activeTabId, theme, onActivate, onClose, onInvi
         <div
             ref={containerRef}
             data-testid="ai-tab-bar"
+            className="mc-tab-bar"
             role="tablist"
             aria-label="AI conversation tabs"
             style={{

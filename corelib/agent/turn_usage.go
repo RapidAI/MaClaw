@@ -289,7 +289,8 @@ type RouteDecision struct {
 }
 
 // TurnUsageFromLLM maps a provider usage payload into TurnUsage.
-// cfg supplies model/provider labels; prices use corelib defaults when unknown.
+// cfg supplies model/provider labels and (when available) the provider's
+// directional RMB prices; defaults are used only for an unpriced config.
 func TurnUsageFromLLM(cfg corelib.MaclawLLMConfig, u *llm.Usage) TurnUsage {
 	if u == nil {
 		return TurnUsage{}
@@ -302,11 +303,35 @@ func TurnUsageFromLLM(cfg corelib.MaclawLLMConfig, u *llm.Usage) TurnUsage {
 	if out == 0 {
 		out = u.OutputTokens
 	}
-	_, _, totalCost := corelib.CalculateLLMCostRMB(
-		int64(in),
-		int64(out),
-		corelib.DefaultLLMInputPricePerMTokensRMB,
-		corelib.DefaultLLMOutputPricePerMTokensRMB,
+	inputTokens, outputTokens := int64(in), int64(out)
+	if inputTokens < 0 {
+		inputTokens = 0
+	}
+	if outputTokens < 0 {
+		outputTokens = 0
+	}
+	cached, written := int64(u.CachedInputTokens), int64(u.CacheWriteTokens)
+	if cached < 0 {
+		cached = 0
+	}
+	if written < 0 {
+		written = 0
+	}
+	if cached > inputTokens {
+		cached = inputTokens
+	}
+	if written > inputTokens-cached {
+		written = inputTokens - cached
+	}
+	inputPrice, outputPrice := cfg.InputPricePerMTokensRMB, cfg.OutputPricePerMTokensRMB
+	cacheReadPrice, cacheWritePrice := cfg.CacheReadPricePerMTokensRMB, cfg.CacheWritePricePerMTokensRMB
+	if inputPrice == 0 && outputPrice == 0 && cacheReadPrice == 0 && cacheWritePrice == 0 {
+		inputPrice, outputPrice = corelib.DefaultLLMInputPricePerMTokensRMB, corelib.DefaultLLMOutputPricePerMTokensRMB
+		cacheReadPrice, cacheWritePrice = inputPrice/10, inputPrice
+	}
+	_, _, _, _, totalCost := corelib.CalculateLLMCostRMBWithCache(
+		inputTokens, outputTokens, cached, written,
+		inputPrice, outputPrice, cacheReadPrice, cacheWritePrice,
 	)
 	return TurnUsage{
 		Model:            cfg.Model,

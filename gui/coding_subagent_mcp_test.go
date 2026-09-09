@@ -245,6 +245,45 @@ func TestSelectRelevantMCPToolsForTask_FullEnvironmentDoesNotCapToolList(t *test
 	}
 }
 
+func TestScopeBasedSelectionKeepsCompleteMCPCatalogAcrossWording(t *testing.T) {
+	tools := make([]MCPToolView, 9)
+	for i := range tools {
+		tools[i] = MCPToolView{Name: "scope_tool_" + strconv.Itoa(i), Description: "opaque capability"}
+	}
+	manager := &LocalMCPManager{clients: map[string]*LocalMCPClient{
+		"scope-mcp": {entry: corelib.LocalMCPServerEntry{Name: "Scope MCP"}, running: true, tools: tools},
+	}}
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{
+		handler: &IMMessageHandler{app: &App{localMCPManager: manager}},
+	}, scopeBasedSelection: true}
+	admitted := make([]codingSubAgentMCPToolMatch, len(tools))
+	for i := range tools {
+		admitted[i] = codingSubAgentMCPToolMatch{ServerID: "scope-mcp", ToolName: tools[i].Name}
+	}
+	cb.setHostAdmittedDynamicBindings(nil, admitted)
+	first := cb.selectRelevantMCPToolsForTask("alpha wording")
+	second := cb.selectRelevantMCPToolsForTask("entirely different beta wording")
+	if len(first) != len(tools) || len(second) != len(tools) {
+		t.Fatalf("scope selection truncated MCP catalog: first=%d second=%d want=%d", len(first), len(second), len(tools))
+	}
+	names := func(values []codingSubAgentMCPToolMatch) map[string]bool {
+		out := make(map[string]bool, len(values))
+		for _, value := range values {
+			out[value.ServerID+"/"+value.ToolName] = true
+			if value.Score != 1 {
+				t.Errorf("scope MCP selection should use neutral host score, got %v for %s", value.Score, value.ToolName)
+			}
+		}
+		return out
+	}
+	secondNames := names(second)
+	for name := range names(first) {
+		if !secondNames[name] {
+			t.Fatalf("scope MCP selection changed with wording: missing %q", name)
+		}
+	}
+}
+
 func TestCodingSubAgentMCPSection_FullEnvironmentIncludesAllConnectedTools(t *testing.T) {
 	tools := make([]MCPToolView, 17)
 	for i := range tools {

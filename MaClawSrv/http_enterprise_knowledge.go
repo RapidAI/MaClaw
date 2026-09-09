@@ -115,10 +115,10 @@ func (s *HTTPServer) handleEnterpriseKnowledgeSetUserSync(w http.ResponseWriter,
 	}
 	libs, _ := s.enterpriseSync.ListLibraries(p)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":    "ok",
+		"status":     "ok",
 		"library_id": libraryID,
-		"enabled":   *body.Enabled,
-		"libraries": libs,
+		"enabled":    *body.Enabled,
+		"libraries":  libs,
 	})
 }
 
@@ -132,6 +132,9 @@ func (s *HTTPServer) handleAdminEnterpriseKnowledgeSyncStatus(w http.ResponseWri
 
 // POST /api/v1/admin/enterprise-knowledge/sync/now
 func (s *HTTPServer) handleAdminEnterpriseKnowledgeSyncNow(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
 	if !s.requireEnterpriseSync(w) {
 		return
 	}
@@ -193,9 +196,9 @@ func (s *HTTPServer) handleEnterpriseKnowledgePurgeLibrary(w http.ResponseWriter
 	}
 	libs, _ := s.enterpriseSync.ListLibraries(p)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":     "ok",
-		"purged":     libraryID,
-		"libraries":  libs,
+		"status":        "ok",
+		"purged":        libraryID,
+		"libraries":     libs,
 		"library_count": len(libs),
 	})
 }

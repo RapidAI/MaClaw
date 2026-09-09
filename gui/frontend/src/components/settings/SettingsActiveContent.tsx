@@ -24,8 +24,8 @@ import {
     MigrationSettingsPanel,
     MISDataSettingsPanel,
     OCRConfigPanel,
-    ProgrammingToolsSettingsPanel,
     ProxySettingsPanel,
+    ProgrammingToolsSettingsPanel,
     SecurityPolicyPanel,
     SystemSettingsPanel,
     TTSConfigPanel,
@@ -391,6 +391,9 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
                 />
             ));
             break;
+        case 'programmingTools':
+            body = <ProgrammingToolsSettingsPanel config={config} setConfig={setConfig} lang={lang} />;
+            break;
         case 'llm':
             body = wrapPanel('settings-content settings-panel', (
                 <LLMConfigPanel
@@ -565,15 +568,6 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
                     setDarkSchemeId={setDarkSchemeId}
                     lightSchemeId={lightSchemeId}
                     setLightSchemeId={setLightSchemeId}
-                />
-            ));
-            break;
-        case 'display':
-            body = wrapPanel('settings-content', (
-                <ProgrammingToolsSettingsPanel
-                    config={config}
-                    setConfig={setConfig}
-                    lang={lang}
                 />
             ));
             break;

@@ -29,6 +29,9 @@ func TestLegacyAdapterProvisionFailsClosedForUnknownOrExpiredName(t *testing.T) 
 	if !LegacyAdapterCatalogIncomplete("bash", now) {
 		t.Fatal("expired legacy candidate must become catalog_incomplete")
 	}
+	if !LegacyAdapterCatalogIncomplete("not_a_real_tool", now) {
+		t.Fatal("unknown tool must be catalog_incomplete, not an implicit grant")
+	}
 }
 
 func TestLegacyAdapterProvisionCopiesAreImmutable(t *testing.T) {
@@ -41,6 +44,33 @@ func TestLegacyAdapterProvisionCopiesAreImmutable(t *testing.T) {
 	second, ok := LegacyAdapterProvisionForTool("bash", now)
 	if !ok || second.Effects[0] != EffectLocalMutation {
 		t.Fatalf("provision mutation leaked: %+v", second)
+	}
+}
+
+func TestDatabaseToolsHaveReviewedLegacyProvisions(t *testing.T) {
+	now := time.Date(2026, 8, 22, 0, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name       string
+		capability CapabilityID
+		effect     EffectClass
+	}{
+		{name: "database", capability: CapabilityBusinessDataMIS, effect: EffectSensitive},
+		{name: "database_query", capability: CapabilityBusinessDataRead, effect: EffectReadOnly},
+	}
+	for _, tc := range cases {
+		provision, ok := LegacyAdapterProvisionForTool(tc.name, now)
+		if !ok {
+			t.Fatalf("%s provision missing", tc.name)
+		}
+		if provision.Capability != tc.capability {
+			t.Fatalf("%s capability = %q, want %q", tc.name, provision.Capability, tc.capability)
+		}
+		if len(provision.Effects) != 1 || provision.Effects[0] != tc.effect {
+			t.Fatalf("%s effects = %#v, want [%s]", tc.name, provision.Effects, tc.effect)
+		}
+		if provision.Owner == "" || provision.AdapterContract == "" {
+			t.Fatalf("%s provision is incomplete: %+v", tc.name, provision)
+		}
 	}
 }
 
@@ -82,6 +112,28 @@ func TestRouterRecordsOnlyReviewedCapabilityRecommendations(t *testing.T) {
 	}
 	if !foundRead {
 		t.Fatalf("reviewed read_file capability evidence missing: %+v", recommendation)
+	}
+}
+
+func TestSearchAndInstallSkillHintHasLiveLegacyProvision(t *testing.T) {
+	hint := SearchAndInstallSkillHint()
+	name := ExtractToolName(hint)
+	if _, ok := LegacyAdapterProvisionForTool(name, time.Date(2026, 8, 22, 0, 0, 0, 0, time.UTC)); !ok {
+		t.Fatalf("recommendation hint %q has no live reviewed provision; injecting it would evict a provisioned tool", name)
+	}
+}
+
+func TestRouterDoesNotSelectUnprovisionedHostTools(t *testing.T) {
+	router := NewRouter(NewDefinitionGenerator(nil, nil))
+	tools := []map[string]interface{}{
+		makeToolDef("read_file", "read a local file"),
+		makeToolDef("unprovisioned_mysql_cli", "connect mysql database SHOW DATABASES query sql postgres"),
+	}
+	routed := router.Route("查看 mysql 数据库 SHOW DATABASES", tools)
+	for _, definition := range routed {
+		if ExtractToolName(definition) == "unprovisioned_mysql_cli" {
+			t.Fatalf("unprovisioned host tool must not be a routing candidate: %#v", routed)
+		}
 	}
 }
 

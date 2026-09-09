@@ -23,6 +23,7 @@ import { classifyDisplayAttachmentType, isBinaryDocumentAttachment } from "./att
 import { safeAvatarDataURL } from "./virtualEmployeeAvatar";
 import { getWailsAppModule as loadWailsAppModule, type WailsAppModule } from "../../utils/wailsAppModule";
 import { firstVEStreamText, visibleHistoryMessageContent, visibleVEStreamContent } from "./visibleChatText";
+import { localizeAIAssistantError } from "./aiAssistantI18n";
 
 export { firstVEStreamText, sanitizeVisibleVEText, visibleHistoryMessageContent, visibleVEStreamContent } from "./visibleChatText";
 
@@ -45,6 +46,16 @@ function loadVirtualEmployeeDirectory(listFn: (() => Promise<unknown>) | undefin
             virtualEmployeeDirectoryInFlight = null;
         });
     return virtualEmployeeDirectoryInFlight;
+}
+
+function logVEFrontendDiagnostic(payload: Record<string, unknown>): void {
+    void getWailsAppModule()
+        .then((mod) => {
+            const fn = (mod as any).LogFrontendDiagnostic;
+            if (typeof fn === "function") return fn({ ...payload, tag: "ve-conversation" });
+            return undefined;
+        })
+        .catch(() => { });
 }
 
 // --- Types ---
@@ -165,7 +176,8 @@ export type VEConversationError =
     | { type: "auth_timeout"; message: string }
     | { type: "access_denied"; message: string }
     | { type: "send_failed"; message: string }
-    | { type: "session_timeout"; message: string };
+    | { type: "session_timeout"; message: string }
+    | { type: "response_timeout"; message: string };
 
 export interface VEConversationViewProps {
     veId: string;
@@ -182,6 +194,8 @@ export interface VEConversationViewProps {
     initialMessages?: VEMessage[];
     /** Pre-existing input text to restore on remount (tab switch). */
     initialInputText?: string;
+    /** Whether this tab is currently visible; re-focus retries failed history loads. */
+    active?: boolean;
     /** View-only mode: history/invited sessions can render messages without allowing edits. */
     readOnly?: boolean;
     /** Incrementing signal from the tab manager to clear the current transcript and start fresh. */
@@ -451,6 +465,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     existingSessionId,
     initialMessages,
     initialInputText,
+    active = true,
     readOnly = false,
     clearSignal = 0,
     initiateConversation,
@@ -494,6 +509,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     const [responseWatchdogTimeoutSec, setResponseWatchdogTimeoutSec] = useState(DEFAULT_AGENT_TIMEOUT_SEC);
     const [historyLoadSettledSessionId, setHistoryLoadSettledSessionId] = useState("");
     const [historyLoadSucceededSessionId, setHistoryLoadSucceededSessionId] = useState("");
+    const [historyLoadFailedSessionId, setHistoryLoadFailedSessionId] = useState("");
 
     // Refs for imperative state access (avoids stale closure in useImperativeHandle)
     const stateRef = useRef(state);
@@ -525,6 +541,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const authPendingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const loadedHistorySessionRef = useRef<string>("");
+    const wasActiveRef = useRef(active);
     const skipHistoryLoadSessionIdsRef = useRef<Set<string>>(new Set());
     const showLocalIntroAfterClearRef = useRef(false);
     const sessionInitInFlightRef = useRef<Promise<boolean> | null>(null);
@@ -637,7 +654,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         if (mountedRef.current) setAwaitingReplyVisible(false);
     }, []);
 
-    const releaseResponseGate = useCallback(() => {
+    const releaseResponseGate = useCallback((timeoutReason?: "silence" | "total", timeoutSeconds?: number) => {
         if (!awaitingReplyRef.current) return; // already released — idempotent guard
         awaitingReplyRef.current = false;
         hideAwaitingReply();
@@ -650,6 +667,22 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             silenceTimerRef.current = null;
         }
         if (!mountedRef.current) return;
+        if (timeoutReason) {
+            const timeoutMessage = timeoutReason === "silence"
+                ? "response_silence"
+                : `response_total:${Math.max(1, Math.round(timeoutSeconds || DEFAULT_AGENT_TIMEOUT_SEC))}`;
+            setState((prev) => ({
+                ...prev,
+                error: { type: "response_timeout", message: timeoutMessage },
+            }));
+            // Keep a durable, privacy-safe breadcrumb for support diagnosis. The
+            // backend sanitizes the payload and writes it under ~/.maclaw.
+            logVEFrontendDiagnostic({
+                event: "response-timeout",
+                reason: timeoutReason,
+                session_id_present: !!sessionIdRef.current,
+            });
+        }
         setQueueDrainSignal((value) => value + 1);
     }, [hideAwaitingReply]);
 
@@ -665,7 +698,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         if (!awaitingReplyRef.current) return;
         silenceTimerRef.current = setTimeout(() => {
             silenceTimerRef.current = null;
-            releaseResponseGate();
+            releaseResponseGate("silence");
         }, SILENCE_TIMEOUT_SEC * 1000);
     }, [releaseResponseGate]);
 
@@ -683,7 +716,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         if (responseWatchdogRef.current) clearTimeout(responseWatchdogRef.current);
         responseWatchdogRef.current = setTimeout(() => {
             responseWatchdogRef.current = null;
-            releaseResponseGate();
+            releaseResponseGate("total", responseWatchdogTimeoutSec);
         }, responseWatchdogTimeoutSec * 1000);
     }, [refreshSilenceTimer, releaseResponseGate, responseWatchdogTimeoutSec]);
 
@@ -825,6 +858,18 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     }, [promptHistoryState]);
 
     useEffect(() => {
+        const becameActive = active && !wasActiveRef.current;
+        wasActiveRef.current = active;
+        if (!becameActive || !historyLoadFailedSessionId) return;
+        // A transient Hub/network failure must not permanently poison this
+        // mounted tab. Re-focusing it starts a fresh authoritative lookup.
+        loadedHistorySessionRef.current = "";
+        setHistoryLoadSettledSessionId("");
+        setHistoryLoadSucceededSessionId("");
+        setHistoryLoadFailedSessionId("");
+    }, [active, historyLoadFailedSessionId]);
+
+    useEffect(() => {
         const sessionId = String(state.sessionId || "").trim();
         const resumedExistingSessionId = String(existingSessionId || "").trim();
         // Allow history loading when:
@@ -834,7 +879,13 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         //    (initSession may reuse a sticky session that already has history)
         if (!resumedExistingSessionId && (participants?.length || 0) === 0 && !sessionId) return;
         if (skipHistoryLoadSessionIdsRef.current.has(sessionId)) return;
-        if (!sessionId || loadedHistorySessionRef.current === sessionId || state.messages.length > 0) return;
+        // A synthetic local intro is rendered while the first lookup is in
+        // flight. It must not block a later retry after a transient Hub
+        // failure, and a successful lookup must be allowed to replace it.
+        const onlyLocalIntro = state.messages.length === 1
+            && state.messages[0]?.localOnly === true
+            && state.messages[0]?.messageKind === "employee_intro";
+        if (!sessionId || loadedHistorySessionRef.current === sessionId || (state.messages.length > 0 && !onlyLocalIntro)) return;
         loadedHistorySessionRef.current = sessionId;
         setHistoryLoadSettledSessionId("");
         setHistoryLoadSucceededSessionId("");
@@ -845,27 +896,42 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                 if (cancelled) return;
                 if (!detail) {
                     setHistoryLoadSucceededSessionId("");
+                    // Treat an unavailable/empty response as a recoverable
+                    // lookup failure. Re-focusing the tab will retry instead
+                    // of permanently accepting the synthetic intro.
+                    setHistoryLoadFailedSessionId(sessionId);
                     return;
                 }
                 const history = veMessagesFromHistoryDetail(detail, veId, assistantDisplayName, localSpeakerName);
                 if (!history.length) {
                     setHistoryLoadSucceededSessionId("");
+                    // An empty payload can be returned while Hub is still
+                    // catching up. Keep the intro visible, but mark the
+                    // lookup recoverable so focusing the tab retries it.
+                    setHistoryLoadFailedSessionId(sessionId);
                     return;
                 }
+                setHistoryLoadFailedSessionId("");
                 setHistoryLoadSucceededSessionId(sessionId);
                 setState((prev) => {
-                    if (prev.sessionId !== sessionId || prev.messages.length > 0) return prev;
+                    const canReplaceIntro = prev.messages.length === 1
+                        && prev.messages[0]?.localOnly === true
+                        && prev.messages[0]?.messageKind === "employee_intro";
+                    if (prev.sessionId !== sessionId || (prev.messages.length > 0 && !canReplaceIntro)) return prev;
                     return { ...prev, messages: history };
                 });
             })
             .catch(() => {
-                if (!cancelled) setHistoryLoadSucceededSessionId("");
+                if (!cancelled) {
+                    setHistoryLoadSucceededSessionId("");
+                    setHistoryLoadFailedSessionId(sessionId);
+                }
             })
             .finally(() => {
                 if (!cancelled) setHistoryLoadSettledSessionId(sessionId);
             });
         return () => { cancelled = true; };
-    }, [assistantDisplayName, existingSessionId, localSpeakerName, participants?.length, state.messages.length, state.sessionId, veId]);
+    }, [active, assistantDisplayName, existingSessionId, localSpeakerName, participants?.length, state.messages.length, state.sessionId, veId]);
 
     useEffect(() => {
         const sessionId = String(state.sessionId || "").trim();
@@ -1019,6 +1085,11 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                 if (sessionInitGenerationRef.current !== initGeneration) return false;
                 if (mountedRef.current) {
                     const errorType = classifySessionInitError(err);
+                    logVEFrontendDiagnostic({
+                        event: "session-init-error",
+                        error_type: errorType,
+                        error: extractErrorMessage(err) || "Connection failed",
+                    });
                     if (errorType === "auth_pending") scheduleAuthPendingTimeout(err);
                     else clearAuthPendingTimer();
                     setState((prev) => ({
@@ -1154,6 +1225,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
         loadedHistorySessionRef.current = "";
         setHistoryLoadSettledSessionId("");
         setHistoryLoadSucceededSessionId("");
+        setHistoryLoadFailedSessionId("");
         showLocalIntroAfterClearRef.current = true;
         sessionIdRef.current = null;
         setState((prev) => ({
@@ -1289,7 +1361,14 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
             if (!mountedRef.current) return;
             hideAwaitingReply();
             setState((prev) => {
-                const finalContent = prev.streamContent;
+                // A MaClawSrv delivery failure is transported as the content
+                // of the terminal stream_end envelope.  Include that payload
+                // in the transcript instead of dropping it (normal successful
+                // stream_end events carry an empty content string).
+                const terminalContent = String(data?.content ?? data?.chunk ?? "");
+                const finalContent = prev.streamContent
+                    ? (terminalContent ? `${prev.streamContent}\n\n${terminalContent}` : prev.streamContent)
+                    : terminalContent;
                 const endAttachments = normalizeVEMessageAttachments(data?.attachments);
                 const attachments = endAttachments.length ? mergeVEMessageAttachments(prev.streamAttachments, endAttachments) : prev.streamAttachments;
                 if (!finalContent && attachments.length === 0) return { ...prev, streaming: false, streamContent: "", streamFromId: "", streamFromName: "", streamAttachments: [] };
@@ -1397,6 +1476,11 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                 if (mountedRef.current) {
                     const errorMessage = extractErrorMessage(err) || "Send failed";
                     const errorType = classifySendError(err);
+                    logVEFrontendDiagnostic({
+                        event: "send-error",
+                        error_type: errorType,
+                        error: errorMessage,
+                    });
                     const recoverable = isRecoverableVESendError(err, errorType);
                     setState((prev) => {
                         const msgs = [...prev.messages];
@@ -1651,6 +1735,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
 
     return (
         <div
+            className="mc-ve-conversation"
             data-testid="ve-conversation-view"
             onDragOver={handleDragOver}
             onDrop={handleDrop}
@@ -1716,7 +1801,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
 
                 {/* Awaiting visible response — status chip, no speaker name → no name tail */}
                 {awaitingReplyVisible && !state.streaming && (
-                    <div data-testid="ve-thinking-indicator" style={{ marginTop: 8 }}>
+                    <div className="mc-ve-thinking" data-testid="ve-thinking-indicator" style={{ marginTop: 8 }}>
                         <ChatBubbleFrame
                             side="left"
                             background={theme.fieldBg}
@@ -1734,6 +1819,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                 {state.streaming && (
                     <div
                         data-testid="ve-streaming-indicator"
+                        className="mc-ve-message mc-ve-message--streaming"
                         style={{ marginTop: 8, display: "flex", flexDirection: "column", alignItems: "flex-start" }}
                     >
                         <div
@@ -1765,6 +1851,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                             background={theme.fieldBg}
                             borderColor={theme.fieldBorder}
                             data-testid="ve-streaming-content"
+                            className="mc-ve-message-bubble mc-ve-message-bubble--assistant"
                             style={{
                                 maxWidth: "80%",
                                 fontSize: 13,
@@ -2044,6 +2131,7 @@ function MessageBubble({ message, sessionId, theme, isZh, assistantName, userNam
 
     return (
         <div
+            className={`mc-ve-message ${isUser ? "mc-ve-message--user" : "mc-ve-message--assistant"}`}
             data-testid={`ve-msg-${message.id}`}
             style={{
                 marginBottom: 10,
@@ -2053,6 +2141,7 @@ function MessageBubble({ message, sessionId, theme, isZh, assistantName, userNam
             }}
         >
             <div
+                className="mc-ve-message-label"
                 data-testid={`ve-msg-label-${message.id}`}
                 style={{
                     maxWidth: "80%",
@@ -2108,6 +2197,7 @@ function MessageBubble({ message, sessionId, theme, isZh, assistantName, userNam
                                 : theme.fieldBg
                     }
                     borderColor={isUser ? theme.sendBtnBorder : theme.fieldBorder}
+                    className={`mc-ve-message-bubble ${isUser ? "mc-ve-message-bubble--user" : "mc-ve-message-bubble--assistant"}`}
                     data-testid={message.localOnly ? `ve-local-msg-content-${message.id}` : `ve-msg-content-${message.id}`}
                     style={{
                         maxWidth: "80%",
@@ -2346,6 +2436,19 @@ function formatError(error: VEConversationError, isZh: boolean): string {
             return error.message ? (isZh ? `\u6d88\u606f\u53d1\u9001\u5931\u8d25\uff1a${localizeBackendErrorDetail(error.message, isZh)}` : `Message send failed: ${error.message}`) : (isZh ? "\u6d88\u606f\u53d1\u9001\u5931\u8d25" : "Message send failed");
         case "session_timeout":
             return isZh ? "\u4f1a\u8bdd\u521b\u5efa\u8d85\u65f6\uff0815\u79d2\uff09" : "Session creation timed out (15s)";
+        case "response_timeout":
+            if (error.message === "response_silence") {
+                return isZh
+                    ? `\u6570\u5b57\u5458\u5de5\u6682\u65e0\u54cd\u5e94\uff08${SILENCE_TIMEOUT_SEC}\u79d2\u65e0\u6d3b\u52a8\uff09`
+                    : `Digital employee stopped responding (${SILENCE_TIMEOUT_SEC}s without activity)`;
+            }
+            {
+                const match = String(error.message || "").match(/^response_total:(\d+)$/);
+                const seconds = match ? Number(match[1]) : DEFAULT_AGENT_TIMEOUT_SEC;
+                return isZh
+                    ? `\u6570\u5b57\u5458\u5de5\u54cd\u5e94\u8d85\u65f6\uff08${seconds}\u79d2\uff09`
+                    : `Digital employee response timed out (${seconds}s)`;
+            }
         default:
             return (error as VEConversationError).message;
     }
@@ -2353,7 +2456,10 @@ function formatError(error: VEConversationError, isZh: boolean): string {
 
 function localizeBackendErrorDetail(message: string, isZh: boolean): string {
     const text = String(message || "").trim();
-    if (!isZh || text === "") return text;
+    if (text === "") return text;
+    const localizedLLMError = localizeAIAssistantError(text, isZh ? "zh-Hans" : "en");
+    if (localizedLLMError !== text) return localizedLLMError;
+    if (!isZh) return text;
     const lower = text.toLowerCase();
     if (lower === "send failed") return "\u53d1\u9001\u5931\u8d25";
     if (lower === "network error") return "\u7f51\u7edc\u9519\u8bef";

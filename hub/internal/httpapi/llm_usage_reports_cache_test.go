@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -133,6 +135,38 @@ func TestLLMUsageReportIncludesRMBCostCounters(t *testing.T) {
 	}
 }
 
+func TestLLMUsageReportRMBCostTotalIsSummedFromDirectionalComponents(t *testing.T) {
+	rep := &llmUsageReportsStore{Version: llmUsageReportsVersion, Days: map[string]*llmUsageReportDay{}}
+	ts := time.Date(2026, 4, 21, 9, 30, 0, 0, time.UTC)
+	// TotalCostRMB deliberately contains a stale value. Reports must expose the
+	// sum of the four frozen directional amounts, never this independently
+	// supplied aggregate.
+	rep.addUsageWithCreditBreakdown(ts, "user@example.com", nil, corelib.TokenUsageStat{
+		InputTokens:       1_000,
+		CachedInputTokens: 200,
+		CacheWriteTokens:  100,
+		OutputTokens:      500,
+		TotalTokens:       1_500,
+		InputCostRMB:      0.1048,
+		CacheReadCostRMB:  0.006,
+		CacheWriteCostRMB: 0.009,
+		OutputCostRMB:     0.0402,
+		TotalCostRMB:      999,
+		Requests:          1,
+	}, 0, &llmUsageCreditBreakdown{RMBPricingRecorded: true})
+
+	resp := buildLLMUsageReportResponse(context.Background(), rep, nil, "user", "daily", "2026-04-21", "2026-04", "", ts)
+	if got, want := resp.Summary.TotalCostRMB, 0.16; math.Abs(got-want) > 1e-12 {
+		t.Fatalf("summary RMB total = %.12f, want %.12f", got, want)
+	}
+	if len(resp.Rows) != 1 || math.Abs(resp.Rows[0].TotalCostRMB-0.16) > 1e-12 {
+		t.Fatalf("row RMB total must equal its components: %#v", resp.Rows)
+	}
+	if len(resp.Trend) != 24 || math.Abs(resp.Trend[9].TotalCostRMB-0.16) > 1e-12 {
+		t.Fatalf("trend RMB total must equal its components: %#v", resp.Trend[9])
+	}
+}
+
 func TestLLMUsageReportExcludesLegacyRMBWithoutFrozenPricing(t *testing.T) {
 	rep := &llmUsageReportsStore{Version: llmUsageReportsVersion, Days: map[string]*llmUsageReportDay{}}
 	ts := time.Date(2026, 4, 21, 9, 30, 0, 0, time.UTC)
@@ -147,6 +181,18 @@ func TestLLMUsageReportExcludesLegacyRMBWithoutFrozenPricing(t *testing.T) {
 	resp := buildLLMUsageReportResponse(context.Background(), rep, nil, "user", "daily", "2026-04-21", "2026-04", "user@example.com", ts)
 	if resp.Summary.TotalCostRMB != 0.02 || resp.Summary.InputCostRMB != 0.02 || resp.Summary.RMBPricedInputTokens != 10_000 || resp.Summary.RMBPricedCredits != 1 {
 		t.Fatalf("legacy RMB leaked into frozen reference cost: %+v", resp.Summary)
+	}
+}
+
+func TestLLMUsageReportPricingSourceCountedOnce(t *testing.T) {
+	rep := &llmUsageReportsStore{Version: llmUsageReportsVersion, Days: map[string]*llmUsageReportDay{}}
+	ts := time.Date(2026, 4, 21, 9, 30, 0, 0, time.UTC)
+	usage := corelib.TokenUsageStat{InputTokens: 10, Requests: 1, PricingSource: "provider"}
+	breakdown := &llmUsageCreditBreakdown{PricingSource: "provider", RMBPricingRecorded: true}
+	rep.addUsageWithCreditBreakdown(ts, "user@example.com", nil, usage, 1, breakdown, "provider-a")
+	resp := buildLLMUsageReportResponse(context.Background(), rep, nil, "user", "daily", "2026-04-21", "2026-04", "user@example.com", ts)
+	if got := resp.Summary.PricingSources["provider"]; got != 1 {
+		t.Fatalf("pricing source count = %d, want 1", got)
 	}
 }
 
@@ -227,6 +273,69 @@ func TestLLMUsageReportIncludesSettledCreditCalculationComponents(t *testing.T) 
 	}
 	if len(resp.Rows) != 1 || resp.Rows[0].Credits != 6.1 || resp.Rows[0].CreditInputComponent != 1.2 || resp.Rows[0].CreditOutputComponent != 3.6 || resp.Rows[0].CreditMinimumAdjustment != 0.2 || resp.Rows[0].CreditRoundingAdjustment != 0.1 || resp.Rows[0].CreditUnitemizedComponent != 1 {
 		t.Fatalf("row credit breakdown = %#v", resp.Rows)
+	}
+}
+
+func TestLLMUsageReportBoundsStaleDirectionalComponents(t *testing.T) {
+	rep := &llmUsageReportsStore{Version: llmUsageReportsVersion, Days: map[string]*llmUsageReportDay{}}
+	ts := time.Date(2026, 8, 26, 9, 0, 0, 0, time.UTC)
+	rep.addUsageWithCreditBreakdown(ts, "user@example.com", nil, corelib.TokenUsageStat{InputTokens: 10_000, OutputTokens: 10_000, Requests: 1}, 20, &llmUsageCreditBreakdown{
+		InputComponent: 10, NormalInputComponent: 10, OutputComponent: 10,
+		ProviderID: "p", RMBPricingRecorded: true,
+	}, "p")
+	// No provider pricing means there is no safe upper bound; preserve the
+	// frozen component exactly rather than guessing from current settings.
+	resp := buildLLMUsageReportResponse(context.Background(), rep, nil, "user", "daily", "2026-08-26", "2026-08", "", ts)
+	if resp.Summary.CreditOutputComponent != 10 || resp.Summary.CreditUnitemizedComponent != 0 {
+		t.Fatalf("component without pricing was rewritten: %+v", resp.Summary)
+	}
+}
+
+func TestBoundUsageCreditComponentsMovesImpossibleExcessToUnitemized(t *testing.T) {
+	c := &llmUsageCounters{
+		PricedNormalInputTokens: 10_000, PricedOutputTokens: 10_000,
+		CreditNormalInputComponent: 10, CreditOutputComponent: 10,
+		ProviderPricing:     []llmUsageProviderPricing{{ProviderID: "p", InputCreditsPer10K: 1, OutputCreditsPer10K: 2}},
+		ProviderMultipliers: []llmUsageProviderMultiplier{{ProviderID: "p", Multiplier: 1, MultiplierSource: "provider"}},
+	}
+	boundUsageCreditComponents(c)
+	if c.CreditNormalInputComponent != 1 || c.CreditOutputComponent != 2 || c.CreditUnitemizedComponent != 17 {
+		t.Fatalf("bounded components = %+v", c)
+	}
+}
+
+func TestLLMUsageReportUsesDirectionalPricedTokenDenominators(t *testing.T) {
+	rep := &llmUsageReportsStore{Version: llmUsageReportsVersion, Days: map[string]*llmUsageReportDay{}}
+	ts := time.Date(2026, 4, 21, 9, 30, 0, 0, time.UTC)
+	priced := corelib.TokenUsageStat{
+		InputTokens:       3_972,
+		CachedInputTokens: 256,
+		CacheWriteTokens:  128,
+		OutputTokens:      463,
+		TotalTokens:       4_435,
+		Requests:          1,
+	}
+	breakdown := &llmUsageCreditBreakdown{
+		NormalInputComponent: 0.3588,
+		CacheReadComponent:   0.00256,
+		CacheWriteComponent:  0.0128,
+		OutputComponent:      0.0926,
+		RMBPricingRecorded:   true,
+	}
+	rep.addUsageWithCreditBreakdown(ts, "user@example.com", nil, priced, 0.46676, breakdown, "provider-a")
+	// A legacy debit must remain in the total but must not be used as the
+	// denominator for a frozen directional price.
+	rep.addUsage(ts, "user@example.com", nil, corelib.TokenUsageStat{
+		InputTokens: 3_000_000, OutputTokens: 15_000, TotalTokens: 3_015_000, Requests: 100,
+	}, 324.279, "provider-a")
+
+	resp := buildLLMUsageReportResponse(context.Background(), rep, nil, "user", "daily", "2026-04-21", "2026-04", "user@example.com", ts)
+	got := resp.Summary
+	if got.PricedNormalInputTokens != 3_588 || got.PricedCacheReadTokens != 256 || got.PricedCacheWriteTokens != 128 || got.PricedOutputTokens != 463 {
+		t.Fatalf("directional priced token denominators = %+v", got)
+	}
+	if got.InputTokens != 3_003_972 || got.CachedInputTokens != 256 {
+		t.Fatalf("all usage must still be retained separately: %+v", got)
 	}
 }
 
@@ -403,6 +512,171 @@ func TestAccumulatorDefersUsageReportUntilCreditSettlementSucceeds(t *testing.T)
 	}
 }
 
+func TestFlushCreditChargesFreezesCacheLegsAndDirectionalAmounts(t *testing.T) {
+	system := &testSystemSettingsRepo{}
+	now := time.Now().UTC().Truncate(time.Second)
+	registry := &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "paid", AccessPolicy: llmservice.AccessPolicyGrantRequired}},
+		Grants: []llmservice.Grant{{
+			ID: "grant-1", UserID: "u1", Email: "user@example.com", ServiceGroupID: "paid",
+			CreditsTotal: 10, Permanent: true, StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour),
+		}},
+	}
+	if err := llmservice.SaveRegistry(t.Context(), system, registry); err != nil {
+		t.Fatal(err)
+	}
+	invalidateLLMRuntimeCaches(system)
+
+	pricing := &llmpool.ResolvedTokenPricing{TokenPricing: llmpool.TokenPricing{
+		InputCreditsPer10K: 1, OutputCreditsPer10K: 4, InputRMBPer10K: 0.02, OutputRMBPer10K: 0.08,
+	}}
+	usage := corelib.TokenUsageStat{
+		InputTokens: 10_000, CachedInputTokens: 8_000, CacheWriteTokens: 1_000, OutputTokens: 5_000, TotalTokens: 15_000,
+		InputCostRMB: 0.002, CacheReadCostRMB: 0.00016, CacheWriteCostRMB: 0.002, OutputCostRMB: 0.04, TotalCostRMB: 0.04416,
+		Requests: 1, PricingSource: llmpool.PricingSourceServiceGroupOverride,
+	}
+	charge := &pendingCreditCharge{
+		userID: "u1", email: "user@example.com", serviceGroupIDs: []string{"paid"}, credits: 2.28,
+		requestID: "request-cache-1", providerID: "provider-a", usage: usage,
+		providerMultiplier: 1, serviceGroupMultiplier: 1, pricing: pricing,
+	}
+	settled, err := flushCreditChargesDetailed(t.Context(), system, map[string]*pendingCreditCharge{creditChargeKey(charge): charge})
+	if err != nil || !settled[creditChargeKey(charge)] {
+		t.Fatalf("flush: settled=%v err=%v", settled, err)
+	}
+
+	stored, err := llmservice.LoadRegistry(t.Context(), system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, ok := llmservice.BillingLedgerEntryForRequest(stored, "request-cache-1")
+	if !ok {
+		t.Fatal("ledger entry missing after settlement")
+	}
+	if entry.CachedInputTokens != 8_000 || entry.CacheWriteTokens != 1_000 {
+		t.Fatalf("cache legs not frozen in ledger: %+v", entry)
+	}
+	// The directional amounts are the already-computed settlement facts:
+	// normal 1000×1/10k=0.1, read 8000×0.1/10k=0.08, write 1000×1/10k=0.1,
+	// output 5000×4/10k=2 (defaults derived at resolution: read=input×0.1,
+	// write=input).
+	assertFloat := func(name string, got, want float64) {
+		t.Helper()
+		if math.Abs(got-want) > 1e-9 {
+			t.Fatalf("%s = %v, want %v", name, got, want)
+		}
+	}
+	assertFloat("normal_input_credits", entry.NormalInputCredits, 0.1)
+	assertFloat("cache_read_credits", entry.CacheReadCredits, 0.08)
+	assertFloat("cache_write_credits", entry.CacheWriteCredits, 0.1)
+	assertFloat("output_credits", entry.OutputCredits, 2)
+	assertFloat("normal_input_cost_rmb", entry.NormalInputCostRMB, 0.002)
+	assertFloat("cache_read_cost_rmb", entry.CacheReadCostRMB, 0.00016)
+	assertFloat("cache_write_cost_rmb", entry.CacheWriteCostRMB, 0.002)
+	assertFloat("output_cost_rmb", entry.OutputCostRMB, 0.04)
+	if entry.PricingSource != llmpool.PricingSourceServiceGroupOverride {
+		t.Fatalf("pricing source not frozen in ledger: %q", entry.PricingSource)
+	}
+
+	// A replayed request must rebuild its reporting provenance from the ledger,
+	// including the cache legs, the frozen directional RMB amounts, and the
+	// pricing source, instead of the retry's stale or cache-less usage.
+	replay := &pendingCreditCharge{
+		userID: "u1", email: "user@example.com", serviceGroupIDs: []string{"paid"}, credits: 15,
+		requestID: "request-cache-1", providerID: "provider-a",
+		usage: corelib.TokenUsageStat{InputTokens: 10_000, OutputTokens: 5_000, TotalTokens: 15_000, Requests: 1, InputCostRMB: 9.9, TotalCostRMB: 9.9},
+	}
+	settled, err = flushCreditChargesDetailed(t.Context(), system, map[string]*pendingCreditCharge{creditChargeKey(replay): replay})
+	if err != nil {
+		t.Fatalf("replay flush: %v", err)
+	}
+	if settled[creditChargeKey(replay)] {
+		t.Fatal("replayed request was debited a second time")
+	}
+	if replay.usage.CachedInputTokens != 8_000 || replay.usage.CacheWriteTokens != 1_000 {
+		t.Fatalf("replay lost cache legs: %+v", replay.usage)
+	}
+	assertFloat("replay input_cost_rmb", replay.usage.InputCostRMB, 0.002)
+	assertFloat("replay cache_read_cost_rmb", replay.usage.CacheReadCostRMB, 0.00016)
+	assertFloat("replay cache_write_cost_rmb", replay.usage.CacheWriteCostRMB, 0.002)
+	assertFloat("replay output_cost_rmb", replay.usage.OutputCostRMB, 0.04)
+	assertFloat("replay total_cost_rmb", replay.usage.TotalCostRMB, 0.04416)
+	if replay.usage.PricingSource != llmpool.PricingSourceServiceGroupOverride {
+		t.Fatalf("replay lost frozen pricing source: %q", replay.usage.PricingSource)
+	}
+	if replay.pricing == nil || replay.pricing.InputCreditsPer10K != 1 {
+		t.Fatalf("replay lost frozen pricing: %+v", replay.pricing)
+	}
+	if replay.credits != 2.28 {
+		t.Fatalf("replay credits = %v, want ledger deduction 2.28", replay.credits)
+	}
+}
+
+func TestRecordLocalCacheHitLLMUsageCountsRequestWithoutCharge(t *testing.T) {
+	system := &testSystemSettingsRepo{}
+	// A local full-response cache hit never reaches upstream: zero tokens, zero
+	// Credits, but the request must appear in Usage Stats with the local_cache
+	// marker, separate from provider prompt-cache reads (design §2.2).
+	recordLocalCacheHitLLMUsage(t.Context(), system, nil, "u1", "user@example.com", "provider-a", []string{"paid"})
+	globalLLMUsageAccumulator.flush(t.Context())
+	stored, err := loadLLMUsageReports(t.Context(), system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The report is bucketed by the local day; derive the key from the stored
+	// record so the assertion survives timezone and midnight boundaries.
+	if len(stored.Days) != 1 {
+		t.Fatalf("stored report days = %d, want 1", len(stored.Days))
+	}
+	dayKey := ""
+	for key := range stored.Days {
+		dayKey = key
+	}
+	resp := buildLLMUsageReportResponse(t.Context(), stored, nil, "user", "daily", dayKey, dayKey[:7], "user@example.com", time.Now())
+	if resp.Summary.Requests != 1 || resp.Summary.Credits != 0 {
+		t.Fatalf("local cache hit summary = %+v, want 1 request and 0 credits", resp.Summary)
+	}
+	if resp.Summary.InputTokens != 0 || resp.Summary.OutputTokens != 0 || resp.Summary.CachedInputTokens != 0 || resp.Summary.CacheWriteTokens != 0 {
+		t.Fatalf("local cache hit recorded phantom tokens: %+v", resp.Summary)
+	}
+	if resp.Summary.CachedRequests != 0 {
+		t.Fatalf("local cache hit must not count as a prompt-cache request: %+v", resp.Summary)
+	}
+	if got := resp.Summary.CacheUsageSources["local_cache"]; got != 1 {
+		t.Fatalf("cache_usage_sources = %+v, want local_cache=1", resp.Summary.CacheUsageSources)
+	}
+	// No charge and no ledger entry may be created for a free cache hit.
+	reg, err := llmservice.LoadRegistry(t.Context(), system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reg.BillingLedger) != 0 {
+		t.Fatalf("local cache hit created a ledger entry: %#v", reg.BillingLedger)
+	}
+}
+
+func TestBillingLedgerEntryJSONKeepsLegacyShapeCompatible(t *testing.T) {
+	// Entries written before the cache-v1 ledger extension have no cache legs
+	// and no directional amounts; they must still decode, and zero-valued new
+	// fields must not appear when re-serialized.
+	var legacy llmservice.BillingLedgerEntry
+	if err := json.Unmarshal([]byte(`{"request_id":"r1","input_tokens":100,"output_tokens":50,"requested_credits":1,"deducted_credits":1,"billing_group_multiplier":1,"created_at":"2026-08-24T01:00:00Z"}`), &legacy); err != nil {
+		t.Fatalf("legacy entry decode: %v", err)
+	}
+	if legacy.CachedInputTokens != 0 || legacy.CacheReadCredits != 0 || legacy.NormalInputCostRMB != 0 {
+		t.Fatalf("legacy entry gained phantom cache facts: %+v", legacy)
+	}
+	encoded, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, key := range []string{"cached_input_tokens", "cache_write_tokens", "normal_input_credits", "cache_read_credits", "cache_write_credits", "output_credits", "normal_input_cost_rmb", "cache_read_cost_rmb", "cache_write_cost_rmb", "output_cost_rmb"} {
+		if strings.Contains(string(encoded), `"`+key+`"`) {
+			t.Fatalf("zero-valued %s leaked into legacy JSON: %s", key, encoded)
+		}
+	}
+}
+
 func TestLegacySettlementAdjustmentDoesNotChangeRMBCoverage(t *testing.T) {
 	rep := &llmUsageReportsStore{Version: llmUsageReportsVersion, Days: map[string]*llmUsageReportDay{}}
 	ts := time.Date(2026, 4, 21, 9, 30, 0, 0, time.UTC)
@@ -469,6 +743,33 @@ func TestLLMUsageReportNormalizesLegacyCreditTotalsAsUnitemized(t *testing.T) {
 	resp := buildLLMUsageReportResponse(context.Background(), &rep, nil, "user", "daily", "2026-04-21", "2026-04", "", time.Now())
 	if resp.Summary.CreditUnitemizedComponent != 3.5 || len(resp.Rows) != 1 || resp.Rows[0].CreditUnitemizedComponent != 3.5 || len(resp.Trend) != 24 || resp.Trend[0].CreditUnitemizedComponent != 3.5 {
 		t.Fatalf("legacy credits must reconcile as unitemized components: %+v", resp)
+	}
+}
+
+func TestLLMUsageReportScopesResidualLegacyTokens(t *testing.T) {
+	// Simulate a row formed by a mix of new directionally-priced requests and
+	// older aggregate-only settlements. The residual debit must not be shown as
+	// an unexplained amount with zero token scope.
+	c := &llmUsageCounters{
+		InputTokens: 2_738_212, OutputTokens: 18_541, CachedInputTokens: 1_902_080,
+		Requests: 130, Credits: 278.42,
+		CreditInputComponent: 3.375, CreditMinimumAdjustment: 0.0103,
+		CreditRoundingAdjustment: 0.00014,
+		PricedNormalInputTokens:  25_726, PricedCacheReadTokens: 1_536,
+		PricedOutputTokens: 3_883, RMBPricedRequests: 12,
+	}
+	normalizeUsageCreditComponents(c)
+	if c.CreditUnitemizedComponent < 275 {
+		t.Fatalf("unitemized credits = %v, want residual legacy debit", c.CreditUnitemizedComponent)
+	}
+	if c.UnitemizedRequests != 118 || c.UnitemizedInputTokens != 2_710_950 || c.UnitemizedCachedInputTokens != 1_902_080-1_536 || c.UnitemizedOutputTokens != 14_658 {
+		t.Fatalf("unitemized scope = %+v", c)
+	}
+	// Normalization is also used when rendering an already-normalized report;
+	// repeating it must not grow the residual scope or debit.
+	normalizeUsageCreditComponents(c)
+	if c.CreditUnitemizedComponent < 275 || c.UnitemizedRequests != 118 || c.UnitemizedInputTokens != 2_710_950 || c.UnitemizedCachedInputTokens != 1_902_080-1_536 || c.UnitemizedOutputTokens != 14_658 {
+		t.Fatalf("normalization is not idempotent: %+v", c)
 	}
 }
 
@@ -675,5 +976,124 @@ func TestLLMUsageAccumulatorDoesNotReplayProviderUsageAfterLegacySyncFailure(t *
 	stat := registry.TokenUsage["provider-a"]
 	if stat == nil || stat.InputTokens != 6 || stat.OutputTokens != 3 || stat.TotalTokens != 9 || stat.Requests != 1 {
 		t.Fatalf("provider usage replayed after legacy sync failure: %#v", stat)
+	}
+}
+
+func TestFlushCreditChargesSettlesLateResponseAfterUsageUnresolved(t *testing.T) {
+	system := &testSystemSettingsRepo{}
+	now := time.Now().UTC().Truncate(time.Second)
+	registry := &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "paid", AccessPolicy: llmservice.AccessPolicyGrantRequired}},
+		Grants: []llmservice.Grant{{
+			ID: "grant-1", UserID: "u1", Email: "user@example.com", ServiceGroupID: "paid",
+			CreditsTotal: 10, Permanent: true, StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour),
+		}},
+		// A sent local reservation whose response was lost past the recovery
+		// window: its hold no longer counts against the balance, and the late
+		// response must still settle the real usage exactly once.
+		BillingReservations: []llmservice.BillingReservation{{
+			RequestID: "late-request", UserID: "u1", Email: "user@example.com",
+			ServiceGroupIDs: []string{"paid"}, Credits: 7,
+			ProviderID: "third-party",
+			SentAt:     now.Add(-llmservice.SentLocalBillingReservationMaxAge - time.Minute),
+			ExpiresAt:  now.Add(-llmservice.SentLocalBillingReservationMaxAge),
+			CreatedAt:  now.Add(-llmservice.SentLocalBillingReservationMaxAge - time.Minute),
+		}},
+	}
+	if err := llmservice.SaveRegistry(t.Context(), system, registry); err != nil {
+		t.Fatal(err)
+	}
+	invalidateLLMRuntimeCaches(system)
+	if got := llmservice.AvailableCreditsForServiceGroupsForUserID(registry, "u1", "user@example.com", []string{"paid"}, now); got != 10 {
+		t.Fatalf("aged sent reservation still holds balance: available=%v, want 10", got)
+	}
+
+	pricing := &llmpool.ResolvedTokenPricing{TokenPricing: llmpool.TokenPricing{
+		InputCreditsPer10K: 1, OutputCreditsPer10K: 4,
+	}}
+	charge := &pendingCreditCharge{
+		userID: "u1", email: "user@example.com", serviceGroupIDs: []string{"paid"}, credits: 2.28,
+		requestID: "late-request", providerID: "third-party",
+		usage:              corelib.TokenUsageStat{InputTokens: 10_000, CachedInputTokens: 8_000, CacheWriteTokens: 1_000, OutputTokens: 5_000, TotalTokens: 15_000, Requests: 1},
+		providerMultiplier: 1, serviceGroupMultiplier: 1, pricing: pricing,
+	}
+	settled, err := flushCreditChargesDetailed(t.Context(), system, map[string]*pendingCreditCharge{creditChargeKey(charge): charge})
+	if err != nil || !settled[creditChargeKey(charge)] {
+		t.Fatalf("late settlement flush: settled=%v err=%v", settled, err)
+	}
+
+	stored, err := llmservice.LoadRegistry(t.Context(), system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, ok := llmservice.BillingLedgerEntryForRequest(stored, "late-request")
+	if !ok {
+		t.Fatal("late settlement did not write the ledger entry")
+	}
+	if entry.DeductedCredits != 2.28 {
+		t.Fatalf("late settlement deducted %v, want the real usage 2.28", entry.DeductedCredits)
+	}
+	for _, reservation := range stored.BillingReservations {
+		if strings.EqualFold(reservation.RequestID, "late-request") {
+			t.Fatalf("reservation row survived settlement: %#v", reservation)
+		}
+	}
+	if got := llmservice.AvailableCreditsForServiceGroupsForUserID(stored, "u1", "user@example.com", []string{"paid"}, now); got != 7.72 {
+		t.Fatalf("available after late settlement = %v, want 7.72 (10 - 2.28)", got)
+	}
+
+	// Replaying the same request must not debit a second time.
+	replay := &pendingCreditCharge{
+		userID: "u1", email: "user@example.com", serviceGroupIDs: []string{"paid"}, credits: 2.28,
+		requestID: "late-request", providerID: "third-party",
+		usage:   corelib.TokenUsageStat{InputTokens: 10_000, OutputTokens: 5_000, TotalTokens: 15_000, Requests: 1},
+		pricing: pricing, providerMultiplier: 1, serviceGroupMultiplier: 1,
+	}
+	settled, err = flushCreditChargesDetailed(t.Context(), system, map[string]*pendingCreditCharge{creditChargeKey(replay): replay})
+	if err != nil {
+		t.Fatalf("replay flush: %v", err)
+	}
+	if settled[creditChargeKey(replay)] {
+		t.Fatal("replayed late request was debited a second time")
+	}
+	stored, err = llmservice.LoadRegistry(t.Context(), system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := llmservice.AvailableCreditsForServiceGroupsForUserID(stored, "u1", "user@example.com", []string{"paid"}, now); got != 7.72 {
+		t.Fatalf("available after replay = %v, want unchanged 7.72", got)
+	}
+}
+
+func TestLLMUsageReportScopesUnitemizedLegacySettlements(t *testing.T) {
+	rep := &llmUsageReportsStore{Version: llmUsageReportsVersion, Days: map[string]*llmUsageReportDay{}}
+	ts := time.Date(2026, 4, 21, 9, 30, 0, 0, time.UTC)
+	// One directionally priced request and one legacy token-count settlement in
+	// the same row: the tooltip must show the legacy share's own token scope so
+	// the itemized legs plus the unitemized scope reconcile with the row totals.
+	rep.addUsageWithCreditBreakdown(ts, "user@example.com", nil, corelib.TokenUsageStat{
+		InputTokens: 10_000, OutputTokens: 2_000, TotalTokens: 12_000, Requests: 1,
+	}, 5, &llmUsageCreditBreakdown{InputComponent: 1, OutputComponent: 4, RMBPricingRecorded: true}, "provider-a")
+	rep.addUsageWithCreditBreakdown(ts, "user@example.com", nil, corelib.TokenUsageStat{
+		InputTokens: 90_000, OutputTokens: 8_000, TotalTokens: 98_000, Requests: 1,
+	}, 3, &llmUsageCreditBreakdown{UnitemizedComponent: 3, ProviderID: "provider-a", ProviderMultiplier: 1}, "provider-a")
+
+	resp := buildLLMUsageReportResponse(context.Background(), rep, nil, "user", "daily", "2026-04-21", "2026-04", "user@example.com", ts)
+	if resp.Summary.CreditUnitemizedComponent != 3 {
+		t.Fatalf("unitemized credits = %v, want 3", resp.Summary.CreditUnitemizedComponent)
+	}
+	if resp.Summary.UnitemizedRequests != 1 || resp.Summary.UnitemizedInputTokens != 90_000 || resp.Summary.UnitemizedOutputTokens != 8_000 {
+		t.Fatalf("unitemized scope = %+v, want 1 request with 90000/8000 tokens", resp.Summary)
+	}
+	// The priced request must not leak into the unitemized scope, and the row
+	// totals still cover both requests.
+	if resp.Summary.UnitemizedInputTokens+resp.Summary.PricedNormalInputTokens > resp.Summary.InputTokens {
+		t.Fatalf("scopes exceed row totals: %+v", resp.Summary)
+	}
+	if resp.Summary.InputTokens != 100_000 || resp.Summary.OutputTokens != 10_000 || resp.Summary.Requests != 2 {
+		t.Fatalf("row totals = %+v, want 100000/10000 over 2 requests", resp.Summary)
+	}
+	if len(resp.Rows) != 1 || resp.Rows[0].UnitemizedRequests != 1 || resp.Rows[0].UnitemizedInputTokens != 90_000 {
+		t.Fatalf("row unitemized scope = %+v", resp.Rows)
 	}
 }

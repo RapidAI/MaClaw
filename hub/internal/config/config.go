@@ -134,6 +134,14 @@ type Config struct {
 		AutoGenerate bool   `yaml:"auto_generate"` // generate self-signed cert if cert/key missing
 	} `yaml:"tls"`
 
+	// Backup holds the minimal settings used by the one-shot
+	// `hub backup create` archive primitive. Continuous scheduling is left to
+	// the deployment (external cron invoking `backup create`).
+	Backup struct {
+		OutputDir   string `yaml:"output_dir"`
+		IncludeLogs bool   `yaml:"include_logs"`
+	} `yaml:"backup"`
+
 	// Replica identifies this Hub process among optional tenant-head replicas.
 	// Empty NodeID is treated as "local". Peers are other Hub processes of the
 	// same install. SharedSecret authenticates replica artifact push.
@@ -202,6 +210,8 @@ func Default() *Config {
 	cfg.TLS.CertFile = "./data/tls/hub.crt"
 	cfg.TLS.KeyFile = "./data/tls/hub.key"
 	cfg.TLS.AutoGenerate = true
+
+	cfg.Backup.OutputDir = "./data/backups"
 
 	return cfg
 }

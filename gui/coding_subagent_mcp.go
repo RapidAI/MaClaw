@@ -5,7 +5,8 @@ package main
 // an MCP capability only after the durable catalog/plan/grant/request-surface
 // bridge has rendered a bound alias.
 //
-// Selection mechanism mirrors coding_subagent_skills.go:
+// Legacy selection mechanism mirrors coding_subagent_skills.go. Scope mode
+// bypasses lexical scoring and projects only planner/host-admitted bindings:
 //   1. Scan connected local and reachable remote MCP servers and their tools
 //   2. Score each tool's (name + description) against the task description
 //      using BM25 + bigram Jaccard + embedding cosine (three-signal fusion)
@@ -61,7 +62,7 @@ func (c *codingSubAgentCallbacks) selectRelevantMCPToolsForTask(taskDescription 
 	}
 	taskForScore := strings.TrimSpace(taskDescription)
 	fullEnv := c.subagent.isFullEnvironment()
-	if taskForScore == "" && !fullEnv {
+	if taskForScore == "" && !fullEnv && !c.scopeBasedSelection {
 		return nil
 	}
 
@@ -71,12 +72,20 @@ func (c *codingSubAgentCallbacks) selectRelevantMCPToolsForTask(taskDescription 
 	if len(candidates) == 0 {
 		return nil
 	}
-	if fullEnv {
-		// A coding task may need any connected MCP capability. Do not score or
-		// cap this list: a top-K subset makes valid tools undiscoverable and is
-		// the direct cause of the assistant reporting a truncated tool list.
+	if c.scopeBasedSelection {
+		// Scope mode is an exact projection of planner/host admission. A
+		// connected registry is only an observation and cannot become an
+		// implicit allow-list when the admission source is absent.
 		results := buildCodingSubAgentMCPToolMatches(candidates, nil)
-		logCodingSubAgentMCPToolSelection(taskDescription, true, len(candidates), results)
+		results = c.filterCodingScopeMCP(results)
+		logCodingSubAgentMCPToolSelection("scope-admitted", fullEnv, len(candidates), results)
+		return results
+	}
+	if fullEnv {
+		// Legacy full-environment callers retain their explicit broad catalog
+		// posture. New scope callbacks always take the branch above.
+		results := buildCodingSubAgentMCPToolMatches(candidates, nil)
+		logCodingSubAgentMCPToolSelection("full-environment", true, len(candidates), results)
 		return results
 	}
 

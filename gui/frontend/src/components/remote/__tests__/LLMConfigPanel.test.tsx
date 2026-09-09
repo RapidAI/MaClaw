@@ -20,7 +20,6 @@ const StartOpenCodeZenLoginMock = vi.fn();
 const StartXAIOAuthMock = vi.fn();
 const CancelXAIOAuthMock = vi.fn();
 const FetchCodeGenModelsMock = vi.fn();
-const ImportExternalAgentsMock = vi.fn();
 const GetMoAConfigMock = vi.fn();
     const SaveMoAConfigMock = vi.fn();
 const GetMaclawLLMProfilePanelStateMock = vi.fn();
@@ -45,7 +44,6 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     CancelXAIOAuth: (...args: unknown[]) => CancelXAIOAuthMock(...args),
     CancelOpenAIOAuth: vi.fn(),
     ImportCodexAuth: vi.fn(),
-    ImportExternalAgents: (...args: unknown[]) => ImportExternalAgentsMock(...args),
     FetchCodeGenModels: (...args: unknown[]) => FetchCodeGenModelsMock(...args),
     FetchProviderModels: (...args: unknown[]) => FetchProviderModelsMock(...args),
     CreateMobileLLMDesktopQRSession: (...args: unknown[]) => CreateMobileLLMDesktopQRSessionMock(...args),
@@ -111,7 +109,6 @@ describe('LLMConfigPanel test-and-save flow', () => {
         SaveMaclawLLMProfilesMock.mockResolvedValue(undefined);
         FetchProviderModelsMock.mockResolvedValue([{ id: 'gpt-test', name: 'GPT Test' }]);
         FetchCodeGenModelsMock.mockResolvedValue([]);
-        ImportExternalAgentsMock.mockResolvedValue({ imported: [], skipped: [], current: 'Custom1' });
         CreateMobileLLMDesktopQRSessionMock.mockResolvedValue({
             status: 'created',
             session_id: 'mlqr_test',
@@ -1071,17 +1068,6 @@ describe('LLMConfigPanel test-and-save flow', () => {
 
         await waitFor(() => expect(TestAndSaveMaclawLLMProvidersMock).toHaveBeenCalled());
         await waitFor(() => expect(GetMaclawLLMProvidersMock.mock.calls.length).toBeGreaterThanOrEqual(2));
-    });
-
-    it('offers an import-other-agents action', async () => {
-        ImportExternalAgentsMock.mockResolvedValue({
-            imported: ['Codex'],
-            skipped: [{ source: 'opencode', name: 'OpenCode', reason: '认证未通过' }],
-            current: 'Custom1',
-        });
-        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
-        fireEvent.click(await screen.findByRole('button', { name: 'Import other agents' }));
-        await waitFor(() => expect(ImportExternalAgentsMock).toHaveBeenCalledTimes(1));
     });
 
     it('restricts imported agent providers to model selection', async () => {

@@ -44,7 +44,6 @@ func newStartupAutoResponder(app *App, session *RemoteSession) *startupAutoRespo
 		window:    30 * time.Second,
 		sentKeys:  map[string]bool{},
 		// Disabled by default — the onboarding pre-check in
-		// ensureClaudeOnboardingComplete should handle startup prompts.
 		// Enable only if the pre-check is insufficient for some edge case.
 		done: true,
 	}

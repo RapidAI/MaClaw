@@ -29,7 +29,7 @@
   min-height: 36px;
   padding: 0 11px;
   border: 1px solid color-mix(in srgb, var(--vrepo-primary) 62%, var(--vrepo-border));
-  border-radius: 6px;
+  border-radius: var(--radius-sm, 6px);
   background: var(--vrepo-primary);
   color: var(--theme-on-primary, #fff);
   cursor: pointer;
@@ -88,9 +88,9 @@
 
 .vrepo-page .utilities-link { min-height: 0; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--vrepo-primary); font-size: .78rem; font-weight: 650; }
 .vrepo-page .utilities-link:hover:not(:disabled) { background: transparent; color: var(--theme-primary-strong, var(--vrepo-primary)); text-decoration: underline; text-underline-offset: 3px; }
-.vrepo-page .utilities-error { margin: 0 0 14px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--vrepo-danger) 46%, var(--vrepo-border)); border-radius: 8px; background: var(--theme-danger-bg, #fbf1f0); color: var(--vrepo-danger); font-size: .8rem; line-height: 1.45; white-space: pre-wrap; }
+.vrepo-page .utilities-error { margin: 0 0 14px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--vrepo-danger) 46%, var(--vrepo-border)); border-radius: var(--radius-md, 8px); background: var(--theme-danger-bg, #fbf1f0); color: var(--vrepo-danger); font-size: .8rem; line-height: 1.45; white-space: pre-wrap; }
 .vrepo-local-directory-note { margin: 0; color: var(--vrepo-secondary); font-size: .76rem; line-height: 1.45; }
-.vrepo-sync-status { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 30px; margin: 0 0 14px; padding: 6px 8px 6px 10px; border: 1px solid var(--vrepo-border-subtle); border-radius: 6px; background: var(--vrepo-muted); color: var(--vrepo-secondary); font-size: .72rem; line-height: 1.4; }
+.vrepo-sync-status { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 30px; margin: 0 0 14px; padding: 6px 8px 6px 10px; border: 1px solid var(--vrepo-border-subtle); border-radius: var(--radius-sm, 6px); background: var(--vrepo-muted); color: var(--vrepo-secondary); font-size: .72rem; line-height: 1.4; }
 .vrepo-sync-status > span { min-width: 0; overflow-wrap: anywhere; }
 .vrepo-sync-status__repair { flex: 0 0 auto; min-height: 28px !important; padding: 0 9px !important; border-color: color-mix(in srgb, var(--vrepo-danger) 46%, var(--vrepo-border)) !important; color: var(--vrepo-danger) !important; font-size: .7rem !important; }
 .vrepo-sync-status__repair:hover:not(:disabled) { border-color: var(--vrepo-danger) !important; background: color-mix(in srgb, var(--vrepo-danger) 9%, var(--vrepo-surface)) !important; color: var(--vrepo-danger) !important; }
@@ -99,7 +99,7 @@
 .vrepo-sync-status.is-retry { border-color: color-mix(in srgb, var(--vrepo-primary) 34%, var(--vrepo-border)); color: var(--vrepo-primary); }
 .vrepo-sync-status.is-conflict, .vrepo-sync-status.is-error { border-color: color-mix(in srgb, var(--vrepo-danger) 42%, var(--vrepo-border)); color: var(--vrepo-danger); }
 
-.vrepo-client-status { margin: 0 0 16px; border: 1px solid var(--vrepo-border-subtle); border-radius: 8px; background: color-mix(in srgb, var(--vrepo-muted) 72%, var(--vrepo-surface)); color: var(--vrepo-secondary); font-size: .76rem; }
+.vrepo-client-status { margin: 0 0 16px; border: 1px solid var(--vrepo-border-subtle); border-radius: var(--radius-md, 8px); background: color-mix(in srgb, var(--vrepo-muted) 72%, var(--vrepo-surface)); color: var(--vrepo-secondary); font-size: .76rem; }
 .vrepo-client-status summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 12px; cursor: pointer; list-style: none; }
 .vrepo-client-status summary::-webkit-details-marker { display: none; }
 .vrepo-client-status summary::after { color: var(--vrepo-muted-ink); content: '+'; font-size: 1rem; font-weight: 500; line-height: 1; }
@@ -118,14 +118,14 @@
 .vrepo-client-status--compact summary::after { margin-left: 1px; }
 .vrepo-client-status--compact summary:hover { background: var(--vrepo-muted); }
 .vrepo-client-status--compact[open] { z-index: 2; }
-.vrepo-client-status--compact[open] .vrepo-client-status__body { position: absolute; z-index: 3; top: calc(100% + 5px); left: 0; width: max-content; max-width: min(440px, calc(100vw - 32px)); border: 1px solid var(--vrepo-border); border-radius: 7px; background: var(--vrepo-surface); box-shadow: 0 4px 8px color-mix(in srgb, var(--vrepo-ink) 16%, transparent); }
+.vrepo-client-status--compact[open] .vrepo-client-status__body { position: absolute; z-index: 3; top: calc(100% + 5px); left: 0; width: max-content; max-width: min(440px, calc(100vw - 32px)); border: 1px solid var(--vrepo-border); border-radius: var(--radius-sm, 7px); background: var(--vrepo-surface); box-shadow: var(--shadow-md, 0 4px 12px -2px color-mix(in srgb, var(--vrepo-ink) 14%, transparent)); }
 .vrepo-client-status--end-aligned[open] .vrepo-client-status__body { left: auto; right: 0; }
 .vrepo-page .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
-.vrepo-empty { border: 1px solid var(--vrepo-border); border-radius: 10px; background: var(--vrepo-surface); }
+.vrepo-empty { border: 1px solid var(--vrepo-border); border-radius: var(--radius-md, 10px); background: var(--vrepo-surface); }
 .vrepo-empty { width: min(760px, 100%); box-sizing: border-box; margin: clamp(32px, 9vh, 92px) auto 32px; padding: 28px; }
 .vrepo-empty__intro { display: flex; align-items: flex-start; gap: 14px; text-align: left; }
-.vrepo-empty__mark { display: grid; flex: 0 0 36px; width: 36px; height: 36px; place-items: center; border: 1px solid color-mix(in srgb, var(--vrepo-primary) 48%, var(--vrepo-border)); border-radius: 8px; background: var(--vrepo-primary-soft); color: var(--vrepo-primary); font-size: .9rem; font-weight: 800; }
+.vrepo-empty__mark { display: grid; flex: 0 0 36px; width: 36px; height: 36px; place-items: center; border: 1px solid color-mix(in srgb, var(--vrepo-primary) 48%, var(--vrepo-border)); border-radius: var(--radius-md, 8px); background: var(--vrepo-primary-soft); color: var(--vrepo-primary); font-size: .9rem; font-weight: 800; }
 .vrepo-empty h2 { margin: 0; color: var(--vrepo-ink); font-size: 1.02rem; }
 .vrepo-empty p { margin: 5px 0 0; color: var(--vrepo-secondary); font-size: .82rem; line-height: 1.6; }
 .vrepo-empty__actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 22px 0 24px 50px; }
@@ -138,13 +138,13 @@
 .vrepo-recent__open:disabled { opacity: .78; }
 .vrepo-recent__task { flex: 0 0 auto; }
 
-.vrepo-management-shell { display: grid; grid-template-columns: minmax(230px, 280px) minmax(0, 1fr); min-height: 560px; border: 1px solid var(--vrepo-border); border-radius: 10px; overflow: hidden; background: var(--vrepo-surface); }
+.vrepo-management-shell { display: grid; grid-template-columns: minmax(230px, 280px) minmax(0, 1fr); min-height: 560px; border: 1px solid var(--vrepo-border); border-radius: var(--radius-md, 10px); overflow: hidden; background: var(--vrepo-surface); }
 .vrepo-repository-list { display: flex; min-height: 0; flex-direction: column; box-shadow: inset -1px 0 0 var(--vrepo-border); background: color-mix(in srgb, var(--vrepo-muted) 84%, var(--vrepo-surface)); }
 .vrepo-repository-list__head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 15px 14px 10px; }
 .vrepo-repository-list__head strong { color: var(--vrepo-ink); font-size: .84rem; }
 .vrepo-repository-list__head span { color: var(--vrepo-muted-ink); font-size: .68rem; }
 .vrepo-repository-list__search { display: block; padding: 0 12px 12px; }
-.vrepo-repository-list__search input { width: 100%; box-sizing: border-box; min-height: 36px; padding: 7px 9px; border: 1px solid var(--vrepo-border); border-radius: 6px; background: var(--vrepo-surface); color: var(--vrepo-ink); font-size: .76rem; }
+.vrepo-repository-list__search input { width: 100%; box-sizing: border-box; min-height: 36px; padding: 7px 9px; border: 1px solid var(--vrepo-border); border-radius: var(--radius-sm, 6px); background: var(--vrepo-surface); color: var(--vrepo-ink); font-size: .76rem; }
 .vrepo-repository-list__search input:focus { border-color: var(--vrepo-primary); outline: 2px solid color-mix(in srgb, var(--vrepo-primary) 25%, transparent); outline-offset: 1px; }
 .vrepo-repository-list__items { min-height: 0; overflow: auto; padding: 0 7px 10px; }
 .vrepo-repository-list__items { overscroll-behavior: contain; }
@@ -157,12 +157,12 @@
 .vrepo-repository-list__item-name strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .78rem; }
 .vrepo-repository-list__item-label { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 5px; }
 .vrepo-repository-list__item-name em { flex: 0 0 auto; color: var(--vrepo-primary); font-size: .62rem; font-style: normal; font-weight: 700; }
-.vrepo-repository-list__unavailable { padding: 2px 5px; border: 1px solid color-mix(in srgb, var(--vrepo-warning) 45%, var(--vrepo-border)); border-radius: 4px; background: color-mix(in srgb, var(--vrepo-warning) 11%, var(--vrepo-surface)); color: var(--vrepo-secondary); font-size: .6rem; font-weight: 700; line-height: 1.2; }
+.vrepo-repository-list__unavailable { padding: 2px 5px; border: 1px solid color-mix(in srgb, var(--vrepo-warning) 45%, var(--vrepo-border)); border-radius: var(--radius-xs, 4px); background: color-mix(in srgb, var(--vrepo-warning) 11%, var(--vrepo-surface)); color: var(--vrepo-secondary); font-size: .6rem; font-weight: 700; line-height: 1.2; }
 .vrepo-repository-list__item-path { overflow: hidden; color: var(--vrepo-secondary); font-size: .68rem; font-weight: 450; text-overflow: ellipsis; white-space: nowrap; }
 .vrepo-repository-list__item-meta { color: var(--vrepo-muted-ink); font-size: .65rem; font-weight: 600; }
 .vrepo-repository-list__task { display: block; min-height: 34px !important; margin: 2px 9px 4px; font-size: .68rem !important; text-align: left; }
 .vrepo-repository-list__empty { margin: 16px 8px; color: var(--vrepo-muted-ink); font-size: .73rem; line-height: 1.5; }
-.vrepo-repository-menu { position: fixed; z-index: 60; box-sizing: border-box; width: 232px; padding: 6px; border: 1px solid color-mix(in srgb, var(--vrepo-border) 88%, var(--vrepo-secondary)); border-radius: 8px; background: var(--vrepo-surface); box-shadow: 0 6px 12px color-mix(in srgb, var(--vrepo-ink) 14%, transparent); }
+.vrepo-repository-menu { position: fixed; z-index: 60; box-sizing: border-box; width: 232px; padding: 6px; border: 1px solid color-mix(in srgb, var(--vrepo-border) 88%, var(--vrepo-secondary)); border-radius: var(--radius-md, 8px); background: var(--vrepo-surface); box-shadow: var(--shadow-md, 0 4px 12px -2px color-mix(in srgb, var(--vrepo-ink) 14%, transparent)); }
 .vrepo-repository-menu__context { display: grid; gap: 2px; min-width: 0; padding: 5px 7px 8px; border-bottom: 1px solid var(--vrepo-border-subtle); }
 .vrepo-repository-menu__context span { color: var(--vrepo-muted-ink); font-size: .62rem; font-weight: 650; }
 .vrepo-repository-menu__context strong { overflow: hidden; color: var(--vrepo-secondary); font-size: .72rem; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
@@ -206,7 +206,7 @@ button.vrepo-tree__chevron:focus-visible { outline: 2px solid var(--vrepo-primar
 .vrepo-tree__icon.is-svn { color: var(--vrepo-success); }
 .vrepo-tree__icon.is-local { color: var(--vrepo-secondary); }
 .vrepo-editor label:has(input[placeholder="build/release"]) { display: none; }
-.vrepo-tree__label { min-width: 0; padding: 2px 4px; border-radius: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vrepo-tree__label { min-width: 0; padding: 2px 4px; border-radius: var(--radius-xs, 3px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .vrepo-tree__item:hover:not(:disabled) .vrepo-tree__label { background: color-mix(in srgb, var(--vrepo-primary) 7%, transparent); }
 .vrepo-tree__label.is-selected { background: var(--vrepo-primary-soft); color: var(--vrepo-primary); font-weight: 650; }
 .vrepo-tree__label.is-dragging { opacity: .48; }
@@ -223,10 +223,10 @@ button.vrepo-tree__chevron:focus-visible { outline: 2px solid var(--vrepo-primar
 .vrepo-detail__title { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
 .vrepo-detail__title > div { display: flex; align-items: center; gap: 8px; }
 .vrepo-detail__title h2, .vrepo-editor h2, .vrepo-editor h3 { margin: 0; color: var(--vrepo-ink); font-size: 1.02rem; letter-spacing: -.01em; }
-.vrepo-facts { display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 10px 16px; max-width: 880px; margin: 0 0 20px; padding: 16px; border: 1px solid var(--vrepo-border-subtle); border-radius: 8px; background: color-mix(in srgb, var(--vrepo-muted) 56%, var(--vrepo-surface)); font-size: .82rem; }
+.vrepo-facts { display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 10px 16px; max-width: 880px; margin: 0 0 20px; padding: 16px; border: 1px solid var(--vrepo-border-subtle); border-radius: var(--radius-md, 8px); background: color-mix(in srgb, var(--vrepo-muted) 56%, var(--vrepo-surface)); font-size: .82rem; }
 .vrepo-facts dt { color: var(--vrepo-secondary); }
 .vrepo-facts dd { margin: 0; color: var(--vrepo-ink); overflow-wrap: anywhere; }
-.vrepo-status-output { max-height: 260px; margin: 18px 0 0; overflow: auto; padding: 13px; border: 1px solid var(--vrepo-border-subtle); border-radius: 8px; background: color-mix(in srgb, var(--vrepo-page) 86%, #000); color: var(--vrepo-secondary); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .73rem; }
+.vrepo-status-output { max-height: 260px; margin: 18px 0 0; overflow: auto; padding: 13px; border: 1px solid var(--vrepo-border-subtle); border-radius: var(--radius-md, 8px); background: color-mix(in srgb, var(--vrepo-page) 86%, var(--theme-overlay-color, #0f172a)); color: var(--vrepo-secondary); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .73rem; }
 .vrepo-changes { margin-top: 20px; border-top: 1px solid var(--vrepo-border-subtle); padding-top: 18px; }
 .vrepo-changes__head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .vrepo-changes__head > div:last-child { display: flex; flex-wrap: wrap; gap: 7px; }
@@ -235,7 +235,7 @@ button.vrepo-tree__chevron:focus-visible { outline: 2px solid var(--vrepo-primar
 .vrepo-changes__head p, .vrepo-changes__empty { margin: 5px 0 0; color: var(--vrepo-secondary); font-size: .76rem; line-height: 1.45; }
 .vrepo-changes__notice { margin: 0 0 9px; color: var(--vrepo-secondary); font-size: .72rem; line-height: 1.45; }
 .vrepo-changes__summary { display: flex; gap: 8px; margin: 14px 0; color: var(--vrepo-secondary); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .7rem; }
-.vrepo-changes__summary span { padding: 4px 6px; border-radius: 4px; background: var(--vrepo-muted); }
+.vrepo-changes__summary span { padding: 4px 6px; border-radius: var(--radius-xs, 4px); background: var(--vrepo-muted); }
 .vrepo-changes__grid { display: grid; grid-template-columns: minmax(220px, .9fr) minmax(260px, 1.1fr); gap: 18px; }
 .vrepo-change-list { max-height: 270px; overflow: auto; border-top: 1px solid var(--vrepo-border-subtle); }
 .vrepo-change-list button { display: flex; width: 100%; min-height: 0; justify-content: space-between; gap: 10px; padding: 8px 4px; border: 0; border-bottom: 1px solid var(--vrepo-border-subtle); border-radius: 0; background: transparent; color: var(--vrepo-ink); text-align: left; }
@@ -254,8 +254,8 @@ button.vrepo-tree__chevron:focus-visible { outline: 2px solid var(--vrepo-primar
 .vrepo-commit-graph strong { overflow: hidden; color: var(--vrepo-ink); font-size: .73rem; text-overflow: ellipsis; white-space: nowrap; }
 .vrepo-commit-graph small { margin-top: 4px; color: var(--vrepo-secondary); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .64rem; line-height: 1.4; }
 .vrepo-diff { margin-top: 18px; }
-.vrepo-diff pre { max-height: 420px; margin: 0; overflow: auto; padding: 13px; border: 1px solid var(--vrepo-border-subtle); border-radius: 8px; background: color-mix(in srgb, var(--vrepo-page) 86%, #000); color: var(--vrepo-ink); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .7rem; line-height: 1.55; white-space: pre; }
-.vrepo-placeholder { display: grid; min-height: 310px; align-content: center; padding: 24px; border: 1px dashed var(--vrepo-border); border-radius: 8px; color: var(--vrepo-secondary); text-align: center; }
+.vrepo-diff pre { max-height: 420px; margin: 0; overflow: auto; padding: 13px; border: 1px solid var(--vrepo-border-subtle); border-radius: var(--radius-md, 8px); background: color-mix(in srgb, var(--vrepo-page) 86%, var(--theme-overlay-color, #0f172a)); color: var(--vrepo-ink); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .7rem; line-height: 1.55; white-space: pre; }
+.vrepo-placeholder { display: grid; min-height: 310px; align-content: center; padding: 24px; border: 1px dashed var(--vrepo-border); border-radius: var(--radius-md, 8px); color: var(--vrepo-secondary); text-align: center; }
 .vrepo-placeholder h2 { margin: 0; color: var(--vrepo-ink); font-size: 1rem; }
 .vrepo-placeholder p { margin: 7px 0 0; color: var(--vrepo-muted-ink); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .76rem; }
 .vrepo-management-placeholder { display: grid; min-height: 360px; align-content: center; padding: 30px; color: var(--vrepo-secondary); }
@@ -266,7 +266,7 @@ button.vrepo-tree__chevron:focus-visible { outline: 2px solid var(--vrepo-primar
 .vrepo-overview__title h2 { margin: 5px 0 0; color: var(--vrepo-ink); font-size: 1.16rem; letter-spacing: -.015em; }
 .vrepo-overview__title p { max-width: 62ch; margin: 5px 0 0; color: var(--vrepo-secondary); font-size: .75rem; overflow-wrap: anywhere; }
 .vrepo-health { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 18px 0 24px; }
-.vrepo-health > div { padding: 11px 12px; border: 1px solid var(--vrepo-border-subtle); border-radius: 8px; background: color-mix(in srgb, var(--vrepo-muted) 52%, var(--vrepo-surface)); }
+.vrepo-health > div { padding: 11px 12px; border: 1px solid var(--vrepo-border-subtle); border-radius: var(--radius-md, 8px); background: color-mix(in srgb, var(--vrepo-muted) 52%, var(--vrepo-surface)); }
 .vrepo-health span, .vrepo-health strong { display: block; }
 .vrepo-health span { color: var(--vrepo-secondary); font-size: .68rem; }
 .vrepo-health strong { margin-top: 5px; color: var(--vrepo-ink); font-size: .8rem; }
@@ -278,18 +278,18 @@ button.vrepo-tree__chevron:focus-visible { outline: 2px solid var(--vrepo-primar
 .vrepo-editor > button { align-self: flex-start; }
 .vrepo-editor h2, .vrepo-editor h3 { margin-bottom: 3px; }
 .vrepo-editor label, .vrepo-operation label { display: flex; flex-direction: column; gap: 6px; color: var(--vrepo-secondary); font-size: .76rem; font-weight: 650; }
-.vrepo-editor input, .vrepo-editor select, .vrepo-operation textarea { width: 100%; box-sizing: border-box; min-height: 36px; padding: 7px 9px; border: 1px solid var(--vrepo-border); border-radius: 6px; background: var(--vrepo-surface); color: var(--vrepo-ink); }
+.vrepo-editor input, .vrepo-editor select, .vrepo-operation textarea { width: 100%; box-sizing: border-box; min-height: 36px; padding: 7px 9px; border: 1px solid var(--vrepo-border); border-radius: var(--radius-sm, 6px); background: var(--vrepo-surface); color: var(--vrepo-ink); }
 .vrepo-operation textarea { min-height: 82px; resize: vertical; }
 .vrepo-editor input:focus, .vrepo-editor select:focus, .vrepo-operation textarea:focus { border-color: var(--vrepo-primary); outline: none; box-shadow: 0 0 0 2px var(--vrepo-primary-soft); }
 .vrepo-editor label small { color: var(--vrepo-muted-ink); font-size: .7rem; font-weight: 500; line-height: 1.45; }
-.vrepo-repair-hint { max-width: 64ch; margin: 0; padding: 10px 12px; border: 1px solid var(--vrepo-border-subtle); border-radius: 8px; background: color-mix(in srgb, var(--vrepo-muted) 52%, var(--vrepo-surface)); color: var(--vrepo-secondary); font-size: .78rem; line-height: 1.5; }
+.vrepo-repair-hint { max-width: 64ch; margin: 0; padding: 10px 12px; border: 1px solid var(--vrepo-border-subtle); border-radius: var(--radius-md, 8px); background: color-mix(in srgb, var(--vrepo-muted) 52%, var(--vrepo-surface)); color: var(--vrepo-secondary); font-size: .78rem; line-height: 1.5; }
 .vrepo-inline { display: flex; align-items: center; gap: 10px; }
 .vrepo-inline input, .vrepo-inline > label { flex: 1; }
 .vrepo-inline > label:last-child { flex: 0 0 110px; }
 .vrepo-inline .vrepo-credential-add { flex: 0 0 auto; white-space: nowrap; }
-.vrepo-host-key { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid color-mix(in srgb, var(--vrepo-warning) 55%, var(--vrepo-border)); border-radius: 8px; background: var(--theme-warning-bg, #f8fafc); color: var(--vrepo-secondary); }
+.vrepo-host-key { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid color-mix(in srgb, var(--vrepo-warning) 55%, var(--vrepo-border)); border-radius: var(--radius-md, 8px); background: var(--theme-warning-bg, #f8fafc); color: var(--vrepo-secondary); }
 .vrepo-host-key code { overflow-wrap: anywhere; }
-.vrepo-root-missing { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border: 1px solid color-mix(in srgb, var(--vrepo-warning) 55%, var(--vrepo-border)); border-radius: 8px; background: var(--theme-warning-bg, #f8fafc); color: var(--vrepo-secondary); font-size: .78rem; }
+.vrepo-root-missing { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border: 1px solid color-mix(in srgb, var(--vrepo-warning) 55%, var(--vrepo-border)); border-radius: var(--radius-md, 8px); background: var(--theme-warning-bg, #f8fafc); color: var(--vrepo-secondary); font-size: .78rem; }
 .vrepo-root-missing button { flex: 0 0 auto; }
 .vrepo-connection-ok { margin: 0; font-size: .78rem; }
 .vrepo-editor .vrepo-check { flex-direction: row; align-items: center; color: var(--vrepo-secondary); font-weight: 500; }
@@ -297,10 +297,10 @@ button.vrepo-tree__chevron:focus-visible { outline: 2px solid var(--vrepo-primar
 .vrepo-migration { display: flex; flex-direction: column; gap: 14px; }
 .vrepo-migration__hint { max-width: 64ch; margin: 0; color: var(--vrepo-secondary); font-size: .82rem; line-height: 1.55; }
 .vrepo-migration label { display: flex; flex-direction: column; gap: 6px; color: var(--vrepo-secondary); font-size: .76rem; font-weight: 650; }
-.vrepo-migration label > code { display: block; box-sizing: border-box; min-height: 36px; padding: 9px; border: 1px solid var(--vrepo-border-subtle); border-radius: 6px; background: var(--vrepo-muted); color: var(--vrepo-ink); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .72rem; font-weight: 500; overflow-wrap: anywhere; }
-.vrepo-migration input { width: 100%; box-sizing: border-box; min-height: 36px; padding: 7px 9px; border: 1px solid var(--vrepo-border); border-radius: 6px; background: var(--vrepo-surface); color: var(--vrepo-ink); }
+.vrepo-migration label > code { display: block; box-sizing: border-box; min-height: 36px; padding: 9px; border: 1px solid var(--vrepo-border-subtle); border-radius: var(--radius-sm, 6px); background: var(--vrepo-muted); color: var(--vrepo-ink); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .72rem; font-weight: 500; overflow-wrap: anywhere; }
+.vrepo-migration input { width: 100%; box-sizing: border-box; min-height: 36px; padding: 7px 9px; border: 1px solid var(--vrepo-border); border-radius: var(--radius-sm, 6px); background: var(--vrepo-surface); color: var(--vrepo-ink); }
 .vrepo-migration input:focus { border-color: var(--vrepo-primary); outline: none; box-shadow: 0 0 0 2px var(--vrepo-primary-soft); }
-.vrepo-migration__preview { padding: 13px; border: 1px solid var(--vrepo-border); border-radius: 8px; background: color-mix(in srgb, var(--vrepo-muted) 52%, var(--vrepo-surface)); }
+.vrepo-migration__preview { padding: 13px; border: 1px solid var(--vrepo-border); border-radius: var(--radius-md, 8px); background: color-mix(in srgb, var(--vrepo-muted) 52%, var(--vrepo-surface)); }
 .vrepo-migration__preview.is-ready { border-color: color-mix(in srgb, var(--vrepo-success) 45%, var(--vrepo-border)); }
 .vrepo-migration__preview.is-blocked { border-color: color-mix(in srgb, var(--vrepo-danger) 45%, var(--vrepo-border)); }
 .vrepo-migration__preview strong { display: block; color: var(--vrepo-ink); font-size: .8rem; line-height: 1.45; }
@@ -315,8 +315,8 @@ button.vrepo-tree__chevron:focus-visible { outline: 2px solid var(--vrepo-primar
 .vrepo-credential-row span { margin-top: 4px; color: var(--vrepo-secondary); font-size: .73rem; }
 .vrepo-credential-row > div:last-child { display: flex; gap: 7px; align-items: center; }
 
-.vrepo-dialog-backdrop { position: fixed; z-index: 70; inset: 0; display: grid; place-items: center; padding: 20px; background: color-mix(in srgb, var(--vrepo-page) 42%, rgba(0, 0, 0, .72)); animation: vrepo-dialog-backdrop-in 160ms ease-out; }
-.vrepo-dialog { display: flex; width: min(620px, 100%); max-height: calc(100vh - 40px); flex-direction: column; border-radius: 12px; background: var(--vrepo-surface); color: var(--vrepo-ink); box-shadow: 0 12px 32px color-mix(in srgb, var(--vrepo-ink) 22%, transparent); animation: vrepo-dialog-in 180ms cubic-bezier(.22, 1, .36, 1); }
+.vrepo-dialog-backdrop { position: fixed; z-index: 70; inset: 0; display: grid; place-items: center; padding: 20px; background: color-mix(in srgb, var(--vrepo-page) 42%, var(--theme-overlay, rgba(0, 0, 0, .72))); animation: vrepo-dialog-backdrop-in 160ms ease-out; }
+.vrepo-dialog { display: flex; width: min(620px, 100%); max-height: calc(100vh - 40px); flex-direction: column; border-radius: var(--radius-lg, 12px); background: var(--vrepo-surface); color: var(--vrepo-ink); box-shadow: var(--shadow-xl, 0 12px 40px -8px color-mix(in srgb, var(--vrepo-ink) 18%, transparent)); animation: vrepo-dialog-in 180ms cubic-bezier(.22, 1, .36, 1); }
 .vrepo-dialog--repo { width: min(640px, 100%); }
 .vrepo-dialog--node { width: min(600px, 100%); }
 .vrepo-dialog--credentials { width: min(760px, 100%); }
@@ -324,7 +324,7 @@ button.vrepo-tree__chevron:focus-visible { outline: 2px solid var(--vrepo-primar
 .vrepo-dialog__header { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 12px; padding: 18px 22px 10px; }
 .vrepo-dialog__header h2 { margin: 0; color: var(--vrepo-ink); font-size: 1.05rem; letter-spacing: -.01em; }
 .vrepo-page .vrepo-dialog__close { display: grid; width: 32px; min-height: 32px; padding: 0; place-items: center; border: 0; background: transparent; color: var(--vrepo-secondary); font-size: 1.05rem; font-weight: 500; }
-.vrepo-page .vrepo-dialog__close:hover:not(:disabled) { border-radius: 6px; background: var(--vrepo-muted); color: var(--vrepo-ink); }
+.vrepo-page .vrepo-dialog__close:hover:not(:disabled) { border-radius: var(--radius-sm, 6px); background: var(--vrepo-muted); color: var(--vrepo-ink); }
 .vrepo-dialog__body { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 6px 22px 18px; }
 .vrepo-dialog__footer { display: flex; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; gap: 8px; padding: 14px 22px; border-top: 1px solid var(--vrepo-border-subtle); }
 @keyframes vrepo-dialog-backdrop-in { from { opacity: 0; } }
@@ -334,7 +334,7 @@ button.vrepo-tree__chevron:focus-visible { outline: 2px solid var(--vrepo-primar
 .vrepo-operation__targets span, .vrepo-operation-result span { color: var(--vrepo-secondary); }
 .vrepo-operation__hint { margin: 0 0 14px; color: var(--vrepo-secondary); font-size: .8rem; line-height: 1.5; }
 .vrepo-operation__danger, .vrepo-operation-result .is-error { color: var(--vrepo-danger); }
-.vrepo-operation-result { margin-top: 16px; padding: 18px; border: 1px solid var(--vrepo-border); border-radius: 10px; background: var(--vrepo-surface); }
+.vrepo-operation-result { margin-top: 16px; padding: 18px; border: 1px solid var(--vrepo-border); border-radius: var(--radius-md, 10px); background: var(--vrepo-surface); }
 .vrepo-tree__item:focus-visible, .vrepo-page button:focus-visible, .vrepo-page input:focus-visible, .vrepo-page select:focus-visible, .vrepo-page textarea:focus-visible, .vrepo-client-status summary:focus-visible { outline: 2px solid var(--vrepo-primary); outline-offset: 2px; }
 
 @media (max-width: 1000px) {

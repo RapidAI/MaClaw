@@ -1273,6 +1273,7 @@ export function FileTabBar({
             )}
             <div
                 ref={containerRef}
+                className="mc-file-tab-bar"
                 onDragEnd={() => setDragOver((prev) => (prev == null ? prev : null))}
                 data-testid="file-tab-bar"
                 role="tablist"

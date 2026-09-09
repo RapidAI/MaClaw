@@ -26,9 +26,22 @@ const USAGE_STATS_I18N = {
     summaryCacheRate: 'Prompt Cache Rate',
     summaryCacheRead: 'Cache Read Tokens',
     summaryCacheWrite: 'Cache Write Tokens',
+    summaryCacheAnomalies: 'Cache usage anomalies',
     summaryRequests: 'Requests',
     summaryCredits: 'Credits',
-    summaryCostRMB: 'RMB reference cost / estimate',
+    summaryCostRMB: 'RMB reference cost',
+    reconciliationTitle: 'HubCenter reconciliation',
+    reconciliationMatched: 'Matched',
+    reconciliationMismatch: 'Mismatch',
+    reconciliationUnavailable: 'Unavailable',
+    reconciliationTotals: 'Hub {hubIn}/{hubOut} in/out · HubCenter {upIn}/{upOut} in/out · difference {diffIn}/{diffOut} in/out · requests {diffRequests} · Hub {hubCredits} Credits · HubCenter {upCredits} Credits · upstream Credits difference {diffUpstreamCredits}',
+    reconciliationUnavailableDetail: 'HubCenter reconciliation is unavailable: {message}',
+    reconciliationGroupsTitle: 'Service-group ledger',
+    reconciliationGroupUnspecified: 'Unspecified service group',
+    reconciliationGroupRow: '{group}: Hub {hubIn}/{hubOut} in/out · {hubCredits} Credits · HubCenter {upIn}/{upOut} in/out · {upCredits} Credits · difference {diffIn}/{diffOut} in/out · requests {diffRequests} · upstream Credits difference {diffUpstreamCredits}',
+    reconciliationGroupUpstreamOnly: '{group}: HubCenter {upIn}/{upOut} in/out · {upCredits} Credits. Hub has no per-group ledger for this day, so this row is HubCenter-only.',
+    reconciliationCreditsNote: 'Hub Credits include the Hub service-group multiplier. Upstream Credits strip that Hub markup so they can be compared with the HubCenter authorization debit. Day status follows tokens and requests; per-group Credits compare only when the Hub markup is uniform.',
+    reconciliationCreditsNA: 'n/a',
     trendTitle: '24-Hour Trend',
     trendEmpty: 'No daily trend is available for the selected view.',
     rowsTitle: 'Usage Ranking',
@@ -38,33 +51,34 @@ const USAGE_STATS_I18N = {
     colInput: 'Input',
     colOutput: 'Output',
     colCacheRead: 'Cache Read',
+    colCacheWrite: 'Cache Write',
     colCacheRate: 'Cache Rate',
     colRequests: 'Requests',
     colCredits: 'Credits',
     colCostRMB: 'Charge',
     creditsTooltipTitle: 'How credits are deducted',
-    creditsTooltipFormula: 'Per-request rule: max((input tokens × provider input credits/10K × HubCenter provider multiplier × Hub service-group multiplier) + (output tokens × provider output credits/10K × HubCenter provider multiplier × Hub service-group multiplier), minimum request credits × both multipliers).',
-    creditsTooltipScope: 'Calculated from settled requests. Input and output lines are blended effective results; the provider prices and multipliers below are frozen settlement facts. Multiple entries can reflect price or multiplier changes, or different providers, during this reporting period. HubCenter provider/time-of-use and Hub service-group multipliers are each frozen at settlement and applied once.',
-    creditsTooltipInputLine: 'Input: {tokens} × {rate} Credits/10K = {credits} Credits',
+    creditsTooltipFormula: 'Per-request rule: max(((input tokens − cache read − cache write) × provider input credits/10K) + (cache read × provider cache-read credits/10K) + (cache write × provider cache-write credits/10K) + (output tokens × provider output credits/10K), minimum request credits), then apply the frozen HubCenter provider and Hub service-group multipliers once.',
+    creditsTooltipScope: 'Calculated from settled requests that retain a frozen provider-route price. Each line uses only the Tokens that were settled with its directional component; legacy usage without a price snapshot is shown separately and is never used to derive a unit price. Provider prices and multipliers below are frozen settlement facts.',
+    creditsTooltipInputLine: 'Non-cached input: {tokens} × {rate} Credits/10K = {credits} Credits',
+    creditsTooltipCacheReadLine: 'Cache Read: {tokens} × {rate} Credits/10K = {credits} Credits',
+    creditsTooltipCacheWriteLine: 'Cache Write: {tokens} × {rate} Credits/10K = {credits} Credits',
     creditsTooltipOutputLine: 'Output: {tokens} × {rate} Credits/10K = {credits} Credits',
     creditsTooltipAdjustments: 'Adjustments: minimum {minimum} + settlement/rounding {rounding} + unitemized {unitemized}',
+    creditsTooltipUnitemizedLine: 'Unitemized: {credits} Credits from {requests} settled requests without a frozen price snapshot (legacy token-count billing), covering non-cached input {input} + cache read {cacheRead} + cache write {cacheWrite} + output {output} Tokens; together with the lines above this equals the row totals.',
+    creditsTooltipUnitemizedDirectionalEstimate: 'The same unitemized Tokens at the frozen provider-route unit prices would be about {credits} Credits (non-cached input {input} + cache read {cacheRead} + cache write {cacheWrite} + output {output}). The remaining difference is the legacy tokens-per-credit charge, which does not discount cache reads.',
     creditsTooltipActualTotal: 'Actual credits deducted: {credits}',
     creditsTooltipMultiplier: '{provider}: {label} × {multiplier}',
     creditsTooltipServiceGroupMultiplier: 'service-group multiplier',
     creditsTooltipProviderMultiplier: 'provider multiplier',
     creditsTooltipMultiplierUnavailable: 'Settlement multiplier snapshot: unavailable for this legacy usage record. Current HubCenter provider settings cannot recreate the historical charge.',
     creditsTooltipCurrentProviderMultiplier: 'HubCenter current setting (reference only): {provider} provider multiplier × {multiplier}',
-    creditsTooltipProviderBasePricing: 'HubCenter settled provider price ({provider}, used for this debit): input {inputCredits} Credits/10K · output {outputCredits} Credits/10K; input ¥{inputRMB}/1M · output ¥{outputRMB}/1M',
-    creditsTooltipRMBRates: 'Effective RMB price: input ¥{input}/1M Tokens · output ¥{output}/1M Tokens',
+    creditsTooltipProviderBasePricing: 'Settled provider-route price ({provider}, used for this debit): input {inputCredits} Credits/10K · cache read {cacheReadCredits} · cache write {cacheWriteCredits} · output {outputCredits} Credits/10K; input ¥{inputRMB}/1M · cache read ¥{cacheReadRMB}/1M · cache write ¥{cacheWriteRMB}/1M · output ¥{outputRMB}/1M',
+    creditsTooltipRMBRates: 'Effective RMB price: non-cached input ¥{input}/1M Tokens · cache read ¥{cacheRead}/1M Tokens · cache write ¥{cacheWrite}/1M Tokens · output ¥{output}/1M Tokens',
     creditsTooltipRMBRateUnavailable: 'sample insufficient',
-    creditsTooltipRMB: 'RMB: input ¥{input} + output ¥{output} + other ¥{other} = ¥{total}',
-    creditsTooltipRMBEstimate: 'RMB estimate: recorded ¥{recorded} + unpriced usage estimate ¥{estimated} = ¥{total}. It extrapolates only a direction with a representative frozen-price sample and never changes the settled Credits debit.{unestimated}',
-    creditsTooltipRMBEstimateIncomplete: ' {tokens} unpriced Token(s) have no representative frozen-price sample, so they are not included; this is a lower-bound estimate.',
-    creditsTooltipRMBCoverage: 'RMB reference-cost coverage: {pricedRequests}/{requests} settled requests · input {pricedInputTokens}/{inputTokens} Tokens · output {pricedOutputTokens}/{outputTokens} Tokens · {pricedCredits}/{credits} Credits. {missingCredits} Credits lack a frozen RMB price; current HubCenter pricing is never used to rewrite historical settlement.',
+    creditsTooltipRMB: 'RMB: non-cached input ¥{input} + cache read ¥{cacheRead} + cache write ¥{cacheWrite} + output ¥{output} = ¥{total}',
+    creditsTooltipRMBCoverage: 'RMB reference-cost coverage: {pricedRequests}/{requests} settled requests · non-cached input {pricedNormalInputTokens}/{normalInputTokens} Tokens · cache read {pricedCacheReadTokens}/{cacheReadTokens} Tokens · cache write {pricedCacheWriteTokens}/{cacheWriteTokens} Tokens · output {pricedOutputTokens}/{outputTokens} Tokens · {pricedCredits}/{credits} Credits. {missingCredits} Credits lack a frozen RMB price; current HubCenter pricing is never used to rewrite historical settlement.',
     creditsTooltipRMBUnavailable: 'RMB reference cost is unavailable: none of the settled requests in this result retained a frozen RMB price.',
     rmbReferencePartial: '{value} (partial)',
-    rmbReferenceEstimated: '{value} (estimated)',
-    rmbReferenceEstimatedLowerBound: '{value} (estimated lower bound)',
     loadFailed: 'Load usage stats failed: {error}',
     generatedAt: 'Generated at {time}'
     , subtabUsage: 'Usage Report'
@@ -106,9 +120,22 @@ const USAGE_STATS_I18N = {
     summaryCacheRate: 'Prompt \u7f13\u5b58\u7387',
     summaryCacheRead: '\u7f13\u5b58\u8bfb\u53d6 Token',
     summaryCacheWrite: '\u7f13\u5b58\u5199\u5165 Token',
+    summaryCacheAnomalies: '\u7f13\u5b58\u7528\u91cf\u5f02\u5e38',
     summaryRequests: '\u8bf7\u6c42\u6570',
     summaryCredits: '\u79ef\u5206',
-    summaryCostRMB: '\u4eba\u6c11\u5e01\u53c2\u8003\u6210\u672c\uff08\u542b\u4f30\u7b97\uff09',
+    summaryCostRMB: '\u4eba\u6c11\u5e01\u53c2\u8003\u6210\u672c',
+    reconciliationTitle: 'HubCenter \u5bf9\u8d26',
+    reconciliationMatched: '\u5df2\u5bf9\u4e0a',
+    reconciliationMismatch: '\u4e0d\u4e00\u81f4',
+    reconciliationUnavailable: '\u6682\u4e0d\u53ef\u7528',
+    reconciliationTotals: 'Hub \u8f93\u5165/\u8f93\u51fa {hubIn}/{hubOut} \u00b7 HubCenter {upIn}/{upOut} \u00b7 \u5dee\u989d {diffIn}/{diffOut} \u00b7 \u8bf7\u6c42\u6570\u5dee\u989d {diffRequests} \u00b7 Hub {hubCredits} \u79ef\u5206 \u00b7 HubCenter {upCredits} \u79ef\u5206 \u00b7 \u4e0a\u6e38\u79ef\u5206\u5dee\u989d {diffUpstreamCredits}',
+    reconciliationUnavailableDetail: 'HubCenter \u5bf9\u8d26\u6682\u4e0d\u53ef\u7528\uff1a{message}',
+    reconciliationGroupsTitle: '\u670d\u52a1\u7ec4\u53f0\u8d26',
+    reconciliationGroupUnspecified: '\u672a\u6807\u6ce8\u670d\u52a1\u7ec4',
+    reconciliationGroupRow: '{group}\uff1aHub \u8f93\u5165/\u8f93\u51fa {hubIn}/{hubOut} \u00b7 {hubCredits} \u79ef\u5206 \u00b7 HubCenter {upIn}/{upOut} \u00b7 {upCredits} \u79ef\u5206 \u00b7 \u5dee\u989d {diffIn}/{diffOut} \u00b7 \u8bf7\u6c42\u6570\u5dee\u989d {diffRequests} \u00b7 \u4e0a\u6e38\u79ef\u5206\u5dee\u989d {diffUpstreamCredits}',
+    reconciliationGroupUpstreamOnly: '{group}\uff1aHubCenter \u8f93\u5165/\u8f93\u51fa {upIn}/{upOut} \u00b7 {upCredits} \u79ef\u5206\u3002Hub \u8be5\u65e5\u5c1a\u65e0\u670d\u52a1\u7ec4\u53f0\u8d26\uff0c\u6b64\u884c\u4ec5\u5c55\u793a HubCenter \u5206\u7ec4\u3002',
+    reconciliationCreditsNote: 'Hub \u79ef\u5206\u542b\u672c\u5730\u670d\u52a1\u7ec4\u500d\u7387\uff1b\u4e0a\u6e38\u79ef\u5206\u4f1a\u5265\u6389\u8be5\u500d\u7387\uff0c\u7528\u4ee5\u5bf9\u8d26 HubCenter \u6388\u6743\u6263\u8d39\u3002\u65e5\u72b6\u6001\u6309 token \u4e0e\u8bf7\u6c42\u6570\u5224\u5b9a\uff1b\u670d\u52a1\u7ec4\u79ef\u5206\u4ec5\u5728 Hub \u52a0\u4ef7\u4e00\u81f4\u65f6\u6bd4\u5bf9\u3002',
+    reconciliationCreditsNA: '\u4e0d\u53ef\u6bd4',
     trendTitle: '24 \u5c0f\u65f6\u8d8b\u52bf',
     trendEmpty: '\u5f53\u524d\u7b5b\u9009\u4e0b\u65e0\u6bcf\u65e5\u8d8b\u52bf\u6570\u636e\u3002',
     rowsTitle: '\u7528\u91cf\u6392\u540d',
@@ -118,33 +145,34 @@ const USAGE_STATS_I18N = {
     colInput: '\u8f93\u5165',
     colOutput: '\u8f93\u51fa',
     colCacheRead: '\u7f13\u5b58\u8bfb\u53d6',
+    colCacheWrite: '\u7f13\u5b58\u5199\u5165',
     colCacheRate: '\u7f13\u5b58\u7387',
     colRequests: '\u8bf7\u6c42\u6570',
     colCredits: '\u79ef\u5206',
     colCostRMB: '\u8ba1\u8d39',
     creditsTooltipTitle: '\u79ef\u5206\u6263\u9664\u8ba1\u7b97',
-    creditsTooltipFormula: '\u5355\u6b21\u8bf7\u6c42\u89c4\u5219\uff1amax(\u8f93\u5165 Token \u00d7 \u670d\u52a1\u5546\u8f93\u5165\u6bcf 1 \u4e07 Token \u79ef\u5206 \u00d7 HubCenter \u670d\u52a1\u5546\u500d\u7387 \u00d7 Hub \u670d\u52a1\u7ec4\u500d\u7387 + \u8f93\u51fa Token \u00d7 \u670d\u52a1\u5546\u8f93\u51fa\u6bcf 1 \u4e07 Token \u79ef\u5206 \u00d7 HubCenter \u670d\u52a1\u5546\u500d\u7387 \u00d7 Hub \u670d\u52a1\u7ec4\u500d\u7387\uff0c\u6700\u4f4e\u8bf7\u6c42\u79ef\u5206 \u00d7 \u4e24\u5c42\u500d\u7387)\u3002',
-    creditsTooltipScope: '\u660e\u7ec6\u6309\u5df2\u7ed3\u7b97\u8bf7\u6c42\u6c47\u603b\u3002\u8f93\u5165/\u8f93\u51fa\u884c\u4e3a\u52a0\u6743\u540e\u7684\u5b9e\u9645\u7ed3\u679c\uff1b\u4e0b\u65b9\u670d\u52a1\u5546\u5355\u4ef7\u4e0e\u500d\u7387\u4e3a\u56fa\u5316\u7684\u7ed3\u7b97\u4e8b\u5b9e\u3002\u591a\u6761\u8bb0\u5f55\u53ef\u80fd\u6765\u81ea\u8be5\u7edf\u8ba1\u5468\u671f\u5185\u7684\u5355\u4ef7\u3001\u500d\u7387\u53d8\u52a8\uff0c\u6216\u4e0d\u540c\u670d\u52a1\u5546\u3002HubCenter \u670d\u52a1\u5546/\u5206\u65f6\u500d\u7387\u4e0e Hub \u670d\u52a1\u7ec4\u500d\u7387\u90fd\u5728\u7ed3\u7b97\u65f6\u56fa\u5316\uff0c\u5e76\u4e14\u5404\u751f\u6548\u4e00\u6b21\u3002',
-    creditsTooltipInputLine: '\u8f93\u5165\uff1a{tokens} \u00d7 \u6bcf 1 \u4e07 Token {rate} \u79ef\u5206 = {credits} \u79ef\u5206',
+    creditsTooltipFormula: '\u5355\u6b21\u8bf7\u6c42\u89c4\u5219\uff1amax((\u8f93\u5165 Token \u2212 \u7f13\u5b58\u8bfb\u53d6 \u2212 \u7f13\u5b58\u5199\u5165) \u00d7 \u670d\u52a1\u5546\u8f93\u5165\u6bcf 1 \u4e07 Token \u79ef\u5206 + \u7f13\u5b58\u8bfb\u53d6 \u00d7 \u670d\u52a1\u5546\u7f13\u5b58\u8bfb\u53d6\u6bcf 1 \u4e07 Token \u79ef\u5206 + \u7f13\u5b58\u5199\u5165 \u00d7 \u670d\u52a1\u5546\u7f13\u5b58\u5199\u5165\u6bcf 1 \u4e07 Token \u79ef\u5206 + \u8f93\u51fa Token \u00d7 \u670d\u52a1\u5546\u8f93\u51fa\u6bcf 1 \u4e07 Token \u79ef\u5206\uff0c\u6700\u4f4e\u8bf7\u6c42\u79ef\u5206)\uff0c\u518d\u5404\u751f\u6548\u4e00\u6b21 HubCenter \u670d\u52a1\u5546\u500d\u7387\u4e0e Hub \u670d\u52a1\u7ec4\u500d\u7387\u3002',
+    creditsTooltipScope: '\u660e\u7ec6\u4ec5\u6c47\u603b\u4fdd\u7559\u4e86\u56fa\u5316\u670d\u52a1\u5546\u8def\u7531\u5355\u4ef7\u7684\u5df2\u7ed3\u7b97\u8bf7\u6c42\u3002\u6bcf\u4e00\u884c\u4ec5\u4f7f\u7528\u5bf9\u5e94\u65b9\u5411\u8ba1\u8d39\u5206\u91cf\u5df2\u7ed3\u7b97\u7684 Token\uff1b\u7f3a\u5c11\u5355\u4ef7\u5feb\u7167\u7684\u5386\u53f2\u7528\u91cf\u4f1a\u5355\u72ec\u5c55\u793a\uff0c\u4e0d\u518d\u7528\u6765\u53cd\u63a8\u5355\u4ef7\u3002\u4e0b\u65b9\u670d\u52a1\u5546\u5355\u4ef7\u4e0e\u500d\u7387\u5747\u4e3a\u7ed3\u7b97\u65f6\u56fa\u5316\u7684\u4e8b\u5b9e\u3002',
+    creditsTooltipInputLine: '\u975e\u7f13\u5b58\u8f93\u5165\uff1a{tokens} \u00d7 \u6bcf 1 \u4e07 Token {rate} \u79ef\u5206 = {credits} \u79ef\u5206',
+    creditsTooltipCacheReadLine: '\u7f13\u5b58\u8bfb\u53d6\uff1a{tokens} \u00d7 \u6bcf 1 \u4e07 Token {rate} \u79ef\u5206 = {credits} \u79ef\u5206',
+    creditsTooltipCacheWriteLine: '\u7f13\u5b58\u5199\u5165\uff1a{tokens} \u00d7 \u6bcf 1 \u4e07 Token {rate} \u79ef\u5206 = {credits} \u79ef\u5206',
     creditsTooltipOutputLine: '\u8f93\u51fa\uff1a{tokens} \u00d7 \u6bcf 1 \u4e07 Token {rate} \u79ef\u5206 = {credits} \u79ef\u5206',
     creditsTooltipAdjustments: '\u8c03\u6574\uff1a\u6700\u4f4e\u6d88\u8d39 {minimum} + \u7ed3\u7b97/\u56db\u820d\u4e94\u5165 {rounding} + \u672a\u62c6\u5206 {unitemized}',
+    creditsTooltipUnitemizedLine: '\u672a\u62c6\u5206 {credits} \u79ef\u5206\uff1a{requests} \u7b14\u7ed3\u7b97\u7f3a\u5c11\u56fa\u5316\u5355\u4ef7\u5feb\u7167\uff08\u65e7\u7248\u6309\u91cf\u8ba1\u8d39\uff09\uff0c\u542b\u975e\u7f13\u5b58\u8f93\u5165 {input} + \u7f13\u5b58\u8bfb\u53d6 {cacheRead} + \u7f13\u5b58\u5199\u5165 {cacheWrite} + \u8f93\u51fa {output} Token\uff1b\u4e0e\u4e0a\u65b9\u660e\u7ec6\u76f8\u52a0\u5373\u7b49\u4e8e\u672c\u884c\u603b\u91cf\u3002',
+    creditsTooltipUnitemizedDirectionalEstimate: '\u540c\u4e00\u7b14\u672a\u62c6\u5206 Token \u6309\u5df2\u7ed3\u7b97\u8def\u7531\u5355\u4ef7\u8ba1\u7b97\u7ea6 {credits} \u79ef\u5206\uff08\u975e\u7f13\u5b58\u8f93\u5165 {input} + \u7f13\u5b58\u8bfb\u53d6 {cacheRead} + \u7f13\u5b58\u5199\u5165 {cacheWrite} + \u8f93\u51fa {output}\uff09\u3002\u5dee\u989d\u6765\u81ea\u65e7\u7248\u6309\u91cf\u8ba1\u8d39\uff0c\u4e0d\u4f1a\u7ed9\u7f13\u5b58\u8bfb\u53d6\u6298\u6263\u3002',
     creditsTooltipActualTotal: '\u5b9e\u9645\u6263\u9664\uff1a{credits} \u79ef\u5206',
     creditsTooltipMultiplier: '{provider}\uff1a{label} \u00d7 {multiplier}',
     creditsTooltipServiceGroupMultiplier: '\u670d\u52a1\u7ec4\u500d\u7387',
     creditsTooltipProviderMultiplier: '\u670d\u52a1\u5546\u500d\u7387',
     creditsTooltipMultiplierUnavailable: '\u7ed3\u7b97\u500d\u7387\u5feb\u7167\uff1a\u8be5\u5386\u53f2\u7528\u91cf\u672a\u4fdd\u5b58\u3002\u4e0d\u80fd\u7528 HubCenter \u5f53\u524d\u670d\u52a1\u5546\u914d\u7f6e\u53cd\u63a8\u5386\u53f2\u6263\u8d39\u3002',
     creditsTooltipCurrentProviderMultiplier: 'HubCenter \u5f53\u524d\u914d\u7f6e\uff08\u4ec5\u4f9b\u53c2\u8003\uff09\uff1a{provider} \u670d\u52a1\u5546\u500d\u7387 \u00d7 {multiplier}',
-    creditsTooltipProviderBasePricing: 'HubCenter \u5df2\u7ed3\u7b97\u670d\u52a1\u5546\u5355\u4ef7\uff08{provider}\uff0c\u672c\u6b21\u6263\u8d39\u4f7f\u7528\uff09\uff1a\u8f93\u5165\u6bcf 1 \u4e07 Token {inputCredits} \u79ef\u5206\u00b7\u8f93\u51fa\u6bcf 1 \u4e07 Token {outputCredits} \u79ef\u5206\uff1b\u8f93\u5165\u6bcf 100 \u4e07 Token \u00a5{inputRMB}\u00b7\u8f93\u51fa\u6bcf 100 \u4e07 Token \u00a5{outputRMB}',
-    creditsTooltipRMBRates: '\u52a0\u6743\u6bcf 100 \u4e07 Token \u4eba\u6c11\u5e01\u5355\u4ef7\uff1a\u8f93\u5165 \u00a5{input}\uff0c\u8f93\u51fa \u00a5{output}',
+    creditsTooltipProviderBasePricing: '\u5df2\u7ed3\u7b97\u670d\u52a1\u5546\u8def\u7531\u5355\u4ef7\uff08{provider}\uff0c\u672c\u6b21\u6263\u8d39\u4f7f\u7528\uff09\uff1a\u8f93\u5165\u6bcf 1 \u4e07 Token {inputCredits} \u79ef\u5206\u00b7\u7f13\u5b58\u8bfb\u53d6 {cacheReadCredits}\u00b7\u7f13\u5b58\u5199\u5165 {cacheWriteCredits}\u00b7\u8f93\u51fa\u6bcf 1 \u4e07 Token {outputCredits} \u79ef\u5206\uff1b\u8f93\u5165\u6bcf 100 \u4e07 Token \u00a5{inputRMB}\u00b7\u7f13\u5b58\u8bfb\u53d6 \u00a5{cacheReadRMB}\u00b7\u7f13\u5b58\u5199\u5165 \u00a5{cacheWriteRMB}\u00b7\u8f93\u51fa \u6bcf 100 \u4e07 Token \u00a5{outputRMB}',
+    creditsTooltipRMBRates: '\u52a0\u6743\u6bcf 100 \u4e07 Token \u4eba\u6c11\u5e01\u5355\u4ef7\uff1a\u975e\u7f13\u5b58\u8f93\u5165 \u00a5{input}\uff0c\u7f13\u5b58\u8bfb\u53d6 \u00a5{cacheRead}\uff0c\u7f13\u5b58\u5199\u5165 \u00a5{cacheWrite}\uff0c\u8f93\u51fa \u00a5{output}',
     creditsTooltipRMBRateUnavailable: '\u6837\u672c\u4e0d\u8db3',
-    creditsTooltipRMB: '\u4eba\u6c11\u5e01\uff1a\u8f93\u5165 \u00a5{input} + \u8f93\u51fa \u00a5{output} + \u5176\u4ed6 \u00a5{other} = \u00a5{total}',
-    creditsTooltipRMBEstimate: '\u4eba\u6c11\u5e01\u4f30\u7b97\uff1a\u5df2\u8bb0\u5f55 \u00a5{recorded} + \u672a\u56fa\u5316\u4ef7\u683c\u7528\u91cf\u4f30\u7b97 \u00a5{estimated} = \u00a5{total}\u3002\u4ec5\u5728\u67d0\u4e2a\u65b9\u5411\u6709\u4ee3\u8868\u6027\u56fa\u5316\u4ef7\u683c\u6837\u672c\u65f6\u624d\u5916\u63a8\uff0c\u4e0d\u4f1a\u5f71\u54cd\u5df2\u7ed3\u7b97\u7684\u79ef\u5206\u6263\u9664\u3002{unestimated}',
-    creditsTooltipRMBEstimateIncomplete: ' \u6709 {tokens} \u4e2a\u672a\u56fa\u5316\u4ef7\u683c\u7684 Token \u7f3a\u5c11\u4ee3\u8868\u6027\u56fa\u5316\u4ef7\u683c\u6837\u672c\uff0c\u672a\u8ba1\u5165\uff1b\u8fd9\u662f\u4f30\u7b97\u4e0b\u9650\u3002',
-    creditsTooltipRMBCoverage: '\u4eba\u6c11\u5e01\u53c2\u8003\u6210\u672c\u8986\u76d6\u5ea6\uff1a{pricedRequests}/{requests} \u7b14\u5df2\u7ed3\u7b97\u8bf7\u6c42\u00b7\u8f93\u5165 {pricedInputTokens}/{inputTokens} Token\u00b7\u8f93\u51fa {pricedOutputTokens}/{outputTokens} Token\u00b7{pricedCredits}/{credits} \u79ef\u5206\u3002{missingCredits} \u79ef\u5206\u7f3a\u5c11\u56fa\u5316\u7684\u4eba\u6c11\u5e01\u4ef7\u683c\uff1b\u4e0d\u4f7f\u7528 HubCenter \u5f53\u524d\u4ef7\u683c\u6539\u5199\u5386\u53f2\u7ed3\u7b97\u3002',
+    creditsTooltipRMB: '\u4eba\u6c11\u5e01\uff1a\u975e\u7f13\u5b58\u8f93\u5165 \u00a5{input} + \u7f13\u5b58\u8bfb\u53d6 \u00a5{cacheRead} + \u7f13\u5b58\u5199\u5165 \u00a5{cacheWrite} + \u8f93\u51fa \u00a5{output} = \u00a5{total}',
+    creditsTooltipRMBCoverage: '\u4eba\u6c11\u5e01\u53c2\u8003\u6210\u672c\u8986\u76d6\u5ea6\uff1a{pricedRequests}/{requests} \u7b14\u5df2\u7ed3\u7b97\u8bf7\u6c42\u00b7\u975e\u7f13\u5b58\u8f93\u5165 {pricedNormalInputTokens}/{normalInputTokens} Token\u00b7\u7f13\u5b58\u8bfb\u53d6 {pricedCacheReadTokens}/{cacheReadTokens} Token\u00b7\u7f13\u5b58\u5199\u5165 {pricedCacheWriteTokens}/{cacheWriteTokens} Token\u00b7\u8f93\u51fa {pricedOutputTokens}/{outputTokens} Token\u00b7{pricedCredits}/{credits} \u79ef\u5206\u3002{missingCredits} \u79ef\u5206\u7f3a\u5c11\u56fa\u5316\u7684\u4eba\u6c11\u5e01\u4ef7\u683c\uff1b\u4e0d\u4f7f\u7528 HubCenter \u5f53\u524d\u4ef7\u683c\u6539\u5199\u5386\u53f2\u7ed3\u7b97\u3002',
     creditsTooltipRMBUnavailable: '\u4eba\u6c11\u5e01\u53c2\u8003\u6210\u672c\u4e0d\u53ef\u7528\uff1a\u5f53\u524d\u7ed3\u679c\u4e2d\u6ca1\u6709\u5df2\u7ed3\u7b97\u8bf7\u6c42\u4fdd\u7559\u56fa\u5316\u7684\u4eba\u6c11\u5e01\u4ef7\u683c\u3002',
     rmbReferencePartial: '{value}\uff08\u90e8\u5206\uff09',
-    rmbReferenceEstimated: '{value}\uff08\u4f30\u7b97\uff09',
-    rmbReferenceEstimatedLowerBound: '{value}\uff08\u4f30\u7b97\u4e0b\u9650\uff09',
     loadFailed: '\u52a0\u8f7d\u4f7f\u7528\u7edf\u8ba1\u5931\u8d25: {error}',
     generatedAt: '\u751f\u6210\u65f6\u95f4 {time}'
     , subtabUsage: '\u7528\u91cf\u7edf\u8ba1'
@@ -220,6 +248,53 @@ function fmtFormulaCredits(value) {
   // the settled three-decimal-credit debit.
   return n.toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
 }
+function usageOptionalCreditRate(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+function unitemizedDirectionalCreditEstimate(data, inputTokens, cacheReadTokens, cacheWriteTokens, outputTokens) {
+  const records = Array.isArray(data && data.provider_pricing) ? data.provider_pricing : [];
+  if (!records.length) return null;
+  const pricing = records[0];
+  for (let i = 1; i < records.length; i++) {
+    if (records[i].input_credits_per_10k !== pricing.input_credits_per_10k
+        || records[i].output_credits_per_10k !== pricing.output_credits_per_10k
+        || records[i].cache_read_credits_per_10k !== pricing.cache_read_credits_per_10k
+        || records[i].cache_write_credits_per_10k !== pricing.cache_write_credits_per_10k) {
+      return null;
+    }
+  }
+  const inputRate = usageOptionalCreditRate(pricing.input_credits_per_10k, NaN);
+  const outputRate = usageOptionalCreditRate(pricing.output_credits_per_10k, NaN);
+  if (!(inputRate > 0) || !(outputRate >= 0)) return null;
+  const cacheReadRate = usageOptionalCreditRate(pricing.cache_read_credits_per_10k, inputRate / 10);
+  const cacheWriteRate = usageOptionalCreditRate(pricing.cache_write_credits_per_10k, inputRate);
+  const providerID = String(pricing.provider_id || '');
+  let providerMul = 1;
+  let groupMul = 1;
+  const multipliers = Array.isArray(data && data.provider_multipliers) ? data.provider_multipliers : [];
+  multipliers.forEach(function(item) {
+    if (!item) return;
+    if (providerID && String(item.provider_id || '') && String(item.provider_id) !== providerID) return;
+    const value = Number(item.multiplier);
+    if (!Number.isFinite(value) || value <= 0) return;
+    const source = String(item.multiplier_source || '').toLowerCase();
+    if (source === 'provider') providerMul = value;
+    if (source === 'service_group') groupMul = value;
+  });
+  const multiplier = providerMul * groupMul;
+  const input = Number(inputTokens || 0) * inputRate / 10000 * multiplier;
+  const cacheRead = Number(cacheReadTokens || 0) * cacheReadRate / 10000 * multiplier;
+  const cacheWrite = Number(cacheWriteTokens || 0) * cacheWriteRate / 10000 * multiplier;
+  const output = Number(outputTokens || 0) * outputRate / 10000 * multiplier;
+  return {
+    credits: input + cacheRead + cacheWrite + output,
+    input: input,
+    cacheRead: cacheRead,
+    cacheWrite: cacheWrite,
+    output: output
+  };
+}
 function fmtEffectiveRate(component, tokens) {
   const count = Number(tokens || 0);
   if (!Number.isFinite(count) || count <= 0) return '0';
@@ -247,9 +322,14 @@ function rmbCoverageDetails(usage) {
   }
   const pricedCredits = coverageCredits(data.rmb_priced_credits);
   const totalCredits = coverageCredits(data.credits);
-  const pricedInputTokens = Math.max(0, Number(data.rmb_priced_input_tokens || 0));
+  const pricedNormalInputTokens = Math.max(0, Number(data.priced_normal_input_tokens || 0));
+  const pricedCacheReadTokens = Math.max(0, Number(data.priced_cache_read_tokens || 0));
+  const pricedCacheWriteTokens = Math.max(0, Number(data.priced_cache_write_tokens || 0));
   const pricedOutputTokens = Math.max(0, Number(data.rmb_priced_output_tokens || 0));
   const inputTokens = Math.max(0, Number(data.input_tokens || 0));
+  const cacheReadTokens = Math.min(inputTokens, Math.max(0, Number(data.cached_input_tokens || 0)));
+  const cacheWriteTokens = Math.min(inputTokens - cacheReadTokens, Math.max(0, Number(data.cache_write_tokens || 0)));
+  const normalInputTokens = inputTokens - cacheReadTokens - cacheWriteTokens;
   const outputTokens = Math.max(0, Number(data.output_tokens || 0));
   const requests = Math.max(0, Number(data.requests || 0));
   const pricedRequests = Math.max(0, Number(data.rmb_priced_requests || 0));
@@ -257,13 +337,19 @@ function rmbCoverageDetails(usage) {
   return {
     available: true,
     partial: partial,
-    pricedInputTokens: Number.isFinite(pricedInputTokens) ? pricedInputTokens : 0,
+    pricedNormalInputTokens: Number.isFinite(pricedNormalInputTokens) ? pricedNormalInputTokens : 0,
+    pricedCacheReadTokens: Number.isFinite(pricedCacheReadTokens) ? pricedCacheReadTokens : 0,
+    pricedCacheWriteTokens: Number.isFinite(pricedCacheWriteTokens) ? pricedCacheWriteTokens : 0,
     pricedOutputTokens: Number.isFinite(pricedOutputTokens) ? pricedOutputTokens : 0,
     text: ust('creditsTooltipRMBCoverage', {
       pricedRequests: fmtInt(pricedRequests),
       requests: fmtInt(requests),
-      pricedInputTokens: fmtInt(pricedInputTokens),
-      inputTokens: fmtInt(inputTokens),
+      pricedNormalInputTokens: fmtInt(pricedNormalInputTokens),
+      normalInputTokens: fmtInt(normalInputTokens),
+      pricedCacheReadTokens: fmtInt(pricedCacheReadTokens),
+      cacheReadTokens: fmtInt(cacheReadTokens),
+      pricedCacheWriteTokens: fmtInt(pricedCacheWriteTokens),
+      cacheWriteTokens: fmtInt(cacheWriteTokens),
       pricedOutputTokens: fmtInt(pricedOutputTokens),
       outputTokens: fmtInt(outputTokens),
       pricedCredits: fmtFormulaCredits(pricedCredits),
@@ -272,74 +358,35 @@ function rmbCoverageDetails(usage) {
     })
   };
 }
-// Older usage records predate the frozen RMB-price snapshot.  Do not pretend
-// that a current HubCenter setting was historically settled; when this report
-// has a priced sample, however, its own weighted frozen rate is the best
-// available reference for estimating the otherwise omitted token usage.
+// RMB is an auditable settlement reference.  It is always the four frozen
+// directional components added together; legacy token-only records remain
+// outside this total instead of being extrapolated from an unrelated sample.
 function rmbCostDetails(usage) {
   const data = usage || {};
   const coverage = rmbCoverageDetails(data);
-  const recordedInput = Number(data.input_cost_rmb || 0);
-  const recordedOutput = Number(data.output_cost_rmb || 0);
-  const recordedTotal = Number(data.total_cost_rmb || 0);
-  const pricedInputTokens = Math.max(0, Number(data.rmb_priced_input_tokens || 0));
-  const pricedOutputTokens = Math.max(0, Number(data.rmb_priced_output_tokens || 0));
-  const inputTokens = Math.max(0, Number(data.input_tokens || 0));
-  const outputTokens = Math.max(0, Number(data.output_tokens || 0));
-  if (!coverage.available) {
-    return { available: false, estimated: false, total: 0, recorded: 0, estimate: 0, text: coverage.text };
-  }
-  const representativeRatePerM = function(cost, pricedTokens, totalTokens, direction) {
-    const coverageRatio = totalTokens > 0 ? pricedTokens / totalTokens : 0;
-    // A handful of anomalous/very small directional usage values can produce
-    // an absurd effective rate (for example one streamed output accounting
-    // frame). Attribution was not retained on legacy records, so a list of
-    // provider prices cannot safely be assigned to those Tokens. Estimate only
-    // from a meaningful same-direction sample in this report.
-    if (pricedTokens >= 1000 && coverageRatio >= 0.01) {
-      const rate = cost * 1000000 / pricedTokens;
-      return Number.isFinite(rate) && rate >= 0 ? rate : null;
-    }
-    return null;
+  const nonNegativeCost = function(value) {
+    const amount = Number(value || 0);
+    return Number.isFinite(amount) && amount > 0 ? amount : 0;
   };
-  const inputRatePerM = representativeRatePerM(recordedInput, pricedInputTokens, inputTokens, 'input');
-  const outputRatePerM = representativeRatePerM(recordedOutput, pricedOutputTokens, outputTokens, 'output');
-  const unpricedInputTokens = Math.max(0, inputTokens - pricedInputTokens);
-  const unpricedOutputTokens = Math.max(0, outputTokens - pricedOutputTokens);
-  const estimatedInput = inputRatePerM === null ? 0 : unpricedInputTokens * inputRatePerM / 1000000;
-  const estimatedOutput = outputRatePerM === null ? 0 : unpricedOutputTokens * outputRatePerM / 1000000;
-  const estimate = estimatedInput + estimatedOutput;
-  const total = recordedTotal + estimate;
-  const estimated = estimate > 0.0000005;
-  const unestimatedTokens = (inputRatePerM === null ? unpricedInputTokens : 0) + (outputRatePerM === null ? unpricedOutputTokens : 0);
+  if (!coverage.available) {
+    return { available: false, total: 0, text: coverage.text };
+  }
   return {
     available: true,
-    estimated: estimated,
-    lowerBound: unestimatedTokens > 0,
-    recorded: recordedTotal,
-    estimate: estimate,
-    total: total,
-    inputRatePerM: inputRatePerM,
-    outputRatePerM: outputRatePerM,
-    unpricedInputTokens: unpricedInputTokens,
-    unpricedOutputTokens: unpricedOutputTokens,
-    unestimatedTokens: unestimatedTokens,
-    text: estimated ? ust('creditsTooltipRMBEstimate', {
-      recorded: fmtRMB(recordedTotal),
-      estimated: fmtRMB(estimate),
-      total: fmtRMB(total),
-      inputTokens: fmtInt(unpricedInputTokens),
-      outputTokens: fmtInt(unpricedOutputTokens),
-      unestimated: unestimatedTokens > 0 ? ust('creditsTooltipRMBEstimateIncomplete', { tokens: fmtInt(unestimatedTokens) }) : ''
-    }) : coverage.text
+    partial: coverage.partial,
+    input: nonNegativeCost(data.input_cost_rmb),
+    cacheRead: nonNegativeCost(data.cache_read_cost_rmb),
+    cacheWrite: nonNegativeCost(data.cache_write_cost_rmb),
+    output: nonNegativeCost(data.output_cost_rmb),
+    total: nonNegativeCost(data.input_cost_rmb) + nonNegativeCost(data.cache_read_cost_rmb) + nonNegativeCost(data.cache_write_cost_rmb) + nonNegativeCost(data.output_cost_rmb),
+    text: coverage.text
   };
 }
 function usageRMBValue(usage) {
   const cost = rmbCostDetails(usage);
   if (!cost.available) return '-';
   const value = '\u00a5' + fmtRMB(cost.total);
-  if (!cost.estimated) return cost.lowerBound ? ust('rmbReferencePartial', { value: value }) : value;
-  return ust(cost.lowerBound ? 'rmbReferenceEstimatedLowerBound' : 'rmbReferenceEstimated', { value: value });
+  return cost.partial ? ust('rmbReferencePartial', { value: value }) : value;
 }
 function creditMultiplierDetails(usage) {
   const records = Array.isArray(usage && usage.provider_multipliers) ? usage.provider_multipliers : [];
@@ -382,7 +429,11 @@ function providerPricingDetails(usage) {
         inputCredits: fmtFormulaCredits(record && record.input_credits_per_10k),
         outputCredits: fmtFormulaCredits(record && record.output_credits_per_10k),
         inputRMB: fmtRMB(Number(record && record.input_rmb_per_10k || 0) * 100),
-        outputRMB: fmtRMB(Number(record && record.output_rmb_per_10k || 0) * 100)
+        outputRMB: fmtRMB(Number(record && record.output_rmb_per_10k || 0) * 100),
+        cacheReadCredits: fmtFormulaCredits(record && record.cache_read_credits_per_10k),
+        cacheWriteCredits: fmtFormulaCredits(record && record.cache_write_credits_per_10k),
+        cacheReadRMB: fmtRMB(Number(record && record.cache_read_rmb_per_10k || 0) * 100),
+        cacheWriteRMB: fmtRMB(Number(record && record.cache_write_rmb_per_10k || 0) * 100)
       })
     };
   });
@@ -396,22 +447,26 @@ function fmtDuration(seconds) {
 }
 function creditCalculationDetails(usage) {
   const data = usage || {};
-  const inputRate = fmtEffectiveRate(data.credit_input_component, data.input_tokens);
-  const outputRate = fmtEffectiveRate(data.credit_output_component, data.output_tokens);
-  const otherRMBCost = Number(data.total_cost_rmb || 0) - Number(data.input_cost_rmb || 0) - Number(data.output_cost_rmb || 0);
+  const normalInputTokens = Number(data.priced_normal_input_tokens || 0);
+  const cacheReadTokens = Number(data.priced_cache_read_tokens || 0);
+  const cacheWriteTokens = Number(data.priced_cache_write_tokens || 0);
+  const outputTokens = Number(data.priced_output_tokens || 0);
+  const inputRate = fmtEffectiveRate(data.credit_normal_input_component, normalInputTokens);
+  const cacheReadRate = fmtEffectiveRate(data.credit_cache_read_component, cacheReadTokens);
+  const cacheWriteRate = fmtEffectiveRate(data.credit_cache_write_component, cacheWriteTokens);
+  const outputRate = fmtEffectiveRate(data.credit_output_component, outputTokens);
   const rmbCoverage = rmbCoverageDetails(data);
   const rmbCost = rmbCostDetails(data);
   // The RMB total only covers requests that carried a frozen pricing snapshot.
-  // Its effective rates must use that same token denominator; dividing by every
-  // historical token makes a correctly-priced partial total look undercharged.
-  const rmbRateLabel = function(ratePerM, recordedCost, pricedTokens) {
-    if (rmbCost.lowerBound && ratePerM === null) return ust('creditsTooltipRMBRateUnavailable');
-    return rmbCost.estimated && ratePerM !== null
-      ? fmtRMB(ratePerM)
-      : fmtEffectiveRMBPricePerM(recordedCost, pricedTokens);
+  // Each effective rate uses its matching directional denominator.
+  const rmbRateLabel = function(recordedCost, pricedTokens) {
+    if (!Number.isFinite(Number(pricedTokens)) || Number(pricedTokens) <= 0) return ust('creditsTooltipRMBRateUnavailable');
+    return fmtEffectiveRMBPricePerM(recordedCost, pricedTokens);
   };
-  const inputRMBPrice = rmbRateLabel(rmbCost.inputRatePerM, data.input_cost_rmb, rmbCoverage.pricedInputTokens);
-  const outputRMBPrice = rmbRateLabel(rmbCost.outputRatePerM, data.output_cost_rmb, rmbCoverage.pricedOutputTokens);
+  const inputRMBPrice = rmbRateLabel(rmbCost.input, rmbCoverage.pricedNormalInputTokens);
+  const cacheReadRMBPrice = rmbRateLabel(rmbCost.cacheRead, rmbCoverage.pricedCacheReadTokens);
+  const cacheWriteRMBPrice = rmbRateLabel(rmbCost.cacheWrite, rmbCoverage.pricedCacheWriteTokens);
+  const outputRMBPrice = rmbRateLabel(rmbCost.output, rmbCoverage.pricedOutputTokens);
   const adjustments = {
     minimum: Number(data.credit_minimum_adjustment || 0),
     rounding: Number(data.credit_rounding_adjustment || 0),
@@ -420,17 +475,19 @@ function creditCalculationDetails(usage) {
   const lines = [
     { kind: 'title', text: ust('creditsTooltipTitle') },
     { kind: 'note', text: ust('creditsTooltipScope') },
-    { kind: 'line', text: ust('creditsTooltipInputLine', {
-      tokens: fmtInt(data.input_tokens),
+    ...(normalInputTokens > 0 ? [{ kind: 'line', text: ust('creditsTooltipInputLine', {
+      tokens: fmtInt(normalInputTokens),
       inputRate: inputRate,
       rate: inputRate,
-      credits: fmtFormulaCredits(data.credit_input_component)
-    }) },
-    { kind: 'line', text: ust('creditsTooltipOutputLine', {
-      tokens: fmtInt(data.output_tokens),
+      credits: fmtFormulaCredits(data.credit_normal_input_component)
+    }) }] : []),
+    ...(cacheReadTokens > 0 ? [{ kind: 'line', text: ust('creditsTooltipCacheReadLine', { tokens: fmtInt(cacheReadTokens), rate: cacheReadRate, credits: fmtFormulaCredits(data.credit_cache_read_component) }) }] : []),
+    ...(cacheWriteTokens > 0 ? [{ kind: 'line', text: ust('creditsTooltipCacheWriteLine', { tokens: fmtInt(cacheWriteTokens), rate: cacheWriteRate, credits: fmtFormulaCredits(data.credit_cache_write_component) }) }] : []),
+    ...(outputTokens > 0 ? [{ kind: 'line', text: ust('creditsTooltipOutputLine', {
+      tokens: fmtInt(outputTokens),
       rate: outputRate,
       credits: fmtFormulaCredits(data.credit_output_component)
-    }) }
+    }) }] : [])
   ];
   if (Math.abs(adjustments.minimum) >= 0.0000005 || Math.abs(adjustments.rounding) >= 0.0000005 || Math.abs(adjustments.unitemized) >= 0.0000005) {
     lines.push({ kind: 'line', text: ust('creditsTooltipAdjustments', {
@@ -438,6 +495,46 @@ function creditCalculationDetails(usage) {
       rounding: fmtFormulaCredits(adjustments.rounding),
       unitemized: fmtFormulaCredits(adjustments.unitemized)
     }) });
+  }
+  // The unitemized share settles legacy token-count requests whose tokens are
+  // part of the row totals but not of any directional line above. Show its
+  // scope explicitly so the tooltip visibly reconciles with the row.
+  if (adjustments.unitemized > 0.0000005) {
+    // Rows can contain legacy settlements written before directional pricing
+    // existed. Their token counters are still present, but the explicit
+    // unitemized scope fields are absent in those historical records. Derive
+    // the uncovered residual from the row totals and frozen-price coverage so
+    // cache-read tokens are not silently omitted from the explanation.
+    const totalInputTokens = Math.max(0, Number(data.input_tokens || 0));
+    const totalCacheReadTokens = Math.min(totalInputTokens, Math.max(0, Number(data.cached_input_tokens || 0)));
+    const totalCacheWriteTokens = Math.min(totalInputTokens - totalCacheReadTokens, Math.max(0, Number(data.cache_write_tokens || 0)));
+    const pricedInputTokens = Math.max(0, Number(data.priced_normal_input_tokens || 0)) + Math.max(0, Number(data.priced_cache_read_tokens || 0)) + Math.max(0, Number(data.priced_cache_write_tokens || 0));
+    const residualCacheRead = Math.max(0, totalCacheReadTokens - Math.max(0, Number(data.priced_cache_read_tokens || 0)));
+    const residualCacheWrite = Math.max(0, totalCacheWriteTokens - Math.max(0, Number(data.priced_cache_write_tokens || 0)));
+    const unitemizedCacheRead = Math.max(0, Number(data.unitemized_cached_input_tokens || 0)) || residualCacheRead;
+    const unitemizedCacheWrite = Math.max(0, Number(data.unitemized_cache_write_tokens || 0)) || residualCacheWrite;
+    const unitemizedInputTotal = Math.max(0, Number(data.unitemized_input_tokens || 0)) || Math.max(0, totalInputTokens - pricedInputTokens);
+    const unitemizedInput = Math.max(0, unitemizedInputTotal - unitemizedCacheRead - unitemizedCacheWrite);
+    const unitemizedOutput = Math.max(0, Number(data.unitemized_output_tokens || 0)) || Math.max(0, Number(data.output_tokens || 0) - Math.max(0, Number(data.priced_output_tokens || 0)));
+    const unitemizedRequests = Math.max(0, Number(data.unitemized_requests || 0)) || Math.max(0, Number(data.requests || 0) - Number(data.rmb_priced_requests || 0));
+    lines.push({ kind: 'note', text: ust('creditsTooltipUnitemizedLine', {
+      credits: fmtFormulaCredits(adjustments.unitemized),
+      requests: fmtInt(unitemizedRequests),
+      input: fmtInt(unitemizedInput),
+      cacheRead: fmtInt(unitemizedCacheRead),
+      cacheWrite: fmtInt(unitemizedCacheWrite),
+      output: fmtInt(unitemizedOutput)
+    }) });
+    const directional = unitemizedDirectionalCreditEstimate(data, unitemizedInput, unitemizedCacheRead, unitemizedCacheWrite, unitemizedOutput);
+    if (directional && directional.credits > 0.0000005) {
+      lines.push({ kind: 'note', text: ust('creditsTooltipUnitemizedDirectionalEstimate', {
+        credits: fmtFormulaCredits(directional.credits),
+        input: fmtFormulaCredits(directional.input),
+        cacheRead: fmtFormulaCredits(directional.cacheRead),
+        cacheWrite: fmtFormulaCredits(directional.cacheWrite),
+        output: fmtFormulaCredits(directional.output)
+      }) });
+    }
   }
   Array.prototype.push.apply(lines, providerPricingDetails(data));
   Array.prototype.push.apply(lines, creditMultiplierDetails(data));
@@ -447,14 +544,14 @@ function creditCalculationDetails(usage) {
     // The compact metric card still uses fmtCredits, while this audit view must
     // visibly reconcile even for sub-milli-credit settlements.
     { kind: 'total', text: ust('creditsTooltipActualTotal', { credits: fmtFormulaCredits(data.credits) }) },
-    { kind: 'rmb-rate', text: rmbCoverage.available ? ust('creditsTooltipRMBRates', { input: inputRMBPrice, output: outputRMBPrice }) : '' },
-    { kind: 'rmb', text: rmbCoverage.available && !rmbCost.estimated ? ust('creditsTooltipRMB', {
-      input: fmtRMB(data.input_cost_rmb),
-      output: fmtRMB(data.output_cost_rmb),
-      other: fmtRMB(otherRMBCost),
-      total: fmtRMB(data.total_cost_rmb)
+    { kind: 'rmb-rate', text: rmbCoverage.available ? ust('creditsTooltipRMBRates', { input: inputRMBPrice, cacheRead: cacheReadRMBPrice, cacheWrite: cacheWriteRMBPrice, output: outputRMBPrice }) : '' },
+    { kind: 'rmb', text: rmbCoverage.available ? ust('creditsTooltipRMB', {
+      input: fmtRMB(rmbCost.input),
+      cacheRead: fmtRMB(rmbCost.cacheRead),
+      cacheWrite: fmtRMB(rmbCost.cacheWrite),
+      output: fmtRMB(rmbCost.output),
+      total: fmtRMB(rmbCost.total)
     }) : '' },
-    { kind: 'rmb-estimate', text: rmbCost.estimated ? rmbCost.text : '' },
     { kind: 'rule', text: ust('creditsTooltipFormula') }
   );
   return lines;
@@ -562,6 +659,7 @@ function ensureUsageStatsUI() {
     '<div style="grid-column:1 / -1"><label id="usageStatsEntityLabel"></label><select id="usageStatsEntity" style="height:36px;max-width:360px" onchange="onUsageStatsFilterChange()"></select></div>' +
     '</div><div id="usageStatsGeneratedAt" class="item-meta" style="margin-top:8px;font-size:11px"></div></div>' +
     '<div id="usageStatsSummary" class="metrics" style="margin-top:10px;max-width:none;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:8px"></div>' +
+    '<div id="usageStatsReconciliation" class="item hidden" style="margin-top:10px;padding:10px 14px"></div>' +
     '<div class="usage-stats-detail-grid">' +
     '<div class="item" style="padding:12px 14px"><div class="item-title" data-icon="chart" style="font-size:14px" id="usageStatsTrendTitle"></div><div id="usageStatsTrend" style="margin-top:8px"></div></div>' +
     '<div class="item" style="padding:12px 14px"><div class="item-title" data-icon="list" style="font-size:14px" id="usageStatsRowsTitle"></div><div id="usageStatsRows" style="margin-top:8px"></div></div>' +
@@ -732,6 +830,7 @@ function renderUsageRows() {
           '<div class="usage-rank-chip"><span class="usage-rank-label">' + ust('colInput') + '</span><span class="usage-rank-value">' + fmtInt(row.input_tokens) + '</span></div>' +
           '<div class="usage-rank-chip"><span class="usage-rank-label">' + ust('colOutput') + '</span><span class="usage-rank-value">' + fmtInt(row.output_tokens) + '</span></div>' +
           '<div class="usage-rank-chip"><span class="usage-rank-label">' + ust('colCacheRead') + '</span><span class="usage-rank-value cache">' + fmtInt(row.cached_input_tokens) + '</span></div>' +
+          '<div class="usage-rank-chip"><span class="usage-rank-label">' + ust('colCacheWrite') + '</span><span class="usage-rank-value cache">' + fmtInt(row.cache_write_tokens) + '</span></div>' +
           '<div class="usage-rank-chip"><span class="usage-rank-label">' + usageCreditsLabel(row) + '</span><span class="usage-rank-value">' + fmtCredits(row.credits) + '</span></div>' +
           '<div class="usage-rank-chip"><span class="usage-rank-label">' + ust('colCostRMB') + '</span><span class="usage-rank-value">' + usageRMBValue(row) + '</span></div>' +
         '</div>' +
@@ -750,10 +849,68 @@ function renderUsageSummary() {
     usageMetricCard(ust('summaryCacheRate'), fmtPercent(s.cached_requests, s.requests), fmtInt(s.cached_requests) + ' / ' + fmtInt(s.requests)),
     usageMetricCard(ust('summaryCacheRead'), fmtInt(s.cached_input_tokens), ust('colCacheRead')),
     usageMetricCard(ust('summaryCacheWrite'), fmtInt(s.cache_write_tokens), ust('summaryCacheWrite')),
+    usageMetricCard(ust('summaryCacheAnomalies'), fmtInt(s.usage_anomaly_count), ust('summaryCacheAnomalies')),
     usageMetricCard(ust('summaryRequests'), fmtInt(s.cached_requests) + ' / ' + fmtInt(s.requests), ust('summaryRequests')),
     usageMetricCard(ust('summaryCredits'), fmtCredits(s.credits), ust('summaryCredits'), usageCreditsLabel(s)),
     usageMetricCard(ust('summaryCostRMB'), usageRMBValue(s), rmbCoverageDetails(s).text)
   ].join('');
+}
+function renderUsageReconciliation() {
+  const root = document.getElementById('usageStatsReconciliation');
+  if (!root) return;
+  const visible = usageStatsState.period === 'daily' && usageStatsState.scope === 'user' && !usageStatsState.entity;
+  root.classList.toggle('hidden', !visible);
+  if (!visible) return;
+  const reconciliation = usageStatsCache && usageStatsCache.reconciliation;
+  if (!reconciliation || reconciliation.status === 'unavailable' || !reconciliation.hubcenter) {
+    root.innerHTML = '<div class="item-title" style="font-size:14px">' + escapeHtml(ust('reconciliationTitle')) + '</div><div class="hint" style="margin-top:5px">' + escapeHtml(ust('reconciliationUnavailableDetail', { message: String(reconciliation && reconciliation.message || ust('reconciliationUnavailable')) })) + '</div>';
+    return;
+  }
+  const difference = reconciliation.difference || {};
+  const status = String(reconciliation.status || 'unavailable');
+  const statusLabel = status === 'matched' ? ust('reconciliationMatched') : (status === 'mismatch' ? ust('reconciliationMismatch') : ust('reconciliationUnavailable'));
+  const statusClass = status === 'matched' ? 'ok' : (status === 'mismatch' ? 'warn' : '');
+  function reconCredits(value) {
+    const n = Number(value || 0);
+    return Number.isFinite(n) ? fmtCredits(n) : fmtCredits(0);
+  }
+  function reconUpstreamCredits(diff) {
+    if (!diff || !diff.upstream_credits_comparable) return ust('reconciliationCreditsNA');
+    return reconCredits(diff.upstream_credits);
+  }
+  const groups = Array.isArray(reconciliation.service_groups) ? reconciliation.service_groups : [];
+  const groupRows = groups.map(function(row) {
+    const groupDiff = row && row.difference || {};
+    const groupStatus = String(row && row.status || 'unavailable');
+    const groupStatusLabel = groupStatus === 'matched' ? ust('reconciliationMatched') : (groupStatus === 'mismatch' ? ust('reconciliationMismatch') : ust('reconciliationUnavailable'));
+    const groupName = String(row && row.service_group_id || '').trim() || ust('reconciliationGroupUnspecified');
+    const key = groupStatus === 'unavailable' ? 'reconciliationGroupUpstreamOnly' : 'reconciliationGroupRow';
+    return '<div class="hint" style="margin-top:4px">' + escapeHtml(ust(key, {
+      group: groupName + ' (' + groupStatusLabel + ')',
+      hubIn: fmtInt(row && row.hub && row.hub.input_tokens),
+      hubOut: fmtInt(row && row.hub && row.hub.output_tokens),
+      hubCredits: reconCredits(row && row.hub && row.hub.credits),
+      upIn: fmtInt(row && row.hubcenter && row.hubcenter.input_tokens),
+      upOut: fmtInt(row && row.hubcenter && row.hubcenter.output_tokens),
+      upCredits: reconCredits(row && row.hubcenter && row.hubcenter.total_credits),
+      diffIn: fmtInt(groupDiff.input_tokens),
+      diffOut: fmtInt(groupDiff.output_tokens),
+      diffRequests: fmtInt(groupDiff.requests),
+      diffUpstreamCredits: reconUpstreamCredits(groupDiff)
+    })) + '</div>';
+  }).join('');
+  root.innerHTML = '<div class="item-title" style="font-size:14px">' + escapeHtml(ust('reconciliationTitle')) + ' <span class="' + statusClass + '" style="font-size:12px">' + escapeHtml(statusLabel) + '</span></div><div class="hint" style="margin-top:5px">' + escapeHtml(ust('reconciliationTotals', {
+    hubIn: fmtInt(reconciliation.hub && reconciliation.hub.input_tokens),
+    hubOut: fmtInt(reconciliation.hub && reconciliation.hub.output_tokens),
+    upIn: fmtInt(reconciliation.hubcenter.input_tokens),
+    upOut: fmtInt(reconciliation.hubcenter.output_tokens),
+    diffIn: fmtInt(difference.input_tokens),
+    diffOut: fmtInt(difference.output_tokens),
+    diffRequests: fmtInt(difference.requests),
+    hubCredits: reconCredits(reconciliation.hub && reconciliation.hub.credits),
+    upCredits: reconCredits(reconciliation.hubcenter.total_credits),
+    diffUpstreamCredits: reconUpstreamCredits(difference)
+  })) + '</div><div class="hint" style="margin-top:4px">' + escapeHtml(ust('reconciliationCreditsNote')) + '</div>' + (groupRows ? ('<div class="item-meta" style="margin-top:8px">' + escapeHtml(ust('reconciliationGroupsTitle')) + '</div>' + groupRows) : '');
 }
 function renderUsageStats() {
   dismissUsageCreditTooltip();
@@ -788,6 +945,7 @@ function renderUsageStats() {
   syncUserRankingFiltersFromState();
   buildUsageStatsEntityOptions();
   renderUsageSummary();
+  renderUsageReconciliation();
   renderUsageTrend();
   renderUsageRows();
   renderUserRankings();
@@ -898,16 +1056,20 @@ async function loadUsageStats() {
     if (usageStatsState.period === 'monthly') params.set('month', usageStatsState.month);
     if (usageStatsState.entity) params.set('entity', usageStatsState.entity);
     const reportPath = '/api/admin/llm/usage-report?' + params.toString();
-    const results = await Promise.all([
+    const requests = [
       api(reportPath),
       api('/api/admin/llm/maclaw-compute-status?refresh=1').catch(function() { return null; })
-    ]);
+    ];
+    const needsReconciliation = usageStatsState.period === 'daily' && usageStatsState.scope === 'user' && !usageStatsState.entity;
+    if (needsReconciliation) requests.push(api('/api/admin/llm/usage-reconciliation?date=' + encodeURIComponent(usageStatsState.date)).catch(function() { return null; }));
+    const results = await Promise.all(requests);
     usageStatsCache = results[0];
     if (usageStatsCache && results[1] && Array.isArray(results[1].provider_billing)) {
       // This is deliberately shown only as the live HubCenter configuration.
       // A current schedule must never be used to recreate a historic settlement.
       usageStatsCache.current_provider_billing = results[1].provider_billing;
     }
+    if (usageStatsCache) usageStatsCache.reconciliation = results[2] || null;
     renderUsageStats();
   } catch (err) {
     const msg = ust('loadFailed', { error: err.message });

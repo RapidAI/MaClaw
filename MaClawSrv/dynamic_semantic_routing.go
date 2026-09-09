@@ -11,6 +11,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 const srvDynamicIntentClassificationTimeout = 12 * time.Second
@@ -72,7 +73,9 @@ func (c srvPrincipalIntentClassifier) ClassifyDynamicIntent(ctx context.Context,
 }
 
 // configureSrvDynamicSemanticRouting activates the reviewed
-// information.lookup family (LabelSearch / LabelLiveData) and the host-owned
+// information.search.web family (LabelSearch / LabelLiveData) via the host
+// web-search provider, keeps information.lookup for published MCP/Skill
+// contracts, and the host-owned
 // information.current_time clock, knowledge.read.local store read,
 // security.audit.read, information.fetch.web, fs.read.local, repo.inspect.vcs,
 // document.read.local, fs.write.local, document.write.office (spreadsheet),
@@ -81,7 +84,7 @@ func (c srvPrincipalIntentClassifier) ClassifyDynamicIntent(ctx context.Context,
 // template.manage.session, schedule.administer.local,
 // knowledge.admin.maintenance, config.manage.self,
 // session.manage.coding, and audio.transcribe.speech. GUI desktop families such as
-// information.search.web and schedule.dispatch.channel live in the IM builtin
+// schedule.dispatch.channel live in the IM builtin
 // catalog and are not copied here: this host has no IM catalog and no
 // delivery-receipt worker. current_time, knowledge_read,
 // audit_read (events plus principal conversation snippets), web_fetch,
@@ -129,10 +132,11 @@ func configureSrvDynamicSemanticRouting(svc *agentservice.Service) error {
 		Classifier:        srvPrincipalIntentClassifier{svc: svc},
 		Registry:          registry,
 		Rules:             agentservice.ReviewedDynamicIntentCapabilityNeedRules(),
-		MinimumConfidence: 0.78,
+		MinimumConfidence: agentservice.ReviewedIntentMinimumConfidence,
 		AmbientRetrieval:  true,
+		ArchetypeBundles:  true,
 	}
-	if err := svc.ConfigureDynamicSemanticRouting(registry, resolver, agentservice.ReviewedDynamicCapabilityPolicyAdapter(), 10*time.Minute); err != nil {
+	if err := svc.ConfigureDynamicSemanticRouting(registry, resolver, agentservice.ReviewedDynamicCapabilityPolicyAdapter(), coretool.DefaultInvocationGrantTTL); err != nil {
 		return fmt.Errorf("configure dynamic semantic routing: %w", err)
 	}
 	// SessionGovernedTask is Service-owned. Continuation replays only

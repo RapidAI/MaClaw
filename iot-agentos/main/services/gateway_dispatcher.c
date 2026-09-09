@@ -810,10 +810,19 @@ static esp_err_t poll_reply(void) {
             // path and must obey the same foreground wake lifecycle as URL
             // speech. Keep the lease through the ACK below so no later poll
             // can recreate the recognizer before this reply is committed.
-            server_audio_wake_lease_used =
-                s_host.begin_server_audio_wake_lease("inline server audio") ||
-                server_audio_wake_lease_used;
-            if (!gateway_reply_audio_lease_current(&audio_lease, "before inline decode")) {
+            /* Inline payloads still contend with the recognizer/codec memory
+             * domain.  A capability lease alone is insufficient: if another
+             * server-audio transaction owns the singleton wake lease, keep
+             * this message pending instead of decoding/playing without the
+             * memory fence (and never attempt to finish a lease we did not
+             * acquire). */
+            const bool inline_wake_lease_acquired =
+                s_host.begin_server_audio_wake_lease("inline server audio");
+            server_audio_wake_lease_used = inline_wake_lease_acquired ||
+                                           server_audio_wake_lease_used;
+            if (!inline_wake_lease_acquired) {
+                ESP_LOGW(TAG, "server audio wake lease busy; deferring inline payload");
+            } else if (!gateway_reply_audio_lease_current(&audio_lease, "before inline decode")) {
                 audio_permanently_invalid = true;
             } else {
                 size_t audio_capacity = 0;

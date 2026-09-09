@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -25,6 +26,30 @@ import (
 	"github.com/openai/openai-go/responses"
 	"github.com/openai/openai-go/shared"
 )
+
+func cacheRMBPrice(value float64) *float64 { return &value }
+
+func isMaClawOfficialQuotePath(path string) bool {
+	return strings.HasSuffix(strings.TrimSpace(path), "/api/llm/v1/quotes")
+}
+
+func writeMaClawOfficialTestQuote(w http.ResponseWriter, serviceGroupID string, pricing llmpool.TokenPricing) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"token": "test-quote-token",
+		"quote": map[string]any{
+			"provider_id":         "official-provider-a",
+			"upstream_model":      "opencode-1",
+			"service_group_id":    strings.TrimSpace(serviceGroupID),
+			"provider_multiplier": 1,
+			"expires_at":          time.Now().UTC().Add(time.Minute),
+			"pricing": map[string]any{
+				"input_credits_per_10k":  pricing.InputCreditsPer10K,
+				"output_credits_per_10k": pricing.OutputCreditsPer10K,
+			},
+		},
+	})
+}
 
 func TestForwardAuthorizedModelRequestOrdersProvidersByProviderScopedParams(t *testing.T) {
 	var docHits atomic.Int32
@@ -158,6 +183,13 @@ func TestLLMProviderUpstreamHTTPClientUsesConfiguredTimeout(t *testing.T) {
 		t.Fatalf("stream client Timeout = %s, want 0 to avoid cutting off long streams", streamClient.Timeout)
 	}
 }
+func TestParseUsageStatsFoldsSeparateReasoningTokens(t *testing.T) {
+	usage := parseUsageStats([]byte(`{"usage":{"prompt_tokens":100,"completion_tokens":50,"total_tokens":550,"completion_tokens_details":{"reasoning_tokens":400}}}`))
+	if usage.InputTokens != 100 || usage.OutputTokens != 450 || usage.TotalTokens != 550 {
+		t.Fatalf("reasoning usage = %#v, want 100/450/550", usage)
+	}
+}
+
 func TestParseUsageStatsIncludesPromptCache(t *testing.T) {
 	payload := []byte(`{"usage":{"prompt_tokens":120,"completion_tokens":30,"total_tokens":150,"prompt_tokens_details":{"cached_tokens":48},"cache_creation_input_tokens":12}}`)
 	usage := parseUsageStats(payload)
@@ -187,6 +219,65 @@ func TestApplyProviderUsageCostUsesProviderPricing(t *testing.T) {
 	}
 	if priced.InputPricePerMTokensRMB != 3 || priced.OutputPricePerMTokensRMB != 6 {
 		t.Fatalf("prices = %.4f/%.4f, want 3/6", priced.InputPricePerMTokensRMB, priced.OutputPricePerMTokensRMB)
+	}
+	legacyCache := applyProviderUsageCost(corelib.TokenUsageStat{InputTokens: 1_000_000, CachedInputTokens: 200_000, CacheWriteTokens: 100_000, OutputTokens: 500_000}, provider)
+	if math.Abs(legacyCache.CacheReadCostRMB-0.06) > 1e-12 || math.Abs(legacyCache.CacheWriteCostRMB-0.3) > 1e-12 {
+		t.Fatalf("legacy provider cache costs = read %.12f write %.12f, want 0.06/0.3", legacyCache.CacheReadCostRMB, legacyCache.CacheWriteCostRMB)
+	}
+}
+
+func TestApplyProviderUsageCostUsesDirectionalCachePricing(t *testing.T) {
+	usage := corelib.TokenUsageStat{
+		InputTokens:       1_000_000,
+		CachedInputTokens: 200_000,
+		CacheWriteTokens:  100_000,
+		OutputTokens:      500_000,
+	}
+	provider := &im.LLMProvider{TokenPricing: llmpool.TokenPricing{
+		Version:             "cache-v1",
+		InputRMBPer10K:      0.02,
+		OutputRMBPer10K:     0.06,
+		CacheReadRMBPer10K:  cacheRMBPrice(0.002),
+		CacheWriteRMBPer10K: cacheRMBPrice(0.04),
+	}}
+	priced := applyProviderUsageCost(usage, provider)
+	if math.Abs(priced.InputCostRMB-1.4) > 1e-12 || math.Abs(priced.CacheReadCostRMB-0.04) > 1e-12 || math.Abs(priced.CacheWriteCostRMB-0.4) > 1e-12 || math.Abs(priced.OutputCostRMB-3) > 1e-12 || math.Abs(priced.TotalCostRMB-4.84) > 1e-12 {
+		t.Fatalf("directional local RMB costs = input %.12f read %.12f write %.12f output %.12f total %.12f", priced.InputCostRMB, priced.CacheReadCostRMB, priced.CacheWriteCostRMB, priced.OutputCostRMB, priced.TotalCostRMB)
+	}
+}
+
+func TestApplyProviderUsageCostKeepsBasePricesWhenOnlyCachePriceConfigured(t *testing.T) {
+	provider := &im.LLMProvider{
+		InputPricePerMTokensRMB: 3, OutputPricePerMTokensRMB: 6,
+		TokenPricing: llmpool.TokenPricing{Version: "cache-v1", CacheReadRMBPer10K: cacheRMBPrice(0.002)},
+	}
+	priced := applyProviderUsageCost(corelib.TokenUsageStat{InputTokens: 1_000_000, CachedInputTokens: 200_000, OutputTokens: 500_000}, provider)
+	if priced.InputPricePerMTokensRMB != 3 || priced.OutputPricePerMTokensRMB != 6 || math.Abs(priced.CacheReadPricePerMTokensRMB-0.2) > 1e-12 {
+		t.Fatalf("partial pricing overwrote base prices: input %.4f output %.4f read %.4f", priced.InputPricePerMTokensRMB, priced.OutputPricePerMTokensRMB, priced.CacheReadPricePerMTokensRMB)
+	}
+	// The unset Cache Write direction must keep the legacy default (the
+	// effective input price), not collapse to zero.
+	withWrite := applyProviderUsageCost(corelib.TokenUsageStat{InputTokens: 1_000_000, CacheWriteTokens: 100_000, OutputTokens: 500_000}, provider)
+	if withWrite.CacheWritePricePerMTokensRMB != 3 || math.Abs(withWrite.CacheWriteCostRMB-0.3) > 1e-12 {
+		t.Fatalf("unset cache-write direction lost its legacy default: price %.4f cost %.12f", withWrite.CacheWritePricePerMTokensRMB, withWrite.CacheWriteCostRMB)
+	}
+}
+
+func TestApplyProviderUsageCostHonorsExplicitZeroCachePrices(t *testing.T) {
+	provider := &im.LLMProvider{
+		InputPricePerMTokensRMB: 3, OutputPricePerMTokensRMB: 6,
+		TokenPricing: llmpool.TokenPricing{
+			CacheReadRMBPer10K:  cacheRMBPrice(0),
+			CacheWriteRMBPer10K: cacheRMBPrice(0),
+		},
+	}
+	priced := applyProviderUsageCost(corelib.TokenUsageStat{InputTokens: 1_000_000, CachedInputTokens: 200_000, CacheWriteTokens: 100_000, OutputTokens: 500_000}, provider)
+	if priced.CacheReadPricePerMTokensRMB != 0 || priced.CacheWritePricePerMTokensRMB != 0 || priced.CacheReadCostRMB != 0 || priced.CacheWriteCostRMB != 0 {
+		t.Fatalf("explicit zero cache prices not honored: read %.4f/%.12f write %.4f/%.12f",
+			priced.CacheReadPricePerMTokensRMB, priced.CacheReadCostRMB, priced.CacheWritePricePerMTokensRMB, priced.CacheWriteCostRMB)
+	}
+	if priced.InputPricePerMTokensRMB != 3 || priced.OutputPricePerMTokensRMB != 6 {
+		t.Fatalf("base prices overwritten: input %.4f output %.4f", priced.InputPricePerMTokensRMB, priced.OutputPricePerMTokensRMB)
 	}
 }
 
@@ -2483,6 +2574,10 @@ func TestOpenAISDKClientCanStreamHubChatCompletionsViaMaClawOfficial(t *testing.
 
 	var hubCenterHits atomic.Int32
 	hubCenter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isMaClawOfficialQuotePath(r.URL.Path) {
+			writeMaClawOfficialTestQuote(w, llmservice.MaClawOfficialServiceGroupID, llmpool.TokenPricing{InputCreditsPer10K: 1, OutputCreditsPer10K: 2})
+			return
+		}
 		hubCenterHits.Add(1)
 		if r.URL.Path != "/api/llm/v1/chat/completions" {
 			t.Fatalf("hubcenter path = %q, want /api/llm/v1/chat/completions", r.URL.Path)
@@ -3845,7 +3940,7 @@ func TestOpenAISDKClientGetsOpenAIErrorShapeForMissingHubModel(t *testing.T) {
 	}
 }
 
-func TestLLMV1ChatCompletionsHandlerUsesLocalCacheWithoutEnqueueingUsage(t *testing.T) {
+func TestLLMV1ChatCompletionsHandlerRecordsLocalCacheHitWithoutCharge(t *testing.T) {
 	identity, _, _ := newHTTPAPITestServices(t)
 	viewerToken, _ := issueViewerToken(t, identity, "cached-handler@example.com")
 	ctx := context.Background()
@@ -3938,8 +4033,11 @@ func TestLLMV1ChatCompletionsHandlerUsesLocalCacheWithoutEnqueueingUsage(t *test
 	if err != nil {
 		t.Fatalf("load provider registry: %v", err)
 	}
-	if stat := providerReg.TokenUsage["provider-a"]; stat != nil && (stat.TotalTokens != 0 || stat.Requests != 0) {
-		t.Fatalf("expected no provider usage to be recorded, got %#v", stat)
+	// A local full-response cache hit is free and carries no real upstream token
+	// usage, but the request itself must be counted (design §2.2).
+	stat := providerReg.TokenUsage["provider-a"]
+	if stat == nil || stat.Requests != 1 || stat.TotalTokens != 0 || stat.InputTokens != 0 || stat.OutputTokens != 0 {
+		t.Fatalf("expected one zero-token provider usage record, got %#v", stat)
 	}
 
 	serviceReg, err := llmservice.LoadRegistry(ctx, system)
@@ -3948,6 +4046,22 @@ func TestLLMV1ChatCompletionsHandlerUsesLocalCacheWithoutEnqueueingUsage(t *test
 	}
 	if len(serviceReg.Grants) != 1 || serviceReg.Grants[0].CreditsUsed != 2 || len(serviceReg.BillingReservations) != 0 || len(serviceReg.BillingLedger) != 0 {
 		t.Fatalf("expected credits to remain unchanged, got %#v", serviceReg.Grants)
+	}
+
+	reports, err := loadLLMUsageReports(ctx, system)
+	if err != nil {
+		t.Fatalf("load usage reports: %v", err)
+	}
+	if len(reports.Days) != 1 {
+		t.Fatalf("usage report days = %d, want 1", len(reports.Days))
+	}
+	for _, day := range reports.Days {
+		if day.Totals.Requests != 1 || day.Totals.Credits != 0 || day.Totals.TotalTokens != 0 {
+			t.Fatalf("usage report totals = %+v, want 1 free zero-token request", day.Totals)
+		}
+		if day.Totals.CachedRequests != 0 || day.Totals.CacheUsageSources["local_cache"] != 1 {
+			t.Fatalf("local cache hit must be marked local_cache, not prompt cache: %+v", day.Totals)
+		}
 	}
 }
 
@@ -4264,6 +4378,13 @@ func TestLLMV1HandlersChargeMaClawOfficialCredits(t *testing.T) {
 			var seenRequestID string
 			var hubCenterHits atomic.Int32
 			hubCenter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if isMaClawOfficialQuotePath(r.URL.Path) {
+					// Admission quotes the output cap, not the eventual 1+1
+					// tokens. Keep this price cheap so the 9 remaining Credits
+					// cover the reservation; settlement still uses the response snapshot.
+					writeMaClawOfficialTestQuote(w, officialCardServiceGroupID, llmpool.TokenPricing{InputCreditsPer10K: 1, OutputCreditsPer10K: 1})
+					return
+				}
 				hubCenterHits.Add(1)
 				if r.URL.Path != "/api/llm/v1/chat/completions" {
 					http.NotFound(w, r)
@@ -4558,5 +4679,41 @@ func TestLLMV1ChatCompletionsHandlerReturnsServiceUnavailableWhenProviderQueueTi
 	case <-done1:
 	case <-time.After(2 * time.Second):
 		t.Fatal("first request did not finish")
+	}
+}
+
+func TestRewriteOpenAIStreamLineIgnoresZeroLegUsageChunk(t *testing.T) {
+	usage := &corelib.TokenUsageStat{InputTokens: 120, OutputTokens: 30, TotalTokens: 150, Requests: 1}
+	// A chunk carrying only explicit-zero cache fields must not replace the
+	// already accumulated real usage with zeros.
+	line := []byte(`data: {"choices":[],"usage":{"prompt_tokens_details":{"cached_tokens":0}}}` + "\n")
+	rewriteOpenAIStreamLine(line, "auto", usage)
+	if usage.InputTokens != 120 || usage.OutputTokens != 30 {
+		t.Fatalf("zero-leg chunk wiped accumulated usage: %#v", usage)
+	}
+	// A chunk with real legs still replaces the accumulator (last chunk wins).
+	line = []byte(`data: {"choices":[],"usage":{"prompt_tokens":120,"completion_tokens":30,"total_tokens":150,"prompt_tokens_details":{"cached_tokens":48}}}` + "\n")
+	rewriteOpenAIStreamLine(line, "auto", usage)
+	if usage.CachedInputTokens != 48 || usage.InputTokens != 120 {
+		t.Fatalf("real usage chunk not applied: %#v", usage)
+	}
+}
+
+func TestRewriteOpenAIStreamLineAcceptsCacheOnlyUsageChunk(t *testing.T) {
+	// An upstream may report only cache usage in its final chunk. The cache leg
+	// is a real directional fact and must be captured; with no billable base
+	// legs the request settles free, and the parser flags the shape as an
+	// anomaly so the lost revenue is visible in Usage Stats.
+	usage := &corelib.TokenUsageStat{}
+	line := []byte(`data: {"choices":[],"usage":{"prompt_tokens_details":{"cached_tokens":48}}}` + "\n")
+	rewriteOpenAIStreamLine(line, "auto", usage)
+	if usage.CachedInputTokens != 48 {
+		t.Fatalf("cache-only chunk not accepted: %#v", usage)
+	}
+	if usage.UsageAnomaly != "cache_tokens_exceed_input" {
+		t.Fatalf("usage_anomaly = %q, want cache_tokens_exceed_input", usage.UsageAnomaly)
+	}
+	if usage.InputTokens != 0 || usage.OutputTokens != 0 {
+		t.Fatalf("cache-only chunk invented base legs: %#v", usage)
 	}
 }

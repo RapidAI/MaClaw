@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
@@ -25,6 +26,10 @@ import (
 type semanticCallSurface struct {
 	plan  tool.ToolPlan
 	scope tool.InvocationScope
+	// scopePlan is the immutable projection used by directory discovery and
+	// publish-time validation. It keeps continuation identity bound to the
+	// planner's catalog rather than reconstructing it from model text.
+	scopePlan tool.ToolScopePlan
 	// hostConnectionID is an opaque, host-private journal partition for this
 	// materialized surface.  It is not a transport connection claim and must
 	// never be reconstructed from RequestID, LoopContext.ID, user input, or a
@@ -321,8 +326,11 @@ type semanticRouteDiagnostic struct {
 // planning. Shadow routing must stop here: issuing a grant is an execution
 // capability, not a diagnostic operation.
 type semanticPlanPreparation struct {
-	registry       *tool.CapabilityRegistry
-	plan           tool.ToolPlan
+	registry *tool.CapabilityRegistry
+	plan     tool.ToolPlan
+	// scopePlan is the immutable, host-admitted projection validated before
+	// this preparation can reach surface publication.
+	scopePlan      tool.ToolScopePlan
 	definitions    map[string]map[string]interface{}
 	schemas        map[string]map[string]interface{}
 	rootTaskID     string
@@ -335,6 +343,7 @@ type semanticPlanPreparation struct {
 	// re-plans without the turn's user text and must mirror the drop instead
 	// of resurrecting non-petitioned lookup legs.
 	conversationLookupReused bool
+	policy                   corelib.EffectiveRoutingPolicy
 }
 
 func newIMSemanticCapabilityRegistry() *tool.CapabilityRegistry {
@@ -1901,7 +1910,16 @@ func (h *IMMessageHandler) semanticCallSurfaceForSharedTurnWithContextAndIdentit
 	if !handled || err != nil {
 		return nil, nil, handled, err
 	}
+	if prepared != nil && prepared.policy.Enabled && !prepared.policy.AllowsExecutableScope() {
+		return nil, nil, true, fmt.Errorf("semantic_routing_policy_mode_%s", prepared.policy.Mode)
+	}
 	if err := semanticRoutingRequestErr(requestCtx); err != nil {
+		return nil, nil, true, err
+	}
+	// Re-check the immutable scope immediately before any durable publication.
+	// An incomplete definition/dependency closure must never become a partially
+	// rendered executable surface or fall through to the legacy router.
+	if err := validatePreparedSemanticToolScope(prepared); err != nil {
 		return nil, nil, true, err
 	}
 	issuer, err := h.semanticInvocationIssuer()
@@ -1928,7 +1946,11 @@ func (h *IMMessageHandler) semanticCallSurfaceForSharedTurnWithContextAndIdentit
 	if err != nil {
 		return nil, nil, true, err
 	}
-	scope := tool.InvocationScope{RootTaskID: prepared.rootTaskID, PlanID: prepared.plan.ID, SessionID: sessionID, TurnID: prepared.turnID, PrincipalID: userID}
+	toolSnapshotID := strings.TrimSpace(prepared.plan.SnapshotDigest)
+	if toolSnapshotID == "" {
+		toolSnapshotID = strings.TrimSpace(prepared.plan.CatalogDigest)
+	}
+	scope := tool.InvocationScope{RootTaskID: prepared.rootTaskID, PlanID: prepared.plan.ID, SessionID: sessionID, TurnID: prepared.turnID, PrincipalID: userID, ToolSnapshotID: toolSnapshotID}
 	var parent *tool.RouteRevisionRef
 	if current, currentErr := routeState.CurrentRevision(scope); currentErr == nil {
 		// Publish and route-state registration live in distinct durable stores.
@@ -1965,7 +1987,7 @@ func (h *IMMessageHandler) semanticCallSurfaceForSharedTurnWithContextAndIdentit
 		classVal = *classification
 	}
 	surface := &semanticCallSurface{
-		plan: state.Plan, scope: scope, issuer: issuer, executor: executor, routeState: routeState, hostCalls: hostCalls, coordinator: coordinator, tenantID: h.semanticContinuityTenantID(), registry: prepared.registry,
+		plan: state.Plan, scope: scope, scopePlan: prepared.scopePlan, issuer: issuer, executor: executor, routeState: routeState, hostCalls: hostCalls, coordinator: coordinator, tenantID: h.semanticContinuityTenantID(), registry: prepared.registry,
 		hostConnectionID: "agent-loop-surface:" + newSemanticEphemeralIdentity(),
 		completed:        make(map[string]bool), materialized: make(map[string]bool), schemas: prepared.definitions, parameterSchemas: prepared.schemas,
 		grants: make(map[string]tool.InvocationGrant), retiredGrants: make(map[string]tool.InvocationGrant), rendered: make(map[string]bool), artifacts: newSemanticArtifactBroker(scope, artifactStore, routeState, coordinator), pendingArtifacts: make(map[string][]tool.ArtifactPayload),
@@ -2456,6 +2478,19 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	if err := semanticRoutingRequestErr(requestCtx); err != nil {
 		return nil, true, err
 	}
+	var policy corelib.EffectiveRoutingPolicy
+	var configErr error
+	if cfg, cfgErr := h.loadConfig(); cfgErr == nil {
+		policy = cfg.EffectiveRoutingPolicy()
+		if policy.Enabled && !policy.Valid {
+			return nil, true, fmt.Errorf("semantic_routing_policy_invalid:%s", policy.InvalidReason)
+		}
+	} else {
+		// Configuration is part of the governed route decision. Keep generic
+		// conversations compatible, but never publish a managed surface from a
+		// zero-value policy after a failed read.
+		configErr = cfgErr
+	}
 	var classification intent.ClassificationResult
 	if supplied != nil {
 		classification = *supplied
@@ -2512,6 +2547,9 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	}
 	if !imSemanticIntentIsManagedForLoop(semanticWorkflowAgentLoop(requestCtx), classification) {
 		return nil, false, nil
+	}
+	if configErr != nil {
+		return nil, true, fmt.Errorf("semantic_routing_config_unavailable: %w", configErr)
 	}
 	if classificationHasLabel(classification, intent.LabelAttachmentDelivery) && classificationHasLabel(classification, intent.LabelDocumentGenerate) {
 		return nil, true, errSemanticGenerateDeliveryConflict
@@ -3143,6 +3181,14 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	if err != nil {
 		return nil, true, fmt.Errorf("publish IM semantic catalog: %w", err)
 	}
+	if policy.Enabled {
+		if !policy.AllowsExecutableScope() {
+			return nil, true, fmt.Errorf("semantic_routing_policy_mode_%s", policy.Mode)
+		}
+		if !policy.AllowsCatalogCoverage(string(snapshot.Coverage.State)) {
+			return nil, true, fmt.Errorf("semantic_routing_catalog_coverage_%s", snapshot.Coverage.State)
+		}
+	}
 	host := semanticHostContextFromRequest(requestCtx, channel)
 	facts := semanticHostContextFacts(host)
 	facts = append(make([]tool.RoutingFact, 0, len(facts)+len(documentInputs)+len(audioInputs)), facts...)
@@ -3166,17 +3212,31 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 		return nil, true, fmt.Errorf("resolve IM semantic capability policy: %w", err)
 	}
 	policyConstraints = append(policyConstraints, semanticHostContextConstraints(host)...)
+	maxSelections, maxSchemaTokens := semanticPlanningBudget(requestCtx), semanticSchemaTokenBudget(requestCtx)
+	if policy.Enabled {
+		maxSelections, maxSchemaTokens = policy.MaxSelections, policy.MaxSchemaTokens
+	}
 	plan, err := tool.NewToolPlanner(registry).Plan(tool.RouteRequest{
 		RootTaskID: rootTaskID, SessionID: sessionID, TurnID: turnID, ChannelScope: semanticChannelScope(channel), Snapshot: snapshot, Needs: needs, Facts: facts, Constraints: policyConstraints,
-		Budget: semanticHostPlanningBudget(semanticPlanningBudget(requestCtx), semanticSchemaTokenBudget(requestCtx)),
+		Budget: semanticHostPlanningBudget(maxSelections, maxSchemaTokens),
 	})
 	if err != nil {
 		return nil, true, fmt.Errorf("plan IM semantic route: %w", err)
 	}
+	scopePlan, scopeResult := validateSemanticToolScope(plan, defsByName, rootTaskID, sessionID, turnID)
+	preparation := &semanticPlanPreparation{
+		registry: registry, plan: plan, scopePlan: scopePlan, definitions: defsByName, schemas: semanticSchemas,
+		rootTaskID: rootTaskID, turnID: turnID, documentInputs: documentInputs, audioInputs: audioInputs,
+		conversationLookupReused: conversationLookupReused,
+		policy:                   policy,
+	}
 	// A managed family never falls through to old name routing: the caller sees
 	// a planner result only. Missing capability providers are explicit errors.
 	if len(plan.Unmet) > 0 {
-		return &semanticPlanPreparation{registry: registry, plan: plan, definitions: defsByName, schemas: semanticSchemas, rootTaskID: rootTaskID, turnID: turnID, documentInputs: documentInputs, audioInputs: audioInputs, conversationLookupReused: conversationLookupReused}, true, semanticUnmetNeedsError{Unmet: plan.Unmet}
+		return preparation, true, semanticUnmetNeedsError{Unmet: plan.Unmet}
+	}
+	if err := semanticScopeSurfaceError(scopePlan, scopeResult); err != nil {
+		return preparation, true, err
 	}
 	// Confirmation is represented as a plan dependency and therefore has no
 	// executable tool surface in this phase. The existing confirmation UX owns
@@ -3186,7 +3246,7 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 			return nil, true, errSemanticAwaitingConfirmation
 		}
 	}
-	return &semanticPlanPreparation{registry: registry, plan: plan, definitions: defsByName, schemas: semanticSchemas, rootTaskID: rootTaskID, turnID: turnID, documentInputs: documentInputs, audioInputs: audioInputs, conversationLookupReused: conversationLookupReused}, true, nil
+	return preparation, true, nil
 }
 
 // semanticInvocationSchema converts either a full JSON Schema definition or a
@@ -4218,6 +4278,9 @@ func (h *IMMessageHandler) publishSemanticChildRevision(requestCtx context.Conte
 	if err := semanticRoutingRequestErr(requestCtx); err != nil {
 		return nil, nil, err
 	}
+	if err := validatePreparedSemanticToolScope(prepared); err != nil {
+		return nil, nil, err
+	}
 	current, err := surface.routeState.CurrentRevision(surface.scope)
 	if err != nil {
 		return nil, nil, fmt.Errorf("load semantic replan parent: %w", err)
@@ -4249,7 +4312,7 @@ func (h *IMMessageHandler) publishSemanticChildRevision(requestCtx context.Conte
 		return nil, nil, err
 	}
 	child := &semanticCallSurface{
-		plan: state.Plan, scope: childScope, issuer: surface.issuer, executor: surface.executor, routeState: surface.routeState, hostCalls: surface.hostCalls, coordinator: surface.coordinator, tenantID: surface.tenantID, registry: prepared.registry,
+		plan: state.Plan, scope: childScope, scopePlan: prepared.scopePlan, issuer: surface.issuer, executor: surface.executor, routeState: surface.routeState, hostCalls: surface.hostCalls, coordinator: surface.coordinator, tenantID: surface.tenantID, registry: prepared.registry,
 		hostConnectionID: "agent-loop-surface:" + newSemanticEphemeralIdentity(),
 		completed:        make(map[string]bool), materialized: make(map[string]bool), schemas: prepared.definitions, parameterSchemas: prepared.schemas,
 		grants: make(map[string]tool.InvocationGrant), retiredGrants: make(map[string]tool.InvocationGrant), rendered: make(map[string]bool), artifacts: newSemanticArtifactBroker(childScope, artifactStore, surface.routeState, surface.coordinator), pendingArtifacts: make(map[string][]tool.ArtifactPayload),
@@ -4874,4 +4937,90 @@ func appendClosedHostSemanticProviders(providers *[]tool.ProviderSpec, defsByNam
 		*providers = append(*providers, provider)
 	}
 	return nil
+}
+
+// semanticScopeSurfaceIncompleteError is returned before a managed surface is
+// published when the immutable planner decision cannot be rendered from the
+// same catalog snapshot. Keeping this as a typed error lets the host reject
+// the turn without entering the legacy text router.
+type semanticScopeSurfaceIncompleteError struct {
+	Scope  tool.ToolScopePlan
+	Result tool.ToolScopeRouteResult
+}
+
+func (e semanticScopeSurfaceIncompleteError) Error() string {
+	reason := strings.TrimSpace(e.Result.Error)
+	if reason == "" {
+		reason = "scope_plan_incomplete"
+	}
+	return "semantic_scope_surface_incomplete:" + reason
+}
+
+// validateSemanticToolScope builds the host-admitted scope projection from a
+// planner result and validates its complete definition/dependency closure.
+// Definitions are sorted before validation to make diagnostics independent of
+// registry iteration order. The router receives no user text and therefore
+// cannot perform keyword, embedding, BM25, or reranker retrieval here.
+func validateSemanticToolScope(plan tool.ToolPlan, definitions map[string]map[string]interface{}, rootTaskID, sessionID, turnID string) (tool.ToolScopePlan, tool.ToolScopeRouteResult) {
+	identity := strings.Join([]string{strings.TrimSpace(rootTaskID), strings.TrimSpace(sessionID), strings.TrimSpace(turnID), strings.TrimSpace(plan.ID), strings.TrimSpace(plan.CatalogDigest)}, "\x00")
+	scopeID := "semantic-scope:" + tool.SchemaDigest([]byte(identity))
+	scope := tool.ToolScopePlanFromToolPlan(plan, scopeID, len(plan.Selections))
+	return scope, routeSemanticToolScope(scope, definitions)
+}
+
+func routeSemanticToolScope(scope tool.ToolScopePlan, definitions map[string]map[string]interface{}) tool.ToolScopeRouteResult {
+	return tool.NewRouter(nil).RouteForScopePlanByAdapter(definitions, scope)
+}
+
+func validatePreparedSemanticToolScope(prepared *semanticPlanPreparation) error {
+	if prepared == nil {
+		return fmt.Errorf("semantic_scope_preparation_required")
+	}
+	scope := prepared.scopePlan
+	// Keep the projection and planner identity on the same immutable catalog.
+	// A stale publication must fail closed instead of issuing grants against a
+	// different generation or digest than the one used for planning.
+	if strings.TrimSpace(scope.CatalogDigest) != strings.TrimSpace(prepared.plan.CatalogDigest) {
+		return semanticScopeSurfaceError(scope, tool.ToolScopeRouteResult{
+			Error:            "scope_catalog_digest_mismatch",
+			DependencyClosed: false,
+		})
+	}
+	if scope.CatalogGeneration != prepared.plan.CatalogGeneration {
+		return semanticScopeSurfaceError(scope, tool.ToolScopeRouteResult{
+			Error:            "scope_catalog_generation_mismatch",
+			DependencyClosed: false,
+		})
+	}
+	if strings.TrimSpace(scope.ScopeID) == "" {
+		var result tool.ToolScopeRouteResult
+		scope, result = validateSemanticToolScope(prepared.plan, prepared.definitions, prepared.rootTaskID, "", prepared.turnID)
+		return semanticScopeSurfaceError(scope, result)
+	}
+	return semanticScopeSurfaceError(scope, routeSemanticToolScope(scope, prepared.definitions))
+}
+
+func semanticScopeSurfaceError(scope tool.ToolScopePlan, result tool.ToolScopeRouteResult) error {
+	if result.Valid {
+		return nil
+	}
+	return semanticScopeSurfaceIncompleteError{Scope: scope, Result: result}
+}
+
+// semanticScopeSurfaceDiagnostics is compact and safe for logs; it contains
+// only adapter names/reason codes and no user text or arguments.
+func semanticScopeSurfaceDiagnostics(err error) string {
+	var incomplete semanticScopeSurfaceIncompleteError
+	if !errors.As(err, &incomplete) {
+		return ""
+	}
+	parts := make([]string, 0, len(incomplete.Result.MissingNames)+len(incomplete.Result.Omitted))
+	for _, name := range incomplete.Result.MissingNames {
+		parts = append(parts, "missing="+name)
+	}
+	for _, item := range incomplete.Result.Omitted {
+		parts = append(parts, "omitted="+item.Name+":"+item.Reason)
+	}
+	sort.Strings(parts)
+	return fmt.Sprintf("scope=%s %s", incomplete.Scope.ScopeID, strings.Join(parts, " "))
 }

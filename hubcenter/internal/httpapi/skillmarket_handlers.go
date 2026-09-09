@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -11,13 +13,18 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
+	"path"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	coreskill "github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/hubs"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/mail"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skill"
@@ -27,26 +34,27 @@ import (
 
 // SkillMarketHandlers 处理 SkillMarket 相关的 HTTP 请求。
 type SkillMarketHandlers struct {
-	store          *skillmarket.Store
-	skillStore     *skill.SkillStore
-	userSvc        *skillmarket.UserService
-	creditsSvc     *skillmarket.CreditsService
-	processor      *skillmarket.Processor
-	ratingSvc      *skillmarket.RatingService
-	trialMgr       *skillmarket.TrialManager
-	searchSvc      *skillmarket.SearchService
-	leaderboardSvc *skillmarket.LeaderboardService
-	apiKeySvc      *skillmarket.APIKeyPoolService
-	refundSvc      *skillmarket.RefundService
-	rateLimiter    *skillmarket.RateLimiter
-	authSvc        *skillmarket.AuthService
-	settings       store.SystemSettingsRepository
-	rsaPrivKey     *rsa.PrivateKey
-	pendingDir     string
-	dataDir        string
-	petStoreSync   petStoreSyncRecorder
-	petStoreMailer mail.Mailer
-	hubVerifier    hubViewerMachineVerifier
+	store           *skillmarket.Store
+	skillStore      *skill.SkillStore
+	userSvc         *skillmarket.UserService
+	creditsSvc      *skillmarket.CreditsService
+	processor       *skillmarket.Processor
+	ratingSvc       *skillmarket.RatingService
+	trialMgr        *skillmarket.TrialManager
+	searchSvc       *skillmarket.SearchService
+	leaderboardSvc  *skillmarket.LeaderboardService
+	apiKeySvc       *skillmarket.APIKeyPoolService
+	refundSvc       *skillmarket.RefundService
+	rateLimiter     *skillmarket.RateLimiter
+	authSvc         *skillmarket.AuthService
+	settings        store.SystemSettingsRepository
+	rsaPrivKey      *rsa.PrivateKey
+	pendingDir      string
+	dataDir         string
+	petStoreSync    petStoreSyncRecorder
+	petStoreMailer  mail.Mailer
+	hubVerifier     hubViewerMachineVerifier
+	suitePurchaseMu sync.Mutex
 }
 
 type hubViewerMachineVerifier interface {
@@ -114,6 +122,71 @@ func NewSkillMarketHandlers(cfg SkillMarketConfig) *SkillMarketHandlers {
 		petStoreMailer: cfg.PetStoreMailer,
 		hubVerifier:    cfg.HubVerifier,
 	}
+}
+
+// PurchaseSkillSuite charges once for a Suite and records the member
+// entitlement atomically. Free Suites are recorded with amount_paid=0.
+func (h *SkillMarketHandlers) PurchaseSkillSuite(w http.ResponseWriter, r *http.Request) {
+	h.suitePurchaseMu.Lock()
+	defer h.suitePurchaseMu.Unlock()
+	id := strings.TrimSpace(r.PathValue("id"))
+	email := strings.TrimSpace(r.URL.Query().Get("email"))
+	if id == "" || email == "" {
+		smError(w, http.StatusBadRequest, "suite id and email are required")
+		return
+	}
+	suite, err := h.skillStore.GetSuite(id)
+	if err != nil || !suite.Visible {
+		smError(w, http.StatusNotFound, "suite not found")
+		return
+	}
+	if h.userSvc == nil {
+		smError(w, http.StatusServiceUnavailable, "skill market unavailable")
+		return
+	}
+	buyer, err := h.userSvc.EnsureAccount(r.Context(), email)
+	if err != nil {
+		smError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if existing, err := h.store.GetActiveSuitePurchase(r.Context(), id, buyer.ID); err == nil && existing != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"purchase_id": existing.ID, "suite_id": id, "amount_paid": existing.AmountPaid, "suite": suite, "already_owned": true})
+		return
+	}
+	amount := int64(suite.Price)
+	purchaseID := uniqueID("suite-pur")
+	if amount > 0 {
+		if h.creditsSvc == nil {
+			smError(w, http.StatusServiceUnavailable, "credits service unavailable")
+			return
+		}
+		if err := h.creditsSvc.Debit(r.Context(), buyer.ID, amount, id, purchaseID, "purchase skill suite"); err != nil {
+			smError(w, http.StatusPaymentRequired, err.Error())
+			return
+		}
+	}
+	members := make([]string, 0, len(suite.Members))
+	for _, member := range suite.Members {
+		if id := firstNonEmpty(member.SkillID, member.SkillRef); id != "" {
+			members = append(members, id)
+		}
+	}
+	rec := &skillmarket.SuitePurchaseRecord{ID: purchaseID, SuiteID: id, MemberSkillIDs: members, BuyerEmail: email, BuyerID: buyer.ID, AmountPaid: amount, Version: suite.Version, Status: "active"}
+	if err := h.store.CreateSuitePurchase(r.Context(), rec); err != nil {
+		if amount > 0 && h.creditsSvc != nil {
+			_ = h.creditsSvc.Credit(r.Context(), buyer.ID, amount, true, id, purchaseID, "rollback failed suite purchase")
+		}
+		// Another Hub/API replica may have won the idempotency race after our
+		// initial lookup. Return that entitlement instead of surfacing a 500.
+		if existing, lookupErr := h.store.GetActiveSuitePurchase(r.Context(), id, buyer.ID); lookupErr == nil && existing != nil {
+			writeJSON(w, http.StatusOK, map[string]any{"purchase_id": existing.ID, "suite_id": id, "amount_paid": existing.AmountPaid, "version": existing.Version, "suite": suite, "already_owned": true})
+			return
+		}
+		smError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_ = h.store.RecordSuiteAuditEvent(r.Context(), id, "purchase", buyer.ID, purchaseID, members)
+	writeJSON(w, http.StatusOK, map[string]any{"purchase_id": purchaseID, "suite_id": id, "amount_paid": amount, "version": suite.Version, "download_url": "/api/v1/skillmarket/suites/" + url.PathEscape(id) + "/download?purchase_id=" + url.QueryEscape(purchaseID), "suite": suite})
 }
 
 // SearchService returns the underlying SearchService for use by other handlers
@@ -245,6 +318,199 @@ func (h *SkillMarketHandlers) SubmitSkill(w http.ResponseWriter, r *http.Request
 		"submission_id": subID,
 		"status":        "pending",
 	})
+}
+
+// SubmitSkillSuite handles JSON Suite uploads from Maclaw GUI. Each member is
+// published as an ordinary Skill for backward compatibility, then the Suite
+// envelope is persisted as the distribution unit.
+func (h *SkillMarketHandlers) SubmitSkillSuite(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Suite skill.SkillSuiteFull `json:"suite"`
+		Email string               `json:"email"`
+	}
+	if !decodeSkillMarketJSON(w, r, &req, 100<<20) {
+		return
+	}
+	if strings.TrimSpace(req.Suite.Name) == "" || len(req.Suite.Skills) < 2 || len(req.Suite.Skills) > 32 {
+		smError(w, http.StatusBadRequest, "suite name and at least two skills are required")
+		return
+	}
+	if len(req.Suite.Members) != 0 && len(req.Suite.Members) != len(req.Suite.Skills) {
+		smError(w, http.StatusBadRequest, "suite members must match submitted skills")
+		return
+	}
+	if req.Suite.ID == "" {
+		req.Suite.ID = strings.ToLower(strings.ReplaceAll(strings.TrimSpace(req.Suite.Name), " ", "-"))
+	}
+	if !validSuiteSlug(req.Suite.ID) {
+		smError(w, http.StatusBadRequest, "invalid suite id")
+		return
+	}
+	email := strings.TrimSpace(req.Email)
+	if h.authSvc != nil {
+		if token := extractSessionToken(r); token != "" {
+			sess, err := h.authSvc.ValidateSession(r.Context(), token)
+			if err != nil {
+				smError(w, http.StatusUnauthorized, "session expired or invalid")
+				return
+			}
+			email = strings.TrimSpace(sess.Email)
+		} else if h.getUploadAuthMode(r.Context()) == UploadAuthModeToken {
+			smError(w, http.StatusUnauthorized, "session token required (upload auth mode: token)")
+			return
+		}
+	}
+	if email == "" {
+		smError(w, http.StatusBadRequest, "email is required")
+		return
+	}
+	if h.userSvc == nil || h.skillStore == nil {
+		smError(w, http.StatusInternalServerError, "skill market unavailable")
+		return
+	}
+	user, err := h.userSvc.EnsureAccount(r.Context(), email)
+	if err != nil {
+		smError(w, http.StatusInternalServerError, "ensure account: "+err.Error())
+		return
+	}
+	seenMemberIDs := map[string]bool{}
+	submittedMemberIDs := map[string]bool{}
+	permissionSet := map[string]bool{}
+	const maxSuiteMemberBytes = 10 << 20
+	previous := map[string]*skill.HubSkillFull{}
+	published := []string{}
+	totalSuiteBytes := 0
+	rollbackMembers := func() {
+		for _, id := range published {
+			if old := previous[id]; old != nil {
+				_ = h.skillStore.Publish(*old)
+			} else {
+				_ = h.skillStore.DeleteSkill(id)
+			}
+		}
+	}
+	for i := range req.Suite.Skills {
+		sk := req.Suite.Skills[i]
+		if strings.TrimSpace(sk.ID) == "" {
+			sk.ID = fmt.Sprintf("%s-%d", req.Suite.ID, i+1)
+		}
+		if !validSuiteSlug(sk.ID) {
+			smError(w, http.StatusBadRequest, "invalid suite member id")
+			return
+		}
+		if seenMemberIDs[strings.ToLower(sk.ID)] {
+			smError(w, http.StatusBadRequest, "duplicate suite member id")
+			return
+		}
+		seenMemberIDs[strings.ToLower(sk.ID)] = true
+		if strings.TrimSpace(sk.Name) == "" {
+			smError(w, http.StatusBadRequest, "suite member name is required")
+			return
+		}
+		totalBytes := 0
+		for filePath, encoded := range sk.Files {
+			_, ok := safeSuiteArchivePath(filePath)
+			if !ok {
+				rollbackMembers()
+				smError(w, http.StatusBadRequest, "invalid suite member file path")
+				return
+			}
+			decoded, decodeErr := base64.StdEncoding.DecodeString(encoded)
+			if decodeErr != nil || len(decoded) > 256<<10 {
+				rollbackMembers()
+				smError(w, http.StatusBadRequest, "invalid or oversized suite member file")
+				return
+			}
+			totalBytes += len(decoded)
+			totalSuiteBytes += len(decoded)
+			if totalBytes > maxSuiteMemberBytes {
+				rollbackMembers()
+				smError(w, http.StatusRequestEntityTooLarge, "suite member files are too large")
+				return
+			}
+			if totalSuiteBytes > 64<<20 {
+				rollbackMembers()
+				smError(w, http.StatusRequestEntityTooLarge, "suite files are too large")
+				return
+			}
+			if strings.EqualFold(path.Base(strings.ReplaceAll(filePath, "\\", "/")), "skill.yaml") {
+				if _, parseErr := coreskill.ParseSkillYAMLFile(decoded); parseErr != nil {
+					rollbackMembers()
+					smError(w, http.StatusBadRequest, "invalid suite member skill.yaml")
+					return
+				}
+			}
+		}
+		if old, getErr := h.skillStore.Get(sk.ID); getErr == nil && old != nil {
+			cp := *old
+			previous[sk.ID] = &cp
+		}
+		sk.UploaderEmail = email
+		sk.Visible = true
+		if sk.Status == "" {
+			sk.Status = "published"
+		}
+		if sk.TrustLevel == "" {
+			sk.TrustLevel = "trusted"
+		}
+		for _, permission := range sk.Manifest.Permissions {
+			if p := strings.TrimSpace(permission); p != "" {
+				permissionSet[p] = true
+			}
+		}
+		if err := h.skillStore.Publish(sk); err != nil {
+			rollbackMembers()
+			smError(w, http.StatusInternalServerError, "publish suite member: "+err.Error())
+			return
+		}
+		published = append(published, sk.ID)
+		submittedMemberIDs[strings.ToLower(sk.ID)] = true
+		req.Suite.Skills[i] = sk
+	}
+	for permission := range permissionSet {
+		req.Suite.Permissions = append(req.Suite.Permissions, permission)
+	}
+	sort.Strings(req.Suite.Permissions)
+	if req.Suite.ID == "" {
+		req.Suite.ID = strings.ToLower(strings.ReplaceAll(req.Suite.Name, " ", "-"))
+	}
+	if len(req.Suite.Members) == 0 {
+		req.Suite.Members = make([]skill.SkillSuiteMember, 0, len(req.Suite.Skills))
+		for i, member := range req.Suite.Skills {
+			req.Suite.Members = append(req.Suite.Members, skill.SkillSuiteMember{SkillID: member.ID, SkillRef: member.SkillID, Name: member.Name, Version: member.Version, Required: true, Order: i})
+		}
+	}
+	for i := range req.Suite.Members {
+		if req.Suite.Members[i].SkillID == "" && i < len(req.Suite.Skills) {
+			req.Suite.Members[i].SkillID = req.Suite.Skills[i].ID
+		}
+		if !submittedMemberIDs[strings.ToLower(strings.TrimSpace(req.Suite.Members[i].SkillID))] {
+			rollbackMembers()
+			smError(w, http.StatusBadRequest, "suite member does not match submitted skill")
+			return
+		}
+	}
+	req.Suite.Author = firstNonEmpty(req.Suite.Author, email)
+	if raw, marshalErr := json.Marshal(req.Suite.Skills); marshalErr == nil {
+		sum := sha256.Sum256(raw)
+		req.Suite.PackageSHA256 = hex.EncodeToString(sum[:])
+	}
+	req.Suite.Status = "published"
+	req.Suite.Visible = true
+	if err := h.skillStore.PublishSuite(req.Suite); err != nil {
+		rollbackMembers()
+		smError(w, http.StatusInternalServerError, "publish suite: "+err.Error())
+		return
+	}
+	memberIDs := make([]string, 0, len(req.Suite.Members))
+	for _, m := range req.Suite.Members {
+		if id := firstNonEmpty(m.SkillID, m.SkillRef); id != "" {
+			memberIDs = append(memberIDs, id)
+		}
+	}
+	_ = h.store.RecordSuiteAuditEvent(r.Context(), req.Suite.ID, "publish", email, "", memberIDs)
+	_ = user
+	writeJSON(w, http.StatusOK, map[string]any{"suite_id": req.Suite.ID, "submission_id": req.Suite.ID, "status": "published", "member_count": len(req.Suite.Skills)})
 }
 
 // getUploadAuthMode reads the upload auth mode from system settings.
@@ -1338,6 +1604,45 @@ func (h *SkillMarketHandlers) AdminRefund(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]string{"status": "refunded"})
 }
 
+// RefundSuite is a Suite-specific alias for the generic administrator refund
+// endpoint, useful for clients that only know a Suite route.
+func (h *SkillMarketHandlers) RefundSuite(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		PurchaseID string `json:"purchase_id"`
+		Reason     string `json:"reason"`
+		AdminEmail string `json:"admin_email"`
+	}
+	if !decodeSkillMarketJSON(w, r, &req, skillMarketAuthJSONBodyLimit) {
+		return
+	}
+	if strings.TrimSpace(req.PurchaseID) == "" {
+		req.PurchaseID = strings.TrimSpace(r.URL.Query().Get("purchase_id"))
+	}
+	if req.PurchaseID == "" {
+		smError(w, http.StatusBadRequest, "purchase_id is required")
+		return
+	}
+	if h.refundSvc == nil {
+		smError(w, http.StatusServiceUnavailable, "refund service unavailable")
+		return
+	}
+	if h.store != nil {
+		if rec, err := h.store.GetSuitePurchaseByID(r.Context(), req.PurchaseID); err != nil || rec.SuiteID != strings.TrimSpace(r.PathValue("id")) {
+			smError(w, http.StatusBadRequest, "purchase does not belong to suite")
+			return
+		}
+	}
+	if err := h.refundSvc.ProcessRefund(r.Context(), req.PurchaseID, req.AdminEmail, req.Reason); err != nil {
+		status := http.StatusInternalServerError
+		if err == skillmarket.ErrAlreadyRefunded {
+			status = http.StatusConflict
+		}
+		smError(w, status, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "refunded", "suite_id": strings.TrimSpace(r.PathValue("id"))})
+}
+
 func (h *SkillMarketHandlers) CapabilityMarketSkillLicenses(ctx context.Context, buyerEmail string) ([]CapabilityMarketLicenseRecord, error) {
 	if h == nil || h.refundSvc == nil {
 		return []CapabilityMarketLicenseRecord{}, nil
@@ -1422,6 +1727,114 @@ func (h *SkillMarketHandlers) AdminListPurchases(w http.ResponseWriter, r *http.
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"records": records, "total": total})
+}
+
+// ListSuitePurchases exposes Suite entitlements for a buyer or administrator.
+func (h *SkillMarketHandlers) ListSuitePurchases(w http.ResponseWriter, r *http.Request) {
+	if h.store == nil {
+		smError(w, http.StatusServiceUnavailable, "skill market unavailable")
+		return
+	}
+	suiteID := strings.TrimSpace(r.PathValue("id"))
+	buyerID := strings.TrimSpace(r.URL.Query().Get("buyer_id"))
+	emailFilter := strings.TrimSpace(r.URL.Query().Get("email"))
+	// The public endpoint must always be scoped to a buyer. The admin route is
+	// wrapped by RequireAdmin and may intentionally omit a filter.
+	if !strings.Contains(r.URL.Path, "/admin/") && buyerID == "" && emailFilter == "" {
+		smError(w, http.StatusBadRequest, "buyer_id or email is required")
+		return
+	}
+	if !strings.Contains(r.URL.Path, "/admin/") && h.authSvc != nil {
+		token := extractSessionToken(r)
+		if token == "" {
+			smError(w, http.StatusUnauthorized, "session token required")
+			return
+		}
+		sess, authErr := h.authSvc.ValidateSession(r.Context(), token)
+		if authErr != nil {
+			smError(w, http.StatusUnauthorized, "session expired or invalid")
+			return
+		}
+		if buyerID != "" && buyerID != sess.UserID {
+			smError(w, http.StatusForbidden, "purchase ownership required")
+			return
+		}
+		if emailFilter != "" && !strings.EqualFold(emailFilter, sess.Email) {
+			smError(w, http.StatusForbidden, "purchase ownership required")
+			return
+		}
+		buyerID = sess.UserID
+		emailFilter = sess.Email
+	}
+	var items []skillmarket.SuitePurchaseRecord
+	var err error
+	if buyerID != "" {
+		items, err = h.store.ListSuitePurchases(r.Context(), suiteID, buyerID, 200)
+	} else if emailFilter != "" {
+		items, err = h.store.ListSuitePurchasesByEmail(r.Context(), suiteID, emailFilter, 200)
+	} else {
+		items, err = h.store.ListSuitePurchases(r.Context(), suiteID, "", 200)
+	}
+	if err != nil {
+		smError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"purchases": items, "total": len(items)})
+}
+
+// GetSuitePurchase returns one Suite entitlement and its current status.
+func (h *SkillMarketHandlers) GetSuitePurchase(w http.ResponseWriter, r *http.Request) {
+	if h.store == nil {
+		smError(w, http.StatusServiceUnavailable, "skill market unavailable")
+		return
+	}
+	id := strings.TrimSpace(r.PathValue("purchase_id"))
+	if id == "" {
+		id = strings.TrimSpace(r.PathValue("id"))
+	}
+	rec, err := h.store.GetSuitePurchaseByID(r.Context(), id)
+	if err != nil {
+		smError(w, http.StatusNotFound, "suite purchase not found")
+		return
+	}
+	if suiteID := strings.TrimSpace(r.URL.Query().Get("suite_id")); suiteID != "" && suiteID != rec.SuiteID {
+		smError(w, http.StatusNotFound, "suite purchase not found")
+		return
+	}
+	if !strings.Contains(r.URL.Path, "/admin/") {
+		email := strings.TrimSpace(r.URL.Query().Get("email"))
+		if h.authSvc != nil {
+			token := extractSessionToken(r)
+			if token == "" {
+				smError(w, http.StatusUnauthorized, "session token required")
+				return
+			}
+			sess, authErr := h.authSvc.ValidateSession(r.Context(), token)
+			if authErr != nil || !strings.EqualFold(sess.Email, rec.BuyerEmail) {
+				smError(w, http.StatusForbidden, "purchase ownership required")
+				return
+			}
+		} else if email == "" || !strings.EqualFold(email, rec.BuyerEmail) {
+			smError(w, http.StatusForbidden, "purchase ownership required")
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, rec)
+}
+
+// ListSuiteAuditEvents returns download, purchase and refund events.
+func (h *SkillMarketHandlers) ListSuiteAuditEvents(w http.ResponseWriter, r *http.Request) {
+	if h.store == nil {
+		smError(w, http.StatusServiceUnavailable, "skill market unavailable")
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	items, err := h.store.ListSuiteAuditEventsFiltered(r.Context(), strings.TrimSpace(r.PathValue("id")), strings.TrimSpace(r.URL.Query().Get("event_type")), limit)
+	if err != nil {
+		smError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"events": items, "total": len(items)})
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────

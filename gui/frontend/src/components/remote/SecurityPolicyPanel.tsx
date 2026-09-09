@@ -149,6 +149,9 @@ export function SecurityPolicyPanel({ config, saveRemoteConfigField, lang }: Pro
     const networkAllowlist = getArray("network_allowlist");
     const yoloAllowed = getBool("yolo_mode_allowed", true);
     const smartRouteEnabled = getBool("smart_route_enabled", true);
+    const semanticRouting = ((config as any)?.semantic_tool_scope_routing || {}) as Record<string, any>;
+    const semanticRoutingEnabled = semanticRouting.enabled === true;
+    const semanticRoutingMode = typeof semanticRouting.mode === "string" && semanticRouting.mode.trim() !== "" ? semanticRouting.mode : "off";
     const gossipEnabled = getBool("gossip_enabled", true);
     const fileOutboundEnabled = getBool("file_outbound_enabled", true);
     const imageOutboundEnabled = getBool("image_outbound_enabled", true);
@@ -287,10 +290,26 @@ export function SecurityPolicyPanel({ config, saveRemoteConfigField, lang }: Pro
             />
             <PolicyToggle
                 label={t("Smart Route", "智能路由", "智能路由")}
-                desc={t("Allow Hub LLM smart routing for IM messages", "允许 Hub LLM 对 IM 消息做智能路由", "允許 Hub LLM 對 IM 訊息做智能路由")}
+                desc={t("Allow Hub LLM message routing", "允许 Hub LLM 对消息做智能路由", "允許 Hub LLM 對訊息做智能路由")}
                 value={smartRouteEnabled}
                 disabled={readOnly}
                 onChange={(value) => saveRemoteConfigField({ smart_route_enabled: value } as any)}
+            />
+            <PolicyToggle
+                label={t("Task-scoped Tool Routing", "任务范围工具路由", "任務範圍工具路由")}
+                desc={t("Plan tools from the task scope; disabled keeps the governed path fail-closed", "按任务范围规划工具；关闭时受治理路径保持拒绝执行", "按任務範圍規劃工具；關閉時受治理路徑保持拒絕執行")}
+                value={semanticRoutingEnabled}
+                disabled={readOnly}
+                onChange={(value) => saveRemoteConfigField({ semantic_tool_scope_routing: { ...semanticRouting, enabled: value } } as any)}
+            />
+            <PolicySelect
+                label={t("Task Routing Mode", "任务路由模式", "任務路由模式")}
+                desc={t("Scope-only publishes executable plans; shadow is observational", "scope-only 发布可执行计划；shadow 仅用于观察", "scope-only 發布可執行計劃；shadow 僅用於觀察")}
+                value={semanticRoutingMode}
+                options={["off", "shadow", "scope_only"]}
+                labels={["Off", "Shadow", "Scope only"]}
+                disabled={readOnly || !semanticRoutingEnabled}
+                onChange={(value) => saveRemoteConfigField({ semantic_tool_scope_routing: { ...semanticRouting, mode: value } } as any)}
             />
             <PolicyToggle
                 label={t("Gossip", "Gossip 模块", "Gossip 模組")}

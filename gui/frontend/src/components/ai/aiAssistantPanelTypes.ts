@@ -101,6 +101,11 @@ export interface AIAssistantPanelWindowProps {
 export interface AIAssistantPanelProps {
     onClose: () => void;
     lang: string; // 'zh-Hans' | 'zh-Hant' | 'en'
+    /** Start the embedded assistant on the redesigned workbench landing page.
+     * Existing local conversation history remains available after the user
+     * sends a new prompt or opens a concrete task from the sidebar. */
+    startOnWorkbenchHome?: boolean;
+    activeAssistantTask?: ActiveAssistantTaskIdentity | null;
     chatFontSize?: number;
     state: AIAssistantPanelStateProps;
     actions: AIAssistantPanelActionProps;
@@ -127,6 +132,7 @@ export interface AIAssistantPanelProps {
     onEnsureAssistantTabTask?: (tabType: string, tabIdentity: string, title: string, projectPath?: string) => Promise<void> | void;
     appUpdateAvailable?: AssistantUpdatePayload | null;
     onOpenAppUpdate?: () => void;
+    onOpenAppReleaseNotes?: () => void;
     onDismissAppUpdate?: (latestVersion: string) => void;
     /** Bottom quick-settings bar: provider/model quick-switch data and language change handler. */
     availableProviders?: SidebarLLMProviderSummary[];
@@ -149,6 +155,8 @@ export interface AIAssistantPanelProps {
      * removing tasks that still have an open tab.
      */
     onOpenProjectTabsChange?: (projectPaths: string[]) => void;
+    /** Publishes stable identities so cloud workspaces survive cache-path changes. */
+    onOpenProjectTabIdentitiesChange?: (identities: Array<{ projectPath: string; cloudWorkspaceId?: string }>) => void;
     /** Notifies the shell about open expert tabs so their durable task rows cannot be removed mid-session. */
     onOpenExpertTabsChange?: (expertIDs: string[]) => void;
     /**

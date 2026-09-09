@@ -35,6 +35,45 @@ const (
 	PlanExecutionRunningLease = 5 * time.Minute
 )
 
+// ExecutionConsumesModelGrant identifies durable execution states whose opaque
+// model function must never be exposed again. A plan may later be revised
+// under the original capability constraints, but a consumed grant is not retry
+// authority for a different parameter set or provider attempt.
+func ExecutionConsumesModelGrant(state PlanExecutionState) bool {
+	switch state {
+	case PlanExecutionAwaitingReceipt, PlanExecutionFailed, PlanExecutionUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+// SelectionExecutionUnsettled reports that a spent selection has no settled
+// outcome. A failed attempt is settled — it cost its budget and the family
+// moves on — while awaiting-receipt, running, or lost outcomes are not, and a
+// family must not step past them.
+func SelectionExecutionUnsettled(state PlanExecutionState) bool {
+	switch state {
+	case PlanExecutionAwaitingReceipt, PlanExecutionUnknown, PlanExecutionRunning:
+		return true
+	default:
+		return false
+	}
+}
+
+// SelectionUnsettled reads the durable execution record for a spent selection.
+// GUI and srv NextRepeatSelections both back Unsettled with this.
+func SelectionUnsettled(executor *PlanExecutor, scope InvocationScope, selectionID string) bool {
+	if executor == nil {
+		return false
+	}
+	record, err := executor.Execution(scope, selectionID)
+	if err != nil {
+		return false
+	}
+	return SelectionExecutionUnsettled(record.State)
+}
+
 type PlanExecutionRecord struct {
 	Scope        InvocationScope
 	SelectionID  string
@@ -158,7 +197,7 @@ func (s *memoryPlanExecutionStore) Succeeded(scope InvocationScope) (map[string]
 	defer s.mu.Unlock()
 	completed := make(map[string]bool)
 	for _, record := range s.records {
-		if record.Scope == scope && record.State == PlanExecutionSucceeded {
+		if invocationScopesCompatible(record.Scope, scope) && record.State == PlanExecutionSucceeded {
 			completed[record.SelectionID] = true
 		}
 	}
@@ -199,6 +238,68 @@ type SelectionExecutionResult struct {
 	// fresh call.
 	Unknown    bool
 	ReasonCode string
+}
+
+// PlanExecutionStateFromResult projects a provider result onto the durable
+// execution fact Complete records. Unknown and awaiting-receipt clear Succeeded
+// so a host cannot persist a success flag beside a non-success state.
+func PlanExecutionStateFromResult(result SelectionExecutionResult) (PlanExecutionState, SelectionExecutionResult) {
+	state := PlanExecutionSucceeded
+	if result.Unknown {
+		state, result.Succeeded = PlanExecutionUnknown, false
+	} else if result.AwaitingReceipt {
+		state, result.Succeeded = PlanExecutionAwaitingReceipt, false
+	} else if !result.Succeeded {
+		state = PlanExecutionFailed
+	}
+	return state, result
+}
+
+// SelectionResultFromExecution reconstructs a provider result from a durable
+// execution fact. Running and other non-terminal states return false so the
+// caller falls back to recorded text instead of inventing a verdict.
+func SelectionResultFromExecution(state PlanExecutionState, result, reasonCode string) (SelectionExecutionResult, bool) {
+	switch state {
+	case PlanExecutionSucceeded:
+		return SelectionExecutionResult{Result: result, Succeeded: true, ReasonCode: reasonCode}, true
+	case PlanExecutionFailed:
+		return SelectionExecutionResult{Result: result, ReasonCode: reasonCode}, true
+	case PlanExecutionUnknown:
+		return SelectionExecutionResult{Result: result, Unknown: true, ReasonCode: reasonCode}, true
+	case PlanExecutionAwaitingReceipt:
+		return SelectionExecutionResult{Result: result, AwaitingReceipt: true, ReasonCode: reasonCode}, true
+	default:
+		return SelectionExecutionResult{}, false
+	}
+}
+
+// RecordedSelectionResultFallback is the last resort when no durable verdict
+// can be read. Text only refuses shapes that are certainly not success.
+func RecordedSelectionResultFallback(result string) SelectionExecutionResult {
+	trimmed := strings.TrimSpace(result)
+	switch {
+	case strings.HasPrefix(trimmed, "[system unknown]"):
+		return SelectionExecutionResult{Result: result, Unknown: true}
+	case strings.HasPrefix(trimmed, "[system rejected]"), strings.HasPrefix(strings.ToLower(trimmed), "error:"):
+		return SelectionExecutionResult{Result: result}
+	default:
+		return SelectionExecutionResult{Result: result, Succeeded: true}
+	}
+}
+
+// ReplayedSelectionResult reconstructs a host-call replay from the execution
+// store. A trusted receipt may have settled awaiting_receipt or unknown since
+// the first attempt; the execution row carries that resolution. Missing store,
+// lost row, or non-terminal state fall back to recorded text.
+func ReplayedSelectionResult(store PlanExecutionStore, scope InvocationScope, selectionID, result string) SelectionExecutionResult {
+	if store != nil {
+		if record, err := store.Execution(scope, selectionID); err == nil {
+			if replayed, ok := SelectionResultFromExecution(record.State, result, record.ReasonCode); ok {
+				return replayed
+			}
+		}
+	}
+	return RecordedSelectionResultFallback(result)
 }
 
 type SelectionExecutor func(PlannedSelection) SelectionExecutionResult
@@ -312,7 +413,7 @@ func (e *PlanExecutor) Execute(grant InvocationGrant, scope InvocationScope, pla
 			completed[requirement] = true
 		}
 	}
-	selection, err := e.issuer.ValidateAndConsume(grant, scope, plan, completed)
+	selection, err := e.issuer.ValidateAndConsumeWithCanonicalScope(grant, scope, plan, completed)
 	if err != nil {
 		return SelectionExecutionResult{}, PlannedSelection{}, err
 	}

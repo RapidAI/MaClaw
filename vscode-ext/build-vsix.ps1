@@ -1,5 +1,5 @@
 # Build + package the MaClaw VS Code extension and refresh the embedded asset
-# under gui/vscode_ext_asset/. Best-effort: callers (release scripts) may skip
+# under guiapp/vscode_ext_asset/. Best-effort: callers (release scripts) may skip
 # this when Node is unavailable — the committed VSIX keeps builds working.
 [CmdletBinding()]
 param()
@@ -16,7 +16,7 @@ try {
         }
     }
     if (-not $npm) {
-        Write-Warning "npm not found; keeping the committed VSIX under gui/vscode_ext_asset/ unchanged."
+        Write-Warning "npm not found; keeping the committed VSIX under guiapp/vscode_ext_asset/ unchanged."
         exit 0
     }
     $npmCmd = if ($npm -is [string]) { $npm } else { $npm.Source }
@@ -27,7 +27,7 @@ try {
     & $npmCmd run package
     if ($LASTEXITCODE -ne 0) { throw "npm run package failed ($LASTEXITCODE)" }
 
-    Write-Host "VSIX refreshed under gui/vscode_ext_asset/"
+    Write-Host "VSIX refreshed under guiapp/vscode_ext_asset/"
 }
 finally {
     Pop-Location

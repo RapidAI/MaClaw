@@ -152,9 +152,6 @@ func (a *App) SaveProxyConfig(data map[string]interface{}) error {
 	if v, ok := data["scope_maclaw"].(bool); ok {
 		patch["default_proxy_scope_maclaw"] = v
 	}
-	if v, ok := data["scope_coding_tools"].(bool); ok {
-		patch["default_proxy_scope_coding_tools"] = v
-	}
 	if v, ok := data["scope_agent"].(bool); ok {
 		patch["default_proxy_scope_agent"] = v
 	}

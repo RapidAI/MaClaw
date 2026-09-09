@@ -47,6 +47,91 @@ func WriteFile(filePath string, data WriteData) error {
 	return nil
 }
 
+// WriteFileRange writes rows into an A1-notation rectangle while preserving
+// all cells and worksheets outside that rectangle. The target workbook must
+// already exist when range is used with an existing file; a new workbook is
+// created when filePath does not exist. Rows must fit entirely within the
+// requested rectangle, otherwise the operation is rejected before any write.
+// This deliberately keeps range writes separate from WriteFile, whose
+// historical contract is to create/overwrite a workbook from scratch.
+func WriteFileRange(filePath, sheetName, rangeText string, rows [][]WriteCell) error {
+	if strings.TrimSpace(sheetName) == "" {
+		return fmt.Errorf("sheet name cannot be empty")
+	}
+	startCol, startRow, endCol, endRow, err := ParseRange(rangeText)
+	if err != nil {
+		return err
+	}
+	if endCol < startCol || endRow < startRow {
+		return fmt.Errorf("range end must not precede range start")
+	}
+	maxRows, maxCols := endRow-startRow+1, endCol-startCol+1
+	if len(rows) > maxRows {
+		return fmt.Errorf("rows exceed range height: got %d, max %d", len(rows), maxRows)
+	}
+	for i, row := range rows {
+		if len(row) > maxCols {
+			return fmt.Errorf("rows[%d] exceed range width: got %d, max %d", i, len(row), maxCols)
+		}
+	}
+	if dir := filepath.Dir(filePath); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("create output directory: %w", err)
+		}
+	}
+
+	if _, statErr := os.Stat(filePath); statErr == nil && strings.EqualFold(filepath.Ext(filePath), ".xlsx") {
+		if err := patchExistingXLSXRange(filePath, sheetName, rangeText, rows); err != nil {
+			return err
+		}
+		return nil
+	}
+	var wb *gospreadsheet.Workbook
+	if _, statErr := os.Stat(filePath); statErr == nil {
+		wb, err = gospreadsheet.OpenFile(filePath)
+		if err != nil {
+			return fmt.Errorf("open workbook: %w", err)
+		}
+	} else if !os.IsNotExist(statErr) {
+		return fmt.Errorf("stat workbook: %w", statErr)
+	} else {
+		wb = gospreadsheet.NewEmpty()
+	}
+
+	ws, err := wb.GetSheetByName(sheetName)
+	if err != nil {
+		// A new file may create the requested sheet. For an existing workbook,
+		// silently creating a sheet is surprising and can bypass an allowlist.
+		if _, statErr := os.Stat(filePath); statErr == nil {
+			return fmt.Errorf("sheet %q not found", sheetName)
+		}
+		ws, err = wb.AddSheet(sheetName)
+		if err != nil {
+			return fmt.Errorf("create sheet: %w", err)
+		}
+	}
+	// Writing into a merged region is ambiguous (the top-left cell owns the
+	// value while the other cells are placeholders). Reject any overlap rather
+	// than silently producing a workbook whose displayed value differs from
+	// the requested matrix.
+	for _, merged := range ws.GetMergeCells() {
+		if merged.StartRow <= endRow-1 && merged.EndRow >= startRow-1 && merged.StartCol <= endCol-1 && merged.EndCol >= startCol-1 {
+			return fmt.Errorf("range overlaps merged cells")
+		}
+	}
+	for rowIdx, row := range rows {
+		for colIdx, cell := range row {
+			if err := writeCell(ws, startRow-1+rowIdx, startCol-1+colIdx, cell); err != nil {
+				return fmt.Errorf("write range cell: %w", err)
+			}
+		}
+	}
+	if err := gospreadsheet.SaveFile(wb, filePath); err != nil {
+		return fmt.Errorf("save workbook: %w", err)
+	}
+	return nil
+}
+
 // writeCell writes a single cell value and style to the worksheet.
 func writeCell(ws *gospreadsheet.Worksheet, row, col int, wc WriteCell) error {
 	if wc.Value == nil {

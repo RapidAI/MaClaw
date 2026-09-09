@@ -35,7 +35,7 @@ import (
 
 // generatedFilePath is the canonical, repository-root-relative location of the
 // generated TypeScript artifact.
-const generatedFilePath = "gui/frontend/src/components/ai/workflowPhaseMeta.generated.ts"
+const generatedFilePath = "guiapp/frontend/src/components/ai/workflowPhaseMeta.generated.ts"
 
 // genphasemeta generates the TypeScript phase metadata artifact from the
 // authoritative Go template registry. No hardcoded type list needed — all

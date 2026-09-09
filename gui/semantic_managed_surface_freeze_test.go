@@ -122,6 +122,18 @@ func TestClosedManagedSemanticDefinitionsForTurnDropsLightUnsafeGrants(t *testin
 	}
 }
 
+func TestSemanticManagedTurnCannotEnterLegacyNameRouter(t *testing.T) {
+	h := &IMMessageHandler{toolRouter: NewToolRouter(nil)}
+	defs := []map[string]interface{}{
+		toolDef("bash", "shell", nil, nil),
+		toolDef("discover_tool", "discover", nil, nil),
+	}
+	routed, ranked := h.routeSessionToolsWithRanking("user-1", "open a browser", defs, false, nil, managedLiveDataLoopContext())
+	if len(routed) != 0 || len(ranked) != 0 {
+		t.Fatalf("managed turn entered legacy router: routed=%#v ranked=%#v", routed, ranked)
+	}
+}
+
 func TestManagedSemanticLightUpgradeDoesNotRestoreLegacyTools(t *testing.T) {
 	h := &IMMessageHandler{registry: NewToolRegistry()}
 	registerBuiltinTools(h.registry, h)

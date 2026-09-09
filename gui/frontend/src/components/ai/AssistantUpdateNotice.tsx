@@ -1,3 +1,4 @@
+import { createPortal } from "react-dom";
 import { useEffect, useRef, useState, type CSSProperties, type MouseEvent } from "react";
 import { localizeText } from "./aiAssistantI18n";
 import { getTitleBarToolButtonStyle, type Theme } from "./aiAssistantPanelTheme";
@@ -9,13 +10,18 @@ export type AssistantUpdatePayload = {
     HasUpdate?: boolean;
     latest_version?: string;
     LatestVersion?: string;
+    release_url?: string;
+    ReleaseUrl?: string;
 };
 
 type AssistantUpdateNoticeProps = {
     inline: boolean;
+    /** Title-bar keeps the legacy menu for embedded callers; the app uses the floating variant. */
+    variant?: "titlebar" | "floating";
     lang: string;
     onDismissAppUpdate?: (latestVersion: string) => void;
     onOpenAppUpdate?: () => void;
+    onOpenAppReleaseNotes?: () => void;
     theme: Theme;
     themeMode: "light" | "dark";
     updateAvailable?: AssistantUpdatePayload | null;
@@ -40,7 +46,15 @@ const DismissIcon = () => (
     </svg>
 );
 
-export function AssistantUpdateNotice({ inline, lang, onDismissAppUpdate, onOpenAppUpdate, theme: t, themeMode, updateAvailable }: AssistantUpdateNoticeProps) {
+const UpdateReadyIcon = () => (
+    <svg viewBox="0 0 24 24" width="21" height="21" aria-hidden="true" focusable="false">
+        <path d="M12 18V5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+        <path d="m7.5 9.5 4.5-4.5 4.5 4.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M5 19.5h14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+);
+
+export function AssistantUpdateNotice({ inline, lang, onDismissAppUpdate, onOpenAppReleaseNotes, onOpenAppUpdate, theme: t, themeMode, updateAvailable, variant = "titlebar" }: AssistantUpdateNoticeProps) {
     const [open, setOpen] = useState(false);
     const menuRef = useRef<HTMLDivElement | null>(null);
     const firstMenuItemRef = useRef<HTMLButtonElement | null>(null);
@@ -54,6 +68,10 @@ export function AssistantUpdateNotice({ inline, lang, onDismissAppUpdate, onOpen
         ? localizeText(lang, `Online update to ${latestVersion}`, `\u5728\u7ebf\u66f4\u65b0\u5230 ${latestVersionDisplay} \u7248\u672c`, `\u5728\u7dda\u66f4\u65b0\u5230 ${latestVersionDisplay} \u7248\u672c`)
         : localizeText(lang, "Online update", "\u5728\u7ebf\u66f4\u65b0", "\u5728\u7dda\u66f4\u65b0");
     const skipText = localizeText(lang, "Do not remind this time", "\u6b64\u6b21\u4e0d\u63d0\u793a", "\u6b64\u6b21\u4e0d\u63d0\u793a");
+    const readyText = localizeText(lang, "New version ready", "\u65b0\u7248\u672c\u5c31\u7eea", "\u65b0\u7248\u672c\u5c31\u7dd2");
+    const releaseNotesText = localizeText(lang, "Release notes", "\u66f4\u65b0\u65e5\u5fd7", "\u66f4\u65b0\u65e5\u8a8c");
+    const restartUpdateText = localizeText(lang, "Restart to update", "\u91cd\u542f\u5347\u7ea7", "\u91cd\u555f\u5347\u7d1a");
+    const closeText = localizeText(lang, "Close update notice", "\u5173\u95ed\u66f4\u65b0\u63d0\u793a", "\u95dc\u9589\u66f4\u65b0\u63d0\u793a");
 
     useEffect(() => {
         if (open && hasUpdate) firstMenuItemRef.current?.focus();
@@ -77,6 +95,53 @@ export function AssistantUpdateNotice({ inline, lang, onDismissAppUpdate, onOpen
     }, [open]);
 
     if (!hasUpdate) return null;
+
+    if (variant === "floating") {
+        const handleFloatingOpen = (event: MouseEvent<HTMLButtonElement>) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onOpenAppUpdate?.();
+        };
+        const handleFloatingReleaseNotes = (event: MouseEvent<HTMLButtonElement>) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (onOpenAppReleaseNotes) onOpenAppReleaseNotes();
+            else onOpenAppUpdate?.();
+        };
+        const handleFloatingDismiss = (event: MouseEvent<HTMLButtonElement>) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onDismissAppUpdate?.(latestVersion);
+        };
+        const cardStyle = {
+            "--app-update-surface": t.titleBarBg,
+            "--app-update-border": t.titleBarBorder,
+            "--app-update-text": t.text,
+            "--app-update-muted": t.textMuted,
+            "--app-update-accent": themeMode === "dark" ? "#65d6a0" : "#36b98a",
+            "--app-update-accent-strong": themeMode === "dark" ? "#8de8bd" : "#249a72",
+            "--wails-draggable": "no-drag",
+        } as CSSProperties;
+        const card = <div className="app-update-float" data-testid="assistant-update-float" data-ai-theme={themeMode} role="status" aria-live="polite" style={cardStyle}>
+            <div className="app-update-float__identity">
+                <span className="app-update-float__icon" aria-hidden="true"><UpdateReadyIcon /></span>
+                <div className="app-update-float__copy">
+                    <strong>{readyText}</strong>
+                    {latestVersionDisplay && <span>{latestVersionDisplay}</span>}
+                </div>
+            </div>
+            <div className="app-update-float__actions">
+                <button type="button" className="app-update-float__button app-update-float__button--outline" onClick={handleFloatingReleaseNotes}>{releaseNotesText}</button>
+                <button type="button" className="app-update-float__button app-update-float__button--primary" onClick={handleFloatingOpen}>{restartUpdateText}</button>
+            </div>
+            <button type="button" className="app-update-float__close" aria-label={closeText} title={closeText} onClick={handleFloatingDismiss}><DismissIcon /></button>
+        </div>;
+        // The assistant panel is kept mounted while other pages are active and
+        // also lives inside the scaled app layer. Portalling makes the notice
+        // global and keeps its physical bottom-left position stable.
+        return typeof document !== "undefined" && document.body ? createPortal(card, document.body) : card;
+    }
+
     const toggleMenu = () => setOpen(value => !value);
     const toggleProps = inline
         ? {

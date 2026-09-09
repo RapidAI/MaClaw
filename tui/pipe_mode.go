@@ -28,6 +28,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent/sshtool"
 	"github.com/RapidAI/CodeClaw/corelib/brand"
 	"github.com/RapidAI/CodeClaw/corelib/config"
+	"github.com/RapidAI/CodeClaw/corelib/database"
 	"github.com/RapidAI/CodeClaw/corelib/goal"
 	"github.com/RapidAI/CodeClaw/corelib/llm" // RouteTurn ClassifyHints + CostTracker
 	"github.com/RapidAI/CodeClaw/corelib/memory"
@@ -80,6 +81,7 @@ func runPrompt(promptText string) {
 		fmt.Fprintln(os.Stderr, "error: prompt cannot be empty")
 		os.Exit(commands.ExitUsage)
 	}
+	runTUIStartupRecovery(commands.ResolveDataDir())
 
 	// --- Initialize infrastructure (same as runTUIWithOptions but no UI) ---
 	dataDir := commands.ResolveDataDir()
@@ -147,6 +149,16 @@ func runPrompt(promptText string) {
 		}
 		return sshtool.ToolSSH(deps, args)
 	}
+	pipeDBManager := database.NewManager(appCfg.DatabaseProfiles, tuiDatabaseSecret)
+	pipeDBManager.SetEnabled(appCfg.DatabaseToolIsEnabled())
+	pipeDBManager.SetTunnelDialer(remote.SSHTunnelDialer(func() *remote.SSHSessionManager { return sshMgr }))
+	if favStore, err := database.NewFavoriteStore(filepath.Join(dataSubDir, "database_favorites.json")); err == nil {
+		pipeDBManager.SetFavoriteStore(favStore)
+	}
+	if pendingStore, err := database.NewPendingStore(filepath.Join(dataSubDir, "database_pending.json")); err == nil {
+		pipeDBManager.SetPendingStore(pendingStore)
+	}
+	pipeDB := newTUIDatabaseRuntime(pipeDBManager, func() corelib.AppConfig { return app.appConfig }, func() string { return "" }, "tui:pipe", "tui:pipe", false)
 	agent.RegisterCoreTools(app.toolRegistry, agent.CoreToolDeps{
 		MemoryStore: memStore,
 		TaskStore:   app.taskStore,
@@ -155,6 +167,9 @@ func runPrompt(promptText string) {
 			return app.appConfig
 		}),
 		SSHHandler: sshHandler,
+		ExtraHandlersCtx: map[string]agent.ToolHandlerCtx{
+			"database": pipeDB.handlerCtx(),
+		},
 		WebSearchHandlerCtx: func(ctx context.Context, args map[string]interface{}) string {
 			var provider corelib.WebSearchProvider
 			if len(app.appConfig.WebSearchProviders) > 0 {

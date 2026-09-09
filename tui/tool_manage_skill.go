@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -36,6 +37,12 @@ import (
 	"github.com/RapidAI/CodeClaw/tui/commands"
 	"gopkg.in/yaml.v3"
 )
+
+// tuiSkillMutationMu serializes legacy TUI definition/patch writes.  TUI does
+// not share the desktop App's installMutex, but concurrent tool calls in one
+// process must still compare-and-swap the YAML pre-image and patch history so
+// one writer cannot silently overwrite another or report an unaudited write.
+var tuiSkillMutationMu sync.Mutex
 
 // newManageSkillHandler creates the manage_skill handler bound to the TUI app.
 func newManageSkillHandler(app *TUIApp) func(args map[string]interface{}) string {
@@ -59,6 +66,8 @@ func newManageSkillHandler(app *TUIApp) func(args map[string]interface{}) string
 			return skillStatus(args)
 		case "upload":
 			return skillUpload(app, args)
+		case "upload_suite":
+			return "upload_suite 当前仅支持 Maclaw GUI；请在 GUI 中指定 names 数组上传 Suite"
 		case "validate":
 			return skillValidate(app, args)
 		case "patch":
@@ -918,6 +927,222 @@ func formatTUISkillSearchResults(query string, results []skill.HubSearchResult, 
 
 // --- install ---
 
+// installTUISkillTransactional performs the network download outside the
+// mutation lock, then publishes the package directory and registry entry as
+// one compensating transaction.  TUI has no desktop App/SkillCommitter
+// instance, so this adapter supplies the same durable coordinator callbacks
+// against FileConfigStore and the process-wide TUI mutation mutex.
+func installTUISkillTransactional(app *TUIApp, effectiveSource, skillID, installRef, hubURL string) (entry *corelib.NLSkillEntry, already *corelib.NLSkillEntry, err error) {
+	if app == nil {
+		return nil, nil, fmt.Errorf("TUI app 未初始化")
+	}
+	if strings.TrimSpace(skillID) == "" {
+		return nil, nil, fmt.Errorf("缺少 skill_id 参数")
+	}
+	if err := ensureTUISkillCompensationAdmission(skillID); err != nil {
+		return nil, nil, fmt.Errorf("Skill 安装被阻止：%w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	client := skill.DefaultHubClient()
+	var stagingDir, finalDir string
+	staged := false
+	cleanupStage := func() {
+		if stagingDir != "" {
+			_ = os.RemoveAll(stagingDir)
+		}
+	}
+	defer cleanupStage()
+
+	// SkillHub payloads may contain executable files.  Always materialise them
+	// under an isolated sibling directory and publish with one rename only after
+	// the registry pre-image has been durably captured by SkillCommitter.
+	if effectiveSource == "skillhub" {
+		root, rootErr := skill.PrimarySkillsDir()
+		if rootErr != nil {
+			return nil, nil, fmt.Errorf("解析 Skill 目录失败: %w", rootErr)
+		}
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			return nil, nil, fmt.Errorf("创建 Skill 目录失败: %w", err)
+		}
+		stagingDir, err = os.MkdirTemp(root, ".tui-skill-stage-*")
+		if err != nil {
+			return nil, nil, fmt.Errorf("创建 Skill staging 目录失败: %w", err)
+		}
+		entry, err = client.DownloadSkillHubWithOptions(ctx, hubURL, skillID, skill.HubDownloadOptions{
+			HubURL: hubURL, SkillID: skillID, Source: "hub", TargetDir: stagingDir,
+		})
+	} else {
+		switch effectiveSource {
+		case "clawhub":
+			entry, err = client.DownloadClawHub(ctx, skillID)
+		case "github":
+			if strings.TrimSpace(installRef) == "" {
+				return nil, nil, fmt.Errorf("GitHub Skill 缺少 install_ref 参数")
+			}
+			entry, err = client.DownloadGitHub(ctx, installRef)
+		default:
+			return nil, nil, fmt.Errorf("不支持的 Skill 来源 %q", effectiveSource)
+		}
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	if entry == nil || strings.TrimSpace(entry.Name) == "" {
+		return nil, nil, fmt.Errorf("下载结果缺少 Skill 名称")
+	}
+
+	store := commands.NewFileConfigStore(commands.ResolveDataDir())
+	tuiSkillMutationMu.Lock()
+	defer tuiSkillMutationMu.Unlock()
+	cfg, err := store.LoadConfig()
+	if err != nil {
+		return nil, nil, fmt.Errorf("加载配置失败: %w", err)
+	}
+	if existing, installed := tuiInstalledSkillEntryForInstallRequest(effectiveSource, skillID, installRef, cfg.NLSkills); installed {
+		app.appConfig = cfg
+		return nil, &existing, nil
+	}
+	// A source-aware lookup can legitimately miss an entry whose name collides
+	// with this package.  Never replace that entry implicitly: the caller must
+	// use an explicit update path instead.
+	for _, existing := range cfg.NLSkills {
+		if strings.EqualFold(strings.TrimSpace(existing.Name), strings.TrimSpace(entry.Name)) {
+			app.appConfig = cfg
+			return nil, &existing, nil
+		}
+	}
+
+	if stagingDir != "" {
+		// DownloadSkillHubWithOptions sets SkillDir to staging even for a
+		// metadata-only package.  Publish a directory only when files were
+		// actually materialised; executable step-only entries remain config-only.
+		if items, readErr := os.ReadDir(stagingDir); readErr != nil {
+			return nil, nil, fmt.Errorf("检查 Skill staging 目录失败: %w", readErr)
+		} else if len(items) > 0 {
+			safeName := skill.SanitizeSkillName(entry.Name)
+			if safeName == "" || safeName != entry.Name {
+				return nil, nil, fmt.Errorf("Skill 名称包含不安全路径字符: %q", entry.Name)
+			}
+			root, rootErr := skill.PrimarySkillsDir()
+			if rootErr != nil {
+				return nil, nil, fmt.Errorf("解析 Skill 目录失败: %w", rootErr)
+			}
+			rootAbs, rootErr := filepath.Abs(root)
+			if rootErr != nil {
+				return nil, nil, rootErr
+			}
+			finalDir = filepath.Join(rootAbs, safeName)
+			if !pathWithinTUIDir(rootAbs, finalDir) {
+				return nil, nil, fmt.Errorf("Skill 目标目录越界: %q", finalDir)
+			}
+			if info, statErr := os.Lstat(finalDir); statErr == nil {
+				if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+					return nil, nil, fmt.Errorf("Skill 目标不是安全目录: %q", finalDir)
+				}
+				return nil, nil, fmt.Errorf("Skill 目录已存在: %q", entry.Name)
+			} else if !os.IsNotExist(statErr) {
+				return nil, nil, fmt.Errorf("检查 Skill 目标目录失败: %w", statErr)
+			}
+			entry.SkillDir = finalDir
+			staged = true
+		} else {
+			entry.SkillDir = ""
+		}
+	}
+
+	requestID := fmt.Sprintf("evo_tui_install_%d", time.Now().UnixNano())
+	commitCtx := skill.WithEvolutionRequestMetadata(context.Background(), requestID, 1)
+	configRevision := "tui"
+	published := false
+	committer := &skill.SkillCommitter{
+		SkillLoader: func() []corelib.NLSkillEntry {
+			latest, loadErr := store.LoadConfig()
+			if loadErr != nil {
+				return nil
+			}
+			if latest.NLSkills == nil {
+				return []corelib.NLSkillEntry{}
+			}
+			return latest.NLSkills
+		},
+		SkillSaver: func(entries []corelib.NLSkillEntry) error {
+			latest, loadErr := store.LoadConfig()
+			if loadErr != nil {
+				return loadErr
+			}
+			latest.NLSkills = entries
+			if saveErr := store.SaveConfig(latest); saveErr != nil {
+				return saveErr
+			}
+			app.appConfig = latest
+			return nil
+		},
+		RollbackSkillSaver: func(entries []corelib.NLSkillEntry) error {
+			latest, loadErr := store.LoadConfig()
+			if loadErr != nil {
+				return loadErr
+			}
+			latest.NLSkills = entries
+			if saveErr := store.SaveConfig(latest); saveErr != nil {
+				return saveErr
+			}
+			app.appConfig = latest
+			return nil
+		},
+		ExternalCommitWithCompensation: func(record *skill.EvolutionCompensationRecord) error {
+			if !staged {
+				return nil
+			}
+			if err := os.Rename(stagingDir, finalDir); err != nil {
+				return fmt.Errorf("发布 Skill 目录失败: %w", err)
+			}
+			published = true
+			if record != nil {
+				record.SetDirectoryPublished(true)
+			}
+			return nil
+		},
+		ExternalRollback: func() error {
+			if !published || finalDir == "" {
+				return nil
+			}
+			if err := os.RemoveAll(finalDir); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			published = false
+			return nil
+		},
+		FinalAuditor: func(event string, data map[string]string) error {
+			return skill.RecordEvolutionEventStrict(event, data, "tui")
+		},
+		CompensationMutator: func(record *skill.EvolutionCompensationRecord) {
+			record.SetRecoveryScope(commands.ResolveDataDir())
+			// TUI currently has no desktop-level checked routing index publisher;
+			// recovery restores the authoritative config/directory only.
+			record.SetSkipIndexRefresh(true)
+			if staged {
+				record.SetCreatedDirectories([]string{finalDir})
+				record.SetRollbackCleanupPaths([]string{stagingDir})
+			}
+		},
+		ConfigRevision:       configRevision,
+		AllowCreate:          true,
+		SkipIfUnchanged:      !staged,
+		SkipDefinitionBackup: true,
+	}
+	result := committer.Commit(commitCtx, entry.Name, entry, "skill:tui_skill_installed", map[string]string{
+		"skill": entry.Name, "action": "tui_install", "source": effectiveSource, "via": "tui",
+		"request_id": requestID, "attempt": "1", "config_revision": configRevision,
+		"schema_version": "2", "evidence_mode": "none",
+	})
+	if result.State != "committed" || result.CleanupStatus != "clear" {
+		return nil, nil, fmt.Errorf("Skill 安装未提交: %s (%s)", result.State, result.FailureReason)
+	}
+	return entry, nil, nil
+}
+
 func skillInstall(app *TUIApp, args map[string]interface{}) string {
 	skillID := sval(args, "skill_id")
 	if skillID == "" {
@@ -969,44 +1194,13 @@ func skillInstall(app *TUIApp, args map[string]interface{}) string {
 		return fmt.Sprintf("Skill '%s' 已安装", name)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	client := skill.DefaultHubClient()
-	var entry *corelib.NLSkillEntry
-	var err error
-
-	switch effectiveSource {
-	case "clawhub":
-		entry, err = client.DownloadClawHub(ctx, skillID)
-	case "github":
-		if installRef == "" {
-			return "GitHub Skill 缺少 install_ref 参数"
-		}
-		entry, err = client.DownloadGitHub(ctx, installRef)
-	default:
-		entry, err = client.DownloadSkillHub(ctx, hubURL, skillID)
-	}
+	entry, existing, err := installTUISkillTransactional(app, effectiveSource, skillID, installRef, hubURL)
 	if err != nil {
 		return fmt.Sprintf("安装失败: %v", err)
 	}
-
-	store := commands.NewFileConfigStore(commands.ResolveDataDir())
-	cfg, err := store.LoadConfig()
-	if err != nil {
-		return fmt.Sprintf("加载配置失败: %v", err)
-	}
-	// Avoid duplicate entries if another process completed the same install
-	// while this command was downloading the package.
-	if existing, installed := tuiInstalledSkillEntryForInstallRequest(effectiveSource, skillID, installRef, cfg.NLSkills); installed {
-		app.appConfig = cfg
+	if existing != nil {
 		return fmt.Sprintf("Skill '%s' 已安装", existing.Name)
 	}
-	cfg.NLSkills = append(cfg.NLSkills, *entry)
-	if err := store.SaveConfig(cfg); err != nil {
-		return fmt.Sprintf("保存失败: %v", err)
-	}
-	app.appConfig = cfg
 
 	sourceLabel := "SkillHub"
 	switch effectiveSource {
@@ -1025,50 +1219,163 @@ func skillUninstall(app *TUIApp, args map[string]interface{}) string {
 	if name == "" {
 		return "缺少 name 参数（要卸载的 Skill 名称）"
 	}
+	if app == nil {
+		return "TUI app 未初始化"
+	}
+	if err := ensureTUISkillCompensationAdmission(name); err != nil {
+		return fmt.Sprintf("卸载被阻止：%v", err)
+	}
 
-	// Remove from config.
 	store := commands.NewFileConfigStore(commands.ResolveDataDir())
+	tuiSkillMutationMu.Lock()
+	defer tuiSkillMutationMu.Unlock()
 	cfg, err := store.LoadConfig()
 	if err != nil {
 		return fmt.Sprintf("加载配置失败: %v", err)
 	}
+	originalSkills := append([]corelib.NLSkillEntry(nil), cfg.NLSkills...)
 
-	found := false
-	for i, s := range cfg.NLSkills {
-		if s.MatchesName(name) {
-			cfg.NLSkills = append(cfg.NLSkills[:i], cfg.NLSkills[i+1:]...)
-			found = true
-			break
-		}
+	// Resolve every matching on-disk directory before mutating config.  Only
+	// real directories below a configured scan root are eligible; symlinks and
+	// out-of-root paths fail closed instead of allowing an attacker-controlled
+	// delete target.
+	type pendingMove struct {
+		original   string
+		quarantine string
+		moved      bool
 	}
-
-	if found {
-		if err := store.SaveConfig(cfg); err != nil {
-			return fmt.Sprintf("保存配置失败: %v", err)
-		}
-		app.appConfig = cfg
-	}
-
-	// Remove on-disk directories (using unfiltered scanner so any format is covered).
-	dirRemoved := false
+	moves := make([]pendingMove, 0)
+	seenDirs := make(map[string]struct{})
 	for _, root := range skill.SkillScanRootsWithExternal(cfg.ExternalSkillDirs) {
-		for _, s := range skill.ScanSkillDirAll(root) {
-			if s.MatchesName(name) {
-				if s.SkillDir != "" {
-					if err := os.RemoveAll(s.SkillDir); err != nil {
-						log.Printf("[skill-uninstall] failed to remove %s: %v", s.SkillDir, err)
-					} else {
-						dirRemoved = true
-					}
-				}
+		rootAbs, absErr := filepath.Abs(root)
+		if absErr != nil {
+			return fmt.Sprintf("解析 Skill 根目录失败: %v", absErr)
+		}
+		for _, scanned := range skill.ScanSkillDirAll(root) {
+			if !scanned.MatchesName(name) || strings.TrimSpace(scanned.SkillDir) == "" {
+				continue
 			}
+			dirAbs, absErr := filepath.Abs(scanned.SkillDir)
+			if absErr != nil || !pathWithinTUIDir(rootAbs, dirAbs) {
+				return fmt.Sprintf("拒绝删除越界 Skill 目录: %q", scanned.SkillDir)
+			}
+			info, statErr := os.Lstat(dirAbs)
+			if statErr != nil {
+				if os.IsNotExist(statErr) {
+					continue
+				}
+				return fmt.Sprintf("检查 Skill 目录失败: %v", statErr)
+			}
+			if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+				return fmt.Sprintf("拒绝删除非普通 Skill 目录: %q", dirAbs)
+			}
+			key := strings.ToLower(filepath.Clean(dirAbs))
+			if _, seen := seenDirs[key]; seen {
+				continue
+			}
+			seenDirs[key] = struct{}{}
+			moves = append(moves, pendingMove{original: dirAbs, quarantine: fmt.Sprintf("%s.tui-delete-pending-%d-%d", dirAbs, time.Now().UnixNano(), len(moves))})
 		}
 	}
 
-	if !found && !dirRemoved {
+	updatedSkills := make([]corelib.NLSkillEntry, 0, len(cfg.NLSkills))
+	configFound := false
+	for _, existing := range cfg.NLSkills {
+		if existing.MatchesName(name) || strings.EqualFold(strings.TrimSpace(existing.Name), strings.TrimSpace(name)) {
+			configFound = true
+			continue
+		}
+		updatedSkills = append(updatedSkills, existing)
+	}
+	if !configFound && len(moves) == 0 {
 		return fmt.Sprintf("Skill '%s' 未找到（不在配置中，也不在磁盘上）", name)
 	}
 
+	requestID := fmt.Sprintf("evo_tui_uninstall_%d", time.Now().UnixNano())
+	record := skill.NewEvolutionCompensationRecord(requestID, name, "tui_uninstall", "", nil, false, originalSkills, "tui_skill_uninstall_pending")
+	record.ConfigBackupCaptured = true
+	record.SetRecoveryScope(commands.ResolveDataDir())
+	record.SetSkipIndexRefresh(true)
+	record.SetAffectedSkills([]string{name})
+	durableMoves := make([]skill.EvolutionDirectoryMove, 0, len(moves))
+	for _, move := range moves {
+		durableMoves = append(durableMoves, skill.EvolutionDirectoryMove{OriginalPath: move.original, BackupPath: move.quarantine, HadPrevious: true})
+	}
+	record.SetDirectoryMoves(durableMoves)
+	cleanupPaths := make([]string, 0, len(moves))
+	for _, move := range moves {
+		cleanupPaths = append(cleanupPaths, move.quarantine)
+	}
+	record.SetPostCommitCleanupPaths(cleanupPaths)
+	record.FinalAuditKind = skill.KindFromEventName("skill:tui_skill_uninstalled")
+	if err := skill.PersistEvolutionCompensation(record); err != nil {
+		return fmt.Sprintf("保存卸载补偿记录失败: %v", err)
+	}
+	persistRecord := func() error { return skill.ReplaceEvolutionCompensation(record) }
+	rollback := func(cause error) string {
+		rollbackErr := skill.RestoreEvolutionCompensation(record, func(skills []corelib.NLSkillEntry) error {
+			cfgRollback, loadErr := store.LoadConfig()
+			if loadErr != nil {
+				return loadErr
+			}
+			cfgRollback.NLSkills = skills
+			if saveErr := store.SaveConfig(cfgRollback); saveErr != nil {
+				return saveErr
+			}
+			app.appConfig = cfgRollback
+			return nil
+		}, nil)
+		if rollbackErr != nil {
+			record.LastError = rollbackErr.Error()
+			record.TransactionState = "audit_pending"
+			record.CleanupStatus = "pending"
+			_ = skill.MarkEvolutionCompensationRollbackFailure(&record, rollbackErr)
+			return fmt.Sprintf("%v；回滚失败，已进入人工复核队列: %v", cause, rollbackErr)
+		}
+		if clearErr := skill.ClearEvolutionCompensation(record.RequestID, record.Skill, record.Action); clearErr != nil {
+			_ = skill.MarkEvolutionCompensationRollbackFailure(&record, clearErr)
+			return fmt.Sprintf("%v；清理补偿记录失败: %v", cause, clearErr)
+		}
+		return fmt.Sprintf("%v；卸载已回滚", cause)
+	}
+
+	for i := range moves {
+		if err := os.Rename(moves[i].original, moves[i].quarantine); err != nil {
+			return rollback(fmt.Errorf("隔离 Skill 目录失败: %w", err))
+		}
+		moves[i].moved = true
+		durableMoves[i].Moved = true
+		durableMoves[i].Published = true
+		record.SetDirectoryMoves(durableMoves)
+		if err := persistRecord(); err != nil {
+			return rollback(fmt.Errorf("保存目录隔离状态失败: %w", err))
+		}
+	}
+	cfg.NLSkills = updatedSkills
+	if err := store.SaveConfig(cfg); err != nil {
+		return rollback(fmt.Errorf("保存配置失败: %w", err))
+	}
+	app.appConfig = cfg
+	if err := skill.RecordEvolutionEventStrict("skill:tui_skill_uninstalled", map[string]string{
+		"skill": name, "action": "tui_uninstall", "decision": "applied", "via": "tui",
+		"request_id": requestID, "attempt": "1", "config_revision": "tui",
+		"schema_version": "2", "evidence_mode": "none",
+	}, "tui"); err != nil {
+		return rollback(fmt.Errorf("卸载最终审计失败: %w", err))
+	}
+	record.TransactionState = "committed"
+	record.CleanupStatus = "pending"
+	if err := skill.ReplaceEvolutionCompensation(record); err != nil {
+		return fmt.Sprintf("卸载已提交但提交状态无法持久化: %v", err)
+	}
+	if err := skill.CleanupCommittedEvolutionCompensation(record); err != nil {
+		_ = skill.MarkEvolutionCompensationCleanupFailure(&record, err)
+		return fmt.Sprintf("Skill 已卸载，但隔离目录清理待重试: %v", err)
+	}
+	if err := skill.ClearEvolutionCompensation(record.RequestID, record.Skill, record.Action); err != nil {
+		_ = skill.MarkEvolutionCompensationCleanupFailure(&record, err)
+		return fmt.Sprintf("Skill 已卸载，但补偿记录清理待重试: %v", err)
+	}
 	return fmt.Sprintf("Skill '%s' 已卸载（配置和目录已清理）", name)
 }
 
@@ -1627,6 +1934,14 @@ func tuiBaseCommandEnvFrom(base []string) []string {
 }
 
 func persistStats(name string, e *corelib.NLSkillEntry) {
+	if e == nil {
+		return
+	}
+	// Runtime overlays are still registry writes. Serialize the read-modify-
+	// write with install/uninstall/patch so a completed run cannot be lost when
+	// an install commits a full NLSkills snapshot concurrently.
+	tuiSkillMutationMu.Lock()
+	defer tuiSkillMutationMu.Unlock()
 	store := commands.NewFileConfigStore(commands.ResolveDataDir())
 	cfg, err := store.LoadConfig()
 	if err != nil {
@@ -1701,6 +2016,34 @@ func recordTUISkillUsageExperience(entry *corelib.NLSkillEntry, success bool) {
 
 // --- upload ---
 
+type tuiUploadStatusFile struct {
+	SubmissionID string `json:"submission_id"`
+	UploadedAt   string `json:"uploaded_at"`
+}
+
+// persistTUIUploadReceipt writes the local post-submit receipt atomically. A
+// remote acceptance cannot be rolled back, so callers must surface any local
+// persistence or audit failure explicitly instead of reporting a clean upload.
+func persistTUIUploadReceipt(entry *corelib.NLSkillEntry, submissionID string) error {
+	if entry == nil || strings.TrimSpace(entry.SkillDir) == "" {
+		return fmt.Errorf("Skill 目录不存在")
+	}
+	status := tuiUploadStatusFile{SubmissionID: strings.TrimSpace(submissionID), UploadedAt: time.Now().UTC().Format(time.RFC3339)}
+	data, err := json.MarshalIndent(status, "", "  ")
+	if err != nil {
+		return err
+	}
+	tuiSkillMutationMu.Lock()
+	defer tuiSkillMutationMu.Unlock()
+	if info, statErr := os.Lstat(entry.SkillDir); statErr != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		if statErr != nil {
+			return fmt.Errorf("Skill 目录不可用: %w", statErr)
+		}
+		return fmt.Errorf("Skill 目录不是普通目录")
+	}
+	return fileutil.AtomicWriteFile(filepath.Join(entry.SkillDir, "upload_status.json"), append(data, '\n'), 0o644)
+}
+
 // skillUpload packages a local skill and uploads it to SkillMarket.
 // Reuses the same HTTP API as tui/commands/skillmarket.go smSubmit,
 // but operates on a skill name (not a pre-built zip path).
@@ -1718,6 +2061,9 @@ func skillUpload(app *TUIApp, args map[string]interface{}) string {
 	if entry.SkillDir == "" {
 		return fmt.Sprintf("Skill「%s」没有关联的目录，无法打包上传", name)
 	}
+	if err := ensureTUISkillCompensationAdmission(name); err != nil {
+		return fmt.Sprintf("上传被阻止：%v", err)
+	}
 
 	// Pre-upload portability gate (shared with GUI): auto-fix safe absolute
 	// paths in place, then block when machine-specific paths or missing
@@ -1731,28 +2077,89 @@ func skillUpload(app *TUIApp, args map[string]interface{}) string {
 			force = strings.EqualFold(val, "true")
 		}
 	}
+	var uploadTx *tuiDirectoryTransaction
+	uploadDir := entry.SkillDir
+	remoteAccepted := false
+	var rollbackPreflight func(string) string
+	rollbackPreflight = func(message string) string {
+		if uploadTx == nil {
+			return message
+		}
+		if remoteAccepted {
+			return message + "；远端已接受，保留本地事务待人工复核"
+		}
+		tuiSkillMutationMu.Lock()
+		defer tuiSkillMutationMu.Unlock()
+		if err := uploadTx.rollback(fmt.Errorf("%s", message)); err != nil {
+			return err.Error()
+		}
+		uploadTx = nil
+		return message + "；已回滚上传前预检写盘"
+	}
 	if !force {
-		result, prepErr := skill.PrepareSkillForUpload(entry.SkillDir)
+		tuiSkillMutationMu.Lock()
+		uploadTx, txErr := beginTUIDirectoryTransaction(name, entry.SkillDir, "tui_upload", skill.KindFromEventName("skill:tui_skill_uploaded"))
+		if txErr != nil {
+			if uploadTx != nil {
+				txErr = uploadTx.rollback(txErr)
+			}
+			tuiSkillMutationMu.Unlock()
+			return fmt.Sprintf("上传前 durable 事务准备失败: %s", txErr.Error())
+		}
+		uploadDir = uploadTx.skillDir
+		result, prepErr := skill.PrepareSkillForUpload(uploadDir)
 		if prepErr != nil {
-			return fmt.Sprintf("上传前可移植性检查失败: %s", prepErr.Error())
+			message := prepErr.Error()
+			if rollbackErr := uploadTx.rollback(fmt.Errorf("%s", message)); rollbackErr != nil {
+				message = rollbackErr.Error()
+			}
+			uploadTx = nil
+			tuiSkillMutationMu.Unlock()
+			return fmt.Sprintf("上传前可移植性检查失败: %s", message)
 		}
 		if !result.Portable() {
-			return skill.FormatUploadPreflight(result)
+			message := skill.FormatUploadPreflight(result)
+			if rollbackErr := uploadTx.rollback(fmt.Errorf("%s", message)); rollbackErr != nil {
+				message = rollbackErr.Error()
+			}
+			uploadTx = nil
+			tuiSkillMutationMu.Unlock()
+			return message
 		}
 
 		// Quality gate: consistent with GUI's toolUploadSkill checks.
 		// Require at least 2 uses and at least 1 success before allowing upload.
 		if entry.UsageCount < 2 {
-			return fmt.Sprintf("Skill「%s」尚未经过充分测试（使用 %d 次）。建议先执行几次确认可用后再上传。如需强制上传，请传入 force=true", name, entry.UsageCount)
+			message := fmt.Sprintf("Skill「%s」尚未经过充分测试（使用 %d 次）。建议先执行几次确认可用后再上传。如需强制上传，请传入 force=true", name, entry.UsageCount)
+			if rollbackErr := uploadTx.rollback(fmt.Errorf("%s", message)); rollbackErr != nil {
+				message = rollbackErr.Error()
+			}
+			uploadTx = nil
+			tuiSkillMutationMu.Unlock()
+			return message
 		}
 		if entry.SuccessCount == 0 {
-			return fmt.Sprintf("Skill「%s」从未成功执行过（使用 %d 次，成功 0 次）。建议先修复后再上传。如需强制上传，请传入 force=true", name, entry.UsageCount)
+			message := fmt.Sprintf("Skill「%s」从未成功执行过（使用 %d 次，成功 0 次）。建议先修复后再上传。如需强制上传，请传入 force=true", name, entry.UsageCount)
+			if rollbackErr := uploadTx.rollback(fmt.Errorf("%s", message)); rollbackErr != nil {
+				message = rollbackErr.Error()
+			}
+			uploadTx = nil
+			tuiSkillMutationMu.Unlock()
+			return message
 		}
+		// The local preflight is now a committed, independently recoverable
+		// mutation. Keep its queue row pending while the remote request runs;
+		// other TUI writers will fail closed on this Skill until the request has a
+		// durable remote receipt and final audit.
+		tuiSkillMutationMu.Unlock()
 	}
 
 	// Resolve email.
 	email := strings.TrimSpace(app.appConfig.RemoteEmail)
 	if email == "" {
+		if rollbackPreflight != nil {
+			return rollbackPreflight("未配置 remote_email，无法上传到 SkillMarket。请先在配置中设置邮箱。")
+		}
 		return "未配置 remote_email，无法上传到 SkillMarket。请先在配置中设置邮箱。"
 	}
 
@@ -1760,8 +2167,13 @@ func skillUpload(app *TUIApp, args map[string]interface{}) string {
 	authToken := strings.TrimSpace(app.appConfig.SkillMarketSessionToken)
 
 	// Package skill directory into a zip.
-	zipPath, err := packageSkillDirToZip(entry)
+	entryForPackage := *entry
+	entryForPackage.SkillDir = uploadDir
+	zipPath, err := packageSkillDirToZip(&entryForPackage)
 	if err != nil {
+		if rollbackPreflight != nil {
+			return rollbackPreflight(fmt.Sprintf("打包失败: %s", err.Error()))
+		}
 		return fmt.Sprintf("打包失败: %s", err.Error())
 	}
 	defer os.Remove(zipPath)
@@ -1769,19 +2181,67 @@ func skillUpload(app *TUIApp, args map[string]interface{}) string {
 	// Upload via HTTP multipart POST (same API as smSubmit).
 	hubURL := commands.ResolveHubCenterWithFailover(app.appConfig, app.appConfig.SkillMarketBaseURL(remote.DefaultRemoteHubCenterURL), nil, nil)
 	if strings.TrimSpace(hubURL) == "" {
-		return "上传失败: 未找到可用的公网 HubCenter 地址。请先运行 remote activate 或 remote set-hubcenter 后重试。"
+		message := "上传失败: 未找到可用的公网 HubCenter 地址。请先运行 remote activate 或 remote set-hubcenter 后重试。"
+		if rollbackPreflight != nil {
+			return rollbackPreflight(message)
+		}
+		return message
 	}
 	submissionID, err := submitSkillZip(hubURL, zipPath, email, authToken)
 	if err != nil {
 		// If 401 and no token, provide login guidance
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "401") && authToken == "" {
-			return fmt.Sprintf("上传失败: SkillMarket 要求认证。请先登录:\n"+
+			message := fmt.Sprintf("上传失败: SkillMarket 要求认证。请先登录:\n"+
 				"  maclaw-tui skillmarket login --email %s --password <密码>\n"+
 				"  或使用邮件验证: maclaw-tui skillmarket lookup --email %s\n\n原始错误: %s",
 				email, email, errMsg)
+			if rollbackPreflight != nil {
+				return rollbackPreflight(message)
+			}
+			return message
 		}
-		return fmt.Sprintf("上传失败: %s", errMsg)
+		message := fmt.Sprintf("上传失败: %s", errMsg)
+		if rollbackPreflight != nil {
+			return rollbackPreflight(message)
+		}
+		return message
+	}
+	if uploadTx != nil {
+		// The remote response is an irreversible boundary. Persist its receipt in
+		// the compensation record before touching local receipt/audit files so a
+		// crash cannot make startup recovery roll back a package already accepted
+		// by SkillMarket.
+		remoteAccepted = true
+		tuiSkillMutationMu.Lock()
+		markerErr := uploadTx.markExternalSubmission(submissionID)
+		tuiSkillMutationMu.Unlock()
+		if markerErr != nil {
+			return fmt.Sprintf("Skill「%s」已提交到 SkillMarket（提交 ID: %s），但远端提交标记未持久化，请立即人工复核: %v", name, submissionID, markerErr)
+		}
+	}
+	if err := persistTUIUploadReceipt(&entryForPackage, submissionID); err != nil {
+		return fmt.Sprintf("Skill「%s」已提交到 SkillMarket（提交 ID: %s），但本地上传回执未持久化，请人工复核: %v", name, submissionID, err)
+	}
+	auditData := map[string]string{
+		"skill": name, "action": "upload", "decision": "applied", "via": "tui",
+		"submission_id": strings.TrimSpace(submissionID), "schema_version": "2", "evidence_mode": "none",
+	}
+	if uploadTx != nil {
+		auditData["request_id"] = uploadTx.record.RequestID
+		auditData["attempt"] = "1"
+	}
+	if err := skill.RecordEvolutionEventStrict("skill:tui_skill_uploaded", auditData, "tui"); err != nil {
+		return fmt.Sprintf("Skill「%s」已提交且本地回执已保存（提交 ID: %s），但上传审计不可用，请人工复核: %v", name, submissionID, err)
+	}
+	if uploadTx != nil {
+		tuiSkillMutationMu.Lock()
+		cleanupErr := uploadTx.commit()
+		tuiSkillMutationMu.Unlock()
+		if cleanupErr != nil {
+			return fmt.Sprintf("Skill「%s」已上传且审计完成（提交 ID: %s），但本地事务清理待处理，请人工复核: %v", name, submissionID, cleanupErr)
+		}
+		uploadTx = nil
 	}
 
 	return fmt.Sprintf("Skill「%s」已上传到 SkillMarket，提交 ID: %s\n使用 CLI `maclaw-tui skillmarket status %s` 查看审核状态。",
@@ -1795,7 +2255,10 @@ func packageSkillDirToZip(entry *corelib.NLSkillEntry) (string, error) {
 		return "", err
 	}
 	zipPath := tmpFile.Name()
-	tmpFile.Close()
+	if closeErr := tmpFile.Close(); closeErr != nil {
+		_ = os.Remove(zipPath)
+		return "", closeErr
+	}
 
 	if err := zipDirectoryTUI(entry.SkillDir, zipPath); err != nil {
 		os.Remove(zipPath)
@@ -1806,6 +2269,16 @@ func packageSkillDirToZip(entry *corelib.NLSkillEntry) (string, error) {
 
 // zipDirectoryTUI packages srcDir into a zip file at zipPath.
 func zipDirectoryTUI(srcDir, zipPath string) error {
+	if strings.TrimSpace(srcDir) == "" || strings.TrimSpace(zipPath) == "" {
+		return fmt.Errorf("zip source and destination are required")
+	}
+	rootInfo, rootErr := os.Lstat(srcDir)
+	if rootErr != nil {
+		return rootErr
+	}
+	if rootInfo.Mode()&os.ModeSymlink != 0 || !rootInfo.IsDir() {
+		return fmt.Errorf("refusing to package non-directory Skill root")
+	}
 	outFile, err := os.Create(zipPath)
 	if err != nil {
 		return err
@@ -1832,6 +2305,9 @@ func zipDirectoryTUI(srcDir, zipPath string) error {
 			_, err := w.Create(rel + "/")
 			return err
 		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("拒绝打包符号链接: %s", rel)
+		}
 		fw, err := w.Create(filepath.ToSlash(rel))
 		if err != nil {
 			return err
@@ -1840,19 +2316,25 @@ func zipDirectoryTUI(srcDir, zipPath string) error {
 		if err != nil {
 			return err
 		}
-		defer f.Close()
-		_, err = io.Copy(fw, f)
-		return err
+		_, copyErr := io.Copy(fw, f)
+		closeErr := f.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		return closeErr
 	})
 
 	// Close zip writer first (writes central directory), then the file.
 	closeErr := w.Close()
-	_ = outFile.Close()
+	fileCloseErr := outFile.Close()
 
 	if walkErr != nil {
 		return walkErr
 	}
-	return closeErr
+	if closeErr != nil {
+		return closeErr
+	}
+	return fileCloseErr
 }
 
 // submitSkillZip uploads a zip file to the SkillMarket submit API.
@@ -1945,15 +2427,49 @@ func skillValidate(app *TUIApp, args map[string]interface{}) string {
 		return skill.FormatPortabilityReport(report)
 	}
 
-	// Auto-fix → re-validate.
+	// Auto-fix → re-validate. AutoFixPortability writes in place and can fail
+	// after updating one file; retain an exact pre-image so TUI validation never
+	// leaves a partially repaired Skill behind.
+	if err := ensureTUISkillCompensationAdmission(name); err != nil {
+		return fmt.Sprintf("自动修复被阻止：%v", err)
+	}
+	tuiSkillMutationMu.Lock()
+	defer tuiSkillMutationMu.Unlock()
+	// Move the original directory to a durable sibling backup before copying a
+	// working tree back into place.  Unlike the old process-local temp snapshot,
+	// this survives a TUI crash and is replayed by startup recovery.
+	tx, txErr := beginTUIValidationTransaction(name, skillDir)
+	if txErr != nil {
+		if tx != nil {
+			return fmt.Sprintf("自动修复事务准备失败: %s", tx.rollback(txErr).Error())
+		}
+		return fmt.Sprintf("自动修复前快照失败: %s\n\n%s", txErr.Error(), skill.FormatPortabilityReport(report))
+	}
+	skillDir = tx.skillDir
+	requestID := tx.record.RequestID
+	if err := skill.RecordEvolutionEventStrict("skill:tui_skill_validate_started", map[string]string{
+		"skill": name, "action": "validate_auto_fix", "decision": "pending", "via": "tui",
+		"request_id": requestID, "schema_version": "2", "evidence_mode": "none",
+	}, "tui"); err != nil {
+		return fmt.Sprintf("自动修复审计不可用: %v", tx.rollback(err))
+	}
 	changes, fixErr := skill.AutoFixPortability(skillDir)
 	if fixErr != nil {
-		return fmt.Sprintf("自动修复失败: %s\n\n%s", fixErr.Error(), skill.FormatPortabilityReport(report))
+		return fmt.Sprintf("自动修复失败: %s\n\n%s", tx.rollback(fixErr), skill.FormatPortabilityReport(report))
 	}
 
 	finalReport, revalidateErr := skill.ValidateSkillPortability(skillDir)
 	if revalidateErr != nil {
-		return fmt.Sprintf("修复后重新验证失败: %s\n\n%s", revalidateErr.Error(), skill.FormatPortabilityChanges(changes))
+		return fmt.Sprintf("修复后重新验证失败: %s\n\n%s", tx.rollback(revalidateErr), skill.FormatPortabilityChanges(changes))
+	}
+	if err := skill.RecordEvolutionEventStrict("skill:tui_skill_validated", map[string]string{
+		"skill": name, "action": "validate_auto_fix", "decision": "applied", "via": "tui",
+		"request_id": requestID, "schema_version": "2", "evidence_mode": "none",
+	}, "tui"); err != nil {
+		return fmt.Sprintf("自动修复审计失败: %s", tx.rollback(err))
+	}
+	if err := tx.commit(); err != nil {
+		return fmt.Sprintf("自动修复已审计但清理待处理: %s", err)
 	}
 
 	var b strings.Builder
@@ -1977,6 +2493,9 @@ func skillPatch(app *TUIApp, args map[string]interface{}) string {
 	skillName := sval(args, "skill_name")
 	if skillName == "" {
 		return "缺少 skill_name 参数"
+	}
+	if err := ensureTUISkillCompensationAdmission(skillName); err != nil {
+		return fmt.Sprintf("patch 被阻止：%v", err)
 	}
 
 	// Dispatch by mode: "text" (default) or "step" (structured).
@@ -2078,20 +2597,16 @@ func skillPatchStructured(app *TUIApp, skillName string, args map[string]interfa
 		return fmt.Sprintf("patch 后的 skill 定义无效，已拒绝保存: %s", validationErr)
 	}
 
-	if err := fileutil.AtomicWriteFile(defPath, modified, 0644); err != nil {
-		return fmt.Sprintf("保存 Skill 定义文件失败: %s", err.Error())
-	}
-
-	log.Printf("[skill-patch-step] patched %s step %d field %s in %s", skillName, stepIdx, field, defPath)
-
-	if auditErr := appendTUIPatchRecord(entry.SkillDir, tuiPatchRecord{
+	if err := commitTUIPatch(defPath, entry.SkillDir, entry.Name, content, modified, tuiPatchRecord{
 		Timestamp: time.Now().Format(time.RFC3339),
 		Find:      fmt.Sprintf("step[%d].%s", stepIdx, field),
 		Replace:   value,
 		Reason:    reason,
-	}); auditErr != nil {
-		log.Printf("[skill-patch-step] warning: failed to write audit trail: %v", auditErr)
+	}); err != nil {
+		return fmt.Sprintf("保存 Skill 定义或 patch 审计失败: %s", err.Error())
 	}
+
+	log.Printf("[skill-patch-step] patched %s step %d field %s in %s", skillName, stepIdx, field, defPath)
 
 	return fmt.Sprintf("Skill「%s」步骤 %d 的 %s 已修改为 %q", skillName, stepIdx, field, value)
 }
@@ -2141,20 +2656,16 @@ func skillPatchText(app *TUIApp, skillName string, args map[string]interface{}) 
 		return fmt.Sprintf("patch 后的文件格式无效，已拒绝保存: %s", validationErr)
 	}
 
-	if err := fileutil.AtomicWriteFile(defPath, []byte(modified), 0644); err != nil {
-		return fmt.Sprintf("保存 Skill 定义文件失败: %s", err.Error())
-	}
-
-	log.Printf("[skill-patch] patched %s in %s", skillName, defPath)
-
-	if auditErr := appendTUIPatchRecord(entry.SkillDir, tuiPatchRecord{
+	if err := commitTUIPatch(defPath, entry.SkillDir, entry.Name, content, []byte(modified), tuiPatchRecord{
 		Timestamp: time.Now().Format(time.RFC3339),
 		Find:      find,
 		Replace:   replaceStr,
 		Reason:    reason,
-	}); auditErr != nil {
-		log.Printf("[skill-patch] warning: failed to write audit trail: %v", auditErr)
+	}); err != nil {
+		return fmt.Sprintf("保存 Skill 定义或 patch 审计失败: %s", err.Error())
 	}
+
+	log.Printf("[skill-patch] patched %s in %s", skillName, defPath)
 
 	return fmt.Sprintf("Skill「%s」已成功 patch（替换了 1 处匹配）", skillName)
 }
@@ -2248,16 +2759,110 @@ func validateSkillContent(data []byte, format string) string {
 	return ""
 }
 
+// commitTUIPatch publishes the definition and its patch history as one
+// compare-and-swap boundary.  If history persistence fails, the definition is
+// restored before returning an error; callers therefore never report a patch
+// as successful when its audit trail is missing or corrupt.
+func commitTUIPatch(defPath, skillDir, expectedName string, original, modified []byte, record tuiPatchRecord) error {
+	if strings.TrimSpace(defPath) == "" || !filepath.IsAbs(defPath) {
+		return fmt.Errorf("skill definition path must be absolute")
+	}
+	if strings.TrimSpace(skillDir) == "" || !filepath.IsAbs(skillDir) {
+		return fmt.Errorf("skill directory path must be absolute")
+	}
+	if info, err := os.Lstat(skillDir); err != nil {
+		return fmt.Errorf("inspect skill directory: %w", err)
+	} else if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("refusing to patch non-directory Skill root")
+	}
+	if info, err := os.Lstat(defPath); err != nil {
+		return fmt.Errorf("inspect skill definition: %w", err)
+	} else if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return fmt.Errorf("refusing to patch symlink or non-regular definition")
+	}
+	parsed, err := skill.ParseSkillDefinitionFile(modified, "yaml")
+	if err != nil {
+		return fmt.Errorf("patch definition is invalid: %w", err)
+	}
+	if strings.TrimSpace(parsed.Name) == "" || !strings.EqualFold(strings.TrimSpace(parsed.Name), strings.TrimSpace(expectedName)) {
+		return fmt.Errorf("patch changes skill identity from %q to %q", expectedName, parsed.Name)
+	}
+	tuiSkillMutationMu.Lock()
+	defer tuiSkillMutationMu.Unlock()
+	current, err := os.ReadFile(defPath)
+	if err != nil {
+		return fmt.Errorf("read current definition: %w", err)
+	}
+	if !bytes.Equal(current, original) {
+		return fmt.Errorf("skill definition changed concurrently; patch was not applied")
+	}
+	patchesPath := filepath.Join(skillDir, ".patches.json")
+	patchBefore, patchExists, err := readTUIPatchHistory(patchesPath)
+	if err != nil {
+		return err
+	}
+	if err := fileutil.AtomicWriteFile(defPath, modified, 0644); err != nil {
+		return fmt.Errorf("保存 Skill 定义文件失败: %w", err)
+	}
+	if err := appendTUIPatchRecord(skillDir, record); err != nil {
+		// Best effort restoration keeps the operation fail-closed.  Include both
+		// errors so an operator can see when manual recovery is required.
+		restoreErr := fileutil.AtomicWriteFile(defPath, original, 0644)
+		if patchExists {
+			if err2 := fileutil.AtomicWriteFile(patchesPath, patchBefore, 0644); restoreErr == nil {
+				restoreErr = err2
+			}
+		} else if err2 := os.Remove(patchesPath); err2 != nil && !os.IsNotExist(err2) && restoreErr == nil {
+			restoreErr = err2
+		}
+		if restoreErr != nil {
+			return fmt.Errorf("patch audit failed: %w; rollback failed: %v", err, restoreErr)
+		}
+		return fmt.Errorf("patch audit failed; definition rolled back: %w", err)
+	}
+	return nil
+}
+
+func readTUIPatchHistory(path string) ([]byte, bool, error) {
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return nil, false, fmt.Errorf("拒绝读取 symlink 或非普通 patch history")
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, false, fmt.Errorf("读取 patch 历史失败: %w", err)
+	}
+	data, err := os.ReadFile(path)
+	if err == nil {
+		var records []tuiPatchRecord
+		if jsonErr := json.Unmarshal(data, &records); jsonErr != nil {
+			return nil, false, fmt.Errorf("解析 patch 历史失败: %w", jsonErr)
+		}
+		return data, true, nil
+	}
+	if os.IsNotExist(err) {
+		return nil, false, nil
+	}
+	return nil, false, fmt.Errorf("读取 patch 历史失败: %w", err)
+}
+
 // appendTUIPatchRecord appends a patch record to .patches.json audit trail.
 func appendTUIPatchRecord(skillDir string, record tuiPatchRecord) error {
 	patchesPath := filepath.Join(skillDir, ".patches.json")
+	if info, err := os.Lstat(patchesPath); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return fmt.Errorf("拒绝写入 symlink 或非普通 patch history")
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("读取 patch 历史失败: %w", err)
+	}
 
 	var records []tuiPatchRecord
 	if data, err := os.ReadFile(patchesPath); err == nil {
 		if jsonErr := json.Unmarshal(data, &records); jsonErr != nil {
-			log.Printf("[skill-patch] warning: corrupted .patches.json, starting fresh: %v", jsonErr)
-			records = nil
+			return fmt.Errorf("解析 patch 历史失败: %w", jsonErr)
 		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("读取 patch 历史失败: %w", err)
 	}
 
 	records = append(records, record)

@@ -227,7 +227,6 @@ func (m *Manager) formatRemoteConfig(cfg corelib.AppConfig, raw bool) string {
 	}
 	b.WriteString(fmt.Sprintf("remote_machine_token: %s\n", token))
 	b.WriteString(fmt.Sprintf("remote_heartbeat_sec: %d\n", cfg.RemoteHeartbeatSec))
-	b.WriteString(fmt.Sprintf("default_launch_mode: %s\n", cfg.DefaultLaunchMode))
 	return b.String()
 }
 
@@ -299,7 +298,6 @@ func (m *Manager) formatProxyConfig(cfg corelib.AppConfig, raw bool) string {
 	b.WriteString(fmt.Sprintf("default_proxy_password: %s\n", pwd))
 	b.WriteString(fmt.Sprintf("default_proxy_bypass: %s\n", cfg.DefaultProxyBypass))
 	b.WriteString(fmt.Sprintf("default_proxy_scope_maclaw: %v\n", cfg.DefaultProxyScopeMaclaw))
-	b.WriteString(fmt.Sprintf("default_proxy_scope_coding_tools: %v\n", cfg.DefaultProxyScopeCodingTools))
 	b.WriteString(fmt.Sprintf("default_proxy_scope_agent: %v\n", cfg.DefaultProxyScopeAgent))
 	return b.String()
 }
@@ -307,7 +305,6 @@ func (m *Manager) formatProxyConfig(cfg corelib.AppConfig, raw bool) string {
 func (m *Manager) formatGeneralConfig(cfg corelib.AppConfig) string {
 	var b strings.Builder
 	b.WriteString("=== 通用设置 ===\n")
-	b.WriteString(fmt.Sprintf("active_tool: %s\n", cfg.ActiveTool))
 	b.WriteString(fmt.Sprintf("language: %s\n", cfg.Language))
 	b.WriteString(fmt.Sprintf("power_optimization: %v\n", cfg.PowerOptimization))
 	b.WriteString(fmt.Sprintf("screen_dim_timeout_min: %d\n", cfg.ScreenDimTimeoutMin))
@@ -795,10 +792,6 @@ func (m *Manager) applyProxyChange(cfg *corelib.AppConfig, key, value string) (s
 		old := fmt.Sprintf("%v", cfg.DefaultProxyScopeMaclaw)
 		cfg.DefaultProxyScopeMaclaw = value == "true"
 		return old, nil
-	case "default_proxy_scope_coding_tools":
-		old := fmt.Sprintf("%v", cfg.DefaultProxyScopeCodingTools)
-		cfg.DefaultProxyScopeCodingTools = value == "true"
-		return old, nil
 	case "default_proxy_scope_agent":
 		old := fmt.Sprintf("%v", cfg.DefaultProxyScopeAgent)
 		cfg.DefaultProxyScopeAgent = value == "true"
@@ -969,23 +962,7 @@ func (m *Manager) applySkillMarketChange(cfg *corelib.AppConfig, key, value stri
 // ---------------------------------------------------------------------------
 
 func (m *Manager) initSchema() {
-	toolModelSection := func(name, desc string) ConfigSection {
-		return ConfigSection{
-			Name:        name,
-			Description: desc,
-			Keys: []ConfigKeySchema{
-				{Key: "current_model", Description: "当前使用的模型名称", Type: "string"},
-			},
-		}
-	}
-
 	m.schema = []ConfigSection{
-		toolModelSection("claude", "Claude 工具模型配置"),
-		toolModelSection("codex", "Codex 工具模型配置"),
-		toolModelSection("opencode", "OpenCode 工具模型配置"),
-		toolModelSection("iflow", "iFlow 工具模型配置"),
-		toolModelSection("kilo", "Kilo 工具模型配置"),
-		toolModelSection("codebuddy", "CodeBuddy 工具模型配置"),
 		{
 			Name:        "projects",
 			Description: "项目管理",
@@ -1001,7 +978,6 @@ func (m *Manager) initSchema() {
 				{Key: "remote_hub_url", Description: "Hub 服务器地址", Type: "string"},
 				{Key: "remote_email", Description: "远程账户邮箱", Type: "string"},
 				{Key: "remote_heartbeat_sec", Description: "心跳间隔（秒）", Type: "int", Default: "30"},
-				{Key: "default_launch_mode", Description: "编程工具默认工作模式", Type: "enum", Default: "local", ValidValues: []string{"local", "remote"}},
 			},
 		},
 		{
@@ -1016,7 +992,6 @@ func (m *Manager) initSchema() {
 				{Key: "default_proxy_password", Description: "默认代理密码", Type: "string"},
 				{Key: "default_proxy_bypass", Description: "绕过地址列表 (分号分隔)", Type: "string"},
 				{Key: "default_proxy_scope_maclaw", Description: "代理范围: MacClaw", Type: "bool"},
-				{Key: "default_proxy_scope_coding_tools", Description: "代理范围: 编程工具", Type: "bool"},
 				{Key: "default_proxy_scope_agent", Description: "代理范围: 智能体", Type: "bool"},
 			},
 		},
@@ -1045,7 +1020,6 @@ func (m *Manager) initSchema() {
 			Name:        "general",
 			Description: "通用设置",
 			Keys: []ConfigKeySchema{
-				{Key: "active_tool", Description: "当前激活的编程工具", Type: "enum", ValidValues: []string{"claude", "codex", "opencode", "iflow", "kilo", "codebuddy"}},
 				{Key: "language", Description: "界面语言", Type: "enum", Default: "zh", ValidValues: []string{"zh", "en"}},
 				{Key: "power_optimization", Description: "是否启用省电优化", Type: "bool", Default: "false"},
 				{Key: "screen_dim_timeout_min", Description: "无操作多少分钟后熄屏（0=禁用）", Type: "int", Default: "3"},

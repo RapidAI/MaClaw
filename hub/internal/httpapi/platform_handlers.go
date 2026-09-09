@@ -2746,8 +2746,8 @@ func (s platformAwareMachineSender) SendDiscussionMessageAsync(session *corea2a.
 			// Single retry on transport failure (connection refused, timeout)
 			// when no stream chunks have been sent yet. Covers MaClawSrv
 			// redeploy scenario where the service is back within 3-5 seconds.
-			if err != nil && !streamedChunks && isTransientDeliveryError(err) {
-				log.Printf("[ve-platform-delivery] async runtime delivery transient failure, retrying in %s session=%s target=%s: %v", veRuntimeDeliveryRetryDelay, groupDiscussionSessionID(sessionCopy), targetID, err)
+			if deliveryErr != nil && !streamedChunks && isTransientDeliveryError(deliveryErr) {
+				log.Printf("[ve-platform-delivery] async runtime delivery transient failure, retrying in %s session=%s target=%s: %v", veRuntimeDeliveryRetryDelay, groupDiscussionSessionID(sessionCopy), targetID, deliveryErr)
 				time.Sleep(veRuntimeDeliveryRetryDelay)
 				reply, err = s.postMacLawSrvDiscussionMessage(context.Background(), deliveryTarget.entry, deliveryTarget.runtime, deliveryTarget.tenantID, macLawSrvDiscussionPayload(sessionCopy, msgCopy, targetID, targetCopy.RoleCode), chunkCb)
 				deliveryErr = err
@@ -2757,8 +2757,8 @@ func (s platformAwareMachineSender) SendDiscussionMessageAsync(session *corea2a.
 			}
 			release(deliveryErr)
 			recordVERuntimeDeliveryResult(circuitKey, deliveryErr, time.Now())
-			if err != nil {
-				log.Printf("[ve-platform-delivery] async runtime delivery failed session=%s target=%s tenant=%s employee=%s platform_employee=%s duration=%s: %v", groupDiscussionSessionID(sessionCopy), targetID, deliveryTarget.tenantID, deliveryTarget.entry.ID, platformLogID(deliveryTarget.entry.PlatformEmployeeID), time.Since(started), err)
+			if deliveryErr != nil {
+				log.Printf("[ve-platform-delivery] async runtime delivery failed session=%s target=%s tenant=%s employee=%s platform_employee=%s duration=%s: %v", groupDiscussionSessionID(sessionCopy), targetID, deliveryTarget.tenantID, deliveryTarget.entry.ID, platformLogID(deliveryTarget.entry.PlatformEmployeeID), time.Since(started), deliveryErr)
 				// Send stream_end with error so the frontend closes the
 				// "thinking..." spinner. Without this, the UI hangs forever
 				// when MaClawSrv is temporarily unavailable (e.g., redeploy).
@@ -2766,17 +2766,22 @@ func (s platformAwareMachineSender) SendDiscussionMessageAsync(session *corea2a.
 					errEnvelope := corea2a.NewGroupEnvelope(newGroupDiscussionID("a2aenv"), corea2a.GroupMessageDiscussionMessage, targetID, time.Now().UTC())
 					errEnvelope.SessionID = groupDiscussionSessionID(sessionCopy)
 					errEnvelope.ToIDs = []string{initiatorID}
-					errContent := "[系统提示] 服务暂时不可用，请稍后重试"
+					// Preserve the actionable MaClawSrv failure reason for the
+					// requesting UI.  The detail is sanitized to avoid leaking the
+					// platform employee identifier or unbounded response bodies.
+					errContent := macLawSrvRuntimeFailureContent(deliveryErr, deliveryTarget.entry.PlatformEmployeeID)
 					errMsg := corea2a.GroupDiscussionMessage{ID: newGroupDiscussionID("hub-msg"), SessionID: groupDiscussionSessionID(sessionCopy), FromID: targetID, Kind: corea2a.MessageStreamEnd, Content: errContent}
 					errEnvelope.Message = &errMsg
-					_ = s.fallback.SendToMachine(initiatorID, map[string]any{
+					if notifyErr := s.SendToMachine(initiatorID, map[string]any{
 						"type": "ve:discussion_message",
 						"ts":   time.Now().Unix(),
 						"payload": map[string]any{
 							"envelope":    errEnvelope,
 							"target_role": strings.TrimSpace(targetCopy.RoleCode),
 						},
-					})
+					}); notifyErr != nil {
+						log.Printf("[ve-platform-delivery] failed to notify initiator of runtime error session=%s target=%s initiator=%s: %v", groupDiscussionSessionID(sessionCopy), targetID, initiatorID, notifyErr)
+					}
 				}
 				return
 			}
@@ -3252,7 +3257,7 @@ func (s platformAwareMachineSender) postMacLawSrvDiscussionMessage(ctx context.C
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		log.Printf("[ve-platform-delivery] post runtime failed tenant=%s employee=%s platform_employee=%s status=%d duration=%s bytes=%d", tenantID, entry.ID, platformLogID(entry.PlatformEmployeeID), resp.StatusCode, time.Since(started), len(respBody))
-		detail := strings.TrimSpace(string(respBody))
+		detail := runtimeErrorResponseDetail(respBody)
 		if detail != "" {
 			return "", fmt.Errorf("MaClawSrv runtime returned status %d: %s", resp.StatusCode, sanitizeRuntimeDeliveryErrorText(detail, entry.PlatformEmployeeID))
 		}
@@ -3306,6 +3311,59 @@ func sanitizeRuntimeDeliveryErrorText(text, platformEmployeeID string) string {
 		text = strings.ReplaceAll(text, platformEmployeeID, "*")
 	}
 	return truncateRemoteResponseDetail(text)
+}
+
+func runtimeErrorResponseDetail(body []byte) string {
+	var payload struct {
+		Message string          `json:"message"`
+		Error   json.RawMessage `json:"error"`
+		Detail  string          `json:"detail"`
+	}
+	if err := json.Unmarshal(body, &payload); err == nil {
+		for _, value := range []string{payload.Message, payload.Detail} {
+			if value = strings.TrimSpace(value); value != "" {
+				return value
+			}
+		}
+		if len(payload.Error) > 0 {
+			var text string
+			if json.Unmarshal(payload.Error, &text) == nil && strings.TrimSpace(text) != "" {
+				return strings.TrimSpace(text)
+			}
+			var nested struct {
+				Message string `json:"message"`
+			}
+			if json.Unmarshal(payload.Error, &nested) == nil && strings.TrimSpace(nested.Message) != "" {
+				return strings.TrimSpace(nested.Message)
+			}
+		}
+	}
+	// Some runtimes keep the SSE content type even for an error status.  Pull
+	// the structured error out of its data frame instead of exposing the raw
+	// `data:` wire syntax to the user.
+	for _, line := range strings.Split(string(body), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		var event struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &event) == nil && strings.TrimSpace(event.Error) != "" {
+			return strings.TrimSpace(event.Error)
+		}
+	}
+	return strings.TrimSpace(string(body))
+}
+
+func macLawSrvRuntimeFailureContent(err error, platformEmployeeID string) string {
+	detail := "runtime delivery failed"
+	if err != nil {
+		if sanitized := sanitizeRuntimeDeliveryErrorText(err.Error(), platformEmployeeID); strings.TrimSpace(sanitized) != "" {
+			detail = sanitized
+		}
+	}
+	return "[系统提示] MaClawSrv 执行失败：" + detail
 }
 
 // consumeRuntimeSSEResponse reads an SSE stream from a maclawsrv runtime,
@@ -3366,7 +3424,7 @@ func (s platformAwareMachineSender) consumeRuntimeSSEResponse(body io.Reader, te
 		log.Printf("[ve-platform-delivery] SSE aggregated tenant=%s employee=%s platform_employee=%s duration=%s content_chars=%d", tenantID, entry.ID, platformLogID(entry.PlatformEmployeeID), time.Since(started), len([]rune(reply)))
 		return reply, nil
 	}
-	return "", errors.New("MaClawSrv runtime SSE response did not include content")
+	return "", errors.New("MaClawSrv runtime SSE response did not include assistant content")
 }
 
 func setPlatformEmployeeHubHeaders(req *http.Request, entry digitalEmployeeEntry, tenantID string) {
@@ -3420,8 +3478,9 @@ func macLawSrvReplyMessageID(msg corea2a.GroupDiscussionMessage, targetID string
 
 func truncateRemoteResponseDetail(detail string) string {
 	detail = strings.TrimSpace(detail)
-	if len(detail) > 500 {
-		return detail[:500] + "..."
+	runes := []rune(detail)
+	if len(runes) > 500 {
+		return string(runes[:500]) + "..."
 	}
 	return detail
 }

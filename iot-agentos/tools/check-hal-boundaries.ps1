@@ -3676,6 +3676,19 @@ if (-not (Test-Path -LiteralPath $connectivityServiceHeader) -or
         $connectivitySourceText -notmatch 'connectivity_service_observe_wifi_disconnected[\s\S]*?!s_system_sleep_preparing') {
         $violations += 'main/connectivity_service.c: System Sleep fence must close Wi-Fi attempt admission and reject late IP/disconnect callbacks before they publish readiness'
     }
+    $connectivityDeinitStart = $connectivitySourceText.IndexOf('static esp_err_t connectivity_service_deinit_legacy(')
+    $connectivityDeinitEnd = $connectivitySourceText.IndexOf('/* The selected-uplink state is common service policy.', $connectivityDeinitStart)
+    if ($connectivityDeinitStart -lt 0 -or $connectivityDeinitEnd -le $connectivityDeinitStart) {
+        $violations += 'main/connectivity_service.c: cannot locate deinit transaction for stopping/domain ordering audit'
+    } else {
+        $connectivityDeinitText = $connectivitySourceText.Substring(
+            $connectivityDeinitStart, $connectivityDeinitEnd - $connectivityDeinitStart)
+        $domainStopped = $connectivityDeinitText.IndexOf('fault_domain_mark_stopped(&s_fault_domain)')
+        $stoppingReopen = $connectivityDeinitText.IndexOf('s_connectivity_stopping = false')
+        if ($domainStopped -lt 0 -or $stoppingReopen -lt 0 -or $stoppingReopen -lt $domainStopped) {
+            $violations += 'main/connectivity_service.c: deinit must keep stopping asserted until fault-domain STOPPED is proven'
+        }
+    }
     if ($connectivitySourceText -notmatch 'acquire_transport_selection_admission[\s\S]*?!s_system_sleep_preparing' -or
         $connectivitySourceText -notmatch 'acquire_transport_selection_admission[\s\S]*?s_network_request_users\s*==\s*0' -or
         $connectivitySourceText -notmatch 'acquire_transport_selection_admission[\s\S]*?s_cellular_network_request_users\s*==\s*0' -or
@@ -3685,6 +3698,12 @@ if (-not (Test-Path -LiteralPath $connectivityServiceHeader) -or
         $connectivitySourceText -notmatch 'connectivity_service_deinit_legacy[\s\S]*?s_cellular_transport_operation_users\s*==\s*0' -or
         $connectivitySourceText -notmatch 'connectivity_service_set_active_uplink[\s\S]*?acquire_transport_selection_admission') {
         $violations += 'main/connectivity_service.c: uplink selection must wait for network borrowers/physical cellular operations and System Sleep/deinit must drain them before transport park or release'
+    }
+    if ($connectivitySourceText -notmatch 'connectivity_ticks_to_timeout_ms\s*\(' -or
+        $connectivitySourceText -notmatch 'connectivity_ticks_to_timeout_ms\(cancel_remaining\)' -or
+        $connectivitySourceText -notmatch 'connectivity_ticks_to_timeout_ms\(remaining\)' -or
+        $connectivitySourceText -notmatch 'UINT32_MAX\s*/\s*period_ms') {
+        $violations += 'main/connectivity_service.c: parent tick budgets must convert to callback milliseconds with saturating arithmetic'
     }
     if ($connectivitySourceText -notmatch 'wake_wifi_attempt_waiters_for_system_sleep' -or
         $connectivitySourceText -notmatch 'connectivity_service_prepare_system_sleep[\s\S]*?wake_wifi_attempt_waiters_for_system_sleep' -or
@@ -3995,7 +4014,10 @@ if (-not (Test-Path -LiteralPath $connectivityServiceHeader) -or
                 's_system_sleep_preparing',
                 's_callbacks_inflight',
                 'esp_timer_start_once',
-                'retry_timer_cb')) {
+                'retry_timer_cb',
+                'const\s+bool\s+still_admitted\s*=\s*s_initialized',
+                's_timer\s*==\s*timer',
+                'esp_timer_stop\(timer\)')) {
             if ($startupPetRetryText -notmatch $startupPetRetryRequirement) {
                 $violations += "main/services/startup_pet_retry_service.c: retry coordinator is incomplete (${startupPetRetryRequirement})"
             }
@@ -4194,7 +4216,7 @@ if (-not (Test-Path -LiteralPath $connectivityServiceHeader) -or
     # frame bridge to serialize registration and to preserve the epoch decision
     # across both Wi-Fi and cellular completion races.
     foreach ($assetCancellationRequirement in @(
-            's_asset_download_guard\s*=\s*xSemaphoreCreateMutex',
+            '(?:s_asset_download_guard\s*=\s*xSemaphoreCreateMutex|s_asset_download_guard\s*=\s*asset_download_guard)',
             'xSemaphoreTake\(s_asset_download_guard,\s*pdMS_TO_TICKS\(100\)\)',
             'const\s+uint32_t\s+requested_epoch\s*=\s*asset_cancel_epoch_snapshot',
             'asset_cancel_epoch_current\(asset_epoch\)',
@@ -4956,7 +4978,7 @@ if (-not (Test-Path -LiteralPath $networkLifecycleHeader) -or
         $networkLifecycleSourceText -notmatch 'physical_has_resources[\s\S]*?DEVICE_STATUS_BUSY') {
         $violations += 'main/services/connectivity_network_lifecycle_service.c: physical-before-logical stop and partial-root closure are incomplete'
     }
-    if ($mainNetworkRootText -notmatch 'connectivity_network_lifecycle_service_ensure_core\s*\(' -or
+    if ($mainNetworkRootText -notmatch 'connectivity_network_lifecycle_service_ensure_(core|wifi)\s*\(' -or
         $mainNetworkRootText -notmatch 'connectivity_network_lifecycle_service_ensure_wifi\s*\(' -or
         $mainNetworkRootText -notmatch 'connectivity_network_lifecycle_service_stop\s*\(' -or
         $mainNetworkRootText -notmatch 'connectivity_network_lifecycle_service_init\s*\(') {

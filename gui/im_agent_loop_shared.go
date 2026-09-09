@@ -2609,7 +2609,8 @@ func (c *sharedAgentLoopCallbacks) executeSemanticToolCallWithEpoch(functionName
 		requestDigest = canonicalArgs.Digest
 	}
 	identity := tool.HostCallIdentity{Protocol: "agent-loop/v1", ConnectionID: c.semanticHostConnectionID(), CallID: strings.TrimSpace(callID), SurfaceEpoch: strings.TrimSpace(surfaceEpoch)}
-	record, action, journalErr := c.semanticSurface.hostCalls.Acquire(identity, tool.InvocationGrantFingerprint(grant), requestDigest, time.Now().UTC())
+	fingerprint := c.semanticSurface.issuer.Fingerprint(grant)
+	record, action, journalErr := c.semanticSurface.hostCalls.Acquire(identity, fingerprint, requestDigest, time.Now().UTC())
 	if journalErr != nil {
 		return semanticGrantRejectMessage(journalErr.Error())
 	}
@@ -2631,7 +2632,7 @@ func (c *sharedAgentLoopCallbacks) executeSemanticToolCallWithEpoch(functionName
 	default:
 		return "[system rejected] host_call_unavailable"
 	}
-	if _, journalErr := c.semanticSurface.hostCalls.MarkAdmitted(identity, tool.InvocationGrantFingerprint(grant), requestDigest, time.Now().UTC()); journalErr != nil {
+	if _, journalErr := c.semanticSurface.hostCalls.MarkAdmitted(identity, fingerprint, requestDigest, time.Now().UTC()); journalErr != nil {
 		return "[system rejected] " + journalErr.Error()
 	}
 	// Parameter refusal happens BEFORE the adapter runs, so it consumes no
@@ -2647,7 +2648,7 @@ func (c *sharedAgentLoopCallbacks) executeSemanticToolCallWithEpoch(functionName
 	} else {
 		result = c.executeSemanticToolWithCanonical(functionName, grant, canonicalArgs)
 	}
-	if _, journalErr := c.semanticSurface.hostCalls.Complete(identity, tool.InvocationGrantFingerprint(grant), requestDigest, result, time.Now().UTC()); journalErr != nil {
+	if _, journalErr := c.semanticSurface.hostCalls.Complete(identity, fingerprint, requestDigest, result, time.Now().UTC()); journalErr != nil {
 		// The adapter may have run, but a host cannot safely report a result that
 		// it failed to durably correlate with the original model call.
 		return "[system rejected] " + journalErr.Error()
@@ -2685,7 +2686,7 @@ func (c *sharedAgentLoopCallbacks) executeCoordinatedSemanticToolCall(functionNa
 		// same-tool failure counter and the no-progress breaker.
 		return semanticModelParameterRejection(semanticCanonicalRejectionText(err))
 	}
-	if _, err := c.semanticSurface.issuer.Validate(grant, c.semanticSurface.scope, c.semanticSurface.plan, c.semanticSurface.completed); err != nil {
+	if _, err := c.semanticSurface.issuer.ValidateWithCanonicalScope(grant, c.semanticSurface.scope, c.semanticSurface.plan, c.semanticSurface.completed); err != nil {
 		return semanticGrantRejectMessage(err.Error())
 	}
 	// A prepared delivery intent is scoped to exactly one adapter invocation.

@@ -153,13 +153,13 @@ function ModalOverlay({ onClose, children }: { onClose: () => void; children: Re
 }
 
 const overlayStyle: WailsNoDragStyle = {
-    position: "fixed", inset: 0, background: "rgba(0,0,0,0.3)",
+    position: "fixed", inset: 0, background: colors.overlay,
     display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999,
     WebkitAppRegion: "no-drag", "--wails-draggable": "no-drag",
 };
 const dialogBaseStyle: WailsNoDragStyle = {
     background: colors.surface, borderRadius: radius.lg,
-    padding: "20px 24px", minWidth: 280, boxShadow: "0 8px 30px rgba(0,0,0,0.12)",
+    padding: "20px 24px", minWidth: 280, boxShadow: "var(--shadow-lg, 0 8px 28px -6px rgba(30,58,95,0.18))",
     WebkitAppRegion: "no-drag", "--wails-draggable": "no-drag",
 };
 const cancelBtnStyle: React.CSSProperties = {

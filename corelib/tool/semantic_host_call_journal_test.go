@@ -91,6 +91,25 @@ func TestResolveHostCallAcquireActionReplaysMatchingDigestAfterGrantMismatch(t *
 	}
 }
 
+func TestHostCallAcquireTerminalReplayAndRejects(t *testing.T) {
+	record := HostCallRecord{Result: "lookup result"}
+	if _, done := HostCallAcquireTerminal(HostCallAcquireAdmit, HostCallAcquireAdmit, record, nil, InvocationScope{}, "sel"); done {
+		t.Fatal("admit must not be terminal")
+	}
+	got, done := HostCallAcquireTerminal(HostCallAcquireConflict, HostCallAcquireConflict, record, nil, InvocationScope{}, "sel")
+	if !done || got.ReasonCode != "host_call_conflict" || got.Succeeded {
+		t.Fatalf("conflict=%#v done=%t", got, done)
+	}
+	unknown, done := HostCallAcquireTerminal(HostCallAcquireUnknown, HostCallAcquireUnknown, record, nil, InvocationScope{}, "sel")
+	if !done || !unknown.Unknown || unknown.ReasonCode != "host_call_unknown" {
+		t.Fatalf("unknown=%#v done=%t", unknown, done)
+	}
+	replay, done := HostCallAcquireTerminal(HostCallAcquireConflict, HostCallAcquireReplay, HostCallRecord{Result: "error: provider refused"}, nil, InvocationScope{}, "sel")
+	if !done || replay.Succeeded {
+		t.Fatalf("conflict-rewritten replay must use recorded text fallback, got %#v", replay)
+	}
+}
+
 func TestHostCallJournalConcurrentAcquireHasOneAdmitter(t *testing.T) {
 	journal := NewMemoryHostCallJournal()
 	identity := hostCallTestIdentity()

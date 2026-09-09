@@ -16,6 +16,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -120,6 +121,24 @@ func (r *CoreToolRegistry) Has(name string) bool {
 	defer r.mu.RUnlock()
 	_, ok := r.tools[name]
 	return ok
+}
+
+// Lookup returns a snapshot of a registered tool's LLM-facing schema.
+// Properties and Required are cloned so a host overlay cannot mutate the
+// registry inventory used by later requests.
+func (r *CoreToolRegistry) Lookup(name string) (ToolEntry, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	entry, ok := r.tools[strings.TrimSpace(name)]
+	if !ok || entry == nil {
+		return ToolEntry{}, false
+	}
+	out := *entry
+	out.Properties = cloneToolDefinitionProperties(entry.Properties)
+	if len(entry.Required) > 0 {
+		out.Required = append([]string(nil), entry.Required...)
+	}
+	return out, true
 }
 
 // MissingTools returns tool names that are in the required set but not

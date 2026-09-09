@@ -2203,6 +2203,13 @@ export namespace corelib {
 		    return a;
 		}
 	}
+	export class SemanticToolScopeRoutingConfig {
+	    enabled: boolean; mode: string; legacy_text_route: string;
+	    require_catalog_coverage: boolean; allow_degraded_read_only: boolean;
+	    max_selections: number; max_schema_tokens: number; max_iterations: number;
+	    constructor(source: any = {}) { if (typeof source === "string") source = JSON.parse(source); this.enabled=source["enabled"]; this.mode=source["mode"]; this.legacy_text_route=source["legacy_text_route"]; this.require_catalog_coverage=source["require_catalog_coverage"]; this.allow_degraded_read_only=source["allow_degraded_read_only"]; this.max_selections=source["max_selections"]; this.max_schema_tokens=source["max_schema_tokens"]; this.max_iterations=source["max_iterations"]; }
+	    static createFrom(source: any = {}) { return new SemanticToolScopeRoutingConfig(source); }
+	}
 	export class AppConfig {
 	    claude: ToolConfig;
 	    codex: ToolConfig;
@@ -2316,6 +2323,7 @@ export namespace corelib {
 	    computer_use_log_max_age_days?: number;
 	    computer_use_log_auto_prune?: boolean;
 	    smart_route_enabled: boolean;
+	    semantic_tool_scope_routing?: SemanticToolScopeRoutingConfig;
 	    gossip_enabled: boolean;
 	    file_outbound_enabled: boolean;
 	    image_outbound_enabled: boolean;
@@ -2588,6 +2596,7 @@ export namespace corelib {
 	        this.computer_use_log_max_age_days = source["computer_use_log_max_age_days"];
 	        this.computer_use_log_auto_prune = source["computer_use_log_auto_prune"];
 	        this.smart_route_enabled = source["smart_route_enabled"];
+	        this.semantic_tool_scope_routing = this.convertValues(source["semantic_tool_scope_routing"], SemanticToolScopeRoutingConfig);
 	        this.gossip_enabled = source["gossip_enabled"];
 	        this.file_outbound_enabled = source["file_outbound_enabled"];
 	        this.image_outbound_enabled = source["image_outbound_enabled"];
@@ -8551,6 +8560,38 @@ export namespace main {
 	        this.task_mode = source["task_mode"] ?? source["TaskMode"];
 	        this.lease_in_use = source["lease_in_use"] ?? source["LeaseInUse"];
 	        this.lease_holder = source["lease_holder"] ?? source["LeaseHolder"];
+	    }
+	}
+	export class CloudWorkspaceTaskProvision {
+	    operation_id: string;
+	    workspace_id: string;
+	    cloud_task_id: string;
+	    device_task_id: string;
+	    name: string;
+	    mode: string;
+	    tag: string;
+	    state: string;
+	    last_error: string;
+	    created_at: string;
+	    updated_at: string;
+
+	    static createFrom(source: any = {}) {
+	        return new CloudWorkspaceTaskProvision(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.operation_id = source["operation_id"] ?? source["OperationID"];
+	        this.workspace_id = source["workspace_id"] ?? source["WorkspaceID"];
+	        this.cloud_task_id = source["cloud_task_id"] ?? source["CloudTaskID"];
+	        this.device_task_id = source["device_task_id"] ?? source["DeviceTaskID"];
+	        this.name = source["name"] ?? source["Name"];
+	        this.mode = source["mode"] ?? source["Mode"];
+	        this.tag = source["tag"] ?? source["Tag"];
+	        this.state = source["state"] ?? source["State"];
+	        this.last_error = source["last_error"] ?? source["LastError"];
+	        this.created_at = source["created_at"] ?? source["CreatedAt"];
+	        this.updated_at = source["updated_at"] ?? source["UpdatedAt"];
 	    }
 	}
 	export class PreparedCloudWorkspace {

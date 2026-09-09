@@ -319,7 +319,7 @@ func (pi *ProjectIndex) SearchMatching(query string, limit int, predicate func(P
 	includeArchived := queryWantsArchived(queryLower)
 
 	for _, rec := range pi.records {
-		if !rec.HasOutput {
+		if !rec.HasOutput && !IsDurableTaskManagementRecord(rec) {
 			continue
 		}
 		if p, ok := pi.prefs[rec.ProjectPath]; ok {
@@ -383,13 +383,15 @@ func (pi *ProjectIndex) ListRecentMatching(limit int, predicate func(ProjectReco
 // ListAllMatching returns every output-backed record that matches predicate,
 // including hidden and archived records. It is intended for internal identity
 // lookups where a soft-hidden record must still reserve its stable key.
+// Durable task-management records are included even without output backing so
+// a lost output entry cannot split one task into duplicate identities.
 func (pi *ProjectIndex) ListAllMatching(predicate func(ProjectRecord) bool) []ProjectRecord {
 	pi.mu.RLock()
 	defer pi.mu.RUnlock()
 
 	matched := make([]ProjectRecord, 0, len(pi.records))
 	for _, rec := range pi.records {
-		if !rec.HasOutput {
+		if !rec.HasOutput && !IsDurableTaskManagementRecord(rec) {
 			continue
 		}
 		clone := pi.outputRecordCloneLocked(rec)
@@ -407,7 +409,7 @@ func (pi *ProjectIndex) ListAllMatching(predicate func(ProjectRecord) bool) []Pr
 func (pi *ProjectIndex) listRecentMatchingLocked(limit int, predicate func(ProjectRecord) bool) []ProjectRecord {
 	matched := make([]ProjectRecord, 0, min(limit, len(pi.records)))
 	for _, rec := range pi.records {
-		if !rec.HasOutput {
+		if !rec.HasOutput && !IsDurableTaskManagementRecord(rec) {
 			continue
 		}
 		if pref, ok := pi.prefs[rec.ProjectPath]; ok && (pref.Hidden || pref.Archived) {
@@ -851,6 +853,21 @@ func IsDurableTaskManagementEntry(e *Entry) bool {
 		return true
 	}
 	return hasTag(e.Tags, "manual_task") && hasTag(e.Tags, "recent_task")
+}
+
+// IsDurableTaskManagementRecord reports whether a project record carries the
+// durable task-management identity tags. Listing paths must keep these rows
+// visible even when HasOutput is false: the backing output entry can be lost
+// to eviction, supersession, or a partial reindex, and hiding the row would
+// make a user-created task vanish from the task list.
+func IsDurableTaskManagementRecord(rec *ProjectRecord) bool {
+	if rec == nil {
+		return false
+	}
+	if hasTag(rec.Tags, "task_management") || hasTag(rec.Tags, "task_user_created") || hasTag(rec.Tags, "task_user_saved") {
+		return true
+	}
+	return hasTag(rec.Tags, "manual_task") && hasTag(rec.Tags, "recent_task")
 }
 
 func isRecentTaskOutputEntry(e *Entry) bool {

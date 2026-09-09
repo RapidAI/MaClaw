@@ -27,10 +27,8 @@ type ResponsesAPIRequestOptions struct {
 	// depend on mutable map composition.
 	ToolChoice        interface{}
 	ParallelToolCalls *bool
-	// PreserveResponseFormat keeps a host control-plane response contract when
-	// a conservative OpenAI-compatible relay sanitizes ordinary chat fields.
-	// The caller owns the protocol-failure path, so silently dropping the
-	// contract would incorrectly turn a machine-readable request into prose.
+	// PreserveResponseFormat keeps json_schema instead of normalizing it to
+	// json_object on providers that only advertise JSON-object mode.
 	PreserveResponseFormat bool
 }
 
@@ -157,21 +155,10 @@ func BuildResponsesAPIRequestData(
 		}
 	}
 	if cfg.NeedsConservativeOpenAICompatSanitization() {
-		corelib.SanitizeCodeGenOpenAICompatBody(reqBody)
-		if opts.PreserveResponseFormat && opts.ExtraBody != nil {
-			if format := responsesTextFormatFromChatResponseFormat(cfg, opts.ExtraBody["response_format"], true); format != nil {
-				reqBody["text"] = map[string]interface{}{"format": format}
-			}
-		}
-		if opts.ToolChoice != nil {
-			if toolChoice := sanitizeResponsesToolChoice(opts.ToolChoice); toolChoice != nil {
-				reqBody["tool_choice"] = toolChoice
-			}
-		}
-		if opts.ParallelToolCalls != nil {
-			reqBody["parallel_tool_calls"] = *opts.ParallelToolCalls
-		}
+		corelib.SanitizeCodeGenOpenAICompatBodyPreservingSemanticContracts(reqBody)
 	}
+
+	applyConfigTemperature(reqBody, cfg)
 
 	body, err = json.Marshal(reqBody)
 	return endpoint, body, err

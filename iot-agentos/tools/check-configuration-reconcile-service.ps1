@@ -71,9 +71,22 @@ if (Test-Path -LiteralPath $source) {
             's_retry_generation',
             's_retry_delivered_generation',
             's_retry_delivered_generation\s*==\s*s_retry_generation',
+            '!s_system_sleep_preparing\s*&&\s*!s_expiry_stop_requested',
             's_retry_armed\s*=\s*false',
             's_retry_due_us\s*=\s*0u',
+            'lifecycle_deadline_us\s*\(',
+            'lifecycle_remaining_ticks\s*\(',
+            'const\s+uint64_t\s+deadline_us\s*=\s*lifecycle_deadline_us\(timeout_ms\)',
+            'lifecycle_remaining_ticks\(deadline_us\)',
+            'bounded_ms\s*>\s*UINT32_MAX',
+            'pdMS_TO_TICKS\(\(uint32_t\)bounded_ms\)',
+            'max_ticks\s*>\s*UINT64_MAX\s*/\s*1000u',
+            'remaining_us\s*/\s*1000u',
+            'remaining_us\s*%\s*1000u',
             'esp_timer_start_once\(s_retry_timer, delay_us\)\s*==\s*ESP_OK',
+            'const\s+uint32_t\s+armed_generation\s*=\s*s_retry_generation',
+            's_retry_generation\s*==\s*armed_generation',
+            'timer_still_admitted',
             'retryable_status\(status\)',
             'rearm_expiry_timer_under_mutex\s*\(',
             'status == DEVICE_STATUS_BUSY',
@@ -82,6 +95,19 @@ if (Test-Path -LiteralPath $source) {
             'DEVICE_STATUS_UNAVAILABLE',
             'CONFIGURATION_APPLY_OBSERVATION_UNKNOWN')) {
         if ($text -notmatch $required) { $failures += "reconcile service implementation missing $required" }
+    }
+    foreach ($required in @(
+            'Runtime policy mutation and its consumer reconciliation form one',
+            'xSemaphoreTake\(s_mutex, 0\) != pdTRUE',
+            'const bool admitted = s_initialized && !s_stopping &&',
+            '!s_system_sleep_preparing && !s_reconciling',
+            'const device_status_t status = configuration_service_apply_runtime_override\(',
+            'if \(status != DEVICE_STATUS_OK\)',
+            'const device_status_t reconcile_status = reconcile_internal_locked\(',
+            's_reconciling = true')) {
+        if ($text -notmatch $required) {
+            $failures += "runtime override ingress missing serialized admission fence $required"
+        }
     }
     if ($text -notmatch 's_system_sleep_preparing' -or
         $text -notmatch '!s_system_sleep_preparing' -or
@@ -103,8 +129,8 @@ if (Test-Path -LiteralPath $source) {
     if ($text -notmatch 'stopped/rearmed esp_timer callback') {
         $failures += 'retry worker must discard callbacks whose timer generation was superseded'
     }
-    $reconcileStart = $text.LastIndexOf('static device_status_t reconcile_internal(')
-    $reconcileEnd = $text.IndexOf('device_status_t configuration_reconcile_service_apply_runtime_override(', $reconcileStart)
+    $reconcileStart = $text.IndexOf('static device_status_t reconcile_internal_locked(')
+    $reconcileEnd = $text.IndexOf('static device_status_t reconcile_internal(', $reconcileStart)
     if ($reconcileStart -lt 0 -or $reconcileEnd -lt $reconcileStart) {
         $failures += 'cannot locate serialized reconcile owner for timer ordering audit'
     } else {
@@ -113,16 +139,27 @@ if (Test-Path -LiteralPath $source) {
         # The owner has an early admission-failure release before loading the
         # snapshot. Audit the terminal release after the retry/expiry
         # decisions, not that guarded fast-path unlock.
-        $release = $reconcile.LastIndexOf('xSemaphoreGive(s_mutex)')
-        if ($schedule -lt 0 -or $release -lt 0 -or $schedule -gt $release) {
-            $failures += 'retry timer decision must occur before serialized reconcile mutex release'
+        if ($schedule -lt 0) {
+            $failures += 'retry timer decision must remain inside serialized reconcile owner'
         }
         $expiryRearm = $reconcile.IndexOf('rearm_expiry_timer_under_mutex()')
-        if ($expiryRearm -lt 0 -or $expiryRearm -gt $release) {
-            $failures += 'expiry timer rearm must occur before serialized reconcile mutex release'
+        if ($expiryRearm -lt 0) {
+            $failures += 'expiry timer rearm must remain inside serialized reconcile owner'
         }
         if ($reconcile -notmatch '!schedule_or_cancel_retry\(status, reason, authorization\)\s*&&\s*retryable_status\(status\)') {
             $failures += 'retry timer arm failure must remain observable as a degraded reconcile result'
+        }
+        $wrapperStart = $text.IndexOf('static device_status_t reconcile_internal(', $reconcileEnd)
+        $wrapperEnd = $text.IndexOf('device_status_t configuration_reconcile_service_apply_runtime_override(', $wrapperStart)
+        if ($wrapperStart -lt 0 -or $wrapperEnd -le $wrapperStart) {
+            $failures += 'cannot locate reconcile wrapper for mutex release audit'
+        } else {
+            $wrapper = $text.Substring($wrapperStart, $wrapperEnd - $wrapperStart)
+            $ownedCall = $wrapper.IndexOf('reconcile_internal_locked(reason, authorization)')
+            $release = $wrapper.LastIndexOf('xSemaphoreGive(s_mutex)')
+            if ($ownedCall -lt 0 -or $release -lt 0 -or $ownedCall -gt $release) {
+                $failures += 'reconcile wrapper must release mutex only after serialized owner returns'
+            }
         }
     }
 }

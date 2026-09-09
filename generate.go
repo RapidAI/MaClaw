@@ -7,7 +7,7 @@
 //
 // The phase-metadata generator (cmd/genphasemeta) resolves the package path
 // `./cmd/genphasemeta` and writes its output to the repo-root-relative path
-// `gui/frontend/src/components/ai/workflowPhaseMeta.generated.ts`. Both only
+// `guiapp/frontend/src/components/ai/workflowPhaseMeta.generated.ts`. Both only
 // resolve correctly when the directive's working directory is the repository
 // root, which is exactly the directory of this file.
 package codeclaw

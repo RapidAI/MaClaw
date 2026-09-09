@@ -269,6 +269,7 @@ endif()
 target_sources(${COMPONENT_LIB} PRIVATE
     "services/gateway_ack_outbox_policy.c"
     "services/gateway_tool_result_outbox_policy.c"
+    "services/gateway_tool_result_service.c"
     "configuration_migration_journal.c"
     "configuration_factory_reset_policy.c"
     "services/factory_reset_service.c"

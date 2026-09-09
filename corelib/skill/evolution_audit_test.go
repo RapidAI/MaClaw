@@ -1,12 +1,36 @@
 package skill
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
+
+func TestEvolutionAuditHealthRedactsDiagnosticPaths(t *testing.T) {
+	evolutionAuditHealth.mu.Lock()
+	oldAvailable, oldError, oldCount, oldSuccess := evolutionAuditHealth.available, evolutionAuditHealth.lastError, evolutionAuditHealth.failureCount, evolutionAuditHealth.lastSuccessAt
+	evolutionAuditHealth.available = false
+	evolutionAuditHealth.lastError = fmt.Sprintf("audit write failed at %s", `C:\Users\alice\.maclaw\skill_evolution\audit.jsonl`)
+	evolutionAuditHealth.failureCount = 1
+	evolutionAuditHealth.lastSuccessAt = ""
+	evolutionAuditHealth.mu.Unlock()
+	t.Cleanup(func() {
+		evolutionAuditHealth.mu.Lock()
+		evolutionAuditHealth.available, evolutionAuditHealth.lastError, evolutionAuditHealth.failureCount, evolutionAuditHealth.lastSuccessAt = oldAvailable, oldError, oldCount, oldSuccess
+		evolutionAuditHealth.mu.Unlock()
+	})
+	health := EvolutionAuditHealth()
+	if strings.Contains(health.LastError, "alice") || strings.Contains(health.LastError, "C:\\") {
+		t.Fatalf("audit health leaked path: %q", health.LastError)
+	}
+	if health.Available || health.FailureCount != 1 {
+		t.Fatalf("unexpected audit health snapshot: %+v", health)
+	}
+}
 
 func TestKindFromEventName_MarkNeedsReviewAndRestore(t *testing.T) {
 	if got := KindFromEventName("skill:mark_needs_review"); got != "mark_needs_review" {

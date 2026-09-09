@@ -9,9 +9,23 @@ import (
 const auditRedactedValue = "[REDACTED]"
 
 var (
-	auditSensitiveAssignmentRe  = regexp.MustCompile(`(?i)([A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API[_-]?KEY|JWT|AUTHORIZATION|COOKIE|ENCRYPTION[_-]?KEY|ACCESS[_-]?KEY|REFRESH[_-]?KEY|PRIVATE[_-]?KEY)[A-Z0-9_]*\s*=\s*)(?:'[^']*'|"[^"]*"|[^\s;&|]+)`)
-	auditSensitiveJSONFieldRe   = regexp.MustCompile(`(?i)(((?:"|')[A-Z0-9_ -]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API[_-]?KEY|JWT|AUTHORIZATION|COOKIE|ENCRYPTION[_-]?KEY|ACCESS[_-]?KEY|REFRESH[_-]?KEY|PRIVATE[_-]?KEY)[A-Z0-9_ -]*(?:"|')\s*:\s*))(?:'[^']*'|"[^"]*"|[^\s,}\];&|]+)`)
-	auditSensitiveFlagRe        = regexp.MustCompile(`(?i)((?:--?(?:password|passwd|secret|token|api-key|apikey|jwt|authorization|cookie|access-key|refresh-key|private-key|encryption-key)|/(?:password|passwd|token))(?:(?:\s*=\s*)|\s+))(?:'[^']*'|"[^"]*"|[^\s;&|]+)`)
+	// Assignment form: `key=value` and `key: value`.
+	//
+	// Keywords tolerate one separator character inside them so that
+	// `API Key`, `API-Key` and `API_Key` all match. The prefix and suffix
+	// deliberately exclude spaces: if they allowed them, `compact-secret API
+	// Secret:` would match as one long key and the real secret
+	// (`compact-secret`) would survive while only the tail got rewritten.
+	auditSensitiveAssignmentRe = regexp.MustCompile(`(?i)([A-Za-z0-9_-]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API[\s_-]?KEY|JWT|AUTHORIZATION|COOKIE|ENCRYPTION[\s_-]?KEY|ACCESS[\s_-]?KEY|REFRESH[\s_-]?KEY|PRIVATE[\s_-]?KEY)[A-Za-z0-9_-]*[ \t]*[:=][ \t]*)(?:'[^']*'|"[^"]*"|[^\s;&|,'"]+)`)
+	auditSensitiveJSONFieldRe  = regexp.MustCompile(`(?i)(((?:"|')[A-Z0-9_ -]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API[_-]?KEY|JWT|AUTHORIZATION|COOKIE|ENCRYPTION[_-]?KEY|ACCESS[_-]?KEY|REFRESH[_-]?KEY|PRIVATE[_-]?KEY)[A-Z0-9_ -]*(?:"|')\s*:\s*))(?:'[^']*'|"[^"]*"|[^\s,}\];&|]+)`)
+	// Flag form: `--password x`, `-token=abc`, `/password x`.
+	//
+	// The leading boundary group is load-bearing. Without it the `-?` prefix
+	// happily consumes the hyphen belonging to the *previous* word, so
+	// `compact-secret API` was read as flag `-secret` with value `API` — the
+	// real secret survived and an innocent adjacent word was redacted in its
+	// place. Confirmed by TestRedactSensitiveStringDoesNotMisreadHyphenatedWord.
+	auditSensitiveFlagRe        = regexp.MustCompile(`(?i)((?:^|[\s"'` + "`" + `;=|,(])--?(?:password|passwd|secret|token|api-key|apikey|jwt|authorization|cookie|access-key|refresh-key|private-key|encryption-key)(?:[ \t]*=[ \t]*|[ \t]+)|(?:^|[\s=])/(?:password|passwd|token)(?:[ \t]*=[ \t]*|[ \t]+))(?:'[^']*'|"[^"]*"|[^\s;&|'"]+)`)
 	auditSensitiveHeaderRe      = regexp.MustCompile(`(?i)((?:authorization|cookie)\s*:\s*)(?:'[^']*'|"[^"]*"|[^"'\r\n;&|]+)`)
 	auditSensitiveURLUserInfoRe = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://[^\s/@:]+:)[^\s/@]+(@)`)
 )
@@ -37,6 +51,53 @@ func SanitizeAuditEntry(entry AuditEntry) AuditEntry {
 	entry.OutputSnippet = redactAuditString(entry.OutputSnippet)
 	entry.Result = redactAuditString(entry.Result)
 	return entry
+}
+
+// RedactMetadataMap returns a copy of in (typical Service recordAudit metadata,
+// i.e. map[string]string) with secret-bearing values redacted. Use it at every
+// audit persistence boundary that does not go through SanitizeAuditEntry.
+//
+// Fix for P0-3 of the 2026-09-08 review: Service.recordAudit previously passed
+// metadata through cloneMap verbatim, leaking password / token / api_key values
+// into agentservice_state.json. This helper makes the Service path match the
+// AuditLog.Log path.
+//
+// Secret-named keys are replaced outright; every other value is scanned for
+// embedded `key=value` / `key: value` / flag-shaped secrets.
+//
+// History worth keeping: an earlier version of this function passed non-secret
+// values through untouched because redactAuditString was lossy — it replaced
+// only the keyword (`API Key = display-key` became `[REDACTED] Key =
+// display-key`) and misread `compact-secret API` as a `-secret` flag, so
+// running it here corrupted the text into a shape the stronger export-time
+// redactor no longer recognised and leaked *more* than doing nothing. Those
+// regex defects are fixed (see auditSensitiveFlagRe);
+// TestRedactSensitiveStringIsIdempotent guards the chaining property this
+// depends on. Do not reintroduce a partial redactor here.
+func RedactMetadataMap(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		key := strings.TrimSpace(k)
+		if key == "" {
+			continue
+		}
+		if isSensitiveAuditKey(key) {
+			out[key] = auditRedactedValue
+			continue
+		}
+		// Safe to scan here now that redactAuditString is complete and
+		// idempotent (see TestRedactSensitiveStringIsIdempotent). It previously
+		// only replaced the keyword and left the secret in place, which made
+		// chained redaction leak more than doing nothing.
+		out[key] = redactAuditString(v)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func sanitizeAuditMap(in map[string]interface{}) map[string]interface{} {

@@ -284,14 +284,19 @@ const SurveyHelpPanel = ({ title, groups }: { title: string; groups: SurveyOpera
     </div>
 );
 
+export type UtilitiesPageMode = 'combined' | 'tools' | 'experts';
+
 export const UtilitiesPage = ({
     lang,
     active = true,
+    mode = 'combined',
     onStartMeetingRecord,
     onOpenExpert,
     onOpenVirtualRepositoryTask,
 }: {
     lang?: string;
+    /** Controls which home surface is shown in the split left-rail entries. */
+    mode?: UtilitiesPageMode;
     /** The workspace stays mounted for virtual-repository operations; pause unrelated refreshes while hidden. */
     active?: boolean;
     /** Open a new agent tab and send the meeting-recording command. */
@@ -301,8 +306,33 @@ export const UtilitiesPage = ({
     onOpenVirtualRepositoryTask?: (launch: { project_path: CodingTaskLaunch['projectPath']; task_title: CodingTaskLaunch['taskTitle']; agent_mode: NonNullable<CodingTaskLaunch['agentMode']>; remote_host?: CodingTaskLaunch['remoteHost'] }) => void;
 }) => {
     const isZh = !lang || lang.startsWith('zh');
+    const showToolSurface = mode !== 'experts';
+    const showExpertSurface = mode !== 'tools';
     const { showConfirm } = useDialog();
     const [view, setView] = useState<View>('home');
+    // The tools and AI expert entries share the same lazy page instance. A
+    // sub-page (for example, the survey editor) must never leak into the
+    // other entry when the user switches the left rail button.
+    useEffect(() => {
+        setView('home');
+        // The split entries intentionally share one mounted page instance.
+        // Clear transient UI from the surface we are leaving so an ACP
+        // status, VS Code prompt, or expert dialog cannot appear on the
+        // other entry after a quick rail switch.
+        setAcpStatusLine('');
+        setAcpState(null);
+        setVscodeFeedback(null);
+        setVscodeInstallPrompt(null);
+        setExpertDeleteTarget(null);
+        setExpertResetTarget(null);
+        setExpertEditor(null);
+        setExpertMarketOpen(false);
+        setExpertShareTarget(null);
+        setExpertAboutTarget(null);
+        setError('');
+        expertsRequestRef.current += 1;
+        expertMarketUploadsRequestRef.current += 1;
+    }, [mode]);
     const [meetingStarting, setMeetingStarting] = useState(false);
     const [vscodeStarting, setVscodeStarting] = useState(false);
     const [vscodeExtStarting, setVscodeExtStarting] = useState(false);
@@ -401,7 +431,7 @@ export const UtilitiesPage = ({
 
     // Mode B / VS Code ACP readiness line on home.
     useEffect(() => {
-        if (!active || view !== 'home') return;
+        if (!active || view !== 'home' || !showToolSurface) return;
         let cancelled = false;
         (async () => {
             try {
@@ -413,7 +443,7 @@ export const UtilitiesPage = ({
                 const addr = st.address || (st.host && st.port ? `${st.host}:${st.port}` : '');
                 if (!enabled) {
                     setAcpState('disabled');
-                    setAcpStatusLine(isZh ? 'ACP Mode B：已关闭（设置 → 编程工具）' : 'ACP Mode B: disabled (Settings → Programming tools)');
+                    setAcpStatusLine(isZh ? 'ACP Mode B：已关闭' : 'ACP Mode B: disabled');
                 } else if (running) {
                     setAcpState('running');
                     setAcpStatusLine(isZh
@@ -430,7 +460,7 @@ export const UtilitiesPage = ({
             }
         })();
         return () => { cancelled = true; };
-    }, [active, isZh, view]);
+    }, [active, isZh, view, showToolSurface]);
 
     // AI experts: load the card list whenever the home view is shown.
     const loadExperts = useCallback(async () => {
@@ -474,18 +504,18 @@ export const UtilitiesPage = ({
 	}, [expertActionBusy, isZh, loadExperts]);
 
     useEffect(() => {
-        if (!active || view !== 'home') return;
+        if (!active || view !== 'home' || !showExpertSurface) return;
         void loadExperts();
-    }, [active, view, loadExperts]);
+    }, [active, view, loadExperts, showExpertSurface]);
 
 	// Installation is started by the backend so the initial directory load is
 	// non-blocking. Poll briefly while an automatic install is in progress and
 	// replace the placeholder with its usable read-only card as soon as it lands.
 	useEffect(() => {
-		if (!active || view !== 'home' || !managedIndustryExperts.some(expert => expert.industry_auto_installing)) return;
+		if (!active || view !== 'home' || !showExpertSurface || !managedIndustryExperts.some(expert => expert.industry_auto_installing)) return;
 		const timer = window.setTimeout(() => { void loadExperts(); }, 1200);
 		return () => window.clearTimeout(timer);
-	}, [active, view, managedIndustryExperts, loadExperts]);
+	}, [active, view, managedIndustryExperts, loadExperts, showExpertSurface]);
 
     /** id → name lookup for the "优化自" lineage line on expert cards. */
     const expertNameById = useMemo(() => {
@@ -536,9 +566,9 @@ export const UtilitiesPage = ({
     }, []);
 
     useEffect(() => {
-        if (!active || view !== 'home') return;
+        if (!active || view !== 'home' || !showExpertSurface) return;
         void loadExpertMarketUploads();
-    }, [active, view, loadExpertMarketUploads]);
+    }, [active, view, loadExpertMarketUploads, showExpertSurface]);
 
     const handleWithdrawExpertMarketListing = useCallback(async (expert: ExpertDefinition) => {
         const listing = expertMarketUploads[expert.id];
@@ -897,10 +927,18 @@ export const UtilitiesPage = ({
     };
 
     const t = useMemo(() => ({
-        title: utilitiesPageTitle(lang),
-        subtitle: isZh
-            ? '面向群场景与日常办公的轻量工具（问卷、会议记录、VS Code 等）'
-            : 'Lightweight tools for IM groups and daily work (surveys, meeting notes, VS Code, …)',
+        title: mode === 'tools'
+            ? (lang === 'zh-Hant' ? '工具' : isZh ? '工具' : 'Tools')
+            : mode === 'experts'
+                ? (lang === 'zh-Hant' ? 'AI 專家' : isZh ? 'AI 专家' : 'AI Experts')
+                : utilitiesPageTitle(lang),
+        subtitle: mode === 'tools'
+            ? (isZh ? '面向群场景与日常办公的轻量工具（问卷、会议记录、VS Code 等）' : 'Lightweight tools for IM groups and daily work (surveys, meeting notes, VS Code, …)')
+            : mode === 'experts'
+                ? (lang === 'zh-Hant' ? '點擊卡片與專家對話；也可以建立自己的專家' : isZh ? '点击卡片与专家对话；也可以创建自己的专家' : 'Click a card to chat with an expert, or create your own')
+                : (isZh
+                    ? '面向群场景与日常办公的轻量工具（问卷、会议记录、VS Code 等）'
+                    : 'Lightweight tools for IM groups and daily work (surveys, meeting notes, VS Code, …)'),
         surveyCard: isZh ? '调查问卷' : 'Surveys',
         surveyDesc: isZh ? '创建问卷、绑定蓝信群、查看结果并导出 Excel' : 'Create surveys, bind Lansenger groups, view results, export Excel',
         meetingCard: meetingRecordBaseTitle(lang),
@@ -1032,7 +1070,7 @@ export const UtilitiesPage = ({
                 ? `优化自：${sourceName}`
                 : `Optimized from: ${sourceName}`,
         expertOptimizedFromDeleted: lang === 'zh-Hant' ? '優化自：已刪除專家' : isZh ? '优化自：已删除专家' : 'Optimized from: deleted expert',
-    }), [isZh, lang]);
+    }), [isZh, lang, mode]);
 
     const handleMeetingRecord = useCallback(async () => {
         if (!onStartMeetingRecord || meetingStartingRef.current) return;
@@ -1787,25 +1825,34 @@ export const UtilitiesPage = ({
             },
         ];
         return (
-            <div className="utilities-page" data-testid="utilities-page">
+            <div className="utilities-page" data-testid="utilities-page" data-mode={mode}>
                 <div className="utilities-page__header">
-                    <h1 className="utilities-page__title">{t.title}</h1>
+                    <div className={mode === 'experts' ? 'utilities-page__title-row utilities-page__title-row--experts' : undefined}>
+                        <h1 className="utilities-page__title">{t.title}</h1>
+                        {mode === 'experts' ? (
+                            <button type="button" className="utilities-btn utilities-experts__market-button" data-testid="utilities-expert-market" onClick={() => { setExpertMarketIntent('market'); setExpertMarketOpen(true); }}>
+                                <ExpertMarketIcon />
+                                <span>{t.expertMarket}</span>
+                            </button>
+                        ) : null}
+                    </div>
                     <p className="utilities-page__subtitle">{t.subtitle}</p>
-                    {acpStatusLine ? (
+                    {mode === 'experts' ? <p className="utilities-experts__exchange-hint utilities-page__header-exchange-hint">{t.expertExchangeHint}</p> : null}
+                    {showToolSurface && acpStatusLine ? (
                         <p className="utilities-status-chip" data-state={acpState || undefined} data-testid="utilities-acp-status">
                             <span className="utilities-status-chip__dot" aria-hidden />
                             {acpStatusLine}
                         </p>
                     ) : null}
                     {error ? <p className="utilities-error" role="alert">{error}</p> : null}
-                    {vscodeFeedback ? (
+                    {showToolSurface && vscodeFeedback ? (
                         <LaunchFeedbackPanel
                             feedback={vscodeFeedback}
                             dismissLabel={t.dismiss}
                             onDismiss={() => setVscodeFeedback(null)}
                         />
                     ) : null}
-                    {vscodeInstallPrompt ? (
+                    {showToolSurface && vscodeInstallPrompt ? (
                         <ConfirmDialog
                             title={t.vscodeMissingTitle}
                             message={t.vscodeMissingMsg}
@@ -1823,7 +1870,7 @@ export const UtilitiesPage = ({
                         />
                     ) : null}
                 </div>
-                <div className="utilities-page__grid">
+                {showToolSurface ? <div className="utilities-page__grid" data-surface="tools">
                     {toolCards.map((card) => (
                         <button
                             key={card.key}
@@ -1844,9 +1891,9 @@ export const UtilitiesPage = ({
                             <span className="utilities-tool-card__cta">{card.cta}<ToolCardCtaArrow /></span>
                         </button>
                     ))}
-                </div>
-                <div className="utilities-experts" data-testid="utilities-experts-section">
-                    <div className="utilities-experts__heading">
+                </div> : null}
+                {showExpertSurface ? <div className="utilities-experts" data-testid="utilities-experts-section" data-surface="experts">
+                    {mode !== 'experts' ? <div className="utilities-experts__heading">
                         <div className="utilities-experts__title-row">
                             <h2 className="utilities-experts__title">{t.expertsTitle}</h2>
                             <button type="button" className="utilities-btn utilities-experts__market-button" data-testid="utilities-expert-market" onClick={() => { setExpertMarketIntent('market'); setExpertMarketOpen(true); }}>
@@ -1856,7 +1903,7 @@ export const UtilitiesPage = ({
                         </div>
                         <p className="utilities-experts__subtitle">{t.expertsSubtitle}</p>
                         <p className="utilities-experts__exchange-hint">{t.expertExchangeHint}</p>
-                    </div>
+                    </div> : null}
                     <div className="utilities-experts__grid">
 						{managedIndustryExperts.map((expert) => {
 							const installed = !!expert.industry_installed;
@@ -1994,7 +2041,7 @@ export const UtilitiesPage = ({
                             <span>{t.expertImport}</span>
                         </button>
                     </div>
-                </div>
+                </div> : null}
                 {expertDeleteTarget ? (
                     <ConfirmDialog
                         title={t.expertDeleteTitle}

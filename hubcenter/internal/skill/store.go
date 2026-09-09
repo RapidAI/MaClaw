@@ -2,9 +2,12 @@ package skill
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -21,6 +24,7 @@ type SkillStore struct {
 	dir         string
 	index       []HubSkillMeta
 	skills      map[string]*HubSkillFull
+	suites      map[string]*SkillSuiteFull
 	ratings     map[string][]SkillRating
 	syncMu      sync.Mutex
 	sync        SyncRecorder
@@ -32,12 +36,389 @@ func NewSkillStore(dir string) *SkillStore {
 	s := &SkillStore{
 		dir:     dir,
 		skills:  make(map[string]*HubSkillFull),
+		suites:  make(map[string]*SkillSuiteFull),
 		ratings: make(map[string][]SkillRating),
 	}
 	_ = os.MkdirAll(dir, 0o755)
 	_ = s.RebuildIndex()
+	s.loadAllSuites()
 	s.loadAllRatings()
 	return s
+}
+
+// PublishSuite persists a Suite and its member references. Existing download
+// and timestamp fields are preserved on update.
+func (s *SkillStore) PublishSuite(suite SkillSuiteFull) error {
+	suite.ID = strings.TrimSpace(suite.ID)
+	suite.Version = strings.TrimSpace(suite.Version)
+	suite.Status = strings.TrimSpace(suite.Status)
+	suite.TrustLevel = strings.TrimSpace(suite.TrustLevel)
+	statusProvided := strings.TrimSpace(suite.Status) != ""
+	if strings.TrimSpace(suite.ID) == "" {
+		return fmt.Errorf("suite id is required")
+	}
+	if strings.ContainsAny(suite.ID, `/\\`) || suite.ID == "." || suite.ID == ".." {
+		return fmt.Errorf("invalid suite id")
+	}
+	if !validSuiteID(suite.ID) {
+		return fmt.Errorf("invalid suite id")
+	}
+	if len(suite.Members) == 0 {
+		return fmt.Errorf("suite must contain at least one member")
+	}
+	if len(suite.Members) > 32 {
+		return fmt.Errorf("suite must contain at most 32 members")
+	}
+	if suite.Price < 0 {
+		return fmt.Errorf("suite price cannot be negative")
+	}
+	seenMembers := make(map[string]struct{}, len(suite.Members))
+	for i := range suite.Members {
+		suite.Members[i].SkillID = strings.TrimSpace(suite.Members[i].SkillID)
+		id := suite.Members[i].SkillID
+		if id == "" {
+			return fmt.Errorf("suite member skill id is required")
+		}
+		if !validSuiteID(id) {
+			return fmt.Errorf("invalid suite member skill id: %s", id)
+		}
+		if _, ok := seenMembers[id]; ok {
+			return fmt.Errorf("duplicate suite member: %s", id)
+		}
+		if p := strings.TrimSpace(suite.Members[i].Path); p != "" {
+			n := strings.ReplaceAll(p, "\\", "/")
+			clean := path.Clean(n)
+			if strings.HasPrefix(n, "/") || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") || strings.Contains(clean, "/../") || (len(clean) > 1 && clean[1] == ':') {
+				return fmt.Errorf("invalid suite member path: %s", p)
+			}
+			suite.Members[i].Path = clean
+		}
+		seenMembers[id] = struct{}{}
+	}
+	if len(suite.Skills) > 0 {
+		if len(suite.Skills) != len(suite.Members) {
+			return fmt.Errorf("suite members must match embedded skills")
+		}
+		skillIDs := make(map[string]struct{}, len(suite.Skills))
+		for _, item := range suite.Skills {
+			id := strings.TrimSpace(item.ID)
+			if id == "" {
+				return fmt.Errorf("embedded suite skill id is required")
+			}
+			if _, exists := skillIDs[id]; exists {
+				return fmt.Errorf("duplicate embedded suite skill: %s", id)
+			}
+			skillIDs[id] = struct{}{}
+		}
+		for id := range seenMembers {
+			if _, ok := skillIDs[id]; !ok {
+				return fmt.Errorf("suite member %s has no embedded skill", id)
+			}
+		}
+	}
+	if suite.CreatedAt == "" {
+		suite.CreatedAt = fmtTimeNow()
+	}
+	if suite.UpdatedAt == "" {
+		suite.UpdatedAt = suite.CreatedAt
+	}
+	if suite.Status == "" {
+		suite.Status = "published"
+	}
+	if suite.Manifest.Format == "" {
+		suite.Manifest.Format = "skill-suite.v1"
+	}
+	if suite.Manifest.GeneratedAt == "" {
+		suite.Manifest.GeneratedAt = suite.UpdatedAt
+	}
+	s.mu.Lock()
+	if s.suites == nil {
+		s.suites = make(map[string]*SkillSuiteFull)
+	}
+	if old := s.suites[suite.ID]; old != nil {
+		// Persist the complete previous revision so operators can roll back,
+		// while keeping the compact VersionHistory metadata for API clients.
+		if err := s.persistSuiteVersion(*old); err != nil {
+			s.mu.Unlock()
+			return fmt.Errorf("persist suite version: %w", err)
+		}
+		suite.CreatedAt = old.CreatedAt
+		suite.UpdatedAt = fmtTimeNow()
+		// Keep operational counters and moderation metadata across idempotent
+		// updates; these belong to the Suite identity rather than a revision.
+		suite.Downloads = old.Downloads
+		if !statusProvided {
+			suite.Status = old.Status
+		}
+		if statusProvided && strings.EqualFold(strings.TrimSpace(suite.Status), "withdrawn") {
+			suite.Visible = false
+		} else if strings.EqualFold(strings.TrimSpace(suite.Status), "published") && !strings.EqualFold(strings.TrimSpace(old.Status), "published") {
+			suite.Visible = true
+		} else {
+			suite.Visible = old.Visible
+		}
+		if strings.TrimSpace(suite.TrustLevel) == "" {
+			suite.TrustLevel = old.TrustLevel
+		}
+		history := append([]SuiteVersionSummary(nil), old.VersionHistory...)
+		if strings.TrimSpace(old.Version) != "" && old.Version != suite.Version {
+			history = append(history, SuiteVersionSummary{Version: old.Version, SourceRevision: old.SourceRevision, UpdatedAt: old.UpdatedAt})
+			if len(history) > 20 {
+				history = history[len(history)-20:]
+			}
+		}
+		suite.VersionHistory = history
+	} else {
+		suite.Visible = true
+	}
+	data, err := json.MarshalIndent(&suite, "", "  ")
+	if err == nil {
+		err = os.WriteFile(filepath.Join(s.dir, "suite-"+suite.ID+".json"), data, 0o644)
+	}
+	if err != nil {
+		s.mu.Unlock()
+		return fmt.Errorf("write suite: %w", err)
+	}
+	s.suites[suite.ID] = &suite
+	s.mu.Unlock()
+	// Keep Suite updates consistent with ordinary Skill publishes so HA
+	// replicas receive the complete snapshot (including Suite members).
+	s.emitSync(context.Background())
+	return nil
+}
+
+func validSuiteID(id string) bool {
+	if id == "" {
+		return false
+	}
+	for i, r := range id {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+			if i == 0 && (r == '-' || r == '_' || r == '.') {
+				return false
+			}
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func suiteVersionKey(version string) string {
+	sum := sha256.Sum256([]byte(version))
+	return hex.EncodeToString(sum[:])
+}
+
+func (s *SkillStore) persistSuiteVersion(suite SkillSuiteFull) error {
+	dir := filepath.Join(s.dir, "suite-versions", suite.ID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(&suite, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, suiteVersionKey(suite.Version)+".json"), b, 0o644)
+}
+
+// RollbackSuite restores a previously published complete Suite revision.
+func (s *SkillStore) RollbackSuite(id, version string) (*SkillSuiteFull, error) {
+	version = strings.TrimSpace(version)
+	if version == "" {
+		return nil, fmt.Errorf("version is required")
+	}
+	s.mu.RLock()
+	current := s.suites[id]
+	var currentDownloads int
+	var currentCreatedAt string
+	if current != nil {
+		currentDownloads, currentCreatedAt = current.Downloads, current.CreatedAt
+	}
+	s.mu.RUnlock()
+	if current == nil {
+		return nil, fmt.Errorf("suite not found: %s", id)
+	}
+	if current.Version == version {
+		cp := *current
+		return &cp, nil
+	}
+	path := filepath.Join(s.dir, "suite-versions", id, suiteVersionKey(version)+".json")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("suite version %s not found", version)
+	}
+	var target SkillSuiteFull
+	if err = json.Unmarshal(b, &target); err != nil {
+		return nil, err
+	}
+	if target.ID == "" {
+		target.ID = id
+	}
+	// Operational counters and creation identity belong to the Suite, not a
+	// particular revision, so rolling back must not reset them.
+	target.Downloads = currentDownloads
+	target.CreatedAt = currentCreatedAt
+	target.UpdatedAt = ""
+	if err = s.PublishSuite(target); err != nil {
+		return nil, err
+	}
+	return s.GetSuite(id)
+}
+
+func (s *SkillStore) GetSuite(id string) (*SkillSuiteFull, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	su, ok := s.suites[id]
+	if !ok {
+		return nil, fmt.Errorf("suite not found: %s", id)
+	}
+	cp := *su
+	cp.Members = append([]SkillSuiteMember(nil), su.Members...)
+	cp.Skills = append([]HubSkillFull(nil), su.Skills...)
+	cp.Tags = append([]string(nil), su.Tags...)
+	cp.Permissions = append([]string(nil), su.Permissions...)
+	cp.VersionHistory = append([]SuiteVersionSummary(nil), su.VersionHistory...)
+	return &cp, nil
+}
+
+// SetSuiteVisibility updates moderation visibility without creating a new
+// revision or resetting Suite counters.
+func (s *SkillStore) SetSuiteVisibility(id string, visible bool, status string) error {
+	s.mu.Lock()
+	su, ok := s.suites[strings.TrimSpace(id)]
+	if !ok {
+		s.mu.Unlock()
+		return fmt.Errorf("suite not found: %s", id)
+	}
+	cp := *su
+	cp.Visible = visible
+	if strings.TrimSpace(status) != "" {
+		cp.Status = strings.TrimSpace(status)
+	}
+	cp.UpdatedAt = fmtTimeNow()
+	b, err := json.MarshalIndent(&cp, "", "  ")
+	if err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(s.dir, "suite-"+cp.ID+".json"), b, 0o644); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	s.suites[cp.ID] = &cp
+	s.mu.Unlock()
+	s.emitSync(context.Background())
+	return nil
+}
+
+func (s *SkillStore) ListSuites() []SkillSuiteFull {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]SkillSuiteFull, 0, len(s.suites))
+	for _, su := range s.suites {
+		if su.Visible {
+			cp := *su
+			cp.Members = append([]SkillSuiteMember(nil), su.Members...)
+			// Catalog responses expose metadata only; full member payloads are
+			// served by GET /skill-suites/{id} and /download.
+			cp.Skills = nil
+			cp.Tags = append([]string(nil), su.Tags...)
+			cp.Permissions = append([]string(nil), su.Permissions...)
+			cp.VersionHistory = append([]SuiteVersionSummary(nil), su.VersionHistory...)
+			out = append(out, cp)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt > out[j].UpdatedAt })
+	return out
+}
+
+// ListSuitesAll returns Suite metadata for administrators, including hidden
+// and withdrawn entries.
+func (s *SkillStore) ListSuitesAll() []SkillSuiteFull {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]SkillSuiteFull, 0, len(s.suites))
+	for _, su := range s.suites {
+		cp := *su
+		cp.Skills = nil
+		cp.Members = append([]SkillSuiteMember(nil), su.Members...)
+		cp.Tags = append([]string(nil), su.Tags...)
+		cp.Permissions = append([]string(nil), su.Permissions...)
+		cp.VersionHistory = append([]SuiteVersionSummary(nil), su.VersionHistory...)
+		out = append(out, cp)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt > out[j].UpdatedAt })
+	return out
+}
+
+// SearchSuites performs a lightweight name/description/tag search over
+// visible suites. Pagination follows the skill catalog conventions.
+func (s *SkillStore) SearchSuites(query string, page int) SkillSuiteSearchResult {
+	if page < 1 {
+		page = 1
+	}
+	q := strings.ToLower(strings.TrimSpace(query))
+	s.mu.RLock()
+	items := make([]SkillSuiteMeta, 0, len(s.suites))
+	for _, su := range s.suites {
+		if !su.Visible {
+			continue
+		}
+		if q != "" {
+			matched := strings.Contains(strings.ToLower(su.Name), q) || strings.Contains(strings.ToLower(su.Description), q)
+			if !matched {
+				for _, tag := range su.Tags {
+					if strings.Contains(strings.ToLower(tag), q) {
+						matched = true
+						break
+					}
+				}
+			}
+			if !matched {
+				continue
+			}
+		}
+		meta := su.SkillSuiteMeta
+		meta.Tags = append([]string(nil), su.Tags...)
+		meta.Members = append([]SkillSuiteMember(nil), su.Members...)
+		meta.VersionHistory = append([]SuiteVersionSummary(nil), su.VersionHistory...)
+		items = append(items, meta)
+	}
+	s.mu.RUnlock()
+	sort.Slice(items, func(i, j int) bool { return items[i].UpdatedAt > items[j].UpdatedAt })
+	total := len(items)
+	start := (page - 1) * pageSize
+	if start >= total {
+		return SkillSuiteSearchResult{Suites: []SkillSuiteMeta{}, Total: total, Page: page}
+	}
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
+	return SkillSuiteSearchResult{Suites: items[start:end], Total: total, Page: page}
+}
+
+func (s *SkillStore) loadAllSuites() {
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return
+	}
+	suites := make(map[string]*SkillSuiteFull)
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasPrefix(e.Name(), "suite-") || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(s.dir, e.Name()))
+		if err != nil {
+			continue
+		}
+		var su SkillSuiteFull
+		if json.Unmarshal(data, &su) == nil && su.ID != "" {
+			suites[su.ID] = &su
+		}
+	}
+	s.mu.Lock()
+	s.suites = suites
+	s.mu.Unlock()
 }
 
 func (s *SkillStore) Search(query string, tags []string, page int) SkillSearchResult {
@@ -131,11 +512,53 @@ func (s *SkillStore) GetCurrentVisible(id string) (*HubSkillFull, error) {
 	return skill, nil
 }
 
-func (s *SkillStore) Publish(sk HubSkillFull) error {
-	sk.Visible = true
+// skillFilePath resolves a skill ID to its on-disk JSON path, refusing any ID
+// that escapes the store directory.
+//
+// P0 (2026-09-09 review): the previous code did filepath.Join(s.dir, sk.ID)
+// with no validation, so "../../etc/foo" wrote outside s.dir. The check is
+// done on the cleaned path AND re-verified with filepath.Rel after joining,
+// because on Windows a leading separator or a drive-relative form can survive
+// a naive ".." substring test.
+func (s *SkillStore) skillFilePath(id string) (string, error) {
+	cleaned := filepath.Clean(strings.TrimSpace(id))
+	if cleaned == "" || cleaned == "." || cleaned == ".." {
+		return "", fmt.Errorf("invalid skill id %q", id)
+	}
+	if filepath.IsAbs(cleaned) || strings.HasPrefix(cleaned, "/") || strings.HasPrefix(cleaned, `\`) {
+		return "", fmt.Errorf("invalid skill id %q", id)
+	}
+	if cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) ||
+		strings.HasPrefix(cleaned, "../") || strings.HasPrefix(cleaned, `..\`) ||
+		strings.Contains(cleaned, "/../") || strings.Contains(cleaned, `\..\`) ||
+		strings.HasSuffix(cleaned, "/..") || strings.HasSuffix(cleaned, `\..`) {
+		return "", fmt.Errorf("invalid skill id %q", id)
+	}
+	// Backslashes are separators on Windows and legal filename characters on
+	// POSIX; rejecting them keeps the ID unambiguous across platforms.
+	if strings.ContainsAny(cleaned, `\`) {
+		return "", fmt.Errorf("invalid skill id %q", id)
+	}
+	dir := filepath.Clean(s.dir)
+	target := filepath.Join(dir, cleaned+".json")
+	rel, err := filepath.Rel(dir, target)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("invalid skill id %q", id)
+	}
+	return target, nil
+}
 
+func (s *SkillStore) Publish(sk HubSkillFull) error {
 	s.mu.Lock()
 	if existing, ok := s.skills[sk.ID]; ok {
+		// Preserve moderation fields when an idempotent Suite re-import updates
+		// the member payload. New publishes remain visible by default.
+		if sk.Status == "" {
+			sk.Status = existing.Status
+		}
+		if sk.TrustLevel == "" {
+			sk.TrustLevel = existing.TrustLevel
+		}
 		sk.Downloads = existing.Downloads
 		sk.DownloadCount = existing.DownloadCount
 		sk.RatingSum = existing.RatingSum
@@ -143,6 +566,8 @@ func (s *SkillStore) Publish(sk HubSkillFull) error {
 		sk.AvgRating = existing.AvgRating
 		sk.CreatedAt = existing.CreatedAt
 		sk.UpdatedAt = fmtTimeNow()
+	} else {
+		sk.Visible = true
 	}
 
 	data, err := json.MarshalIndent(sk, "", "  ")
@@ -150,7 +575,14 @@ func (s *SkillStore) Publish(sk HubSkillFull) error {
 		s.mu.Unlock()
 		return fmt.Errorf("marshal skill: %w", err)
 	}
-	path := filepath.Join(s.dir, sk.ID+".json")
+	// P0 (2026-09-09 review): sk.ID reached filepath.Join unvalidated, so an
+	// ID of "../../<path>" wrote a .json file outside the skill directory
+	// (arbitrary file write reachable by any authenticated publisher).
+	path, err := s.skillFilePath(sk.ID)
+	if err != nil {
+		s.mu.Unlock()
+		return err
+	}
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		s.mu.Unlock()
 		return fmt.Errorf("write skill file: %w", err)
@@ -861,6 +1293,27 @@ func (s *SkillStore) IncrementDownloadCount(id string) error {
 	s.rebuildIndexFromSkills()
 	s.mu.Unlock()
 
+	s.emitSync(context.Background())
+	return nil
+}
+
+// IncrementSuiteDownloadCount records one download of a Suite distribution.
+func (s *SkillStore) IncrementSuiteDownloadCount(id string) error {
+	s.mu.Lock()
+	su, ok := s.suites[id]
+	if !ok {
+		s.mu.Unlock()
+		return fmt.Errorf("suite not found: %s", id)
+	}
+	su.Downloads++
+	data, err := json.MarshalIndent(su, "", "  ")
+	if err == nil {
+		err = os.WriteFile(filepath.Join(s.dir, "suite-"+id+".json"), data, 0o644)
+	}
+	s.mu.Unlock()
+	if err != nil {
+		return err
+	}
 	s.emitSync(context.Background())
 	return nil
 }

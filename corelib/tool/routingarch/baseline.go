@@ -201,9 +201,6 @@ var Baseline = map[Rule]map[string]Reason{
 		"corelib/mcp/filter.go:FilterTools": ReasonDiscoveryListing,
 		"gui/im_tools_misc.go:FilterTools":  ReasonDiscoveryListing,
 
-		"gui/app.go:ensureToolOnboardingComplete":                    ReasonNameMatchOnly,
-		"gui/tool_onboarding.go:ensureToolOnboardingComplete":        ReasonNameMatchOnly,
-		"gui/remote_session_manager.go:ensureToolOnboardingComplete": ReasonNameMatchOnly,
 		"gui/tool_cache_maintenance.go:ensureToolCachePath":          ReasonNameMatchOnly,
 		"gui/openhuman_wiring.go:injectToolMemoryHint":               ReasonNameMatchOnly,
 	},

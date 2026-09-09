@@ -9,6 +9,24 @@ const zh = {
   "tenantList": "租户",
   "accounts": "管理员",
   "knowledge": "知识与技能来源",
+  "database": "数据源",
+  "databaseHint": "按租户用户管理 database profile、kill switch 与指标。密钥不会出现在本页。",
+  "databaseKillSwitch": "立即禁用工具",
+  "databaseEnable": "启用工具",
+  "databaseTest": "测试连接",
+  "databaseRotateSecret": "轮换 secret_ref",
+  "databaseReceipt": "回执",
+  "databaseReceiptHint": "按 receipt_id 查询 metadata-only mutation receipt。",
+  "databaseSecretRef": "secret_ref",
+  "databaseSecretRefHint": "不填则保留已绑定的凭据。本表单不接受明文密码。",
+  "databaseFilePath": "文件路径",
+  "databaseSheet": "工作表",
+  "databaseTLS": "TLS",
+  "databaseClass": "数据分类",
+  "databasePublic": "允许公网主机",
+  "databaseDDL": "允许 DDL",
+  "databaseDeleteConfirm": "删除该数据源 profile？已绑定的 secret_ref 不会显示。",
+  "databaseNew": "新建",
   "ops": "运维",
   "setup": "初始化管理员",
   "login": "管理员登录",
@@ -444,6 +462,24 @@ const en = {
   "tenantList": "Tenants",
   "accounts": "Admins",
   "knowledge": "Knowledge & Skill Sources",
+  "database": "Data sources",
+  "databaseHint": "Manage database profiles, the kill switch, and metrics per tenant user. Secrets never appear on this page.",
+  "databaseKillSwitch": "Disable tool now",
+  "databaseEnable": "Enable tool",
+  "databaseTest": "Test connection",
+  "databaseRotateSecret": "Rotate secret_ref",
+  "databaseReceipt": "Receipt",
+  "databaseReceiptHint": "Look up a metadata-only mutation receipt by receipt_id.",
+  "databaseSecretRef": "secret_ref",
+  "databaseSecretRefHint": "Leave blank to keep the bound credential. This form never accepts a plaintext password.",
+  "databaseFilePath": "File path",
+  "databaseSheet": "Sheet",
+  "databaseTLS": "TLS",
+  "databaseClass": "Classification",
+  "databasePublic": "Allow public host",
+  "databaseDDL": "Allow DDL",
+  "databaseDeleteConfirm": "Delete this database profile? The bound secret_ref is never shown.",
+  "databaseNew": "New",
   "ops": "Ops",
   "setup": "Initialize Admin",
   "login": "Admin Login",
@@ -1019,7 +1055,7 @@ Object.assign(zh, {
   profileJSONInvalid: "Profile \u914d\u7f6e JSON \u683c\u5f0f\u65e0\u6548",
   importUrls: "URL \u6570\u91cf"
 });
-const sections = ["overview","sandbox","logs","config","clientConfig","aiModels","tenants","accounts","knowledge","ops"];
+const sections = ["overview","sandbox","logs","config","clientConfig","aiModels","tenants","accounts","knowledge","database","ops"];
 const navIcons = {
   overview: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 4.75A1.75 1.75 0 0 1 4.75 3h3.5A1.75 1.75 0 0 1 10 4.75v3.5A1.75 1.75 0 0 1 8.25 10h-3.5A1.75 1.75 0 0 1 3 8.25zm7 0A1.75 1.75 0 0 1 11.75 3h3.5A1.75 1.75 0 0 1 17 4.75v3.5A1.75 1.75 0 0 1 15.25 10h-3.5A1.75 1.75 0 0 1 10 8.25zm-7 7A1.75 1.75 0 0 1 4.75 10h3.5A1.75 1.75 0 0 1 10 11.75v3.5A1.75 1.75 0 0 1 8.25 17h-3.5A1.75 1.75 0 0 1 3 15.25zm7 1.5a.75.75 0 0 1 .75-.75h6.5a.75.75 0 0 1 0 1.5h-6.5a.75.75 0 0 1-.75-.75m.75-3.25a.75.75 0 0 0 0 1.5h6.5a.75.75 0 0 0 0-1.5z" fill="currentColor"/></svg>',
   sandbox: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.5 4 4.75v4.1c0 3.72 2.36 7.16 6 8.65 3.64-1.49 6-4.93 6-8.65v-4.1zm0 1.6 4.5 1.7v3.05c0 2.92-1.77 5.67-4.5 6.98C7.27 14.52 5.5 11.77 5.5 8.85V5.8zm-1 3.15a.75.75 0 0 0-1.06 1.06l1.5 1.5a.75.75 0 0 0 1.06 0l3.5-3.5a.75.75 0 0 0-1.06-1.06l-2.97 2.97z" fill="currentColor"/></svg>',
@@ -1030,7 +1066,8 @@ const navIcons = {
   tenants: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4.75 3.25A1.75 1.75 0 0 0 3 5v10.25c0 .97.78 1.75 1.75 1.75h10.5A1.75 1.75 0 0 0 17 15.25V8.88a1.75 1.75 0 0 0-.51-1.24l-3.13-3.13A1.75 1.75 0 0 0 12.12 4zm-.25 2A.25.25 0 0 1 4.75 5h6v2.25c0 .97.78 1.75 1.75 1.75h2v6.25a.25.25 0 0 1-.25.25h-2.5v-2.25A1.75 1.75 0 0 0 10 11.5H8a1.75 1.75 0 0 0-1.75 1.75v2.25h-1.5a.25.25 0 0 1-.25-.25zm3.25 10.25v-2a.25.25 0 0 1 .25-.25h2a.25.25 0 0 1 .25.25v2z" fill="currentColor"/></svg>',
   accounts: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3.25a2.75 2.75 0 1 0 0 5.5 2.75 2.75 0 0 0 0-5.5M6 14a3.5 3.5 0 0 1 7 0v1.25a.75.75 0 0 0 1.5 0V14a5 5 0 1 0-10 0v1.25a.75.75 0 0 0 1.5 0zm8.75-7.5a2 2 0 1 0 0 4 2 2 0 0 0 0-4m-.75 6.25a.75.75 0 0 0 0 1.5h2.25a.75.75 0 0 0 0-1.5z" fill="currentColor"/></svg>',
   knowledge: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4.75 3.25A1.75 1.75 0 0 0 3 5v10a1.75 1.75 0 0 0 1.75 1.75H15a.75.75 0 0 0 0-1.5H4.75a.25.25 0 0 1-.25-.25v-1.25h9.75A1.75 1.75 0 0 0 16 12V5a1.75 1.75 0 0 0-1.75-1.75zm.25 1.5h9.25a.25.25 0 0 1 .25.25v7a.25.25 0 0 1-.25.25H5zM6.75 7a.75.75 0 0 0 0 1.5h6.5a.75.75 0 0 0 0-1.5m-1 3a.75.75 0 0 0 0 1.5h4.5a.75.75 0 0 0 0-1.5z" fill="currentColor"/></svg>',
-  ops: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M11.8 3.52a.75.75 0 0 0-.92.53l-.45 1.67a4.8 4.8 0 0 0-1.52.45L7.7 5.04a.75.75 0 0 0-1.03.03L5.1 6.64a.75.75 0 0 0-.03 1.03l1.13 1.2a4.8 4.8 0 0 0-.45 1.52l-1.67.45a.75.75 0 0 0-.53.92l.43 1.64a.75.75 0 0 0 .92.53l1.67-.45c.36.54.82 1 1.36 1.36l-.45 1.67a.75.75 0 0 0 .53.92l1.64.43a.75.75 0 0 0 .92-.53l.45-1.67a4.8 4.8 0 0 0 1.52-.45l1.2 1.13a.75.75 0 0 0 1.03-.03l1.57-1.57a.75.75 0 0 0 .03-1.03l-1.13-1.2c.2-.48.35-.98.45-1.52l1.67-.45a.75.75 0 0 0 .53-.92l-.43-1.64a.75.75 0 0 0-.92-.53l-1.67.45a4.8 4.8 0 0 0-1.36-1.36l.45-1.67a.75.75 0 0 0-.53-.92zM10 8a2 2 0 1 1 0 4 2 2 0 0 1 0-4" fill="currentColor"/></svg>'
+  ops: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M11.8 3.52a.75.75 0 0 0-.92.53l-.45 1.67a4.8 4.8 0 0 0-1.52.45L7.7 5.04a.75.75 0 0 0-1.03.03L5.1 6.64a.75.75 0 0 0-.03 1.03l1.13 1.2a4.8 4.8 0 0 0-.45 1.52l-1.67.45a.75.75 0 0 0-.53.92l.43 1.64a.75.75 0 0 0 .92.53l1.67-.45c.36.54.82 1 1.36 1.36l-.45 1.67a.75.75 0 0 0 .53.92l1.64.43a.75.75 0 0 0 .92-.53l.45-1.67a4.8 4.8 0 0 0 1.52-.45l1.2 1.13a.75.75 0 0 0 1.03-.03l1.57-1.57a.75.75 0 0 0 .03-1.03l-1.13-1.2c.2-.48.35-.98.45-1.52l1.67-.45a.75.75 0 0 0 .53-.92l-.43-1.64a.75.75 0 0 0-.92-.53l-1.67.45a4.8 4.8 0 0 0-1.36-1.36l.45-1.67a.75.75 0 0 0-.53-.92zM10 8a2 2 0 1 1 0 4 2 2 0 0 1 0-4" fill="currentColor"/></svg>',
+  database: '<svg viewBox="0 0 20 20" aria-hidden="true"><ellipse cx="10" cy="5" rx="6" ry="2.2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M4 5v10c0 1.2 2.7 2.2 6 2.2s6-1 6-2.2V5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M4 10c0 1.2 2.7 2.2 6 2.2s6-1 6-2.2" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>'
 };
 const initialSection = sections.includes(location.hash.slice(1)) ? location.hash.slice(1) : (sections.includes(localStorage.getItem("maclaw.admin.section")) ? localStorage.getItem("maclaw.admin.section") : "overview");
 const state = { locale: localStorage.getItem("maclaw.admin.locale") || "zh-CN", token: localStorage.getItem("maclaw.admin.token") || "", section: initialSection, sectionChanged: false, me: null, pendingRiskFilter: null, pendingRequests: 0, knowledgeTenantNames: {}, knowledgeUserNames: {}, locales: [{locale:"zh-CN",label:"zh-CN"},{locale:"en-US",label:"English"}] };
@@ -1130,7 +1167,7 @@ async function loadLocales(){ if(!state.token) return; const out=await api("/api
 async function startup(){ renderShell(); try{ const bs=await api("/api/v1/admin/bootstrap/status",{headers:{}}); applyLocaleMetadata(bs); if(!bs.initialized){ hideMain(true); renderBootstrap(bs); return; } }catch(e){} if(state.token){ await loadMe().catch(()=>{state.me=null; state.token=""; localStorage.removeItem("maclaw.admin.token");}); await loadLocales().catch(()=>{}); } render(); }
 function hideMain(authOnly=false){ setAuthShell(authOnly); $("content").innerHTML=""; $("content").className="content"; $("loginPanel").classList.add("hidden"); $("bootstrapPanel").classList.add("hidden"); renderShell(); }
 function clearTransientAdminModals(){ document.querySelectorAll("#credentialModalBackdrop,.tenant-users-modal,.admin-result-modal").forEach(el=>{ const backdrop=el.id==="credentialModalBackdrop"?el:el.closest(".modal-backdrop"); backdrop?.remove(); }); }
-async function render(){ clearTransientAdminModals(); hideMain(!state.token); if(!state.token){ renderLogin(); return; } renderShell(); $("content").setAttribute("aria-busy","true"); $("content").innerHTML=`<div class="card loading-card"><div class="skeleton skeleton-title"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line short"></div></div>`; const f={overview,sandbox,logs,config,clientConfig,aiModels,tenants,accounts,knowledge,ops}[state.section] || overview; try{ await f(); applyOwnerGuards(); enhanceA11y(); if(state.sectionChanged){ $("main")?.focus({preventScroll:true}); state.sectionChanged=false; } }catch(e){ if(e.status===401){state.token="";localStorage.removeItem("maclaw.admin.token");hideMain(true);renderLogin();return;} $("content").innerHTML=`<div class="panel error-panel"><h2>${t("failed")}</h2><pre class="code">${esc(e.message)}\n${esc(pretty(e.body||{}))}</pre></div>`; enhanceA11y(); if(state.sectionChanged){ $("main")?.focus({preventScroll:true}); state.sectionChanged=false; } } }
+async function render(){ clearTransientAdminModals(); hideMain(!state.token); if(!state.token){ renderLogin(); return; } renderShell(); $("content").setAttribute("aria-busy","true"); $("content").innerHTML=`<div class="card loading-card"><div class="skeleton skeleton-title"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line short"></div></div>`; const f={overview,sandbox,logs,config,clientConfig,aiModels,tenants,accounts,knowledge,database,ops}[state.section] || overview; try{ await f(); applyOwnerGuards(); enhanceA11y(); if(state.sectionChanged){ $("main")?.focus({preventScroll:true}); state.sectionChanged=false; } }catch(e){ if(e.status===401){state.token="";localStorage.removeItem("maclaw.admin.token");hideMain(true);renderLogin();return;} $("content").innerHTML=`<div class="panel error-panel"><h2>${t("failed")}</h2><pre class="code">${esc(e.message)}\n${esc(pretty(e.body||{}))}</pre></div>`; enhanceA11y(); if(state.sectionChanged){ $("main")?.focus({preventScroll:true}); state.sectionChanged=false; } } }
 async function overview(){ setTitle(t("overview"), t("overviewHint")); const [rt,dash,ready,scheduler,jobs,security,tenantsResp,usersResp]=await Promise.all([api("/api/v1/admin/runtime/status"),api("/api/v1/admin/dashboard").catch(e=>({error:e.message})),api("/api/v1/admin/system/readiness"),api("/api/v1/admin/scheduler/status").catch(e=>({error:e.message,recent_tasks:[]})),api("/api/v1/admin/jobs?limit=50").catch(e=>({error:e.message,items:[]})),api("/api/v1/admin/security/summary").catch(e=>({error:e.message,status:"unknown",counts:{},recent:[]})),api("/api/v1/admin/tenants?limit=500").catch(e=>({error:e.message,items:[]})),api("/api/v1/admin/users?limit=500").catch(e=>({error:e.message,items:[]}))]); const tenantItems=tenantsResp.items||[]; const userItems=usersResp.items||[]; $("content").innerHTML=pageShell("dashboard-page",`<div class="grid dashboard-hero-grid"><div class="card metric"><span>${t("runtimeLabel")}</span><b class="${rt.readiness?.status==='ok'||rt.ready?"status-ok":"status-warn"}">${esc(cellText("status",rt.readiness?.status||rt.status||rt.ready))}</b><span>${esc(ready.summary||ready.status||"")}</span></div><div class="card metric"><span>${t("sandbox")}</span><b>${esc(rt.sandbox?.effective_backend||rt.sandbox?.mode||"-")}</b><span>${esc(cellText("status",rt.last_sandbox_report?.status||t("noReport")))}</span></div><div class="card metric"><span>${t("jobs")}</span><b>${esc(Object.values(rt.jobs||{}).reduce((a,b)=>a+b,0))}</b><span>${esc(t("runningCount",{count:(jobs.items||[]).filter(x=>x.status==="running").length}))}</span></div><div class="card metric"><span>${t("security")}</span><b class="${security.status==='ok'?'status-ok':'status-warn'}">${esc(cellText("status",security.status||t("unknown")))}</b><span>${esc(t("highMedium",{high:security.counts?.high||0,medium:security.counts?.medium||0}))}</span></div></div><div class="card stack">${sectionHead(t("securityRisks"), t("overviewHint"))}${riskFilterSummary(security)}<h3>${t("bySeverity")}</h3>${riskCountChips(security.counts,"severity")}<h3>${t("byKind")}</h3>${riskCountChips(security.kind_counts)}${riskEventsTable(security.recent||[])}</div><div class="split dashboard-detail-split"><div class="card stack">${sectionHead(t("asyncJobs"), t("jobs"))}<div class="row"><select id="jobStatus"><option value="">${t("allOption")}</option>${localizedOptions(["pending","running","succeeded","failed","canceled"])}</select><input id="jobKind" placeholder="${t("kindPlaceholder")}">${tenantSelect("jobTenant",tenantItems)}${userSelect("jobUser",userItems,"","tenantUser")}<button id="loadJobs">${t("refresh")}</button></div><div id="jobsTable">${jobTable(jobs.items||[])}</div></div><div class="card stack">${sectionHead(t("scheduler"), t("nextRunAt"))}<div class="row muted"><span>${t("tasks")||"tasks"}: <b>${esc(scheduler.task_count??0)}</b></span><span>${t("push")||"push"}: <b>${esc(scheduler.delivery_enabled??0)}</b></span><span class="${(scheduler.delivery_warnings||0)>0?'status-warn':''}">${t("pushWarn")||"push warn"}: <b>${esc(scheduler.delivery_warnings??0)}</b></span><select id="deliveryTargetChannel"><option value="lansenger">lansenger</option><option value="weixin">weixin</option><option value="telegram">telegram</option><option value="qq">qq</option></select><input id="deliveryTargetQuery" placeholder="${t("query")||"query"}"><button class="secondary" id="loadDeliveryTargets" type="button">${t("listTargets")||"list targets"}</button><button class="secondary" id="loadDeliveryAudit" type="button">${t("deliveryAudit")||"delivery audit"}</button><button class="secondary" id="refreshSchedulerTasks" type="button">${t("refresh")||"refresh"}</button></div><div id="deliveryTargetsOut" class="panel stack hidden"></div><div id="deliveryAuditOut" class="panel stack hidden"></div><div id="schedulerTasksTable">${schedulerTaskTable(scheduler.recent_tasks||[])}</div></div></div><div class="card stack">${sectionHead(t("serviceSupportBundle"), t("opsHint"),`<div class="row section-actions"><button class="secondary" id="runRuntimeGC">${t("runGC")}</button><button class="secondary" id="viewGoroutines">${t("goroutines")}</button><button class="secondary" id="downloadGoroutines">${t("downloadGoroutines")}</button><button class="secondary" id="viewHeapProfile">${t("heapProfile")}</button><button class="secondary" id="downloadHeapProfile">${t("downloadHeapProfile")}</button><button class="secondary" id="serviceSupportBundle">${t("serviceSupportBundle")}</button><button class="secondary" id="serviceSupportBundleDownload">${t("download")}</button></div>`)}<p class="muted">${t("serviceSupportBundle")}</p></div>`); syncTenantFromUser("jobUser","jobTenant"); bindJobActions(); bindRiskCountChips(); bindRiskEventActions(security.recent||[]); $("runRuntimeGC").onclick=async()=>{await api("/api/v1/admin/runtime/gc",{method:"POST"}); toast(t("loaded"));}; $("viewGoroutines").onclick=()=>downloadAdmin("/api/v1/admin/runtime/goroutines?debug=2&download=true","goroutines.txt").catch(e=>toast(`${t("failed")}: ${e.message}`)); $("downloadGoroutines").onclick=()=>downloadAdmin("/api/v1/admin/runtime/goroutines?debug=2&download=true","goroutines.txt").catch(e=>toast(`${t("failed")}: ${e.message}`)); $("viewHeapProfile").onclick=()=>downloadAdmin("/api/v1/admin/runtime/profiles/heap?debug=1&gc=true&download=true","heap.txt").catch(e=>toast(`${t("failed")}: ${e.message}`)); $("downloadHeapProfile").onclick=()=>downloadAdmin("/api/v1/admin/runtime/profiles/heap?debug=1&gc=true&download=true","heap.txt").catch(e=>toast(`${t("failed")}: ${e.message}`)); $("serviceSupportBundle").onclick=async()=>showAdminResult(t("serviceSupportBundle"),await api("/api/v1/admin/support-bundle")); $("serviceSupportBundleDownload").onclick=()=>downloadAdmin("/api/v1/admin/support-bundle?download=true","maclaw-support-bundle.json").catch(e=>toast(`${t("failed")}: ${e.message}`)); $("loadJobs").onclick=async()=>{const q=new URLSearchParams({limit:"50"}); if($("jobStatus").value) q.set("status",$("jobStatus").value); if($("jobKind").value) q.set("kind",$("jobKind").value); const ids=tenantUserValue("jobTenant","jobUser"); if(ids.tenant) q.set("tenant_id",ids.tenant); if(ids.user) q.set("user_id",ids.user); const out=await api(`/api/v1/admin/jobs?${q}`); $("jobsTable").innerHTML=jobTable(out.items||[]); bindJobActions(); applyOwnerGuards(); toast(`${t("loaded")}: ${out.items?.length||0} ${t("jobs")}`);}; if($("loadDeliveryTargets")) $("loadDeliveryTargets").onclick=async()=>{const ch=($("deliveryTargetChannel")?.value||"lansenger").trim(); const q=($("deliveryTargetQuery")?.value||"").trim(); const qs=new URLSearchParams({channel:ch}); if(q) qs.set("query",q); const out=await api(`/api/v1/admin/scheduler/delivery-targets?${qs}`).catch(e=>({error:e.message,text:String(e.message||e)})); const el=$("deliveryTargetsOut"); if(!el) return; el.classList.remove("hidden"); el.innerHTML=`<pre class="code">${esc(out.text||pretty(out))}</pre>`;}; if($("loadDeliveryAudit")) $("loadDeliveryAudit").onclick=async()=>{const out=await api("/api/v1/admin/scheduler/delivery-audit?limit=50").catch(e=>({error:e.message,items:[]})); const el=$("deliveryAuditOut"); if(!el) return; el.classList.remove("hidden"); el.innerHTML=table(out.items||[],["time","task_name","channel","ok","peer","error"],null);}; if($("refreshSchedulerTasks")) $("refreshSchedulerTasks").onclick=async()=>{const out=await api("/api/v1/admin/scheduler/tasks").catch(e=>({error:e.message,items:[]})); const box=$("schedulerTasksTable"); if(box){ box.innerHTML=schedulerTaskTable(out.items||[]); bindSchedulerTaskActions(); applyOwnerGuards(); toast(`${t("loaded")}: ${out.items?.length||0}`); }}; bindSchedulerTaskActions(); }
 function summarizeTaskPush(t){ if(!t||!t.delivery||!t.delivery.enabled) return "-"; const ch=t.delivery.channel||"lansenger"; const n=(t.delivery.targets||[]).length; let st="pending"; if(String(t.last_result||"").includes("[投递警告]")) st="warn"; else if(t.run_count>0&&!t.last_error) st="ok"; else if(t.last_error) st="err"; return `${ch}×${n} ${st}`; }
 function schedulerTaskTable(items){ const rows=(items||[]).map(t=>({id:t.id,name:t.name,status:t.status,push:summarizeTaskPush(t),next_run_at:t.next_run_at,last_error:t.last_error,_raw:t})); return table(rows,["id","name","status","push","next_run_at","last_error"],x=>{ const st=String(x.status||""); const pauseLabel=st==="active"?(t("pause")||"pause"):(t("resume")||"resume"); const pauseAttr=st==="active"?"data-sch-pause":"data-sch-resume"; return `<button class="secondary" data-sch-trigger="${esc(x.id)}">${t("run")||"run"}</button> <button class="secondary" ${pauseAttr}="${esc(x.id)}">${pauseLabel}</button> <button class="danger" data-sch-del="${esc(x.id)}">${t("delete")||"del"}</button>`; }); }
@@ -1516,6 +1553,163 @@ function bindKnowledgeActions(sources,publicLibraries,sharedCfg){
   $('saveSkillUser').onclick=run(async()=>{ const ids=requireSkillUserIds(); if(!ids) return; saveOK(await api(`/api/v1/admin/skill-sources/tenants/${encodeURIComponent(ids.tenant)}/users/${encodeURIComponent(ids.user)}`,{method:'PUT',body:JSON.stringify(skillSourceBody('skillUserCfg',sources))})); });
   $('resolveSkillUser').onclick=run(async()=>{ const ids=requireSkillUserIds(); if(!ids) return; show(await api(`/api/v1/admin/skill-sources/tenants/${encodeURIComponent(ids.tenant)}/users/${encodeURIComponent(ids.user)}/resolve`)); });
   $('deleteSkillUser').onclick=run(async()=>{ const ids=requireSkillUserIds(); if(!ids) return; if(await confirmDanger(t("deleteSkillUserConfirm"))) saveOK(await api(`/api/v1/admin/skill-sources/tenants/${encodeURIComponent(ids.tenant)}/users/${encodeURIComponent(ids.user)}`,{method:'DELETE'})); });
+}
+async function database(){
+  setTitle(t("database"), t("databaseHint"));
+  const [tenantsResp, usersResp] = await Promise.all([
+    api("/api/v1/admin/tenants?limit=500").catch(e=>({error:e.message,items:[]})),
+    api("/api/v1/admin/users?limit=500").catch(e=>({error:e.message,items:[]}))
+  ]);
+  const tenantItems=tenantsResp.items||[];
+  const userItems=usersResp.items||[];
+  const types=["mysql","postgres","sqlserver","access","excel"];
+  const tlsModes=["","disable","require","verify-full"];
+  const classes=["","public","internal","confidential","restricted"];
+  $("content").innerHTML=pageShell("database-page", `${sectionHead(t("database"), t("databaseHint"))}<div class="card stack"><div class="row">${tenantSelect("dbTenant",tenantItems)}${userSelect("dbUser",userItems,"","tenantUser")}<button id="loadDbProfiles">${t("refresh")}</button><button class="secondary" id="dbDisable">${t("databaseKillSwitch")}</button><button class="secondary" id="dbEnable">${t("databaseEnable")}</button></div><div id="dbMetrics" class="muted"></div><div id="dbProfiles">${emptyState(t("loaded"))}</div></div><div class="card stack">${sectionHead(t("databaseNew"), t("databaseSecretRefHint"), `<div class="row section-actions"><button id="dbProfileNew">${t("databaseNew")}</button><button id="dbProfileSave">${t("save")}</button><button class="secondary" id="dbProfileRotate">${t("databaseRotateSecret")}</button></div>`)}<div class="form-grid"><input id="dbId" placeholder="id"><input id="dbName" placeholder="${t("name")}"><select id="dbType">${types.map(x=>`<option value="${x}">${x}</option>`).join("")}</select><input id="dbHost" placeholder="${t("hostLabel")}"><input id="dbPort" placeholder="${t("portLabel")}" inputmode="numeric"><input id="dbDatabase" placeholder="database"><input id="dbUsername" placeholder="${t("usernameLabel")}"><input id="dbSSHSession" placeholder="ssh_session_id"><input id="dbReplicaHost" placeholder="replica_host"><input id="dbReplicaPort" placeholder="replica_port" inputmode="numeric"><input id="dbReplicaSSH" placeholder="replica_ssh_session_id"><input id="dbSecretRef" placeholder="${t("databaseSecretRef")}"><input id="dbFilePath" placeholder="${t("databaseFilePath")}"><input id="dbSheet" placeholder="${t("databaseSheet")}"><select id="dbTls">${tlsModes.map(x=>`<option value="${x}">${x||t("databaseTLS")}</option>`).join("")}</select><select id="dbClass">${classes.map(x=>`<option value="${x}">${x||t("databaseClass")}</option>`).join("")}</select><label class="row"><input id="dbRO" type="checkbox" class="w-auto" checked> RO</label><label class="row"><input id="dbRW" type="checkbox" class="w-auto"> RW</label><label class="row"><input id="dbPublic" type="checkbox" class="w-auto"> ${t("databasePublic")}</label><label class="row"><input id="dbDDL" type="checkbox" class="w-auto"> ${t("databaseDDL")}</label><label class="row"><input id="dbDisabled" type="checkbox" class="w-auto"> ${t("disabledState")}</label></div></div><div class="card stack">${sectionHead(t("databaseReceipt"), t("databaseReceiptHint"), `<div class="row section-actions"><button id="dbReceiptLookup">${t("databaseReceipt")}</button></div>`)}<div class="row"><input id="dbReceiptId" placeholder="receipt_id"></div></div>`);
+  let loadedProfiles=[];
+  const scopeQuery=()=>{
+    const ids=tenantUserValue("dbTenant","dbUser");
+    if(!ids.tenant||!ids.user) return "";
+    return new URLSearchParams({tenant_id:ids.tenant,user_id:ids.user}).toString();
+  };
+  const clearForm=()=>{
+    ["dbId","dbName","dbHost","dbPort","dbDatabase","dbUsername","dbSSHSession","dbReplicaHost","dbReplicaPort","dbReplicaSSH","dbSecretRef","dbFilePath","dbSheet"].forEach(id=>{ if($(id)) $(id).value=""; });
+    if($("dbId")) $("dbId").readOnly=false;
+    if($("dbType")) $("dbType").value="mysql";
+    if($("dbTls")) $("dbTls").value="";
+    if($("dbClass")) $("dbClass").value="";
+    if($("dbRO")) $("dbRO").checked=true;
+    if($("dbRW")) $("dbRW").checked=false;
+    if($("dbPublic")) $("dbPublic").checked=false;
+    if($("dbDDL")) $("dbDDL").checked=false;
+    if($("dbDisabled")) $("dbDisabled").checked=false;
+  };
+  const fillForm=(p)=>{
+    $("dbId").value=p.id||"";
+    $("dbId").readOnly=true;
+    $("dbName").value=p.name||"";
+    $("dbType").value=p.type||"mysql";
+    $("dbHost").value=p.host||"";
+    $("dbPort").value=p.port||"";
+    $("dbDatabase").value=p.database||"";
+    $("dbUsername").value=p.username||"";
+    if($("dbSSHSession")) $("dbSSHSession").value=p.ssh_session_id||"";
+    if($("dbReplicaHost")) $("dbReplicaHost").value=p.replica_host||"";
+    if($("dbReplicaPort")) $("dbReplicaPort").value=p.replica_port||"";
+    if($("dbReplicaSSH")) $("dbReplicaSSH").value=p.replica_ssh_session_id||"";
+    $("dbSecretRef").value="";
+    $("dbFilePath").value="";
+    $("dbSheet").value=p.sheet||"";
+    $("dbTls").value=p.tls_mode||"";
+    $("dbClass").value=p.data_classification||"";
+    $("dbRO").checked=p.read_only!==false;
+    $("dbRW").checked=!!p.write_enabled;
+    $("dbPublic").checked=!!p.allow_external_host;
+    $("dbDDL").checked=!!p.allow_ddl;
+    $("dbDisabled").checked=!!p.disabled;
+  };
+  const readForm=()=>{
+    const body={
+      id:($("dbId").value||"").trim(),
+      name:($("dbName").value||"").trim(),
+      type:$("dbType").value||"mysql",
+      host:($("dbHost").value||"").trim(),
+      database:($("dbDatabase").value||"").trim(),
+      username:($("dbUsername").value||"").trim(),
+      ssh_session_id:(($("dbSSHSession")||{}).value||"").trim(),
+      replica_host:(($("dbReplicaHost")||{}).value||"").trim(),
+      replica_ssh_session_id:(($("dbReplicaSSH")||{}).value||"").trim(),
+      sheet:($("dbSheet").value||"").trim(),
+      file_path:($("dbFilePath").value||"").trim(),
+      read_only:!!$("dbRO").checked,
+      write_enabled:!!$("dbRW").checked,
+      allow_external_host:!!$("dbPublic").checked,
+      allow_ddl:!!$("dbDDL").checked,
+      disabled:!!$("dbDisabled").checked
+    };
+    const port=Number(($("dbPort").value||"").trim());
+    if(port>0) body.port=port;
+    const replicaPort=Number((($("dbReplicaPort")||{}).value||"").trim());
+    if(replicaPort>0) body.replica_port=replicaPort;
+    const secret=($("dbSecretRef").value||"").trim();
+    if(secret) body.secret_ref=secret;
+    const tls=($("dbTls").value||"").trim();
+    if(tls) body.tls={mode:tls};
+    const klass=($("dbClass").value||"").trim();
+    if(klass) body.data_classification=klass;
+    Object.keys(body).forEach(k=>{ if(body[k]==="" ) delete body[k]; });
+    return body;
+  };
+  const bindProfileActions=()=>{
+    document.querySelectorAll("[data-db-edit]").forEach(b=>b.onclick=()=>{
+      const p=loadedProfiles.find(x=>x.id===b.dataset.dbEdit);
+      if(p) fillForm(p);
+    });
+    document.querySelectorAll("[data-db-test]").forEach(b=>b.onclick=async()=>{
+      const qs=scopeQuery(); if(!qs){ toast(t("requiredField")); return; }
+      showAdminResult(t("databaseTest"), await api(`/api/v1/admin/database/profiles/${encodeURIComponent(b.dataset.dbTest)}/test?${qs}`,{method:"POST",body:"{}"}));
+    });
+    document.querySelectorAll("[data-db-del]").forEach(b=>b.onclick=async()=>{
+      if(!await confirmDanger(t("databaseDeleteConfirm"))) return;
+      const qs=scopeQuery(); if(!qs){ toast(t("requiredField")); return; }
+      await api(`/api/v1/admin/database/profiles/${encodeURIComponent(b.dataset.dbDel)}?${qs}&confirm=true`,{method:"DELETE"});
+      toast(t("saved"));
+      await load();
+    });
+  };
+  const load=async()=>{
+    const qs=scopeQuery();
+    if(!qs){ toast(t("requiredField")); return; }
+    const [profiles, metrics]=await Promise.all([
+      api(`/api/v1/admin/database/profiles?${qs}`),
+      api(`/api/v1/admin/database/metrics?${qs}`).catch(()=>({metrics:{}}))
+    ]);
+    loadedProfiles=profiles.items||[];
+    $("dbMetrics").textContent=pretty(metrics.metrics||metrics);
+    $("dbProfiles").innerHTML=table(loadedProfiles, ["id","name","type","status","host","database","read_only","write_enabled","disabled"], x=>`<button class="secondary" data-db-edit="${esc(x.id)}">${t("view")}</button> <button class="secondary" data-db-test="${esc(x.id)}">${t("databaseTest")}</button> <button class="danger" data-db-del="${esc(x.id)}">${t("delete")}</button>`);
+    bindProfileActions();
+  };
+  $("loadDbProfiles").onclick=()=>load().catch(e=>toast(`${t("failed")}: ${e.message}`));
+  $("dbProfileNew").onclick=()=>clearForm();
+  $("dbProfileSave").onclick=async()=>{
+    try{
+      const qs=scopeQuery(); if(!qs){ toast(t("requiredField")); return; }
+      const body=readForm();
+      if(!body.id){ toast(t("requiredField")); return; }
+      await api(`/api/v1/admin/database/profiles?${qs}`,{method:"POST",body:JSON.stringify(body)});
+      toast(t("saved"));
+      $("dbSecretRef").value="";
+      await load();
+    }catch(e){ toast(`${t("failed")}: ${e.message}`); }
+  };
+  $("dbProfileRotate").onclick=async()=>{
+    try{
+      const qs=scopeQuery(); if(!qs){ toast(t("requiredField")); return; }
+      const id=($("dbId").value||"").trim();
+      const secret=($("dbSecretRef").value||"").trim();
+      if(!id||!secret){ toast(t("requiredField")); return; }
+      await api(`/api/v1/admin/database/profiles/${encodeURIComponent(id)}/rotate-secret?${qs}`,{method:"POST",body:JSON.stringify({secret_ref:secret})});
+      toast(t("saved"));
+      $("dbSecretRef").value="";
+      await load();
+    }catch(e){ toast(`${t("failed")}: ${e.message}`); }
+  };
+  $("dbReceiptLookup").onclick=async()=>{
+    try{
+      const qs=scopeQuery(); if(!qs){ toast(t("requiredField")); return; }
+      const id=($("dbReceiptId").value||"").trim();
+      if(!id){ toast(t("requiredField")); return; }
+      showAdminResult(t("databaseReceipt"), await api(`/api/v1/admin/database/receipts/${encodeURIComponent(id)}?${qs}`));
+    }catch(e){ toast(`${t("failed")}: ${e.message}`); }
+  };
+  const setEnabled=async(enabled)=>{
+    const qs=scopeQuery(); if(!qs){ toast(t("requiredField")); return; }
+    await api(`/api/v1/admin/database/runtime?${qs}`,{method:"POST",body:JSON.stringify({enabled})});
+    toast(t("saved"));
+    await load();
+  };
+  $("dbDisable").onclick=()=>setEnabled(false).catch(e=>toast(`${t("failed")}: ${e.message}`));
+  $("dbEnable").onclick=()=>setEnabled(true).catch(e=>toast(`${t("failed")}: ${e.message}`));
 }
 async function ops(){ setTitle(t("ops"), t("opsHint")); const [audit,snaps,risks,tenantsResp,usersResp,adminsResp]=await Promise.all([api("/api/v1/admin/audit-events?limit=50").catch(e=>({error:e.message,items:[]})),api("/api/v1/admin/snapshots?limit=50").catch(e=>({error:e.message,items:[]})),api("/api/v1/admin/security/risk-events?limit=50").catch(e=>({error:e.message,items:[]})),api("/api/v1/admin/tenants?limit=500").catch(e=>({error:e.message,items:[]})),api("/api/v1/admin/users?limit=500").catch(e=>({error:e.message,items:[]})),api("/api/v1/admin/auth/users").catch(e=>({error:e.message,items:[]}))]); const tenantItems=tenantsResp.items||[]; const userItems=usersResp.items||[]; const adminItems=adminsResp.items||[]; $("content").innerHTML=pageShell("ops-page",`<div class="ops-main-grid"><div class="card stack ops-risk-card">${sectionHead(t("riskEvents"), t("securityRisks"), `<div class="row section-actions"><button class="secondary" id="loadRisks">${t("refresh")}</button><button class="secondary" id="clearRiskFilters">${t("clear")}</button></div>`)}<div class="row ops-risk-filters"><select id="riskSeverity"><option value="">${t("all")}</option>${localizedOptions(["high","medium","low"],"severity")}</select><input id="riskKind" placeholder="${t("kindPlaceholder")}" list="riskKindOptions"><datalist id="riskKindOptions">${riskKindOptions(risks.kind_counts)}</datalist><input id="riskSince" type="datetime-local"><input id="riskUntil" type="datetime-local"><input id="riskLimit" type="number" min="1" max="500" value="50" class="w-narrow"></div><div class="row section-actions ops-risk-presets"><button class="secondary" data-risk-preset="1">1h</button><button class="secondary" data-risk-preset="24">24h</button><button class="secondary" data-risk-preset="168">7d</button><button class="secondary" data-risk-preset="all">${t("all")}</button></div><div id="riskFilterStatus" class="ops-risk-summary">${riskFilterSummary(risks)}</div><div class="ops-risk-meta"><div><h3>${t("bySeverity")}</h3><div id="riskSeverityCounts">${riskCountChips(risks.counts,"severity")}</div></div><div><h3>${t("byKind")}</h3><div id="riskKindCounts">${riskCountChips(risks.kind_counts)}</div></div></div><div id="riskEventsList" class="ops-risk-table">${riskEventsTable(risks.items||[])}</div></div><div class="card stack ops-snapshot-card">${sectionHead(t("snapshots"), t("restore"))}<div class="ops-snapshot-table">${snapshotTable(snaps.items||[])}</div></div></div><div class="ops-control-grid"><div class="card stack">${sectionHead(t("snapshots"), t("snapshotsHint"), `<div class="row section-actions"><button id="createSnapshot">${t("create")}</button><button class="secondary" id="refreshSnapshots">${t("refresh")}</button></div>`)}<div class="form-grid"><input id="snapshotName" placeholder="${t("name")}">${tenantSelect("snapshotTenant",tenantItems)}${userSelect("snapshotUser",userItems,"","tenantUser")}<label class="row"><input id="snapshotMessages" type="checkbox" checked class="w-auto"> ${t("messages")}</label><label class="row"><input id="snapshotRuns" type="checkbox" checked class="w-auto"> ${t("runs")}</label><label class="row"><input id="snapshotAudit" type="checkbox" checked class="w-auto"> ${t("audit")}</label><label class="row"><input id="snapshotSecrets" type="checkbox" class="w-auto"> ${t("secrets")}</label></div><details class="advanced-disclosure action-disclosure"><summary>${t("moreOptions")}</summary><p class="helper-text">${t("snapshotSecretPrompt")}</p><div class="row disclosure-actions"><input id="pruneKeep" type="number" value="10" class="w-narrow"><button class="warn" id="pruneSnapshots">${t("dryRun")}</button></div></details></div><div class="card stack">${sectionHead(t("audit"), t("opsHint"), `<div class="row section-actions"><button class="secondary" id="loadAudit">${t("refresh")}</button></div>`)}<div class="form-grid"><input id="auditAction" placeholder="${t("actionName")}">${tenantSelect("auditTenant",tenantItems)}${userSelect("auditUser",userItems,"","tenantUser")}${adminSelect("auditActorUser",adminItems)}<input id="auditLimit" type="number" value="50"></div></div><div class="card stack">${sectionHead(t("export"), t("messages"), `<div class="row section-actions"><button id="runExport">${t("export")}</button></div>`)}<div class="form-grid">${tenantSelect("exportTenant",tenantItems)}${userSelect("exportUser",userItems,"","tenantUser")}<label class="row"><input id="exportMessages" type="checkbox" checked class="w-auto"> ${t("messages")}</label><label class="row"><input id="exportRuns" type="checkbox" checked class="w-auto"> ${t("runs")}</label><label class="row"><input id="exportAudit" type="checkbox" checked class="w-auto"> ${t("audit")}</label><label class="row"><input id="exportSecrets" type="checkbox" class="w-auto"> ${t("secrets")}</label></div></div><div class="card stack subtle-card">${sectionHead(t("import"), t("importPreviewHint"), `<div class="row section-actions"><button id="runImport">${t("import")}</button></div>`)}<details class="advanced-disclosure technical-panel"><summary>${t("pasteData")}</summary><p class="helper-text">${t("importPayloadHint")}</p><textarea id="importText" class="quiet-editor" placeholder="${t("pasteExportedJSON")}"></textarea></details><div class="row info-strip"><label class="row"><input id="importOverwrite" type="checkbox" class="w-auto"> ${t("overwrite")}</label><label class="row"><input id="importDryRun" type="checkbox" checked class="w-auto"> ${t("dryRun")}</label></div></div></div>`); bindOpsSnapshotActions(); bindRiskEventActions(risks.items||[]); bindRiskCountChips(); $("loadRisks").onclick=loadRiskEventsFromFilters; $("clearRiskFilters").onclick=clearRiskFilters; document.querySelectorAll("[data-risk-preset]").forEach(btn=>btn.onclick=()=>setRiskTimePreset(btn.dataset.riskPreset==="all"?0:Number(btn.dataset.riskPreset))); syncTenantFromUser("auditUser","auditTenant"); syncTenantFromUser("exportUser","exportTenant"); syncTenantFromUser("snapshotUser","snapshotTenant"); applyPendingRiskFilter(); $("loadAudit").onclick=async()=>{const q=new URLSearchParams(); if($("auditAction").value) q.set("action",$("auditAction").value); const ids=tenantUserValue("auditTenant","auditUser"); if(ids.tenant) q.set("tenant_id",ids.tenant); if(ids.user) q.set("user_id",ids.user); if($("auditActorUser").value) q.set("actor_user_id",$("auditActorUser").value); let auditLimit; try{auditLimit=numberInRange("auditLimit",50,1,500);}catch{return;} q.set("limit",String(auditLimit)); showAdminResult(t("audit"),await api(`/api/v1/admin/audit-events?${q}`));}; $("runExport").onclick=async()=>{const q=exportParams("export"); if($("exportSecrets").checked){if(!await confirmPhrase(t("exportSecretPrompt"),"EXPORT SECRETS")) return; q.set("confirm","true");} showAdminResult(t("export"),await api(`/api/v1/admin/export?${q}`));}; $("runImport").onclick=async()=>{let data; try{data=parseJSONField("importText","{}");}catch{return;} const q=new URLSearchParams({overwrite:String($("importOverwrite").checked),dry_run:String($("importDryRun").checked)}); if(!$("importDryRun").checked){if(!await confirmPhrase(t("importRunPrompt"),"IMPORT STATE")) return; q.set("confirm","true");} showAdminResult(t("import"),await api(`/api/v1/admin/import?${q}`,{method:"POST",body:JSON.stringify({data,overwrite:$("importOverwrite").checked,dry_run:$("importDryRun").checked})}));}; $("createSnapshot").onclick=async()=>{const ids=tenantUserValue("snapshotTenant","snapshotUser"); const body={name:$("snapshotName").value,tenant_id:ids.tenant,user_id:ids.user,include_messages:$("snapshotMessages").checked,include_runs:$("snapshotRuns").checked,include_audit:$("snapshotAudit").checked,include_secrets:$("snapshotSecrets").checked}; let path="/api/v1/admin/snapshots"; if(body.include_secrets){if(!await confirmPhrase(t("snapshotSecretPrompt"),"SNAPSHOT SECRETS")) return; path+="?confirm=true";} showAdminResult(t("snapshots"),await api(path,{method:"POST",body:JSON.stringify(body)})); render();}; $("refreshSnapshots").onclick=()=>render(); $("pruneSnapshots").onclick=async()=>showAdminResult(t("snapshots"),await api("/api/v1/admin/snapshots/prune",{method:"POST",body:JSON.stringify({keep_latest:numberInRange("pruneKeep",10,1,1000),dry_run:true})})); }
 function exportParams(prefix){ const q=new URLSearchParams(); const ids=tenantUserValue(prefix+"Tenant",prefix+"User"); if(ids.tenant) q.set("tenant_id",ids.tenant); if(ids.user) q.set("user_id",ids.user); q.set("include_messages",String($(prefix+"Messages").checked)); q.set("include_runs",String($(prefix+"Runs").checked)); q.set("include_audit",String($(prefix+"Audit").checked)); q.set("include_secrets",String($(prefix+"Secrets").checked)); return q; }

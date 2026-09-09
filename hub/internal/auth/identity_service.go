@@ -267,9 +267,14 @@ func normalizeTenantIDValue(tenantID string) string {
 }
 
 type MachinePrincipal struct {
-	TenantID  string
-	UserID    string
-	MachineID string
+	TenantID         string
+	UserID           string
+	MachineID        string
+	ClientInstanceID string
+	// FencingToken is supplied only on cloud-workspace write requests. It is
+	// intentionally not part of the machine credential: the Hub issues it
+	// when a writer lease is acquired and validates it against that lease.
+	FencingToken int64
 }
 
 type MachineMetadata struct {

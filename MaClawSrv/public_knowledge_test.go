@@ -255,6 +255,92 @@ func TestAdminPublicKnowledgeCreateDeleteAndImportAudit(t *testing.T) {
 	}
 }
 
+func TestAdminPublicKnowledgeImportTextWithIdempotencyUsesDurableJob(t *testing.T) {
+	ctx := t.Context()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	defer svc.Close()
+	store, err := knowledge.NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	server := NewHTTPServer(svc, "admin-secret", &knowledgeStoreManager{store: store, access: newKnowledgeAccessService(newFileKVStore(filepath.Join(t.TempDir(), "knowledge_access.json")))})
+	defer server.Close()
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant A"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	createReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/public-knowledge-libraries", strings.NewReader(`{"tenant_id":"`+tenant.ID+`","name":"Ops Docs"}`))
+	createReq.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	createReq.Header.Set("Content-Type", "application/json")
+	createResp := httptest.NewRecorder()
+	server.Handler().ServeHTTP(createResp, createReq)
+	if createResp.Code != http.StatusCreated {
+		t.Fatalf("create library status = %d body=%s", createResp.Code, createResp.Body.String())
+	}
+	var library publicKnowledgeLibrary
+	if err := json.Unmarshal(createResp.Body.Bytes(), &library); err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/v1/admin/public-knowledge-libraries/" + library.ID + "/import/text"
+	request := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"text":"ops runbook","title":"Runbook"}`))
+		req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Idempotency-Key", "text-import-1")
+		resp := httptest.NewRecorder()
+		server.Handler().ServeHTTP(resp, req)
+		return resp
+	}
+	first := request()
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("first async import status = %d body=%s", first.Code, first.Body.String())
+	}
+	var firstOut struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal(first.Body.Bytes(), &firstOut); err != nil || firstOut.JobID == "" {
+		t.Fatalf("first response = %s", first.Body.String())
+	}
+	second := request()
+	if second.Code != http.StatusAccepted {
+		t.Fatalf("replay async import status = %d body=%s", second.Code, second.Body.String())
+	}
+	var secondOut struct {
+		JobID            string `json:"job_id"`
+		IdempotentReplay bool   `json:"idempotent_replay"`
+	}
+	if err := json.Unmarshal(second.Body.Bytes(), &secondOut); err != nil {
+		t.Fatal(err)
+	}
+	if secondOut.JobID != firstOut.JobID || !secondOut.IdempotentReplay {
+		t.Fatalf("replay response = %#v, first=%s", secondOut, first.Body.String())
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		job, found := server.jobs.getAnyJob(firstOut.JobID)
+		if found && job != nil && job.Status == asyncJobStatusSucceeded {
+			sources, listErr := store.ListSources(ctx, knowledge.ListSourcesOptions{TenantID: library.TenantID, OwnerID: library.OwnerID, Limit: 20})
+			if listErr != nil {
+				t.Fatal(listErr)
+			}
+			if len(sources) != 1 {
+				t.Fatalf("expected one imported source, got %d", len(sources))
+			}
+			events, auditErr := svc.ListAuditEvents(ctx, agentservice.ListAuditEventsInput{Action: "admin.public_knowledge_import_text"})
+			if auditErr != nil || len(events) != 1 {
+				t.Fatalf("expected one import audit, events=%#v err=%v", events, auditErr)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for async text import")
+}
+
 func TestAdminPublicKnowledgeCreateDuplicateIsIdempotent(t *testing.T) {
 	ctx := t.Context()
 	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
@@ -363,6 +449,139 @@ func TestAdminPublicKnowledgeImportFileAcceptsMultipleFiles(t *testing.T) {
 	}
 	if len(sources) != 2 {
 		t.Fatalf("expected two public sources from multi file import, got %#v", sources)
+	}
+}
+
+func TestAdminPublicKnowledgeImportURLsIsIdempotent(t *testing.T) {
+	ctx := t.Context()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	defer svc.Close()
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant A"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	store, err := knowledge.NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	access := newKnowledgeAccessService(newFileKVStore(filepath.Join(t.TempDir(), "knowledge_access.json")))
+	library, err := access.CreatePublicLibrary(ctx, tenant.ID, "Ops Docs")
+	if err != nil {
+		t.Fatalf("CreatePublicLibrary: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", &knowledgeStoreManager{store: store, access: access})
+	defer server.Close()
+	request := func() (int, map[string]any) {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/public-knowledge-libraries/"+library.ID+"/import/urls", strings.NewReader(`{"urls":["https://example.com/runbook"],"max_depth":0,"topic_hint":"ops","labels":"runbook"}`))
+		req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+		req.Header.Set("Idempotency-Key", "public-url-import-1")
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		server.Handler().ServeHTTP(w, req)
+		var out map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode URL import response: %v body=%s", err, w.Body.String())
+		}
+		return w.Code, out
+	}
+	firstStatus, first := request()
+	secondStatus, second := request()
+	if firstStatus != http.StatusAccepted || secondStatus != http.StatusAccepted {
+		t.Fatalf("unexpected URL import statuses: first=%d second=%d firstBody=%#v secondBody=%#v", firstStatus, secondStatus, first, second)
+	}
+	firstID, _ := first["job_id"].(string)
+	secondID, _ := second["job_id"].(string)
+	if firstID == "" || firstID != secondID || second["idempotent_replay"] != true {
+		t.Fatalf("expected idempotent replay, first=%#v second=%#v", first, second)
+	}
+	events, err := svc.ListAuditEvents(ctx, agentservice.ListAuditEventsInput{Action: "admin.public_knowledge_import_urls"})
+	if err != nil {
+		t.Fatalf("ListAuditEvents: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected one audit event for replayed URL import, got %#v", events)
+	}
+}
+
+func TestAdminPublicKnowledgeImportFileIsIdempotent(t *testing.T) {
+	ctx := t.Context()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	defer svc.Close()
+	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant A"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	store, err := knowledge.NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	access := newKnowledgeAccessService(newFileKVStore(filepath.Join(t.TempDir(), "knowledge_access.json")))
+	library, err := access.CreatePublicLibrary(ctx, tenant.ID, "Ops Docs")
+	if err != nil {
+		t.Fatalf("CreatePublicLibrary: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", &knowledgeStoreManager{store: store, access: access})
+	defer server.Close()
+	request := func() (int, map[string]any) {
+		var body bytes.Buffer
+		writer := multipart.NewWriter(&body)
+		part, err := writer.CreateFormFile("file", "runbook.txt")
+		if err != nil {
+			t.Fatalf("CreateFormFile: %v", err)
+		}
+		if _, err := part.Write([]byte("public idempotent runbook")); err != nil {
+			t.Fatalf("write multipart file: %v", err)
+		}
+		if err := writer.WriteField("topic_hint", "ops"); err != nil {
+			t.Fatalf("WriteField: %v", err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatalf("multipart close: %v", err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/public-knowledge-libraries/"+library.ID+"/import/file", &body)
+		req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+		req.Header.Set("Idempotency-Key", "public-file-import-1")
+		req.Header.Set("Content-Type", writer.FormDataContentType())
+		w := httptest.NewRecorder()
+		server.Handler().ServeHTTP(w, req)
+		var out map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode file import response: %v body=%s", err, w.Body.String())
+		}
+		return w.Code, out
+	}
+	firstStatus, first := request()
+	secondStatus, second := request()
+	if firstStatus != http.StatusAccepted || secondStatus != http.StatusAccepted {
+		t.Fatalf("unexpected file import statuses: first=%d second=%d firstBody=%#v secondBody=%#v", firstStatus, secondStatus, first, second)
+	}
+	firstID, _ := first["job_id"].(string)
+	secondID, _ := second["job_id"].(string)
+	if firstID == "" || firstID != secondID || second["idempotent_replay"] != true {
+		t.Fatalf("expected idempotent replay, first=%#v second=%#v", first, second)
+	}
+	waitForAdminJobSuccess(t, server, firstID)
+	sources, err := store.ListSources(ctx, knowledge.ListSourcesOptions{TenantID: library.TenantID, OwnerID: library.OwnerID, Limit: 10})
+	if err != nil {
+		t.Fatalf("ListSources: %v", err)
+	}
+	if len(sources) != 1 {
+		t.Fatalf("expected one source after idempotent file import, got %#v", sources)
+	}
+	events, err := svc.ListAuditEvents(ctx, agentservice.ListAuditEventsInput{Action: "admin.public_knowledge_import_file"})
+	if err != nil {
+		t.Fatalf("ListAuditEvents: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected one audit event for replayed file import, got %#v", events)
 	}
 }
 

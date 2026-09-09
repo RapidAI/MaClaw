@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
@@ -185,12 +186,12 @@ func reviewedHostDeliverableMedia(fileName, mimeType string) (name, canonicalMIM
 
 func reviewedHostDeliverableDocument(fileName, mimeType string) (name, canonicalMIME string, ok bool) {
 	name = filepath.Base(strings.TrimSpace(fileName))
-	format, canonicalMIME, ok := reviewedHostDocumentFormat(name, mimeType)
+	format, canonicalMIME, ok := agent.DocumentAttachmentFormat(name, mimeType)
 	if !ok {
 		return reviewedHostSpreadsheetFile(name)
 	}
 	if name == "" || name == "." {
-		name = "document" + reviewedHostDocumentTempSuffix("", format)
+		name = "document" + agent.DocumentAttachmentTempSuffix("", format)
 	}
 	return name, canonicalMIME, true
 }

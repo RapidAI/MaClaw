@@ -40,6 +40,7 @@ if ($failures.Count -eq 0) {
             'const esp_err_t peripheral_cleanup_err\s*=\s*round_peripheral_lifecycle_detach\(',
             'const esp_err_t codec_cleanup_err\s*=\s*round_audio_adapter_release_codecs\(',
             'const esp_err_t bus_cleanup_err\s*=\s*round_audio_adapter_delete_codec_bus\(',
+            'if \(lifecycle_err\s*!=\s*ESP_OK\)\s*return lifecycle_err',
             'peripheral_cleanup_err\s*!=\s*ESP_OK',
             'codec_cleanup_err\s*!=\s*ESP_OK')) {
         if ($adapterText -notmatch $required) { $failures += "codec teardown does not propagate peripheral cleanup evidence: $required" }
@@ -74,8 +75,63 @@ if ($failures.Count -eq 0) {
             'round_audio_lifecycle_recovery_status_to_esp_err\(result\.status\)',
             'remaining_after_audio_lock',
             'round_audio_lifecycle_recovery_remaining_timeout\(&context\)',
-            'round_audio_lifecycle_shared_bus_lock_for\(remaining_after_audio_lock\)')) {
+            'round_audio_lifecycle_shared_bus_lock_for\(remaining_after_audio_lock\)',
+            'round_audio_service_acquire_until\(context\.deadline_us\)',
+            'round_audio_service_acquire_until\s*\(uint64_t\s+deadline_us\)',
+            'round_audio_lifecycle_deadline_us\s*\(',
+            'UINT64_MAX\s*-\s*base\s*<\s*delta',
+            'remaining_us\s*/\s*1000u',
+            'remaining_us\s*%\s*1000u',
+            'timeout_ms\s*==\s*UINT32_MAX\s*\?\s*portMAX_DELAY')) {
         if ($audioText -notmatch $required) { $failures += "round Audio recovery wiring missing $required" }
+    }
+    foreach ($required in @(
+            'snapshot\.domain\.phase\s*==\s*FAULT_DOMAIN_UNKNOWN_OUTCOME',
+            'snapshot\.domain\.phase\s*==\s*FAULT_DOMAIN_QUIESCING',
+            'snapshot\.active_lease_count\s*!=\s*0u')) {
+        if ($audioText -notmatch $required) { $failures += "round Audio teardown admission fence missing $required" }
+    }
+    foreach ($required in @(
+            'static esp_err_t round_audio_service_release\(void\)',
+            'const esp_err_t release_err = round_audio_service_release\(\)',
+            'if \(release_err != ESP_OK\) return release_err',
+            'const esp_err_t cleanup_err = round_audio_service_release\(\)',
+            'if \(cleanup_err != ESP_OK\) return cleanup_err')) {
+        if ($audioText -notmatch $required) { $failures += "round Audio partial-initialization cleanup is not fail-closed: $required" }
+    }
+    foreach ($required in @(
+            'const esp_err_t release_err = round_audio_adapter_release\(\)',
+            'if \(release_err != ESP_OK\) return release_err')) {
+        if ($adapterText -notmatch $required) { $failures += "round Audio adapter initialization ignores cleanup failure: $required" }
+    }
+
+    # The adapter is a hardware source owner and cannot be linked into the
+    # value-only host tests. Keep a lexical regression here so a future edit
+    # cannot move any physical cleanup ahead of the lifecycle fence or call
+    # finish_teardown for the detached/no-handle path.
+    $releaseStart = $adapterText.IndexOf('static esp_err_t round_audio_adapter_release(')
+    $releaseEnd = $adapterText.IndexOf('static esp_err_t round_audio_adapter_initialize(', $releaseStart)
+    if ($releaseStart -lt 0 -or $releaseEnd -le $releaseStart) {
+        $failures += 'cannot locate round Audio adapter release transaction for ordering audit'
+    } else {
+        $releaseText = $adapterText.Substring($releaseStart, $releaseEnd - $releaseStart)
+        $fenceReturn = $releaseText.IndexOf('if (lifecycle_err != ESP_OK) return lifecycle_err')
+        $firstCleanup = $releaseText.IndexOf('round_audio_adapter_release_i2s()')
+        $finishGuard = $releaseText.IndexOf('if (lifecycle_teardown_active)')
+        $finishCall = $releaseText.IndexOf('round_audio_lifecycle_shared_bus_finish_teardown(cleanup_err)')
+        if ($fenceReturn -lt 0 -or $firstCleanup -lt 0 -or $fenceReturn -gt $firstCleanup) {
+            $failures += 'adapter physical cleanup must follow teardown ownership fence'
+        }
+        if ($finishGuard -lt 0 -or $finishCall -lt $finishGuard) {
+            $failures += 'adapter must finish shared-bus teardown only for an active fence'
+        }
+        $peripheralCleanup = $releaseText.IndexOf('round_peripheral_lifecycle_detach()')
+        $codecCleanup = $releaseText.IndexOf('round_audio_adapter_release_codecs()')
+        $busCleanup = $releaseText.IndexOf('round_audio_adapter_delete_codec_bus()')
+        if ($peripheralCleanup -lt 0 -or $codecCleanup -le $peripheralCleanup -or
+            $busCleanup -le $codecCleanup) {
+            $failures += 'adapter teardown must preserve peripheral -> codec -> bus cleanup order'
+        }
     }
 }
 

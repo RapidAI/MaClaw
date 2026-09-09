@@ -1,6 +1,13 @@
 import type { CSSProperties, ReactNode } from "react";
 
 export type ChatBubbleSide = "left" | "right";
+/**
+ * The ordinary chat layout keeps the speaker label above the bubble, while
+ * the execution layout puts the avatar beside the bubble.  Keep the two tail
+ * placements explicit so the decorative pointer can follow the speaker in
+ * either layout.
+ */
+export type ChatBubbleTailPlacement = "top" | "side";
 
 export interface ChatBubbleFrameProps {
     /**
@@ -19,6 +26,9 @@ export interface ChatBubbleFrameProps {
     children?: ReactNode;
     /** Hide the name-pointing tail (status chips with no speaker label). Default true. */
     showTail?: boolean;
+    /** Where the tail points: above the bubble (label-above layout) or out of
+     * the side toward the adjacent speaker avatar. */
+    tailPlacement?: ChatBubbleTailPlacement;
     /** Optional control(s) pinned to the bubble's top-right (e.g. copy reply). */
     topRight?: ReactNode;
 }
@@ -27,6 +37,21 @@ export interface ChatBubbleFrameProps {
 export const CHAT_BUBBLE_TAIL_SIZE = 10;
 /** How far the diamond sits above the bubble top edge (points at the speaker name). */
 export const CHAT_BUBBLE_TAIL_TOP = -6;
+/**
+ * WeChat-style side tail: an outlined up-pointing triangle sitting on the
+ * name-side top corner of the bubble. The outer (outline) layer's base lands
+ * exactly on the bubble's top border (TOP + HEIGHT === 0) so the outline
+ * never crosses below the border line; the inner fill runs 1px past it to
+ * hide the border under the tail.
+ */
+export const CHAT_BUBBLE_SIDE_TAIL_WIDTH = 12;
+export const CHAT_BUBBLE_SIDE_TAIL_HEIGHT = 8;
+export const CHAT_BUBBLE_SIDE_TAIL_TOP = -8;
+/** Distance from the name-aligned corner (left for peer, right for user). */
+export const CHAT_BUBBLE_SIDE_TAIL_INSET = 2;
+/** Corner-tail outline: a plain up-pointing triangle. */
+export const CHAT_BUBBLE_SIDE_TAIL_POLYGON =
+    "polygon(0 100%, 50% 0, 100% 100%)";
 /** Horizontal inset from the name-aligned edge (left for peer, right for user). */
 export const CHAT_BUBBLE_TAIL_INSET = 13;
 /**
@@ -85,15 +110,39 @@ export function sanitizeChatBubbleLayoutStyle(
 }
 
 /**
- * Top-pointing diamond under the speaker name — identical geometry to
- * AI assistant bubbles in `renderMessage` (aiAssistantMarkdown.tsx).
+ * Top-pointing diamond under the speaker name ("top") or a WeChat-style
+ * outlined triangle on the name-side top corner ("side", used by AI assistant
+ * bubbles in `renderMessage`).
  */
 export function chatBubbleTailStyle(
     side: ChatBubbleSide,
     background: string,
     borderColor: string,
+    placement: ChatBubbleTailPlacement = "top",
 ): CSSProperties {
     const isUser = side === "right";
+    if (placement === "side") {
+        // Outer layer of the corner tail: paints the outline in borderColor.
+        // The inner fill (chatBubbleSideTailFillStyle) sits 1px in and runs
+        // 1px below the base, so the bubble's top border is swallowed and the
+        // slopes keep a clean 1px outline.
+        const polygon = CHAT_BUBBLE_SIDE_TAIL_POLYGON;
+        return {
+            position: "absolute",
+            top: CHAT_BUBBLE_SIDE_TAIL_TOP,
+            width: CHAT_BUBBLE_SIDE_TAIL_WIDTH,
+            height: CHAT_BUBBLE_SIDE_TAIL_HEIGHT,
+            boxSizing: "border-box",
+            background: borderColor,
+            clipPath: polygon,
+            WebkitClipPath: polygon,
+            pointerEvents: "none",
+            zIndex: 0,
+            ...(isUser
+                ? { right: CHAT_BUBBLE_SIDE_TAIL_INSET }
+                : { left: CHAT_BUBBLE_SIDE_TAIL_INSET }),
+        };
+    }
     return {
         position: "absolute",
         top: CHAT_BUBBLE_TAIL_TOP,
@@ -107,11 +156,28 @@ export function chatBubbleTailStyle(
         transformOrigin: "center",
         borderRadius: "1px 0 0 0",
         pointerEvents: "none",
-        // Under in-flow text; above this bubble's background/border (see isolation).
+        // Keep the legacy label-above tail behind in-flow text; side (corner)
+        // tails use zIndex 0 so the fill paints over the bubble's top border.
         zIndex: -1,
         ...(isUser
             ? { right: CHAT_BUBBLE_TAIL_INSET }
             : { left: CHAT_BUBBLE_TAIL_INSET }),
+    };
+}
+
+/** Inner fill for the side (corner) tail: leaves a 1px outline on the slopes
+ * and tip while its base runs 1px past the outer base into the bubble. */
+export function chatBubbleSideTailFillStyle(background: string): CSSProperties {
+    return {
+        position: "absolute",
+        left: 1,
+        top: 1,
+        width: CHAT_BUBBLE_SIDE_TAIL_WIDTH - 2,
+        height: CHAT_BUBBLE_SIDE_TAIL_HEIGHT,
+        background,
+        clipPath: CHAT_BUBBLE_SIDE_TAIL_POLYGON,
+        WebkitClipPath: CHAT_BUBBLE_SIDE_TAIL_POLYGON,
+        pointerEvents: "none",
     };
 }
 
@@ -144,6 +210,7 @@ export function ChatBubbleFrame({
     tailTestId,
     children,
     showTail = true,
+    tailPlacement = "top",
     topRight,
 }: ChatBubbleFrameProps) {
     const { layoutStyle, padding, borderRadius } = sanitizeChatBubbleLayoutStyle(style, { showTail });
@@ -173,17 +240,27 @@ export function ChatBubbleFrame({
                     aria-hidden="true"
                     data-testid={resolvedTailTestId}
                     data-side={side}
-                    style={chatBubbleTailStyle(side, fill, stroke)}
-                />
+                    className="mc-chat-bubble-tail"
+                    style={chatBubbleTailStyle(side, fill, stroke, tailPlacement)}
+                >
+                    {tailPlacement === "side" && (
+                        <span
+                            aria-hidden="true"
+                            data-testid={resolvedTailTestId ? `${resolvedTailTestId}-fill` : undefined}
+                            style={chatBubbleSideTailFillStyle(fill)}
+                        />
+                    )}
+                </span>
             )}
             {topRight ? (
                 <div
+                    className="mc-chat-bubble-top-right"
                     data-testid={testId ? `${testId}-top-right` : undefined}
                     style={{
                         position: "absolute",
                         top: 4,
-                        right: 4,
-                        zIndex: 2,
+                        right: 8,
+                        zIndex: 3,
                         display: "flex",
                         alignItems: "center",
                         gap: 2,

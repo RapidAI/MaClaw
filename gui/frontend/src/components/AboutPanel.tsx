@@ -4,7 +4,6 @@ import { CreateMobileAuthDesktopQRSession, GetEmbedAccelInfo, GetHubUserRanking,
 import { QRCodeSVG } from 'qrcode.react';
 import { MouseEvent, useCallback, useEffect, useRef, useState } from 'react';
 import remarkGfm from 'remark-gfm';
-import rehypeRaw from 'rehype-raw';
 import { corelib, main } from '../../wailsjs/go/models';
 import { useSafeBackdropDismiss } from '../hooks/useSafeBackdropDismiss';
 import { remoteCardStyle, remoteMutedCardStyle, remoteSectionTitleStyle, remoteBodyTextStyle } from './remote/styles';
@@ -59,6 +58,22 @@ type AboutPanelProps = {
 const localHubCenterPattern = /(?:^|\/\/|\[)(?:127(?:\.\d{1,3}){3}|0\.0\.0\.0|::1|localhost)(?::|\]|\/|$)/i;
 const HUB_RANKING_REFRESH_INTERVAL_MS = 30 * 60_000;
 const HUB_RANKING_STARTUP_RETRY_DELAYS_MS = [30_000, 2 * 60_000, 8 * 60_000] as const;
+
+// publicHubCenterURL only surfaces a HubCenter origin that is safe to hand to
+// BrowserOpenURL / an <a href>. Synced from guiapp/ (D8, 2026-09-09): gui/ was
+// only checking loopback, so a config-injected `javascript:` URL would pass
+// through and execute in the Wails runtime.
+function publicHubCenterURL(value: unknown): string {
+    const raw = String(value || '').trim();
+    if (!raw || localHubCenterPattern.test(raw)) return '';
+    try {
+        const parsed = new URL(raw);
+        if ((parsed.protocol !== 'http:' && parsed.protocol !== 'https:') || !parsed.hostname || parsed.username || parsed.password) return '';
+        return raw;
+    } catch {
+        return '';
+    }
+}
 
 const phoneAccountPrefix = 'phone:';
 
@@ -262,15 +277,15 @@ export function AboutPanel({
     // remote_hubcenter_urls (discovery seeds / pollution) — matches
     // ConfiguredHubCenterBaseURL / RegisteredPublicHubCenterURLs.
     const hubCenterURL = (() => {
-        const preferred = String(config?.remote_hubcenter_url || '').trim();
-        if (preferred && !localHubCenterPattern.test(preferred)) return preferred;
+        const preferred = publicHubCenterURL(config?.remote_hubcenter_url);
+        if (preferred) return preferred;
         // Preferred unset (not loopback-local): allow first public list entry.
         if (!preferred) {
             const discoveredList = (config as any)?.remote_hubcenter_urls as string[] | undefined;
             if (Array.isArray(discoveredList) && discoveredList.length > 0) {
                 const publicURL = discoveredList.find(u => {
                     const trimmed = String(u || '').trim();
-                    return trimmed && !localHubCenterPattern.test(trimmed);
+                    return Boolean(publicHubCenterURL(trimmed));
                 });
                 if (publicURL) return String(publicURL).trim();
             }
@@ -550,7 +565,7 @@ export function AboutPanel({
     })();
 
     return (
-        <div className="about-page">
+        <div className="secondary-page-shell about-page">
             <div className="about-page__container">
                 <section className="about-hero-card" style={remoteCardStyle}>
                     <div className="about-hero-card__icon-wrap" style={remoteMutedCardStyle}>
@@ -731,7 +746,6 @@ export function AboutPanel({
                             <ReactMarkdown
                                 remarkPlugins={[remarkGfm]}
                                 // @ts-ignore
-                                rehypePlugins={[rehypeRaw]}
                                 components={{ a: MarkdownLink }}
                             >
                                 {thanksContent}

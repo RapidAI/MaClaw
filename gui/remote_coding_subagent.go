@@ -2179,17 +2179,13 @@ func (c *remoteCodingCallbacks) ensureLocalWorkbenchExtensions() {
 		return
 	}
 	c.localExtSelected = true
-	if c.agent == nil || c.agent.handler == nil {
-		return
-	}
-	// Reuse local CodingSubAgent skill/MCP selection in full-environment mode.
-	sa := &CodingSubAgent{handler: c.agent.handler, fullEnvironment: true}
-	cb := &codingSubAgentCallbacks{
-		subagent: sa,
-		task:     &TaskItem{Index: 1, Title: c.task, Description: c.task},
-	}
-	c.localExtSkills = cb.selectRelevantSkillsForTask(c.task)
-	c.localExtMCP = cb.selectRelevantMCPToolsForTask(c.task)
+	// Remote compatibility callbacks do not own a verified local task scope or
+	// host-admitted dynamic binding set. Calling the generic selectors here
+	// would turn a remote request into an all-catalog discovery path. Keep the
+	// extension surface empty until a correlated host plan is explicitly
+	// supplied through localWorkbenchCallbacks.
+	c.localExtSkills = nil
+	c.localExtMCP = nil
 }
 
 func (c *remoteCodingCallbacks) localWorkbenchCallbacks() *codingSubAgentCallbacks {
@@ -2199,11 +2195,12 @@ func (c *remoteCodingCallbacks) localWorkbenchCallbacks() *codingSubAgentCallbac
 	c.ensureLocalWorkbenchExtensions()
 	sa := &CodingSubAgent{handler: c.agent.handler, fullEnvironment: true}
 	return &codingSubAgentCallbacks{
-		subagent:        sa,
-		task:            &TaskItem{Index: 1, Title: c.task, Description: c.task},
-		matchedSkills:   c.localExtSkills,
-		matchedMCPTools: c.localExtMCP,
-		dynamicSurface:  c.dynamicSurface,
+		subagent:            sa,
+		task:                &TaskItem{Index: 1, Title: c.task, Description: c.task},
+		matchedSkills:       c.localExtSkills,
+		matchedMCPTools:     c.localExtMCP,
+		dynamicSurface:      c.dynamicSurface,
+		scopeBasedSelection: true,
 	}
 }
 

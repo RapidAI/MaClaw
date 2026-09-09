@@ -125,6 +125,26 @@ func TestQwenOpenAICompatNeedsConservativeSanitization(t *testing.T) {
 	}
 }
 
+func TestFirstPartyHubLLMSkipsCodeGenPromptRelocationIdentity(t *testing.T) {
+	hub := MaclawLLMConfig{URL: "https://hub.mypapers.top/api/llm/v1", Model: "auto"}
+	if !hub.IsFirstPartyHubLLM() {
+		t.Fatal("official Hub URL must be first-party")
+	}
+	if !hub.NeedsConservativeOpenAICompatSanitization() {
+		t.Fatal("official Hub still needs conservative tool-schema projection")
+	}
+	flagged := MaclawLLMConfig{URL: "https://example.test/v1", Model: "auto", HubManaged: true}
+	if !flagged.IsFirstPartyHubLLM() {
+		t.Fatal("HubManaged snapshot must be first-party even off the official URL")
+	}
+	if (MaclawLLMConfig{URL: "https://codegen.qianxin-inc.cn/api/v1", Model: "qax-codegen/Auto"}).IsFirstPartyHubLLM() {
+		t.Fatal("CodeGen is not first-party Hub")
+	}
+	if hub.ShouldSendWorkloadHints() != hub.IsFirstPartyHubLLM() || flagged.ShouldSendWorkloadHints() != flagged.IsFirstPartyHubLLM() {
+		t.Fatal("workload hints and first-party Hub identity must stay the same predicate")
+	}
+}
+
 func TestSanitizeCodeGenOpenAIChatToolsValue(t *testing.T) {
 	tools := SanitizeCodeGenOpenAIChatToolsValue([]interface{}{map[string]interface{}{
 		"type":                 "function",
@@ -408,6 +428,16 @@ func TestNormalizeLLMTokenPricePerMTokensRMBAllowsZero(t *testing.T) {
 	_, _, total := CalculateLLMCostRMB(1_000_000, 1_000_000, 0, 0)
 	if total != 0 {
 		t.Fatalf("zero token prices produced total cost %v, want 0", total)
+	}
+}
+
+func TestCalculateLLMCostRMBWithCacheSplitsAllDirections(t *testing.T) {
+	input, output, read, write, total := CalculateLLMCostRMBWithCache(
+		1_000_000, 500_000, 200_000, 100_000,
+		2, 4, 0.5, 1,
+	)
+	if input != 1.4 || output != 2 || read != 0.1 || write != 0.1 || total != 3.6 {
+		t.Fatalf("costs = input %.4f output %.4f read %.4f write %.4f total %.4f; want 1.4/2/0.1/0.1/3.6", input, output, read, write, total)
 	}
 }
 

@@ -57,6 +57,7 @@ func reviewedHostInvocationSchemas() map[string]map[string]interface{} {
 		"urllaunch":         reviewedHostURLLaunchInvocationSchema(),
 		"visualcapture":     reviewedHostVisualCaptureInvocationSchema(),
 		"webfetch":          reviewedHostWebFetchInvocationSchema(),
+		"websearch":         reviewedHostWebSearchInvocationSchema(),
 	}
 }
 
@@ -200,12 +201,36 @@ func TestReviewedHostSchemaGateCoversEveryAdapter(t *testing.T) {
 		t.Fatal("no reviewed host invocation schema was found, the coverage check is vacuous")
 	}
 	if len(declared) != len(reviewedHostInvocationSchemas()) {
+		// Report the real set difference. Printing every declared schema (the
+		// previous behaviour) buries the uncovered adapter among all the
+		// covered ones, which defeats the point of the check when the gate
+		// drifts. Gate keys ("websearch") and function names
+		// ("reviewedHostWebSearchInvocationSchema") do not match by string, so
+		// the referenced set is recovered from the map literal's own source.
+		referenced := make(map[string]bool)
+		if own, readErr := os.ReadFile("dynamic_host_schema_gate_test.go"); readErr == nil {
+			for _, match := range regexp.MustCompile(`(?m)^\s*"[^"]+"\s*:\s*(reviewedHost\w+InvocationSchema)\(\)`).
+				FindAllStringSubmatch(string(own), -1) {
+				referenced[match[1]] = true
+			}
+		}
 		var missing []string
 		for function, file := range declared {
+			if referenced[function] {
+				continue
+			}
 			missing = append(missing, function+" ("+file+")")
 		}
 		sort.Strings(missing)
-		t.Fatalf("the gate covers %d adapters but the package declares %d schemas:\n  %s",
+		if len(missing) == 0 {
+			// Counts disagree but every declared function is referenced: the
+			// gate map has an entry pointing at a schema that no longer has a
+			// declaration, or a duplicate key collapsed two entries.
+			t.Fatalf("the gate covers %d adapters but the package declares %d schemas; "+
+				"every declared schema is referenced, so the gate map itself has a duplicate or stale entry",
+				len(reviewedHostInvocationSchemas()), len(declared))
+		}
+		t.Fatalf("the gate covers %d adapters but the package declares %d schemas; uncovered:\n  %s",
 			len(reviewedHostInvocationSchemas()), len(declared), strings.Join(missing, "\n  "))
 	}
 }

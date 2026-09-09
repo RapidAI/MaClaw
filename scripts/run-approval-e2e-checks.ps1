@@ -29,7 +29,7 @@ Step -Name "Hub httpapi (multi-machine push / classify / escalation extras)" -Sc
 }
 
 Step -Name "GUI (attention / directory / reconcile / escalation merge)" -ScriptBlock {
-    go test ./gui/ -count=1 -timeout 180s -run "TestApplyHubWorkflowStatusAttention|TestMaclawAppApprovalInstanceFromHubDirectoryItem|TestReconcile|TestMergeMaclawAppApprovalEscalation"
+    go test ./guiapp/ -count=1 -timeout 180s -run "TestApplyHubWorkflowStatusAttention|TestMaclawAppApprovalInstanceFromHubDirectoryItem|TestReconcile|TestMergeMaclawAppApprovalEscalation"
 }
 
 Step -Name "Workflow editor empty-state" -ScriptBlock {
@@ -41,10 +41,10 @@ Step -Name "Workflow editor i18n" -ScriptBlock {
 }
 
 Step -Name "Frontend escalation display helpers" -ScriptBlock {
-    Push-Location (Join-Path $root "gui/frontend")
+    Push-Location (Join-Path $root "guiapp/frontend")
     try {
         if (-not (Test-Path "node_modules/vitest/vitest.mjs")) {
-            Write-Host "vitest not installed under gui/frontend; skip (run npm install there to enable)" -ForegroundColor Yellow
+            Write-Host "vitest not installed under guiapp/frontend; skip (run npm install there to enable)" -ForegroundColor Yellow
             return
         }
         node node_modules/vitest/vitest.mjs run src/components/pages/__tests__/approvalEscalationDisplay.test.ts

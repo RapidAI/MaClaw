@@ -515,7 +515,10 @@ func TestRegisterCraftedSkillEntry(t *testing.T) {
 		t.Fatalf("write script: %v", err)
 	}
 
-	result := registerCraftedSkillEntry(app, "collect logs", "", scriptPath, "bash")
+	result, registered := registerCraftedSkillEntry(app, "collect logs", "", scriptPath, "bash")
+	if !registered {
+		t.Fatalf("expected crafted skill registration to succeed: %s", result)
+	}
 	if !strings.Contains(result, "已注册为 Skill") {
 		t.Fatalf("unexpected register result: %s", result)
 	}
@@ -645,7 +648,10 @@ parser.add_argument("--verbose", action="store_true")
 		t.Fatalf("write script: %v", err)
 	}
 
-	result := registerCraftedSkillEntry(app, "convert file", "", scriptPath, "python")
+	result, registered := registerCraftedSkillEntry(app, "convert file", "", scriptPath, "python")
+	if !registered {
+		t.Fatalf("expected crafted skill registration to succeed: %s", result)
+	}
 	if !strings.Contains(result, "Skill") {
 		t.Fatalf("unexpected register result: %s", result)
 	}
@@ -693,7 +699,10 @@ print(requests.__version__)
 		t.Fatalf("write script: %v", err)
 	}
 
-	result := registerCraftedSkillEntry(app, "call api", "", scriptPath, "python")
+	result, registered := registerCraftedSkillEntry(app, "call api", "", scriptPath, "python")
+	if !registered {
+		t.Fatalf("expected crafted skill registration to succeed: %s", result)
+	}
 	if !strings.Contains(result, "Skill") {
 		t.Fatalf("unexpected register result: %s", result)
 	}
@@ -784,7 +793,10 @@ func TestRegisterCraftedSkillEntryAppendsSysArgvPositionals(t *testing.T) {
 		t.Fatalf("write script: %v", err)
 	}
 
-	result := registerCraftedSkillEntry(app, "join args", "", scriptPath, "python")
+	result, registered := registerCraftedSkillEntry(app, "join args", "", scriptPath, "python")
+	if !registered {
+		t.Fatalf("expected crafted skill registration to succeed: %s", result)
+	}
 	if !strings.Contains(result, "Skill") {
 		t.Fatalf("unexpected register result: %s", result)
 	}
@@ -929,5 +941,75 @@ func TestHumanizeCraftAPIError(t *testing.T) {
 				t.Errorf("humanizeCraftAPIError(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestRegisterCraftedSkillEntryReportsRejection locks the contract that the
+// caller relies on to decide whether it may persist a crafted script to disk.
+//
+// A crafted script is scanned and admitted here, but persistence writes it
+// under the skills root, where ScanSkillDir later loads it WITHOUT re-running
+// this admission gate. So a rejected script that still reached disk would come
+// back as a live skill after an app restart — the rejection would have been
+// cosmetic. The boolean return is what stops that, and it must be false when
+// admission refuses.
+func TestRegisterCraftedSkillEntryReportsRejection(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+
+	// A browser-automation script is rejected by the skill admission policy.
+	// The policy matches on the bash step command, which embeds the script
+	// path, so the playwright marker has to appear in the file name here.
+	scriptPath := filepath.Join(tempHome, "playwright_browser.py")
+	script := "from playwright import sync_playwright\nprint('automation')\n"
+	if err := os.WriteFile(scriptPath, []byte(script), 0644); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	message, registered := registerCraftedSkillEntry(app, "drive the browser", "", scriptPath, "python")
+	if registered {
+		t.Fatalf("rejected crafted skill reported success: %s", message)
+	}
+	if !strings.Contains(message, "Skill 注册失败") {
+		t.Fatalf("expected a rejection message, got: %s", message)
+	}
+}
+
+// TestRegisterCraftedSkillEntryAdmissionSeesStagedContent locks the fix for
+// §14.4: ScanInstallStaged does not backfill entry.SkillDir from stagingDir,
+// so the admission policy's browser-automation file check (which reads
+// entry.SkillDir) used to see "" on this path and silently skip the staged
+// script — even though the same content is rejected on the normal install
+// path. The crafted registration now hands the staging dir to the admission
+// decision and restores the entry afterwards.
+//
+// The marker here is in the file CONTENT only; the file name is plain, so
+// only the staged-directory check can catch it.
+func TestRegisterCraftedSkillEntryAdmissionSeesStagedContent(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+
+	scriptPath := filepath.Join(tempHome, "browser.py")
+	script := "from playwright import sync_playwright\nprint('automation')\n"
+	if err := os.WriteFile(scriptPath, []byte(script), 0644); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	message, registered := registerCraftedSkillEntry(app, "drive the browser", "", scriptPath, "python")
+	if registered {
+		t.Fatalf("browser-automation script content was not rejected: %s", message)
+	}
+	if !strings.Contains(message, "Skill 注册失败") {
+		t.Fatalf("expected a rejection message, got: %s", message)
 	}
 }

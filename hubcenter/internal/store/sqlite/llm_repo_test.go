@@ -111,6 +111,38 @@ func TestEnsureLLMTablesDeduplicatesLegacyCardOrderAuthorizations(t *testing.T) 
 	if usageAuthID != "legacy-auth-1" || orderAuthID != "legacy-auth-1" {
 		t.Fatalf("repaired references usage=%q order=%q, want canonical legacy-auth-1", usageAuthID, orderAuthID)
 	}
+	var requestID string
+	if err := db.QueryRow(`SELECT request_id FROM llm_usage_records LIMIT 1`).Scan(&requestID); err != nil {
+		t.Fatalf("read migrated usage request id: %v", err)
+	}
+	if requestID != "" {
+		t.Fatalf("legacy request_id = %q, want empty", requestID)
+	}
+}
+
+func TestLLMUsageRepoPersistsRequestCorrelationID(t *testing.T) {
+	provider, err := NewProvider(Config{DSN: filepath.Join(t.TempDir(), "llm-usage-request-id.db"), WAL: false})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	t.Cleanup(func() { _ = provider.Close() })
+	if err := EnsureLLMTables(provider.Write); err != nil {
+		t.Fatalf("EnsureLLMTables() error = %v", err)
+	}
+	repo := NewLLMUsageRepo(provider)
+	if err := repo.Insert(context.Background(), &llmservice.TenantUsageRecord{
+		HubID: "hub-1", TenantID: "tenant-1", RequestID: "req-1", Model: "model", ProviderID: "provider",
+		InputTokens: 12, OutputTokens: 3, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("Insert() error = %v", err)
+	}
+	records, err := repo.QueryRecent(context.Background(), "hub-1", "tenant-1", 10)
+	if err != nil {
+		t.Fatalf("QueryRecent() error = %v", err)
+	}
+	if len(records) != 1 || records[0].RequestID != "req-1" {
+		t.Fatalf("recent records = %#v", records)
+	}
 }
 
 func TestLLMAuthRepoUpdateRefreshesValidityFields(t *testing.T) {
@@ -641,6 +673,62 @@ func TestLLMUsageRepoQueryProviderTrafficOffsetFormattedLegacyRow(t *testing.T) 
 	}
 }
 
+func TestLLMUsageRepoQueryProviderTrafficSpaceSeparatedLegacyRow(t *testing.T) {
+	provider, err := NewProvider(Config{DSN: filepath.Join(t.TempDir(), "llm-provider-traffic-space.db"), WAL: false})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	t.Cleanup(func() { _ = provider.Close() })
+	if err := EnsureLLMTables(provider.Write); err != nil {
+		t.Fatalf("EnsureLLMTables() error = %v", err)
+	}
+
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatalf("LoadLocation: %v", err)
+	}
+	now := time.Date(2026, 8, 12, 15, 0, 0, 0, loc)
+	dayStart, weekStart, monthStart := llmservice.ProviderTrafficBounds(now, loc)
+	// This is the format emitted by older SQLite integrations. It sorts before
+	// an RFC3339 scan bound lexically, so the datetime predicate is required.
+	if _, err := provider.Write.Exec(`INSERT INTO llm_usage_records (hub_id, tenant_id, model, provider_id, input_tokens, output_tokens, credits_deducted, cache_hit, auth_id, created_at) VALUES ('h1', 't1', 'm', 'legacy-space', 13, 7, 0, 0, '', '2026-08-12 10:00:00')`); err != nil {
+		t.Fatalf("insert legacy usage: %v", err)
+	}
+
+	got, err := NewLLMUsageRepo(provider).QueryProviderTraffic(context.Background(), dayStart, weekStart, monthStart)
+	if err != nil {
+		t.Fatalf("QueryProviderTraffic() error = %v", err)
+	}
+	traffic, ok := got["legacy-space"]
+	if !ok {
+		t.Fatalf("missing space-formatted legacy provider: %#v", got)
+	}
+	if traffic.Day.TotalTokens != 20 || traffic.Week.TotalTokens != 20 || traffic.Month.TotalTokens != 20 {
+		t.Fatalf("legacy space traffic = %#v, want 20 tokens in all windows", traffic)
+	}
+}
+
+func TestLLMUsageRepoQueryRecentParsesLegacyTimestamp(t *testing.T) {
+	provider, err := NewProvider(Config{DSN: filepath.Join(t.TempDir(), "llm-provider-recent-legacy.db"), WAL: false})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	t.Cleanup(func() { _ = provider.Close() })
+	if err := EnsureLLMTables(provider.Write); err != nil {
+		t.Fatalf("EnsureLLMTables() error = %v", err)
+	}
+	if _, err := provider.Write.Exec(`INSERT INTO llm_usage_records (hub_id, tenant_id, model, provider_id, input_tokens, output_tokens, credits_deducted, cache_hit, auth_id, created_at) VALUES ('h1', 't1', 'm', 'legacy', 3, 4, 0, 0, '', '2026-08-12 10:00:00')`); err != nil {
+		t.Fatalf("insert legacy usage: %v", err)
+	}
+	records, err := NewLLMUsageRepo(provider).QueryRecent(context.Background(), "h1", "t1", 10)
+	if err != nil {
+		t.Fatalf("QueryRecent() error = %v", err)
+	}
+	if len(records) != 1 || records[0].CreatedAt.IsZero() || records[0].CreatedAt.UTC().Format("2006-01-02T15:04:05Z") != "2026-08-12T10:00:00Z" {
+		t.Fatalf("legacy recent record = %#v", records)
+	}
+}
+
 func TestLLMUsageRepoQueryProviderTrafficMergesPaddedProviderIDs(t *testing.T) {
 	provider, err := NewProvider(Config{DSN: filepath.Join(t.TempDir(), "llm-provider-traffic-pad.db"), WAL: false})
 	if err != nil {
@@ -836,5 +924,56 @@ func TestLLMUsageRepoQuerySummaryUsesLocalTimezoneDay(t *testing.T) {
 	}
 	if len(miss) != 0 {
 		t.Fatalf("model filter = %#v, want empty", miss)
+	}
+}
+
+func TestLLMUsageRepoQuerySummaryGroupsByServiceGroup(t *testing.T) {
+	provider, err := NewProvider(Config{DSN: filepath.Join(t.TempDir(), "llm-usage-summary-groups.db"), WAL: false})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	t.Cleanup(func() { _ = provider.Close() })
+	if err := EnsureLLMTables(provider.Write); err != nil {
+		t.Fatalf("EnsureLLMTables() error = %v", err)
+	}
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatalf("LoadLocation: %v", err)
+	}
+	repo := NewLLMUsageRepo(provider)
+	ctx := context.Background()
+	records := []*llmservice.TenantUsageRecord{
+		{HubID: "h1", TenantID: "t1", Model: "m", ProviderID: "p", ServiceGroupID: "redeem", InputTokens: 10, OutputTokens: 4, CachedInputTokens: 2, Credits: 1.1, CreatedAt: time.Date(2026, 8, 12, 1, 0, 0, 0, loc)},
+		{HubID: "h1", TenantID: "t1", Model: "m", ProviderID: "p", ServiceGroupID: " redeem ", InputTokens: 5, OutputTokens: 1, Credits: 0.4, CreatedAt: time.Date(2026, 8, 12, 2, 0, 0, 0, loc)},
+		{HubID: "h1", TenantID: "t1", Model: "m", ProviderID: "p", ServiceGroupID: "maclaw-official", InputTokens: 7, OutputTokens: 3, CacheWriteTokens: 1, Credits: 0.8, CreatedAt: time.Date(2026, 8, 12, 3, 0, 0, 0, loc)},
+		{HubID: "h1", TenantID: "t1", Model: "m", ProviderID: "p", ServiceGroupID: "", InputTokens: 2, OutputTokens: 2, Credits: 0.1, CreatedAt: time.Date(2026, 8, 12, 4, 0, 0, 0, loc)},
+	}
+	for _, rec := range records {
+		if err := repo.Insert(ctx, rec); err != nil {
+			t.Fatalf("Insert error = %v", err)
+		}
+	}
+	got, err := repo.QuerySummary(ctx, llmservice.UsageFilter{
+		HubID: "h1", TenantID: "t1", Period: "daily", Timezone: "Asia/Shanghai",
+		StartDate: "2026-08-12", EndDate: "2026-08-12", GroupByServiceGroup: true,
+	})
+	if err != nil {
+		t.Fatalf("QuerySummary() error = %v", err)
+	}
+	byGroup := map[string]llmservice.TenantUsageSummary{}
+	for _, row := range got {
+		byGroup[row.ServiceGroupID] = row
+	}
+	if len(byGroup) != 3 {
+		t.Fatalf("groups = %#v, want 3 (redeem, maclaw-official, empty)", got)
+	}
+	if byGroup["redeem"].InputTokens != 15 || byGroup["redeem"].OutputTokens != 5 || byGroup["redeem"].CachedInputTokens != 2 || byGroup["redeem"].TotalCredits != 1.5 || byGroup["redeem"].TotalRequests != 2 {
+		t.Fatalf("redeem = %#v", byGroup["redeem"])
+	}
+	if byGroup["maclaw-official"].InputTokens != 7 || byGroup["maclaw-official"].CacheWriteTokens != 1 || byGroup["maclaw-official"].TotalCredits != 0.8 {
+		t.Fatalf("maclaw-official = %#v", byGroup["maclaw-official"])
+	}
+	if byGroup[""].InputTokens != 2 || byGroup[""].TotalCredits != 0.1 {
+		t.Fatalf("unspecified group = %#v", byGroup[""])
 	}
 }

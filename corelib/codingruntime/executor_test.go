@@ -168,6 +168,65 @@ func TestRunnerCapturesReadOnlyWorkspaceBaselineBeforeExecutor(t *testing.T) {
 	}
 }
 
+func TestRunnerBlocksGatedWriterBeforeExecutorWhenBaselineProbeFails(t *testing.T) {
+	store := NewMemoryStore()
+	calls := 0
+	runner := Runner{
+		Store: store, LeaseOwner: "gated-writer",
+		WorkspaceProber: WorkspaceProberFunc(func(context.Context, Task, Attempt) (*WorkspaceProbe, error) {
+			return nil, errors.New("git is unavailable")
+		}),
+	}
+	task, attempt, err := runner.Run(context.Background(), Task{ProjectRef: "repo", Mode: "local"}, PolicySnapshot{
+		ProjectRoot: "repo", Mode: "local", FinalWorkspaceGateRequired: true,
+	}, executorFunc(func(context.Context, ExecutionRequest) ExecutionResult {
+		calls++
+		return ExecutionResult{Status: TaskCompleted, SideEffectState: SideEffectConfirmed}
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 {
+		t.Fatalf("executor calls=%d; gated writer must not execute without baseline", calls)
+	}
+	if task == nil || task.Status != TaskBlocked || attempt == nil || attempt.Status != TaskBlocked || attempt.ErrorCode != "workspace_before_probe_failed" {
+		t.Fatalf("task=%+v attempt=%+v", task, attempt)
+	}
+	events, err := store.ListEvents(attempt.AttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seenFailure, seenBlock := false, false
+	for _, event := range events {
+		seenFailure = seenFailure || event.Type == "workspace_before_probe_failed"
+		seenBlock = seenBlock || event.Type == "workspace_gate_blocked"
+	}
+	if !seenFailure || !seenBlock {
+		t.Fatalf("events=%+v; missing baseline failure/block audit", events)
+	}
+}
+
+func TestRunnerBlocksGatedWriterBeforeExecutorWithoutWorkspaceProber(t *testing.T) {
+	store := NewMemoryStore()
+	calls := 0
+	runner := Runner{Store: store, LeaseOwner: "gated-writer"}
+	task, attempt, err := runner.Run(context.Background(), Task{ProjectRef: "repo", Mode: "local"}, PolicySnapshot{
+		ProjectRoot: "repo", Mode: "local", FinalWorkspaceGateRequired: true,
+	}, executorFunc(func(context.Context, ExecutionRequest) ExecutionResult {
+		calls++
+		return ExecutionResult{Status: TaskCompleted, SideEffectState: SideEffectConfirmed}
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 {
+		t.Fatalf("executor calls=%d; gated writer must not execute without a prober", calls)
+	}
+	if task == nil || task.Status != TaskBlocked || attempt == nil || attempt.Status != TaskBlocked || attempt.ErrorCode != "workspace_probe_unavailable" {
+		t.Fatalf("task=%+v attempt=%+v", task, attempt)
+	}
+}
+
 func TestRunnerDoesNotOverwriteParentAfterChildAdmission(t *testing.T) {
 	store := NewMemoryStore()
 	now := time.Date(2026, 8, 10, 10, 0, 0, 0, time.UTC)

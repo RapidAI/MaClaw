@@ -38,6 +38,15 @@ type EvolutionPipeline struct {
 	UsageTracker *tool.UsageTracker
 	SkillLoader  func() []corelib.NLSkillEntry
 	SkillSaver   func([]corelib.NLSkillEntry) error
+	// MutationMutex serializes the complete config/YAML/index/audit commit with
+	// platform-owned writers. SkillSaver alone only protects one config write;
+	// callers that need a transaction-wide critical section (for example GUI)
+	// provide their process-level mutex here.
+	MutationMutex sync.Locker
+	// MutationAdmission is an optional fail-closed gate checked immediately
+	// before and again after MutationMutex acquisition. It is used by adapters
+	// that own a durable compensation queue and stable Skill aliases.
+	MutationAdmission func(string) error
 	// DefinitionWriter writes the authoritative YAML definition. Nil selects
 	// the built-in atomic writer; injection keeps compensation tests isolated.
 	DefinitionWriter func(*corelib.NLSkillEntry) error
@@ -56,6 +65,10 @@ type EvolutionPipeline struct {
 	// legacy records remain compatible; services that mutate external state must
 	// provide it and persist the corresponding snapshot in the record.
 	ExternalRecovery func(EvolutionCompensationRecord) error
+	// CommittedCleanup optionally overrides post-commit artifact cleanup for
+	// deterministic failure injection. Production leaves it nil and uses the
+	// narrow, idempotent filesystem cleanup routine.
+	CommittedCleanup func(EvolutionCompensationRecord) error
 	UploadTrigger    func(skillName string, result *SkillExecutionResultCompat) // enqueues upload via SkillLifecycleManager (subject to skill_auto_upload_enabled)
 	LLM              LLMRepairer
 	EventEmitter     func(event string, data map[string]string) // notifies frontend of evolution actions
@@ -685,7 +698,7 @@ func (p *EvolutionPipeline) Status() EvolutionStatus {
 		// surface that same uncertainty to operators instead of displaying a
 		// misleading zero pending count.
 		status.CompensationQueueHealthy = false
-		status.CompensationQueueError = err.Error()
+		status.CompensationQueueError = SummarizeEvolutionCompensationError(err)
 	}
 	p.pendingMu.Lock()
 	status.ActiveSkills = len(p.activeSkills)
@@ -1003,19 +1016,51 @@ func (p *EvolutionPipeline) tryRepair(ctx context.Context, req evolutionRequest)
 	// LLM 修复成功且 gate 通过、真正落 ApplyRepair 之前才写冷却时间戳。
 	p.markRepairAttempt(req.SkillName)
 	originalEntry := CloneNLSkillEntry(entry)
+	// An unfixable Skill is a durable lifecycle transition, not a best-effort
+	// metadata write. Route the disable/needs_review result through the same
+	// compensating committer used by normal repairs so a saver failure cannot
+	// leave an in-memory-only status or an unaudited disk mutation.
+	if result != nil && result.ShouldDisable {
+		if p.SkillSaver == nil || p.SkillLoader == nil {
+			log.Printf("[evolution-pipeline] repair disable not persisted skill=%s: persistence not configured", req.SkillName)
+			return
+		}
+		candidate := CloneNLSkillEntry(entry)
+		if candidate == nil {
+			return
+		}
+		// ApplyRepair returns false for a deliberate disable; it still applies the
+		// needs_review marker and repair-attempt metadata to the candidate.
+		_ = ApplyRepair(candidate, result)
+		auditData := map[string]string{
+			"skill": req.SkillName, "action": "repair", "decision": "disabled",
+			"reason": "unfixable", "request_id": req.RequestID, "attempt": "1",
+			"config_revision": p.configRevision(), "schema_version": "2", "evidence_mode": "real",
+		}
+		commit := p.persistDefinitionChangeWithAudit(ctx, req.SkillName, candidate, EventSkillRepairDisabled, auditData)
+		if commit.State != "committed" || commit.CleanupStatus != "clear" {
+			if commit.State == "committed" {
+				// The business result is durable even when post-commit cleanup is
+				// pending; keep the live entry blocked while surfacing the failure.
+				*entry = *candidate
+			} else if originalEntry != nil {
+				*entry = *originalEntry
+			}
+			log.Printf("[evolution-pipeline] repair disable commit %s skill=%s reason=%s", commit.State, req.SkillName, commit.FailureReason)
+			p.emitRequestEvent(EventSkillEvolutionRolledBack, req, map[string]string{
+				"decision": commit.State, "reason": "repair_disable_persistence_failed", "failure_reason": commit.FailureReason,
+			})
+			return
+		}
+		*entry = *candidate
+		p.emitRequestEvent(EventSkillRepairDisabled, req, map[string]string{
+			"decision": "disabled", "reason": "repair_unfixable", "explanation": result.Explanation,
+		})
+		return
+	}
 	if !ApplyRepair(entry, result) {
 		if result != nil && !result.ShouldDisable {
 			p.recordRepairFailure(req, entry, ExtractErrorClass(entry.LastError), result.Explanation)
-		}
-		if result != nil && result.ShouldDisable && p.SkillSaver != nil && p.SkillLoader != nil {
-			skills := p.SkillLoader()
-			for i := range skills {
-				if skills[i].Name == req.SkillName {
-					mergeEvolvedEntry(&skills[i], entry)
-					_ = p.SkillSaver(skills)
-					break
-				}
-			}
 		}
 		return
 	}
@@ -1061,6 +1106,12 @@ func (p *EvolutionPipeline) recordRepairFailure(req evolutionRequest, entry *cor
 	if p == nil || entry == nil {
 		return
 	}
+	unlock, err := p.beginMutation(req.SkillName)
+	if err != nil {
+		log.Printf("[evolution-pipeline] failed-attempt metadata blocked skill=%s: %v", req.SkillName, err)
+		return
+	}
+	defer unlock()
 	RecordRepairAttemptFailure(entry, errorClass, explanation)
 	if p.SkillLoader == nil || p.SkillSaver == nil {
 		return
@@ -1345,7 +1396,7 @@ func (p *EvolutionPipeline) persistDefinitionChangeWithAudit(ctx context.Context
 	if p == nil {
 		return EvolutionCommitResult{State: "rolled_back", FailureReason: "persistence_not_configured", CleanupStatus: "clear"}
 	}
-	return (&SkillCommitter{
+	committer := &SkillCommitter{
 		SkillLoader:      p.SkillLoader,
 		SkillSaver:       p.SkillSaver,
 		DefinitionWriter: p.DefinitionWriter,
@@ -1353,7 +1404,38 @@ func (p *EvolutionPipeline) persistDefinitionChangeWithAudit(ctx context.Context
 		FinalAuditor:     p.FinalAuditor,
 		ConfigRevision:   p.configRevision(),
 		SkipIfUnchanged:  true,
-	}).Commit(ctx, skillName, after, event, auditData)
+	}
+	unlock, err := p.beginMutation(skillName)
+	if err != nil {
+		return EvolutionCommitResult{State: "rolled_back", FailureReason: "mutation_admission_failed: " + err.Error(), CleanupStatus: "clear", RollbackComplete: true}
+	}
+	defer unlock()
+	return committer.Commit(ctx, skillName, after, event, auditData)
+}
+
+// beginMutation enters the optional platform-wide mutation boundary and
+// re-checks admission after lock acquisition. The returned function is always
+// safe to call; when no mutex is configured it is a no-op.
+func (p *EvolutionPipeline) beginMutation(skillName string) (func(), error) {
+	if p == nil {
+		return func() {}, nil
+	}
+	if p.MutationAdmission != nil {
+		if err := p.MutationAdmission(skillName); err != nil {
+			return func() {}, err
+		}
+	}
+	if p.MutationMutex == nil {
+		return func() {}, nil
+	}
+	p.MutationMutex.Lock()
+	if p.MutationAdmission != nil {
+		if err := p.MutationAdmission(skillName); err != nil {
+			p.MutationMutex.Unlock()
+			return func() {}, err
+		}
+	}
+	return p.MutationMutex.Unlock, nil
 }
 
 // persistDefinitionChangeLegacy is retained temporarily for source-level

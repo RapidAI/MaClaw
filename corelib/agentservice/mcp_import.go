@@ -276,6 +276,9 @@ func mcpCreateInputFromObject(name string, obj map[string]interface{}, kindHint 
 		if strings.TrimSpace(in.EndpointURL) == "" {
 			return MCPServerCreateInput{}, fmt.Errorf("remote MCP server %q is missing url or endpoint_url", display)
 		}
+		if err := validateMCPRemoteEndpoint(in.EndpointURL); err != nil {
+			return MCPServerCreateInput{}, fmt.Errorf("remote MCP server %q: %w", display, err)
+		}
 		if strings.TrimSpace(in.AuthType) == "" {
 			if strings.TrimSpace(in.AuthSecret) != "" {
 				in.AuthType = "api_key"

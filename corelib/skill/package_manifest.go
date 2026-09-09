@@ -7,10 +7,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/fileutil"
 )
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -36,6 +39,9 @@ type PackageManifest struct {
 // GeneratePackageManifest creates a manifest by hashing all files in the skill directory.
 // Excludes runtime/cache files (see IsSkillRuntimePackageFile/IsSkillRuntimePackageDir).
 func GeneratePackageManifest(skillDir, skillID, version string) (*PackageManifest, error) {
+	if err := validatePackageManifestDir(skillDir); err != nil {
+		return nil, err
+	}
 	manifest := &PackageManifest{
 		SkillID:     skillID,
 		Version:     version,
@@ -52,6 +58,9 @@ func GeneratePackageManifest(skillDir, skillID, version string) (*PackageManifes
 			return err
 		}
 		rel = filepath.ToSlash(rel)
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("manifest refuses symlink entry: %s", rel)
+		}
 
 		if info.IsDir() {
 			if IsSkillRuntimePackageDir(rel) {
@@ -81,17 +90,63 @@ func GeneratePackageManifest(skillDir, skillID, version string) (*PackageManifes
 
 // WritePackageManifest writes the manifest to the skill directory.
 func WritePackageManifest(skillDir string, manifest *PackageManifest) error {
+	if err := validatePackageManifestDir(skillDir); err != nil {
+		return err
+	}
+	if manifest == nil {
+		return fmt.Errorf("manifest is nil")
+	}
+	target := filepath.Join(skillDir, PackageManifestFileName)
+	// Do not let the atomic writer's Windows replacement fallback remove a
+	// directory (or traverse a symlink) that merely collides with the manifest
+	// name. Such a shape is a packaging error and must fail closed.
+	if info, statErr := os.Lstat(target); statErr == nil {
+		if info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("manifest target is not a regular file: %s", PackageManifestFileName)
+		}
+	} else if !os.IsNotExist(statErr) {
+		return fmt.Errorf("inspect manifest target: %w", statErr)
+	}
 	data, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal manifest: %w", err)
 	}
-	return os.WriteFile(filepath.Join(skillDir, PackageManifestFileName), append(data, '\n'), 0o644)
+	// Keep the integrity evidence crash-safe. A direct WriteFile can leave a
+	// truncated manifest after power loss, while AtomicWriteFile replaces the
+	// target only after the complete JSON has been flushed.
+	return fileutil.AtomicWriteFile(target, append(data, '\n'), 0o644)
+}
+
+func validatePackageManifestDir(skillDir string) error {
+	skillDir = strings.TrimSpace(skillDir)
+	if skillDir == "" {
+		return fmt.Errorf("skill directory is empty")
+	}
+	info, err := os.Lstat(skillDir)
+	if err != nil {
+		return fmt.Errorf("inspect skill directory: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("skill path is not a regular directory")
+	}
+	return nil
 }
 
 // ReadPackageManifest reads the manifest from a skill directory.
 // Returns nil, nil if the manifest file does not exist (legacy skill without manifest).
 func ReadPackageManifest(skillDir string) (*PackageManifest, error) {
-	data, err := os.ReadFile(filepath.Join(skillDir, PackageManifestFileName))
+	if err := validatePackageManifestDir(skillDir); err != nil {
+		return nil, err
+	}
+	target := filepath.Join(skillDir, PackageManifestFileName)
+	if info, statErr := os.Lstat(target); statErr == nil {
+		if info.IsDir() || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("manifest target is not a regular file: %s", PackageManifestFileName)
+		}
+	} else if !os.IsNotExist(statErr) {
+		return nil, fmt.Errorf("inspect manifest target: %w", statErr)
+	}
+	data, err := os.ReadFile(target)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -108,15 +163,50 @@ func ReadPackageManifest(skillDir string) (*PackageManifest, error) {
 // VerifyPackageIntegrity checks all files in the manifest against actual disk content.
 // Returns nil if all hashes match. Returns a descriptive error listing mismatches.
 func VerifyPackageIntegrity(skillDir string, manifest *PackageManifest) error {
-	if manifest == nil || len(manifest.Files) == 0 {
+	if manifest == nil {
 		return nil // no manifest = nothing to verify (legacy skill)
+	}
+	if err := validatePackageManifestDir(skillDir); err != nil {
+		return err
+	}
+	if len(manifest.Files) == 0 {
+		return fmt.Errorf("package integrity manifest contains no files")
 	}
 
 	var mismatches []string
 	var missing []string
+	listed := make(map[string]struct{}, len(manifest.Files))
 
 	for relPath, expectedHash := range manifest.Files {
-		absPath := filepath.Join(skillDir, filepath.FromSlash(relPath))
+		canonical, err := canonicalManifestRelativePath(relPath)
+		if err != nil {
+			return fmt.Errorf("package integrity manifest has invalid path %q: %w", relPath, err)
+		}
+		if _, duplicate := listed[canonical]; duplicate {
+			return fmt.Errorf("package integrity manifest has duplicate path %q", relPath)
+		}
+		listed[canonical] = struct{}{}
+		if len(expectedHash) != sha256.Size*2 {
+			return fmt.Errorf("package integrity manifest has invalid hash for %q", relPath)
+		}
+		if _, err := hex.DecodeString(expectedHash); err != nil {
+			return fmt.Errorf("package integrity manifest has invalid hash for %q: %w", relPath, err)
+		}
+		absPath := filepath.Join(skillDir, filepath.FromSlash(canonical))
+		info, statErr := os.Lstat(absPath)
+		if statErr == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("package integrity check refuses symlink: %s", canonical)
+			}
+			if info.IsDir() {
+				return fmt.Errorf("package integrity check expected file but found directory: %s", canonical)
+			}
+			if !info.Mode().IsRegular() {
+				return fmt.Errorf("package integrity check refuses non-regular file: %s", canonical)
+			}
+		} else if !os.IsNotExist(statErr) {
+			return fmt.Errorf("package integrity check cannot inspect %s: %w", canonical, statErr)
+		}
 		actualHash, err := hashFileSHA256(absPath)
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -139,6 +229,43 @@ func VerifyPackageIntegrity(skillDir string, manifest *PackageManifest) error {
 		}
 	}
 
+	// A manifest is a complete package inventory, not merely a set of hashes
+	// for selected files. Detect unlisted regular files as well; otherwise an
+	// attacker could append an executable payload without invalidating the
+	// advertised integrity evidence. Runtime/cache artifacts remain excluded by
+	// the same policy used by GeneratePackageManifest.
+	if err := filepath.Walk(skillDir, func(filePath string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, err := filepath.Rel(skillDir, filePath)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("package integrity check refuses symlink: %s", rel)
+		}
+		if info.IsDir() {
+			if IsSkillRuntimePackageDir(rel) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if IsSkillRuntimePackageFile(rel) || rel == PackageManifestFileName {
+			return nil
+		}
+		if _, ok := listed[rel]; !ok {
+			mismatches = append(mismatches, fmt.Sprintf("%s: unexpected file", rel))
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("walk package for integrity check: %w", err)
+	}
+
 	if len(mismatches) == 0 && len(missing) == 0 {
 		return nil
 	}
@@ -155,6 +282,23 @@ func VerifyPackageIntegrity(skillDir string, manifest *PackageManifest) error {
 		b.WriteString("  MISSING: " + m + "\n")
 	}
 	return fmt.Errorf("%s", b.String())
+}
+
+// canonicalManifestRelativePath validates the portable slash-separated path
+// stored in a manifest and returns its canonical representation. Manifest
+// entries are untrusted input; accepting an absolute path or ".." component
+// would let integrity verification read files outside the Skill directory.
+func canonicalManifestRelativePath(rel string) (string, error) {
+	rel = strings.ReplaceAll(rel, "\\", "/")
+	local := filepath.FromSlash(rel)
+	if rel == "" || rel == "." || strings.HasPrefix(rel, "/") || path.IsAbs(rel) || filepath.IsAbs(local) || filepath.VolumeName(local) != "" {
+		return "", fmt.Errorf("path must be relative")
+	}
+	clean := path.Clean(rel)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
+		return "", fmt.Errorf("path escapes Skill directory")
+	}
+	return clean, nil
 }
 
 // hashFileSHA256 returns the hex-encoded SHA256 hash of a file.

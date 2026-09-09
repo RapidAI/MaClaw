@@ -39,13 +39,18 @@
       btn.disabled=true;btn.textContent=shtr('importing');
       resultEl.textContent='';
       try{
-        const data=await api('/api/admin/skillhub/import-url',{method:'POST',body:JSON.stringify({url})});
+        const isGitHubRepo=/^https?:\/\/github\.com\/[^/]+\/[^/]+(?:\/tree\/[^/]+(?:\/.*)?)?\/?$/i.test(url);
+        const endpoint=isGitHubRepo?'/api/admin/capability-market/import':'/api/admin/skillhub/import-url';
+        const payload=isGitHubRepo?{capability_type:'skill',source:'github',install_ref:url,package_kind:'suite',publish_members:true}:{url};
+        const data=await api(endpoint,{method:'POST',body:JSON.stringify(payload)});
         const msgs=[];
-        if(data.published&&data.published.length)msgs.push(shtr('importedPrefix')+data.published.join(', '));
+        const importedNames=(data.published&&Array.isArray(data.published))?data.published:[];
+        if(data.suite){const suiteName=data.suite.name||data.suite.id||data.capability_id||'Suite';const members=Array.isArray(data.suite.members)?data.suite.members:[];msgs.push('Imported Suite '+suiteName+' ('+(members.length||importedNames.length)+' skills)')}
+        if(importedNames.length)msgs.push(shtr('importedPrefix')+importedNames.join(', '));
         if(data.errors&&data.errors.length)msgs.push(shtr('errorsPrefix')+data.errors.join('; '));
-        if(!data.published||!data.published.length)msgs.push(shtr('noImportable'));
+        if(!data.suite&&!importedNames.length)msgs.push(shtr('noImportable'));
         resultEl.textContent=msgs.join(' | ');
-        if(data.published&&data.published.length){showToast(shtr('importedCount',{count:data.published.length}),'success');loadSkillHubList()}
+        if(data.suite||importedNames.length){showToast(data.suite?('Imported Suite '+(data.suite.name||data.suite.id||'')):shtr('importedCount',{count:importedNames.length||1}),'success');loadSkillHubList()}
       }catch(err){resultEl.textContent=err.message;showToast(err.message,'error')}
       finally{btn.disabled=false;btn.textContent=shtr('import')}
     }
@@ -67,11 +72,13 @@
     }
     async function catalogImportSearchResult(idx){
       const item=(window._catalogSearchResults||[])[idx];if(!item)return;
-      const source=item.source||'';const installRef=item.install_ref||item.id||item.repo_url||'';
+      const source=item.source||'';const isGitHub=String(source).toLowerCase()==='github';const installRef=isGitHub&&item.repo_url?item.repo_url:(item.install_ref||item.id||item.repo_url||'');
       if(!installRef){showToast('No install reference','error');return}
       try{
-        const data=await api('/api/admin/capability-market/import',{method:'POST',body:JSON.stringify({capability_type:'skill',source:source,install_ref:installRef,display_name:item.name||item.display_name||'',description:item.description||''})});
-        showToast(shtr('importedCount',{count:1}),'success');loadSkillHubList();
+        const payload={capability_type:'skill',source:source,install_ref:installRef,display_name:item.name||item.display_name||'',description:item.description||''};
+        if(isGitHub&&item.repo_url)payload.package_kind='suite';
+        const data=await api('/api/admin/capability-market/import',{method:'POST',body:JSON.stringify(payload)});
+        showToast(data.suite?('Imported Suite '+(data.suite.name||data.suite.id||'')):shtr('importedCount',{count:1}),'success');loadSkillHubList();
       }catch(err){showToast(err.message,'error')}
     }
     const SKILLHUB_TEXT_EN={"searchTitle":"Search External Skills","searchDesc":"Search ClawHub and GitHub for skills to import into the catalog.","searchPlaceholder":"Enter keyword to search...","search":"Search","searching":"Searching...","searchEnterKeyword":"Please enter a keyword","searchNoResults":"No results found","importTitle":"Import Skill from URL","importDesc":"Enter a GitHub repo URL or raw skill.yaml URL to import free Skills.","importPlaceholder":"https://github.com/user/repo or raw skill.yaml URL","import":"Import","importing":"Importing...","enterUrl":"Please enter a URL","importedPrefix":"Imported: ","errorsPrefix":"Errors: ","noImportable":"No importable skills found","importedCount":"Imported {count} skill(s)","visible":"Visible","hidden":"Hidden","noDescription":"No description","show":"Show","hide":"Hide","delete":"Delete","visibilityUpdated":"Visibility updated","deleteConfirm":"Are you sure you want to delete skill \"{name}\"? This cannot be undone.","deleted":"Skill deleted","loadFailed":"Load SkillHub failed: {error}","page":"Page {current} / {total}","source":"Source","downloads":"Downloads","rating":"Rating","updated":"Updated","trust":"Trust","unknown":"Unknown","author":"Author","recommend":"Recommend","uploadToMarket":"Upload to Market"}; const SKILLHUB_TEXT={en:SKILLHUB_TEXT_EN,zh:Object.assign({},SKILLHUB_TEXT_EN,{searchTitle:"\u641c\u7d22\u5916\u90e8\u6280\u80fd",searchDesc:"\u4ece ClawHub \u548c GitHub \u641c\u7d22\u6280\u80fd\u5e76\u5bfc\u5165\u5230\u76ee\u5f55\u3002",searchPlaceholder:"\u8f93\u5165\u5173\u952e\u8bcd\u641c\u7d22...",search:"\u641c\u7d22",searching:"\u641c\u7d22\u4e2d...",searchEnterKeyword:"\u8bf7\u8f93\u5165\u5173\u952e\u8bcd",searchNoResults:"\u672a\u627e\u5230\u7ed3\u679c",importTitle:"\u4ece\u94fe\u63a5\u5bfc\u5165\u6280\u80fd",importDesc:"\u8f93\u5165 GitHub \u4ed3\u5e93\u94fe\u63a5\u6216\u539f\u59cb skill.yaml \u94fe\u63a5\uff0c\u7528\u4e8e\u5bfc\u5165\u514d\u8d39\u6280\u80fd\u3002",importPlaceholder:"https://github.com/user/repo \u6216\u539f\u59cb skill.yaml \u94fe\u63a5",import:"\u5bfc\u5165",importing:"\u5bfc\u5165\u4e2d...",enterUrl:"\u8bf7\u8f93\u5165\u94fe\u63a5",importedPrefix:"\u5df2\u5bfc\u5165\uff1a",errorsPrefix:"\u9519\u8bef\uff1a",noImportable:"\u672a\u53d1\u73b0\u53ef\u5bfc\u5165\u7684\u6280\u80fd",importedCount:"\u5df2\u5bfc\u5165 {count} \u4e2a\u6280\u80fd",visible:"\u53ef\u89c1",hidden:"\u9690\u85cf",noDescription:"\u6682\u65e0\u63cf\u8ff0",show:"\u663e\u793a",hide:"\u9690\u85cf",delete:"\u5220\u9664",visibilityUpdated:"\u53ef\u89c1\u6027\u5df2\u66f4\u65b0",deleteConfirm:"\u786e\u5b9a\u5220\u9664\u6280\u80fd\u300c{name}\u300d\uff1f\u8fd9\u4e2a\u64cd\u4f5c\u4e0d\u53ef\u64a4\u9500\u3002",deleted:"\u5df2\u5220\u9664",loadFailed:"\u52a0\u8f7d\u6280\u80fd\u76ee\u5f55\u5931\u8d25\uff1a{error}",page:"\u7b2c {current} / {total} \u9875",source:"\u6765\u6e90",downloads:"\u4e0b\u8f7d",rating:"\u8bc4\u5206",updated:"\u66f4\u65b0",trust:"\u4fe1\u4efb",unknown:"\u672a\u77e5",author:"\u4f5c\u8005",recommend:"\u8bbe\u4e3a\u63a8\u8350",uploadToMarket:"\u4e0a\u4f20\u5e02\u573a"})};
@@ -135,6 +142,7 @@
       var historyAction = versionCount > 1 ? '<button type="button" class="mp-card-btn mp-card-btn-ghost" onclick="skillhubShowVersionHistory(' + idx + ')">' + (currentLang==='zh' ? '历史版本 (' + versionCount + ')' : 'Versions (' + versionCount + ')') + '</button>' : '';
       var idArg = jsArg(s.id);
       var catBadge = skillCategoryBadge(cat);
+      var suiteBadge = (s.package_kind === 'suite' || s.suite_id) ? '<span class="badge-inline info">Suite' + (s.member_count ? ' (' + escapeHtml(String(s.member_count)) + ')' : '') + '</span>' : '';
       // Description (prominently displayed, with fallback)
       var description = s.description ? escapeHtml(s.description) : '<span class="skillhub-desc-empty">' + escapeHtml(shtr('noDescription')) + '</span>';
       // Source + status meta line (concise)
@@ -157,7 +165,7 @@
       return '<div class="item mp-cap-card" data-category="' + cat + '">' +
         '<div class="mp-cap-card-header">' +
           '<div class="mp-cap-card-title-row"><span class="mp-cap-card-dot"></span><div class="mp-cap-card-name" title="' + name + '">' + name + '</div>' + verTag + '</div>' +
-          catBadge +
+          catBadge + suiteBadge +
         '</div>' +
         '<div class="mp-cap-card-desc">' + description + '</div>' +
         idLine +
@@ -273,9 +281,10 @@ function showNewsEditor(){document.getElementById('newsEditor').classList.add('i
     let gossipListInFlight=null,gossipListInFlightKey='';
     const _finalLoadGossipList=loadGossipList;
     loadGossipList=function(page){const targetPage=page||gossipPage;const key=targetPage+'|'+(gossipFilter||'');if(gossipListInFlight&&gossipListInFlightKey===key)return gossipListInFlight;gossipListInFlightKey=key;gossipListInFlight=Promise.resolve(_finalLoadGossipList(page));return gossipListInFlight.finally(()=>{gossipListInFlight=null;gossipListInFlightKey=''})};
+    async function loadSkillSuiteCatalog(){var root=document.getElementById('skillhubList');if(!root)return;try{var data=await api('/api/admin/skillhub/list?page=1&page_size=1');var suites=Array.isArray(data.suites)?data.suites:[];var old=document.getElementById('skillhubSuiteCatalog');if(old)old.remove();if(!suites.length)return;var section=document.createElement('div');section.id='skillhubSuiteCatalog';section.className='list';section.innerHTML=suites.map(function(s){var names=(s.members||[]).map(function(m){return m.name||m.skill_id||''}).filter(Boolean).join(', ');var visible=s.visible!==false;var actionLabel=visible?(currentLang==='zh'?'下架':'Withdraw'):(currentLang==='zh'?'发布':'Publish');var actionState=visible?'false':'true';return '<div class="item mp-cap-card"><div class="mp-cap-card-header"><div class="mp-cap-card-title-row"><span class="mp-cap-card-dot"></span><div class="mp-cap-card-name">'+escapeHtml(s.name||s.id||'Suite')+'</div>'+(s.version?'<span class="mp-card-version">v'+escapeHtml(s.version)+'</span>':'')+'</div><span class="badge-inline '+(visible?'ok':'warn')+'">Suite ('+((s.members||[]).length)+') · '+(visible?(currentLang==='zh'?'可见':'Visible'):(currentLang==='zh'?'已下架':'Withdrawn'))+'</span></div><div class="mp-cap-card-desc">'+escapeHtml(s.description||'Skill Suite')+'</div><div class="mp-cap-card-meta">'+escapeHtml(names)+'</div><div class="actions"><button type="button" class="btn-secondary" onclick="api(\'/api/v1/skill-suites/'+encodeURIComponent(String(s.id||''))+'\').then(function(v){setOutput(JSON.stringify(v,null,2))})">'+(currentLang==='zh'?'查看详情':'View details')+'</button><button type="button" class="btn-secondary" onclick="api(\'/api/v1/admin/skill-suites/'+encodeURIComponent(String(s.id||''))+'/visibility\',{method:\'POST\',body:JSON.stringify({visible:'+actionState+'})}).then(function(){loadSkillSuiteCatalog()})">'+actionLabel+'</button></div></div>'}).join('');root.appendChild(section)}catch(e){/* catalog list remains usable when Suite endpoint is unavailable */}}
     let skillhubListInFlight=null,skillhubListInFlightKey='';
     const _finalLoadSkillHubList=loadSkillHubList;
-    loadSkillHubList=function(page){const key=String(page||skillhubPage);if(skillhubListInFlight&&skillhubListInFlightKey===key)return skillhubListInFlight;skillhubListInFlightKey=key;skillhubListInFlight=Promise.resolve(_finalLoadSkillHubList(page));return skillhubListInFlight.finally(()=>{skillhubListInFlight=null;skillhubListInFlightKey=''})};
+    loadSkillHubList=function(page){const key=String(page||skillhubPage);if(skillhubListInFlight&&skillhubListInFlightKey===key)return skillhubListInFlight;skillhubListInFlightKey=key;skillhubListInFlight=Promise.resolve(_finalLoadSkillHubList(page)).then(function(result){loadSkillSuiteCatalog();return result});return skillhubListInFlight.finally(()=>{skillhubListInFlight=null;skillhubListInFlightKey=''})};
     let moderationConfigInFlight=null;
     const _finalLoadModerationConfig=loadModerationConfig;
     loadModerationConfig=function(){if(moderationConfigInFlight)return moderationConfigInFlight;moderationConfigInFlight=Promise.resolve(_finalLoadModerationConfig());return moderationConfigInFlight.finally(()=>{moderationConfigInFlight=null})};

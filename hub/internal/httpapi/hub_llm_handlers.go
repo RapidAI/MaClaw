@@ -27,6 +27,8 @@ type hubLLMCacheStatus struct {
 	CacheWriteTokens  int64                        `json:"cache_write_tokens"`
 	InputCostRMB      float64                      `json:"input_cost_rmb,omitempty"`
 	OutputCostRMB     float64                      `json:"output_cost_rmb,omitempty"`
+	CacheReadCostRMB  float64                      `json:"cache_read_cost_rmb,omitempty"`
+	CacheWriteCostRMB float64                      `json:"cache_write_cost_rmb,omitempty"`
 	TotalCostRMB      float64                      `json:"total_cost_rmb,omitempty"`
 	Requests          int64                        `json:"requests"`
 	CachedRequests    int64                        `json:"cached_requests"`
@@ -80,10 +82,12 @@ func hubLLMPromptCacheStatus(r *http.Request, system store.SystemSettingsReposit
 		out.CacheWriteTokens += stat.CacheWriteTokens
 		out.InputCostRMB += stat.InputCostRMB
 		out.OutputCostRMB += stat.OutputCostRMB
-		out.TotalCostRMB += stat.TotalCostRMB
+		out.CacheReadCostRMB += stat.CacheReadCostRMB
+		out.CacheWriteCostRMB += stat.CacheWriteCostRMB
 		out.Requests += stat.Requests
 		out.CachedRequests += stat.CachedRequests
 	}
+	out.TotalCostRMB = out.InputCostRMB + out.CacheReadCostRMB + out.CacheWriteCostRMB + out.OutputCostRMB
 	out.CacheRate = hubLLMRate(out.CachedRequests, out.Requests)
 	out.CacheReuseRate = hubLLMRate(out.CachedInputTokens, out.InputTokens)
 	if stats, err := promptCacheStatusFromSource(r.Context(), promptCacheSource); err == nil && stats != nil {

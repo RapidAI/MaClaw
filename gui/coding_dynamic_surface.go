@@ -272,6 +272,9 @@ func codingDynamicSurfaceNonce() string {
 }
 
 func (c *codingSubAgentCallbacks) BuildToolsForModelRequest(userText string, iteration int) []map[string]interface{} {
+	if c == nil || !c.ensureCodingPlannerSnapshotAdopted() {
+		return nil
+	}
 	_ = userText
 	_ = iteration
 	if c.staticCompatibilitySurfaceQuarantined() {

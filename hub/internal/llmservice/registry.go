@@ -57,9 +57,11 @@ type Registry struct {
 	DefaultNewUserCredits       float64           `json:"default_new_user_credits,omitempty"`
 	DefaultNewUserBenefitMode   string            `json:"default_new_user_benefit_mode"`
 	// DefaultNewUserLimitCard is a separate, unmetered entitlement for new
-	// users. Unlike DefaultNewUserCredits, it grants access to a binding-active
-	// service group and constrains consumption only through period limits.
+	// users. Unlike DefaultNewUserCredits, it grants access to a configured
+	// model service group (free or grant-required) and constrains consumption
+	// only through period limits.
 	DefaultNewUserLimitCard NewUserLimitCard `json:"default_new_user_limit_card,omitempty"`
+	ResetVouchers           []ResetVoucher   `json:"reset_vouchers,omitempty"`
 	TokensPerCredit         int              `json:"tokens_per_credit,omitempty"`
 	// BillingLedger is append-only request settlement evidence. Keeping it in
 	// the same settings document as grants makes the debit and the idempotency
@@ -69,6 +71,18 @@ type Registry struct {
 	// to grants so admission, settlement, and recovery use one durable balance
 	// authority while the SQL ledger remains an audit mirror.
 	BillingReservations []BillingReservation `json:"billing_reservations,omitempty"`
+}
+
+// ResetVoucher is a one-time entitlement that clears the holder's current
+// five-hour and daily limit-card usage. It is intentionally separate from
+// credits and never contributes to billing balances.
+type ResetVoucher struct {
+	ID         string     `json:"id"`
+	UserID     string     `json:"user_id,omitempty"`
+	Email      string     `json:"email"`
+	IssuedAt   time.Time  `json:"issued_at"`
+	ExpiresAt  time.Time  `json:"expires_at"`
+	RedeemedAt *time.Time `json:"redeemed_at,omitempty"`
 }
 
 type BillingReservation struct {
@@ -90,7 +104,29 @@ type BillingReservation struct {
 	SentAt    time.Time `json:"sent_at,omitempty"`
 	ExpiresAt time.Time `json:"expires_at"`
 	CreatedAt time.Time `json:"created_at"`
+	// Status is empty while the hold is live. BillingReservationUsageUnresolved
+	// marks a sent local reservation whose response was lost past the recovery
+	// window: the hold no longer counts against the balance, but the row is
+	// retained as audit evidence instead of being silently deleted.
+	Status string `json:"status,omitempty"`
 }
+
+const (
+	// BillingReservationUsageUnresolved marks a settled-impossible reservation:
+	// the request was sent upstream but no usage fact ever came back (design §8
+	// requires keeping this state rather than guessing a cache-discounted
+	// settlement).
+	BillingReservationUsageUnresolved = "usage_unresolved"
+	// SentLocalBillingReservationMaxAge bounds how long a sent non-official
+	// reservation may hold Credits without a settlement. Official reservations
+	// are excluded: they keep waiting for HubCenter's authenticated
+	// reconciliation, which can still prove the real usage later.
+	SentLocalBillingReservationMaxAge = 30 * time.Minute
+	// BillingReservationTerminalRetention bounds how long a terminal
+	// (usage_unresolved) reservation row is kept as audit evidence before
+	// pruning drops it, keeping the registry JSON bounded.
+	BillingReservationTerminalRetention = 30 * 24 * time.Hour
+)
 
 // BillingLedgerEntry is the immutable settlement fact for one Hub request.
 // Prices are snapshots, never looked up again when reviewing historical usage.
@@ -104,6 +140,32 @@ type BillingLedgerEntry struct {
 	OutputTokens     int64    `json:"output_tokens,omitempty"`
 	RequestedCredits float64  `json:"requested_credits"`
 	DeductedCredits  float64  `json:"deducted_credits"`
+	// CachedInputTokens/CacheWriteTokens freeze the cache-direction usage legs.
+	// Without them a replayed request would rebuild its report from input/output
+	// only and silently lose the Cache Read/Write provenance of the original
+	// debit. Older entries predate the fields and simply decode as zero.
+	CachedInputTokens int64 `json:"cached_input_tokens,omitempty"`
+	CacheWriteTokens  int64 `json:"cache_write_tokens,omitempty"`
+	// The four directional amounts are the already-computed settlement facts
+	// (design: history must never be recalculated from a later price). They are
+	// expressed on the requested-amount scale: when a balance cap truncates the
+	// final debit, their sum matches RequestedCredits, not DeductedMicrocredits.
+	// An explicit zero direction is indistinguishable from a legacy entry in
+	// JSON because of omitempty; the presence signal for "this entry carries a
+	// directional price snapshot" is Pricing != nil. Legacy token-count debits
+	// keep all eight fields empty.
+	NormalInputCredits float64 `json:"normal_input_credits,omitempty"`
+	CacheReadCredits   float64 `json:"cache_read_credits,omitempty"`
+	CacheWriteCredits  float64 `json:"cache_write_credits,omitempty"`
+	OutputCredits      float64 `json:"output_credits,omitempty"`
+	NormalInputCostRMB float64 `json:"normal_input_cost_rmb,omitempty"`
+	CacheReadCostRMB   float64 `json:"cache_read_cost_rmb,omitempty"`
+	CacheWriteCostRMB  float64 `json:"cache_write_cost_rmb,omitempty"`
+	OutputCostRMB      float64 `json:"output_cost_rmb,omitempty"`
+	// PricingSource is the audit label of the frozen price's configuration
+	// owner ("provider" or "service_group_override"), frozen so a replayed
+	// request reports the same source as the original debit.
+	PricingSource string `json:"pricing_source,omitempty"`
 	// Requested/DeductedMicrocredits are the authoritative fixed-point amounts.
 	// Float fields remain for compatibility with existing JSON consumers.
 	RequestedMicrocredits int64 `json:"requested_microcredits,omitempty"`
@@ -154,14 +216,15 @@ type ModelServiceModel struct {
 }
 
 type ModelServiceProviderConfig struct {
-	ProviderID       string               `json:"provider_id"`
-	Model            string               `json:"model,omitempty"`
-	BillingMode      string               `json:"billing_mode,omitempty"`
-	CapabilityTags   []string             `json:"capability_tags,omitempty"`
-	Priority         int                  `json:"priority,omitempty"`
-	ResolutionTier   int                  `json:"resolution_tier,omitempty"`
-	CreditMultiplier float64              `json:"credit_multiplier,omitempty"`
-	TokenPricing     llmpool.TokenPricing `json:"token_pricing,omitempty"`
+	ProviderID           string               `json:"provider_id"`
+	Model                string               `json:"model,omitempty"`
+	BillingMode          string               `json:"billing_mode,omitempty"`
+	CapabilityTags       []string             `json:"capability_tags,omitempty"`
+	Priority             int                  `json:"priority,omitempty"`
+	ResolutionTier       int                  `json:"resolution_tier,omitempty"`
+	CreditMultiplier     float64              `json:"credit_multiplier,omitempty"`
+	TokenPricingOverride bool                 `json:"token_pricing_override,omitempty"`
+	TokenPricing         llmpool.TokenPricing `json:"token_pricing,omitempty"`
 }
 
 type GroupBinding struct {
@@ -236,8 +299,12 @@ type Grant struct {
 	CreatedAt       time.Time `json:"created_at"`
 	Permanent       bool      `json:"permanent,omitempty"`
 	RollingFiveHour bool      `json:"rolling_five_hour,omitempty"`
-	CreditsTotal    float64   `json:"credits_total,omitempty"`
-	CreditsUsed     float64   `json:"credits_used,omitempty"`
+	// AnchoredFiveHour uses the first-use timestamp as the start of recurring
+	// five-hour windows. It is materialized only in the effective new-user
+	// limit-card view and is cleared from the stored qualification snapshot.
+	AnchoredFiveHour bool    `json:"anchored_five_hour,omitempty"`
+	CreditsTotal     float64 `json:"credits_total,omitempty"`
+	CreditsUsed      float64 `json:"credits_used,omitempty"`
 	// Frozen grants are retained for audit but never participate in billing.
 	// Referral revocation uses this rather than deleting already-issued grants.
 	Frozen       bool               `json:"frozen,omitempty"`
@@ -276,8 +343,9 @@ type AuthorizedModel struct {
 // ProviderRouteBilling is the provider-owned billing configuration for one
 // logical-model / upstream-model route after group aggregation.
 type ProviderRouteBilling struct {
-	BillingMode  string               `json:"billing_mode,omitempty"`
-	TokenPricing llmpool.TokenPricing `json:"token_pricing,omitempty"`
+	BillingMode          string               `json:"billing_mode,omitempty"`
+	TokenPricingOverride bool                 `json:"token_pricing_override,omitempty"`
+	TokenPricing         llmpool.TokenPricing `json:"token_pricing,omitempty"`
 }
 
 type ActiveGrant struct {
@@ -340,6 +408,7 @@ type ServiceStatus struct {
 	CreditsRemaining   float64           `json:"credits_remaining"`
 	CreditsAvailable   float64           `json:"credits_available"`
 	TokensPerCredit    int               `json:"tokens_per_credit,omitempty"`
+	ResetVouchers      []ResetVoucher    `json:"reset_vouchers,omitempty"`
 }
 
 func LoadRegistry(ctx context.Context, system SystemSettingsRepository) (*Registry, error) {
@@ -517,6 +586,18 @@ func purgeUserFromRegistryForUser(ctx context.Context, system SystemSettingsRepo
 	}
 	reg.Cards = filteredCards
 
+	// Reset vouchers are user-owned entitlements as well; remove them when the
+	// account is purged so a later account cannot inherit stale vouchers.
+	filteredVouchers := reg.ResetVouchers[:0]
+	for _, voucher := range reg.ResetVouchers {
+		if resetVoucherMatchesOwner(voucher, owner) {
+			changed = true
+		} else {
+			filteredVouchers = append(filteredVouchers, voucher)
+		}
+	}
+	reg.ResetVouchers = filteredVouchers
+
 	if !changed {
 		return nil
 	}
@@ -648,7 +729,7 @@ func (r *Registry) Normalize() {
 		r.DefaultNewUserLimitCard.DurationDays = 0
 	}
 	r.DefaultNewUserLimitCard.PeriodLimits = normalizeCreditPeriodLimits(r.DefaultNewUserLimitCard.PeriodLimits)
-	// The welcome limit card deliberately exposes only rolling five-hour and
+	// The welcome limit card deliberately exposes only anchored five-hour and
 	// daily caps. Do not retain hidden weekly/monthly values supplied through a
 	// direct API payload: they would be enforced without being configurable or
 	// visible in the tenant System Settings UI.
@@ -660,13 +741,14 @@ func (r *Registry) Normalize() {
 	// belong to a user grant. Clear legacy snapshots while normalizing so a
 	// later settings change cannot leave two sources of truth in storage.
 	for i := range r.Grants {
-		if !strings.EqualFold(strings.TrimSpace(r.Grants[i].Source), "new_user_limit_card") {
+		if !isNewUserLimitCardSource(r.Grants[i].Source) {
 			continue
 		}
 		r.Grants[i].ExpiresAt = time.Time{}
 		r.Grants[i].Permanent = false
 		r.Grants[i].PeriodLimits = CreditPeriodLimits{}
 		r.Grants[i].RollingFiveHour = false
+		r.Grants[i].AnchoredFiveHour = false
 	}
 	if r.TokensPerCredit <= 0 {
 		r.TokensPerCredit = DefaultTokensPerCredit
@@ -990,6 +1072,9 @@ func mergeModelServiceProviderConfig(dst ModelServiceProviderConfig, src ModelSe
 	}
 	if src.TokenPricing.HasCreditPricing() {
 		dst.TokenPricing = src.TokenPricing
+	}
+	if src.TokenPricingOverride {
+		dst.TokenPricingOverride = true
 	}
 	return dst
 }

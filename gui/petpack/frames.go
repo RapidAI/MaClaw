@@ -12,16 +12,16 @@ import (
 	"strings"
 	"sync"
 
-	_ "golang.org/x/image/webp"
 	xdraw "golang.org/x/image/draw"
+	_ "golang.org/x/image/webp"
 )
 
 // FrameKey identifies a decoded pack frame.
 type FrameKey struct {
-	PackID    string
-	Variant   string
-	State     PetRuntimeState
-	Size      int
+	PackID  string
+	Variant string
+	State   PetRuntimeState
+	Size    int
 }
 
 // FrameCache caches decoded+scaled pack frames.

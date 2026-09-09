@@ -2,14 +2,18 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"math"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/llmpool"
+	"github.com/RapidAI/CodeClaw/hub/internal/im"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	storesqlite "github.com/RapidAI/CodeClaw/hub/internal/store/sqlite"
@@ -80,6 +84,17 @@ func TestSettledUsageCreditBreakdownIncludesServiceGroupMultiplier(t *testing.T)
 	)
 	if breakdown == nil || breakdown.InputComponent != 2 || breakdown.OutputComponent != 2 || breakdown.RoundingAdjustment != 0 {
 		t.Fatalf("settled breakdown = %#v, want input/output/rounding 2/2/0", breakdown)
+	}
+}
+
+func TestSettledUsageCreditBreakdownMaterializesLegacyCacheDiscount(t *testing.T) {
+	pricing := &llmpool.ResolvedTokenPricing{TokenPricing: llmpool.TokenPricing{
+		InputCreditsPer10K: 1, OutputCreditsPer10K: 2, Version: "legacy-v1",
+	}}
+	credits := llmservice.EstimateTokenPricingCreditsWithCache(10_000, 0, 10_000, 0, *pricing, 1)
+	breakdown := settledUsageCreditBreakdown(corelib.TokenUsageStat{InputTokens: 10_000, CachedInputTokens: 10_000}, credits, 1, 1, pricing)
+	if breakdown == nil || breakdown.CacheReadCreditsPer10K != 0.1 || breakdown.CacheReadComponent != 0.1 {
+		t.Fatalf("legacy cache breakdown = %#v, want read price/component 0.1", breakdown)
 	}
 }
 
@@ -401,7 +416,7 @@ func TestEnqueueLLMUsageRecordFinalizesZeroUsageRequestReservation(t *testing.T)
 	if err := llmservice.SaveRegistry(t.Context(), system, reg); err != nil {
 		t.Fatal(err)
 	}
-	enqueueLLMUsageRecordWithBilling(system, "p", corelib.TokenUsageStat{Requests: 1}, "u", "u@example.com", []string{"paid"}, nil, 0, llmservice.OfficialForwardMeta{}, "req-enqueue-zero", 2, 2, 1, nil)
+	enqueueLLMUsageRecordWithBilling(system, "p", corelib.TokenUsageStat{Requests: 1}, "u", "u@example.com", []string{"paid"}, nil, 0, llmservice.OfficialForwardMeta{}, "req-enqueue-zero", 2, 2, 1, nil, nil)
 	got, err := llmservice.LoadRegistry(t.Context(), system)
 	if err != nil {
 		t.Fatal(err)
@@ -477,29 +492,24 @@ func TestComputeLLMRequestBillingUsesSyncedHubCenterMultiplierWithoutSnapshot(t 
 	ctx := withLLMBillingState(t.Context(), time.Date(2026, 8, 27, 1, 0, 0, 0, time.UTC), "req-official-legacy-snapshot")
 	header := make(http.Header)
 	header.Set(llmpool.ProviderIDHeader, "hubcenter-provider-a")
-	// Simulate an older HubCenter that sent its concrete provider ID but not the
-	// pricing snapshot. Hub must still include the synced provider multiplier
-	// rather than charging only the Hub service-group multiplier.
+	// Provider ID without a HubCenter price snapshot: keep the synced
+	// multiplier, but do not invent input/cache/output prices on Hub.
 	noteOfficialCreditMultiplierFromHeader(ctx, header)
 	serviceReg := &llmservice.Registry{ModelServiceGroups: []llmservice.ModelServiceGroup{{
 		ID:                     "official-group",
 		BillingGroupMultiplier: 4,
 	}}}
 	model := &llmservice.AuthorizedModel{
-		Name: "official",
-		ProviderRouteBilling: map[string]map[string]llmservice.ProviderRouteBilling{
-			llmservice.MaClawOfficialProviderID: {
-				"opencode-1": {BillingMode: llmpool.BillingModePaid, TokenPricing: llmpool.TokenPricing{InputCreditsPer10K: 2, OutputCreditsPer10K: 8}},
-			},
-		},
+		Name:                   "official",
+		ProviderTokenPricing:   map[string]llmpool.TokenPricing{llmservice.MaClawOfficialProviderID: {InputCreditsPer10K: 2, OutputCreditsPer10K: 8}},
 		ProviderUpstreamModels: map[string]string{llmservice.MaClawOfficialProviderID: "opencode-1"},
 	}
 	credits, multiplier := computeLLMRequestBilling(
 		ctx, model, llmservice.MaClawOfficialProviderID, nil, serviceReg, []string{"official-group"},
 		corelib.TokenUsageStat{InputTokens: 10_000, OutputTokens: 1_000, TotalTokens: 11_000}, llmservice.DefaultTokensPerCredit,
 	)
-	if credits != 16.8 || multiplier != 6 {
-		t.Fatalf("legacy official fallback billing = credits=%v multiplier=%v, want 16.8 and 6", credits, multiplier)
+	if credits != 0 || multiplier != 6 {
+		t.Fatalf("official billing without HubCenter price = credits=%v multiplier=%v, want 0 and 6", credits, multiplier)
 	}
 	providerMultiplier, groupMultiplier := llmUsageReportMultipliers(ctx, llmservice.MaClawOfficialProviderID, serviceReg, []string{"official-group"}, multiplier)
 	if providerMultiplier != 1.5 || groupMultiplier != 4 {
@@ -507,6 +517,71 @@ func TestComputeLLMRequestBillingUsesSyncedHubCenterMultiplierWithoutSnapshot(t 
 	}
 	if got := usageReportBillingProviderID(ctx, llmservice.MaClawOfficialProviderID); got != "hubcenter-provider-a" {
 		t.Fatalf("legacy official fallback tooltip provider = %q, want hubcenter-provider-a", got)
+	}
+}
+
+func TestComputeLLMRequestBillingDoesNotUseHubLocalOfficialPrices(t *testing.T) {
+	ctx := withLLMBillingState(t.Context(), time.Now().UTC(), "req-official-hub-local-price")
+	reg := &llmservice.Registry{ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "official-group", BillingGroupMultiplier: 1}}}
+	model := &llmservice.AuthorizedModel{
+		Name: "official",
+		ProviderTokenPricing: map[string]llmpool.TokenPricing{
+			llmservice.MaClawOfficialProviderID: {InputCreditsPer10K: 1, OutputCreditsPer10K: 2},
+		},
+	}
+	usage := corelib.TokenUsageStat{InputTokens: 10_000, CachedInputTokens: 8_000, OutputTokens: 2_000, TotalTokens: 12_000}
+	credits, _ := computeLLMRequestBilling(ctx, model, llmservice.MaClawOfficialProviderID, nil, reg, []string{"official-group"}, usage, llmservice.DefaultTokensPerCredit)
+	if credits != 0 {
+		t.Fatalf("official debit = %v; Hub-local prices and tokens-per-credit must not replace upstream provider input/cache/output prices", credits)
+	}
+}
+
+func TestChargeLoggedOfficialUsageWithoutUpstreamPriceKeepsReservation(t *testing.T) {
+	provider, err := storesqlite.NewProvider(storesqlite.Config{DSN: filepath.Join(t.TempDir(), "llm-official-no-price.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = provider.Close() })
+	if err := storesqlite.RunMigrations(provider.Write); err != nil {
+		t.Fatal(err)
+	}
+	st := storesqlite.NewStore(provider)
+	system := userReferralMetricSystemSettings{SystemSettingsRepository: st.System, billing: st.LLMBillingLedger}
+	now := time.Now().UTC()
+	requestID := "req-official-no-price"
+	reg := &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "official-group", AccessPolicy: llmservice.AccessPolicyGrantRequired}},
+		Grants: []llmservice.Grant{{
+			ID: "g", UserID: "u", Email: "u@example.com", ServiceGroupID: "official-group",
+			CreditsTotal: 10, StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour),
+		}},
+	}
+	if _, ok := llmservice.ReserveBillingCreditsForUserID(reg, "u", "u@example.com", []string{"official-group"}, requestID, 8, now.Add(time.Minute), now); !ok {
+		t.Fatal("reserve")
+	}
+	if !llmservice.MarkBillingReservationSent(reg, requestID, now) {
+		t.Fatal("mark sent")
+	}
+	if !llmservice.SetBillingReservationBillingDetails(reg, requestID, llmservice.MaClawOfficialProviderID, 1, 1) {
+		t.Fatal("billing details")
+	}
+	if err := llmservice.SaveRegistry(t.Context(), system, reg); err != nil {
+		t.Fatal(err)
+	}
+	ctx := withLLMBillingState(t.Context(), now, requestID)
+	credits, _ := chargeLoggedLLMEndpointUsage(ctx, system, nil, "u", "u@example.com", llmservice.MaClawOfficialProviderID, &llmservice.AuthorizedModel{}, nil, &llmservice.Registry{ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "official-group", BillingGroupMultiplier: 1}}}, corelib.TokenUsageStat{InputTokens: 10_000, CachedInputTokens: 8_000, OutputTokens: 2_000, TotalTokens: 12_000, Requests: 1}, []string{"official-group"})
+	if credits != 0 {
+		t.Fatalf("credits=%v, want 0 without upstream provider price", credits)
+	}
+	got, err := llmservice.LoadRegistry(t.Context(), system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if llmservice.HasBillingRequest(got, requestID) {
+		t.Fatalf("zero debit must not settle and block HubCenter reconciliation: %#v", got.BillingLedger)
+	}
+	if len(got.BillingReservations) != 1 {
+		t.Fatalf("sent official reservation = %#v, want kept for reconciliation", got.BillingReservations)
 	}
 }
 
@@ -756,6 +831,176 @@ func TestResolvedRouteUsageRMBPricingOverridesProviderDisplayPrice(t *testing.T)
 	}
 }
 
+func TestResolvedRouteUsageRMBCostSeparatesCacheReadAndWrite(t *testing.T) {
+	usage := corelib.TokenUsageStat{
+		InputTokens:       1_000_000,
+		CachedInputTokens: 200_000,
+		CacheWriteTokens:  100_000,
+		OutputTokens:      500_000,
+		TotalTokens:       1_500_000,
+	}
+	pricing := llmpool.ResolvedTokenPricing{TokenPricing: llmpool.TokenPricing{
+		InputRMBPer10K:      0.02,
+		CacheReadRMBPer10K:  cacheRMBPrice(0.002),
+		CacheWriteRMBPer10K: cacheRMBPrice(0.04),
+		OutputRMBPer10K:     0.06,
+	}}
+
+	priced := applyResolvedTokenPricingUsageSnapshot(usage, pricing, 1.5, 2)
+	if math.Abs(priced.InputCostRMB-4.2) > 1e-12 || math.Abs(priced.CacheReadCostRMB-0.12) > 1e-12 || math.Abs(priced.CacheWriteCostRMB-1.2) > 1e-12 || math.Abs(priced.OutputCostRMB-9) > 1e-12 {
+		t.Fatalf("RMB components = input %.12f cache-read %.12f cache-write %.12f output %.12f; want 4.2/0.12/1.2/9", priced.InputCostRMB, priced.CacheReadCostRMB, priced.CacheWriteCostRMB, priced.OutputCostRMB)
+	}
+	if got, want := priced.TotalCostRMB, priced.InputCostRMB+priced.CacheReadCostRMB+priced.CacheWriteCostRMB+priced.OutputCostRMB; math.Abs(got-want) > 1e-12 {
+		t.Fatalf("RMB total = %.12f, want component sum %.12f", got, want)
+	}
+}
+
+func TestApplyOfficialTokenPricingUsageSnapshotDefaultsCacheRMBFromUpstreamInput(t *testing.T) {
+	usage := applyOfficialTokenPricingUsageSnapshot(corelib.TokenUsageStat{Requests: 1}, &llmpool.TokenPricingSnapshot{
+		ProviderID: "agnes", InputTokens: 10_000, CachedInputTokens: 8_000, OutputTokens: 2_000,
+		Pricing: llmpool.ResolvedTokenPricing{TokenPricing: llmpool.TokenPricing{
+			InputCreditsPer10K: 1, OutputCreditsPer10K: 2,
+			InputRMBPer10K: 0.01, OutputRMBPer10K: 0.02,
+		}},
+	})
+	// Upstream cache RMB defaults: read = input/10, write = input.
+	// Per 1M: input ¥1, cache read ¥0.1, output ¥2.
+	if math.Abs(usage.InputCostRMB-0.002) > 1e-12 || math.Abs(usage.CacheReadCostRMB-0.0008) > 1e-12 || math.Abs(usage.CacheWriteCostRMB) > 1e-12 || math.Abs(usage.OutputCostRMB-0.004) > 1e-12 {
+		t.Fatalf("official cache RMB = input %.12f read %.12f write %.12f output %.12f; want 0.002/0.0008/0/0.004", usage.InputCostRMB, usage.CacheReadCostRMB, usage.CacheWriteCostRMB, usage.OutputCostRMB)
+	}
+	if math.Abs(usage.TotalCostRMB-0.0068) > 1e-12 {
+		t.Fatalf("official cache RMB total = %.12f, want 0.0068", usage.TotalCostRMB)
+	}
+}
+
+func TestChargeLoggedOfficialSnapshotAppliesUpstreamCacheRMB(t *testing.T) {
+	ctx := withLLMBillingState(t.Context(), time.Now().UTC(), "req-official-snapshot-rmb-cache")
+	header := make(http.Header)
+	header.Set(llmpool.ProviderIDHeader, "agnes")
+	header.Set(llmpool.TokenPricingSnapshotHeader, mustEncodeTokenPricingSnapshot(t, llmpool.TokenPricingSnapshot{
+		ProviderID: "agnes", ProviderMultiplier: 1,
+		InputTokens: 10_000, CachedInputTokens: 8_000, OutputTokens: 2_000,
+		Pricing: llmpool.ResolvedTokenPricing{TokenPricing: llmpool.TokenPricing{
+			InputCreditsPer10K: 1, OutputCreditsPer10K: 2,
+			InputRMBPer10K: 0.01, OutputRMBPer10K: 0.02,
+		}},
+	}))
+	noteOfficialCreditMultiplierFromHeader(ctx, header)
+	system := &testSystemSettingsRepo{}
+	t.Cleanup(func() {
+		globalLLMUsageAccumulator.mu.Lock()
+		delete(globalLLMUsageAccumulator.pending, system)
+		globalLLMUsageAccumulator.mu.Unlock()
+	})
+	reg := &llmservice.Registry{ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "official", BillingGroupMultiplier: 2}}}
+	credits, _ := chargeLoggedLLMEndpointUsage(ctx, system, nil, "u", "u@example.com", llmservice.MaClawOfficialProviderID, &llmservice.AuthorizedModel{}, nil, reg, corelib.TokenUsageStat{Requests: 1}, []string{"official"})
+	if credits != 1.36 {
+		t.Fatalf("official cache credits = %v, want 1.36 from upstream prices × service-group 2", credits)
+	}
+	summary := officialPendingUsageSummary(t, system)
+	if math.Abs(summary.InputCostRMB-0.004) > 1e-12 || math.Abs(summary.CacheReadCostRMB-0.0016) > 1e-12 || math.Abs(summary.OutputCostRMB-0.008) > 1e-12 || math.Abs(summary.TotalCostRMB-0.0136) > 1e-12 {
+		t.Fatalf("official snapshot RMB = %+v; want input 0.004 cache-read 0.0016 output 0.008 total 0.0136", summary)
+	}
+	if summary.RMBPricedRequests != 1 || summary.CreditUnitemizedComponent != 0 {
+		t.Fatalf("official snapshot must keep RMB coverage and stay itemized: %+v", summary)
+	}
+}
+
+func TestChargeLoggedOfficialSnapshotUsesQuoteProviderMultiplierWhenSnapshotOmitsIt(t *testing.T) {
+	now := time.Now().UTC()
+	ctx := withLLMBillingState(t.Context(), now, "req-official-snapshot-quote-mul")
+	reg := &llmservice.Registry{ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "official", BillingGroupMultiplier: 2}}}
+	quote := llmservice.OfficialPricingQuote{
+		ProviderID: "agnes",
+		Pricing: llmpool.ResolvedTokenPricing{TokenPricing: llmpool.TokenPricing{
+			InputCreditsPer10K: 1, OutputCreditsPer10K: 2,
+			InputRMBPer10K: 0.01, OutputRMBPer10K: 0.02,
+		}},
+		ProviderMultiplier: 1.5,
+		ExpiresAt:          now.Add(time.Minute),
+	}
+	if err := rememberOfficialPricingQuote(ctx, reg, &llmservice.AuthorizedModel{Name: "auto", ProviderIDs: []string{llmservice.MaClawOfficialProviderID}}, quote, []string{"official"}, 10_000, 2_000); err != nil {
+		t.Fatalf("remember official quote: %v", err)
+	}
+	reg.ModelServiceGroups[0].BillingGroupMultiplier = 9
+	header := make(http.Header)
+	header.Set(llmpool.ProviderIDHeader, "agnes")
+	header.Set(llmpool.TokenPricingSnapshotHeader, mustEncodeTokenPricingSnapshot(t, llmpool.TokenPricingSnapshot{
+		ProviderID: "agnes", InputTokens: 10_000, OutputTokens: 2_000,
+		Pricing: llmpool.ResolvedTokenPricing{TokenPricing: llmpool.TokenPricing{
+			InputCreditsPer10K: 1, OutputCreditsPer10K: 2,
+			InputRMBPer10K: 0.01, OutputRMBPer10K: 0.02,
+		}},
+	}))
+	noteOfficialCreditMultiplierFromHeader(ctx, header)
+	system := &testSystemSettingsRepo{}
+	t.Cleanup(func() {
+		globalLLMUsageAccumulator.mu.Lock()
+		delete(globalLLMUsageAccumulator.pending, system)
+		globalLLMUsageAccumulator.mu.Unlock()
+	})
+	credits, multiplier := chargeLoggedLLMEndpointUsage(ctx, system, nil, "u", "u@example.com", llmservice.MaClawOfficialProviderID, &llmservice.AuthorizedModel{}, nil, reg, corelib.TokenUsageStat{Requests: 1}, []string{"official"})
+	if credits != 4.2 || multiplier != 3 {
+		t.Fatalf("official settlement = credits=%v multiplier=%v, want 4.2 and 3 from quote 1.5 × frozen group 2", credits, multiplier)
+	}
+	summary := officialPendingUsageSummary(t, system)
+	if math.Abs(summary.InputCostRMB-0.03) > 1e-12 || math.Abs(summary.OutputCostRMB-0.012) > 1e-12 || math.Abs(summary.TotalCostRMB-0.042) > 1e-12 {
+		t.Fatalf("official RMB = %+v; want input 0.03 output 0.012 total 0.042", summary)
+	}
+}
+
+func TestChargeLoggedOfficialQuoteAppliesUpstreamCacheRMBWithoutSnapshot(t *testing.T) {
+	now := time.Now().UTC()
+	ctx := withLLMBillingState(t.Context(), now, "req-official-quote-rmb-cache")
+	reg := &llmservice.Registry{ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "official", BillingGroupMultiplier: 1}}}
+	quote := llmservice.OfficialPricingQuote{
+		ProviderID: "agnes",
+		Pricing: llmpool.ResolvedTokenPricing{TokenPricing: llmpool.TokenPricing{
+			InputCreditsPer10K: 1, OutputCreditsPer10K: 2,
+			InputRMBPer10K: 0.01, OutputRMBPer10K: 0.02,
+		}},
+		ProviderMultiplier: 1,
+		ExpiresAt:          now.Add(time.Minute),
+	}
+	if err := rememberOfficialPricingQuote(ctx, reg, &llmservice.AuthorizedModel{Name: "auto", ProviderIDs: []string{llmservice.MaClawOfficialProviderID}}, quote, []string{"official"}, 10_000, 2_000); err != nil {
+		t.Fatalf("remember official quote: %v", err)
+	}
+	system := &testSystemSettingsRepo{}
+	t.Cleanup(func() {
+		globalLLMUsageAccumulator.mu.Lock()
+		delete(globalLLMUsageAccumulator.pending, system)
+		globalLLMUsageAccumulator.mu.Unlock()
+	})
+	credits, _ := chargeLoggedLLMEndpointUsage(ctx, system, nil, "u", "u@example.com", llmservice.MaClawOfficialProviderID, &llmservice.AuthorizedModel{}, nil, reg, corelib.TokenUsageStat{InputTokens: 10_000, CachedInputTokens: 8_000, OutputTokens: 2_000, TotalTokens: 12_000, Requests: 1}, []string{"official"})
+	if credits != 0.68 {
+		t.Fatalf("official quote cache credits = %v, want 0.68", credits)
+	}
+	summary := officialPendingUsageSummary(t, system)
+	if math.Abs(summary.InputCostRMB-0.002) > 1e-12 || math.Abs(summary.CacheReadCostRMB-0.0008) > 1e-12 || math.Abs(summary.OutputCostRMB-0.004) > 1e-12 || math.Abs(summary.TotalCostRMB-0.0068) > 1e-12 {
+		t.Fatalf("official quote RMB = %+v; want input 0.002 cache-read 0.0008 output 0.004 total 0.0068", summary)
+	}
+}
+
+func officialPendingUsageSummary(t *testing.T, system store.SystemSettingsRepository) llmUsageCounters {
+	t.Helper()
+	globalLLMUsageAccumulator.mu.Lock()
+	pending := globalLLMUsageAccumulator.pending[system]
+	globalLLMUsageAccumulator.mu.Unlock()
+	if pending == nil || pending.reports == nil || len(pending.reports.Days) == 0 {
+		t.Fatal("usage report was not queued")
+	}
+	var day string
+	for key := range pending.reports.Days {
+		day = key
+		break
+	}
+	month := day
+	if len(day) >= 7 {
+		month = day[:7]
+	}
+	return buildLLMUsageReportResponse(t.Context(), pending.reports, nil, "user", "daily", day, month, "", time.Now()).Summary
+}
+
 func TestPrepareLLMPricingQuoteUsesConcreteUpstreamRoutePrice(t *testing.T) {
 	now := time.Date(2026, 8, 24, 1, 0, 0, 0, time.UTC)
 	reg := &llmservice.Registry{ModelServiceGroups: []llmservice.ModelServiceGroup{{
@@ -773,12 +1018,12 @@ func TestPrepareLLMPricingQuoteUsesConcreteUpstreamRoutePrice(t *testing.T) {
 		ProviderTokenPricing:   map[string]llmpool.TokenPricing{"p1": {InputCreditsPer10K: 99, OutputCreditsPer10K: 99}},
 		ProviderRouteBilling: map[string]map[string]llmservice.ProviderRouteBilling{"p1": {
 			"expensive-default": {BillingMode: llmpool.BillingModePaid, TokenPricing: llmpool.TokenPricing{InputCreditsPer10K: 9, OutputCreditsPer10K: 9}},
-			"cheap-route":       {BillingMode: llmpool.BillingModePaid, TokenPricing: llmpool.TokenPricing{InputCreditsPer10K: 1, OutputCreditsPer10K: 2}},
+			"cheap-route":       {BillingMode: llmpool.BillingModePaid, TokenPricingOverride: true, TokenPricing: llmpool.TokenPricing{InputCreditsPer10K: 1, OutputCreditsPer10K: 2}},
 		}},
 		ProviderUpstreamRouteModels: map[string]map[string]string{"p1": {"logical-model": "cheap-route"}},
 	}
 	ctx := withLLMBillingState(t.Context(), now, "req-route-quote")
-	denial, err := prepareLLMPricingQuote(ctx, reg, "u1", "user@example.com", model, "p1", map[string]any{"max_tokens": 1_000}, now)
+	denial, err := prepareLLMPricingQuote(ctx, reg, nil, "u1", "user@example.com", model, "p1", map[string]any{"max_tokens": 1_000}, now)
 	if err != nil || denial.Code != "" {
 		t.Fatalf("quote failed: denial=%#v err=%v", denial, err)
 	}
@@ -808,13 +1053,13 @@ func TestPrepareLLMPricingQuoteRejectsInsufficientMaximumAndFreezesRoutePrice(t 
 		ProviderTokenPricing:  map[string]llmpool.TokenPricing{"p1": {InputCreditsPer10K: 1, OutputCreditsPer10K: 4}},
 	}
 	ctx := withLLMBillingState(t.Context(), now, "req-quote")
-	denial, err := prepareLLMPricingQuote(ctx, reg, "u1", "user@example.com", model, "p1", map[string]any{"max_tokens": 2_000}, now)
+	denial, err := prepareLLMPricingQuote(ctx, reg, nil, "u1", "user@example.com", model, "p1", map[string]any{"max_tokens": 2_000}, now)
 	if err == nil || denial.Code != "LLM_SERVICE_CREDITS_INSUFFICIENT_FOR_REQUEST" {
 		t.Fatalf("denial=%#v err=%v, want insufficient quote", denial, err)
 	}
 
 	reg.Grants[0].CreditsTotal = 10
-	denial, err = prepareLLMPricingQuote(ctx, reg, "u1", "user@example.com", model, "p1", map[string]any{"max_tokens": 2_000}, now)
+	denial, err = prepareLLMPricingQuote(ctx, reg, nil, "u1", "user@example.com", model, "p1", map[string]any{"max_tokens": 2_000}, now)
 	if err != nil || denial.Code != "" {
 		t.Fatalf("quote failed: denial=%#v err=%v", denial, err)
 	}
@@ -855,6 +1100,251 @@ func TestRememberOfficialPricingQuoteUsesLogicalModelAndFreezesDirectionalPrice(
 	}
 }
 
+func TestComputeLLMRequestBillingUsesOfficialQuoteCacheRatesWithoutSnapshot(t *testing.T) {
+	now := time.Now().UTC()
+	ctx := withLLMBillingState(t.Context(), now, "req-official-cache-quote")
+	reg := &llmservice.Registry{ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "official-group", BillingGroupMultiplier: 1}}}
+	model := &llmservice.AuthorizedModel{Name: "hub-public-model", ProviderIDs: []string{llmservice.MaClawOfficialProviderID}}
+	quote := llmservice.OfficialPricingQuote{
+		ProviderID: "agnes",
+		Pricing: llmpool.ResolvedTokenPricing{TokenPricing: llmpool.TokenPricing{
+			InputCreditsPer10K: 1, OutputCreditsPer10K: 2,
+		}},
+		ProviderMultiplier: 1,
+		ExpiresAt:          now.Add(time.Minute),
+	}
+	if err := rememberOfficialPricingQuote(ctx, reg, model, quote, []string{"official-group"}, 10_000, 2_000); err != nil {
+		t.Fatalf("remember official quote: %v", err)
+	}
+	usage := corelib.TokenUsageStat{InputTokens: 10_000, CachedInputTokens: 8_000, OutputTokens: 2_000, TotalTokens: 12_000}
+	credits, multiplier := computeLLMRequestBilling(ctx, model, llmservice.MaClawOfficialProviderID, nil, reg, []string{"official-group"}, usage, llmservice.DefaultTokensPerCredit)
+	// Directional: (2000*1 + 8000*0.1 + 2000*2) / 10000 = 0.68
+	// Legacy tokens-per-credit would charge 12_000/10000 = 1.2.
+	if credits != 0.68 || multiplier != 1 {
+		t.Fatalf("official cache quote billing = credits=%v multiplier=%v, want 0.68 and 1", credits, multiplier)
+	}
+	breakdown := settledUsageCreditBreakdown(usage, credits, 1, 1, &quote.Pricing)
+	if breakdown == nil || breakdown.UnitemizedComponent != 0 {
+		t.Fatalf("cache quote settlement must stay itemized, breakdown=%#v", breakdown)
+	}
+	if breakdown.NormalInputComponent != 0.2 || breakdown.CacheReadComponent != 0.08 || breakdown.OutputComponent != 0.4 {
+		t.Fatalf("cache quote components = %#v, want normal 0.2 cache-read 0.08 output 0.4", breakdown)
+	}
+}
+
+func TestPrepareOfficialLLMRequestPricingQuoteWithoutLocalDirectionalPrice(t *testing.T) {
+	var quoted bool
+	hubCenter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/api/llm/v1/quotes") {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get("X-MaClaw-Request-ID") == "" || r.Header.Get("X-Hub-ID") == "" {
+			http.Error(w, "missing quote identity", http.StatusBadRequest)
+			return
+		}
+		quoted = true
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"token": "quote-token",
+			"quote": map[string]any{
+				"provider_id":         "agnes",
+				"upstream_model":      "upstream-model",
+				"service_group_id":    "redeem",
+				"provider_multiplier": 1,
+				"expires_at":          time.Now().UTC().Add(time.Minute),
+				"pricing": map[string]any{
+					"input_credits_per_10k":  1,
+					"output_credits_per_10k": 2,
+				},
+			},
+		})
+	}))
+	defer hubCenter.Close()
+
+	previous := GetMaClawModule()
+	SetMaClawModule(&llmservice.MaClawModule{Client: llmservice.NewMaClawProviderClient(llmservice.MaClawProviderConfig{
+		HubCenterURL: hubCenter.URL,
+		HubID:        "hub-1",
+		MachineToken: "hub-secret",
+	})})
+	t.Cleanup(func() { SetMaClawModule(previous) })
+
+	ctx := store.WithTenant(withLLMBillingState(t.Context(), time.Now().UTC(), "req-official-no-local-price"), "tenant-a")
+	ctx = llmservice.WithOfficialForwardMeta(ctx, llmservice.OfficialForwardMeta{RequestID: "req-official-no-local-price"})
+	model := &llmservice.AuthorizedModel{
+		Name:        "auto",
+		ProviderIDs: []string{llmservice.MaClawOfficialProviderID},
+	}
+	reg := &llmservice.Registry{ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "official-group", BillingGroupMultiplier: 1}}}
+	if err := prepareOfficialLLMRequestPricingQuote(ctx, reg, &im.LLMProviderRegistry{}, model, map[string]any{"model": "auto"}); err != nil {
+		t.Fatalf("prepare official quote: %v", err)
+	}
+	if !quoted {
+		t.Fatal("official quote must be requested even when Hub has no local directional price")
+	}
+	stored, ok := snapshotLLMPricingQuote(ctx, llmservice.MaClawOfficialProviderID)
+	if !ok || stored.Pricing.InputCreditsPer10K != 1 || stored.Pricing.OutputCreditsPer10K != 2 {
+		t.Fatalf("stored official quote = %#v ok=%v, want HubCenter 1/2 price", stored, ok)
+	}
+	officialQuote, ok := snapshotOfficialForwardQuote(ctx)
+	if !ok || officialQuote.ServiceGroupID != "redeem" {
+		t.Fatalf("official quote service group = %#v ok=%v, want HubCenter matched redeem", officialQuote, ok)
+	}
+	if got := officialUsageReportServiceGroupIDs(ctx, llmservice.MaClawOfficialProviderID, []string{"coding-auto"}); len(got) != 1 || got[0] != "redeem" {
+		t.Fatalf("report groups = %#v, want HubCenter matched redeem", got)
+	}
+}
+
+func TestPrepareOfficialLLMRequestPricingQuoteSkipsFreeRoute(t *testing.T) {
+	quoted := false
+	hubCenter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		quoted = true
+		http.Error(w, "quote must not be requested for a free official route", http.StatusInternalServerError)
+	}))
+	defer hubCenter.Close()
+
+	previous := GetMaClawModule()
+	SetMaClawModule(&llmservice.MaClawModule{Client: llmservice.NewMaClawProviderClient(llmservice.MaClawProviderConfig{
+		HubCenterURL: hubCenter.URL,
+		HubID:        "hub-1",
+		MachineToken: "hub-secret",
+	})})
+	t.Cleanup(func() { SetMaClawModule(previous) })
+
+	ctx := store.WithTenant(withLLMBillingState(t.Context(), time.Now().UTC(), "req-official-free"), "tenant-a")
+	ctx = llmservice.WithOfficialForwardMeta(ctx, llmservice.OfficialForwardMeta{RequestID: "req-official-free"})
+	model := &llmservice.AuthorizedModel{
+		Name:                 "auto",
+		ProviderIDs:          []string{llmservice.MaClawOfficialProviderID},
+		ProviderBillingModes: map[string]string{llmservice.MaClawOfficialProviderID: llmpool.BillingModeFree},
+	}
+	if err := prepareOfficialLLMRequestPricingQuote(ctx, &llmservice.Registry{}, &im.LLMProviderRegistry{}, model, map[string]any{"model": "auto"}); err != nil {
+		t.Fatalf("prepare official quote: %v", err)
+	}
+	if quoted {
+		t.Fatal("free official route must not request a HubCenter pricing quote")
+	}
+	if _, ok := snapshotLLMPricingQuote(ctx, llmservice.MaClawOfficialProviderID); ok {
+		t.Fatal("free official route must not freeze a pricing quote")
+	}
+}
+
+func TestComputeLLMRequestBillingUsesLocalProviderPricing(t *testing.T) {
+	providerReg := &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "local", TokenPricing: llmpool.TokenPricing{InputCreditsPer10K: 4, OutputCreditsPer10K: 8}}}}
+	serviceReg := &llmservice.Registry{ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "paid", BillingGroupMultiplier: 1}}}
+	credits, multiplier := computeLLMRequestBilling(context.Background(), &llmservice.AuthorizedModel{}, "local", providerReg, serviceReg, []string{"paid"}, corelib.TokenUsageStat{InputTokens: 10_000, OutputTokens: 5_000}, llmservice.DefaultTokensPerCredit)
+	if credits != 8 || multiplier != 1 {
+		t.Fatalf("local provider pricing billing = credits=%v multiplier=%v, want 8 and 1", credits, multiplier)
+	}
+}
+
+func TestPrepareLLMPricingQuoteLabelsServiceGroupOverrideSource(t *testing.T) {
+	now := time.Date(2026, 8, 24, 1, 0, 0, 0, time.UTC)
+	reg := &llmservice.Registry{ModelServiceGroups: []llmservice.ModelServiceGroup{{
+		ID: "paid", AccessPolicy: llmservice.AccessPolicyGrantRequired,
+	}}, Grants: []llmservice.Grant{{
+		ID: "g1", UserID: "u1", Email: "user@example.com", ServiceGroupID: "paid",
+		CreditsTotal: 100, Permanent: true, StartsAt: now.Add(-time.Hour), ExpiresAt: now.AddDate(1, 0, 0),
+	}}}
+	model := &llmservice.AuthorizedModel{
+		Name:                   "logical-model",
+		ProviderIDs:            []string{"p1", "p2"},
+		ProviderServiceGroups:  map[string][]string{"p1": {"paid"}, "p2": {"paid"}},
+		ProviderBillingModes:   map[string]string{"p1": llmpool.BillingModePaid, "p2": llmpool.BillingModePaid},
+		ProviderUpstreamModels: map[string]string{"p1": "upstream-a", "p2": "upstream-b"},
+		ProviderTokenPricing: map[string]llmpool.TokenPricing{
+			"p1": {InputCreditsPer10K: 1, OutputCreditsPer10K: 2},
+			"p2": {InputCreditsPer10K: 3, OutputCreditsPer10K: 4},
+		},
+		ProviderRouteBilling: map[string]map[string]llmservice.ProviderRouteBilling{"p1": {
+			// An explicit per-route price is a service-group override and must be
+			// reported as such, never silently merged into the provider price.
+			"upstream-a": {BillingMode: llmpool.BillingModePaid, TokenPricingOverride: true, TokenPricing: llmpool.TokenPricing{InputCreditsPer10K: 5, OutputCreditsPer10K: 6}},
+		}},
+	}
+	ctx := withLLMBillingState(t.Context(), now, "req-override-source")
+	denial, err := prepareLLMPricingQuote(ctx, reg, nil, "u1", "user@example.com", model, "p1", map[string]any{"max_tokens": 100}, now)
+	if err != nil || denial.Code != "" {
+		t.Fatalf("override quote failed: denial=%#v err=%v", denial, err)
+	}
+	quote, ok := snapshotLLMPricingQuote(ctx, "p1")
+	if !ok || quote.PricingSource != llmpool.PricingSourceServiceGroupOverride {
+		t.Fatalf("override quote source = %q ok=%v, want %q", quote.PricingSource, ok, llmpool.PricingSourceServiceGroupOverride)
+	}
+
+	ctx = withLLMBillingState(t.Context(), now, "req-provider-source")
+	denial, err = prepareLLMPricingQuote(ctx, reg, nil, "u1", "user@example.com", model, "p2", map[string]any{"max_tokens": 100}, now)
+	if err != nil || denial.Code != "" {
+		t.Fatalf("provider quote failed: denial=%#v err=%v", denial, err)
+	}
+	quote, ok = snapshotLLMPricingQuote(ctx, "p2")
+	if !ok || quote.PricingSource != llmpool.PricingSourceProvider {
+		t.Fatalf("provider quote source = %q ok=%v, want %q", quote.PricingSource, ok, llmpool.PricingSourceProvider)
+	}
+}
+
+func TestLLMUsageReportMultipliersSlotsLocalRouteFactorUnderServiceGroup(t *testing.T) {
+	// A non-official directional route has no HubCenter-owned provider factor.
+	// Its whole effective multiplier belongs to the service-group slot so the
+	// usage report labels provider_multiplier=1 and
+	// service_group_multiplier=<actual>, and their product still equals the
+	// multiplier used by the debit.
+	reg := &llmservice.Registry{ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "paid", BillingGroupMultiplier: 2.5}}}
+	providerMultiplier, groupMultiplier := llmUsageReportMultipliers(context.Background(), "third-party", reg, []string{"paid"}, 2.5)
+	if providerMultiplier != 1 || groupMultiplier != 2.5 {
+		t.Fatalf("local route multipliers = provider %v group %v, want 1 and 2.5", providerMultiplier, groupMultiplier)
+	}
+	if providerMultiplier*groupMultiplier != 2.5 {
+		t.Fatalf("multiplier product %v no longer matches the debit factor 2.5", providerMultiplier*groupMultiplier)
+	}
+}
+
+func TestPrepareLLMPricingQuoteReservesLocalProviderPricing(t *testing.T) {
+	now := time.Date(2026, 8, 24, 1, 0, 0, 0, time.UTC)
+	// The provider owns its directional price in the local provider registry;
+	// the model has no service-group route price for it. Admission must still
+	// reserve the worst-case quote against this price (design §8), matching the
+	// settlement priority chain in computeLLMRequestBilling.
+	providerReg := &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "local", TokenPricing: llmpool.TokenPricing{InputCreditsPer10K: 4, OutputCreditsPer10K: 8}}}}
+	model := &llmservice.AuthorizedModel{
+		Name:                  "logical-model",
+		ProviderIDs:           []string{"local"},
+		ProviderServiceGroups: map[string][]string{"local": {"paid"}},
+	}
+	newReg := func(creditsTotal float64) *llmservice.Registry {
+		return &llmservice.Registry{
+			ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "paid", AccessPolicy: llmservice.AccessPolicyGrantRequired}},
+			Grants: []llmservice.Grant{{
+				ID: "g1", UserID: "u1", Email: "user@example.com", ServiceGroupID: "paid",
+				CreditsTotal: creditsTotal, Permanent: true, StartsAt: now.Add(-time.Hour), ExpiresAt: now.AddDate(1, 0, 0),
+			}},
+		}
+	}
+
+	// Sufficient balance: the quote is frozen from the provider-owned price.
+	ctx := withLLMBillingState(t.Context(), now, "req-local-quote")
+	denial, err := prepareLLMPricingQuote(ctx, newReg(100), providerReg, "u1", "user@example.com", model, "local", map[string]any{"max_tokens": 100}, now)
+	if err != nil || denial.Code != "" {
+		t.Fatalf("local provider quote failed: denial=%#v err=%v", denial, err)
+	}
+	quote, ok := snapshotLLMPricingQuote(ctx, "local")
+	if !ok || quote.Pricing.InputCreditsPer10K != 4 || quote.Pricing.OutputCreditsPer10K != 8 {
+		t.Fatalf("local provider quote = %#v ok=%v, want provider-owned 4/8 price", quote, ok)
+	}
+	if quote.PricingSource != llmpool.PricingSourceProvider {
+		t.Fatalf("local provider quote source = %q, want %q", quote.PricingSource, llmpool.PricingSourceProvider)
+	}
+
+	// A finite balance below the worst-case hold must be rejected at admission
+	// instead of being silently overdrawn at settlement.
+	ctx = withLLMBillingState(t.Context(), now, "req-local-insufficient")
+	denial, err = prepareLLMPricingQuote(ctx, newReg(0.01), providerReg, "u1", "user@example.com", model, "local", map[string]any{"max_tokens": 100}, now)
+	if err == nil || denial.Code != "LLM_SERVICE_CREDITS_INSUFFICIENT_FOR_REQUEST" {
+		t.Fatalf("denial=%#v err=%v, want insufficient quote denial", denial, err)
+	}
+}
+
 func mustEncodeTokenPricingSnapshot(t *testing.T, snapshot llmpool.TokenPricingSnapshot) string {
 	t.Helper()
 	encoded, ok := llmpool.EncodeTokenPricingSnapshot(snapshot)
@@ -862,4 +1352,172 @@ func mustEncodeTokenPricingSnapshot(t *testing.T, snapshot llmpool.TokenPricingS
 		t.Fatal("encode token pricing snapshot")
 	}
 	return encoded
+}
+
+func TestOfficialUsageReportPrefersHubCenterMatchedServiceGroup(t *testing.T) {
+	ctx := withLLMBillingState(context.Background(), time.Now().UTC(), "req-recon")
+	state := llmBillingStateFrom(ctx)
+	state.officialQuote = &llmservice.OfficialPricingQuote{ServiceGroupID: "redeem"}
+	got := officialUsageReportServiceGroupIDs(ctx, llmservice.MaClawOfficialProviderID, []string{"coding-auto"})
+	if len(got) != 1 || got[0] != "redeem" {
+		t.Fatalf("official report groups = %#v, want HubCenter matched redeem", got)
+	}
+	if got := officialUsageReportServiceGroupIDs(context.Background(), llmservice.MaClawOfficialProviderID, []string{"coding-auto", "second"}); len(got) != 1 || got[0] != "coding-auto" {
+		t.Fatalf("fallback charged groups = %#v, want a single catalog group", got)
+	}
+	if got := officialUsageReportServiceGroupIDs(ctx, "local-provider", []string{"coding-auto"}); got != nil {
+		t.Fatalf("local provider report groups = %#v, want omitted from HubCenter reconciliation", got)
+	}
+}
+
+func TestUsageReconciliationServiceGroupsAlignCreditsAfterHubMarkup(t *testing.T) {
+	hub := &llmUsageReportEntry{Totals: llmUsageCounters{
+		InputTokens: 100, OutputTokens: 20, CachedInputTokens: 10, Requests: 2, Credits: 2.4,
+		ProviderMultipliers: []llmUsageProviderMultiplier{{ProviderID: "agnes", Multiplier: 2, MultiplierSource: "service_group"}},
+	}}
+	groups := usageReconciliationServiceGroups(map[string]*llmUsageReportEntry{"redeem": hub}, []llmservice.OfficialUsageSummary{{
+		ServiceGroupID: "redeem", InputTokens: 100, OutputTokens: 20, CachedInputTokens: 10, TotalRequests: 2, TotalCredits: 1.2,
+	}})
+	if len(groups) != 1 {
+		t.Fatalf("groups = %#v", groups)
+	}
+	if groups[0].Status != "matched" {
+		t.Fatalf("status = %s difference=%#v", groups[0].Status, groups[0].Difference)
+	}
+	if groups[0].Difference.Credits != 1.2 || !groups[0].Difference.UpstreamCreditsComparable || math.Abs(groups[0].Difference.UpstreamCredits) > 0.0005 {
+		t.Fatalf("credit difference = %#v, want Hub markup 1.2 and stripped upstream 0", groups[0].Difference)
+	}
+	dayDiff := usageReconciliationDifference(hub.Totals, llmservice.OfficialUsageSummary{
+		InputTokens: 100, OutputTokens: 20, CachedInputTokens: 10, TotalRequests: 2, TotalCredits: 1.2,
+	})
+	if usageReconciliationTokenMismatch(dayDiff) {
+		t.Fatalf("tenant tokens should match: %#v", dayDiff)
+	}
+	if dayDiff.Credits != 1.2 {
+		t.Fatalf("raw credit delta should keep Hub markup visible: %#v", dayDiff)
+	}
+	if !dayDiff.UpstreamCreditsComparable || math.Abs(dayDiff.UpstreamCredits) > 0.0005 {
+		t.Fatalf("stripped upstream credits should match HubCenter: %#v", dayDiff)
+	}
+	if usageReconciliationDayStatus(dayDiff) != "matched" {
+		t.Fatalf("day status = %s, want matched from tokens even when raw credits differ", usageReconciliationDayStatus(dayDiff))
+	}
+}
+
+func TestUsageReconciliationDayStatusIgnoresGroupCreditMismatch(t *testing.T) {
+	diff := usageReconciliationDifference(llmUsageCounters{
+		InputTokens: 10, Requests: 1, Credits: 2,
+		ProviderMultipliers: []llmUsageProviderMultiplier{{Multiplier: 2, MultiplierSource: "service_group"}},
+	}, llmservice.OfficialUsageSummary{InputTokens: 10, TotalRequests: 1, TotalCredits: 2})
+	if !usageReconciliationCreditMismatch(diff) {
+		t.Fatalf("stripped 1 vs HubCenter 2 should be a credit mismatch: %#v", diff)
+	}
+	if usageReconciliationDayStatus(diff) != "matched" {
+		t.Fatalf("day status = %s, want matched; group credit diffs stay on the group row", usageReconciliationDayStatus(diff))
+	}
+}
+
+func TestUsageReconciliationSkipsCreditsWhenUnitemizedOrMixedMarkup(t *testing.T) {
+	legacy := llmUsageCounters{InputTokens: 10, Requests: 1, Credits: 5, UnitemizedRequests: 1, CreditUnitemizedComponent: 5,
+		ProviderMultipliers: []llmUsageProviderMultiplier{{Multiplier: 2, MultiplierSource: "service_group"}}}
+	if _, ok := usageReconciliationUpstreamCredits(legacy); ok {
+		t.Fatal("unitemized credits must not be divided by a later group multiplier")
+	}
+	mixed := llmUsageCounters{Credits: 9, ProviderMultipliers: []llmUsageProviderMultiplier{
+		{Multiplier: 2, MultiplierSource: "service_group"},
+		{Multiplier: 3, MultiplierSource: "service_group"},
+	}}
+	if _, ok := usageReconciliationUpstreamCredits(mixed); ok {
+		t.Fatal("mixed Hub markups must not invent a single upstream credit total")
+	}
+	groups := usageReconciliationServiceGroups(nil, []llmservice.OfficialUsageSummary{{
+		ServiceGroupID: "redeem", InputTokens: 10, TotalRequests: 1, TotalCredits: 1,
+	}})
+	if len(groups) != 1 || groups[0].Status != "unavailable" || groups[0].Difference != nil {
+		t.Fatalf("legacy Hub day groups = %#v", groups)
+	}
+}
+
+func TestUsageReconciliationServiceGroupCreditMismatch(t *testing.T) {
+	hub := &llmUsageReportEntry{Totals: llmUsageCounters{
+		InputTokens: 100, Requests: 1, Credits: 2.4,
+		ProviderMultipliers: []llmUsageProviderMultiplier{{ProviderID: "agnes", Multiplier: 2, MultiplierSource: "service_group"}},
+	}}
+	groups := usageReconciliationServiceGroups(map[string]*llmUsageReportEntry{"redeem": hub}, []llmservice.OfficialUsageSummary{{
+		ServiceGroupID: "redeem", InputTokens: 100, TotalRequests: 1, TotalCredits: 2,
+	}})
+	if len(groups) != 1 || groups[0].Status != "mismatch" || !usageReconciliationCreditMismatch(groups[0].Difference) {
+		t.Fatalf("stripped upstream credits 1.2 vs HubCenter 2 should mismatch: %#v", groups)
+	}
+	if usageReconciliationTokenMismatch(groups[0].Difference) {
+		t.Fatalf("tokens matched, credit-only mismatch: %#v", groups[0].Difference)
+	}
+}
+
+func TestAddUsageRecordsOfficialServiceGroupsForReconciliation(t *testing.T) {
+	reports := &llmUsageReportsStore{Version: llmUsageReportsVersion, Days: map[string]*llmUsageReportDay{}}
+	ts := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
+	reports.addUsageWithCreditBreakdown(ts, "user@example.com", []string{"engineering"}, corelib.TokenUsageStat{InputTokens: 10, OutputTokens: 4, Requests: 1}, 1.2, &llmUsageCreditBreakdown{
+		ServiceGroupMultiplier: 2,
+		ReportServiceGroupIDs:  []string{"redeem", "coding-auto"},
+		RMBPricingRecorded:     true,
+	}, llmservice.MaClawOfficialProviderID)
+	day := reports.Days["2026-09-01"]
+	if day == nil || day.ServiceGroups["redeem"] == nil {
+		t.Fatalf("service groups = %#v", day)
+	}
+	if day.ServiceGroups["redeem"].Totals.InputTokens != 10 || day.ServiceGroups["redeem"].Totals.Credits != 1.2 {
+		t.Fatalf("redeem totals = %#v", day.ServiceGroups["redeem"].Totals)
+	}
+	if _, ok := day.ServiceGroups["coding-auto"]; ok {
+		t.Fatal("one request must not be copied onto a second HubCenter catalog group")
+	}
+	if _, ok := day.Groups["engineering"]; !ok {
+		t.Fatal("security-group bucket missing")
+	}
+}
+
+func TestHubOfficialUsageCountersFallsBackToServiceGroups(t *testing.T) {
+	day := &llmUsageReportDay{
+		Totals: llmUsageCounters{InputTokens: 99, Requests: 9},
+		ServiceGroups: map[string]*llmUsageReportEntry{
+			"redeem":          {Totals: llmUsageCounters{InputTokens: 10, Requests: 1, Credits: 1.2}},
+			"maclaw-official": {Totals: llmUsageCounters{InputTokens: 5, Requests: 1, Credits: 0.4}},
+		},
+	}
+	got := hubOfficialUsageCounters(day)
+	if got.InputTokens != 15 || got.Requests != 2 || got.Credits != 1.6 {
+		t.Fatalf("service-group fallback = %#v, want official-only 15/2/1.6 not day totals", got)
+	}
+	day.Providers = map[string]*llmUsageReportEntry{
+		llmservice.MaClawOfficialProviderID: {Totals: llmUsageCounters{InputTokens: 8, Requests: 1}},
+	}
+	got = hubOfficialUsageCounters(day)
+	if got.InputTokens != 8 || got.Requests != 1 {
+		t.Fatalf("official provider bucket = %#v", got)
+	}
+	day.Providers["MACLAW_OFFICIAL"] = &llmUsageReportEntry{Totals: llmUsageCounters{InputTokens: 2, Requests: 1}}
+	got = hubOfficialUsageCounters(day)
+	if got.InputTokens != 10 || got.Requests != 2 {
+		t.Fatalf("case-insensitive official provider sum = %#v", got)
+	}
+}
+
+func TestUsageReconciliationServiceGroupsMergesCaseVariants(t *testing.T) {
+	groups := usageReconciliationServiceGroups(map[string]*llmUsageReportEntry{
+		"Redeem": {Totals: llmUsageCounters{InputTokens: 4, Requests: 1, Credits: 0.4}},
+		"redeem": {Totals: llmUsageCounters{InputTokens: 6, Requests: 1, Credits: 0.8}},
+	}, []llmservice.OfficialUsageSummary{
+		{ServiceGroupID: "REDEEM", InputTokens: 3, TotalRequests: 1, TotalCredits: 0.3},
+		{ServiceGroupID: "redeem", InputTokens: 7, TotalRequests: 1, TotalCredits: 0.9},
+	})
+	if len(groups) != 1 {
+		t.Fatalf("groups = %#v", groups)
+	}
+	if groups[0].Hub.InputTokens != 10 || math.Abs(groups[0].Hub.Credits-1.2) > 0.000000001 {
+		t.Fatalf("hub merge = %#v", groups[0].Hub)
+	}
+	if groups[0].HubCenter == nil || groups[0].HubCenter.InputTokens != 10 || groups[0].HubCenter.TotalCredits != 1.2 {
+		t.Fatalf("hubcenter merge = %#v", groups[0].HubCenter)
+	}
 }

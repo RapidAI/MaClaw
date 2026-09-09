@@ -582,7 +582,6 @@ func TestSemanticToolCallPetitionSkipsRenderedAndRetiredNames(t *testing.T) {
 	}
 }
 
-
 // The 2026-08-28 张惠妹 turn, end to end at the planning boundary: the L3 tree
 // answered a lookup task with its natural web_fetch verdict and the synthesis
 // attached document_generate from L2 runner-up evidence — confidence 0.68,

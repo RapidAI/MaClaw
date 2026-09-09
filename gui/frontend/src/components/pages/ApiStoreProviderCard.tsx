@@ -20,34 +20,27 @@ const badgeStyle = (bg: string, text: string) => ({
     backgroundColor: bg,
     color: text,
     padding: '3px 10px',
-    borderRadius: '4px',
+    borderRadius: 'var(--radius-sm, 6px)',
     fontSize: '0.65rem',
     fontWeight: 'bold',
-    boxShadow: '0 2px 4px rgba(0,0,0,0.25)',
+    boxShadow: 'var(--shadow-sm, 0 1px 2px rgba(30,58,95,0.06))',
 });
 
 export const ApiStoreProviderCard = ({ provider, t }: ApiStoreProviderCardProps) => (
     <div
+        className="api-store-provider-card"
         style={{
             backgroundColor: 'var(--theme-surface)',
             border: '1px solid var(--theme-border)',
-            borderRadius: '8px',
+            borderRadius: 'var(--radius-md)',
             padding: '8px 12px',
             display: 'flex',
             flexDirection: 'column',
             justifyContent: 'center',
-            transition: 'all 0.2s ease',
+            transition: 'transform var(--transition-fast), box-shadow var(--transition-fast), border-color var(--transition-fast)',
             cursor: 'pointer',
             position: 'relative',
             minHeight: '42px',
-        }}
-        onMouseEnter={(e) => {
-            e.currentTarget.style.boxShadow = '0 4px 12px rgba(0,0,0,0.1)';
-            e.currentTarget.style.transform = 'translateY(-2px)';
-        }}
-        onMouseLeave={(e) => {
-            e.currentTarget.style.boxShadow = 'none';
-            e.currentTarget.style.transform = 'translateY(0)';
         }}
         onClick={() => BrowserOpenURL(provider.url)}
     >

@@ -11,12 +11,10 @@ interface ApiStorePageProps {
 }
 
 export const ApiStorePage = ({ lang, t, chatFontSize, setChatFontSize }: ApiStorePageProps) => (
-                        <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+                        <div className="secondary-page-shell api-store-page" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
 
                             <div style={{ flex: 1, overflowY: 'auto', padding: '20px', overflowX: 'hidden' }}>
-                                <div style={{
-                                    display: 'grid',
-                                    gridTemplateColumns: 'repeat(4, 1fr)',
+                                <div className="api-store-provider-grid" style={{
                                     gap: '12px',
                                     paddingBottom: '20px'
                                 }}>

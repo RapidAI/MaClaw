@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	coreconfig "github.com/RapidAI/CodeClaw/corelib/config"
 )
 
 func DefaultParameterDefinitions() []ParameterDefinition {
@@ -35,7 +36,7 @@ func DefaultParameterDefinitions() []ParameterDefinition {
 		{Key: "yolo_mode_allowed", Title: "YOLO Mode Allowed", Description: "Allow this user to enable broad tool execution mode.", Required: false, Type: "bool", Example: "false"},
 		{Key: "skill_runner_timeout_sec", Title: "Skill Runner Timeout", Description: "Default SkillRunner job and bash step timeout in seconds. Range: 240-14400; default: 600. Per-skill global_timeout overrides this value.", Required: false, Type: "integer", Example: "3600"},
 	}
-	return appendMissingAppConfigDefinitions(defs)
+	return enrichParameterDefinitions(appendMissingAppConfigDefinitions(defs))
 }
 
 func SharedClientParameterDefinitions() []ParameterDefinition {
@@ -44,7 +45,7 @@ func SharedClientParameterDefinitions() []ParameterDefinition {
 	out := make([]ParameterDefinition, 0, len(defs))
 	for _, def := range defs {
 		seen[def.Key] = true
-		if sharedClientConfigKeys[def.Key] {
+		if coreconfig.IsSharedClientField(def.Key) {
 			out = append(out, def)
 		}
 	}
@@ -52,65 +53,39 @@ func SharedClientParameterDefinitions() []ParameterDefinition {
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
 		key := jsonFieldName(field)
-		if key == "" || seen[key] || !sharedClientConfigKeys[key] {
+		if key == "" || seen[key] || !coreconfig.IsSharedClientField(key) {
 			continue
 		}
 		out = append(out, ParameterDefinition{Key: key, Title: titleFromConfigKey(key), Description: "Shared client AppConfig field " + key + ".", Required: false, Secret: configKeyLooksSecret(key), Type: appConfigFieldType(field.Type)})
 		seen[key] = true
 	}
-	return out
+	return enrichParameterDefinitions(out)
 }
 
-var sharedClientConfigKeys = map[string]bool{
-	"maclaw_llm_url":                   true,
-	"maclaw_llm_key":                   true,
-	"maclaw_llm_model":                 true,
-	"maclaw_llm_protocol":              true,
-	"maclaw_llm_context_length":        true,
-	"maclaw_llm_timeout_sec":           true,
-	"agent_response_timeout_sec":       true,
-	"skill_runner_timeout_sec":         true,
-	"maclaw_llm_providers":             true,
-	"maclaw_llm_current_provider":      true,
-	"llm_prompt_cache":                 true,
-	"maclaw_agent_max_iterations":      true,
-	"subagent_concurrency":             true,
-	"web_search_providers":             true,
-	"web_search_current_provider":      true,
-	"default_proxy_enabled":            true,
-	"default_proxy_protocol":           true,
-	"default_proxy_host":               true,
-	"default_proxy_port":               true,
-	"default_proxy_username":           true,
-	"default_proxy_password":           true,
-	"default_proxy_bypass":             true,
-	"default_proxy_scope_maclaw":       true,
-	"default_proxy_scope_coding_tools": true,
-	"default_proxy_scope_agent":        true,
-	"mcp_servers":                      true,
-	"local_mcp_servers":                true,
-	"ssh_hosts":                        true,
-	"skill_hub_urls":                   true,
-	"external_skill_dirs":              true,
-	"skill_sources_allowed":            true,
-	"security_policy_mode":             true,
-	"hub_security_centralized":         true,
-	"network_level":                    true,
-	"network_allowlist":                true,
-	"language":                         true,
-	"ui_mode":                          true,
-	"working_directory":                true,
-	"vector_search_enabled":            true,
-	"asr_enabled":                      true,
-	"tts_voice_id":                     true,
-	"tts_enabled":                      true,
-	"im_progress_nudge_enabled":        true,
-	"knowledge_vision_llm":             true,
-	"knowledge_include_images":         true,
-	"auxiliary_llm":                    true,
-	"model_routes":                     true,
-	"daily_llm_budget_usd":             true,
-	"moa":                              true,
+func enrichParameterDefinitions(defs []ParameterDefinition) []ParameterDefinition {
+	metadata := coreconfig.AppConfigFieldMap()
+	for i := range defs {
+		field, ok := metadata[defs[i].Key]
+		if !ok {
+			continue
+		}
+		if defs[i].Title == "" {
+			defs[i].Title = field.Title
+		}
+		if defs[i].Description == "" {
+			defs[i].Description = field.Description
+		}
+		if defs[i].Type == "" {
+			defs[i].Type = field.Type
+		}
+		defs[i].Secret = defs[i].Secret || field.Secret
+		defs[i].Scope = string(field.Scope)
+		defs[i].Mutable = field.Mutable
+		defs[i].RestartRequired = field.RestartRequired
+		defs[i].HeadlessSupport = field.HeadlessSupport
+		defs[i].UserWebVisible = field.UserWebVisible
+	}
+	return defs
 }
 
 func appendMissingAppConfigDefinitions(defs []ParameterDefinition) []ParameterDefinition {
@@ -122,7 +97,7 @@ func appendMissingAppConfigDefinitions(defs []ParameterDefinition) []ParameterDe
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
 		key := jsonFieldName(field)
-		if key == "" || seen[key] || !appConfigFieldAvailableInMaClawSrv(key) {
+		if key == "" || seen[key] || !coreconfig.IsAvailableInMaClawSrv(key) {
 			continue
 		}
 		defs = append(defs, ParameterDefinition{Key: key, Title: titleFromConfigKey(key), Description: "AppConfig field " + key + ".", Required: false, Secret: configKeyLooksSecret(key), Type: appConfigFieldType(field.Type)})
@@ -132,98 +107,23 @@ func appendMissingAppConfigDefinitions(defs []ParameterDefinition) []ParameterDe
 }
 
 func appConfigFieldAvailableInMaClawSrv(key string) bool {
-	if _, ok := maclawSrvHiddenAppConfigKeys[key]; ok {
-		return false
-	}
-	return true
-}
-
-var maclawSrvHiddenAppConfigKeys = map[string]struct{}{
-	"claude":                           {},
-	"codex":                            {},
-	"opencode":                         {},
-	"codebuddy":                        {},
-	"iflow":                            {},
-	"kilo":                             {},
-	"projects":                         {},
-	"current_project":                  {},
-	"active_tool":                      {},
-	"default_tool":                     {},
-	"default_tool_provider":            {},
-	"show_codex":                       {},
-	"show_opencode":                    {},
-	"show_codebuddy":                   {},
-	"show_iflow":                       {},
-	"show_kilo":                        {},
-	"extra_tool_configs":               {},
-	"default_proxy_scope_coding_tools": {},
-	"use_windows_terminal":             {},
-	"nl_skills":                        {},
+	return coreconfig.IsAvailableInMaClawSrv(key)
 }
 
 func jsonFieldName(field reflect.StructField) string {
-	if field.PkgPath != "" {
-		return ""
-	}
-	tag := field.Tag.Get("json")
-	if tag == "-" {
-		return ""
-	}
-	name := strings.Split(tag, ",")[0]
-	if name != "" {
-		return name
-	}
-	return field.Name
+	return coreconfig.JSONFieldName(field)
 }
 
 func appConfigFieldType(t reflect.Type) string {
-	for t.Kind() == reflect.Pointer {
-		t = t.Elem()
-	}
-	switch t.Kind() {
-	case reflect.Bool:
-		return "bool"
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64, reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return "integer"
-	case reflect.Float32, reflect.Float64:
-		return "number"
-	case reflect.Slice, reflect.Array:
-		return "array"
-	case reflect.Map, reflect.Struct:
-		return "object"
-	default:
-		return "string"
-	}
+	return coreconfig.AppConfigFieldType(t)
 }
 
 func titleFromConfigKey(key string) string {
-	parts := strings.Split(key, "_")
-	for i, part := range parts {
-		if part == "" {
-			continue
-		}
-		upper := strings.ToUpper(part)
-		switch upper {
-		case "LLM", "MCP", "MIS", "QQ", "ASR", "TTS", "UI", "URL", "ID", "API", "CDN", "WSS", "YOLO", "IM", "VAD":
-			parts[i] = upper
-		default:
-			parts[i] = strings.ToUpper(part[:1]) + part[1:]
-		}
-	}
-	return strings.Join(parts, " ")
+	return coreconfig.TitleFromConfigKey(key)
 }
 
 func configKeyLooksSecret(key string) bool {
-	key = strings.ToLower(key)
-	if strings.Contains(key, "token_usage") || strings.Contains(key, "token_budget") {
-		return false
-	}
-	for _, marker := range []string{"key", "secret", "token", "password", "credential"} {
-		if strings.Contains(key, marker) {
-			return true
-		}
-	}
-	return false
+	return coreconfig.ConfigKeyLooksSecret(key)
 }
 
 func SanitizeAppConfig(cfg corelib.AppConfig) corelib.AppConfig {
@@ -415,18 +315,22 @@ func ResolveLLMConfig(cfg corelib.AppConfig) (corelib.MaclawLLMConfig, error) {
 			protocol = "anthropic"
 		}
 		return corelib.MaclawLLMConfig{
-			URL:            strings.TrimSpace(provider.URL),
-			Key:            key,
-			Model:          corelib.MigrateZhipuCodingModel(provider.Name, provider.Model),
-			Protocol:       protocol,
-			ContextLength:  provider.ContextLength,
-			TimeoutSec:     provider.TimeoutSec,
-			SupportsVision: provider.SupportsVision,
-			AgentType:      provider.AgentType,
-			WireAPI:        strings.TrimSpace(provider.WireAPI),
-			ProviderName:   strings.TrimSpace(provider.Name),
-			AuthType:       strings.TrimSpace(provider.AuthType),
-			ThinkingMode:   cfg.MaclawLLMThinkingMode,
+			URL:                          strings.TrimSpace(provider.URL),
+			Key:                          key,
+			Model:                        corelib.MigrateZhipuCodingModel(provider.Name, provider.Model),
+			Protocol:                     protocol,
+			ContextLength:                provider.ContextLength,
+			TimeoutSec:                   provider.TimeoutSec,
+			SupportsVision:               provider.SupportsVision,
+			AgentType:                    provider.AgentType,
+			WireAPI:                      strings.TrimSpace(provider.WireAPI),
+			ProviderName:                 strings.TrimSpace(provider.Name),
+			InputPricePerMTokensRMB:      provider.InputPricePerMTokensRMB,
+			OutputPricePerMTokensRMB:     provider.OutputPricePerMTokensRMB,
+			CacheReadPricePerMTokensRMB:  provider.CacheReadPricePerMTokensRMB,
+			CacheWritePricePerMTokensRMB: provider.CacheWritePricePerMTokensRMB,
+			AuthType:                     strings.TrimSpace(provider.AuthType),
+			ThinkingMode:                 corelib.EffectiveGlobalThinkingMode(cfg.MaclawLLMThinkingMode),
 		}, nil
 	}
 
@@ -446,7 +350,7 @@ func ResolveLLMConfig(cfg corelib.AppConfig) (corelib.MaclawLLMConfig, error) {
 		Protocol:      strings.TrimSpace(cfg.MaclawLLMProtocol),
 		ContextLength: cfg.MaclawLLMContextLength,
 		TimeoutSec:    cfg.MaclawLLMTimeoutSec,
-		ThinkingMode:  cfg.MaclawLLMThinkingMode,
+		ThinkingMode:  corelib.EffectiveGlobalThinkingMode(cfg.MaclawLLMThinkingMode),
 	}, nil
 }
 

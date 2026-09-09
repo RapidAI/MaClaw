@@ -6,6 +6,8 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"github.com/RapidAI/CodeClaw/corelib/database"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
@@ -117,6 +119,14 @@ type ParameterDefinition struct {
 	Secret      bool   `json:"secret,omitempty"`
 	Type        string `json:"type"`
 	Example     string `json:"example,omitempty"`
+	// Runtime-neutral AppConfig metadata.  These fields let GUI and srv
+	// consume the same ownership/visibility contract without maintaining
+	// transport-local key lists.
+	Scope           string `json:"scope,omitempty"`
+	Mutable         bool   `json:"mutable,omitempty"`
+	RestartRequired bool   `json:"restart_required,omitempty"`
+	HeadlessSupport bool   `json:"headless_supported,omitempty"`
+	UserWebVisible  bool   `json:"user_web_visible,omitempty"`
 }
 
 type UserConfig struct {
@@ -961,6 +971,19 @@ type PostMessageInput struct {
 	RefineTask bool `json:"refine_task,omitempty"`
 	// OnToken, if set, receives streaming text deltas during execution (not serialized).
 	OnToken func(string) `json:"-"`
+	// DatabaseApproval is injected by a trusted host after its approval flow;
+	// HTTP/JSON clients and model output cannot populate this field. It is
+	// copied into ExecuteRequest and then converted to a request context by the
+	// shared CoreAgentExecutor.
+	DatabaseApproval *database.ApprovalContext `json:"-"`
+	// onRunCreated is an internal admission hook used by PostMessageAsync. It
+	// is deliberately unexported so transport callers cannot inject lifecycle
+	// callbacks through JSON or bypass Service-owned run creation.
+	onRunCreated func(Run) `json:"-"`
+	// asyncAdmission releases the client-message idempotency gate immediately
+	// after the durable run is admitted. Synchronous callers retain the gate
+	// through execution for historical behavior.
+	asyncAdmission bool `json:"-"`
 }
 
 type SendMessageInput struct {
@@ -985,6 +1008,9 @@ type SendMessageInput struct {
 	MoAPreset string `json:"moa_preset,omitempty"`
 	// OnToken, if set, receives streaming text deltas during execution (not serialized).
 	OnToken func(string) `json:"-"`
+	// DatabaseApproval is host-only and is forwarded to PostMessage. Wire
+	// clients/model output cannot provide an approval token through this type.
+	DatabaseApproval *database.ApprovalContext `json:"-"`
 }
 
 type AgentToolCapability struct {
@@ -1003,6 +1029,18 @@ type AgentCapabilities struct {
 	SupportsLocalBash bool                  `json:"supports_local_bash"`
 	Tools             []AgentToolCapability `json:"tools,omitempty"`
 	Metadata          map[string]string     `json:"metadata,omitempty"`
+	// SurfaceDigest is carried on the legacy endpoint as an additive parity
+	// signal. New clients should prefer CapabilitySnapshot directly, but older
+	// GUI/TUI clients can still detect a shared Runtime surface change without
+	// depending on the translated tool list ordering.
+	SurfaceDigest string `json:"surface_digest,omitempty"`
+}
+
+// RuntimeToolInvoker is supplied only by the shared Runtime adapter. It is
+// intentionally request-scoped so a module cannot retain tenant/session state
+// across turns.
+type RuntimeToolInvoker interface {
+	InvokeRuntimeTool(context.Context, string, map[string]any) (string, bool, error)
 }
 
 type ExecuteRequest struct {
@@ -1016,12 +1054,30 @@ type ExecuteRequest struct {
 	DataDir            string
 	Config             corelib.AppConfig
 	ClientCapabilities *agent.ClientCapabilities
+	// Host carries the transport-neutral GUI/headless capability surface. It is
+	// intentionally excluded from JSON; only the authenticated composition root
+	// may inject it.
+	Host agentruntime.HostCapabilities `json:"-"`
+	// RuntimePrompt and RuntimeTools are populated by the shared Runtime
+	// module registry immediately before the legacy executor is invoked. They
+	// keep module contributions transport-neutral while allowing the existing
+	// CoreAgentExecutor to consume them during the migration.
+	RuntimePrompt          string                        `json:"-"`
+	RuntimeTools           []agentruntime.ToolDefinition `json:"-"`
+	RuntimeExecutableTools []agentruntime.ToolDefinition `json:"-"`
+	RuntimeToolInvoker     RuntimeToolInvoker            `json:"-"`
 
 	// TaskRelation is a host-only continuation decision. It is deliberately
 	// excluded from transport JSON: request text, a client tool, or a model must
 	// not be able to select an existing RootTaskID. The authenticated service
 	// ingress may attach a previously verified handle before Execute.
 	TaskRelation *TaskRelationDecision `json:"-"`
+
+	// DatabaseApproval is a host-only, request-scoped approval envelope. The
+	// model and wire JSON can never provide this field; the executor copies it
+	// into context immediately before invoking shared database tooling. The
+	// opaque token must not be persisted, logged, or returned to the model.
+	DatabaseApproval *database.ApprovalContext `json:"-"`
 
 	// ToolPolicy optionally constrains tool exposure and execution for this
 	// request. Empty means unrestricted beyond the executor's normal
@@ -1053,6 +1109,14 @@ type ExecuteRequest struct {
 	// allow_auto matches; explicit value selects a named AppConfig.moa preset.
 	// Also accepted via Message.Metadata["moa_preset"].
 	MoAPreset string
+}
+
+func cloneDatabaseApproval(in *database.ApprovalContext) *database.ApprovalContext {
+	if in == nil {
+		return nil
+	}
+	copy := *in
+	return &copy
 }
 
 type ExecuteResult struct {

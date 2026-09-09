@@ -98,6 +98,25 @@ describe('UtilitiesPage AI expert section', () => {
         delete (window as any).go;
     });
 
+    it('renders the dedicated tools surface without the expert section', async () => {
+        const spies = installAppSpies([]);
+        render(<UtilitiesPage lang="zh-Hans" mode="tools" />);
+
+        expect(screen.getByTestId('utilities-virtual-repository-card')).toBeTruthy();
+        expect(screen.queryByTestId('utilities-experts-section')).toBeNull();
+        await Promise.resolve();
+        expect(spies.ListExperts).not.toHaveBeenCalled();
+    });
+
+    it('renders the dedicated AI experts surface without tool cards', async () => {
+        render(<UtilitiesPage lang="zh-Hans" mode="experts" />);
+
+        await waitFor(() => expect(screen.getByTestId('utilities-expert-card-builtin-paper-polish')).toBeTruthy());
+        expect(screen.getByTestId('utilities-experts-section')).toBeTruthy();
+        expect(screen.queryByTestId('utilities-virtual-repository-card')).toBeNull();
+        expect(screen.queryByTestId('utilities-vscode-card')).toBeNull();
+    });
+
     it('renders expert cards from ListExperts with icon, name and description', async () => {
         render(<UtilitiesPage lang="zh-Hans" />);
         expect(screen.getByTestId('utilities-experts-section')).toBeTruthy();
@@ -125,6 +144,16 @@ describe('UtilitiesPage AI expert section', () => {
         const market = screen.getByTestId('utilities-expert-market');
         expect(title.parentElement?.contains(market)).toBe(true);
         expect(market.querySelector('svg')).toBeTruthy();
+    });
+
+    it('keeps the dedicated AI experts header free of duplicate section title content', async () => {
+        render(<UtilitiesPage lang="en" mode="experts" />);
+        const title = screen.getByRole('heading', { name: 'AI Experts', level: 1 });
+        const market = screen.getByTestId('utilities-expert-market');
+        expect(title.parentElement?.classList.contains('utilities-page__title-row--experts')).toBe(true);
+        expect(title.parentElement?.contains(market)).toBe(true);
+        expect(screen.queryByRole('heading', { name: 'AI Experts', level: 2 })).toBeNull();
+        expect(screen.getAllByText('Click a card to chat with an expert, or create your own')).toHaveLength(1);
     });
 
     it('keeps expert card labels available to assistive technology', async () => {

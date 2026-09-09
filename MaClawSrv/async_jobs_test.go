@@ -9,6 +9,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -79,7 +80,7 @@ func TestAsyncImportSkillJobFailure(t *testing.T) {
 		t.Fatalf("decode async failure job: %v", err)
 	}
 	final := waitForAsyncJob(t, server, token, job.ID)
-	if final.Status != asyncJobStatusFailed || final.Error == "" {
+	if final.Status != asyncJobStatusFailed || final.Error == "" || final.ErrorCode != "request_error" {
 		t.Fatalf("expected failed job, got %#v", final)
 	}
 }
@@ -87,6 +88,7 @@ func TestAsyncImportSkillJobFailure(t *testing.T) {
 func TestAsyncJobRedactsResultAndError(t *testing.T) {
 	dataRoot := t.TempDir()
 	m := newAsyncJobManager(dataRoot)
+	t.Cleanup(m.close)
 	p := agentservice.Principal{TenantID: "tenant", UserID: "user"}
 	jsonEscapedRoot, _ := json.Marshal(dataRoot)
 	job := m.createUserJob("test.success", p, func(context.Context) (any, error) {
@@ -145,6 +147,7 @@ func TestAsyncJobRedactsResultAndError(t *testing.T) {
 func TestAsyncJobSnapshotRedactsLegacyPersistedPayload(t *testing.T) {
 	dataRoot := t.TempDir()
 	m := newAsyncJobManager(dataRoot)
+	t.Cleanup(m.close)
 	p := agentservice.Principal{TenantID: "tenant", UserID: "user"}
 	outsidePath := filepath.Join(filepath.Dir(dataRoot), "outside-secret", "legacy-job.md")
 	payload, err := json.Marshal(map[string]any{"message": "token=legacy-token path=" + dataRoot, "file_path": outsidePath, "nested": map[string]string{"root_path": outsidePath}})
@@ -183,7 +186,12 @@ func newAsyncSkillTestServer(t *testing.T) (*agentservice.Service, agentservice.
 	if err != nil {
 		t.Fatalf("Issue token: %v", err)
 	}
-	return svc, principal, token, NewHTTPServer(svc, "admin-secret", nil)
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	t.Cleanup(func() {
+		server.Close()
+		_ = svc.Close()
+	})
+	return svc, principal, token, server
 }
 
 func waitForAsyncJob(t *testing.T, server *HTTPServer, token, jobID string) asyncJobView {
@@ -275,5 +283,60 @@ func TestDeleteAsyncJobsEndpointRequiresFilterOrAll(t *testing.T) {
 	server.Handler().ServeHTTP(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestAsyncJobPersistenceFailureIsExposedByReadiness(t *testing.T) {
+	svc, _, _, server := newAsyncSkillTestServer(t)
+	t.Cleanup(func() {
+		server.Close()
+		_ = svc.Close()
+	})
+	server.jobs.mu.Lock()
+	server.jobs.lastPersistErr = errors.New("simulated job store outage")
+	server.jobs.mu.Unlock()
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("readiness status = %d body = %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "service not ready") && !strings.Contains(w.Body.String(), "async job store persistence unavailable") {
+		t.Fatalf("readiness response did not expose job persistence failure: %s", w.Body.String())
+	}
+}
+
+func TestDeleteAsyncJobReturnsStablePersistenceError(t *testing.T) {
+	_, principal, token, server := newAsyncSkillTestServer(t)
+	job := server.jobs.createUserJob("job.delete-persist", principal, func(context.Context) (any, error) {
+		return map[string]string{"status": "done"}, nil
+	})
+	_ = waitForAsyncJob(t, server, token, job.ID)
+	blocker := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server.jobs.mu.Lock()
+	server.jobs.filePath = filepath.Join(blocker, "state", "jobs.json")
+	server.jobs.store = &fileAsyncJobStore{path: server.jobs.filePath}
+	server.jobs.mu.Unlock()
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/jobs/"+job.ID, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("delete persistence status = %d body = %s", w.Code, w.Body.String())
+	}
+	var payload struct {
+		Code string `json:"code"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Code != "job_persistence_failed" {
+		t.Fatalf("unexpected delete persistence error: %#v", payload)
+	}
+	if _, ok := server.jobs.getUserJob(job.ID, principal); !ok {
+		t.Fatal("failed durable delete removed the in-memory job")
 	}
 }

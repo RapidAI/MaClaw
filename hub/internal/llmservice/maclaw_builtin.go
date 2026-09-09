@@ -216,7 +216,9 @@ type OfficialPricingQuote struct {
 	Token              string                       `json:"token"`
 	ProviderID         string                       `json:"provider_id"`
 	UpstreamModel      string                       `json:"upstream_model"`
+	ServiceGroupID     string                       `json:"service_group_id,omitempty"`
 	Pricing            llmpool.ResolvedTokenPricing `json:"pricing"`
+	PricingSource      string                       `json:"pricing_source,omitempty"`
 	ProviderMultiplier float64                      `json:"provider_multiplier"`
 	ExpiresAt          time.Time                    `json:"expires_at"`
 	targetURL          string
@@ -231,6 +233,36 @@ type OfficialBillingAttempt struct {
 	ProviderID      string                       `json:"provider_id"`
 	PricingSnapshot llmpool.TokenPricingSnapshot `json:"pricing_snapshot"`
 	CompletedAt     time.Time                    `json:"completed_at"`
+}
+
+// OfficialUsageSummary is HubCenter's persisted aggregate for one Hub tenant
+// and one calendar day. It intentionally mirrors metering facts only; Hub
+// retains ownership of its user/group debit ledger and markups.
+type OfficialUsageSummary struct {
+	HubID             string  `json:"hub_id"`
+	TenantID          string  `json:"tenant_id"`
+	ServiceGroupID    string  `json:"service_group_id,omitempty"`
+	Period            string  `json:"period"`
+	PeriodStart       string  `json:"period_start"`
+	InputTokens       int64   `json:"input_tokens"`
+	OutputTokens      int64   `json:"output_tokens"`
+	CachedInputTokens int64   `json:"cached_input_tokens"`
+	CacheWriteTokens  int64   `json:"cache_write_tokens"`
+	TotalCredits      float64 `json:"total_credits"`
+	TotalRequests     int64   `json:"total_requests"`
+	CacheHits         int64   `json:"cache_hits"`
+	CacheHitRate      float64 `json:"cache_hit_rate"`
+}
+
+// OfficialUsageReconciliation is the machine-authenticated upstream usage
+// fact used by the Hub Usage Stats reconciliation endpoint.
+type OfficialUsageReconciliation struct {
+	HubID         string                 `json:"hub_id"`
+	TenantID      string                 `json:"tenant_id"`
+	Date          string                 `json:"date"`
+	Timezone      string                 `json:"timezone"`
+	Upstream      OfficialUsageSummary   `json:"upstream"`
+	ServiceGroups []OfficialUsageSummary `json:"service_groups,omitempty"`
 }
 
 // Forward sends an LLM request to HubCenter and returns the response.
@@ -387,6 +419,57 @@ func (c *MaClawProviderClient) BillingAttempt(ctx context.Context, tenantID, req
 	return OfficialBillingAttempt{}, 0, lastErr
 }
 
+// UsageReconciliation retrieves HubCenter's persisted usage for exactly one
+// Hub/tenant/day. Provider traffic cards are global operational metrics and
+// must not be used as a downstream billing reconciliation source.
+func (c *MaClawProviderClient) UsageReconciliation(ctx context.Context, tenantID, date, timezone string) (OfficialUsageReconciliation, int, error) {
+	httpClient := c.adminHTTPClient()
+	targets := c.orderedTargets(tenantID)
+	if len(targets) == 0 {
+		return OfficialUsageReconciliation{}, 0, fmt.Errorf("maclaw official provider: no HubCenter URL configured")
+	}
+	hubID, token := c.ensureCredentials()
+	if hubID == "" || token == "" {
+		return OfficialUsageReconciliation{}, 0, fmt.Errorf("maclaw official provider: hub not registered to HubCenter yet")
+	}
+	var lastErr error
+	for _, target := range targets {
+		query := url.Values{}
+		query.Set("date", strings.TrimSpace(date))
+		query.Set("timezone", strings.TrimSpace(timezone))
+		endpoint := strings.TrimRight(target, "/") + "/api/llm/v1/usage/reconciliation?" + query.Encode()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return OfficialUsageReconciliation{}, 0, err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("X-Hub-ID", hubID)
+		req.Header.Set("X-Tenant-ID", tenantID)
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		var payload struct {
+			Reconciliation OfficialUsageReconciliation `json:"reconciliation"`
+		}
+		decodeErr := json.NewDecoder(io.LimitReader(resp.Body, 128<<10)).Decode(&payload)
+		_ = resp.Body.Close()
+		if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices && decodeErr == nil {
+			return payload.Reconciliation, resp.StatusCode, nil
+		}
+		if decodeErr != nil {
+			lastErr = fmt.Errorf("maclaw official: decode usage reconciliation: %w", decodeErr)
+		} else {
+			lastErr = fmt.Errorf("maclaw official: usage reconciliation HTTP %d", resp.StatusCode)
+		}
+		if resp.StatusCode < http.StatusInternalServerError {
+			return OfficialUsageReconciliation{}, resp.StatusCode, lastErr
+		}
+	}
+	return OfficialUsageReconciliation{}, 0, lastErr
+}
+
 func (c *MaClawProviderClient) ForwardDetailedWithQuote(ctx context.Context, quote OfficialPricingQuote, body []byte, tenantID string, serviceGroupIDs ...string) (OfficialForwardResult, error) {
 	if strings.TrimSpace(quote.Token) == "" || strings.TrimSpace(quote.targetURL) == "" || !quote.ExpiresAt.After(time.Now().UTC()) {
 		return OfficialForwardResult{NoUpstreamDispatch: true}, fmt.Errorf("maclaw official provider: invalid or expired pricing quote")
@@ -498,7 +581,9 @@ func (c *MaClawProviderClient) quoteTo(ctx context.Context, httpClient *http.Cli
 		Quote struct {
 			ProviderID         string                       `json:"provider_id"`
 			UpstreamModel      string                       `json:"upstream_model"`
+			ServiceGroupID     string                       `json:"service_group_id,omitempty"`
 			Pricing            llmpool.ResolvedTokenPricing `json:"pricing"`
+			PricingSource      string                       `json:"pricing_source,omitempty"`
 			ProviderMultiplier float64                      `json:"provider_multiplier"`
 			ExpiresAt          time.Time                    `json:"expires_at"`
 		} `json:"quote"`
@@ -513,7 +598,7 @@ func (c *MaClawProviderClient) quoteTo(ctx context.Context, httpClient *http.Cli
 	if strings.TrimSpace(payload.Token) == "" || strings.TrimSpace(payload.Quote.ProviderID) == "" || payload.Quote.ExpiresAt.IsZero() {
 		return OfficialPricingQuote{}, resp.StatusCode, fmt.Errorf("maclaw official: malformed quote response")
 	}
-	return OfficialPricingQuote{Token: payload.Token, ProviderID: payload.Quote.ProviderID, UpstreamModel: payload.Quote.UpstreamModel, Pricing: payload.Quote.Pricing, ProviderMultiplier: llmpool.NormalizeCreditMultiplier(payload.Quote.ProviderMultiplier), ExpiresAt: payload.Quote.ExpiresAt}, resp.StatusCode, nil
+	return OfficialPricingQuote{Token: payload.Token, ProviderID: payload.Quote.ProviderID, UpstreamModel: payload.Quote.UpstreamModel, ServiceGroupID: strings.TrimSpace(payload.Quote.ServiceGroupID), Pricing: payload.Quote.Pricing, PricingSource: payload.Quote.PricingSource, ProviderMultiplier: llmpool.NormalizeCreditMultiplier(payload.Quote.ProviderMultiplier), ExpiresAt: payload.Quote.ExpiresAt}, resp.StatusCode, nil
 }
 
 func officialForwardBilling(resp *http.Response) (float64, string) {

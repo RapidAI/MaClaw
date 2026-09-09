@@ -64,6 +64,27 @@ logging:
   level: info
   # Runtime logs: hub.log (all) and registration.log (onboarding/registration only).
   dir: ./data/logs
+
+# Optional continuous disaster-recovery worker. Disabled by default. An
+# offsite_dir is only a filesystem destination; production should inject an
+# ArchiveDestination backed by immutable object storage.
+backup:
+  enabled: false
+  interval_seconds: 86400
+  output_dir: ./data/backups
+  include_logs: false
+  retain_local: 7
+  retain_offsite: 30
+  offsite_dir: ""
+  require_offsite_for_deletion: true
+  dry_run_interval_seconds: 604800
+  alert_rpo_seconds: 172800
+  alert_write_pause_ms: 5000
+  alert_restore_duration_ms: 30000
+  # Durable SQLite lease used to prevent duplicate backups from same install.
+  # A crashed process is eligible for takeover after this interval. Keep it
+  # longer than the worst observed backup writer barrier.
+  distributed_lock_lease_seconds: 1800
 # Optional same-install Hub replicas for tenant classification-head distribution.
 # Single process can omit this block (node_id defaults to local).
 replica:

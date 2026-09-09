@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -34,7 +35,7 @@ func TestGetLLMServiceAccountHandlerReturnsStatusAndUsage(t *testing.T) {
 	// The service-account summary is sourced from the same audited usage report
 	// as the admin page. Mark this fixture as a frozen pricing snapshot so the
 	// RMB reference amount is intentionally available to the account holder.
-	rep.addUsageWithCreditBreakdown(now, "account@example.com", nil, corelib.TokenUsageStat{InputTokens: 10, OutputTokens: 20, TotalTokens: 30, TotalCostRMB: 0.42, Requests: 1}, 0.003, &llmUsageCreditBreakdown{RMBPricingRecorded: true})
+	rep.addUsageWithCreditBreakdown(now, "account@example.com", nil, corelib.TokenUsageStat{InputTokens: 10, OutputTokens: 20, TotalTokens: 30, InputCostRMB: 0.14, OutputCostRMB: 0.28, TotalCostRMB: 0.42, Requests: 1}, 0.003, &llmUsageCreditBreakdown{RMBPricingRecorded: true})
 	if err := saveLLMUsageReports(ctx, system, rep); err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +54,7 @@ func TestGetLLMServiceAccountHandlerReturnsStatusAndUsage(t *testing.T) {
 	if resp.Email != "account@example.com" || resp.TenantID == "" || resp.Status == nil || resp.Status.CreditsAvailable != 95 {
 		t.Fatalf("unexpected account response: %+v", resp)
 	}
-	if resp.Usage.TotalTokens != 30 || resp.Usage.TotalCostRMB != 0.42 {
+	if resp.Usage.TotalTokens != 30 || math.Abs(resp.Usage.TotalCostRMB-0.42) > 1e-12 {
 		t.Fatalf("unexpected usage: %+v", resp.Usage)
 	}
 }
@@ -380,5 +381,69 @@ func TestGetLLMServiceAccountHandlerKeepsExpiredGrantVisible(t *testing.T) {
 	}
 	if len(resp.Status.InactiveReasons) == 0 || resp.Status.InactiveReasons[0] != "grant has expired" {
 		t.Fatalf("expected expired inactive reason, got %+v", resp.Status.InactiveReasons)
+	}
+}
+
+func TestGetLLMServiceAccountHandlerBackfillsNewUserLimitCard(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "recharge@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	now := time.Now().UTC()
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups:        []llmservice.ModelServiceGroup{{ID: "redeem", Name: "充值服务组", AccessPolicy: llmservice.AccessPolicyGrantRequired}},
+		DefaultNewUserBenefitMode: llmservice.NewUserBenefitModeLimitCard,
+		DefaultNewUserLimitCard:   llmservice.NewUserLimitCard{ServiceGroupIDs: []string{"redeem"}, PeriodLimits: llmservice.CreditPeriodLimits{FiveHour: 100, Daily: 200}},
+		Grants: []llmservice.Grant{{
+			ID: "paid-1", Email: "recharge@example.com", ServiceGroupID: "redeem", Source: "card",
+			StartsAt: now.Add(-time.Hour), ExpiresAt: now.Add(24 * time.Hour), CreditsTotal: 50000, CreditsUsed: 1000,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/llm/service/account", nil)
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	rec := httptest.NewRecorder()
+	GetLLMServiceAccountHandler(identity, system, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp llmServiceAccountResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	var welcome *llmservice.ActiveGrant
+	for i := range resp.Status.CreditGrants {
+		if resp.Status.CreditGrants[i].Source == "new_user_limit_card" {
+			welcome = &resp.Status.CreditGrants[i]
+			break
+		}
+	}
+	if welcome == nil {
+		t.Fatalf("expected auto-backfilled welcome card beside recharge grant, got %+v", resp.Status.CreditGrants)
+	}
+	if welcome.PeriodLimits == nil || welcome.PeriodLimits.FiveHour != 100 || welcome.PeriodLimits.Daily != 200 {
+		t.Fatalf("welcome period limits = %#v", welcome.PeriodLimits)
+	}
+
+	req2 := httptest.NewRequest(http.MethodGet, "/api/llm/service/account", nil)
+	req2.Header.Set("Authorization", "Bearer "+viewerToken)
+	rec = httptest.NewRecorder()
+	GetLLMServiceAccountHandler(identity, system, nil).ServeHTTP(rec, req2)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("second status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	welcomeCount := 0
+	for _, grant := range resp.Status.CreditGrants {
+		if grant.Source == "new_user_limit_card" {
+			welcomeCount++
+		}
+	}
+	if welcomeCount != 1 {
+		t.Fatalf("second poll welcome cards = %d, want 1: %+v", welcomeCount, resp.Status.CreditGrants)
 	}
 }

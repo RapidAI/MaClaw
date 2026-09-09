@@ -1,5 +1,5 @@
 import { useEffect, useId, type CSSProperties } from "react";
-import { colors } from "./styles";
+import { colors, radius } from "./styles";
 import { wizardGhostButtonStyle, wizardPrimaryButtonStyle } from "./OnboardingWizardShared";
 import { useSafeBackdropDismiss } from "../../hooks/useSafeBackdropDismiss";
 
@@ -26,7 +26,7 @@ export function OfflineModeNoticeDialog({ onBackToOnline, onClose, t }: Props) {
 
     return (
         <div
-            style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.35)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 10000, WebkitAppRegion: "no-drag", "--wails-draggable": "no-drag" } as CSSProperties}
+            style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: colors.overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 10000, WebkitAppRegion: "no-drag", "--wails-draggable": "no-drag" } as CSSProperties}
             {...backdropProps}
         >
             <div
@@ -34,7 +34,7 @@ export function OfflineModeNoticeDialog({ onBackToOnline, onClose, t }: Props) {
                 aria-modal="true"
                 aria-labelledby={titleId}
                 aria-describedby={descId}
-                style={{ background: colors.surface, borderRadius: 16, padding: "22px 26px", maxWidth: 420, width: "90%", boxShadow: "0 16px 40px rgba(0,0,0,0.18)", WebkitAppRegion: "no-drag", "--wails-draggable": "no-drag" } as CSSProperties}
+                style={{ background: colors.surface, borderRadius: radius.lg, padding: "22px 26px", maxWidth: 420, width: "90%", boxShadow: "var(--shadow-xl, 0 12px 40px -8px rgba(30,58,95,0.22))", WebkitAppRegion: "no-drag", "--wails-draggable": "no-drag" } as CSSProperties}
                 {...dialogProps}
             >
                 <div id={titleId} style={{ fontSize: 16, fontWeight: 700, marginBottom: 10, color: colors.text }}>{t("离网模式提示", "Offline Mode Notice", "離網模式提示")}</div>

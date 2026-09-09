@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -99,10 +101,20 @@ func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsReposit
 		Usage:       usageRecorder,
 		Quotes:      llmservice.NewProxyQuoteStore(),
 		Attempts:    llmservice.NewProxyBillingAttemptStore(attemptRepo),
+		// P0 (2026-09-09 review): this client carried InsecureSkipVerify:true
+		// unconditionally, so every request to an LLM provider — prompts,
+		// completions and the provider API key in the Authorization header —
+		// could be read by anyone able to intercept the connection.
+		//
+		// Verification is now on by default. Operators whose provider presents
+		// a private-CA certificate can install that CA in the system trust
+		// store, and only as a last resort set
+		// HUBCENTER_LLM_TLS_SKIP_VERIFY=true to restore the old behaviour
+		// (logged once at startup).
 		HTTPClient: &http.Client{
 			Timeout: 180 * time.Second,
 			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: llmTLSSkipVerify()},
 			},
 		},
 		NodeID: nodeID,
@@ -448,4 +460,25 @@ func normalizeCardStoreTenantID(tenantID string) string {
 		return "default"
 	}
 	return tenantID
+}
+
+// llmTLSSkipVerify reports whether outbound LLM provider TLS verification is
+// disabled. It defaults to false (verify). The escape hatch exists only for
+// providers fronted by a private CA that cannot be installed system-wide, and
+// its use is logged because it exposes prompts and provider API keys to any
+// network observer. P0 of the 2026-09-09 review.
+func llmTLSSkipVerify() bool {
+	raw := strings.TrimSpace(os.Getenv("HUBCENTER_LLM_TLS_SKIP_VERIFY"))
+	if raw == "" {
+		return false
+	}
+	skip, err := strconv.ParseBool(raw)
+	if err != nil {
+		log.Printf("llm: ignoring unparseable HUBCENTER_LLM_TLS_SKIP_VERIFY=%q (TLS verification stays on)", raw)
+		return false
+	}
+	if skip {
+		log.Printf("llm: WARNING TLS certificate verification is DISABLED for LLM provider connections (HUBCENTER_LLM_TLS_SKIP_VERIFY=true); prompts and provider API keys are exposed to interception")
+	}
+	return skip
 }

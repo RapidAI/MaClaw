@@ -22,7 +22,7 @@ export function cloudWorkspaceIdFromTags(tags?: string[] | null): string {
     return "";
 }
 
-/** Same identity order as the backend: working_dir, then tag, then project path. */
+/** Same identity order as the backend: working_dir, then project path, then tag. */
 export function cloudWorkspaceIdFromTaskFields(task?: {
     tags?: string[] | null;
     project_path?: string | null;
@@ -31,12 +31,16 @@ export function cloudWorkspaceIdFromTaskFields(task?: {
     workingDir?: string | null;
 } | null): string {
     if (!task) return "";
-    return (
+    const pathId = (
         cloudWorkspaceIdFromPath(task.working_dir || task.workingDir)
-        || cloudWorkspaceIdFromTags(task.tags)
         || cloudWorkspaceIdFromPath(task.project_path || task.projectPath)
         || ""
     ).trim();
+    if (pathId) return pathId;
+    // A remote SSH task is a different environment. A stray cloud_workspace
+    // tag must not collapse it onto a Hub workspace row.
+    if (agentModeFromTaskTags(task.tags) === "remote_coding_dev") return "";
+    return cloudWorkspaceIdFromTags(task.tags);
 }
 
 const GENERIC_CLOUD_WORKSPACE_TASK_NAMES = new Set([
@@ -98,11 +102,140 @@ export function isCloudWorkspaceTask(task?: {
     workingDir?: string | null;
 } | null): boolean {
     if (!task) return false;
-    return !!(
-        cloudWorkspaceIdFromTags(task.tags)
-        || isCloudWorkspacePath(task.project_path || task.projectPath)
-        || isCloudWorkspacePath(task.working_dir || task.workingDir)
+    if (cloudWorkspaceIdFromTaskFields(task)) return true;
+    if (agentModeFromTaskTags(task.tags) === "remote_coding_dev") return false;
+    return isCloudWorkspacePath(task.project_path || task.projectPath)
+        || isCloudWorkspacePath(task.working_dir || task.workingDir);
+}
+
+type CloudWorkspaceLeaseResume = (
+    workspaceId: string,
+    projectPath: string,
+) => Promise<{ project_path?: string; projectPath?: string } | null | undefined>;
+
+export type CloudWorkspaceLeaseEnsureResult =
+    | { ok: true; skipped: boolean; projectPath: string }
+    | { ok: false; cancelled: boolean; error: string };
+
+const cloudWorkspaceLeaseEnsuredIds = new Set<string>();
+const cloudWorkspaceLeaseInFlight = new Map<string, Promise<string>>();
+
+/** Prepare returns this when the user declines a dirty-cache dialog. */
+const CLOUD_WORKSPACE_LEASE_CANCELLED = "已取消打开云端工作区";
+
+function cloudWorkspaceLeaseErrorMessage(error: unknown): string {
+    if (error instanceof Error) return error.message.trim();
+    if (typeof error === "string") return error.trim();
+    if (error && typeof error === "object" && "message" in error) {
+        return String((error as { message?: unknown }).message || "").trim();
+    }
+    return String(error || "").trim();
+}
+
+function isCloudWorkspaceLeaseCancelled(message: string): boolean {
+    return message.includes("已取消打开");
+}
+
+export function cloudWorkspaceIdFromTab(tab?: {
+    cloudWorkspaceId?: string | null;
+    projectPath?: string | null;
+    workingDir?: string | null;
+} | null): string {
+    return (
+        String(tab?.cloudWorkspaceId || "").trim()
+        || cloudWorkspaceIdFromPath(tab?.workingDir)
+        || cloudWorkspaceIdFromPath(tab?.projectPath)
+        || ""
     );
+}
+
+export function cloudWorkspaceLeaseEnsured(workspaceId?: string | null): boolean {
+    const id = String(workspaceId || "").trim();
+    return !!id && cloudWorkspaceLeaseEnsuredIds.has(id);
+}
+
+export function markCloudWorkspaceLeaseEnsured(workspaceId?: string | null): void {
+    const id = String(workspaceId || "").trim();
+    if (id) cloudWorkspaceLeaseEnsuredIds.add(id);
+}
+
+export function forgetCloudWorkspaceLeaseEnsured(workspaceId?: string | null): void {
+    const id = String(workspaceId || "").trim();
+    if (!id) {
+        cloudWorkspaceLeaseEnsuredIds.clear();
+        cloudWorkspaceLeaseInFlight.clear();
+        return;
+    }
+    cloudWorkspaceLeaseEnsuredIds.delete(id);
+    cloudWorkspaceLeaseInFlight.delete(id);
+}
+
+export function __resetCloudWorkspaceLeaseEnsureForTests(): void {
+    forgetCloudWorkspaceLeaseEnsured();
+}
+
+/**
+ * Re-acquire the Hub writer lease before the first command on an already-open
+ * cloud-workspace tab. Restarted tabs restore conversation/files from cache
+ * without Prepare; sending without this step writes a sealed or stolen tree.
+ * Later sends in the same process skip Hub round-trips once the lease is held.
+ * Pass `force` when the sidebar row is being opened and no live tab exists:
+ * HideTask/DeleteTask release the Hub lease, so a leftover in-process mark is
+ * stale. Closing only the assistant tab does not release the mount; force
+ * Resume is then a cheap already-held path.
+ */
+export async function ensureCloudWorkspaceLeaseBeforeSend(input: {
+    workspaceId?: string | null;
+    projectPath?: string | null;
+    resume: CloudWorkspaceLeaseResume;
+    force?: boolean;
+}): Promise<CloudWorkspaceLeaseEnsureResult> {
+    const projectPath = String(input.projectPath || "").trim();
+    const workspaceId = String(input.workspaceId || "").trim() || cloudWorkspaceIdFromPath(projectPath);
+    if (!workspaceId) return { ok: true, skipped: true, projectPath };
+
+    if (!input.force && cloudWorkspaceLeaseEnsuredIds.has(workspaceId)) {
+        return { ok: true, skipped: true, projectPath };
+    }
+
+    const existing = cloudWorkspaceLeaseInFlight.get(workspaceId);
+    if (existing) {
+        try {
+            const boundPath = await existing;
+            return { ok: true, skipped: false, projectPath: boundPath || projectPath };
+        } catch (error) {
+            const message = cloudWorkspaceLeaseErrorMessage(error);
+            return { ok: false, cancelled: isCloudWorkspaceLeaseCancelled(message), error: message };
+        }
+    }
+
+    let pending!: Promise<string>;
+    pending = (async () => {
+        const bound = await input.resume(workspaceId, projectPath);
+        const boundPath = String(bound?.project_path || bound?.projectPath || "").trim();
+        if (!boundPath) {
+            throw new Error("Unable to open the cloud workspace task");
+        }
+        // Close/delete can drop the in-flight entry while Hub is still working.
+        // Do not advertise a held lease after that tab is gone.
+        if (cloudWorkspaceLeaseInFlight.get(workspaceId) !== pending) {
+            throw new Error(CLOUD_WORKSPACE_LEASE_CANCELLED);
+        }
+        markCloudWorkspaceLeaseEnsured(workspaceId);
+        return boundPath;
+    })();
+    cloudWorkspaceLeaseInFlight.set(workspaceId, pending);
+    try {
+        const boundPath = await pending;
+        return { ok: true, skipped: false, projectPath: boundPath };
+    } catch (error) {
+        const message = cloudWorkspaceLeaseErrorMessage(error);
+        return { ok: false, cancelled: isCloudWorkspaceLeaseCancelled(message), error: message };
+    } finally {
+        if (cloudWorkspaceLeaseInFlight.get(workspaceId) === pending) {
+            cloudWorkspaceLeaseInFlight.delete(workspaceId);
+        }
+    }
 }
 
 function foldCloudComparePath(path?: string | null): string {
@@ -123,6 +256,9 @@ export function cloudWorkspaceRevealMatchesTab(
     if (wantPath && tabDir && wantPath === tabDir) return true;
     if (wantDir && tabPath && wantDir === tabPath) return true;
     if (wantDir && tabDir && wantDir === tabDir) return true;
+    const wantId = cloudWorkspaceIdFromPath(reveal.workingDir) || cloudWorkspaceIdFromPath(reveal.projectPath);
+    const tabId = cloudWorkspaceIdFromPath(tab.workingDir) || cloudWorkspaceIdFromPath(tab.projectPath);
+    if (wantId && tabId && wantId === tabId) return true;
     const wantRoot = foldCloudComparePath(cloudWorkspaceRootFromPath(reveal.workingDir || reveal.projectPath));
     const tabRoot = foldCloudComparePath(cloudWorkspaceRootFromPath(tab.workingDir || tab.projectPath));
     return !!wantRoot && !!tabRoot && wantRoot === tabRoot;
@@ -284,7 +420,7 @@ export function cloudSafePathLabel(path?: string | null, fallback = "cloud"): st
     return cloudWorkspaceRelativePath(raw) || fallback;
 }
 
-/** Sidebar 浏览: open the in-app cloud file tree for this task (after pull). */
+/** Sidebar 浏览: open the local cache folder. */
 export const REVEAL_CLOUD_WORKSPACE_FILES_EVENT = "ai-reveal-cloud-workspace-files";
 
 /** Dir-bar: switch the already-open panel to the cloud file tree without reloading. */
@@ -292,6 +428,9 @@ export const FOCUS_CLOUD_WORKSPACE_TREE_EVENT = "ai-focus-cloud-workspace-tree";
 
 /** Backend watcher: local cloud-cache files changed and should refresh the preview tree. */
 export const CLOUD_WORKSPACE_FILES_CHANGED_EVENT = "cloud-workspace-files-changed";
+
+/** Backend sync progress/terminal state for the cloud workspace overview. */
+export const CLOUD_WORKSPACE_SYNC_PROGRESS_EVENT = "cloud-workspace-sync-progress";
 
 /** Drop local cache paths from cloud-workspace error text shown in the UI. */
 export function parseWailsEventObject(payload: unknown): Record<string, unknown> {
@@ -322,6 +461,17 @@ export function agentModeFromTaskTags(tags?: string[] | null): PureCodingAgentMo
     if (tags.includes("remote_coding_dev")) return "remote_coding_dev";
     if (tags.includes("coding_dev")) return "coding_dev";
     return undefined;
+}
+
+/** Cloud cache is a local working directory; SSH remote_coding must not reopen it. */
+export function agentModeForCloudWorkspace(
+    mode: PureCodingAgentMode | undefined,
+    cloudWorkspaceId?: string | null,
+): PureCodingAgentMode | undefined {
+    if (String(cloudWorkspaceId || "").trim() && mode === "remote_coding_dev") {
+        return "coding_dev";
+    }
+    return mode;
 }
 
 export function remoteHostFromTaskTags(tags?: string[] | null): string | undefined {

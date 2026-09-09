@@ -160,9 +160,7 @@ var CodingSessionToolNames = map[string]bool{
 	"get_session_events": true,
 	"interrupt_session":  true,
 	"kill_session":       true,
-	"list_providers":     true,
 	"parallel_execute":   true,
-	"recommend_tool":     true,
 	"create_template":    true,
 	"list_templates":     true,
 	"launch_template":    true,
@@ -189,7 +187,6 @@ func FilterCodingTools(tools []map[string]interface{}) []map[string]interface{} 
 // Bootstrap and legacy-candidate names are merged in automatically via init(),
 // so there is no need to duplicate them here.
 var BuiltinToolNames = map[string]bool{
-	"list_providers":    true,
 	"ssh":               true,
 	"send_input":        true,
 	"interrupt_session": true, "kill_session": true,
@@ -197,7 +194,7 @@ var BuiltinToolNames = map[string]bool{
 	"manage_skill":   true,
 	"list_skills":    true, "run_skill": true, "get_skill_run": true,
 	"search_skill_hub": true, "install_skill_hub": true,
-	"parallel_execute": true, "recommend_tool": true, "craft_tool": true,
+	"parallel_execute": true, "craft_tool": true,
 	"open":            true,
 	"edit_file":       true,
 	"create_template": true, "list_templates": true, "launch_template": true,
@@ -324,6 +321,11 @@ type Router struct {
 	intentClassifier   *IntentClassifier               // hybrid intent classifier (Layer 1+2+3)
 	unifiedClassifier  *intent.UnifiedIntentClassifier // UIC replaces conditionalKeepRules when non-nil
 	lastRecommendation RoutingRecommendation
+	legacyRouteCalls   atomic.Uint64
+	// searchTextExtra folds host-owned retrieval tokens (for example persisted
+	// database profile names) into BM25/hybrid text without changing the LLM
+	// description. Route holds mu while reading it.
+	searchTextExtra map[string][]string
 }
 
 func NewRouter(generator *DefinitionGenerator) *Router {
@@ -755,6 +757,51 @@ func (r *Router) SetEnrichmentStore(store *EnrichmentStore) {
 	r.enrichStore = store
 }
 
+// SetSearchTextExtra replaces host-owned retrieval tokens for a tool. Empty
+// queries clear the overlay. Callers must not put secrets here.
+func (r *Router) SetSearchTextExtra(name string, queries []string) {
+	if r == nil {
+		return
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return
+	}
+	cleaned := make([]string, 0, len(queries))
+	for _, query := range queries {
+		query = strings.TrimSpace(query)
+		if query != "" {
+			cleaned = append(cleaned, query)
+		}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.searchTextExtra == nil {
+		r.searchTextExtra = make(map[string][]string)
+	}
+	if len(cleaned) == 0 {
+		delete(r.searchTextExtra, name)
+		return
+	}
+	r.searchTextExtra[name] = cleaned
+}
+
+// SearchTextExtra returns a copy of host-owned retrieval tokens for name.
+func (r *Router) SearchTextExtra(name string) []string {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	src := r.searchTextExtra[strings.TrimSpace(name)]
+	if len(src) == 0 {
+		return nil
+	}
+	out := make([]string, len(src))
+	copy(out, src)
+	return out
+}
+
 // SetUsageTracker configures the usage tracker for experience-aware scoring.
 func (r *Router) SetUsageTracker(tracker *UsageTracker) {
 	r.mu.Lock()
@@ -1009,17 +1056,19 @@ func isLocalPathToken(s string) bool {
 
 // buildSearchText returns the enriched search text for a tool if an enrichment
 // store is configured, otherwise falls back to name + description + tags.
+// Builtin synthetic queries and host-owned extra tokens (profile names) are
+// always folded in so short follow-ups can match without a persisted store.
 func (r *Router) buildSearchText(name, description string) string {
+	var text string
 	if r.enrichStore != nil && r.registry != nil {
 		if t, ok := r.registry.Get(name); ok {
-			return r.enrichStore.GetSearchText(*t)
+			text = r.enrichStore.GetSearchText(*t)
 		}
 	}
-	text := name + " " + description
-	if tags := r.tagsForTool(name); len(tags) > 0 {
-		text += " " + strings.Join(tags, " ")
+	if text == "" {
+		text = baseToolSearchText(name, description, r.tagsForTool(name))
 	}
-	return text
+	return appendSearchQueries(text, r.searchTextExtra[name])
 }
 
 // buildEmbeddingText returns the text used for embedding vector computation.
@@ -1284,6 +1333,36 @@ func legacyFallbackSurfaceTool(name string) bool {
 	}
 }
 
+func applyHostKeepTools(names []string, condKeep, condFilterOut, suppressed map[string]bool) {
+	for _, raw := range names {
+		name := strings.TrimSpace(raw)
+		if name == "" || IsDisabledExternalCodingSessionTool(name) {
+			continue
+		}
+		if condKeep != nil {
+			condKeep[name] = true
+		}
+		if condFilterOut != nil {
+			delete(condFilterOut, name)
+		}
+		if suppressed != nil {
+			delete(suppressed, name)
+		}
+	}
+}
+
+func hostKeepSet(names []string) map[string]bool {
+	out := map[string]bool{}
+	for _, raw := range names {
+		name := strings.TrimSpace(raw)
+		if name == "" || IsDisabledExternalCodingSessionTool(name) {
+			continue
+		}
+		out[name] = true
+	}
+	return out
+}
+
 func trimCoreToolsToBudget(core []map[string]interface{}, condKeep, mustKeep map[string]bool) []map[string]interface{} {
 	if len(core) <= MaxToolBudget && len(mustKeep) == 0 {
 		return core
@@ -1306,8 +1385,31 @@ func trimCoreToolsToBudget(core []map[string]interface{}, condKeep, mustKeep map
 }
 
 // Route selects the most relevant tools for userMessage from allTools.
+// Deprecated for task-scoped requests; use RouteForScope after the host has
+// resolved the task capability set.
 func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []map[string]interface{} {
 	return r.RouteWithOptions(userMessage, allTools, RouteOptions{})
+}
+
+// RouteForScope returns the host-admitted tool surface for a task scope. It
+// intentionally performs no text retrieval, intent rewrite, BM25 scoring or
+// reranking. The caller supplies the already-authorized names; definitions are
+// returned in deterministic name order and unknown names are ignored.
+func (r *Router) RouteForScope(allTools []map[string]interface{}, allowedNames []string) []map[string]interface{} {
+	allowed := make(map[string]bool, len(allowedNames))
+	for _, name := range allowedNames {
+		if name = strings.TrimSpace(name); name != "" {
+			allowed[name] = true
+		}
+	}
+	selected := make([]map[string]interface{}, 0, len(allowed))
+	for _, definition := range allTools {
+		if allowed[ExtractToolName(definition)] {
+			selected = append(selected, definition)
+		}
+	}
+	sort.SliceStable(selected, func(i, j int) bool { return ExtractToolName(selected[i]) < ExtractToolName(selected[j]) })
+	return selected
 }
 
 // RouteWithOptions preserves the legacy definitions return for callers that
@@ -1315,9 +1417,21 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 // BuildLegacyAdapterPlan/RenderLegacyAdapterPlan, not treat this return value
 // as an authorization decision.
 func (r *Router) RouteWithOptions(userMessage string, allTools []map[string]interface{}, opts RouteOptions) []map[string]interface{} {
+	if r != nil {
+		r.legacyRouteCalls.Add(1)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.routeWithOptionsLocked(userMessage, allTools, opts)
+}
+
+// LegacyRouteCalls returns the number of calls through the deprecated text
+// router. Hosts can use it to track migration before removing that path.
+func (r *Router) LegacyRouteCalls() uint64 {
+	if r == nil {
+		return 0
+	}
+	return r.legacyRouteCalls.Load()
 }
 
 // RecommendWithOptions returns the Router's compatibility selection together
@@ -1494,9 +1608,10 @@ func (r *Router) routeWithOptionsLocked(userMessage string, allTools []map[strin
 		// hide generic fallback/discovery surfaces so the model cannot route the
 		// same action through call_mcp_tool(server_id="ssh", tool_name="ssh") or
 		// install a community SSH skill instead of using the builtin.
+		// discover_tool stays visible: a misclassified SSH turn must still be
+		// able to recover a missing capability such as database.
 		suppressedTools["call_mcp_tool"] = true
 		suppressedTools["manage_skill"] = true
-		suppressedTools["discover_tool"] = true
 		suppressedTools["search_and_install_skill"] = true
 	}
 	// LLM / structured intent rewrite only contributes an expanded retrieval
@@ -1540,6 +1655,8 @@ func (r *Router) routeWithOptionsLocked(userMessage string, allTools []map[strin
 	}
 	suppressedTools["git_commit"] = true
 	suppressedTools["git_push"] = true
+
+	applyHostKeepTools(opts.HostKeepTools, condKeep, condFilterOut, suppressedTools)
 
 	// Skill matching is recommendation evidence only on this compatibility
 	// route. Dynamic Skills must enter the model surface through a managed,
@@ -1588,10 +1705,13 @@ func (r *Router) routeWithOptionsLocked(userMessage string, allTools []map[strin
 		if suppressedTools[name] {
 			continue
 		}
-		if LegacyCandidateToolNames[name] && !legacyAdapterCandidateAllowed(name, routeNow) {
-			// A known compatibility name without a live reviewed provision is
-			// catalog_incomplete, not a candidate. Never let its description or
-			// a BM25 hit reconstruct authority.
+		if !legacyAdapterCandidateAllowed(name, routeNow) {
+			// A model-visible host name without a live reviewed provision is
+			// catalog_incomplete, not a candidate. This covers expired catalog
+			// entries and newly registered static tools that were never reviewed
+			// into the legacy adapter catalog. Letting them rank lets BM25
+			// select them; the closed replacement then used to reject the
+			// entire surface as unprovisioned.
 			continue
 		}
 		if LegacyBootstrapToolNames[name] || condKeep[name] || legacyRouteFallbackTool(name) {
@@ -1606,7 +1726,7 @@ func (r *Router) routeWithOptionsLocked(userMessage string, allTools []map[strin
 		}
 	}
 
-	mustKeepCore := map[string]bool{}
+	mustKeepCore := hostKeepSet(opts.HostKeepTools)
 	matchedSkillCapabilities := r.matchedSkillCapabilities(matchedSkills)
 	core = trimCoreToolsToBudget(core, condKeep, mustKeepCore)
 	remainingSlots := MaxToolBudget - len(core)
@@ -1814,7 +1934,7 @@ func (r *Router) routeWithOptionsLocked(userMessage string, allTools []map[strin
 
 	if r.recommender != nil && skillInstallEligible {
 		if hint := r.matchRecommendations(userTokens); hint != nil {
-			if name := ExtractToolName(hint); !resultNames[name] && !suppressedTools[name] {
+			if name := ExtractToolName(hint); !resultNames[name] && !suppressedTools[name] && legacyAdapterCandidateAllowed(name, routeNow) {
 				// Recommendation hints are metadata-only client-side prompts in
 				// legacy hosts. Do not let them violate the model tool budget: if
 				// the routed request surface is full, replace the lowest-priority

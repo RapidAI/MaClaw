@@ -78,6 +78,11 @@ type Service struct {
 	privateKey    *rsa.PrivateKey
 	publicKeyPEM  string
 
+	// requireSignatureV2 enforces the body-bound V2 signature and rejects
+	// V1-only peers. Kept false during rolling upgrades (dual-send V1+V2);
+	// enable after every peer has been confirmed to send V2.
+	requireSignatureV2 atomic.Bool
+
 	ops                         store.HASyncOpRepository
 	cursors                     store.HAPeerCursorRepository
 	versions                    store.HAEntityVersionRepository
@@ -487,28 +492,64 @@ func (s *Service) SignPeerRequest(req *http.Request) error {
 	if err != nil {
 		return err
 	}
+	// V2: bind the raw request body hash so an op signature cannot be replayed
+	// against a different body. Both signatures are sent during rolling
+	// upgrades; after full rollout SetRequireSignatureV2(true) rejects V1-only
+	// peers on the receiving side.
+	bodyHash, err := requestBodySHA256Hex(req)
+	if err != nil {
+		return err
+	}
+	v2Signature, err := signHACanonicalRequest(s.privateKey, requestCanonicalPayloadV2(req, s.nodeID, timestamp, bodyHash))
+	if err != nil {
+		return err
+	}
 	req.Header.Set(haHeaderNodeID, s.nodeID)
 	req.Header.Set(haHeaderTimestamp, timestamp)
 	req.Header.Set(haHeaderSignature, signature)
+	req.Header.Set(haHeaderBodyHash, bodyHash)
+	req.Header.Set(haHeaderSignatureV2, v2Signature)
 	return nil
+}
+
+// SetRequireSignatureV2 toggles enforcement of the body-bound V2 signature.
+// Keep disabled during rolling upgrades so V1-only peers still authenticate;
+// enable once every peer sends V2 to reject V1-only requests.
+func (s *Service) SetRequireSignatureV2(require bool) {
+	if s == nil {
+		return
+	}
+	s.requireSignatureV2.Store(require)
 }
 
 func (s *Service) AuthenticatePeerRequest(r *http.Request) error {
 	if s == nil {
 		return nil
 	}
-	if secret := strings.TrimSpace(s.clusterSecret); secret != "" {
+	secret := strings.TrimSpace(s.clusterSecret)
+	hasPeers := len(s.peerPublicKeys) > 0
+	// P0 (2026-09-09 review): with neither a cluster secret nor any peer
+	// public key configured, every branch below used to `return nil`, so
+	// GET/POST /api/internal/ha/ops was open to anyone — unauthenticated
+	// reads of the full HA operation log and unauthenticated op injection.
+	// Absent trust material must deny, not allow.
+	if secret == "" && !hasPeers {
+		return fmt.Errorf("ha peer authentication is not configured")
+	}
+	if secret != "" {
 		if got := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")); got != secret {
 			return fmt.Errorf("invalid cluster secret")
+		}
+		// Shared-secret mode: a cluster secret with no peer keys is a
+		// complete authentication on its own.
+		if !hasPeers {
+			return nil
 		}
 	}
 	nodeID := strings.TrimSpace(r.Header.Get(haHeaderNodeID))
 	timestamp := strings.TrimSpace(r.Header.Get(haHeaderTimestamp))
 	signature := strings.TrimSpace(r.Header.Get(haHeaderSignature))
 	if nodeID == "" || timestamp == "" || signature == "" {
-		if len(s.peerPublicKeys) == 0 {
-			return nil
-		}
 		return fmt.Errorf("missing ha signature headers")
 	}
 	if err := timestampWithinHABounds(timestamp, time.Now().UTC(), 5*time.Minute); err != nil {
@@ -516,10 +557,22 @@ func (s *Service) AuthenticatePeerRequest(r *http.Request) error {
 	}
 	pub := s.peerPublicKeys[nodeID]
 	if pub == nil {
-		if len(s.peerPublicKeys) == 0 {
-			return nil
-		}
 		return fmt.Errorf("unknown peer public key for node %s", nodeID)
+	}
+	// V2: prefer the body-bound signature when the peer sent it. The body hash
+	// is recomputed from the actual body (never trusted from the header), so
+	// the signature fails if the body was altered in transit.
+	if v2 := strings.TrimSpace(r.Header.Get(haHeaderSignatureV2)); v2 != "" {
+		bodyHash, err := requestBodySHA256Hex(r)
+		if err != nil {
+			return err
+		}
+		return verifyHACanonicalRequest(pub, requestCanonicalPayloadV2(r, nodeID, timestamp, bodyHash), v2)
+	}
+	// Backward compatibility: a V1 signature covers only method+path+query.
+	// Accept it during rollout, then reject once V2 is enforced.
+	if s.requireSignatureV2.Load() {
+		return fmt.Errorf("ha signature v2 required")
 	}
 	return verifyHACanonicalRequest(pub, requestCanonicalPayload(r, nodeID, timestamp), signature)
 }

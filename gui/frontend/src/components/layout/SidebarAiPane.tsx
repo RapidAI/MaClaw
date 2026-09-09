@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import type { SidebarCreditDisplayFormatters, SidebarCurrentProviderTokenUsage, SidebarHubCredits } from '../../types/appShell';
 import { EVENT_OPEN_CREATE_CODING_TASK } from '../../constants/events';
 import type { CodingAgentProgress, CodingAgentTurnSnapshot } from '../ai/CodingAgentProgressStatus';
@@ -7,7 +7,8 @@ import { SidebarTaskManagement, type TaskManagementItem, type TaskContextMenu } 
 import type { ActiveAssistantTaskIdentity } from '../ai/aiAssistantPanelSessionUtils';
 import { SidebarSystemStatus } from './SidebarSystemStatus';
 import { VirtualEmployeeTab, type VirtualEmployeeEntry } from '../ai/VirtualEmployeeTab';
-import { darkTheme, lightTheme } from '../ai/aiAssistantPanelTheme';
+import { getAssistantDarkScheme, type AssistantDarkSchemeId } from '../ai/assistantDarkSchemes';
+import { DEFAULT_ASSISTANT_LIGHT_SCHEME_ID, getAssistantLightScheme, type AssistantLightSchemeId } from '../ai/assistantLightSchemes';
 import { SidebarMiddleTabs } from './SidebarMiddleTabs';
 import { SidebarHistorySessions, type HistoryDiscussionSummary } from './SidebarHistorySessions';
 import { isDigitalEmployeeAuthorizationUsable, shouldShowDigitalEmployeeFeatureTabs } from '../ai/digitalEmployeeFeature';
@@ -45,6 +46,8 @@ type SidebarAiPaneProps = SidebarCreditDisplayFormatters & {
     taskManagementPaneWidth: number;
     lang: string;
     aiThemeMode?: 'light' | 'dark';
+    aiLightSchemeId?: AssistantLightSchemeId;
+    aiDarkSchemeId?: AssistantDarkSchemeId;
     maclawLLMOnline: boolean;
     showLansenger?: boolean;
     remoteActivationStatus: any;
@@ -54,6 +57,12 @@ type SidebarAiPaneProps = SidebarCreditDisplayFormatters & {
     lansengerStatus: string;
     backgroundTaskCount?: number;
     onOpenBackgroundTasks?: () => void;
+    /** Keep cloud workspace/project controls for external coding surfaces. */
+    showCloudWorkspaceManagement?: boolean;
+    /** Show cloud task creation while keeping project management controls hidden. */
+    showCloudWorkspaceCreation?: boolean;
+    /** Restore durable cloud task rows while keeping project controls hidden. */
+    restoreCloudWorkspaceTasks?: boolean;
     config: any;
     activeTool: string;
     toolDropdownOpen: boolean;
@@ -82,6 +91,8 @@ type SidebarAiPaneProps = SidebarCreditDisplayFormatters & {
     hideTask: (projectPath: string, tags?: string[]) => Promise<unknown>;
     /** Open project-tab paths; tasks with open tabs cannot be removed from the list menu. */
     openProjectTabPaths?: string[];
+    /** Include cloud workspace identity when matching an open task tab. */
+    openProjectTabIdentities?: Array<{ projectPath: string; cloudWorkspaceId?: string }>;
     openExpertTabIDs?: string[];
     /** Currently visible assistant tab. Null/empty clears the task-list highlight. */
     activeAssistantTask?: ActiveAssistantTaskIdentity | null;
@@ -96,7 +107,7 @@ type SidebarAiPaneProps = SidebarCreditDisplayFormatters & {
     openHubCardStorePage?: () => void;
     codingAgentProgress?: CodingAgentProgress | null;
     codingAgentTurnSnapshot?: CodingAgentTurnSnapshot | null;
-    handleTaskManagementResizeStart: (e: ReactMouseEvent<HTMLDivElement>) => void;
+    handleTaskManagementResizeStart: (e: ReactMouseEvent<HTMLDivElement> | ReactPointerEvent<HTMLDivElement> | number) => void;
     isTaskManagementResizing: boolean;
     switchTool: (tool: string) => void;
     onOpenVEConversation?: (ve: VirtualEmployeeEntry) => void;
@@ -142,6 +153,8 @@ export const SidebarAiPane = ({
     taskManagementPaneWidth,
     lang,
     aiThemeMode,
+    aiLightSchemeId = DEFAULT_ASSISTANT_LIGHT_SCHEME_ID,
+    aiDarkSchemeId,
     maclawLLMOnline,
     showLansenger = false,
     remoteActivationStatus,
@@ -151,6 +164,9 @@ export const SidebarAiPane = ({
     lansengerStatus,
     backgroundTaskCount = 0,
     onOpenBackgroundTasks,
+    showCloudWorkspaceManagement,
+    showCloudWorkspaceCreation,
+    restoreCloudWorkspaceTasks,
     config,
     activeTool,
     toolDropdownOpen,
@@ -172,6 +188,7 @@ export const SidebarAiPane = ({
     pinTask,
     hideTask,
     openProjectTabPaths,
+    openProjectTabIdentities,
     openExpertTabIDs,
     activeAssistantTask,
     sidebarCurrentProviderTokenUsage,
@@ -220,12 +237,30 @@ export const SidebarAiPane = ({
     codingInheritsAssistant,
 }: SidebarAiPaneProps) => {
     const [middleTab, setMiddleTab] = useState<MiddleTab>('tasks');
-    const veTheme = useMemo(() => (aiThemeMode === 'dark' ? darkTheme : lightTheme), [aiThemeMode]);
+    const veTheme = useMemo(() => (
+        aiThemeMode === 'dark'
+            ? getAssistantDarkScheme(aiDarkSchemeId).assistantTheme
+            : getAssistantLightScheme(aiLightSchemeId).assistantTheme
+    ), [aiThemeMode, aiDarkSchemeId, aiLightSchemeId]);
     const showDigitalEmployeeTabs = showDigitalEmployeeNavigation ?? shouldShowDigitalEmployeeMiddleTabs(digitalEmployeeFeatureStatus);
     const visibleTabs = useMemo<MiddleTab[]>(() => showDigitalEmployeeTabs ? ['tasks', 'employees', 'history'] : ['tasks'], [showDigitalEmployeeTabs]);
     useEffect(() => {
         if (!showDigitalEmployeeTabs && middleTab !== 'tasks') setMiddleTab('tasks');
     }, [middleTab, showDigitalEmployeeTabs]);
+
+    // The redesigned rail owns navigation for experts, employees and notifications;
+    // keep the old middle-tab state reachable through those semantic rail intents
+    // even though the tab strip is visually collapsed in the reference layout.
+    useEffect(() => {
+        const focusTasks = () => setMiddleTab('tasks');
+        const focusEmployees = () => { if (showDigitalEmployeeTabs) setMiddleTab('employees'); };
+        window.addEventListener('maclaw:focus-task-list', focusTasks);
+        window.addEventListener('maclaw:focus-digital-employees', focusEmployees);
+        return () => {
+            window.removeEventListener('maclaw:focus-task-list', focusTasks);
+            window.removeEventListener('maclaw:focus-digital-employees', focusEmployees);
+        };
+    }, [showDigitalEmployeeTabs]);
 
     // Welcome software-dev cards open the create-task dialog in TaskManagement. Keep the
     // tasks pane mounted (hidden) so the listener stays alive on employees/history tabs,
@@ -238,13 +273,13 @@ export const SidebarAiPane = ({
 
     // Favorite employees - use authoritative IDs from parent (includes optimistic updates)
     const tabLabels: Record<MiddleTab, string> = {
-        tasks: lang === 'en' ? 'Task Management' : lang === 'zh-Hant' ? '任務管理' : '任务管理',
-        employees: lang === 'en' ? 'Digital Employees' : lang === 'zh-Hant' ? '數字員工' : '数字员工',
+        tasks: lang === 'en' ? 'Tasks' : lang === 'zh-Hant' ? '任務' : '任务',
+        employees: lang === 'en' ? 'AI Experts' : lang === 'zh-Hant' ? 'AI 專家' : 'AI 专家',
         history: lang === 'en' ? 'History' : lang === 'zh-Hant' ? '歷史會話' : '历史会话',
     };
     return (
         <>
-            <div style={{ width: `${taskManagementPaneWidth}px`, flexShrink: 0, display: 'flex', flexDirection: 'column', borderRight: '1px solid var(--theme-border)', background: 'var(--theme-page-bg)', minHeight: 0, overflow: 'hidden' }}>
+            <div className="mc-sidebar-shell office-agent-sidebar" style={{ width: `${taskManagementPaneWidth}px`, flexShrink: 0, display: 'flex', flexDirection: 'column', borderRight: '1px solid var(--theme-border)', background: 'var(--theme-page-bg)', minHeight: 0, overflow: 'hidden' }}>
                 <SidebarToolSelector activeTool={activeTool} toolDropdownOpen={toolDropdownOpen} setToolDropdownOpen={setToolDropdownOpen} config={config} switchTool={switchTool} visible={showCodingToolEntry} />
                 {visibleTabs.length > 1 && <SidebarMiddleTabs active={middleTab} labels={tabLabels} onChange={setMiddleTab} visibleTabs={visibleTabs} />}
                 <div data-testid="sidebar-ai-content-slot" style={middleContentSlotStyle}>
@@ -259,14 +294,49 @@ export const SidebarAiPane = ({
                             flexDirection: 'column',
                         }}
                     >
-                        <SidebarTaskManagement lang={lang} themeMode={aiThemeMode} tasks={tasks} renamingTaskPath={renamingTaskPath} setRenamingTaskPath={setRenamingTaskPath} renameValue={renameValue} setRenameValue={setRenameValue} resumeTask={resumeTask} continueWorkflowProject={continueWorkflowProject} assistantReady={assistantReady} onTaskSwitchBlocked={onTaskSwitchBlocked} createTask={createTask} refreshTasks={refreshTasks} taskContextMenu={taskContextMenu} setTaskContextMenu={setTaskContextMenu} renameTask={renameTask} pinTask={pinTask} hideTask={hideTask} openProjectTabPaths={openProjectTabPaths} openExpertTabIDs={openExpertTabIDs} activeAssistantTask={activeAssistantTask} taskListVisible={middleTab === 'tasks'} />
+                        <SidebarTaskManagement lang={lang} themeMode={aiThemeMode} tasks={tasks} renamingTaskPath={renamingTaskPath} setRenamingTaskPath={setRenamingTaskPath} renameValue={renameValue} setRenameValue={setRenameValue} resumeTask={resumeTask} continueWorkflowProject={continueWorkflowProject} assistantReady={assistantReady} onTaskSwitchBlocked={onTaskSwitchBlocked} createTask={createTask} refreshTasks={refreshTasks} taskContextMenu={taskContextMenu} setTaskContextMenu={setTaskContextMenu} renameTask={renameTask} pinTask={pinTask} hideTask={hideTask} openProjectTabPaths={openProjectTabPaths} openProjectTabIdentities={openProjectTabIdentities} openExpertTabIDs={openExpertTabIDs} activeAssistantTask={activeAssistantTask} taskListVisible={middleTab === 'tasks'} showCloudWorkspaceManagement={showCloudWorkspaceManagement ?? showCodingToolEntry} showCloudWorkspaceCreation={showCloudWorkspaceCreation ?? showCloudWorkspaceManagement ?? showCodingToolEntry} restoreCloudWorkspaceTasks={restoreCloudWorkspaceTasks} onOpenBackgroundTasks={onOpenBackgroundTasks} />
                     </div>
                     {middleTab === 'employees' && showDigitalEmployeeTabs && <div data-testid="sidebar-middle-pane-employees" style={middlePaneStyle}><VirtualEmployeeTab lang={lang} theme={veTheme} onStartConversation={(ve) => onOpenVEConversation?.(ve)} favoriteEmployeeIds={favoriteEmployeeIds} favoriteEmployeeNames={favoriteEmployeeNames} onSetFavorite={onSetFavoriteEmployee} onRemoveFavorite={onRemoveFavoriteEmployee} onRenameEmployee={onRenameEmployee} /></div>}
                     {middleTab === 'history' && showDigitalEmployeeTabs && <div data-testid="sidebar-middle-pane-history" style={middlePaneStyle}><SidebarHistorySessions lang={lang} enabled={showDigitalEmployeeTabs} onOpenDiscussion={(discussion) => onOpenHistoryDiscussion?.(discussion)} /></div>}
                 </div>
                 <SidebarSystemStatus lang={lang} maclawLLMOnline={maclawLLMOnline} showLansenger={showLansenger} remoteActivationStatus={remoteActivationStatus} qqBotStatus={qqBotStatus} telegramStatus={telegramStatus} weixinStatus={weixinStatus} lansengerStatus={lansengerStatus} backgroundTaskCount={backgroundTaskCount} onOpenBackgroundTasks={onOpenBackgroundTasks} localLLMCacheEnabled={(config as any)?.llm_prompt_cache?.enabled === true} sidebarCurrentProviderTokenUsage={sidebarCurrentProviderTokenUsage} sidebarHubCredits={sidebarHubCredits} formatSidebarTokens={formatSidebarTokens} formatSidebarHubExpiry={formatSidebarHubExpiry} formatSidebarHubTotalCredits={formatSidebarHubTotalCredits} formatSidebarHubUsedCredits={formatSidebarHubUsedCredits} formatSidebarCredit={formatSidebarCredit} unlimitedHubCreditText={unlimitedHubCreditText} noHubAuthorizationText={noHubAuthorizationText} showHubCreditAction={showHubCreditAction} openHubCreditsPage={openHubCreditsPage} openServiceRedeemPage={openServiceRedeemPage} openLLMSettingsPage={openLLMSettingsPage} openHubCardStorePage={openHubCardStorePage} codingAgentProgress={codingAgentProgress} codingAgentTurnSnapshot={codingAgentTurnSnapshot} isDark={aiThemeMode === 'dark'} availableProviders={availableProviders} onSwitchProvider={onSwitchProvider} currentModel={currentModel} modelOptions={modelOptions} modelsLoading={modelsLoading} onSwitchModel={onSwitchModel} onOpenModelMenu={onOpenModelMenu} onDismissModelMenu={onDismissModelMenu} moaSticky={moaSticky} onToggleMoASticky={onToggleMoASticky} profileSummaries={profileSummaries} activeProfile={activeProfile} codingInheritsAssistant={codingInheritsAssistant} providerSelectionPending={providerSelectionPending} profileSavePending={profileSavePending} />
             </div>
-            <div onMouseDown={handleTaskManagementResizeStart} title={lang === 'en' ? 'Drag to resize middle panel' : lang === 'zh-Hant' ? '拖動調整中間面板寬度' : '拖动调整中间面板宽度'} style={{ width: '6px', flexShrink: 0, cursor: 'col-resize', background: isTaskManagementResizing ? 'color-mix(in srgb, var(--theme-primary) 42%, transparent)' : 'transparent', borderRight: '1px solid var(--theme-border)', transition: 'background 120ms ease', ['--wails-draggable' as any]: 'no-drag' }} />
+            <div
+                className="mc-task-pane-resize-handle"
+                data-testid="task-pane-resize-handle"
+                role="separator"
+                aria-orientation="vertical"
+                aria-valuemin={180}
+                aria-valuemax={460}
+                aria-valuenow={Math.round(taskManagementPaneWidth)}
+                aria-label={lang === 'en' ? 'Resize task panel' : lang === 'zh-Hant' ? '調整任務面板寬度' : '调整任务面板宽度'}
+                tabIndex={0}
+                onPointerDown={(event) => {
+                    handleTaskManagementResizeStart(event);
+                    event.currentTarget.setPointerCapture?.(event.pointerId);
+                }}
+                onPointerUp={(event) => {
+                    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture?.(event.pointerId);
+                }}
+                onPointerCancel={(event) => {
+                    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture?.(event.pointerId);
+                }}
+                onMouseDown={(event) => {
+                    if (typeof window.PointerEvent === 'undefined') handleTaskManagementResizeStart(event);
+                }}
+                onKeyDown={(event) => {
+                    const delta = event.key === 'ArrowLeft' ? -16 : event.key === 'ArrowRight' ? 16 : 0;
+                    if (delta !== 0) {
+                        event.preventDefault();
+                        handleTaskManagementResizeStart(taskManagementPaneWidth + delta);
+                    } else if (event.key === 'Home' || event.key === 'End') {
+                        event.preventDefault();
+                        handleTaskManagementResizeStart(event.key === 'Home' ? 180 : 460);
+                    }
+                }}
+                title={lang === 'en' ? 'Drag to resize middle panel' : lang === 'zh-Hant' ? '拖動調整中間面板寬度' : '拖动调整中间面板宽度'}
+                style={{ width: '12px', marginLeft: '-3px', marginRight: '-3px', position: 'relative', zIndex: 40, flexShrink: 0, cursor: 'col-resize', background: isTaskManagementResizing ? 'color-mix(in srgb, var(--theme-primary) 42%, transparent)' : 'transparent', transition: 'background 120ms ease', touchAction: 'none', userSelect: 'none', pointerEvents: 'auto', ['WebkitAppRegion' as any]: 'no-drag', ['--wails-draggable' as any]: 'no-drag' }}
+            />
         </>
     );
 };

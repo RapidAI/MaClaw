@@ -6,6 +6,10 @@ import {
     utilitiesLabels,
     utilitiesNavLabel,
     utilitiesPageTitle,
+    toolsBackHintLabel,
+    toolsBackLabel,
+    toolsEntryLabel,
+    expertsEntryLabel,
 } from './utilitiesLabels';
 
 describe('utilitiesLabels', () => {
@@ -35,5 +39,12 @@ describe('utilitiesLabels', () => {
         expect(utilitiesNavLabel()).toBe('专家&工具');
         expect(utilitiesNavLabel('zh')).toBe('专家&工具');
         expect(utilitiesPageTitle()).toBe('专家&工具');
+    });
+
+    it('keeps split tools and AI expert copy separate from the legacy combined labels', () => {
+        expect(toolsEntryLabel('zh-Hans')).toBe('工具入口');
+        expect(toolsBackLabel('zh-Hans')).toBe('返回工具');
+        expect(toolsBackHintLabel('en')).toBe('Return to the Tools page');
+        expect(expertsEntryLabel('zh-Hans')).toBe('AI 专家入口');
     });
 });

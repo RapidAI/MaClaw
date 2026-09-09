@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"hash/fnv"
 	"net/http"
@@ -150,6 +152,16 @@ func CapabilityMarketBillingLicensesHandler(deps ...any) http.HandlerFunc {
 		tenantID := capabilityMarketInternalTenantID(rawTenantID)
 		tenantFilterSet := rawTenantID != ""
 		adminEmail := strings.TrimSpace(firstCapabilityMarketNonEmpty(r.URL.Query().Get("admin_email"), r.URL.Query().Get("buyer_email"), r.URL.Query().Get("email")))
+		// P0 (2026-09-09 review): every filter above is "skip when empty", so a
+		// request with no query parameters returned the license records of
+		// EVERY tenant — purchase ids, hub ids, tenant ids, admin emails and
+		// license payloads — from an endpoint that has no authentication at
+		// all. Callers must now scope the query; the endpoint is documented as
+		// "for Hub tenant admins", never as a full-platform export.
+		if hubID == "" && !tenantFilterSet && adminEmail == "" {
+			writeError(w, http.StatusBadRequest, "SCOPE_REQUIRED", "hub_id, tenant_id or admin_email query parameter is required")
+			return
+		}
 		items := make([]CapabilityMarketLicenseRecord, 0, len(purchases.Items))
 		for _, item := range purchases.Items {
 			if hubID != "" && item.HubID != hubID {
@@ -821,6 +833,9 @@ func AdminCapabilityMarketImportHandler(settings store.SystemSettingsRepository,
 			DisplayName    string `json:"display_name"`
 			Description    string `json:"description"`
 			EndpointURL    string `json:"endpoint_url,omitempty"` // for MCP imports
+			PackageKind    string `json:"package_kind,omitempty"` // "skill" | "suite"; suite auto-detected for GitHub repos
+			SuiteID        string `json:"suite_id,omitempty"`
+			PublishMembers *bool  `json:"publish_members,omitempty"`
 		}
 		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
 			writeJSONDecodeError(w, err, "INVALID_JSON", "invalid request body")
@@ -852,6 +867,97 @@ func AdminCapabilityMarketImportHandler(settings store.SystemSettingsRepository,
 
 		switch capType {
 		case corelib.CapabilityTypeSkill:
+			// A GitHub repository URL may contain multiple Skills. Import it as
+			// one Suite for the Capability Catalog while retaining each member as
+			// an independently downloadable Skill for legacy clients.
+			if source == corelib.CapabilitySourceGitHub && (strings.EqualFold(strings.TrimSpace(req.PackageKind), "suite") || looksLikeGitHubRepositoryURL(req.InstallRef)) {
+				importer := skill.NewRemoteImporter()
+				imported, importErr := importer.ImportFromURL(req.InstallRef)
+				if importErr != nil {
+					writeError(w, http.StatusBadGateway, "DOWNLOAD_FAILED", "failed to import GitHub Suite: "+importErr.Error())
+					return
+				}
+				if imported.Suite != nil || (strings.EqualFold(strings.TrimSpace(req.PackageKind), "suite") && len(imported.Skills) > 0) {
+					if skillStore == nil {
+						writeError(w, http.StatusServiceUnavailable, "PERSIST_UNAVAILABLE", "skill store is not configured")
+						return
+					}
+					var suite skill.SkillSuiteFull
+					if imported.Suite != nil {
+						suite = *imported.Suite
+					} else {
+						member := imported.Skills[0]
+						suite = skill.SkillSuiteFull{SkillSuiteMeta: skill.SkillSuiteMeta{ID: "github-import-suite", Name: member.Name, Description: member.Description, Version: member.Version, SourceURL: member.SourceURL, Visible: true, Status: "published"}, Skills: append([]skill.HubSkillFull(nil), imported.Skills...), Manifest: skill.SuiteManifest{Format: "skill-suite.v1"}}
+						for i, sk := range imported.Skills {
+							suite.Members = append(suite.Members, skill.SkillSuiteMember{SkillID: sk.ID, Name: sk.Name, Version: sk.Version, Required: true, Order: i})
+						}
+					}
+					if strings.TrimSpace(req.SuiteID) != "" {
+						suite.ID = strings.TrimSpace(req.SuiteID)
+					}
+					existingSuite := false
+					if existing, getErr := skillStore.GetSuite(suite.ID); getErr == nil && existing != nil {
+						existingSuite = true
+						// Re-imports are idempotent: preserve moderation state and
+						// counters instead of silently resetting an approved/hidden Suite.
+						suite.Status = existing.Status
+						suite.TrustLevel = existing.TrustLevel
+						suite.Visible = existing.Visible
+						suite.Downloads = existing.Downloads
+					}
+					if raw, marshalErr := json.Marshal(suite.Skills); marshalErr == nil {
+						sum := sha256.Sum256(raw)
+						suite.PackageSHA256 = hex.EncodeToString(sum[:])
+					}
+					if !existingSuite {
+						suite.TrustLevel = "trusted"
+						suite.Status = "published"
+						suite.Visible = true
+					}
+					if err := skillStore.PublishSuite(suite); err != nil {
+						writeError(w, http.StatusInternalServerError, "PERSIST_FAILED", "failed to publish Suite: "+err.Error())
+						return
+					}
+					publishMembers := req.PublishMembers == nil || *req.PublishMembers
+					published := make([]string, 0, len(imported.Skills))
+					if publishMembers && skillStore != nil {
+						for _, member := range imported.Skills {
+							if existing, getErr := skillStore.Get(member.ID); getErr == nil && existing != nil {
+								member.TrustLevel = existing.TrustLevel
+								member.Visible = existing.Visible
+								member.Status = existing.Status
+							} else {
+								member.TrustLevel = "trusted"
+								member.Visible = true
+								member.Status = "published"
+							}
+							if err := skillStore.Publish(member); err != nil {
+								imported.Errors = append(imported.Errors, "publish "+member.Name+": "+err.Error())
+								continue
+							}
+							published = append(published, member.Name)
+						}
+					}
+					if len(imported.Errors) > 0 {
+						suite.Status = "needs_review"
+						suite.Visible = false
+						_ = skillStore.PublishSuite(suite)
+					}
+					result["package_kind"] = "suite"
+					result["capability_id"] = suite.ID
+					result["display_name"] = suite.Name
+					result["description"] = suite.Description
+					result["version"] = suite.Version
+					result["suite"] = suite
+					result["published"] = published
+					if len(imported.Errors) > 0 {
+						result["errors"] = imported.Errors
+					}
+					result["total"] = len(imported.Skills)
+					writeJSON(w, http.StatusOK, result)
+					return
+				}
+			}
 			// Download and register skill from external source.
 			client := coreskill.DefaultHubClient()
 			var entry *corelib.NLSkillEntry
@@ -996,4 +1102,25 @@ func AdminCapabilityMarketImportHandler(settings store.SystemSettingsRepository,
 
 		writeJSON(w, http.StatusOK, result)
 	}
+}
+
+// looksLikeGitHubRepositoryURL distinguishes a human-entered repository URL
+// from the JSON install refs used by the mixed Skill search API. Raw file URLs
+// and serialized candidates continue through the legacy single-Skill importer.
+func looksLikeGitHubRepositoryURL(raw string) bool {
+	u := strings.TrimRight(strings.TrimSpace(raw), "/")
+	if !strings.HasPrefix(strings.ToLower(u), "https://github.com/") && !strings.HasPrefix(strings.ToLower(u), "http://github.com/") {
+		return false
+	}
+	rest := strings.TrimPrefix(strings.TrimPrefix(u, "https://github.com/"), "http://github.com/")
+	parts := strings.Split(rest, "/")
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+		return false
+	}
+	for _, p := range parts[2:] {
+		if strings.EqualFold(p, "blob") || strings.EqualFold(p, "raw") {
+			return false
+		}
+	}
+	return true
 }

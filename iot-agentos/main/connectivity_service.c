@@ -1,5 +1,6 @@
 #include "connectivity_service.h"
 
+#include <limits.h>
 #include <string.h>
 
 #include "freertos/FreeRTOS.h"
@@ -201,6 +202,19 @@ device_status_t connectivity_service_begin_network_request(void) {
     return admitted ? DEVICE_STATUS_OK : DEVICE_STATUS_BUSY;
 }
 
+/* Convert a remaining tick budget back to the millisecond unit required by a
+ * profile callback without allowing a wide TickType_t multiplication to wrap
+ * a 32-bit timeout.  Saturation is conservative: the parent deadline is still
+ * rechecked after the callback returns. */
+static uint32_t connectivity_ticks_to_timeout_ms(TickType_t ticks) {
+    const uint64_t period_ms = (uint64_t)portTICK_PERIOD_MS;
+    if (period_ms == 0u) return ticks ? UINT32_MAX : 0u;
+    const uint64_t max_ticks = UINT32_MAX / period_ms;
+    if ((uint64_t)ticks > max_ticks) return UINT32_MAX;
+    const uint64_t milliseconds = (uint64_t)ticks * period_ms;
+    return milliseconds > UINT32_MAX ? UINT32_MAX : (uint32_t)milliseconds;
+}
+
 /* Cellular HTTP must not reuse the transport-neutral admission unchanged:
  * that would let a Wi-Fi-selected generation enter the profile-private modem
  * seam.  Check the selected fault domain and take the shared drain reference
@@ -306,7 +320,7 @@ device_status_t connectivity_service_prepare_system_sleep(uint32_t timeout_ms) {
         TickType_t cancel_remaining = connectivity_remaining_ticks(started, budget);
         if (cancel_remaining == 0) return DEVICE_STATUS_TIMEOUT;
         uint32_t cancel_timeout_ms =
-            (uint32_t)cancel_remaining * (uint32_t)portTICK_PERIOD_MS;
+            connectivity_ticks_to_timeout_ms(cancel_remaining);
         if (cancel_timeout_ms == 0u) cancel_timeout_ms = 1u;
         device_status_t cancel_status = canceller(cancel_timeout_ms, canceller_context);
         if (cancel_status != DEVICE_STATUS_OK) return cancel_status;
@@ -340,7 +354,7 @@ device_status_t connectivity_service_prepare_system_sleep(uint32_t timeout_ms) {
      * It remains below the value-only Device API and is undone by ABORT. */
     const TickType_t remaining = connectivity_remaining_ticks(started, budget);
     if (remaining == 0) return DEVICE_STATUS_TIMEOUT;
-    uint32_t remaining_ms = (uint32_t)remaining * (uint32_t)portTICK_PERIOD_MS;
+    uint32_t remaining_ms = connectivity_ticks_to_timeout_ms(remaining);
     if (remaining_ms == 0u) remaining_ms = 1u;
     const device_status_t transport_status =
         platform_connectivity_prepare_system_sleep(remaining_ms);
@@ -568,10 +582,11 @@ static esp_err_t connectivity_service_deinit_legacy(uint32_t timeout_ms) {
     s_wifi_attempt_epoch = 0;
     s_wifi_ready_epoch = 0;
     s_wifi_attempt_network_id[0] = '\0';
-    /* A new generation can be opened only by the explicit composition-root
-     * initialize call.  Wi-Fi callbacks and stale start paths cannot lazily
-     * resurrect an EventGroup after rollback has released its physical stack. */
-    s_connectivity_stopping = false;
+    /* Keep `stopping` asserted until the fault-domain transition below has
+     * succeeded.  Transport selection is intentionally allowed before a
+     * normal initialization, so clearing this bit while the EventGroup is
+     * already detached but the domain is still QUIESCING would admit a
+     * selection transaction into a half-torn-down generation. */
     taskEXIT_CRITICAL(&s_connectivity_lock);
     if (events) vEventGroupDelete(events);
     if (!fault_domain_mark_stopped(&s_fault_domain)) {
@@ -582,6 +597,12 @@ static esp_err_t connectivity_service_deinit_legacy(uint32_t timeout_ms) {
         xSemaphoreGive(deinit_lock);
         return ESP_ERR_INVALID_STATE;
     }
+    taskENTER_CRITICAL(&s_connectivity_lock);
+    /* A new generation can be opened only by the explicit composition-root
+     * initialize call.  Wi-Fi callbacks and stale start paths cannot lazily
+     * resurrect an EventGroup after rollback has released its physical stack. */
+    s_connectivity_stopping = false;
+    taskEXIT_CRITICAL(&s_connectivity_lock);
     xSemaphoreGive(deinit_lock);
     return ESP_OK;
 }

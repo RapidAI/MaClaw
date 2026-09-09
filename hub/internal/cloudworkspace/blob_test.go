@@ -75,6 +75,11 @@ func TestBlobStoreRejectsTraversalAndUpperHash(t *testing.T) {
 	if _, err := bs.StagingDir("t1", "u1/../x", "cws_one"); err != ErrInvalidBlobKey {
 		t.Fatalf("user traversal err=%v", err)
 	}
+	for _, segment := range []string{" tenant", "tenant ", "tenant.", "CON", "NUL.txt", "tenant:ads", "tenant\rvalue"} {
+		if _, err := bs.ObjectsDir(segment, "u1", "cws_one"); err != ErrInvalidBlobKey {
+			t.Fatalf("unsafe tenant segment %q err=%v", segment, err)
+		}
+	}
 }
 
 func TestBlobStoreStagingDir(t *testing.T) {
@@ -138,7 +143,7 @@ func TestBlobStoreGetHasRefuseOversizedCiphertext(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Larger than plaintext cap + GCM overhead, so Get must not ReadFile it.
-	if err := os.WriteFile(path, bytes.Repeat([]byte("a"), 64), 0o600); err != nil {
+	if err := os.WriteFile(path, bytes.Repeat([]byte("a"), 128), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := bs.Get(context.Background(), "t1", "u1", "cws_one", sum); err != ErrBlobTooLarge {

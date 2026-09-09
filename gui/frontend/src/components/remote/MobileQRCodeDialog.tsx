@@ -1,6 +1,6 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import { QRCodeSVG } from "qrcode.react";
-import { colors } from "./styles";
+import { colors, radius } from "./styles";
 import type { LLMProvider } from "./LLMConfigPanelShared";
 import { NONE_PROVIDER, HUB_SERVICE_PROVIDER_NAME } from "./LLMConfigPanelShared";
 import { CreateMobileLLMDesktopQRSession, FetchProviderModels } from "../../../wailsjs/go/main/App";
@@ -166,16 +166,16 @@ export function MobileQRCodeDialog({ open, onClose, providers, currentName, lang
              aria-label={t("Mobile QR Code", "移动端二维码")}
              className="llm-qr-dialog-overlay" style={{
             position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
-            background: "rgba(0,0,0,0.4)", display: "flex",
+            background: colors.overlay, display: "flex",
             alignItems: "center", justifyContent: "center", zIndex: 9999,
             outline: "none",
         }} onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
            onKeyDown={(e) => { if (e.key === "Escape") onClose(); }}
         >
             <div className="llm-qr-dialog" style={{
-                background: colors.surface, borderRadius: 12, padding: "24px 28px",
+                background: colors.surface, borderRadius: radius.lg, padding: "24px 28px",
                 maxWidth: 440, width: "92%", maxHeight: "85vh", overflowY: "auto",
-                boxShadow: "0 16px 48px rgba(0,0,0,0.22)",
+                boxShadow: "var(--shadow-xl, 0 12px 40px -8px rgba(30,58,95,0.22))",
             }}>
                 {/* Header */}
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>

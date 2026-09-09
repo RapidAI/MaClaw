@@ -31,6 +31,8 @@ import { useAssistantPreviewResize } from "./useAssistantPreviewResize";
 import { getAssistantInitLabel } from "./aiAssistantStatusLabels";
 import { AssistantConversationBody } from "./AssistantConversationBody";
 import { AssistantTitleBar } from "./AssistantTitleBar";
+import { executionSecondaryChromeStyle, formatTaskCreatedAt } from "./assistantTaskExecutionChrome";
+import { TaskMoreActions } from "./TaskMoreActions";
 import { KnowledgeDialog } from "./KnowledgeDialog";
 import { AssistantInputStack } from "./AssistantInputStack";
 import type { AssistantPermissionMode } from "./AssistantInputComposerTypes";
@@ -57,7 +59,7 @@ import { localAssistantTabTitle } from "./aiAssistantI18n";
 import { getAITabDisplayTitle } from "./AITabItem";
 import type { AITab } from "./AITabTypes";
 import { useAITabManager } from "./useAITabManager";
-import { ProjectDirBar } from "./ProjectDirBar";
+import { SessionWorkingDirChip, workingDirDisplayLabel } from "./SessionWorkingDirChip";
 import { looksLikeRawParticipantId } from "./localAIIdentity";
 import { useAddGroupParticipantToTab } from "./useAddGroupParticipantToTab";
 import { useAddLocalMaclawToTab } from "./useAddLocalMaclawToTab";
@@ -80,7 +82,7 @@ import { useExpertOptimize } from "./useExpertOptimize";
 import { AdoptBaseCodingWorkbenchConflict, AdoptCodingWorkbenchConflict, ApplyCodingWorkbenchConflictPreviewSide, CancelAIAssistantSessionForSession, ClearAIAssistantHistoryForSession, ClearCodingWorkbenchConflictLog, ComputerUseStop, DiscardAllCodingWorkbenchConflicts, DiscardCodingWorkbenchConflict, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, ExportCodingWorkbenchConflictLog, GetCodingWorkbenchCheckpointSidecarStats, GetCodingWorkbenchConflictDiffs, GetCodingWorkbenchConflictFilePreview, GetCodingWorkbenchConflictFileTriple, GetCodingWorkbenchPermission, GetCodingWorkbenchPlanMode, GetCodingWorkbenchRoutePref, GetCodingWorkbenchStatus, GetCodingWorkbenchWorktreeMode, GetComputerUseStatus, GetConversationBranchPoints, GroupDiscussionRenameConsultation, KeepMainCodingWorkbenchConflict, ListCodingWorkbenchCheckpoints, ListCodingWorkbenchConflicts, LoadConfig, OpenCodingWorkbenchConflictFile, PatchConfigFields, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, PruneCodingWorkbenchCheckpoints, RefreshWorkflowV2StateForTab, RenameTask, ResolveCodingWorkbenchConflict, RestoreCodingWorkbenchCheckpointByLabel, RestoreCodingWorkbenchCheckpointEx, RunCodingWorkbenchBackgroundVerify, SaveCodingWorkbenchCheckpoint, SetCodingWorkbenchConflictUIState, SetCodingWorkbenchPermission, SetCodingWorkbenchPlanMode, SetCodingWorkbenchRoutePref, SetCodingWorkbenchSessionPlan, SetCodingWorkbenchWorktreeMode, UpdateCodingWorkbenchPendingPlan, WriteCodingWorkbenchConflictFileContent } from "../../../wailsjs/go/main/App";
 import { suggestSessionPlanFromMessages } from "./codingSessionPlanUtils";
 import { CodingAgentPlanChecklist } from "./CodingAgentPlanChecklist";
-import { buildCodingBannerChrome, codingStepStatusColor, CodingWorkbenchControlPanel, CodingControlSection } from "./CodingWorkbenchControlPanel";
+import { buildCodingBannerChrome, codingStepGlyph, codingStepStatusColor, codingStepStatusLabel, CodingWorkbenchControlPanel, CodingControlSection } from "./CodingWorkbenchControlPanel";
 import { CodingConflictSidePanel } from "./CodingConflictSidePanel";
 import { agentModeFromTaskTags, CLOUD_WORKSPACE_FILES_CHANGED_EVENT, cloudWorkingDirForActiveTab, cloudWorkspaceIdFromPath, cloudWorkspaceRevealMatchesTab, FOCUS_CLOUD_WORKSPACE_TREE_EVENT, isActiveCloudWorkspacePreview, isCloudWorkspacePath, nextTabWorkingDir, parseWailsEventObject, remoteHostFromTaskTags, REVEAL_CLOUD_WORKSPACE_FILES_EVENT, type CloudWorkspaceReveal, type TabWorkingDir } from "./codingTaskMode";
 import { canDispatchCodingIntent, resolveCodingTaskPhase } from "./codingTaskRuntime";
@@ -92,14 +94,13 @@ import { ComputerUseOperatorPanel } from "./ComputerUseOperatorPanel";
 import { ComputerUseQuickBar } from "./ComputerUseQuickBar";
 import { AssistantQuickSettingsBar } from "./AssistantQuickSettingsBar";
 import { ComputerUseReadinessBanner } from "./ComputerUseReadinessBanner";
+import { canShowWorkbenchLanding, useWorkbenchLandingMode } from "./useWorkbenchLandingMode";
 export { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
-
 const LOCAL_HIGH_RISK_APPROVAL_KIND = "local_high_risk_bash";
 const REMOTE_HIGH_RISK_APPROVAL_KIND = "remote_high_risk_bash";
 const REMOTE_DIRECTORY_WRITE_APPROVAL_KIND = "remote_shell_directory_write";
 const REMOTE_PATH_ACCESS_APPROVAL_KIND = "remote_path_access";
 const AssistantPreviewPane = lazy(() => import("./AssistantPreviewPane").then((module) => ({ default: module.AssistantPreviewPane })));
-
 type ConversationBranchPointLike = {
     index?: number;
     entry_id?: string;
@@ -426,7 +427,7 @@ async function loadRestoredProjectConversationHistory(projectPath: string): Prom
 }
 
 export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
-    const { onClose, lang, chatFontSize = 14, themeMode: controlledThemeMode, darkSchemeId, lightSchemeId = DEFAULT_ASSISTANT_LIGHT_SCHEME_ID, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId, petVoiceStartSeq = 0, petFocusInputSeq = 0, pendingVEOpen, onPendingVEOpenHandled, pendingHistoryDiscussionOpen, onPendingHistoryDiscussionOpenHandled, appUpdateAvailable, onOpenAppUpdate, onDismissAppUpdate, availableProviders, currentModel, modelOptions, modelsLoading, onSwitchProvider, onSwitchModel, onOpenModelMenu, onDismissModelMenu, activeExecutionProfile, codingInheritsAssistant, providerSelectionPending, profileSavePending, onOpenLLMSettings, onLanguageChange, onActiveExecutionProfileChange, statusSlot } = props;
+    const { onClose, lang, startOnWorkbenchHome = false, activeAssistantTask: activeAssistantTaskProp = null, chatFontSize = 14, themeMode: controlledThemeMode, darkSchemeId, lightSchemeId = DEFAULT_ASSISTANT_LIGHT_SCHEME_ID, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId, petVoiceStartSeq = 0, petFocusInputSeq = 0, pendingVEOpen, onPendingVEOpenHandled, pendingHistoryDiscussionOpen, onPendingHistoryDiscussionOpenHandled, appUpdateAvailable, onOpenAppReleaseNotes, onOpenAppUpdate, onDismissAppUpdate, availableProviders, currentModel, modelOptions, modelsLoading, onSwitchProvider, onSwitchModel, onOpenModelMenu, onDismissModelMenu, activeExecutionProfile, codingInheritsAssistant, providerSelectionPending, profileSavePending, onOpenLLMSettings, onLanguageChange, onActiveExecutionProfileChange, statusSlot, recentTasks: recentTasksProp = [], onRecentTaskSelect: onRecentTaskSelectProp } = props;
     const state = props.state || props;
     const actions = props.actions || props;
     const panelWindow = props.window || props;
@@ -833,6 +834,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
     }, [lang]);
     const { tabState, activeTab, activateTab, createVETab, createGroupTab, createProjectTab, createExpertTab, closeTab, discardDeletedProjectTabs, discardDeletedExpertTabs, clearTabConversation, saveTabState, getTabState, getTabs, hasProjectTab, upgradeVETabToGroup, renameGroupTab, renameLocalTab, renameProjectTabs, tabLimitError, clearTabLimitError } = useAITabManager();
+    const { requested: workbenchHomeRequested, dismiss: dismissWorkbenchHome } = useWorkbenchLandingMode(startOnWorkbenchHome, activeTab.id, activeTab.type);
     cloudTreeRefreshTabIdRef.current = activeTab.id;
     const projectTabRenameRequestRef = useRef<Map<string, number>>(new Map());
     const [projectTabSessionReadyRevisions, setProjectTabSessionReadyRevisions] = useState<Record<string, number>>({});
@@ -853,6 +855,24 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         paths.sort();
         onChange(paths);
     }, [tabState.tabs, props.onOpenProjectTabsChange]);
+    // Publish stable project identities as well as paths. Cloud workspace tabs
+    // can be rebound to a new local cache directory while keeping the same
+    // workspace id; the task sidebar must still know that the task is open.
+    useEffect(() => {
+        const onChange = props.onOpenProjectTabIdentitiesChange as ((identities: Array<{ projectPath: string; cloudWorkspaceId?: string }>) => void) | undefined;
+        if (typeof onChange !== "function") return;
+        const identities = tabState.tabs
+            .filter(t => t.type === "project" && t.projectPath)
+            .map(t => {
+                const projectPath = normalizeProjectSessionPath(t.projectPath);
+                if (!projectPath) return null;
+                const cloudWorkspaceId = String((t as any).cloudWorkspaceId || "").trim() || cloudWorkspaceIdFromPath(t.projectPath) || undefined;
+                return cloudWorkspaceId ? { projectPath, cloudWorkspaceId } : { projectPath };
+            })
+            .filter((item): item is { projectPath: string; cloudWorkspaceId?: string } => !!item);
+        identities.sort((a, b) => `${a.cloudWorkspaceId || ""}\0${a.projectPath}`.localeCompare(`${b.cloudWorkspaceId || ""}\0${b.projectPath}`));
+        onChange(identities);
+    }, [tabState.tabs, props.onOpenProjectTabIdentitiesChange]);
     // Expert tabs do not have a project path, but each has a durable sidebar
     // task keyed by expert id. Publish those ids so the sidebar cannot remove
     // the task that makes an already-open expert reachable again.
@@ -2386,17 +2406,36 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const isProjectTabActive = activeTab.type === "project";
     const isExpertTabActive = activeTab.type === "expert";
     const [resolvedWorkingDir, setResolvedWorkingDir] = useState<TabWorkingDir | null>(null);
+    // Per-tab cache of resolved working directories (keyed by tab id, "local"
+    // for the main tab) so the execution header can show the directory.
+    const [workingDirByTab, setWorkingDirByTab] = useState<Record<string, string>>({});
     const [cloudReveal, setCloudReveal] = useState<TabWorkingDir | null>(null);
     const pendingCloudRevealRef = useRef<CloudWorkspaceReveal | null>(null);
     const handleWorkingDirResolved = useCallback((path: string, tabId: string) => {
         setResolvedWorkingDir(prev => nextTabWorkingDir(prev, tabId, path));
+        const key = tabId || "local";
+        setWorkingDirByTab(prev => (prev[key] === path ? prev : { ...prev, [key]: path }));
     }, []);
+    // Drop cached directories for tabs that no longer exist.
+    useEffect(() => {
+        const liveIds = new Set(tabState.tabs.map(tab => tab.id));
+        setWorkingDirByTab(prev => {
+            const keys = Object.keys(prev);
+            if (keys.every(key => liveIds.has(key))) return prev;
+            const next: Record<string, string> = {};
+            for (const key of keys) if (liveIds.has(key)) next[key] = prev[key];
+            return next;
+        });
+    }, [tabState.tabs]);
     const resolvedDirForActive = cloudWorkingDirForActiveTab({
         tabId: activeTab.id,
         projectPath: activeTab.projectPath,
         stored: resolvedWorkingDir,
         pending: pendingCloudRevealRef.current,
     });
+    // Path shown in the execution header meta row; the cache is filled by the
+    // session working-directory chip once it resolves the active tab.
+    const activeTabWorkingDirPath = workingDirByTab[activeTab?.id || ""] || "";
     useEffect(() => {
         const onChange = props.onActiveAssistantTaskChange as ((identity: ActiveAssistantTaskIdentity | null) => void) | undefined;
         if (typeof onChange !== "function") return;
@@ -4134,6 +4173,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     useEffect(() => {
         if (!panelActive) projectSearch.close();
     }, [panelActive, projectSearch.close]);
+    useEffect(() => {
+        const openHeaderSearch = (event: Event) => {
+            const query = (event as CustomEvent<{ query?: string }>).detail?.query || "";
+            projectSearch.openWithQuery(query);
+        };
+        window.addEventListener("maclaw:open-task-search", openHeaderSearch);
+        return () => window.removeEventListener("maclaw:open-task-search", openHeaderSearch);
+    }, [projectSearch.openWithQuery]);
     const handleProjectSearchSwitch = useCallback(async (msg: string) => {
         if (isBusy && cancelSession) {
             const ok = await showConfirm(
@@ -4172,6 +4219,29 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         setSaveTaskName(suggested);
         setSaveTaskDialogOpen(true);
     }, [deriveTaskNameFromMessages, isLocalTabActive]);
+    const shareCurrentTask = useCallback(async () => {
+        const taskTitle = String(activeTab?.title || deriveTaskNameFromMessages()).trim();
+        if (!taskTitle) return;
+        const shareDetail = { title: taskTitle, tabId: activeTab?.id };
+        if (typeof navigator !== "undefined" && typeof navigator.share === "function") {
+            try {
+                await navigator.share({ title: taskTitle, text: taskTitle });
+                return;
+            } catch (error) {
+                if ((error as DOMException)?.name === "AbortError") return;
+            }
+        }
+        try {
+            if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+                await navigator.clipboard.writeText(taskTitle);
+            }
+        } catch {
+            // Clipboard access is optional in Wails; keep the host event usable.
+        }
+        if (typeof window !== "undefined") {
+            window.dispatchEvent(new CustomEvent("maclaw:share-task", { detail: shareDetail }));
+        }
+    }, [activeTab?.id, activeTab?.title, deriveTaskNameFromMessages]);
     useEffect(() => {
         const handler = () => { void openSaveTaskDialog(); };
         window.addEventListener('ai-save-current-chat-as-task', handler);
@@ -4453,7 +4523,62 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     // generic assistant guide after their environment connects hides that state.
     // NOTE: welcome view is shown in both inline (embedded panel) and overlay (standalone window)
     // modes — the embedded panel is now the primary usage mode.
-    const showWelcomeView = ready && !onboardingIncomplete && otherMessages.length === 0 && displayProgressMessages.length === 0 && !showThinkingState && !showProcessingState && !activeProjectPreparing && !workflowAwaitingForm && !workflowFormGeneratingDocument && !workflowAwaitingReview && !workflowStartingLabel && queue.length === 0 && !queueEditDraftActive && !queueInteractionStarted && (isLocalTabActive || (isProjectTabActive && !isPureCodingEnvironment));
+    // Keep the workbench home visible while the backend is still connecting.
+    // The composer receives `ready` separately and remains disabled until the
+    // assistant is available, but the shell should match the designed home
+    // layout instead of falling back to an empty execution pane. Restrict the
+    // early render to real initialization states so partial test/embedding
+    // state without an initStatus keeps the legacy execution fallback.
+    const canShowWelcomeBeforeReady = ready || initStatus === "connecting" || initStatus === "loading" || initStatus === "warming";
+    // Keep active workflow and preview surfaces out of the welcome landing.
+    const workflowExecutionActive = workflowState.active || workflowCurrentPhaseRunning || workflowState.splitMode || codePreviewState.active || showAgentView || codingConflictOpen;
+    const landing = canShowWorkbenchLanding({ enabled: startOnWorkbenchHome, requested: workbenchHomeRequested, local: isLocalTabActive, coding: isPureCodingEnvironment, activeTask: !!activeAssistantTaskProp, progress: displayProgressMessages.length, thinking: showThinkingState, processing: showProcessingState, preparing: activeProjectPreparing, form: workflowAwaitingForm, generating: workflowFormGeneratingDocument, review: workflowAwaitingReview, starting: !!workflowStartingLabel, queue: queue.length, editing: queueEditDraftActive, interacted: queueInteractionStarted, workflowActive: workflowExecutionActive });
+    const showWelcomeView = canShowWelcomeBeforeReady && !onboardingIncomplete && !activeAssistantTaskProp && !workflowExecutionActive && (landing || (otherMessages.length === 0 && displayProgressMessages.length === 0 && !showThinkingState && !showProcessingState && !activeProjectPreparing && !workflowAwaitingForm && !workflowFormGeneratingDocument && !workflowAwaitingReview && !workflowStartingLabel && queue.length === 0 && !queueEditDraftActive && !queueInteractionStarted && (isLocalTabActive || (isProjectTabActive && !isPureCodingEnvironment))));
+    const taskCreatedTimestamp = displayMessages.find((message: ChatMessage) => message.role === "user")?.timestamp ?? displayMessages[0]?.timestamp;
+    const taskCreatedLabel = formatTaskCreatedAt(taskCreatedTimestamp, lang);
+    const taskExecutionStatus = useMemo(() => {
+        const activeProjectPath = String(activeTab?.projectPath || "").trim().replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+        const activeTask = Array.isArray(recentTasksProp)
+            ? recentTasksProp.find((task: any) => {
+                const candidate = String(task?.project_path || task?.active_workflow?.project_path || "").trim().replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+                return !!candidate && !!activeProjectPath && candidate === activeProjectPath;
+            })
+            : undefined;
+        const workflowRaw = [
+            activeTask?.status,
+            activeTask?.state,
+            activeTask?.active_workflow?.status,
+            activeTask?.active_workflow?.phase,
+            activeTask?.active_workflow?.pending_review ? "pending_review" : "",
+            workflowCurrentPhaseStatus,
+            workflowAwaitingReview ? "waiting_confirm" : "",
+            workflowState.active ? "active" : "",
+        ].filter(Boolean).join(" ").toLowerCase();
+        const stepRaw = codingStepStatuses.map((step) => String(step.status || "").toLowerCase()).join(" ");
+        const raw = `${workflowRaw} ${stepRaw}`;
+        if (/(fail|error|blocked|verify_failed|失败|错误|阻塞)/.test(raw)) {
+            return { label: localizeText(lang, "Failed", "失败", "失敗"), tone: "failed" as const };
+        }
+        if (/(^|[\\s_])(paused|pause|已暂停|暂停)(?=$|[\\s_])/.test(raw)) {
+            return { label: localizeText(lang, "Paused", "已暂停", "已暫停"), tone: "pending" as const };
+        }
+        if (activeTask?.active_workflow?.pending_review || workflowAwaitingReview || /(waiting[_ ]?confirm|review|approval|pending|待确认|待处理|审核|审批)/.test(raw)) {
+            return { label: localizeText(lang, "Pending", "待处理", "待處理"), tone: "pending" as const };
+        }
+        if (cancelPending) {
+            return { label: localizeText(lang, "Stopping", "正在停止", "正在停止"), tone: "pending" as const };
+        }
+        if (/(cancel|canceled|cancelled|stopped|已取消|已停止)/.test(raw)) {
+            return { label: localizeText(lang, "Cancelled", "已取消", "已取消"), tone: "cancelled" as const };
+        }
+        if (isBusy || activeProjectPreparing || workflowCurrentPhaseRunning || /\b(running|execut|processing|in_progress|started|进行|执行|运行)\b/.test(raw)) {
+            return { label: localizeText(lang, "In progress", "进行中", "進行中"), tone: "running" as const };
+        }
+        if (/(complete|completed|finish|success|succeed|done|passed|已完成|完成|成功)/.test(raw) || activeTask?.has_output === true || (displayMessages.length > 0 && !workflowState.active && codingStepStatuses.length === 0)) {
+            return { label: localizeText(lang, "Completed", "已完成", "已完成"), tone: "completed" as const };
+        }
+        return { label: localizeText(lang, "Pending", "待处理", "待處理"), tone: "pending" as const };
+    }, [activeProjectPreparing, activeTab?.projectPath, cancelPending, codingStepStatuses, displayMessages.length, isBusy, lang, recentTasksProp, workflowAwaitingReview, workflowCurrentPhaseRunning, workflowCurrentPhaseStatus, workflowState.active]);
     const pureCodingEmptyTitle = isRemoteMaintenanceEnvironment
         ? (remoteCodingNeedsReconnect
             ? localizeText(lang, "Remote maintenance needs SSH reconnect", "远程维护需要重新连接 SSH", "遠端維護需要重新連線 SSH")
@@ -4697,6 +4822,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const handleWelcomePromptSend = useCallback(async (text: string, meta?: WelcomePromptSubmitMeta) => {
         const trimmed = (text || "").trim();
         if (!trimmed) return;
+        if (startOnWorkbenchHome) dismissWorkbenchHome();
         setComposeAction(null);
         if (!ready) {
             handleWelcomePromptSelect(trimmed, meta);
@@ -4735,6 +4861,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             sendInFlightRef.current = false;
         }
     }, [
+        dismissWorkbenchHome,
+        startOnWorkbenchHome,
         ready,
         recordingActive,
         inputLocked,
@@ -4856,6 +4984,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         voiceInput,
     });
     const handleSend = useCallback(async () => {
+        if (startOnWorkbenchHome && workbenchHomeRequested) dismissWorkbenchHome();
         // Live mic session: do not send or queue — user must stop via the card.
         if (recordingActive) return;
         // Prevent duplicate submits before the session reports busy, but keep
@@ -5006,7 +5135,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         } finally {
             sendInFlightRef.current = false;
         }
-    }, [activeSessionIsSending, activeSessionIsStreaming, activeSessionKey, activeTab.id, activeTab.projectPath, activeTab.type, addEntry, busySessionKeys, cancelPending, clearComposerDraft, codingTaskReadyForIntents, composeAction, dispatchBtwText, inputValue, pendingAttachments, queueEditDraftActive, recordSubmittedPrompt, recordingActive, refreshQueueInFlight, remoteReconnect.success, selectedFilePaths, sendBtwMessage, sendMessageForTab, sending, sendingSessionKey, streaming, streamingSessionKey, streamingSessionKeys, submitLocked, updateInputValue]);
+    }, [activeSessionIsSending, activeSessionIsStreaming, activeSessionKey, activeTab.id, activeTab.projectPath, activeTab.type, addEntry, busySessionKeys, cancelPending, clearComposerDraft, codingTaskReadyForIntents, composeAction, dismissWorkbenchHome, dispatchBtwText, inputValue, pendingAttachments, queueEditDraftActive, recordSubmittedPrompt, recordingActive, refreshQueueInFlight, remoteReconnect.success, selectedFilePaths, sendBtwMessage, sendMessageForTab, sending, sendingSessionKey, startOnWorkbenchHome, streaming, streamingSessionKey, streamingSessionKeys, submitLocked, updateInputValue, workbenchHomeRequested]);
     useEffect(() => {
         if (queue.length === 0) {
             continueQueueDrainSessionKeysRef.current.delete(activeSessionKey);
@@ -5579,10 +5708,16 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const scopeApprovalIsRemoteScope = scopeApprovalPending?.kind === REMOTE_DIRECTORY_WRITE_APPROVAL_KIND || scopeApprovalPending?.kind === REMOTE_PATH_ACCESS_APPROVAL_KIND;
     const scopeApprovalIsRemoteMaintenance = (scopeApprovalIsRemoteHighRisk || scopeApprovalIsRemoteScope) && scopeApprovalPending?.maintenance === true;
     return (
-        <div data-testid="ai-panel-root" style={containerStyle}>
+        <div data-testid="ai-panel-root" data-ai-view={showWelcomeView ? "welcome" : "execution"} style={containerStyle}>
             <style>{`.branch-hover-container:hover .branch-btn { opacity: 0.7 !important; } .branch-hover-container .branch-btn:hover { opacity: 1 !important; background: ${t.fieldBg} !important; }`}</style>
-            {inline && <AssistantDragHandle />}
-            <AssistantTitleBar clearHistory={clearActiveHistory} clearHistoryDisabled={inputLocked} inline={!!inline} lang={lang} maximized={!!maximized} onClose={onClose} onDismissAppUpdate={onDismissAppUpdate} onHideWindow={onHideWindow} onOpenAppUpdate={onOpenAppUpdate} onOpenKnowledge={() => setKnowledgeDialogOpen(true)} onOpenTutorial={onOpenTutorial} onOptimizeExpert={isExpertTabActive && activeTab.expertId ? handleOptimizeExpert : undefined} onSaveCurrentTask={isLocalTabActive ? openSaveTaskDialog : undefined} onToggleMaximize={onToggleMaximize} onTogglePreviewPanel={handleTogglePreviewPanel} onToggleSkillRecording={handleToggleSkillRecording} optimizeExpertBusy={expertOptimizeBusy} previewPanelOpen={showWorkflowPreview || showCodePreview || showCodingConflictPanel} previewAvailable={isCloudWorkspaceEnvironment} projectSearchOpen={projectSearch.open} refreshNews={refreshNews} showMaximizeToggle={showMaximizeToggle} skillRecording={skillRecordingTabId === activeTab?.id} skillRecordingCount={skillRecordingCount} skillRecordingAnyTab={!!skillRecordingTabId} theme={t} themeMode={themeMode} title={title} trialReflectEnabled={trialReflectEnabled} toggleProjectSearch={projectSearch.toggle} updateAvailable={appUpdateAvailable} workflowActive={workflowState.active} />
+            {inline && showWelcomeView && <AssistantDragHandle />}
+            <div
+                data-testid="ai-execution-secondary-titlebar"
+                aria-label={!showWelcomeView ? localizeText(lang, "Additional task controls", "其他任务控制", "其他任務控制") : undefined}
+                style={!showWelcomeView ? executionSecondaryChromeStyle : undefined}
+            >
+                <AssistantTitleBar active={panelActive} clearHistory={clearActiveHistory} clearHistoryDisabled={inputLocked} inline={!!inline} lang={lang} maximized={!!maximized} onClose={onClose} onDismissAppUpdate={onDismissAppUpdate} onHideWindow={onHideWindow} onOpenAppReleaseNotes={onOpenAppReleaseNotes} onOpenAppUpdate={onOpenAppUpdate} onOpenKnowledge={() => setKnowledgeDialogOpen(true)} onOpenTutorial={onOpenTutorial} onOptimizeExpert={isExpertTabActive && activeTab.expertId && !showWelcomeView ? handleOptimizeExpert : undefined} onSaveCurrentTask={isLocalTabActive && !showWelcomeView ? openSaveTaskDialog : undefined} onToggleMaximize={onToggleMaximize} onTogglePreviewPanel={handleTogglePreviewPanel} onToggleSkillRecording={!showWelcomeView ? handleToggleSkillRecording : undefined} optimizeExpertBusy={expertOptimizeBusy} previewPanelOpen={showWorkflowPreview || showCodePreview || showCodingConflictPanel} previewAvailable={isCloudWorkspaceEnvironment} projectSearchOpen={projectSearch.open} refreshNews={refreshNews} showMaximizeToggle={showMaximizeToggle} skillRecording={skillRecordingTabId === activeTab?.id} skillRecordingCount={skillRecordingCount} skillRecordingAnyTab={!!skillRecordingTabId} theme={t} themeMode={themeMode} title={title} trialReflectEnabled={trialReflectEnabled} toggleProjectSearch={projectSearch.toggle} updateAvailable={appUpdateAvailable} workflowActive={workflowState.active} />
+            </div>
             {/* Column shell: chat|preview row on top, full-bleed bottom chrome under both
                 (so the quick-settings / status strip spans into the code-preview column). */}
             <div data-testid="ai-panel-main" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, minWidth: 0, overflow: "hidden" }}>
@@ -5593,7 +5728,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 <div data-testid="scope-approval-backdrop" style={{ position: "fixed", inset: 0, zIndex: 50001, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(15, 23, 42, 0.35)", padding: 16 }}>
                     <div role="alertdialog" aria-modal="true" aria-labelledby="scope-approval-title" style={{ width: 440, maxWidth: "calc(100vw - 32px)", background: t.titleBarBg, border: `1px solid ${t.titleBarBorder}`, borderRadius: 14, boxShadow: (t.bg.startsWith("#0") || t.bg.startsWith("#1") || t.bg.startsWith("#2")) ? "0 1px 2px rgba(0, 0, 0, 0.30), 0 4px 12px -2px rgba(0, 0, 0, 0.40)" : "0 1px 2px rgba(30, 58, 95, 0.05), 0 4px 12px -2px rgba(30, 58, 95, 0.10)", color: t.text, overflow: "hidden" }} onMouseDown={e => e.stopPropagation()}>
                         <div style={{ padding: "12px 14px", borderBottom: `1px solid ${t.titleBarBorder}` }}>
-                            <h3 id="scope-approval-title" style={{ margin: 0, fontSize: 14, fontWeight: 700, color: "#f59e0b" }}>{scopeApprovalIsHighRisk ? (scopeApprovalIsRemoteHighRisk ? localizeText(lang, "Remote Command Approval", "远程命令确认", "遠程命令確認") : localizeText(lang, "Command Approval", "命令确认", "命令確認")) : scopeApprovalIsRemoteMaintenance ? localizeText(lang, "Remote Maintenance Approval", "远程维护确认", "遠端維護確認") : localizeText(lang, "Scope Approval", "目录越权确认", "目錄越權確認")}</h3>
+                            <h3 id="scope-approval-title" style={{ margin: 0, fontSize: 14, fontWeight: 700, color: "var(--theme-warning, #d97706)" }}>{scopeApprovalIsHighRisk ? (scopeApprovalIsRemoteHighRisk ? localizeText(lang, "Remote Command Approval", "远程命令确认", "遠程命令確認") : localizeText(lang, "Command Approval", "命令确认", "命令確認")) : scopeApprovalIsRemoteMaintenance ? localizeText(lang, "Remote Maintenance Approval", "远程维护确认", "遠端維護確認") : localizeText(lang, "Scope Approval", "目录越权确认", "目錄越權確認")}</h3>
                         </div>
                         <div style={{ padding: "12px 14px", fontSize: 13, lineHeight: 1.6 }}>
                             <div style={{ marginBottom: 8 }}>{scopeApprovalIsHighRisk ? (scopeApprovalIsRemoteMaintenance ? localizeText(lang, "Remote maintenance is requesting a high-risk command:", "远程维护请求执行高风险命令：", "遠端維護請求執行高風險命令：") : scopeApprovalIsRemoteHighRisk ? localizeText(lang, "Remote CodingSubAgent is trying to run a blocked high-risk command:", "远程编码 SubAgent 尝试执行被拦截的高风险命令：", "遠程編碼 SubAgent 嘗試執行被攔截的高風險命令：") : localizeText(lang, "CodingSubAgent is trying to run a blocked high-risk command:", "编码 SubAgent 尝试执行被拦截的高风险命令：", "編碼 SubAgent 嘗試執行被攔截的高風險命令：")) : scopeApprovalIsRemoteMaintenance ? localizeText(lang, "Remote maintenance is requesting access outside the project scope:", "远程维护请求访问项目范围外的路径：", "遠端維護請求存取專案範圍外的路徑：") : localizeText(lang, "CodingSubAgent is trying to access a path outside the project:", "编码 SubAgent 尝试访问项目目录外的路径：", "編碼 SubAgent 嘗試訪問項目目錄外的路徑：")}</div>
@@ -5606,8 +5741,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         </div>
                         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, padding: "10px 14px", borderTop: `1px solid ${t.titleBarBorder}` }}>
                             <button type="button" onClick={() => void handleScopeApprovalResolve("deny")} style={{ padding: "5px 14px", borderRadius: 4, border: `1px solid ${t.fieldBorder}`, background: "transparent", color: t.text, fontSize: 12, cursor: "pointer" }}>{localizeText(lang, "Deny", "拒绝", "拒絕")}</button>
-                            <button type="button" onClick={() => void handleScopeApprovalResolve("full_access")} style={{ padding: "5px 14px", borderRadius: 4, border: `1px solid ${t.fieldBorder}`, background: "transparent", color: "#22c55e", fontSize: 12, cursor: "pointer" }}>{scopeApprovalIsHighRisk ? localizeText(lang, "Allow Later", "以后放行", "以後放行") : localizeText(lang, "Full Access", "完全访问", "完全訪問")}</button>
-                            <button type="button" onClick={() => void handleScopeApprovalResolve(scopeApprovalIsHighRisk ? "allow_once" : "allow_dir")} style={{ padding: "5px 14px", borderRadius: 4, border: "none", background: "#f59e0b", color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>{scopeApprovalIsHighRisk ? localizeText(lang, `Allow Once (${scopeApprovalCountdown}s)`, `本次放行 (${scopeApprovalCountdown}s)`, `本次放行 (${scopeApprovalCountdown}s)`) : localizeText(lang, `Allow Directory (${scopeApprovalCountdown}s)`, `允许该目录 (${scopeApprovalCountdown}s)`, `允許該目錄 (${scopeApprovalCountdown}s)`)}</button>
+                            <button type="button" onClick={() => void handleScopeApprovalResolve("full_access")} style={{ padding: "5px 14px", borderRadius: 4, border: `1px solid ${t.fieldBorder}`, background: "transparent", color: "var(--theme-success, #4f7f6f)", fontSize: 12, cursor: "pointer" }}>{scopeApprovalIsHighRisk ? localizeText(lang, "Allow Later", "以后放行", "以後放行") : localizeText(lang, "Full Access", "完全访问", "完全訪問")}</button>
+                            <button type="button" onClick={() => void handleScopeApprovalResolve(scopeApprovalIsHighRisk ? "allow_once" : "allow_dir")} style={{ padding: "5px 14px", borderRadius: 4, border: "none", background: "var(--theme-warning, #d97706)", color: "var(--theme-on-primary, #fff)", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>{scopeApprovalIsHighRisk ? localizeText(lang, `Allow Once (${scopeApprovalCountdown}s)`, `本次放行 (${scopeApprovalCountdown}s)`, `本次放行 (${scopeApprovalCountdown}s)`) : localizeText(lang, `Allow Directory (${scopeApprovalCountdown}s)`, `允许该目录 (${scopeApprovalCountdown}s)`, `允許該目錄 (${scopeApprovalCountdown}s)`)}</button>
                         </div>
                     </div>
                 </div>
@@ -5631,6 +5766,12 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     </form>
                 </div>
             )}
+            <div
+                data-testid="ai-execution-secondary-tabs"
+                aria-label={!showWelcomeView ? localizeText(lang, "Conversation tabs", "对话标签", "對話標籤") : undefined}
+                hidden={showWelcomeView}
+                style={executionSecondaryChromeStyle}
+            >
             <AITabBar tabs={tabState.tabs} activeTabId={tabState.activeTabId} theme={t} onActivate={activateTab} onClose={closeTabWithProjectCleanup} onInviteToTab={(tab) => {
                 if (tab.type === "ve") {
                     const tabSt = getTabState(tab.id);
@@ -5655,24 +5796,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     if (syncedTitle) renameProjectTabs(projectPath, syncedTitle);
                 }).catch(() => { /* the current tab title stays unchanged on failure */ });
             }} lang={lang} recordingTabId={skillRecordingTabId} />
+            </div>
             {tabLimitError && <div data-testid="ai-tab-limit-error" style={{ padding: "6px 12px", fontSize: 12, color: t.errorText, background: t.errorBg, borderBottom: `1px solid ${t.errorBorder}`, textAlign: "center" }}>{tabLimitError}</div>}
-            {(activeTab?.type === "local" || activeTab?.type === "project" || activeTab?.type === "expert") && (
-                <ProjectDirBar
-					key={activeTab?.type === "local" ? "local" : activeTab.id}
-					// Every assistant tab has an optional private directory. Until it
-                    // is set, project and expert tabs dynamically follow the main tab.
-					tabId={activeTab?.type === "local" ? "" : activeTab.id}
-                    sessionReadyRevision={activeTab?.type === "project" ? projectTabSessionReadyRevisions[activeTab.id] || 0 : 0}
-                    theme={t}
-                    lang={lang}
-                    onWorkingDirChange={bumpLocalWorkspaceRefresh}
-                    onWorkingDirResolved={handleWorkingDirResolved}
-                    onOpenCloudFiles={() => {
-                        reopenCodePreview();
-                        window.dispatchEvent(new CustomEvent(FOCUS_CLOUD_WORKSPACE_TREE_EVENT));
-                    }}
-                />
-            )}
             {showChatUI && (
             <div data-testid="ai-chat-column" style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", position: "relative", overflow: "hidden" }}>
                 {isPureCodingEnvironment && (
@@ -5979,28 +6104,23 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                             )}
                                         </div>
                                         {codingStepStatuses.length > 0 && (
-                                            <div data-testid="coding-step-statuses" style={{ marginTop: 4, padding: "6px 8px", borderRadius: 6, border: `1px solid ${codingBannerChrome.border}`, background: codingBannerChrome.insetBg, fontSize: 11, color: codingBannerChrome.muted, maxHeight: 100, overflow: "auto" }}>
+                                            <div data-testid="coding-step-statuses" className="mc-execution-timeline" style={{ marginTop: 4, padding: "6px 8px", borderRadius: 6, border: `1px solid ${codingBannerChrome.border}`, background: codingBannerChrome.insetBg, fontSize: 11, color: codingBannerChrome.muted, maxHeight: 100, overflow: "auto" }}>
                                                 <div style={{ fontWeight: 600, marginBottom: 4, color: codingBannerChrome.accentStrong }}>
                                                     {localizeText(lang, "Steps", "执行步骤", "執行步驟")}
                                                 </div>
                                                 {codingStepStatuses.map((st) => {
-                                                    // Claude Code / Codex-style checklist marks.
-                                                    const icon = st.status === "passed"
-                                                        ? "☑"
-                                                        : (st.status === "failed" || st.status === "verify_failed")
-                                                            ? "✗"
-                                                            : st.status === "running"
-                                                                ? "…"
-                                                                : st.status === "skipped"
-                                                                    ? "–"
-                                                                    : "☐";
+                                                    const icon = codingStepGlyph(st.status);
                                                     const color = codingStepStatusColor(st.status, !!t.isDark, codingBannerChrome);
+                                                    const statusLabel = codingStepStatusLabel(lang, st.status);
                                                     return (
-                                                        <div key={st.index} data-testid={`coding-step-${st.index}`} data-status={st.status} style={{ display: "flex", gap: 6, alignItems: "baseline", marginBottom: 2, color }}>
+                                                        <div key={st.index} data-testid={`coding-step-${st.index}`} data-status={st.status} className="mc-execution-step" style={{ display: "flex", gap: 6, alignItems: "baseline", marginBottom: 2, color }}>
                                                             <span style={{ width: 14, flexShrink: 0 }}>{icon}</span>
                                                             <span style={{ fontWeight: 600 }}>T{st.index}</span>
-                                                            <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{st.title || st.status}</span>
-                                                            <span style={{ opacity: 0.8, flexShrink: 0 }}>{st.status}</span>
+                                                            <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "normal" }} title={st.summary || undefined}>
+                                                                <span className="mc-execution-step-title">{st.title || statusLabel}</span>
+                                                                {st.summary ? <small className="mc-execution-step-summary">{st.summary}</small> : null}
+                                                            </span>
+                                                            <span style={{ opacity: 0.8, flexShrink: 0 }} aria-label={statusLabel}>{statusLabel}</span>
                                                         </div>
                                                     );
                                                 })}
@@ -6343,7 +6463,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                             padding: "8px 12px",
                             borderRadius: 8,
                             border: `1px solid ${t.titleBarBorder}`,
-                            background: `color-mix(in srgb, #22c55e 12%, ${t.bg || "#fff"})`,
+                            background: `color-mix(in srgb, var(--theme-success, #4f7f6f) 12%, ${t.bg || "var(--theme-surface, #fff)"})`,
                             color: t.text,
                             fontSize: 12,
                             display: "flex",
@@ -6388,6 +6508,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                             active={panelActive}
                             onPromptSelect={handleWelcomePromptSelect}
                             onPromptSend={handleWelcomePromptSend}
+                            recentTasks={Array.isArray(recentTasksProp) ? recentTasksProp : []}
+                            onRecentTaskSelect={(task) => {
+                                if (startOnWorkbenchHome) dismissWorkbenchHome();
+                                onRecentTaskSelectProp?.(task);
+                            }}
                             pinnedNews={pinnedNews}
                             composer={{
                                 browseFile,
@@ -6434,8 +6559,27 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                             }}
                         />
                     </div>
-                ) : (
-                <div ref={outputContainerRef} data-testid="ai-output-container" className="ai-chat-scrollbar" style={{ flex: 1, minHeight: 0, maxHeight: "none", padding: isPureCodingEnvironment ? "40px 10px 8px" : "8px 10px", fontSize: `${chatFontSize}px`, lineHeight: 1.5, overflowY: "auto", overflowX: "hidden", scrollbarGutter: "stable", textAlign: "left", color: t.text, background: t.bg, // Keep prose/reasoning in a CJK-capable UI font. Code blocks opt into monospace locally.
+                ) : (<>
+                <div className="mc-task-execution-header" data-testid="task-execution-header" style={{ minHeight: 72 }}>
+                    <div className="mc-task-execution-heading">
+                        <div className="mc-task-execution-title-row">
+                            {(() => {
+                                const executionTitle = activeTab?.title || localizeText(lang, "Current task", "当前任务", "目前任務");
+                                return <strong className="mc-task-execution-title" data-task-title={executionTitle} role="heading" aria-level={2} aria-label={executionTitle}>{executionTitle}</strong>;
+                            })()}
+                            <span className={`mc-task-execution-status mc-task-execution-status--${taskExecutionStatus.tone}`} data-status={taskExecutionStatus.tone} role="status"><i aria-hidden="true" />{taskExecutionStatus.label}</span>
+                        </div>
+                        <div className="mc-task-execution-meta" title={activeTabWorkingDirPath && !isCloudWorkspacePath(activeTabWorkingDirPath) ? activeTabWorkingDirPath : undefined}>
+                            {localizeText(lang, "Created by you", "由你创建", "由你建立")}{taskCreatedLabel ? ` · ${taskCreatedLabel}` : ""}{activeTabWorkingDirPath ? ` · ${workingDirDisplayLabel(activeTabWorkingDirPath, lang)}` : ""}
+                        </div>
+                    </div>
+                    <div className="mc-task-execution-actions">
+                        <button className="task-pause-btn" data-action="cancel" type="button" onClick={handleCancel} disabled={!inputVisualBusy || cancelPending} aria-busy={cancelPending} aria-label={localizeText(lang, "Pause task", "暂停任务", "暫停任務")} title={localizeText(lang, "Pause task", "暂停任务", "暫停任務")}>{localizeText(lang, "Pause task", "暂停任务", "暫停任務")}</button>
+                        <button className="task-share-btn" data-testid="task-share-btn" type="button" onClick={() => { void shareCurrentTask(); }} aria-label={localizeText(lang, "Share task", "分享任务", "分享任務")}>{localizeText(lang, "Share", "分享", "分享")}</button>
+                        <TaskMoreActions lang={lang} onSave={openSaveTaskDialog} onClear={clearActiveHistory} onCopyTitle={() => { const titleText = String(activeTab?.title || deriveTaskNameFromMessages()).trim(); if (titleText && typeof navigator !== "undefined" && navigator.clipboard?.writeText) return navigator.clipboard.writeText(titleText); }} />
+                    </div>
+                </div>
+                <div ref={outputContainerRef} data-testid="ai-output-container" className="ai-chat-scrollbar mc-task-execution" style={{ flex: 1, minHeight: 0, maxHeight: "none", padding: isPureCodingEnvironment ? "40px 10px 8px" : "8px 10px", fontSize: `${chatFontSize}px`, lineHeight: 1.5, overflowY: "auto", overflowX: "hidden", scrollbarGutter: "stable", textAlign: "left", color: t.text, background: t.bg, // Keep prose/reasoning in a CJK-capable UI font. Code blocks opt into monospace locally.
                     fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Arial, sans-serif", whiteSpace: "normal", overflowWrap: "break-word", wordBreak: "normal" }} onScroll={handleScroll} onWheel={handleUserScrollIntent} onTouchMove={handleUserScrollIntent} onPointerDown={handleUserScrollIntent}>
                     {isExpertTabActive && displayMessages.length === 0 ? (
                         // Expert tab empty state (e.g. after a conversation clear):
@@ -6456,8 +6600,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     <AssistantConversationBody emptyContent={isPureCodingEnvironment ? null : undefined} initLabel={initLabel} lang={lang} messages={displayMessages} onOpenOnboarding={onOpenOnboarding} onboardingIncomplete={onboardingIncomplete} pinnedNews={pinnedNews} processingText={activeProcessingText} ready={ready} renderedOtherMessages={renderedOtherMessages} renderedProgressMessages={renderedProgressMessages} showProcessingState={showProcessingState && !isPureCodingEnvironment} showThinkingState={showThinkingState && !isPureCodingEnvironment} busyAccessory={codingWorkingTrail} theme={t} thinkingText={thinkingText} />
                     </CodingAgentPreviewFocusContext.Provider>
                     <div ref={outputEndRef} />
-                </div>
-                )}
+                </div></>)}
                 {activeProjectPreparing && <div data-testid="project-tab-restore-progress" style={{ flexShrink: 0, padding: "7px 10px 8px", borderTop: `1px solid ${t.inputBarBorder}`, background: t.inputBarBg, color: t.textMuted, fontSize: 12 }}>
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 6 }}>
                         <span>{activeProjectPrepareMode === "new-agent"
@@ -6521,7 +6664,27 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 )}
                 {!showWelcomeView && <ComputerUseReadinessBanner lang={lang} theme={t} />}
                 {!showWelcomeView && <ComputerUseQuickBar lang={lang} theme={t} themeMode={themeMode} />}
-                {!showWelcomeView && <AssistantInputStack active={panelActive} browseFile={browseFile} canSend={canSend} cancelPending={cancelPending} cancelSession={cancelSession} clearSelectedFile={clearSelectedFile} composeAction={composeAction} editingEntryId={editingEntryId} exitHistoryBrowsing={exitHistoryBrowsing} finishVoicePointer={finishVoicePointer} handleCancel={handleCancel} handleCancelEdit={handleCancelEdit} handleClearInput={handleClearInput} handleDragOver={handleDragOver} handleDrop={handleDrop} handleEditEntry={handleEditEntry} handlePaste={handlePaste} handleSaveEdit={handleSaveEdit} handleFireEntry={handleFireEntry} handleSend={handleSend} isEntryInFlight={isQueueEntryInFlight} handleVoiceClick={handleVoiceClick} handleVoicePointerDown={handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} inputAreaHeight={inputAreaHeight} inputLocked={inputLocked} hardLockInput={recordingActive} inputRef={inputRef} inputValue={inputValue} inline={false} flushBottom isBusy={inputVisualBusy} isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary} lang={lang} onComposeActionChange={handleComposeActionChange} onFireSlashCommand={handleFireSlashCommand} onInsertTemplate={handleInsertTemplate} onPlusMenuAction={handlePlusMenuAction} onPermissionModeChange={handlePermissionModeChange} pendingAttachments={pendingAttachments} permissionMode={permissionMode} showWorkspacePermissionOption={isPureCodingEnvironment} placeholderText={placeholderText} queue={queue} ready={ready} recallHistory={recallHistory} rememberHistoryEdit={rememberHistoryEdit} removeEntry={handleDeleteEntry} removeSelectedFile={removeSelectedFile} reorderEntry={handleReorderEntry} resizeInput={resizeInput} selectedFilePaths={selectedFilePaths} setPendingAttachments={setPendingAttachments} showBusySpinner={showBusySpinner} startInputResize={startInputResize} submittedPrompts={submittedPrompts} theme={t} themeMode={themeMode} updateInputValue={updateInputValue} voiceInput={voiceInput} />}
+                {!showWelcomeView && (activeTab?.type === "local" || activeTab?.type === "project" || activeTab?.type === "expert") && (
+                    // Session context row above the composer: the working directory
+                    // chip is the primary entry for viewing/changing where this
+                    // session operates.
+                    <SessionWorkingDirChip
+                        key={activeTab?.type === "local" ? "local" : activeTab.id}
+                        // Every assistant tab has an optional private directory. Until it
+                        // is set, project and expert tabs dynamically follow the main tab.
+                        tabId={activeTab?.type === "local" ? "" : activeTab.id}
+                        sessionReadyRevision={activeTab?.type === "project" ? projectTabSessionReadyRevisions[activeTab.id] || 0 : 0}
+                        theme={t}
+                        lang={lang}
+                        onWorkingDirChange={bumpLocalWorkspaceRefresh}
+                        onWorkingDirResolved={handleWorkingDirResolved}
+                        onOpenCloudFiles={() => {
+                            reopenCodePreview();
+                            window.dispatchEvent(new CustomEvent(FOCUS_CLOUD_WORKSPACE_TREE_EVENT));
+                        }}
+                    />
+                )}
+                {!showWelcomeView && <AssistantInputStack active={panelActive} browseFile={browseFile} canSend={canSend} cancelPending={cancelPending} cancelSession={cancelSession} clearSelectedFile={clearSelectedFile} composeAction={composeAction} editingEntryId={editingEntryId} exitHistoryBrowsing={exitHistoryBrowsing} finishVoicePointer={finishVoicePointer} handleCancel={handleCancel} handleCancelEdit={handleCancelEdit} handleClearInput={handleClearInput} handleDragOver={handleDragOver} handleDrop={handleDrop} handleEditEntry={handleEditEntry} handlePaste={handlePaste} handleSaveEdit={handleSaveEdit} handleFireEntry={handleFireEntry} handleSend={handleSend} isEntryInFlight={isQueueEntryInFlight} handleVoiceClick={handleVoiceClick} handleVoicePointerDown={handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} inputAreaHeight={inputAreaHeight} inputLocked={inputLocked} hardLockInput={recordingActive} inputRef={inputRef} inputValue={inputValue} inline={false} flushBottom isBusy={inputVisualBusy} isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary} lang={lang} onComposeActionChange={handleComposeActionChange} onFireSlashCommand={handleFireSlashCommand} onInsertTemplate={handleInsertTemplate} onPlusMenuAction={handlePlusMenuAction} onPermissionModeChange={handlePermissionModeChange} pendingAttachments={pendingAttachments} permissionMode={permissionMode} showWorkspacePermissionOption={isPureCodingEnvironment} placeholderText={showWelcomeView || showThinkingState || showProcessingState || !ready ? placeholderText : localizeText(lang, "Continue this task", "输入消息，继续安排任务…", "輸入訊息，繼續安排任務…")} queue={queue} ready={ready} recallHistory={recallHistory} rememberHistoryEdit={rememberHistoryEdit} removeEntry={handleDeleteEntry} removeSelectedFile={removeSelectedFile} reorderEntry={handleReorderEntry} resizeInput={resizeInput} selectedFilePaths={selectedFilePaths} setPendingAttachments={setPendingAttachments} showBusySpinner={showBusySpinner} startInputResize={startInputResize} submittedPrompts={submittedPrompts} sendButtonStyle={{ minWidth: 40, width: 40, height: 40, borderRadius: 12, flexShrink: 0, background: t.sendBtnBg || t.btnColor, borderColor: t.sendBtnBorder || t.sendBtnBg || t.btnColor, color: t.sendBtnColor || "#fff", opacity: canSend ? 1 : 0.72, boxShadow: `0 3px 8px color-mix(in srgb, ${t.btnColor} 22%, transparent)` }} theme={t} themeMode={themeMode} updateInputValue={updateInputValue} voiceInput={voiceInput} />}
             </div>
             )}
             <AssistantActiveTabContent activeTab={activeTab} tabs={tabState.tabs} isLocalTabActive={isLocalTabActive} isProjectTabActive={isProjectTabActive} lang={lang} theme={t} getTabState={getTabState} saveTabState={saveTabState} onAddParticipantToTab={addParticipantToTab} />
@@ -6540,7 +6703,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             {panelActive && participantInviteTargetTab && <TabParticipantInviteDialog key={participantInviteTargetTab.id} tab={participantInviteTargetTab} lang={lang} theme={t} onClose={() => setParticipantInviteTargetTabId(null)} onAddParticipantToTab={addParticipantToTab} />}
             {panelActive && <ExpertOptimizeEditorDialog lang={lang} draft={expertOptimizeDraft} onClose={clearExpertOptimizeDraft} />}
             </div>
-            {(showCodingConflictPanel || showWorkflowPreview || showCodePreview || showAgentView) ? (
+            {(!showWelcomeView && (showCodingConflictPanel || showWorkflowPreview || showCodePreview || showAgentView)) ? (
                 <Suspense fallback={null}>
                     <AssistantPreviewPane
                         agentView={agentView}

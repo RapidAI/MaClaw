@@ -553,6 +553,31 @@ func UpdateLLMServicesAdminHandler(system store.SystemSettingsRepository, securi
 	}
 }
 
+// ResetLLMServiceNewUserLimitUsageHandler restores the configured five-hour
+// and daily allowance for every user's new-user limit-card grant.
+func ResetLLMServiceNewUserLimitUsageHandler(system store.SystemSettingsRepository, audits ...store.AdminAuditRepository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		system := scopedSystemSettingsForRequest(r, system)
+		reg, err := llmservice.LoadRegistry(r.Context(), system)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_LOAD_FAILED", err.Error())
+			return
+		}
+		resetCount := llmservice.ResetNewUserLimitCardUsage(reg, time.Now().UTC())
+		if resetCount > 0 {
+			if err := llmservice.SaveRegistry(r.Context(), system, reg); err != nil {
+				writeError(w, http.StatusInternalServerError, "LLM_SERVICE_RESET_SAVE_FAILED", err.Error())
+				return
+			}
+			invalidateLLMRuntimeCaches(system)
+		}
+		if resetCount > 0 {
+			writeLLMServiceCardAdminAudit(r.Context(), firstAdminAuditRepo(audits...), RequestTenantID(r), "llm.new_user_limit_card.reset", map[string]any{"reset_grants": resetCount})
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"reset_grants": resetCount})
+	}
+}
+
 func writeLLMServiceBindingAudit(ctx context.Context, audit store.AdminAuditRepository, adminUserID string, oldReg, nextReg *llmservice.Registry) {
 	oldSnapshot := buildLLMServiceBindingAuditSnapshot(oldReg)
 	nextSnapshot := buildLLMServiceBindingAuditSnapshot(nextReg)
@@ -1063,7 +1088,7 @@ func GetLLMServiceStatusHandler(identity *auth.IdentityService, system store.Sys
 		// Use cached registry reads to avoid hitting the DB on every poll.
 		// The 3s TTL cache is sufficient since registry changes are rare
 		// (admin edits, redeem) while status polls are frequent (every few seconds per client).
-		serviceReg, err := loadCachedLLMServiceRegistry(ctx, system)
+		serviceReg, err := loadCachedLLMServiceRegistryForViewer(ctx, system, principal.UserID, principal.Email)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
 			return
@@ -1095,7 +1120,7 @@ func GetLLMServiceAccountHandler(identity *auth.IdentityService, system store.Sy
 		}
 		system := scopedSystemSettingsForTenant(principal.TenantID, system)
 		ctx := security.WithTenant(r.Context(), principal.TenantID)
-		serviceReg, err := loadCachedLLMServiceRegistry(ctx, system)
+		serviceReg, err := loadCachedLLMServiceRegistryForViewer(ctx, system, principal.UserID, principal.Email)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
 			return
@@ -1376,8 +1401,13 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 				TotalTokens:       logUsage.TotalTokens,
 				CachedInputTokens: logUsage.CachedInputTokens,
 				CacheWriteTokens:  logUsage.CacheWriteTokens,
+				CacheUsageSource:  logUsage.CacheUsageSource,
+				UsageAnomaly:      logUsage.UsageAnomaly,
+				PricingSource:     logUsage.PricingSource,
 				InputCostRMB:      logUsage.InputCostRMB,
 				OutputCostRMB:     logUsage.OutputCostRMB,
+				CacheReadCostRMB:  logUsage.CacheReadCostRMB,
+				CacheWriteCostRMB: logUsage.CacheWriteCostRMB,
 				TotalCostRMB:      logUsage.TotalCostRMB,
 				CreditMultiplier:  logCreditMultiplier,
 				Credits:           logCredits,
@@ -1433,11 +1463,11 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 			writeLoggedError(http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
 			return
 		}
-		billableModels, deniedByModel, firstDenial := filterAuthorizedModelsByBillingEligibility(ctx, serviceReg, principal.UserID, principal.Email, body, models)
+		billableModels, deniedByModel, firstDenial := filterAuthorizedModelsByBillingEligibility(ctx, serviceReg, providerReg, principal.UserID, principal.Email, body, models)
 		if len(models) == 0 || (len(billableModels) == 0 && firstDenial.Code != "") {
 			if freshProviderReg, freshModels, freshServiceReg, refreshErr := reloadAuthorizedModelsAfterEntitlementDenial(ctx, r, system, securitySvc, principal.UserID, principal.Email); refreshErr == nil {
 				providerReg, models, serviceReg = freshProviderReg, freshModels, freshServiceReg
-				billableModels, deniedByModel, firstDenial = filterAuthorizedModelsByBillingEligibility(ctx, serviceReg, principal.UserID, principal.Email, body, models)
+				billableModels, deniedByModel, firstDenial = filterAuthorizedModelsByBillingEligibility(ctx, serviceReg, providerReg, principal.UserID, principal.Email, body, models)
 			}
 		}
 		authorizedModel, requestedModel, workloadDecision, err := resolveAuthorizedModel(r, body, billableModels, serviceReg)
@@ -1543,6 +1573,12 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 				logCreditMultiplier = resolveBillableCreditMultiplier(ctx, authorizedModel, usedProviderID, providerReg)
 				logCredits = 0
 				logBillingRecorded = true
+				if err == nil && statusCode < 400 {
+					// A local full-response cache hit is free and has no real
+					// upstream token usage, but it still belongs in Usage Stats
+					// with a local_cache marker (design §2.2).
+					recordLocalCacheHitLLMUsage(ctx, system, securitySvc, principal.UserID, principal.Email, usedProviderID, chargedServiceGroupIDs)
+				}
 			}
 		}
 		if err != nil {
@@ -1706,8 +1742,13 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 				TotalTokens:       logUsage.TotalTokens,
 				CachedInputTokens: logUsage.CachedInputTokens,
 				CacheWriteTokens:  logUsage.CacheWriteTokens,
+				CacheUsageSource:  logUsage.CacheUsageSource,
+				UsageAnomaly:      logUsage.UsageAnomaly,
+				PricingSource:     logUsage.PricingSource,
 				InputCostRMB:      logUsage.InputCostRMB,
 				OutputCostRMB:     logUsage.OutputCostRMB,
+				CacheReadCostRMB:  logUsage.CacheReadCostRMB,
+				CacheWriteCostRMB: logUsage.CacheWriteCostRMB,
 				TotalCostRMB:      logUsage.TotalCostRMB,
 				CreditMultiplier:  logCreditMultiplier,
 				Credits:           logCredits,
@@ -1757,11 +1798,11 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 			writeLoggedError(http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
 			return
 		}
-		billableModels, deniedByModel, firstDenial := filterAuthorizedModelsByBillingEligibility(ctx, serviceReg, principal.UserID, principal.Email, chatBody, models)
+		billableModels, deniedByModel, firstDenial := filterAuthorizedModelsByBillingEligibility(ctx, serviceReg, providerReg, principal.UserID, principal.Email, chatBody, models)
 		if len(models) == 0 || (len(billableModels) == 0 && firstDenial.Code != "") {
 			if freshProviderReg, freshModels, freshServiceReg, refreshErr := reloadAuthorizedModelsAfterEntitlementDenial(ctx, r, system, securitySvc, principal.UserID, principal.Email); refreshErr == nil {
 				providerReg, models, serviceReg = freshProviderReg, freshModels, freshServiceReg
-				billableModels, deniedByModel, firstDenial = filterAuthorizedModelsByBillingEligibility(ctx, serviceReg, principal.UserID, principal.Email, chatBody, models)
+				billableModels, deniedByModel, firstDenial = filterAuthorizedModelsByBillingEligibility(ctx, serviceReg, providerReg, principal.UserID, principal.Email, chatBody, models)
 			}
 		}
 		authorizedModel, requestedModel, workloadDecision, err := resolveAuthorizedModel(r, chatBody, billableModels, serviceReg)
@@ -1874,6 +1915,12 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 				logCreditMultiplier = resolveBillableCreditMultiplier(ctx, authorizedModel, usedProviderID, providerReg)
 				logCredits = 0
 				logBillingRecorded = true
+				if err == nil && statusCode < 400 {
+					// A local full-response cache hit is free and has no real
+					// upstream token usage, but it still belongs in Usage Stats
+					// with a local_cache marker (design §2.2).
+					recordLocalCacheHitLLMUsage(ctx, system, securitySvc, principal.UserID, principal.Email, usedProviderID, chargedServiceGroupIDs)
+				}
 			}
 		}
 		if err != nil {
@@ -2609,7 +2656,7 @@ func writeRawResponsesStreamResponse(w http.ResponseWriter, resp *http.Response,
 				return err
 			}
 			if strings.HasPrefix(trimmed, "data:") {
-				if chunkUsage := responsesStreamUsageFromLine(line); chunkUsage.TotalTokens > 0 || chunkUsage.InputTokens > 0 || chunkUsage.OutputTokens > 0 {
+				if chunkUsage := responsesStreamUsageFromLine(line); chunkUsage.TotalTokens > 0 || chunkUsage.InputTokens > 0 || chunkUsage.OutputTokens > 0 || chunkUsage.CachedInputTokens > 0 || chunkUsage.CacheWriteTokens > 0 {
 					usage = chunkUsage
 				}
 			}
@@ -2688,7 +2735,7 @@ func writeOpenAIChatAsResponsesStreamResponse(w http.ResponseWriter, resp *http.
 		if strings.TrimSpace(payload) == "[DONE]" {
 			return false, nil
 		}
-		if chunkUsage := corelib.OpenAIStreamUsageFromData([]byte(payload)); chunkUsage.TotalTokens > 0 || chunkUsage.InputTokens > 0 || chunkUsage.OutputTokens > 0 {
+		if chunkUsage := corelib.OpenAIStreamUsageFromData([]byte(payload)); chunkUsage.TotalTokens > 0 || chunkUsage.InputTokens > 0 || chunkUsage.OutputTokens > 0 || chunkUsage.CachedInputTokens > 0 || chunkUsage.CacheWriteTokens > 0 {
 			usage = chunkUsage
 		}
 		var chunk map[string]any
@@ -3497,7 +3544,7 @@ func rewriteOpenAIStreamLine(line []byte, externalModel string, usage *corelib.T
 	}
 	payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
 	chunkUsage := corelib.OpenAIStreamUsageFromData([]byte(payload))
-	if usage != nil && (chunkUsage.TotalTokens > 0 || chunkUsage.InputTokens > 0 || chunkUsage.OutputTokens > 0) {
+	if usage != nil && (chunkUsage.TotalTokens > 0 || chunkUsage.InputTokens > 0 || chunkUsage.OutputTokens > 0 || chunkUsage.CachedInputTokens > 0 || chunkUsage.CacheWriteTokens > 0) {
 		*usage = chunkUsage
 	}
 	rewritten := corelib.RewriteOpenAIStreamDataModel([]byte(payload), externalModel)
@@ -4333,13 +4380,50 @@ func shouldSkipFullAuthorizedProvider(routes []llmpool.BalancedRoute, index int,
 func applyProviderUsageCost(usage corelib.TokenUsageStat, provider *im.LLMProvider) corelib.TokenUsageStat {
 	inputPrice := corelib.DefaultLLMInputPricePerMTokensRMB
 	outputPrice := corelib.DefaultLLMOutputPricePerMTokensRMB
+	cacheReadPrice := inputPrice / 10
+	cacheWritePrice := inputPrice
 	if provider != nil {
 		inputPrice = corelib.NormalizeLLMTokenPricePerMTokensRMB(provider.InputPricePerMTokensRMB, inputPrice)
 		outputPrice = corelib.NormalizeLLMTokenPricePerMTokensRMB(provider.OutputPricePerMTokensRMB, outputPrice)
+		cacheReadPrice = inputPrice / 10
+		cacheWritePrice = inputPrice
+		// Local providers may carry the same per-10K directional pricing as
+		// HubCenter. Use it when present; otherwise retain the legacy provider
+		// fields and their cache defaults (read=input/10, write=input). An
+		// explicitly configured zero cache price is honored as a free direction,
+		// so presence must be captured before defaults fill the nil fields.
+		cacheReadSet := provider.TokenPricing.CacheReadRMBPer10K != nil
+		cacheWriteSet := provider.TokenPricing.CacheWriteRMBPer10K != nil
+		pricing := provider.TokenPricing.WithCachePricingDefaults()
+		cacheReadRMB := llmpool.OptionalTokenPriceValue(pricing.CacheReadRMBPer10K)
+		cacheWriteRMB := llmpool.OptionalTokenPriceValue(pricing.CacheWriteRMBPer10K)
+		if pricing.Version != "" || pricing.InputRMBPer10K > 0 || pricing.OutputRMBPer10K > 0 || cacheReadSet || cacheWriteSet {
+			// A partial TokenPricing block may only provide cache prices. Do not
+			// let absent zero-valued base RMB fields erase the provider's legacy
+			// input/output prices.
+			if pricing.InputRMBPer10K > 0 {
+				inputPrice = corelib.NormalizeLLMTokenPricePerMTokensRMB(pricing.InputRMBPer10K*100, inputPrice)
+			}
+			if pricing.OutputRMBPer10K > 0 {
+				outputPrice = corelib.NormalizeLLMTokenPricePerMTokensRMB(pricing.OutputRMBPer10K*100, outputPrice)
+			}
+			// Unset cache directions keep the legacy defaults derived from the
+			// effective input price; only an explicitly configured value
+			// (including zero, a deliberate free direction) replaces them.
+			if cacheReadSet || cacheReadRMB > 0 {
+				cacheReadPrice = corelib.NormalizeLLMTokenPricePerMTokensRMB(cacheReadRMB*100, inputPrice/10)
+			}
+			if cacheWriteSet || cacheWriteRMB > 0 {
+				cacheWritePrice = corelib.NormalizeLLMTokenPricePerMTokensRMB(cacheWriteRMB*100, inputPrice)
+			}
+		}
 	}
 	usage.InputPricePerMTokensRMB = inputPrice
 	usage.OutputPricePerMTokensRMB = outputPrice
-	usage.InputCostRMB, usage.OutputCostRMB, usage.TotalCostRMB = corelib.CalculateLLMCostRMB(usage.InputTokens, usage.OutputTokens, inputPrice, outputPrice)
+	usage.CacheReadPricePerMTokensRMB = cacheReadPrice
+	usage.CacheWritePricePerMTokensRMB = cacheWritePrice
+	usage.InputCostRMB, usage.OutputCostRMB, usage.CacheReadCostRMB, usage.CacheWriteCostRMB = calculateLLMCostRMBWithCache(usage.InputTokens, usage.OutputTokens, usage.CachedInputTokens, usage.CacheWriteTokens, inputPrice, outputPrice, cacheReadPrice, cacheWritePrice)
+	usage.TotalCostRMB = usage.InputCostRMB + usage.CacheReadCostRMB + usage.CacheWriteCostRMB + usage.OutputCostRMB
 	return usage
 }
 
@@ -4581,9 +4665,9 @@ func validateLLMServiceGroupReferences(reg *llmservice.Registry) []string {
 	return issues
 }
 
-// validateNewUserLimitCardServiceGroups keeps the welcome limit card as an
-// entitlement overlay on binding-active groups. Recharge groups are already
-// grant-gated and must retain their own card/top-up behavior.
+// validateNewUserLimitCardServiceGroups ensures configured welcome-card
+// targets still exist. Welcome cards are explicit per-user entitlements and
+// may target both free and grant-required/recharge service groups.
 func validateNewUserLimitCardServiceGroups(reg *llmservice.Registry) []string {
 	if reg == nil {
 		return nil
@@ -4595,9 +4679,6 @@ func validateNewUserLimitCardServiceGroups(reg *llmservice.Registry) []string {
 			// The general reference validator reports missing groups with its
 			// established error code.
 			continue
-		}
-		if llmservice.NormalizeAccessPolicy(group.AccessPolicy) != llmservice.AccessPolicyFree {
-			issues = append(issues, fmt.Sprintf("new-user limit card only supports binding-active service groups: %s", strings.TrimSpace(group.ID)))
 		}
 	}
 	return issues
@@ -4724,12 +4805,12 @@ type llmBillingDenial struct {
 	RetryAfterAt      string
 }
 
-func filterAuthorizedModelsByBillingEligibility(ctx context.Context, reg *llmservice.Registry, userID string, email string, body map[string]any, models []llmservice.AuthorizedModel) ([]llmservice.AuthorizedModel, map[string]llmBillingDenial, llmBillingDenial) {
+func filterAuthorizedModelsByBillingEligibility(ctx context.Context, reg *llmservice.Registry, providerReg *im.LLMProviderRegistry, userID string, email string, body map[string]any, models []llmservice.AuthorizedModel) ([]llmservice.AuthorizedModel, map[string]llmBillingDenial, llmBillingDenial) {
 	filtered := make([]llmservice.AuthorizedModel, 0, len(models))
 	denied := map[string]llmBillingDenial{}
 	firstDenial := llmBillingDenial{}
 	for i := range models {
-		eligibleModel, denial, err := filterAuthorizedModelByBillingEligibility(ctx, reg, userID, email, body, &models[i])
+		eligibleModel, denial, err := filterAuthorizedModelByBillingEligibility(ctx, reg, providerReg, userID, email, body, &models[i])
 		if err != nil {
 			if denial.Message == "" {
 				denial.Message = err.Error()
@@ -4746,7 +4827,7 @@ func filterAuthorizedModelsByBillingEligibility(ctx context.Context, reg *llmser
 	return filtered, denied, firstDenial
 }
 
-func filterAuthorizedModelByBillingEligibility(ctx context.Context, reg *llmservice.Registry, userID string, email string, body map[string]any, model *llmservice.AuthorizedModel) (*llmservice.AuthorizedModel, llmBillingDenial, error) {
+func filterAuthorizedModelByBillingEligibility(ctx context.Context, reg *llmservice.Registry, providerReg *im.LLMProviderRegistry, userID string, email string, body map[string]any, model *llmservice.AuthorizedModel) (*llmservice.AuthorizedModel, llmBillingDenial, error) {
 	if model == nil || reg == nil {
 		return model, llmBillingDenial{}, nil
 	}
@@ -4758,7 +4839,7 @@ func filterAuthorizedModelByBillingEligibility(ctx context.Context, reg *llmserv
 	firstDenial := llmBillingDenial{}
 	now := time.Now().UTC()
 	for _, providerID := range orderedProviders {
-		denial, err := prepareLLMPricingQuote(ctx, reg, userID, email, model, providerID, body, now)
+		denial, err := prepareLLMPricingQuote(ctx, reg, providerReg, userID, email, model, providerID, body, now)
 		if err == nil {
 			eligibleProviderIDs = append(eligibleProviderIDs, providerID)
 			continue
@@ -5354,58 +5435,7 @@ func toCoreLLMEndpointProvider(p *im.LLMProvider) corelib.LLMEndpointProvider {
 }
 
 func parseUsageStats(respBody []byte) corelib.TokenUsageStat {
-	var payload map[string]any
-	if err := json.Unmarshal(respBody, &payload); err != nil {
-		return corelib.TokenUsageStat{}
-	}
-	usage, _ := payload["usage"].(map[string]any)
-	if usage == nil {
-		return corelib.TokenUsageStat{}
-	}
-	stat := corelib.TokenUsageStat{
-		InputTokens:       int64(numberToInt(firstNonNil(usage["prompt_tokens"], usage["input_tokens"]))),
-		OutputTokens:      int64(numberToInt(firstNonNil(usage["completion_tokens"], usage["output_tokens"]))),
-		TotalTokens:       int64(numberToInt(usage["total_tokens"])),
-		CachedInputTokens: int64(numberToInt(cachedUsageValue(usage))),
-		CacheWriteTokens:  int64(numberToInt(cacheWriteUsageValue(usage))),
-		Requests:          1,
-	}
-	if stat.TotalTokens <= 0 {
-		stat.TotalTokens = stat.InputTokens + stat.OutputTokens
-	}
-	if stat.CachedInputTokens > 0 || stat.CacheWriteTokens > 0 {
-		stat.CachedRequests = 1
-	}
-	return stat
-}
-
-func cachedUsageValue(usage map[string]any) any {
-	return firstNonNil(
-		lookupMapValue(usage, "prompt_tokens_details", "cached_tokens"),
-		lookupMapValue(usage, "input_tokens_details", "cached_tokens"),
-		usage["cache_read_input_tokens"],
-		usage["cached_input_tokens"],
-	)
-}
-
-func cacheWriteUsageValue(usage map[string]any) any {
-	return firstNonNil(
-		usage["cache_creation_input_tokens"],
-		usage["cache_write_input_tokens"],
-		lookupMapValue(usage, "prompt_tokens_details", "cache_write_tokens"),
-		lookupMapValue(usage, "input_tokens_details", "cache_write_tokens"),
-	)
-}
-
-func lookupMapValue(root map[string]any, key string, nested string) any {
-	if root == nil {
-		return nil
-	}
-	child, _ := root[key].(map[string]any)
-	if child == nil {
-		return nil
-	}
-	return child[nested]
+	return corelib.ParseLLMResponseUsage(respBody)
 }
 
 func firstNonNil(values ...any) any {
@@ -5420,10 +5450,19 @@ func firstNonNil(values ...any) any {
 func numberToInt(v any) int {
 	switch n := v.(type) {
 	case float64:
+		if n < 0 || n >= float64(math.MaxInt) || math.IsNaN(n) || math.IsInf(n, 0) || math.Trunc(n) != n {
+			return 0
+		}
 		return int(n)
 	case int:
+		if n < 0 {
+			return 0
+		}
 		return n
 	case int64:
+		if n < 0 {
+			return 0
+		}
 		return int(n)
 	default:
 		return 0

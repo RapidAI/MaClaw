@@ -15,7 +15,7 @@ func TestWantsAmbientRetrievalAllLabels(t *testing.T) {
 		LabelSearch: false, LabelLiveData: false, LabelLiveDataVisual: false, LabelWebFetch: false,
 		LabelCoding: true, LabelBugFix: true, LabelMaintenance: true,
 		LabelDocumentRead: true, LabelFileRead: true, LabelAuditRead: true, LabelGitInspect: true,
-		LabelFileWrite: true, LabelShellCommand: true, LabelGitMutate: true, LabelOffice: true, LabelBusinessData: true,
+		LabelFileWrite: true, LabelShellCommand: true, LabelGitMutate: true, LabelOffice: true, LabelBusinessData: true, LabelDatabase: true,
 		LabelKnowledgeRead: true, LabelMemoryManage: true,
 		LabelSSH: true, LabelBrowser: true, LabelTaskTrack: true, LabelGoalManage: true, LabelDelegateTask: true,
 		LabelWorkflowTask: true,

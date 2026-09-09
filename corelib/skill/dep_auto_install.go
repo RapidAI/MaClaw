@@ -3,8 +3,34 @@ package skill
 import (
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 )
+
+// depInstallNameMaxLen caps an auto-installed package name.
+const depInstallNameMaxLen = 128
+
+// depInstallNameRe matches a bare package name: starts alphanumeric, then
+// letters, digits, dot, underscore, plus or hyphen.
+var depInstallNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]*$`)
+
+// validDependencyInstallName reports whether name is a plain package name.
+//
+// The name is scraped out of skill / tool output, which a malicious skill or a
+// page the agent read can influence. Installation runs through
+// exec.Command (no shell), so argv injection is structurally impossible — but
+// one token is still enough to do damage: pip and npm both accept a URL or a
+// filesystem path as the install target, so an error line reading
+// `No module named https://host/x.whl` would install straight from an
+// attacker-controlled location, and a leading `-` would be parsed as a flag.
+// Deliberately stricter than the declared-requirements path: this one is
+// driven by runtime text rather than a manifest.
+func validDependencyInstallName(name string) bool {
+	if name == "" || len(name) > depInstallNameMaxLen {
+		return false
+	}
+	return depInstallNameRe.MatchString(name)
+}
 
 // AutoInstallMissingDependency detects the missing package from a step error,
 // installs it via the appropriate package manager (pip/npm), and returns nil on
@@ -56,6 +82,12 @@ func AutoInstallMissingDependencyWithPython(errMsg, output, command, skillDir, p
 	}
 
 	log.Printf("[dep-auto-install] detected missing %s package: import=%q install=%q python=%q", kind, name, installName, pythonPath)
+
+	// Refuse anything that is not a bare package name before it reaches
+	// pip/npm — see validDependencyInstallName.
+	if !validDependencyInstallName(installName) {
+		return fmt.Errorf("refusing to auto-install %q: not a plain package name", installName)
+	}
 
 	switch kind {
 	case "python":

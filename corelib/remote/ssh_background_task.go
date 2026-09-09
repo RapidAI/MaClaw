@@ -77,9 +77,29 @@ type SSHBackgroundTaskManager struct {
 	mirrorDir  string
 
 	// 持久化相关字段
-	persistDir  string        // 持久化目录（空则不持久化）
-	persistCh   chan struct{} // debounce 信号通道
-	persistOnce sync.Once     // 确保 persistLoop 只启动一次
+	persistDir    string        // 持久化目录（空则不持久化）
+	persistCh     chan struct{} // debounce 信号通道
+	persistOnce   sync.Once     // 确保 persistLoop 只启动一次
+	persistMu     sync.Mutex
+	persistStop   chan struct{}
+	persistClosed bool
+}
+
+// Close stops the optional persistence worker. SSH sessions themselves are
+// owned by SSHSessionManager; this method only handles the background task
+// manager's process-local goroutine and is safe to call repeatedly.
+func (m *SSHBackgroundTaskManager) Close() {
+	if m == nil {
+		return
+	}
+	m.persistMu.Lock()
+	if !m.persistClosed {
+		m.persistClosed = true
+		if m.persistStop != nil {
+			close(m.persistStop)
+		}
+	}
+	m.persistMu.Unlock()
 }
 
 // NewSSHBackgroundTaskManager 创建后台任务管理器。
@@ -780,9 +800,17 @@ func (m *SSHBackgroundTaskManager) EnsureSudoToken(sessionID string) (ok bool, m
 	}
 
 	// 5. 写入密码（不带 echo，直接写入 PTY stdin）
-	if err := session.Handle.Write([]byte(password + "\n")); err != nil {
+	// P0-4 (2026-09-08 review): the previous code passed `[]byte(password + "\n")`
+	// straight into the PTY write without zeroing the buffer afterwards, so the
+	// plaintext bytes survived until the next GC. Wrap in a buffer that is
+	// wiped as soon as Write returns.
+	prompt := make([]byte, 0, len(password)+1)
+	prompt = append(prompt, password...)
+	prompt = append(prompt, '\n')
+	if err := session.Handle.Write(prompt); err != nil {
 		return false, fmt.Sprintf("写入密码失败: %v", err)
 	}
+	SecureZeroPassword(prompt)
 
 	// 6. 等待 sudo -v 完成，同时检测密码错误
 	// 如果密码错误，sudo 会输出 "Sorry" 或再次提示密码

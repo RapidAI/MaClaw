@@ -164,6 +164,8 @@ var DocOnlyAllowedTools = map[string]bool{
 	"search_skill_hub":         true,
 	"install_skill_hub":        true,
 	"search_and_install_skill": true,
+	"database":                 true,
+	"database_query":           true,
 }
 
 // PlanningAllowedTools is the canonical set for reviewable coding-planning phases.
@@ -186,6 +188,8 @@ var PlanningAllowedTools = map[string]bool{
 	"search_skill_hub":         true,
 	"install_skill_hub":        true,
 	"search_and_install_skill": true,
+	"database":                 true,
+	"database_query":           true,
 }
 
 // OpsControlledAllowedTools is the canonical tool set for controlled server
@@ -203,6 +207,8 @@ var OpsControlledAllowedTools = map[string]bool{
 	"web_search":       true,
 	"web_fetch":        true,
 	"set_nickname":     true,
+	"database":         true,
+	"database_query":   true,
 }
 
 // ---------------------------------------------------------------------------
@@ -251,6 +257,13 @@ func ValidateToolCallByPolicyWithApproval(policy ToolFilterPolicy, name string, 
 	name = strings.TrimSpace(name)
 	if !IsToolAllowedByPolicy(policy, name) {
 		return fmt.Errorf("%s is not allowed in current workflow phase", name)
+	}
+	if name == "database" && policy != ToolPolicyNone && policy != ToolPolicyFull {
+		action, _ := args["action"].(string)
+		switch strings.ToLower(strings.TrimSpace(action)) {
+		case "execute", "batch_execute", "write_table", "export_excel":
+			return fmt.Errorf("database write is not allowed in current workflow phase")
+		}
 	}
 	if policy != ToolPolicyOpsControlled || (name != "bash" && name != "ssh") {
 		return nil

@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -40,6 +41,159 @@ type hubSearchResult struct {
 	Skills []HubSkillMeta `json:"skills"`
 	Total  int            `json:"total"`
 	Page   int            `json:"page"`
+}
+
+// skillHubMutationMu serializes CLI registry read-modify-write operations in
+// one process. Cross-process recovery is provided by SkillCommitter's durable
+// compensation record; callers still must treat an unreadable queue as a hard
+// admission failure.
+var skillHubMutationMu sync.Mutex
+
+func commitSkillHubConfigEntry(store *FileConfigStore, entry *corelib.NLSkillEntry, action, event string, allowCreate bool, mergers ...func(dst, src *corelib.NLSkillEntry)) error {
+	if store == nil || entry == nil {
+		return fmt.Errorf("SkillHub 提交参数无效")
+	}
+	if err := skill.CheckEvolutionCompensationQueue(); err != nil {
+		return fmt.Errorf("SkillHub 写入被阻止：补偿队列不可读: %w", err)
+	}
+	requestID := fmt.Sprintf("evo_cli_%s_%d", action, time.Now().UnixNano())
+	committer := &skill.SkillCommitter{
+		SkillLoader: func() []corelib.NLSkillEntry {
+			cfg, err := store.LoadConfig()
+			if err != nil {
+				return nil
+			}
+			if cfg.NLSkills == nil {
+				return []corelib.NLSkillEntry{}
+			}
+			return cfg.NLSkills
+		},
+		SkillSaver: func(entries []corelib.NLSkillEntry) error {
+			cfg, err := store.LoadConfig()
+			if err != nil {
+				return err
+			}
+			cfg.NLSkills = entries
+			return store.SaveConfig(cfg)
+		},
+		RollbackSkillSaver: func(entries []corelib.NLSkillEntry) error {
+			cfg, err := store.LoadConfig()
+			if err != nil {
+				return err
+			}
+			cfg.NLSkills = entries
+			return store.SaveConfig(cfg)
+		},
+		DefinitionWriter: func(*corelib.NLSkillEntry) error { return nil },
+		FinalAuditor: func(kind string, data map[string]string) error {
+			return skill.RecordEvolutionEventStrict(kind, data, "tui-cli")
+		},
+		ConfigRevision:       "tui-cli",
+		AllowCreate:          allowCreate,
+		SkipIfUnchanged:      true,
+		SkipDefinitionBackup: true,
+		CompensationMutator: func(record *skill.EvolutionCompensationRecord) {
+			// CLI config-only writes share the TUI data root. Bind recovery to
+			// that scope and explicitly skip routing-index refresh, which is not
+			// available in headless CLI mode.
+			record.SetRecoveryScope(ResolveDataDir())
+			record.SetSkipIndexRefresh(true)
+		},
+	}
+	if len(mergers) > 0 && mergers[0] != nil {
+		committer.EntryMerger = mergers[0]
+	}
+	recordAction := "tui_cli_" + strings.TrimSpace(action)
+	commitCtx := skill.WithEvolutionRequestMetadata(context.Background(), requestID, 1)
+	result := committer.Commit(commitCtx, entry.Name, entry, event, map[string]string{
+		"skill": entry.Name, "action": recordAction, "via": "tui-cli", "request_id": requestID,
+		"attempt": "1", "config_revision": "tui-cli", "schema_version": "2", "evidence_mode": "none",
+	})
+	if result.State != "committed" && result.State != "skipped" {
+		return fmt.Errorf("SkillHub %s 未提交: %s (%s)", action, result.State, result.FailureReason)
+	}
+	if result.CleanupStatus != "clear" {
+		return fmt.Errorf("SkillHub %s 已提交但清理待处理: %s", action, result.FailureReason)
+	}
+	return nil
+}
+
+// commitSkillHubConfigBatch publishes a set of config-only imports as one
+// durable transaction.  A single compensation snapshot prevents a mid-batch
+// failure from leaving only a prefix of the imported registry entries.
+func commitSkillHubConfigBatch(store *FileConfigStore, entries []corelib.NLSkillEntry, action, event string) error {
+	if store == nil || len(entries) == 0 {
+		return nil
+	}
+	if err := skill.CheckEvolutionCompensationQueue(); err != nil {
+		return fmt.Errorf("SkillHub 批量写入被阻止：补偿队列不可读: %w", err)
+	}
+	requestID := fmt.Sprintf("evo_cli_%s_%d", action, time.Now().UnixNano())
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if strings.TrimSpace(entry.Name) == "" {
+			return fmt.Errorf("SkillHub 批量提交包含空名称")
+		}
+		names = append(names, entry.Name)
+	}
+	committer := &skill.SkillCommitter{
+		SkillLoader: func() []corelib.NLSkillEntry {
+			cfg, err := store.LoadConfig()
+			if err != nil {
+				return nil
+			}
+			if cfg.NLSkills == nil {
+				return []corelib.NLSkillEntry{}
+			}
+			return cfg.NLSkills
+		},
+		SkillSaver: func(updated []corelib.NLSkillEntry) error {
+			cfg, err := store.LoadConfig()
+			if err != nil {
+				return err
+			}
+			cfg.NLSkills = updated
+			return store.SaveConfig(cfg)
+		},
+		EntriesMutator: func(original []corelib.NLSkillEntry) ([]corelib.NLSkillEntry, error) {
+			seen := make(map[string]struct{}, len(original)+len(entries))
+			for _, existing := range original {
+				seen[strings.ToLower(strings.TrimSpace(existing.Name))] = struct{}{}
+			}
+			updated := append([]corelib.NLSkillEntry(nil), original...)
+			for _, entry := range entries {
+				key := strings.ToLower(strings.TrimSpace(entry.Name))
+				if _, exists := seen[key]; exists {
+					return nil, fmt.Errorf("Skill '%s' 在提交期间已存在", entry.Name)
+				}
+				seen[key] = struct{}{}
+				updated = append(updated, *skill.CloneNLSkillEntry(&entry))
+			}
+			return updated, nil
+		},
+		FinalAuditor: func(kind string, data map[string]string) error {
+			return skill.RecordEvolutionEventStrict(kind, data, "tui-cli")
+		},
+		CompensationMutator: func(record *skill.EvolutionCompensationRecord) {
+			record.SetRecoveryScope(ResolveDataDir())
+			record.SetSkipIndexRefresh(true)
+			record.SetAffectedSkills(names)
+		},
+		ConfigRevision:       "tui-cli",
+		AllowCreate:          false,
+		SkipIfUnchanged:      true,
+		SkipDefinitionBackup: true,
+	}
+	commitCtx := skill.WithEvolutionRequestMetadata(context.Background(), requestID, 1)
+	result := committer.Commit(commitCtx, entries[0].Name, &entries[0], event, map[string]string{
+		"skill": entries[0].Name, "action": "tui_cli_" + strings.TrimSpace(action), "via": "tui-cli",
+		"request_id": requestID, "attempt": "1", "config_revision": "tui-cli",
+		"schema_version": "2", "evidence_mode": "none", "package_count": fmt.Sprintf("%d", len(entries)),
+	})
+	if result.State != "committed" || result.CleanupStatus != "clear" {
+		return fmt.Errorf("SkillHub 批量 %s 未提交: %s (%s)", action, result.State, result.FailureReason)
+	}
+	return nil
 }
 
 // RunSkillHub 执行 skillhub 子命令（search/install/rate）。
@@ -387,8 +541,12 @@ func skillhubInstall(args []string) error {
 		return fmt.Errorf("解析技能数据失败: %w", err)
 	}
 
-	// 写入本地 NLSkills 配置
+	// Registry publication is serialized and coordinated by the same durable
+	// committer used by manage_skill. Load a fresh snapshot after the network
+	// request so another CLI process cannot be silently overwritten.
 	store := NewFileConfigStore(ResolveDataDir())
+	skillHubMutationMu.Lock()
+	defer skillHubMutationMu.Unlock()
 	cfg, err := store.LoadConfig()
 	if err != nil {
 		return fmt.Errorf("加载配置失败: %w", err)
@@ -405,10 +563,11 @@ func skillhubInstall(args []string) error {
 		}
 	}
 
-	// 添加到 NLSkills
+	// Add through SkillCommitter so config writes have a durable pre-image and a
+	// strict final audit. The in-memory cfg is refreshed after the commit for
+	// callers that continue using this command process.
 	newSkill := newNLSkillFromHub(full.HubSkillMeta, full.Triggers, hubURL)
-	cfg.NLSkills = append(cfg.NLSkills, newSkill)
-	if err := store.SaveConfig(cfg); err != nil {
+	if err := commitSkillHubConfigEntry(store, &newSkill, "install", "skill:cli_skillhub_installed", true); err != nil {
 		return fmt.Errorf("保存配置失败: %w", err)
 	}
 
@@ -450,6 +609,8 @@ func skillhubInstallGitHub(args []string) error {
 	}
 
 	store := NewFileConfigStore(ResolveDataDir())
+	skillHubMutationMu.Lock()
+	defer skillHubMutationMu.Unlock()
 	cfg, loadErr := store.LoadConfig()
 	if loadErr != nil {
 		return fmt.Errorf("加载配置失败: %w", loadErr)
@@ -480,7 +641,7 @@ func skillhubInstallGitHub(args []string) error {
 		return nil
 	}
 
-	if err := store.SaveConfig(cfg); err != nil {
+	if err := commitSkillHubConfigBatch(store, installed, "github_install", "skill:cli_skillhub_github_installed"); err != nil {
 		return fmt.Errorf("保存配置失败: %w", err)
 	}
 
@@ -712,10 +873,11 @@ func skillhubUpdate(args []string) error {
 
 	updateAll := target == "--all"
 	updated := 0
+	pendingUpdates := make([]corelib.NLSkillEntry, 0)
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	for i := range cfg.NLSkills {
-		s := &cfg.NLSkills[i]
+		s := cfg.NLSkills[i]
 		if s.HubSkillID == "" {
 			continue
 		}
@@ -753,17 +915,35 @@ func skillhubUpdate(args []string) error {
 		}
 		resp.Body.Close()
 
-		// Update local entry
-		s.Description = full.Description
-		s.Triggers = full.Triggers
-		s.HubVersion = full.Version
-		s.TrustLevel = full.TrustLevel
-		updated++
-		Printf("'%s' 已更新到 v%s\n", s.Name, full.Version)
+		// Keep network work outside the mutation lock. The complete candidate is
+		// committed below against a fresh config snapshot so a concurrent install
+		// or status update cannot be overwritten by this stale list.
+		candidate := s
+		candidate.Description = full.Description
+		candidate.Triggers = full.Triggers
+		candidate.HubVersion = full.Version
+		candidate.TrustLevel = full.TrustLevel
+		candidate.Version = full.SemVer
+		pendingUpdates = append(pendingUpdates, candidate)
 	}
 
-	if err := store.SaveConfig(cfg); err != nil {
-		return fmt.Errorf("保存配置失败: %w", err)
+	skillHubMutationMu.Lock()
+	defer skillHubMutationMu.Unlock()
+	for i := range pendingUpdates {
+		candidate := pendingUpdates[i]
+		if err := commitSkillHubConfigEntry(store, &candidate, "update", "skill:cli_skillhub_updated", false,
+			func(dst, src *corelib.NLSkillEntry) {
+				if dst == nil || src == nil {
+					return
+				}
+				// Hub metadata is authoritative for the package fields, while the
+				// candidate already carries local lifecycle/runtime overlays.
+				*dst = *src
+			}); err != nil {
+			return fmt.Errorf("保存配置失败: %w", err)
+		}
+		updated++
+		Printf("'%s' 已更新到 v%s\n", candidate.Name, candidate.HubVersion)
 	}
 
 	if *jsonOut {

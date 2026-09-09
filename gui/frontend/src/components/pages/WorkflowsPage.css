@@ -41,7 +41,7 @@
     height: 32px;
     padding: 0 30px 0 10px;
     border: 1px solid var(--theme-border);
-    border-radius: 6px;
+    border-radius: var(--radius-sm, 6px);
     color: var(--theme-text-primary);
     background: var(--theme-surface);
     font-size: 0.8rem;
@@ -60,7 +60,7 @@
     width: 20px;
     height: 20px;
     border: 0;
-    border-radius: 4px;
+    border-radius: var(--radius-xs, 4px);
     background: transparent;
     color: var(--theme-text-secondary);
     cursor: pointer;
@@ -94,9 +94,9 @@
 
 .workflows-page__start-error {
     padding: 9px 12px;
-    border: 1px solid color-mix(in srgb, var(--theme-error, #c43d3d) 46%, var(--theme-border));
-    border-radius: 6px;
-    background: color-mix(in srgb, var(--theme-error, #c43d3d) 8%, var(--theme-surface));
+    border: 1px solid color-mix(in srgb, var(--theme-danger) 46%, var(--theme-border));
+    border-radius: var(--radius-sm, 6px);
+    background: color-mix(in srgb, var(--theme-danger) 8%, var(--theme-surface));
     color: var(--theme-text-primary);
     font-size: 0.78rem;
     line-height: 1.4;
@@ -129,7 +129,7 @@
     gap: 5px;
     padding: 12px 8px 10px;
     border: 1px solid var(--theme-border);
-    border-radius: 8px;
+    border-radius: var(--radius-md, 8px);
     background: var(--theme-surface);
     color: var(--theme-text-primary);
     font: inherit;
@@ -142,7 +142,7 @@
 .workflows-page__tile:hover:not(:disabled) {
     border-color: color-mix(in srgb, var(--theme-primary) 40%, var(--theme-border));
     background: color-mix(in srgb, var(--theme-primary) 5%, var(--theme-surface));
-    box-shadow: 0 2px 8px color-mix(in srgb, var(--theme-primary) 10%, transparent);
+    box-shadow: var(--shadow-md, 0 2px 8px color-mix(in srgb, var(--theme-primary) 10%, transparent));
     transform: translateY(-1px);
 }
 

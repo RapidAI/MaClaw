@@ -2437,7 +2437,13 @@ func (h *IMMessageHandler) runCodingExecChildReviewTargetsLocal(userID string, s
 		}
 		continuation := continuations[task.Index]
 		v1Task := &TaskItem{Index: task.Index, Title: task.Title, Description: task.Description, Files: append([]string(nil), task.Files...), DependsOn: append([]int(nil), task.DependsOn...)}
-		options := &guiCodingRuntimeOptions{ExistingTaskID: continuation.Task.TaskID, ParentContinuationAttemptID: continuation.ParentAttemptID}
+		// A child-result review starts a fresh parent writer Attempt. Carry the
+		// same task-scoped declaration and final workspace gate as an ordinary
+		// production turn; continuation identity alone must never reopen the
+		// historical nil-options/unknown-write-set path.
+		options := defaultGUICodingRuntimeOptions(v1Task, projectPath)
+		options.ExistingTaskID = continuation.Task.TaskID
+		options.ParentContinuationAttemptID = continuation.ParentAttemptID
 		result := runTaskWithSubAgentRuntimeOptions(h, cfg, h.client, v1Task, projectPath, config.RequirementsCtx, config.DesignCtx, []string{codingRuntimeChildReviewContext(continuation)}, loopCtx, tokenCB, progressCB, options)
 		if result == nil {
 			return &v2.TaskRunResult{TaskIndex: task.Index, Title: task.Title, Status: v2.TaskFailed, Error: "child-result review returned nil"}

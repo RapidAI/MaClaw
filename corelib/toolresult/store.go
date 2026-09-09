@@ -31,6 +31,9 @@ type Handle struct {
 	OriginalBytes int       `json:"original_bytes"`
 	PreviewBytes  int       `json:"preview_bytes"`
 	CreatedAt     time.Time `json:"created_at"`
+	// Encrypted marks handles whose on-disk payload is sealed with the store
+	// key (AES-256-GCM). Read/Resolve handle decryption transparently.
+	Encrypted bool `json:"encrypted,omitempty"`
 }
 
 // Projection is the dual-view result after Project.
@@ -67,6 +70,9 @@ type ProjectOptions struct {
 	// Nil defaults to true. Set false for preview-only compatibility helpers;
 	// the full content is still spilled and Projection.Handle remains available.
 	IncludeHandleFooter *bool
+	// Encrypt seals the spilled payload at rest. Project additionally forces
+	// encryption for tools flagged by isEncryptedToolResult.
+	Encrypt bool
 }
 
 // Project builds a provider preview and optionally spills the full content.
@@ -106,6 +112,9 @@ func Project(opts ProjectOptions) (Projection, error) {
 		SessionKey: opts.SessionKey,
 		Content:    content,
 		Root:       opts.Root,
+		// Tools flagged as sensitive (currently: database) always spill
+		// encrypted, regardless of which projection path triggered the spill.
+		Encrypt: opts.Encrypt || isEncryptedToolResult(opts.ToolName),
 	})
 	if err != nil {
 		// Spill failure must not break the agent turn — return preview only.
@@ -135,6 +144,10 @@ type SpillOptions struct {
 	SessionKey string
 	Content    string
 	Root       string
+	// Encrypt seals the payload with the store key (AES-256-GCM). Project
+	// forces this for tools flagged by isEncryptedToolResult; direct Spill
+	// callers can opt in explicitly.
+	Encrypt bool
 }
 
 // SessionDirectoryName returns the opaque on-disk namespace for a session key.
@@ -173,8 +186,21 @@ func Spill(opts SpillOptions) (*Handle, error) {
 	if err != nil {
 		return nil, err
 	}
-	path := filepath.Join(dir, id+".txt")
-	if err := fileutil.AtomicWriteFile(path, []byte(opts.Content), 0o600); err != nil {
+	payload := []byte(opts.Content)
+	suffix := ".txt"
+	if opts.Encrypt {
+		key, err := storeKey(root)
+		if err != nil {
+			return nil, err
+		}
+		payload, err = encryptPayload(key, payload)
+		if err != nil {
+			return nil, fmt.Errorf("toolresult: encrypt: %w", err)
+		}
+		suffix = encryptedSuffix
+	}
+	path := filepath.Join(dir, id+suffix)
+	if err := fileutil.AtomicWriteFile(path, payload, 0o600); err != nil {
 		return nil, fmt.Errorf("toolresult: write: %w", err)
 	}
 	invalidateStoreStats(root)
@@ -186,10 +212,12 @@ func Spill(opts SpillOptions) (*Handle, error) {
 		SessionKey:    opts.SessionKey,
 		OriginalBytes: len(opts.Content),
 		CreatedAt:     time.Now().UTC(),
+		Encrypted:     opts.Encrypt,
 	}, nil
 }
 
-// ReadFile returns the full spilled content at path.
+// ReadFile returns the full spilled content at path, decrypting encrypted
+// handles transparently.
 // Path must resolve under the tool_results store (unless Root is overridden via
 // Resolve/Read). Prefer Read() for model-facing partial re-reads.
 func ReadFile(path string) (string, error) {
@@ -197,7 +225,11 @@ func ReadFile(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	data, err := os.ReadFile(abs)
+	keyRoot, err := storeRootForKey("")
+	if err != nil {
+		return "", err
+	}
+	data, err := readStoreFile(keyRoot, abs)
 	if err != nil {
 		return "", err
 	}

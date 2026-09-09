@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -161,6 +162,100 @@ func TestRouter_BM25_ChineseQuery(t *testing.T) {
 		}
 		t.Errorf("database_query should be selected for '我要查询数据库', got: %v", names)
 	}
+}
+
+func TestApplyHostKeepToolsUnsuppresses(t *testing.T) {
+	condKeep := map[string]bool{}
+	condFilterOut := map[string]bool{"database": true}
+	suppressed := map[string]bool{"database": true, "database_query": true}
+	applyHostKeepTools([]string{" database ", "database_query", ""}, condKeep, condFilterOut, suppressed)
+	if !condKeep["database"] || !condKeep["database_query"] {
+		t.Fatalf("condKeep=%v", condKeep)
+	}
+	if condFilterOut["database"] {
+		t.Fatal("host keep must remove filter-out")
+	}
+	if suppressed["database"] || suppressed["database_query"] {
+		t.Fatal("host keep must unsuppress")
+	}
+}
+
+func TestRouter_HostKeepToolsSurviveGitBM25(t *testing.T) {
+	gen := NewDefinitionGenerator(nil, nil)
+	router := NewRouter(gen)
+
+	var tools []map[string]interface{}
+	for name := range CoreToolNames {
+		tools = append(tools, makeToolDef(name, "core tool "+name))
+	}
+	tools = append(tools,
+		makeToolDef("database", "SQL data source"),
+		makeToolDef("database_query", "read-only SQL"),
+		makeToolDef("git_status", "查看当前 Git 仓库状态"),
+		makeToolDef("git_diff", "查看 Git 差异摘要"),
+	)
+	for i := 0; i < 20; i++ {
+		tools = append(tools, makeToolDef(fmt.Sprintf("filler_%d", i), "unrelated filler tool"))
+	}
+
+	without := routedToolNames(router.Route("查看 rapidbi库", tools))
+	withGrant := routedToolNames(router.RouteWithOptions("查看 rapidbi库", tools, RouteOptions{
+		HostKeepTools: []string{"database", "database_query"},
+	}))
+	if !withGrant["database"] || !withGrant["database_query"] {
+		t.Fatalf("host grant must keep database tools, got %v (ungranted=%v)", sortedToolNames(withGrant), sortedToolNames(without))
+	}
+}
+
+func TestRouter_ViewNamedDatabaseBeatsGitRepo(t *testing.T) {
+	gen := NewDefinitionGenerator(nil, nil)
+	router := NewRouter(gen)
+
+	var tools []map[string]interface{}
+	for name := range CoreToolNames {
+		tools = append(tools, makeToolDef(name, "core tool "+name))
+	}
+	tools = append(tools,
+		makeToolDef("database", "查看库、查看数据库、列出库/schema/表、查看表结构，以及连接并操作 MySQL 数据源。不要当成 Git 仓库。"),
+		makeToolDef("database_query", "只读查看库、查看数据库、列出库/schema/表、查看表结构。"),
+		makeToolDef("git_status", "显示当前 Git 仓库工作区状态（git status）"),
+		makeToolDef("git_diff", "显示 Git 仓库工作区或暂存区差异（git diff）"),
+		makeToolDef("ssh", "connect to a remote server and run commands"),
+	)
+	for i := 0; i < 20; i++ {
+		tools = append(tools, makeToolDef(fmt.Sprintf("filler_%d", i), "unrelated filler tool"))
+	}
+	if len(tools) <= MaxToolBudget {
+		t.Fatalf("need more than %d tools to test routing, got %d", MaxToolBudget, len(tools))
+	}
+
+	result := router.Route("查看 rapidbi库", tools)
+	names := routedToolNames(result)
+	if !names["database"] && !names["database_query"] {
+		t.Fatalf("database tool should be selected for '查看 rapidbi库', got %v", sortedToolNames(names))
+	}
+	if names["git_diff"] && !names["database"] && !names["database_query"] {
+		t.Fatalf("git_diff must not win a SQL-library inspect over database, got %v", sortedToolNames(names))
+	}
+
+	router.SetSearchTextExtra("database", []string{"rapidbi", "mysql-192-168-1-242", "192.168.1.242"})
+	router.SetSearchTextExtra("database_query", []string{"rapidbi", "mysql-192-168-1-242", "192.168.1.242"})
+	result = router.Route("查看 rapidbi库", tools)
+	names = routedToolNames(result)
+	if !names["database"] && !names["database_query"] {
+		t.Fatalf("profile overlay should keep database selected for '查看 rapidbi库', got %v", sortedToolNames(names))
+	}
+}
+
+func sortedToolNames(names map[string]bool) []string {
+	out := make([]string, 0, len(names))
+	for name, ok := range names {
+		if ok {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func TestRouter_BM25_EmptyMessage(t *testing.T) {
@@ -1005,10 +1100,13 @@ func TestRouter_UICEmbeddingSSHRouteKeepsBuiltinAndSuppressesFallbacks(t *testin
 	if !names["ssh"] {
 		t.Fatalf("builtin ssh should be included for concrete UIC SSH intent; got %#v", names)
 	}
-	for _, fallback := range []string{"call_mcp_tool", "manage_skill", "discover_tool", "search_and_install_skill"} {
+	for _, fallback := range []string{"call_mcp_tool", "manage_skill", "search_and_install_skill"} {
 		if names[fallback] {
 			t.Fatalf("%s should be suppressed for concrete UIC SSH intent; got %#v", fallback, names)
 		}
+	}
+	if !names["discover_tool"] {
+		t.Fatalf("discover_tool must stay available so a routing miss can recover; got %#v", names)
 	}
 	if router.IsSessionPinned("ssh") {
 		t.Fatalf("UIC SSH intent should not eager-pin ssh to the session")
@@ -1055,10 +1153,13 @@ func TestRouter_SSHIntentSuppressesFallbackTooling(t *testing.T) {
 	if !names["ssh"] {
 		t.Fatalf("ssh should be included for SSH intent")
 	}
-	for _, fallback := range []string{"call_mcp_tool", "manage_skill", "discover_tool", "search_and_install_skill"} {
+	for _, fallback := range []string{"call_mcp_tool", "manage_skill", "search_and_install_skill"} {
 		if names[fallback] {
 			t.Fatalf("%s should be suppressed when builtin ssh is selected; got %#v", fallback, names)
 		}
+	}
+	if !names["discover_tool"] {
+		t.Fatalf("discover_tool must stay available so a routing miss can recover; got %#v", names)
 	}
 	if router.IsSessionPinned("ssh") {
 		t.Fatalf("fallback semantic SSH intent should not eager-pin ssh before successful tool use")

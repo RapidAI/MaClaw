@@ -1,5 +1,5 @@
 /**
- * Package the extension into ../gui/vscode_ext_asset/maclaw-acp.vsix (+ version.txt)
+ * Package the extension into ../guiapp/vscode_ext_asset/maclaw-acp.vsix (+ version.txt)
  * so the MaClaw GUI can go:embed it and auto-install into VS Code.
  */
 import { spawnSync } from "child_process";
@@ -31,7 +31,7 @@ if (run.status !== 0) {
   process.exit(run.status ?? 1);
 }
 
-const assetDir = path.resolve(root, "..", "gui", "vscode_ext_asset");
+const assetDir = path.resolve(root, "..", "guiapp", "vscode_ext_asset");
 fs.mkdirSync(assetDir, { recursive: true });
 fs.copyFileSync(outVsix, path.join(assetDir, "maclaw-acp.vsix"));
 fs.writeFileSync(path.join(assetDir, "version.txt"), version + "\n", "utf8");

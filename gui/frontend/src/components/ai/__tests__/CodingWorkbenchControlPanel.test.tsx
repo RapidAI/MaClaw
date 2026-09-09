@@ -5,6 +5,7 @@ import {
     CODING_BANNER_LOCAL_DARK_ACCENT,
     CODING_BANNER_LOCAL_DARK_ACCENT_STRONG,
     codingStepStatusColor,
+    codingStepStatusLabel,
     CodingWorkbenchControlPanel,
     deriveChipStatus,
 } from "../CodingWorkbenchControlPanel";
@@ -103,6 +104,16 @@ describe("codingStepStatusColor", () => {
         expect(codingStepStatusColor("failed", false, chrome)).toBe("#dc2626");
         expect(codingStepStatusColor("running", true, chrome)).toBe(chrome.accentStrong);
         expect(codingStepStatusColor("pending", true, chrome)).toBe(chrome.muted);
+    });
+});
+
+describe("codingStepStatusLabel", () => {
+    it("localizes execution states for the timeline", () => {
+        expect(codingStepStatusLabel("zh-Hans", "passed")).toBe("已完成");
+        expect(codingStepStatusLabel("zh-Hans", "running")).toBe("进行中");
+        expect(codingStepStatusLabel("zh-Hans", "verify_failed")).toBe("失败");
+        expect(codingStepStatusLabel("zh-Hans", "pending")).toBe("待确认");
+        expect(codingStepStatusLabel("en", "completed")).toBe("Completed");
     });
 });
 

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/cloudworkspace"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
@@ -68,11 +69,13 @@ func PutCloudWorkspaceSettingsAdminHandler(svc *cloudworkspace.Service, audit st
 			return
 		}
 		writeAdminAuditLog(r.Context(), audit, adminAuditUserID(r), "cloud_workspace.settings.update", map[string]any{
-			"mode":                   settings.Mode,
-			"quota":                  settings.Quota,
-			"department_ids":         settings.DepartmentIDs,
-			"max_workspace_bytes":    settings.MaxWorkspaceBytes,
-			"tenant_max_total_bytes": settings.TenantMaxTotalBytes,
+			"mode":                          settings.Mode,
+			"quota":                         settings.Quota,
+			"department_ids":                settings.DepartmentIDs,
+			"max_workspace_bytes":           settings.MaxWorkspaceBytes,
+			"tenant_max_total_bytes":        settings.TenantMaxTotalBytes,
+			"bandwidth_user_bytes_per_hour": settings.BandwidthUserBytesPerHour,
+			"bandwidth_tenant_bytes_per_hour": settings.BandwidthTenantBytesPerHour,
 		})
 		writeJSON(w, http.StatusOK, cloudWorkspaceView(svc, r, settings))
 	}
@@ -85,6 +88,15 @@ func GetCloudWorkspaceMetricsAdminHandler(svc *cloudworkspace.Service) http.Hand
 			writeJSON(w, http.StatusOK, cloudworkspace.Metrics{})
 			return
 		}
+		// The route is wrapped with RequireTenantAdmin. Scope all workspace,
+		// lease, audit and purge gauges to that tenant; process counters and
+		// physical free space remain installation-wide by design.
+		if admin := AdminFromContext(r.Context()); admin != nil && adminHasTenantScope(admin) && strings.TrimSpace(admin.TenantID) != "" {
+			writeJSON(w, http.StatusOK, svc.CollectMetricsForTenant(r.Context(), admin.TenantID))
+			return
+		}
+		// Keep direct/internal callers backwards-compatible; production routes
+		// cannot reach this branch because RequireTenantAdmin is mandatory.
 		writeJSON(w, http.StatusOK, svc.CollectMetrics(r.Context()))
 	}
 }

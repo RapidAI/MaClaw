@@ -65,11 +65,11 @@ echo [INFO] Building Version: %VERSION%
 
 REM -- Sync version with frontend --
 echo [Step 3/14] Syncing version with frontend...
-powershell -NoProfile -Command "@('export const buildNumber = ''%BUILD_NUM%'';','export const appVersion = ''%VERSION%'';') | Set-Content -Path '%~dp0gui\frontend\src\version.ts' -Encoding Utf8"
+powershell -NoProfile -Command "@('export const buildNumber = ''%BUILD_NUM%'';','export const appVersion = ''%VERSION%'';') | Set-Content -Path '%~dp0guiapp\frontend\src\version.ts' -Encoding Utf8"
 
 REM -- Build Frontend --
 echo [Step 4/14] Building frontend...
-cd /d "%~dp0gui\frontend"
+cd /d "%~dp0guiapp\frontend"
 if not exist "node_modules" (
     call npm.cmd install --cache ./.npm_cache
     if !errorlevel! neq 0 (
@@ -86,7 +86,7 @@ if !errorlevel! neq 0 (
 cd "%~dp0"
 REM OEM shares MaClaw frontend embed - fail local builds if welcome page is stale/old.
 echo [INFO] Verifying AI assistant welcome page in frontend dist...
-node "%~dp0scripts\verify-frontend-welcome.mjs" --dist "%~dp0gui\frontend\dist"
+node "%~dp0scripts\verify-frontend-welcome.mjs" --dist "%~dp0guiapp\frontend\dist"
 if !errorlevel! neq 0 (
     echo [ERROR] Frontend welcome verification failed.
     goto :error
@@ -94,7 +94,7 @@ if !errorlevel! neq 0 (
 
 REM -- Generate Windows Resources (icon + version info) --
 echo [Step 5/14] Generating Windows resources...
-del /q "%~dp0gui\resource_windows_*.syso" 2>nul
+del /q "%~dp0guiapp\resource_windows_*.syso" 2>nul
 del /q "%~dp0resource_windows_*.syso" 2>nul
 del /q "%~dp0tmp*.syso" 2>nul
 del /q "%~dp0tmp*.json" 2>nul
@@ -129,12 +129,12 @@ set "GOOS=windows"
 set "GOARCH=amd64"
 set "CGO_ENABLED=0"
 set "CC="
-"%GOVERSIONINFO_PATH%" -64 -icon "%~dp0build\windows\icon.ico" -manifest "%~dp0build\windows\wails.exe.manifest.tmp" -o "%~dp0gui\resource_windows_amd64.syso" "%~dp0build\windows\versioninfo.json.tmp"
+"%GOVERSIONINFO_PATH%" -64 -icon "%~dp0build\windows\icon.ico" -manifest "%~dp0build\windows\wails.exe.manifest.tmp" -o "%~dp0guiapp\resource_windows_amd64.syso" "%~dp0build\windows\versioninfo.json.tmp"
 if !errorlevel! neq 0 (
     echo [ERROR] Failed to generate amd64 resources.
     goto :error
 )
-call :go_build -p 1 -tags %GUI_BUILD_TAGS% -ldflags "-s -w -H windowsgui -X main.version=%VERSION%" -o "%OUTPUT_DIR%\%APP_NAME%_amd64.exe" ./gui/
+call :go_build -p 1 -tags %GUI_BUILD_TAGS% -ldflags "-s -w -H windowsgui -X main.version=%VERSION%" -o "%OUTPUT_DIR%\%APP_NAME%_amd64.exe" ./cmd/maclaw-gui/
 if !errorlevel! neq 0 (
     echo [ERROR] Go build for GUI amd64 failed.
     goto :error
@@ -144,16 +144,16 @@ if !errorlevel! neq 0 (
     echo [ERROR] GUI amd64 welcome embed verification failed.
     goto :error
 )
-del "%~dp0gui\resource_windows_amd64.syso"
+del "%~dp0guiapp\resource_windows_amd64.syso"
 set "GOARCH=arm64"
 set "CGO_ENABLED=0"
 set "CC="
-"%GOVERSIONINFO_PATH%" -64 -arm -icon "%~dp0build\windows\icon.ico" -manifest "%~dp0build\windows\wails.exe.manifest.tmp" -o "%~dp0gui\resource_windows_arm64.syso" "%~dp0build\windows\versioninfo.json.tmp"
+"%GOVERSIONINFO_PATH%" -64 -arm -icon "%~dp0build\windows\icon.ico" -manifest "%~dp0build\windows\wails.exe.manifest.tmp" -o "%~dp0guiapp\resource_windows_arm64.syso" "%~dp0build\windows\versioninfo.json.tmp"
 if !errorlevel! neq 0 (
     echo [ERROR] Failed to generate arm64 resources.
     goto :error
 )
-call :go_build -p 1 -tags %GUI_BUILD_TAGS% -ldflags "-s -w -H windowsgui -X main.version=%VERSION%" -o "%OUTPUT_DIR%\%APP_NAME%_arm64.exe" ./gui/
+call :go_build -p 1 -tags %GUI_BUILD_TAGS% -ldflags "-s -w -H windowsgui -X main.version=%VERSION%" -o "%OUTPUT_DIR%\%APP_NAME%_arm64.exe" ./cmd/maclaw-gui/
 if !errorlevel! neq 0 (
     echo [ERROR] Go build for GUI arm64 failed.
     goto :error
@@ -163,7 +163,7 @@ if !errorlevel! neq 0 (
     echo [ERROR] GUI arm64 welcome embed verification failed.
     goto :error
 )
-del "%~dp0gui\resource_windows_arm64.syso"
+del "%~dp0guiapp\resource_windows_arm64.syso"
 del "%~dp0build\windows\wails.exe.manifest.tmp"
 del "%~dp0build\windows\versioninfo.json.tmp"
 

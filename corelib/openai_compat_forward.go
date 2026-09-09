@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 )
@@ -123,10 +124,120 @@ func RewriteOpenAIStreamDataModel(payload []byte, model string) []byte {
 // OpenAIStreamUsageFromData extracts usage from an SSE data JSON payload.
 func OpenAIStreamUsageFromData(payload []byte) TokenUsageStat {
 	trimmed := strings.TrimSpace(string(payload))
-	if trimmed == "" || trimmed == "[DONE]" || !json.Valid([]byte(trimmed)) {
+	if trimmed == "" || trimmed == "[DONE]" {
 		return TokenUsageStat{}
 	}
 	return parseOpenAIUsageJSON([]byte(trimmed))
+}
+
+// LLMUsageFields is a provider usage object after directional normalization.
+// Presence flags distinguish an explicit zero from a missing field so callers
+// do not replace a measured zero with a local token estimate.
+type LLMUsageFields struct {
+	Input, Output, Total                         int64
+	Cached, Written                              int64
+	InputObserved, OutputObserved, TotalObserved bool
+	CachedObserved, WrittenObserved              bool
+}
+
+// Stat converts the normalized fields into the persistence/display shape used
+// by Hub, HubCenter, and GUI token counters.
+func (f LLMUsageFields) Stat() TokenUsageStat {
+	stat := TokenUsageStat{
+		InputTokens:       f.Input,
+		OutputTokens:      f.Output,
+		TotalTokens:       f.Total,
+		CachedInputTokens: f.Cached,
+		CacheWriteTokens:  f.Written,
+		CacheUsageSource:  "unavailable",
+		Requests:          1,
+	}
+	if f.CachedObserved || f.WrittenObserved || f.Cached > 0 || f.Written > 0 {
+		stat.CacheUsageSource = "provider_reported"
+	}
+	if stat.TotalTokens <= 0 {
+		stat.TotalTokens = stat.InputTokens + stat.OutputTokens
+	}
+	if stat.CachedInputTokens > stat.InputTokens || stat.CacheWriteTokens > stat.InputTokens-stat.CachedInputTokens {
+		stat.UsageAnomaly = "cache_tokens_exceed_input"
+	}
+	if stat.UsageAnomaly == "" && stat.TotalTokens > 0 && stat.InputTokens <= 0 && stat.OutputTokens <= 0 && stat.CachedInputTokens <= 0 && stat.CacheWriteTokens <= 0 {
+		stat.UsageAnomaly = "total_tokens_without_directional_legs"
+	}
+	if stat.CachedInputTokens > 0 || stat.CacheWriteTokens > 0 {
+		stat.CachedRequests = 1
+	}
+	return stat
+}
+
+// ParseLLMResponseUsage extracts normalized token usage from an OpenAI-style
+// response body. GUI, Hub, and HubCenter must share this parser so the same
+// provider payload cannot produce three different totals.
+func ParseLLMResponseUsage(respBody []byte) TokenUsageStat {
+	return parseOpenAIUsageJSON(respBody)
+}
+
+// ParseLLMUsageFields normalizes one provider `usage` object. It infers a
+// missing directional leg from total_tokens, accepts string-encoded counts,
+// and folds separately reported reasoning_tokens into output when the provider
+// billed them outside completion_tokens.
+func ParseLLMUsageFields(usage map[string]interface{}) LLMUsageFields {
+	var f LLMUsageFields
+	if usage == nil {
+		return f
+	}
+	f.Input, f.InputObserved = llmUsageFirstPresent(usage, "prompt_tokens", "input_tokens")
+	f.Output, f.OutputObserved = llmUsageFirstPresent(usage, "completion_tokens", "output_tokens")
+	f.Total, f.TotalObserved = llmUsageNumberPresent(usage["total_tokens"])
+	if f.Total > 0 {
+		switch {
+		case !f.InputObserved && !f.OutputObserved:
+			// A total-only usage is a complete measurement. Record it as input
+			// and do not later fill the missing side with a local estimate.
+			f.Input = f.Total
+			f.InputObserved = true
+			f.OutputObserved = true
+		case !f.InputObserved && f.Total > f.Output:
+			f.Input = f.Total - f.Output
+			f.InputObserved = true
+		case !f.OutputObserved && f.Total > f.Input:
+			f.Output = f.Total - f.Input
+			f.OutputObserved = true
+		}
+	}
+	if f.TotalObserved && f.Total == 0 {
+		switch {
+		case !f.InputObserved && !f.OutputObserved:
+			f.InputObserved = true
+			f.OutputObserved = true
+		case !f.InputObserved && f.OutputObserved && f.Output == 0:
+			f.InputObserved = true
+		case f.InputObserved && f.Input == 0 && !f.OutputObserved:
+			f.OutputObserved = true
+		}
+	}
+	if reasoning := llmUsageReasoningTokens(usage); reasoning > 0 {
+		accounted := f.Input + f.Output
+		switch {
+		case f.TotalObserved && f.Total == accounted+reasoning:
+			f.Output += reasoning
+			f.OutputObserved = true
+		case f.TotalObserved && f.Total == accounted:
+			// reasoning is already inside completion/output tokens
+		case f.TotalObserved && f.Total > accounted && f.Total-accounted <= reasoning:
+			f.Output += f.Total - accounted
+			f.OutputObserved = true
+		case !f.OutputObserved:
+			f.Output += reasoning
+			f.OutputObserved = true
+		}
+	}
+	f.Cached, f.CachedObserved = llmUsageCachedTokens(usage)
+	f.Written, f.WrittenObserved = llmUsageCacheWriteTokens(usage)
+	if !f.TotalObserved || f.Total <= 0 || f.Input+f.Output > f.Total {
+		f.Total = f.Input + f.Output
+	}
+	return f
 }
 
 func parseOpenAIUsageJSON(body []byte) TokenUsageStat {
@@ -138,21 +249,99 @@ func parseOpenAIUsageJSON(body []byte) TokenUsageStat {
 	if usage == nil {
 		return TokenUsageStat{}
 	}
-	stat := TokenUsageStat{
-		InputTokens:       int64(numberToInt64(firstOpenAICompatNonNil(usage["prompt_tokens"], usage["input_tokens"]))),
-		OutputTokens:      int64(numberToInt64(firstOpenAICompatNonNil(usage["completion_tokens"], usage["output_tokens"]))),
-		TotalTokens:       int64(numberToInt64(usage["total_tokens"])),
-		CachedInputTokens: int64(numberToInt64(openAICompatCachedUsageValue(usage))),
-		CacheWriteTokens:  int64(numberToInt64(openAICompatCacheWriteUsageValue(usage))),
-		Requests:          1,
+	return ParseLLMUsageFields(usage).Stat()
+}
+
+func llmUsageFirstPresent(m map[string]interface{}, keys ...string) (int64, bool) {
+	if m == nil {
+		return 0, false
 	}
-	if stat.TotalTokens <= 0 {
-		stat.TotalTokens = stat.InputTokens + stat.OutputTokens
+	for _, key := range keys {
+		if value, ok := llmUsageNumberPresent(m[key]); ok {
+			return value, true
+		}
 	}
-	if stat.CachedInputTokens > 0 || stat.CacheWriteTokens > 0 {
-		stat.CachedRequests = 1
+	return 0, false
+}
+
+func llmUsageNumberPresent(v interface{}) (int64, bool) {
+	switch n := v.(type) {
+	case int:
+		if n < 0 {
+			return 0, false
+		}
+		return int64(n), true
+	case int64:
+		if n < 0 {
+			return 0, false
+		}
+		return n, true
+	case float64:
+		if n < 0 || n >= float64(math.MaxInt64) || math.IsNaN(n) || math.IsInf(n, 0) {
+			return 0, false
+		}
+		return int64(n), true
+	case json.Number:
+		if i, err := n.Int64(); err == nil && i >= 0 {
+			return i, true
+		}
+		if f, err := n.Float64(); err == nil && f >= 0 && f < float64(math.MaxInt64) && !math.IsNaN(f) && !math.IsInf(f, 0) {
+			return int64(f), true
+		}
+		return 0, false
+	case string:
+		trimmed := strings.TrimSpace(n)
+		if trimmed == "" {
+			return 0, false
+		}
+		return llmUsageNumberPresent(json.Number(trimmed))
+	default:
+		return 0, false
 	}
-	return stat
+}
+
+func llmUsageReasoningTokens(usage map[string]interface{}) int64 {
+	if usage == nil {
+		return 0
+	}
+	if value, ok := llmUsageNumberPresent(usage["reasoning_tokens"]); ok && value > 0 {
+		return value
+	}
+	for _, key := range []string{"completion_tokens_details", "output_tokens_details"} {
+		details := mapFromAny(usage[key])
+		if details == nil {
+			continue
+		}
+		if value, ok := llmUsageNumberPresent(details["reasoning_tokens"]); ok && value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func llmUsageCachedTokens(usage map[string]interface{}) (int64, bool) {
+	for _, key := range []string{"prompt_tokens_details", "input_tokens_details"} {
+		if details := mapFromAny(usage[key]); details != nil {
+			if value, ok := llmUsageFirstPresent(details, "cached_tokens", "cached_input_tokens"); ok {
+				return value, true
+			}
+		}
+	}
+	return llmUsageFirstPresent(usage, "cached_input_tokens", "cache_read_input_tokens")
+}
+
+func llmUsageCacheWriteTokens(usage map[string]interface{}) (int64, bool) {
+	if value, ok := llmUsageFirstPresent(usage, "cache_write_tokens", "cache_write_input_tokens", "cache_creation_input_tokens", "cache_creation_tokens"); ok {
+		return value, true
+	}
+	for _, key := range []string{"prompt_tokens_details", "input_tokens_details"} {
+		if details := mapFromAny(usage[key]); details != nil {
+			if value, ok := llmUsageFirstPresent(details, "cache_write_tokens", "cache_write_input_tokens", "cache_creation_input_tokens", "cache_creation_tokens"); ok {
+				return value, true
+			}
+		}
+	}
+	return 0, false
 }
 
 func firstOpenAICompatNonNil(values ...interface{}) interface{} {
@@ -162,34 +351,6 @@ func firstOpenAICompatNonNil(values ...interface{}) interface{} {
 		}
 	}
 	return nil
-}
-
-func openAICompatCachedUsageValue(usage map[string]interface{}) interface{} {
-	return firstOpenAICompatNonNil(
-		openAICompatLookupMapValue(usage, "prompt_tokens_details", "cached_tokens"),
-		openAICompatLookupMapValue(usage, "input_tokens_details", "cached_tokens"),
-		usage["cache_read_input_tokens"],
-		usage["cached_input_tokens"],
-	)
-}
-
-func openAICompatCacheWriteUsageValue(usage map[string]interface{}) interface{} {
-	return firstOpenAICompatNonNil(
-		usage["cache_creation_input_tokens"],
-		usage["cache_write_input_tokens"],
-		openAICompatLookupMapValue(usage, "prompt_tokens_details", "cache_write_tokens"),
-		openAICompatLookupMapValue(usage, "prompt_tokens_details", "cache_creation_input_tokens"),
-		openAICompatLookupMapValue(usage, "input_tokens_details", "cache_write_tokens"),
-		openAICompatLookupMapValue(usage, "input_tokens_details", "cache_creation_input_tokens"),
-	)
-}
-
-func openAICompatLookupMapValue(root map[string]interface{}, key string, nested string) interface{} {
-	child := mapFromAny(root[key])
-	if child == nil {
-		return nil
-	}
-	return child[nested]
 }
 
 func sanitizeOpenAICompatForwardStreamOptions(body map[string]interface{}) {
@@ -220,13 +381,25 @@ func sanitizeOpenAICompatForwardStreamOptions(body map[string]interface{}) {
 func numberToInt64(v interface{}) int64 {
 	switch n := v.(type) {
 	case float64:
+		if n < 0 || n >= float64(math.MaxInt64) || math.IsNaN(n) || math.IsInf(n, 0) || math.Trunc(n) != n {
+			return 0
+		}
 		return int64(n)
 	case int:
+		if n < 0 {
+			return 0
+		}
 		return int64(n)
 	case int64:
+		if n < 0 {
+			return 0
+		}
 		return n
 	case json.Number:
-		value, _ := n.Int64()
+		value, err := n.Int64()
+		if err != nil || value < 0 {
+			return 0
+		}
 		return value
 	default:
 		return 0
@@ -1548,34 +1721,24 @@ func convertResponsesTools(tools []map[string]interface{}) []map[string]interfac
 // responsesToOpenAIUsage converts Responses API usage into OpenAI-compatible
 // chat completion usage while preserving prompt-cache counters.
 func responsesToOpenAIUsage(raw interface{}) map[string]interface{} {
-	usage := mapFromAny(raw)
-	var promptTokens, completionTokens float64
-	if usage != nil {
-		promptTokens = float64(numberToInt64(usage["input_tokens"]))
-		completionTokens = float64(numberToInt64(usage["output_tokens"]))
-	}
+	fields := ParseLLMUsageFields(mapFromAny(raw))
 	result := map[string]interface{}{
-		"prompt_tokens":     promptTokens,
-		"completion_tokens": completionTokens,
-		"total_tokens":      promptTokens + completionTokens,
+		"prompt_tokens":     float64(fields.Input),
+		"completion_tokens": float64(fields.Output),
+		"total_tokens":      float64(fields.Total),
 	}
-	if usage == nil {
-		return result
-	}
-	cacheRead := numberToInt64(openAICompatCachedUsageValue(usage))
-	cacheWrite := numberToInt64(openAICompatCacheWriteUsageValue(usage))
-	if cacheRead > 0 || cacheWrite > 0 {
+	if fields.Cached > 0 || fields.Written > 0 {
 		result["prompt_tokens_details"] = map[string]interface{}{
-			"cached_tokens": cacheRead,
+			"cached_tokens": fields.Cached,
 		}
 	}
-	if cacheRead > 0 {
-		result["cache_read_input_tokens"] = float64(cacheRead)
+	if fields.Cached > 0 {
+		result["cache_read_input_tokens"] = float64(fields.Cached)
 	}
-	if cacheWrite > 0 {
-		result["cache_write_input_tokens"] = float64(cacheWrite)
+	if fields.Written > 0 {
+		result["cache_write_input_tokens"] = float64(fields.Written)
 		details := result["prompt_tokens_details"].(map[string]interface{})
-		details["cache_creation_input_tokens"] = cacheWrite
+		details["cache_creation_input_tokens"] = fields.Written
 	}
 	return result
 }

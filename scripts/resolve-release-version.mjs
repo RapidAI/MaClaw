@@ -4,14 +4,14 @@
  *
  * Priority:
  *   1. Git tag (V6.5.2.11519 / v6.5.2.11519)
- *   2. gui/frontend/src/version.ts appVersion
+ *   2. guiapp/frontend/src/version.ts appVersion
  *   3. wails.json productVersion, optionally patched with build_number
  *
  * Prints GitHub Actions GITHUB_ENV lines to stdout:
  *   VERSION=...
  *   VERSION_SOURCE=...
  *
- * Also rewrites gui/frontend/src/version.ts so frontend and backend match.
+ * Also rewrites guiapp/frontend/src/version.ts so frontend and backend match.
  *
  * Usage:
  *   node scripts/resolve-release-version.mjs [refName]
@@ -60,7 +60,7 @@ function resolveVersion(refName) {
     return { version: tagMatch[1], source: "git tag" };
   }
 
-  const versionTs = readText("gui/frontend/src/version.ts");
+  const versionTs = readText("guiapp/frontend/src/version.ts");
   const appMatch = versionTs.match(/appVersion\s*=\s*['"]([^'"]+)['"]/);
   if (appMatch && appMatch[1].trim()) {
     return { version: appMatch[1].trim(), source: "version.ts" };
@@ -97,7 +97,7 @@ function writeVersionTs(version) {
   const parts = version.split(".");
   const buildNum = parts.length >= 4 ? parts[3] : "0";
   const content = `export const buildNumber = '${buildNum}';\nexport const appVersion = '${version}';\n`;
-  const out = path.join(repoRoot, "gui", "frontend", "src", "version.ts");
+  const out = path.join(repoRoot, "guiapp", "frontend", "src", "version.ts");
   fs.mkdirSync(path.dirname(out), { recursive: true });
   fs.writeFileSync(out, content, "utf8");
 }

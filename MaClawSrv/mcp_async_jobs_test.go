@@ -7,8 +7,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 )
 
@@ -19,6 +21,7 @@ func TestAsyncMCPCreateJobLifecycle(t *testing.T) {
 	body := fmt.Sprintf(`{"kind":"local","name":"Local Echo Async Create","command":%q,"args":["-test.run=TestLocalMCPHelperProcess","--"],"env":{"GO_WANT_LOCAL_MCP_HELPER":"1"}}`, cmd)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/mcp/servers?async=true", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Idempotency-Key", "mcp-create-client-key")
 	w := httptest.NewRecorder()
 	server.Handler().ServeHTTP(w, req)
 	if w.Code != http.StatusAccepted {
@@ -30,6 +33,35 @@ func TestAsyncMCPCreateJobLifecycle(t *testing.T) {
 	}
 	if job.Kind != "mcp.create" || job.ID == "" {
 		t.Fatalf("unexpected async create job: %#v", job)
+	}
+	if job.RecoveryPolicy != agentruntime.JobRecoveryPolicyReconcile || job.IdempotentReplay || job.IdempotencyDigest == "" || job.RequestDigest == "" {
+		t.Fatalf("unexpected async create admission state: %#v", job)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/mcp/servers?async=true", bytes.NewBufferString(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Idempotency-Key", "mcp-create-client-key")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("replayed async create status = %d body = %s", w.Code, w.Body.String())
+	}
+	var replay asyncJobView
+	if err := json.NewDecoder(w.Body).Decode(&replay); err != nil {
+		t.Fatalf("decode replayed create job: %v", err)
+	}
+	if replay.ID != job.ID || !replay.IdempotentReplay || replay.IdempotencyDigest != job.IdempotencyDigest {
+		t.Fatalf("create admission was not canonical: first=%#v replay=%#v", job, replay)
+	}
+
+	conflictingBody := fmt.Sprintf(`{"kind":"local","name":"Different MCP","command":%q,"args":["-test.run=TestLocalMCPHelperProcess","--"],"env":{"GO_WANT_LOCAL_MCP_HELPER":"1"}}`, cmd)
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/mcp/servers?async=true", bytes.NewBufferString(conflictingBody))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Idempotency-Key", "mcp-create-client-key")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "job_idempotency_conflict") {
+		t.Fatalf("conflicting create key status = %d body = %s", w.Code, w.Body.String())
 	}
 
 	final := waitForAsyncMCPJob(t, server, token, job.ID)
@@ -163,6 +195,7 @@ func TestAsyncMCPHealthCheckJobLifecycle(t *testing.T) {
 
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/mcp/servers/"+created.ID+"/health-check?async=true", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Idempotency-Key", "health-check-client-key")
 	w = httptest.NewRecorder()
 	server.Handler().ServeHTTP(w, req)
 	if w.Code != http.StatusAccepted {
@@ -175,10 +208,53 @@ func TestAsyncMCPHealthCheckJobLifecycle(t *testing.T) {
 	if job.Kind != "mcp.health_check" || job.ID == "" {
 		t.Fatalf("unexpected async health-check job: %#v", job)
 	}
+	if job.IdempotentReplay || job.IdempotencyDigest == "" || job.RequestDigest == "" || strings.Contains(job.IdempotencyDigest, "health-check-client-key") {
+		t.Fatalf("unexpected initial health-check idempotency state: %#v", job)
+	}
+	if job.RecoveryPolicy != agentruntime.JobRecoveryPolicyFail || job.RetryPolicy.MaxAttempts != 3 {
+		t.Fatalf("health-check job did not expose safe retry policy: %#v", job)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/mcp/servers/"+created.ID+"/health-check?async=true", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Idempotency-Key", "health-check-client-key")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("replayed health-check status = %d body = %s", w.Code, w.Body.String())
+	}
+	var replay asyncJobView
+	if err := json.NewDecoder(w.Body).Decode(&replay); err != nil {
+		t.Fatalf("decode replayed health-check job: %v", err)
+	}
+	if replay.ID != job.ID || !replay.IdempotentReplay || replay.IdempotencyDigest != job.IdempotencyDigest {
+		t.Fatalf("health-check admission was not idempotent: first=%#v replay=%#v", job, replay)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/mcp/servers/different-server/health-check?async=true", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Idempotency-Key", "health-check-client-key")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "job_idempotency_conflict") {
+		t.Fatalf("conflicting health-check key status = %d body = %s", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/mcp/servers/"+created.ID+"/health-check?async=true", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Idempotency-Key", strings.Repeat("x", 257))
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "invalid_job_idempotency_key") {
+		t.Fatalf("invalid health-check key status = %d body = %s", w.Code, w.Body.String())
+	}
 
 	final := waitForAsyncMCPJob(t, server, token, job.ID)
 	if final.Status != asyncJobStatusSucceeded {
 		t.Fatalf("expected succeeded mcp health-check job, got %#v", final)
+	}
+	if final.Attempt != 1 || final.NextAttemptAt != nil {
+		t.Fatalf("healthy MCP probe unexpectedly retried: %#v", final)
 	}
 	var result agentservice.MCPServerView
 	if err := json.Unmarshal(final.Result, &result); err != nil {

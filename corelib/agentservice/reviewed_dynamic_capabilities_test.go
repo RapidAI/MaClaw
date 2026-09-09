@@ -8,6 +8,16 @@ import (
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
+func requiredNeedCount(needs []coretool.CapabilityNeed) int {
+	n := 0
+	for _, need := range needs {
+		if need.Required {
+			n++
+		}
+	}
+	return n
+}
+
 func TestReviewedDynamicCapabilityRegistryIsSealedAndNarrow(t *testing.T) {
 	registry, err := NewReviewedDynamicCapabilityRegistry()
 	if err != nil {
@@ -19,6 +29,13 @@ func TestReviewedDynamicCapabilityRegistryIsSealedAndNarrow(t *testing.T) {
 	descriptor, ok := registry.Lookup(CapabilityInformationLookup)
 	if !ok || len(descriptor.Effects) != 1 || descriptor.Effects[0] != coretool.EffectReadOnly {
 		t.Fatalf("lookup descriptor=%#v found=%v", descriptor, ok)
+	}
+	searchWeb, ok := registry.Lookup(CapabilityInformationSearchWeb)
+	if !ok || len(searchWeb.Effects) != 1 || searchWeb.Effects[0] != coretool.EffectReadOnly {
+		t.Fatalf("search.web descriptor=%#v found=%v", searchWeb, ok)
+	}
+	if searchWeb.Qualifiers[QualifierSearchFreshness].Values[0] != SearchFreshnessReference || !searchWeb.Qualifiers[QualifierSearchFreshness].Required {
+		t.Fatalf("search.web qualifiers=%#v", searchWeb.Qualifiers)
 	}
 	clock, ok := registry.Lookup(CapabilityCurrentTime)
 	if !ok || len(clock.Effects) != 1 || clock.Effects[0] != coretool.EffectReadOnly {
@@ -213,11 +230,11 @@ func TestReviewedDynamicIntentRulesIgnoreLegacyToolNames(t *testing.T) {
 		Registry: registry, Rules: ReviewedDynamicIntentCapabilityNeedRules(),
 	}
 	resolution, err := resolver.ResolveDynamicCapabilityNeeds(context.Background(), DynamicCapabilityNeedRequest{UserText: "find reports"})
-	if err != nil || !resolution.Managed || len(resolution.Needs) != 1 {
+	if err != nil || !resolution.Managed || requiredNeedCount(resolution.Needs) != 1 {
 		t.Fatalf("resolution=%#v err=%v", resolution, err)
 	}
 	need := resolution.Needs[0]
-	if need.Capability != CapabilityInformationLookup || need.Qualifiers[QualifierInformationScope] != InformationScopeReference {
+	if need.Capability != CapabilityInformationSearchWeb || need.Qualifiers[QualifierSearchFreshness] != SearchFreshnessReference {
 		t.Fatalf("need=%#v", need)
 	}
 }
@@ -307,7 +324,7 @@ func TestReviewedDynamicIntentRulesResolveWebFetchWithoutLookup(t *testing.T) {
 		Registry: registry, Rules: ReviewedDynamicIntentCapabilityNeedRules(),
 	}
 	resolution, err := resolver.ResolveDynamicCapabilityNeeds(context.Background(), DynamicCapabilityNeedRequest{UserText: "fetch the content of this URL"})
-	if err != nil || !resolution.Managed || len(resolution.Needs) != 1 {
+	if err != nil || !resolution.Managed || requiredNeedCount(resolution.Needs) != 1 {
 		t.Fatalf("resolution=%#v err=%v", resolution, err)
 	}
 	if resolution.Needs[0].Capability != CapabilityWebFetch {
@@ -451,7 +468,7 @@ func TestReviewedDynamicIntentRulesResolveOfficeWriteWithoutFileWrite(t *testing
 		Registry: registry, Rules: ReviewedDynamicIntentCapabilityNeedRules(),
 	}
 	resolution, err := resolver.ResolveDynamicCapabilityNeeds(context.Background(), DynamicCapabilityNeedRequest{UserText: "写一个表格"})
-	if err != nil || !resolution.Managed || len(resolution.Needs) != 1 {
+	if err != nil || !resolution.Managed || requiredNeedCount(resolution.Needs) != 1 {
 		t.Fatalf("resolution=%#v err=%v", resolution, err)
 	}
 	if resolution.Needs[0].Capability != CapabilityOfficeWrite || resolution.Needs[0].Qualifiers[QualifierDocumentFormat] != DocumentFormatSpreadsheet {
@@ -523,7 +540,7 @@ func TestReviewedDynamicIntentRulesResolveShellWithoutFileWrite(t *testing.T) {
 		Registry: registry, Rules: ReviewedDynamicIntentCapabilityNeedRules(),
 	}
 	resolution, err := resolver.ResolveDynamicCapabilityNeeds(context.Background(), DynamicCapabilityNeedRequest{UserText: "运行 echo hi"})
-	if err != nil || !resolution.Managed || len(resolution.Needs) != 1 {
+	if err != nil || !resolution.Managed || requiredNeedCount(resolution.Needs) != 1 {
 		t.Fatalf("resolution=%#v err=%v", resolution, err)
 	}
 	if resolution.Needs[0].Capability != CapabilityShellExecute {
@@ -876,6 +893,20 @@ func TestReviewedDynamicIntentRulesResolveSessionManageWithoutDriveOrDelegate(t 
 
 func TestReviewedDynamicIntentRulesDoNotImportGUIMCatalog(t *testing.T) {
 	rules := ReviewedDynamicIntentCapabilityNeedRules()
+	searchNeeds, ok := rules[intent.LabelSearch]
+	if !ok || len(searchNeeds) != 1 || searchNeeds[0].Capability != CapabilityInformationSearchWeb || searchNeeds[0].Qualifiers[QualifierSearchFreshness] != SearchFreshnessReference {
+		t.Fatalf("search rule=%#v", searchNeeds)
+	}
+	if searchNeeds[0].Capability == CapabilityInformationLookup {
+		t.Fatal("search must not map onto information.lookup")
+	}
+	liveNeeds, ok := rules[intent.LabelLiveData]
+	if !ok || len(liveNeeds) != 1 || liveNeeds[0].Capability != CapabilityInformationSearchWeb || liveNeeds[0].Qualifiers[QualifierSearchFreshness] != SearchFreshnessCurrent {
+		t.Fatalf("live_data rule=%#v", liveNeeds)
+	}
+	if liveNeeds[0].Capability == CapabilityInformationLookup {
+		t.Fatal("live_data must not map onto information.lookup")
+	}
 	generateNeeds, ok := rules[intent.LabelDocumentGenerate]
 	if !ok || len(generateNeeds) != 2 || generateNeeds[0].Capability != CapabilityDocumentGenerate || generateNeeds[0].Qualifiers[QualifierDocumentFormat] != DocumentFormatPDF || generateNeeds[1].Capability != CapabilityArtifactDeliverCurrent || generateNeeds[1].Qualifiers[QualifierArtifactFormat] != ArtifactFormatFile {
 		t.Fatalf("document_generate rule=%#v", generateNeeds)
@@ -1158,7 +1189,17 @@ func TestReviewedDynamicIntentRulesDoNotImportGUIMCatalog(t *testing.T) {
 
 func TestReviewedDynamicPolicyDeniesLookupForOpsControlled(t *testing.T) {
 	_, constraints, err := ReviewedDynamicCapabilityPolicyAdapter().DynamicCapabilityConstraints(DynamicCapabilityNeedRequest{WorkflowPolicy: "ops_controlled"})
-	if err != nil || len(constraints) != 1 || constraints[0].Capability != CapabilityInformationLookup || constraints[0].Effect != "deny" {
+	if err != nil || len(constraints) != 2 {
 		t.Fatalf("constraints=%#v err=%v", constraints, err)
+	}
+	denied := map[coretool.CapabilityID]bool{}
+	for _, constraint := range constraints {
+		if constraint.Effect != "deny" {
+			t.Fatalf("constraint=%#v", constraint)
+		}
+		denied[constraint.Capability] = true
+	}
+	if !denied[CapabilityInformationLookup] || !denied[CapabilityInformationSearchWeb] {
+		t.Fatalf("ops_controlled must deny lookup and search.web, constraints=%#v", constraints)
 	}
 }

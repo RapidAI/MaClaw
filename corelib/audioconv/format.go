@@ -33,7 +33,10 @@ func (e *NativeDecodeUnsupportedError) Error() string {
 	if format == "" {
 		return ErrNativeDecodeUnsupported.Error()
 	}
-	return fmt.Sprintf("%s: %s", ErrNativeDecodeUnsupported.Error(), format)
+	// Keep the format in the stable, agent-facing portion of the message so
+	// callers can explain exactly which native decoder is unavailable while
+	// errors.Is/As still match ErrNativeDecodeUnsupported.
+	return fmt.Sprintf("audioconv: native %s decode is not supported", format)
 }
 
 func (e *NativeDecodeUnsupportedError) Unwrap() error {

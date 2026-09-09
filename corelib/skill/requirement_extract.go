@@ -6,6 +6,7 @@ package skill
 
 import (
 	"fmt"
+	"regexp"
 	"runtime"
 	"strings"
 
@@ -655,10 +656,58 @@ func (c *GUIChecker) Check(req Requirement) *Violation {
 
 type PipFixer struct{}
 
+// declarativeRequirementNameRe accepts the shapes a *declared* dependency name
+// may legitimately take:
+//   - plain package:  requests, opencv-python, Pillow, foo.bar
+//   - npm scope:      @types/node
+//   - inline version: lodash@^4.17 — splitPkgVersion does not split on "@",
+//     so an npm-style pinned name arrives here whole
+//
+// It deliberately excludes ":" so a URL can never be a name, excludes a
+// leading "-" so it can never be a flag, and excludes a leading "." or "/" so
+// it can never be a filesystem path.
+//
+// This is intentionally *looser* than validDependencyInstallName: declared
+// requirements come from a manifest the user reviewed when installing the
+// skill, not from runtime output a malicious document can influence. It is
+// still a real boundary — pip and npm both accept a URL or a path as an
+// install target, so without this a skill.yaml could declare
+// `requires: python: ["https://host/x.whl"]` and install straight from it.
+var declarativeRequirementNameRe = regexp.MustCompile(`^(@[A-Za-z0-9._+-]+/)?[A-Za-z0-9][A-Za-z0-9._+-]*(@[\^~]?[A-Za-z0-9][A-Za-z0-9._+-]*)?$`)
+
+// declarativeRequirementVersionRe accepts pip/npm version constraints, which
+// splitPkgVersion leaves attached to the version: ">=0.9", "==1.0.*", "~=1.4",
+// "^4.17.21", and comma-separated forms such as ">=1.0,<2".
+var declarativeRequirementVersionRe = regexp.MustCompile(`^[><~!=^]=?[ ]*[A-Za-z0-9][A-Za-z0-9._*+-]*([ ]*,[ ]*[><~!=^]=?[ ]*[A-Za-z0-9][A-Za-z0-9._*+-]*)*$`)
+
+const declarativeRequirementMaxLen = 256
+
+// validDeclarativeRequirement guards the declared-dependency install path,
+// which reaches pip/npm as a single argv token (no shell, so argv injection is
+// not the concern — one token being a URL or a path is).
+func validDeclarativeRequirement(name, version string) error {
+	if name == "" {
+		return fmt.Errorf("dependency name is empty")
+	}
+	if len(name) > declarativeRequirementMaxLen || len(version) > declarativeRequirementMaxLen {
+		return fmt.Errorf("dependency name or version is too long")
+	}
+	if !declarativeRequirementNameRe.MatchString(name) {
+		return fmt.Errorf("refusing to install %q: not a plain package name", name)
+	}
+	if version != "" && !declarativeRequirementVersionRe.MatchString(version) {
+		return fmt.Errorf("refusing to install %q: version constraint %q is not a plain constraint", name, version)
+	}
+	return nil
+}
+
 var ensureSharedPythonRuntimeWithDataDir = pyenv.EnsureSharedPythonRuntimeWithDataDir
 
 func (f *PipFixer) Type() string { return "pip" }
 func (f *PipFixer) Fix(req Requirement) error {
+	if err := validDeclarativeRequirement(req.Name, req.Version); err != nil {
+		return err
+	}
 	// Use the python_path from Context if available — this ensures the Fixer
 	// installs into the SAME Python environment that BuildCommandEnv will inject
 	// at runtime. Without this, Fixer might use system Python while runtime uses
@@ -705,6 +754,9 @@ type NpmFixer struct{}
 
 func (f *NpmFixer) Type() string { return "npm" }
 func (f *NpmFixer) Fix(req Requirement) error {
+	if err := validDeclarativeRequirement(req.Name, req.Version); err != nil {
+		return err
+	}
 	skillDir := ""
 	if req.Context != nil {
 		skillDir = req.Context["skill_dir"]

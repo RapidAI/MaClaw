@@ -1932,10 +1932,14 @@ func TestOpenAI_RequestBody_StripsCodeGenUnsupportedStreamOptions(t *testing.T) 
 	if err := json.Unmarshal(body, &req); err != nil {
 		t.Fatalf("failed to parse request body: %v", err)
 	}
-	for _, key := range []string{"stream_options", "parallel_tool_calls", "store", "metadata", "response_format", "tool_choice", "function_call", "logprobs", "top_logprobs", "service_tier", "reasoning_effort", "modalities", "prediction", "audio", "web_search_options"} {
+	for _, key := range []string{"stream_options", "store", "metadata", "function_call", "logprobs", "top_logprobs", "service_tier", "reasoning_effort", "modalities", "prediction", "audio", "web_search_options"} {
 		if _, ok := req[key]; ok {
 			t.Fatalf("CodeGen request leaked %s: %#v", key, req)
 		}
+	}
+	format, _ := req["response_format"].(map[string]interface{})
+	if format["type"] != "json_schema" {
+		t.Fatalf("structured CodeGen request dropped response_format: %#v", req["response_format"])
 	}
 	if got := req["stream"]; got != true {
 		t.Fatalf("stream = %#v, want true", got)
@@ -2003,10 +2007,14 @@ func TestOpenAI_RequestBody_SanitizesQwenOpenAICompatProvider(t *testing.T) {
 	if err := json.Unmarshal(body, &req); err != nil {
 		t.Fatalf("failed to parse request body: %v", err)
 	}
-	for _, key := range []string{"stream_options", "parallel_tool_calls", "store", "metadata", "response_format", "tool_choice", "function_call", "logprobs", "top_logprobs", "service_tier", "reasoning_effort", "modalities", "prediction", "audio", "web_search_options"} {
+	for _, key := range []string{"stream_options", "store", "metadata", "function_call", "logprobs", "top_logprobs", "service_tier", "reasoning_effort", "modalities", "prediction", "audio", "web_search_options"} {
 		if _, ok := req[key]; ok {
 			t.Fatalf("Qwen request leaked %s: %#v", key, req)
 		}
+	}
+	format, _ := req["response_format"].(map[string]interface{})
+	if format["type"] != "json_schema" {
+		t.Fatalf("structured Qwen request dropped response_format: %#v", req["response_format"])
 	}
 	messages := req["messages"].([]interface{})
 	if len(messages) != 6 {
@@ -2171,6 +2179,180 @@ E:\中再集团-U1SP5测试报告.docx
 	}
 }
 
+func TestOpenAI_RequestBody_PreservesControlPlaneSystemPromptOnConservativeCompat(t *testing.T) {
+	classifierPrompt := "You are an intent classifier. Given the user message, select the best matching intents from the intent tree below.\n" +
+		strings.Repeat("  template_manage: administer session templates\n  session_manage: administer coding sessions\n", 400)
+	if len(classifierPrompt) <= conservativeOpenAICompatSystemPromptLimit {
+		t.Fatalf("fixture too small to trigger relocation: len=%d", len(classifierPrompt))
+	}
+	userText := "需要专业风格, 使用大型技术交流会议的风格"
+	_, body, err := BuildOpenAIChatRequestData(
+		corelib.MaclawLLMConfig{URL: "https://hub.mypapers.top/api/llm/v1", Model: "auto"},
+		[]interface{}{
+			map[string]interface{}{"role": "system", "content": classifierPrompt},
+			map[string]interface{}{"role": "user", "content": userText},
+		},
+		OpenAIChatRequestOptions{
+			ResponseFormat: map[string]interface{}{
+				"type": "json_schema",
+				"json_schema": map[string]interface{}{
+					"name":   "intent_tree_candidates",
+					"strict": true,
+					"schema": map[string]interface{}{"type": "object"},
+				},
+			},
+			PreserveResponseFormat: true,
+		},
+	)
+	if err != nil {
+		t.Fatalf("BuildOpenAIChatRequestData: %v", err)
+	}
+	var req map[string]interface{}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("decode request: %v", err)
+	}
+	messages := req["messages"].([]interface{})
+	if len(messages) != 2 {
+		t.Fatalf("messages len = %d, want 2: %#v", len(messages), messages)
+	}
+	system := messages[0].(map[string]interface{})
+	if system["role"] != "system" {
+		t.Fatalf("first role = %#v, want system", system["role"])
+	}
+	systemContent, _ := system["content"].(string)
+	if systemContent != classifierPrompt {
+		t.Fatalf("control-plane system prompt was rewritten: got len=%d want len=%d prefix=%q", len(systemContent), len(classifierPrompt), truncateForTest(systemContent, 80))
+	}
+	if systemContent == conservativeOpenAICompatCompactSystemPrompt {
+		t.Fatal("classifier system prompt was replaced with the agent-chat compact persona")
+	}
+	user := messages[1].(map[string]interface{})
+	userContent, _ := user["content"].(string)
+	if strings.Contains(userContent, "[Runtime context]") {
+		t.Fatalf("control-plane user message must not receive relocated runtime context: %q", truncateForTest(userContent, 200))
+	}
+	if userContent != userText {
+		t.Fatalf("user content = %q, want %q", userContent, userText)
+	}
+	format, _ := req["response_format"].(map[string]interface{})
+	if format["type"] != "json_schema" {
+		t.Fatalf("response_format=%#v, want json_schema retained", req["response_format"])
+	}
+}
+
+func TestOpenAI_RequestBody_StructuredOutputIsARequestKindNotAFlag(t *testing.T) {
+	classifierPrompt := "You are an intent classifier.\n" + strings.Repeat("intent tree line\n", 900)
+	if len(classifierPrompt) <= conservativeOpenAICompatSystemPromptLimit {
+		t.Fatalf("fixture too small to trigger relocation: len=%d", len(classifierPrompt))
+	}
+	_, body, err := BuildOpenAIChatRequestData(
+		corelib.MaclawLLMConfig{URL: "https://hub.mypapers.top/api/llm/v1", Model: "auto"},
+		[]interface{}{
+			map[string]interface{}{"role": "system", "content": classifierPrompt},
+			map[string]interface{}{"role": "user", "content": "需要专业风格"},
+		},
+		OpenAIChatRequestOptions{
+			ResponseFormat: map[string]interface{}{
+				"type": "json_schema",
+				"json_schema": map[string]interface{}{
+					"name":   "intent_tree_candidates",
+					"strict": true,
+					"schema": map[string]interface{}{"type": "object"},
+				},
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("BuildOpenAIChatRequestData: %v", err)
+	}
+	var req map[string]interface{}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("decode request: %v", err)
+	}
+	system := req["messages"].([]interface{})[0].(map[string]interface{})
+	if got := system["content"].(string); got != classifierPrompt {
+		t.Fatalf("structured request rewrote system prompt without PreserveResponseFormat: prefix=%q", truncateForTest(got, 80))
+	}
+	user := req["messages"].([]interface{})[1].(map[string]interface{})
+	if strings.Contains(user["content"].(string), "[Runtime context]") {
+		t.Fatal("structured request injected [Runtime context] without PreserveResponseFormat")
+	}
+	format, _ := req["response_format"].(map[string]interface{})
+	if format["type"] != "json_schema" {
+		t.Fatalf("structured request dropped response_format without PreserveResponseFormat: %#v", req["response_format"])
+	}
+}
+
+func TestOpenAI_RequestBody_HubDoesNotRelocateOversizedAgentSystemPrompt(t *testing.T) {
+	systemPrompt := "You are MaClaw, AI personal assistant.\n" + strings.Repeat("skill and safety instruction\n", 900)
+	if len(systemPrompt) <= conservativeOpenAICompatSystemPromptLimit {
+		t.Fatalf("fixture too small to trigger relocation: len=%d", len(systemPrompt))
+	}
+	for _, cfg := range []corelib.MaclawLLMConfig{
+		{URL: "https://hub.mypapers.top/api/llm/v1", Model: "auto"},
+		{URL: "https://dashscope.aliyuncs.com/compatible-mode/v1", Model: "qwen-27b", HubManaged: true},
+	} {
+		_, body, err := BuildOpenAIChatRequestData(
+			cfg,
+			[]interface{}{
+				map[string]interface{}{"role": "system", "content": systemPrompt},
+				map[string]interface{}{"role": "user", "content": "继续改 PPT"},
+			},
+			OpenAIChatRequestOptions{
+				Stream: true,
+				Tools: []map[string]interface{}{{
+					"type":     "function",
+					"function": map[string]interface{}{"name": "office", "parameters": map[string]interface{}{"type": "object"}},
+				}},
+				ExplicitToolReplacement: true,
+			},
+		)
+		if err != nil {
+			t.Fatalf("BuildOpenAIChatRequestData: %v", err)
+		}
+		var req map[string]interface{}
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		system := req["messages"].([]interface{})[0].(map[string]interface{})
+		if got := system["content"].(string); got != systemPrompt {
+			t.Fatalf("Hub agent/coding system prompt was rewritten: cfg=%#v prefix=%q", cfg, truncateForTest(got, 80))
+		}
+		user := req["messages"].([]interface{})[1].(map[string]interface{})
+		userContent, _ := user["content"].(string)
+		if strings.Contains(userContent, "[Runtime context]") {
+			t.Fatalf("Hub agent/coding user message received relocated runtime context: cfg=%#v", cfg)
+		}
+		if _, ok := req["tools"]; !ok {
+			t.Fatalf("Hub agent/coding request lost tools: %#v", req)
+		}
+	}
+}
+
+func truncateForTest(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
+}
+
+func TestLimitOpenAICompatRuntimeContextKeepsHeadAndTail(t *testing.T) {
+	text := "HEAD-IDENTITY " + strings.Repeat("middle ", 2000) + " TAIL-CODING-WORKFLOW"
+	got := limitOpenAICompatRuntimeContext(text, 256)
+	if len(got) > 256 {
+		t.Fatalf("limited len=%d, want <=256", len(got))
+	}
+	if !strings.Contains(got, "HEAD-IDENTITY") || !strings.Contains(got, "TAIL-CODING-WORKFLOW") {
+		t.Fatalf("truncation dropped prompt ends: %q", got)
+	}
+	if !strings.Contains(got, "[...truncated for compatibility...]") {
+		t.Fatal("expected truncation marker")
+	}
+	if strings.Count(got, "middle") > 80 {
+		t.Fatalf("middle of prompt should be truncated: count=%d text=%q", strings.Count(got, "middle"), got)
+	}
+}
+
 func TestCompactOpenAICompatMessagesForToollessRetryKeepsLatestUserAndTaskContext(t *testing.T) {
 	messages := []interface{}{
 		map[string]interface{}{"role": "system", "content": strings.Repeat("runtime context\n", 900) + `
@@ -2207,6 +2389,9 @@ E:\中再集团-U1SP5测试报告.docx
 	userContent := user["content"].(string)
 	if !strings.Contains(userContent, "latest request") {
 		t.Fatalf("compact user missing latest request: %q", userContent)
+	}
+	if !strings.Contains(userContent, "tool schemas were omitted") {
+		t.Fatal("toolless compact retry must say tool schemas were omitted")
 	}
 	for _, want := range []string{"[Relevant runtime context]", "星网U8BUG", `e:\test4`, "[Skill preference] prefer reusable skill"} {
 		if !strings.Contains(userContent, want) {
@@ -2458,11 +2643,219 @@ func TestShouldRetryOpenAIWithCompactAllowsToollessBadRequest(t *testing.T) {
 	if !ShouldRetryOpenAIWithCompact(cfg, http.StatusBadRequest, messages, nil) {
 		t.Fatal("expected compact retry for conservative OpenAI-compatible 400 without tools")
 	}
-	if ShouldRetryOpenAIWithCompact(cfg, http.StatusBadRequest, messages, []map[string]interface{}{{"type": "function", "function": map[string]interface{}{"name": "read_file"}}}) {
-		t.Fatal("a request that still exposes tools must not compact into a tool-free retry")
+	tools := []map[string]interface{}{{"type": "function", "function": map[string]interface{}{"name": "read_file"}}}
+	if ShouldRetryOpenAIWithCompact(cfg, http.StatusBadRequest, messages, tools) {
+		t.Fatal("CodeGen/Qwen tool-bearing 400 must not compact-retry; those relays already received a size-adapted first request")
+	}
+	hub := corelib.MaclawLLMConfig{URL: "https://hub.mypapers.top/api/llm/v1", Model: "auto"}
+	if !ShouldRetryOpenAIWithCompact(hub, http.StatusBadRequest, messages, tools) {
+		t.Fatal("Hub skipped preemptive relocate, so a size 400 may compact messages while keeping tools")
 	}
 	if ShouldRetryOpenAIWithCompact(corelib.MaclawLLMConfig{URL: "https://api.openai.com/v1", Model: "gpt-test"}, http.StatusBadRequest, messages, nil) {
 		t.Fatal("standard OpenAI provider should not use compact compatibility retry")
+	}
+}
+
+func TestCompactRetryChatRequestKeepsHubToolSurface(t *testing.T) {
+	messages := []interface{}{
+		map[string]interface{}{"role": "system", "content": strings.Repeat("runtime context\n", 900)},
+		map[string]interface{}{"role": "user", "content": "继续改 PPT"},
+	}
+	tools := []map[string]interface{}{{
+		"type":     "function",
+		"function": map[string]interface{}{"name": "office", "parameters": map[string]interface{}{"type": "object"}},
+	}}
+	opts := OpenAIChatRequestOptions{Stream: true, Tools: tools, ExplicitToolReplacement: true}
+	compact, retryOpts, ok := compactRetryChatRequest(
+		corelib.MaclawLLMConfig{URL: "https://hub.mypapers.top/api/llm/v1", Model: "auto"},
+		http.StatusBadRequest, messages, tools, opts, true,
+	)
+	if !ok || len(compact) == 0 {
+		t.Fatal("Hub size 400 must compact messages")
+	}
+	if len(retryOpts.Tools) != 1 || !retryOpts.ExplicitToolReplacement || !retryOpts.Stream {
+		t.Fatalf("Hub compact retry dropped the tool contract: %#v", retryOpts)
+	}
+	system := compact[0].(map[string]interface{})
+	systemContent, _ := system["content"].(string)
+	if systemContent == conservativeOpenAICompatCompactSystemPrompt {
+		t.Fatal("Hub compact retry replaced the real system prompt with the chat-assistant persona")
+	}
+	if !strings.Contains(systemContent, "runtime context") {
+		t.Fatalf("Hub compact retry dropped system instructions: %q", truncateForTest(systemContent, 200))
+	}
+	user := compact[1].(map[string]interface{})
+	userContent, _ := user["content"].(string)
+	if userContent != "继续改 PPT" {
+		t.Fatalf("Hub compact retry user = %q, want the original latest user message", userContent)
+	}
+	if strings.Contains(userContent, "tool schemas were omitted") {
+		t.Fatal("Hub compact retry kept tools but told the model tool schemas were omitted")
+	}
+
+	if _, _, structured := compactRetryChatRequest(
+		corelib.MaclawLLMConfig{URL: "https://hub.mypapers.top/api/llm/v1", Model: "auto"},
+		http.StatusBadRequest, messages, nil,
+		OpenAIChatRequestOptions{ResponseFormat: map[string]interface{}{"type": "json_object"}},
+		false,
+	); structured {
+		t.Fatal("structured-output compact retry must not fire")
+	}
+}
+
+func TestCompactRetryChatRequestKeepsFullTruncatedSystemNotKeywordSlice(t *testing.T) {
+	systemPrompt := "HEAD-IDENTITY You are MaClaw.\n" +
+		strings.Repeat("filler ", 3000) +
+		"\n用户需求：这段只是工作流说明里的词，不是任务块。\n" +
+		strings.Repeat("filler ", 3000) +
+		"\nTAIL-CODING Spec-driven implementation constraints."
+	compact, _, ok := compactRetryChatRequest(
+		corelib.MaclawLLMConfig{URL: "https://hub.mypapers.top/api/llm/v1", Model: "auto"},
+		http.StatusBadRequest,
+		[]interface{}{
+			map[string]interface{}{"role": "system", "content": systemPrompt},
+			map[string]interface{}{"role": "user", "content": "继续实现"},
+		},
+		[]map[string]interface{}{{"type": "function", "function": map[string]interface{}{"name": "bash"}}},
+		OpenAIChatRequestOptions{Tools: []map[string]interface{}{{"type": "function", "function": map[string]interface{}{"name": "bash"}}}},
+		false,
+	)
+	if !ok {
+		t.Fatal("expected Hub compact retry")
+	}
+	systemContent := compact[0].(map[string]interface{})["content"].(string)
+	if !strings.Contains(systemContent, "HEAD-IDENTITY") || !strings.Contains(systemContent, "TAIL-CODING") {
+		t.Fatalf("keyword slice replaced the real system prompt: %q", truncateForTest(systemContent, 240))
+	}
+	if compact[1].(map[string]interface{})["content"].(string) != "继续实现" {
+		t.Fatalf("user = %#v", compact[1])
+	}
+}
+
+func TestCompactRetryChatRequestPreservesMultimodalUserContent(t *testing.T) {
+	userContent := []interface{}{
+		map[string]interface{}{"type": "text", "text": "看这张图"},
+		map[string]interface{}{"type": "image_url", "image_url": map[string]interface{}{"url": "data:image/png;base64,abc"}},
+	}
+	compact, retryOpts, ok := compactRetryChatRequest(
+		corelib.MaclawLLMConfig{URL: "https://hub.mypapers.top/api/llm/v1", Model: "auto"},
+		http.StatusBadRequest,
+		[]interface{}{
+			map[string]interface{}{"role": "system", "content": "You are MaClaw.\n" + strings.Repeat("rule\n", 400)},
+			map[string]interface{}{"role": "user", "content": userContent},
+		},
+		[]map[string]interface{}{{"type": "function", "function": map[string]interface{}{"name": "screenshot"}}},
+		OpenAIChatRequestOptions{
+			Tools:                   []map[string]interface{}{{"type": "function", "function": map[string]interface{}{"name": "screenshot"}}},
+			ExplicitToolReplacement: true,
+		},
+		true,
+	)
+	if !ok {
+		t.Fatal("expected Hub compact retry")
+	}
+	if len(retryOpts.Tools) != 1 {
+		t.Fatalf("tools = %#v", retryOpts.Tools)
+	}
+	got := compact[1].(map[string]interface{})["content"]
+	gotJSON, _ := json.Marshal(got)
+	wantJSON, _ := json.Marshal(userContent)
+	if string(gotJSON) != string(wantJSON) {
+		t.Fatalf("multimodal user content was stringified: %s", gotJSON)
+	}
+}
+
+func TestCompactRetryChatRequestSkipsEmptyUserContentArray(t *testing.T) {
+	compact, _, ok := compactRetryChatRequest(
+		corelib.MaclawLLMConfig{URL: "https://hub.mypapers.top/api/llm/v1", Model: "auto"},
+		http.StatusBadRequest,
+		[]interface{}{
+			map[string]interface{}{"role": "system", "content": "You are MaClaw."},
+			map[string]interface{}{"role": "user", "content": "真正的请求"},
+			map[string]interface{}{"role": "user", "content": []interface{}{}},
+		},
+		[]map[string]interface{}{{"type": "function", "function": map[string]interface{}{"name": "office"}}},
+		OpenAIChatRequestOptions{Tools: []map[string]interface{}{{"type": "function", "function": map[string]interface{}{"name": "office"}}}},
+		false,
+	)
+	if !ok {
+		t.Fatal("expected compact retry to skip empty content array")
+	}
+	if compact[1].(map[string]interface{})["content"].(string) != "真正的请求" {
+		t.Fatalf("empty user array should not hide the previous user message: %#v", compact[1])
+	}
+}
+
+func TestOpenAI_RequestBody_RelocatesOversizedSystemWithoutStringifyingImages(t *testing.T) {
+	userContent := []interface{}{
+		map[string]interface{}{"type": "text", "text": "看图改代码"},
+		map[string]interface{}{"type": "image_url", "image_url": map[string]interface{}{"url": "data:image/png;base64,abc"}},
+	}
+	_, body, err := BuildOpenAIChatRequestData(
+		corelib.MaclawLLMConfig{URL: "https://codegen.qianxin-inc.cn/api/v1", Model: "qax-codegen/Auto", ProviderName: "CodeGen"},
+		[]interface{}{
+			map[string]interface{}{"role": "system", "content": strings.Repeat("runtime instruction and context\n", 700)},
+			map[string]interface{}{"role": "user", "content": userContent},
+		},
+		OpenAIChatRequestOptions{Stream: true},
+	)
+	if err != nil {
+		t.Fatalf("BuildOpenAIChatRequestData: %v", err)
+	}
+	var req map[string]interface{}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("decode request: %v", err)
+	}
+	user := req["messages"].([]interface{})[1].(map[string]interface{})
+	parts, ok := user["content"].([]interface{})
+	if !ok || len(parts) < 2 {
+		t.Fatalf("relocated multimodal user was stringified: %#v", user["content"])
+	}
+	last, _ := parts[len(parts)-1].(map[string]interface{})
+	if last["type"] != "image_url" {
+		t.Fatalf("image part dropped: %#v", parts)
+	}
+}
+
+func TestOpenAI_RequestBody_RelocatesTypedContentBlockSliceWithoutStringifying(t *testing.T) {
+	userContent := []map[string]interface{}{
+		{"type": "text", "text": "看图"},
+		{"type": "image_url", "image_url": map[string]interface{}{"url": "data:image/png;base64,abc"}},
+	}
+	_, body, err := BuildOpenAIChatRequestData(
+		corelib.MaclawLLMConfig{URL: "https://codegen.qianxin-inc.cn/api/v1", Model: "qax-codegen/Auto", ProviderName: "CodeGen"},
+		[]interface{}{
+			map[string]interface{}{"role": "system", "content": strings.Repeat("runtime instruction and context\n", 700)},
+			map[string]interface{}{"role": "user", "content": userContent},
+		},
+		OpenAIChatRequestOptions{Stream: true},
+	)
+	if err != nil {
+		t.Fatalf("BuildOpenAIChatRequestData: %v", err)
+	}
+	var req map[string]interface{}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("decode request: %v", err)
+	}
+	user := req["messages"].([]interface{})[1].(map[string]interface{})
+	parts, ok := user["content"].([]interface{})
+	if !ok || len(parts) < 2 {
+		t.Fatalf("typed content-block slice was stringified: %#v", user["content"])
+	}
+	last, _ := parts[len(parts)-1].(map[string]interface{})
+	if last["type"] != "image_url" {
+		t.Fatalf("typed image part dropped: %#v", parts)
+	}
+}
+
+func TestShouldRetryOpenAIWithCompactDoesNotApplyToStructuredOutput(t *testing.T) {
+	if !hasStructuredOutputContract(OpenAIChatRequestOptions{
+		ResponseFormat: map[string]interface{}{"type": "json_object"},
+	}) {
+		t.Fatal("ResponseFormat must mark a structured-output contract")
+	}
+	if hasStructuredOutputContract(OpenAIChatRequestOptions{}) {
+		t.Fatal("tool-free chat must not look like a structured-output contract")
 	}
 }
 
@@ -2517,6 +2910,58 @@ func TestBuildResponsesAPIRequestDataPreservesExplicitToolControlsForConservativ
 	}
 	if request["tool_choice"] != "required" || request["parallel_tool_calls"] != false || len(request["tools"].([]interface{})) != 1 {
 		t.Fatalf("explicit Responses tool contract was downgraded: %#v", request)
+	}
+}
+
+func TestDoOpenAIRequest_HubCompactsMessagesButKeepsToolsOnBadRequest(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if _, ok := body["tools"]; !ok {
+			t.Fatalf("attempt %d lost tools: %#v", attempts, body)
+		}
+		switch attempts {
+		case 1:
+			system := body["messages"].([]interface{})[0].(map[string]interface{})
+			if got := system["content"].(string); !strings.Contains(got, "runtime context\nruntime context") {
+				t.Fatalf("Hub first attempt must send the real system prompt, got %.80q", got)
+			}
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"context too large"}}`))
+		case 2:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+		default:
+			t.Fatalf("unexpected attempt %d", attempts)
+		}
+	}))
+	defer srv.Close()
+
+	resp, err := DoOpenAIRequest(
+		context.Background(),
+		corelib.MaclawLLMConfig{URL: srv.URL, Model: "qwen-27b", Protocol: "openai", HubManaged: true},
+		[]interface{}{
+			map[string]interface{}{"role": "system", "content": strings.Repeat("runtime context\n", 900)},
+			map[string]interface{}{"role": "user", "content": "继续改 PPT"},
+		},
+		[]map[string]interface{}{{
+			"type":     "function",
+			"function": map[string]interface{}{"name": "office", "parameters": map[string]interface{}{"type": "object"}},
+		}},
+		srv.Client(),
+	)
+	if err != nil {
+		t.Fatalf("DoOpenAIRequest: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+	if got := resp.Choices[0].Message.Content; got != "ok" {
+		t.Fatalf("content = %q, want ok", got)
 	}
 }
 
@@ -5521,5 +5966,103 @@ func TestBuildAnthropicMessagesRequestBodyBoundsThinkingBudgetToOutputLimit(t *t
 	}
 	if got := req["max_tokens"]; got != 8 {
 		t.Fatalf("max_tokens = %#v, want configured limit preserved", got)
+	}
+}
+
+func TestBuildRequestBodies_ConfigTemperature(t *testing.T) {
+	tmp := 0.3
+	msgs := []interface{}{map[string]interface{}{"role": "user", "content": "hi"}}
+
+	// Chat completions: config temperature lands in the body.
+	_, body, err := BuildOpenAIChatRequestData(
+		corelib.MaclawLLMConfig{URL: "https://example.com/v1", Model: "gpt-4.1", Temperature: &tmp},
+		msgs, OpenAIChatRequestOptions{})
+	if err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	var chat map[string]interface{}
+	if err := json.Unmarshal(body, &chat); err != nil {
+		t.Fatalf("chat parse: %v", err)
+	}
+	if got := chat["temperature"]; got != 0.3 {
+		t.Fatalf("chat temperature = %#v, want 0.3", got)
+	}
+
+	// Explicit PassThrough/ExtraBody temperature wins over the config field.
+	_, body, err = BuildOpenAIChatRequestData(
+		corelib.MaclawLLMConfig{URL: "https://example.com/v1", Model: "gpt-4.1", Temperature: &tmp},
+		msgs, OpenAIChatRequestOptions{ExtraBody: map[string]interface{}{"temperature": 0.7}})
+	if err != nil {
+		t.Fatalf("chat explicit: %v", err)
+	}
+	if err := json.Unmarshal(body, &chat); err != nil {
+		t.Fatalf("chat explicit parse: %v", err)
+	}
+	if got := chat["temperature"]; got != 0.7 {
+		t.Fatalf("chat explicit temperature = %#v, want 0.7", got)
+	}
+
+	// DeepSeek thinking-enabled default rejects/ignores temperature: skip it.
+	_, body, err = BuildOpenAIChatRequestData(
+		corelib.MaclawLLMConfig{URL: "https://api.deepseek.com/v1", Model: "deepseek-reasoner", Temperature: &tmp},
+		msgs, OpenAIChatRequestOptions{})
+	if err != nil {
+		t.Fatalf("deepseek: %v", err)
+	}
+	// Unmarshal into a fresh map: reusing the previous one would retain the
+	// earlier case's temperature key when the body correctly omits it.
+	chat = nil
+	if err := json.Unmarshal(body, &chat); err != nil {
+		t.Fatalf("deepseek parse: %v", err)
+	}
+	if _, ok := chat["temperature"]; ok {
+		t.Fatalf("deepseek thinking temperature = %#v, want absent", chat["temperature"])
+	}
+
+	// Responses API: config temperature lands in the body.
+	_, body, err = BuildResponsesAPIRequestData(
+		corelib.MaclawLLMConfig{URL: "https://api.openai.com", Model: "gpt-5", WireAPI: "responses", Temperature: &tmp},
+		msgs, ResponsesAPIRequestOptions{})
+	if err != nil {
+		t.Fatalf("responses: %v", err)
+	}
+	var resp map[string]interface{}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("responses parse: %v", err)
+	}
+	if got := resp["temperature"]; got != 0.3 {
+		t.Fatalf("responses temperature = %#v, want 0.3", got)
+	}
+
+	// Codex subscription endpoints reject sampling params: skip.
+	_, body, err = BuildResponsesAPIRequestData(
+		corelib.MaclawLLMConfig{URL: "https://chatgpt.com/backend-api/codex", Model: "gpt-5", WireAPI: "responses", Temperature: &tmp},
+		msgs, ResponsesAPIRequestOptions{})
+	if err != nil {
+		t.Fatalf("codex: %v", err)
+	}
+	// Fresh map for the same reason as the DeepSeek case above.
+	resp = nil
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("codex parse: %v", err)
+	}
+	if _, ok := resp["temperature"]; ok {
+		t.Fatalf("codex temperature = %#v, want absent", resp["temperature"])
+	}
+
+	// Anthropic: config temperature lands in the body.
+	req := BuildAnthropicMessagesRequestBody(
+		corelib.MaclawLLMConfig{URL: "https://api.anthropic.com", Model: "claude-sonnet", Temperature: &tmp},
+		msgs, AnthropicMessagesRequestOptions{})
+	if got := req["temperature"]; got != 0.3 {
+		t.Fatalf("anthropic temperature = %#v, want 0.3", got)
+	}
+
+	// Anthropic extended thinking rejects temperature: skip it.
+	req = BuildAnthropicMessagesRequestBody(
+		corelib.MaclawLLMConfig{URL: "https://api.anthropic.com", Model: "claude-sonnet", ThinkingMode: "enabled", Temperature: &tmp},
+		msgs, AnthropicMessagesRequestOptions{})
+	if _, ok := req["temperature"]; ok {
+		t.Fatalf("anthropic thinking temperature = %#v, want absent", req["temperature"])
 	}
 }

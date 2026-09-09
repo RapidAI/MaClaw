@@ -309,8 +309,13 @@ type ProviderSpec struct {
 type ToolCatalogSnapshot struct {
 	Generation      uint64
 	RegistryVersion string
-	CreatedAt       time.Time
-	Providers       []ProviderSpec
+	// Digest is the immutable identity of this catalog snapshot. It is kept
+	// separate from a plan digest: a plan also commits needs, facts, policy
+	// constraints and budgets, while this value answers only "which provider
+	// inventory did the host admit?".
+	Digest    string
+	CreatedAt time.Time
+	Providers []ProviderSpec
 	// Coverage tells the planner whether this snapshot is a complete view of
 	// the governed inventory for the current request scope. An empty provider
 	// list without coverage is not evidence that a capability is unavailable:
@@ -318,6 +323,27 @@ type ToolCatalogSnapshot struct {
 	// callers receive explicit Complete coverage; dynamic hosts must publish
 	// their observed readiness through PublishWithCoverage.
 	Coverage CatalogCoverage
+}
+
+// EffectiveCatalogSnapshotDigest returns the canonical identity of a catalog
+// snapshot.  Digest is a persisted claim supplied by a publisher, so callers
+// must never use it as an authority without checking it against the immutable
+// snapshot contents.  A blank claim is accepted for legacy in-memory callers
+// and is filled from the canonical representation.
+func EffectiveCatalogSnapshotDigest(snapshot ToolCatalogSnapshot) (string, error) {
+	expected := CatalogSnapshotDigest(snapshot)
+	if supplied := strings.TrimSpace(snapshot.Digest); supplied != "" && supplied != expected {
+		return "", fmt.Errorf("catalog_snapshot_digest_mismatch")
+	}
+	return expected, nil
+}
+
+// ValidateCatalogSnapshotDigest checks the optional persisted digest claim
+// without mutating the snapshot.  It is useful at boundaries that need a
+// boolean-style validation before handing a snapshot to a planner.
+func ValidateCatalogSnapshotDigest(snapshot ToolCatalogSnapshot) error {
+	_, err := EffectiveCatalogSnapshotDigest(snapshot)
+	return err
 }
 
 // CatalogCoverageState distinguishes an actually infeasible need from a
@@ -548,7 +574,9 @@ func (c *ToolCatalog) PublishWithCoverage(providers []ProviderSpec, coverage Cat
 	for i := range validated {
 		validated[i].Binding.CatalogGeneration = generation
 	}
-	c.snapshot = ToolCatalogSnapshot{Generation: generation, RegistryVersion: c.registry.Version(), CreatedAt: now, Providers: validated, Coverage: coverage}
+	snapshot := ToolCatalogSnapshot{Generation: generation, RegistryVersion: c.registry.Version(), CreatedAt: now, Providers: validated, Coverage: coverage}
+	snapshot.Digest = CatalogSnapshotDigest(snapshot)
+	c.snapshot = snapshot
 	return cloneCatalogSnapshot(c.snapshot), nil
 }
 
@@ -688,6 +716,8 @@ func validateEffectClasses(effects []EffectClass) error {
 func cloneProviderSpec(in ProviderSpec) ProviderSpec {
 	out := in
 	out.ParameterAuthorization.AllowedFields = append([]string(nil), in.ParameterAuthorization.AllowedFields...)
+	out.ParameterAuthorization.AllowedTargets = append([]string(nil), in.ParameterAuthorization.AllowedTargets...)
+	out.ParameterAuthorization.AllowedArtifactIDs = append([]string(nil), in.ParameterAuthorization.AllowedArtifactIDs...)
 	out.Effects = append([]EffectClass(nil), in.Effects...)
 	out.ChannelScopes = append([]string(nil), in.ChannelScopes...)
 	out.Consumes = append([]ArtifactContract(nil), in.Consumes...)
@@ -733,4 +763,186 @@ func cloneStringMap(in map[string]string) map[string]string {
 func SchemaDigest(schema []byte) string {
 	sum := sha256.Sum256(schema)
 	return hex.EncodeToString(sum[:])
+}
+
+// CatalogSnapshotDigest returns a stable identity for the host-admitted
+// provider inventory. Diagnostic timestamps and the stored Digest field are
+// deliberately excluded; changing a provider binding, schema authorization,
+// readiness watermark, coverage state or generation produces a new identity.
+//
+// The digest payload is a length-delimited canonical multiset. Provider and
+// coverage-family order therefore cannot affect the result, and a malformed
+// snapshot containing duplicate stable IDs still has a deterministic identity
+// (the duplicate entries are retained and sorted by their complete payload).
+// The v2 marker is intentional: v1 joined raw slices and was order-sensitive,
+// so an old and a new publisher must never silently treat those identities as
+// interchangeable during recovery.
+//
+// Callers may use this for recovery checks even when they received a snapshot
+// from an older publisher that did not persist Digest.
+func CatalogSnapshotDigest(snapshot ToolCatalogSnapshot) string {
+	parts := []string{
+		"catalog-snapshot-v2",
+		snapshot.RegistryVersion,
+		fmt.Sprintf("%d", snapshot.Generation),
+		"coverage",
+		string(snapshot.Coverage.State),
+		snapshot.Coverage.ReasonCode,
+		canonicalDigestTime(snapshot.Coverage.StaleUntil),
+	}
+	families := append([]CatalogCoverageFamily(nil), snapshot.Coverage.Families...)
+	sort.Slice(families, func(i, j int) bool {
+		return canonicalCatalogCoverageFamilyDigest(families[i]) < canonicalCatalogCoverageFamilyDigest(families[j])
+	})
+	for _, family := range families {
+		parts = append(parts, "family", canonicalCatalogCoverageFamilyDigest(family))
+	}
+	providers := append([]ProviderSpec(nil), snapshot.Providers...)
+	sort.Slice(providers, func(i, j int) bool {
+		return canonicalProviderDigest(providers[i]) < canonicalProviderDigest(providers[j])
+	})
+	for _, provider := range providers {
+		parts = append(parts, "provider", canonicalProviderDigest(provider))
+	}
+	return "catalog:sha256:" + SchemaDigest([]byte(canonicalDigestEncode(parts...)))
+}
+
+// canonicalDigestEncode gives every field an explicit byte length. It is used
+// only for immutable identity payloads; unlike a delimiter join it cannot
+// collapse two values that contain a delimiter or an embedded NUL.
+func canonicalDigestEncode(parts ...string) string {
+	var builder strings.Builder
+	for _, part := range parts {
+		builder.WriteString(fmt.Sprintf("%d:", len(part)))
+		builder.WriteString(part)
+	}
+	return builder.String()
+}
+
+func canonicalDigestTime(value time.Time) string {
+	return value.UTC().Format(time.RFC3339Nano)
+}
+
+// canonicalDigestStringList represents a multiset: entries are sorted but
+// deliberately not deduplicated. Duplicate values are invalid for several
+// catalog fields, yet retaining them makes a hand-built invalid snapshot
+// deterministic and keeps the digest from masking the malformed state.
+func canonicalDigestStringList(values []string) string {
+	if len(values) == 0 {
+		return canonicalDigestEncode("0")
+	}
+	sorted := append([]string(nil), values...)
+	sort.Strings(sorted)
+	parts := make([]string, 0, len(sorted)+1)
+	parts = append(parts, fmt.Sprintf("%d", len(sorted)))
+	parts = append(parts, sorted...)
+	return canonicalDigestEncode(parts...)
+}
+
+func canonicalDigestNormalizedStringList(values []string, lower bool) string {
+	if len(values) == 0 {
+		return canonicalDigestEncode("0")
+	}
+	normalized := make([]string, len(values))
+	for index, value := range values {
+		value = strings.TrimSpace(value)
+		if lower {
+			value = strings.ToLower(value)
+		}
+		normalized[index] = value
+	}
+	return canonicalDigestStringList(normalized)
+}
+
+func canonicalCatalogCoverageFamilyDigest(family CatalogCoverageFamily) string {
+	return canonicalDigestEncode(
+		canonicalCatalogCoverageKind(family.Kind),
+		string(family.State),
+		family.ReasonCode,
+		canonicalDigestTime(family.StaleUntil),
+	)
+}
+
+func canonicalProviderDigest(provider ProviderSpec) string {
+	authorization := provider.ParameterAuthorization
+	return canonicalDigestEncode(
+		strings.TrimSpace(provider.AdapterName),
+		string(provider.Classification.normalized()),
+		strings.TrimSpace(provider.Binding.Kind),
+		strings.TrimSpace(provider.Binding.ProviderID),
+		strings.TrimSpace(provider.Binding.ImplementationID),
+		strings.TrimSpace(provider.Binding.SchemaDigest),
+		fmt.Sprintf("%d", provider.Binding.CatalogGeneration),
+		fmt.Sprintf("%t", provider.Ready),
+		canonicalDigestTime(provider.ReadyUntil),
+		// Channel scopes are matched case-insensitively by the planner, so the
+		// identity follows the same semantic normalization.
+		canonicalDigestNormalizedStringList(provider.ChannelScopes, true),
+		strings.TrimSpace(authorization.Digest),
+		strings.TrimSpace(authorization.CanonicalizerVer),
+		canonicalDigestNormalizedStringList(authorization.AllowedFields, false),
+		canonicalDigestNormalizedStringList(authorization.AllowedTargets, false),
+		canonicalDigestNormalizedStringList(authorization.AllowedArtifactIDs, false),
+		canonicalDigestNormalizedStringList(effectStrings(provider.Effects), false),
+		canonicalDigestProvisionList(provider.Provides),
+		canonicalDigestArtifactList(provider.Consumes),
+		canonicalDigestArtifactList(provider.Produces),
+	)
+}
+
+func effectStrings(effects []EffectClass) []string {
+	values := make([]string, len(effects))
+	for index, effect := range effects {
+		values[index] = string(effect)
+	}
+	return values
+}
+
+func canonicalDigestProvisionList(provisions []CapabilityProvision) string {
+	values := make([]string, 0, len(provisions))
+	for _, provision := range provisions {
+		values = append(values, canonicalDigestEncode(
+			string(provision.Capability),
+			canonicalDigestStringMap(provision.Qualifiers),
+			fmt.Sprintf("%.9g", provision.Quality),
+		))
+	}
+	sort.Strings(values)
+	parts := make([]string, 0, len(values)+1)
+	parts = append(parts, fmt.Sprintf("%d", len(values)))
+	parts = append(parts, values...)
+	return canonicalDigestEncode(parts...)
+}
+
+func canonicalDigestArtifactList(contracts []ArtifactContract) string {
+	values := make([]string, 0, len(contracts))
+	for _, contract := range contracts {
+		values = append(values, canonicalDigestEncode(
+			strings.ToLower(strings.TrimSpace(contract.Kind)),
+			strings.ToLower(strings.TrimSpace(contract.MIMEType)),
+			fmt.Sprintf("%t", contract.Required),
+		))
+	}
+	sort.Strings(values)
+	parts := make([]string, 0, len(values)+1)
+	parts = append(parts, fmt.Sprintf("%d", len(values)))
+	parts = append(parts, values...)
+	return canonicalDigestEncode(parts...)
+}
+
+func canonicalDigestStringMap(values map[string]string) string {
+	if len(values) == 0 {
+		return canonicalDigestEncode("0")
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys)+1)
+	parts = append(parts, fmt.Sprintf("%d", len(keys)))
+	for _, key := range keys {
+		parts = append(parts, canonicalDigestEncode(key, values[key]))
+	}
+	return canonicalDigestEncode(parts...)
 }

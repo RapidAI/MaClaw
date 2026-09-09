@@ -1,12 +1,16 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/cloudworkspace"
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
 func TestGetCloudWorkspaceMetricsJSONShape(t *testing.T) {
@@ -27,6 +31,33 @@ func TestGetCloudWorkspaceMetricsJSONShape(t *testing.T) {
 	}
 	if got.VolumeFreeBytes < 0 {
 		t.Fatalf("volume_free_bytes=%d", got.VolumeFreeBytes)
+	}
+}
+
+func TestCloudWorkspaceMetricsAdminTenantScope(t *testing.T) {
+	svc, _, _ := newCloudWorkspaceUserEnv(t, cloudworkspace.ModeAllUsers, 5, nil)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	other, err := svc.Workspaces.Create(ctx, cloudworkspace.CreateParams{TenantID: "t2", UserID: "u2", Name: "other", Quota: 5, TenantMaxTotalBytes: 1 << 30}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.RecordAudit(ctx, auth.MachinePrincipal{TenantID: "t2", UserID: "u2", MachineID: "m2"}, other.ID, cloudworkspace.AuditEvent{EventID: "t2-event", Operation: "push"}); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/cloud-workspaces/metrics", nil)
+	req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, &store.AdminUser{ID: "adm", Scope: "tenant", TenantID: "t1"}))
+	rec := httptest.NewRecorder()
+	GetCloudWorkspaceMetricsAdminHandler(svc)(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got cloudworkspace.Metrics
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.AuditEvents != 0 {
+		t.Fatalf("tenant t1 leaked audit rows: %+v", got)
 	}
 }
 

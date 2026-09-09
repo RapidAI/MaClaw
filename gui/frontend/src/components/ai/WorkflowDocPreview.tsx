@@ -27,7 +27,7 @@ function mermaidThemeConfig(theme: DocPreviewTheme) {
     return {
         startOnLoad: false,
         theme: "base",
-        securityLevel: "loose",
+        securityLevel: "strict",
         suppressErrorRendering: true,
         themeVariables: {
             background: theme.bg,
@@ -1386,7 +1386,19 @@ function renderInline(text: string, theme: DocPreviewTheme): React.ReactNode {
                 fontFamily: "'Cascadia Code', 'Fira Code', 'Consolas', monospace",
             }}>{match[9]}</code>);
         } else if (match[10]) { // link
-            parts.push(<a key={key++} href={match[12]} style={{ color: theme.linkColor, textDecoration: "underline" }} target="_blank" rel="noopener noreferrer">{match[11]}</a>);
+            // P0 (2026-09-09 review): match[12] is captured as ([^)]+) with no
+            // scheme restriction, so "[text](javascript:...)" produced a
+            // clickable javascript: URL. React 18 only warns about these, it
+            // does not block them, and the Wails WebView would execute the
+            // script with access to every bound Go method. Only http(s) is
+            // linkified; anything else degrades to plain text, matching the
+            // main chat renderer (aiAssistantMarkdown.tsx).
+            const inlineHref = match[12] || "";
+            if (/^https?:\/\//i.test(inlineHref)) {
+                parts.push(<a key={key++} href={inlineHref} style={{ color: theme.linkColor, textDecoration: "underline" }} target="_blank" rel="noopener noreferrer">{match[11]}</a>);
+            } else {
+                parts.push(<span key={key++}>{match[10]}</span>);
+            }
         }
         lastIndex = match.index + match[0].length;
     }

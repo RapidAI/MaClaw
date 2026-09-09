@@ -7,6 +7,7 @@ import (
 	"html"
 	"log"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -25,6 +26,7 @@ var (
 	contentGLMArgPairRe              = regexp.MustCompile(`(?is)<arg_key>\s*(.*?)\s*</arg_key>\s*<arg_value>(.*?)</arg_value>`)
 	contentQwenParamEqRe             = regexp.MustCompile(`(?is)<parameter=([^>]+)>(.*?)</parameter>`)
 	contentLeadingToolNameRe         = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_.-]*)`)
+	contentSpecialTokenRe            = regexp.MustCompile(`<\|[^|<>\n]+\|>`)
 	dsmlSpacedFenceRe                = regexp.MustCompile(`(?i)\|\s*DSML\s*\|`)
 	dsmlLooseOpenRe                  = regexp.MustCompile(`(?i)<\s*\|DSML\|`)
 	dsmlLooseCloseRe                 = regexp.MustCompile(`(?i)</\s*\|DSML\|`)
@@ -100,6 +102,16 @@ func ParseContentToolCallsDetailed(content string) ([]ToolCall, bool) {
 		calls = append(calls, plainCalls...)
 	}
 	if plainMalformed {
+		malformed = true
+	}
+	// Some providers emit a line-oriented call that the legacy plain parser
+	// partially recognizes (typically dropping later arguments). Prefer the
+	// structured line parse whenever it succeeds so tool arguments are not lost.
+	lineCalls, lineMalformed := parseLineOrientedContentToolCalls(content)
+	if len(lineCalls) > 0 {
+		calls = lineCalls
+		malformed = false
+	} else if lineMalformed {
 		malformed = true
 	}
 	if malformed && len(calls) == 0 {
@@ -234,6 +246,9 @@ func parseNamedMarkupToolCall(name, body string) (ToolCall, bool) {
 	if args, ok := parseMarkupToolCallArguments(body); ok {
 		return normalizePlainContentToolCall(name, args)
 	}
+	if args, ok := parseLineOrientedToolCallArguments(body); ok {
+		return normalizePlainContentToolCall(name, args)
+	}
 	if call, ok := parseContentJSONToolCallPayload(body); ok {
 		if strings.TrimSpace(call.Function.Name) == "" {
 			call.Function.Name = name
@@ -330,6 +345,8 @@ func logMalformedContentToolCall(content string) {
 		kind = "tool_call"
 	case strings.Contains(lower, "tool_call"):
 		kind = "plain"
+	case looksLikeUnparsedLeakedToolCall(content):
+		kind = "line_oriented"
 	}
 	log.Printf("[LLM] intercepted unparseable content tool markup kind=%s bytes=%d", kind, len(content))
 }
@@ -548,6 +565,9 @@ func HoldContentToolCallStream(s string, force bool) (visible, hold string, supp
 		return visible, "", true
 	}
 	partial := contentToolCallMarkerSuffixLen(s)
+	if n := leakedLineOrientedIncompleteLineHoldLen(s); n > partial {
+		partial = n
+	}
 	if partial <= 0 {
 		return s, "", false
 	}
@@ -568,7 +588,56 @@ func dropPartialContentToolCallOnFlush(suffix string) bool {
 		return true
 	}
 	lower := strings.ToLower(strings.TrimLeft(suffix, " \t\r\n"))
-	return strings.HasPrefix(lower, "<tool_call") || strings.HasPrefix(lower, "<turn: tool_call") || strings.HasPrefix(lower, "<function=")
+	if strings.HasPrefix(lower, "<tool_call") || strings.HasPrefix(lower, "<turn: tool_call") || strings.HasPrefix(lower, "<function=") {
+		return true
+	}
+	return couldBecomeLeakedLineOrientedToolLine(suffix)
+}
+
+func leakedLineOrientedIncompleteLineHoldLen(s string) int {
+	idx := strings.LastIndexByte(s, '\n')
+	last := s
+	if idx >= 0 {
+		last = s[idx+1:]
+	}
+	if last == "" || !couldBecomeLeakedLineOrientedToolLine(last) {
+		return 0
+	}
+	return len(last)
+}
+
+func couldBecomeLeakedLineOrientedToolLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return false
+	}
+	if name := lineOrientedToolName(trimmed); name != "" && leakedToolNameShouldSuppressStream(name) {
+		return true
+	}
+	fields := strings.Fields(trimmed)
+	switch len(fields) {
+	case 1:
+		return couldBeLeakedToolNamePrefix(fields[0])
+	case 2:
+		return looksLikeJunkToolCallPrefix(fields[0]) && strings.HasPrefix(strings.ToLower(fields[1]), "glob")
+	default:
+		return false
+	}
+}
+
+func couldBeLeakedToolNamePrefix(ident string) bool {
+	if contentLeadingToolNameRe.FindString(ident) != ident {
+		return false
+	}
+	lower := strings.ToLower(ident)
+	if lower == "glob" || lower == "tool_call" || strings.HasPrefix(lower, "tool_call") {
+		return false
+	}
+	if strings.HasPrefix(lower, "glob_") {
+		return true
+	}
+	const leaked = "glob_file_search_tool"
+	return strings.HasPrefix(leaked, lower) && len(lower) >= 5
 }
 
 func firstContentToolCallMarkerIndex(s string) int {
@@ -581,6 +650,9 @@ func firstContentToolCallMarkerIndex(s string) int {
 	}
 	if loc := contentDSMLMarkerRe.FindStringIndex(s); loc != nil && (best < 0 || loc[0] < best) {
 		best = loc[0]
+	}
+	if idx := leakedLineOrientedToolMarkerIndex(s); idx >= 0 && (best < 0 || idx < best) {
+		best = idx
 	}
 	return best
 }
@@ -645,6 +717,236 @@ func normalizeDSMLMarkup(s string) string {
 	s = strings.ReplaceAll(s, "|DSML| /", "|DSML|/")
 	s = dsmlTagSpaceRe.ReplaceAllString(s, "${1}|DSML|")
 	return dsmlAltCloseRe.ReplaceAllString(s, "</|DSML|$1>")
+}
+
+func parseLineOrientedContentToolCalls(content string) ([]ToolCall, bool) {
+	_, name, rest := findLineOrientedToolCall(content)
+	if name == "" {
+		return nil, looksLikeUnparsedLeakedToolCall(content) || leakedLineOrientedToolMarkerIndex(content) >= 0
+	}
+	args, ok := parseLineOrientedToolCallArguments(rest)
+	if !ok {
+		return nil, true
+	}
+	call, ok := normalizePlainContentToolCall(name, args)
+	if !ok {
+		return nil, true
+	}
+	return []ToolCall{call}, false
+}
+
+func findLineOrientedToolCall(content string) (int, string, string) {
+	parts := strings.Split(content, "\n")
+	offset := 0
+	foundAt, foundName, foundRest := -1, "", ""
+	for i, line := range parts {
+		name := lineOrientedToolName(strings.TrimSpace(line))
+		if name != "" {
+			rest := strings.Join(parts[i+1:], "\n")
+			if _, ok := parseLineOrientedToolCallArguments(rest); ok {
+				foundAt, foundName, foundRest = offset, name, rest
+			}
+		}
+		offset += len(line)
+		if i < len(parts)-1 {
+			offset++
+		}
+	}
+	return foundAt, foundName, foundRest
+}
+
+func parseLineOrientedToolCallArguments(body string) (json.RawMessage, bool) {
+	body = stripContentSpecialTokens(strings.TrimSpace(body))
+	if body == "" {
+		return nil, false
+	}
+	lines := strings.Split(body, "\n")
+	args := map[string]interface{}{}
+	for i := 0; i < len(lines); i++ {
+		line := stripContentSpecialTokens(strings.TrimSpace(lines[i]))
+		if line == "" {
+			continue
+		}
+		key, inlineVal, hasInline := splitLineOrientedArgKey(line)
+		if !looksLikeLineOrientedArgKey(key) {
+			if lineOrientedArgsLookExecutable(args) {
+				break
+			}
+			return nil, false
+		}
+		val := inlineVal
+		if !hasInline {
+			i++
+			for i < len(lines) {
+				val = stripContentSpecialTokens(strings.TrimSpace(lines[i]))
+				if val != "" {
+					break
+				}
+				i++
+			}
+		}
+		if val == "" {
+			if lineOrientedArgsLookExecutable(args) {
+				break
+			}
+			return nil, false
+		}
+		if isNumericToolArgKey(key) {
+			if n, err := strconv.Atoi(val); err == nil {
+				args[key] = n
+				continue
+			}
+		}
+		args[key] = val
+	}
+	if len(args) == 0 || !lineOrientedArgsLookExecutable(args) {
+		return nil, false
+	}
+	raw, err := json.Marshal(args)
+	if err != nil {
+		return nil, false
+	}
+	return raw, true
+}
+
+func isNumericToolArgKey(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "max_results", "max_chars", "offset", "timeout", "count":
+		return true
+	default:
+		return false
+	}
+}
+
+func splitLineOrientedArgKey(line string) (key, value string, hasValue bool) {
+	if idx := strings.IndexByte(line, ':'); idx > 0 {
+		key = strings.TrimSpace(line[:idx])
+		value = stripContentSpecialTokens(strings.TrimSpace(line[idx+1:]))
+		if looksLikeLineOrientedArgKey(key) && value != "" {
+			return key, value, true
+		}
+	}
+	return strings.TrimSuffix(line, ":"), "", false
+}
+
+func looksLikeLineOrientedArgKey(key string) bool {
+	key = strings.TrimSpace(strings.TrimSuffix(key, ":"))
+	if key == "" || strings.ContainsAny(key, " \t\\/") {
+		return false
+	}
+	if contentLeadingToolNameRe.FindString(key) != key {
+		return false
+	}
+	switch strings.ToLower(key) {
+	case "path", "file_path", "glob_pattern", "pattern", "glob", "query", "command",
+		"old_string", "new_string", "content", "working_dir", "timeout":
+		return true
+	}
+	return strings.Contains(key, "_") && len(key) <= 40
+}
+
+func lineOrientedArgsLookExecutable(args map[string]interface{}) bool {
+	for _, key := range []string{"path", "file_path", "glob_pattern", "pattern", "glob", "command", "query"} {
+		if _, ok := args[key]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func lineOrientedToolName(line string) string {
+	line = stripContentSpecialTokens(strings.TrimSpace(line))
+	if line == "" {
+		return ""
+	}
+	fields := strings.Fields(line)
+	switch len(fields) {
+	case 1:
+		if looksLikeLineOrientedToolName(fields[0]) {
+			return fields[0]
+		}
+	case 2:
+		if !looksLikeLineOrientedToolName(fields[1]) {
+			return ""
+		}
+		if looksLikeJunkToolCallPrefix(fields[0]) || strings.HasSuffix(strings.ToLower(fields[1]), "_tool") {
+			return fields[1]
+		}
+	}
+	return ""
+}
+
+func looksLikeLineOrientedToolName(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" || contentLeadingToolNameRe.FindString(name) != name {
+		return false
+	}
+	lower := strings.ToLower(name)
+	if lower == "tool_call" {
+		return false
+	}
+	if strings.HasSuffix(lower, "_tool") {
+		return len(name) >= 6
+	}
+	switch lower {
+	case "glob", "glob_file_search", "search_files", "list_directory", "read_file", "write_file", "edit_file", "ripgrep", "grep_search", "web_search", "web_fetch":
+		return true
+	}
+	return false
+}
+
+func looksLikeJunkToolCallPrefix(s string) bool {
+	if len(s) < 2 || len(s) > 12 || strings.Contains(s, "_") {
+		return false
+	}
+	hasDigit := false
+	for _, r := range s {
+		if r >= '0' && r <= '9' {
+			hasDigit = true
+			continue
+		}
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') {
+			return false
+		}
+	}
+	return hasDigit
+}
+
+func stripContentSpecialTokens(s string) string {
+	return strings.TrimSpace(contentSpecialTokenRe.ReplaceAllString(s, ""))
+}
+
+func looksLikeUnparsedLeakedToolCall(content string) bool {
+	if !contentSpecialTokenRe.MatchString(content) {
+		return false
+	}
+	for _, line := range strings.Split(content, "\n") {
+		if lineOrientedToolName(strings.TrimSpace(line)) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func leakedLineOrientedToolMarkerIndex(s string) int {
+	parts := strings.Split(s, "\n")
+	offset := 0
+	for i, line := range parts {
+		name := lineOrientedToolName(strings.TrimSpace(line))
+		if name != "" && leakedToolNameShouldSuppressStream(name) {
+			return offset
+		}
+		offset += len(line)
+		if i < len(parts)-1 {
+			offset++
+		}
+	}
+	return -1
+}
+
+func leakedToolNameShouldSuppressStream(name string) bool {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	return strings.HasSuffix(lower, "_tool") || lower == "glob_file_search" || lower == "web_search" || lower == "web_fetch"
 }
 
 func parsePlainContentToolCalls(content string) ([]ToolCall, bool) {

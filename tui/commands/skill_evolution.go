@@ -52,7 +52,7 @@ func SkillEvolutionEnvDisabled() bool {
 // SharedEvolutionStatus returns a diagnostic map for the shared CLI pipeline.
 // Pipeline may be nil if never started. Includes env/session/config kill layers.
 func SharedEvolutionStatus() map[string]interface{} {
-	configEnabled := true
+	configEnabled := false
 	cooldownHours := 1
 	if store := NewFileConfigStore(ResolveDataDir()); store != nil {
 		if cfg, err := store.LoadConfig(); err == nil {

@@ -896,6 +896,19 @@ func TestServiceCancelRunClosesCodingRuntimeSubtreeBeforeRequestCancellation(t *
 	if attempts, listErr := ledger.ListAttempts(child.TaskID); listErr != nil || len(attempts) != 1 || attempts[0].Status != codingruntime.TaskCancelled {
 		t.Fatalf("child attempts=%#v err=%v", attempts, listErr)
 	}
+	events, eventErr := svc.ListRunEventsForInstance(context.Background(), principal, inst.ID, running[0].ID, 0, 100)
+	if eventErr != nil {
+		t.Fatalf("ListRunEventsForInstance: %v", eventErr)
+	}
+	cancelledEvents := 0
+	for _, event := range events {
+		if event.Type == "run.cancelled" {
+			cancelledEvents++
+		}
+	}
+	if cancelledEvents != 1 {
+		t.Fatalf("run.cancelled events=%d; want exactly one: %#v", cancelledEvents, events)
+	}
 }
 
 func TestRemoteCodingRuntimeRejectsUnpinnedOrUnboundTargetBeforeModelCall(t *testing.T) {

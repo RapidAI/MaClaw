@@ -275,11 +275,11 @@ func codingBoundDynamicRequestReasonForDisposition(disposition agent.ToolSurface
 // callback contract is wired and enabled. Current rows return nil without a
 // WebSocket dial, catalog read, plan publication, or alias materialization.
 func newQualifiedCodingBoundDynamicRequestLifecycleRelay(handler *IMMessageHandler, identity *trustedCodingInvocationIdentity, cfg corelib.MaclawLLMConfig) *codingBoundDynamicRequestLifecycleRelay {
-	qualification := codingDynamicProductionAdapterForConfig(cfg)
-	if !qualification.eligible() {
-		return nil
-	}
-	return newCodingBoundDynamicRequestLifecycleRelay(handler, identity, reserveCodingBoundDynamicRequestAdapter)
+	// Dynamic Skill/MCP aliases stay fail-closed until this callback receives a
+	// real host scope plan and binding admission. The current GUI has no such
+	// production handoff, so transport qualification must never construct a
+	// relay or create a second model-facing surface.
+	return nil
 }
 
 // reserveCodingBoundDynamicRequestAdapter is the sole future callback

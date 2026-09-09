@@ -442,13 +442,36 @@ func DefaultDefinitions() []IntentDefinition {
 			ToolNames: []string{"mis_data"},
 		},
 		{
+			Label:  LabelDatabase,
+			Domain: "SQL 数据源 (Database)",
+			TreeText: "用户要查看、连接或查询 MySQL、PostgreSQL、SQL Server、Access、Excel 数据源里的库、schema 或表。" +
+				"语义判据：目标是已有数据源上的库名、表结构、SQL 查询或数据预览，而不是写业务表单、也不是 Git 仓库。" +
+				"边界：「查看 Git 仓库/diff/status」→ git_inspect；「报销/审批等业务表单」→ business_data；「远程主机命令」→ ssh。",
+			EmbedTexts: []string{
+				"查看库",
+				"查看数据库",
+				"查看 mysql 库",
+				"查看 rapidbi 库",
+				"列出这个库里的表",
+				"查看表结构",
+				"inspect the mysql schema",
+				"list tables in the database",
+				"show tables in this postgres database",
+				"query the sql server catalog",
+				"connect to the mysql data source and inspect schema",
+				"查看 192.168.1.242 上的 mysql 数据库",
+			},
+			ToolNames: []string{"database", "database_query"},
+		},
+		{
 			Label:              LabelOffice,
 			Domain:             "内容处理 (Content)",
 			MayTriggerWorkflow: true, // presentation_design workflow
 			WorkflowTypes:      []string{"presentation_design"},
-			TreeText: "用户要创建需要设计决策的演示文稿（PPT/幻灯片/slide）。" +
+			TreeText: "用户要创建或改写需要设计决策的演示文稿（PPT/幻灯片/slide），包括对当前正在编辑的PPT做风格改进。" +
 				"判据：产出物是否需要受众定位、内容架构、视觉风格等设计决策。" +
 				"需要工作流：「生成/制作/设计 PPT」「基于文档做宣传PPT」「做投资人路演PPT」— 同一素材可产出截然不同的PPT，需要设计决策 → office + workflow_type。" +
+				"改已有稿：「把当前PPT改成专业会议风格」「对正在编辑的演示文稿做风格改进」— 仍是设计决策，走 office。" +
 				"不需要工作流：「打开/查看/转换/截图 PPT」— 文件操作，无设计决策 → document_delivery 或 non_coding。" +
 				"注意：「基于已有素材」不等于「内容处理」。基于文档做PPT仍需要受众定位+内容取舍+风格设计等多阶段决策。" +
 				"Excel/Word 等其他办公文档创建不需要工作流，workflow_type 留空。",
@@ -465,6 +488,10 @@ func DefaultDefinitions() []IntentDefinition {
 				"organize the data into an Excel file",
 				"build a slide deck for the meeting",
 				"create a spreadsheet with the analysis results",
+				"对当前编辑的ppt进行风格改进",
+				"把这份演示文稿改成大型技术交流会议的专业风格",
+				"restyle the current PowerPoint professionally",
+				"edit the existing slide deck visual style",
 				// Celebration/souvenir phrasings observed in production: the
 				// deck request is wrapped in an occasion and often bundles an
 				// image-search half (「网上找图片」), which diluted the office
@@ -658,7 +685,7 @@ func DefaultDefinitions() []IntentDefinition {
 			Domain: "版本控制 (VCS)",
 			TreeText: "用户要查看本地 Git 仓库的只读状态：工作区状态、未提交变更、diff 差异。" +
 				"语义判据：用户目标是只读检查版本控制状态或差异，不提交、不推送、不改历史。" +
-				"边界：「提交/推送代码」→ git_mutate；「看代码文件内容」→ file_read。",
+				"边界：「提交/推送代码」→ git_mutate；「看代码文件内容」→ file_read；「查看 MySQL/Postgres 库、schema、表结构」→ database。",
 			EmbedTexts: []string{
 				"看看当前 git 状态",
 				"这个仓库有哪些未提交的改动",

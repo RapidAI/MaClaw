@@ -185,6 +185,24 @@ func (t *UsageTracker) RecordExperience(exp ToolExperience) {
 			ErrorClass: r.ErrorClass,
 			CreatedAt:  r.Timestamp,
 		}))
+		// Recovery evidence: when a failed tool was routed to a recovery tool,
+		// record the pair so the comparative distiller can turn stable
+		// failure/recovery paths into failure_skill / comparative_skill drafts.
+		if r.RecoveryTool != "" {
+			recoveryOutcome := "recovered"
+			if !usageRecordSucceeded(r) {
+				recoveryOutcome = "failed"
+			}
+			sink.RecordExperienceEvent(exp.EventContext.Apply(lifecycle.Event{
+				EventType:  lifecycle.EventToolRecovered,
+				ToolName:   r.RecoveryTool,
+				Query:      strings.Join(r.QueryTokens, " "),
+				Reason:     "failed_tool:" + r.ToolName,
+				Outcome:    recoveryOutcome,
+				ErrorClass: r.ErrorClass,
+				CreatedAt:  r.Timestamp,
+			}))
+		}
 	}
 
 	_ = t.saveSnapshot(snapshot, invalidations)

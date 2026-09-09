@@ -112,3 +112,14 @@ func TestEnsureSkillIDBeforeUpload_PreservesYAMLDocumentMarker(t *testing.T) {
 	}
 	_ = id
 }
+
+func TestEnsureSkillIDBeforeUpload_PersistenceFailureIsFatalAndRevertsEntry(t *testing.T) {
+	dir := t.TempDir()
+	entry := &corelib.NLSkillEntry{Name: "Broken Skill", SkillDir: dir, Publisher: "old"}
+	if _, err := EnsureSkillIDBeforeUpload(entry, "alice@example.com"); err == nil {
+		t.Fatal("expected persistence error when skill definition is missing")
+	}
+	if entry.SkillID != "" || entry.Publisher != "old" {
+		t.Fatalf("entry identity changed despite persistence failure: skill_id=%q publisher=%q", entry.SkillID, entry.Publisher)
+	}
+}

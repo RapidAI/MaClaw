@@ -1,6 +1,6 @@
 import { getToolLabel, isToolTab } from '../../config/toolCatalog';
 import { miniAppShortLabel } from '../../i18n/maclawMiniAppLabels';
-import { utilitiesPageTitle } from '../../i18n/utilitiesLabels';
+import { expertsPageTitle, toolsPageTitle, utilitiesPageTitle } from '../../i18n/utilitiesLabels';
 
 const zhHans = {
     taskManagement: '\u4efb\u52a1\u76d1\u63a7',
@@ -12,11 +12,12 @@ const zhHant = {
     workflows: '\u5de5\u4f5c\u6d41',
 };
 
-export const getHeaderTitle = (navTab: string, lang: string, t: (key: string) => string) => (
+export const getHeaderTitle = (navTab: string, lang: string, t: (key: string) => string, splitUtilities = false) => (
     isToolTab(navTab) ? getToolLabel(navTab) :
         navTab === 'projects' ? t('projectManagement') :
             navTab === 'apps' ? miniAppShortLabel(lang) :
-                navTab === 'utilities' ? utilitiesPageTitle(lang) :
+                navTab === 'utilities' ? (splitUtilities ? expertsPageTitle(lang) : utilitiesPageTitle(lang)) :
+                    navTab === 'tools' ? toolsPageTitle(lang) :
                     navTab === 'workflows' ? (lang === 'zh-Hans' ? zhHans.workflows : lang === 'zh-Hant' ? zhHant.workflows : 'Workflows') :
                 navTab === 'skills' ? t('skills') :
                     navTab === 'tutorial' ? t('tutorial') :

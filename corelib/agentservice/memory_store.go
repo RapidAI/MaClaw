@@ -1,6 +1,7 @@
 package agentservice
 
 import (
+	"errors"
 	"sort"
 	"strings"
 	"sync"
@@ -56,6 +57,7 @@ type MemoryStore struct {
 	sessions    map[string]Session
 	messages    map[string][]Message
 	runs        map[string]Run
+	runEvents   map[string][]RunEvent
 	auditEvents []AuditEvent
 }
 
@@ -68,6 +70,7 @@ type storeState struct {
 	Sessions    map[string]Session    `json:"sessions,omitempty"`
 	Messages    map[string][]Message  `json:"messages,omitempty"`
 	Runs        map[string]Run        `json:"runs,omitempty"`
+	RunEvents   map[string][]RunEvent `json:"run_events,omitempty"`
 	AuditEvents []AuditEvent          `json:"audit_events,omitempty"`
 }
 
@@ -81,6 +84,7 @@ func NewMemoryStore() *MemoryStore {
 		sessions:    map[string]Session{},
 		messages:    map[string][]Message{},
 		runs:        map[string]Run{},
+		runEvents:   map[string][]RunEvent{},
 		auditEvents: []AuditEvent{},
 	}
 }
@@ -119,16 +123,20 @@ func newMemoryStoreFromState(state storeState) *MemoryStore {
 	if state.Runs != nil {
 		s.runs = state.Runs
 	}
+	if state.RunEvents != nil {
+		s.runEvents = state.RunEvents
+	}
 	if state.AuditEvents != nil {
 		s.auditEvents = state.AuditEvents
 	}
 	return s
 }
 
-func (s *MemoryStore) snapshot() storeState {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
+// snapshotLocked copies the complete control-plane state while the caller
+// holds s.mu. Keeping the locking wrapper separate lets the in-memory
+// lifecycle transaction take a savepoint without attempting to RLock a
+// mutex it already owns.
+func (s *MemoryStore) snapshotLocked() storeState {
 	state := storeState{
 		Tenants:     make(map[string]Tenant, len(s.tenants)),
 		Users:       make(map[string]User, len(s.users)),
@@ -138,6 +146,7 @@ func (s *MemoryStore) snapshot() storeState {
 		Sessions:    make(map[string]Session, len(s.sessions)),
 		Messages:    make(map[string][]Message, len(s.messages)),
 		Runs:        make(map[string]Run, len(s.runs)),
+		RunEvents:   make(map[string][]RunEvent, len(s.runEvents)),
 		AuditEvents: append([]AuditEvent(nil), s.auditEvents...),
 	}
 	for k, v := range s.tenants {
@@ -164,7 +173,49 @@ func (s *MemoryStore) snapshot() storeState {
 	for k, v := range s.runs {
 		state.Runs[k] = v
 	}
+	for k, v := range s.runEvents {
+		state.RunEvents[k] = append([]RunEvent(nil), v...)
+	}
 	return state
+}
+
+func (s *MemoryStore) snapshot() storeState {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.snapshotLocked()
+}
+
+// restoreLocked replaces the mutable maps from a previously captured
+// snapshot while the caller holds s.mu. It is deliberately a full-state
+// restore: a lifecycle call may append more than one event and must not leave
+// a partially committed event map when any later append is rejected.
+func (s *MemoryStore) restoreLocked(state storeState) {
+	if s == nil {
+		return
+	}
+	restored := newMemoryStoreFromState(state)
+	s.tenants = restored.tenants
+	s.users = restored.users
+	s.credentials = restored.credentials
+	s.userConfigs = restored.userConfigs
+	s.instances = restored.instances
+	s.sessions = restored.sessions
+	s.messages = restored.messages
+	s.runs = restored.runs
+	s.runEvents = restored.runEvents
+	s.auditEvents = restored.auditEvents
+}
+
+// restore replaces the mutable maps from a previously captured snapshot. It
+// is used by FileStore lifecycle transactions when validation or the atomic
+// file replacement fails after the in-memory mutation has already run.
+func (s *MemoryStore) restore(state storeState) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.restoreLocked(state)
+	s.mu.Unlock()
 }
 
 func NewID(prefix string) string { return prefix + "_" + uuid.NewString() }
@@ -235,6 +286,7 @@ func (s *MemoryStore) DeleteTenant(tenantID string) error {
 	for runID, run := range s.runs {
 		if run.TenantID == tenantID {
 			delete(s.runs, runID)
+			delete(s.runEvents, runEventScope(run.TenantID, run.UserID, run.ID))
 		}
 	}
 	return nil
@@ -298,6 +350,7 @@ func (s *MemoryStore) DeleteUser(tenantID, userID string) error {
 	for runID, run := range s.runs {
 		if run.TenantID == tenantID && run.UserID == userID {
 			delete(s.runs, runID)
+			delete(s.runEvents, runEventScope(run.TenantID, run.UserID, run.ID))
 		}
 	}
 	return nil
@@ -421,6 +474,7 @@ func (s *MemoryStore) DeleteInstance(tenantID, userID, instanceID string) error 
 	for runID, run := range s.runs {
 		if run.TenantID == tenantID && run.UserID == userID && run.InstanceID == instanceID {
 			delete(s.runs, runID)
+			delete(s.runEvents, runEventScope(run.TenantID, run.UserID, run.ID))
 		}
 	}
 	return nil
@@ -429,6 +483,16 @@ func (s *MemoryStore) DeleteInstance(tenantID, userID, instanceID string) error 
 func (s *MemoryStore) SaveSession(v Session) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if key := strings.TrimSpace(v.Metadata["client_session_key"]); key != "" {
+		for _, existing := range s.sessions {
+			if existing.ID == v.ID || existing.TenantID != v.TenantID || existing.UserID != v.UserID || existing.InstanceID != v.InstanceID {
+				continue
+			}
+			if strings.TrimSpace(existing.Metadata["client_session_key"]) == key {
+				return ErrAlreadyExists
+			}
+		}
+	}
 	s.sessions[v.ID] = v
 	return nil
 }
@@ -468,6 +532,7 @@ func (s *MemoryStore) DeleteSession(tenantID, userID, instanceID, sessionID stri
 	for runID, run := range s.runs {
 		if run.TenantID == tenantID && run.UserID == userID && run.InstanceID == instanceID && run.SessionID == sessionID {
 			delete(s.runs, runID)
+			delete(s.runEvents, runEventScope(run.TenantID, run.UserID, run.ID))
 		}
 	}
 	return nil
@@ -476,7 +541,29 @@ func (s *MemoryStore) DeleteSession(tenantID, userID, instanceID, sessionID stri
 func (s *MemoryStore) SaveMessage(v Message) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.ensureUniqueClientMessageLocked(v); err != nil {
+		return err
+	}
 	s.messages[v.SessionID] = append(s.messages[v.SessionID], v)
+	return nil
+}
+
+func (s *MemoryStore) ensureUniqueClientMessageLocked(v Message) error {
+	if v.Role != MessageRoleUser {
+		return nil
+	}
+	key := strings.TrimSpace(v.Metadata["client_message_id"])
+	if key == "" {
+		return nil
+	}
+	for _, existing := range s.messages[v.SessionID] {
+		if existing.Role != MessageRoleUser || existing.TenantID != v.TenantID || existing.UserID != v.UserID || existing.InstanceID != v.InstanceID {
+			continue
+		}
+		if strings.TrimSpace(existing.Metadata["client_message_id"]) == key {
+			return ErrAlreadyExists
+		}
+	}
 	return nil
 }
 
@@ -526,6 +613,100 @@ func (s *MemoryStore) SaveRun(v Run) error {
 	s.runs[v.ID] = v
 	return nil
 }
+
+// appendRunEventLocked appends one event while the MemoryStore mutex is held.
+// It intentionally mirrors RunEventStore's idempotency contract so a
+// lifecycle transaction and a standalone event append have identical replay
+// behavior.
+func (s *MemoryStore) appendRunEventLocked(event RunEvent) (RunEvent, error) {
+	if s == nil {
+		return RunEvent{}, errors.New("run event store is unavailable")
+	}
+	if s.runEvents == nil {
+		s.runEvents = make(map[string][]RunEvent)
+	}
+	key := runEventScope(event.TenantID, event.UserID, event.RunID)
+	items := s.runEvents[key]
+	if event.Sequence == 0 {
+		var maxSequence uint64
+		for _, existing := range items {
+			if existing.Sequence > maxSequence {
+				maxSequence = existing.Sequence
+			}
+		}
+		event.Sequence = maxSequence + 1
+	}
+	var err error
+	event, err = normalizeRunEvent(event)
+	if err != nil {
+		return RunEvent{}, err
+	}
+	for _, existing := range items {
+		if existing.Sequence == event.Sequence || (event.ID != "" && existing.ID == event.ID) {
+			return cloneRunEvent(existing), nil
+		}
+	}
+	items = append(items, event)
+	sort.Slice(items, func(i, j int) bool { return items[i].Sequence < items[j].Sequence })
+	s.runEvents[key] = items
+	return event, nil
+}
+
+// Append implements RunEventStore for the same in-process repository used by
+// MemoryStore message/run lifecycle operations. Keeping events in this store
+// enables atomic lifecycle tests and makes the in-memory host faithful to the
+// durable FileStore path.
+func (s *MemoryStore) Append(event RunEvent) (RunEvent, error) {
+	if s == nil {
+		return RunEvent{}, errors.New("run event store is unavailable")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	canonical, err := s.appendRunEventLocked(event)
+	if err != nil {
+		return RunEvent{}, err
+	}
+	return canonical, nil
+}
+
+func (s *MemoryStore) SequenceForID(tenantID, userID, runID, eventID string) (uint64, bool, error) {
+	if s == nil {
+		return 0, false, errors.New("run event store is unavailable")
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, event := range s.runEvents[runEventScope(tenantID, userID, runID)] {
+		if event.ID == eventID {
+			return event.Sequence, true, nil
+		}
+	}
+	return 0, false, nil
+}
+
+func (s *MemoryStore) ListAfter(tenantID, userID, runID string, after uint64, limit int) ([]RunEvent, error) {
+	if s == nil {
+		return nil, errors.New("run event store is unavailable")
+	}
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	items := s.runEvents[runEventScope(tenantID, userID, runID)]
+	out := make([]RunEvent, 0, minIntRunEventStore(limit, len(items)))
+	for _, event := range items {
+		if event.Sequence <= after {
+			continue
+		}
+		out = append(out, cloneRunEvent(event))
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) Close() error { return nil }
 
 func (s *MemoryStore) GetRun(tenantID, userID, instanceID, runID string) (Run, error) {
 	s.mu.RLock()

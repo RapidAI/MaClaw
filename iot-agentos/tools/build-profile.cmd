@@ -589,6 +589,7 @@ if errorlevel 1 (
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-gateway-capability-projection.ps1"
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-gateway-ack-outbox.ps1"
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-gateway-tool-result-outbox.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check-gateway-tool-result-service.ps1"
 if errorlevel 1 (
   set "MACLAW_RESULT=%ERRORLEVEL%"
   goto :done

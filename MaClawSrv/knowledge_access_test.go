@@ -1462,9 +1462,12 @@ func TestKnowledgeImportEndpointsUsePrincipalScope(t *testing.T) {
 		{name: "func (s *HTTPServer) handleKnowledgeImportURL", next: "func (s *HTTPServer) handleKnowledgeImportURLs", want: []string{"OwnerID:   p.UserID", "TenantID:  p.TenantID"}},
 		{name: "func (s *HTTPServer) handleKnowledgeImportURLs", next: "func (s *HTTPServer) handleKnowledgeImportText", want: []string{"OwnerID:   p.UserID", "TenantID:  p.TenantID", "OwnerID:        p.UserID", "TenantID:       p.TenantID"}},
 	} {
-		block := knowledgeHandlerBlock(t, body, tc.name, tc.next)
+		// gofmt aligns composite-literal values according to the longest field;
+		// compare normalized whitespace so this guard checks principal scope,
+		// rather than depending on incidental alignment.
+		block := strings.Join(strings.Fields(knowledgeHandlerBlock(t, body, tc.name, tc.next)), " ")
 		for _, needle := range tc.want {
-			if !strings.Contains(block, needle) {
+			if !strings.Contains(block, strings.Join(strings.Fields(needle), " ")) {
 				t.Fatalf("%s missing principal-scope marker %q", tc.name, needle)
 			}
 		}

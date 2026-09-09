@@ -145,6 +145,7 @@ export function AssistantInputStack(props: AssistantInputStackProps) {
             </div>}
             <div
                 data-testid="ai-input-stack"
+                className="mc-input-stack"
                 style={{
                     display: "flex",
                     flexDirection: "column",

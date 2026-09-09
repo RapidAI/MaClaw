@@ -22,7 +22,7 @@ type ProxyTestState = {
 
 const textForLang = localizeText;
 
-export const ProxySettingsPanel = ({ config, setConfig, isWindows, lang, t, showToastMessage }: ProxySettingsPanelProps) => {
+export const ProxySettingsPanel = ({ config, setConfig, lang, t, showToastMessage }: ProxySettingsPanelProps) => {
     const [saving, setSaving] = useState(false);
     const [testing, setTesting] = useState(false);
     const [banner, setBanner] = useState<ProxyTestState | null>(null);
@@ -109,7 +109,6 @@ export const ProxySettingsPanel = ({ config, setConfig, isWindows, lang, t, show
                         if (
                             enabled &&
                             !config?.default_proxy_scope_maclaw &&
-                            !config?.default_proxy_scope_coding_tools &&
                             !config?.default_proxy_scope_agent
                         ) {
                             patch.default_proxy_scope_maclaw = true;
@@ -122,7 +121,7 @@ export const ProxySettingsPanel = ({ config, setConfig, isWindows, lang, t, show
         </label>
 
         <ProxySettingsFields config={config} t={t} updateConfig={updateConfig} />
-        <ProxyScopeSettings config={config} isWindows={isWindows} t={t} updateConfig={updateConfig} />
+        <ProxyScopeSettings config={config} t={t} updateConfig={updateConfig} />
         <div className="proxy-settings-hint">{t("proxyTestHint")}</div>
         {banner && (
             <div className="proxy-settings-status" data-ok={banner.ok ? 'true' : 'false'} role="status">

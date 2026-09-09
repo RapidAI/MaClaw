@@ -1,4 +1,4 @@
-import { type CSSProperties, MouseEvent } from "react";
+import { type CSSProperties, type KeyboardEvent, type MouseEvent, useState } from "react";
 import { LoadConfig } from "../../../wailsjs/go/main/App";
 import { BrowserOpenURL } from "../../../wailsjs/runtime";
 import { buildHubCardStoreURL } from "../../utils/hubCredits";
@@ -37,6 +37,8 @@ export async function openCurrentTenantCardStore(loadConfig: () => Promise<CardS
 }
 
 interface AssistantTitleBarProps {
+    /** Whether this title bar belongs to the visible assistant surface. */
+    active?: boolean;
     clearHistory: () => void;
     /** When true, the "New conversation" button is disabled to prevent clearing an in-progress session. */
     clearHistoryDisabled?: boolean;
@@ -47,6 +49,7 @@ interface AssistantTitleBarProps {
     onHideWindow?: () => void;
     onDismissAppUpdate?: (latestVersion: string) => void;
     onOpenKnowledge?: () => void;
+    onOpenAppReleaseNotes?: () => void;
     onOpenAppUpdate?: () => void;
     onOpenTutorial?: () => void;
     onToggleMaximize?: () => void;
@@ -81,18 +84,61 @@ const stopMouse = (handler: () => void) => (e: MouseEvent) => {
     e.stopPropagation();
     handler();
 };
-export function AssistantTitleBar({ clearHistory, clearHistoryDisabled, inline, lang, maximized, onClose, onDismissAppUpdate, onHideWindow, onOpenAppUpdate, onOpenKnowledge, onOpenTutorial, onOptimizeExpert, onSaveCurrentTask, onToggleMaximize, onTogglePreviewPanel, onToggleSkillRecording, optimizeExpertBusy, previewPanelOpen, previewAvailable, projectSearchOpen, refreshNews, showMaximizeToggle, skillRecording, skillRecordingAnyTab, skillRecordingCount, theme: t, themeMode, title, trialReflectEnabled, toggleProjectSearch, updateAvailable, workflowActive }: AssistantTitleBarProps) {
+export function AssistantTitleBar({ active = true, clearHistory, clearHistoryDisabled, inline, lang, maximized, onClose, onDismissAppUpdate, onHideWindow, onOpenAppReleaseNotes, onOpenAppUpdate, onOpenKnowledge, onOpenTutorial, onOptimizeExpert, onSaveCurrentTask, onToggleMaximize, onTogglePreviewPanel, onToggleSkillRecording, optimizeExpertBusy, previewPanelOpen, previewAvailable, projectSearchOpen, refreshNews, showMaximizeToggle, skillRecording, skillRecordingAnyTab, skillRecordingCount, theme: t, themeMode, title, trialReflectEnabled, toggleProjectSearch, updateAvailable, workflowActive }: AssistantTitleBarProps) {
+    const themeSuccess = "var(--theme-success, #4f7f6f)";
+    const [searchQuery, setSearchQuery] = useState("");
+    const openInlineTaskSearch = () => {
+        if (typeof window === "undefined") return;
+        window.dispatchEvent(new CustomEvent("maclaw:open-task-search", { detail: { query: searchQuery } }));
+    };
+    const handleSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        openInlineTaskSearch();
+    };
+    const rootStyle: WailsDragStyle = {
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        padding: inline ? "0 18px 0 24px" : "0 12px 0 10px",
+        height: inline ? "72px" : "38px",
+        background: t.titleBarBg,
+        borderBottom: `1px solid ${t.titleBarBorder}`,
+        flexShrink: 0,
+        minWidth: 0,
+        boxSizing: "border-box",
+        gap: inline ? "14px" : "8px",
+        position: "relative",
+        zIndex: 30000,
+        overflow: "visible",
+        ...(inline ? { "--wails-draggable": "drag", userSelect: "none" } : {}),
+    };
     return (
         <>
-        <div data-testid="ai-title-bar" {...(inline ? { "data-window-drag": true } : {})} onDoubleClick={() => { if (inline) onToggleMaximize?.(); }} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 12px 0 10px", height: "38px", background: t.titleBarBg, borderBottom: `1px solid ${t.titleBarBorder}`, flexShrink: 0, minWidth: 0, boxSizing: "border-box", gap: "8px", position: "relative", zIndex: 30000, overflow: "visible", ...(inline ? { "--wails-draggable": "drag", userSelect: "none" } satisfies WailsDragStyle : {}) }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "10px", minWidth: 0, flex: "1 1 auto" }}>
+        <div className="mc-ai-titlebar" data-testid="ai-title-bar" {...(inline ? { "data-window-drag": true } : {})} onDoubleClick={() => { if (inline) onToggleMaximize?.(); }} style={rootStyle}>
+            <div data-testid="ai-titlebar-leading" style={{ display: "flex", alignItems: "center", gap: inline ? "12px" : "10px", minWidth: 0, flex: "1 1 auto" }}>
+                {inline && <>
+                    <span className="mc-header-brand" data-testid="ai-titlebar-brand" aria-label="MaClaw">
+                        <span className="mc-header-brand-mark" aria-hidden="true">
+                            <svg viewBox="0 0 80 80" focusable="false">
+                                <path d="M14 58V22l26 25 26-25v36" fill="none" stroke="currentColor" strokeWidth="10.5" strokeLinecap="round" strokeLinejoin="round" />
+                            </svg>
+                        </span>
+                        <span>MaClaw</span>
+                    </span>
+                    <span className="mc-header-search-wrap" data-testid="ai-titlebar-search" onMouseDown={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()} style={{ flex: "1 1 180px", width: "clamp(120px, 22vw, 300px)", maxWidth: "300px", minWidth: "120px" }}>
+                        <svg className="mc-header-search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4.5 4.5" /></svg>
+                        <input className="mc-header-search" data-testid="ai-titlebar-search-input" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} onKeyDown={handleSearchKeyDown} onMouseDown={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()} placeholder={lang === "en" ? "Search tasks, files, knowledge..." : "搜索任务、文件、知识…"} aria-label={lang === "en" ? "Search" : "搜索"} />
+                    </span>
+                    <span className="mc-header-ready" data-testid="ai-titlebar-ready"><i aria-hidden="true" />{lang === "en" ? "Ready" : "准备就绪"}</span>
+                </>}
                 {!inline && <div style={{ display: "flex", gap: "5px", flexShrink: 0 }}><span style={{ ...dotBase, background: t.closeBtnColor }} onClick={onClose} title={lang === "en" ? "Close" : "\u5173\u95ed"} /></div>}
-                <span data-testid="ai-titlebar-title" style={{ color: t.titleText, fontSize: "11px", fontWeight: 600, letterSpacing: "0.02em", fontFamily: "'Segoe UI', 'SF Pro Text', system-ui, sans-serif", flex: "0 1 auto", minWidth: 0, maxWidth: "240px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", transform: "translateY(-0.5px)" }}>{title}</span>
+                <span data-testid="ai-titlebar-title" style={{ color: t.titleText, fontSize: "11px", fontWeight: 600, letterSpacing: "0.02em", fontFamily: "'Segoe UI', 'SF Pro Text', system-ui, sans-serif", flex: "0 1 auto", minWidth: 0, maxWidth: "240px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", transform: "translateY(-0.5px)", ...(inline ? { display: "none" } : {}) }}>{title}</span>
                 {trialReflectEnabled && <span style={{ fontSize: "10px", lineHeight: 1, padding: "3px 6px", borderRadius: "999px", background: t.fieldBg, color: t.promptColor, border: `1px solid ${t.titleBarBorder}`, flexShrink: 0 }}>{lang === "en" ? "Trial+Reflect" : "\u8bd5\u9519\u53cd\u601d"}</span>}
                 <div data-testid="ai-titlebar-primary-actions" style={{ display: "flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
                     {onSaveCurrentTask && <button className="ai-titlebar-tool save-task-btn" data-testid="save-current-task-btn" aria-label={localizeText(lang, "Save current conversation as task", "保存当前对话为任务", "保存目前對話為任務")} {...(inline ? { onMouseDown: stopMouse(onSaveCurrentTask) } : { onClick: onSaveCurrentTask })} style={{ display: "inline-flex", alignItems: "center", gap: "3px", padding: "2px 8px", borderRadius: "999px", fontSize: "10px", fontWeight: 600, lineHeight: 1, cursor: "pointer", userSelect: "none", border: `1px solid ${t.titleBarBorder}`, background: t.fieldBg, color: t.promptColor, transition: "all 150ms ease", flexShrink: 0, height: "20px", ["--ai-titlebar-tool-hover-bg" as any]: "rgba(148, 163, 184, 0.15)", ...(inline ? { "--wails-draggable": "no-drag" } as WailsDragStyle : {}) }} title={localizeText(lang, "Save current conversation as task", "保存当前对话为任务", "保存目前對話為任務")}><svg width="10" height="10" viewBox="0 0 24 24" aria-hidden="true" focusable="false" style={{ display: "block", flexShrink: 0 }}><path fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M6 4h10l2 2v14H6z" /><path fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M9 4v6h6V4" /><path fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M9 16h6" /></svg>{localizeText(lang, "Save as Task", "保存为任务", "保存為任務")}</button>}
                     {onOptimizeExpert && <button className="ai-titlebar-tool optimize-expert-btn" data-testid="optimize-expert-btn" disabled={!!optimizeExpertBusy} aria-label={localizeText(lang, "Distill this conversation into an optimized expert", "从当前对话提炼优化专家", "從目前對話提煉優化專家")} {...(inline ? { onMouseDown: optimizeExpertBusy ? undefined : stopMouse(onOptimizeExpert) } : { onClick: optimizeExpertBusy ? undefined : onOptimizeExpert })} style={{ display: "inline-flex", alignItems: "center", gap: "3px", padding: "2px 8px", borderRadius: "999px", fontSize: "10px", fontWeight: 600, lineHeight: 1, cursor: optimizeExpertBusy ? "wait" : "pointer", userSelect: "none", border: `1px solid ${t.titleBarBorder}`, background: t.fieldBg, color: t.promptColor, opacity: optimizeExpertBusy ? 0.6 : 1, transition: "all 150ms ease", flexShrink: 0, height: "20px", ["--ai-titlebar-tool-hover-bg" as any]: "rgba(148, 163, 184, 0.15)", ...(inline ? { "--wails-draggable": "no-drag" } as WailsDragStyle : {}) }} title={localizeText(lang, "Distill this conversation into an optimized expert", "从当前对话提炼优化专家", "從目前對話提煉優化專家")}><svg width="10" height="10" viewBox="0 0 24 24" aria-hidden="true" focusable="false" style={{ display: "block", flexShrink: 0 }}><path fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M12 3l1.9 4.8L18.5 9.5l-4.6 1.7L12 16l-1.9-4.8L5.5 9.5l4.6-1.7z" /><path fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M18.5 15.5l.9 2.1 2.1.9-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9z" /></svg>{optimizeExpertBusy ? localizeText(lang, "Optimizing…", "优化中…", "優化中…") : localizeText(lang, "Optimize Expert", "专家优化", "專家優化")}</button>}
-                    {(workflowActive || previewPanelOpen || previewAvailable) && onTogglePreviewPanel && <button className="ai-titlebar-tool workflow-preview-toggle-btn" data-testid="workflow-preview-toggle-btn" role="switch" aria-checked={!!previewPanelOpen} aria-label={localizeText(lang, previewPanelOpen ? "Hide preview panel" : "Show preview panel", previewPanelOpen ? "隐藏预览面板" : "显示预览面板", previewPanelOpen ? "隱藏預覽面板" : "顯示預覽面板")} {...(inline ? { onMouseDown: stopMouse(onTogglePreviewPanel) } : { onClick: onTogglePreviewPanel })} style={{ display: "inline-flex", alignItems: "center", gap: "4px", padding: "2px 8px", borderRadius: "999px", fontSize: "10px", fontWeight: 600, lineHeight: 1, cursor: "pointer", userSelect: "none", border: previewPanelOpen ? "1px solid rgba(79, 127, 111, 0.36)" : `1px solid ${t.titleBarBorder}`, background: previewPanelOpen ? "rgba(79, 127, 111, 0.12)" : t.fieldBg, color: previewPanelOpen ? "#4f7f6f" : t.promptColor, transition: "all 150ms ease", flexShrink: 0, height: "20px", ["--ai-titlebar-tool-hover-bg" as any]: previewPanelOpen ? "rgba(79, 127, 111, 0.20)" : "rgba(148, 163, 184, 0.15)", ...(inline ? { "--wails-draggable": "no-drag" } as WailsDragStyle : {}) }} title={localizeText(lang, previewPanelOpen ? "Hide preview panel" : "Show preview panel", previewPanelOpen ? "隐藏预览面板" : "显示预览面板", previewPanelOpen ? "隱藏預覽面板" : "顯示預覽面板")}><span aria-hidden="true" style={{ display: "inline-block", width: "6px", height: "6px", borderRadius: "50%", background: "#4f7f6f", opacity: previewPanelOpen ? 1 : 0.4, transition: "all 150ms ease" }} />{localizeText(lang, "Preview", "预览", "預覽")}</button>}
+                    {(workflowActive || previewPanelOpen || previewAvailable) && onTogglePreviewPanel && <button className="ai-titlebar-tool workflow-preview-toggle-btn" data-testid="workflow-preview-toggle-btn" role="switch" aria-checked={!!previewPanelOpen} aria-label={localizeText(lang, previewPanelOpen ? "Hide preview panel" : "Show preview panel", previewPanelOpen ? "隐藏预览面板" : "显示预览面板", previewPanelOpen ? "隱藏預覽面板" : "顯示預覽面板")} {...(inline ? { onMouseDown: stopMouse(onTogglePreviewPanel) } : { onClick: onTogglePreviewPanel })} style={{ display: "inline-flex", alignItems: "center", gap: "4px", padding: "2px 8px", borderRadius: "999px", fontSize: "10px", fontWeight: 600, lineHeight: 1, cursor: "pointer", userSelect: "none", border: previewPanelOpen ? `1px solid color-mix(in srgb, ${themeSuccess} 36%, transparent)` : `1px solid ${t.titleBarBorder}`, background: previewPanelOpen ? `color-mix(in srgb, ${themeSuccess} 12%, transparent)` : t.fieldBg, color: previewPanelOpen ? themeSuccess : t.promptColor, transition: "all 150ms ease", flexShrink: 0, height: "20px", ["--ai-titlebar-tool-hover-bg" as any]: previewPanelOpen ? `color-mix(in srgb, ${themeSuccess} 20%, transparent)` : "rgba(148, 163, 184, 0.15)", ...(inline ? { "--wails-draggable": "no-drag" } as WailsDragStyle : {}) }} title={localizeText(lang, previewPanelOpen ? "Hide preview panel" : "Show preview panel", previewPanelOpen ? "隐藏预览面板" : "显示预览面板", previewPanelOpen ? "隱藏預覽面板" : "顯示預覽面板")}><span aria-hidden="true" style={{ display: "inline-block", width: "6px", height: "6px", borderRadius: "50%", background: themeSuccess, opacity: previewPanelOpen ? 1 : 0.4, transition: "all 150ms ease" }} />{localizeText(lang, "Preview", "预览", "預覽")}</button>}
                     {onToggleSkillRecording && <button className="ai-titlebar-tool skill-recording-btn" data-testid="skill-recording-btn" role="switch" aria-checked={!!skillRecording} disabled={!!(skillRecordingAnyTab && !skillRecording)} aria-label={localizeText(lang, skillRecording ? "Recording... click to stop" : (skillRecordingAnyTab ? "Another tab is recording" : "Record operations as Skill"), skillRecording ? "录制中...点击停止" : (skillRecordingAnyTab ? "其他标签页正在录制" : "录制操作为 Skill"), skillRecording ? "錄製中...點擊停止" : (skillRecordingAnyTab ? "其他標籤頁正在錄製" : "錄製操作為 Skill"))} {...(inline ? { onMouseDown: (skillRecordingAnyTab && !skillRecording) ? undefined : stopMouse(onToggleSkillRecording) } : { onClick: (skillRecordingAnyTab && !skillRecording) ? undefined : onToggleSkillRecording })} style={{ display: "inline-flex", alignItems: "center", gap: "4px", padding: "2px 8px", borderRadius: "999px", fontSize: "10px", fontWeight: 600, lineHeight: 1, cursor: (skillRecordingAnyTab && !skillRecording) ? "not-allowed" : "pointer", userSelect: "none", border: skillRecording ? "1px solid rgba(220, 38, 38, 0.4)" : `1px solid ${t.titleBarBorder}`, background: skillRecording ? "rgba(220, 38, 38, 0.1)" : t.fieldBg, color: skillRecording ? "#dc2626" : t.promptColor, opacity: (skillRecordingAnyTab && !skillRecording) ? 0.4 : 1, transition: "all 150ms ease", flexShrink: 0, height: "20px", ["--ai-titlebar-tool-hover-bg" as any]: skillRecording ? "rgba(220, 38, 38, 0.18)" : "rgba(148, 163, 184, 0.15)", ...(inline ? { "--wails-draggable": "no-drag" } as WailsDragStyle : {}) }} title={localizeText(lang, skillRecording ? `Recording (${skillRecordingCount || 0} ops)... click to stop` : (skillRecordingAnyTab ? "Another tab is recording" : "Record operations as Skill"), skillRecording ? `录制中 (${skillRecordingCount || 0} 步)...点击停止` : (skillRecordingAnyTab ? "其他标签页正在录制" : "录制操作为 Skill"), skillRecording ? `錄製中 (${skillRecordingCount || 0} 步)...点击停止` : (skillRecordingAnyTab ? "其他标签页正在录制" : "录制操作为 Skill"))}><span aria-hidden="true" style={{ display: "inline-block", width: "6px", height: "6px", borderRadius: "50%", background: skillRecording ? "#dc2626" : t.promptColor, opacity: skillRecording ? 1 : 0.4, transition: "all 150ms ease", animation: skillRecording ? "pulse-recording 1.5s ease-in-out infinite" : "none" }} />{localizeText(lang, skillRecording ? `REC ${skillRecordingCount || 0}` : "REC", skillRecording ? `录制 ${skillRecordingCount || 0}` : "录制", skillRecording ? `錄製 ${skillRecordingCount || 0}` : "錄製")}</button>}
                 </div>
             </div>
@@ -100,8 +146,8 @@ export function AssistantTitleBar({ clearHistory, clearHistoryDisabled, inline, 
                 Do not overflow:hidden tools — NotificationPanel / update menu are absolute. */}
             <div style={{ display: "flex", alignItems: "center", flexShrink: 0, paddingRight: inline ? 0 : 2, ...(inline ? { "--wails-draggable": "no-drag", position: "relative", zIndex: 30010 } satisfies WailsDragStyle : {}) }}>
                 <div data-testid="ai-titlebar-tools-group" style={{ display: "flex", gap: "4px", alignItems: "center", minWidth: 0, paddingTop: 1 }}>
-                    <AssistantUpdateNotice inline={inline} lang={lang} onDismissAppUpdate={onDismissAppUpdate} onOpenAppUpdate={onOpenAppUpdate} theme={t} themeMode={themeMode} updateAvailable={updateAvailable} />
-                    <AssistantTitleBarNotifications inline={inline} lang={lang} theme={t} />
+                    <AssistantUpdateNotice variant="floating" inline={inline} lang={lang} onDismissAppUpdate={onDismissAppUpdate} onOpenAppReleaseNotes={onOpenAppReleaseNotes} onOpenAppUpdate={onOpenAppUpdate} theme={t} themeMode={themeMode} updateAvailable={updateAvailable} />
+                    <AssistantTitleBarNotifications active={active} inline={inline} lang={lang} theme={t} />
                     <AssistantMobileDocsControl lang={lang} theme={t} inline={inline} />
                     <button className="ai-titlebar-tool" {...(inline ? { onMouseDown: stopMouse(() => { void openCurrentTenantCardStore(); }) } : { onClick: () => { void openCurrentTenantCardStore(); } })} style={getTitleBarToolButtonStyle(t)} title={localizeText(lang, "Buy service redemption cards", "\u8d2d\u4e70\u670d\u52a1\u5151\u6362\u5361")}><TitleBarToolIcon name="cart" /></button>
                     <button className="ai-titlebar-tool" {...(inline ? { onMouseDown: stopMouse(toggleProjectSearch) } : { onClick: toggleProjectSearch })} style={getTitleBarToolButtonStyle(t, projectSearchOpen ? "active" : "default")} title={localizeText(lang, "Search tasks", "\u641c\u7d22\u4efb\u52a1")}><TitleBarToolIcon name="search" /></button>

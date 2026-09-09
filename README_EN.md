@@ -97,7 +97,7 @@ MaClaw has a persistent memory system that remembers your preferences, project k
 
 ### Expert System — Role-Constrained Sessions
 
-The desktop app ships switchable **Experts** (`gui/expert_*.go`): role prompts plus capability tiers that constrain tools/skills per session:
+The desktop app ships switchable **Experts** (`guiapp/expert_*.go`): role prompts plus capability tiers that constrain tools/skills per session:
 
 * **Built-in experts**: Paper polish, academic translation, PPT maker (resettable to factory definitions)
 * **Capability tiers**: `full` / `advisor` / `docs` / `office` / `custom` — limits tools and skill risk levels

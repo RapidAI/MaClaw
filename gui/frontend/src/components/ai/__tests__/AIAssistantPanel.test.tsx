@@ -6504,10 +6504,11 @@ describe('expert tabs', () => {
         selectWorkingDirMock.mockResolvedValueOnce('D:/workspace/literature');
         renderPanel({ pendingExpertOpen: { expert }, onPendingExpertOpenHandled: vi.fn() });
         await screen.findByTestId('ai-tab-expert-exp-1');
-        const openDirectory = await screen.findByRole('button', { name: 'Open current working directory' });
-        fireEvent.click(openDirectory);
+        fireEvent.click(await screen.findByTestId('working-dir-chip'));
+        fireEvent.click(await screen.findByRole('menuitem', { name: 'Open containing folder' }));
         await waitFor(() => expect(openProjectDirectoryMock).toHaveBeenCalledWith('D:/workspace/default'));
-        fireEvent.click(screen.getByRole('button', { name: 'Choose a different working directory' }));
+        fireEvent.click(screen.getByTestId('working-dir-chip'));
+        fireEvent.click(await screen.findByRole('menuitem', { name: 'Choose a different working directory' }));
         await waitFor(() => expect(setTabWorkingDirMock).toHaveBeenCalledWith('expert-exp-1', 'D:/workspace/literature'));
     });
 
@@ -6517,7 +6518,8 @@ describe('expert tabs', () => {
         selectWorkingDirMock.mockImplementationOnce(() => new Promise<string>(resolve => { resolveDirectory = resolve; }));
         renderPanel({ pendingExpertOpen: { expert }, onPendingExpertOpenHandled: vi.fn() });
         await screen.findByTestId('ai-tab-expert-exp-1');
-        const changeButton = await screen.findByRole('button', { name: 'Choose a different working directory' });
+        fireEvent.click(await screen.findByTestId('working-dir-chip'));
+        const changeButton = await screen.findByRole('menuitem', { name: 'Choose a different working directory' });
 
         fireEvent.click(changeButton);
         fireEvent.click(changeButton);

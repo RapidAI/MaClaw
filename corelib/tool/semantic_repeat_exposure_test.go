@@ -26,6 +26,41 @@ func repeatSelected(t *testing.T, got map[string]bool) []string {
 // Both hosts adopt this closure, so the load-bearing property is that a need
 // without a budget resolves exactly as it did before repeats existed: grant
 // every ready selection that has not been granted, and nothing else.
+func TestNextExposedSelectionsUsesGrantTable(t *testing.T) {
+	ready := repeatSelections("selection:need:a", "selection:need:b")
+	got := NextExposedSelections(ready, nil, map[string]bool{"selection:need:a": true}, map[string]InvocationGrant{
+		"web_search": {SelectionID: "selection:need:a"},
+	}, nil)
+	if got["selection:need:a"] || !got["selection:need:b"] {
+		t.Fatalf("exposed=%#v", got)
+	}
+}
+
+func TestGrantSelectionIDsProjectsGrantTable(t *testing.T) {
+	grants := map[string]InvocationGrant{
+		"web_search": {SelectionID: "sel-1"},
+		"other":      {SelectionID: "sel-2"},
+		"empty":      {},
+	}
+	got := GrantSelectionIDs(grants)
+	if !got["sel-1"] || !got["sel-2"] || len(got) != 2 {
+		t.Fatalf("ids=%#v", got)
+	}
+	names := LiveGrantNames(grants)
+	if !names["web_search"] || !names["other"] || !names["empty"] || len(names) != 3 {
+		t.Fatalf("names=%#v", names)
+	}
+	if SoleLiveGrantName(grants) != "" {
+		t.Fatal("multiple grants must not report a sole name")
+	}
+	if !HasLiveGrant(grants, "web_search") || HasLiveGrant(grants, "missing") {
+		t.Fatal("HasLiveGrant mismatch")
+	}
+	if !HasKnownGrant(grants, map[string]InvocationGrant{"retired": {SelectionID: "sel-3"}}, "retired") {
+		t.Fatal("HasKnownGrant must see retired names")
+	}
+}
+
 func TestNextRepeatSelectionsLeavesSingleInvocationFamiliesUnchanged(t *testing.T) {
 	ready := repeatSelections("selection:need:a", "selection:need:b", "selection:need:c")
 

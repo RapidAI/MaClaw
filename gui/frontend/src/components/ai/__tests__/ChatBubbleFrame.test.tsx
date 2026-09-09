@@ -2,10 +2,15 @@ import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
 import {
     ChatBubbleFrame,
+    CHAT_BUBBLE_SIDE_TAIL_HEIGHT,
+    CHAT_BUBBLE_SIDE_TAIL_INSET,
+    CHAT_BUBBLE_SIDE_TAIL_TOP,
+    CHAT_BUBBLE_SIDE_TAIL_WIDTH,
     CHAT_BUBBLE_TAIL_INSET,
     CHAT_BUBBLE_TAIL_SIZE,
     CHAT_BUBBLE_TAIL_TOP,
     CHAT_SPEAKER_LABEL_GAP,
+    chatBubbleSideTailFillStyle,
     chatBubbleTailStyle,
     localIntroChatBubbleBackground,
     sanitizeChatBubbleLayoutStyle,
@@ -74,6 +79,34 @@ describe("chatBubbleTailStyle", () => {
         expect(left.transform).toBe("rotate(45deg)");
         expect(left.borderTop).toContain("#222");
         expect(left.borderLeft).toContain("#222");
+    });
+
+    it("draws the side tail as an outlined triangle on the name-side corner", () => {
+        const left = chatBubbleTailStyle("left", "#111", "#222", "side");
+        const right = chatBubbleTailStyle("right", "#111", "#222", "side");
+
+        // Outer layer paints the outline in the border color.
+        expect(left.background).toBe("#222");
+        expect(right.background).toBe("#222");
+        expect(left.clipPath).toBe("polygon(0 100%, 50% 0, 100% 100%)");
+        expect(left.left).toBe(CHAT_BUBBLE_SIDE_TAIL_INSET);
+        expect(right.right).toBe(CHAT_BUBBLE_SIDE_TAIL_INSET);
+        expect(left.top).toBe(CHAT_BUBBLE_SIDE_TAIL_TOP);
+        expect(left.width).toBe(CHAT_BUBBLE_SIDE_TAIL_WIDTH);
+        expect(left.height).toBe(CHAT_BUBBLE_SIDE_TAIL_HEIGHT);
+        // The outline layer's base lands flush on the bubble's top border
+        // (never crosses below it); the inner fill hides the border itself.
+        expect(CHAT_BUBBLE_SIDE_TAIL_TOP).toBeLessThan(0);
+        expect(CHAT_BUBBLE_SIDE_TAIL_TOP + CHAT_BUBBLE_SIDE_TAIL_HEIGHT).toBe(0);
+
+        // Inner fill leaves a 1px outline and runs 1px past the outer base.
+        const fill = chatBubbleSideTailFillStyle("#111");
+        expect(fill.background).toBe("#111");
+        expect(fill.left).toBe(1);
+        expect(fill.top).toBe(1);
+        expect(fill.width).toBe(CHAT_BUBBLE_SIDE_TAIL_WIDTH - 2);
+        expect(fill.height).toBe(CHAT_BUBBLE_SIDE_TAIL_HEIGHT);
+        expect(fill.clipPath).toBe("polygon(0 100%, 50% 0, 100% 100%)");
     });
 });
 

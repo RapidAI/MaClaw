@@ -84,7 +84,7 @@ func reviewedHostImageInputsForTurn(rootTaskID, turnID, principalID string, atta
 	}
 	inputScope := coretool.InvocationScope{
 		RootTaskID:  strings.TrimSpace(rootTaskID),
-		PlanID:      "input:" + strings.TrimSpace(turnID),
+		PlanID:      coretool.TrustedInputPlanID(turnID),
 		SessionID:   strings.TrimSpace(principalID),
 		TurnID:      strings.TrimSpace(turnID),
 		PrincipalID: strings.TrimSpace(principalID),
@@ -92,7 +92,7 @@ func reviewedHostImageInputsForTurn(rootTaskID, turnID, principalID string, atta
 	attachments = CanonicalizeReviewedHostMessageAttachments(attachments)
 	inputs := make([]reviewedHostImageInput, 0, len(attachments))
 	for index, attachment := range attachments {
-		if _, _, ok := reviewedHostDocumentFormat(attachment.FileName, attachment.MimeType); ok {
+		if _, _, ok := agent.DocumentAttachmentFormat(attachment.FileName, attachment.MimeType); ok {
 			continue
 		}
 		mimeType, ok := reviewedHostImageFormat(attachment.FileName, attachment.MimeType)
@@ -107,10 +107,7 @@ func reviewedHostImageInputsForTurn(rootTaskID, turnID, principalID string, atta
 			return nil, fmt.Errorf("trusted_image_attachment_too_large")
 		}
 		encoded := base64.StdEncoding.EncodeToString(raw)
-		sourceID := strings.TrimSpace(attachment.SourceMediaID)
-		if sourceID == "" {
-			sourceID = fmt.Sprintf("attachment:%d:%s:%s", index, filepath.Base(attachment.FileName), mimeType)
-		}
+		sourceID := coretool.TrustedAttachmentSourceID(index, attachment.FileName, mimeType, attachment.SourceMediaID)
 		producer := "trusted-input:host-image:" + coretool.SchemaDigest([]byte(sourceID))[:24]
 		payload, err := coretool.NewArtifactPayload(inputScope, producer, "image", mimeType, encoded, time.Now().UTC())
 		if err != nil {
@@ -158,7 +155,7 @@ func bindReviewedHostDeliverableTurn(needs []coretool.CapabilityNeed, turn revie
 		}
 		return resolved, &turn.Documents[0], nil, nil, nil
 	}
-	if (reviewedHostGenerateNeedPresent(needs) || reviewedHostAudioRenderNeedPresent(needs) || reviewedHostVisualCaptureNeedPresent(needs)) && hasAttachment {
+	if coretool.InTurnArtifactProducerPresent(needs, CapabilityAudioRender, CapabilityVisualCapture) && hasAttachment {
 		return needs, nil, nil, nil, nil
 	}
 	if !hasAttachment {
@@ -195,18 +192,15 @@ func bindReviewedHostDeliverableTurn(needs []coretool.CapabilityNeed, turn revie
 		}
 		return resolved, nil, nil, &turn.Voices[0], nil
 	}
-	if docN+imgN+voiceN == 0 {
-		return nil, nil, nil, nil, fmt.Errorf("trusted_document_input_missing")
+	if err := coretool.UniqueTrustedInputCount(docN + imgN + voiceN); err != nil {
+		return nil, nil, nil, nil, err
 	}
-	return nil, nil, nil, nil, fmt.Errorf("trusted_document_input_ambiguous")
+	return needs, nil, nil, nil, nil
 }
 
 func applyReviewedHostImageDeliverInputs(needs []coretool.CapabilityNeed, inputs []reviewedHostImageInput) ([]coretool.CapabilityNeed, error) {
-	if len(inputs) != 1 {
-		if len(inputs) == 0 {
-			return nil, fmt.Errorf("trusted_document_input_missing")
-		}
-		return nil, fmt.Errorf("trusted_document_input_ambiguous")
+	if err := coretool.UniqueTrustedInputCount(len(inputs)); err != nil {
+		return nil, err
 	}
 	resolved := append([]coretool.CapabilityNeed(nil), needs...)
 	for index := range resolved {

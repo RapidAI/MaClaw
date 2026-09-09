@@ -220,3 +220,14 @@ MaClaw 独创的浏览器运行监管系统，为自动化测试与业务流程�
 * **检查更新**：获取 MaClaw 最新版本
 * **系统托盘**：右键托盘图标可快速启动工具或退出程序
 * **安全框架**：风险评估引擎、审计日志、安全防火墙与细粒度权限控制
+
+## 12. 数据库连接工具
+
+Agent 通过统一的 `database` 工具查询 MySQL、PostgreSQL、SQL Server、Access 和 Excel，密码只保存在系统密钥环，不会进入对话或日志。
+
+1. 打开 **设置 → 数据源**，添加 profile（主机、库名、只读/写入开关）。公网主机必须勾选「允许公网主机」。可选填写只读副本主机，查询走副本、写入仍走主库。主库与副本可分别绑定已批准的 SSH 会话做隧道。
+2. 密码通过独立的密钥字段写入密钥环；复制 profile 不会复制密钥。
+3. 对话中先 `list_connections` / `inspect`，再用参数化 `query`。写入必须先 `dry_run=true`，再由宿主审批后提交。
+4. 结果过大时使用返回的 `cursor` / `result_handle` 分页，不要重复跑无界查询。导出 Excel 可直接提交 `result_handle`，不必先把全部行塞进工具参数。大查询可设 `async=true`，再用 `job_status` 轮询。
+5. `explain` 可预览只读 SQL 的执行计划；只给 `prompt` 时返回 schema 约束，不会在工具里自动生成并执行 SQL。常用查询可用 `save_favorite` / `list_favorites` 收藏。
+6. 可用 `database_tool_enabled` 或单个 profile 的停用开关立即切断连接。Access 需要 Windows + Access Database Engine；缺少驱动时 doctor 会给出安装提示。GUI、TUI 和 MaClawSrv 必须使用同一数据库工具契约，否则 doctor 会报 schema hash 不一致。

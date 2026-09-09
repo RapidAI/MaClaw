@@ -362,18 +362,10 @@ func dynamicSemanticExecutionCancelledResult() coretool.SelectionExecutionResult
 }
 
 func dynamicSelectionRequiresReceipt(selection coretool.PlannedSelection) bool {
-	if dynamicHostLocalMutationSelection(selection) {
+	if dynamicHostLocalMutationSelection(selection) || dynamicHostObservedExternalSelection(selection) {
 		return false
 	}
-	if dynamicHostObservedExternalSelection(selection) {
-		return false
-	}
-	for _, effect := range selection.Effects {
-		if effect == coretool.EffectExternalEffect || effect == coretool.EffectSensitive {
-			return true
-		}
-	}
-	return false
+	return coretool.SelectionRequiresExternalReceipt(selection)
 }
 
 // dynamicHostObservedExternalSelection identifies a host-owned ssh / browser /
@@ -382,24 +374,9 @@ func dynamicSelectionRequiresReceipt(selection coretool.PlannedSelection) bool {
 // not a channel send and must not enter the IM delivery coordinator.
 // Schedule dispatch and message.send.im stay on the coordinator path.
 func dynamicHostObservedExternalSelection(selection coretool.PlannedSelection) bool {
-	if !strings.EqualFold(strings.TrimSpace(selection.Provider.Kind), reviewedHostProviderKind) {
-		return false
-	}
-	external := false
-	for _, effect := range selection.Effects {
-		if effect == coretool.EffectExternalEffect {
-			external = true
-		}
-	}
-	if !external {
-		return false
-	}
-	switch strings.TrimSpace(selection.AdapterName) {
-	case reviewedHostSSHAdapterName, reviewedHostBrowserAdapterName, reviewedHostComputerUseAdapterName, reviewedHostRepoMutateAdapterName:
-		return true
-	default:
-		return false
-	}
+	return coretool.HostObservedExternalSelection(selection, reviewedHostProviderKind,
+		reviewedHostSSHAdapterName, reviewedHostBrowserAdapterName,
+		reviewedHostComputerUseAdapterName, reviewedHostRepoMutateAdapterName)
 }
 
 // dynamicHostLocalMutationSelection identifies a host-owned provider whose
@@ -408,19 +385,7 @@ func dynamicHostObservedExternalSelection(selection coretool.PlannedSelection) b
 // authoritative local completion receipt. This boundary is unavailable to
 // Skill/MCP or any selection that also declares EffectExternalEffect.
 func dynamicHostLocalMutationSelection(selection coretool.PlannedSelection) bool {
-	if !strings.EqualFold(strings.TrimSpace(selection.Provider.Kind), reviewedHostProviderKind) {
-		return false
-	}
-	local := false
-	for _, effect := range selection.Effects {
-		switch effect {
-		case coretool.EffectSensitive, coretool.EffectLocalMutation:
-			local = true
-		case coretool.EffectExternalEffect:
-			return false
-		}
-	}
-	return local
+	return coretool.HostLocalMutationSelection(selection, reviewedHostProviderKind)
 }
 
 func executeDynamicExternalEffect(ctx context.Context, coordinator DynamicExternalEffectCoordinator, invocation DynamicExternalEffectInvocation, dispatch func() (string, error)) coretool.SelectionExecutionResult {

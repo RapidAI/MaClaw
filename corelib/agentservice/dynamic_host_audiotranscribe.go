@@ -254,12 +254,7 @@ func applyReviewedHostAudioInputs(needs []coretool.CapabilityNeed, inputs []revi
 }
 
 func reviewedHostAudioNeedPresent(needs []coretool.CapabilityNeed) bool {
-	for _, need := range needs {
-		if need.Capability == CapabilityAudioTranscribe {
-			return true
-		}
-	}
-	return false
+	return coretool.CapabilityNeedsContain(needs, CapabilityAudioTranscribe)
 }
 
 // ReviewedHostTrustedAudioMIME reports whether a host attachment is in the

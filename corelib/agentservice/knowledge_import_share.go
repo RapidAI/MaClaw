@@ -16,6 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 )
 
@@ -106,7 +107,7 @@ func (c *coreAgentCallbacks) executeKnowledgeImportShare(args map[string]interfa
 	}
 
 	// Step 3: Download the package.
-	pkg, err := downloadSharePackage(downloadCtx, packageURL, authHeader)
+	pkg, err := downloadSharePackage(downloadCtx, packageURL, authHeader, apiURL)
 	cancelDownload()
 	if err != nil {
 		log.Printf("[knowledge_import_share] package download failed: %v (url=%s)", err, packageURL)
@@ -565,6 +566,9 @@ func fetchShareMetadata(ctx context.Context, apiURL, authorization string) (map[
 	if err != nil {
 		return nil, err
 	}
+	if tp := agentruntime.TraceParentHeader(ctx); tp != "" {
+		req.Header.Set("traceparent", tp)
+	}
 	req.Header.Set("Accept", "application/json")
 	if authorization != "" {
 		req.Header.Set("Authorization", authorization)
@@ -609,12 +613,28 @@ func resolveSharePackageURL(apiURL string, share map[string]interface{}) string 
 	return base.ResolveReference(parsed).String()
 }
 
+// sameShareOrigin reports whether two URLs share scheme and host.
+func sameShareOrigin(apiURL, other string) bool {
+	a, errA := url.Parse(apiURL)
+	b, errB := url.Parse(other)
+	if errA != nil || errB != nil || a.Host == "" || b.Host == "" {
+		return false
+	}
+	return strings.EqualFold(a.Scheme, b.Scheme) && strings.EqualFold(a.Host, b.Host)
+}
+
 // downloadSharePackage fetches and parses the knowledge package JSON.
-func downloadSharePackage(ctx context.Context, packageURL, authorization string) (sharePackage, error) {
+// traceOrigin restricts traceparent injection to the share API's own host: a
+// package_url may point at third-party storage, and correlation IDs must not
+// leak across origins.
+func downloadSharePackage(ctx context.Context, packageURL, authorization, traceOrigin string) (sharePackage, error) {
 	var pkg sharePackage
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, packageURL, nil)
 	if err != nil {
 		return pkg, err
+	}
+	if tp := agentruntime.TraceParentHeader(ctx); tp != "" && sameShareOrigin(traceOrigin, packageURL) {
+		req.Header.Set("traceparent", tp)
 	}
 	req.Header.Set("Accept", "application/json")
 	if authorization != "" {

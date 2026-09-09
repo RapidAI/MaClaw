@@ -44,6 +44,11 @@ func TestSrvAdvertisesSharedCoreCapabilities(t *testing.T) {
 			t.Errorf("srv extra capability %s should be enabled under equivalent host wiring; reason=%q", name, cap.DisabledReason)
 		}
 	}
+	for name := range agent.HostPrivateCapabilityNames() {
+		if _, ok := advertised[name]; ok {
+			t.Errorf("srv catalog leaked GUI host-private tool %s", name)
+		}
+	}
 }
 
 func TestSrvSharedToolsExecuteThroughShippedExecutor(t *testing.T) {
@@ -318,6 +323,26 @@ func TestSharedCatalogNamesComeFromRegisterCoreTools(t *testing.T) {
 	}
 	if seen["screenshot"] || seen["open"] {
 		t.Fatal("desktop-only names leaked into shared core catalog")
+	}
+}
+
+func TestSrvCoreToolSpecsUseRegisterCoreToolsSchemas(t *testing.T) {
+	cb := fullyWiredSharedCatalogCallbacks(t)
+	for _, spec := range cb.coreToolSpecs() {
+		schema, ok := agent.CoreToolJSONSchema(spec.Name)
+		if !ok {
+			continue
+		}
+		got, _ := spec.Parameters["properties"].(map[string]interface{})
+		want, _ := schema["properties"].(map[string]interface{})
+		if len(want) == 0 {
+			continue
+		}
+		for key := range want {
+			if _, exists := got[key]; !exists {
+				t.Errorf("srv %s missing core property %s", spec.Name, key)
+			}
+		}
 	}
 }
 

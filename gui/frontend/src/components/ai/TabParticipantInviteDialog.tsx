@@ -85,11 +85,11 @@ export function TabParticipantInviteDialog({ tab, lang, theme, onClose, onAddPar
             data-testid="tab-participant-invite-dialog"
             role="dialog"
             aria-modal="true"
-            style={{ position: "absolute", inset: 0, zIndex: 10000, background: "rgba(0,0,0,0.08)", display: "flex", alignItems: "flex-start", justifyContent: "flex-end", padding: "44px 16px", boxSizing: "border-box", WebkitAppRegion: "no-drag", "--wails-draggable": "no-drag" } as WailsNoDragStyle}
+            style={{ position: "absolute", inset: 0, zIndex: 10000, background: "var(--theme-overlay-soft, rgba(15, 23, 42, 0.08))", display: "flex", alignItems: "flex-start", justifyContent: "flex-end", padding: "44px 16px", boxSizing: "border-box", WebkitAppRegion: "no-drag", "--wails-draggable": "no-drag" } as WailsNoDragStyle}
             {...backdropProps}
         >
             <div
-                style={{ width: 260, maxHeight: 320, overflowY: "auto", background: theme.bg, color: theme.text, border: `1px solid ${theme.divider}`, borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.18)", padding: 6, WebkitAppRegion: "no-drag", "--wails-draggable": "no-drag" } as WailsNoDragStyle}
+                style={{ width: 260, maxHeight: 320, overflowY: "auto", background: theme.bg, color: theme.text, border: `1px solid ${theme.divider}`, borderRadius: "var(--radius-md, 8px)", boxShadow: "var(--shadow-lg, 0 8px 24px rgba(30,58,95,0.16))", padding: 6, WebkitAppRegion: "no-drag", "--wails-draggable": "no-drag" } as WailsNoDragStyle}
                 {...dialogProps}
             >
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 8px", borderBottom: `1px solid ${theme.divider}`, marginBottom: 4 }}>
@@ -115,8 +115,8 @@ export function TabParticipantInviteDialog({ tab, lang, theme, onClose, onAddPar
                         } finally {
                             setAddingId("");
                         }
-                    }} style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "7px 8px", border: "none", background: "transparent", color: theme.text, cursor: addingId ? "default" : "pointer", textAlign: "left", borderRadius: 6, opacity: addingId && addingId !== participantId ? 0.55 : 1 }}>
-                        <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#4f7f6f", flexShrink: 0 }} />
+                    }} style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "7px 8px", border: "none", background: "transparent", color: theme.text, cursor: addingId ? "default" : "pointer", textAlign: "left", borderRadius: "var(--radius-sm, 6px)", opacity: addingId && addingId !== participantId ? 0.55 : 1 }}>
+                        <span style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--theme-success, #4f7f6f)", flexShrink: 0 }} />
                         <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{addingId === participantId ? (isZh ? "\u6dfb\u52a0\u4e2d..." : "Adding...") : displayName}</span>
                     </button>;
                 })}

@@ -34,6 +34,8 @@
       quotaLabel: 'Per-user quota (1-10)',
       maxMiBLabel: 'Per-workspace capacity (MiB)',
       tenantGiBLabel: 'Tenant total capacity (GiB)',
+      bwUserMiBLabel: 'Per-user hourly transfer (MiB/h, 0=unlimited)',
+      bwTenantGiBLabel: 'Tenant hourly transfer (GiB/h, 0=unlimited)',
       preview: 'Currently covering {n} departments, about {m} users',
       previewOff: 'Cloud workspace is off. Users will not see it when creating a task.',
       previewAllUsers: 'Open to every user in this tenant.',
@@ -42,7 +44,9 @@
       saveFailed: 'Save cloud workspace settings failed: {error}',
       invalidQuota: 'Please enter a quota from 1 to 10.',
       invalidMaxMiB: 'Please enter a per-workspace capacity from 256 to 8192 MiB.',
-      invalidTenantGiB: 'Please enter a tenant total capacity from 1 to 1024 GiB.'
+      invalidTenantGiB: 'Please enter a tenant total capacity from 1 to 1024 GiB.',
+      invalidBwUserMiB: 'Please enter a per-user hourly transfer from 0 (unlimited) to 1048576 MiB.',
+      invalidBwTenantGiB: 'Please enter a tenant hourly transfer from 0 (unlimited) to 1024 GiB.'
     },
     zh: {
       title: '\u4e91\u5de5\u4f5c\u533a',
@@ -72,6 +76,8 @@
       quotaLabel: '\u4eba\u5747\u914d\u989d\uff081-10\uff09',
       maxMiBLabel: '\u5355\u5de5\u4f5c\u533a\u5bb9\u91cf\uff08MiB\uff09',
       tenantGiBLabel: '\u79df\u6237\u603b\u5bb9\u91cf\uff08GiB\uff09',
+      bwUserMiBLabel: '\u4eba\u5747\u6bcf\u5c0f\u65f6\u4f20\u8f93\uff08MiB/h\uff0c0=\u4e0d\u9650\uff09',
+      bwTenantGiBLabel: '\u79df\u6237\u6bcf\u5c0f\u65f6\u4f20\u8f93\uff08GiB/h\uff0c0=\u4e0d\u9650\uff09',
       preview: '\u5f53\u524d\u5c06\u8986\u76d6 {n} \u4e2a\u90e8\u95e8\u3001\u7ea6 {m} \u540d\u7528\u6237',
       previewOff: '\u4e91\u7aef\u5de5\u4f5c\u533a\u5df2\u5173\u95ed\uff0c\u7528\u6237\u65b0\u5efa\u4efb\u52a1\u65f6\u4e0d\u4f1a\u770b\u5230\u8be5\u9009\u9879\u3002',
       previewAllUsers: '\u5df2\u5bf9\u5f53\u524d\u79df\u6237\u5168\u5458\u5f00\u653e\u3002',
@@ -80,7 +86,9 @@
       saveFailed: '\u4fdd\u5b58\u4e91\u5de5\u4f5c\u533a\u8bbe\u7f6e\u5931\u8d25: {error}',
       invalidQuota: '\u8bf7\u8f93\u5165 1 \u5230 10 \u7684\u914d\u989d\u3002',
       invalidMaxMiB: '\u8bf7\u8f93\u5165 256 \u5230 8192 MiB \u7684\u5355\u5de5\u4f5c\u533a\u5bb9\u91cf\u3002',
-      invalidTenantGiB: '\u8bf7\u8f93\u5165 1 \u5230 1024 GiB \u7684\u79df\u6237\u603b\u5bb9\u91cf\u3002'
+      invalidTenantGiB: '\u8bf7\u8f93\u5165 1 \u5230 1024 GiB \u7684\u79df\u6237\u603b\u5bb9\u91cf\u3002',
+      invalidBwUserMiB: '\u8bf7\u8f93\u5165 0\uff08\u4e0d\u9650\uff09\u5230 1048576 MiB \u7684\u4eba\u5747\u6bcf\u5c0f\u65f6\u4f20\u8f93\u3002',
+      invalidBwTenantGiB: '\u8bf7\u8f93\u5165 0\uff08\u4e0d\u9650\uff09\u5230 1024 GiB \u7684\u79df\u6237\u6bcf\u5c0f\u65f6\u4f20\u8f93\u3002'
     }
   };
 
@@ -93,6 +101,9 @@
   var CWS_TENANT_GIB_MIN = 1;
   var CWS_TENANT_GIB_MAX = 1024;
   var CWS_TENANT_GIB_DEFAULT = 50;
+  // Hourly transfer quotas: 0 means unlimited; ceilings mirror the server clamp.
+  var CWS_BW_USER_MIB_MAX = 1048576;
+  var CWS_BW_TENANT_GIB_MAX = 1024;
   var MIB = 1024 * 1024;
   var GIB = 1024 * 1024 * 1024;
   var cwsMaxDepartmentTreeDepth = 64;
@@ -107,6 +118,11 @@
     selectedDepts: [],
     deptFilter: '',
     preview: { department_count: 0, user_count: 0, over_quota_users: [] },
+    // Bandwidth limits are not editable in this card; keep the last loaded
+    // values so a settings save (full-replace PUT) does not silently reset
+    // limits configured through the API.
+    bandwidthUserBytesPerHour: 0,
+    bandwidthTenantBytesPerHour: 0,
     saving: false
   };
 
@@ -625,6 +641,20 @@
       totalEl.max = String(CWS_TENANT_GIB_MAX);
       totalEl.value = String(clampInt(bytesToGiB(settings.tenant_max_total_bytes), CWS_TENANT_GIB_DEFAULT, CWS_TENANT_GIB_MIN, CWS_TENANT_GIB_MAX));
     }
+    state.bandwidthUserBytesPerHour = Number(settings.bandwidth_user_bytes_per_hour) || 0;
+    state.bandwidthTenantBytesPerHour = Number(settings.bandwidth_tenant_bytes_per_hour) || 0;
+    var bwUserEl = byID('tenantCloudWorkspaceBwUserMiB');
+    if (bwUserEl) {
+      bwUserEl.min = '0';
+      bwUserEl.max = String(CWS_BW_USER_MIB_MAX);
+      bwUserEl.value = String(Math.round(state.bandwidthUserBytesPerHour / MIB));
+    }
+    var bwTenantEl = byID('tenantCloudWorkspaceBwTenantGiB');
+    if (bwTenantEl) {
+      bwTenantEl.min = '0';
+      bwTenantEl.max = String(CWS_BW_TENANT_GIB_MAX);
+      bwTenantEl.value = String(Math.round(state.bandwidthTenantBytesPerHour / GIB));
+    }
     var ids = Array.isArray(settings.department_ids) ? settings.department_ids : [];
     state.selectedDepts = uniqueStrings(ids.map(function(id) { return String(id || '').trim(); }).filter(Boolean));
     applyPreview(settings.preview);
@@ -644,6 +674,8 @@
     setText('tenantCloudWorkspaceQuotaLabel', cwsx('quotaLabel'));
     setText('tenantCloudWorkspaceMaxMiBLabel', cwsx('maxMiBLabel'));
     setText('tenantCloudWorkspaceTenantGiBLabel', cwsx('tenantGiBLabel'));
+    setText('tenantCloudWorkspaceBwUserMiBLabel', cwsx('bwUserMiBLabel'));
+    setText('tenantCloudWorkspaceBwTenantGiBLabel', cwsx('bwTenantGiBLabel'));
     setText('tenantCloudWorkspaceSettingsHint', cwsx('hint'));
     setText('tenantCloudWorkspaceEmptyWarn', cwsx('emptyDepartmentsWarn'));
     applyPreview(state.preview);
@@ -707,6 +739,20 @@
       showToast(tMsg, 'error');
       return;
     }
+    var bwUserMiB = readNumberInput('tenantCloudWorkspaceBwUserMiB', 0);
+    var bwTenantGiB = readNumberInput('tenantCloudWorkspaceBwTenantGiB', 0);
+    if (!Number.isFinite(bwUserMiB) || bwUserMiB < 0 || bwUserMiB > CWS_BW_USER_MIB_MAX) {
+      var buMsg = cwsx('invalidBwUserMiB');
+      setOutput(buMsg);
+      showToast(buMsg, 'error');
+      return;
+    }
+    if (!Number.isFinite(bwTenantGiB) || bwTenantGiB < 0 || bwTenantGiB > CWS_BW_TENANT_GIB_MAX) {
+      var btMsg = cwsx('invalidBwTenantGiB');
+      setOutput(btMsg);
+      showToast(btMsg, 'error');
+      return;
+    }
     var departmentIds = collectSelectedFromDom();
     if (mode === 'departments' && !departmentIds.length) {
       var emptyMsg = cwsx('emptyDepartmentsWarn');
@@ -730,7 +776,9 @@
           quota: quota,
           department_ids: departmentIds,
           max_workspace_bytes: maxMiB * MIB,
-          tenant_max_total_bytes: tenantGiB * GIB
+          tenant_max_total_bytes: tenantGiB * GIB,
+          bandwidth_user_bytes_per_hour: Math.round(bwUserMiB) * MIB,
+          bandwidth_tenant_bytes_per_hour: Math.round(bwTenantGiB) * GIB
         })
       });
       applySettings(data || {});

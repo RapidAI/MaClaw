@@ -180,13 +180,25 @@ func buildKeyAuth(cfg SSHHostConfig) (ssh.AuthMethod, error) {
 	}
 	var signer ssh.Signer
 	if cfg.Passphrase != "" {
-		signer, err = ssh.ParsePrivateKeyWithPassphrase(keyData, []byte(cfg.Passphrase))
+		// P0-4 (2026-09-08 review): the previous code created a []byte that
+		// survived until the function returned, sharing memory with cfg's
+		// string. We now wrap it in a Secret-shaped lifetime that we wipe as
+		// soon as ParsePrivateKeyWithPassphrase returns. (The signer / ssh
+		// library retains its own copy internally; that is owned by the SSH
+		// client lifecycle and out of scope for this fix.)
+		passphraseSecret := BuildPassphraseSecret(cfg.Passphrase)
+		defer passphraseSecret.Zero()
+		signer, err = ssh.ParsePrivateKeyWithPassphrase(keyData, passphraseSecret.Reveal())
 	} else {
 		signer, err = ssh.ParsePrivateKey(keyData)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("parse ssh key: %w", err)
 	}
+	// keyData holds the on-disk private key bytes; zero it before returning so
+	// a debugger attach after this function returns cannot recover the raw
+	// key contents. P0-4.
+	SecureZeroPassword(keyData)
 	return ssh.PublicKeys(signer), nil
 }
 

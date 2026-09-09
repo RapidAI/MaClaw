@@ -12,26 +12,26 @@ import (
 )
 
 type horizonSession struct {
-	mu               sync.Mutex
-	ownerID          string
-	requestID        string
-	lang             string
-	state            *longhorizon.TaskState
-	cancel           context.CancelFunc
-	loopCtx          *LoopContext
-	inbox            []string
-	notify           chan struct{}
-	status           string
-	asking           bool
-	resumeAsk        bool
-	started          bool
-	cancelled        bool
-	cancelNotified   bool
-	finalized        bool
-	experienceWrites int
-	eventSeq         int
-	storeRoot        string
-	handler          *IMMessageHandler
+	mu                sync.Mutex
+	ownerID           string
+	requestID         string
+	lang              string
+	state             *longhorizon.TaskState
+	cancel            context.CancelFunc
+	loopCtx           *LoopContext
+	inbox             []string
+	notify            chan struct{}
+	status            string
+	asking            bool
+	resumeAsk         bool
+	started           bool
+	cancelled         bool
+	cancelNotified    bool
+	finalized         bool
+	experienceWrites  int
+	eventSeq          int
+	storeRoot         string
+	handler           *IMMessageHandler
 	eventScopeID      string
 	computerUseOwner  string
 	browserSessionIDs []string

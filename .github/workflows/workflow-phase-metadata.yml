@@ -14,13 +14,13 @@ on:
     paths:
       - 'corelib/workflow/**'
       - 'cmd/genphasemeta/**'
-      - 'gui/workflow_adapter*.go'
-      - 'gui/workflow_phase_helpers.go'
-      - 'gui/workflow_phase_file_name.go'
-      - 'gui/frontend/src/components/ai/workflowPhase.ts'
-      - 'gui/frontend/src/components/ai/WorkflowDocPreview.tsx'
-      - 'gui/frontend/src/components/ai/workflowPhaseMeta.generated.ts'
-      - 'gui/frontend/src/components/ai/__tests__/workflowPhaseMeta.contract.test.ts'
+      - 'guiapp/workflow_adapter*.go'
+      - 'guiapp/workflow_phase_helpers.go'
+      - 'guiapp/workflow_phase_file_name.go'
+      - 'guiapp/frontend/src/components/ai/workflowPhase.ts'
+      - 'guiapp/frontend/src/components/ai/WorkflowDocPreview.tsx'
+      - 'guiapp/frontend/src/components/ai/workflowPhaseMeta.generated.ts'
+      - 'guiapp/frontend/src/components/ai/__tests__/workflowPhaseMeta.contract.test.ts'
       - 'generate.go'
       - '.github/workflows/workflow-phase-metadata.yml'
   push:
@@ -29,13 +29,13 @@ on:
     paths:
       - 'corelib/workflow/**'
       - 'cmd/genphasemeta/**'
-      - 'gui/workflow_adapter*.go'
-      - 'gui/workflow_phase_helpers.go'
-      - 'gui/workflow_phase_file_name.go'
-      - 'gui/frontend/src/components/ai/workflowPhase.ts'
-      - 'gui/frontend/src/components/ai/WorkflowDocPreview.tsx'
-      - 'gui/frontend/src/components/ai/workflowPhaseMeta.generated.ts'
-      - 'gui/frontend/src/components/ai/__tests__/workflowPhaseMeta.contract.test.ts'
+      - 'guiapp/workflow_adapter*.go'
+      - 'guiapp/workflow_phase_helpers.go'
+      - 'guiapp/workflow_phase_file_name.go'
+      - 'guiapp/frontend/src/components/ai/workflowPhase.ts'
+      - 'guiapp/frontend/src/components/ai/WorkflowDocPreview.tsx'
+      - 'guiapp/frontend/src/components/ai/workflowPhaseMeta.generated.ts'
+      - 'guiapp/frontend/src/components/ai/__tests__/workflowPhaseMeta.contract.test.ts'
       - 'generate.go'
       - '.github/workflows/workflow-phase-metadata.yml'
   workflow_dispatch: {}
@@ -59,7 +59,7 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
-          cache-dependency-path: gui/frontend/package-lock.json
+          cache-dependency-path: guiapp/frontend/package-lock.json
 
       # 1. Generated artifact is fresh (Property 5 / Requirement 2.3). The freshness
       #    check is the in-memory Go contract test TestGeneratedArtifactUpToDate in
@@ -82,13 +82,13 @@ jobs:
           echo "=== corelib/workflow + cmd/genphasemeta ==="
           CGO_ENABLED=0 go test ./corelib/workflow/... ./cmd/genphasemeta/...
           echo "=== gui phase file-name anti-drift guards ==="
-          CGO_ENABLED=0 go test ./gui/ -run 'TestWorkflowPhaseFileNames(UniquePerTemplate|NonEmptyPerTemplate)'
+          CGO_ENABLED=0 go test ./guiapp/ -run 'TestWorkflowPhaseFileNames(UniquePerTemplate|NonEmptyPerTemplate)'
 
       # 3. Frontend anti-drift contract test (Properties 3, 4 + backend-coverage
       #    guards): the retained fallback maps and degraded-mode rendering agree
       #    with the generated artifact for every registered backend template.
       - name: Run frontend anti-drift contract test
-        working-directory: gui/frontend
+        working-directory: guiapp/frontend
         run: |
           echo "=== workflowPhaseMeta.contract.test.ts ==="
           npm ci --cache ./.npm_cache

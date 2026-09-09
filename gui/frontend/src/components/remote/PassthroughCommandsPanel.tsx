@@ -676,7 +676,7 @@ export function PassthroughCommandsPanel({ lang }: Props) {
             </div>
 
             {showForm && <>
-                <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", zIndex: 1000 }} onClick={closeForm} />
+                <div style={{ position: "fixed", inset: 0, background: colors.overlay, zIndex: 1000 }} onClick={closeForm} />
                 <div style={{
                     position: "fixed",
                     top: "50%",
@@ -689,7 +689,7 @@ export function PassthroughCommandsPanel({ lang }: Props) {
                     borderRadius: radius.lg,
                     padding: 16,
                     background: colors.surface,
-                    boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+                    boxShadow: "var(--shadow-xl, 0 12px 40px -8px rgba(30,58,95,0.22))",
                     zIndex: 1001,
                 }}>
                 <div style={{ display: "flex", alignItems: "center", marginBottom: 10 }}>

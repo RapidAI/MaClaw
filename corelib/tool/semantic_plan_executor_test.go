@@ -271,3 +271,50 @@ func TestPlanExecutorProjectsSucceededDependencyToCompatibleRevision(t *testing.
 		t.Fatalf("projected completion=%#v err=%v", projected, err)
 	}
 }
+
+func TestPlanExecutionStateFromResultClearsSuccessOnNonSuccess(t *testing.T) {
+	state, result := PlanExecutionStateFromResult(SelectionExecutionResult{Succeeded: true, Unknown: true, Result: "maybe"})
+	if state != PlanExecutionUnknown || result.Succeeded {
+		t.Fatalf("unknown state=%q result=%#v", state, result)
+	}
+	state, result = PlanExecutionStateFromResult(SelectionExecutionResult{Succeeded: true, AwaitingReceipt: true})
+	if state != PlanExecutionAwaitingReceipt || result.Succeeded {
+		t.Fatalf("awaiting state=%q result=%#v", state, result)
+	}
+	state, result = PlanExecutionStateFromResult(SelectionExecutionResult{})
+	if state != PlanExecutionFailed || result.Succeeded {
+		t.Fatalf("failed state=%q result=%#v", state, result)
+	}
+	state, result = PlanExecutionStateFromResult(SelectionExecutionResult{Succeeded: true, Result: "ok"})
+	if state != PlanExecutionSucceeded || !result.Succeeded {
+		t.Fatalf("success state=%q result=%#v", state, result)
+	}
+}
+
+func TestReplayedSelectionResultPrefersExecutionRowOverText(t *testing.T) {
+	store := NewMemoryPlanExecutionStore()
+	scope := InvocationScope{RootTaskID: "root", PlanID: "plan", SessionID: "session", TurnID: "turn", PrincipalID: "principal"}
+	if _, acquired, err := store.Acquire(PlanExecutionRecord{Scope: scope, SelectionID: "sel", StartedAt: time.Now().UTC()}); err != nil || !acquired {
+		t.Fatalf("acquire=%v err=%v", acquired, err)
+	}
+	if _, err := store.Complete(scope, "sel", PlanExecutionAwaitingReceipt, "digest", "awaiting", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	got := ReplayedSelectionResult(store, scope, "sel", "delivery accepted for dispatch")
+	if got.Succeeded || !got.AwaitingReceipt {
+		t.Fatalf("pending replay=%#v", got)
+	}
+	fallback := RecordedSelectionResultFallback("[system unknown] lost")
+	if fallback.Succeeded || !fallback.Unknown {
+		t.Fatalf("unknown fallback=%#v", fallback)
+	}
+	if RecordedSelectionResultFallback("Error: provider refused").Succeeded {
+		t.Fatal("error prefix must not replay as success")
+	}
+	if !RecordedSelectionResultFallback("lookup result").Succeeded {
+		t.Fatal("plain text fallback must stay success")
+	}
+	if _, ok := SelectionResultFromExecution(PlanExecutionRunning, "x", ""); ok {
+		t.Fatal("running must not invent a replay verdict")
+	}
+}

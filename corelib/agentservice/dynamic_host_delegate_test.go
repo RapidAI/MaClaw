@@ -70,7 +70,7 @@ func TestReviewedHostDelegateExecutesWithoutCoordinatorAndRejectsSoup(t *testing
 	}
 }
 
-func TestReviewedHostDelegateTimeoutAndStartedAreUnknown(t *testing.T) {
+func TestReviewedHostDelegateCancellationAndStartedSemantics(t *testing.T) {
 	registry, err := NewReviewedDynamicCapabilityRegistry()
 	if err != nil {
 		t.Fatal(err)
@@ -107,23 +107,24 @@ func TestReviewedHostDelegateTimeoutAndStartedAreUnknown(t *testing.T) {
 		t.Fatalf("started must be unknown, result=%#v", unknown)
 	}
 
-	timeoutCB := &coreAgentCallbacks{
+	cancellationCB := &coreAgentCallbacks{
 		principal: principal,
 		delegateSubtask: func(ctx context.Context, _ Principal, _ string) (string, error) {
 			<-ctx.Done()
 			return "", ctx.Err()
 		},
 	}
-	// Keep the wait short by shrinking the helper timeout via a pre-cancelled context.
+	// A pre-cancelled request is rejected before any host-owned work starts.
+	// This is deterministic and avoids waiting for the production timeout.
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
-	timeoutCatalog, _, err := prepareReviewedDynamicSemanticCatalog(registry, nil, nil, DynamicCatalogLifecycle{}, reviewedHostOwnedServices{Delegate: timeoutCB})
+	cancelledCatalog, _, err := prepareReviewedDynamicSemanticCatalog(registry, nil, nil, DynamicCatalogLifecycle{}, reviewedHostOwnedServices{Delegate: cancellationCB})
 	if err != nil {
 		t.Fatal(err)
 	}
-	timed := timeoutCatalog.ExecuteSelection(cancelled, principal, nil, nil, plan.Selections[0], `{"task":"summarize"}`)
-	if !timed.Unknown || timed.Succeeded || timed.ReasonCode != "host_delegate_timeout" {
-		t.Fatalf("timeout must be unknown, result=%#v", timed)
+	cancelledResult := cancelledCatalog.ExecuteSelection(cancelled, principal, nil, nil, plan.Selections[0], `{"task":"summarize"}`)
+	if cancelledResult.Unknown || cancelledResult.Succeeded || cancelledResult.ReasonCode != "dynamic_execution_cancelled" {
+		t.Fatalf("cancelled request must fail closed as cancellation, result=%#v", cancelledResult)
 	}
 }
 

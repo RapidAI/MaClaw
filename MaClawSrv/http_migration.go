@@ -15,13 +15,16 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/archiveutil"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
@@ -30,16 +33,18 @@ import (
 )
 
 const (
-	migrationPackageVersion = "maclaw-user-data-migration/v1"
-	migrationChunkSize      = int64(4 << 20)
-	migrationAEADChunkSize  = int64(4 << 20)
-	migrationMagic          = "MLMIG01"
-	migrationHubResolveWait = 8 * time.Second
-	migrationMaxDownload    = int64(2) << 30
-	migrationMaxExpanded    = int64(4) << 30
-	migrationMaxZipFiles    = 200000
-	migrationMaxManifest    = int64(16) << 20
-	migrationMaxMemoryJSON  = int64(256) << 20
+	migrationPackageVersion   = "maclaw-user-data-migration/v1"
+	migrationChunkSize        = int64(4 << 20)
+	migrationAEADChunkSize    = int64(4 << 20)
+	migrationMagic            = "MLMIG01"
+	migrationHubResolveWait   = 8 * time.Second
+	migrationMaxDownload      = int64(2) << 30
+	migrationMaxExpanded      = int64(4) << 30
+	migrationMaxZipFiles      = 200000
+	migrationMaxManifest      = int64(16) << 20
+	migrationMaxMemoryJSON    = int64(256) << 20
+	migrationExportEffectKind = "migration.export"
+	migrationImportEffectKind = "migration.import"
 )
 
 type migrationStatusResponse struct {
@@ -139,16 +144,14 @@ func (s *HTTPServer) handleMigrationExport(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	var job *asyncJobRecord
-	progress := func(v float64, text string) {
-		if job != nil {
-			s.jobs.updateProgress(job.ID, v, text)
-		}
-	}
-	job = s.jobs.createUserJob("migration.export", p, func(ctx context.Context) (any, error) {
-		return s.runMigrationExport(ctx, p, cfg, req.Password, progress)
+	job, admissionErr := s.admitUserJob(r, p, "migration.export", agentruntime.JobRecoveryPolicyReconcile, agentruntime.JobRetryPolicy{}, req, func(ctx context.Context) (any, error) {
+		return s.runMigrationExport(ctx, p, cfg, req.Password, migrationJobProgressReporter(ctx))
 	})
-	writeJSON(w, http.StatusAccepted, map[string]interface{}{"job_id": job.ID, "status": string(job.Status)})
+	if admissionErr != nil {
+		writeAsyncJobAdmissionError(w, admissionErr)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]interface{}{"job_id": job.ID, "status": string(job.Status), "idempotent_replay": job.IdempotentReplay})
 }
 
 func (s *HTTPServer) handleMigrationImport(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
@@ -174,16 +177,46 @@ func (s *HTTPServer) handleMigrationImport(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	var job *asyncJobRecord
-	progress := func(v float64, text string) {
-		if job != nil {
-			s.jobs.updateProgress(job.ID, v, text)
-		}
-	}
-	job = s.jobs.createUserJob("migration.import", p, func(ctx context.Context) (any, error) {
-		return s.runMigrationImport(ctx, p, cfg, strings.TrimSpace(req.ExportID), req.Password, progress)
+	job, admissionErr := s.admitUserJob(r, p, "migration.import", agentruntime.JobRecoveryPolicyReconcile, agentruntime.JobRetryPolicy{}, req, func(ctx context.Context) (any, error) {
+		return s.runMigrationImport(ctx, p, cfg, strings.TrimSpace(req.ExportID), req.Password, migrationJobProgressReporter(ctx))
 	})
-	writeJSON(w, http.StatusAccepted, map[string]interface{}{"job_id": job.ID, "status": string(job.Status)})
+	if admissionErr != nil {
+		writeAsyncJobAdmissionError(w, admissionErr)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]interface{}{"job_id": job.ID, "status": string(job.Status), "idempotent_replay": job.IdempotentReplay})
+}
+
+func migrationJobProgressReporter(ctx context.Context) func(float64, string) {
+	var sequence atomic.Uint64
+	return func(progress float64, text string) {
+		checkpoint := &agentruntime.JobCheckpoint{
+			Sequence: sequence.Add(1),
+			Phase:    migrationCheckpointPhase(progress),
+		}
+		_ = agentruntime.ReportJobUpdate(ctx, agentruntime.JobUpdate{
+			Progress: &progress, ProgressText: text, Checkpoint: checkpoint,
+		})
+	}
+}
+
+func migrationCheckpointPhase(progress float64) string {
+	switch {
+	case progress < 0.10:
+		return "prepare"
+	case progress < 0.30:
+		return "package"
+	case progress < 0.72:
+		return "transfer"
+	case progress < 0.82:
+		return "verify"
+	case progress < 0.92:
+		return "apply"
+	case progress < 1:
+		return "finalize"
+	default:
+		return "completed"
+	}
 }
 
 type migrationClientConfig struct {
@@ -193,6 +226,160 @@ type migrationClientConfig struct {
 	TenantID     string
 	MachineID    string
 	MachineName  string
+}
+
+type migrationExportJobReconciler struct {
+	server *HTTPServer
+	cfg    migrationClientConfig
+}
+
+func (r migrationExportJobReconciler) ReconcileJob(ctx context.Context, job agentruntime.Job, effects []agentruntime.JobEffect) (agentruntime.JobReconcileResult, error) {
+	if r.server == nil || job.Kind != "migration.export" {
+		return agentruntime.JobReconcileResult{}, nil
+	}
+	var effect *agentruntime.JobEffect
+	for i := range effects {
+		if effects[i].Kind == migrationExportEffectKind {
+			candidate := effects[i]
+			effect = &candidate
+			break
+		}
+	}
+	if effect == nil || strings.TrimSpace(effect.ResourceID) == "" {
+		return agentruntime.JobReconcileResult{}, nil
+	}
+	if effect.State == agentruntime.JobEffectCommitted {
+		return migrationExportReconcileSuccess(*effect, nil)
+	}
+	if strings.TrimSpace(r.cfg.HubURL) == "" {
+		return agentruntime.JobReconcileResult{}, nil
+	}
+	out, err := r.server.migrationHubJSON(ctx, r.cfg, http.MethodGet, "/api/v1/migration/exports/"+url.PathEscape(effect.ResourceID), nil)
+	if err != nil {
+		return agentruntime.JobReconcileResult{}, err
+	}
+	export, _ := out["export"].(map[string]interface{})
+	if export == nil || strings.TrimSpace(fmt.Sprint(export["export_id"])) != effect.ResourceID {
+		return agentruntime.JobReconcileResult{}, fmt.Errorf("Hub migration export receipt identity mismatch")
+	}
+	if source := strings.TrimSpace(fmt.Sprint(export["source_machine_id"])); source != "" && source != strings.TrimSpace(r.cfg.MachineID) {
+		return agentruntime.JobReconcileResult{}, fmt.Errorf("Hub migration export receipt source mismatch")
+	}
+	status := strings.ToLower(strings.TrimSpace(fmt.Sprint(export["status"])))
+	switch status {
+	case "ready", "importing", "imported", "deleting", "deleted":
+		return migrationExportReconcileSuccess(*effect, export)
+	case "uploading", "finalizing", "failed", "aborted", "replaced":
+		return agentruntime.JobReconcileResult{
+			Resolved: true, Status: agentruntime.JobStatusFailed,
+			ErrorCode: "migration_export_incomplete",
+			Error:     "migration export did not reach a durable ready state",
+		}, nil
+	default:
+		return agentruntime.JobReconcileResult{}, nil
+	}
+}
+
+func migrationExportReconcileSuccess(effect agentruntime.JobEffect, remote map[string]interface{}) (agentruntime.JobReconcileResult, error) {
+	result := map[string]interface{}{"export_id": effect.ResourceID, "reconciled": true}
+	if len(effect.Payload) > 0 {
+		var payload map[string]interface{}
+		if err := decodeMigrationJSON(effect.Payload, &payload); err != nil {
+			return agentruntime.JobReconcileResult{}, fmt.Errorf("decode migration export effect: %w", err)
+		}
+		for _, key := range []string{"encrypted_size", "chunk_count"} {
+			if value, ok := payload[key]; ok {
+				result[key] = value
+			}
+		}
+	}
+	if remote != nil {
+		for _, key := range []string{"encrypted_size", "chunk_count"} {
+			if value, ok := remote[key]; ok {
+				result[key] = value
+			}
+		}
+	}
+	raw, err := json.Marshal(result)
+	if err != nil {
+		return agentruntime.JobReconcileResult{}, err
+	}
+	return agentruntime.JobReconcileResult{Resolved: true, Status: agentruntime.JobStatusSucceeded, Result: raw}, nil
+}
+
+type migrationImportJobReconciler struct {
+	server *HTTPServer
+	cfg    migrationClientConfig
+}
+
+func (r migrationImportJobReconciler) ReconcileJob(ctx context.Context, job agentruntime.Job, effects []agentruntime.JobEffect) (agentruntime.JobReconcileResult, error) {
+	if r.server == nil || job.Kind != "migration.import" {
+		return agentruntime.JobReconcileResult{}, nil
+	}
+	var effect *agentruntime.JobEffect
+	for i := range effects {
+		if effects[i].Kind == migrationImportEffectKind {
+			candidate := effects[i]
+			effect = &candidate
+			break
+		}
+	}
+	if effect == nil || strings.TrimSpace(effect.ResourceID) == "" {
+		return agentruntime.JobReconcileResult{}, nil
+	}
+	if effect.State == agentruntime.JobEffectCommitted {
+		return migrationImportReconcileSuccess(*effect, "")
+	}
+	if strings.TrimSpace(r.cfg.HubURL) == "" {
+		return agentruntime.JobReconcileResult{}, nil
+	}
+	out, err := r.server.migrationHubJSON(ctx, r.cfg, http.MethodGet, "/api/v1/migration/exports/"+url.PathEscape(effect.ResourceID), nil)
+	if err != nil {
+		return agentruntime.JobReconcileResult{}, err
+	}
+	export, _ := out["export"].(map[string]interface{})
+	if export == nil || strings.TrimSpace(fmt.Sprint(export["export_id"])) != effect.ResourceID {
+		return agentruntime.JobReconcileResult{}, fmt.Errorf("Hub migration import receipt identity mismatch")
+	}
+	status := strings.ToLower(strings.TrimSpace(fmt.Sprint(export["status"])))
+	claimedBy := strings.TrimSpace(fmt.Sprint(export["claimed_by_machine_id"]))
+	switch status {
+	case "imported", "deleting", "deleted":
+		if claimedBy == "" || claimedBy != strings.TrimSpace(r.cfg.MachineID) {
+			return agentruntime.JobReconcileResult{Resolved: true, Status: agentruntime.JobStatusFailed, ErrorCode: "migration_import_claim_lost", Error: "migration import is no longer owned by this machine"}, nil
+		}
+		return migrationImportReconcileSuccess(*effect, status)
+	case "ready", "uploading", "finalizing", "failed", "aborted", "replaced":
+		return agentruntime.JobReconcileResult{Resolved: true, Status: agentruntime.JobStatusFailed, ErrorCode: "migration_import_not_applied", Error: "migration import did not reach a durable local commit"}, nil
+	case "importing":
+		if claimedBy != "" && claimedBy != strings.TrimSpace(r.cfg.MachineID) {
+			return agentruntime.JobReconcileResult{Resolved: true, Status: agentruntime.JobStatusFailed, ErrorCode: "migration_import_claim_lost", Error: "migration import claim moved to another machine"}, nil
+		}
+		return agentruntime.JobReconcileResult{}, nil
+	default:
+		return agentruntime.JobReconcileResult{}, nil
+	}
+}
+
+func migrationImportReconcileSuccess(effect agentruntime.JobEffect, remoteStatus string) (agentruntime.JobReconcileResult, error) {
+	result := map[string]interface{}{"export_id": effect.ResourceID, "reconciled": true}
+	if len(effect.Payload) > 0 {
+		var payload map[string]interface{}
+		if err := decodeMigrationJSON(effect.Payload, &payload); err != nil {
+			return agentruntime.JobReconcileResult{}, fmt.Errorf("decode migration import effect: %w", err)
+		}
+		for key, value := range payload {
+			result[key] = value
+		}
+	}
+	if remoteStatus != "" {
+		result["status"] = remoteStatus
+	}
+	raw, err := json.Marshal(result)
+	if err != nil {
+		return agentruntime.JobReconcileResult{}, err
+	}
+	return agentruntime.JobReconcileResult{Resolved: true, Status: agentruntime.JobStatusSucceeded, Result: raw}, nil
 }
 
 func (s *HTTPServer) migrationConfig(ctx context.Context, p agentservice.Principal) (migrationClientConfig, error) {
@@ -291,21 +478,53 @@ func (s *HTTPServer) runMigrationExport(ctx context.Context, p agentservice.Prin
 		"chunk_size":       migrationChunkSize,
 		"chunk_count":      chunkCount,
 	}
+	effectEnabled := agentruntime.JobEffectRecorderAvailable(ctx)
+	if effectEnabled {
+		if _, err := agentruntime.PrepareJobEffect(ctx, migrationExportEffectKind, createReq); err != nil {
+			// No provider I/O has happened yet, so this is a known local failure.
+			return nil, fmt.Errorf("prepare migration export effect: %w", err)
+		}
+	}
 	created, err := s.migrationHubJSON(ctx, cfg, http.MethodPost, "/api/v1/migration/exports", createReq)
 	if err != nil {
+		if effectEnabled {
+			return nil, fmt.Errorf("%w: create migration export: %v", agentruntime.ErrJobEffectOutcomeUncertain, err)
+		}
 		return nil, err
 	}
 	exportID := strings.TrimSpace(fmt.Sprint(created["export_id"]))
 	if exportID == "" {
+		if effectEnabled {
+			return nil, fmt.Errorf("%w: Hub created an export without returning its identity", agentruntime.ErrJobEffectOutcomeUncertain)
+		}
 		return nil, fmt.Errorf("Hub did not return export_id")
+	}
+	if effectEnabled {
+		if _, err := agentruntime.BindJobEffectResource(ctx, migrationExportEffectKind, exportID); err != nil {
+			return nil, fmt.Errorf("%w: bind migration export effect: %v", agentruntime.ErrJobEffectOutcomeUncertain, err)
+		}
 	}
 	progress(0.30, "uploading encrypted chunks")
 	if err := s.uploadMigrationChunks(ctx, cfg, exportID, encryptedPath, encryptedSize, chunkCount, progress); err != nil {
+		if effectEnabled {
+			_, _ = agentruntime.SettleJobEffect(ctx, migrationExportEffectKind, agentruntime.JobEffectUnknown, "", "remote_transfer_unknown", map[string]string{"status": "uploading"})
+			return nil, fmt.Errorf("%w: upload migration export: %v", agentruntime.ErrJobEffectOutcomeUncertain, err)
+		}
 		return nil, err
 	}
 	completeReq := map[string]interface{}{"encrypted_sha256": encryptedHash}
 	if _, err := s.migrationHubJSON(ctx, cfg, http.MethodPost, "/api/v1/migration/exports/"+exportID+"/complete-upload", completeReq); err != nil {
+		if effectEnabled {
+			_, _ = agentruntime.SettleJobEffect(ctx, migrationExportEffectKind, agentruntime.JobEffectUnknown, "", "remote_completion_unknown", map[string]string{"status": "finalizing"})
+			return nil, fmt.Errorf("%w: complete migration export: %v", agentruntime.ErrJobEffectOutcomeUncertain, err)
+		}
 		return nil, err
+	}
+	if effectEnabled {
+		receipt := strings.Join([]string{exportID, "ready", encryptedHash}, ":")
+		if _, err := agentruntime.SettleJobEffect(ctx, migrationExportEffectKind, agentruntime.JobEffectCommitted, receipt, "remote_ready", map[string]interface{}{"status": "ready", "encrypted_size": encryptedSize, "chunk_count": chunkCount}); err != nil {
+			return nil, fmt.Errorf("%w: settle migration export effect: %v", agentruntime.ErrJobEffectOutcomeUncertain, err)
+		}
 	}
 	progress(1, "export completed")
 	return map[string]interface{}{"export_id": exportID, "encrypted_size": encryptedSize, "chunk_count": chunkCount}, nil
@@ -324,9 +543,22 @@ func (s *HTTPServer) runMigrationImport(ctx context.Context, p agentservice.Prin
 		return nil, err
 	}
 	defer os.RemoveAll(workDir)
+	effectEnabled := agentruntime.JobEffectRecorderAvailable(ctx)
+	if effectEnabled {
+		if _, err := agentruntime.PrepareJobEffect(ctx, migrationImportEffectKind, map[string]string{"machine_id": cfg.MachineID}); err != nil {
+			return nil, fmt.Errorf("prepare migration import effect: %w", err)
+		}
+		if _, err := agentruntime.BindJobEffectResource(ctx, migrationImportEffectKind, exportID); err != nil {
+			return nil, fmt.Errorf("bind migration import effect: %w", err)
+		}
+	}
 	progress(0.05, "claiming migration export")
 	claimResp, err := s.migrationHubJSON(ctx, cfg, http.MethodPost, "/api/v1/migration/imports/"+exportID+"/claim", map[string]interface{}{})
 	if err != nil {
+		if effectEnabled {
+			_, _ = agentruntime.SettleJobEffect(ctx, migrationImportEffectKind, agentruntime.JobEffectUnknown, "", "remote_claim_unknown", nil)
+			return nil, fmt.Errorf("%w: claim migration import: %v", agentruntime.ErrJobEffectOutcomeUncertain, err)
+		}
 		return nil, err
 	}
 	claimed := true
@@ -335,26 +567,44 @@ func (s *HTTPServer) runMigrationImport(ctx context.Context, p agentservice.Prin
 		if err != nil && claimed && !localRestored {
 			abortCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
-			_, _ = s.migrationHubJSON(abortCtx, cfg, http.MethodPost, "/api/v1/migration/imports/"+exportID+"/abort", map[string]interface{}{})
+			if _, abortErr := s.migrationHubJSON(abortCtx, cfg, http.MethodPost, "/api/v1/migration/imports/"+exportID+"/abort", map[string]interface{}{}); abortErr == nil && effectEnabled {
+				_, _ = agentruntime.SettleJobEffect(context.WithoutCancel(ctx), migrationImportEffectKind, agentruntime.JobEffectFailed, "", "local_restore_not_applied", nil)
+			}
 		}
 	}()
 	exportMap, _ := claimResp["export"].(map[string]interface{})
 	claimedStatus := strings.ToLower(strings.TrimSpace(fmt.Sprint(exportMap["status"])))
 	if claimedStatus == "deleted" {
 		claimed = false
+		result := map[string]interface{}{"export_id": exportID, "cleanup_retried": true, "status": "deleted"}
+		if effectEnabled {
+			if _, err := agentruntime.SettleJobEffect(ctx, migrationImportEffectKind, agentruntime.JobEffectCommitted, exportID+":deleted", "local_restore_committed", result); err != nil {
+				return nil, fmt.Errorf("%w: settle completed migration import: %v", agentruntime.ErrJobEffectOutcomeUncertain, err)
+			}
+		}
 		progress(1, "import cleanup already completed")
-		return map[string]interface{}{"export_id": exportID, "cleanup_retried": true, "status": "deleted"}, nil
+		return result, nil
 	}
 	if claimedStatus == "imported" || claimedStatus == "deleting" {
+		localRestored = true
+		result := map[string]interface{}{"export_id": exportID, "cleanup_retried": true}
+		if effectEnabled {
+			if _, err := agentruntime.SettleJobEffect(ctx, migrationImportEffectKind, agentruntime.JobEffectCommitted, exportID+":cleanup-pending", "local_restore_committed", result); err != nil {
+				return nil, fmt.Errorf("%w: settle pending migration cleanup: %v", agentruntime.ErrJobEffectOutcomeUncertain, err)
+			}
+		}
 		progress(0.92, "retrying Hub cleanup")
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if err := s.completeMigrationImportOnHub(cleanupCtx, cfg, exportID); err != nil {
+			if effectEnabled {
+				return nil, fmt.Errorf("%w: imported migration cleanup failed: %v", agentruntime.ErrJobEffectOutcomeUncertain, err)
+			}
 			return nil, fmt.Errorf("Hub cleanup retry failed: %w", err)
 		}
 		claimed = false
 		progress(1, "import cleanup completed")
-		return map[string]interface{}{"export_id": exportID, "cleanup_retried": true}, nil
+		return result, nil
 	}
 	if password == "" {
 		return nil, fmt.Errorf("migration password is required")
@@ -389,14 +639,22 @@ func (s *HTTPServer) runMigrationImport(ctx context.Context, p agentservice.Prin
 		return nil, err
 	}
 	localRestored = true
+	result["export_id"] = exportID
+	if effectEnabled {
+		if _, err := agentruntime.SettleJobEffect(ctx, migrationImportEffectKind, agentruntime.JobEffectCommitted, exportID+":local-restored", "local_restore_committed", result); err != nil {
+			return nil, fmt.Errorf("%w: settle local migration import: %v", agentruntime.ErrJobEffectOutcomeUncertain, err)
+		}
+	}
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := s.completeMigrationImportOnHub(cleanupCtx, cfg, exportID); err != nil {
+		if effectEnabled {
+			return nil, fmt.Errorf("%w: local import committed but Hub cleanup failed: %v", agentruntime.ErrJobEffectOutcomeUncertain, err)
+		}
 		return nil, fmt.Errorf("local import succeeded, but Hub cleanup failed: %w", err)
 	}
 	claimed = false
 	progress(1, "import completed")
-	result["export_id"] = exportID
 	return result, nil
 }
 
@@ -999,6 +1257,9 @@ func (s *HTTPServer) migrationHubBytesLimited(ctx context.Context, cfg migration
 	req, err := http.NewRequestWithContext(ctx, method, cfg.HubURL+path, body)
 	if err != nil {
 		return nil, err
+	}
+	if tp := agentruntime.TraceParentHeader(ctx); tp != "" {
+		req.Header.Set("traceparent", tp)
 	}
 	if cfg.ViewerToken != "" {
 		req.Header.Set("Authorization", "Bearer "+cfg.ViewerToken)

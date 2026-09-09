@@ -29,6 +29,36 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
 )
 
+// formatDatabaseProfileSummary is the read-only TUI projection of a data
+// source: id:type(ro|rw[,off][,replica][,ssh]). Secrets never appear.
+func formatDatabaseProfileSummary(id, typ string, writeEnabled, readOnly, disabled bool, replicaHost, sshSession, replicaSSH string) string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ""
+	}
+	label := id
+	if t := strings.TrimSpace(typ); t != "" {
+		label += ":" + t
+	}
+	flags := []string{"ro"}
+	if writeEnabled && !readOnly {
+		flags[0] = "rw"
+	}
+	if disabled {
+		flags = append(flags, "off")
+	}
+	if strings.TrimSpace(replicaHost) != "" {
+		flags = append(flags, "replica")
+	}
+	if strings.TrimSpace(sshSession) != "" {
+		flags = append(flags, "ssh")
+	}
+	if strings.TrimSpace(replicaSSH) != "" {
+		flags = append(flags, "replica-ssh")
+	}
+	return label + "(" + strings.Join(flags, ",") + ")"
+}
+
 // ConfigFieldDef is the single definition for a TUI-editable config field.
 type ConfigFieldDef struct {
 	Key      string
@@ -1168,6 +1198,23 @@ var allConfigFields = []ConfigFieldDef{
 		Set: boolSet(func(c *corelib.AppConfig, v bool) { c.SmartRouteEnabled = v }),
 	},
 	{
+		Key: "semantic_tool_scope_routing", Tab: CfgTabSecurity, Section: "security",
+		DescKey: i18n.MsgTUIConfigDescSmartRoute, Options: []string{"off", "shadow", "scope_only"}, Default: "off",
+		Get: func(c *corelib.AppConfig) string {
+			p := c.SemanticToolScopeRouting
+			if !p.Enabled || p.Mode == "" {
+				return "off"
+			}
+			return p.Mode
+		},
+		Set: func(c *corelib.AppConfig, v string) {
+			p := c.SemanticToolScopeRouting
+			p.Mode = v
+			p.Enabled = v != "off"
+			c.SemanticToolScopeRouting = p
+		},
+	},
+	{
 		Key: "file_outbound_enabled", Tab: CfgTabSecurity, Section: "security",
 		DescKey: i18n.MsgTUIConfigDescFileOutbound, Options: boolOpts, Default: "true",
 		Get: boolGet(func(c *corelib.AppConfig) bool { return c.FileOutboundEnabled }),
@@ -1222,6 +1269,40 @@ var allConfigFields = []ConfigFieldDef{
 		DescKey: i18n.MsgTUIConfigDescDebugTools, Options: boolOpts, Default: "false",
 		Get: boolGet(func(c *corelib.AppConfig) bool { return c.MaclawDebugToolCalls }),
 		Set: boolSet(func(c *corelib.AppConfig, v bool) { c.MaclawDebugToolCalls = v }),
+	},
+	{
+		Key: "database_tool_enabled", Tab: CfgTabAdvanced, Section: "database",
+		DescKey: i18n.MsgTUIConfigDescDatabaseTool, Options: boolOpts, Default: "true",
+		Get: func(c *corelib.AppConfig) string {
+			if c.DatabaseToolIsEnabled() {
+				return "true"
+			}
+			return "false"
+		},
+		Set: func(c *corelib.AppConfig, v string) {
+			enabled := v == "true"
+			c.DatabaseToolEnabled = &enabled
+		},
+	},
+	{
+		Key: "database_profiles", Tab: CfgTabAdvanced, Section: "database",
+		DescKey: i18n.MsgTUIConfigDescDatabaseProfiles, ReadOnly: true,
+		Get: func(c *corelib.AppConfig) string {
+			if len(c.DatabaseProfiles) == 0 {
+				return "(none)"
+			}
+			parts := make([]string, 0, len(c.DatabaseProfiles))
+			for _, p := range c.DatabaseProfiles {
+				line := formatDatabaseProfileSummary(p.ID, string(p.Type), p.WriteEnabled, p.ReadOnly, p.Disabled, p.ReplicaHost, p.SSHSessionID, p.ReplicaSSHSessionID)
+				if line != "" {
+					parts = append(parts, line)
+				}
+			}
+			if len(parts) == 0 {
+				return "(none)"
+			}
+			return strings.Join(parts, ", ")
+		},
 	},
 	{
 		Key: "gossip_enabled", Tab: CfgTabAdvanced, Section: "advanced",

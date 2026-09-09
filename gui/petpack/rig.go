@@ -19,13 +19,13 @@ import (
 // bone hierarchy, named local raster slots, and numeric keyframes only.
 // Expressions, callbacks, URLs, shaders, and script execution are absent.
 type Rig struct {
-	Version int                `json:"version"`
+	Version int `json:"version"`
 	// Join controls multi-part neck/shoulder compositing aids. Optional and
 	// ignored by packs that do not use body+expression-head paper-dolls.
-	Join    *RigJoin           `json:"join,omitempty"`
-	Bones   []RigBone          `json:"bones"`
-	Slots   []RigSlot          `json:"slots"`
-	Clips   map[string]RigClip `json:"clips"`
+	Join  *RigJoin           `json:"join,omitempty"`
+	Bones []RigBone          `json:"bones"`
+	Slots []RigSlot          `json:"slots"`
+	Clips map[string]RigClip `json:"clips"`
 }
 
 // RigJoin is the engine-side neck join contract for multi-part characters.

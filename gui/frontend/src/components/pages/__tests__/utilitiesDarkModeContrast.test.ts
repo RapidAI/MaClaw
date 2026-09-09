@@ -78,6 +78,13 @@ describe('dark-mode button/card text contrast', () => {
         )).toBe(true);
     });
 
+    it('industry expert install actions follow the active primary text token', () => {
+        const css = readCss('components/pages/UtilitiesPage.css');
+        expect(anyBody(css, '.utilities-expert-card__industry-install', (body) =>
+            /color\s*:\s*var\(\s*--theme-on-primary\b/.test(body),
+        )).toBe(true);
+    });
+
     it('utilities watch list items and member chips set theme text on the control', () => {
         const css = readCss('components/pages/UtilitiesPage.css');
         expect(anyBody(css, '.utilities-watch-item', hasThemeTextPrimary)).toBe(true);

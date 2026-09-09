@@ -35,39 +35,87 @@ const (
 	BillingModeFree = "free"
 )
 
+const (
+	PricingSourceProvider             = "provider"
+	PricingSourceServiceGroupOverride = "service_group_override"
+)
+
 // TokenPricing describes the base, provider-owned token price for one
 // provider/model route. Credits are per 10,000 tokens. RMB fields are display
 // only and must never be used to derive a credit charge.
+//
+// The four cache-direction prices are presence-aware pointers: nil means the
+// operator never configured that direction (the documented defaults apply at
+// billing resolution time), while a non-nil pointer — including a pointer to
+// zero — is an explicit operator choice that must survive a save/load round
+// trip unchanged. A plain float64 cannot represent both states because its
+// zero value is ambiguous.
 type TokenPricing struct {
-	InputCreditsPer10K    float64            `json:"input_credits_per_10k,omitempty"`
-	OutputCreditsPer10K   float64            `json:"output_credits_per_10k,omitempty"`
-	InputRMBPer10K        float64            `json:"input_rmb_per_10k,omitempty"`
-	OutputRMBPer10K       float64            `json:"output_rmb_per_10k,omitempty"`
-	MinimumRequestCredits float64            `json:"minimum_request_credits,omitempty"`
-	Timezone              string             `json:"timezone,omitempty"`
-	PriceSchedule         []TokenPriceWindow `json:"price_schedule,omitempty"`
-	Version               string             `json:"version,omitempty"`
+	InputCreditsPer10K      float64            `json:"input_credits_per_10k,omitempty"`
+	OutputCreditsPer10K     float64            `json:"output_credits_per_10k,omitempty"`
+	CacheReadCreditsPer10K  *float64           `json:"cache_read_credits_per_10k,omitempty"`
+	CacheWriteCreditsPer10K *float64           `json:"cache_write_credits_per_10k,omitempty"`
+	InputRMBPer10K          float64            `json:"input_rmb_per_10k,omitempty"`
+	OutputRMBPer10K         float64            `json:"output_rmb_per_10k,omitempty"`
+	CacheReadRMBPer10K      *float64           `json:"cache_read_rmb_per_10k,omitempty"`
+	CacheWriteRMBPer10K     *float64           `json:"cache_write_rmb_per_10k,omitempty"`
+	MinimumRequestCredits   float64            `json:"minimum_request_credits,omitempty"`
+	Timezone                string             `json:"timezone,omitempty"`
+	PriceSchedule           []TokenPriceWindow `json:"price_schedule,omitempty"`
+	Version                 string             `json:"version,omitempty"`
 }
 
 // TokenPriceWindow overrides selected fields of TokenPricing during a local
 // provider time window. Nil values inherit the route default, allowing an
 // explicit zero price without confusing it with an omitted field.
 type TokenPriceWindow struct {
-	ID                    string   `json:"id,omitempty"`
-	Days                  []int    `json:"days,omitempty"`
-	Start                 string   `json:"start"`
-	End                   string   `json:"end"`
-	InputCreditsPer10K    *float64 `json:"input_credits_per_10k,omitempty"`
-	OutputCreditsPer10K   *float64 `json:"output_credits_per_10k,omitempty"`
-	InputRMBPer10K        *float64 `json:"input_rmb_per_10k,omitempty"`
-	OutputRMBPer10K       *float64 `json:"output_rmb_per_10k,omitempty"`
-	MinimumRequestCredits *float64 `json:"minimum_request_credits,omitempty"`
+	ID                      string   `json:"id,omitempty"`
+	Days                    []int    `json:"days,omitempty"`
+	Start                   string   `json:"start"`
+	End                     string   `json:"end"`
+	InputCreditsPer10K      *float64 `json:"input_credits_per_10k,omitempty"`
+	OutputCreditsPer10K     *float64 `json:"output_credits_per_10k,omitempty"`
+	CacheReadCreditsPer10K  *float64 `json:"cache_read_credits_per_10k,omitempty"`
+	CacheWriteCreditsPer10K *float64 `json:"cache_write_credits_per_10k,omitempty"`
+	InputRMBPer10K          *float64 `json:"input_rmb_per_10k,omitempty"`
+	OutputRMBPer10K         *float64 `json:"output_rmb_per_10k,omitempty"`
+	CacheReadRMBPer10K      *float64 `json:"cache_read_rmb_per_10k,omitempty"`
+	CacheWriteRMBPer10K     *float64 `json:"cache_write_rmb_per_10k,omitempty"`
+	MinimumRequestCredits   *float64 `json:"minimum_request_credits,omitempty"`
 }
 
 // ResolvedTokenPricing is the immutable price snapshot used for one request.
 type ResolvedTokenPricing struct {
 	TokenPricing
 	WindowID string `json:"window_id,omitempty"`
+}
+
+// Clone returns a deep copy: every presence-aware pointer (including the
+// per-window overrides in PriceSchedule) is duplicated so the copy never
+// aliases the source's configuration memory.
+func (p TokenPricing) Clone() TokenPricing {
+	p.CacheReadCreditsPer10K = cloneOptionalTokenPrice(p.CacheReadCreditsPer10K)
+	p.CacheWriteCreditsPer10K = cloneOptionalTokenPrice(p.CacheWriteCreditsPer10K)
+	p.CacheReadRMBPer10K = cloneOptionalTokenPrice(p.CacheReadRMBPer10K)
+	p.CacheWriteRMBPer10K = cloneOptionalTokenPrice(p.CacheWriteRMBPer10K)
+	if p.PriceSchedule != nil {
+		windows := make([]TokenPriceWindow, len(p.PriceSchedule))
+		for i, window := range p.PriceSchedule {
+			window.Days = append([]int(nil), window.Days...)
+			window.InputCreditsPer10K = cloneOptionalTokenPrice(window.InputCreditsPer10K)
+			window.OutputCreditsPer10K = cloneOptionalTokenPrice(window.OutputCreditsPer10K)
+			window.CacheReadCreditsPer10K = cloneOptionalTokenPrice(window.CacheReadCreditsPer10K)
+			window.CacheWriteCreditsPer10K = cloneOptionalTokenPrice(window.CacheWriteCreditsPer10K)
+			window.InputRMBPer10K = cloneOptionalTokenPrice(window.InputRMBPer10K)
+			window.OutputRMBPer10K = cloneOptionalTokenPrice(window.OutputRMBPer10K)
+			window.CacheReadRMBPer10K = cloneOptionalTokenPrice(window.CacheReadRMBPer10K)
+			window.CacheWriteRMBPer10K = cloneOptionalTokenPrice(window.CacheWriteRMBPer10K)
+			window.MinimumRequestCredits = cloneOptionalTokenPrice(window.MinimumRequestCredits)
+			windows[i] = window
+		}
+		p.PriceSchedule = windows
+	}
+	return p
 }
 
 // TokenPricingSnapshot is the authenticated HubCenter-to-Hub fact used to
@@ -78,9 +126,12 @@ type TokenPricingSnapshot struct {
 	ProviderID         string               `json:"provider_id"`
 	UpstreamModel      string               `json:"upstream_model"`
 	Pricing            ResolvedTokenPricing `json:"pricing"`
+	PricingSource      string               `json:"pricing_source,omitempty"`
 	ProviderMultiplier float64              `json:"provider_multiplier,omitempty"`
 	InputTokens        int64                `json:"input_tokens"`
 	OutputTokens       int64                `json:"output_tokens"`
+	CachedInputTokens  int64                `json:"cached_input_tokens,omitempty"`
+	CacheWriteTokens   int64                `json:"cache_write_tokens,omitempty"`
 }
 
 // PricingQuoteSnapshot is the immutable, non-secret financial envelope for a
@@ -102,6 +153,7 @@ type PricingQuoteSnapshot struct {
 	ProviderID             string               `json:"provider_id"`
 	UpstreamModel          string               `json:"upstream_model,omitempty"`
 	Pricing                ResolvedTokenPricing `json:"pricing"`
+	PricingSource          string               `json:"pricing_source,omitempty"`
 	ProviderMultiplier     float64              `json:"provider_multiplier,omitempty"`
 	ServiceGroupIDs        []string             `json:"service_group_ids,omitempty"`
 	BillingGroupMultiplier float64              `json:"billing_group_multiplier"`
@@ -122,9 +174,35 @@ func NewPricingQuoteSnapshot(requestID, attemptID, providerID string, pricing Re
 	if requestID == "" || attemptID == "" || providerID == "" || expiresAt.IsZero() {
 		return PricingQuoteSnapshot{}, false
 	}
+	// The optional cache prices are presence-aware: nil is unset, but a set
+	// value must be a finite non-negative number. Reject malformed directional
+	// prices instead of freezing a quote that settlement would miscalculate.
+	if !optionalTokenPriceValid(pricing.CacheReadCreditsPer10K) || !optionalTokenPriceValid(pricing.CacheWriteCreditsPer10K) ||
+		!optionalTokenPriceValid(pricing.CacheReadRMBPer10K) || !optionalTokenPriceValid(pricing.CacheWriteRMBPer10K) {
+		return PricingQuoteSnapshot{}, false
+	}
+	if !strings.EqualFold(strings.TrimSpace(pricing.Version), "cache-v1") {
+		pricing.TokenPricing = pricing.TokenPricing.WithCachePricingDefaults()
+		if strings.TrimSpace(pricing.Version) == "" {
+			pricing.Version = "cache-v1"
+		}
+	}
 	providerMultiplier = NormalizeCreditMultiplier(providerMultiplier)
 	billingGroupMultiplier = NormalizeCreditMultiplier(billingGroupMultiplier)
-	reserved, ok := EstimateTokenPricingMicrocredits(inputTokenEstimate, outputTokenLimit, pricing, CombineCreditMultipliers(providerMultiplier, billingGroupMultiplier))
+	// Admission does not know the eventual Cache Read/Write split. Reserve
+	// against the most expensive input direction so a cache-heavy response can
+	// never exceed the hold established before contacting the provider.
+	reservePricing := pricing
+	reservePricing.TokenPricing = reservePricing.TokenPricing.WithCachePricingDefaults()
+	maxInputPrice := reservePricing.InputCreditsPer10K
+	if cacheRead := OptionalTokenPriceValue(reservePricing.CacheReadCreditsPer10K); cacheRead > maxInputPrice {
+		maxInputPrice = cacheRead
+	}
+	if cacheWrite := OptionalTokenPriceValue(reservePricing.CacheWriteCreditsPer10K); cacheWrite > maxInputPrice {
+		maxInputPrice = cacheWrite
+	}
+	reservePricing.InputCreditsPer10K = maxInputPrice
+	reserved, ok := EstimateTokenPricingMicrocredits(inputTokenEstimate, outputTokenLimit, reservePricing, CombineCreditMultipliers(providerMultiplier, billingGroupMultiplier))
 	if !ok {
 		return PricingQuoteSnapshot{}, false
 	}
@@ -133,6 +211,7 @@ func NewPricingQuoteSnapshot(requestID, attemptID, providerID string, pricing Re
 		AttemptID:              attemptID,
 		ProviderID:             providerID,
 		Pricing:                pricing,
+		PricingSource:          PricingSourceProvider,
 		ProviderMultiplier:     providerMultiplier,
 		BillingGroupMultiplier: billingGroupMultiplier,
 		InputTokenEstimate:     maxTokenCount(inputTokenEstimate),
@@ -144,6 +223,12 @@ func NewPricingQuoteSnapshot(requestID, attemptID, providerID string, pricing Re
 
 func EncodeTokenPricingSnapshot(snapshot TokenPricingSnapshot) (string, bool) {
 	if !ValidateResolvedTokenPricing(snapshot.Pricing) {
+		return "", false
+	}
+	if strings.TrimSpace(snapshot.PricingSource) == "" {
+		snapshot.PricingSource = PricingSourceProvider
+	}
+	if !validPricingSource(snapshot.PricingSource) {
 		return "", false
 	}
 	encoded, err := json.Marshal(snapshot)
@@ -162,10 +247,31 @@ func DecodeTokenPricingSnapshot(raw string) (TokenPricingSnapshot, bool) {
 	if err := json.Unmarshal(encoded, &snapshot); err != nil || strings.TrimSpace(snapshot.ProviderID) == "" {
 		return TokenPricingSnapshot{}, false
 	}
+	// Snapshots emitted before cache-v1 did not carry a version or cache
+	// prices. Treat an omitted version as legacy when decoding; the legacy
+	// fallback now applies the same 10% cache-read rule as current pricing.
+	if strings.TrimSpace(snapshot.Pricing.Version) == "" {
+		snapshot.Pricing.Version = "legacy-v1"
+	}
+	if strings.TrimSpace(snapshot.PricingSource) == "" {
+		snapshot.PricingSource = PricingSourceProvider
+	}
+	if !validPricingSource(snapshot.PricingSource) {
+		return TokenPricingSnapshot{}, false
+	}
 	if !ValidateResolvedTokenPricing(snapshot.Pricing) {
 		return TokenPricingSnapshot{}, false
 	}
 	return snapshot, true
+}
+
+func validPricingSource(source string) bool {
+	switch strings.TrimSpace(source) {
+	case PricingSourceProvider, PricingSourceServiceGroupOverride:
+		return true
+	default:
+		return false
+	}
 }
 
 // ValidateResolvedTokenPricing validates the already-frozen price values in a
@@ -176,7 +282,9 @@ func DecodeTokenPricingSnapshot(raw string) (TokenPricingSnapshot, bool) {
 func ValidateResolvedTokenPricing(pricing ResolvedTokenPricing) bool {
 	p := pricing.TokenPricing
 	return len(p.PriceSchedule) == 0 && p.HasCreditPricing() && validNonNegative(p.MinimumRequestCredits) &&
-		validNonNegative(p.InputRMBPer10K) && validNonNegative(p.OutputRMBPer10K)
+		validNonNegative(p.InputRMBPer10K) && validNonNegative(p.OutputRMBPer10K) &&
+		optionalTokenPriceValid(p.CacheReadCreditsPer10K) && optionalTokenPriceValid(p.CacheWriteCreditsPer10K) &&
+		optionalTokenPriceValid(p.CacheReadRMBPer10K) && optionalTokenPriceValid(p.CacheWriteRMBPer10K)
 }
 
 // HasCreditPricing reports whether the route has an explicit Credits price.
@@ -185,18 +293,93 @@ func (p TokenPricing) HasCreditPricing() bool {
 		(p.InputCreditsPer10K > 0 || p.OutputCreditsPer10K > 0 || p.MinimumRequestCredits > 0)
 }
 
-// EffectiveRouteTokenPricing resolves the billable base price for one provider
-// route. A configured HubCenter provider price is authoritative: it is the
-// price owned by the selected upstream provider and must be the same one
-// included in the Hub-facing settlement snapshot. Route pricing is retained as
-// a legacy per-model fallback only when the provider has no usable Credits
-// price. This prevents a stale route value from silently replacing the
-// provider's configured input/output Credits and RMB prices.
-func EffectiveRouteTokenPricing(route ModelProviderConfig, provider ProviderConfig) TokenPricing {
-	if provider.TokenPricing.HasCreditPricing() {
-		return provider.TokenPricing
+// OptionalTokenPriceValue reads a presence-aware optional price field. A nil
+// field means "not configured" and reads as zero; only WithCachePricingDefaults
+// may turn that unset state into a derived default. An explicitly configured
+// zero is returned as zero.
+func OptionalTokenPriceValue(value *float64) float64 {
+	if value == nil {
+		return 0
 	}
-	return route.TokenPricing
+	return *value
+}
+
+// optionalTokenPriceValid validates an optional price field. An unset field is
+// valid; a set field must hold a finite non-negative number.
+func optionalTokenPriceValid(value *float64) bool {
+	return value == nil || validNonNegative(*value)
+}
+
+// cloneOptionalTokenPrice copies a presence-aware price pointer so a frozen
+// snapshot never aliases the live configuration's memory.
+func cloneOptionalTokenPrice(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	copied := *value
+	return &copied
+}
+
+// WithCachePricingDefaults applies the cache-v1 defaults to newly resolved
+// pricing. Only unset (nil) cache fields receive a default; an explicit zero
+// configured by the operator is a deliberate free direction and is preserved.
+// legacy-v1 snapshots (which predate independent cache rates) follow the same
+// presence rules: the historical product rule (cache-read = 10% of input,
+// cache-write = 100% of input) fills only unset fields.
+func (p TokenPricing) WithCachePricingDefaults() TokenPricing {
+	setDefault := func(target **float64, value float64) {
+		if *target != nil {
+			return
+		}
+		resolved := value
+		*target = &resolved
+	}
+	// cache-v1 and legacy-v1 share the same product rule today (cache-read =
+	// 10% of normal input, cache-write = 100% of normal input): an unset cache
+	// rate means the provider did not configure that direction, so fall back to
+	// the default rather than silently charging zero. The legacy-v1 version tag
+	// is still recorded on old snapshots even though it currently changes no
+	// behavior — keep it so a future divergence (for example a different legacy
+	// cache-write rule) can be expressed without reshaping stored snapshots.
+	// The input-price guards keep a zero base price from drifting an unset
+	// field's presence to an explicit zero.
+	if p.InputCreditsPer10K > 0 {
+		setDefault(&p.CacheReadCreditsPer10K, p.InputCreditsPer10K/10)
+		setDefault(&p.CacheWriteCreditsPer10K, p.InputCreditsPer10K)
+	}
+	if p.InputRMBPer10K > 0 {
+		setDefault(&p.CacheReadRMBPer10K, p.InputRMBPer10K/10)
+		setDefault(&p.CacheWriteRMBPer10K, p.InputRMBPer10K)
+	}
+	return p
+}
+
+// EffectiveRouteTokenPricing resolves the billable base price for one provider
+// route. An explicit per-route (service-group) price takes precedence over the
+// provider/model base price; otherwise the provider price is used. This lets a
+// service group apply a deliberate commercial override while keeping provider
+// pricing as the default for all groups. A route price saved without the
+// override flag is deliberately inert (design §4.1: a route inherits the
+// provider price unless the operator explicitly opens the override), so the
+// function falls back to the provider price even when that price is empty —
+// callers treat an empty result as "no directional pricing" and use legacy
+// billing, exactly like the Hub-side ResolveTokenPricingForProviderRoute.
+func EffectiveRouteTokenPricing(route ModelProviderConfig, provider ProviderConfig) TokenPricing {
+	if route.TokenPricingOverride && route.TokenPricing.HasCreditPricing() {
+		return route.TokenPricing
+	}
+	return provider.TokenPricing
+}
+
+// EffectiveRouteTokenPricingSource identifies which immutable commercial
+// configuration supplied the effective route price. Explicit service-group
+// overrides are distinguishable from the provider base price for audit and
+// historical usage reports.
+func EffectiveRouteTokenPricingSource(route ModelProviderConfig, provider ProviderConfig) string {
+	if route.TokenPricingOverride && route.TokenPricing.HasCreditPricing() {
+		return PricingSourceServiceGroupOverride
+	}
+	return PricingSourceProvider
 }
 
 // ResolveTokenPricing freezes the route's price at startedAt. Invalid or
@@ -204,7 +387,9 @@ func EffectiveRouteTokenPricing(route ModelProviderConfig, provider ProviderConf
 // them before a route is enabled.
 func ResolveTokenPricing(p TokenPricing, startedAt time.Time) (ResolvedTokenPricing, bool) {
 	if !p.HasCreditPricing() || !validNonNegative(p.MinimumRequestCredits) ||
-		!validNonNegative(p.InputRMBPer10K) || !validNonNegative(p.OutputRMBPer10K) {
+		!validNonNegative(p.InputRMBPer10K) || !validNonNegative(p.OutputRMBPer10K) ||
+		!optionalTokenPriceValid(p.CacheReadCreditsPer10K) || !optionalTokenPriceValid(p.CacheWriteCreditsPer10K) ||
+		!optionalTokenPriceValid(p.CacheReadRMBPer10K) || !optionalTokenPriceValid(p.CacheWriteRMBPer10K) {
 		return ResolvedTokenPricing{}, false
 	}
 	if startedAt.IsZero() {
@@ -214,12 +399,19 @@ func ResolveTokenPricing(p TokenPricing, startedAt time.Time) (ResolvedTokenPric
 		p.Timezone = DefaultCreditMultiplierTimezone
 	}
 	if strings.TrimSpace(p.Version) == "" {
-		p.Version = "legacy-v1"
+		p.Version = "cache-v1"
 	}
 	// A request snapshot contains final, time-of-use values only. Leaving the
 	// live schedule attached would make an immutable billing fact ambiguous when
 	// it crosses a time boundary or configuration update.
 	schedule := p.PriceSchedule
+	p.PriceSchedule = nil
+	// The frozen snapshot must never alias the live configuration's optional
+	// cache price pointers: a later in-place write through the shared pointer
+	// (for example a JSON decode into a reused struct) would rewrite an
+	// immutable billing fact. (The detached schedule is immutable by
+	// construction; window values are copied again when applied below.)
+	p = p.Clone()
 	p.PriceSchedule = nil
 	resolved := ResolvedTokenPricing{TokenPricing: p}
 	local := startedAt.In(loadTokenPricingLocation(p.Timezone))
@@ -234,6 +426,11 @@ func ResolveTokenPricing(p TokenPricing, startedAt time.Time) (ResolvedTokenPric
 		resolved.WindowID = strings.TrimSpace(window.ID)
 		break
 	}
+	// Apply defaults after selecting the active window. If a time window
+	// changes the base input price but leaves cache prices unspecified, the
+	// fallback must be derived from that effective input price (not the stale
+	// off-window value).
+	resolved.TokenPricing = resolved.TokenPricing.WithCachePricingDefaults()
 	return resolved, true
 }
 
@@ -251,10 +448,28 @@ func applyTokenPriceWindow(p *TokenPricing, window TokenPriceWindow) bool {
 		*target = *value
 		return true
 	}
+	// applyOptional replaces a presence-aware cache price. The window value is
+	// copied so the frozen snapshot never aliases the live configuration's
+	// schedule memory.
+	applyOptional := func(target **float64, value *float64) bool {
+		if value == nil {
+			return true
+		}
+		if !validNonNegative(*value) {
+			return false
+		}
+		resolved := *value
+		*target = &resolved
+		return true
+	}
 	return apply(&p.InputCreditsPer10K, window.InputCreditsPer10K) &&
 		apply(&p.OutputCreditsPer10K, window.OutputCreditsPer10K) &&
+		applyOptional(&p.CacheReadCreditsPer10K, window.CacheReadCreditsPer10K) &&
+		applyOptional(&p.CacheWriteCreditsPer10K, window.CacheWriteCreditsPer10K) &&
 		apply(&p.InputRMBPer10K, window.InputRMBPer10K) &&
 		apply(&p.OutputRMBPer10K, window.OutputRMBPer10K) &&
+		applyOptional(&p.CacheReadRMBPer10K, window.CacheReadRMBPer10K) &&
+		applyOptional(&p.CacheWriteRMBPer10K, window.CacheWriteRMBPer10K) &&
 		apply(&p.MinimumRequestCredits, window.MinimumRequestCredits) &&
 		p.HasCreditPricing()
 }
@@ -266,7 +481,14 @@ func validNonNegative(v float64) bool { return v >= 0 && !math.IsNaN(v) && !math
 // configuration input; they are first converted through their decimal form.
 // The result is rounded half-up to BillingRoundMicrocredits exactly once.
 func EstimateTokenPricingMicrocredits(inputTokens, outputTokens int64, pricing ResolvedTokenPricing, billingGroupMultiplier float64) (int64, bool) {
-	amount, _, _, _, ok := tokenPricingCreditComponentRats(inputTokens, outputTokens, pricing, billingGroupMultiplier)
+	return EstimateTokenPricingMicrocreditsWithCache(inputTokens, outputTokens, 0, 0, pricing, billingGroupMultiplier)
+}
+
+// EstimateTokenPricingMicrocreditsWithCache calculates a debit using explicit
+// Cache Read/Write input usage. Cached and write tokens are treated as subsets
+// of input tokens and are bounded deterministically.
+func EstimateTokenPricingMicrocreditsWithCache(inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens int64, pricing ResolvedTokenPricing, billingGroupMultiplier float64) (int64, bool) {
+	amount, _, _, _, ok := tokenPricingCreditComponentRatsWithCache(inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, pricing, billingGroupMultiplier)
 	if !ok {
 		return 0, false
 	}
@@ -278,7 +500,14 @@ func EstimateTokenPricingMicrocredits(inputTokens, outputTokens int64, pricing R
 // Usage Stats tooltip can then show the same decimal facts as the ledger while
 // retaining the one final request-level rounding adjustment separately.
 func TokenPricingCreditComponents(inputTokens, outputTokens int64, pricing ResolvedTokenPricing, billingGroupMultiplier float64) (input, output, minimumAdjustment float64, ok bool) {
-	_, inputAmount, outputAmount, minimumAmount, ok := tokenPricingCreditComponentRats(inputTokens, outputTokens, pricing, billingGroupMultiplier)
+	return TokenPricingCreditComponentsWithCache(inputTokens, outputTokens, 0, 0, pricing, billingGroupMultiplier)
+}
+
+// TokenPricingCreditComponentsWithCache is the usage-aware counterpart of
+// TokenPricingCreditComponents. The returned input component includes normal
+// input, Cache Read and Cache Write amounts.
+func TokenPricingCreditComponentsWithCache(inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens int64, pricing ResolvedTokenPricing, billingGroupMultiplier float64) (input, output, minimumAdjustment float64, ok bool) {
+	_, inputAmount, _, _, outputAmount, minimumAmount, ok := tokenPricingCreditComponentRatsWithCacheDetailed(inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, pricing, billingGroupMultiplier)
 	if !ok {
 		return 0, 0, 0, false
 	}
@@ -297,38 +526,108 @@ func TokenPricingCreditComponents(inputTokens, outputTokens int64, pricing Resol
 	return input, output, minimumAdjustment, true
 }
 
+// TokenPricingCreditComponentsDetailedWithCache exposes the four directional
+// credit components used by Usage Stats. Values are unrounded Credits; the
+// request-level minimum and final ledger rounding remain separate.
+func TokenPricingCreditComponentsDetailedWithCache(inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens int64, pricing ResolvedTokenPricing, billingGroupMultiplier float64) (normalInput, cacheRead, cacheWrite, output, minimumAdjustment float64, ok bool) {
+	_, normalAmount, readAmount, writeAmount, outputAmount, minimumAmount, ok := tokenPricingCreditComponentRatsWithCacheDetailed(inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, pricing, billingGroupMultiplier)
+	if !ok {
+		return 0, 0, 0, 0, 0, false
+	}
+	for i, value := range []*big.Rat{normalAmount, readAmount, writeAmount, outputAmount, minimumAmount} {
+		converted, valid := ratToCredits(value)
+		if !valid {
+			return 0, 0, 0, 0, 0, false
+		}
+		switch i {
+		case 0:
+			normalInput = converted
+		case 1:
+			cacheRead = converted
+		case 2:
+			cacheWrite = converted
+		case 3:
+			output = converted
+		default:
+			minimumAdjustment = converted
+		}
+	}
+	return normalInput, cacheRead, cacheWrite, output, minimumAdjustment, true
+}
+
 // tokenPricingCreditComponentRats contains the common fixed-point basis for
 // debit calculation and its explainable directional components. The first
 // return value is the amount after the request minimum, before final rounding.
 func tokenPricingCreditComponentRats(inputTokens, outputTokens int64, pricing ResolvedTokenPricing, billingGroupMultiplier float64) (amount, inputAmount, outputAmount, minimumAdjustment *big.Rat, ok bool) {
-	if !validNonNegative(billingGroupMultiplier) || billingGroupMultiplier <= 0 {
+	return tokenPricingCreditComponentRatsWithCache(inputTokens, outputTokens, 0, 0, pricing, billingGroupMultiplier)
+}
+
+func tokenPricingCreditComponentRatsWithCache(inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens int64, pricing ResolvedTokenPricing, billingGroupMultiplier float64) (amount, inputAmount, outputAmount, minimumAdjustment *big.Rat, ok bool) {
+	amount, normalInput, cacheRead, cacheWrite, outputAmount, minimumAdjustment, ok := tokenPricingCreditComponentRatsWithCacheDetailed(inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens, pricing, billingGroupMultiplier)
+	if !ok {
+		// A rejected input (for example a NaN multiplier) must surface as
+		// ok=false; aggregating nil components would panic instead.
 		return nil, nil, nil, nil, false
+	}
+	inputAmount = new(big.Rat).Add(normalInput, cacheRead)
+	inputAmount.Add(inputAmount, cacheWrite)
+	return amount, inputAmount, outputAmount, minimumAdjustment, ok
+}
+
+func tokenPricingCreditComponentRatsWithCacheDetailed(inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens int64, pricing ResolvedTokenPricing, billingGroupMultiplier float64) (amount, normalInputAmount, cacheReadAmount, cacheWriteAmount, outputAmount, minimumAdjustment *big.Rat, ok bool) {
+	if !validNonNegative(billingGroupMultiplier) || billingGroupMultiplier <= 0 {
+		return nil, nil, nil, nil, nil, nil, false
 	}
 	inputPrice, ok := decimalCreditsToMicrocredits(pricing.InputCreditsPer10K)
 	if !ok {
-		return nil, nil, nil, nil, false
+		return nil, nil, nil, nil, nil, nil, false
 	}
 	outputPrice, ok := decimalCreditsToMicrocredits(pricing.OutputCreditsPer10K)
 	if !ok {
-		return nil, nil, nil, nil, false
+		return nil, nil, nil, nil, nil, nil, false
 	}
 	minimum, ok := decimalCreditsToMicrocredits(pricing.MinimumRequestCredits)
 	if !ok {
-		return nil, nil, nil, nil, false
+		return nil, nil, nil, nil, nil, nil, false
 	}
 	multiplier, ok := decimalToRat(billingGroupMultiplier)
 	if !ok || multiplier.Sign() <= 0 {
-		return nil, nil, nil, nil, false
+		return nil, nil, nil, nil, nil, nil, false
 	}
 	inputTokens = maxTokenCount(inputTokens)
 	outputTokens = maxTokenCount(outputTokens)
+	cachedInputTokens = maxTokenCount(cachedInputTokens)
+	cacheWriteTokens = maxTokenCount(cacheWriteTokens)
+	if cachedInputTokens > inputTokens {
+		cachedInputTokens = inputTokens
+	}
+	if cacheWriteTokens > inputTokens-cachedInputTokens {
+		cacheWriteTokens = inputTokens - cachedInputTokens
+	}
+	pricing.TokenPricing = pricing.TokenPricing.WithCachePricingDefaults()
+	cacheReadPrice, ok := decimalCreditsToMicrocredits(OptionalTokenPriceValue(pricing.CacheReadCreditsPer10K))
+	if !ok {
+		return nil, nil, nil, nil, nil, nil, false
+	}
+	cacheWritePrice, ok := decimalCreditsToMicrocredits(OptionalTokenPriceValue(pricing.CacheWriteCreditsPer10K))
+	if !ok {
+		return nil, nil, nil, nil, nil, nil, false
+	}
 
-	inputAmount = new(big.Rat).SetInt64(inputPrice)
-	inputAmount.Mul(inputAmount, big.NewRat(inputTokens, 10_000))
-	inputAmount.Mul(inputAmount, multiplier)
+	normalInputAmount = new(big.Rat).SetInt64(inputPrice)
+	normalInputAmount.Mul(normalInputAmount, big.NewRat(inputTokens-cachedInputTokens-cacheWriteTokens, 10_000))
+	normalInputAmount.Mul(normalInputAmount, multiplier)
+	cacheReadAmount = new(big.Rat).SetInt64(cacheReadPrice)
+	cacheReadAmount.Mul(cacheReadAmount, big.NewRat(cachedInputTokens, 10_000))
+	cacheReadAmount.Mul(cacheReadAmount, multiplier)
+	cacheWriteAmount = new(big.Rat).SetInt64(cacheWritePrice)
+	cacheWriteAmount.Mul(cacheWriteAmount, big.NewRat(cacheWriteTokens, 10_000))
+	cacheWriteAmount.Mul(cacheWriteAmount, multiplier)
 	outputAmount = new(big.Rat).SetInt64(outputPrice)
 	outputAmount.Mul(outputAmount, big.NewRat(outputTokens, 10_000))
 	outputAmount.Mul(outputAmount, multiplier)
+	inputAmount := new(big.Rat).Add(normalInputAmount, cacheReadAmount)
+	inputAmount.Add(inputAmount, cacheWriteAmount)
 	amount = new(big.Rat).Add(inputAmount, outputAmount)
 
 	minimumAmount := new(big.Rat).SetInt64(minimum)
@@ -338,7 +637,7 @@ func tokenPricingCreditComponentRats(inputTokens, outputTokens int64, pricing Re
 		minimumAdjustment.Sub(minimumAmount, amount)
 		amount = minimumAmount
 	}
-	return amount, inputAmount, outputAmount, minimumAdjustment, true
+	return amount, normalInputAmount, cacheReadAmount, cacheWriteAmount, outputAmount, minimumAdjustment, true
 }
 
 func ratToCredits(value *big.Rat) (float64, bool) {
@@ -439,7 +738,9 @@ func ValidateRouteBilling(mode string, pricing TokenPricing) error {
 
 func validateTokenPricingShape(pricing TokenPricing, requirePrice bool) error {
 	if !validNonNegative(pricing.InputCreditsPer10K) || !validNonNegative(pricing.OutputCreditsPer10K) ||
+		!optionalTokenPriceValid(pricing.CacheReadCreditsPer10K) || !optionalTokenPriceValid(pricing.CacheWriteCreditsPer10K) ||
 		!validNonNegative(pricing.InputRMBPer10K) || !validNonNegative(pricing.OutputRMBPer10K) ||
+		!optionalTokenPriceValid(pricing.CacheReadRMBPer10K) || !optionalTokenPriceValid(pricing.CacheWriteRMBPer10K) ||
 		!validNonNegative(pricing.MinimumRequestCredits) {
 		return fmt.Errorf("token prices must be finite non-negative numbers")
 	}
@@ -473,7 +774,7 @@ func validateTokenPricingShape(pricing TokenPricing, requirePrice bool) error {
 				return fmt.Errorf("price_schedule[%d] has invalid weekday", i)
 			}
 		}
-		for _, value := range []*float64{window.InputCreditsPer10K, window.OutputCreditsPer10K, window.InputRMBPer10K, window.OutputRMBPer10K, window.MinimumRequestCredits} {
+		for _, value := range []*float64{window.InputCreditsPer10K, window.OutputCreditsPer10K, window.CacheReadCreditsPer10K, window.CacheWriteCreditsPer10K, window.InputRMBPer10K, window.OutputRMBPer10K, window.CacheReadRMBPer10K, window.CacheWriteRMBPer10K, window.MinimumRequestCredits} {
 			if value != nil && !validNonNegative(*value) {
 				return fmt.Errorf("price_schedule[%d] has invalid override", i)
 			}

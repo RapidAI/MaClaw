@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"net/http"
 	"strings"
@@ -206,6 +207,13 @@ func rememberOfficialPricingQuote(ctx context.Context, serviceReg *llmservice.Re
 		frozen.LogicalModel = quote.UpstreamModel
 	}
 	frozen.UpstreamModel = quote.UpstreamModel
+	frozen.PricingSource = strings.TrimSpace(quote.PricingSource)
+	if frozen.PricingSource == "" {
+		frozen.PricingSource = llmpool.PricingSourceProvider
+	}
+	if frozen.PricingSource != llmpool.PricingSourceProvider && frozen.PricingSource != llmpool.PricingSourceServiceGroupOverride {
+		return fmt.Errorf("official pricing quote has invalid pricing source")
+	}
 	frozen.ServiceGroupIDs = append([]string(nil), serviceGroupIDs...)
 	rememberLLMPricingQuote(ctx, frozen)
 	state.mu.Lock()
@@ -227,11 +235,11 @@ func prepareOfficialLLMRequestPricingQuote(ctx context.Context, serviceReg *llms
 		if !IsMaClawProviderRequest(providerID) {
 			continue
 		}
-		if !officialRouteHasDirectionalPricing(model, providerID) {
-			// A legacy official route without directional pricing continues through
-			// the historical forward path. It cannot safely be quote-reserved yet.
+		if llmservice.IsFreeBillingProviderRoute(model, providerID, billingUpstreamModel(model, providerID)) {
 			continue
 		}
+		// Official input/cache/output prices come from HubCenter. Quote even
+		// when Hub has no local directional price.
 		forwardBody := rewriteOfficialForwardBody(body, model, providerID)
 		payload, err := json.Marshal(forwardBody)
 		if err != nil {
@@ -248,14 +256,6 @@ func prepareOfficialLLMRequestPricingQuote(ctx context.Context, serviceReg *llms
 		return rememberOfficialPricingQuote(ctx, serviceReg, model, quote, llmservice.ChargedServiceGroupIDs(model, providerID), estimateLLMQuoteInputTokens(forwardBody), llmQuoteOutputTokenLimit(forwardBody))
 	}
 	return nil
-}
-
-func officialRouteHasDirectionalPricing(model *llmservice.AuthorizedModel, providerID string) bool {
-	if model == nil {
-		return false
-	}
-	_, ok := llmservice.ResolveTokenPricingForProviderRoute(model, providerID, billingUpstreamModel(model, providerID), time.Now())
-	return ok
 }
 
 func billingUpstreamModel(model *llmservice.AuthorizedModel, providerID string) string {
@@ -294,7 +294,7 @@ func snapshotLLMPricingQuote(ctx context.Context, providerID string) (llmpool.Pr
 // metered balance covers the request's conservative input+maximum-output
 // amount. Unlimited grants still bypass a balance reservation, as they have no
 // finite wallet value to compare here.
-func prepareLLMPricingQuote(ctx context.Context, reg *llmservice.Registry, userID, email string, model *llmservice.AuthorizedModel, providerID string, body map[string]any, now time.Time) (llmBillingDenial, error) {
+func prepareLLMPricingQuote(ctx context.Context, reg *llmservice.Registry, providerReg *im.LLMProviderRegistry, userID, email string, model *llmservice.AuthorizedModel, providerID string, body map[string]any, now time.Time) (llmBillingDenial, error) {
 	groups := llmservice.ChargedServiceGroupIDs(model, providerID)
 	allowed, _, code, message, available, _, _ := llmservice.BillingEligibilityForServiceGroupsForUserID(reg, userID, email, groups, now)
 	if !allowed {
@@ -303,10 +303,27 @@ func prepareLLMPricingQuote(ctx context.Context, reg *llmservice.Registry, userI
 	if llmservice.IsFreeBillingProviderRoute(model, providerID, billingUpstreamModel(model, providerID)) {
 		return llmBillingDenial{}, nil
 	}
+	if IsMaClawProviderRequest(providerID) {
+		// Official input/cache/output prices belong to the HubCenter provider.
+		// HubCenter quote/snapshot is the admission and settlement source.
+		return llmBillingDenial{}, nil
+	}
 	// Quote the same concrete upstream route that settlement will use. A
 	// provider can serve several routes with different prices, so the
 	// provider-only compatibility projection is not safe for admission.
 	pricing, ok := llmservice.ResolveTokenPricingForProviderRoute(model, providerID, billingUpstreamModel(model, providerID), now)
+	// The quote's pricing source must name the branch that actually supplied
+	// the price, not a re-evaluation of the configuration: an override flag
+	// without a usable price falls through to the provider price.
+	pricingSource := llmservice.PricingSourceForProviderRoute(model, providerID, billingUpstreamModel(model, providerID))
+	if !ok {
+		// A local third-party provider can own its directional price directly in
+		// the provider registry (no service-group route override). Settlement
+		// honors that price, so admission must reserve against it too; otherwise
+		// a finite balance could be silently overdrawn at settlement.
+		pricing, ok = resolveLocalProviderTokenPricing(providerReg, providerID, now)
+		pricingSource = llmpool.PricingSourceProvider
+	}
 	if !ok {
 		// Legacy routes retain their existing entitlement behavior until their
 		// owner assigns directional pricing. They cannot safely be reserved by
@@ -326,6 +343,7 @@ func prepareLLMPricingQuote(ctx context.Context, reg *llmservice.Registry, userI
 	}
 	quote.ServiceGroupIDs = append([]string(nil), groups...)
 	quote.LogicalModel = strings.TrimSpace(model.Name)
+	quote.PricingSource = pricingSource
 	// A zero available amount represents an unlimited entitlement in the
 	// existing registry model. Only finite positive wallet balances participate
 	// in the preflight check.
@@ -560,7 +578,10 @@ func reconcileOfficialBillingReservations(ctx context.Context, system store.Syst
 		// actual immutable settlement factors rather than trusting its display
 		// value alone.
 		applyUsageRMBMultiplier(&usage, effectiveMultiplier/llmpool.NormalizeCreditMultiplier(attempt.PricingSnapshot.ProviderMultiplier))
-		credits := llmservice.EstimateTokenPricingCredits(usage.InputTokens, usage.OutputTokens, attempt.PricingSnapshot.Pricing, effectiveMultiplier)
+		credits := 0.0
+		if hasBillableTokenLeg(usage.InputTokens, usage.OutputTokens, usage.CachedInputTokens, usage.CacheWriteTokens) {
+			credits = llmservice.EstimateTokenPricingCreditsWithCache(usage.InputTokens, usage.OutputTokens, usage.CachedInputTokens, usage.CacheWriteTokens, attempt.PricingSnapshot.Pricing, effectiveMultiplier)
+		}
 		pricing := attempt.PricingSnapshot.Pricing
 		charge := &pendingCreditCharge{userID: reservation.UserID, email: reservation.Email, serviceGroupIDs: reservation.ServiceGroupIDs, credits: credits, requestID: reservation.RequestID, providerID: llmservice.MaClawOfficialProviderID, usage: usage, multiplier: effectiveMultiplier, providerMultiplier: providerMultiplier, serviceGroupMultiplier: reservation.BillingGroupMultiplier, pricing: &pricing}
 		if settled, err := flushCreditChargesDetailed(ctx, system, map[string]*pendingCreditCharge{creditChargeKey(charge): charge}); err != nil {
@@ -575,7 +596,7 @@ func reconcileOfficialBillingReservations(ctx context.Context, system store.Syst
 			if reportedAt.IsZero() {
 				reportedAt = time.Now().UTC()
 			}
-			globalLLMUsageAccumulator.enqueueRecoveredUsageReport(system, llmservice.MaClawOfficialProviderID, attempt.PricingSnapshot.ProviderID, usage, reservation.Email, reportedAt, charge.credits, providerMultiplier, reservation.BillingGroupMultiplier, &pricing)
+			globalLLMUsageAccumulator.enqueueRecoveredUsageReport(system, llmservice.MaClawOfficialProviderID, attempt.PricingSnapshot.ProviderID, usage, reservation.Email, reportedAt, charge.credits, providerMultiplier, reservation.BillingGroupMultiplier, &pricing, reservation.ServiceGroupIDs...)
 			result.Settled++
 		} else {
 			// A concurrent handler may already have completed the same request.
@@ -735,46 +756,78 @@ func computeLLMRequestBilling(ctx context.Context, model *llmservice.AuthorizedM
 	// request. Prefer it over the admission quote because a compatibility retry
 	// may legitimately need a new quote for a sanitized payload.
 	if snapshot := snapshotOfficialTokenPricing(ctx); snapshot != nil && IsMaClawProviderRequest(providerID) {
-		groupMultiplier := llmservice.BillingGroupMultiplier(serviceReg, serviceGroupIDs)
-		providerMultiplier := llmpool.NormalizeCreditMultiplier(snapshot.ProviderMultiplier)
-		// Keep the service-group multiplier frozen at admission. The response
-		// snapshot supplies the actual provider pricing. The quote's provider
-		// factor is only a rolling-upgrade fallback when a legacy snapshot did
-		// not include one; a present authenticated snapshot factor is authoritative.
-		if quote, ok := snapshotLLMPricingQuote(ctx, providerID); ok && quote.BillingGroupMultiplier > 0 {
-			groupMultiplier = quote.BillingGroupMultiplier
-			if snapshot.ProviderMultiplier <= 0 {
-				providerMultiplier = llmpool.NormalizeCreditMultiplier(quote.ProviderMultiplier)
-			}
-		}
+		providerMultiplier, groupMultiplier := officialRouteMultipliers(ctx, providerID, serviceReg, serviceGroupIDs)
 		multiplier = llmpool.CombineCreditMultipliers(providerMultiplier, groupMultiplier)
-		credits = llmservice.EstimateTokenPricingCredits(snapshot.InputTokens, snapshot.OutputTokens, snapshot.Pricing, multiplier)
+		if !hasBillableTokenLeg(snapshot.InputTokens, snapshot.OutputTokens, snapshot.CachedInputTokens, snapshot.CacheWriteTokens) {
+			return 0, multiplier
+		}
+		credits = llmservice.EstimateTokenPricingCreditsWithCache(snapshot.InputTokens, snapshot.OutputTokens, snapshot.CachedInputTokens, snapshot.CacheWriteTokens, snapshot.Pricing, multiplier)
 		return credits, multiplier
 	}
 	if quote, ok := snapshotLLMPricingQuote(ctx, providerID); ok {
 		multiplier = llmpool.CombineCreditMultipliers(quote.ProviderMultiplier, quote.BillingGroupMultiplier)
-		credits = llmservice.EstimateTokenPricingCredits(usage.InputTokens, usage.OutputTokens, quote.Pricing, multiplier)
+		if !hasBillableTokenLeg(usage.InputTokens, usage.OutputTokens, usage.CachedInputTokens, usage.CacheWriteTokens) {
+			return 0, multiplier
+		}
+		credits = llmservice.EstimateTokenPricingCreditsWithCache(usage.InputTokens, usage.OutputTokens, usage.CachedInputTokens, usage.CacheWriteTokens, quote.Pricing, multiplier)
 		return credits, multiplier
 	}
-	if pricing, ok := llmservice.ResolveTokenPricingForProviderRoute(model, providerID, billingUpstreamModel(model, providerID), startedAt); ok {
-		providerMultiplier := 1.0
-		groupMultiplier := llmservice.BillingGroupMultiplier(serviceReg, serviceGroupIDs)
-		if IsMaClawProviderRequest(providerID) {
-			// A rolling upgrade can leave Hub with a directional price but without
-			// HubCenter's per-request pricing snapshot.  The old fallback charged
-			// only the Hub service-group factor here, silently omitting the selected
-			// HubCenter provider's configured/time-of-use multiplier.  Use the
-			// synced provider policy at the request-start boundary until the
-			// authoritative snapshot is available.
-			providerMultiplier = officialProviderMultiplierFallback(ctx, startedAt)
-		}
+	if IsMaClawProviderRequest(providerID) {
+		providerMultiplier, groupMultiplier := officialRouteMultipliers(ctx, providerID, serviceReg, serviceGroupIDs)
 		multiplier = llmpool.CombineCreditMultipliers(providerMultiplier, groupMultiplier)
-		credits = llmservice.EstimateTokenPricingCredits(usage.InputTokens, usage.OutputTokens, pricing, multiplier)
+		if hasBillableTokenLeg(usage.InputTokens, usage.OutputTokens, usage.CachedInputTokens, usage.CacheWriteTokens) || usage.TotalTokens > 0 {
+			log.Printf("[llm-billing] official usage missing HubCenter directional price provider=%s input=%d cache_read=%d cache_write=%d output=%d total=%d", providerID, usage.InputTokens, usage.CachedInputTokens, usage.CacheWriteTokens, usage.OutputTokens, usage.TotalTokens)
+		}
+		return 0, multiplier
+	}
+	if pricing, ok := llmservice.ResolveTokenPricingForProviderRoute(model, providerID, billingUpstreamModel(model, providerID), startedAt); ok {
+		groupMultiplier := llmservice.BillingGroupMultiplier(serviceReg, serviceGroupIDs)
+		multiplier = groupMultiplier
+		if !hasBillableTokenLeg(usage.InputTokens, usage.OutputTokens, usage.CachedInputTokens, usage.CacheWriteTokens) {
+			return 0, multiplier
+		}
+		credits = llmservice.EstimateTokenPricingCreditsWithCache(usage.InputTokens, usage.OutputTokens, usage.CachedInputTokens, usage.CacheWriteTokens, pricing, multiplier)
+		return credits, multiplier
+	}
+	// Local provider pricing is stored in the provider registry when no
+	// service-group route override exists. Honor that provider-owned price
+	// before falling back to the legacy tokens-per-credit formula.
+	if pricing, ok := resolveLocalProviderTokenPricing(providerReg, providerID, startedAt); ok {
+		groupMultiplier := llmservice.BillingGroupMultiplier(serviceReg, serviceGroupIDs)
+		multiplier = groupMultiplier
+		if !hasBillableTokenLeg(usage.InputTokens, usage.OutputTokens, usage.CachedInputTokens, usage.CacheWriteTokens) {
+			return 0, multiplier
+		}
+		credits = llmservice.EstimateTokenPricingCreditsWithCache(usage.InputTokens, usage.OutputTokens, usage.CachedInputTokens, usage.CacheWriteTokens, pricing, multiplier)
 		return credits, multiplier
 	}
 	multiplier = resolveBillableCreditMultiplier(ctx, model, providerID, providerReg)
+	if !hasBillableTokenLeg(usage.InputTokens, usage.OutputTokens, usage.CachedInputTokens, usage.CacheWriteTokens) && usage.TotalTokens <= 0 {
+		return 0, multiplier
+	}
+	if usage.CachedInputTokens > 0 || usage.CacheWriteTokens > 0 {
+		log.Printf("[llm-billing] cache-aware usage billed via legacy tokens-per-credit formula provider=%s input=%d cache_read=%d cache_write=%d output=%d total=%d", providerID, usage.InputTokens, usage.CachedInputTokens, usage.CacheWriteTokens, usage.OutputTokens, usage.TotalTokens)
+	}
 	credits = llmservice.EstimateCreditsWithFloor(usage.TotalTokens, multiplier, tokensPerCredit)
 	return credits, multiplier
+}
+
+// hasBillableTokenLeg distinguishes an explicit empty/zero-usage response from
+// a real request. Minimum-request pricing is only meaningful after at least
+// one directional token leg (normal input, cache read/write, or output) exists.
+func hasBillableTokenLeg(inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens int64) bool {
+	return inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0 || cacheWriteTokens > 0
+}
+
+func resolveLocalProviderTokenPricing(providerReg *im.LLMProviderRegistry, providerID string, startedAt time.Time) (llmpool.ResolvedTokenPricing, bool) {
+	if providerReg == nil || IsMaClawProviderRequest(providerID) {
+		return llmpool.ResolvedTokenPricing{}, false
+	}
+	provider := providerReg.FindProvider(providerID)
+	if provider == nil || !provider.TokenPricing.HasCreditPricing() {
+		return llmpool.ResolvedTokenPricing{}, false
+	}
+	return llmpool.ResolveTokenPricing(provider.TokenPricing, startedAt)
 }
 
 func chargeLoggedLLMEndpointUsage(ctx context.Context, system store.SystemSettingsRepository, securitySvc *security.SecurityService, userID, email, providerID string, model *llmservice.AuthorizedModel, providerReg *im.LLMProviderRegistry, serviceReg *llmservice.Registry, usage corelib.TokenUsageStat, serviceGroupIDs []string) (credits, multiplier float64) {
@@ -799,13 +852,13 @@ func chargeLoggedLLMEndpointUsage(ctx context.Context, system store.SystemSettin
 	}
 	credits, multiplier = computeLLMRequestBilling(ctx, model, providerID, providerReg, serviceReg, serviceGroupIDs, usage, tokensPerCredit)
 	providerMultiplier, serviceGroupMultiplier := llmUsageReportMultipliers(ctx, providerID, serviceReg, serviceGroupIDs, multiplier)
+	localProviderPricing := false
 	if hasOfficialDirectionalSnapshot {
-		// HubCenter's snapshot normally carries the same provider factor as the
-		// admission quote. Finish from the actual frozen provider × service-group
-		// factors, including the rolling-upgrade case where the response omitted
-		// the provider multiplier.
-		settlementMultiplier := llmpool.CombineCreditMultipliers(providerMultiplier, serviceGroupMultiplier)
-		applyUsageRMBMultiplier(&usage, settlementMultiplier/llmpool.NormalizeCreditMultiplier(officialSnapshot.ProviderMultiplier))
+		// Recompute RMB from the upstream snapshot with the same provider ×
+		// service-group factors used for Credits. Do not scale the already
+		// provider-weighted display rates; that ratio drifts when the snapshot
+		// omitted ProviderMultiplier and settlement used the quote factor.
+		usage = applyResolvedTokenPricingUsageSnapshot(usage, officialSnapshot.Pricing, providerMultiplier, serviceGroupMultiplier)
 	}
 	userGroupIDs := []string(nil)
 	if securitySvc != nil {
@@ -829,33 +882,85 @@ func chargeLoggedLLMEndpointUsage(ctx context.Context, system store.SystemSettin
 	} else if quote, ok := snapshotLLMPricingQuote(ctx, providerID); ok {
 		copyPricing := quote.Pricing
 		pricing = &copyPricing
-	} else if resolved, ok := llmservice.ResolveTokenPricingForProviderRoute(model, providerID, billingUpstreamModel(model, providerID), pricingStartedAt); ok {
-		pricing = &resolved
+	} else if !IsMaClawProviderRequest(providerID) {
+		if resolved, ok := llmservice.ResolveTokenPricingForProviderRoute(model, providerID, billingUpstreamModel(model, providerID), pricingStartedAt); ok {
+			pricing = &resolved
+		} else if resolved, ok := resolveLocalProviderTokenPricing(providerReg, providerID, pricingStartedAt); ok {
+			pricing = &resolved
+			localProviderPricing = true
+		}
+	}
+	if localProviderPricing {
+		// The local provider registry owns the base directional price; only the
+		// Hub service-group multiplier is applied to the user debit.
+		providerMultiplier = 1
+		serviceGroupMultiplier = llmservice.BillingGroupMultiplier(serviceReg, serviceGroupIDs)
 	}
 	if pricing != nil && !hasOfficialDirectionalSnapshot {
+		if localProviderPricing {
+			// The price came from the provider registry after the route
+			// resolution failed (for example an override whose time windows
+			// currently resolve to no billable price). The static route-source
+			// probe cannot see that dynamic failure, so label the actual
+			// supplier here instead of re-deriving it from the configuration.
+			usage.PricingSource = llmpool.PricingSourceProvider
+		} else if quote, ok := snapshotLLMPricingQuote(ctx, providerID); ok && strings.TrimSpace(quote.PricingSource) != "" {
+			usage.PricingSource = strings.TrimSpace(quote.PricingSource)
+		} else {
+			usage.PricingSource = llmservice.PricingSourceForProviderRoute(model, providerID, billingUpstreamModel(model, providerID))
+		}
 		// Local directional routes are debited from the exact resolved route
 		// price (or its admission quote), not from the provider-wide display
 		// price which may describe a different route. Freeze that same RMB
 		// fact in the usage report, including every multiplier in the debit.
 		usage = applyResolvedTokenPricingUsageSnapshot(usage, *pricing, providerMultiplier, serviceGroupMultiplier)
 	}
+	if IsMaClawProviderRequest(providerID) && pricing == nil && (hasBillableTokenLeg(usage.InputTokens, usage.OutputTokens, usage.CachedInputTokens, usage.CacheWriteTokens) || usage.TotalTokens > 0) {
+		// Keep any sent reservation for HubCenter reconciliation. A zero ledger
+		// debit would look settled and block recovery of the upstream price.
+		clearUsageRMBCosts(&usage)
+		publishLoggedLLMUsage(ctx, system, providerID, usage, userID, email, serviceGroupIDs, userGroupIDs, 0, meta, "", multiplier, providerMultiplier, serviceGroupMultiplier, nil)
+		return 0, multiplier
+	}
 	markLLMBillingSettlementQueued(ctx)
-	// Provider-scoped reports deliberately retain Hub's logical route ID (for
-	// example maclaw_official). The credit tooltip, however, must identify the
-	// concrete HubCenter provider whose directional price was actually used.
-	enqueueLLMUsageRecordWithBilling(system, providerID, usage, userID, email, serviceGroupIDs, userGroupIDs, credits, meta, llmBillingRequestID(ctx), multiplier, providerMultiplier, serviceGroupMultiplier, pricing, usageReportBillingProviderID(ctx, providerID))
+	publishLoggedLLMUsage(ctx, system, providerID, usage, userID, email, serviceGroupIDs, userGroupIDs, credits, meta, llmBillingRequestID(ctx), multiplier, providerMultiplier, serviceGroupMultiplier, pricing)
+	return credits, multiplier
+}
+
+func publishLoggedLLMUsage(ctx context.Context, system store.SystemSettingsRepository, providerID string, usage corelib.TokenUsageStat, userID, email string, serviceGroupIDs, userGroupIDs []string, credits float64, meta llmservice.OfficialForwardMeta, requestID string, multiplier, providerMultiplier, serviceGroupMultiplier float64, pricing *llmpool.ResolvedTokenPricing) {
+	enqueueLLMUsageRecordWithBilling(system, providerID, usage, userID, email, serviceGroupIDs, userGroupIDs, credits, meta, requestID, multiplier, providerMultiplier, serviceGroupMultiplier, pricing, officialUsageReportServiceGroupIDs(ctx, providerID, serviceGroupIDs), usageReportBillingProviderID(ctx, providerID))
 	recordLLMClassTraffic(system, serviceGroupIDs, meta, usage, meta.Preview)
 	recordLLMClassHeadSample(system, serviceGroupIDs, meta)
-	return credits, multiplier
+}
+
+func officialUsageReportServiceGroupIDs(ctx context.Context, providerID string, charged []string) []string {
+	if !IsMaClawProviderRequest(providerID) {
+		return nil
+	}
+	if quote, ok := snapshotOfficialForwardQuote(ctx); ok {
+		if id := strings.TrimSpace(quote.ServiceGroupID); id != "" {
+			return []string{id}
+		}
+	}
+	return usageReportServiceGroupIDs(charged)
 }
 
 // llmUsageReportMultipliers returns the actual factors used in this request's
 // debit. Directional official pricing gets the provider/time-of-use factor
 // from HubCenter's authenticated snapshot; legacy billing has one factor.
 func llmUsageReportMultipliers(ctx context.Context, providerID string, serviceReg *llmservice.Registry, serviceGroupIDs []string, effectiveMultiplier float64) (providerMultiplier, serviceGroupMultiplier float64) {
-	if snapshot := snapshotOfficialTokenPricing(ctx); snapshot != nil && IsMaClawProviderRequest(providerID) {
+	if IsMaClawProviderRequest(providerID) {
+		return officialRouteMultipliers(ctx, providerID, serviceReg, serviceGroupIDs)
+	}
+	// Local directional routes have no HubCenter-owned provider factor: the
+	// whole effective multiplier is the Hub service-group factor.
+	return 1, llmpool.NormalizeCreditMultiplier(effectiveMultiplier)
+}
+
+func officialRouteMultipliers(ctx context.Context, providerID string, serviceReg *llmservice.Registry, serviceGroupIDs []string) (providerMultiplier, serviceGroupMultiplier float64) {
+	serviceGroupMultiplier = llmservice.BillingGroupMultiplier(serviceReg, serviceGroupIDs)
+	if snapshot := snapshotOfficialTokenPricing(ctx); snapshot != nil {
 		providerMultiplier = llmpool.NormalizeCreditMultiplier(snapshot.ProviderMultiplier)
-		serviceGroupMultiplier = llmservice.BillingGroupMultiplier(serviceReg, serviceGroupIDs)
 		if quote, ok := snapshotLLMPricingQuote(ctx, providerID); ok && quote.BillingGroupMultiplier > 0 {
 			serviceGroupMultiplier = quote.BillingGroupMultiplier
 			if snapshot.ProviderMultiplier <= 0 {
@@ -864,21 +969,18 @@ func llmUsageReportMultipliers(ctx context.Context, providerID string, serviceRe
 		}
 		return providerMultiplier, serviceGroupMultiplier
 	}
-	if quote, ok := snapshotLLMPricingQuote(ctx, providerID); ok && IsMaClawProviderRequest(providerID) {
+	if quote, ok := snapshotLLMPricingQuote(ctx, providerID); ok {
 		return llmpool.NormalizeCreditMultiplier(quote.ProviderMultiplier), llmpool.NormalizeCreditMultiplier(quote.BillingGroupMultiplier)
 	}
-	if IsMaClawProviderRequest(providerID) {
-		startedAt := time.Now()
-		if state := llmBillingStateFrom(ctx); state != nil {
-			state.mu.Lock()
-			if !state.started.IsZero() {
-				startedAt = state.started
-			}
-			state.mu.Unlock()
+	startedAt := time.Now()
+	if state := llmBillingStateFrom(ctx); state != nil {
+		state.mu.Lock()
+		if !state.started.IsZero() {
+			startedAt = state.started
 		}
-		return officialProviderMultiplierFallback(ctx, startedAt), llmservice.BillingGroupMultiplier(serviceReg, serviceGroupIDs)
+		state.mu.Unlock()
 	}
-	return llmpool.NormalizeCreditMultiplier(effectiveMultiplier), 1
+	return officialProviderMultiplierFallback(ctx, startedAt), serviceGroupMultiplier
 }
 
 // officialProviderMultiplierFallback resolves a HubCenter provider's multiplier
@@ -943,6 +1045,25 @@ func authoritativeLLMUsageForAccessLog(ctx context.Context, providerID string, u
 	return usage
 }
 
+// recordLocalCacheHitLLMUsage records a local full-response cache hit in Usage
+// Stats without any charge. A cache hit never contacts the upstream provider,
+// so there is no real token usage (design §2.2): the token legs stay zero, the
+// request itself still counts, and the cache_usage_source "local_cache" marker
+// keeps it separate from provider-reported prompt-cache reads.
+func recordLocalCacheHitLLMUsage(ctx context.Context, system store.SystemSettingsRepository, securitySvc *security.SecurityService, userID, email, providerID string, serviceGroupIDs []string) {
+	if system == nil || strings.TrimSpace(providerID) == "" {
+		return
+	}
+	userGroupIDs := []string(nil)
+	if securitySvc != nil {
+		if resolved, resolveErr := securitySvc.ResolveUserGroupChain(ctx, email); resolveErr == nil {
+			userGroupIDs = resolved
+		}
+	}
+	usage := corelib.TokenUsageStat{Requests: 1, CacheUsageSource: "local_cache"}
+	enqueueLLMUsageRecord(system, providerID, usage, userID, email, serviceGroupIDs, userGroupIDs, 0, llmservice.OfficialForwardMetaFrom(ctx))
+}
+
 // applyOfficialTokenPricingUsageSnapshot applies HubCenter's authenticated
 // directional usage and RMB display pricing to a Hub-side usage record. Its
 // base RMB price is weighted by HubCenter's frozen provider multiplier. Hub's
@@ -955,17 +1076,49 @@ func applyOfficialTokenPricingUsageSnapshot(usage corelib.TokenUsageStat, snapsh
 	}
 	usage.InputTokens = snapshot.InputTokens
 	usage.OutputTokens = snapshot.OutputTokens
+	usage.CachedInputTokens = snapshot.CachedInputTokens
+	usage.CacheWriteTokens = snapshot.CacheWriteTokens
+	usage.PricingSource = strings.TrimSpace(snapshot.PricingSource)
+	if usage.PricingSource == "" {
+		usage.PricingSource = llmpool.PricingSourceProvider
+	}
 	usage.TotalTokens = snapshot.InputTokens + snapshot.OutputTokens
 	providerMultiplier := llmpool.NormalizeCreditMultiplier(snapshot.ProviderMultiplier)
-	usage.InputPricePerMTokensRMB = snapshot.Pricing.InputRMBPer10K * 100 * providerMultiplier
-	usage.OutputPricePerMTokensRMB = snapshot.Pricing.OutputRMBPer10K * 100 * providerMultiplier
-	usage.InputCostRMB, usage.OutputCostRMB, usage.TotalCostRMB = corelib.CalculateLLMCostRMB(
-		usage.InputTokens,
-		usage.OutputTokens,
-		usage.InputPricePerMTokensRMB,
-		usage.OutputPricePerMTokensRMB,
-	)
+	p := snapshot.Pricing.TokenPricing.WithCachePricingDefaults()
+	usage.InputPricePerMTokensRMB = p.InputRMBPer10K * 100 * providerMultiplier
+	usage.OutputPricePerMTokensRMB = p.OutputRMBPer10K * 100 * providerMultiplier
+	usage.CacheReadPricePerMTokensRMB = llmpool.OptionalTokenPriceValue(p.CacheReadRMBPer10K) * 100 * providerMultiplier
+	usage.CacheWritePricePerMTokensRMB = llmpool.OptionalTokenPriceValue(p.CacheWriteRMBPer10K) * 100 * providerMultiplier
+	usage.InputCostRMB, usage.OutputCostRMB, usage.CacheReadCostRMB, usage.CacheWriteCostRMB = calculateLLMCostRMBWithCache(usage.InputTokens, usage.OutputTokens, usage.CachedInputTokens, usage.CacheWriteTokens, usage.InputPricePerMTokensRMB, usage.OutputPricePerMTokensRMB, usage.CacheReadPricePerMTokensRMB, usage.CacheWritePricePerMTokensRMB)
+	usage.TotalCostRMB = usage.InputCostRMB + usage.CacheReadCostRMB + usage.CacheWriteCostRMB + usage.OutputCostRMB
 	return usage
+}
+
+func calculateLLMCostRMBWithCache(input, output, cached, written int64, inputRate, outputRate, cacheReadRate, cacheWriteRate float64) (inputCost, outputCost, cacheReadCost, cacheWriteCost float64) {
+	if input < 0 {
+		input = 0
+	}
+	if output < 0 {
+		output = 0
+	}
+	if cached < 0 {
+		cached = 0
+	}
+	if written < 0 {
+		written = 0
+	}
+	if cached > input {
+		cached = input
+	}
+	if written > input-cached {
+		written = input - cached
+	}
+	normal := input - cached - written
+	inputCost = float64(normal) * inputRate / 1_000_000
+	cacheReadCost = float64(cached) * cacheReadRate / 1_000_000
+	cacheWriteCost = float64(written) * cacheWriteRate / 1_000_000
+	outputCost = float64(output) * outputRate / 1_000_000
+	return
 }
 
 // applyUsageRMBMultiplier adds a settlement multiplier to already-resolved RMB
@@ -978,12 +1131,25 @@ func applyUsageRMBMultiplier(usage *corelib.TokenUsageStat, multiplier float64) 
 	multiplier = llmpool.NormalizeCreditMultiplier(multiplier)
 	usage.InputPricePerMTokensRMB *= multiplier
 	usage.OutputPricePerMTokensRMB *= multiplier
-	usage.InputCostRMB, usage.OutputCostRMB, usage.TotalCostRMB = corelib.CalculateLLMCostRMB(
-		usage.InputTokens,
-		usage.OutputTokens,
-		usage.InputPricePerMTokensRMB,
-		usage.OutputPricePerMTokensRMB,
-	)
+	usage.CacheReadPricePerMTokensRMB *= multiplier
+	usage.CacheWritePricePerMTokensRMB *= multiplier
+	usage.InputCostRMB, usage.OutputCostRMB, usage.CacheReadCostRMB, usage.CacheWriteCostRMB = calculateLLMCostRMBWithCache(usage.InputTokens, usage.OutputTokens, usage.CachedInputTokens, usage.CacheWriteTokens, usage.InputPricePerMTokensRMB, usage.OutputPricePerMTokensRMB, usage.CacheReadPricePerMTokensRMB, usage.CacheWritePricePerMTokensRMB)
+	usage.TotalCostRMB = usage.InputCostRMB + usage.CacheReadCostRMB + usage.CacheWriteCostRMB + usage.OutputCostRMB
+}
+
+func clearUsageRMBCosts(usage *corelib.TokenUsageStat) {
+	if usage == nil {
+		return
+	}
+	usage.InputPricePerMTokensRMB = 0
+	usage.OutputPricePerMTokensRMB = 0
+	usage.CacheReadPricePerMTokensRMB = 0
+	usage.CacheWritePricePerMTokensRMB = 0
+	usage.InputCostRMB = 0
+	usage.OutputCostRMB = 0
+	usage.CacheReadCostRMB = 0
+	usage.CacheWriteCostRMB = 0
+	usage.TotalCostRMB = 0
 }
 
 // applyResolvedTokenPricingUsageSnapshot records the exact directional RMB
@@ -992,14 +1158,13 @@ func applyUsageRMBMultiplier(usage *corelib.TokenUsageStat, multiplier float64) 
 // request start. The caller applies the same provider and service-group
 // multipliers used by the settled Credits debit.
 func applyResolvedTokenPricingUsageSnapshot(usage corelib.TokenUsageStat, pricing llmpool.ResolvedTokenPricing, providerMultiplier, serviceGroupMultiplier float64) corelib.TokenUsageStat {
-	usage.InputPricePerMTokensRMB = pricing.InputRMBPer10K * 100
-	usage.OutputPricePerMTokensRMB = pricing.OutputRMBPer10K * 100
-	usage.InputCostRMB, usage.OutputCostRMB, usage.TotalCostRMB = corelib.CalculateLLMCostRMB(
-		usage.InputTokens,
-		usage.OutputTokens,
-		usage.InputPricePerMTokensRMB,
-		usage.OutputPricePerMTokensRMB,
-	)
+	p := pricing.TokenPricing.WithCachePricingDefaults()
+	usage.InputPricePerMTokensRMB = p.InputRMBPer10K * 100
+	usage.OutputPricePerMTokensRMB = p.OutputRMBPer10K * 100
+	usage.CacheReadPricePerMTokensRMB = llmpool.OptionalTokenPriceValue(p.CacheReadRMBPer10K) * 100
+	usage.CacheWritePricePerMTokensRMB = llmpool.OptionalTokenPriceValue(p.CacheWriteRMBPer10K) * 100
+	usage.InputCostRMB, usage.OutputCostRMB, usage.CacheReadCostRMB, usage.CacheWriteCostRMB = calculateLLMCostRMBWithCache(usage.InputTokens, usage.OutputTokens, usage.CachedInputTokens, usage.CacheWriteTokens, usage.InputPricePerMTokensRMB, usage.OutputPricePerMTokensRMB, usage.CacheReadPricePerMTokensRMB, usage.CacheWritePricePerMTokensRMB)
+	usage.TotalCostRMB = usage.InputCostRMB + usage.CacheReadCostRMB + usage.CacheWriteCostRMB + usage.OutputCostRMB
 	applyUsageRMBMultiplier(&usage, llmpool.CombineCreditMultipliers(providerMultiplier, serviceGroupMultiplier))
 	return usage
 }

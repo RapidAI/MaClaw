@@ -52,6 +52,12 @@ type PassthroughCommand struct {
 
 const defaultPassthroughTimeoutSeconds = 240
 
+// passthroughAuditCap is the maximum number of audit entries retained in the
+// registry file. It was previously hard-coded to 100, which silently discarded
+// forensic evidence after the first hundred passthrough runs for the lifetime
+// of the installation. Review finding P0-5 (2026-09-08); raised to 1000.
+const passthroughAuditCap = 1000
+
 type PassthroughRunResult struct {
 	CommandName string               `json:"command_name"`
 	Status      passthroughRunStatus `json:"status"`
@@ -409,8 +415,8 @@ func (r *PassthroughRegistry) recordAudit(kind, source string, result Passthroug
 		entry.Error = runErr.Error()
 	}
 	f.Audit = append([]PassthroughAuditEntry{entry}, f.Audit...)
-	if len(f.Audit) > 100 {
-		f.Audit = f.Audit[:100]
+	if len(f.Audit) > passthroughAuditCap {
+		f.Audit = f.Audit[:passthroughAuditCap]
 	}
 	return r.saveLocked(f)
 }
@@ -440,8 +446,8 @@ func (r *PassthroughRegistry) recordControlAuditArgs(kind, commandName, source s
 		Error:       strings.TrimSpace(errText),
 	}
 	f.Audit = append([]PassthroughAuditEntry{entry}, f.Audit...)
-	if len(f.Audit) > 100 {
-		f.Audit = f.Audit[:100]
+	if len(f.Audit) > passthroughAuditCap {
+		f.Audit = f.Audit[:passthroughAuditCap]
 	}
 	return r.saveLocked(f)
 }

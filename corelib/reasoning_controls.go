@@ -116,15 +116,42 @@ func CoerceAlwaysOnThinkingMode(cfg MaclawLLMConfig) MaclawLLMConfig {
 	return cfg
 }
 
-func normalizeReasoningMode(raw string) string {
+// ParseGlobalThinkingMode normalizes the persisted application-level setting
+// shared by GUI, MaClawSrv and other hosts. The bool distinguishes the
+// explicit auto/unset value from an unknown value so reviewed config surfaces
+// can reject typos while request builders can safely fall back to auto.
+func ParseGlobalThinkingMode(raw string) (mode string, ok bool) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "enabled", "on", "1", "true":
-		return "enabled"
-	case "disabled", "off", "0", "false", "none":
-		return "disabled"
+	case "", "auto":
+		return "", true
+	case "enabled", "enable", "on", "1", "true":
+		return "enabled", true
+	case "disabled", "disable", "off", "0", "false", "none":
+		return "disabled", true
 	default:
-		return ""
+		return "", false
 	}
+}
+
+// NormalizeGlobalThinkingMode returns the canonical persisted spelling, or
+// the legacy auto/unset value for unknown input.
+func NormalizeGlobalThinkingMode(raw string) string {
+	mode, _ := ParseGlobalThinkingMode(raw)
+	return mode
+}
+
+// EffectiveGlobalThinkingMode resolves auto/unset and invalid legacy values to
+// the product default used by the desktop UI when materializing a request.
+func EffectiveGlobalThinkingMode(raw string) string {
+	mode, ok := ParseGlobalThinkingMode(raw)
+	if ok && mode != "" {
+		return mode
+	}
+	return "enabled"
+}
+
+func normalizeReasoningMode(raw string) string {
+	return NormalizeGlobalThinkingMode(raw)
 }
 
 // IsAutoThinkingMode reports whether a configuration leaves the provider's

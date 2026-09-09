@@ -154,67 +154,62 @@ func NeedsOpenAIProxy(requiredEnv []string, extraEnv map[string]string) bool {
 	return !hasUserProvidedOpenAIAPIKey(extraEnv)
 }
 
-// NeedsOpenAIProxyAuto is like NeedsOpenAIProxy but also auto-detects
-// OpenAI env var usage from skill step commands and script files when
-// RequiredEnv is not explicitly declared. This handles skills downloaded
-// from ClawHub or other sources that use OPENAI_API_KEY in their scripts
-// but don't declare requires_env in their metadata.
+// NeedsOpenAIProxyAuto decides whether to start the local OpenAI proxy for a
+// skill run. The policy is default-on: the proxy starts unless
 //
-// Detection order:
-//  1. RequiredEnv explicitly declares OPENAI_API_KEY/OPENAI_BASE_URL.
-//  2. Step commands reference OPENAI_API_KEY/OPENAI_BASE_URL.
-//  3. Script files (.py, .js, .ts, .sh) in skillDir reference them.
+//  1. the caller already supplied OpenAI credentials via extraEnv,
+//  2. the process environment already has a valid OPENAI_API_KEY (the stale
+//     "sk-maclaw-local-proxy" sentinel does not count), or
+//  3. the skill explicitly declares no_llm_api (noLLMAPI=true).
 //
-// Explicit required_env entries are satisfied per variable. Passive script
-// detection remains conservative: any user-provided OpenAI env disables the
-// proxy so caller-supplied endpoints are not overwritten.
-func NeedsOpenAIProxyAuto(requiredEnv []string, extraEnv map[string]string, steps []NLSkillStep, skillDir string) bool {
-	// Check if the skill or any executable step explicitly declares
-	// OPENAI env requirements. Step-level required_env is common in imported skills.
-	// Checked before the process-level env so that a stale
-	// "sk-maclaw-local-proxy" sentinel in os env doesn't prevent
-	// proxy startup for skills that genuinely need it.
-	explicitUsage := openAIEnvUsage{
-		apiKey:  declaresOpenAIAPIKey(requiredEnv) || stepsDeclareOpenAIAPIKey(steps),
-		baseURL: declaresOpenAIBaseURL(requiredEnv) || stepsDeclareOpenAIBaseURL(steps),
+// Starting the proxy is cheap (a local listener); not starting it is
+// expensive (the skill fails for lack of an API key). Static source scanning
+// cannot reliably determine whether a script reads OPENAI_API_KEY at runtime
+// (library-internal reads, dotenv loaders, arbitrary file layouts), so the
+// former three-layer detection scan no longer gates the decision — it is
+// kept only as a diagnostic log (logOpenAIProxyDiagnostics).
+func NeedsOpenAIProxyAuto(requiredEnv []string, extraEnv map[string]string, steps []NLSkillStep, skillDir string, noLLMAPI bool) bool {
+	// Fast path: the caller already provided OpenAI credentials.
+	if hasUserProvidedOpenAIEnv(extraEnv) {
+		return false
 	}
-	if explicitUsage.any() {
-		apiKeySatisfied := !explicitUsage.apiKey || hasUserProvidedOpenAIAPIKey(extraEnv) || hasProcessOpenAIAPIKey(extraEnv)
-		baseURLSatisfied := !explicitUsage.baseURL || hasUserProvidedOpenAIBaseURL(extraEnv) || hasProcessOpenAIBaseURL(extraEnv)
-		return !(apiKeySatisfied && baseURLSatisfied)
+	// Fast path: the process env already has a valid OPENAI_API_KEY
+	// (non stale sentinel). Checked before noLLMAPI so a stale sentinel
+	// never suppresses the proxy.
+	if hasProcessOpenAIAPIKey(extraEnv) {
+		return false
 	}
+	// The skill explicitly declares it does not call any LLM API.
+	if noLLMAPI {
+		return false
+	}
+	// Default: start the proxy. Proxy cost is near zero; skipping it when the
+	// skill does need an API key costs a failed run.
+	logOpenAIProxyDiagnostics(requiredEnv, steps, skillDir)
+	return true
+}
 
-	var detectedUsage openAIEnvUsage
-	// Layer 2: scan executable step command/code fields for env var references.
+// logOpenAIProxyDiagnostics records the legacy three-layer detection results
+// (explicit declaration, step-command reference, script-file reference) for
+// debugging. The scan no longer influences the start/skip decision.
+func logOpenAIProxyDiagnostics(requiredEnv []string, steps []NLSkillStep, skillDir string) {
+	explicit := declaresOpenAIAPIKey(requiredEnv) || declaresOpenAIBaseURL(requiredEnv) ||
+		stepsDeclareOpenAIAPIKey(steps) || stepsDeclareOpenAIBaseURL(steps)
+	var commandRef openAIEnvUsage
 	for _, step := range steps {
 		if !isOpenAIProbeCommandAction(step.Action) {
 			continue
 		}
 		for _, text := range openAIProbeStepTexts(step.Params) {
-			detected := detectOpenAIEnvUsage(text)
-			if detected.any() {
-				log.Printf("[openai-proxy] auto-detected OPENAI env usage in step command")
-				detectedUsage = detectedUsage.merge(detected)
-			}
+			commandRef = commandRef.merge(detectOpenAIEnvUsage(text))
 		}
 	}
-
-	// Layer 3: scan script files in skillDir
+	var fileRef openAIEnvUsage
 	if skillDir != "" {
-		detected := scanSkillDirForOpenAIEnvUsage(skillDir)
-		if detected.any() {
-			log.Printf("[openai-proxy] auto-detected OPENAI env usage in skill scripts at %s", skillDir)
-			detectedUsage = detectedUsage.merge(detected)
-		}
+		fileRef = scanSkillDirForOpenAIEnvUsage(skillDir)
 	}
-
-	if !detectedUsage.any() {
-		return false
-	}
-	if hasUserProvidedOpenAIEnv(extraEnv) || hasProcessOpenAIAPIKey(extraEnv) || hasProcessOpenAIBaseURL(extraEnv) {
-		return false
-	}
-	return true
+	log.Printf("[openai-proxy] diag: default-on start; explicit=%v commandRef=%v fileRef=%v",
+		explicit, commandRef.any(), fileRef.any())
 }
 
 func declaresOpenAIAPIKey(requiredEnv []string) bool {
@@ -370,13 +365,6 @@ func hasProcessOpenAIAPIKey(extraEnv map[string]string) bool {
 		return false
 	}
 	return true
-}
-
-func hasProcessOpenAIBaseURL(extraEnv map[string]string) bool {
-	if _, explicitlyOverridden := lookupExtraEnvName(extraEnv, "OPENAI_BASE_URL"); explicitlyOverridden {
-		return false
-	}
-	return strings.TrimSpace(os.Getenv("OPENAI_BASE_URL")) != ""
 }
 
 func lookupExtraEnvName(extraEnv map[string]string, name string) (string, bool) {
@@ -695,102 +683,33 @@ func openAIProxyUsageFromResponse(reqBody map[string]interface{}, respBody []byt
 		}
 	}
 	usage := mapFromAny(payload["usage"])
-	var out OpenAIProxyUsage
-	derivedFromTotalOnly := false
-	if usage != nil {
-		out.InputTokens = int(firstPositiveInt64(
-			numberToInt64(usage["prompt_tokens"]),
-			numberToInt64(usage["input_tokens"]),
-		))
-		out.OutputTokens = int(firstPositiveInt64(
-			numberToInt64(usage["completion_tokens"]),
-			numberToInt64(usage["output_tokens"]),
-		))
-		totalTokens := numberToInt64(usage["total_tokens"])
-		if totalTokens > 0 {
-			switch {
-			case out.InputTokens == 0 && out.OutputTokens == 0:
-				out.InputTokens = int(totalTokens)
-				derivedFromTotalOnly = true
-			case out.InputTokens == 0 && totalTokens > int64(out.OutputTokens):
-				out.InputTokens = int(totalTokens) - out.OutputTokens
-			case out.OutputTokens == 0 && totalTokens > int64(out.InputTokens):
-				out.OutputTokens = int(totalTokens) - out.InputTokens
-			}
-		}
-		out.CachedInputTokens = openAIProxyCachedInputTokens(usage)
-		out.CacheWriteTokens = openAIProxyCacheWriteTokens(usage)
-	}
-	if !derivedFromTotalOnly && (out.InputTokens == 0 || out.OutputTokens == 0) {
+	if usage == nil {
 		estimatedInput := EstimateTextTokens(openAIProxyFlattenText(reqBody))
 		estimatedOutput := EstimateTextTokens(openAIProxyResponseText(payload))
-		if out.InputTokens == 0 {
-			out.InputTokens = estimatedInput
-			out.Estimated = out.Estimated || estimatedInput > 0
+		return OpenAIProxyUsage{
+			InputTokens:  estimatedInput,
+			OutputTokens: estimatedOutput,
+			Estimated:    estimatedInput > 0 || estimatedOutput > 0,
 		}
-		if out.OutputTokens == 0 {
-			out.OutputTokens = estimatedOutput
-			out.Estimated = out.Estimated || estimatedOutput > 0
-		}
+	}
+	fields := ParseLLMUsageFields(usage)
+	out := OpenAIProxyUsage{
+		InputTokens:       int(fields.Input),
+		OutputTokens:      int(fields.Output),
+		CachedInputTokens: int(fields.Cached),
+		CacheWriteTokens:  int(fields.Written),
+	}
+	if !fields.InputObserved {
+		estimatedInput := EstimateTextTokens(openAIProxyFlattenText(reqBody))
+		out.InputTokens = estimatedInput
+		out.Estimated = estimatedInput > 0
+	}
+	if !fields.OutputObserved {
+		estimatedOutput := EstimateTextTokens(openAIProxyResponseText(payload))
+		out.OutputTokens = estimatedOutput
+		out.Estimated = out.Estimated || estimatedOutput > 0
 	}
 	return out
-}
-
-func firstPositiveInt64(values ...int64) int64 {
-	for _, value := range values {
-		if value > 0 {
-			return value
-		}
-	}
-	return 0
-}
-
-func openAIProxyCachedInputTokens(usage map[string]interface{}) int {
-	if usage == nil {
-		return 0
-	}
-	if v := firstPositiveInt64(
-		numberToInt64(usage["cached_input_tokens"]),
-		numberToInt64(usage["cache_read_input_tokens"]),
-	); v > 0 {
-		return int(v)
-	}
-	for _, key := range []string{"prompt_tokens_details", "input_tokens_details"} {
-		if details := mapFromAny(usage[key]); details != nil {
-			if v := firstPositiveInt64(
-				numberToInt64(details["cached_tokens"]),
-				numberToInt64(details["cached_input_tokens"]),
-			); v > 0 {
-				return int(v)
-			}
-		}
-	}
-	return 0
-}
-
-func openAIProxyCacheWriteTokens(usage map[string]interface{}) int {
-	if usage == nil {
-		return 0
-	}
-	if v := firstPositiveInt64(
-		numberToInt64(usage["cache_write_tokens"]),
-		numberToInt64(usage["cache_creation_input_tokens"]),
-		numberToInt64(usage["cache_creation_tokens"]),
-	); v > 0 {
-		return int(v)
-	}
-	for _, key := range []string{"input_tokens_details", "prompt_tokens_details"} {
-		if details := mapFromAny(usage[key]); details != nil {
-			if v := firstPositiveInt64(
-				numberToInt64(details["cache_write_tokens"]),
-				numberToInt64(details["cache_creation_input_tokens"]),
-				numberToInt64(details["cache_creation_tokens"]),
-			); v > 0 {
-				return int(v)
-			}
-		}
-	}
-	return 0
 }
 
 func openAIProxyFlattenText(v interface{}) string {
@@ -1848,16 +1767,14 @@ func openAIProxyChatUsageToResponsesUsage(raw interface{}) interface{} {
 	if usage == nil {
 		return raw
 	}
-	inputTokens := numberToInt64(firstOpenAICompatNonNil(usage["input_tokens"], usage["prompt_tokens"]))
-	outputTokens := numberToInt64(firstOpenAICompatNonNil(usage["output_tokens"], usage["completion_tokens"]))
-	totalTokens := numberToInt64(usage["total_tokens"])
+	fields := ParseLLMUsageFields(usage)
 	out := make(map[string]interface{}, len(usage)+2)
 	for k, v := range usage {
 		out[k] = v
 	}
-	out["input_tokens"] = inputTokens
-	out["output_tokens"] = outputTokens
-	out["total_tokens"] = totalTokens
+	out["input_tokens"] = fields.Input
+	out["output_tokens"] = fields.Output
+	out["total_tokens"] = fields.Total
 	if details := mapFromAny(firstOpenAICompatNonNil(usage["input_tokens_details"], usage["prompt_tokens_details"])); details != nil {
 		out["input_tokens_details"] = details
 	}

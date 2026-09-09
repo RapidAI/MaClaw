@@ -65,6 +65,27 @@ func loadCachedLLMProviderRegistry(ctx context.Context, system store.SystemSetti
 	return cloneLLMProviderRegistry(reg), err
 }
 
+func loadCachedLLMServiceRegistryForViewer(ctx context.Context, system store.SystemSettingsRepository, userID, email string) (*llmservice.Registry, error) {
+	reg, err := loadCachedLLMServiceRegistry(ctx, system)
+	if err != nil || reg == nil {
+		return reg, err
+	}
+	if !llmservice.NeedsNewUserLimitCardBackfill(reg, userID, email) {
+		return reg, nil
+	}
+	issued, ensureErr := llmservice.EnsureNewUserLimitCardForUserID(ctx, system, userID, email)
+	if ensureErr == nil && issued {
+		invalidateLLMRuntimeCaches(system)
+		if fresh, loadErr := loadCachedLLMServiceRegistry(ctx, system); loadErr == nil && fresh != nil {
+			reg = fresh
+		}
+	}
+	if !llmservice.HasLiveNewUserLimitCard(reg, userID, email) {
+		_ = llmservice.IssueNewUserLimitCards(reg, []llmservice.VoucherUser{{ID: userID, Email: email}}, time.Now().UTC())
+	}
+	return reg, nil
+}
+
 func loadCachedLLMServiceRegistry(ctx context.Context, system store.SystemSettingsRepository) (*llmservice.Registry, error) {
 	if system == nil {
 		return llmservice.LoadRegistry(ctx, system)
@@ -156,6 +177,12 @@ func cloneLLMProviderRegistry(reg *im.LLMProviderRegistry) *im.LLMProviderRegist
 	}
 	clone := *reg
 	clone.Providers = append([]im.LLMProvider(nil), reg.Providers...)
+	// Deep-copy each provider's pricing (presence-aware cache prices and any
+	// time-window overrides) so a configuration reload can never rewrite
+	// memory a frozen quote still references.
+	for i := range clone.Providers {
+		clone.Providers[i].TokenPricing = clone.Providers[i].TokenPricing.Clone()
+	}
 	clone.TokenUsage = corelib.FilterRemoteCodingToolTokenUsage(reg.TokenUsage)
 	return &clone
 }

@@ -98,8 +98,8 @@ export function MentionPopover({
                 overflowY: "auto",
                 background: theme.fieldBg || "#0f1720",
                 border: `1px solid ${theme.divider || "#263447"}`,
-                borderRadius: 6,
-                boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
+                borderRadius: "var(--radius-sm, 6px)",
+                boxShadow: "var(--shadow-md, 0 4px 12px rgba(30,58,95,0.16))",
                 padding: "4px 0",
             }}
         >
@@ -142,7 +142,7 @@ export function MentionPopover({
                                 width: 7,
                                 height: 7,
                                 borderRadius: "50%",
-                                background: p.online ? "#4f7f6f" : "#6b7280",
+                                background: p.online ? "var(--theme-success, #4f7f6f)" : (theme.textMuted || "var(--theme-text-muted, #64748b)"),
                                 flexShrink: 0,
                             }}
                         />

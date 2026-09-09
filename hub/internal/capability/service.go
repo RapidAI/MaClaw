@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -130,6 +131,17 @@ type VersionSummary struct {
 	LicenseJSON       string `json:"license_json"`
 	CompatibilityJSON string `json:"compatibility_json"`
 	Status            string `json:"status"`
+}
+
+type SuiteAuditEvent struct {
+	TenantID       string   `json:"tenant_id,omitempty"`
+	ID             string   `json:"id"`
+	SuiteID        string   `json:"suite_id"`
+	MemberSkillIDs []string `json:"member_skill_ids,omitempty"`
+	EventType      string   `json:"event_type"`
+	ActorID        string   `json:"actor_id,omitempty"`
+	PurchaseID     string   `json:"purchase_id,omitempty"`
+	CreatedAt      string   `json:"created_at"`
 }
 
 type AcquisitionRequest struct {
@@ -281,6 +293,57 @@ func (s *Service) ListVersions(ctx context.Context, capabilityRef string) ([]Ver
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+// SetCurrentVersion switches the active version for a capability. The target
+// version must already exist in the same tenant.
+func (s *Service) SetCurrentVersion(ctx context.Context, capabilityRef, versionKey string) error {
+	tenantID := tenantIDFromContext(ctx)
+	capabilityRef = strings.TrimSpace(capabilityRef)
+	versionKey = strings.TrimSpace(versionKey)
+	if capabilityRef == "" || versionKey == "" {
+		return fmt.Errorf("capability and version key are required")
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE capabilities SET current_version_key=?, updated_at=? WHERE tenant_id=? AND (id=? OR capability_id=?) AND EXISTS (SELECT 1 FROM capability_versions WHERE tenant_id=? AND capability_ref=capabilities.id AND version_key=?)`, versionKey, time.Now().UTC().Format(time.RFC3339Nano), tenantID, capabilityRef, capabilityRef, tenantID, versionKey)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Service) RecordSuiteAuditEvent(ctx context.Context, suiteID, eventType, actorID, purchaseID string, members []string) error {
+	tenantID := tenantIDFromContext(ctx)
+	payload, _ := json.Marshal(members)
+	id := fmt.Sprintf("suite-audit-%d", time.Now().UnixNano())
+	_, err := s.db.ExecContext(ctx, `INSERT INTO capability_suite_audit_events (tenant_id,id,suite_id,member_skill_ids,event_type,actor_id,purchase_id,created_at) VALUES (?,?,?,?,?,?,?,?)`, tenantID, id, suiteID, string(payload), eventType, actorID, purchaseID, time.Now().UTC().Format(time.RFC3339Nano))
+	return err
+}
+
+func (s *Service) ListSuiteAuditEvents(ctx context.Context, suiteID string, limit int) ([]SuiteAuditEvent, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	tenantID := tenantIDFromContext(ctx)
+	rows, err := s.db.QueryContext(ctx, `SELECT tenant_id,id,suite_id,member_skill_ids,event_type,actor_id,purchase_id,created_at FROM capability_suite_audit_events WHERE tenant_id=? AND suite_id=? ORDER BY created_at DESC LIMIT ?`, tenantID, suiteID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SuiteAuditEvent
+	for rows.Next() {
+		var e SuiteAuditEvent
+		var raw string
+		if err := rows.Scan(&e.TenantID, &e.ID, &e.SuiteID, &raw, &e.EventType, &e.ActorID, &e.PurchaseID, &e.CreatedAt); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal([]byte(raw), &e.MemberSkillIDs)
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }
 
 type UpsertCapabilityInput struct {

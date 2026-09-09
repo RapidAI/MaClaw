@@ -20,7 +20,6 @@ var expertToolMetaByName = map[string]expertToolMeta{
 	"memory":                   {Category: "interaction", Risk: "safe", LabelZh: "记忆", LabelEn: "Memory"},
 	"ask_user":                 {Category: "interaction", Risk: "safe", LabelZh: "向用户提问", LabelEn: "Ask user"},
 	"discover_tool":            {Category: "interaction", Risk: "safe", LabelZh: "按需发现工具", LabelEn: "Discover tools"},
-	"recommend_tool":           {Category: "interaction", Risk: "safe", LabelZh: "推荐工具", LabelEn: "Recommend tool"},
 	"session_search":           {Category: "interaction", Risk: "safe", LabelZh: "会话检索", LabelEn: "Session search"},
 	"set_nickname":             {Category: "interaction", Risk: "safe", LabelZh: "设置昵称", LabelEn: "Set nickname"},
 	"set_max_iterations":       {Category: "interaction", Risk: "elevated", LabelZh: "设置最大轮次", LabelEn: "Set max iterations"},

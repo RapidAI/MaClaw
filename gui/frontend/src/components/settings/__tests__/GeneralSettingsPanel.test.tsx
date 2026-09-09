@@ -107,7 +107,7 @@ describe('GeneralSettingsPanel', () => {
     it('persists disabling the Utilities entry switch', () => {
         renderPanel({}, 'en');
 
-        fireEvent.click(screen.getByLabelText('Experts & Tools entry'));
+        fireEvent.click(screen.getByLabelText('AI Experts entry'));
 
         expect(PatchConfigFieldsMock).toHaveBeenCalledWith({ show_utilities_entry: false });
     });

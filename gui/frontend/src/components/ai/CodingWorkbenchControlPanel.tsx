@@ -102,6 +102,29 @@ export function codingStepStatusColor(status: string, isDark: boolean, chrome: P
     return chrome.muted;
 }
 
+/** Human-facing status text for the execution timeline. Keep transport/status
+ * values in the data model while presenting the same localized labels used by
+ * the task reference cards. */
+export function codingStepStatusLabel(lang: string | undefined, status: string): string {
+    const s = (status || "").toLowerCase();
+    if (s === "passed" || s === "completed" || s === "success" || s === "succeeded") {
+        return localizeText(lang, "Completed", "已完成", "已完成");
+    }
+    if (s === "running" || s === "in_progress" || s === "started") {
+        return localizeText(lang, "In progress", "进行中", "進行中");
+    }
+    if (s === "failed" || s === "verify_failed" || s === "error") {
+        return localizeText(lang, "Failed", "失败", "失敗");
+    }
+    if (s === "pending" || s === "queued" || s === "waiting" || s === "needs_review" || s === "blocked") {
+        return localizeText(lang, "Pending", "待确认", "待確認");
+    }
+    if (s === "skipped" || s === "cancelled" || s === "canceled") {
+        return localizeText(lang, "Skipped", "已跳过", "已跳過");
+    }
+    return status || localizeText(lang, "Pending", "待确认", "待確認");
+}
+
 export type CodingStepStatus = {
     index: number;
     title?: string;

@@ -5,12 +5,13 @@ import { NotificationBell } from "./NotificationBell";
 import { asNotificationCategory, NotificationPanel, stripMarkdownPreview } from "./NotificationPanel";
 import { useNotifications, type AdminNotification } from "./useNotifications";
 import { IconRecord } from "./WorkbenchIcons";
-
 export function AssistantTitleBarNotifications({
+    active = true,
     inline,
     lang,
     theme: t,
 }: {
+    active?: boolean;
     inline: boolean;
     lang: string;
     theme: Theme;
@@ -28,21 +29,17 @@ export function AssistantTitleBarNotifications({
         dismissUrgentToast,
     } = useNotifications();
     const [selectedNotification, setSelectedNotification] = useState<AdminNotification | null>(null);
-
     const handleSelectNotification = useCallback((notification: AdminNotification) => {
         if (!notification.is_read) markRead(notification.id);
         setSelectedNotification(notification);
     }, [markRead]);
-
     const handleClosePanel = useCallback(() => {
         setSelectedNotification(null);
         if (panelOpen) togglePanel();
     }, [panelOpen, togglePanel]);
-
     const handleBackFromDetail = useCallback(() => {
         setSelectedNotification(null);
     }, []);
-
     const handleOpenFromToast = useCallback(() => {
         if (!urgentToast) return;
         if (!urgentToast.is_read) markRead(urgentToast.id);
@@ -50,16 +47,23 @@ export function AssistantTitleBarNotifications({
         if (!panelOpen) togglePanel();
         dismissUrgentToast();
     }, [dismissUrgentToast, markRead, panelOpen, togglePanel, urgentToast]);
-
     const handleTogglePanel = useCallback(() => {
         if (panelOpen) setSelectedNotification(null);
         togglePanel();
     }, [panelOpen, togglePanel]);
-
-    const resolvedSelected = selectedNotification
-        ? notifications.find((item) => item.id === selectedNotification.id) ?? selectedNotification
-        : null;
-
+    useEffect(() => {
+        if (!active) return;
+        const openSystemNotifications = (event: Event) => {
+            const shouldToggle = (event as CustomEvent<{ toggle?: boolean }>).detail?.toggle !== false;
+            if (!shouldToggle) { if (!panelOpen) togglePanel(); return; }
+            if (panelOpen) setSelectedNotification(null);
+            togglePanel();
+        };
+        window.addEventListener('maclaw:open-system-notifications', openSystemNotifications);
+        return () => window.removeEventListener('maclaw:open-system-notifications', openSystemNotifications);
+    }, [active, panelOpen, togglePanel]);
+    useEffect(() => { if (active || !panelOpen) return; setSelectedNotification(null); togglePanel(); const focused = document.activeElement; if (focused instanceof HTMLElement && focused.closest('[data-testid="notification-panel"]')) focused.blur(); }, [active, panelOpen, togglePanel]);
+    const resolvedSelected = selectedNotification ? notifications.find((item) => item.id === selectedNotification.id) ?? selectedNotification : null;
     useEffect(() => {
         if (!urgentToast || panelOpen) return;
         const onKeyDown = (event: KeyboardEvent) => {
@@ -68,7 +72,6 @@ export function AssistantTitleBarNotifications({
         document.addEventListener("keydown", onKeyDown);
         return () => document.removeEventListener("keydown", onKeyDown);
     }, [dismissUrgentToast, panelOpen, urgentToast]);
-
     const notificationPanelTheme = useMemo(() => ({
         bg: t.titleBarBg,
         text: t.text,
@@ -87,7 +90,7 @@ export function AssistantTitleBarNotifications({
                     onClick={handleTogglePanel}
                     theme={t}
                     inline={inline}
-                    open={panelOpen}
+                    open={active && panelOpen}
                     lang={lang}
                 />
             </div>
@@ -100,13 +103,13 @@ export function AssistantTitleBarNotifications({
                     onSelectNotification={handleSelectNotification}
                     onClose={handleClosePanel}
                     selectedNotification={resolvedSelected}
-                    onBackFromDetail={handleBackFromDetail}
+                    onBackFromDetail={handleBackFromDetail} ariaHidden={!active}
                     detailTheme={t}
                     lang={lang}
                     theme={notificationPanelTheme}
                 />
             )}
-            {urgentToast && !panelOpen && (
+            {urgentToast && active && !panelOpen && (
                 <div
                     data-testid="notification-urgent-toast"
                     data-notification-toast="true"
@@ -119,9 +122,9 @@ export function AssistantTitleBarNotifications({
                         width: "320px",
                         padding: "12px 16px",
                         background: t.titleBarBg,
-                        border: "1px solid #ef4444",
+                        border: "1px solid var(--theme-danger, #c43d34)",
                         borderRadius: "8px",
-                        boxShadow: "0 4px 24px rgba(239, 68, 68, 0.2)",
+                        boxShadow: "0 4px 24px color-mix(in srgb, var(--theme-danger, #c43d34) 20%, transparent)",
                         zIndex: 50000,
                         display: "flex",
                         flexDirection: "column",
@@ -129,8 +132,8 @@ export function AssistantTitleBarNotifications({
                     }}
                 >
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                        <span style={{ fontSize: "12px", fontWeight: 600, color: "#ef4444", display: "inline-flex", alignItems: "center", gap: 6 }}>
-                            <IconRecord size={12} color="#ef4444" />
+                        <span style={{ fontSize: "12px", fontWeight: 600, color: "var(--theme-danger, #c43d34)", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                            <IconRecord size={12} color="var(--theme-danger, #c43d34)" />
                             {localizeText(lang, "Urgent Notification", "\u7d27\u6025\u901a\u77e5", "\u7dca\u6025\u901a\u77e5")}
                         </span>
                         <button

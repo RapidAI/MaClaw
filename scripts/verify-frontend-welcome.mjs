@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Fail CI / local packaging if gui/frontend/dist (or a built GUI binary)
+ * Fail CI / local packaging if guiapp/frontend/dist (or a built GUI binary)
  * is missing the current AI assistant welcome page.
  *
  * TigerClaw / MetaStaff OEM builds share the same frontend embed as MaClaw.
@@ -10,7 +10,7 @@
  *
  * Usage:
  *   node scripts/verify-frontend-welcome.mjs
- *   node scripts/verify-frontend-welcome.mjs --dist gui/frontend/dist
+ *   node scripts/verify-frontend-welcome.mjs --dist guiapp/frontend/dist
  *   node scripts/verify-frontend-welcome.mjs --binary dist/TigerClaw.exe
  *   node scripts/verify-frontend-welcome.mjs --source
  */
@@ -30,7 +30,7 @@ function resolveUserPath(p) {
 }
 
 function parseArgs(argv) {
-  let dist = path.join(repoRoot, "gui", "frontend", "dist");
+  let dist = path.join(repoRoot, "guiapp", "frontend", "dist");
   let binary = "";
   let checkSource = false;
   let distSpecified = false;
@@ -115,9 +115,9 @@ const FORBIDDEN_MARKERS = [
 
 /** Source files that must still carry the new welcome contract. */
 const SOURCE_REQUIRED_FILES = [
-  "gui/frontend/src/components/ai/welcomeScenarioTasks.ts",
-  "gui/frontend/src/components/ai/WelcomePromptParamDialog.tsx",
-  "gui/frontend/src/components/ai/AssistantWelcomeView.tsx",
+  "guiapp/frontend/src/components/ai/welcomeScenarioTasks.ts",
+  "guiapp/frontend/src/components/ai/WelcomePromptParamDialog.tsx",
+  "guiapp/frontend/src/components/ai/AssistantWelcomeView.tsx",
 ];
 
 function walkFiles(dir, out = []) {
@@ -170,7 +170,7 @@ function verifySource() {
   }
   const scenarioSource = readUtf8Safe(path.join(
     repoRoot,
-    "gui/frontend/src/components/ai/welcomeScenarioTasks.ts",
+    "guiapp/frontend/src/components/ai/welcomeScenarioTasks.ts",
   ));
   for (const tabId of SCENARIO_TAB_IDS) {
     const tabMatch = new RegExp(
@@ -311,8 +311,8 @@ if (failures.length > 0) {
   console.error("[verify-frontend-welcome] FAILED:");
   for (const f of failures) console.error(`  - ${f}`);
   console.error(
-    "\nOEM brands (TigerClaw/MetaStaff) embed the same gui/frontend/dist as MaClaw.\n" +
-      "Rebuild frontend with `npm run build` in gui/frontend, then rebuild the GUI binary.",
+    "\nOEM brands (TigerClaw/MetaStaff) embed the same guiapp/frontend/dist as MaClaw.\n" +
+      "Rebuild frontend with `npm run build` in guiapp/frontend, then rebuild the GUI binary.",
   );
   process.exit(1);
 }

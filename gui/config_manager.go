@@ -155,7 +155,6 @@ func (m *ConfigManager) formatRemoteConfig(cfg corelib.AppConfig, raw bool) stri
 	}
 	b.WriteString(fmt.Sprintf("remote_machine_token: %s\n", token))
 	b.WriteString(fmt.Sprintf("remote_heartbeat_sec: %d\n", cfg.RemoteHeartbeatSec))
-	b.WriteString(fmt.Sprintf("default_launch_mode: %s\n", cfg.DefaultLaunchMode))
 	return b.String()
 }
 
@@ -229,7 +228,6 @@ func (m *ConfigManager) formatProxyConfig(cfg corelib.AppConfig, raw bool) strin
 func (m *ConfigManager) formatGeneralConfig(cfg corelib.AppConfig) string {
 	var b strings.Builder
 	b.WriteString("=== 通用设置 ===\n")
-	b.WriteString(fmt.Sprintf("active_tool: %s\n", cfg.ActiveTool))
 	b.WriteString(fmt.Sprintf("language: %s\n", cfg.Language))
 	b.WriteString(fmt.Sprintf("power_optimization: %v\n", cfg.PowerOptimization))
 	b.WriteString(fmt.Sprintf("screen_dim_timeout_min: %d\n", cfg.ScreenDimTimeoutMin))
@@ -796,31 +794,13 @@ func (m *ConfigManager) applyPowerChange(cfg *corelib.AppConfig, key, value stri
 }
 
 // ---------------------------------------------------------------------------
-// initSchema initialises the full configuration schema covering all sections:
-// tool models, projects, remote, proxy, maclaw LLM, and general settings.
+// initSchema initialises the configuration schema for projects, remote,
+// proxy, Maclaw LLM, and general settings.
 // ---------------------------------------------------------------------------
 
 func (m *ConfigManager) initSchema() {
-	toolModelSection := func(name, desc string) config.ConfigSection {
-		return config.ConfigSection{
-			Name:        name,
-			Description: desc,
-			Keys: []config.ConfigKeySchema{
-				{Key: "current_model", Description: "当前使用的模型名称", Type: "string"},
-			},
-		}
-	}
-
 	m.schema = []config.ConfigSection{
-		// 1. Tool model sections
-		toolModelSection("claude", "Claude 工具模型配置"),
-		toolModelSection("codex", "Codex 工具模型配置"),
-		toolModelSection("opencode", "OpenCode 工具模型配置"),
-		toolModelSection("iflow", "iFlow 工具模型配置"),
-		toolModelSection("kilo", "Kilo 工具模型配置"),
-		toolModelSection("codebuddy", "CodeBuddy 工具模型配置"),
-
-		// 2. Projects section
+		// Projects section
 		{
 			Name:        "projects",
 			Description: "项目管理",
@@ -838,7 +818,6 @@ func (m *ConfigManager) initSchema() {
 				{Key: "remote_hub_url", Description: "Hub 服务器地址", Type: "string"},
 				{Key: "remote_email", Description: "远程账户邮箱", Type: "string"},
 				{Key: "remote_heartbeat_sec", Description: "心跳间隔（秒）", Type: "int", Default: "30"},
-				{Key: "default_launch_mode", Description: "编程工具默认工作模式", Type: "enum", Default: "local", ValidValues: []string{"local", "remote"}},
 			},
 		},
 
@@ -884,7 +863,6 @@ func (m *ConfigManager) initSchema() {
 			Name:        "general",
 			Description: "通用设置",
 			Keys: []config.ConfigKeySchema{
-				{Key: "active_tool", Description: "当前激活的编程工具", Type: "enum", ValidValues: []string{"claude", "codex", "opencode", "iflow", "kilo", "codebuddy"}},
 				{Key: "language", Description: "界面语言", Type: "enum", Default: "zh", ValidValues: []string{"zh", "en"}},
 				{Key: "power_optimization", Description: "是否启用省电优化", Type: "bool", Default: "false"},
 				{Key: "screen_dim_timeout_min", Description: "无操作多少分钟后熄屏（0=禁用）", Type: "int", Default: "3"},

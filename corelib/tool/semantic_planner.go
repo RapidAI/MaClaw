@@ -28,6 +28,177 @@ type CapabilityNeed struct {
 	EvidenceIDs []string
 }
 
+// GrantedNeedFromSelection projects one immutable planned selection onto the
+// session-governed / continuity need record. NeedID wins; empty NeedID falls
+// back to the selection identity so a host cannot invent a later replay key.
+func GrantedNeedFromSelection(selection PlannedSelection) CapabilityNeed {
+	need := CapabilityNeed{
+		ID:         strings.TrimSpace(selection.NeedID),
+		Capability: selection.FitProof.MatchedCapability,
+		Qualifiers: map[string]string{},
+		Polarity:   NeedRequire,
+		Required:   true,
+	}
+	for key, value := range selection.FitProof.QualifierBindings {
+		need.Qualifiers[key] = value
+	}
+	if need.ID == "" {
+		need.ID = strings.TrimSpace(selection.ID)
+	}
+	return need
+}
+
+// GrantedNeedsFromPlan projects planner-granted selections into capability
+// needs. GUI session-governed persist, headless SessionGovernedTaskStore, and
+// continuity open-need projection share this so a later continuation cannot
+// drift which NeedID or qualifier set it replays.
+func GrantedNeedsFromPlan(plan ToolPlan) []CapabilityNeed {
+	if len(plan.Selections) == 0 {
+		return nil
+	}
+	needs := make([]CapabilityNeed, 0, len(plan.Selections))
+	for _, selection := range plan.Selections {
+		needs = append(needs, GrantedNeedFromSelection(selection))
+	}
+	return needs
+}
+
+// CloneCapabilityNeed copies Qualifiers and EvidenceIDs so a persist/load
+// cycle cannot share maps with the live plan.
+func CloneCapabilityNeed(value CapabilityNeed) CapabilityNeed {
+	result := value
+	result.Qualifiers = CloneNeedQualifiers(value.Qualifiers)
+	result.EvidenceIDs = append([]string(nil), value.EvidenceIDs...)
+	return result
+}
+
+// CloneNeedQualifiers copies a qualifier map. Empty input yields nil so persist
+// and planning keys cannot share a live map.
+func CloneNeedQualifiers(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	clone := make(map[string]string, len(values))
+	for key, value := range values {
+		clone[key] = value
+	}
+	return clone
+}
+
+// NeedQualifierKey is the stable identity of a qualifier map for sibling
+// dedup. Keys are sorted; empty input yields the empty string.
+func NeedQualifierKey(values map[string]string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, strings.TrimSpace(key)+"="+strings.TrimSpace(values[key]))
+	}
+	return strings.Join(parts, "\x1f")
+}
+
+// CloneCapabilityNeeds copies a need slice. Empty input yields nil.
+func CloneCapabilityNeeds(needs []CapabilityNeed) []CapabilityNeed {
+	if len(needs) == 0 {
+		return nil
+	}
+	out := make([]CapabilityNeed, 0, len(needs))
+	for _, need := range needs {
+		out = append(out, CloneCapabilityNeed(need))
+	}
+	return out
+}
+
+// CapabilityNeedsContain reports whether any granted need names capability.
+// GUI document/audio ingress and headless reviewed-host NeedPresent scans
+// share this so a host cannot miss a family the other would see.
+func CapabilityNeedsContain(needs []CapabilityNeed, capability CapabilityID) bool {
+	for _, need := range needs {
+		if need.Capability == capability {
+			return true
+		}
+	}
+	return false
+}
+
+// CapabilityNeedsContainAny reports whether any granted need names one of
+// capabilities. Empty capabilities yields false.
+func CapabilityNeedsContainAny(needs []CapabilityNeed, capabilities ...CapabilityID) bool {
+	for _, capability := range capabilities {
+		if CapabilityNeedsContain(needs, capability) {
+			return true
+		}
+	}
+	return false
+}
+
+// GrantedNeedStillCovered reports whether a persisted need may still be
+// replayed. A non-nil registry fail-closes on unknown capabilities; covered
+// is the current rule-table identity set so a retired mapping cannot revive
+// a grant.
+func GrantedNeedStillCovered(need CapabilityNeed, covered map[CapabilityID]bool, registry *CapabilityRegistry) bool {
+	if registry != nil {
+		if _, ok := registry.Lookup(need.Capability); !ok {
+			return false
+		}
+	}
+	return covered[need.Capability]
+}
+
+// FilterGrantedNeedsStillCovered keeps granted needs that are still covered
+// and clones them so replay cannot share maps with the live plan.
+func FilterGrantedNeedsStillCovered(needs []CapabilityNeed, covered map[CapabilityID]bool, registry *CapabilityRegistry) []CapabilityNeed {
+	kept := make([]CapabilityNeed, 0, len(needs))
+	for _, need := range needs {
+		if GrantedNeedStillCovered(need, covered, registry) {
+			kept = append(kept, need)
+		}
+	}
+	return CloneCapabilityNeeds(kept)
+}
+
+// CloneRoutingFact copies Attributes so policy/planning cannot share a live map.
+func CloneRoutingFact(fact RoutingFact) RoutingFact {
+	fact.Attributes = CloneNeedQualifiers(fact.Attributes)
+	return fact
+}
+
+// CloneRoutingFacts copies a fact slice. Empty input yields nil.
+func CloneRoutingFacts(facts []RoutingFact) []RoutingFact {
+	if len(facts) == 0 {
+		return nil
+	}
+	out := make([]RoutingFact, 0, len(facts))
+	for _, fact := range facts {
+		out = append(out, CloneRoutingFact(fact))
+	}
+	return out
+}
+
+// CloneRoutingConstraint copies Attributes so policy/planning cannot share a live map.
+func CloneRoutingConstraint(constraint RoutingConstraint) RoutingConstraint {
+	constraint.Attributes = CloneNeedQualifiers(constraint.Attributes)
+	return constraint
+}
+
+// CloneRoutingConstraints copies a constraint slice. Empty input yields nil.
+func CloneRoutingConstraints(constraints []RoutingConstraint) []RoutingConstraint {
+	if len(constraints) == 0 {
+		return nil
+	}
+	out := make([]RoutingConstraint, 0, len(constraints))
+	for _, constraint := range constraints {
+		out = append(out, CloneRoutingConstraint(constraint))
+	}
+	return out
+}
+
 type FactAuthority string
 
 const (
@@ -68,6 +239,18 @@ type RoutingConstraint struct {
 type PlanningBudget struct {
 	MaxSelections   int
 	MaxSchemaTokens int
+}
+
+// NewPlanningBudget clamps negative limits to zero so GUI and srv do not
+// copy a second constructor. Zero still means unlimited at Plan time.
+func NewPlanningBudget(maxSelections, maxSchemaTokens int) PlanningBudget {
+	if maxSelections < 0 {
+		maxSelections = 0
+	}
+	if maxSchemaTokens < 0 {
+		maxSchemaTokens = 0
+	}
+	return PlanningBudget{MaxSelections: maxSelections, MaxSchemaTokens: maxSchemaTokens}
 }
 
 type RouteRequest struct {
@@ -251,7 +434,11 @@ type ToolPlan struct {
 	// SnapshotDigest freezes every planner input that can influence the
 	// decision. It is the compare-and-publish guard for RouteState revisions;
 	// CatalogGeneration alone is intentionally insufficient.
-	SnapshotDigest    string
+	SnapshotDigest string
+	// CatalogDigest identifies only the immutable provider inventory used by
+	// this plan. SnapshotDigest remains the full plan-input identity (needs,
+	// facts, constraints and budgets included).
+	CatalogDigest     string
 	CatalogGeneration uint64
 	Selections        []PlannedSelection
 	Unmet             []UnmetNeed
@@ -360,7 +547,11 @@ func (p *ToolPlanner) Plan(req RouteRequest) (ToolPlan, error) {
 	if req.Snapshot.RegistryVersion != p.registry.Version() {
 		return ToolPlan{}, fmt.Errorf("catalog registry version %q does not match planner registry %q", req.Snapshot.RegistryVersion, p.registry.Version())
 	}
-	plan := ToolPlan{RootTaskID: req.RootTaskID, CatalogGeneration: req.Snapshot.Generation}
+	catalogDigest, err := EffectiveCatalogSnapshotDigest(req.Snapshot)
+	if err != nil {
+		return ToolPlan{}, err
+	}
+	plan := ToolPlan{RootTaskID: req.RootTaskID, CatalogDigest: catalogDigest, CatalogGeneration: req.Snapshot.Generation}
 	plan.SnapshotDigest = semanticRouteSnapshotDigest(req)
 	plan.ID = "plan:" + plan.SnapshotDigest[:24]
 	needs := append([]CapabilityNeed(nil), req.Needs...)
@@ -477,8 +668,70 @@ func IsLookupCapability(capability CapabilityID) bool {
 	return IsWebLookupCapability(capability) || id == "information.current_time"
 }
 
-func isDocumentGenerateFile(capability CapabilityID) bool {
-	return strings.TrimSpace(string(capability)) == "document.generate.file"
+// AliasableLookupSelection reports a light-safe web-search selection whose
+// query schema can share a stable model name. Fetch wants a URL and
+// current_time takes no query; aliasing those would fail validation and
+// consume the one-shot grant.
+func AliasableLookupSelection(selection PlannedSelection) bool {
+	if !IsLightPromptSafeSelection(selection) {
+		return false
+	}
+	id := strings.TrimSpace(string(selection.FitProof.MatchedCapability))
+	return strings.HasPrefix(id, "information.search.")
+}
+
+// SoleLiveLookupGrantName returns the unique live grant when it is an
+// aliasable lookup. Zero, many, or a non-search live grant yields empty.
+func SoleLiveLookupGrantName(plan ToolPlan, grants map[string]InvocationGrant) string {
+	live := SoleLiveGrantName(grants)
+	if live == "" {
+		return ""
+	}
+	grant, ok := grants[live]
+	if !ok {
+		return ""
+	}
+	selection, ok := PlanSelectionByID(plan, grant.SelectionID)
+	if !ok || !AliasableLookupSelection(selection) {
+		return ""
+	}
+	return live
+}
+
+// IsDocumentGenerateFile reports the reviewed document-generation capability.
+// Host skip filters and planner generate-after-lookup edges both use this.
+func IsDocumentGenerateFile(capability CapabilityID) bool {
+	return strings.EqualFold(strings.TrimSpace(string(capability)), "document.generate.file")
+}
+
+// IsDocumentRead reports the reviewed local-document-read capability.
+// GUI trusted-document binding and headless reviewed document-read share this.
+func IsDocumentRead(capability CapabilityID) bool {
+	return strings.EqualFold(strings.TrimSpace(string(capability)), "document.read.local")
+}
+
+// BindDocumentReadFormat stamps the ingress format onto a document-read need.
+// Other capabilities are returned unchanged so a host can map the helper over
+// a mixed need list after UniqueTrustedInputCount.
+func BindDocumentReadFormat(need CapabilityNeed, format string) CapabilityNeed {
+	if !IsDocumentRead(need.Capability) {
+		return need
+	}
+	need.Qualifiers = map[string]string{"format": strings.TrimSpace(format)}
+	return need
+}
+
+// InTurnArtifactProducerPresent reports whether this turn already produces an
+// artifact that current-channel deliver should consume instead of ingress.
+// Document generate always counts; hosts pass extra producer capabilities
+// (office write on GUI IM, audio/visual capture on headless).
+func InTurnArtifactProducerPresent(needs []CapabilityNeed, extra ...CapabilityID) bool {
+	for _, need := range needs {
+		if IsDocumentGenerateFile(need.Capability) {
+			return true
+		}
+	}
+	return CapabilityNeedsContainAny(needs, extra...)
 }
 
 func isScheduleAdministerLocal(capability CapabilityID) bool {
@@ -591,7 +844,7 @@ func attachGenerateCurrentDeliverDependencies(plan *ToolPlan) {
 	requireSelectionIDs(plan, func(selection PlannedSelection) bool {
 		return isCurrentChannelFileDeliver(selection.FitProof.MatchedCapability, selection.FitProof.QualifierBindings)
 	}, familyBaseSelectionIDs(plan.Selections, func(selection PlannedSelection) bool {
-		return isDocumentGenerateFile(selection.FitProof.MatchedCapability)
+		return IsDocumentGenerateFile(selection.FitProof.MatchedCapability)
 	}))
 }
 
@@ -685,7 +938,7 @@ func appendUniqueRequirements(current, required []string) []string {
 // attached. Waiting for id#02…#05 dead-locks generate on unused refinements.
 func attachLookupGenerateDependencies(plan *ToolPlan, needs []CapabilityNeed) {
 	requireSelectionIDs(plan, func(selection PlannedSelection) bool {
-		return isDocumentGenerateFile(selection.FitProof.MatchedCapability)
+		return IsDocumentGenerateFile(selection.FitProof.MatchedCapability)
 	}, requiredLookupBaseSelectionIDs(plan, needs))
 }
 
@@ -1032,10 +1285,7 @@ func trustedArtifactDependency(facts []RoutingFact, consumed ArtifactContract, n
 			}
 			binding = &legacy
 		}
-		if !strings.EqualFold(strings.TrimSpace(binding.Kind), strings.TrimSpace(consumed.Kind)) {
-			continue
-		}
-		if mimeType := strings.TrimSpace(consumed.MIMEType); mimeType != "" && !strings.EqualFold(strings.TrimSpace(binding.MIMEType), mimeType) {
+		if !ArtifactBindingMatchesContract(*binding, consumed) {
 			continue
 		}
 		candidate := ArtifactDependency{ArtifactID: binding.ID, Artifact: *binding, Contract: consumed}
@@ -1049,10 +1299,7 @@ func trustedArtifactDependency(facts []RoutingFact, consumed ArtifactContract, n
 
 func producesArtifact(produced []ArtifactContract, consumed ArtifactContract) bool {
 	for _, candidate := range produced {
-		if !strings.EqualFold(strings.TrimSpace(candidate.Kind), strings.TrimSpace(consumed.Kind)) {
-			continue
-		}
-		if strings.TrimSpace(consumed.MIMEType) == "" || strings.EqualFold(strings.TrimSpace(candidate.MIMEType), strings.TrimSpace(consumed.MIMEType)) {
+		if ArtifactContractMatches(candidate, consumed) {
 			return true
 		}
 	}
@@ -1073,8 +1320,7 @@ func validArtifactBinding(binding ArtifactBinding) bool {
 }
 
 func artifactBindingMatchesContract(binding ArtifactBinding, contract ArtifactContract) bool {
-	return strings.EqualFold(strings.TrimSpace(binding.Kind), strings.TrimSpace(contract.Kind)) &&
-		(strings.TrimSpace(contract.MIMEType) == "" || strings.EqualFold(strings.TrimSpace(binding.MIMEType), strings.TrimSpace(contract.MIMEType)))
+	return ArtifactBindingMatchesContract(binding, contract)
 }
 
 func canonicalArtifactBinding(binding ArtifactBinding) string {
@@ -1369,36 +1615,46 @@ func semanticPlanID(req RouteRequest) string {
 // kept separate from the short plan ID so durable revision publication can
 // compare the complete digest rather than a truncated display identity.
 func semanticRouteSnapshotDigest(req RouteRequest) string {
-	parts := []string{req.RootTaskID, req.SessionID, req.ChannelScope, req.Snapshot.RegistryVersion, fmt.Sprintf("%d", req.Snapshot.Generation), req.TurnID,
-		"coverage", string(req.Snapshot.Coverage.State), req.Snapshot.Coverage.ReasonCode, req.Snapshot.Coverage.StaleUntil.UTC().Format(time.RFC3339Nano),
+	// Always derive the catalog component from immutable contents.  Plan calls
+	// validate the optional stored claim first; this helper also remains safe
+	// for diagnostic callers that construct a RouteRequest directly.
+	catalogDigest := CatalogSnapshotDigest(req.Snapshot)
+	// v2 uses the same length-delimited canonical encoding as the catalog
+	// digest. The version marker is part of the payload so a v1 digest can
+	// never be mistaken for the order-independent representation.
+	parts := []string{"semantic-route-snapshot-v2", req.RootTaskID, req.SessionID, req.ChannelScope, req.Snapshot.RegistryVersion, fmt.Sprintf("%d", req.Snapshot.Generation), catalogDigest, req.TurnID,
+		"coverage", string(req.Snapshot.Coverage.State), req.Snapshot.Coverage.ReasonCode, canonicalDigestTime(req.Snapshot.Coverage.StaleUntil),
 	}
 	families := append([]CatalogCoverageFamily(nil), req.Snapshot.Coverage.Families...)
-	sort.Slice(families, func(i, j int) bool { return families[i].Kind < families[j].Kind })
+	sort.Slice(families, func(i, j int) bool {
+		return canonicalCatalogCoverageFamilyDigest(families[i]) < canonicalCatalogCoverageFamilyDigest(families[j])
+	})
 	for _, family := range families {
 		// ObservedAt is intentionally excluded: it is diagnostic metadata, not
 		// a change in the route's semantic meaning. The state/reason/window are
 		// authorization-relevant and therefore part of the immutable identity.
-		parts = append(parts, "coverage_family", family.Kind, string(family.State), family.ReasonCode, family.StaleUntil.UTC().Format(time.RFC3339Nano))
+		parts = append(parts, "coverage_family", canonicalCatalogCoverageFamilyDigest(family))
 	}
 	providers := append([]ProviderSpec(nil), req.Snapshot.Providers...)
-	sort.Slice(providers, func(i, j int) bool { return providers[i].Binding.StableID() < providers[j].Binding.StableID() })
+	sort.Slice(providers, func(i, j int) bool {
+		return canonicalProviderDigest(providers[i]) < canonicalProviderDigest(providers[j])
+	})
 	for _, provider := range providers {
-		parts = append(parts,
-			"provider", provider.AdapterName, provider.Binding.StableID(), fmt.Sprintf("%t", provider.Ready),
-			provider.ReadyUntil.UTC().Format(time.RFC3339Nano), strings.Join(provider.ChannelScopes, "\x1f"),
-			provider.ParameterAuthorization.Digest, provider.ParameterAuthorization.CanonicalizerVer, strings.Join(provider.ParameterAuthorization.AllowedFields, "\x1f"),
-			canonicalEffects(provider.Effects), canonicalProvisions(provider.Provides), canonicalArtifacts(provider.Consumes), canonicalArtifacts(provider.Produces),
-		)
+		parts = append(parts, "provider", canonicalProviderDigest(provider))
 	}
 	needs := append([]CapabilityNeed(nil), req.Needs...)
-	sort.Slice(needs, func(i, j int) bool { return needs[i].ID < needs[j].ID })
+	sort.Slice(needs, func(i, j int) bool {
+		return canonicalNeedDigest(needs[i]) < canonicalNeedDigest(needs[j])
+	})
 	for _, need := range needs {
-		parts = append(parts, "need", need.ID, string(need.Capability), string(need.Polarity), fmt.Sprintf("%t", need.Required), canonicalStringMap(need.Qualifiers))
+		parts = append(parts, "need", canonicalNeedDigest(need))
 	}
 	constraints := append([]RoutingConstraint(nil), req.Constraints...)
-	sort.Slice(constraints, func(i, j int) bool { return constraints[i].ID < constraints[j].ID })
+	sort.Slice(constraints, func(i, j int) bool {
+		return canonicalConstraintDigest(constraints[i]) < canonicalConstraintDigest(constraints[j])
+	})
 	for _, constraint := range constraints {
-		parts = append(parts, "constraint", constraint.ID, string(constraint.Capability), constraint.Effect, string(constraint.Authority), constraint.ValidUntil.UTC().Format(time.RFC3339Nano), canonicalStringMap(constraint.Attributes))
+		parts = append(parts, "constraint", canonicalConstraintDigest(constraint))
 	}
 	if req.Budget.MaxSelections > 0 {
 		parts = append(parts, "budget", fmt.Sprintf("%d", req.Budget.MaxSelections))
@@ -1407,15 +1663,65 @@ func semanticRouteSnapshotDigest(req RouteRequest) string {
 		parts = append(parts, "schema_budget", fmt.Sprintf("%d", req.Budget.MaxSchemaTokens))
 	}
 	facts := append([]RoutingFact(nil), req.Facts...)
-	sort.Slice(facts, func(i, j int) bool { return facts[i].ID < facts[j].ID })
+	sort.Slice(facts, func(i, j int) bool {
+		return canonicalFactDigest(facts[i]) < canonicalFactDigest(facts[j])
+	})
 	for _, fact := range facts {
-		artifact := ""
-		if fact.Artifact != nil {
-			artifact = canonicalArtifactBinding(*fact.Artifact)
-		}
-		parts = append(parts, "fact", fact.ID, fact.Kind, string(fact.Authority), fact.ValidUntil.UTC().Format(time.RFC3339Nano), canonicalStringMap(fact.Attributes), artifact)
+		parts = append(parts, "fact", canonicalFactDigest(fact))
 	}
-	return SchemaDigest([]byte(strings.Join(parts, "\x00")))
+	return SchemaDigest([]byte(canonicalDigestEncode(parts...)))
+}
+
+func canonicalNeedDigest(need CapabilityNeed) string {
+	return canonicalDigestEncode(
+		strings.TrimSpace(need.ID),
+		strings.TrimSpace(string(need.Capability)),
+		string(need.Polarity),
+		fmt.Sprintf("%t", need.Required),
+		canonicalDigestStringMap(need.Qualifiers),
+	)
+}
+
+func canonicalConstraintDigest(constraint RoutingConstraint) string {
+	return canonicalDigestEncode(
+		strings.TrimSpace(constraint.ID),
+		strings.TrimSpace(string(constraint.Capability)),
+		strings.TrimSpace(constraint.Effect),
+		string(constraint.Authority),
+		canonicalDigestTime(constraint.ValidUntil),
+		canonicalDigestStringMap(constraint.Attributes),
+	)
+}
+
+func canonicalFactDigest(fact RoutingFact) string {
+	artifact := ""
+	if fact.Artifact != nil {
+		artifact = canonicalArtifactBindingDigest(*fact.Artifact)
+	}
+	return canonicalDigestEncode(
+		strings.TrimSpace(fact.ID),
+		strings.TrimSpace(fact.Kind),
+		string(fact.Authority),
+		canonicalDigestTime(fact.ValidUntil),
+		canonicalDigestStringMap(fact.Attributes),
+		artifact,
+	)
+}
+
+func canonicalArtifactBindingDigest(binding ArtifactBinding) string {
+	return canonicalDigestEncode(
+		strings.TrimSpace(binding.ID),
+		strings.ToLower(strings.TrimSpace(binding.Kind)),
+		strings.ToLower(strings.TrimSpace(binding.MIMEType)),
+		strings.TrimSpace(binding.IntegrityDigest),
+		strings.TrimSpace(binding.ProducerSelection),
+		strings.TrimSpace(binding.Scope.RootTaskID),
+		strings.TrimSpace(binding.Scope.PlanID),
+		strings.TrimSpace(binding.Scope.SessionID),
+		strings.TrimSpace(binding.Scope.TurnID),
+		strings.TrimSpace(binding.Scope.PrincipalID),
+		strings.TrimSpace(binding.Scope.ToolSnapshotID),
+	)
 }
 
 func canonicalEffects(effects []EffectClass) string {

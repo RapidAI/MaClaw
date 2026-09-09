@@ -71,6 +71,40 @@ static device_status_t reconcile_internal(
     configuration_reconcile_service_reason_t reason,
     const configuration_reconcile_authorization_t *authorization);
 
+/* Lifecycle callers expose one timeout for the complete operation. Keep an
+ * absolute monotonic deadline so expiry-worker drain and serialized-mutex
+ * acquisition cannot each consume a fresh copy of the caller's budget. */
+static uint64_t lifecycle_deadline_us(uint32_t timeout_ms) {
+    const int64_t now = esp_timer_get_time();
+    const uint64_t base = now > 0 ? (uint64_t)now : 0u;
+    const uint64_t delta = (uint64_t)timeout_ms * 1000u;
+    return UINT64_MAX - base < delta ? UINT64_MAX : base + delta;
+}
+
+static TickType_t lifecycle_remaining_ticks(uint64_t deadline_us) {
+    const int64_t now = esp_timer_get_time();
+    const uint64_t current = now > 0 ? (uint64_t)now : 0u;
+    if (current >= deadline_us) return 0;
+    const uint64_t remaining_us = deadline_us - current;
+    /* Compute ceil(remaining_us / 1000) without adding 999 to a value that
+     * may be close to UINT64_MAX (e.g. a saturated deadline). */
+    uint64_t remaining_ms = remaining_us / 1000u;
+    if ((remaining_us % 1000u) != 0u && remaining_ms != UINT64_MAX) ++remaining_ms;
+    const uint64_t max_ticks = (uint64_t)portMAX_DELAY;
+    const uint64_t max_ms_numerator =
+        max_ticks > UINT64_MAX / 1000u ? UINT64_MAX : max_ticks * 1000u;
+    const uint64_t max_ms = max_ms_numerator / (uint64_t)configTICK_RATE_HZ;
+    uint64_t bounded_ms = remaining_ms;
+    if (bounded_ms > max_ms) bounded_ms = max_ms;
+    /* pdMS_TO_TICKS takes a 32-bit millisecond value on the supported
+     * FreeRTOS profiles.  Keep the conversion defined even when a lower
+     * tick rate makes max_ms exceed UINT32_MAX. */
+    if (bounded_ms > UINT32_MAX) bounded_ms = UINT32_MAX;
+    TickType_t ticks = pdMS_TO_TICKS((uint32_t)bounded_ms);
+    if (ticks == 0 && bounded_ms != 0u) ticks = 1;
+    return ticks;
+}
+
 static bool retryable_status(device_status_t status) {
     return status == DEVICE_STATUS_BUSY || status == DEVICE_STATUS_TIMEOUT ||
            status == DEVICE_STATUS_IO_ERROR || status == DEVICE_STATUS_INTERNAL_ERROR;
@@ -110,6 +144,7 @@ static void expiry_timer_callback(void *unused) {
     (void)unused;
     taskENTER_CRITICAL(&s_state_lock);
     const TaskHandle_t task = (s_initialized && !s_stopping &&
+                               !s_system_sleep_preparing &&
                                !s_expiry_stop_requested) ? s_expiry_task : NULL;
     taskEXIT_CRITICAL(&s_state_lock);
     if (task) (void)xTaskNotify(task, CONFIGURATION_RECONCILE_NOTIFY_EXPIRY, eSetBits);
@@ -219,7 +254,17 @@ static void rearm_expiry_timer_under_mutex(void) {
     const uint64_t delay_ms = expiry_ms > now_ms ? expiry_ms - now_ms : 1u;
     const uint64_t delay_us = delay_ms > UINT64_MAX / 1000u
                                   ? UINT64_MAX : delay_ms * 1000u;
-    (void)esp_timer_start_once(s_expiry_timer, delay_us);
+    if (esp_timer_start_once(s_expiry_timer, delay_us) != ESP_OK) return;
+    /* PREPARE may close admission between the post-read check above and the
+     * start call.  Do not leave a freshly armed callback behind in that
+     * fenced interval; its callback would otherwise wake the retained worker
+     * after the parent transaction has already stopped this timer. */
+    taskENTER_CRITICAL(&s_state_lock);
+    const bool timer_still_admitted = s_initialized && !s_stopping &&
+                                      !s_system_sleep_preparing &&
+                                      !s_expiry_stop_requested;
+    taskEXIT_CRITICAL(&s_state_lock);
+    if (!timer_still_admitted) (void)esp_timer_stop(s_expiry_timer);
 }
 
 static void rearm_expiry_timer(void) {
@@ -292,7 +337,29 @@ static bool schedule_or_cancel_retry(device_status_t status,
     taskEXIT_CRITICAL(&s_state_lock);
     if (!admitted) return false;
     (void)esp_timer_stop(s_retry_timer);
-    if (esp_timer_start_once(s_retry_timer, delay_us) == ESP_OK) return true;
+    const uint32_t armed_generation = s_retry_generation;
+    if (esp_timer_start_once(s_retry_timer, delay_us) == ESP_OK) {
+        /* PREPARE can publish its fence after the state snapshot above but
+         * before this start call.  Revalidate after the ESP timer operation;
+         * otherwise a timer stopped by PREPARE could be resurrected into the
+         * fenced System-Sleep interval. */
+        taskENTER_CRITICAL(&s_state_lock);
+        const bool still_admitted = s_initialized && !s_stopping &&
+                                    !s_system_sleep_preparing &&
+                                    s_retry_armed &&
+                                    s_retry_generation == armed_generation;
+        if (!still_admitted && s_retry_generation == armed_generation) {
+            s_retry_armed = false;
+            s_retry_due_us = 0u;
+            s_retry_delivered_generation = 0u;
+            s_retry_authorization_valid = false;
+            s_retry_authorization = (configuration_reconcile_authorization_t){0};
+        }
+        taskEXIT_CRITICAL(&s_state_lock);
+        if (still_admitted) return true;
+        (void)esp_timer_stop(s_retry_timer);
+        return false;
+    }
     /* A retryable consumer result without a retained retry timer is degraded,
      * not armed. Do not keep a fictitious due deadline that a callback can
      * later interpret as real retry work. The next explicit policy revision
@@ -588,13 +655,20 @@ device_status_t configuration_reconcile_service_init(void) {
 
 device_status_t configuration_reconcile_service_deinit(uint32_t timeout_ms) {
     if (timeout_ms == 0u || !s_mutex) return DEVICE_STATUS_INVALID_ARGUMENT;
+    const uint64_t deadline_us = lifecycle_deadline_us(timeout_ms);
     taskENTER_CRITICAL(&s_state_lock);
-    if (!s_initialized || s_stopping) {
+    if (!s_initialized) {
         taskEXIT_CRITICAL(&s_state_lock);
         return DEVICE_STATUS_UNAVAILABLE;
     }
-    s_stopping = true;
-    s_expiry_stop_requested = true;
+    /* A previous bounded attempt may have timed out after publishing the
+     * stopping fence.  Keep that generation closed, but allow the caller to
+     * retry the same cleanup rather than turning the timeout into a permanent
+     * UNAVAILABLE state. */
+    if (!s_stopping) {
+        s_stopping = true;
+        s_expiry_stop_requested = true;
+    }
     const TaskHandle_t expiry_task_handle = s_expiry_task;
     taskEXIT_CRITICAL(&s_state_lock);
     if (s_expiry_timer) (void)esp_timer_stop(s_expiry_timer);
@@ -603,11 +677,12 @@ device_status_t configuration_reconcile_service_deinit(uint32_t timeout_ms) {
         while (xSemaphoreTake(s_expiry_stopped, 0) == pdTRUE) {}
         (void)xTaskNotify(expiry_task_handle, CONFIGURATION_RECONCILE_NOTIFY_EXPIRY,
                           eSetBits);
-        if (xSemaphoreTake(s_expiry_stopped, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
+        if (xSemaphoreTake(s_expiry_stopped,
+                           lifecycle_remaining_ticks(deadline_us)) != pdTRUE) {
             return DEVICE_STATUS_TIMEOUT;
         }
     }
-    if (xSemaphoreTake(s_mutex, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
+    if (xSemaphoreTake(s_mutex, lifecycle_remaining_ticks(deadline_us)) != pdTRUE) {
         return DEVICE_STATUS_TIMEOUT;
     }
     taskENTER_CRITICAL(&s_state_lock);
@@ -624,6 +699,7 @@ device_status_t configuration_reconcile_service_deinit(uint32_t timeout_ms) {
 device_status_t configuration_reconcile_service_prepare_system_sleep(
     uint32_t timeout_ms) {
     if (timeout_ms == 0u || !s_mutex) return DEVICE_STATUS_INVALID_ARGUMENT;
+    const uint64_t deadline_us = lifecycle_deadline_us(timeout_ms);
     taskENTER_CRITICAL(&s_state_lock);
     if (!s_initialized || s_stopping || s_system_sleep_preparing) {
         taskEXIT_CRITICAL(&s_state_lock);
@@ -654,7 +730,7 @@ device_status_t configuration_reconcile_service_prepare_system_sleep(
      * its complete apply state before the caller proceeds to Configuration
      * and Persistence fencing.  On timeout the fence intentionally remains
      * closed until the explicit ABORT path is able to reopen it. */
-    if (xSemaphoreTake(s_mutex, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
+    if (xSemaphoreTake(s_mutex, lifecycle_remaining_ticks(deadline_us)) != pdTRUE) {
         return DEVICE_STATUS_TIMEOUT;
     }
     taskENTER_CRITICAL(&s_state_lock);
@@ -684,36 +760,26 @@ void configuration_reconcile_service_abort_system_sleep_prepare(void) {
     rearm_expiry_timer();
 }
 
-static device_status_t reconcile_internal(
+/* Serialized reconcile body. The caller owns s_mutex and has already marked
+ * s_reconciling=true. Keeping the entire mutation->snapshot->consumer pass
+ * under this owner prevents System Sleep from fencing a newly published
+ * runtime override in the small gap between mutation and apply. */
+static device_status_t reconcile_internal_locked(
     configuration_reconcile_service_reason_t reason,
     const configuration_reconcile_authorization_t *authorization) {
     if (reason > CONFIGURATION_RECONCILE_REASON_RUNTIME_OVERRIDE_EXPIRY || !s_mutex) {
         return DEVICE_STATUS_INVALID_ARGUMENT;
     }
-    taskENTER_CRITICAL(&s_state_lock);
-    const bool admitted = s_initialized && !s_stopping &&
-                          !s_system_sleep_preparing && !s_reconciling;
-    if (admitted) s_reconciling = true;
-    taskEXIT_CRITICAL(&s_state_lock);
-    if (!admitted) return DEVICE_STATUS_BUSY;
-    if (xSemaphoreTake(s_mutex, pdMS_TO_TICKS(5000)) != pdTRUE) {
-        taskENTER_CRITICAL(&s_state_lock);
-        s_reconciling = false;
-        taskEXIT_CRITICAL(&s_state_lock);
-        return DEVICE_STATUS_TIMEOUT;
-    }
-
-    /* Admission is sampled before waiting on the serialized mutex. A
-     * destructive reset/System Sleep may publish its fence while this caller
-     * is queued, so sample it again while owning the mutex and before loading
-     * Configuration or invoking any Audio/Display side effect. */
+    /* Admission is sampled before the caller enters this owner. A destructive
+     * reset/System Sleep may publish its fence while a caller is queued; the
+     * wrapper therefore rechecks it while owning s_mutex before invoking any
+     * Configuration, Audio, or Display side effect. */
     taskENTER_CRITICAL(&s_state_lock);
     const bool still_admitted = s_initialized && !s_stopping &&
                                 !s_system_sleep_preparing && s_reconciling;
     if (!still_admitted) s_reconciling = false;
     taskEXIT_CRITICAL(&s_state_lock);
     if (!still_admitted) {
-        xSemaphoreGive(s_mutex);
         return DEVICE_STATUS_BUSY;
     }
 
@@ -742,6 +808,28 @@ static device_status_t reconcile_internal(
     s_last_status = status;
     s_reconciling = false;
     taskEXIT_CRITICAL(&s_state_lock);
+    return status;
+}
+
+static device_status_t reconcile_internal(
+    configuration_reconcile_service_reason_t reason,
+    const configuration_reconcile_authorization_t *authorization) {
+    if (reason > CONFIGURATION_RECONCILE_REASON_RUNTIME_OVERRIDE_EXPIRY || !s_mutex) {
+        return DEVICE_STATUS_INVALID_ARGUMENT;
+    }
+    taskENTER_CRITICAL(&s_state_lock);
+    const bool admitted = s_initialized && !s_stopping &&
+                          !s_system_sleep_preparing && !s_reconciling;
+    if (admitted) s_reconciling = true;
+    taskEXIT_CRITICAL(&s_state_lock);
+    if (!admitted) return DEVICE_STATUS_BUSY;
+    if (xSemaphoreTake(s_mutex, pdMS_TO_TICKS(5000)) != pdTRUE) {
+        taskENTER_CRITICAL(&s_state_lock);
+        s_reconciling = false;
+        taskEXIT_CRITICAL(&s_state_lock);
+        return DEVICE_STATUS_TIMEOUT;
+    }
+    const device_status_t status = reconcile_internal_locked(reason, authorization);
     xSemaphoreGive(s_mutex);
     return status;
 }
@@ -772,31 +860,90 @@ device_status_t configuration_reconcile_service_apply_runtime_override(
     if (override->kind == CONFIGURATION_RUNTIME_OVERRIDE_VALUE_TRANSPORT_SELECTION) {
         return DEVICE_STATUS_UNAVAILABLE;
     }
+    /* Runtime policy mutation and its consumer reconciliation form one
+     * admission boundary.  Do not publish a new override while a destructive
+     * System-Sleep fence, deinit, or another serialized reconcile owns this
+     * generation: otherwise the durable intent would change even though the
+     * caller receives BUSY and no consumer pass can prove convergence. */
+    if (!s_mutex || xSemaphoreTake(s_mutex, 0) != pdTRUE) {
+        return DEVICE_STATUS_BUSY;
+    }
+    taskENTER_CRITICAL(&s_state_lock);
+    const bool admitted = s_initialized && !s_stopping &&
+                          !s_system_sleep_preparing && !s_reconciling;
+    if (admitted) s_reconciling = true;
+    taskEXIT_CRITICAL(&s_state_lock);
+    if (!admitted) {
+        xSemaphoreGive(s_mutex);
+        return DEVICE_STATUS_BUSY;
+    }
     const device_status_t status = configuration_service_apply_runtime_override(override);
-    if (status != DEVICE_STATUS_OK) return status;
-    /* A replacement may move the earliest deadline in either direction. Rearm
-     * before entering reconcile so even a temporarily busy consumer cannot
-     * leave a newly earlier expiry behind the old timer deadline. */
-    rearm_expiry_timer();
-    return configuration_reconcile_service_reconcile(
-        CONFIGURATION_RECONCILE_REASON_RUNTIME_POLICY);
+    if (status != DEVICE_STATUS_OK) {
+        taskENTER_CRITICAL(&s_state_lock);
+        s_reconciling = false;
+        taskEXIT_CRITICAL(&s_state_lock);
+        xSemaphoreGive(s_mutex);
+        return status;
+    }
+    const device_status_t reconcile_status = reconcile_internal_locked(
+        CONFIGURATION_RECONCILE_REASON_RUNTIME_POLICY, NULL);
+    xSemaphoreGive(s_mutex);
+    return reconcile_status;
 }
 
 device_status_t configuration_reconcile_service_remove_runtime_override(
     configuration_runtime_override_value_kind_t kind) {
+    if (!s_mutex || xSemaphoreTake(s_mutex, 0) != pdTRUE) {
+        return DEVICE_STATUS_BUSY;
+    }
+    taskENTER_CRITICAL(&s_state_lock);
+    const bool admitted = s_initialized && !s_stopping &&
+                          !s_system_sleep_preparing && !s_reconciling;
+    if (admitted) s_reconciling = true;
+    taskEXIT_CRITICAL(&s_state_lock);
+    if (!admitted) {
+        xSemaphoreGive(s_mutex);
+        return DEVICE_STATUS_BUSY;
+    }
     const device_status_t status = configuration_service_remove_runtime_override(kind);
-    if (status != DEVICE_STATUS_OK) return status;
-    rearm_expiry_timer();
-    return configuration_reconcile_service_reconcile(
-        CONFIGURATION_RECONCILE_REASON_RUNTIME_POLICY);
+    if (status != DEVICE_STATUS_OK) {
+        taskENTER_CRITICAL(&s_state_lock);
+        s_reconciling = false;
+        taskEXIT_CRITICAL(&s_state_lock);
+        xSemaphoreGive(s_mutex);
+        return status;
+    }
+    const device_status_t reconcile_status = reconcile_internal_locked(
+        CONFIGURATION_RECONCILE_REASON_RUNTIME_POLICY, NULL);
+    xSemaphoreGive(s_mutex);
+    return reconcile_status;
 }
 
 device_status_t configuration_reconcile_service_clear_runtime_overrides(void) {
+    if (!s_mutex || xSemaphoreTake(s_mutex, 0) != pdTRUE) {
+        return DEVICE_STATUS_BUSY;
+    }
+    taskENTER_CRITICAL(&s_state_lock);
+    const bool admitted = s_initialized && !s_stopping &&
+                          !s_system_sleep_preparing && !s_reconciling;
+    if (admitted) s_reconciling = true;
+    taskEXIT_CRITICAL(&s_state_lock);
+    if (!admitted) {
+        xSemaphoreGive(s_mutex);
+        return DEVICE_STATUS_BUSY;
+    }
     const device_status_t status = configuration_service_clear_runtime_overrides();
-    if (status != DEVICE_STATUS_OK) return status;
-    rearm_expiry_timer();
-    return configuration_reconcile_service_reconcile(
-        CONFIGURATION_RECONCILE_REASON_RUNTIME_POLICY);
+    if (status != DEVICE_STATUS_OK) {
+        taskENTER_CRITICAL(&s_state_lock);
+        s_reconciling = false;
+        taskEXIT_CRITICAL(&s_state_lock);
+        xSemaphoreGive(s_mutex);
+        return status;
+    }
+    const device_status_t reconcile_status = reconcile_internal_locked(
+        CONFIGURATION_RECONCILE_REASON_RUNTIME_POLICY, NULL);
+    xSemaphoreGive(s_mutex);
+    return reconcile_status;
 }
 
 bool configuration_reconcile_service_get_snapshot(

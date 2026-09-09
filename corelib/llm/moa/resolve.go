@@ -86,6 +86,9 @@ func ResolvePreset(in ResolveInput) (ResolvedPreset, error) {
 	if preset.AggregatorMaxTokens > 0 {
 		agg.MaxOutputTokens = preset.AggregatorMaxTokens
 	}
+	if preset.AggregatorTemperature != nil {
+		agg.Temperature = preset.AggregatorTemperature
+	}
 	out.Aggregator = agg
 	out.AggregatorUsePrimary = usePrimary
 
@@ -105,6 +108,9 @@ func ResolvePreset(in ResolveInput) (ResolvedPreset, error) {
 		}
 		if preset.ReferenceMaxTokens > 0 {
 			rcfg.MaxOutputTokens = preset.ReferenceMaxTokens
+		}
+		if preset.ReferenceTemperature != nil {
+			rcfg.Temperature = preset.ReferenceTemperature
 		}
 		// Reject responses-ws for references (K: Responses-WS as ref).
 		if rcfg.IsResponsesWebSocket() {

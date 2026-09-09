@@ -94,6 +94,9 @@ func (m *LocalBackgroundTaskManager) SubmitWithOwner(command, workDir, role, own
 	if rejection, rejected := RejectRawSSHCommand(command); rejected {
 		return nil, fmt.Errorf("%s", rejection)
 	}
+	if rejection, rejected := RejectShellDatabaseCLI(command); rejected {
+		return nil, fmt.Errorf("%s", rejection)
+	}
 	if rejection, rejected := RejectBroadBrowserKillCommand(command); rejected {
 		return nil, fmt.Errorf("%s", rejection)
 	}

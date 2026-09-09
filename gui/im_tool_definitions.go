@@ -14,11 +14,6 @@ import (
 
 func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 	defs := []map[string]interface{}{
-		toolDef("list_sessions", "列出当前所有远程会话及其状态", nil, nil),
-		toolDef("list_providers", "列出指定编程工具的所有可用服务商（已过滤未配置的空服务商）",
-			map[string]interface{}{
-				"coding_tool": map[string]string{"type": "string", "description": "工具名称，如 claude, codex, opencode"},
-			}, []string{"coding_tool"}),
 		toolDef("ssh", "SSH 远程服务器管理（connect/exec/exec_background/check_task/wait_task/list_tasks/kill_task/upload/download/list/close）。适用于服务器登录、远程命令、日志排查、服务重启与文件传输。长命令请优先使用 exec_background。重要：连接后如果要执行后台任务，请先用 list_tasks 检查是否已有相同任务在运行，避免重复创建。",
 			map[string]interface{}{
 				"action":          map[string]string{"type": "string", "description": "操作: connect/exec/exec_background/check_task/wait_task/list_tasks/kill_task/upload/download/list/close"},
@@ -46,28 +41,6 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 				"path":   map[string]string{"type": "string", "description": "项目路径（create 必填）"},
 				"target": map[string]string{"type": "string", "description": "项目名称或 ID（delete/switch 必填）"},
 			}, []string{"action"}),
-		toolDef("send_input", "向指定会话发送文本输入。发送后可用 get_session_output 观察结果。",
-			map[string]interface{}{
-				"session_id": map[string]string{"type": "string", "description": "会话 ID"},
-				"text":       map[string]string{"type": "string", "description": "要发送的文本"},
-			}, []string{"session_id", "text"}),
-		toolDef("get_session_output", "获取指定会话的最近输出内容和状态摘要。",
-			map[string]interface{}{
-				"session_id": map[string]string{"type": "string", "description": "会话 ID"},
-				"lines":      map[string]string{"type": "integer", "description": "返回最近 N 行输出（默认 30，最大 100）"},
-			}, []string{"session_id"}),
-		toolDef("get_session_events", "获取指定会话的重要事件列表（文件修改、命令执行、错误等）",
-			map[string]interface{}{
-				"session_id": map[string]string{"type": "string", "description": "会话 ID"},
-			}, []string{"session_id"}),
-		toolDef("interrupt_session", "中断指定会话（发送 Ctrl+C 信号）",
-			map[string]interface{}{
-				"session_id": map[string]string{"type": "string", "description": "会话 ID"},
-			}, []string{"session_id"}),
-		toolDef("kill_session", "终止指定会话",
-			map[string]interface{}{
-				"session_id": map[string]string{"type": "string", "description": "会话 ID"},
-			}, []string{"session_id"}),
 		toolDef("screenshot", "截取屏幕截图并发送给用户。这是截屏的唯一正确方式，禁止用 bash 编写 PowerShell/Python/scrot 等截屏脚本替代此工具。使用场景：(1) 用户明确要求截屏；(2) 用户通过 IM 远程监督，需要确认操作结果。不要在用户未要求时主动截屏。最小间隔 30 秒。",
 			map[string]interface{}{
 				"session_id": map[string]string{"type": "string", "description": "会话 ID（可选，只有一个会话时自动选择）"},
@@ -122,10 +95,6 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 					},
 				},
 			}, []string{"tasks"}),
-		toolDef("recommend_tool", "根据任务描述推荐最合适的编程工具",
-			map[string]interface{}{
-				"task_description": map[string]string{"type": "string", "description": "任务描述"},
-			}, []string{"task_description"}),
 		toolDef("craft_tool", "当现有工具、Skill 或会话式编程都不合适时，生成并执行单脚本来完成一次性自动化任务。更适合本机数据处理、API 调用、文件转换和小型系统自动化；不适合复杂代码库改造或长链路编程任务。",
 			map[string]interface{}{
 				"task":               map[string]string{"type": "string", "description": "需要完成的任务描述（越详细越好）"},

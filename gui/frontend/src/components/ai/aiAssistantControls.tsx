@@ -4,10 +4,10 @@ import { baseWindowControlBtnStyle, type Theme } from "./aiAssistantPanelTheme";
 export const miniActionButtonStyle: React.CSSProperties = {
     flex: 1,
     minWidth: 0,
-    border: "1px solid #cbd5e1",
+    border: "1px solid var(--theme-border, #cbd5e1)",
     borderRadius: "8px",
-    background: "white",
-    color: "#334155",
+    background: "var(--theme-surface, #ffffff)",
+    color: "var(--theme-text-primary, #334155)",
     fontSize: "11px",
     fontWeight: 600,
     padding: "5px 8px",
@@ -66,7 +66,7 @@ export function VoiceLevelVisualizer({ onAudioLevelRef, isSpeaking, themeColor, 
 }
 
 export function getWindowControlButtonStyle(t: Theme, variant: "hide" | "fullscreen", active = false): React.CSSProperties {
-    const hoverBg = variant === "hide" ? "rgba(148, 163, 184, 0.14)" : "rgba(47, 111, 188, 0.14)";
+    const hoverBg = variant === "hide" ? "rgba(148, 163, 184, 0.14)" : `color-mix(in srgb, ${t.btnColor} 14%, transparent)`;
     return {
         ...baseWindowControlBtnStyle,
         color: active ? t.text : t.actionBtnColor,

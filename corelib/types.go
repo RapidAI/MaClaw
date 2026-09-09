@@ -381,7 +381,10 @@ type NLSkillEntry struct {
 	Operations         []NLSkillOperation  `json:"operations,omitempty"`      // named operations for api_workflow mode
 	RequiredArgs       []string            `json:"required_args,omitempty"`   // required template variables (e.g. "input", "output")
 	RequiredEnv        []string            `json:"required_env,omitempty"`    // required environment variables (e.g. "API_KEY")
-	PreferredShell     string              `json:"preferred_shell,omitempty"` // "bash" or "cmd"; empty = auto-detect
+	// NoLLMAPI declares the skill does not call any OpenAI-compatible LLM API,
+	// so the runner skips starting the local OpenAI proxy (default-on otherwise).
+	NoLLMAPI       bool   `json:"no_llm_api,omitempty"`
+	PreferredShell string `json:"preferred_shell,omitempty"` // "bash" or "cmd"; empty = auto-detect
 	UsageCount         int                 `json:"usage_count"`
 	SuccessCount       int                 `json:"success_count"`
 	FailureCount       int                 `json:"failure_count"`
@@ -963,13 +966,15 @@ type MaclawLLMProvider struct {
 	SupportsVision bool     `json:"supports_vision"`
 	AgentType      string   `json:"agent_type,omitempty"` // "openclaw" (default) or "claude" → controls User-Agent header
 	// ── 新增 OAuth 字段 ──
-	AuthType                 string  `json:"auth_type,omitempty"`
-	RefreshToken             string  `json:"refresh_token,omitempty"`
-	TokenExpiresAt           int64   `json:"token_expires_at,omitempty"`
-	OAuthAccessToken         string  `json:"oauth_access_token,omitempty"` // 原始 access_token（Responses API）；组织账单查询需要 Admin API Key，不能用该字段
-	WireAPI                  string  `json:"wire_api,omitempty"`           // "chat" or "responses"; empty defaults to "chat"
-	InputPricePerMTokensRMB  float64 `json:"input_price_per_m_tokens_rmb,omitempty"`
-	OutputPricePerMTokensRMB float64 `json:"output_price_per_m_tokens_rmb,omitempty"`
+	AuthType                     string  `json:"auth_type,omitempty"`
+	RefreshToken                 string  `json:"refresh_token,omitempty"`
+	TokenExpiresAt               int64   `json:"token_expires_at,omitempty"`
+	OAuthAccessToken             string  `json:"oauth_access_token,omitempty"` // 原始 access_token（Responses API）；组织账单查询需要 Admin API Key，不能用该字段
+	WireAPI                      string  `json:"wire_api,omitempty"`           // "chat" or "responses"; empty defaults to "chat"
+	InputPricePerMTokensRMB      float64 `json:"input_price_per_m_tokens_rmb,omitempty"`
+	OutputPricePerMTokensRMB     float64 `json:"output_price_per_m_tokens_rmb,omitempty"`
+	CacheReadPricePerMTokensRMB  float64 `json:"cache_read_price_per_m_tokens_rmb,omitempty"`
+	CacheWritePricePerMTokensRMB float64 `json:"cache_write_price_per_m_tokens_rmb,omitempty"`
 }
 
 // UserAgent returns the User-Agent header value for LLM API requests.
@@ -1001,18 +1006,22 @@ func (p MaclawLLMProvider) CodexSubscriptionOAuthToken() string {
 
 // MaclawLLMConfig 是 MaClaw 桌面 Agent 的 LLM 配置。
 type MaclawLLMConfig struct {
-	URL             string `json:"url"`
-	Key             string `json:"key"`
-	Model           string `json:"model"`
-	Protocol        string `json:"protocol,omitempty"`
-	ContextLength   int    `json:"context_length,omitempty"`
-	TimeoutSec      int    `json:"timeout_sec,omitempty"`
-	MaxOutputTokens int    `json:"max_output_tokens,omitempty"` // per-request output token limit; 0 = use system default
-	SupportsVision  bool   `json:"supports_vision"`
-	AgentType       string `json:"agent_type,omitempty"`    // "openclaw" (default) or "claude" → controls User-Agent header
-	WireAPI         string `json:"wire_api,omitempty"`      // "chat" or "responses"; empty defaults to "chat"
-	ProviderName    string `json:"provider_name,omitempty"` // human-readable provider name (e.g. "智谱编程")
-	ProviderID      string `json:"provider_id,omitempty"`   // stable shared-provider identity for usage attribution
+	URL                          string  `json:"url"`
+	Key                          string  `json:"key"`
+	Model                        string  `json:"model"`
+	Protocol                     string  `json:"protocol,omitempty"`
+	ContextLength                int     `json:"context_length,omitempty"`
+	TimeoutSec                   int     `json:"timeout_sec,omitempty"`
+	MaxOutputTokens              int     `json:"max_output_tokens,omitempty"` // per-request output token limit; 0 = use system default
+	SupportsVision               bool    `json:"supports_vision"`
+	AgentType                    string  `json:"agent_type,omitempty"`    // "openclaw" (default) or "claude" → controls User-Agent header
+	WireAPI                      string  `json:"wire_api,omitempty"`      // "chat" or "responses"; empty defaults to "chat"
+	ProviderName                 string  `json:"provider_name,omitempty"` // human-readable provider name (e.g. "智谱编程")
+	ProviderID                   string  `json:"provider_id,omitempty"`   // stable shared-provider identity for usage attribution
+	InputPricePerMTokensRMB      float64 `json:"-"`
+	OutputPricePerMTokensRMB     float64 `json:"-"`
+	CacheReadPricePerMTokensRMB  float64 `json:"-"`
+	CacheWritePricePerMTokensRMB float64 `json:"-"`
 	// Profile identifies the configured execution profile that produced this
 	// snapshot (assistant or coding). RouteSource is filled by a later routing
 	// layer when it replaces the profile's base model.
@@ -1036,6 +1045,13 @@ type MaclawLLMConfig struct {
 	// "" = auto (existing IsDeepSeekThinkingModeModel default),
 	// "enabled" | "disabled" for explicit override (cost-route Phase 3).
 	ThinkingMode string `json:"thinking_mode,omitempty"`
+
+	// Temperature is an optional sampling temperature sent as the request-body
+	// "temperature" field (chat completions / Responses / Anthropic). nil =
+	// provider default. Applied by corelib/llm request builders; skipped for
+	// Codex subscription endpoints and thinking-enabled Anthropic/DeepSeek
+	// requests, which reject the parameter.
+	Temperature *float64 `json:"temperature,omitempty"`
 
 	// HubManaged and the *Hint fields are request-only L1 signals for Hub /
 	// HubCenter. They are never persisted in config files. Desktop and TUI
@@ -1167,6 +1183,14 @@ func IsMaclawOfficialHubLLMURL(rawURL string) bool {
 	return strings.Contains(text, "hub.mypapers.top/api/llm/v1")
 }
 
+// IsFirstPartyHubLLM reports whether Hub/HubCenter owns this snapshot.
+// First-party Hub must receive the caller's real messages; conservative
+// prompt relocation is a CodeGen/Qwen compatibility rewrite, not a Hub
+// transport requirement.
+func (c MaclawLLMConfig) IsFirstPartyHubLLM() bool {
+	return c.HubManaged || IsHubManagedLLMEndpoint(c.URL, c.Model)
+}
+
 // WithHubWorkloadHints marks this snapshot as Hub-managed and attaches
 // classifier hints. Desktop never remaps these onto a local model_routes pick.
 func (c MaclawLLMConfig) WithHubWorkloadHints(taskType, workflowType, phaseKind string) MaclawLLMConfig {
@@ -1179,7 +1203,7 @@ func (c MaclawLLMConfig) WithHubWorkloadHints(taskType, workflowType, phaseKind 
 
 // ShouldSendWorkloadHints reports whether L1 hint headers may leave this client.
 func (c MaclawLLMConfig) ShouldSendWorkloadHints() bool {
-	return c.HubManaged || IsHubManagedLLMEndpoint(c.URL, c.Model)
+	return c.IsFirstPartyHubLLM()
 }
 
 // IsHubManagedLLMEndpoint reports desktop/TUI configs that must not apply
@@ -1610,25 +1634,32 @@ func (c MaclawLLMConfig) EffectiveContextTokens() int {
 type TokenUsageStat struct {
 	// Attribution is present only in LLMProfileTokenUsage. Provider-only legacy
 	// records deliberately leave these fields blank rather than guessing.
-	Profile                  string  `json:"profile,omitempty"`
-	ProviderID               string  `json:"provider_id,omitempty"`
-	ProviderDisplayName      string  `json:"provider_display_name,omitempty"`
-	FinalModel               string  `json:"final_model,omitempty"`
-	RouteSource              string  `json:"route_source,omitempty"`
-	InputTokens              int64   `json:"input_tokens"`
-	OutputTokens             int64   `json:"output_tokens"`
-	TotalTokens              int64   `json:"total_tokens"`
-	CachedInputTokens        int64   `json:"cached_input_tokens,omitempty"`
-	CacheWriteTokens         int64   `json:"cache_write_tokens,omitempty"`
-	InputPricePerMTokensRMB  float64 `json:"input_price_per_m_tokens_rmb,omitempty"`
-	OutputPricePerMTokensRMB float64 `json:"output_price_per_m_tokens_rmb,omitempty"`
-	InputCostRMB             float64 `json:"input_cost_rmb,omitempty"`
-	OutputCostRMB            float64 `json:"output_cost_rmb,omitempty"`
-	TotalCostRMB             float64 `json:"total_cost_rmb,omitempty"`
-	Requests                 int64   `json:"requests,omitempty"`
-	CachedRequests           int64   `json:"cached_requests,omitempty"`
-	LocalCacheRequests       int64   `json:"local_cache_requests,omitempty"`
-	LocalCacheHits           int64   `json:"local_cache_hits,omitempty"`
+	Profile                      string  `json:"profile,omitempty"`
+	ProviderID                   string  `json:"provider_id,omitempty"`
+	ProviderDisplayName          string  `json:"provider_display_name,omitempty"`
+	FinalModel                   string  `json:"final_model,omitempty"`
+	RouteSource                  string  `json:"route_source,omitempty"`
+	InputTokens                  int64   `json:"input_tokens"`
+	OutputTokens                 int64   `json:"output_tokens"`
+	TotalTokens                  int64   `json:"total_tokens"`
+	CachedInputTokens            int64   `json:"cached_input_tokens,omitempty"`
+	CacheWriteTokens             int64   `json:"cache_write_tokens,omitempty"`
+	CacheUsageSource             string  `json:"cache_usage_source,omitempty"`
+	UsageAnomaly                 string  `json:"usage_anomaly,omitempty"`
+	PricingSource                string  `json:"pricing_source,omitempty"`
+	InputPricePerMTokensRMB      float64 `json:"input_price_per_m_tokens_rmb,omitempty"`
+	OutputPricePerMTokensRMB     float64 `json:"output_price_per_m_tokens_rmb,omitempty"`
+	InputCostRMB                 float64 `json:"input_cost_rmb,omitempty"`
+	OutputCostRMB                float64 `json:"output_cost_rmb,omitempty"`
+	CacheReadPricePerMTokensRMB  float64 `json:"cache_read_price_per_m_tokens_rmb,omitempty"`
+	CacheWritePricePerMTokensRMB float64 `json:"cache_write_price_per_m_tokens_rmb,omitempty"`
+	CacheReadCostRMB             float64 `json:"cache_read_cost_rmb,omitempty"`
+	CacheWriteCostRMB            float64 `json:"cache_write_cost_rmb,omitempty"`
+	TotalCostRMB                 float64 `json:"total_cost_rmb,omitempty"`
+	Requests                     int64   `json:"requests,omitempty"`
+	CachedRequests               int64   `json:"cached_requests,omitempty"`
+	LocalCacheRequests           int64   `json:"local_cache_requests,omitempty"`
+	LocalCacheHits               int64   `json:"local_cache_hits,omitempty"`
 }
 
 // AdaptivePromptStat is a compact process-level adaptive system-prompt cost
@@ -1763,6 +1794,42 @@ func CalculateLLMCostRMB(inputTokens, outputTokens int64, inputPricePerM, output
 	inputCost := float64(inputTokens) * inputPricePerM / 1_000_000
 	outputCost := float64(outputTokens) * outputPricePerM / 1_000_000
 	return inputCost, outputCost, inputCost + outputCost
+}
+
+// CalculateLLMCostRMBWithCache calculates directional RMB cost. Input tokens
+// reported as cached or cache-written are excluded from the normal input leg;
+// each is charged using its own provider price. The returned total is the
+// exact sum of all four legs.
+func CalculateLLMCostRMBWithCache(inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens int64, inputPricePerM, outputPricePerM, cacheReadPricePerM, cacheWritePricePerM float64) (inputCost, outputCost, cacheReadCost, cacheWriteCost, total float64) {
+	if inputTokens < 0 {
+		inputTokens = 0
+	}
+	if outputTokens < 0 {
+		outputTokens = 0
+	}
+	if cachedInputTokens < 0 {
+		cachedInputTokens = 0
+	}
+	if cacheWriteTokens < 0 {
+		cacheWriteTokens = 0
+	}
+	if cachedInputTokens > inputTokens {
+		cachedInputTokens = inputTokens
+	}
+	if cacheWriteTokens > inputTokens-cachedInputTokens {
+		cacheWriteTokens = inputTokens - cachedInputTokens
+	}
+	inputPricePerM = NormalizeLLMTokenPricePerMTokensRMB(inputPricePerM, DefaultLLMInputPricePerMTokensRMB)
+	outputPricePerM = NormalizeLLMTokenPricePerMTokensRMB(outputPricePerM, DefaultLLMOutputPricePerMTokensRMB)
+	cacheReadPricePerM = NormalizeLLMTokenPricePerMTokensRMB(cacheReadPricePerM, inputPricePerM/10)
+	cacheWritePricePerM = NormalizeLLMTokenPricePerMTokensRMB(cacheWritePricePerM, inputPricePerM)
+	normal := inputTokens - cachedInputTokens - cacheWriteTokens
+	inputCost = float64(normal) * inputPricePerM / 1_000_000
+	cacheReadCost = float64(cachedInputTokens) * cacheReadPricePerM / 1_000_000
+	cacheWriteCost = float64(cacheWriteTokens) * cacheWritePricePerM / 1_000_000
+	outputCost = float64(outputTokens) * outputPricePerM / 1_000_000
+	total = inputCost + cacheReadCost + cacheWriteCost + outputCost
+	return
 }
 
 // SkillHubEntry 描述一个 SkillHUB 注册端点。

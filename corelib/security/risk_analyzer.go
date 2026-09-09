@@ -205,4 +205,10 @@ var DefaultRiskPatterns = []RiskPattern{
 	{Name: "delete_no_where", Category: "database", ToolMatch: ".*",
 		ParamKey: "command", ParamMatch: `(?i)DELETE\s+FROM\s+\w+\s*$|TRUNCATE\s+`, Level: RiskHigh,
 		Description: "无条件删除或截断数据"},
+	{Name: "database_execute", Category: "database", ToolMatch: "^database$",
+		ParamKey: "action", ParamMatch: `^(execute|batch_execute)$`, Level: RiskHigh,
+		Description: "数据库写入或批处理"},
+	{Name: "database_export", Category: "database", ToolMatch: "^database$",
+		ParamKey: "action", ParamMatch: `^(write_table|export_excel)$`, Level: RiskMedium,
+		Description: "数据库导出或表格写入"},
 }

@@ -4623,6 +4623,13 @@ func TestAuthorizeLoopTool_LightProfileDeniesBash(t *testing.T) {
 	if denied2 {
 		t.Fatalf("web_search should not be light-denied: %+v", res2)
 	}
+	if _, denied := authorizeLoopTool(cb, "database", `{"action":"query","sql":"select 1"}`); denied {
+		t.Fatal("database query should be allowed on light")
+	}
+	writeRes, writeDenied := authorizeLoopTool(cb, "database", `{"action":"execute","sql":"delete from t"}`)
+	if !writeDenied || !strings.Contains(writeRes.Result, "light prompt profile") {
+		t.Fatalf("database execute should be light-denied: denied=%v result=%q", writeDenied, writeRes.Result)
+	}
 }
 
 func TestAuthorizeLoopTool_LightProfileUsesHostCapabilityBoundaryForOpaqueNames(t *testing.T) {

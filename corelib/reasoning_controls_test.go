@@ -132,6 +132,34 @@ func TestIsAutoThinkingModeNormalizesWhitespaceAndUnknownValues(t *testing.T) {
 	}
 }
 
+func TestParseGlobalThinkingModeSharesHostAliases(t *testing.T) {
+	tests := []struct {
+		raw  string
+		mode string
+		ok   bool
+	}{
+		{raw: "", mode: "", ok: true},
+		{raw: " auto ", mode: "", ok: true},
+		{raw: "ENABLE", mode: "enabled", ok: true},
+		{raw: "true", mode: "enabled", ok: true},
+		{raw: "DISABLE", mode: "disabled", ok: true},
+		{raw: "none", mode: "disabled", ok: true},
+		{raw: "unexpected", mode: "", ok: false},
+	}
+	for _, tt := range tests {
+		mode, ok := ParseGlobalThinkingMode(tt.raw)
+		if mode != tt.mode || ok != tt.ok {
+			t.Errorf("ParseGlobalThinkingMode(%q) = (%q, %v), want (%q, %v)", tt.raw, mode, ok, tt.mode, tt.ok)
+		}
+	}
+	if got := EffectiveGlobalThinkingMode("auto"); got != "enabled" {
+		t.Fatalf("auto effective mode = %q, want enabled", got)
+	}
+	if got := EffectiveGlobalThinkingMode("invalid"); got != "enabled" {
+		t.Fatalf("invalid effective mode = %q, want enabled", got)
+	}
+}
+
 func TestApplyReasoningControlsResponsesUsesThinkingForQwen(t *testing.T) {
 	body := map[string]interface{}{}
 	ApplyReasoningControls(

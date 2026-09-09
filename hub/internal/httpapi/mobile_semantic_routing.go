@@ -98,7 +98,9 @@ var (
 )
 
 // configureMobileDynamicSemanticRouting mirrors the reviewed MaClawSrv
-// bootstrap: information.lookup plus the host-owned information.current_time
+// bootstrap: information.search.web (LabelSearch / LabelLiveData) plus
+// information.lookup for published MCP/Skill contracts, the host-owned
+// information.current_time
 // clock, knowledge.read.local store read, security.audit.read,
 // information.fetch.web, fs.read.local, repo.inspect.vcs,
 // document.read.local, fs.write.local, knowledge.ingest.local,
@@ -106,8 +108,8 @@ var (
 // template.manage.session, schedule.administer.local,
 // knowledge.admin.maintenance, config.manage.self,
 // session.manage.coding, and audio.transcribe.speech are
-// activated. GUI IM builtins (information.search.web,
-// schedule.dispatch.channel, document.generate.file, and the rest of the
+// activated. GUI IM builtins (
+// schedule.dispatch.channel and the rest of the
 // desktop catalog) are not published here — the reviewed dynamic registry
 // has no descriptors or receipt workers for them. current_time,
 // knowledge_read, audit_read (events plus principal conversation snippets),
@@ -152,10 +154,11 @@ func configureMobileDynamicSemanticRouting(svc *agentservice.Service) error {
 		Classifier:        mobilePrincipalIntentClassifier{},
 		Registry:          registry,
 		Rules:             agentservice.ReviewedDynamicIntentCapabilityNeedRules(),
-		MinimumConfidence: 0.78,
+		MinimumConfidence: agentservice.ReviewedIntentMinimumConfidence,
 		AmbientRetrieval:  true,
+		ArchetypeBundles:  true,
 	}
-	if err := svc.ConfigureDynamicSemanticRouting(registry, resolver, agentservice.ReviewedDynamicCapabilityPolicyAdapter(), 10*time.Minute); err != nil {
+	if err := svc.ConfigureDynamicSemanticRouting(registry, resolver, agentservice.ReviewedDynamicCapabilityPolicyAdapter(), coretool.DefaultInvocationGrantTTL); err != nil {
 		return fmt.Errorf("configure dynamic semantic routing: %w", err)
 	}
 	// SessionGovernedTask is Service-owned. Continuation replays only

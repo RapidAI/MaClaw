@@ -287,7 +287,13 @@ func runBackupCreate(args []string) error {
 		return printJSON(result)
 	}
 	fmt.Fprintf(os.Stdout, "backup created: %s\n", result.ArchivePath)
+	fmt.Fprintf(os.Stdout, "generation: %s\n", result.Manifest.GenerationID)
+	fmt.Fprintf(os.Stdout, "consistency: %s\n", result.Manifest.Consistency)
+	fmt.Fprintf(os.Stdout, "write pause: %d ms, total: %d ms\n", result.Manifest.WritePauseMS, result.Manifest.DurationMS)
 	fmt.Fprintf(os.Stdout, "entries: %d\n", len(result.Manifest.Entries))
+	if summary := result.Manifest.CloudWorkspace; summary != nil {
+		fmt.Fprintf(os.Stdout, "cloud workspaces: %d, encrypted files verified: %d, retained bytes: %d\n", summary.Workspaces, summary.VerifiedObjects+summary.Sidecars, summary.Usage.RetainedBytes)
+	}
 	fmt.Fprintln(os.Stdout, "restore: hub restore --file <archive.tar.gz> --target-root <hub-dir> --force")
 	return nil
 }
@@ -314,9 +320,9 @@ func runBackupInspect(args []string) error {
 	if *jsonOut {
 		return printJSON(manifest)
 	}
-	fmt.Fprintf(os.Stdout, "app: %s\ncreated_at: %s\nentries: %d\n", manifest.App, manifest.CreatedAt, len(manifest.Entries))
+	fmt.Fprintf(os.Stdout, "app: %s\ngeneration: %s\ncreated_at: %s\nconsistency: %s\nentries: %d\n", manifest.App, manifest.GenerationID, manifest.CreatedAt, manifest.Consistency, len(manifest.Entries))
 	for _, entry := range manifest.Entries {
-		fmt.Fprintf(os.Stdout, "%s\t%s\t%d\n", entry.Kind, entry.Path, entry.Size)
+		fmt.Fprintf(os.Stdout, "%s\t%s\t%d\t%s\n", entry.Kind, entry.Path, entry.Size, entry.SHA256)
 	}
 	return nil
 }
@@ -356,6 +362,13 @@ func runRestore(args []string) error {
 		verb = "would restore"
 	}
 	fmt.Fprintf(os.Stdout, "%s %d entries into %s\n", verb, len(result.Restored), result.TargetRoot)
+	fmt.Fprintf(os.Stdout, "duration: %d ms\n", result.DurationMS)
+	if result.GenerationID != "" {
+		fmt.Fprintf(os.Stdout, "generation: %s\n", result.GenerationID)
+	}
+	if summary := result.Verification; summary != nil {
+		fmt.Fprintf(os.Stdout, "cloud workspace verification: %d roots, %d files, %d retained bytes\n", summary.Workspaces, summary.VerifiedObjects+summary.Sidecars, summary.Usage.RetainedBytes)
+	}
 	if len(result.Skipped) > 0 {
 		fmt.Fprintf(os.Stdout, "skipped existing entries: %d\n", len(result.Skipped))
 	}
@@ -485,6 +498,8 @@ func printBackupUsage() {
 	fmt.Fprintln(os.Stdout, "Included data:")
 	fmt.Fprintln(os.Stdout, "  config file, consistent SQLite snapshot, data directory assets, skills,")
 	fmt.Fprintln(os.Stdout, "  user/device/session/chat/IM/LLM state, and configured TLS cert/key files.")
+	fmt.Fprintln(os.Stdout, "  Cloud Workspace SQLite roots, encrypted blobs, and file keyring are captured")
+	fmt.Fprintln(os.Stdout, "  under one write barrier; every archive entry carries a SHA-256 digest.")
 	fmt.Fprintln(os.Stdout, "  Runtime .log files are skipped unless --include-logs is set.")
 }
 
@@ -515,7 +530,7 @@ func printBackupInspectUsage() {
 	fmt.Fprintln(os.Stdout, "Usage:")
 	fmt.Fprintln(os.Stdout, "  hub backup inspect --file <backup.tar.gz> [--json]")
 	fmt.Fprintln(os.Stdout, "")
-	fmt.Fprintln(os.Stdout, "Reads manifest.json without restoring files. Use this before transfer or restore.")
+	fmt.Fprintln(os.Stdout, "Reads generation metadata and SHA-256 inventory without restoring files.")
 	fmt.Fprintln(os.Stdout, "")
 	fmt.Fprintln(os.Stdout, "Options:")
 	fmt.Fprintln(os.Stdout, "  --file <path>         Backup archive to inspect.")
@@ -529,7 +544,9 @@ func printRestoreUsage() {
 	fmt.Fprintln(os.Stdout, "Usage:")
 	fmt.Fprintln(os.Stdout, "  hub restore --file <backup.tar.gz> --target-root <hub-dir> [--dry-run] [--force] [--json]")
 	fmt.Fprintln(os.Stdout, "")
-	fmt.Fprintln(os.Stdout, "Restores a Hub archive. Stop Hub before a real restore.")
+	fmt.Fprintln(os.Stdout, "Validates every SHA-256, SQLite quick_check, Cloud Workspace manifest/snapshot roots,")
+	fmt.Fprintln(os.Stdout, "objects, sidecars, master-key identity, and retained usage before target mutation.")
+	fmt.Fprintln(os.Stdout, "Stop Hub before a real restore; the data directory is activated as one generation.")
 	fmt.Fprintln(os.Stdout, "By default, restore refuses to overwrite existing files. Use --dry-run first,")
 	fmt.Fprintln(os.Stdout, "then rerun with --force when the target path is correct.")
 	fmt.Fprintln(os.Stdout, "")

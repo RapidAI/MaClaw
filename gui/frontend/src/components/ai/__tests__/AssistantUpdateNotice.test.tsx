@@ -149,4 +149,34 @@ describe("AssistantUpdateNotice", () => {
 
         expect(container.firstChild).toBeNull();
     });
+
+    it("renders the reference-style floating update card", () => {
+        const onOpen = vi.fn();
+        const onOpenReleaseNotes = vi.fn();
+        const onDismiss = vi.fn();
+        render(
+            <AssistantUpdateNotice
+                inline={true}
+                variant="floating"
+                lang="zh-Hans"
+                onDismissAppUpdate={onDismiss}
+                onOpenAppReleaseNotes={onOpenReleaseNotes}
+                onOpenAppUpdate={onOpen}
+                theme={lightTheme}
+                themeMode="light"
+                updateAvailable={{ has_update: true, latest_version: "V3.4.5" }}
+            />
+        );
+
+        const card = screen.getByTestId("assistant-update-float");
+        expect(card.textContent).toContain("新版本就绪");
+        expect(card.textContent).toContain("3.4.5");
+        fireEvent.click(screen.getByRole("button", { name: "更新日志" }));
+        fireEvent.click(screen.getByRole("button", { name: "重启升级" }));
+        fireEvent.click(screen.getByRole("button", { name: "关闭更新提示" }));
+
+        expect(onOpenReleaseNotes).toHaveBeenCalledTimes(1);
+        expect(onOpen).toHaveBeenCalledTimes(1);
+        expect(onDismiss).toHaveBeenCalledWith("V3.4.5");
+    });
 });

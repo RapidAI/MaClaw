@@ -42,6 +42,10 @@ const (
 	// and not launching an unrelated application, URL, or folder (app_launch).
 	LabelDocumentOpen IntentLabel = "document_open"
 	LabelBusinessData IntentLabel = "business_data"
+	// LabelDatabase is a SQL/data-source inspect or query against MySQL,
+	// PostgreSQL, SQL Server, Access, or Excel. It is not a Git 仓库, not
+	// the knowledge 库, and not MIS business-form entry (business_data).
+	LabelDatabase     IntentLabel = "database"
 	LabelBugFix       IntentLabel = "bug_fix"
 	LabelContinuation IntentLabel = "continuation"
 	LabelMaintenance  IntentLabel = "maintenance"
@@ -148,6 +152,7 @@ func AllLabels() []IntentLabel {
 		LabelDocumentRead,
 		LabelDocumentOpen,
 		LabelBusinessData,
+		LabelDatabase,
 		LabelBugFix,
 		LabelContinuation,
 		LabelMaintenance,
@@ -208,6 +213,20 @@ func (l IntentLabel) IsValid() bool {
 func (l IntentLabel) IsNonCapabilityLabel() bool {
 	switch l {
 	case "", LabelNonCoding, LabelContinuation, LabelAmbiguous, LabelUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsGenericContinuationPrimary reports a classifier primary that may replay a
+// previously granted plan instead of starting a new capability family.
+// Continuation, unknown, and ambiguous are the closed set; non_coding is not
+// included because it is a real Q&A surface, not a "continue the last task"
+// signal.
+func (r ClassificationResult) IsGenericContinuationPrimary() bool {
+	switch r.Primary {
+	case LabelContinuation, LabelUnknown, LabelAmbiguous:
 		return true
 	default:
 		return false
@@ -279,6 +298,18 @@ func (r ClassificationResult) Labels() []IntentLabel {
 	labels := make([]IntentLabel, 0, 1+len(r.Secondary))
 	labels = append(labels, r.Primary)
 	return append(labels, r.Secondary...)
+}
+
+// HasLabel reports whether primary or any secondary equals label. GUI IM
+// routing and headless archetype bundle selection share this so a composite
+// cannot be read as two different label sets.
+func (r ClassificationResult) HasLabel(label IntentLabel) bool {
+	for _, candidate := range r.Labels() {
+		if candidate == label {
+			return true
+		}
+	}
+	return false
 }
 
 // MessageContext is the input to the classifier.

@@ -94,6 +94,10 @@ func CreateOrderHandler(svc *Service) http.HandlerFunc {
 
 // ListOrdersHandler lists orders for a hub/tenant.
 // GET /api/cardstore/orders?hub_id=X&tenant_id=Y&status=Z&statuses=A,B&offset=0&limit=20
+// maxOrderListLimit caps the page size for order listing. P1 of the
+// 2026-09-09 review: the value was previously unbounded.
+const maxOrderListLimit = 200
+
 func ListOrdersHandler(svc *Service) http.HandlerFunc {
 	return listOrdersHandler(svc, false)
 }
@@ -104,6 +108,12 @@ func listOrdersHandler(svc *Service, allowActiveCards bool) http.HandlerFunc {
 		limit, _ := strconv.Atoi(q.Get("limit"))
 		if limit <= 0 {
 			limit = 20
+		}
+		// P1 (2026-09-09 review): limit was unbounded and flowed straight into
+		// the SQL LIMIT clause (llm_order_repo.go), so a single anonymous
+		// request could pull the entire order table.
+		if limit > maxOrderListLimit {
+			limit = maxOrderListLimit
 		}
 		offset, _ := strconv.Atoi(q.Get("offset"))
 
@@ -123,6 +133,18 @@ func listOrdersHandler(svc *Service, allowActiveCards bool) http.HandlerFunc {
 		if allowActiveCards {
 			filter.ActiveCardsOnly = q.Get("active_cards") == "1" || strings.EqualFold(q.Get("active_cards"), "true") ||
 				q.Get("valid_cards") == "1" || strings.EqualFold(q.Get("valid_cards"), "true")
+		}
+		// P0 (2026-09-09 review): the SQL behind this filter is "WHERE 1=1"
+		// with every predicate optional, so an anonymous request with no query
+		// parameters paged through every tenant's orders — admin emails, hub
+		// and tenant ids, amounts and payment URLs (llm_order_repo.go:43).
+		// Callers must scope the query.
+		if strings.TrimSpace(q.Get("hub_id")) == "" &&
+			strings.TrimSpace(q.Get("tenant_id")) == "" &&
+			strings.TrimSpace(q.Get("email")) == "" &&
+			strings.TrimSpace(q.Get("service_group_id")) == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "hub_id, tenant_id, email or service_group_id query parameter is required"})
+			return
 		}
 		alipay := alipayConfigForRequest(r, svc)
 		orders, total, err := svc.ListOrdersWithAlipayConfig(r.Context(), filter, alipay)

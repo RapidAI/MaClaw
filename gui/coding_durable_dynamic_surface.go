@@ -81,6 +81,13 @@ func (a *App) publishCodingDurableDynamicSurfaceForEpoch(identity *trustedCoding
 		RootTaskID: identity.RootTaskID, PlanID: prepared.Plan.ID, SessionID: identity.SessionID,
 		TurnID: identity.TurnID, PrincipalID: identity.PrincipalID,
 	}
+	// Keep the host-admitted tool-surface identity separate from the provider
+	// inventory digest. The full planner snapshot is preferred; the catalog
+	// digest is only a compatibility fallback for legacy plans.
+	scope.ToolSnapshotID = strings.TrimSpace(prepared.Plan.SnapshotDigest)
+	if scope.ToolSnapshotID == "" {
+		scope.ToolSnapshotID = strings.TrimSpace(prepared.Plan.CatalogDigest)
+	}
 	_, grants, err := coordinator.PublishSurface(tool.SurfacePublishRequest{
 		Revision: tool.RouteRevisionPublishRequest{Scope: scope, Plan: prepared.Plan, SnapshotDigest: prepared.Plan.SnapshotDigest},
 		TenantID: identity.TenantID, Issuer: issuer, GrantTTL: 5 * time.Minute, Now: now,
@@ -198,6 +205,14 @@ func (a *App) recoverCodingDurableDynamicSurface(identity *trustedCodingInvocati
 	if err != nil {
 		return nil, fmt.Errorf("stale_surface")
 	}
+	// Preserve an explicit host surface identity across restart. Legacy rows
+	// without one use the immutable planner snapshot as their compatibility
+	// identity; CatalogDigest is only the final fallback for old plans.
+	if expectedToolSnapshotID := strings.TrimSpace(surface.Scope.ToolSnapshotID); expectedToolSnapshotID != "" {
+		if err := tool.ValidateInvocationScopeSnapshot(surface.Scope, expectedToolSnapshotID); err != nil {
+			return nil, fmt.Errorf("stale_surface: %w", err)
+		}
+	}
 	return &codingDurableDynamicSurface{
 		coordinator: coordinator,
 		plan:        plan,
@@ -311,7 +326,7 @@ func (s *codingDurableDynamicSurface) ExecuteBoundSelection(ctx context.Context,
 		now = time.Now().UTC()
 	}
 	grant, scope, err := s.ResolveAlias(responseID, alias)
-	if err != nil || scope != s.scope {
+	if err != nil || !tool.InvocationScopesCompatible(scope, s.scope) {
 		return rejectedCodingDynamicSelection("stale_surface")
 	}
 	// The durable route is the authority after recovery. Do not validate
@@ -326,7 +341,7 @@ func (s *codingDurableDynamicSurface) ExecuteBoundSelection(ctx context.Context,
 	if err != nil {
 		return rejectedCodingDynamicSelection("semantic_execution_coordinator_unavailable")
 	}
-	selection, err := issuer.Validate(grant, scope, publishedPlan)
+	selection, err := issuer.ValidateWithCanonicalScope(grant, scope, publishedPlan)
 	if err != nil {
 		return rejectedCodingDynamicSelection(err.Error())
 	}

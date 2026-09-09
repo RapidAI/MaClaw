@@ -442,6 +442,34 @@ func shouldAutoRegisterCraftRequest(request craftToolRequest) bool {
 	return true
 }
 
+// automaticCraftSkillMutationAllowed is the authorization boundary for the
+// craft_tool success path. A tool call is initiated by the model, rather than
+// by a dedicated lifecycle confirmation UI, so save_as_skill=true must not
+// turn into a durable definition write merely because the argument was
+// omitted or inferred. Keep this aligned with automatic experience
+// extraction: both the persisted opt-in and the process kill switch are
+// checked immediately before registration.
+//
+// Synced from guiapp/ to close the dual-tree drift (D8, 2026-09-09): gui/ was
+// missing this gate and would persist a model-generated script as a reusable
+// skill even when the user had not enabled skill evolution.
+func automaticCraftSkillMutationAllowed(app *App) error {
+	if app == nil || app.skillExecutor == nil {
+		return fmt.Errorf("automatic crafted skill mutation is not configured")
+	}
+	if cskill.EvolutionEnvDisabled() {
+		return fmt.Errorf("automatic crafted skill mutation is disabled by environment")
+	}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		return fmt.Errorf("automatic crafted skill mutation blocked: load skill evolution config: %w", err)
+	}
+	if !cfg.IsSkillEvolutionEnabled() {
+		return fmt.Errorf("automatic crafted skill mutation is disabled")
+	}
+	return nil
+}
+
 func detectAvailableScriptRuntimes() craftRuntimeAvailability {
 	runtimes := craftRuntimeAvailability{
 		Python:     detectCraftPythonRuntime(),
@@ -751,49 +779,68 @@ func buildCraftSuccessResult(app *App, request craftToolRequest, attempt craftAt
 		result.WriteString("\n")
 		result.WriteString(attempt.VerificationMessage)
 	}
-	if request.ShouldAutoRegister && app.skillExecutor != nil {
-		sendProgress("正在注册为 Skill...")
-		result.WriteString("\n")
-		result.WriteString(registerCraftedSkillEntry(app, request.OriginalTask, request.SkillName, attempt.ScriptPath, attempt.Language))
+	if request.ShouldAutoRegister && app != nil && app.skillExecutor != nil {
+		if err := automaticCraftSkillMutationAllowed(app); err != nil {
+			// The generated script remains available at the reported path for this
+			// completed task, but it is deliberately not promoted into the reusable
+			// registry. Do not defer this mutation to a goroutine: a later config
+			// change must not revive a write that was rejected at this boundary.
+			log.Printf("[craft-register] automatic registration skipped: %v", err)
+			result.WriteString("\n未自动保存为 Skill：自进化写盘当前未获授权（可在设置中启用 Skill 自进化后重试）。")
+		} else {
+			sendProgress("正在注册为 Skill...")
+			result.WriteString("\n")
+			registerMessage, registered := registerCraftedSkillEntry(app, request.OriginalTask, request.SkillName, attempt.ScriptPath, attempt.Language)
+			result.WriteString(registerMessage)
 
-		// Persist the crafted script to disk as a reusable skill (async).
-		// This complements the in-memory registration above — the persisted
-		// skill survives app restarts and can be discovered by ScanSkillDir.
-		go func() {
-			skillsRoot, err := cskill.PrimarySkillsDir()
-			if err != nil {
-				log.Printf("[craft-persist] cannot determine skills dir: %v", err)
-				return
+			// Persist the crafted script to disk as a reusable skill (async).
+			// This complements the in-memory registration above — the persisted
+			// skill survives app restarts and can be discovered by ScanSkillDir.
+			//
+			// It MUST stay gated on `registered`. ScanSkillDir loads skills from
+			// disk without re-running the admission gate, so writing a rejected
+			// script here would resurrect it on the next restart even though the
+			// scan or the user's rejection refused to register it.
+			if !registered {
+				log.Printf("[craft-persist] registration was rejected; skipping disk persistence for task %q", request.OriginalTask)
+				return result.String()
 			}
-			scriptContent, readErr := os.ReadFile(attempt.ScriptPath)
-			if readErr != nil {
-				log.Printf("[craft-persist] cannot read script %s: %v", attempt.ScriptPath, readErr)
-				return
-			}
-			persistResult, persistErr := cskill.PersistCraftedSkill(skillsRoot, request.OriginalTask, string(scriptContent), attempt.Language)
-			if persistErr != nil {
-				log.Printf("[craft-persist] failed to persist crafted skill: %v", persistErr)
-				return
-			}
-			action := "created"
-			if persistResult.IsUpdate {
-				action = "updated"
-			}
-			log.Printf("[craft-persist] %s skill %q at %s", action, persistResult.SkillName, persistResult.SkillDir)
-			// Thin config overlay so the disk-backed skill is classified as
-			// crafted/自学习 even when its directory name differs from the
-			// in-memory craft_* registration name.
-			if app != nil && app.skillExecutor != nil && strings.TrimSpace(persistResult.SkillDir) != "" {
-				if overlayErr := app.skillExecutor.UpdateLearnedSource(corelib.NLSkillEntry{
-					Name:     persistResult.SkillName,
-					Source:   "crafted",
-					SkillDir: persistResult.SkillDir,
-					Status:   "active",
-				}); overlayErr != nil {
-					log.Printf("[craft-persist] crafted source overlay failed (non-fatal): %v", overlayErr)
+			go func() {
+				skillsRoot, err := cskill.PrimarySkillsDir()
+				if err != nil {
+					log.Printf("[craft-persist] cannot determine skills dir: %v", err)
+					return
 				}
-			}
-		}()
+				scriptContent, readErr := os.ReadFile(attempt.ScriptPath)
+				if readErr != nil {
+					log.Printf("[craft-persist] cannot read script %s: %v", attempt.ScriptPath, readErr)
+					return
+				}
+				persistResult, persistErr := cskill.PersistCraftedSkill(skillsRoot, request.OriginalTask, string(scriptContent), attempt.Language)
+				if persistErr != nil {
+					log.Printf("[craft-persist] failed to persist crafted skill: %v", persistErr)
+					return
+				}
+				action := "created"
+				if persistResult.IsUpdate {
+					action = "updated"
+				}
+				log.Printf("[craft-persist] %s skill %q at %s", action, persistResult.SkillName, persistResult.SkillDir)
+				// Thin config overlay so the disk-backed skill is classified as
+				// crafted/自学习 even when its directory name differs from the
+				// in-memory craft_* registration name.
+				if app != nil && app.skillExecutor != nil && strings.TrimSpace(persistResult.SkillDir) != "" {
+					if overlayErr := app.skillExecutor.UpdateLearnedSource(corelib.NLSkillEntry{
+						Name:     persistResult.SkillName,
+						Source:   "crafted",
+						SkillDir: persistResult.SkillDir,
+						Status:   "active",
+					}); overlayErr != nil {
+						log.Printf("[craft-persist] crafted source overlay failed (non-fatal): %v", overlayErr)
+					}
+				}
+			}()
+		}
 	} else if request.SaveAsSkill {
 		result.WriteString("\n默认未自动注册为 Skill：该脚本更像一次性任务或强输出绑定结果。")
 	}
@@ -1030,10 +1077,19 @@ func detectCraftArtifactPath(text string) string {
 
 // registerCraftedSkill registers a crafted script as a reusable NLSkillEntry.
 func (h *IMMessageHandler) registerCraftedSkill(task, skillName, scriptPath, language string) string {
-	return registerCraftedSkillEntry(h.app, task, skillName, scriptPath, language)
+	message, _ := registerCraftedSkillEntry(h.app, task, skillName, scriptPath, language)
+	return message
 }
 
-func registerCraftedSkillEntry(app *App, task, skillName, scriptPath, language string) string {
+// registerCraftedSkillEntry scans and registers a crafted script as an
+// in-memory skill.
+//
+// The boolean result reports whether registration actually succeeded. Callers
+// MUST gate any disk persistence on it: a rejected registration must not leave
+// a copy behind, because the on-disk skills directory is later loaded by
+// ScanSkillDir, which applies no admission gate at all. Persisting regardless
+// of this result let a rejected script come back after an app restart.
+func registerCraftedSkillEntry(app *App, task, skillName, scriptPath, language string) (string, bool) {
 	if skillName == "" {
 		skillName = generateSkillName(task)
 	}
@@ -1112,8 +1168,18 @@ func registerCraftedSkillEntry(app *App, task, skillName, scriptPath, language s
 				app.emitSkillInstallProgress(candidate.Name, "scanning", status, nil)
 			})
 		}
-		if err := app.admitManualSkillInstall(context.Background(), &candidate, "crafted skill", report); err != nil {
-			return report, err
+		// ScanInstallStaged does not backfill entry.SkillDir from stagingDir,
+		// so the admission policy's browser-automation file check would see an
+		// empty directory here and silently skip it. Point it at the staging
+		// dir for the duration of the admission decision, then restore: the
+		// temp dir is deleted by a defer as soon as this returns, so the
+		// registered entry must not keep a reference to it.
+		savedSkillDir := candidate.SkillDir
+		candidate.SkillDir = scanDir
+		admitErr := app.admitManualSkillInstall(context.Background(), &candidate, "crafted skill", report)
+		candidate.SkillDir = savedSkillDir
+		if admitErr != nil {
+			return report, admitErr
 		}
 		if err := app.skillExecutor.Register(candidate); err != nil {
 			return report, err
@@ -1126,13 +1192,13 @@ func registerCraftedSkillEntry(app *App, task, skillName, scriptPath, language s
 			entry.Name = skillName + "_" + time.Now().Format("0102_1504")
 			_, err2 := register(entry)
 			if err2 != nil {
-				return fmt.Sprintf("Skill 注册失败: %s", err2.Error())
+				return fmt.Sprintf("Skill 注册失败: %s", err2.Error()), false
 			}
-			return fmt.Sprintf("已注册为 Skill「%s」，下次可直接用 run_skill 执行", entry.Name)
+			return fmt.Sprintf("已注册为 Skill「%s」，下次可直接用 run_skill 执行", entry.Name), true
 		}
-		return fmt.Sprintf("Skill 注册失败: %s", err.Error())
+		return fmt.Sprintf("Skill 注册失败: %s", err.Error()), false
 	}
-	return fmt.Sprintf("已注册为 Skill「%s」，下次可直接用 run_skill 执行", entry.Name)
+	return fmt.Sprintf("已注册为 Skill「%s」，下次可直接用 run_skill 执行", entry.Name), true
 }
 
 func scanCraftedScriptBeforeExecution(ctx context.Context, app *App, task, script, language string, sendProgress func(string)) (*cskill.ScanReport, error) {

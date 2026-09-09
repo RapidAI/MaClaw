@@ -33,13 +33,21 @@ type guiCodingRuntimeOptions struct {
 	ExistingTaskID              string
 	ParentContinuationAttemptID string
 	DeclaredWrites              []string
+	// ReadOnly is an explicit host assertion for inquiry/reviewer turns. It is
+	// intentionally separate from an empty DeclaredWrites slice: an empty
+	// writer declaration is unknown and must never silently become read-only.
+	ReadOnly bool
 	// PolicyProjectRoot is the stable logical workspace used for write-set
 	// locking. An isolated worktree executes under a temporary checkout but
 	// still locks the primary repository that its controlled merge will change.
 	PolicyProjectRoot    string
 	WorkspaceIsolated    bool
 	RequireFinalDiffGate bool
-	FinalizeWriter       func(*CodingSubAgentResult) (bool, error)
+	// RequireFinalWorkspaceGate enables the serialized-writer baseline/final
+	// probe. Production GUI implementation/operational turns set this even
+	// when they cannot create an isolated worktree.
+	RequireFinalWorkspaceGate bool
+	FinalizeWriter            func(*CodingSubAgentResult) (bool, error)
 }
 
 type codingRuntimeApprovalGate func() string
@@ -233,8 +241,18 @@ func runGUICodingTaskWithLedgerWithOptions(ctx context.Context, store codingrunt
 		if root := strings.TrimSpace(options.PolicyProjectRoot); root != "" {
 			policy.ProjectRoot = root
 		}
+		policy.ReadOnly = options.ReadOnly
 		policy.WorkspaceIsolated = options.WorkspaceIsolated
 		policy.FinalDiffGateRequired = options.RequireFinalDiffGate
+		policy.FinalWorkspaceGateRequired = options.RequireFinalWorkspaceGate
+		if policy.FinalWorkspaceGateRequired && !policy.ReadOnly && len(options.DeclaredWrites) == 0 {
+			// A final workspace probe proves that *something* changed, but it
+			// cannot establish which scope the writer was admitted for. Reject an
+			// explicitly gated unknown write set before an executor can mutate the
+			// workspace; callers should derive claims from the task plan (or use
+			// the explicit project-root directory claim for dynamic file discovery).
+			return nil, nil, fmt.Errorf("GUI final workspace gate requires declared write claims")
+		}
 		policy.WriteSet.Claims = make([]codingruntime.WriteClaim, 0, len(options.DeclaredWrites))
 		for _, path := range options.DeclaredWrites {
 			policy.WriteSet.Claims = append(policy.WriteSet.Claims, codingruntime.WriteClaim{Path: path, Directory: strings.HasSuffix(strings.TrimSpace(path), "/") || strings.HasSuffix(strings.TrimSpace(path), `\`)})

@@ -43,7 +43,7 @@ The standalone `*_linux_u2404` binary in the same workflow artifact is dynamical
 # Ubuntu 24.04
 sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev patchelf xvfb
 CGO_ENABLED=1 go build -tags desktop,production,webkit2_41 \
-  -ldflags "-s -w -X main.version=dev" -o build/bin/MaClaw_amd64_linux ./gui/
+  -ldflags "-s -w -X main.version=dev" -o build/bin/MaClaw_amd64_linux ./cmd/maclaw-gui/
 build/linux/package_appimage.sh \
   --binary build/bin/MaClaw_amd64_linux \
   --app-name MaClaw \

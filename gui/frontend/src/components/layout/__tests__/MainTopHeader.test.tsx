@@ -1,5 +1,5 @@
 ﻿// @vitest-environment jsdom
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { MainTopHeader } from '../MainTopHeader';
 
@@ -41,5 +41,26 @@ describe('MainTopHeader', () => {
             'iflow',
             'kilo',
         ]);
+    });
+    it('routes the global bell to the shared system notification center', () => {
+        const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
+        try {
+            render(<MainTopHeader {...baseProps} />);
+            fireEvent.click(screen.getByTestId('main-header-notifications'));
+            expect(dispatchSpy).toHaveBeenCalledWith(expect.objectContaining({
+                type: 'maclaw:open-system-notifications',
+                detail: { toggle: true },
+            }));
+        } finally {
+            dispatchSpy.mockRestore();
+        }
+    });
+
+    it('renders the MaClaw wordmark and M mark together in the main header', () => {
+        render(<MainTopHeader {...baseProps} />);
+
+        expect(screen.getByLabelText('MaClaw').textContent).toContain('MaClaw');
+        expect(document.querySelector('.mc-header-brand-mark')).toBeTruthy();
+        expect(document.querySelector('.mc-header-brand-mark svg path')?.getAttribute('d')).toBe('M14 58V22l26 25 26-25v36');
     });
 });

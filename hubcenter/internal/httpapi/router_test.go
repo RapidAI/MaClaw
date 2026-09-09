@@ -124,6 +124,39 @@ func TestRouterDoesNotServePetPackHelp(t *testing.T) {
 	}
 }
 
+func TestRouterServesDeveloperCommunity(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+	rec := httptest.NewRecorder()
+	svc.handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/developer", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("developer status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	body := rec.Body.String()
+	for _, marker := range []string{"MaClaw 开发者社区", "Skill / Suite 开发", "第三方接入协议", "/capabilitymarket", "/skillmarket/user", "langButton", "navigator.language"} {
+		if !strings.Contains(body, marker) {
+			t.Fatalf("developer page missing marker %q", marker)
+		}
+	}
+
+	docsRec := httptest.NewRecorder()
+	svc.handler.ServeHTTP(docsRec, httptest.NewRequest(http.MethodGet, "/developer/docs/", nil))
+	if docsRec.Code != http.StatusOK || !strings.Contains(docsRec.Body.String(), "MaClaw 开发文档") || !strings.Contains(docsRec.Body.String(), "/skillmarket/user") || !strings.Contains(docsRec.Body.String(), "Switch to English") {
+		t.Fatalf("developer docs status=%d body missing docs title", docsRec.Code)
+	}
+
+	marketRec := httptest.NewRecorder()
+	svc.handler.ServeHTTP(marketRec, httptest.NewRequest(http.MethodGet, "/expert-market", nil))
+	if marketRec.Code != http.StatusOK || !strings.Contains(marketRec.Body.String(), "AI 专家市场") {
+		t.Fatalf("expert market status=%d body missing market title", marketRec.Code)
+	}
+	for _, marker := range []string{"platform_distribution", "data-detail", "/api/v1/expert-market/experts/"} {
+		if !strings.Contains(marketRec.Body.String(), marker) {
+			t.Fatalf("expert market page missing marker %q", marker)
+		}
+	}
+}
+
 func TestHubDeviceCredentialBackupRoundTripRequiresCurrentHubSecret(t *testing.T) {
 	svc := newHubCenterHTTPTestServices(t)
 	registered := registerConfirmAndHeartbeatHub(t, svc, map[string]any{

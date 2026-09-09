@@ -1,8 +1,11 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib/database"
 )
 
 // LightTurnToolAllowlist is the shared allowlist for adaptive light turns
@@ -29,6 +32,11 @@ var LightTurnToolAllowlist = map[string]bool{
 	// Read-only knowledge lookups are light-safe; writes/imports stay full-only.
 	"knowledge_list_sources": true,
 	"knowledge_stats":        true,
+	// Database query/inspect is read-only. Write actions are still denied by
+	// authorizeLoopTool via database.IsWriteAction so light turns cannot
+	// execute/export through the shared tool name.
+	"database":       true,
+	"database_query": true,
 }
 
 // IsLightTurnToolAllowed reports whether name may run on a light prompt profile.
@@ -39,6 +47,19 @@ func IsLightTurnToolAllowed(name string) bool {
 		return false
 	}
 	return LightTurnToolAllowlist[n]
+}
+
+func lightDeniedDatabaseWrite(name, argsJSON string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	if n != "database" && n != "database_query" {
+		return false
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return true
+	}
+	action, _ := args["action"].(string)
+	return database.IsWriteAction(action)
 }
 
 // LightToolDenyMessage is returned when a non-allowlisted tool is requested

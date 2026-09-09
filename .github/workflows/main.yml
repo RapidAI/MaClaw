@@ -36,6 +36,35 @@ jobs:
   # ============================================================
   # Verify: pure Go embedding build path compiles and tests pass
   # ============================================================
+  # Keep the GUI/headless convergence rules as a required, cheap gate. This
+  # job is part of the release dependency chain so an accidental second
+  # Runtime composition root or transport-owned Agent behavior blocks publish.
+  verify-agent-architecture:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Check shared Runtime architecture
+        run: node scripts/check-agent-architecture.mjs
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Run Runtime/service/HTTP contract tests
+        run: >-
+          go test ./corelib/agentruntime ./corelib/agentservice ./MaClawSrv
+          -run 'Test(ModuleRegistry|RuntimeExecutor|RuntimeSurfaceDigest|DescribeRuntimeCapabilities|RuntimeCapabilitiesEndpoint|RuntimeCallbacks|CoreAgentCallbacks|RegisterBuiltinModules|ResolveRole|AdaptiveRetry|HeadlessScreenshot|GUIAndSrv|SQLiteRunEventStoreConcurrent|RunEventsStream|OpenAPIDocument)'
+          -count=1 -race
+
+      - name: Compile GUI host package
+        run: go test ./guiapp -run 'Test(SharedAgentLoopCallbacksEmitRuntimeEvents|RunAgentLoopSharedDelegatesThroughRuntimeContract|GUIRuntimeDescribesDeterministicToolSurface|GUIAndSrv)' -count=1 -race
+
   verify-noembedding:
     runs-on: ubuntu-latest
     steps:
@@ -56,6 +85,96 @@ jobs:
         run: |
           echo "=== Running tests for embedding and memory packages ==="
           CGO_ENABLED=0 go test ./corelib/embedding/... ./corelib/memory/...
+
+  # ============================================================
+  # Database integration: real MySQL/PostgreSQL/SQL Server containers
+  # ============================================================
+  # Drives the corelib/database Manager/Profile path (connect, inspect,
+  # parameterized query with cursor paging, dry-run/commit with one-time
+  # approval, rollback on max_affected_rows, metadata-only audit) against
+  # throwaway tables in ephemeral service containers. The Access fixture test
+  # stays in the Windows job because it needs the ACE ODBC driver.
+  database-integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: dbtest
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: test
+          MYSQL_DATABASE: dbtest
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 3
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: Y
+          SA_PASSWORD: Test!Passw0rd123
+          MSSQL_PID: Developer
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'Test!Passw0rd123' -Q 'SELECT 1' -C -No || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      # Health-check options only gate the containers themselves; wait for
+      # each engine to answer before the tests connect. Client tools run via
+      # docker exec so the step does not depend on runner-installed clients.
+      - name: Wait for database services
+        run: |
+          set -e
+          PG=$(docker ps --filter ancestor=postgres:16 --format '{{.ID}}' | head -1)
+          MY=$(docker ps --filter ancestor=mysql:8 --format '{{.ID}}' | head -1)
+          MS=$(docker ps --filter ancestor=mcr.microsoft.com/mssql/server:2022-latest --format '{{.ID}}' | head -1)
+          for i in $(seq 1 30); do
+            docker exec "$PG" pg_isready -U postgres -d dbtest >/dev/null 2>&1 && break
+            [ "$i" = 30 ] && { echo "postgres did not become ready"; exit 1; }
+            sleep 2
+          done
+          for i in $(seq 1 30); do
+            docker exec "$MY" mysqladmin ping -uroot -ptest --silent >/dev/null 2>&1 && break
+            [ "$i" = 30 ] && { echo "mysql did not become ready"; exit 1; }
+            sleep 2
+          done
+          for i in $(seq 1 60); do
+            docker exec "$MS" bash -c 'if [ -x /opt/mssql-tools18/bin/sqlcmd ]; then /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -C -No -l 2 -Q "SELECT 1"; else /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -l 2 -Q "SELECT 1"; fi' >/dev/null 2>&1 && break
+            [ "$i" = 60 ] && { echo "sqlserver did not become ready"; exit 1; }
+            sleep 2
+          done
+          docker exec "$MS" bash -c 'if [ -x /opt/mssql-tools18/bin/sqlcmd ]; then /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -C -No -Q "IF DB_ID(''dbtest'') IS NULL CREATE DATABASE dbtest"; else /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -Q "IF DB_ID(''dbtest'') IS NULL CREATE DATABASE dbtest"; fi'
+
+      - name: Run database integration tests
+        env:
+          MACLAW_DBTEST_MYSQL_DSN: root:test@tcp(127.0.0.1:3306)/dbtest
+          MACLAW_DBTEST_PG_DSN: postgres://postgres:postgres@127.0.0.1:5432/dbtest?sslmode=disable
+          MACLAW_DBTEST_MSSQL_DSN: sqlserver://sa:Test!Passw0rd123@127.0.0.1:1433?database=dbtest
+        run: go test -tags dbintegration ./corelib/database/ -run Integration -count=1 -v
 
   # Keep the firmware publication contract cheap and early: a mismatch among
   # the desktop catalog, board matrix, release allow-list, or mirror manifest
@@ -115,7 +234,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: |
-            gui/frontend/package-lock.json
+            guiapp/frontend/package-lock.json
             vscode-ext/package-lock.json
 
       - name: Check source encoding
@@ -141,21 +260,21 @@ jobs:
           # Keep CI aligned with build_win*.bat: never reuse an old Vite output.
           # This is especially important because the directory is embedded into
           # the GUI binary in the next step.
-          Remove-Item gui/frontend/dist -Recurse -Force -ErrorAction SilentlyContinue
-          cd gui/frontend
+          Remove-Item guiapp/frontend/dist -Recurse -Force -ErrorAction SilentlyContinue
+          cd guiapp/frontend
           npm ci --cache ./.npm_cache
           npm run build
           cd ../..
           # Stamp forces //go:embed to invalidate even when GOCACHE is warm.
           $stamp = "$env:VERSION`n${{ github.sha }}"
-          [System.IO.File]::WriteAllText((Join-Path (Get-Location) 'gui/frontend/dist/.build-stamp'), $stamp)
+          [System.IO.File]::WriteAllText((Join-Path (Get-Location) 'guiapp/frontend/dist/.build-stamp'), $stamp)
           # OEM brands (TigerClaw/MetaStaff) share this embed; fail if welcome page is stale/old.
-          node scripts/verify-frontend-welcome.mjs --dist gui/frontend/dist
+          node scripts/verify-frontend-welcome.mjs --dist guiapp/frontend/dist
 
       - name: Build VS Code extension VSIX
         shell: pwsh
         run: |
-          # Refresh the first-party VS Code extension asset (gui/vscode_ext_asset/)
+          # Refresh the first-party VS Code extension asset (guiapp/vscode_ext_asset/)
           # before the Go build embeds it. Required in CI (Node is guaranteed):
           # a packaging break must fail the release, not ship a stale VSIX.
           cd vscode-ext
@@ -219,6 +338,13 @@ jobs:
         shell: pwsh
         run: choco install mingw -y --no-progress
 
+      # Runs the corelib/database unit suite plus the Access ODBC fixture
+      # test (integration_access_windows_test.go). The fixture test skips
+      # cleanly on runners without the Access Database Engine installed.
+      - name: Test database tool package
+        shell: pwsh
+        run: go test ./corelib/database/ -count=1
+
       - name: Generate Windows resources & build GUI
         shell: pwsh
         run: |
@@ -259,22 +385,22 @@ jobs:
           $outName = $env:BRAND_APP_NAME
 
           # --- amd64 (CGO enabled for Wails WebView) ---
-          & $goversioninfo -64 -icon $env:BRAND_ICON_ICO -manifest build/windows/wails.exe.manifest.tmp -o gui/resource_windows_amd64.syso build/windows/versioninfo.json.tmp
+          & $goversioninfo -64 -icon $env:BRAND_ICON_ICO -manifest build/windows/wails.exe.manifest.tmp -o guiapp/resource_windows_amd64.syso build/windows/versioninfo.json.tmp
           $env:GOOS='windows'; $env:GOARCH='amd64'; $env:CGO_ENABLED='1'
           $env:CC='gcc'
           # .build-stamp (written after npm build) invalidates //go:embed without full -a rebuild.
-          go build -tags $guiTagsBase -ldflags "-s -w -H windowsgui -X main.version=$env:VERSION" -o "dist/${outName}_amd64.exe" ./gui/
-          Remove-Item gui/resource_windows_amd64.syso -ErrorAction SilentlyContinue
+          go build -tags $guiTagsBase -ldflags "-s -w -H windowsgui -X main.version=$env:VERSION" -o "dist/${outName}_amd64.exe" ./cmd/maclaw-gui/
+          Remove-Item guiapp/resource_windows_amd64.syso -ErrorAction SilentlyContinue
           # Catch embed regressions (e.g. empty/stale dist) for MaClaw and OEM brands alike.
           # The installer can select either architecture, so each final GUI
           # binary must be checked instead of validating amd64 alone.
           node scripts/verify-frontend-welcome.mjs --binary "dist/${outName}_amd64.exe"
 
           # --- arm64 (no CGO, NoopEmbedder 鈥?cross-compile CGO not supported) ---
-          & $goversioninfo -64 -arm -icon $env:BRAND_ICON_ICO -manifest build/windows/wails.exe.manifest.tmp -o gui/resource_windows_arm64.syso build/windows/versioninfo.json.tmp
+          & $goversioninfo -64 -arm -icon $env:BRAND_ICON_ICO -manifest build/windows/wails.exe.manifest.tmp -o guiapp/resource_windows_arm64.syso build/windows/versioninfo.json.tmp
           $env:GOARCH='arm64'; $env:CGO_ENABLED='0'
-          go build -tags $guiTagsBase -ldflags "-s -w -H windowsgui -X main.version=$env:VERSION" -o "dist/${outName}_arm64.exe" ./gui/
-          Remove-Item gui/resource_windows_arm64.syso -ErrorAction SilentlyContinue
+          go build -tags $guiTagsBase -ldflags "-s -w -H windowsgui -X main.version=$env:VERSION" -o "dist/${outName}_arm64.exe" ./cmd/maclaw-gui/
+          Remove-Item guiapp/resource_windows_arm64.syso -ErrorAction SilentlyContinue
           node scripts/verify-frontend-welcome.mjs --binary "dist/${outName}_arm64.exe"
 
           Remove-Item build/windows/wails.exe.manifest.tmp, build/windows/versioninfo.json.tmp
@@ -956,7 +1082,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: |
-            gui/frontend/package-lock.json
+            guiapp/frontend/package-lock.json
             vscode-ext/package-lock.json
 
       - name: Extract version (prefer git tag, then version.ts, then wails.json)
@@ -969,19 +1095,19 @@ jobs:
       - name: Build frontend
         run: |
           # Match the Windows batch builds and prevent stale chunks entering go:embed.
-          rm -rf gui/frontend/dist
-          cd gui/frontend
+          rm -rf guiapp/frontend/dist
+          cd guiapp/frontend
           npm ci --cache ./.npm_cache
           npm run build
           cd ../..
-          printf '%s\n%s\n' "$VERSION" "${{ github.sha }}" > gui/frontend/dist/.build-stamp
+          printf '%s\n%s\n' "$VERSION" "${{ github.sha }}" > guiapp/frontend/dist/.build-stamp
           # OEM brands (TigerClaw/MetaStaff) share this embed; fail if welcome page is stale/old.
-          node scripts/verify-frontend-welcome.mjs --dist gui/frontend/dist
+          node scripts/verify-frontend-welcome.mjs --dist guiapp/frontend/dist
 
       - name: Build VS Code extension VSIX
         run: |
           # Same embedded-asset refresh as the Windows job; must run before the
-          # Go GUI build below (go:embed gui/vscode_ext_asset).
+          # Go GUI build below (go:embed guiapp/vscode_ext_asset).
           cd vscode-ext
           npm ci --cache ./.npm_cache
           npm run package
@@ -998,10 +1124,10 @@ jobs:
           # .build-stamp invalidates //go:embed without full -a rebuild.
           CGO_ENABLED=1 CGO_LDFLAGS="-weak_framework UniformTypeIdentifiers" \
             GOOS=darwin GOARCH=amd64 \
-            go build -tags "${GUI_TAGS}" -ldflags "-s -w -X main.version=${VERSION}" -o "build/bin/${OUT_NAME}_amd64" ./gui/
+            go build -tags "${GUI_TAGS}" -ldflags "-s -w -X main.version=${VERSION}" -o "build/bin/${OUT_NAME}_amd64" ./cmd/maclaw-gui/
           CGO_ENABLED=1 CGO_LDFLAGS="-weak_framework UniformTypeIdentifiers" \
             GOOS=darwin GOARCH=arm64 \
-            go build -tags "${GUI_TAGS}" -ldflags "-s -w -X main.version=${VERSION}" -o "build/bin/${OUT_NAME}_arm64" ./gui/
+            go build -tags "${GUI_TAGS}" -ldflags "-s -w -X main.version=${VERSION}" -o "build/bin/${OUT_NAME}_arm64" ./cmd/maclaw-gui/
           node scripts/verify-frontend-welcome.mjs --binary "build/bin/${OUT_NAME}_arm64"
           # Native arch smoke: the binary must load and print its version.
           "build/bin/${OUT_NAME}_arm64" --version
@@ -1486,7 +1612,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: |
-            gui/frontend/package-lock.json
+            guiapp/frontend/package-lock.json
             vscode-ext/package-lock.json
 
       - name: Install Linux GUI dependencies
@@ -1520,19 +1646,19 @@ jobs:
       - name: Build frontend
         run: |
           # Match the Windows batch builds and prevent stale chunks entering go:embed.
-          rm -rf gui/frontend/dist
-          cd gui/frontend
+          rm -rf guiapp/frontend/dist
+          cd guiapp/frontend
           npm ci --cache ./.npm_cache
           npm run build
           cd ../..
-          printf '%s\n%s\n' "$VERSION" "${{ github.sha }}" > gui/frontend/dist/.build-stamp
+          printf '%s\n%s\n' "$VERSION" "${{ github.sha }}" > guiapp/frontend/dist/.build-stamp
           # OEM brands (TigerClaw/MetaStaff) share this embed; fail if welcome page is stale/old.
-          node scripts/verify-frontend-welcome.mjs --dist gui/frontend/dist
+          node scripts/verify-frontend-welcome.mjs --dist guiapp/frontend/dist
 
       - name: Build VS Code extension VSIX
         run: |
           # Same embedded-asset refresh as the Windows/macOS jobs; must run
-          # before the Go GUI build below (go:embed gui/vscode_ext_asset).
+          # before the Go GUI build below (go:embed guiapp/vscode_ext_asset).
           cd vscode-ext
           npm ci --cache ./.npm_cache
           npm run package
@@ -1545,7 +1671,7 @@ jobs:
           # Include Ubuntu label in binary name so both versions coexist in artifacts
           CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
             go build -tags "${WEBKIT_TAGS}" -ldflags "-s -w -X main.version=${VERSION}" \
-            -o "build/bin/${OUT_NAME}_amd64_linux_${UBUNTU_LABEL}" ./gui/
+            -o "build/bin/${OUT_NAME}_amd64_linux_${UBUNTU_LABEL}" ./cmd/maclaw-gui/
           # Also copy to the generic name for AppImage packaging
           cp "build/bin/${OUT_NAME}_amd64_linux_${UBUNTU_LABEL}" "build/bin/${OUT_NAME}_amd64_linux"
           node scripts/verify-frontend-welcome.mjs --binary "build/bin/${OUT_NAME}_amd64_linux"
@@ -1724,7 +1850,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: |
-            gui/frontend/package-lock.json
+            guiapp/frontend/package-lock.json
             vscode-ext/package-lock.json
 
       - name: Install Linux GUI dependencies
@@ -1756,19 +1882,19 @@ jobs:
       - name: Build frontend
         run: |
           # Match the Windows batch builds and prevent stale chunks entering go:embed.
-          rm -rf gui/frontend/dist
-          cd gui/frontend
+          rm -rf guiapp/frontend/dist
+          cd guiapp/frontend
           npm ci --cache ./.npm_cache
           npm run build
           cd ../..
-          printf '%s\n%s\n' "$VERSION" "${{ github.sha }}" > gui/frontend/dist/.build-stamp
+          printf '%s\n%s\n' "$VERSION" "${{ github.sha }}" > guiapp/frontend/dist/.build-stamp
           # OEM brands (TigerClaw/MetaStaff) share this embed; fail if welcome page is stale/old.
-          node scripts/verify-frontend-welcome.mjs --dist gui/frontend/dist
+          node scripts/verify-frontend-welcome.mjs --dist guiapp/frontend/dist
 
       - name: Build VS Code extension VSIX
         run: |
           # Same embedded-asset refresh as the Windows/macOS jobs; must run
-          # before the Go GUI build below (go:embed gui/vscode_ext_asset).
+          # before the Go GUI build below (go:embed guiapp/vscode_ext_asset).
           cd vscode-ext
           npm ci --cache ./.npm_cache
           npm run package
@@ -1780,7 +1906,7 @@ jobs:
           OUT_NAME="${BRAND_APP_NAME}"
           CGO_ENABLED=1 GOOS=linux GOARCH=arm64 \
             go build -tags "${WEBKIT_TAGS}" -ldflags "-s -w -X main.version=${VERSION}" \
-            -o "build/bin/${OUT_NAME}_arm64_linux_${UBUNTU_LABEL}" ./gui/
+            -o "build/bin/${OUT_NAME}_arm64_linux_${UBUNTU_LABEL}" ./cmd/maclaw-gui/
           cp "build/bin/${OUT_NAME}_arm64_linux_${UBUNTU_LABEL}" "build/bin/${OUT_NAME}_arm64_linux"
           node scripts/verify-frontend-welcome.mjs --binary "build/bin/${OUT_NAME}_arm64_linux"
 
@@ -2328,7 +2454,7 @@ jobs:
     # syncs that tag to Gitee. workflow_dispatch supplies a branch name, so it
     # may validate builds but must never publish or enter the release boundary.
     if: github.ref_type == 'tag'
-    needs: [build-windows, build-ins-maclaw, build-tigerproxy, build-macos, build-linux, build-linux-arm64, build-clawmate-maker]
+    needs: [verify-agent-architecture, build-windows, build-ins-maclaw, build-tigerproxy, build-macos, build-linux, build-linux-arm64, build-clawmate-maker]
     runs-on: ubuntu-latest
     # The R2/COS credentials and firmware release keys may be environment
     # secrets. Keep asset generation, mirror upload and public read-back under

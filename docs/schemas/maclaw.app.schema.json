@@ -155,6 +155,9 @@
             },
             "skill": {
               "$ref": "#/$defs/skillBinding"
+            },
+            "automation": {
+              "$ref": "#/$defs/automationBinding"
             }
           }
         },
@@ -221,6 +224,87 @@
         "fields": {
           "type": "array",
           "items": { "$ref": "#/$defs/field" }
+        }
+      }
+    },
+    "automationBinding": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["skill", "schedule"],
+      "properties": {
+        "id": {
+          "description": "Stable automation binding identifier (e.g. nightly-sync).",
+          "type": "string",
+          "minLength": 1
+        },
+        "skill": {
+          "description": "Skill reference executed on each scheduled fire (same coordinate as RunNLSkillAsync).",
+          "type": "string",
+          "minLength": 1
+        },
+        "params": {
+          "description": "Static run arguments passed to the skill on every fire.",
+          "type": "object",
+          "additionalProperties": true
+        },
+        "outputDir": {
+          "description": "Optional directory where the skill should place generated outputs.",
+          "type": "string"
+        },
+        "schedule": {
+          "$ref": "#/$defs/automationSchedule"
+        }
+      }
+    },
+    "automationSchedule": {
+      "description": "Fixed-time or interval schedule. intervalMinutes > 0 switches to interval mode and hour/minute then only anchor the first run of the day. Cron expressions are not supported.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "hour": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 23,
+          "default": 9
+        },
+        "minute": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 59,
+          "default": 0
+        },
+        "dayOfWeek": {
+          "description": "-1 = every day, 0 = Sunday .. 6 = Saturday.",
+          "type": "integer",
+          "minimum": -1,
+          "maximum": 6,
+          "default": -1
+        },
+        "dayOfMonth": {
+          "description": "-1 = any day, otherwise 1-31.",
+          "type": "integer",
+          "minimum": -1,
+          "maximum": 31,
+          "default": -1
+        },
+        "intervalMinutes": {
+          "description": "> 0: repeat every N minutes instead of once per matching day.",
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        },
+        "startDate": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "endDate": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "taskType": {
+          "description": "reminder: a missed run is skipped; process: a missed run far from the next slot is caught up.",
+          "type": "string",
+          "enum": ["reminder", "process"]
         }
       }
     },

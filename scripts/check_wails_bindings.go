@@ -9,7 +9,7 @@
 //
 // Strategy: scan the FRONTEND source code for dynamic wailsApp references and
 // verify each one exists in App.js. Then compare every App.js export with the
-// native *App methods in gui. That second check catches stale generated wrappers
+// native *App methods in guiapp. That second check catches stale generated wrappers
 // that would otherwise resolve to undefined at runtime.
 //
 // This catches the exact class of bug that caused the "功能不可用" error:
@@ -43,8 +43,8 @@ var jsExportRe = regexp.MustCompile(`^export function (\w+)\(`)
 var goAppMethodRe = regexp.MustCompile(`^func \(a \*App\) ([A-Z]\w+)\(`)
 
 func main() {
-	frontendSrcDir := filepath.Join("gui", "frontend", "src")
-	bindingFile := filepath.Join("gui", "frontend", "wailsjs", "go", "main", "App.js")
+	frontendSrcDir := filepath.Join("guiapp", "frontend", "src")
+	bindingFile := filepath.Join("guiapp", "frontend", "wailsjs", "go", "main", "App.js")
 
 	// 1. Scan frontend source for dynamic binding references (the risky pattern)
 	// These are method calls via `(wailsApp as any).Foo` which bypass TypeScript
@@ -64,7 +64,7 @@ func main() {
 		}
 		defer f.Close()
 
-		relPath, _ := filepath.Rel("gui/frontend", path)
+		relPath, _ := filepath.Rel("guiapp/frontend", path)
 		scanner := bufio.NewScanner(f)
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -108,7 +108,7 @@ func main() {
 	// 2b. Do not infer this from TypeScript declarations: they are generated
 	// alongside App.js and cannot expose a stale native binding.
 	nativeMethods := map[string]bool{}
-	err = filepath.Walk("gui", func(path string, info os.FileInfo, err error) error {
+	err = filepath.Walk("guiapp", func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() || filepath.Ext(path) != ".go" {
 			return nil
 		}
@@ -126,7 +126,7 @@ func main() {
 		return nil
 	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "ERROR: cannot walk gui Go sources: %v\n", err)
+		fmt.Fprintf(os.Stderr, "ERROR: cannot walk guiapp Go sources: %v\n", err)
 		os.Exit(1)
 	}
 

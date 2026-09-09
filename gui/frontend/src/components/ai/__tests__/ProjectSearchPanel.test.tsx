@@ -210,6 +210,20 @@ describe("ProjectSearchPanel", () => {
         expect(screen.queryByText("Chat only")).toBeNull();
     });
 
+    it("keeps cloud workspace tasks searchable before their first output", () => {
+        const search = makeSearch([{
+            id: "cloud",
+            name: "Cloud workspace task",
+            project_path: "C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_a",
+            tags: ["cloud_workspace:cws_a"],
+            has_output: false,
+        }]);
+
+        renderPanel(search);
+
+        expect(screen.getByText("Cloud workspace task")).toBeTruthy();
+    });
+
     it("falls back to ResumeTask when project tabs are unavailable", async () => {
         const search = makeSearch([{ id: "p2", name: "Fallback task", project_path: "D:/p/fallback" }]);
         const onProjectSwitch = vi.fn();

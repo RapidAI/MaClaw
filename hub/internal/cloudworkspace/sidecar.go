@@ -4,11 +4,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/archiveutil"
 	"github.com/RapidAI/CodeClaw/corelib/fileutil"
@@ -17,69 +20,6 @@ import (
 
 var sidecarCodecMagic = [4]byte{'M', 'C', 'S', '1'}
 var sidecarWriteMu sync.Mutex
-
-func mergeSessionJSON(existing, incoming []byte) []byte {
-	var old, next struct {
-		Conversation []json.RawMessage `json:"conversation,omitempty"`
-		InputText    string            `json:"input_text,omitempty"`
-		ClearedAt    int64             `json:"cleared_at,omitempty"`
-	}
-	if json.Unmarshal(existing, &old) != nil || json.Unmarshal(incoming, &next) != nil {
-		return incoming
-	}
-	// A clear timestamp is a tombstone/fence.  Never resurrect turns from a
-	// snapshot that predates the latest clear, even when two Hub processes race
-	// while replacing the encrypted sidecar.
-	merged := make([]json.RawMessage, 0, len(old.Conversation)+len(next.Conversation))
-	switch {
-	case next.ClearedAt > old.ClearedAt:
-		merged = append(merged, next.Conversation...)
-	case old.ClearedAt > next.ClearedAt:
-		merged = append(merged, old.Conversation...)
-	default:
-		merged = append(merged, old.Conversation...)
-		merged = append(merged, next.Conversation...)
-	}
-	seen := make(map[[32]byte]struct{}, len(merged))
-	uniq := merged[:0]
-	for _, item := range merged {
-		key := sha256.Sum256(item)
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		uniq = append(uniq, item)
-	}
-	if len(uniq) > 4000 {
-		uniq = uniq[len(uniq)-4000:]
-	}
-	out := map[string]any{"conversation": uniq}
-	if next.ClearedAt > old.ClearedAt {
-		if next.InputText != "" {
-			out["input_text"] = next.InputText
-		}
-	} else if old.ClearedAt > next.ClearedAt {
-		if old.InputText != "" {
-			out["input_text"] = old.InputText
-		}
-	} else if next.InputText != "" {
-		out["input_text"] = next.InputText
-	} else if old.InputText != "" {
-		out["input_text"] = old.InputText
-	}
-	clearedAt := old.ClearedAt
-	if next.ClearedAt > clearedAt {
-		clearedAt = next.ClearedAt
-	}
-	if clearedAt > 0 {
-		out["cleared_at"] = clearedAt
-	}
-	raw, err := json.Marshal(out)
-	if err != nil {
-		return incoming
-	}
-	return raw
-}
 
 func encodeSidecar(plain []byte) ([]byte, error) {
 	if int64(len(plain)) > MaxSidecarBytes {
@@ -131,9 +71,20 @@ const MaxSidecarBytes int64 = MaxObjectBytes
 
 // TaskSidecar is the Hub task.json payload used to restore the GUI task list.
 type TaskSidecar struct {
-	Name string `json:"name"`
-	Mode string `json:"mode"`
-	Tag  string `json:"tag"`
+	WorkspaceID    string `json:"workspace_id,omitempty"`
+	CloudTaskID    string `json:"cloud_task_id,omitempty"`
+	BindingVersion int64  `json:"binding_version,omitempty"`
+	Name           string `json:"name"`
+	Mode           string `json:"mode"`
+	Tag            string `json:"tag"`
+}
+
+// Sidecar is a named task-continuity blob together with its CAS revision.
+// Revisions are SHA-256 digests of the plaintext of the single canonical file,
+// which keeps reads stateless.
+type Sidecar struct {
+	Data     []byte
+	Revision string
 }
 
 func ParseTaskSidecar(data []byte) TaskSidecar {
@@ -145,6 +96,8 @@ func ParseTaskSidecar(data []byte) TaskSidecar {
 	task.Name = strings.TrimSpace(task.Name)
 	task.Mode = strings.TrimSpace(task.Mode)
 	task.Tag = strings.TrimSpace(task.Tag)
+	task.WorkspaceID = strings.TrimSpace(task.WorkspaceID)
+	task.CloudTaskID = strings.TrimSpace(task.CloudTaskID)
 	return task
 }
 
@@ -154,10 +107,13 @@ func (s *Service) taskSidecarFor(ctx context.Context, tenantID, userID, workspac
 		return TaskSidecar{}
 	}
 	data, err := blobs.GetSidecar(ctx, tenantID, userID, workspaceID, SidecarTask)
-	if err != nil || len(data) == 0 {
-		return TaskSidecar{}
+	if err == nil && len(data) > 0 {
+		return ParseTaskSidecar(data)
 	}
-	return ParseTaskSidecar(data)
+	if binding, bindErr := s.Workspaces.GetTaskBinding(ctx, tenantID, userID, workspaceID); bindErr == nil && binding != nil {
+		return TaskSidecar{WorkspaceID: workspaceID, CloudTaskID: binding.CloudTaskID, BindingVersion: binding.Version, Name: binding.Name, Mode: binding.Mode, Tag: binding.Tag}
+	}
+	return TaskSidecar{}
 }
 
 func sidecarAAD(tenantID, userID, workspaceID, name string) []byte {
@@ -194,63 +150,64 @@ func (s *BlobStore) SidecarPath(tenantID, userID, workspaceID, name string) (str
 	return filepath.Join(dir, name+objectFileExt), nil
 }
 
-// PutSidecar seals a named blob (not content-addressed) with the workspace DEK.
-func (s *BlobStore) PutSidecar(_ context.Context, tenantID, userID, workspaceID, name string, plaintext []byte) error {
+// stageSidecarFile seals the payload and writes it to an fsync'd temporary
+// sibling of the canonical path. The caller renames it into place after the
+// metadata transaction commits, so a failed commit never destroys the
+// previously committed canonical content.
+func (s *BlobStore) stageSidecarFile(ctx context.Context, tenantID, userID, workspaceID, name, canonicalPath string, plaintext []byte) (string, error) {
 	if s == nil {
-		return ErrUnavailable
+		return "", ErrUnavailable
 	}
-	if int64(len(plaintext)) > MaxSidecarBytes {
-		return ErrBlobTooLarge
+	if _, err := ValidateSidecarName(name); err != nil {
+		return "", err
 	}
-	path, err := s.SidecarPath(tenantID, userID, workspaceID, name)
-	if err != nil {
-		return err
-	}
-	if name == SidecarSession {
-		sidecarWriteMu.Lock()
-		defer sidecarWriteMu.Unlock()
-		if raw, readErr := os.ReadFile(path); readErr == nil {
-			if master, keyErr := loadMasterKey(s.keyDir()); keyErr == nil {
-				dek := deriveDEK(master, tenantID, userID, workspaceID)
-				if oldEncoded, openErr := open(dek, sidecarAAD(tenantID, userID, workspaceID, name), raw); openErr == nil {
-					plaintext = mergeSessionJSON(mustDecodeSidecar(oldEncoded), plaintext)
-				}
-			}
-		}
-	}
-	dir := filepath.Dir(path)
+	dir := filepath.Dir(canonicalPath)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
+		return "", err
 	}
-	master, err := loadMasterKey(s.keyDir())
-	if err != nil {
-		return err
-	}
-	dek := deriveDEK(master, tenantID, userID, workspaceID)
 	encoded, err := encodeSidecar(plaintext)
 	if err != nil {
-		return err
+		return "", err
 	}
-	sealed, err := seal(dek, sidecarAAD(tenantID, userID, workspaceID, name), encoded)
+	sealed, _, err := sealWorkspace(ctx, s.keyProvider(), tenantID, userID, workspaceID, sidecarAAD(tenantID, userID, workspaceID, name), encoded)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if avail, err := archiveutil.AvailableBytes(dir); err == nil && avail < int64(len(sealed))+4096 {
-		return ErrDiskFull
+		return "", ErrDiskFull
 	}
-	return fileutil.AtomicWriteFile(path, sealed, 0o600)
+	tmp, err := os.CreateTemp(dir, ".sidecar-stage-*")
+	if err != nil {
+		return "", err
+	}
+	tmpPath := tmp.Name()
+	ok := false
+	defer func() {
+		if !ok {
+			_ = tmp.Close()
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if _, err := tmp.Write(sealed); err != nil {
+		return "", err
+	}
+	if err := tmp.Sync(); err != nil {
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		return "", err
+	}
+	ok = true
+	return tmpPath, nil
 }
 
-func mustDecodeSidecar(data []byte) []byte {
-	decoded, err := decodeSidecar(data)
-	if err != nil {
-		return data
-	}
-	return decoded
+func sidecarRevision(plaintext []byte) string {
+	sum := sha256.Sum256(plaintext)
+	return hex.EncodeToString(sum[:])
 }
 
 // GetSidecar decrypts a named sidecar. Missing files are ErrBlobNotFound.
-func (s *BlobStore) GetSidecar(_ context.Context, tenantID, userID, workspaceID, name string) ([]byte, error) {
+func (s *BlobStore) GetSidecar(ctx context.Context, tenantID, userID, workspaceID, name string) ([]byte, error) {
 	if s == nil {
 		return nil, ErrUnavailable
 	}
@@ -258,7 +215,15 @@ func (s *BlobStore) GetSidecar(_ context.Context, tenantID, userID, workspaceID,
 	if err != nil {
 		return nil, err
 	}
+	// The canonical file is the only copy; its plaintext hash is the revision.
 	blob, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		// Deployments written by the pre-11.31 CAS design may have their latest
+		// committed content only in the immutable revision file named by the DB
+		// row (the canonical file was a best-effort compat copy). Fall back to
+		// that committed pointer instead of reporting the sidecar as lost.
+		blob, err = s.readLegacySidecarRevision(ctx, workspaceID, name, path)
+	}
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, ErrBlobNotFound
@@ -269,54 +234,165 @@ func (s *BlobStore) GetSidecar(_ context.Context, tenantID, userID, workspaceID,
 	if int64(len(blob)) > s.maxCiphertextBytes()+13 {
 		return nil, ErrBlobTooLarge
 	}
-	master, err := loadMasterKey(s.keyDir())
-	if err != nil {
-		return nil, err
-	}
-	dek := deriveDEK(master, tenantID, userID, workspaceID)
-	plain, err := open(dek, sidecarAAD(tenantID, userID, workspaceID, name), blob)
+	plain, _, err := openWorkspace(ctx, s.keyProvider(), tenantID, userID, workspaceID, sidecarAAD(tenantID, userID, workspaceID, name), blob)
 	if err != nil {
 		return nil, err
 	}
 	return decodeSidecar(plain)
 }
 
+// readLegacySidecarRevision resolves the committed DB pointer to a pre-11.31
+// immutable revision file. Revision is a validated content hash and name is
+// allowlisted, so the derived path cannot escape the sidecar directory.
+func (s *BlobStore) readLegacySidecarRevision(ctx context.Context, workspaceID, name, canonicalPath string) ([]byte, error) {
+	if s.DB == nil {
+		return nil, os.ErrNotExist
+	}
+	var revision string
+	err := s.DB.QueryRowContext(ctx, `SELECT revision FROM cloud_workspace_sidecars WHERE workspace_id = ? AND name = ?`, workspaceID, name).Scan(&revision)
+	if err != nil || !ValidSHA256Hex(strings.TrimSpace(revision)) {
+		return nil, os.ErrNotExist
+	}
+	legacy := filepath.Join(filepath.Dir(canonicalPath), name+"."+strings.TrimSpace(revision)+objectFileExt)
+	blob, err := os.ReadFile(legacy)
+	if err != nil {
+		return nil, err
+	}
+	return blob, nil
+}
+
+func (s *BlobStore) GetSidecarWithRevision(ctx context.Context, tenantID, userID, workspaceID, name string) (*Sidecar, error) {
+	plain, err := s.GetSidecar(ctx, tenantID, userID, workspaceID, name)
+	if err != nil {
+		return nil, err
+	}
+	return &Sidecar{Data: plain, Revision: sidecarRevision(plain)}, nil
+}
+
 // PutSidecar admits a named sidecar. Grant is enforced at HTTP; owner+lease here.
 func (s *Service) PutSidecar(ctx context.Context, principal auth.MachinePrincipal, workspaceID, name string, plaintext []byte) error {
+	_, err := s.PutSidecarWithRevision(ctx, principal, workspaceID, name, "", plaintext)
+	return err
+}
+
+// PutSidecarWithRevision performs an exclusive-lease protected CAS update.
+// An empty ifMatch is accepted only when the sidecar does not exist yet.
+func (s *Service) PutSidecarWithRevision(ctx context.Context, principal auth.MachinePrincipal, workspaceID, name, ifMatch string, plaintext []byte) (*Sidecar, error) {
 	blobs, err := s.blobs()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	name, err = ValidateSidecarName(name)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if int64(len(plaintext)) > MaxSidecarBytes {
-		return ErrBlobTooLarge
+		return nil, ErrBlobTooLarge
 	}
-	// Only conversation history is multi-writer. Task identity and runtime
-	// sidecars remain lease-protected to preserve the existing task lifecycle
-	// semantics and avoid concurrent renames/restores racing with a mount.
-	if name != SidecarSession {
-		if _, err := s.Workspaces.RequireLease(ctx, principal.TenantID, principal.UserID, workspaceID, principal.MachineID, s.now()); err != nil {
-			return err
-		}
-	} else if _, err := s.Workspaces.GetOwned(ctx, principal.TenantID, principal.UserID, workspaceID); err != nil {
-		return err
+	// v1-sequential has one writer for every sidecar, including session.json.
+	// The old session-only multi-writer exception could resurrect stale history
+	// and bypass the lease/fencing boundary during handoff.
+	if _, err := s.Workspaces.RequireLeaseWithSessionAndToken(ctx, principal.TenantID, principal.UserID, workspaceID, principal.MachineID, principal.ClientInstanceID, principal.FencingToken, s.now()); err != nil {
+		return nil, err
+	}
+	if err := s.admitBandwidth(ctx, principal, int64(len(plaintext)), 0); err != nil {
+		return nil, err
 	}
 	dir, err := blobs.SidecarsDir(principal.TenantID, principal.UserID, workspaceID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := s.checkVolume(dir, int64(len(plaintext))); err != nil {
-		return err
+		return nil, err
 	}
-	return blobs.PutSidecar(ctx, principal.TenantID, principal.UserID, workspaceID, name, plaintext)
+	// task.json is also the transport for the unique server-side binding. Parse
+	// and validate it now, but defer the binding mutation until the durable
+	// sidecar transaction below. This prevents a stale/failed sidecar write from
+	// advancing the task binding on its own.
+	var taskBinding *TaskSidecar
+	if name == SidecarTask {
+		task := ParseTaskSidecar(plaintext)
+		if task.WorkspaceID != "" && task.WorkspaceID != strings.TrimSpace(workspaceID) {
+			return nil, ErrRevisionConflict
+		}
+		taskBinding = &task
+	}
+	newRevision := sidecarRevision(plaintext)
+	path, err := blobs.SidecarPath(principal.TenantID, principal.UserID, workspaceID, name)
+	if err != nil {
+		return nil, err
+	}
+	// The lease already guarantees a single writer; the mutex only serializes
+	// in-process CAS check + atomic write against local readers/writers.
+	sidecarWriteMu.Lock()
+	defer sidecarWriteMu.Unlock()
+	// The canonical file content is the CAS baseline: its plaintext hash is the
+	// current revision, and a missing file means the sidecar does not exist.
+	current, currentErr := blobs.GetSidecar(ctx, principal.TenantID, principal.UserID, workspaceID, name)
+	if currentErr != nil && !errors.Is(currentErr, ErrBlobNotFound) {
+		return nil, currentErr
+	}
+	currentRev := ""
+	if currentErr == nil {
+		currentRev = sidecarRevision(current)
+	}
+	if strings.TrimSpace(ifMatch) != currentRev {
+		return nil, ErrRevisionConflict
+	}
+	// Stage the sealed payload beside the canonical file, commit the DB
+	// transaction, then atomically rename into place. A fenced or failed commit
+	// discards only the temp file; the previously committed canonical content is
+	// never deleted out from under readers. A crash between commit and rename
+	// leaves the DB revision ahead of the file, which the next write's CAS (the
+	// file hash is the baseline) heals on retry.
+	staged, err := blobs.stageSidecarFile(ctx, principal.TenantID, principal.UserID, workspaceID, name, path, plaintext)
+	if err != nil {
+		return nil, err
+	}
+	out := &Sidecar{Data: append([]byte(nil), plaintext...), Revision: newRevision}
+	now := s.now().UTC()
+	err = s.Workspaces.withImmediate(ctx, func(q queryer) error {
+		if _, err := requireActiveOwned(ctx, q, principal.TenantID, principal.UserID, workspaceID); err != nil {
+			return err
+		}
+		if err := assertLeaseHeldForSession(ctx, q, workspaceID, principal.MachineID, principal.ClientInstanceID, principal.FencingToken, now); err != nil {
+			return err
+		}
+		if taskBinding != nil {
+			if _, err := upsertTaskBindingTx(ctx, q, principal.TenantID, principal.UserID, workspaceID, taskBinding.CloudTaskID, "", taskBinding.Name, taskBinding.Mode, taskBinding.Tag, taskBinding.BindingVersion, now.Format(time.RFC3339)); err != nil {
+				return err
+			}
+		}
+		if _, err := q.ExecContext(ctx, `INSERT INTO cloud_workspace_sidecars (workspace_id, name, revision, updated_by_session, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(workspace_id, name) DO UPDATE SET revision = excluded.revision, updated_by_session = excluded.updated_by_session, updated_at = excluded.updated_at`, workspaceID, name, newRevision, principal.ClientInstanceID, now.Format(time.RFC3339)); err != nil {
+			return err
+		}
+		return stageAtomicIdempotency(ctx, q, out)
+	})
+	if err != nil {
+		_ = os.Remove(staged)
+		return nil, err
+	}
+	if err := fileutil.RenameAtomicFile(staged, path); err != nil {
+		// The revision is committed; the caller can retry the same If-Match CAS
+		// against the previous canonical content. Keep the staged file out of the
+		// directory so the legacy-fallback and orphan scans never see it.
+		_ = os.Remove(staged)
+		return nil, err
+	}
+	return out, nil
 }
 
 // GetSidecar returns sidecar plaintext for the owner. Reads do not take the
 // exclusive write lease so a new machine can restore task.json into the list.
 func (s *Service) GetSidecar(ctx context.Context, principal auth.MachinePrincipal, workspaceID, name string) ([]byte, error) {
+	out, err := s.GetSidecarWithRevision(ctx, principal, workspaceID, name)
+	if err != nil {
+		return nil, err
+	}
+	return out.Data, nil
+}
+
+func (s *Service) GetSidecarWithRevision(ctx context.Context, principal auth.MachinePrincipal, workspaceID, name string) (*Sidecar, error) {
 	blobs, err := s.blobs()
 	if err != nil {
 		return nil, err
@@ -335,5 +411,15 @@ func (s *Service) GetSidecar(ctx context.Context, principal auth.MachinePrincipa
 	if ws == nil || ws.Status != StatusActive {
 		return nil, ErrNotFound
 	}
-	return blobs.GetSidecar(ctx, principal.TenantID, principal.UserID, workspaceID, name)
+	out, err := blobs.GetSidecarWithRevision(ctx, principal.TenantID, principal.UserID, workspaceID, name)
+	if err != nil {
+		return nil, err
+	}
+	// Sidecar rows carry no durable size column, so downloads are charged after
+	// the read against the actual plaintext length. An over-limit window still
+	// fails closed: the response is withheld and the next window must admit it.
+	if err := s.admitBandwidth(ctx, principal, 0, int64(len(out.Data))); err != nil {
+		return nil, err
+	}
+	return out, nil
 }

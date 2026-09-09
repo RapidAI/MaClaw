@@ -49,30 +49,37 @@ func DefaultEnrichmentStorePath() string {
 // Format: "name description tag1 tag2 | query1 | query2 | ..."
 // Falls back to base text when no enrichment exists.
 func (s *EnrichmentStore) GetSearchText(t RegisteredTool) string {
-	base := t.Name + " " + t.Description
-	for _, tag := range t.Tags {
-		base += " " + tag
-	}
-	if isInternalBrowserDispatchToolName(t.Name) {
+	base := baseToolSearchText(t.Name, t.Description, t.Tags)
+	if s == nil || isInternalBrowserDispatchToolName(t.Name) {
 		return base
 	}
-
-	// Check builtin enrichments first.
-	if queries, ok := BuiltinEnrichments[t.Name]; ok {
-		for _, q := range queries {
-			base += " | " + q
-		}
-		return base
-	}
-
-	// Check stored enrichments.
 	s.mu.RLock()
 	e, ok := s.enrichments[t.Name]
 	s.mu.RUnlock()
-	if ok && len(e.SyntheticQueries) > 0 {
-		for _, q := range e.SyntheticQueries {
-			base += " | " + q
+	if ok {
+		base = appendSearchQueries(base, e.SyntheticQueries)
+	}
+	return base
+}
+
+func baseToolSearchText(name, description string, tags []string) string {
+	base := name + " " + description
+	for _, tag := range tags {
+		base += " " + tag
+	}
+	if isInternalBrowserDispatchToolName(name) {
+		return base
+	}
+	return appendSearchQueries(base, BuiltinEnrichments[name])
+}
+
+func appendSearchQueries(base string, queries []string) string {
+	for _, query := range queries {
+		query = strings.TrimSpace(query)
+		if query == "" {
+			continue
 		}
+		base += " | " + query
 	}
 	return base
 }
@@ -320,10 +327,6 @@ Typical usage: Generate and execute a single local script for data processing, A
 
 	"parallel_execute": `Disabled for external coding sessions. Split or route coding work through the internal CodingSubAgent instead.`,
 
-	"recommend_tool": `Parameters:
-- task (string, required): Description of the task to accomplish
-Typical usage: Get a recommendation for which coding tool fits a task best`,
-
 	"send_file": `Parameters:
 - path (string, required): Local file path to show in the current chat
 - destination / forward_to_im (optional): set only if also forwarding to IM
@@ -518,13 +521,6 @@ var BuiltinEnrichments = map[string][]string{
 		"use internal CodingSubAgent instead",
 		"external queued coding execution is disabled",
 	},
-	"recommend_tool": {
-		"which coding tool is best for this",
-		"recommend a tool for this task",
-		"推荐编程工具",
-		"suggest the right tool",
-		"help me pick a coding tool",
-	},
 	"send_file": {
 		"send a file to the user",
 		"share a file",
@@ -584,5 +580,22 @@ var BuiltinEnrichments = map[string][]string{
 		"查找更多工具",
 		"I need a capability not in the current list",
 		"discover matching tools from MCP or SkillHub",
+	},
+	"database": {
+		"查看库",
+		"查看数据库",
+		"查看 mysql 库",
+		"列出库和表",
+		"查看表结构",
+		"inspect schema",
+		"list tables in the database",
+		"query mysql postgres sqlserver",
+	},
+	"database_query": {
+		"查看库",
+		"查看数据库",
+		"只读查询数据库",
+		"inspect schema",
+		"list tables in the database",
 	},
 }

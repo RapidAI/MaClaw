@@ -299,6 +299,8 @@ const (
 	MsgTUIConfigDescMemoryRecallLog          = "msg.tui_config_desc_memory_recall_log"
 	MsgTUIConfigDescTrajectory               = "msg.tui_config_desc_trajectory"
 	MsgTUIConfigDescDebugTools               = "msg.tui_config_desc_debug_tools"
+	MsgTUIConfigDescDatabaseTool             = "msg.tui_config_desc_database_tool"
+	MsgTUIConfigDescDatabaseProfiles         = "msg.tui_config_desc_database_profiles"
 	MsgTUIConfigDescGossip                   = "msg.tui_config_desc_gossip"
 	MsgTUIConfigDescTrialReflect             = "msg.tui_config_desc_trial_reflect"
 	MsgTUIConfigDescLocalNeedleEnabled       = "msg.tui_config_desc_local_needle_enabled"
@@ -764,6 +766,8 @@ var translations = map[string]map[string]string{
 		MsgTUIConfigDescMemoryRecallLog:          "记忆召回日志（独立文件 memory_recall.log）",
 		MsgTUIConfigDescTrajectory:               "LLM 轨迹记录",
 		MsgTUIConfigDescDebugTools:               "调试工具调用",
+		MsgTUIConfigDescDatabaseTool:             "启用 Agent 数据库工具（总开关）",
+		MsgTUIConfigDescDatabaseProfiles:         "已配置数据源（只读摘要：id:类型(ro|rw,replica,ssh)，不含密钥）",
 		MsgTUIConfigDescGossip:                   "启用 Gossip",
 		MsgTUIConfigDescTrialReflect:             "启用试错反思",
 		MsgTUIConfigDescLocalNeedleEnabled:       "启用本地 Needle 微路由器，默认关闭；开启后仅用于低风险微决策并保留回退",
@@ -1201,6 +1205,8 @@ var translations = map[string]map[string]string{
 		MsgTUIConfigDescMemoryRecallLog:          "Memory recall log (separate file memory_recall.log)",
 		MsgTUIConfigDescTrajectory:               "LLM trajectory logging",
 		MsgTUIConfigDescDebugTools:               "Debug tool calls",
+		MsgTUIConfigDescDatabaseTool:             "Enable the Agent database tool (kill switch)",
+		MsgTUIConfigDescDatabaseProfiles:         "Configured data sources (read-only summary: id:type(ro|rw,replica,ssh), no secrets)",
 		MsgTUIConfigDescGossip:                   "Enable Gossip",
 		MsgTUIConfigDescTrialReflect:             "Enable trial-and-reflect",
 		MsgTUIConfigDescLocalNeedleEnabled:       "Enable the local Needle micro-router. Off by default; low-risk decisions keep fallback paths.",

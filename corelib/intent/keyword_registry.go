@@ -80,6 +80,8 @@ func newKeywordRegistryFromEntries(keywords []KeywordEntry) *KeywordRegistry {
 		// with git_inspect and "提交" wording with several older families, and
 		// must never outrank them on a keyword they already own.
 		LabelGitMutate: 37,
+		// SQL data-source inspect ranks after VCS so "查看…仓库" stays git_inspect.
+		LabelDatabase: 38,
 	}
 
 	type entryKey struct {
@@ -171,6 +173,16 @@ var defaultKeywords = []KeywordEntry{
 	{Keyword: "expense reimbursement", Label: LabelBusinessData, Strength: Weak},
 	{Keyword: "invoice approval", Label: LabelBusinessData, Strength: Weak},
 
+	{Keyword: "数据库", Label: LabelDatabase, Strength: Strong},
+	{Keyword: "查看库", Label: LabelDatabase, Strength: Strong},
+	{Keyword: "查看数据库", Label: LabelDatabase, Strength: Strong},
+	{Keyword: "表结构", Label: LabelDatabase, Strength: Strong},
+	{Keyword: "mysql", Label: LabelDatabase, Strength: Weak},
+	{Keyword: "postgres", Label: LabelDatabase, Strength: Weak},
+	{Keyword: "postgresql", Label: LabelDatabase, Strength: Weak},
+	{Keyword: "sqlserver", Label: LabelDatabase, Strength: Weak},
+	{Keyword: "inspect schema", Label: LabelDatabase, Strength: Weak},
+
 	{Keyword: "write code", Label: LabelCoding, Strength: Strong},
 	{Keyword: "implement feature", Label: LabelCoding, Strength: Strong},
 	{Keyword: "build app", Label: LabelCoding, Strength: Strong},
@@ -186,6 +198,10 @@ var defaultKeywords = []KeywordEntry{
 
 	{Keyword: "ppt", Label: LabelOffice, Strength: Strong},
 	{Keyword: "spreadsheet", Label: LabelOffice, Strength: Strong},
+	{Keyword: "演示文稿", Label: LabelOffice, Strength: Strong},
+	{Keyword: "幻灯片", Label: LabelOffice, Strength: Strong},
+	{Keyword: "slide deck", Label: LabelOffice, Strength: Strong},
+	{Keyword: "restyle", Label: LabelOffice, Strength: Weak},
 
 	{Keyword: "continue", Label: LabelContinuation, Strength: Weak},
 	{Keyword: "go ahead", Label: LabelContinuation, Strength: Weak},

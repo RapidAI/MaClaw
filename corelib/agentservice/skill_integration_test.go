@@ -39,6 +39,23 @@ type skillDynamicContractResolverStub struct {
 	ok       bool
 }
 
+func TestSkillToolBridgeFailsClosedWithoutContractRegistry(t *testing.T) {
+	bridge := &SkillToolBridge{svc: &Service{}}
+	if got := bridge.ListSkills(context.Background(), Principal{}); got != nil {
+		t.Fatalf("ListSkills() = %#v, want nil without contract registry", got)
+	}
+	items, lifecycle := bridge.DynamicSkillInventory(context.Background(), Principal{})
+	if items != nil {
+		t.Fatalf("DynamicSkillInventory() items = %#v, want nil", items)
+	}
+	if lifecycle.Coverage.State == coretool.CatalogCoverageComplete {
+		t.Fatalf("DynamicSkillInventory() lifecycle = %#v, must remain incomplete", lifecycle)
+	}
+	if lifecycle.Coverage.ReasonCode != "contract_registry_unavailable" {
+		t.Fatalf("DynamicSkillInventory() reason = %q, want contract_registry_unavailable", lifecycle.Coverage.ReasonCode)
+	}
+}
+
 func (s skillDynamicContractResolverStub) ResolveSkillDynamicContract(context.Context, Principal, string) (DynamicCapabilityContract, bool) {
 	return s.contract, s.ok
 }

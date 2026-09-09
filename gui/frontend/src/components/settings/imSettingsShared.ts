@@ -42,7 +42,7 @@ export const connectionStatusGlyphKind = (
 
 export const pillButtonStyle = (active: boolean): CSSProperties => ({
     padding: '4px 14px',
-    borderRadius: '14px',
+    borderRadius: 'var(--radius-pill, 999px)',
     border: active ? '1.5px solid var(--theme-primary)' : '1px solid var(--theme-border)',
     background: active ? 'var(--theme-info-bg)' : 'transparent',
     color: active ? 'var(--theme-primary)' : 'var(--theme-text-secondary)',
@@ -57,7 +57,7 @@ export const connectionBadgeStyle = (status: string): CSSProperties => {
     return {
         fontSize: '0.7rem',
         padding: '2px 8px',
-        borderRadius: '10px',
+        borderRadius: 'var(--radius-pill, 999px)',
         background: status === 'connected' ? 'var(--theme-success-bg)' : pending ? 'var(--theme-info-bg)' : 'var(--theme-danger-bg)',
         color: status === 'connected' ? 'var(--theme-success)' : pending ? 'var(--theme-primary)' : 'var(--theme-danger)',
     };

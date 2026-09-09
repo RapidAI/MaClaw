@@ -31,18 +31,6 @@ func (a *ClaudeAdapter) BuildCommand(spec LaunchSpec) (CommandSpec, error) {
 		return CommandSpec{}, fmt.Errorf("claude is not installed")
 	}
 
-	// Ensure Claude Code's onboarding/first-run wizard has been marked
-	// as complete so it doesn't block the session with interactive prompts.
-	// Pass the API key so it gets added to customApiKeyResponses.approved,
-	// preventing the interactive API key confirmation dialog that would
-	// cause an immediate exit with code 1 in SDK mode.
-	apiKey := spec.Env["ANTHROPIC_AUTH_TOKEN"]
-	if err := ensureClaudeOnboardingComplete(a.app, spec.ProjectPath, apiKey); err != nil {
-		if a.app != nil {
-			a.app.log(fmt.Sprintf("[claude-adapter] onboarding pre-check warning: %v", err))
-		}
-	}
-
 	commandPath := a.resolveClaudeExecutable(status.Path)
 	env := a.buildCommandEnv(spec.Env)
 
@@ -89,7 +77,6 @@ func (a *ClaudeAdapter) BuildCommand(spec LaunchSpec) (CommandSpec, error) {
 	// Inject anti-premature-exit instructions that encourage Claude Code
 	// to decompose complex tasks into a TODO list and complete all items
 	// before exiting. This works in tandem with the stop hook installed
-	// by EnsureClaudeOnboarding.
 	// Skip for resume sessions 鈥?the previous session already has the
 	// TODO protocol in its context, and adding it again wastes tokens.
 	if spec.ResumeSessionID == "" {
@@ -177,7 +164,6 @@ When the user asks to take a screenshot or check what's on screen, use these com
 // and complete all items before exiting. This dramatically reduces
 // premature exits on multi-step tasks.
 //
-// Works in tandem with the stop hook installed by EnsureClaudeOnboarding,
 // which checks for incomplete TODO items and blocks exit if any remain.
 func buildAntiPrematureExitPrompt() string {
 	return `IMPORTANT: Task Completion Protocol

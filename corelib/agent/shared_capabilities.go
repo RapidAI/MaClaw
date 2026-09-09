@@ -13,7 +13,6 @@ func DesktopOnlyCapabilityNames() map[string]bool {
 		"set_nickname":       true,
 		"list_sessions":      true,
 		"project_manage":     true,
-		"list_providers":     true,
 		"send_input":         true,
 		"get_session_output": true,
 		"get_session_events": true,
@@ -39,17 +38,30 @@ func SharedCoreCapabilityNames() []string {
 	return out
 }
 
-// ExtraSharedHostCapabilityNames are GUI-advertised capabilities that are
-// not registered by RegisterCoreTools but must still work on a headless
-// host (same outcomes, host-adapted I/O).
+// ExtraSharedHostCapabilityNames is the hook for GUI-advertised capabilities
+// that still cannot be compiled into RegisterCoreTools. Shared host tools now
+// live in RegisterCoreTools; keep this empty unless a new extra appears.
 func ExtraSharedHostCapabilityNames() []string {
-	return []string{
-		"delegate_task",
-		"office",
-		"generate_pdf",
-		"list_mcp_tools",
-		"import_mcp_servers",
-		"tts_render",
-		"edit_lines",
+	return nil
+}
+
+// HostPrivateCapabilityNames are GUI-catalog tools that must not enter
+// RegisterCoreTools. Headless hosts serve the same outcomes through reviewed
+// semantic providers (config.manage.self, template.manage.session, opaque
+// MCP/Skill grants) rather than these IM soup names. FileRead/ripgrep/excel
+// remain folded into office/search helpers and are not listed here.
+func HostPrivateCapabilityNames() map[string]bool {
+	return map[string]bool{
+		"call_mcp_tool":      true,
+		"parallel_execute":   true,
+		"craft_tool":         true,
+		"compress_context":   true,
+		"manage_template":    true,
+		"create_template":    true,
+		"list_templates":     true,
+		"launch_template":    true,
+		"manage_config":      true,
+		"set_max_iterations": true,
+		"mis_data":           true,
 	}
 }

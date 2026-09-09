@@ -18,8 +18,9 @@ import (
 )
 
 const (
-	StatusActive  = "active"
-	StatusDeleted = "deleted"
+	StatusActive       = "active"
+	StatusProvisioning = "provisioning"
+	StatusDeleted      = "deleted"
 
 	ReasonMachineUnbound = "machine_unbound"
 	ReasonNotGranted     = "not_granted"
@@ -31,26 +32,34 @@ const (
 )
 
 var (
-	ErrUnavailable        = errors.New("cloud workspace store is unavailable")
-	ErrNotFound           = errors.New("cloud workspace not found")
-	ErrQuota              = errors.New("cloud workspace quota exceeded")
-	ErrTenantDisk         = errors.New("cloud workspace tenant disk exceeded")
-	ErrNameTaken          = errors.New("cloud workspace name taken")
-	ErrInvalidName        = errors.New("invalid cloud workspace name")
-	ErrRestoreWindow      = errors.New("cloud workspace restore window expired")
-	ErrInUse              = errors.New("cloud workspace in use")
-	ErrLeaseRequired      = errors.New("cloud workspace lease required")
-	ErrWorkspaceSize      = errors.New("cloud workspace size exceeded")
-	ErrVolumeFull         = errors.New("cloud workspace volume full")
-	ErrRevisionConflict   = errors.New("cloud workspace revision conflict")
-	ErrInvalidPath        = errors.New("invalid cloud workspace path")
-	ErrBlobHashMismatch   = errors.New("cloud workspace object hash mismatch")
-	ErrObjectMissing      = errors.New("cloud workspace object missing")
-	ErrTooManyEntries     = errors.New("cloud workspace file count exceeded")
-	ErrIncompleteChunks   = errors.New("cloud workspace object chunks incomplete")
-	ErrInvalidChunkIndex  = errors.New("invalid cloud workspace chunk index")
-	ErrContentLength      = errors.New("cloud workspace content-length required")
-	ErrInvalidSidecarName = errors.New("invalid cloud workspace sidecar name")
+	ErrUnavailable             = errors.New("cloud workspace store is unavailable")
+	ErrNotFound                = errors.New("cloud workspace not found")
+	ErrQuota                   = errors.New("cloud workspace quota exceeded")
+	ErrTenantDisk              = errors.New("cloud workspace tenant disk exceeded")
+	ErrNameTaken               = errors.New("cloud workspace name taken")
+	ErrInvalidName             = errors.New("invalid cloud workspace name")
+	ErrRestoreWindow           = errors.New("cloud workspace restore window expired")
+	ErrInUse                   = errors.New("cloud workspace in use")
+	ErrLeaseRequired           = errors.New("cloud workspace lease required")
+	ErrFenced                  = errors.New("cloud workspace writer fenced")
+	ErrIdempotencyKeyReused    = errors.New("cloud workspace idempotency key reused")
+	ErrIdempotencyInProgress   = errors.New("cloud workspace idempotent request in progress")
+	ErrWorkspaceSize           = errors.New("cloud workspace size exceeded")
+	ErrVolumeFull              = errors.New("cloud workspace volume full")
+	ErrRevisionConflict        = errors.New("cloud workspace revision conflict")
+	ErrInvalidPath             = errors.New("invalid cloud workspace path")
+	ErrBlobHashMismatch        = errors.New("cloud workspace object hash mismatch")
+	ErrObjectMissing           = errors.New("cloud workspace object missing")
+	ErrObjectDeleting          = errors.New("cloud workspace object deletion in progress")
+	ErrTooManyEntries          = errors.New("cloud workspace file count exceeded")
+	ErrIncompleteChunks        = errors.New("cloud workspace object chunks incomplete")
+	ErrInvalidChunkIndex       = errors.New("invalid cloud workspace chunk index")
+	ErrContentLength           = errors.New("cloud workspace content-length required")
+	ErrInvalidSidecarName      = errors.New("invalid cloud workspace sidecar name")
+	ErrProtocolMismatch        = errors.New("cloud workspace protocol mismatch")
+	ErrProvisionState          = errors.New("cloud workspace provisioning state conflict")
+	ErrInstanceSessionRequired = errors.New("cloud workspace instance session required")
+	ErrInstanceSessionInvalid  = errors.New("cloud workspace instance session invalid")
 
 	defaultNamePattern = regexp.MustCompile(`^工作区 ([1-9][0-9]*)$`)
 )
@@ -129,53 +138,83 @@ func restoreDeadline(deletedAt string) (time.Time, bool) {
 
 // EntitlementLease is the exclusive-lease snapshot on an entitlement workspace.
 type EntitlementLease struct {
-	Held        bool   `json:"held"`
-	MachineID   string `json:"machine_id"`
-	MachineName string `json:"machine_name"`
-	IsSelf      bool   `json:"is_self"`
-	ExpiresAt   string `json:"expires_at"`
+	Held               bool   `json:"held"`
+	MachineID          string `json:"machine_id"`
+	MachineName        string `json:"machine_name"`
+	IsSelf             bool   `json:"is_self"`
+	ExpiresAt          string `json:"expires_at"`
+	HandoffRequestedAt string `json:"handoff_requested_at,omitempty"`
 }
 
 // EntitlementWorkspace is one active row in the entitlement payload.
 type EntitlementWorkspace struct {
-	ID          string            `json:"id"`
-	Name        string            `json:"name"`
-	UsedBytes   int64             `json:"used_bytes"`
-	UpdatedAt   string            `json:"updated_at"`
-	TaskName    string            `json:"task_name,omitempty"`
-	TaskMode    string            `json:"task_mode,omitempty"`
-	Lease       *EntitlementLease `json:"lease,omitempty"`
-	LeaseInUse  bool              `json:"lease_in_use,omitempty"`
-	LeaseHolder string            `json:"lease_holder,omitempty"`
+	ID                string            `json:"id"`
+	Name              string            `json:"name"`
+	Status            string            `json:"status,omitempty"`
+	UsedBytes         int64             `json:"used_bytes"`
+	LogicalBytes      int64             `json:"logical_bytes"`
+	RetainedBytes     int64             `json:"retained_bytes"`
+	SnapshotBytes     int64             `json:"snapshot_retained_bytes"`
+	StagingBytes      int64             `json:"staging_bytes"`
+	UnreferencedBytes int64             `json:"unreferenced_retained_bytes"`
+	UpdatedAt         string            `json:"updated_at"`
+	SyncProtocol      string            `json:"sync_protocol"`
+	ServerRevision    string            `json:"server_revision"`
+	TaskName          string            `json:"task_name,omitempty"`
+	TaskMode          string            `json:"task_mode,omitempty"`
+	CloudTaskID       string            `json:"cloud_task_id,omitempty"`
+	BindingVersion    int64             `json:"binding_version,omitempty"`
+	ProvisionState    string            `json:"provision_state,omitempty"`
+	ProvisionOpID     string            `json:"provision_operation_id,omitempty"`
+	Lease             *EntitlementLease `json:"lease,omitempty"`
+	LeaseInUse        bool              `json:"lease_in_use,omitempty"`
+	LeaseHolder       string            `json:"lease_holder,omitempty"`
 }
 
 // EntitlementDeletedWorkspace is one soft-deleted row in the entitlement payload.
 type EntitlementDeletedWorkspace struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	UsedBytes  int64  `json:"used_bytes"`
-	UpdatedAt  string `json:"updated_at"`
-	DeletedAt  string `json:"deleted_at"`
-	PurgeAfter string `json:"purge_after"`
+	ID                string `json:"id"`
+	Name              string `json:"name"`
+	Status            string `json:"status,omitempty"`
+	UsedBytes         int64  `json:"used_bytes"`
+	LogicalBytes      int64  `json:"logical_bytes"`
+	RetainedBytes     int64  `json:"retained_bytes"`
+	SnapshotBytes     int64  `json:"snapshot_retained_bytes"`
+	StagingBytes      int64  `json:"staging_bytes"`
+	UnreferencedBytes int64  `json:"unreferenced_retained_bytes"`
+	UpdatedAt         string `json:"updated_at"`
+	DeletedAt         string `json:"deleted_at"`
+	PurgeAfter        string `json:"purge_after"`
 }
 
 // Entitlement is GET /api/v1/cloud-workspaces/entitlement.
 type Entitlement struct {
-	Enabled           bool                          `json:"enabled"`
-	Quota             int                           `json:"quota"`
-	Used              int                           `json:"used"`
-	MaxWorkspaceBytes int64                         `json:"max_workspace_bytes"`
-	Workspaces        []EntitlementWorkspace        `json:"workspaces"`
-	Deleted           []EntitlementDeletedWorkspace `json:"deleted"`
-	Reason            string                        `json:"reason,omitempty"`
+	Enabled             bool                          `json:"enabled"`
+	SyncProtocol        string                        `json:"sync_protocol"`
+	ReadOnlyAllowed     bool                          `json:"read_only_allowed"`
+	Quota               int                           `json:"quota"`
+	Used                int                           `json:"used"`
+	MaxWorkspaceBytes   int64                         `json:"max_workspace_bytes"`
+	TenantMaxTotalBytes int64                         `json:"tenant_max_total_bytes"`
+	LogicalBytes        int64                         `json:"logical_bytes"`
+	RetainedBytes       int64                         `json:"retained_bytes"`
+	SnapshotBytes       int64                         `json:"snapshot_retained_bytes"`
+	StagingBytes        int64                         `json:"staging_bytes"`
+	UnreferencedBytes   int64                         `json:"unreferenced_retained_bytes"`
+	Workspaces          []EntitlementWorkspace        `json:"workspaces"`
+	Deleted             []EntitlementDeletedWorkspace `json:"deleted"`
+	Reason              string                        `json:"reason,omitempty"`
 }
 
 func emptyEntitlement(settings Settings) Entitlement {
 	return Entitlement{
-		Quota:             settings.Quota,
-		MaxWorkspaceBytes: settings.MaxWorkspaceBytes,
-		Workspaces:        []EntitlementWorkspace{},
-		Deleted:           []EntitlementDeletedWorkspace{},
+		SyncProtocol:        "v1-sequential",
+		ReadOnlyAllowed:     true,
+		Quota:               settings.Quota,
+		MaxWorkspaceBytes:   settings.MaxWorkspaceBytes,
+		TenantMaxTotalBytes: settings.TenantMaxTotalBytes,
+		Workspaces:          []EntitlementWorkspace{},
+		Deleted:             []EntitlementDeletedWorkspace{},
 	}
 }
 
@@ -216,38 +255,68 @@ func (s *Service) EntitlementFor(ctx context.Context, principal auth.MachinePrin
 		if ws == nil {
 			continue
 		}
+		usage, err := s.Workspaces.UsageForWorkspace(ctx, ws.ID)
+		if err != nil {
+			return Entitlement{}, err
+		}
+		out.LogicalBytes += usage.LogicalBytes
+		out.RetainedBytes += usage.RetainedBytes
+		out.SnapshotBytes += usage.SnapshotRetainedBytes
+		out.StagingBytes += usage.StagingBytes
+		out.UnreferencedBytes += usage.UnreferencedRetainedBytes
 		switch ws.Status {
-		case StatusActive:
+		case StatusActive, StatusProvisioning:
 			out.Used++
 			item := EntitlementWorkspace{
-				ID:        ws.ID,
-				Name:      ws.Name,
-				UsedBytes: ws.UsedBytes,
-				UpdatedAt: ws.UpdatedAt,
+				ID:                ws.ID,
+				Name:              ws.Name,
+				UsedBytes:         ws.UsedBytes,
+				LogicalBytes:      usage.LogicalBytes,
+				RetainedBytes:     usage.RetainedBytes,
+				SnapshotBytes:     usage.SnapshotRetainedBytes,
+				StagingBytes:      usage.StagingBytes,
+				UnreferencedBytes: usage.UnreferencedRetainedBytes,
+				UpdatedAt:         ws.UpdatedAt,
+				Status:            ws.Status,
+				SyncProtocol:      "v1-sequential",
+				ServerRevision:    ws.ManifestRevision,
 			}
 			if task := s.taskSidecarFor(ctx, tenantID, userID, ws.ID); task.Name != "" || task.Mode != "" {
 				item.TaskName = task.Name
 				item.TaskMode = task.Mode
+				item.CloudTaskID = task.CloudTaskID
+				item.BindingVersion = task.BindingVersion
+			}
+			if op, opErr := s.Workspaces.GetLatestWorkspaceTaskProvision(ctx, tenantID, userID, ws.ID); opErr == nil && op != nil && op.State != ProvisionStateActive {
+				item.ProvisionState = op.State
+				item.ProvisionOpID = op.OperationID
 			}
 			if lease := leases[ws.ID]; lease != nil {
 				item.Lease = &EntitlementLease{
-					Held:        !leaseExpired(lease.ExpiresAt, now),
-					MachineID:   lease.MachineID,
-					MachineName: lease.MachineName,
-					IsSelf:      lease.MachineID == principal.MachineID,
-					ExpiresAt:   lease.ExpiresAt,
+					Held:               !leaseExpired(lease.ExpiresAt, now),
+					MachineID:          lease.MachineID,
+					MachineName:        lease.MachineName,
+					IsSelf:             lease.MachineID == principal.MachineID,
+					ExpiresAt:          lease.ExpiresAt,
+					HandoffRequestedAt: lease.HandoffRequestedAt,
 				}
 				projectEntitlementLease(&item)
 			}
 			out.Workspaces = append(out.Workspaces, item)
 		case StatusDeleted:
 			out.Deleted = append(out.Deleted, EntitlementDeletedWorkspace{
-				ID:         ws.ID,
-				Name:       ws.Name,
-				UsedBytes:  ws.UsedBytes,
-				UpdatedAt:  ws.UpdatedAt,
-				DeletedAt:  ws.DeletedAt,
-				PurgeAfter: purgeAfter(ws.DeletedAt),
+				ID:                ws.ID,
+				Name:              ws.Name,
+				Status:            ws.Status,
+				UsedBytes:         ws.UsedBytes,
+				LogicalBytes:      usage.LogicalBytes,
+				RetainedBytes:     usage.RetainedBytes,
+				SnapshotBytes:     usage.SnapshotRetainedBytes,
+				StagingBytes:      usage.StagingBytes,
+				UnreferencedBytes: usage.UnreferencedRetainedBytes,
+				UpdatedAt:         ws.UpdatedAt,
+				DeletedAt:         ws.DeletedAt,
+				PurgeAfter:        purgeAfter(ws.DeletedAt),
 			})
 		}
 	}
@@ -301,7 +370,7 @@ func (s *Service) SoftDeleteWorkspace(ctx context.Context, principal auth.Machin
 	if s == nil || s.Workspaces == nil {
 		return nil, ErrUnavailable
 	}
-	return s.Workspaces.SoftDelete(ctx, principal.TenantID, principal.UserID, principal.MachineID, id, s.now())
+	return s.Workspaces.SoftDeleteWithSessionAndToken(ctx, principal.TenantID, principal.UserID, principal.MachineID, principal.ClientInstanceID, principal.FencingToken, id, s.now())
 }
 
 // RestoreWorkspace undeletes a workspace within 7 days if quota allows.
@@ -338,6 +407,9 @@ func (s *Service) HardDeleteDeletedWorkspace(ctx context.Context, principal auth
 				if row.Status != StatusDeleted {
 					return ErrNotFound
 				}
+				// Files first, metadata second. If the process crashes between
+				// the two, the next GC sweep's orphan-directory reconciliation
+				// reclaims any leftover directory.
 				found = true
 				if err := s.Blobs.RemoveWorkspace(row.TenantID, row.UserID, row.ID); err != nil {
 					return err

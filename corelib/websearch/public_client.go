@@ -33,6 +33,14 @@ func isPublicNetworkOnly(ctx context.Context) bool {
 // newPublicHTTPClient only connects to public IP addresses. It intentionally
 // ignores the desktop proxy and cookie jar: callers use it for untrusted URLs
 // where a group member must not be able to reach workstation-local services.
+//
+// NewPublicHTTPClient is the exported form (P0-6, 2026-09-08 review) so other
+// packages (notably corelib/mcp) can route user-configured remote endpoints
+// through the same SSRF guard instead of relying on http.DefaultClient.
+func NewPublicHTTPClient(timeout time.Duration) *http.Client {
+	return newPublicHTTPClient(timeout)
+}
+
 func newPublicHTTPClient(timeout time.Duration) *http.Client {
 	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
 	transport := &http.Transport{
@@ -54,6 +62,14 @@ func newPublicHTTPClient(timeout time.Duration) *http.Client {
 			return validateResolvedPublicURL(req.Context(), req.URL)
 		},
 	}
+}
+
+// ValidatePublicHTTPURL is the exported form of validatePublicHTTPURL. It is
+// called by corelib/mcp before issuing an MCP remote request so that
+// user-supplied endpoints cannot point at loopback, link-local, RFC1918 or
+// cloud-metadata addresses (P0-6 of the 2026-09-08 review).
+func ValidatePublicHTTPURL(raw string) (*url.URL, error) {
+	return validatePublicHTTPURL(raw)
 }
 
 func validatePublicHTTPURL(raw string) (*url.URL, error) {
@@ -239,6 +255,13 @@ func isReservedSpecialUseHost(host string) bool {
 
 func normalizePublicHost(host string) string {
 	return strings.TrimSuffix(strings.Trim(strings.ToLower(host), "[]"), ".")
+}
+
+// IsBlockedPublicIP is the exported form of isBlockedPublicIP (P0-6, 2026-09-08
+// review). It returns true for loopback, unspecified, multicast, link-local,
+// RFC1918, CGNAT, benchmarking (RFC 2544) and any RFC-blessed private range.
+func IsBlockedPublicIP(ip net.IP) bool {
+	return isBlockedPublicIP(ip)
 }
 
 func isBlockedPublicIP(ip net.IP) bool {

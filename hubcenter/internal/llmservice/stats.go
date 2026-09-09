@@ -2,6 +2,7 @@ package llmservice
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"time"
 
@@ -16,36 +17,60 @@ import (
 
 // TenantUsageRecord is the per-request usage record stored for billing/stats.
 type TenantUsageRecord struct {
-	ID             int64     `json:"id,omitempty"`
-	HubID          string    `json:"hub_id"`
-	TenantID       string    `json:"tenant_id"`
-	Model          string    `json:"model"`
-	ProviderID     string    `json:"provider_id"`
-	InputTokens    int64     `json:"input_tokens"`
-	OutputTokens   int64     `json:"output_tokens"`
-	Credits        float64   `json:"credits"`
-	CacheHit       bool      `json:"cache_hit"`
-	AuthID         string    `json:"auth_id,omitempty"` // which authorization was charged
-	ServiceGroupID string    `json:"service_group_id,omitempty"`
-	WorkloadClass  string    `json:"workload_class,omitempty"`
-	ClassSource    string    `json:"class_source,omitempty"`
-	Preview        string    `json:"preview,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
+	ID                int64     `json:"id,omitempty"`
+	HubID             string    `json:"hub_id"`
+	TenantID          string    `json:"tenant_id"`
+	RequestID         string    `json:"request_id,omitempty"`
+	Model             string    `json:"model"`
+	ProviderID        string    `json:"provider_id"`
+	InputTokens       int64     `json:"input_tokens"`
+	OutputTokens      int64     `json:"output_tokens"`
+	CachedInputTokens int64     `json:"cached_input_tokens,omitempty"`
+	CacheWriteTokens  int64     `json:"cache_write_tokens,omitempty"`
+	CacheUsageSource  string    `json:"cache_usage_source,omitempty"`
+	UsageAnomaly      string    `json:"usage_anomaly,omitempty"`
+	PricingSource     string    `json:"pricing_source,omitempty"`
+	Credits           float64   `json:"credits"`
+	CacheHit          bool      `json:"cache_hit"`
+	AuthID            string    `json:"auth_id,omitempty"` // which authorization was charged
+	ServiceGroupID    string    `json:"service_group_id,omitempty"`
+	WorkloadClass     string    `json:"workload_class,omitempty"`
+	ClassSource       string    `json:"class_source,omitempty"`
+	Preview           string    `json:"preview,omitempty"`
+	CreatedAt         time.Time `json:"created_at"`
 }
 
 // TenantUsageSummary is an aggregated usage report.
 type TenantUsageSummary struct {
-	HubID         string  `json:"hub_id"`
-	TenantID      string  `json:"tenant_id"`
-	Model         string  `json:"model,omitempty"`
-	Period        string  `json:"period"`       // "daily" / "weekly" / "monthly"
-	PeriodStart   string  `json:"period_start"` // "2026-01-01"
-	InputTokens   int64   `json:"input_tokens"`
-	OutputTokens  int64   `json:"output_tokens"`
-	TotalCredits  float64 `json:"total_credits"`
-	TotalRequests int64   `json:"total_requests"`
-	CacheHits     int64   `json:"cache_hits"`
-	CacheHitRate  float64 `json:"cache_hit_rate"`
+	HubID             string  `json:"hub_id"`
+	TenantID          string  `json:"tenant_id"`
+	ServiceGroupID    string  `json:"service_group_id,omitempty"`
+	Model             string  `json:"model,omitempty"`
+	Period            string  `json:"period"`       // "daily" / "weekly" / "monthly"
+	PeriodStart       string  `json:"period_start"` // "2026-01-01"
+	InputTokens       int64   `json:"input_tokens"`
+	OutputTokens      int64   `json:"output_tokens"`
+	CachedInputTokens int64   `json:"cached_input_tokens"`
+	CacheWriteTokens  int64   `json:"cache_write_tokens"`
+	TotalCredits      float64 `json:"total_credits"`
+	TotalRequests     int64   `json:"total_requests"`
+	CacheHits         int64   `json:"cache_hits"`
+	CacheHitRate      float64 `json:"cache_hit_rate"`
+}
+
+// UsageReconciliationReport is the upstream fact a Hub uses to reconcile one
+// tenant/day.  It is deliberately scoped by the authenticated Hub and tenant;
+// provider-wide admin cards aggregate every Hub and are not a ledger source.
+// ServiceGroups is the same day split by the catalog group HubCenter actually
+// billed, so a Hub can line its official-route usage up against one group
+// instead of only the tenant total.
+type UsageReconciliationReport struct {
+	HubID         string               `json:"hub_id"`
+	TenantID      string               `json:"tenant_id"`
+	Date          string               `json:"date"`
+	Timezone      string               `json:"timezone"`
+	Upstream      TenantUsageSummary   `json:"upstream"`
+	ServiceGroups []TenantUsageSummary `json:"service_groups,omitempty"`
 }
 
 // TokenTraffic is input/output/total token volume for one window.
@@ -103,16 +128,17 @@ type ServiceGroupTrafficReport struct {
 
 // UsageFilter for querying aggregated stats.
 type UsageFilter struct {
-	HubID          string `json:"hub_id,omitempty"`
-	TenantID       string `json:"tenant_id,omitempty"`
-	Model          string `json:"model,omitempty"`
-	ServiceGroupID string `json:"service_group_id,omitempty"`
-	WorkloadClass  string `json:"workload_class,omitempty"`
-	Period         string `json:"period,omitempty"`     // "daily" / "weekly" / "monthly"
-	StartDate      string `json:"start_date,omitempty"` // "2026-01-01"
-	EndDate        string `json:"end_date,omitempty"`
-	Timezone       string `json:"timezone,omitempty"`
-	Limit          int    `json:"limit,omitempty"`
+	HubID               string `json:"hub_id,omitempty"`
+	TenantID            string `json:"tenant_id,omitempty"`
+	Model               string `json:"model,omitempty"`
+	ServiceGroupID      string `json:"service_group_id,omitempty"`
+	WorkloadClass       string `json:"workload_class,omitempty"`
+	Period              string `json:"period,omitempty"`     // "daily" / "weekly" / "monthly"
+	StartDate           string `json:"start_date,omitempty"` // "2026-01-01"
+	EndDate             string `json:"end_date,omitempty"`
+	Timezone            string `json:"timezone,omitempty"`
+	Limit               int    `json:"limit,omitempty"`
+	GroupByServiceGroup bool   `json:"group_by_service_group,omitempty"`
 }
 
 // UsageRecorderImpl implements llmpool.UsageRecorder for HubCenter.
@@ -134,20 +160,26 @@ func (u *UsageRecorderImpl) RecordUsage(ctx context.Context, record *llmpool.Usa
 	// Extract hub/tenant from context (set by proxy handler)
 	hubID, tenantID := usageContextValues(ctx)
 	return u.repo.Insert(ctx, &TenantUsageRecord{
-		HubID:          hubID,
-		TenantID:       tenantID,
-		Model:          record.Model,
-		ProviderID:     record.ProviderID,
-		ServiceGroupID: record.ServiceGroupID,
-		WorkloadClass:  record.WorkloadClass,
-		ClassSource:    record.ClassSource,
-		Preview:        record.Preview,
-		InputTokens:    record.InputTokens,
-		OutputTokens:   record.OutputTokens,
-		Credits:        record.Credits,
-		CacheHit:       record.CacheHit,
-		AuthID:         record.AuthID,
-		CreatedAt:      record.Timestamp,
+		HubID:             hubID,
+		TenantID:          tenantID,
+		RequestID:         record.RequestID,
+		Model:             record.Model,
+		ProviderID:        record.ProviderID,
+		ServiceGroupID:    record.ServiceGroupID,
+		WorkloadClass:     record.WorkloadClass,
+		ClassSource:       record.ClassSource,
+		Preview:           record.Preview,
+		InputTokens:       record.InputTokens,
+		OutputTokens:      record.OutputTokens,
+		CachedInputTokens: record.CachedInputTokens,
+		CacheWriteTokens:  record.CacheWriteTokens,
+		CacheUsageSource:  record.CacheUsageSource,
+		UsageAnomaly:      record.UsageAnomaly,
+		PricingSource:     record.PricingSource,
+		Credits:           record.Credits,
+		CacheHit:          record.CacheHit,
+		AuthID:            record.AuthID,
+		CreatedAt:         record.Timestamp,
 	})
 }
 
@@ -194,6 +226,85 @@ func (s *StatsService) QueryUsageSummary(ctx context.Context, filter UsageFilter
 		return nil, nil
 	}
 	return s.repo.QuerySummary(ctx, filter)
+}
+
+// QueryUsageReconciliation returns the exact calendar-day usage that this
+// HubCenter persisted for one authenticated Hub tenant.
+func (s *StatsService) QueryUsageReconciliation(ctx context.Context, hubID, tenantID, date, timezone string) (*UsageReconciliationReport, error) {
+	loc := TrafficLocation(timezone)
+	date = strings.TrimSpace(date)
+	if _, err := time.ParseInLocation("2006-01-02", date, loc); err != nil {
+		date = time.Now().In(loc).Format("2006-01-02")
+	}
+	report := &UsageReconciliationReport{
+		HubID:    strings.TrimSpace(hubID),
+		TenantID: strings.TrimSpace(tenantID),
+		Date:     date,
+		Timezone: loc.String(),
+		Upstream: TenantUsageSummary{
+			HubID:       strings.TrimSpace(hubID),
+			TenantID:    strings.TrimSpace(tenantID),
+			Period:      "daily",
+			PeriodStart: date,
+		},
+	}
+	if s == nil || s.repo == nil || report.HubID == "" || report.TenantID == "" {
+		return report, nil
+	}
+	groups, err := s.repo.QuerySummary(ctx, UsageFilter{
+		HubID: report.HubID, TenantID: report.TenantID,
+		Period: "daily", StartDate: date, EndDate: date, Timezone: loc.String(),
+		GroupByServiceGroup: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	report.ServiceGroups = make([]TenantUsageSummary, 0, len(groups))
+	index := make(map[string]int, len(groups))
+	for _, row := range groups {
+		if !strings.EqualFold(strings.TrimSpace(row.HubID), report.HubID) || !strings.EqualFold(strings.TrimSpace(row.TenantID), report.TenantID) {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(row.ServiceGroupID))
+		if i, ok := index[key]; ok {
+			addTenantUsageSummary(&report.ServiceGroups[i], row)
+			addTenantUsageSummary(&report.Upstream, row)
+			continue
+		}
+		report.ServiceGroups = append(report.ServiceGroups, row)
+		index[key] = len(report.ServiceGroups) - 1
+		addTenantUsageSummary(&report.Upstream, row)
+	}
+	if len(report.ServiceGroups) == 0 {
+		report.ServiceGroups = nil
+	} else {
+		sort.Slice(report.ServiceGroups, func(i, j int) bool {
+			return report.ServiceGroups[i].ServiceGroupID < report.ServiceGroups[j].ServiceGroupID
+		})
+	}
+	return report, nil
+}
+
+func addTenantUsageSummary(dst *TenantUsageSummary, src TenantUsageSummary) {
+	if dst == nil {
+		return
+	}
+	if dst.Period == "" {
+		dst.Period = src.Period
+	}
+	if dst.PeriodStart == "" {
+		dst.PeriodStart = src.PeriodStart
+	}
+	dst.InputTokens += src.InputTokens
+	dst.OutputTokens += src.OutputTokens
+	dst.CachedInputTokens += src.CachedInputTokens
+	dst.CacheWriteTokens += src.CacheWriteTokens
+	dst.TotalCredits += src.TotalCredits
+	dst.TotalRequests += src.TotalRequests
+	dst.CacheHits += src.CacheHits
+	if dst.TotalRequests > 0 {
+		dst.CacheHitRate = float64(dst.CacheHits) / float64(dst.TotalRequests)
+	}
 }
 
 // QueryRecentRecords returns recent usage records for a hub+tenant.

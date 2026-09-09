@@ -6,7 +6,7 @@ import { ProjectSearchArchivedPanel } from "./ProjectSearchArchivedPanel";
 import { ProjectSearchForkForm } from "./ProjectSearchForkForm";
 import { ProjectSearchIcon } from "./ProjectSearchIcon";
 import { ProjectSceneDetailPanel, type ProjectSceneDetail, type ProjectSearchArtifact } from "./ProjectSceneDetailPanel";
-import { agentModeFromTaskTags, isCodingWorkflowSourceTags, isPureCodingTaskTags, isRemoteMaintenanceTaskTags, remoteHostFromTaskTags } from "./codingTaskMode";
+import { agentModeFromTaskTags, isCloudWorkspaceTask, isCodingWorkflowSourceTags, isPureCodingTaskTags, isRemoteMaintenanceTaskTags, remoteHostFromTaskTags } from "./codingTaskMode";
 import { expertIDFromTaskTags, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache } from "./aiAssistantPanelSessionUtils";
 import { useDialog } from "../CustomDialog";
 
@@ -58,7 +58,7 @@ export function useProjectSearch(lang: string) {
     const doSearch = useCallback((q: string) => {
         setLoading(true);
         SearchTasks(q, 20)
-            .then(r => setResults(((r || []) as ProjectSearchItem[]).filter(item => item.has_output !== false)))
+            .then(r => setResults(((r || []) as ProjectSearchItem[]).filter(item => item.has_output !== false || isCloudWorkspaceTask(item))))
             .catch(() => setResults([]))
             .finally(() => setLoading(false));
     }, []);
@@ -74,6 +74,12 @@ export function useProjectSearch(lang: string) {
 
     const close = useCallback(() => { setOpen(false); setQuery(""); }, []);
     const toggle = useCallback(() => { setOpen(v => !v); }, []);
+    const openWithQuery = useCallback((value = "") => {
+        if (debounceRef.current) clearTimeout(debounceRef.current);
+        setOpen(true);
+        setQuery(value);
+        if (value.trim()) doSearch(value);
+    }, [doSearch]);
     const refresh = useCallback(() => doSearch(query), [doSearch, query]);
 
     const formatTime = useCallback((iso?: string): string => {
@@ -88,7 +94,7 @@ export function useProjectSearch(lang: string) {
         } catch { return ""; }
     }, [lang]);
 
-    return { open, query, results, loading, toggle, close, onQueryChange, refresh, formatTime };
+    return { open, query, results, loading, toggle, close, openWithQuery, onQueryChange, refresh, formatTime };
 }
 
 export function ProjectSearchPanel({ search, lang, theme: t, inline, active = true, onProjectSwitch, onCreateProjectTab, onCloseProjectTab, onForkCurrentChat, onTaskPrefsChanged }: {
@@ -124,7 +130,7 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, active = tr
     const [sceneLoadingPath, setSceneLoadingPath] = useState<string | null>(null);
     const activeRef = useRef(active);
     activeRef.current = active;
-    const visibleResults = search.results.filter(item => item.has_output !== false);
+    const visibleResults = search.results.filter(item => item.has_output !== false || isCloudWorkspaceTask(item));
 
     useEffect(() => { if (search.open) inputRef.current?.focus(); }, [search.open]);
     useEffect(() => {
@@ -263,10 +269,10 @@ function ProjectSearchRow({ item, lang, theme: t, search, renamingPath, renameVa
                     : "TASK";
     return <div data-pure-coding={pureCoding ? "true" : "false"} onClick={() => void onSelect(item)} onKeyDown={event => { if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); void onSelect(item); } }} onContextMenu={event => { event.preventDefault(); setCtxMenu({ x: event.clientX, y: event.clientY, item }); }} role="button" tabIndex={0} aria-label={item.name || item.project_path} style={{ padding: "8px 10px", cursor: "pointer", borderRadius: "6px", transition: "background 0.15s" }} onMouseEnter={event => (event.currentTarget.style.background = t.codeBlockBg)} onMouseLeave={event => (event.currentTarget.style.background = "transparent")}>
         <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "2px" }}>
-            <span style={{ minWidth: "26px", textAlign: "center", fontSize: "10px", fontWeight: 700, color: pureCoding ? (remoteCoding ? "#0284c7" : "#15803d") : t.textMuted, border: pureCoding ? `1px solid ${remoteCoding ? "color-mix(in srgb, #0ea5e9 48%, transparent)" : "color-mix(in srgb, #22c55e 48%, transparent)"}` : `1px solid ${t.titleBarBorder}`, borderRadius: "4px", padding: "1px 4px", flexShrink: 0 }} title={pureCoding ? (remoteMaintenance ? localizeText(lang, "Remote maintenance", "远程维护") : remoteCoding ? localizeText(lang, "Remote pure coding", "远程纯编程") : localizeText(lang, "Local pure coding", "本地纯编程")) : undefined}>{kindLabel}</span>
+            <span style={{ minWidth: "26px", textAlign: "center", fontSize: "10px", fontWeight: 700, color: pureCoding ? (remoteCoding ? "var(--theme-primary-strong)" : "var(--theme-success)") : t.textMuted, border: pureCoding ? `1px solid ${remoteCoding ? "color-mix(in srgb, var(--theme-primary) 48%, transparent)" : "color-mix(in srgb, var(--theme-success) 48%, transparent)"}` : `1px solid ${t.titleBarBorder}`, borderRadius: "4px", padding: "1px 4px", flexShrink: 0 }} title={pureCoding ? (remoteMaintenance ? localizeText(lang, "Remote maintenance", "远程维护") : remoteCoding ? localizeText(lang, "Remote pure coding", "远程纯编程") : localizeText(lang, "Local pure coding", "本地纯编程")) : undefined}>{kindLabel}</span>
             {renamingPath === item.project_path ? <input autoFocus value={renameVal} onChange={event => setRenameVal(event.target.value)} onBlur={async () => { const trimmed = renameVal.trim(); if (trimmed && trimmed !== item.name) { await RenameTask(item.project_path, trimmed); refreshResults(); } setRenamingPath(null); }} onKeyDown={event => { if (event.key === "Enter") (event.target as HTMLInputElement).blur(); if (event.key === "Escape") setRenamingPath(null); }} onClick={event => event.stopPropagation()} style={{ flex: 1, fontSize: "13px", fontWeight: 600, color: t.text, background: t.codeBlockBg, border: `1px solid ${t.headingColor}`, borderRadius: "3px", padding: "2px 6px", outline: "none", minWidth: 0, fontFamily: "inherit" }} /> : <span style={{ fontSize: "13px", fontWeight: 600, color: t.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{item.name || item.project_path}</span>}
-            {pureCoding && <span data-testid={remoteCoding ? "search-remote-coding-badge" : "search-coding-badge"} style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "999px", background: remoteCoding ? "color-mix(in srgb, #0ea5e9 12%, transparent)" : "color-mix(in srgb, #22c55e 12%, transparent)", color: remoteCoding ? "#0284c7" : "#15803d", border: remoteCoding ? "1px solid color-mix(in srgb, #0ea5e9 48%, transparent)" : "1px solid color-mix(in srgb, #22c55e 48%, transparent)", flexShrink: 0, maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{remoteCoding ? (remoteHost ? `${remoteMaintenance ? localizeText(lang, "Remote maintenance", "远程维护") : localizeText(lang, "Remote coding", "远程编程")} · ${remoteHost}` : (remoteMaintenance ? localizeText(lang, "Remote maintenance", "远程维护") : localizeText(lang, "Remote coding", "远程编程"))) : localizeText(lang, "Pure coding", "纯编程")}</span>}
-            {fromCodingWorkflow && <span data-testid="search-coding-workflow-source-badge" style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "999px", background: "color-mix(in srgb, #8b5cf6 12%, transparent)", color: "#7c3aed", border: "1px solid color-mix(in srgb, #8b5cf6 48%, transparent)", flexShrink: 0 }} title={localizeText(lang, "Created from coding workflow", "由编程工作流创建")}>{localizeText(lang, "Workflow", "工作流")}</span>}
+            {pureCoding && <span data-testid={remoteCoding ? "search-remote-coding-badge" : "search-coding-badge"} style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "999px", background: remoteCoding ? "color-mix(in srgb, var(--theme-primary) 12%, transparent)" : "color-mix(in srgb, var(--theme-success) 12%, transparent)", color: remoteCoding ? "var(--theme-primary-strong)" : "var(--theme-success)", border: remoteCoding ? "1px solid color-mix(in srgb, var(--theme-primary) 48%, transparent)" : "1px solid color-mix(in srgb, var(--theme-success) 48%, transparent)", flexShrink: 0, maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{remoteCoding ? (remoteHost ? `${remoteMaintenance ? localizeText(lang, "Remote maintenance", "远程维护") : localizeText(lang, "Remote coding", "远程编程")} · ${remoteHost}` : (remoteMaintenance ? localizeText(lang, "Remote maintenance", "远程维护") : localizeText(lang, "Remote coding", "远程编程"))) : localizeText(lang, "Pure coding", "纯编程")}</span>}
+            {fromCodingWorkflow && <span data-testid="search-coding-workflow-source-badge" style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "999px", background: "color-mix(in srgb, var(--theme-primary-strong) 12%, transparent)", color: "var(--theme-primary-strong)", border: "1px solid color-mix(in srgb, var(--theme-primary-strong) 48%, transparent)", flexShrink: 0 }} title={localizeText(lang, "Created from coding workflow", "由编程工作流创建")}>{localizeText(lang, "Workflow", "工作流")}</span>}
             {item.workflow_type && <span style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "999px", background: "rgba(47,111,188,0.10)", color: t.headingColor, border: `1px solid ${t.titleBarBorder}`, flexShrink: 0 }}>{formatWorkflowType(item.workflow_type, lang)}</span>}
             {item.archived && <span style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "999px", background: "rgba(100,116,139,0.10)", color: t.textMuted, border: `1px solid ${t.titleBarBorder}`, flexShrink: 0 }}>{localizeText(lang, "Archived", "\u5df2\u5f52\u6863")}</span>}
             <button type="button" onClick={event => { event.stopPropagation(); void onShowSceneDetail(item); }} style={{ border: "none", background: "transparent", color: t.headingColor, opacity: sceneLoading ? 0.35 : 0.7, width: "20px", height: "20px", cursor: sceneLoading ? "default" : "pointer", flexShrink: 0, fontSize: "12px" }} disabled={sceneLoading} title={localizeText(lang, "Scene details", "任务证据详情")}>{sceneLoading ? "..." : <ProjectSearchIcon name="info" />}</button>

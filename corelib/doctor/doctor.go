@@ -248,6 +248,9 @@ func Run(in Input) Report {
 
 	// --- shared agent loop strangler (env + config) ---
 	add(SharedLoopCheck(cfg))
+	for _, c := range DatabaseChecks(cfg, baseDir) {
+		add(c)
+	}
 	// --- adaptive system prompt hit rate / est. token savings ---
 	add(AdaptivePromptCheck())
 	add(WorkingStateCheck())
@@ -417,7 +420,9 @@ func Run(in Input) Report {
 			totalIn += st.InputTokens
 			totalOut += st.OutputTokens
 			totalReq += st.Requests
-			totalCost += st.TotalCostRMB
+			// Recompute from directional amounts so stale aggregate values from
+			// older provider records cannot hide cache read/write costs.
+			totalCost += st.InputCostRMB + st.CacheReadCostRMB + st.CacheWriteCostRMB + st.OutputCostRMB
 		}
 		add(Check{
 			ID:      "usage.tokens",

@@ -20,8 +20,8 @@ fi
 
 # Sync version to frontend
 echo "Syncing version $VERSION to frontend..."
-sed -i '' "s/const APP_VERSION = \".*\";/const APP_VERSION = \"$VERSION\";/" gui/frontend/src/App.tsx
-cat > gui/frontend/src/version.ts <<VEOF
+sed -i '' "s/const APP_VERSION = \".*\";/const APP_VERSION = \"$VERSION\";/" guiapp/frontend/src/App.tsx
+cat > guiapp/frontend/src/version.ts <<VEOF
 export const buildNumber = "$BUILD_NUM";
 export const appVersion = "$VERSION";
 VEOF
@@ -46,7 +46,7 @@ mkdir -p "$BIN_DIR"
 
 # Build Frontend
 echo "[1/4] Building Frontend..."
-cd gui/frontend
+cd guiapp/frontend
 npm install --cache ./.npm_cache
 npm run build
 cd ../..
@@ -56,11 +56,11 @@ echo "[2/4] Compiling Go Binaries..."
 
 # Build AMD64
 echo "  - Building for amd64..."
-CGO_ENABLED=1 CGO_LDFLAGS="-weak_framework UniformTypeIdentifiers" GOOS=darwin GOARCH=amd64 go build -tags desktop,production -ldflags "-X main.version=${VERSION}" -o "${BIN_DIR}/${APP_NAME}_amd64" ./gui/
+CGO_ENABLED=1 CGO_LDFLAGS="-weak_framework UniformTypeIdentifiers" GOOS=darwin GOARCH=amd64 go build -tags desktop,production -ldflags "-X main.version=${VERSION}" -o "${BIN_DIR}/${APP_NAME}_amd64" ./cmd/maclaw-gui/
 
 # Build ARM64
 echo "  - Building for arm64..."
-CGO_ENABLED=1 CGO_LDFLAGS="-weak_framework UniformTypeIdentifiers" GOOS=darwin GOARCH=arm64 go build -tags desktop,production -ldflags "-X main.version=${VERSION}" -o "${BIN_DIR}/${APP_NAME}_arm64" ./gui/
+CGO_ENABLED=1 CGO_LDFLAGS="-weak_framework UniformTypeIdentifiers" GOOS=darwin GOARCH=arm64 go build -tags desktop,production -ldflags "-X main.version=${VERSION}" -o "${BIN_DIR}/${APP_NAME}_arm64" ./cmd/maclaw-gui/
 
 # Generate Windows Resources
 echo "  - Generating Windows Resources..."
@@ -76,8 +76,8 @@ if command -v "$RSRC_TOOL" &> /dev/null; then
         -e "s/{{.Info.ProductVersion}}.0/$VERSION/g" \
         build/windows/wails.exe.manifest > build/windows/wails.exe.manifest.tmp
 
-    "$RSRC_TOOL" -manifest build/windows/wails.exe.manifest.tmp -ico build/windows/icon.ico -arch amd64 -o gui/resource_windows_amd64.syso
-    "$RSRC_TOOL" -manifest build/windows/wails.exe.manifest.tmp -ico build/windows/icon.ico -arch arm64 -o gui/resource_windows_arm64.syso
+    "$RSRC_TOOL" -manifest build/windows/wails.exe.manifest.tmp -ico build/windows/icon.ico -arch amd64 -o guiapp/resource_windows_amd64.syso
+    "$RSRC_TOOL" -manifest build/windows/wails.exe.manifest.tmp -ico build/windows/icon.ico -arch arm64 -o guiapp/resource_windows_arm64.syso
     
     rm build/windows/wails.exe.manifest.tmp
 else
@@ -86,14 +86,14 @@ fi
 
 # Build Windows AMD64
 echo "  - Building for Windows amd64..."
-CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -tags desktop,production -ldflags "-s -w -H windowsgui -X main.version=${VERSION}" -o "${BIN_DIR}/${APP_NAME}_amd64.exe" ./gui/
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -tags desktop,production -ldflags "-s -w -H windowsgui -X main.version=${VERSION}" -o "${BIN_DIR}/${APP_NAME}_amd64.exe" ./cmd/maclaw-gui/
 
 # Build Windows ARM64
 echo "  - Building for Windows arm64..."
-CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -tags desktop,production -ldflags "-s -w -H windowsgui -X main.version=${VERSION}" -o "${BIN_DIR}/${APP_NAME}_arm64.exe" ./gui/
+CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -tags desktop,production -ldflags "-s -w -H windowsgui -X main.version=${VERSION}" -o "${BIN_DIR}/${APP_NAME}_arm64.exe" ./cmd/maclaw-gui/
 
 # Cleanup Windows Resources
-rm -f gui/resource_windows_amd64.syso gui/resource_windows_arm64.syso
+rm -f guiapp/resource_windows_amd64.syso guiapp/resource_windows_arm64.syso
 
 # Build TUI/CLI Binaries
 echo "  - Building TUI/CLI, MaClawSrv and DataSrv binaries..."
@@ -153,9 +153,9 @@ build_linux() {
     # Build binary
     # Note: On Linux/macOS cross-compile, CGO is required for Wails.
     if [ -n "$CC_CMD" ]; then
-        eval $CC_CMD CGO_ENABLED=1 GOOS=linux GOARCH=$ARCH go build -tags desktop,production -ldflags "-X main.version=${VERSION}" -o "${BIN_DIR}/${APP_NAME}_${ARCH}_linux" ./gui/
+        eval $CC_CMD CGO_ENABLED=1 GOOS=linux GOARCH=$ARCH go build -tags desktop,production -ldflags "-X main.version=${VERSION}" -o "${BIN_DIR}/${APP_NAME}_${ARCH}_linux" ./cmd/maclaw-gui/
     elif [ "$(uname)" == "Linux" ]; then
-        CGO_ENABLED=1 GOOS=linux GOARCH=$ARCH go build -tags desktop,production -ldflags "-X main.version=${VERSION}" -o "${BIN_DIR}/${APP_NAME}_${ARCH}_linux" ./gui/
+        CGO_ENABLED=1 GOOS=linux GOARCH=$ARCH go build -tags desktop,production -ldflags "-X main.version=${VERSION}" -o "${BIN_DIR}/${APP_NAME}_${ARCH}_linux" ./cmd/maclaw-gui/
     fi
     
     # Package

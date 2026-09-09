@@ -1093,6 +1093,15 @@ func (h *IMMessageHandler) routeSessionTools(userID, userMessage string, allTool
 // additions (channel delivery, ambient retrieval, result reader) are never
 // silently removed.
 func (h *IMMessageHandler) routeSessionToolsWithRanking(userID, userMessage string, allTools []map[string]interface{}, skipUnifiedClassifier bool, preResolved *intent.ClassificationResult, ctx *LoopContext) ([]map[string]interface{}, []string) {
+	// A semantic-managed turn already owns a closed, grant-bound surface. Keep
+	// this boundary here as well as in prepareAgentLoopTools so future callers
+	// cannot accidentally re-enter the legacy name router and union tools onto
+	// that surface.
+	if loopContextBlocksLegacyToolRouter(ctx) || loopContextHasClassifierTimeoutLookup(ctx) {
+		// Timeout turns have a deterministic read-only lookup scope; never
+		// re-enter the broad legacy name/BM25 router while the tree verdict waits.
+		return nil, nil
+	}
 	h.toolsMu.RLock()
 	router := h.toolRouter
 	h.toolsMu.RUnlock()
@@ -1208,6 +1217,14 @@ func ambientRetrievalNeedsForUnmanaged() []tool.CapabilityNeed {
 }
 
 var classifierTimeoutWebLookupToolNames = []string{"web_search", "web_fetch"}
+
+func keepClassifierTimeoutLookupTools(tools []map[string]interface{}) []map[string]interface{} {
+	if len(tools) == 0 { return tools }
+	wanted := map[string]bool{"web_search": true, "web_fetch": true}
+	out := make([]map[string]interface{}, 0, 2)
+	for _, t := range tools { if wanted[extractToolName(t)] { out = append(out, t) } }
+	return out
+}
 
 func (h *IMMessageHandler) pinClassifierTimeoutWebLookup(userID string, ctx *LoopContext, tools, catalog []map[string]interface{}) []map[string]interface{} {
 	if !loopContextHasClassifierTimeoutLookup(ctx) {

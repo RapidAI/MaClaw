@@ -47,6 +47,10 @@ type RouteOptions struct {
 	// used by the turn's original Classify (text, user, recent history). Empty
 	// Text falls back to the Route userMessage.
 	CacheMessage intent.MessageContext
+	// HostKeepTools are host-owned grants for this turn (for example a
+	// configured SQL data source the user is asking to inspect). They are not
+	// model-history pins. BM25 leftover ranking cannot drop them.
+	HostKeepTools []string
 }
 
 // MinRouteIntentConfidence is the floor below which a rewrite is ignored.

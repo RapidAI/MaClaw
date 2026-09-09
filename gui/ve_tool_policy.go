@@ -89,7 +89,6 @@ var veBlockedTools = map[string]bool{
 
 	// --- Project management ---
 	"project_manage":  true,
-	"list_providers":  true,
 	"switch_provider": true,
 
 	// --- Coding tool gate / workflow ---

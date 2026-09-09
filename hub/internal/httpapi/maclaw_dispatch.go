@@ -105,6 +105,17 @@ func ReconcileMaClawBillingAttempt(ctx context.Context, tenantID, requestID stri
 	return module.Client.BillingAttempt(ctx, tenantID, requestID)
 }
 
+// ReconcileMaClawUsage retrieves HubCenter's persisted, tenant-scoped daily
+// totals. Unlike the HubCenter provider card, this request is authenticated as
+// the owning Hub and is safe to compare to this Hub's usage ledger.
+func ReconcileMaClawUsage(ctx context.Context, tenantID, date, timezone string) (llmservice.OfficialUsageReconciliation, int, error) {
+	module := GetMaClawModule()
+	if module == nil || module.Client == nil {
+		return llmservice.OfficialUsageReconciliation{}, 0, errors.New("MaClaw official service is not configured")
+	}
+	return module.Client.UsageReconciliation(ctx, tenantID, date, timezone)
+}
+
 func ForwardViaMaClawDetailedWithQuote(ctx context.Context, quote llmservice.OfficialPricingQuote, body []byte, tenantID string, serviceGroupIDs ...string) (llmservice.OfficialForwardResult, error) {
 	module := GetMaClawModule()
 	if module == nil || module.Client == nil {

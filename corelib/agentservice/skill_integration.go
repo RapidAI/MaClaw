@@ -138,7 +138,7 @@ func (b *SkillToolBridge) DynamicSkillInventory(ctx context.Context, p Principal
 		return nil, IncompleteDynamicCatalogLifecycle("catalog_incomplete")
 	}
 	contracts, err := b.contractSnapshot(p)
-	if err != nil {
+	if err != nil || contracts == nil {
 		return nil, IncompleteDynamicCatalogLifecycle("contract_registry_unavailable")
 	}
 	items, err := b.svc.ListSkills(ctx, p)
@@ -169,6 +169,9 @@ func NewSkillToolBridge(svc *Service) *SkillToolBridge {
 
 // ListSkills returns all active skills for the principal.
 func (b *SkillToolBridge) ListSkills(ctx context.Context, p Principal) []SkillToolEntry {
+	if b == nil || b.svc == nil || b.contracts == nil {
+		return nil
+	}
 	items, err := b.svc.ListSkills(ctx, p)
 	if err != nil {
 		return nil
@@ -234,7 +237,7 @@ func dynamicSkillContractMatchesEntry(contract DynamicCapabilityContract, entry 
 
 func (b *SkillToolBridge) contractSnapshot(p Principal) (SkillDynamicContractResolver, error) {
 	if b == nil || b.contracts == nil {
-		return nil, nil
+		return nil, fmt.Errorf("dynamic capability contract registry is unavailable")
 	}
 	provider, ok := b.contracts.(dynamicCapabilityContractSnapshotProvider)
 	if !ok {
@@ -299,6 +302,9 @@ func DynamicSkillContentDigest(entry corelib.NLSkillEntry) string { return skill
 // principal's installed skills. It does not mutate, execute, archive, or merge
 // any skill.
 func (b *SkillToolBridge) BuildSkillMaintenancePlan(ctx context.Context, p Principal, opts skill.SkillMaintenancePlanOptions) (skill.SkillMaintenancePlan, error) {
+	if b == nil || b.svc == nil {
+		return skill.SkillMaintenancePlan{}, fmt.Errorf("skill maintenance unavailable")
+	}
 	items, err := b.svc.ListSkills(ctx, p)
 	if err != nil {
 		return skill.SkillMaintenancePlan{}, err
@@ -312,6 +318,9 @@ func (b *SkillToolBridge) BuildSkillMaintenancePlan(ctx context.Context, p Princ
 // InstallSkill installs a skill using the Service's user-scoped skill
 // lifecycle. Source allow-lists are enforced by Service.InstallSkill.
 func (b *SkillToolBridge) InstallSkill(ctx context.Context, p Principal, args map[string]interface{}) ([]corelib.NLSkillEntry, error) {
+	if b == nil || b.svc == nil {
+		return nil, fmt.Errorf("skill install unavailable")
+	}
 	in := SkillInstallInput{
 		Source:         normalizeSkillInstallToolSource(firstNonEmptySkillArg(args, "source", "origin")),
 		RepoURL:        stringArg(args, "repo_url"),
@@ -344,6 +353,9 @@ func (b *SkillToolBridge) InstallSkill(ctx context.Context, p Principal, args ma
 // must use CallBoundSkill instead: the legacy path deliberately retains
 // compatibility alias matching while the bound path executes one exact entry.
 func (b *SkillToolBridge) RunSkill(ctx context.Context, p Principal, name string, args map[string]interface{}) (string, error) {
+	if b == nil || b.svc == nil {
+		return "", fmt.Errorf("skill execution unavailable")
+	}
 	entry, err := b.svc.GetSkill(ctx, p, name)
 	if err != nil {
 		return "", fmt.Errorf("skill %q not found: %w", name, err)
@@ -518,6 +530,9 @@ func (b *SkillToolBridge) runSkillTimeoutSec(p Principal, entry *corelib.NLSkill
 
 // SearchSkills searches for skills across configured sources.
 func (b *SkillToolBridge) SearchSkills(ctx context.Context, p Principal, query string) ([]SkillSearchResult, error) {
+	if b == nil || b.svc == nil {
+		return nil, fmt.Errorf("skill search unavailable")
+	}
 	return b.svc.SearchSkills(ctx, p, SkillSearchInput{
 		Query: query,
 		TopN:  10,

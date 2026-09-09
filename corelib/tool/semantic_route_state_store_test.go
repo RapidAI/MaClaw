@@ -1,12 +1,239 @@
 package tool
 
 import (
+	"database/sql"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+func TestSQLiteRouteStateStorePersistsTenantPartition(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "route-state.db")
+	store, err := NewSQLiteRouteStateStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	plan, scope, _ := routeStateTestPlan(t)
+	state, err := store.Open(scope, plan, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.TenantID != routeStateDefaultTenantID {
+		t.Fatalf("state tenant=%q, want %q", state.TenantID, routeStateDefaultTenantID)
+	}
+	var persisted string
+	if err := store.db.QueryRow(`SELECT tenant_id FROM semantic_route_states WHERE route_key=?`, routeStateKey(scope)).Scan(&persisted); err != nil {
+		t.Fatal(err)
+	}
+	if persisted != routeStateDefaultTenantID {
+		t.Fatalf("persisted tenant=%q, want %q", persisted, routeStateDefaultTenantID)
+	}
+}
+
+func TestSQLiteRouteStateStorePersistsToolSnapshotIdentity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "route-state-snapshot.db")
+	plan, scope, _ := routeStateTestPlan(t)
+	scope.ToolSnapshotID = "toolsnap:route-v1"
+	store, err := NewSQLiteRouteStateStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := store.Open(scope, plan, time.Now().UTC())
+	if err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	if state.Scope.ToolSnapshotID != scope.ToolSnapshotID {
+		store.Close()
+		t.Fatalf("opened scope snapshot=%q, want %q", state.Scope.ToolSnapshotID, scope.ToolSnapshotID)
+	}
+	var persisted string
+	if err := store.db.QueryRow(`SELECT tool_snapshot_id FROM semantic_route_states WHERE route_key=?`, routeStateKey(scope)).Scan(&persisted); err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	if persisted != scope.ToolSnapshotID {
+		store.Close()
+		t.Fatalf("persisted snapshot=%q, want %q", persisted, scope.ToolSnapshotID)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := NewSQLiteRouteStateStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	recovered, err := reopened.Open(scope, plan, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.Scope.ToolSnapshotID != scope.ToolSnapshotID {
+		t.Fatalf("recovered scope snapshot=%q, want %q", recovered.Scope.ToolSnapshotID, scope.ToolSnapshotID)
+	}
+	wrong := scope
+	wrong.ToolSnapshotID = "toolsnap:route-v2"
+	if _, err := reopened.Open(wrong, plan, time.Now().UTC()); err == nil || err.Error() != "route_state_conflict" {
+		t.Fatalf("different concrete snapshot was accepted: %v", err)
+	}
+}
+
+func TestRouteStateStoreBindsFirstConcreteSnapshotForLegacyRow(t *testing.T) {
+	plan, scope, _ := routeStateTestPlan(t)
+	legacy := scope
+	legacy.ToolSnapshotID = ""
+	concrete := scope
+	concrete.ToolSnapshotID = "toolsnap:legacy-bound"
+	other := scope
+	other.ToolSnapshotID = "toolsnap:legacy-other"
+
+	for _, tc := range []struct {
+		name  string
+		store RouteStateStore
+		close func()
+	}{
+		{name: "memory", store: NewMemoryRouteStateStore(), close: func() {}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			defer tc.close()
+			if _, err := tc.store.Open(legacy, plan, time.Now().UTC()); err != nil {
+				t.Fatal(err)
+			}
+			bound, err := tc.store.Open(concrete, plan, time.Now().UTC())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bound.Scope.ToolSnapshotID != concrete.ToolSnapshotID {
+				t.Fatalf("bound snapshot=%q, want %q", bound.Scope.ToolSnapshotID, concrete.ToolSnapshotID)
+			}
+			if _, err := tc.store.Open(other, plan, time.Now().UTC()); err == nil || err.Error() != "route_state_conflict" {
+				t.Fatalf("different concrete snapshot err=%v", err)
+			}
+		})
+	}
+
+	path := filepath.Join(t.TempDir(), "legacy-snapshot-bind.db")
+	store, err := NewSQLiteRouteStateStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.Open(legacy, plan, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	bound, err := store.Open(concrete, plan, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bound.Scope.ToolSnapshotID != concrete.ToolSnapshotID {
+		t.Fatalf("sqlite bound snapshot=%q, want %q", bound.Scope.ToolSnapshotID, concrete.ToolSnapshotID)
+	}
+	var persisted string
+	if err := store.db.QueryRow(`SELECT tool_snapshot_id FROM semantic_route_states WHERE route_key=?`, routeStateKey(scope)).Scan(&persisted); err != nil {
+		t.Fatal(err)
+	}
+	if persisted != concrete.ToolSnapshotID {
+		t.Fatalf("persisted snapshot=%q, want %q", persisted, concrete.ToolSnapshotID)
+	}
+	if _, err := store.Open(other, plan, time.Now().UTC()); err == nil || err.Error() != "route_state_conflict" {
+		t.Fatalf("sqlite different concrete snapshot err=%v", err)
+	}
+}
+
+func TestMemoryRouteStateStoreRejectsDifferentConcreteSnapshotAcrossOperations(t *testing.T) {
+	store := NewMemoryRouteStateStore()
+	plan, scope, grant := routeStateTestPlan(t)
+	scope.ToolSnapshotID = "toolsnap:memory-a"
+	if _, err := store.Open(scope, plan, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	wrong := scope
+	wrong.ToolSnapshotID = "toolsnap:memory-b"
+	want := "route_snapshot_scope_mismatch"
+	if err := store.IsCurrent(wrong); err == nil || err.Error() != want {
+		t.Fatalf("IsCurrent wrong snapshot err=%v, want %s", err, want)
+	}
+	if _, err := store.PublishedPlan(wrong); err == nil || err.Error() != want {
+		t.Fatalf("PublishedPlan wrong snapshot err=%v, want %s", err, want)
+	}
+	if _, err := store.CompletedSelections(wrong); err == nil || err.Error() != want {
+		t.Fatalf("CompletedSelections wrong snapshot err=%v, want %s", err, want)
+	}
+	if _, err := store.ConfirmedRequirements(wrong, time.Now().UTC()); err == nil || err.Error() != want {
+		t.Fatalf("ConfirmedRequirements wrong snapshot err=%v, want %s", err, want)
+	}
+	if _, err := store.ArtifactRefs(wrong); err == nil || err.Error() != want {
+		t.Fatalf("ArtifactRefs wrong snapshot err=%v, want %s", err, want)
+	}
+	if _, err := store.RecordSelectionCompletion(wrong, plan.ID, grant.SelectionID, time.Now().UTC()); err == nil || err.Error() != want {
+		t.Fatalf("RecordSelectionCompletion wrong snapshot err=%v, want %s", err, want)
+	}
+	if _, err := store.RecordConfirmation(wrong, plan.ID, RoutingFact{}, time.Now().UTC()); err == nil || err.Error() != want {
+		t.Fatalf("RecordConfirmation wrong snapshot err=%v, want %s", err, want)
+	}
+	ref := ArtifactRef{Scope: scope}
+	if _, err := store.RecordArtifact(wrong, plan.ID, ref, time.Now().UTC()); err == nil {
+		t.Fatal("RecordArtifact accepted a different concrete snapshot")
+	}
+	materialization := RouteMaterialization{FunctionName: grant.Token, Grant: grant, State: RouteMaterializationExposed}
+	if _, err := store.RecordMaterialization(wrong, plan.ID, materialization, time.Now().UTC()); err == nil || err.Error() != want {
+		t.Fatalf("RecordMaterialization wrong snapshot err=%v, want %s", err, want)
+	}
+	if _, err := store.RetireMaterialization(wrong, plan.ID, grant.Token, time.Now().UTC()); err == nil || err.Error() != want {
+		t.Fatalf("RetireMaterialization wrong snapshot err=%v, want %s", err, want)
+	}
+}
+
+func TestSQLiteRouteStateStoreMigratesEmptyTenantPartition(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "route-state.db")
+	plan, scope, _ := routeStateTestPlan(t)
+	encoded, digest, err := canonicalRoutePlan(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`CREATE TABLE semantic_route_states (
+		route_key TEXT PRIMARY KEY, version TEXT NOT NULL, tenant_id TEXT NOT NULL DEFAULT '', root_task_id TEXT NOT NULL, plan_id TEXT NOT NULL,
+		session_id TEXT NOT NULL, turn_id TEXT NOT NULL, principal_id TEXT NOT NULL,
+		plan_json BLOB NOT NULL, plan_digest TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+	)`)
+	if err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	when := routeStateTime(time.Now().UTC())
+	if _, err := db.Exec(`INSERT INTO semantic_route_states(route_key, version, tenant_id, root_task_id, plan_id, session_id, turn_id, principal_id, plan_json, plan_digest, created_at, updated_at) VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?)`, routeStateKey(scope), RouteStateVersion, scope.RootTaskID, scope.PlanID, scope.SessionID, scope.TurnID, scope.PrincipalID, encoded, digest, when, when); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewSQLiteRouteStateStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.Open(scope, plan, time.Now().UTC()); err == nil || err.Error() != "route_state_quarantined" {
+		t.Fatalf("quarantined legacy route open err=%v", err)
+	}
+	var quarantined, active int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM semantic_route_state_quarantine WHERE route_key=? AND reason='missing_tenant_id'`, routeStateKey(scope)).Scan(&quarantined); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM semantic_route_states WHERE route_key=?`, routeStateKey(scope)).Scan(&active); err != nil {
+		t.Fatal(err)
+	}
+	if quarantined != 1 || active != 0 {
+		t.Fatalf("quarantine=%d active=%d, want quarantine=1 active=0", quarantined, active)
+	}
+}
 
 func routeStateTestPlan(t *testing.T) (ToolPlan, InvocationScope, InvocationGrant) {
 	t.Helper()

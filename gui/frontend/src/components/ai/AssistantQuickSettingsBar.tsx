@@ -259,9 +259,9 @@ export const AssistantQuickSettingsBar = memo(function AssistantQuickSettingsBar
         lineHeight: 1,
         cursor: "pointer",
         userSelect: "none",
-        border: active ? "1px solid rgba(79, 127, 111, 0.36)" : `1px solid ${t.titleBarBorder}`,
-        background: active ? "rgba(79, 127, 111, 0.12)" : t.fieldBg,
-        color: active ? "#4f7f6f" : t.promptColor,
+        border: active ? "1px solid color-mix(in srgb, var(--theme-success, #4f7f6f) 36%, transparent)" : `1px solid ${t.titleBarBorder}`,
+        background: active ? "color-mix(in srgb, var(--theme-success, #4f7f6f) 12%, transparent)" : t.fieldBg,
+        color: active ? "var(--theme-success, #4f7f6f)" : t.promptColor,
         transition: "all 150ms ease",
         flexShrink: 0,
         height: 20,
@@ -274,7 +274,7 @@ export const AssistantQuickSettingsBar = memo(function AssistantQuickSettingsBar
     }), [chipStyle]);
 
     const dot = (active: boolean) => (
-        <span aria-hidden="true" style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: active ? "#4f7f6f" : t.promptColor, opacity: active ? 1 : 0.4, transition: "all 150ms ease" }} />
+        <span aria-hidden="true" style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: active ? "var(--theme-success, #4f7f6f)" : t.promptColor, opacity: active ? 1 : 0.4, transition: "all 150ms ease" }} />
     );
 
     const nextLang = LANG_CYCLE[lang] || "zh-Hans";

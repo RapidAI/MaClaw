@@ -63,6 +63,24 @@ func (r *ToolRouter) RouteWithOptions(userMessage string, allTools []map[string]
 	return r.inner.RouteWithOptions(userMessage, allTools, opts)
 }
 
+// RouteForScope renders a host-admitted surface without consulting user text
+// or the legacy retrieval stack.
+func (r *ToolRouter) RouteForScope(allTools []map[string]interface{}, allowedNames []string) []map[string]interface{} {
+	if r == nil || r.inner == nil {
+		return nil
+	}
+	return r.inner.RouteForScope(allTools, allowedNames)
+}
+
+// RouteForScopePlan renders an immutable scope plan and returns explicit
+// diagnostics when a definition or dependency is missing.
+func (r *ToolRouter) RouteForScopePlan(allTools []map[string]interface{}, plan tool.ToolScopePlan) tool.ToolScopeRouteResult {
+	if r == nil || r.inner == nil {
+		return tool.ToolScopeRouteResult{DependencyClosed: false, Valid: false, Error: "router_unavailable"}
+	}
+	return r.inner.RouteForScopePlan(allTools, plan)
+}
+
 // RecommendWithOptions returns one atomic legacy compatibility selection and
 // its reviewed capability evidence. New GUI callers must create and render a
 // LegacyAdapterPlan from this pair; the returned definitions are not an

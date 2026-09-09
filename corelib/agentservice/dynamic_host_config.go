@@ -51,16 +51,7 @@ func reviewedHostConfigDispatch(hasMax, hasThinking bool) (string, bool) {
 }
 
 func reviewedHostConfigThinkingMode(raw string) (string, bool) {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "enabled", "enable", "on":
-		return "enabled", true
-	case "disabled", "disable", "off":
-		return "disabled", true
-	case "auto", "":
-		return "", true
-	default:
-		return "", false
-	}
+	return corelib.ParseGlobalThinkingMode(raw)
 }
 
 // ProjectReviewedHostConfigProvider projects the host-owned agent-self

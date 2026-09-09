@@ -9,13 +9,14 @@ import (
 // vocabulary for dynamic providers. A host must construct a new registry
 // version when it changes a capability contract; it must never append
 // provider-discovered vocabulary to this registry at runtime.
-const ReviewedDynamicCapabilityRegistryVersion = "dynamic-capabilities-v39"
+const ReviewedDynamicCapabilityRegistryVersion = "dynamic-capabilities-v40"
 
 const (
-	// CapabilityInformationLookup is a read-only retrieval outcome. It is not
-	// a tool, Skill, MCP server, package, market listing, or provider name.
-	// SessionGovernedTask treats it as read-only: a succeeded lookup is not
-	// replayed as an unfinished mutation.
+	// CapabilityInformationLookup is a read-only retrieval outcome served by
+	// published MCP/Skill contracts. LabelSearch / LabelLiveData now map to
+	// information.search.web via the host web-search provider; lookup stays
+	// for discovered dynamic bindings. SessionGovernedTask treats it as
+	// read-only: a succeeded lookup is not replayed as an unfinished mutation.
 	CapabilityInformationLookup coretool.CapabilityID = "information.lookup"
 	QualifierInformationScope                         = "scope"
 	InformationScopeReference                         = "reference"
@@ -315,6 +316,21 @@ func NewReviewedDynamicCapabilityRegistry() (*coretool.CapabilityRegistry, error
 		Qualifiers: map[string]coretool.QualifierConstraint{
 			QualifierInformationScope: {
 				Values:   []string{InformationScopeReference, InformationScopeCurrent},
+				Required: true,
+			},
+		},
+		Effects: []coretool.EffectClass{coretool.EffectReadOnly},
+		Owner:   "semantic-routing-review",
+	}); err != nil {
+		return nil, err
+	}
+	if err := registry.Register(coretool.CapabilityDescriptor{
+		ID:      CapabilityInformationSearchWeb,
+		Version: "v1",
+		Summary: "Search the public web for reference or current facts without changing local or external state.",
+		Qualifiers: map[string]coretool.QualifierConstraint{
+			QualifierSearchFreshness: {
+				Values:   []string{SearchFreshnessReference, SearchFreshnessCurrent},
 				Required: true,
 			},
 		},
@@ -698,9 +714,9 @@ func NewReviewedDynamicCapabilityRegistry() (*coretool.CapabilityRegistry, error
 // ReviewedDynamicIntentCapabilityNeedRules maps only governed UIC labels to
 // the reviewed dynamic vocabulary. It deliberately does not read
 // ClassificationResult.ToolNames, Tool Affinity, provider metadata, or
-// discovery output. GUI IM families (search.web) are intentionally
-// absent: they are not published on this
-// registry and have no dynamic receipt worker. document.generate.file is
+// discovery output. information.search.web is host-owned (query only) and
+// shares the IM freshness qualifier. information.lookup remains MCP/Skill
+// only. document.generate.file is
 // host-owned: render and publish an ArtifactRef, then current-channel file
 // deliver. information.current_time and
 // knowledge.read.local, security.audit.read, information.fetch.web,
@@ -723,14 +739,15 @@ func NewReviewedDynamicCapabilityRegistry() (*coretool.CapabilityRegistry, error
 func ReviewedDynamicIntentCapabilityNeedRules() map[intent.IntentLabel][]IntentCapabilityNeedTemplate {
 	return map[intent.IntentLabel][]IntentCapabilityNeedTemplate{
 		intent.LabelSearch: {{
-			Capability: CapabilityInformationLookup,
-			Qualifiers: map[string]string{QualifierInformationScope: InformationScopeReference},
-			Polarity:   coretool.NeedRequire,
-			Required:   true,
+			Capability:     CapabilityInformationSearchWeb,
+			Qualifiers:     map[string]string{QualifierSearchFreshness: SearchFreshnessReference},
+			Polarity:       coretool.NeedRequire,
+			Required:       true,
+			MaxInvocations: 5,
 		}},
 		intent.LabelLiveData: {{
-			Capability: CapabilityInformationLookup,
-			Qualifiers: map[string]string{QualifierInformationScope: InformationScopeCurrent},
+			Capability: CapabilityInformationSearchWeb,
+			Qualifiers: map[string]string{QualifierSearchFreshness: SearchFreshnessCurrent},
 			Polarity:   coretool.NeedRequire,
 			Required:   true,
 		}},
@@ -750,14 +767,16 @@ func ReviewedDynamicIntentCapabilityNeedRules() map[intent.IntentLabel][]IntentC
 			Required:   true,
 		}},
 		intent.LabelWebFetch: {{
-			Capability: CapabilityWebFetch,
-			Polarity:   coretool.NeedRequire,
-			Required:   true,
+			Capability:     CapabilityWebFetch,
+			Polarity:       coretool.NeedRequire,
+			Required:       true,
+			MaxInvocations: 5,
 		}},
 		intent.LabelFileDownload: {{
-			Capability: CapabilityFileDownload,
-			Polarity:   coretool.NeedRequire,
-			Required:   true,
+			Capability:     CapabilityFileDownload,
+			Polarity:       coretool.NeedRequire,
+			Required:       true,
+			MaxInvocations: 3,
 		}},
 		intent.LabelFileRead: {{
 			Capability: CapabilityFileRead,
@@ -794,15 +813,17 @@ func ReviewedDynamicIntentCapabilityNeedRules() map[intent.IntentLabel][]IntentC
 			Required:   true,
 		}},
 		intent.LabelOffice: {{
-			Capability: CapabilityOfficeWrite,
-			Qualifiers: map[string]string{QualifierDocumentFormat: DocumentFormatSpreadsheet},
-			Polarity:   coretool.NeedRequire,
-			Required:   true,
+			Capability:     CapabilityOfficeWrite,
+			Qualifiers:     map[string]string{QualifierDocumentFormat: DocumentFormatSpreadsheet},
+			Polarity:       coretool.NeedRequire,
+			Required:       true,
+			MaxInvocations: 8,
 		}},
 		intent.LabelShellCommand: {{
-			Capability: CapabilityShellExecute,
-			Polarity:   coretool.NeedRequire,
-			Required:   true,
+			Capability:     CapabilityShellExecute,
+			Polarity:       coretool.NeedRequire,
+			Required:       true,
+			MaxInvocations: 8,
 		}},
 		intent.LabelDelegateTask: {{
 			Capability: CapabilityDelegateSubtask,
@@ -953,6 +974,11 @@ func ReviewedDynamicCapabilityPolicyAdapter() StaticCapabilityPolicyAdapter {
 		Constraints: []coretool.RoutingConstraint{{
 			ID:         "policy:ops_controlled:deny-information-lookup",
 			Capability: CapabilityInformationLookup,
+			Effect:     "deny",
+			Authority:  coretool.AuthorityPolicy,
+		}, {
+			ID:         "policy:ops_controlled:deny-information-search-web",
+			Capability: CapabilityInformationSearchWeb,
 			Effect:     "deny",
 			Authority:  coretool.AuthorityPolicy,
 		}},

@@ -94,6 +94,23 @@ func colLettersToNumber(letters string) int {
 	return result
 }
 
+func colNumberToLetters(col int) string {
+	if col <= 0 {
+		return ""
+	}
+	var letters []byte
+	for col > 0 {
+		col--
+		letters = append([]byte{byte('A' + col%26)}, letters...)
+		col /= 26
+	}
+	return string(letters)
+}
+
+func cellRef(col, row int) string {
+	return fmt.Sprintf("%s%d", colNumberToLetters(col), row)
+}
+
 // isAlpha returns true if the byte is an ASCII letter.
 func isAlpha(b byte) bool {
 	return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')

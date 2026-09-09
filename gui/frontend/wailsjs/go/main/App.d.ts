@@ -243,6 +243,8 @@ export function CloseSurvey(arg1:string):Promise<string>;
 
 export function CloseVESession(arg1:string):Promise<void>;
 
+export function CloudWorkspaceCacheDir(arg1:string):Promise<main.PreparedCloudWorkspace>;
+
 export function CloudWorkspaceEntitlement():Promise<main.CloudWorkspaceEntitlement>;
 
 export function CodingKnowledgeCapacity():Promise<main.CodingKnowledgeCapacityStatus>;
@@ -352,6 +354,12 @@ export function CreateTask(arg1:string,arg2:string):Promise<main.ProjectSearchRe
 export function CreateTaskWithMode(arg1:string,arg2:string,arg3:string):Promise<main.ProjectSearchResult>;
 
 export function CreateTaskWithCloudWorkspace(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.ProjectSearchResult>;
+
+export function ProvisionCloudWorkspaceTask(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.CloudWorkspaceTaskProvision>;
+
+export function CompleteCloudWorkspaceTaskProvision(arg1:string):Promise<main.CloudWorkspaceTaskProvision>;
+
+export function AbortCloudWorkspaceTaskProvision(arg1:string,arg2:string):Promise<main.CloudWorkspaceTaskProvision>;
 
 export function CreateTemplate(arg1:string,arg2:string,arg3:string,arg4:string,arg5:boolean):Promise<void>;
 
@@ -1787,8 +1795,6 @@ export function ReadThanks():Promise<string>;
 export function ReadTutorial():Promise<string>;
 
 export function ReclaimVirtualEmployee(arg1:string):Promise<main.VirtualEmployeeEntry>;
-
-export function RecommendTool(arg1:string):Promise<string|string>;
 
 export function ReconcileMaclawAppApprovalProjections():Promise<Record<string, any>>;
 

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { AssistantPreviewPane } from '../AssistantPreviewPane';
 import type { Theme } from '../aiAssistantPanelTheme';
@@ -150,6 +150,63 @@ function renderPaneWithCodeState(codePreviewState: typeof emptyCodePreviewState 
 }
 
 describe('AssistantPreviewPane', () => {
+    it('keeps the embedded agent splitter wired when preview tabs are combined', async () => {
+        const startPreviewResize = vi.fn();
+        render(
+            <AssistantPreviewPane
+                agentView={agentView}
+                codePreviewState={activeCodePreviewState}
+                closeCodePreview={vi.fn()}
+                closeDocPreview={vi.fn()}
+                lang="en"
+                selectCodeFile={vi.fn()}
+                showAgentView={true}
+                showCodePreview={true}
+                showWorkflowPreview={true}
+                splitRatio={0.42}
+                startPreviewResize={startPreviewResize}
+                theme={theme}
+                workflowState={workflowState}
+            />,
+        );
+
+        const agentTab = screen.getByRole('tab', { name: 'Agent Task' });
+        fireEvent.click(agentTab);
+        await waitFor(() => expect(agentTab.getAttribute('aria-selected')).toBe('true'));
+        const separators = screen.getAllByRole('separator');
+        expect(separators.length).toBeGreaterThanOrEqual(2);
+        fireEvent.keyDown(separators[separators.length - 1], { key: 'ArrowRight' });
+        expect(startPreviewResize).toHaveBeenLastCalledWith(0.44);
+    });
+
+    it('exposes a pointer and keyboard resize handle for the preview split', () => {
+        const startPreviewResize = vi.fn();
+        render(
+            <AssistantPreviewPane
+                codePreviewState={activeCodePreviewState}
+                closeCodePreview={vi.fn()}
+                closeDocPreview={vi.fn()}
+                lang="en"
+                selectCodeFile={vi.fn()}
+                showAgentView={false}
+                showCodePreview={true}
+                showWorkflowPreview={true}
+                splitRatio={0.42}
+                startPreviewResize={startPreviewResize}
+                theme={theme}
+                workflowState={workflowState}
+            />,
+        );
+
+        const handle = screen.getByTestId('assistant-preview-resize-handle');
+        expect(handle.getAttribute('role')).toBe('separator');
+        expect(handle.getAttribute('aria-valuenow')).toBe('42');
+        fireEvent.pointerDown(handle, { pointerId: 7, clientX: 640 });
+        expect(startPreviewResize).toHaveBeenCalledWith(expect.objectContaining({ pointerId: 7 }));
+        fireEvent.keyDown(handle, { key: 'ArrowRight' });
+        expect(startPreviewResize).toHaveBeenLastCalledWith(0.44);
+    });
+
     it('keeps workflow progress and source preview available behind tabs', () => {
         renderPane();
 

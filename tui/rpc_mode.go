@@ -18,6 +18,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agent/sshtool"
 	"github.com/RapidAI/CodeClaw/corelib/brand"
+	"github.com/RapidAI/CodeClaw/corelib/database"
 	"github.com/RapidAI/CodeClaw/corelib/goal"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
@@ -76,6 +77,7 @@ func runRPCMode() {
 	// Redirect all log output to stderr (stdout is protocol-only).
 	log.SetOutput(os.Stderr)
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
+	runTUIStartupRecovery(commands.ResolveDataDir())
 
 	log.Printf("[rpc] starting %s RPC mode", brand.Current().DisplayName)
 
@@ -139,6 +141,16 @@ func runRPCMode() {
 		}
 		return sshtool.ToolSSH(deps, args)
 	}
+	rpcDBManager := database.NewManager(appCfg.DatabaseProfiles, tuiDatabaseSecret)
+	rpcDBManager.SetEnabled(appCfg.DatabaseToolIsEnabled())
+	rpcDBManager.SetTunnelDialer(remote.SSHTunnelDialer(func() *remote.SSHSessionManager { return sshMgr }))
+	if favStore, err := database.NewFavoriteStore(filepath.Join(dataSubDir, "database_favorites.json")); err == nil {
+		rpcDBManager.SetFavoriteStore(favStore)
+	}
+	if pendingStore, err := database.NewPendingStore(filepath.Join(dataSubDir, "database_pending.json")); err == nil {
+		rpcDBManager.SetPendingStore(pendingStore)
+	}
+	rpcDB := newTUIDatabaseRuntime(rpcDBManager, func() corelib.AppConfig { return app.appConfig }, func() string { return "" }, "tui:rpc", "tui:rpc", false)
 	agent.RegisterCoreTools(app.toolRegistry, agent.CoreToolDeps{
 		MemoryStore: memStore,
 		TaskStore:   app.taskStore,
@@ -147,6 +159,9 @@ func runRPCMode() {
 			return app.appConfig
 		}),
 		SSHHandler: sshHandler,
+		ExtraHandlersCtx: map[string]agent.ToolHandlerCtx{
+			"database": rpcDB.handlerCtx(),
+		},
 		WebSearchHandlerCtx: func(ctx context.Context, args map[string]interface{}) string {
 			var provider corelib.WebSearchProvider
 			if len(app.appConfig.WebSearchProviders) > 0 {

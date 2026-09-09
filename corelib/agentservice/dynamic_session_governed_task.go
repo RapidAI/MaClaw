@@ -74,33 +74,11 @@ func sessionGovernedPrincipalComplete(request DynamicCapabilityNeedRequest) bool
 }
 
 func isGenericContinuationPrimary(result intent.ClassificationResult) bool {
-	switch result.Primary {
-	case intent.LabelContinuation, intent.LabelUnknown, intent.LabelAmbiguous:
-		return true
-	default:
-		return false
-	}
+	return result.IsGenericContinuationPrimary()
 }
 
 func grantedNeedsFromPlan(plan coretool.ToolPlan) []coretool.CapabilityNeed {
-	needs := make([]coretool.CapabilityNeed, 0, len(plan.Selections))
-	for _, selection := range plan.Selections {
-		need := coretool.CapabilityNeed{
-			ID:         strings.TrimSpace(selection.NeedID),
-			Capability: selection.FitProof.MatchedCapability,
-			Qualifiers: map[string]string{},
-			Polarity:   coretool.NeedRequire,
-			Required:   true,
-		}
-		for key, value := range selection.FitProof.QualifierBindings {
-			need.Qualifiers[key] = value
-		}
-		if need.ID == "" {
-			need.ID = strings.TrimSpace(selection.ID)
-		}
-		needs = append(needs, need)
-	}
-	return needs
+	return coretool.GrantedNeedsFromPlan(plan)
 }
 
 // sessionGovernedNeedHasSideEffect reports whether replaying this need would
@@ -122,45 +100,11 @@ func grantedNeedsFromPlan(plan coretool.ToolPlan) []coretool.CapabilityNeed {
 // capabilities default to side-effect so a later mutation family is not
 // dropped from continuation.
 func sessionGovernedNeedHasSideEffect(registry *coretool.CapabilityRegistry, need coretool.CapabilityNeed) bool {
-	capability := strings.TrimSpace(string(need.Capability))
-	if capability == "" {
-		return false
-	}
-	if registry != nil {
-		if descriptor, ok := registry.Lookup(need.Capability); ok {
-			if len(descriptor.Effects) == 0 {
-				return true
-			}
-			for _, effect := range descriptor.Effects {
-				if effect != coretool.EffectReadOnly {
-					return true
-				}
-			}
-			return false
-		}
-	}
-	if capability == string(CapabilityInformationLookup) ||
-		strings.HasPrefix(capability, "information.search.") ||
-		capability == "information.current_time" ||
-		capability == string(CapabilityKnowledgeRead) ||
-		capability == string(CapabilityAuditRead) ||
-		capability == string(CapabilityWebFetch) ||
-		capability == string(CapabilityFileRead) ||
-		capability == string(CapabilityRepoInspect) ||
-		capability == string(CapabilityDocumentRead) ||
-		capability == string(CapabilityAudioTranscribe) {
-		return false
-	}
-	return true
+	return coretool.CapabilityNeedHasSideEffect(registry, need)
 }
 
 func sessionGovernedNeedsHaveSideEffect(registry *coretool.CapabilityRegistry, needs []coretool.CapabilityNeed) bool {
-	for _, need := range needs {
-		if sessionGovernedNeedHasSideEffect(registry, need) {
-			return true
-		}
-	}
-	return false
+	return coretool.CapabilityNeedsHaveSideEffect(registry, needs)
 }
 
 func (task SessionGovernedTask) replayable(registry *coretool.CapabilityRegistry) bool {
@@ -171,29 +115,84 @@ func (task SessionGovernedTask) replayable(registry *coretool.CapabilityRegistry
 }
 
 func grantedNeedStillCovered(need coretool.CapabilityNeed, rules map[intent.IntentLabel][]IntentCapabilityNeedTemplate, registry *coretool.CapabilityRegistry) bool {
-	if registry != nil {
-		if _, ok := registry.Lookup(need.Capability); !ok {
-			return false
-		}
-	}
-	for _, templates := range rules {
-		for _, template := range templates {
-			if template.Capability == need.Capability {
-				return true
-			}
-		}
-	}
-	return false
+	return coretool.GrantedNeedStillCovered(need, CoveredCapabilitiesFromNeedTemplates(rules), registry)
 }
 
 func grantedNeedsStillCovered(needs []coretool.CapabilityNeed, rules map[intent.IntentLabel][]IntentCapabilityNeedTemplate, registry *coretool.CapabilityRegistry) []coretool.CapabilityNeed {
-	kept := make([]coretool.CapabilityNeed, 0, len(needs))
+	return coretool.FilterGrantedNeedsStillCovered(needs, CoveredCapabilitiesFromNeedTemplates(rules), registry)
+}
+
+// ClassificationFromGrantedNeeds rebuilds a UIC result from planner-granted
+// needs so a generic continuation can re-enter the same reviewed rule table.
+// Special cases pin composite families (generate vs attachment delivery,
+// search freshness, app_launch vs document_open). Remaining capabilities
+// collect every mentioning label. GUI session-governed replay uses this;
+// headless ReplayContinuation injects needs directly and does not reconstruct
+// labels.
+func ClassificationFromGrantedNeeds(needs []coretool.CapabilityNeed, rules map[intent.IntentLabel][]IntentCapabilityNeedTemplate) intent.ClassificationResult {
+	hasGenerate := false
+	hasImageDeliver := false
+	hasFileDeliver := false
+	seen := make(map[intent.IntentLabel]bool)
+	labels := make([]intent.IntentLabel, 0, len(needs))
+	add := func(label intent.IntentLabel) {
+		if label == "" || seen[label] {
+			return
+		}
+		seen[label] = true
+		labels = append(labels, label)
+	}
 	for _, need := range needs {
-		if grantedNeedStillCovered(need, rules, registry) {
-			kept = append(kept, need)
+		switch need.Capability {
+		case CapabilityDocumentGenerate:
+			hasGenerate = true
+			add(intent.LabelDocumentGenerate)
+		case CapabilityInformationSearchWeb:
+			if need.Qualifiers[QualifierSearchFreshness] == SearchFreshnessCurrent {
+				add(intent.LabelLiveData)
+			} else {
+				add(intent.LabelSearch)
+			}
+		case CapabilityCurrentTime:
+			add(intent.LabelCurrentTime)
+		case coretool.CapabilityAudioRenderSpeech:
+			add(intent.LabelAudioDeliver)
+		case coretool.CapabilitySystemLaunchLocal:
+			// app_launch and document_open share this capability. Replay
+			// keeps a single label so the planner emits one launch need.
+			add(intent.LabelAppLaunch)
+		case CapabilityVisualCapture:
+			add(intent.LabelScreenshot)
+		case CapabilityArtifactDeliverCurrent:
+			if need.Qualifiers[QualifierArtifactFormat] == ArtifactFormatImage {
+				hasImageDeliver = true
+			}
+			if need.Qualifiers[QualifierArtifactFormat] == ArtifactFormatFile {
+				hasFileDeliver = true
+			}
+			if need.Qualifiers[QualifierArtifactFormat] == ArtifactFormatVoice {
+				add(intent.LabelAudioDeliver)
+			}
+		default:
+			for label, templates := range rules {
+				for _, tmpl := range templates {
+					if tmpl.Capability == need.Capability {
+						add(label)
+					}
+				}
+			}
 		}
 	}
-	return cloneDynamicCapabilityNeeds(kept)
+	if hasImageDeliver {
+		add(intent.LabelScreenshot)
+	}
+	if hasFileDeliver && !hasGenerate {
+		add(intent.LabelAttachmentDelivery)
+	}
+	if len(labels) == 0 {
+		return intent.ClassificationResult{Primary: intent.LabelUnknown, Confidence: 0.9, Layer: 3}
+	}
+	return intent.ClassificationResult{Primary: labels[0], Secondary: append([]intent.IntentLabel(nil), labels[1:]...), Confidence: 0.98, Layer: 3}
 }
 
 func bindSessionGovernedStore(routing *DynamicSemanticRouting) {

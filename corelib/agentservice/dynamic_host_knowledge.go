@@ -153,6 +153,7 @@ func (c *coreAgentCallbacks) reviewedHostOwnedServices() reviewedHostOwnedServic
 		out.Audit = c.auditReader
 	}
 	out.WebFetch = c
+	out.WebSearch = c
 	if strings.TrimSpace(c.workspace) != "" {
 		out.FileRead = c
 		out.FileWrite = c

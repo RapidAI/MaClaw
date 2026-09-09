@@ -34,6 +34,8 @@ export interface NotificationPanelProps {
     onClose: () => void;
     selectedNotification?: AdminNotification | null;
     onBackFromDetail?: () => void;
+    /** Marks the transient panel inaccessible while its host page is hidden. */
+    ariaHidden?: boolean;
     detailTheme?: Theme;
     lang?: string;
     theme: NotificationPanelTheme;
@@ -321,6 +323,7 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({
     onClose,
     selectedNotification,
     onBackFromDetail,
+    ariaHidden = false,
     detailTheme,
     lang,
     theme: t,
@@ -410,6 +413,7 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({
     useEffect(() => {
         const root = panelRef.current;
         if (!root) return;
+        if (ariaHidden) return;
         if (viewingDetail) {
             root.querySelector<HTMLElement>("[data-testid='notification-detail-back']")
                 ?.focus({ preventScroll: true });
@@ -423,7 +427,7 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({
             ? root.querySelector<HTMLElement>(`[data-testid='notification-item-${escapedId}']`)
             : null;
         (lastItem ?? root).focus({ preventScroll: true });
-    }, [viewingDetail]);
+    }, [ariaHidden, viewingDetail]);
 
     return (
         <div
@@ -431,6 +435,7 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({
             data-testid="notification-panel"
             role="dialog"
             aria-modal="false"
+            aria-hidden={ariaHidden ? "true" : undefined}
             tabIndex={-1}
             aria-label={localizeText(lang, "Notifications", "通知", "通知")}
             style={{

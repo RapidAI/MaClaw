@@ -31,15 +31,6 @@ func (a *CodeBuddyAdapter) BuildCommand(spec LaunchSpec) (CommandSpec, error) {
 		return CommandSpec{}, fmt.Errorf("codebuddy is not installed")
 	}
 
-	// Ensure CodeBuddy's first-run onboarding (login method selection,
-	// theme, project trust) is pre-configured so it doesn't block the
-	// remote session with interactive prompts.
-	if err := ensureCodeBuddyOnboardingComplete(a.app, spec.ProjectPath); err != nil {
-		if a.app != nil {
-			a.app.log(fmt.Sprintf("[codebuddy-adapter] onboarding pre-check warning: %v", err))
-		}
-	}
-
 	env := buildOpenAICompatibleCommandEnv(spec.Env, privateToolsDirForApp(a.app), nil)
 
 	args := make([]string, 0, 8)

@@ -140,12 +140,7 @@ func reviewedHostVisualCaptureArgsAllowed(args map[string]interface{}) error {
 }
 
 func reviewedHostVisualCaptureNeedPresent(needs []coretool.CapabilityNeed) bool {
-	for _, need := range needs {
-		if need.Capability == CapabilityVisualCapture {
-			return true
-		}
-	}
-	return false
+	return coretool.CapabilityNeedsContain(needs, CapabilityVisualCapture)
 }
 
 func (c *coreAgentCallbacks) CaptureReviewedHostDesktop(ctx context.Context, principal Principal) (string, error) {

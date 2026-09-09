@@ -113,6 +113,31 @@ type PurchaseRecord struct {
 	CreatedAt        time.Time `json:"created_at"`
 }
 
+// SuitePurchaseRecord records one atomic Suite purchase without changing
+// legacy Skill purchase rows.
+type SuitePurchaseRecord struct {
+	ID             string    `json:"id"`
+	SuiteID        string    `json:"suite_id"`
+	MemberSkillIDs []string  `json:"member_skill_ids"`
+	BuyerEmail     string    `json:"buyer_email"`
+	BuyerID        string    `json:"buyer_id"`
+	AmountPaid     int64     `json:"amount_paid"`
+	Version        string    `json:"version,omitempty"`
+	Status         string    `json:"status"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+// SuiteAuditEvent records purchases, downloads and refunds for a Suite.
+type SuiteAuditEvent struct {
+	ID             string    `json:"id"`
+	SuiteID        string    `json:"suite_id"`
+	MemberSkillIDs []string  `json:"member_skill_ids,omitempty"`
+	EventType      string    `json:"event_type"`
+	ActorID        string    `json:"actor_id,omitempty"`
+	PurchaseID     string    `json:"purchase_id,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
 // ── Rating ───────────────────────────────────────────────────────────────
 
 // Rating 记录单个用户对 Skill 的评分（以 email 去重）。

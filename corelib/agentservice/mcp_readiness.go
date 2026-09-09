@@ -3,11 +3,11 @@ package agentservice
 import (
 	"context"
 	"log"
-	"net/http"
 	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	mcphttp "github.com/RapidAI/CodeClaw/corelib/mcp"
 )
 
 // MCPReadinessManager is the state reconciler for MCP server runtime.
@@ -169,7 +169,9 @@ func (m *MCPReadinessManager) reconcileRemote(runtime *userMCPRuntime, state *us
 // dedicated HTTP client with a short timeout, preventing slow/dead remote
 // servers from blocking the agent loop for 30s.
 func checkRemoteWithTimeout(runtime *userMCPRuntime, entry corelib.MCPServerEntry, timeout time.Duration) error {
-	client := &http.Client{Timeout: timeout}
+	// Same guarded transport as checkRemote: a bare client follows redirects
+	// into the metadata address space.
+	client := mcphttp.NewPrivateHTTPClient(timeout)
 	return runtime.checkRemoteWithClient(client, entry)
 }
 

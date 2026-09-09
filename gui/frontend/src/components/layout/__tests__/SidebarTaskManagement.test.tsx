@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { cloudWorkspaceNameMapFromEntitlement, isActiveTaskRow, isProjectTabOpen, SidebarTaskManagement, taskCreationLabel, taskSecondaryLabelFor, workflowStatusForTask } from '../SidebarTaskManagement';
 import type { ComponentProps, ReactElement } from 'react';
-import { GetProjectScene, OpenFileOrShowInFolder, SelectWorkingDir } from '../../../../wailsjs/go/main/App';
+import { GetProjectScene, OpenFileOrShowInFolder, OpenProjectDirectory, SelectWorkingDir } from '../../../../wailsjs/go/main/App';
 import { EventsEmit } from '../../../../wailsjs/runtime';
 import { DialogProvider } from '../../CustomDialog';
 import { __resetCloudWorkspaceDisplayNamesForTests, rememberCloudWorkspaceDisplayName } from '../../ai/codingTaskMode';
@@ -11,6 +11,7 @@ import { __resetCloudWorkspaceDisplayNamesForTests, rememberCloudWorkspaceDispla
 const {
     getProjectSceneMock,
     openFileOrShowInFolderMock,
+    openProjectDirectoryMock,
     selectWorkingDirMock,
     eventsEmitMock,
     cloudWorkspaceEntitlementMock,
@@ -25,6 +26,7 @@ const {
     return {
         getProjectSceneMock: vi.fn(),
         openFileOrShowInFolderMock: vi.fn(),
+        openProjectDirectoryMock: vi.fn(),
         selectWorkingDirMock: vi.fn(),
         eventsEmitMock: vi.fn(),
         cloudWorkspaceEntitlementMock: vi.fn().mockResolvedValue({ enabled: false }),
@@ -41,6 +43,7 @@ const {
 vi.mock('../../../../wailsjs/go/main/App', () => ({
     GetProjectScene: getProjectSceneMock,
     OpenFileOrShowInFolder: openFileOrShowInFolderMock,
+    OpenProjectDirectory: openProjectDirectoryMock,
     SelectWorkingDir: selectWorkingDirMock,
     GetRemoteCodingTaskMeta: vi.fn().mockResolvedValue({ host: '10.0.0.8', user: 'ubuntu', port: 22, work_dir: '/app' }),
     UpdateRemoteCodingTaskMeta: vi.fn().mockResolvedValue(undefined),
@@ -84,6 +87,9 @@ function renderTaskManagement(overrides: Partial<ComponentProps<typeof SidebarTa
         renameTask: vi.fn(),
         pinTask: vi.fn(),
         hideTask: vi.fn(),
+        // Cloud workspace tests exercise the legacy project-management surface
+        // explicitly; production App wiring keeps this feature disabled.
+        showCloudWorkspaceManagement: true,
         ...overrides,
     };
     const wrap = (node: ReactElement) => <DialogProvider>{node}</DialogProvider>;
@@ -100,6 +106,7 @@ afterEach(async () => {
     selectWorkingDirMock.mockReset();
     getProjectSceneMock.mockReset();
     openFileOrShowInFolderMock.mockReset();
+    openProjectDirectoryMock.mockReset();
     cloudWorkspaceEntitlementMock.mockReset();
     cloudWorkspaceEntitlementMock.mockResolvedValue({ enabled: false });
     createCloudWorkspaceMock.mockReset();
@@ -266,6 +273,58 @@ describe('taskSecondaryLabelFor', () => {
 });
 
 describe('SidebarTaskManagement', () => {
+    it('keeps the assistant task pane disconnected from cloud project management', () => {
+        renderTaskManagement({ showCloudWorkspaceManagement: false });
+
+        expect(cloudWorkspaceEntitlementMock).not.toHaveBeenCalled();
+        expect(screen.queryByTestId('task-cloud-overview')).toBeNull();
+        expect(screen.queryByTestId('task-cloud-workspace-list')).toBeNull();
+    });
+
+    it('keeps cloud task rows and their marker when project management is hidden', () => {
+        const cloudTask = {
+            ...baseProject,
+            id: 'cloud-task-1',
+            name: 'Cloud workspace task',
+            project_path: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant/cws_a',
+            working_dir: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant/cws_a',
+            tags: ['task_management', 'cloud_workspace:cws_a'],
+            // Cloud workspace rows remain durable even before an output file exists.
+            has_output: false,
+        };
+        renderTaskManagement({ showCloudWorkspaceManagement: false, tasks: [cloudTask] });
+
+        expect(screen.getByText('Cloud workspace task')).toBeTruthy();
+        expect(screen.getByTestId('task-cloud-workspace-icon')).toBeTruthy();
+        expect(screen.getByTestId('task-cloud-workspace-badge')).toBeTruthy();
+        expect(screen.queryByTestId('task-cloud-overview')).toBeNull();
+        expect(screen.queryByTestId('task-cloud-workspace-list')).toBeNull();
+    });
+    it('keeps the cloud task entry beside the execution-page add button', async () => {
+        cloudWorkspaceEntitlementMock.mockResolvedValue({ enabled: true, quota: 5, used: 0, workspaces: [] });
+        renderTaskManagement({
+            lang: 'zh',
+            showCloudWorkspaceManagement: false,
+            showCloudWorkspaceCreation: true,
+            activeAssistantTask: { projectPath: baseProject.project_path },
+        });
+
+        const cloudButton = await screen.findByTestId('execution-task-cloud-create');
+        expect(cloudButton.getAttribute('aria-label')).toBe('创建云端工作区任务');
+        fireEvent.click(cloudButton);
+        expect(await screen.findByRole('dialog', { name: '创建云端工作区任务' })).toBeTruthy();
+    });
+    it('opens the shared system notification center from the sidebar summary', () => {
+        const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
+        try {
+            renderTaskManagement();
+            fireEvent.click(screen.getByTestId('sidebar-system-notifications'));
+            expect(dispatchSpy).toHaveBeenCalledWith(expect.objectContaining({ type: 'maclaw:open-system-notifications' }));
+        } finally {
+            dispatchSpy.mockRestore();
+        }
+    });
+
     it('highlights the task matching the current AI tab and clears it for the local assistant', () => {
         const expertTask = {
             id: 'task-expert',
@@ -1577,6 +1636,42 @@ describe('SidebarTaskManagement', () => {
         }
     });
 
+    it('keeps the in-app cloud file browser working when native directory opening rejects', async () => {
+        const resumeTask = vi.fn();
+        openProjectDirectoryMock.mockRejectedValueOnce(new Error('not a directory'));
+        renderTaskManagement({
+            lang: 'zh',
+            resumeTask,
+            taskContextMenu: {
+                x: 10,
+                y: 20,
+                projectPath: baseProject.project_path,
+                name: '云端工作区任务1',
+                pinned: false,
+                tags: ['cloud_workspace:cws_a'],
+                workingDir: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_a',
+            },
+        });
+        const revealed: string[] = [];
+        const onReveal = (event: Event) => {
+            revealed.push(String((event as CustomEvent<{ projectPath?: string }>).detail?.projectPath || ''));
+        };
+        window.addEventListener('ai-reveal-cloud-workspace-files', onReveal);
+        try {
+            fireEvent.click(screen.getByTestId('task-context-browse-cloud'));
+            await waitFor(() => {
+                expect(OpenProjectDirectory).toHaveBeenCalledWith('C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_a');
+                expect(resumeTask).toHaveBeenCalledWith(baseProject.project_path, expect.objectContaining({
+                    project_path: baseProject.project_path,
+                    working_dir: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_a',
+                }));
+                expect(revealed).toEqual([baseProject.project_path]);
+            });
+        } finally {
+            window.removeEventListener('ai-reveal-cloud-workspace-files', onReveal);
+        }
+    });
+
     it('opens edit remote SSH dialog with host/user/port/workdir and test button', async () => {
         const { GetRemoteCodingTaskMeta, UpdateRemoteCodingTaskMeta, TestRemoteSSHConnection } = await import('../../../../wailsjs/go/main/App');
         renderTaskManagement({
@@ -1959,9 +2054,24 @@ describe('SidebarTaskManagement', () => {
         await waitFor(() => expect((createButton as HTMLButtonElement).disabled).toBe(false));
     });
 
+    it('keeps the cloud task entry beside New Task without restoring project management', async () => {
+        cloudWorkspaceEntitlementMock.mockResolvedValue({ enabled: true, quota: 5, used: 0, workspaces: [] });
+        renderTaskManagement({ lang: 'zh', showCloudWorkspaceManagement: false, showCloudWorkspaceCreation: true });
+
+        const cloudButton = await screen.findByTestId('task-cloud-create');
+        expect(screen.queryByTestId('task-cloud-overview')).toBeNull();
+        fireEvent.click(cloudButton);
+
+        expect(await screen.findByRole('dialog', { name: '创建云端工作区任务' })).toBeTruthy();
+        expect(screen.getByTestId('task-workspace-kind-cloud')).toBeTruthy();
+        expect(screen.queryByTestId('task-cloud-overview-dialog')).toBeNull();
+    });
+
     it('shows a disabled cloud task type when entitlement is not granted', async () => {
         cloudWorkspaceEntitlementMock.mockResolvedValue({ enabled: false });
-        renderTaskManagement({ lang: 'zh' });
+        renderTaskManagement({ lang: 'zh', showCloudWorkspaceManagement: false, showCloudWorkspaceCreation: true });
+
+        expect(await screen.findByTestId('task-cloud-create')).toBeTruthy();
 
         fireEvent.click(screen.getByTitle('创建任务'));
 

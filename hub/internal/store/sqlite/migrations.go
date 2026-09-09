@@ -6,13 +6,20 @@ import (
 	"strings"
 )
 
-func isIgnorableMigrationError(err error) bool {
+func isIgnorableMigrationError(stmt string, err error) bool {
 	if err == nil {
 		return true
 	}
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "duplicate column name") ||
-		strings.Contains(msg, "already exists")
+	stmt = strings.ToLower(strings.TrimSpace(stmt))
+	if strings.Contains(msg, "duplicate column name") {
+		return strings.HasPrefix(stmt, "alter table")
+	}
+	// Do not swallow an object-name collision for a migration that did not
+	// explicitly opt into IF NOT EXISTS. A pre-existing index/table with the
+	// same name but different definition would otherwise leave the database in
+	// a silently incompatible schema.
+	return strings.Contains(msg, "already exists") && strings.Contains(stmt, "if not exists")
 }
 
 func isDeferredLegacyColumnMigrationError(stmt string, err error) bool {
@@ -231,6 +238,23 @@ func RunMigrations(db *sql.DB) error {
 			PRIMARY KEY (tenant_id, request_id)
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_llm_billing_ledger_tenant_created_at ON llm_billing_ledger(tenant_id, created_at DESC);`,
+
+		// Transactional outbox for billing state transitions (design §6.5).
+		// Events are written in the same transaction as the ledger settlement
+		// they describe; asynchronous reports, notifications and cross-layer
+		// reconciliation may only consume this queue. The unique key makes
+		// consumer-side idempotency enforceable at the storage layer.
+		`CREATE TABLE IF NOT EXISTS llm_billing_outbox (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+			request_id TEXT NOT NULL,
+			event_type TEXT NOT NULL,
+			payload_json TEXT NOT NULL DEFAULT '{}',
+			created_at TEXT NOT NULL,
+			consumed_at TEXT,
+			UNIQUE (tenant_id, request_id, event_type)
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_llm_billing_outbox_pending ON llm_billing_outbox(tenant_id, created_at) WHERE consumed_at IS NULL;`,
 
 		`CREATE TABLE IF NOT EXISTS viewer_tokens (
 			id TEXT PRIMARY KEY,
@@ -737,6 +761,8 @@ func RunMigrations(db *sql.DB) error {
 		);`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_capability_versions_key ON capability_versions(tenant_id, version_key);`,
 		`CREATE INDEX IF NOT EXISTS idx_capability_versions_capability_ref ON capability_versions(tenant_id, capability_ref);`,
+		`CREATE TABLE IF NOT EXISTS capability_suite_audit_events (tenant_id TEXT NOT NULL, id TEXT PRIMARY KEY, suite_id TEXT NOT NULL, member_skill_ids TEXT NOT NULL DEFAULT '[]', event_type TEXT NOT NULL, actor_id TEXT NOT NULL DEFAULT '', purchase_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);`,
+		`CREATE INDEX IF NOT EXISTS idx_cap_suite_audit ON capability_suite_audit_events(tenant_id, suite_id, created_at DESC);`,
 
 		`CREATE TABLE IF NOT EXISTS capability_acquisition_requests (
 			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
@@ -1128,6 +1154,20 @@ func RunMigrations(db *sql.DB) error {
 	// HubCenter-owned factor separately so historic row shape remains compatible
 	// while new settlements explain both components of the effective debit.
 	alterStmts = append(alterStmts, `ALTER TABLE llm_billing_ledger ADD COLUMN provider_multiplier REAL NOT NULL DEFAULT 1`)
+	// Cache-v1 settlement evidence: the cache-direction token legs and the four
+	// directional Credits/RMB amounts computed at settlement time. All columns
+	// are nullable without defaults so rows settled before this migration keep
+	// NULL and are never backfilled from later prices.
+	alterStmts = append(alterStmts, `ALTER TABLE llm_billing_ledger ADD COLUMN cached_input_tokens INTEGER`)
+	alterStmts = append(alterStmts, `ALTER TABLE llm_billing_ledger ADD COLUMN cache_write_tokens INTEGER`)
+	alterStmts = append(alterStmts, `ALTER TABLE llm_billing_ledger ADD COLUMN normal_input_credits REAL`)
+	alterStmts = append(alterStmts, `ALTER TABLE llm_billing_ledger ADD COLUMN cache_read_credits REAL`)
+	alterStmts = append(alterStmts, `ALTER TABLE llm_billing_ledger ADD COLUMN cache_write_credits REAL`)
+	alterStmts = append(alterStmts, `ALTER TABLE llm_billing_ledger ADD COLUMN output_credits REAL`)
+	alterStmts = append(alterStmts, `ALTER TABLE llm_billing_ledger ADD COLUMN normal_input_cost_rmb REAL`)
+	alterStmts = append(alterStmts, `ALTER TABLE llm_billing_ledger ADD COLUMN cache_read_cost_rmb REAL`)
+	alterStmts = append(alterStmts, `ALTER TABLE llm_billing_ledger ADD COLUMN cache_write_cost_rmb REAL`)
+	alterStmts = append(alterStmts, `ALTER TABLE llm_billing_ledger ADD COLUMN output_cost_rmb REAL`)
 	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_user_usage_daily_tenant_user_day ON user_usage_daily(tenant_id, user_id, day)`)
 
 	// machine_heartbeat_log: stores timestamped heartbeats for accurate
@@ -1201,6 +1241,20 @@ func RunMigrations(db *sql.DB) error {
 	)`)
 	alterStmts = append(alterStmts, `CREATE UNIQUE INDEX IF NOT EXISTS idx_cws_lease_active
 		ON cloud_workspace_leases(workspace_id) WHERE released_at IS NULL`)
+	// Lease lookups are predominantly tenant-scoped and filter out released or
+	// expired rows. Keep this covering prefix aligned with the query predicates
+	// used by metrics/admin paths so retention and observability do not degrade
+	// into full-table scans as the lease history grows.
+	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_cws_lease_tenant_active
+		ON cloud_workspace_leases(tenant_id, released_at, expires_at)`)
+	alterStmts = append(alterStmts,
+		`ALTER TABLE cloud_workspace_leases ADD COLUMN client_instance_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE cloud_workspace_leases ADD COLUMN fencing_token INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE cloud_workspace_leases ADD COLUMN lease_state TEXT NOT NULL DEFAULT 'active'`,
+		`ALTER TABLE cloud_workspace_leases ADD COLUMN last_committed_revision TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE cloud_workspace_leases ADD COLUMN handoff_requested_at TEXT`,
+		`ALTER TABLE cloud_workspace_leases ADD COLUMN handoff_requested_by TEXT NOT NULL DEFAULT ''`,
+	)
 	alterStmts = append(alterStmts, `CREATE TABLE IF NOT EXISTS cloud_workspace_objects (
 		workspace_id TEXT NOT NULL,
 		sha256 TEXT NOT NULL,
@@ -1215,6 +1269,7 @@ func RunMigrations(db *sql.DB) error {
 		`ALTER TABLE cloud_workspace_objects ADD COLUMN compression TEXT NOT NULL DEFAULT 'none'`,
 		`ALTER TABLE cloud_workspace_objects ADD COLUMN compression_level INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE cloud_workspace_objects ADD COLUMN encryption_version TEXT NOT NULL DEFAULT 'aes-gcm-v1'`,
+		`ALTER TABLE cloud_workspace_objects ADD COLUMN object_state TEXT NOT NULL DEFAULT 'ready'`,
 	)
 	alterStmts = append(alterStmts, `CREATE TABLE IF NOT EXISTS cloud_workspace_manifest_entries (
 		workspace_id TEXT NOT NULL,
@@ -1224,6 +1279,165 @@ func RunMigrations(db *sql.DB) error {
 		PRIMARY KEY (workspace_id, path)
 	)`)
 	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_cws_manifest_sha ON cloud_workspace_manifest_entries(workspace_id, sha256)`)
+	alterStmts = append(alterStmts, `CREATE TABLE IF NOT EXISTS cloud_workspace_snapshots (
+		snapshot_id TEXT PRIMARY KEY,
+		workspace_id TEXT NOT NULL,
+		manifest_revision TEXT NOT NULL,
+		manifest_hash TEXT NOT NULL,
+		created_by_session TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL,
+		retention_class TEXT NOT NULL DEFAULT 'standard'
+	)`)
+	alterStmts = append(alterStmts, `CREATE INDEX IF NOT EXISTS idx_cws_snapshots_workspace ON cloud_workspace_snapshots(workspace_id, created_at DESC)`)
+	alterStmts = append(alterStmts,
+		`CREATE TABLE IF NOT EXISTS backup_scheduler_locks (
+			lock_name TEXT PRIMARY KEY,
+			owner_id TEXT NOT NULL,
+			acquired_at_unix_ns INTEGER NOT NULL,
+			expires_at_unix_ns INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_backup_scheduler_locks_expiry ON backup_scheduler_locks(expires_at_unix_ns)`,
+		`CREATE TABLE IF NOT EXISTS cloud_workspace_snapshot_entries (
+			snapshot_id TEXT NOT NULL,
+			path TEXT NOT NULL,
+			sha256 TEXT NOT NULL,
+			size_bytes INTEGER NOT NULL,
+			PRIMARY KEY (snapshot_id, path)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_cws_snapshot_entries_snapshot ON cloud_workspace_snapshot_entries(snapshot_id)`,
+		`CREATE TABLE IF NOT EXISTS cloud_workspace_sidecars (
+			workspace_id TEXT NOT NULL,
+			name TEXT NOT NULL,
+			revision TEXT NOT NULL DEFAULT '',
+			sha256 TEXT NOT NULL DEFAULT '',
+			payload_hash TEXT NOT NULL DEFAULT '',
+			updated_by_session TEXT NOT NULL DEFAULT '',
+			storage_file TEXT NOT NULL DEFAULT '',
+			pending_revision TEXT NOT NULL DEFAULT '',
+			pending_file TEXT NOT NULL DEFAULT '',
+			pending_started_at TEXT,
+			updated_at TEXT NOT NULL,
+			PRIMARY KEY (workspace_id, name)
+		)`,
+		`ALTER TABLE cloud_workspace_sidecars ADD COLUMN storage_file TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE cloud_workspace_sidecars ADD COLUMN payload_hash TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE cloud_workspace_sidecars ADD COLUMN updated_by_session TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE cloud_workspace_sidecars ADD COLUMN pending_revision TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE cloud_workspace_sidecars ADD COLUMN pending_file TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE cloud_workspace_sidecars ADD COLUMN pending_started_at TEXT`,
+		`CREATE INDEX IF NOT EXISTS idx_cws_sidecars_workspace ON cloud_workspace_sidecars(workspace_id)`,
+		`CREATE TABLE IF NOT EXISTS cloud_workspace_task_bindings (
+			workspace_id TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL,
+			user_id TEXT NOT NULL,
+			cloud_task_id TEXT NOT NULL UNIQUE,
+			device_task_id TEXT NOT NULL DEFAULT '',
+			name TEXT NOT NULL DEFAULT '',
+			mode TEXT NOT NULL DEFAULT '',
+			tag TEXT NOT NULL DEFAULT '',
+			version INTEGER NOT NULL DEFAULT 1,
+			updated_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_cws_task_bindings_owner ON cloud_workspace_task_bindings(tenant_id, user_id)`,
+		`CREATE TABLE IF NOT EXISTS cloud_workspace_staging_chunks (
+			workspace_id TEXT NOT NULL,
+			sha256 TEXT NOT NULL,
+			chunk_index INTEGER NOT NULL,
+			size_bytes INTEGER NOT NULL,
+			updated_at TEXT NOT NULL,
+			PRIMARY KEY (workspace_id, sha256, chunk_index)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_cws_staging_chunks_updated ON cloud_workspace_staging_chunks(updated_at)`,
+		`CREATE TABLE IF NOT EXISTS cloud_workspace_idempotency (
+			tenant_id TEXT NOT NULL,
+			user_id TEXT NOT NULL,
+			workspace_id TEXT NOT NULL,
+			client_instance_id TEXT NOT NULL DEFAULT '',
+			idempotency_key TEXT NOT NULL,
+			payload_hash TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'pending',
+			status_code INTEGER NOT NULL DEFAULT 0,
+			response_json BLOB,
+			created_at TEXT NOT NULL,
+			expires_at TEXT NOT NULL,
+			PRIMARY KEY (tenant_id, user_id, workspace_id, idempotency_key)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_cws_idempotency_expiry ON cloud_workspace_idempotency(expires_at)`,
+		`CREATE TABLE IF NOT EXISTS cloud_workspace_audit_events (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        event_id TEXT NOT NULL,
+                        tenant_id TEXT NOT NULL,
+                        user_id TEXT NOT NULL,
+                        workspace_id TEXT NOT NULL,
+                        client_instance_id TEXT NOT NULL DEFAULT '',
+                        machine_id TEXT NOT NULL DEFAULT '',
+                        operation TEXT NOT NULL,
+                        outcome TEXT NOT NULL DEFAULT 'ok',
+                        revision TEXT NOT NULL DEFAULT '',
+                        files INTEGER NOT NULL DEFAULT 0,
+                        bytes INTEGER NOT NULL DEFAULT 0,
+                        detail TEXT NOT NULL DEFAULT '',
+                        created_at TEXT NOT NULL,
+                        UNIQUE(workspace_id, event_id)
+                )`,
+		`CREATE INDEX IF NOT EXISTS idx_cws_audit_workspace_id ON cloud_workspace_audit_events(workspace_id, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_cws_audit_tenant_id ON cloud_workspace_audit_events(tenant_id, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_cws_audit_tenant_workspace_id ON cloud_workspace_audit_events(tenant_id, workspace_id, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_cws_audit_tenant_created ON cloud_workspace_audit_events(tenant_id, created_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS cloud_workspace_instance_sessions (
+			id TEXT PRIMARY KEY,
+			token_hash TEXT NOT NULL UNIQUE,
+			tenant_id TEXT NOT NULL,
+			user_id TEXT NOT NULL,
+			machine_id TEXT NOT NULL,
+			client_instance_id TEXT NOT NULL UNIQUE,
+			protocol TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			last_seen_at TEXT NOT NULL,
+			expires_at TEXT NOT NULL,
+			revoked_at TEXT
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_cws_instance_sessions_owner ON cloud_workspace_instance_sessions(tenant_id, user_id, machine_id, expires_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_cws_instance_sessions_expiry ON cloud_workspace_instance_sessions(expires_at)`,
+		`CREATE TABLE IF NOT EXISTS cloud_workspace_task_provisions (
+			operation_id TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL,
+			user_id TEXT NOT NULL,
+			client_instance_id TEXT NOT NULL DEFAULT '',
+			workspace_id TEXT NOT NULL,
+			cloud_task_id TEXT NOT NULL,
+			device_task_id TEXT NOT NULL DEFAULT '',
+			name TEXT NOT NULL DEFAULT '',
+			mode TEXT NOT NULL DEFAULT '',
+			tag TEXT NOT NULL DEFAULT '',
+			state TEXT NOT NULL,
+			last_error TEXT NOT NULL DEFAULT '',
+			idempotency_key TEXT NOT NULL DEFAULT '',
+			idempotency_payload_hash TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_cws_task_provisions_owner ON cloud_workspace_task_provisions(tenant_id, user_id, updated_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_cws_task_provisions_workspace ON cloud_workspace_task_provisions(workspace_id, updated_at DESC)`,
+		`ALTER TABLE cloud_workspace_task_provisions ADD COLUMN client_instance_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE cloud_workspace_task_provisions ADD COLUMN idempotency_key TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE cloud_workspace_task_provisions ADD COLUMN idempotency_payload_hash TEXT NOT NULL DEFAULT ''`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_cws_task_provisions_idempotency ON cloud_workspace_task_provisions(tenant_id, user_id, idempotency_key) WHERE idempotency_key <> ''`,
+	)
+	alterStmts = append(alterStmts,
+		// Per-user transfer accounting for the optional hourly bandwidth quota.
+		// Rows are keyed by UTC hour window so cross-device usage converges on
+		// the same durable counters; old windows are pruned lazily on admission.
+		`CREATE TABLE IF NOT EXISTS cloud_workspace_bandwidth_usage (
+			tenant_id TEXT NOT NULL DEFAULT '',
+			user_id TEXT NOT NULL DEFAULT '',
+			window_start TEXT NOT NULL DEFAULT '',
+			bytes_up INTEGER NOT NULL DEFAULT 0,
+			bytes_down INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (tenant_id, user_id, window_start)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_cws_bandwidth_window ON cloud_workspace_bandwidth_usage(tenant_id, window_start)`,
+	)
 	alterStmts = append(alterStmts,
 		`CREATE TABLE IF NOT EXISTS cloud_workspace_files (
 			workspace_id TEXT NOT NULL, path TEXT NOT NULL, file_revision TEXT NOT NULL,
@@ -1240,7 +1454,7 @@ func RunMigrations(db *sql.DB) error {
 	)
 
 	for _, stmt := range alterStmts {
-		if _, err := db.Exec(stmt); err != nil && !isIgnorableMigrationError(err) {
+		if _, err := db.Exec(stmt); err != nil && !isIgnorableMigrationError(stmt, err) {
 			return fmt.Errorf("run alter migration: %w", err)
 		}
 	}
@@ -1312,6 +1526,9 @@ func RunMigrations(db *sql.DB) error {
 		), '')
 		WHERE trim(user_id) = ''`); err != nil {
 		return fmt.Errorf("backfill user usage user ids: %w", err)
+	}
+	if err := applyUserUsageDailyLifetimeDumpRepairOnce(db); err != nil {
+		return err
 	}
 
 	return nil

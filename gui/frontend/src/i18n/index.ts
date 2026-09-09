@@ -40,6 +40,14 @@ export {
     utilitiesLabels,
     utilitiesNavLabel,
     utilitiesPageTitle,
+    toolsNavLabel,
+    toolsPageTitle,
+    toolsEntryLabel,
+    toolsBackLabel,
+    toolsBackHintLabel,
+    expertsNavLabel,
+    expertsPageTitle,
+    expertsEntryLabel,
 } from './utilitiesLabels';
 export type { UtilitiesLabelPack } from './utilitiesLabels';
 

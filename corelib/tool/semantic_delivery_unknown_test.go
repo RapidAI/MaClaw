@@ -145,3 +145,29 @@ func TestStaleDeliveryReconciliationLeavesSettledDeliveriesAlone(t *testing.T) {
 		t.Fatalf("settled execution=%#v err=%v", record, err)
 	}
 }
+
+func TestPrepareDeliveryAndCompleteRejectsUnknownDelivery(t *testing.T) {
+	coordinator, err := NewSQLiteSemanticExecutionCoordinator(filepath.Join(t.TempDir(), "semantic-execution.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer coordinator.Close()
+	scope, plan, admission, payload := outboxDeliveryFixture(t, coordinator, "root-delivery-unknown-retry")
+	if _, claimed, err := coordinator.ClaimDelivery(scope, plan.Selections[0].ID, time.Now().UTC()); err != nil || !claimed {
+		t.Fatalf("claim claimed=%v err=%v", claimed, err)
+	}
+	if changed, err := coordinator.ReconcileStaleDeliveryDispatches(time.Now().UTC().Add(30*time.Minute), DeliveryDispatchLease); err != nil || changed != 1 {
+		t.Fatalf("reconcile changed=%d err=%v", changed, err)
+	}
+	record := DeliveryRecord{
+		Scope: scope, SelectionID: plan.Selections[0].ID, ArtifactID: payload.Ref.ID,
+		ArtifactSourceScope: scope, ChannelScope: "test-channel",
+		DestinationID: "group:one", State: DeliveryPrepared,
+	}
+	if _, _, err := coordinator.PrepareDeliveryAndComplete(admission, record, "same-result", "channel_delivery_prepared", time.Now().UTC()); err == nil || err.Error() != "delivery_unknown_requires_receipt" {
+		t.Fatalf("unknown delivery retry err=%v", err)
+	}
+	if execution, err := coordinator.Executions.Execution(scope, plan.Selections[0].ID); err != nil || execution.State != PlanExecutionUnknown {
+		t.Fatalf("unknown retry changed execution=%#v err=%v", execution, err)
+	}
+}

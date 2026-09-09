@@ -1707,10 +1707,16 @@ describe("renderMessage assistant display guard", () => {
         expect(userBubble.style.background).toContain("color-mix(in srgb");
         const userTail = screen.getByTestId("assistant-chat-tail-user-user-bubble");
         expect(userTail.getAttribute("aria-hidden")).toBe("true");
-        expect(userTail.style.right).toBe("13px");
-        expect(userTail.style.top).toBe("-6px");
-        expect(userTail.style.transform).toBe("rotate(45deg)");
-        expect(userTail.style.background).toBe(userBubble.style.background);
+        expect(userTail.style.right).toBe("2px");
+        expect(userTail.style.top).toBe("-8px");
+        expect(userTail.style.marginTop).toBe("");
+        expect(userTail.style.transform).toBe("");
+        expect(userTail.style.clipPath).toBe("polygon(0 100%, 50% 0, 100% 100%)");
+        // Outlined corner tail: outer layer carries the border color, inner fill the bubble color.
+        const strokeProbe = document.createElement("div");
+        strokeProbe.style.color = lightTheme.sendBtnBorder;
+        expect(userTail.style.background).toBe(strokeProbe.style.color);
+        expect((screen.getByTestId("assistant-chat-tail-user-user-bubble-fill") as HTMLElement).style.background).toBe(userBubble.style.background);
 
         rerender(<div>{renderMessage({
             id: "ai-bubble",
@@ -1727,10 +1733,15 @@ describe("renderMessage assistant display guard", () => {
         const assistantBubble = screen.getByTestId("assistant-chat-ai-bubble-ai-bubble") as HTMLElement;
         const assistantTail = screen.getByTestId("assistant-chat-tail-ai-ai-bubble");
         expect(assistantTail.getAttribute("aria-hidden")).toBe("true");
-        expect(assistantTail.style.left).toBe("13px");
-        expect(assistantTail.style.top).toBe("-6px");
-        expect(assistantTail.style.transform).toBe("rotate(45deg)");
-        expect(assistantTail.style.background).toBe(assistantBubble.style.background);
+        expect(assistantTail.style.left).toBe("2px");
+        expect(assistantTail.style.top).toBe("-8px");
+        expect(assistantTail.style.marginTop).toBe("");
+        expect(assistantTail.style.transform).toBe("");
+        expect(assistantTail.style.clipPath).toBe("polygon(0 100%, 50% 0, 100% 100%)");
+        const aiStrokeProbe = document.createElement("div");
+        aiStrokeProbe.style.color = lightTheme.fieldBorder;
+        expect(assistantTail.style.background).toBe(aiStrokeProbe.style.color);
+        expect((screen.getByTestId("assistant-chat-tail-ai-ai-bubble-fill") as HTMLElement).style.background).toBe(assistantBubble.style.background);
     });
 
     it("marks a fired guide bubble as injected without turning it into a new turn", () => {
@@ -1791,7 +1802,7 @@ describe("renderMessage assistant display guard", () => {
         await expect(copyTextToClipboard("   ")).resolves.toBe(false);
     });
 
-    it("keeps the assistant bubble tail visually paired with the active theme", () => {
+    it("outlines the assistant bubble corner tail with the theme border color", () => {
         render(<div>{renderMessage({
             id: "dark-ai-bubble",
             role: "assistant",
@@ -1799,16 +1810,17 @@ describe("renderMessage assistant display guard", () => {
             timestamp: Date.now(),
         }, vi.fn(), darkTheme, false, "Saved file", "en", false)}</div>);
 
+        const bubble = screen.getByTestId("assistant-chat-ai-bubble-dark-ai-bubble") as HTMLElement;
         const tail = screen.getByTestId("assistant-chat-tail-ai-dark-ai-bubble");
         // Pair against live theme tokens (jsdom normalizes hex → rgb).
         const probe = document.createElement("div");
-        probe.style.background = darkTheme.fieldBg;
         probe.style.color = darkTheme.fieldBorder;
-        expect(tail.style.background).toBe(probe.style.background);
-        expect(tail.style.borderTop).toContain(probe.style.color);
+        expect(tail.style.background).toBe(probe.style.color);
         expect(tail.style.pointerEvents).toBe("none");
-        expect(tail.style.top).toBe("-6px");
-        expect(tail.style.left).toBe("13px");
+        expect(tail.style.top).toBe("-8px");
+        expect(tail.style.left).toBe("2px");
+        expect(tail.style.marginTop).toBe("");
+        expect((screen.getByTestId("assistant-chat-tail-ai-dark-ai-bubble-fill") as HTMLElement).style.background).toBe(bubble.style.background);
     });
 
     it("keeps failures compact and announced within the message flow", () => {

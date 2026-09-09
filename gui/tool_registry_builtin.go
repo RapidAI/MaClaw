@@ -92,11 +92,6 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 	registerArchiveBuiltinTool(registry, h)
 
 	// --- Session management tools ---
-	reg("list_sessions", "列出当前所有远程会话及其状态",
-		ToolCategoryBuiltin, []string{"session", "list"},
-		nil, nil,
-		func(args map[string]interface{}) string { return h.toolListSessions() })
-
 	reg("project_manage", "项目管理（创建/列出/删除/切换项目）",
 		ToolCategoryBuiltin, []string{"project", "list", "create", "delete", "switch"},
 		map[string]interface{}{
@@ -107,59 +102,13 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		}, []string{"action"},
 		func(args map[string]interface{}) string { return h.toolProjectManage(args) })
 
-	reg("list_providers", "List configured providers for a coding tool.",
-		ToolCategoryBuiltin, []string{"provider", "list", "model"},
-		map[string]interface{}{
-			"coding_tool": map[string]string{"type": "string", "description": "工具名称，如 claude, codex, opencode"},
-		}, []string{"coding_tool"},
-		func(args map[string]interface{}) string { return h.toolListProviders(args) })
-
-	reg("send_input", "Send text input to a remote coding session.",
-		ToolCategoryBuiltin, []string{"session", "input", "send"},
-		map[string]interface{}{
-			"session_id": map[string]string{"type": "string", "description": "Session ID."},
-			"text":       map[string]string{"type": "string", "description": "要发送的文本"},
-		}, []string{"session_id", "text"},
-		func(args map[string]interface{}) string { return h.toolSendInput(args) })
-
-	reg("get_session_output", "Get recent output and status for a remote coding session.",
-		ToolCategoryBuiltin, []string{"session", "output", "status"},
-		map[string]interface{}{
-			"session_id": map[string]string{"type": "string", "description": "Session ID."},
-			"lines":      map[string]string{"type": "integer", "description": "Number of recent output lines to return."},
-		}, []string{"session_id"},
-		func(args map[string]interface{}) string { return h.toolGetSessionOutput(args) })
-
-	reg("get_session_events", "Get important events for a remote coding session.",
-		ToolCategoryBuiltin, []string{"session", "events"},
-		map[string]interface{}{
-			"session_id": map[string]string{"type": "string", "description": "Session ID."},
-		}, []string{"session_id"},
-		func(args map[string]interface{}) string { return h.toolGetSessionEvents(args) })
-
-	reg("interrupt_session", "Interrupt a remote coding session with Ctrl+C.",
-		ToolCategoryBuiltin, []string{"session", "interrupt", "cancel"},
-		map[string]interface{}{
-			"session_id": map[string]string{"type": "string", "description": "Session ID."},
-		}, []string{"session_id"},
-		func(args map[string]interface{}) string { return h.toolInterruptSession(args) })
-
-	reg("kill_session", "终止指定会话",
-		ToolCategoryBuiltin, []string{"session", "kill", "stop"},
-		map[string]interface{}{
-			"session_id": map[string]string{"type": "string", "description": "Session ID."},
-		}, []string{"session_id"},
-		func(args map[string]interface{}) string { return h.toolKillSession(args) })
 	// The coding-session administration entries share one outcome contract.
 	// They operate on host-owned session/project state and the host observes
 	// the outcome synchronously, so the sensitive family crosses the builtin
 	// local mutation receipt boundary. These entries stay annotated for
 	// unmanaged/legacy turns. The managed catalog unpublished this soup in
 	// favor of semantic_inspect_trusted_session.
-	for _, name := range []string{
-		"list_sessions", "project_manage", "list_providers", "send_input",
-		"get_session_output", "get_session_events", "interrupt_session", "kill_session",
-	} {
+	for _, name := range []string{"project_manage"} {
 		annotateSemanticTool(registry, name, []tool.CapabilityProvision{{
 			Capability: tool.CapabilitySessionManageCoding, Quality: 1,
 		}}, []tool.EffectClass{tool.EffectSensitive})
@@ -315,13 +264,6 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 	annotateSemanticTool(registry, "parallel_execute", []tool.CapabilityProvision{{
 		Capability: tool.CapabilityAgentDelegateSubtask, Quality: 1,
 	}}, []tool.EffectClass{tool.EffectSensitive})
-
-	reg("recommend_tool", "根据任务描述推荐最合适的编程工具",
-		ToolCategoryBuiltin, []string{"recommend", "select", "tool"},
-		map[string]interface{}{
-			"task_description": map[string]string{"type": "string", "description": "任务描述"},
-		}, []string{"task_description"},
-		func(args map[string]interface{}) string { return h.toolRecommendTool(args) })
 
 	reg("discover_tool", "发现更多可用工具。当你需要以下能力但找不到对应工具时调用：配置管理、定时任务、会话模板、MCP 扩展工具、Skill 市场搜索安装、审计日志查询。传入你需要的能力描述，返回匹配的工具定义。",
 		ToolCategoryBuiltin, []string{"discover", "find", "search", "tool", "config", "schedule", "template", "mcp", "audit"},

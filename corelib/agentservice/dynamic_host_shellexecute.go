@@ -195,6 +195,7 @@ func (c *coreAgentCallbacks) ExecuteReviewedHostShell(ctx context.Context, princ
 	// have their own trusted adapters on this host.
 	for _, guard := range []func(string) (string, bool){
 		coretool.RejectRawSSHCommand,
+		coretool.RejectShellDatabaseCLI,
 		coretool.RejectBroadBrowserKillCommand,
 		coretool.RejectBrowserSideEffectHTTPCommand,
 		coretool.RejectShellBrowserAutomationCommand,

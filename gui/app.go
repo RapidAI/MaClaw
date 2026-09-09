@@ -2005,8 +2005,7 @@ func (a *App) ensureAuditLog() {
 }
 
 // createAndWireHubClient creates a new RemoteHubClient, wires all subsystem
-// handlers into it, and connects. This consolidates the repeated hub-client
-// setup code that was duplicated in startup() and LaunchTool().
+// handlers into it, and connects. This keeps hub-client setup in one place.
 func (a *App) createAndWireHubClient() *RemoteHubClient {
 	cwStart := time.Now()
 	a.logMemorySnapshot("createAndWireHubClient:start")
@@ -2421,7 +2420,7 @@ func (a *App) isToolLocked(toolName string) bool {
 
 // IsToolBeingInstalled checks if a tool is currently being installed (exported for frontend)
 func (a *App) IsToolBeingInstalled(toolName string) bool {
-	return a.isToolLocked(toolName)
+	return false
 }
 
 func (a *App) syncIMGatewaysFromConfig() {
@@ -2488,7 +2487,6 @@ func (a *App) startup(ctx context.Context) {
 		writeWorkdirReadySidecar(config.WorkingDirectory, effectiveWD, skillTemp)
 		a.logStoragePaths("startup.config_loaded", &config)
 		a.applyConfiguredProxies(config)
-		go a.maybeImportExternalAgentsOnce()
 		// a.syncToCodeBuddySettings(config, ")
 		if config.Language != "" {
 			a.SetLanguage(config.Language)
@@ -2983,7 +2981,7 @@ func (a *App) resolveProjectProxyURL(config corelib.AppConfig, projectDir string
 // Named flags for whether launch-env builders may rewrite each tool's native
 // CLI config files (~/.codex, ~/.claude, …). Prefer these over bare booleans.
 const (
-	persistNativeToolConfig = true  // real LaunchTool / remote session start
+	persistNativeToolConfig = true  // remote session start
 	probeNativeToolConfig   = false // diagnostics, readiness, dry-run probes
 )
 
@@ -4805,254 +4803,9 @@ func getBaseUrl(selectedModel *corelib.ModelConfig) string {
 	return baseUrl
 }
 func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonProject bool, pythonEnv string, projectDir string, useProxy bool) error {
-	a.log(fmt.Sprintf("LaunchTool called: %s, yolo=%v, admin=%v, py=%v, pyenv=%s, dir=%s, proxy=%v",
-		toolName, yoloMode, adminMode, pythonProject, pythonEnv, projectDir, useProxy))
-	if projectDir == "" {
-		projectDir = a.GetCurrentProjectPath()
-	}
-	projectDir = normalizeProjectSessionPath(projectDir)
-	if err := a.ensureWorkflowAllowsRemoteToolCallForOwner(remoteLaunchPolicyOwnerIDForProject(RemoteLaunchSourceDesktop, projectDir), remoteSessionStartPolicyToolName, map[string]interface{}{"tool": toolName, "project_dir": projectDir, "launch_source": "desktop"}); err != nil {
-		a.log(fmt.Sprintf("LaunchTool blocked by workflow policy: %v", err))
-		return err
-	}
-	a.log(fmt.Sprintf("Launching %s...", toolName))
-
-	// Generate unique instance ID for this launch (timestamp-based)
-	instanceID := fmt.Sprintf("%d", time.Now().UnixNano())
-
-	// Only process Python environment if pythonProject is true
-	if pythonProject && pythonEnv != "" && pythonEnv != "None (Default)" {
-		a.log(fmt.Sprintf("Python project: using Python environment: %s", pythonEnv))
-	} else {
-		// Clear pythonEnv if not a Python project
-		pythonEnv = ""
-	}
-	config, err := a.LoadConfig()
-	if err != nil {
-		a.log("Error loading config: " + err.Error())
-		return err
-	}
-	launchToolKind := normalizeRemoteToolNameKind(toolName)
-	var toolCfg corelib.ToolConfig
-	var envKey, envBaseUrl string
-	var binaryName string
-	switch launchToolKind {
-	case remoteToolNameClaude:
-		toolCfg = config.Claude
-		envKey = "ANTHROPIC_AUTH_TOKEN"
-		envBaseUrl = "ANTHROPIC_BASE_URL"
-		binaryName = "claude"
-	case remoteToolNameCodex:
-		toolCfg = config.Codex
-		envKey = "OPENAI_API_KEY"
-		envBaseUrl = "OPENAI_BASE_URL"
-		binaryName = "codex"
-	case remoteToolNameIFlow:
-		toolCfg = config.IFlow
-		envKey = "IFLOW_API_KEY"
-		envBaseUrl = "IFLOW_BASE_URL"
-		binaryName = "iflow"
-	case remoteToolNameKilo:
-		toolCfg = config.Kilo
-		envKey = "KILO_API_KEY"
-		envBaseUrl = "KILO_BASE_URL"
-		binaryName = "kilo"
-	case remoteToolNameOpencode:
-		toolCfg = config.Opencode
-		envKey = "OPENCODE_API_KEY"
-		envBaseUrl = "OPENCODE_BASE_URL"
-		binaryName = "opencode"
-	case remoteToolNameCodeBuddy:
-		toolCfg = config.CodeBuddy
-		envKey = "CODEBUDDY_API_KEY"
-		envBaseUrl = "CODEBUDDY_BASE_URL"
-		binaryName = "codebuddy"
-	default:
-		// Check OEM extra tools from brand config
-		extraTool := findExtraTool(launchToolKind.String())
-		if extraTool == nil {
-			return fmt.Errorf("unsupported tool: %s", toolName)
-		}
-		// Load tool config from ExtraToolConfigs map
-		if config.ExtraToolConfigs != nil {
-			if tc, ok := config.ExtraToolConfigs[extraTool.ConfigKey]; ok {
-				toolCfg = tc
-			}
-		}
-		envKey = "OPENAI_API_KEY"
-		envBaseUrl = "OPENAI_BASE_URL"
-		binaryName = extraTool.Name
-	}
-	var selectedModel *corelib.ModelConfig
-	for _, m := range toolCfg.Models {
-		if m.ModelName == toolCfg.CurrentModel {
-			selectedModel = &m
-			break
-		}
-	}
-	if selectedModel == nil || toolCfg.CurrentModel == "" {
-		title := "\u63d0\u793a"
-		message := "\u8bf7\u5148\u9009\u62e9\u670d\u52a1\u5546"
-		if normalizeAppLanguageKind(a.CurrentLanguage).IsEnglish() {
-			title = "Notice"
-			message = "Please select a provider first."
-		}
-		a.ShowMessage(title, message)
-		return fmt.Errorf("please select a provider first")
-	}
-
-	// Remote desktop launches write native configs exactly once inside
-	// buildRemoteLaunchSpec. Handle them before the local env/write path so we
-	// do not rewrite ~/.codex / ~/.claude twice.
-	launchMode := normalizeLaunchModeKind(config.DefaultLaunchMode)
-	remoteCapableTool := launchToolKind.IsDesktopRemoteLaunchCapableBuiltin() || findExtraTool(launchToolKind.String()) != nil
-	if launchMode.IsRemote() && config.RemoteEnabled && remoteCapableTool {
-		return a.launchToolRemoteSession(toolName, config, yoloMode, adminMode, pythonEnv, projectDir, useProxy, launchToolKind)
-	}
-
-	// Ensure ActiveTool is set correctly for syncToSystemEnv
-	config.ActiveTool = launchToolKind.String()
-	a.syncToSystemEnv(config)
-	// Create env map for passing to batch script
-	env := make(map[string]string)
-	// Proxy settings
-	if useProxy && goruntime.GOOS != "windows" {
-		var proxyHost, proxyPort, proxyUsername, proxyPassword string
-		// Get proxy configuration (matching project path > global default)
-		var targetProj *corelib.ProjectConfig
-		for i := range config.Projects {
-			if config.Projects[i].Path == projectDir {
-				targetProj = &config.Projects[i]
-				break
-			}
-		}
-		// Fallback to CurrentProject if path match not found
-		if targetProj == nil {
-			for i := range config.Projects {
-				if config.Projects[i].Id == config.CurrentProject {
-					targetProj = &config.Projects[i]
-					break
-				}
-			}
-		}
-		if targetProj != nil {
-			proxyHost = targetProj.ProxyHost
-			proxyPort = targetProj.ProxyPort
-			proxyUsername = targetProj.ProxyUsername
-			proxyPassword = targetProj.ProxyPassword
-		}
-		// Use global default if project not configured
-		if proxyHost == "" {
-			proxyHost = config.DefaultProxyHost
-			proxyPort = config.DefaultProxyPort
-			proxyUsername = config.DefaultProxyUsername
-			proxyPassword = config.DefaultProxyPassword
-		}
-		if proxyHost != "" && proxyPort != "" {
-			var proxyURL string
-			if proxyUsername != "" && proxyPassword != "" {
-				proxyURL = fmt.Sprintf("http://%s:%s@%s:%s",
-					proxyUsername, proxyPassword, proxyHost, proxyPort)
-			} else {
-				proxyURL = fmt.Sprintf("http://%s:%s", proxyHost, proxyPort)
-			}
-			// Set proxy environment variables (only in env map, not main process)
-			env["HTTP_PROXY"] = proxyURL
-			env["HTTPS_PROXY"] = proxyURL
-			env["http_proxy"] = proxyURL
-			env["https_proxy"] = proxyURL
-			a.log(fmt.Sprintf("Proxy enabled: %s:%s", proxyHost, proxyPort))
-		}
-	}
-	// Shared launch-env builders own native config writes for the main tools so
-	// local desktop launch matches remote launch (normalization, surgical
-	// update/clear, CodeGen headers). CodeBuddy / OEM extras keep the legacy path.
-	switch launchToolKind {
-	case remoteToolNameClaude, remoteToolNameCodex, remoteToolNameOpencode, remoteToolNameIFlow, remoteToolNameKilo:
-		built, err := a.buildRemoteLaunchEnvForTool(launchToolKind.String(), config, selectedModel, projectDir, useProxy, persistNativeToolConfig)
-		if err != nil {
-			a.log(fmt.Sprintf("prepare %s launch env failed: %v", toolName, err))
-			return err
-		}
-		for k, v := range built {
-			env[k] = v
-		}
-		if !selectedModel.IsBuiltin {
-			// Local desktop extras not required by remote session adapters.
-			if launchToolKind == remoteToolNameCodex {
-				env["WIRE_API"] = "responses"
-				if selectedModel.ModelId != "" {
-					env["OPENAI_MODEL"] = selectedModel.ModelId
-				}
-			}
-			// Instance-scoped config files for multi-window local launches.
-			switch launchToolKind {
-			case remoteToolNameOpencode:
-				if err := a.syncToOpencodeSettings(config, projectDir, instanceID); err != nil {
-					log.Printf("Opencode: sync instance settings failed: %v", err)
-				}
-			case remoteToolNameIFlow:
-				if err := a.syncToIFlowSettings(config, projectDir, instanceID); err != nil {
-					log.Printf("iFlow: sync instance settings failed: %v", err)
-				}
-			case remoteToolNameKilo:
-				if err := a.syncToKiloSettings(config, projectDir, instanceID); err != nil {
-					log.Printf("Kilo: sync instance settings failed: %v", err)
-				}
-			}
-			a.log(fmt.Sprintf("%s: prepared provider env and native config for local launch", toolName))
-		} else {
-			a.log(fmt.Sprintf("Running %s in Original mode: native config restored.", toolName))
-		}
-	default:
-		if !selectedModel.IsBuiltin {
-			// --- OTHER PROVIDER MODE (CodeBuddy / OEM): SET ENV ONLY ---
-			toolBaseURL := strings.TrimSpace(selectedModel.ModelUrl)
-			if !launchToolKind.IsClaude() {
-				toolBaseURL = normalizedOpenAICompatibleToolBaseURL(launchToolKind.String(), *selectedModel)
-			}
-			env[envKey] = selectedModel.ApiKey
-			if toolBaseURL != "" && envBaseUrl != "" {
-				env[envBaseUrl] = toolBaseURL
-			}
-			selectedModelProvider := normalizeModelProviderKind(selectedModel.ModelName)
-			if selectedModelProvider.IsDeepSeek() {
-				env["CODEBUDDY_CODE_MAX_OUTPUT_TOKENS"] = "8192"
-			}
-			if selectedModel.ModelId != "" {
-				if findExtraTool(launchToolKind.String()) != nil {
-					env["OPENAI_MODEL"] = selectedModel.ModelId
-				}
-			}
-			if et := findExtraTool(launchToolKind.String()); et != nil && et.EnvBuilderFunc != nil {
-				extraEnv := et.EnvBuilderFunc(nil, selectedModel, projectDir)
-				for k, v := range extraEnv {
-					env[k] = v
-				}
-			}
-		} else {
-			a.restoreToolNativeConfig(launchToolKind.String())
-			a.log(fmt.Sprintf("Running %s in Original mode: native config restored.", toolName))
-		}
-	}
-
-	// Ensure tool onboarding is complete for local launches so the user
-	// doesn't have to confirm theme/trust/setup prompts every time.
-	ensureToolOnboardingComplete(a, launchToolKind.String(), projectDir)
-
-	// Enforce Hub YOLO mode override for local launches (Req 7.8).
-	yoloMode = a.enforceYoloModeQuiet(yoloMode)
-	if launchToolKind.IsClaude() {
-		log.Printf("[claude-launch] local-launch-requested project=%q yolo=%v admin=%v", projectDir, yoloMode, adminMode)
-	}
-
-	// Platform specific launch
-	return a.platformLaunch(binaryName, yoloMode, adminMode, pythonEnv, projectDir, env, selectedModel.ModelId)
+	return fmt.Errorf("external programming tools are disabled; use the built-in AI assistant")
 }
 
-// launchToolRemoteSession builds a remote launch spec (writing native configs
-// once) and creates the session. Used by LaunchTool so remote mode never runs
-// the local env/config write path first.
 func (a *App) launchToolRemoteSession(
 	toolName string,
 	config corelib.AppConfig,
@@ -6360,7 +6113,6 @@ func preserveBackendOwnedFields(incoming *corelib.AppConfig, ondisk *corelib.App
 	incoming.MaclawLLMTimeoutSec = ondisk.MaclawLLMTimeoutSec
 	incoming.MaclawLLMContextLength = ondisk.MaclawLLMContextLength
 	incoming.MaclawLLMProviders = ondisk.MaclawLLMProviders
-	incoming.ExternalAgentImportAttempted = ondisk.ExternalAgentImportAttempted
 	// Model assignments are backend-owned and revision-protected. Once the
 	// dual-profile contract exists on disk, a stale whole-config form must not
 	// erase it or revive its old assistant-only selection. Initial setup is
@@ -7430,6 +7182,53 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 		}
 		return cache.WithDefaults(), nil
 	}
+	semanticRoutingField := func(key string, value interface{}, base corelib.SemanticToolScopeRoutingConfig) (corelib.SemanticToolScopeRoutingConfig, error) {
+		data, err := json.Marshal(value)
+		if err != nil {
+			return corelib.SemanticToolScopeRoutingConfig{}, fmt.Errorf("config field %q must be object: %w", key, err)
+		}
+		cfg := base
+		var raw map[string]json.RawMessage
+		_ = json.Unmarshal(data, &raw)
+		defaults := corelib.DefaultSemanticToolScopeRoutingConfig()
+		if cfg.Mode == "" {
+			if _, present := raw["mode"]; !present {
+				cfg.Mode = defaults.Mode
+			}
+		}
+		if cfg.LegacyTextRoute == "" {
+			if _, present := raw["legacy_text_route"]; !present {
+				cfg.LegacyTextRoute = defaults.LegacyTextRoute
+			}
+		}
+		if cfg.MaxSelections == 0 {
+			if _, present := raw["max_selections"]; !present {
+				cfg.MaxSelections = defaults.MaxSelections
+			}
+		}
+		if cfg.MaxSchemaTokens == 0 {
+			if _, present := raw["max_schema_tokens"]; !present {
+				cfg.MaxSchemaTokens = defaults.MaxSchemaTokens
+			}
+		}
+		if cfg.MaxIterations == 0 {
+			if _, present := raw["max_iterations"]; !present {
+				cfg.MaxIterations = defaults.MaxIterations
+			}
+		}
+		if !cfg.RequireCatalogCoverage {
+			if _, present := raw["require_catalog_coverage"]; !present && base == (corelib.SemanticToolScopeRoutingConfig{}) {
+				cfg.RequireCatalogCoverage = defaults.RequireCatalogCoverage
+			}
+		}
+		if err := json.Unmarshal(data, &cfg); err != nil {
+			return corelib.SemanticToolScopeRoutingConfig{}, fmt.Errorf("config field %q must be object: %w", key, err)
+		}
+		if _, err := cfg.Normalize(); err != nil {
+			return corelib.SemanticToolScopeRoutingConfig{}, fmt.Errorf("config field %q invalid: %w", key, err)
+		}
+		return cfg, nil
+	}
 	modelRoutesField := func(key string, value interface{}) (map[string]corelib.ModelRouteConfig, error) {
 		if value == nil {
 			return nil, nil
@@ -7723,6 +7522,12 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.SmartRouteEnabled = v
+		case "semantic_tool_scope_routing":
+			v, err := semanticRoutingField(key, value, cfg.SemanticToolScopeRouting)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.SemanticToolScopeRouting = v
 		case "gossip_enabled":
 			v, err := boolField(key, value)
 			if err != nil {
@@ -8140,13 +7945,6 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.DefaultProxyScopeMaclaw = v
-			proxyChanged = true
-		case "default_proxy_scope_coding_tools":
-			v, err := boolField(key, value)
-			if err != nil {
-				return corelib.AppConfig{}, err
-			}
-			cfg.DefaultProxyScopeCodingTools = v
 			proxyChanged = true
 		case "default_proxy_scope_agent":
 			v, err := boolField(key, value)

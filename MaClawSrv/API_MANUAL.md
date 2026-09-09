@@ -314,6 +314,12 @@ Common runtime variables:
 
 - `MACLAW_CREDENTIAL_PEPPER`: optional extra pepper for credential hashing.
 
+- `MACLAW_RUNTIME_RATE_LIMIT_RATE`: optional per-tenant Agent turn admission rate in tokens/second. `0` or unset disables the limiter.
+
+- `MACLAW_RUNTIME_RATE_LIMIT_BURST`: optional per-tenant burst size. Defaults to one token when a positive rate is configured.
+
+- `MACLAW_RUNTIME_RATE_LIMIT_TENANT_LIMIT`: maximum in-memory tenant buckets (default `1024`). When full, the least-recently-used bucket is evicted and the eviction is reported by limiter diagnostics.
+
 
 
 
@@ -887,12 +893,17 @@ For AI tools and desktop clients, use this sequence:
 
 
 
-10. `POST /api/v1/instances/{instanceId}/messages`
+10. `GET /api/v1/instances/{instanceId}/runtime-capabilities`
 
 
 
 
-11. Poll `GET /api/v1/instances/{instanceId}/runs/{runId}` or read message history
+11. `POST /api/v1/instances/{instanceId}/messages`
+
+
+
+
+12. Poll `GET /api/v1/instances/{instanceId}/runs/{runId}` or read message history
 
 
 
@@ -1167,7 +1178,7 @@ Recommended handling:
 
 
 
-- `429`: throttled token/login flow; retry is appropriate.
+- `429`: quota or runtime token-bucket throttling (or authentication throttling); retry after the advertised `Retry-After` delay. Runtime admission uses `code: "rate_limited"`.
 
 
 
@@ -2457,7 +2468,18 @@ Recommended usage:
 
 
 
-`GET /metrics` returns Prometheus text format counters for tenants, users, instances, sessions, messages, runs, and audit events.
+`GET /metrics` returns Prometheus text format counters for tenants, users, instances, sessions, messages, runs, and audit events. It also exposes the shared Agent Runtime telemetry used by GUI and headless hosts:
+
+- `maclaw_runtime_turns_*` and `maclaw_runtime_active_runs` for lifecycle/concurrency;
+- `maclaw_runtime_queue_wait_*` and `maclaw_runtime_first_token_latency_*` for admission and first-token latency aggregates;
+- `maclaw_runtime_token_deltas_total`, `maclaw_runtime_tool_*`, and `maclaw_runtime_events_*` for token/tool/outbox health;
+- `maclaw_runtime_quota_rejected_total` and `maclaw_runtime_tenant_series_dropped_total` for quota pressure and bounded-cardinality diagnostics.
+
+- `maclaw_runtime_rate_limited_total` for short-term tenant token-bucket pressure and `maclaw_runtime_rate_limit_buckets_evicted_total` for bounded-map eviction diagnostics. A `429` response includes `code=rate_limited`, `Retry-After`, and `retry_after_seconds` when the limiter is enabled.
+
+Tenant-labelled samples use `tenant_hash`, a deterministic 16-character SHA-256 prefix. Raw tenant identifiers are never emitted, and the number of tenant series is bounded by the Runtime collector.
+
+Every HTTP response carries a validated `X-Request-ID` (generated when absent or malformed). If the request includes a valid W3C `traceparent`, its trace-id and parent span-id are propagated into run metadata, lifecycle events, and audit metadata; the raw traceparent value is never persisted.
 
 
 
@@ -3016,6 +3038,26 @@ Response includes aggregate counters for imported tenants, users, credentials, i
 
 
 
+
+### 9.14 Database profiles
+
+Database profiles are tenant/user scoped. Credentials stay in `secret_ref`; list responses never return DSN, file paths, or secrets. Reads may use `replica_host` / `replica_ssh_session_id`; writes always use the primary.
+
+Query parameters on every route: `tenant_id`, `user_id`. Owner role is required for every route: list and test expose hostnames, and test dials the configured host.
+
+```http
+GET /api/v1/admin/database/profiles
+POST /api/v1/admin/database/profiles
+POST /api/v1/admin/database/profiles/{profileId}/test
+POST /api/v1/admin/database/profiles/{profileId}/rotate-secret
+DELETE /api/v1/admin/database/profiles/{profileId}?confirm=true
+POST /api/v1/admin/database/approvals
+POST /api/v1/admin/database/runtime
+GET /api/v1/admin/database/metrics
+GET /api/v1/admin/database/receipts/{receiptId}
+```
+
+`POST .../approvals` returns only `approval_id`. The opaque token never leaves the host. `POST .../runtime` is the kill switch. Receipts are metadata-only (no SQL text, no tokens).
 
 ## 10. User config API
 
@@ -4467,6 +4509,42 @@ Important policy notes:
 
 
 
+### 11.6.1 Get shared Runtime capabilities
+
+
+
+
+```http
+
+
+GET /api/v1/instances/{instanceId}/runtime-capabilities
+
+
+```
+
+
+
+Returns the transport-neutral `agentruntime` capability snapshot used by both
+GUI and MaClawSrv. The response includes `contract_version`, the effective
+headless/desktop host profile, deterministic module descriptors, the effective
+tool list, and a `prompt_digest` for parity checks (the prompt text itself is
+never returned). It also includes `surface_digest`, a canonical SHA-256 of the
+host profile, module/tool contracts and prompt digest. Metadata is limited to transport-safe policy flags; workspace
+and data-root paths are not exposed. Clients should use this contract when deciding which non-UI
+Agent behavior is available; the legacy `/capabilities` endpoint remains for
+compatibility and now includes the same additive `surface_digest` field.
+
+The metadata also reports repository guarantees: `lifecycle_persistence_mode`
+(`atomic`, `mixed`, or `best_effort`), `durable_outbox`, and the admission,
+completion, and terminal `*_outbox_atomic` flags. A client may use these flags
+to decide whether retry/replay is safe without inferring the concrete backend.
+Admission policy metadata (`rate_limit_enabled`, `rate_limit_rate`,
+`rate_limit_burst`, and `rate_limit_tenant_limit`) describes the shared
+tenant token-bucket applied before a new run is persisted.
+
+
+
+
 
 
 
@@ -4814,6 +4892,16 @@ Request fields:
 
 - `client_message_id`: optional client-side message correlation ID.
 
+Optional headers:
+
+- `Idempotency-Key`: equivalent to `client_message_id`; mismatched values are
+  rejected.
+- `Prefer: respond-async`: return `202 Accepted` after run admission and
+  continue execution in the background. Poll the returned `status_url` or use
+  the run event stream.
+- Query `async=true` is an equivalent compatibility form when custom clients
+  cannot send `Prefer` headers.
+
 
 
 
@@ -4957,6 +5045,17 @@ Success response example:
 
 
 
+```
+
+Asynchronous response example:
+
+```json
+{
+  "async": true,
+  "session": { "id": "sess_xxx" },
+  "run": { "id": "run_xxx", "status": "running" },
+  "status_url": "/api/v1/instances/inst_xxx/runs/run_xxx"
+}
 ```
 
 
@@ -5529,6 +5628,15 @@ POST /api/v1/instances/{instanceId}/sessions/{sessionId}/messages
 
 ```
 
+Optional headers:
+
+- `Idempotency-Key`: stable client request id. It is mapped to
+  `metadata.client_message_id` and prevents duplicate runs.
+- `Prefer: respond-async`: return `202 Accepted` as soon as the run is
+  durably admitted. The executor continues in the background; poll `status_url`
+  or subscribe to the run event stream.
+- Query `async=true` is an equivalent compatibility form.
+
 
 
 
@@ -5662,6 +5770,16 @@ Success response:
 
 
 
+```
+
+Asynchronous response (`Prefer: respond-async`):
+
+```json
+{
+  "async": true,
+  "run": { "id": "run_xxx", "status": "running" },
+  "status_url": "/api/v1/instances/inst_xxx/runs/run_xxx"
+}
 ```
 
 
@@ -5909,6 +6027,12 @@ GET /api/v1/instances/{instanceId}/runs/{runId}/events
 
 Content type: `text/event-stream`.
 
+Reconnect with the `Last-Event-ID` request header set to the last received
+durable event id. The server resolves the id to the run-local sequence and
+only emits events after that cursor. Incremental runtime events include an
+SSE `id` plus a JSON envelope (`type` and `event`); `snapshot`/`done` remain
+available for compatibility.
+
 
 
 
@@ -5928,6 +6052,11 @@ Event types:
 
 
 - `snapshot`
+
+
+- Runtime event names such as `run.started`, `assistant.delta`, `tool.call`,
+  `tool.result`, `ask_user`, `assistant.message`, `run.completed`,
+  `run.failed`, and `run.cancelled`
 
 
 
@@ -7022,6 +7151,18 @@ Example response:
 
 
 
+`status` uses the shared Runtime job vocabulary: `pending`, `running`,
+`succeeded`, `failed`, `canceled`, or `unknown`. Jobs also expose the shared
+`recovery_policy`: `reconcile` is the fail-closed default for operations that
+may have external side effects, while `fail` is reserved for operations whose
+interruption is known not to have an uncertain effect. Failed/canceled/unknown
+jobs may include an `error_code` (for example `request_error`, `job_canceled`,
+`service_restarted`, `reconcile_required`, `result_not_serializable`, or
+`job_persistence_failed`) so clients do not need to parse the human-readable
+`error` field.
+
+
+
 ### 14.9 List or cancel async jobs
 
 
@@ -7072,7 +7213,155 @@ Use `GET /api/v1/jobs?kind=skill.import&status=succeeded` for recent user-scoped
 
 
 
-`status` can be `pending`, `running`, `succeeded`, `failed`, or `canceled`. Bulk deletion only accepts terminal statuses.
+`status` can be `pending`, `running`, `succeeded`, `failed`, `canceled`, or
+`unknown`. Bulk deletion accepts terminal statuses, including `unknown`.
+
+Job admission is fail-closed: the server only starts the worker after the
+initial envelope is committed by a SQLite transaction in `state/jobs.db`. If the repository cannot
+be written, the returned job is terminal `failed` with
+`error_code: "job_persistence_failed"`; it must not be retried blindly because
+no durable admission exists. Readiness and Prometheus metrics expose the same
+store health (`jobs_store_persistence` and
+`maclaw_async_jobs_persistence_healthy`).
+On first use, `jobs.db` imports and validates the legacy `jobs.json` snapshot
+exactly once and keeps the old file as a rollback/audit backup. An unreadable,
+corrupt, or identity-conflicting legacy snapshot makes readiness fail rather
+than silently starting with an incomplete job list.
+
+The persistence boundary is the shared multi-writer
+`agentruntime.JobRepository` contract. `version` starts at `1` and advances on
+every durable mutation; it is a read-only CAS revision for API clients. The
+repository separately stores worker owner/lease metadata that is deliberately
+excluded from API JSON. A live worker renews its lease, so another srv process
+does not mistake in-flight work for restart residue. Only an expired lease (or
+a legacy active Job with no lease) enters recovery: `reconcile` becomes
+`unknown/reconcile_required`, while `fail` becomes
+`failed/service_restarted`. Recovery never replays or automatically prunes the
+Job, and CAS rejects a late result from the expired worker. Clients must
+reconcile an unknown external effect before retrying it.
+
+Workers with external effects can also use the shared
+`agentruntime.JobEffectRecorder` to write protected prepare/resource-binding/
+receipt evidence to `state/job_effects.db`. The SQLite implementation lives in
+shared `corelib/agentservice`, so GUI, srv, and future hosts can compose the
+same repository. Resource identifiers, domain payloads, and receipt digests
+never enter generic Job JSON. Migration export/import are the first production
+consumers. When an expired worker leaves either migration Job unknown, a Job
+read invokes its domain reconciler: it reads protected evidence and performs a
+read-only Hub export receipt probe, then settles the Job by `version` CAS. It
+never replays export/import, claim, upload, or local restore; insufficient
+evidence leaves `unknown/reconcile_required` unchanged.
+
+Running jobs may also expose a shared checkpoint:
+
+```json
+{
+  "progress": 0.65,
+  "progress_text": "uploading migration package",
+  "checkpoint": {
+    "sequence": 4,
+    "phase": "transfer",
+    "updated_at": "2026-09-01T10:00:00Z"
+  }
+}
+```
+
+Domain workers publish progress and checkpoints through the
+context-injected `agentruntime.JobReporter`; both values are committed by one
+repository CAS update. Migration export/import and the Knowledge/Skill long-
+running jobs use the same path.
+`sequence` must increase monotonically and `updated_at` is assigned by the
+host. A checkpoint contains auditable phase metadata only: replay payloads,
+passwords/tokens, filesystem paths, and external resource identifiers remain
+in a domain repository. A checkpoint does not authorize automatic replay after
+a restart; `unknown/reconcile_required` still requires domain reconciliation.
+
+The Job envelope also exposes in-process retry state:
+
+```json
+{
+  "retry_policy": {
+    "max_attempts": 3,
+    "initial_backoff_ms": 250,
+    "maximum_backoff_ms": 1000
+  },
+  "attempt": 1,
+  "next_attempt_at": "2026-09-01T10:00:00.250Z",
+  "last_attempt_error_code": "request_error",
+  "last_attempt_error": "temporary probe failure"
+}
+```
+
+`max_attempts` includes the first execution and defaults to `1`, which disables
+automatic retry. A domain must explicitly mark an error as retryable; ordinary
+business, validation, lookup, and authorization errors are never retried just
+because a policy allows multiple attempts. Backoff is shared, exponential, and
+capped, and cancel/shutdown interrupts it immediately. Async MCP health-check
+is the first production consumer: it makes at most three attempts and only an
+actual MCP probe failure is retryable. Retry policy authorizes execution only
+inside the current worker process and never authorizes replay after restart;
+restart behavior still follows `recovery_policy` and domain reconciliation.
+
+MCP create/update/start/stop, Skill install/import/upload, and Knowledge
+file/URL/directory/package/share imports also use the protected `JobEffectRecorder` ledger.
+Workers prepare an effect before mutation, bind server/skill/source resource
+identifiers, and commit a redacted result receipt. If persistence fails after a
+side effect, the Job becomes `unknown/reconcile_required`; the corresponding
+read-only domain reconciler either replays the protected committed payload or
+proves the current MCP/Skill/Knowledge state. Reconcilers never invoke the
+original worker closure, and effect payloads, credentials, and resource IDs
+remain outside the generic Job/API envelope.
+
+The following asynchronous endpoints accept an optional header:
+
+- `POST /api/v1/mcp/servers?async=true`
+- `PATCH /api/v1/mcp/servers/{serverId}?async=true`
+- `POST /api/v1/mcp/servers/{serverId}/start?async=true`
+- `POST /api/v1/mcp/servers/{serverId}/stop?async=true`
+- `POST /api/v1/mcp/servers/{serverId}/health-check?async=true`
+- `POST /api/v1/skills/install?async=true`
+- `POST /api/v1/skills/import?async=true`
+- `POST /api/v1/skills/{skillName}/upload?async=true`
+- `POST /api/v1/knowledge/import/file`
+- `POST /api/v1/knowledge/import/urls`
+- `POST /api/v1/knowledge/import/directory`
+- `POST /api/v1/admin/public-knowledge-libraries/{libraryId}/import/file`
+- `POST /api/v1/admin/public-knowledge-libraries/{libraryId}/import/urls`
+- `POST /api/v1/admin/public-knowledge-libraries/{libraryId}/import/text` (with `Idempotency-Key` enables an asynchronous Job; without it the synchronous legacy response is preserved)
+- `POST /api/v1/migration/export`
+- `POST /api/v1/migration/import`
+
+```http
+Idempotency-Key: <1-256 byte client key>
+```
+
+Concurrent or repeated requests with the same tenant/user, Job kind, and key
+return the same canonical Job and only the first admission starts a worker. A
+direct replay response includes `idempotent_replay: true`; ordinary
+`GET /api/v1/jobs/{jobId}` responses do not treat it as durable state. Reusing
+the key with different request parameters returns HTTP `409` with
+`code: "job_idempotency_conflict"`; an invalid key returns HTTP `400` with
+`code: "invalid_job_idempotency_key"`. Keys are not silently trimmed; leading
+or trailing whitespace is rejected so it cannot address a different durable
+identity than the caller supplied.
+
+The raw key and request (including migration passwords) are never persisted or returned. Only
+`idempotency_digest` and `request_digest` are stored and exposed to the worker
+context for a future domain operation ledger. SQLite enforces a partial unique
+index for every non-empty `idempotency_digest`; concurrent admissions through
+independent repository handles/processes have one winner and return the same
+canonical Job. Deleting or automatically pruning that Job releases the key and
+cleans its protected effect receipts after the Job deletion commits. A cross-file
+cleanup failure is retained for readiness diagnostics and retried by later
+housekeeping. The legacy file adapter remains a single-writer compatibility path and does
+not claim cross-process deduplication. If the initial Job envelope cannot be persisted,
+the worker is not started and the key is released immediately; once readiness
+recovers, the same key can safely attempt admission again.
+
+Updates use version CAS. Explicit and bulk deletion validate the expected
+revision, and a bulk deletion commits all rows or none in one transaction.
+Repository failures return HTTP `503` with `code: "job_persistence_failed"`;
+the job remains queryable and can be retried after readiness recovers.
 
 
 
@@ -8704,8 +8993,15 @@ Admin:
 
 - `GET /api/v1/admin/audit-events`
 
-
-
+- `GET /api/v1/admin/database/profiles`
+- `POST /api/v1/admin/database/profiles`
+- `POST /api/v1/admin/database/profiles/{profileId}/test`
+- `POST /api/v1/admin/database/profiles/{profileId}/rotate-secret`
+- `DELETE /api/v1/admin/database/profiles/{profileId}`
+- `POST /api/v1/admin/database/approvals`
+- `POST /api/v1/admin/database/runtime`
+- `GET /api/v1/admin/database/metrics`
+- `GET /api/v1/admin/database/receipts/{receiptId}`
 
 - `POST /api/v1/admin/tenants`
 
@@ -9346,6 +9642,11 @@ DELETE /api/v1/admin/snapshots/{snapshot_id}?confirm=true
 X-MaClaw-Admin-Secret: <admin-secret>
 ```
 
+## AppConfig schema contract
 
-
-
+`GET /api/v1/config/schema` and `GET /api/v1/admin/client-config/schema` return
+the historical `items` array plus `schema_version` (`maclaw.app-config/v1`).
+Each item may include `scope`, `mutable`, `restart_required`,
+`headless_supported`, and `user_web_visible`. These fields are generated from
+the shared `corelib/config` schema; clients should use the version and metadata
+instead of maintaining a second field allow-list.

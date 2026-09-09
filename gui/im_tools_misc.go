@@ -10,7 +10,6 @@ import (
 	"log"
 	"net/url"
 	"os"
-	"os/exec"
 	pathpkg "path"
 	"path/filepath"
 	"runtime"
@@ -1625,30 +1624,6 @@ func queuedSessionSkipReason(sr SessionResult) string {
 		return strings.TrimSpace(errorText[len(prefix):])
 	}
 	return errorText
-}
-
-func (h *IMMessageHandler) toolRecommendTool(args map[string]interface{}) string {
-	selector := h.getToolSelector()
-	if selector == nil {
-		return "ToolSelector 未初始化"
-	}
-	desc, _ := args["task_description"].(string)
-	if desc == "" {
-		return "缺少 task_description 参数"
-	}
-	// Build list of installed tools by checking if their binaries are on PATH.
-	var installed []string
-	for _, tool := range []string{"claude", "codex", "opencode", "iflow", "kilo"} {
-		meta, ok := remoteToolCatalog[tool]
-		if !ok {
-			continue
-		}
-		if _, err := exec.LookPath(meta.BinaryName); err == nil {
-			installed = append(installed, tool)
-		}
-	}
-	name, reason := selector.Recommend(desc, installed)
-	return fmt.Sprintf("推荐工具: %s\n理由: %s", name, reason)
 }
 
 // ---------------------------------------------------------------------------

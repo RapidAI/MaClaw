@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
@@ -168,10 +169,16 @@ func TestAdminSchedulerHTTPCRUD(t *testing.T) {
 	}
 
 	// Delete
-	req = httptest.NewRequest(http.MethodDelete, "/api/v1/admin/scheduler/tasks/"+id, nil)
-	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
-	w = httptest.NewRecorder()
-	server.Handler().ServeHTTP(w, req)
+	for attempt := 0; attempt < 20; attempt++ {
+		req = httptest.NewRequest(http.MethodDelete, "/api/v1/admin/scheduler/tasks/"+id, nil)
+		req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+		w = httptest.NewRecorder()
+		server.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "cancellation requested") {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if w.Code != http.StatusOK && w.Code != http.StatusForbidden && w.Code != http.StatusUnauthorized {
 		t.Fatalf("delete = %d %s", w.Code, w.Body.String())
 	}

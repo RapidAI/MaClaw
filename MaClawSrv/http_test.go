@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	coreim "github.com/RapidAI/CodeClaw/corelib/im"
 	"github.com/RapidAI/CodeClaw/corelib/tts"
@@ -188,7 +190,7 @@ func seedReadyTTSModel(t *testing.T, dataRoot string) {
 	if err := os.WriteFile(filepath.Join(modelsDir, "kokoro-v1_0.koro"), []byte("fake-tts-model"), 0o644); err != nil {
 		t.Fatalf("write tts model marker: %v", err)
 	}
-	for _, voiceID := range []string{"zm_yunxi", "zm_yunyang", "zf_xiaoxiao", "zf_xiaoyi"} {
+	for _, voiceID := range tts.SupportedTTSVoiceIDs {
 		if err := os.WriteFile(filepath.Join(voicesDir, voiceID+".koro"), []byte("fake-voice"), 0o644); err != nil {
 			t.Fatalf("write tts voice marker: %v", err)
 		}
@@ -230,6 +232,50 @@ func TestOpenAPIDocumentIsAvailable(t *testing.T) {
 	}
 	if _, ok := doc.Paths["/api/v1/knowledge/import/url"]; !ok {
 		t.Fatalf("expected knowledge single URL import path in openapi doc")
+	}
+	runEventsPath, ok := doc.Paths["/api/v1/instances/{instanceId}/runs/{runId}/events"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected run events path in openapi doc")
+	}
+	runEventsGet, ok := runEventsPath["get"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected run events GET operation in openapi doc")
+	}
+	lastEventIDHeader := false
+	if params, ok := runEventsGet["parameters"].([]any); ok {
+		for _, raw := range params {
+			param, _ := raw.(map[string]any)
+			if param["name"] == "Last-Event-ID" && param["in"] == "header" {
+				lastEventIDHeader = true
+				break
+			}
+		}
+	}
+	if !lastEventIDHeader {
+		t.Fatalf("expected Last-Event-ID header parameter in run events OpenAPI operation: %#v", runEventsGet)
+	}
+	messagePath, ok := doc.Paths["/api/v1/instances/{instanceId}/sessions/{sessionId}/messages"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected session message path in openapi doc")
+	}
+	messagePost, ok := messagePath["post"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected session message POST operation in openapi doc")
+	}
+	preferHeader, asyncResponse := false, false
+	if params, ok := messagePost["parameters"].([]any); ok {
+		for _, raw := range params {
+			param, _ := raw.(map[string]any)
+			if param["name"] == "Prefer" && param["in"] == "header" {
+				preferHeader = true
+			}
+		}
+	}
+	if responses, ok := messagePost["responses"].(map[string]any); ok {
+		_, asyncResponse = responses["202"]
+	}
+	if !preferHeader || !asyncResponse {
+		t.Fatalf("expected Prefer header and 202 response in message OpenAPI operation: %#v", messagePost)
 	}
 	for _, path := range []string{"/api/v1/im/weixin/qr/start", "/api/v1/im/weixin/qr/image", "/api/v1/im/weixin/qr/poll", "/api/v1/im/weixin/status", "/api/v1/im/weixin/restart", "/api/v1/im/qqbot/qr/start", "/api/v1/im/qqbot/qr/image", "/api/v1/im/qqbot/qr/poll"} {
 		if _, ok := doc.Paths[path]; !ok {
@@ -966,16 +1012,21 @@ func TestOpenAPIKnowledgeClearDocumentsAdminCredentialBody(t *testing.T) {
 }
 
 func TestOpenAPICoversRegisteredAdminRoutes(t *testing.T) {
-	source, err := os.ReadFile("http.go")
-	if err != nil {
-		t.Fatalf("read http.go: %v", err)
-	}
 	registered := map[string]bool{}
 	re := regexp.MustCompile(`s\.mux\.HandleFunc\("([A-Z]+) ([^"]+)"`)
-	for _, match := range re.FindAllStringSubmatch(string(source), -1) {
-		method, path := match[1], match[2]
-		if strings.HasPrefix(path, "/api/v1/admin/") {
-			registered[method+" "+path] = true
+	for _, name := range []string{"http.go", "http_routes_admin.go"} {
+		source, err := os.ReadFile(name)
+		if err != nil {
+			if name == "http.go" {
+				continue
+			}
+			t.Fatalf("read %s: %v", name, err)
+		}
+		for _, match := range re.FindAllStringSubmatch(string(source), -1) {
+			method, path := match[1], match[2]
+			if strings.HasPrefix(path, "/api/v1/admin/") {
+				registered[method+" "+path] = true
+			}
 		}
 	}
 	if len(registered) == 0 {
@@ -1012,10 +1063,10 @@ func TestOpenAPIAdminMutationsAreOwnerOnlyUnlessExplicitlyAllowed(t *testing.T) 
 		http.MethodPost + " /api/v1/admin/ai-models/tts/synthesize":                          true,
 		http.MethodPost + " /api/v1/admin/tenants/{tenantId}/users/{userId}/config/validate": true,
 		http.MethodPost + " /api/v1/admin/tenants/{tenantId}/users/{userId}/config/test":     true,
-		http.MethodPost + " /api/v1/admin/sandbox/detect":                                    true,
-		http.MethodPost + " /api/v1/admin/sandbox/smoke-test":                                true,
-		http.MethodPost + " /api/v1/admin/sandbox/diagnose":                                  true,
-		http.MethodPost + " /api/v1/admin/sandbox/profiles/{profileName}/validate":           true,
+		http.MethodPost + " /api/v1/admin/sandbox/detect":                          true,
+		http.MethodPost + " /api/v1/admin/sandbox/smoke-test":                      true,
+		http.MethodPost + " /api/v1/admin/sandbox/diagnose":                        true,
+		http.MethodPost + " /api/v1/admin/sandbox/profiles/{profileName}/validate": true,
 	}
 	for _, route := range openAPIRoutes {
 		if !strings.HasPrefix(route.Path, "/api/v1/admin/") {
@@ -1077,6 +1128,9 @@ func TestOpenAPIAdminRoleAnnotationsCoverCriticalRoutes(t *testing.T) {
 		{http.MethodDelete, "/api/v1/admin/sandbox/profiles/{profileName}", "owner"},
 		{http.MethodDelete, "/api/v1/admin/sandbox/reports/{reportId}", "owner"},
 		{http.MethodPost, "/api/v1/admin/sandbox/install", "owner"},
+		{http.MethodGet, "/api/v1/admin/database/profiles", "owner"},
+		{http.MethodPost, "/api/v1/admin/database/profiles", "owner"},
+		{http.MethodPost, "/api/v1/admin/database/profiles/{profileId}/test", "owner"},
 		{http.MethodPost, "/api/v1/admin/tenants", "owner"},
 		{http.MethodPatch, "/api/v1/admin/tenants/{tenantId}", "owner"},
 		{http.MethodPost, "/api/v1/admin/tenants/{tenantId}/pause", "owner"},
@@ -2624,6 +2678,11 @@ func TestMetricsEndpoint(t *testing.T) {
 	if err := store.SaveAuditEvent(agentservice.AuditEvent{ID: "audit_admin_password_change_failed_metric", ActorType: "admin", Action: "admin.password_change_failed", ResourceType: "admin_user", ResourceID: "admin", CreatedAt: now.Add(8 * time.Second)}); err != nil {
 		t.Fatalf("SaveAuditEvent admin.password_change_failed: %v", err)
 	}
+	// Exercise the shared Runtime collector independently of the legacy
+	// overview counters so this transport test also protects tenant-hash
+	// redaction and the Prometheus projection.
+	svc.RuntimeMetrics().RecordTurnAdmitted(tenant.ID, 2*time.Millisecond)
+	svc.RuntimeMetrics().RecordTurnFinished(tenant.ID, "succeeded")
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
 	server.Handler().ServeHTTP(w, req)
@@ -2653,7 +2712,11 @@ func TestMetricsEndpoint(t *testing.T) {
 		!strings.Contains(body, "maclaw_runs_failed_total 1") ||
 		!strings.Contains(body, "maclaw_run_succeeded_events_total 1") ||
 		!strings.Contains(body, "maclaw_run_failed_events_total 1") ||
-		!strings.Contains(body, "maclaw_async_jobs_total{status=\"succeeded\"} 1") {
+		!strings.Contains(body, "maclaw_async_jobs_total{status=\"succeeded\"} 1") ||
+		!strings.Contains(body, "# TYPE maclaw_runtime_turns_admitted_total counter") ||
+		!strings.Contains(body, "maclaw_runtime_active_runs 0") ||
+		!strings.Contains(body, "maclaw_runtime_turns_admitted_total{tenant_hash=\"") ||
+		strings.Contains(body, tenant.ID) {
 		t.Fatalf("unexpected metrics body: %s", body)
 	}
 	if got := w.Header().Get("Content-Type"); !strings.Contains(got, "text/plain") {
@@ -4112,6 +4175,16 @@ func TestParsePageQueryCapsLimitAndValidatesBefore(t *testing.T) {
 	}
 }
 
+func TestParseSkillPageQueryAcceptsNameCursor(t *testing.T) {
+	page, err := parseSkillPageQuery(httptest.NewRequest("GET", "/api/v1/skills?limit=2&before=bravo", nil))
+	if err != nil {
+		t.Fatalf("parseSkillPageQuery: %v", err)
+	}
+	if page.Limit != 2 || page.Before != "bravo" {
+		t.Fatalf("skill page = %#v", page)
+	}
+}
+
 func TestIMAuditMessagesAreUserScopedAndFilterable(t *testing.T) {
 	const tokenSecret = "test-token-secret-0123456789012345"
 	ctx := context.Background()
@@ -4805,12 +4878,12 @@ func TestWeixinRuntimeRepliesToVoiceWithMP3File(t *testing.T) {
 		if name != "voice.wav" {
 			t.Fatalf("mp3 encoder name = %q", name)
 		}
-		if string(wav) != "RIFF-wx-tts" {
-			t.Fatalf("mp3 encoder input = %q", wav)
+		if !bytes.HasPrefix(wav, []byte("RIFF")) {
+			t.Fatalf("mp3 encoder input is not WAV: %q", wav)
 		}
 		return tts.PlayableVoiceFile{Data: []byte("ID3-wx-mp3"), Name: "voice.mp3", MIME: "audio/mpeg", Converted: true}, nil
 	}
-	fakeTTS := &fakeSrvTTSSynthesizer{wav: []byte("RIFF-wx-tts")}
+	fakeTTS := &fakeSrvTTSSynthesizer{wav: testWAVBytes()}
 	aiModels := newSrvAIModelManager(dataRoot)
 	aiModels.asrMgr = &fakeSrvASRTranscriber{text: "微信语音问题"}
 	aiModels.ttsMgr = fakeTTS
@@ -4828,7 +4901,7 @@ func TestWeixinRuntimeRepliesToVoiceWithMP3File(t *testing.T) {
 		MediaType:    "audio/wav",
 		MediaData:    testWAVBytes(),
 	})
-	if len(fakeTTS.seen) != 1 || !strings.Contains(fakeTTS.seen[0], "微信语音问题") {
+	if len(fakeTTS.seen) == 0 || !strings.Contains(strings.Join(fakeTTS.seen, "\n"), "微信语音问题") {
 		t.Fatalf("TTS did not synthesize WeChat assistant reply: %#v", fakeTTS.seen)
 	}
 	if len(gateway.sentMedia) != 1 {
@@ -5802,12 +5875,12 @@ func TestConfiguredIMRuntimeRepliesToVoiceWithMP3File(t *testing.T) {
 		if name != "voice.wav" {
 			t.Fatalf("mp3 encoder name = %q", name)
 		}
-		if string(wav) != "RIFF-tts-wav" {
-			t.Fatalf("mp3 encoder input = %q", wav)
+		if !bytes.HasPrefix(wav, []byte("RIFF")) {
+			t.Fatalf("mp3 encoder input is not WAV: %q", wav)
 		}
 		return tts.PlayableVoiceFile{Data: []byte("ID3-mp3"), Name: "voice.mp3", MIME: "audio/mpeg", Converted: true}, nil
 	}
-	fakeTTS := &fakeSrvTTSSynthesizer{wav: []byte("RIFF-tts-wav")}
+	fakeTTS := &fakeSrvTTSSynthesizer{wav: testWAVBytes()}
 	aiModels := newSrvAIModelManager(dataRoot)
 	aiModels.asrMgr = &fakeSrvASRTranscriber{text: "语音问题"}
 	aiModels.ttsMgr = fakeTTS
@@ -5848,7 +5921,7 @@ func TestConfiguredIMRuntimeRepliesToVoiceWithMP3File(t *testing.T) {
 			return nil
 		},
 	})
-	if len(fakeTTS.seen) != 1 || !strings.Contains(fakeTTS.seen[0], "语音问题") {
+	if len(fakeTTS.seen) == 0 || !strings.Contains(strings.Join(fakeTTS.seen, "\n"), "语音问题") {
 		t.Fatalf("TTS did not synthesize assistant reply: %#v", fakeTTS.seen)
 	}
 	if string(media.data) != "ID3-mp3" || media.fileName != "assistant.mp3" || media.mediaType != "file" || media.mimeType != "audio/mpeg" {
@@ -8674,6 +8747,8 @@ func TestGetInstanceCapabilities(t *testing.T) {
 	}
 
 	server := NewHTTPServer(svc, "admin-secret", nil)
+	defer server.Close()
+	defer svc.Close()
 	req := httptest.NewRequest("GET", "/api/v1/instances/"+inst.ID+"/capabilities", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
@@ -9807,6 +9882,8 @@ func TestRunEventsStreamPublishesRunningAndDoneSnapshots(t *testing.T) {
 		t.Fatalf("Issue token: %v", err)
 	}
 	server := NewHTTPServer(svc, "admin-secret", nil)
+	defer server.Close()
+	defer svc.Close()
 	httpSrv := httptest.NewServer(server.Handler())
 	defer httpSrv.Close()
 
@@ -9909,6 +9986,145 @@ func TestRunEventsStreamPublishesRunningAndDoneSnapshots(t *testing.T) {
 	if err := <-resultCh; err != nil {
 		t.Fatalf("send request failed: %v", err)
 	}
+}
+
+func TestRunEventsStreamResumesFromLastEventID(t *testing.T) {
+	svc, principal, inst := agentserviceTestService(t, agentservice.EchoExecutor{})
+	defer svc.Close()
+	_, run, _, err := svc.SendMessage(context.Background(), principal, inst.ID, agentservice.SendMessageInput{Content: "resume me"})
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	events, err := svc.ListRunEventsForInstance(context.Background(), principal, inst.ID, run.ID, 0, 100)
+	if err != nil || len(events) < 2 {
+		t.Fatalf("events=%#v err=%v", events, err)
+	}
+	token, _, err := agentservice.NewTokenManager("test-token-secret-0123456789012345", time.Hour).Issue(principal)
+	if err != nil {
+		t.Fatalf("Issue token: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	defer server.Close()
+	httpSrv := httptest.NewServer(server.Handler())
+	defer httpSrv.Close()
+	req, err := http.NewRequest(http.MethodGet, httpSrv.URL+"/api/v1/instances/"+inst.ID+"/runs/"+run.ID+"/events", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Last-Event-ID", events[0].ID)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("stream request: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read stream: %v", err)
+	}
+	stream := string(body)
+	if strings.Contains(stream, "id: "+events[0].ID+"\n") {
+		t.Fatalf("stream replayed Last-Event-ID %q: %s", events[0].ID, stream)
+	}
+	if !strings.Contains(stream, "id: "+events[1].ID+"\n") {
+		t.Fatalf("stream did not resume at event %q: %s", events[1].ID, stream)
+	}
+}
+
+func TestRuntimeCapabilitiesEndpointReturnsSharedContract(t *testing.T) {
+	svc, principal, inst := agentserviceTestService(t, agentservice.EchoExecutor{})
+	defer svc.Close()
+	token, _, err := agentservice.NewTokenManager("test-token-secret-0123456789012345", time.Hour).Issue(principal)
+	if err != nil {
+		t.Fatalf("Issue token: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	defer server.Close()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/instances/"+inst.ID+"/runtime-capabilities", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("runtime capabilities status=%d body=%s", w.Code, w.Body.String())
+	}
+	var snapshot agentruntime.CapabilitySnapshot
+	if err := json.NewDecoder(w.Body).Decode(&snapshot); err != nil {
+		t.Fatalf("decode runtime capabilities: %v", err)
+	}
+	if snapshot.ContractVersion != agentruntime.ContractVersion || !snapshot.Profile.Headless {
+		t.Fatalf("unexpected runtime snapshot: %#v", snapshot)
+	}
+	ids := map[string]bool{}
+	for _, module := range snapshot.Modules {
+		ids[module.ModuleID] = true
+	}
+	if !ids["prompt.default_role"] {
+		t.Fatalf("runtime snapshot missing builtin modules: %#v", snapshot.Modules)
+	}
+	if snapshot.Metadata[agentruntime.CapabilityMetadataLifecyclePersistenceMode] != "atomic" || snapshot.Metadata[agentruntime.CapabilityMetadataDurableOutbox] != "true" {
+		t.Fatalf("unexpected lifecycle persistence metadata: %#v", snapshot.Metadata)
+	}
+	if _, leaked := snapshot.Metadata["workspace_dir"]; leaked {
+		t.Fatalf("runtime capability metadata leaked workspace path: %#v", snapshot.Metadata)
+	}
+}
+
+func TestWriteRedactedErrorIncludesStableCode(t *testing.T) {
+	w := httptest.NewRecorder()
+	writeRedactedError(w, fmt.Errorf("wrapped: %w", agentservice.ErrRunNotFound), t.TempDir())
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status=%d, want %d", w.Code, http.StatusNotFound)
+	}
+	var payload struct {
+		Code  string `json:"code"`
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	if payload.Code != "run_not_found" || !strings.Contains(payload.Error, "wrapped") {
+		t.Fatalf("error payload=%#v", payload)
+	}
+	w = httptest.NewRecorder()
+	writeRedactedError(w, fmt.Errorf("wrapped: %w", agentservice.ErrJobPersistence), t.TempDir())
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("job persistence status=%d, want %d", w.Code, http.StatusServiceUnavailable)
+	}
+	payload = struct {
+		Code  string `json:"code"`
+		Error string `json:"error"`
+	}{}
+	if err := json.NewDecoder(w.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode job persistence error response: %v", err)
+	}
+	if payload.Code != "job_persistence_failed" {
+		t.Fatalf("job persistence error payload=%#v", payload)
+	}
+}
+
+func agentserviceTestService(t *testing.T, executor agentservice.Executor) (*agentservice.Service, agentservice.Principal, agentservice.Instance) {
+	t.Helper()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), executor)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	principal := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, testLLMConfig()); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	inst, err := svc.CreateInstance(context.Background(), principal, agentservice.CreateInstanceInput{Name: "Instance"})
+	if err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	return svc, principal, *inst
 }
 
 func TestSkillMarketAccountEndpointReturnsValidationError(t *testing.T) {

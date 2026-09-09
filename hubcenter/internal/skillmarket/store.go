@@ -130,6 +130,18 @@ func (s *Store) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_sm_purchase_hub_tenant_buyer ON sm_purchase_records(hub_id, tenant_id, buyer_email);`,
 		`CREATE INDEX IF NOT EXISTS idx_sm_purchase_seller ON sm_purchase_records(seller_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_sm_purchase_pending_key ON sm_purchase_records(key_status) WHERE key_status = 'pending_key';`,
+		`CREATE TABLE IF NOT EXISTS sm_suite_purchases (
+			id TEXT PRIMARY KEY, suite_id TEXT NOT NULL, member_skill_ids TEXT NOT NULL DEFAULT '[]',
+			buyer_email TEXT NOT NULL, buyer_id TEXT NOT NULL, amount_paid INTEGER NOT NULL DEFAULT 0, version TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL
+		);`,
+		`ALTER TABLE sm_suite_purchases ADD COLUMN version TEXT NOT NULL DEFAULT ''`,
+		`CREATE INDEX IF NOT EXISTS idx_sm_suite_purchase_buyer ON sm_suite_purchases(buyer_id, suite_id);`,
+		// A buyer may hold at most one active entitlement for a Suite. The
+		// partial unique index also permits a later re-purchase after refund.
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_sm_suite_purchase_active ON sm_suite_purchases(suite_id, buyer_id) WHERE status = 'active';`,
+		`CREATE TABLE IF NOT EXISTS sm_suite_audit_events (id TEXT PRIMARY KEY, suite_id TEXT NOT NULL, member_skill_ids TEXT NOT NULL DEFAULT '[]', event_type TEXT NOT NULL, actor_id TEXT NOT NULL DEFAULT '', purchase_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);`,
+		`CREATE INDEX IF NOT EXISTS idx_sm_suite_audit_suite ON sm_suite_audit_events(suite_id, created_at);`,
 		// 鈹€鈹€ Ratings 鈹€鈹€
 		`CREATE TABLE IF NOT EXISTS sm_ratings (
 			skill_id   TEXT NOT NULL,

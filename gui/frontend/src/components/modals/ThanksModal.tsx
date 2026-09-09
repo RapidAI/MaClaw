@@ -1,6 +1,5 @@
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import rehypeRaw from 'rehype-raw';
 import { MarkdownLink } from '../common/MarkdownLink';
 
 type ThanksModalProps = {
@@ -17,7 +16,6 @@ export const ThanksModal = ({ content, t, onClose }: ThanksModalProps) => (
                 <ReactMarkdown
                     remarkPlugins={[remarkGfm]}
                     // @ts-ignore
-                    rehypePlugins={[rehypeRaw]}
                     components={{ a: MarkdownLink }}
                 >
                     {content}

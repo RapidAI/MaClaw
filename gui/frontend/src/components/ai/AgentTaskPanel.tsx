@@ -16,7 +16,10 @@ import {
 interface AgentTaskPanelProps {
     view: AgentView;
     onDismiss?: (viewId: string | undefined, data?: Record<string, unknown>) => void | Promise<void>;
-    onResizeStart?: () => void;
+    /** Start resizing the assistant split. A numeric value is used by keyboard controls. */
+    onResizeStart?: (startEvent?: MouseEvent | PointerEvent | number) => void;
+    /** Current chat/preview ratio, used to expose an accessible keyboard resize. */
+    splitRatio?: number;
     onToggleMaximize?: () => void;
     onSubmit?: (viewId: string | undefined, data: Record<string, unknown>) => void | Promise<void>;
     theme: Theme;
@@ -1196,7 +1199,7 @@ function ApprovalDecisionPanel({
     );
 }
 
-export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximize, onSubmit, theme, lang }: AgentTaskPanelProps) {
+export function AgentTaskPanel({ view, onDismiss, onResizeStart, splitRatio = 0.6, onToggleMaximize, onSubmit, theme, lang }: AgentTaskPanelProps) {
     // AppView workspace shell — never nested (backend forbids nested app_view).
     // Route before any hooks so React rules of hooks stay valid.
     if (view.type === "app_view") {
@@ -1205,6 +1208,7 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
                 view={view}
                 onDismiss={onDismiss}
                 onResizeStart={onResizeStart}
+                splitRatio={splitRatio}
                 onToggleMaximize={onToggleMaximize}
                 onSubmit={onSubmit}
                 theme={theme}
@@ -1217,6 +1221,7 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
             view={view}
             onDismiss={onDismiss}
             onResizeStart={onResizeStart}
+            splitRatio={splitRatio}
             onToggleMaximize={onToggleMaximize}
             onSubmit={onSubmit}
             theme={theme}
@@ -1225,7 +1230,7 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
     );
 }
 
-function AgentTaskPanelContent({ view, onDismiss, onResizeStart, onToggleMaximize, onSubmit, theme, lang }: AgentTaskPanelProps) {
+function AgentTaskPanelContent({ view, onDismiss, onResizeStart, splitRatio = 0.6, onToggleMaximize, onSubmit, theme, lang }: AgentTaskPanelProps) {
     const s = useMemo(() => agentViewStrings(lang || "en"), [lang]);
     const { showConfirm } = useDialog();
     const [activeVariantId, setActiveVariantId] = useState<string | undefined>(() => {
@@ -1396,8 +1401,32 @@ function AgentTaskPanelContent({ view, onDismiss, onResizeStart, onToggleMaximiz
             <div
                 role="separator"
                 aria-orientation="vertical"
-                onMouseDown={onResizeStart}
-                style={{ width: 6, cursor: "col-resize", position: "absolute", height: "100%" }}
+                aria-valuemin={20}
+                aria-valuemax={80}
+                aria-valuenow={Math.round(splitRatio * 100)}
+                aria-label={lang === "en" ? "Resize preview panel" : "调整预览面板宽度"}
+                tabIndex={0}
+                onPointerDown={(event) => {
+                    event.preventDefault();
+                    event.currentTarget.setPointerCapture?.(event.pointerId);
+                    onResizeStart?.(event.nativeEvent);
+                }}
+                onPointerUp={(event) => {
+                    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture?.(event.pointerId);
+                }}
+                onKeyDown={(event) => {
+                    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight" && event.key !== "Home" && event.key !== "End") return;
+                    event.preventDefault();
+                    const delta = event.key === "ArrowLeft" ? -0.02 : event.key === "ArrowRight" ? 0.02 : 0;
+                    const nextRatio = event.key === "Home" ? 0.2 : event.key === "End" ? 0.8 : Math.max(0.2, Math.min(0.8, splitRatio + delta));
+                    onResizeStart?.(nextRatio);
+                }}
+                onMouseDown={(event) => {
+                    // Pointer-capable WebViews dispatch a compatibility mouse event
+                    // after pointerdown; avoid starting the resize twice there.
+                    if (typeof window.PointerEvent === "undefined") onResizeStart?.(event.nativeEvent);
+                }}
+                style={{ width: 10, cursor: "col-resize", position: "absolute", left: 0, top: 0, bottom: 0, zIndex: 4, touchAction: "none", userSelect: "none" }}
             />
             <header
                 data-testid="agent-task-panel-header"

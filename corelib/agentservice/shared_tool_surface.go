@@ -1,6 +1,7 @@
 package agentservice
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"os"
@@ -9,7 +10,8 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
-	"github.com/RapidAI/CodeClaw/corelib/skill"
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"github.com/RapidAI/CodeClaw/corelib/database"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/corelib/websearch"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
@@ -26,346 +28,126 @@ func (c *coreAgentCallbacks) sharedHostToolSpecs() []coreToolSpec {
 	}
 	return []coreToolSpec{
 		{
-			Name:        "manage_skill",
-			Description: skill.ManageSkillDescription(),
-			Enabled:     c.skillProvider != nil,
-			DisabledReason: func() string {
-				if c.skillProvider == nil {
-					return "skill system is not configured"
-				}
-				return ""
-			}(),
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"action":   map[string]interface{}{"type": "string", "description": "list, search, install, run, or maintenance_plan"},
-					"query":    map[string]interface{}{"type": "string"},
-					"name":     map[string]interface{}{"type": "string"},
-					"skill_id": map[string]interface{}{"type": "string"},
-					"hub_url":  map[string]interface{}{"type": "string"},
-					"args":     map[string]interface{}{"type": "object"},
-				},
-				"required": []string{"action"},
-			},
+			Name:        "database",
+			Description: database.ToolDescription(),
+			// A database manager exists for every authenticated service session,
+			// including sessions with no configured profiles. Keeping the tool
+			// visible makes list_connections and configuration remediation
+			// discoverable instead of turning an empty profile set into unknown
+			// tool drift. Direct callback tests may omit the manager; execution
+			// then returns the same stable initialization error.
+			Enabled:    true,
+			Parameters: database.ToolParameters(),
 		},
 		{
-			Name:        "goal",
-			Description: "Manage a persistent long-running goal (action: create/complete/fail/get).",
-			Enabled:     c.goals != nil,
-			DisabledReason: func() string {
-				if c.goals == nil {
-					return "goal store is not initialized"
-				}
-				return ""
-			}(),
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"action":              map[string]interface{}{"type": "string"},
-					"objective":           map[string]interface{}{"type": "string"},
-					"token_budget":        map[string]interface{}{"type": "integer"},
-					"max_turns":           map[string]interface{}{"type": "integer"},
-					"acceptance_criteria": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
-					"summary":             map[string]interface{}{"type": "string"},
-					"reason":              map[string]interface{}{"type": "string"},
-				},
-				"required": []string{"action"},
-			},
+			Name:        "database_query",
+			Description: database.ToolDescriptionReadOnly(),
+			Enabled:     true,
+			Parameters:  database.ToolParameters(),
 		},
-		{
-			Name:        "delegate_task",
-			Description: "Delegate a task to a bound child agent and wait for the finished result. coding_workflow runs the shared coding runtime; help answers product questions.",
-			Enabled:     c.canDelegateCodingWorkflow() || c.delegateSubtask != nil,
-			DisabledReason: func() string {
-				if !c.canDelegateCodingWorkflow() && c.delegateSubtask == nil {
-					return "delegate_task host adapter is not initialized"
-				}
-				return ""
-			}(),
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"agent":        map[string]interface{}{"type": "string", "description": "coding_workflow or help"},
-					"request":      map[string]interface{}{"type": "string"},
-					"task":         map[string]interface{}{"type": "string", "description": "Alias for request"},
-					"project_path": map[string]interface{}{"type": "string"},
-				},
-			},
-		},
-		{
-			Name:        "asr",
-			Description: "Transcribe a local audio file in the instance workspace.",
-			Enabled:     reviewedHostSpeechReady(c.speechTranscriber),
-			DisabledReason: func() string {
-				if !reviewedHostSpeechReady(c.speechTranscriber) {
-					return "speech transcriber is not initialized"
-				}
-				return ""
-			}(),
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"path":   map[string]interface{}{"type": "string"},
-					"format": map[string]interface{}{"type": "string"},
-				},
-				"required": []string{"path"},
-			},
-		},
-		{
-			Name:        "tts",
-			Description: "Synthesize speech from text. Headless hosts render an audio artifact; desktop/IM hosts may also play or send it.",
-			Enabled:     reviewedHostSpeechSynthesizerReady(c.speechSynthesizer),
-			DisabledReason: func() string {
-				if !reviewedHostSpeechSynthesizerReady(c.speechSynthesizer) {
-					return "speech synthesizer is not initialized"
-				}
-				return ""
-			}(),
-			Parameters: map[string]interface{}{
-				"type":       "object",
-				"properties": map[string]interface{}{"text": map[string]interface{}{"type": "string"}},
-				"required":   []string{"text"},
-			},
-		},
-		{
-			Name:        "tts_render",
-			Description: "Render speech as a workspace audio artifact. Does not play or send.",
-			Enabled:     reviewedHostSpeechSynthesizerReady(c.speechSynthesizer),
-			DisabledReason: func() string {
-				if !reviewedHostSpeechSynthesizerReady(c.speechSynthesizer) {
-					return "speech synthesizer is not initialized"
-				}
-				return ""
-			}(),
-			Parameters: map[string]interface{}{
-				"type":       "object",
-				"properties": map[string]interface{}{"text": map[string]interface{}{"type": "string"}},
-				"required":   []string{"text"},
-			},
-		},
-		{
-			Name:           "FileRead",
-			Description:    "Read a precise UTF-8 line range from a workspace file.",
-			Enabled:        workspaceOK,
-			DisabledReason: workspaceReason,
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"path":       map[string]interface{}{"type": "string"},
-					"file_path":  map[string]interface{}{"type": "string", "description": "Alias for path"},
-					"start_line": map[string]interface{}{"type": "integer"},
-					"end_line":   map[string]interface{}{"type": "integer"},
-					"lines":      map[string]interface{}{"type": "integer"},
-				},
-				"required": []string{"path"},
-			},
-		},
-		{
-			Name:           "ripgrep",
-			Description:    "Search workspace files with a regular expression.",
-			Enabled:        workspaceOK,
-			DisabledReason: workspaceReason,
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"pattern":     map[string]interface{}{"type": "string"},
-					"path":        map[string]interface{}{"type": "string"},
-					"glob":        map[string]interface{}{"type": "string"},
-					"max_results": map[string]interface{}{"type": "integer"},
-				},
-				"required": []string{"pattern"},
-			},
-		},
-		{
-			Name:           "Glob",
-			Description:    "Find workspace files by glob pattern.",
-			Enabled:        workspaceOK,
-			DisabledReason: workspaceReason,
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"pattern": map[string]interface{}{"type": "string"},
-					"path":    map[string]interface{}{"type": "string"},
-				},
-				"required": []string{"pattern"},
-			},
-		},
-		{
-			Name:           "edit_lines",
-			Description:    "Edit a workspace file by line number (replace, insert, or delete).",
-			Enabled:        workspaceOK,
-			DisabledReason: workspaceReason,
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"path":       map[string]interface{}{"type": "string"},
-					"operation":  map[string]interface{}{"type": "string"},
-					"start_line": map[string]interface{}{"type": "integer"},
-					"end_line":   map[string]interface{}{"type": "integer"},
-					"content":    map[string]interface{}{"type": "string"},
-				},
-				"required": []string{"path", "operation", "start_line"},
-			},
-		},
-		{
-			Name:           "read_excel",
-			Description:    "Read an Excel file (.xlsx/.xls/.csv) in the instance workspace.",
-			Enabled:        workspaceOK,
-			DisabledReason: workspaceReason,
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"file_path": map[string]interface{}{"type": "string"},
-					"path":      map[string]interface{}{"type": "string"},
-					"sheet":     map[string]interface{}{"type": "string"},
-					"range":     map[string]interface{}{"type": "string"},
-					"max_rows":  map[string]interface{}{"type": "integer"},
-				},
-			},
-		},
-		{
-			Name:           "write_excel",
-			Description:    "Write an XLSX file in the instance workspace.",
-			Enabled:        workspaceOK,
-			DisabledReason: workspaceReason,
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"file_path": map[string]interface{}{"type": "string"},
-					"data":      map[string]interface{}{"type": "object"},
-				},
-				"required": []string{"file_path", "data"},
-			},
-		},
-		{
-			Name:           "read_pptx",
-			Description:    "Read a PowerPoint PPTX file in the instance workspace.",
-			Enabled:        workspaceOK,
-			DisabledReason: workspaceReason,
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"file_path":    map[string]interface{}{"type": "string"},
-					"path":         map[string]interface{}{"type": "string"},
-					"max_slides":   map[string]interface{}{"type": "integer"},
-					"slide_offset": map[string]interface{}{"type": "integer"},
-				},
-			},
-		},
-		{
-			Name:           "office",
-			Description:    "Office/PDF/text document tool. action: read_document/read_excel/write_excel/read_pptx/generate_pdf.",
-			Enabled:        workspaceOK,
-			DisabledReason: workspaceReason,
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"action":    map[string]interface{}{"type": "string"},
-					"file_path": map[string]interface{}{"type": "string"},
-					"path":      map[string]interface{}{"type": "string"},
-					"content":   map[string]interface{}{"type": "string"},
-					"title":     map[string]interface{}{"type": "string"},
-					"data":      map[string]interface{}{"type": "object"},
-				},
-				"required": []string{"action"},
-			},
-		},
-		{
-			Name:           "generate_pdf",
-			Description:    "Render Markdown content to a PDF in the instance workspace.",
-			Enabled:        workspaceOK,
-			DisabledReason: workspaceReason,
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"content": map[string]interface{}{"type": "string"},
-					"title":   map[string]interface{}{"type": "string"},
-				},
-				"required": []string{"content"},
-			},
-		},
-		{
-			Name:           "download_file",
-			Description:    "Download an HTTP/HTTPS URL into the instance workspace.",
-			Enabled:        workspaceOK,
-			DisabledReason: workspaceReason,
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"url":       map[string]interface{}{"type": "string"},
-					"save_path": map[string]interface{}{"type": "string"},
-					"output":    map[string]interface{}{"type": "string"},
-				},
-				"required": []string{"url"},
-			},
-		},
-		{
-			Name:        "list_mcp_tools",
-			Description: "List ready MCP servers and their tools for this user.",
-			Enabled:     c.mcpProvider != nil,
-			DisabledReason: func() string {
-				if c.mcpProvider == nil {
-					return "MCP provider is not initialized"
-				}
-				return ""
-			}(),
-			Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
-		},
-		{
-			Name:        "import_mcp_servers",
-			Description: "Import MCP servers from JSON into this user's config. Accepts {\"mcpServers\":{...}} or MaClaw create entries.",
-			Enabled:     c.canImportMCP(),
-			DisabledReason: func() string {
-				if !c.canImportMCP() {
-					return "MCP import persistence is not configured"
-				}
-				return ""
-			}(),
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"json_config": map[string]interface{}{"type": "string"},
-					"target":      map[string]interface{}{"type": "string"},
-				},
-				"required": []string{"json_config"},
-			},
-		},
-		{
-			Name:        "screenshot",
-			Description: "Capture the operator desktop. Unavailable on a headless host without a display adapter.",
-			Enabled:     reviewedHostDesktopCapturerReady(c.desktopCapturer),
-			DisabledReason: func() string {
-				if !reviewedHostDesktopCapturerReady(c.desktopCapturer) {
-					return "desktop screenshot is unavailable on this headless host"
-				}
-				return ""
-			}(),
-			Parameters: map[string]interface{}{
-				"type":       "object",
-				"properties": map[string]interface{}{"display": map[string]interface{}{"type": "integer"}},
-			},
-		},
-		{
-			Name:        "open",
-			Description: "Open a file or URL with the host default handler. Desktop-display-only on hosts without a launcher.",
-			Enabled:     reviewedHostURLLauncherReady(c.urlLauncher) || reviewedHostDocumentLauncherReady(c.documentLauncher),
-			DisabledReason: func() string {
-				if !reviewedHostURLLauncherReady(c.urlLauncher) && !reviewedHostDocumentLauncherReady(c.documentLauncher) {
-					return "OS open is unavailable on this headless host"
-				}
-				return ""
-			}(),
-			Parameters: map[string]interface{}{
-				"type":       "object",
-				"properties": map[string]interface{}{"target": map[string]interface{}{"type": "string"}},
-				"required":   []string{"target"},
-			},
-		},
+		specFromCoreTool("manage_skill", "", c.skillProvider != nil, func() string {
+			if c.skillProvider == nil {
+				return "skill system is not configured"
+			}
+			return ""
+		}()),
+		specFromCoreTool("goal", "", c.goals != nil, func() string {
+			if c.goals == nil {
+				return "goal store is not initialized"
+			}
+			return ""
+		}()),
+		specFromCoreTool("delegate_task", "Delegate a task to a bound child agent and wait for the finished result. coding_workflow runs the shared coding runtime; help answers product questions.", c.canDelegateCodingWorkflow() || c.delegateSubtask != nil, func() string {
+			if !c.canDelegateCodingWorkflow() && c.delegateSubtask == nil {
+				return "delegate_task host adapter is not initialized"
+			}
+			return ""
+		}()),
+		specFromCoreTool("asr", "", reviewedHostSpeechReady(c.speechTranscriber), func() string {
+			if !reviewedHostSpeechReady(c.speechTranscriber) {
+				return "speech transcriber is not initialized"
+			}
+			return ""
+		}()),
+		specFromCoreTool("tts", "Synthesize speech from text. Headless hosts render an audio artifact; desktop/IM hosts may also play or send it.", reviewedHostSpeechSynthesizerReady(c.speechSynthesizer), func() string {
+			if !reviewedHostSpeechSynthesizerReady(c.speechSynthesizer) {
+				return "speech synthesizer is not initialized"
+			}
+			return ""
+		}()),
+		specFromCoreTool("tts_render", "Render speech as a workspace audio artifact. Does not play or send.", reviewedHostSpeechSynthesizerReady(c.speechSynthesizer), func() string {
+			if !reviewedHostSpeechSynthesizerReady(c.speechSynthesizer) {
+				return "speech synthesizer is not initialized"
+			}
+			return ""
+		}()),
+		specFromCoreTool("FileRead", "", workspaceOK, workspaceReason),
+		specFromCoreTool("ripgrep", "", workspaceOK, workspaceReason),
+		specFromCoreTool("Glob", "", workspaceOK, workspaceReason),
+		specFromCoreTool("edit_lines", "", workspaceOK, workspaceReason),
+		specFromCoreTool("read_excel", "", workspaceOK, workspaceReason),
+		specFromCoreTool("write_excel", "", workspaceOK, workspaceReason),
+		specFromCoreTool("read_pptx", "", workspaceOK, workspaceReason),
+		specFromCoreTool("office", "Office/PDF/text document tool. action: read_document/read_excel/write_excel/read_pptx/write_pptx/generate_pdf.", workspaceOK, workspaceReason),
+		specFromCoreTool("generate_pdf", "Render Markdown content to a PDF in the instance workspace.", workspaceOK, workspaceReason),
+		specFromCoreTool("download_file", "", workspaceOK, workspaceReason),
+		specFromCoreTool("list_mcp_tools", "List ready MCP servers and their tools for this user.", c.mcpProvider != nil, func() string {
+			if c.mcpProvider == nil {
+				return "MCP provider is not initialized"
+			}
+			return ""
+		}()),
+		specFromCoreTool("import_mcp_servers", "Import MCP servers from JSON into this user's config. Accepts {\"mcpServers\":{...}} or MaClaw create entries.", c.canImportMCP(), func() string {
+			if !c.canImportMCP() {
+				return "MCP import persistence is not configured"
+			}
+			return ""
+		}()),
+		specFromCoreTool("screenshot", "Capture the operator desktop. Unavailable on a headless host without a display adapter.", reviewedHostDesktopCapturerReady(c.desktopCapturer), func() string {
+			if !reviewedHostDesktopCapturerReady(c.desktopCapturer) {
+				return "desktop screenshot is unavailable on this headless host"
+			}
+			return ""
+		}()),
+		specFromCoreTool("open", "Open a file or URL with the host default handler. Desktop-display-only on hosts without a launcher.", reviewedHostURLLauncherReady(c.urlLauncher) || reviewedHostDocumentLauncherReady(c.documentLauncher), func() string {
+			if !reviewedHostURLLauncherReady(c.urlLauncher) && !reviewedHostDocumentLauncherReady(c.documentLauncher) {
+				return "OS open is unavailable on this headless host"
+			}
+			return ""
+		}()),
 	}
 }
 
 func (c *coreAgentCallbacks) executeSharedHostTool(name string, args map[string]interface{}) (agent.ToolExecutionResult, bool) {
 	switch strings.TrimSpace(name) {
+	case "database", "database_query":
+		if c == nil || c.databaseManager == nil {
+			return toolTextResult("数据库连接工具未初始化。请先配置数据源 profile。"), true
+		}
+		if name == "database_query" {
+			if msg, refused := database.RefuseWriteForReadOnlyTool(args); refused {
+				return toolTextResult(msg), true
+			}
+		}
+		// Bind connection IDs to the authenticated principal/session through the
+		// trusted request context; transport-private fields never enter model
+		// arguments or the shared tool schema.
+		// Managed semantic turns carry a stable task operation scope. Opt the
+		// database manager into the strict query-success gate only for that
+		// governed surface; legacy turns remain on the compatibility path.
+		c.databaseManager.SetStrictOperationGate(c.dynamicSemanticManaged)
+		scope := database.RequestScope{
+			OwnerID: memoryOwnerIDForPrincipal(c.principal), SessionID: strings.TrimSpace(c.session.ID),
+		}
+		if c.dynamicSemanticManaged {
+			scope.OperationID = strings.TrimSpace(c.dynamicOperationScope)
+		}
+		execCtx := database.WithRequestScope(c.ctx, scope)
+		if database.ContextHasApproval(c.ctx) {
+			execCtx = c.ctx
+			execCtx = database.WithRequestScope(execCtx, scope)
+		}
+		return toolTextResult(database.HandleTool(execCtx, c.databaseManager, args)), true
 	case "goal":
 		out := agent.ToolGoal(c.goals, args)
 		return toolTextResult(out), true
@@ -401,7 +183,7 @@ func (c *coreAgentCallbacks) executeSharedHostTool(name string, args map[string]
 	case "download_file":
 		return c.executeDownloadFile(args), true
 	case "list_mcp_tools":
-		return c.executeListMCPTools(), true
+		return c.executeListMCPTools(args), true
 	case "import_mcp_servers":
 		return c.executeImportMCPServers(args), true
 	case "screenshot":
@@ -414,11 +196,7 @@ func (c *coreAgentCallbacks) executeSharedHostTool(name string, args map[string]
 }
 
 func toolTextResult(out string) agent.ToolExecutionResult {
-	outcome := agent.ToolExecutionOutcomeOK
-	if sharedHostToolTextFailed(out) {
-		outcome = agent.ToolExecutionOutcomeError
-	}
-	return agent.ToolExecutionResult{Result: out, Outcome: outcome}
+	return agentruntime.ToolTextResult(out)
 }
 
 func commandOutputToolResult(out string) agent.ToolExecutionResult {
@@ -460,53 +238,7 @@ func sshToolResult(out string) agent.ToolExecutionResult {
 }
 
 func sharedHostToolTextFailed(out string) bool {
-	out = strings.TrimSpace(out)
-	if out == "" {
-		return false
-	}
-	firstLine, _, _ := strings.Cut(out, "\n")
-	lower := strings.ToLower(firstLine)
-	if strings.HasPrefix(lower, "error:") || strings.HasPrefix(firstLine, "错误:") || strings.HasPrefix(firstLine, "[错误]") || strings.HasPrefix(firstLine, "目标管理器未初始化") || strings.HasPrefix(firstLine, "任务管理器未初始化") || strings.HasPrefix(firstLine, "long-term memory is not initialized") || strings.HasPrefix(firstLine, "未知 task action") || strings.HasPrefix(firstLine, "未知 goal action") || strings.HasPrefix(firstLine, "创建目标失败") || strings.HasPrefix(firstLine, "未知 SSH") || strings.HasPrefix(firstLine, "unknown memory action") || strings.HasPrefix(firstLine, "save memory failed") || strings.HasPrefix(firstLine, "delete memory failed") || strings.HasPrefix(firstLine, "memory candidate rejected") || strings.HasPrefix(firstLine, "derived surgery failed") || strings.HasPrefix(firstLine, "unsupported derived surgery") {
-		return true
-	}
-	if _, failed := agent.DocumentReadFailure(out); failed {
-		return true
-	}
-	switch {
-	case strings.HasPrefix(firstLine, "缺少 "),
-		strings.HasPrefix(firstLine, "文件不存在或无法访问"),
-		strings.HasPrefix(firstLine, "读取失败"),
-		strings.HasPrefix(firstLine, "missing pattern"),
-		strings.HasPrefix(firstLine, "invalid regex"),
-		strings.HasPrefix(firstLine, "search cancelled"),
-		strings.HasPrefix(firstLine, "Glob cancelled"),
-		strings.HasPrefix(firstLine, "data 参数格式错误"),
-		strings.HasPrefix(firstLine, "missing query parameter"),
-		strings.HasPrefix(firstLine, "missing content parameter"),
-		strings.HasPrefix(firstLine, "missing id parameter"),
-		strings.HasPrefix(firstLine, "cannot combine "),
-		strings.HasPrefix(firstLine, "pagination not available"),
-		strings.HasPrefix(firstLine, "scroll sessions not available"),
-		strings.HasPrefix(firstLine, "未知 "),
-		strings.HasPrefix(firstLine, "发送失败"),
-		strings.HasPrefix(firstLine, "定时任务管理器未初始化"),
-		strings.HasPrefix(firstLine, "请提供 "),
-		strings.Contains(firstLine, "必须在 "):
-		return true
-	}
-	if strings.Contains(firstLine, "失败:") {
-		return true
-	}
-	if strings.Contains(firstLine, " in this isolated conversation") {
-		return true
-	}
-	if strings.Contains(firstLine, " 是目录，请使用") {
-		return true
-	}
-	if strings.HasPrefix(firstLine, "start_line=") || strings.HasPrefix(firstLine, "end_line=") {
-		return true
-	}
-	return false
+	return agentruntime.ToolTextFailure(out)
 }
 
 func (c *coreAgentCallbacks) codingRuntimeParent() *CoreAgentExecutor {
@@ -750,6 +482,18 @@ func (c *coreAgentCallbacks) executeWriteExcel(args map[string]interface{}) agen
 	return agent.ToolExecutionResult{Result: text, Outcome: agent.ToolExecutionOutcomeOK}
 }
 
+func (c *coreAgentCallbacks) executeWritePPTX(args map[string]interface{}) agent.ToolExecutionResult {
+	scoped, err := c.scopeToolPaths(args, "file_path", "path")
+	if err != nil {
+		return agent.ToolExecutionResult{Result: "Error: " + err.Error(), Outcome: agent.ToolExecutionOutcomeError}
+	}
+	text, writeErr := agent.WritePPTXDetailed(scoped)
+	if writeErr != nil {
+		return agent.ToolExecutionResult{Result: text, Outcome: agent.ToolExecutionOutcomeError}
+	}
+	return agent.ToolExecutionResult{Result: text, Outcome: agent.ToolExecutionOutcomeOK}
+}
+
 func (c *coreAgentCallbacks) scopeToolPaths(args map[string]interface{}, keys ...string) (map[string]interface{}, error) {
 	scoped := cloneToolArgs(args)
 	for _, key := range keys {
@@ -777,6 +521,8 @@ func (c *coreAgentCallbacks) executeOffice(args map[string]interface{}) agent.To
 		return c.executeWriteExcel(args)
 	case "read_pptx":
 		return c.executeScopedAgentFileTool(args, []string{"file_path", "path"}, agent.ToolReadPPTX)
+	case "write_pptx", "generate_pptx":
+		return c.executeWritePPTX(args)
 	case "generate_pdf":
 		return c.executeGeneratePDF(args)
 	default:
@@ -863,17 +609,26 @@ func (c *coreAgentCallbacks) executeDownloadFile(args map[string]interface{}) ag
 	return agent.ToolExecutionResult{Result: "Downloaded to " + saved, Outcome: agent.ToolExecutionOutcomeOK}
 }
 
-func (c *coreAgentCallbacks) executeListMCPTools() agent.ToolExecutionResult {
+func (c *coreAgentCallbacks) executeListMCPTools(args map[string]interface{}) agent.ToolExecutionResult {
 	if c.mcpProvider == nil {
 		return agent.ToolExecutionResult{Result: "Error: MCP provider is not initialized", Outcome: agent.ToolExecutionOutcomeError}
 	}
+	query := strings.ToLower(strings.TrimSpace(stringArg(args, "query")))
+	serverID := strings.TrimSpace(stringArg(args, "server_id"))
 	tools := c.mcpProvider.ListAvailableTools(c.parentContext(), c.principal)
-	if len(tools) == 0 {
-		return agent.ToolExecutionResult{Result: "No MCP tools are ready.", Outcome: agent.ToolExecutionOutcomeOK}
-	}
+	matched := 0
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("Ready MCP tools (%d):\n", len(tools)))
 	for _, tool := range tools {
+		if serverID != "" && !strings.EqualFold(tool.ServerID, serverID) && !strings.EqualFold(tool.ServerName, serverID) {
+			continue
+		}
+		if query != "" {
+			haystack := strings.ToLower(strings.TrimSpace(tool.ServerName + " " + tool.ServerID + " " + tool.ToolName + " " + tool.Description))
+			if !strings.Contains(haystack, query) {
+				continue
+			}
+		}
+		matched++
 		b.WriteString(fmt.Sprintf("  - %s / %s", tool.ServerName, tool.ToolName))
 		if strings.TrimSpace(tool.Description) != "" {
 			b.WriteString(": ")
@@ -881,7 +636,13 @@ func (c *coreAgentCallbacks) executeListMCPTools() agent.ToolExecutionResult {
 		}
 		b.WriteByte('\n')
 	}
-	return agent.ToolExecutionResult{Result: b.String(), Outcome: agent.ToolExecutionOutcomeOK}
+	if matched == 0 {
+		if len(tools) == 0 {
+			return agent.ToolExecutionResult{Result: "No MCP tools are ready.", Outcome: agent.ToolExecutionOutcomeOK}
+		}
+		return agent.ToolExecutionResult{Result: "No MCP tools matched the filter.", Outcome: agent.ToolExecutionOutcomeOK}
+	}
+	return agent.ToolExecutionResult{Result: fmt.Sprintf("Ready MCP tools (%d):\n%s", matched, b.String()), Outcome: agent.ToolExecutionOutcomeOK}
 }
 
 func (c *coreAgentCallbacks) executeImportMCPServers(args map[string]interface{}) agent.ToolExecutionResult {
@@ -915,13 +676,29 @@ func (c *coreAgentCallbacks) executeImportMCPServers(args map[string]interface{}
 }
 
 func (c *coreAgentCallbacks) executeScreenshot(args map[string]interface{}) agent.ToolExecutionResult {
-	if display := intArg(args, "display", 0); display > 1 || display < 0 {
-		return agent.ToolExecutionResult{Result: "Error: this host can only capture the primary display", Outcome: agent.ToolExecutionOutcomeError}
+	display := 0
+	if raw, ok := args["display"]; ok {
+		parsed, err := agentruntime.ParseDesktopDisplayIndex(raw)
+		if err != nil {
+			return agent.ToolExecutionResult{Result: "Error: " + err.Error(), Outcome: agent.ToolExecutionOutcomeError}
+		}
+		display = parsed
 	}
 	if !reviewedHostDesktopCapturerReady(c.desktopCapturer) {
-		return agent.ToolExecutionResult{Result: "Error: desktop screenshot is unavailable on this headless host", Outcome: agent.ToolExecutionOutcomeError}
+		return capabilityUnavailableToolResult("desktop_capture")
 	}
-	png, err := c.desktopCapturer.CapturePrimary(c.parentContext())
+	var png []byte
+	var err error
+	if capturer, ok := c.desktopCapturer.(interface {
+		CaptureDisplay(context.Context, int) ([]byte, error)
+	}); ok {
+		png, err = capturer.CaptureDisplay(c.parentContext(), display)
+	} else {
+		if display > 1 || display < 0 {
+			return agent.ToolExecutionResult{Result: "Error: this host can only capture the primary display", Outcome: agent.ToolExecutionOutcomeError}
+		}
+		png, err = c.desktopCapturer.CapturePrimary(c.parentContext())
+	}
 	if err != nil {
 		return agent.ToolExecutionResult{Result: "Error: " + err.Error(), Outcome: agent.ToolExecutionOutcomeError}
 	}
@@ -947,7 +724,7 @@ func (c *coreAgentCallbacks) executeOpen(args map[string]interface{}) agent.Tool
 		target = path
 	} else if looksLikeOpenURL(target) {
 		if !reviewedHostURLLauncherReady(c.urlLauncher) {
-			return agent.ToolExecutionResult{Result: "Error: OS open is unavailable on this headless host", Outcome: agent.ToolExecutionOutcomeError}
+			return capabilityUnavailableToolResult("url_launcher")
 		}
 		out, err := c.OpenReviewedHostURL(c.parentContext(), c.principal, target)
 		if err != nil {
@@ -956,7 +733,7 @@ func (c *coreAgentCallbacks) executeOpen(args map[string]interface{}) agent.Tool
 		return agent.ToolExecutionResult{Result: out, Outcome: agent.ToolExecutionOutcomeOK}
 	}
 	if !reviewedHostDocumentLauncherReady(c.documentLauncher) {
-		return agent.ToolExecutionResult{Result: "Error: OS open is unavailable on this headless host", Outcome: agent.ToolExecutionOutcomeError}
+		return capabilityUnavailableToolResult("document_launcher")
 	}
 	out, err := c.OpenReviewedHostDocument(c.parentContext(), c.principal, target)
 	if err != nil {

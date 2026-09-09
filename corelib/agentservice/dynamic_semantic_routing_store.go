@@ -1,6 +1,7 @@
 package agentservice
 
 import (
+	"context"
 	cryptorand "crypto/rand"
 	"fmt"
 	"io"
@@ -41,10 +42,36 @@ type DynamicSemanticRoutingResources struct {
 	// trusted receipt-reconciliation worker must settle through exactly the
 	// same durable owner that prepared the operation.
 	effectCoordinator DynamicExternalEffectCoordinator
+	// continuityWorker consumes only the fact-projection outbox. It is kept
+	// alongside the coordinator so shutdown can stop the goroutine before the
+	// SQLite handle is closed.
+	continuityWorker *coretool.ContinuityProjectionWorker
 	// sessionGoverned is process-local continuation state. It is not a
 	// durable external-effect ledger; Routing reuses the same store so a
 	// reconfigure does not drop an in-flight granted task.
 	sessionGoverned *SessionGovernedTaskStore
+}
+
+// StartContinuityProjectionWorker starts the restart-safe background consumer
+// for this resource set. It is intentionally explicit at the Service
+// composition boundary: opening a database must not start goroutines before a
+// host has finished configuring semantic routing.
+func (r *DynamicSemanticRoutingResources) StartContinuityProjectionWorker(ctx context.Context, logf func(string, ...interface{})) error {
+	if r == nil {
+		return fmt.Errorf("dynamic semantic routing resources are unavailable")
+	}
+	r.mu.Lock()
+	if r.coordinator == nil {
+		r.mu.Unlock()
+		return fmt.Errorf("dynamic semantic execution coordinator is unavailable")
+	}
+	if r.continuityWorker == nil {
+		r.continuityWorker = coretool.NewContinuityProjectionWorker(r.coordinator, 0, 0)
+	}
+	worker := r.continuityWorker
+	r.mu.Unlock()
+	worker.SetLogger(logf)
+	return worker.Start(ctx)
 }
 
 func OpenDynamicSemanticRoutingResources(dataRoot string) (*DynamicSemanticRoutingResources, error) {
@@ -153,8 +180,13 @@ func (r *DynamicSemanticRoutingResources) Close() error {
 	}
 	r.mu.Lock()
 	coordinator := r.coordinator
+	worker := r.continuityWorker
+	r.continuityWorker = nil
 	r.coordinator, r.grantStore, r.executionStore, r.routeState, r.hostCalls, r.key = nil, nil, nil, nil, nil, nil
 	r.mu.Unlock()
+	if worker != nil {
+		worker.Stop()
+	}
 	var firstErr error
 	for _, store := range []interface{ Close() error }{coordinator} {
 		if store != nil {

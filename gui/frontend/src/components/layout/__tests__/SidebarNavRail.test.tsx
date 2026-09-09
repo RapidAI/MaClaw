@@ -69,6 +69,102 @@ function renderRail(overrides: Partial<React.ComponentProps<typeof SidebarNavRai
     return props;
 }
 
+
+describe('SidebarNavRail system popup', () => {
+    it('opens About first from the system menu without duplicating settings or the task monitor', () => {
+        const props = renderRail({ lang: 'zh-Hans', runningTaskCount: 3 });
+
+        fireEvent.click(screen.getByTitle('系统菜单'));
+
+        expect(screen.queryByTestId('system-menu-settings')).toBeNull();
+        expect(screen.getByTestId('system-menu-about')).toBeTruthy();
+        expect(screen.getAllByRole('menuitem')[0]).toBe(screen.getByTestId('system-menu-about'));
+        expect(screen.queryByTestId('system-menu-remote')).toBeNull();
+
+        fireEvent.click(screen.getByTestId('system-menu-about'));
+        expect(props.switchTool).toHaveBeenCalledWith('about');
+    });
+
+    it('allows keyboard activation of About from the system menu', () => {
+        const props = renderRail({ lang: 'zh-Hans' });
+
+        fireEvent.click(screen.getByTitle('系统菜单'));
+        const about = screen.getByTestId('system-menu-about');
+        expect(about.tagName).toBe('BUTTON');
+        fireEvent.keyDown(about, { key: 'Enter' });
+
+        expect(props.switchTool).toHaveBeenCalledWith('about');
+        expect(screen.queryByTestId('system-popup-menu')).toBeNull();
+    });
+
+    it('opens the system menu from the focused rail trigger', () => {
+        renderRail({ lang: 'zh-Hans' });
+        const trigger = screen.getByTestId('system-menu-trigger');
+        expect(trigger.getAttribute('role')).toBe('button');
+        fireEvent.keyDown(trigger, { key: 'Enter' });
+        expect(screen.getByTestId('system-popup-menu')).toBeTruthy();
+        expect(trigger.getAttribute('aria-expanded')).toBe('true');
+    });
+
+    it('closes the system menu when the same rail trigger is clicked again', () => {
+        renderRail({ lang: 'zh-Hans' });
+        const trigger = screen.getByTestId('system-menu-trigger');
+
+        fireEvent.click(trigger);
+        expect(screen.getByTestId('system-popup-menu')).toBeTruthy();
+        // Reproduce the browser event order: document mousedown precedes the
+        // trigger click. The outside handler must leave the trigger click in
+        // charge of toggling the menu closed.
+        fireEvent.mouseDown(trigger);
+        fireEvent.click(trigger);
+
+        expect(screen.queryByTestId('system-popup-menu')).toBeNull();
+        expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    });
+
+    it('returns focus to the system trigger when Escape closes the menu', async () => {
+        renderRail({ lang: 'zh-Hans' });
+        const trigger = screen.getByTestId('system-menu-trigger');
+
+        fireEvent.click(trigger);
+        const firstItem = screen.getByTestId('system-menu-about');
+        fireEvent.keyDown(firstItem, { key: 'Escape' });
+        await new Promise(resolve => window.setTimeout(resolve, 40));
+
+        expect(screen.queryByTestId('system-popup-menu')).toBeNull();
+        expect(document.activeElement).toBe(trigger);
+    });
+
+    it('uses the system gear mark for the system-menu trigger', () => {
+        renderRail();
+
+        const systemTrigger = screen.getByRole('button', { name: 'System menu' });
+        const systemMark = systemTrigger.querySelector('.mc-profile-rail__avatar--system');
+
+        expect(systemMark).toBeTruthy();
+        expect(systemMark?.querySelector('svg')).toBeTruthy();
+        expect(systemMark?.querySelector('svg circle')?.getAttribute('cx')).toBe('12');
+        expect(systemMark?.querySelector('svg path')?.getAttribute('d')).toContain('M19.4 15');
+        expect(systemTrigger.querySelector('img')).toBeNull();
+    });
+
+    it('keeps the MaClaw mark out of the rail after moving it to the main header', () => {
+        renderRail();
+
+        expect(screen.queryByTestId('sidebar-brand-mark')).toBeNull();
+    });
+
+    it('keeps the task rail as the background monitor entry', () => {
+        const onOpenBackgroundTasks = vi.fn();
+        const props = renderRail({ onOpenBackgroundTasks });
+
+        fireEvent.click(screen.getByTestId('sidebar-task-monitor-nav'));
+
+        expect(onOpenBackgroundTasks).toHaveBeenCalledTimes(1);
+        expect(props.switchTool).not.toHaveBeenCalledWith('remote');
+    });
+});
+
 describe('SidebarNavRail favorite employees', () => {
     it('removes the invitation button after Hub disables invitations while MaClaw is open', async () => {
         vi.useFakeTimers();
@@ -131,6 +227,20 @@ describe('SidebarNavRail favorite employees', () => {
         fireEvent.click(utilitiesEntry);
 
         expect(props.switchTool).toHaveBeenCalledWith('utilities');
+    });
+
+    it('splits the AI Experts and Tools entries when the dedicated tools rail is enabled', () => {
+        const props = renderRail({ lang: 'zh-Hans', showToolsEntry: true });
+
+        const expertsEntry = screen.getByTestId('sidebar-utilities-nav');
+        const toolsEntry = screen.getByTestId('sidebar-tools-nav');
+        expect(expertsEntry.textContent).toContain('AI 专家');
+        expect(expertsEntry.textContent).not.toContain('专家&工具');
+        expect(toolsEntry.textContent).toContain('工具');
+        expect(toolsEntry.getAttribute('title')).toBe('工具');
+
+        fireEvent.click(toolsEntry);
+        expect(props.switchTool).toHaveBeenCalledWith('tools');
     });
 
     it('defaults the utilities rail label to 专家&工具 in Simplified Chinese', () => {
@@ -442,4 +552,21 @@ describe('SidebarNavRail favorite employees', () => {
         expect(props.switchTool).toHaveBeenCalledWith('ai');
         expect(props.onStartVEConversation).toHaveBeenCalledWith('ve-1');
     });
+    it('opens the scheduled task monitor from the 日程 rail entry', () => {
+        const onOpenScheduledTasks = vi.fn();
+        const props = renderRail({ onOpenScheduledTasks });
+        const scheduleEntry = screen.getByTestId('sidebar-schedule-nav');
+
+        fireEvent.click(scheduleEntry);
+
+        expect(onOpenScheduledTasks).toHaveBeenCalledTimes(1);
+        expect(props.switchTool).not.toHaveBeenCalledWith('workflows');
+    });
+
+    it('marks the 日程 entry active for the scheduled monitor tab', () => {
+        renderRail({ navTab: 'remote', remoteSessionTab: 'scheduled' });
+        expect(screen.getByTestId('sidebar-schedule-nav').classList.contains('active')).toBe(true);
+        expect(screen.getByTestId('sidebar-task-monitor-nav').classList.contains('active')).toBe(false);
+    });
+
 });

@@ -27,12 +27,59 @@ const (
 	auditRetentionDays = 30
 )
 
+// auditPermBackfilled tracks directories whose pre-existing audit files have
+// already been re-permissioned in this process. The backfill walks the
+// directory, so it must not repeat on every NewAuditLog call — CLI entry
+// points such as cmd/maclaw-tool construct an AuditLog per invocation.
+var (
+	auditPermBackfillMu   sync.Mutex
+	auditPermBackfilled   = map[string]struct{}{}
+	auditPermBackfillMaxN = 4096
+)
+
 // NewAuditLog creates an AuditLog that writes to the given directory.
+//
+// Security: the directory is created with mode 0o750 and every rotated log file
+// is opened with mode 0o640 (owner rw-, group r--). 0o640 keeps audit lines
+// readable by an 'audit' group account used by upstream log collectors while
+// denying world-read on shared workstations. The tighter permission replaces
+// the previous 0o755/0o644 combination which leaked tenant_id, user_id and
+// tool/arg metadata to any local user (P0-2 of the 2026-09-08 review).
 func NewAuditLog(dir string) (*AuditLog, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return nil, fmt.Errorf("audit log: create dir: %w", err)
 	}
+	backfillAuditFilePerms(dir)
 	return &AuditLog{dir: dir}, nil
+}
+
+// backfillAuditFilePerms tightens audit files written by earlier versions, which
+// used 0o644 and are therefore world-readable. It runs at most once per
+// directory per process, and bails out on unusually large directories rather
+// than stalling startup.
+func backfillAuditFilePerms(dir string) {
+	auditPermBackfillMu.Lock()
+	if _, done := auditPermBackfilled[dir]; done {
+		auditPermBackfillMu.Unlock()
+		return
+	}
+	auditPermBackfilled[dir] = struct{}{}
+	auditPermBackfillMu.Unlock()
+
+	_ = os.Chmod(dir, 0o750)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for i, e := range entries {
+		if i >= auditPermBackfillMaxN {
+			return
+		}
+		if e.IsDir() || !strings.HasPrefix(e.Name(), "audit-") {
+			continue
+		}
+		_ = os.Chmod(filepath.Join(dir, e.Name()), 0o640)
+	}
 }
 
 // Log writes an audit entry as a single JSON line.
@@ -147,7 +194,9 @@ func (l *AuditLog) rotateLocked(dateStr string) error {
 		path = l.filePathForDate(dateStr, seq)
 	}
 
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	// Security: 0o640 (was 0o644) so unrelated local users can no longer read
+	// tenant, user, action, tool name and arg metadata. See NewAuditLog.
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
 	if err != nil {
 		return fmt.Errorf("audit log: open: %w", err)
 	}

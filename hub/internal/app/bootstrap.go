@@ -38,7 +38,17 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/ws"
 )
 
+// BootstrapOptions exposes deployment-owned integrations that cannot be
+// represented safely in YAML (for example an S3 Object Lock destination,
+// Kubernetes Lease, external KMS provider, or incident sink).
+type BootstrapOptions struct {
+}
+
 func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
+	return BootstrapWithOptions(cfg, configPath, BootstrapOptions{})
+}
+
+func BootstrapWithOptions(cfg *config.Config, configPath string, opts BootstrapOptions) (*App, error) {
 	provider, err := sqlite.NewProvider(sqlite.Config{
 		DSN:                   cfg.Database.DSN,
 		WAL:                   cfg.Database.WAL,

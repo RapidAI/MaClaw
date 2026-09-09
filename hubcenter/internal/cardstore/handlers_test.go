@@ -648,11 +648,15 @@ func signAlipayTestValues(t *testing.T, values url.Values, key *rsa.PrivateKey) 
 	}
 	return base64.StdEncoding.EncodeToString(sig)
 }
+// Note: order listing now requires at least one scoping filter (hub_id /
+// tenant_id / email / service_group_id). Without it an unauthenticated caller
+// could page through every tenant's orders, so these tests supply a hub_id
+// even though the filter is not what they assert on.
 func TestPublicListOrdersHandlerIgnoresActiveCardsFilter(t *testing.T) {
 	now := time.Now().UTC()
 	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{"HC-ACTIVE": usableSoldOrder("HC-ACTIVE", "g1", now)}}
 	svc := NewService(nil, orderRepo, &authTestRepo{byID: map[string]*llmservice.TenantAuthorization{"auth-HC-ACTIVE": usableSoldAuth("HC-ACTIVE", "g1", now)}})
-	req := httptest.NewRequest(http.MethodGet, "/api/cardstore/orders?active_cards=1", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/cardstore/orders?active_cards=1&hub_id=hub-1", nil)
 	rr := httptest.NewRecorder()
 
 	ListOrdersHandler(svc).ServeHTTP(rr, req)
@@ -669,7 +673,7 @@ func TestAdminListOrdersHandlerHonorsActiveCardsFilter(t *testing.T) {
 	now := time.Now().UTC()
 	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{"HC-ACTIVE": usableSoldOrder("HC-ACTIVE", "g1", now)}}
 	svc := NewService(nil, orderRepo, &authTestRepo{byID: map[string]*llmservice.TenantAuthorization{"auth-HC-ACTIVE": usableSoldAuth("HC-ACTIVE", "g1", now)}})
-	req := httptest.NewRequest(http.MethodGet, "/api/admin/cardstore/orders?active_cards=1", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/cardstore/orders?active_cards=1&hub_id=hub-1", nil)
 	rr := httptest.NewRecorder()
 
 	AdminListOrdersHandler(svc).ServeHTTP(rr, req)

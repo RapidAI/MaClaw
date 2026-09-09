@@ -159,15 +159,9 @@ func openAISDKChatStreamUnused(ctx context.Context, cfg corelib.MaclawLLMConfig,
 	for stream.Next() {
 		chunk := stream.Current()
 		shouldStopAfterChunk := false
-		if chunk.Usage.TotalTokens > 0 || chunk.Usage.PromptTokens > 0 || chunk.Usage.CompletionTokens > 0 {
-			usage = &Usage{
-				PromptTokens:     int(chunk.Usage.PromptTokens),
-				CompletionTokens: int(chunk.Usage.CompletionTokens),
-				TotalTokens:      int(chunk.Usage.TotalTokens),
-				InputTokens:      int(chunk.Usage.PromptTokens),
-				OutputTokens:     int(chunk.Usage.CompletionTokens),
-			}
-		} else if parsed := openAISDKChunkUsage(chunk.RawJSON()); parsed != nil {
+		if parsed := openAISDKChunkUsage(chunk.RawJSON()); llmUsageHasCounts(parsed) {
+			usage = parsed
+		} else if parsed := usageFromPositiveCounts(int64(chunk.Usage.PromptTokens), int64(chunk.Usage.CompletionTokens), int64(chunk.Usage.TotalTokens)); llmUsageHasCounts(parsed) {
 			usage = parsed
 		}
 		if len(chunk.Choices) == 0 {
@@ -334,27 +328,29 @@ func openAISDKChatStreamUnused(ctx context.Context, cfg corelib.MaclawLLMConfig,
 	}
 	var truncatedTools []string
 	if capture.isEventStream() {
-		if parsed, err := ParseSSEToResponse(capture.body()); err == nil && parsed != nil && len(parsed.Choices) > 0 {
-			parsedChoice := parsed.Choices[0]
-			if msg.ReasoningContent == "" {
-				msg.ReasoningContent = parsedChoice.Message.ReasoningContent
-			}
-			if msg.Content == "" {
-				msg.Content = parsedChoice.Message.Content
-			}
-			truncatedTools = parsedChoice.TruncatedToolNames
-			if len(truncatedTools) > 0 {
-				msg.ToolCalls = parsedChoice.Message.ToolCalls
-				if parsedChoice.FinishReason != "" {
+		if parsed, err := ParseSSEToResponse(capture.body()); err == nil && parsed != nil {
+			if len(parsed.Choices) > 0 {
+				parsedChoice := parsed.Choices[0]
+				if msg.ReasoningContent == "" {
+					msg.ReasoningContent = parsedChoice.Message.ReasoningContent
+				}
+				if msg.Content == "" {
+					msg.Content = parsedChoice.Message.Content
+				}
+				truncatedTools = parsedChoice.TruncatedToolNames
+				if len(truncatedTools) > 0 {
+					msg.ToolCalls = parsedChoice.Message.ToolCalls
+					if parsedChoice.FinishReason != "" {
+						finishReason = parsedChoice.FinishReason
+					}
+				} else if len(msg.ToolCalls) == 0 && len(parsedChoice.Message.ToolCalls) > 0 {
+					msg.ToolCalls = parsedChoice.Message.ToolCalls
+				}
+				if finishReason == "" {
 					finishReason = parsedChoice.FinishReason
 				}
-			} else if len(msg.ToolCalls) == 0 && len(parsedChoice.Message.ToolCalls) > 0 {
-				msg.ToolCalls = parsedChoice.Message.ToolCalls
 			}
-			if finishReason == "" {
-				finishReason = parsedChoice.FinishReason
-			}
-			if usage == nil {
+			if llmUsageHasCounts(parsed.Usage) {
 				usage = parsed.Usage
 			}
 		}
@@ -405,6 +401,15 @@ func openAISDKChunkUsage(raw string) *Usage {
 		return nil
 	}
 	return payload.Usage
+}
+
+func llmUsageHasCounts(u *Usage) bool {
+	if u == nil {
+		return false
+	}
+	return u.InputReported || u.OutputReported ||
+		u.PromptTokens > 0 || u.CompletionTokens > 0 || u.TotalTokens > 0 ||
+		u.CachedInputTokens > 0 || u.CacheWriteTokens > 0
 }
 
 func openAISDKOptions(cfg corelib.MaclawLLMConfig, client *http.Client) []option.RequestOption {

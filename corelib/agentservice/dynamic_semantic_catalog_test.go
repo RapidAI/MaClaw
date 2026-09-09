@@ -140,7 +140,7 @@ func TestProjectedDynamicProvidersUseCommonPlannerAndRenderer(t *testing.T) {
 		t.Fatalf("renderer leaked dynamic provider identity: %#v", function)
 	}
 	description, _ := function["description"].(string)
-	if !strings.HasPrefix(description, "Execute the approved dynamic capability. One-time grant this turn. After it succeeds this name may leave the list and later reappear for the next authorized step.") {
+	if !strings.HasPrefix(description, "Execute the approved dynamic capability. Call it whenever it is listed; after a successful call this name may briefly leave the list and later reappear for the next authorized step.") {
 		t.Fatalf("renderer did not derive capability description: %#v", function)
 	}
 	// The projected adapter has a closed empty schema, so the renderer must

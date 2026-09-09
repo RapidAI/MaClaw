@@ -95,6 +95,11 @@ func (s *Service) InstallMCPMarketCapability(ctx context.Context, p Principal, i
 	if endpoint == "" {
 		return nil, fmt.Errorf("MCP capability %s has neither command nor endpoint_url", firstMCPNonEmpty(item.ID, item.CapabilityID))
 	}
+	// Market metadata is third-party input: a malicious listing must not be
+	// able to install a server that probes cloud metadata.
+	if err := validateMCPRemoteEndpoint(endpoint); err != nil {
+		return nil, fmt.Errorf("MCP capability %s endpoint rejected: %w", firstMCPNonEmpty(item.ID, item.CapabilityID), err)
+	}
 	authType := normalizeMCPAuthType(firstMCPNonEmpty(stringFromAny(metadata["auth_type"]), "none"))
 	if authType == "" {
 		return nil, fmt.Errorf("invalid MCP capability auth_type")

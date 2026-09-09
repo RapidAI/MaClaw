@@ -1034,6 +1034,28 @@ func TestUserWebIncludesChannelProtocolSettings(t *testing.T) {
 		}
 	}
 }
+
+func TestUserWebIncludesDatabaseProfiles(t *testing.T) {
+	bodyBytes, err := fs.ReadFile(userWebFS, "user_web/app.js")
+	if err != nil {
+		t.Fatalf("read user app: %v", err)
+	}
+	body := string(bodyBytes)
+	for _, needle := range []string{
+		`dbProfilesSaveHint: "Saving writes database_profiles into the shared user config."`,
+		`data-db-field="ssh_session_id"`,
+		`data-db-field="replica_host"`,
+		`data-db-field="replica_port"`,
+		`data-db-field="replica_ssh_session_id"`,
+		`replica_ssh_session_id: (get("replica_ssh_session_id")?.value || "").trim()`,
+		`["name","host","database","username","ssh_session_id","replica_host","replica_ssh_session_id","secret_ref","file_path","data_classification"]`,
+	} {
+		if !strings.Contains(body, needle) {
+			t.Fatalf("user web missing database profile marker %s", needle)
+		}
+	}
+}
+
 func TestUserWebRedirectsSlashlessApp(t *testing.T) {
 	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
 	if err != nil {

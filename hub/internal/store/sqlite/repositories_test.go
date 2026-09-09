@@ -915,11 +915,267 @@ func TestSessionRepositoryUserTokenUsageSnapshotDeltasAndReset(t *testing.T) {
 	if got.UserEmail != "rank@example.com" {
 		t.Fatalf("email = %q", got.UserEmail)
 	}
-	if got.Usage.InputTokens != 190 || got.Usage.OutputTokens != 22 || got.Usage.CachedInputTokens != 31 || got.Usage.CacheWriteTokens != 6 {
+	// First snapshot is a lifetime baseline (100/20/30/5) and is not counted.
+	// Mixed snapshot adds input +80. A collapse to 10/2 is a local reset and
+	// becomes a new baseline rather than period usage.
+	if got.Usage.InputTokens != 80 || got.Usage.OutputTokens != 0 || got.Usage.CachedInputTokens != 0 || got.Usage.CacheWriteTokens != 0 {
 		t.Fatalf("usage = %#v", got.Usage)
 	}
-	if got.Usage.TotalTokens() != 212 {
+	if got.Usage.TotalTokens() != 80 {
 		t.Fatalf("total tokens = %d, want input + output only", got.Usage.TotalTokens())
+	}
+}
+
+func TestSessionRepositoryUserTokenUsageFirstSnapshotIsBaseline(t *testing.T) {
+	st := newTestStore(t)
+	ctx := store.WithTenant(context.Background(), "tenant_acme")
+	now := time.Date(2026, 9, 3, 10, 0, 0, 0, time.UTC)
+	user := &store.User{ID: "u_lifetime", TenantID: "tenant_acme", Email: "lifetime@example.com", SN: "SN-LIFETIME", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}
+	if err := st.Users.Create(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	lifetime := store.UserTokenUsage{InputTokens: 19_700_000_000, OutputTokens: 12_000}
+	if err := st.Sessions.RecordUserTokenUsageSnapshot(ctx, user.TenantID, "gui:machine-new", user.ID, lifetime, now); err != nil {
+		t.Fatalf("record lifetime baseline: %v", err)
+	}
+	grown := lifetime
+	grown.InputTokens += 4_000
+	grown.OutputTokens += 800
+	if err := st.Sessions.RecordUserTokenUsageSnapshot(ctx, user.TenantID, "gui:machine-new", user.ID, grown, now.Add(time.Minute)); err != nil {
+		t.Fatalf("record increment: %v", err)
+	}
+
+	rows, err := st.Sessions.SummarizeUserTokenUsage(ctx, user.TenantID, now, now.Add(24*time.Hour))
+	if err != nil {
+		t.Fatalf("summarize token usage: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1: %#v", len(rows), rows)
+	}
+	got := rows[0]
+	if got.Usage.InputTokens != 4_000 || got.Usage.OutputTokens != 800 || got.Usage.TotalTokens() != 4_800 {
+		t.Fatalf("period usage = %#v, want only the increment after baseline", got.Usage)
+	}
+}
+
+func TestSessionRepositoryUserTokenUsageZeroSnapshotIsBaseline(t *testing.T) {
+	st := newTestStore(t)
+	ctx := store.WithTenant(context.Background(), "tenant_acme")
+	now := time.Date(2026, 9, 3, 10, 0, 0, 0, time.UTC)
+	user := &store.User{ID: "u_zero_snap", TenantID: "tenant_acme", Email: "zero@example.com", SN: "SN-ZERO", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}
+	if err := st.Users.Create(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if _, err := st.System.(*systemRepo).db.Exec(`
+		INSERT INTO session_token_usage_snapshots (tenant_id, session_id, user_id, input_tokens, output_tokens, cached_input_tokens, cache_write_tokens, updated_at)
+		VALUES (?, 'gui:machine-1', ?, 0, 0, 0, 0, ?)`,
+		user.TenantID, user.ID, now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("insert zero snapshot: %v", err)
+	}
+	lifetime := store.UserTokenUsage{InputTokens: 19_700_000_000, OutputTokens: 12_000}
+	if err := st.Sessions.RecordUserTokenUsageSnapshot(ctx, user.TenantID, "gui:machine-1", user.ID, lifetime, now); err != nil {
+		t.Fatalf("record lifetime: %v", err)
+	}
+	rows, err := st.Sessions.SummarizeUserTokenUsage(ctx, user.TenantID, now, now.Add(24*time.Hour))
+	if err != nil {
+		t.Fatalf("summarize token usage: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("rows = %#v, want none after treating a zero snapshot as a baseline", rows)
+	}
+}
+
+func TestSessionRepositoryUserTokenUsageIgnoresSmallDip(t *testing.T) {
+	st := newTestStore(t)
+	ctx := store.WithTenant(context.Background(), "tenant_acme")
+	now := time.Date(2026, 9, 3, 10, 0, 0, 0, time.UTC)
+	user := &store.User{ID: "u_dip", TenantID: "tenant_acme", Email: "dip@example.com", SN: "SN-DIP", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}
+	if err := st.Users.Create(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	baseline := store.UserTokenUsage{InputTokens: 1_000_000, OutputTokens: 50_000}
+	if err := st.Sessions.RecordUserTokenUsageSnapshot(ctx, user.TenantID, "gui:machine-1", user.ID, baseline, now); err != nil {
+		t.Fatalf("record baseline: %v", err)
+	}
+	dip := store.UserTokenUsage{InputTokens: 900_000, OutputTokens: 50_000}
+	if err := st.Sessions.RecordUserTokenUsageSnapshot(ctx, user.TenantID, "gui:machine-1", user.ID, dip, now.Add(time.Minute)); err != nil {
+		t.Fatalf("record dip: %v", err)
+	}
+	recovered := baseline
+	recovered.InputTokens += 3_000
+	if err := st.Sessions.RecordUserTokenUsageSnapshot(ctx, user.TenantID, "gui:machine-1", user.ID, recovered, now.Add(2*time.Minute)); err != nil {
+		t.Fatalf("record recovery: %v", err)
+	}
+
+	rows, err := st.Sessions.SummarizeUserTokenUsage(ctx, user.TenantID, now, now.Add(24*time.Hour))
+	if err != nil {
+		t.Fatalf("summarize token usage: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1: %#v", len(rows), rows)
+	}
+	got := rows[0]
+	if got.Usage.InputTokens != 3_000 || got.Usage.OutputTokens != 0 {
+		t.Fatalf("period usage = %#v, want only the increment after the ignored dip", got.Usage)
+	}
+}
+
+func TestRepairUserUsageDailyLifetimeDumpsZerosAllTimeDay(t *testing.T) {
+	st := newTestStore(t)
+	ctx := store.WithTenant(context.Background(), "tenant_acme")
+	now := time.Date(2026, 9, 3, 8, 0, 0, 0, time.UTC)
+	user := &store.User{ID: "u_dump", TenantID: "tenant_acme", Email: "dump@example.com", SN: "SN-DUMP", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}
+	if err := st.Users.Create(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	provider := st.System.(*systemRepo)
+	if _, err := provider.db.Exec(`
+		INSERT INTO session_token_usage_snapshots (tenant_id, session_id, user_id, input_tokens, output_tokens, cached_input_tokens, cache_write_tokens, updated_at)
+		VALUES (?, 'gui:machine-1', ?, ?, 12000, 0, 0, ?)`,
+		user.TenantID, user.ID, int64(19_700_000_000), now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("insert snapshot: %v", err)
+	}
+	if _, err := provider.db.Exec(`
+		INSERT INTO user_usage_daily (tenant_id, user_id, user_email, day, input_tokens, output_tokens, cached_input_tokens, cache_write_tokens, updated_at)
+		VALUES (?, ?, ?, '2026-09-03', ?, 12000, 0, 0, ?),
+		       (?, ?, ?, '2026-09-02', 4000, 800, 0, 0, ?)`,
+		user.TenantID, user.ID, user.Email, int64(19_700_000_000), now.Format(time.RFC3339),
+		user.TenantID, user.ID, user.Email, now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("insert daily rows: %v", err)
+	}
+
+	if err := repairUserUsageDailyLifetimeDumps(provider.db); err != nil {
+		t.Fatalf("repair: %v", err)
+	}
+	if err := repairUserUsageDailyLifetimeDumps(provider.db); err != nil {
+		t.Fatalf("repair second pass: %v", err)
+	}
+
+	rows, err := st.Sessions.SummarizeUserTokenUsage(ctx, user.TenantID, time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("summarize token usage: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1: %#v", len(rows), rows)
+	}
+	got := rows[0]
+	if got.Usage.InputTokens != 4000 || got.Usage.OutputTokens != 800 || got.Usage.TotalTokens() != 4800 {
+		t.Fatalf("repaired usage = %#v, want only the non-dump day", got.Usage)
+	}
+}
+
+func TestRepairUserUsageDailyLifetimeDumpsZerosEachMachineDumpDay(t *testing.T) {
+	st := newTestStore(t)
+	ctx := store.WithTenant(context.Background(), "tenant_acme")
+	now := time.Date(2026, 9, 3, 8, 0, 0, 0, time.UTC)
+	user := &store.User{ID: "u_two_machines", TenantID: "tenant_acme", Email: "two@example.com", SN: "SN-TWO", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}
+	if err := st.Users.Create(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	db := st.System.(*systemRepo).db
+	for _, row := range []struct {
+		session string
+		input   int64
+	}{
+		{session: "gui:machine-a", input: 10_000_000_000},
+		{session: "gui:machine-b", input: 8_000_000_000},
+	} {
+		if _, err := db.Exec(`
+			INSERT INTO session_token_usage_snapshots (tenant_id, session_id, user_id, input_tokens, output_tokens, cached_input_tokens, cache_write_tokens, updated_at)
+			VALUES (?, ?, ?, ?, 0, 0, 0, ?)`,
+			user.TenantID, row.session, user.ID, row.input, now.Format(time.RFC3339)); err != nil {
+			t.Fatalf("insert snapshot %s: %v", row.session, err)
+		}
+	}
+	if _, err := db.Exec(`
+		INSERT INTO user_usage_daily (tenant_id, user_id, user_email, day, input_tokens, output_tokens, cached_input_tokens, cache_write_tokens, updated_at)
+		VALUES (?, ?, ?, '2026-09-01', ?, 0, 0, 0, ?),
+		       (?, ?, ?, '2026-09-02', ?, 0, 0, 0, ?),
+		       (?, ?, ?, '2026-09-03', 5000, 200, 0, 0, ?)`,
+		user.TenantID, user.ID, user.Email, int64(10_000_000_000), now.Format(time.RFC3339),
+		user.TenantID, user.ID, user.Email, int64(8_000_000_000), now.Format(time.RFC3339),
+		user.TenantID, user.ID, user.Email, now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("insert daily rows: %v", err)
+	}
+
+	if err := repairUserUsageDailyLifetimeDumps(db); err != nil {
+		t.Fatalf("repair: %v", err)
+	}
+
+	rows, err := st.Sessions.SummarizeUserTokenUsage(ctx, user.TenantID, time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("summarize token usage: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1: %#v", len(rows), rows)
+	}
+	got := rows[0]
+	if got.Usage.InputTokens != 5000 || got.Usage.OutputTokens != 200 {
+		t.Fatalf("repaired usage = %#v, want both machine dump days zeroed", got.Usage)
+	}
+}
+
+func TestApplyUserUsageDailyLifetimeDumpRepairOnceSkipsSecondRun(t *testing.T) {
+	st := newTestStore(t)
+	ctx := store.WithTenant(context.Background(), "tenant_acme")
+	now := time.Date(2026, 9, 3, 8, 0, 0, 0, time.UTC)
+	user := &store.User{ID: "u_once", TenantID: "tenant_acme", Email: "once@example.com", SN: "SN-ONCE", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}
+	if err := st.Users.Create(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	db := st.System.(*systemRepo).db
+	if _, err := db.Exec(`DELETE FROM system_settings WHERE key = ?`, userUsageDailyLifetimeDumpRepairKey); err != nil {
+		t.Fatalf("clear repair marker: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO session_token_usage_snapshots (tenant_id, session_id, user_id, input_tokens, output_tokens, cached_input_tokens, cache_write_tokens, updated_at)
+		VALUES (?, 'gui:machine-1', ?, ?, 0, 0, 0, ?)`,
+		user.TenantID, user.ID, int64(12_000_000_000), now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("insert snapshot: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO user_usage_daily (tenant_id, user_id, user_email, day, input_tokens, output_tokens, cached_input_tokens, cache_write_tokens, updated_at)
+		VALUES (?, ?, ?, '2026-09-01', ?, 0, 0, 0, ?)`,
+		user.TenantID, user.ID, user.Email, int64(12_000_000_000), now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("insert dump day: %v", err)
+	}
+
+	if err := applyUserUsageDailyLifetimeDumpRepairOnce(db); err != nil {
+		t.Fatalf("first apply: %v", err)
+	}
+	monthStart := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	monthEnd := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	rows, err := st.Sessions.SummarizeUserTokenUsage(ctx, user.TenantID, monthStart, monthEnd)
+	if err != nil {
+		t.Fatalf("summarize after first apply: %v", err)
+	}
+	var firstTotal int64
+	for _, row := range rows {
+		firstTotal += row.Usage.TotalTokens()
+	}
+	if firstTotal != 0 {
+		t.Fatalf("first startup should zero the dump day, got %#v", rows)
+	}
+
+	if _, err := db.Exec(`
+		INSERT INTO user_usage_daily (tenant_id, user_id, user_email, day, input_tokens, output_tokens, cached_input_tokens, cache_write_tokens, updated_at)
+		VALUES (?, ?, ?, '2026-09-03', 15000000, 2000, 0, 0, ?)`,
+		user.TenantID, user.ID, user.Email, now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("insert later usage: %v", err)
+	}
+	if err := applyUserUsageDailyLifetimeDumpRepairOnce(db); err != nil {
+		t.Fatalf("second apply: %v", err)
+	}
+	rows, err = st.Sessions.SummarizeUserTokenUsage(ctx, user.TenantID, monthStart, monthEnd)
+	if err != nil {
+		t.Fatalf("summarize after second apply: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Usage.InputTokens != 15_000_000 || rows[0].Usage.OutputTokens != 2000 {
+		t.Fatalf("second startup must not re-zero later usage: %#v", rows)
 	}
 }
 
@@ -990,6 +1246,43 @@ func TestSessionRepositorySummarizeUserTokenUsageMergesLegacyBoundEmailAndPhone(
 	}
 	if got.Usage.InputTokens != 120 || got.Usage.OutputTokens != 15 || got.Usage.TotalTokens() != 135 {
 		t.Fatalf("usage = %#v, want merged phone+email totals", got.Usage)
+	}
+}
+
+func TestSessionRepositorySummarizeUserTokenUsageDoesNotMultiplyDuplicateIdentities(t *testing.T) {
+	st := newTestStore(t)
+	ctx := store.WithTenant(context.Background(), "tenant_acme")
+	now := time.Date(2026, 9, 3, 10, 0, 0, 0, time.UTC)
+	user := &store.User{ID: "u_dup_ident", TenantID: "tenant_acme", Email: "dup@example.com", SN: "SN-DUP-IDENT", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now}
+	if err := st.Users.Create(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	db := st.System.(*systemRepo).db
+	for _, value := range []string{"Dup@Example.com", "dup@example.com"} {
+		if _, err := db.Exec(`
+			INSERT INTO user_identities (id, tenant_id, user_id, type, value, verified, verified_at, created_at, updated_at)
+			VALUES (?, ?, ?, 'email', ?, 1, ?, ?, ?)`,
+			user.ID+"_"+value, user.TenantID, user.ID, value, now.Format(time.RFC3339), now.Format(time.RFC3339), now.Format(time.RFC3339)); err != nil {
+			t.Fatalf("insert identity %s: %v", value, err)
+		}
+	}
+	if _, err := db.Exec(`
+		INSERT INTO user_usage_daily (tenant_id, user_email, day, input_tokens, output_tokens, cached_input_tokens, cache_write_tokens, updated_at)
+		VALUES (?, 'dup@example.com', ?, 100, 20, 0, 0, ?)`,
+		user.TenantID, now.Format("2006-01-02"), now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("insert daily row: %v", err)
+	}
+
+	rows, err := st.Sessions.SummarizeUserTokenUsage(ctx, user.TenantID, now, now.Add(24*time.Hour))
+	if err != nil {
+		t.Fatalf("summarize token usage: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1: %#v", len(rows), rows)
+	}
+	got := rows[0]
+	if got.Usage.InputTokens != 100 || got.Usage.OutputTokens != 20 || got.Usage.TotalTokens() != 120 {
+		t.Fatalf("usage = %#v, duplicate-case identities must not multiply tokens", got.Usage)
 	}
 }
 

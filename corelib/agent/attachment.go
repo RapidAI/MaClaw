@@ -352,6 +352,72 @@ func NormalizeBinaryDocumentAttachmentFilename(fileName, mimeType string) string
 	return base + mimeExt
 }
 
+// Trusted document attachment format vocabulary. These values are the single
+// source for the agentservice DocumentFormat* qualifier constants (aliased
+// there because agentservice already imports this package).
+const (
+	DocumentAttachmentFormatPDF          = "pdf"
+	DocumentAttachmentFormatWord         = "word"
+	DocumentAttachmentFormatSpreadsheet  = "spreadsheet"
+	DocumentAttachmentFormatPresentation = "presentation"
+	DocumentAttachmentFormatText         = "text"
+)
+
+// DocumentAttachmentFormat is an ingress classification only. The document
+// reader still validates the bytes with its native parser; MIME/name metadata
+// cannot turn arbitrary content into a successful document read.
+func DocumentAttachmentFormat(fileName, mimeType string) (format, canonicalMIME string, ok bool) {
+	switch strings.ToLower(filepath.Ext(strings.TrimSpace(fileName))) {
+	case ".pdf":
+		return DocumentAttachmentFormatPDF, "application/pdf", true
+	case ".doc", ".docx":
+		return DocumentAttachmentFormatWord, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", true
+	case ".xls", ".xlsx", ".csv":
+		return DocumentAttachmentFormatSpreadsheet, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", true
+	case ".ppt", ".pptx":
+		return DocumentAttachmentFormatPresentation, "application/vnd.openxmlformats-officedocument.presentationml.presentation", true
+	case ".txt", ".md", ".markdown", ".json", ".xml", ".yaml", ".yml", ".log":
+		return DocumentAttachmentFormatText, "text/plain", true
+	}
+	switch strings.ToLower(strings.TrimSpace(strings.SplitN(mimeType, ";", 2)[0])) {
+	case "application/pdf":
+		return DocumentAttachmentFormatPDF, "application/pdf", true
+	case "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+		return DocumentAttachmentFormatWord, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", true
+	case "application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "text/csv":
+		return DocumentAttachmentFormatSpreadsheet, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", true
+	case "application/vnd.ms-powerpoint", "application/vnd.openxmlformats-officedocument.presentationml.presentation":
+		return DocumentAttachmentFormatPresentation, "application/vnd.openxmlformats-officedocument.presentationml.presentation", true
+	case "text/plain", "text/markdown", "application/json", "application/xml", "text/xml", "application/yaml", "text/yaml":
+		return DocumentAttachmentFormatText, "text/plain", true
+	default:
+		return "", "", false
+	}
+}
+
+// DocumentAttachmentTempSuffix returns a staging-safe suffix for a trusted
+// document attachment: a recognized filename extension wins, otherwise the
+// classified format picks a canonical suffix for the downstream reader.
+func DocumentAttachmentTempSuffix(fileName, format string) string {
+	ext := strings.ToLower(filepath.Ext(strings.TrimSpace(fileName)))
+	switch ext {
+	case ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".csv", ".ppt", ".pptx", ".txt", ".md", ".markdown", ".json", ".xml", ".yaml", ".yml", ".log":
+		return ext
+	}
+	switch format {
+	case DocumentAttachmentFormatPDF:
+		return ".pdf"
+	case DocumentAttachmentFormatWord:
+		return ".docx"
+	case DocumentAttachmentFormatSpreadsheet:
+		return ".xlsx"
+	case DocumentAttachmentFormatPresentation:
+		return ".pptx"
+	default:
+		return ".txt"
+	}
+}
+
 // RecognizeImageTextNote runs the optional local-OCR recognizer for an image
 // attachment bound for a non-vision model and formats the result as a
 // bracketed note appended to the attachment description. Returns "" when no

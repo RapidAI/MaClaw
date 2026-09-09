@@ -42,3 +42,19 @@ func TestChildExecutionRegistryReleaseRemovesLiveHandle(t *testing.T) {
 		t.Fatalf("released parent retained a cancellation handle: %v", err)
 	}
 }
+
+func TestChildExecutionRegistryCancelAll(t *testing.T) {
+	var registry ChildExecutionRegistry
+	first, releaseFirst := registry.Begin("parent-one", "child-one")
+	defer releaseFirst()
+	second, releaseSecond := registry.Begin("parent-two", "child-two")
+	defer releaseSecond()
+	registry.CancelAll()
+	for name, ctx := range map[string]context.Context{"first": first, "second": second} {
+		select {
+		case <-ctx.Done():
+		case <-time.After(time.Second):
+			t.Fatalf("%s child context was not cancelled", name)
+		}
+	}
+}

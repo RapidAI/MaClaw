@@ -2,13 +2,13 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { SIDEBAR_NAV_RAIL_WIDTH } from './sidebarLayout';
 import { SystemPopupMenu, type SystemMenuItem } from './SystemPopupMenu';
 import { FavoriteEmployeeButtons, type FavoriteEmployeeSlot } from './FavoriteEmployeeButtons';
-import { SystemIcon, AboutIcon, SettingsIcon, MonitorIcon, SkillsIcon, MCPIcon, GossipIcon } from './SidebarNavIcons';
+import { SystemIcon, AboutIcon, SkillsIcon, MCPIcon, GossipIcon } from './SidebarNavIcons';
 import { SidebarBrandHeader, SidebarLinkedMedal, SidebarPrimaryNav } from './SidebarNavRailPieces';
 import { IconRankBadge } from '../ai/WorkbenchIcons';
 import { GetHubUserInvitationStatus, GetHubUserRanking } from '../../../wailsjs/go/main/App';
 import { BrowserOpenURL, EventsOn } from '../../../wailsjs/runtime';
 import { miniAppShortLabel } from '../../i18n/maclawMiniAppLabels';
-import { utilitiesNavLabel, utilitiesPageTitle } from '../../i18n/utilitiesLabels';
+import { expertsNavLabel, expertsPageTitle, toolsNavLabel, toolsPageTitle, utilitiesNavLabel, utilitiesPageTitle } from '../../i18n/utilitiesLabels';
 import { HubInvitationDialog } from '../HubInvitationDialog';
 
 type SidebarNavRailProps = {
@@ -21,6 +21,9 @@ type SidebarNavRailProps = {
     maclawLLMOnline?: boolean;
     remoteActivationStatus?: any;
     runningTaskCount: number;
+    onOpenBackgroundTasks?: () => void;
+    onOpenScheduledTasks?: () => void;
+    remoteSessionTab?: 'remote' | 'background' | 'scheduled' | 'passthrough';
     t: (key: string) => string;
     gossipAllowed: boolean;
     config: any;
@@ -33,6 +36,7 @@ type SidebarNavRailProps = {
     showAppEntry?: boolean;
     showWorkflowEntry?: boolean;
     showUtilitiesEntry?: boolean;
+    showToolsEntry?: boolean;
     utilitiesLabel?: string;
 };
 
@@ -47,15 +51,11 @@ function InviteGiftIcon() {
 const zhHans = {
     aiAssistant: 'AI \u52a9\u624b',
     system: '\u7cfb\u7edf',
-    monitor: '\u76d1\u63a7',
-    settings: '\u8bbe\u7f6e',
 };
 
 const zhHant = {
     aiAssistant: 'AI \u52a9\u624b',
     system: '\u7cfb\u7d71',
-    monitor: '\u76e3\u63a7',
-    settings: '\u8a2d\u5b9a',
 };
 
 function buildUserRankingURL(hubURL: string, tenantID?: string) {
@@ -80,7 +80,8 @@ export const SidebarNavRail = ({
     switchTool,
     lang,
     remoteActivationStatus,
-    runningTaskCount,
+    onOpenBackgroundTasks,
+    onOpenScheduledTasks, remoteSessionTab = 'remote',
     t,
     gossipAllowed,
     config,
@@ -93,12 +94,13 @@ export const SidebarNavRail = ({
     showAppEntry = false,
     showWorkflowEntry = true,
     showUtilitiesEntry = true,
+    showToolsEntry = false,
     utilitiesLabel,
 }: SidebarNavRailProps) => {
     const [systemMenuOpen, setSystemMenuOpen] = useState(false);
+    const systemMenuOpenerRef = useRef<HTMLElement | null>(null);
     const [invitationEnabled, setInvitationEnabled] = useState(false);
     const [invitationDialogOpen, setInvitationDialogOpen] = useState(false);
-
     const showRanking = config?.show_hub_ranking !== false; // default: show
     const trophyThreshold = config?.ranking_trophy_threshold || 10; // hub-configured: top N use trophy
     const [medal, setMedal] = useState<{ rank: number; tokenRank: number; durationRank: number; totalUsers: number; rankChange?: number; trophyThreshold: number } | null>(null);
@@ -245,18 +247,23 @@ export const SidebarNavRail = ({
     const aiAssistantLabel = lang === 'zh-Hans' ? zhHans.aiAssistant : lang === 'zh-Hant' ? zhHant.aiAssistant : 'AI Asst';
     const appsLabel = miniAppShortLabel(lang);
     const workflowLabel = lang === 'zh-Hans' ? '工作流' : lang === 'zh-Hant' ? '工作流' : 'Workflow';
-    const resolvedUtilitiesLabel = utilitiesLabel || utilitiesNavLabel(lang);
-    const resolvedUtilitiesTitle = utilitiesLabel || utilitiesPageTitle(lang);
+    const resolvedUtilitiesLabel = utilitiesLabel || (showToolsEntry ? expertsNavLabel(lang) : utilitiesNavLabel(lang));
+    const resolvedUtilitiesTitle = showToolsEntry ? expertsPageTitle(lang) : utilitiesPageTitle(lang);
+    const resolvedToolsLabel = toolsNavLabel(lang);
+    const resolvedToolsTitle = toolsPageTitle(lang);
     const systemLabel = lang === 'zh-Hans' ? zhHans.system : lang === 'zh-Hant' ? zhHant.system : 'System';
     const systemMenuItems: SystemMenuItem[] = [
-        { id: 'settings', icon: <SettingsIcon />, label: lang === 'zh-Hans' ? zhHans.settings : lang === 'zh-Hant' ? zhHant.settings : 'Settings', visible: true },
-        { id: 'remote', icon: <MonitorIcon />, label: lang === 'zh-Hans' ? zhHans.monitor : lang === 'zh-Hant' ? zhHant.monitor : 'Monitor', visible: true, badge: runningTaskCount > 0 ? runningTaskCount : undefined },
+        { id: 'about', icon: <AboutIcon />, label: t('about'), visible: true },
         { id: 'skills', icon: <SkillsIcon />, label: t('skills'), visible: true },
         { id: 'mcp', icon: <MCPIcon />, label: 'MCP', visible: true },
         { id: 'gossip', icon: <GossipIcon />, label: t('gossip'), visible: gossipAllowed },
     ];
+    const toggleSystemMenu = (target: HTMLElement) => {
+        if (!systemMenuOpen) systemMenuOpenerRef.current = target;
+        setSystemMenuOpen(prev => !prev);
+    };
     return (
-        <div style={{
+        <div className="mc-nav-rail" style={{
             width: `${SIDEBAR_NAV_RAIL_WIDTH}px`,
             borderRight: '1px solid var(--theme-border)',
             display: 'flex',
@@ -268,7 +275,7 @@ export const SidebarNavRail = ({
             position: 'relative',
         }}>
             <SidebarBrandHeader brandId={brandInfo?.id} currentIcon={currentIcon} brandSidebarName={brandSidebarName} />
-            <SidebarPrimaryNav navTab={navTab} aiAssistantLabel={aiAssistantLabel} appsLabel={appsLabel} showAppEntry={showAppEntry} showWorkflowEntry={showWorkflowEntry} showUtilitiesEntry={showUtilitiesEntry} switchTool={switchTool} workflowLabel={workflowLabel} utilitiesLabel={resolvedUtilitiesLabel} utilitiesTitle={resolvedUtilitiesTitle} />
+            <SidebarPrimaryNav navTab={navTab} aiAssistantLabel={aiAssistantLabel} appsLabel={appsLabel} showAppEntry={showAppEntry} showWorkflowEntry={showWorkflowEntry} showUtilitiesEntry={showUtilitiesEntry} showToolsEntry={showToolsEntry} switchTool={switchTool} onOpenBackgroundTasks={onOpenBackgroundTasks} onOpenScheduledTasks={onOpenScheduledTasks} remoteSessionTab={remoteSessionTab} workflowLabel={workflowLabel} utilitiesLabel={resolvedUtilitiesLabel} utilitiesTitle={resolvedUtilitiesTitle} toolsLabel={resolvedToolsLabel} toolsTitle={resolvedToolsTitle} />
             {showAppEntry && veAuthorized && favoriteEmployees.length > 0 && (
                 <div
                     aria-hidden="true"
@@ -294,71 +301,76 @@ export const SidebarNavRail = ({
                 lang={lang}
             />
             <div style={{ flex: 1 }} />
-            <div
-                className={'sidebar-item left-nav-item ' + (systemMenuOpen ? 'active' : '')}
-                onClick={() => setSystemMenuOpen(prev => !prev)}
-                style={{ flexDirection: 'column', padding: '5px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: '1px solid transparent', boxShadow: systemMenuOpen ? 'inset -1px 0 0 var(--theme-text-muted)' : 'none', justifyContent: 'center' }}
-                title={systemLabel}
-            >
-                <span className="sidebar-icon" style={{ margin: 0, display: 'inline-flex', color: systemMenuOpen ? 'var(--theme-primary)' : 'var(--theme-text-primary)' }}><SystemIcon /></span>
-                <span style={{ fontSize: '0.72rem', lineHeight: 1, fontWeight: 700 }}>{systemLabel}</span>
-            </div>
-            <div className={'sidebar-item left-nav-item ' + (navTab === 'about' ? 'active' : '')} onClick={() => switchTool('about')} style={{ flexDirection: 'column', padding: '5px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: '1px solid transparent', boxShadow: navTab === 'about' ? 'inset -1px 0 0 var(--theme-text-muted)' : 'none', justifyContent: 'center' }} title={t('about')}>
-                <span className="sidebar-icon" style={{ margin: 0, display: 'inline-flex', color: navTab === 'about' ? 'var(--theme-primary)' : 'var(--theme-text-primary)' }}><AboutIcon /></span>
-                <span style={{ fontSize: '0.72rem', lineHeight: 1, fontWeight: 700 }}>{t('about')}</span>
-            </div>
-            {medal && <SidebarLinkedMedal
-                medal={medal}
-                lang={lang}
-                title={lang === 'zh-Hans' ? '点击查看完整排行榜' : lang === 'zh-Hant' ? '點擊查看完整排行榜' : 'View full leaderboard'}
-                onClick={openUserRanking}
-            />}
-            {showRegisteredRankingMark && (
+            <div className="mc-legacy-rail-footer">
                 <div
-                    className="sidebar-medal-badge"
-                    title={lang === 'zh-Hans' ? '本月排行暂未生成' : lang === 'zh-Hant' ? '本月排行暫未生成' : 'Monthly ranking pending'}
-                    onClick={openUserRanking}
-                    style={{
-                        display: 'flex',
-                        flexDirection: 'column',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        width: '100%',
-                        minHeight: '38px',
-                        padding: '3px 0 5px 0',
-                        cursor: 'pointer',
-                        userSelect: 'none',
-                    }}
+                    className={'sidebar-item left-nav-item ' + (systemMenuOpen ? 'active' : '')}
+                    role="button" tabIndex={0} aria-haspopup="menu" aria-expanded={systemMenuOpen} aria-controls="system-popup-menu"
+                    onClick={event => toggleSystemMenu(event.currentTarget)}
+                    onKeyDown={event => { if (event.key !== 'Enter' && event.key !== ' ') return; event.preventDefault(); toggleSystemMenu(event.currentTarget); }}
+                    style={{ flexDirection: 'column', padding: '5px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: '1px solid transparent', boxShadow: systemMenuOpen ? 'inset -1px 0 0 var(--theme-text-muted)' : 'none', justifyContent: 'center' }}
+                    title={systemLabel}
                 >
-                    <span aria-label="monthly ranking" style={{ lineHeight: 1, display: 'flex', alignItems: 'center' }}>
-                        <IconRankBadge size={18} />
-                    </span>
-                    <span style={{ fontSize: '0.58rem', lineHeight: 1, color: 'var(--theme-text-muted)', fontWeight: 700, marginTop: '3px' }}>
-                        {lang === 'en' ? 'Rank' : '排行'}
-                    </span>
+                    <span className="sidebar-icon" style={{ margin: 0, display: 'inline-flex', color: systemMenuOpen ? 'var(--theme-primary)' : 'var(--theme-text-primary)' }}><SystemIcon /></span>
+                    <span style={{ fontSize: '0.72rem', lineHeight: 1, fontWeight: 700 }}>{systemLabel}</span>
                 </div>
-            )}
-            {invitationEnabled && (
-                <>
-                    <div aria-hidden="true" style={{ width: '60%', height: 1, margin: '3px 0', background: 'var(--theme-border)', opacity: .7 }} />
-                    <button
-                        type="button"
-                        className="sidebar-item left-nav-item"
-                        onClick={() => setInvitationDialogOpen(true)}
-                        title={lang === 'zh-Hans' ? '邀请好友' : lang === 'zh-Hant' ? '邀請好友' : 'Invite friends'}
-                        style={{ flexDirection: 'column', padding: '5px 0', width: '100%', gap: '2px', border: 'none', background: 'transparent', color: 'var(--theme-primary)', cursor: 'pointer', position: 'relative' }}
+                {medal && <SidebarLinkedMedal
+                    medal={medal}
+                    lang={lang}
+                    title={lang === 'zh-Hans' ? '点击查看完整排行榜' : lang === 'zh-Hant' ? '點擊查看完整排行榜' : 'View full leaderboard'}
+                    onClick={openUserRanking}
+                />}
+                {showRegisteredRankingMark && (
+                    <div
+                        className="sidebar-medal-badge"
+                        title={lang === 'zh-Hans' ? '本月排行暂未生成' : lang === 'zh-Hant' ? '本月排行暫未生成' : 'Monthly ranking pending'}
+                        onClick={openUserRanking}
+                        style={{
+                            display: 'flex',
+                            flexDirection: 'column',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            width: '100%',
+                            minHeight: '38px',
+                            padding: '3px 0 5px 0',
+                            cursor: 'pointer',
+                            userSelect: 'none',
+                        }}
                     >
-                        <span className="sidebar-icon" style={{ margin: 0, display: 'inline-flex' }}><InviteGiftIcon /></span>
-                        <span style={{ fontSize: '.66rem', lineHeight: 1, fontWeight: 800 }}>{lang === 'en' ? 'Invite' : '邀请'}</span>
-                        <span aria-hidden="true" style={{ position: 'absolute', top: 5, right: '25%', width: 5, height: 5, borderRadius: '50%', background: '#ef5d6c' }} />
-                    </button>
-                </>
-            )}
+                        <span aria-label="monthly ranking" style={{ lineHeight: 1, display: 'flex', alignItems: 'center' }}>
+                            <IconRankBadge size={18} />
+                        </span>
+                        <span style={{ fontSize: '0.58rem', lineHeight: 1, color: 'var(--theme-text-muted)', fontWeight: 700, marginTop: '3px' }}>
+                            {lang === 'en' ? 'Rank' : '排行'}
+                        </span>
+                    </div>
+                )}
+                {invitationEnabled && (
+                    <>
+                        <div aria-hidden="true" style={{ width: '60%', height: 1, margin: '3px 0', background: 'var(--theme-border)', opacity: .7 }} />
+                        <button
+                            type="button"
+                            className="sidebar-item left-nav-item"
+                            onClick={() => setInvitationDialogOpen(true)}
+                            title={lang === 'zh-Hans' ? '邀请好友' : lang === 'zh-Hant' ? '邀請好友' : 'Invite friends'}
+                            style={{ flexDirection: 'column', padding: '5px 0', width: '100%', gap: '2px', border: 'none', background: 'transparent', color: 'var(--theme-primary)', cursor: 'pointer', position: 'relative' }}
+                        >
+                            <span className="sidebar-icon" style={{ margin: 0, display: 'inline-flex' }}><InviteGiftIcon /></span>
+                            <span style={{ fontSize: '.66rem', lineHeight: 1, fontWeight: 800 }}>{lang === 'en' ? 'Invite' : '邀请'}</span>
+                            <span aria-hidden="true" style={{ position: 'absolute', top: 5, right: '25%', width: 5, height: 5, borderRadius: '50%', background: '#ef5d6c' }} />
+                        </button>
+                    </>
+                )}
+            </div>
+            <button type="button" role="button" className="mc-profile-rail" data-testid="system-menu-trigger" aria-label={lang === 'en' ? 'System menu' : lang === 'zh-Hant' ? '系統選單' : '系统菜单'} title={lang === 'en' ? 'System menu' : lang === 'zh-Hant' ? '系統選單' : '系统菜单'} aria-haspopup="menu" aria-expanded={systemMenuOpen} aria-controls="system-popup-menu" onClick={event => toggleSystemMenu(event.currentTarget)} onKeyDown={event => { if (event.key !== 'Enter' && event.key !== ' ') return; event.preventDefault(); toggleSystemMenu(event.currentTarget); }}>
+                <span className="mc-profile-rail__avatar mc-profile-rail__avatar--system" aria-hidden="true"><SystemIcon /></span>
+            </button>
             {systemMenuOpen && (
                 <SystemPopupMenu
                     items={systemMenuItems}
                     onSelect={(id) => switchTool(id)}
                     onClose={() => setSystemMenuOpen(false)}
+                    returnFocus={() => systemMenuOpenerRef.current}
+                    ariaLabel={systemLabel}
                 />
             )}
             <HubInvitationDialog open={invitationDialogOpen} onClose={() => setInvitationDialogOpen(false)} lang={lang} />

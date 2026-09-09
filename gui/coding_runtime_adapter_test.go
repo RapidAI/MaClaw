@@ -5,11 +5,74 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 )
+
+func TestDefaultGUICodingRuntimeOptionsDeclareWriterScope(t *testing.T) {
+	root := t.TempDir()
+	options := defaultGUICodingRuntimeOptions(&TaskItem{
+		RequestKind: codingRequestImplementation,
+		Files:       []string{"src/main.go"},
+	}, root)
+	if options == nil || options.ReadOnly || !options.RequireFinalWorkspaceGate {
+		t.Fatalf("writer options=%+v", options)
+	}
+	if len(options.DeclaredWrites) != 1 || options.DeclaredWrites[0] != "src/main.go" {
+		t.Fatalf("declared writes=%#v", options.DeclaredWrites)
+	}
+	inquiry := defaultGUICodingRuntimeOptions(&TaskItem{RequestKind: codingRequestInquiry}, root)
+	if inquiry == nil || !inquiry.ReadOnly || inquiry.RequireFinalWorkspaceGate || len(inquiry.DeclaredWrites) != 0 {
+		t.Fatalf("inquiry options=%+v", inquiry)
+	}
+	rootClaim := defaultGUICodingRuntimeOptions(&TaskItem{RequestKind: codingRequestImplementation}, root)
+	if rootClaim == nil || len(rootClaim.DeclaredWrites) != 1 || !strings.HasSuffix(rootClaim.DeclaredWrites[0], string(filepath.Separator)) {
+		t.Fatalf("dynamic writer root claim=%+v", rootClaim)
+	}
+	relative := defaultGUICodingRuntimeOptions(&TaskItem{RequestKind: codingRequestImplementation}, "repo")
+	if relative == nil || len(relative.DeclaredWrites) != 1 || relative.DeclaredWrites[0] != "."+string(filepath.Separator) {
+		t.Fatalf("relative writer root claim=%+v", relative)
+	}
+}
+
+func TestGUIGatedWriterRejectsUnknownClaimsBeforeExecutor(t *testing.T) {
+	store := codingruntime.NewMemoryStore()
+	calls := 0
+	_, attempt, err := runGUICodingTaskWithLedgerWithOptions(
+		context.Background(), store, "gui:test", "workflow", "phase", t.TempDir(), "write", nil, nil,
+		&guiCodingRuntimeOptions{RequireFinalWorkspaceGate: true},
+		func() *CodingSubAgentResult {
+			calls++
+			return &CodingSubAgentResult{Status: TaskExecPassed}
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "declared write claims") || attempt != nil || calls != 0 {
+		t.Fatalf("unknown gated writer err=%v attempt=%#v calls=%d", err, attempt, calls)
+	}
+}
+
+func TestGUICodingProductionWriterRunsOnlyWithWorkspaceGate(t *testing.T) {
+	root := initRecoveryGitFixture(t)
+	options := defaultGUICodingRuntimeOptions(&TaskItem{RequestKind: codingRequestImplementation, Files: []string{"generated.txt"}}, root)
+	result, attempt, err := runGUICodingTaskWithLedgerWithOptions(
+		context.Background(), codingruntime.NewMemoryStore(), "gui:test", "workflow", "phase", root, "implement", nil, nil, options,
+		func() *CodingSubAgentResult {
+			if writeErr := os.WriteFile(filepath.Join(root, "generated.txt"), []byte("generated\n"), 0o600); writeErr != nil {
+				t.Fatalf("write generated file: %v", writeErr)
+			}
+			return &CodingSubAgentResult{Status: TaskExecPassed, FilesCreated: []string{"generated.txt"}, Summary: "generated"}
+		},
+	)
+	if err != nil || result == nil || attempt == nil {
+		t.Fatalf("result=%#v attempt=%#v err=%v", result, attempt, err)
+	}
+	if result.Status != TaskExecPassed || attempt.Status != codingruntime.TaskCompleted || !attempt.Policy.FinalWorkspaceGateRequired || attempt.Policy.WriteSet.Unknown || len(attempt.Policy.WriteSet.Claims) != 1 {
+		t.Fatalf("result=%#v attempt=%#v", result, attempt)
+	}
+}
 
 func TestGUILoopCancellationPersistsRuntimeCancellationAndDiscardsLateResult(t *testing.T) {
 	store := codingruntime.NewMemoryStore()

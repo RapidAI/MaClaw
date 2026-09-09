@@ -89,6 +89,9 @@ func TestToolPlannerSelectsCapabilityProvidersWithoutToolNameRules(t *testing.T)
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}
+	if snapshot.Digest == "" || plan.CatalogDigest != snapshot.Digest {
+		t.Fatalf("catalog identity was not carried into plan: snapshot=%q plan=%q", snapshot.Digest, plan.CatalogDigest)
+	}
 	if len(plan.Unmet) != 0 || len(plan.Selections) != 2 {
 		t.Fatalf("plan = %+v, want two selected capabilities", plan)
 	}
@@ -772,6 +775,142 @@ func TestIsLookupCapabilityIncludesSearchFetchAndClock(t *testing.T) {
 	}
 }
 
+func TestGrantedNeedsFromPlanUsesNeedIDThenSelectionID(t *testing.T) {
+	plan := ToolPlan{Selections: []PlannedSelection{
+		{ID: "sel-search", NeedID: "need:search", FitProof: FitProof{MatchedCapability: "information.search.web", QualifierBindings: map[string]string{"freshness": "current"}}},
+		{ID: "sel-generate", FitProof: FitProof{MatchedCapability: "document.generate.file"}},
+	}}
+	got := GrantedNeedsFromPlan(plan)
+	if len(got) != 2 || got[0].ID != "need:search" || got[0].Capability != "information.search.web" || got[0].Qualifiers["freshness"] != "current" || got[0].Polarity != NeedRequire || !got[0].Required {
+		t.Fatalf("search need=%#v", got)
+	}
+	if got[1].ID != "sel-generate" || got[1].Capability != "document.generate.file" {
+		t.Fatalf("generate need=%#v", got[1])
+	}
+	cloned := CloneCapabilityNeeds(got)
+	cloned[0].Qualifiers["freshness"] = "mutated"
+	if got[0].Qualifiers["freshness"] != "current" {
+		t.Fatal("clone must not share qualifier maps")
+	}
+	if GrantedNeedsFromPlan(ToolPlan{}) != nil {
+		t.Fatal("empty plan must yield nil needs")
+	}
+}
+
+func TestCapabilityNeedsContainAndContainAny(t *testing.T) {
+	needs := []CapabilityNeed{
+		{Capability: "document.generate.file"},
+		{Capability: CapabilityDocumentWriteOffice},
+	}
+	if !CapabilityNeedsContain(needs, "document.generate.file") || CapabilityNeedsContain(needs, "document.read.local") {
+		t.Fatalf("contain drifted: %#v", needs)
+	}
+	if !CapabilityNeedsContainAny(needs, "document.read.local", CapabilityDocumentWriteOffice) {
+		t.Fatal("contain-any must match office write")
+	}
+	if CapabilityNeedsContain(nil, "document.generate.file") || CapabilityNeedsContainAny(nil) || CapabilityNeedsContainAny(needs) {
+		t.Fatal("empty needs or empty capabilities must be false")
+	}
+}
+
+func TestIsDocumentReadAndBindDocumentReadFormat(t *testing.T) {
+	if !IsDocumentRead("document.read.local") || IsDocumentRead("document.generate.file") {
+		t.Fatal("document-read membership drifted")
+	}
+	read := CapabilityNeed{Capability: "document.read.local"}
+	bound := BindDocumentReadFormat(read, " pdf ")
+	if bound.Qualifiers["format"] != "pdf" {
+		t.Fatalf("bound format=%q", bound.Qualifiers["format"])
+	}
+	deliver := BindDocumentReadFormat(CapabilityNeed{Capability: "artifact.deliver.current_channel", Qualifiers: map[string]string{"format": "file"}}, "pdf")
+	if deliver.Qualifiers["format"] != "file" {
+		t.Fatal("non-read needs must stay unchanged")
+	}
+}
+
+func TestInTurnArtifactProducerPresentCountsGenerateAndExtra(t *testing.T) {
+	generate := []CapabilityNeed{{Capability: "document.generate.file"}}
+	if !InTurnArtifactProducerPresent(generate) {
+		t.Fatal("document generate must count without extra")
+	}
+	office := []CapabilityNeed{{Capability: CapabilityDocumentWriteOffice}}
+	if !InTurnArtifactProducerPresent(office, CapabilityDocumentWriteOffice) || InTurnArtifactProducerPresent(office) {
+		t.Fatal("office write must count only when passed as extra")
+	}
+	search := []CapabilityNeed{{Capability: "information.search.web"}}
+	if InTurnArtifactProducerPresent(search, CapabilityDocumentWriteOffice) {
+		t.Fatal("lookup must not skip ingress deliver")
+	}
+}
+
+func TestFilterGrantedNeedsStillCoveredUsesRegistryAndRuleSet(t *testing.T) {
+	needs := []CapabilityNeed{
+		{ID: "search", Capability: "information.search.web"},
+		{ID: "gone", Capability: "retired.capability"},
+		{ID: "write", Capability: "fs.write.local"},
+	}
+	covered := map[CapabilityID]bool{"information.search.web": true, "retired.capability": true}
+	got := FilterGrantedNeedsStillCovered(needs, covered, nil)
+	if len(got) != 2 || got[0].ID != "search" || got[1].ID != "gone" {
+		t.Fatalf("nil registry kept=%#v", got)
+	}
+	registry := NewCapabilityRegistry("covered-test")
+	if err := registry.Register(CapabilityDescriptor{ID: "information.search.web", Version: "v1", Owner: "test", Summary: "search", Effects: []EffectClass{EffectReadOnly}}); err != nil {
+		t.Fatal(err)
+	}
+	got = FilterGrantedNeedsStillCovered(needs, covered, registry)
+	if len(got) != 1 || got[0].ID != "search" {
+		t.Fatalf("registry fail-closed kept=%#v", got)
+	}
+	got[0].Qualifiers = map[string]string{"freshness": "mutated"}
+	if needs[0].Qualifiers["freshness"] != "" {
+		t.Fatal("filter clone must not share qualifier maps")
+	}
+}
+
+func TestNeedQualifierKeyAndCloneAreStable(t *testing.T) {
+	if NeedQualifierKey(nil) != "" || CloneNeedQualifiers(nil) != nil {
+		t.Fatal("empty qualifiers must be empty")
+	}
+	left := NeedQualifierKey(map[string]string{"b": "2", "a": "1"})
+	right := NeedQualifierKey(map[string]string{"a": "1", "b": "2"})
+	if left == "" || left != right {
+		t.Fatalf("qualifier key must sort keys: %q vs %q", left, right)
+	}
+	src := map[string]string{"freshness": "current"}
+	cloned := CloneNeedQualifiers(src)
+	cloned["freshness"] = "mutated"
+	if src["freshness"] != "current" {
+		t.Fatal("clone must not share the live map")
+	}
+	fact := RoutingFact{ID: "f1", Attributes: map[string]string{"k": "v"}}
+	clonedFact := CloneRoutingFacts([]RoutingFact{fact})
+	clonedFact[0].Attributes["k"] = "mutated"
+	if fact.Attributes["k"] != "v" {
+		t.Fatal("routing fact clone must not share attributes")
+	}
+}
+
+func TestAliasableLookupSelectionIsSearchOnly(t *testing.T) {
+	search := PlannedSelection{FitProof: FitProof{MatchedCapability: "information.search.web"}, Effects: []EffectClass{EffectReadOnly}}
+	fetch := PlannedSelection{FitProof: FitProof{MatchedCapability: CapabilityInformationFetchWeb}, Effects: []EffectClass{EffectReadOnly}}
+	mutate := PlannedSelection{FitProof: FitProof{MatchedCapability: "information.search.web"}, Effects: []EffectClass{EffectLocalMutation}}
+	if !AliasableLookupSelection(search) {
+		t.Fatal("read-only search must be aliasable")
+	}
+	if AliasableLookupSelection(fetch) || AliasableLookupSelection(mutate) {
+		t.Fatal("fetch and mutating search must not alias")
+	}
+	plan := ToolPlan{Selections: []PlannedSelection{{ID: "sel-search", FitProof: search.FitProof, Effects: search.Effects}}}
+	grants := map[string]InvocationGrant{"web_search": {SelectionID: "sel-search"}}
+	if got := SoleLiveLookupGrantName(plan, grants); got != "web_search" {
+		t.Fatalf("sole live lookup=%q", got)
+	}
+	if SoleLiveLookupGrantName(plan, map[string]InvocationGrant{"web_search": {SelectionID: "sel-search"}, "other": {SelectionID: "sel-search"}}) != "" {
+		t.Fatal("two live grants must not pick a lookup alias")
+	}
+}
+
 func TestFamilyBaseSelectionIDsPicksEarliestRemainingSibling(t *testing.T) {
 	base := "selection:need:information.search.web:searchfam"
 	got := familyBaseSelectionIDs([]PlannedSelection{
@@ -1010,6 +1149,17 @@ func TestToolPlannerInquireNeedIsClarificationRequired(t *testing.T) {
 	}
 	if len(plan.Selections) != 0 || len(plan.Unmet) != 1 || plan.Unmet[0].ReasonCode != "clarification_required" {
 		t.Fatalf("inquire need must ask for clarification: %+v", plan)
+	}
+}
+
+func TestNewPlanningBudgetClampsNegativeLimits(t *testing.T) {
+	got := NewPlanningBudget(-3, -9)
+	if got.MaxSelections != 0 || got.MaxSchemaTokens != 0 {
+		t.Fatalf("negative budget=%+v", got)
+	}
+	got = NewPlanningBudget(8, 29)
+	if got.MaxSelections != 8 || got.MaxSchemaTokens != 29 {
+		t.Fatalf("positive budget=%+v", got)
 	}
 }
 

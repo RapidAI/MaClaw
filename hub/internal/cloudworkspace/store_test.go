@@ -35,8 +35,8 @@ func newTestWorkspaceStore(t *testing.T) (*Store, *store.Store) {
 		BusyTimeoutMS:     5000,
 		MaxReadOpenConns:  4,
 		MaxReadIdleConns:  2,
-		MaxWriteOpenConns: 4,
-		MaxWriteIdleConns: 2,
+		MaxWriteOpenConns: 1,
+		MaxWriteIdleConns: 1,
 	})
 	if err != nil {
 		t.Fatalf("provider: %v", err)
@@ -124,7 +124,7 @@ func TestStoreRestoreWindowExpired(t *testing.T) {
 	}
 }
 
-func TestStoreTenantDiskIncludesDeleted(t *testing.T) {
+func TestStoreTenantRetainedQuotaIncludesDeletedObjects(t *testing.T) {
 	st, _ := newTestWorkspaceStore(t)
 	ctx := context.Background()
 	now := time.Now().UTC()
@@ -132,7 +132,11 @@ func TestStoreTenantDiskIncludesDeleted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.db.ExecContext(ctx, `UPDATE cloud_workspaces SET used_bytes = 10 WHERE id = ?`, ws.ID); err != nil {
+	sha := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	if _, err := st.db.ExecContext(ctx, `INSERT INTO cloud_workspace_objects (
+		workspace_id, sha256, size_bytes, plain_size_bytes, stored_size_bytes,
+		compression, compression_level, encryption_version, ref_count, created_at, object_state
+	) VALUES (?, ?, 10, 10, 10, 'none', 0, 'aes-gcm-v1', 0, ?, 'ready')`, ws.ID, sha, now.Format(time.RFC3339)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.SoftDelete(ctx, "t1", "u1", "m1", ws.ID, now.Add(time.Second)); err != nil {

@@ -31,6 +31,9 @@ func RegisterLLMRoutes(
 		mux.HandleFunc("POST /api/llm/v1/chat/completions", RequireHubMachine(hubService, hubIDFromProxyRequest, llmservice.ProxyHandler(proxyCfg)))
 		mux.HandleFunc("POST /api/llm/v1/quotes", RequireHubMachine(hubService, hubIDFromProxyRequest, llmservice.ProxyQuoteHandler(proxyCfg)))
 		mux.HandleFunc("GET /api/llm/v1/billing-attempts/{request_id}", RequireHubMachine(hubService, hubIDFromProxyRequest, llmservice.ProxyBillingAttemptHandler(proxyCfg)))
+		if statsSvc != nil {
+			mux.HandleFunc("GET /api/llm/v1/usage/reconciliation", RequireHubMachine(hubService, hubIDFromProxyRequest, llmservice.UsageReconciliationHandler(statsSvc)))
+		}
 	}
 
 	// --- Authorization query (called by Hubs) ---

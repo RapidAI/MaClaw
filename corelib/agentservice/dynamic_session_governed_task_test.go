@@ -83,6 +83,9 @@ func TestSessionGovernedLookupIsReadOnlyAndDoesNotReplay(t *testing.T) {
 	if sessionGovernedNeedHasSideEffect(registry, coretool.CapabilityNeed{Capability: CapabilityInformationLookup}) {
 		t.Fatal("information.lookup must settle as read-only, not as a mutation")
 	}
+	if sessionGovernedNeedHasSideEffect(registry, coretool.CapabilityNeed{Capability: CapabilityInformationSearchWeb}) {
+		t.Fatal("information.search.web must settle as read-only, not as a mutation")
+	}
 	request := DynamicCapabilityNeedRequest{
 		Principal: Principal{TenantID: "tenant", UserID: "user"}, ChannelScope: "core-agent",
 	}
@@ -463,11 +466,11 @@ func TestCoreDynamicSemanticLookupContinuationStaysUnmanaged(t *testing.T) {
 	}
 	defs, managed := first.dynamicSemanticToolDefinitions()
 	if !managed || len(defs) != 1 {
-		t.Fatalf("lookup turn defs=%#v managed=%v", defs, managed)
+		t.Fatalf("search.web turn defs=%#v managed=%v", defs, managed)
 	}
 	task, ok := store.Load(DynamicCapabilityNeedRequest{Principal: first.principal, ChannelScope: "core-agent"})
-	if !ok || task.Status != sessionGovernedSucceeded || task.Needs[0].Capability != CapabilityInformationLookup {
-		t.Fatalf("lookup must persist as succeeded read-only, task=%#v ok=%v", task, ok)
+	if !ok || task.Status != sessionGovernedSucceeded || task.Needs[0].Capability != CapabilityInformationSearchWeb {
+		t.Fatalf("search.web must persist as succeeded read-only, task=%#v ok=%v", task, ok)
 	}
 	continued := &coreAgentCallbacks{
 		ctx: context.Background(), principal: Principal{TenantID: "tenant", UserID: "user"}, userText: "continue",
@@ -475,7 +478,7 @@ func TestCoreDynamicSemanticLookupContinuationStaysUnmanaged(t *testing.T) {
 	}
 	contDefs, contManaged := continued.dynamicSemanticToolDefinitions()
 	if contManaged || len(contDefs) != 0 {
-		t.Fatalf("continue after succeeded lookup must stay unmanaged, defs=%#v managed=%v", contDefs, contManaged)
+		t.Fatalf("continue after succeeded search.web must stay unmanaged, defs=%#v managed=%v", contDefs, contManaged)
 	}
 }
 

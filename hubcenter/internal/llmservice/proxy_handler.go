@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"net/http"
 	"strings"
@@ -73,7 +74,10 @@ func ProxyHandler(cfg *ProxyConfig) http.HandlerFunc {
 			return
 		}
 
-		resp, err := HandleProxyRequest(r.Context(), cfg, proxyReq)
+		// UsageRecorder obtains the owner from context.  The streaming path has
+		// always wrapped this context; normal requests must do the same or their
+		// records become unscoped and cannot be reconciled back to a Hub tenant.
+		resp, err := HandleProxyRequest(WithUsageContext(r.Context(), hubID, tenantID), cfg, proxyReq)
 		if err != nil {
 			writeProxyRequestError(w, err)
 			return
@@ -185,6 +189,7 @@ func ProxyQuoteHandler(cfg *ProxyConfig) http.HandlerFunc {
 			ProviderID:         dispatch.provider.ID,
 			UpstreamModel:      upstreamModel,
 			Pricing:            pricing.Pricing,
+			PricingSource:      pricing.PricingSource,
 			ProviderMultiplier: pricing.ProviderMultiplier,
 			ExpiresAt:          time.Now().Add(proxyQuoteTTL),
 		})
@@ -231,6 +236,36 @@ func ProxyBillingAttemptHandler(cfg *ProxyConfig) http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"attempt": attempt})
+	}
+}
+
+// UsageReconciliationHandler exposes the persisted upstream fact for the
+// authenticated owning Hub.  It intentionally does not use the provider
+// traffic card aggregation, because that view combines every Hub and cannot
+// be reconciled to one downstream tenant ledger.
+func UsageReconciliationHandler(stats *StatsService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		hubID := strings.TrimSpace(r.Header.Get("X-Hub-ID"))
+		tenantID := strings.TrimSpace(r.Header.Get("X-Tenant-ID"))
+		if hubID == "" || tenantID == "" {
+			writeJSONError(w, http.StatusBadRequest, "X-Hub-ID and X-Tenant-ID headers are required")
+			return
+		}
+		if stats == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "usage reconciliation is not configured")
+			return
+		}
+		report, err := stats.QueryUsageReconciliation(r.Context(), hubID, tenantID, r.URL.Query().Get("date"), r.URL.Query().Get("timezone"))
+		if err != nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "usage reconciliation is temporarily unavailable")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"reconciliation": report})
 	}
 }
 
@@ -367,6 +402,8 @@ func writeProxyStreamBillingTrailers(w http.ResponseWriter, req *ProxyRequest, d
 	if snapshot := proxyDispatchTokenPricingSnapshot(req, dispatch, upstreamModel); snapshot != nil {
 		if encoded, ok := llmpool.EncodeTokenPricingSnapshot(*snapshot); ok {
 			w.Header().Set(llmpool.TokenPricingSnapshotHeader, encoded)
+		} else {
+			log.Printf("[llm-proxy] stream pricing snapshot encode failed provider=%s input=%d cache_read=%d cache_write=%d output=%d", dispatch.provider.ID, snapshot.InputTokens, snapshot.CachedInputTokens, snapshot.CacheWriteTokens, snapshot.OutputTokens)
 		}
 	}
 }
@@ -381,12 +418,20 @@ func proxyDispatchTokenPricingSnapshot(req *ProxyRequest, dispatch *proxyDispatc
 			ProviderID:         dispatch.provider.ID,
 			UpstreamModel:      strings.TrimSpace(upstreamModel),
 			Pricing:            *dispatch.pricing,
+			PricingSource:      proxyTokenPricingSource(dispatch.matchedGroup, dispatch.provider, dispatch.provider.ID, upstreamModel),
 			ProviderMultiplier: providerMultiplier,
 			InputTokens:        dispatch.billingInputTokens,
 			OutputTokens:       dispatch.billingOutputTokens,
+			CachedInputTokens:  dispatch.billingCachedInputTokens,
+			CacheWriteTokens:   dispatch.billingCacheWriteTokens,
 		}
 	}
-	return proxyRequestTokenPricingSnapshot(req, dispatch.matchedGroup, dispatch.provider, dispatch.provider.ID, upstreamModel, dispatch.billingInputTokens, dispatch.billingOutputTokens, proxyRequestStartedAt(req))
+	snapshot := proxyRequestTokenPricingSnapshot(req, dispatch.matchedGroup, dispatch.provider, dispatch.provider.ID, upstreamModel, dispatch.billingInputTokens, dispatch.billingOutputTokens, proxyRequestStartedAt(req))
+	if snapshot != nil {
+		snapshot.CachedInputTokens = dispatch.billingCachedInputTokens
+		snapshot.CacheWriteTokens = dispatch.billingCacheWriteTokens
+	}
+	return snapshot
 }
 
 func proxyQuoteFromRequest(cfg *ProxyConfig, token string, req *ProxyRequest) (ProxyQuote, bool) {

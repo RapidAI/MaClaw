@@ -2819,6 +2819,13 @@ func authorizeLoopTool(cb LoopCallbacks, name, argsJSON string) (ToolExecutionRe
 				Outcome: ToolExecutionOutcomeError,
 			}, true
 		}
+		if lightDeniedDatabaseWrite(name, argsJSON) {
+			RecordLightToolDeny(name)
+			return ToolExecutionResult{
+				Result:  LightToolDenyMessage(name + " write"),
+				Outcome: ToolExecutionOutcomeError,
+			}, true
+		}
 	}
 	if authorizer, ok := cb.(ToolCallAuthorizer); ok {
 		if allowed, reason := authorizer.IsToolCallAllowed(name, argsJSON); !allowed {

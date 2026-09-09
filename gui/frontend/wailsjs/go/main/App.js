@@ -462,6 +462,10 @@ export function CloseVESession(arg1) {
   return window['go']['main']['App']['CloseVESession'](arg1);
 }
 
+export function CloudWorkspaceCacheDir(arg1) {
+  return window['go']['main']['App']['CloudWorkspaceCacheDir'](arg1);
+}
+
 export function CloudWorkspaceEntitlement() {
   return window['go']['main']['App']['CloudWorkspaceEntitlement']();
 }
@@ -680,6 +684,18 @@ export function CreateTaskWithMode(arg1, arg2, arg3) {
 
 export function CreateTaskWithCloudWorkspace(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['CreateTaskWithCloudWorkspace'](arg1, arg2, arg3, arg4);
+}
+
+export function ProvisionCloudWorkspaceTask(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['ProvisionCloudWorkspaceTask'](arg1, arg2, arg3, arg4);
+}
+
+export function CompleteCloudWorkspaceTaskProvision(arg1) {
+  return window['go']['main']['App']['CompleteCloudWorkspaceTaskProvision'](arg1);
+}
+
+export function AbortCloudWorkspaceTaskProvision(arg1, arg2) {
+  return window['go']['main']['App']['AbortCloudWorkspaceTaskProvision'](arg1, arg2);
 }
 
 export function CreateTemplate(arg1, arg2, arg3, arg4, arg5) {
@@ -3560,10 +3576,6 @@ export function ReadTutorial() {
 
 export function ReclaimVirtualEmployee(arg1) {
   return window['go']['main']['App']['ReclaimVirtualEmployee'](arg1);
-}
-
-export function RecommendTool(arg1) {
-  return window['go']['main']['App']['RecommendTool'](arg1);
 }
 
 export function ReconcileMaclawAppApprovalProjections() {

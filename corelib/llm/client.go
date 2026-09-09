@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
@@ -65,11 +66,10 @@ type OpenAIChatRequestOptions struct {
 	// intact, while false must survive serialization for final-wire verification.
 	ParallelToolCalls *bool
 	ResponseFormat    interface{}
-	// PreserveResponseFormat is for host control-plane requests whose response
-	// is consumed by a validator rather than displayed to a user. Conservative
-	// compatibility sanitization normally drops response_format because many
-	// older providers reject it; a caller that sets this field owns the failure
-	// path and must not be silently downgraded to free-form text.
+	// PreserveResponseFormat keeps json_schema instead of normalizing it to
+	// json_object on providers that only advertise JSON-object mode (DeepSeek
+	// Flash). It is a dialect choice, not the switch that makes a request
+	// structured: any non-nil ResponseFormat is a machine-readable contract.
 	PreserveResponseFormat bool
 }
 
@@ -109,7 +109,9 @@ func buildOpenAIChatRequestBody(
 	}
 	if cfg.NeedsConservativeOpenAICompatSanitization() {
 		messages = sanitizeConservativeOpenAICompatMessages(messages)
-		messages = relocateOversizedSystemPromptForOpenAICompat(cfg, messages)
+		if shouldRelocateOversizedSystemPrompt(cfg, opts) {
+			messages = relocateOversizedSystemPromptForOpenAICompat(cfg, messages)
+		}
 	}
 	if corelib.IsDeepSeekFlashOpenAICompat(cfg) {
 		messages = normalizeOpenAICompatDeveloperMessages(messages)
@@ -181,21 +183,21 @@ func buildOpenAIChatRequestBody(
 	}
 	ensureMaxOutputTokens(reqBody, cfg)
 	if cfg.NeedsConservativeOpenAICompatSanitization() {
-		corelib.SanitizeCodeGenOpenAICompatBody(reqBody)
-		if opts.PreserveResponseFormat && opts.ResponseFormat != nil {
-			if responseFormat := sanitizeOpenAIResponseFormatForProvider(cfg, opts.ResponseFormat, true); responseFormat != nil {
-				reqBody["response_format"] = responseFormat
-			}
-		}
-		if opts.ToolChoice != nil {
-			if toolChoice := sanitizeOpenAIToolChoiceForProvider(cfg, opts.ToolChoice); toolChoice != nil {
-				if opts.PreserveResponseFormat || isExplicitOpenAIToolChoice(toolChoice) {
+		if hasStructuredOutputContract(opts) {
+			// Structured requests own their output contract. The forward
+			// path already refuses to strip response_format; building a
+			// request must not turn it into HTTP 200 chat either.
+			corelib.SanitizeCodeGenOpenAICompatBodyPreservingSemanticContracts(reqBody)
+		} else {
+			corelib.SanitizeCodeGenOpenAICompatBody(reqBody)
+			if opts.ToolChoice != nil {
+				if toolChoice := sanitizeOpenAIToolChoiceForProvider(cfg, opts.ToolChoice); toolChoice != nil && isExplicitOpenAIToolChoice(toolChoice) {
 					reqBody["tool_choice"] = toolChoice
 				}
 			}
-		}
-		if opts.ParallelToolCalls != nil {
-			reqBody["parallel_tool_calls"] = *opts.ParallelToolCalls
+			if opts.ParallelToolCalls != nil {
+				reqBody["parallel_tool_calls"] = *opts.ParallelToolCalls
+			}
 		}
 	}
 	sanitizeOpenAIChatRequestBodyForSDKCompatibility(reqBody)
@@ -232,6 +234,7 @@ func buildOpenAIChatRequestBody(
 			reqBody["reasoning_effort"] = re
 		}
 	}
+	applyConfigTemperature(reqBody, cfg)
 	if corelib.IsDeepSeekFlashOpenAICompat(cfg) {
 		normalizeDeepSeekFlashUnsupportedOptions(reqBody)
 		ensureDeepSeekFlashJSONResponseInstruction(reqBody)
@@ -281,6 +284,29 @@ func ensureMaxOutputTokens(reqBody map[string]interface{}, cfg corelib.MaclawLLM
 		}
 	}
 	reqBody["max_tokens"] = cfg.EffectiveMaxOutputTokens()
+}
+
+// applyConfigTemperature writes cfg.Temperature into the request body when set.
+// An explicit temperature from PassThrough/ExtraBody wins. Codex subscription
+// endpoints reject unknown sampling params; thinking-enabled requests
+// (Anthropic extended thinking, DeepSeek V4 default thinking) also reject or
+// ignore temperature, so those bodies are left untouched.
+func applyConfigTemperature(reqBody map[string]interface{}, cfg corelib.MaclawLLMConfig) {
+	if reqBody == nil || cfg.Temperature == nil {
+		return
+	}
+	if _, ok := reqBody["temperature"]; ok {
+		return
+	}
+	if IsCodexSubscriptionEndpoint(cfg.URL) {
+		return
+	}
+	if thinking, _ := reqBody["thinking"].(map[string]interface{}); thinking != nil {
+		if strings.EqualFold(strings.TrimSpace(fmt.Sprint(thinking["type"])), "enabled") {
+			return
+		}
+	}
+	reqBody["temperature"] = *cfg.Temperature
 }
 
 func ShouldOmitOpenAIToolsForInitialRequest(cfg corelib.MaclawLLMConfig, messages []interface{}) bool {
@@ -518,8 +544,32 @@ const conservativeOpenAICompatCompactSystemPrompt = "You are MaClaw, a helpful A
 
 const openAICompatUnsupportedNonTextContentPlaceholder = "[Unsupported non-text content omitted]"
 
+func hasStructuredOutputContract(opts OpenAIChatRequestOptions) bool {
+	return opts.ResponseFormat != nil
+}
+
+// shouldRelocateOversizedSystemPrompt reports whether an oversized system
+// role may be rewritten into a chat-assistant persona. That rewrite is a
+// CodeGen/Qwen compatibility probe. It must not run on:
+//   - structured-output requests (the system prompt is the protocol)
+//   - first-party Hub (assistant, local coding, and remote coding all share
+//     this builder; preemptive rewrite turns their real system prompt into
+//     "use available tools" plus truncated [Runtime context])
+func shouldRelocateOversizedSystemPrompt(cfg corelib.MaclawLLMConfig, opts OpenAIChatRequestOptions) bool {
+	if hasStructuredOutputContract(opts) {
+		return false
+	}
+	if cfg.IsFirstPartyHubLLM() {
+		return false
+	}
+	return cfg.NeedsConservativeOpenAICompatSanitization()
+}
+
+// relocateOversizedSystemPromptForOpenAICompat is an agent-chat compatibility
+// rewrite for conservative OpenAI-compatible relays that reject large system
+// roles. Callers must gate it with shouldRelocateOversizedSystemPrompt.
 func relocateOversizedSystemPromptForOpenAICompat(cfg corelib.MaclawLLMConfig, messages []interface{}) []interface{} {
-	if len(messages) == 0 || !cfg.NeedsConservativeOpenAICompatSanitization() {
+	if len(messages) == 0 || !cfg.NeedsConservativeOpenAICompatSanitization() || cfg.IsFirstPartyHubLLM() {
 		return messages
 	}
 	if messageRole(messages[0]) != "system" {
@@ -538,7 +588,7 @@ func relocateOversizedSystemPromptForOpenAICompat(cfg corelib.MaclawLLMConfig, m
 		if messageRole(out[i]) != "user" {
 			continue
 		}
-		out[i] = withMessageContent(out[i], joinOpenAICompatText(contextBlock, messageContent(out[i])))
+		out[i] = withMessageContentValue(out[i], prependOpenAICompatContext(contextBlock, messageContent(out[i])))
 		return out
 	}
 	out = append(out, map[string]interface{}{
@@ -564,20 +614,60 @@ func compactOversizedOpenAICompatSystemContext(systemContent string) string {
 }
 
 func CompactOpenAICompatMessagesForToollessRetry(cfg corelib.MaclawLLMConfig, messages []interface{}) []interface{} {
-	if !cfg.NeedsConservativeOpenAICompatSanitization() {
-		return nil
-	}
-	runtimeContext := compactOpenAICompatRuntimeContext(messages)
-	latestUser := ""
+	return compactOpenAICompatMessagesForRetry(cfg, messages, false)
+}
+
+func latestUserMessageContent(messages []interface{}) interface{} {
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messageRole(messages[i]) != "user" {
 			continue
 		}
-		latestUser = strings.TrimSpace(stringifyOpenAIToolContent(messageContent(messages[i])))
-		if latestUser != "" {
-			break
+		content := messageContent(messages[i])
+		if isEmptyOpenAIMessageContent(content) {
+			continue
+		}
+		return content
+	}
+	return nil
+}
+
+func isEmptyOpenAIMessageContent(content interface{}) bool {
+	switch v := content.(type) {
+	case nil:
+		return true
+	case string:
+		return strings.TrimSpace(v) == ""
+	case []byte:
+		return len(bytes.TrimSpace(v)) == 0
+	case []interface{}:
+		return len(v) == 0
+	case []map[string]interface{}:
+		return len(v) == 0
+	default:
+		return false
+	}
+}
+
+func compactOpenAICompatMessagesForRetry(cfg corelib.MaclawLLMConfig, messages []interface{}, keepCallableSurface bool) []interface{} {
+	if !cfg.NeedsConservativeOpenAICompatSanitization() {
+		return nil
+	}
+	runtimeContext := compactOpenAICompatRuntimeContext(messages, keepCallableSurface)
+	latestContent := latestUserMessageContent(messages)
+	if latestContent == nil {
+		return nil
+	}
+	if keepCallableSurface {
+		systemContent := runtimeContext
+		if systemContent == "" {
+			systemContent = conservativeOpenAICompatCompactSystemPrompt
+		}
+		return []interface{}{
+			map[string]interface{}{"role": "system", "content": systemContent},
+			map[string]interface{}{"role": "user", "content": latestContent},
 		}
 	}
+	latestUser := strings.TrimSpace(stringifyOpenAIToolContent(latestContent))
 	if latestUser == "" {
 		return nil
 	}
@@ -604,7 +694,8 @@ func CompactOpenAICompatMessagesForToollessRetry(cfg corelib.MaclawLLMConfig, me
 
 const conservativeOpenAICompatRuntimeContextLimit = 8 * 1024
 
-func compactOpenAICompatRuntimeContext(messages []interface{}) string {
+func compactOpenAICompatRuntimeContext(messages []interface{}, fallbackToTruncatedSystem bool) string {
+	systems := make([]string, 0, 2)
 	parts := make([]string, 0, 2)
 	for _, message := range messages {
 		if messageRole(message) != "system" {
@@ -614,12 +705,26 @@ func compactOpenAICompatRuntimeContext(messages []interface{}) string {
 		if content == "" {
 			continue
 		}
+		systems = append(systems, content)
+		if fallbackToTruncatedSystem {
+			continue
+		}
 		if section := extractOpenAICompatTaskContext(content); section != "" {
 			parts = append(parts, section)
 		}
 		if skill := extractOpenAICompatSkillPreference(content); skill != "" {
 			parts = append(parts, skill)
 		}
+	}
+	if fallbackToTruncatedSystem {
+		// Tool-bearing Hub recoveries keep a truncated copy of the real
+		// system prompt. Keyword extraction was built for CodeGen task
+		// documents and will slice MaClaw assistant/coding prompts at the
+		// first "用户需求" in the workflow instructions.
+		if len(systems) == 0 {
+			return ""
+		}
+		return limitOpenAICompatRuntimeContext(strings.Join(systems, "\n\n"), conservativeOpenAICompatRuntimeContextLimit)
 	}
 	if len(parts) == 0 {
 		return ""
@@ -702,10 +807,49 @@ func limitOpenAICompatRuntimeContext(text string, limit int) string {
 	if len(text) <= limit {
 		return text
 	}
-	if limit <= 32 {
-		return text[:limit]
+	marker := "\n[...truncated for compatibility...]\n"
+	if limit <= len(marker)+8 {
+		if limit <= 32 {
+			return cutUTF8Prefix(text, limit)
+		}
+		return strings.TrimSpace(cutUTF8Prefix(text, limit-32)) + "\n[...truncated for compatibility...]"
 	}
-	return strings.TrimSpace(text[:limit-32]) + "\n[...truncated for compatibility...]"
+	// Keep identity/rules at the start and current-task/coding constraints
+	// at the end. Head-only truncation dropped the spec-driven coding
+	// workflow from MaClaw assistant/subagent recoveries.
+	keep := limit - len(marker)
+	headBudget := keep / 2
+	tailBudget := keep - headBudget
+	head := strings.TrimSpace(cutUTF8Prefix(text, headBudget))
+	tail := strings.TrimSpace(cutUTF8Suffix(text, tailBudget))
+	return head + marker + tail
+}
+
+func cutUTF8Prefix(s string, n int) string {
+	if n >= len(s) {
+		return s
+	}
+	if n <= 0 {
+		return ""
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
+}
+
+func cutUTF8Suffix(s string, n int) string {
+	if n >= len(s) {
+		return s
+	}
+	if n <= 0 {
+		return ""
+	}
+	start := len(s) - n
+	for start < len(s) && !utf8.RuneStart(s[start]) {
+		start++
+	}
+	return s[start:]
 }
 
 func normalizeOpenAICompatDeveloperMessages(messages []interface{}) []interface{} {
@@ -800,6 +944,51 @@ func textFromOpenAIContentBlocks(content interface{}) (string, bool) {
 		}
 	}
 	return strings.Join(parts, ""), true
+}
+
+func withMessageContentValue(message interface{}, content interface{}) interface{} {
+	if text, ok := content.(string); ok {
+		return withMessageContent(message, text)
+	}
+	m := toStringInterfaceMap(message)
+	if m == nil {
+		return map[string]interface{}{"role": messageRole(message), "content": content}
+	}
+	patched := make(map[string]interface{}, len(m)+1)
+	for k, v := range m {
+		patched[k] = v
+	}
+	patched["content"] = content
+	return patched
+}
+
+func prependOpenAICompatContext(prefix string, content interface{}) interface{} {
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		return content
+	}
+	parts, ok := openAIContentBlockList(content)
+	if !ok {
+		return joinOpenAICompatText(prefix, content)
+	}
+	out := make([]interface{}, 0, 1+len(parts))
+	out = append(out, map[string]interface{}{"type": "text", "text": prefix})
+	return append(out, parts...)
+}
+
+func openAIContentBlockList(content interface{}) ([]interface{}, bool) {
+	switch v := content.(type) {
+	case []interface{}:
+		return v, true
+	case []map[string]interface{}:
+		out := make([]interface{}, len(v))
+		for i, item := range v {
+			out[i] = item
+		}
+		return out, true
+	default:
+		return nil, false
+	}
 }
 
 func joinOpenAICompatText(left string, right interface{}) string {
@@ -2253,33 +2442,31 @@ func doOpenAIRequestRawWithOptions(ctx context.Context, cfg corelib.MaclawLLMCon
 		return nil, body, fmt.Errorf("llm http status %d body_len=%d", statusCode, len(body))
 	}
 	if statusCode != http.StatusOK && !TransparentRequestRetriesDisabled(ctx) {
-		if ShouldRetryOpenAIWithCompact(cfg, statusCode, messages, tools) {
-			if compactMessages := CompactOpenAICompatMessagesForToollessRetry(cfg, messages); len(compactMessages) > 0 {
-				log.Printf("[LLM] retry_compact_without_tools %s model=%s configured_model=%s reason=conservative_openai_compat_400_direct %s", endpoint, upstreamModel, cfg.Model, traceFields)
-				endpoint, reqBody, err = BuildOpenAIChatRequestData(cfg, compactMessages, OpenAIChatRequestOptions{Stream: false})
+		if compactMessages, retryOpts, ok := compactRetryChatRequest(cfg, statusCode, messages, tools, opts, false); ok {
+			log.Printf("[LLM] retry_compact_messages %s model=%s configured_model=%s reason=conservative_openai_compat_400_direct %s", endpoint, upstreamModel, cfg.Model, traceFields)
+			endpoint, reqBody, err = BuildOpenAIChatRequestData(cfg, compactMessages, retryOpts)
+			if err != nil {
+				return nil, body, err
+			}
+			compactStartedAt := time.Now()
+			body, statusCode, err = openAISDKChatRaw(ctx, cfg, reqBody, client)
+			if err != nil {
+				log.Printf("[LLM] retry_compact_messages done %s model=%s configured_model=%s status=error http_status=%d elapsed=%s err=%v %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(compactStartedAt).Round(time.Millisecond), err, traceFields)
+				if statusCode == 0 {
+					return nil, body, fmt.Errorf("[%s] %w", endpoint, err)
+				}
+			}
+			requestSummary = ""
+			if statusCode != http.StatusOK {
+				requestSummary = " request=" + SummarizeOpenAIChatRequestBody(reqBody)
+			}
+			log.Printf("[LLM] retry_compact_messages done %s model=%s configured_model=%s protocol=%s status=%d elapsed=%s body_len=%d%s %s", endpoint, upstreamModel, cfg.Model, cfg.Protocol, statusCode, time.Since(compactStartedAt).Round(time.Millisecond), len(body), requestSummary, traceFields)
+			if statusCode == http.StatusOK {
+				result, err := ParseNonStreamOpenAIResponseBody(body)
 				if err != nil {
 					return nil, body, err
 				}
-				compactStartedAt := time.Now()
-				body, statusCode, err = openAISDKChatRaw(ctx, cfg, reqBody, client)
-				if err != nil {
-					log.Printf("[LLM] retry_compact_without_tools done %s model=%s configured_model=%s status=error http_status=%d elapsed=%s err=%v %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(compactStartedAt).Round(time.Millisecond), err, traceFields)
-					if statusCode == 0 {
-						return nil, body, fmt.Errorf("[%s] %w", endpoint, err)
-					}
-				}
-				requestSummary = ""
-				if statusCode != http.StatusOK {
-					requestSummary = " request=" + SummarizeOpenAIChatRequestBody(reqBody)
-				}
-				log.Printf("[LLM] retry_compact_without_tools done %s model=%s configured_model=%s protocol=%s status=%d elapsed=%s body_len=%d%s %s", endpoint, upstreamModel, cfg.Model, cfg.Protocol, statusCode, time.Since(compactStartedAt).Round(time.Millisecond), len(body), requestSummary, traceFields)
-				if statusCode == http.StatusOK {
-					result, err := ParseNonStreamOpenAIResponseBody(body)
-					if err != nil {
-						return nil, body, err
-					}
-					return result, body, nil
-				}
+				return result, body, nil
 			}
 		}
 		if se := newHTTPStatusError(statusCode, body); se != nil {
@@ -2299,15 +2486,34 @@ func doOpenAIRequestRawWithOptions(ctx context.Context, cfg corelib.MaclawLLMCon
 	return result, body, nil
 }
 
-// ShouldRetryOpenAIWithCompact permits a compatibility retry only for a
-// genuinely tool-free request. Compaction constructs a new, shorter dialogue;
-// carrying tools into the original request means that a tool call is still a
-// valid outcome, so retrying without them would change the request contract.
+func compactRetryChatRequest(cfg corelib.MaclawLLMConfig, statusCode int, messages []interface{}, tools []map[string]interface{}, opts OpenAIChatRequestOptions, stream bool) ([]interface{}, OpenAIChatRequestOptions, bool) {
+	if hasStructuredOutputContract(opts) || !ShouldRetryOpenAIWithCompact(cfg, statusCode, messages, tools) {
+		return nil, OpenAIChatRequestOptions{}, false
+	}
+	keepCallableSurface := len(tools) > 0 || opts.ExplicitToolReplacement
+	compactMessages := compactOpenAICompatMessagesForRetry(cfg, messages, keepCallableSurface)
+	if len(compactMessages) == 0 {
+		return nil, OpenAIChatRequestOptions{}, false
+	}
+	retryOpts := opts
+	retryOpts.Stream = stream
+	return compactMessages, retryOpts, true
+}
+
+// ShouldRetryOpenAIWithCompact permits a message-only compatibility retry
+// after HTTP 400. Compaction shortens the dialogue; it must not drop tools
+// or response_format. CodeGen/Qwen tool-bearing 400s are left to fail
+// closed (those relays already received a size-adapted first request).
+// First-party Hub skipped preemptive relocate, so a size 400 there may
+// recover by compacting messages while keeping the tool surface.
 func ShouldRetryOpenAIWithCompact(cfg corelib.MaclawLLMConfig, statusCode int, messages []interface{}, tools []map[string]interface{}) bool {
-	return statusCode == http.StatusBadRequest &&
-		len(tools) == 0 &&
-		cfg.NeedsConservativeOpenAICompatSanitization() &&
-		len(CompactOpenAICompatMessagesForToollessRetry(cfg, messages)) > 0
+	if statusCode != http.StatusBadRequest || !cfg.NeedsConservativeOpenAICompatSanitization() {
+		return false
+	}
+	if len(tools) > 0 && !cfg.IsFirstPartyHubLLM() {
+		return false
+	}
+	return latestUserMessageContent(messages) != nil
 }
 
 func hasOpenAIToolInteractionMessages(messages []interface{}) bool {

@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import rehypeRaw from 'rehype-raw';
 import { ReadThanks } from '../../../wailsjs/go/main/App';
 import { MarkdownLink } from '../common/MarkdownLink';
 
@@ -33,7 +32,6 @@ export const AboutThanksCard = ({ t }: AboutThanksCardProps) => {
             <div className="about-thanks-content">
                 <ReactMarkdown remarkPlugins={[remarkGfm]}
                     // @ts-ignore -- rehype-raw pulls a nested vfile type in this dependency tree.
-                    rehypePlugins={[rehypeRaw]}
                     components={{ a: MarkdownLink }}>
                     {content}
                 </ReactMarkdown>

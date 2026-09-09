@@ -1,6 +1,5 @@
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import rehypeRaw from 'rehype-raw';
 import { MarkdownLink } from '../common/MarkdownLink';
 
 interface TutorialPageProps {
@@ -12,7 +11,7 @@ interface TutorialPageProps {
 }
 
 export const TutorialPage = ({ lang, refreshStatus, refreshKey, tutorialContent, switchTool }: TutorialPageProps) => (
-                        <div style={{
+                        <div className="secondary-page-shell tutorial-page" style={{
                             width: '100%',
                             padding: '0 15px',
                             boxSizing: 'border-box'
@@ -38,21 +37,7 @@ export const TutorialPage = ({ lang, refreshStatus, refreshKey, tutorialContent,
                                 marginBottom: '5px'
                             }}>
                                 {refreshStatus && (
-                                    <div style={{
-                                        position: 'absolute',
-                                        top: '0',
-                                        right: '0',
-                                        zIndex: 100,
-                                        padding: '4px 12px',
-                                        backgroundColor: 'var(--theme-info-bg, rgba(224, 242, 254, 0.95))',
-                                        borderRadius: '16px',
-                                        color: 'var(--theme-primary, #0369a1)',
-                                        fontSize: '0.75rem',
-                                        fontWeight: 'bold',
-                                        boxShadow: '0 4px 6px rgba(0,0,0,0.1)',
-                                        backdropFilter: 'blur(4px)',
-                                        animation: 'fadeIn 0.3s ease-out'
-                                    }}>
+                                    <div className="tutorial-refresh-status">
                                         {refreshStatus}
                                     </div>
                                 )}
@@ -74,7 +59,6 @@ export const TutorialPage = ({ lang, refreshStatus, refreshKey, tutorialContent,
                                     key={refreshKey}
                                     remarkPlugins={[remarkGfm]}
                                     // @ts-ignore - rehype-raw type compatibility
-                                    rehypePlugins={[rehypeRaw]}
                                     components={{ a: MarkdownLink }}
                                 >
                                     {tutorialContent}

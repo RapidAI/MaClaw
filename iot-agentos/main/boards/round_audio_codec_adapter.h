@@ -443,6 +443,13 @@ static esp_err_t round_audio_adapter_release(void) {
     bool lifecycle_teardown_active = false;
     const esp_err_t lifecycle_err =
         round_audio_lifecycle_shared_bus_begin_teardown(&lifecycle_teardown_active);
+    /* A lifecycle error means the shared-bus generation is not owned by this
+     * cleanup attempt (for example UNKNOWN_OUTCOME or a concurrent recovery).
+     * Do not touch any retained I2C/codec/I2S handle in that state: physical
+     * cleanup without the admission fence could race a borrower or consume
+     * an externally uncertain resource.  A successful but inactive begin is
+     * the normal no-handle/detached path and remains safe to continue. */
+    if (lifecycle_err != ESP_OK) return lifecycle_err;
     const esp_err_t i2s_cleanup_err = round_audio_adapter_release_i2s();
     /* PMIC/touch/IMU are bus devices. Their profile-private owner must detach
      * them before this Audio owner deletes the shared I2C master bus. */
@@ -465,7 +472,8 @@ static esp_err_t round_audio_adapter_release(void) {
 static esp_err_t round_audio_adapter_initialize(unsigned output_volume) {
     const round_audio_profile_t *profile = round_audio_profile_adapter();
     if (!profile) return ESP_ERR_INVALID_STATE;
-    (void)round_audio_adapter_release();
+    const esp_err_t release_err = round_audio_adapter_release();
+    if (release_err != ESP_OK) return release_err;
     esp_err_t err = round_audio_lifecycle_shared_bus_begin_bootstrap();
     if (err != ESP_OK) return err;
     err = round_audio_adapter_open_codec_bus();

@@ -59,14 +59,15 @@ func (g *ModelServiceGroup) ToPoolGroup() llmpool.ServiceGroup {
 		configs := make([]llmpool.ModelProviderConfig, 0, len(model.ProviderConfigs))
 		for _, cfg := range model.ProviderConfigs {
 			configs = append(configs, llmpool.ModelProviderConfig{
-				ProviderID:       cfg.ProviderID,
-				Model:            cfg.Model,
-				BillingMode:      cfg.BillingMode,
-				CapabilityTags:   append([]string(nil), cfg.CapabilityTags...),
-				Priority:         cfg.Priority,
-				ResolutionTier:   cfg.ResolutionTier,
-				CreditMultiplier: cfg.CreditMultiplier,
-				TokenPricing:     cfg.TokenPricing,
+				ProviderID:           cfg.ProviderID,
+				Model:                cfg.Model,
+				BillingMode:          cfg.BillingMode,
+				CapabilityTags:       append([]string(nil), cfg.CapabilityTags...),
+				Priority:             cfg.Priority,
+				ResolutionTier:       cfg.ResolutionTier,
+				CreditMultiplier:     cfg.CreditMultiplier,
+				TokenPricingOverride: cfg.TokenPricingOverride,
+				TokenPricing:         cfg.TokenPricing,
 			})
 		}
 		models = append(models, llmpool.ModelConfig{

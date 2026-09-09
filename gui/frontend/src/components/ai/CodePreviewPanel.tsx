@@ -211,6 +211,19 @@ function isPreviewHeaderInteractiveTarget(target: EventTarget | null, currentTar
     return !!target.closest('button, a, input, select, textarea, [role="button"], [role="tab"], [data-preview-no-maximize="true"]');
 }
 
+function CloudGlyph({ color }: { color: string }) {
+    return (
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true" style={{ flexShrink: 0 }}>
+            <path
+                d="M5 12.3h6a2.75 2.75 0 0 0 .9-5.4 3.55 3.55 0 0 0-6.6-.95 2.5 2.5 0 0 0-1.7 3.65A1.55 1.55 0 0 0 5 12.3Z"
+                stroke={color}
+                strokeWidth="1.3"
+                strokeLinejoin="round"
+            />
+        </svg>
+    );
+}
+
 function CloudWorkspaceNameLabel({ name, theme, compact = false }: { name: string; theme: CodePreviewTheme; compact?: boolean }) {
     const text = name.trim();
     if (!text) return null;
@@ -219,15 +232,22 @@ function CloudWorkspaceNameLabel({ name, theme, compact = false }: { name: strin
             data-testid="code-preview-cloud-workspace-name"
             title={text}
             style={{
-                color: theme.textMuted,
-                fontSize: 12,
-                fontWeight: 400,
+                display: 'inline-flex',
+                alignItems: 'center',
+                color: theme.tabActiveText,
+                background: theme.tabHoverBg,
+                border: `1px solid ${theme.border}`,
+                borderRadius: 999,
+                padding: compact ? '0 7px' : '1px 9px',
+                fontSize: 11,
+                fontWeight: 500,
+                lineHeight: 1.5,
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
                 whiteSpace: 'nowrap',
                 minWidth: 0,
-                flex: compact ? '0 1 auto' : 1,
-                maxWidth: compact ? 160 : undefined,
+                flex: '0 1 auto',
+                maxWidth: compact ? 160 : '100%',
                 marginLeft: compact ? 6 : undefined,
             }}
         >
@@ -1415,7 +1435,7 @@ export function CodePreviewPanel({
     // Empty state: no files
     if (files.size === 0) {
         return (
-            <div style={{
+            <div className="mc-code-preview-panel" style={{
                 display: 'flex',
                 flexDirection: 'row',
                 height: '100%',
@@ -1460,7 +1480,8 @@ export function CodePreviewPanel({
                         } as any}
                     >
                         <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flex: 1, marginRight: 8 }}>
-                            <span style={{ color: theme.tabActiveText, fontSize: 12, fontWeight: 600, flexShrink: 0 }}>
+                            {cloudMode ? <CloudGlyph color={theme.tabActiveText} /> : null}
+                            <span style={{ color: theme.tabActiveText, fontSize: 12, fontWeight: 600, letterSpacing: '0.01em', flexShrink: 0 }}>
                                 {cloudMode ? (lang.startsWith('zh') ? '云端工作区' : 'Cloud workspace') : (lang.startsWith('zh') ? '工作目录' : 'Working directory')}
                             </span>
                             {cloudMode && resolvedCloudName ? (
@@ -1479,9 +1500,10 @@ export function CodePreviewPanel({
                                 cursor: 'pointer',
                                 fontSize: 16,
                                 padding: '2px 6px',
-                                borderRadius: 4,
+                                borderRadius: 8,
                                 color: theme.textMuted,
                                 lineHeight: 1,
+                                transition: 'background 120ms ease, color 120ms ease',
                                 '--wails-draggable': 'no-drag',
                             } as any}
                             title="Close code preview"
@@ -1498,6 +1520,7 @@ export function CodePreviewPanel({
 
     return (
         <div
+            className="mc-code-preview-panel"
             data-testid="code-preview-panel"
             tabIndex={0}
             onKeyDown={handlePanelKeyDown}
@@ -1567,6 +1590,7 @@ export function CodePreviewPanel({
                         style={{
                             display: 'inline-flex',
                             alignItems: 'center',
+                            gap: 6,
                             flexShrink: 1,
                             minWidth: 0,
                             height: 36,
@@ -1580,8 +1604,10 @@ export function CodePreviewPanel({
                             font: 'inherit',
                             fontSize: 12,
                             fontWeight: 600,
+                            letterSpacing: '0.01em',
                         }}
                     >
+                        {cloudMode ? <CloudGlyph color={workspaceActive ? theme.tabActiveText : theme.textMuted} /> : null}
                         {cloudMode ? (lang.startsWith('zh') ? '云端文件' : 'Cloud files') : (lang.startsWith('zh') ? '工作目录' : 'Working directory')}
                         {cloudMode ? <CloudWorkspaceNameLabel name={resolvedCloudName} theme={theme} compact /> : null}
                     </button>
@@ -1621,11 +1647,12 @@ export function CodePreviewPanel({
                         cursor: 'pointer',
                         fontSize: 16,
                         padding: '2px 6px',
-                        borderRadius: 4,
+                        borderRadius: 8,
                         color: theme.textMuted,
                         lineHeight: 1,
                         flexShrink: 0,
                         marginLeft: 4,
+                        transition: 'background 120ms ease, color 120ms ease',
                         '--wails-draggable': 'no-drag',
                     } as any}
                     title="Close code preview"

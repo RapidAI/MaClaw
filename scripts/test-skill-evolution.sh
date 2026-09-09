@@ -26,7 +26,7 @@ gui_run='TestSetNLSkillStatus|TestGetSkillEvolutionStatus|TestListSkillEvolution
 tui_run='TestManageSkillHandler_AllCanonical|TestManageSkillHandler_Evolution|TestManageSkillHandler_SetEvolution'
 
 run_pkg ./corelib/skill/ "$core_run" 90s
-run_pkg ./gui/ "$gui_run" 120s
+run_pkg ./guiapp/ "$gui_run" 120s
 run_pkg ./tui/ "$tui_run" 90s
 
 echo ""

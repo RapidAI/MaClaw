@@ -69,8 +69,8 @@ func TestWelcomeSyncDocumentFlow(t *testing.T) {
 
 	// Optimistic concurrency: wrong if_match_revision → 409
 	conflictRec := doKnowledgeShareJSON(t, UploadWelcomeSyncHandler(identity, welcomeDir), http.MethodPut, "/api/welcome/sync", viewerToken, map[string]any{
-		"payload":            payload,
-		"if_match_revision":  "not-the-real-revision",
+		"payload":           payload,
+		"if_match_revision": "not-the-real-revision",
 	})
 	if conflictRec.Code != http.StatusConflict {
 		t.Fatalf("conflict upload = %d body=%s", conflictRec.Code, conflictRec.Body.String())

@@ -23,6 +23,11 @@ func ReadFile(filePath string, opts ReadOptions) (result *ReadResult, err error)
 		return nil, fmt.Errorf("文件不存在: %s", filePath)
 	}
 
+	readable, err := ResolveReadablePath(filePath, opts.Password)
+	if err != nil {
+		return nil, err
+	}
+	filePath = readable
 	ext := strings.ToLower(filepath.Ext(filePath))
 	if ext == ".csv" {
 		return readCSV(filePath, opts)

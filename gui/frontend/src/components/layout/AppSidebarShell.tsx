@@ -1,4 +1,4 @@
-import type { MouseEvent as ReactMouseEvent } from 'react';
+import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from 'react';
 import { SidebarAiPane } from './SidebarAiPane';
 import { SidebarNavRail } from './SidebarNavRail';
 import type { SidebarCreditDisplayFormatters, SidebarCurrentProviderTokenUsage, SidebarHubCredits } from '../../types/appShell';
@@ -33,6 +33,14 @@ interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     runningTaskCount: number;
     backgroundTaskCount?: number;
     onOpenBackgroundTasks?: () => void;
+    /** Keep cloud workspace/project controls for external coding surfaces. */
+    showCloudWorkspaceManagement?: boolean;
+    /** Show cloud task creation while keeping project management controls hidden. */
+    showCloudWorkspaceCreation?: boolean;
+    /** Restore durable cloud task rows while keeping project controls hidden. */
+    restoreCloudWorkspaceTasks?: boolean;
+    onOpenScheduledTasks?: () => void;
+    remoteSessionTab?: 'remote' | 'background' | 'scheduled' | 'passthrough';
     t: (key: string) => string;
     gossipAllowed: boolean;
     config: any;
@@ -65,6 +73,8 @@ interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     hideTask: (projectPath: string, tags?: string[]) => Promise<unknown>;
     /** Open project-tab paths; tasks with open tabs cannot be removed from the list menu. */
     openProjectTabPaths?: string[];
+    /** Include cloud workspace identity when matching an open task tab. */
+    openProjectTabIdentities?: Array<{ projectPath: string; cloudWorkspaceId?: string }>;
     openExpertTabIDs?: string[];
     /** Currently visible assistant tab. Null/empty clears the task-list highlight. */
     activeAssistantTask?: ActiveAssistantTaskIdentity | null;
@@ -79,7 +89,7 @@ interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     openHubCardStorePage?: () => void;
     codingAgentProgress?: CodingAgentProgress | null;
     codingAgentTurnSnapshot?: CodingAgentTurnSnapshot | null;
-    handleTaskManagementResizeStart: (e: ReactMouseEvent<HTMLDivElement>) => void;
+    handleTaskManagementResizeStart: (e: ReactMouseEvent<HTMLDivElement> | ReactPointerEvent<HTMLDivElement> | number) => void;
     isTaskManagementResizing: boolean;
     onOpenVEConversation?: (ve: VirtualEmployeeEntry) => void;
     favoriteEmployees?: FavoriteEmployeeSlot[];
@@ -98,6 +108,7 @@ interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     showAppEntry?: boolean;
     showWorkflowEntry?: boolean;
 	showUtilitiesEntry?: boolean;
+	showToolsEntry?: boolean;
     utilitiesLabel?: string;
     availableProviders?: Array<{ name: string; url: string; isHubService: boolean; model?: string; models?: string[] }>;
     onSwitchProvider?: (providerID: string) => void;
@@ -142,6 +153,11 @@ export const AppSidebarShell = ({
     runningTaskCount,
     backgroundTaskCount = 0,
     onOpenBackgroundTasks,
+    showCloudWorkspaceManagement,
+    showCloudWorkspaceCreation,
+    restoreCloudWorkspaceTasks,
+    onOpenScheduledTasks,
+    remoteSessionTab = 'remote',
     t,
     gossipAllowed,
     config,
@@ -167,6 +183,7 @@ export const AppSidebarShell = ({
     pinTask,
     hideTask,
     openProjectTabPaths,
+    openProjectTabIdentities,
     openExpertTabIDs,
     activeAssistantTask,
     sidebarCurrentProviderTokenUsage,
@@ -204,6 +221,7 @@ export const AppSidebarShell = ({
     showAppEntry = false,
     showWorkflowEntry = true,
 	showUtilitiesEntry = true,
+	showToolsEntry = false,
     utilitiesLabel,
     availableProviders = [],
     onSwitchProvider,
@@ -222,7 +240,7 @@ export const AppSidebarShell = ({
     codingInheritsAssistant,
 }: AppSidebarShellProps) => (
 <>
-            <div data-window-drag style={{
+            <div className="mc-sidebar-drag-strip" data-window-drag style={{
                 height: '30px',
                 width: navTab === 'ai' ? `${SIDEBAR_NAV_RAIL_WIDTH + taskManagementPaneWidth + SIDEBAR_AI_PANE_GAP}px` : `${SIDEBAR_NAV_RAIL_WIDTH}px`,
                 position: 'absolute',
@@ -230,10 +248,11 @@ export const AppSidebarShell = ({
                 left: 0,
                 zIndex: 999,
                 userSelect: 'none',
+                '--mc-task-pane-width': `${taskManagementPaneWidth}px`,
                 '--wails-draggable': 'drag'
             } as any}></div>
 
-            <div className="sidebar" style={{ '--wails-draggable': 'no-drag', flexDirection: 'row', padding: 0, width: navTab === 'ai' ? `${SIDEBAR_NAV_RAIL_WIDTH + taskManagementPaneWidth + SIDEBAR_AI_PANE_GAP}px` : `${SIDEBAR_NAV_RAIL_WIDTH}px` } as any} data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-ai-light-scheme={aiThemeMode === 'light' ? aiLightSchemeId : undefined}>
+            <div className="sidebar office-agent-shell" style={{ '--wails-draggable': 'no-drag', '--mc-task-pane-width': `${taskManagementPaneWidth}px`, flexDirection: 'row', padding: 0, width: navTab === 'ai' ? `${SIDEBAR_NAV_RAIL_WIDTH + taskManagementPaneWidth + SIDEBAR_AI_PANE_GAP}px` : `${SIDEBAR_NAV_RAIL_WIDTH}px` } as any} data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-ai-light-scheme={aiThemeMode === 'light' ? aiLightSchemeId : undefined}>
                           <SidebarNavRail
                     navTab={navTab}
                     brandInfo={brandInfo}
@@ -244,6 +263,9 @@ export const AppSidebarShell = ({
                     maclawLLMOnline={maclawLLMOnline}
                     remoteActivationStatus={remoteActivationStatus}
                     runningTaskCount={runningTaskCount}
+                    onOpenBackgroundTasks={onOpenBackgroundTasks}
+                    onOpenScheduledTasks={onOpenScheduledTasks}
+                    remoteSessionTab={remoteSessionTab}
                     t={t}
                     gossipAllowed={gossipAllowed}
                     config={config}
@@ -256,12 +278,15 @@ export const AppSidebarShell = ({
                     showAppEntry={showAppEntry}
                     showWorkflowEntry={showWorkflowEntry}
 					showUtilitiesEntry={showUtilitiesEntry}
+					showToolsEntry={showToolsEntry}
                     utilitiesLabel={utilitiesLabel}
                 />        {navTab === 'ai' && (
                     <SidebarAiPane
                         taskManagementPaneWidth={taskManagementPaneWidth}
                         lang={lang}
                         aiThemeMode={aiThemeMode}
+                        aiLightSchemeId={aiLightSchemeId}
+                        aiDarkSchemeId={aiDarkSchemeId}
                         maclawLLMOnline={maclawLLMOnline}
                         showLansenger={showLansenger}
                         remoteActivationStatus={remoteActivationStatus}
@@ -271,6 +296,9 @@ export const AppSidebarShell = ({
                         lansengerStatus={lansengerStatus}
                         backgroundTaskCount={backgroundTaskCount}
                         onOpenBackgroundTasks={onOpenBackgroundTasks}
+                        showCloudWorkspaceManagement={showCloudWorkspaceManagement}
+                        showCloudWorkspaceCreation={showCloudWorkspaceCreation}
+                        restoreCloudWorkspaceTasks={restoreCloudWorkspaceTasks}
                         config={config}
                         activeTool={activeTool}
                         toolDropdownOpen={toolDropdownOpen}
@@ -292,6 +320,7 @@ export const AppSidebarShell = ({
                         pinTask={pinTask}
                         hideTask={hideTask}
                         openProjectTabPaths={openProjectTabPaths}
+                        openProjectTabIdentities={openProjectTabIdentities}
                         openExpertTabIDs={openExpertTabIDs}
                         activeAssistantTask={activeAssistantTask}
                         sidebarCurrentProviderTokenUsage={sidebarCurrentProviderTokenUsage}

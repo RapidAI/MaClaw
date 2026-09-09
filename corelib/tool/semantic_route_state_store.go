@@ -116,7 +116,11 @@ type RouteRevisionPublishRequest struct {
 // that revision. It deliberately does not persist mutable artifact payloads,
 // provider output, credentials, or untrusted model arguments.
 type RouteState struct {
-	Version        string
+	Version string
+	// TenantID is the authenticated tenant partition persisted with the
+	// route. It is kept separate from InvocationScope for compatibility with
+	// legacy callers whose scopes predate tenant-aware routing.
+	TenantID       string
 	Scope          InvocationScope
 	Plan           ToolPlan
 	PlanDigest     string
@@ -236,6 +240,11 @@ func cloneRouteStatePlan(plan ToolPlan) ToolPlan {
 		clone.Selections[i] = clonePlannedSelection(selection)
 	}
 	clone.Unmet = append([]UnmetNeed(nil), plan.Unmet...)
+	// Omitted is part of the durable plan contract.  Keep it detached from the
+	// caller's slice and canonicalize its order just like Unmet; otherwise a
+	// read/modify/publish cycle can silently drop optional omissions or produce
+	// a different route digest for the same plan.
+	clone.Omitted = append([]UnmetNeed(nil), plan.Omitted...)
 	clone.Decisions = append([]ToolDecision(nil), plan.Decisions...)
 	clone.Trace.Events = append([]TraceEvent(nil), plan.Trace.Events...)
 	sort.Slice(clone.Selections, func(i, j int) bool { return clone.Selections[i].ID < clone.Selections[j].ID })
@@ -245,11 +254,81 @@ func cloneRouteStatePlan(plan ToolPlan) ToolPlan {
 		}
 		return clone.Unmet[i].NeedID < clone.Unmet[j].NeedID
 	})
+	sort.Slice(clone.Omitted, func(i, j int) bool {
+		if clone.Omitted[i].NeedID == clone.Omitted[j].NeedID {
+			return clone.Omitted[i].ReasonCode < clone.Omitted[j].ReasonCode
+		}
+		return clone.Omitted[i].NeedID < clone.Omitted[j].NeedID
+	})
 	return clone
 }
 
 func routeStateKey(scope InvocationScope) string {
 	return SchemaDigest([]byte(strings.Join([]string{scope.RootTaskID, scope.PlanID, scope.SessionID, scope.TurnID, scope.PrincipalID}, "\x00")))
+}
+
+// routeToolSnapshotCompatible keeps pre-snapshot route rows readable while
+// rejecting two concrete, different host-admitted surfaces.  Legacy callers
+// may omit the field; any newly issued grant still carries the persisted
+// value, and recovery paths that require an exact snapshot validate it
+// explicitly.  Once both sides provide an identity it is an exact match.
+func catalogDigestsCompatible(left, right string) bool {
+	left, right = strings.TrimSpace(left), strings.TrimSpace(right)
+	return left == "" || right == "" || left == right
+}
+func routeToolSnapshotCompatible(stored, requested string) bool {
+	stored, requested = strings.TrimSpace(stored), strings.TrimSpace(requested)
+	return stored == "" || requested == "" || stored == requested
+}
+
+// canonicalRouteScope fills the snapshot field for a legacy caller before a
+// coordinator operation can issue or persist a new grant. The route row is
+// the durable owner; callers may omit the field for compatibility, but a
+// concrete conflicting value is rejected.
+func canonicalRouteScope(q routeStateRowQuerier, scope InvocationScope) (InvocationScope, error) {
+	if q == nil {
+		return InvocationScope{}, fmt.Errorf("route_state_store_unavailable")
+	}
+	var stored string
+	err := q.QueryRow(`SELECT COALESCE(tool_snapshot_id, '') FROM semantic_route_states WHERE route_key = ? AND COALESCE(trim(tenant_id), '') <> ''`, routeStateKey(scope)).Scan(&stored)
+	if err == sql.ErrNoRows {
+		return scope, nil
+	}
+	if err != nil {
+		return InvocationScope{}, err
+	}
+	stored = strings.TrimSpace(stored)
+	requested := strings.TrimSpace(scope.ToolSnapshotID)
+	if stored != "" && requested != "" && stored != requested {
+		return InvocationScope{}, fmt.Errorf("route_snapshot_scope_mismatch")
+	}
+	// A concrete snapshot supplied by a trusted host is the only safe value
+	// with which to bind a legacy row.  Merely treating an empty stored value
+	// as a wildcard lets two different concrete surfaces reuse the same route
+	// key after restart.  Persist the first concrete value with a compare-and-
+	// set, then re-read it so a racing writer cannot win silently.
+	if stored == "" && requested != "" {
+		execer, ok := q.(routeStateRowExecer)
+		if !ok {
+			return InvocationScope{}, fmt.Errorf("route_snapshot_binding_unavailable")
+		}
+		if _, err := execer.Exec(`UPDATE semantic_route_states SET tool_snapshot_id=? WHERE route_key=? AND COALESCE(trim(tool_snapshot_id), '')=''`, requested, routeStateKey(scope)); err != nil {
+			return InvocationScope{}, err
+		}
+		if err := q.QueryRow(`SELECT COALESCE(tool_snapshot_id, '') FROM semantic_route_states WHERE route_key = ? AND COALESCE(trim(tenant_id), '') <> ''`, routeStateKey(scope)).Scan(&stored); err != nil {
+			return InvocationScope{}, err
+		}
+		stored = strings.TrimSpace(stored)
+		if stored != "" && stored != requested {
+			return InvocationScope{}, fmt.Errorf("route_snapshot_scope_mismatch")
+		}
+	}
+	if requested == "" {
+		scope.ToolSnapshotID = stored
+	} else {
+		scope.ToolSnapshotID = requested
+	}
+	return scope, nil
 }
 
 func routeLineageKey(scope InvocationScope) string {
@@ -344,7 +423,13 @@ func validateRouteMaterialization(materialization RouteMaterialization) error {
 }
 
 func routeMaterializationMatchesPlan(plan ToolPlan, scope InvocationScope, materialization RouteMaterialization) bool {
-	if materialization.Grant.Scope != scope || materialization.Grant.Scope.PlanID != plan.ID || materialization.Grant.CatalogGeneration != plan.CatalogGeneration {
+	if !invocationScopesCompatible(materialization.Grant.Scope, scope) || materialization.Grant.Scope.PlanID != plan.ID || materialization.Grant.CatalogGeneration != plan.CatalogGeneration {
+		return false
+	}
+	// Grants issued before CatalogDigest was introduced carry an empty value;
+	// retain their generation-bound compatibility while rejecting two concrete
+	// identities that disagree.
+	if !catalogDigestsCompatible(plan.CatalogDigest, materialization.Grant.CatalogDigest) {
 		return false
 	}
 	for _, selection := range plan.Selections {
@@ -399,8 +484,9 @@ func sameInvocationGrant(left, right InvocationGrant) bool {
 		left.ProviderBinding == right.ProviderBinding &&
 		left.FitProofDigest == right.FitProofDigest &&
 		parameterAuthorizationsEqual(left.ParameterAuthorization, right.ParameterAuthorization) &&
+		catalogDigestsCompatible(left.CatalogDigest, right.CatalogDigest) &&
 		left.CatalogGeneration == right.CatalogGeneration &&
-		left.Scope == right.Scope &&
+		invocationScopesCompatible(left.Scope, right.Scope) &&
 		left.IssuedAt.Equal(right.IssuedAt) &&
 		left.ExpiresAt.Equal(right.ExpiresAt) &&
 		left.Nonce == right.Nonce &&
@@ -490,8 +576,18 @@ func routeArtifactRefFromArtifact(ref ArtifactRef, producerPurpose string) Route
 	return RouteArtifactRef{ArtifactID: ref.ID, Kind: ref.Kind, MIMEType: ref.MIMEType, IntegrityDigest: ref.IntegrityDigest, ProducerSelection: ref.ProducerSelection, ProducerPurposeDigest: producerPurpose, SourceScope: ref.Scope, CreatedAt: ref.CreatedAt.UTC()}
 }
 
-func (ref RouteArtifactRef) artifactRef() ArtifactRef {
+func sameRouteArtifactIdentity(left, right RouteArtifactRef) bool {
+	return left.ArtifactID == right.ArtifactID && left.Kind == right.Kind && left.MIMEType == right.MIMEType && left.IntegrityDigest == right.IntegrityDigest && left.ProducerSelection == right.ProducerSelection && left.ProducerPurposeDigest == right.ProducerPurposeDigest && invocationScopesCompatible(left.SourceScope, right.SourceScope) && left.CreatedAt.Equal(right.CreatedAt)
+}
+
+// ArtifactRef projects trusted RouteState metadata into the ArtifactStore
+// handle. It never copies payload or access grants.
+func (ref RouteArtifactRef) ArtifactRef() ArtifactRef {
 	return ArtifactRef{ID: ref.ArtifactID, Kind: ref.Kind, MIMEType: ref.MIMEType, IntegrityDigest: ref.IntegrityDigest, ProducerSelection: ref.ProducerSelection, Scope: ref.SourceScope, CreatedAt: ref.CreatedAt}
+}
+
+func (ref RouteArtifactRef) artifactRef() ArtifactRef {
+	return ref.ArtifactRef()
 }
 
 func validateRouteArtifactRef(ref RouteArtifactRef) error {
@@ -590,6 +686,34 @@ type memoryRouteStateStore struct {
 	fencing uint64
 }
 
+// ensureMemoryRouteScope mirrors the SQLite route snapshot fence.  Memory
+// stores are used by tests and single-process development, but their map key
+// intentionally omits ToolSnapshotID just like the durable key; without this
+// check a caller could reuse one state under two concrete host surfaces.
+// When a legacy state has no snapshot, the first concrete trusted caller binds
+// it in the state and all later callers must use that identity.  An omitted
+// caller value is hydrated from an already-bound state for compatibility.
+func ensureMemoryRouteScope(state *RouteState, scope *InvocationScope) (bool, error) {
+	if state == nil || scope == nil {
+		return false, fmt.Errorf("route_state_scope_required")
+	}
+	if !routeToolSnapshotCompatible(state.Scope.ToolSnapshotID, scope.ToolSnapshotID) {
+		return false, fmt.Errorf("route_snapshot_scope_mismatch")
+	}
+	stored, requested := strings.TrimSpace(state.Scope.ToolSnapshotID), strings.TrimSpace(scope.ToolSnapshotID)
+	changed := false
+	if stored == "" && requested != "" {
+		state.Scope.ToolSnapshotID = requested
+		stored, changed = requested, true
+	}
+	if requested == "" {
+		scope.ToolSnapshotID = stored
+	} else {
+		scope.ToolSnapshotID = requested
+	}
+	return changed, nil
+}
+
 // NewMemoryRouteStateStore is restricted to tests and explicit single-process
 // development. Restartable hosts must use SQLiteRouteStateStore.
 func NewMemoryRouteStateStore() RouteStateStore {
@@ -611,12 +735,21 @@ func (s *memoryRouteStateStore) Open(scope InvocationScope, plan ToolPlan, now t
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if current, ok := s.states[key]; ok {
-		if current.Version != RouteStateVersion || current.PlanDigest != digest {
+		if current.Version != RouteStateVersion || current.PlanDigest != digest || strings.TrimSpace(current.TenantID) == "" || !routeToolSnapshotCompatible(current.Scope.ToolSnapshotID, scope.ToolSnapshotID) {
 			return RouteState{}, fmt.Errorf("route_state_conflict")
+		}
+		// Bind the first concrete host snapshot to a legacy in-memory row.  A
+		// wildcard that is never persisted would allow a later caller to swap
+		// the executable surface under the same logical route key.
+		if strings.TrimSpace(current.Scope.ToolSnapshotID) == "" && strings.TrimSpace(scope.ToolSnapshotID) != "" {
+			current.Scope.ToolSnapshotID = strings.TrimSpace(scope.ToolSnapshotID)
+			current.UpdatedAt = now.UTC()
+			s.states[key] = current
 		}
 		return cloneRouteState(current), nil
 	}
-	state := RouteState{Version: RouteStateVersion, Scope: scope, Plan: cloneRouteStatePlan(plan), PlanDigest: digest, CreatedAt: now.UTC(), UpdatedAt: now.UTC()}
+	scope.ToolSnapshotID = strings.TrimSpace(scope.ToolSnapshotID)
+	state := RouteState{Version: RouteStateVersion, TenantID: routeStateTenantID(), Scope: scope, Plan: cloneRouteStatePlan(plan), PlanDigest: digest, CreatedAt: now.UTC(), UpdatedAt: now.UTC()}
 	s.states[key] = state
 	return cloneRouteState(state), nil
 }
@@ -636,8 +769,13 @@ func (s *memoryRouteStateStore) PublishRevision(request RouteRevisionPublishRequ
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if existing, ok := s.states[key]; ok {
-		if existing.PlanDigest != digest || existing.SnapshotDigest != request.SnapshotDigest || existing.Revision == nil || !sameOptionalRouteAmendmentRef(existing.Amendment, request.Amendment) || (!sameOptionalRouteRevisionRef(existing.ParentRevision, request.ExpectedParent) && !sameOptionalRouteRevisionRef(existing.Revision, request.ExpectedParent)) {
+		if strings.TrimSpace(existing.TenantID) == "" || existing.PlanDigest != digest || existing.SnapshotDigest != request.SnapshotDigest || !routeToolSnapshotCompatible(existing.Scope.ToolSnapshotID, request.Scope.ToolSnapshotID) || existing.Revision == nil || !sameOptionalRouteAmendmentRef(existing.Amendment, request.Amendment) || (!sameOptionalRouteRevisionRef(existing.ParentRevision, request.ExpectedParent) && !sameOptionalRouteRevisionRef(existing.Revision, request.ExpectedParent)) {
 			return RouteState{}, fmt.Errorf("route_state_conflict")
+		}
+		if strings.TrimSpace(existing.Scope.ToolSnapshotID) == "" && strings.TrimSpace(request.Scope.ToolSnapshotID) != "" {
+			existing.Scope.ToolSnapshotID = strings.TrimSpace(request.Scope.ToolSnapshotID)
+			existing.UpdatedAt = now.UTC()
+			s.states[key] = existing
 		}
 		return cloneRouteState(existing), nil
 	}
@@ -673,7 +811,7 @@ func (s *memoryRouteStateStore) PublishRevision(request RouteRevisionPublishRequ
 	}
 	ref := routeRevisionRef(request.Scope, request.Plan.ID, digest, revision)
 	s.fencing++
-	state := RouteState{Version: RouteStateVersion, Scope: request.Scope, Plan: cloneRouteStatePlan(request.Plan), PlanDigest: digest, Revision: &ref, ParentRevision: cloneRouteRevisionRef(request.ExpectedParent), SnapshotDigest: request.SnapshotDigest, Amendment: cloneRouteAmendmentRef(request.Amendment), FencingToken: s.fencing, Completed: projectedCompleted, Confirmations: projectedConfirmations, Artifacts: projectedArtifacts, CreatedAt: now.UTC(), UpdatedAt: now.UTC()}
+	state := RouteState{Version: RouteStateVersion, TenantID: routeStateTenantID(), Scope: request.Scope, Plan: cloneRouteStatePlan(request.Plan), PlanDigest: digest, Revision: &ref, ParentRevision: cloneRouteRevisionRef(request.ExpectedParent), SnapshotDigest: request.SnapshotDigest, Amendment: cloneRouteAmendmentRef(request.Amendment), FencingToken: s.fencing, Completed: projectedCompleted, Confirmations: projectedConfirmations, Artifacts: projectedArtifacts, CreatedAt: now.UTC(), UpdatedAt: now.UTC()}
 	s.states[key], s.lineages[lineageKey] = state, ref
 	return cloneRouteState(state), nil
 }
@@ -696,9 +834,15 @@ func (s *memoryRouteStateStore) IsCurrent(scope InvocationScope) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	state, ok := s.states[routeStateKey(scope)]
+	key := routeStateKey(scope)
+	state, ok := s.states[key]
 	if !ok {
 		return fmt.Errorf("route_state_not_found")
+	}
+	if changed, err := ensureMemoryRouteScope(&state, &scope); err != nil {
+		return err
+	} else if changed {
+		s.states[key] = state
 	}
 	if state.Revision == nil { // Legacy Open-only state.
 		if _, published := s.lineages[routeLineageKey(scope)]; published {
@@ -726,6 +870,15 @@ func (s *memoryRouteStateStore) CurrentRevision(scope InvocationScope) (RouteRev
 	if !ok {
 		return RouteRevisionRef{}, fmt.Errorf("route_revision_not_found")
 	}
+	key, state, found := findMemoryRouteRevision(s.states, ref)
+	if !found {
+		return RouteRevisionRef{}, fmt.Errorf("route_revision_corrupt")
+	}
+	if changed, err := ensureMemoryRouteScope(&state, &scope); err != nil {
+		return RouteRevisionRef{}, err
+	} else if changed {
+		s.states[key] = state
+	}
 	return ref, nil
 }
 
@@ -735,9 +888,15 @@ func (s *memoryRouteStateStore) PublishedPlan(scope InvocationScope) (ToolPlan, 
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	state, ok := s.states[routeStateKey(scope)]
+	key := routeStateKey(scope)
+	state, ok := s.states[key]
 	if !ok {
 		return ToolPlan{}, fmt.Errorf("route_state_not_found")
+	}
+	if changed, err := ensureMemoryRouteScope(&state, &scope); err != nil {
+		return ToolPlan{}, err
+	} else if changed {
+		s.states[key] = state
 	}
 	if state.Revision != nil {
 		current, ok := s.lineages[routeLineageKey(scope)]
@@ -762,6 +921,11 @@ func (s *memoryRouteStateStore) RecordSelectionCompletion(scope InvocationScope,
 	state, ok := s.states[key]
 	if !ok || state.Plan.ID != planID {
 		return RouteState{}, fmt.Errorf("route_state_not_found")
+	}
+	if changed, err := ensureMemoryRouteScope(&state, &scope); err != nil {
+		return RouteState{}, err
+	} else if changed {
+		s.states[key] = state
 	}
 	if state.Revision != nil {
 		current, ok := s.lineages[routeLineageKey(scope)]
@@ -795,6 +959,12 @@ func (s *memoryRouteStateStore) CompletedSelections(scope InvocationScope) (map[
 	if !ok {
 		return nil, fmt.Errorf("route_state_not_found")
 	}
+	key := routeStateKey(scope)
+	if changed, err := ensureMemoryRouteScope(&state, &scope); err != nil {
+		return nil, err
+	} else if changed {
+		s.states[key] = state
+	}
 	completed := make(map[string]bool, len(state.Completed))
 	for _, value := range state.Completed {
 		if completedSelectionMatchesPlan(value, state.Plan) {
@@ -814,6 +984,11 @@ func (s *memoryRouteStateStore) RecordConfirmation(scope InvocationScope, planID
 	state, ok := s.states[key]
 	if !ok || state.Plan.ID != planID {
 		return RouteState{}, fmt.Errorf("route_state_not_found")
+	}
+	if changed, err := ensureMemoryRouteScope(&state, &scope); err != nil {
+		return RouteState{}, err
+	} else if changed {
+		s.states[key] = state
 	}
 	if state.Revision != nil {
 		current, ok := s.lineages[routeLineageKey(scope)]
@@ -849,6 +1024,12 @@ func (s *memoryRouteStateStore) ConfirmedRequirements(scope InvocationScope, now
 	if !ok {
 		return nil, fmt.Errorf("route_state_not_found")
 	}
+	key := routeStateKey(scope)
+	if changed, err := ensureMemoryRouteScope(&state, &scope); err != nil {
+		return nil, err
+	} else if changed {
+		s.states[key] = state
+	}
 	confirmed := make(map[string]bool, len(state.Confirmations))
 	for _, confirmation := range state.Confirmations {
 		if confirmationMatchesPlan(confirmation, state.Plan, now) {
@@ -862,8 +1043,11 @@ func (s *memoryRouteStateStore) RecordArtifact(scope InvocationScope, planID str
 	if s == nil {
 		return RouteState{}, fmt.Errorf("route state store is unavailable")
 	}
-	if ref.Scope != scope || scope.PlanID != planID {
+	if !invocationScopesCompatible(ref.Scope, scope) || scope.PlanID != planID {
 		return RouteState{}, fmt.Errorf("route_artifact_scope_mismatch")
+	}
+	if hydrated, err := canonicalInvocationScope(ref.Scope, scope); err == nil {
+		ref.Scope = hydrated
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -871,6 +1055,11 @@ func (s *memoryRouteStateStore) RecordArtifact(scope InvocationScope, planID str
 	state, ok := s.states[key]
 	if !ok || state.Plan.ID != planID {
 		return RouteState{}, fmt.Errorf("route_state_not_found")
+	}
+	if changed, err := ensureMemoryRouteScope(&state, &scope); err != nil {
+		return RouteState{}, err
+	} else if changed {
+		s.states[key] = state
 	}
 	if state.Revision != nil {
 		current, ok := s.lineages[routeLineageKey(scope)]
@@ -897,7 +1086,7 @@ func (s *memoryRouteStateStore) RecordArtifact(scope InvocationScope, planID str
 	}
 	for _, existing := range state.Artifacts {
 		if existing.ArtifactID == value.ArtifactID {
-			if existing != value {
+			if !sameRouteArtifactIdentity(existing, value) {
 				return RouteState{}, fmt.Errorf("route_artifact_conflict")
 			}
 			return cloneRouteState(state), nil
@@ -915,9 +1104,15 @@ func (s *memoryRouteStateStore) ArtifactRefs(scope InvocationScope) ([]RouteArti
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	state, ok := s.states[routeStateKey(scope)]
+	key := routeStateKey(scope)
+	state, ok := s.states[key]
 	if !ok {
 		return nil, fmt.Errorf("route_state_not_found")
+	}
+	if changed, err := ensureMemoryRouteScope(&state, &scope); err != nil {
+		return nil, err
+	} else if changed {
+		s.states[key] = state
 	}
 	refs := make([]RouteArtifactRef, 0, len(state.Artifacts))
 	for _, ref := range state.Artifacts {
@@ -941,9 +1136,14 @@ func (s *memoryRouteStateStore) CurrentArtifactRefs(scope InvocationScope) ([]Ro
 	if !ok {
 		return nil, fmt.Errorf("route_revision_not_found")
 	}
-	_, state, ok := findMemoryRouteRevision(s.states, ref)
+	key, state, ok := findMemoryRouteRevision(s.states, ref)
 	if !ok {
 		return nil, fmt.Errorf("route_revision_corrupt")
+	}
+	if changed, err := ensureMemoryRouteScope(&state, &scope); err != nil {
+		return nil, err
+	} else if changed {
+		s.states[key] = state
 	}
 	refs := make([]RouteArtifactRef, 0, len(state.Artifacts))
 	for _, artifact := range state.Artifacts {
@@ -978,8 +1178,11 @@ func reconcileRouteArtifacts(state RouteState, artifacts ArtifactStore, now time
 			return nil, err
 		}
 		for _, ref := range published {
-			if ref.Scope != state.Scope || registered[ref.ID] || !producesArtifact(selection.Produces, ArtifactContract{Kind: ref.Kind, MIMEType: ref.MIMEType, Required: true}) {
+			if !invocationScopesCompatible(ref.Scope, state.Scope) || registered[ref.ID] || !producesArtifact(selection.Produces, ArtifactContract{Kind: ref.Kind, MIMEType: ref.MIMEType, Required: true}) {
 				continue
+			}
+			if hydrated, err := canonicalInvocationScope(ref.Scope, state.Scope); err == nil {
+				ref.Scope = hydrated
 			}
 			refs = append(refs, ref)
 		}
@@ -992,11 +1195,23 @@ func (s *memoryRouteStateStore) ReconcileArtifacts(scope InvocationScope, artifa
 		return RouteState{}, fmt.Errorf("route state store is unavailable")
 	}
 	s.mu.Lock()
-	state, ok := s.states[routeStateKey(scope)]
+	key := routeStateKey(scope)
+	state, ok := s.states[key]
+	if ok {
+		if changed, err := ensureMemoryRouteScope(&state, &scope); err != nil {
+			s.mu.Unlock()
+			return RouteState{}, err
+		} else if changed {
+			s.states[key] = state
+		}
+	}
 	s.mu.Unlock()
 	if !ok {
 		return RouteState{}, fmt.Errorf("route_state_not_found")
 	}
+	// Validate the caller's concrete surface before enumerating completed
+	// artifacts. The map key omits ToolSnapshotID, so this guard is the only
+	// boundary in the in-memory recovery path.
 	refs, err := reconcileRouteArtifacts(cloneRouteState(state), artifacts, now)
 	if err != nil {
 		return RouteState{}, err
@@ -1025,6 +1240,9 @@ func (s *memoryRouteStateStore) ReconcileCurrentArtifacts(scope InvocationScope,
 	if !found {
 		return RouteState{}, fmt.Errorf("route_revision_corrupt")
 	}
+	if _, err := ensureMemoryRouteScope(&state, &scope); err != nil {
+		return RouteState{}, err
+	}
 	_ = key
 	return s.ReconcileArtifacts(state.Scope, artifacts, now)
 }
@@ -1036,17 +1254,32 @@ func (s *memoryRouteStateStore) RecordMaterialization(scope InvocationScope, pla
 	if err := validateRouteMaterialization(materialization); err != nil {
 		return RouteState{}, err
 	}
-	key := routeStateKey(scope)
+	// A legacy caller may omit the snapshot on its route scope while the
+	// already-signed grant still carries the concrete host surface.  Bind the
+	// route from that trusted grant before checking or storing the materialized
+	// alias; otherwise a later concrete surface could reuse this route key while
+	// the row remained an unbound wildcard.  Keep the grant itself untouched so
+	// its historical signature/fingerprint remains valid.
+	bindingScope, err := canonicalInvocationScope(scope, materialization.Grant.Scope)
+	if err != nil {
+		return RouteState{}, fmt.Errorf("route_state_grant_scope_mismatch")
+	}
+	key := routeStateKey(bindingScope)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	state, ok := s.states[key]
 	if !ok || state.Plan.ID != planID {
 		return RouteState{}, fmt.Errorf("route_state_not_found")
 	}
-	if materialization.Grant.Scope != scope || materialization.Grant.Scope.PlanID != planID {
+	if changed, err := ensureMemoryRouteScope(&state, &bindingScope); err != nil {
+		return RouteState{}, err
+	} else if changed {
+		s.states[key] = state
+	}
+	if !invocationScopesCompatible(materialization.Grant.Scope, bindingScope) || materialization.Grant.Scope.PlanID != planID {
 		return RouteState{}, fmt.Errorf("route_state_grant_scope_mismatch")
 	}
-	if !routeMaterializationMatchesPlan(state.Plan, scope, materialization) {
+	if !routeMaterializationMatchesPlan(state.Plan, bindingScope, materialization) {
 		return RouteState{}, fmt.Errorf("route_state_grant_binding_mismatch")
 	}
 	for _, existing := range state.Materializations {
@@ -1075,6 +1308,11 @@ func (s *memoryRouteStateStore) RetireMaterialization(scope InvocationScope, pla
 	if !ok || state.Plan.ID != planID {
 		return RouteState{}, fmt.Errorf("route_state_not_found")
 	}
+	if changed, err := ensureMemoryRouteScope(&state, &scope); err != nil {
+		return RouteState{}, err
+	} else if changed {
+		s.states[key] = state
+	}
 	for i := range state.Materializations {
 		if state.Materializations[i].FunctionName != functionName {
 			continue
@@ -1094,6 +1332,14 @@ func (s *memoryRouteStateStore) RetireMaterialization(scope InvocationScope, pla
 // opaque adapter mappings. It intentionally uses one connection so a local
 // process sees compare-and-create and transition order consistently.
 type SQLiteRouteStateStore struct{ db *sql.DB }
+
+// routeStateDefaultTenantID preserves the single-tenant behavior of the
+// original RouteStateStore API, which did not accept tenant metadata. New
+// coordinator callers use their authenticated tenant when publishing a
+// surface; direct legacy store callers are assigned this explicit partition.
+const routeStateDefaultTenantID = "tenant"
+
+func routeStateTenantID() string { return routeStateDefaultTenantID }
 
 func NewSQLiteRouteStateStore(dbPath string) (*SQLiteRouteStateStore, error) {
 	if strings.TrimSpace(dbPath) == "" {
@@ -1122,8 +1368,9 @@ func (s *SQLiteRouteStateStore) init() error {
 	for _, statement := range []string{
 		`PRAGMA journal_mode=WAL`, `PRAGMA synchronous=FULL`, `PRAGMA busy_timeout=5000`,
 		`CREATE TABLE IF NOT EXISTS semantic_route_states (
-			route_key TEXT PRIMARY KEY, version TEXT NOT NULL, tenant_id TEXT NOT NULL DEFAULT '', root_task_id TEXT NOT NULL, plan_id TEXT NOT NULL,
+			route_key TEXT PRIMARY KEY, version TEXT NOT NULL, tenant_id TEXT NOT NULL CHECK(length(trim(tenant_id)) > 0), root_task_id TEXT NOT NULL, plan_id TEXT NOT NULL,
 			session_id TEXT NOT NULL, turn_id TEXT NOT NULL, principal_id TEXT NOT NULL,
+			tool_snapshot_id TEXT NOT NULL DEFAULT '',
 			plan_json BLOB NOT NULL, plan_digest TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 		)`,
 		`CREATE TABLE IF NOT EXISTS semantic_route_materializations (
@@ -1134,7 +1381,7 @@ func (s *SQLiteRouteStateStore) init() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_semantic_route_states_scope ON semantic_route_states(root_task_id, plan_id, session_id, turn_id, principal_id)`,
 		`CREATE TABLE IF NOT EXISTS semantic_route_lineages (
-			lineage_key TEXT PRIMARY KEY, root_task_id TEXT NOT NULL, session_id TEXT NOT NULL, principal_id TEXT NOT NULL,
+			lineage_key TEXT PRIMARY KEY, tenant_id TEXT NOT NULL CHECK(length(trim(tenant_id)) > 0), root_task_id TEXT NOT NULL, session_id TEXT NOT NULL, principal_id TEXT NOT NULL,
 			current_route_key TEXT NOT NULL, current_revision INTEGER NOT NULL, current_plan_id TEXT NOT NULL,
 			current_plan_digest TEXT NOT NULL, updated_at TEXT NOT NULL
 		)`,
@@ -1169,6 +1416,13 @@ func (s *SQLiteRouteStateStore) init() error {
 			parent_revision INTEGER NOT NULL, parent_fencing_token INTEGER NOT NULL,
 			FOREIGN KEY(route_key) REFERENCES semantic_route_states(route_key)
 		)`,
+		`CREATE TABLE IF NOT EXISTS semantic_route_state_quarantine (
+			route_key TEXT PRIMARY KEY, version TEXT NOT NULL, tenant_id TEXT NOT NULL, root_task_id TEXT NOT NULL, plan_id TEXT NOT NULL,
+			session_id TEXT NOT NULL, turn_id TEXT NOT NULL, principal_id TEXT NOT NULL,
+			tool_snapshot_id TEXT NOT NULL DEFAULT '',
+			plan_json BLOB NOT NULL, plan_digest TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+			quarantined_at TEXT NOT NULL, reason TEXT NOT NULL
+		)`,
 	} {
 		if _, err := s.db.Exec(statement); err != nil {
 			return err
@@ -1179,14 +1433,49 @@ func (s *SQLiteRouteStateStore) init() error {
 	// legacy/unfenced rather than failing.
 	for _, statement := range []string{
 		`ALTER TABLE semantic_route_states ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+		// ToolSnapshotID was added after the first route-state schema. An empty
+		// value is retained for legacy rows; a non-empty caller value must match
+		// the persisted identity before it can be used for execution.
+		`ALTER TABLE semantic_route_states ADD COLUMN tool_snapshot_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE semantic_route_state_quarantine ADD COLUMN tool_snapshot_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE semantic_route_revisions ADD COLUMN fencing_token INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE semantic_route_lineages ADD COLUMN fencing_token INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE semantic_route_lineages ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
 	} {
 		if _, err := s.db.Exec(statement); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
 			return err
 		}
 	}
+	for _, statement := range []string{
+		`CREATE TRIGGER IF NOT EXISTS semantic_route_states_tenant_required_insert BEFORE INSERT ON semantic_route_states WHEN COALESCE(trim(NEW.tenant_id), '') = '' BEGIN SELECT RAISE(ABORT, 'route state tenant_id is required'); END`,
+		`CREATE TRIGGER IF NOT EXISTS semantic_route_states_tenant_required_update BEFORE UPDATE OF tenant_id ON semantic_route_states WHEN COALESCE(trim(NEW.tenant_id), '') = '' BEGIN SELECT RAISE(ABORT, 'route state tenant_id is required'); END`,
+	} {
+		if _, err := s.db.Exec(statement); err != nil {
+			return err
+		}
+	}
+	// Legacy lineage rows can be assigned a tenant only when their current
+	// route still carries one. Ambiguous rows are removed from the executable
+	// lineage table; their route state is already quarantined above.
+	if _, err := s.db.Exec(`UPDATE semantic_route_lineages SET tenant_id = (SELECT tenant_id FROM semantic_route_states WHERE route_key = semantic_route_lineages.current_route_key) WHERE COALESCE(trim(tenant_id), '') = '' AND EXISTS (SELECT 1 FROM semantic_route_states WHERE route_key = semantic_route_lineages.current_route_key AND COALESCE(trim(tenant_id), '') <> '')`); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`DELETE FROM semantic_route_lineages WHERE COALESCE(trim(tenant_id), '') = ''`); err != nil {
+		return err
+	}
 	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_semantic_route_states_tenant_scope ON semantic_route_states(tenant_id, root_task_id, session_id, principal_id)`); err != nil {
+		return err
+	}
+	// Rows created before tenant partitioning have no trustworthy tenant
+	// boundary. Preserve them for operator recovery, but remove them from the
+	// executable route table so no request can accidentally adopt another
+	// tenant's state.
+	if _, err := s.db.Exec(`INSERT OR IGNORE INTO semantic_route_state_quarantine(route_key, version, tenant_id, root_task_id, plan_id, session_id, turn_id, principal_id, tool_snapshot_id, plan_json, plan_digest, created_at, updated_at, quarantined_at, reason)
+		SELECT route_key, version, tenant_id, root_task_id, plan_id, session_id, turn_id, principal_id, COALESCE(tool_snapshot_id, ''), plan_json, plan_digest, created_at, updated_at, ?, 'missing_tenant_id'
+		FROM semantic_route_states WHERE COALESCE(trim(tenant_id), '') = ''`, routeStateTime(time.Now().UTC())); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`DELETE FROM semantic_route_states WHERE COALESCE(trim(tenant_id), '') = ''`); err != nil {
 		return err
 	}
 	return initOutboxFencing(s.db)
@@ -1211,7 +1500,10 @@ func (s *SQLiteRouteStateStore) Open(scope InvocationScope, plan ToolPlan, now t
 		return RouteState{}, err
 	}
 	key := routeStateKey(scope)
-	result, err := s.db.Exec(`INSERT OR IGNORE INTO semantic_route_states(route_key, version, root_task_id, plan_id, session_id, turn_id, principal_id, plan_json, plan_digest, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, key, RouteStateVersion, scope.RootTaskID, scope.PlanID, scope.SessionID, scope.TurnID, scope.PrincipalID, encoded, digest, routeStateTime(now), routeStateTime(now))
+	if routeStateQuarantined(s.db, key) {
+		return RouteState{}, fmt.Errorf("route_state_quarantined")
+	}
+	result, err := s.db.Exec(`INSERT OR IGNORE INTO semantic_route_states(route_key, version, tenant_id, root_task_id, plan_id, session_id, turn_id, principal_id, tool_snapshot_id, plan_json, plan_digest, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, key, RouteStateVersion, routeStateTenantID(), scope.RootTaskID, scope.PlanID, scope.SessionID, scope.TurnID, scope.PrincipalID, strings.TrimSpace(scope.ToolSnapshotID), encoded, digest, routeStateTime(now), routeStateTime(now))
 	if err != nil {
 		return RouteState{}, err
 	}
@@ -1223,7 +1515,22 @@ func (s *SQLiteRouteStateStore) Open(scope InvocationScope, plan ToolPlan, now t
 	if err != nil {
 		return RouteState{}, err
 	}
-	if changed == 0 && (state.Version != RouteStateVersion || state.PlanDigest != digest) {
+	if changed == 0 {
+		// Legacy rows may have an empty snapshot column.  Bind the first
+		// concrete trusted value atomically; otherwise every later concrete
+		// snapshot would remain a wildcard for this route key.
+		if _, bindErr := canonicalRouteScope(s.db, scope); bindErr != nil {
+			if bindErr.Error() == "route_snapshot_scope_mismatch" {
+				return RouteState{}, fmt.Errorf("route_state_conflict")
+			}
+			return RouteState{}, bindErr
+		}
+		state, err = s.get(key)
+		if err != nil {
+			return RouteState{}, err
+		}
+	}
+	if changed == 0 && (state.Version != RouteStateVersion || state.PlanDigest != digest || strings.TrimSpace(state.TenantID) == "" || !routeToolSnapshotCompatible(state.Scope.ToolSnapshotID, scope.ToolSnapshotID)) {
 		return RouteState{}, fmt.Errorf("route_state_conflict")
 	}
 	return state, nil
@@ -1241,17 +1548,26 @@ func (s *SQLiteRouteStateStore) PublishRevision(request RouteRevisionPublishRequ
 		return RouteState{}, err
 	}
 	routeKey, lineageKey := routeStateKey(request.Scope), routeLineageKey(request.Scope)
+	if routeStateQuarantined(s.db, routeKey) {
+		return RouteState{}, fmt.Errorf("route_state_quarantined")
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return RouteState{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	var existingDigest, existingSnapshot string
-	err = tx.QueryRow(`SELECT rs.plan_digest, rr.snapshot_digest FROM semantic_route_states rs JOIN semantic_route_revisions rr ON rr.route_key = rs.route_key WHERE rs.route_key = ?`, routeKey).Scan(&existingDigest, &existingSnapshot)
+	var existingDigest, existingSnapshot, existingTenantID, existingToolSnapshotID string
+	err = tx.QueryRow(`SELECT rs.plan_digest, rr.snapshot_digest, rs.tenant_id, COALESCE(rs.tool_snapshot_id, '') FROM semantic_route_states rs JOIN semantic_route_revisions rr ON rr.route_key = rs.route_key WHERE rs.route_key = ?`, routeKey).Scan(&existingDigest, &existingSnapshot, &existingTenantID, &existingToolSnapshotID)
 	if err == nil {
-		if existingDigest != digest || existingSnapshot != request.SnapshotDigest {
+		if existingDigest != digest || existingSnapshot != request.SnapshotDigest || strings.TrimSpace(existingTenantID) == "" || !routeToolSnapshotCompatible(existingToolSnapshotID, request.Scope.ToolSnapshotID) {
 			return RouteState{}, fmt.Errorf("route_state_conflict")
+		}
+		if _, bindErr := canonicalRouteScope(tx, request.Scope); bindErr != nil {
+			if bindErr.Error() == "route_snapshot_scope_mismatch" {
+				return RouteState{}, fmt.Errorf("route_state_conflict")
+			}
+			return RouteState{}, bindErr
 		}
 		if err := tx.Commit(); err != nil {
 			return RouteState{}, err
@@ -1269,9 +1585,12 @@ func (s *SQLiteRouteStateStore) PublishRevision(request RouteRevisionPublishRequ
 		return RouteState{}, err
 	}
 
-	var parentRouteKey, parentPlanID, parentDigest string
+	var parentRouteKey, parentPlanID, parentDigest, parentTenantID string
 	var parentRevision uint64
-	lineageErr := tx.QueryRow(`SELECT current_route_key, current_revision, current_plan_id, current_plan_digest FROM semantic_route_lineages WHERE lineage_key = ?`, lineageKey).Scan(&parentRouteKey, &parentRevision, &parentPlanID, &parentDigest)
+	lineageErr := tx.QueryRow(`SELECT current_route_key, current_revision, current_plan_id, current_plan_digest, tenant_id FROM semantic_route_lineages WHERE lineage_key = ?`, lineageKey).Scan(&parentRouteKey, &parentRevision, &parentPlanID, &parentDigest, &parentTenantID)
+	if lineageErr == nil && parentTenantID != routeStateTenantID() {
+		return RouteState{}, fmt.Errorf("route_revision_conflict")
+	}
 	if request.ExpectedParent == nil {
 		if lineageErr == nil {
 			return RouteState{}, fmt.Errorf("route_revision_parent_required")
@@ -1303,7 +1622,7 @@ func (s *SQLiteRouteStateStore) PublishRevision(request RouteRevisionPublishRequ
 		}
 	}
 
-	if _, err := tx.Exec(`INSERT INTO semantic_route_states(route_key, version, root_task_id, plan_id, session_id, turn_id, principal_id, plan_json, plan_digest, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, routeKey, RouteStateVersion, request.Scope.RootTaskID, request.Scope.PlanID, request.Scope.SessionID, request.Scope.TurnID, request.Scope.PrincipalID, encoded, digest, routeStateTime(now), routeStateTime(now)); err != nil {
+	if _, err := tx.Exec(`INSERT INTO semantic_route_states(route_key, version, tenant_id, root_task_id, plan_id, session_id, turn_id, principal_id, tool_snapshot_id, plan_json, plan_digest, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, routeKey, RouteStateVersion, routeStateTenantID(), request.Scope.RootTaskID, request.Scope.PlanID, request.Scope.SessionID, request.Scope.TurnID, request.Scope.PrincipalID, strings.TrimSpace(request.Scope.ToolSnapshotID), encoded, digest, routeStateTime(now), routeStateTime(now)); err != nil {
 		return RouteState{}, err
 	}
 	// Allocate the fencing token inside the publish transaction so the token
@@ -1398,7 +1717,7 @@ func (s *SQLiteRouteStateStore) PublishRevision(request RouteRevisionPublishRequ
 			return RouteState{}, err
 		}
 		parentPlanJSON := []byte(nil)
-		if err := tx.QueryRow(`SELECT plan_json FROM semantic_route_states WHERE route_key = ?`, parentRouteKey).Scan(&parentPlanJSON); err != nil {
+		if err := tx.QueryRow(`SELECT plan_json FROM semantic_route_states WHERE route_key = ? AND COALESCE(trim(tenant_id), '') <> ''`, parentRouteKey).Scan(&parentPlanJSON); err != nil {
 			return RouteState{}, err
 		}
 		var parentPlan ToolPlan
@@ -1429,14 +1748,22 @@ func (s *SQLiteRouteStateStore) PublishRevision(request RouteRevisionPublishRequ
 			}
 		}
 	}
-	if _, err := tx.Exec(`INSERT INTO semantic_route_lineages(lineage_key, root_task_id, session_id, principal_id, current_route_key, current_revision, current_plan_id, current_plan_digest, fencing_token, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(lineage_key) DO UPDATE SET current_route_key = excluded.current_route_key, current_revision = excluded.current_revision, current_plan_id = excluded.current_plan_id, current_plan_digest = excluded.current_plan_digest, fencing_token = excluded.fencing_token, updated_at = excluded.updated_at`, lineageKey, request.Scope.RootTaskID, request.Scope.SessionID, request.Scope.PrincipalID, routeKey, revision, request.Plan.ID, digest, fencingToken, routeStateTime(now)); err != nil {
+	if _, err := tx.Exec(`INSERT INTO semantic_route_lineages(lineage_key, tenant_id, root_task_id, session_id, principal_id, current_route_key, current_revision, current_plan_id, current_plan_digest, fencing_token, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(lineage_key) DO UPDATE SET current_route_key = excluded.current_route_key, current_revision = excluded.current_revision, current_plan_id = excluded.current_plan_id, current_plan_digest = excluded.current_plan_digest, fencing_token = excluded.fencing_token, updated_at = excluded.updated_at`, lineageKey, routeStateTenantID(), request.Scope.RootTaskID, request.Scope.SessionID, request.Scope.PrincipalID, routeKey, revision, request.Plan.ID, digest, fencingToken, routeStateTime(now)); err != nil {
 		return RouteState{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return RouteState{}, err
 	}
 	return s.get(routeKey)
+}
+
+func routeStateQuarantined(db *sql.DB, key string) bool {
+	if db == nil || strings.TrimSpace(key) == "" {
+		return false
+	}
+	var present int
+	return db.QueryRow(`SELECT 1 FROM semantic_route_state_quarantine WHERE route_key=? LIMIT 1`, key).Scan(&present) == nil && present == 1
 }
 
 func (s *SQLiteRouteStateStore) IsCurrent(scope InvocationScope) error {
@@ -1452,6 +1779,18 @@ func (s *SQLiteRouteStateStore) IsCurrent(scope InvocationScope) error {
 // database-level read while a transaction is open would wait on itself.
 func routeRevisionIsCurrent(q routeStateRowQuerier, scope InvocationScope) error {
 	key := routeStateKey(scope)
+	// Route keys intentionally omit ToolSnapshotID so a logical task can be
+	// revised without changing its lookup key.  Once a concrete route row is
+	// present, however, two concrete snapshot identities must never be mixed.
+	// Empty values remain compatible with pre-snapshot callers; recovery of a
+	// concrete surface performs the stricter exact check below.
+	var storedToolSnapshotID string
+	if err := q.QueryRow(`SELECT COALESCE(tool_snapshot_id, '') FROM semantic_route_states WHERE route_key = ? AND COALESCE(trim(tenant_id), '') <> ''`, key).Scan(&storedToolSnapshotID); err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	if !routeToolSnapshotCompatible(storedToolSnapshotID, scope.ToolSnapshotID) {
+		return fmt.Errorf("route_snapshot_scope_mismatch")
+	}
 	var cancelled int
 	if err := q.QueryRow(`SELECT 1 FROM semantic_route_cancellations WHERE route_key = ?`, key).Scan(&cancelled); err == nil {
 		return fmt.Errorf("route_revision_cancelled")
@@ -1462,7 +1801,7 @@ func routeRevisionIsCurrent(q routeStateRowQuerier, scope InvocationScope) error
 	err := q.QueryRow(`SELECT rr.route_key, rl.current_route_key FROM semantic_route_revisions rr JOIN semantic_route_lineages rl ON rl.lineage_key = rr.lineage_key WHERE rr.route_key = ?`, key).Scan(&revisionRouteKey, &currentRouteKey)
 	if err == sql.ErrNoRows {
 		var exists int
-		if err := q.QueryRow(`SELECT 1 FROM semantic_route_states WHERE route_key = ?`, key).Scan(&exists); err != nil {
+		if err := q.QueryRow(`SELECT 1 FROM semantic_route_states WHERE route_key = ? AND COALESCE(trim(tenant_id), '') <> ''`, key).Scan(&exists); err != nil {
 			if err == sql.ErrNoRows {
 				return fmt.Errorf("route_state_not_found")
 			}
@@ -1573,6 +1912,15 @@ type routeStateRowQuerier interface {
 	QueryRow(query string, args ...interface{}) *sql.Row
 }
 
+// routeStateRowExecer is implemented by both *sql.DB and *sql.Tx.  It is
+// kept separate from routeStateRowQuerier because read-only helpers and test
+// doubles should not be forced to provide a write method; snapshot binding,
+// however, must fail closed when no atomic writer is available.
+type routeStateRowExecer interface {
+	routeStateRowQuerier
+	Exec(query string, args ...interface{}) (sql.Result, error)
+}
+
 // recordSelectionCompletionTx applies the same admission checks and writes as
 // RecordSelectionCompletion inside an already-open transaction, so a caller can
 // commit the completion together with the execution state it projects. It
@@ -1589,7 +1937,7 @@ func (s *SQLiteRouteStateStore) recordSelectionCompletionTx(tx *sql.Tx, scope In
 	key := routeStateKey(scope)
 	var storedPlanID string
 	var planJSON []byte
-	err := tx.QueryRow(`SELECT plan_id, plan_json FROM semantic_route_states WHERE route_key = ?`, key).Scan(&storedPlanID, &planJSON)
+	err := tx.QueryRow(`SELECT plan_id, plan_json FROM semantic_route_states WHERE route_key = ? AND COALESCE(trim(tenant_id), '') <> ''`, key).Scan(&storedPlanID, &planJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("route_state_not_found")
 	}
@@ -1721,8 +2069,11 @@ func (s *SQLiteRouteStateStore) RecordArtifact(scope InvocationScope, planID str
 	if s == nil || s.db == nil {
 		return RouteState{}, fmt.Errorf("route state store is unavailable")
 	}
-	if ref.Scope != scope || scope.PlanID != planID {
+	if !invocationScopesCompatible(ref.Scope, scope) || scope.PlanID != planID {
 		return RouteState{}, fmt.Errorf("route_artifact_scope_mismatch")
+	}
+	if hydrated, err := canonicalInvocationScope(ref.Scope, scope); err == nil {
+		ref.Scope = hydrated
 	}
 	key := routeStateKey(scope)
 	state, err := s.get(key)
@@ -1775,7 +2126,7 @@ func (s *SQLiteRouteStateStore) RecordArtifact(scope InvocationScope, planID str
 			return RouteState{}, err
 		}
 		existing.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
-		if existing != value {
+		if !sameRouteArtifactIdentity(existing, value) {
 			return RouteState{}, fmt.Errorf("route_artifact_conflict")
 		}
 	}
@@ -1888,10 +2239,18 @@ func (s *SQLiteRouteStateStore) RecordMaterialization(scope InvocationScope, pla
 	if err := validateRouteMaterialization(materialization); err != nil {
 		return RouteState{}, err
 	}
-	if materialization.Grant.Scope != scope || materialization.Grant.Scope.PlanID != planID {
+	// See the memory-store path above: a signed concrete grant is enough to
+	// bind a legacy route row whose caller omitted ToolSnapshotID, but the
+	// signed grant JSON must remain byte-for-byte unchanged.
+	bindingScope, err := canonicalInvocationScope(scope, materialization.Grant.Scope)
+	if err != nil || materialization.Grant.Scope.PlanID != planID {
 		return RouteState{}, fmt.Errorf("route_state_grant_scope_mismatch")
 	}
-	key := routeStateKey(scope)
+	bindingScope, err = canonicalRouteScope(s.db, bindingScope)
+	if err != nil {
+		return RouteState{}, err
+	}
+	key := routeStateKey(bindingScope)
 	grantJSON, err := json.Marshal(materialization.Grant)
 	if err != nil {
 		return RouteState{}, err
@@ -1904,7 +2263,7 @@ func (s *SQLiteRouteStateStore) RecordMaterialization(scope InvocationScope, pla
 	if err != nil {
 		return RouteState{}, err
 	}
-	if !routeMaterializationMatchesPlan(state.Plan, scope, materialization) {
+	if !routeMaterializationMatchesPlan(state.Plan, bindingScope, materialization) {
 		return RouteState{}, fmt.Errorf("route_state_grant_binding_mismatch")
 	}
 	tx, err := s.db.Begin()
@@ -1929,7 +2288,12 @@ func (s *SQLiteRouteStateStore) RecordMaterialization(scope InvocationScope, pla
 		if err := tx.QueryRow(`SELECT grant_json, state FROM semantic_route_materializations WHERE route_key = ? AND function_name = ?`, key, materialization.FunctionName).Scan(&existingGrant, &existingState); err != nil {
 			return RouteState{}, err
 		}
-		if string(existingGrant) != string(grantJSON) || existingState != materialization.State {
+		var existingValue InvocationGrant
+		// Grant JSON written by an older binary omits newly-added zero fields.
+		// Compare the decoded signed identity instead of raw bytes so a retry
+		// after restart can reserialize the same legacy grant without creating a
+		// false materialization conflict.
+		if err := json.Unmarshal(existingGrant, &existingValue); err != nil || !sameInvocationGrant(existingValue, materialization.Grant) || existingState != materialization.State {
 			return RouteState{}, fmt.Errorf("route_state_materialization_conflict")
 		}
 	}
@@ -1985,14 +2349,14 @@ func (s *SQLiteRouteStateStore) RetireMaterialization(scope InvocationScope, pla
 }
 
 func routeStateExists(tx *sql.Tx, key, planID string) error {
-	var storedPlan string
-	if err := tx.QueryRow(`SELECT plan_id FROM semantic_route_states WHERE route_key = ?`, key).Scan(&storedPlan); err != nil {
+	var storedPlan, tenantID string
+	if err := tx.QueryRow(`SELECT plan_id, tenant_id FROM semantic_route_states WHERE route_key = ? AND COALESCE(trim(tenant_id), '') <> ''`, key).Scan(&storedPlan, &tenantID); err != nil {
 		if err == sql.ErrNoRows {
 			return fmt.Errorf("route_state_not_found")
 		}
 		return err
 	}
-	if storedPlan != planID {
+	if strings.TrimSpace(tenantID) == "" || storedPlan != planID {
 		return fmt.Errorf("route_state_conflict")
 	}
 	return nil
@@ -2002,11 +2366,11 @@ func (s *SQLiteRouteStateStore) get(key string) (RouteState, error) {
 	var state RouteState
 	var planJSON []byte
 	var created, updated string
-	err := s.db.QueryRow(`SELECT version, root_task_id, plan_id, session_id, turn_id, principal_id, plan_json, plan_digest, created_at, updated_at FROM semantic_route_states WHERE route_key = ?`, key).Scan(&state.Version, &state.Scope.RootTaskID, &state.Scope.PlanID, &state.Scope.SessionID, &state.Scope.TurnID, &state.Scope.PrincipalID, &planJSON, &state.PlanDigest, &created, &updated)
+	err := s.db.QueryRow(`SELECT version, tenant_id, root_task_id, plan_id, session_id, turn_id, principal_id, COALESCE(tool_snapshot_id, ''), plan_json, plan_digest, created_at, updated_at FROM semantic_route_states WHERE route_key = ? AND COALESCE(trim(tenant_id), '') <> ''`, key).Scan(&state.Version, &state.TenantID, &state.Scope.RootTaskID, &state.Scope.PlanID, &state.Scope.SessionID, &state.Scope.TurnID, &state.Scope.PrincipalID, &state.Scope.ToolSnapshotID, &planJSON, &state.PlanDigest, &created, &updated)
 	if err != nil {
 		return RouteState{}, err
 	}
-	if state.Version != RouteStateVersion || json.Unmarshal(planJSON, &state.Plan) != nil || state.Plan.ID != state.Scope.PlanID || state.Plan.RootTaskID != state.Scope.RootTaskID {
+	if state.TenantID == "" || state.Version != RouteStateVersion || json.Unmarshal(planJSON, &state.Plan) != nil || state.Plan.ID != state.Scope.PlanID || state.Plan.RootTaskID != state.Scope.RootTaskID {
 		return RouteState{}, fmt.Errorf("route_state_corrupt")
 	}
 	_, digest, err := canonicalRoutePlan(state.Plan)
@@ -2025,11 +2389,14 @@ func (s *SQLiteRouteStateStore) get(key string) (RouteState, error) {
 		ref := routeRevisionRef(state.Scope, state.Plan.ID, state.PlanDigest, revision)
 		state.Revision, state.SnapshotDigest = &ref, snapshotDigest
 		if parentRouteKey != "" {
-			var parentRootTaskID, parentSessionID, parentTurnID, parentPrincipalID string
+			var parentTenantID, parentRootTaskID, parentSessionID, parentTurnID, parentPrincipalID string
 			var parentPlanID, parentDigest string
 			var parentRevision uint64
-			parentErr := s.db.QueryRow(`SELECT rs.root_task_id, rs.plan_id, rs.session_id, rs.turn_id, rs.principal_id, rs.plan_digest, rr.revision FROM semantic_route_states rs JOIN semantic_route_revisions rr ON rr.route_key = rs.route_key WHERE rs.route_key = ?`, parentRouteKey).Scan(&parentRootTaskID, &parentPlanID, &parentSessionID, &parentTurnID, &parentPrincipalID, &parentDigest, &parentRevision)
+			parentErr := s.db.QueryRow(`SELECT rs.tenant_id, rs.root_task_id, rs.plan_id, rs.session_id, rs.turn_id, rs.principal_id, rs.plan_digest, rr.revision FROM semantic_route_states rs JOIN semantic_route_revisions rr ON rr.route_key = rs.route_key WHERE rs.route_key = ? AND COALESCE(trim(rs.tenant_id), '') <> ''`, parentRouteKey).Scan(&parentTenantID, &parentRootTaskID, &parentPlanID, &parentSessionID, &parentTurnID, &parentPrincipalID, &parentDigest, &parentRevision)
 			if parentErr != nil {
+				return RouteState{}, fmt.Errorf("route_state_corrupt")
+			}
+			if parentTenantID != state.TenantID {
 				return RouteState{}, fmt.Errorf("route_state_corrupt")
 			}
 			parent := routeRevisionRef(InvocationScope{RootTaskID: parentRootTaskID, SessionID: parentSessionID, TurnID: parentTurnID, PrincipalID: parentPrincipalID}, parentPlanID, parentDigest, parentRevision)
@@ -2101,6 +2468,13 @@ func (s *SQLiteRouteStateStore) get(key string) (RouteState, error) {
 			return RouteState{}, err
 		}
 		value.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
+		// The route-artifact schema predates ToolSnapshotID.  Hydrate only when
+		// the source is this route itself; projected parent artifacts retain an
+		// empty legacy value because their canonical snapshot is a different
+		// route and cannot be inferred from this row.
+		if hydrated, hydrateErr := canonicalInvocationScope(value.SourceScope, state.Scope); hydrateErr == nil {
+			value.SourceScope = hydrated
+		}
 		if !routeArtifactUsableInPlan(value, state.Plan) {
 			_ = artifactRows.Close()
 			return RouteState{}, fmt.Errorf("route_state_corrupt")

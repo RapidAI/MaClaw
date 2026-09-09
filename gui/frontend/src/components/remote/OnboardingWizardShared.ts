@@ -1,5 +1,5 @@
 import type { CSSProperties } from "react";
-import { colors } from "./styles";
+import { colors, radius } from "./styles";
 import { localizeByLang } from "../../utils/hubServiceI18n";
 
 export interface HubLLMServiceStatus {
@@ -123,13 +123,13 @@ export const wizardPrimaryButtonStyle: CSSProperties = {
     background: colors.primary,
     color: colors.onPrimary,
     border: `1px solid ${colors.primary}`,
-    borderRadius: 8,
+    borderRadius: radius.md,
     cursor: "pointer",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-    boxShadow: "0 1px 3px rgba(15,23,42,0.16)",
+    boxShadow: "var(--shadow-sm, 0 1px 2px rgba(30,58,95,0.06))",
     transition: "background 0.15s, box-shadow 0.15s",
 };
 
@@ -158,7 +158,7 @@ export const wizardGhostButtonStyle: CSSProperties = {
     background: "transparent",
     color: colors.textSecondary,
     border: `1px solid ${colors.border}`,
-    borderRadius: 8,
+    borderRadius: radius.md,
     cursor: "pointer",
     transition: "background 0.15s, border-color 0.15s",
 };
@@ -167,7 +167,7 @@ export const wizardGhostButtonStyle: CSSProperties = {
 export const wizardStatusBannerStyle: CSSProperties = {
     marginTop: 10,
     padding: "8px 12px",
-    borderRadius: 8,
+    borderRadius: radius.md,
     fontSize: "0.74rem",
     lineHeight: 1.55,
     whiteSpace: "pre-wrap",
@@ -233,7 +233,7 @@ export const wizardOptionCardStyle: CSSProperties = {
     alignItems: "flex-start",
     gap: 8,
     padding: "8px 10px",
-    borderRadius: 8,
+    borderRadius: radius.md,
     cursor: "pointer",
     fontSize: "0.76rem",
     color: colors.text,

@@ -70,7 +70,13 @@ func ToolBashWithContext(parent context.Context, args map[string]interface{}, on
 	if rejection, rejected := tool.RejectRawSSHCommand(command); rejected {
 		return rejection
 	}
+	if rejection, rejected := tool.RejectShellDatabaseCLI(command); rejected {
+		return rejection
+	}
 	if rejection, rejected := tool.RejectBroadBrowserKillCommand(command); rejected {
+		return rejection
+	}
+	if rejection, rejected := tool.RejectShellBrowserAutomationCommand(command); rejected {
 		return rejection
 	}
 	if rejection, rejected := tool.RejectBrowserSideEffectHTTPCommand(command); rejected {
@@ -544,6 +550,12 @@ func ToolGlobDetailedCtx(ctx context.Context, args map[string]interface{}) Searc
 		return SearchToolResult{Text: "Glob cancelled", Outcome: SearchToolOutcomeError}
 	}
 	pattern := StringArg(args, "pattern")
+	if pattern == "" {
+		pattern = StringArg(args, "glob_pattern")
+	}
+	if pattern == "" {
+		pattern = StringArg(args, "glob")
+	}
 	if pattern == "" {
 		return SearchToolResult{Text: "missing pattern parameter", Outcome: SearchToolOutcomeError}
 	}

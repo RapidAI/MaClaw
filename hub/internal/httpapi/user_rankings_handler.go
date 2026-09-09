@@ -114,11 +114,12 @@ func GetUserRankingsHandler(sessions userUsageSummarizer, users store.UserReposi
 			Rows:        merged[startIdx:endIdx],
 			GeneratedAt: generatedAt,
 		}
-		if period == "daily" {
+		switch period {
+		case "daily", "weekly":
 			resp.Date = label
-		} else if period == "monthly" {
+		case "monthly":
 			resp.Month = label
-		} else {
+		default:
 			resp.Year = label
 		}
 		writeJSON(w, http.StatusOK, resp)
@@ -368,6 +369,8 @@ func normalizeUserRankingPeriod(v string) string {
 	switch strings.ToLower(strings.TrimSpace(v)) {
 	case "monthly", "month":
 		return "monthly"
+	case "weekly", "week":
+		return "weekly"
 	case "yearly", "year":
 		return "yearly"
 	default:
@@ -388,6 +391,7 @@ func normalizeUserRankingDimension(v string) string {
 
 func userRankingRange(q map[string][]string, period string, now time.Time) (time.Time, time.Time, string) {
 	loc := time.UTC
+	now = now.In(loc)
 	switch period {
 	case "monthly":
 		label := firstQueryValue(q, "month")
@@ -396,6 +400,15 @@ func userRankingRange(q map[string][]string, period string, now time.Time) (time
 		}
 		t := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, loc)
 		return t, t.AddDate(0, 1, 0), t.Format("2006-01")
+	case "weekly":
+		label := firstQueryValue(q, "date")
+		var t time.Time
+		if parsed, err := time.ParseInLocation("2006-01-02", label, loc); err == nil {
+			t = weekStart(parsed)
+		} else {
+			t = weekStart(now)
+		}
+		return t, t.AddDate(0, 0, 7), t.Format("2006-01-02")
 	case "yearly":
 		label := firstQueryValue(q, "year")
 		if y, err := strconv.Atoi(label); err == nil && y >= 1970 && y <= 9999 {
@@ -412,6 +425,15 @@ func userRankingRange(q map[string][]string, period string, now time.Time) (time
 		t := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
 		return t, t.AddDate(0, 0, 1), t.Format("2006-01-02")
 	}
+}
+
+func weekStart(now time.Time) time.Time {
+	now = now.UTC()
+	weekday := int(now.Weekday())
+	if weekday == 0 {
+		weekday = 7
+	}
+	return time.Date(now.Year(), now.Month(), now.Day()-(weekday-1), 0, 0, 0, 0, time.UTC)
 }
 
 func firstQueryValue(q map[string][]string, key string) string {

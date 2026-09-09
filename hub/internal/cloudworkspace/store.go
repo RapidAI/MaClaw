@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
@@ -21,6 +22,20 @@ type queryer interface {
 // Store persists cloud_workspaces rows.
 type Store struct {
 	db *sql.DB
+}
+
+var atomicCommitHookState struct {
+	sync.RWMutex
+	hook func(stage string)
+}
+
+func runAtomicCommitHook(stage string) {
+	atomicCommitHookState.RLock()
+	hook := atomicCommitHookState.hook
+	atomicCommitHookState.RUnlock()
+	if hook != nil {
+		hook(stage)
+	}
 }
 
 // NewStore wraps a Hub SQLite handle.
@@ -65,17 +80,29 @@ func (s *Store) withImmediate(ctx context.Context, fn func(queryer) error) error
 	}
 	committed := false
 	defer func() {
+		clearAtomicIdempotencyFinalized(ctx)
 		if !committed {
 			_, _ = conn.ExecContext(context.Background(), `ROLLBACK`)
 		}
 	}()
+	if err := preflightAtomicIdempotency(ctx, conn); err != nil {
+		return err
+	}
 	if err := fn(conn); err != nil {
 		return err
+	}
+	atomicFinalized := consumeAtomicIdempotencyFinalized(ctx)
+	if atomicFinalized {
+		runAtomicCommitHook("before_commit")
 	}
 	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
 		return err
 	}
 	committed = true
+	if atomicFinalized {
+		markAtomicIdempotencyCommitted(ctx)
+		runAtomicCommitHook("after_commit")
+	}
 	return nil
 }
 
@@ -99,8 +126,8 @@ func scanWorkspace(scanner interface{ Scan(dest ...any) error }) (*Workspace, er
 func countActive(ctx context.Context, q queryer, tenantID, userID string) (int, error) {
 	var n int
 	err := q.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM cloud_workspaces WHERE tenant_id = ? AND user_id = ? AND status = ?`,
-		tenantID, userID, StatusActive,
+		`SELECT COUNT(*) FROM cloud_workspaces WHERE tenant_id = ? AND user_id = ? AND status IN (?, ?)`,
+		tenantID, userID, StatusActive, StatusProvisioning,
 	).Scan(&n)
 	return n, err
 }
@@ -197,11 +224,11 @@ func (s *Store) Create(ctx context.Context, p CreateParams, now time.Time) (*Wor
 		if n >= quota {
 			return ErrQuota
 		}
-		used, err := tenantUsedBytes(ctx, q, tenantID)
+		usage, err := tenantRetainedUsage(ctx, q, tenantID)
 		if err != nil {
 			return err
 		}
-		if p.TenantMaxTotalBytes > 0 && used >= p.TenantMaxTotalBytes {
+		if p.TenantMaxTotalBytes > 0 && usage.RetainedBytes >= p.TenantMaxTotalBytes {
 			return ErrTenantDisk
 		}
 		name := strings.TrimSpace(p.Name)
@@ -245,7 +272,7 @@ func (s *Store) Create(ctx context.Context, p CreateParams, now time.Time) (*Wor
 			return err
 		}
 		created = ws
-		return nil
+		return stageAtomicIdempotency(ctx, q, created)
 	})
 	if err != nil {
 		return nil, err
@@ -259,6 +286,29 @@ func (s *Store) GetOwned(ctx context.Context, tenantID, userID, id string) (*Wor
 		return nil, ErrUnavailable
 	}
 	return getOwned(ctx, s.db, store.NormalizeTenantID(tenantID), strings.TrimSpace(userID), strings.TrimSpace(id))
+}
+
+// CanAccessAudit reports whether tenant+user may append/read audit rows for a
+// workspace. After a hard purge the workspace row is gone and late audit
+// uploads are rejected; the device-local JSONL log remains the evidence of
+// record for final cleanup events. This is deliberately narrower than
+// GetOwned: it grants no lease, object, manifest, or restore capability.
+func (s *Store) CanAccessAudit(ctx context.Context, tenantID, userID, id string) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, ErrUnavailable
+	}
+	tenantID = store.NormalizeTenantID(tenantID)
+	userID = strings.TrimSpace(userID)
+	id = strings.TrimSpace(id)
+	if tenantID == "" || userID == "" || id == "" {
+		return false, nil
+	}
+	if _, err := getOwned(ctx, s.db, tenantID, userID, id); err == nil {
+		return true, nil
+	} else if !errors.Is(err, ErrNotFound) {
+		return false, err
+	}
+	return false, nil
 }
 
 // ListOwned returns the user's workspaces (active and deleted), oldest first.
@@ -325,7 +375,7 @@ func (s *Store) Rename(ctx context.Context, tenantID, userID, id, name, nameNorm
 		ws.NameNorm = nameNorm
 		ws.UpdatedAt = ts
 		out = ws
-		return nil
+		return stageAtomicIdempotency(ctx, q, out)
 	})
 	if err != nil {
 		return nil, err
@@ -336,6 +386,14 @@ func (s *Store) Rename(ctx context.Context, tenantID, userID, id, name, nameNorm
 // SoftDelete marks an active owned workspace deleted.
 // This machine's lease is released first; another machine's unexpired lease is 409.
 func (s *Store) SoftDelete(ctx context.Context, tenantID, userID, machineID, id string, now time.Time) (*Workspace, error) {
+	return s.SoftDeleteWithSessionAndToken(ctx, tenantID, userID, machineID, "", 0, id, now)
+}
+
+// SoftDeleteWithSessionAndToken applies the workspace delete while fencing a
+// stale process on the same machine. The legacy SoftDelete wrapper above keeps
+// migration tooling source-compatible, while HTTP callers pass the process
+// session and fencing token from the authenticated principal.
+func (s *Store) SoftDeleteWithSessionAndToken(ctx context.Context, tenantID, userID, machineID, clientInstanceID string, fencingToken int64, id string, now time.Time) (*Workspace, error) {
 	if s == nil || s.db == nil {
 		return nil, ErrUnavailable
 	}
@@ -361,6 +419,12 @@ func (s *Store) SoftDelete(ctx context.Context, tenantID, userID, machineID, id 
 			if lease.MachineID != machineID && !leaseExpired(lease.ExpiresAt, now) {
 				return newInUseError(lease)
 			}
+			if lease.MachineID == machineID && strings.TrimSpace(clientInstanceID) != "" && strings.TrimSpace(lease.ClientInstanceID) != "" && strings.TrimSpace(lease.ClientInstanceID) != strings.TrimSpace(clientInstanceID) {
+				return ErrFenced
+			}
+			if lease.MachineID == machineID && fencingToken > 0 && lease.FencingToken > 0 && lease.FencingToken != fencingToken {
+				return ErrFenced
+			}
 			if err := releaseLease(ctx, q, lease.ID, ts, ""); err != nil {
 				return err
 			}
@@ -375,7 +439,7 @@ func (s *Store) SoftDelete(ctx context.Context, tenantID, userID, machineID, id 
 		ws.DeletedAt = ts
 		ws.UpdatedAt = ts
 		out = ws
-		return nil
+		return stageAtomicIdempotency(ctx, q, out)
 	})
 	if err != nil {
 		return nil, err
@@ -435,7 +499,7 @@ func (s *Store) Restore(ctx context.Context, tenantID, userID, id string, quota 
 		ws.DeletedAt = ""
 		ws.UpdatedAt = ts
 		out = ws
-		return nil
+		return stageAtomicIdempotency(ctx, q, out)
 	})
 	if err != nil {
 		return nil, err
@@ -466,7 +530,13 @@ func (s *Store) HardDeleteDeleted(ctx context.Context, tenantID, userID, id stri
 			return ErrNotFound
 		}
 		for _, stmt := range []string{
+			`DELETE FROM cloud_workspace_task_provisions WHERE workspace_id = ?`,
+			`DELETE FROM cloud_workspace_staging_chunks WHERE workspace_id = ?`,
+			`DELETE FROM cloud_workspace_task_bindings WHERE workspace_id = ?`,
 			`DELETE FROM cloud_workspace_manifest_entries WHERE workspace_id = ?`,
+			`DELETE FROM cloud_workspace_snapshot_entries WHERE snapshot_id IN (SELECT snapshot_id FROM cloud_workspace_snapshots WHERE workspace_id = ?)`,
+			`DELETE FROM cloud_workspace_snapshots WHERE workspace_id = ?`,
+			`DELETE FROM cloud_workspace_sidecars WHERE workspace_id = ?`,
 			`DELETE FROM cloud_workspace_objects WHERE workspace_id = ?`,
 			`DELETE FROM cloud_workspace_leases WHERE workspace_id = ?`,
 			`DELETE FROM cloud_workspaces WHERE id = ? AND tenant_id = ? AND user_id = ? AND status = ?`,
@@ -479,7 +549,7 @@ func (s *Store) HardDeleteDeleted(ctx context.Context, tenantID, userID, id stri
 				return err
 			}
 		}
-		return nil
+		return stageAtomicIdempotency(ctx, q, nil)
 	})
 }
 
@@ -504,11 +574,11 @@ func (s *Store) ListOverQuotaUsers(ctx context.Context, tenantID string, quota i
 		SELECT COALESCE(u.sn, ''), COUNT(*)
 		FROM cloud_workspaces w
 		LEFT JOIN users u ON u.id = w.user_id AND u.tenant_id = w.tenant_id
-		WHERE w.tenant_id = ? AND w.status = ?
+		WHERE w.tenant_id = ? AND w.status IN (?, ?)
 		GROUP BY w.user_id
 		HAVING COUNT(*) > ?
 		ORDER BY COUNT(*) DESC, COALESCE(u.sn, '') ASC`,
-		tenantID, StatusActive, quota,
+		tenantID, StatusActive, StatusProvisioning, quota,
 	)
 	if err != nil {
 		return nil, err

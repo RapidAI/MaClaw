@@ -59,7 +59,6 @@ const TOOL_META: ToolMeta[] = [
     { id: 'memory', category: 'interaction', risk: 'safe', labelZh: '记忆', labelEn: 'Memory' },
     { id: 'ask_user', category: 'interaction', risk: 'safe', labelZh: '向用户提问', labelEn: 'Ask user' },
     { id: 'discover_tool', category: 'interaction', risk: 'safe', labelZh: '按需发现工具', labelEn: 'Discover tools' },
-    { id: 'recommend_tool', category: 'interaction', risk: 'safe', labelZh: '推荐工具', labelEn: 'Recommend tool' },
     { id: 'session_search', category: 'interaction', risk: 'safe', labelZh: '会话检索', labelEn: 'Session search' },
     { id: 'set_nickname', category: 'interaction', risk: 'safe', labelZh: '设置昵称', labelEn: 'Set nickname' },
     { id: 'set_max_iterations', category: 'interaction', risk: 'elevated', labelZh: '设置最大轮次', labelEn: 'Set max iterations' },

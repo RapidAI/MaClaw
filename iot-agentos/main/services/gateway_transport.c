@@ -216,6 +216,10 @@ static bool gateway_https_absolute_url_valid(const char *url, size_t capacity) {
  * owns both its mutex and persistent esp_http_client handle; no handle is ever
  * operated by two tasks concurrently. */
 static SemaphoreHandle_t s_http_mutex;
+/* The general transport lane is a FreeRTOS mutex. Record its owner so a
+ * stale cleanup (for example a late meeting worker) cannot give it from a
+ * different task and overlap a successor request. */
+static TaskHandle_t s_http_lane_owner;
 static esp_http_client_handle_t s_gateway_http_client;
 static char s_gateway_http_origin[URL_CAPACITY];
 static SemaphoreHandle_t s_gateway_poll_http_mutex;
@@ -243,6 +247,10 @@ static TaskHandle_t s_asset_download_task;
  * owner token for the asset lane so lifecycle cancellation can still reach
  * the profile-private ML307 adapter without exposing that handle upstream. */
 static const void *s_active_cellular_asset_owner;
+/* Cellular meeting PUTs have no ESP HTTP handle. Keep their opaque owner in
+ * the same cancellation registry so a System Sleep/Connectivity drain that
+ * asks for ALL lanes cannot leave a modem stream borrowed. */
+static const void *s_active_cellular_meeting_stream_owner;
 /* Monotonic cancellation intent for the asset lane.  This closes the race
  * where a lifecycle stop arrives after request admission but before a
  * cellular owner or Wi-Fi client is published. */
@@ -282,6 +290,10 @@ static gateway_capability_projection_t s_capability_projection;
 
 static gateway_transport_host_t s_host;
 static bool s_host_installed;
+/* Serializes the create-and-publish transaction.  `s_host_installed` is only
+ * published after every lane guard exists; a concurrent initializer must not
+ * observe that window as an invitation to allocate a second generation. */
+static bool s_initializing;
 
 typedef enum {
     GATEWAY_ACTIVE_LANE_STARTUP = 0,
@@ -684,6 +696,32 @@ static bool cellular_asset_owner_still_active(const void *owner) {
     return active;
 }
 
+static bool publish_cellular_meeting_stream_owner(const void *owner) {
+    if (!owner || !s_active_clients_mutex) return false;
+    xSemaphoreTake(s_active_clients_mutex, portMAX_DELAY);
+    const bool available = s_active_cellular_meeting_stream_owner == NULL;
+    if (available) s_active_cellular_meeting_stream_owner = owner;
+    xSemaphoreGive(s_active_clients_mutex);
+    return available;
+}
+
+static void clear_cellular_meeting_stream_owner(const void *owner) {
+    if (!s_active_clients_mutex) return;
+    xSemaphoreTake(s_active_clients_mutex, portMAX_DELAY);
+    if (s_active_cellular_meeting_stream_owner == owner) {
+        s_active_cellular_meeting_stream_owner = NULL;
+    }
+    xSemaphoreGive(s_active_clients_mutex);
+}
+
+static bool cellular_meeting_stream_owner_still_active(const void *owner) {
+    if (!owner || !s_active_clients_mutex) return false;
+    xSemaphoreTake(s_active_clients_mutex, portMAX_DELAY);
+    const bool active = s_active_cellular_meeting_stream_owner == owner;
+    xSemaphoreGive(s_active_clients_mutex);
+    return active;
+}
+
 static bool asset_download_override_active(void) {
     bool active;
     taskENTER_CRITICAL(&s_transport_state_lock);
@@ -866,11 +904,18 @@ int32_t gateway_transport_stream_meeting_chunk(
 
     const bool cellular = device_connectivity_is_active_cellular();
     if (cellular) {
+        const void *meeting_owner = (const void *)xTaskGetCurrentTaskHandle();
+        if (!publish_cellular_meeting_stream_owner(meeting_owner)) {
+            return ESP_ERR_INVALID_STATE;
+        }
         gateway_transport_response_t response = {0};
         response.data = heap_caps_malloc(MEETING_STREAM_RESPONSE_CAPACITY,
                                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!response.data) response.data = malloc(MEETING_STREAM_RESPONSE_CAPACITY);
-        if (!response.data) return ESP_ERR_NO_MEM;
+        if (!response.data) {
+            clear_cellular_meeting_stream_owner(meeting_owner);
+            return ESP_ERR_NO_MEM;
+        }
         response.capacity = MEETING_STREAM_RESPONSE_CAPACITY;
         char authorization[128];
         uint32_t response_len = 0;
@@ -893,6 +938,7 @@ int32_t gateway_transport_stream_meeting_chunk(
         };
         esp_err_t err = device_status_to_platform_error(
             device_connectivity_cellular_http_stream_request(&cellular_request));
+        clear_cellular_meeting_stream_owner(meeting_owner);
         mbedtls_platform_zeroize(authorization, sizeof(authorization));
         response.len = response_len;
         if (meeting_stream_stop_requested(request) && err == ESP_OK) {
@@ -1043,15 +1089,24 @@ device_status_t gateway_transport_cancel_meeting_stream(const void *owner_token,
         return DEVICE_STATUS_TIMEOUT;
     }
     device_status_t status = DEVICE_STATUS_OK;
+    bool cellular_owner = false;
     if (s_active_meeting_stream_owner == owner_token) {
         status = cancel_active_client_locked(s_active_meeting_stream_client,
                                              "meeting-stream");
     }
+    cellular_owner = s_active_cellular_meeting_stream_owner == owner_token;
     xSemaphoreGive(s_active_clients_mutex);
     /* The request-level Cellular admission knows whether this owner still
      * has an ML307 borrower. Do not use the current uplink as a proxy: a
      * worker can be retiring just after an uplink switch. */
-    (void)device_connectivity_cancel_cellular_requests_for_owner(owner_token);
+    if (cellular_owner) {
+        const bool cancelled =
+            device_connectivity_cancel_cellular_requests_for_owner(owner_token);
+        if (!cancelled && cellular_meeting_stream_owner_still_active(owner_token) &&
+            status == DEVICE_STATUS_OK) {
+            status = DEVICE_STATUS_BUSY;
+        }
+    }
     return status;
 }
 
@@ -1113,7 +1168,14 @@ static int32_t request_with_capacity(const char *method, const char *path, const
                                      gateway_transport_response_t *out) {
     if (!out) return ESP_ERR_INVALID_ARG;
     memset(out, 0, sizeof(*out));
-    if (!method || !path || response_capacity < 2) return ESP_ERR_INVALID_ARG;
+    /* Keep the public value contract fail-closed before selecting a physical
+     * lane.  In particular, a negative signed length must never reach the
+     * ESP HTTP setter (or be converted to an unsigned cellular length), and a
+     * non-empty request must always have a source buffer. */
+    if (!method || !method[0] || !path || !path[0] || response_capacity < 2 ||
+        body_len < 0 || (body_len > 0 && !body)) {
+        return ESP_ERR_INVALID_ARG;
+    }
     const bool path_absolute = !strncmp(path, "http://", 7) ||
                                !strncmp(path, "https://", 8);
     if (!path_absolute &&
@@ -2651,11 +2713,32 @@ device_status_t gateway_transport_commit_prepared_network_restart(void) {
 }
 
 bool gateway_transport_general_lane_lock(uint32_t timeout_ms) {
-    return s_http_mutex && xSemaphoreTake(s_http_mutex, pdMS_TO_TICKS(timeout_ms)) == pdTRUE;
+    if (!s_http_mutex || timeout_ms == 0u ||
+        xSemaphoreTake(s_http_mutex, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
+        return false;
+    }
+    const TaskHandle_t current = xTaskGetCurrentTaskHandle();
+    taskENTER_CRITICAL(&s_transport_state_lock);
+    if (!s_host_installed || s_http_lane_owner != NULL) {
+        taskEXIT_CRITICAL(&s_transport_state_lock);
+        (void)xSemaphoreGive(s_http_mutex);
+        return false;
+    }
+    s_http_lane_owner = current;
+    taskEXIT_CRITICAL(&s_transport_state_lock);
+    return true;
 }
 
 void gateway_transport_general_lane_unlock(void) {
-    if (s_http_mutex) xSemaphoreGive(s_http_mutex);
+    if (!s_http_mutex) return;
+    bool owned = false;
+    taskENTER_CRITICAL(&s_transport_state_lock);
+    if (s_http_lane_owner == xTaskGetCurrentTaskHandle()) {
+        s_http_lane_owner = NULL;
+        owned = true;
+    }
+    taskEXIT_CRITICAL(&s_transport_state_lock);
+    if (owned) (void)xSemaphoreGive(s_http_mutex);
 }
 
 static device_status_t cancel_active_client_locked(esp_http_client_handle_t client,
@@ -2678,6 +2761,7 @@ device_status_t gateway_transport_cancel_active_requests(
         return DEVICE_STATUS_TIMEOUT;
     }
     device_status_t status = DEVICE_STATUS_OK;
+    const void *cellular_meeting_owner = NULL;
     if (mask & GATEWAY_TRANSPORT_CANCEL_ASSET) {
         ++s_asset_cancel_epoch;
     }
@@ -2704,10 +2788,25 @@ device_status_t gateway_transport_cancel_active_requests(
                                s_active_asset_client, "asset");
     CANCEL_ACTIVE_GATEWAY_LANE(GATEWAY_TRANSPORT_CANCEL_FOREGROUND,
                                s_active_foreground_client, "foreground");
+    CANCEL_ACTIVE_GATEWAY_LANE(GATEWAY_TRANSPORT_CANCEL_MEETING_STREAM,
+                               s_active_meeting_stream_client, "meeting-stream");
+    if (mask & GATEWAY_TRANSPORT_CANCEL_MEETING_STREAM) {
+        cellular_meeting_owner = s_active_cellular_meeting_stream_owner;
+    }
 #undef CANCEL_ACTIVE_GATEWAY_LANE
     const void *cellular_asset_owner =
         (mask & GATEWAY_TRANSPORT_CANCEL_ASSET) ? s_active_cellular_asset_owner : NULL;
     xSemaphoreGive(s_active_clients_mutex);
+    if (cellular_meeting_owner) {
+        /* Cellular streams are cancelled through the profile-private owner
+         * seam only after releasing the registry guard. */
+        const bool cancelled =
+            device_connectivity_cancel_cellular_requests_for_owner(cellular_meeting_owner);
+        if (!cancelled && cellular_meeting_stream_owner_still_active(cellular_meeting_owner) &&
+            status == DEVICE_STATUS_OK) {
+            status = DEVICE_STATUS_BUSY;
+        }
+    }
     /* Cellular asset requests are represented by an owner token rather than
      * an ESP HTTP handle.  Snapshot under the same registry guard, then ask
      * Connectivity to perform the bounded profile-private cancellation. */
@@ -2781,34 +2880,95 @@ device_status_t gateway_transport_init(const gateway_transport_host_t *host) {
         !host->persist_gateway_token) {
         return DEVICE_STATUS_INVALID_ARGUMENT;
     }
+    /* Initialization is a one-shot composition-root transaction.  A second
+     * caller must not replace the host callbacks or allocate a second set of
+     * lane guards while workers from the first generation may still exist. */
+    taskENTER_CRITICAL(&s_transport_state_lock);
+    if (s_host_installed) {
+        taskEXIT_CRITICAL(&s_transport_state_lock);
+        return DEVICE_STATUS_OK;
+    }
+    if (s_initializing) {
+        taskEXIT_CRITICAL(&s_transport_state_lock);
+        return DEVICE_STATUS_BUSY;
+    }
+    s_initializing = true;
+    taskEXIT_CRITICAL(&s_transport_state_lock);
     ensure_credential_generation();
-    if (s_credential_generation == 0u) return DEVICE_STATUS_UNAVAILABLE;
+    if (s_credential_generation == 0u) {
+        taskENTER_CRITICAL(&s_transport_state_lock);
+        s_initializing = false;
+        taskEXIT_CRITICAL(&s_transport_state_lock);
+        return DEVICE_STATUS_UNAVAILABLE;
+    }
     taskENTER_CRITICAL(&s_transport_state_lock);
     gateway_capability_projection_init(&s_capability_projection);
     const bool capabilities_initialized = gateway_capability_projection_set_effective(
         &s_capability_projection, local_gateway_capabilities());
     taskEXIT_CRITICAL(&s_transport_state_lock);
-    if (!capabilities_initialized) return DEVICE_STATUS_INTERNAL_ERROR;
-    s_host = *host;
-    s_host_installed = true;
-    s_http_mutex = xSemaphoreCreateMutex();
-    if (!s_http_mutex) return DEVICE_STATUS_RESOURCE_EXHAUSTED;
-    s_active_clients_mutex = xSemaphoreCreateMutex();
-    if (!s_active_clients_mutex) return DEVICE_STATUS_RESOURCE_EXHAUSTED;
-    s_gateway_poll_http_mutex = xSemaphoreCreateMutex();
-    if (!s_gateway_poll_http_mutex) return DEVICE_STATUS_RESOURCE_EXHAUSTED;
-    s_gateway_asset_http_mutex = xSemaphoreCreateMutex();
-    if (!s_gateway_asset_http_mutex) return DEVICE_STATUS_RESOURCE_EXHAUSTED;
-    s_asset_download_guard = xSemaphoreCreateMutex();
-    if (!s_asset_download_guard) return DEVICE_STATUS_RESOURCE_EXHAUSTED;
-    s_gateway_startup_start_gate = xSemaphoreCreateBinary();
-    if (!s_gateway_startup_start_gate) return DEVICE_STATUS_RESOURCE_EXHAUSTED;
-    s_gateway_startup_stopped = xSemaphoreCreateBinary();
-    if (!s_gateway_startup_stopped) return DEVICE_STATUS_RESOURCE_EXHAUSTED;
+    if (!capabilities_initialized) {
+        taskENTER_CRITICAL(&s_transport_state_lock);
+        s_initializing = false;
+        taskEXIT_CRITICAL(&s_transport_state_lock);
+        return DEVICE_STATUS_INTERNAL_ERROR;
+    }
+    /* Keep all handles local until the complete allocation set exists.  This
+     * makes every failure path recoverable and prevents cancellation callers
+     * from observing a half-published transport generation. */
+    SemaphoreHandle_t http_mutex = xSemaphoreCreateMutex();
+    SemaphoreHandle_t active_clients_mutex = xSemaphoreCreateMutex();
+    SemaphoreHandle_t poll_http_mutex = xSemaphoreCreateMutex();
+    SemaphoreHandle_t asset_http_mutex = xSemaphoreCreateMutex();
+    SemaphoreHandle_t asset_download_guard = xSemaphoreCreateMutex();
+    SemaphoreHandle_t startup_start_gate = xSemaphoreCreateBinary();
+    SemaphoreHandle_t startup_stopped = xSemaphoreCreateBinary();
+    if (!http_mutex || !active_clients_mutex || !poll_http_mutex ||
+        !asset_http_mutex || !asset_download_guard || !startup_start_gate ||
+        !startup_stopped) {
+        if (startup_stopped) vSemaphoreDelete(startup_stopped);
+        if (startup_start_gate) vSemaphoreDelete(startup_start_gate);
+        if (asset_download_guard) vSemaphoreDelete(asset_download_guard);
+        if (asset_http_mutex) vSemaphoreDelete(asset_http_mutex);
+        if (poll_http_mutex) vSemaphoreDelete(poll_http_mutex);
+        if (active_clients_mutex) vSemaphoreDelete(active_clients_mutex);
+        if (http_mutex) vSemaphoreDelete(http_mutex);
+        taskENTER_CRITICAL(&s_transport_state_lock);
+        s_initializing = false;
+        taskEXIT_CRITICAL(&s_transport_state_lock);
+        return DEVICE_STATUS_RESOURCE_EXHAUSTED;
+    }
     taskENTER_CRITICAL(&s_transport_state_lock);
+    /* Publish the complete generation as one critical-section commit.  The
+     * cancellation/lane callers intentionally use lock-free pointer checks
+     * before taking their individual guards; keeping every handle, owner and
+     * epoch write ordered before `s_host_installed` prevents them from
+     * observing a half-published generation on weakly ordered targets. */
+    s_host = *host;
+    s_http_mutex = http_mutex;
+    s_http_lane_owner = NULL;
+    s_active_clients_mutex = active_clients_mutex;
+    s_gateway_poll_http_mutex = poll_http_mutex;
+    s_gateway_asset_http_mutex = asset_http_mutex;
+    s_asset_download_guard = asset_download_guard;
+    s_gateway_startup_start_gate = startup_start_gate;
+    s_gateway_startup_stopped = startup_stopped;
+    s_active_startup_client = NULL;
+    s_active_capability_refresh_client = NULL;
+    s_active_foreground_client = NULL;
+    s_active_poll_client = NULL;
+    s_active_asset_client = NULL;
+    s_active_meeting_stream_client = NULL;
+    s_active_cellular_asset_owner = NULL;
+    s_active_cellular_meeting_stream_owner = NULL;
+    s_asset_download_task = NULL;
+    s_meeting_stream_reusable_client = NULL;
+    s_asset_cancel_epoch = 0u;
+    s_asset_download_epoch = 0u;
     s_gateway_startup_retiring = false;
     s_gateway_startup_exit_status = ESP_OK;
     s_gateway_startup_registry_retirement_failed = false;
+    s_host_installed = true;
+    s_initializing = false;
     taskEXIT_CRITICAL(&s_transport_state_lock);
     return DEVICE_STATUS_OK;
 }

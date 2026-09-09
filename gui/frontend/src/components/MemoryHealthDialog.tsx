@@ -55,9 +55,9 @@ export function MemoryHealthDialog({ open, onClose, t }: Props) {
     };
 
     const capacityColor = (pct: number) => {
-        if (pct >= 90) return '#e74c3c';
-        if (pct >= 70) return '#f39c12';
-        return '#27ae60';
+        if (pct >= 90) return 'var(--theme-danger, #c43d34)';
+        if (pct >= 70) return 'var(--theme-warning, #d97706)';
+        return 'var(--theme-success, #4f7f6f)';
     };
 
     return (
@@ -95,7 +95,7 @@ export function MemoryHealthDialog({ open, onClose, t }: Props) {
                                     <tr style={{ borderBottom: '1px solid var(--theme-border)' }}>
                                         <td style={labelStyle}>{t('memHealthStale')}</td>
                                         <td style={valueStyle}>
-                                            <span style={{ color: report.stale_entries > 0 ? '#f39c12' : 'inherit' }}>
+                                            <span style={{ color: report.stale_entries > 0 ? 'var(--theme-warning, #d97706)' : 'inherit' }}>
                                                 {report.stale_entries}
                                             </span>
                                         </td>
@@ -107,7 +107,7 @@ export function MemoryHealthDialog({ open, onClose, t }: Props) {
                                     <tr style={{ borderBottom: '1px solid var(--theme-border)' }}>
                                         <td style={labelStyle}>{t('memHealthNoEmbed')}</td>
                                         <td style={valueStyle}>
-                                            <span style={{ color: report.no_embedding > 0 ? '#e67e22' : 'inherit' }}>
+                                            <span style={{ color: report.no_embedding > 0 ? 'var(--theme-warning, #d97706)' : 'inherit' }}>
                                                 {report.no_embedding}
                                             </span>
                                         </td>
@@ -123,7 +123,7 @@ export function MemoryHealthDialog({ open, onClose, t }: Props) {
                                     <tr style={{ borderBottom: '1px solid var(--theme-border)' }}>
                                         <td style={labelStyle}>{t('memHealthEmbedder')}</td>
                                         <td style={valueStyle}>
-                                            <span style={{ color: report.embedder_active ? '#27ae60' : '#e74c3c' }}>
+                                            <span style={{ color: report.embedder_active ? 'var(--theme-success, #4f7f6f)' : 'var(--theme-danger, #c43d34)' }}>
                                                 {report.embedder_active ? 'Active' : 'Inactive'}
                                             </span>
                                         </td>

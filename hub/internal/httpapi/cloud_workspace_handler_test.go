@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,6 +19,127 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	storesqlite "github.com/RapidAI/CodeClaw/hub/internal/store/sqlite"
 )
+
+var cloudWorkspaceHTTPTestSessions sync.Map
+
+type cloudWorkspaceHTTPTestSessionKey struct {
+	h         http.Handler
+	machineID string
+	token     string
+}
+
+type cloudWorkspaceHTTPTestLeaseKey struct {
+	h           http.Handler
+	machineID   string
+	workspaceID string
+}
+
+type cloudWorkspaceHTTPTestLease struct {
+	leaseID      string
+	fencingToken int64
+}
+
+var cloudWorkspaceHTTPTestLeases sync.Map
+
+func cloudWorkspaceHTTPTestNeedsSession(path string) bool {
+	return (strings.HasPrefix(path, "/api/v1/cloud-workspaces") && path != "/api/v1/cloud-workspaces/entitlement") || strings.HasPrefix(path, "/api/v1/cloud-workspace-tasks")
+}
+
+func cloudWorkspaceHTTPTestSession(t *testing.T, h http.Handler, machineID, token string) (string, *httptest.ResponseRecorder) {
+	t.Helper()
+	key := cloudWorkspaceHTTPTestSessionKey{h: h, machineID: machineID, token: token}
+	if cached, ok := cloudWorkspaceHTTPTestSessions.Load(key); ok {
+		return cached.(string), nil
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/cloud-workspace-sessions", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Machine-ID", machineID)
+	req.Header.Set("X-Cloud-Workspace-Protocol", cloudworkspace.CloudWorkspaceProtocol)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		return "", rec
+	}
+	var session cloudworkspace.InstanceSession
+	if err := json.Unmarshal(rec.Body.Bytes(), &session); err != nil {
+		t.Fatalf("decode instance session: %v", err)
+	}
+	if session.Token == "" {
+		t.Fatal("instance session response has no token")
+	}
+	cloudWorkspaceHTTPTestSessions.Store(key, session.Token)
+	return session.Token, nil
+}
+
+func cloudWorkspaceHTTPTestWorkspaceID(path string) string {
+	const prefix = "/api/v1/cloud-workspaces/"
+	if !strings.HasPrefix(path, prefix) {
+		return ""
+	}
+	rest := strings.TrimPrefix(path, prefix)
+	if cut := strings.IndexByte(rest, '/'); cut >= 0 {
+		rest = rest[:cut]
+	}
+	if rest == "" || rest == "entitlement" {
+		return ""
+	}
+	return rest
+}
+
+func setCloudWorkspaceHTTPTestAuth(t *testing.T, h http.Handler, req *http.Request, machineID, token string) *httptest.ResponseRecorder {
+	t.Helper()
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Machine-ID", machineID)
+	if !cloudWorkspaceHTTPTestNeedsSession(req.URL.Path) {
+		return nil
+	}
+	sessionToken, failed := cloudWorkspaceHTTPTestSession(t, h, machineID, token)
+	if failed != nil {
+		return failed
+	}
+	req.Header.Set("X-Cloud-Workspace-Protocol", cloudworkspace.CloudWorkspaceProtocol)
+	req.Header.Set(cloudWorkspaceInstanceSessionHeader, sessionToken)
+	if workspaceID := cloudWorkspaceHTTPTestWorkspaceID(req.URL.Path); workspaceID != "" {
+		key := cloudWorkspaceHTTPTestLeaseKey{h: h, machineID: machineID, workspaceID: workspaceID}
+		if cached, ok := cloudWorkspaceHTTPTestLeases.Load(key); ok {
+			lease := cached.(cloudWorkspaceHTTPTestLease)
+			req.Header.Set("X-Cloud-Workspace-Session", lease.leaseID)
+			req.Header.Set("X-Cloud-Workspace-Fencing", fmt.Sprintf("%d", lease.fencingToken))
+		}
+	}
+	return nil
+}
+
+func mustSetCloudWorkspaceHTTPTestAuth(t *testing.T, h http.Handler, req *http.Request, machineID, token string) {
+	t.Helper()
+	if failed := setCloudWorkspaceHTTPTestAuth(t, h, req, machineID, token); failed != nil {
+		t.Fatalf("issue cloud workspace instance session: status=%d body=%s", failed.Code, failed.Body.String())
+	}
+}
+
+func recordCloudWorkspaceHTTPTestLease(t *testing.T, h http.Handler, req *http.Request, machineID string, rec *httptest.ResponseRecorder) {
+	t.Helper()
+	if rec == nil || rec.Code < 200 || rec.Code >= 300 {
+		return
+	}
+	workspaceID := cloudWorkspaceHTTPTestWorkspaceID(req.URL.Path)
+	if workspaceID == "" {
+		return
+	}
+	key := cloudWorkspaceHTTPTestLeaseKey{h: h, machineID: machineID, workspaceID: workspaceID}
+	if req.Method == http.MethodPost && strings.HasSuffix(req.URL.Path, "/leases") {
+		var out cloudworkspace.AcquireOutcome
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode lease outcome: %v", err)
+		}
+		if out.LeaseID != "" && out.FencingToken > 0 {
+			cloudWorkspaceHTTPTestLeases.Store(key, cloudWorkspaceHTTPTestLease{leaseID: out.LeaseID, fencingToken: out.FencingToken})
+		}
+	}
+	if req.Method == http.MethodDelete && strings.Contains(req.URL.Path, "/leases/") {
+		cloudWorkspaceHTTPTestLeases.Delete(key)
+	}
+}
 
 type cloudWorkspaceUserDir map[string]*store.User
 
@@ -93,15 +216,25 @@ func newCloudWorkspaceUserEnv(t *testing.T, mode string, quota int, departmentID
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/cloud-workspaces/entitlement", CloudWorkspaceEntitlementHandler(svc, authn))
+	mux.HandleFunc("POST /api/v1/cloud-workspace-sessions", CloudWorkspaceIssueInstanceSessionHandler(svc, authn))
+	mux.HandleFunc("DELETE /api/v1/cloud-workspace-sessions/{session_id}", CloudWorkspaceRevokeInstanceSessionHandler(svc, authn))
 	mux.HandleFunc("POST /api/v1/cloud-workspaces", CloudWorkspaceCreateHandler(svc, authn))
+	mux.HandleFunc("POST /api/v1/cloud-workspace-tasks", CloudWorkspaceTaskProvisionHandler(svc, authn))
+	mux.HandleFunc("GET /api/v1/cloud-workspace-tasks/{operation_id}", CloudWorkspaceTaskProvisionStatusHandler(svc, authn))
+	mux.HandleFunc("POST /api/v1/cloud-workspace-tasks/{operation_id}/complete", cloudWorkspaceTaskProvisionTransitionHandler(svc, authn, false))
+	mux.HandleFunc("POST /api/v1/cloud-workspace-tasks/{operation_id}/abort", cloudWorkspaceTaskProvisionTransitionHandler(svc, authn, true))
 	mux.HandleFunc("PATCH /api/v1/cloud-workspaces/{id}", CloudWorkspaceRenameHandler(svc, authn))
 	mux.HandleFunc("DELETE /api/v1/cloud-workspaces/{id}", CloudWorkspaceDeleteHandler(svc, authn))
+	mux.HandleFunc("DELETE /api/v1/cloud-workspaces/{id}/purge", CloudWorkspaceHardDeleteHandler(svc, authn))
 	mux.HandleFunc("POST /api/v1/cloud-workspaces/{id}/restore", CloudWorkspaceRestoreHandler(svc, authn))
 	mux.HandleFunc("POST /api/v1/cloud-workspaces/{id}/leases", CloudWorkspaceAcquireLeaseHandler(svc, authn))
+	mux.HandleFunc("POST /api/v1/cloud-workspaces/{id}/leases/handoff-request", CloudWorkspaceHandoffRequestHandler(svc, authn))
 	mux.HandleFunc("POST /api/v1/cloud-workspaces/{id}/leases/{lease_id}/heartbeat", CloudWorkspaceHeartbeatLeaseHandler(svc, authn))
 	mux.HandleFunc("DELETE /api/v1/cloud-workspaces/{id}/leases/{lease_id}", CloudWorkspaceReleaseLeaseHandler(svc, authn))
 	mux.HandleFunc("GET /api/v1/cloud-workspaces/{id}/manifest", CloudWorkspaceGetManifestHandler(svc, authn))
 	mux.HandleFunc("PUT /api/v1/cloud-workspaces/{id}/manifest", CloudWorkspacePutManifestHandler(svc, authn))
+	mux.HandleFunc("POST /api/v1/cloud-workspaces/{id}/audit", CloudWorkspaceRecordAuditHandler(svc, authn))
+	mux.HandleFunc("GET /api/v1/cloud-workspaces/{id}/audit", CloudWorkspaceListAuditHandler(svc, authn))
 	mux.HandleFunc("GET /api/v1/cloud-workspaces/{id}/objects/{sha256}", CloudWorkspaceGetObjectHandler(svc, authn))
 	mux.HandleFunc("PUT /api/v1/cloud-workspaces/{id}/objects/{sha256}", CloudWorkspacePutObjectHandler(svc, authn))
 	mux.HandleFunc("PUT /api/v1/cloud-workspaces/{id}/objects/{sha256}/chunks/{index}", CloudWorkspacePutObjectChunkHandler(svc, authn))
@@ -124,15 +257,24 @@ func doCloudWorkspaceRequest(t *testing.T, h http.Handler, method, path, machine
 		body = bytes.NewReader(raw)
 	}
 	req := httptest.NewRequest(method, path, body)
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	if machineID != "" {
-		req.Header.Set("X-Machine-ID", machineID)
+	if token != "" || machineID != "" {
+		if failed := setCloudWorkspaceHTTPTestAuth(t, h, req, machineID, token); failed != nil {
+			return failed
+		}
 	}
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
+	recordCloudWorkspaceHTTPTestLease(t, h, req, machineID, rec)
 	return rec
+}
+
+func mustJSONBody(t *testing.T, payload any) io.Reader {
+	t.Helper()
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return bytes.NewReader(raw)
 }
 
 func cloudWorkspaceErrCode(t *testing.T, rec *httptest.ResponseRecorder) string {
@@ -144,6 +286,83 @@ func cloudWorkspaceErrCode(t *testing.T, rec *httptest.ResponseRecorder) string 
 		t.Fatalf("decode %q: %v", rec.Body.String(), err)
 	}
 	return payload.Code
+}
+
+func TestCloudWorkspaceInstanceSessionRequiredBoundAndRevocable(t *testing.T) {
+	_, h, _ := newCloudWorkspaceUserEnv(t, cloudworkspace.ModeAllUsers, 5, nil)
+
+	missingReq := httptest.NewRequest(http.MethodPost, "/api/v1/cloud-workspaces", mustJSONBody(t, map[string]any{"name": "missing"}))
+	missingReq.Header.Set("Authorization", "Bearer secret")
+	missingReq.Header.Set("X-Machine-ID", "m1")
+	missingReq.Header.Set("X-Cloud-Workspace-Protocol", cloudworkspace.CloudWorkspaceProtocol)
+	missing := httptest.NewRecorder()
+	h.ServeHTTP(missing, missingReq)
+	if missing.Code != http.StatusUnauthorized || cloudWorkspaceErrCode(t, missing) != "CLOUD_WORKSPACE_SESSION_REQUIRED" {
+		t.Fatalf("missing session=%d %s", missing.Code, missing.Body.String())
+	}
+
+	issueReq := httptest.NewRequest(http.MethodPost, "/api/v1/cloud-workspace-sessions", nil)
+	issueReq.Header.Set("Authorization", "Bearer secret")
+	issueReq.Header.Set("X-Machine-ID", "m1")
+	issueReq.Header.Set("X-Cloud-Workspace-Protocol", cloudworkspace.CloudWorkspaceProtocol)
+	issueReq.Header.Set("X-Cloud-Workspace-Instance", "cwi_attacker_chosen")
+	issuedRec := httptest.NewRecorder()
+	h.ServeHTTP(issuedRec, issueReq)
+	if issuedRec.Code != http.StatusCreated {
+		t.Fatalf("issue=%d %s", issuedRec.Code, issuedRec.Body.String())
+	}
+	var issued cloudworkspace.InstanceSession
+	if err := json.Unmarshal(issuedRec.Body.Bytes(), &issued); err != nil {
+		t.Fatal(err)
+	}
+	if issued.Token == "" || issued.ID == "" || issued.ClientInstanceID == "" || issued.ClientInstanceID == "cwi_attacker_chosen" {
+		t.Fatalf("issued=%+v", issued)
+	}
+
+	spoofReq := httptest.NewRequest(http.MethodPost, "/api/v1/cloud-workspaces", mustJSONBody(t, map[string]any{"name": "spoof"}))
+	spoofReq.Header.Set("Authorization", "Bearer secret")
+	spoofReq.Header.Set("X-Machine-ID", "m1")
+	spoofReq.Header.Set("X-Cloud-Workspace-Protocol", cloudworkspace.CloudWorkspaceProtocol)
+	spoofReq.Header.Set(cloudWorkspaceInstanceSessionHeader, issued.Token)
+	spoofReq.Header.Set("X-Cloud-Workspace-Instance", "cwi_other")
+	spoofed := httptest.NewRecorder()
+	h.ServeHTTP(spoofed, spoofReq)
+	if spoofed.Code != http.StatusUnauthorized || cloudWorkspaceErrCode(t, spoofed) != "CLOUD_WORKSPACE_SESSION_INVALID" {
+		t.Fatalf("spoofed=%d %s", spoofed.Code, spoofed.Body.String())
+	}
+
+	createReq := httptest.NewRequest(http.MethodPost, "/api/v1/cloud-workspaces", mustJSONBody(t, map[string]any{"name": "bound"}))
+	createReq.Header.Set("Authorization", "Bearer secret")
+	createReq.Header.Set("X-Machine-ID", "m1")
+	createReq.Header.Set("X-Cloud-Workspace-Protocol", cloudworkspace.CloudWorkspaceProtocol)
+	createReq.Header.Set(cloudWorkspaceInstanceSessionHeader, issued.Token)
+	created := httptest.NewRecorder()
+	h.ServeHTTP(created, createReq)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create=%d %s", created.Code, created.Body.String())
+	}
+
+	revokeReq := httptest.NewRequest(http.MethodDelete, "/api/v1/cloud-workspace-sessions/"+issued.ID, nil)
+	revokeReq.Header.Set("Authorization", "Bearer secret")
+	revokeReq.Header.Set("X-Machine-ID", "m1")
+	revokeReq.Header.Set("X-Cloud-Workspace-Protocol", cloudworkspace.CloudWorkspaceProtocol)
+	revokeReq.Header.Set(cloudWorkspaceInstanceSessionHeader, issued.Token)
+	revoked := httptest.NewRecorder()
+	h.ServeHTTP(revoked, revokeReq)
+	if revoked.Code != http.StatusOK {
+		t.Fatalf("revoke=%d %s", revoked.Code, revoked.Body.String())
+	}
+
+	afterReq := httptest.NewRequest(http.MethodPost, "/api/v1/cloud-workspaces", mustJSONBody(t, map[string]any{"name": "after"}))
+	afterReq.Header.Set("Authorization", "Bearer secret")
+	afterReq.Header.Set("X-Machine-ID", "m1")
+	afterReq.Header.Set("X-Cloud-Workspace-Protocol", cloudworkspace.CloudWorkspaceProtocol)
+	afterReq.Header.Set(cloudWorkspaceInstanceSessionHeader, issued.Token)
+	after := httptest.NewRecorder()
+	h.ServeHTTP(after, afterReq)
+	if after.Code != http.StatusUnauthorized || cloudWorkspaceErrCode(t, after) != "CLOUD_WORKSPACE_SESSION_INVALID" {
+		t.Fatalf("after revoke=%d %s", after.Code, after.Body.String())
+	}
 }
 
 func TestCloudWorkspaceEntitlementDisabledWhenModeOff(t *testing.T) {
@@ -230,6 +449,114 @@ func TestCloudWorkspaceCreateSucceedsWithCWSID(t *testing.T) {
 	}
 	if def.Name != "工作区 1" {
 		t.Fatalf("default name=%q", def.Name)
+	}
+}
+
+func TestCloudWorkspaceTaskProvisionLifecycleAndIdempotency(t *testing.T) {
+	_, h, _ := newCloudWorkspaceUserEnv(t, cloudworkspace.ModeAllUsers, 5, nil)
+	payload := map[string]any{"name": "编排任务", "device_task_id": "local-1", "mode": "coding_dev"}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/cloud-workspace-tasks", mustJSONBody(t, payload))
+	mustSetCloudWorkspaceHTTPTestAuth(t, h, req, "m1", "secret")
+	req.Header.Set("Idempotency-Key", "provision-1")
+	first := httptest.NewRecorder()
+	h.ServeHTTP(first, req)
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("first status=%d body=%s", first.Code, first.Body.String())
+	}
+	var op map[string]any
+	if err := json.Unmarshal(first.Body.Bytes(), &op); err != nil {
+		t.Fatal(err)
+	}
+	opID, _ := op["operation_id"].(string)
+	workspaceID, _ := op["workspace_id"].(string)
+	if opID == "" || workspaceID == "" || op["state"] != cloudworkspace.ProvisionStateProvisioning {
+		t.Fatalf("op=%v", op)
+	}
+	// Same key/payload replays the original operation instead of consuming quota.
+	replayReq := httptest.NewRequest(http.MethodPost, "/api/v1/cloud-workspace-tasks", mustJSONBody(t, payload))
+	mustSetCloudWorkspaceHTTPTestAuth(t, h, replayReq, "m1", "secret")
+	replayReq.Header.Set("Idempotency-Key", "provision-1")
+	replay := httptest.NewRecorder()
+	h.ServeHTTP(replay, replayReq)
+	var replayOp map[string]any
+	if err := json.Unmarshal(replay.Body.Bytes(), &replayOp); err != nil {
+		t.Fatal(err)
+	}
+	if replay.Code != http.StatusAccepted || replayOp["operation_id"] != opID || replayOp["workspace_id"] != workspaceID {
+		t.Fatalf("replay status=%d body=%s want operation=%s workspace=%s", replay.Code, replay.Body.String(), opID, workspaceID)
+	}
+	lease := doCloudWorkspaceRequest(t, h, http.MethodPost, "/api/v1/cloud-workspaces/"+workspaceID+"/leases", "m1", "secret", map[string]any{"force": false})
+	if lease.Code != http.StatusOK {
+		t.Fatalf("lease status=%d body=%s", lease.Code, lease.Body.String())
+	}
+	completeReq := httptest.NewRequest(http.MethodPost, "/api/v1/cloud-workspace-tasks/"+opID+"/complete", nil)
+	mustSetCloudWorkspaceHTTPTestAuth(t, h, completeReq, "m1", "secret")
+	if cached, ok := cloudWorkspaceHTTPTestLeases.Load(cloudWorkspaceHTTPTestLeaseKey{h: h, machineID: "m1", workspaceID: workspaceID}); ok {
+		lease := cached.(cloudWorkspaceHTTPTestLease)
+		completeReq.Header.Set("X-Cloud-Workspace-Session", lease.leaseID)
+		completeReq.Header.Set("X-Cloud-Workspace-Fencing", fmt.Sprintf("%d", lease.fencingToken))
+	} else {
+		t.Fatal("missing cached provisioning lease")
+	}
+	complete := httptest.NewRecorder()
+	h.ServeHTTP(complete, completeReq)
+	if complete.Code != http.StatusOK {
+		t.Fatalf("complete status=%d body=%s", complete.Code, complete.Body.String())
+	}
+	statusReq := httptest.NewRequest(http.MethodGet, "/api/v1/cloud-workspace-tasks/"+opID, nil)
+	mustSetCloudWorkspaceHTTPTestAuth(t, h, statusReq, "m1", "secret")
+	status := httptest.NewRecorder()
+	h.ServeHTTP(status, statusReq)
+	if status.Code != http.StatusOK || !strings.Contains(status.Body.String(), `"state":"active"`) {
+		t.Fatalf("status=%d body=%s", status.Code, status.Body.String())
+	}
+}
+
+func TestCloudWorkspaceTaskProvisionRecoversOperationWhenLedgerResponseWasLost(t *testing.T) {
+	svc, h, _ := newCloudWorkspaceUserEnv(t, cloudworkspace.ModeAllUsers, 5, nil)
+	ctx := context.Background()
+	payload := map[string]any{
+		"name": "崩溃恢复任务", "device_task_id": "local-recover", "mode": "coding_dev",
+	}
+	payloadForHash := struct {
+		Name         string `json:"name"`
+		CloudTaskID  string `json:"cloud_task_id"`
+		DeviceTaskID string `json:"device_task_id"`
+		Mode         string `json:"mode"`
+		Tag          string `json:"tag"`
+	}{Name: "崩溃恢复任务", DeviceTaskID: "local-recover", Mode: "coding_dev"}
+	payloadHash, _, err := cloudWorkspacePayloadHash(payloadForHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledgerKey := "workspace-task:provision:provision-recover"
+	if _, err := svc.Workspaces.BeginIdempotency(ctx, "t1", "u1", "", "cwi-old", ledgerKey, payloadHash, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	op, err := svc.Workspaces.BeginWorkspaceTaskProvision(ctx, cloudworkspace.WorkspaceTaskProvisionParams{
+		TenantID: "t1", UserID: "u1", Name: "崩溃恢复任务", DeviceTaskID: "local-recover", Mode: "coding_dev",
+		IdempotencyKey: "provision-recover", IdempotencyPayloadHash: payloadHash, Quota: 5,
+	}, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if op == nil || op.OperationID == "" {
+		t.Fatalf("operation=%+v", op)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/cloud-workspace-tasks", mustJSONBody(t, payload))
+	mustSetCloudWorkspaceHTTPTestAuth(t, h, req, "m1", "secret")
+	req.Header.Set("Idempotency-Key", "provision-recover")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var recovered map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &recovered); err != nil {
+		t.Fatal(err)
+	}
+	if recovered["operation_id"] != op.OperationID || recovered["workspace_id"] != op.WorkspaceID {
+		t.Fatalf("recovered=%v want op=%s workspace=%s", recovered, op.OperationID, op.WorkspaceID)
 	}
 }
 

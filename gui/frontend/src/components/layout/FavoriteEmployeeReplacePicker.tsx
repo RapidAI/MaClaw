@@ -37,7 +37,7 @@ export function FavoriteEmployeeReplacePicker({ currentSlots, newVeName, onRepla
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            background: 'rgba(0,0,0,0.3)',
+            background: 'var(--theme-overlay, rgba(15, 23, 42, 0.30))',
             zIndex: 99999,
         }}>
             <div
@@ -46,8 +46,8 @@ export function FavoriteEmployeeReplacePicker({ currentSlots, newVeName, onRepla
                 style={{
                     background: 'var(--theme-surface)',
                     border: '1px solid var(--theme-border)',
-                    borderRadius: '12px',
-                    boxShadow: '0 8px 32px rgba(0,0,0,0.18)',
+                    borderRadius: 'var(--radius-lg, 12px)',
+                    boxShadow: 'var(--shadow-lg, 0 8px 32px rgba(30,58,95,0.18))',
                     padding: '16px',
                     minWidth: '240px',
                     maxWidth: '320px',
@@ -72,7 +72,7 @@ export function FavoriteEmployeeReplacePicker({ currentSlots, newVeName, onRepla
                             gap: '8px',
                             width: '100%',
                             padding: '8px 12px',
-                            borderRadius: '8px',
+                            borderRadius: 'var(--radius-md, 8px)',
                             border: 0,
                             background: 'transparent',
                             font: 'inherit',
@@ -105,7 +105,7 @@ export function FavoriteEmployeeReplacePicker({ currentSlots, newVeName, onRepla
                         type="button"
                         onClick={onCancel}
                         style={{
-                            fontSize: '11px', padding: '4px 12px', borderRadius: '6px',
+                            fontSize: '11px', padding: '4px 12px', borderRadius: 'var(--radius-sm, 6px)',
                             border: '1px solid var(--theme-border)', background: 'transparent',
                             color: 'var(--theme-text-muted)', cursor: 'pointer',
                         }}

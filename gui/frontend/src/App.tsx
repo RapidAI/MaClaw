@@ -1,4 +1,4 @@
-import { BugReportScreenshotPreviewDataURL, CancelDownload, CheckEnvironment, CheckToolsStatus, ClampMaximizedWindowToWorkArea, ConsumeReferralHandoff, CreateExpertTask, CreateRemoteCodingTask, CreateRemoteOpsDiagnosisTask, CreateTask, CreateTaskWithCloudWorkspace, CreateTaskWithMode, DeleteSkillDetailed, DeleteTask, DownloadUpdate, DownloadUpdateWithSHA256, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, FetchMaclawLLMProfileModels, FetchProviderModels, GetAdaptiveWindowSize, GetAllLLMProfileTokenUsage, GetAllLLMTokenUsage, GetBrandInfo, GetChatFontSize, GetDigitalEmployeeFeatureStatus, GetEnvCheckInterval, GetFramelessTopInset, GetHubLLMServiceStatus, GetLansengerLocalMode, GetLansengerStatus, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMoASessionState, GetQQBotLocalMode, GetQQBotStatus, GetSystemInfo, GetTelegramLocalMode, GetTelegramStatus, GetThirdPartyGatewayLocalMode, GetThirdPartyGatewayStatus, GetUIZoomFactor, GetUserHomeDir, GetWeixinLocalMode, GetWeixinStatus, GroupDiscussionAcceptInvite, GroupDiscussionProcessPendingInvites, GroupDiscussionPublishProfile, GroupDiscussionRejectInvite, GroupDiscussionStatus, HasPendingBugReportUpload, HideTask, InstallToolOnDemand, IsGossipAllowed, IsNativeRoundedCorners, IsToolBeingInstalled, IsWindowsTerminalAvailable, LaunchInstallerAndExit, LaunchTool, ListBackgroundLoops, ListMyBugReports, ListPythonEnvironments, ListRemoteHubs, ListSkills, ListSkillsWithInstallStatus, ListTasks, LoadConfigForUI, OpenSystemUrl, PackLog, PatchConfigFields, PinTask, PingMaclawLLM, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, QuickSaveMaclawLLMProfile, ReadBBS, ReadThanks, ReadTutorial, RefreshMaclawLLMProfileHealth, RenameTask, ResizeWindow, RespondDigitalEmployeeSensitiveRequest, RestoreCloudWorkspaceTasks, ResumeCloudWorkspaceTask, ResumeTask, RetryBugReportUpload, SaveConfig, SelectBugReportScreenshots, SelectProjectDir, SetBugReportEnabled, SetDefaultLaunchMode, SetLanguage, SetMaclawLLMCurrentModel, SetMoASticky, SetMoAStickyPreset, ShouldCheckEnvironment, ShowItemInFolder, SubmitBugReport, UpdateLastEnvCheckTime } from '../wailsjs/go/main/App';
+import { BugReportScreenshotPreviewDataURL, CancelDownload, CheckEnvironment, ClampMaximizedWindowToWorkArea, ConsumeReferralHandoff, CreateExpertTask, CreateRemoteCodingTask, CreateRemoteOpsDiagnosisTask, CreateTask, CreateTaskWithCloudWorkspace, CreateTaskWithMode, DeleteSkillDetailed, DeleteTask, DownloadUpdate, DownloadUpdateWithSHA256, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, FetchMaclawLLMProfileModels, FetchProviderModels, GetAdaptiveWindowSize, GetAllLLMProfileTokenUsage, GetAllLLMTokenUsage, GetBrandInfo, GetChatFontSize, GetDigitalEmployeeFeatureStatus, GetEnvCheckInterval, GetFramelessTopInset, GetHubLLMServiceStatus, GetLansengerLocalMode, GetLansengerStatus, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMoASessionState, GetQQBotLocalMode, GetQQBotStatus, GetSystemInfo, GetTelegramLocalMode, GetTelegramStatus, GetThirdPartyGatewayLocalMode, GetThirdPartyGatewayStatus, GetUIZoomFactor, GetUserHomeDir, GetWeixinLocalMode, GetWeixinStatus, GroupDiscussionAcceptInvite, GroupDiscussionProcessPendingInvites, GroupDiscussionPublishProfile, GroupDiscussionRejectInvite, GroupDiscussionStatus, HasPendingBugReportUpload, HideTask, IsGossipAllowed, IsNativeRoundedCorners, IsWindowsTerminalAvailable, LaunchInstallerAndExit, ListBackgroundLoops, ListMyBugReports, ListPythonEnvironments, ListRemoteHubs, ListSkills, ListSkillsWithInstallStatus, ListTasks, LoadConfigForUI, OpenSystemUrl, PackLog, PatchConfigFields, PinTask, PingMaclawLLM, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, QuickSaveMaclawLLMProfile, ReadBBS, ReadThanks, ReadTutorial, RefreshMaclawLLMProfileHealth, RenameTask, ResizeWindow, RespondDigitalEmployeeSensitiveRequest, RestoreCloudWorkspaceTasks, ResumeCloudWorkspaceTask, ResumeTask, RetryBugReportUpload, SaveConfig, SelectBugReportScreenshots, SelectProjectDir, SetBugReportEnabled, SetDefaultLaunchMode, SetLanguage, SetMaclawLLMCurrentModel, SetMoASticky, SetMoAStickyPreset, ShouldCheckEnvironment, ShowItemInFolder, SubmitBugReport, UpdateLastEnvCheckTime } from '../wailsjs/go/main/App';
 import { BrowserOpenURL, EventsOff, EventsOn, Quit, WindowHide, WindowIsFullscreen, WindowIsMaximised, WindowToggleMaximise, WindowUnmaximise } from '../wailsjs/runtime';
 import { appVersion, buildNumber } from './version';
 // Keep the in-app navigation and About artwork aligned with the packaged
@@ -422,10 +422,14 @@ function App() {
         reportBillingTimezoneOnAuthenticatedLaunch(config, reportedBillingTimezoneForAccountRef);
     }, [config]);
     const [navTab, setNavTab] = useState<string>("ai");
+    // A notification request can originate from a page whose notification panel
+    // is not mounted yet. Keep it pending until the AI surface has rendered.
+    const [pendingSystemNotifications, setPendingSystemNotifications] = useState(false);
+    const [pendingTaskSearch, setPendingTaskSearch] = useState<string | null>(null);
     // Keep Utilities alive after its first visit so long-running virtual-repository
     // work continues when the user briefly switches to the AI assistant.
     const [utilitiesPageVisited, setUtilitiesPageVisited] = useState(false);
-    const [remoteInitialSessionTab, setRemoteInitialSessionTab] = useState<"remote" | "background">("remote");
+    const [remoteInitialSessionTab, setRemoteInitialSessionTab] = useState<"remote" | "background" | "scheduled" | "passthrough">("remote");
     const audioDevices = useAudioDevices();
     const [aiPanelMaximized, setAiPanelMaximized] = useState(false);
     const aiPanelMaximizedWindowRef = useRef(false);
@@ -491,13 +495,14 @@ function App() {
     const navTabRef = useRef(navTab);
     const startupNavAppliedRef = useRef(false);
     const setNavTabNow = useCallback((tab: string) => {
-        if (tab === 'utilities') setUtilitiesPageVisited(true);
+        if (tab === 'utilities' || tab === 'tools') setUtilitiesPageVisited(true);
         navTabRef.current = tab;
         setNavTab(tab);
     }, []);
     const showAppEntryEnabled = config?.show_app_entry !== false;
     const showWorkflowEntryEnabled = config?.show_workflow_entry !== false;
 	const showUtilitiesEntryEnabled = (config as any)?.show_utilities_entry !== false;
+    const showToolsEntryEnabled = (config as any)?.show_tools_entry !== false;
     useEffect(() => {
         const openAppsPanel = () => {
             if (showAppEntryEnabled) setNavTabNow('apps');
@@ -514,6 +519,9 @@ function App() {
 	useEffect(() => {
 		if (!showUtilitiesEntryEnabled && navTab === 'utilities') setNavTabNow('ai');
 	}, [navTab, setNavTabNow, showUtilitiesEntryEnabled]);
+	useEffect(() => {
+		if (!showToolsEntryEnabled && navTab === 'tools') setNavTabNow('ai');
+	}, [navTab, setNavTabNow, showToolsEntryEnabled]);
     useEffect(() => { navTabRef.current = navTab; }, [navTab]);
     const [bbsContent, setBbsContent] = useState<string>("");
     const [tutorialContent, setTutorialContent] = useState<string>("");
@@ -524,14 +532,17 @@ function App() {
     const [refreshKey, setRefreshKey] = useState<number>(0);
     const [activeTool, setActiveTool] = useState<string>("claude");
     const [codexConfigUpdateCount, setCodexConfigUpdateCount] = useState(0);
-    const [taskManagementPaneWidth, setTaskManagementPaneWidth] = useState(260);
+    const [taskManagementPaneWidth, setTaskManagementPaneWidth] = useState(308);
     const [isTaskManagementResizing, setIsTaskManagementResizing] = useState(false);
     const taskManagementResizeStartX = useRef(0);
-    const taskManagementResizeStartWidth = useRef(380);
+    const taskManagementResizeStartWidth = useRef(308);
+    const taskManagementResizePointerId = useRef<number | null>(null);
     const [toolDropdownOpen, setToolDropdownOpen] = useState(false);
     const [taskContextMenu, setTaskContextMenu] = useState<{ x: number; y: number; projectPath: string; name: string; pinned: boolean; isRemoteCoding?: boolean; tags?: string[] } | null>(null);
     /** Project paths with an open AI assistant tab — used to block task-list remove. */
     const [openProjectTabPaths, setOpenProjectTabPaths] = useState<string[]>([]);
+    /** Stable identities for open project tabs; cloud tabs may be rebound to a new cache path. */
+    const [openProjectTabIdentities, setOpenProjectTabIdentities] = useState<Array<{ projectPath: string; cloudWorkspaceId?: string }>>([]);
     /** Expert IDs with an open AI assistant tab — protects their durable task rows. */
     const [openExpertTabIDs, setOpenExpertTabIDs] = useState<string[]>([]);
     const handleOpenProjectTabsChange = useCallback((paths: string[]) => {
@@ -544,6 +555,21 @@ function App() {
                 }
             }
             return paths;
+        });
+    }, []);
+    const handleOpenProjectTabIdentitiesChange = useCallback((identities: Array<{ projectPath: string; cloudWorkspaceId?: string }>) => {
+        const next = identities
+            .map((item) => ({
+                projectPath: String(item?.projectPath || '').trim(),
+                cloudWorkspaceId: String(item?.cloudWorkspaceId || '').trim() || undefined,
+            }))
+            .filter((item) => !!item.projectPath)
+            .sort((a, b) => `${a.cloudWorkspaceId || ''}\0${a.projectPath}`.localeCompare(`${b.cloudWorkspaceId || ''}\0${b.projectPath}`));
+        setOpenProjectTabIdentities(prev => {
+            if (prev.length === next.length && prev.every((item, index) => item.projectPath === next[index].projectPath && item.cloudWorkspaceId === next[index].cloudWorkspaceId)) {
+                return prev;
+            }
+            return next;
         });
     }, []);
     const handleOpenExpertTabsChange = useCallback((expertIDs: string[]) => {
@@ -563,7 +589,8 @@ function App() {
     }, []);
     const hideTaskGuarded = useCallback(async (projectPath: string, tags?: string[]): Promise<boolean> => {
         // Keep the guard: an open task must be closed before its state is deleted.
-        if (isProjectTabOpen(projectPath, openProjectTabPaths)) {
+        const cloudWorkspaceId = cloudWorkspaceIdFromTaskFields({ project_path: projectPath, tags });
+        if (isProjectTabOpen(projectPath, openProjectTabPaths, cloudWorkspaceId, openProjectTabIdentities)) {
             return false;
         }
         const expertID = expertIDFromTaskTags(tags);
@@ -575,7 +602,7 @@ function App() {
         // Expert history is keyed by expert id, not the task workspace path.
         if (expertID) purgeDeletedExpertTabLocalCache(expertID);
         return true;
-    }, [openExpertTabIDs, openProjectTabPaths]);
+    }, [openExpertTabIDs, openProjectTabIdentities, openProjectTabPaths]);
     const [renamingTaskPath, setRenamingTaskPath] = useState<string | null>(null);
     const [renameValue, setRenameValue] = useState("");
     const [taskItems, setTaskItems] = useState<Array<{ id?: string; name?: string; project_path: string; working_dir?: string; workflow_type?: string; active_workflow?: { id?: string; type?: string; phase?: string; status?: string; project_path?: string; pending_review?: boolean }; preview?: string; tags?: string[]; created_at?: string; last_activity?: string; pinned?: boolean; has_output?: boolean }>>([]);
@@ -1799,6 +1826,15 @@ function App() {
         setShowUpdateModal(true);
     }, [appUpdateAvailable]);
 
+    const handleOpenAppReleaseNotes = useCallback(() => {
+        const releaseUrl = String(appUpdateAvailable?.release_url || appUpdateAvailable?.ReleaseUrl || "").trim();
+        if (releaseUrl) {
+            safeBrowserOpenURL(releaseUrl);
+            return;
+        }
+        handleOpenAppUpdate();
+    }, [appUpdateAvailable, handleOpenAppUpdate]);
+
     const handleDismissAppUpdate = useCallback((latestVersion: string) => {
         const normalizedVersion = String(latestVersion || "").trim();
         if (normalizedVersion) {
@@ -1916,26 +1952,57 @@ function App() {
         }
     };
 
-    const handleTaskManagementResizeStart = (e: React.MouseEvent<HTMLDivElement>) => {
+    const handleTaskManagementResizeStart = (
+        e: React.MouseEvent<HTMLDivElement> | React.PointerEvent<HTMLDivElement> | number,
+    ) => {
+        if (typeof e === 'number') {
+            setTaskManagementPaneWidth(Math.min(460, Math.max(180, e)));
+            return;
+        }
         e.preventDefault();
         e.stopPropagation();
         taskManagementResizeStartX.current = e.clientX;
         taskManagementResizeStartWidth.current = taskManagementPaneWidth;
+        const nativeEvent = e.nativeEvent as MouseEvent & { pointerId?: number };
+        taskManagementResizePointerId.current = typeof nativeEvent.pointerId === 'number' ? nativeEvent.pointerId : null;
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
         setIsTaskManagementResizing(true);
     };
 
     useEffect(() => {
         if (!isTaskManagementResizing) return;
-        const handleMove = (event: MouseEvent) => {
-            const nextWidth = taskManagementResizeStartWidth.current + event.clientX - taskManagementResizeStartX.current;
+        const applyWidth = (clientX: number) => {
+            const nextWidth = taskManagementResizeStartWidth.current + clientX - taskManagementResizeStartX.current;
             setTaskManagementPaneWidth(Math.min(460, Math.max(180, nextWidth)));
         };
-        const handleUp = () => setIsTaskManagementResizing(false);
+        const handleMove = (event: MouseEvent) => {
+            applyWidth(event.clientX);
+        };
+        const handlePointerMove = (event: PointerEvent) => {
+            if (taskManagementResizePointerId.current !== null && event.pointerId !== taskManagementResizePointerId.current) return;
+            event.preventDefault();
+            applyWidth(event.clientX);
+        };
+        const handleUp = (event?: PointerEvent) => {
+            if (event && taskManagementResizePointerId.current !== null && event.pointerId !== taskManagementResizePointerId.current) return;
+            taskManagementResizePointerId.current = null;
+            setIsTaskManagementResizing(false);
+        };
+        const handleMouseUp = () => handleUp();
+        window.addEventListener('pointermove', handlePointerMove, { passive: false });
+        window.addEventListener('pointerup', handleUp);
+        window.addEventListener('pointercancel', handleUp);
         window.addEventListener('mousemove', handleMove);
-        window.addEventListener('mouseup', handleUp);
+        window.addEventListener('mouseup', handleMouseUp);
         return () => {
+            window.removeEventListener('pointermove', handlePointerMove);
+            window.removeEventListener('pointerup', handleUp);
+            window.removeEventListener('pointercancel', handleUp);
             window.removeEventListener('mousemove', handleMove);
-            window.removeEventListener('mouseup', handleUp);
+            window.removeEventListener('mouseup', handleMouseUp);
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
         };
     }, [isTaskManagementResizing]);
 
@@ -2238,10 +2305,6 @@ function App() {
                 }
             }).catch(() => {});
 
-            if (!cfg.pause_env_check) {
-                checkTools();
-            }
-
             if (cfg && cfg.language) {
                 setLang(cfg.language);
                 void callBackend(() => SetLanguage(cfg.language));
@@ -2394,54 +2457,6 @@ function App() {
         callBackend(() => GetThirdPartyGatewayStatus()).then(setThirdPartyGatewayStatus).catch(() => {});
         callBackend(() => GetThirdPartyGatewayLocalMode()).then(setThirdPartyGatewayLocalModeState).catch(() => {});
 
-        // Listen for background tool installation events
-        safeEventsOn("tool-checking", (toolName: string) => {
-            setBackgroundInstallStatus(`Checking ${toolName}...`);
-            setBackgroundInstallingTool("");  // Clear previous tool's installing state
-        });
-
-        safeEventsOn("tool-installing", (toolName: string) => {
-            setBackgroundInstallStatus(`Installing ${toolName}...`);
-            setBackgroundInstallingTool(toolName);
-        });
-
-        safeEventsOn("tool-updating", (toolName: string) => {
-            setBackgroundInstallStatus(`Updating ${toolName}...`);
-            setBackgroundInstallingTool(toolName);
-        });
-
-        safeEventsOn("tool-installed", (toolName: string) => {
-            console.log("Tool installed in background:", toolName);
-            setBackgroundInstallStatus(`${toolName} installed`);
-            setBackgroundInstallingTool("");
-            setTimeout(() => setBackgroundInstallStatus(""), 3000);
-            // Refresh tool statuses
-            callBackend(() => CheckToolsStatus()).then(statuses => {
-                setToolStatuses(statuses);
-            }).catch(() => {});
-        });
-
-        safeEventsOn("tool-updated", (toolName: string) => {
-            console.log("Tool updated in background:", toolName);
-            setBackgroundInstallStatus(`${toolName} updated`);
-            setBackgroundInstallingTool("");
-            setTimeout(() => setBackgroundInstallStatus(""), 3000);
-            // Refresh tool statuses
-            callBackend(() => CheckToolsStatus()).then(statuses => {
-                setToolStatuses(statuses);
-            }).catch(() => {});
-        });
-
-        safeEventsOn("tools-install-done", () => {
-            console.log("Background tool installation complete");
-            setBackgroundInstallStatus("");
-            setBackgroundInstallingTool("");
-            // Final refresh of tool statuses
-            callBackend(() => CheckToolsStatus()).then(statuses => {
-                setToolStatuses(statuses);
-            }).catch(() => {});
-        });
-
         // Hub security policy: refresh gossip visibility when policy changes (Req 6.1)
         callBackend(() => IsGossipAllowed()).then(setGossipAllowed).catch(() => {});
         safeEventsOn("hub-security-policy-changed", () => {
@@ -2470,12 +2485,6 @@ function App() {
             safeEventsOff("telegram-status-changed");
             safeEventsOff("weixin-status-changed");
             safeEventsOff("thirdparty-gateway-status-changed");
-            safeEventsOff("tool-checking");
-            safeEventsOff("tool-installing");
-            safeEventsOff("tool-updating");
-            safeEventsOff("tool-installed");
-            safeEventsOff("tool-updated");
-            safeEventsOff("tools-install-done");
             safeEventsOff("hub-security-policy-changed");
             safeEventsOff("hub-auth-rejected");
         };
@@ -2547,69 +2556,36 @@ function App() {
         return () => clearTimeout(retryTimer);
     }, [config, maclawLLMOnline, requestOnboarding]);
 
-    const checkTools = async () => {
-        try {
-            const statuses = await callBackend(() => CheckToolsStatus());
-            setToolStatuses(statuses);
-            // Tools are now installed in background by the backend
-            // No need to install here - just update the status
-        } catch (err) {
-            console.error("Failed to check tools:", err);
-        }
-    };
-
     const applyLanguage = useCallback((newLang: string) => {
         setLang(newLang);
         void callBackend(() => SetLanguage(newLang));
-        if (config) {
-            const newConfig = new corelib.AppConfig({ ...config, language: newLang });
-            setConfig(newConfig);
-            void callBackend(() => PatchConfigFields({ language: newLang })).then((saved) => setConfig(new corelib.AppConfig(saved))).catch((err) => console.error('Failed to save language:', err));
-        }
-    }, [config]);
+    }, []);
 
     const handleLangChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
         applyLanguage(e.target.value);
     };
 
     const switchTool = (tool: string) => {
+        // External editor/CLI tool tabs are retired; keep navigation on the built-in assistant.
+        if (isToolTab(tool)) {
+            setNavTabNow('ai');
+            setToolDropdownOpen(false);
+            return;
+        }
         setNavTabNow(tool);
         setToolDropdownOpen(false);
         if (tool === 'remote') setRemoteInitialSessionTab('remote');
-        if (isToolTab(tool)) {
-            setActiveTool(tool);
-            setActiveTab(0);
-        }
-
         if (tool === 'message') {
-            // message tab removed: redirect to AI assistant
             switchTool('ai');
             return;
         }
-
         if (tool === 'tutorial') {
             setShowModelSettings(false);
             callBackend(() => ReadTutorial()).then(content => setTutorialContent(content)).catch(err => console.error(err));
         }
-
         if (tool === 'skills') {
             setShowModelSettings(false);
             callBackend(() => ListSkills(activeTool)).then(list => setSkills(list || [])).catch(err => console.error(err));
-        }
-
-        if (config) {
-            // Don't persist 'ai' as active_tool; it's a UI nav state, not a coding tool
-            if (isToolTab(tool)) {
-                const newConfig = new corelib.AppConfig({ ...config, active_tool: tool });
-                setConfig(newConfig);
-                void callBackend(() => PatchConfigFields({ active_tool: tool })).then((saved) => setConfig(new corelib.AppConfig(saved))).catch((err) => console.error('Failed to save active tool:', err));
-            }
-
-            const toolCfg = (config as any)[tool];
-            if (toolCfg && toolCfg.models) {
-                const idx = toolCfg.models.findIndex((m: any) => m.model_name === toolCfg.current_model);
-                if (idx !== -1) setActiveTab(idx);
-            }
         }
     };
 
@@ -2617,7 +2593,64 @@ function App() {
         setRemoteInitialSessionTab('background');
         setNavTabNow('remote');
         setToolDropdownOpen(false);
+        if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('maclaw:focus-background-tasks'));
     }, [setNavTabNow]);
+    const openScheduledTasks = useCallback(() => {
+        setRemoteInitialSessionTab('scheduled');
+        setNavTabNow('remote');
+        setToolDropdownOpen(false);
+        if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('maclaw:focus-scheduled-tasks'));
+    }, [setNavTabNow]);
+
+    useEffect(() => {
+        const revealSystemNotifications = () => {
+            if (navTab !== 'ai') {
+                setPendingSystemNotifications(true);
+                setNavTabNow('ai');
+            }
+        };
+        window.addEventListener('maclaw:open-system-notifications', revealSystemNotifications);
+        return () => window.removeEventListener('maclaw:open-system-notifications', revealSystemNotifications);
+    }, [navTab, setNavTabNow]);
+
+    useEffect(() => {
+        const revealTaskSearch = (event: Event) => {
+            // MainTopHeader is present on task, monitor, tools and settings
+            // pages while the search panel itself belongs to the retained AI
+            // surface. Defer the open until that surface is active so the
+            // hidden panel's cleanup cannot immediately close it again.
+            if (navTab === 'ai') return;
+            const query = String((event as CustomEvent<{ query?: unknown }>).detail?.query ?? '');
+            setPendingTaskSearch(query);
+            setNavTabNow('ai');
+        };
+        window.addEventListener('maclaw:open-task-search', revealTaskSearch);
+        return () => window.removeEventListener('maclaw:open-task-search', revealTaskSearch);
+    }, [navTab, setNavTabNow]);
+
+    useEffect(() => {
+        if (navTab !== 'ai' || pendingTaskSearch === null) return;
+        const query = pendingTaskSearch;
+        setPendingTaskSearch(null);
+        const timer = window.setTimeout(() => {
+            window.dispatchEvent(new CustomEvent('maclaw:open-task-search', { detail: { query } }));
+        }, 0);
+        return () => window.clearTimeout(timer);
+    }, [navTab, pendingTaskSearch]);
+
+    // Re-emit after the AI panel mounts so AssistantTitleBarNotifications can
+    // handle requests that came from the task/monitor pages.
+    useEffect(() => {
+        if (navTab !== 'ai' || !pendingSystemNotifications) return;
+        setPendingSystemNotifications(false);
+        const timer = window.setTimeout(() => {
+            // This request originated on another page. Explicitly open the inbox
+            // after navigation so a panel that was already open while hidden is
+            // not accidentally toggled closed by the hand-off event.
+            window.dispatchEvent(new CustomEvent('maclaw:open-system-notifications', { detail: { toggle: false } }));
+        }, 0);
+        return () => window.clearTimeout(timer);
+    }, [navTab, pendingSystemNotifications]);
 
     useEffect(() => {
         // Keep settingsTab aligned with the tabs actually shown in the rail
@@ -2913,7 +2946,9 @@ function App() {
     );
     const refreshTasks = useCallback(() => {
         const generation = ++taskRefreshGenerationRef.current;
-        callBackend(() => ListTasks(50)).then((r: any) => {
+        // Cloud workspace recovery can materialize more than the old 50-row
+        // cap. Keep the complete task-management list visible after restore.
+        callBackend(() => ListTasks(1000)).then((r: any) => {
             if (generation === taskRefreshGenerationRef.current) {
                 setTaskItems(r || []);
             }
@@ -3035,15 +3070,21 @@ function App() {
         };
         const offProjectIndexChanged = safeEventsOn(EVENT_PROJECT_INDEX_CHANGED, refresh);
         const offTasksChanged = safeEventsOn(EVENT_TASKS_CHANGED, refresh);
-        const offAssistantReady = safeEventsOn('ai-assistant-init-progress', (status: string) => {
-            if (status === 'ready') restoreCloudTasks();
-        });
+        // The ready event can fire before this listener is mounted when the
+        // assistant restores a persisted session quickly. Restore immediately
+        // for an already-ready assistant; otherwise keep the event fallback.
+        const offAssistantReady = aiAssistant.ready
+            ? undefined
+            : safeEventsOn('ai-assistant-init-progress', (status: string) => {
+                if (status === 'ready') restoreCloudTasks();
+            });
+        if (aiAssistant.ready) restoreCloudTasks();
         return () => {
             if (typeof offProjectIndexChanged === 'function') offProjectIndexChanged(); else safeEventsOff(EVENT_PROJECT_INDEX_CHANGED);
             if (typeof offTasksChanged === 'function') offTasksChanged(); else safeEventsOff(EVENT_TASKS_CHANGED);
             if (typeof offAssistantReady === 'function') offAssistantReady(); else safeEventsOff('ai-assistant-init-progress');
         };
-    }, [refreshTasks]);
+    }, [aiAssistant.ready, refreshTasks]);
 
     const resumeTask = useCallback(async (projectPath: string, task?: { project_path?: string; name?: string; tags?: string[]; working_dir?: string }) => {
         const startedAt = performance.now();
@@ -4965,7 +5006,7 @@ ${instruction}`;
         >
             <DataMigrationOverlay />
             <div className="app-scale-layer">
-                <div id="App" data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-ai-light-scheme={aiThemeMode === 'light' ? aiLightSchemeId : undefined} data-native-rounded={nativeRounded ? "true" : undefined} data-css-window-corners={useCSSWindowCorners ? "true" : "false"} data-windows-legacy-frameless={isLegacyWindowsFrameless ? "true" : undefined} data-maximized={windowMaximized ? "true" : undefined}>
+                <div id="App" data-nav-tab={navTab} data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-ai-light-scheme={aiThemeMode === 'light' ? aiLightSchemeId : undefined} data-native-rounded={nativeRounded ? "true" : undefined} data-css-window-corners={useCSSWindowCorners ? "true" : "false"} data-windows-legacy-frameless={isLegacyWindowsFrameless ? "true" : undefined} data-maximized={windowMaximized ? "true" : undefined}>
             <AppSidebarShell
                 navTab={navTab}
                 taskManagementPaneWidth={taskManagementPaneWidth}
@@ -4987,6 +5028,8 @@ ${instruction}`;
                 runningTaskCount={runningTaskCount}
                 backgroundTaskCount={backgroundTaskCount}
                 onOpenBackgroundTasks={openBackgroundTaskMonitor}
+                onOpenScheduledTasks={openScheduledTasks}
+                remoteSessionTab={remoteInitialSessionTab}
                 t={t}
                 gossipAllowed={gossipAllowed}
                 config={config}
@@ -5010,6 +5053,7 @@ ${instruction}`;
                 pinTask={PinTask}
                 hideTask={hideTaskGuarded}
                 openProjectTabPaths={openProjectTabPaths}
+                openProjectTabIdentities={openProjectTabIdentities}
                 openExpertTabIDs={openExpertTabIDs}
                 activeAssistantTask={activeAssistantTask}
                 sidebarCurrentProviderTokenUsage={sidebarCurrentProviderTokenUsage}
@@ -5047,7 +5091,11 @@ ${instruction}`;
                 showAppEntry={showAppEntryEnabled}
                 showWorkflowEntry={showWorkflowEntryEnabled}
 				showUtilitiesEntry={showUtilitiesEntryEnabled}
-                showCodingToolEntry={!!(config as any)?.show_coding_tool_entry}
+				showToolsEntry={showToolsEntryEnabled}
+				showCloudWorkspaceManagement={false}
+				showCloudWorkspaceCreation={true}
+				restoreCloudWorkspaceTasks
+                showCodingToolEntry={false}
                 availableProviders={quickProfileProviders}
                 onSwitchProvider={handleProfileQuickSwitchProvider}
                 currentModel={quickModel}
@@ -5080,6 +5128,7 @@ ${instruction}`;
                     <div className="ai-main-panel-shell">
                     <AIAssistantPanel
                             onClose={() => { switchTool('settings'); }}
+                            startOnWorkbenchHome
                             lang={lang}
                             chatFontSize={chatFontSize}
                             themeMode={aiThemeMode}
@@ -5099,9 +5148,12 @@ ${instruction}`;
                             onEnsureExpertTask={ensureExpertTask}
                             onEnsureAssistantTabTask={ensureAssistantTabTask}
                             onOpenProjectTabsChange={handleOpenProjectTabsChange}
+                            onOpenProjectTabIdentitiesChange={handleOpenProjectTabIdentitiesChange}
                             onOpenExpertTabsChange={handleOpenExpertTabsChange}
                             onActiveAssistantTaskChange={handleActiveAssistantTaskChange}
+                            activeAssistantTask={activeAssistantTask}
                             appUpdateAvailable={appUpdateAvailable}
+                            onOpenAppReleaseNotes={handleOpenAppReleaseNotes}
                             onOpenAppUpdate={handleOpenAppUpdate}
                             onDismissAppUpdate={handleDismissAppUpdate}
                             availableProviders={quickProfileProviders}
@@ -5119,6 +5171,11 @@ ${instruction}`;
                             onOpenLLMSettings={openLLMSettingsPage}
                             onActiveExecutionProfileChange={setActiveExecutionProfile}
                             onLanguageChange={applyLanguage}
+                            recentTasks={taskItems}
+                            onRecentTaskSelect={(task: any) => {
+                                const projectPath = String(task?.project_path || "").trim();
+                                if (projectPath) void resumeTask(projectPath, task);
+                            }}
                             statusSlot={(
                                 <AppStatusMessageBar
                                     variant="inline"
@@ -5164,8 +5221,7 @@ ${instruction}`;
                     handleWindowMaximizeToggle={handleWindowMaximizeToggle}
                     windowMaximized={windowMaximized}
                 />}
-
-                {navTab !== 'ai' && navTab !== 'utilities' && <div className="main-content elegant-scrollbar app-main-content" data-nav-tab={navTab}>
+                {navTab !== 'ai' && navTab !== 'utilities' && navTab !== 'tools' && <div className="main-content elegant-scrollbar app-main-content" data-nav-tab={navTab}>
                 {/* Settings is outside page Suspense. General panels are eager so the default
                     open path never depends on a lazy chunk (OEM intermittent blank fix). */}
                 {navTab === 'settings' ? (
@@ -5285,6 +5341,7 @@ ${instruction}`;
                             formatText={formatText}
                             localizeText={localizeText}
                             initialSessionTab={remoteInitialSessionTab}
+                            onSessionTabChange={setRemoteInitialSessionTab}
                         />
                     )}
                     {navTab === 'api-store' && (
@@ -5414,14 +5471,14 @@ ${instruction}`;
                 </Suspense>
                 )}
                 </div>}
-				{showUtilitiesEntryEnabled && (navTab === 'utilities' || utilitiesPageVisited) && (
-                    <div className="main-content elegant-scrollbar app-main-content" data-nav-tab="utilities" hidden={navTab !== 'utilities'}>
+				{((showUtilitiesEntryEnabled && navTab === 'utilities') || (showToolsEntryEnabled && navTab === 'tools') || utilitiesPageVisited) && (
+					<div className="main-content elegant-scrollbar app-main-content" data-nav-tab={navTab === 'tools' ? 'tools' : 'utilities'} hidden={navTab !== 'utilities' && navTab !== 'tools'}>
                         <Suspense fallback={
                             <div className="app-main-content-loading" role="status" aria-live="polite">
                                 {localizeText('Loading…', '加载中…', '載入中…')}
                             </div>
                         }>
-                            <UtilitiesPage lang={lang} active={navTab === 'utilities'} onStartMeetingRecord={startMeetingRecord} onOpenExpert={(expert) => {
+							<UtilitiesPage mode={navTab === 'tools' ? 'tools' : 'experts'} lang={lang} active={navTab === 'utilities' || navTab === 'tools'} onStartMeetingRecord={startMeetingRecord} onOpenExpert={(expert) => {
                                 switchTool('ai');
                                 setPendingExpertOpen({ expert });
                             }} onOpenVirtualRepositoryTask={(launch) => {
@@ -5432,352 +5489,6 @@ ${instruction}`;
                 )}
 
                 {/* Global Action Bar (Footer) */}
-                {config && isToolTab(navTab) && (
-                    <div className="global-action-bar" data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-ai-light-scheme={aiThemeMode === 'light' ? aiLightSchemeId : undefined}>
-                        <div className="coding-launch-panel wails-no-drag">
-                            <div className="coding-launch-meta-row">
-                                <div className="coding-launch-summary">
-                                    {/* runnerStatus label removed */}
-                                    <span className="coding-launch-tool-name">{getToolLabel(activeTool)}</span>
-                                    <span
-                                        className="coding-launch-provider-name"
-                                        title={(config as any)[activeTool].current_model === "Original" ? t("original") : (config as any)[activeTool].current_model}
-                                    >
-                                        {(() => {
-                                            const modelName = (config as any)[activeTool].current_model === "Original" ? t("original") : (config as any)[activeTool].current_model;
-                                            return modelName.length > 10 ? `${modelName.slice(0, 4)}...${modelName.slice(-4)}` : modelName;
-                                        })()}
-                                    </span>
-                                </div>
-                                <div className="coding-launch-options">
-                                <label className="coding-launch-check">
-                                    <input
-                                        type="checkbox"
-                                        checked={launchPanelProject?.admin_mode || false}
-                                        onChange={(e) => {
-                                            updateResolvedLaunchProject((project) => {
-                                                const updated = { ...project, admin_mode: e.target.checked };
-                                                if (!isWindows && e.target.checked) {
-                                                    updated.yolo_mode = false;
-                                                }
-                                                return updated;
-                                            });
-                                        }}
-                                    />
-                                    <span>{isWindows ? t("adminModeLabel") : t("rootModeLabel")}</span>
-                                </label>
-                                <label className="coding-launch-check">
-                                    <input
-                                        type="checkbox"
-                                        checked={launchPanelProject?.python_project || false}
-                                        onChange={(e) => updateResolvedLaunchProject((project) => ({ ...project, python_project: e.target.checked }))}
-                                    />
-                                    <span>{t("pythonProjectLabel")}</span>
-                                </label>
-                                {launchPanelProject?.python_project && (
-                                    <div className="coding-launch-python-env">
-                                        <span className="coding-launch-python-label">{t("pythonEnvLabel")}:</span>
-                                        <select
-                                            value={launchPanelProject?.python_env || ""}
-                                            onChange={(e) => updateResolvedLaunchProject((project) => ({ ...project, python_env: e.target.value }))}
-                                            className="coding-launch-python-select"
-                                        >
-                                            {pythonEnvironments.map((env: any, index: number) => (
-                                                <option key={index} value={env.name}>
-                                                    {env.name} {env.type === 'conda' ? '(Conda)' : ''}
-                                                </option>
-                                            ))}
-                                        </select>
-                                    </div>
-                                )}
-                            </div>
-                            </div>
-                            <div className="coding-launch-mode-row">
-                                <div className="coding-launch-mode-group">
-                                    <div className="coding-launch-segmented">
-                                        <button
-                                            type="button"
-                                            onClick={() => { void setLaunchMode('local'); }}
-                                            className={!launchRemoteEnabled ? 'is-active' : ''}
-                                        >
-                                            {t("localModeLabel")}
-                                        </button>
-                                        <button
-                                            type="button"
-                                            onClick={() => {
-                                                if (!isRemoteCapableActiveTool) return;
-                                                void setLaunchMode('remote');
-                                            }}
-                                            className={launchRemoteEnabled ? 'is-active' : ''}
-                                            title={isRemoteCapableActiveTool ? t("remoteModeDesc") : localizeText("This tool does not support remote mode", "此工具不支持远程模式", "此工具不支援遠端模式")}
-                                        >
-                                            {t("remoteModeLabel")}
-                                        </button>
-                                    </div>
-                                </div>
-                                {launchRemoteEnabled && (
-                                    <div
-                                        className={`coding-launch-status-pill ${remoteActivationStatus?.activated ? 'is-active' : 'needs-action'}`}
-                                        onClick={() => {
-                                            if (!remoteActivationStatus?.activated) {
-                                                openRemoteActivationModal(activeTool);
-                                            }
-                                        }}
-                                        title={remoteActivationStatus?.activated ? t("remoteActivated") : (lang === 'zh-Hans' ? '点击注册' : lang === 'zh-Hant' ? '點擊註冊' : 'Click to register')}
-                                    >
-                                        <span>
-                                            {remoteActivationStatus?.activated ? t("remoteActivated") : t("remoteRegister")}
-                                        </span>
-                                    </div>
-                                )}
-                                {activeTool === 'claude' && (
-                                    <label className="coding-launch-check">
-                                        <input
-                                            type="checkbox"
-                                            checked={launchPanelProject?.team_mode || false}
-                                            onChange={(e) => updateResolvedLaunchProject((project) => ({ ...project, team_mode: e.target.checked }))}
-                                        />
-                                        <span>{t("teamModeLabel")}</span>
-                                    </label>
-                                )}
-                                {activeTool !== 'kilo' && (
-                                    <label className="coding-launch-check">
-                                        <input
-                                            type="checkbox"
-                                            checked={launchPanelProject?.yolo_mode || false}
-                                            onChange={(e) => {
-                                                updateResolvedLaunchProject((project) => {
-                                                    const updated = { ...project, yolo_mode: e.target.checked };
-                                                    if (!isWindows && e.target.checked) {
-                                                        updated.admin_mode = false;
-                                                    }
-                                                    return updated;
-                                                });
-                                            }}
-                                        />
-                                        <span>{t("yoloModeLabel")}</span>
-                                        {launchPanelProject?.yolo_mode && (
-                                            <span className="coding-launch-danger-badge">
-                                                {t("danger")}
-                                            </span>
-                                        )}
-                                    </label>
-                                )}
-                                {!isWindows && (
-                                    <label className="coding-launch-check">
-                                        <input
-                                            type="checkbox"
-                                            checked={launchPanelProject?.use_proxy || false}
-                                            onChange={(e) => {
-                                                if (e.target.checked && !launchPanelProject?.proxy_host && !config?.default_proxy_host) {
-                                                    setShowProxySettings(true);
-                                                    return;
-                                                }
-                                                updateResolvedLaunchProject((project) => ({ ...project, use_proxy: e.target.checked }));
-                                            }}
-                                        />
-                                        <span>{t("proxyMode")}</span>
-                                        <span
-                                            className="coding-launch-inline-action"
-                                            role="button"
-                                            tabIndex={0}
-                                            onClick={(e) => {
-                                                e.preventDefault();
-                                                e.stopPropagation();
-                                                setShowProxySettings(true);
-                                            }}
-                                            onKeyDown={(e) => {
-                                                if (e.key === 'Enter' || e.key === ' ') {
-                                                    e.preventDefault();
-                                                    e.stopPropagation();
-                                                    setShowProxySettings(true);
-                                                }
-                                            }}
-                                            title={t("proxySettings")}
-                                        >
-                                            {lang === 'zh-Hans' ? '设置' : lang === 'zh-Hant' ? '設定' : 'Edit'}
-                                        </span>
-                                    </label>
-                                )}
-                                <div className="coding-launch-project-main">
-                                    <div className="coding-launch-project-picker">
-                                        <span className="coding-launch-project-label">{t("project")}</span>
-                                        <input
-                                            type="text"
-                                            className="form-input coding-launch-project-search"
-                                            value={launchProjectKeyword}
-                                            onChange={(e) => setLaunchProjectKeyword(e.target.value)}
-                                            placeholder={t("projectSearchPlaceholder")}
-                                            spellCheck={false}
-                                            autoComplete="off"
-                                        />
-                                        <select
-                                            value={launchProjectSelectValue}
-                                            onChange={(e) => setSelectedProjectForLaunch(e.target.value)}
-                                            className="coding-launch-select"
-                                        >
-                                            {launchProjectSelectOptions.length > 0 ? launchProjectSelectOptions.map((proj: any) => (
-                                                <option key={proj.id} value={proj.id}>
-                                                    {proj.name}
-                                                </option>
-                                            )) : (
-                                                <option value="" disabled>{t("projectNoResults")}</option>
-                                            )}
-                                        </select>
-                                        <button
-                                            type="button"
-                                            onClick={() => switchTool('projects')}
-                                            className="coding-launch-manage"
-                                            title={t("projectManagement")}
-                                            aria-label={t("projectManagement")}
-                                        >
-                                            ...
-                                        </button>
-                                    </div>
-                                </div>
-                                <button
-                                    className="btn-launch coding-launch-button"
-                                    disabled={onDemandInstallingTool === activeTool || backgroundInstallingTool === activeTool || launchingTool === activeTool || (!hasActiveRemoteSessionForTool && !hasSelectableLaunchProject)}
-                                    aria-busy={launchingTool === activeTool || onDemandInstallingTool === activeTool || backgroundInstallingTool === activeTool}
-                                    onClick={async () => {
-                                        console.log("Launch button clicked. activeTool:", activeTool);
-                                        if (launchRemoteEnabled && hasActiveRemoteSessionForTool && activeRemoteSessionForTool?.id) {
-                                            setLaunchingTool(activeTool);
-                                            await killRemoteSession(activeRemoteSessionForTool.id);
-                                            setStatus(localizeText('Remote stopped', '远程已停止', '遠端已停止'));
-                                            setTimeout(() => { setStatus(""); setLaunchingTool(""); }, 2000);
-                                            return;
-                                        }
-                                        const selectedProj = activeLaunchProject;
-                                        if (selectedProj && selectedProj.path && selectedProj.path.trim() !== "") {
-                                            if (launchRemoteEnabled) {
-                                                if (remoteToolMetadata.length > 0 && !isRemoteCapableActiveTool) {
-                                                    setStatus(localizeText("This tool does not support remote launch", "此工具不支持远程启动", "此工具不支持遠端啟動"));
-                                                    return;
-                                                }
-                                                if (!config?.remote_hub_url?.trim() || !remoteActivationStatus?.activated || !config?.remote_email?.trim()) {
-                                                    openRemoteActivationModal(activeTool);
-                                                    return;
-                                                }
-                                                setStatus(localizeText("Starting remotely...", "正在启动远程...", "正在啟動遠端..."));
-                                                setLaunchingTool(activeTool);
-                                                try {
-                                                    await quickStartRemoteSession(activeTool as any);
-                                                    setTimeout(() => { setStatus(""); setLaunchingTool(""); }, 2000);
-                                                } catch (err) {
-                                                    setStatus(localizeText("Error: ", "错误：", "錯誤：") + err);
-                                                    setLaunchingTool("");
-                                                }
-                                                return;
-                                            }
-                                            // Check if tool is installed
-                                            const toolStatus = toolStatuses?.find((s: any) => s.name === activeTool);
-                                            if (toolStatus && !toolStatus.installed) {
-                                                // Check if tool is being installed in background
-                                                const isBeingInstalled = await IsToolBeingInstalled(activeTool);
-                                                if (isBeingInstalled) {
-                                                    // Tool is being installed in background, just wait
-                                                    setStatus(localizeText(
-                                                        `${activeTool} is being installed in background, please wait...`,
-                                                        `${activeTool} 正在后台安装，请稍候…`,
-                                                        `${activeTool} 正在背景安裝，請稍候…`,
-                                                    ));
-                                                    setOnDemandInstallingTool(activeTool);
-                                                    try {
-                                                        await callBackend(() => InstallToolOnDemand(activeTool));
-                                                        // Refresh tool statuses
-                                                        const updatedStatuses = await callBackend(() => CheckToolsStatus());
-                                                        setToolStatuses(updatedStatuses);
-                                                        setStatus(localizeText(`${activeTool} installed`, `${activeTool} 安装成功`, `${activeTool} 安裝成功`));
-                                                        setOnDemandInstallingTool("");
-                                                        // Auto launch
-                                                        setTimeout(async () => {
-                                                            setStatus(localizeText("Launching...", "启动中...", "啟動中..."));
-                                                            setLaunchingTool(activeTool);
-                                                            try {
-                                                                await callBackend(() => LaunchTool(activeTool, selectedProj.yolo_mode, selectedProj.admin_mode || false, selectedProj.python_project || false, selectedProj.python_env || "", selectedProj.path || "", selectedProj.use_proxy || false));
-                                                                setTimeout(() => { setStatus(""); setLaunchingTool(""); }, 2000);
-                                                            } catch (err) {
-                                                                setStatus(localizeText("Error: ", "错误：", "錯誤：") + err);
-                                                                setLaunchingTool("");
-                                                            }
-                                                        }, 500);
-                                                    } catch (err) {
-                                                        setStatus(localizeText("Error: ", "错误：", "錯誤：") + err);
-                                                        setOnDemandInstallingTool("");
-                                                    }
-                                                    return;
-                                                }
-
-                                                // Tool not installed and not being installed, show install dialog
-                                                setOnDemandInstallingTool(activeTool);
-                                                setToolRepairStatus({show: true, toolName: activeTool, status: 'installing', message: ''});
-                                                try {
-                                                    await callBackend(() => InstallToolOnDemand(activeTool));
-                                                    // Refresh tool statuses
-                                                    const updatedStatuses = await callBackend(() => CheckToolsStatus());
-                                                    setToolStatuses(updatedStatuses);
-                                                    setToolRepairStatus({show: true, toolName: activeTool, status: 'success', message: ''});
-
-                                                    // Auto launch after successful installation
-                                                    setTimeout(async () => {
-                                                        setToolRepairStatus(prev => ({...prev, show: false}));
-                                                        setOnDemandInstallingTool("");
-                                                        // Launch the tool
-                                                        setStatus(localizeText("Launching...", "启动中...", "啟動中..."));
-                                                        setLaunchingTool(activeTool);
-                                                        try {
-                                                            await callBackend(() => LaunchTool(activeTool, selectedProj.yolo_mode, selectedProj.admin_mode || false, selectedProj.python_project || false, selectedProj.python_env || "", selectedProj.path || "", selectedProj.use_proxy || false));
-                                                            console.log("LaunchTool call returned successfully after install");
-                                                            setTimeout(() => { setStatus(""); setLaunchingTool(""); }, 2000);
-                                                        } catch (err) {
-                                                            console.error("LaunchTool call failed after install:", err);
-                                                            setStatus(localizeText("Error: ", "错误：", "錯誤：") + err);
-                                                            setLaunchingTool("");
-                                                        }
-                                                    }, 1500);
-                                                    return;
-                                                } catch (err) {
-                                                    console.error("Failed to install tool on demand:", err);
-                                                    setToolRepairStatus({show: true, toolName: activeTool, status: 'failed', message: String(err)});
-                                                    setOnDemandInstallingTool("");
-                                                    return;
-                                                }
-                                            }
-
-                                            console.log("Launching tool with project:", selectedProj.name, "path:", selectedProj.path);
-                                            setStatus(localizeText("Launching...", "启动中...", "啟動中..."));
-                                            setLaunchingTool(activeTool);
-                                            callBackend(() => LaunchTool(activeTool, selectedProj.yolo_mode, selectedProj.admin_mode || false, selectedProj.python_project || false, selectedProj.python_env || "", selectedProj.path || "", selectedProj.use_proxy || false))
-                                                .then(() => {
-                                                    console.log("LaunchTool call returned successfully");
-                                                    setTimeout(() => { setStatus(""); setLaunchingTool(""); }, 2000);
-                                                })
-                                                .catch(err => {
-                                                    console.error("LaunchTool call failed:", err);
-                                                    setStatus(localizeText("Error: ", "错误：", "錯誤：") + err);
-                                                    setLaunchingTool("");
-                                                });
-                                            // Update current project if different
-                                            if (selectedProj.id !== config?.current_project) {
-                                                handleProjectSwitch(selectedProj.id);
-                                            }
-                                        } else {
-                                            console.error("No project found for launch ID:", selectedProjectForLaunch);
-                                            setStatus(t("projectDirError"));
-                                        }
-                                    }}
-                                >
-                                    <span className="coding-launch-state-dot" aria-hidden="true" />
-                                    {launchRemoteEnabled
-                                        ? (launchingTool === activeTool ? t("launchStarting") : (hasActiveRemoteSessionForTool ? t("remoteStopTool") : t("remoteStartTool")))
-                                        : (launchingTool === activeTool ? t("launchStarting") : (onDemandInstallingTool === activeTool || backgroundInstallingTool === activeTool ? t("installing") : t("launch")))}
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                )}
-
                 {codexConfigUpdating && (
                     <div className="codex-config-progress-overlay" role="status" aria-live="polite">
                         <div className="codex-config-progress-panel">
@@ -5798,7 +5509,9 @@ ${instruction}`;
                 {/* AI tab hosts this bar inline in the quick-settings row; keep a
                     full-width strip only on tool / settings / utilities pages. */}
                 {navTab !== 'ai' && (
-                    <AppStatusMessageBar {...appStatusMessageBarProps} />
+                    <div className="global-action-bar" data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-ai-light-scheme={aiThemeMode === 'light' ? aiLightSchemeId : undefined}>
+                        <AppStatusMessageBar {...appStatusMessageBarProps} />
+                    </div>
                 )}
         </div>
 

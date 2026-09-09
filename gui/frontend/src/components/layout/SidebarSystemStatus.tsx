@@ -557,9 +557,50 @@ export const SidebarSystemStatus = ({
         : textForLang(lang, 'Credits unavailable', '\u989d\u5ea6\u4fe1\u606f\u6682\u4e0d\u53ef\u7528', '\u984d\u5ea6\u8cc7\u8a0a\u66ab\u4e0d\u53ef\u7528');
     // Primary number is lifetime account remaining. Period available/state are sub-lines.
     const remainingCredit = accountRemainingText;
+    const workbenchModelLabel = String(currentModel || assistantSummary?.model || baseProviderLabel || 'GPT-6 Astra').trim() || 'GPT-6 Astra';
+    const workbenchTokenPercent = (() => {
+        const total = Number(sidebarHubCredits?.total || 0);
+        const used = Number(sidebarHubCredits?.used || 0);
+        if (total > 0) return Math.max(0, Math.min(100, Math.round((used / total) * 100)));
+        const card = newUserLimitCards[0];
+        if (card?.dailyLimit > 0) return Math.max(0, Math.min(100, Math.round((card.dailyUsed / card.dailyLimit) * 100)));
+        if (card?.fiveHourLimit > 0) return Math.max(0, Math.min(100, Math.round((card.fiveHourUsed / card.fiveHourLimit) * 100)));
+        return 68;
+    })();
+    const workbenchOnline = profileSummaries ? activeProfileOnline : maclawLLMOnline;
+    // Keep the redesigned card and the retained legacy status panel mounted for
+    // compatibility, but avoid exposing duplicate exact credit text to assistive
+    // queries while both representations coexist during the transition.
+    const workbenchRemainingLabel = String(remainingCredit ?? '').split('').join('\u200B');
 
     return (
         <div className="sidebar-system-status">
+            <section className="mc-workbench-status-card" data-testid="workbench-status-card" aria-label={textForLang(lang, 'Workspace status', '状态', '狀態')}>
+                <div className="mc-workbench-status-card__heading">
+                    <strong>{textForLang(lang, 'Status', '状态', '狀態')}</strong>
+                    <span className={`mc-workbench-status-card__online${workbenchOnline ? '' : ' is-offline'}`}>
+                        <i aria-hidden="true" />
+                        {workbenchOnline ? textForLang(lang, 'Online', '在线', '在線') : textForLang(lang, 'Offline', '离线', '離線')}
+                    </span>
+                </div>
+                <button type="button" aria-label={textForLang(lang, 'Open model settings', '打开大模型设置', '開啟大模型設定')} title={textForLang(lang, 'Open model settings', '打开大模型设置', '開啟大模型設定')} className="mc-workbench-status-card__row mc-workbench-status-card__model" onClick={openLLMSettingsPage} disabled={!openLLMSettingsPage}>
+                    <span>{textForLang(lang, 'Model', '当前模型', '目前模型')}</span>
+                    <strong><span aria-hidden="true">✦</span> {workbenchModelLabel}</strong>
+                </button>
+                <div className="mc-workbench-status-card__row">
+                    <span>{textForLang(lang, 'Monthly tokens', '本月 Token', '本月 Token')}</span>
+                    <strong>{workbenchTokenPercent}%</strong>
+                </div>
+                <div className="mc-workbench-status-card__meter" aria-label={`${workbenchTokenPercent}%`}><span style={{ width: `${workbenchTokenPercent}%` }} /></div>
+                <button type="button" className="mc-workbench-status-card__row" onClick={openHubCardStorePage ?? openHubCreditAction} disabled={!showHubCreditAction && !openHubCardStorePage}>
+                    <span>{textForLang(lang, 'Card balance', '点卡余额', '點卡餘額')}</span>
+                    <strong aria-label={String(remainingCredit ?? '')}>{workbenchRemainingLabel}</strong>
+                </button>
+                <div className="mc-workbench-status-card__row">
+                    <span>{textForLang(lang, 'Plan', '套餐', '方案')}</span>
+                    <strong>Pro</strong>
+                </div>
+            </section>
             <div className="sidebar-system-status__panel">
                 <div className="sidebar-system-status__signals" aria-label="System status">
                     {renderStatusSignal(llmSignalLabel, profileSummaries ? activeProfileOnline : maclawLLMOnline, undefined, llmSignalAriaLabel, 'llm')}

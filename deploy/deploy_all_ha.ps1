@@ -1,4 +1,4 @@
-﻿param(
+param(
     [ValidateSet('full', 'hubcenter-only', 'hub-only')]
     [string]$Scope = 'full',
 
@@ -317,7 +317,7 @@ function Stage-SourceTree {
             ExcludePaths = @('node_modules', 'dist')
         },
         [pscustomobject]@{
-            Path = 'gui\internal\systray'
+            Path = 'guiapp\internal\systray'
             ExcludePaths = @()
         }
     )
@@ -427,9 +427,12 @@ function Stage-DeployAssets {
     # The public guide now documents the Pet 3.0 performance-pack contract.
     # Keep the staging guard aligned with the page rather than pinning it to
     # superseded 2.0 copy.
-    foreach ($requiredMarker in @('MaClaw 宠物角色表演包规范 3.0', 'native-skeleton', 'native-character', 'pet-performance-v3')) {
+    # Keep these markers ASCII. Windows PowerShell 5.1 parses this script as the
+    # system ANSI code page unless a UTF-8 BOM is present, so a Chinese literal
+    # here would not match the UTF-8 guide even when the page is correct.
+    foreach ($requiredMarker in @('MaClaw Pet Performance Pack Specification 3.0', 'native-skeleton', 'native-character', 'pet-performance-v3')) {
         if ($hubPetPackHelp -notmatch [regex]::Escape($requiredMarker)) {
-            throw ("Hub pet pack guide is missing required v2 marker: {0}" -f $requiredMarker)
+            throw ("Hub pet pack guide is missing required 3.0 marker: {0}" -f $requiredMarker)
         }
     }
 

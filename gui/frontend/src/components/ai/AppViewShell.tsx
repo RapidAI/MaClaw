@@ -10,7 +10,8 @@ type AppView = Extract<AgentView, { type: "app_view" }>;
 interface AppViewShellProps {
     view: AppView;
     onDismiss?: (viewId: string | undefined, data?: Record<string, unknown>) => void | Promise<void>;
-    onResizeStart?: () => void;
+    onResizeStart?: (startEvent?: MouseEvent | PointerEvent | number) => void;
+    splitRatio?: number;
     onToggleMaximize?: () => void;
     onSubmit?: (viewId: string | undefined, data: Record<string, unknown>) => void | Promise<void>;
     theme: Theme;
@@ -53,6 +54,7 @@ export function AppViewShell({
     view,
     onDismiss,
     onResizeStart,
+    splitRatio = 0.6,
     onToggleMaximize,
     onSubmit,
     theme,
@@ -139,8 +141,32 @@ export function AppViewShell({
             <div
                 role="separator"
                 aria-orientation="vertical"
-                onMouseDown={onResizeStart}
-                style={{ width: 6, cursor: "col-resize", position: "absolute", height: "100%", zIndex: 2 }}
+                aria-valuemin={20}
+                aria-valuemax={80}
+                aria-valuenow={Math.round(splitRatio * 100)}
+                aria-label={lang === "en" ? "Resize preview panel" : "调整预览面板宽度"}
+                tabIndex={0}
+                onPointerDown={(event) => {
+                    event.preventDefault();
+                    // Preserve keyboard resize controls after pointer capture.
+                    event.currentTarget.focus({ preventScroll: true });
+                    event.currentTarget.setPointerCapture?.(event.pointerId);
+                    onResizeStart?.(event.nativeEvent);
+                }}
+                onPointerUp={(event) => {
+                    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture?.(event.pointerId);
+                }}
+                onKeyDown={(event) => {
+                    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight" && event.key !== "Home" && event.key !== "End") return;
+                    event.preventDefault();
+                    const delta = event.key === "ArrowLeft" ? -0.02 : event.key === "ArrowRight" ? 0.02 : 0;
+                    const nextRatio = event.key === "Home" ? 0.2 : event.key === "End" ? 0.8 : Math.max(0.2, Math.min(0.8, splitRatio + delta));
+                    onResizeStart?.(nextRatio);
+                }}
+                onMouseDown={(event) => {
+                    if (typeof window.PointerEvent === "undefined") onResizeStart?.(event.nativeEvent);
+                }}
+                style={{ width: 10, cursor: "col-resize", position: "absolute", left: 0, top: 0, bottom: 0, zIndex: 2, touchAction: "none", userSelect: "none" }}
             />
             <header
                 data-testid="app-view-header"

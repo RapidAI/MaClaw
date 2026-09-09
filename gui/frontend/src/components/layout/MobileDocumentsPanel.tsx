@@ -307,7 +307,7 @@ function MobileDocImage({
   }
   if (err || !src) {
     return (
-      <div style={{ opacity: 0.65, fontSize: '0.78rem', padding: '6px 0', color: '#f0b4b4' }}>
+      <div className="mobile-documents-inline-error" style={{ opacity: 0.65, fontSize: '0.78rem', padding: '6px 0' }}>
         [{alt || imageId}]
       </div>
     );
@@ -323,7 +323,7 @@ function MobileDocImage({
           borderRadius: 8,
           border: '1px solid var(--theme-border, rgba(255,255,255,0.12))',
           objectFit: 'contain',
-          background: 'color-mix(in srgb, var(--theme-field-bg, #000) 40%, transparent)',
+          background: 'color-mix(in srgb, var(--theme-control-well, var(--theme-surface-muted, #000)) 40%, transparent)',
           display: 'block',
         }}
       />
@@ -530,7 +530,7 @@ function MeetingRecordingPlayer({ item }: { item: MobileLibraryItem }) {
   const [src, setSrc] = useState(''); const [error, setError] = useState('');
   useEffect(() => { let url = ''; let cancelled = false; setSrc(''); setError(''); if (!item.audio?.available) return () => undefined; void callGetMeetingRecordingAudio(item.id).then((payload) => { const raw = String(payload?.data_base64 || ''); if (!raw) throw new Error('empty audio'); const binary = atob(raw); const bytes = new Uint8Array(binary.length); for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i); url = URL.createObjectURL(new Blob([bytes], { type: String(payload?.content_type || item.audio?.content_type || 'audio/mp4').split(';')[0] })); if (!cancelled) setSrc(url); }).catch((e: any) => { if (!cancelled) setError(String(e?.message || e || 'load failed')); }); return () => { cancelled = true; if (url) URL.revokeObjectURL(url); }; }, [item.id, item.audio?.available, item.audio?.content_type]);
   if (!item.audio?.available) return <div>Original audio is no longer available. Generated documents remain accessible.</div>;
-  if (error) return <div style={{ color: '#ffb4b4' }}>Unable to load embedded playback. You can still open or save the original audio.</div>;
+  if (error) return <div className="mobile-documents-inline-error">Unable to load embedded playback. You can still open or save the original audio.</div>;
   if (!src) return <div>Loading audio…</div>;
   return <audio controls preload="metadata" src={src} style={{ width: '100%' }} aria-label="Meeting recording playback" />;
 }
@@ -1180,54 +1180,63 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
       position: 'fixed' as const,
       inset: 0,
       zIndex: 50000,
-      background: 'color-mix(in srgb, var(--theme-page-bg, #0b1220) 35%, rgba(0, 0, 0, 0.55))',
-      backdropFilter: 'blur(6px)',
+      background: 'rgba(15, 23, 42, 0.34)',
+      backdropFilter: 'blur(8px)',
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
+      padding: '24px',
       // Capture pointer so clicks do not fall through to the main window chrome.
       pointerEvents: 'auto' as const,
       '--wails-draggable': 'no-drag',
     } as any,
     shell: {
-      width: 'min(960px, 94vw)',
-      height: 'min(720px, 88vh)',
+      width: 'min(1440px, calc(100vw - 64px))',
+      height: 'min(1080px, calc(100vh - 64px))',
+      minHeight: 0,
       // Use real theme tokens (not --theme-bg* which do not exist on #App).
-      background: 'var(--theme-surface, var(--theme-page-bg, #111827))',
-      color: 'var(--theme-text-primary, #e5e7eb)',
-      borderRadius: 16,
-      border: '1px solid var(--theme-border, #334155)',
-      boxShadow: '0 24px 64px rgba(0,0,0,0.45), 0 0 0 1px color-mix(in srgb, var(--theme-border, #334155) 40%, transparent) inset',
+      background: 'var(--theme-surface, #ffffff)',
+      color: 'var(--theme-text-primary, #1c2733)',
+      // Follow the shared surface scale so the panel keeps the same radius
+      // as the workbench in both light and dark themes.
+      // Keep the documents dialog on the shared workbench radius scale.  The
+      // token set intentionally stops at --radius-lg; --radius-xl would
+      // silently fall back to an oversized 24px shell.
+      borderRadius: 'var(--radius-lg, 14px)',
+      border: '1px solid var(--theme-border, #d9e1ec)',
+      boxShadow: 'var(--shadow-lg, 0 24px 70px rgba(19,43,77,0.18), 0 4px 14px rgba(19,43,77,0.08))',
       display: 'flex',
       flexDirection: 'column' as const,
       overflow: 'hidden',
     },
     header: {
       display: 'flex',
-      alignItems: 'flex-start',
-      gap: 12,
-      padding: '16px 18px 12px',
+      alignItems: 'center',
+      gap: 16,
+      padding: '24px 28px 20px',
       borderBottom: '1px solid var(--theme-border-subtle, var(--theme-border, #1e293b))',
       background:
-        'linear-gradient(180deg, color-mix(in srgb, var(--theme-primary, #8fb4dc) 10%, transparent), transparent)',
+        'linear-gradient(180deg, color-mix(in srgb, var(--theme-primary, #2f6fbc) 5%, var(--theme-surface, #ffffff)), var(--theme-surface, #ffffff))',
     },
     btn: {
-      border: '1px solid var(--theme-border, #334155)',
-      background: 'var(--theme-surface-muted, color-mix(in srgb, var(--theme-surface, #111827) 88%, #000))',
-      color: 'inherit',
-      borderRadius: 8,
-      padding: '6px 12px',
-      fontSize: '0.82rem',
+      border: '1px solid var(--theme-border, #d9e1ec)',
+      background: 'var(--theme-surface, #ffffff)',
+      color: 'var(--theme-text-primary, #1c2733)',
+      borderRadius: 'var(--radius-md, 12px)',
+      minHeight: 44,
+      padding: '0 16px',
+      fontSize: '0.9rem',
       fontWeight: 600,
       cursor: 'pointer',
     } as CSSProperties,
     btnPrimary: {
-      border: '1px solid color-mix(in srgb, var(--theme-primary, #8fb4dc) 55%, transparent)',
-      background: 'color-mix(in srgb, var(--theme-primary, #8fb4dc) 18%, transparent)',
-      color: 'var(--theme-primary, #8fb4dc)',
-      borderRadius: 8,
-      padding: '6px 12px',
-      fontSize: '0.82rem',
+      border: '1px solid color-mix(in srgb, var(--theme-primary, #2f6fbc) 48%, var(--theme-border, #d9e1ec))',
+      background: 'var(--theme-primary-soft, rgba(47,111,188,0.10))',
+      color: 'var(--theme-primary-strong, #235a9e)',
+      borderRadius: 'var(--radius-md, 12px)',
+      minHeight: 44,
+      padding: '0 18px',
+      fontSize: '0.9rem',
       fontWeight: 650,
       cursor: 'pointer',
     } as CSSProperties,
@@ -1238,6 +1247,8 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
       role="dialog"
       aria-modal="true"
       aria-label={t('Mobile documents', 'Mobile 文稿')}
+      data-testid="mobile-documents-panel"
+      className="mobile-documents-overlay"
       data-ai-theme={appTheme}
       data-ai-dark-scheme={appDarkScheme}
       data-ai-light-scheme={appLightScheme}
@@ -1251,45 +1262,47 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
       }}
     >
       <div
+        className="mobile-documents-shell"
         style={styles.shell}
         onMouseDown={(e) => e.stopPropagation()}
         onClick={(e) => e.stopPropagation()}
       >
-        <div style={styles.header}>
+        <div style={styles.header} className="mobile-documents-header">
           <div
+            className="mobile-documents-icon"
             style={{
-              width: 40,
-              height: 40,
-              borderRadius: 12,
+              width: 62,
+              height: 62,
+              borderRadius: 16,
               display: 'grid',
               placeItems: 'center',
-              background: 'color-mix(in srgb, var(--theme-primary, #4f7f6f) 16%, transparent)',
-              border: '1px solid color-mix(in srgb, var(--theme-primary, #4f7f6f) 30%, transparent)',
+              background: 'color-mix(in srgb, var(--theme-primary, #2f6fbc) 12%, transparent)',
+              border: '1px solid color-mix(in srgb, var(--theme-primary, #2f6fbc) 30%, transparent)',
               flexShrink: 0,
             }}
             aria-hidden
           >
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
+            <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
               <rect x="7" y="2.5" width="10" height="19" rx="2" />
               <path d="M10 5.5h4M10 9h4M10 12h4M10 15h2.5M9.5 18.5h5" strokeLinecap="round" />
             </svg>
           </div>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontWeight: 750, fontSize: '1.05rem', letterSpacing: '0.01em' }}>
+          <div style={{ flex: 1, minWidth: 0 }} className="mobile-documents-heading">
+            <div className="mobile-documents-title" style={{ fontWeight: 750, fontSize: '1.55rem', letterSpacing: '-0.02em' }}>
               {t('Mobile document library', 'Mobile 文稿库')}
             </div>
-            <div style={{ fontSize: '0.78rem', opacity: 0.72, marginTop: 4, lineHeight: 1.4 }}>
+            <div className="mobile-documents-subtitle" style={{ fontSize: '1rem', opacity: 0.72, marginTop: 6, lineHeight: 1.45 }}>
               {t(
                 'Shared Hub library with the phone app. Drop files of any type here.',
                 '与手机端共用 Hub 文库。可将任意格式文件拖入此处。',
               )}
             </div>
           </div>
-          <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
-            <button type="button" style={styles.btn} onClick={() => void refresh()} disabled={loading || uploading}>
+          <div style={{ display: 'flex', gap: 8, flexShrink: 0 }} className="mobile-documents-header-actions">
+            <button type="button" className="mobile-documents-btn" style={styles.btn} onClick={() => void refresh()} disabled={loading || uploading}>
               {loading ? t('Loading…', '加载中…') : t('Refresh', '刷新')}
             </button>
-            <button type="button" style={styles.btn} onClick={onClose}>
+            <button type="button" className="mobile-documents-btn" style={styles.btn} onClick={onClose}>
               {t('Close', '关闭')}
             </button>
           </div>
@@ -1297,6 +1310,8 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
 
         {/* Drop zone */}
         <div
+          className="mobile-documents-dropzone"
+          data-testid="mobile-documents-drop-zone"
           onDrop={onDrop}
           onDragEnter={onDragEnter}
           onDragLeave={onDragLeave}
@@ -1304,42 +1319,42 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
           role="group"
           aria-label={t('Document upload drop zone', '文档上传拖放区')}
           style={{
-            margin: '12px 16px 0',
-            borderRadius: 12,
+             margin: '18px 26px 0',
+             borderRadius: 18,
             border: dragOver
-              ? '1.5px dashed color-mix(in srgb, var(--theme-primary, #4f7f6f) 80%, #fff)'
-              : '1.5px dashed var(--theme-border, rgba(255,255,255,0.14))',
+               ? '1.5px dashed color-mix(in srgb, var(--theme-primary, #2f6fbc) 80%, var(--theme-surface, #fff))'
+               : '1.5px dashed var(--theme-border, #d9e1ec)',
             background: dragOver
-              ? 'color-mix(in srgb, var(--theme-primary, #4f7f6f) 12%, transparent)'
-              : 'color-mix(in srgb, var(--theme-field-bg, #fff) 3%, transparent)',
-            padding: '14px 16px',
+               ? 'color-mix(in srgb, var(--theme-primary, #2f6fbc) 12%, transparent)'
+              : 'color-mix(in srgb, var(--theme-control-well, var(--theme-surface-muted, #fff)) 3%, transparent)',
+             padding: '24px',
             display: 'flex',
             alignItems: 'center',
-            gap: 14,
+             gap: 20,
             transition: 'background 120ms ease, border-color 120ms ease',
           }}
         >
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontWeight: 650, fontSize: '0.9rem' }}>
+          <div className="mobile-documents-dropzone-copy" style={{ flex: 1, minWidth: 0 }}>
+            <div className="mobile-documents-dropzone-title" style={{ fontWeight: 700, fontSize: '1.3rem' }}>
               {dragOver
                 ? t('Release to share with Mobile', '松开以上传并分享到手机')
                 : t('Drag & drop files to share', '拖放文件到此处分享')}
             </div>
-            <div style={{ fontSize: '0.75rem', opacity: 0.68, marginTop: 4 }}>
+            <div className="mobile-documents-dropzone-help" style={{ fontSize: '1rem', opacity: 0.72, marginTop: 8 }}>
               {t(
                 'Any file type. Max 100MB after automatic compression; existing archives and DOCX/XLSX/PPTX are not recompressed.',
                 '支持任意格式；自动压缩后单文件 ≤100MB。压缩包及 DOCX/XLSX/PPTX 不重复压缩。',
               )}
             </div>
             {quota ? (
-              <div style={{ marginTop: 8, maxWidth: 520 }} aria-label={t('Document storage usage', '文稿库存储空间')}>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 12px', fontSize: '0.72rem', opacity: 0.78 }}>
+              <div className="mobile-documents-quota" style={{ marginTop: 14, maxWidth: 720 }} aria-label={t('Document storage usage', '文稿库存储空间')}>
+                <div className="mobile-documents-quota-copy" style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 18px', fontSize: '0.95rem', opacity: 0.82 }}>
                   <span>{t('Used', '已用')} {formatLibraryFileSize(quota.document_quota_used_bytes)}</span>
                   <span>{t('Remaining', '剩余')} {formatLibraryFileSize(quota.document_quota_remaining)}</span>
                   <span>{t('Total', '总限额')} {formatLibraryFileSize(quota.document_quota_bytes)}</span>
                 </div>
-                <div style={{ height: 4, marginTop: 6, borderRadius: 2, overflow: 'hidden', background: 'var(--theme-border, rgba(255,255,255,0.12))' }}>
-                  <div style={{ height: '100%', width: `${Math.min(100, Math.max(0, 100 * Number(quota.document_quota_used_bytes || 0) / Math.max(1, Number(quota.document_quota_bytes || 1))))}%`, background: 'var(--theme-primary, #4f7f6f)' }} />
+                <div className="mobile-documents-quota-track" style={{ height: 6, marginTop: 9, borderRadius: 3, overflow: 'hidden', background: 'var(--theme-border, #d9e1ec)' }}>
+                  <div style={{ height: '100%', width: `${Math.min(100, Math.max(0, 100 * Number(quota.document_quota_used_bytes || 0) / Math.max(1, Number(quota.document_quota_bytes || 1))))}%`, background: 'var(--theme-primary, #2f6fbc)' }} />
                 </div>
               </div>
             ) : null}
@@ -1356,6 +1371,7 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
           />
           <button
             type="button"
+            className="mobile-documents-btn mobile-documents-btn--primary"
             style={styles.btnPrimary}
             disabled={uploading}
             onClick={() => fileInputRef.current?.click()}
@@ -1366,16 +1382,17 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
 
         {banner ? (
           <div
+            className="mobile-documents-banner"
             role="status"
             aria-live="polite"
             style={{
-              margin: '10px 16px 0',
-              padding: '10px 12px',
-              borderRadius: 10,
-              background: 'color-mix(in srgb, var(--theme-primary, #4f7f6f) 14%, transparent)',
-              border: '1px solid color-mix(in srgb, var(--theme-primary, #4f7f6f) 28%, transparent)',
-              fontSize: '0.82rem',
-              color: 'var(--theme-primary, #9fd4c3)',
+               margin: '14px 26px 0',
+               padding: '12px 16px',
+               borderRadius: 12,
+               background: 'color-mix(in srgb, var(--theme-primary, #2f6fbc) 10%, var(--theme-surface, #ffffff))',
+               border: '1px solid color-mix(in srgb, var(--theme-primary, #2f6fbc) 28%, var(--theme-border, #d9e1ec))',
+               fontSize: '0.9rem',
+               color: 'var(--theme-primary-strong, #235a9e)',
             }}
           >
             {banner}
@@ -1383,22 +1400,23 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
         ) : null}
         {error ? (
           <div
+            className="mobile-documents-error"
             role="alert"
             style={{
-              margin: '10px 16px 0',
-              padding: '10px 12px',
-              borderRadius: 10,
+               margin: '14px 26px 0',
+               padding: '12px 16px',
+               borderRadius: 12,
               background: 'rgba(220,80,80,0.12)',
               border: '1px solid rgba(220,80,80,0.28)',
-              color: '#ffb4b4',
-              fontSize: '0.82rem',
+              color: 'var(--theme-danger, #c43d34)',
+               fontSize: '0.9rem',
             }}
           >
             {error}
           </div>
         ) : null}
         {jobs.length > 0 ? (
-          <div aria-live="polite" aria-label={t('Upload progress', '上传进度')} style={{ margin: '8px 16px 0', display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          <div className="mobile-documents-jobs" aria-live="polite" aria-label={t('Upload progress', '上传进度')} style={{ margin: '10px 26px 0', display: 'flex', flexWrap: 'wrap', gap: 8 }}>
             {jobs.map((j, i) => (
               <span
                 key={`${j.name}-${i}`}
@@ -1406,9 +1424,9 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
                   fontSize: '0.72rem',
                   padding: '3px 8px',
                   borderRadius: 999,
-                  border: '1px solid var(--theme-border, rgba(255,255,255,0.1))',
+                  border: '1px solid var(--theme-border, #d9e1ec)',
                   opacity: j.status === 'error' ? 1 : 0.9,
-                  color: j.status === 'error' ? '#ffb4b4' : j.status === 'done' ? '#9fd4c3' : 'inherit',
+                  color: j.status === 'error' ? 'var(--theme-danger, #c43d34)' : j.status === 'done' ? 'var(--theme-success, #18a86b)' : 'var(--theme-text-secondary, #44546a)',
                 }}
                 title={j.message}
               >
@@ -1424,44 +1442,46 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
           </div>
         ) : null}
 
-        <div style={{ display: 'flex', flex: 1, minHeight: 0, marginTop: 12, borderTop: '1px solid var(--theme-border, rgba(255,255,255,0.08))' }}>
+        <div className="mobile-documents-body" data-testid="mobile-documents-body" style={{ display: 'flex', flex: 1, minHeight: 0, marginTop: 18, borderTop: '1px solid var(--theme-border-subtle, #e8eef5)' }}>
           {/* List */}
           <div
+            className="mobile-documents-list-pane"
             style={{
-              width: '38%',
-              minWidth: 240,
-              borderRight: '1px solid var(--theme-border, rgba(255,255,255,0.08))',
+               width: '38%',
+               minWidth: 280,
+               borderRight: '1px solid var(--theme-border, #d9e1ec)',
               display: 'flex',
               flexDirection: 'column',
               minHeight: 0,
             }}
           >
-            <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--theme-border, rgba(255,255,255,0.06))' }}>
+            <div className="mobile-documents-list-tools" style={{ padding: '18px 22px', borderBottom: '1px solid var(--theme-border-subtle, #e8eef5)' }}>
               <input
+                className="mobile-documents-search"
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}
                 placeholder={t('Search drafts…', '搜索文稿…')}
                 style={{
                   width: '100%',
                   boxSizing: 'border-box',
-                  borderRadius: 8,
-                  border: '1px solid var(--theme-border, rgba(255,255,255,0.12))',
-                  background: 'var(--theme-field-bg, rgba(0,0,0,0.2))',
-                  color: 'inherit',
-                  padding: '8px 10px',
-                  fontSize: '0.82rem',
+                  borderRadius: 12,
+                  border: '1px solid var(--theme-border, #d9e1ec)',
+                  background: 'var(--theme-surface-muted, #f0f4f9)',
+                  color: 'var(--theme-text-primary, #1c2733)',
+                  padding: '12px 14px',
+                  fontSize: '1rem',
                   outline: 'none',
                 }}
               />
-              <div style={{ fontSize: '0.72rem', opacity: 0.55, marginTop: 6 }}>
+              <div className="mobile-documents-count" style={{ fontSize: '0.85rem', opacity: 0.65, marginTop: 8 }}>
                 {t(`${filtered.length} draft(s)`, `${filtered.length} 篇文稿`)}
               </div>
             </div>
-            <div style={{ flex: 1, overflow: 'auto' }}>
+            <div className="mobile-documents-list" data-testid="mobile-documents-list" style={{ flex: 1, overflow: 'auto' }}>
               {loading ? (
                 <div style={{ padding: 16, opacity: 0.7 }}>{t('Loading…', '加载中…')}</div>
               ) : filtered.length === 0 ? (
-                <div style={{ padding: 16, opacity: 0.7, fontSize: '0.85rem', lineHeight: 1.5 }}>
+                <div className="mobile-documents-empty" style={{ padding: 24, opacity: 0.7, fontSize: '1rem', lineHeight: 1.6 }}>
                   {t(
                     'No drafts yet. Drop a file above or create one on the phone.',
                     '暂无文稿。可拖入文件，或在手机端创建。',
@@ -1473,37 +1493,39 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
                   const deleteCopy = libraryDeleteButtonCopy(d, t);
                   return (
                     <div
+                      className={`mobile-documents-list-row${active ? ' is-active' : ''}`}
                       key={d.id}
                       style={{
                         display: 'flex',
                         alignItems: 'stretch',
-                        borderBottom: '1px solid var(--theme-border, rgba(255,255,255,0.05))',
+                         borderBottom: '1px solid var(--theme-border-subtle, #e8eef5)',
                         borderLeft: active
-                          ? '3px solid var(--theme-primary, #4f7f6f)'
+                           ? '3px solid var(--theme-primary, #2f6fbc)'
                           : '3px solid transparent',
                         background: active
-                          ? 'color-mix(in srgb, var(--theme-primary, #4f7f6f) 12%, transparent)'
+                           ? 'color-mix(in srgb, var(--theme-primary, #2f6fbc) 10%, var(--theme-surface, #ffffff))'
                           : 'transparent',
                       }}
                     >
                       <button
+                        className="mobile-documents-list-item"
                         type="button"
                         onClick={() => void selectDraft(d)}
                         style={{
                           flex: 1,
                           minWidth: 0,
                           textAlign: 'left',
-                          padding: '12px 10px 12px 14px',
+                           padding: '18px 16px 18px 20px',
                           border: 'none',
                           background: 'transparent',
-                          color: 'inherit',
+                           color: 'var(--theme-text-primary, #1c2733)',
                           cursor: 'pointer',
                         }}
                       >
-                        <div style={{ fontWeight: 650, fontSize: '0.9rem', lineHeight: 1.3 }}>
+                        <div className="mobile-documents-list-item-title" style={{ fontWeight: 700, fontSize: '1rem', lineHeight: 1.35 }}>
                           {d.title || d.id}
                         </div>
-                        <div style={{ fontSize: '0.72rem', opacity: 0.58, marginTop: 5 }}>
+                        <div className="mobile-documents-list-item-meta" style={{ fontSize: '0.82rem', opacity: 0.62, marginTop: 6 }}>
                           {isAudioItem(d)
                             ? `${d.audio?.available ? t('Recording', '录音') : audioUnavailableLabel(d, t)}${d.audio?.duration_sec ? ` · ${formatAudioDuration(d.audio.duration_sec)}` : ''}${d.audio?.size_bytes ? ` · ${formatLibraryFileSize(d.audio.size_bytes)}` : ''}`
                             : d.has_original
@@ -1520,10 +1542,11 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
                         </div>
                         {d.preview ? (
                           <div
+                            className="mobile-documents-list-item-preview"
                             style={{
-                              fontSize: '0.76rem',
+                               fontSize: '0.86rem',
                               opacity: 0.72,
-                              marginTop: 5,
+                               marginTop: 7,
                               whiteSpace: 'nowrap',
                               overflow: 'hidden',
                               textOverflow: 'ellipsis',
@@ -1534,6 +1557,7 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
                         ) : null}
                       </button>
                       <button
+                        className="mobile-documents-list-delete"
                         type="button"
                         title={deleteCopy.title}
                         aria-label={deleteCopy.aria}
@@ -1544,10 +1568,10 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
                         }}
                         style={{
                           flexShrink: 0,
-                          width: 36,
+                           width: 44,
                           border: 'none',
                           background: 'transparent',
-                          color: 'rgba(255,180,180,0.85)',
+                           color: 'var(--theme-danger, #c43d34)',
                           cursor: uploading ? 'not-allowed' : 'pointer',
                           fontSize: '0.95rem',
                           opacity: uploading ? 0.45 : 0.75,
@@ -1563,29 +1587,31 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
           </div>
 
           {/* Preview */}
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0 }}>
+          <div className="mobile-documents-preview-pane" data-testid="mobile-documents-preview" style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0 }}>
             <div
+              className="mobile-documents-preview-header"
               style={{
                 display: 'flex',
                 alignItems: 'center',
                 gap: 8,
-                padding: '10px 14px',
-                borderBottom: '1px solid var(--theme-border, rgba(255,255,255,0.06))',
+                 padding: '18px 24px',
+                 borderBottom: '1px solid var(--theme-border-subtle, #e8eef5)',
               }}
             >
-              <div style={{ flex: 1, minWidth: 0, fontWeight: 700, fontSize: '0.92rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              <div className="mobile-documents-preview-title" style={{ flex: 1, minWidth: 0, fontWeight: 750, fontSize: '1.25rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {selected ? selected.title || selected.id : t('Preview', '预览')}
               </div>
               {selected ? (
                 isAudioItem(selected) ? (
                   <>
-                    <button type="button" style={styles.btnPrimary} onClick={() => void processAudio(selected)} disabled={uploading || isProcessingAudio(selected) || hasMeetingMinutes(selected) || !selected.audio?.available}>
+                    <button type="button" className="mobile-documents-btn mobile-documents-btn--primary" style={styles.btnPrimary} onClick={() => void processAudio(selected)} disabled={uploading || isProcessingAudio(selected) || hasMeetingMinutes(selected) || !selected.audio?.available}>
                       {isProcessingAudio(selected) ? t('Processing…', '处理中…') : hasMeetingMinutes(selected) ? t('Meeting minutes ready', '会议纪要已生成') : selected.processing?.status === 'failed' ? t('Retry meeting minutes', '重试生成纪要') : t('Generate meeting minutes', '生成会议纪要')}
                     </button>
-                    {selected.audio?.available ? <><button type="button" style={styles.btn} onClick={() => void openAudio(selected)} disabled={uploading}>{t('Open audio', '打开音频')}</button><button type="button" style={styles.btn} onClick={() => void saveAudio(selected)} disabled={uploading}>{t('Save audio', '保存音频')}</button></> : null}
+                    {selected.audio?.available ? <><button type="button" className="mobile-documents-btn" style={styles.btn} onClick={() => void openAudio(selected)} disabled={uploading}>{t('Open audio', '打开音频')}</button><button type="button" className="mobile-documents-btn" style={styles.btn} onClick={() => void saveAudio(selected)} disabled={uploading}>{t('Save audio', '保存音频')}</button></> : null}
                     <button
+                      className="mobile-documents-btn mobile-documents-btn--danger"
                       type="button"
-                      style={{ ...styles.btn, borderColor: 'rgba(220,80,80,0.45)', color: '#ffb4b4' }}
+                       style={{ ...styles.btn, borderColor: 'color-mix(in srgb, var(--theme-danger, #c43d34) 45%, var(--theme-border, #d9e1ec))', color: 'var(--theme-danger, #c43d34)' }}
                       onClick={() => void deleteDraft(selected)}
                       disabled={uploading}
                     >
@@ -1593,12 +1619,13 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
                     </button>
                   </>
                 ) : <>
-                  <button type="button" style={styles.btn} onClick={() => void copyBody()} disabled={!selected.markdown && !selected.preview}>
+                   <button type="button" className="mobile-documents-btn" style={styles.btn} onClick={() => void copyBody()} disabled={!selected.markdown && !selected.preview}>
                     {t('Copy', '复制')}
                   </button>
                   {selected.has_original ? (
                     <>
                       <button
+                        className="mobile-documents-btn"
                         type="button"
                         style={styles.btn}
                         onClick={() => void openSelectedOriginal()}
@@ -1608,6 +1635,7 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
                         {t('Open original', '打开原件')}
                       </button>
                       <button
+                        className="mobile-documents-btn"
                         type="button"
                         style={styles.btn}
                         onClick={() => void saveSelectedOriginal()}
@@ -1618,7 +1646,8 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
                       </button>
                     </>
                   ) : null}
-                  <button
+                   <button
+                     className="mobile-documents-btn mobile-documents-btn--primary"
                     type="button"
                     style={styles.btnPrimary}
                     onClick={() => void shareSelectedAgain()}
@@ -1630,12 +1659,13 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
                   >
                     {t('Already on Mobile', '已共享到手机')}
                   </button>
-                  <button
+                   <button
+                     className="mobile-documents-btn mobile-documents-btn--danger"
                     type="button"
                     style={{
                       ...styles.btn,
-                      borderColor: 'rgba(220,80,80,0.45)',
-                      color: '#ffb4b4',
+                       borderColor: 'color-mix(in srgb, var(--theme-danger, #c43d34) 45%, var(--theme-border, #d9e1ec))',
+                       color: 'var(--theme-danger, #c43d34)',
                     }}
                     onClick={() => void deleteDraft(selected)}
                     disabled={uploading}
@@ -1646,13 +1676,14 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
               ) : null}
             </div>
             <div
+              className="mobile-documents-preview-body"
               style={{
                 flex: 1,
                 overflow: 'auto',
-                padding: 16,
-                fontFamily: "ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, Consolas, monospace",
-                fontSize: '0.82rem',
-                lineHeight: 1.5,
+                 padding: '24px 28px',
+                 fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', sans-serif",
+                 fontSize: '0.98rem',
+                 lineHeight: 1.65,
                 opacity: selected ? 1 : 0.65,
               }}
             >
@@ -1660,7 +1691,7 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
                 isAudioItem(selected) ? (
                   <div aria-live="polite" style={{ display: 'grid', gap: 14, fontFamily: 'inherit' }}>
                     <MeetingRecordingPlayer item={selected} />
-                    <div><strong>{isProcessingAudio(selected) ? t('Processing recording', '正在处理录音') : selected.processing?.status === 'failed' ? t('Processing failed', '处理失败') : selected.derived_documents?.minutes_draft_id ? t('Meeting minutes ready', '会议纪要已生成') : t('Ready for meeting minutes', '可生成会议纪要')}</strong>{selected.processing?.message ? <div style={{ opacity: 0.7, marginTop: 4 }}>{selected.processing.message}</div> : null}{isProcessingAudio(selected) ? <div style={{ height: 4, marginTop: 10, background: 'var(--theme-border, #334155)', borderRadius: 2 }}><div style={{ width: `${Math.max(4, Math.min(100, Number(selected.processing?.progress || 0)))}%`, height: '100%', background: 'var(--theme-primary, #4f7f6f)', borderRadius: 2 }} /></div> : null}</div>
+                    <div><strong>{isProcessingAudio(selected) ? t('Processing recording', '正在处理录音') : selected.processing?.status === 'failed' ? t('Processing failed', '处理失败') : selected.derived_documents?.minutes_draft_id ? t('Meeting minutes ready', '会议纪要已生成') : t('Ready for meeting minutes', '可生成会议纪要')}</strong>{selected.processing?.message ? <div style={{ opacity: 0.7, marginTop: 4 }}>{selected.processing.message}</div> : null}{isProcessingAudio(selected) ? <div style={{ height: 6, marginTop: 10, background: 'var(--theme-border, #d9e1ec)', borderRadius: 3 }}><div style={{ width: `${Math.max(4, Math.min(100, Number(selected.processing?.progress || 0)))}%`, height: '100%', background: 'var(--theme-primary, #2f6fbc)', borderRadius: 3 }} /></div> : null}</div>
                     {(selected.derived_documents?.transcript_draft_id || selected.derived_documents?.minutes_draft_id) ? <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>{selected.derived_documents?.transcript_draft_id ? <button type="button" style={styles.btn} onClick={() => void openDocumentFromAudio(selected.derived_documents?.transcript_draft_id)}>{t('Open transcript', '打开逐字稿')}</button> : null}{selected.derived_documents?.minutes_draft_id ? <button type="button" style={styles.btnPrimary} onClick={() => void openDocumentFromAudio(selected.derived_documents?.minutes_draft_id)}>{t('Open meeting minutes', '打开会议纪要')}</button> : null}</div> : null}
                     {selected.retention_until ? <div style={{ opacity: 0.58, fontSize: '0.78rem' }}>{t('Original audio retention until', '原始音频保留至')} {formatUpdatedAt(selected.retention_until, isZh)}</div> : null}
                   </div>
@@ -1671,10 +1702,11 @@ export function MobileDocumentsPanel({ lang, open, onClose }: MobileDocumentsPan
             </div>
             {selected?.id ? (
               <div
+                className="mobile-documents-preview-footer"
                 style={{
                   padding: '8px 14px',
-                  borderTop: '1px solid var(--theme-border, rgba(255,255,255,0.06))',
-                  fontSize: '0.7rem',
+                   borderTop: '1px solid var(--theme-border-subtle, #e8eef5)',
+                   fontSize: '0.78rem',
                   opacity: 0.5,
                   fontFamily: 'ui-monospace, monospace',
                 }}

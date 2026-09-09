@@ -33,6 +33,10 @@ type reviewedHostWebFetcher interface {
 	FetchReviewedHostWeb(ctx context.Context, principal Principal, rawURL string) (string, error)
 }
 
+type reviewedHostWebSearcher interface {
+	SearchReviewedHostWeb(ctx context.Context, principal Principal, query string) (string, error)
+}
+
 type reviewedHostFileReader interface {
 	ReadReviewedHostFile(ctx context.Context, principal Principal, path, query, filePattern string) (string, error)
 }
@@ -50,6 +54,7 @@ type reviewedHostOwnedServices struct {
 	KnowledgeWrite    reviewedHostKnowledgeIngester
 	Audit             reviewedHostAuditReader
 	WebFetch          reviewedHostWebFetcher
+	WebSearch         reviewedHostWebSearcher
 	FileDownload      reviewedHostFileDownloader
 	FileRead          reviewedHostFileReader
 	FileWrite         reviewedHostFileWriter
@@ -222,6 +227,13 @@ func prepareReviewedDynamicSemanticCatalog(registry *coretool.CapabilityRegistry
 	}
 	if _, ok := registry.Lookup(CapabilityWebFetch); ok && services.WebFetch != nil {
 		catalog, err = AttachReviewedHostWebFetchProvider(catalog, services.WebFetch)
+		if err != nil {
+			return DynamicSemanticCatalog{}, DynamicCatalogLifecycle{}, err
+		}
+		attached = true
+	}
+	if _, ok := registry.Lookup(CapabilityInformationSearchWeb); ok && services.WebSearch != nil {
+		catalog, err = AttachReviewedHostWebSearchProvider(catalog, services.WebSearch)
 		if err != nil {
 			return DynamicSemanticCatalog{}, DynamicCatalogLifecycle{}, err
 		}

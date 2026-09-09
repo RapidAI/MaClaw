@@ -16,6 +16,15 @@ export const ExpertRailIcon = () => (
     </svg>
 );
 
+/** 工具 - 扳手与螺丝刀，和 AI 专家入口保持独立语义。 */
+export const ToolsRailIcon = () => (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" data-testid="sidebar-tools-icon">
+        <path d="M14.7 6.3a4.2 4.2 0 0 0-5.5-5.1l3 3-3.1 3.1-3-3a4.2 4.2 0 0 0 5.1 5.5l7.1 7.1a2.1 2.1 0 0 0 3-3z" />
+        <path d="m4.5 19.5 4-4" />
+        <path d="m3 21 2-2" />
+    </svg>
+);
+
 /** 系统 - 细线齿轮 */
 export const SystemIcon = () => (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

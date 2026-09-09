@@ -29,19 +29,25 @@ type recordingRankingUsageSummarizer struct {
 	durationTenantID string
 	tokenContext     string
 	durationContext  string
+	start            time.Time
+	end              time.Time
 	tokenRows        []store.UserTokenSummary
 	durationRows     []store.UserDurationSummary
 }
 
-func (f *recordingRankingUsageSummarizer) SummarizeUserTokenUsage(ctx context.Context, tenantID string, _, _ time.Time) ([]store.UserTokenSummary, error) {
+func (f *recordingRankingUsageSummarizer) SummarizeUserTokenUsage(ctx context.Context, tenantID string, start, end time.Time) ([]store.UserTokenSummary, error) {
 	f.tokenTenantID = tenantID
 	f.tokenContext = store.TenantIDFromContext(ctx)
+	f.start = start
+	f.end = end
 	return f.tokenRows, nil
 }
 
-func (f *recordingRankingUsageSummarizer) SummarizeUserDurations(ctx context.Context, tenantID string, _, _, _ time.Time) ([]store.UserDurationSummary, error) {
+func (f *recordingRankingUsageSummarizer) SummarizeUserDurations(ctx context.Context, tenantID string, start, end, _ time.Time) ([]store.UserDurationSummary, error) {
 	f.durationTenantID = tenantID
 	f.durationContext = store.TenantIDFromContext(ctx)
+	f.start = start
+	f.end = end
 	return f.durationRows, nil
 }
 
@@ -83,6 +89,30 @@ func TestUserRankingAccountFilterAllowsPhoneAccounts(t *testing.T) {
 func TestMaskEmailMasksPhoneAccounts(t *testing.T) {
 	if got := maskEmail("phone:19900001111"); got != "phone:199****1111" {
 		t.Fatalf("masked phone = %q, want phone:199****1111", got)
+	}
+}
+
+func TestPublicUserRankingsHandlerWeeklyWindowIsCurrentWeek(t *testing.T) {
+	sessions := &recordingRankingUsageSummarizer{
+		tokenRows: []store.UserTokenSummary{
+			{UserEmail: "user@example.com", Usage: store.UserTokenUsage{InputTokens: 10}},
+		},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/public/user-rankings?period=weekly&dimension=tokens", nil)
+	rec := httptest.NewRecorder()
+	GetPublicUserRankingsHandler(sessions, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if sessions.start.Weekday() != time.Monday || !sessions.end.Equal(sessions.start.AddDate(0, 0, 7)) {
+		t.Fatalf("weekly window = %s %s, want Monday + 7 days", sessions.start, sessions.end)
+	}
+	var resp publicUserRankingResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Period != "weekly" || resp.Month != sessions.start.Format("2006-01-02") {
+		t.Fatalf("weekly public labels = %#v, want month %s", resp, sessions.start.Format("2006-01-02"))
 	}
 }
 
@@ -227,7 +257,7 @@ func TestMyRankingHandlerRanksWithinViewerTenant(t *testing.T) {
 			{UserEmail: "bob@example.com", DurationSeconds: 60},
 		},
 	}
-	req := httptest.NewRequest(http.MethodGet, "/api/my-ranking?tenant_id=other-tenant", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/my-ranking?tenant_id=other-tenant&month=2020-01", nil)
 	req.Header.Set("Authorization", "Bearer "+viewerToken)
 	rec := httptest.NewRecorder()
 
@@ -241,6 +271,9 @@ func TestMyRankingHandlerRanksWithinViewerTenant(t *testing.T) {
 	}
 	if sessions.tokenContext != "tenant-acme" || sessions.durationContext != "tenant-acme" {
 		t.Fatalf("ranking context tenant = token:%q duration:%q, want tenant-acme", sessions.tokenContext, sessions.durationContext)
+	}
+	if sessions.start.Year() == 2020 || sessions.start.Day() != 1 {
+		t.Fatalf("my ranking window = %s, must ignore month=2020-01", sessions.start)
 	}
 	var resp myRankingResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
@@ -337,5 +370,54 @@ func TestUserRankingEmailFilterRejectsMalformedEmails(t *testing.T) {
 		if isUserRankingEmail(email) {
 			t.Fatalf("isUserRankingEmail(%q) = true, want false", email)
 		}
+	}
+}
+
+func TestUserRankingRangeCoversDailyWeeklyMonthly(t *testing.T) {
+	now := time.Date(2026, 9, 3, 15, 4, 0, 0, time.UTC) // Thursday
+	start, end, label := userRankingRange(nil, "daily", now)
+	if label != "2026-09-03" || !start.Equal(time.Date(2026, 9, 3, 0, 0, 0, 0, time.UTC)) || !end.Equal(start.AddDate(0, 0, 1)) {
+		t.Fatalf("daily range = %s %s %s", label, start, end)
+	}
+	start, end, label = userRankingRange(nil, "weekly", now)
+	if label != "2026-08-31" || !start.Equal(time.Date(2026, 8, 31, 0, 0, 0, 0, time.UTC)) || !end.Equal(start.AddDate(0, 0, 7)) {
+		t.Fatalf("weekly range = %s %s %s", label, start, end)
+	}
+	start, end, label = userRankingRange(nil, "monthly", now)
+	if label != "2026-09" || !start.Equal(time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)) || !end.Equal(start.AddDate(0, 1, 0)) {
+		t.Fatalf("monthly range = %s %s %s", label, start, end)
+	}
+}
+
+func TestNormalizeUserRankingPeriodAcceptsWeekly(t *testing.T) {
+	if got := normalizeUserRankingPeriod("week"); got != "weekly" {
+		t.Fatalf("period = %q, want weekly", got)
+	}
+	if got := normalizePublicRankingPeriod(""); got != "monthly" {
+		t.Fatalf("public default = %q, want monthly", got)
+	}
+}
+
+func TestGetUserRankingsHandlerWeeklyUsesDateLabel(t *testing.T) {
+	sessions := fakeRankingUsageSummarizer{
+		tokenRows: []store.UserTokenSummary{
+			{UserEmail: "user@example.com", Usage: store.UserTokenUsage{InputTokens: 10}},
+		},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/user-rankings?period=weekly", nil)
+	rec := httptest.NewRecorder()
+	GetUserRankingsHandler(sessions, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp userRankingResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Period != "weekly" || resp.Date == "" || resp.Year != "" || resp.Month != "" {
+		t.Fatalf("weekly response labels = %#v", resp)
+	}
+	if _, err := time.Parse("2006-01-02", resp.Date); err != nil {
+		t.Fatalf("weekly date %q: %v", resp.Date, err)
 	}
 }

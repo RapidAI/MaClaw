@@ -161,6 +161,17 @@ func TestApplyTargetedMaintenanceAction_MergeRequiresFlags(t *testing.T) {
 	}
 }
 
+func TestApplyTargetedMaintenanceAction_MergeRejectsSameSkill(t *testing.T) {
+	skills := []corelib.NLSkillEntry{{Name: "keep-me", Source: "learned", Status: "active"}}
+	updated, res := ApplyTargetedMaintenanceAction(skills, MaintenanceActionMergeDuplicate, "keep-me", "keep-me", false, true, true)
+	if res.OK || res.Error != "merge_duplicate requires two distinct skills" {
+		t.Fatalf("same-skill merge result = %#v, want distinct-skill rejection", res)
+	}
+	if len(updated) != 1 || updated[0].Status != "active" {
+		t.Fatalf("same-skill merge mutated input: %#v", updated)
+	}
+}
+
 func TestCollectMaintenanceReviewDrafts_MergeDraft(t *testing.T) {
 	skills := []corelib.NLSkillEntry{
 		{

@@ -33,7 +33,7 @@ build-tui:
 # GUI 编译（需要 CGO + Wails）
 build-gui:
 	@echo "Building maclaw-gui..."
-	go build -o $(BIN_DIR)/maclaw-gui ./gui/
+	go build -o $(BIN_DIR)/maclaw-gui ./cmd/maclaw-gui/
 	@echo "OK: $(BIN_DIR)/maclaw-gui"
 
 # maclaw-tool 编译

@@ -583,6 +583,7 @@ var floatingLogoPNGLinux []byte
 //   - 20fps face/skeleton/character animation (Windows render loop)
 //   - motion amplitude / interaction-mode posing
 //   - pet motion sound
+//
 // Runtime states still swap the matching pack still (or keep the logo).
 type linuxFloatingWindow struct {
 	app              *App
