@@ -14,6 +14,59 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+function ConvertFrom-Psd1Ast {
+    param([System.Management.Automation.Language.Ast]$Ast)
+    if ($null -eq $Ast) { return $null }
+    if ($Ast -is [System.Management.Automation.Language.ScriptBlockAst]) {
+        return ConvertFrom-Psd1Ast $Ast.EndBlock
+    }
+    if ($Ast -is [System.Management.Automation.Language.NamedBlockAst]) {
+        $statements = @($Ast.Statements)
+        if ($statements.Count -eq 0) { return $null }
+        if ($statements.Count -ne 1) { throw "Inventory data file must contain a single hashtable" }
+        return ConvertFrom-Psd1Ast $statements[0]
+    }
+    if ($Ast -is [System.Management.Automation.Language.PipelineAst]) {
+        return ConvertFrom-Psd1Ast ($Ast.PipelineElements | Select-Object -Last 1)
+    }
+    if ($Ast -is [System.Management.Automation.Language.CommandExpressionAst]) {
+        return ConvertFrom-Psd1Ast $Ast.Expression
+    }
+    if ($Ast -is [System.Management.Automation.Language.HashtableAst]) {
+        $result = [ordered]@{}
+        foreach ($pair in $Ast.KeyValuePairs) {
+            $key = $pair.Item1.Extent.Text.Trim('"', "'")
+            $result[$key] = ConvertFrom-Psd1Ast $pair.Item2
+        }
+        return $result
+    }
+    if ($Ast -is [System.Management.Automation.Language.ArrayExpressionAst]) {
+        $sub = $Ast.SubExpression
+        if ($sub -is [System.Management.Automation.Language.StatementBlockAst] -and $sub.Statements.Count -eq 0) {
+            return @()
+        }
+        if ($sub -is [System.Management.Automation.Language.StatementBlockAst] -and $sub.Statements.Count -gt 0) {
+            return ConvertFrom-Psd1Ast $sub.Statements[0]
+        }
+        return @()
+    }
+    if ($Ast -is [System.Management.Automation.Language.ArrayLiteralAst]) {
+        return @($Ast.Elements | ForEach-Object { ConvertFrom-Psd1Ast $_ })
+    }
+    if ($Ast -is [System.Management.Automation.Language.VariableExpressionAst]) {
+        switch ($Ast.VariablePath.UserPath) {
+            'true'  { return $true }
+            'false' { return $false }
+            'null'  { return $null }
+            default { throw "Unsupported variable '$($Ast.VariablePath.UserPath)' in inventory data file" }
+        }
+    }
+    if ($Ast -is [System.Management.Automation.Language.ConstantExpressionAst]) {
+        return $Ast.SafeGetValue()
+    }
+    throw "Unsupported expression in inventory data file at line $($Ast.Extent.StartLineNumber): '$($Ast.Extent.Text)'"
+}
+
 function Import-InventoryDataFile {
     param([string]$Path)
 
@@ -23,12 +76,21 @@ function Import-InventoryDataFile {
     }
 
     # Windows PowerShell 5.1 lacks Import-PowerShellDataFile; deployment
-    # inventories are local generated PSD1 hashtables, so evaluate them in a child scope.
+    # inventories are local generated PSD1 hashtables. Parse the file and
+    # convert only literal hashtable/array/scalar nodes — never Invoke-Expression,
+    # so a tampered inventory file cannot execute arbitrary code.
     $resolvedPath = (Resolve-Path -LiteralPath $Path -ErrorAction Stop).Path
-    return & {
-        param([string]$InventoryFile)
-        Invoke-Expression ([System.IO.File]::ReadAllText($InventoryFile))
-    } $resolvedPath
+    $tokens = $null
+    $parseErrors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($resolvedPath, [ref]$tokens, [ref]$parseErrors)
+    if ($parseErrors -and $parseErrors.Count -gt 0) {
+        throw "Failed to parse inventory data file '$Path': $($parseErrors[0].Message)"
+    }
+    $value = ConvertFrom-Psd1Ast $ast
+    if ($null -eq $value) {
+        throw "Inventory data file '$Path' is empty"
+    }
+    return $value
 }
 
 function Get-EnvOrDefault {

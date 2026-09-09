@@ -12,16 +12,16 @@ func writeAuditLogsCSV(w io.Writer, items []AuditLog) error {
 	}
 	for _, item := range items {
 		if err := writer.Write([]string{
-			item.ID,
+			sanitizeCSVCell(item.ID),
 			formatTime(item.CreatedAt),
-			item.TenantID,
-			item.UserID,
-			item.Action,
-			item.DatasetID,
-			item.TargetType,
-			item.TargetID,
-			item.Summary,
-			jsonString(item.Metadata),
+			sanitizeCSVCell(item.TenantID),
+			sanitizeCSVCell(item.UserID),
+			sanitizeCSVCell(item.Action),
+			sanitizeCSVCell(item.DatasetID),
+			sanitizeCSVCell(item.TargetType),
+			sanitizeCSVCell(item.TargetID),
+			sanitizeCSVCell(item.Summary),
+			sanitizeCSVCell(jsonString(item.Metadata)),
 		}); err != nil {
 			return err
 		}
