@@ -318,14 +318,18 @@ function assertTenantAdminUIHooks() {
       fail('cloud-workspace-tab.js is missing tenant cloud workspace settings marker: ' + marker);
     }
   });
+  const cloudWorkspaceGuard = extractNamedFunction(cloudWorkspace, 'canManageTenantCloudWorkspace');
+  if (!cloudWorkspaceGuard.includes("String(profile.scope || '').toLowerCase() === 'tenant'")) {
+    fail('cloud-workspace-tab.js must restrict cloud workspace settings to tenant admins.');
+  }
   ['loadTenantCloudWorkspaceSettings', 'saveTenantCloudWorkspaceSettings'].forEach(function(name) {
     const handler = extractNamedFunction(cloudWorkspace, name);
     if (!handler.includes('if (!canManageTenantCloudWorkspace()) return null;')) {
-      fail('cloud-workspace-tab.js must guard ' + name + ' behind a signed-in admin profile.');
+      fail('cloud-workspace-tab.js must guard ' + name + ' behind a tenant admin profile.');
     }
   });
-  if (!tenant.includes("tenantCloudWorkspaceCard.classList.toggle('hidden', !hasProfile)")) {
-    fail('tenant-tab.js must show cloud workspace settings to signed-in admins.');
+  if (!tenant.includes("tenantCloudWorkspaceCard.classList.toggle('hidden', !(hasProfile && tenantAdmin))")) {
+    fail('tenant-tab.js must show cloud workspace settings only to tenant admins.');
   }
   if (!admin.includes('loadTenantCloudWorkspaceSettings')) {
     fail('admin.js must load tenant cloud workspace settings in the tenant system scope.');
@@ -810,8 +814,20 @@ function assertUsageStatsRMBBreakdown() {
     fail('usage-stats-tab.js must not invent an RMB amount without a frozen-price snapshot.');
   }
   const tooltipSource = extractNamedFunction(source, 'creditCalculationDetails');
-  if (!tooltipSource.includes("creditsTooltipRMBRateUnavailable") || !tooltipSource.includes('cacheRead: fmtRMB(rmbCost.cacheRead)') || !tooltipSource.includes('total: fmtRMB(rmbCost.total)')) {
+  const rmbRateSource = extractNamedFunction(source, 'effectiveRMBRateLabel');
+  const rmbBreakdownSource = extractNamedFunction(source, 'rmbRateBreakdownLines');
+  if (!rmbRateSource.includes("creditsTooltipRMBRateUnavailable") || !rmbBreakdownSource.includes('cacheRead: fmtRMB(rmbCost.cacheRead)') || !rmbBreakdownSource.includes('total: fmtRMB(rmbCost.total)')) {
     fail('usage-stats-tab.js must show the four RMB components and their summed total.');
+  }
+  if (!rmbBreakdownSource.includes('effectiveRMBRateLabel')) {
+    fail('usage-stats-tab.js must derive effective RMB rates through the shared effectiveRMBRateLabel helper.');
+  }
+  if (!tooltipSource.includes('rmbRateBreakdownLines')) {
+    fail('usage-stats-tab.js must render the credits tooltip RMB breakdown through the shared rmbRateBreakdownLines helper.');
+  }
+  const rmbDetailsSource = extractNamedFunction(source, 'usageRMBDetails');
+  if (!rmbDetailsSource.includes('rmbRateBreakdownLines')) {
+    fail('usage-stats-tab.js must render the RMB summary tooltip through the shared rmbRateBreakdownLines helper.');
   }
   if (!tooltipSource.includes('unitemizedCacheRead') || !tooltipSource.includes('unitemizedCacheWrite') || !tooltipSource.includes('unitemizedRequests')) {
     fail('usage-stats-tab.js must reconcile legacy unitemized cache legs and request scope.');

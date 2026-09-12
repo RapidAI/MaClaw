@@ -9,7 +9,8 @@ import { addParticipantIdentityKeys, participantIdentityMatches } from "./partic
 import { veStatusEventInfo } from "./veStatusEvent";
 import { safeAvatarDataURL } from "./virtualEmployeeAvatar";
 import { expertSessionKey, normalizeProjectSessionPath, purgeDeletedExpertTabLocalCache } from "./aiAssistantPanelSessionUtils";
-import { cloudWorkspaceIdFromPath } from "./codingTaskMode";
+import { cloudWorkspaceIdFromPath, cloudWorkspaceIdFromTaskFields } from "./codingTaskMode";
+import type { TaskManagementItem } from "../layout/SidebarTaskManagement";
 import { updateAssistantTabTaskSession } from "./aiAssistantPanelSessionUtils";
 import type { ExpertDefinition } from "./expertTypes";
 import { expertTabId } from "./expertTypes";
@@ -17,6 +18,9 @@ import { expertTabId } from "./expertTypes";
 function isEmptyProjectTabSessionNotice(notice: unknown): boolean {
     return typeof notice === "string" && !notice.trim();
 }
+
+/** How long a project tab may stay unclaimed by any visible task row before the reconcile discards it. */
+const ORPHAN_PROJECT_TAB_GRACE_MS = 15_000;
 
 /**
  * Generate a deterministic hex hash from a string using a simple
@@ -228,6 +232,8 @@ export interface UseAITabManagerResult {
     discardDeletedProjectTabs: (projectPath: string) => void;
     /** Remove a deleted expert's tab and history without re-persisting conversation. */
     discardDeletedExpertTabs: (expertId: string) => void;
+    /** Discard open project tabs that no visible task row claims (after a grace window). */
+    discardOrphanProjectTabs: (tasks: TaskManagementItem[]) => void;
     /** Clear a VE/group conversation explicitly, resetting cached and visible state. */
     clearTabConversation: (tabId: string) => void;
     /** Save state for the current active tab before switching */
@@ -535,10 +541,26 @@ function loadPersistedVETabs(): Array<{ tab: AITab; sessionId?: string }> {
 }
 
 /**
+ * Strip the "-<UnixNano>" suffix that task directories get at creation time
+ * (tasks/<slug>-<UnixNano>). Only strips when the suffix is a long digit run,
+ * matching the Go-side stripTaskDirTimestampSuffix heuristic.
+ */
+function stripTaskDirTimestampSuffix(name: string): string {
+    const i = name.lastIndexOf("-");
+    if (i > 0) {
+        const suffix = name.slice(i + 1);
+        if (suffix.length >= 10 && /^\d+$/.test(suffix)) {
+            return name.slice(0, i);
+        }
+    }
+    return name;
+}
+
+/**
  * Sanitize a project tab title for display. If the title looks like a raw
  * file path or a long internal task ID, extract a friendlier short name.
  */
-function sanitizeProjectTabTitle(title: string, projectPath?: string): string {
+export function sanitizeProjectTabTitle(title: string, projectPath?: string): string {
     if (!title) return projectPath ? sanitizeProjectTabTitle(projectPath) : "Task";
     // If title looks like a task ID (task-<digits>), shorten it
     if (/^task-\d{10,}$/.test(title)) {
@@ -548,9 +570,21 @@ function sanitizeProjectTabTitle(title: string, projectPath?: string): string {
     if ((title.includes("\\") || title.includes("/")) && title.length > 30) {
         const segments = title.replace(/\\/g, "/").split("/").filter(Boolean);
         const last = segments[segments.length - 1] || title;
-        return last.replace(/\/$/, "");
+        return stripTaskDirTimestampSuffix(last.replace(/\/$/, ""));
     }
-    return title;
+    return stripTaskDirTimestampSuffix(title);
+}
+
+// resolvedBackendTabTitle returns the sanitized backend title, or "" when the
+// backend didn't resolve a real name (empty title, or a title that is just the
+// task dir basename) — callers then keep the tab's existing title instead of
+// overwriting it with a raw directory fallback.
+function resolvedBackendTabTitle(title: string | undefined, normalizedPath: string): string {
+    const rawTitle = String(title || "").trim();
+    if (!rawTitle) return "";
+    const sanitized = sanitizeProjectTabTitle(rawTitle, normalizedPath);
+    const dirName = stripTaskDirTimestampSuffix(normalizedPath.replace(/\\/g, "/").split("/").filter(Boolean).pop() || "");
+    return dirName && sanitized === dirName ? "" : sanitized;
 }
 
 /**
@@ -673,9 +707,11 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
                 for (const entry of entries) {
                     if (!entry || entry.archived || !entry.projectPath) continue;
                     const normalizedPath = normalizeProjectSessionPath(entry.projectPath);
-                    const title = sanitizeProjectTabTitle(entry.title || normalizedPath, normalizedPath);
-                    backendTitlesByPath.set(normalizedPath, title);
-                    if (entry.id) backendTitlesById.set(entry.id, title);
+                    const title = resolvedBackendTabTitle(entry.title, normalizedPath);
+                    if (title) {
+                        backendTitlesByPath.set(normalizedPath, title);
+                        if (entry.id) backendTitlesById.set(entry.id, title);
+                    }
 					backendEntriesByPath.set(normalizedPath, entry);
 					if (entry.id) backendEntriesById.set(entry.id, entry);
 					const cloudWorkspaceId = String(entry.cloudWorkspaceId || '').trim() || cloudWorkspaceIdFromPath(normalizedPath);
@@ -692,7 +728,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
                         : tab.projectPath;
                     const backendTitle = backendTitlesByPath.get(normalizedPath)
                         || backendTitlesById.get(tab.id)
-                        || (backendEntry?.title ? sanitizeProjectTabTitle(backendEntry.title, canonicalProjectPath) : "");
+                        || (backendEntry ? resolvedBackendTabTitle(backendEntry.title, canonicalProjectPath) : "");
                     const agentMode = backendEntry?.agentMode === "remote_coding_dev"
                         ? "remote_coding_dev" as const
                         : (backendEntry?.agentMode === "coding_dev" ? "coding_dev" as const : tab.agentMode);
@@ -702,9 +738,10 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
                         : tab.remoteSafety;
                     const executionProfile = executionProfileForProjectMode(agentMode);
                     const cloudWorkspaceId = String(backendEntry?.cloudWorkspaceId || tab.cloudWorkspaceId || "").trim() || cloudWorkspaceIdFromPath(normalizedPath) || undefined;
-                    if (canonicalProjectPath === tab.projectPath && backendTitle === tab.title && cloudWorkspaceId === tab.cloudWorkspaceId && agentMode === tab.agentMode && remoteHost === tab.remoteHost && remoteSafety === tab.remoteSafety && executionProfile === tab.executionProfile) return tab;
+                    const nextTitle = backendTitle || tab.title;
+                    if (canonicalProjectPath === tab.projectPath && nextTitle === tab.title && cloudWorkspaceId === tab.cloudWorkspaceId && agentMode === tab.agentMode && remoteHost === tab.remoteHost && remoteSafety === tab.remoteSafety && executionProfile === tab.executionProfile) return tab;
                     titleChanged = true;
-                    return { ...tab, projectPath: canonicalProjectPath, title: backendTitle || tab.title, cloudWorkspaceId, agentMode, remoteHost, remoteSafety, executionProfile };
+                    return { ...tab, projectPath: canonicalProjectPath, title: nextTitle, cloudWorkspaceId, agentMode, remoteHost, remoteSafety, executionProfile };
                 });
 
                 const newTabs: AITab[] = [];
@@ -1142,11 +1179,14 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         // When resuming a pure coding task, always re-apply agentMode/remoteHost from
         // the open request so a stale tab without coding mode is restored correctly.
         const sessionKey = String(options?.sessionKey || "").trim();
-        const cloudWorkspaceId = String(options?.cloudWorkspaceId || "").trim();
+        // Derive the workspace identity from the cache path when the caller did
+        // not pass one; otherwise the same workspace opened via a different path
+        // (renamed/re-mounted cache) spawns duplicate tabs.
+        const cloudWorkspaceId = String(options?.cloudWorkspaceId || "").trim() || cloudWorkspaceIdFromPath(projectPath);
         const existing = sessionKey
             ? prev.tabs.find(t => t.type === "project" && t.sessionKey === sessionKey)
             : cloudWorkspaceId
-                ? prev.tabs.find(t => t.type === "project" && (t.cloudWorkspaceId === cloudWorkspaceId || cloudWorkspaceIdFromPath(t.projectPath) === cloudWorkspaceId))
+                ? prev.tabs.find(t => t.type === "project" && (String(t.cloudWorkspaceId || "").trim() || cloudWorkspaceIdFromPath(t.projectPath)) === cloudWorkspaceId)
                     || prev.tabs.find(t => t.type === "project" && normalizeProjectSessionPath(t.projectPath) === projectPath)
             : prev.tabs.find(t => t.type === "project" && normalizeProjectSessionPath(t.projectPath) === projectPath);
         if (existing) {
@@ -1330,10 +1370,35 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         return newTab;
     }, [updateTabState]);
 
+    const historyPersistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const dirtyTabIdsRef = useRef<Set<string>>(new Set());
+    // Incremented before a tab is cleared. A queued debounce captures its
+    // generation and must not write a pre-clear transcript afterwards.
+    const historyGenerationByTabIdRef = useRef<Map<string, number>>(new Map());
+
+    // Flush a tab's pending conversation to the backend session file
+    // immediately. closeTab uses this so a tab closed inside the 500ms
+    // debounce window does not lose its unflushed tail — the debounced flush
+    // only writes tabs that are still open.
+    const flushDirtyTabConversationNow = useCallback((tabId: string) => {
+        if (!dirtyTabIdsRef.current.has(tabId)) return;
+        dirtyTabIdsRef.current.delete(tabId);
+        const generation = historyGenerationByTabIdRef.current.get(tabId) || 0;
+        const state = tabStatesRef.current.get(tabId);
+        if (state && Array.isArray(state.history) && state.history.length > 0) {
+            const history = persistableProjectHistory(state.history);
+            if ((historyGenerationByTabIdRef.current.get(tabId) || 0) === generation) {
+                SaveProjectTabConversation(tabId, history).catch(() => {});
+            }
+        }
+    }, []);
+
     const closeTab = useCallback((tabId: string) => {
         updateTabState(prev => {
             const tab = prev.tabs.find(t => t.id === tabId);
             if (!tab || !tab.closable) return prev;
+
+            flushDirtyTabConversationNow(tabId);
 
             // Release a closed tab's runtime workdir. Project tabs also archive
             // their backend index entry; expert tabs only need the private
@@ -1371,18 +1436,11 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         evictClosedTabStates(tabStatesRef.current, openTabIds, "history-", 32);
         evictClosedTabStates(tabStatesRef.current, openTabIds, "group-", 32);
         evictClosedTabStates(tabStatesRef.current, openTabIds, "expert-", 32);
-    }, [updateTabState]);
+    }, [flushDirtyTabConversationNow, updateTabState]);
 
-    const discardDeletedProjectTabs = useCallback((projectPath: string) => {
-        const normalizedPath = normalizeProjectSessionPath(projectPath);
-        if (!normalizedPath) return;
+    const discardProjectTabsById = useCallback((deletedIDs: Set<string>) => {
+        if (deletedIDs.size === 0) return;
         const current = tabStateRef.current;
-        const deletedTabIDs = current.tabs
-            .filter(tab => tab.type === "project" && normalizeProjectSessionPath(tab.projectPath) === normalizedPath)
-            .map(tab => tab.id);
-        if (deletedTabIDs.length === 0) return;
-
-        const deletedIDs = new Set(deletedTabIDs);
         for (const tabID of deletedIDs) {
             tabStatesRef.current.delete(tabID);
             dirtyTabIdsRef.current.delete(tabID);
@@ -1400,6 +1458,93 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         persistProjectTabHistories(tabStatesRef.current, next.tabs);
     }, [updateTabState]);
 
+    const discardDeletedProjectTabs = useCallback((projectPath: string) => {
+        const normalizedPath = normalizeProjectSessionPath(projectPath);
+        if (!normalizedPath) return;
+        // Live cloud tabs may sit on a cache path; also match by workspace id.
+        const wsId = cloudWorkspaceIdFromPath(normalizedPath);
+        const current = tabStateRef.current;
+        const deletedTabIDs = current.tabs
+            .filter(tab => tab.type === "project" && (normalizeProjectSessionPath(tab.projectPath) === normalizedPath
+                || (!!wsId && (String(tab.cloudWorkspaceId || "").trim() || cloudWorkspaceIdFromPath(tab.projectPath)) === wsId)))
+            .map(tab => tab.id);
+        if (deletedTabIDs.length === 0) return;
+        discardProjectTabsById(new Set(deletedTabIDs));
+    }, [discardProjectTabsById]);
+
+    // Orphan-tab reconcile: a project tab whose task row is gone (deleted or
+    // hidden while the GUI was not listening, tag drift, etc.) must not linger
+    // in the AI panel task switcher — otherwise it disagrees with the sidebar
+    // task list. A tab is claimed by ANY task-list row (by path or cloud
+    // workspace id), not only sidebar-visible ones: a row hidden by
+    // has_output=false is a sidebar-view decision, not evidence of deletion.
+    // Reaping uses closeTab semantics (backend session closed, history cache
+    // retained and resumable) rather than deletion-grade cleanup, so a false
+    // positive costs a closable tab, not the transcript. The caller re-runs
+    // this whenever the task list or the tabs change; a tab is reaped only
+    // after staying unclaimed for a grace window, so a freshly opened tab
+    // whose task row has not landed in the list yet is never reaped early.
+    const orphanProjectTabSinceRef = useRef(new Map<string, number>());
+    const orphanProjectTabTimerRef = useRef(0);
+    const orphanProjectTabTasksRef = useRef<TaskManagementItem[]>([]);
+    const discardOrphanProjectTabs = useCallback((tasks: TaskManagementItem[]) => {
+        orphanProjectTabTasksRef.current = tasks;
+        const current = tabStateRef.current;
+        const orphanIDs: string[] = [];
+        for (const tab of current.tabs) {
+            if (tab.type !== "project" || isACPMirrorTab(tab) || !tab.projectPath || !tab.closable) continue;
+            const tabPath = normalizeProjectSessionPath(tab.projectPath);
+            const tabWsId = String(tab.cloudWorkspaceId || "").trim() || cloudWorkspaceIdFromPath(tab.projectPath);
+            const claimed = tasks.some(task => {
+                const taskPath = normalizeProjectSessionPath(String(task.project_path || ""));
+                const wsId = cloudWorkspaceIdFromTaskFields(task);
+                return (!!wsId && !!tabWsId && wsId === tabWsId) || (!!taskPath && taskPath === tabPath);
+            });
+            if (!claimed) orphanIDs.push(tab.id);
+        }
+        const since = orphanProjectTabSinceRef.current;
+        // Forget tabs that are claimed again or already gone.
+        for (const id of Array.from(since.keys())) {
+            if (!orphanIDs.includes(id)) since.delete(id);
+        }
+        const now = Date.now();
+        const due: string[] = [];
+        let nextDueIn = Infinity;
+        for (const id of orphanIDs) {
+            const first = since.get(id);
+            if (first === undefined) {
+                since.set(id, now);
+                nextDueIn = Math.min(nextDueIn, ORPHAN_PROJECT_TAB_GRACE_MS);
+                continue;
+            }
+            const elapsed = now - first;
+            if (elapsed >= ORPHAN_PROJECT_TAB_GRACE_MS) due.push(id);
+            else nextDueIn = Math.min(nextDueIn, ORPHAN_PROJECT_TAB_GRACE_MS - elapsed);
+        }
+        if (orphanProjectTabTimerRef.current) {
+            window.clearTimeout(orphanProjectTabTimerRef.current);
+            orphanProjectTabTimerRef.current = 0;
+        }
+        if (nextDueIn < Infinity) {
+            orphanProjectTabTimerRef.current = window.setTimeout(() => {
+                orphanProjectTabTimerRef.current = 0;
+                discardOrphanProjectTabs(orphanProjectTabTasksRef.current);
+            }, nextDueIn);
+        }
+        if (due.length > 0) {
+            for (const id of due) since.delete(id);
+            // Reap with close semantics, not deletion: the backend session is
+            // released but the closed-tab history cache stays resumable, so a
+            // false positive costs a tab the user can reopen, not a transcript.
+            for (const id of due) closeTab(id);
+        }
+    }, [closeTab]);
+    useEffect(() => () => {
+        if (orphanProjectTabTimerRef.current) {
+            window.clearTimeout(orphanProjectTabTimerRef.current);
+            orphanProjectTabTimerRef.current = 0;
+        }
+    }, []);
     const discardDeletedExpertTabs = useCallback((expertId: string) => {
         const id = String(expertId || "").trim();
         if (!id) return;
@@ -1479,11 +1624,6 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         };
     }, [discardDeletedExpertTabs, updateTabState]);
 
-    const historyPersistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const dirtyTabIdsRef = useRef<Set<string>>(new Set());
-    // Incremented before a tab is cleared. A queued debounce captures its
-    // generation and must not write a pre-clear transcript afterwards.
-    const historyGenerationByTabIdRef = useRef<Map<string, number>>(new Map());
     const scheduleHistoryPersist = useCallback(() => {
         if (historyPersistTimerRef.current) clearTimeout(historyPersistTimerRef.current);
         historyPersistTimerRef.current = setTimeout(() => {
@@ -1673,6 +1813,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         closeTab,
         discardDeletedProjectTabs,
         discardDeletedExpertTabs,
+        discardOrphanProjectTabs,
         clearTabConversation,
         saveTabState,
         getTabState,

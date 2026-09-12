@@ -965,7 +965,7 @@ requireIncludes('guiapp/frontend/src/components/layout/SidebarSystemStatus.tsx',
 requireIncludes('guiapp/frontend/src/components/layout/SidebarSystemStatus.tsx', 'formatSidebarHubUsedCredits', 'hub credits used display wiring');
 requireIncludes('guiapp/frontend/src/components/layout/SidebarSystemStatus.tsx', 'formatSidebarHubExpiry', 'hub credits expiry display wiring');
 requireIncludes('guiapp/frontend/src/components/layout/SidebarSystemStatus.tsx', 'sidebarCurrentProviderTokenUsage.isHubService', 'hub service credits visibility condition');
-requireIncludes('guiapp/frontend/src/components/layout/SidebarTaskManagement.tsx', 'visibleTasks.map', 'task list stays in sidebar task management component');
+requireIncludes('guiapp/frontend/src/components/layout/SidebarTaskManagement.tsx', 'filteredTasks.map', 'task list stays in sidebar task management component');
 requireIncludes('guiapp/frontend/src/components/layout/SidebarSystemStatus.tsx', 'showHubCreditAction', 'hub credits action stays in sidebar system status');
 requireIncludes('guiapp/frontend/src/components/layout/SidebarSystemStatus.tsx', 'openHubCreditsPage', 'hub credits purchase action wiring');
 requireIncludes('guiapp/frontend/src/components/layout/MainTopHeader.tsx', 'export const MainTopHeader', 'non-AI top header export');

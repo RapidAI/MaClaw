@@ -26,7 +26,12 @@ import (
 )
 
 const (
-	virtualRepositorySyncVersion         = 1
+	// Version 2 adds the mappings section and vmap tombstones. Version 1
+	// endpoints silently drop the unknown mappings field (encoding/json ignores
+	// it) and would erase the section fleet-wide on their next upload, so they
+	// must fail loudly on the version check instead of merging a document they
+	// cannot represent.
+	virtualRepositorySyncVersion         = 2
 	virtualRepositorySyncResponseMaxSize = 3 << 20
 )
 
@@ -35,16 +40,33 @@ var virtualRepositoryCloudSyncMu sync.Mutex
 var errVirtualRepositoryChangedDuringSync = errors.New("virtual repository changed while synchronizing")
 
 type virtualRepositorySyncPackage struct {
-	Version      int                                  `json:"version"`
-	Repositories map[string]virtualRepositorySyncRepo `json:"repositories"`
-	Credentials  map[string]virtualRepositorySyncCred `json:"credentials"`
-	Bindings     map[string]string                    `json:"bindings"`
-	SSHSecrets   map[string]string                    `json:"ssh_secrets"`
-	Tombstones   map[string]time.Time                 `json:"tombstones,omitempty"`
+	Version      int                                     `json:"version"`
+	Repositories map[string]virtualRepositorySyncRepo    `json:"repositories"`
+	Mappings     map[string]virtualRepositorySyncMapping `json:"mappings,omitempty"`
+	Credentials  map[string]virtualRepositorySyncCred    `json:"credentials"`
+	Bindings     map[string]string                       `json:"bindings"`
+	SSHSecrets   map[string]string                       `json:"ssh_secrets"`
+	Tombstones   map[string]time.Time                    `json:"tombstones,omitempty"`
 }
 type virtualRepositorySyncRepo struct {
 	Repository VirtualRepository `json:"repository"`
 	Location   string            `json:"location"` // local or remote
+}
+
+// virtualRepositorySyncMapping is the portable form of a remote SSH mapping.
+// Local mappings are device-private and never enter the sync package. The map
+// key is "<repository id>/<mapping id>"; mapping-scoped SSH passwords ride the
+// ssh_secrets channel under the same composite key (the legacy default mapping
+// keeps the bare repository id for backward compatibility).
+type virtualRepositorySyncMapping struct {
+	RepositoryID string `json:"repository_id"`
+	MappingID    string `json:"mapping_id"`
+	Label        string `json:"label"`
+	RootPath     string `json:"root_path"`
+	Host         string `json:"host"`
+	Port         int    `json:"port,omitempty"`
+	User         string `json:"user"`
+	IsDefault    bool   `json:"is_default,omitempty"`
 }
 type virtualRepositorySyncCred struct {
 	Metadata RepositoryCredentialMetadata `json:"metadata"`
@@ -145,9 +167,13 @@ func (a *App) loadVirtualRepositorySyncState() (virtualRepositorySyncState, erro
 	if err := readJSONFile(a.virtualRepositorySyncStatePath(), &state); err != nil {
 		return state, err
 	}
-	if state.Version != virtualRepositorySyncVersion {
+	// The checkpoint file predates the wire-protocol bump: version 1 state (item
+	// hashes and tombstones) is forward-compatible with version 2, so accept it
+	// locally and rewrite it as the current version on the next checkpoint save.
+	if state.Version != 1 && state.Version != virtualRepositorySyncVersion {
 		return state, fmt.Errorf("unsupported virtual repository sync state version %d", state.Version)
 	}
+	state.Version = virtualRepositorySyncVersion
 	if state.ItemHashes == nil {
 		state.ItemHashes = map[string]string{}
 	}
@@ -166,6 +192,9 @@ func virtualRepositorySyncPackageHashes(pkg virtualRepositorySyncPackage) map[st
 	result := map[string]string{}
 	for id, repo := range pkg.Repositories {
 		result["repo:"+id] = virtualRepositorySyncHash(repo)
+	}
+	for id, mapping := range pkg.Mappings {
+		result["vmap:"+id] = virtualRepositorySyncHash(mapping)
 	}
 	for id, credential := range pkg.Credentials {
 		result["cred:"+id] = virtualRepositorySyncHash(credential)
@@ -190,6 +219,9 @@ func virtualRepositorySyncPackagesEqual(left, right virtualRepositorySyncPackage
 	normalize := func(pkg *virtualRepositorySyncPackage) {
 		if pkg.Repositories == nil {
 			pkg.Repositories = map[string]virtualRepositorySyncRepo{}
+		}
+		if pkg.Mappings == nil {
+			pkg.Mappings = map[string]virtualRepositorySyncMapping{}
 		}
 		if pkg.Credentials == nil {
 			pkg.Credentials = map[string]virtualRepositorySyncCred{}
@@ -256,6 +288,33 @@ func validateVirtualRepositorySyncPackage(pkg virtualRepositorySyncPackage) erro
 		}
 	}
 
+	for rawKey, mapping := range pkg.Mappings {
+		key := strings.TrimSpace(rawKey)
+		repositoryID, mappingID, qualified := strings.Cut(key, "/")
+		if rawKey != key || !qualified || repositoryID == "" || mappingID == "" || repositoryID != strings.TrimSpace(mapping.RepositoryID) || mappingID != strings.TrimSpace(mapping.MappingID) {
+			return errors.New("synchronized repository mapping key does not match its mapping")
+		}
+		if _, exists := pkg.Repositories[repositoryID]; !exists {
+			return errors.New("synchronized repository mapping references a missing repository")
+		}
+		canonical := []VirtualRepositoryMapping{{
+			ID:        mapping.MappingID,
+			Label:     mapping.Label,
+			Kind:      virtualRepositoryMappingKindRemoteSSH,
+			RootPath:  mapping.RootPath,
+			Host:      mapping.Host,
+			Port:      mapping.Port,
+			User:      mapping.User,
+			IsDefault: mapping.IsDefault,
+		}}
+		if err := validateVirtualRepositoryMappings(canonical); err != nil {
+			return fmt.Errorf("synchronized repository mapping %q: %w", key, err)
+		}
+		if canonical[0].Port != mapping.Port || canonical[0].RootPath != mapping.RootPath {
+			return fmt.Errorf("synchronized repository mapping %q contains non-canonical fields", key)
+		}
+	}
+
 	credentialFile := repositoryCredentialFile{Version: 1, Items: make([]RepositoryCredentialMetadata, 0, len(pkg.Credentials))}
 	for rawID, credential := range pkg.Credentials {
 		metadata := credential.Metadata
@@ -284,7 +343,7 @@ func validateVirtualRepositorySyncPackage(pkg virtualRepositorySyncPackage) erro
 		}
 	}
 	for id, secret := range pkg.SSHSecrets {
-		if id != strings.TrimSpace(id) || id == "" || len(id) > virtualRepositoryNameMaxLength || containsControlCharacter(id) || strings.ContainsRune(id, ':') || len(secret) > virtualRepositoryFieldMaxLength || strings.ContainsAny(secret, "\r\n\x00") {
+		if err := validateVirtualRepositorySyncSecretKey(id); err != nil || len(secret) > virtualRepositoryFieldMaxLength || strings.ContainsAny(secret, "\r\n\x00") {
 			return errors.New("synchronized SSH secret is invalid")
 		}
 	}
@@ -298,8 +357,17 @@ func validateVirtualRepositorySyncPackage(pkg virtualRepositorySyncPackage) erro
 			kind, id = "repo", key // legacy, unqualified repository tombstone
 		}
 		switch kind {
-		case "repo", "ssh":
-			if id == "" || len(id) > virtualRepositoryNameMaxLength || containsControlCharacter(id) || strings.ContainsRune(id, ':') {
+		case "repo":
+			if id == "" || len(id) > virtualRepositoryNameMaxLength || containsControlCharacter(id) || strings.ContainsAny(id, `:/`) {
+				return errors.New("synchronized deletion marker is invalid")
+			}
+		case "ssh":
+			if err := validateVirtualRepositorySyncSecretKey(id); err != nil {
+				return errors.New("synchronized deletion marker is invalid")
+			}
+		case "vmap":
+			repositoryID, mappingID, ok := strings.Cut(id, "/")
+			if !ok || repositoryID == "" || mappingID == "" || strings.ContainsRune(repositoryID, ':') || strings.ContainsAny(mappingID, `:/`) || len(repositoryID) > virtualRepositoryNameMaxLength || len(mappingID) > virtualRepositoryNameMaxLength || containsControlCharacter(repositoryID) || containsControlCharacter(mappingID) {
 				return errors.New("synchronized deletion marker is invalid")
 			}
 		case "cred":
@@ -313,6 +381,21 @@ func validateVirtualRepositorySyncPackage(pkg virtualRepositorySyncPackage) erro
 			}
 		default:
 			return errors.New("synchronized deletion marker has an unsupported kind")
+		}
+	}
+	return nil
+}
+
+// validateVirtualRepositorySyncSecretKey accepts a bare repository id or a
+// mapping-scoped composite key (<repository id>/<mapping id>).
+func validateVirtualRepositorySyncSecretKey(id string) error {
+	if id != strings.TrimSpace(id) || id == "" || len(id) > virtualRepositoryCompositeKeyMaxLength || containsControlCharacter(id) || strings.ContainsRune(id, ':') {
+		return errors.New("invalid SSH secret key")
+	}
+	if strings.Contains(id, "/") {
+		repositoryID, mappingID, ok := strings.Cut(id, "/")
+		if !ok || repositoryID == "" || mappingID == "" || strings.Contains(mappingID, "/") {
+			return errors.New("invalid SSH secret key")
 		}
 	}
 	return nil
@@ -360,7 +443,7 @@ func virtualRepositorySyncOptionalSecret(service, id string) (string, error) {
 }
 
 func (a *App) snapshotVirtualRepositorySyncPackage() (virtualRepositorySyncPackage, error) {
-	pkg := virtualRepositorySyncPackage{Version: virtualRepositorySyncVersion, Repositories: map[string]virtualRepositorySyncRepo{}, Credentials: map[string]virtualRepositorySyncCred{}, Bindings: map[string]string{}, SSHSecrets: map[string]string{}, Tombstones: map[string]time.Time{}}
+	pkg := virtualRepositorySyncPackage{Version: virtualRepositorySyncVersion, Repositories: map[string]virtualRepositorySyncRepo{}, Mappings: map[string]virtualRepositorySyncMapping{}, Credentials: map[string]virtualRepositorySyncCred{}, Bindings: map[string]string{}, SSHSecrets: map[string]string{}, Tombstones: map[string]time.Time{}}
 	state, err := a.loadVirtualRepositorySyncState()
 	if err != nil {
 		return pkg, err
@@ -446,7 +529,36 @@ func (a *App) snapshotVirtualRepositorySyncPackage() (virtualRepositorySyncPacka
 		} else {
 			portable.RootPath = ""
 		}
+		// Mappings are machine coordinates and never ride the repository body:
+		// remote SSH mappings are carried by the dedicated mappings section,
+		// local mappings stay on this device.
+		portable.Mappings = nil
 		pkg.Repositories[portable.ID] = virtualRepositorySyncRepo{Repository: portable, Location: location}
+		for _, mapping := range virtualRepositoryIndexEntryMappings(item) {
+			if mapping.Kind != virtualRepositoryMappingKindRemoteSSH {
+				continue
+			}
+			key := portable.ID + "/" + mapping.ID
+			pkg.Mappings[key] = virtualRepositorySyncMapping{
+				RepositoryID: portable.ID,
+				MappingID:    mapping.ID,
+				Label:        mapping.Label,
+				RootPath:     mapping.RootPath,
+				Host:         mapping.Host,
+				Port:         mapping.Port,
+				User:         mapping.User,
+				IsDefault:    mapping.IsDefault,
+			}
+			if secretKey := virtualRepositoryMappingSecretKey(portable.ID, mapping.ID); secretKey != portable.ID {
+				secret, secretErr := virtualRepositorySyncOptionalSecret(virtualRepositorySSHKeyringService, secretKey)
+				if secretErr != nil {
+					return pkg, secretErr
+				}
+				if secret != "" {
+					pkg.SSHSecrets[secretKey] = secret
+				}
+			}
+		}
 		if portable.Remote != nil {
 			liveRemoteIDs[portable.ID] = struct{}{}
 			if storeVirtualRepositoryDefinitionInCache(&definitionCache, &portable) {
@@ -732,9 +844,14 @@ func (a *App) syncVirtualRepositories(resolutions map[string]string) (string, er
 		}
 		var cloud, merged virtualRepositorySyncPackage
 		if status == http.StatusOK && len(cloudData) > 0 {
-			if err := json.Unmarshal(cloudData, &cloud); err != nil || cloud.Version != virtualRepositorySyncVersion {
+			if err := json.Unmarshal(cloudData, &cloud); err != nil || (cloud.Version != 1 && cloud.Version != virtualRepositorySyncVersion) {
 				return "", errors.New("Hub returned invalid virtual repository sync data")
 			}
+			// A version 1 document predates the mappings section; treat it as a
+			// version 2 document with no mappings. Version 1 endpoints still
+			// reject version 2 documents outright, so their uploads can never
+			// silently erase mappings — the asymmetry is what makes the bump safe.
+			cloud.Version = virtualRepositorySyncVersion
 			if err := validateVirtualRepositorySyncPackage(cloud); err != nil {
 				return "", fmt.Errorf("Hub returned invalid virtual repository sync data: %w", err)
 			}
@@ -862,17 +979,23 @@ func (a *App) syncVirtualRepositories(resolutions map[string]string) (string, er
 }
 
 func mergeVirtualRepositorySyncPackages(local, cloud virtualRepositorySyncPackage, base map[string]string, resolutions map[string]string) (virtualRepositorySyncPackage, []VirtualRepositorySyncConflict) {
+	// Protocol note: the mappings section only exists in version 2 documents.
+	// Version 1 endpoints ignore unknown JSON fields, so rather than letting an
+	// old device merge and re-upload a document with the mappings section
+	// silently erased, the package version bump makes that device reject the
+	// document at validation time. Mapping merge therefore assumes both sides
+	// understand the vmap tombstone kind.
 	// Callers validate complete packages before persisting or applying them. Keep
 	// merge permissive enough for its value-only inputs (and the conflict UI's
 	// partial test fixtures), while still protecting the identity invariant that
 	// merge itself depends on.
 	if err := validateVirtualRepositorySyncRepositories(local.Repositories); err != nil {
-		return virtualRepositorySyncPackage{Version: virtualRepositorySyncVersion, Repositories: map[string]virtualRepositorySyncRepo{}, Credentials: map[string]virtualRepositorySyncCred{}, Bindings: map[string]string{}, SSHSecrets: map[string]string{}, Tombstones: map[string]time.Time{}}, []VirtualRepositorySyncConflict{{Kind: "repository", Name: err.Error()}}
+		return virtualRepositorySyncPackage{Version: virtualRepositorySyncVersion, Repositories: map[string]virtualRepositorySyncRepo{}, Mappings: map[string]virtualRepositorySyncMapping{}, Credentials: map[string]virtualRepositorySyncCred{}, Bindings: map[string]string{}, SSHSecrets: map[string]string{}, Tombstones: map[string]time.Time{}}, []VirtualRepositorySyncConflict{{Kind: "repository", Name: err.Error()}}
 	}
 	if err := validateVirtualRepositorySyncRepositories(cloud.Repositories); err != nil {
-		return virtualRepositorySyncPackage{Version: virtualRepositorySyncVersion, Repositories: map[string]virtualRepositorySyncRepo{}, Credentials: map[string]virtualRepositorySyncCred{}, Bindings: map[string]string{}, SSHSecrets: map[string]string{}, Tombstones: map[string]time.Time{}}, []VirtualRepositorySyncConflict{{Kind: "repository", Name: err.Error()}}
+		return virtualRepositorySyncPackage{Version: virtualRepositorySyncVersion, Repositories: map[string]virtualRepositorySyncRepo{}, Mappings: map[string]virtualRepositorySyncMapping{}, Credentials: map[string]virtualRepositorySyncCred{}, Bindings: map[string]string{}, SSHSecrets: map[string]string{}, Tombstones: map[string]time.Time{}}, []VirtualRepositorySyncConflict{{Kind: "repository", Name: err.Error()}}
 	}
-	result := virtualRepositorySyncPackage{Version: virtualRepositorySyncVersion, Repositories: map[string]virtualRepositorySyncRepo{}, Credentials: map[string]virtualRepositorySyncCred{}, Bindings: map[string]string{}, SSHSecrets: map[string]string{}, Tombstones: map[string]time.Time{}}
+	result := virtualRepositorySyncPackage{Version: virtualRepositorySyncVersion, Repositories: map[string]virtualRepositorySyncRepo{}, Mappings: map[string]virtualRepositorySyncMapping{}, Credentials: map[string]virtualRepositorySyncCred{}, Bindings: map[string]string{}, SSHSecrets: map[string]string{}, Tombstones: map[string]time.Time{}}
 	conflicts := []VirtualRepositorySyncConflict{}
 	// A repository copy gets a new repository id. Keep this mapping so its
 	// repository-scoped secrets and bindings can follow it after the respective
@@ -1067,6 +1190,41 @@ func mergeVirtualRepositorySyncPackages(local, cloud virtualRepositorySyncPackag
 				}
 			}
 		}
+		// A repository deletion also retires its portable remote mappings and
+		// their mapping-scoped SSH passwords on every device.
+		mappingPrefix := repositoryID + "/"
+		mappingKeys := map[string]struct{}{}
+		for mappingKey := range local.Mappings {
+			if strings.HasPrefix(mappingKey, mappingPrefix) {
+				mappingKeys[mappingKey] = struct{}{}
+			}
+		}
+		for mappingKey := range cloud.Mappings {
+			if strings.HasPrefix(mappingKey, mappingPrefix) {
+				mappingKeys[mappingKey] = struct{}{}
+			}
+		}
+		for mappingKey := range mappingKeys {
+			vmapKey := virtualRepositorySyncTombstoneKey("vmap", mappingKey)
+			if existing, ok := local.Tombstones[vmapKey]; !ok || deletedAt.After(existing) {
+				local.Tombstones[vmapKey] = deletedAt
+			}
+			if existing, ok := cloud.Tombstones[vmapKey]; !ok || deletedAt.After(existing) {
+				cloud.Tombstones[vmapKey] = deletedAt
+			}
+			// The scoped SSH secret key equals the mapping key for non-default
+			// mappings; the legacy default mapping's secret uses the bare
+			// repository id and is covered by the ssh:<repo> tombstone above.
+			if mappingKey != repositoryID+"/"+virtualRepositoryLegacyDefaultMappingID {
+				scopedSSHKey := virtualRepositorySyncTombstoneKey("ssh", mappingKey)
+				if existing, ok := local.Tombstones[scopedSSHKey]; !ok || deletedAt.After(existing) {
+					local.Tombstones[scopedSSHKey] = deletedAt
+				}
+				if existing, ok := cloud.Tombstones[scopedSSHKey]; !ok || deletedAt.After(existing) {
+					cloud.Tombstones[scopedSSHKey] = deletedAt
+				}
+			}
+		}
 	}
 	localCreds, cloudCreds := map[string]any{}, map[string]any{}
 	for k, v := range local.Credentials {
@@ -1104,9 +1262,34 @@ func mergeVirtualRepositorySyncPackages(local, cloud virtualRepositorySyncPackag
 		result.Tombstones[key] = deletedAt
 	}
 	merge("binding:", "credential binding", localBindings, cloudBindings, func(k string, v any) { result.Bindings[k] = v.(string) }, func(any) string { return "Credential binding" })
+	localMappings, cloudMappings := map[string]any{}, map[string]any{}
+	for k, v := range local.Mappings {
+		localMappings[k] = v
+	}
+	for k, v := range cloud.Mappings {
+		cloudMappings[k] = v
+	}
+	localMappings, cloudMappings, mappingTombstones := mergeDeleted("vmap", "repository mapping", "vmap:", localMappings, cloudMappings, func(v any) string { return v.(virtualRepositorySyncMapping).Label })
+	for key, deletedAt := range mappingTombstones {
+		result.Tombstones[key] = deletedAt
+	}
+	merge("vmap:", "repository mapping", localMappings, cloudMappings, func(k string, v any) { result.Mappings[k] = v.(virtualRepositorySyncMapping) }, func(v any) string { return v.(virtualRepositorySyncMapping).Label })
 	for sourceID, copyID := range localRepositoryCopies {
 		if secret, exists := local.SSHSecrets[sourceID]; exists {
 			result.SSHSecrets[copyID] = secret
+		}
+		mappingPrefix := sourceID + "/"
+		for key, mapping := range local.Mappings {
+			if !strings.HasPrefix(key, mappingPrefix) || !result.Tombstones[virtualRepositorySyncTombstoneKey("vmap", key)].IsZero() {
+				continue
+			}
+			copied := mapping
+			copied.RepositoryID = copyID
+			copiedKey := copyID + "/" + mapping.MappingID
+			result.Mappings[copiedKey] = copied
+			if secret, exists := local.SSHSecrets[key]; exists {
+				result.SSHSecrets[copiedKey] = secret
+			}
 		}
 		prefix := sourceID + ":"
 		for key, credentialID := range local.Bindings {
@@ -1282,6 +1465,10 @@ func (a *App) applyVirtualRepositorySyncPackage(pkg virtualRepositorySyncPackage
 					}
 				}
 				entry := virtualRepositoryIndexEntry{ID: repo.ID, Name: repo.Name, RootPath: repo.RootPath, Remote: cloneVirtualRepositoryRemote(repo.Remote), Unbound: unbound, LastOpened: time.Now().UTC()}
+				// Mappings are this device's coordinate view; a definition
+				// replacement must not silently drop them. The mappings section
+				// of the package is applied below.
+				entry.Mappings = index[i].Mappings
 				if unbound {
 					entry.Definition = cloneVirtualRepository(&repo)
 				}
@@ -1297,6 +1484,103 @@ func (a *App) applyVirtualRepositorySyncPackage(pkg virtualRepositorySyncPackage
 			}
 			index = append(index, entry)
 		}
+	}
+	// Apply portable remote SSH mappings. Local mappings are device-private and
+	// never appear in the package; existing ones on this device are kept.
+	for key, synced := range pkg.Mappings {
+		if deleted("vmap", key) {
+			continue
+		}
+		for i := range index {
+			if index[i].ID != synced.RepositoryID {
+				continue
+			}
+			mappings := virtualRepositoryIndexEntryMappings(index[i])
+			incoming := VirtualRepositoryMapping{
+				ID:        synced.MappingID,
+				Label:     synced.Label,
+				Kind:      virtualRepositoryMappingKindRemoteSSH,
+				RootPath:  synced.RootPath,
+				Host:      synced.Host,
+				Port:      synced.Port,
+				User:      synced.User,
+				IsDefault: synced.IsDefault,
+			}
+			if existing := virtualRepositoryMappingByID(mappings, incoming.ID); existing != nil {
+				// A device-local default choice wins over the synchronized flag;
+				// the synchronized default applies only where no local mapping
+				// holds it. Device-observed connection state survives the upsert.
+				isDefault := existing.IsDefault
+				lastStatus, lastError, lastCheckedAt := existing.LastStatus, existing.LastError, existing.LastCheckedAt
+				*existing = incoming
+				existing.IsDefault = isDefault
+				existing.LastStatus, existing.LastError, existing.LastCheckedAt = lastStatus, lastError, lastCheckedAt
+			} else {
+				mappings = append(mappings, incoming)
+			}
+			localDefault := false
+			for j := range mappings {
+				if mappings[j].IsDefault && mappings[j].Kind == virtualRepositoryMappingKindLocal {
+					localDefault = true
+				}
+			}
+			switch {
+			case localDefault:
+				// A device-local default choice wins over the synchronized flag.
+				for j := range mappings {
+					if mappings[j].ID == incoming.ID {
+						mappings[j].IsDefault = false
+					}
+				}
+			case incoming.IsDefault:
+				for j := range mappings {
+					mappings[j].IsDefault = mappings[j].ID == incoming.ID
+				}
+			}
+			index[i].Mappings = mappings
+		}
+	}
+	for key := range pkg.Tombstones {
+		if !strings.HasPrefix(key, "vmap:") {
+			continue
+		}
+		// Resurrection analysis: a tombstoned mapping can only re-enter the
+		// package from a device that still holds it, and the merge then reports a
+		// deletion conflict instead of silently reviving it. By the time apply
+		// runs, every mapping in the package has survived that check, so a
+		// tombstone without a matching upsert is a proven deletion — removing the
+		// id from the stored list here cannot strand a live mapping.
+		repositoryID, mappingID, ok := strings.Cut(strings.TrimPrefix(key, "vmap:"), "/")
+		if !ok {
+			continue
+		}
+		for i := range index {
+			if index[i].ID != repositoryID || len(index[i].Mappings) == 0 {
+				continue
+			}
+			remaining := index[i].Mappings[:0]
+			for _, mapping := range index[i].Mappings {
+				if mapping.ID != mappingID {
+					remaining = append(remaining, mapping)
+				}
+			}
+			index[i].Mappings = remaining
+		}
+	}
+	// Re-mirror entry locations after mapping changes. An unbound repository
+	// whose synchronized default mapping is a remote SSH endpoint becomes
+	// directly openable through that endpoint.
+	for i := range index {
+		if len(index[i].Mappings) == 0 {
+			continue
+		}
+		if index[i].Unbound {
+			if mapping := virtualRepositoryDefaultMapping(index[i].Mappings); mapping != nil && mapping.IsDefault && mapping.Kind == virtualRepositoryMappingKindRemoteSSH {
+				applyVirtualRepositoryMappingLocation(&index[i], *mapping)
+			}
+			continue
+		}
+		reconcileVirtualRepositoryIndexEntryMappings(&index[i])
 	}
 	sort.Slice(index, func(i, j int) bool { return index[i].LastOpened.After(index[j].LastOpened) })
 	return writeJSONFile(a.virtualRepositoryStatePath("virtual-repositories-index.json"), virtualRepositoryIndex{Version: 1, Items: index})

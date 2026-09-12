@@ -154,7 +154,7 @@ func lookupRemoteToolMetadata(toolName string) (RemoteToolMetadata, bool) {
 		return meta, true
 	}
 	for _, et := range brand.Current().ExtraTools {
-		if et.Name == tool {
+		if extraToolNameMatches(et, tool) {
 			return RemoteToolMetadata{
 				Name:             et.Name,
 				DisplayName:      et.DisplayName,
@@ -164,12 +164,7 @@ func lookupRemoteToolMetadata(toolName string) (RemoteToolMetadata, bool) {
 				SupportsProxy:    true,
 				SupportsRemote:   true,
 				ConfigSelector: func(cfg corelib.AppConfig) corelib.ToolConfig {
-					if cfg.ExtraToolConfigs != nil {
-						if tc, ok := cfg.ExtraToolConfigs[et.ConfigKey]; ok {
-							return tc
-						}
-					}
-					return corelib.ToolConfig{}
+					return extraToolConfig(cfg, et)
 				},
 			}, true
 		}
@@ -256,7 +251,7 @@ func remoteToolVisible(cfg corelib.AppConfig, toolName string) bool {
 		return true
 	default:
 		for _, et := range brand.Current().ExtraTools {
-			if et.Name == normalizeRemoteToolName(toolName) {
+			if extraToolNameMatches(et, toolName) {
 				return true
 			}
 		}

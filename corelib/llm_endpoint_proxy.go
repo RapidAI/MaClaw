@@ -78,7 +78,7 @@ func (p *LLMEndpointProxy) ForwardProviderRequest(ctx context.Context, provider 
 	}
 	defer release()
 
-	cfg := provider.MaclawLLMConfig()
+	cfg := BindOpenCodeSessionID(ctx, provider.MaclawLLMConfig())
 	client := p.cachedHTTPClient(cfg)
 	if p.Client != nil {
 		client = p.Client(cfg)
@@ -102,7 +102,7 @@ func (p *LLMEndpointProxy) ForwardProviderRequest(ctx context.Context, provider 
 }
 
 func ForwardLLMEndpointProviderRequest(ctx context.Context, provider LLMEndpointProvider, body map[string]any, client *http.Client, responseModel string) ([]byte, int, error) {
-	cfg := provider.MaclawLLMConfig()
+	cfg := BindOpenCodeSessionID(ctx, provider.MaclawLLMConfig())
 	if client == nil {
 		client = NewLLMEndpointHTTPClient(cfg)
 	}

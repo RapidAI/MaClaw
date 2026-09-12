@@ -1,12 +1,14 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { SIDEBAR_NAV_RAIL_WIDTH } from './sidebarLayout';
 import { SystemPopupMenu, type SystemMenuItem } from './SystemPopupMenu';
 import { FavoriteEmployeeButtons, type FavoriteEmployeeSlot } from './FavoriteEmployeeButtons';
-import { SystemIcon, AboutIcon, SkillsIcon, MCPIcon, GossipIcon } from './SidebarNavIcons';
+import { SystemIcon, AboutIcon, SkillsIcon, MCPIcon, GossipIcon, MobileDocsIcon, KnowledgeIcon } from './SidebarNavIcons';
 import { SidebarBrandHeader, SidebarLinkedMedal, SidebarPrimaryNav } from './SidebarNavRailPieces';
 import { IconRankBadge } from '../ai/WorkbenchIcons';
-import { GetHubUserInvitationStatus, GetHubUserRanking } from '../../../wailsjs/go/main/App';
-import { BrowserOpenURL, EventsOn } from '../../../wailsjs/runtime';
+import { useSidebarHubRanking } from './sidebarHubRanking';
+import { openSettingsTab } from '../../utils/settingsNavigation';
+import { GetHubUserInvitationStatus } from '../../../wailsjs/go/main/App';
+import { BrowserOpenURL } from '../../../wailsjs/runtime';
 import { miniAppShortLabel } from '../../i18n/maclawMiniAppLabels';
 import { expertsNavLabel, expertsPageTitle, toolsNavLabel, toolsPageTitle, utilitiesNavLabel, utilitiesPageTitle } from '../../i18n/utilitiesLabels';
 import { HubInvitationDialog } from '../HubInvitationDialog';
@@ -22,7 +24,6 @@ type SidebarNavRailProps = {
     remoteActivationStatus?: any;
     runningTaskCount: number;
     onOpenBackgroundTasks?: () => void;
-    onOpenScheduledTasks?: () => void;
     remoteSessionTab?: 'remote' | 'background' | 'scheduled' | 'passthrough';
     t: (key: string) => string;
     gossipAllowed: boolean;
@@ -34,14 +35,13 @@ type SidebarNavRailProps = {
     onRemoveFavorite?: (veId: string) => void;
     onRenameFavorite?: (veId: string, name: string) => void | Promise<void>;
     showAppEntry?: boolean;
-    showWorkflowEntry?: boolean;
     showUtilitiesEntry?: boolean;
     showToolsEntry?: boolean;
     utilitiesLabel?: string;
+    /** Current settings tab, used to highlight the library entry for the Knowledge page. */
+    settingsTab?: string;
 };
 
-const HUB_RANKING_REFRESH_INTERVAL_MS = 30 * 60_000;
-const HUB_RANKING_STARTUP_RETRY_DELAYS_MS = [30_000, 2 * 60_000, 8 * 60_000] as const;
 const HUB_INVITATION_STATUS_REFRESH_INTERVAL_MS = 30_000;
 
 function InviteGiftIcon() {
@@ -81,7 +81,7 @@ export const SidebarNavRail = ({
     lang,
     remoteActivationStatus,
     onOpenBackgroundTasks,
-    onOpenScheduledTasks, remoteSessionTab = 'remote',
+    remoteSessionTab = 'remote',
     t,
     gossipAllowed,
     config,
@@ -92,20 +92,24 @@ export const SidebarNavRail = ({
     onRemoveFavorite = () => {},
     onRenameFavorite = () => {},
     showAppEntry = false,
-    showWorkflowEntry = true,
     showUtilitiesEntry = true,
     showToolsEntry = false,
     utilitiesLabel,
+    settingsTab,
 }: SidebarNavRailProps) => {
     const [systemMenuOpen, setSystemMenuOpen] = useState(false);
     const systemMenuOpenerRef = useRef<HTMLElement | null>(null);
+    const [extensionsMenuOpen, setExtensionsMenuOpen] = useState(false);
+    const [extensionsMenuTop, setExtensionsMenuTop] = useState(0);
+    const extensionsMenuOpenerRef = useRef<HTMLElement | null>(null);
+    const [libraryMenuOpen, setLibraryMenuOpen] = useState(false);
+    const [libraryMenuTop, setLibraryMenuTop] = useState(0);
+    const libraryMenuOpenerRef = useRef<HTMLElement | null>(null);
     const [invitationEnabled, setInvitationEnabled] = useState(false);
     const [invitationDialogOpen, setInvitationDialogOpen] = useState(false);
     const showRanking = config?.show_hub_ranking !== false; // default: show
     const trophyThreshold = config?.ranking_trophy_threshold || 10; // hub-configured: top N use trophy
-    const [medal, setMedal] = useState<{ rank: number; tokenRank: number; durationRank: number; totalUsers: number; rankChange?: number; trophyThreshold: number } | null>(null);
-    const rankingRequestSeqRef = useRef(0);
-    const rankingLoadedRef = useRef(false);
+    const { medal } = useSidebarHubRanking(showRanking, trophyThreshold, !!remoteActivationStatus?.activated);
     const invitationRequestSeqRef = useRef(0);
     const showRegisteredRankingMark = showRanking && !medal && !!remoteActivationStatus?.activated;
     const openUserRanking = () => {
@@ -113,97 +117,6 @@ export const SidebarNavRail = ({
         if (url) BrowserOpenURL(url);
     };
 
-    const fetchRanking = useCallback((): Promise<boolean> => {
-        const requestSeq = ++rankingRequestSeqRef.current;
-        if (!showRanking) {
-            rankingLoadedRef.current = false;
-            setMedal(null);
-            return Promise.resolve(false);
-        }
-        return GetHubUserRanking()
-            .then((result) => {
-                if (requestSeq !== rankingRequestSeqRef.current) return rankingLoadedRef.current;
-                const r = result as { token_rank?: number; duration_rank?: number; total_users?: number; rank_change?: number; error?: string } | null;
-                if (!r || r.error) {
-                    setMedal(null);
-                    return false;
-                }
-                const tRank = r.token_rank || 0;
-                const dRank = r.duration_rank || 0;
-                // Pick the best (lowest non-zero) rank and show the badge for any valid Hub ranking response.
-                let bestRank = 0;
-                if (tRank > 0 && (dRank === 0 || tRank <= dRank)) { bestRank = tRank; }
-                else if (dRank > 0) { bestRank = dRank; }
-                rankingLoadedRef.current = true;
-                setMedal({ rank: bestRank, tokenRank: tRank, durationRank: dRank, totalUsers: r.total_users || 0, rankChange: r.rank_change || 0, trophyThreshold });
-                return true;
-            })
-            .catch(() => {
-                if (requestSeq === rankingRequestSeqRef.current) setMedal(null);
-                return false;
-            });
-    }, [showRanking, trophyThreshold]);
-    const fetchRankingRef = useRef(fetchRanking);
-    useEffect(() => { fetchRankingRef.current = fetchRanking; }, [fetchRanking]);
-
-    useEffect(() => {
-        if (!showRanking || !remoteActivationStatus?.activated) return;
-        const interval = window.setInterval(() => {
-            fetchRankingRef.current();
-        }, HUB_RANKING_REFRESH_INTERVAL_MS);
-        return () => window.clearInterval(interval);
-    }, [showRanking, remoteActivationStatus?.activated]);
-
-    useEffect(() => {
-        if (!showRanking || !remoteActivationStatus?.activated) {
-            rankingLoadedRef.current = false;
-            setMedal(null);
-            return;
-        }
-        let cancelled = false;
-        const retryTimers: number[] = [];
-        const attempt = (retryIndex: number) => {
-            if (rankingLoadedRef.current) return;
-            fetchRanking().then((loaded) => {
-                if (cancelled || loaded || rankingLoadedRef.current || retryIndex >= HUB_RANKING_STARTUP_RETRY_DELAYS_MS.length) return;
-                const timer = window.setTimeout(() => attempt(retryIndex + 1), HUB_RANKING_STARTUP_RETRY_DELAYS_MS[retryIndex]);
-                retryTimers.push(timer);
-            });
-        };
-        attempt(0);
-        return () => {
-            cancelled = true;
-            retryTimers.forEach(timer => window.clearTimeout(timer));
-        };
-    }, [fetchRanking, showRanking, remoteActivationStatus?.activated]);
-    // Refresh ranking when token usage changes, throttled to avoid flooding Hub API.
-    useEffect(() => {
-        if (!showRanking) return;
-        let throttleTimer: number | undefined;
-        let pending = false;
-        const onTokenUsageChanged = () => {
-            if (throttleTimer !== undefined) {
-                pending = true;
-                return;
-            }
-            throttleTimer = window.setTimeout(() => {
-                throttleTimer = undefined;
-                fetchRankingRef.current();
-                if (pending) {
-                    pending = false;
-                    throttleTimer = window.setTimeout(() => {
-                        throttleTimer = undefined;
-                        fetchRankingRef.current();
-                    }, 60_000);
-                }
-            }, 5_000);
-        };
-        const unsubscribe = EventsOn("llm-token-usage-changed", onTokenUsageChanged);
-        return () => {
-            window.clearTimeout(throttleTimer);
-            if (typeof unsubscribe === 'function') unsubscribe();
-        };
-    }, [showRanking]);
     // The server is authoritative: a disabled tenant deliberately renders no
     // invitation button or separator, rather than a disabled-looking control.
     // Hub administrators can change the switch while MaClaw is open, so refresh
@@ -252,15 +165,58 @@ export const SidebarNavRail = ({
     const resolvedToolsLabel = toolsNavLabel(lang);
     const resolvedToolsTitle = toolsPageTitle(lang);
     const systemLabel = lang === 'zh-Hans' ? zhHans.system : lang === 'zh-Hant' ? zhHant.system : 'System';
+    const extensionsLabel = lang === 'zh-Hans' ? '扩展' : lang === 'zh-Hant' ? '擴展' : 'Extensions';
+    const connectorsLabel = lang === 'zh-Hans' ? '连接器' : lang === 'zh-Hant' ? '連接器' : 'Connectors';
+    const libraryLabel = lang === 'zh-Hans' ? '资料库' : lang === 'zh-Hant' ? '資料庫' : 'Library';
+    const mobileDocsLabel = lang === 'zh-Hans' ? '移动文稿库' : lang === 'zh-Hant' ? '行動文稿庫' : 'Mobile documents';
+    const knowledgeLabel = lang === 'zh-Hans' ? '知识库' : lang === 'zh-Hant' ? '知識庫' : 'Knowledge base';
+    const knowledgeActive = navTab === 'settings' && settingsTab === 'knowledge';
     const systemMenuItems: SystemMenuItem[] = [
         { id: 'about', icon: <AboutIcon />, label: t('about'), visible: true },
         { id: 'skills', icon: <SkillsIcon />, label: t('skills'), visible: true },
         { id: 'mcp', icon: <MCPIcon />, label: 'MCP', visible: true },
         { id: 'gossip', icon: <GossipIcon />, label: t('gossip'), visible: gossipAllowed },
     ];
+    const extensionsMenuItems: SystemMenuItem[] = [
+        { id: 'skills', icon: <SkillsIcon />, label: t('skills'), visible: true },
+        { id: 'mcp', icon: <MCPIcon />, label: connectorsLabel, visible: true },
+    ];
+    const libraryMenuItems: SystemMenuItem[] = [
+        { id: 'documents', icon: <MobileDocsIcon />, label: mobileDocsLabel, visible: true },
+        { id: 'knowledge', icon: <KnowledgeIcon />, label: knowledgeLabel, visible: true },
+    ];
     const toggleSystemMenu = (target: HTMLElement) => {
-        if (!systemMenuOpen) systemMenuOpenerRef.current = target;
+        if (!systemMenuOpen) {
+            systemMenuOpenerRef.current = target;
+            setExtensionsMenuOpen(false);
+            setLibraryMenuOpen(false);
+        }
         setSystemMenuOpen(prev => !prev);
+    };
+    const toggleExtensionsMenu = (target: HTMLElement) => {
+        if (!extensionsMenuOpen) {
+            extensionsMenuOpenerRef.current = target;
+            setExtensionsMenuTop(target.offsetTop + target.offsetHeight / 2);
+            setSystemMenuOpen(false);
+            setLibraryMenuOpen(false);
+        }
+        setExtensionsMenuOpen(prev => !prev);
+    };
+    const toggleLibraryMenu = (target: HTMLElement) => {
+        if (!libraryMenuOpen) {
+            libraryMenuOpenerRef.current = target;
+            setLibraryMenuTop(target.offsetTop + target.offsetHeight / 2);
+            setSystemMenuOpen(false);
+            setExtensionsMenuOpen(false);
+        }
+        setLibraryMenuOpen(prev => !prev);
+    };
+    const selectLibraryMenuItem = (id: string) => {
+        if (id === 'knowledge') {
+            openSettingsTab('knowledge');
+            return;
+        }
+        switchTool('files');
     };
     return (
         <div className="mc-nav-rail" style={{
@@ -275,7 +231,7 @@ export const SidebarNavRail = ({
             position: 'relative',
         }}>
             <SidebarBrandHeader brandId={brandInfo?.id} currentIcon={currentIcon} brandSidebarName={brandSidebarName} />
-            <SidebarPrimaryNav navTab={navTab} aiAssistantLabel={aiAssistantLabel} appsLabel={appsLabel} showAppEntry={showAppEntry} showWorkflowEntry={showWorkflowEntry} showUtilitiesEntry={showUtilitiesEntry} showToolsEntry={showToolsEntry} switchTool={switchTool} onOpenBackgroundTasks={onOpenBackgroundTasks} onOpenScheduledTasks={onOpenScheduledTasks} remoteSessionTab={remoteSessionTab} workflowLabel={workflowLabel} utilitiesLabel={resolvedUtilitiesLabel} utilitiesTitle={resolvedUtilitiesTitle} toolsLabel={resolvedToolsLabel} toolsTitle={resolvedToolsTitle} />
+            <SidebarPrimaryNav navTab={navTab} aiAssistantLabel={aiAssistantLabel} appsLabel={appsLabel} showAppEntry={showAppEntry} showUtilitiesEntry={showUtilitiesEntry} showToolsEntry={showToolsEntry} switchTool={switchTool} onOpenBackgroundTasks={onOpenBackgroundTasks} remoteSessionTab={remoteSessionTab} extensionsLabel={extensionsLabel} extensionsMenuOpen={extensionsMenuOpen} onToggleExtensionsMenu={toggleExtensionsMenu} libraryMenuOpen={libraryMenuOpen} onToggleLibraryMenu={toggleLibraryMenu} knowledgeActive={knowledgeActive} workflowLabel={workflowLabel} utilitiesLabel={resolvedUtilitiesLabel} utilitiesTitle={resolvedUtilitiesTitle} toolsLabel={resolvedToolsLabel} toolsTitle={resolvedToolsTitle} />
             {showAppEntry && veAuthorized && favoriteEmployees.length > 0 && (
                 <div
                     aria-hidden="true"
@@ -371,6 +327,32 @@ export const SidebarNavRail = ({
                     onClose={() => setSystemMenuOpen(false)}
                     returnFocus={() => systemMenuOpenerRef.current}
                     ariaLabel={systemLabel}
+                />
+            )}
+            {extensionsMenuOpen && (
+                <SystemPopupMenu
+                    items={extensionsMenuItems}
+                    onSelect={(id) => switchTool(id)}
+                    onClose={() => setExtensionsMenuOpen(false)}
+                    returnFocus={() => extensionsMenuOpenerRef.current}
+                    ariaLabel={extensionsLabel}
+                    anchorTop={extensionsMenuTop}
+                    excludeTriggerSelector='[data-testid="sidebar-extensions-nav"]'
+                    menuId="extensions-popup-menu"
+                    testIdPrefix="extensions-menu"
+                />
+            )}
+            {libraryMenuOpen && (
+                <SystemPopupMenu
+                    items={libraryMenuItems}
+                    onSelect={selectLibraryMenuItem}
+                    onClose={() => setLibraryMenuOpen(false)}
+                    returnFocus={() => libraryMenuOpenerRef.current}
+                    ariaLabel={libraryLabel}
+                    anchorTop={libraryMenuTop}
+                    excludeTriggerSelector='[data-testid="sidebar-files-nav"]'
+                    menuId="library-popup-menu"
+                    testIdPrefix="library-menu"
                 />
             )}
             <HubInvitationDialog open={invitationDialogOpen} onClose={() => setInvitationDialogOpen(false)} lang={lang} />

@@ -6,7 +6,7 @@
  * These tests validate universal correctness properties of the tab system
  * using fast-check for property-based testing.
  */
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { renderHook, act, waitFor } from "@testing-library/react";
 import fc from "fast-check";
 import { useAITabManager } from "../useAITabManager";
@@ -186,6 +186,25 @@ describe("useAITabManager - Property Tests for Tab Creation", () => {
             expect(result.current.tabState.tabs.filter(tab => tab.type === "project")).toHaveLength(1);
             expect(second.cloudWorkspaceId).toBe("cws-42");
             expect(second.projectPath).toBe("E:/cache/tenant/cws-42");
+        });
+
+        it("derives the workspace identity from the path when the caller omits it", () => {
+            const { result } = renderHook(() => useAITabManager());
+            let first!: AITab;
+            let second!: AITab;
+
+            act(() => {
+                first = result.current.createProjectTab("D:/cache/cloud-workspaces/tenant/cws-42", "Cloud task")!;
+            });
+            act(() => {
+                second = result.current.createProjectTab("E:/other-cache/cloud-workspaces/tenant/cws-42", "Cloud task")!;
+            });
+
+            expect(first.id).toBe(second.id);
+            expect(first.id.startsWith("cws-")).toBe(true);
+            expect(result.current.tabState.tabs.filter(tab => tab.type === "project")).toHaveLength(1);
+            expect(second.cloudWorkspaceId).toBe("cws-42");
+            expect(second.projectPath).toBe("E:/other-cache/cloud-workspaces/tenant/cws-42");
         });
 
         it("keeps the live cache path during cloud activation", () => {
@@ -785,5 +804,104 @@ describe("useAITabManager - Property Tests for Tab Creation", () => {
         });
         expect((reopened as AITab | null)?.id).toBe(tabId);
         expect(result.current.getTabState(tabId)?.history || []).toEqual([]);
+    });
+});
+
+describe("useAITabManager - orphan project tab reconcile", () => {
+    beforeEach(() => {
+        localStorage.clear();
+        vi.clearAllMocks();
+        vi.useRealTimers();
+        vi.mocked(LoadProjectTabIndex).mockResolvedValue([]);
+        vi.mocked(CloseAssistantTabSession).mockResolvedValue(undefined as any);
+        vi.mocked(CreateProjectTabSession).mockResolvedValue("已打开项目");
+        vi.mocked(LoadProjectTabConversation).mockResolvedValue([]);
+        vi.mocked(SaveProjectTabConversation).mockResolvedValue(undefined as any);
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    const projectTabPaths = (result: { current: ReturnType<typeof useAITabManager> }) =>
+        result.current.tabState.tabs.filter(t => t.type === "project").map(t => t.projectPath);
+
+    it("discards a project tab no visible task row claims once the grace window passes", () => {
+        vi.useFakeTimers();
+        const { result } = renderHook(() => useAITabManager());
+        act(() => {
+            result.current.createProjectTab("D:/work/orphan-task", "测试任务");
+        });
+        expect(projectTabPaths(result)).toContain("D:/work/orphan-task");
+
+        // First sighting only marks the tab; it must survive the grace window
+        // so a freshly opened tab racing the task-list refresh is never reaped.
+        act(() => {
+            result.current.discardOrphanProjectTabs([]);
+        });
+        expect(projectTabPaths(result)).toContain("D:/work/orphan-task");
+
+        act(() => {
+            vi.advanceTimersByTime(20_000);
+        });
+        expect(projectTabPaths(result)).not.toContain("D:/work/orphan-task");
+    });
+
+    it("keeps a project tab claimed by a visible task row", () => {
+        vi.useFakeTimers();
+        const { result } = renderHook(() => useAITabManager());
+        act(() => {
+            result.current.createProjectTab("D:/work/kept-task", "人工智能数学基础");
+        });
+        act(() => {
+            result.current.discardOrphanProjectTabs([
+                { project_path: "D:/work/kept-task", name: "人工智能数学基础" } as any,
+            ]);
+        });
+        act(() => {
+            vi.advanceTimersByTime(60_000);
+        });
+        expect(projectTabPaths(result)).toContain("D:/work/kept-task");
+    });
+
+    it("forgives an orphan tab when a claiming task row arrives within the grace window", () => {
+        vi.useFakeTimers();
+        const { result } = renderHook(() => useAITabManager());
+        act(() => {
+            result.current.createProjectTab("D:/work/late-task", "迟到的任务");
+        });
+        act(() => {
+            result.current.discardOrphanProjectTabs([]);
+        });
+        act(() => {
+            vi.advanceTimersByTime(5_000);
+        });
+        // The task list catches up before the grace window ends.
+        act(() => {
+            result.current.discardOrphanProjectTabs([
+                { project_path: "D:/work/late-task", name: "迟到的任务" } as any,
+            ]);
+        });
+        act(() => {
+            vi.advanceTimersByTime(60_000);
+        });
+        expect(projectTabPaths(result)).toContain("D:/work/late-task");
+    });
+
+    it("claims a cloud cache-path tab by cloud workspace id", () => {
+        vi.useFakeTimers();
+        const { result } = renderHook(() => useAITabManager());
+        act(() => {
+            result.current.createProjectTab("C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_a", "云端任务");
+        });
+        act(() => {
+            result.current.discardOrphanProjectTabs([
+                { project_path: "D:/tasks/canonical", name: "云端任务", tags: ["task_management", "cloud_workspace:cws_a"] } as any,
+            ]);
+        });
+        act(() => {
+            vi.advanceTimersByTime(60_000);
+        });
+        expect(projectTabPaths(result)).toContain("C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_a");
     });
 });

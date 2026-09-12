@@ -57,7 +57,7 @@ const renderTitleBar = (active = true, inline = false) => render(
         showMaximizeToggle={false}
         theme={overlayTheme}
         themeMode="light"
-        title="AI 助手"
+        title="默认任务"
         trialReflectEnabled={false}
         toggleProjectSearch={vi.fn()}
     />,
@@ -100,7 +100,7 @@ describe('AssistantTitleBar', () => {
                 showMaximizeToggle={false}
                 theme={overlayTheme}
                 themeMode="light"
-                title="AI 助手"
+                title="默认任务"
                 trialReflectEnabled={false}
                 toggleProjectSearch={vi.fn()}
             />,
@@ -138,7 +138,7 @@ describe('AssistantTitleBar', () => {
                 showMaximizeToggle={false}
                 theme={overlayTheme}
                 themeMode="light"
-                title="AI 助手"
+                title="默认任务"
                 trialReflectEnabled={false}
                 toggleProjectSearch={vi.fn()}
             />,
@@ -164,7 +164,7 @@ describe('AssistantTitleBar', () => {
                 showMaximizeToggle={false}
                 theme={overlayTheme}
                 themeMode="light"
-                title="AI 助手"
+                title="默认任务"
                 trialReflectEnabled={false}
                 toggleProjectSearch={vi.fn()}
             />,

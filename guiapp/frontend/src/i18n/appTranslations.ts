@@ -157,7 +157,7 @@ export const translations: Record<string, Record<string, string>> = {
         "cancel": "Cancel",
         "confirm": "Confirm",
         "slogan": "Master your code, seize the machine.",
-        "aboutProductName": "\u7801\u5361\u9f99 7 \u4e07\u53d8",
+        "aboutProductName": "\u7801\u5361\u9f99 8 \u4e07\u53d8",
         "aboutHwAccelBadge": "NPU",
         "aboutHwAccelTooltip": "Hardware acceleration (NPU)",
         "buildLabel": "Build",
@@ -814,7 +814,7 @@ export const translations: Record<string, Record<string, string>> = {
         "dbProfilesAllowDdlHint": "CREATE / ALTER / DROP. Turns on writes and turns off read-only."
     },
     "zh-Hans": {
-        "title": "码卡龙 7",
+        "title": "码卡龙 8",
         "about": "关于",
         "help": "帮助",
         "cs146s": "在线课程",
@@ -970,7 +970,7 @@ export const translations: Record<string, Record<string, string>> = {
         "cancel": "取消",
         "confirm": "确定",
         "slogan": "让远程编程像品尝甜点一样丝滑。",
-        "aboutProductName": "\u7801\u5361\u9f99 7 \u4e07\u53d8",
+        "aboutProductName": "\u7801\u5361\u9f99 8 \u4e07\u53d8",
         "aboutHwAccelBadge": "\u786c\u4ef6\u52a0\u901f",
         "aboutHwAccelTooltip": "NPU \u786c\u4ef6\u52a0\u901f",
         "buildLabel": "\u6784\u5efa",
@@ -1608,7 +1608,7 @@ export const translations: Record<string, Record<string, string>> = {
         "dbProfilesAllowDdlHint": "允许 CREATE / ALTER / DROP；会开启写入并取消只读。"
     },
     "zh-Hant": {
-        "title": "碼卡龍 7",
+        "title": "碼卡龍 8",
         "about": "關於",
         "help": "幫助",
         "cs146s": "線上課程",
@@ -1767,7 +1767,7 @@ export const translations: Record<string, Record<string, string>> = {
         "cancel": "取消",
         "confirm": "確定",
         "slogan": "讓遠程編程像品嚐甜點一樣絲滑。",
-        "aboutProductName": "\u78bc\u5361\u9f8d 7 \u842c\u8b8a",
+        "aboutProductName": "\u78bc\u5361\u9f8d 8 \u842c\u8b8a",
         "aboutHwAccelBadge": "\u786c\u9ad4\u52a0\u901f",
         "aboutHwAccelTooltip": "NPU \u786c\u9ad4\u52a0\u901f",
         "buildLabel": "\u69cb\u5efa",

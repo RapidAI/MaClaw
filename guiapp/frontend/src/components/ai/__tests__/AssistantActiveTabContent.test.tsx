@@ -396,4 +396,31 @@ describe("AssistantActiveTabContent", () => {
 
         expect(onAddParticipantToTab).toHaveBeenCalledWith(groupTab, "ve-2", "Contract Bot");
     });
+
+    it("marks only the active VE pane aria-hidden=false so chrome rules can target it", () => {
+        // The App.css rule that hides the quick-settings bar on the digital
+        // employee surface keys on `[aria-hidden='false'] .mc-ve-conversation`;
+        // inactive VE panes stay mounted and must NOT match it.
+        const veTabA: AITab = { id: "ve-a", type: "ve", title: "Agent A", veId: "ve-a", closable: true };
+        const veTabB: AITab = { id: "ve-b", type: "ve", title: "Agent B", veId: "ve-b", closable: true };
+
+        render(
+            <AssistantActiveTabContent
+                activeTab={veTabA}
+                tabs={[LOCAL_TAB, veTabA, veTabB]}
+                isLocalTabActive={false}
+                isProjectTabActive={false}
+                lang="en"
+                theme={theme}
+                getTabState={() => ({ sessionId: "session-1", history: [], inputText: "", scrollTop: 0 })}
+                saveTabState={vi.fn()}
+            />
+        );
+
+        const views = screen.getAllByTestId("ve-conversation-view");
+        expect(views).toHaveLength(2);
+        const panes = views.map((view) => view.closest("[aria-hidden]") as HTMLElement);
+        expect(panes.map((pane) => pane.getAttribute("aria-hidden")).sort()).toEqual(["false", "true"]);
+        expect(panes.every((pane) => pane.querySelector(".mc-ve-conversation"))).toBe(true);
+    });
 });

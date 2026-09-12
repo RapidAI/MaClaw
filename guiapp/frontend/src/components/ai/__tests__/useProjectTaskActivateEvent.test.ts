@@ -52,6 +52,14 @@ describe('useProjectTaskActivateEvent', () => {
         expect(activateTab).toHaveBeenCalledWith('cws-1');
     });
 
+    it('activates the local assistant tab for the default-task payload', () => {
+        const { activateTab, handler } = setup();
+
+        handler({ local: true });
+
+        expect(activateTab).toHaveBeenCalledWith('local');
+    });
+
     it('activates the expert tab matching by expert id', () => {
         const { activateTab, handler } = setup();
 

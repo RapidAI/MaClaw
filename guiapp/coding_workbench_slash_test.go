@@ -177,3 +177,20 @@ func TestCodingPlanExecutionPreservesPendingPlanWhenLocalProjectPathIsUnavailabl
 		})
 	}
 }
+
+func TestCodingPlanExecutionLoopContextPropagatesDesktopIngressToken(t *testing.T) {
+	msg := IMUserMessage{
+		UserID:                 "desktop-user:C:/workspace/a",
+		CodingTaskIngressToken: "coding-ingress-test-token",
+	}
+	loopCtx := newCodingPlanExecutionLoopContext("coding-plan-approve", 8, nil, msg.UserID, msg)
+	if loopCtx == nil {
+		t.Fatal("plan execution loop context was not created")
+	}
+	if loopCtx.CodingTaskIngressToken != msg.CodingTaskIngressToken {
+		t.Fatalf("ingress token was not propagated: got %q want %q", loopCtx.CodingTaskIngressToken, msg.CodingTaskIngressToken)
+	}
+	if loopCtx.UserID != msg.UserID {
+		t.Fatalf("user id was not propagated: got %q want %q", loopCtx.UserID, msg.UserID)
+	}
+}

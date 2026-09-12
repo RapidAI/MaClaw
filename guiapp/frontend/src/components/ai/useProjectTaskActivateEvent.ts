@@ -15,8 +15,13 @@ export function useProjectTaskActivateEvent(opts: {
 }) {
     const { activateTab, getTabs } = opts;
     useEffect(() => {
-        const offActivate = EventsOn(EVENT_PROJECT_TASK_ACTIVATE, (payload: { projectPath?: string; cloudWorkspaceId?: string; expertId?: string } | string) => {
+        const offActivate = EventsOn(EVENT_PROJECT_TASK_ACTIVATE, (payload: { projectPath?: string; cloudWorkspaceId?: string; expertId?: string; local?: boolean } | string) => {
             const detail = typeof payload === "string" ? { projectPath: payload } : payload || {};
+            if (detail.local) {
+                const localTab = getTabs().find(t => t.type === "local");
+                if (localTab) activateTab(localTab.id);
+                return;
+            }
             const expertId = String(detail.expertId || "").trim();
             const cloudWorkspaceId = String(detail.cloudWorkspaceId || "").trim();
             const normalizedPath = normalizeProjectSessionPath(String(detail.projectPath || ""));

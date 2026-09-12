@@ -11,6 +11,7 @@ import type { AssistantLightSchemeId } from "./assistantLightSchemes";
 import type { SidebarLLMProviderSummary } from "../../types/appShell";
 import type { AIExecutionProfile } from "./AITabTypes";
 import type { ActiveAssistantTaskIdentity } from "./aiAssistantPanelSessionUtils";
+import type { TaskManagementItem } from "../layout/SidebarTaskManagement";
 
 export type { ActiveAssistantTaskIdentity };
 
@@ -165,6 +166,16 @@ export interface AIAssistantPanelProps {
      * sidebar highlight can clear.
      */
     onActiveAssistantTaskChange?: (identity: ActiveAssistantTaskIdentity | null) => void;
+    /** Sidebar-visible task list mirrored by the header task switcher. */
+    tasks?: TaskManagementItem[];
+    /**
+     * False until the first ListTasks settles. The orphan-tab reconcile stays
+     * off while false so a slow initial load cannot prune legitimate tabs.
+     * Undefined (standalone/test usage) means "treat as loaded".
+     */
+    tasksLoaded?: boolean;
+    /** Opens a task-list row that has no open assistant tab yet. */
+    onOpenTask?: (projectPath: string, task?: TaskManagementItem) => void;
 }
 
 export type AIAssistantPanelCompatProps = AIAssistantPanelProps & AIAssistantPanelStateProps & AIAssistantPanelActionProps & AIAssistantPanelWindowProps;

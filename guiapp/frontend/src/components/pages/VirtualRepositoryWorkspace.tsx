@@ -209,6 +209,66 @@ const parseRepositoryChanges = (raw: unknown, label: string): RepositoryChanges 
 
 const statusNeedsAttention = (status: NodeStatus) => Boolean(status.error_code || status.error);
 
+// One machine/root pair through which a repository is reachable. Mirrors the
+// backend VirtualRepositoryMapping (local mappings are device-private; remote
+// SSH mappings arrive through Hub sync).
+type MachineMapping = {
+    id: string;
+    label: string;
+    kind: 'local' | 'remote_ssh';
+    root_path: string;
+    host?: string;
+    port?: number;
+    user?: string;
+    is_default?: boolean;
+    last_status?: string;
+    last_error?: string;
+    last_checked_at?: string;
+};
+
+const isMachineMapping = (value: unknown): value is MachineMapping => {
+    if (!value || typeof value !== 'object') return false;
+    const mapping = value as Record<string, unknown>;
+    return typeof mapping.id === 'string' && mapping.id.trim().length > 0
+        && typeof mapping.label === 'string'
+        && (mapping.kind === 'local' || mapping.kind === 'remote_ssh')
+        && typeof mapping.root_path === 'string'
+        && (mapping.host == null || typeof mapping.host === 'string')
+        && (mapping.port == null || typeof mapping.port === 'number')
+        && (mapping.user == null || typeof mapping.user === 'string')
+        && (mapping.is_default == null || typeof mapping.is_default === 'boolean')
+        && (mapping.last_status == null || typeof mapping.last_status === 'string')
+        && (mapping.last_error == null || typeof mapping.last_error === 'string')
+        && (mapping.last_checked_at == null || typeof mapping.last_checked_at === 'string');
+};
+
+const parseMachineMappings = (raw: unknown, label: string): MachineMapping[] => {
+    const value = parseRequiredJSON<unknown>(raw, label);
+    if (!Array.isArray(value) || value.some((mapping) => !isMachineMapping(mapping))) {
+        throw new Error(`${label} returned invalid machine mappings`);
+    }
+    const ids = new Set<string>();
+    if (value.some((mapping) => {
+        if (ids.has(mapping.id)) return true;
+        ids.add(mapping.id);
+        return false;
+    })) throw new Error(`${label} returned duplicate machine mappings`);
+    return value;
+};
+
+const machineMappingDisplayPath = (mapping: MachineMapping) => {
+    if (mapping.kind !== 'remote_ssh') return mapping.root_path;
+    const user = mapping.user || '';
+    const host = mapping.host || '';
+    const authority = user && host ? `${user}@${host}` : host || user;
+    return authority ? `${authority}:${mapping.root_path}` : mapping.root_path;
+};
+
+const mappingKindIcon = (kind: MachineMapping['kind']) => {
+    if (kind === 'remote_ssh') return <svg viewBox="0 0 16 16" aria-hidden><path d="M4 11.5a3 3 0 0 1-.4-6 4 4 0 0 1 7.7-1.2 2.8 2.8 0 0 1 .7 5.5H4z" /></svg>;
+    return <svg viewBox="0 0 16 16" aria-hidden><path d="M2.5 3.5h11v7h-11zM6 12.5h4M8 10.5v2" /></svg>;
+};
+
 type CodingTaskLaunch = {
     project_path: SharedCodingTaskLaunch['projectPath'];
     task_title: SharedCodingTaskLaunch['taskTitle'];
@@ -464,6 +524,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
         noCredential: '不使用凭据', anyHost: '任意主机', operationRunningHint: '仓库操作运行期间不能修改虚拟目录树或启动其他操作。',
 			location: '位置', localLocation: '本机', remoteLocation: '远程 SSH', editConnection: '编辑连接', repairConnectionHint: '此处仅用于验证并修复 SSH 连接；连接恢复后请关闭窗口并点击「立即同步」。', moveRoot: '迁移根目录', moveRootTitle: '迁移仓库根目录', moveRootHint: '复制文件、验证仓库清单后才会切换到新位置；旧根目录会保留，方便你确认后自行清理。', currentRoot: '当前根目录', destinationRoot: '新根目录', rootManagedByMigration: '已有仓库的根目录由“迁移根目录”操作管理。', inspectMigration: '检查迁移', migrationReady: '预检通过，可以迁移。', migrationConflict: '目标目录不能包含另一个虚拟仓库，且不能与源目录重叠。已有的同名文件也会阻止迁移。', sourceFiles: '源文件', destinationFiles: '目标文件', migrateNow: '开始迁移', migrating: '正在迁移…', migrationComplete: '迁移完成。旧根目录仍被保留。', chooseDestination: '选择目标目录', previewAgain: '重新检查', chooseNewRoot: '请选择新的仓库根目录。', locationUnavailable: '根目录不可用', locationUnavailableHint: '此仓库来自其它设备，尚未在本机设置根目录。请选择一个空目录，或包含同一虚拟仓库的目录。', setLocalRoot: '设置本机根目录', bindLocalRootTitle: '设置本机仓库根目录', bindLocalRootHint: '此设置仅保存在本机，不会覆盖其它设备的目录位置。', bindLocalRoot: '绑定根目录', bindingRoot: '正在绑定…', reconnectLocalRoot: '重新连接本机根目录', reconnectRoot: '重新连接根目录', reconnectRootTitle: '重新连接本机根目录', reconnectRootHint: '请选择包含同一虚拟仓库清单的目录；不会初始化或覆盖目录内容。', reconnectRootUnavailableHint: '原本机根目录不可用。只能重新连接到匹配的仓库。', rootRepairListHint: '原本机根目录不可用。请选择包含同一虚拟仓库的目录以重新连接。', startCodingTask: '启动编程任务', startingCodingTask: '正在启动…', server: '服务器', port: '端口', sshUser: 'SSH 用户名', sshPassword: 'SSH 密码', remoteRoot: '远程根目录', testConnection: '测试连接', trustHostKey: '首次创建时设置信任主机密钥', hostKeyPrompt: '首次连接，请核对并信任服务器指纹', hostKeyChangedPrompt: '服务器主机密钥与已保存指纹不一致。请先独立核对下方指纹；确认后移除旧记录，再重新测试并明确保存新密钥。', removeSavedHostKey: '移除已保存密钥', removeSavedHostKeyConfirm: '这将移除该远程仓库的已保存 SSH 主机密钥，不会信任下方的新密钥。请先通过独立渠道核对指纹；移除后必须重新测试并明确保存新密钥。', connected: '连接成功', rootMissingPrompt: 'SSH 已连接，但远程根目录不存在。是否创建该目录？', createRemoteRoot: '创建远程根目录', createRemoteRootConfirm: '确认在远程服务器上创建此根目录？',
 		cleanStatus: '仓库干净', changedStatus: '仓库有变更', errorStatus: '仓库状态异常', changes: '变更', changesTitle: 'Git 变更', changesHint: '查看工作区文件变更与最近提交关系；此页面只读，不会修改仓库。', refreshChanges: '刷新变更', loadingChanges: '正在读取变更…', noChanges: '工作区没有未提交的变更', changesTruncated: '仅显示前 2,000 个变更文件；请使用 Git 客户端查看完整列表。', changedFiles: '文件变更', recentCommits: '最近提交', selectChange: '选择一个文件查看差异', noDiff: '该文件没有可显示的文本差异', conflict: '冲突', staged: '已暂存', modified: '已修改', untracked: '未跟踪', renamed: '重命名', deleted: '已删除', graph: '提交图', changesUnavailable: '仅已检出的 Git 映射可查看变更', closeChanges: '关闭变更',
+		machineMappings: '机器/根映射', addMachineMapping: '添加机器映射', editMachineMapping: '编辑映射', mappingName: '名称', mappingKind: '类型', localMachine: '本机', remoteSSHMachine: '远程 SSH', testMappingConnection: '测试连接', verifyMappingPath: '验证路径', setDefaultMapping: '设为默认', defaultMappingBadge: '默认', removeMapping: '移除', removeMappingConfirm: '确认移除映射“{label}”？\n\n不会删除任何真实文件；远程映射会同时解除其 SSH 密码保存。', removeLastMapping: '仓库至少需要保留一个映射。', mappingDefaultLocked: '默认映射的坐标由「迁移根目录」管理，这里只能修改名称。', mappingUnverified: '尚未验证', mappingHealthy: '状态正常', mappingFailed: '连接失败', currentMapping: '当前映射', selectCodingTarget: '选择目标机器', selectCodingTargetHint: '此仓库可从多台机器访问，请选择编程任务的执行位置。', mappingNameRequired: '请填写映射名称。', mappingRootRequired: '请选择本机根目录。', mappingRemoteRequired: '请填写服务器、用户名和远程根目录。', mappingTestRequired: '请先测试连接，成功后再保存。', mappingTesting: '正在测试…',
     } : {
         title: 'Virtual Repository', back: toolsBackLabel('en'), newRepo: 'New virtual repository', openRepo: 'Open existing root',
         recent: 'Recent', repositoryList: 'Repositories', searchRepositories: 'Search repositories', repositoryCount: 'repositories', noSearchResults: 'No virtual repositories match your search', selectRepository: 'Select a virtual repository', selectRepositoryHint: 'Open a repository from the list to review mappings, health, and operations.', localRepository: 'Local', remoteRepository: 'Remote SSH', mappings: 'mappings', health: 'Health overview', healthy: 'Healthy', needsAttention: 'Needs attention', pendingStatus: 'Not checked', lastOpened: 'Last opened', repositoryActions: 'Repository actions',
@@ -484,6 +545,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
         noCredential: 'No credential', anyHost: 'any host', operationRunningHint: 'The virtual tree and other operations are locked while a repository operation is running.',
 			location: 'Location', localLocation: 'This computer', remoteLocation: 'Remote SSH', editConnection: 'Edit connection', repairConnectionHint: 'This dialog only verifies and repairs the SSH connection. After it succeeds, close it and click Sync now.', moveRoot: 'Move root', moveRootTitle: 'Move repository root', moveRootHint: 'Files are copied and the manifest is verified before switching to the new location. The old root is kept for review.', currentRoot: 'Current root', destinationRoot: 'New root', rootManagedByMigration: 'An existing repository root is managed by the Move root action.', inspectMigration: 'Check migration', migrationReady: 'Preflight passed. This repository is ready to move.', migrationConflict: 'The destination cannot contain another virtual repository or overlap the source. Existing files with the same path also block the move.', sourceFiles: 'Source files', destinationFiles: 'Destination files', migrateNow: 'Start migration', migrating: 'Migrating…', migrationComplete: 'Migration complete. The old root was kept.', chooseDestination: 'Choose destination', previewAgain: 'Check again', chooseNewRoot: 'Choose a new repository root.', locationUnavailable: 'Root directory unavailable', locationUnavailableHint: 'This repository came from another device and has no root directory on this computer yet. Choose an empty directory, or one containing this virtual repository.', setLocalRoot: 'Set local root', bindLocalRootTitle: 'Set local repository root', bindLocalRootHint: 'This setting is stored only on this computer and never replaces another device’s location.', bindLocalRoot: 'Bind root', bindingRoot: 'Binding…', reconnectLocalRoot: 'Reconnect local root', reconnectRoot: 'Reconnect root', reconnectRootTitle: 'Reconnect local repository root', reconnectRootHint: 'Choose a directory containing the same virtual repository manifest. No directory contents will be initialized or overwritten.', reconnectRootUnavailableHint: 'The previous local root is unavailable. Reconnect only to the matching repository.', rootRepairListHint: 'Local root unavailable — choose the matching repository to reconnect it.', startCodingTask: 'Start coding task', startingCodingTask: 'Starting…', server: 'Server', port: 'Port', sshUser: 'SSH username', sshPassword: 'SSH password', remoteRoot: 'Remote root directory', testConnection: 'Test connection', trustHostKey: 'Trust and save host key', hostKeyPrompt: 'First connection: verify and trust this server fingerprint', hostKeyChangedPrompt: 'The server host key differs from the saved fingerprint. Verify the fingerprint independently, then remove the old saved key, test again, and explicitly save the new key.', removeSavedHostKey: 'Remove saved key', removeSavedHostKeyConfirm: 'This removes the saved SSH host key for this remote repository; it does not trust the newly observed key. Verify the fingerprint independently first. You must test again and explicitly save the new key.', connected: 'Connected', rootMissingPrompt: 'SSH is connected, but the remote root does not exist. Create it now?', createRemoteRoot: 'Create remote root', createRemoteRootConfirm: 'Create this root directory on the remote server?',
 		cleanStatus: 'Repository is clean', changedStatus: 'Repository has changes', errorStatus: 'Repository status error', changes: 'Changes', changesTitle: 'Git changes', changesHint: 'Review working-tree files and recent commit relationships. This view is read-only.', refreshChanges: 'Refresh changes', loadingChanges: 'Loading changes…', noChanges: 'The working tree has no uncommitted changes', changesTruncated: 'Showing the first 2,000 changed files. Use a Git client for the full list.', changedFiles: 'Changed files', recentCommits: 'Recent commits', selectChange: 'Select a file to view its diff', noDiff: 'This file has no text diff to display', conflict: 'Conflict', staged: 'Staged', modified: 'Modified', untracked: 'Untracked', renamed: 'Renamed', deleted: 'Deleted', graph: 'Commit graph', changesUnavailable: 'Changes are available for checked-out Git mappings only', closeChanges: 'Close changes',
+		machineMappings: 'Machine/root mappings', addMachineMapping: 'Add machine mapping', editMachineMapping: 'Edit machine mapping', mappingName: 'Name', mappingKind: 'Type', localMachine: 'This computer', remoteSSHMachine: 'Remote SSH', testMappingConnection: 'Test connection', verifyMappingPath: 'Verify path', setDefaultMapping: 'Set as default', defaultMappingBadge: 'Default', removeMapping: 'Remove', removeMappingConfirm: 'Remove mapping “{label}”?\n\nNo real files are deleted; a remote mapping also drops its saved SSH password.', removeLastMapping: 'A repository needs at least one mapping.', mappingDefaultLocked: 'The default mapping’s coordinates are managed by the Move root action; only its name can be edited here.', mappingUnverified: 'Not verified yet', mappingHealthy: 'Connection healthy', mappingFailed: 'Connection failed', currentMapping: 'Active mapping', selectCodingTarget: 'Choose target machine', selectCodingTargetHint: 'This repository is reachable from several machines. Choose where the coding task runs.', mappingNameRequired: 'A mapping name is required.', mappingRootRequired: 'Choose a local root directory.', mappingRemoteRequired: 'Server, username and remote root are required.', mappingTestRequired: 'Test the connection successfully before saving.', mappingTesting: 'Testing…',
     };
 
 	// Hover/title strings for toolbar and dialog actions. Kept separate from
@@ -537,6 +599,12 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 		addCredential: '新增仓库登录凭据',
 		editCredential: '编辑此凭据',
 		removeCredential: '删除此凭据',
+		addMachineMapping: '添加一个机器/根映射',
+		editMachineMapping: '编辑此映射',
+		removeMachineMapping: '移除此映射（不删除真实文件）',
+		setDefaultMapping: '将此映射设为默认',
+		testMapping: '测试此映射的连接或路径',
+		codingTarget: '选择编程任务的目标机器',
 	} : {
 		back: toolsBackHintLabel('en'),
 		searchGit: 'Search the system for the Git executable',
@@ -586,6 +654,12 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 		addCredential: 'Add a repository credential',
 		editCredential: 'Edit this credential',
 		removeCredential: 'Delete this credential',
+		addMachineMapping: 'Add a machine/root mapping',
+		editMachineMapping: 'Edit this mapping',
+		removeMachineMapping: 'Remove this mapping (real files stay untouched)',
+		setDefaultMapping: 'Make this mapping the default',
+		testMapping: 'Test this mapping’s connection or path',
+		codingTarget: 'Choose the coding task target machine',
 	};
 
     const [repos, setRepos] = useState<any[]>([]);
@@ -596,7 +670,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 	const [changesNodeID, setChangesNodeID] = useState('');
 	const [changesFilePath, setChangesFilePath] = useState('');
 	const [changesLoading, setChangesLoading] = useState(false);
-	    const [mode, setMode] = useState<'none' | 'repo' | 'group' | 'mapping' | 'credentials' | 'migration' | 'root-binding'>('none');
+	    const [mode, setMode] = useState<'none' | 'repo' | 'group' | 'mapping' | 'credentials' | 'migration' | 'root-binding' | 'mapping-target' | 'coding-target'>('none');
     const [draft, setDraft] = useState<any>({});
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState('');
@@ -619,6 +693,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 		const [migrationComplete, setMigrationComplete] = useState(false);
 		const [rootBindingDestination, setRootBindingDestination] = useState('');
     const [startingRepositoryID, setStartingRepositoryID] = useState('');
+	const [startingCodingMappingID, setStartingCodingMappingID] = useState('');
 	const [openingRepositoryKey, setOpeningRepositoryKey] = useState('');
 	const [repositoryQuery, setRepositoryQuery] = useState('');
 	const deferredRepositoryQuery = useDeferredValue(repositoryQuery);
@@ -633,6 +708,8 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 	const [backgroundSyncRepairRepositoryID, setBackgroundSyncRepairRepositoryID] = useState('');
 	const [backgroundSyncNextRetryAt, setBackgroundSyncNextRetryAt] = useState('');
 	const [checkoutNodeID, setCheckoutNodeID] = useState('');
+	const [machineMappings, setMachineMappings] = useState<MachineMapping[]>([]);
+	const [activeMappingID, setActiveMappingID] = useState('');
 	    const [selectingRoot, setSelectingRoot] = useState(false);
 	const [draggedNodeID, setDraggedNodeID] = useState('');
 	const [dropTargetID, setDropTargetID] = useState<string | null>(null);
@@ -655,6 +732,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 	const statusInspectionRequestRef = useRef(0);
 	const changesRequestRef = useRef(0);
 	const repositorySessionRef = useRef(0);
+	const machineMappingsRequestRef = useRef(0);
 	const recentRepositoriesRequestRef = useRef(0);
 	const directoryStatsRequestRef = useRef(0);
 		const remoteConnectionRequestRef = useRef(0);
@@ -985,6 +1063,40 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 		}
 	}, []);
 
+	const loadMachineMappings = useCallback(async (repositoryId?: string) => {
+		const requestID = ++machineMappingsRequestRef.current;
+		if (!repositoryId) { setMachineMappings([]); return; }
+		const backend = app();
+		if (typeof backend?.ListVirtualRepositoryMappings !== 'function') return;
+		try {
+			const list = parseMachineMappings(await backend.ListVirtualRepositoryMappings(repositoryId), 'List repository mappings');
+			if (requestID === machineMappingsRequestRef.current) setMachineMappings(list);
+		} catch {
+			if (requestID === machineMappingsRequestRef.current) setMachineMappings([]);
+		}
+	}, []);
+
+	// Reload the mapping list whenever the open repository changes; the mapping
+	// switcher always starts at the repository's default mapping. Clear the list
+	// first so the previous repository's mappings never render against the new one.
+	useEffect(() => {
+		setActiveMappingID('');
+		setMachineMappings([]);
+		void loadMachineMappings(repo?.id);
+	}, [repo?.id, loadMachineMappings]);
+
+	// The active mapping drives status refresh, changes, checkout and repository
+	// operations. It defaults to the repository's default mapping; a stale
+	// selection (for example after a removal) falls back to it.
+	const activeMapping = useMemo(() => {
+		if (!machineMappings.length) return undefined;
+		return machineMappings.find((mapping) => mapping.id === activeMappingID)
+			|| machineMappings.find((mapping) => mapping.is_default)
+			|| machineMappings[0];
+	}, [machineMappings, activeMappingID]);
+	const activeMappingIsRemote = activeMapping ? activeMapping.kind === 'remote_ssh' : !!repo?.remote;
+	const activeMappingRootPath = activeMapping?.kind === 'local' ? activeMapping.root_path : (activeMapping?.root_path || repo?.root_path || '');
+
 	const runRepositorySync = async (initialResolutions: Record<string, string> = {}) => {
 		if (syncStatus === 'syncing' || backgroundSyncPending || !backgroundSyncStateReady) return;
 		const backend = app();
@@ -1019,6 +1131,8 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 					setSyncStatus('success');
 					setSyncMessage(result?.last_synced_at ? `${text.syncSuccess} · ${new Date(result.last_synced_at).toLocaleString()}` : text.syncSuccess);
 					await loadRecent();
+					// Remote mappings arrive through Hub sync; refresh them too.
+					if (repo?.id) void loadMachineMappings(repo.id);
 					return;
 				}
 				if (result?.status !== 'conflict') throw new Error(result?.message || 'Virtual repository sync returned an invalid status');
@@ -1195,6 +1309,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 			const bound = parseRequiredJSON<VRepo>(await app()?.BindVirtualRepositoryRoot?.(JSON.stringify({ repository_id: repo.id, root_path: rootBindingDestination })), 'Local root binding');
 			setActiveRepository(bound, true);
 			setMode('none');
+			void loadMachineMappings(bound.id);
 			await loadRecent();
 			void inspectRepositoryStatusesInBackground(bound, repositorySessionRef.current);
 		} catch (e: any) { setError(errorMessage(e)); }
@@ -1238,6 +1353,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 			setActiveRepository(migrated, true);
 			setMigrationComplete(true);
 			setMigrationPreview(null);
+			void loadMachineMappings(migrated.id);
 			await loadRecent();
 			void inspectRepositoryStatusesInBackground(migrated, repositorySessionRef.current);
 		} catch (e: any) { setError(errorMessage(e)); }
@@ -1354,18 +1470,252 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
         }
     };
 
-    const startCodingTask = async (item: any) => {
+    const startCodingTask = async (item: any, mappingID = '') => {
         const id = String(item?.id || '').trim();
         if (!id || codingTaskStartingRef.current) return;
         codingTaskStartingRef.current = true;
-        setStartingRepositoryID(id); setError('');
+        setStartingRepositoryID(id); setStartingCodingMappingID(mappingID); setError('');
         try {
-            const launch = await app()?.StartVirtualRepositoryCodingTask?.(id);
+            const launch = await app()?.StartVirtualRepositoryCodingTask?.(id, mappingID);
             if (!launch?.project_path) throw new Error(isZh ? '创建编程任务失败' : 'Failed to create coding task');
+            setMode('none');
             onOpenCodingTask?.(launch);
 		} catch (e: any) { setError(String(e?.message || e)); }
-        finally { codingTaskStartingRef.current = false; setStartingRepositoryID(''); }
+        finally { codingTaskStartingRef.current = false; setStartingRepositoryID(''); setStartingCodingMappingID(''); }
     };
+
+	// With several machine/root mappings the user picks the launch target first;
+	// a single-mapping repository keeps the one-click behaviour.
+    const beginCodingTask = () => {
+        if (!repo?.id || mutationLocked || codingTaskStartingRef.current) return;
+        if (machineMappings.length > 1) { setError(''); setMode('coding-target'); return; }
+        void startCodingTask(repo, activeMapping?.id || '');
+    };
+
+	// After a default-mapping change the repository's location can switch kind
+	// (local ↔ remote SSH). Reopen the repository through the new default so the
+	// tree, status and changes views talk to the right machine.
+	const reopenRepositoryAfterLocationChange = async (list: MachineMapping[]) => {
+		if (!repo?.id) return;
+		const nextDefault = list.find((mapping) => mapping.is_default);
+		if (!nextDefault) return;
+		const nextRemote = nextDefault.kind === 'remote_ssh';
+		if (nextRemote === !!repo.remote && (nextRemote || nextDefault.root_path === repo.root_path)) return;
+		const opened = parseRequiredJSON<VRepo>(nextRemote
+			? await app()?.OpenRemoteVirtualRepository?.(repo.id)
+			: await app()?.OpenVirtualRepository?.(nextDefault.root_path), 'Open virtual repository');
+		setActiveRepository(opened);
+		setStatuses({});
+		setDirectoryStats(null);
+		inspectRepositoryStatusesInBackground(opened, repositorySessionRef.current);
+		await loadRecent();
+	};
+
+	const testMachineMapping = async (mapping: MachineMapping) => {
+		if (!repo?.id || busyRef.current) return;
+		busyRef.current = true;
+		setBusy(true); setError('');
+		try {
+			const status = parseRequiredJSON<any>(await app()?.TestVirtualRepositoryMappingConnection?.(JSON.stringify({
+				repository_id: repo.id, mapping_id: mapping.id, mapping,
+			})), 'Mapping connection test');
+			if (status?.error || status?.error_code) setError(status.error || status.error_code);
+		} catch (e: any) { setError(errorMessage(e)); }
+		finally { busyRef.current = false; setBusy(false); }
+		await loadMachineMappings(repo.id);
+	};
+
+	const setDefaultMachineMapping = async (mapping: MachineMapping) => {
+		if (!repo?.id || mapping.is_default || busyRef.current) return;
+		busyRef.current = true;
+		setBusy(true); setError('');
+		try {
+			const list = parseMachineMappings(await app()?.SetDefaultVirtualRepositoryMapping?.(repo.id, mapping.id), 'Set default mapping');
+			machineMappingsRequestRef.current += 1;
+			setMachineMappings(list);
+			await reopenRepositoryAfterLocationChange(list);
+			await loadRecent();
+			// Refresh checkout/status dots for the mapping that is active now.
+			const nextActive = list.find((item) => item.id === activeMappingID) || list.find((item) => item.is_default) || list[0];
+			if (nextActive) inspectRepositoryStatusesInBackground(repo, repositorySessionRef.current, nextActive);
+		} catch (e: any) { setError(errorMessage(e)); }
+		finally { busyRef.current = false; setBusy(false); }
+	};
+
+	const removeMachineMapping = async (mapping: MachineMapping) => {
+		if (!repo?.id || busyRef.current || machineMappings.length <= 1) return;
+		if (!await showConfirm(text.removeMappingConfirm.replace('{label}', mapping.label || mapping.id), text.removeMapping, { confirmText: text.remove, cancelText: text.cancel, confirmVariant: 'danger' })) return;
+		busyRef.current = true;
+		setBusy(true); setError('');
+		try {
+			await app()?.RemoveVirtualRepositoryMapping?.(repo.id, mapping.id);
+			if (activeMappingID === mapping.id) setActiveMappingID('');
+			const list = parseMachineMappings(await app()?.ListVirtualRepositoryMappings?.(repo.id), 'List repository mappings');
+			machineMappingsRequestRef.current += 1;
+			setMachineMappings(list);
+			if (mapping.is_default) await reopenRepositoryAfterLocationChange(list);
+			await loadRecent();
+			// Refresh checkout/status dots for the mapping that is active now;
+			// a removed active mapping falls back to the default.
+			const nextActive = list.find((item) => item.id === activeMappingID) || list.find((item) => item.is_default) || list[0];
+			if (nextActive) inspectRepositoryStatusesInBackground(repo, repositorySessionRef.current, nextActive);
+		} catch (e: any) { setError(errorMessage(e)); }
+		finally { busyRef.current = false; setBusy(false); }
+	};
+
+	const openAddMachineMapping = () => {
+		if (!repo?.id || mutationLocked) return;
+		setRemoteConnection(null);
+		setDraft({ mapping_id: '', mapping_label: '', mapping_kind: 'local', root_path: '', ssh_host: '', ssh_port: 22, ssh_user: '', ssh_password: '' });
+		setError('');
+		setMode('mapping-target');
+	};
+
+	const openEditMachineMapping = (mapping: MachineMapping) => {
+		if (!repo?.id || mutationLocked) return;
+		setRemoteConnection(null);
+		setDraft({
+			mapping_id: mapping.id,
+			mapping_label: mapping.label,
+			mapping_kind: mapping.kind === 'remote_ssh' ? 'remote' : 'local',
+			root_path: mapping.root_path,
+			ssh_host: mapping.host || '',
+			ssh_port: mapping.port || 22,
+			ssh_user: mapping.user || '',
+			ssh_password: '',
+			coords_locked: !!mapping.is_default,
+		});
+		setError('');
+		setMode('mapping-target');
+	};
+
+	const mappingTargetPayload = (trustHostKey = !!draft.trust_host_key) => JSON.stringify({
+		repository_id: repo?.id || '',
+		mapping_id: draft.mapping_id || '',
+		mapping: {
+			id: draft.mapping_id || '',
+			label: String(draft.mapping_label || '').trim(),
+			kind: draft.mapping_kind === 'remote' ? 'remote_ssh' : 'local',
+			root_path: draft.root_path || '',
+			host: draft.mapping_kind === 'remote' ? draft.ssh_host || '' : '',
+			port: draft.mapping_kind === 'remote' ? Number(draft.ssh_port || 22) : 0,
+			user: draft.mapping_kind === 'remote' ? draft.ssh_user || '' : '',
+		},
+		password: draft.ssh_password || '',
+		trust_host_key: trustHostKey,
+	});
+
+	const testMappingTargetConnection = async (trustHostKey = !!draft.trust_host_key) => {
+		if (busyRef.current) return;
+		busyRef.current = true;
+		const request = ++remoteConnectionRequestRef.current;
+		setBusy(true); setError(''); setRemoteConnection(null);
+		try {
+			const status = parseRequiredJSON<any>(await app()?.TestVirtualRepositoryMappingConnection?.(mappingTargetPayload(trustHostKey)), 'Connection test');
+			if (request !== remoteConnectionRequestRef.current) return;
+			setRemoteConnection(status);
+			if (status?.error_code && status.error_code !== 'host_key_untrusted' && status.error_code !== 'host_key_changed') setError(status.error || status.error_code);
+			else if (!status?.error_code) void loadMachineMappings(repo?.id);
+		} catch (e: any) { if (request === remoteConnectionRequestRef.current) setError(String(e?.message || e)); }
+		finally { busyRef.current = false; setBusy(false); }
+	};
+
+	const createMappingRemoteRoot = async () => {
+		if (busyRef.current) return;
+		if (!await showConfirm(text.createRemoteRootConfirm, text.createRemoteRoot, { confirmText: text.createRemoteRoot, cancelText: text.cancel })) return;
+		busyRef.current = true;
+		const request = ++remoteConnectionRequestRef.current;
+		setBusy(true); setError('');
+		try {
+			await app()?.CreateRemoteVirtualRepositoryRoot?.(JSON.stringify({
+				repository_id: repo?.id || '',
+				remote: { host: draft.ssh_host || '', port: Number(draft.ssh_port || 22), user: draft.ssh_user || '' },
+				root_path: draft.root_path || '',
+				password: draft.ssh_password || '',
+				trust_host_key: !!draft.trust_host_key,
+			}));
+			const status = parseRequiredJSON<any>(await app()?.TestVirtualRepositoryMappingConnection?.(mappingTargetPayload()), 'Connection test');
+			if (request !== remoteConnectionRequestRef.current) return;
+			setRemoteConnection(status);
+			if (!status?.root_exists) setError(status?.error || status?.error_code || 'Remote root verification failed');
+		} catch (e: any) { if (request === remoteConnectionRequestRef.current) setError(String(e?.message || e)); }
+		finally { busyRef.current = false; setBusy(false); }
+	};
+
+	const resetMappingTargetHostKey = async () => {
+		if (!repo?.id || busyRef.current) return;
+		const confirmed = await showConfirm(text.removeSavedHostKeyConfirm, text.removeSavedHostKey, { confirmText: text.removeSavedHostKey, cancelText: text.cancel, confirmVariant: 'danger' });
+		if (!confirmed) return;
+		busyRef.current = true;
+		setBusy(true); setError('');
+		let reset = false;
+		try {
+			await app()?.ResetRemoteVirtualRepositoryHostKey?.(repo.id, draft.mapping_id || '');
+			setDraft((current: any) => ({ ...current, trust_host_key: false }));
+			setRemoteConnection(null);
+			reset = true;
+		} catch (e: any) { setError(String(e?.message || e)); }
+		finally { busyRef.current = false; setBusy(false); }
+		if (reset) await testMappingTargetConnection(false);
+	};
+
+	// Editing an existing remote mapping only needs a fresh connection test when
+	// its coordinates (host/port/user/root) diverge from the saved mapping; a
+	// pure rename or password update keeps the previously verified coordinates.
+	const mappingDraftCoordinatesChanged = () => {
+		if (!draft.mapping_id) return false;
+		const original = machineMappings.find((mapping) => mapping.id === draft.mapping_id);
+		if (!original) return false;
+		if (original.root_path !== String(draft.root_path || '')) return true;
+		if (draft.mapping_kind !== 'remote') return false;
+		return (original.host || '') !== String(draft.ssh_host || '')
+			|| (original.port || 22) !== Number(draft.ssh_port || 22)
+			|| (original.user || '') !== String(draft.ssh_user || '');
+	};
+	const mappingTargetConnectionVerified = !!(remoteConnection?.connected && remoteConnection?.host_key_trusted && remoteConnection?.root_exists && !remoteConnection?.error_code);
+	const mappingTargetTestRequired = draft.mapping_kind === 'remote'
+		&& (!draft.mapping_id || mappingDraftCoordinatesChanged())
+		&& !mappingTargetConnectionVerified;
+
+	const saveMachineMapping = async () => {
+		if (!repo?.id || busyRef.current) return;
+		const isRemote = draft.mapping_kind === 'remote';
+		if (!String(draft.mapping_label || '').trim()) { setError(text.mappingNameRequired); return; }
+		if (!isRemote && !String(draft.root_path || '').trim()) { setError(text.mappingRootRequired); return; }
+		if (isRemote && (!String(draft.ssh_host || '').trim() || !String(draft.ssh_user || '').trim() || !String(draft.root_path || '').trim())) { setError(text.mappingRemoteRequired); return; }
+		if (mappingTargetTestRequired) { setError(text.mappingTestRequired); return; }
+		busyRef.current = true;
+		setBusy(true); setError('');
+		try {
+			const payload = mappingTargetPayload();
+			const list = parseMachineMappings(draft.mapping_id
+				? await app()?.UpdateVirtualRepositoryMapping?.(payload)
+				: await app()?.AddVirtualRepositoryMapping?.(payload), 'Save machine mapping');
+			machineMappingsRequestRef.current += 1;
+			setMachineMappings(list);
+			setMode('none');
+			setDraft({});
+			setRemoteConnection(null);
+			await reopenRepositoryAfterLocationChange(list);
+			await loadRecent();
+		} catch (e: any) { setError(errorMessage(e)); }
+		finally { busyRef.current = false; setBusy(false); }
+	};
+
+	const selectActiveMapping = (mappingID: string) => {
+		if (!repo || mappingID === (activeMapping?.id || '')) return;
+		setActiveMappingID(mappingID);
+		setStatuses({});
+		changesRequestRef.current += 1;
+		setChanges(null);
+		setChangesNodeID('');
+		setChangesFilePath('');
+		// Invalidate any in-flight size scan against the previous mapping's root.
+		directoryStatsRequestRef.current += 1;
+		setDirectoryStats(null);
+		const mapping = machineMappings.find((item) => item.id === mappingID);
+		inspectRepositoryStatusesInBackground(repo, repositorySessionRef.current, mapping);
+	};
 
     const saveRepo = async (nextRepo: VRepo) => {
         const backend = app();
@@ -1379,15 +1729,16 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
         } catch (e: any) { setError(String(e?.message || e)); } finally { setBusy(false); }
     };
 
-	const inspectRepositoryStatuses = useCallback(async (targetRepository: VRepo, repositorySession = repositorySessionRef.current) => {
+	const inspectRepositoryStatuses = useCallback(async (targetRepository: VRepo, repositorySession = repositorySessionRef.current, mapping?: MachineMapping) => {
 		const requestID = ++statusInspectionRequestRef.current;
 		const backend = app();
-		const inspect = targetRepository.remote ? backend?.InspectRemoteVirtualRepository : backend?.InspectVirtualRepository;
+		const isRemote = mapping ? mapping.kind === 'remote_ssh' : !!targetRepository.remote;
+		const inspect = isRemote ? backend?.InspectRemoteVirtualRepository : backend?.InspectVirtualRepository;
 		if (typeof inspect !== 'function') throw new Error(isZh ? '当前版本不支持检查虚拟仓库状态。' : 'This version does not support virtual repository status checks.');
-		if (targetRepository.remote && !targetRepository.id) throw new Error(isZh ? '远程虚拟仓库 ID 缺失。' : 'Remote virtual repository id is missing.');
-		const raw = targetRepository.remote
-			? await inspect(targetRepository.id)
-			: await inspect(targetRepository.root_path);
+		if (isRemote && !targetRepository.id) throw new Error(isZh ? '远程虚拟仓库 ID 缺失。' : 'Remote virtual repository id is missing.');
+		const raw = isRemote
+			? await backend.InspectRemoteVirtualRepository(targetRepository.id, mapping?.id || '')
+			: await backend.InspectVirtualRepository(mapping?.root_path || targetRepository.root_path);
 		const list = parseNodeStatuses(raw, 'Inspect virtual repository');
 		const mappingKinds = new Map(targetRepository.nodes
 			.filter((node) => !!node.repository)
@@ -1402,9 +1753,9 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 		return nextStatuses;
 	}, []);
 
-	const inspectRepositoryStatusesInBackground = useCallback((targetRepository: VRepo, repositorySession = repositorySessionRef.current) => {
+	const inspectRepositoryStatusesInBackground = useCallback((targetRepository: VRepo, repositorySession = repositorySessionRef.current, mapping?: MachineMapping) => {
 		const requestID = statusInspectionRequestRef.current + 1;
-		void inspectRepositoryStatuses(targetRepository, repositorySession).catch((inspectionError) => {
+		void inspectRepositoryStatuses(targetRepository, repositorySession, mapping).catch((inspectionError) => {
 			if (
 				workspaceMountedRef.current
 				&& requestID === statusInspectionRequestRef.current
@@ -1420,36 +1771,38 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 		const repositorySession = repositorySessionRef.current;
 		setBusy(true); setError('');
 		try {
-			await inspectRepositoryStatuses(repo, repositorySession);
+			await inspectRepositoryStatuses(repo, repositorySession, activeMapping);
 		} catch (e: any) {
 			if (workspaceMountedRef.current && repositorySession === repositorySessionRef.current) setError(String(e?.message || e));
 		} finally {
 			if (workspaceMountedRef.current && repositorySession === repositorySessionRef.current) setBusy(false);
 		}
-	}, [repo, inspectRepositoryStatuses]);
+	}, [repo, activeMapping, inspectRepositoryStatuses]);
 
 	const refreshStatusAfterOperation = useCallback(async () => {
 		const requestID = ++operationRefreshRequestRef.current;
 		if (!repo) return;
 		const repositorySession = repositorySessionRef.current;
 		try {
-			await inspectRepositoryStatuses(repo, repositorySession);
+			await inspectRepositoryStatuses(repo, repositorySession, activeMapping);
 		} catch (e: any) {
 			if (workspaceMountedRef.current && requestID === operationRefreshRequestRef.current && repositorySession === repositorySessionRef.current) {
 				setError(String(e?.message || e));
 			}
 		}
-	}, [repo, inspectRepositoryStatuses]);
+	}, [repo, activeMapping, inspectRepositoryStatuses]);
 
-	const loadChanges = useCallback(async (targetRepository: VRepo, nodeID: string, filePath = '', repositorySession = repositorySessionRef.current) => {
+	const loadChanges = useCallback(async (targetRepository: VRepo, nodeID: string, filePath = '', repositorySession = repositorySessionRef.current, mapping?: MachineMapping) => {
 		const backend = app();
 		if (typeof backend?.GetVirtualRepositoryChanges !== 'function') throw new Error(isZh ? '当前版本不支持查看 Git 变更。' : 'This version does not support Git changes.');
+		const isRemote = mapping ? mapping.kind === 'remote_ssh' : !!targetRepository.remote;
 		const requestID = ++changesRequestRef.current;
 		setChangesLoading(true);
 		try {
 			const raw = await backend.GetVirtualRepositoryChanges(JSON.stringify({
-				repository_id: targetRepository.remote ? targetRepository.id || '' : '',
-				root_path: targetRepository.remote ? '' : targetRepository.root_path,
+				repository_id: isRemote ? targetRepository.id || '' : '',
+				root_path: isRemote ? '' : mapping?.root_path || targetRepository.root_path,
+				mapping_id: mapping?.id || '',
 				node_id: nodeID,
 				file_path: filePath,
 			}));
@@ -1473,27 +1826,28 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 		}
 		setError('');
 		try {
-			await loadChanges(repo, selectedMapping.id, '', repositorySessionRef.current);
+			await loadChanges(repo, selectedMapping.id, '', repositorySessionRef.current, activeMapping);
 		} catch (changeError) {
 			setError(localizeVRepoError(changeError, isZh));
 		}
-	}, [repo, selectedId, statuses, loadChanges, text.changesUnavailable, isZh]);
+	}, [repo, selectedId, statuses, loadChanges, activeMapping, text.changesUnavailable, isZh]);
 
 	const selectChangeFile = useCallback(async (filePath: string) => {
 		if (!repo || !changesNodeID) return;
 		setError('');
 		try {
-			await loadChanges(repo, changesNodeID, filePath, repositorySessionRef.current);
+			await loadChanges(repo, changesNodeID, filePath, repositorySessionRef.current, activeMapping);
 		} catch (changeError) {
 			setError(localizeVRepoError(changeError, isZh));
 		}
-	}, [repo, changesNodeID, loadChanges, isZh]);
+	}, [repo, changesNodeID, loadChanges, activeMapping, isZh]);
 
-	const checkoutRepositoryNode = async (targetRepository: VRepo, targetNodeID: string) => {
+	const checkoutRepositoryNode = async (targetRepository: VRepo, targetNodeID: string, mapping?: MachineMapping) => {
 		if (!targetRepository.id) throw new Error(isZh ? '虚拟仓库 ID 缺失，无法检出。' : 'The virtual repository id is missing, so checkout cannot start.');
-		const checkout = targetRepository.remote ? app()?.CheckoutRemoteVirtualRepositoryNode : app()?.CheckoutVirtualRepositoryNode;
+		const isRemote = mapping ? mapping.kind === 'remote_ssh' : !!targetRepository.remote;
+		const checkout = isRemote ? app()?.CheckoutRemoteVirtualRepositoryNode : app()?.CheckoutVirtualRepositoryNode;
 		if (typeof checkout !== 'function') throw new Error(isZh ? '当前版本不支持检出虚拟仓库。' : 'This version does not support virtual repository checkout.');
-		await checkout(targetRepository.id, targetNodeID);
+		await checkout(targetRepository.id, targetNodeID, mapping?.id || '');
 	};
 
 	const checkoutSelectedRepositoryNode = async (targetRepository: VRepo, targetNodeID: string) => {
@@ -1506,12 +1860,12 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 		setBusy(true);
 		setError('');
 		try {
-			await checkoutRepositoryNode(targetRepository, targetNodeID);
+			await checkoutRepositoryNode(targetRepository, targetNodeID, activeMapping);
 			// Refresh precisely the repository that was checked out. Calling the
 			// render-bound refreshStatus here could instead inspect a repository the
 			// user selected while the clone was still running.
 			if (workspaceMountedRef.current && repositorySession === repositorySessionRef.current) {
-				await inspectRepositoryStatuses(targetRepository, repositorySession);
+				await inspectRepositoryStatuses(targetRepository, repositorySession, activeMapping);
 			}
 		} catch (e: any) {
 			if (workspaceMountedRef.current && repositorySession === repositorySessionRef.current) setError(localizeVRepoError(e, isZh));
@@ -1582,8 +1936,8 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 			if (mode === 'mapping' && (draft.create_directory || draft.kind === 'local')) {
 				try {
 					const mappedPath = saved.nodes.find((item) => item.id === id)?.repository?.relative_path || '';
-					if (saved.remote) await app()?.CreateRemoteVirtualRepositoryDirectory?.(saved.id, mappedPath);
-					else await app()?.CreateVirtualRepositoryDirectory?.(saved.root_path, mappedPath);
+					if (activeMappingIsRemote) await app()?.CreateRemoteVirtualRepositoryDirectory?.(saved.id, mappedPath, activeMapping?.id || '');
+					else await app()?.CreateVirtualRepositoryDirectory?.(activeMappingRootPath || saved.root_path, mappedPath);
 				} catch (creationError) {
 					directoryCreationError = creationError;
 				}
@@ -1609,7 +1963,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 			setSelectedId(id);
 			if (mode === 'mapping') {
 				try {
-					await inspectRepositoryStatuses(saved, savedRepositorySession);
+					await inspectRepositoryStatuses(saved, savedRepositorySession, activeMapping);
 				} catch (inspectError) {
 					// An inspection failure is distinct from an unchecked-out repository
 					// or a missing local directory. Keep that diagnostic visible so users
@@ -1623,7 +1977,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 				}
 				if (draft.kind !== 'local' && draft.enabled !== false && draft.checkout_after_save) {
 					try {
-						await checkoutRepositoryNode(saved, id);
+						await checkoutRepositoryNode(saved, id, activeMapping);
 					} catch (checkoutError) {
 						if (savedRepositorySession === repositorySessionRef.current) {
 							setError(isZh
@@ -1633,7 +1987,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 						return;
 					}
 					try {
-						await inspectRepositoryStatuses(saved, savedRepositorySession);
+						await inspectRepositoryStatuses(saved, savedRepositorySession, activeMapping);
 					} catch (inspectError) {
 						if (savedRepositorySession === repositorySessionRef.current) {
 							setError(isZh
@@ -1678,7 +2032,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 
     const openMappedFolder = async () => {
         if (!repo || !selected?.repository) return;
-        const path = selectedStatus?.path || `${repo.root_path.replace(/[\\/]$/, '')}/${selected.repository.relative_path || relativePathForTreeNode(repo.nodes, selected.id)}`;
+        const path = selectedStatus?.path || `${(activeMappingRootPath || repo.root_path).replace(/[\\/]$/, '')}/${selected.repository.relative_path || relativePathForTreeNode(repo.nodes, selected.id)}`;
         try { await app()?.OpenFileOrShowInFolder?.(path); } catch (e: any) { setError(String(e?.message || e)); }
     };
 
@@ -1891,9 +2245,9 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 		setError('');
 		try {
 			const relativePath = relativePathForTreeNode(repo.nodes, selected.id);
-			const raw = repo.remote
-				? await app()?.GetRemoteVirtualRepositoryDirectoryStats?.(repo.id, relativePath)
-				: await app()?.GetVirtualRepositoryDirectoryStats?.(repo.root_path, relativePath);
+			const raw = activeMappingIsRemote
+				? await app()?.GetRemoteVirtualRepositoryDirectoryStats?.(repo.id, relativePath, activeMapping?.id || '')
+				: await app()?.GetVirtualRepositoryDirectoryStats?.(activeMappingRootPath || repo.root_path, relativePath);
 			if (requestID === directoryStatsRequestRef.current && repositorySession === repositorySessionRef.current && selectedNodeID === selectedId) {
 				setDirectoryStats(parseJSON(raw, null));
 			}
@@ -2069,7 +2423,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
         setOperation(next); operationResultRef.current = null; setOperationResult(null); setError('');
         if (action === 'commit' || action === 'commit_push') return;
         try {
-			const preview = parseRequiredJSON<any>(await app()?.PreviewVirtualRepositoryOperation?.(JSON.stringify({ root_path: repo.root_path, repository_id: repo.id, node_id: selectedId, action })), 'Operation preview');
+			const preview = parseRequiredJSON<any>(await app()?.PreviewVirtualRepositoryOperation?.(JSON.stringify({ root_path: activeMappingRootPath || repo.root_path, repository_id: repo.id, mapping_id: activeMapping?.id || '', node_id: selectedId, action })), 'Operation preview');
 			if (operationPreviewRequestRef.current === requestID) setOperation({ ...next, preview });
 		} catch (e: any) { if (operationPreviewRequestRef.current === requestID) setError(localizeVRepoError(e, isZh)); }
     };
@@ -2079,7 +2433,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 		const requestID = ++operationPreviewRequestRef.current;
 		setBusy(true); setError('');
         try {
-			const preview = parseRequiredJSON<any>(await app()?.PreviewVirtualRepositoryOperation?.(JSON.stringify({ root_path: repo.root_path, repository_id: repo.id, node_id: selectedId, node_ids: retryNodeIds, action: operation.action, message: operation.message })), 'Operation preview');
+			const preview = parseRequiredJSON<any>(await app()?.PreviewVirtualRepositoryOperation?.(JSON.stringify({ root_path: activeMappingRootPath || repo.root_path, repository_id: repo.id, mapping_id: activeMapping?.id || '', node_id: selectedId, node_ids: retryNodeIds, action: operation.action, message: operation.message })), 'Operation preview');
 			if (operationPreviewRequestRef.current === requestID) setOperation({ ...operation, preview });
 		} catch (e: any) {
 			if (operationPreviewRequestRef.current === requestID) setError(localizeVRepoError(e, isZh));
@@ -2093,7 +2447,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 		operationStartingRef.current = true;
         setBusy(true); setError('');
         try {
-			const result = parseOperationResult(await app()?.StartVirtualRepositoryOperation?.(JSON.stringify({ root_path: repo.root_path, repository_id: repo.id, node_id: selectedId, node_ids: retryNodeIds, action: operation.action, message: operation.message, expected_repository_id: operation.preview?.repository_id, expected_updated_at: operation.preview?.updated_at })), 'Start operation');
+			const result = parseOperationResult(await app()?.StartVirtualRepositoryOperation?.(JSON.stringify({ root_path: activeMappingRootPath || repo.root_path, repository_id: repo.id, mapping_id: activeMapping?.id || '', node_id: selectedId, node_ids: retryNodeIds, action: operation.action, message: operation.message, expected_repository_id: operation.preview?.repository_id, expected_updated_at: operation.preview?.updated_at })), 'Start operation');
 			operationResultRef.current = result;
 			setOperationResult(result); setOperation(null); setRetryNodeIds([]);
 			if (result.status !== 'running') {
@@ -2222,7 +2576,7 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
                 {repo ? <div className="vrepo-actions__group vrepo-actions__operation" role="group" aria-labelledby="vrepo-repository-actions">
 					<span id="vrepo-repository-actions" className="vrepo-actions__label">{text.repositoryActions}</span>
 					<div className="vrepo-actions__buttons">
-					<button type="button" className={`secondary vrepo-coding-task-button${startingRepositoryID === repo.id ? ' is-loading' : ''}`} title={tips.startCoding} disabled={mutationLocked || !!startingRepositoryID} aria-busy={startingRepositoryID === repo.id} onClick={() => void startCodingTask(repo)}>
+					<button type="button" className={`secondary vrepo-coding-task-button${startingRepositoryID === repo.id ? ' is-loading' : ''}`} title={machineMappings.length > 1 ? tips.codingTarget : tips.startCoding} disabled={mutationLocked || !!startingRepositoryID} aria-busy={startingRepositoryID === repo.id} onClick={beginCodingTask}>
 						<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
 							<path d="m8.5 8-4 4 4 4M15.5 8l4 4-4 4M13.5 5.5l-3 13" />
 						</svg>
@@ -2312,6 +2666,36 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 			</div>
 		</VRepoDialog> : null}
 
+		{mode === 'mapping-target' && repo ? <VRepoDialog title={draft.mapping_id ? text.editMachineMapping : text.addMachineMapping} titleId="vrepo-mapping-target-dialog-title" className="vrepo-dialog--repo" closeLabel={text.close} closeDisabled={busy || selectingRoot} onClose={() => setMode('none')} footer={<>
+			<button type="button" className="secondary" title={tips.cancel} disabled={busy || selectingRoot} onClick={() => setMode('none')}>{text.cancel}</button>
+			<button type="button" title={tips.save} disabled={busy || selectingRoot || mappingTargetTestRequired} onClick={() => void saveMachineMapping()}>{text.save}</button>
+		</>}>
+			{errorBanner}
+			<div className="vrepo-editor">
+				<label>{text.mappingName}<input value={draft.mapping_label || ''} onChange={(e) => setDraft({ ...draft, mapping_label: e.target.value })} /></label>
+				<label>{text.mappingKind}<select value={draft.mapping_kind || 'local'} disabled={!!draft.mapping_id} onChange={(e) => { remoteConnectionRequestRef.current += 1; setDraft({ ...draft, mapping_kind: e.target.value }); setRemoteConnection(null); }}><option value="local">{text.localMachine}</option><option value="remote">{text.remoteSSHMachine}</option></select></label>
+				{draft.coords_locked ? <p className="vrepo-repair-hint" role="status">{text.mappingDefaultLocked}</p> : null}
+				{mappingTargetTestRequired ? <p className="vrepo-repair-hint" role="status">{text.mappingTestRequired}</p> : null}
+				{draft.mapping_kind === 'remote' ? <>
+					<div className="vrepo-inline"><label>{text.server}<input value={draft.ssh_host || ''} readOnly={!!draft.coords_locked} onChange={(e) => updateRemoteDraft({ ssh_host: e.target.value })} /></label><label>{text.port}<input type="number" min="1" max="65535" value={draft.ssh_port || 22} readOnly={!!draft.coords_locked} onChange={(e) => updateRemoteDraft({ ssh_port: e.target.value })} /></label></div>
+					<label>{text.sshUser}<input value={draft.ssh_user || ''} readOnly={!!draft.coords_locked} onChange={(e) => updateRemoteDraft({ ssh_user: e.target.value })} /></label>
+					<label>{text.sshPassword}<input type="password" autoComplete="new-password" value={draft.ssh_password || ''} placeholder={draft.mapping_id ? text.passwordHint : ''} onChange={(e) => updateRemoteDraft({ ssh_password: e.target.value })} /></label>
+					<label>{text.remoteRoot}<input value={draft.root_path || ''} placeholder="/srv/workspace" readOnly={!!draft.coords_locked} onChange={(e) => updateRemoteDraft({ root_path: e.target.value })} /></label>
+					{remoteConnection?.error_code === 'host_key_untrusted' ? <div className="vrepo-host-key"><strong>{text.hostKeyPrompt}</strong><code>{remoteConnection.host_key_algorithm} {remoteConnection.host_key_fingerprint}</code><label className="vrepo-check"><input type="checkbox" checked={!!draft.trust_host_key} onChange={(e) => setDraft({ ...draft, trust_host_key: e.target.checked })} />{text.trustHostKey}</label></div> : null}
+					{remoteConnection?.error_code === 'host_key_changed' ? <div className="vrepo-host-key" role="alert"><strong>{text.hostKeyChangedPrompt}</strong><code>{remoteConnection.host_key_algorithm} {remoteConnection.host_key_fingerprint}</code><button type="button" className="danger" disabled={busy} onClick={() => void resetMappingTargetHostKey()}>{text.removeSavedHostKey}</button></div> : null}
+					{remoteConnection?.connected && remoteConnection?.error_code === 'root_not_found' ? <div className="vrepo-root-missing" role="alert"><span>{text.rootMissingPrompt}</span><button type="button" disabled={busy} title={tips.createRemoteRoot} onClick={() => void createMappingRemoteRoot()}>{text.createRemoteRoot}</button></div> : null}
+					{remoteConnection?.connected && remoteConnection?.root_exists ? <p className="vrepo-connection-ok">{text.connected} · Git {remoteConnection.git_version || '—'} · SVN {remoteConnection.svn_version || '—'}</p> : null}
+					<button type="button" className="secondary" disabled={busy} title={tips.testMapping} onClick={() => void testMappingTargetConnection()}>{busy ? text.mappingTesting : text.testMappingConnection}</button>
+				</> : <label>{text.root}<div className="vrepo-inline"><input value={draft.root_path || ''} readOnly /><button type="button" className="secondary" disabled={busy || selectingRoot || !!draft.coords_locked} title={tips.chooseRoot} onClick={() => void selectRoot()}>{selectingRoot ? text.loading : text.choose}</button></div>{draft.coords_locked ? <small>{text.mappingDefaultLocked}</small> : null}</label>}
+			</div>
+		</VRepoDialog> : null}
+
+		{mode === 'coding-target' && repo ? <VRepoDialog title={text.selectCodingTarget} titleId="vrepo-coding-target-dialog-title" className="vrepo-dialog--node" closeLabel={text.close} closeDisabled={!!startingRepositoryID} onClose={() => setMode('none')} footer={<button type="button" className="secondary" title={tips.cancel} disabled={!!startingRepositoryID} onClick={() => setMode('none')}>{text.cancel}</button>}>
+			{errorBanner}
+			<p className="vrepo-migration__hint">{text.selectCodingTargetHint}</p>
+			<div className="vrepo-coding-targets">{machineMappings.map((mapping) => { const statusClass = mapping.last_status === 'ok' ? 'is-ok' : mapping.last_status === 'error' ? 'is-error' : 'is-pending'; const statusLabel = mapping.last_status === 'ok' ? text.mappingHealthy : mapping.last_status === 'error' ? text.mappingFailed : text.mappingUnverified; return <button type="button" key={mapping.id} className="vrepo-coding-target" title={machineMappingDisplayPath(mapping)} disabled={!!startingRepositoryID} onClick={() => void startCodingTask(repo, mapping.id)}><span className={`vrepo-mapping-dot ${statusClass}`} role="img" aria-label={statusLabel} /><span className="vrepo-machine-mapping__kind">{mappingKindIcon(mapping.kind)}<em>{mapping.kind === 'remote_ssh' ? text.remoteSSHMachine : text.localMachine}</em></span><strong>{mapping.label}{mapping.is_default ? <span className="vrepo-machine-mapping__default">{text.defaultMappingBadge}</span> : null}</strong><span className="vrepo-coding-target__path">{machineMappingDisplayPath(mapping)}</span>{startingRepositoryID === repo.id && startingCodingMappingID === mapping.id ? <span className="vrepo-button-spinner" aria-hidden="true" /> : null}</button>; })}</div>
+		</VRepoDialog> : null}
+
 		{(repositoryRecords.length || repo) ? <div className="vrepo-management-shell">
             {repositoryList}
             {repo ? <div className="vrepo-layout">
@@ -2325,12 +2709,13 @@ export function VirtualRepositoryWorkspace({ isZh, onBack, onOpenCodingTask }: {
 				</div>
             </aside>
             <main className="vrepo-detail">
+				{machineMappings.length > 1 ? <div className="vrepo-mapping-switch"><label>{text.currentMapping}<select aria-label={text.currentMapping} disabled={mutationLocked} value={activeMapping?.id || ''} onChange={(event) => selectActiveMapping(event.target.value)}>{machineMappings.map((mapping) => <option key={mapping.id} value={mapping.id}>{`${mapping.label} · ${machineMappingDisplayPath(mapping)}`}</option>)}</select></label>{activeMapping ? <span className={`vrepo-mapping-dot ${activeMapping.last_status === 'ok' ? 'is-ok' : activeMapping.last_status === 'error' ? 'is-error' : 'is-pending'}`} role="img" aria-label={activeMapping.last_status === 'ok' ? text.mappingHealthy : activeMapping.last_status === 'error' ? text.mappingFailed : text.mappingUnverified} title={activeMapping.last_error || undefined} /> : null}</div> : null}
                 {selected ? <section>
                     <div className="vrepo-detail__title"><div><span className="vrepo-detail__kind">{selected.repository?.kind.toUpperCase() || 'DIR'}</span><h2>{selected.name}</h2></div><div><button type="button" className="secondary" title={tips.editNode} disabled={mutationLocked} onClick={() => { setMode(selected.repository ? 'mapping' : 'group'); setDraft({ ...selected, ...(selected.repository || {}) }); }}>{text.edit}</button><button type="button" className="danger" title={tips.removeNode} disabled={mutationLocked} onClick={() => void removeNode(selected.id)}>{text.remove}</button></div></div>
-					{selected.repository ? <><dl className="vrepo-facts">{selected.repository.remote_url ? <><dt>{text.remote}</dt><dd>{selectedStatus?.remote_url || selected.repository.remote_url}</dd></> : null}{selected.repository.ref_name ? <><dt>{selected.repository.ref_type === 'tag' ? text.tagRef : text.branchRef}</dt><dd>{selected.repository.ref_name}</dd></> : null}{selectedStatus?.branch ? <><dt>{text.branch}</dt><dd>{selectedStatus.branch}</dd></> : null}<dt>{text.status}</dt><dd>{selectedStatusLabel}</dd>{directoryStats && selected.repository.kind === 'local' ? <><dt>{text.files}</dt><dd>{directoryStats.file_count}</dd><dt>{text.size}</dt><dd>{directoryStats.size_bytes.toLocaleString()} bytes</dd></> : null}</dl><div className="vrepo-detail__actions">{!repo.remote ? <button type="button" className="secondary" title={tips.openFolder} onClick={() => void openMappedFolder()}>{text.openFolder}</button> : null}{selected.repository.kind !== 'local' && !selectedIsCheckedOut ? <button type="button" className={checkingOut ? 'is-loading' : undefined} disabled={mutationLocked} aria-busy={checkingOut} title={tips.checkout} onClick={() => void checkoutSelectedRepositoryNode(repo, selected.id)}>{checkingOut ? <span className="vrepo-button-spinner" aria-hidden="true" /> : null}<span>{checkingOut ? text.checkingOut : text.checkout}</span></button> : null}{selected.repository.kind === 'git' && selectedIsCheckedOut ? <button type="button" className="secondary" disabled={changesLoading} aria-busy={changesLoading} onClick={() => void openChanges()}>{changesLoading ? text.loadingChanges : text.changes}</button> : null}{selected.repository.kind === 'local' ? <button type="button" className="secondary" title={tips.calcSize} onClick={() => void loadDirectoryStats()}>{text.calculateSize}</button> : null}</div></> : null}
+					{selected.repository ? <><dl className="vrepo-facts">{selected.repository.remote_url ? <><dt>{text.remote}</dt><dd>{selectedStatus?.remote_url || selected.repository.remote_url}</dd></> : null}{selected.repository.ref_name ? <><dt>{selected.repository.ref_type === 'tag' ? text.tagRef : text.branchRef}</dt><dd>{selected.repository.ref_name}</dd></> : null}{selectedStatus?.branch ? <><dt>{text.branch}</dt><dd>{selectedStatus.branch}</dd></> : null}<dt>{text.status}</dt><dd>{selectedStatusLabel}</dd>{directoryStats && selected.repository.kind === 'local' ? <><dt>{text.files}</dt><dd>{directoryStats.file_count}</dd><dt>{text.size}</dt><dd>{directoryStats.size_bytes.toLocaleString()} bytes</dd></> : null}</dl><div className="vrepo-detail__actions">{!activeMappingIsRemote ? <button type="button" className="secondary" title={tips.openFolder} onClick={() => void openMappedFolder()}>{text.openFolder}</button> : null}{selected.repository.kind !== 'local' && !selectedIsCheckedOut ? <button type="button" className={checkingOut ? 'is-loading' : undefined} disabled={mutationLocked} aria-busy={checkingOut} title={tips.checkout} onClick={() => void checkoutSelectedRepositoryNode(repo, selected.id)}>{checkingOut ? <span className="vrepo-button-spinner" aria-hidden="true" /> : null}<span>{checkingOut ? text.checkingOut : text.checkout}</span></button> : null}{selected.repository.kind === 'git' && selectedIsCheckedOut ? <button type="button" className="secondary" disabled={changesLoading} aria-busy={changesLoading} onClick={() => void openChanges()}>{changesLoading ? text.loadingChanges : text.changes}</button> : null}{selected.repository.kind === 'local' ? <button type="button" className="secondary" title={tips.calcSize} onClick={() => void loadDirectoryStats()}>{text.calculateSize}</button> : null}</div></> : null}
 					{changesOpen ? <section className="vrepo-changes" aria-label={text.changesTitle}><header className="vrepo-changes__head"><div><h3>{text.changesTitle}</h3><p>{text.changesHint}</p></div><div><button type="button" className="secondary" disabled={changesLoading} onClick={() => void openChanges()}>{text.refreshChanges}</button><button type="button" className="secondary" onClick={() => { changesRequestRef.current += 1; setChanges(null); setChangesNodeID(''); setChangesFilePath(''); }}>{text.closeChanges}</button></div></header><div className="vrepo-changes__summary"><span>{changes?.branch || selectedStatus?.branch || 'HEAD'}</span><span>{changes?.head ? changes.head.slice(0, 8) : ''}</span></div><div className="vrepo-changes__grid"><section><h4>{text.changedFiles}</h4>{changes?.files_truncated ? <p className="vrepo-changes__notice" role="status">{text.changesTruncated}</p> : null}{changes?.files.length ? <div className="vrepo-change-list">{changes.files.map((file) => { const label = changeLabel(file); return <button type="button" key={`${file.path}\u0000${file.original_path || ''}`} className={changesFilePath === file.path ? 'is-selected' : ''} onClick={() => void selectChangeFile(file.path)}><span><strong>{file.path}</strong>{file.original_path ? <em>{file.original_path}</em> : null}</span><small className={label === text.conflict ? 'is-conflict' : undefined}>{label}</small></button>; })}</div> : <p className="vrepo-changes__empty">{text.noChanges}</p>}</section><section><h4>{text.recentCommits}</h4><div className="vrepo-commit-graph">{changes?.commits.map((commit) => <div key={commit.hash}><span className="vrepo-commit-graph__rail" aria-hidden>●</span><p><strong>{commit.subject}</strong><small>{commit.short_hash} · {commit.author} · {commit.date}{commit.decorations ? ` · ${commit.decorations}` : ''}</small></p></div>)}</div></section></div><section className="vrepo-diff"><h4>{changesFilePath || text.selectChange}</h4>{changesFilePath ? changes?.diff ? <pre>{changes.diff}</pre> : <p className="vrepo-changes__empty">{text.noDiff}</p> : <p className="vrepo-changes__empty">{text.selectChange}</p>}</section></section> : null}
 					{selectedStatus?.status ? <pre className="vrepo-status-output">{selectedStatus.status}</pre> : null}
-						</section> : <section className="vrepo-overview"><div className="vrepo-overview__title"><div><span>{repo.remote ? text.remoteRepository : text.localRepository}</span><h2>{repo.name}</h2><p>{repo.root_path}</p></div></div><div className="vrepo-health"><div><span>{text.health}</span><strong>{Object.values(statuses).some(statusNeedsAttention) ? text.needsAttention : Object.keys(statuses).length ? text.healthy : text.pendingStatus}</strong></div><div><span>{text.mappings}</span><strong>{repo.nodes.filter((node) => node.repository).length}</strong></div><div><span>{text.location}</span><strong>{repo.remote ? text.remoteRepository : text.localRepository}</strong></div></div><div className="vrepo-overview__next"><h3>{text.repositoryActions}</h3><p>{text.selectRepositoryHint}</p></div></section>}
+						</section> : <section className="vrepo-overview"><div className="vrepo-overview__title"><div><span>{repo.remote ? text.remoteRepository : text.localRepository}</span><h2>{repo.name}</h2><p>{repo.root_path}</p></div></div><div className="vrepo-health"><div><span>{text.health}</span><strong>{Object.values(statuses).some(statusNeedsAttention) ? text.needsAttention : Object.keys(statuses).length ? text.healthy : text.pendingStatus}</strong></div><div><span>{text.mappings}</span><strong>{repo.nodes.filter((node) => node.repository).length}</strong></div><div><span>{text.machineMappings}</span><strong>{machineMappings.length || '—'}</strong></div></div><div className="vrepo-machine-mappings" role="group" aria-label={text.machineMappings}><div className="vrepo-machine-mappings__head"><h3>{text.machineMappings}</h3><button type="button" className="secondary" title={tips.addMachineMapping} disabled={mutationLocked} onClick={openAddMachineMapping}>{text.addMachineMapping}</button></div>{machineMappings.length ? <div className="vrepo-machine-mappings__table">{machineMappings.map((mapping) => { const statusClass = mapping.last_status === 'ok' ? 'is-ok' : mapping.last_status === 'error' ? 'is-error' : 'is-pending'; const statusLabel = mapping.last_status === 'ok' ? text.mappingHealthy : mapping.last_status === 'error' ? `${text.mappingFailed}${mapping.last_error ? ` · ${mapping.last_error}` : ''}` : text.mappingUnverified; return <div className="vrepo-machine-mapping" key={mapping.id} data-vrepo-mapping-id={mapping.id}><span className={`vrepo-mapping-dot ${statusClass}`} role="img" aria-label={statusLabel} title={statusLabel} /><span className="vrepo-machine-mapping__kind">{mappingKindIcon(mapping.kind)}<em>{mapping.kind === 'remote_ssh' ? text.remoteSSHMachine : text.localMachine}</em></span><strong className="vrepo-machine-mapping__label">{mapping.label}{mapping.is_default ? <span className="vrepo-machine-mapping__default">{text.defaultMappingBadge}</span> : null}</strong><span className="vrepo-machine-mapping__path" title={machineMappingDisplayPath(mapping)}>{machineMappingDisplayPath(mapping)}</span><span className="vrepo-machine-mapping__actions"><button type="button" className="secondary" title={tips.testMapping} disabled={mutationLocked} onClick={() => void testMachineMapping(mapping)}>{mapping.kind === 'remote_ssh' ? text.testMappingConnection : text.verifyMappingPath}</button>{!mapping.is_default ? <button type="button" className="secondary" title={tips.setDefaultMapping} disabled={mutationLocked} onClick={() => void setDefaultMachineMapping(mapping)}>{text.setDefaultMapping}</button> : null}<button type="button" className="secondary" title={tips.editMachineMapping} disabled={mutationLocked} onClick={() => openEditMachineMapping(mapping)}>{text.edit}</button><button type="button" className="danger" title={machineMappings.length <= 1 ? text.removeLastMapping : tips.removeMachineMapping} disabled={mutationLocked || machineMappings.length <= 1} onClick={() => void removeMachineMapping(mapping)}>{text.removeMapping}</button></span></div>; })}</div> : <p className="vrepo-machine-mappings__empty" role="status">{text.loading}</p>}</div><div className="vrepo-overview__next"><h3>{text.repositoryActions}</h3><p>{text.selectRepositoryHint}</p></div></section>}
             </main>
         </div> : <section className="vrepo-management-placeholder"><h2>{text.selectRepository}</h2><p>{text.selectRepositoryHint}</p></section>}
         </div> : null}

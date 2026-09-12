@@ -62,6 +62,7 @@ func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsReposit
 	if haSvc != nil {
 		haSvc.AttachLLMAuthorizations(baseAuthRepo)
 		haSvc.AttachLLMBindings(bindingRepo)
+		haSvc.AttachLLMUsage(usageRepo)
 		authRepo = &haLLMAuthorizationRepo{inner: baseAuthRepo, sync: haSvc}
 		haSvc.AttachCardTypes(baseCardTypeRepo)
 		cardTypeRepo = &haCardTypeRepo{inner: baseCardTypeRepo, sync: haSvc}
@@ -85,7 +86,29 @@ func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsReposit
 		llmSvc.SetOfficialHeadRoster(local, nil)
 	}
 	authChecker := llmservice.NewAuthorizationChecker(authRepo)
-	usageRecorder := llmservice.NewUsageRecorder(usageRepo)
+	var recorderRepo llmservice.UsageRepository = usageRepo
+	if haSvc != nil {
+		recorderRepo = &localOriginUsageRepo{UsageRepository: usageRepo, local: usageRepo, nodeID: nodeID}
+	}
+	usageRecorder := llmservice.NewUsageRecorder(recorderRepo)
+	if haSvc != nil && strings.TrimSpace(nodeID) == "" {
+		log.Printf("[llm-init] HA enabled but node ID is empty: llm usage replication disabled on this node")
+	} else if haSvc != nil {
+		// Capture the seed cutoff before the live replicator starts: rows at or
+		// below it are backfilled by the seed pass, rows above it flow through
+		// the live buffer. Publishing the same row through both channels would
+		// use two batch IDs and defeat the peers' idempotent batch ledger.
+		seedCutoff, err := usageRepo.MaxUsageID(context.Background())
+		if err != nil {
+			log.Printf("[llm-init] read llm usage max id failed, skip usage sync seed this run: %v", err)
+		}
+		syncBuffer := newLLMUsageSyncBuffer(nodeID, haSvc.AppendLLMUsageBatch)
+		usageRecorder.SetSyncSink(syncBuffer.Add)
+		go syncBuffer.Run()
+		if err == nil {
+			go seedLLMUsageHAOps(context.Background(), haSvc, usageRepo, nodeID, seedCutoff)
+		}
+	}
 	bindingMgr := ha.NewLLMBindingManager(nodeID, bindingRepo)
 	if haSvc != nil {
 		bindingMgr.SetSyncBinding(haSvc.AppendLLMNodeBinding)
@@ -193,6 +216,7 @@ func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsReposit
 		seedLLMCardTypeHAOps(context.Background(), haSvc, baseCardTypeRepo)
 		seedLLMAuthorizationHAOps(context.Background(), haSvc, baseAuthRepo)
 		seedLLMCardOrderHAOps(context.Background(), haSvc, baseOrderRepo)
+		seedLLMRegistryHAOp(context.Background(), haSvc, system)
 	}
 
 	// Load payment config from system settings (admin configures via API)

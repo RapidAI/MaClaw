@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { AssistantInputActionsLeft, clampMenuPosition } from "../AssistantInputActions";
@@ -98,10 +101,23 @@ describe("AssistantInputActionsLeft plus menu", () => {
         expect(document.activeElement).toBe(selector);
     });
 
-    it("keeps the normal field border when full control is selected", () => {
+    it("marks the trigger as dangerous red when full control is selected", () => {
         renderLeft({ permissionMode: "full" });
 
-        expect((screen.getByTestId("ai-permission-mode") as HTMLElement).style.border).toBe("1px solid rgb(221, 221, 221)");
+        const trigger = screen.getByTestId("ai-permission-mode") as HTMLElement;
+        // Red text/icon come from the inline theme color; the mc-input-stack
+        // neutral button locks (which would repaint every composer button
+        // grey/blue) are countered by the [data-permission-mode='full'] rule
+        // in App.css, so the attribute is part of the contract.
+        expect(trigger.getAttribute("data-permission-mode")).toBe("full");
+        expect(trigger.style.color).toBe("rgb(185, 28, 28)");
+    });
+
+    it("keeps full control red above the neutral composer button locks", () => {
+        const here = dirname(fileURLToPath(import.meta.url));
+        const css = readFileSync(resolve(here, "../../../App.css"), "utf8");
+        expect(css).toContain(".ai-permission-mode-trigger[data-testid='ai-permission-mode'][data-permission-mode='full']:hover");
+        expect(css).toMatch(/\[data-permission-mode='full'\][^{]*\{[^}]*color:\s*var\(--theme-danger/);
     });
 
     it("renders the permission menu in a viewport-level layer", () => {

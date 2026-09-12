@@ -34,14 +34,19 @@ type SidebarPrimaryNavProps = {
     aiAssistantLabel: string;
     appsLabel: string;
     showAppEntry: boolean;
-    showWorkflowEntry: boolean;
     showUtilitiesEntry?: boolean;
     /** Split navigation mode: expose a dedicated Tools rail item. */
     showToolsEntry?: boolean;
     switchTool: (tool: string) => void;
     onOpenBackgroundTasks?: () => void;
-    onOpenScheduledTasks?: () => void;
     remoteSessionTab?: 'remote' | 'background' | 'scheduled' | 'passthrough';
+    extensionsLabel: string;
+    extensionsMenuOpen: boolean;
+    onToggleExtensionsMenu?: (target: HTMLElement) => void;
+    libraryMenuOpen?: boolean;
+    onToggleLibraryMenu?: (target: HTMLElement) => void;
+    /** True while the settings page shows the Knowledge tab opened from the library menu. */
+    knowledgeActive?: boolean;
     workflowLabel?: string;
     utilitiesLabel: string;
     utilitiesTitle?: string;
@@ -157,9 +162,9 @@ const TaskRailIcon = () => (
     </svg>
 );
 
-const CalendarRailIcon = () => (
+const ExtensionsRailIcon = () => (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <rect x="3" y="4.5" width="18" height="16" rx="2" /><path d="M7 2.8v3.4M17 2.8v3.4M3 9h18" /><path d="M7.5 13h3M13.5 13h3M7.5 16.5h3" />
+        <rect x="3.5" y="3.5" width="7" height="7" rx="1.5" /><rect x="13.5" y="3.5" width="7" height="7" rx="1.5" /><rect x="3.5" y="13.5" width="7" height="7" rx="1.5" /><path d="M17 13.5v7M13.5 17h7" />
     </svg>
 );
 
@@ -187,14 +192,17 @@ type SemanticNavItemProps = {
     legacyLabel?: string;
     icon: ReactNode;
     active: boolean;
-    onClick: () => void;
+    /** aria-current target. Defaults to `active`; menu triggers separate the two. */
+    current?: boolean;
+    onClick: (event: React.MouseEvent<HTMLButtonElement>) => void;
     title?: string;
     testId?: string;
     aiStyle?: boolean;
     visible?: boolean;
+    menuTrigger?: { expanded: boolean; controls: string };
 };
 
-const SemanticNavItem = ({ id, label, legacyLabel, icon, active, onClick, title, testId, aiStyle = false, visible = true }: SemanticNavItemProps) => (
+const SemanticNavItem = ({ id, label, legacyLabel, icon, active, current, onClick, title, testId, aiStyle = false, visible = true, menuTrigger }: SemanticNavItemProps) => (
     <button
         type="button"
         data-reference-nav={id}
@@ -203,7 +211,8 @@ const SemanticNavItem = ({ id, label, legacyLabel, icon, active, onClick, title,
         onClick={onClick}
         title={title || label}
         aria-label={label}
-        aria-current={active ? 'page' : undefined}
+        aria-current={(current ?? active) ? 'page' : undefined}
+        {...(menuTrigger ? { 'aria-haspopup': 'menu' as const, 'aria-expanded': menuTrigger.expanded, 'aria-controls': menuTrigger.controls } : {})}
         style={aiStyle ? (visible ? undefined : { display: 'none' }) : { flexDirection: 'column', padding: '5px 0', width: '100%', gap: '4px', border: 'none', justifyContent: 'center', position: 'relative', ...(visible ? {} : { display: 'none' }) }}
     >
         <span className="sidebar-icon" style={{ margin: 0, display: 'inline-flex', color: active ? 'var(--theme-primary-strong)' : 'var(--theme-text-primary)' }}>{icon}</span>
@@ -212,7 +221,7 @@ const SemanticNavItem = ({ id, label, legacyLabel, icon, active, onClick, title,
     </button>
 );
 
-export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showAppEntry, showWorkflowEntry, showUtilitiesEntry = true, showToolsEntry = false, switchTool, onOpenBackgroundTasks, onOpenScheduledTasks, remoteSessionTab = 'remote', workflowLabel, utilitiesLabel, utilitiesTitle, toolsLabel, toolsTitle }: SidebarPrimaryNavProps) => {
+export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showAppEntry, showUtilitiesEntry = true, showToolsEntry = false, switchTool, onOpenBackgroundTasks, remoteSessionTab = 'remote', extensionsLabel, extensionsMenuOpen, onToggleExtensionsMenu, libraryMenuOpen = false, onToggleLibraryMenu, knowledgeActive = false, workflowLabel, utilitiesLabel, utilitiesTitle, toolsLabel, toolsTitle }: SidebarPrimaryNavProps) => {
     // The rail is also used by the English and Traditional-Chinese builds. The
     // existing localized labels are the only language signal available here,
     // so infer the display language without changing the parent component API.
@@ -223,10 +232,10 @@ export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showApp
     // split rail would label a zh-Hans build as AI 專家.
     const isTraditional = !isEnglish && /[專體務設]/.test(languageSample);
     const labels = isEnglish
-        ? { workbench: 'Workbench', tasks: 'Tasks', apps: 'Mini apps', experts: 'AI experts', tools: 'Tools', employees: 'Digital employees', schedule: 'Schedule', files: 'Files', settings: 'Settings' }
+        ? { workbench: 'Workbench', tasks: 'Tasks', apps: 'Mini apps', experts: 'AI experts', tools: 'Tools', employees: 'Digital employees', files: 'Library', settings: 'Settings' }
         : isTraditional
-            ? { workbench: '工作台', tasks: '任務', apps: '小程式', experts: 'AI 專家', tools: '工具', employees: '數字員工', schedule: '日程', files: '文件', settings: '設定' }
-        : { workbench: '工作台', tasks: '任务', apps: '小程序', experts: 'AI 专家', tools: '工具', employees: '数字员工', schedule: '日程', files: '文件', settings: '设置' };
+            ? { workbench: '工作台', tasks: '任務', apps: '小程式', experts: 'AI 專家', tools: '工具', employees: '數字員工', files: '資料庫', settings: '設定' }
+        : { workbench: '工作台', tasks: '任务', apps: '小程序', experts: 'AI 专家', tools: '工具', employees: '数字员工', files: '资料库', settings: '设置' };
 
     // Keep the old combined entry available to isolated embedders/tests that
     // do not opt into the split navigation, while the packaged app uses the
@@ -257,9 +266,9 @@ export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showApp
             <SemanticNavItem id="experts" label={expertLabel} legacyLabel={showToolsEntry ? undefined : utilitiesLabel} icon={<ExpertRailIcon />} active={navTab === 'utilities'} onClick={() => switchTool('utilities')} title={expertTitle} testId="sidebar-utilities-nav" visible={showUtilitiesEntry} />
             <SemanticNavItem id="tools" label={toolLabel} icon={<ToolsRailIcon />} active={navTab === 'tools'} onClick={() => switchTool('tools')} title={toolsTitle || toolLabel} testId="sidebar-tools-nav" visible={showToolsEntry} />
             <SemanticNavItem id="employees" label={labels.employees} icon={<GossipIcon />} active={false} onClick={() => { switchTool('ai'); emitRailIntent('maclaw:focus-digital-employees'); }} title={labels.employees} testId="sidebar-digital-employees-nav" />
-            <SemanticNavItem id="schedule" label={labels.schedule} legacyLabel={workflowLabel || (isEnglish ? 'Scheduled tasks' : '计划任务')} icon={<CalendarRailIcon />} active={navTab === 'remote' && remoteSessionTab === 'scheduled'} onClick={onOpenScheduledTasks || (() => switchTool('remote'))} title={isEnglish ? 'Scheduled tasks' : isTraditional ? '計劃任務' : '计划任务'} testId="sidebar-schedule-nav" visible={showWorkflowEntry} />
-            <SemanticNavItem id="files" label={labels.files} icon={<FolderRailIcon />} active={navTab === 'files'} onClick={() => switchTool('files')} title={labels.files} testId="sidebar-files-nav" />
-            <SemanticNavItem id="settings" label={labels.settings} icon={<SettingsIcon />} active={navTab === 'settings'} onClick={() => switchTool('settings')} title={labels.settings} testId="sidebar-settings-nav" />
+            <SemanticNavItem id="extensions" label={extensionsLabel} icon={<ExtensionsRailIcon />} active={extensionsMenuOpen || navTab === 'skills' || navTab === 'mcp'} current={navTab === 'skills' || navTab === 'mcp'} onClick={event => { if (onToggleExtensionsMenu) onToggleExtensionsMenu(event.currentTarget); }} title={extensionsLabel} testId="sidebar-extensions-nav" menuTrigger={{ expanded: extensionsMenuOpen, controls: 'extensions-popup-menu' }} />
+            <SemanticNavItem id="files" label={labels.files} icon={<FolderRailIcon />} active={libraryMenuOpen || navTab === 'files' || knowledgeActive} current={navTab === 'files' || knowledgeActive} onClick={event => { if (onToggleLibraryMenu) onToggleLibraryMenu(event.currentTarget); }} title={labels.files} testId="sidebar-files-nav" menuTrigger={{ expanded: libraryMenuOpen, controls: 'library-popup-menu' }} />
+            <SemanticNavItem id="settings" label={labels.settings} icon={<SettingsIcon />} active={navTab === 'settings' && !knowledgeActive} onClick={() => switchTool('settings')} title={labels.settings} testId="sidebar-settings-nav" />
         </>
     );
 };

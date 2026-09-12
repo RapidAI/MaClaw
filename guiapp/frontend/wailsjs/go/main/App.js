@@ -94,6 +94,10 @@ export function AddVEToGroup(arg1, arg2) {
   return window['go']['main']['App']['AddVEToGroup'](arg1, arg2);
 }
 
+export function AddVirtualRepositoryMapping(arg1) {
+  return window['go']['main']['App']['AddVirtualRepositoryMapping'](arg1);
+}
+
 export function AdoptBaseCodingWorkbenchConflict(arg1, arg2, arg3) {
   return window['go']['main']['App']['AdoptBaseCodingWorkbenchConflict'](arg1, arg2, arg3);
 }
@@ -394,12 +398,12 @@ export function CheckYOLOModel() {
   return window['go']['main']['App']['CheckYOLOModel']();
 }
 
-export function CheckoutRemoteVirtualRepositoryNode(arg1, arg2) {
-  return window['go']['main']['App']['CheckoutRemoteVirtualRepositoryNode'](arg1, arg2);
+export function CheckoutRemoteVirtualRepositoryNode(arg1, arg2, arg3) {
+  return window['go']['main']['App']['CheckoutRemoteVirtualRepositoryNode'](arg1, arg2, arg3 === undefined ? '' : arg3);
 }
 
-export function CheckoutVirtualRepositoryNode(arg1, arg2) {
-  return window['go']['main']['App']['CheckoutVirtualRepositoryNode'](arg1, arg2);
+export function CheckoutVirtualRepositoryNode(arg1, arg2, arg3) {
+  return window['go']['main']['App']['CheckoutVirtualRepositoryNode'](arg1, arg2, arg3 === undefined ? '' : arg3);
 }
 
 export function ClampMaximizedWindowToWorkArea() {
@@ -666,8 +670,8 @@ export function CreateRemoteOpsDiagnosisTask(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['CreateRemoteOpsDiagnosisTask'](arg1, arg2, arg3, arg4, arg5);
 }
 
-export function CreateRemoteVirtualRepositoryDirectory(arg1, arg2) {
-  return window['go']['main']['App']['CreateRemoteVirtualRepositoryDirectory'](arg1, arg2);
+export function CreateRemoteVirtualRepositoryDirectory(arg1, arg2, arg3) {
+  return window['go']['main']['App']['CreateRemoteVirtualRepositoryDirectory'](arg1, arg2, arg3 === undefined ? '' : arg3);
 }
 
 export function CreateRemoteVirtualRepositoryRoot(arg1) {
@@ -1690,8 +1694,8 @@ export function GetRemoteToolReadiness(arg1, arg2, arg3) {
   return window['go']['main']['App']['GetRemoteToolReadiness'](arg1, arg2, arg3);
 }
 
-export function GetRemoteVirtualRepositoryDirectoryStats(arg1, arg2) {
-  return window['go']['main']['App']['GetRemoteVirtualRepositoryDirectoryStats'](arg1, arg2);
+export function GetRemoteVirtualRepositoryDirectoryStats(arg1, arg2, arg3) {
+  return window['go']['main']['App']['GetRemoteVirtualRepositoryDirectoryStats'](arg1, arg2, arg3 === undefined ? '' : arg3);
 }
 
 export function GetRiskAssessor() {
@@ -2310,8 +2314,8 @@ export function InjectAIAssistantSupplementaryForSession(arg1, arg2) {
   return window['go']['main']['App']['InjectAIAssistantSupplementaryForSession'](arg1, arg2);
 }
 
-export function InspectRemoteVirtualRepository(arg1) {
-  return window['go']['main']['App']['InspectRemoteVirtualRepository'](arg1);
+export function InspectRemoteVirtualRepository(arg1, arg2) {
+  return window['go']['main']['App']['InspectRemoteVirtualRepository'](arg1, arg2 === undefined ? '' : arg2);
 }
 
 export function InspectVirtualRepository(arg1) {
@@ -3218,6 +3222,10 @@ export function ListVirtualRepositories() {
   return window['go']['main']['App']['ListVirtualRepositories']();
 }
 
+export function ListVirtualRepositoryMappings(arg1) {
+  return window['go']['main']['App']['ListVirtualRepositoryMappings'](arg1);
+}
+
 export function LoadAIAssistantUIState() {
   return window['go']['main']['App']['LoadAIAssistantUIState']();
 }
@@ -3488,6 +3496,14 @@ export function PollQQBotQRStatus(arg1) {
 
 export function PollWeixinQRStatus(arg1) {
   return window['go']['main']['App']['PollWeixinQRStatus'](arg1);
+}
+
+export function PptxSlideThumbnailDataURL(arg1) {
+  return window['go']['main']['App']['PptxSlideThumbnailDataURL'](arg1);
+}
+
+export function PptxPreviewEnsure(arg1) {
+  return window['go']['main']['App']['PptxPreviewEnsure'](arg1);
 }
 
 export function PreflightMaclawAppOneClickPublish(arg1) {
@@ -3797,8 +3813,12 @@ export function ResetLLMTokenUsage(arg1) {
   return window['go']['main']['App']['ResetLLMTokenUsage'](arg1);
 }
 
-export function ResetRemoteVirtualRepositoryHostKey(arg1) {
-  return window['go']['main']['App']['ResetRemoteVirtualRepositoryHostKey'](arg1);
+export function ResetRemoteVirtualRepositoryHostKey(arg1, arg2) {
+  return window['go']['main']['App']['ResetRemoteVirtualRepositoryHostKey'](arg1, arg2 === undefined ? '' : arg2);
+}
+
+export function RemoveVirtualRepositoryMapping(arg1, arg2) {
+  return window['go']['main']['App']['RemoveVirtualRepositoryMapping'](arg1, arg2);
 }
 
 export function ResetVCSClientExecutable(arg1) {
@@ -4517,6 +4537,10 @@ export function SetUIZoomFactor(arg1) {
   return window['go']['main']['App']['SetUIZoomFactor'](arg1);
 }
 
+export function SetDefaultVirtualRepositoryMapping(arg1, arg2) {
+  return window['go']['main']['App']['SetDefaultVirtualRepositoryMapping'](arg1, arg2);
+}
+
 export function SetVCSClientExecutable(arg1, arg2) {
   return window['go']['main']['App']['SetVCSClientExecutable'](arg1, arg2);
 }
@@ -4641,8 +4665,8 @@ export function StartUserDataMigrationImport(arg1, arg2) {
   return window['go']['main']['App']['StartUserDataMigrationImport'](arg1, arg2);
 }
 
-export function StartVirtualRepositoryCodingTask(arg1) {
-  return window['go']['main']['App']['StartVirtualRepositoryCodingTask'](arg1);
+export function StartVirtualRepositoryCodingTask(arg1, arg2) {
+  return window['go']['main']['App']['StartVirtualRepositoryCodingTask'](arg1, arg2 === undefined ? '' : arg2);
 }
 
 export function StartVirtualRepositoryOperation(arg1) {
@@ -4801,6 +4825,10 @@ export function TestRemoteVirtualRepositoryConnection(arg1) {
   return window['go']['main']['App']['TestRemoteVirtualRepositoryConnection'](arg1);
 }
 
+export function TestVirtualRepositoryMappingConnection(arg1) {
+  return window['go']['main']['App']['TestVirtualRepositoryMappingConnection'](arg1);
+}
+
 export function TestWebSearchEngine(arg1) {
   return window['go']['main']['App']['TestWebSearchEngine'](arg1);
 }
@@ -4907,6 +4935,10 @@ export function UpdateRemoteCodingTaskMeta(arg1, arg2, arg3, arg4, arg5) {
 
 export function UpdateScheduledTask(arg1, arg2) {
   return window['go']['main']['App']['UpdateScheduledTask'](arg1, arg2);
+}
+
+export function UpdateVirtualRepositoryMapping(arg1) {
+  return window['go']['main']['App']['UpdateVirtualRepositoryMapping'](arg1);
 }
 
 export function UpdateSkillRunArtifactCache(arg1, arg2, arg3, arg4) {

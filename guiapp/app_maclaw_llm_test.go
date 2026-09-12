@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/brand"
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/configfile"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
@@ -30,7 +31,7 @@ func (f appLLMRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error
 	return f(req)
 }
 
-func TestDoFetchModelsRequestDefaultsCodeGenUserAgentToTigerclaw(t *testing.T) {
+func TestDoFetchModelsRequestDefaultsCodeGenUserAgentToQAgent(t *testing.T) {
 	app := &App{}
 	client := &http.Client{Transport: appLLMRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if got := req.Header.Get("User-Agent"); got != corelib.CodeGenClientName {
@@ -52,6 +53,43 @@ func TestDoFetchModelsRequestDefaultsCodeGenUserAgentToTigerclaw(t *testing.T) {
 		t.Fatalf("doFetchModelsRequest() error = %v", err)
 	}
 	_ = resp.Body.Close()
+}
+
+func TestDoFetchModelsRequestNormalizesLegacyTigerclawUserAgent(t *testing.T) {
+	app := &App{}
+	client := &http.Client{Transport: appLLMRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if got := req.Header.Get("User-Agent"); got != corelib.CodeGenClientName {
+			t.Fatalf("User-Agent = %q, want %q", got, corelib.CodeGenClientName)
+		}
+		if got := req.Header.Get(corelib.CodeGenClientNameHeader); got != corelib.CodeGenClientName {
+			t.Fatalf("%s = %q, want %q", corelib.CodeGenClientNameHeader, got, corelib.CodeGenClientName)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(bytes.NewReader([]byte(`{"data":[]}`))),
+			Request:    req,
+		}, nil
+	})}
+
+	resp, err := app.doFetchModelsRequest(client, "https://codegen.qianxin-inc.cn/api/v1/models", "token", "openai", "tigerclaw")
+	if err != nil {
+		t.Fatalf("doFetchModelsRequest() error = %v", err)
+	}
+	_ = resp.Body.Close()
+}
+
+func TestExtraToolNameMatchesLegacyTigerclaw(t *testing.T) {
+	et := brand.ExtraToolDef{Name: corelib.CodeGenClientName, ConfigKey: corelib.CodeGenClientName}
+	if !extraToolNameMatches(et, "qagent") || !extraToolNameMatches(et, "tigerclaw") {
+		t.Fatal("QAgent extra tool should match qagent and legacy tigerclaw")
+	}
+	cfg := corelib.AppConfig{ExtraToolConfigs: map[string]corelib.ToolConfig{
+		corelib.CodeGenLegacyClientName: {CurrentModel: "legacy-model"},
+	}}
+	if got := extraToolConfig(cfg, et).CurrentModel; got != "legacy-model" {
+		t.Fatalf("legacy extra tool config = %q, want legacy-model", got)
+	}
 }
 
 func TestIsXAIGrokOAuthProvider(t *testing.T) {

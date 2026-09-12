@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { cloudWorkspaceNameMapFromEntitlement, isActiveTaskRow, isProjectTabOpen, SidebarTaskManagement, sortTaskManagementItems, taskCreationLabel, taskSecondaryLabelFor, workflowStatusForTask } from '../SidebarTaskManagement';
+import { cloudWorkspaceNameMapFromEntitlement, isActiveTaskRow, isProjectTabOpen, SidebarTaskManagement, sortTaskManagementItems, taskCreationLabel, taskSecondaryLabelFor, workflowStatusForTask, workflowStatusForTaskRow } from '../SidebarTaskManagement';
 import type { ComponentProps, ReactElement } from 'react';
 import { GetProjectScene, OpenFileOrShowInFolder, OpenProjectDirectory, SelectWorkingDir } from '../../../../wailsjs/go/main/App';
 import { EventsEmit } from '../../../../wailsjs/runtime';
 import { DialogProvider } from '../../CustomDialog';
 import { __resetCloudWorkspaceDisplayNamesForTests, __resetCloudWorkspaceLeaseEnsureForTests, markCloudWorkspaceLeaseEnsured, rememberCloudWorkspaceDisplayName } from '../../ai/codingTaskMode';
+import { __resetCloudWorkspaceTaskRestoreForTests } from '../../../utils/cloudWorkspaceTaskRestore';
 
 const {
     getProjectSceneMock,
@@ -153,6 +154,7 @@ afterEach(async () => {
     cloudWorkspaceCacheDirMock.mockResolvedValue({ local_path: '' });
     __resetCloudWorkspaceDisplayNamesForTests();
     __resetCloudWorkspaceLeaseEnsureForTests();
+    __resetCloudWorkspaceTaskRestoreForTests();
     document.getElementById('App')?.remove();
 });
 
@@ -362,6 +364,48 @@ describe('SidebarTaskManagement', () => {
         }
     });
 
+    it('filters the task list by status chips', () => {
+        const runningTask = { ...baseProject, id: 'task-running', name: 'Running task', project_path: 'D:/work/tasks/running-task', active_workflow: { status: 'running' } };
+        const doneTask = { ...baseProject, id: 'task-done', name: 'Done task', project_path: 'D:/work/tasks/done-task', has_output: true };
+        renderTaskManagement({ tasks: [runningTask, doneTask] });
+
+        expect(screen.getByTestId('task-filter-all').textContent).toContain('2');
+        expect(screen.queryByTestId('task-filter-paused')).toBeNull();
+        expect(screen.queryByTestId('task-filter-shared')).toBeNull();
+
+        fireEvent.click(screen.getByTestId('task-filter-completed'));
+        expect(screen.getByTestId('task-filter-completed').getAttribute('aria-pressed')).toBe('true');
+        expect(screen.queryByText('Running task')).toBeNull();
+        expect(screen.getByText('Done task')).toBeTruthy();
+
+        fireEvent.click(screen.getByTestId('task-filter-all'));
+        expect(screen.getByText('Running task')).toBeTruthy();
+        expect(screen.getByText('Done task')).toBeTruthy();
+    });
+
+    it('shows the paused chip only when a paused task exists and filters to it', () => {
+        const pausedTask = { ...baseProject, id: 'task-paused', name: 'Paused task', project_path: 'D:/work/tasks/paused-task', active_workflow: { status: 'paused' } };
+        renderTaskManagement({ tasks: [pausedTask] });
+
+        const pausedChip = screen.getByTestId('task-filter-paused');
+        expect(screen.queryByTestId('task-filter-shared')).toBeNull();
+        fireEvent.click(pausedChip);
+        expect(pausedChip.getAttribute('aria-pressed')).toBe('true');
+        expect(screen.getByText('Paused task')).toBeTruthy();
+    });
+
+    it('shows a loading bar instead of the empty state while tasks load', () => {
+        renderTaskManagement({ tasks: [], tasksLoading: true });
+        expect(screen.getByTestId('task-list-loading')).toBeTruthy();
+        expect(screen.queryByText('No tasks')).toBeNull();
+    });
+
+    it('shows the empty state once loading finished with no tasks', () => {
+        renderTaskManagement({ tasks: [], tasksLoading: false });
+        expect(screen.queryByTestId('task-list-loading')).toBeNull();
+        expect(screen.getByText('No tasks')).toBeTruthy();
+    });
+
     it('sorts by pinned state and creation time instead of mutable activity', () => {
         const older = { ...baseProject, id: 'older', project_path: 'D:/work/tasks/older', created_at: '2026-01-01T00:00:00Z', last_activity: '2026-09-01T00:00:00Z' };
         const newer = { ...baseProject, id: 'newer', project_path: 'D:/work/tasks/newer', created_at: '2026-08-01T00:00:00Z', last_activity: '2026-01-01T00:00:00Z' };
@@ -457,6 +501,21 @@ describe('SidebarTaskManagement', () => {
         expect(workflowStatusForTask(undefined, 'en')).toBeNull();
         expect(taskCreationLabel('2026-01-01T00:00:00.000Z', 'en')).toMatch(/^Created 2026-01-01 /);
         expect(taskCreationLabel('not-a-date', 'en')).toBe('');
+    });
+
+    it('falls back to output-based completion when no workflow snapshot survives', () => {
+        expect(workflowStatusForTaskRow(null, 'en')).toBeNull();
+        expect(workflowStatusForTaskRow({ has_output: true }, 'en')).toEqual({
+            label: 'Completed', tone: 'success',
+        });
+        // A genuinely running workflow still wins over stale output.
+        expect(workflowStatusForTaskRow({ active_workflow: { status: 'running' }, has_output: true }, 'en')).toEqual({
+            label: 'In progress', detail: undefined, tone: 'info',
+        });
+        // Terminal snapshots (cancelled) win over output too.
+        expect(workflowStatusForTaskRow({ active_workflow: { status: 'cancelled' }, has_output: true }, 'en')).toEqual({
+            label: 'Cancelled', detail: undefined, tone: 'neutral',
+        });
     });
 
     it('keeps completed and cancelled workflow snapshots distinct', () => {
@@ -1778,6 +1837,60 @@ describe('SidebarTaskManagement', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Create & open' }));
 
         expect(createTask).toHaveBeenCalledWith('New task', 'D:/work/selected-folder');
+    });
+
+    it('does not prefill a cloud workspace cache dir when creating a chat task', () => {
+        renderTaskManagement({
+            tasks: [{
+                ...baseProject,
+                project_path: 'D:/tasks/cloud-a',
+                tags: ['cloud_workspace:cws_a'],
+                working_dir: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_a',
+            }],
+        });
+
+        fireEvent.click(screen.getByTitle('Create task'));
+
+        expect(document.getElementById('task-working-directory')?.getAttribute('title')).toBe('Choose working folder');
+    });
+
+    it('prefills the last local coding workdir instead of a newer cloud workspace cache dir', () => {
+        renderTaskManagement({
+            tasks: [
+                {
+                    ...baseProject,
+                    project_path: 'D:/tasks/cloud-a',
+                    tags: ['cloud_workspace:cws_a'],
+                    working_dir: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_a',
+                },
+                {
+                    ...baseProject,
+                    id: 'task-2',
+                    project_path: 'D:/tasks/local-coding',
+                    tags: ['coding_dev'],
+                    working_dir: 'D:/work/coding-project',
+                },
+            ],
+        });
+
+        fireEvent.click(screen.getByTitle('Create task'));
+
+        expect(document.getElementById('task-working-directory')?.getAttribute('title')).toBe('D:/work/coding-project');
+    });
+
+    it('rejects a manually picked cloud workspace cache folder', async () => {
+        selectWorkingDirMock.mockResolvedValue('C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_a');
+        const createTask = vi.fn();
+        renderTaskManagement({ createTask });
+
+        fireEvent.click(screen.getByTitle('Create task'));
+        fireEvent.click(screen.getByRole('button', { name: 'Choose working folder' }));
+
+        await screen.findByText(/cloud workspace cache/);
+        expect(document.getElementById('task-working-directory')?.getAttribute('title')).toBe('Choose working folder');
+
+        fireEvent.click(screen.getByRole('button', { name: 'Create & open' }));
+        expect(createTask).toHaveBeenCalledWith('New task');
     });
 
     it('shows a coding task icon and pure-coding badge for coding_dev tags', () => {
@@ -3937,5 +4050,26 @@ describe('SidebarTaskManagement', () => {
         await waitFor(() => expect(screen.queryByTestId('task-cloud-workspace-deleted')).toBeNull());
         expect(screen.getByRole('dialog', { name: '创建云端工作区任务' })).toBeTruthy();
         confirmSpy.mockRestore();
+    });
+});
+
+describe('cloud sync progress indicator', () => {
+    // Disable every internal cloud-sync trigger so the indicator is driven
+    // solely by the cloudTasksLoading prop from App's assistant-ready path.
+    const cloudSyncOffProps = {
+        showCloudWorkspaceManagement: false,
+        showCloudWorkspaceCreation: false,
+    } as const;
+
+    it('shows the indicator while cloud tasks load, without hiding local tasks', () => {
+        renderTaskManagement({ ...cloudSyncOffProps, cloudTasksLoading: true });
+        expect(screen.getByTestId('task-cloud-sync-progress')).toBeTruthy();
+        // Local rows stay visible while the cloud sync runs.
+        expect(screen.getByText('Build dashboard')).toBeTruthy();
+    });
+
+    it('hides the indicator when no cloud sync is in flight', () => {
+        renderTaskManagement({ ...cloudSyncOffProps, cloudTasksLoading: false });
+        expect(screen.queryByTestId('task-cloud-sync-progress')).toBeNull();
     });
 });

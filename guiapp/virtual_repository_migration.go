@@ -70,7 +70,7 @@ func parseVirtualRepositoryRootMigrationRequest(inputJSON string) (VirtualReposi
 	}
 	request.RepositoryID = strings.TrimSpace(request.RepositoryID)
 	request.DestinationRoot = strings.TrimSpace(request.DestinationRoot)
-	if len(request.RepositoryID) > virtualRepositoryNameMaxLength || containsControlCharacter(request.RepositoryID) || strings.ContainsRune(request.RepositoryID, ':') {
+	if len(request.RepositoryID) > virtualRepositoryNameMaxLength || containsControlCharacter(request.RepositoryID) || strings.ContainsAny(request.RepositoryID, `:/`) {
 		return request, errors.New("virtual repository id is invalid")
 	}
 	if len(request.Password) > virtualRepositoryFieldMaxLength || strings.ContainsAny(request.Password, "\r\n\x00") {

@@ -23,17 +23,20 @@ type VirtualRepositoryCodingTaskLaunch struct {
 // StartVirtualRepositoryCodingTask creates a task-management record and arms
 // the corresponding local or remote coding environment. repositoryID is used
 // for both modes so callers never get to supply an arbitrary execution path.
-func (a *App) StartVirtualRepositoryCodingTask(repositoryID string) (VirtualRepositoryCodingTaskLaunch, error) {
+// mappingID selects the machine/root mapping to launch on; an empty mappingID
+// uses the repository's default mapping (the legacy single-location behavior).
+func (a *App) StartVirtualRepositoryCodingTask(repositoryID, mappingID string) (VirtualRepositoryCodingTaskLaunch, error) {
 	id := strings.TrimSpace(repositoryID)
 	if id == "" {
 		return VirtualRepositoryCodingTaskLaunch{}, errors.New("virtual repository ID is required")
 	}
+	mappingID = strings.TrimSpace(mappingID)
 	// Wails requests are not guaranteed to come from one frontend instance.
 	// Coalesce same-repository launches in the backend as the final guard against
 	// duplicated task records and parallel SSH handshakes.
-	launchKey := fmt.Sprintf("%p:%s", a, id)
+	launchKey := fmt.Sprintf("%p:%s:%s", a, id, mappingID)
 	result, err, _ := virtualRepositoryCodingTaskLaunches.Do(launchKey, func() (any, error) {
-		return a.startVirtualRepositoryCodingTask(id)
+		return a.startVirtualRepositoryCodingTask(id, mappingID)
 	})
 	if err != nil {
 		return VirtualRepositoryCodingTaskLaunch{}, err
@@ -41,58 +44,60 @@ func (a *App) StartVirtualRepositoryCodingTask(repositoryID string) (VirtualRepo
 	return result.(VirtualRepositoryCodingTaskLaunch), nil
 }
 
-func (a *App) startVirtualRepositoryCodingTask(repositoryID string) (VirtualRepositoryCodingTaskLaunch, error) {
+func (a *App) startVirtualRepositoryCodingTask(repositoryID, mappingID string) (VirtualRepositoryCodingTaskLaunch, error) {
 	item, err := a.virtualRepositoryIndexEntryByID(repositoryID)
 	if err != nil {
 		return VirtualRepositoryCodingTaskLaunch{}, err
 	}
-	var repo *VirtualRepository
-	if item.Remote == nil {
-		repo, err = readVirtualRepository(item.RootPath)
-		if err != nil {
-			return VirtualRepositoryCodingTaskLaunch{}, fmt.Errorf("open local virtual repository: %w", err)
-		}
-		if repo.ID != item.ID {
-			return VirtualRepositoryCodingTaskLaunch{}, errors.New("virtual repository index no longer matches its manifest")
-		}
-	} else {
+	mapping, err := resolveVirtualRepositoryMapping(item, mappingID)
+	if err != nil {
+		return VirtualRepositoryCodingTaskLaunch{}, err
+	}
+	if mapping.Kind == virtualRepositoryMappingKindRemoteSSH {
 		// Check local trust material before touching the network. This makes a
 		// missing-password or untrusted-host launch fail immediately and ensures
 		// no task record can be created during an incomplete connection setup.
-		password, passwordErr := keyring.Get(virtualRepositorySSHKeyringService, item.ID)
+		secretKey := virtualRepositoryMappingSecretKey(item.ID, mapping.ID)
+		password, passwordErr := keyring.Get(virtualRepositorySSHKeyringService, secretKey)
 		if passwordErr != nil || strings.TrimSpace(password) == "" {
 			return VirtualRepositoryCodingTaskLaunch{}, errors.New("SSH password is unavailable; open the virtual repository connection settings and save the password again")
 		}
+		remote := virtualRepositoryMappingRemote(mapping)
 		knownHosts, knownHostsErr := a.loadVirtualRepositoryKnownHosts()
 		if knownHostsErr != nil {
 			return VirtualRepositoryCodingTaskLaunch{}, fmt.Errorf("load trusted SSH host key: %w", knownHostsErr)
 		}
-		fingerprint := knownHosts.Hosts[remoteVirtualRepositoryHostID(item.Remote)]
+		fingerprint := knownHosts.Hosts[remoteVirtualRepositoryHostID(remote)]
 		if strings.TrimSpace(fingerprint) == "" {
 			return VirtualRepositoryCodingTaskLaunch{}, errors.New("SSH host key is not trusted; test and trust the virtual repository connection first")
 		}
-		repo, err = a.readRemoteVirtualRepository(item, password, false)
+		view := virtualRepositoryIndexEntryForMapping(item, *mapping)
+		repo, err := a.readRemoteVirtualRepositoryWithKey(view, secretKey, password, false)
 		if err != nil {
 			return VirtualRepositoryCodingTaskLaunch{}, fmt.Errorf("open remote virtual repository: %w", err)
 		}
 		return a.startRemoteVirtualRepositoryCodingTask(repo, password, fingerprint)
 	}
+	repo, err := readVirtualRepository(mapping.RootPath)
+	if err != nil {
+		return VirtualRepositoryCodingTaskLaunch{}, fmt.Errorf("open local virtual repository: %w", err)
+	}
+	if repo.ID != item.ID {
+		return VirtualRepositoryCodingTaskLaunch{}, errors.New("virtual repository index no longer matches its manifest")
+	}
 	title := strings.TrimSpace(repo.Name)
 	if title == "" {
 		title = "Virtual repository"
 	}
-	if repo.Remote == nil {
-		created := a.CreateTaskWithMode(title, repo.RootPath, "coding_dev")
-		if strings.TrimSpace(created.ProjectPath) == "" {
-			return VirtualRepositoryCodingTaskLaunch{}, errors.New("create local coding task failed")
-		}
-		if err := a.PrepareLocalCodingEnvironment(created.ProjectPath, repo.RootPath); err != nil {
-			a.HideTask(created.ProjectPath)
-			return VirtualRepositoryCodingTaskLaunch{}, fmt.Errorf("prepare local coding environment: %w", err)
-		}
-		return VirtualRepositoryCodingTaskLaunch{ProjectPath: created.ProjectPath, TaskTitle: title, AgentMode: "coding_dev"}, nil
+	created := a.CreateTaskWithMode(title, repo.RootPath, "coding_dev")
+	if strings.TrimSpace(created.ProjectPath) == "" {
+		return VirtualRepositoryCodingTaskLaunch{}, errors.New("create local coding task failed")
 	}
-	return VirtualRepositoryCodingTaskLaunch{}, errors.New("invalid virtual repository location")
+	if err := a.PrepareLocalCodingEnvironment(created.ProjectPath, repo.RootPath); err != nil {
+		a.HideTask(created.ProjectPath)
+		return VirtualRepositoryCodingTaskLaunch{}, fmt.Errorf("prepare local coding environment: %w", err)
+	}
+	return VirtualRepositoryCodingTaskLaunch{ProjectPath: created.ProjectPath, TaskTitle: title, AgentMode: "coding_dev"}, nil
 }
 
 func (a *App) startRemoteVirtualRepositoryCodingTask(repo *VirtualRepository, password, fingerprint string) (VirtualRepositoryCodingTaskLaunch, error) {
@@ -115,10 +120,15 @@ func (a *App) virtualRepositoryByIDForCodingTask(repositoryID string) (*VirtualR
 	if err != nil {
 		return nil, err
 	}
-	if item.Remote != nil {
-		return a.readRemoteVirtualRepository(item, "", false)
+	mapping, err := resolveVirtualRepositoryMapping(item, "")
+	if err != nil {
+		return nil, err
 	}
-	repo, err := readVirtualRepository(item.RootPath)
+	if mapping.Kind == virtualRepositoryMappingKindRemoteSSH {
+		view := virtualRepositoryIndexEntryForMapping(item, *mapping)
+		return a.readRemoteVirtualRepositoryWithKey(view, virtualRepositoryMappingSecretKey(item.ID, mapping.ID), "", false)
+	}
+	repo, err := readVirtualRepository(mapping.RootPath)
 	if err != nil {
 		return nil, fmt.Errorf("open local virtual repository: %w", err)
 	}

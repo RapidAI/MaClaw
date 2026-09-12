@@ -799,6 +799,11 @@ func (e *CoreAgentExecutor) executeLocalCodingRuntime(ctx context.Context, req E
 		LeaseDuration:   15 * time.Minute,
 		WorkspaceProber: codingruntime.NewLocalGitWorkspaceProber(policy.ProjectRoot),
 	}
+	if policy.Mode == "local" && !policy.ReadOnly && policy.FinalWorkspaceGateRequired {
+		if err := codingruntime.EnsureLocalGitBaseline(ctx, policy.ProjectRoot); err != nil {
+			log.Printf("[agentservice] local git baseline init failed for %s: %v", policy.ProjectRoot, err)
+		}
+	}
 	task, attempt, runErr := runner.Run(ctx, codingruntime.Task{
 		TaskID:        taskID,
 		WorkflowID:    strings.TrimSpace(req.Message.Metadata[metaCodingRuntimeWorkflowID]),

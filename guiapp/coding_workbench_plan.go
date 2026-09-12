@@ -103,7 +103,7 @@ func (h *IMMessageHandler) resolveCodingRequestDecision(userText string) codingR
 	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
 		return fallback
 	}
-	if decision, ok := parseCodingRequestDecision(h.callLightweightLLMOnce(cfg, codingRequestClassifierSystemPrompt, userText, 5)); ok {
+	if decision, ok := parseCodingRequestDecision(h.callLightweightLLMOnce(cfg, codingRequestClassifierSystemPrompt, userText, 15)); ok {
 		return applyCodingRequestPlanFloor(decision, userText)
 	}
 	// A missing or malformed classifier answer must never grant a looser mode.

@@ -41,8 +41,10 @@ var codingSurfaceTrustedAdapters = map[tool.CapabilityID]string{
 // search and locating files by name through the trusted read adapter, so a
 // managed coding plan can discover and grep the workspace without these two
 // legacy entries ever being registered.
+//
+// Glob is registered on the host with fs.read.local provisions and a trusted
+// adapter, so it no longer belongs here; ripgrep remains subagent-only.
 var codingSurfaceToolsOutsideHostRegistry = map[string]string{
-	"Glob":    "subagent-only fallback definition; outcome served by fs.read.local file_pattern",
 	"ripgrep": "subagent-only fallback definition; outcome served by fs.read.local query",
 }
 

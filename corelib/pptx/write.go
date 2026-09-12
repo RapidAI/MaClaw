@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	ppt "github.com/VantageDataChat/GoPPT"
+	ppt "github.com/Vantagics/GoPPT"
 )
 
 // Outline is the JSON contract for native deck generation. It matches the

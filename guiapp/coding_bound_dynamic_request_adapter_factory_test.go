@@ -3151,8 +3151,16 @@ func TestVerifiedIngressRunLoopCancellationSettlesBoundReservationExactlyOnce(t 
 	if adapter == nil || relay == nil {
 		t.Fatal("verified cancellation never composed the relay")
 	}
-	if relay.active != nil || !adapter.terminal {
-		t.Fatalf("cancelled reservation still live: active=%#v terminal=%v", relay.active, adapter.terminal)
+	// The unwind signals done as soon as the runtime returns; the relay's
+	// finishTerminal performs a durable close off that goroutine, so under a
+	// loaded test host the settlement can land a moment later. Wait for it
+	// with a bounded poll instead of asserting on the raw race window.
+	settleDeadline := time.Now().Add(2 * time.Second)
+	for relay.active != nil || !adapter.terminal {
+		if time.Now().After(settleDeadline) {
+			t.Fatalf("cancelled reservation still live: active=%#v terminal=%v", relay.active, adapter.terminal)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 	execution := testCodingBoundAdapterExecution(adapter)
 	events := ledger.eventsFor(t, execution)

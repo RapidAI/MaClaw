@@ -57,6 +57,9 @@ func openAICompatSDKOptions(cfg MaclawLLMConfig, client *http.Client) []option.R
 	if IsCodeGenURL(cfg.URL) {
 		opts = append(opts, option.WithHeader(CodeGenClientNameHeader, NormalizeCodeGenClientName(cfg.UserAgent())))
 	}
+	if name, value, ok := OpenCodeSessionHeaderForConfig(cfg); ok {
+		opts = append(opts, option.WithHeader(name, value))
+	}
 	if timeout := cfg.EffectiveTimeoutSec(); timeout > 0 {
 		opts = append(opts, option.WithRequestTimeout(time.Duration(timeout)*time.Second))
 	}

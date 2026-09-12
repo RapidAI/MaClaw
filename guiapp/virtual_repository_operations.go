@@ -23,6 +23,7 @@ import (
 type VirtualRepositoryOperationRequest struct {
 	RootPath             string    `json:"root_path"`
 	RepositoryID         string    `json:"repository_id,omitempty"`
+	MappingID            string    `json:"mapping_id,omitempty"`
 	NodeID               string    `json:"node_id,omitempty"`
 	Action               string    `json:"action"`
 	Message              string    `json:"message,omitempty"`
@@ -38,9 +39,25 @@ func (a *App) virtualRepositoryForOperation(req VirtualRepositoryOperationReques
 			return nil, err
 		}
 		for _, item := range indexItems {
-			if item.ID == strings.TrimSpace(req.RepositoryID) && item.Remote != nil {
-				return a.readRemoteVirtualRepository(item, "", false)
+			if item.ID != strings.TrimSpace(req.RepositoryID) {
+				continue
 			}
+			mapping, err := resolveVirtualRepositoryMapping(item, req.MappingID)
+			if err != nil {
+				return nil, err
+			}
+			if mapping.Kind == virtualRepositoryMappingKindRemoteSSH {
+				view := virtualRepositoryIndexEntryForMapping(item, *mapping)
+				return a.readRemoteVirtualRepositoryWithKey(view, virtualRepositoryMappingSecretKey(item.ID, mapping.ID), "", false)
+			}
+			repo, err := readVirtualRepository(mapping.RootPath)
+			if err != nil {
+				return nil, err
+			}
+			if repo.ID != item.ID {
+				return nil, errors.New("virtual repository index no longer matches its manifest")
+			}
+			return repo, nil
 		}
 	}
 	return readVirtualRepository(req.RootPath)
@@ -198,12 +215,16 @@ func parseVirtualRepositoryOperationRequest(inputJSON string) (VirtualRepository
 	}
 	req.RootPath = strings.TrimSpace(req.RootPath)
 	req.RepositoryID = strings.TrimSpace(req.RepositoryID)
+	req.MappingID = strings.TrimSpace(req.MappingID)
 	req.NodeID = strings.TrimSpace(req.NodeID)
 	req.ExpectedRepositoryID = strings.TrimSpace(req.ExpectedRepositoryID)
 	for _, value := range []string{req.RepositoryID, req.NodeID, req.ExpectedRepositoryID} {
 		if len(value) > virtualRepositoryNameMaxLength || containsControlCharacter(value) {
 			return req, errors.New("virtual repository operation contains an invalid id")
 		}
+	}
+	if len(req.MappingID) > virtualRepositoryNameMaxLength || containsControlCharacter(req.MappingID) || strings.ContainsAny(req.MappingID, `:/`) {
+		return req, errors.New("virtual repository operation contains an invalid mapping id")
 	}
 	if len(req.RootPath) > virtualRepositoryFieldMaxLength || containsControlCharacter(req.RootPath) {
 		return req, errors.New("virtual repository operation contains an invalid root path")
@@ -326,7 +347,7 @@ func (a *App) PreviewVirtualRepositoryOperation(inputJSON string) (string, error
 	var remoteClient *ssh.Client
 	if repo.Remote != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		remoteRepo, client, remoteErr := a.remoteVirtualRepositoryByIDContext(ctx, repo.ID)
+		remoteRepo, client, remoteErr := a.remoteVirtualRepositoryByIDMappingContext(ctx, repo.ID, req.MappingID)
 		cancel()
 		if remoteErr != nil {
 			return "", remoteErr
@@ -508,7 +529,7 @@ func (a *App) runVirtualRepositoryOperationJob(ctx context.Context, job *virtual
 	var remoteConnectErr error
 	if repo.Remote != nil {
 		var current *VirtualRepository
-		current, remoteClient, remoteConnectErr = a.remoteVirtualRepositoryByIDContext(ctx, repo.ID)
+		current, remoteClient, remoteConnectErr = a.remoteVirtualRepositoryByIDMappingContext(ctx, repo.ID, req.MappingID)
 		if remoteConnectErr == nil {
 			if !current.UpdatedAt.Equal(repo.UpdatedAt) {
 				remoteConnectErr = errors.New("remote virtual repository changed after the operation was queued; preview and start it again")

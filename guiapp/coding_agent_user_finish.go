@@ -88,14 +88,17 @@ func formatCodingAgentResultParagraph(result v2.TaskRunResult) string {
 		}
 		return title + " did not finish."
 	case v2.TaskSkipped:
+		if err != "" {
+			if title == "" {
+				title = codingExecText("this step", "this step", "this step")
+			}
+			return fmt.Sprintf("Skipped %s: %s", title, err)
+		}
 		if summary != "" {
 			return summary
 		}
 		if title == "" {
 			return codingExecText("Skipped this step.", "Skipped this step.", "Skipped this step.")
-		}
-		if err != "" {
-			return fmt.Sprintf("Skipped %s: %s", title, err)
 		}
 		return fmt.Sprintf("Skipped %s.", title)
 	default:

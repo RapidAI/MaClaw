@@ -211,3 +211,51 @@ func TestApplySystemSettingOpDoesNotAckPerGroupClassHead(t *testing.T) {
 		t.Fatalf("per-group class head must not ack official head, acks=%d", acked)
 	}
 }
+
+func applyMonitorLeaseOp(t *testing.T, svc *Service, valueJSON string) {
+	t.Helper()
+	payload, err := json.Marshal(systemSettingPayload{Key: LLMProviderMonitorLeaseKey, ValueJSON: valueJSON})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	if err := svc.applySystemSettingOp(context.Background(), &store.HASyncOp{OpType: OpUpsert, PayloadJSON: string(payload)}); err != nil {
+		t.Fatalf("applySystemSettingOp: %v", err)
+	}
+}
+
+func TestApplySystemSettingOpFencesStaleMonitorLease(t *testing.T) {
+	fresh := `{"owner":"node-a","until":2000}`
+	settings := &fakeSystemSettings{data: map[string]string{LLMProviderMonitorLeaseKey: fresh}}
+	svc := &Service{settings: settings}
+
+	applyMonitorLeaseOp(t, svc, `{"owner":"node-b","until":1000}`)
+
+	if got := settings.data[LLMProviderMonitorLeaseKey]; got != fresh {
+		t.Fatalf("stale lease op demoted the fresher local lease: %q", got)
+	}
+}
+
+func TestApplySystemSettingOpAppliesNewerMonitorLease(t *testing.T) {
+	settings := &fakeSystemSettings{data: map[string]string{LLMProviderMonitorLeaseKey: `{"owner":"node-a","until":2000}`}}
+	svc := &Service{settings: settings}
+
+	newer := `{"owner":"node-b","until":3000}`
+	applyMonitorLeaseOp(t, svc, newer)
+
+	if got := settings.data[LLMProviderMonitorLeaseKey]; got != newer {
+		t.Fatalf("newer lease op not applied: %q", got)
+	}
+}
+
+func TestApplySystemSettingOpAppliesMalformedMonitorLease(t *testing.T) {
+	settings := &fakeSystemSettings{data: map[string]string{LLMProviderMonitorLeaseKey: `{"owner":"node-a","until":2000}`}}
+	svc := &Service{settings: settings}
+
+	// Malformed incoming payloads apply as usual so a corrupted lease never
+	// blocks recovery.
+	applyMonitorLeaseOp(t, svc, `{not json}`)
+
+	if got := settings.data[LLMProviderMonitorLeaseKey]; got != `{not json}` {
+		t.Fatalf("malformed lease op not applied: %q", got)
+	}
+}

@@ -59,6 +59,8 @@ export function AddSkillDetailed(arg1:string,arg2:string,arg3:string,arg4:string
 
 export function AddVEToGroup(arg1:string,arg2:string):Promise<void>;
 
+export function AddVirtualRepositoryMapping(arg1:string):Promise<string>;
+
 export function AdoptBaseCodingWorkbenchConflict(arg1:string,arg2:string,arg3:string):Promise<string>;
 
 export function AdoptCodingWorkbenchConflict(arg1:string,arg2:string,arg3:string):Promise<string>;
@@ -208,9 +210,9 @@ export function CheckVEApprovalCapabilityStatus(arg1:string):Promise<main.VEAppr
 
 export function CheckYOLOModel():Promise<Record<string, any>>;
 
-export function CheckoutRemoteVirtualRepositoryNode(arg1:string,arg2:string):Promise<void>;
+export function CheckoutRemoteVirtualRepositoryNode(arg1:string,arg2:string,arg3?:string):Promise<void>;
 
-export function CheckoutVirtualRepositoryNode(arg1:string,arg2:string):Promise<void>;
+export function CheckoutVirtualRepositoryNode(arg1:string,arg2:string,arg3?:string):Promise<void>;
 
 export function ClampMaximizedWindowToWorkArea():Promise<void>;
 
@@ -344,7 +346,7 @@ export function CreateRemoteCodingTask(arg1:string,arg2:string,arg3:string,arg4:
 
 export function CreateRemoteOpsDiagnosisTask(arg1:string,arg2:string,arg3:string,arg4:string,arg5:number):Promise<main.ProjectSearchResult>;
 
-export function CreateRemoteVirtualRepositoryDirectory(arg1:string,arg2:string):Promise<void>;
+export function CreateRemoteVirtualRepositoryDirectory(arg1:string,arg2:string,arg3?:string):Promise<void>;
 
 export function CreateRemoteVirtualRepositoryRoot(arg1:string):Promise<void>;
 
@@ -855,7 +857,7 @@ export function GetRemoteToolLaunchProbe(arg1:string,arg2:string,arg3:boolean):P
 
 export function GetRemoteToolReadiness(arg1:string,arg2:string,arg3:boolean):Promise<main.RemoteToolReadiness>;
 
-export function GetRemoteVirtualRepositoryDirectoryStats(arg1:string,arg2:string):Promise<string>;
+export function GetRemoteVirtualRepositoryDirectoryStats(arg1:string,arg2:string,arg3?:string):Promise<string>;
 
 export function GetRiskAssessor():Promise<main.RiskAssessor>;
 
@@ -1169,7 +1171,7 @@ export function InjectAIAssistantSupplementary(arg1:string):Promise<boolean>;
 
 export function InjectAIAssistantSupplementaryForSession(arg1:string,arg2:string):Promise<boolean>;
 
-export function InspectRemoteVirtualRepository(arg1:string):Promise<string>;
+export function InspectRemoteVirtualRepository(arg1:string,arg2?:string):Promise<string>;
 
 export function InspectVirtualRepository(arg1:string):Promise<string>;
 
@@ -1615,6 +1617,8 @@ export function ListVirtualEmployees():Promise<Array<main.VirtualEmployeeEntry>>
 
 export function ListVirtualRepositories():Promise<string>;
 
+export function ListVirtualRepositoryMappings(arg1:string):Promise<string>;
+
 export function LoadAIAssistantUIState():Promise<main.AIAssistantUIState>;
 
 export function LoadConfig():Promise<corelib.AppConfig>;
@@ -1750,6 +1754,10 @@ export function PlatformTransparencyFlags():Promise<boolean|boolean>;
 export function PollQQBotQRStatus(arg1:string):Promise<Record<string, string>>;
 
 export function PollWeixinQRStatus(arg1:string):Promise<Record<string, string>>;
+
+export function PptxSlideThumbnailDataURL(arg1:string):Promise<string>;
+
+export function PptxPreviewEnsure(arg1:string):Promise<Record<string, any>>;
 
 export function PreflightMaclawAppOneClickPublish(arg1:string):Promise<Record<string, any>>;
 
@@ -1903,7 +1911,9 @@ export function ResetBuiltinExpert(arg1:string):Promise<void>;
 
 export function ResetLLMTokenUsage(arg1:string):Promise<void>;
 
-export function ResetRemoteVirtualRepositoryHostKey(arg1:string):Promise<void>;
+export function ResetRemoteVirtualRepositoryHostKey(arg1:string,arg2?:string):Promise<void>;
+
+export function RemoveVirtualRepositoryMapping(arg1:string,arg2:string):Promise<void>;
 
 export function ResetVCSClientExecutable(arg1:string):Promise<string>;
 
@@ -2262,6 +2272,8 @@ export function SetTrialReflectEnabled(arg1:boolean):Promise<void>;
 
 export function SetUIZoomFactor(arg1:number):Promise<void>;
 
+export function SetDefaultVirtualRepositoryMapping(arg1:string,arg2:string):Promise<string>;
+
 export function SetVCSClientExecutable(arg1:string,arg2:string):Promise<string>;
 
 export function SetVEAllowedDirectories(arg1:Array<string>):Promise<void>;
@@ -2324,7 +2336,7 @@ export function StartUserDataMigrationExport(arg1:string,arg2:string,arg3:boolea
 
 export function StartUserDataMigrationImport(arg1:string,arg2:string):Promise<main.userDataMigrationJob>;
 
-export function StartVirtualRepositoryCodingTask(arg1:string):Promise<main.VirtualRepositoryCodingTaskLaunch>;
+export function StartVirtualRepositoryCodingTask(arg1:string,arg2?:string):Promise<main.VirtualRepositoryCodingTaskLaunch>;
 
 export function StartVirtualRepositoryOperation(arg1:string):Promise<string>;
 
@@ -2404,6 +2416,8 @@ export function TestRemoteSSHConnection(arg1:string,arg2:string,arg3:string,arg4
 
 export function TestRemoteVirtualRepositoryConnection(arg1:string):Promise<string>;
 
+export function TestVirtualRepositoryMappingConnection(arg1:string):Promise<string>;
+
 export function TestWebSearchEngine(arg1:main.TestWebSearchEngineRequest):Promise<main.WebSearchEngineTestResult>;
 
 export function TestWebSearchProvider(arg1:corelib.WebSearchProvider):Promise<void>;
@@ -2457,6 +2471,8 @@ export function UpdateNLSkill(arg1:corelib.NLSkillEntry):Promise<void>;
 export function UpdateRemoteCodingTaskMeta(arg1:string,arg2:string,arg3:string,arg4:string,arg5:number):Promise<void>;
 
 export function UpdateScheduledTask(arg1:string,arg2:Record<string, any>):Promise<void>;
+
+export function UpdateVirtualRepositoryMapping(arg1:string):Promise<string>;
 
 export function UpdateSkillRunArtifactCache(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.SkillArtifactRegistryEntry>;
 

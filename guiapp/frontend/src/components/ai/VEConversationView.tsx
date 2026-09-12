@@ -9,6 +9,7 @@ import {
 import { MessageContentRenderer } from "./MessageContentRenderer";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { AssistantInputStack } from "./AssistantInputStack";
+import { AssistantReplyCopyButton } from "./AssistantReplyCopyButton";
 import { MentionPopover, useMentionKeyboard, type MentionParticipant } from "./MentionPopover";
 import { getParticipantColor } from "./VEGroupChat";
 import { LEGACY_LOCAL_AI_PARTICIPANT_ID, LOCAL_AI_DISPLAY_NAME_EN, LOCAL_AI_DISPLAY_NAME_ZH_HANS, LOCAL_AI_DISPLAY_NAME_ZH_HANT, isLocalAIName, looksLikeRawParticipantId, normalizeParticipantId } from "./localAIIdentity";
@@ -1815,7 +1816,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                     </div>
                 )}
 
-                {/* Streaming — name above bubble so the top tail points at the speaker */}
+                {/* Streaming — name above bubble; the corner tail points back at the speaker label */}
                 {state.streaming && (
                     <div
                         data-testid="ve-streaming-indicator"
@@ -1824,7 +1825,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                     >
                         <div
                             style={{
-                                maxWidth: "80%",
+                                maxWidth: "84%",
                                 marginBottom: CHAT_SPEAKER_LABEL_GAP,
                                 padding: "0 4px",
                                 fontSize: 11,
@@ -1848,18 +1849,20 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                         </div>
                         <ChatBubbleFrame
                             side="left"
+                            tailPlacement="side"
                             background={theme.fieldBg}
                             borderColor={theme.fieldBorder}
                             data-testid="ve-streaming-content"
                             className="mc-ve-message-bubble mc-ve-message-bubble--assistant"
                             style={{
-                                maxWidth: "80%",
+                                maxWidth: "84%",
                                 fontSize: 13,
                                 color: theme.text,
                                 wordBreak: "break-word",
                                 overflowWrap: "anywhere",
                                 whiteSpace: "pre-wrap",
-                                borderRadius: "14px 14px 14px 4px",
+                                padding: "9px 12px",
+                                borderRadius: "6px 16px 16px 16px",
                             }}
                         >
                             {state.streamContent && <MessageContentRenderer content={state.streamContent} theme={theme} />}
@@ -2145,7 +2148,7 @@ function MessageBubble({ message, sessionId, theme, isZh, assistantName, userNam
                 data-testid={`ve-msg-label-${message.id}`}
                 style={{
                     maxWidth: "80%",
-                    // Match AI assistant name→bubble gap so the top tail points cleanly at the label.
+                    // Match AI assistant name→bubble gap so the corner tail points cleanly at the label.
                     marginBottom: CHAT_SPEAKER_LABEL_GAP,
                     padding: "0 4px",
                     color: theme.textMuted,
@@ -2189,6 +2192,7 @@ function MessageBubble({ message, sessionId, theme, isZh, assistantName, userNam
             {shouldRenderContent && (
                 <ChatBubbleFrame
                     side={isUser ? "right" : "left"}
+                    tailPlacement="side"
                     background={
                         isUser
                             ? userChatBubbleBackground(theme.sendBtnBg, theme.fieldBg)
@@ -2199,15 +2203,29 @@ function MessageBubble({ message, sessionId, theme, isZh, assistantName, userNam
                     borderColor={isUser ? theme.sendBtnBorder : theme.fieldBorder}
                     className={`mc-ve-message-bubble ${isUser ? "mc-ve-message-bubble--user" : "mc-ve-message-bubble--assistant"}`}
                     data-testid={message.localOnly ? `ve-local-msg-content-${message.id}` : `ve-msg-content-${message.id}`}
+                    topRight={
+                        !isUser && hasContent ? (
+                            <AssistantReplyCopyButton
+                                text={message.content}
+                                theme={theme}
+                                lang={isZh ? "zh" : "en"}
+                                messageId={message.id}
+                            />
+                        ) : undefined
+                    }
                     style={{
-                        maxWidth: "80%",
+                        maxWidth: isUser ? "76%" : "84%",
                         fontSize: 13,
                         color: theme.text,
                         wordBreak: "break-word",
                         overflowWrap: "anywhere",
                         whiteSpace: "pre-wrap",
-                        // Tail-side corner stays tight (user: bottom-right, peer: bottom-left).
-                        borderRadius: isUser ? "14px 14px 4px 14px" : "14px 14px 14px 4px",
+                        // Extra right padding so the top-right copy control sits in
+                        // the bubble corner instead of over the first line.
+                        padding: isUser ? "8px 14px" : hasContent ? "9px 28px 9px 12px" : "9px 12px",
+                        // Corner tail sits on the name-side top corner, so that
+                        // corner stays tight (user: top-right, peer: top-left).
+                        borderRadius: isUser ? "16px 6px 16px 16px" : "6px 16px 16px 16px",
                     }}
                 >
                     {hasContent && <MessageContentRenderer content={message.content} theme={theme} isUser={isUser} />}

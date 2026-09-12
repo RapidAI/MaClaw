@@ -1,0 +1,13 @@
+﻿4 activities found:
+  Activity #0:
+    priority=0 preferredOrder=0 match=0x608000 specificIndex=-1 isDefault=true
+    com.google.android.apps.docs/.common.shareitem.UploadMenuActivity
+  Activity #1:
+    priority=0 preferredOrder=0 match=0x608000 specificIndex=-1 isDefault=true
+    com.google.android.gm/.ComposeActivityGmailExternal
+  Activity #2:
+    priority=0 preferredOrder=0 match=0x608000 specificIndex=-1 isDefault=true
+    com.google.android.gms/.nearby.sharing.send.SendActivity
+  Activity #3:
+    priority=0 preferredOrder=0 match=0x608000 specificIndex=-1 isDefault=true
+    top.mypapers.maclaw.mobile/.MainActivity

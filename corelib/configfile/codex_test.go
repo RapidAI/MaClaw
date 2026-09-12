@@ -64,7 +64,7 @@ func TestWriteCodexConfigAddsCodeGenClientNameHeader(t *testing.T) {
 	}
 }
 
-func TestWriteCodexConfigDefaultsOpenClawCodeGenClientNameToTigerclaw(t *testing.T) {
+func TestWriteCodexConfigDefaultsOpenClawCodeGenClientNameToQAgent(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("USERPROFILE", tmpHome)
@@ -81,8 +81,8 @@ func TestWriteCodexConfigDefaultsOpenClawCodeGenClientNameToTigerclaw(t *testing
 	if strings.Contains(content, `"X-Codegen-Client-Name" = "openclaw"`) {
 		t.Fatalf("legacy openclaw CodeGen client name leaked into config.toml:\n%s", content)
 	}
-	if !strings.Contains(content, `"X-Codegen-Client-Name" = "tigerclaw"`) {
-		t.Fatalf("CodeGen client name did not default to tigerclaw:\n%s", content)
+	if !strings.Contains(content, `"X-Codegen-Client-Name" = "QAgent"`) {
+		t.Fatalf("CodeGen client name did not default to QAgent:\n%s", content)
 	}
 }
 

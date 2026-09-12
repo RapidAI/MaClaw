@@ -1,0 +1,6 @@
+﻿Artifact path: ../../build/app/outputs/flutter-apk/app-release.apk
+SHA256: 9DAC173F4075C39CB204310E204D694F2DF2381DAA8C2B2618255292DB335586
+Artifact size bytes: 78483910
+Version/build number: 0.1.0+1
+Signing identity: MaClaw Mobile QA release alias; SHA-256 certificate fingerprint recorded by keytool
+Installer channel: Google Play internal testing

@@ -439,6 +439,28 @@ func TestRecoveredTaskMetadataHelpers(t *testing.T) {
 	}
 }
 
+func TestStripTaskDirTimestampSuffix(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		want string
+	}{
+		{"长江学者申请-1788863843672061400", "长江学者申请"},
+		{"码卡龙9-19演讲ppt-1788765400560920", "码卡龙9-19演讲ppt"},
+		{"search-remote-papers-1", "search-remote-papers-1"},
+		{"年度报告-2024", "年度报告-2024"},
+		{"no-dash", "no-dash"},
+		{"-1788863843672061400", "-1788863843672061400"},
+		{"trailing-", "trailing-"},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		if got := stripTaskDirTimestampSuffix(tc.name); got != tc.want {
+			t.Fatalf("stripTaskDirTimestampSuffix(%q) = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestListTasksOnlyShowsExplicitTaskManagementRecords(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 	app.ensureMemoryStore()
@@ -3493,5 +3515,76 @@ func TestNormalizeRecentTaskName(t *testing.T) {
 	long := strings.Repeat("\u6d4b", 130)
 	if got := normalizeRecentTaskName(long); len([]rune(got)) != 120 {
 		t.Fatalf("normalizeRecentTaskName length = %d, want 120", len([]rune(got)))
+	}
+}
+
+func TestRepairMergedTaskIdentityEntriesRestoresAbsorbedTasks(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.disableBackgroundEmbeddingForTest = true
+
+	taskA := app.CreateTask("合并幸存任务", "")
+	taskB := app.CreateTask("被吸收任务", "")
+	if taskA.ProjectPath == "" || taskB.ProjectPath == "" {
+		t.Fatalf("setup paths A=%q B=%q", taskA.ProjectPath, taskB.ProjectPath)
+	}
+	entryWithTag := func(tag string) (memory.Entry, bool) {
+		for _, e := range app.memoryStore.List(memory.CategoryTaskArtifact, "") {
+			for _, tg := range e.Tags {
+				if tg == tag {
+					return e, true
+				}
+			}
+		}
+		return memory.Entry{}, false
+	}
+	entryA, okA := entryWithTag(taskA.ProjectPath)
+	entryB, okB := entryWithTag(taskB.ProjectPath)
+	if !okA || !okB {
+		t.Fatalf("identity entries missing: A=%v B=%v", okA, okB)
+	}
+
+	// Simulate the compressor/semantic-dedup merge: union B's tags into A's
+	// identity entry and tombstone B's entry. B's sidebar record disappears,
+	// and B's identity upserts now hit the merged A entry.
+	merged := entryA
+	merged.Tags = append(append([]string{}, entryA.Tags...), entryB.Tags...)
+	if err := app.memoryStore.UpdateEntriesAndDeleteIDs([]memory.Entry{merged}, []string{entryB.ID}); err != nil {
+		t.Fatalf("simulate merge: %v", err)
+	}
+	app.memoryStore.WaitRebuild()
+
+	if n := app.repairMergedTaskIdentityEntries(); n != 1 {
+		t.Fatalf("repairMergedTaskIdentityEntries = %d, want 1", n)
+	}
+	// The merged entry keeps its own task but no longer carries B's dir tag.
+	for _, e := range app.memoryStore.List(memory.CategoryTaskArtifact, "") {
+		if e.ID != entryA.ID {
+			continue
+		}
+		for _, tag := range e.Tags {
+			if tag == taskB.ProjectPath {
+				t.Fatalf("absorbed dir tag not stripped from merged entry: %v", e.Tags)
+			}
+		}
+	}
+
+	if n := app.recoverManagedTaskRecordsFromDisk(); n < 1 {
+		t.Fatalf("recoverManagedTaskRecordsFromDisk = %d, want >= 1", n)
+	}
+	// B has its own identity entry again (not the merged A entry).
+	if _, ok := entryWithTag(taskB.ProjectPath); !ok {
+		t.Fatal("absorbed task identity entry was not recreated")
+	}
+	if e, ok := entryWithTag(taskB.ProjectPath); ok && e.ID == entryA.ID {
+		t.Fatal("absorbed task identity still points at the merged entry")
+	}
+
+	listed := app.ListTasks(50)
+	paths := map[string]bool{}
+	for _, item := range listed {
+		paths[item.ProjectPath] = true
+	}
+	if !paths[taskA.ProjectPath] || !paths[taskB.ProjectPath] {
+		t.Fatalf("ListTasks = %#v, want both surviving and absorbed tasks", paths)
 	}
 }

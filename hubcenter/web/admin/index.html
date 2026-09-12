@@ -285,6 +285,20 @@
           <button class="btn-ghost" id="llmSubTabClassHead" data-icon="cpu" type="button" role="tab" aria-selected="false" aria-pressed="false" aria-controls="llmSubViewClassHead" tabindex="-1" onclick="switchLLMSubTab('classHead')" data-i18n="llmServiceClassHead"></button>
         </div>
         <div id="llmSubViewProviders" role="tabpanel" aria-labelledby="llmSubTabProviders">
+          <div class="stage-card section-bottom" id="llmProviderMonitorCard">
+            <div class="inline-check">
+              <div class="inline-pair">
+                <label class="inline-label" for="llmProviderMonitorEnabled" data-i18n="llmMonitorEnable"></label>
+                <input type="checkbox" id="llmProviderMonitorEnabled" class="auto-check">
+              </div>
+              <div class="inline-pair">
+                <label class="inline-label" for="llmProviderMonitorInterval" data-i18n="llmMonitorInterval"></label>
+                <input id="llmProviderMonitorInterval" class="inline-num" type="number" min="1" step="1" value="3" aria-describedby="llmProviderMonitorHint">
+              </div>
+              <button class="btn-primary" type="button" id="llmProviderMonitorSave" onclick="saveLLMProviderMonitorConfig()" data-i18n="llmServiceSave" disabled></button>
+            </div>
+            <div class="hint stack-gap-xs" id="llmProviderMonitorHint" data-i18n="llmMonitorHint"></div>
+          </div>
           <div class="head meta-spaced"><div><div class="item-title" data-icon="spark" data-i18n="llmServiceProvidersTitle"></div><div class="item-meta" data-i18n="llmServiceProvidersDesc"></div></div><div class="actions"><div id="llmProviderTrafficSwitch" class="provider-traffic-switch" hidden></div><button class="btn-primary" onclick="showProviderDialog('create')" data-i18n="llmServiceAddProvider"></button></div></div>
           <div id="llmProvidersList" class="list llm-card-grid"><div class="hint" data-i18n="llmServiceNoProviders"></div></div>
         </div>

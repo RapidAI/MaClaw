@@ -56,7 +56,9 @@ if (typeof I18N_ZH !== 'undefined') {
       sgBillingModePaid: 'Paid', sgBillingModeFree: 'Free', sgBillingModeLegacy: 'Legacy (empty)',
       tokenPricingTitle: 'Token Pricing (per 10k tokens)', tokenPricingHint: 'Credits fields are billed; RMB fields are display-only and never affect Credits.',
       fieldInputCredits: 'Input Credits / 10k', fieldOutputCredits: 'Output Credits / 10k',
+      fieldCacheReadCredits: 'Cache Read Credits / 10k', fieldCacheWriteCredits: 'Cache Write Credits / 10k',
       fieldInputRMB: 'Input RMB / 10k (ref)', fieldOutputRMB: 'Output RMB / 10k (ref)',
+      fieldCacheReadRMB: 'Cache Read RMB / 10k', fieldCacheWriteRMB: 'Cache Write RMB / 10k',
       fieldMinimumCredits: 'Minimum Credits / request', fieldPricingTimezone: 'Pricing Timezone', fieldPricingVersion: 'Pricing Version',
       providerPriceSummary: 'Base price', providerSetPrice: 'Set price', pricingSchedule: 'Time-of-use prices', pricingAddWindow: 'Add price window', pricingRemoveWindow: 'Remove',
       pricingWindowHint: 'A matching window overrides only the prices entered below; blank values keep the base price. The first matching window wins.',
@@ -71,6 +73,8 @@ if (typeof I18N_ZH !== 'undefined') {
       saved: 'Saved successfully.', deleted: 'Deleted.', error: 'Error', sgFailed: 'Failed',
       testProvider: 'Test Status', providerTesting: 'Testing...', providerTestOK: 'Available', providerTestFailed: 'Unavailable',
       providerTestLatency: 'Latency', providerTestModels: 'Models',
+      monitorSaved: 'Monitor settings saved.', monitorInvalidInterval: 'Enter a whole-number interval of at least 1 hour.',
+      monitorLoadRetry: 'Load failed. Use the refresh button above to retry.',
       status: 'Status', credits: 'Credits', expires: 'Expires', active: 'Active',
       sgClassTraffic: 'Downstream traffic',
       sgClassTrafficHint: 'Successful requests billed to this group, by task class. Training lives on the Classification head tab.',
@@ -198,7 +202,9 @@ if (typeof I18N_ZH !== 'undefined') {
       sgBillingModePaid: '\u6536\u8d39', sgBillingModeFree: '\u514d\u8d39', sgBillingModeLegacy: '\u517c\u5bb9\uff08\u7a7a\uff09',
       tokenPricingTitle: 'Token \u8ba1\u8d39\uff08\u6bcf\u4e07 Token\uff09', tokenPricingHint: 'Credits \u5b57\u6bb5\u53c2\u4e0e\u6263\u8d39\uff1bRMB \u4ec5\u5c55\u793a\u3002',
       fieldInputCredits: '\u8f93\u5165 Credits / \u4e07', fieldOutputCredits: '\u8f93\u51fa Credits / \u4e07',
+      fieldCacheReadCredits: '\u7f13\u5b58\u8bfb\u53d6 Credits / \u4e07', fieldCacheWriteCredits: '\u7f13\u5b58\u5199\u5165 Credits / \u4e07',
       fieldInputRMB: '\u8f93\u5165 RMB / \u4e07\uff08\u53c2\u8003\uff09', fieldOutputRMB: '\u8f93\u51fa RMB / \u4e07\uff08\u53c2\u8003\uff09',
+      fieldCacheReadRMB: '\u7f13\u5b58\u8bfb\u53d6 RMB / \u4e07', fieldCacheWriteRMB: '\u7f13\u5b58\u5199\u5165 RMB / \u4e07',
       fieldMinimumCredits: '\u5355\u6b21\u6700\u4f4e\u6d88\u8d39 Credits', fieldPricingTimezone: '\u8ba1\u8d39\u65f6\u533a', fieldPricingVersion: '\u8ba1\u8d39\u7248\u672c',
       providerPriceSummary: '\u57fa\u7840\u5355\u4ef7', providerSetPrice: '\u8bbe\u7f6e\u5355\u4ef7', pricingSchedule: '\u5206\u65f6\u5355\u4ef7', pricingAddWindow: '\u6dfb\u52a0\u5355\u4ef7\u65f6\u6bb5', pricingRemoveWindow: '\u5220\u9664',
       pricingWindowHint: '\u547d\u4e2d\u65f6\u6bb5\u4ec5\u8986\u76d6\u5df2\u586b\u5355\u4ef7\uff0c\u7559\u7a7a\u7684\u65b9\u5411\u7ee7\u7eed\u4f7f\u7528\u57fa\u7840\u5355\u4ef7\uff1b\u9996\u4e2a\u547d\u4e2d\u7684\u65f6\u6bb5\u751f\u6548\u3002',
@@ -213,6 +219,8 @@ if (typeof I18N_ZH !== 'undefined') {
       saved: '\u4fdd\u5b58\u6210\u529f\u3002', deleted: '\u5df2\u5220\u9664\u3002', error: '\u9519\u8bef', sgFailed: '\u5931\u8d25',
       testProvider: '\u6d4b\u8bd5\u72b6\u6001', providerTesting: '\u6d4b\u8bd5\u4e2d...', providerTestOK: '\u53ef\u7528', providerTestFailed: '\u5f02\u5e38',
       providerTestLatency: '\u8017\u65f6', providerTestModels: '\u6a21\u578b',
+      monitorSaved: '\u76d1\u63a7\u8bbe\u7f6e\u5df2\u4fdd\u5b58\u3002', monitorInvalidInterval: '\u8bf7\u8f93\u5165\u4e0d\u5c0f\u4e8e 1 \u5c0f\u65f6\u7684\u6574\u6570\u95f4\u9694\u3002',
+      monitorLoadRetry: '\u52a0\u8f7d\u5931\u8d25\uff0c\u8bf7\u4f7f\u7528\u4e0a\u65b9\u5237\u65b0\u6309\u94ae\u91cd\u8bd5\u3002',
       status: '\u72b6\u6001', credits: '\u989d\u5ea6', expires: '\u6709\u6548\u671f', active: '\u6d3b\u8dc3',
       sgClassTraffic: '\u4e0b\u6e38\u6d41\u91cf',
       sgClassTrafficHint: '\u8fd9\u7ec4\u6263\u8d39\u6210\u529f\u7684\u8bf7\u6c42\uff0c\u6309\u4efb\u52a1\u5206\u7c7b\u6c47\u603b\u3002\u8bad\u7ec3\u5728\u300c\u5206\u7c7b\u5934\u300d\u9875\u3002',
@@ -365,7 +373,7 @@ if (typeof I18N_ZH !== 'undefined') {
   window.initLLMServiceTab = async function() {
     if (llmInitInFlight) return llmInitInFlight;
     llmInitInFlight = (async function() {
-      await Promise.all([loadProviders(), loadAgents(), loadServiceGroups()]);
+      await Promise.all([loadProviders(), loadAgents(), loadServiceGroups(), loadLLMProviderMonitorConfig()]);
       if (llmClassHeadViewVisible() && typeof window.sgReloadClassHeadPage === 'function') window.sgReloadClassHeadPage();
     })();
     try { return await llmInitInFlight; }
@@ -751,6 +759,68 @@ if (typeof I18N_ZH !== 'undefined') {
       toast(t('providerTestFailed') + ': ' + e.message, 'error');
     }
     renderProviders();
+  };
+  var monitorSaveBusy = false;
+  var monitorConfigLoadSeq = 0;
+  function setLLMProviderMonitorSaveEnabled(enabled) {
+    var btn = document.getElementById('llmProviderMonitorSave');
+    if (btn) btn.disabled = !enabled;
+  }
+  async function loadLLMProviderMonitorConfig(opts) {
+    var silent = !!(opts && opts.silent);
+    var force = !!(opts && opts.force);
+    var seq = ++monitorConfigLoadSeq;
+    try {
+      var cfg = await api('/api/admin/llm/provider-monitor/config');
+      if (seq !== monitorConfigLoadSeq) return;
+      var enabledEl = document.getElementById('llmProviderMonitorEnabled');
+      // Don't clobber in-progress edits: a stale load must not overwrite a
+      // field while the admin is interacting with it. The save-error resync
+      // passes force because Safari does not move focus to the save button,
+      // which would otherwise leave the form stuck on never-persisted state.
+      if (enabledEl && (force || document.activeElement !== enabledEl)) enabledEl.checked = !!(cfg && cfg.enabled);
+      var intervalEl = document.getElementById('llmProviderMonitorInterval');
+      if (intervalEl && (force || document.activeElement !== intervalEl)) intervalEl.value = (cfg && cfg.interval_hours) || 3;
+      // Only a successful load makes the form authoritative enough to save.
+      setLLMProviderMonitorSaveEnabled(true);
+    } catch (e) {
+      if (seq !== monitorConfigLoadSeq) return;
+      setLLMProviderMonitorSaveEnabled(false);
+      if (window.console && console.warn) console.warn('llm provider monitor config load failed', e);
+      if (!silent) {
+        var detail = e && e.message ? String(e.message).replace(/\.$/, '') : '';
+        toast(t('monitorLoadRetry') + (detail ? ' (' + detail + ')' : ''), 'error');
+      }
+    }
+  }
+  window.saveLLMProviderMonitorConfig = async function() {
+    if (monitorSaveBusy) return;
+    var enabledEl = document.getElementById('llmProviderMonitorEnabled');
+    var intervalEl = document.getElementById('llmProviderMonitorInterval');
+    var hours = Number(intervalEl && intervalEl.value);
+    if (!isFinite(hours) || hours !== Math.round(hours) || hours < 1) {
+      toast(t('monitorInvalidInterval'), 'error');
+      return;
+    }
+    monitorSaveBusy = true;
+    setLLMProviderMonitorSaveEnabled(false);
+    try {
+      await api('/api/admin/llm/provider-monitor/config', { method: 'PUT', body: JSON.stringify({
+        enabled: !!(enabledEl && enabledEl.checked), interval_hours: hours
+      }) });
+      toast(t('monitorSaved'), 'success');
+      setLLMProviderMonitorSaveEnabled(true);
+    } catch (e) {
+      toast(e.message || t('sgFailed'), 'error');
+      // The server rejects the save when the enable test email fails; reload
+      // so the form reflects the persisted (unchanged) state. The reload
+      // re-enables the button only when it succeeds; it stays silent so a
+      // failing reload does not stack a second error toast over the save
+      // error (it still logs to the console).
+      await loadLLMProviderMonitorConfig({ silent: true, force: true });
+    } finally {
+      monitorSaveBusy = false;
+    }
   };
   function uniqueProviderBillingDays(days) {
     var seen = {};
@@ -1490,14 +1560,14 @@ if (typeof I18N_ZH !== 'undefined') {
       return '<div class="data-row llm-service-group-row"><div class="data-row-main"><strong>' + esc(g.name||g.id) + '</strong> ' + tags
         + '<span class="data-row-meta">' + esc(agentName) + ' \u00b7 ' + esc(g.description||'') + ' \u00b7 ' + esc(modelNames||'no models')
         + ' \u00b7 ' + (g.models||[]).length + ' route(s)</span></div>'
-        + '<div class="service-group-traffic' + (serviceGroupTrafficReady ? '' : ' is-pending') + '" data-service-group-id="' + esc(g.id) + '"></div>'
         + '<div class="data-row-actions">'
         + (isDynamic ? '<button class="btn-ghost" onclick="editLLMClassTraffic('+jsArg(g.id)+')">' + esc(t('sgClassTrafficOpen')) + '</button>' : '')
         + '<button class="btn-ghost" onclick="testLLMServiceGroup('+jsArg(g.id)+')">' + esc(t('testProvider')) + '</button>'
         + '<button class="btn-ghost" onclick="editLLMServiceGroup('+jsArg(g.id)+')">' + esc(t('editGroup')) + '</button>'
         + (isDefault ? '' : '<button class="btn-ghost" onclick="setDefaultLLMServiceGroup('+jsArg(g.id)+')">' + esc(t('sgSetDefault')) + '</button>')
         + (isOfficial?'':'<button class="btn-danger-ghost" onclick="deleteLLMServiceGroup('+jsArg(g.id)+')">' + esc(t('deleteGroup')) + '</button>')
-        + '</div></div>';
+        + '</div>'
+        + '<div class="service-group-traffic' + (serviceGroupTrafficReady ? '' : ' is-pending') + '" data-service-group-id="' + esc(g.id) + '"></div></div>';
     }).join('');
     patchServiceGroupTraffic();
   }

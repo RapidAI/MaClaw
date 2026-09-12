@@ -1,4 +1,4 @@
-import { BugReportScreenshotPreviewDataURL, CancelDownload, CheckEnvironment, ClampMaximizedWindowToWorkArea, ConsumeReferralHandoff, CreateExpertTask, CreateRemoteCodingTask, CreateRemoteOpsDiagnosisTask, CreateTask, CreateTaskWithCloudWorkspace, CreateTaskWithMode, DeleteSkillDetailed, DeleteTask, DownloadUpdate, DownloadUpdateWithSHA256, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, FetchMaclawLLMProfileModels, FetchProviderModels, GetAdaptiveWindowSize, GetAllLLMProfileTokenUsage, GetAllLLMTokenUsage, GetBrandInfo, GetChatFontSize, GetDigitalEmployeeFeatureStatus, GetEnvCheckInterval, GetFramelessTopInset, GetHubLLMServiceStatus, GetLansengerLocalMode, GetLansengerStatus, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMoASessionState, GetQQBotLocalMode, GetQQBotStatus, GetSystemInfo, GetTelegramLocalMode, GetTelegramStatus, GetThirdPartyGatewayLocalMode, GetThirdPartyGatewayStatus, GetUIZoomFactor, GetUserHomeDir, GetWeixinLocalMode, GetWeixinStatus, GroupDiscussionAcceptInvite, GroupDiscussionProcessPendingInvites, GroupDiscussionPublishProfile, GroupDiscussionRejectInvite, GroupDiscussionStatus, HasPendingBugReportUpload, HideTask, IsGossipAllowed, IsNativeRoundedCorners, IsWindowsTerminalAvailable, LaunchInstallerAndExit, ListBackgroundLoops, ListMyBugReports, ListPythonEnvironments, ListRemoteHubs, ListSkills, ListSkillsWithInstallStatus, ListTasks, LoadConfigForUI, OpenSystemUrl, PackLog, PatchConfigFields, PinTask, PingMaclawLLM, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, QuickSaveMaclawLLMProfile, ReadBBS, ReadThanks, ReadTutorial, RefreshMaclawLLMProfileHealth, RenameTask, ResizeWindow, RespondDigitalEmployeeSensitiveRequest, RestoreCloudWorkspaceTasks, ResumeCloudWorkspaceTask, ResumeTask, RetryBugReportUpload, SaveConfig, SelectBugReportScreenshots, SelectProjectDir, SetBugReportEnabled, SetDefaultLaunchMode, SetLanguage, SetMaclawLLMCurrentModel, SetMoASticky, SetMoAStickyPreset, ShouldCheckEnvironment, ShowItemInFolder, SubmitBugReport, UpdateLastEnvCheckTime } from '../wailsjs/go/main/App';
+import { BugReportScreenshotPreviewDataURL, CancelDownload, CheckEnvironment, ClampMaximizedWindowToWorkArea, ConsumeReferralHandoff, CreateExpertTask, CreateRemoteCodingTask, CreateRemoteOpsDiagnosisTask, CreateTask, CreateTaskWithCloudWorkspace, CreateTaskWithMode, DeleteSkillDetailed, DeleteTask, DownloadUpdate, DownloadUpdateWithSHA256, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, FetchMaclawLLMProfileModels, FetchProviderModels, GetAdaptiveWindowSize, GetAllLLMProfileTokenUsage, GetAllLLMTokenUsage, GetBrandInfo, GetChatFontSize, GetDigitalEmployeeFeatureStatus, GetEnvCheckInterval, GetFramelessTopInset, GetHubLLMServiceStatus, GetLansengerLocalMode, GetLansengerStatus, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMoASessionState, GetQQBotLocalMode, GetQQBotStatus, GetSystemInfo, GetTelegramLocalMode, GetTelegramStatus, GetThirdPartyGatewayLocalMode, GetThirdPartyGatewayStatus, GetUIZoomFactor, GetUserHomeDir, GetWeixinLocalMode, GetWeixinStatus, GroupDiscussionAcceptInvite, GroupDiscussionProcessPendingInvites, GroupDiscussionPublishProfile, GroupDiscussionRejectInvite, GroupDiscussionStatus, HasPendingBugReportUpload, HideTask, IsGossipAllowed, IsNativeRoundedCorners, IsWindowsTerminalAvailable, LaunchInstallerAndExit, ListBackgroundLoops, ListMyBugReports, ListPythonEnvironments, ListRemoteHubs, ListSkills, ListSkillsWithInstallStatus, ListTasks, LoadConfigForUI, OpenSystemUrl, PackLog, PatchConfigFields, PinTask, PingMaclawLLM, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, QuickSaveMaclawLLMProfile, ReadBBS, ReadThanks, ReadTutorial, RefreshMaclawLLMProfileHealth, RenameTask, ResizeWindow, RespondDigitalEmployeeSensitiveRequest, ResumeCloudWorkspaceTask, ResumeTask, RetryBugReportUpload, SaveConfig, SelectBugReportScreenshots, SelectProjectDir, SetBugReportEnabled, SetDefaultLaunchMode, SetLanguage, SetMaclawLLMCurrentModel, SetMoASticky, SetMoAStickyPreset, ShouldCheckEnvironment, ShowItemInFolder, SubmitBugReport, UpdateLastEnvCheckTime } from '../wailsjs/go/main/App';
 import { BrowserOpenURL, EventsEmit, EventsOff, EventsOn, Quit, WindowHide, WindowIsFullscreen, WindowIsMaximised, WindowToggleMaximise, WindowUnmaximise } from '../wailsjs/runtime';
 import { appVersion, buildNumber } from './version';
 // Keep the in-app navigation and About artwork aligned with the packaged
@@ -73,6 +73,40 @@ function readClipboardImageBase64(file: Blob): Promise<string> {
 }
 
 const BUG_REPORT_SCREENSHOT_MAX_BYTES = 10 * 1024 * 1024;
+// Matches the sidebar's CLOUD_RESTORE_LIST_WAIT_MS fallback: upper bound for
+// how long the cloud-sync indicator may stay visible on a hung Hub restore.
+const CLOUD_TASKS_LOADING_FALLBACK_MS = 8000;
+// A fast no-op restore (cloud not configured) must not flash the indicator;
+// only show it when the Hub round-trip takes long enough to notice.
+const CLOUD_TASKS_LOADING_INDICATOR_DELAY_MS = 400;
+// The backend emits both project-index:changed and tasks:changed per logical
+// change, and cloud restore fires a burst; collapse them into one ListTasks.
+const TASK_LIST_REFRESH_DEBOUNCE_MS = 250;
+
+// Last authoritative task list, persisted so the sidebar renders local tasks
+// instantly at startup instead of waiting for the memory store to boot. The
+// mount-time refreshTasks replaces it with the live list once ListTasks
+// settles; cloud workspace tasks still restore once via the shared restore.
+const TASK_ITEMS_SNAPSHOT_KEY = 'task_items_snapshot_v1';
+const TASK_ITEMS_SNAPSHOT_CAP = 200;
+function loadTaskItemsSnapshot(): Array<{ project_path: string; [key: string]: unknown }> {
+    try {
+        const raw = localStorage.getItem(TASK_ITEMS_SNAPSHOT_KEY);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [];
+        return parsed.filter(item => item && typeof item.project_path === 'string' && item.project_path.trim() !== '');
+    } catch {
+        return [];
+    }
+}
+function saveTaskItemsSnapshot(items: ReadonlyArray<unknown>): void {
+    try {
+        localStorage.setItem(TASK_ITEMS_SNAPSHOT_KEY, JSON.stringify(items.slice(0, TASK_ITEMS_SNAPSHOT_CAP)));
+    } catch {
+        // Quota or serialization issues must never break the task list.
+    }
+}
 
 function appendProblemReportScreenshotPaths(previous: string[], paths: unknown[]): string[] {
     return [...previous, ...paths]
@@ -96,6 +130,7 @@ import { START_VOICE_INPUT_EVENT } from './components/ai/useVoiceInput';
 import { useDialog } from './components/CustomDialog';
 import { buildHubCardStoreURL, buildHubCreditsURL, buildHubMaclawAppManualURL } from './utils/hubCredits';
 import { reportBillingTimezoneOnAuthenticatedLaunch } from './utils/reportBillingTimezone';
+import { restoreCloudWorkspaceTasksShared } from './utils/cloudWorkspaceTaskRestore';
 import { inferProviderModelFetchProtocol } from './utils/providerModelFetchProtocol';
 import { normalizeSidebarHubCredits } from './utils/sidebarHubCredits';
 import { getSidebarUsageForProvider, selectSidebarCurrentProvider } from './utils/sidebarProviderSelection';
@@ -132,7 +167,7 @@ function installerFileNameFromURL(value: unknown): string {
     try {
         const pathname = new URL(first).pathname;
         const name = decodeURIComponent(pathname.slice(pathname.lastIndexOf('/') + 1));
-        return /^(MaClaw|TigerClaw|MetaStaff)-(Setup\.exe|Universal\.pkg)$/i.test(name) ? name : '';
+        return /^(MaClaw|TigerClaw|QAgent|MetaStaff)-(Setup\.exe|Universal\.pkg)$/i.test(name) ? name : '';
     } catch {
         return '';
     }
@@ -607,13 +642,36 @@ function App() {
     }, [openExpertTabIDs, openProjectTabIdentities, openProjectTabPaths]);
     const [renamingTaskPath, setRenamingTaskPath] = useState<string | null>(null);
     const [renameValue, setRenameValue] = useState("");
-    const [taskItems, setTaskItems] = useState<Array<{ id?: string; name?: string; project_path: string; working_dir?: string; workflow_type?: string; active_workflow?: { id?: string; type?: string; phase?: string; status?: string; project_path?: string; pending_review?: boolean }; preview?: string; tags?: string[]; created_at?: string; last_activity?: string; pinned?: boolean; has_output?: boolean }>>([]);
+    const [taskItems, setTaskItems] = useState<Array<{ id?: string; name?: string; project_path: string; working_dir?: string; workflow_type?: string; active_workflow?: { id?: string; type?: string; phase?: string; status?: string; project_path?: string; pending_review?: boolean }; preview?: string; tags?: string[]; created_at?: string; last_activity?: string; pinned?: boolean; has_output?: boolean }>>(() => loadTaskItemsSnapshot());
+    // Starts true: the mount effect below fires the first ListTasks immediately.
+    const [tasksLoading, setTasksLoading] = useState(true);
+    // Flips once the first ListTasks settles. The AI panel's orphan-tab
+    // reconcile must wait for this: with a large memory store the first load
+    // can outlast the grace window, and pruning against a not-yet-loaded
+    // empty list would discard legitimate tabs.
+    const [taskListLoaded, setTaskListLoaded] = useState(false);
+    // Persist the authoritative list for instant startup render. The snapshot
+    // initializer reads it before the first ListTasks; only save once a real
+    // list has arrived so an empty cold start never clobbers it.
+    useEffect(() => {
+        if (!taskListLoaded) return;
+        saveTaskItemsSnapshot(taskItems);
+    }, [taskItems, taskListLoaded]);
+    // True while a cloud workspace restore is in flight from this component.
+    // Kept separate from tasksLoading so local tasks stay visible while cloud
+    // tasks sync in the background.
+    const [cloudTasksLoading, setCloudTasksLoading] = useState(false);
+    const cloudTasksLoadingGenRef = useRef(0);
+    // Cancels the in-flight restore indicator (timers + state) on effect
+    // cleanup, so no timer or late promise can setState after unmount.
+    const cloudTasksLoadingCancelRef = useRef<(() => void) | null>(null);
     const taskItemsRef = useRef(taskItems);
     taskItemsRef.current = taskItems;
     // A ListTasks response can complete after a task was just created locally.
     // Keep a monotonically increasing generation so an older response never
     // overwrites that optimistic, durable task-management entry.
     const taskRefreshGenerationRef = useRef(0);
+    const taskRefreshInFlightRef = useRef(0);
     const [status, setStatus] = useState("");
     const [activeTab, setActiveTab] = useState(0);
     const [tabStartIndex, setTabStartIndex] = useState(0);
@@ -2615,12 +2673,6 @@ function App() {
         setToolDropdownOpen(false);
         if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('maclaw:focus-background-tasks'));
     }, [setNavTabNow]);
-    const openScheduledTasks = useCallback(() => {
-        setRemoteInitialSessionTab('scheduled');
-        setNavTabNow('remote');
-        setToolDropdownOpen(false);
-        if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('maclaw:focus-scheduled-tasks'));
-    }, [setNavTabNow]);
 
     useEffect(() => {
         const revealSystemNotifications = () => {
@@ -2966,15 +3018,37 @@ function App() {
     );
     const refreshTasks = useCallback(() => {
         const generation = ++taskRefreshGenerationRef.current;
+        taskRefreshInFlightRef.current += 1;
+        setTasksLoading(true);
+        // Loading state tracks in-flight COUNT, not generation: a response
+        // discarded as stale (e.g. upsertTaskItem bumped the generation) must
+        // still end the spinner when no newer refresh is actually in flight.
+        const settle = () => {
+            taskRefreshInFlightRef.current -= 1;
+            if (taskRefreshInFlightRef.current <= 0) {
+                taskRefreshInFlightRef.current = 0;
+                setTasksLoading(false);
+            }
+        };
         // Cloud workspace recovery can materialize more than the old 50-row
         // cap. Keep the complete task-management list visible after restore.
         callBackend(() => ListTasks(1000)).then((r: any) => {
+            settle();
+            // Any successful response proves a real list arrived, so the
+            // orphan-tab reconcile gate may open even when this particular
+            // response is too stale to apply (reconcile reads the latest
+            // taskListProp, not this payload).
+            setTaskListLoaded(true);
             if (generation === taskRefreshGenerationRef.current) {
                 setTaskItems(r || []);
             }
         }).catch(() => {
             // Preserve the last known list on a transient refresh failure rather
-            // than making a newly-created task disappear from the sidebar.
+            // than making a newly-created task disappear from the sidebar. Do
+            // NOT mark the list loaded: on a cold start the last known list is
+            // empty, and the orphan-tab reconcile must stay gated until a real
+            // ListTasks result has arrived.
+            settle();
         });
     }, []);
     // Insert a newly-created row immediately and invalidate any ListTasks
@@ -3053,8 +3127,16 @@ function App() {
         }
         await tabOpened;
     }, [openCodingTask, upsertTaskItem]);
+    // Skip the navTab effect's first run: the dedicated mount effect below
+    // fires the initial ListTasks and navTab starts as 'ai', so without this
+    // guard startup would issue two concurrent ListTasks requests.
+    const navTabTaskRefreshFirstRef = useRef(true);
 
     useEffect(() => {
+        if (navTabTaskRefreshFirstRef.current) {
+            navTabTaskRefreshFirstRef.current = false;
+            return;
+        }
         if (navTab === 'ai') refreshTasks();
     }, [navTab, refreshTasks]);
 
@@ -3083,18 +3165,60 @@ function App() {
         });
     }, [openCodingTask]);
 
+    // Fire the first ListTasks at mount instead of waiting for the
+    // assistant-ready/cloud-restore path below, so the sidebar list starts
+    // loading as early as possible. The ready/restore flow still refreshes
+    // again afterwards to pick up recovered cloud workspace tasks.
     useEffect(() => {
+        refreshTasks();
+    }, [refreshTasks]);
+
+    useEffect(() => {
+        let refreshTimer = 0;
+        let effectActive = true;
         const refresh = () => {
-            if (navTabRef.current === 'ai') refreshTasks();
+            if (!effectActive) return;
+            // Trailing debounce: one ListTasks per burst of change events,
+            // not one per event (each change emits two, cloud restore a storm).
+            window.clearTimeout(refreshTimer);
+            refreshTimer = window.setTimeout(() => {
+                refreshTimer = 0;
+                if (navTabRef.current === 'ai') refreshTasks();
+            }, TASK_LIST_REFRESH_DEBOUNCE_MS);
         };
         const restoreCloudTasks = () => {
-            if (typeof RestoreCloudWorkspaceTasks !== 'function') return;
-            void RestoreCloudWorkspaceTasks()
-                .then(() => refresh())
-                .catch(() => { /* keep the last local list if Hub restore fails */ });
+            const generation = ++cloudTasksLoadingGenRef.current;
+            let settled = false;
+            let showTimer = 0;
+            let fallbackTimer = 0;
+            const finish = () => {
+                if (settled) return;
+                settled = true;
+                window.clearTimeout(showTimer);
+                window.clearTimeout(fallbackTimer);
+                if (generation === cloudTasksLoadingGenRef.current) setCloudTasksLoading(false);
+            };
+            // Safety net: never leave the cloud-sync indicator on if the Hub
+            // restore promise neither resolves nor rejects.
+            fallbackTimer = window.setTimeout(finish, CLOUD_TASKS_LOADING_FALLBACK_MS);
+            showTimer = window.setTimeout(() => {
+                if (generation === cloudTasksLoadingGenRef.current) setCloudTasksLoading(true);
+            }, CLOUD_TASKS_LOADING_INDICATOR_DELAY_MS);
+            cloudTasksLoadingCancelRef.current = finish;
+            // Shared with the sidebar mount effect: startup restores cloud
+            // workspace tasks from the Hub once, not once per trigger.
+            void restoreCloudWorkspaceTasksShared()
+                .then(() => { finish(); refresh(); })
+                .catch(() => { finish(); /* keep the last local list if Hub restore fails */ });
         };
         const offProjectIndexChanged = safeEventsOn(EVENT_PROJECT_INDEX_CHANGED, refresh);
         const offTasksChanged = safeEventsOn(EVENT_TASKS_CHANGED, refresh);
+        // A workflow reaching a terminal state never triggers tasks:changed,
+        // so refresh the sidebar task list from its phase_update event.
+        const offWorkflowPhaseUpdate = safeEventsOn('workflow:phase_update', (state: any) => {
+            const status = String(state?.status || '').toLowerCase();
+            if (status && status !== 'active' && status !== 'running') refresh();
+        });
         // The ready event can fire before this listener is mounted when the
         // assistant restores a persisted session quickly. Restore immediately
         // for an already-ready assistant; otherwise keep the event fallback.
@@ -3105,8 +3229,13 @@ function App() {
             });
         if (aiAssistant.ready) restoreCloudTasks();
         return () => {
+            effectActive = false;
+            cloudTasksLoadingCancelRef.current?.();
+            cloudTasksLoadingCancelRef.current = null;
+            window.clearTimeout(refreshTimer);
             if (typeof offProjectIndexChanged === 'function') offProjectIndexChanged(); else safeEventsOff(EVENT_PROJECT_INDEX_CHANGED);
             if (typeof offTasksChanged === 'function') offTasksChanged(); else safeEventsOff(EVENT_TASKS_CHANGED);
+            if (typeof offWorkflowPhaseUpdate === 'function') offWorkflowPhaseUpdate(); else safeEventsOff('workflow:phase_update');
             if (typeof offAssistantReady === 'function') offAssistantReady(); else safeEventsOff('ai-assistant-init-progress');
         };
     }, [aiAssistant.ready, refreshTasks]);
@@ -5034,6 +5163,7 @@ ${instruction}`;
                 <div id="App" data-nav-tab={navTab} data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-ai-light-scheme={aiThemeMode === 'light' ? aiLightSchemeId : undefined} data-native-rounded={nativeRounded ? "true" : undefined} data-css-window-corners={useCSSWindowCorners ? "true" : "false"} data-windows-legacy-frameless={isLegacyWindowsFrameless ? "true" : undefined} data-maximized={windowMaximized ? "true" : undefined}>
             <AppSidebarShell
                 navTab={navTab}
+                settingsTab={resolvedSettingsTab}
                 taskManagementPaneWidth={taskManagementPaneWidth}
                 aiThemeMode={aiThemeMode}
                 aiDarkSchemeId={aiDarkSchemeId}
@@ -5053,7 +5183,6 @@ ${instruction}`;
                 runningTaskCount={runningTaskCount}
                 backgroundTaskCount={backgroundTaskCount}
                 onOpenBackgroundTasks={openBackgroundTaskMonitor}
-                onOpenScheduledTasks={openScheduledTasks}
                 remoteSessionTab={remoteInitialSessionTab}
                 t={t}
                 gossipAllowed={gossipAllowed}
@@ -5062,6 +5191,8 @@ ${instruction}`;
                 toolDropdownOpen={toolDropdownOpen}
                 setToolDropdownOpen={setToolDropdownOpen}
                 tasks={taskItems}
+                tasksLoading={tasksLoading}
+                cloudTasksLoading={cloudTasksLoading}
                 renamingTaskPath={renamingTaskPath}
                 setRenamingTaskPath={setRenamingTaskPath}
                 renameValue={renameValue}
@@ -5115,7 +5246,6 @@ ${instruction}`;
                 favoriteEmployeeIds={userFavoriteEmployeeIds}
                 favoriteEmployeeNames={favoriteEmployeeNames}
                 showAppEntry={showAppEntryEnabled}
-                showWorkflowEntry={showWorkflowEntryEnabled}
 				showUtilitiesEntry={showUtilitiesEntryEnabled}
 				showToolsEntry={showToolsEntryEnabled}
 				showCloudWorkspaceManagement={false}
@@ -5198,6 +5328,9 @@ ${instruction}`;
                             onActiveExecutionProfileChange={setActiveExecutionProfile}
                             onLanguageChange={applyLanguage}
                             recentTasks={taskItems}
+                            tasks={taskItems}
+                            tasksLoaded={taskListLoaded}
+                            onOpenTask={resumeTask}
                             onRecentTaskSelect={(task: any) => {
                                 const projectPath = String(task?.project_path || "").trim();
                                 if (projectPath) void resumeTask(projectPath, task);
@@ -5232,6 +5365,7 @@ ${instruction}`;
                 </div>
                 {navTab !== 'ai' && <MainTopHeader
                     navTab={navTab}
+                    settingsTab={resolvedSettingsTab}
                     lang={lang}
                     t={t}
                     activeTool={activeTool}

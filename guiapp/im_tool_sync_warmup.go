@@ -51,6 +51,7 @@ func (h *IMMessageHandler) WarmupHTTPConn() {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
 	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
+	corelib.ApplyOpenCodeSessionHeader(req, cfg)
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	req = req.WithContext(ctx)

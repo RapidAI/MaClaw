@@ -31,6 +31,7 @@ func openAISDKChatRaw(ctx context.Context, cfg corelib.MaclawLLMConfig, body []b
 	// itself only prevents transport-level body replay after it replaces the
 	// exact JSON payload.
 	rawClient := openAISDKClientWithRawBody(client, body, nil)
+	cfg = bindOpenCodeSessionFromJSONBody(ctx, cfg, body)
 	openaiClient := openai.NewClient(openAISDKOptions(cfg, rawClient)...)
 	var err error
 	_, err = openaiClient.Chat.Completions.New(
@@ -70,6 +71,7 @@ func openAISDKChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body 
 
 func openAIHTTPChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body []byte, client *http.Client, onToken TokenCallback, onReasoning TokenCallback) (*Response, int, []byte, error) {
 	client = HTTPClientForRequestContext(ctx, client)
+	cfg = bindOpenCodeSessionFromJSONBody(ctx, cfg, body)
 	endpoint := BuildOpenAIChatCompletionsEndpoint(corelib.NormalizeGLMCodingPlanOpenAIBaseURL(cfg.URL, cfg.UserAgent()))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
@@ -85,6 +87,7 @@ func openAIHTTPChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body
 	ApplyProviderAuthHeaders(req, cfg)
 	ApplyWorkloadHintHeaders(req, cfg)
 	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
+	corelib.ApplyOpenCodeSessionHeader(req, cfg)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -138,6 +141,7 @@ func openAISDKChatStreamUnused(ctx context.Context, cfg corelib.MaclawLLMConfig,
 	client = HTTPClientForRequestContext(ctx, client)
 	capture := &openAISDKStreamCapture{limit: 512 * 1024}
 	streamClient := openAISDKClientWithRawBody(client, body, capture)
+	cfg = bindOpenCodeSessionFromJSONBody(ctx, cfg, body)
 	openaiClient := openai.NewClient(openAISDKOptions(cfg, streamClient)...)
 	stream := openaiClient.Chat.Completions.NewStreaming(ctx, openai.ChatCompletionNewParams{})
 
@@ -422,6 +426,9 @@ func openAISDKOptions(cfg corelib.MaclawLLMConfig, client *http.Client) []option
 	}
 	if corelib.IsCodeGenURL(cfg.URL) {
 		opts = append(opts, option.WithHeader(corelib.CodeGenClientNameHeader, corelib.NormalizeCodeGenClientName(cfg.UserAgent())))
+	}
+	if name, value, ok := corelib.OpenCodeSessionHeaderForConfig(cfg); ok {
+		opts = append(opts, option.WithHeader(name, value))
 	}
 	if strings.EqualFold(strings.TrimSpace(cfg.ProviderName), "xAI-Grok") &&
 		strings.EqualFold(strings.TrimSpace(cfg.AuthType), "oauth") {

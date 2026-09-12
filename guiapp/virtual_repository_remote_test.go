@@ -106,7 +106,7 @@ func TestResetRemoteVirtualRepositoryHostKeyRemovesOnlyTargetHost(t *testing.T) 
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.ResetRemoteVirtualRepositoryHostKey("remote_1"); err != nil {
+	if err := app.ResetRemoteVirtualRepositoryHostKey("remote_1", ""); err != nil {
 		t.Fatal(err)
 	}
 	knownHosts, err := app.loadVirtualRepositoryKnownHosts()
@@ -126,7 +126,7 @@ func TestResetRemoteVirtualRepositoryHostKeyRejectsUnknownRepository(t *testing.
 	if err := writeJSONFile(app.virtualRepositoryStatePath("virtual-repositories-index.json"), virtualRepositoryIndex{Version: 1, Items: []virtualRepositoryIndexEntry{}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.ResetRemoteVirtualRepositoryHostKey("missing"); err == nil || !strings.Contains(err.Error(), "not found") {
+	if err := app.ResetRemoteVirtualRepositoryHostKey("missing", ""); err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("unknown repository reset error = %v", err)
 	}
 }

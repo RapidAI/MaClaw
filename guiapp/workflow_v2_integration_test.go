@@ -507,3 +507,61 @@ func TestRunWorkflowV2PhaseEnsuresProjectPathBeforeAgentLoop(t *testing.T) {
 		t.Fatalf("workflow phase project path was not created: %v", err)
 	}
 }
+
+func TestLocalCodingPlanStepReqCtxDefersVerificationToLaterBuildStep(t *testing.T) {
+	tasks := []*v2.TaskItem{
+		{Index: 1, Title: "创建 snake.cpp 游戏主文件", Description: "实现蛇的移动控制、食物生成、碰撞检测"},
+		{Index: 2, Title: "创建 CMakeLists.txt 构建配置"},
+		{Index: 3, Title: "编译并验证游戏运行"},
+	}
+	ctx := localCodingPlanStepReqCtx("开发一个基于C++的贪吃蛇游戏", tasks, tasks[0], len(tasks))
+	if !strings.Contains(ctx, "[Plan step T1/3] 创建 snake.cpp 游戏主文件") {
+		t.Fatalf("step header missing from ctx:\n%s", ctx)
+	}
+	if !strings.Contains(ctx, "- T3: 编译并验证游戏运行") {
+		t.Fatalf("titles-only outline missing from ctx:\n%s", ctx)
+	}
+	// The finalize gates must recover title+description from this layout and
+	// relax a MISSING verification status for an implementation-only step when
+	// the plan assigns compilation to a later step.
+	stepTitle, stepDesc := resolveCodingPlanStepFocus(tasks[0].Title, tasks[0].Description, ctx)
+	if stepDesc == "" {
+		t.Fatalf("step description not recovered from ctx (title=%q)", stepTitle)
+	}
+	status, _ := maybeRelaxDeferredPlanStepVerification(stepTitle, stepDesc, ctx, codingSubAgentQualityMissing, "no verify")
+	if status != codingSubAgentQualityNotNeeded {
+		t.Fatalf("verification status = %v, want NotNeeded for deferred implementation step", status)
+	}
+	// A failed verification (actual build/test error) is never relaxed.
+	status, _ = maybeRelaxDeferredPlanStepVerification(stepTitle, stepDesc, ctx, codingSubAgentQualityFailed, "build broke")
+	if status != codingSubAgentQualityFailed {
+		t.Fatalf("failed verification must not be relaxed, got %v", status)
+	}
+	// The last step owns verification: no later build/test step, gate stays.
+	lastCtx := localCodingPlanStepReqCtx("开发一个基于C++的贪吃蛇游戏", tasks, tasks[2], len(tasks))
+	lastTitle, lastDesc := resolveCodingPlanStepFocus(tasks[2].Title, tasks[2].Description, lastCtx)
+	status, _ = maybeRelaxDeferredPlanStepVerification(lastTitle, lastDesc, lastCtx, codingSubAgentQualityMissing, "no verify")
+	if status != codingSubAgentQualityMissing {
+		t.Fatalf("final verify step status = %v, want Missing (no relaxation)", status)
+	}
+}
+
+func TestLocalCodingPlanStepReqCtxRenumbersMissingStepIndex(t *testing.T) {
+	tasks := []*v2.TaskItem{
+		{Index: 0, Title: "创建主文件"},
+		{Index: 0, Title: "编译并验证"},
+	}
+	ctx := localCodingPlanStepReqCtx("goal", tasks, tasks[0], len(tasks))
+	if !strings.Contains(ctx, "[Plan step T1/2] 创建主文件") {
+		t.Fatalf("header must use the renumbered positional index:\n%s", ctx)
+	}
+	if !strings.Contains(ctx, "- T1: 创建主文件  ← current") {
+		t.Fatalf("outline current marker must agree with the header:\n%s", ctx)
+	}
+	// The renumbered header still lets the gate see the later build step.
+	stepTitle, stepDesc := resolveCodingPlanStepFocus(tasks[0].Title, tasks[0].Description, ctx)
+	status, _ := maybeRelaxDeferredPlanStepVerification(stepTitle, stepDesc, ctx, codingSubAgentQualityMissing, "no verify")
+	if status != codingSubAgentQualityNotNeeded {
+		t.Fatalf("verification status = %v, want NotNeeded", status)
+	}
+}

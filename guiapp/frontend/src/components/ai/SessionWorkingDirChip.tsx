@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { createPortal } from "react-dom";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { GetTabWorkingDir, SetTabWorkingDir, OpenProjectDirectory, SelectWorkingDir } from "../../../wailsjs/go/main/App";
 import { isCloudWorkspacePath } from "./codingTaskMode";
@@ -23,6 +24,9 @@ interface DirState {
     path: string;
     isDefault: boolean;
 }
+
+const MENU_WIDTH = 176;
+const MENU_MAX_HEIGHT = 240;
 
 async function readTabWorkingDir(tabId: string): Promise<DirState | null> {
     const result = await GetTabWorkingDir(tabId) as { path?: string; is_default?: boolean };
@@ -59,15 +63,48 @@ export function workingDirDisplayLabel(path: string, lang?: string): string {
  */
 export function SessionWorkingDirChip({ tabId, sessionReadyRevision = 0, theme: t, lang, onWorkingDirChange, onWorkingDirResolved, onOpenCloudFiles }: SessionWorkingDirChipProps) {
     const [dirState, setDirState] = useState<DirState | null>(null);
-    const [menuOpen, setMenuOpen] = useState(false);
+    const [menuOpen, setMenuOpenState] = useState(false);
+    const [menuPosition, setMenuPosition] = useState<{ left: number; top: number; openUp: boolean; maxHeight: number } | null>(null);
     const [selectingDirectory, setSelectingDirectory] = useState(false);
     const mountedRef = useRef(true);
     const rootRef = useRef<HTMLDivElement>(null);
     const chipRef = useRef<HTMLButtonElement>(null);
+    const menuRef = useRef<HTMLDivElement>(null);
     const refreshGenerationRef = useRef(0);
     // State updates are asynchronous, so use a ref as the immediate guard
     // against a rapid double-click opening two native directory pickers.
     const directorySelectionInFlightRef = useRef(false);
+
+    // The menu is portaled to document.body so composer toolbars with
+    // overflow:hidden cannot clip it; position it from the chip's rect and
+    // open toward whichever viewport side has more room.
+    const updateMenuPosition = useCallback(() => {
+        const chip = chipRef.current;
+        if (!chip || typeof window === "undefined") return;
+        const rect = chip.getBoundingClientRect();
+        const viewportPadding = 8;
+        const menuGap = 6;
+        const spaceAbove = Math.max(0, rect.top - menuGap - viewportPadding);
+        const spaceBelow = Math.max(0, window.innerHeight - rect.bottom - menuGap - viewportPadding);
+        // Pick the roomier side, then cap the menu height so it can never
+        // disappear beyond either viewport edge.
+        const openUp = spaceAbove >= spaceBelow;
+        const left = Math.min(
+            Math.max(viewportPadding, rect.left),
+            Math.max(viewportPadding, window.innerWidth - MENU_WIDTH - viewportPadding),
+        );
+        setMenuPosition({
+            left,
+            top: openUp ? rect.top - menuGap : rect.bottom + menuGap,
+            openUp,
+            maxHeight: Math.min(MENU_MAX_HEIGHT, openUp ? spaceAbove : spaceBelow),
+        });
+    }, []);
+
+    const setMenuOpen = useCallback((next: boolean) => {
+        if (next) updateMenuPosition();
+        setMenuOpenState(next);
+    }, [updateMenuPosition]);
 
     useEffect(() => {
         mountedRef.current = true;
@@ -97,7 +134,9 @@ export function SessionWorkingDirChip({ tabId, sessionReadyRevision = 0, theme: 
     useEffect(() => {
         if (!menuOpen) return;
         const onPointerDown = (event: MouseEvent) => {
-            if (rootRef.current && !rootRef.current.contains(event.target as Node)) setMenuOpen(false);
+            const target = event.target as Node;
+            if (rootRef.current?.contains(target) || menuRef.current?.contains(target)) return;
+            setMenuOpen(false);
         };
         const onKeyDown = (event: KeyboardEvent) => {
             if (event.key === "Escape") {
@@ -105,13 +144,41 @@ export function SessionWorkingDirChip({ tabId, sessionReadyRevision = 0, theme: 
                 chipRef.current?.focus();
             }
         };
+        const handleReposition = () => updateMenuPosition();
         document.addEventListener("mousedown", onPointerDown);
         document.addEventListener("keydown", onKeyDown);
+        window.addEventListener("resize", handleReposition);
+        window.addEventListener("scroll", handleReposition, true);
         return () => {
             document.removeEventListener("mousedown", onPointerDown);
             document.removeEventListener("keydown", onKeyDown);
+            window.removeEventListener("resize", handleReposition);
+            window.removeEventListener("scroll", handleReposition, true);
         };
+    }, [menuOpen, setMenuOpen, updateMenuPosition]);
+
+    // Move focus into the menu on open so arrow-key navigation works immediately.
+    useEffect(() => {
+        if (!menuOpen) return;
+        menuRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')?.focus();
     }, [menuOpen]);
+
+    const handleMenuKeyDown = useCallback((event: ReactKeyboardEvent) => {
+        const items = Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') || []).filter((item) => !item.disabled);
+        if (!items.length) return;
+        const index = items.indexOf(event.target as HTMLButtonElement);
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+            event.preventDefault();
+            const step = event.key === "ArrowDown" ? 1 : items.length - 1;
+            items[(Math.max(index, 0) + step) % items.length]?.focus();
+        } else if (event.key === "Home") {
+            event.preventDefault();
+            items[0]?.focus();
+        } else if (event.key === "End") {
+            event.preventDefault();
+            items.at(-1)?.focus();
+        }
+    }, []);
 
     const handleOpenDir = useCallback(() => {
         setMenuOpen(false);
@@ -165,7 +232,7 @@ export function SessionWorkingDirChip({ tabId, sessionReadyRevision = 0, theme: 
         return (
             <div data-testid="session-context-bar" style={{
                 display: "inline-flex", alignItems: "center",
-                minHeight: 22, boxSizing: "border-box", flexShrink: 0,
+                minHeight: 24, boxSizing: "border-box", flexShrink: 0,
             }}>
                 <span style={{ opacity: 0.35, display: "inline-flex", color: "var(--theme-text-muted)" }}><IconFolder size={13} color="currentColor" /></span>
             </div>
@@ -183,7 +250,7 @@ export function SessionWorkingDirChip({ tabId, sessionReadyRevision = 0, theme: 
 
     const menuItemStyle: CSSProperties = {
         display: "flex", alignItems: "center", gap: 6, width: "100%",
-        padding: "6px 12px", border: "none", background: "transparent",
+        padding: "5px 8px", border: "none", borderRadius: 4, background: "transparent",
         color: t.text, fontSize: 12, textAlign: "left", cursor: "pointer",
         whiteSpace: "nowrap",
     };
@@ -200,7 +267,7 @@ export function SessionWorkingDirChip({ tabId, sessionReadyRevision = 0, theme: 
                 flexShrink: 1, overflow: "visible",
             }}
         >
-            <div ref={rootRef} style={{ position: "relative", minWidth: 0, maxWidth: "100%" }}>
+            <div ref={rootRef} style={{ minWidth: 0, maxWidth: "100%" }}>
                 <button
                     type="button"
                     ref={chipRef}
@@ -210,15 +277,17 @@ export function SessionWorkingDirChip({ tabId, sessionReadyRevision = 0, theme: 
                     aria-expanded={menuOpen}
                     aria-label={(lang === "en" ? "Session working directory: " : "会话工作目录：") + displayPath}
                     title={isCloud ? displayPath : dirState.path}
-                    onClick={() => setMenuOpen(v => !v)}
+                    onClick={() => setMenuOpen(!menuOpen)}
+                    onKeyDown={(event) => { if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setMenuOpen(true); } }}
                     style={{
                         display: "inline-flex", alignItems: "center", gap: 5,
-                        maxWidth: "100%", minHeight: 22, padding: "2px 9px",
-                        border: "1px solid var(--theme-border)", borderRadius: 999,
-                        background: menuOpen ? "var(--theme-primary-soft)" : "var(--theme-surface-muted)",
-                        color: menuOpen ? "var(--theme-primary)" : "var(--theme-text-secondary)",
+                        maxWidth: "100%", height: 24, padding: "0 8px",
+                        border: `1px solid ${t.fieldBorder}`, borderRadius: 4,
+                        background: menuOpen ? `color-mix(in srgb, ${t.btnColor} 10%, ${t.fieldBg})` : t.fieldBg,
+                        color: menuOpen ? t.btnColor : t.textMuted,
                         cursor: "pointer", fontSize: 11, lineHeight: 1.4,
                         transition: "background 150ms ease, border-color 150ms ease",
+                        boxSizing: "border-box",
                     }}
                 >
                     <span style={{ display: "inline-flex", flexShrink: 0, opacity: 0.8 }}>
@@ -234,15 +303,20 @@ export function SessionWorkingDirChip({ tabId, sessionReadyRevision = 0, theme: 
                     )}
                     <span aria-hidden="true" style={{ fontSize: 9, opacity: 0.6, flexShrink: 0 }}>▾</span>
                 </button>
-                {menuOpen && (
+                {menuOpen && menuPosition && typeof document !== "undefined" && createPortal(
                     <div
+                        ref={menuRef}
                         role="menu"
                         data-testid="working-dir-menu"
+                        onKeyDown={handleMenuKeyDown}
                         style={{
-                            position: "absolute", bottom: "calc(100% + 4px)", left: 0, zIndex: 9999,
-                            background: t.titleBarBg, border: `1px solid ${t.titleBarBorder}`,
-                            borderRadius: 8, boxShadow: "0 6px 18px rgba(0,0,0,0.16)",
-                            padding: "4px 0", minWidth: 170,
+                            position: "fixed", left: menuPosition.left, top: menuPosition.top,
+                            transform: menuPosition.openUp ? "translateY(-100%)" : undefined,
+                            zIndex: 40000,
+                            background: t.bg, border: `1px solid ${t.fieldBorder}`,
+                            borderRadius: 6, boxShadow: "0 4px 8px rgba(15, 23, 42, 0.14)",
+                            padding: 4, minWidth: MENU_WIDTH,
+                            maxHeight: menuPosition.maxHeight, overflowY: "auto",
                         }}
                     >
                         <button
@@ -278,7 +352,8 @@ export function SessionWorkingDirChip({ tabId, sessionReadyRevision = 0, theme: 
                         >
                             {lang === "en" ? "Copy path" : "复制路径"}
                         </button>
-                    </div>
+                    </div>,
+                    document.body,
                 )}
             </div>
         </div>

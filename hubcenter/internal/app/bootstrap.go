@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -264,9 +265,50 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 	} else {
 		nodeID = "single"
 	}
-	if _, err := InitLLMModule(provider, systemSettings, nodeID, entryService, haSvc, dataDir); err != nil {
+	llmModule, err := InitLLMModule(provider, systemSettings, nodeID, entryService, haSvc, dataDir)
+	if err != nil {
 		return nil, fmt.Errorf("initialize LLM module: %w", err)
 	}
+	httpapi.SetLLMProviderMonitorMailer(mailer)
+	// Every node starts the monitor loop; in HA the nodes self-elect a single
+	// runner through a lease in the replicated system settings. Guarantee:
+	// one runner under normal operation — a duplicate cycle is possible only
+	// inside failover/split-brain windows and is bounded by the lease TTL.
+	hostname, hostErr := os.Hostname()
+	if hostErr != nil || strings.TrimSpace(hostname) == "" {
+		hostname = "node"
+	}
+	// Non-HA uses a stable node ID (hostname only): a single node has no
+	// peers to fence against, and a stable ID avoids self-lockout after a
+	// restart while the previous lease is still fresh.
+	monitorNodeID := hostname
+	leaseTTL := 3 * time.Minute
+	if cfg.HA.Enabled {
+		monitorNodeID = strings.TrimSpace(cfg.HA.NodeID)
+		if monitorNodeID == "" {
+			// Multiple nodes can share a hostname; disambiguate by pid.
+			monitorNodeID = fmt.Sprintf("%s-%d", hostname, os.Getpid())
+		}
+		// The holder renews the lease every 1-minute tick, but renewals reach
+		// peers only after the system-setting replication lag (sync interval
+		// + push debounce). The TTL must cover that lag with margin — 3x the
+		// worst lag also absorbs modest clock skew (peers are assumed to be
+		// NTP-disciplined). A 10-minute floor covers tiny custom intervals.
+		syncSec := cfg.HA.SyncIntervalSeconds
+		if syncSec <= 0 {
+			syncSec = 180
+		}
+		debounceSec := cfg.HA.PushDebounceSeconds
+		if debounceSec <= 0 {
+			debounceSec = 180
+		}
+		leaseTTL = time.Duration((syncSec+debounceSec)*3) * time.Second
+		if leaseTTL < 10*time.Minute {
+			leaseTTL = 10 * time.Minute
+		}
+		log.Printf("[llm-monitor] HA enabled; provider monitor self-elects a single runner via lease (node=%s, lease_ttl=%s)", monitorNodeID, leaseTTL)
+	}
+	app.goBackground(func(ctx context.Context) { httpapi.RunLLMProviderMonitor(ctx, llmModule.Service, mailer, monitorNodeID, leaseTTL) })
 	if haSvc != nil {
 		// The HA syncer may apply compute-market operations as soon as it starts.
 		// Initialize and attach the LLM repositories first; otherwise a pulled

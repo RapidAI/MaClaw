@@ -226,12 +226,12 @@ describe('AssistantPreviewPane', () => {
         expect(screen.getByText('answer')).toBeTruthy();
     });
 
-    it('keeps the empty source preview header draggable', () => {
+    it('drops the duplicate panel header for the empty local source preview', () => {
         renderPaneWithCodeState(activeEmptyCodePreviewState);
 
         fireEvent.click(screen.getByRole('tab', { name: 'Source' }));
 
-        expect(screen.getByTestId('code-preview-header').style.getPropertyValue('--wails-draggable')).toBe('no-drag');
+        expect(screen.queryByTestId('code-preview-header')).toBeNull();
         expect(screen.getByTestId('code-preview-workspace-status')).toBeTruthy();
         expect(screen.getByText('Working directory unavailable')).toBeTruthy();
     });
@@ -562,5 +562,225 @@ describe('AssistantPreviewPane', () => {
 
         fireEvent.keyDown(screen.getByRole('tab', { name: 'Source' }), { key: 'Home' });
         expect(screen.getByRole('tab', { name: 'Progress' }).getAttribute('aria-selected')).toBe('true');
+    });
+
+    it('opens the file list from the leftmost header button, paginated behind show-more', () => {
+        const selectCodeFile = vi.fn();
+        const manyFiles = new Map(Array.from({ length: 7 }, (_, i) => {
+            const p = `/src/f${i}.go`;
+            return [p, { ...file, filePath: p, fileName: `f${i}.go` }];
+        }));
+        render(
+            <AssistantPreviewPane
+                codePreviewState={{ ...activeCodePreviewState, files: manyFiles }}
+                closeCodePreview={vi.fn()}
+                closeDocPreview={vi.fn()}
+                lang="en"
+                selectCodeFile={selectCodeFile}
+                showAgentView={false}
+                showCodePreview={true}
+                showWorkflowPreview={false}
+                splitRatio={0.42}
+                startPreviewResize={vi.fn()}
+                theme={theme}
+                workflowState={workflowState}
+            />,
+        );
+
+        fireEvent.click(screen.getByTestId('code-preview-file-list-toggle'));
+
+        expect(screen.getByTestId('code-preview-file-list-panel').textContent).toContain('Artifacts (7)');
+        expect(screen.getAllByTestId('code-preview-file-list-item')).toHaveLength(5);
+        fireEvent.click(screen.getByTestId('code-preview-file-list-more'));
+        expect(screen.getAllByTestId('code-preview-file-list-item')).toHaveLength(7);
+
+        fireEvent.click(screen.getAllByTestId('code-preview-file-list-item')[2]);
+        expect(selectCodeFile).toHaveBeenCalledWith('/src/f2.go');
+        // Unpinned: selecting a file closes the panel.
+        expect(screen.queryByTestId('code-preview-file-list-panel')).toBeNull();
+    });
+
+    it('keeps the file list open across selections when pinned', () => {
+        const selectCodeFile = vi.fn();
+        render(
+            <AssistantPreviewPane
+                codePreviewState={activeCodePreviewState}
+                closeCodePreview={vi.fn()}
+                closeDocPreview={vi.fn()}
+                lang="en"
+                selectCodeFile={selectCodeFile}
+                showAgentView={false}
+                showCodePreview={true}
+                showWorkflowPreview={false}
+                splitRatio={0.42}
+                startPreviewResize={vi.fn()}
+                theme={theme}
+                workflowState={workflowState}
+            />,
+        );
+
+        fireEvent.click(screen.getByTestId('code-preview-file-list-toggle'));
+        fireEvent.click(screen.getByTestId('code-preview-file-list-pin'));
+        fireEvent.click(screen.getByTestId('code-preview-file-list-item'));
+
+        expect(selectCodeFile).toHaveBeenCalledWith('/src/main.ts');
+        expect(screen.getByTestId('code-preview-file-list-panel')).toBeTruthy();
+    });
+
+    it('shows upload / share / reveal actions for a previewed local file', () => {
+        const localFile: CodeFile = { ...file, absPath: 'D:\\proj\\src\\main.ts' };
+        render(
+            <AssistantPreviewPane
+                codePreviewState={{
+                    ...activeCodePreviewState,
+                    files: new Map([[localFile.filePath, localFile]]),
+                }}
+                closeCodePreview={vi.fn()}
+                closeDocPreview={vi.fn()}
+                lang="zh"
+                selectCodeFile={vi.fn()}
+                showAgentView={false}
+                showCodePreview={true}
+                showWorkflowPreview={false}
+                splitRatio={0.42}
+                startPreviewResize={vi.fn()}
+                theme={theme}
+                workflowState={workflowState}
+            />,
+        );
+
+        expect(screen.getByTestId('preview-file-action-upload').getAttribute('aria-label')).toBe('上传到文稿库');
+        expect(screen.getByTestId('preview-file-action-share').getAttribute('aria-label')).toBe('分享（复制文件路径）');
+        expect(screen.getByTestId('preview-file-action-reveal').getAttribute('aria-label')).toBe('打开文件夹');
+    });
+
+    it('hides the file actions for cloud workspace files, which have no local path', () => {
+        render(
+            <AssistantPreviewPane
+                codePreviewState={activeCodePreviewState}
+                closeCodePreview={vi.fn()}
+                closeDocPreview={vi.fn()}
+                lang="en"
+                selectCodeFile={vi.fn()}
+                showAgentView={false}
+                showCodePreview={true}
+                showWorkflowPreview={false}
+                cloudMode
+                cloudWorkspaceName="ws-1"
+                splitRatio={0.42}
+                startPreviewResize={vi.fn()}
+                theme={theme}
+                workflowState={workflowState}
+            />,
+        );
+
+        expect(screen.queryByTestId('preview-file-actions')).toBeNull();
+    });
+
+    it('expands the pane to full width from the code preview toolbar and restores it', async () => {
+        render(
+            <AssistantPreviewPane
+                codePreviewState={activeCodePreviewState}
+                closeCodePreview={vi.fn()}
+                closeDocPreview={vi.fn()}
+                lang="en"
+                selectCodeFile={vi.fn()}
+                showAgentView={false}
+                showCodePreview={true}
+                showWorkflowPreview={false}
+                splitRatio={0.42}
+                startPreviewResize={vi.fn()}
+                theme={theme}
+                workflowState={workflowState}
+            />,
+        );
+
+        const pane = document.querySelector('.mc-assistant-preview-pane') as HTMLElement;
+        // splitRatio 0.42 → split width 58%.
+        expect(pane.style.width).toBe('58%');
+
+        const toggle = screen.getByTestId('code-preview-expand-toggle');
+        expect(toggle.textContent).toBe('⤢');
+        fireEvent.click(toggle);
+
+        expect(pane.style.width).toBe('100%');
+        expect(toggle.textContent).toBe('⤡');
+        expect(toggle.getAttribute('data-active')).toBe('true');
+        // The resize handle is hidden while expanded — it would have no effect.
+        expect(screen.queryByTestId('assistant-preview-resize-handle')).toBeNull();
+
+        fireEvent.click(toggle);
+        expect(pane.style.width).toBe('58%');
+        expect(screen.getByTestId('assistant-preview-resize-handle')).toBeTruthy();
+    });
+
+    it('presents as a right-edge slide-in overlay over a dimmed backdrop', async () => {
+        renderPane();
+
+        const pane = document.querySelector('.mc-assistant-preview-pane') as HTMLElement;
+        expect(pane.style.position).toBe('absolute');
+        expect(pane.style.right).toBe('0px');
+        expect(pane.style.transition).toContain('transform');
+        expect(screen.getByTestId('assistant-preview-backdrop')).toBeTruthy();
+        // After the slide-in the transform is cleared so fixed-position context
+        // menus inside the panel keep their viewport anchoring.
+        await waitFor(() => expect(pane.style.transform).toBe('none'));
+    });
+
+    it('closes open preview surfaces when the backdrop is clicked', () => {
+        const closeCodePreview = vi.fn();
+        const closeDocPreview = vi.fn();
+        render(
+            <AssistantPreviewPane
+                codePreviewState={activeCodePreviewState}
+                closeCodePreview={closeCodePreview}
+                closeDocPreview={closeDocPreview}
+                lang="en"
+                selectCodeFile={vi.fn()}
+                showAgentView={false}
+                showCodePreview={true}
+                showWorkflowPreview={true}
+                splitRatio={0.42}
+                startPreviewResize={vi.fn()}
+                theme={theme}
+                workflowState={workflowState}
+            />,
+        );
+
+        const backdrop = screen.getByTestId('assistant-preview-backdrop');
+        fireEvent.mouseDown(backdrop);
+        fireEvent.click(backdrop);
+
+        expect(closeCodePreview).toHaveBeenCalled();
+        expect(closeDocPreview).toHaveBeenCalled();
+    });
+
+    it('keeps the panel mounted while it slides out after the last preview closes', async () => {
+        const props = {
+            codePreviewState: activeCodePreviewState,
+            closeCodePreview: vi.fn(),
+            closeDocPreview: vi.fn(),
+            lang: 'en',
+            selectCodeFile: vi.fn(),
+            showAgentView: false,
+            showWorkflowPreview: false,
+            splitRatio: 0.42,
+            startPreviewResize: vi.fn(),
+            theme,
+            workflowState,
+        };
+        const { rerender } = render(<AssistantPreviewPane {...props} showCodePreview={true} />);
+        expect(document.querySelector('.mc-assistant-preview-pane')).toBeTruthy();
+
+        // Fully entered: the backdrop intercepts clicks to dismiss the preview.
+        await waitFor(() => expect(screen.getByTestId('assistant-preview-backdrop').style.pointerEvents).toBe('auto'));
+
+        rerender(<AssistantPreviewPane {...props} showCodePreview={false} />);
+
+        // Still mounted right after the flag flips — the exit animation plays
+        // first, and the now-invisible backdrop lets clicks fall through.
+        expect(document.querySelector('.mc-assistant-preview-pane')).toBeTruthy();
+        expect(screen.getByTestId('assistant-preview-backdrop').style.pointerEvents).toBe('none');
+        await waitFor(() => expect(document.querySelector('.mc-assistant-preview-pane')).toBeNull());
     });
 });

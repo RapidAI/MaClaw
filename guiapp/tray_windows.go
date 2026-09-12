@@ -5,6 +5,7 @@ package guiapp
 import (
 	"os"
 	stdruntime "runtime"
+	"sync/atomic"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -41,6 +42,10 @@ func setupTray(app *App, appOptions *options.App) {
 			systray.SetIcon(icon)
 			systray.SetTitle(brand.Current().DisplayName)
 			systray.SetTooltip(brand.Current().TrayTooltip)
+
+			var isVisible atomic.Bool
+			isVisible.Store(!app.IsAutoStart)
+
 			systray.SetOnDClick(func(menu systray.IMenu) {
 				_ = menu
 				go func() {
@@ -50,6 +55,8 @@ func setupTray(app *App, appOptions *options.App) {
 					runtime.WindowShow(app.ctx)
 					runtime.WindowSetAlwaysOnTop(app.ctx, true)
 					runtime.WindowSetAlwaysOnTop(app.ctx, false)
+					isVisible.Store(true)
+					UpdateTrayMenu(app.CurrentLanguage)
 				}()
 			})
 
@@ -65,8 +72,6 @@ func setupTray(app *App, appOptions *options.App) {
 			mCUReset := mCU.AddSubMenuItem("Reset control state", "Clear stop/pause")
 			systray.AddSeparator()
 			mQuit := systray.AddMenuItem("Quit", "Quit Application")
-
-			isVisible := !app.IsAutoStart
 
 			refreshCUTray := func() {
 				menuTitle, statusLabel, pause, resume, stop, reset, pe, re, se, xe := computerUseTrayLabels(app)
@@ -108,7 +113,7 @@ func setupTray(app *App, appOptions *options.App) {
 				}
 				systray.SetTitle(t["title"])
 				systray.SetTooltip(t["title"])
-				if isVisible {
+				if isVisible.Load() {
 					mShow.SetTitle(t["hide"])
 				} else {
 					mShow.SetTitle(t["show"])
@@ -118,8 +123,12 @@ func setupTray(app *App, appOptions *options.App) {
 			}
 
 			UpdateTrayVisibility = func(visible bool) {
-				isVisible = visible
+				isVisible.Store(visible)
 				UpdateTrayMenu(app.CurrentLanguage)
+			}
+
+			IsMainWindowVisible = func() bool {
+				return isVisible.Load()
 			}
 
 			OnConfigChanged = func(cfg corelib.AppConfig) {
@@ -142,15 +151,15 @@ func setupTray(app *App, appOptions *options.App) {
 					if app.ctx == nil {
 						return
 					}
-					if isVisible {
+					if isVisible.Load() {
 						// Use app.WindowHide() so the desktop pet remains available from the title-bar hide path.
 						app.WindowHide()
-						isVisible = false
+						isVisible.Store(false)
 					} else {
 						runtime.WindowShow(app.ctx)
 						runtime.WindowSetAlwaysOnTop(app.ctx, true)
 						runtime.WindowSetAlwaysOnTop(app.ctx, false)
-						isVisible = true
+						isVisible.Store(true)
 					}
 					UpdateTrayMenu(app.CurrentLanguage)
 				}()

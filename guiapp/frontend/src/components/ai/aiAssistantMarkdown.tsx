@@ -3,6 +3,7 @@ import katex from "katex";
 import "katex/dist/katex.min.css";
 import { AIAssistantAttachmentPreviewDataURL, OpenFileOrShowInFolder, ShowItemInFolder } from "../../../wailsjs/go/main/App";
 import { BrowserOpenURL } from "../../../wailsjs/runtime";
+import { TaskResultUploadButton, taskResultUploadSupported } from "./TaskResultUploadButton";
 import type { ChatAction, ChatConfirmation, ChatMessage, ChatRecoverableSession, ChatUnfinishedSlot, CodingAgentTimelineItem } from "./useAIAssistant";
 import { renderCodingAgentProgressStatus } from "./CodingAgentProgressStatus";
 import { attachBareHeadingMarkers, normalizeInlineListMarkers } from "./aiAssistantMarkdownNormalize";
@@ -1537,8 +1538,8 @@ function AssistantReasoningPanel({
                 margin: "5px 0 7px 0",
                 fontSize: "12px",
                 color: t.textMuted,
-                borderLeft: `2px solid ${t.isDark ? "rgba(96,165,250,.65)" : "rgba(37,99,235,.48)"}`,
-                background: t.isDark ? "rgba(30, 41, 59, .28)" : "rgba(239, 246, 255, .72)",
+                borderLeft: `2px solid ${t.isDark ? "rgba(148,163,184,.55)" : `color-mix(in srgb, ${t.textMuted} 42%, transparent)`}`,
+                background: t.isDark ? "rgba(30, 41, 59, .28)" : `color-mix(in srgb, ${t.textMuted} 7%, transparent)`,
                 borderRadius: "0 7px 7px 0",
             }}
         >
@@ -1549,14 +1550,14 @@ function AssistantReasoningPanel({
                 gap: 7,
                 minHeight: 26,
                 padding: "2px 9px 2px 8px",
-                color: t.isDark ? "#bfdbfe" : "#1d4ed8",
+                color: t.isDark ? "#cbd5e1" : t.textMuted,
                 fontWeight: 650,
                 opacity: 0.94,
                 listStyleType: "none",
             }}>
-                <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: "50%", background: t.isDark ? "#60a5fa" : "#2563eb", flex: "0 0 auto", boxShadow: isOpen ? `0 0 0 3px ${t.isDark ? "rgba(96,165,250,.18)" : "rgba(37,99,235,.14)"}` : undefined }} />
-                <span>{label}</span>
-                {typeof step === "number" && <span style={{ fontSize: 10, fontWeight: 600, opacity: .72 }}>#{step}</span>}
+                <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: "50%", background: t.isDark ? "#94a3b8" : t.textMuted, flex: "0 0 auto", boxShadow: isOpen ? `0 0 0 3px ${t.isDark ? "rgba(148,163,184,.16)" : `color-mix(in srgb, ${t.textMuted} 14%, transparent)`}` : undefined }} />
+                <span style={{ flex: "0 0 auto", whiteSpace: "nowrap" }}>{label}</span>
+                {typeof step === "number" && <span style={{ fontSize: 10, fontWeight: 600, opacity: .72, flex: "0 0 auto", whiteSpace: "nowrap" }}>#{step}</span>}
                 {preview && !isOpen && <span style={{ flex: "1 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 450, opacity: .72 }}>{preview}</span>}
                 <span aria-live="polite" data-testid="assistant-reasoning-toggle-state" style={{ marginLeft: "auto", fontSize: 10, fontWeight: 500, opacity: .65 }}>
                     {isOpen
@@ -1905,7 +1906,8 @@ export function renderMessage(
                             <div className="mc-task-result-card__heading"><span className="mc-task-result-card__icon" aria-hidden="true">▤</span><strong>{lang === "en" ? "Task result" : "任务结果"}</strong><span>{lang === "en" ? "Document" : "文档"}</span></div>
                             <div className="mc-task-result-card__files">{savedPaths.map((fp, i) => {
                                 const label = cloudSafePathLabel(fp, lang === "en" ? "Cloud file" : "云端文件");
-                                return <div key={i} className="mc-task-result-card__file"><a href="#" onClick={(event) => openFileInFolder(event, fp)} title={label}>{savedFileLabel}: {label}</a></div>;
+                                return <div key={i} className="mc-task-result-card__file"><a href="#" onClick={(event) => openFileInFolder(event, fp)} title={label}>{savedFileLabel}: {label}</a>
+                                    {taskResultUploadSupported(fp) && <TaskResultUploadButton filePath={fp} lang={lang} />}</div>;
                             })}</div>
                             <div className="mc-task-result-card__actions">
                                 <button type="button" onClick={(event) => openFileInFolder(event, savedPaths[0])}>{lang === "en" ? "View document" : "查看文档"}</button>

@@ -199,7 +199,7 @@ describe('OnboardingWizard registration', () => {
         FetchCodeGenModelsMock.mockResolvedValue([]);
         ActivateRemoteMock.mockResolvedValue({ vip_flag: true });
 
-        render(<OnboardingWizard {...baseProps} brandId="qianxin" brandDisplayName="TigerClaw" />);
+        render(<OnboardingWizard {...baseProps} brandId="qianxin" brandDisplayName="QAgent" />);
 
         expect(screen.getByText('1 / 2')).toBeTruthy();
         expect(screen.queryByText('Free trial')).toBeNull();
@@ -237,7 +237,7 @@ describe('OnboardingWizard registration', () => {
         SaveCodeGenModelChoiceMock.mockResolvedValue(undefined);
         ActivateRemoteMock.mockResolvedValue({ vip_flag: true });
 
-        render(<OnboardingWizard {...baseProps} brandId="qianxin" brandDisplayName="TigerClaw" />);
+        render(<OnboardingWizard {...baseProps} brandId="qianxin" brandDisplayName="QAgent" />);
 
         fireEvent.click(screen.getByRole('button', { name: /Enterprise SSO Login/ }));
 
@@ -259,7 +259,7 @@ describe('OnboardingWizard registration', () => {
                 <OnboardingWizard
                     {...baseProps}
                     brandId="qianxin"
-                    brandDisplayName="TigerClaw"
+                    brandDisplayName="QAgent"
                     onSaveField={(patch) => {
                         saveCompletion(patch);
                         setSaveVersion(version => version + 1);
@@ -285,7 +285,7 @@ describe('OnboardingWizard registration', () => {
         StartCodeGenSSOEmbeddedMock.mockRejectedValue(new Error('embedded unavailable'));
         StartCodeGenSSOMock.mockResolvedValue({ message: 'Browser SSO OK' });
 
-        render(<OnboardingWizard {...baseProps} brandId="qianxin" brandDisplayName="TigerClaw" />);
+        render(<OnboardingWizard {...baseProps} brandId="qianxin" brandDisplayName="QAgent" />);
 
         fireEvent.click(screen.getByRole('button', { name: /Enterprise SSO Login/ }));
 

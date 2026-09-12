@@ -445,6 +445,30 @@ function fmtDuration(seconds) {
   if (hours > 0) return hours + 'h ' + minutes + ' Min';
   return minutes + ' Min';
 }
+function effectiveRMBRateLabel(recordedCost, pricedTokens) {
+  if (!Number.isFinite(Number(pricedTokens)) || Number(pricedTokens) <= 0) return ust('creditsTooltipRMBRateUnavailable');
+  return fmtEffectiveRMBPricePerM(recordedCost, pricedTokens);
+}
+// Shared by the credits tooltip and the RMB summary-card tooltip so both audit
+// views quote identical effective rates and the same four-component breakdown.
+function rmbRateBreakdownLines(rmbCoverage, rmbCost) {
+  if (!rmbCoverage.available) return [];
+  return [
+    { kind: 'rmb-rate', text: ust('creditsTooltipRMBRates', {
+      input: effectiveRMBRateLabel(rmbCost.input, rmbCoverage.pricedNormalInputTokens),
+      cacheRead: effectiveRMBRateLabel(rmbCost.cacheRead, rmbCoverage.pricedCacheReadTokens),
+      cacheWrite: effectiveRMBRateLabel(rmbCost.cacheWrite, rmbCoverage.pricedCacheWriteTokens),
+      output: effectiveRMBRateLabel(rmbCost.output, rmbCoverage.pricedOutputTokens)
+    }) },
+    { kind: 'rmb', text: ust('creditsTooltipRMB', {
+      input: fmtRMB(rmbCost.input),
+      cacheRead: fmtRMB(rmbCost.cacheRead),
+      cacheWrite: fmtRMB(rmbCost.cacheWrite),
+      output: fmtRMB(rmbCost.output),
+      total: fmtRMB(rmbCost.total)
+    }) }
+  ];
+}
 function creditCalculationDetails(usage) {
   const data = usage || {};
   const normalInputTokens = Number(data.priced_normal_input_tokens || 0);
@@ -457,16 +481,6 @@ function creditCalculationDetails(usage) {
   const outputRate = fmtEffectiveRate(data.credit_output_component, outputTokens);
   const rmbCoverage = rmbCoverageDetails(data);
   const rmbCost = rmbCostDetails(data);
-  // The RMB total only covers requests that carried a frozen pricing snapshot.
-  // Each effective rate uses its matching directional denominator.
-  const rmbRateLabel = function(recordedCost, pricedTokens) {
-    if (!Number.isFinite(Number(pricedTokens)) || Number(pricedTokens) <= 0) return ust('creditsTooltipRMBRateUnavailable');
-    return fmtEffectiveRMBPricePerM(recordedCost, pricedTokens);
-  };
-  const inputRMBPrice = rmbRateLabel(rmbCost.input, rmbCoverage.pricedNormalInputTokens);
-  const cacheReadRMBPrice = rmbRateLabel(rmbCost.cacheRead, rmbCoverage.pricedCacheReadTokens);
-  const cacheWriteRMBPrice = rmbRateLabel(rmbCost.cacheWrite, rmbCoverage.pricedCacheWriteTokens);
-  const outputRMBPrice = rmbRateLabel(rmbCost.output, rmbCoverage.pricedOutputTokens);
   const adjustments = {
     minimum: Number(data.credit_minimum_adjustment || 0),
     rounding: Number(data.credit_rounding_adjustment || 0),
@@ -544,14 +558,7 @@ function creditCalculationDetails(usage) {
     // The compact metric card still uses fmtCredits, while this audit view must
     // visibly reconcile even for sub-milli-credit settlements.
     { kind: 'total', text: ust('creditsTooltipActualTotal', { credits: fmtFormulaCredits(data.credits) }) },
-    { kind: 'rmb-rate', text: rmbCoverage.available ? ust('creditsTooltipRMBRates', { input: inputRMBPrice, cacheRead: cacheReadRMBPrice, cacheWrite: cacheWriteRMBPrice, output: outputRMBPrice }) : '' },
-    { kind: 'rmb', text: rmbCoverage.available ? ust('creditsTooltipRMB', {
-      input: fmtRMB(rmbCost.input),
-      cacheRead: fmtRMB(rmbCost.cacheRead),
-      cacheWrite: fmtRMB(rmbCost.cacheWrite),
-      output: fmtRMB(rmbCost.output),
-      total: fmtRMB(rmbCost.total)
-    }) : '' },
+    ...rmbRateBreakdownLines(rmbCoverage, rmbCost),
     { kind: 'rule', text: ust('creditsTooltipFormula') }
   );
   return lines;
@@ -561,6 +568,21 @@ function usageCreditsLabel(usage) {
   const details = calculation.map(function (line) { return line.text; }).join('. ');
   const encoded = encodeURIComponent(JSON.stringify(calculation));
   return '<span class="usage-credit-label">' + escapeHtml(ust('colCredits')) + '<button class="usage-credit-info" type="button" aria-expanded="false" aria-label="' + escapeHtml(details) + '" data-credit-details="' + encoded + '" onclick="toggleUsageCreditTooltip(event)" onkeydown="onUsageCreditTooltipKeydown(event)">i</button></span>';
+}
+function usageRMBDetails(usage) {
+  const data = usage || {};
+  const coverage = rmbCoverageDetails(data);
+  return [
+    { kind: 'title', text: ust('summaryCostRMB') },
+    { kind: 'rmb-coverage', text: coverage.text },
+    ...rmbRateBreakdownLines(coverage, rmbCostDetails(data))
+  ];
+}
+function usageRMBLabel(usage) {
+  const details = usageRMBDetails(usage);
+  const ariaLabel = details.map(function (line) { return line.text; }).join('. ');
+  const encoded = encodeURIComponent(JSON.stringify(details));
+  return '<span class="usage-credit-label">' + escapeHtml(ust('summaryCostRMB')) + '<button class="usage-credit-info" type="button" aria-expanded="false" aria-label="' + escapeHtml(ariaLabel) + '" data-credit-details="' + encoded + '" onclick="toggleUsageCreditTooltip(event)" onkeydown="onUsageCreditTooltipKeydown(event)">i</button></span>';
 }
 function dismissUsageCreditTooltip() {
   const popover = document.getElementById('usageCreditPopover');
@@ -852,7 +874,7 @@ function renderUsageSummary() {
     usageMetricCard(ust('summaryCacheAnomalies'), fmtInt(s.usage_anomaly_count), ust('summaryCacheAnomalies')),
     usageMetricCard(ust('summaryRequests'), fmtInt(s.cached_requests) + ' / ' + fmtInt(s.requests), ust('summaryRequests')),
     usageMetricCard(ust('summaryCredits'), fmtCredits(s.credits), ust('summaryCredits'), usageCreditsLabel(s)),
-    usageMetricCard(ust('summaryCostRMB'), usageRMBValue(s), rmbCoverageDetails(s).text)
+    usageMetricCard(ust('summaryCostRMB'), usageRMBValue(s), ust('summaryCostRMB'), usageRMBLabel(s))
   ].join('');
 }
 function renderUsageReconciliation() {

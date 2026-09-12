@@ -21,6 +21,8 @@ import {
     isCloudWorkspaceFilePath,
     isCloudWorkspaceTask,
     isTaskManagementTaskRow,
+    isVisibleTaskRow,
+    visibleTaskRows,
     cloudWorkspaceRevealMatchesTab,
     cloudWorkingDirForActiveTab,
     isActiveCloudWorkspacePreview,
@@ -252,6 +254,18 @@ describe("codingTaskMode", () => {
         expect(isTaskManagementTaskRow({ tags: ["cloud_workspace:cws_a"] })).toBe(false);
         expect(isTaskManagementTaskRow({ tags: [] })).toBe(false);
         expect(isTaskManagementTaskRow(null)).toBe(false);
+    });
+
+    it("applies one visibility rule for sidebar, switcher and search", () => {
+        const rows = [
+            { name: "out", project_path: "D:/tasks/out" },
+            { name: "no-output-auto", project_path: "D:/tasks/auto", has_output: false },
+            { name: "no-output-managed", project_path: "D:/tasks/managed", has_output: false, tags: ["task_management"] },
+            { name: "no-output-cloud", project_path: "D:/tasks/cloud", has_output: false, tags: ["cloud_workspace:cws_v"] },
+        ];
+        expect(rows.filter(isVisibleTaskRow).map(r => r.name)).toEqual(["out", "no-output-managed", "no-output-cloud"]);
+        expect(visibleTaskRows(rows).map(r => r.name)).toEqual(["out", "no-output-managed", "no-output-cloud"]);
+        expect(isVisibleTaskRow(rows[1])).toBe(false);
     });
 
     it("does not treat a remote SSH task with a stray cloud tag as a cloud workspace", () => {

@@ -7,6 +7,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"os/exec"
 	"strings"
+	"sync/atomic"
 
 	"github.com/wailsapp/wails/v2/pkg/menu"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -40,10 +41,20 @@ func setupTrayNative(app *App, appOptions *options.App) {
 
 		t := trayTranslations()["en"]
 
+		var isVisible atomic.Bool
+		isVisible.Store(!app.IsAutoStart)
+		IsMainWindowVisible = isVisible.Load
+		// app.WindowHide reports hide events through UpdateTrayVisibility on
+		// every platform; there is no native hide menu on macOS.
+		UpdateTrayVisibility = func(visible bool) {
+			isVisible.Store(visible)
+		}
+
 		setupTahoeTray(icon, t["title"], t["show"], t["quit"],
 			func() {
 				// Show
 				runtime.WindowShow(app.ctx)
+				isVisible.Store(true)
 			},
 			func() {
 				// Quit

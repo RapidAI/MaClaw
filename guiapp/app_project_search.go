@@ -276,7 +276,7 @@ func (a *App) GetProjectScene(projectPath string) (*ProjectSceneDetail, error) {
 
 	scene, ok := a.sceneRecordForProjectPath(projectPath, projectSceneMap(a.memoryStore.SceneIndex(100)))
 	if !ok {
-		return &ProjectSceneDetail{ProjectPath: projectPath, Name: lastPathComponent(projectPath), ActiveWorkflow: a.activeWorkflowForRecentTaskPath(projectPath)}, nil
+		return &ProjectSceneDetail{ProjectPath: projectPath, Name: stripTaskDirTimestampSuffix(lastPathComponent(projectPath)), ActiveWorkflow: a.activeWorkflowForRecentTaskPath(projectPath)}, nil
 	}
 	detail := projectSceneDetailFromRecord(scene)
 	detail.ActiveWorkflow = a.activeWorkflowForRecentTaskPath(projectPath)
@@ -323,6 +323,69 @@ func (a *App) SearchProjects(query string, limit int) []ProjectSearchResult {
 
 	return results
 }
+
+// sceneIndexForTaskList returns the memory scene index, cached by the store's
+// dirty generation. SearchTasks runs on every sidebar refresh (and refresh
+// bursts are common during cloud restore), while BuildSceneIndex iterates
+// every memory entry — caching turns repeat refreshes into a map lookup.
+func (a *App) sceneIndexForTaskList(limit int) []memory.SceneRecord {
+	ms := a.memoryStore
+	if ms == nil {
+		return nil
+	}
+	genBefore := ms.DirtyGen()
+	a.sceneIndexCacheMu.Lock()
+	defer a.sceneIndexCacheMu.Unlock()
+	// TTL backstop: DirtyGen covers the known mutation paths, but a bounded
+	// cache age guarantees any missed mutation path self-heals.
+	if a.sceneIndexCacheGen == genBefore && a.sceneIndexCacheLimit >= limit && a.sceneIndexCache != nil && time.Since(a.sceneIndexCacheAt) < sceneIndexCacheTTL {
+		out := a.sceneIndexCache
+		if len(out) > limit {
+			out = out[:limit]
+		}
+		return out
+	}
+	scenes := ms.SceneIndex(limit)
+	if scenes == nil {
+		// Normalize so a fresh install (zero project scenes) caches too —
+		// otherwise the nil-cache guard rebuilds on every sidebar refresh.
+		scenes = []memory.SceneRecord{}
+	}
+	// A save racing the rebuild leaves the snapshot older than the generation
+	// it would be cached under; skip caching in that case so the next call
+	// rebuilds instead of serving a stale index indefinitely.
+	if ms.DirtyGen() == genBefore {
+		a.sceneIndexCacheGen = genBefore
+		a.sceneIndexCacheLimit = limit
+		a.sceneIndexCache = scenes
+		a.sceneIndexCacheAt = time.Now()
+	}
+	return scenes
+}
+
+// v2WorkflowStatesByOwner preloads every persisted V2 workflow state keyed by
+// owner ID. SearchTasks otherwise pays one SQLite round-trip per listed task
+// in activeWorkflowForProject; workflow rows are few, so one batch is cheaper.
+func (a *App) v2WorkflowStatesByOwner() map[string]*v2.WorkflowState {
+	if a.workflowV2 == nil || a.workflowV2.store == nil {
+		return nil
+	}
+	ids, err := a.workflowV2.store.ListAllUserIDs()
+	if err != nil {
+		return nil
+	}
+	states := make(map[string]*v2.WorkflowState, len(ids))
+	for _, id := range ids {
+		if state, err := a.workflowV2.store.Load(id); err == nil && state != nil {
+			states[id] = state
+		}
+	}
+	return states
+}
+
+// sceneIndexCacheTTL bounds how long a generation-keyed scene index may be
+// served before it is rebuilt even without an observed mutation.
+const sceneIndexCacheTTL = 60 * time.Second
 
 // ListTasks returns the user-visible task management list. Unlike SearchProjects,
 // this intentionally excludes automatic project/memory sediment and fork rows.
@@ -381,7 +444,8 @@ func (a *App) SearchTasks(query string, limit int) []ProjectSearchResult {
 	// for the same workspace. Collapse those rows before applying the visible
 	// limit so the sidebar never shows the same cloud task twice.
 	records = collapseDuplicateCloudWorkspaceRecords(records)
-	scenesByPath := projectSceneMap(a.memoryStore.SceneIndex(searchLimit * 2))
+	scenesByPath := projectSceneMap(a.sceneIndexForTaskList(searchLimit * 2))
+	v2WorkflowStates := a.v2WorkflowStatesByOwner()
 	results := make([]ProjectSearchResult, 0, len(records))
 	for _, rec := range records {
 		if !isTaskManagementRecord(rec) {
@@ -397,7 +461,7 @@ func (a *App) SearchTasks(query string, limit int) []ProjectSearchResult {
 		if scene, ok := a.sceneRecordForProjectPath(rec.ProjectPath, scenesByPath); ok {
 			enrichProjectSearchResultWithScene(&result, scene)
 		}
-		result.ActiveWorkflow = a.activeWorkflowForProject(projectWorkflowProjectPathForRecord(rec))
+		result.ActiveWorkflow = a.activeWorkflowForProjectFromCache(projectWorkflowProjectPathForRecord(rec), v2WorkflowStates)
 		results = append(results, result)
 	}
 	if strings.TrimSpace(query) == "" {
@@ -3181,7 +3245,7 @@ func (a *App) ForkRecentTask(sourceProjectPath string) ProjectSearchResult {
 			taskName = pi.GetDisplayName(sourceProjectPath)
 		}
 		if taskName == "" {
-			taskName = lastPathComponent(sourceProjectPath)
+			taskName = stripTaskDirTimestampSuffix(lastPathComponent(sourceProjectPath))
 		}
 		taskName = normalizeRecentTaskName(taskName)
 		if taskName == "" {
@@ -3410,8 +3474,9 @@ func (a *App) recentTaskExecutionProjectPath(projectPath string) string {
 	// Priority 3: for managed task directories, use workspace/ subdirectory
 	// to isolate tool outputs from task metadata (task.md, conversation).
 	// No custom working_dir here (priority 2 already returned if set).
+	// Read path stays pure: the workspace dir is created at task creation and
+	// on task open/resume; listing tasks must not pay per-record disk syscalls.
 	if a.isManagedRecentTaskWorkspacePath(projectPath) {
-		_ = ensureManagedTaskWorkspaceDir(projectPath, lastPathComponent(projectPath), "")
 		return filepath.Join(projectPath, "workspace")
 	}
 	return projectPath
@@ -3526,7 +3591,7 @@ func (a *App) recoverOneManagedTaskFromDisk(pi *memory.ProjectIndex, taskDir str
 	}
 	title, extraTags := inferRecoveredTaskMetadata(taskDir, content)
 	if title == "" {
-		title = lastPathComponent(taskDir)
+		title = stripTaskDirTimestampSuffix(lastPathComponent(taskDir))
 	}
 	tags := append([]string{taskLegacyManualTag, taskLegacyRecentTag, taskDir}, extraTags...)
 	createdAt, updatedAt := recoveredTaskTimes(content, taskFile)
@@ -3548,6 +3613,75 @@ func (a *App) recoverOneManagedTaskFromDisk(pi *memory.ProjectIndex, taskDir str
 		return false
 	}
 	return result.Created || result.Updated
+}
+
+// repairMergedTaskIdentityEntries undoes compressor/semantic-dedup merges that
+// unioned many managed task identities into one task_artifact entry. Such a
+// merged entry carries dozens of task-dir tags but backs only ONE sidebar
+// record, hiding every other absorbed task — and because it matches every
+// managed task's identity upsert, disk recovery keeps rewriting it instead of
+// recreating per-task entries. Strip the absorbed task-dir tags so each
+// managed task can recover its own identity entry; the entry keeps the task
+// its SourceURL points to (fallback: first managed-dir tag, matching
+// inferProjectPath's first-path-tag rule).
+func (a *App) repairMergedTaskIdentityEntries() int {
+	if a == nil || a.memoryStore == nil {
+		return 0
+	}
+	tasksRoot := normalizeProjectSessionPath(filepath.Join(a.GetDataDir(), "tasks"))
+	if tasksRoot == "" {
+		return 0
+	}
+	managedDirFromTag := func(tag string) string {
+		p := normalizeProjectSessionPath(tag)
+		if p != "" && p != tasksRoot && strings.HasPrefix(p, tasksRoot+string(filepath.Separator)) {
+			return p
+		}
+		return ""
+	}
+	ownDirFromSourceURL := func(sourceURL string) string {
+		p := normalizeProjectSessionPath(filepath.Dir(strings.TrimSpace(sourceURL)))
+		if p != "" && p != tasksRoot && strings.HasPrefix(p, tasksRoot+string(filepath.Separator)) {
+			return p
+		}
+		return ""
+	}
+	repaired := 0
+	for _, entry := range a.memoryStore.List(memory.CategoryTaskArtifact, "") {
+		if !memory.IsDurableTaskManagementEntry(&entry) {
+			continue
+		}
+		ownDir := ownDirFromSourceURL(entry.SourceURL)
+		var managedDirs []string
+		for _, tag := range entry.Tags {
+			if dir := managedDirFromTag(tag); dir != "" {
+				managedDirs = append(managedDirs, dir)
+			}
+		}
+		if len(managedDirs) < 2 {
+			continue
+		}
+		if ownDir == "" {
+			ownDir = managedDirs[0]
+		}
+		keep := make([]string, 0, len(entry.Tags))
+		for _, tag := range entry.Tags {
+			if dir := managedDirFromTag(tag); dir != "" && dir != ownDir {
+				continue
+			}
+			keep = append(keep, tag)
+		}
+		updated := entry
+		updated.Tags = keep
+		updated.UpdatedAt = time.Now()
+		if err := a.memoryStore.UpdateEntriesByID([]memory.Entry{updated}); err != nil {
+			log.Printf("[project_search] repair merged task entry %s: %v", entry.ID, err)
+			continue
+		}
+		log.Printf("[project_search] repair merged task entry %s: kept %s, released %d absorbed task dirs", entry.ID, ownDir, len(managedDirs)-1)
+		repaired++
+	}
+	return repaired
 }
 
 func mergeRecoveredTaskTags(existing, desired []string) []string {
@@ -3655,14 +3789,20 @@ func recoveredTaskTitle(taskDir, content string) string {
 			break
 		}
 	}
-	name := lastPathComponent(taskDir)
+	name := stripTaskDirTimestampSuffix(lastPathComponent(taskDir))
+	return normalizeRecentTaskName(name)
+}
+
+// stripTaskDirTimestampSuffix removes the "-<UnixNano>" suffix that task
+// directories get at creation time (tasks/<slug>-<UnixNano>).
+func stripTaskDirTimestampSuffix(name string) string {
 	if i := strings.LastIndex(name, "-"); i > 0 {
 		suffix := name[i+1:]
 		if len(suffix) >= 10 && isAllDecimalDigits(suffix) {
-			name = name[:i]
+			return name[:i]
 		}
 	}
-	return normalizeRecentTaskName(name)
+	return name
 }
 
 func recoveredExpertIDFromTaskContent(content string) string {
@@ -3776,6 +3916,13 @@ func (a *App) activeWorkflowForRecentTaskPath(projectPath string) *ProjectWorkfl
 }
 
 func (a *App) activeWorkflowForProject(projectPath string) *ProjectWorkflowState {
+	return a.activeWorkflowForProjectFromCache(projectPath, nil)
+}
+
+// activeWorkflowForProjectFromCache behaves like activeWorkflowForProject but,
+// when v2Cache is non-nil, resolves V2 workflow states from the preloaded map
+// instead of hitting the store once per record.
+func (a *App) activeWorkflowForProjectFromCache(projectPath string, v2Cache map[string]*v2.WorkflowState) *ProjectWorkflowState {
 	projectPath = normalizeProjectSessionPath(projectPath)
 	if a == nil || projectPath == "" {
 		return nil
@@ -3787,17 +3934,23 @@ func (a *App) activeWorkflowForProject(projectPath string) *ProjectWorkflowState
 		}
 		ownerID := projectSessionOwnerID(path)
 		var terminalV2 *ProjectWorkflowState
-		if a.workflowV2 != nil && a.workflowV2.store != nil {
+		var v2State *v2.WorkflowState
+		if v2Cache != nil {
+			v2State = v2Cache[ownerID]
+		} else if a.workflowV2 != nil && a.workflowV2.store != nil {
 			// The task list is a recent-work snapshot, so terminal V2 workflows
 			// belong here too. GetActive intentionally hides them from runtime
 			// routing, whereas the store keeps the latest state for this task.
-			if state, err := a.workflowV2.store.Load(ownerID); err == nil && state != nil {
-				snapshot := projectWorkflowStateFromV2(state)
-				if state.Status == v2.StatusActive {
-					return snapshot
-				}
-				terminalV2 = snapshot
+			if state, err := a.workflowV2.store.Load(ownerID); err == nil {
+				v2State = state
 			}
+		}
+		if v2State != nil {
+			snapshot := projectWorkflowStateFromV2(v2State)
+			if v2State.Status == v2.StatusActive {
+				return snapshot
+			}
+			terminalV2 = snapshot
 		}
 		if a.workflowEngine != nil {
 			if state := a.workflowEngine.GetActiveWorkflow(ownerID); state != nil {
@@ -3885,7 +4038,7 @@ func (a *App) ensureRecentTaskWorkspace(projectPath, taskName string) bool {
 	}
 	name := normalizeRecentTaskName(taskName)
 	if name == "" {
-		name = lastPathComponent(projectPath)
+		name = stripTaskDirTimestampSuffix(lastPathComponent(projectPath))
 	}
 	taskFile := filepath.Join(projectPath, "task.md")
 	if _, err := os.Stat(taskFile); os.IsNotExist(err) {
@@ -4462,7 +4615,7 @@ func (a *App) ResumeProject(projectPath string) string {
 		projectName = pi.GetDisplayName(projectPath)
 	}
 	if projectName == "" {
-		projectName = lastPathComponent(projectPath)
+		projectName = stripTaskDirTimestampSuffix(lastPathComponent(projectPath))
 	}
 
 	log.Printf("[project_search] ResumeProject: path=%q, name=%q", projectPath, projectName)
@@ -5052,7 +5205,7 @@ func (a *App) projectTabDisplayName(projectPath string) string {
 			}
 		}
 	}
-	if name := normalizeRecentTaskName(lastPathComponent(projectPath)); name != "" {
+	if name := normalizeRecentTaskName(stripTaskDirTimestampSuffix(lastPathComponent(projectPath))); name != "" {
 		return name
 	}
 	return "Task"
@@ -5178,7 +5331,7 @@ func (a *App) buildProjectTabContextMessage(projectPath string) string {
 		return ""
 	}
 
-	projectName := lastPathComponent(projectPath)
+	projectName := stripTaskDirTimestampSuffix(lastPathComponent(projectPath))
 
 	contextPath := a.recentTaskExecutionProjectPath(projectPath)
 	if contextPath == "" {
@@ -6154,7 +6307,7 @@ func deriveTaskName(rec memory.ProjectRecord) string {
 	}
 
 	// Layer 2: workflow type + directory name (e.g. "编码: steave2").
-	dir := lastPathComponent(rec.ProjectPath)
+	dir := stripTaskDirTimestampSuffix(lastPathComponent(rec.ProjectPath))
 	if rec.WorkflowType != "" {
 		label := workflowTypeLabel(rec.WorkflowType)
 		if label != "" {

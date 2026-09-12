@@ -48,6 +48,7 @@ func ListAnthropicModelsWithSDK(ctx context.Context, cfg corelib.MaclawLLMConfig
 func anthropicSDKMessage(ctx context.Context, cfg corelib.MaclawLLMConfig, body []byte, client *http.Client) (*Response, int, []byte, error) {
 	client = HTTPClientForRequestContext(ctx, client)
 	body = anthropicSDKBodyWithoutStream(body)
+	cfg = bindOpenCodeSessionFromJSONBody(ctx, cfg, body)
 	var response *http.Response
 	anthropicClient := anthropic.NewClient(anthropicSDKOptions(ctx, cfg, client)...)
 	msg, err := anthropicClient.Messages.New(
@@ -80,6 +81,7 @@ func anthropicSDKMessage(ctx context.Context, cfg corelib.MaclawLLMConfig, body 
 func anthropicSDKMessageStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body []byte, client *http.Client, onToken TokenCallback, onReasoning TokenCallback) (*Response, int, []byte, error) {
 	client = HTTPClientForRequestContext(ctx, client)
 	body = anthropicSDKBodyWithoutStream(body)
+	cfg = bindOpenCodeSessionFromJSONBody(ctx, cfg, body)
 	capture := &openAISDKStreamCapture{limit: 512 * 1024}
 	streamClient := openAISDKClientWithCapture(client, capture)
 	anthropicClient := anthropic.NewClient(anthropicSDKOptions(ctx, cfg, streamClient)...)
@@ -199,6 +201,7 @@ func emitAnthropicSDKDeltas(raw string, onToken TokenCallback, onReasoning Token
 }
 
 func anthropicSDKOptions(ctx context.Context, cfg corelib.MaclawLLMConfig, client *http.Client) []anthropicopt.RequestOption {
+	cfg = bindOpenCodeSession(ctx, cfg, nil)
 	opts := []anthropicopt.RequestOption{
 		anthropicopt.WithBaseURL(anthropicSDKBaseURL(cfg.URL)),
 		anthropicopt.WithAPIKey(cfg.Key),
@@ -209,6 +212,9 @@ func anthropicSDKOptions(ctx context.Context, cfg corelib.MaclawLLMConfig, clien
 	}
 	if corelib.IsCodeGenURL(cfg.URL) {
 		opts = append(opts, anthropicopt.WithHeader(corelib.CodeGenClientNameHeader, corelib.NormalizeCodeGenClientName(cfg.UserAgent())))
+	}
+	if name, value, ok := corelib.OpenCodeSessionHeaderForConfig(cfg); ok {
+		opts = append(opts, anthropicopt.WithHeader(name, value))
 	}
 	for key, value := range WorkloadHintHeaderValues(cfg) {
 		opts = append(opts, anthropicopt.WithHeader(key, value))

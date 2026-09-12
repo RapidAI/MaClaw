@@ -774,10 +774,12 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 		existingFilesModified := existingSubAgentModifiedFiles(allFilesModified, allFilesCreated)
 		explorationStatus, explorationSummary = summarizeSubAgentExploration(existingFilesModified, allFilesRead, allSearchesRun, audit.ExploredBeforeFirstEdit)
 		verificationStatus, verificationSummary = summarizeSubAgentVerification(allFilesModified, allCommandsRun, audit.LastEditSeq)
-		// Scaffold/init plan steps create incomplete skeletons; defer build/test gates.
+		// Scaffold/init plan steps create incomplete skeletons; defer build/test
+		// gates. Implementation-only steps defer as well when the plan assigns
+		// build/test to a later step (same relaxation as the remote path).
 		if task != nil {
-			stepTitle, stepDesc := resolveCodingPlanStepFocus(task.Title, task.Description, "")
-			verificationStatus, verificationSummary = maybeRelaxScaffoldVerification(stepTitle, stepDesc, verificationStatus, verificationSummary)
+			stepTitle, stepDesc := resolveCodingPlanStepFocus(task.Title, task.Description, reqCtx)
+			verificationStatus, verificationSummary = maybeRelaxDeferredPlanStepVerification(stepTitle, stepDesc, reqCtx, verificationStatus, verificationSummary)
 		}
 		unresolvedGuardrailViolations := unresolvedSubAgentGuardrailViolations(allGuardrailViolations, filterPostEditSubAgentCommands(allCommandsRun, audit.LastEditSeq))
 		status, errMsg = applySubAgentExplorationOutcome(status, errMsg, explorationStatus, explorationSummary, len(existingFilesModified))
@@ -3513,7 +3515,7 @@ func rejectWindowsShellCompatibilityCommand(command string) string {
 	if !hasWindowsShellCompatibilitySyntax(command) {
 		return ""
 	}
-	return fmt.Sprintf("PowerShell command compatibility: %s uses bash-only syntax such as `mkdir -p`. Use PowerShell syntax and set working_dir to the command directory.", command)
+	return fmt.Sprintf("PowerShell command compatibility: %s uses bash-only syntax (e.g. `mkdir -p`, `ls -la`, `rm -rf`). Use PowerShell syntax and set working_dir to the command directory.", command)
 }
 
 func hasWindowsShellCompatibilitySyntax(command string) bool {
@@ -3534,11 +3536,54 @@ func hasWindowsShellCompatibilitySyntax(command string) bool {
 				commandPosition = true
 				continue
 			}
-			if commandNameBase(normalizeShellExecutableToken(token)) == "mkdir" && shellCommandSegmentHasArg(fields[i+1:], "-p") {
+			base := commandNameBase(normalizeShellExecutableToken(token))
+			if base == "mkdir" && shellCommandSegmentHasArg(fields[i+1:], "-p") {
+				return true
+			}
+			// ls/cp/mv exist in PowerShell as aliases, but their Unix short
+			// flags (-la, -r, -v) are rejected there; catch the common
+			// "alias command + bash-only flags" recipe the same way.
+			if unixAliasedShellCommands[base] && shellCommandSegmentHasUnixShortFlag(fields[i+1:]) {
 				return true
 			}
 		}
 		commandPosition = false
+	}
+	return false
+}
+
+// unixAliasedShellCommands names commands that PowerShell aliases to its own
+// cmdlets, where Unix short flags silently do not apply. `rm` is deliberately
+// absent: `rm -rf` must keep flowing to the high-risk recursive-delete
+// classification (which is also the correct verdict on remote targets where
+// the syntax is valid), not to syntax-compat guidance.
+var unixAliasedShellCommands = map[string]bool{"ls": true, "cp": true, "mv": true}
+
+// shellCommandSegmentHasUnixShortFlag reports whether the current command
+// segment carries an all-lowercase short flag such as -la or -rf. PowerShell
+// parameters are full words (-Recurse, -Force), so case is significant: the
+// token must stay in its original spelling for the distinction to work.
+func shellCommandSegmentHasUnixShortFlag(fields []string) bool {
+	for _, field := range fields {
+		token := normalizeShellCommandToken(field)
+		if token == "" {
+			continue
+		}
+		if isShellCommandBoundary(strings.ToLower(token)) {
+			return false
+		}
+		if len(token) >= 2 && token[0] == '-' && token[1] != '-' {
+			allLower := true
+			for _, r := range token[1:] {
+				if r < 'a' || r > 'z' {
+					allLower = false
+					break
+				}
+			}
+			if allLower {
+				return true
+			}
+		}
 	}
 	return false
 }
@@ -9992,7 +10037,7 @@ func maybeRelaxDeferredPlanStepVerification(
 		return verificationStatus, verificationSummary
 	}
 	focus := strings.ToLower(strings.TrimSpace(title + "\n" + description))
-	if !codingPlanTextContainsAny(focus, []string{"implement", "实现", "编码实现", "编写代码"}) {
+	if !codingPlanTextContainsAny(focus, []string{"implement", "实现", "编写", "创建", "新增"}) {
 		return verificationStatus, verificationSummary
 	}
 	if !codingPlanHasLaterBuildOrTestStep(fullTask) {
@@ -15762,12 +15807,31 @@ func runTaskWithSubAgentRuntimeOptions(
 	sa := NewCodingSubAgent(handler, cfg, httpClient, projectPath, loopCtx)
 	// Production desktop R1 ingress: only the Wails host can mint the opaque
 	// request token. The agent receives a verified relation handle, never an
-	// identity assembled from LoopContext/UserID/project path.
+	// identity assembled from LoopContext/UserID/project path. Root-step
+	// resolution additionally honors the single-use continuation token chained
+	// from the previous step's bind, so every root step of a multi-step plan
+	// inside one request enters R1 on the same semantic root.
+	verifiedBound := false
 	if handler != nil && handler.app != nil && loopCtx != nil {
-		if service, subject, handle, workspace, ok := handler.app.nextDesktopCodingTaskRelationWithWorkspace(loopCtx.CodingTaskIngressToken, loopCtx.UserID); ok {
+		if service, subject, handle, workspace, ok := handler.app.nextDesktopCodingRootStepRelation(loopCtx.CodingTaskIngressToken, loopCtx.UserID); ok {
 			sa.setVerifiedCodingTaskRelation(service, subject, handle)
 			sa.staticWorkspaceBinding = workspace
+			verifiedBound = true
 		}
+	}
+	// Pre-dispatch capability gate. An implementation/operational step on the
+	// uncorrelated read-only surface cannot produce files or command results
+	// by construction; running the model loop anyway burns a full turn of
+	// tokens and then fails. Fail fast here with an actionable host-side
+	// diagnostic instead. Inquiry steps are read-only by design and pass.
+	if !verifiedBound && !sa.horizonPosture && !codingTaskLooksInquiry(task) && loopCtx != nil && isDesktopCodingOwner(loopCtx.UserID) {
+		taskTitle := ""
+		if task != nil {
+			taskTitle = task.Title
+		}
+		log.Printf("[coding-subagent] pre-dispatch gate: implementation step without verified desktop relation user=%s project=%s task=%q",
+			loopCtx.UserID, projectPath, truncateRunesV2(taskTitle, 80))
+		return failedCodingSubAgentStartResult(desktopCodingVerifiedSurfaceUnavailableDiagnostic)
 	}
 	sa.SetCallbacks(wrapCodingAgentReasoningToken(onToken), onProgress)
 	if loopCtx != nil && len(loopCtx.CodingAttachments) > 0 {

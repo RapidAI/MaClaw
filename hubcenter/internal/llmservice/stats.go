@@ -2,8 +2,11 @@ package llmservice
 
 import (
 	"context"
+	"crypto/rand"
+	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	_ "time/tzdata"
@@ -33,6 +36,7 @@ type TenantUsageRecord struct {
 	Credits           float64   `json:"credits"`
 	CacheHit          bool      `json:"cache_hit"`
 	AuthID            string    `json:"auth_id,omitempty"` // which authorization was charged
+	SyncID            string    `json:"sync_id,omitempty"` // stable cross-node identity for HA replication dedup
 	ServiceGroupID    string    `json:"service_group_id,omitempty"`
 	WorkloadClass     string    `json:"workload_class,omitempty"`
 	ClassSource       string    `json:"class_source,omitempty"`
@@ -103,6 +107,13 @@ type UsageRepository interface {
 	QueryClassTraffic(ctx context.Context, serviceGroupID string, since time.Time) ([]ClassTrafficRow, map[string]int64, []ClassTrafficSample, error)
 }
 
+// UsageBatchRepository applies HA-replicated usage batches idempotently.
+// applied reports whether this call actually inserted the records (false when
+// the batch ID was already applied on this node).
+type UsageBatchRepository interface {
+	InsertBatch(ctx context.Context, batchID, sourceNodeID string, records []*TenantUsageRecord) (applied bool, err error)
+}
+
 type ClassTrafficRow struct {
 	Class        string `json:"class"`
 	Requests     int64  `json:"requests"`
@@ -145,11 +156,22 @@ type UsageFilter struct {
 type UsageRecorderImpl struct {
 	repo  UsageRepository
 	hubID string // can be set per-request via context, or default
+
+	sinkMu sync.RWMutex
+	sink   func(*TenantUsageRecord)
 }
 
 // NewUsageRecorder creates a usage recorder backed by the given repository.
 func NewUsageRecorder(repo UsageRepository) *UsageRecorderImpl {
 	return &UsageRecorderImpl{repo: repo}
+}
+
+// SetSyncSink registers a hook invoked with every successfully persisted
+// usage record. HubCenter uses it to feed the HA usage-batch replicator.
+func (u *UsageRecorderImpl) SetSyncSink(sink func(*TenantUsageRecord)) {
+	u.sinkMu.Lock()
+	defer u.sinkMu.Unlock()
+	u.sink = sink
 }
 
 // RecordUsage implements llmpool.UsageRecorder.
@@ -159,7 +181,7 @@ func (u *UsageRecorderImpl) RecordUsage(ctx context.Context, record *llmpool.Usa
 	}
 	// Extract hub/tenant from context (set by proxy handler)
 	hubID, tenantID := usageContextValues(ctx)
-	return u.repo.Insert(ctx, &TenantUsageRecord{
+	stored := &TenantUsageRecord{
 		HubID:             hubID,
 		TenantID:          tenantID,
 		RequestID:         record.RequestID,
@@ -180,7 +202,29 @@ func (u *UsageRecorderImpl) RecordUsage(ctx context.Context, record *llmpool.Usa
 		CacheHit:          record.CacheHit,
 		AuthID:            record.AuthID,
 		CreatedAt:         record.Timestamp,
-	})
+	}
+	// Normalize the timestamp before persisting so the row and the copy handed
+	// to the sync sink carry the same value; otherwise peers would stamp the
+	// replicated row with their own apply time.
+	if stored.CreatedAt.IsZero() {
+		stored.CreatedAt = time.Now()
+	}
+	// The sync ID lets peers deduplicate at record level: a row republished by
+	// a later seed pass (e.g. one that was still in the live buffer when this
+	// node restarted) is ignored instead of counted twice.
+	if stored.SyncID == "" {
+		stored.SyncID = newUsageSyncID()
+	}
+	if err := u.repo.Insert(ctx, stored); err != nil {
+		return err
+	}
+	u.sinkMu.RLock()
+	sink := u.sink
+	u.sinkMu.RUnlock()
+	if sink != nil {
+		sink(stored)
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -208,6 +252,14 @@ func usageContextValues(ctx context.Context) (string, string) {
 		return "", ""
 	}
 	return v.HubID, v.TenantID
+}
+
+func newUsageSyncID() string {
+	var buf [12]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return fmt.Sprintf("t_%d", time.Now().UTC().UnixNano())
+	}
+	return fmt.Sprintf("u_%x", buf[:])
 }
 
 // StatsService wraps a UsageRepository for the admin API layer.

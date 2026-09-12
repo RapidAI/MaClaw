@@ -6,6 +6,8 @@ import { WindowCloseIcon, WindowMaximizeIcon, WindowRestoreIcon } from './Window
 
 interface MainTopHeaderProps {
     navTab: string;
+    /** Current settings tab; lets the header name the Knowledge page opened from the library menu. */
+    settingsTab?: string;
     lang: string;
     t: (key: string) => string;
     activeTool: string;
@@ -51,6 +53,7 @@ const windowControlBtnStyle = {
 
 export const MainTopHeader = ({
     navTab,
+    settingsTab,
     lang,
     t,
     activeTool,
@@ -100,7 +103,7 @@ export const MainTopHeader = ({
                         ))}
                     </select>
                 ) : (
-                    <span>{getHeaderTitle(navTab, lang, t, true)}</span>
+                    <span>{getHeaderTitle(navTab, lang, t, true, settingsTab)}</span>
                 ))}
                 <MainTopHeaderActions
                     navTab={navTab}

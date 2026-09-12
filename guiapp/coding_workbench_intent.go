@@ -534,7 +534,7 @@ func (h *IMMessageHandler) llmCodingRequestRestatement(userText string, mem stic
 	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
 		return ""
 	}
-	got := parseCodingRequestRestatement(h.callLightweightLLMOnce(cfg, codingRequestUnderstandingSystemPrompt, buildCodingUnderstandingUserPrompt(userText, mem), 8))
+	got := parseCodingRequestRestatement(h.callLightweightLLM(cfg, codingRequestUnderstandingSystemPrompt, buildCodingUnderstandingUserPrompt(userText, mem), 20))
 	if got == "" || codingRestatementCopiesUser(got, userText) || utf8.RuneCountInString(got) < 8 {
 		return ""
 	}

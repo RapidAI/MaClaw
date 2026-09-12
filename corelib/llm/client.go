@@ -378,6 +378,7 @@ func NewOpenAIChatRequest(
 	messages []interface{},
 	opts OpenAIChatRequestOptions,
 ) (*http.Request, []byte, string, error) {
+	cfg = bindOpenCodeSession(ctx, cfg, messages)
 	endpoint, data, err := BuildOpenAIChatRequestData(cfg, messages, opts)
 	if err != nil {
 		return nil, nil, endpoint, err
@@ -394,6 +395,7 @@ func NewOpenAIChatRequest(
 	ApplyProviderAuthHeaders(req, cfg)
 	ApplyWorkloadHintHeaders(req, cfg)
 	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
+	corelib.ApplyOpenCodeSessionHeader(req, cfg)
 	return req, data, endpoint, nil
 }
 

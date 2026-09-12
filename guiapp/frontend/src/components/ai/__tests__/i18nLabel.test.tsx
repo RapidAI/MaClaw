@@ -58,11 +58,11 @@ describe('AI Assistant i18n property tests', () => {
         fc.assert(
             fc.property(langArb, (lang) => {
                 // Compare against production localizeText (normalizeLang), not the stub above.
-                const expectedTitle = realLocalizeText(lang, 'AI Assistant', 'AI 助手');
+                const expectedTitle = realLocalizeText(lang, 'Default Task', '默认任务');
                 expect(localAssistantTabTitle(lang)).toBe(expectedTitle);
                 // Explicit product expectation for common codes.
-                if (lang === 'en' || lang === 'en-US') expect(localAssistantTabTitle(lang)).toBe('AI Assistant');
-                else expect(localAssistantTabTitle(lang)).toBe('AI 助手');
+                if (lang === 'en' || lang === 'en-US') expect(localAssistantTabTitle(lang)).toBe('Default Task');
+                else expect(localAssistantTabTitle(lang)).toBe('默认任务');
             }),
             { numRuns: 100 },
         );

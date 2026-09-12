@@ -998,7 +998,9 @@ func normalizeProjectPath(fwdPath string) string {
 		fwdPath = strings.ReplaceAll(fwdPath, "//", "/")
 	}
 	// Detect Windows path: second char is ':' (e.g. "D:/workprj/snake").
+	// Uppercase the drive letter so keys match regardless of input casing.
 	if len(fwdPath) >= 2 && fwdPath[1] == ':' {
+		fwdPath = strings.ToUpper(fwdPath[:1]) + fwdPath[1:]
 		return strings.ReplaceAll(fwdPath, "/", "\\")
 	}
 	return fwdPath

@@ -6,11 +6,10 @@ import { MouseEvent, useCallback, useEffect, useRef, useState } from 'react';
 import remarkGfm from 'remark-gfm';
 import { corelib, main } from '../../wailsjs/go/models';
 import { useSafeBackdropDismiss } from '../hooks/useSafeBackdropDismiss';
-import { remoteCardStyle, remoteMutedCardStyle, remoteSectionTitleStyle, remoteBodyTextStyle } from './remote/styles';
 import { MemoryHealthDialog } from './MemoryHealthDialog';
 import { SystemDoctorDialog } from './SystemDoctorDialog';
 import { SecurityEventsDialog } from './SecurityEventsDialog';
-import { IconRankBadge } from './ai/WorkbenchIcons';
+import { IconAlert, IconBolt, IconBranch, IconClipboard, IconCross, IconDocument, IconLightbulb, IconLock, IconMessage, IconRankBadge, IconRocket, IconUsers } from './ai/WorkbenchIcons';
 
 type BrandInfo = {
     id: string;
@@ -390,10 +389,10 @@ export function AboutPanel({
             return t("aboutProductName");
         }
         if (brandInfo.id === 'qianxin') {
-            return '\u864e\u722a 7 \u4e07\u53d8';
+            return '\u864e\u722a 8 \u4e07\u53d8';
         }
         if (brandInfo.id === 'metastaff') {
-            return '\u667a\u5458 7 \u4e07\u53d8';
+            return '\u667a\u5458 8 \u4e07\u53d8';
         }
         const cnName = String(brandInfo.displayNameCN || '').trim();
         const displayName = String(brandInfo.displayName || '').trim();
@@ -401,13 +400,13 @@ export function AboutPanel({
     })();
 
     const renderProductName = () => {
-        const versionMatch = productName.match(/7/);
+        const versionMatch = productName.match(/8/);
         if (!versionMatch || versionMatch.index == null) return productName;
         const versionIndex = versionMatch.index;
         return (
             <>
                 {productName.slice(0, versionIndex)}
-                <span className="brand-version-mark" aria-label="7">7</span>
+                <span className="brand-version-mark" aria-label="8">8</span>
                 {productName.slice(versionIndex + 1)}
             </>
         );
@@ -567,8 +566,8 @@ export function AboutPanel({
     return (
         <div className="secondary-page-shell about-page">
             <div className="about-page__container">
-                <section className="about-hero-card" style={remoteCardStyle}>
-                    <div className="about-hero-card__icon-wrap" style={remoteMutedCardStyle}>
+                <section className="about-hero-card">
+                    <div className="about-hero-card__icon-wrap">
                         <img src={currentIcon} alt="Logo" className="about-hero-card__icon" />
                     </div>
                     <div className="about-hero-card__body">
@@ -581,32 +580,39 @@ export function AboutPanel({
                             ) : null}
                         </h2>
                         <p className="about-hero-card__slogan">{slogan}</p>
-                        <div className="about-version-row">
-                            <span className="about-version-badge">{t("version")} {appVersion}</span>
-                            <button className="btn-link about-update-inline-button" onClick={onCheckUpdate}>{t("onlineUpdate")}</button>
-                            {onOpenProblemReport && <button className="btn-link about-update-inline-button" onClick={onOpenProblemReport}>{t("problemReport")}</button>}
-                        </div>
                         <div className="about-meta-inline">
                             <span>{t("author")}: {author}</span>
                             <span className="about-meta-dot">•</span>
                             <span>{businessContact}</span>
                         </div>
                     </div>
+                    <div className="about-hero-card__side">
+                        <span className="about-version-pill">
+                            {t("version")} {appVersion}
+                            <span className="about-version-pill__build">· {t("buildLabel")} {buildNumber}</span>
+                        </span>
+                        <div className="about-hero-card__actions">
+                            {onOpenProblemReport && (
+                                <button type="button" className="about-hero-button about-hero-button--ghost" onClick={onOpenProblemReport}>{t("problemReport")}</button>
+                            )}
+                            <button type="button" className="about-hero-button about-hero-button--primary" onClick={onCheckUpdate}>{t("onlineUpdate")}</button>
+                        </div>
+                    </div>
                 </section>
 
-                <section className="about-identity-card" style={remoteCardStyle}>
+                <section className="about-identity-card">
                     <div className="about-card-heading">
                         <div>
-                            <p className="about-actions-card__desc" style={remoteBodyTextStyle}>
-                                {t("aboutIdentityDesc")}
-                            </p>
+                            <div className="about-card-title">{t("aboutIdentityTitle")}</div>
+                            <p className="about-card-desc">{t("aboutIdentityDesc")}</p>
                         </div>
                         {hasRegisteredMachine ? (
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                            <div className="about-card-heading__actions">
+                                <span className="about-status-pill is-online">{t("remoteActivated")}</span>
                                 {canCreateMobileAuthQR && (
                                     <button
-                                        className="about-status-pill is-online"
-                                        style={{ cursor: 'pointer', border: 'none', background: 'var(--theme-primary-soft)', color: 'var(--theme-primary)' }}
+                                        type="button"
+                                        className="about-status-pill about-pill-button about-pill-button--accent"
                                         onClick={openMobileAuthQRDialog}
                                         title={t("aboutMobileAuthQRTitle")}
                                     >
@@ -614,8 +620,8 @@ export function AboutPanel({
                                     </button>
                                 )}
                                 <button
-                                    className="about-status-pill is-online"
-                                    style={{ cursor: 'pointer', border: 'none', background: 'var(--theme-danger-bg)', color: 'var(--theme-danger)' }}
+                                    type="button"
+                                    className="about-status-pill about-pill-button about-pill-button--danger"
                                     onClick={onClearRegistration}
                                     title={t("aboutClearRegistration")}
                                 >
@@ -624,8 +630,8 @@ export function AboutPanel({
                             </div>
                         ) : (
                             <button
-                                className="about-status-pill"
-                                style={{ cursor: 'pointer', border: 'none', background: 'var(--theme-primary-soft)', color: 'var(--theme-primary)' }}
+                                type="button"
+                                className="about-status-pill about-pill-button about-pill-button--accent"
                                 onClick={onRegister}
                                 title={t("aboutRegisterHub")}
                             >
@@ -684,69 +690,111 @@ export function AboutPanel({
                                 <dd className="about-identity-value about-identity-value--mono">{machineID}</dd>
                             </div>
                         </div>
-                        {hasRegisteredMachine && (
-                            <div className="about-identity-row">
-                                <div className="about-identity-item">
-                                    <dt className="about-kv-label" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                                        <IconRankBadge rank={bestRank} size={16} />
-                                        {t("aboutTotalOnline")} <span className="about-rank-badge" style={{ marginLeft: 0 }}>({t("aboutPeriodMonthly")})</span>
+                    </dl>
+                    {hasRegisteredMachine && (
+                        <dl className="about-stats">
+                            <div className="about-stat">
+                                <div className="about-stat__icon">
+                                    <IconRankBadge rank={bestRank} size={20} />
+                                </div>
+                                <div className="about-stat__body">
+                                    <dt className="about-stat__label">
+                                        {t("aboutTotalOnline")}
+                                        <span className="about-stat__tag">{t("aboutPeriodMonthly")}</span>
                                     </dt>
-                                    <dd className="about-identity-value about-identity-value--muted">
+                                    <dd className="about-stat__value">
                                         {ranking
                                             ? formatRankingValue(formatDuration(ranking.durationSeconds), ranking.durationRank, ranking.totalUsers)
                                             : emptyValue}
                                     </dd>
                                 </div>
-                                <div className="about-identity-item">
-                                    <dt className="about-kv-label">
-                                        {t("aboutTotalTokens")} <span className="about-rank-badge" style={{ marginLeft: 0 }}>({t("aboutPeriodMonthly")})</span>
+                            </div>
+                            <div className="about-stat">
+                                <div className="about-stat__icon">
+                                    <IconBolt size={20} />
+                                </div>
+                                <div className="about-stat__body">
+                                    <dt className="about-stat__label">
+                                        {t("aboutTotalTokens")}
+                                        <span className="about-stat__tag">{t("aboutPeriodMonthly")}</span>
                                     </dt>
-                                    <dd className="about-identity-value about-identity-value--muted">
+                                    <dd className="about-stat__value">
                                         {ranking
                                             ? formatRankingValue(formatTokens(ranking.totalTokens), ranking.tokenRank, ranking.totalUsers)
                                             : emptyValue}
                                     </dd>
                                 </div>
                             </div>
-                        )}
-                    </dl>
+                        </dl>
+                    )}
                 </section>
 
-                <section className="about-actions-card" style={remoteCardStyle}>
+                <section className="about-actions-card">
                     <div className="about-card-heading">
                         <div>
-                            <div style={remoteSectionTitleStyle}>{t("quickActionsTitle")}</div>
+                            <div className="about-card-title">{t("quickActionsTitle")}</div>
                         </div>
                     </div>
-                    <div className="about-action-grid">
-                        <button className="btn-link about-action-button" onClick={onOpenWebsite}>{t("officialWebsite")}</button>
+                    <div className="about-tile-grid">
+                        <button type="button" className="about-tile" onClick={onOpenWebsite}>
+                            <span className="about-tile__icon"><IconRocket size={18} /></span>
+                            {t("officialWebsite")}
+                        </button>
                         <button
-                            className="btn-link about-action-button"
+                            type="button"
+                            className="about-tile"
                             onClick={() => developerCommunityURL && BrowserOpenURL(developerCommunityURL)}
                             disabled={!developerCommunityURL}
                         >
+                            <span className="about-tile__icon"><IconUsers size={18} /></span>
                             {t("developerCommunity")}
                         </button>
-                        <button className="btn-link about-action-button" onClick={onShowInstallLog}>{t("installLog")}</button>
-                        {onOpenProblemReport && <button className="btn-link about-action-button" onClick={onOpenProblemReport}>{t("problemReport")}</button>}
-                        <button className="btn-link about-action-button" onClick={() => setShowHealthDialog(true)}>{t("memoryHealth")}</button>
-                        <button className="btn-link about-action-button" onClick={() => setShowSystemDoctor(true)}>{t("systemDoctor")}</button>
-                        <button className="btn-link about-action-button" onClick={() => setShowSecurityEvents(true)}>{t("securityEvents")}</button>
-                        <button className="btn-link about-action-button" onClick={() => setShowErrorLog(true)}>{t("errorLog")}</button>
+                        <button type="button" className="about-tile" onClick={onShowInstallLog}>
+                            <span className="about-tile__icon"><IconDocument size={18} /></span>
+                            {t("installLog")}
+                        </button>
+                        {onOpenProblemReport && (
+                            <button type="button" className="about-tile" onClick={onOpenProblemReport}>
+                                <span className="about-tile__icon"><IconAlert size={18} /></span>
+                                {t("problemReport")}
+                            </button>
+                        )}
+                        <button type="button" className="about-tile" onClick={() => setShowHealthDialog(true)}>
+                            <span className="about-tile__icon"><IconLightbulb size={18} /></span>
+                            {t("memoryHealth")}
+                        </button>
+                        <button type="button" className="about-tile" onClick={() => setShowSystemDoctor(true)}>
+                            <span className="about-tile__icon"><IconClipboard size={18} /></span>
+                            {t("systemDoctor")}
+                        </button>
+                        <button type="button" className="about-tile" onClick={() => setShowSecurityEvents(true)}>
+                            <span className="about-tile__icon"><IconLock size={18} /></span>
+                            {t("securityEvents")}
+                        </button>
+                        <button type="button" className="about-tile" onClick={() => setShowErrorLog(true)}>
+                            <span className="about-tile__icon"><IconCross size={18} /></span>
+                            {t("errorLog")}
+                        </button>
                         {showGithubActions && (
                             <>
-                                <button className="btn-link about-action-button" onClick={onOpenBugReport}>{t("bugReport")}</button>
-                                <button className="btn-link about-action-button" onClick={onOpenGithub}>{t("codeRepository")}</button>
+                                <button type="button" className="about-tile" onClick={onOpenBugReport}>
+                                    <span className="about-tile__icon"><IconMessage size={18} /></span>
+                                    {t("bugReport")}
+                                </button>
+                                <button type="button" className="about-tile" onClick={onOpenGithub}>
+                                    <span className="about-tile__icon"><IconBranch size={18} /></span>
+                                    {t("codeRepository")}
+                                </button>
                             </>
                         )}
                     </div>
                 </section>
 
                 {thanksContent.trim() && (
-                    <section className="about-actions-card about-thanks-card" style={remoteCardStyle}>
-                        <div className="about-actions-card__header about-thanks-header">
+                    <section className="about-actions-card about-thanks-card">
+                        <div className="about-card-heading">
                             <div>
-                                <div style={remoteSectionTitleStyle} className="about-thanks-title">{t("thanks")}</div>
+                                <div className="about-card-title about-thanks-title">{t("thanks")}</div>
                             </div>
                         </div>
                         <div className="about-thanks-content markdown-content">

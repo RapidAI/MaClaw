@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func newDedupTestStore(t *testing.T) *Store {
@@ -461,5 +462,37 @@ func TestSemanticDedup_NoEmbedder_Noop(t *testing.T) {
 	}
 	if pendingCount != 0 {
 		t.Fatalf("expected 0 pending without embedder, got %d", pendingCount)
+	}
+}
+
+func TestProcessPendingDedupSkipsDurableTaskManagementEntries(t *testing.T) {
+	s := newDedupTestStore(t)
+	s.SetLLMDedup(&fakeLLMDedup{mergeAll: true})
+	now := time.Now()
+	// Task identity entries share near-identical boilerplate, so they enqueue
+	// as dedup pairs constantly — merging them unions task-path tags and
+	// erases tasks from the sidebar.
+	if err := s.Save(Entry{ID: "durable-task-a", Title: "任务甲", Content: "# 任务甲\n\nCreated from task management.", Category: CategoryTaskArtifact, Tags: []string{"task_management", "C:/tasks/alpha"}, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("Save task A: %v", err)
+	}
+	if err := s.Save(Entry{ID: "durable-task-b", Title: "任务乙", Content: "# 任务乙\n\nCreated from task management.", Category: CategoryTaskArtifact, Tags: []string{"task_management", "C:/tasks/beta"}, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("Save task B: %v", err)
+	}
+	s.mu.Lock()
+	s.pendingDedup = append(s.pendingDedup, pendingDedupPair{NewEntryID: "durable-task-b", CandidateEntryID: "durable-task-a", CreatedAt: now})
+	s.mu.Unlock()
+
+	if merged := s.ProcessPendingDedup(context.Background()); merged != 0 {
+		t.Fatalf("durable task-management entries must not merge, got %d", merged)
+	}
+
+	entries := s.List(CategoryTaskArtifact, "")
+	if len(entries) != 2 {
+		t.Fatalf("expected both task entries to survive, got %d", len(entries))
+	}
+	for _, e := range entries {
+		if len(e.Tags) != 2 {
+			t.Fatalf("entry %s tags unioned: %v", e.ID, e.Tags)
+		}
 	}
 }

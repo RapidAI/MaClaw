@@ -312,7 +312,7 @@ func proxyRequestWantsStream(body map[string]any) bool {
 }
 
 func streamProxyRequest(w http.ResponseWriter, r *http.Request, cfg *ProxyConfig, proxyReq *ProxyRequest) {
-	ctx, cancel := context.WithCancel(WithUsageContext(r.Context(), proxyReq.HubID, proxyReq.TenantID))
+	ctx, cancel := context.WithCancel(withOpenCodeSessionContext(WithUsageContext(r.Context(), proxyReq.HubID, proxyReq.TenantID), proxyReq))
 	defer cancel()
 	dispatches, err := prepareProxyStreamDispatches(ctx, cfg, proxyReq)
 	if err != nil {

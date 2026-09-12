@@ -1,4 +1,7 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup } from '@testing-library/react';
@@ -504,5 +507,18 @@ describe('AssistantQuickSettingsBar', () => {
         expect(screen.getByRole('listbox')).toBeTruthy();
         fireEvent.mouseDown(document.body);
         expect(screen.queryByRole('listbox')).toBeNull();
+    });
+});
+
+describe('quick settings bar surface chrome', () => {
+    it('is hidden while a digital-employee conversation is the active tab', () => {
+        // The redesigned surfaces (home, task execution, VE/group chat) drop the
+        // legacy strip; VE panes stay mounted when inactive, so the rule must
+        // qualify on the active pane via aria-hidden='false'.
+        const here = dirname(fileURLToPath(import.meta.url));
+        const css = readFileSync(resolve(here, '../../../App.css'), 'utf8');
+        expect(css).toContain(
+            "[data-testid='ai-panel-root']:has([aria-hidden='false'] .mc-ve-conversation) [data-testid='assistant-quick-settings-bar']"
+        );
     });
 });

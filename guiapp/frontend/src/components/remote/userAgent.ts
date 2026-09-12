@@ -1,5 +1,8 @@
 import type { LLMProvider } from "./LLMConfigPanelShared";
 
+export const CODEGEN_USER_AGENT = "QAgent";
+const CODEGEN_LEGACY_USER_AGENT = "tigerclaw";
+
 export const KNOWN_USER_AGENTS = [
     "openclaw",
     "Cline",
@@ -11,7 +14,7 @@ export const KNOWN_USER_AGENTS = [
     "Crush",
     "Goose",
     "claude code 2.0",
-    "tigerclaw",
+    CODEGEN_USER_AGENT,
 ] as const;
 
 // Claude Code is kept as a recognized value for imported/previously saved
@@ -19,14 +22,18 @@ export const KNOWN_USER_AGENTS = [
 // dedicated `claude code 2.0` identity below is the provider-facing option;
 // showing both values in the GUI is confusing because they represent the
 // same Claude client family.
-const LEGACY_KNOWN_USER_AGENTS = ["opencode", "claude-code/2.0.0"] as const;
+const LEGACY_KNOWN_USER_AGENTS = ["opencode", "claude-code/2.0.0", CODEGEN_LEGACY_USER_AGENT] as const;
 const NON_SELECTABLE_KNOWN_USER_AGENTS = ["Claude Code"] as const;
 const DISPLAY_AGENT_ALIASES = new Map<string, string>([
     ["Claude Code", "claude code 2.0"],
+    [CODEGEN_LEGACY_USER_AGENT, CODEGEN_USER_AGENT],
 ]);
 
+const knownUserAgentEqual = (known: string, agent: string) =>
+    known.toLowerCase() === agent.toLowerCase();
+
 export const defaultAgentTypeForProvider = (provider?: LLMProvider | null) => {
-    if (provider?.name === "CodeGen" && provider?.auth_type === "sso") return "tigerclaw";
+    if (provider?.name === "CodeGen" && provider?.auth_type === "sso") return CODEGEN_USER_AGENT;
     if (provider?.name === "OpenCode") return "OpenCode";
     switch ((provider?.import_source || "").trim()) {
         case "codex":
@@ -48,13 +55,16 @@ export const effectiveAgentType = (provider?: LLMProvider | null) => {
 /** Map hidden legacy identities to the canonical visible chip value. */
 export const selectableAgentType = (provider?: LLMProvider | null) => {
     const current = effectiveAgentType(provider);
-    return DISPLAY_AGENT_ALIASES.get(current) || current;
+    for (const [from, to] of DISPLAY_AGENT_ALIASES) {
+        if (knownUserAgentEqual(from, current)) return to;
+    }
+    return current;
 };
 
 export const isKnownUserAgent = (agent: string) =>
-    KNOWN_USER_AGENTS.some(known => known === agent) ||
-    LEGACY_KNOWN_USER_AGENTS.some(known => known === agent) ||
-    NON_SELECTABLE_KNOWN_USER_AGENTS.some(known => known === agent);
+    KNOWN_USER_AGENTS.some(known => knownUserAgentEqual(known, agent)) ||
+    LEGACY_KNOWN_USER_AGENTS.some(known => knownUserAgentEqual(known, agent)) ||
+    NON_SELECTABLE_KNOWN_USER_AGENTS.some(known => knownUserAgentEqual(known, agent));
 
 export const customAgentSeedForProvider = (provider?: LLMProvider | null) => {
     const current = effectiveAgentType(provider);

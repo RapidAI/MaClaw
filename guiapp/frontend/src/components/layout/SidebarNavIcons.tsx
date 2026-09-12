@@ -89,3 +89,22 @@ export const GossipIcon = () => (
         <path d="M16 3.13a4 4 0 0 1 0 7.75" />
     </svg>
 );
+
+/** 移动文稿库 - 手机上的文稿 */
+export const MobileDocsIcon = () => (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <rect x="6" y="2.5" width="12" height="19" rx="2" />
+        <line x1="9.5" y1="7" x2="14.5" y2="7" />
+        <line x1="9.5" y1="10.5" x2="14.5" y2="10.5" />
+        <line x1="9.5" y1="14" x2="12.5" y2="14" />
+        <line x1="10.5" y1="18.5" x2="13.5" y2="18.5" />
+    </svg>
+);
+
+/** 知识库 - 书本 */
+export const KnowledgeIcon = () => (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+        <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+    </svg>
+);

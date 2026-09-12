@@ -15,19 +15,19 @@ const theme = {
 describe("AITabItem", () => {
     it("localizes the main AI assistant tab title by language", () => {
         const tab = { id: "local", type: "local" as const, title: "工作台", closable: false };
-        expect(localAssistantTabTitle("en")).toBe("AI Assistant");
-        expect(localAssistantTabTitle("en-US")).toBe("AI Assistant");
-        expect(localAssistantTabTitle("zh-Hans")).toBe("AI 助手");
-        expect(localAssistantTabTitle("zh-Hant")).toBe("AI 助手");
+        expect(localAssistantTabTitle("en")).toBe("Default Task");
+        expect(localAssistantTabTitle("en-US")).toBe("Default Task");
+        expect(localAssistantTabTitle("zh-Hans")).toBe("默认任务");
+        expect(localAssistantTabTitle("zh-Hant")).toBe("默认任务");
         // Display ignores stored legacy title and follows language.
-        expect(getAITabDisplayTitle(tab, "en")).toBe("AI Assistant");
-        expect(getAITabDisplayTitle(tab, "zh-CN")).toBe("AI 助手");
-        expect(getAITabDisplayTitle(tab, "zh-Hant")).toBe("AI 助手");
+        expect(getAITabDisplayTitle(tab, "en")).toBe("Default Task");
+        expect(getAITabDisplayTitle(tab, "zh-CN")).toBe("默认任务");
+        expect(getAITabDisplayTitle(tab, "zh-Hant")).toBe("默认任务");
     });
 
     it("lets the main AI assistant tab be renamed by double-click", () => {
         const onRename = vi.fn();
-        const tab = { id: "local", type: "local" as const, title: "AI 助手", closable: false };
+        const tab = { id: "local", type: "local" as const, title: "默认任务", closable: false };
         render(<AITabItem tab={tab} active={true} theme={theme} onActivate={vi.fn()} onRename={onRename} lang="zh-CN" />);
 
         fireEvent.doubleClick(screen.getByTestId("ai-tab-local"));
@@ -40,7 +40,7 @@ describe("AITabItem", () => {
 
     it("supports keyboard renaming and does not save a cancelled edit", () => {
         const onRename = vi.fn();
-        const tab = { id: "local", type: "local" as const, title: "AI 助手", closable: false };
+        const tab = { id: "local", type: "local" as const, title: "默认任务", closable: false };
         render(<AITabItem tab={tab} active={true} theme={theme} onActivate={vi.fn()} onRename={onRename} lang="zh-CN" />);
 
         fireEvent.keyDown(screen.getByTestId("ai-tab-local"), { key: "F2" });
@@ -54,7 +54,7 @@ describe("AITabItem", () => {
 
     it("does not submit while an IME composition is still active", () => {
         const onRename = vi.fn();
-        const tab = { id: "local", type: "local" as const, title: "AI 助手", closable: false };
+        const tab = { id: "local", type: "local" as const, title: "默认任务", closable: false };
         render(<AITabItem tab={tab} active={true} theme={theme} onActivate={vi.fn()} onRename={onRename} lang="zh-CN" />);
 
         fireEvent.doubleClick(screen.getByTestId("ai-tab-local"));
@@ -72,7 +72,7 @@ describe("AITabItem", () => {
 
     it("does not save an unchanged title and uses an empty title to reset", () => {
         const onRename = vi.fn();
-        const tab = { id: "local", type: "local" as const, title: "AI 助手", customTitle: "研究助手", closable: false };
+        const tab = { id: "local", type: "local" as const, title: "默认任务", customTitle: "研究助手", closable: false };
         render(<AITabItem tab={tab} active={true} theme={theme} onActivate={vi.fn()} onRename={onRename} lang="zh-CN" />);
 
         fireEvent.doubleClick(screen.getByTestId("ai-tab-local"));
@@ -87,7 +87,7 @@ describe("AITabItem", () => {
     });
 
     it("uses a saved custom title for the main AI assistant tab", () => {
-        const tab = { id: "local", type: "local" as const, title: "AI 助手", customTitle: "研究助手", closable: false };
+        const tab = { id: "local", type: "local" as const, title: "默认任务", customTitle: "研究助手", closable: false };
         expect(getAITabDisplayTitle(tab, "en")).toBe("研究助手");
     });
 

@@ -396,7 +396,7 @@ export function contrastingInkOnFill(fillCss: string, preferred?: string): strin
 export function resolvePrimaryFilledColors(
     t: Pick<Theme, "sendBtnBg" | "sendBtnColor" | "btnColor">,
 ): { bg: string; fg: string } {
-    const bg = (t.sendBtnBg && t.sendBtnBg.trim()) || t.btnColor || "#2563eb";
+    const bg = (t.sendBtnBg && t.sendBtnBg.trim()) || t.btnColor || "#1769e8";
     const preferredFg = (t.sendBtnColor && t.sendBtnColor.trim()) || undefined;
     // If caller only has light btnColor as bg (no sendBtn), auto-ink prevents white-on-light.
     const fg = contrastingInkOnFill(bg, preferredFg);

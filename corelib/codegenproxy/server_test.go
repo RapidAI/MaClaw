@@ -1264,8 +1264,8 @@ func TestAnthropicProxySanitizesQwenFlashClaudeCodeSystemPrompt(t *testing.T) {
 					t.Fatalf("system prompt leaked %q: %q", forbidden, systemText)
 				}
 			}
-			if !strings.Contains(systemText, "TigerClaw Code") {
-				t.Fatalf("system prompt = %q, want TigerClaw Code", systemText)
+			if !strings.Contains(systemText, "QAgent Code") {
+				t.Fatalf("system prompt = %q, want QAgent Code", systemText)
 			}
 			json.NewEncoder(w).Encode(openaiChatResponse{
 				ID: "chatcmpl-qwen-system",

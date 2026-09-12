@@ -5533,3 +5533,31 @@ func TestStreamProviderToWriterRetargetsReasoningControlsForAgnes(t *testing.T) 
 		}
 	})
 }
+
+func TestStreamProviderToWriterSendsOpenCodeSessionHeader(t *testing.T) {
+	var got string
+	client := &http.Client{Transport: proxyRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		got = req.Header.Get(corelib.OpenCodeSessionHeader)
+		stream := "data: {\"id\":\"c1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"}}]}\n\n" +
+			"data: [DONE]\n\n"
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader(stream)),
+		}, nil
+	})}
+	provider := &llmpool.ProviderConfig{
+		ID:     "opencode-go",
+		Name:   "OpenCode",
+		APIURL: "https://opencode.ai/zen/go/v1",
+	}
+	ctx := corelib.WithOpenCodeSessionID(context.Background(), "proxy-session-1")
+	if _, err := streamProviderToWriter(ctx, client, provider, map[string]any{
+		"model": "glm-5.3-flash",
+	}, "glm-5.3-flash", "auto", newLockedResponseRecorder()); err != nil {
+		t.Fatalf("streamProviderToWriter() error = %v", err)
+	}
+	if got != "proxy-session-1" {
+		t.Fatalf("%s = %q, want proxy-session-1", corelib.OpenCodeSessionHeader, got)
+	}
+}

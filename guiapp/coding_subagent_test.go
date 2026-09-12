@@ -7488,9 +7488,22 @@ func TestHasWindowsShellCompatibilitySyntax(t *testing.T) {
 		{command: `PowerShell -Command "MKDIR -P build"`, want: true},
 		{command: `Cross-Env CI=1 MKDIR -P build`, want: true},
 		{command: `ENV FOO=1 MKDIR -P build`, want: true},
+		{command: `cd F:\test-prog && ls -la snake.exe`, want: true},
+		{command: "ls -la", want: true},
+		{command: "cp -r src dst", want: true},
+		{command: `bash -lc "cp -r src dst"`, want: true},
+		// rm keeps flowing to the high-risk recursive-delete classification,
+		// not to syntax-compat guidance (see unixAliasedShellCommands).
+		{command: "rm -rf build", want: false},
 		{command: `node -e "console.log('a && b'); console.log('mkdir -p docs')"`, want: false},
 		{command: `go test ./... -run "TestA&&TestB"`, want: false},
 		{command: `Write-Output "mkdir -p is mentioned in docs"`, want: false},
+		{command: "ls", want: false},
+		{command: "Get-ChildItem snake.exe", want: false},
+		{command: "ls -Recurse -Force", want: false},
+		{command: "Remove-Item -Recurse -Force build", want: false},
+		{command: "curl -s http://localhost:8080/health", want: false},
+		{command: "tar -xzf bundle.tar.gz", want: false},
 	}
 	for _, tc := range cases {
 		if got := hasWindowsShellCompatibilitySyntax(tc.command); got != tc.want {

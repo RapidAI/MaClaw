@@ -1,16 +1,18 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
-import { AbortCloudWorkspaceTaskProvision, CloudWorkspaceCacheDir, CloudWorkspaceEntitlement, CompleteCloudWorkspaceTaskProvision, CreateCloudWorkspace, DeleteCloudWorkspace, ForceDeleteCloudWorkspace, GetProjectScene, GetRemoteCodingTaskMeta, OpenProjectDirectory, PrepareCloudWorkspace, ProvisionCloudWorkspaceTask, RenameCloudWorkspace, RestoreCloudWorkspace, RestoreCloudWorkspaceTasks, SelectWorkingDir, TestRemoteSSHConnection, UpdateRemoteCodingTaskMeta } from '../../../wailsjs/go/main/App';
+import { AbortCloudWorkspaceTaskProvision, CloudWorkspaceCacheDir, CloudWorkspaceEntitlement, CompleteCloudWorkspaceTaskProvision, CreateCloudWorkspace, DeleteCloudWorkspace, ForceDeleteCloudWorkspace, GetProjectScene, GetRemoteCodingTaskMeta, OpenProjectDirectory, PrepareCloudWorkspace, ProvisionCloudWorkspaceTask, RenameCloudWorkspace, RestoreCloudWorkspace, SelectWorkingDir, TestRemoteSSHConnection, UpdateRemoteCodingTaskMeta } from '../../../wailsjs/go/main/App';
 import { EventsEmit } from '../../../wailsjs/runtime';
-import { EVENT_OPEN_CREATE_CODING_TASK, EVENT_PROJECT_TASK_CLOSED, type OpenCreateCodingTaskDetail } from '../../constants/events';
+import { EVENT_OPEN_CREATE_CODING_TASK, EVENT_PROJECT_TASK_ACTIVATE, EVENT_PROJECT_TASK_CLOSED, type OpenCreateCodingTaskDetail } from '../../constants/events';
 import { localizeText } from '../../i18n';
+import { restoreCloudWorkspaceTasksShared, invalidateCloudWorkspaceTaskRestore } from '../../utils/cloudWorkspaceTaskRestore';
 import { ProjectSearchIcon } from '../ai/ProjectSearchIcon';
 import type { ProjectSceneDetail } from '../ai/ProjectSceneDetailPanel';
-import { agentModeFromTaskTags, cloudSafePathLabel, cloudWorkspaceIdFromPath, cloudWorkspaceIdFromTags, cloudWorkspaceIdFromTaskFields, collapseCloudWorkspaceTasks, CODING_TASK_COMMAND_MAX_LEN, isCloudWorkspaceTask, isPureCodingTaskTags, isRemoteMaintenanceTaskTags, isTaskManagementTaskRow, lookupCloudWorkspaceDisplayName, rememberCloudWorkspaceDisplayNames, REVEAL_CLOUD_WORKSPACE_FILES_EVENT, remoteCodingMetaFromTaskTags, remoteHostFromTaskTags, scrubCloudWorkspaceError, type PureCodingAgentMode } from '../ai/codingTaskMode';
+import { agentModeFromTaskTags, cloudSafePathLabel, cloudWorkspaceIdFromPath, isCloudWorkspacePath, cloudWorkspaceIdFromTags, cloudWorkspaceIdFromTaskFields, CODING_TASK_COMMAND_MAX_LEN, isCloudWorkspaceTask, isPureCodingTaskTags, isRemoteMaintenanceTaskTags, isTaskManagementTaskRow, lookupCloudWorkspaceDisplayName, rememberCloudWorkspaceDisplayNames, REVEAL_CLOUD_WORKSPACE_FILES_EVENT, remoteCodingMetaFromTaskTags, remoteHostFromTaskTags, scrubCloudWorkspaceError, visibleTaskRows, type PureCodingAgentMode } from '../ai/codingTaskMode';
 import { coerceActiveAssistantTask, expertIDFromTaskTags, normalizeProjectSessionPath, type ActiveAssistantTaskIdentity } from '../ai/aiAssistantPanelSessionUtils';
 import { truncatePathMiddle } from '../ai/SessionWorkingDirChip';
 import { IconFolder } from '../ai/WorkbenchIcons';
 import { extractErrorMessage } from '../ai/participantAddError';
+import { localAssistantTabTitle } from '../ai/aiAssistantI18n';
 import { normalizeWorkflowStatus, WorkflowStatus } from '../ai/workflowStatus';
 import { useDialog } from '../CustomDialog';
 import { SidebarTaskEvidencePanel } from './SidebarTaskEvidencePanel';
@@ -53,7 +55,7 @@ export type TaskContextMenu = {
 /** Re-export for task sidebar consumers that already import from this module. */
 export { expertIDFromTaskTags };
 
-type TaskIconKind = 'pin' | 'reference' | 'coding' | 'remote_coding' | 'cloud_workspace' | 'task';
+type TaskIconKind = 'default' | 'pin' | 'reference' | 'coding' | 'remote_coding' | 'cloud_workspace' | 'task';
 
 type TaskWorkflowStatusTone = 'info' | 'warning' | 'danger' | 'success' | 'neutral';
 
@@ -133,6 +135,7 @@ const isRemoteMaintenanceTask = (proj: TaskManagementItem): boolean =>
     isRemoteCodingTask(proj) && isRemoteMaintenanceTaskTags(proj.tags);
 
 const taskIconLabel = (kind: TaskIconKind, lang: string, maintenance = false) => {
+    if (kind === 'default') return textForLang(lang, 'Default task', '默认任务', '預設任務');
     if (kind === 'pin') return textForLang(lang, 'Pinned task', '\u7f6e\u9876\u4efb\u52a1', '\u7f6e\u9802\u4efb\u52d9');
     if (kind === 'reference') return textForLang(lang, 'Referenced task', '\u5f15\u7528\u4efb\u52a1', '\u5f15\u7528\u4efb\u52d9');
     if (kind === 'remote_coding') return maintenance
@@ -197,6 +200,21 @@ export function workflowStatusForTask(
     return { label: textForLang(lang, 'In progress', '进行中', '進行中'), detail, tone: 'info' };
 }
 
+/** Row/card status with an output-based completion fallback: a finished
+ * run often leaves no active workflow snapshot, so trust the same bucket
+ * the status filters use instead of falling through to "in progress". */
+export function workflowStatusForTaskRow(
+    task: Pick<TaskManagementItem, 'active_workflow' | 'has_output'> | null | undefined,
+    lang: string,
+): TaskWorkflowStatus | null {
+    if (!task) return null;
+    const snapshot = workflowStatusForTask(task.active_workflow, lang);
+    if ((!snapshot || snapshot.tone === 'info') && taskStatusBucketFor(task) === 'completed') {
+        return { label: textForLang(lang, 'Completed', '已完成', '已完成'), tone: 'success' };
+    }
+    return snapshot;
+}
+
 /** Stable, explicit creation timestamp for a user-managed task. */
 export function taskCreationLabel(value: string | undefined, lang: string): string {
     const timestamp = Date.parse(value || '');
@@ -230,7 +248,9 @@ function taskRecentTimeLabel(value: string | undefined, lang: string): string {
 
 const TaskTypeIcon = ({ kind, lang, maintenance = false }: { kind: TaskIconKind; lang: string; maintenance?: boolean }) => {
     const label = taskIconLabel(kind, lang, maintenance);
-    const iconColor = kind === 'cloud_workspace'
+    const iconColor = kind === 'default'
+        ? 'var(--theme-primary)'
+        : kind === 'cloud_workspace'
         ? 'color-mix(in srgb, var(--theme-primary-strong) 78%, var(--theme-text-primary))'
         : 'var(--theme-text-muted)';
 
@@ -238,10 +258,16 @@ const TaskTypeIcon = ({ kind, lang, maintenance = false }: { kind: TaskIconKind;
         <span
             aria-label={label}
             title={label}
-            data-testid={kind === 'cloud_workspace' ? 'task-cloud-workspace-icon' : undefined}
+            data-testid={kind === 'default' ? 'task-default-icon' : kind === 'cloud_workspace' ? 'task-cloud-workspace-icon' : undefined}
             style={{ flexShrink: 0, width: '24px', height: '18px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: iconColor, opacity: 0.92 }}
         >
             <svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true" focusable="false" style={{ display: 'block' }}>
+                {kind === 'default' && (
+                    <>
+                        <path {...TASK_ICON_PROPS} d="M12 3l2 5.4L19.5 10l-5.5 1.6L12 17l-2-5.4L4.5 10l5.5-1.6L12 3z" />
+                        <path {...TASK_ICON_PROPS} d="M18.5 14.5l.9 2.4 2.4.9-2.4.9-.9 2.4-.9-2.4-2.4-.9 2.4-.9.9-2.4z" />
+                    </>
+                )}
                 {kind === 'pin' && (
                     <>
                         <path {...TASK_ICON_PROPS} d="M15 4 20 9" />
@@ -334,6 +360,10 @@ type SidebarTaskManagementProps = {
     lang: string;
     themeMode?: 'light' | 'dark';
     tasks: TaskManagementItem[];
+    /** True while a ListTasks refresh is in flight; shows a loading bar instead of the empty state. */
+    tasksLoading?: boolean;
+    /** True while a cloud workspace restore is syncing tasks in the background; shows a slim progress hint that does not hide local tasks. */
+    cloudTasksLoading?: boolean;
     renamingTaskPath: string | null;
     setRenamingTaskPath: (path: string | null) => void;
     renameValue: string;
@@ -380,8 +410,6 @@ type SidebarTaskManagementProps = {
     showCloudWorkspaceCreation?: boolean;
     /** Restore durable cloud task rows while keeping project controls hidden. */
     restoreCloudWorkspaceTasks?: boolean;
-    /** Open the backend task monitor when the running summary is selected. */
-    onOpenBackgroundTasks?: () => void;
 };
 
 /** True when projectPath matches an open project tab (path-normalized). Exported for tests. */
@@ -417,6 +445,28 @@ export function sortTaskManagementItems(items: TaskManagementItem[]): TaskManage
         if (Number.isFinite(aTime) !== Number.isFinite(bTime)) return Number.isFinite(aTime) ? -1 : 1;
         return String(a.id || a.project_path || a.name || '').localeCompare(String(b.id || b.project_path || b.name || ''));
     });
+}
+
+/** Status filters offered above the task list. 'shared' is tag-driven, the
+ * rest come from taskStatusBucketFor. */
+export type TaskStatusFilter = 'all' | 'running' | 'pending' | 'completed' | 'paused' | 'shared';
+
+type TaskStatusBucket = Exclude<TaskStatusFilter, 'all' | 'shared'> | 'other';
+
+/** Bucket a durable task row into one status filter. Paused is checked first
+ * so a paused run never counts as in progress. */
+export function taskStatusBucketFor(task: Pick<TaskManagementItem, 'active_workflow' | 'has_output'>): TaskStatusBucket {
+    const raw = `${task.active_workflow?.status || ''} ${task.active_workflow?.phase || ''}`.toLowerCase();
+    if (/(paused|pause|已暂停|暂停)/.test(raw)) return 'paused';
+    if (/(running|execut|active|processing)/.test(raw)) return 'running';
+    if (task.active_workflow?.pending_review || /(review|confirm|approval|pending|待)/.test(raw)) return 'pending';
+    if (/(complete|finish|success|done)/.test(raw) || task.has_output === true) return 'completed';
+    return 'other';
+}
+
+/** Shared-with-me rows carry a share tag from the hub. */
+export function isSharedTaskRow(task: Pick<TaskManagementItem, 'tags'>): boolean {
+    return (task.tags || []).some(tag => /(shared|share|invite|共享|分享)/i.test(String(tag)));
 }
 
 /** True when this durable task row is the currently visible AI assistant tab. */
@@ -1069,6 +1119,8 @@ export const SidebarTaskManagement = ({
     lang,
     themeMode,
     tasks,
+    tasksLoading = false,
+    cloudTasksLoading = false,
     renamingTaskPath,
     setRenamingTaskPath,
     renameValue,
@@ -1093,7 +1145,6 @@ export const SidebarTaskManagement = ({
     showCloudWorkspaceManagement = true,
     showCloudWorkspaceCreation = showCloudWorkspaceManagement,
     restoreCloudWorkspaceTasks = false,
-    onOpenBackgroundTasks,
 }: SidebarTaskManagementProps) => {
     const { showConfirm } = useDialog();
     const { unreadCount: systemUnreadCount } = useNotifications();
@@ -1223,11 +1274,11 @@ export const SidebarTaskManagement = ({
                     if (entitlementFetchGenRef.current === entitlementGen) {
                         setCloudEntitlement(next);
                     }
-                    if (next.enabled && !next.hub_unavailable && typeof RestoreCloudWorkspaceTasks === 'function') {
+                    if (next.enabled && !next.hub_unavailable) {
                         setCloudRestorePending(true);
                         let restored: unknown = [];
                         try {
-                            restored = await RestoreCloudWorkspaceTasks();
+                            restored = await restoreCloudWorkspaceTasksShared();
                         } catch {
                             // Keep the local task list if Hub restore fails.
                         }
@@ -1239,7 +1290,7 @@ export const SidebarTaskManagement = ({
                             finishCloudRestoreWait();
                             return;
                         }
-                        const alreadyVisible = tasksRef.current.filter(proj => proj.has_output !== false || isCloudWorkspaceTask(proj) || isTaskManagementTaskRow(proj));
+                        const alreadyVisible = visibleTaskRows(tasksRef.current);
                         let missing = false;
                         for (const id of ids) {
                             if (!taskForCloudWorkspace(alreadyVisible, id)) {
@@ -1293,56 +1344,64 @@ export const SidebarTaskManagement = ({
     // marker and task identity must stay visible even when project-management
     // actions are disabled for this surface.
     const visibleTasks = useMemo(
-        () => collapseCloudWorkspaceTasks(tasks.filter(proj => proj.has_output !== false || isCloudWorkspaceTask(proj) || isTaskManagementTaskRow(proj))),
+        () => visibleTaskRows(tasks),
         [tasks],
     );
-    const taskSummary = useMemo(() => {
-        let running = 0;
-        let pending = 0;
-        let completed = 0;
+    // Two restore trigger paths feed this hint: the mount effect above sets
+    // cloudRestorePending, App's assistant-ready path passes cloudTasksLoading.
+    // Both go through restoreCloudWorkspaceTasksShared, so a single Hub restore
+    // backs the two triggers. OR-ing the states means neither path can clear
+    // the other's in-flight state.
+    const cloudSyncInProgress = cloudRestorePending || cloudTasksLoading;
+    const [taskFilter, setTaskFilter] = useState<TaskStatusFilter>('all');
+    const taskFilterCounts = useMemo(() => {
+        const counts: Record<Exclude<TaskStatusFilter, 'all'>, number> = { running: 0, pending: 0, completed: 0, paused: 0, shared: 0 };
         for (const task of visibleTasks) {
-            const raw = `${task.active_workflow?.status || ''} ${task.active_workflow?.phase || ''}`.toLowerCase();
-            if (/(running|execut|active|processing)/.test(raw)) running += 1;
-            else if (task.active_workflow?.pending_review || /(review|confirm|approval|pending|待)/.test(raw)) pending += 1;
-            else if (/(complete|finish|success|done)/.test(raw) || task.has_output === true) completed += 1;
+            const bucket = taskStatusBucketFor(task);
+            if (bucket !== 'other') counts[bucket] += 1;
+            if (isSharedTaskRow(task)) counts.shared += 1;
         }
-        return { running, pending, completed };
+        return counts;
     }, [visibleTasks]);
+    const filteredTasks = useMemo(() => {
+        if (taskFilter === 'all') return visibleTasks;
+        if (taskFilter === 'shared') return visibleTasks.filter(isSharedTaskRow);
+        return visibleTasks.filter(task => taskStatusBucketFor(task) === taskFilter);
+    }, [visibleTasks, taskFilter]);
+    // Conditional chips (paused/shared) disappear when their count reaches
+    // zero; fall back to the full list instead of trapping the user on an
+    // empty view whose chip is no longer rendered.
+    useEffect(() => {
+        if (taskFilter === 'paused' && taskFilterCounts.paused === 0) setTaskFilter('all');
+        if (taskFilter === 'shared' && taskFilterCounts.shared === 0) setTaskFilter('all');
+    }, [taskFilter, taskFilterCounts]);
     const activeTaskForSidebar = useMemo(
         () => activeAssistantTask
             ? visibleTasks.find(task => isActiveTaskRow(task, activeAssistantTask)) || null
             : null,
         [visibleTasks, activeAssistantTask],
     );
-    const executionTaskStatus = activeTaskForSidebar
-        ? (workflowStatusForTask(activeTaskForSidebar.active_workflow, lang) || {
-            label: textForLang(lang, 'In progress', '进行中', '進行中'),
-            tone: 'info' as const,
-        })
-        : {
-            label: textForLang(lang, 'In progress', '进行中', '進行中'),
-            tone: 'info' as const,
-        };
+    const executionTaskStatus = workflowStatusForTaskRow(activeTaskForSidebar, lang) || {
+        label: textForLang(lang, 'In progress', '进行中', '進行中'),
+        tone: 'info' as const,
+    };
     const executionTaskTitle = activeTaskForSidebar?.name?.trim()
         || (activeAssistantTask?.expertId
             ? activeAssistantTask.expertId
             : activeAssistantTask?.projectPath || textForLang(lang, 'Current task', '当前任务', '目前任務'));
-    const executionTaskGroups = useMemo(() => {
-        const paused = visibleTasks.filter(task => {
-            const raw = `${task.active_workflow?.status || ''} ${task.active_workflow?.phase || ''}`.toLowerCase();
-            return /(paused|pause|已暂停|暂停)/.test(raw);
-        }).length;
-        const shared = visibleTasks.filter(task => (task.tags || []).some(tag => /(shared|share|invite|共享|分享)/i.test(String(tag)))).length;
-        return [
-            { key: 'all', icon: '▦', label: textForLang(lang, 'All tasks', '全部任务', '全部任務'), count: visibleTasks.length },
-            { key: 'running', icon: '▶', label: textForLang(lang, 'In progress', '进行中', '進行中'), count: taskSummary.running },
-            { key: 'pending', icon: '◷', label: textForLang(lang, 'Pending', '待处理', '待處理'), count: taskSummary.pending },
-            { key: 'completed', icon: '✓', label: textForLang(lang, 'Completed', '已完成', '已完成'), count: taskSummary.completed },
-            { key: 'paused', icon: 'Ⅱ', label: textForLang(lang, 'Paused', '已暂停', '已暫停'), count: paused },
-            { key: 'created', icon: '♙', label: textForLang(lang, 'Created by me', '我创建的', '我建立的'), count: visibleTasks.length },
-            { key: 'shared', icon: '⌁', label: textForLang(lang, 'Shared with me', '分享给我的', '分享給我的'), count: shared },
-        ] as const;
-    }, [lang, taskSummary, visibleTasks]);
+    const taskFilterChips = useMemo(() => {
+        const chips: { key: TaskStatusFilter; label: string; count: number }[] = [
+            { key: 'all', label: textForLang(lang, 'All', '全部', '全部'), count: visibleTasks.length },
+            { key: 'running', label: textForLang(lang, 'In progress', '进行中', '進行中'), count: taskFilterCounts.running },
+            { key: 'pending', label: textForLang(lang, 'Pending', '待处理', '待處理'), count: taskFilterCounts.pending },
+            { key: 'completed', label: textForLang(lang, 'Completed', '已完成', '已完成'), count: taskFilterCounts.completed },
+        ];
+        // Low-frequency filters only appear when they actually have tasks;
+        // 'created by me' is dropped because it always equals 'all' here.
+        if (taskFilterCounts.paused > 0 || taskFilter === 'paused') chips.push({ key: 'paused', label: textForLang(lang, 'Paused', '已暂停', '已暫停'), count: taskFilterCounts.paused });
+        if (taskFilterCounts.shared > 0 || taskFilter === 'shared') chips.push({ key: 'shared', label: textForLang(lang, 'Shared with me', '分享给我的', '分享給我的'), count: taskFilterCounts.shared });
+        return chips;
+    }, [lang, taskFilter, visibleTasks.length, taskFilterCounts]);
     const taskListRef = useRef<HTMLDivElement | null>(null);
     const activeRowPresent = visibleTasks.some(proj => isActiveTaskRow(proj, activeAssistantTask));
     useEffect(() => {
@@ -1375,8 +1434,8 @@ export const SidebarTaskManagement = ({
     };
 
     const lastLocalCodingWorkDir = () => (
-        tasks.find(t => agentModeFromTaskTags(t.tags) === 'coding_dev' && t.working_dir)?.working_dir
-        || tasks.find(t => t.working_dir)?.working_dir
+        tasks.find(t => agentModeFromTaskTags(t.tags) === 'coding_dev' && t.working_dir && !isCloudWorkspaceTask(t))?.working_dir
+        || tasks.find(t => t.working_dir && !isCloudWorkspaceTask(t))?.working_dir
         || ''
     );
 
@@ -1787,7 +1846,13 @@ export const SidebarTaskManagement = ({
         setSelectingWorkingDir(true);
         try {
             const dir = await SelectWorkingDir();
-            if (dir) setNewTaskWorkingDir(dir);
+            if (!dir) return;
+            if (isCloudWorkspacePath(dir)) {
+                setCreateError(textForLang(lang, 'That folder is a cloud workspace cache. Pick another folder, or use a Cloud workspace task instead.', '\u8be5\u76ee\u5f55\u662f\u4e91\u7aef\u5de5\u4f5c\u533a\u7f13\u5b58\u76ee\u5f55\uff0c\u8bf7\u9009\u62e9\u5176\u4ed6\u76ee\u5f55\uff0c\u6216\u6539\u7528\u4e91\u7aef\u5de5\u4f5c\u533a\u4efb\u52a1\u3002', '\u8a72\u76ee\u9304\u662f\u96f2\u7aef\u5de5\u4f5c\u5340\u5feb\u53d6\u76ee\u9304\uff0c\u8acb\u9078\u64c7\u5176\u4ed6\u76ee\u9304\uff0c\u6216\u6539\u7528\u96f2\u7aef\u5de5\u4f5c\u5340\u4efb\u52d9\u3002'));
+                return;
+            }
+            setCreateError('');
+            setNewTaskWorkingDir(dir);
         } catch (error) {
             console.error('[SidebarTaskManagement] SelectWorkingDir failed:', error);
         } finally {
@@ -2125,6 +2190,7 @@ export const SidebarTaskManagement = ({
         const id = (created?.id || '').trim();
         if (!id) throw new Error(textForLang(lang, 'Failed to create cloud workspace', '新建云端工作区失败', '新建雲端工作區失敗'));
         entitlementFetchGenRef.current += 1;
+        invalidateCloudWorkspaceTaskRestore();
         setCloudEntitlement(prev => {
             const workspaces = [...(prev?.workspaces || []).filter(row => row.id !== id), created!];
             const deleted = (prev?.deleted || []).filter(row => row.id !== id);
@@ -2189,6 +2255,7 @@ export const SidebarTaskManagement = ({
             const deletedRaw = await DeleteCloudWorkspace(workspaceId);
             entitlementFetchGenRef.current += 1;
             overviewFetchGenRef.current += 1;
+            invalidateCloudWorkspaceTaskRestore();
             const current = cloudWorkspaces.find(row => row.id === workspaceId);
             const deleted = asCloudWorkspaceDeletedRow(deletedRaw) || {
                 id: workspaceId,
@@ -2219,6 +2286,7 @@ export const SidebarTaskManagement = ({
         overviewFetchGenRef.current += 1;
         try {
             await ForceDeleteCloudWorkspace(workspaceId);
+            invalidateCloudWorkspaceTaskRestore();
             setCloudEntitlement(prev => {
                 if (!prev) return prev;
                 const workspaces = (prev.workspaces || []).filter(row => deletedWorkspaceId(row) !== workspaceId);
@@ -2298,12 +2366,14 @@ export const SidebarTaskManagement = ({
             setSelectedCloudWorkspaceId(workspaceId);
             releasedCloudWorkspaceIdsRef.current.delete(workspaceId);
             resetCloudWorkspaceEditors();
-            if (typeof RestoreCloudWorkspaceTasks === 'function') {
-                try {
-                    await RestoreCloudWorkspaceTasks();
-                } catch {
-                    // Workspace is restored; the task list can catch up on the next refresh.
-                }
+            // The restore mutates the workspace set: drop any settled shared
+            // restore result, then go through the shared restore so a mount
+            // effect racing this path shares one Hub call.
+            invalidateCloudWorkspaceTaskRestore();
+            try {
+                await restoreCloudWorkspaceTasksShared();
+            } catch {
+                // Workspace is restored; the task list can catch up on the next refresh.
             }
             refreshTasks();
         } catch (error) {
@@ -2364,6 +2434,10 @@ export const SidebarTaskManagement = ({
         }
         try {
             const workingDir = newTaskWorkingDir.trim();
+            if (!isRemoteCreate && !cloudCreateSelected && isCloudWorkspacePath(workingDir)) {
+                setCreateError(textForLang(lang, 'That folder is a cloud workspace cache. Pick another folder, or use a Cloud workspace task instead.', '\u8be5\u76ee\u5f55\u662f\u4e91\u7aef\u5de5\u4f5c\u533a\u7f13\u5b58\u76ee\u5f55\uff0c\u8bf7\u9009\u62e9\u5176\u4ed6\u76ee\u5f55\uff0c\u6216\u6539\u7528\u4e91\u7aef\u5de5\u4f5c\u533a\u4efb\u52a1\u3002', '\u8a72\u76ee\u9304\u662f\u96f2\u7aef\u5de5\u4f5c\u5340\u5feb\u53d6\u76ee\u9304\uff0c\u8acb\u9078\u64c7\u5176\u4ed6\u76ee\u9304\uff0c\u6216\u6539\u7528\u96f2\u7aef\u5de5\u4f5c\u5340\u4efb\u52d9\u3002'));
+                return;
+            }
             if (isRemoteCreate) {
                 const portNum = parseRemotePort(remotePort);
                 if (portNum == null) return;
@@ -2530,6 +2604,19 @@ export const SidebarTaskManagement = ({
         if (!isTaskInstanceOpen(task)) return;
         activateTask?.(task.project_path, task);
     };
+
+    /** The pinned "Default Task" row focuses the always-open local assistant tab. */
+    const handleDefaultTaskRowClick = () => {
+        try {
+            EventsEmit(EVENT_PROJECT_TASK_ACTIVATE, { local: true });
+        } catch (error) {
+            console.warn('[SidebarTaskManagement] default task activate event emit failed:', error);
+        }
+    };
+
+    // The local assistant tab publishes no task-list identity, so a null
+    // activeAssistantTask means the default task is the focused surface.
+    const defaultTaskActive = !activeAssistantTask;
 
     const handleTaskDoubleClick = async (task: TaskManagementItem) => {
         const projectPath = task.project_path;
@@ -2703,6 +2790,19 @@ export const SidebarTaskManagement = ({
                         <CloudComputingIcon />
                     </button>
                 )}
+                <button
+                    type="button"
+                    data-testid="sidebar-system-notifications"
+                    onClick={() => window.dispatchEvent(new CustomEvent('maclaw:open-system-notifications', { detail: { toggle: false } }))}
+                    aria-label={textForLang(lang, 'Open notifications', '打开通知中心', '開啟通知中心')}
+                    title={textForLang(lang, 'Open notifications', '打开通知中心', '開啟通知中心')}
+                    style={{ ...taskHeaderActionButtonStyle(), position: 'relative' }}
+                >
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" /><path d="M10 21h4" /></svg>
+                    {systemUnreadCount > 0 && (
+                        <span style={{ position: 'absolute', top: '-4px', right: '-5px', minWidth: '13px', height: '13px', padding: '0 3px', borderRadius: '999px', background: 'var(--theme-danger, #dc2626)', color: '#fff', fontSize: '0.55rem', fontWeight: 700, lineHeight: '13px', textAlign: 'center' }}>{systemUnreadCount > 99 ? '99+' : systemUnreadCount}</span>
+                    )}
+                </button>
             </span>
             <span className="mc-task-pane__save-group" style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: '6px', minWidth: 0 }}>
                 <span>{textForLang(lang, 'Save as Task', '保存为任务', '保存為任務')}</span>
@@ -2758,27 +2858,14 @@ export const SidebarTaskManagement = ({
                     className="mc-current-task-card"
                     data-testid="current-task-card"
                     onDoubleClick={() => { if (activeTaskForSidebar) void handleTaskDoubleClick(activeTaskForSidebar); }}
-                    title={textForLang(lang, 'Double-click to open the current task', '双击打开当前任务', '雙擊開啟目前任務')}
+                    title={`${textForLang(lang, 'Double-click to open the current task', '双击打开当前任务', '雙擊開啟目前任務')}${executionTaskStatus.detail ? ` · ${executionTaskStatus.detail}` : ''}`}
                 >
-                    <span className="mc-current-task-card__dot" aria-hidden="true" />
-                    <span className="mc-current-task-card__copy">
-                        <strong>{executionTaskTitle}</strong>
-                        <small>{executionTaskStatus.detail || textForLang(lang, 'Current task', '当前任务', '目前任務')}</small>
-                    </span>
+                    <span className={`mc-current-task-card__dot mc-current-task-card__dot--${executionTaskStatus.tone}`} aria-hidden="true" />
+                    <strong className="mc-current-task-card__title">{executionTaskTitle}</strong>
                     <span className={`mc-current-task-card__status mc-current-task-card__status--${executionTaskStatus.tone}`}>
                         {executionTaskStatus.label}
                     </span>
                 </button>
-                <div className="mc-execution-task-sidebar__group-title">{textForLang(lang, 'Task groups', '任务分组', '任務分組')}</div>
-                <div className="mc-execution-task-sidebar__groups" role="list">
-                    {executionTaskGroups.map(group => (
-                        <div className="mc-execution-task-group" data-group={group.key} role="listitem" key={group.key}>
-                            <span className="mc-execution-task-group__icon" aria-hidden="true">{group.icon}</span>
-                            <span>{group.label}</span>
-                            <b>{group.count}</b>
-                        </div>
-                    ))}
-                </div>
             </section>
         )}        {creatingTask && !createDialogOpen && (
             <div
@@ -2796,26 +2883,43 @@ export const SidebarTaskManagement = ({
                 </span>
             </div>
         )}
-        <div className="mc-task-summary" data-testid="task-summary" aria-label={textForLang(lang, 'Task summary', '任务概览', '任務概覽')}>
-            <div role="button" tabIndex={0} data-testid="sidebar-system-notifications" aria-label={textForLang(lang, 'Open notifications', '打开通知中心', '開啟通知中心')} onClick={() => window.dispatchEvent(new CustomEvent('maclaw:open-system-notifications', { detail: { toggle: false } }))} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); window.dispatchEvent(new CustomEvent('maclaw:open-system-notifications', { detail: { toggle: false } })); } }} title={textForLang(lang, 'Open notifications', '打开通知中心', '開啟通知中心')}><span className="mc-task-summary__icon" aria-hidden="true"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" /><path d="M10 21h4" /></svg></span><span>{textForLang(lang, 'Notifications', '通知中心', '通知中心')}</span><b>{systemUnreadCount > 99 ? '99+' : systemUnreadCount}</b></div>
-            <div
-                className="mc-task-summary__running"
-                role={onOpenBackgroundTasks ? 'button' : undefined}
-                tabIndex={onOpenBackgroundTasks ? 0 : undefined}
-                aria-label={onOpenBackgroundTasks ? textForLang(lang, 'Open background tasks', '打开后台任务', '開啟後台任務') : undefined}
-                title={onOpenBackgroundTasks ? textForLang(lang, 'Open background tasks', '打开后台任务', '開啟後台任務') : undefined}
-                onClick={onOpenBackgroundTasks}
-                onKeyDown={onOpenBackgroundTasks ? (event) => {
-                    if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault();
-                        onOpenBackgroundTasks();
-                    }
-                } : undefined}
-            ><span className="mc-task-summary__dot mc-task-summary__dot--running" /><span>{textForLang(lang, 'In progress', '进行中', '進行中')}</span><b>{taskSummary.running}</b></div>
-            <div><span className="mc-task-summary__dot mc-task-summary__dot--pending" /><span>{textForLang(lang, 'Pending', '待处理', '待處理')}</span><b>{taskSummary.pending}</b></div>
-            <div><span className="mc-task-summary__dot mc-task-summary__dot--completed" /><span>{textForLang(lang, 'Completed', '已完成', '已完成')}</span><b>{taskSummary.completed}</b></div>
-        </div>
         <div className="mc-task-section-label">{textForLang(lang, activeAssistantTask ? 'My task list' : 'Recent tasks', activeAssistantTask ? '我的任务列表' : '最近任务', activeAssistantTask ? '我的任務列表' : '最近任務')}</div>
+        <div className="mc-task-filter-chips" role="group" aria-label={textForLang(lang, 'Filter tasks by status', '按状态筛选任务', '按狀態篩選任務')} style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', padding: '0 8px 8px' }}>
+            {taskFilterChips.map(chip => {
+                const selected = taskFilter === chip.key;
+                return (
+                    <button
+                        type="button"
+                        key={chip.key}
+                        data-testid={`task-filter-${chip.key}`}
+                        aria-pressed={selected}
+                        onClick={() => setTaskFilter(chip.key)}
+                        style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            padding: '2px 9px',
+                            borderRadius: '999px',
+                            fontSize: '0.66rem',
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                            border: selected ? '1px solid var(--theme-primary)' : '1px solid var(--theme-border)',
+                            background: selected ? 'color-mix(in srgb, var(--theme-primary) 14%, transparent)' : 'transparent',
+                            color: selected ? 'var(--theme-primary)' : 'var(--theme-text-secondary)',
+                            opacity: chip.count === 0 && !selected ? 0.55 : 1,
+                        }}
+                    >{chip.label}<b>{chip.count}</b></button>
+                );
+            })}
+        </div>
+        {cloudSyncInProgress ? (
+            <div role="status" data-testid="task-cloud-sync-progress" style={{ margin: '0 8px 8px', padding: '7px 10px', borderRadius: '6px', border: '1px solid color-mix(in srgb, var(--theme-primary) 28%, var(--theme-border))', background: 'color-mix(in srgb, var(--theme-primary) 7%, transparent)', color: 'var(--theme-text-secondary)', fontSize: '0.7rem', lineHeight: 1.35 }}>
+                <span>{textForLang(lang, 'Syncing cloud tasks…', '正在同步云端任务…', '正在同步雲端任務…')}</span>
+                <span style={{ display: 'block', marginTop: '5px', height: '3px', overflow: 'hidden', borderRadius: '999px', background: 'color-mix(in srgb, var(--theme-primary) 18%, transparent)' }}>
+                    <span className="sidebar-task-progress__bar" style={{ display: 'block', width: '42%', height: '100%', borderRadius: 'inherit', background: 'var(--theme-primary)', animation: 'sidebar-task-restore-progress 0.9s ease-in-out infinite alternate' }} />
+                </span>
+            </div>
+        ) : null}
         {taskListNotice ? (
             <div role="status" data-testid="task-list-notice" style={{ margin: '0 8px 8px', padding: '7px 10px', borderRadius: '6px', border: '1px solid color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border))', background: 'color-mix(in srgb, var(--theme-primary) 9%, transparent)', color: 'var(--theme-text-primary)', fontSize: '0.72rem', lineHeight: 1.4, fontWeight: 500 }}>
                 {taskListNotice}
@@ -2829,11 +2933,52 @@ export const SidebarTaskManagement = ({
                 </span>
             </div>
         ) : null}
-        {visibleTasks.length === 0 ? (
-            <div style={{ padding: '24px 8px', textAlign: 'center', fontSize: '0.78rem', color: 'var(--theme-text-muted)', opacity: 0.65 }}>
-                {textForLang(lang, 'No tasks', '\u6682\u65e0\u4efb\u52a1', '\u66ab\u7121\u4efb\u52d9')}
+        <div data-testid="sidebar-default-task-row" data-task-kind="default" data-active={defaultTaskActive ? 'true' : 'false'}>
+            <div
+                className={`sidebar-task-row sidebar-default-task-row${defaultTaskActive ? ' is-active' : ''}`}
+                role="button"
+                tabIndex={0}
+                onClick={handleDefaultTaskRowClick}
+                onKeyDown={e => { if (e.key !== 'Enter' && e.key !== ' ') return; e.preventDefault(); handleDefaultTaskRowClick(); }}
+                style={{
+                    display: 'flex',
+                    flexDirection: 'row',
+                    alignItems: 'flex-start',
+                    gap: '6px',
+                    padding: '7px 8px',
+                    borderRadius: '8px',
+                    cursor: 'pointer',
+                    ...(defaultTaskActive ? {
+                        background: 'var(--theme-surface)',
+                        boxShadow: 'inset 3px 0 0 var(--theme-primary), inset 0 0 0 1px color-mix(in srgb, var(--theme-primary) 28%, var(--theme-border))',
+                    } : {}),
+                }}
+                title={textForLang(lang, 'Click to focus the default task', '单击聚焦默认任务', '單擊聚焦預設任務')}
+                aria-current={defaultTaskActive ? 'true' : undefined}
+            >
+                <TaskTypeIcon kind="default" lang={lang} />
+                <span style={{ minWidth: 0, flex: 1, textAlign: 'left' }}>
+                    <span className="mc-sidebar-task-title-row"><span style={{ display: 'block', minWidth: 0, flex: 1, fontWeight: 700, fontSize: '0.74rem', color: 'var(--theme-text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>{localAssistantTabTitle(lang)}</span></span>
+                    <span data-testid="default-task-subtitle" style={{ display: 'block', marginTop: '3px', color: 'var(--theme-text-muted)', fontSize: '0.66rem', lineHeight: 1.3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>{textForLang(lang, 'Built-in local assistant, always available', '内置本地助手，始终可用', '內建本地助理，始終可用')}</span>
+                </span>
             </div>
-        ) : visibleTasks.map(proj => {
+        </div>
+        {filteredTasks.length === 0 ? (
+            tasksLoading ? (
+                <div role="status" data-testid="task-list-loading" style={{ margin: '0 8px 8px', padding: '7px 10px', borderRadius: '6px', border: '1px solid color-mix(in srgb, var(--theme-primary) 28%, var(--theme-border))', background: 'color-mix(in srgb, var(--theme-primary) 7%, transparent)', color: 'var(--theme-text-secondary)', fontSize: '0.7rem', lineHeight: 1.35 }}>
+                    <span>{textForLang(lang, 'Loading tasks…', '任务加载中…', '任務載入中…')}</span>
+                    <span style={{ display: 'block', marginTop: '5px', height: '3px', overflow: 'hidden', borderRadius: '999px', background: 'color-mix(in srgb, var(--theme-primary) 18%, transparent)' }}>
+                        <span className="sidebar-task-progress__bar" style={{ display: 'block', width: '42%', height: '100%', borderRadius: 'inherit', background: 'var(--theme-primary)', animation: 'sidebar-task-restore-progress 0.9s ease-in-out infinite alternate' }} />
+                    </span>
+                </div>
+            ) : (
+            <div style={{ padding: '24px 8px', textAlign: 'center', fontSize: '0.78rem', color: 'var(--theme-text-muted)', opacity: 0.65 }}>
+                {taskFilter === 'all'
+                    ? textForLang(lang, 'No tasks', '\u6682\u65e0\u4efb\u52a1', '\u66ab\u7121\u4efb\u52d9')
+                    : textForLang(lang, 'No tasks in this group', '\u8be5\u5206\u7ec4\u6682\u65e0\u4efb\u52a1', '\u8a72\u5206\u7d44\u66ab\u7121\u4efb\u52d9')}
+            </div>
+            )
+        ) : filteredTasks.map(proj => {
             const taskIconKind = taskIconKindForProject(proj);
             const remoteMaintenance = isRemoteMaintenanceTask(proj);
             const cloudWorkspace = isCloudWorkspaceTask(proj);
@@ -2850,7 +2995,7 @@ export const SidebarTaskManagement = ({
             // server, but they are not pure-coding tasks in this sidebar.
             // Keep the row metadata aligned with the visible task type.
             const pureCoding = !cloudWorkspace && isPureCodingTask(proj);
-            const workflowStatus = workflowStatusForTask(proj.active_workflow, lang);
+            const workflowStatus = workflowStatusForTaskRow(proj, lang);
             const createdAtLabel = taskCreationLabel(proj.created_at, lang);
             const recentTimeLabel = taskRecentTimeLabel(proj.last_activity || proj.created_at, lang);
             const isRemoving = removingTaskPaths.has(proj.project_path);
@@ -3256,9 +3401,14 @@ export const SidebarTaskManagement = ({
                                             title={cloudLocked ? cloudDeniedReason : opt.detail}
                                             disabled={disabled}
                                             onClick={() => selectCreateTaskType(opt.id)}
-                                            style={{ minWidth: 0, minHeight: '58px', border: active ? '1px solid color-mix(in srgb, var(--theme-primary) 58%, var(--theme-border))' : '1px solid var(--theme-border)', borderRadius: '8px', padding: '7px 8px', textAlign: 'left', cursor: disabled ? 'default' : 'pointer', color: active ? 'var(--theme-primary)' : 'var(--theme-text-primary)', background: active ? 'color-mix(in srgb, var(--theme-primary) 10%, var(--theme-surface))' : 'var(--theme-surface-muted)', opacity: disabled ? 0.55 : 1 }}
+                                            style={{ minWidth: 0, minHeight: '58px', border: active ? '1px solid var(--theme-primary)' : '1px solid var(--theme-border)', boxShadow: active ? '0 0 0 1px var(--theme-primary)' : 'none', borderRadius: '8px', padding: '7px 8px', textAlign: 'left', cursor: disabled ? 'default' : 'pointer', color: active ? 'var(--theme-primary)' : 'var(--theme-text-primary)', background: active ? 'color-mix(in srgb, var(--theme-primary) 16%, var(--theme-surface))' : 'var(--theme-surface-muted)', opacity: disabled ? 0.55 : 1 }}
                                         >
-                                            <span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '0.74rem', fontWeight: 700 }}>{opt.label}</span>
+                                            <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '4px', fontSize: '0.74rem', fontWeight: 700 }}>
+                                                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{opt.label}</span>
+                                                {active && (
+                                                    <span aria-hidden="true" style={{ flexShrink: 0, width: '14px', height: '14px', borderRadius: '50%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: 'var(--theme-primary)', color: 'var(--theme-on-primary, #fff)', fontSize: '0.6rem', lineHeight: 1 }}>✓</span>
+                                                )}
+                                            </span>
                                             <span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: '3px', color: active ? 'var(--theme-primary)' : 'var(--theme-text-muted)', fontSize: '0.64rem', opacity: active ? 0.88 : 1 }}>{opt.detail}</span>
                                         </button>
                                     );

@@ -68,6 +68,10 @@ type SidebarAiPaneProps = SidebarCreditDisplayFormatters & {
     toolDropdownOpen: boolean;
     setToolDropdownOpen: (updater: (prev: boolean) => boolean) => void;
     tasks: TaskManagementItem[];
+    /** True while the initial/refresh ListTasks request is in flight. */
+    tasksLoading?: boolean;
+    /** True while a cloud workspace restore is syncing tasks in the background. */
+    cloudTasksLoading?: boolean;
     renamingTaskPath: string | null;
     setRenamingTaskPath: (path: string | null) => void;
     renameValue: string;
@@ -173,6 +177,8 @@ export const SidebarAiPane = ({
     toolDropdownOpen,
     setToolDropdownOpen,
     tasks,
+    tasksLoading = false,
+    cloudTasksLoading = false,
     renamingTaskPath,
     setRenamingTaskPath,
     renameValue,
@@ -281,7 +287,7 @@ export const SidebarAiPane = ({
     };
     return (
         <>
-            <div className="mc-sidebar-shell office-agent-sidebar" style={{ width: `${taskManagementPaneWidth}px`, flexShrink: 0, display: 'flex', flexDirection: 'column', borderRight: '1px solid var(--theme-border)', background: 'var(--theme-page-bg)', minHeight: 0, overflow: 'hidden' }}>
+            <div className="mc-sidebar-shell office-agent-sidebar" style={{ width: `${taskManagementPaneWidth}px`, flexShrink: 0, display: 'flex', flexDirection: 'column', background: 'var(--theme-page-bg)', minHeight: 0, overflow: 'hidden' }}>
                 <SidebarToolSelector activeTool={activeTool} toolDropdownOpen={toolDropdownOpen} setToolDropdownOpen={setToolDropdownOpen} config={config} switchTool={switchTool} visible={showCodingToolEntry} />
                 {visibleTabs.length > 1 && <SidebarMiddleTabs active={middleTab} labels={tabLabels} onChange={setMiddleTab} visibleTabs={visibleTabs} />}
                 <div data-testid="sidebar-ai-content-slot" style={middleContentSlotStyle}>
@@ -296,7 +302,7 @@ export const SidebarAiPane = ({
                             flexDirection: 'column',
                         }}
                     >
-                        <SidebarTaskManagement lang={lang} themeMode={aiThemeMode} tasks={tasks} renamingTaskPath={renamingTaskPath} setRenamingTaskPath={setRenamingTaskPath} renameValue={renameValue} setRenameValue={setRenameValue} resumeTask={resumeTask} continueWorkflowProject={continueWorkflowProject} assistantReady={assistantReady} onTaskSwitchBlocked={onTaskSwitchBlocked} createTask={createTask} refreshTasks={refreshTasks} taskContextMenu={taskContextMenu} setTaskContextMenu={setTaskContextMenu} renameTask={renameTask} pinTask={pinTask} hideTask={hideTask} activateTask={activateTask} openProjectTabPaths={openProjectTabPaths} openProjectTabIdentities={openProjectTabIdentities} openExpertTabIDs={openExpertTabIDs} activeAssistantTask={activeAssistantTask} taskListVisible={middleTab === 'tasks'} showCloudWorkspaceManagement={showCloudWorkspaceManagement ?? showCodingToolEntry} showCloudWorkspaceCreation={showCloudWorkspaceCreation ?? showCloudWorkspaceManagement ?? showCodingToolEntry} restoreCloudWorkspaceTasks={restoreCloudWorkspaceTasks} onOpenBackgroundTasks={onOpenBackgroundTasks} />
+                        <SidebarTaskManagement lang={lang} themeMode={aiThemeMode} tasks={tasks} tasksLoading={tasksLoading} cloudTasksLoading={cloudTasksLoading} renamingTaskPath={renamingTaskPath} setRenamingTaskPath={setRenamingTaskPath} renameValue={renameValue} setRenameValue={setRenameValue} resumeTask={resumeTask} continueWorkflowProject={continueWorkflowProject} assistantReady={assistantReady} onTaskSwitchBlocked={onTaskSwitchBlocked} createTask={createTask} refreshTasks={refreshTasks} taskContextMenu={taskContextMenu} setTaskContextMenu={setTaskContextMenu} renameTask={renameTask} pinTask={pinTask} hideTask={hideTask} activateTask={activateTask} openProjectTabPaths={openProjectTabPaths} openProjectTabIdentities={openProjectTabIdentities} openExpertTabIDs={openExpertTabIDs} activeAssistantTask={activeAssistantTask} taskListVisible={middleTab === 'tasks'} showCloudWorkspaceManagement={showCloudWorkspaceManagement ?? showCodingToolEntry} showCloudWorkspaceCreation={showCloudWorkspaceCreation ?? showCloudWorkspaceManagement ?? showCodingToolEntry} restoreCloudWorkspaceTasks={restoreCloudWorkspaceTasks} />
                     </div>
                     {middleTab === 'employees' && showDigitalEmployeeTabs && <div data-testid="sidebar-middle-pane-employees" style={middlePaneStyle}><VirtualEmployeeTab lang={lang} theme={veTheme} onStartConversation={(ve) => onOpenVEConversation?.(ve)} favoriteEmployeeIds={favoriteEmployeeIds} favoriteEmployeeNames={favoriteEmployeeNames} onSetFavorite={onSetFavoriteEmployee} onRemoveFavorite={onRemoveFavoriteEmployee} onRenameEmployee={onRenameEmployee} /></div>}
                     {middleTab === 'history' && showDigitalEmployeeTabs && <div data-testid="sidebar-middle-pane-history" style={middlePaneStyle}><SidebarHistorySessions lang={lang} enabled={showDigitalEmployeeTabs} onOpenDiscussion={(discussion) => onOpenHistoryDiscussion?.(discussion)} /></div>}
@@ -337,7 +343,7 @@ export const SidebarAiPane = ({
                     }
                 }}
                 title={lang === 'en' ? 'Drag to resize middle panel' : lang === 'zh-Hant' ? '拖動調整中間面板寬度' : '拖动调整中间面板宽度'}
-                style={{ width: '12px', marginLeft: '-3px', marginRight: '-3px', position: 'relative', zIndex: 40, flexShrink: 0, cursor: 'col-resize', background: isTaskManagementResizing ? 'color-mix(in srgb, var(--theme-primary) 42%, transparent)' : 'transparent', transition: 'background 120ms ease', touchAction: 'none', userSelect: 'none', pointerEvents: 'auto', ['WebkitAppRegion' as any]: 'no-drag', ['--wails-draggable' as any]: 'no-drag' }}
+                style={{ width: '12px', marginLeft: '-3px', marginRight: '-3px', position: 'relative', zIndex: 40, flexShrink: 0, cursor: 'col-resize', background: 'transparent', touchAction: 'none', userSelect: 'none', pointerEvents: 'auto', ['WebkitAppRegion' as any]: 'no-drag', ['--wails-draggable' as any]: 'no-drag', ['--mc-task-pane-divider-color' as any]: isTaskManagementResizing ? 'var(--theme-primary)' : undefined }}
             />
         </>
     );

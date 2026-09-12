@@ -2960,6 +2960,55 @@ func formatTaskListBriefWithCurrent(tasks []*v2.TaskItem, currentIdx int) string
 	return sb.String()
 }
 
+// localCodingPlanStepReqCtx appends the plan-step context for a local plan
+// step to the turn context. It mirrors the remote plan-step prompt shape
+// ([Plan step Tn/N] header + step description + titles-only outline) so the
+// local SubAgent finalize gates recover the same title/description (via
+// extractPlanStepFocusFromTaskText) and can defer build/test verification to
+// the later step that owns it. The description must stay between the header
+// and the instruction line — that is exactly what the extractor parses.
+func localCodingPlanStepReqCtx(reqCtx string, tasks []*v2.TaskItem, step *v2.TaskItem, stepTotal int) string {
+	if step == nil {
+		return reqCtx
+	}
+	// formatTaskListBriefWithCurrent renumbers Index<=0 tasks by position; the
+	// header/instruction must use the same effective index or the outline
+	// current-marker and the [Plan step Tn/N] header disagree.
+	idx := step.Index
+	if idx <= 0 {
+		pos := 0
+		for _, task := range tasks {
+			if task == nil {
+				continue
+			}
+			pos++
+			if task == step {
+				idx = pos
+				break
+			}
+		}
+	}
+	if idx <= 0 {
+		idx = 1
+	}
+	title := strings.TrimSpace(step.Title)
+	var stepCtx strings.Builder
+	stepCtx.WriteString(fmt.Sprintf("[Plan step T%d/%d] %s\n\n", idx, stepTotal, title))
+	if d := strings.TrimSpace(step.Description); d != "" && d != title {
+		stepCtx.WriteString(d)
+		stepCtx.WriteString("\n\n")
+	}
+	stepCtx.WriteString(fmt.Sprintf(
+		"You are executing plan step T%d/%d: %s\nFocus on this step only; do not skip ahead.",
+		idx, stepTotal, title,
+	))
+	if outline := strings.TrimSpace(formatTaskListBriefWithCurrent(tasks, idx)); outline != "" {
+		stepCtx.WriteString("\n\nPlan outline (titles only; later steps are separate tasks — do not execute them now):\n")
+		stepCtx.WriteString(outline)
+	}
+	return strings.TrimSpace(reqCtx + "\n\n" + stepCtx.String())
+}
+
 // formatRemotePlanStepCarrySummary builds a short prior-step note for the next
 // remote plan step. Full agent summaries often claim "全部完成"; that must not
 // license later steps to no-op.
@@ -3130,6 +3179,12 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		tasks = []*v2.TaskItem{{Index: 1, Title: truncateRunesV2(userText, 80), Description: userText}}
 		planned = false
 	}
+	// Cap this request's continuation chain at the dispatch work actually
+	// planned: writer + reviewer per step plus retry slack (see
+	// armDesktopCodingContinuationBudget).
+	if h.app != nil {
+		h.app.armDesktopCodingContinuationBudget(userID, len(tasks))
+	}
 	decision = forceWorkspaceClearCodingDecision(userText, decision)
 	requestKind := decision.Kind
 	inquiry := requestKind == codingRequestInquiry
@@ -3221,10 +3276,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		}
 		stepReqCtx := reqCtx
 		if planned {
-			stepReqCtx = strings.TrimSpace(reqCtx + fmt.Sprintf(
-				"\n\nYou are executing plan step T%d/%d: %s\nFocus on this step only; do not skip ahead.",
-				t.Index, len(tasks), strings.TrimSpace(t.Title),
-			))
+			stepReqCtx = localCodingPlanStepReqCtx(reqCtx, tasks, t, len(tasks))
 		}
 
 		// Worktree isolation is only for implementation turns. A simple local
@@ -3507,7 +3559,7 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 		TDDMode:     tddMode,
 		MaxParallel: maxParallel,
 		CanRunParallelWave: func(wave []*v2.TaskItem) bool {
-			return codingWorkbenchCanRunParallelWriterWave(requestKind, planned, worktreeMode, projectPath, wave)
+			return codingWorkbenchCanRunParallelWaveForSurface(userID, requestKind, planned, worktreeMode, projectPath, wave)
 		},
 	}
 
@@ -3855,6 +3907,12 @@ func (h *IMMessageHandler) runRemoteCodingTemplateSubAgent(userID, userText stri
 	if len(tasks) == 0 {
 		tasks = []*v2.TaskItem{{Index: 1, Title: truncateRunesV2(userText, 80), Description: userText}}
 		planned = false
+	}
+	// Same continuation-chain budget as the local runner: writer + reviewer
+	// per step plus retry slack, so a remote multi-step plan cannot mint an
+	// unbounded turn chain either.
+	if h.app != nil {
+		h.app.armDesktopCodingContinuationBudget(userID, len(tasks))
 	}
 	// Preserve the kind of the user's actual turn for the remote subagent. The
 	// expanded per-step prompt may include a prior session plan, which must not
@@ -4292,6 +4350,19 @@ func codingWorkbenchMaxParallel(kind codingRequestKind, planned bool, worktreeMo
 		return 1
 	}
 	return codingWorkbenchParallelWriterLimit
+}
+
+// codingWorkbenchCanRunParallelWaveForSurface gates parallel writer waves on
+// the dispatch surface before the declaration checks run. The verified
+// desktop surface executes on a single active relation chain: concurrent
+// writers would consume and rotate the same task handle, failing each other
+// closed mid-plan, so waves are serialized there instead of starting work
+// that cannot finish.
+func codingWorkbenchCanRunParallelWaveForSurface(userID string, kind codingRequestKind, planned bool, worktreeMode, projectPath string, wave []*v2.TaskItem) bool {
+	if isDesktopCodingOwner(userID) {
+		return false
+	}
+	return codingWorkbenchCanRunParallelWriterWave(kind, planned, worktreeMode, projectPath, wave)
 }
 
 // codingWorkbenchCanRunParallelWriterWave verifies the planner-provided

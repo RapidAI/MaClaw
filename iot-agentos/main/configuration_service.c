@@ -13,8 +13,21 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "mbedtls/platform_util.h"
 #include "persistence_service.h"
+#include "services/secret_storage.h"
 
+#if !defined(MACLAW_HOST_BUILD)
+#include "esp_mac.h"
+#endif
+
+/* V8 schema: the three credential fields (wifi_password, pair_code,
+ * gateway_token) and each personal-network password are no longer carried
+ * inline in configuration_store_t.  They live as AES-GCM authenticated blobs
+ * in the same "maclaw" namespace under dedicated NVS keys managed by
+ * secret_storage.  The inline byte ranges stay in the struct for layout
+ * compatibility with V7 (the migration journal source_bytes is the same
+ * sizeof(configuration_store_t)) and are zeroed in every V8 publication. */
 #define CONFIGURATION_NAMESPACE "maclaw"
 #define CONFIGURATION_STORE_KEY "configuration"
 #define CONFIGURATION_MIGRATION_JOURNAL_KEY "configuration_migration_journal"
@@ -23,7 +36,185 @@
 #define CONFIGURATION_MIGRATION_TARGET_FINGERPRINT_KEY \
     "configuration_migration_target_fingerprint"
 #define CONFIGURATION_STORE_MAGIC 0x43464731u /* CFG1 */
-#define CONFIGURATION_STORE_VERSION 7u
+#define CONFIGURATION_STORE_VERSION 8u
+/* secret_storage records live alongside the V8 store so a single
+ * `nvs_flash_erase`-equivalent erases everything; the dedicated namespace
+ * alias clarifies intent at the call site. */
+#define CONFIGURATION_SECRET_NAMESPACE CONFIGURATION_NAMESPACE
+
+/* NVS keys for V8 at-rest ciphertext.  The "_staged" suffix separates a
+ * pending provisioning candidate from the confirmed snapshot so a discarded
+ * candidate never overwrites the owner's durable credentials. */
+#define CONFIGURATION_SECRET_KEY_WIFI_PASS         "secret_v8_wifi_pass"
+#define CONFIGURATION_SECRET_KEY_PAIR_CODE         "secret_v8_pair_code"
+#define CONFIGURATION_SECRET_KEY_GATEWAY_TOKEN     "secret_v8_gateway_token"
+#define CONFIGURATION_SECRET_KEY_WIFI_PASS_STAGED  "secret_v8_wifi_pass_staged"
+#define CONFIGURATION_SECRET_KEY_PAIR_CODE_STAGED  "secret_v8_pair_code_staged"
+#define CONFIGURATION_SECRET_KEY_GATEWAY_TOKEN_STAGED \
+    "secret_v8_gateway_token_staged"
+
+static const char *configuration_secret_wifi_net_key(uint8_t index, bool staged) {
+    if (index >= CONFIGURATION_WIFI_NETWORK_CAPACITY) return NULL;
+    static const char *kConfirmed[CONFIGURATION_WIFI_NETWORK_CAPACITY] = {
+        "secret_v8_net_0",
+        "secret_v8_net_1",
+        "secret_v8_net_2",
+        "secret_v8_net_3",
+        "secret_v8_net_4",
+    };
+    static const char *kStaged[CONFIGURATION_WIFI_NETWORK_CAPACITY] = {
+        "secret_v8_net_0_staged",
+        "secret_v8_net_1_staged",
+        "secret_v8_net_2_staged",
+        "secret_v8_net_3_staged",
+        "secret_v8_net_4_staged",
+    };
+    return staged ? kStaged[index] : kConfirmed[index];
+}
+
+/* Per-chip key provider.  Mixes the Wi-Fi STA MAC with a build-time salt via
+ * HMAC-SHA-256 (the same primitive secret_storage_derive_test_key uses, so
+ * the host build can verify by feeding the same seed).  The MAC is globally
+ * unique and stable across power cycles, so the derived key is also stable;
+ * a raw-flash attacker who reads the MAC still needs the build-time salt to
+ * compute the same key.  Factory provisioning can later wrap this in
+ * eFuse BLOCK_KEY0 via esp_hmac_calculate for a stronger guarantee without
+ * changing the key-provider interface. */
+static const uint8_t kConfigurationSecretStorageSalt[10] = {
+    'M', 'a', 'C', 'l', 'a', 'w', 'C', 'f', 'g', '8',
+};
+
+static device_status_t configuration_secret_storage_key_provider(
+    uint8_t out_key[32], void *context) {
+    (void)context;
+    if (!out_key) return DEVICE_STATUS_INVALID_ARGUMENT;
+    uint8_t mac[6] = {0};
+#if defined(MACLAW_HOST_BUILD)
+    static const uint8_t kHostMac[6] = {0x02, 0xAA, 0xBB, 0xCC, 0xDD, 0x01};
+    memcpy(mac, kHostMac, sizeof(mac));
+#else
+    if (esp_read_mac(mac, ESP_MAC_WIFI_STA) != ESP_OK) {
+        mbedtls_platform_zeroize(mac, sizeof(mac));
+        return DEVICE_STATUS_UNAVAILABLE;
+    }
+#endif
+    uint8_t seed[16];
+    memset(seed, 0, sizeof(seed));
+    memcpy(seed, mac, sizeof(mac));
+    memcpy(&seed[6], kConfigurationSecretStorageSalt,
+           sizeof(kConfigurationSecretStorageSalt));
+    const device_status_t status = secret_storage_derive_test_key(seed, out_key);
+    mbedtls_platform_zeroize(seed, sizeof(seed));
+    mbedtls_platform_zeroize(mac, sizeof(mac));
+    return status;
+}
+
+static void configuration_zero_snapshot_secrets(configuration_snapshot_t *snapshot) {
+    if (!snapshot) return;
+    memset(snapshot->wifi_password, 0, sizeof(snapshot->wifi_password));
+    memset(snapshot->pair_code, 0, sizeof(snapshot->pair_code));
+    memset(snapshot->gateway_token, 0, sizeof(snapshot->gateway_token));
+    for (uint8_t i = 0; i < CONFIGURATION_WIFI_NETWORK_CAPACITY; ++i) {
+        memset(snapshot->wifi_networks[i].password, 0,
+               sizeof(snapshot->wifi_networks[i].password));
+    }
+}
+
+static esp_err_t configuration_encrypt_secret_string_locked(const char *nvs_key,
+                                                            const char *plaintext,
+                                                            size_t capacity) {
+    if (!nvs_key || !plaintext || capacity == 0) return ESP_ERR_INVALID_ARG;
+    /* An empty or absent credential maps to an erased ciphertext so a future
+     * decrypt sees the same observable empty string the V7 reader did. */
+    if (plaintext[0] == '\0') {
+        return device_status_to_platform_error(
+            secret_storage_erase(CONFIGURATION_SECRET_NAMESPACE, nvs_key));
+    }
+    size_t size = strnlen(plaintext, capacity);
+    if (size >= capacity) return ESP_ERR_INVALID_STATE;
+    return device_status_to_platform_error(secret_storage_write(
+        CONFIGURATION_SECRET_NAMESPACE, nvs_key, plaintext, size));
+}
+
+static esp_err_t configuration_decrypt_secret_string_locked(const char *nvs_key,
+                                                            char *out_value,
+                                                            size_t capacity) {
+    if (!nvs_key || !out_value || capacity == 0) return ESP_ERR_INVALID_ARG;
+    memset(out_value, 0, capacity);
+    size_t size = capacity - 1;
+    device_status_t status = secret_storage_read(CONFIGURATION_SECRET_NAMESPACE,
+                                                 nvs_key, out_value, &size);
+    if (status == DEVICE_STATUS_NOT_FOUND) return ESP_OK;
+    if (status != DEVICE_STATUS_OK) {
+        memset(out_value, 0, capacity);
+        return device_status_to_platform_error(status);
+    }
+    if (size >= capacity) {
+        out_value[capacity - 1] = '\0';
+    } else {
+        out_value[size] = '\0';
+        memset(out_value + size + 1, 0, capacity - size - 1);
+    }
+    return ESP_OK;
+}
+
+static esp_err_t configuration_encrypt_snapshot_secrets_locked(
+    const configuration_snapshot_t *snapshot, bool staged) {
+    if (!snapshot) return ESP_ERR_INVALID_ARG;
+    const char *wifi_key = staged ? CONFIGURATION_SECRET_KEY_WIFI_PASS_STAGED
+                                   : CONFIGURATION_SECRET_KEY_WIFI_PASS;
+    const char *pair_key = staged ? CONFIGURATION_SECRET_KEY_PAIR_CODE_STAGED
+                                   : CONFIGURATION_SECRET_KEY_PAIR_CODE;
+    const char *token_key = staged ? CONFIGURATION_SECRET_KEY_GATEWAY_TOKEN_STAGED
+                                    : CONFIGURATION_SECRET_KEY_GATEWAY_TOKEN;
+    esp_err_t err = configuration_encrypt_secret_string_locked(
+        wifi_key, snapshot->wifi_password, sizeof(snapshot->wifi_password));
+    if (err != ESP_OK) return err;
+    err = configuration_encrypt_secret_string_locked(
+        pair_key, snapshot->pair_code, sizeof(snapshot->pair_code));
+    if (err != ESP_OK) return err;
+    err = configuration_encrypt_secret_string_locked(
+        token_key, snapshot->gateway_token, sizeof(snapshot->gateway_token));
+    if (err != ESP_OK) return err;
+    for (uint8_t i = 0; i < CONFIGURATION_WIFI_NETWORK_CAPACITY; ++i) {
+        const char *key = configuration_secret_wifi_net_key(i, staged);
+        if (!key) return ESP_ERR_INVALID_STATE;
+        err = configuration_encrypt_secret_string_locked(
+            key, snapshot->wifi_networks[i].password,
+            sizeof(snapshot->wifi_networks[i].password));
+        if (err != ESP_OK) return err;
+    }
+    return ESP_OK;
+}
+
+static esp_err_t configuration_decrypt_snapshot_secrets_locked(
+    configuration_snapshot_t *snapshot, bool staged) {
+    if (!snapshot) return ESP_ERR_INVALID_ARG;
+    const char *wifi_key = staged ? CONFIGURATION_SECRET_KEY_WIFI_PASS_STAGED
+                                   : CONFIGURATION_SECRET_KEY_WIFI_PASS;
+    const char *pair_key = staged ? CONFIGURATION_SECRET_KEY_PAIR_CODE_STAGED
+                                   : CONFIGURATION_SECRET_KEY_PAIR_CODE;
+    const char *token_key = staged ? CONFIGURATION_SECRET_KEY_GATEWAY_TOKEN_STAGED
+                                    : CONFIGURATION_SECRET_KEY_GATEWAY_TOKEN;
+    esp_err_t err = configuration_decrypt_secret_string_locked(
+        wifi_key, snapshot->wifi_password, sizeof(snapshot->wifi_password));
+    if (err != ESP_OK) return err;
+    err = configuration_decrypt_secret_string_locked(
+        pair_key, snapshot->pair_code, sizeof(snapshot->pair_code));
+    if (err != ESP_OK) return err;
+    err = configuration_decrypt_secret_string_locked(
+        token_key, snapshot->gateway_token, sizeof(snapshot->gateway_token));
+    if (err != ESP_OK) return err;
+    for (uint8_t i = 0; i < CONFIGURATION_WIFI_NETWORK_CAPACITY; ++i) {
+        const char *key = configuration_secret_wifi_net_key(i, staged);
+        if (!key) return ESP_ERR_INVALID_STATE;
+        err = configuration_decrypt_secret_string_locked(
+            key, snapshot->wifi_networks[i].password,
+            sizeof(snapshot->wifi_networks[i].password));
+        if (err != ESP_OK) return err;
+    }
+    return ESP_OK;
+}
 
 typedef struct {
     uint32_t magic;
@@ -660,6 +851,41 @@ static esp_err_t migrate_v6_locked(configuration_store_t *store) {
     return ESP_OK;
 }
 
+/* V7 -> V8 transition.  V7 kept the three credential fields (wifi_password,
+ * pair_code, gateway_token) and every personal-network password inline in
+ * configuration_store_t; V8 encrypts them as AES-GCM authenticated blobs in
+ * the same NVS namespace via secret_storage, zeroing the inline byte ranges
+ * on the durable write.  The migration only re-routes credentials; the
+ * remaining snapshot fields are byte-for-byte preserved by the caller
+ * writing the (now V8) store back through write_store_locked().
+ *
+ * Inline plaintext is intentionally NOT zeroed here: write_store_locked()
+ * owns the encrypt-and-zero contract so a single source of truth governs
+ * what hits flash.  Migrate first encrypts (idempotent — fresh nonce on
+ * every call) and bumps the version field; if power is lost before the
+ * subsequent write_store_locked() persists V8, the V7 record is still
+ * readable and migrate_v7_locked() will rerun. */
+static esp_err_t migrate_v7_locked(configuration_store_t *store) {
+    if (!store || store->version != 7u) return ESP_ERR_INVALID_ARG;
+    if (!valid_snapshot(&store->provisioning.confirmed_snapshot)) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (store->provisioning.staged &&
+        !valid_snapshot(&store->provisioning.staged_snapshot)) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    esp_err_t err = configuration_encrypt_snapshot_secrets_locked(
+        &store->provisioning.confirmed_snapshot, false);
+    if (err != ESP_OK) return err;
+    if (store->provisioning.staged) {
+        err = configuration_encrypt_snapshot_secrets_locked(
+            &store->provisioning.staged_snapshot, true);
+        if (err != ESP_OK) return err;
+    }
+    store->version = CONFIGURATION_STORE_VERSION;
+    return ESP_OK;
+}
+
 static esp_err_t migrate_v5_locked(configuration_store_t *store) {
     configuration_store_v5_t *legacy =
         heap_caps_calloc(1, sizeof(*legacy), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -1060,7 +1286,18 @@ static esp_err_t load_locked(configuration_snapshot_t *inout_snapshot,
         err = device_status_to_platform_error(persistence_service_read_blob(CONFIGURATION_NAMESPACE,
                                             CONFIGURATION_STORE_KEY,
                                             store, &size));
-        if (err != ESP_OK || !valid_store(store)) return ESP_ERR_INVALID_STATE;
+        if (err != ESP_OK || store->magic != CONFIGURATION_STORE_MAGIC) {
+            return ESP_ERR_INVALID_STATE;
+        }
+        if (store->version == 7u) {
+            err = migrate_v7_locked(store);
+            if (err != ESP_OK) return err;
+            migrated = true;
+        } else if (store->version != CONFIGURATION_STORE_VERSION) {
+            return ESP_ERR_INVALID_STATE;
+        } else if (!valid_store(store)) {
+            return ESP_ERR_INVALID_STATE;
+        }
     } else {
         return ESP_ERR_INVALID_STATE;
     }
@@ -1125,6 +1362,20 @@ static esp_err_t load_locked(configuration_snapshot_t *inout_snapshot,
             return ESP_ERR_INVALID_STATE;
         }
     }
+    /* write_store_locked() encrypts secrets into secret_storage and zeroes
+     * the inline byte ranges in s_scratch_store (= store).  Re-derive the
+     * in-memory plaintext from secret_storage so callers continue to see a
+     * normal populated configuration_snapshot_t.  Decryption failure here
+     * means the ciphertext on flash is corrupt or the key provider drifted;
+     * fail closed rather than silently handing out a zeroed snapshot. */
+    err = configuration_decrypt_snapshot_secrets_locked(
+        &store->provisioning.confirmed_snapshot, false);
+    if (err != ESP_OK) return err;
+    if (store->provisioning.staged) {
+        err = configuration_decrypt_snapshot_secrets_locked(
+            &store->provisioning.staged_snapshot, true);
+        if (err != ESP_OK) return err;
+    }
     *inout_snapshot = store->provisioning.confirmed_snapshot;
     *out_force_setup = store->force_setup != 0;
     return ESP_OK;
@@ -1134,6 +1385,29 @@ static esp_err_t write_store_locked(const configuration_store_t *store) {
     if (!valid_store(store)) return ESP_ERR_INVALID_ARG;
     if (!s_scratch_store) return ESP_ERR_INVALID_STATE;
     *s_scratch_store = *store;
+    /* V8: encrypt secrets into secret_storage first, then zero the inline
+     * byte ranges in the durable scratch copy.  The const `store` argument
+     * still carries plaintext (write_store_locked never sees the in-RAM
+     * store zeroed); the caller is responsible for re-decrypting if it
+     * wants the RAM copy populated again.  Encrypting BEFORE writing means
+     * secret_storage carries a fresh nonce per publication, so a partial
+     * crash between the encrypt and the NVS write leaves the V7 record on
+     * disk intact and migrate_v7_locked() reruns idempotently on the next
+     * boot. */
+    esp_err_t err = configuration_encrypt_snapshot_secrets_locked(
+        &s_scratch_store->provisioning.confirmed_snapshot, false);
+    if (err != ESP_OK) return err;
+    if (s_scratch_store->provisioning.staged) {
+        err = configuration_encrypt_snapshot_secrets_locked(
+            &s_scratch_store->provisioning.staged_snapshot, true);
+        if (err != ESP_OK) return err;
+    }
+    configuration_zero_snapshot_secrets(
+        &s_scratch_store->provisioning.confirmed_snapshot);
+    if (s_scratch_store->provisioning.staged) {
+        configuration_zero_snapshot_secrets(
+            &s_scratch_store->provisioning.staged_snapshot);
+    }
     return device_status_to_platform_error(persistence_service_write_blob(
         CONFIGURATION_NAMESPACE, CONFIGURATION_STORE_KEY, s_scratch_store,
         sizeof(*s_scratch_store)));
@@ -1245,6 +1519,25 @@ static esp_err_t configuration_service_init_legacy(void) {
         __atomic_store_n(&s_initializing, false, __ATOMIC_RELEASE);
         return ESP_ERR_TIMEOUT;
     }
+    /* V8 secret_storage initialisation must happen before any code path that
+     * touches a (possibly V7) configuration record.  migrate_v7_locked(),
+     * write_store_locked() and configuration_decrypt_snapshot_secrets_locked()
+     * all call into secret_storage.  secret_storage_init is idempotent so a
+     * re-entrant init is a no-op aside from re-binding the key provider. */
+    const device_status_t init_status = secret_storage_init();
+    if (init_status != DEVICE_STATUS_OK) {
+        xSemaphoreGive(s_deinit_lock);
+        __atomic_store_n(&s_initializing, false, __ATOMIC_RELEASE);
+        return device_status_to_platform_error(init_status);
+    }
+    const device_status_t key_status = secret_storage_set_key_provider(
+        configuration_secret_storage_key_provider, NULL);
+    if (key_status != DEVICE_STATUS_OK) {
+        secret_storage_deinit();
+        xSemaphoreGive(s_deinit_lock);
+        __atomic_store_n(&s_initializing, false, __ATOMIC_RELEASE);
+        return device_status_to_platform_error(key_status);
+    }
     if (!__atomic_load_n(&s_stopping, __ATOMIC_ACQUIRE) &&
         s_scratch_snapshot_a && s_scratch_snapshot_b && s_scratch_store) {
         xSemaphoreGive(s_deinit_lock);
@@ -1331,6 +1624,10 @@ static esp_err_t configuration_service_deinit_legacy(uint32_t timeout_ms) {
     }
     memset(&s_default_snapshot, 0, sizeof(s_default_snapshot));
     s_default_snapshot_available = false;
+    /* Drop the V8 secret_storage key provider so a future boot re-derives
+     * the per-chip key; otherwise a recycled secret_storage binary with
+     * a stale provider context could read another chip's ciphertext. */
+    secret_storage_deinit();
     /* Keep the admission mutex allocated. A task that sampled it immediately
      * before `s_stopping` changed may still be queued on it; deleting a live
      * FreeRTOS mutex would turn an orderly deinit into a use-after-free. The

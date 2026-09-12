@@ -286,7 +286,7 @@ func WritePPTXDetailed(args map[string]interface{}) (string, error) {
 	if !strings.EqualFold(filepath.Ext(filePath), ".pptx") {
 		filePath += ".pptx"
 	}
-	return fmt.Sprintf("已成功写入 PPTX 文件: %s", filePath), nil
+	return fmt.Sprintf("已成功写入 PPTX 文件: %s", filePath) + previewPPTXAfterWrite(args, filePath), nil
 }
 
 func structuredOfficeMaxSlides(args map[string]interface{}) int {

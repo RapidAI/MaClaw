@@ -199,6 +199,11 @@ func (app *TUIApp) runTUIWorkflowCodingAttempt(ctx context.Context, cb *tuiCallb
 		LeaseDuration:   15 * time.Minute,
 		WorkspaceProber: codingruntime.NewLocalGitWorkspaceProber(projectPath),
 	}
+	if policy.Mode == "local" && !policy.ReadOnly && policy.FinalWorkspaceGateRequired {
+		if err := codingruntime.EnsureLocalGitBaseline(ctx, projectPath); err != nil {
+			log.Printf("[tui] local git baseline init failed for %s: %v", projectPath, err)
+		}
+	}
 	task, attempt, err := runner.Run(ctx, codingruntime.Task{
 		TaskID:        taskID,
 		WorkflowID:    state.ID,

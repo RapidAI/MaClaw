@@ -101,7 +101,7 @@ func TestBuildCodexConfigTomlNormalizesLegacyOpenClawClientName(t *testing.T) {
 	if strings.Contains(content, `"X-Codegen-Client-Name" = "openclaw"`) {
 		t.Fatalf("legacy openclaw client leaked into config:\n%s", content)
 	}
-	if !strings.Contains(content, `"X-Codegen-Client-Name" = "tigerclaw"`) {
-		t.Fatalf("normalized tigerclaw header missing:\n%s", content)
+	if !strings.Contains(content, `"X-Codegen-Client-Name" = "QAgent"`) {
+		t.Fatalf("normalized QAgent header missing:\n%s", content)
 	}
 }

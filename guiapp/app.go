@@ -142,28 +142,12 @@ type App struct {
 	semanticHostCallJournal      *tool.SQLiteHostCallJournal
 	semanticArtifactStore        *tool.SQLiteArtifactStore
 	semanticDynamicContracts     agentservice.DynamicCapabilityContractRegistry
-	// codingTaskRelations is the R1a authenticated semantic-task relation
-	// authority. It intentionally precedes, and is separate from, the runtime
-	// ledger anchor binding that R1b will add.
-	codingTaskRelationsMu sync.Mutex
-	codingTaskRelations   *codingTaskRelationService
-	// desktopCodingTaskSessions binds a desktop-host-authenticated UI session
-	// to its latest opaque task handle. Keys are host-resolved session owners;
-	// neither model input nor project paths become identity fields themselves.
-	desktopCodingTaskSessionsMu sync.Mutex
-	desktopCodingTaskSessions   map[string]desktopCodingTaskSession
-	desktopCodingIngressMu      sync.Mutex
-	desktopCodingIngress        map[string]desktopCodingIngress
-	// desktopCodingStaticWorkspaces holds host-issued local workspace handles
-	// used by the Coding static shadow catalog. The directory is deliberately
-	// kept behind an opaque handle: neither a Coding task nor a model callback
-	// may turn a project-path string into a provider binding.
-	desktopCodingStaticWorkspaces map[string]desktopCodingStaticWorkspace
-	// desktopCodingIngressGenerations is a host-only fence per UI owner. It
-	// distinguishes a token issued before an explicit new-task/cancel fence
-	// from one issued afterwards, including when the old token had already been
-	// consumed and is waiting to bind a runtime attempt.
-	desktopCodingIngressGenerations map[string]uint64
+	// codingCaps is the single owner of every desktop Coding capability:
+	// the R1a authenticated semantic-task relation authority, per-owner task
+	// sessions, ingress tokens, workspace handles, generation fences and the
+	// continuation chain. All rules that mint, chain, fence, or revoke live
+	// on desktopCodingCapabilityIssuer; App only delegates.
+	codingCaps desktopCodingCapabilityIssuer
 	// semanticEffectReceiptWorker is the generic reconciliation loop for
 	// receipt-bound dynamic effects. It owns no sources yet; channel/provider
 	// integrations register their binding-specific receipt source here.
@@ -294,6 +278,11 @@ type App struct {
 	// Smart session components
 	memoryStore                       *memory.Store
 	memoryStoreMu                     sync.Mutex
+	sceneIndexCacheMu                 sync.Mutex
+	sceneIndexCacheGen                uint64
+	sceneIndexCacheLimit              int
+	sceneIndexCache                   []memory.SceneRecord
+	sceneIndexCacheAt                 time.Time
 	answerCacheMu                     sync.Mutex
 	answerCache                       *answerCacheStore
 	configManager                     *ConfigManager
@@ -576,6 +565,11 @@ var ShowNotification func(title, message string, iconFlag uint32) = func(string,
 // FlashAndBeep plays a notification sound and flashes the taskbar/dock icon.
 // Set by platform-specific tray setup code.
 var FlashAndBeep func() = func() {}
+
+// IsMainWindowVisible reports whether the main window is currently shown.
+// Set by platform tray setup; defaults to visible so headless/test
+// environments treat the window as visible.
+var IsMainWindowVisible func() bool = func() bool { return true }
 
 // NewApp creates a new App application struct
 func NewApp() *App {
@@ -1066,9 +1060,16 @@ func (a *App) ensureMemoryStore() {
 		a.configureMemoryCompressor(compressorToConfigure)
 	}
 	if justOpened {
+		// Repair compressor/dedup-merged task identity entries BEFORE disk
+		// recovery: a merged entry matches every managed task's identity
+		// upsert, so recovery would keep rewriting it instead of recreating
+		// per-task records. Task list is derived from the memory index, not
+		// from scanning data/tasks.
+		if n := a.repairMergedTaskIdentityEntries(); n > 0 {
+			log.Printf("[ensureMemoryStore] repaired %d merged task identity entries", n)
+		}
 		// Recover before the evolution-LLM refresh so the first ListTasks
-		// does not wait on a config/LLM round-trip. Task list is derived
-		// from the memory index, not from scanning data/tasks.
+		// does not wait on a config/LLM round-trip.
 		if n := a.recoverManagedTaskRecordsFromDisk(); n > 0 {
 			log.Printf("[ensureMemoryStore] recovered %d managed task records from disk", n)
 		}
@@ -2626,7 +2627,7 @@ func (a *App) startup(ctx context.Context) {
 			a.ensureACPHost()
 		}()
 		// CodeGen SSO token validation on startup (qianxin brand only).
-		// Claude/TigerClaw Code now uses CodeGen's remote Anthropic-compatible
+		// Claude/QAgent Code now uses CodeGen's remote Anthropic-compatible
 		// base URL directly; the legacy local adapter remains disabled.
 		go func() {
 			if err := a.ensureCodeGenToken(); err != nil {
@@ -2677,10 +2678,16 @@ func (a *App) startup(ctx context.Context) {
 		a.initEarlyClassifier()
 		log.Printf("[startup] initEarlyClassifier done in %v", time.Since(classifierStart))
 
+		// Background warmup: open the memory store off the startup critical path
+		// so the first ListTasks doesn't pay the cold-start open/migration cost.
+		go a.ensureMemoryStore()
+
 		log.Printf("[startup] complete in %v", time.Since(startupBegin))
 		return
 	}
 	a.setPowerOptimizationEnabled(false)
+	// Background warmup: same memory-store prewarm for the no-config path.
+	go a.ensureMemoryStore()
 	log.Printf("[startup] complete (no config) in %v", time.Since(startupBegin))
 }
 
@@ -3421,11 +3428,33 @@ func (a *App) buildRemoteLaunchEnvForTool(
 // Returns nil if no matching extra tool is found.
 func findExtraTool(toolName string) *brand.ExtraToolDef {
 	for i, et := range brand.Current().ExtraTools {
-		if et.Name == toolName {
+		if extraToolNameMatches(et, toolName) {
 			return &brand.Current().ExtraTools[i]
 		}
 	}
 	return nil
+}
+
+func extraToolNameMatches(et brand.ExtraToolDef, toolName string) bool {
+	if strings.EqualFold(et.Name, toolName) {
+		return true
+	}
+	return strings.EqualFold(et.Name, corelib.CodeGenClientName) && strings.EqualFold(toolName, corelib.CodeGenLegacyClientName)
+}
+
+func extraToolConfig(cfg corelib.AppConfig, et brand.ExtraToolDef) corelib.ToolConfig {
+	if cfg.ExtraToolConfigs == nil {
+		return corelib.ToolConfig{}
+	}
+	if tc, ok := cfg.ExtraToolConfigs[et.ConfigKey]; ok {
+		return tc
+	}
+	if strings.EqualFold(et.ConfigKey, corelib.CodeGenClientName) {
+		if tc, ok := cfg.ExtraToolConfigs[corelib.CodeGenLegacyClientName]; ok {
+			return tc
+		}
+	}
+	return corelib.ToolConfig{}
 }
 
 // buildExtraToolLaunchEnv builds environment variables for an OEM extra tool.

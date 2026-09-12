@@ -63,6 +63,9 @@ func anthropicSDKForwardOptions(cfg MaclawLLMConfig, client *http.Client) []anth
 	if IsCodeGenURL(cfg.URL) {
 		opts = append(opts, anthropicopt.WithHeader(CodeGenClientNameHeader, NormalizeCodeGenClientName(cfg.UserAgent())))
 	}
+	if name, value, ok := OpenCodeSessionHeaderForConfig(cfg); ok {
+		opts = append(opts, anthropicopt.WithHeader(name, value))
+	}
 	if timeout := cfg.EffectiveTimeoutSec(); timeout > 0 {
 		opts = append(opts, anthropicopt.WithRequestTimeout(time.Duration(timeout)*time.Second))
 	}

@@ -6,7 +6,7 @@ import { ProjectSearchArchivedPanel } from "./ProjectSearchArchivedPanel";
 import { ProjectSearchForkForm } from "./ProjectSearchForkForm";
 import { ProjectSearchIcon } from "./ProjectSearchIcon";
 import { ProjectSceneDetailPanel, type ProjectSceneDetail, type ProjectSearchArtifact } from "./ProjectSceneDetailPanel";
-import { agentModeFromTaskTags, isCloudWorkspaceTask, isCodingWorkflowSourceTags, isPureCodingTaskTags, isRemoteMaintenanceTaskTags, isTaskManagementTaskRow, remoteHostFromTaskTags } from "./codingTaskMode";
+import { agentModeFromTaskTags, isCodingWorkflowSourceTags, isPureCodingTaskTags, isRemoteMaintenanceTaskTags, isVisibleTaskRow, remoteHostFromTaskTags } from "./codingTaskMode";
 import { expertIDFromTaskTags, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache } from "./aiAssistantPanelSessionUtils";
 import { useDialog } from "../CustomDialog";
 
@@ -58,7 +58,7 @@ export function useProjectSearch(lang: string) {
     const doSearch = useCallback((q: string) => {
         setLoading(true);
         SearchTasks(q, 20)
-            .then(r => setResults(((r || []) as ProjectSearchItem[]).filter(item => item.has_output !== false || isCloudWorkspaceTask(item) || isTaskManagementTaskRow(item))))
+            .then(r => setResults(((r || []) as ProjectSearchItem[]).filter(isVisibleTaskRow)))
             .catch(() => setResults([]))
             .finally(() => setLoading(false));
     }, []);
@@ -130,7 +130,7 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, active = tr
     const [sceneLoadingPath, setSceneLoadingPath] = useState<string | null>(null);
     const activeRef = useRef(active);
     activeRef.current = active;
-    const visibleResults = search.results.filter(item => item.has_output !== false || isCloudWorkspaceTask(item) || isTaskManagementTaskRow(item));
+    const visibleResults = search.results.filter(isVisibleTaskRow);
 
     useEffect(() => { if (search.open) inputRef.current?.focus(); }, [search.open]);
     useEffect(() => {

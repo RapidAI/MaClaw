@@ -1,8 +1,10 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CodePreviewPanel, createCodePreviewTheme, maximumContrastInkOnFill } from "./CodePreviewPanel";
 import { WorkflowDocPreview } from "./WorkflowDocPreview";
 import { contrastingInkOnFill, type Theme } from "./aiAssistantPanelTheme";
 import { AgentTaskPanel } from "./AgentTaskPanel";
+import { useSafeBackdropDismiss } from "../../hooks/useSafeBackdropDismiss";
+import { usePreviewSlideLifecycle } from "./previewSlide";
 import type { AgentView } from "./agentViewTypes";
 import type { CodePreviewUIState } from "./useCodePreviewState";
 import type { CodeFile } from "./useCodePreviewState";
@@ -71,13 +73,19 @@ function previewTabTooltip(mode: PreviewPaneMode, lang: string, cloudMode = fals
 function previewSurfaceVars(theme: Theme): React.CSSProperties {
     return {
         "--mc-preview-pane-bg": theme.bg,
-        "--mc-preview-surface-bg": theme.titleBarBg,
-        "--mc-preview-surface-border": theme.titleBarBorder || theme.divider,
+        "--mc-preview-surface-bg": theme.bg,
+        "--mc-preview-surface-border": theme.divider,
         "--mc-preview-surface-shadow": theme.isDark
             ? "0 1px 2px rgba(0, 0, 0, 0.32), 0 12px 32px -12px rgba(0, 0, 0, 0.45)"
             : "0 1px 2px rgba(30, 58, 95, 0.05), 0 12px 32px -12px rgba(30, 58, 95, 0.12)",
     } as React.CSSProperties;
 }
+
+/** Flush-right overlay surface: rounded corners only on the exposed left edge. */
+const overlaySurfaceStyle: React.CSSProperties = {
+    borderRadius: "12px 0 0 12px",
+    borderRight: "none",
+};
 
 function previewRailStyle(theme: Theme): React.CSSProperties {
     return {
@@ -86,7 +94,7 @@ function previewRailStyle(theme: Theme): React.CSSProperties {
         alignItems: "center",
         padding: "8px 4px",
         borderLeft: `1px solid ${theme.divider}`,
-        background: theme.titleBarBg,
+        background: theme.bg,
         flexShrink: 0,
         width: "32px",
     };
@@ -380,15 +388,6 @@ export function AssistantPreviewPane({
 
     const codeTheme = useMemo(() => createCodePreviewTheme(theme), [theme]);
 
-    const paneStyle: React.CSSProperties = {
-        flex: Math.max(0.2, 1 - splitRatio),
-        minWidth: 0,
-        height: "100%",
-        display: "flex",
-        flexDirection: "row",
-        position: "relative",
-    };
-
     // AgentTaskPanel is now integrated into the tab system (no longer exclusive)
     // Determine which modes are available
     const availableModes: PreviewPaneMode[] = [];
@@ -396,10 +395,55 @@ export function AssistantPreviewPane({
     if (showAgentView && agentView) availableModes.push("agent");
     if (showWorkflowPreview) availableModes.push("workflow");
     if (showCodePreview) availableModes.push("code");
-    if (availableModes.length === 0) return null;
+    const anyOpen = availableModes.length > 0;
 
     // Ensure activeMode is valid
-    const effectiveMode = availableModes.includes(activeMode) ? activeMode : availableModes[0];
+    const effectiveMode = anyOpen
+        ? (availableModes.includes(activeMode) ? activeMode : availableModes[0])
+        : activeMode;
+
+    // Overlay lifecycle: the parent keeps us mounted after the first open, so a
+    // close only flips the show flags — we keep the last content on screen while
+    // the panel slides back out, then drop the DOM.
+    const { present, entered, closing, settled, slideMs } = usePreviewSlideLifecycle(anyOpen);
+    const lastOpenRef = useRef<{ body: React.ReactNode; mode: PreviewPaneMode; widthFraction: number } | null>(null);
+    // Expanded = pane covers the full window width; resets whenever the last
+    // preview surface closes so the next open starts at the split width.
+    const [previewExpanded, setPreviewExpanded] = useState(false);
+    useEffect(() => {
+        if (!anyOpen) setPreviewExpanded(false);
+    }, [anyOpen]);
+
+    const handleBackdropClose = useCallback(() => {
+        // Agent forms keep their own dismiss flow; a misclick must not drop one.
+        if (showCodePreview) closeCodePreview();
+        if (showWorkflowPreview) closeDocPreview();
+        if (showConflict) onCloseConflict?.();
+    }, [showCodePreview, showWorkflowPreview, showConflict, closeCodePreview, closeDocPreview, onCloseConflict]);
+    const { backdropProps } = useSafeBackdropDismiss(handleBackdropClose);
+
+    // Freeze the width during slide-out: the parent resets splitRatio to 1 as
+    // soon as the last surface closes, which would visibly shrink the panel
+    // mid-animation.
+    const liveFraction = previewExpanded ? 1 : Math.max(0.2, 1 - splitRatio);
+    const widthFraction = anyOpen ? liveFraction : (lastOpenRef.current?.widthFraction ?? liveFraction);
+
+    const paneStyle: React.CSSProperties = {
+        position: "absolute",
+        top: 0,
+        right: 0,
+        bottom: 0,
+        width: `${Math.round(widthFraction * 100)}%`,
+        maxWidth: "100%",
+        height: "100%",
+        display: "flex",
+        flexDirection: "row",
+        padding: 0,
+        background: "transparent",
+        zIndex: 40,
+        transform: settled ? "none" : (entered && !closing ? "translateX(0)" : "translateX(105%)"),
+        transition: settled ? "none" : `transform ${slideMs}ms ease`,
+    };
 
     const handleClose = () => {
         // Close the active tab's surface first when multiple modes are open.
@@ -422,37 +466,27 @@ export function AssistantPreviewPane({
     };
 
     // Agent-only: no tab rail needed, render standalone
-    if (availableModes.length === 1 && availableModes[0] === "agent") {
-        return (
-            <div
-                className="mc-assistant-preview-pane"
-                data-preview-mode="agent"
-                style={{ ...paneStyle, ...previewSurfaceVars(theme) }}
-            >
-                <div className="mc-assistant-preview-surface mc-assistant-preview-surface--agent">
-                    <AgentTaskPanel
-                        view={agentView!}
-                        onDismiss={dismissAgentView}
-                        onResizeStart={startPreviewResize}
-                        splitRatio={splitRatio}
-                        onToggleMaximize={onToggleMaximize}
-                        onSubmit={submitAgentView}
-                        theme={theme}
-                        lang={lang}
-                    />
-                </div>
+    let openBody: React.ReactNode = null;
+    if (anyOpen && availableModes.length === 1 && availableModes[0] === "agent") {
+        openBody = (
+            <div className="mc-assistant-preview-surface mc-assistant-preview-surface--agent" style={overlaySurfaceStyle}>
+                <AgentTaskPanel
+                    view={agentView!}
+                    onDismiss={dismissAgentView}
+                    onResizeStart={startPreviewResize}
+                    splitRatio={splitRatio}
+                    onToggleMaximize={onToggleMaximize}
+                    onSubmit={submitAgentView}
+                    theme={theme}
+                    lang={lang}
+                />
             </div>
         );
-    }
-
-    return (
-        <div
-            className="mc-assistant-preview-pane"
-            data-preview-mode={effectiveMode}
-            style={{ ...paneStyle, ...previewSurfaceVars(theme) }}
-        >
-            <div className="mc-assistant-preview-surface">
-            {/* ── Drag handle for resizing ── */}
+    } else if (anyOpen) {
+        openBody = (
+            <div className="mc-assistant-preview-surface" style={overlaySurfaceStyle}>
+            {/* ── Drag handle for resizing (hidden while expanded to full width) ── */}
+            {!previewExpanded && (
             <div
                 className="mc-assistant-preview-resize-handle"
                 data-testid="assistant-preview-resize-handle"
@@ -493,7 +527,6 @@ export function AssistantPreviewPane({
                     width: "24px",
                     cursor: "col-resize",
                     background: "transparent",
-                    transition: "background 0.15s, box-shadow 0.15s",
                     zIndex: 20,
                     touchAction: "none",
                     userSelect: "none",
@@ -501,9 +534,8 @@ export function AssistantPreviewPane({
                     "--wails-draggable": "no-drag",
                     pointerEvents: "auto",
                 } as any}
-                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = `color-mix(in srgb, ${theme.headingColor} 24%, transparent)`; }}
-                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
             />
+            )}
             {/* ── Content area ──
                 Conflict panel stays mounted (hidden) when switching to SRC so scroll / draft state
                 and Esc-focus scoping survive tab switches. */}
@@ -569,11 +601,12 @@ export function AssistantPreviewPane({
                         onMoveFile={moveCodeFile}
                         onTogglePinFile={toggleCodeFilePinned}
                         onClose={closeCodePreview}
-                        onResizeStart={startPreviewResize}
                         onToggleMaximize={onToggleMaximize}
                         cloudMode={cloudMode}
                         cloudWorkspaceName={cloudWorkspaceName}
                         hideHeaderClose
+                        previewExpanded={previewExpanded}
+                        onTogglePreviewExpand={() => setPreviewExpanded(v => !v)}
                         theme={codeTheme}
                         lang={lang}
                     />
@@ -607,6 +640,45 @@ export function AssistantPreviewPane({
                 </div>
             )}
             </div>
-        </div>
+        );
+    }
+    // Cache the last open content in an effect (not during render — ref writes
+    // during render can tear under concurrent rendering). The exit animation
+    // replays the cached content after the show flags flip off.
+    useEffect(() => {
+        if (!anyOpen) return;
+        lastOpenRef.current = { body: openBody, mode: effectiveMode, widthFraction: liveFraction };
+    });
+    const cached = lastOpenRef.current;
+    if (!present || (!anyOpen && !cached)) return null;
+    const renderedMode = anyOpen ? effectiveMode : cached!.mode;
+    const renderedBody = anyOpen ? openBody : cached!.body;
+
+    return (
+        <>
+            <div
+                role="presentation"
+                data-testid="assistant-preview-backdrop"
+                style={{
+                    position: "absolute",
+                    inset: 0,
+                    zIndex: 39,
+                    background: "rgba(0, 0, 0, 0.45)",
+                    opacity: entered && !closing ? 1 : 0,
+                    transition: `opacity ${slideMs}ms ease`,
+                    // Already invisible while sliding out — let clicks fall
+                    // through to the chat instead of swallowing them.
+                    pointerEvents: entered && !closing ? "auto" : "none",
+                }}
+                {...backdropProps}
+            />
+            <div
+                className="mc-assistant-preview-pane"
+                data-preview-mode={renderedMode}
+                style={{ ...paneStyle, ...previewSurfaceVars(theme) }}
+            >
+                {renderedBody}
+            </div>
+        </>
     );
 }

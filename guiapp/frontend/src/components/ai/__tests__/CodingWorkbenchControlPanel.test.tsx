@@ -387,6 +387,50 @@ describe("CodingWorkbenchControlPanel", () => {
         expect(text).not.toMatch(/Ready|就绪|就緒/);
     });
 
+    it("rests at defaultTop and drags the collapsed chip without toggling", () => {
+        const onExpandedChange = vi.fn();
+        const { getByTestId } = render(
+            <CodingWorkbenchControlPanel
+                lang="en"
+                theme={{ text: "#111", isDark: false } as any}
+                chrome={chrome}
+                remote={false}
+                stepStatuses={[]}
+                pendingApproval={false}
+                conflictCount={0}
+                expanded={false}
+                onExpandedChange={onExpandedChange}
+                defaultTop={80}
+            >
+                <div>body</div>
+            </CodingWorkbenchControlPanel>,
+        );
+        const root = getByTestId("coding-control-float-root") as HTMLElement;
+        expect(root.style.top).toBe("80px");
+
+        const chip = getByTestId("coding-env-banner");
+        // Sub-threshold wiggle stays a click.
+        fireEvent.pointerDown(chip, { button: 0, pointerId: 1, clientX: 100, clientY: 100 });
+        fireEvent.pointerMove(document, { pointerId: 1, clientX: 101, clientY: 102 });
+        fireEvent.pointerUp(document, { pointerId: 1, clientX: 101, clientY: 102 });
+        fireEvent.click(chip);
+        expect(onExpandedChange).toHaveBeenCalledWith(true);
+        expect(root.style.transform).toBe("");
+
+        onExpandedChange.mockClear();
+        // Real drag moves the chip and suppresses the trailing click.
+        fireEvent.pointerDown(chip, { button: 0, pointerId: 2, clientX: 100, clientY: 100 });
+        fireEvent.pointerMove(document, { pointerId: 2, clientX: 100, clientY: 160 });
+        expect(root.style.transform).toBe("translate(0px, 60px)");
+        fireEvent.pointerUp(document, { pointerId: 2, clientX: 100, clientY: 160 });
+        fireEvent.click(chip);
+        expect(onExpandedChange).not.toHaveBeenCalled();
+
+        // A plain click after the drag still toggles.
+        fireEvent.click(chip);
+        expect(onExpandedChange).toHaveBeenCalledWith(true);
+    });
+
     it("isFormFieldTarget detects inputs", () => {
         const input = document.createElement("input");
         expect(isFormFieldTarget(input)).toBe(true);

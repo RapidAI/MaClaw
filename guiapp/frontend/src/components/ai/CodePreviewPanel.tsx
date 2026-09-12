@@ -18,6 +18,9 @@
  */
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { CodeFileDiffStat, FileTabBar, cycleFilePath } from './FileTabBar';
+import { CodePreviewFileListButton } from './CodePreviewFileList';
+import { PptxPreviewPanel, isPptxFileName } from './PptxPreviewPanel';
+import { PreviewFileActions } from './PreviewFileActions';
 import type { CodePreviewTheme } from './FileTabBar';
 import type { CodeFile } from './useCodePreviewState';
 import { codeFileLineDeltaHasChange, computeCodeFileLineDelta, getMruCycleOrder, isCodeFileDirty } from './useCodePreviewState';
@@ -138,7 +141,7 @@ export function createCodePreviewTheme(theme: Theme): CodePreviewTheme {
         border: theme.divider,
         lineNumBg: theme.codeBg,
         lineNumText: theme.textMuted,
-        tabBg: theme.titleBarBg,
+        tabBg: theme.bg,
         tabActiveBg: theme.fieldBg,
         tabActiveText: theme.headingColor,
         tabHoverBg: `color-mix(in srgb, ${theme.btnColor} ${isDark ? 14 : 8}%, ${theme.titleBarBg})`,
@@ -192,7 +195,6 @@ export interface CodePreviewPanelProps {
     onMoveFile?: (fromPath: string, toIndex: number) => void;
     onTogglePinFile?: (filePath: string) => void;
     onClose: () => void;
-    onResizeStart?: () => void;
     /** Double-click header (outside interactive targets) toggles window maximize. */
     onToggleMaximize?: () => void;
     theme: CodePreviewTheme;
@@ -203,6 +205,10 @@ export interface CodePreviewPanelProps {
     cloudWorkspaceName?: string;
     /** Preview pane already has a close control; hide the inner header X. */
     hideHeaderClose?: boolean;
+    /** Hosting preview pane is expanded to full window width. */
+    previewExpanded?: boolean;
+    /** Toggle the hosting preview pane between split width and full width. */
+    onTogglePreviewExpand?: () => void;
 }
 
 /** Skip maximize when double-clicking interactive header controls / tab bar. */
@@ -948,13 +954,14 @@ export function CodePreviewPanel({
     onMoveFile,
     onTogglePinFile,
     onClose,
-    onResizeStart,
     onToggleMaximize,
     theme,
     lang = 'en',
     cloudMode = false,
     cloudWorkspaceName = '',
     hideHeaderClose = false,
+    previewExpanded = false,
+    onTogglePreviewExpand,
 }: CodePreviewPanelProps) {
     const cloudWorkspaceId = cloudMode ? cloudWorkspaceIdFromPath(projectPath) : '';
     const [resolvedCloudName, setResolvedCloudName] = useState(() => (
@@ -1067,6 +1074,15 @@ export function CodePreviewPanel({
             if (filePath !== deletedPath && (filePath.startsWith(slash) || filePath.startsWith(win))) onCloseFile(filePath);
         }
     }, [files, onCloseFile]);
+
+    // The workspace tree owns the refresh logic; the merged header hosts the
+    // button, so the tree hands its refresh callback and busy state up here.
+    const workspaceRefreshRef = useRef<(() => void) | null>(null);
+    const [workspaceRefreshing, setWorkspaceRefreshing] = useState(false);
+    const handleWorkspaceRefreshReady = useCallback((refresh: () => void, refreshing: boolean) => {
+        workspaceRefreshRef.current = refresh;
+        setWorkspaceRefreshing(refreshing);
+    }, []);
 
     const handleSelectFile = useCallback((filePath: string) => {
         setWorkspaceActive(false);
@@ -1441,19 +1457,6 @@ export function CodePreviewPanel({
                 height: '100%',
                 minWidth: 0,
             }}>
-                {/* Drag handle for resizing */}
-                <div
-                    onMouseDown={(e) => { e.preventDefault(); onResizeStart?.(); }}
-                    style={{
-                        width: 6,
-                        cursor: 'col-resize',
-                        background: theme.border,
-                        flexShrink: 0,
-                        transition: 'background 0.15s',
-                    }}
-                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = theme.tabActiveText; }}
-                    onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = theme.border; }}
-                />
                 <div style={{
                     display: 'flex',
                     flexDirection: 'column',
@@ -1463,7 +1466,10 @@ export function CodePreviewPanel({
                     background: theme.bg,
                     color: theme.text,
                 }}>
-                    {/* Header */}
+                    {/* Header — when this bar renders it fully replaces the workspace
+                        tree's own header row (title, path/name, refresh), which is
+                        suppressed via hideHeader below. */}
+                    {cloudMode || !hideHeaderClose ? (
                     <div
                         data-testid="code-preview-header"
                         onDoubleClick={handleHeaderDoubleClick}
@@ -1490,7 +1496,37 @@ export function CodePreviewPanel({
                                     <CloudWorkspaceNameLabel name={resolvedCloudName} theme={theme} />
                                 </>
                             ) : null}
+                            {!cloudMode && projectPath ? (
+                                <span title={projectPath} style={{ color: theme.textMuted, fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
+                                    {projectPath}
+                                </span>
+                            ) : null}
                         </span>
+                        <button
+                            data-testid="code-preview-header-refresh"
+                            onClick={() => workspaceRefreshRef.current?.()}
+                            onDoubleClick={(event) => event.stopPropagation()}
+                            aria-busy={workspaceRefreshing}
+                            disabled={!projectPath}
+                            style={{
+                                background: 'none',
+                                border: 'none',
+                                cursor: projectPath ? 'pointer' : 'default',
+                                fontSize: 12,
+                                padding: '2px 6px',
+                                borderRadius: 8,
+                                color: theme.tabActiveText,
+                                lineHeight: 1,
+                                flexShrink: 0,
+                                opacity: !projectPath || workspaceRefreshing ? 0.55 : 1,
+                                transition: 'opacity 120ms ease',
+                                '--wails-draggable': 'no-drag',
+                            } as any}
+                            title={cloudMode ? (lang.startsWith('zh') ? '刷新云端文件' : 'Refresh cloud files') : (lang.startsWith('zh') ? '刷新工作目录' : 'Refresh working directory')}
+                            aria-label={cloudMode ? (lang.startsWith('zh') ? '刷新云端文件' : 'Refresh cloud files') : (lang.startsWith('zh') ? '刷新工作目录' : 'Refresh working directory')}
+                        >
+                            {workspaceRefreshing ? (lang.startsWith('zh') ? '刷新中…' : 'Refreshing…') : (lang.startsWith('zh') ? '刷新' : 'Refresh')}
+                        </button>
                         {!hideHeaderClose ? (
                         <button
                             onClick={onClose}
@@ -1512,7 +1548,8 @@ export function CodePreviewPanel({
                         </button>
                         ) : null}
                     </div>
-                    <CodePreviewWorkspace projectPath={projectPath} refreshToken={workspaceRefreshToken} resetOnRefresh={workspaceResetOnRefresh} cloudMode={cloudMode} lang={lang} theme={theme} onOpenFile={openWorkspaceFile} onFileDeleted={handleWorkspaceFileDeleted} />
+                    ) : null}
+                    <CodePreviewWorkspace projectPath={projectPath} refreshToken={workspaceRefreshToken} resetOnRefresh={workspaceResetOnRefresh} cloudMode={cloudMode} hideHeader={cloudMode || !hideHeaderClose} onRefreshReady={handleWorkspaceRefreshReady} lang={lang} theme={theme} onOpenFile={openWorkspaceFile} onFileDeleted={handleWorkspaceFileDeleted} />
                 </div>
             </div>
         );
@@ -1532,19 +1569,6 @@ export function CodePreviewPanel({
                 outline: 'none',
             }}
         >
-            {/* Drag handle for resizing */}
-            <div
-                onMouseDown={(e) => { e.preventDefault(); onResizeStart?.(); }}
-                style={{
-                    width: 6,
-                    cursor: 'col-resize',
-                    background: theme.border,
-                    flexShrink: 0,
-                    transition: 'background 0.15s',
-                }}
-                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = theme.tabActiveText; }}
-                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = theme.border; }}
-            />
             <div style={{
                 display: 'flex',
                 flexDirection: 'column',
@@ -1581,6 +1605,14 @@ export function CodePreviewPanel({
                         '--wails-draggable': 'no-drag',
                     } as any}
                 >
+                    <CodePreviewFileListButton
+                        files={files}
+                        pinnedPaths={pinnedPaths || []}
+                        activeFilePath={activeFilePath}
+                        theme={theme}
+                        lang={lang}
+                        onSelectFile={handleSelectFile}
+                    />
                     <button
                         type="button"
                         role="tab"
@@ -1628,6 +1660,7 @@ export function CodePreviewPanel({
                         cloudMode={cloudMode}
                     />
                 </div>
+                {!activeFile || !isPptxFileName(activeFile.fileName || activeFile.filePath) ? (
                 <CodePreviewViewToolbar
                     wordWrap={wordWrap}
                     fontSize={fontSize}
@@ -1638,6 +1671,32 @@ export function CodePreviewPanel({
                     onZoomOut={zoomOut}
                     onZoomReset={zoomReset}
                 />
+                ) : null}
+                {onTogglePreviewExpand ? (
+                <button
+                    type="button"
+                    data-testid="code-preview-expand-toggle"
+                    data-active={previewExpanded ? 'true' : 'false'}
+                    onClick={onTogglePreviewExpand}
+                    title={lang.startsWith('zh') ? (previewExpanded ? '还原预览宽度' : '放大预览至全宽') : (previewExpanded ? 'Restore preview width' : 'Expand preview to full width')}
+                    aria-label={lang.startsWith('zh') ? (previewExpanded ? '还原预览宽度' : '放大预览至全宽') : (previewExpanded ? 'Restore preview width' : 'Expand preview to full width')}
+                    style={{
+                        border: `1px solid ${theme.border}`,
+                        background: previewExpanded ? theme.tabActiveBg : theme.bg,
+                        color: previewExpanded ? theme.tabActiveText : theme.textMuted,
+                        borderRadius: 4,
+                        padding: '1px 6px',
+                        cursor: 'pointer',
+                        fontSize: 12,
+                        lineHeight: '18px',
+                        fontFamily: 'inherit',
+                        flexShrink: 0,
+                        marginLeft: 4,
+                    }}
+                >
+                    {previewExpanded ? '⤡' : '⤢'}
+                </button>
+                ) : null}
                 {!hideHeaderClose ? (
                 <button
                     onClick={onClose}
@@ -1739,6 +1798,11 @@ export function CodePreviewPanel({
                             {lang.startsWith('zh') ? '已修改' : 'changed'}
                         </span>
                     ) : null}
+                    <PreviewFileActions
+                        absPath={!cloudMode && activeFile.absPath ? activeFile.absPath : undefined}
+                        lang={lang}
+                        color={theme.textMuted}
+                    />
                 </div>
             )}
 
@@ -1811,6 +1875,8 @@ export function CodePreviewPanel({
             >
                 {workspaceActive ? (
                     <CodePreviewWorkspace projectPath={projectPath} refreshToken={workspaceRefreshToken} resetOnRefresh={workspaceResetOnRefresh} cloudMode={cloudMode} lang={lang} theme={theme} onOpenFile={openWorkspaceFile} onFileDeleted={handleWorkspaceFileDeleted} />
+                ) : activeFile && isPptxFileName(activeFile.fileName || activeFile.filePath) && activeFile.absPath ? (
+                    <PptxPreviewPanel absPath={activeFile.absPath} theme={theme} lang={lang} />
                 ) : activeFile ? (
                     diffLines ? (
                         <DiffView

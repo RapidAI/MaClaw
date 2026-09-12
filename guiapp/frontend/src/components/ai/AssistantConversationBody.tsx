@@ -151,7 +151,7 @@ export function AssistantConversationBody({
                     </div>
                     <button
                         onClick={onOpenOnboarding}
-                        style={{ padding: "10px 28px", fontSize: "15px", fontWeight: 600, background: "#2f6fbc", color: "#fff", border: "1px solid #2f6fbc", borderRadius: "8px", cursor: "pointer", transition: "opacity 0.2s" }}
+                        style={{ padding: "10px 28px", fontSize: "15px", fontWeight: 600, background: t.sendBtnBg || t.btnColor || "#2f78d0", color: t.sendBtnColor || "#fff", border: `1px solid ${t.sendBtnBorder || t.sendBtnBg || t.btnColor || "#2f78d0"}`, borderRadius: "8px", cursor: "pointer", transition: "opacity 0.2s" }}
                         onMouseEnter={e => (e.currentTarget.style.opacity = "0.85")}
                         onMouseLeave={e => (e.currentTarget.style.opacity = "1")}
                     >

@@ -713,6 +713,7 @@ func (s *Store) UpdateEntriesAndDeleteIDs(entries []Entry, deleteIDs []string) e
 	// updated or deleted (indices shifted). This is O(n) map assignment,
 	// fast for 500 entries (<1ms).
 	s.rebuildContentHashIdx()
+	s.bumpEntriesGen()
 	if s.backend == nil {
 		s.markDirtyLocked()
 	}
@@ -830,6 +831,7 @@ func (s *Store) upsertEntriesByID(entries []Entry, requireExisting bool, preserv
 			s.contentHashIdxAdd(updated[i].ContentHash, idx)
 		}
 	}
+	s.bumpEntriesGen()
 	if s.backend == nil {
 		s.markDirtyLocked()
 	}
@@ -3810,6 +3812,7 @@ func (s *Store) RestoreEntriesSnapshot(entries []Entry) error {
 
 func (s *Store) replaceEntriesAndRebuildLocked(entries []Entry, syncGraphLinks bool) {
 	s.entries = entries
+	s.bumpEntriesGen()
 	s.rebuildDerivedIndexesLocked(syncGraphLinks)
 }
 
@@ -3825,6 +3828,7 @@ func (s *Store) replaceEntriesAndRebuildLocked(entries []Entry, syncGraphLinks b
 // rebuilds from racing on syncGraphLinksLocked.
 func (s *Store) replaceEntriesAndRebuildAsync(entries []Entry, syncGraphLinks bool) {
 	s.entries = entries
+	s.bumpEntriesGen()
 	s.rebuildContentHashIdx()
 	s.scheduleAsyncRebuildLocked(syncGraphLinks)
 }
@@ -4029,6 +4033,7 @@ func (s *Store) persistInsertedEntryLocked(entry *Entry) error {
 // Caller MUST hold the write lock.
 func (s *Store) MarkDirty() {
 	s.dirty = true
+	s.bumpEntriesGen()
 }
 
 // SignalSave triggers an async persist. Safe to call without lock.
@@ -5168,6 +5173,22 @@ func (s *Store) signalSave() {
 	case s.saveCh <- struct{}{}:
 	default:
 	}
+}
+
+// DirtyGen returns the store mutation generation. It increments on every
+// in-memory entries mutation (insert, update, delete, eviction, snapshot
+// restore, sync merge), so callers can cache derived indexes (e.g. the scene
+// index) keyed by this value and rebuild only when the entries have changed.
+func (s *Store) DirtyGen() uint64 {
+	return atomic.LoadUint64(&s.dirtyGen)
+}
+
+// bumpEntriesGen invalidates generation-keyed derived caches on every entries
+// mutation. It is deliberately decoupled from the save signal: with a storage
+// backend configured, most mutation paths never call markDirtyLocked, but
+// derived-index caches must still be invalidated.
+func (s *Store) bumpEntriesGen() {
+	atomic.AddUint64(&s.dirtyGen, 1)
 }
 
 func containsKeyword(e Entry, kw string) bool {

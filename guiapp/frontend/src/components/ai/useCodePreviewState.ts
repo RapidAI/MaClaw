@@ -220,6 +220,19 @@ export function shouldAcceptCodeEventForProject(eventProjectPath?: string, activ
 }
 
 /**
+ * Whether a hierarchical absolute path fits a cloud workspace tab:
+ * under the task/cache roots, or inside the same cloud workspace id.
+ */
+function cloudAbsPathBelongsToWorkspace(fileAbs: string, route: string, belong: string): boolean {
+    if (pathIsUnderRoot(fileAbs, route) || pathIsUnderRoot(fileAbs, belong)) return true;
+    if (isCloudWorkspacePath(fileAbs)) {
+        const fileId = cloudWorkspaceIdFromPath(fileAbs);
+        return !!fileId && (fileId === cloudWorkspaceIdFromPath(route) || fileId === cloudWorkspaceIdFromPath(belong));
+    }
+    return false;
+}
+
+/**
  * Whether an open preview file belongs to the active tab.
  * `projectPath` is the tab identity used for event routing.
  * `belongingPath` is an extra root (cloud cache) for leftovers, not routing.
@@ -235,16 +248,22 @@ export function codeFileBelongsToPreviewProject(
     const route = normalizeCodeEventProjectPath(projectPath);
     const belong = normalizeCodeEventProjectPath(belongingPath) || route;
     if (!route && !belong && !cloudWorkspaceTab) return true;
+    const cloudAnchor = cloudWorkspaceTab || isCloudWorkspacePath(route) || isCloudWorkspacePath(belong);
     if (file.projectPath) {
-        if (route && shouldAcceptCodeEventForProject(file.projectPath, route)) return true;
-        if (belong && belong !== route && shouldAcceptCodeEventForProject(file.projectPath, belong)) return true;
-        return false;
+        const stamped = (route && shouldAcceptCodeEventForProject(file.projectPath, route))
+            || (belong && belong !== route && shouldAcceptCodeEventForProject(file.projectPath, belong));
+        if (!stamped) return false;
+        if (!cloudAnchor) return true;
+        // Cloud tabs: restored snapshots can carry a matching task stamp on files
+        // that predate stamping; a foreign absolute path still marks a remote leftover.
+        const stampedAbs = normalizeCodeEventProjectPath(file.absPath || file.filePath);
+        if (!stampedAbs || !isHierarchicalCodePath(stampedAbs)) return true;
+        return cloudAbsPathBelongsToWorkspace(stampedAbs, route, belong);
     }
     const fileAbs = normalizeCodeEventProjectPath(file.absPath || file.filePath);
     if (!fileAbs) return true;
     if (!isHierarchicalCodePath(fileAbs)) return true;
     if (pathIsUnderRoot(fileAbs, route) || pathIsUnderRoot(fileAbs, belong)) return true;
-    const cloudAnchor = cloudWorkspaceTab || isCloudWorkspacePath(route) || isCloudWorkspacePath(belong);
     if (cloudAnchor) {
         if (isCloudWorkspacePath(fileAbs)) {
             const fileId = cloudWorkspaceIdFromPath(fileAbs);

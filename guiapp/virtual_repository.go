@@ -48,14 +48,44 @@ var (
 )
 
 type VirtualRepository struct {
-	Version   int                      `json:"version"`
-	ID        string                   `json:"id"`
-	Name      string                   `json:"name"`
-	RootPath  string                   `json:"root_path,omitempty"`
-	Remote    *VirtualRepositoryRemote `json:"remote,omitempty"`
-	Nodes     []VirtualRepositoryNode  `json:"nodes"`
-	CreatedAt time.Time                `json:"created_at"`
-	UpdatedAt time.Time                `json:"updated_at"`
+	Version   int                        `json:"version"`
+	ID        string                     `json:"id"`
+	Name      string                     `json:"name"`
+	RootPath  string                     `json:"root_path,omitempty"`
+	Remote    *VirtualRepositoryRemote   `json:"remote,omitempty"`
+	Mappings  []VirtualRepositoryMapping `json:"mappings,omitempty"`
+	Nodes     []VirtualRepositoryNode    `json:"nodes"`
+	CreatedAt time.Time                  `json:"created_at"`
+	UpdatedAt time.Time                  `json:"updated_at"`
+}
+
+const (
+	virtualRepositoryMappingKindLocal     = "local"
+	virtualRepositoryMappingKindRemoteSSH = "remote_ssh"
+	// virtualRepositoryLegacyDefaultMappingID is the deterministic id assigned
+	// when a legacy single-location repository (RootPath/Remote only) is
+	// upgraded to the mapping model. Keeping it stable lets a repository that
+	// never persisted its mappings resolve the same mapping on every load.
+	virtualRepositoryLegacyDefaultMappingID = "default"
+)
+
+// VirtualRepositoryMapping is one (machine, root) pair through which a virtual
+// repository is reachable. Local mappings are device-private and never leave
+// this machine; remote SSH mappings are portable and ride the Hub sync
+// package. The manifest on disk never stores mappings: they are machine
+// coordinates and live in the desktop index instead.
+type VirtualRepositoryMapping struct {
+	ID            string     `json:"id"`
+	Label         string     `json:"label"`
+	Kind          string     `json:"kind"`
+	RootPath      string     `json:"root_path"`
+	Host          string     `json:"host,omitempty"`
+	Port          int        `json:"port,omitempty"`
+	User          string     `json:"user,omitempty"`
+	IsDefault     bool       `json:"is_default,omitempty"`
+	LastStatus    string     `json:"last_status,omitempty"`
+	LastError     string     `json:"last_error,omitempty"`
+	LastCheckedAt *time.Time `json:"last_checked_at,omitempty"`
 }
 
 type VirtualRepositoryRemote struct {
@@ -92,6 +122,11 @@ type virtualRepositoryIndexEntry struct {
 	Name     string                   `json:"name"`
 	RootPath string                   `json:"root_path"`
 	Remote   *VirtualRepositoryRemote `json:"remote,omitempty"`
+	// Mappings is this device's view of the (machine, root) pairs for the
+	// repository: local mappings are private to this device, remote SSH
+	// mappings arrive through Hub sync. The default mapping mirrors
+	// RootPath/Remote so legacy readers keep working unchanged.
+	Mappings []VirtualRepositoryMapping `json:"mappings,omitempty"`
 	// Unbound is set only for a local repository definition received from
 	// another machine. It has no filesystem root on this device until the user
 	// explicitly binds it to a local directory.
@@ -122,6 +157,7 @@ func cloneVirtualRepository(repo *VirtualRepository) *VirtualRepository {
 	}
 	copy := *repo
 	copy.Remote = cloneVirtualRepositoryRemote(repo.Remote)
+	copy.Mappings = cloneVirtualRepositoryMappings(repo.Mappings)
 	copy.Nodes = append([]VirtualRepositoryNode(nil), repo.Nodes...)
 	for i := range copy.Nodes {
 		if repo.Nodes[i].Repository == nil {
@@ -131,6 +167,180 @@ func cloneVirtualRepository(repo *VirtualRepository) *VirtualRepository {
 		copy.Nodes[i].Repository = &binding
 	}
 	return &copy
+}
+
+func cloneVirtualRepositoryMappings(mappings []VirtualRepositoryMapping) []VirtualRepositoryMapping {
+	if len(mappings) == 0 {
+		return nil
+	}
+	copy := append([]VirtualRepositoryMapping(nil), mappings...)
+	for i := range copy {
+		if mappings[i].LastCheckedAt != nil {
+			checkedAt := *mappings[i].LastCheckedAt
+			copy[i].LastCheckedAt = &checkedAt
+		}
+	}
+	return copy
+}
+
+// legacyVirtualRepositoryMappings upgrades a legacy single-location repository
+// (RootPath plus optional Remote) to the mapping model in memory. The mapping
+// id is deterministic so a repository whose mappings were never persisted
+// still resolves to the same mapping on every load. A repository without any
+// location (an unbound synchronized definition) has no legacy mapping: the
+// absence of a local root must not be mistaken for the absence of mappings.
+func legacyVirtualRepositoryMappings(rootPath string, remote *VirtualRepositoryRemote) []VirtualRepositoryMapping {
+	rootPath = strings.TrimSpace(rootPath)
+	if remote != nil {
+		host := strings.TrimSpace(remote.Host)
+		label := host
+		if label == "" {
+			label = "Remote"
+		}
+		return []VirtualRepositoryMapping{{
+			ID:        virtualRepositoryLegacyDefaultMappingID,
+			Label:     label,
+			Kind:      virtualRepositoryMappingKindRemoteSSH,
+			RootPath:  rootPath,
+			Host:      host,
+			Port:      remote.Port,
+			User:      strings.TrimSpace(remote.User),
+			IsDefault: true,
+		}}
+	}
+	if rootPath == "" {
+		return nil
+	}
+	return []VirtualRepositoryMapping{{
+		ID:        virtualRepositoryLegacyDefaultMappingID,
+		Label:     "Local",
+		Kind:      virtualRepositoryMappingKindLocal,
+		RootPath:  rootPath,
+		IsDefault: true,
+	}}
+}
+
+// ensureVirtualRepositoryMappings migrates a loaded repository definition that
+// predates the mapping model. Manifests never persist mappings, so every
+// manifest read arrives with an empty slice and gains the default mapping here.
+func ensureVirtualRepositoryMappings(repo *VirtualRepository) {
+	if repo == nil || len(repo.Mappings) > 0 {
+		return
+	}
+	repo.Mappings = legacyVirtualRepositoryMappings(repo.RootPath, repo.Remote)
+}
+
+// virtualRepositoryDefaultMapping resolves the mapping used by every execution
+// entry point that does not name a mapping explicitly.
+func virtualRepositoryDefaultMapping(mappings []VirtualRepositoryMapping) *VirtualRepositoryMapping {
+	for i := range mappings {
+		if mappings[i].IsDefault {
+			return &mappings[i]
+		}
+	}
+	if len(mappings) > 0 {
+		return &mappings[0]
+	}
+	return nil
+}
+
+func virtualRepositoryMappingByID(mappings []VirtualRepositoryMapping, mappingID string) *VirtualRepositoryMapping {
+	mappingID = strings.TrimSpace(mappingID)
+	for i := range mappings {
+		if mappings[i].ID == mappingID {
+			return &mappings[i]
+		}
+	}
+	return nil
+}
+
+// virtualRepositoryMappingRemote converts a remote SSH mapping to the legacy
+// coordinate view used by the SSH dial and manifest read paths.
+func virtualRepositoryMappingRemote(mapping *VirtualRepositoryMapping) *VirtualRepositoryRemote {
+	if mapping == nil || mapping.Kind != virtualRepositoryMappingKindRemoteSSH {
+		return nil
+	}
+	return &VirtualRepositoryRemote{Host: mapping.Host, Port: mapping.Port, User: mapping.User}
+}
+
+// virtualRepositoryMappingSecretKey is the keyring/ssh_secrets key for a
+// mapping's SSH password. The legacy default mapping keeps the bare repository
+// id so existing keyring entries and Hub documents remain valid; additional
+// mappings are scoped by their id.
+func virtualRepositoryMappingSecretKey(repositoryID, mappingID string) string {
+	repositoryID = strings.TrimSpace(repositoryID)
+	mappingID = strings.TrimSpace(mappingID)
+	if mappingID == "" || mappingID == virtualRepositoryLegacyDefaultMappingID {
+		return repositoryID
+	}
+	return repositoryID + "/" + mappingID
+}
+
+func newVirtualRepositoryMappingID() string {
+	return "map_" + uuid.NewString()
+}
+
+// virtualRepositoryIndexEntryMappings resolves this device's mapping list for
+// an index entry, upgrading the legacy RootPath/Remote location when no
+// mappings were persisted yet.
+func virtualRepositoryIndexEntryMappings(item virtualRepositoryIndexEntry) []VirtualRepositoryMapping {
+	if len(item.Mappings) > 0 {
+		return cloneVirtualRepositoryMappings(item.Mappings)
+	}
+	return legacyVirtualRepositoryMappings(item.RootPath, item.Remote)
+}
+
+// reconcileVirtualRepositoryIndexEntryMappings enforces the invariant that the
+// default mapping mirrors the entry's RootPath/Remote location, so every
+// legacy reader of those fields observes the default mapping. A default
+// mapping whose kind no longer matches the entry location (for example after
+// binding a local root on a repository whose synced default is remote) is
+// demoted instead of rewritten, and a fresh mapping is appended for the
+// current location.
+func reconcileVirtualRepositoryIndexEntryMappings(entry *virtualRepositoryIndexEntry) {
+	if entry == nil || entry.Unbound || strings.TrimSpace(entry.RootPath) == "" {
+		return
+	}
+	locationKind := virtualRepositoryMappingKindLocal
+	if entry.Remote != nil {
+		locationKind = virtualRepositoryMappingKindRemoteSSH
+	}
+	for i := range entry.Mappings {
+		m := &entry.Mappings[i]
+		if !m.IsDefault {
+			continue
+		}
+		if m.Kind != locationKind {
+			m.IsDefault = false
+			continue
+		}
+		m.RootPath = entry.RootPath
+		if locationKind == virtualRepositoryMappingKindRemoteSSH {
+			m.Host, m.Port, m.User = entry.Remote.Host, entry.Remote.Port, entry.Remote.User
+		} else {
+			m.Host, m.User, m.Port = "", "", 0
+		}
+		return
+	}
+	mapping := VirtualRepositoryMapping{
+		ID:        newVirtualRepositoryMappingID(),
+		Kind:      locationKind,
+		RootPath:  entry.RootPath,
+		IsDefault: true,
+	}
+	if len(entry.Mappings) == 0 {
+		mapping.ID = virtualRepositoryLegacyDefaultMappingID
+	}
+	if locationKind == virtualRepositoryMappingKindRemoteSSH {
+		mapping.Host, mapping.Port, mapping.User = entry.Remote.Host, entry.Remote.Port, entry.Remote.User
+		mapping.Label = strings.TrimSpace(entry.Remote.Host)
+		if mapping.Label == "" {
+			mapping.Label = "Remote"
+		}
+	} else {
+		mapping.Label = "Local"
+	}
+	entry.Mappings = append(entry.Mappings, mapping)
 }
 
 type virtualRepositoryLocalSettings struct {
@@ -221,6 +431,7 @@ type VirtualRepositoryCommit struct {
 type virtualRepositoryChangesRequest struct {
 	RepositoryID string `json:"repository_id"`
 	RootPath     string `json:"root_path"`
+	MappingID    string `json:"mapping_id,omitempty"`
 	NodeID       string `json:"node_id"`
 	FilePath     string `json:"file_path,omitempty"`
 }
@@ -394,7 +605,7 @@ func validateVirtualRepository(v *VirtualRepository) error {
 		return errors.New("virtual repository is required")
 	}
 	v.ID = strings.TrimSpace(v.ID)
-	if len(v.ID) > virtualRepositoryNameMaxLength || containsControlCharacter(v.ID) || strings.ContainsRune(v.ID, ':') {
+	if len(v.ID) > virtualRepositoryNameMaxLength || containsControlCharacter(v.ID) || strings.ContainsAny(v.ID, `:/`) {
 		return errors.New("virtual repository id is invalid")
 	}
 	v.Name = strings.TrimSpace(v.Name)
@@ -451,6 +662,9 @@ func validateVirtualRepository(v *VirtualRepository) error {
 			return err
 		}
 		v.RootPath = root
+	}
+	if err := validateVirtualRepositoryMappings(v.Mappings); err != nil {
+		return err
 	}
 	deriveVirtualRepositoryMappingPaths(v)
 	if len(v.Nodes) > virtualRepositoryNodeMaxCount {
@@ -582,6 +796,88 @@ func validateVirtualRepository(v *VirtualRepository) error {
 		}
 		for _, id := range chain {
 			states[id] = 2
+		}
+	}
+	return nil
+}
+
+// validateVirtualRepositoryMappings normalizes and checks the in-memory
+// mapping list. Local roots are deliberately not stat'ed here: an unavailable
+// drive must not make the repository definition unreadable.
+func validateVirtualRepositoryMappings(mappings []VirtualRepositoryMapping) error {
+	if len(mappings) > 64 {
+		return fmt.Errorf("virtual repository contains more than %d machine mappings", 64)
+	}
+	seen := make(map[string]struct{}, len(mappings))
+	defaultFound := false
+	for i := range mappings {
+		m := &mappings[i]
+		m.ID = strings.TrimSpace(m.ID)
+		m.Label = strings.TrimSpace(m.Label)
+		m.Kind = strings.ToLower(strings.TrimSpace(m.Kind))
+		if m.ID == "" || m.Label == "" {
+			return errors.New("every virtual repository mapping requires an id and label")
+		}
+		if len(m.ID) > virtualRepositoryNameMaxLength || len(m.Label) > virtualRepositoryNameMaxLength {
+			return fmt.Errorf("virtual repository mapping %q has an id or label that is too long", m.Label)
+		}
+		if containsControlCharacter(m.ID) || containsControlCharacter(m.Label) || strings.ContainsAny(m.ID, `:/`) {
+			return fmt.Errorf("virtual repository mapping %q contains an invalid id or label", m.Label)
+		}
+		if _, ok := seen[m.ID]; ok {
+			return fmt.Errorf("duplicate virtual repository mapping id %q", m.ID)
+		}
+		seen[m.ID] = struct{}{}
+		switch m.Kind {
+		case virtualRepositoryMappingKindLocal:
+			m.Host, m.User, m.Port = "", "", 0
+			m.RootPath = strings.TrimSpace(m.RootPath)
+			if m.RootPath == "" {
+				return fmt.Errorf("virtual repository mapping %q requires a root directory", m.Label)
+			}
+			if len(m.RootPath) > virtualRepositoryFieldMaxLength || containsControlCharacter(m.RootPath) {
+				return fmt.Errorf("virtual repository mapping %q has an invalid root directory", m.Label)
+			}
+		case virtualRepositoryMappingKindRemoteSSH:
+			m.Host = strings.TrimSpace(m.Host)
+			m.User = strings.TrimSpace(m.User)
+			m.RootPath = strings.TrimSpace(m.RootPath)
+			if m.Host == "" || m.User == "" || m.RootPath == "" {
+				return fmt.Errorf("virtual repository mapping %q requires a remote host, username and root directory", m.Label)
+			}
+			if len(m.User) > virtualRepositoryNameMaxLength || len(m.RootPath) > virtualRepositoryFieldMaxLength {
+				return fmt.Errorf("virtual repository mapping %q has a field that is too long", m.Label)
+			}
+			if m.Port == 0 {
+				m.Port = 22
+			}
+			if m.Port < 1 || m.Port > 65535 {
+				return fmt.Errorf("virtual repository mapping %q has an SSH port outside 1-65535", m.Label)
+			}
+			if containsControlCharacter(m.Host) || containsControlCharacter(m.User) || containsControlCharacter(m.RootPath) {
+				return fmt.Errorf("virtual repository mapping %q must not contain control characters", m.Label)
+			}
+			if err := validateVirtualRepositorySSHHost(m.Host); err != nil {
+				return fmt.Errorf("virtual repository mapping %q: %w", m.Label, err)
+			}
+			if !strings.HasPrefix(m.RootPath, "/") || strings.Contains(m.RootPath, "\\") {
+				return fmt.Errorf("virtual repository mapping %q root directory must be an absolute POSIX path", m.Label)
+			}
+			m.RootPath = path.Clean(m.RootPath)
+			if m.RootPath == "/" {
+				return fmt.Errorf("virtual repository mapping %q root directory must not be the filesystem root", m.Label)
+			}
+		default:
+			return fmt.Errorf("virtual repository mapping %q has unsupported kind %q", m.Label, m.Kind)
+		}
+		if m.IsDefault {
+			if defaultFound {
+				// A hand-edited or merged list may carry several defaults. Keep the
+				// first so the persisted form has one canonical default mapping.
+				m.IsDefault = false
+			} else {
+				defaultFound = true
+			}
 		}
 	}
 	return nil
@@ -809,6 +1105,7 @@ func readVirtualRepository(root string) (*VirtualRepository, error) {
 	if err := validateVirtualRepository(&repo); err != nil {
 		return nil, err
 	}
+	ensureVirtualRepositoryMappings(&repo)
 	return &repo, nil
 }
 
@@ -843,6 +1140,9 @@ func writeVirtualRepository(repo *VirtualRepository) error {
 	}
 	disk := *repo
 	disk.RootPath = ""
+	// Mappings are machine coordinates. They live in the desktop index (and the
+	// Hub sync package for remote SSH mappings), never in the manifest.
+	disk.Mappings = nil
 	data, err := json.MarshalIndent(disk, "", "  ")
 	if err != nil {
 		return err
@@ -913,6 +1213,7 @@ func (a *App) updateVirtualRepositoryIndexLocked(repo *VirtualRepository) error 
 		return err
 	}
 	next := make([]virtualRepositoryIndexEntry, 0, len(idx.Items)+1)
+	var existingMappings []VirtualRepositoryMapping
 	for _, item := range idx.Items {
 		sameLocation := sameVirtualRepositoryPath(item.RootPath, repo.RootPath)
 		if item.Remote != nil || repo.Remote != nil {
@@ -920,9 +1221,22 @@ func (a *App) updateVirtualRepositoryIndexLocked(repo *VirtualRepository) error 
 		}
 		if item.ID != repo.ID && !sameLocation {
 			next = append(next, item)
+			continue
+		}
+		if item.ID == repo.ID && len(existingMappings) == 0 {
+			existingMappings = item.Mappings
 		}
 	}
-	next = append(next, virtualRepositoryIndexEntry{ID: repo.ID, Name: repo.Name, RootPath: repo.RootPath, Remote: cloneVirtualRepositoryRemote(repo.Remote), LastOpened: time.Now().UTC()})
+	entry := virtualRepositoryIndexEntry{ID: repo.ID, Name: repo.Name, RootPath: repo.RootPath, Remote: cloneVirtualRepositoryRemote(repo.Remote), LastOpened: time.Now().UTC()}
+	// Index entries own the device-local mapping list. A manifest read never
+	// carries mappings, so preserve the stored list unless the caller loaded the
+	// repository with a newer one.
+	entry.Mappings = existingMappings
+	if len(entry.Mappings) == 0 {
+		entry.Mappings = cloneVirtualRepositoryMappings(repo.Mappings)
+	}
+	reconcileVirtualRepositoryIndexEntryMappings(&entry)
+	next = append(next, entry)
 	sort.Slice(next, func(i, j int) bool { return next[i].LastOpened.After(next[j].LastOpened) })
 	idx.Items = next
 	return writeJSONFile(path, idx)
@@ -949,7 +1263,7 @@ func validateVirtualRepositoryIndex(index *virtualRepositoryIndex) error {
 		if containsControlCharacter(id) || containsControlCharacter(name) || containsControlCharacter(rootPath) {
 			return fmt.Errorf("virtual repository index entry %q contains control characters", name)
 		}
-		if item.ID != id || item.Name != name || item.RootPath != rootPath || strings.ContainsRune(id, ':') {
+		if item.ID != id || item.Name != name || item.RootPath != rootPath || strings.ContainsAny(id, `:/`) {
 			return fmt.Errorf("virtual repository index entry %q contains a non-canonical field", name)
 		}
 		if _, exists := seen[id]; exists {
@@ -978,6 +1292,10 @@ func validateVirtualRepositoryIndex(index *virtualRepositoryIndex) error {
 				return fmt.Errorf("virtual repository index entry %q has invalid remote connection fields", name)
 			}
 		}
+		// Validate a copy: this validator must not rewrite the stored entry.
+		if err := validateVirtualRepositoryMappings(cloneVirtualRepositoryMappings(item.Mappings)); err != nil {
+			return fmt.Errorf("virtual repository index entry %q: %w", name, err)
+		}
 	}
 	return nil
 }
@@ -997,8 +1315,14 @@ func validatePortableLocalVirtualRepositoryDefinition(definition *VirtualReposit
 	if definition.RootPath != "" || definition.Remote != nil {
 		return errors.New("portable definition must be local and rootless")
 	}
+	for _, mapping := range definition.Mappings {
+		if mapping.Kind == virtualRepositoryMappingKindLocal {
+			return errors.New("portable definition must not contain device-local mappings")
+		}
+	}
 	copy := cloneVirtualRepository(definition)
 	copy.RootPath = os.TempDir()
+	copy.Mappings = nil
 	if err := validateVirtualRepository(copy); err != nil {
 		return fmt.Errorf("invalid portable definition: %w", err)
 	}
@@ -1010,6 +1334,7 @@ func validatePortableLocalVirtualRepositoryDefinition(definition *VirtualReposit
 	// in an unbound definition would cause needless sync conflicts before the
 	// repository is ever bound on this device.
 	copy.RootPath, copy.Remote = "", nil
+	copy.Mappings = nil
 	*definition = *copy
 	return nil
 }
@@ -1114,7 +1439,7 @@ func (a *App) BindVirtualRepositoryRoot(inputJSON string) (string, error) {
 		return "", err
 	}
 	request.RepositoryID = strings.TrimSpace(request.RepositoryID)
-	if request.RepositoryID == "" || len(request.RepositoryID) > virtualRepositoryNameMaxLength || containsControlCharacter(request.RepositoryID) || strings.ContainsRune(request.RepositoryID, ':') {
+	if request.RepositoryID == "" || len(request.RepositoryID) > virtualRepositoryNameMaxLength || containsControlCharacter(request.RepositoryID) || strings.ContainsAny(request.RepositoryID, `:/`) {
 		return "", errors.New("virtual repository id is invalid")
 	}
 	root, err := cleanVirtualRepositoryRoot(request.RootPath)
@@ -1187,6 +1512,9 @@ func (a *App) BindVirtualRepositoryRoot(inputJSON string) (string, error) {
 		}
 		item.Name, item.RootPath, item.Remote = bound.Name, bound.RootPath, nil
 		item.Unbound, item.Definition, item.LastOpened = false, nil, time.Now().UTC()
+		// Binding a root attaches (or moves) this device's local mapping and makes
+		// it the default, mirroring the new entry location.
+		reconcileVirtualRepositoryIndexEntryMappings(item)
 		if err := writeJSONFile(indexPath, index); err != nil {
 			return "", err
 		}
@@ -1294,11 +1622,13 @@ func (a *App) DeleteVirtualRepository(id string) error {
 	}
 	next := idx.Items[:0]
 	found := false
+	var deletedItem virtualRepositoryIndexEntry
 	for _, item := range idx.Items {
 		if item.ID != id {
 			next = append(next, item)
 		} else {
 			found = true
+			deletedItem = item
 		}
 	}
 	if !found {
@@ -1345,6 +1675,16 @@ func (a *App) DeleteVirtualRepository(id string) error {
 	// matching tombstone so the encrypted Hub document drops the password too,
 	// instead of retaining a secret for a repository the user deleted.
 	a.recordVirtualRepositorySyncTombstone("ssh", id)
+	for _, mapping := range virtualRepositoryIndexEntryMappings(deletedItem) {
+		if mapping.Kind != virtualRepositoryMappingKindRemoteSSH {
+			continue
+		}
+		a.recordVirtualRepositorySyncTombstone("vmap", id+"/"+mapping.ID)
+		if secretKey := virtualRepositoryMappingSecretKey(id, mapping.ID); secretKey != id {
+			_ = keyring.Delete(virtualRepositorySSHKeyringService, secretKey)
+			a.recordVirtualRepositorySyncTombstone("ssh", secretKey)
+		}
+	}
 	for _, binding := range removedBindings {
 		a.recordVirtualRepositorySyncTombstone("binding", binding)
 	}
@@ -1394,7 +1734,7 @@ func virtualRepositoryBindingByRelativePath(repo *VirtualRepository, relativePat
 	return nil
 }
 
-func (a *App) CheckoutVirtualRepositoryNode(repositoryID, nodeID string) error {
+func (a *App) CheckoutVirtualRepositoryNode(repositoryID, nodeID, mappingID string) error {
 	repositoryID, nodeID = strings.TrimSpace(repositoryID), strings.TrimSpace(nodeID)
 	if repositoryID == "" || nodeID == "" {
 		return errors.New("virtual repository and node ids are required")
@@ -1407,10 +1747,17 @@ func (a *App) CheckoutVirtualRepositoryNode(repositoryID, nodeID string) error {
 		return err
 	}
 	for _, item := range items {
-		if item.ID != repositoryID || item.Remote != nil {
+		if item.ID != repositoryID {
 			continue
 		}
-		repo, readErr := readVirtualRepository(item.RootPath)
+		mapping, err := resolveVirtualRepositoryMapping(item, mappingID)
+		if err != nil {
+			return err
+		}
+		if mapping.Kind != virtualRepositoryMappingKindLocal {
+			return errors.New("virtual repository mapping is not a local location")
+		}
+		repo, readErr := readVirtualRepository(mapping.RootPath)
 		if readErr != nil {
 			return readErr
 		}
@@ -1584,7 +1931,11 @@ func (a *App) GetVirtualRepositoryChanges(inputJSON string) (string, error) {
 	}
 	request.RepositoryID = strings.TrimSpace(request.RepositoryID)
 	request.RootPath = strings.TrimSpace(request.RootPath)
+	request.MappingID = strings.TrimSpace(request.MappingID)
 	request.NodeID = strings.TrimSpace(request.NodeID)
+	if len(request.MappingID) > virtualRepositoryNameMaxLength || containsControlCharacter(request.MappingID) || strings.ContainsAny(request.MappingID, `:/`) {
+		return "", errors.New("virtual repository mapping id is invalid")
+	}
 	// Git permits paths with leading or trailing whitespace. Keep the exact path
 	// returned by porcelain status so selecting such a file still resolves to
 	// the same working-tree entry.
@@ -1598,8 +1949,45 @@ func (a *App) GetVirtualRepositoryChanges(inputJSON string) (string, error) {
 		if len(request.RepositoryID) > virtualRepositoryNameMaxLength || containsControlCharacter(request.RepositoryID) {
 			return "", errors.New("virtual repository id is invalid")
 		}
-		return a.getRemoteVirtualRepositoryChanges(request)
+		// Dispatch on the resolved mapping's kind: a repository id combined with a
+		// local mapping id reviews that mapping's local root, not a remote host.
+		items, err := a.loadVirtualRepositoryIndexItems()
+		if err != nil {
+			return "", err
+		}
+		for _, item := range items {
+			if item.ID != request.RepositoryID {
+				continue
+			}
+			mapping, err := resolveVirtualRepositoryMapping(item, request.MappingID)
+			if err != nil {
+				return "", err
+			}
+			if mapping.Kind == virtualRepositoryMappingKindRemoteSSH {
+				return a.getRemoteVirtualRepositoryChanges(request)
+			}
+			repo, err := readVirtualRepository(mapping.RootPath)
+			if err != nil {
+				return "", err
+			}
+			if repo.ID != item.ID {
+				return "", errors.New("virtual repository index no longer matches its manifest")
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			changes, err := a.collectLocalVirtualRepositoryChanges(ctx, repo, request.NodeID, request.FilePath)
+			if err != nil {
+				return "", err
+			}
+			data, err := json.Marshal(changes)
+			return string(data), err
+		}
+		return "", errors.New("virtual repository was not found in the recent list")
 	}
+	// Legacy local form: root_path alone addresses the repository by location.
+	// mapping_id is accepted for forward compatibility but plays no role here —
+	// the local collector operates on root_path directly, so a mapping switch is
+	// expressed by sending that mapping's root as root_path.
 	if request.RootPath == "" {
 		return "", errors.New("virtual repository root directory is required")
 	}

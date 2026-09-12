@@ -91,7 +91,7 @@ describe("primaryFilledButtonStyle / resolvePrimaryFilledColors", () => {
             sendBtnColor: "",
             sendBtnBorder: "",
         });
-        expect(style.background).toBe("#2563eb");
+        expect(style.background).toBe("#1769e8");
         expect(style.color).toBe("#ffffff");
     });
 });

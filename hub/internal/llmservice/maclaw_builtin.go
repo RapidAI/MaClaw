@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	corellm "github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/llmpool"
 )
@@ -1219,6 +1220,9 @@ func applyOfficialForwardMeta(req *http.Request, ctx context.Context) {
 	}
 	if task := strings.TrimSpace(meta.TaskType); task != "" {
 		req.Header.Set(llmpool.TaskTypeHeader, task)
+	}
+	if session := strings.TrimSpace(meta.OpenCodeSession); session != "" {
+		req.Header.Set(corelib.OpenCodeSessionHeader, session)
 	}
 }
 

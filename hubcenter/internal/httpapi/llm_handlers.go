@@ -393,14 +393,12 @@ func adminTestLLMProviderChat(svc *llmservice.Service) http.HandlerFunc {
 		}
 		// Use the provider's configured protocol and wire API, so the test covers
 		// the same upstream request shape as production routing.
-		protocol := corelib.NormalizeLLMProviderProtocol(req.Protocol)
-		wireAPI := corelib.NormalizeLLMProviderWireAPI(req.WireAPI)
 		cfg := corelib.MaclawLLMConfig{
 			URL:        req.APIURL,
 			Key:        req.APIKey,
 			Model:      req.Model,
-			Protocol:   protocol,
-			WireAPI:    wireAPI,
+			Protocol:   corelib.NormalizeLLMProviderProtocol(req.Protocol),
+			WireAPI:    corelib.NormalizeLLMProviderWireAPI(req.WireAPI),
 			TimeoutSec: timeoutSec,
 		}
 		// An availability test must use the provider's production timeout. Slower
@@ -408,101 +406,11 @@ func adminTestLLMProviderChat(svc *llmservice.Service) http.HandlerFunc {
 		// returning their first completion.
 		ctx, cancel := context.WithTimeout(r.Context(), llmProviderTestTimeout(cfg))
 		defer cancel()
-		httpReq, err := newLLMProviderTestRequest(ctx, cfg)
-		if err != nil {
-			writeJSONResp(w, http.StatusOK, map[string]any{"success": false, "error": err.Error()})
-			return
-		}
-		start := time.Now()
-		client := corelib.NewLLMEndpointHTTPClient(cfg)
-		resp, err := client.Do(httpReq)
-		latencyMs := time.Since(start).Milliseconds()
-		if err != nil {
+		reply, errMsg, latencyMs := runLLMProviderChatTest(ctx, cfg)
+		if errMsg != "" {
 			writeJSONResp(w, http.StatusOK, map[string]any{
 				"success":    false,
-				"error":      llmProviderTestRequestError(err, cfg),
-				"latency_ms": latencyMs,
-			})
-			return
-		}
-		defer resp.Body.Close()
-		respBody, truncated, err := readLLMProviderTestResponse(resp.Body)
-		if err != nil {
-			writeJSONResp(w, http.StatusOK, map[string]any{
-				"success":    false,
-				"error":      llmProviderTestResponseReadError(err, cfg),
-				"latency_ms": latencyMs,
-			})
-			return
-		}
-		if truncated {
-			writeJSONResp(w, http.StatusOK, map[string]any{
-				"success":    false,
-				"error":      "model response exceeds the 64 KiB availability-test limit",
-				"latency_ms": latencyMs,
-			})
-			return
-		}
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			writeJSONResp(w, http.StatusOK, map[string]any{
-				"success":    false,
-				"error":      llmProviderTestHTTPError(resp.StatusCode, respBody),
-				"latency_ms": latencyMs,
-			})
-			return
-		}
-		// A successful HTTP response is not itself proof that the model is usable:
-		// some compatible gateways return an error envelope with HTTP 200. Treat
-		// those responses, malformed bodies, and empty completions as failures.
-		var envelope struct {
-			Type    string          `json:"type"`
-			Message string          `json:"message"`
-			Error   json.RawMessage `json:"error"`
-		}
-		if err := json.Unmarshal(respBody, &envelope); err != nil {
-			writeJSONResp(w, http.StatusOK, map[string]any{
-				"success":    false,
-				"error":      "invalid model response: " + err.Error(),
-				"latency_ms": latencyMs,
-			})
-			return
-		}
-		if len(envelope.Error) > 0 && string(envelope.Error) != "null" {
-			writeJSONResp(w, http.StatusOK, map[string]any{
-				"success":    false,
-				"error":      "model returned an error: " + llmProviderTestErrorMessage(envelope.Error),
-				"latency_ms": latencyMs,
-			})
-			return
-		}
-		if strings.EqualFold(envelope.Type, "error") {
-			errMsg := strings.TrimSpace(envelope.Message)
-			if errMsg == "" {
-				errMsg = "unknown error"
-			}
-			writeJSONResp(w, http.StatusOK, map[string]any{
-				"success":    false,
-				"error":      "model returned an error: " + errMsg,
-				"latency_ms": latencyMs,
-			})
-			return
-		}
-
-		// Parse the actual completion. A model is available only after it returns
-		// non-empty content to the short test prompt.
-		reply, err := llmProviderTestReply(respBody, protocol, wireAPI)
-		if err != nil {
-			writeJSONResp(w, http.StatusOK, map[string]any{
-				"success":    false,
-				"error":      "invalid model response: " + err.Error(),
-				"latency_ms": latencyMs,
-			})
-			return
-		}
-		if strings.TrimSpace(reply) == "" {
-			writeJSONResp(w, http.StatusOK, map[string]any{
-				"success":    false,
-				"error":      "model returned no completion content",
+				"error":      errMsg,
 				"latency_ms": latencyMs,
 			})
 			return
@@ -514,6 +422,101 @@ func adminTestLLMProviderChat(svc *llmservice.Service) http.HandlerFunc {
 			"latency_ms": latencyMs,
 		})
 	}
+}
+
+// testLLMProviderChatStatus runs the same availability test as the admin
+// "Test Status" button against a saved provider. It is used by the background
+// provider monitor; the model is the provider's first configured model, which
+// mirrors the model the admin UI picks for the manual test.
+func testLLMProviderChatStatus(ctx context.Context, svc *llmservice.Service, providerID string) (success bool, errMsg string, latencyMs int64) {
+	if svc == nil {
+		return false, "provider service unavailable", 0
+	}
+	existing, err := svc.GetProvider(ctx, providerID)
+	if err != nil {
+		return false, "load provider: " + err.Error(), 0
+	}
+	if existing == nil {
+		return false, "provider not found", 0
+	}
+	model := ""
+	if len(existing.Models) > 0 {
+		model = existing.Models[0]
+	}
+	if strings.TrimSpace(existing.APIURL) == "" || model == "" {
+		return false, "api_url and model are required", 0
+	}
+	cfg := corelib.MaclawLLMConfig{
+		URL:        existing.APIURL,
+		Key:        existing.APIKey,
+		Model:      model,
+		Protocol:   corelib.NormalizeLLMProviderProtocol(existing.Protocol),
+		WireAPI:    corelib.NormalizeLLMProviderWireAPI(existing.WireAPI),
+		TimeoutSec: existing.UpstreamTimeoutSec,
+	}
+	testCtx, cancel := context.WithTimeout(ctx, llmProviderTestTimeout(cfg))
+	defer cancel()
+	_, errMsg, latencyMs = runLLMProviderChatTest(testCtx, cfg)
+	return errMsg == "", errMsg, latencyMs
+}
+
+// runLLMProviderChatTest executes one availability probe against cfg and
+// returns the model reply. A non-empty errMsg marks the provider unavailable.
+func runLLMProviderChatTest(ctx context.Context, cfg corelib.MaclawLLMConfig) (reply string, errMsg string, latencyMs int64) {
+	httpReq, err := newLLMProviderTestRequest(ctx, cfg)
+	if err != nil {
+		return "", err.Error(), 0
+	}
+	start := time.Now()
+	client := corelib.NewLLMEndpointHTTPClient(cfg)
+	resp, err := client.Do(httpReq)
+	latencyMs = time.Since(start).Milliseconds()
+	if err != nil {
+		return "", llmProviderTestRequestError(err, cfg), latencyMs
+	}
+	defer resp.Body.Close()
+	respBody, truncated, err := readLLMProviderTestResponse(resp.Body)
+	if err != nil {
+		return "", llmProviderTestResponseReadError(err, cfg), latencyMs
+	}
+	if truncated {
+		return "", "model response exceeds the 64 KiB availability-test limit", latencyMs
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", llmProviderTestHTTPError(resp.StatusCode, respBody), latencyMs
+	}
+	// A successful HTTP response is not itself proof that the model is usable:
+	// some compatible gateways return an error envelope with HTTP 200. Treat
+	// those responses, malformed bodies, and empty completions as failures.
+	var envelope struct {
+		Type    string          `json:"type"`
+		Message string          `json:"message"`
+		Error   json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(respBody, &envelope); err != nil {
+		return "", "invalid model response: " + err.Error(), latencyMs
+	}
+	if len(envelope.Error) > 0 && string(envelope.Error) != "null" {
+		return "", "model returned an error: " + llmProviderTestErrorMessage(envelope.Error), latencyMs
+	}
+	if strings.EqualFold(envelope.Type, "error") {
+		errMsg := strings.TrimSpace(envelope.Message)
+		if errMsg == "" {
+			errMsg = "unknown error"
+		}
+		return "", "model returned an error: " + errMsg, latencyMs
+	}
+
+	// Parse the actual completion. A model is available only after it returns
+	// non-empty content to the short test prompt.
+	reply, err = llmProviderTestReply(respBody, cfg.Protocol, cfg.WireAPI)
+	if err != nil {
+		return "", "invalid model response: " + err.Error(), latencyMs
+	}
+	if strings.TrimSpace(reply) == "" {
+		return "", "model returned no completion content", latencyMs
+	}
+	return reply, "", latencyMs
 }
 
 func newLLMProviderTestRequest(ctx context.Context, cfg corelib.MaclawLLMConfig) (*http.Request, error) {
@@ -532,6 +535,7 @@ func newLLMProviderTestRequest(ctx context.Context, cfg corelib.MaclawLLMConfig)
 			req.Header.Set("x-api-key", cfg.Key)
 		}
 		req.Header.Set("anthropic-version", "2023-06-01")
+		corelib.ApplyOpenCodeSessionHeader(req, cfg)
 		return req, nil
 	}
 	if cfg.IsResponsesAPI() {

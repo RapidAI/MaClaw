@@ -182,6 +182,39 @@ describe('CodePreviewWorkspace hidden entries', () => {
     });
 });
 
+describe('CodePreviewWorkspace merged header', () => {
+    it('hides its own header row when hideHeader is set', async () => {
+        getDirectory.mockResolvedValueOnce({
+            root: 'C:/proj',
+            entries: [{ name: 'a.go', path: 'a.go', is_dir: false }],
+        });
+        render(<CodePreviewWorkspace projectPath="local-task" hideHeader lang="zh-Hans" theme={theme} onOpenFile={vi.fn()} />);
+        expect(await screen.findByText('a.go')).toBeTruthy();
+        expect(screen.queryByText('工作目录')).toBeNull();
+        expect(screen.queryByTestId('code-preview-workspace-root-label')).toBeNull();
+        expect(screen.queryByRole('button', { name: '刷新工作目录' })).toBeNull();
+    });
+
+    it('exposes refresh and busy state through onRefreshReady', async () => {
+        let resolveRefresh: ((value: unknown) => void) | undefined;
+        getDirectory
+            .mockResolvedValueOnce({ root: 'C:/proj', entries: [{ name: 'a.go', path: 'a.go', is_dir: false }] })
+            .mockImplementationOnce(() => new Promise((resolve) => { resolveRefresh = resolve; }));
+        const ready = vi.fn();
+        render(<CodePreviewWorkspace projectPath="local-task" hideHeader onRefreshReady={ready} lang="zh-Hans" theme={theme} onOpenFile={vi.fn()} />);
+        expect(await screen.findByText('a.go')).toBeTruthy();
+        const lastCall = () => ready.mock.calls[ready.mock.calls.length - 1];
+        const refresh = lastCall()[0] as () => void;
+        expect(typeof refresh).toBe('function');
+        expect(lastCall()[1]).toBe(false);
+        act(() => refresh());
+        await waitFor(() => expect(getDirectory).toHaveBeenCalledTimes(2));
+        await waitFor(() => expect(lastCall()[1]).toBe(true));
+        await act(async () => { resolveRefresh?.({ root: 'C:/proj', entries: [{ name: 'a.go', path: 'a.go', is_dir: false }] }); });
+        await waitFor(() => expect(lastCall()[1]).toBe(false));
+    });
+});
+
 describe('workspaceFileIconKind', () => {
     it('assigns distinct SVG badges to common file families', () => {
         expect(workspaceFileIconKind('component.tsx')).toEqual({ badge: 'TS', kind: 'code' });
@@ -302,6 +335,21 @@ describe('CodePreviewWorkspace context menu', () => {
         fireEvent.contextMenu(file, { clientX: 30, clientY: 30 });
         fireEvent.click(screen.getByTestId('code-preview-workspace-context-preview'));
         await waitFor(() => expect(onOpenFile).toHaveBeenCalledWith(expect.objectContaining({ filePath: 'main.go', content: 'package main' })));
+    });
+
+    it('opens a local .pptx in the slide preview instead of requesting a text preview', async () => {
+        const onOpenFile = vi.fn();
+        getDirectory.mockResolvedValue({ root: 'D:/proj', entries: [{ name: 'demo.pptx', path: 'docs/demo.pptx', is_dir: false }] });
+        render(<CodePreviewWorkspace projectPath="D:/proj" lang="zh-Hans" theme={theme} onOpenFile={onOpenFile} />);
+        const file = await screen.findByText('demo.pptx');
+        fireEvent.click(file);
+        await waitFor(() => expect(onOpenFile).toHaveBeenCalledWith(expect.objectContaining({
+            filePath: 'docs/demo.pptx',
+            fileName: 'demo.pptx',
+            absPath: 'D:/proj/docs/demo.pptx',
+            language: 'pptx',
+        })));
+        expect(getFilePreview).not.toHaveBeenCalled();
     });
 
     it('localizes binary preview notices for Chinese and English', async () => {

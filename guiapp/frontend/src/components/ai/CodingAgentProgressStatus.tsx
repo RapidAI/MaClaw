@@ -31,9 +31,9 @@ const successTone: CodingAgentStatusTone = {
     border: "rgba(79, 127, 111, 0.22)",
 };
 const runningTone: CodingAgentStatusTone = {
-    accent: "var(--theme-primary, #4a8cff)",
-    bg: "color-mix(in srgb, var(--theme-primary, #4a8cff) 8%, transparent)",
-    border: "color-mix(in srgb, var(--theme-primary, #4a8cff) 22%, transparent)",
+    accent: "var(--theme-primary, #2f78d0)",
+    bg: "color-mix(in srgb, var(--theme-primary, #2f78d0) 8%, transparent)",
+    border: "color-mix(in srgb, var(--theme-primary, #2f78d0) 22%, transparent)",
 };
 const slateTone: CodingAgentStatusTone = {
     accent: "#64748b",
@@ -1295,9 +1295,9 @@ function CodingAgentActivityFeedShell({
             `${visibleLineRows.length} ${lang.startsWith("zh") ? "\u6b65" : "steps"}`,
         )
         : codingAgentDisplayText(header, lang);
-    const borderColor = t.isDark ? "rgba(148,163,184,0.18)" : "color-mix(in srgb, var(--theme-primary, #4a8cff) 14%, transparent)";
+    const borderColor = t.isDark ? "rgba(148,163,184,0.18)" : "color-mix(in srgb, var(--theme-primary, #2f78d0) 14%, transparent)";
     const bg = t.isDark ? "rgba(15, 23, 42, 0.42)" : "var(--theme-surface-muted, #f7f8fa)";
-    const hairline = t.isDark ? "rgba(148,163,184,0.12)" : "color-mix(in srgb, var(--theme-primary, #4a8cff) 9%, transparent)";
+    const hairline = t.isDark ? "rgba(148,163,184,0.12)" : "color-mix(in srgb, var(--theme-primary, #2f78d0) 9%, transparent)";
     const hasToolTrail = lineRows.some(({ progress }) => !isCodingAgentTaskStatusOnly(progress));
     const hasPlainTrail = lineRows.some(({ progress }) => isCodingAgentPlainTrailEvent(progress));
     const showFailureChip = criticalCount > 0 && !hasPlainTrail;

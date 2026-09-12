@@ -114,7 +114,6 @@ export function AppViewShell({
         height: "100%",
         minHeight: 0,
         background: theme.bg,
-        borderLeft: `1px solid ${theme.divider}`,
         position: "relative",
     };
     const buttonStyle: React.CSSProperties = {

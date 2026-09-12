@@ -1422,7 +1422,6 @@ function AgentTaskPanelContent({ view, onDismiss, onResizeStart, splitRatio = 0.
         flexDirection: "column",
         background: theme.bg,
         color: theme.text,
-        borderLeft: `1px solid ${theme.divider}`,
         fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif",
         fontSize: 13,
         lineHeight: 1.5,

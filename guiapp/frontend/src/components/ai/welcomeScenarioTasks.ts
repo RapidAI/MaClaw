@@ -49,7 +49,7 @@ export interface ScenarioTab {
     prompts: WelcomePrompt[];
 }
 
-const ALL_SCENARIO_TABS: ScenarioTab[] = [
+export const SCENARIO_TABS: ScenarioTab[] = [
     {
         id: "business",
         label: "经营分析",
@@ -923,7 +923,6 @@ const ALL_SCENARIO_TABS: ScenarioTab[] = [
  * uses the same investigation intent, but always goes through the SSH task
  * creation flow and starts with an evidence-only diagnosis turn.
  */
-export const SCENARIO_TABS: ScenarioTab[] = ALL_SCENARIO_TABS.filter((tab) => tab.id !== "dev");
 
 export function getWelcomeOpsPrompts(mode: WelcomeOpsMode): WelcomePrompt[] {
     const prompts = SCENARIO_TABS.find((tab) => tab.id === "ops")?.prompts || [];

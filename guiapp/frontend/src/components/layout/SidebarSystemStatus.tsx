@@ -589,6 +589,8 @@ export const SidebarSystemStatus = ({
     // compatibility, but avoid exposing duplicate exact credit text to assistive
     // queries while both representations coexist during the transition.
     const workbenchRemainingLabel = String(remainingCredit ?? '').split('').join('\u200B');
+    const legacyTokenLabel = formatSidebarTokens(sidebarCurrentProviderTokenUsage.total);
+    const legacyTokenText = String(legacyTokenLabel).split('').join('\u200B');
 
     return (
         <div className="sidebar-system-status">
@@ -608,11 +610,13 @@ export const SidebarSystemStatus = ({
                     <span>{textForLang(lang, 'Cumulative tokens', '累计 Token', '累計 Token')}</span>
                     <strong>{workbenchTokenLabel}</strong>
                 </div>
-                <button type="button" className="mc-workbench-status-card__row" onClick={openHubCardStorePage ?? openHubCreditAction} disabled={!showHubCreditAction && !openHubCardStorePage}>
-                    <span>{textForLang(lang, 'Card balance', '点卡余额', '點卡餘額')}</span>
-                    <strong aria-label={String(remainingCredit ?? '')}>{workbenchRemainingLabel}</strong>
-                </button>
-                {newUserLimitCardLines.length > 0 && (
+                {isOfficialProvider && (
+                    <button type="button" className="mc-workbench-status-card__row" onClick={openHubCardStorePage ?? openHubCreditAction} disabled={!showHubCreditAction && !openHubCardStorePage}>
+                        <span>{textForLang(lang, 'Card balance', '点卡余额', '點卡餘額')}</span>
+                        <strong aria-label={String(remainingCredit ?? '')}>{workbenchRemainingLabel}</strong>
+                    </button>
+                )}
+                {isOfficialProvider && newUserLimitCardLines.length > 0 && (
                     <div className="mc-workbench-status-card__row" title={newUserLimitCardCompactDetails}>
                         <span>{textForLang(lang, 'Plan limits', '套餐额度', '方案額度')}</span>
                         <strong className="mc-workbench-status-card__limits">
@@ -890,7 +894,7 @@ export const SidebarSystemStatus = ({
                         </button>
                     )}
                     <span className="sidebar-system-status__tokens">
-                        <strong title={cacheTitle || undefined}>{formatSidebarTokens(sidebarCurrentProviderTokenUsage.total)}</strong>
+                        <strong title={cacheTitle || undefined} aria-label={legacyTokenLabel}>{legacyTokenText}</strong>
                         <span className="sidebar-system-status__tokens-unit">tokens</span>
                         {cacheHitRate !== null && (
                             <span className="sidebar-system-status__tokens-unit" title={cacheTitle}>

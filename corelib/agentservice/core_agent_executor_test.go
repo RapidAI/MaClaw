@@ -114,7 +114,12 @@ func (e *blockingRuntimeCancelExecutor) runtimeIDs() (string, string) {
 
 func setupCaptureAgentService(t *testing.T, executor Executor) (*Service, Principal, Instance) {
 	t.Helper()
-	svc, err := NewService(Config{DataRoot: t.TempDir(), TokenSecret: "01234567890123456789012345678901", TokenTTL: time.Hour}, NewMemoryStore(), executor)
+	return setupCaptureAgentServiceWithDataRoot(t, executor, t.TempDir())
+}
+
+func setupCaptureAgentServiceWithDataRoot(t *testing.T, executor Executor, dataRoot string) (*Service, Principal, Instance) {
+	t.Helper()
+	svc, err := NewService(Config{DataRoot: dataRoot, TokenSecret: "01234567890123456789012345678901", TokenTTL: time.Hour}, NewMemoryStore(), executor)
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
@@ -704,7 +709,15 @@ func TestCoreAgentExecutorExplicitCodingRuntimeUsesLedgerAndLeavesRegularRequest
 	}))
 	defer server.Close()
 	executor := &CoreAgentExecutor{HTTPClient: server.Client()}
-	svc, principal, inst := setupCaptureAgentService(t, executor)
+	// Keep the workspace path short: the gated writer auto-initializes a Git
+	// baseline, and Git for Windows cannot operate past the MAX_PATH limit of a
+	// deeply nested t.TempDir() workspace.
+	dataRoot, err := os.MkdirTemp("", "maclaw-agt-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dataRoot) })
+	svc, principal, inst := setupCaptureAgentServiceWithDataRoot(t, executor, dataRoot)
 	if _, err := svc.UpdateUserConfig(context.Background(), principal, corelib.AppConfig{MaclawLLMUrl: server.URL, MaclawLLMKey: "test-key", MaclawLLMModel: "test-model"}); err != nil {
 		t.Fatalf("UpdateUserConfig: %v", err)
 	}
@@ -729,9 +742,10 @@ func TestCoreAgentExecutorExplicitCodingRuntimeUsesLedgerAndLeavesRegularRequest
 	if err != nil {
 		t.Fatalf("explicit coding runtime PostMessage: %v", err)
 	}
-	// The mock model reports completion but does not call a mutating tool. An
-	// implementation workflow must therefore be blocked by the final
-	// read-only workspace gate rather than recorded as a false success.
+	// The mock model reports completion but does not call a mutating tool. The
+	// executor initializes a local Git baseline for the gated writer, so the
+	// attempt runs and the final read-only workspace gate blocks the unchanged
+	// workspace rather than recording a false success.
 	if msg == nil || msg.Metadata[metaCodingRuntimeTaskStatus] != string(codingruntime.TaskBlocked) || msg.Metadata[metaCodingRuntimeTaskID] == "" || msg.Metadata[metaCodingRuntimeAttemptID] == "" {
 		t.Fatalf("missing runtime projection: %#v", msg)
 	}
@@ -739,7 +753,7 @@ func TestCoreAgentExecutorExplicitCodingRuntimeUsesLedgerAndLeavesRegularRequest
 	if err != nil || task.Status != codingruntime.TaskBlocked || task.WorkflowID != workflowID || task.PhaseID != phaseID {
 		t.Fatalf("runtime task=%#v err=%v", task, err)
 	}
-	if attempts, err := ledger.ListAttempts(task.TaskID); err != nil || len(attempts) != 1 || attempts[0].Status != codingruntime.TaskBlocked || attempts[0].ErrorCode != "final_workspace_probe_failed" {
+	if attempts, err := ledger.ListAttempts(task.TaskID); err != nil || len(attempts) != 1 || attempts[0].Status != codingruntime.TaskBlocked || attempts[0].ErrorCode != "final_workspace_unchanged" {
 		t.Fatalf("runtime attempts=%#v err=%v", attempts, err)
 	}
 

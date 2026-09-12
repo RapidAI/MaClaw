@@ -2,6 +2,7 @@ package guiapp
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -10,6 +11,21 @@ import (
 
 // Pure-coding slash commands (Codex-style workbench helpers).
 // Handled early so they do not enter the full SubAgent loop.
+
+// newCodingPlanExecutionLoopContext builds the LoopContext for /plan approve
+// and /plan skip. The dispatch still runs inside the authenticated desktop
+// request that carried the action, so the host-issued ingress token must be
+// propagated into the rebuilt context; without it every plan step degrades
+// to the read-only compatibility surface and the task cannot complete.
+func newCodingPlanExecutionLoopContext(id string, maxIter int, httpClient *http.Client, userID string, msg IMUserMessage) *LoopContext {
+	loopCtx := NewLoopContext(id, maxIter, httpClient)
+	if loopCtx == nil {
+		return nil
+	}
+	loopCtx.UserID = strings.TrimSpace(userID)
+	loopCtx.CodingTaskIngressToken = strings.TrimSpace(msg.CodingTaskIngressToken)
+	return loopCtx
+}
 
 func isCodingWorkbenchSlash(trimmed string) bool {
 	lower := strings.ToLower(strings.TrimSpace(trimmed))
@@ -143,9 +159,8 @@ func (h *IMMessageHandler) executeApprovedCodingPlan(
 	}
 	marker := codingPlanApproveExecuteMarker
 
-	loopCtx := NewLoopContext("coding-plan-approve", h.getMaclawAgentMaxIterations(), h.client)
+	loopCtx := newCodingPlanExecutionLoopContext("coding-plan-approve", h.getMaclawAgentMaxIterations(), h.client, userID, msg)
 	if loopCtx != nil {
-		loopCtx.UserID = userID
 		defer func() {
 			loopCtx.Cancel()
 			loopCtx.Done()
@@ -157,7 +172,6 @@ func (h *IMMessageHandler) executeApprovedCodingPlan(
 	if remote {
 		return h.runRemoteCodingTemplateSubAgent(userID, marker+" "+pending.UserText, remoteCtx, loopCtx, onProgress, onToken)
 	}
-	_ = msg
 	return h.runCodingTemplateSubAgent(userID, marker+" "+pending.UserText, projectPath, loopCtx, onProgress, onToken)
 }
 
@@ -195,9 +209,8 @@ func (h *IMMessageHandler) executeSkippedCodingPlan(
 	m.ApprovedPlanJSON = ""
 	h.storeStickyCodingWorkbenchMemory(userID, m)
 
-	loopCtx := NewLoopContext("coding-plan-skip", h.getMaclawAgentMaxIterations(), h.client)
+	loopCtx := newCodingPlanExecutionLoopContext("coding-plan-skip", h.getMaclawAgentMaxIterations(), h.client, userID, msg)
 	if loopCtx != nil {
-		loopCtx.UserID = userID
 		defer func() {
 			loopCtx.Cancel()
 			loopCtx.Done()
@@ -209,7 +222,6 @@ func (h *IMMessageHandler) executeSkippedCodingPlan(
 	if remote {
 		return h.runRemoteCodingTemplateSubAgent(userID, orig, remoteCtx, loopCtx, onProgress, onToken)
 	}
-	_ = msg
 	return h.runCodingTemplateSubAgent(userID, orig, projectPath, loopCtx, onProgress, onToken)
 }
 

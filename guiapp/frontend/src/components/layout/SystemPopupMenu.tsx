@@ -15,9 +15,15 @@ interface SystemPopupMenuProps {
     onClose: () => void;
     returnFocus?: () => HTMLElement | null;
     ariaLabel?: string;
+    /** When set, vertically center the menu at this offset (px) instead of the rail bottom. */
+    anchorTop?: number;
+    /** Extra CSS selector whose clicks must not count as outside clicks (the opening trigger). */
+    excludeTriggerSelector?: string;
+    menuId?: string;
+    testIdPrefix?: string;
 }
 
-export function SystemPopupMenu({ items, onSelect, onClose, returnFocus, ariaLabel = 'System menu' }: SystemPopupMenuProps) {
+export function SystemPopupMenu({ items, onSelect, onClose, returnFocus, ariaLabel = 'System menu', anchorTop, excludeTriggerSelector, menuId = 'system-popup-menu', testIdPrefix = 'system-menu' }: SystemPopupMenuProps) {
     const menuRef = useRef<HTMLDivElement>(null);
     const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
@@ -36,7 +42,9 @@ export function SystemPopupMenu({ items, onSelect, onClose, returnFocus, ariaLab
             // state back open.  The static preview already excludes both
             // production trigger variants, so keep the event chain identical.
             const target = e.target as Element | null;
-            if (target?.closest('[data-testid="system-menu-trigger"], .mc-legacy-rail-footer .left-nav-item[role="button"]')) return;
+            const triggerSelector = '[data-testid="system-menu-trigger"], .mc-legacy-rail-footer .left-nav-item[role="button"]'
+                + (excludeTriggerSelector ? `, ${excludeTriggerSelector}` : '');
+            if (target?.closest(triggerSelector)) return;
             onClose();
         };
         const handleEscape = (e: KeyboardEvent) => {
@@ -55,22 +63,22 @@ export function SystemPopupMenu({ items, onSelect, onClose, returnFocus, ariaLab
             document.removeEventListener('mousedown', handleClickOutside);
             document.removeEventListener('keydown', handleEscape);
         };
-    }, [onClose]);
+    }, [onClose, excludeTriggerSelector]);
 
     const visibleItems = items.filter(item => item.visible);
 
     return (
         <div
             ref={menuRef}
-            id="system-popup-menu"
-            data-testid="system-popup-menu"
+            id={menuId}
+            data-testid={menuId}
             role="menu"
             aria-label={ariaLabel}
             aria-orientation="horizontal"
             style={{
                 position: 'absolute',
                 left: `${SIDEBAR_NAV_RAIL_WIDTH}px`,
-                bottom: '8px',
+                ...(anchorTop != null ? { top: `${anchorTop}px`, transform: 'translateY(-50%)' } : { bottom: '8px' }),
                 display: 'flex',
                 flexDirection: 'row',
                 gap: '2px',
@@ -90,7 +98,7 @@ export function SystemPopupMenu({ items, onSelect, onClose, returnFocus, ariaLab
                     key={item.id}
                     ref={node => { itemRefs.current[index] = node; }}
                     autoFocus={index === 0}
-                    data-testid={`system-menu-${item.id}`}
+                    data-testid={`${testIdPrefix}-${item.id}`}
                     role="menuitem"
                     type="button"
                     onClick={() => { onSelect(item.id); onClose(); }}

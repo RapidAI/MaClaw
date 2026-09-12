@@ -283,7 +283,7 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
     const [codegenModels, setCodegenModels] = useState<{ id: string; name: string }[]>([]);
     const [codegenModelsFetching, setCodegenModelsFetching] = useState(false);
     const [maclawModel, setMaclawModel] = useState("");        // MaClaw Agent 使用的模型
-    const [claudeCodeModel, setClaudeCodeModel] = useState(""); // TigerClaw Code 使用的模型
+    const [claudeCodeModel, setClaudeCodeModel] = useState(""); // QAgent Code 使用的模型
     const [modelSaving, setModelSaving] = useState(false);
     const [modelSaved, setModelSaved] = useState(false);
     const [wxDone, setWxDone] = useState(false);
@@ -1817,8 +1817,8 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
                         <div>
                             <p style={{ margin: "0 0 10px 0", fontSize: "0.76rem", color: colors.textSecondary, lineHeight: 1.4 }}>
                                 {t(
-                                    `使用企业账号一键登录，自动配置 ${displayName} 和 TigerClaw Code，并注册到 Hub。`,
-                                    `Sign in with your enterprise account to configure ${displayName}, TigerClaw Code, and register to Hub.`
+                                    `使用企业账号一键登录，自动配置 ${displayName} 和 QAgent Code，并注册到 Hub。`,
+                                    `Sign in with your enterprise account to configure ${displayName}, QAgent Code, and register to Hub.`
                                 )}
                             </p>
                             <button onClick={handleEmbeddedSSOLogin} disabled={ssoBusy || (llmDone && regDone)} style={{
@@ -1935,10 +1935,10 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
                                                 </div>
                                             </div>
 
-                                            {/* TigerClaw Code 模型 */}
+                                            {/* QAgent Code 模型 */}
                                             <div style={{ marginBottom: 10 }}>
                                                 <label style={{ fontSize: "0.72rem", color: colors.textSecondary, display: "block", marginBottom: 4 }}>
-                                                    {t("TigerClaw Code 模型", "TigerClaw Code Model")}
+                                                    {t("QAgent Code 模型", "QAgent Code Model")}
                                                 </label>
                                                 <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                                                     {codegenModels.map(m => (

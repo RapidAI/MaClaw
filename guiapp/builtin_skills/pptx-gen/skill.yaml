@@ -1,5 +1,5 @@
 name: pptx-gen
-description: "PPT 生成 — 根据 JSON 大纲生成 PowerPoint 演示文稿（.pptx）。输入为包含 title 与 slides（标题/要点/备注）的 JSON 文件，支持中文。"
+description: "PPT 生成 — 根据 JSON 大纲生成 PowerPoint 演示文稿（.pptx）。输入为包含 title 与 slides（标题/要点/备注）的 JSON 文件，支持中文。生成后用 office(action=preview_pptx) 渲染每页预览图，检查排版效果并迭代修复。"
 triggers:
     - 生成PPT
     - 制作PPT

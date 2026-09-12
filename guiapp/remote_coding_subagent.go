@@ -378,19 +378,43 @@ func (r *RemoteCodingSubAgent) SaveRuntimeExperience(exp knowledge.CodingExperie
 	return err
 }
 
+// preDispatchGateDiagnostic returns the fail-fast diagnostic when an
+// implementation/operational remote step reaches dispatch on a desktop owner
+// without a verified relation, or "" when the step may proceed. Inquiry
+// steps are read-only by design and always proceed.
+func (r *RemoteCodingSubAgent) preDispatchGateDiagnostic(verifiedBound bool, taskDescription string) string {
+	if verifiedBound || r == nil || r.requestKind == codingRequestInquiry || r.loopCtx == nil || !isDesktopCodingOwner(r.loopCtx.UserID) {
+		return ""
+	}
+	log.Printf("[remote-coding] pre-dispatch gate: implementation step without verified desktop relation user=%s session=%s task=%q",
+		r.loopCtx.UserID, r.sessionID, truncateRunesV2(taskDescription, 80))
+	return desktopCodingVerifiedSurfaceUnavailableDiagnostic
+}
+
 // ExecuteTask runs a single task on the remote server in a clean context.
 func (r *RemoteCodingSubAgent) ExecuteTask(taskDescription, taskContext string) *RemoteCodingSubAgentResult {
 	if r == nil {
 		return &RemoteCodingSubAgentResult{Status: "failed", Error: "remote coding subagent is nil"}
 	}
 	// The remote transport does not issue semantic identity. It may only use a
-	// one-shot desktop ingress already attached to the host-owned LoopContext.
+	// one-shot desktop ingress already attached to the host-owned LoopContext
+	// (or the continuation token chained from the previous root step's bind).
 	// Nested children call executeTask directly and therefore keep the parent
 	// relation for IssueChildCodingTurn instead of receiving a new root here.
+	// A retained agent that already holds a verified relation counts as bound:
+	// mayReadDesktopCodingIngress deliberately skips it below.
+	verifiedBound := r.verifiedTaskHandle != nil && r.verifiedTaskHandle.complete()
 	if r.mayReadDesktopCodingIngress() && r.handler != nil && r.handler.app != nil && r.loopCtx != nil {
-		if service, subject, handle, ok := r.handler.app.nextDesktopCodingTaskRelation(r.loopCtx.CodingTaskIngressToken, r.loopCtx.UserID); ok {
+		if service, subject, handle, _, ok := r.handler.app.nextDesktopCodingRootStepRelation(r.loopCtx.CodingTaskIngressToken, r.loopCtx.UserID); ok {
 			r.setVerifiedCodingTaskRelation(service, subject, handle)
+			verifiedBound = true
 		}
+	}
+	// Pre-dispatch capability gate, symmetric with the local runner: an
+	// implementation/operational remote step without a verified relation can
+	// only produce a plan-only turn that fails afterwards. Fail fast instead.
+	if diag := r.preDispatchGateDiagnostic(verifiedBound, taskDescription); diag != "" {
+		return &RemoteCodingSubAgentResult{Status: "failed", Error: diag}
 	}
 	// Keep turn-specific routing state on an execution-local copy. A caller may
 	// retain and reuse this agent across turns, and concurrent calls must not let

@@ -204,7 +204,9 @@ func TestSemanticCodingRepeatAnnouncesTheSpentBudget(t *testing.T) {
 		if !strings.Contains(got, "diff --git") {
 			t.Fatalf("round %d inspect = %q", round, got)
 		}
-		spent := strings.Contains(got, "reached its limit")
+		// RepeatFamilySpentBudgetNote is the canonical spent-budget notice; it
+		// rides on the call that spends the last invocation and only there.
+		spent := strings.Contains(got, "Planned invocations for")
 		if spent != (round == budget) {
 			t.Fatalf("round %d of %d: budget notice present=%v, result=%q", round, budget, spent, got)
 		}

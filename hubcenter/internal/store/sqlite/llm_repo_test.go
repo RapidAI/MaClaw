@@ -977,3 +977,105 @@ func TestLLMUsageRepoQuerySummaryGroupsByServiceGroup(t *testing.T) {
 		t.Fatalf("unspecified group = %#v", byGroup[""])
 	}
 }
+
+func TestLLMUsageRepoInsertBatchIdempotentAndOriginFilter(t *testing.T) {
+	provider, err := NewProvider(Config{DSN: filepath.Join(t.TempDir(), "llm-usage-sync-batch.db"), WAL: false})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	t.Cleanup(func() { _ = provider.Close() })
+	if err := EnsureLLMTables(provider.Write); err != nil {
+		t.Fatalf("EnsureLLMTables() error = %v", err)
+	}
+
+	ctx := context.Background()
+	repo := NewLLMUsageRepo(provider)
+	now := time.Now().UTC().Truncate(time.Second)
+
+	legacy := &llmservice.TenantUsageRecord{HubID: "hub-1", TenantID: "tenant-a", Model: "model-a", ProviderID: "provider-a", InputTokens: 1, OutputTokens: 2, CreatedAt: now}
+	if err := repo.Insert(ctx, legacy); err != nil {
+		t.Fatalf("Insert(legacy) error = %v", err)
+	}
+	local := &llmservice.TenantUsageRecord{HubID: "hub-1", TenantID: "tenant-a", Model: "model-a", ProviderID: "provider-a", InputTokens: 3, OutputTokens: 4, CreatedAt: now}
+	if err := repo.InsertLocal(ctx, local, "hc-9"); err != nil {
+		t.Fatalf("InsertLocal() error = %v", err)
+	}
+	replicated := []*llmservice.TenantUsageRecord{
+		{HubID: "hub-2", TenantID: "tenant-b", Model: "model-b", ProviderID: "provider-b", InputTokens: 10, OutputTokens: 20, SyncID: "u-rec-a", CreatedAt: now},
+		{HubID: "hub-2", TenantID: "tenant-b", Model: "model-b", ProviderID: "provider-b", InputTokens: 30, OutputTokens: 40, SyncID: "u-rec-b", CreatedAt: now},
+	}
+	applied, err := repo.InsertBatch(ctx, "seed-hc-1-1-2", "hc-1", replicated)
+	if err != nil {
+		t.Fatalf("InsertBatch() error = %v", err)
+	}
+	if !applied {
+		t.Fatal("first InsertBatch() applied = false, want true")
+	}
+	applied, err = repo.InsertBatch(ctx, "seed-hc-1-1-2", "hc-1", replicated)
+	if err != nil {
+		t.Fatalf("InsertBatch(replay) error = %v", err)
+	}
+	if applied {
+		t.Fatal("replayed InsertBatch() applied = true, want false")
+	}
+	// The same records republished under a DIFFERENT batch ID (a seed pass
+	// after an origin-node restart) must still not double-insert: record-level
+	// sync IDs deduplicate where the batch ledger cannot.
+	applied, err = repo.InsertBatch(ctx, "live-hc-1-99-1", "hc-1", replicated)
+	if err != nil {
+		t.Fatalf("InsertBatch(other batch) error = %v", err)
+	}
+	if !applied {
+		t.Fatal("new-batch InsertBatch() applied = false, want true (ledger entry written)")
+	}
+
+	var total, replicatedCount int
+	if err := provider.Read.QueryRow(`SELECT COUNT(*) FROM llm_usage_records`).Scan(&total); err != nil {
+		t.Fatalf("count usage records: %v", err)
+	}
+	if total != 4 {
+		t.Fatalf("usage records = %d, want 4 (replayed/republished batches must not double-insert)", total)
+	}
+	if err := provider.Read.QueryRow(`SELECT COUNT(*) FROM llm_usage_records WHERE origin_node_id = 'hc-1'`).Scan(&replicatedCount); err != nil {
+		t.Fatalf("count replicated rows: %v", err)
+	}
+	if replicatedCount != 2 {
+		t.Fatalf("replicated rows = %d, want 2", replicatedCount)
+	}
+
+	// The seed pass must see legacy ('' origin) and own-node rows, but never
+	// rows replicated from another node — otherwise they would echo back.
+	seedRows, err := repo.ListLocalForSync(ctx, "hc-9", 0, 0, 10)
+	if err != nil {
+		t.Fatalf("ListLocalForSync() error = %v", err)
+	}
+	if len(seedRows) != 2 {
+		t.Fatalf("ListLocalForSync() rows = %d, want 2 (legacy + local)", len(seedRows))
+	}
+	if seedRows[0].ID >= seedRows[1].ID {
+		t.Fatalf("ListLocalForSync() not ordered by id asc: %+v", seedRows)
+	}
+	tailRows, err := repo.ListLocalForSync(ctx, "hc-9", seedRows[1].ID, 0, 10)
+	if err != nil {
+		t.Fatalf("ListLocalForSync(afterID) error = %v", err)
+	}
+	if len(tailRows) != 0 {
+		t.Fatalf("ListLocalForSync(afterID) rows = %d, want 0 (replicated rows filtered out)", len(tailRows))
+	}
+	// The cutoff bound excludes rows above it: those belong to the live
+	// replicator and must not be published by the seed a second time.
+	boundedRows, err := repo.ListLocalForSync(ctx, "hc-9", 0, seedRows[0].ID, 10)
+	if err != nil {
+		t.Fatalf("ListLocalForSync(maxID) error = %v", err)
+	}
+	if len(boundedRows) != 1 || boundedRows[0].ID != seedRows[0].ID {
+		t.Fatalf("ListLocalForSync(maxID=%d) rows = %+v, want only the first row", seedRows[0].ID, boundedRows)
+	}
+	maxID, err := repo.MaxUsageID(ctx)
+	if err != nil {
+		t.Fatalf("MaxUsageID() error = %v", err)
+	}
+	if maxID != seedRows[1].ID+2 {
+		t.Fatalf("MaxUsageID() = %d, want %d", maxID, seedRows[1].ID+2)
+	}
+}

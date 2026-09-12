@@ -44,6 +44,7 @@ const (
 	EntityLLMTenantAuth       = "llm_tenant_authorization"
 	EntityLLMCardOrder        = "llm_card_order"
 	EntityLLMNodeBinding      = "llm_node_binding"
+	EntityLLMUsageBatch       = "llm_usage_batch"
 	EntityNotification        = "notification"
 
 	OpUpsert = "upsert"
@@ -104,6 +105,7 @@ type Service struct {
 	cardOrders                  cardstore.PurchaseOrderRepository
 	llmAuthorizations           llmservice.TenantAuthorizationRepository
 	llmBindings                 store.LLMNodeBindingRepository
+	llmUsage                    llmservice.UsageBatchRepository
 	notifications               notification.Store
 	heartbeatSync               store.HAHeartbeatSyncStateRepository
 	heartbeatSyncMinInterval    time.Duration
@@ -1692,7 +1694,7 @@ func validateRemoteOp(op *store.HASyncOp) error {
 
 func isSupportedEntityType(entityType string) bool {
 	switch entityType {
-	case EntityBlockedEmail, EntityBlockedIP, EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntitySystemSetting, EntityGossipSnapshot, EntitySkillHubSnapshot, EntitySkillMarketSnapshot, EntityPetStoreSnapshot, EntityPetStoreMetrics, EntityLLMCardType, EntityLLMTenantAuth, EntityLLMCardOrder, EntityLLMNodeBinding, EntityNotification:
+	case EntityBlockedEmail, EntityBlockedIP, EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntitySystemSetting, EntityGossipSnapshot, EntitySkillHubSnapshot, EntitySkillMarketSnapshot, EntityPetStoreSnapshot, EntityPetStoreMetrics, EntityLLMCardType, EntityLLMTenantAuth, EntityLLMCardOrder, EntityLLMNodeBinding, EntityLLMUsageBatch, EntityNotification:
 		return true
 	default:
 		return false
@@ -1949,6 +1951,8 @@ func (s *Service) applyEntityOp(ctx context.Context, op *store.HASyncOp) error {
 		return s.applyLLMCardOrderOp(ctx, op)
 	case EntityLLMNodeBinding:
 		return s.applyLLMNodeBindingOp(ctx, op)
+	case EntityLLMUsageBatch:
+		return s.applyLLMUsageBatchOp(ctx, op)
 	case EntityNotification:
 		return s.applyNotificationOp(ctx, op)
 	default:
@@ -2195,6 +2199,13 @@ func (s *Service) applySystemSettingOp(ctx context.Context, op *store.HASyncOp) 
 	var payload systemSettingPayload
 	if err := json.Unmarshal([]byte(op.PayloadJSON), &payload); err != nil {
 		return err
+	}
+	if strings.TrimSpace(payload.Key) == LLMProviderMonitorLeaseKey {
+		if localRaw, err := s.settings.Get(ctx, LLMProviderMonitorLeaseKey); err == nil && llmProviderMonitorLeaseFence(localRaw, payload.ValueJSON) {
+			// A lagging replicated lease write must not demote a fresher
+			// local lease (split-brain fencing for the monitor election).
+			return nil
+		}
 	}
 	if err := s.settings.Set(ctx, payload.Key, payload.ValueJSON); err != nil {
 		return err

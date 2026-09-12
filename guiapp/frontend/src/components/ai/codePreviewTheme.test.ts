@@ -133,7 +133,7 @@ describe('Active assistant scheme derivation', () => {
 
         expect(preview.bg).toBe(darkTheme.bg);
         expect(preview.border).toBe(darkTheme.divider);
-        expect(preview.tabBg).toBe(darkTheme.titleBarBg);
+        expect(preview.tabBg).toBe(darkTheme.bg);
         expect(preview.tabActiveBg).toBe(darkTheme.fieldBg);
         expect(preview.diffDeleteBg).toBe(darkTheme.errorBg);
         expect(preview.diffDeleteText).toBe(darkTheme.errorText);
@@ -153,7 +153,7 @@ describe('Active assistant scheme derivation', () => {
         const preview = createCodePreviewTheme(alternateLight);
 
         expect(preview.bg).toBe(alternateLight.bg);
-        expect(preview.tabBg).toBe(alternateLight.titleBarBg);
+        expect(preview.tabBg).toBe(alternateLight.bg);
         expect(preview.border).toBe(alternateLight.divider);
         expect(preview.syntaxKeyword).toBe(alternateLight.linkColor);
         expect(preview.syntaxNumber).toBe(alternateLight.pathColor);

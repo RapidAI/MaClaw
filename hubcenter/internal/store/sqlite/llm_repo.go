@@ -64,6 +64,15 @@ func EnsureLLMTables(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_llm_usage_hub_tenant_time ON llm_usage_records(hub_id, tenant_id, created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_llm_usage_created_at ON llm_usage_records(created_at)`,
 
+		// Idempotency ledger for HA-replicated usage batches: a batch is applied
+		// at most once per node even if the op log redelivers it.
+		`CREATE TABLE IF NOT EXISTS llm_usage_sync_batches (
+			batch_id TEXT PRIMARY KEY,
+			source_node_id TEXT NOT NULL DEFAULT '',
+			record_count INTEGER NOT NULL DEFAULT 0,
+			applied_at TEXT NOT NULL
+		)`,
+
 		`CREATE TABLE IF NOT EXISTS llm_card_types (
 			id TEXT PRIMARY KEY,
 			service_group_id TEXT NOT NULL,
@@ -157,6 +166,33 @@ func EnsureLLMTables(db *sql.DB) error {
 	}
 	if err := ensureLLMUsageClassColumns(db); err != nil {
 		return err
+	}
+	if err := ensureLLMUsageSyncColumns(db); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ensureLLMUsageSyncColumns(db *sql.DB) error {
+	columns, err := tableColumns(db, "llm_usage_records")
+	if err != nil {
+		return err
+	}
+	if !columns["origin_node_id"] {
+		if _, err := db.Exec(`ALTER TABLE llm_usage_records ADD COLUMN origin_node_id TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("ensure llm_usage_records.origin_node_id: %w", err)
+		}
+	}
+	if !columns["sync_id"] {
+		// Nullable on purpose: legacy local rows stay NULL, and the partial
+		// unique index below only constrains replicated rows (which always
+		// carry an ID), letting INSERT OR IGNORE deduplicate them.
+		if _, err := db.Exec(`ALTER TABLE llm_usage_records ADD COLUMN sync_id TEXT`); err != nil {
+			return fmt.Errorf("ensure llm_usage_records.sync_id: %w", err)
+		}
+	}
+	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_llm_usage_sync_id ON llm_usage_records(sync_id) WHERE sync_id IS NOT NULL`); err != nil {
+		return fmt.Errorf("ensure llm usage sync id index: %w", err)
 	}
 	return nil
 }
@@ -671,6 +707,16 @@ func NewLLMUsageRepo(p *Provider) *llmUsageRepo {
 }
 
 func (r *llmUsageRepo) Insert(ctx context.Context, record *llmservice.TenantUsageRecord) error {
+	return r.insert(ctx, record, "")
+}
+
+// InsertLocal persists a usage record originated by this HA node so a later
+// sync seed pass can tell locally-originated rows apart from replicated ones.
+func (r *llmUsageRepo) InsertLocal(ctx context.Context, record *llmservice.TenantUsageRecord, nodeID string) error {
+	return r.insert(ctx, record, strings.TrimSpace(nodeID))
+}
+
+func (r *llmUsageRepo) insert(ctx context.Context, record *llmservice.TenantUsageRecord, originNodeID string) error {
 	if record == nil {
 		return nil
 	}
@@ -679,8 +725,8 @@ func (r *llmUsageRepo) Insert(ctx context.Context, record *llmservice.TenantUsag
 		createdAt = time.Now()
 	}
 	_, err := r.write.ExecContext(ctx,
-		`INSERT INTO llm_usage_records (hub_id, tenant_id, request_id, model, provider_id, service_group_id, workload_class, class_source, request_preview, input_tokens, output_tokens, cached_input_tokens, cache_write_tokens, cache_usage_source, usage_anomaly, pricing_source, credits_deducted, cache_hit, auth_id, created_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO llm_usage_records (hub_id, tenant_id, request_id, model, provider_id, service_group_id, workload_class, class_source, request_preview, input_tokens, output_tokens, cached_input_tokens, cache_write_tokens, cache_usage_source, usage_anomaly, pricing_source, credits_deducted, cache_hit, auth_id, created_at, origin_node_id, sync_id)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		strings.TrimSpace(record.HubID), strings.TrimSpace(record.TenantID),
 		strings.TrimSpace(record.RequestID),
 		strings.TrimSpace(record.Model), strings.TrimSpace(record.ProviderID),
@@ -688,8 +734,132 @@ func (r *llmUsageRepo) Insert(ctx context.Context, record *llmservice.TenantUsag
 		strings.TrimSpace(record.ClassSource), record.Preview,
 		record.InputTokens, record.OutputTokens, record.CachedInputTokens, record.CacheWriteTokens, strings.TrimSpace(record.CacheUsageSource), strings.TrimSpace(record.UsageAnomaly), strings.TrimSpace(record.PricingSource), record.Credits,
 		boolToInt(record.CacheHit), strings.TrimSpace(record.AuthID), createdAt.UTC().Format(time.RFC3339),
+		strings.TrimSpace(originNodeID), usageSyncIDValue(record.SyncID),
 	)
 	return err
+}
+
+// usageSyncIDValue stores an empty sync ID as NULL so the partial unique
+// index on sync_id only constrains rows that actually carry one.
+func usageSyncIDValue(syncID string) any {
+	if s := strings.TrimSpace(syncID); s != "" {
+		return s
+	}
+	return nil
+}
+
+// InsertBatch applies one HA-replicated usage batch. The batch ledger makes
+// the apply idempotent: a redelivered batch ID is acknowledged without
+// inserting the records a second time. applied reports whether the records
+// were actually inserted by this call.
+func (r *llmUsageRepo) InsertBatch(ctx context.Context, batchID, sourceNodeID string, records []*llmservice.TenantUsageRecord) (applied bool, err error) {
+	batchID = strings.TrimSpace(batchID)
+	if batchID == "" || len(records) == 0 {
+		return false, nil
+	}
+	tx, err := r.write.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin llm usage batch apply: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	res, err := tx.ExecContext(ctx,
+		`INSERT OR IGNORE INTO llm_usage_sync_batches (batch_id, source_node_id, record_count, applied_at) VALUES (?, ?, ?, ?)`,
+		batchID, strings.TrimSpace(sourceNodeID), len(records), time.Now().UTC().Format(time.RFC3339),
+	)
+	if err != nil {
+		return false, fmt.Errorf("record llm usage sync batch: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		_ = tx.Rollback()
+		return false, nil
+	}
+	for _, record := range records {
+		if record == nil {
+			continue
+		}
+		createdAt := record.CreatedAt
+		if createdAt.IsZero() {
+			createdAt = time.Now()
+		}
+		// OR IGNORE plus the partial unique index on sync_id deduplicates at
+		// record level: a row republished under a different batch ID (e.g. a
+		// seed pass after an origin-node restart) is skipped, not counted.
+		if _, err = tx.ExecContext(ctx,
+			`INSERT OR IGNORE INTO llm_usage_records (hub_id, tenant_id, request_id, model, provider_id, service_group_id, workload_class, class_source, request_preview, input_tokens, output_tokens, cached_input_tokens, cache_write_tokens, cache_usage_source, usage_anomaly, pricing_source, credits_deducted, cache_hit, auth_id, created_at, origin_node_id, sync_id)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			strings.TrimSpace(record.HubID), strings.TrimSpace(record.TenantID),
+			strings.TrimSpace(record.RequestID),
+			strings.TrimSpace(record.Model), strings.TrimSpace(record.ProviderID),
+			strings.TrimSpace(record.ServiceGroupID), strings.TrimSpace(record.WorkloadClass),
+			strings.TrimSpace(record.ClassSource), record.Preview,
+			record.InputTokens, record.OutputTokens, record.CachedInputTokens, record.CacheWriteTokens, strings.TrimSpace(record.CacheUsageSource), strings.TrimSpace(record.UsageAnomaly), strings.TrimSpace(record.PricingSource), record.Credits,
+			boolToInt(record.CacheHit), strings.TrimSpace(record.AuthID), createdAt.UTC().Format(time.RFC3339),
+			strings.TrimSpace(sourceNodeID), usageSyncIDValue(record.SyncID),
+		); err != nil {
+			return false, fmt.Errorf("insert replicated llm usage record: %w", err)
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit llm usage batch apply: %w", err)
+	}
+	return true, nil
+}
+
+// MaxUsageID returns the largest llm_usage_records primary key, or 0 on an
+// empty table. The HA sync seed uses it as an upper bound so rows recorded
+// after the live replicator started are not published twice.
+func (r *llmUsageRepo) MaxUsageID(ctx context.Context) (int64, error) {
+	var id int64
+	if err := r.read.QueryRowContext(ctx, `SELECT COALESCE(MAX(id), 0) FROM llm_usage_records`).Scan(&id); err != nil {
+		return 0, err
+	}
+	return id, nil
+}
+
+// ListLocalForSync pages locally-originated usage records by primary key for
+// the HA sync seed pass. Rows with an empty origin predate the origin_node_id
+// column and are necessarily local; replicated rows always carry a non-empty
+// origin and are never echoed back. maxID bounds the scan (<= 0 means no
+// bound): rows above it belong to the live replicator and must not be
+// published a second time by the seed.
+func (r *llmUsageRepo) ListLocalForSync(ctx context.Context, nodeID string, afterID, maxID int64, limit int) ([]*llmservice.TenantUsageRecord, error) {
+	if limit <= 0 {
+		limit = 300
+	}
+	query := `SELECT id, hub_id, tenant_id, request_id, model, provider_id, service_group_id, workload_class, class_source, request_preview, input_tokens, output_tokens, cached_input_tokens, cache_write_tokens, cache_usage_source, usage_anomaly, pricing_source, credits_deducted, cache_hit, auth_id, created_at, sync_id
+	   FROM llm_usage_records
+	  WHERE id > ? AND (origin_node_id = '' OR origin_node_id = ?)`
+	args := []any{afterID, strings.TrimSpace(nodeID)}
+	if maxID > 0 {
+		query += ` AND id <= ?`
+		args = append(args, maxID)
+	}
+	query += ` ORDER BY id ASC LIMIT ?`
+	args = append(args, limit)
+	rows, err := r.read.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	records := make([]*llmservice.TenantUsageRecord, 0)
+	for rows.Next() {
+		var rec llmservice.TenantUsageRecord
+		var cacheHit int
+		var createdAt string
+		var syncID sql.NullString
+		if err := rows.Scan(&rec.ID, &rec.HubID, &rec.TenantID, &rec.RequestID, &rec.Model, &rec.ProviderID, &rec.ServiceGroupID, &rec.WorkloadClass, &rec.ClassSource, &rec.Preview, &rec.InputTokens, &rec.OutputTokens, &rec.CachedInputTokens, &rec.CacheWriteTokens, &rec.CacheUsageSource, &rec.UsageAnomaly, &rec.PricingSource, &rec.Credits, &cacheHit, &rec.AuthID, &createdAt, &syncID); err != nil {
+			return nil, err
+		}
+		rec.CacheHit = cacheHit == 1
+		rec.CreatedAt, _ = parseStoredUsageTime(createdAt)
+		rec.SyncID = syncID.String
+		records = append(records, &rec)
+	}
+	return records, rows.Err()
 }
 
 func (r *llmUsageRepo) QuerySummary(ctx context.Context, filter llmservice.UsageFilter) ([]llmservice.TenantUsageSummary, error) {

@@ -1031,6 +1031,34 @@ func TestFormatCodingAgentUserFinishHidesScorecard(t *testing.T) {
 	}
 }
 
+func TestFormatCodingAgentSkippedPrefersVisibleErrorOverLedgerSummary(t *testing.T) {
+	paragraph := formatCodingAgentResultParagraph(v2.TaskRunResult{
+		Title:   "scaffold project",
+		Status:  v2.TaskSkipped,
+		Summary: "Execution ledger attempt: 83e762b9-6a51-44e1-96f1-9fb96d366aff",
+		Error:   "writer execution requires a successful read-only workspace baseline",
+	})
+	if !strings.HasPrefix(paragraph, "Skipped scaffold project: writer execution requires a successful read-only workspace baseline") {
+		t.Fatalf("skipped paragraph should lead with the blocking reason: %q", paragraph)
+	}
+	if strings.Contains(paragraph, "Execution ledger attempt") {
+		t.Fatalf("skipped paragraph should not surface the ledger noise summary: %q", paragraph)
+	}
+	if got := formatCodingAgentResultParagraph(v2.TaskRunResult{
+		Title:   "review",
+		Status:  v2.TaskSkipped,
+		Summary: "Child results require an explicit review handoff.",
+	}); got != "Child results require an explicit review handoff." {
+		t.Fatalf("skipped paragraph without error should keep the summary: %q", got)
+	}
+	if got := formatCodingAgentResultParagraph(v2.TaskRunResult{
+		Status: v2.TaskSkipped,
+		Error:  "workspace probe failed",
+	}); got != "Skipped Untitled task: workspace probe failed" {
+		t.Fatalf("untitled skipped paragraph should still name the reason: %q", got)
+	}
+}
+
 func TestIsCodingAgentUserProgressTextKeepsTrailOnly(t *testing.T) {
 	if !isCodingAgentUserProgressText(`Coding Agent Event: {"version":1,"agent":"coding","event":"tool_started"}`) {
 		t.Fatal("structured coding event should stay visible")

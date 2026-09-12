@@ -1849,7 +1849,7 @@ describe('AIAssistantPanel property tests', () => {
         };
         const { container, rerender } = render(<AIAssistantPanel {...initialProps} />, { wrapper: DialogProvider });
 
-        expect(container.querySelector('details')).toHaveProperty('open', true);
+        expect(container.querySelector('[data-testid="assistant-reasoning-panel"]')).toHaveProperty('open', true);
 
         rerender(
             <AIAssistantPanel
@@ -1858,7 +1858,7 @@ describe('AIAssistantPanel property tests', () => {
             />,
         );
 
-        expect(container.querySelector('details')).toHaveProperty('open', false);
+        expect(container.querySelector('[data-testid="assistant-reasoning-panel"]')).toHaveProperty('open', false);
     });
 
     it('keeps completed reasoning folded when the next reply begins streaming', () => {
@@ -1903,7 +1903,7 @@ describe('AIAssistantPanel property tests', () => {
         };
         const { container, rerender } = render(<AIAssistantPanel {...initialProps} />, { wrapper: DialogProvider });
 
-        expect(container.querySelector('details')).toHaveProperty('open', true);
+        expect(container.querySelector('[data-testid="assistant-reasoning-panel"]')).toHaveProperty('open', true);
 
         rerender(
             <AIAssistantPanel
@@ -1912,7 +1912,7 @@ describe('AIAssistantPanel property tests', () => {
             />,
         );
 
-        expect(container.querySelector('details')).toHaveProperty('open', false);
+        expect(container.querySelector('[data-testid="assistant-reasoning-panel"]')).toHaveProperty('open', false);
         expect(container.textContent).toContain('final final');
     });
 
@@ -1933,7 +1933,7 @@ describe('AIAssistantPanel property tests', () => {
         };
         const { container, rerender } = render(<AIAssistantPanel {...initialProps} />, { wrapper: DialogProvider });
 
-        const streamingDetails = container.querySelector('details');
+        const streamingDetails = container.querySelector('[data-testid="assistant-reasoning-panel"]');
         expect(streamingDetails).toHaveProperty('open', true);
         expect(streamingDetails?.textContent).toContain('Thinking step one.');
         expect(streamingDetails?.textContent).toContain(reasoningTail);
@@ -1945,7 +1945,7 @@ describe('AIAssistantPanel property tests', () => {
             />,
         );
 
-        const finalDetails = container.querySelector('details');
+        const finalDetails = container.querySelector('[data-testid="assistant-reasoning-panel"]');
         expect(finalDetails).toHaveProperty('open', false);
         // The post-stream full parse must still contain both ends of the trail
         // (no stale frozen-segment leftovers from incremental rendering).
@@ -3370,6 +3370,122 @@ describe('AIAssistantPanel property tests', () => {
         await waitFor(() => expect((getByTestId('ai-input') as HTMLTextAreaElement).value).toBe('write chapter 1'));
     });
 
+    it('restores the cloud workspace lock before a queued first command drains after the session idles', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        resumeCloudWorkspaceTaskMock.mockResolvedValue({ project_path: 'D:/tasks/cloud-math' });
+        const base = defaultPanelProps();
+        const busyState = {
+            ...base.state,
+            messages: [],
+            sending: true,
+            sendingSessionKey: 'desktop-user:D:/tasks/cloud-math',
+            busySessionKeys: ['desktop-user:D:/tasks/cloud-math'],
+            streaming: false,
+            streamingSessionKeys: [],
+            ready: true,
+        };
+        const { getByTestId, rerender } = render(
+            <AIAssistantPanel
+                {...base}
+                pendingProjectTabOpen={{
+                    projectPath: 'D:/tasks/cloud-math',
+                    taskTitle: 'AI math foundations',
+                    autoSend: false,
+                    cloudWorkspaceId: 'cws_math',
+                    prepareMode: 'restore-context',
+                }}
+                onPendingProjectTabOpenHandled={vi.fn()}
+                state={busyState}
+                actions={{ ...base.actions, sendMessage }}
+            />,
+            { wrapper: DialogProvider },
+        );
+
+        await waitFor(() => expect(document.querySelector('[data-testid="project-tab-restore-progress"]')).toBeNull());
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'queued first command' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        // Busy session: the command waits in the buffer queue without sending,
+        // and the lease must not be requested before the drain actually fires.
+        await waitFor(() => expect(getByTestId('buffer-queue-panel').textContent || '').toContain('queued first command'));
+        expect(sendMessage).not.toHaveBeenCalled();
+        expect(resumeCloudWorkspaceTaskMock).not.toHaveBeenCalled();
+
+        rerender(
+            <AIAssistantPanel
+                {...base}
+                pendingProjectTabOpen={null}
+                state={{ ...busyState, sending: false, sendingSessionKey: '', busySessionKeys: [] }}
+                actions={{ ...base.actions, sendMessage }}
+            />,
+        );
+
+        await waitFor(() => expect(resumeCloudWorkspaceTaskMock).toHaveBeenCalledWith('cws_math', 'D:/tasks/cloud-math'));
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('queued first command', expect.objectContaining({
+            project_path: 'D:/tasks/cloud-math',
+        })));
+        // Lease first, command second.
+        expect(resumeCloudWorkspaceTaskMock.mock.invocationCallOrder[0]).toBeLessThan(sendMessage.mock.invocationCallOrder[0]);
+        expect(resumeCloudWorkspaceTaskMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the queued first command when cloud workspace lock recovery fails during auto drain', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        resumeCloudWorkspaceTaskMock.mockRejectedValue(new Error('workspace is in use'));
+        const base = defaultPanelProps();
+        const busyState = {
+            ...base.state,
+            messages: [],
+            sending: true,
+            sendingSessionKey: 'desktop-user:D:/tasks/cloud-math',
+            busySessionKeys: ['desktop-user:D:/tasks/cloud-math'],
+            streaming: false,
+            streamingSessionKeys: [],
+            ready: true,
+        };
+        const { getByTestId, rerender } = render(
+            <AIAssistantPanel
+                {...base}
+                pendingProjectTabOpen={{
+                    projectPath: 'D:/tasks/cloud-math',
+                    taskTitle: 'AI math foundations',
+                    autoSend: false,
+                    cloudWorkspaceId: 'cws_math',
+                    prepareMode: 'restore-context',
+                }}
+                onPendingProjectTabOpenHandled={vi.fn()}
+                state={busyState}
+                actions={{ ...base.actions, sendMessage }}
+            />,
+            { wrapper: DialogProvider },
+        );
+
+        await waitFor(() => expect(document.querySelector('[data-testid="project-tab-restore-progress"]')).toBeNull());
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'queued cloud command' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+        await waitFor(() => expect(getByTestId('buffer-queue-panel').textContent || '').toContain('queued cloud command'));
+
+        rerender(
+            <AIAssistantPanel
+                {...base}
+                pendingProjectTabOpen={null}
+                state={{ ...busyState, sending: false, sendingSessionKey: '', busySessionKeys: [] }}
+                actions={{ ...base.actions, sendMessage }}
+            />,
+        );
+
+        await waitFor(() => expect(resumeCloudWorkspaceTaskMock).toHaveBeenCalledWith('cws_math', 'D:/tasks/cloud-math'));
+        expect(sendMessage).not.toHaveBeenCalled();
+        // The refused drain keeps the entry in the queue instead of dropping it,
+        // and disarms auto-drain so a persistent refusal cannot spin a retry loop.
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 300)); });
+        expect(resumeCloudWorkspaceTaskMock).toHaveBeenCalledTimes(1);
+        expect(getByTestId('buffer-queue-panel').textContent || '').toContain('queued cloud command');
+        expect(sendMessage).not.toHaveBeenCalled();
+    });
+
     it('shows a remote coding environment banner with host for remote_coding_dev tabs', async () => {
         createProjectTabSessionMock.mockResolvedValueOnce(undefined);
 
@@ -3941,8 +4057,10 @@ describe('AIAssistantPanel property tests', () => {
         });
 
         await waitFor(() => expect(getByTestId('coding-env-banner')).toBeTruthy());
-        // Empty-state source panel still exposes the code preview header.
-        await waitFor(() => expect(getByTestId('code-preview-header')).toBeTruthy());
+        // Empty-state source panel still exposes the workspace tree; in local
+        // mode the merged header keeps the tree's own title row instead of the
+        // panel header bar.
+        await waitFor(() => expect(getByTestId('code-preview-workspace')).toBeTruthy());
     });
 
     it('opens the right-hand source preview panel for remote_coding_dev tasks', async () => {
@@ -3963,7 +4081,7 @@ describe('AIAssistantPanel property tests', () => {
         });
 
         await waitFor(() => expect(getByTestId('remote-coding-env-banner')).toBeTruthy());
-        await waitFor(() => expect(getByTestId('code-preview-header')).toBeTruthy());
+        await waitFor(() => expect(getByTestId('code-preview-workspace')).toBeTruthy());
     });
 
     it('keeps new task input queued until the project tab session is registered', async () => {
@@ -5613,7 +5731,7 @@ describe('AIAssistantPanel property tests', () => {
         fireEvent.click(getByTestId('attachment-image-thumbnail'));
         expect(getByTestId('attachment-image-preview-dialog')).toBeTruthy();
 
-        fireEvent.click(getByTestId('attachment-image-preview-open-file'));
+        fireEvent.click(getByTestId('preview-file-action-reveal'));
 
         await waitFor(() => {
             expect(showItemInFolderMock).toHaveBeenCalledWith('C:\\Users\\demo\\capture.png');
@@ -5791,7 +5909,9 @@ describe('AIAssistantPanel property tests', () => {
         });
 
         await waitFor(() => expect(onHandled).toHaveBeenCalled());
-        expect(getByText('Draft isolated task')).toBeTruthy();
+        // The task-execution header also prints the active tab title, so match
+        // the tab itself rather than bare text.
+        expect(screen.getByRole('tab', { name: 'Draft isolated task' })).toBeTruthy();
 
         const input = getByTestId('ai-input') as HTMLTextAreaElement;
         fireEvent.change(input, { target: { value: 'project draft' } });
@@ -6338,7 +6458,7 @@ describe('AIAssistantPanel property tests', () => {
     it('closes matching project tab on backend task closed event', async () => {
         const onHandled = vi.fn();
 
-        const { getByText, queryByText } = renderPanel({
+        const { queryByText } = renderPanel({
             pendingProjectTabOpen: {
                 projectPath: 'D:/tasks/close-event',
                 taskTitle: 'Close event task',
@@ -6349,7 +6469,9 @@ describe('AIAssistantPanel property tests', () => {
         });
 
         await waitFor(() => expect(onHandled).toHaveBeenCalled());
-        expect(getByText('Close event task')).toBeTruthy();
+        // The task-execution header also prints the active tab title, so match
+        // the tab itself rather than bare text.
+        expect(screen.getByRole('tab', { name: 'Close event task' })).toBeTruthy();
 
         const closeEventHandler = runtimeEventsOnMock.mock.calls.filter(([eventName]) => eventName === 'project-task:closed').at(-1)?.[1];
         expect(closeEventHandler).toBeTypeOf('function');
@@ -6373,8 +6495,8 @@ describe('AIAssistantPanel property tests', () => {
         // Switch away to the local assistant tab first. In jsdom the tab bar is
         // zero-width, so the inactive project tab collapses into the overflow
         // menu and leaves the DOM until it is active again.
-        fireEvent.click(tabFor('AI Assistant')!);
-        await waitFor(() => expect(tabFor('AI Assistant')?.getAttribute('aria-selected')).toBe('true'));
+        fireEvent.click(tabFor('Default Task')!);
+        await waitFor(() => expect(tabFor('Default Task')?.getAttribute('aria-selected')).toBe('true'));
         loadProjectTabConversationMock.mockClear();
 
         const activateHandler = runtimeEventsOnMock.mock.calls.filter(([eventName]) => eventName === 'project-task:activate').at(-1)?.[1];
@@ -6382,7 +6504,7 @@ describe('AIAssistantPanel property tests', () => {
         act(() => activateHandler({ projectPath: 'D:/tasks/activate-target' }));
 
         await waitFor(() => expect(tabFor('Activate target task')?.getAttribute('aria-selected')).toBe('true'));
-        expect(tabFor('AI Assistant')?.getAttribute('aria-selected')).toBe('false');
+        expect(tabFor('Default Task')?.getAttribute('aria-selected')).toBe('false');
         // Focus-only: no transcript reload for the reactivated tab.
         expect(loadProjectTabConversationMock).not.toHaveBeenCalled();
     });
@@ -6679,7 +6801,9 @@ describe('AIAssistantPanel property tests', () => {
                     expect(actionButtons.length).toBe(actions.length);
 
                     if (errorOpt !== null) {
-                        expect(container.textContent).toContain(errorOpt);
+                        // Error bubbles are trimmed by localizeAIAssistantError
+                        // before display, so compare against the trimmed text.
+                        expect(container.textContent).toContain(errorOpt.trim());
                     }
                 },
             ),
@@ -6890,7 +7014,7 @@ describe('thinking panel auto-expands with real hook state shape', () => {
         };
         const { container, rerender } = render(<AIAssistantPanel {...initialProps} />, { wrapper: DialogProvider });
 
-        expect(container.querySelector('details')).toHaveProperty('open', false);
+        expect(container.querySelector('[data-testid="assistant-reasoning-panel"]')).toHaveProperty('open', false);
 
         rerender(
             <AIAssistantPanel
@@ -6903,6 +7027,6 @@ describe('thinking panel auto-expands with real hook state shape', () => {
             />,
         );
 
-        expect(container.querySelector('details')).toHaveProperty('open', true);
+        expect(container.querySelector('[data-testid="assistant-reasoning-panel"]')).toHaveProperty('open', true);
     });
 });

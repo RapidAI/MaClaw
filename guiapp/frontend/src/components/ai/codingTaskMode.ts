@@ -121,6 +121,26 @@ export function isTaskManagementTaskRow(task?: { tags?: string[] | null } | null
     return tags.includes("manual_task") && tags.includes("recent_task");
 }
 
+type VisibleTaskRowShape = {
+    has_output?: boolean | null;
+    name?: string | null;
+    tags?: string[] | null;
+    project_path?: string | null;
+    projectPath?: string | null;
+    working_dir?: string | null;
+    workingDir?: string | null;
+};
+
+/** Single visibility predicate shared by the sidebar list, the task switcher and project search. */
+export function isVisibleTaskRow<T extends VisibleTaskRowShape>(proj: T): boolean {
+    return proj.has_output !== false || isCloudWorkspaceTask(proj) || isTaskManagementTaskRow(proj);
+}
+
+/** Sidebar task list visibility: output-bearing tasks plus durable task rows, one row per cloud workspace. */
+export function visibleTaskRows<T extends VisibleTaskRowShape>(tasks: T[]): T[] {
+    return collapseCloudWorkspaceTasks(tasks.filter(isVisibleTaskRow));
+}
+
 type CloudWorkspaceLeaseResume = (
     workspaceId: string,
     projectPath: string,

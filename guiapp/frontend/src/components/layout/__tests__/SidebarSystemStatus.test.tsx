@@ -77,6 +77,26 @@ describe('SidebarSystemStatus Hub credits', () => {
         expect(document.querySelector('.sidebar-system-status__provider-vision-icon')).toBeNull();
     });
 
+    it('hides card balance and plan limits for a non-official provider', () => {
+        renderStatus({
+            ...baseCredits,
+            newUserLimitCards: [{ serviceGroupID: 'g1', fiveHourLimit: 1000, fiveHourUsed: 100, fiveHourRolling: false, fiveHourResetAt: '', dailyLimit: 2500, dailyUsed: 3, dailyResetAt: '', permanent: false, expiresAt: '', status: '', retryAfterSeconds: 0, retryAfterAt: '' }],
+        }, { isHubService: false });
+
+        expect(screen.queryByText('点卡余额')).toBeNull();
+        expect(screen.queryByText('套餐额度')).toBeNull();
+    });
+
+    it('shows card balance and plan limits for the official provider', () => {
+        renderStatus({
+            ...baseCredits,
+            newUserLimitCards: [{ serviceGroupID: 'g1', fiveHourLimit: 1000, fiveHourUsed: 100, fiveHourRolling: false, fiveHourResetAt: '', dailyLimit: 2500, dailyUsed: 3, dailyResetAt: '', permanent: false, expiresAt: '', status: '', retryAfterSeconds: 0, retryAfterAt: '' }],
+        });
+
+        expect(screen.queryByText('点卡余额')).not.toBeNull();
+        expect(screen.queryByText('套餐额度')).not.toBeNull();
+    });
+
     it('does not infer image input from an unknown capability value', () => {
         render(
             <SidebarSystemStatus

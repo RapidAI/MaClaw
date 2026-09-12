@@ -15,7 +15,8 @@ const RequiredNodeVersion = "24.13.0"
 
 const (
 	CodeGenClientNameHeader = "X-Codegen-Client-Name"
-	CodeGenClientName       = "tigerclaw"
+	CodeGenClientName       = "QAgent"
+	CodeGenLegacyClientName = "tigerclaw"
 	CodeGenDefaultModelID   = "qax-codegen/Auto"
 	CodeGenAutoModelAlias   = "auto"
 )
@@ -32,10 +33,21 @@ func SetCodeGenClientNameHeaderIfNeededWithName(req *http.Request, clientName st
 
 func NormalizeCodeGenClientName(clientName string) string {
 	name := strings.TrimSpace(clientName)
-	if name == "" || strings.EqualFold(name, "openclaw") {
+	if name == "" || strings.EqualFold(name, "openclaw") || strings.EqualFold(name, CodeGenLegacyClientName) {
 		return CodeGenClientName
 	}
 	return name
+}
+
+func codeGenRequestUserAgent(rawURL, agentType string) string {
+	ua := strings.TrimSpace(agentType)
+	if IsCodeGenURL(rawURL) {
+		return NormalizeCodeGenClientName(ua)
+	}
+	if ua != "" {
+		return ua
+	}
+	return "openclaw"
 }
 
 func IsCodeGenHostname(hostname string) bool {
@@ -979,10 +991,7 @@ type MaclawLLMProvider struct {
 
 // UserAgent returns the User-Agent header value for LLM API requests.
 func (p MaclawLLMProvider) UserAgent() string {
-	if agentType := strings.TrimSpace(p.AgentType); agentType != "" {
-		return agentType
-	}
-	return "openclaw"
+	return codeGenRequestUserAgent(p.URL, p.AgentType)
 }
 
 // IsCodexSubscriptionOAuthProvider reports whether this provider targets
@@ -1061,6 +1070,11 @@ type MaclawLLMConfig struct {
 	WorkflowTypeHint  string `json:"-"`
 	PhaseKindHint     string `json:"-"`
 	TaskTypeHint      string `json:"-"`
+
+	// SessionID is a request-only conversation affinity id. OpenCode Go
+	// requires x-opencode-session on every inference request; when set it is
+	// reused across turns of the same conversation. Never persisted.
+	SessionID string `json:"-"`
 }
 
 // IsResponsesAPI reports whether this config targets the OpenAI Responses API.
@@ -1155,13 +1169,9 @@ type WebSearchEngineConfig struct {
 }
 
 // UserAgent returns the User-Agent header value for LLM API requests.
-// Returns AgentType as the User-Agent string.
-// Default is "openclaw" when AgentType is empty.
+// CodeGen endpoints always send the canonical CodeGen client name.
 func (c MaclawLLMConfig) UserAgent() string {
-	if agentType := strings.TrimSpace(c.AgentType); agentType != "" {
-		return agentType
-	}
-	return "openclaw"
+	return codeGenRequestUserAgent(c.URL, c.AgentType)
 }
 
 func (c MaclawLLMConfig) UpstreamModel() string {

@@ -4,7 +4,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/RapidAI/CodeClaw/corelib"
+	"time"
+
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
 // Regression: the local desktop coding workbench runs in-process behind a
@@ -157,5 +161,60 @@ func TestCodingSubAgentSessionLacksEffectEvidence(t *testing.T) {
 	chatSession := &TrajectorySession{Kind: "shared", Status: "success"}
 	if codingSubAgentSessionLacksEffectEvidence(chatSession) {
 		t.Fatalf("non-coding sessions are out of scope for this guard")
+	}
+}
+
+func TestLocalCodingPreDispatchGateFailsFastWithoutVerifiedRelation(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		app.closeCodingTaskRelationService()
+	})
+	handler := &IMMessageHandler{app: app}
+	loopCtx := NewLoopContext("coding-plan-approve", 1, nil)
+	loopCtx.UserID = projectSessionOwnerID("C:/workspace/a")
+	task := &TaskItem{Index: 1, Title: "implement snake gui", Description: "rewrite snake.cpp with Win32", RequestKind: codingRequestImplementation}
+	result := runTaskWithSubAgentRuntimeOptions(handler, corelib.MaclawLLMConfig{}, nil, task, t.TempDir(), "", "", nil, loopCtx, nil, nil, nil)
+	if result == nil || result.Status != TaskExecFailed {
+		t.Fatalf("implementation step without verified relation must fail fast, got %+v", result)
+	}
+	if !strings.Contains(result.Error, desktopCodingVerifiedSurfaceUnavailableDiagnostic) {
+		t.Fatalf("gate diagnostic missing: %q", result.Error)
+	}
+}
+
+func TestCodingWorkbenchParallelWaveSerializedOnVerifiedDesktopSurface(t *testing.T) {
+	wave := []*v2.TaskItem{
+		{Index: 1, Title: "writer a", Files: []string{"a.go"}},
+		{Index: 2, Title: "writer b", Files: []string{"b.go"}},
+	}
+	if codingWorkbenchCanRunParallelWaveForSurface(projectSessionOwnerID("C:/workspace/a"), codingRequestImplementation, true, "auto", t.TempDir(), wave) {
+		t.Fatal("verified desktop surface must serialize parallel writer waves")
+	}
+}
+
+func TestRemoteCodingPreDispatchGateDiagnostic(t *testing.T) {
+	newAgent := func(kind codingRequestKind, withHandle bool) *RemoteCodingSubAgent {
+		loopCtx := NewLoopContext("coding-plan-approve", 1, nil)
+		loopCtx.UserID = projectSessionOwnerID("C:/workspace/a")
+		agent := &RemoteCodingSubAgent{sessionID: "sess-1", requestKind: kind, loopCtx: loopCtx}
+		if withHandle {
+			agent.verifiedTaskHandle = &verifiedCodingTaskHandle{
+				handleID: "h", tenantID: "t", principalID: "p", sessionID: "s",
+				rootTaskID: "r", turnID: "u", expiresAt: time.Now().Add(time.Hour),
+			}
+		}
+		return agent
+	}
+	if diag := newAgent(codingRequestImplementation, false).preDispatchGateDiagnostic(false, "implement feature"); diag != desktopCodingVerifiedSurfaceUnavailableDiagnostic {
+		t.Fatalf("implementation step without verified relation must fail fast, got %q", diag)
+	}
+	if diag := newAgent(codingRequestOperational, false).preDispatchGateDiagnostic(false, "run the build"); diag != desktopCodingVerifiedSurfaceUnavailableDiagnostic {
+		t.Fatalf("operational step without verified relation must fail fast, got %q", diag)
+	}
+	if diag := newAgent(codingRequestInquiry, false).preDispatchGateDiagnostic(false, "explain the code"); diag != "" {
+		t.Fatalf("inquiry step must stay read-only by design, got %q", diag)
+	}
+	if diag := newAgent(codingRequestImplementation, true).preDispatchGateDiagnostic(true, "implement feature"); diag != "" {
+		t.Fatalf("retained verified relation must pass the gate, got %q", diag)
 	}
 }

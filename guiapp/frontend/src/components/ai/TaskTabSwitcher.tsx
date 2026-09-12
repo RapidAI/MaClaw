@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import type { AITab } from "./AITabTypes";
 import { getAITabDisplayTitle } from "./AITabItem";
+import { normalizeProjectSessionPath } from "./aiAssistantPanelSessionUtils";
+import { cloudWorkspaceIdFromPath, cloudWorkspaceIdFromTaskFields, visibleTaskRows } from "./codingTaskMode";
+import { sanitizeProjectTabTitle } from "./useAITabManager";
+import type { TaskManagementItem } from "../layout/SidebarTaskManagement";
 
 type TaskTabSwitcherProps = {
     tabs: AITab[];
@@ -8,6 +12,9 @@ type TaskTabSwitcherProps = {
     lang: string;
     onActivate: (tabId: string) => void;
     onClose: (tabId: string) => void;
+    /** Sidebar-visible task rows; when provided the menu mirrors the task list instead of only open tabs. */
+    tasks?: TaskManagementItem[];
+    onOpenTask?: (projectPath: string, task?: TaskManagementItem) => void;
 };
 
 const label = (lang: string, en: string, zh: string, hant = zh) =>
@@ -61,13 +68,27 @@ function TabTypeIcon({ tab }: { tab: AITab }) {
     );
 }
 
+type SwitcherRow = {
+    key: string;
+    testId: string;
+    title: string;
+    iconTab: AITab;
+    active: boolean;
+    closeTabId?: string;
+    /** Task-list row without an open tab; selecting it opens the task. */
+    unopened?: boolean;
+    onSelect: () => void;
+};
+
 /**
- * Compact open-task switcher for the task execution header. Lists every
- * assistant tab (local / project / expert / VE / group) in a dropdown so the
- * user can switch or close tasks without a visible tab strip. The list renders
- * only while open so task titles never duplicate header text in the DOM.
+ * Compact task switcher for the task execution header. With only `tabs` it
+ * lists every assistant tab; when the sidebar task list is passed via `tasks`
+ * it mirrors that list instead — opened tasks switch, unopened ones open via
+ * `onOpenTask`, and leftover open tabs no task claims stay reachable at the
+ * end. The list renders only while open so task titles never duplicate header
+ * text in the DOM.
  */
-export function TaskTabSwitcher({ tabs, activeTabId, lang, onActivate, onClose }: TaskTabSwitcherProps) {
+export function TaskTabSwitcher({ tabs, activeTabId, lang, onActivate, onClose, tasks, onOpenTask }: TaskTabSwitcherProps) {
     const [open, setOpen] = useState(false);
     const rootRef = useRef<HTMLDetailsElement>(null);
 
@@ -79,6 +100,54 @@ export function TaskTabSwitcher({ tabs, activeTabId, lang, onActivate, onClose }
         document.addEventListener("mousedown", handler);
         return () => document.removeEventListener("mousedown", handler);
     }, [open]);
+
+    const tabRow = (tab: AITab): SwitcherRow => ({
+        key: tab.id,
+        testId: `task-tab-switcher-item-${tab.id}`,
+        title: getAITabDisplayTitle(tab, lang),
+        iconTab: tab,
+        active: tab.id === activeTabId,
+        closeTabId: tab.closable ? tab.id : undefined,
+        onSelect: () => onActivate(tab.id),
+    });
+
+    let rows: SwitcherRow[];
+    if (!tasks) {
+        rows = tabs.map(tabRow);
+    } else {
+        rows = [];
+        const matchedTabIds = new Set<string>();
+        const localTab = tabs.find(tab => tab.type === "local");
+        if (localTab) rows.push(tabRow(localTab));
+        visibleTaskRows(tasks).forEach((task, index) => {
+            const taskPath = normalizeProjectSessionPath(task.project_path || "");
+            const wsId = cloudWorkspaceIdFromTaskFields(task);
+            const tab = tabs.find(candidate => candidate.type !== "local" && !matchedTabIds.has(candidate.id) && (
+                (!!wsId && (String(candidate.cloudWorkspaceId || "").trim() || cloudWorkspaceIdFromPath(candidate.projectPath)) === wsId)
+                || (!!taskPath && normalizeProjectSessionPath(candidate.projectPath || "") === taskPath)
+            )) || null;
+            if (tab) matchedTabIds.add(tab.id);
+            const title = sanitizeProjectTabTitle(String(task.name || "").trim(), task.project_path);
+            const key = String(task.id || task.project_path || index);
+            if (tab) {
+                rows.push({ ...tabRow(tab), title });
+            } else {
+                rows.push({
+                    key: `task-${key}`,
+                    testId: `task-tab-switcher-task-${key}`,
+                    title,
+                    iconTab: { id: `task-${key}`, type: "project", title, projectPath: task.project_path, cloudWorkspaceId: wsId || undefined, closable: false },
+                    active: false,
+                    unopened: true,
+                    onSelect: () => onOpenTask?.(task.project_path, task),
+                });
+            }
+        });
+        for (const tab of tabs) {
+            if (tab.type === "local" || matchedTabIds.has(tab.id)) continue;
+            rows.push(tabRow(tab));
+        }
+    }
 
     return (
         <details
@@ -102,52 +171,48 @@ export function TaskTabSwitcher({ tabs, activeTabId, lang, onActivate, onClose }
                 title={label(lang, "Switch task", "切换任务", "切換任務")}
                 onClick={event => { event.preventDefault(); setOpen(current => !current); }}
             >
-                {label(lang, "Tasks", "任务", "任務")} ({tabs.length})
+                {label(lang, "Tasks", "任务", "任務")} ({rows.length})
             </summary>
             {open && (
                 <div className="mc-task-tab-switcher__popover" role="menu" aria-label={label(lang, "Open tasks", "打开的任务", "開啟的任務")}>
-                    {tabs.map(tab => {
-                        const active = tab.id === activeTabId;
-                        const title = getAITabDisplayTitle(tab, lang);
-                        return (
-                            <div
-                                key={tab.id}
-                                role="menuitem"
-                                tabIndex={0}
-                                className="mc-task-tab-switcher__item"
-                                data-testid={`task-tab-switcher-item-${tab.id}`}
-                                data-active={active || undefined}
-                                onClick={() => { setOpen(false); onActivate(tab.id); }}
-                                onKeyDown={event => {
-                                    if (event.key !== "Enter" && event.key !== " ") return;
-                                    // The close button handles its own keys; without this guard a
-                                    // keyboard press on × would bubble here and activate instead.
-                                    if ((event.target as HTMLElement).closest(".mc-task-tab-switcher__close")) {
-                                        // Keep Space from scrolling the popover before keyup fires click.
-                                        if (event.key === " ") event.preventDefault();
-                                        return;
-                                    }
-                                    event.preventDefault();
-                                    setOpen(false);
-                                    onActivate(tab.id);
-                                }}
-                            >
-                                <span className="mc-task-tab-switcher__check" aria-hidden="true">{active ? "✓" : ""}</span>
-                                <TabTypeIcon tab={tab} />
-                                <span className="mc-task-tab-switcher__title" title={title}>{title}</span>
-                                {tab.closable ? (
-                                    <button
-                                        type="button"
-                                        className="mc-task-tab-switcher__close"
-                                        data-testid={`task-tab-switcher-close-${tab.id}`}
-                                        aria-label={label(lang, `Close ${title}`, `关闭 ${title}`, `關閉 ${title}`)}
-                                        title={label(lang, "Close task", "关闭任务", "關閉任務")}
-                                        onClick={event => { event.stopPropagation(); onClose(tab.id); }}
-                                    >×</button>
-                                ) : null}
-                            </div>
-                        );
-                    })}
+                    {rows.map(row => (
+                        <div
+                            key={row.key}
+                            role="menuitem"
+                            tabIndex={0}
+                            className={`mc-task-tab-switcher__item${row.unopened ? " mc-task-tab-switcher__item--unopened" : ""}`}
+                            data-testid={row.testId}
+                            data-active={row.active || undefined}
+                            onClick={() => { setOpen(false); row.onSelect(); }}
+                            onKeyDown={event => {
+                                if (event.key !== "Enter" && event.key !== " ") return;
+                                // The close button handles its own keys; without this guard a
+                                // keyboard press on × would bubble here and activate instead.
+                                if ((event.target as HTMLElement).closest(".mc-task-tab-switcher__close")) {
+                                    // Keep Space from scrolling the popover before keyup fires click.
+                                    if (event.key === " ") event.preventDefault();
+                                    return;
+                                }
+                                event.preventDefault();
+                                setOpen(false);
+                                row.onSelect();
+                            }}
+                        >
+                            <span className="mc-task-tab-switcher__check" aria-hidden="true">{row.active ? "✓" : ""}</span>
+                            <TabTypeIcon tab={row.iconTab} />
+                            <span className="mc-task-tab-switcher__title" title={row.title}>{row.title}</span>
+                            {row.closeTabId ? (
+                                <button
+                                    type="button"
+                                    className="mc-task-tab-switcher__close"
+                                    data-testid={`task-tab-switcher-close-${row.closeTabId}`}
+                                    aria-label={label(lang, `Close ${row.title}`, `关闭 ${row.title}`, `關閉 ${row.title}`)}
+                                    title={label(lang, "Close task", "关闭任务", "關閉任務")}
+                                    onClick={event => { event.stopPropagation(); onClose(row.closeTabId as string); }}
+                                >×</button>
+                            ) : null}
+                        </div>
+                    ))}
                 </div>
             )}
         </details>

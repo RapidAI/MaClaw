@@ -12,7 +12,7 @@ const zhHant = {
     workflows: '\u5de5\u4f5c\u6d41',
 };
 
-export const getHeaderTitle = (navTab: string, lang: string, t: (key: string) => string, splitUtilities = false) => (
+export const getHeaderTitle = (navTab: string, lang: string, t: (key: string) => string, splitUtilities = false, settingsTab?: string) => (
     isToolTab(navTab) ? getToolLabel(navTab) :
         navTab === 'projects' ? t('projectManagement') :
             navTab === 'apps' ? miniAppShortLabel(lang) :
@@ -26,6 +26,6 @@ export const getHeaderTitle = (navTab: string, lang: string, t: (key: string) =>
                             navTab === 'files' ? (lang === 'zh-Hans' ? '移动文稿库' : lang === 'zh-Hant' ? '行動文稿庫' : 'Mobile documents') :
                                 navTab === 'api-store' ? t('apiStore') :
                                     navTab === 'mcp' ? 'MCP' :
-                                        navTab === 'settings' ? t('globalSettings') :
+                                        navTab === 'settings' ? (settingsTab === 'knowledge' ? (lang === 'zh-Hans' ? '知识库' : lang === 'zh-Hant' ? '知識庫' : 'Knowledge base') : t('globalSettings')) :
                                             t('about')
 );

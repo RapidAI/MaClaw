@@ -18,7 +18,7 @@ import {
 } from "../VEConversationView";
 import type { VEConversationViewProps, VEConversationError, VEConversationHandle } from "../VEConversationView";
 import type { Theme } from "../aiAssistantPanelTheme";
-import { CHAT_BUBBLE_TAIL_INSET, CHAT_BUBBLE_TAIL_TOP } from "../ChatBubbleFrame";
+import { CHAT_BUBBLE_SIDE_TAIL_INSET, CHAT_BUBBLE_SIDE_TAIL_TOP } from "../ChatBubbleFrame";
 import { GroupDiscussionAttachmentPreviewDataURL, GroupDiscussionDownloadAttachment, GroupDiscussionGetConsultationDetail, ListVirtualEmployees, OpenFileOrShowInFolder, SelectAIAssistantFiles } from "../../../../wailsjs/go/main/App";
 
 // Mock Wails runtime
@@ -224,11 +224,11 @@ describe("VEConversationView", () => {
         expect(bubble.style.overflowWrap).toBe("anywhere");
         expect(bubble.style.whiteSpace).toBe("pre-wrap");
         expect(screen.getByText("第二行")).toBeTruthy();
-        // Top-pointing tail under the speaker name (same as AI assistant).
+        // Corner tail on the name-side top corner (same as AI assistant).
         const tail = screen.getByTestId("ve-msg-content-wrap-1-tail");
         expect(tail.getAttribute("data-side")).toBe("left");
-        expect(tail.style.top).toBe(`${CHAT_BUBBLE_TAIL_TOP}px`);
-        expect(tail.style.left).toBe(`${CHAT_BUBBLE_TAIL_INSET}px`);
+        expect(tail.style.top).toBe(`${CHAT_BUBBLE_SIDE_TAIL_TOP}px`);
+        expect(tail.style.left).toBe(`${CHAT_BUBBLE_SIDE_TAIL_INSET}px`);
     });
 
     it("renders compact markdown headings in digital employee replies as separate lines", () => {
@@ -1838,11 +1838,11 @@ describe("VEConversationView", () => {
             expect(bubble.style.overflowWrap).toBe("anywhere");
             expect(bubble.style.whiteSpace).toBe("pre-wrap");
             expect(screen.getByText("second line")).toBeTruthy();
-            // Name sits above the bubble; top tail points at the speaker (AI assistant style).
+            // Name sits above the bubble; corner tail points back at the speaker (AI assistant style).
             const tail = screen.getByTestId("ve-streaming-content-tail");
             expect(tail.getAttribute("data-side")).toBe("left");
-            expect(tail.style.top).toBe(`${CHAT_BUBBLE_TAIL_TOP}px`);
-            expect(tail.style.left).toBe(`${CHAT_BUBBLE_TAIL_INSET}px`);
+            expect(tail.style.top).toBe(`${CHAT_BUBBLE_SIDE_TAIL_TOP}px`);
+            expect(tail.style.left).toBe(`${CHAT_BUBBLE_SIDE_TAIL_INSET}px`);
             const indicator = screen.getByTestId("ve-streaming-indicator");
             const nameRow = indicator.firstElementChild as HTMLElement | null;
             expect(nameRow).toBeTruthy();

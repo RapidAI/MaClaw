@@ -18,12 +18,13 @@ import { darkTheme, lightTheme } from "./aiAssistantPanelTheme";
 // outside jsdom's scope.
 const safeKBImageJPEG = "/9j/2wCEAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDIBCQkJDAsMGA0NGDIhHCEyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMv/AABEIAAEAAQMBIgACEQEDEQH/xAGiAAABBQEBAQEBAQAAAAAAAAAAAQIDBAUGBwgJCgsQAAIBAwMCBAMFBQQEAAABfQECAwAEEQUSITFBBhNRYQcicRQygZGhCCNCscEVUtHwJDNicoIJChYXGBkaJSYnKCkqNDU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+gEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoLEQACAQIEBAMEBwUEBAABAncAAQIDEQQFITEGEkFRB2FxEyIygQgUQpGhscEJIzNS8BVictEKFiQ04SXxFxgZGiYnKCkqNTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqCg4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2dri4+Tl5ufo6ery8/T19vf4+fr/2gAMAwEAAhEDEQA/AOLooor5k/cT/9k=";
 
-const { openFileOrShowInFolderMock, showItemInFolderMock, knowledgeOpenImageAssetMock, attachmentPreviewDataURLMock, attachmentFullDataURLMock } = vi.hoisted(() => ({
+const { openFileOrShowInFolderMock, showItemInFolderMock, knowledgeOpenImageAssetMock, attachmentPreviewDataURLMock, attachmentFullDataURLMock, importMobileDocumentFromPathMock } = vi.hoisted(() => ({
     openFileOrShowInFolderMock: vi.fn(async () => undefined),
     showItemInFolderMock: vi.fn(async () => undefined),
     knowledgeOpenImageAssetMock: vi.fn(async () => undefined),
     attachmentPreviewDataURLMock: vi.fn(async () => "data:image/png;base64,HOSTTHUMB"),
     attachmentFullDataURLMock: vi.fn(async () => "data:image/png;base64,HOSTFULL"),
+    importMobileDocumentFromPathMock: vi.fn(async (_path: string) => ({ id: "draft-1" })),
 }));
 
 vi.mock("../../../wailsjs/go/main/App", () => ({
@@ -32,6 +33,7 @@ vi.mock("../../../wailsjs/go/main/App", () => ({
     KnowledgeOpenImageAsset: knowledgeOpenImageAssetMock,
     AIAssistantAttachmentPreviewDataURL: attachmentPreviewDataURLMock,
     AIAssistantAttachmentFullDataURL: attachmentFullDataURLMock,
+    ImportMobileDocumentFromPath: importMobileDocumentFromPathMock,
 }));
 
 vi.mock("../../../wailsjs/runtime", () => ({
@@ -574,7 +576,10 @@ describe("renderContentWithCodeBlocks", () => {
         expect(screen.getByTestId("attachment-image-preview-status").textContent).toBe("screen.png");
 
         fireEvent.click(screen.getByTestId("attachment-image-preview-close"));
-        expect(screen.queryByTestId("attachment-image-preview-dialog")).toBeNull();
+        // The panel slides back out before it unmounts.
+        await waitFor(() => {
+            expect(screen.queryByTestId("attachment-image-preview-dialog")).toBeNull();
+        });
     });
 
     it("reveals a saved screenshot in its folder instead of opening the OS viewer", async () => {
@@ -582,7 +587,7 @@ describe("renderContentWithCodeBlocks", () => {
         render(<div>{renderScreenshotPreview("abc", savedPath, lightTheme, "zh")}</div>);
 
         fireEvent.click(await screen.findByTestId("attachment-image-thumbnail"));
-        fireEvent.click(screen.getByTestId("attachment-image-preview-open-file"));
+        fireEvent.click(screen.getByTestId("preview-file-action-reveal"));
 
         expect(showItemInFolderMock).toHaveBeenCalledWith(savedPath);
         expect(openFileOrShowInFolderMock).not.toHaveBeenCalled();
@@ -594,7 +599,7 @@ describe("renderContentWithCodeBlocks", () => {
         fireEvent.click(await screen.findByTestId("attachment-image-thumbnail"));
 
         expect(screen.getByTestId("attachment-image-preview-image").getAttribute("src")).toBe("data:image/png;base64,abc");
-        expect(screen.queryByTestId("attachment-image-preview-open-file")).toBeNull();
+        expect(screen.queryByTestId("preview-file-action-reveal")).toBeNull();
         expect(attachmentFullDataURLMock).not.toHaveBeenCalled();
     });
 
@@ -1081,6 +1086,113 @@ describe("renderContentWithCodeBlocks", () => {
         fireEvent.click(screen.getByTitle("人工智能数学入门教程.pdf"));
         await waitFor(() => {
             expect(openFileOrShowInFolderMock).toHaveBeenCalledWith(path);
+        });
+    });
+
+    it("uploads a saved task-result file to the mobile library from the card icon", async () => {
+        importMobileDocumentFromPathMock.mockClear();
+        const path = "C:\\Users\\me\\report.pptx";
+        render(<div>{renderMessage({
+            id: "saved-local-pptx",
+            role: "assistant",
+            content: "PPT已生成",
+            localFilePath: path,
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, false, "文件已保存", "zh", false)}</div>);
+
+        const uploadBtn = screen.getByLabelText("上传到移动文稿库");
+        fireEvent.click(uploadBtn);
+        await waitFor(() => {
+            expect(importMobileDocumentFromPathMock).toHaveBeenCalledWith(path);
+        });
+        await waitFor(() => {
+            expect(uploadBtn.textContent).toBe("✓");
+        });
+    });
+
+    it("shows an error state when the mobile library upload fails", async () => {
+        importMobileDocumentFromPathMock.mockClear();
+        importMobileDocumentFromPathMock.mockRejectedValueOnce(new Error("hub unreachable"));
+        const path = "C:\\Users\\me\\report.docx";
+        render(<div>{renderMessage({
+            id: "saved-local-docx",
+            role: "assistant",
+            content: "文档已生成",
+            localFilePath: path,
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, false, "文件已保存", "zh", false)}</div>);
+
+        const uploadBtn = screen.getByLabelText("上传到移动文稿库");
+        fireEvent.click(uploadBtn);
+        await waitFor(() => {
+            expect(uploadBtn.textContent).toBe("✗");
+        });
+        expect(uploadBtn.title).toContain("hub unreachable");
+    });
+
+    it("does not render the mobile library upload icon for cloud workspace files", () => {
+        const path = "C:\\Users\\me\\.maclaw\\data\\cloud-workspaces\\tenant_default\\cws_abc\\book.pdf";
+        render(<div>{renderMessage({
+            id: "saved-cloud-no-upload",
+            role: "assistant",
+            content: "PDF已成功发送",
+            localFilePath: path,
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, false, "文件已保存", "zh", false)}</div>);
+
+        expect(screen.queryByLabelText("上传到移动文稿库")).toBeNull();
+    });
+
+    it("retries the mobile library upload after a failure", async () => {
+        importMobileDocumentFromPathMock.mockClear();
+        importMobileDocumentFromPathMock.mockRejectedValueOnce(new Error("hub unreachable"));
+        const path = "C:\\Users\\me\\retry.xlsx";
+        render(<div>{renderMessage({
+            id: "saved-local-retry",
+            role: "assistant",
+            content: "表格已生成",
+            localFilePath: path,
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, false, "文件已保存", "zh", false)}</div>);
+
+        const uploadBtn = screen.getByLabelText("上传到移动文稿库");
+        fireEvent.click(uploadBtn);
+        await waitFor(() => {
+            expect(uploadBtn.textContent).toBe("✗");
+        });
+
+        fireEvent.click(uploadBtn);
+        await waitFor(() => {
+            expect(importMobileDocumentFromPathMock).toHaveBeenCalledTimes(2);
+        });
+        await waitFor(() => {
+            expect(uploadBtn.textContent).toBe("✓");
+        });
+    });
+
+    it("ignores extra clicks while a mobile library upload is in flight", async () => {
+        importMobileDocumentFromPathMock.mockClear();
+        let resolveUpload: ((value: { id: string }) => void) | undefined;
+        importMobileDocumentFromPathMock.mockImplementationOnce(() => new Promise((resolve) => { resolveUpload = resolve; }));
+        const path = "C:\\Users\\me\\slow.pptx";
+        render(<div>{renderMessage({
+            id: "saved-local-slow",
+            role: "assistant",
+            content: "PPT已生成",
+            localFilePath: path,
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, false, "文件已保存", "zh", false)}</div>);
+
+        const uploadBtn = screen.getByLabelText("上传到移动文稿库") as HTMLButtonElement;
+        fireEvent.click(uploadBtn);
+        fireEvent.click(uploadBtn);
+        fireEvent.click(uploadBtn);
+        expect(importMobileDocumentFromPathMock).toHaveBeenCalledTimes(1);
+        expect(uploadBtn.disabled).toBe(true);
+
+        resolveUpload?.({ id: "draft-2" });
+        await waitFor(() => {
+            expect(uploadBtn.textContent).toBe("✓");
         });
     });
 
@@ -1729,7 +1841,7 @@ describe("renderMessage assistant display guard", () => {
         expect(assistantGroup.getAttribute("role")).toBe("group");
         expect(assistantGroup.getAttribute("aria-label")).toBe("AI assistant message");
         expect(assistantGroup.style.alignItems).toBe("flex-start");
-        expect(screen.getByText("AI Assistant")).toBeTruthy();
+        expect(screen.getByText("Default Task")).toBeTruthy();
         const assistantBubble = screen.getByTestId("assistant-chat-ai-bubble-ai-bubble") as HTMLElement;
         expect(assistantBubble.style.borderRadius).toBe("16px");
         const assistantTail = screen.getByTestId("assistant-chat-tail-ai-ai-bubble");

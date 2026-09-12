@@ -725,6 +725,19 @@ func TestVEMessageHandler_ConcurrentAccess(t *testing.T) {
 // **Validates: Requirements 4.1, 4.2, 6.3, 6.4**
 // ===========================================================================
 
+// windowsReservedDeviceName reports whether a bare path segment is a Windows
+// reserved device name. Such names cannot be created as files or directories
+// on Windows, so random name generators must exclude them.
+func windowsReservedDeviceName(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "con", "prn", "aux", "nul",
+		"com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+		"lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9":
+		return true
+	}
+	return false
+}
+
 func TestProperty5_ExecutionLayerPathValidation(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		// --- Setup: create directory structure ---
@@ -735,7 +748,9 @@ func TestProperty5_ExecutionLayerPathValidation(t *testing.T) {
 		numAllowed := rapid.IntRange(1, 3).Draw(t, "numAllowedDirs")
 		allowedDirs := make([]string, numAllowed)
 		for i := 0; i < numAllowed; i++ {
-			dirName := rapid.StringMatching(`[a-z]{3,8}`).Draw(t, fmt.Sprintf("allowedDir_%d", i))
+			dirName := rapid.StringMatching(`[a-z]{3,8}`).Filter(func(s string) bool {
+				return !windowsReservedDeviceName(s)
+			}).Draw(t, fmt.Sprintf("allowedDir_%d", i))
 			dir := filepath.Join(baseDir, "allowed", dirName)
 			if err := os.MkdirAll(dir, 0755); err != nil {
 				t.Fatalf("failed to create allowed dir: %v", err)
@@ -761,7 +776,9 @@ func TestProperty5_ExecutionLayerPathValidation(t *testing.T) {
 		os.WriteFile(outsideFilePath, []byte("outside content"), 0644)
 
 		// Create a subdirectory inside allowed dir for list_directory tests
-		subDirName := rapid.StringMatching(`[a-z]{3,6}`).Draw(t, "subDir")
+		subDirName := rapid.StringMatching(`[a-z]{3,6}`).Filter(func(s string) bool {
+			return !windowsReservedDeviceName(s)
+		}).Draw(t, "subDir")
 		insideSubDir := filepath.Join(chosenDir, subDirName)
 		os.MkdirAll(insideSubDir, 0755)
 

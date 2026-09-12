@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -264,6 +265,11 @@ func runGUICodingTaskWithLedgerWithOptions(ctx context.Context, store codingrunt
 		return nil, nil, fmt.Errorf("freeze GUI local coding policy: %w", digestErr)
 	}
 	policy.Digest = policyDigest
+	if policy.Mode == "local" && !policy.ReadOnly && policy.FinalWorkspaceGateRequired {
+		if err := codingruntime.EnsureLocalGitBaseline(ctx, projectPath); err != nil {
+			log.Printf("[coding-runtime] GUI local git baseline init failed for %s: %v", projectPath, err)
+		}
+	}
 	runtimeTask := codingruntime.Task{WorkflowID: workflowID, PhaseID: phaseID, OwnerID: ownerID, ProjectRef: projectPath, Mode: "local", RequestedWork: requestedWork, PolicyDigest: policyDigest}
 	if options != nil {
 		runtimeTask.TaskID = strings.TrimSpace(options.ExistingTaskID)

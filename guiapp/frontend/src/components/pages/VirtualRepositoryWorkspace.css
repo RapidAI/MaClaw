@@ -397,3 +397,42 @@ button.vrepo-tree__chevron:focus-visible { outline: 2px solid var(--vrepo-primar
   .vrepo-button-spinner { animation-duration: 1.4s; }
   .vrepo-dialog-backdrop, .vrepo-dialog { animation: none; }
 }
+
+.vrepo-machine-mappings { margin: 0 0 22px; }
+.vrepo-machine-mappings__head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 9px; }
+.vrepo-machine-mappings__head h3 { margin: 0; color: var(--vrepo-ink); font-size: .9rem; }
+.vrepo-machine-mappings__table { display: flex; flex-direction: column; border: 1px solid var(--vrepo-border-subtle); border-radius: var(--radius-md, 8px); overflow: hidden; }
+.vrepo-machine-mapping { display: grid; grid-template-columns: 14px minmax(86px, max-content) minmax(110px, .8fr) minmax(0, 1.4fr) max-content; align-items: center; gap: 10px; padding: 9px 12px; background: color-mix(in srgb, var(--vrepo-muted) 52%, var(--vrepo-surface)); }
+.vrepo-machine-mapping + .vrepo-machine-mapping { border-top: 1px solid var(--vrepo-border-subtle); }
+.vrepo-mapping-dot { width: 9px; height: 9px; flex: 0 0 9px; border-radius: 50%; background: var(--vrepo-muted-ink); }
+.vrepo-mapping-dot.is-ok { background: var(--vrepo-success); }
+.vrepo-mapping-dot.is-error { background: var(--vrepo-danger); }
+.vrepo-mapping-dot.is-pending { background: color-mix(in srgb, var(--vrepo-muted-ink) 62%, var(--vrepo-surface)); }
+.vrepo-machine-mapping__kind { display: inline-flex; min-width: 0; align-items: center; gap: 6px; color: var(--vrepo-secondary); }
+.vrepo-machine-mapping__kind svg { width: 15px; height: 15px; flex: 0 0 15px; fill: none; stroke: currentColor; stroke-width: 1.45; stroke-linecap: round; stroke-linejoin: round; }
+.vrepo-machine-mapping__kind em { font-size: .68rem; font-style: normal; font-weight: 650; white-space: nowrap; }
+.vrepo-machine-mapping__label { display: inline-flex; min-width: 0; align-items: center; gap: 7px; overflow: hidden; color: var(--vrepo-ink); font-size: .78rem; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.vrepo-machine-mapping__default { flex: 0 0 auto; padding: 2px 6px; border: 1px solid color-mix(in srgb, var(--vrepo-primary) 42%, var(--vrepo-border)); border-radius: var(--radius-xs, 4px); background: var(--vrepo-primary-soft); color: var(--vrepo-primary); font-size: .6rem; font-weight: 700; line-height: 1.2; }
+.vrepo-machine-mapping__path { overflow: hidden; color: var(--vrepo-secondary); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .68rem; text-overflow: ellipsis; white-space: nowrap; }
+.vrepo-machine-mapping__actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.vrepo-machine-mapping__actions button { min-height: 28px; padding: 0 8px; font-size: .66rem; }
+.vrepo-machine-mappings__empty { margin: 4px 0 2px; color: var(--vrepo-muted-ink); font-size: .74rem; }
+
+.vrepo-mapping-switch { display: flex; align-items: center; gap: 9px; margin-bottom: 16px; }
+.vrepo-mapping-switch label { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--vrepo-secondary); font-size: .72rem; font-weight: 650; }
+.vrepo-mapping-switch select { max-width: min(460px, 100%); min-height: 32px; padding: 5px 8px; border: 1px solid var(--vrepo-border); border-radius: var(--radius-sm, 6px); background: var(--vrepo-surface); color: var(--vrepo-ink); font-size: .74rem; }
+.vrepo-mapping-switch select:focus { border-color: var(--vrepo-primary); outline: none; box-shadow: 0 0 0 2px var(--vrepo-primary-soft); }
+
+.vrepo-coding-targets { display: flex; flex-direction: column; gap: 7px; margin-top: 12px; }
+.vrepo-coding-target { display: grid; grid-template-columns: 14px minmax(86px, max-content) minmax(90px, .8fr) minmax(0, 1.4fr) max-content; align-items: center; gap: 10px; width: 100%; min-height: 40px; padding: 8px 12px !important; border-color: var(--vrepo-border-subtle) !important; background: var(--vrepo-muted) !important; color: var(--vrepo-ink) !important; text-align: left; }
+.vrepo-coding-target:hover:not(:disabled) { border-color: var(--vrepo-primary) !important; }
+.vrepo-coding-target strong { display: inline-flex; min-width: 0; align-items: center; gap: 7px; overflow: hidden; font-size: .76rem; text-overflow: ellipsis; white-space: nowrap; }
+.vrepo-coding-target__path { overflow: hidden; color: var(--vrepo-secondary); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .66rem; text-overflow: ellipsis; white-space: nowrap; }
+
+@media (max-width: 820px) {
+  .vrepo-machine-mapping { grid-template-columns: 14px minmax(0, 1fr); }
+  .vrepo-machine-mapping__path { grid-column: 2; }
+  .vrepo-machine-mapping__actions { grid-column: 1 / -1; justify-content: flex-start; }
+  .vrepo-coding-target { grid-template-columns: 14px minmax(0, 1fr) max-content; }
+  .vrepo-coding-target__path { display: none; }
+}

@@ -127,7 +127,7 @@ export function AssistantPermissionModeMenu({ active: panelActive = true, lang, 
 
     return (
         <div ref={rootRef} style={{ position: "relative", flexShrink: 0 }}>
-            <button ref={triggerRef} className="ai-permission-mode-trigger" type="button" aria-label={localizeText(lang, "Permission mode", "权限模式", "權限模式")} aria-controls={open ? menuId : undefined} aria-expanded={open} aria-haspopup="menu" data-testid="ai-permission-mode" onClick={() => setMenuOpen(!open)} onKeyDown={(event) => { if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setMenuOpen(true); } }} title={showWorkspaceOption
+            <button ref={triggerRef} className="ai-permission-mode-trigger" type="button" aria-label={localizeText(lang, "Permission mode", "权限模式", "權限模式")} aria-controls={open ? menuId : undefined} aria-expanded={open} aria-haspopup="menu" data-testid="ai-permission-mode" data-permission-mode={mode} onClick={() => setMenuOpen(!open)} onKeyDown={(event) => { if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setMenuOpen(true); } }} title={showWorkspaceOption
                 ? localizeText(lang, "Permission: Ask / Workspace trust / Full control", "权限：请求授权 / 工作区信任 / 完全控制", "權限：請求授權 / 工作區信任 / 完全控制")
                 : localizeText(lang, "Permission mode", "权限模式", "權限模式")} style={{ height: "24px", display: "inline-flex", alignItems: "center", gap: "4px", padding: "0 5px", border: `1px solid ${theme.fieldBorder}`, borderRadius: 4, background: theme.fieldBg, color: triggerColor, fontSize: "11px", cursor: "pointer" }}>
                 <AssistantInputIcon name={active.icon} size={13} />

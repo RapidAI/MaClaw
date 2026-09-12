@@ -2856,7 +2856,7 @@ func (a *App) runAIAssistantMessageAsyncForUser(req AIAssistantSendRequest, hubC
 			workspaceDir = a.codingWorkbenchLocalExecDirOrDesktop(projectPath)
 		}
 		msg.CodingTaskIngressToken = a.beginDesktopCodingTaskIngressForRequestWithWorkspace(userID, workspaceDir, req.StartNewTask)
-		defer a.endDesktopCodingTaskIngress(msg.CodingTaskIngressToken)
+		defer a.endDesktopCodingTaskIngressForOwner(userID)
 	}
 	streamEvents := newAIAssistantStreamEventEmitter(a, requestID, userID)
 	emitEvent := func(name, value string) {
@@ -3161,6 +3161,7 @@ func (a *App) emitAIAssistantResponse(requestID string, resp *IMAgentResponse) (
 	}
 	log.Printf("[emitAIAssistantResponse] emit request_id=%s session_key=%q text_len=%d error_len=%d fields=%d actions=%d payload_len=%d",
 		requestID, strings.TrimSpace(resp.SessionKey), len(resp.Text), len(resp.Error), len(resp.Fields), len(resp.Actions), len(payload))
+	a.notifyTaskResponseTray(resp)
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("[emitAIAssistantResponse] EventsEmit panic: %v", r)

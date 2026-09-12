@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	ppt "github.com/VantageDataChat/GoPPT"
+	ppt "github.com/Vantagics/GoPPT"
 )
 
 // Presentation is the top-level structured representation of a PPTX file.

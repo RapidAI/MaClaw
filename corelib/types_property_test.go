@@ -38,6 +38,15 @@ func TestSetCodeGenClientNameHeaderIfNeeded(t *testing.T) {
 		t.Fatalf("legacy default %s = %q, want %q", CodeGenClientNameHeader, got, CodeGenClientName)
 	}
 
+	legacyTigerclaw, err := http.NewRequest(http.MethodGet, "https://codegen.qianxin-inc.cn/api/v1/models", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	SetCodeGenClientNameHeaderIfNeededWithName(legacyTigerclaw, "tigerclaw")
+	if got := legacyTigerclaw.Header.Get(CodeGenClientNameHeader); got != CodeGenClientName {
+		t.Fatalf("legacy tigerclaw %s = %q, want %q", CodeGenClientNameHeader, got, CodeGenClientName)
+	}
+
 	other, err := http.NewRequest(http.MethodGet, "https://api.example.com/v1/models", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -307,9 +316,9 @@ func TestMaclawLLMUserAgentTrimsCustomValue(t *testing.T) {
 		t.Fatalf("provider UserAgent() = %q, want %q", got, "custom-agent")
 	}
 
-	config := MaclawLLMConfig{AgentType: "  tigerclaw  "}
-	if got := config.UserAgent(); got != "tigerclaw" {
-		t.Fatalf("config UserAgent() = %q, want %q", got, "tigerclaw")
+	config := MaclawLLMConfig{AgentType: "  QAgent  "}
+	if got := config.UserAgent(); got != "QAgent" {
+		t.Fatalf("config UserAgent() = %q, want %q", got, "QAgent")
 	}
 
 	opencode := MaclawLLMConfig{AgentType: " opencode "}
@@ -337,6 +346,20 @@ func TestMaclawLLMUserAgentTrimsCustomValue(t *testing.T) {
 	blank := MaclawLLMConfig{AgentType: "   "}
 	if got := blank.UserAgent(); got != "openclaw" {
 		t.Fatalf("blank UserAgent() = %q, want %q", got, "openclaw")
+	}
+}
+
+func TestMaclawLLMUserAgentNormalizesCodeGenLegacyNames(t *testing.T) {
+	for _, agentType := range []string{"", "openclaw", "tigerclaw", "TigerClaw", "QAgent"} {
+		cfg := MaclawLLMConfig{URL: "https://codegen.qianxin-inc.cn/api/v1", AgentType: agentType}
+		if got := cfg.UserAgent(); got != CodeGenClientName {
+			t.Fatalf("CodeGen UserAgent(%q) = %q, want %q", agentType, got, CodeGenClientName)
+		}
+	}
+
+	other := MaclawLLMConfig{URL: "https://api.example.com/v1", AgentType: "tigerclaw"}
+	if got := other.UserAgent(); got != "tigerclaw" {
+		t.Fatalf("non-CodeGen UserAgent() = %q, want tigerclaw", got)
 	}
 }
 

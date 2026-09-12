@@ -76,6 +76,9 @@ func TestOpenAISDKDoesNotSendCodeGenHeaderForDeepSeek(t *testing.T) {
 
 func TestOpenAISDKSendsCodeGenHeaderForCodeGen(t *testing.T) {
 	client := &http.Client{Transport: openAISDKHeaderRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if got := req.Header.Get("User-Agent"); got != corelib.CodeGenClientName {
+			t.Fatalf("User-Agent = %q, want %q", got, corelib.CodeGenClientName)
+		}
 		if got := req.Header.Get(corelib.CodeGenClientNameHeader); got != corelib.CodeGenClientName {
 			t.Fatalf("%s = %q, want %q", corelib.CodeGenClientNameHeader, got, corelib.CodeGenClientName)
 		}
@@ -87,6 +90,52 @@ func TestOpenAISDKSendsCodeGenHeaderForCodeGen(t *testing.T) {
 		Model:     "auto",
 		Protocol:  "openai",
 		AgentType: "openclaw",
+	}, []interface{}{map[string]interface{}{"role": "user", "content": "hi"}}, nil, client)
+	if err != nil {
+		t.Fatalf("DoOpenAIRequest() error = %v", err)
+	}
+	if resp == nil || len(resp.Choices) != 1 {
+		t.Fatalf("response = %#v", resp)
+	}
+}
+
+func TestOpenAISDKSendsOpenCodeSessionHeader(t *testing.T) {
+	client := &http.Client{Transport: openAISDKHeaderRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if got := req.Header.Get(corelib.OpenCodeSessionHeader); got != "conv-42" {
+			t.Fatalf("%s = %q, want conv-42", corelib.OpenCodeSessionHeader, got)
+		}
+		return openAISDKHeaderResponse(req), nil
+	})}
+
+	resp, err := DoOpenAIRequest(context.Background(), corelib.MaclawLLMConfig{
+		URL:       "https://opencode.ai/zen/go/v1",
+		Model:     "glm-5.3-flash",
+		Protocol:  "openai",
+		AgentType: "opencode",
+		SessionID: "conv-42",
+	}, []interface{}{map[string]interface{}{"role": "user", "content": "hi"}}, nil, client)
+	if err != nil {
+		t.Fatalf("DoOpenAIRequest() error = %v", err)
+	}
+	if resp == nil || len(resp.Choices) != 1 {
+		t.Fatalf("response = %#v", resp)
+	}
+}
+
+func TestOpenAISDKOmitsOpenCodeSessionHeaderForOtherHosts(t *testing.T) {
+	client := &http.Client{Transport: openAISDKHeaderRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if got := req.Header.Get(corelib.OpenCodeSessionHeader); got != "" {
+			t.Fatalf("non-OpenCode %s = %q, want empty", corelib.OpenCodeSessionHeader, got)
+		}
+		return openAISDKHeaderResponse(req), nil
+	})}
+
+	resp, err := DoOpenAIRequest(context.Background(), corelib.MaclawLLMConfig{
+		URL:       "https://api.deepseek.com/v1",
+		Model:     "deepseek-v4-flash",
+		Protocol:  "openai",
+		AgentType: "opencode",
+		SessionID: "conv-42",
 	}, []interface{}{map[string]interface{}{"role": "user", "content": "hi"}}, nil, client)
 	if err != nil {
 		t.Fatalf("DoOpenAIRequest() error = %v", err)

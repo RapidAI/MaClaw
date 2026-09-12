@@ -17,7 +17,7 @@ import {
 import type { GroupParticipant, GroupMessage } from "../VEGroupChat";
 import type { VirtualEmployeeEntry } from "../VirtualEmployeeTab";
 import { lightTheme } from "../aiAssistantPanelTheme";
-import { CHAT_BUBBLE_TAIL_INSET, CHAT_BUBBLE_TAIL_TOP } from "../ChatBubbleFrame";
+import { CHAT_BUBBLE_SIDE_TAIL_INSET, CHAT_BUBBLE_SIDE_TAIL_TOP } from "../ChatBubbleFrame";
 
 // Mock Wails runtime
 const mockEventsOn = vi.fn((_event: string, _handler: any) => vi.fn());
@@ -875,8 +875,8 @@ describe("VEGroupChatView", () => {
         expect(bubble.style.whiteSpace).toBe("pre-wrap");
         const tail = screen.getByTestId("group-msg-content-wrap-msg-tail");
         expect(tail.getAttribute("data-side")).toBe("left");
-        expect(tail.style.top).toBe(`${CHAT_BUBBLE_TAIL_TOP}px`);
-        expect(tail.style.left).toBe(`${CHAT_BUBBLE_TAIL_INSET}px`);
+        expect(tail.style.top).toBe(`${CHAT_BUBBLE_SIDE_TAIL_TOP}px`);
+        expect(tail.style.left).toBe(`${CHAT_BUBBLE_SIDE_TAIL_INSET}px`);
         expect(screen.getByText("second line")).toBeTruthy();
     });
 
@@ -891,9 +891,9 @@ describe("VEGroupChatView", () => {
         );
         const tail = screen.getByTestId("group-msg-content-u1-tail");
         expect(tail.getAttribute("data-side")).toBe("right");
-        // Same geometry as AI assistant user bubbles (points up at the name).
-        expect(tail.style.top).toBe(`${CHAT_BUBBLE_TAIL_TOP}px`);
-        expect(tail.style.right).toBe(`${CHAT_BUBBLE_TAIL_INSET}px`);
+        // Same corner-tail geometry as AI assistant user bubbles (points up at the name).
+        expect(tail.style.top).toBe(`${CHAT_BUBBLE_SIDE_TAIL_TOP}px`);
+        expect(tail.style.right).toBe(`${CHAT_BUBBLE_SIDE_TAIL_INSET}px`);
     });
 
     it("aligns configured local-user messages to the right", () => {

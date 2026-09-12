@@ -1,0 +1,37 @@
+﻿12 activities found:
+  Activity #0:
+    priority=0 preferredOrder=0 match=0x608000 specificIndex=-1 isDefault=true
+    com.android.bips/.ImagePrintActivity
+  Activity #1:
+    priority=0 preferredOrder=0 match=0x608000 specificIndex=-1 isDefault=true
+    com.google.android.apps.docs/.common.shareitem.UploadMenuActivity
+  Activity #2:
+    priority=0 preferredOrder=0 match=0x608000 specificIndex=-1 isDefault=true
+    com.google.android.apps.maps/com.google.android.maps.MapsActivity
+  Activity #3:
+    priority=0 preferredOrder=0 match=0x608000 specificIndex=-1 isDefault=true
+    com.google.android.apps.messaging/.ui.conversationlist.ShareIntentActivity
+  Activity #4:
+    priority=0 preferredOrder=0 match=0x608000 specificIndex=-1 isDefault=true
+    com.google.android.apps.photos/.upload.intent.UploadContentActivity
+  Activity #5:
+    priority=0 preferredOrder=0 match=0x608000 specificIndex=-1 isDefault=true
+    com.google.android.bluetooth/com.android.bluetooth.opp.BluetoothOppLauncherActivity
+  Activity #6:
+    priority=0 preferredOrder=0 match=0x608000 specificIndex=-1 isDefault=true
+    com.google.android.gm/com.google.android.apps.dynamite.DynamiteDeepLinkSingle
+  Activity #7:
+    priority=0 preferredOrder=0 match=0x608000 specificIndex=-1 isDefault=true
+    com.google.android.gm/.ComposeActivityGmailExternal
+  Activity #8:
+    priority=0 preferredOrder=0 match=0x608000 specificIndex=-1 isDefault=true
+    com.google.android.gms/.nearby.sharing.send.SendActivity
+  Activity #9:
+    priority=0 preferredOrder=0 match=0x608000 specificIndex=-1 isDefault=true
+    com.google.android.googlequicksearchbox/com.google.android.apps.search.lens.LensShareEntryPointActivity
+  Activity #10:
+    priority=0 preferredOrder=0 match=0x608000 specificIndex=-1 isDefault=true
+    com.google.android.googlequicksearchbox/com.google.android.apps.search.googleapp.saves.savefeature.sharereceiver.SavesShareReceiverWithImageType
+  Activity #11:
+    priority=0 preferredOrder=0 match=0x608000 specificIndex=-1 isDefault=true
+    top.mypapers.maclaw.mobile/.MainActivity

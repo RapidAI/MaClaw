@@ -636,3 +636,18 @@ func TestProjectIndex_DurableTaskRecordSurvivesMissingOutput(t *testing.T) {
 		t.Fatalf("SearchMatching should find the durable task row, got %#v", got)
 	}
 }
+
+func TestNormalizeProjectPathUppercasesDriveLetter(t *testing.T) {
+	t.Parallel()
+	lower := normalizeProjectPath("d:/workprj/aicoder/tasks/x")
+	upper := normalizeProjectPath("D:/workprj/aicoder/tasks/x")
+	if lower != upper {
+		t.Fatalf("drive letter casing must not change the key: %q vs %q", lower, upper)
+	}
+	if upper != `D:\workprj\aicoder\tasks\x` {
+		t.Fatalf("normalizeProjectPath = %q, want backslash form with uppercase drive", upper)
+	}
+	if got := normalizeProjectPath("/home/me/proj"); got != "/home/me/proj" {
+		t.Fatalf("posix path must pass through unchanged, got %q", got)
+	}
+}

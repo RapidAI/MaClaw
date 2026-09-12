@@ -101,7 +101,7 @@ export function NotificationItem({ notification, onClick, theme, lang }: Notific
     borderRadius: "6px",
     transition: "background 150ms ease",
     background: is_read ? "transparent" : (theme.isDark ? "rgba(59, 130, 246, 0.06)" : "rgba(59, 130, 246, 0.04)"),
-    borderLeft: is_read ? "3px solid transparent" : `3px solid ${theme.linkColor || "#2563eb"}`,
+    borderLeft: is_read ? "3px solid transparent" : `3px solid ${theme.linkColor || "#2f78d0"}`,
   };
 
   // Title style — unread is bold

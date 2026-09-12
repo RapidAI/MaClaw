@@ -39,7 +39,6 @@ interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     showCloudWorkspaceCreation?: boolean;
     /** Restore durable cloud task rows while keeping project controls hidden. */
     restoreCloudWorkspaceTasks?: boolean;
-    onOpenScheduledTasks?: () => void;
     remoteSessionTab?: 'remote' | 'background' | 'scheduled' | 'passthrough';
     t: (key: string) => string;
     gossipAllowed: boolean;
@@ -50,6 +49,10 @@ interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     toolDropdownOpen: boolean;
     setToolDropdownOpen: (updater: (prev: boolean) => boolean) => void;
     tasks: TaskManagementItem[];
+    /** True while the initial/refresh ListTasks request is in flight. */
+    tasksLoading?: boolean;
+    /** True while a cloud workspace restore is syncing tasks in the background. */
+    cloudTasksLoading?: boolean;
     renamingTaskPath: string | null;
     setRenamingTaskPath: (path: string | null) => void;
     renameValue: string;
@@ -108,10 +111,11 @@ interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     favoriteEmployeeIds?: string[]; favoriteEmployeeNames?: Record<string, string>;
     showCodingToolEntry?: boolean;
     showAppEntry?: boolean;
-    showWorkflowEntry?: boolean;
 	showUtilitiesEntry?: boolean;
 	showToolsEntry?: boolean;
     utilitiesLabel?: string;
+    /** Current settings tab, forwarded to the nav rail for the library menu highlight. */
+    settingsTab?: string;
     availableProviders?: Array<{ name: string; url: string; isHubService: boolean; model?: string; models?: string[] }>;
     onSwitchProvider?: (providerID: string) => void;
     currentModel?: string;
@@ -158,7 +162,6 @@ export const AppSidebarShell = ({
     showCloudWorkspaceManagement,
     showCloudWorkspaceCreation,
     restoreCloudWorkspaceTasks,
-    onOpenScheduledTasks,
     remoteSessionTab = 'remote',
     t,
     gossipAllowed,
@@ -169,6 +172,8 @@ export const AppSidebarShell = ({
     toolDropdownOpen,
     setToolDropdownOpen,
     tasks,
+    tasksLoading = false,
+    cloudTasksLoading = false,
     renamingTaskPath,
     setRenamingTaskPath,
     renameValue,
@@ -222,10 +227,10 @@ export const AppSidebarShell = ({
     favoriteEmployeeIds = [], favoriteEmployeeNames = {},
     showCodingToolEntry = false,
     showAppEntry = false,
-    showWorkflowEntry = true,
 	showUtilitiesEntry = true,
 	showToolsEntry = false,
     utilitiesLabel,
+    settingsTab,
     availableProviders = [],
     onSwitchProvider,
     currentModel = '',
@@ -267,7 +272,6 @@ export const AppSidebarShell = ({
                     remoteActivationStatus={remoteActivationStatus}
                     runningTaskCount={runningTaskCount}
                     onOpenBackgroundTasks={onOpenBackgroundTasks}
-                    onOpenScheduledTasks={onOpenScheduledTasks}
                     remoteSessionTab={remoteSessionTab}
                     t={t}
                     gossipAllowed={gossipAllowed}
@@ -279,10 +283,10 @@ export const AppSidebarShell = ({
                     onRemoveFavorite={onRemoveFavoriteEmployeeById || (() => {})}
                     onRenameFavorite={onRenameFavoriteEmployee || (() => {})}
                     showAppEntry={showAppEntry}
-                    showWorkflowEntry={showWorkflowEntry}
 					showUtilitiesEntry={showUtilitiesEntry}
 					showToolsEntry={showToolsEntry}
                     utilitiesLabel={utilitiesLabel}
+                    settingsTab={settingsTab}
                 />        {navTab === 'ai' && (
                     <SidebarAiPane
                         taskManagementPaneWidth={taskManagementPaneWidth}
@@ -307,6 +311,8 @@ export const AppSidebarShell = ({
                         toolDropdownOpen={toolDropdownOpen}
                         setToolDropdownOpen={setToolDropdownOpen}
                         tasks={tasks}
+                        tasksLoading={tasksLoading}
+                        cloudTasksLoading={cloudTasksLoading}
                         renamingTaskPath={renamingTaskPath}
                         setRenamingTaskPath={setRenamingTaskPath}
                         renameValue={renameValue}

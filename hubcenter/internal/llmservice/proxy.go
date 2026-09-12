@@ -427,6 +427,7 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 	}
 	startedAt := proxyRequestStartedAt(req)
 	ctx = WithUsageContext(ctx, req.HubID, req.TenantID)
+	ctx = withOpenCodeSessionContext(ctx, req)
 
 	// 1. Extract model from request body
 	model := strings.TrimSpace(req.Model)
@@ -924,6 +925,7 @@ func HandleProxyStreamRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyR
 		return fmt.Errorf("stream writer is required")
 	}
 	ctx = WithUsageContext(ctx, req.HubID, req.TenantID)
+	ctx = withOpenCodeSessionContext(ctx, req)
 	dispatches, err := prepareProxyStreamDispatches(ctx, cfg, req)
 	if err != nil {
 		return err
@@ -1321,6 +1323,7 @@ func streamProviderToWriter(ctx context.Context, client *http.Client, provider *
 		WireAPI:            provider.WireAPI,
 		UpstreamTimeoutSec: provider.UpstreamTimeoutSec,
 	}.MaclawLLMConfig()
+	cfg = corelib.BindOpenCodeSessionID(ctx, cfg)
 	client = proxyStreamingHTTPClient(client, cfg)
 	endpoint := corellm.BuildOpenAIChatCompletionsEndpoint(corelib.NormalizeGLMCodingPlanOpenAIBaseURL(provider.APIURL, cfg.UserAgent()))
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
@@ -1336,6 +1339,7 @@ func streamProviderToWriter(ctx context.Context, client *http.Client, provider *
 		httpReq.Header.Set("User-Agent", ua)
 	}
 	corelib.SetCodeGenClientNameHeaderIfNeededWithName(httpReq, cfg.UserAgent())
+	corelib.ApplyOpenCodeSessionHeader(httpReq, cfg)
 
 	resp, err := client.Do(httpReq)
 	if err != nil {

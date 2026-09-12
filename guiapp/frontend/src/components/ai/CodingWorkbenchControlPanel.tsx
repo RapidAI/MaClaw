@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { localizeText } from "./aiAssistantI18n";
 import { resolvePrimaryFilledColors, type Theme } from "./aiAssistantPanelTheme";
 import { isFormFieldTarget, isVisibleCodingConflictPanelPresent } from "./codingUiGuards";
@@ -39,7 +39,7 @@ type BuildCodingBannerChromeOpts = {
  * accent (foreground), not a fill. White-on-btnColor fails WCAG badly on graphite/etc.
  */
 export function buildCodingBannerChrome({ isDark, remote, theme: t }: BuildCodingBannerChromeOpts): CodingBannerChrome {
-    const accentFallback = isDark ? "#5f89b8" : "#4a8cff";
+    const accentFallback = isDark ? "#5f89b8" : "#2f78d0";
     const productAccent = t.btnColor || accentFallback;
     const accent = remote
         ? (isDark ? "#38bdf8" : "#0284c7")
@@ -149,6 +149,10 @@ export type CodingWorkbenchControlPanelProps = {
     onExpandedChange: (next: boolean) => void;
     /** Optional tooltip / title describing the full environment (long copy). */
     envDescription?: string;
+    /** Resting top offset (px) within the relatively-positioned parent.
+     * Pass the height of any header bar above the chat area so the chip
+     * floats over the client area instead of overlapping header actions. */
+    defaultTop?: number;
     children: ReactNode;
 };
 
@@ -202,10 +206,17 @@ const srOnlyStyle: CSSProperties = {
 
 /**
  * Floating coding-workbench control: collapsed chip (zero document-flow cost)
- * + optional top-right popover with full controls as children.
+ * + optional popover with full controls as children.
  *
- * Layout: chip stays pinned at the top-right; popover drops below the chip.
+ * Layout: the chip rests at the top-right of the client area (below the task
+ * header) and can be dragged vertically/horizontally within the parent; the
+ * popover drops below the chip.
  */
+
+/** Pointer movement (px) before a chip press becomes a drag instead of a click. */
+const CHIP_DRAG_THRESHOLD = 4;
+/** Margin (px) kept between the dragged chip and the parent edges. */
+const CHIP_DRAG_MARGIN = 4;
 export function CodingWorkbenchControlPanel({
     lang,
     theme: t,
@@ -222,6 +233,7 @@ export function CodingWorkbenchControlPanel({
     expanded,
     onExpandedChange,
     envDescription,
+    defaultTop = 8,
     children,
 }: CodingWorkbenchControlPanelProps) {
     const rootRef = useRef<HTMLDivElement | null>(null);
@@ -230,6 +242,21 @@ export function CodingWorkbenchControlPanel({
     onExpandedChangeRef.current = onExpandedChange;
     const lockExpandedRef = useRef(lockExpanded);
     lockExpandedRef.current = lockExpanded;
+
+    // Drag offset (px) applied to the resting top-right anchor.
+    const [dragDelta, setDragDelta] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+    const dragSessionRef = useRef<{
+        pointerId: number;
+        startX: number;
+        startY: number;
+        baseX: number;
+        baseY: number;
+        dragging: boolean;
+    } | null>(null);
+    // Swallow the click that follows a drag so the chip does not toggle open.
+    const suppressClickRef = useRef(false);
+    const dragDeltaRef = useRef(dragDelta);
+    dragDeltaRef.current = dragDelta;
 
     const reactId = useId();
     const popoverId = `coding-control-popover-${reactId.replace(/:/g, "")}`;
@@ -322,16 +349,79 @@ export function CodingWorkbenchControlPanel({
     }, [longTitle, showStatusText, status, pendingApproval, conflictCount, expanded, lang]);
 
     const toggle = () => {
+        if (suppressClickRef.current) {
+            suppressClickRef.current = false;
+            return;
+        }
         if (lockExpanded && expanded) return;
         onExpandedChange(!expanded);
     };
 
+    // Clamp a candidate delta so the collapsed chip stays inside the parent box.
+    const clampDragDelta = (x: number, y: number): { x: number; y: number } => {
+        const root = rootRef.current;
+        const parent = root?.parentElement;
+        if (!root || !parent) return { x, y };
+        const pr = parent.getBoundingClientRect();
+        // Unmeasured layout (e.g. jsdom): skip clamping rather than pinning to 0.
+        if (pr.width <= 0 || pr.height <= 0) return { x, y };
+        const rr = root.getBoundingClientRect();
+        // Chip rest position: right edge 10px from parent right, top at defaultTop.
+        const restLeft = pr.right - 10 - rr.width;
+        const minX = pr.left + CHIP_DRAG_MARGIN - restLeft;
+        const maxX = 0;
+        const minY = CHIP_DRAG_MARGIN - defaultTop;
+        const maxY = pr.height - CHIP_DRAG_MARGIN - defaultTop - rr.height;
+        return {
+            x: Math.min(maxX, Math.max(minX, x)),
+            y: Math.min(maxY, Math.max(minY, y)),
+        };
+    };
+
+    const onChipPointerDown = (e: React.PointerEvent<HTMLButtonElement>) => {
+        // Drag only the collapsed chip; the expanded popover stays put.
+        if (e.button !== 0 || expanded) return;
+        suppressClickRef.current = false;
+        dragSessionRef.current = {
+            pointerId: e.pointerId,
+            startX: e.clientX,
+            startY: e.clientY,
+            baseX: dragDeltaRef.current.x,
+            baseY: dragDeltaRef.current.y,
+            dragging: false,
+        };
+        const onMove = (ev: PointerEvent) => {
+            const session = dragSessionRef.current;
+            if (!session || ev.pointerId !== session.pointerId) return;
+            const dx = ev.clientX - session.startX;
+            const dy = ev.clientY - session.startY;
+            if (!session.dragging && Math.hypot(dx, dy) < CHIP_DRAG_THRESHOLD) return;
+            session.dragging = true;
+            setDragDelta(clampDragDelta(session.baseX + dx, session.baseY + dy));
+        };
+        const onUp = (ev: PointerEvent) => {
+            const session = dragSessionRef.current;
+            if (!session || ev.pointerId !== session.pointerId) return;
+            if (session.dragging) suppressClickRef.current = true;
+            dragSessionRef.current = null;
+            document.removeEventListener("pointermove", onMove, true);
+            document.removeEventListener("pointerup", onUp, true);
+            document.removeEventListener("pointercancel", onUp, true);
+        };
+        document.addEventListener("pointermove", onMove, true);
+        document.addEventListener("pointerup", onUp, true);
+        document.addEventListener("pointercancel", onUp, true);
+    };
+
     const rootStyle = useMemo((): CSSProperties => ({
         position: "absolute",
-        top: 8,
+        top: defaultTop,
         right: 10,
         // Only pin bottom while expanded so the collapsed chip is not a full-height overlay.
         ...(expanded ? { bottom: 8 } : null),
+        ...(dragDelta.x !== 0 || dragDelta.y !== 0
+            ? { transform: `translate(${dragDelta.x}px, ${dragDelta.y}px)` }
+            : null),
         zIndex: 40,
         display: "flex",
         flexDirection: "column",
@@ -340,7 +430,7 @@ export function CodingWorkbenchControlPanel({
         maxWidth: "min(360px, calc(100% - 16px))",
         // Let chat scroll/select under the empty area of this root.
         pointerEvents: "none",
-    }), [expanded]);
+    }), [expanded, defaultTop, dragDelta]);
 
     const chipStyle = useMemo((): CSSProperties => ({
         pointerEvents: "auto",
@@ -359,6 +449,8 @@ export function CodingWorkbenchControlPanel({
             ? "0 4px 14px rgba(0,0,0,0.35)"
             : "0 4px 14px rgba(15,23,42,0.10)",
         cursor: lockExpanded && expanded ? "default" : "pointer",
+        // Let pointermove drive chip dragging on touch instead of scrolling.
+        touchAction: expanded ? "auto" : "none",
         fontSize: 11,
         lineHeight: 1,
         fontFamily: "inherit",
@@ -404,6 +496,7 @@ export function CodingWorkbenchControlPanel({
                 title={chipTitle}
                 data-env-description={envDescription || ""}
                 onClick={toggle}
+                onPointerDown={onChipPointerDown}
                 style={chipStyle}
             >
                 <span

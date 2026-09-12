@@ -1,0 +1,269 @@
+﻿6 activities found:
+  Activity #0:
+    priority=0 preferredOrder=0 match=0x608000 specificIndex=-1 isDefault=true
+    ActivityInfo:
+      name=com.google.android.apps.docs.common.shareitem.UploadMenuActivity
+      packageName=com.google.android.apps.docs
+      enabled=true exported=true directBootAware=false
+      taskAffinity=null targetActivity=com.google.android.apps.docs.common.shareitem.legacy.UploadMenuActivity persistableMode=PERSIST_ROOT_ONLY
+      launchMode=LAUNCH_MULTIPLE flags=0x310220 privateFlags=0x2 theme=0x7f140211
+      screenOrientation=-1 configChanges=0x433 softInputMode=0x0
+      lockTaskLaunchMode=LOCK_TASK_LAUNCH_MODE_DEFAULT
+      resizeMode=RESIZE_MODE_RESIZEABLE_VIA_SDK_VERSION
+      knownActivityEmbeddingCerts={}
+      requireContentUriPermissionFromCaller=CONTENT_URI_PERMISSION_NONE
+      ApplicationInfo:
+        name=com.google.android.apps.docs.drive.DriveApplication
+        packageName=com.google.android.apps.docs
+        labelRes=0x7f1300f3 nonLocalizedLabel=null icon=0x7f08031a banner=0x0
+        className=com.google.android.apps.docs.drive.DriveApplication
+        processName=com.google.android.apps.docs
+        taskAffinity=com.google.android.apps.docs
+        uid=10158 flags=0x28ebbe45 privateFlags=0x8c081110 theme=0x0
+        requiresSmallestWidthDp=0 compatibleWidthLimitDp=0 largestWidthLimitDp=0
+        sourceDir=/product/app/Drive/Drive.apk
+        resourceDirs=[/product/overlay/EmulationPixel6/EmulationPixel6Overlay.apk, /product/overlay/NavigationBarModeGestural/NavigationBarModeGesturalOverlay.apk]
+        overlayPaths=[/product/overlay/EmulationPixel6/EmulationPixel6Overlay.apk, /product/overlay/NavigationBarModeGestural/NavigationBarModeGesturalOverlay.apk, /data/resource-cache/com.android.systemui-neutral-YLJR.frro, /data/resource-cache/com.android.systemui-accent-Qtnb.frro, /data/resource-cache/com.android.systemui-dynamic-GEHO.frro]
+        seinfo=default:targetSdkVersion=34:partition=product
+        seinfoUser=:complete
+        dataDir=/data/user/0/com.google.android.apps.docs
+        deviceProtectedDataDir=/data/user_de/0/com.google.android.apps.docs
+        credentialProtectedDataDir=/data/user/0/com.google.android.apps.docs
+        sharedLibraryFiles=[/system/framework/org.apache.http.legacy.jar, /system_ext/framework/androidx.window.extensions.jar, /system_ext/framework/androidx.window.sidecar.jar]
+        enabled=true minSdkVersion=23 targetSdkVersion=34 versionCode=213587435 targetSandboxVersion=1
+        supportsRtl=true
+        fullBackupContent=true
+        crossProfile=false
+        networkSecurityConfigRes=0x7f16001f
+        category=7
+        HiddenApiEnforcementPolicy=2
+        usesNonSdkApi=false
+        allowsPlaybackCapture=true
+        gwpAsanMode=1
+        nativeHeapZeroInitialized=0
+        localeConfigRes=0x7f16001e
+        enableOnBackInvokedCallback=false
+        allowCrossUidActivitySwitchFromBelow=true
+        createTimestamp=14626875
+  Activity #1:
+    priority=0 preferredOrder=0 match=0x608000 specificIndex=-1 isDefault=true
+    labelRes=0x7f151098 nonLocalizedLabel=null icon=0x0
+    ActivityInfo:
+      name=com.google.android.apps.messaging.ui.conversationlist.ShareIntentActivity
+      packageName=com.google.android.apps.messaging
+      enabled=true exported=true directBootAware=false
+      taskAffinity=com.google.android.apps.messaging targetActivity=null persistableMode=PERSIST_ROOT_ONLY
+      launchMode=LAUNCH_SINGLE_TASK flags=0x310220 privateFlags=0x2 theme=0x7f1601c6
+      screenOrientation=2 configChanges=0x4a3 softInputMode=0x0
+      lockTaskLaunchMode=LOCK_TASK_LAUNCH_MODE_DEFAULT
+      resizeMode=RESIZE_MODE_RESIZEABLE_VIA_SDK_VERSION
+      knownActivityEmbeddingCerts={}
+      requireContentUriPermissionFromCaller=CONTENT_URI_PERMISSION_NONE
+      ApplicationInfo:
+        name=com.google.android.apps.messaging.platform.BuglePlatform_Application
+        packageName=com.google.android.apps.messaging
+        labelRes=0x7f1500dd nonLocalizedLabel=null icon=0x7f110000 banner=0x0
+        className=com.google.android.apps.messaging.platform.BuglePlatform_Application
+        processName=com.google.android.apps.messaging
+        taskAffinity=com.google.android.apps.messaging
+        uid=10137 flags=0x38cbbe45 privateFlags=0x8c881118 theme=0x7f1601c2
+        requiresSmallestWidthDp=0 compatibleWidthLimitDp=0 largestWidthLimitDp=0
+        sourceDir=/product/priv-app/PrebuiltBugle/PrebuiltBugle.apk
+        resourceDirs=[/product/overlay/EmulationPixel6/EmulationPixel6Overlay.apk, /product/overlay/NavigationBarModeGestural/NavigationBarModeGesturalOverlay.apk]
+        overlayPaths=[/product/overlay/EmulationPixel6/EmulationPixel6Overlay.apk, /product/overlay/NavigationBarModeGestural/NavigationBarModeGesturalOverlay.apk, /data/resource-cache/com.android.systemui-neutral-YLJR.frro, /data/resource-cache/com.android.systemui-accent-Qtnb.frro, /data/resource-cache/com.android.systemui-dynamic-GEHO.frro]
+        seinfo=default:privapp:targetSdkVersion=35:partition=product
+        seinfoUser=:complete
+        dataDir=/data/user/0/com.google.android.apps.messaging
+        deviceProtectedDataDir=/data/user_de/0/com.google.android.apps.messaging
+        credentialProtectedDataDir=/data/user/0/com.google.android.apps.messaging
+        sharedLibraryFiles=[/system/framework/org.apache.http.legacy.jar, /system_ext/framework/SatelliteClient.jar, /system_ext/framework/androidx.window.extensions.jar, /system_ext/framework/androidx.window.sidecar.jar]
+        enabled=true minSdkVersion=34 targetSdkVersion=35 versionCode=235003880 targetSandboxVersion=1
+        supportsRtl=true
+        fullBackupContent=true
+        crossProfile=false
+        category=4
+        HiddenApiEnforcementPolicy=2
+        usesNonSdkApi=false
+        allowsPlaybackCapture=true
+        nativeHeapZeroInitialized=0
+        enableOnBackInvokedCallback=true
+        allowCrossUidActivitySwitchFromBelow=true
+        createTimestamp=14626875
+  Activity #2:
+    priority=0 preferredOrder=0 match=0x608000 specificIndex=-1 isDefault=true
+    ActivityInfo:
+      name=com.android.bluetooth.opp.BluetoothOppLauncherActivity
+      packageName=com.google.android.bluetooth
+      labelRes=0x7f0c002d nonLocalizedLabel=null icon=0x0 banner=0x0
+      enabled=false exported=true directBootAware=true
+      taskAffinity=com.google.android.bluetooth targetActivity=null persistableMode=PERSIST_ROOT_ONLY
+      launchMode=LAUNCH_MULTIPLE flags=0x310200 privateFlags=0x2 theme=0x1030239
+      screenOrientation=-1 configChanges=0x3 softInputMode=0x0
+      lockTaskLaunchMode=LOCK_TASK_LAUNCH_MODE_DEFAULT
+      resizeMode=RESIZE_MODE_RESIZEABLE_VIA_SDK_VERSION
+      knownActivityEmbeddingCerts={}
+      requireContentUriPermissionFromCaller=CONTENT_URI_PERMISSION_NONE
+      ApplicationInfo:
+        name=com.android.bluetooth.btservice.AdapterApp
+        packageName=com.google.android.bluetooth
+        labelRes=0x7f0c0006 nonLocalizedLabel=null icon=0x7f0a0000 banner=0x0
+        className=com.android.bluetooth.btservice.AdapterApp
+        processName=com.google.android.bluetooth
+        taskAffinity=com.google.android.bluetooth
+        uid=1002 flags=0x20c8be45 privateFlags=0x8c401168 theme=0x0
+        requiresSmallestWidthDp=0 compatibleWidthLimitDp=0 largestWidthLimitDp=0
+        sourceDir=/apex/com.android.btservices/app/BluetoothGoogle@342010060/BluetoothGoogle.apk
+        resourceDirs=[/product/overlay/EmulationPixel6/EmulationPixel6Overlay.apk, /product/overlay/NavigationBarModeGestural/NavigationBarModeGesturalOverlay.apk]
+        overlayPaths=[/product/overlay/EmulationPixel6/EmulationPixel6Overlay.apk, /product/overlay/NavigationBarModeGestural/NavigationBarModeGesturalOverlay.apk, /data/resource-cache/com.android.systemui-neutral-YLJR.frro, /data/resource-cache/com.android.systemui-accent-Qtnb.frro, /data/resource-cache/com.android.systemui-dynamic-GEHO.frro]
+        seinfo=bluetooth:privapp:targetSdkVersion=34:partition=system
+        seinfoUser=:complete
+        dataDir=/data/user_de/0/com.google.android.bluetooth
+        deviceProtectedDataDir=/data/user_de/0/com.google.android.bluetooth
+        credentialProtectedDataDir=/data/user/0/com.google.android.bluetooth
+        enabled=true minSdkVersion=33 targetSdkVersion=34 versionCode=34 targetSandboxVersion=1
+        supportsRtl=true
+        fullBackupContent=true
+        crossProfile=false
+        HiddenApiEnforcementPolicy=0
+        usesNonSdkApi=true
+        allowsPlaybackCapture=true
+        memtagMode=1
+        nativeHeapZeroInitialized=0
+        enableOnBackInvokedCallback=false
+        allowCrossUidActivitySwitchFromBelow=true
+        createTimestamp=14626875
+  Activity #3:
+    priority=0 preferredOrder=0 match=0x608000 specificIndex=-1 isDefault=true
+    ActivityInfo:
+      name=com.google.android.gm.ComposeActivityGmailExternal
+      packageName=com.google.android.gm
+      labelRes=0x7f150263 nonLocalizedLabel=null icon=0x0 banner=0x0
+      enabled=true exported=true directBootAware=false
+      taskAffinity=com.google.android.gm targetActivity=null persistableMode=PERSIST_ROOT_ONLY
+      launchMode=LAUNCH_MULTIPLE flags=0x312200 privateFlags=0x2 theme=0x7f1602cf
+      screenOrientation=-1 configChanges=0x3 softInputMode=0x0
+      lockTaskLaunchMode=LOCK_TASK_LAUNCH_MODE_DEFAULT
+      resizeMode=RESIZE_MODE_RESIZEABLE
+      knownActivityEmbeddingCerts={}
+      requireContentUriPermissionFromCaller=CONTENT_URI_PERMISSION_NONE
+      ApplicationInfo:
+        name=com.google.android.apps.gmail.application.tiktok.Hub_Application
+        packageName=com.google.android.gm
+        labelRes=0x7f150263 nonLocalizedLabel=null icon=0x7f110018 banner=0x0
+        className=com.google.android.apps.gmail.application.tiktok.Hub_Application
+        processName=com.google.android.gm
+        taskAffinity=com.google.android.gm
+        uid=10164 flags=0x38fbbe45 privateFlags=0xac880510 theme=0x7f160aa7
+        requiresSmallestWidthDp=0 compatibleWidthLimitDp=0 largestWidthLimitDp=0
+        sourceDir=/product/app/PrebuiltGmail/PrebuiltGmail.apk
+        resourceDirs=[/product/overlay/EmulationPixel6/EmulationPixel6Overlay.apk, /product/overlay/NavigationBarModeGestural/NavigationBarModeGesturalOverlay.apk]
+        overlayPaths=[/product/overlay/EmulationPixel6/EmulationPixel6Overlay.apk, /product/overlay/NavigationBarModeGestural/NavigationBarModeGesturalOverlay.apk, /data/resource-cache/com.android.systemui-neutral-YLJR.frro, /data/resource-cache/com.android.systemui-accent-Qtnb.frro, /data/resource-cache/com.android.systemui-dynamic-GEHO.frro]
+        seinfo=default:targetSdkVersion=34:partition=product
+        seinfoUser=:complete
+        dataDir=/data/user/0/com.google.android.gm
+        deviceProtectedDataDir=/data/user_de/0/com.google.android.gm
+        credentialProtectedDataDir=/data/user/0/com.google.android.gm
+        sharedLibraryFiles=[/system/framework/org.apache.http.legacy.jar, /system_ext/framework/androidx.window.extensions.jar, /system_ext/framework/androidx.window.sidecar.jar]
+        enabled=true minSdkVersion=23 targetSdkVersion=34 versionCode=64551108 targetSandboxVersion=1
+        supportsRtl=true
+        fullBackupContent=true
+        crossProfile=false
+        networkSecurityConfigRes=0x7f19003d
+        category=7
+        HiddenApiEnforcementPolicy=2
+        usesNonSdkApi=false
+        allowsPlaybackCapture=true
+        gwpAsanMode=1
+        nativeHeapZeroInitialized=0
+        localeConfigRes=0x7f190038
+        enableOnBackInvokedCallback=false
+        allowCrossUidActivitySwitchFromBelow=true
+        createTimestamp=14626875
+  Activity #4:
+    priority=0 preferredOrder=0 match=0x608000 specificIndex=-1 isDefault=true
+    ActivityInfo:
+      name=com.google.android.gms.nearby.sharing.send.SendActivity
+      packageName=com.google.android.gms
+      labelRes=0x7f152524 nonLocalizedLabel=null icon=0x7f080cb3 banner=0x0
+      processName=com.google.android.gms.ui
+      enabled=true exported=true directBootAware=false
+      taskAffinity=null targetActivity=null persistableMode=PERSIST_ROOT_ONLY
+      launchMode=LAUNCH_MULTIPLE flags=0x310200 privateFlags=0x2 theme=0x7f1609ac
+      screenOrientation=-1 configChanges=0x3 softInputMode=0x0
+      lockTaskLaunchMode=LOCK_TASK_LAUNCH_MODE_DEFAULT
+      resizeMode=RESIZE_MODE_RESIZEABLE
+      knownActivityEmbeddingCerts={}
+      requireContentUriPermissionFromCaller=CONTENT_URI_PERMISSION_NONE
+      ApplicationInfo:
+        name=co.g.App
+        packageName=com.google.android.gms
+        labelRes=0x7f150681 nonLocalizedLabel=null icon=0x7f0802cd banner=0x0
+        className=co.g.App
+        processName=com.google.android.gms
+        taskAffinity=com.google.android.gms
+        uid=10143 flags=0xa0cabe45 privateFlags=0xa8089118 theme=0x0
+        requiresSmallestWidthDp=0 compatibleWidthLimitDp=0 largestWidthLimitDp=0
+        sourceDir=/product/priv-app/PrebuiltGmsCore/PrebuiltGmsCore.apk
+        resourceDirs=[/product/overlay/EmulationPixel6/EmulationPixel6Overlay.apk, /product/overlay/NavigationBarModeGestural/NavigationBarModeGesturalOverlay.apk]
+        overlayPaths=[/product/overlay/EmulationPixel6/EmulationPixel6Overlay.apk, /product/overlay/NavigationBarModeGestural/NavigationBarModeGesturalOverlay.apk, /data/resource-cache/com.android.systemui-neutral-YLJR.frro, /data/resource-cache/com.android.systemui-accent-Qtnb.frro, /data/resource-cache/com.android.systemui-dynamic-GEHO.frro]
+        seinfo=default:privapp:targetSdkVersion=34:partition=product
+        seinfoUser=:complete
+        dataDir=/data/user/0/com.google.android.gms
+        deviceProtectedDataDir=/data/user_de/0/com.google.android.gms
+        credentialProtectedDataDir=/data/user/0/com.google.android.gms
+        sharedLibraryFiles=[/system/framework/org.apache.http.legacy.jar, /system/framework/com.android.media.remotedisplay.jar, /system/framework/com.android.location.provider.jar, /system_ext/framework/androidx.window.extensions.jar, /system_ext/framework/androidx.window.sidecar.jar]
+        enabled=true minSdkVersion=31 targetSdkVersion=34 versionCode=242335041 targetSandboxVersion=1
+        manageSpaceActivityName=co.g.Space
+        supportsRtl=true
+        fullBackupContent=true
+        crossProfile=false
+        networkSecurityConfigRes=0x7f190085
+        HiddenApiEnforcementPolicy=2
+        usesNonSdkApi=false
+        allowsPlaybackCapture=true
+        nativeHeapZeroInitialized=0
+        enableOnBackInvokedCallback=false
+        allowCrossUidActivitySwitchFromBelow=true
+        createTimestamp=14626875
+  Activity #5:
+    priority=0 preferredOrder=0 match=0x608000 specificIndex=-1 isDefault=true
+    ActivityInfo:
+      name=top.mypapers.maclaw.mobile.MainActivity
+      packageName=top.mypapers.maclaw.mobile
+      enabled=true exported=true directBootAware=false
+      taskAffinity=null targetActivity=null persistableMode=PERSIST_ROOT_ONLY
+      launchMode=LAUNCH_SINGLE_TOP flags=0x310200 privateFlags=0x2 theme=0x7f0e00a1
+      screenOrientation=-1 configChanges=0x40003fb7 softInputMode=0x10
+      lockTaskLaunchMode=LOCK_TASK_LAUNCH_MODE_DEFAULT
+      resizeMode=RESIZE_MODE_RESIZEABLE_VIA_SDK_VERSION
+      knownActivityEmbeddingCerts={}
+      requireContentUriPermissionFromCaller=CONTENT_URI_PERMISSION_NONE
+      ApplicationInfo:
+        name=android.app.Application
+        packageName=top.mypapers.maclaw.mobile
+        labelRes=0x0 nonLocalizedLabel=MaClaw Mobile icon=0x7f0c0000 banner=0x0
+        className=android.app.Application
+        processName=top.mypapers.maclaw.mobile
+        taskAffinity=top.mypapers.maclaw.mobile
+        uid=10209 flags=0x2088be44 privateFlags=0x8c001100 theme=0x0
+        requiresSmallestWidthDp=0 compatibleWidthLimitDp=0 largestWidthLimitDp=0
+        sourceDir=/data/app/~~Kudu9qQd1G3I1bgiiC4b5Q==/top.mypapers.maclaw.mobile-q_EmY3n-AbnEBCGMfheGXA==/base.apk
+        resourceDirs=[/product/overlay/EmulationPixel6/EmulationPixel6Overlay.apk, /product/overlay/NavigationBarModeGestural/NavigationBarModeGesturalOverlay.apk]
+        overlayPaths=[/product/overlay/EmulationPixel6/EmulationPixel6Overlay.apk, /product/overlay/NavigationBarModeGestural/NavigationBarModeGesturalOverlay.apk, /data/resource-cache/com.android.systemui-neutral-YLJR.frro, /data/resource-cache/com.android.systemui-accent-Qtnb.frro, /data/resource-cache/com.android.systemui-dynamic-GEHO.frro]
+        seinfo=default:targetSdkVersion=36
+        seinfoUser=:complete
+        dataDir=/data/user/0/top.mypapers.maclaw.mobile
+        deviceProtectedDataDir=/data/user_de/0/top.mypapers.maclaw.mobile
+        credentialProtectedDataDir=/data/user/0/top.mypapers.maclaw.mobile
+        sharedLibraryFiles=[/system_ext/framework/androidx.window.extensions.jar, /system_ext/framework/androidx.window.sidecar.jar]
+        enabled=true minSdkVersion=24 targetSdkVersion=36 versionCode=1 targetSandboxVersion=1
+        supportsRtl=false
+        fullBackupContent=true
+        crossProfile=false
+        HiddenApiEnforcementPolicy=2
+        usesNonSdkApi=false
+        allowsPlaybackCapture=true
+        nativeHeapZeroInitialized=0
+        enableOnBackInvokedCallback=false
+        allowCrossUidActivitySwitchFromBelow=true
+        createTimestamp=14626875

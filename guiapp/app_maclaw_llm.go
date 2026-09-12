@@ -3746,6 +3746,7 @@ func maclawLLMProbeStatus(endpoint string, cfg corelib.MaclawLLMConfig) (int, er
 	}
 	llm.ApplyProviderAuthHeaders(req, cfg)
 	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
+	corelib.ApplyOpenCodeSessionHeader(req, cfg)
 
 	resp, err := maclawLLMPingClient.Do(req)
 	if err != nil {
@@ -4574,7 +4575,7 @@ func upsertCodeGenProvider(providers []corelib.MaclawLLMProvider, result oauth.C
 		Key:           result.AccessToken,
 		Model:         corelib.NormalizeCodeGenSSOModel(result.ModelID),
 		Protocol:      "openai",                  // AI 助手通过 OpenAI 协议接入 CodeGen
-		AgentType:     corelib.CodeGenClientName, // TigerClaw CodeGen client identity
+		AgentType:     corelib.CodeGenClientName, // QAgent CodeGen client identity
 		AuthType:      "sso",                     // 标识认证来源，区别于手动 API Key
 		ContextLength: result.ContextLength,
 		Models:        models,
@@ -4613,11 +4614,11 @@ func appendUniqueCodeGenModel(values []string, value string) []string {
 }
 
 // codegenClaudeRemoteBaseURL is the remote Anthropic-compatible base URL used
-// by Claude/TigerClaw Code. It intentionally does not include /v1 because the
+// by Claude/QAgent Code. It intentionally does not include /v1 because the
 // Claude Code client appends its Anthropic API paths itself.
 const codegenClaudeRemoteBaseURL = "https://codegen.qianxin-inc.cn/api"
 
-// codegenAnthropicBaseURL 返回 CodeGen 给 Claude/TigerClaw Code 使用的 Anthropic 兼容端点。
+// codegenAnthropicBaseURL 返回 CodeGen 给 Claude/QAgent Code 使用的 Anthropic 兼容端点。
 func codegenAnthropicBaseURL(openaiBaseURL string) string {
 	return codegenClaudeRemoteBaseURL
 }
@@ -4942,7 +4943,7 @@ func codeGenModelItemsFromSavedIDs(ids []string) []CodeGenModelItem {
 
 // SaveCodeGenModelChoice 保存用户在 SSO 后选择的模型：
 //   - maclawModel：用于驱动 MaClaw Agent（写入 config.json 的 CodeGen provider）
-//   - claudeCodeModel：用于 TigerClaw Code / Claude 工具在 MaClaw 内的模型列表条目
+//   - claudeCodeModel：用于 QAgent Code / Claude 工具在 MaClaw 内的模型列表条目
 //
 // 两个模型可以相同也可以不同，独立配置。
 // 不写入 ~/.claude/settings.json 等原生 CLI 配置；那些仅在编程工具「启动」时写入。
@@ -5841,11 +5842,10 @@ func (a *App) doFetchModelsRequest(client *http.Client, endpoint, apiKey, protoc
 		return nil, fmt.Errorf("构建请求失败: %w", err)
 	}
 	ua := strings.TrimSpace(userAgent)
-	if ua == "" {
+	if corelib.IsCodeGenURL(endpoint) {
+		ua = corelib.NormalizeCodeGenClientName(ua)
+	} else if ua == "" {
 		ua = "openclaw"
-	}
-	if corelib.IsCodeGenURL(endpoint) && strings.EqualFold(ua, "openclaw") {
-		ua = corelib.CodeGenClientName
 	}
 	req.Header.Set("User-Agent", ua)
 	if protocol == "anthropic" {
@@ -5857,9 +5857,7 @@ func (a *App) doFetchModelsRequest(client *http.Client, endpoint, apiKey, protoc
 		req.Header.Set("X-XAI-Token-Auth", "xai-grok-cli")
 	}
 	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, ua)
-	if strings.EqualFold(ua, corelib.CodeGenClientName) {
-		req.Header.Set(corelib.CodeGenClientNameHeader, corelib.CodeGenClientName)
-	}
+	corelib.SetOpenCodeSessionHeaderIfNeeded(req, "")
 	return client.Do(req)
 }
 

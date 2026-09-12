@@ -2,14 +2,16 @@ import { fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AttachmentImageThumbnail } from "../AttachmentImagePreview";
 import { lightTheme } from "../aiAssistantPanelTheme";
-import { AIAssistantAttachmentFullDataURL, ShowItemInFolder } from "../../../../wailsjs/go/main/App";
+import { AIAssistantAttachmentFullDataURL, ImportMobileDocumentFromPath, ShowItemInFolder } from "../../../../wailsjs/go/main/App";
 
 vi.mock("../../../../wailsjs/go/main/App", () => ({
     AIAssistantAttachmentFullDataURL: vi.fn(async () => "data:image/png;base64,FULL"),
+    ImportMobileDocumentFromPath: vi.fn(async () => ({})),
     ShowItemInFolder: vi.fn(async () => undefined),
 }));
 
 const fullDataURL = vi.mocked(AIAssistantAttachmentFullDataURL);
+const importToLibrary = vi.mocked(ImportMobileDocumentFromPath);
 const showInFolder = vi.mocked(ShowItemInFolder);
 const THUMBNAIL = "data:image/png;base64,THUMB";
 const FILE_PATH = "D:\\shots\\screen.png";
@@ -31,6 +33,7 @@ describe("AttachmentImageThumbnail", () => {
     afterEach(() => {
         fullDataURL.mockClear();
         fullDataURL.mockResolvedValue("data:image/png;base64,FULL");
+        importToLibrary.mockClear();
         showInFolder.mockClear();
     });
 
@@ -41,13 +44,18 @@ describe("AttachmentImageThumbnail", () => {
         fireEvent.click(getByTestId("attachment-image-thumbnail"));
 
         expect(getByTestId("attachment-image-preview-dialog").getAttribute("aria-modal")).toBe("true");
-        expect(getByTestId("attachment-image-preview-controls").style.position).toBe("absolute");
-        expect(getByTestId("attachment-image-preview-image").style.maxHeight).toBe("calc(100vh - 160px)");
+        expect(getByTestId("attachment-image-preview-header").textContent).toContain("screen.png");
+        expect(getByTestId("attachment-image-preview-image").style.maxHeight).toBe("100%");
+        // The panel slides in from the right edge rather than appearing centered.
+        expect(getByTestId("attachment-image-preview-dialog").style.transition).toContain("transform");
         expect(getByTestId("attachment-image-preview-image").getAttribute("src")).toBe(THUMBNAIL);
         await waitFor(() => {
             expect(getByTestId("attachment-image-preview-image").getAttribute("src")).toBe("data:image/png;base64,FULL");
         });
         expect(fullDataURL).toHaveBeenCalledWith(FILE_PATH);
+        await waitFor(() => {
+            expect(getByTestId("attachment-image-preview-dialog").style.transform).toBe("translateX(0)");
+        });
     });
 
     it("keeps the file path as hover text while naming the click action for assistive tech", () => {
@@ -138,8 +146,8 @@ describe("AttachmentImageThumbnail", () => {
             fireEvent.click(getByTestId("attachment-image-thumbnail"));
             fireEvent.keyDown(document, { key: "Tab" });
             expect(behindTheOverlay).not.toHaveBeenCalled();
-            // Close starts focused; Tab wraps to the other overlay control.
-            expect(getByTestId("attachment-image-preview-open-file")).toBe(document.activeElement);
+            // Close starts focused; Tab wraps to the first overlay control.
+            expect(getByTestId("preview-file-action-upload")).toBe(document.activeElement);
 
             fireEvent.keyDown(document, { key: "Escape" });
             await waitFor(() => expect(queryByTestId("attachment-image-preview-overlay")).toBeNull());
@@ -149,12 +157,12 @@ describe("AttachmentImageThumbnail", () => {
         }
     });
 
-    it("omits the reveal action when there is no saved file to reveal", () => {
+    it("omits the file actions when there is no saved file to act on", () => {
         const { getByTestId, queryByTestId } = renderThumbnail({ filePath: "" });
 
         fireEvent.click(getByTestId("attachment-image-thumbnail"));
 
-        expect(queryByTestId("attachment-image-preview-open-file")).toBeNull();
+        expect(queryByTestId("preview-file-actions")).toBeNull();
         expect(fullDataURL).not.toHaveBeenCalled();
     });
 
@@ -163,8 +171,14 @@ describe("AttachmentImageThumbnail", () => {
         fireEvent.click(getByTestId("attachment-image-thumbnail"));
 
         const close = getByTestId("attachment-image-preview-close");
-        const reveal = getByTestId("attachment-image-preview-open-file");
+        const upload = getByTestId("preview-file-action-upload");
+        const share = getByTestId("preview-file-action-share");
+        const reveal = getByTestId("preview-file-action-reveal");
         expect(close).toBe(document.activeElement);
+        fireEvent.keyDown(document, { key: "Tab" });
+        expect(upload).toBe(document.activeElement);
+        fireEvent.keyDown(document, { key: "Tab" });
+        expect(share).toBe(document.activeElement);
         fireEvent.keyDown(document, { key: "Tab" });
         expect(reveal).toBe(document.activeElement);
         fireEvent.keyDown(document, { key: "Tab" });
@@ -176,6 +190,28 @@ describe("AttachmentImageThumbnail", () => {
         expect(showInFolder).toHaveBeenCalledWith(FILE_PATH);
     });
 
+    it("uploads the saved file to the mobile documents library", async () => {
+        const { getByTestId } = renderThumbnail();
+        fireEvent.click(getByTestId("attachment-image-thumbnail"));
+
+        fireEvent.click(getByTestId("preview-file-action-upload"));
+
+        await waitFor(() => expect(importToLibrary).toHaveBeenCalledWith(FILE_PATH));
+        await waitFor(() => expect(getByTestId("preview-file-actions-notice").textContent).toBe("已上传到文稿库"));
+    });
+
+    it("shares the saved file by copying its path to the clipboard", async () => {
+        const writeText = vi.fn(async () => undefined);
+        Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+        const { getByTestId } = renderThumbnail();
+        fireEvent.click(getByTestId("attachment-image-thumbnail"));
+
+        fireEvent.click(getByTestId("preview-file-action-share"));
+
+        await waitFor(() => expect(writeText).toHaveBeenCalledWith(FILE_PATH));
+        await waitFor(() => expect(getByTestId("preview-file-actions-notice").textContent).toBe("已复制文件路径，可粘贴分享"));
+    });
+
     it("drops an undisplayable placeholder instead of showing a broken image", () => {
         const { getByTestId, queryByTestId } = renderThumbnail({ src: "blob:maclaw/revoked" });
 
@@ -185,5 +221,29 @@ describe("AttachmentImageThumbnail", () => {
         expect(queryByTestId("attachment-image-preview-image")).toBeNull();
         expect(getByTestId("attachment-image-preview-fallback")).toBeTruthy();
         expect(getByTestId("attachment-image-preview-status").textContent).toBe("正在加载原图…");
+    });
+
+    it("skips the slide animation when the OS requests reduced motion", async () => {
+        const original = (window as { matchMedia?: unknown }).matchMedia;
+        (window as { matchMedia?: unknown }).matchMedia = (query: string) => ({
+            matches: true,
+            media: query,
+            onchange: null,
+            addEventListener: vi.fn(),
+            removeEventListener: vi.fn(),
+            addListener: vi.fn(),
+            removeListener: vi.fn(),
+            dispatchEvent: vi.fn(),
+        });
+        try {
+            const { getByTestId, queryByTestId } = renderThumbnail();
+            fireEvent.click(getByTestId("attachment-image-thumbnail"));
+
+            expect(getByTestId("attachment-image-preview-dialog").style.transition).toBe("transform 0ms ease");
+            fireEvent.keyDown(document, { key: "Escape" });
+            await waitFor(() => expect(queryByTestId("attachment-image-preview-overlay")).toBeNull());
+        } finally {
+            (window as { matchMedia?: unknown }).matchMedia = original;
+        }
     });
 });

@@ -920,7 +920,7 @@ func llmLogin(args []string) error {
 		return llmLoginOpenAI(args[1:])
 	case "codegen":
 		if brand.Current().ID != "qianxin" {
-			return fmt.Errorf("CodeGen SSO 仅在企业版（TigerClaw）中可用")
+			return fmt.Errorf("CodeGen SSO 仅在企业版（%s）中可用", brand.Current().DisplayName)
 		}
 		return llmLoginCodeGen(args[1:])
 	default:

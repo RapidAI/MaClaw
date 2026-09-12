@@ -74,6 +74,29 @@ func TestGUICodingProductionWriterRunsOnlyWithWorkspaceGate(t *testing.T) {
 	}
 }
 
+func TestGUIGatedWriterInitializesGitBaselineForNonGitWorkspace(t *testing.T) {
+	root := t.TempDir()
+	options := defaultGUICodingRuntimeOptions(&TaskItem{RequestKind: codingRequestImplementation, Files: []string{"generated.txt"}}, root)
+	result, attempt, err := runGUICodingTaskWithLedgerWithOptions(
+		context.Background(), codingruntime.NewMemoryStore(), "gui:test", "workflow", "phase", root, "implement", nil, nil, options,
+		func() *CodingSubAgentResult {
+			if writeErr := os.WriteFile(filepath.Join(root, "generated.txt"), []byte("generated\n"), 0o600); writeErr != nil {
+				t.Fatalf("write generated file: %v", writeErr)
+			}
+			return &CodingSubAgentResult{Status: TaskExecPassed, FilesCreated: []string{"generated.txt"}, Summary: "generated"}
+		},
+	)
+	if err != nil || result == nil || attempt == nil {
+		t.Fatalf("result=%#v attempt=%#v err=%v", result, attempt, err)
+	}
+	if result.Status != TaskExecPassed || attempt.Status != codingruntime.TaskCompleted {
+		t.Fatalf("gated writer should complete after baseline init: result=%#v attempt=%#v", result, attempt)
+	}
+	if attempt.WorkspaceBefore == nil || len(attempt.WorkspaceBefore.Head) != 40 {
+		t.Fatalf("baseline probe should be recorded: %#v", attempt.WorkspaceBefore)
+	}
+}
+
 func TestGUILoopCancellationPersistsRuntimeCancellationAndDiscardsLateResult(t *testing.T) {
 	store := codingruntime.NewMemoryStore()
 	loop := NewLoopContext("coding-runtime-cancel", 3, nil)

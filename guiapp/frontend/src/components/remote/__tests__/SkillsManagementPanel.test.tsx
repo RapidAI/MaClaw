@@ -60,10 +60,35 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     InstallSkillSuite: (...args: unknown[]) => InstallSkillSuiteMock(...args),
     UploadSkillSuite: (...args: unknown[]) => UploadSkillSuiteMock(...args),
     DownloadSkillSuiteZip: (...args: unknown[]) => DownloadSkillSuiteZipMock(...args),
+    // Exports the panel imports but individual tests do not drive; safe
+    // defaults keep renders and background loads working.
+    ApplySkillMaintenanceAction: vi.fn(async () => undefined),
+    BatchSetNLSkillStatus: vi.fn(async () => undefined),
+    CancelSkillEvolution: vi.fn(async () => undefined),
+    ClearSkillEvolutionCompensation: vi.fn(async () => undefined),
+    ExportTextFile: vi.fn(async () => undefined),
+    GetExperienceAuditHealth: vi.fn(async () => ({})),
+    GetSkillEvolutionStatus: vi.fn(async () => ({})),
+    ListExperienceAudit: vi.fn(async () => []),
+    ListSkillEvolutionAudit: vi.fn(async () => []),
+    ListSkillEvolutionCompensations: vi.fn(async () => []),
+    ListSkillMaintenanceDrafts: vi.fn(async () => []),
+    ListSkillYAMLBackups: vi.fn(async () => []),
+    LoadConfig: vi.fn(async () => ({})),
+    OpenFileOrShowInFolder: vi.fn(async () => undefined),
+    PatchConfigFields: vi.fn(async () => undefined),
+    PurchaseSkillSuite: vi.fn(async () => undefined),
+    RenameNLSkill: vi.fn(async () => undefined),
+    ResolveCriticalConfirm: vi.fn(async () => false),
+    RestoreSkillYAMLBackup: vi.fn(async () => undefined),
+    RetrySkillEvolutionCompensation: vi.fn(async () => undefined),
+    TriggerSkillOptimize: vi.fn(async () => undefined),
+    TriggerSkillSelfRepair: vi.fn(async () => undefined),
+    VerifyAndActivateNLSkillWithArgs: vi.fn(async () => undefined),
 }));
 
 vi.mock('../../../../wailsjs/runtime', () => ({
-    EventsOn: vi.fn(),
+    EventsOn: vi.fn(() => vi.fn()),
     EventsOff: vi.fn(),
 }));
 

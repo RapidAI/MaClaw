@@ -209,6 +209,13 @@ func (s *Store) ProcessPendingDedup(ctx context.Context) int {
 		if newEntry == nil || candEntry == nil {
 			continue // one or both entries no longer exist
 		}
+		// Durable task-management entries are 1:1 task identities. Their
+		// boilerplate task.md content is near-identical across tasks, so they
+		// enqueue as dedup pairs constantly — merging them unions task-path
+		// tags and erases tasks from the sidebar.
+		if IsDurableTaskManagementEntry(newEntry) || IsDurableTaskManagementEntry(candEntry) {
+			continue
+		}
 
 		// Ask LLM to judge (outside any lock — this is the slow part).
 		decision, mergedText, err := llmJudgeDedup(ctx, llm, *newEntry, *candEntry)

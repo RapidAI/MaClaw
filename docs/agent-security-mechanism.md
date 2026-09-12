@@ -264,7 +264,7 @@ Firewall 的实际接线点：
 - `PolicySnapshot{ProjectRoot, RemoteTarget, Mode, ReadOnly, WriteSet, WorkspaceIsolated, ...}`（`codingruntime/types.go`）
 - `PolicySnapshot.ReadOnly` / `WorkspaceIsolated` 是**自我声明**，源码注释明确写"hosts must enforce this same policy at execution time"。
 - 进程层唯一约束：context 超时 + 进程树 kill（`corelib/tool/process_tree*.go`，Unix `Setpgid`）。**网络出口无任何限制**。
-- 执行前后只读工作区探针（`git rev-parse HEAD` / `git status --porcelain`）；`FinalWorkspaceGateRequired` 要求前后探针必须有差异，否则 `final_workspace_unchanged` 阻断。
+- 执行前后只读工作区探针（`git rev-parse HEAD` / `git status --porcelain`）；`FinalWorkspaceGateRequired` 要求前后探针必须有差异，否则 `final_workspace_unchanged` 阻断。本地非 Git（或零提交）工作区在执行前由 `codingruntime.EnsureLocalGitBaseline` 自动 `git init` + 空基线提交，仅当 Git 不可用或初始化失败时才以 `workspace_before_probe_failed` 阻断。
 - 子任务强制继承父策略：`validateReadOnlyChildSpec` 要求子任务 `ReadOnly` 且 `ProjectRef`/`Mode`/`ProjectRoot` 与父一致。
 - 租约 `LeaseDuration` 默认 **10 分钟**。
 

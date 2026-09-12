@@ -131,7 +131,7 @@ export const DEFAULT_MAX_VE_TABS = 8;
 export const LOCAL_TAB: AITab = {
     id: "local",
     type: "local",
-    title: "AI \u52a9\u624b",
+    title: "默认任务",
     executionProfile: "assistant",
     closable: false,
 };

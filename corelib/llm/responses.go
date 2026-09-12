@@ -214,6 +214,7 @@ func NewResponsesAPIRequest(
 	messages []interface{},
 	opts ResponsesAPIRequestOptions,
 ) (*http.Request, []byte, string, error) {
+	cfg = bindOpenCodeSession(ctx, cfg, messages)
 	endpoint, data, err := BuildResponsesAPIRequestData(cfg, messages, opts)
 	if err != nil {
 		return nil, nil, endpoint, err
@@ -231,6 +232,7 @@ func NewResponsesAPIRequest(
 	ApplyProviderAuthHeaders(req, cfg)
 	ApplyWorkloadHintHeaders(req, cfg)
 	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
+	corelib.ApplyOpenCodeSessionHeader(req, cfg)
 	// Codex subscription headers for chatgpt.com/backend-api
 	if IsCodexSubscriptionEndpoint(cfg.URL) {
 		req.Header.Set("OpenAI-Beta", "responses=experimental")

@@ -2267,7 +2267,9 @@ func openLLMRawResponsesStreamRequest(r *http.Request, p *im.LLMProvider, body m
 		release()
 		return nil, func() {}, fmt.Errorf("marshal responses request: %w", err)
 	}
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, hubOpenAIResponsesEndpoint(cfg.URL), bytes.NewReader(jsonBody))
+	ctx := withHubOpenCodeSession(r, fwd)
+	cfg = corelib.BindOpenCodeSessionID(ctx, cfg)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, hubOpenAIResponsesEndpoint(cfg.URL), bytes.NewReader(jsonBody))
 	if err != nil {
 		release()
 		return nil, func() {}, fmt.Errorf("create responses request: %w", err)
@@ -2278,6 +2280,7 @@ func openLLMRawResponsesStreamRequest(r *http.Request, p *im.LLMProvider, body m
 	}
 	req.Header.Set("User-Agent", cfg.UserAgent())
 	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
+	corelib.ApplyOpenCodeSessionHeader(req, cfg)
 	resp, err := llmProviderUpstreamStreamHTTPClient(cfg).Do(req)
 	if err != nil {
 		release()
@@ -5024,10 +5027,11 @@ func applyHubWorkloadSelection(w http.ResponseWriter, r *http.Request, body map[
 	}
 	if r != nil {
 		meta := llmservice.OfficialForwardMeta{
-			Preview:      llmpool.RequestTextPreview(body, 200),
-			WorkflowType: r.Header.Get(llmpool.WorkflowTypeHeader),
-			PhaseKind:    r.Header.Get(llmpool.PhaseKindHeader),
-			TaskType:     r.Header.Get(llmpool.TaskTypeHeader),
+			Preview:         llmpool.RequestTextPreview(body, 200),
+			WorkflowType:    r.Header.Get(llmpool.WorkflowTypeHeader),
+			PhaseKind:       r.Header.Get(llmpool.PhaseKindHeader),
+			TaskType:        r.Header.Get(llmpool.TaskTypeHeader),
+			OpenCodeSession: r.Header.Get(corelib.OpenCodeSessionHeader),
 		}
 		if decision != nil {
 			if class := strings.TrimSpace(decision.Class); class != "" && class != llmpool.WorkloadUnclassified {
@@ -5384,7 +5388,7 @@ func forwardLLMRequest(r *http.Request, p *im.LLMProvider, body map[string]any, 
 	}
 	defer release()
 	provider := toCoreLLMEndpointProvider(p)
-	return corelib.ForwardLLMEndpointProviderRequest(r.Context(), provider, body, llmProviderUpstreamHTTPClient(provider.MaclawLLMConfig()), externalModel)
+	return corelib.ForwardLLMEndpointProviderRequest(withHubOpenCodeSession(r, body), provider, body, llmProviderUpstreamHTTPClient(provider.MaclawLLMConfig()), externalModel)
 }
 
 func forwardRawResponsesRequest(r *http.Request, p *im.LLMProvider, body map[string]any) ([]byte, int, error) {
@@ -5397,7 +5401,26 @@ func forwardRawResponsesRequest(r *http.Request, p *im.LLMProvider, body map[str
 	}
 	defer release()
 	provider := toCoreLLMEndpointProvider(p)
-	return corelib.ForwardOpenAIResponsesRawRequest(r.Context(), provider.MaclawLLMConfig(), body, llmProviderUpstreamHTTPClient(provider.MaclawLLMConfig()))
+	cfg := provider.MaclawLLMConfig()
+	return corelib.ForwardOpenAIResponsesRawRequest(withHubOpenCodeSession(r, body), cfg, body, llmProviderUpstreamHTTPClient(cfg))
+}
+
+func withHubOpenCodeSession(r *http.Request, body map[string]any) context.Context {
+	if r == nil {
+		return context.Background()
+	}
+	ctx := r.Context()
+	session := strings.TrimSpace(r.Header.Get(corelib.OpenCodeSessionHeader))
+	if session == "" {
+		session = strings.TrimSpace(llmservice.OfficialForwardMetaFrom(ctx).OpenCodeSession)
+	}
+	if session == "" {
+		session = corelib.StableOpenCodeSessionID(corelib.OpenCodeConversationSeed(body))
+	}
+	if session == "" {
+		return ctx
+	}
+	return corelib.WithOpenCodeSessionID(ctx, session)
 }
 
 func llmProviderUpstreamHTTPClient(cfg corelib.MaclawLLMConfig) *http.Client {

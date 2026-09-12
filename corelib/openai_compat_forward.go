@@ -20,6 +20,10 @@ func ForwardOpenAICompatRequest(ctx context.Context, cfg MaclawLLMConfig, body m
 	if client == nil {
 		client = http.DefaultClient
 	}
+	cfg = BindOpenCodeSessionID(ctx, cfg)
+	if strings.TrimSpace(cfg.SessionID) == "" && ShouldAttachOpenCodeSession(cfg) {
+		cfg.SessionID = StableOpenCodeSessionID(OpenCodeConversationSeed(body))
+	}
 
 	// Shallow-copy body and remove streaming-only fields that are meaningless
 	// when all forward paths force stream:false.
@@ -53,6 +57,10 @@ func ForwardOpenAICompatRequest(ctx context.Context, cfg MaclawLLMConfig, body m
 func ForwardOpenAICompatStreamRequest(ctx context.Context, cfg MaclawLLMConfig, body map[string]interface{}, client *http.Client) (*http.Response, error) {
 	if client == nil {
 		client = http.DefaultClient
+	}
+	cfg = BindOpenCodeSessionID(ctx, cfg)
+	if strings.TrimSpace(cfg.SessionID) == "" && ShouldAttachOpenCodeSession(cfg) {
+		cfg.SessionID = StableOpenCodeSessionID(OpenCodeConversationSeed(body))
 	}
 	clean := make(map[string]interface{}, len(body))
 	for k, v := range body {
@@ -96,6 +104,7 @@ func forwardOpenAICompatStreamRequest(ctx context.Context, cfg MaclawLLMConfig, 
 		req.Header.Set("Authorization", "Bearer "+cfg.Key)
 	}
 	SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
+	ApplyOpenCodeSessionHeader(req, cfg)
 	return client.Do(req)
 }
 
@@ -1839,6 +1848,7 @@ func forwardResponsesCompat(ctx context.Context, cfg MaclawLLMConfig, body map[s
 		req.Header.Set("Authorization", "Bearer "+cfg.Key)
 	}
 	SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
+	ApplyOpenCodeSessionHeader(req, cfg)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, 0, err

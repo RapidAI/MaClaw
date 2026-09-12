@@ -15,6 +15,7 @@ func TestWindowTitleMatchesMain(t *testing.T) {
 		{"MaClaw", "MaClaw", true},
 		{"MaClaw - workspace", "MaClaw", true},
 		{"TigerClaw", "TigerClaw", true},
+		{"QAgent", "QAgent", true},
 		{"码卡龙 MaClaw", "MaClaw", true},
 		{"Chrome", "MaClaw", false},
 		{"", "MaClaw", false},

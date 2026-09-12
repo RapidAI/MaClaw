@@ -571,7 +571,10 @@ func (mc *Compressor) mergeSemanticDuplicates(ctx context.Context) (int, error) 
 		mc.store.mu.RLock()
 		var entries []Entry
 		for _, e := range mc.store.entries {
-			if MapToCanonical(e.Category) == key.Category && e.OwnerID == key.OwnerID && !e.Pinned {
+			// Durable task-management entries are 1:1 task identities, not
+			// compressible facts: merging them unions dozens of task-path tags
+			// into one entry and erases every other task from the sidebar.
+			if MapToCanonical(e.Category) == key.Category && e.OwnerID == key.OwnerID && !e.Pinned && !IsDurableTaskManagementEntry(&e) {
 				entries = append(entries, e)
 			}
 		}

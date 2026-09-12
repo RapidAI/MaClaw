@@ -370,6 +370,7 @@ func windowTitleMatchesMain(actual, want string) bool {
 	lower := strings.ToLower(actual)
 	return strings.Contains(lower, "maclaw") ||
 		strings.Contains(lower, "tigerclaw") ||
+		strings.Contains(lower, "qagent") ||
 		strings.Contains(lower, "metastaff") ||
 		strings.Contains(lower, "码卡龙")
 }

@@ -17,6 +17,7 @@ import { SidebarNavRail } from '../SidebarNavRail';
 import { GetHubUserInvitationStatus, GetHubUserRanking } from '../../../../wailsjs/go/main/App';
 import { BrowserOpenURL, EventsOn } from '../../../../wailsjs/runtime';
 import { miniAppLabels } from '../../../i18n/maclawMiniAppLabels';
+import { OPEN_SETTINGS_EVENT } from '../../../utils/settingsNavigation';
 
 // Go's HubUserRanking always carries the numeric fields + period; error is
 // the only optional field. Build error responses with the full shape.
@@ -65,8 +66,8 @@ function renderRail(overrides: Partial<React.ComponentProps<typeof SidebarNavRai
         onReorderFavorites: vi.fn(),
         ...overrides,
     };
-    render(<SidebarNavRail {...props} />);
-    return props;
+    const view = render(<SidebarNavRail {...props} />);
+    return Object.assign(props, { unmount: view.unmount });
 }
 
 
@@ -552,21 +553,174 @@ describe('SidebarNavRail favorite employees', () => {
         expect(props.switchTool).toHaveBeenCalledWith('ai');
         expect(props.onStartVEConversation).toHaveBeenCalledWith('ve-1');
     });
-    it('opens the scheduled task monitor from the 日程 rail entry', () => {
-        const onOpenScheduledTasks = vi.fn();
-        const props = renderRail({ onOpenScheduledTasks });
-        const scheduleEntry = screen.getByTestId('sidebar-schedule-nav');
+    it('opens the extensions menu from the 扩展 rail entry and opens Skills', () => {
+        const props = renderRail({ lang: 'zh-Hans' });
+        const extensionsEntry = screen.getByTestId('sidebar-extensions-nav');
 
-        fireEvent.click(scheduleEntry);
+        fireEvent.click(extensionsEntry);
 
-        expect(onOpenScheduledTasks).toHaveBeenCalledTimes(1);
-        expect(props.switchTool).not.toHaveBeenCalledWith('workflows');
+        expect(screen.getByTestId('extensions-popup-menu')).toBeTruthy();
+        expect(extensionsEntry.getAttribute('aria-expanded')).toBe('true');
+        expect(extensionsEntry.getAttribute('aria-haspopup')).toBe('menu');
+
+        fireEvent.click(screen.getByTestId('extensions-menu-skills'));
+
+        expect(props.switchTool).toHaveBeenCalledWith('skills');
+        expect(screen.queryByTestId('extensions-popup-menu')).toBeNull();
     });
 
-    it('marks the 日程 entry active for the scheduled monitor tab', () => {
-        renderRail({ navTab: 'remote', remoteSessionTab: 'scheduled' });
-        expect(screen.getByTestId('sidebar-schedule-nav').classList.contains('active')).toBe(true);
-        expect(screen.getByTestId('sidebar-task-monitor-nav').classList.contains('active')).toBe(false);
+    it('opens the MCP connectors page from the extensions menu', () => {
+        const props = renderRail({ lang: 'zh-Hans' });
+
+        fireEvent.click(screen.getByTestId('sidebar-extensions-nav'));
+        fireEvent.click(screen.getByTestId('extensions-menu-mcp'));
+
+        expect(props.switchTool).toHaveBeenCalledWith('mcp');
+        expect(screen.queryByTestId('extensions-popup-menu')).toBeNull();
     });
 
+    it('marks the 扩展 entry active on the skills and mcp pages', () => {
+        renderRail({ navTab: 'skills' });
+        expect(screen.getByTestId('sidebar-extensions-nav').classList.contains('active')).toBe(true);
+    });
+
+    it('closes the extensions menu when its rail entry is clicked again', () => {
+        renderRail({ lang: 'zh-Hans' });
+        const trigger = screen.getByTestId('sidebar-extensions-nav');
+
+        fireEvent.click(trigger);
+        expect(screen.getByTestId('extensions-popup-menu')).toBeTruthy();
+
+        fireEvent.mouseDown(trigger);
+        fireEvent.click(trigger);
+
+        expect(screen.queryByTestId('extensions-popup-menu')).toBeNull();
+        expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    });
+
+    it('closes the extensions menu on an outside click', async () => {
+        renderRail({ lang: 'zh-Hans' });
+
+        fireEvent.click(screen.getByTestId('sidebar-extensions-nav'));
+        expect(screen.getByTestId('extensions-popup-menu')).toBeTruthy();
+
+        // The menu registers its outside-click listener on a zero-delay timer
+        // so the opening click itself does not immediately close it.
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+        fireEvent.mouseDown(document.body);
+
+        expect(screen.queryByTestId('extensions-popup-menu')).toBeNull();
+    });
+
+    it('keeps the extensions and system menus mutually exclusive', () => {
+        renderRail({ lang: 'zh-Hans' });
+
+        fireEvent.click(screen.getByTestId('sidebar-extensions-nav'));
+        expect(screen.getByTestId('extensions-popup-menu')).toBeTruthy();
+
+        fireEvent.click(screen.getByTestId('system-menu-trigger'));
+        expect(screen.queryByTestId('extensions-popup-menu')).toBeNull();
+        expect(screen.getByTestId('system-popup-menu')).toBeTruthy();
+
+        fireEvent.mouseDown(screen.getByTestId('sidebar-extensions-nav'));
+        fireEvent.click(screen.getByTestId('sidebar-extensions-nav'));
+        expect(screen.queryByTestId('system-popup-menu')).toBeNull();
+        expect(screen.getByTestId('extensions-popup-menu')).toBeTruthy();
+    });
+
+});
+
+describe('SidebarNavRail library menu', () => {
+    it('opens the library menu from the 资料库 rail entry and opens Mobile documents', () => {
+        const props = renderRail({ lang: 'zh-Hans' });
+        const libraryEntry = screen.getByTestId('sidebar-files-nav');
+
+        fireEvent.click(libraryEntry);
+
+        expect(screen.getByTestId('library-popup-menu')).toBeTruthy();
+        expect(libraryEntry.getAttribute('aria-expanded')).toBe('true');
+        expect(libraryEntry.getAttribute('aria-haspopup')).toBe('menu');
+
+        fireEvent.click(screen.getByTestId('library-menu-documents'));
+
+        expect(props.switchTool).toHaveBeenCalledWith('files');
+        expect(screen.queryByTestId('library-popup-menu')).toBeNull();
+    });
+
+    it('opens the Knowledge settings tab from the library menu', () => {
+        const props = renderRail({ lang: 'zh-Hans' });
+        const openSettingsEvents: Array<{ tab?: string }> = [];
+        const listener = (event: Event) => {
+            openSettingsEvents.push((event as CustomEvent<{ tab?: string }>).detail);
+        };
+        window.addEventListener(OPEN_SETTINGS_EVENT, listener);
+        try {
+            fireEvent.click(screen.getByTestId('sidebar-files-nav'));
+            fireEvent.click(screen.getByTestId('library-menu-knowledge'));
+
+            expect(openSettingsEvents).toEqual([{ tab: 'knowledge' }]);
+            expect(props.switchTool).not.toHaveBeenCalled();
+            expect(screen.queryByTestId('library-popup-menu')).toBeNull();
+        } finally {
+            window.removeEventListener(OPEN_SETTINGS_EVENT, listener);
+        }
+    });
+
+    it('marks the 资料库 entry active on the files page and on the Knowledge settings tab', () => {
+        const first = renderRail({ navTab: 'files' });
+        expect(screen.getByTestId('sidebar-files-nav').classList.contains('active')).toBe(true);
+        first.unmount();
+
+        renderRail({ navTab: 'settings', settingsTab: 'knowledge' });
+        expect(screen.getByTestId('sidebar-files-nav').classList.contains('active')).toBe(true);
+        expect(screen.getByTestId('sidebar-settings-nav').classList.contains('active')).toBe(false);
+    });
+
+    it('closes the library menu when its rail entry is clicked again', () => {
+        renderRail({ lang: 'zh-Hans' });
+        const trigger = screen.getByTestId('sidebar-files-nav');
+
+        fireEvent.click(trigger);
+        expect(screen.getByTestId('library-popup-menu')).toBeTruthy();
+
+        fireEvent.mouseDown(trigger);
+        fireEvent.click(trigger);
+
+        expect(screen.queryByTestId('library-popup-menu')).toBeNull();
+        expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    });
+
+    it('closes the library menu on an outside click', async () => {
+        renderRail({ lang: 'zh-Hans' });
+
+        fireEvent.click(screen.getByTestId('sidebar-files-nav'));
+        expect(screen.getByTestId('library-popup-menu')).toBeTruthy();
+
+        // The menu registers its outside-click listener on a zero-delay timer
+        // so the opening click itself does not immediately close it.
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+        fireEvent.mouseDown(document.body);
+
+        expect(screen.queryByTestId('library-popup-menu')).toBeNull();
+    });
+
+    it('keeps the library, extensions and system menus mutually exclusive', () => {
+        renderRail({ lang: 'zh-Hans' });
+
+        fireEvent.click(screen.getByTestId('sidebar-files-nav'));
+        expect(screen.getByTestId('library-popup-menu')).toBeTruthy();
+
+        fireEvent.click(screen.getByTestId('sidebar-extensions-nav'));
+        expect(screen.queryByTestId('library-popup-menu')).toBeNull();
+        expect(screen.getByTestId('extensions-popup-menu')).toBeTruthy();
+
+        fireEvent.mouseDown(screen.getByTestId('sidebar-files-nav'));
+        fireEvent.click(screen.getByTestId('sidebar-files-nav'));
+        expect(screen.queryByTestId('extensions-popup-menu')).toBeNull();
+        expect(screen.getByTestId('library-popup-menu')).toBeTruthy();
+
+        fireEvent.click(screen.getByTestId('system-menu-trigger'));
+        expect(screen.queryByTestId('library-popup-menu')).toBeNull();
+        expect(screen.getByTestId('system-popup-menu')).toBeTruthy();
+    });
 });

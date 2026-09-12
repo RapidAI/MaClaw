@@ -35,7 +35,7 @@ func TestStartVirtualRepositoryCodingTaskArmsLocalWorkspace(t *testing.T) {
 	if err := app.updateVirtualRepositoryIndex(repo); err != nil {
 		t.Fatal(err)
 	}
-	launch, err := app.StartVirtualRepositoryCodingTask(repo.ID)
+	launch, err := app.StartVirtualRepositoryCodingTask(repo.ID, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestStartVirtualRepositoryCodingTaskDoesNotCreateRemoteTaskWithoutPassword(
 		t.Fatal(err)
 	}
 
-	if _, err := app.StartVirtualRepositoryCodingTask(repo.ID); err == nil {
+	if _, err := app.StartVirtualRepositoryCodingTask(repo.ID, ""); err == nil {
 		t.Fatal("remote launch without a saved SSH password should fail")
 	}
 	if tasks := app.ListTasks(10); len(tasks) != 0 {
@@ -100,7 +100,7 @@ func TestStartVirtualRepositoryCodingTaskDoesNotConnectWithoutTrustedHostKey(t *
 		t.Fatal(err)
 	}
 
-	_, err := app.StartVirtualRepositoryCodingTask(repo.ID)
+	_, err := app.StartVirtualRepositoryCodingTask(repo.ID, "")
 	if err == nil || !strings.Contains(err.Error(), "host key is not trusted") {
 		t.Fatalf("error = %v, want local host-key preflight failure", err)
 	}

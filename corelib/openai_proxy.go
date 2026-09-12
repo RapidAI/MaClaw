@@ -1239,6 +1239,7 @@ func (p *OpenAIProxy) forwardResponses(body map[string]interface{}) ([]byte, int
 	req.Header.Set("Authorization", "Bearer "+p.config.Key)
 	req.Header.Set("User-Agent", cfg.UserAgent())
 	SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
+	ApplyOpenCodeSessionHeader(req, cfg)
 
 	// 6. Execute request
 	resp, err := p.client.Do(req)
@@ -1290,6 +1291,10 @@ func ForwardOpenAIResponsesRawRequest(ctx context.Context, cfg MaclawLLMConfig, 
 	if client == nil {
 		client = http.DefaultClient
 	}
+	cfg = BindOpenCodeSessionID(ctx, cfg)
+	if strings.TrimSpace(cfg.SessionID) == "" && ShouldAttachOpenCodeSession(cfg) {
+		cfg.SessionID = StableOpenCodeSessionID(OpenCodeConversationSeed(body))
+	}
 	fwd := cloneOpenAICompatBody(body)
 	if model := strings.TrimSpace(cfg.UpstreamModel()); model != "" {
 		fwd["model"] = model
@@ -1309,6 +1314,7 @@ func ForwardOpenAIResponsesRawRequest(ctx context.Context, cfg MaclawLLMConfig, 
 	}
 	req.Header.Set("User-Agent", cfg.UserAgent())
 	SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
+	ApplyOpenCodeSessionHeader(req, cfg)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, 0, err

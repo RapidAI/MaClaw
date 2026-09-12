@@ -244,17 +244,17 @@ describe('AboutPanel', () => {
         expect(BrowserOpenURLMock).not.toHaveBeenCalled();
     });
 
-    it('renders the bundled display treatment for version 7 in the default brand name', () => {
+    it('renders the bundled display treatment for version 8 in the default brand name', () => {
         render(
             <AboutPanel
                 {...baseProps}
-                t={(key) => key === 'aboutProductName' ? '码卡龙 7 万变' : baseProps.t(key)}
+                t={(key) => key === 'aboutProductName' ? '码卡龙 8 万变' : baseProps.t(key)}
             />,
         );
 
-        const versionMark = screen.getByLabelText('7');
+        const versionMark = screen.getByLabelText('8');
         expect(versionMark.classList.contains('brand-version-mark')).toBe(true);
-        expect(screen.getByRole('heading', { name: '码卡龙 7 万变' })).toBeTruthy();
+        expect(screen.getByRole('heading', { name: '码卡龙 8 万变' })).toBeTruthy();
     });
 
     it('does not show a hardware-accel badge when instance backend is cpu-simd', async () => {
@@ -298,13 +298,13 @@ describe('AboutPanel', () => {
         expect(screen.queryByText('NPU')).toBeNull();
     });
 
-    it('renders the TigerClaw product name with the version 7 display treatment', () => {
+    it('renders the QAgent product name with the version 8 display treatment', () => {
         render(
             <AboutPanel
                 {...baseProps}
                 brandInfo={{
                     id: 'qianxin',
-                    displayName: 'TigerClaw',
+                    displayName: 'QAgent',
                     displayNameCN: '虎爪',
                     slogan: 'Master your code, seize the machine.',
                     author: 'Dr. Daniel',
@@ -316,12 +316,12 @@ describe('AboutPanel', () => {
             />,
         );
 
-        const versionMark = screen.getByLabelText('7');
+        const versionMark = screen.getByLabelText('8');
         expect(versionMark.classList.contains('brand-version-mark')).toBe(true);
-        expect(screen.getByRole('heading', { name: '虎爪 7 万变' })).toBeTruthy();
+        expect(screen.getByRole('heading', { name: '虎爪 8 万变' })).toBeTruthy();
     });
 
-    it('renders the MetaStaff product name with the version 7 display treatment', () => {
+    it('renders the MetaStaff product name with the version 8 display treatment', () => {
         render(
             <AboutPanel
                 {...baseProps}
@@ -339,9 +339,9 @@ describe('AboutPanel', () => {
             />,
         );
 
-        const versionMark = screen.getByLabelText('7');
+        const versionMark = screen.getByLabelText('8');
         expect(versionMark.classList.contains('brand-version-mark')).toBe(true);
-        expect(screen.getByRole('heading', { name: '智员 7 万变' })).toBeTruthy();
+        expect(screen.getByRole('heading', { name: '智员 8 万变' })).toBeTruthy();
     });
 
     it('renders current tenant and registered hub instance name', () => {

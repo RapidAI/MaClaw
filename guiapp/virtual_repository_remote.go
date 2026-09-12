@@ -25,6 +25,11 @@ import (
 
 const virtualRepositorySSHKeyringService = "MaClaw Virtual Repository SSH"
 
+// virtualRepositoryCompositeKeyMaxLength bounds mapping-scoped keys of the
+// form <repository id>/<mapping id> used for keyring entries and SSH sync
+// secrets.
+const virtualRepositoryCompositeKeyMaxLength = 2*virtualRepositoryNameMaxLength + 1
+
 const remoteGitCheckoutAttempts = 3
 const remoteGitCheckoutCleanupTimeout = 15 * time.Second
 
@@ -116,13 +121,18 @@ func (a *App) loadVirtualRepositoryKnownHosts() (virtualRepositoryKnownHostFile,
 	return file, nil
 }
 
-// ResetRemoteVirtualRepositoryHostKey removes the pin for one existing remote
-// repository. It deliberately does not contact the server or trust a new key:
-// the caller must test again and explicitly confirm the newly observed key.
-func (a *App) ResetRemoteVirtualRepositoryHostKey(repositoryID string) error {
+// ResetRemoteVirtualRepositoryHostKey removes the pin for one remote mapping
+// of a repository (the default mapping when mappingID is empty). It
+// deliberately does not contact the server or trust a new key: the caller must
+// test again and explicitly confirm the newly observed key.
+func (a *App) ResetRemoteVirtualRepositoryHostKey(repositoryID, mappingID string) error {
 	repositoryID = strings.TrimSpace(repositoryID)
-	if repositoryID == "" || len(repositoryID) > virtualRepositoryNameMaxLength || containsControlCharacter(repositoryID) {
+	if repositoryID == "" || len(repositoryID) > virtualRepositoryNameMaxLength || containsControlCharacter(repositoryID) || strings.ContainsAny(repositoryID, `:/`) {
 		return errors.New("remote virtual repository id is invalid")
+	}
+	mappingID = strings.TrimSpace(mappingID)
+	if len(mappingID) > virtualRepositoryNameMaxLength || containsControlCharacter(mappingID) || strings.ContainsAny(mappingID, `:/`) {
+		return errors.New("virtual repository mapping id is invalid")
 	}
 	items, err := a.loadVirtualRepositoryIndexItems()
 	if err != nil {
@@ -130,10 +140,18 @@ func (a *App) ResetRemoteVirtualRepositoryHostKey(repositoryID string) error {
 	}
 	var remote *VirtualRepositoryRemote
 	for _, item := range items {
-		if item.ID == repositoryID && item.Remote != nil {
-			remote = item.Remote
-			break
+		if item.ID != repositoryID {
+			continue
 		}
+		mapping, resolveErr := resolveVirtualRepositoryMapping(item, mappingID)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		if mapping.Kind != virtualRepositoryMappingKindRemoteSSH {
+			return errors.New("virtual repository mapping is not a remote SSH location")
+		}
+		remote = virtualRepositoryMappingRemote(mapping)
+		break
 	}
 	if remote == nil {
 		return errors.New("remote virtual repository was not found")
@@ -198,6 +216,7 @@ func (a *App) RepairRemoteVirtualRepositoryConnection(inputJSON string) (string,
 		if err := keyring.Set(virtualRepositorySSHKeyringService, input.RepositoryID, input.Password); err != nil {
 			return "", fmt.Errorf("save SSH password in system keyring: %w", err)
 		}
+		a.mirrorDefaultRemoteMappingPassword(input.RepositoryID, input.Password)
 	}
 	return statusJSON, nil
 }
@@ -489,7 +508,7 @@ func (a *App) TestRemoteVirtualRepositoryConnection(inputJSON string) (string, e
 		return "", err
 	}
 	input.Remote, input.RootPath = probe.Remote, probe.RootPath
-	if len(input.RepositoryID) > virtualRepositoryNameMaxLength || containsControlCharacter(input.RepositoryID) || len(input.Password) > virtualRepositoryFieldMaxLength || strings.ContainsAny(input.Password, "\r\n\x00") {
+	if len(input.RepositoryID) > virtualRepositoryCompositeKeyMaxLength || containsControlCharacter(input.RepositoryID) || len(input.Password) > virtualRepositoryFieldMaxLength || strings.ContainsAny(input.Password, "\r\n\x00") {
 		return "", errors.New("remote virtual repository connection contains an invalid credential field")
 	}
 	status := RemoteVirtualRepositoryConnectionStatus{}
@@ -555,7 +574,7 @@ func (a *App) CreateRemoteVirtualRepositoryRoot(inputJSON string) (resultErr err
 		return err
 	}
 	input.Remote, input.RootPath = probe.Remote, probe.RootPath
-	if len(input.RepositoryID) > virtualRepositoryNameMaxLength || containsControlCharacter(input.RepositoryID) || len(input.Password) > virtualRepositoryFieldMaxLength || strings.ContainsAny(input.Password, "\r\n\x00") {
+	if len(input.RepositoryID) > virtualRepositoryCompositeKeyMaxLength || containsControlCharacter(input.RepositoryID) || len(input.Password) > virtualRepositoryFieldMaxLength || strings.ContainsAny(input.Password, "\r\n\x00") {
 		return errors.New("remote virtual repository connection contains an invalid credential field")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -619,6 +638,9 @@ func (a *App) writeRemoteVirtualRepository(client *ssh.Client, repo *VirtualRepo
 	disk := *repo
 	disk.RootPath = ""
 	disk.Remote = nil
+	// Mappings are machine coordinates; the manifest on a remote host must not
+	// learn this device's local roots or other endpoints.
+	disk.Mappings = nil
 	data, err := json.MarshalIndent(disk, "", "  ")
 	if err != nil {
 		return err
@@ -690,9 +712,16 @@ func remoteVirtualRepositoryManifestExists(client *ssh.Client, root string) (boo
 }
 
 func (a *App) readRemoteVirtualRepository(item virtualRepositoryIndexEntry, suppliedPassword string, trust bool) (*VirtualRepository, error) {
+	return a.readRemoteVirtualRepositoryWithKey(item, item.ID, suppliedPassword, trust)
+}
+
+// readRemoteVirtualRepositoryWithKey reads the remote manifest at the index
+// entry's location, using keyringKey (rather than the bare repository id) for
+// the SSH password lookup so non-default mappings use their scoped secret.
+func (a *App) readRemoteVirtualRepositoryWithKey(item virtualRepositoryIndexEntry, keyringKey, suppliedPassword string, trust bool) (*VirtualRepository, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	client, _, _, err := a.dialRemoteVirtualRepository(ctx, item.ID, item.Remote, suppliedPassword, trust)
+	client, _, _, err := a.dialRemoteVirtualRepository(ctx, keyringKey, item.Remote, suppliedPassword, trust)
 	if err != nil {
 		return nil, err
 	}
@@ -833,6 +862,13 @@ func (a *App) SaveRemoteVirtualRepository(inputJSON string) (string, error) {
 		return "", fmt.Errorf("remote manifest was saved, but the local recent-repository index could not be updated: %w", err)
 	}
 	log.Printf("[vrepo] save_remote repo=%q nodes=%d status=success duration_ms=%d", repo.ID, len(repo.Nodes), time.Since(started).Milliseconds())
+	// The bare repository key now holds the current password. Mirror it to the
+	// default mapping's scoped key so mapping-aware dial paths stay in step; on
+	// the failure paths above the bare key is rolled back before this point, so
+	// the scoped key never needs its own rollback.
+	if strings.TrimSpace(input.Password) != "" {
+		a.mirrorDefaultRemoteMappingPassword(repo.ID, input.Password)
+	}
 	data, err := json.Marshal(repo)
 	if err == nil {
 		a.clearVirtualRepositorySyncTombstone("repo", repo.ID)
@@ -913,19 +949,35 @@ func (a *App) remoteVirtualRepositoryByID(id string) (*VirtualRepository, *ssh.C
 }
 
 func (a *App) remoteVirtualRepositoryByIDContext(ctx context.Context, id string) (*VirtualRepository, *ssh.Client, error) {
+	return a.remoteVirtualRepositoryByIDMappingContext(ctx, id, "")
+}
+
+// remoteVirtualRepositoryByIDMappingContext dials the SSH endpoint of the
+// requested mapping (default mapping when mappingID is empty) and reads the
+// remote manifest at that mapping's root. The mapping's scoped keyring entry
+// supplies the password for non-default mappings.
+func (a *App) remoteVirtualRepositoryByIDMappingContext(ctx context.Context, id, mappingID string) (*VirtualRepository, *ssh.Client, error) {
 	indexItems, err := a.loadVirtualRepositoryIndexItems()
 	if err != nil {
 		return nil, nil, err
 	}
 	for _, item := range indexItems {
-		if item.ID != strings.TrimSpace(id) || item.Remote == nil {
+		if item.ID != strings.TrimSpace(id) {
 			continue
 		}
-		client, _, _, err := a.dialRemoteVirtualRepository(ctx, item.ID, item.Remote, "", false)
+		mapping, err := resolveVirtualRepositoryMapping(item, mappingID)
 		if err != nil {
 			return nil, nil, err
 		}
-		repo, err := a.readRemoteVirtualRepositoryWithClient(client, item)
+		if mapping.Kind != virtualRepositoryMappingKindRemoteSSH {
+			return nil, nil, errors.New("virtual repository mapping is not a remote SSH location")
+		}
+		view := virtualRepositoryIndexEntryForMapping(item, *mapping)
+		client, _, _, err := a.dialRemoteVirtualRepository(ctx, virtualRepositoryMappingSecretKey(item.ID, mapping.ID), view.Remote, "", false)
+		if err != nil {
+			return nil, nil, err
+		}
+		repo, err := a.readRemoteVirtualRepositoryWithClient(client, view)
 		if err != nil {
 			_ = client.Close()
 			return nil, nil, err
@@ -933,6 +985,21 @@ func (a *App) remoteVirtualRepositoryByIDContext(ctx context.Context, id string)
 		return repo, client, nil
 	}
 	return nil, nil, errors.New("remote virtual repository was not found")
+}
+
+// virtualRepositoryIndexEntryForMapping returns the entry view whose legacy
+// location fields point at the given mapping, so the existing remote read and
+// manifest paths work unchanged for non-default mappings.
+func virtualRepositoryIndexEntryForMapping(item virtualRepositoryIndexEntry, mapping VirtualRepositoryMapping) virtualRepositoryIndexEntry {
+	view := item
+	view.RootPath = mapping.RootPath
+	view.Mappings = virtualRepositoryIndexEntryMappings(item)
+	if mapping.Kind == virtualRepositoryMappingKindRemoteSSH {
+		view.Remote = virtualRepositoryMappingRemote(&mapping)
+	} else {
+		view.Remote = nil
+	}
+	return view
 }
 
 func (a *App) readRemoteVirtualRepositoryWithClient(client *ssh.Client, item virtualRepositoryIndexEntry) (*VirtualRepository, error) {
@@ -964,6 +1031,10 @@ func (a *App) readRemoteVirtualRepositoryWithClient(client *ssh.Client, item vir
 	if err := validateVirtualRepository(&repo); err != nil {
 		return nil, err
 	}
+	// The remote manifest never stores mappings; attach this device's mapping
+	// view from the index entry (upgrading the legacy location when needed).
+	repo.Mappings = virtualRepositoryIndexEntryMappings(item)
+	ensureVirtualRepositoryMappings(&repo)
 	return &repo, nil
 }
 
@@ -1051,9 +1122,11 @@ func inspectRemoteVirtualRepositoryNode(ctx context.Context, client *ssh.Client,
 	return status
 }
 
-func (a *App) InspectRemoteVirtualRepository(id string) (string, error) {
+func (a *App) InspectRemoteVirtualRepository(id, mappingID string) (string, error) {
 	started := time.Now()
-	repo, client, err := a.remoteVirtualRepositoryByID(id)
+	dialCtx, dialCancel := context.WithTimeout(context.Background(), 20*time.Second)
+	repo, client, err := a.remoteVirtualRepositoryByIDMappingContext(dialCtx, id, mappingID)
+	dialCancel()
 	if err != nil {
 		log.Printf("[vrepo] inspect_remote repo=%q status=connect_failed duration_ms=%d error=%q", strings.TrimSpace(id), time.Since(started).Milliseconds(), virtualRepositoryLogError(err))
 		return "", err
@@ -1081,7 +1154,7 @@ func (a *App) InspectRemoteVirtualRepository(id string) (string, error) {
 func (a *App) getRemoteVirtualRepositoryChanges(request virtualRepositoryChangesRequest) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	repo, client, err := a.remoteVirtualRepositoryByIDContext(ctx, request.RepositoryID)
+	repo, client, err := a.remoteVirtualRepositoryByIDMappingContext(ctx, request.RepositoryID, request.MappingID)
 	if err != nil {
 		return "", err
 	}
@@ -1116,11 +1189,13 @@ func (a *App) getRemoteVirtualRepositoryChanges(request virtualRepositoryChanges
 	return string(data), err
 }
 
-func (a *App) CreateRemoteVirtualRepositoryDirectory(repositoryID, relative string) error {
+func (a *App) CreateRemoteVirtualRepositoryDirectory(repositoryID, relative, mappingID string) error {
 	if err := validateRemoteVirtualRepositoryRelativePath(relative); err != nil {
 		return err
 	}
-	repo, client, err := a.remoteVirtualRepositoryByID(repositoryID)
+	dialCtx, dialCancel := context.WithTimeout(context.Background(), 20*time.Second)
+	repo, client, err := a.remoteVirtualRepositoryByIDMappingContext(dialCtx, repositoryID, mappingID)
+	dialCancel()
 	if err != nil {
 		return err
 	}
@@ -1135,7 +1210,7 @@ func (a *App) CreateRemoteVirtualRepositoryDirectory(repositoryID, relative stri
 	return err
 }
 
-func (a *App) CheckoutRemoteVirtualRepositoryNode(repositoryID, nodeID string) (resultErr error) {
+func (a *App) CheckoutRemoteVirtualRepositoryNode(repositoryID, nodeID, mappingID string) (resultErr error) {
 	started := time.Now()
 	kind, refType, refName := "", "", ""
 	defer func() {
@@ -1149,7 +1224,9 @@ func (a *App) CheckoutRemoteVirtualRepositoryNode(repositoryID, nodeID string) (
 	if repositoryID == "" || nodeID == "" || len(repositoryID) > virtualRepositoryNameMaxLength || len(nodeID) > virtualRepositoryNameMaxLength || containsControlCharacter(repositoryID) || containsControlCharacter(nodeID) {
 		return errors.New("virtual repository or node id is invalid")
 	}
-	repo, client, err := a.remoteVirtualRepositoryByID(repositoryID)
+	dialCtx, dialCancel := context.WithTimeout(context.Background(), 20*time.Second)
+	repo, client, err := a.remoteVirtualRepositoryByIDMappingContext(dialCtx, repositoryID, mappingID)
+	dialCancel()
 	if err != nil {
 		return err
 	}
@@ -1248,11 +1325,13 @@ func remoteGitCredentialPrefix(client *ssh.Client, credential *RepositoryCredent
 	return prefix, askPass.cleanup, nil
 }
 
-func (a *App) GetRemoteVirtualRepositoryDirectoryStats(repositoryID, relative string) (string, error) {
+func (a *App) GetRemoteVirtualRepositoryDirectoryStats(repositoryID, relative, mappingID string) (string, error) {
 	if err := validateRemoteVirtualRepositoryRelativePath(relative); err != nil {
 		return "", err
 	}
-	repo, client, err := a.remoteVirtualRepositoryByID(repositoryID)
+	dialCtx, dialCancel := context.WithTimeout(context.Background(), 20*time.Second)
+	repo, client, err := a.remoteVirtualRepositoryByIDMappingContext(dialCtx, repositoryID, mappingID)
+	dialCancel()
 	if err != nil {
 		return "", err
 	}
@@ -1284,7 +1363,9 @@ func parseRemoteVirtualRepositoryDirectoryStats(out string) (int64, int64, error
 }
 
 func (a *App) executeRemoteVirtualRepositoryOperation(parent context.Context, repo *VirtualRepository, node VirtualRepositoryNode, req VirtualRepositoryOperationRequest) (string, error) {
-	remoteRepo, client, err := a.remoteVirtualRepositoryByID(repo.ID)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	remoteRepo, client, err := a.remoteVirtualRepositoryByIDMappingContext(ctx, repo.ID, req.MappingID)
 	if err != nil {
 		return "", err
 	}

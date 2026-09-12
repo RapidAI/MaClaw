@@ -81,6 +81,7 @@ func DoOpenAIRequestStreamWithOptions(
 ) (*Response, error) {
 	opts.Stream = true
 	opts.Tools = tools
+	cfg = bindOpenCodeSession(ctx, cfg, messages)
 	endpoint, reqBody, err := BuildOpenAIChatRequestData(cfg, messages, opts)
 	if err != nil {
 		return nil, err

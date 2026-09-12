@@ -42,6 +42,20 @@ func TestApplyOfficialForwardMetaCopiesWorkflowHints(t *testing.T) {
 	}
 }
 
+func TestApplyOfficialForwardMetaForwardsOpenCodeSession(t *testing.T) {
+	req, err := http.NewRequest(http.MethodPost, "https://hc.example/api/llm/v1/chat/completions", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := WithOfficialForwardMeta(context.Background(), OfficialForwardMeta{
+		OpenCodeSession: "client-session",
+	})
+	applyOfficialForwardMeta(req, ctx)
+	if got := req.Header.Get("x-opencode-session"); got != "client-session" {
+		t.Fatalf("x-opencode-session = %q, want client-session", got)
+	}
+}
+
 func TestApplyOfficialForwardMetaSendsFrozenClass(t *testing.T) {
 	req, err := http.NewRequest(http.MethodPost, "https://hc.example/api/llm/v1/chat/completions", nil)
 	if err != nil {

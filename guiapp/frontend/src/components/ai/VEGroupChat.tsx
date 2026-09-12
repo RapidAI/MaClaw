@@ -515,10 +515,11 @@ export function GroupMessageBubble({ message, participantIndex, theme, isUser, o
             >
                 {displayName || message.fromName}
             </div>
-            {/* Message content — top tail points at speaker name (AI assistant style) */}
+            {/* Message content — corner tail points back at the speaker name (AI assistant style) */}
             {(hasContent || !hasAttachments) && (
                 <ChatBubbleFrame
                     side={isUser ? "right" : "left"}
+                    tailPlacement="side"
                     background={isUser ? userChatBubbleBackground(theme.sendBtnBg, theme.fieldBg) : theme.fieldBg}
                     borderColor={isUser ? theme.sendBtnBorder : theme.fieldBorder}
                     data-testid={`group-msg-content-${message.id}`}
@@ -529,8 +530,9 @@ export function GroupMessageBubble({ message, participantIndex, theme, isUser, o
                         overflowWrap: "anywhere",
                         whiteSpace: "pre-wrap",
                         maxWidth: "82%",
-                        // Tail-side corner stays tight (user: bottom-right, peer: bottom-left).
-                        borderRadius: isUser ? "14px 14px 4px 14px" : "14px 14px 14px 4px",
+                        // Corner tail sits on the name-side top corner, so that
+                        // corner stays tight (user: top-right, peer: top-left).
+                        borderRadius: isUser ? "16px 6px 16px 16px" : "6px 16px 16px 16px",
                     }}
                 >
                     <MessageContentRenderer content={message.content} theme={theme} isUser={isUser} />

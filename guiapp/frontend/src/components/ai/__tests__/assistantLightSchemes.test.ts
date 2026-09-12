@@ -86,10 +86,10 @@ describe("assistant light schemes", () => {
 
     it("exposes the Fluent Azure palette tokens", () => {
         const scheme = getAssistantLightScheme("fluent");
-        expect(scheme.cssVars.pageBg).toBe("#f7f8fa");
-        expect(scheme.cssVars.primary).toBe("#4a8cff");
+        expect(scheme.cssVars.pageBg).toBe("#ffffff");
+        expect(scheme.cssVars.primary).toBe("#2f78d0");
         expect(scheme.cssVars.surface).toBe("#ffffff");
-        expect(scheme.assistantTheme.sendBtnBg).toBe("#2563eb");
+        expect(scheme.assistantTheme.sendBtnBg).toBe("#1769e8");
     });
 
     it("keeps overlay/light fallbacks aligned with Fluent", () => {
@@ -126,8 +126,8 @@ describe("assistant light schemes", () => {
 
     it("paints the first frame with the Fluent page background by default", () => {
         const html = readFileSync(resolve(frontendSrc, "../index.html"), "utf8");
-        expect(html).toContain(": '#f7f8fa'");
-        expect(html).toContain("background-color: var(--theme-page-bg, #f7f8fa)");
+        expect(html).toContain(": '#ffffff'");
+        expect(html).toContain("background-color: var(--theme-page-bg, #ffffff)");
         for (const scheme of assistantLightSchemes) {
             expect(html.toLowerCase(), scheme.id).toContain(scheme.cssVars.pageBg);
         }

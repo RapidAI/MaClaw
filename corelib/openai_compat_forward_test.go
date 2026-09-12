@@ -156,6 +156,35 @@ func TestForwardOpenAICompatRequestWithSDKReturnsStructuredErrorBody(t *testing.
 	}
 }
 
+func TestForwardOpenAICompatRequestSendsOpenCodeSessionHeader(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if got := req.Header.Get(OpenCodeSessionHeader); got != "hub-conv-1" {
+			t.Fatalf("%s = %q, want hub-conv-1", OpenCodeSessionHeader, got)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewBufferString(`{"id":"chatcmpl-test","object":"chat.completion","model":"glm-5.3-flash","choices":[]}`)),
+			Request:    req,
+		}, nil
+	})}
+
+	_, statusCode, err := ForwardOpenAICompatRequest(context.Background(), MaclawLLMConfig{
+		URL:       "https://opencode.ai/zen/go/v1",
+		Model:     "glm-5.3-flash",
+		AgentType: "opencode",
+		SessionID: "hub-conv-1",
+	}, map[string]any{
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	}, client, "")
+	if err != nil {
+		t.Fatalf("ForwardOpenAICompatRequest() error = %v", err)
+	}
+	if statusCode != http.StatusOK {
+		t.Fatalf("statusCode = %d, want %d", statusCode, http.StatusOK)
+	}
+}
+
 func TestForwardOpenAICompatRequestWithSDKSendsCodeGenHeaderOnlyForCodeGen(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		if got := req.Header.Get(CodeGenClientNameHeader); got != CodeGenClientName {

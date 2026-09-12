@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+    CODEGEN_USER_AGENT,
     KNOWN_USER_AGENTS,
     commitCustomAgentValue,
     customAgentSeedForProvider,
@@ -35,8 +36,8 @@ describe('userAgent helpers', () => {
             expect(effectiveAgentType(provider({ agent_type: '  my-agent  ' }))).toBe('my-agent');
         });
 
-        it('returns tigerclaw for CodeGen SSO provider', () => {
-            expect(effectiveAgentType(provider({ name: 'CodeGen', auth_type: 'sso' }))).toBe('tigerclaw');
+        it('returns QAgent for CodeGen SSO provider', () => {
+            expect(effectiveAgentType(provider({ name: 'CodeGen', auth_type: 'sso' }))).toBe(CODEGEN_USER_AGENT);
         });
 
         it('uses each imported agent identity', () => {
@@ -55,6 +56,12 @@ describe('userAgent helpers', () => {
             expect(selectableAgentType(provider({ agent_type: 'Claude Code' }))).toBe('claude code 2.0');
             expect(selectableAgentType(provider({ agent_type: 'Cline' }))).toBe('Cline');
         });
+
+        it('maps the legacy tigerclaw identity to the QAgent chip', () => {
+            expect(selectableAgentType(provider({ agent_type: 'tigerclaw' }))).toBe(CODEGEN_USER_AGENT);
+            expect(selectableAgentType(provider({ agent_type: 'TigerClaw' }))).toBe(CODEGEN_USER_AGENT);
+            expect(selectableAgentType(provider({ agent_type: CODEGEN_USER_AGENT }))).toBe(CODEGEN_USER_AGENT);
+        });
     });
 
     describe('isKnownUserAgent', () => {
@@ -70,7 +77,10 @@ describe('userAgent helpers', () => {
             expect(isKnownUserAgent('Crush')).toBe(true);
             expect(isKnownUserAgent('Goose')).toBe(true);
             expect(isKnownUserAgent('claude code 2.0')).toBe(true);
+            expect(isKnownUserAgent(CODEGEN_USER_AGENT)).toBe(true);
+            expect(isKnownUserAgent('qagent')).toBe(true);
             expect(isKnownUserAgent('tigerclaw')).toBe(true);
+            expect(isKnownUserAgent('TigerClaw')).toBe(true);
         });
 
         it('recognises legacy agent aliases', () => {
@@ -100,6 +110,7 @@ describe('userAgent helpers', () => {
             expect(editableCustomAgentValue(provider({ agent_type: 'opencode' }))).toBe('custom-client');
             expect(editableCustomAgentValue(provider({ agent_type: 'Kilo Code' }))).toBe('custom-client');
             expect(editableCustomAgentValue(provider({ agent_type: 'Cursor' }))).toBe('custom-client');
+            expect(editableCustomAgentValue(provider({ agent_type: 'QAgent' }))).toBe('custom-client');
             expect(editableCustomAgentValue(provider({ agent_type: 'tigerclaw' }))).toBe('custom-client');
         });
 
@@ -108,8 +119,8 @@ describe('userAgent helpers', () => {
             expect(editableCustomAgentValue(undefined)).toBe('custom-client');
         });
 
-        it('seeds to tigerclaw-derived seed for CodeGen SSO provider', () => {
-            // CodeGen SSO: effectiveAgentType → 'tigerclaw' (known) → seed → 'custom-client'
+        it('seeds to QAgent-derived seed for CodeGen SSO provider', () => {
+            // CodeGen SSO: effectiveAgentType → 'QAgent' (known) → seed → 'custom-client'
             const codegen = provider({ name: 'CodeGen', auth_type: 'sso' });
             expect(editableCustomAgentValue(codegen)).toBe('custom-client');
         });

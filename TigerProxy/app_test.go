@@ -324,7 +324,7 @@ func TestHasStartHiddenArg(t *testing.T) {
 	}
 }
 
-func TestTigerProxyUpstreamRequestsCarryTigerClawClientName(t *testing.T) {
+func TestTigerProxyUpstreamRequestsCarryQAgentClientName(t *testing.T) {
 	seen := make(chan http.Header, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen <- r.Header.Clone()
