@@ -583,7 +583,6 @@ button:active{transform:scale(.985)}
 .main[data-active-tab="userreferrals"],#tab-userreferrals{--tab-icon:var(--icon-gift)}
 .main[data-active-tab="security"],#tab-security{--tab-icon:var(--icon-shield)}
 .main[data-active-tab="invitationcodes"],#tab-invitationcodes{--tab-icon:var(--icon-ticket)}
-.main[data-active-tab="pwarequests"],#tab-pwarequests{--tab-icon:var(--icon-phone)}
 .main[data-active-tab="approvalroles"],#tab-approvalroles{--tab-icon:var(--icon-clipboard)}
 .main[data-active-tab="center"],#tab-center{--tab-icon:var(--icon-globe)}
 .main[data-active-tab="im"],#tab-im{--tab-icon:var(--icon-sms)}

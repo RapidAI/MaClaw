@@ -509,7 +509,7 @@ func BootstrapWithOptions(cfg *config.Config, configPath string, opts BootstrapO
 		}
 	}
 
-	// Wire login link broadcaster into identity service so PWA login
+	// Wire login link broadcaster into identity service so login
 	// confirmation links are also sent to bound IM channels.
 	identityService.SetLoginNotifier(broadcaster)
 	identityService.SetUserRouteSyncer(centerService)
@@ -747,8 +747,6 @@ func BootstrapWithOptions(cfg *config.Config, configPath string, opts BootstrapO
 		cfg,
 		configPath,
 		EnsureSelfSignedCert,
-		cfg.PWA.StaticDir,
-		cfg.PWA.RoutePrefix,
 		cfg.Bridge.Dir,
 		tenantNativeIMRuntimes,
 		st.KnowledgeShares,

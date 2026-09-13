@@ -8,6 +8,7 @@ import { localizeText } from "./aiAssistantI18n";
 import { normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey as normalizedProjectPathFromSessionKey, projectSessionKey, expertIdFromSessionKey, expertSessionKey } from "./aiAssistantPanelSessionUtils";
 import { noteAIScrollStreamFlush, noteAIScrollStreamRoundEnd, noteAIScrollStreamToken } from "./assistantScrollDiag";
 import { findRolePrefixForDisplay, stripRolePrefixForDisplay, truncateRolePrefixForDisplay } from "./rolePrefixDisplay";
+import { isHistoryResetCommandText } from "./composeAction";
 import { isCodingAgentChatHiddenEvent, isCodingAgentProgressContent, parseCodingAgentProgress } from "./CodingAgentProgressStatus";
 import { reasoningHasCodingStatusMilestone, stripCodingWorkbenchStatusReasoning } from "./codingAgentUserFinish";
 import { clearAssistantRoundProse } from "./assistantRoundProse";
@@ -966,12 +967,10 @@ function resolveContextStartIndex(messages: ChatMessage[], boundaryMessageID: st
 }
 
 function isExplicitHistoryResetCommand(text: string): boolean {
-    const trimmed = text.trim().toLowerCase();
-    if (trimmed === "/new" || trimmed === "/reset" || trimmed === "/clear") return true;
+    if (isHistoryResetCommandText(text)) return true;
     // /branch N (with a numeric argument) resets the UI after rewinding history.
     // /branch without argument (list mode) does NOT reset.
-    if (/^\/branch\s+\d+$/.test(trimmed)) return true;
-    return false;
+    return /^\/branch\s+\d+$/.test(text.trim().toLowerCase());
 }
 
 

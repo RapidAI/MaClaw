@@ -216,25 +216,26 @@ type RemoteCodingSubAgentResult struct {
 	RuntimeTaskID string
 	// RuntimeHandoff is true only for an explicit waiting_child parent handoff.
 	// It lets the workflow offer a fresh child-result review, not a retry.
-	RuntimeHandoff      bool
-	Iterations          int
-	ToolCalls           int
-	InputTokens         int
-	OutputTokens        int
-	EstCostRMB          float64
-	RouteModel          string
-	RouteSource         string
-	RouteTask           string
-	RouteReason         string
-	FilesModified       []string
-	FilesCreated        []string
-	Localization        *CodingSubAgentLocalizationEvidence
-	CommandsRun         []CodingSubAgentCommandResult
-	QualityStatus       codingSubAgentQualityStatus
-	QualitySummary      string
-	ExplorationSummary  string
-	VerificationSummary string
-	VerifiedNoChange    bool
+	RuntimeHandoff        bool
+	Iterations            int
+	ToolCalls             int
+	InputTokens           int
+	OutputTokens          int
+	EstCostRMB            float64
+	RouteModel            string
+	RouteSource           string
+	RouteTask             string
+	RouteReason           string
+	FilesModified         []string
+	FilesCreated          []string
+	Localization          *CodingSubAgentLocalizationEvidence
+	CommandsRun           []CodingSubAgentCommandResult
+	QualityStatus         codingSubAgentQualityStatus
+	QualitySummary        string
+	ExplorationSummary    string
+	VerificationSummary   string
+	VerifiedNoChange      bool
+	RecalledExperienceIDs []string
 }
 
 // NewRemoteCodingSubAgent creates a SubAgent bound to an existing SSH session.
@@ -440,6 +441,11 @@ func (r *RemoteCodingSubAgent) ExecuteTask(taskDescription, taskContext string) 
 	if remoteTarget == "" {
 		return &RemoteCodingSubAgentResult{Status: "failed", Error: "remote coding runtime requires an existing SSH session with a pinned host key and absolute project directory"}
 	}
+	if !execution.readOnlyInquiry {
+		if err := ensureGUIRemoteGitBaseline(ctx, r.handler, r.sessionID, r.projectDir, remoteTarget); err != nil {
+			log.Printf("[coding-runtime] GUI remote git baseline init failed for %s: %v", r.projectDir, err)
+		}
+	}
 	var unregisterRuntimeCancellation func()
 	result, _, ledgerErr := runGUIRemoteCodingTaskWithStartAndContinuation(ctx, store, ownerID, workflowID, phaseID, remoteTarget, r.projectDir, taskDescription+"\n"+taskContext, newGUIRemoteWorkspaceProber(r.handler, r.sessionID, r.projectDir, remoteTarget), r.runtimeExistingTaskID, r.runtimeParentContinuationAttemptID, func(request codingruntime.ExecutionRequest) {
 		execution.runtimeStore = store
@@ -493,6 +499,9 @@ func (r *RemoteCodingSubAgent) ExecuteTask(taskDescription, taskContext string) 
 	}
 	if result != nil && strings.EqualFold(result.Status, "success") && r.handler != nil {
 		persistLocalizationExperience(r.handler.app, r.codingKB, r.projectDir, taskDescription, result.Localization, result.CommandsRun, result.RuntimeTaskID)
+	}
+	if result != nil {
+		finalizeRemoteCodingKnowledge(r, taskDescription, result)
 	}
 	return result
 }
@@ -778,6 +787,7 @@ func (c *remoteCodingCallbacks) applyRemoteVerificationOutcome(result *RemoteCod
 	result.FilesCreated = uniqueSortedSubAgentStrings(filesCreated)
 	result.Localization = c.localization.snapshot()
 	result.CommandsRun = append([]CodingSubAgentCommandResult(nil), commandsRun...)
+	result.RecalledExperienceIDs = c.snapshotRecalledExperienceIDs()
 
 	// Nested explorer/reviewer are inspection-only by tool policy. Do not fail them
 	// for missing post-edit confirmation / git diff / implementation "no change".
@@ -1935,10 +1945,11 @@ type remoteCodingCallbacks struct {
 	// knownExisting records probed paths: true if a read/write proved the file
 	// exists, false if a lookup proved it is absent. A missing key means
 	// unprobed and must not be treated as a new-file exemption.
-	knownExisting map[string]bool
-	commandsRun   []CodingSubAgentCommandResult
-	searchesRun   []CodingSubAgentSearchResult
-	localization  codingSubAgentLocalizationState
+	knownExisting         map[string]bool
+	commandsRun           []CodingSubAgentCommandResult
+	searchesRun           []CodingSubAgentSearchResult
+	recalledExperienceIDs []string
+	localization          codingSubAgentLocalizationState
 
 	// Local workbench extensions (skills / MCP) for full remote coding env.
 	localExtSelected bool
@@ -5045,7 +5056,7 @@ func (c *remoteCodingCallbacks) buildRemoteKnowledgePromptSections() string {
 	if c.agent.codingKB != nil {
 		if got, err := c.agent.codingKB.ContextPackForTask(ctx, knowledge.CodingContextPackOptions{
 			Query:       taskQuery,
-			Language:    "python", // paper reproduction is predominantly Python
+			Language:    inferRemoteCodingLanguage(c),
 			ProjectPath: c.agent.projectDir,
 			MaxItems:    4,
 			MaxChars:    1500,
@@ -5055,18 +5066,21 @@ func (c *remoteCodingCallbacks) buildRemoteKnowledgePromptSections() string {
 		}
 	}
 	if c.agent.handler != nil && c.agent.handler.app != nil {
-		pack = c.agent.handler.app.mergeEnterpriseCodingPack(ctx, pack, taskQuery, "python", c.agent.projectDir, 4)
+		pack = c.agent.handler.app.mergeEnterpriseCodingPack(ctx, pack, taskQuery, inferRemoteCodingLanguage(c), c.agent.projectDir, 4)
 	}
 	if len(pack.Items) > 0 {
 		b.WriteString("\n## 相关编码经验（来自编程知识库）\n")
 		b.WriteString("以下经验来自历史编码任务积累，供参考：\n")
+		ids := make([]string, 0, len(pack.Items))
 		for _, item := range pack.Items {
 			text := item.Text
 			if len([]rune(text)) > 300 {
 				text = string([]rune(text)[:300]) + "..."
 			}
 			b.WriteString(fmt.Sprintf("- **%s**: %s\n", item.Title, text))
+			ids = append(ids, item.SourceID)
 		}
+		c.noteRecalledExperienceIDs(ids)
 	}
 
 	// 2. General knowledge (project docs)
@@ -5110,17 +5124,19 @@ func (c *remoteCodingCallbacks) executeRemoteCodingKnowledgeSearch(argsJSON stri
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 
+	language := inferRemoteCodingLanguage(c)
 	experiences, err := c.agent.codingKB.SearchExperiences(ctx, knowledge.CodingSearchOptions{
 		Query:       query,
-		Language:    "python",
+		Language:    language,
 		ProjectPath: c.agent.projectDir,
 		Status:      []string{knowledge.CodingStatusActive, knowledge.CodingStatusVerified},
 		Limit:       5,
 	})
-	if c.agent.handler != nil && c.agent.handler.app != nil {
-		experiences = c.agent.handler.app.mergeEnterpriseCodingSearch(ctx, experiences, query, "python", c.agent.projectDir, 5)
-		err = nil
+	var app *App
+	if c.agent.handler != nil {
+		app = c.agent.handler.app
 	}
+	experiences, err = finishCodingKnowledgeSearch(app, ctx, experiences, err, query, language, c.agent.projectDir, 5)
 	if err != nil {
 		return fmt.Sprintf("编程知识库当前不可用；请继续通过 ssh_read_file、ssh_bash 和验证命令完成任务。(%v)", err)
 	}
@@ -5137,8 +5153,8 @@ func (c *remoteCodingCallbacks) executeRemoteCodingKnowledgeSearch(argsJSON stri
 		}
 		if exp.Content != "" {
 			content := exp.Content
-			if len([]rune(content)) > 400 {
-				content = string([]rune(content)[:400]) + "..."
+			if len([]rune(content)) > 800 {
+				content = string([]rune(content)[:800]) + "..."
 			}
 			b.WriteString(fmt.Sprintf("   %s\n", content))
 		}
@@ -5151,7 +5167,45 @@ func (c *remoteCodingCallbacks) executeRemoteCodingKnowledgeSearch(argsJSON stri
 		}
 		b.WriteString("\n")
 	}
+	c.noteRecalledExperiences(experiences)
 	return b.String()
+}
+
+func inferRemoteCodingLanguage(c *remoteCodingCallbacks) string {
+	if c == nil {
+		return ""
+	}
+	files := append([]string{}, c.filesRead...)
+	files = append(files, c.filesModified...)
+	files = append(files, c.filesCreated...)
+	return inferLanguageFromTaskFiles(files)
+}
+
+func (c *remoteCodingCallbacks) noteRecalledExperiences(items []knowledge.CodingExperience) {
+	if c == nil || len(items) == 0 {
+		return
+	}
+	ids := make([]string, 0, len(items))
+	for _, exp := range items {
+		ids = append(ids, exp.ID)
+	}
+	c.noteRecalledExperienceIDs(ids)
+}
+
+func (c *remoteCodingCallbacks) noteRecalledExperienceIDs(ids []string) {
+	if c == nil || len(ids) == 0 {
+		return
+	}
+	c.recalledExperienceIDs = appendUniqueExperienceIDs(c.recalledExperienceIDs, ids)
+}
+
+func (c *remoteCodingCallbacks) snapshotRecalledExperienceIDs() []string {
+	if c == nil || len(c.recalledExperienceIDs) == 0 {
+		return nil
+	}
+	out := make([]string, len(c.recalledExperienceIDs))
+	copy(out, c.recalledExperienceIDs)
+	return out
 }
 
 // executeRemoteKnowledgeSearch handles knowledge_search tool call (general knowledge).

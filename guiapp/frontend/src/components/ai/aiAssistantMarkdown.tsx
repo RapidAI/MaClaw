@@ -4,6 +4,7 @@ import "katex/dist/katex.min.css";
 import { AIAssistantAttachmentPreviewDataURL, OpenFileOrShowInFolder, ShowItemInFolder } from "../../../wailsjs/go/main/App";
 import { BrowserOpenURL } from "../../../wailsjs/runtime";
 import { TaskResultUploadButton, taskResultUploadSupported } from "./TaskResultUploadButton";
+import { dispatchPreviewTaskResult } from "./taskResultPreview";
 import type { ChatAction, ChatConfirmation, ChatMessage, ChatRecoverableSession, ChatUnfinishedSlot, CodingAgentTimelineItem } from "./useAIAssistant";
 import { renderCodingAgentProgressStatus } from "./CodingAgentProgressStatus";
 import { attachBareHeadingMarkers, normalizeInlineListMarkers } from "./aiAssistantMarkdownNormalize";
@@ -38,7 +39,8 @@ import {
 } from "./RecordingSessionCard";
 import { AssistantMermaidDiagram, isMermaidCodeFence } from "./AssistantMermaidDiagram";
 import { AttachmentImageThumbnail } from "./AttachmentImagePreview";
-import { useNestedPinnedScroll } from "./useNestedPinnedScroll";
+import { AssistantReasoningPanel } from "./AssistantReasoningPanel";
+import { assistantLiveActivityLabel } from "./assistantLiveActivity";
 
 export type { Theme } from "./aiAssistantPanelTheme";
 export type { RecordingCompleteResult } from "./RecordingSessionCard";
@@ -1502,97 +1504,6 @@ function UserAttachmentChip({ attachment, theme, lang }: { attachment: NonNullab
     );
 }
 
-function AssistantReasoningPanel({
-    defaultOpen,
-    label,
-    step,
-    lang,
-    preview,
-    theme: t,
-    contentKey,
-    children,
-}: {
-    defaultOpen: boolean;
-    label: string;
-    /** Optional timeline step number for coding-agent thoughts. */
-    step?: number;
-    lang?: string;
-    /** Short single-line summary shown while the panel is collapsed. */
-    preview?: string;
-    theme: Theme;
-    contentKey: string;
-    children: React.ReactNode;
-}) {
-    const [isOpen, setIsOpen] = React.useState(defaultOpen);
-    const { bodyRef, contentRef, handleScroll, handleUserScrollIntent } = useNestedPinnedScroll(isOpen, contentKey);
-    React.useLayoutEffect(() => {
-        setIsOpen(defaultOpen);
-    }, [defaultOpen]);
-    return (
-        <details
-            open={isOpen}
-            onToggle={(event) => setIsOpen(event.currentTarget.open)}
-            data-testid="assistant-reasoning-panel"
-            aria-label={label}
-            style={{
-                margin: "5px 0 7px 0",
-                fontSize: "12px",
-                color: t.textMuted,
-                borderLeft: `2px solid ${t.isDark ? "rgba(148,163,184,.55)" : `color-mix(in srgb, ${t.textMuted} 42%, transparent)`}`,
-                background: t.isDark ? "rgba(30, 41, 59, .28)" : `color-mix(in srgb, ${t.textMuted} 7%, transparent)`,
-                borderRadius: "0 7px 7px 0",
-            }}
-        >
-            <summary className="assistant-reasoning-summary" style={{
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                gap: 7,
-                minHeight: 26,
-                padding: "2px 9px 2px 8px",
-                color: t.isDark ? "#cbd5e1" : t.textMuted,
-                fontWeight: 650,
-                opacity: 0.94,
-                listStyleType: "none",
-            }}>
-                <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: "50%", background: t.isDark ? "#94a3b8" : t.textMuted, flex: "0 0 auto", boxShadow: isOpen ? `0 0 0 3px ${t.isDark ? "rgba(148,163,184,.16)" : `color-mix(in srgb, ${t.textMuted} 14%, transparent)`}` : undefined }} />
-                <span style={{ flex: "0 0 auto", whiteSpace: "nowrap" }}>{label}</span>
-                {typeof step === "number" && <span style={{ fontSize: 10, fontWeight: 600, opacity: .72, flex: "0 0 auto", whiteSpace: "nowrap" }}>#{step}</span>}
-                {preview && !isOpen && <span style={{ flex: "1 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 450, opacity: .72 }}>{preview}</span>}
-                <span aria-live="polite" data-testid="assistant-reasoning-toggle-state" style={{ marginLeft: "auto", fontSize: 10, fontWeight: 500, opacity: .65 }}>
-                    {isOpen
-                        ? (lang === "en" ? "Collapse" : lang === "zh-Hant" ? "收起" : "收起")
-                        : (lang === "en" ? "Expand" : lang === "zh-Hant" ? "展開" : "展开")}
-                </span>
-            </summary>
-            <div
-                ref={bodyRef}
-                data-testid="assistant-reasoning-body"
-                data-nested-scroll=""
-                onWheel={(event) => {
-                    event.stopPropagation();
-                    handleUserScrollIntent(event);
-                }}
-                onTouchMove={(event) => {
-                    event.stopPropagation();
-                    handleUserScrollIntent(event);
-                }}
-                onPointerDown={handleUserScrollIntent}
-                onScroll={handleScroll}
-                // Keep CJK punctuation and its adjacent text together in the
-                // thinking trail. `line-break: strict` handles East-Asian
-                // opening/closing punctuation without disabling normal CJK
-                // wrapping. Keep `word-break: normal` so long Chinese thought
-                // streams remain readable instead of overflowing the panel.
-                // `overflow-wrap` is an emergency fallback for unbroken tokens.
-                style={{ padding: "5px 10px 8px 25px", color: t.text, opacity: 0.88, maxHeight: "400px", overflow: "auto", lineBreak: "strict", wordBreak: "normal", overflowWrap: "break-word", lineHeight: 1.6 }}
-            >
-                <div ref={contentRef}>{children}</div>
-            </div>
-        </details>
-    );
-}
-
 /** Repair provider streams that insert a hard newline immediately inside a
  * parenthesized annotation (for example `（` + `1996）`). Such a newline is
  * not a semantic paragraph break and produces the broken display seen in the
@@ -1621,32 +1532,62 @@ export function codingTimelineThoughtStep(timeline: Array<{ kind: string }>, ind
 }
 
 /** One collapsed reasoning node at its actual position in a coding turn. */
-export function renderCodingAgentThinkingTimelineItem(
-    item: CodingAgentTimelineItem,
-    t: Theme,
-    lang: string,
-    step?: number,
-): React.ReactNode {
-    const displayReasoning = repairReasoningBracketLineBreaks(stripCodingAgentAuditSections(
+export const CodingAgentThinkingTimelineItem = React.memo(function CodingAgentThinkingTimelineItem({
+    item,
+    theme: t,
+    lang,
+    step,
+    liveLabel,
+}: {
+    item: CodingAgentTimelineItem;
+    theme: Theme;
+    lang: string;
+    step?: number;
+    liveLabel?: string;
+}) {
+    const displayReasoning = React.useMemo(() => repairReasoningBracketLineBreaks(stripCodingAgentAuditSections(
         stripCodingWorkbenchStatusReasoning(truncateRolePrefixForDisplay(sanitizeVisibleChatText(item.content || ""))),
-    ));
-    if (!displayReasoning.trim()) return null;
+    )), [item.content]);
+    const live = !!liveLabel;
+    const body = React.useMemo(
+        () => displayReasoning.trim() ? renderContentWithCodeBlocks(displayReasoning, t) : null,
+        [displayReasoning, t],
+    );
+    if (!displayReasoning.trim() && !live) return null;
     // Keep short thoughts uncluttered (and avoid repeating the body text in
     // the summary); longer thoughts get a useful one-line context preview.
-    const preview = reasoningPreviewText(displayReasoning);
+    const preview = live ? undefined : reasoningPreviewText(displayReasoning);
     return (
         <AssistantReasoningPanel
-            key={item.id}
             defaultOpen={false}
-            label={lang === "en" ? "Thought" : "思考过程"}
+            label={live && liveLabel ? liveLabel : localizeText(lang, "Thought", "思考过程", "思考過程")}
             step={step}
             lang={lang}
             preview={preview}
             theme={t}
             contentKey={displayReasoning}
+            live={live}
         >
-            {renderContentWithCodeBlocks(displayReasoning, t)}
+            {body}
         </AssistantReasoningPanel>
+    );
+});
+
+export function renderCodingAgentThinkingTimelineItem(
+    item: CodingAgentTimelineItem,
+    t: Theme,
+    lang: string,
+    step?: number,
+    liveLabel?: string,
+): React.ReactNode {
+    return (
+        <CodingAgentThinkingTimelineItem
+            item={item}
+            theme={t}
+            lang={lang}
+            step={step}
+            liveLabel={liveLabel}
+        />
     );
 }
 
@@ -1700,6 +1641,8 @@ export function renderMessage(
     // thinking panel: reasoning streams token-by-token too and a full re-parse
     // every 33ms flush stalls the main thread once the trail grows long.
     incrementalReasoningRenderer?: (formattedReasoning: string) => React.ReactNode[],
+    /** Live status for the last in-flight assistant (any current activity title). */
+    liveReasoningLabel?: string,
 ): React.ReactNode {
     switch (msg.role) {
         case "user":
@@ -1810,7 +1753,7 @@ export function renderMessage(
                         }}
                     >
                         {/* Ordinary chat only: coding workbench uses the · Working trail. */}
-                        {isLastAssistant && !collapseReasoningByDefault && !msg.content && !msg.fields && !screenshotBase64 && savedPaths.length === 0 && !msg.reasoning && (
+                        {isLastAssistant && !collapseReasoningByDefault && !msg.content && !msg.fields && !screenshotBase64 && savedPaths.length === 0 && !msg.reasoning && !liveReasoningLabel && (
                             <span style={{ color: t.textMuted, fontSize: "12px", fontStyle: "italic", opacity: 0.8, animation: "blink 1.2s step-end infinite" }}>
                                 {lang === "en" ? "Working..." : "\u5904\u7406\u4e2d\u2026"}
                             </span>
@@ -1819,13 +1762,17 @@ export function renderMessage(
                         {/* Ordinary chat only: the thinking panel follows the token
                             stream — open while a round is actively streaming, folded
                             when the stream ends (stream-done fires per LLM round).
-                            The coding workbench stays folded. */}
-                        {!msg.codingTimeline?.length && msg.reasoning && (() => {
-                            const reasoningLabel = lang === "en" ? "Thinking process..." : "思考过程...";
+                            Live tool steps reuse this same header. The coding
+                            workbench stays folded. */}
+                        {!msg.codingTimeline?.length && (msg.reasoning || (isLastAssistant && liveReasoningLabel)) && (() => {
+                            const live = isLastAssistant && (isStreaming || !!liveReasoningLabel);
+                            const reasoningLabel = live
+                                ? (liveReasoningLabel || assistantLiveActivityLabel("thinking", lang))
+                                : (lang === "en" ? "Thinking process..." : "思考过程...");
                             const shouldOpen = isLastAssistant && isStreaming && !collapseReasoningByDefault;
                             // Role-prefix only here; pictograph strip runs inside renderContentWithCodeBlocks.
                             const displayReasoning = repairReasoningBracketLineBreaks(stripCodingAgentAuditSections(stripCodingWorkbenchStatusReasoning(truncateRolePrefixForDisplay(sanitizeVisibleChatText(msg.reasoning || "")))));
-                            if (!displayReasoning.trim()) return null;
+                            if (!displayReasoning.trim() && !live) return null;
                             return (
                                 <AssistantReasoningPanel
                                     key="reasoning"
@@ -1834,10 +1781,13 @@ export function renderMessage(
                                     lang={lang}
                                     theme={t}
                                     contentKey={displayReasoning}
+                                    live={live}
                                 >
-                                    {incrementalReasoningRenderer
-                                        ? incrementalReasoningRenderer(displayReasoning)
-                                        : renderContentWithCodeBlocks(displayReasoning, t)}
+                                    {displayReasoning.trim()
+                                        ? (incrementalReasoningRenderer
+                                            ? incrementalReasoningRenderer(displayReasoning)
+                                            : renderContentWithCodeBlocks(displayReasoning, t))
+                                        : null}
                                 </AssistantReasoningPanel>
                             );
                         })()}
@@ -1910,6 +1860,7 @@ export function renderMessage(
                                     {taskResultUploadSupported(fp) && <TaskResultUploadButton filePath={fp} lang={lang} />}</div>;
                             })}</div>
                             <div className="mc-task-result-card__actions">
+                                <button type="button" data-testid="task-result-preview-btn" onClick={(event) => { event.stopPropagation(); dispatchPreviewTaskResult(savedPaths[0], msg.id); }}>{localizeText(lang, "Preview", "预览", "預覽")}</button>
                                 <button type="button" onClick={(event) => openFileInFolder(event, savedPaths[0])}>{lang === "en" ? "View document" : "查看文档"}</button>
                                 <button type="button" onClick={(event) => { event.stopPropagation(); window.dispatchEvent(new CustomEvent("maclaw:export-task-result", { detail: { path: savedPaths[0], messageId: msg.id } })); openFileInFolder(event, savedPaths[0]); }}>{lang === "en" ? "Export" : "导出"}</button>
                                 <button type="button" onClick={() => { (document.querySelector('[data-testid="ai-input"]') as HTMLTextAreaElement | null)?.focus(); }}>{lang === "en" ? "Continue editing" : "继续修改"}</button>

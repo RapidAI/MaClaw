@@ -146,7 +146,7 @@ type pendingLoginResponse struct {
 }
 
 // ListPendingLoginsHandler returns all unconsumed, non-expired login tokens so
-// the admin can see which PWA users are waiting for email confirmation.
+// the admin can see which users are waiting for email confirmation.
 func ListPendingLoginsHandler(identity *auth.IdentityService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		items, err := identity.ListPendingLoginTokens(auth.WithTenant(r.Context(), RequestTenantID(r)))

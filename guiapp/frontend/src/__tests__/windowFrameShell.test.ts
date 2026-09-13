@@ -131,4 +131,30 @@ describe('frameless window shell regression guards', () => {
         expect(app).toContain('Math.floor(screenHeight * 0.9)');
         expect(app).toContain('ResizeWindow(fallbackSize.width, fallbackSize.height)');
     });
+
+    it('restores the pre-maximize window size after work-area clamp', () => {
+        const app = readSource('App.tsx');
+
+        expect(app).toContain('createWindowMaximizeRestoreSession');
+        expect(app).toContain('windowMaximizeRestore.rememberNormal(op)');
+        expect(app).toContain('windowMaximizeRestore.restoreNormal()');
+        expect(app).toContain('windowMaximizeRestore.shouldSkipClamp()');
+        expect(app).toContain('if (!windowMaximizeRestore.isCurrent(op)) return;');
+        expect(app).toContain('WindowUnmaximise()');
+    });
+
+    it('hands window drag to the execution task header after the MaClaw title bar is hidden', () => {
+        const css = readSource('App.css');
+        const panel = readSource('components/ai/AIAssistantPanel.tsx');
+        const drag = readSource('utils/windowDrag.ts');
+
+        expect(css).toMatch(/\[data-testid='ai-panel-root'\]\[data-ai-view='execution'\] > \.mc-ai-titlebar \{ display: none !important; \}/);
+        expect(css).toMatch(/\.mc-task-execution-header\[data-window-drag\]\s*\{[^}]*--wails-draggable:\s*drag;/);
+        expect(panel).toContain('data-testid="task-execution-header"');
+        expect(panel).toContain('windowDragHandleProps(!!inline');
+        expect(panel).toContain('windowNoDragRegionProps()');
+        expect(drag).toContain('isWindowDragArmTarget');
+        expect(drag).toContain('[data-window-no-drag]');
+        expect(readSource('components/ai/assistantTaskExecutionChrome.ts')).toContain('pointerEvents: "none"');
+    });
 });

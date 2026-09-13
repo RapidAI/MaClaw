@@ -189,6 +189,55 @@ func TestCodingKnowledgeStore_SearchByLanguage(t *testing.T) {
 	}
 }
 
+func TestCodingKnowledgeStore_SearchHydratesFullContent(t *testing.T) {
+	store := openTestCodingStore(t)
+	ctx := context.Background()
+	uniqueTail := "HYDRATE_TAIL_MARKER_Z9"
+	content := strings.Repeat("reusable timeout guidance for http clients. ", 40) + uniqueTail
+	saved, err := store.SaveExperience(ctx, CodingExperience{
+		Title:            "Always set HTTP client timeouts",
+		Category:         CodingCategoryPattern,
+		Scope:            CodingScopeUniversal,
+		TriggerCondition: "http timeout client",
+		Content:          content,
+		Status:           CodingStatusActive,
+	})
+	if err != nil {
+		t.Fatalf("SaveExperience: %v", err)
+	}
+	got, err := store.GetExperience(ctx, saved.ID)
+	if err != nil {
+		t.Fatalf("GetExperience: %v", err)
+	}
+	results, err := store.SearchExperiences(ctx, CodingSearchOptions{
+		Query:  "http timeout client",
+		Status: []string{CodingStatusActive},
+		Limit:  5,
+	})
+	if err != nil {
+		t.Fatalf("SearchExperiences: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected search hit")
+	}
+	var found CodingExperience
+	for _, exp := range results {
+		if exp.ID == saved.ID {
+			found = exp
+			break
+		}
+	}
+	if found.ID == "" {
+		t.Fatalf("saved experience missing from search results: %+v", results)
+	}
+	if found.Content != got.Content {
+		t.Fatalf("search content != GetExperience content\nsearch=%q\nget=%q", found.Content, got.Content)
+	}
+	if !strings.Contains(found.Content, uniqueTail) {
+		t.Fatalf("search dropped stored content tail: %q", found.Content)
+	}
+}
+
 func TestCodingKnowledgeStore_ConfidenceUpdate(t *testing.T) {
 	store := openTestCodingStore(t)
 	ctx := context.Background()

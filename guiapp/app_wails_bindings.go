@@ -3222,6 +3222,27 @@ func (a *App) SendBtwQuery(query string, requestID string) (*IMAgentResponse, er
 	return resp, nil
 }
 
+// clearPersistedProjectConversationsForOwner wipes durable tab transcripts so
+// a later task reopen cannot restore a conversation the user already cleared.
+func (a *App) clearPersistedProjectConversationsForOwner(ownerID string) {
+	if a == nil {
+		return
+	}
+	projectPath := projectPathFromSessionOwnerID(ownerID)
+	if projectPath == "" {
+		return
+	}
+	// SaveProjectTabConversation also holds this lifecycle lock. Taking it
+	// here fences a queued stale frontend flush behind the clear instead of
+	// allowing an old snapshot to be written immediately afterwards.
+	a.tabWorkingDirMu.Lock()
+	_, err := a.ensureProjectTabSessionPersist().ClearProjectSessionConversations(projectPath)
+	a.tabWorkingDirMu.Unlock()
+	if err != nil {
+		log.Printf("[AI assistant] clear persisted project conversations failed project=%q err=%v", projectPath, err)
+	}
+}
+
 // ClearAIAssistantHistory clears the desktop AI assistant conversation memory
 // and resets all per-user session state — fully equivalent to the /clear command (Wails binding).
 func (a *App) ClearAIAssistantHistory() error {
@@ -3257,17 +3278,7 @@ func (a *App) ClearAIAssistantHistoryForSession(sessionKey string) error {
 	// in-memory conversation memory is absent. Clear those snapshots as part of
 	// the same user-visible "new conversation" action, before a no-op return
 	// from an uninitialized IM runtime can leave old history recoverable.
-	if projectPath := projectPathFromSessionOwnerID(targetUserID); projectPath != "" {
-		// SaveProjectTabConversation also holds this lifecycle lock. Taking it
-		// here fences a queued stale frontend flush behind the clear instead of
-		// allowing an old snapshot to be written immediately afterwards.
-		a.tabWorkingDirMu.Lock()
-		_, err := a.ensureProjectTabSessionPersist().ClearProjectSessionConversations(projectPath)
-		a.tabWorkingDirMu.Unlock()
-		if err != nil {
-			log.Printf("[AI assistant] clear persisted project conversations failed project=%q err=%v", projectPath, err)
-		}
-	}
+	a.clearPersistedProjectConversationsForOwner(targetUserID)
 	a.ensureInteractionInfra()
 	hubClient := a.ensureHubClient()
 	if hubClient == nil {
@@ -3278,10 +3289,15 @@ func (a *App) ClearAIAssistantHistoryForSession(sessionKey string) error {
 	// Cancel any active agent loop first, so it does not write back into
 	// memory after we clear it. This mirrors IM-channel behavior where /clear
 	// is serialized behind the per-session mutex and only runs after the loop exits.
+	_ = handler.cancelCurrentTaskForUser(targetUserID, handler.imCommandResponseLang(a.CurrentLanguage))
 	_, _ = handler.CancelSessionForUser(targetUserID)
 	handler.memory.Clear(targetUserID)
 	handler.clearPerUserSessionState(targetUserID)
 	handler.flushEvidenceOnSessionEnd(targetUserID)
+	if a.goalContinuation != nil {
+		a.goalContinuation.CancelPending(targetUserID)
+		handler.getGoalStore().Clear(targetUserID)
+	}
 	// Clear pending gossip auto-publish buffer as well.
 	if a.gossipAutoPublish != nil {
 		a.gossipAutoPublish.ClearBuffer()

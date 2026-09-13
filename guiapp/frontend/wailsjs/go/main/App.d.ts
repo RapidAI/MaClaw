@@ -288,7 +288,7 @@ export function CodingKnowledgeResetFile():Promise<void>;
 
 export function CodingKnowledgeSave(arg1:knowledge.CodingExperience):Promise<knowledge.CodingExperience>;
 
-export function CodingKnowledgeSearch(arg1:string,arg2:number):Promise<Array<knowledge.CodingExperience>>;
+export function CodingKnowledgeSearch(arg1:string,arg2:number,arg3:knowledge.CodingListFilter):Promise<Array<knowledge.CodingExperience>>;
 
 export function CodingKnowledgeStats():Promise<knowledge.CodingKnowledgeStats>;
 
@@ -1758,6 +1758,8 @@ export function PollWeixinQRStatus(arg1:string):Promise<Record<string, string>>;
 export function PptxSlideThumbnailDataURL(arg1:string):Promise<string>;
 
 export function PptxPreviewEnsure(arg1:string):Promise<Record<string, any>>;
+
+export function PreviewTaskResultFile(arg1:string):Promise<Record<string, any>>;
 
 export function PreflightMaclawAppOneClickPublish(arg1:string):Promise<Record<string, any>>;
 

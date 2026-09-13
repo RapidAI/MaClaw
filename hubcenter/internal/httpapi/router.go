@@ -649,14 +649,12 @@ func filterResolveResultByTenant(resp *entry.ResolveResult, tenantID string) {
 	if len(filtered) == 0 {
 		resp.Mode = "none"
 		resp.DefaultHubID = ""
-		resp.DefaultPWA = ""
 		resp.Hubs = nil
 		resp.Message = "No domain route found"
 		return
 	}
 	resp.Hubs = filtered
 	resp.DefaultHubID = filtered[0].HubID
-	resp.DefaultPWA = filtered[0].PWAURL
 	resp.Message = ""
 	if len(filtered) == 1 {
 		resp.Mode = "single"

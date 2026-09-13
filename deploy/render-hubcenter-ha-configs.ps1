@@ -251,10 +251,6 @@ identity:
   enrollment_mode: open
   allow_self_enroll: true
 
-pwa:
-  static_dir: ./web/dist
-  route_prefix: /app
-
 center:
   enabled: true
   base_url: $(Normalize-Url $Hub.PrimaryCenterBaseURL)

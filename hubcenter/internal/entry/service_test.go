@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -733,9 +732,6 @@ func TestResolveByEmailPrefersDefaultLinkedHub(t *testing.T) {
 	}
 	if result.DefaultHubID != "hub_b" {
 		t.Fatalf("expected default hub_b, got %q", result.DefaultHubID)
-	}
-	if result.DefaultPWA != "https://hub-b.example.com/app?email=user%40example.com&entry=app&autologin=1" {
-		t.Fatalf("unexpected default pwa: %q", result.DefaultPWA)
 	}
 	if len(result.Hubs) != 2 {
 		t.Fatalf("expected 2 hubs, got %d", len(result.Hubs))
@@ -1842,9 +1838,6 @@ func TestResolveByDomainReturnsOnlyExactDomainMatches(t *testing.T) {
 	if len(result.Hubs) != 1 || result.Hubs[0].HubID != "hub_qianxin" {
 		t.Fatalf("expected only exact domain hub, got %+v", result.Hubs)
 	}
-	if result.Hubs[0].PWAURL != "" {
-		t.Fatalf("expected empty pwa url for domain query, got %q", result.Hubs[0].PWAURL)
-	}
 }
 
 func TestResolveByDomainReturnsNoneWhenNoExactDomainRoute(t *testing.T) {
@@ -1928,9 +1921,6 @@ func TestResolveByEmailKeepsSameHubTenantCandidates(t *testing.T) {
 			continue
 		}
 		seen[item.TenantID] = true
-		if item.PWAURL == "" || !strings.Contains(item.PWAURL, "tenant_id=") {
-			t.Fatalf("expected tenant pwa url, got %+v", item)
-		}
 	}
 	if !seen["tenant_a"] || !seen["tenant_b"] {
 		t.Fatalf("missing tenant candidates: %+v", result.Hubs)
@@ -2434,7 +2424,7 @@ func TestResolveByDomainReturnsTenantVirtualHubRoutes(t *testing.T) {
 	seen := map[string]bool{}
 	for _, item := range result.Hubs {
 		seen[item.TenantID] = true
-		if item.HubID != hub.ID || item.PWAURL == "" || !strings.Contains(item.PWAURL, "tenant_id=") {
+		if item.HubID != hub.ID {
 			t.Fatalf("unexpected tenant domain candidate: %+v", item)
 		}
 	}

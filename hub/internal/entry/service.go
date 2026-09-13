@@ -22,7 +22,6 @@ type ProbeResult struct {
 	Bound                  bool   `json:"bound"`
 	CanLogin               bool   `json:"can_login"`
 	EnrollmentMode         string `json:"enrollment_mode,omitempty"`
-	PWAURL                 string `json:"pwa_url,omitempty"`
 	Message                string `json:"message,omitempty"`
 	InvitationCodeRequired bool   `json:"invitation_code_required"`
 }
@@ -146,7 +145,6 @@ func (s *Service) ProbeByEmail(ctx context.Context, email string) (*ProbeResult,
 		Bound:                  true,
 		CanLogin:               true,
 		EnrollmentMode:         enrollmentMode,
-		PWAURL:                 s.identity.BuildPWAEntryURL(email),
 		InvitationCodeRequired: invCodeRequired,
 	}, nil
 }

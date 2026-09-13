@@ -52,7 +52,7 @@ AI CLI tools run directly on your machine with full filesystem and dev environme
 **Use Cases**: Daily coding, debugging, refactoring, code review.
 
 ### 2.2 Remote AI Programming
-Browser-based remote access via MaClaw Hub with PWA and mobile support.
+Remote access via MaClaw Hub with mobile support.
 
 1.  Ensure MaClaw Hub is deployed and accessible.
 2.  Open the Hub URL in your browser and activate with email and invitation code.

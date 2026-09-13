@@ -493,6 +493,9 @@ requireFile('guiapp/frontend/src/components/ai/AssistantReplyCopyButton.tsx');
 requireFile('guiapp/frontend/src/components/ai/aiAssistantPanelTheme.tsx');
 requireFile('guiapp/frontend/src/components/ai/aiAssistantI18n.ts');
 requireFile('guiapp/frontend/src/components/ai/ProjectSearchPanel.tsx');
+requireFile('guiapp/frontend/src/components/ai/useProjectSearch.ts');
+requireFile('guiapp/frontend/src/components/ai/unifiedHeaderSearch.ts');
+requireFile('guiapp/frontend/src/components/ai/ProjectSearchLibraryRows.tsx');
 requireFile('guiapp/frontend/src/components/ai/aiAssistantControls.tsx');
 requireFile('guiapp/frontend/src/components/ai/useTTSReadback.ts');
 requireFile('guiapp/frontend/src/components/ai/aiAssistantPanelTypes.ts');
@@ -564,6 +567,9 @@ const extractedFileLineLimits = [
   ['guiapp/frontend/src/components/ai/aiAssistantPanelTheme.tsx', 700],
   ['guiapp/frontend/src/components/ai/aiAssistantI18n.ts', 240],
   ['guiapp/frontend/src/components/ai/ProjectSearchPanel.tsx', 320],
+  ['guiapp/frontend/src/components/ai/useProjectSearch.ts', 140],
+  ['guiapp/frontend/src/components/ai/unifiedHeaderSearch.ts', 260],
+  ['guiapp/frontend/src/components/ai/ProjectSearchLibraryRows.tsx', 50],
   ['guiapp/frontend/src/components/ai/aiAssistantControls.tsx', 120],
   ['guiapp/frontend/src/components/ai/useTTSReadback.ts', 120],
   ['guiapp/frontend/src/components/ai/aiAssistantPanelTypes.ts', 220],
@@ -716,6 +722,11 @@ requireExcludes('guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 'inter
 requireExcludes('guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 'function useProjectSearch', 'inline AI project search hook; use components/ai/ProjectSearchPanel.tsx');
 requireExcludes('guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 'function ProjectSearchPanel', 'inline AI project search panel; use components/ai/ProjectSearchPanel.tsx');
 requireIncludes('guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 'from "./ProjectSearchPanel"', 'AI project search import');
+requireIncludes('guiapp/frontend/src/components/ai/useProjectSearch.ts', 'headerLibrarySearchJobs', 'header search includes files and knowledge');
+requireIncludes('guiapp/frontend/src/components/ai/ProjectSearchPanel.tsx', 'openFileLibrary', 'header search opens mobile documents');
+requireIncludes('guiapp/frontend/src/components/ai/ProjectSearchPanel.tsx', 'openKnowledgeSearch', 'header search opens knowledge');
+requireIncludes('guiapp/frontend/src/components/ai/ProjectSearchPanel.tsx', 'openExpertConversation', 'header search opens AI experts');
+requireIncludes('guiapp/frontend/src/components/ai/useProjectSearch.ts', 'ListExperts', 'header search lists AI experts');
 requireExcludes('guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 'function VoiceLevelVisualizer', 'inline AI voice level visualizer; use components/ai/aiAssistantControls.tsx');
 requireExcludes('guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 'const miniActionButtonStyle', 'inline AI mini action button style; use components/ai/aiAssistantControls.tsx');
 requireExcludes('guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 'GetTTSEnabled', 'inline AI TTS readback hook; use components/ai/useTTSReadback.ts');
@@ -756,7 +767,9 @@ requireIncludes('guiapp/frontend/src/components/ai/AssistantPinnedNewsCards.tsx'
 requireExcludes('guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 'Setup not completed', 'inline AI conversation body; use components/ai/AssistantConversationBody.tsx');
 requireIncludes('guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 'from "./AssistantConversationBody"', 'AI conversation body import');
 requireIncludes('guiapp/frontend/src/components/ai/AssistantConversationBody.tsx', 'AssistantPinnedNewsCards', 'conversation body pinned news wiring');
-requireIncludes('guiapp/frontend/src/components/ai/AssistantConversationBody.tsx', 'showProcessingState', 'conversation body busy state rendering');
+// Busy/thinking status stays owned by the conversation body. The prop was renamed
+// from `showProcessingState` when the live activity label moved into the reasoning panel.
+requireIncludes('guiapp/frontend/src/components/ai/AssistantConversationBody.tsx', 'liveActivityLabel', 'conversation body busy state rendering');
 requireExcludes('guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 'data-testid="ai-voice-input"', 'inline AI input action buttons; use components/ai/AssistantInputActions.tsx');
 requireExcludes('guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 'data-testid="ai-cancel-progress"', 'inline AI cancel action button; use components/ai/AssistantInputActions.tsx');
 requireIncludes('guiapp/frontend/src/components/ai/AssistantInputComposer.tsx', 'from "./AssistantInputActions"', 'AI input actions import');
@@ -951,6 +964,26 @@ requireIncludes('guiapp/frontend/src/components/layout/AppSidebarShell.tsx', 'Si
 requireIncludes('guiapp/frontend/src/components/layout/SidebarNavRail.tsx', 'export const SidebarNavRail', 'sidebar nav rail export');
 requireIncludes('guiapp/frontend/src/components/layout/SidebarNavRail.tsx', 'left-nav-item--ai', 'AI nav rail button');
 requireIncludes('guiapp/frontend/src/components/layout/SidebarNavRail.tsx', 'runningTaskCount', 'monitor running task badge');
+{
+  const rel = 'guiapp/frontend/src/components/layout/SidebarNavRail.tsx';
+  const text = read(rel);
+  const menuId = (block, id) => new RegExp(`\\bid:\\s*['"]${id}['"]`).test(block);
+  const sliceBlock = (startNeedle, endNeedle) => {
+    const start = text.indexOf(startNeedle);
+    const end = text.indexOf(endNeedle);
+    return start >= 0 && end > start ? text.slice(start, end) : '';
+  };
+  const systemBlock = sliceBlock('const systemMenuItems', 'const selectSystemMenuItem');
+  const extensionsBlock = sliceBlock('const extensionsMenuItems', 'const libraryMenuItems');
+  if (!systemBlock) failures.push(`${rel} is missing systemMenuItems block`);
+  else if (menuId(systemBlock, 'skills') || menuId(systemBlock, 'mcp')) {
+    failures.push(`${rel} system menu still lists skills/mcp; those belong on the extensions menu`);
+  }
+  if (!extensionsBlock) failures.push(`${rel} is missing extensionsMenuItems block`);
+  else if (!menuId(extensionsBlock, 'skills') || !menuId(extensionsBlock, 'mcp')) {
+    failures.push(`${rel} extensions menu is missing skills/mcp`);
+  }
+}
 requireIncludes('guiapp/frontend/src/components/layout/SidebarAiPane.tsx', 'export const SidebarAiPane', 'sidebar AI pane export');
 requireIncludes('guiapp/frontend/src/components/layout/SidebarAiPane.tsx', 'handleTaskManagementResizeStart', 'task management resize handle wiring');
 requireIncludes('guiapp/frontend/src/components/layout/SidebarToolSelector.tsx', 'export const SidebarToolSelector', 'sidebar tool selector export');

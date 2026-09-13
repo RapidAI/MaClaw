@@ -1,10 +1,11 @@
-import { type CSSProperties, type KeyboardEvent, type MouseEvent, useState } from "react";
+import { type KeyboardEvent, type MouseEvent, useState } from "react";
 import { LoadConfig } from "../../../wailsjs/go/main/App";
 import { BrowserOpenURL } from "../../../wailsjs/runtime";
 import { buildHubCardStoreURL } from "../../utils/hubCredits";
+import { windowDragHandleProps, type WindowDragStyle } from "../../utils/windowDrag";
 import { localizeText } from "./aiAssistantI18n";
 import { dotBase, getTitleBarToolButtonStyle, type Theme } from "./aiAssistantPanelTheme";
-import { getWindowControlButtonStyle } from "./aiAssistantControls";
+import { getWindowControlButtonStyle, hideWindowFromControlEvent, stopWindowControlEvent, toggleWindowOnce, windowHideLabel, windowMaximizeLabel } from "./aiAssistantControls";
 import { VEAuthorizationRequestCenter } from "./VEAuthorizationDialog";
 import { WindowCloseIcon, WindowMaximizeIcon, WindowRestoreIcon } from "../layout/WindowControlIcons";
 import { AssistantUpdateNotice, type AssistantUpdatePayload } from "./AssistantUpdateNotice";
@@ -12,7 +13,7 @@ import { AssistantMobileDocsControl } from "./AssistantMobileDocsControl";
 import { AssistantTitleBarNotifications } from "./AssistantTitleBarNotifications";
 import { TitleBarToolIcon } from "./AssistantTitleBarIcons";
 
-type WailsDragStyle = CSSProperties & { "--wails-draggable"?: "drag" | "no-drag" };
+type WailsDragStyle = WindowDragStyle;
 
 type CardStoreConfig = {
     remote_email?: string;
@@ -112,11 +113,11 @@ export function AssistantTitleBar({ active = true, clearHistory, clearHistoryDis
         position: "relative",
         zIndex: 30000,
         overflow: "visible",
-        ...(inline ? { "--wails-draggable": "drag", userSelect: "none" } : {}),
+        ...(inline ? { userSelect: "none" } : {}),
     };
     return (
         <>
-        <div className="mc-ai-titlebar" data-testid="ai-title-bar" {...(inline ? { "data-window-drag": true } : {})} onDoubleClick={() => { if (inline) onToggleMaximize?.(); }} style={rootStyle}>
+        <div className="mc-ai-titlebar" data-testid="ai-title-bar" {...windowDragHandleProps(inline, rootStyle)} onDoubleClick={() => { if (inline) onToggleMaximize?.(); }}>
             <div data-testid="ai-titlebar-leading" style={{ display: "flex", alignItems: "center", gap: inline ? "12px" : "10px", minWidth: 0, flex: "1 1 auto" }}>
                 {inline && <>
                     <span className="mc-header-brand" data-testid="ai-titlebar-brand" aria-label="MaClaw">
@@ -129,7 +130,7 @@ export function AssistantTitleBar({ active = true, clearHistory, clearHistoryDis
                     </span>
                     <span className="mc-header-search-wrap" data-testid="ai-titlebar-search" onMouseDown={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()} style={{ flex: "1 1 180px", width: "clamp(120px, 22vw, 300px)", maxWidth: "300px", minWidth: "120px" }}>
                         <svg className="mc-header-search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4.5 4.5" /></svg>
-                        <input className="mc-header-search" data-testid="ai-titlebar-search-input" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} onKeyDown={handleSearchKeyDown} onMouseDown={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()} placeholder={lang === "en" ? "Search tasks, files, knowledge..." : "搜索任务、文件、知识…"} aria-label={lang === "en" ? "Search" : "搜索"} />
+                        <input className="mc-header-search" data-testid="ai-titlebar-search-input" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} onKeyDown={handleSearchKeyDown} onMouseDown={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()} placeholder={lang === "en" ? "Search tasks, files, knowledge, experts..." : "搜索任务、文件、知识、专家…"} aria-label={lang === "en" ? "Search" : "搜索"} />
                     </span>
                     <span className="mc-header-ready" data-testid="ai-titlebar-ready"><i aria-hidden="true" />{lang === "en" ? "Ready" : "准备就绪"}</span>
                 </>}
@@ -151,7 +152,7 @@ export function AssistantTitleBar({ active = true, clearHistory, clearHistoryDis
                     <AssistantTitleBarNotifications active={active} inline={inline} lang={lang} theme={t} />
                     <AssistantMobileDocsControl lang={lang} theme={t} inline={inline} />
                     <button className="ai-titlebar-tool" {...(inline ? { onMouseDown: stopMouse(() => { void openCurrentTenantCardStore(); }) } : { onClick: () => { void openCurrentTenantCardStore(); } })} style={getTitleBarToolButtonStyle(t)} title={localizeText(lang, "Buy service redemption cards", "\u8d2d\u4e70\u670d\u52a1\u5151\u6362\u5361")}><TitleBarToolIcon name="cart" /></button>
-                    <button className="ai-titlebar-tool" {...(inline ? { onMouseDown: stopMouse(toggleProjectSearch) } : { onClick: toggleProjectSearch })} style={getTitleBarToolButtonStyle(t, projectSearchOpen ? "active" : "default")} title={localizeText(lang, "Search tasks", "\u641c\u7d22\u4efb\u52a1")}><TitleBarToolIcon name="search" /></button>
+                    <button className="ai-titlebar-tool" {...(inline ? { onMouseDown: stopMouse(toggleProjectSearch) } : { onClick: toggleProjectSearch })} style={getTitleBarToolButtonStyle(t, projectSearchOpen ? "active" : "default")} title={localizeText(lang, "Search tasks, files, knowledge, experts", "\u641c\u7d22\u4efb\u52a1\u3001\u6587\u4ef6\u3001\u77e5\u8bc6\u3001\u4e13\u5bb6")}><TitleBarToolIcon name="search" /></button>
                     <VEAuthorizationRequestCenter theme={t} lang={lang} inline={inline} />
                     {onOpenKnowledge && <button className="ai-titlebar-tool" {...(inline ? { onMouseDown: stopMouse(onOpenKnowledge) } : { onClick: onOpenKnowledge })} style={getTitleBarToolButtonStyle(t)} title={lang === "en" ? "Knowledge Base" : "\u77e5\u8bc6\u5e93"}><TitleBarToolIcon name="book" /></button>}
                     {onOpenTutorial && <button className="ai-titlebar-tool" {...(inline ? { onMouseDown: onOpenTutorial } : { onClick: onOpenTutorial })} style={getTitleBarToolButtonStyle(t)} title={lang === "en" ? "Tutorial" : "\u6559\u7a0b"}><TitleBarToolIcon name="guide" /></button>}
@@ -159,9 +160,9 @@ export function AssistantTitleBar({ active = true, clearHistory, clearHistoryDis
                     <button className="ai-titlebar-tool" disabled={!!clearHistoryDisabled} {...(inline ? { onMouseDown: clearHistoryDisabled ? undefined : clearHistory } : { onClick: clearHistoryDisabled ? undefined : clearHistory })} style={{ ...getTitleBarToolButtonStyle(t), ...(clearHistoryDisabled ? { opacity: 0.4, cursor: "not-allowed" } : {}) }} title={clearHistoryDisabled ? (lang === "en" ? "Please wait for the current task to finish" : "\u8bf7\u7b49\u5f85\u5f53\u524d\u4efb\u52a1\u5b8c\u6210") : (lang === "en" ? "New conversation" : "\u5f00\u59cb\u65b0\u5bf9\u8bdd")}><TitleBarToolIcon name="eraser" /></button>
                 </div>
                 <div data-testid="ai-titlebar-window-group" style={{ display: "flex", gap: "2px", alignItems: "center", flexShrink: 0, boxSizing: "border-box", marginLeft: inline ? "16px" : "12px", paddingLeft: inline ? "14px" : "12px", paddingTop: 1, borderLeft: `1px solid ${t.titleBarBorder}` }}>
-                    {inline && onHideWindow && <button className="ai-window-control" onMouseDown={stopMouse(onHideWindow)} data-testid="ai-hide-toggle" aria-label={lang === "en" ? "Minimize window" : "\u6700\u5c0f\u5316\u7a97\u53e3"} style={getWindowControlButtonStyle(t, "hide")} title={lang === "en" ? "Minimize window" : "\u6700\u5c0f\u5316\u7a97\u53e3"}><WindowCloseIcon /></button>}
-                    {showMaximizeToggle && <button className="ai-window-control" onClick={(e) => { e.preventDefault(); e.stopPropagation(); onToggleMaximize?.(); }} data-testid="ai-maximize-toggle" aria-label={maximized ? (lang === "en" ? "Restore window" : "\u8fd8\u539f\u7a97\u53e3") : (lang === "en" ? "Maximize window" : "\u6700\u5927\u5316\u7a97\u53e3")} style={getWindowControlButtonStyle(t, "fullscreen", maximized)} title={maximized ? (lang === "en" ? "Restore window" : "\u8fd8\u539f\u7a97\u53e3") : (lang === "en" ? "Maximize window" : "\u6700\u5927\u5316\u7a97\u53e3")}>{maximized ? <WindowRestoreIcon /> : <WindowMaximizeIcon />}</button>}
-                    {!inline && <button className="ai-window-control" onClick={onClose} style={{ ...getWindowControlButtonStyle(t, "hide"), color: t.closeBtnColor }} title={lang === "en" ? "Close" : "\u5173\u95ed"}><WindowCloseIcon /></button>}
+                    {inline && onHideWindow && <button type="button" className="ai-window-control" onMouseDown={(event) => hideWindowFromControlEvent(event, onHideWindow)} onClick={(event) => hideWindowFromControlEvent(event, onHideWindow)} data-testid="ai-hide-toggle" aria-label={windowHideLabel(lang)} style={getWindowControlButtonStyle(t, "hide")} title={windowHideLabel(lang)}><WindowCloseIcon /></button>}
+                    {showMaximizeToggle && <button type="button" className="ai-window-control" onClick={(e) => toggleWindowOnce(e, onToggleMaximize)} onDoubleClick={stopWindowControlEvent} data-testid="ai-maximize-toggle" aria-label={windowMaximizeLabel(lang, maximized)} style={getWindowControlButtonStyle(t, "fullscreen", maximized)} title={windowMaximizeLabel(lang, maximized)}>{maximized ? <WindowRestoreIcon /> : <WindowMaximizeIcon />}</button>}
+                    {!inline && <button type="button" className="ai-window-control" onClick={onClose} style={{ ...getWindowControlButtonStyle(t, "hide"), color: t.closeBtnColor }} title={lang === "en" ? "Close" : "\u5173\u95ed"}><WindowCloseIcon /></button>}
                 </div>
             </div>
         </div>

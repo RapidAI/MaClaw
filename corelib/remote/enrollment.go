@@ -77,7 +77,6 @@ type HubCenterResolveResult struct {
 	Email        string                `json:"email"`
 	Mode         string                `json:"mode"`
 	DefaultHubID string                `json:"default_hub_id,omitempty"`
-	DefaultPWA   string                `json:"default_pwa_url,omitempty"`
 	Hubs         []HubCenterResolveHub `json:"hubs,omitempty"`
 	Message      string                `json:"message,omitempty"`
 }
@@ -88,7 +87,6 @@ type HubCenterResolveHub struct {
 	TenantID       string `json:"tenant_id,omitempty"`
 	Name           string `json:"name"`
 	BaseURL        string `json:"base_url"`
-	PWAURL         string `json:"pwa_url"`
 	Visibility     string `json:"visibility"`
 	EnrollmentMode string `json:"enrollment_mode"`
 	Status         string `json:"status"`

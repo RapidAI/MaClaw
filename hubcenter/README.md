@@ -6,7 +6,7 @@ MaClaw Hub Center is the directory and entry service for MaClaw Hubs.
 
 - Register self-hosted hubs
 - Track hub heartbeats and online status
-- Resolve an email address to one or more hub PWA entry URLs
+- Resolve an email address to one or more hub entry URLs
 - Provide platform-level admin governance for hubs, emails, and IPs
 
 ## Run

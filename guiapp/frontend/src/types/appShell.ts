@@ -2,7 +2,6 @@ export interface RemoteCenterHubOption {
     hub_id: string;
     name: string;
     base_url: string;
-    pwa_url?: string;
     visibility?: string;
     enrollment_mode?: string;
     status?: string;

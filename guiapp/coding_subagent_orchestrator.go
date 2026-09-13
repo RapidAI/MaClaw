@@ -153,8 +153,9 @@ func (r *SubAgentTaskRunner) runTaskHandle(task *TaskItem, runID int, prevOutput
 		log.Printf("[subagent-runner] T%d passed (%d iterations, %d tool calls, %d files, %d created)", displayIndex, result.Iterations, result.ToolCalls, len(result.FilesModified), len(result.FilesCreated))
 		turnCtx.Emit(onProgress, turnCtx.TaskEvent("completed", task, taskTitle))
 
-		// Trigger experience extraction (best-effort, async)
+		// Trigger experience extraction and recall outcome (best-effort, async)
 		wasRetry := task.RetryCount > 0
+		r.recordRecalledExperienceOutcomes(result)
 		r.extractAndSaveExperience(task, result, wasRetry)
 
 		return fmt.Sprintf("T%d: %s - completed\n%s", displayIndex, taskTitle, resultSummary), true
@@ -164,6 +165,7 @@ func (r *SubAgentTaskRunner) runTaskHandle(task *TaskItem, runID int, prevOutput
 		// attempts too. It remains candidate-only and still requires the
 		// durable evidence/provenance gate in the asynchronous writer.
 		if !isSubAgentTransientProviderError(resultError) {
+			r.recordRecalledExperienceOutcomes(result)
 			r.extractAndSaveExperience(task, result, task.RetryCount > 0)
 		}
 		if isSubAgentTransientProviderError(resultError) {

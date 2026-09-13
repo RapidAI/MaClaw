@@ -530,10 +530,12 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 		return nil, fmt.Errorf("no providers configured for model %q", model)
 	}
 
-	// 6. Try providers in order (with concurrency + resilience)
+	// 6. Try providers in order (with concurrency + resilience).
+	// Index loop so a 429 can append other same-group providers mid-request.
 	var lastErr error
 	gate := newProviderAttemptGate()
-	for i, route := range orderedRoutes {
+	for i := 0; i < len(orderedRoutes); i++ {
+		route := orderedRoutes[i]
 		providerID := route.ProviderID
 		provider := findProvider(reg, providerID)
 		if provider == nil {
@@ -576,15 +578,18 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 		}
 
 		if fwdErr != nil || resp == nil || shouldRetryProxyProviderStatus(resp.StatusCode) {
-			if !hasLaterRouteForProvider(orderedRoutes, i, providerID) {
-				proxyRecordResilienceFailure(cfg, provider)
-			}
 			if fwdErr != nil {
 				lastErr = fmt.Errorf("provider %s failed for logical model %s upstream model %s: %w", providerID, model, upstreamModel, fwdErr)
 			} else if resp == nil {
 				lastErr = fmt.Errorf("provider %s failed for logical model %s upstream model %s: empty response", providerID, model, upstreamModel)
 			} else {
 				lastErr = fmt.Errorf("provider %s failed for logical model %s upstream model %s: HTTP %d%s", providerID, model, upstreamModel, resp.StatusCode, proxyProviderErrorSnippet(resp.Body))
+			}
+			if resp != nil && isProxyRateLimitStatus(resp.StatusCode) {
+				proxyOnProviderRateLimited(cfg, gate, provider, lastErr)
+				orderedRoutes = proxyAppendSameGroupRateLimitRoutes(orderedRoutes, reg, matchedGroup, model, acceptLiveProvider)
+			} else if !hasLaterRouteForProvider(orderedRoutes, i, providerID) {
+				proxyRecordResilienceFailure(cfg, provider)
 			}
 			continue
 		}
@@ -937,7 +942,8 @@ func HandleProxyStreamRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyR
 func handleProxyStreamDispatches(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest, dst ProxyStreamWriter, dispatches []*proxyDispatch) (*proxyDispatch, error) {
 	var lastErr error
 	gate := newProviderAttemptGate()
-	for i, dispatch := range dispatches {
+	for i := 0; i < len(dispatches); i++ {
+		dispatch := dispatches[i]
 		if dispatch == nil || dispatch.provider == nil {
 			continue
 		}
@@ -995,7 +1001,10 @@ func handleProxyStreamDispatches(ctx context.Context, cfg *ProxyConfig, req *Pro
 					proxyAbortResilienceProbe(cfg, providerID)
 					return nil, ctx.Err()
 				}
-				if !hasLaterDispatchForProvider(dispatches, i, providerID) {
+				if isProxyRateLimitStatus(result.statusCode) {
+					proxyOnProviderRateLimited(cfg, gate, dispatch.provider, lastErr)
+					dispatches = proxyAppendSameGroupRateLimitDispatches(ctx, cfg, req, dispatches, dispatch, true)
+				} else if !hasLaterDispatchForProvider(dispatches, i, providerID) {
 					proxyRecordResilienceFailure(cfg, dispatch.provider)
 				}
 				continue
@@ -1845,6 +1854,20 @@ func newProviderAttemptGate() *providerAttemptGate {
 	}
 }
 
+func (g *providerAttemptGate) block(providerID string, err error) {
+	if g == nil || err == nil {
+		return
+	}
+	id := providerIDKey(providerID)
+	if id == "" {
+		return
+	}
+	if g.blocked == nil {
+		g.blocked = map[string]error{}
+	}
+	g.blocked[id] = err
+}
+
 func (g *providerAttemptGate) before(cfg *ProxyConfig, provider *llmpool.ProviderConfig) (fresh bool, err error) {
 	if g == nil {
 		return false, proxyBeforeAttempt(cfg, provider)
@@ -1898,6 +1921,9 @@ const (
 	defaultProxyCircuitThreshold = 2
 	defaultProxyCircuitBaseMS    = 10_000
 	defaultProxyCircuitMaxMS     = 300_000
+	// One 429 should take that upstream out of the same-group WRR pool long
+	// enough for other members to absorb traffic. Matches corelib LLM failover.
+	proxyRateLimitCooldownMS = 60_000
 )
 
 func proxyBeforeAttempt(cfg *ProxyConfig, provider *llmpool.ProviderConfig) error {
@@ -1912,6 +1938,44 @@ func proxyRecordResilienceFailure(cfg *ProxyConfig, provider *llmpool.ProviderCo
 		return
 	}
 	cfg.Resilience.RecordFailureBackoff(provider.ID, proxyCircuitThreshold(provider), proxyCircuitBaseMS(provider), proxyCircuitMaxMS(provider))
+}
+
+func proxyOnProviderRateLimited(cfg *ProxyConfig, gate *providerAttemptGate, provider *llmpool.ProviderConfig, err error) {
+	if provider == nil {
+		return
+	}
+	if err == nil {
+		err = fmt.Errorf("provider %s is rate limited", strings.TrimSpace(provider.ID))
+	}
+	proxyRecordRateLimit(cfg, provider)
+	if gate != nil {
+		gate.block(provider.ID, err)
+	}
+	log.Printf("[llm-proxy] provider %s rate-limited (HTTP 429), failing over to other same-group providers", provider.ID)
+}
+
+func proxyRecordRateLimit(cfg *ProxyConfig, provider *llmpool.ProviderConfig) {
+	if cfg == nil || cfg.Resilience == nil || provider == nil {
+		return
+	}
+	threshold := proxyCircuitThreshold(provider)
+	cooldownMS := proxyRateLimitCooldownMS
+	if base := proxyCircuitBaseMS(provider); base > cooldownMS {
+		cooldownMS = base
+	}
+	maxMS := proxyCircuitMaxMS(provider)
+	if cooldownMS > maxMS {
+		maxMS = cooldownMS
+	}
+	// RecordFailureBackoff only opens the circuit once consecFailures reaches
+	// the provider threshold (default 2). A single 429 must still take this
+	// upstream out of WRR so the next quote/request prefers a sibling.
+	for i := 0; i < threshold; i++ {
+		if cfg.Resilience.Snapshot(provider.ID, threshold).State == "open" {
+			return
+		}
+		cfg.Resilience.RecordFailureBackoff(provider.ID, threshold, cooldownMS, maxMS)
+	}
 }
 
 func proxyAbortResilienceProbe(cfg *ProxyConfig, providerID string) {
@@ -2527,7 +2591,119 @@ func shouldRetryProxyProviderStatus(statusCode int) bool {
 		statusCode == http.StatusUnprocessableEntity ||
 		statusCode == http.StatusUnauthorized ||
 		statusCode == http.StatusForbidden ||
-		statusCode == http.StatusTooManyRequests
+		isProxyRateLimitStatus(statusCode)
+}
+
+func isProxyRateLimitStatus(statusCode int) bool {
+	return statusCode == http.StatusTooManyRequests
+}
+
+// sameGroupRateLimitFailoverRoutes lists other live providers configured on the
+// same service group. Quoted requests pin a single route for billing; a 429 is
+// the exception because that upstream did not consume the request.
+func sameGroupRateLimitFailoverRoutes(reg *Registry, group *llmpool.ServiceGroup, logicalModel string, seen map[string]struct{}, accept func(*llmpool.ProviderConfig) bool) []llmpool.DispatchProviderRoute {
+	if group == nil {
+		return nil
+	}
+	if accept == nil {
+		accept = acceptLiveProvider
+	}
+	added := map[string]struct{}{}
+	for key := range seen {
+		if key = providerIDKey(key); key != "" {
+			added[key] = struct{}{}
+		}
+	}
+	var extras []llmpool.DispatchProviderRoute
+	addProvider := func(providerID string) {
+		key := providerIDKey(providerID)
+		if key == "" {
+			return
+		}
+		if _, ok := added[key]; ok {
+			return
+		}
+		provider := findProvider(reg, providerID)
+		if !accept(provider) {
+			return
+		}
+		added[key] = struct{}{}
+		// nil registry keeps failover inside this service group.
+		extras = append(extras, buildServiceGroupFailoverRoutes(nil, group, provider, logicalModel)...)
+	}
+	for _, model := range group.Models {
+		for _, pc := range modelProviderConfigs(model) {
+			addProvider(pc.ProviderID)
+		}
+	}
+	return extras
+}
+
+func proxyAppendSameGroupRateLimitRoutes(ordered []llmpool.DispatchProviderRoute, reg *Registry, group *llmpool.ServiceGroup, logicalModel string, accept func(*llmpool.ProviderConfig) bool) []llmpool.DispatchProviderRoute {
+	seen := map[string]struct{}{}
+	for _, route := range ordered {
+		if key := providerIDKey(route.ProviderID); key != "" {
+			seen[key] = struct{}{}
+		}
+	}
+	extras := sameGroupRateLimitFailoverRoutes(reg, group, logicalModel, seen, accept)
+	if len(extras) == 0 {
+		return ordered
+	}
+	groupID := ""
+	if group != nil {
+		groupID = strings.TrimSpace(group.ID)
+	}
+	log.Printf("[llm-proxy] 429 failover appending %d same-group provider routes model=%s group=%s", len(extras), logicalModel, groupID)
+	return append(ordered, extras...)
+}
+
+func proxyAppendSameGroupRateLimitDispatches(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest, dispatches []*proxyDispatch, seed *proxyDispatch, stream bool) []*proxyDispatch {
+	if cfg == nil || cfg.Service == nil || seed == nil || seed.matchedGroup == nil {
+		return dispatches
+	}
+	reg, err := cfg.Service.LoadRegistry(ctx)
+	if err != nil || reg == nil {
+		return dispatches
+	}
+	seen := map[string]struct{}{}
+	for _, dispatch := range dispatches {
+		if dispatch != nil && dispatch.provider != nil {
+			if key := providerIDKey(dispatch.provider.ID); key != "" {
+				seen[key] = struct{}{}
+			}
+		}
+	}
+	accept := acceptLiveProvider
+	if stream {
+		accept = acceptLiveStreamProvider
+	}
+	extras := sameGroupRateLimitFailoverRoutes(reg, seed.matchedGroup, seed.model, seen, accept)
+	if len(extras) == 0 {
+		return dispatches
+	}
+	startedAt := proxyRequestStartedAt(req)
+	for _, route := range extras {
+		provider := findProvider(reg, route.ProviderID)
+		if !accept(provider) {
+			continue
+		}
+		upstreamModel := proxyUpstreamModelForRoute(route, provider, seed.model)
+		dispatches = append(dispatches, &proxyDispatch{
+			model:         seed.model,
+			responseModel: seed.responseModel,
+			matchedGroup:  seed.matchedGroup,
+			dispatchModel: seed.dispatchModel,
+			route:         route,
+			provider:      provider,
+			auth:          seed.auth,
+			requiresGrant: seed.requiresGrant,
+			pricing:       proxyResolvedRequestTokenPricing(req, seed.matchedGroup, provider, provider.ID, upstreamModel, startedAt),
+		})
+	}
+	groupID := strings.TrimSpace(seed.matchedGroup.ID)
+	log.Printf("[llm-proxy] 429 stream failover appending %d same-group provider routes model=%s group=%s", len(extras), seed.model, groupID)
+	return dispatches
 }
 
 // ---------------------------------------------------------------------------

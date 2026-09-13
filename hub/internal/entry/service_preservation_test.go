@@ -101,12 +101,12 @@ func TestProbeByEmail_Preservation_UnknownEmail(t *testing.T) {
 // all expected fields with correct values for each scenario.
 func TestProbeByEmail_Preservation_AllFields(t *testing.T) {
 	tests := []struct {
-		name                   string
-		email                  string
-		wantStatus             string
-		wantBound              bool
-		wantCanLogin           bool
-		wantInvCodeRequired    bool
+		name                string
+		email               string
+		wantStatus          string
+		wantBound           bool
+		wantCanLogin        bool
+		wantInvCodeRequired bool
 	}{
 		{
 			name:                "empty email",
@@ -220,8 +220,5 @@ func TestProbeByEmail_Preservation_BoundUser(t *testing.T) {
 	}
 	if result.Email != "bound@example.com" {
 		t.Errorf("email: got %q, want %q", result.Email, "bound@example.com")
-	}
-	if result.PWAURL == "" {
-		t.Error("pwa_url: expected non-empty for bound user")
 	}
 }

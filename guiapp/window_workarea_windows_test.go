@@ -5,6 +5,7 @@ package guiapp
 import (
 	"testing"
 	"time"
+	"unsafe"
 )
 
 func TestWindowTitleMatchesMain(t *testing.T) {
@@ -85,5 +86,47 @@ func TestWindowRectOverflowsWorkArea(t *testing.T) {
 	}
 	if !windowRectOverflowsWorkArea(workAreaRect{0, 0, 1920, 1042}, work) {
 		t.Fatal("2px past bottom should overflow")
+	}
+}
+
+func TestWindowPlacementSize(t *testing.T) {
+	if got := unsafe.Sizeof(windowPlacement{}); got != 44 {
+		t.Fatalf("WINDOWPLACEMENT size %d want 44 so Get/SetWindowPlacement length is valid", got)
+	}
+}
+
+func TestApplyPreservedNormalPlacementKeepsMaximized(t *testing.T) {
+	cur := windowPlacement{Length: 1, Flags: 2, ShowCmd: 1, NormalPosition: workAreaRect{0, 0, 1920, 1040}}
+	saved := workAreaRect{Left: 80, Top: 60, Right: 1180, Bottom: 780}
+	got := applyPreservedNormalPlacement(cur, saved)
+	if got.ShowCmd != swShowMaximized {
+		t.Fatalf("ShowCmd=%d want SW_SHOWMAXIMIZED so clamp does not restore", got.ShowCmd)
+	}
+	if got.NormalPosition != saved {
+		t.Fatalf("NormalPosition=%v want %v", got.NormalPosition, saved)
+	}
+	if got.Length != uint32(unsafe.Sizeof(got)) {
+		t.Fatalf("Length=%d want sizeof", got.Length)
+	}
+	if got.Flags != cur.Flags {
+		t.Fatalf("Flags changed: %d", got.Flags)
+	}
+}
+
+func TestShouldPreserveClampedNormalPlacement(t *testing.T) {
+	work := workAreaRect{Left: 0, Top: 0, Right: 1920, Bottom: 1040}
+	normal := workAreaRect{Left: 80, Top: 60, Right: 1180, Bottom: 780}
+	if !shouldPreserveClampedNormalPlacement(normal, work) {
+		t.Fatal("pre-maximize size should be preserved across clamp")
+	}
+	wideShort := workAreaRect{Left: 0, Top: 80, Right: 1920, Bottom: 780}
+	if !shouldPreserveClampedNormalPlacement(wideShort, work) {
+		t.Fatal("full-width but shorter restore rect must still be preserved")
+	}
+	if shouldPreserveClampedNormalPlacement(work, work) {
+		t.Fatal("work-area sized rect is already corrupted and must not be saved")
+	}
+	if shouldPreserveClampedNormalPlacement(workAreaRect{0, 0, 80, 80}, work) {
+		t.Fatal("tiny rect is not a restore size")
 	}
 }

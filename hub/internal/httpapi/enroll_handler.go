@@ -327,7 +327,7 @@ func EmailRequestLoginHandler(identity *auth.IdentityService) http.HandlerFunc {
 }
 
 // VerifyEmailHandler handles GET /api/auth/verify-email?token=xxx.
-// It confirms registration email verification only; it does not sign the PWA in.
+// It confirms registration email verification only; it does not sign the user in.
 func VerifyEmailHandler(identity *auth.IdentityService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := strings.TrimSpace(r.URL.Query().Get("token"))

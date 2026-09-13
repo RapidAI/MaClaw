@@ -15,7 +15,6 @@
     { name: 'ImTab', ok: function() { return typeof global.openImSub === 'function'; } },
     { name: 'FeishuTab', ok: function() { return typeof global.loadFeishuConfig === 'function'; } },
     { name: 'InvitationTab', ok: function() { return typeof global.loadInvitationCodes === 'function'; } },
-    { name: 'PwaTab', ok: function() { return typeof global.loadPwaEnrollments === 'function'; } },
     { name: 'SystemTab', ok: function() { return typeof global.loadMailConfig === 'function' && typeof global.loadTlsConfig === 'function'; } },
     { name: 'ComputeTab', ok: function() { return typeof global.openComputePane === 'function'; } },
     { name: 'LlmProviderTab', ok: function() { return (typeof global.openLlmProviderTab === 'function' && typeof global.loadLlmProviders === 'function' && typeof global.saveLLMProviders === 'function') || typeof global.loadAdminLazyModule === 'function'; } },

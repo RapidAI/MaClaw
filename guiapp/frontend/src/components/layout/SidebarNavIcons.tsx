@@ -90,6 +90,15 @@ export const GossipIcon = () => (
     </svg>
 );
 
+/** 排名 */
+export const RankingIcon = () => (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <rect x="5" y="13" width="4.5" height="7" rx="1" />
+        <rect x="9.75" y="6" width="4.5" height="14" rx="1" />
+        <rect x="14.5" y="10" width="4.5" height="10" rx="1" />
+    </svg>
+);
+
 /** 移动文稿库 - 手机上的文稿 */
 export const MobileDocsIcon = () => (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

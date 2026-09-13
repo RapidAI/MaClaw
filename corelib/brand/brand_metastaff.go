@@ -9,7 +9,7 @@ func init() {
 		DisplayNameCN:       "智员",
 		WindowTitle:         "智员 MetaStaff",
 		TrayTooltip:         "MetaStaff Dashboard",
-		Slogan:              "你的数智时代伙伴。",
+		Slogan:              "AI Native 组织操作系统",
 		Author:              "Dr. Daniel",
 		BusinessContact:     "联系信息：微信 znsoft",
 		WebsiteURL:          "https://maclaw.top",

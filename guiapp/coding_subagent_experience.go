@@ -88,36 +88,32 @@ func (r *SubAgentTaskRunner) extractAndSaveExperience(
 		return
 	}
 
-	taskPassed := result != nil && result.Status == TaskExecPassed
-	if result != nil && result.HorizonOwned {
-		return
-	}
-	switch strategy {
-	case ExperienceStrategyOnRetry:
-		if !wasRetry || !taskPassed {
-			return
-		}
-	case ExperienceStrategyOnSuccess:
-		if !taskPassed {
-			return
-		}
-	case ExperienceStrategyAlways:
-		// extract for both success and failure
-	default:
+	wasRetry = wasRetry || codingResultLooksLikeRetrySuccess(result)
+	if !codingExperienceShouldExtract(mode, strategy, result, wasRetry) {
 		return
 	}
 
-	// Extraction output is always a candidate. `auto` retains its historical
-	// meaning of automatically extracting, not automatically injecting a new
-	// LLM-derived rule into later coding prompts.
-	_ = mode
-	go r.doExtractAndSave(task, result, knowledge.CodingStatusCandidate)
+	// Extraction output is always a candidate. `auto` still means
+	// automatically extract (and log a pending-review notice), never
+	// inject an LLM-derived rule into later coding prompts.
+	go r.doExtractAndSave(task, result, knowledge.CodingStatusCandidate, mode)
+}
+
+func (r *SubAgentTaskRunner) recordRecalledExperienceOutcomes(result *CodingSubAgentResult) {
+	if r == nil || result == nil || result.HorizonOwned || len(result.RecalledExperienceIDs) == 0 {
+		return
+	}
+	if r.handler == nil || r.handler.app == nil {
+		return
+	}
+	go r.doRecordRecalledExperienceOutcomes(result)
 }
 
 func (r *SubAgentTaskRunner) doExtractAndSave(
 	task *TaskItem,
 	result *CodingSubAgentResult,
 	initialStatus string,
+	mode ExperienceSaveMode,
 ) {
 	defer func() {
 		if p := recover(); p != nil {
@@ -137,7 +133,11 @@ func (r *SubAgentTaskRunner) doExtractAndSave(
 	ctx, cancel := context.WithTimeout(context.Background(), experienceExtractionTimeout)
 	defer cancel()
 
-	prompt := buildExperienceExtractionPrompt(task, result, r.orchestrator.ProjectPath)
+	projectPath := ""
+	if r.orchestrator != nil {
+		projectPath = r.orchestrator.ProjectPath
+	}
+	prompt := buildExperienceExtractionPrompt(task, result, projectPath)
 
 	extracted, err := r.callLLMForExperienceExtraction(ctx, prompt)
 	if err != nil {
@@ -152,7 +152,6 @@ func (r *SubAgentTaskRunner) doExtractAndSave(
 	saveCtx, saveCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer saveCancel()
 
-	projectPath := r.orchestrator.ProjectPath
 	language := inferLanguageFromTaskFiles(task.Files)
 	provenance, provenanceErr := r.runtimeExperienceProvenance(result.RuntimeTaskID)
 	if provenanceErr != nil {
@@ -160,6 +159,7 @@ func (r *SubAgentTaskRunner) doExtractAndSave(
 		return
 	}
 
+	savedCount := 0
 	for _, exp := range extracted {
 		exp.SourceTaskTitle = task.Title
 		exp.CreatedBy = "runtime"
@@ -193,12 +193,54 @@ func (r *SubAgentTaskRunner) doExtractAndSave(
 			continue
 		}
 		log.Printf("[coding-experience] saved: %s (id=%s, scope=%s, status=%s)", saved.Title, saved.ID, saved.Scope, saved.Status)
+		savedCount++
+	}
+
+	if mode == ExperienceSaveModeAuto && savedCount > 0 {
+		log.Printf("[coding-experience] auto mode: %d candidate(s) awaiting review", savedCount)
 	}
 
 	// Trigger eviction check after saving (best-effort, don't block)
 	if r.handler != nil && r.handler.app != nil {
 		if evicted, err := r.handler.app.CodingKnowledgeEvict(); err == nil && evicted > 0 {
 			log.Printf("[coding-experience] evicted %d experiences after save", evicted)
+		}
+	}
+}
+
+func (r *SubAgentTaskRunner) doRecordRecalledExperienceOutcomes(result *CodingSubAgentResult) {
+	defer func() {
+		if p := recover(); p != nil {
+			log.Printf("[coding-experience] recall outcome panic: %v", p)
+		}
+	}()
+	if r == nil || result == nil || r.handler == nil || r.handler.app == nil {
+		return
+	}
+	store := r.handler.app.ensureCodingKnowledgeStore()
+	if store == nil {
+		return
+	}
+	provenance, err := codingExperienceRuntimeProvenance(r.handler.app, result.RuntimeTaskID)
+	if err != nil {
+		log.Printf("[coding-experience] skip recall outcome without provenance: %v", err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	outcome := knowledge.RecallOutcome{
+		RuntimeTaskID:    provenance.TaskID,
+		RuntimeAttemptID: provenance.AttemptID,
+		EvidenceDigest:   provenance.EvidenceDigest,
+		TaskSucceeded:    result.Status == TaskExecPassed,
+	}
+	for _, id := range result.RecalledExperienceIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if recErr := store.RecordRecallOutcome(ctx, id, outcome, r.handler.app.verifyCodingKnowledgeRecallOutcome); recErr != nil {
+			log.Printf("[coding-experience] recall outcome %s: %v", id, recErr)
 		}
 	}
 }
@@ -262,7 +304,7 @@ func (r *SubAgentTaskRunner) codingKnowledgeStore() *knowledge.CodingKnowledgeSt
 	if r == nil || r.handler == nil || r.handler.app == nil {
 		return nil
 	}
-	return r.handler.app.codingKnowledgeStore
+	return r.handler.app.ensureCodingKnowledgeStore()
 }
 
 // ---------------------------------------------------------------------------
@@ -322,6 +364,18 @@ func buildExperienceExtractionPrompt(task *TaskItem, result *CodingSubAgentResul
 		}
 		if result.Error != "" {
 			b.WriteString(fmt.Sprintf("\nError: %s\n", result.Error))
+		}
+		if len(result.FilesModified) > 0 {
+			b.WriteString(fmt.Sprintf("Files modified: %s\n", compactSubAgentFileList(result.FilesModified, 8)))
+		}
+		if len(result.FilesCreated) > 0 {
+			b.WriteString(fmt.Sprintf("Files created: %s\n", compactSubAgentFileList(result.FilesCreated, 8)))
+		}
+		if result.VerificationSummary != "" {
+			b.WriteString(fmt.Sprintf("Verification: %s\n", truncateRunesForSubAgent(result.VerificationSummary, 240)))
+		}
+		if result.QualitySummary != "" {
+			b.WriteString(fmt.Sprintf("Quality: %s\n", truncateRunesForSubAgent(result.QualitySummary, 240)))
 		}
 		if len(result.CommandsRun) > 0 {
 			b.WriteString("\n## Commands\n")
@@ -421,11 +475,21 @@ func (r *SubAgentTaskRunner) callLLMForExperienceExtraction(ctx context.Context,
 // ---------------------------------------------------------------------------
 
 func isDuplicateExperience(ctx context.Context, store *knowledge.CodingKnowledgeStore, exp knowledge.CodingExperience) bool {
-	if store == nil || exp.TriggerCondition == "" {
+	if store == nil {
+		return false
+	}
+	query := strings.TrimSpace(exp.TriggerCondition + " " + exp.Title)
+	if query == "" {
+		query = strings.TrimSpace(exp.Content)
+		if runes := []rune(query); len(runes) > 80 {
+			query = string(runes[:80])
+		}
+	}
+	if query == "" {
 		return false
 	}
 	results, err := store.SearchExperiences(ctx, knowledge.CodingSearchOptions{
-		Query:  exp.TriggerCondition + " " + exp.Title,
+		Query:  query,
 		Limit:  3,
 		Status: []string{knowledge.CodingStatusCandidate, knowledge.CodingStatusActive, knowledge.CodingStatusVerified},
 	})
@@ -456,7 +520,96 @@ func isSimilarExperience(existing, newExp knowledge.CodingExperience) bool {
 	if existTrigger != "" && newTrigger != "" && existTrigger == newTrigger {
 		return true
 	}
+	existContent := strings.ToLower(strings.TrimSpace(existing.Content))
+	newContent := strings.ToLower(strings.TrimSpace(newExp.Content))
+	if existContent != "" && newContent != "" && existContent == newContent {
+		return true
+	}
+	if len(existContent) > 40 && len(newContent) > 40 {
+		if strings.Contains(existContent, newContent) || strings.Contains(newContent, existContent) {
+			return true
+		}
+	}
 	return false
+}
+
+func codingExperienceShouldExtract(mode ExperienceSaveMode, strategy ExperienceSaveStrategy, result *CodingSubAgentResult, wasRetry bool) bool {
+	if mode == ExperienceSaveModeOff || strategy == ExperienceStrategyOff {
+		return false
+	}
+	if result == nil || result.HorizonOwned {
+		return false
+	}
+	taskPassed := result.Status == TaskExecPassed
+	switch strategy {
+	case ExperienceStrategyOnRetry:
+		return wasRetry && taskPassed
+	case ExperienceStrategyOnSuccess:
+		return taskPassed
+	case ExperienceStrategyAlways:
+		return true
+	default:
+		return false
+	}
+}
+
+func codingResultLooksLikeRetrySuccess(result *CodingSubAgentResult) bool {
+	if result == nil {
+		return false
+	}
+	hadFail := false
+	for _, cmd := range result.CommandsRun {
+		if !cmd.Succeeded {
+			hadFail = true
+			continue
+		}
+		if hadFail {
+			return true
+		}
+	}
+	return false
+}
+
+func finalizeRemoteCodingKnowledge(agent *RemoteCodingSubAgent, taskDescription string, result *RemoteCodingSubAgentResult) {
+	if agent == nil || result == nil || agent.handler == nil || agent.handler.app == nil {
+		return
+	}
+	localResult := remoteResultAsCodingSubAgentResult(result)
+	runner := &SubAgentTaskRunner{
+		handler:      agent.handler,
+		cfg:          agent.cfg,
+		httpClient:   agent.httpClient,
+		orchestrator: &TaskExecutionOrchestrator{ProjectPath: agent.projectDir},
+	}
+	files := append(append([]string{}, result.FilesModified...), result.FilesCreated...)
+	task := &TaskItem{Title: strings.TrimSpace(taskDescription), Files: files}
+	wasRetry := codingResultLooksLikeRetrySuccess(localResult)
+	if strings.EqualFold(result.Status, "success") || strings.EqualFold(result.Status, "failed") {
+		runner.recordRecalledExperienceOutcomes(localResult)
+		runner.extractAndSaveExperience(task, localResult, wasRetry)
+	}
+}
+
+func remoteResultAsCodingSubAgentResult(result *RemoteCodingSubAgentResult) *CodingSubAgentResult {
+	if result == nil {
+		return nil
+	}
+	status := TaskExecFailed
+	if strings.EqualFold(result.Status, "success") {
+		status = TaskExecPassed
+	}
+	return &CodingSubAgentResult{
+		Status:                status,
+		Summary:               result.Summary,
+		Error:                 result.Error,
+		RuntimeTaskID:         result.RuntimeTaskID,
+		FilesModified:         result.FilesModified,
+		FilesCreated:          result.FilesCreated,
+		CommandsRun:           result.CommandsRun,
+		QualitySummary:        result.QualitySummary,
+		VerificationSummary:   result.VerificationSummary,
+		RecalledExperienceIDs: result.RecalledExperienceIDs,
+	}
 }
 
 // ---------------------------------------------------------------------------

@@ -16,7 +16,6 @@ import { localAssistantTabTitle } from '../ai/aiAssistantI18n';
 import { normalizeWorkflowStatus, WorkflowStatus } from '../ai/workflowStatus';
 import { useDialog } from '../CustomDialog';
 import { SidebarTaskEvidencePanel } from './SidebarTaskEvidencePanel';
-import { useNotifications } from '../ai/useNotifications';
 
 export type TaskManagementItem = {
     id?: string;
@@ -360,9 +359,9 @@ type SidebarTaskManagementProps = {
     lang: string;
     themeMode?: 'light' | 'dark';
     tasks: TaskManagementItem[];
-    /** True while a ListTasks refresh is in flight; shows a loading bar instead of the empty state. */
+    /** True while the first ListTasks is in flight; shares the list progress bar and hides the empty state. */
     tasksLoading?: boolean;
-    /** True while a cloud workspace restore is syncing tasks in the background; shows a slim progress hint that does not hide local tasks. */
+    /** True while a cloud workspace restore is in flight; shares the list progress bar and does not hide local tasks. */
     cloudTasksLoading?: boolean;
     renamingTaskPath: string | null;
     setRenamingTaskPath: (path: string | null) => void;
@@ -749,6 +748,17 @@ const asCloudWorkspaceRow = (value: unknown): CloudWorkspaceRow | null => {
 };
 
 const deletedWorkspaceId = (row: { id?: string } | null | undefined): string => (row?.id || '').trim();
+
+function SidebarTaskStatusBanner({ testId, label }: { testId: string; label: string }) {
+    return (
+        <div role="status" data-testid={testId} className="sidebar-task-status-banner">
+            <span>{label}</span>
+            <span className="sidebar-task-progress__track">
+                <span className="sidebar-task-progress__bar" />
+            </span>
+        </div>
+    );
+}
 
 const CloudDeletedWorkspaceRow = ({
     row,
@@ -1147,7 +1157,6 @@ export const SidebarTaskManagement = ({
     restoreCloudWorkspaceTasks = false,
 }: SidebarTaskManagementProps) => {
     const { showConfirm } = useDialog();
-    const { unreadCount: systemUnreadCount } = useNotifications();
     const [creatingTask, setCreatingTask] = useState(false);
     const [creatingTaskMode, setCreatingTaskMode] = useState<'' | PureCodingAgentMode>('');
     const [createDialogOpen, setCreateDialogOpen] = useState(false);
@@ -1368,6 +1377,15 @@ export const SidebarTaskManagement = ({
         if (taskFilter === 'shared') return visibleTasks.filter(isSharedTaskRow);
         return visibleTasks.filter(task => taskStatusBucketFor(task) === taskFilter);
     }, [visibleTasks, taskFilter]);
+    // One bar for first ListTasks and Hub restore. Unfiltered emptiness so an
+    // empty status chip is not a full-list load, and "No tasks" cannot flash
+    // while cloud restore can still add rows.
+    const localTasksLoading = tasksLoading && visibleTasks.length === 0;
+    const showTaskListProgress = cloudSyncInProgress || localTasksLoading;
+    const suppressEmptyState = visibleTasks.length === 0 && showTaskListProgress;
+    const taskListProgressLabel = localTasksLoading
+        ? textForLang(lang, 'Loading tasks…', '任务加载中…', '任務載入中…')
+        : textForLang(lang, 'Syncing cloud tasks…', '正在同步云端任务…', '正在同步雲端任務…');
     // Conditional chips (paused/shared) disappear when their count reaches
     // zero; fall back to the full list instead of trapping the user on an
     // empty view whose chip is no longer rendered.
@@ -1389,6 +1407,12 @@ export const SidebarTaskManagement = ({
         || (activeAssistantTask?.expertId
             ? activeAssistantTask.expertId
             : activeAssistantTask?.projectPath || textForLang(lang, 'Current task', '当前任务', '目前任務'));
+    // Dock theme toggle mirrors the quick-settings theme chip; fall back to the
+    // App root attribute when the caller does not pass themeMode explicitly.
+    const headerThemeMode: 'light' | 'dark' = getPortalThemeMode(themeMode) === 'dark' ? 'dark' : 'light';
+    const themeToggleLabel = headerThemeMode === 'dark'
+        ? textForLang(lang, 'Switch to light mode', '切换到普通模式', '切換到普通模式')
+        : textForLang(lang, 'Switch to dark mode', '切换到暗黑模式', '切換到暗黑模式');
     const taskFilterChips = useMemo(() => {
         const chips: { key: TaskStatusFilter; label: string; count: number }[] = [
             { key: 'all', label: textForLang(lang, 'All', '全部', '全部'), count: visibleTasks.length },
@@ -2760,6 +2784,7 @@ export const SidebarTaskManagement = ({
                 <span>{textForLang(lang, activeAssistantTask ? 'My tasks' : 'New Task', activeAssistantTask ? '\u6211\u7684\u4efb\u52a1' : '\u65b0\u5efa\u4efb\u52a1', activeAssistantTask ? '\u6211\u7684\u4efb\u52d9' : '\u65b0\u5efa\u4efb\u52d9')}</span>
                 <button
                     type="button"
+                    className="mc-task-pane__create-primary"
                     onClick={() => openCreateDialog()}
                     disabled={creatingTask}
                     aria-label={textForLang(lang, 'Create task', '创建任务', '建立任務')}
@@ -2792,15 +2817,16 @@ export const SidebarTaskManagement = ({
                 )}
                 <button
                     type="button"
-                    data-testid="sidebar-system-notifications"
-                    onClick={() => window.dispatchEvent(new CustomEvent('maclaw:open-system-notifications', { detail: { toggle: false } }))}
-                    aria-label={textForLang(lang, 'Open notifications', '打开通知中心', '開啟通知中心')}
-                    title={textForLang(lang, 'Open notifications', '打开通知中心', '開啟通知中心')}
-                    style={{ ...taskHeaderActionButtonStyle(), position: 'relative' }}
+                    data-testid="sidebar-theme-toggle"
+                    onClick={() => window.dispatchEvent(new CustomEvent('maclaw:toggle-ai-theme'))}
+                    aria-label={themeToggleLabel}
+                    title={themeToggleLabel}
+                    style={taskHeaderActionButtonStyle()}
                 >
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" /><path d="M10 21h4" /></svg>
-                    {systemUnreadCount > 0 && (
-                        <span style={{ position: 'absolute', top: '-4px', right: '-5px', minWidth: '13px', height: '13px', padding: '0 3px', borderRadius: '999px', background: 'var(--theme-danger, #dc2626)', color: '#fff', fontSize: '0.55rem', fontWeight: 700, lineHeight: '13px', textAlign: 'center' }}>{systemUnreadCount > 99 ? '99+' : systemUnreadCount}</span>
+                    {headerThemeMode === 'dark' ? (
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></svg>
+                    ) : (
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" /></svg>
                     )}
                 </button>
             </span>
@@ -2868,20 +2894,14 @@ export const SidebarTaskManagement = ({
                 </button>
             </section>
         )}        {creatingTask && !createDialogOpen && (
-            <div
-                role="status"
-                data-testid="task-autocreate-progress"
-                style={{ margin: '0 8px 8px', padding: '7px 10px', borderRadius: '6px', border: '1px solid color-mix(in srgb, var(--theme-primary) 30%, var(--theme-border))', background: 'color-mix(in srgb, var(--theme-primary) 7%, transparent)', color: 'var(--theme-text-secondary)', fontSize: '0.72rem', lineHeight: 1.4 }}
-            >
-                <span>{creatingTaskMode === 'remote_coding_dev'
+            <SidebarTaskStatusBanner
+                testId="task-autocreate-progress"
+                label={creatingTaskMode === 'remote_coding_dev'
                     ? textForLang(lang, 'Connecting SSH and creating the remote task…', '正在连接 SSH 并创建远程任务…', '正在連線 SSH 並建立遠端任務…')
                     : workspaceKind === 'cloud'
                         ? textForLang(lang, 'Opening cloud workspace…', '正在打开云端工作区…', '正在打開雲端工作區…')
-                        : textForLang(lang, 'Creating task…', '正在创建任务…', '正在建立任務…')}</span>
-                <span style={{ display: 'block', marginTop: '6px', height: '3px', overflow: 'hidden', borderRadius: '999px', background: 'color-mix(in srgb, var(--theme-primary) 18%, transparent)' }}>
-                    <span className="sidebar-task-progress__bar" style={{ display: 'block', width: '42%', height: '100%', borderRadius: 'inherit', background: 'var(--theme-primary)', animation: 'sidebar-task-restore-progress 0.9s ease-in-out infinite alternate' }} />
-                </span>
-            </div>
+                        : textForLang(lang, 'Creating task…', '正在创建任务…', '正在建立任務…')}
+            />
         )}
         <div className="mc-task-section-label">{textForLang(lang, activeAssistantTask ? 'My task list' : 'Recent tasks', activeAssistantTask ? '我的任务列表' : '最近任务', activeAssistantTask ? '我的任務列表' : '最近任務')}</div>
         <div className="mc-task-filter-chips" role="group" aria-label={textForLang(lang, 'Filter tasks by status', '按状态筛选任务', '按狀態篩選任務')} style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', padding: '0 8px 8px' }}>
@@ -2912,13 +2932,11 @@ export const SidebarTaskManagement = ({
                 );
             })}
         </div>
-        {cloudSyncInProgress ? (
-            <div role="status" data-testid="task-cloud-sync-progress" style={{ margin: '0 8px 8px', padding: '7px 10px', borderRadius: '6px', border: '1px solid color-mix(in srgb, var(--theme-primary) 28%, var(--theme-border))', background: 'color-mix(in srgb, var(--theme-primary) 7%, transparent)', color: 'var(--theme-text-secondary)', fontSize: '0.7rem', lineHeight: 1.35 }}>
-                <span>{textForLang(lang, 'Syncing cloud tasks…', '正在同步云端任务…', '正在同步雲端任務…')}</span>
-                <span style={{ display: 'block', marginTop: '5px', height: '3px', overflow: 'hidden', borderRadius: '999px', background: 'color-mix(in srgb, var(--theme-primary) 18%, transparent)' }}>
-                    <span className="sidebar-task-progress__bar" style={{ display: 'block', width: '42%', height: '100%', borderRadius: 'inherit', background: 'var(--theme-primary)', animation: 'sidebar-task-restore-progress 0.9s ease-in-out infinite alternate' }} />
-                </span>
-            </div>
+        {showTaskListProgress ? (
+            <SidebarTaskStatusBanner
+                testId={localTasksLoading ? 'task-list-loading' : 'task-cloud-sync-progress'}
+                label={taskListProgressLabel}
+            />
         ) : null}
         {taskListNotice ? (
             <div role="status" data-testid="task-list-notice" style={{ margin: '0 8px 8px', padding: '7px 10px', borderRadius: '6px', border: '1px solid color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border))', background: 'color-mix(in srgb, var(--theme-primary) 9%, transparent)', color: 'var(--theme-text-primary)', fontSize: '0.72rem', lineHeight: 1.4, fontWeight: 500 }}>
@@ -2926,12 +2944,10 @@ export const SidebarTaskManagement = ({
             </div>
         ) : null}
         {cloudBrowseProgress ? (
-            <div role="status" data-testid="task-browse-cloud-progress" style={{ margin: '0 8px 8px', padding: '7px 10px', borderRadius: '6px', border: '1px solid color-mix(in srgb, var(--theme-primary) 28%, var(--theme-border))', background: 'color-mix(in srgb, var(--theme-primary) 7%, transparent)', color: 'var(--theme-text-secondary)', fontSize: '0.7rem', lineHeight: 1.35 }}>
-                <span>{textForLang(lang, 'Opening local cache folder…', '正在打开本地缓存文件夹…', '正在開啟本機快取資料夾…')}</span>
-                <span style={{ display: 'block', marginTop: '5px', height: '3px', overflow: 'hidden', borderRadius: '999px', background: 'color-mix(in srgb, var(--theme-primary) 18%, transparent)' }}>
-                    <span className="sidebar-task-progress__bar" style={{ display: 'block', width: '42%', height: '100%', borderRadius: 'inherit', background: 'var(--theme-primary)', animation: 'sidebar-task-restore-progress 0.9s ease-in-out infinite alternate' }} />
-                </span>
-            </div>
+            <SidebarTaskStatusBanner
+                testId="task-browse-cloud-progress"
+                label={textForLang(lang, 'Opening local cache folder…', '正在打开本地缓存文件夹…', '正在開啟本機快取資料夾…')}
+            />
         ) : null}
         <div data-testid="sidebar-default-task-row" data-task-kind="default" data-active={defaultTaskActive ? 'true' : 'false'}>
             <div
@@ -2963,21 +2979,12 @@ export const SidebarTaskManagement = ({
                 </span>
             </div>
         </div>
-        {filteredTasks.length === 0 ? (
-            tasksLoading ? (
-                <div role="status" data-testid="task-list-loading" style={{ margin: '0 8px 8px', padding: '7px 10px', borderRadius: '6px', border: '1px solid color-mix(in srgb, var(--theme-primary) 28%, var(--theme-border))', background: 'color-mix(in srgb, var(--theme-primary) 7%, transparent)', color: 'var(--theme-text-secondary)', fontSize: '0.7rem', lineHeight: 1.35 }}>
-                    <span>{textForLang(lang, 'Loading tasks…', '任务加载中…', '任務載入中…')}</span>
-                    <span style={{ display: 'block', marginTop: '5px', height: '3px', overflow: 'hidden', borderRadius: '999px', background: 'color-mix(in srgb, var(--theme-primary) 18%, transparent)' }}>
-                        <span className="sidebar-task-progress__bar" style={{ display: 'block', width: '42%', height: '100%', borderRadius: 'inherit', background: 'var(--theme-primary)', animation: 'sidebar-task-restore-progress 0.9s ease-in-out infinite alternate' }} />
-                    </span>
-                </div>
-            ) : (
+        {filteredTasks.length === 0 && !suppressEmptyState ? (
             <div style={{ padding: '24px 8px', textAlign: 'center', fontSize: '0.78rem', color: 'var(--theme-text-muted)', opacity: 0.65 }}>
                 {taskFilter === 'all'
                     ? textForLang(lang, 'No tasks', '\u6682\u65e0\u4efb\u52a1', '\u66ab\u7121\u4efb\u52d9')
                     : textForLang(lang, 'No tasks in this group', '\u8be5\u5206\u7ec4\u6682\u65e0\u4efb\u52a1', '\u8a72\u5206\u7d44\u66ab\u7121\u4efb\u52d9')}
             </div>
-            )
         ) : filteredTasks.map(proj => {
             const taskIconKind = taskIconKindForProject(proj);
             const remoteMaintenance = isRemoteMaintenanceTask(proj);
@@ -3113,7 +3120,7 @@ export const SidebarTaskManagement = ({
                             </span>
                         ) : null}
                         {!isRemoving && openingTaskPath !== proj.project_path && createdAtLabel && <span data-testid="task-created-at" style={{ display: 'block', marginTop: '2px', color: 'var(--theme-text-muted)', fontSize: '0.6rem', lineHeight: 1.25, opacity: 0.82, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>{createdAtLabel}</span>}
-                        {(openingTaskPath === proj.project_path || isRemoving) && <span data-testid={isRemoving ? 'task-remove-progress' : undefined} role={isRemoving ? 'status' : undefined} aria-label={isRemoving ? textForLang(lang, 'Removing task', '正在删除任务', '正在刪除任務') : textForLang(lang, pureCoding ? 'Restoring pure coding environment' : 'Restoring task', pureCoding ? '正在恢复纯编程环境' : '正在恢复任务', pureCoding ? '正在恢復純程式環境' : '正在恢復任務')} style={{ display: 'block', marginTop: '6px', height: '3px', overflow: 'hidden', borderRadius: '999px', background: 'color-mix(in srgb, var(--theme-primary) 18%, transparent)' }}><span className="sidebar-task-progress__bar" style={{ display: 'block', width: '42%', height: '100%', borderRadius: 'inherit', background: 'var(--theme-primary)', animation: 'sidebar-task-restore-progress 0.9s ease-in-out infinite alternate' }} /></span>}
+                        {(openingTaskPath === proj.project_path || isRemoving) && <span data-testid={isRemoving ? 'task-remove-progress' : undefined} role={isRemoving ? 'status' : undefined} aria-label={isRemoving ? textForLang(lang, 'Removing task', '正在删除任务', '正在刪除任務') : textForLang(lang, pureCoding ? 'Restoring pure coding environment' : 'Restoring task', pureCoding ? '正在恢复纯编程环境' : '正在恢复任务', pureCoding ? '正在恢復純程式環境' : '正在恢復任務')} className="sidebar-task-progress__track" style={{ marginTop: '6px' }}><span className="sidebar-task-progress__bar" /></span>}
                         {removalError && <span data-testid="task-remove-error" role="alert" style={{ display: 'block', marginTop: '4px', color: 'var(--theme-danger, #b91c1c)', fontSize: '0.62rem', lineHeight: 1.3, textAlign: 'left' }}>{removalError}</span>}
                     </span>
                     <button type="button" aria-label={textForLang(lang, 'Scene details', '\u4efb\u52a1\u8bc1\u636e\u8be6\u60c5', '\u4efb\u52d9\u8b49\u64da\u8a73\u60c5')} title={textForLang(lang, 'Scene details', '\u4efb\u52a1\u8bc1\u636e\u8be6\u60c5', '\u4efb\u52d9\u8b49\u64da\u8a73\u60c5')} onClick={e => { e.stopPropagation(); if (!isRemoving) void openSceneDetail(proj.project_path, proj.name); }} disabled={isRemoving || (sceneDetailLoading && sceneDetailPath === proj.project_path)} style={{ border: 'none', background: 'transparent', color: 'var(--theme-primary)', opacity: isRemoving || (sceneDetailLoading && sceneDetailPath === proj.project_path) ? 0.4 : 0.78, cursor: isRemoving ? 'progress' : 'pointer', width: '20px', height: '20px', padding: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><ProjectSearchIcon name="info" size={13} /></button>

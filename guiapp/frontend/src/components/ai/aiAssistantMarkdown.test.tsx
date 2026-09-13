@@ -1089,6 +1089,32 @@ describe("renderContentWithCodeBlocks", () => {
         });
     });
 
+    it("dispatches an in-app preview event from the task-result Preview button", () => {
+        const path = "F:\\个人介绍\\布偶小猫5岁生日.pptx";
+        const seen: string[] = [];
+        const onPreview = (event: Event) => {
+            seen.push(String((event as CustomEvent<{ path?: string }>).detail?.path || ""));
+        };
+        window.addEventListener("maclaw:preview-task-result", onPreview);
+        try {
+            render(<div>{renderMessage({
+                id: "saved-local-pptx-preview",
+                role: "assistant",
+                content: "PPT已生成",
+                localFilePath: path,
+                timestamp: Date.now(),
+            }, vi.fn(), lightTheme, false, "文件已保存", "zh", false)}</div>);
+
+            const previewBtn = screen.getByTestId("task-result-preview-btn");
+            expect(previewBtn.textContent).toBe("预览");
+            fireEvent.click(previewBtn);
+            expect(seen).toEqual([path]);
+            expect(openFileOrShowInFolderMock).not.toHaveBeenCalled();
+        } finally {
+            window.removeEventListener("maclaw:preview-task-result", onPreview);
+        }
+    });
+
     it("uploads a saved task-result file to the mobile library from the card icon", async () => {
         importMobileDocumentFromPathMock.mockClear();
         const path = "C:\\Users\\me\\report.pptx";
@@ -1637,6 +1663,41 @@ describe("renderMessage assistant display guard", () => {
         expect(screen.queryByText("#131")).toBeNull();
     });
 
+    it("marks a live coding thought with sheen and the current activity label", () => {
+        render(<div>{renderCodingAgentThinkingTimelineItem({
+            id: "thought-live-edit",
+            sequence: 3,
+            kind: "thinking",
+            content: "Need to patch the scanner CLI and then verify the full implementation path.",
+            timestamp: 1,
+        }, lightTheme, "zh", 2, "正在编辑文件")}</div>);
+        const panel = screen.getByTestId("assistant-reasoning-panel");
+        expect(panel.getAttribute("data-live")).toBe("true");
+        const label = screen.getByTestId("assistant-reasoning-label");
+        expect(label.textContent).toBe("正在编辑文件");
+        expect(label.className).toContain("assistant-reasoning-live-label");
+        expect(screen.getByText("#2")).toBeTruthy();
+        expect(screen.queryByText("思考过程")).toBeNull();
+        const summary = panel.querySelector(".assistant-reasoning-summary");
+        expect(summary?.className).toContain("assistant-reasoning-summary--live");
+        expect(summary?.textContent || "").not.toContain("Need to patch the scanner CLI");
+    });
+
+    it("keeps a live coding thought header when the body sanitizes to empty", () => {
+        render(<div>{renderCodingAgentThinkingTimelineItem({
+            id: "thought-live-empty",
+            sequence: 1,
+            kind: "thinking",
+            content: "   ",
+            timestamp: 1,
+        }, lightTheme, "zh", 1, "正在思考")}</div>);
+        expect(screen.getByTestId("assistant-reasoning-panel").getAttribute("data-live")).toBe("true");
+        expect(screen.getByTestId("assistant-reasoning-label").textContent).toBe("正在思考");
+        expect(screen.getByTestId("assistant-reasoning-label").className).toContain("assistant-reasoning-live-label");
+        expect(screen.getByText("#1")).toBeTruthy();
+        expect(screen.queryByTestId("assistant-reasoning-body")).toBeNull();
+    });
+
     it("renders legacy guide receipts as compact status instead of a system card", () => {
         render(<div>{renderMessage({
             id: "guide-receipt",
@@ -2052,8 +2113,9 @@ describe("renderMessage assistant display guard", () => {
         };
         const { rerender, unmount } = render(<div>{renderMessage(message, vi.fn(), lightTheme, true, "Saved file", "en", true)}</div>);
 
-        const streamingDetails = screen.getByText("Thinking process...").closest("details");
+        const streamingDetails = screen.getByText("Thinking").closest("details");
         expect(streamingDetails?.open).toBe(true);
+        expect(streamingDetails?.getAttribute("data-live")).toBe("true");
         expect(screen.getByText("Inspecting the request.")).toBeTruthy();
         const reasoningBody = screen.getByTestId("assistant-reasoning-body");
         expect(reasoningBody.hasAttribute("data-nested-scroll")).toBe(true);
@@ -2109,7 +2171,7 @@ describe("renderMessage assistant display guard", () => {
         };
         const { rerender } = render(<div>{renderMessage(message, vi.fn(), lightTheme, true, "Saved file", "en", true)}</div>);
 
-        expect(screen.getByText("Thinking process...").closest("details")?.open).toBe(true);
+        expect(screen.getByText("Thinking").closest("details")?.open).toBe(true);
 
         rerender(<div>{renderMessage(message, vi.fn(), lightTheme, true, "Saved file", "en", false)}</div>);
         expect(screen.getByText("Thinking process...").closest("details")?.open).toBe(false);
@@ -2127,7 +2189,7 @@ describe("renderMessage assistant display guard", () => {
             <div>{renderMessage(next, vi.fn(), lightTheme, true, "Saved file", "en", streaming)}</div>;
         const { rerender } = render(renderChat());
 
-        const summary = screen.getByText("Thinking process...");
+        const summary = screen.getByText("Thinking");
         const details = summary.closest("details");
         expect(details?.open).toBe(true);
 
@@ -2135,7 +2197,7 @@ describe("renderMessage assistant display guard", () => {
         expect(details?.open).toBe(false);
 
         rerender(renderChat({ ...message, reasoning: "Checking the request.\nReviewing constraints." }));
-        expect(screen.getByText("Thinking process...").closest("details")?.open).toBe(false);
+        expect(screen.getByText("Thinking").closest("details")?.open).toBe(false);
 
         rerender(renderChat(message, false));
         const completedDetails = screen.getByText("Thinking process...").closest("details");
@@ -2160,13 +2222,13 @@ describe("renderMessage assistant display guard", () => {
             <div>{renderMessage(message, vi.fn(), lightTheme, true, "Saved file", "en", streaming)}</div>;
         const { rerender } = render(renderChat(true));
 
-        expect(screen.getByText("Thinking process...").closest("details")?.open).toBe(true);
+        expect(screen.getByText("Thinking").closest("details")?.open).toBe(true);
 
         rerender(renderChat(false));
         expect(screen.getByText("Thinking process...").closest("details")?.open).toBe(false);
 
         rerender(renderChat(true));
-        expect(screen.getByText("Thinking process...").closest("details")?.open).toBe(true);
+        expect(screen.getByText("Thinking").closest("details")?.open).toBe(true);
     });
 
     it("keeps coding-workbench reasoning collapsed while streaming and after completion", () => {
@@ -2181,9 +2243,9 @@ describe("renderMessage assistant display guard", () => {
             renderMessage(next, vi.fn(), lightTheme, true, "Saved file", "en", streaming, undefined, undefined, true);
         const { rerender, unmount } = render(<div>{renderCoding()}</div>);
 
-        expect(screen.getByText("Thinking process...").closest("details")?.open).toBe(false);
+        expect(screen.getByText("Thinking").closest("details")?.open).toBe(false);
         rerender(<div>{renderCoding({ ...message, reasoning: "I'll write a small C++ file.\nChecking compile." })}</div>);
-        expect(screen.getByText("Thinking process...").closest("details")?.open).toBe(false);
+        expect(screen.getByText("Thinking").closest("details")?.open).toBe(false);
         rerender(<div>{renderCoding(message, false)}</div>);
         expect(screen.getByText("Thinking process...").closest("details")?.open).toBe(false);
         unmount();
@@ -2429,6 +2491,90 @@ describe("renderMessage assistant display guard", () => {
         rerender(<div>{renderMessage({ ...message, reasoning: "Inspecting the request.\nChecking Ningbo weather." }, vi.fn(), lightTheme, true, "Saved file", "en", true)}</div>);
         expect(reasoningBody.scrollTop).toBe(0);
         unmount();
+    });
+
+    it("shows a live thinking header before reasoning tokens arrive", () => {
+        const message = {
+            id: "assistant-live-empty",
+            role: "assistant" as const,
+            content: "",
+            timestamp: Date.now(),
+        };
+        render(<div>{renderMessage(message, vi.fn(), lightTheme, true, "Saved file", "zh", false, undefined, undefined, false, undefined, "正在调用工具")}</div>);
+        expect(screen.getByTestId("assistant-reasoning-label").textContent).toBe("正在调用工具");
+        expect(screen.getByTestId("assistant-reasoning-label").className).toContain("assistant-reasoning-live-label");
+        expect(screen.queryByText("处理中…")).toBeNull();
+        expect(screen.queryByTestId("assistant-reasoning-body")).toBeNull();
+    });
+
+    it("shows a live action label with shimmer while a tool is running", () => {
+        const message = {
+            id: "assistant-live-write",
+            role: "assistant" as const,
+            content: "",
+            reasoning: "Need to persist the report.",
+            timestamp: Date.now(),
+        };
+        render(<div>{renderMessage(message, vi.fn(), lightTheme, true, "Saved file", "zh", false, undefined, undefined, false, undefined, "正在写入文件")}</div>);
+        const panel = screen.getByTestId("assistant-reasoning-panel");
+        expect(panel.getAttribute("data-live")).toBe("true");
+        expect(panel).toHaveProperty("open", false);
+        const label = screen.getByTestId("assistant-reasoning-label");
+        expect(label.textContent).toBe("正在写入文件");
+        expect(label.className).toContain("assistant-reasoning-live-label");
+        expect(label.className).not.toContain("assistant-reasoning-summary--live");
+        expect(screen.queryByText("思考过程...")).toBeNull();
+    });
+
+    it.each([
+        "正在思考",
+        "正在调用工具",
+        "正在搜索网络",
+        "正在提取网页",
+        "正在编辑文件",
+    ])("puts live sheen on activity title %s", (liveLabel) => {
+        const message = {
+            id: `assistant-live-${liveLabel}`,
+            role: "assistant" as const,
+            content: "",
+            timestamp: Date.now(),
+        };
+        render(<div>{renderMessage(message, vi.fn(), lightTheme, true, "Saved file", "zh", false, undefined, undefined, false, undefined, liveLabel)}</div>);
+        const panel = screen.getByTestId("assistant-reasoning-panel");
+        const label = screen.getByTestId("assistant-reasoning-label");
+        expect(panel.getAttribute("data-live")).toBe("true");
+        expect(label.textContent).toBe(liveLabel);
+        expect(label.className).toContain("assistant-reasoning-live-label");
+        expect((panel.querySelector(".assistant-reasoning-summary") as HTMLElement | null)?.style.opacity).toBe("1");
+        expect(label.style.getPropertyValue("--assistant-sheen-spot")).toBe("#b8c3d0");
+    });
+
+    it("uses a bright sheen spot on dark live titles", () => {
+        const message = {
+            id: "assistant-live-dark",
+            role: "assistant" as const,
+            content: "",
+            timestamp: Date.now(),
+        };
+        render(<div>{renderMessage(message, vi.fn(), { ...darkTheme, isDark: true }, true, "Saved file", "zh", false, undefined, undefined, false, undefined, "正在调用工具")}</div>);
+        expect(screen.getByTestId("assistant-reasoning-label").style.getPropertyValue("--assistant-sheen-spot")).toBe("#fff");
+    });
+
+    it("restores the static thinking-process label after the round ends", () => {
+        const message = {
+            id: "assistant-live-done",
+            role: "assistant" as const,
+            content: "Done.",
+            reasoning: "Need to persist the report.",
+            timestamp: Date.now(),
+        };
+        const { rerender } = render(<div>{renderMessage(message, vi.fn(), lightTheme, true, "Saved file", "zh", true, undefined, undefined, false, undefined, "正在思考")}</div>);
+        expect(screen.getByTestId("assistant-reasoning-label").textContent).toBe("正在思考");
+        rerender(<div>{renderMessage(message, vi.fn(), lightTheme, true, "Saved file", "zh", false)}</div>);
+        expect(screen.getByTestId("assistant-reasoning-label").textContent).toBe("思考过程...");
+        expect(screen.getByTestId("assistant-reasoning-panel").getAttribute("data-live")).toBe("false");
+        expect(screen.getByTestId("assistant-reasoning-label").className).not.toContain("assistant-reasoning-live-label");
+        expect((screen.getByTestId("assistant-reasoning-panel").querySelector(".assistant-reasoning-summary") as HTMLElement).style.opacity).toBe("0.94");
     });
 
     it("does not render an empty reasoning panel after stripping a Browser-only reasoning echo", () => {

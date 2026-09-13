@@ -3,6 +3,9 @@ import { useEffect, useRef } from "react";
 import type { ChatMessage } from "./useAIAssistant";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { AssistantPinnedNewsCards } from "./AssistantPinnedNewsCards";
+import { AssistantReasoningPanel } from "./AssistantReasoningPanel";
+import { t as translate } from "../../i18n";
+import { brandLineParts, formatBrandLine } from "../../utils/brandProductLine";
 
 /** Synthesize a phone-boot-style startup sound: majestic arpeggio with metallic touch. */
 function playStartupChime() {
@@ -102,15 +105,15 @@ interface AssistantConversationBodyProps {
     onOpenOnboarding?: () => void;
     onboardingIncomplete?: boolean;
     pinnedNews: ChatMessage[];
-    processingText: string;
     ready: boolean;
     renderedOtherMessages: ReactNode;
     renderedProgressMessages: ReactNode;
-    showProcessingState: boolean;
-    showThinkingState: boolean;
+    /** Live activity title shown at the panel position when no assistant bubble owns it. */
+    liveActivityLabel?: string;
     busyAccessory?: ReactNode;
     theme: Theme;
-    thinkingText: string;
+    brandId?: string | null;
+    brandDisplayNameCN?: string | null;
 }
 
 export function AssistantConversationBody({
@@ -121,16 +124,22 @@ export function AssistantConversationBody({
     onOpenOnboarding,
     onboardingIncomplete,
     pinnedNews,
-    processingText,
     ready,
     renderedOtherMessages,
     renderedProgressMessages,
-    showProcessingState,
-    showThinkingState,
+    liveActivityLabel,
     busyAccessory,
     theme: t,
-    thinkingText,
+    brandId,
+    brandDisplayNameCN,
 }: AssistantConversationBodyProps) {
+    const brandParts = brandLineParts({
+        brandId,
+        displayNameCN: brandDisplayNameCN,
+        lang,
+        localizedDefault: translate("aboutProductName", lang),
+    });
+    const brandLabel = formatBrandLine(brandParts);
     // Play startup chime once when brand animation is shown
     const chimePlayedRef = useRef(false);
     useEffect(() => {
@@ -160,18 +169,20 @@ export function AssistantConversationBody({
                 </div>
             ) : !ready ? (
                 <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", gap: "18px" }}>
-                    <div style={{ display: "flex", alignItems: "baseline", gap: "7px", animation: "maclaw-brand-breathe 2.4s ease-in-out infinite" }}>
-                        <span style={{ fontSize: "28px", fontWeight: 700, color: t.text, letterSpacing: "0" }}>码卡龙</span>
-                        <span className="brand-version-mark" style={{ fontSize: '30px' }}>7</span>
-                        <span style={{ fontSize: "21px", fontWeight: 650, color: '#7a2330', letterSpacing: '0.04em' }}>万变</span>
+                    <div data-testid="assistant-brand-splash" aria-label={brandLabel} style={{ display: "flex", alignItems: "baseline", gap: "7px", animation: "maclaw-brand-breathe 2.4s ease-in-out infinite" }}>
+                        {brandParts.name ? <span style={{ fontSize: "28px", fontWeight: 700, color: t.text, letterSpacing: "0" }}>{brandParts.name}</span> : null}
+                        <span className="brand-version-mark" style={{ fontSize: '30px' }}>{brandParts.version}</span>
+                        {brandParts.generation ? <span style={{ fontSize: "21px", fontWeight: 650, color: '#7a2330', letterSpacing: '0.04em' }}>{brandParts.generation}</span> : null}
                     </div>
                     <div style={{ color: t.textMuted, fontSize: "11px", opacity: 0.7 }}>{initLabel}</div>
                 </div>
             ) : messages.length === 0 ? (
                 emptyContent !== undefined ? emptyContent : (
-                    <span style={{ color: t.emptyHint }}>
-                        {lang === "en" ? "Ask me anything..." : "\u6709\u4ec0\u4e48\u53ef\u4ee5\u5e2e\u4f60\u7684\uff1f"}
-                    </span>
+                    liveActivityLabel ? null : (
+                        <span style={{ color: t.emptyHint }}>
+                            {lang === "en" ? "Ask me anything..." : "\u6709\u4ec0\u4e48\u53ef\u4ee5\u5e2e\u4f60\u7684\uff1f"}
+                        </span>
+                    )
                 )
             ) : (
                 <>
@@ -181,8 +192,18 @@ export function AssistantConversationBody({
                 </>
             )}
             {ready && !onboardingIncomplete ? busyAccessory : null}
-            {showThinkingState && <div role="status" aria-live="polite" style={{ color: t.textMuted, fontSize: "11px", padding: "4px 0", fontStyle: "italic" }}>{thinkingText}</div>}
-            {showProcessingState && <div role="status" aria-live="polite" style={{ color: t.textMuted, fontSize: "11px", padding: "4px 0", fontStyle: "italic" }}>{processingText}</div>}
+            {liveActivityLabel ? (
+                <AssistantReasoningPanel
+                    defaultOpen={false}
+                    label={liveActivityLabel}
+                    lang={lang}
+                    theme={t}
+                    contentKey={liveActivityLabel}
+                    live
+                >
+                    {null}
+                </AssistantReasoningPanel>
+            ) : null}
         </div>
     );
 }

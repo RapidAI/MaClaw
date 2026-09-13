@@ -188,6 +188,72 @@ func TestRecoverableSubAgentVerificationCommandRemovesDisplayWrapper(t *testing.
 	}
 }
 
+// Live local T2 (2026-09-13, ~/.maclaw): cmake --build and
+// `.\build\snake.exe --selftest` both succeeded, but the model printed the
+// PowerShell exit code with `; "exit=$LASTEXITCODE"`. Quality treated that as
+// failure-suppressing shell syntax and failed the task with "verification not run".
+func TestPowerShellLastExitCodeDisplayWrapperIsRecoverable(t *testing.T) {
+	cases := []struct {
+		wrapped, want string
+	}{
+		{`.\build\snake.exe --selftest; "exit=$LASTEXITCODE"`, `.\build\snake.exe --selftest`},
+		{`.\build\snake.exe --tonecheck; "tonecheck exit=$LASTEXITCODE"`, `.\build\snake.exe --tonecheck`},
+		{`.\build\snake.exe --selftest; "selftest exit=$LASTEXITCODE"`, `.\build\snake.exe --selftest`},
+		{`.\build\snake.exe --selftest; Write-Output "exit=$LASTEXITCODE"`, `.\build\snake.exe --selftest`},
+		{`cmake --build build; echo "exit=$LASTEXITCODE"`, `cmake --build build`},
+		{`cmake --build build; Write-Host "exit=$LASTEXITCODE"`, `cmake --build build`},
+	}
+	for _, tc := range cases {
+		if !isUnsafeSubAgentVerificationCommand(tc.wrapped) {
+			t.Fatalf("fixture must be unsafe before recovery: %q", tc.wrapped)
+		}
+		if got := recoverSubAgentVerificationCommand(tc.wrapped); got != tc.want {
+			t.Fatalf("recovered verifier for %q = %q, want %q", tc.wrapped, got, tc.want)
+		}
+		if got := normalizeSubAgentVerificationCommandForExecution(tc.wrapped); got != tc.want {
+			t.Fatalf("execution-time strip for %q = %q, want %q", tc.wrapped, got, tc.want)
+		}
+		if !isSubAgentVerificationCommand(tc.want) {
+			t.Fatalf("stripped command must count as verification: %q", tc.want)
+		}
+	}
+
+	commands := []CodingSubAgentCommandResult{
+		{Command: `cmake --build build`, Succeeded: true, Summary: "[2/2] Linking CXX executable snake.exe", seq: 19, WorkingDir: `F:\test-prog`},
+		{Command: `.\build\snake.exe --tonecheck; "tonecheck exit=$LASTEXITCODE"`, Succeeded: true, Summary: "tonecheck exit=0\r\ntonecheck: Beep() -> TRUE", seq: 20, WorkingDir: `F:\test-prog`},
+		{Command: `.\build\snake.exe --selftest; "selftest exit=$LASTEXITCODE"`, Succeeded: true, Summary: "selftest exit=0\r\nselftest: logic checks passed", seq: 21, WorkingDir: `F:\test-prog`},
+	}
+	got := recoverableSubAgentVerifications(commands, 18)
+	if len(got) != 2 {
+		t.Fatalf("unique recovered verifiers = %#v, want 2", got)
+	}
+	if got[0].command != `.\build\snake.exe --selftest` || got[1].command != `.\build\snake.exe --tonecheck` {
+		t.Fatalf("recovered verifiers = %#v", got)
+	}
+
+	// After the host replays each recovered verifier, the wrappers are no longer
+	// allowed to poison a successful cmake --build + acceptance run.
+	commands = append(commands,
+		CodingSubAgentCommandResult{Command: `.\build\snake.exe --selftest`, Succeeded: true, Summary: "selftest: logic checks passed", seq: 22, WorkingDir: `F:\test-prog`},
+		CodingSubAgentCommandResult{Command: `.\build\snake.exe --tonecheck`, Succeeded: true, Summary: "tonecheck: Beep() -> TRUE", seq: 23, WorkingDir: `F:\test-prog`},
+	)
+	status, summary := summarizeSubAgentVerification([]string{`F:\test-prog\snake.cpp`}, commands, 18)
+	if status != codingSubAgentQualityPassed {
+		t.Fatalf("live T2 cmake+selftest+tonecheck should pass after recovered reruns, got (%q, %q)", status, summary)
+	}
+
+	for _, command := range []string{
+		`.\build\snake.exe --selftest; foo $LASTEXITCODE`,
+		`.\build\snake.exe --selftest; echo done`,
+		`.\build\snake.exe --selftest; echo "exit=success"`,
+		`.\build\snake.exe --selftest; exit $LASTEXITCODE`,
+	} {
+		if got := recoverSubAgentVerificationCommand(command); got != "" {
+			t.Fatalf("non-display tail must not be recovered: %q -> %q", command, got)
+		}
+	}
+}
+
 func TestRewriteWindowsCompileThenRunSemicolon(t *testing.T) {
 	got := rewriteWindowsCompileThenRunSemicolon(`cl /utf-8 /EHsc /Fe:hello.exe hello.cpp ; .\hello.exe`)
 	if !strings.Contains(got, "&&") || strings.Contains(got, ";") {

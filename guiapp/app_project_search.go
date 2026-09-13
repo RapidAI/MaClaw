@@ -3358,6 +3358,32 @@ func (a *App) recentTaskWorkingDir(projectPath string) string {
 	return recentTaskWorkingDirFromTags(rec.Tags)
 }
 
+// codingTaskTaggedWorkRoot is the local coding workspace stored on the task
+// record. Empty until a working_dir tag exists, and never a task sandbox.
+func (a *App) codingTaskTaggedWorkRoot(projectPath string) string {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if a == nil || projectPath == "" || !looksLikeManagedTaskIdentity(projectPath) {
+		return ""
+	}
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return ""
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return ""
+	}
+	rec := pi.Get(projectPath)
+	if rec == nil || codingModeForProjectRecord(*rec) != taskCodingDevTag {
+		return ""
+	}
+	wd := normalizeProjectSessionPath(recentTaskWorkingDirFromTags(rec.Tags))
+	if wd == "" || isLocalCodingIdentityOrSandbox(projectPath, wd) {
+		return ""
+	}
+	return wd
+}
+
 // codingWorkbenchLocalExecDir is the live work root for a local coding tab.
 //
 // Path model:
@@ -5893,9 +5919,9 @@ func (a *App) BoundWorkingDirForOwner(ownerID string) string {
 
 // EffectiveWorkingDirForOwner returns the directory tools, prompts, workflows
 // and the ProjectDirBar share for one runtime conversation owner. A configured
-// tab override wins; a project-session owner without an override stays in the
-// project named by its owner id; every other unconfigured owner follows the
-// main tab.
+// tab override wins; a local coding task without an override uses its
+// working_dir tag; a project-session owner otherwise stays in the project
+// named by its owner id; every other unconfigured owner follows the main tab.
 func (a *App) EffectiveWorkingDirForOwner(ownerID string) string {
 	projectPath := projectPathFromSessionOwnerID(ownerID)
 	cloudDir := ""
@@ -5913,6 +5939,9 @@ func (a *App) EffectiveWorkingDirForOwner(ownerID string) string {
 	}
 	if projectPath != "" && !looksLikeManagedTaskIdentity(projectPath) {
 		return projectPath
+	}
+	if wd := a.codingTaskTaggedWorkRoot(projectPath); wd != "" {
+		return wd
 	}
 	return normalizeProjectSessionPath(corelib.EffectiveWorkspaceDir())
 }

@@ -1044,7 +1044,6 @@ func buildResolveResult(email string, resultsByHub map[string]resolvedCandidate,
 		Email:        email,
 		Mode:         mode,
 		DefaultHubID: views[0].HubID,
-		DefaultPWA:   views[0].PWAURL,
 		Hubs:         views,
 	}
 }

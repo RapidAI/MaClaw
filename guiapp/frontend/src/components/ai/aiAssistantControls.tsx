@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { localizeText } from "./aiAssistantI18n";
 import { baseWindowControlBtnStyle, type Theme } from "./aiAssistantPanelTheme";
 
 export const miniActionButtonStyle: React.CSSProperties = {
@@ -74,4 +75,40 @@ export function getWindowControlButtonStyle(t: Theme, variant: "hide" | "fullscr
         boxShadow: active ? `inset 0 0 0 1px ${t.fieldBorder}` : "none",
         ['--ai-window-control-hover-bg' as any]: hoverBg,
     };
+}
+
+export function windowHideLabel(lang: string) {
+    return localizeText(lang, "Hide window", "隐藏窗口", "隱藏窗口");
+}
+
+export function windowMaximizeLabel(lang: string, maximized: boolean) {
+    return maximized
+        ? localizeText(lang, "Restore window", "还原窗口", "還原窗口")
+        : localizeText(lang, "Maximize window", "最大化窗口", "最大化窗口");
+}
+
+export function stopWindowControlEvent(event: { preventDefault(): void; stopPropagation(): void }) {
+    event.preventDefault();
+    event.stopPropagation();
+}
+
+/** Ignore the second click of a double-click so maximize/restore does not bounce. */
+export function toggleWindowOnce(
+    event: { preventDefault(): void; stopPropagation(): void; detail: number },
+    toggle?: () => void,
+) {
+    stopWindowControlEvent(event);
+    if (event.detail > 1) return;
+    toggle?.();
+}
+
+/** Pointer hide acts on mousedown so Wails drag cannot swallow it; keyboard hide is a detail-0 click. */
+export function hideWindowFromControlEvent(
+    event: { type: string; preventDefault(): void; stopPropagation(): void; detail?: number; button?: number },
+    hide: () => void,
+) {
+    stopWindowControlEvent(event);
+    if (event.type === "mousedown" && (event.button ?? 0) !== 0) return;
+    if (event.type === "click" && (event.detail ?? 0) > 0) return;
+    hide();
 }

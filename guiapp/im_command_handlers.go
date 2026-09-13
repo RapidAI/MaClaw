@@ -200,6 +200,13 @@ func (h *IMMessageHandler) resetIMSessionForUser(userID, responseLang string) *I
 	// clearing state so a side-runner (/btw or /loop) cannot outlive the freshly
 	// reset conversation.
 	_ = h.cancelCurrentTaskForUser(userID, responseLang)
+	if h.app != nil {
+		// Same task-boundary fence as ClearAIAssistantHistoryForSession: a
+		// coding handle must not survive /clear, and durable tab transcripts
+		// must not restore the discarded conversation after a restart.
+		h.app.revokeDesktopCodingTaskRelation(userID)
+		h.app.clearPersistedProjectConversationsForOwner(userID)
+	}
 	if h.memory != nil {
 		h.memory.Clear(userID)
 	}

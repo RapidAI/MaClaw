@@ -370,10 +370,6 @@ identity:
   enrollment_mode: open
   allow_self_enroll: true
 
-pwa:
-  static_dir: ./web/dist
-  route_prefix: /app
-
 center:
   enabled: true
   base_url: $(normalize_url "${hub_primary[$i]}")
@@ -424,31 +420,9 @@ stage_assets() {
   rsync -a --exclude bin --exclude package --exclude data --exclude .gocache --exclude .gomodcache --exclude cmd --exclude internal --exclude '*.exe' --exclude '*.exe~' "$ROOT_DIR/hub/" "$stage/hub/"
   rsync -a --exclude node_modules --exclude dist "$ROOT_DIR/openclaw-bridge/" "$stage/openclaw-bridge/" 2>/dev/null || true
 
-  if [[ ! -d "$stage/hub/web/dist" ]]; then
-    echo "  - hub/web/dist missing; creating minimal PWA placeholder in staging."
-    mkdir -p "$stage/hub/web/dist"
-    cat >"$stage/hub/web/dist/index.html" <<'EOF'
-<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>MaClaw Hub</title>
-</head>
-<body>
-  <main>
-    <h1>MaClaw Hub</h1>
-    <p>Hub PWA assets are not bundled in this checkout.</p>
-  </main>
-</body>
-</html>
-EOF
-  fi
-
   [[ -d "$stage/hubcenter/web/admin" ]] || die "Missing deploy directory: hubcenter admin web assets"
   [[ -f "$stage/hubcenter/web/admin/assets/js/admin-core.js" ]] || die "Missing deploy payload: hubcenter admin core script"
   [[ -d "$stage/hub/web/admin" ]] || die "Missing deploy directory: hub admin web assets"
-  [[ -d "$stage/hub/web/dist" ]] || die "Missing deploy directory: hub pwa web dist"
   [[ -d "$stage/hub/web/card_store" ]] || die "Missing deploy directory: hub card store web assets"
   [[ -f "$stage/hub/web/card_store/index.html" ]] || die "Missing deploy payload: hub card store index"
   [[ -f "$stage/hub/web/card_store/professional.css" ]] || die "Missing deploy payload: hub card store stylesheet"

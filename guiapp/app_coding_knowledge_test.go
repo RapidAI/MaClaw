@@ -112,7 +112,7 @@ func TestCodingKnowledgeWailsBindingsCRUD(t *testing.T) {
 		t.Fatalf("status after confirm = %q, want active", got.Status)
 	}
 
-	found, err := app.CodingKnowledgeSearch("timeout", 10)
+	found, err := app.CodingKnowledgeSearch("timeout", 10, knowledge.CodingListFilter{})
 	if err != nil {
 		t.Fatalf("CodingKnowledgeSearch: %v", err)
 	}

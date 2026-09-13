@@ -94,8 +94,6 @@ func NewRouter(
 	hubCfg *config.Config,
 	configPath string,
 	ensureTLSCert func(certFile, keyFile string) error,
-	staticDir string,
-	routePrefix string,
 	bridgeDir string,
 	tenantIMRuntimeReloader TenantIMRuntimeReloader,
 	knowledgeShares store.KnowledgeShareRepository,
@@ -1290,7 +1288,6 @@ func NewRouter(
 		}
 	}
 
-	registerPWAStaticRoutes(mux, staticDir, routePrefix)
 	registerStaticRoutes(mux, "./web/knowledge_shares", "/hub/knowledge/shares/mine")
 	registerAdminStaticRoutes(mux, "./web/admin", "/admin")
 	registerBindStaticRoutes(mux, "./web/bind", "/bind")

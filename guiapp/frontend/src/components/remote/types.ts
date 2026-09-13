@@ -217,7 +217,6 @@ export type RemoteSettingsConfig = corelib.AppConfig | null;
  * Canonical set of session statuses that indicate the session is no longer
  * running.  This MUST be kept in sync with:
  *   - hub/internal/session/service.go  → terminalStatuses
- *   - hub/web/dist/_pwa_syntax_check.js → sessionClosed array
  */
 export const TERMINAL_SESSION_STATUSES: ReadonlySet<string> = new Set([
     "stopped",

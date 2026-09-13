@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -269,7 +270,34 @@ func serviceRemoteSSHExecReadOnly(mgr *remote.SSHSessionManager, sessionID, comm
 	return output, nil
 }
 
-func serviceRemoteSSHExecBound(resources *coreAgentSSHResources, binding remoteCodingRuntimeBinding, command string, waitSeconds int) (string, error) {
+func serviceEnsureRemoteGitBaseline(ctx context.Context, resources *coreAgentSSHResources, binding remoteCodingRuntimeBinding) error {
+	if ctx != nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if resources == nil || resources.mgr == nil || strings.TrimSpace(binding.SessionID) == "" || strings.TrimSpace(binding.Target.WorkDir) == "" {
+		return fmt.Errorf("remote git baseline binding is incomplete")
+	}
+	request, err := codingruntime.NewRemoteGitBaselineRequest(binding.Target.WorkDir)
+	if err != nil {
+		return err
+	}
+	output, execErr := serviceRemoteSSHExecBound(ctx, resources, binding, request.Command, 30)
+	if resErr := request.Result(output); resErr == nil {
+		return nil
+	}
+	if execErr != nil {
+		return execErr
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return request.Result(output)
+}
+
+func serviceRemoteSSHExecBound(ctx context.Context, resources *coreAgentSSHResources, binding remoteCodingRuntimeBinding, command string, waitSeconds int) (string, error) {
+	if ctx != nil && ctx.Err() != nil {
+		return "", ctx.Err()
+	}
 	if resources == nil || resources.mgr == nil {
 		return "", fmt.Errorf("remote coding SSH session manager is unavailable")
 	}
@@ -287,10 +315,13 @@ func serviceRemoteSSHExecBound(resources *coreAgentSSHResources, binding remoteC
 	if waitSeconds > 600 {
 		waitSeconds = 600
 	}
-	lines, status := resources.mgr.WaitForOutput(binding.SessionID, before, time.Duration(waitSeconds)*time.Second)
+	lines, status := resources.mgr.WaitForOutputContext(ctx, binding.SessionID, before, time.Duration(waitSeconds)*time.Second)
 	output := strings.Join(lines, "\n")
 	if len(output) > 8000 {
 		output = output[:4000] + "\n... (truncated) ...\n" + output[len(output)-4000:]
+	}
+	if ctx != nil && ctx.Err() != nil && strings.TrimSpace(output) == "" {
+		return "", ctx.Err()
 	}
 	return fmt.Sprintf("[%s] status: %s\n$ %s\n%s", binding.SessionID, status, command, output), nil
 }
@@ -342,6 +373,11 @@ func (e *CoreAgentExecutor) executeRemoteCodingRuntime(ctx context.Context, req 
 		}
 		return codingruntime.ExecutionResult{Status: codingruntime.TaskCompleted, SideEffectState: codingruntime.SideEffectObserved, Evidence: []codingruntime.Evidence{{Type: "remote_service_agent_completion", Digest: serviceCodingRuntimeDigest(out)}}}
 	})
+	if !policy.ReadOnly && policy.FinalWorkspaceGateRequired {
+		if err := serviceEnsureRemoteGitBaseline(ctx, resources, binding); err != nil {
+			log.Printf("[agentservice] remote git baseline init failed for %s: %v", target.WorkDir, err)
+		}
+	}
 	runner := codingruntime.Runner{Store: store, LeaseOwner: serviceCodingRuntimeOwner(req), LeaseDuration: 15 * time.Minute, WorkspaceProber: serviceRemoteReadOnlyWorkspaceProber(resources, binding)}
 	task, attempt, runErr := runner.Run(ctx, codingruntime.Task{TaskID: taskID, WorkflowID: strings.TrimSpace(req.Message.Metadata[metaCodingRuntimeWorkflowID]), PhaseID: strings.TrimSpace(req.Message.Metadata[metaCodingRuntimePhaseID]), OwnerID: serviceCodingRuntimeOwner(req), ProjectRef: target.WorkDir, Mode: "remote", RequestedWork: strings.TrimSpace(req.Message.Content), PolicyDigest: digest}, policy, executor)
 	if runErr != nil {

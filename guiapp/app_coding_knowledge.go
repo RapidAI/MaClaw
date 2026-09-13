@@ -256,7 +256,7 @@ func (a *App) CodingKnowledgeSave(exp knowledge.CodingExperience) (knowledge.Cod
 }
 
 // CodingKnowledgeSearch searches experiences (for the search box in the panel).
-func (a *App) CodingKnowledgeSearch(query string, limit int) ([]knowledge.CodingExperience, error) {
+func (a *App) CodingKnowledgeSearch(query string, limit int, filter knowledge.CodingListFilter) ([]knowledge.CodingExperience, error) {
 	store := a.ensureCodingKnowledgeStore()
 	if store == nil {
 		return nil, fmt.Errorf("coding knowledge store not available")
@@ -267,9 +267,11 @@ func (a *App) CodingKnowledgeSearch(query string, limit int) ([]knowledge.Coding
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	return store.SearchExperiences(ctx, knowledge.CodingSearchOptions{
-		Query:  query,
-		Limit:  limit,
-		Status: []string{knowledge.CodingStatusCandidate, knowledge.CodingStatusActive, knowledge.CodingStatusVerified, knowledge.CodingStatusDeprecated},
+		Query:    query,
+		Limit:    limit,
+		Scope:    filter.Scope,
+		Language: filter.Language,
+		Status:   []string{knowledge.CodingStatusCandidate, knowledge.CodingStatusActive, knowledge.CodingStatusVerified, knowledge.CodingStatusDeprecated},
 	})
 }
 

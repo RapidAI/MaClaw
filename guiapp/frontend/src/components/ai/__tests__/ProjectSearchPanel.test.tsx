@@ -4,6 +4,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProjectSearchPanel } from "../ProjectSearchPanel";
 import { lightTheme } from "../aiAssistantPanelTheme";
 import { DeleteTask, GetArchivedExperience, GetProjectScene, OpenFileOrShowInFolder, ResumeTask } from "../../../../wailsjs/go/main/App";
+import { consumePendingFileLibraryOpen, OPEN_FILE_LIBRARY_EVENT } from "../../../utils/fileLibraryNavigation";
+import { consumePendingKnowledgeSearch, KNOWLEDGE_SEARCH_EVENT } from "../../../utils/knowledgeSearchNavigation";
+import { OPEN_SETTINGS_EVENT } from "../../../utils/settingsNavigation";
+import { OPEN_EXPERT_CONVERSATION_EVENT } from "../../../utils/expertConversationNavigation";
 
 const { getArchivedExperienceMock, getProjectSceneMock, openFileOrShowInFolderMock, resumeTaskMock, renameTaskMock, pinTaskMock, deleteTaskMock, archiveProjectMock } = vi.hoisted(() => ({
     getArchivedExperienceMock: vi.fn(),
@@ -18,6 +22,9 @@ const { getArchivedExperienceMock, getProjectSceneMock, openFileOrShowInFolderMo
 
 vi.mock("../../../../wailsjs/go/main/App", () => ({
     SearchTasks: vi.fn().mockResolvedValue([]),
+    ListMobileLibraryItems: vi.fn().mockResolvedValue([]),
+    KnowledgeSearch: vi.fn().mockResolvedValue([]),
+    ListExperts: vi.fn().mockResolvedValue("[]"),
     GetArchivedExperience: getArchivedExperienceMock,
     GetProjectScene: getProjectSceneMock,
     OpenFileOrShowInFolder: openFileOrShowInFolderMock,
@@ -58,6 +65,8 @@ function renderPanel(search: any, props: Partial<React.ComponentProps<typeof Pro
 afterEach(() => {
     cleanup();
     vi.clearAllMocks();
+    consumePendingFileLibraryOpen();
+    consumePendingKnowledgeSearch();
 });
 
 describe("ProjectSearchPanel", () => {
@@ -182,7 +191,7 @@ describe("ProjectSearchPanel", () => {
             />,
         );
 
-        expect(screen.queryByPlaceholderText("Search tasks...")).toBeNull();
+        expect(screen.queryByTestId("project-search-input")).toBeNull();
         resolveScene({ project_path: "D:/p/hidden", name: "Should not render" });
         await Promise.resolve();
         expect(screen.queryByText("Should not render")).toBeNull();
@@ -320,5 +329,73 @@ describe("ProjectSearchPanel", () => {
         expect(search.close).toHaveBeenCalled();
         expect(onForkCurrentChat).toHaveBeenCalledWith("Research task");
         promptSpy.mockRestore();
+    });
+
+    it("opens a mobile library file from mixed search results", () => {
+        const search = makeSearch([{ id: "p1", name: "Active task", project_path: "D:/p/live", has_output: true }]);
+        search.query = "report";
+        search.fileResults = [{ id: "doc-1", title: "Quarterly report", preview: "Q3 summary", type: "document" }];
+        const seen: unknown[] = [];
+        const listener = (event: Event) => seen.push((event as CustomEvent).detail);
+        window.addEventListener(OPEN_FILE_LIBRARY_EVENT, listener);
+        try {
+            renderPanel(search);
+            expect(screen.getByTestId("search-files-section")).toBeTruthy();
+            fireEvent.click(screen.getByText("Quarterly report"));
+            expect(search.close).toHaveBeenCalled();
+            expect(seen).toEqual([expect.objectContaining({ documentId: "doc-1" })]);
+            expect((seen[0] as { query?: string }).query).toBeUndefined();
+        } finally {
+            window.removeEventListener(OPEN_FILE_LIBRARY_EVENT, listener);
+        }
+    });
+
+    it("opens knowledge search from mixed search results", () => {
+        const search = makeSearch([]);
+        search.query = "gateway";
+        search.knowledgeResults = [{ id: "n1", title: "Gateway topology", preview: "edge nodes", sourceId: "src-1", sourceTitle: "Network", resultType: "node" }];
+        const seen: Array<{ type: string; detail: unknown }> = [];
+        const listener = (event: Event) => seen.push({ type: event.type, detail: (event as CustomEvent).detail });
+        window.addEventListener(KNOWLEDGE_SEARCH_EVENT, listener);
+        window.addEventListener(OPEN_SETTINGS_EVENT, listener);
+        try {
+            renderPanel(search);
+            expect(screen.getByTestId("search-knowledge-section")).toBeTruthy();
+            fireEvent.click(screen.getByText("Gateway topology"));
+            expect(search.close).toHaveBeenCalled();
+            expect(seen).toEqual([
+                { type: KNOWLEDGE_SEARCH_EVENT, detail: expect.objectContaining({ query: "gateway" }) },
+                { type: OPEN_SETTINGS_EVENT, detail: { tab: "knowledge" } },
+            ]);
+        } finally {
+            window.removeEventListener(KNOWLEDGE_SEARCH_EVENT, listener);
+            window.removeEventListener(OPEN_SETTINGS_EVENT, listener);
+        }
+    });
+
+    it("opens an AI expert conversation from mixed search results", () => {
+        const search = makeSearch([]);
+        search.query = "paper";
+        search.expertResults = [{
+            id: "builtin-paper",
+            title: "Paper polish",
+            preview: "Rewrite academic drafts",
+            icon: "📝",
+            expert: { id: "builtin-paper", name: "Paper polish", description: "Rewrite academic drafts", icon: "📝" },
+        }];
+        const seen: unknown[] = [];
+        const listener = (event: Event) => seen.push((event as CustomEvent).detail);
+        window.addEventListener(OPEN_EXPERT_CONVERSATION_EVENT, listener);
+        try {
+            renderPanel(search);
+            expect(screen.getByTestId("search-experts-section")).toBeTruthy();
+            fireEvent.click(screen.getByText("Paper polish"));
+            expect(search.close).toHaveBeenCalled();
+            expect(seen).toEqual([
+                { expert: expect.objectContaining({ id: "builtin-paper", name: "Paper polish" }) },
+            ]);
+        } finally {
+            window.removeEventListener(OPEN_EXPERT_CONVERSATION_EVENT, listener);
+        }
     });
 });

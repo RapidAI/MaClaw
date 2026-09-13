@@ -140,6 +140,55 @@ func TestClearProjectHistoryAlsoClearsPersistedTabSnapshots(t *testing.T) {
 	}
 }
 
+func TestClearSlashCommandClearsPersistedTabSnapshots(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	saved := app.CreateRecentTask("Clear durable tab history via /clear")
+	if saved.ProjectPath == "" {
+		t.Fatal("CreateRecentTask returned an empty project path")
+	}
+	persist := app.ensureProjectTabSessionPersist()
+	if err := persist.SaveSession(&TabSessionData{
+		TabID:       "slash-clear-tab",
+		ProjectPath: saved.ProjectPath,
+		Conversation: []interface{}{
+			map[string]interface{}{"role": "user", "content": "history that /clear must drop"},
+			map[string]interface{}{"role": "assistant", "content": "old answer that /clear must drop"},
+		},
+	}); err != nil {
+		t.Fatalf("SaveSession: %v", err)
+	}
+
+	handler := &IMMessageHandler{app: app, memory: app.ensureConversationMemory()}
+	owner := projectSessionOwnerID(saved.ProjectPath)
+	handler.memory.Save(owner, []agent.ConversationEntry{
+		{Role: "user", Content: "history that /clear must drop"},
+		{Role: "assistant", Content: "old answer that /clear must drop"},
+	})
+	resp := handler.HandleIMMessage(IMUserMessage{
+		UserID:   owner,
+		Platform: "desktop",
+		Text:     "/clear",
+		Lang:     "zh-Hans",
+	})
+	if resp == nil {
+		t.Fatal("expected /clear response")
+	}
+	if !resp.ClearUI {
+		t.Fatalf("expected ClearUI for /clear, got %+v", resp)
+	}
+	if got := handler.memory.Load(owner); len(got) != 0 {
+		t.Fatalf("in-memory history after /clear = %+v, want empty", got)
+	}
+	if history := app.LoadProjectConversationHistory(saved.ProjectPath); len(history) != 0 {
+		t.Fatalf("history after /clear = %+v, want no restored turns", history)
+	}
+	if session, err := persist.LoadSession("slash-clear-tab"); err != nil {
+		t.Fatal(err)
+	} else if session == nil || len(session.Conversation) != 0 {
+		t.Fatalf("persisted session after /clear = %+v, want empty conversation", session)
+	}
+}
+
 func TestSaveProjectTabConversationEmptyDoesNotCreateUnknownSession(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 	app.SaveProjectTabConversation("unknown-tab", []interface{}{})

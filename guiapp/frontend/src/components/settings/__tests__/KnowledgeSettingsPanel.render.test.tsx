@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { KnowledgeSettingsPanel } from '../KnowledgeSettingsPanel';
 import {
@@ -880,5 +880,28 @@ describe('KnowledgeSettingsPanel component', () => {
         expect(KnowledgeGetImageAssetPaths).toHaveBeenCalledWith('architecture-doc_media-image-7');
         fireEvent.click(thumb.closest('button')!);
         await waitFor(() => expect(KnowledgeOpenImageAsset).toHaveBeenCalledWith('architecture-doc_media-image-7'));
+    });
+
+    it('applies a global header knowledge search onto the Search tab', async () => {
+        vi.mocked(KnowledgeSearch).mockResolvedValueOnce([{
+            result_type: 'node',
+            node_id: 'n1',
+            node_title: 'Gateway topology',
+            snippet: 'edge nodes',
+            source: { id: 'architecture-doc', title: 'Architecture document' },
+        }] as any);
+
+        render(<KnowledgeSettingsPanel lang="en" />);
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('maclaw:knowledge-search', { detail: { query: 'gateway topology', sourceId: 'architecture-doc' } }));
+        });
+
+        expect(await screen.findByPlaceholderText('Search knowledge base...')).toBeTruthy();
+        expect(screen.getByRole('tab', { name: 'Search' }).getAttribute('aria-selected')).toBe('true');
+        await waitFor(() => expect(KnowledgeSearch).toHaveBeenCalledWith(expect.objectContaining({
+            query: 'gateway topology',
+            source_id: 'architecture-doc',
+        })));
+        expect((screen.getByPlaceholderText('Search knowledge base...') as HTMLInputElement).value).toBe('gateway topology');
     });
 });

@@ -14,6 +14,12 @@ export const TAB_LABELS: Record<ScopeTab, [string, string, string]> = {
     project: ['Project', '\u9879\u76ee', '\u5c08\u6848'],
 };
 
+export function searchFilterFromScopeTab(tab: ScopeTab): { scope?: string; language?: string } {
+    if (tab === 'all') return {};
+    if (tab === 'universal' || tab === 'project') return { scope: tab };
+    return { scope: 'language', language: tab };
+}
+
 export function useDebouncedValue(value: string, delayMs: number): string {
     const [debounced, setDebounced] = useState(value);
     useEffect(() => {

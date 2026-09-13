@@ -248,13 +248,13 @@ describe('AboutPanel', () => {
         render(
             <AboutPanel
                 {...baseProps}
-                t={(key) => key === 'aboutProductName' ? '码卡龙 8 万变' : baseProps.t(key)}
+                t={(key) => key === 'aboutProductName' ? '码卡龙 8 企缘' : baseProps.t(key)}
             />,
         );
 
         const versionMark = screen.getByLabelText('8');
         expect(versionMark.classList.contains('brand-version-mark')).toBe(true);
-        expect(screen.getByRole('heading', { name: '码卡龙 8 万变' })).toBeTruthy();
+        expect(screen.getByRole('heading', { name: '码卡龙 8 企缘' })).toBeTruthy();
     });
 
     it('does not show a hardware-accel badge when instance backend is cpu-simd', async () => {
@@ -306,7 +306,7 @@ describe('AboutPanel', () => {
                     id: 'qianxin',
                     displayName: 'QAgent',
                     displayNameCN: '虎爪',
-                    slogan: 'Master your code, seize the machine.',
+                    slogan: 'AI Native 组织操作系统',
                     author: 'Dr. Daniel',
                     businessContact: 'Contact: QianXin',
                     websiteURL: 'https://www.qianxin.com',
@@ -318,7 +318,8 @@ describe('AboutPanel', () => {
 
         const versionMark = screen.getByLabelText('8');
         expect(versionMark.classList.contains('brand-version-mark')).toBe(true);
-        expect(screen.getByRole('heading', { name: '虎爪 8 万变' })).toBeTruthy();
+        expect(screen.getByRole('heading', { name: '虎爪 8 企缘' })).toBeTruthy();
+        expect(screen.getByText('AI Native 组织操作系统')).toBeTruthy();
     });
 
     it('renders the MetaStaff product name with the version 8 display treatment', () => {
@@ -329,7 +330,7 @@ describe('AboutPanel', () => {
                     id: 'metastaff',
                     displayName: 'MetaStaff',
                     displayNameCN: '智员',
-                    slogan: 'Master your code, seize the machine.',
+                    slogan: 'AI Native 组织操作系统',
                     author: 'Dr. Daniel',
                     businessContact: 'Contact: WeChat znsoft',
                     websiteURL: 'https://maclaw.top',
@@ -341,7 +342,52 @@ describe('AboutPanel', () => {
 
         const versionMark = screen.getByLabelText('8');
         expect(versionMark.classList.contains('brand-version-mark')).toBe(true);
-        expect(screen.getByRole('heading', { name: '智员 8 万变' })).toBeTruthy();
+        expect(screen.getByRole('heading', { name: '智员 8 企缘' })).toBeTruthy();
+        expect(screen.getByText('AI Native 组织操作系统')).toBeTruthy();
+    });
+
+    it('composes an unknown OEM product name from displayNameCN and the generation mark', () => {
+        render(
+            <AboutPanel
+                {...baseProps}
+                brandInfo={{
+                    id: 'future-oem',
+                    displayName: 'Future',
+                    displayNameCN: '新牌',
+                    slogan: 'AI Native 组织操作系统',
+                    author: 'Dr. Daniel',
+                    businessContact: 'Contact: WeChat znsoft',
+                    websiteURL: 'https://maclaw.top',
+                    githubURL: 'https://github.com/nicedoc/maclaw',
+                    iconPath: 'build/appicon.png',
+                }}
+            />,
+        );
+
+        expect(screen.getByRole('heading', { name: '新牌 8 企缘' })).toBeTruthy();
+        expect(screen.getByLabelText('8').classList.contains('brand-version-mark')).toBe(true);
+    });
+
+    it('uses the traditional generation mark for OEM names when the locale default is traditional', () => {
+        render(
+            <AboutPanel
+                {...baseProps}
+                t={(key) => key === 'aboutProductName' ? '碼卡龍 8 企緣' : baseProps.t(key)}
+                brandInfo={{
+                    id: 'qianxin',
+                    displayName: 'QAgent',
+                    displayNameCN: '虎爪',
+                    slogan: 'AI Native 组织操作系统',
+                    author: 'Dr. Daniel',
+                    businessContact: 'Contact: QianXin',
+                    websiteURL: 'https://www.qianxin.com',
+                    githubURL: '',
+                    iconPath: 'assets/qianxin.png',
+                }}
+            />,
+        );
+
+        expect(screen.getByRole('heading', { name: '虎爪 8 企緣' })).toBeTruthy();
     });
 
     it('renders current tenant and registered hub instance name', () => {

@@ -12249,6 +12249,103 @@ func TestCodingSubAgentFinalGitDiffRejectsUnrelatedUntrackedFiles(t *testing.T) 
 		t.Fatalf("unrelated untracked failure should explain missing task evidence, got %q", summary)
 	}
 }
+func TestSubAgentDiffPathsMatchRelativeAndAbsolute(t *testing.T) {
+	if !subAgentDiffPathsMatch("snake.cpp", "snake.cpp") {
+		t.Fatal("exact match")
+	}
+	if !subAgentDiffPathsMatch(`F:/test-prog/snake.cpp`, "snake.cpp") {
+		t.Fatal("absolute should match relative basename path")
+	}
+	if !subAgentDiffPathsMatch("./snake.cpp", "snake.cpp") {
+		t.Fatal("./ prefix should match")
+	}
+	if !subAgentDiffPathsMatch("src/main.go/", "src/main.go") {
+		t.Fatal("trailing slash should match")
+	}
+	if subAgentDiffPathsMatch("a/main.go", "b/main.go") {
+		t.Fatal("same basename in different directories must not match")
+	}
+	if subAgentDiffPathsMatch("scratch.txt", "main.go") {
+		t.Fatal("unrelated names")
+	}
+	if got := preferredSubAgentDiffPath("./snake.cpp", "snake.cpp"); got != "snake.cpp" {
+		t.Fatalf("preferred path = %q", got)
+	}
+	if got := preferredSubAgentDiffPath("./snake.cpp", "snake.cpp/"); got != "snake.cpp" {
+		t.Fatalf("dirty aliases should canonicalize, got %q", got)
+	}
+}
+
+func TestRememberFileLineDeltaWriteReplacesThenEditAccumulates(t *testing.T) {
+	cb := &codingSubAgentCallbacks{}
+	cb.rememberFileLineDelta("snake.cpp", 213, 0, true)
+	cb.rememberFileLineDelta("snake.cpp", 1, 0, false)
+	got := cb.getFileLineDeltas()
+	if len(got) != 1 || got[0].Insertions != 214 || got[0].Deletions != 0 {
+		t.Fatalf("edit should accumulate on write, got %#v", got)
+	}
+	cb.rememberFileLineDelta("snake.cpp", 40, 0, true)
+	got = cb.getFileLineDeltas()
+	if len(got) != 1 || got[0].Insertions != 40 {
+		t.Fatalf("later write should replace, got %#v", got)
+	}
+}
+
+func TestRememberFileLineDeltaKeepsUnrelatedSameBasenameSeparate(t *testing.T) {
+	cb := &codingSubAgentCallbacks{}
+	cb.rememberFileLineDelta("a/main.go", 3, 0, true)
+	cb.rememberFileLineDelta("b/main.go", 5, 0, true)
+	got := cb.getFileLineDeltas()
+	if len(got) != 2 {
+		t.Fatalf("unrelated same basename should stay separate, got %#v", got)
+	}
+}
+
+func TestRememberFileLineDeltaMergesRelativeAndAbsolute(t *testing.T) {
+	cb := &codingSubAgentCallbacks{}
+	cb.rememberFileLineDelta("snake.cpp", 213, 0, true)
+	cb.rememberFileLineDelta(`F:/test-prog/snake.cpp`, 1, 0, false)
+	got := cb.getFileLineDeltas()
+	if len(got) != 1 || got[0].Insertions != 214 {
+		t.Fatalf("relative/absolute should merge, got %#v", got)
+	}
+}
+
+func TestRememberFileLineDeltaPrefersShorterRelativePath(t *testing.T) {
+	cb := &codingSubAgentCallbacks{}
+	cb.rememberFileLineDelta(`F:/test-prog/snake.cpp`, 213, 0, true)
+	cb.rememberFileLineDelta("snake.cpp", 1, 0, false)
+	got := cb.getFileLineDeltas()
+	if len(got) != 1 || got[0].Path != "snake.cpp" || got[0].Insertions != 214 {
+		t.Fatalf("should keep relative key, got %#v", got)
+	}
+}
+
+func TestCodingSubAgentFinalGitDiffAcceptsModifiedUntrackedFiles(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	runGitForTest(t, "", "init", repo)
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("base\n"), 0644); err != nil {
+		t.Fatalf("write repo file: %v", err)
+	}
+	runGitForTest(t, repo, "add", "README.md")
+	runGitForTest(t, repo, "-c", "user.email=a@b.test", "-c", "user.name=test", "commit", "-m", "init")
+	if err := os.WriteFile(filepath.Join(repo, "snake.cpp"), []byte("int main() { return 0; }\n"), 0644); err != nil {
+		t.Fatalf("write untracked existing file: %v", err)
+	}
+
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{handler: &IMMessageHandler{}, projectPath: repo},
+		task:     &TaskItem{Index: 8, Title: "diff untracked modified file"},
+	}
+	checked, summary := cb.ensureFinalGitDiff([]string{"snake.cpp"}, nil)
+	if !checked {
+		t.Fatalf("modifying an existing untracked file should satisfy final diff self-check, summary=%q", summary)
+	}
+	if !strings.Contains(summary, "Untracked files") || !strings.Contains(summary, "snake.cpp") {
+		t.Fatalf("final diff summary should include the modified untracked file, got %q", summary)
+	}
+}
+
 func TestCodingSubAgentFinalGitDiffIncludesUntrackedCreatedFiles(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "repo")
 	runGitForTest(t, "", "init", repo)

@@ -1,11 +1,14 @@
 package guiapp
 
 import (
+	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
+	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 )
 
 func TestCodingExperienceEvidenceDigestBindsMaterialLedgerEvents(t *testing.T) {
@@ -82,6 +85,98 @@ func TestCodingExperienceEvidenceDigestRejectsUnknownEvidenceEvent(t *testing.T)
 	}
 	if _, err := codingExperienceEvidenceDigest(store, task, attempt); err == nil || !strings.Contains(err.Error(), "no material execution evidence") {
 		t.Fatalf("expected unknown evidence rejection, err=%v", err)
+	}
+}
+
+func TestCodingExperienceShouldExtract(t *testing.T) {
+	passed := &CodingSubAgentResult{Status: TaskExecPassed}
+	failed := &CodingSubAgentResult{Status: TaskExecFailed}
+	horizon := &CodingSubAgentResult{Status: TaskExecPassed, HorizonOwned: true}
+
+	if codingExperienceShouldExtract(ExperienceSaveModeOff, ExperienceStrategyOnSuccess, passed, false) {
+		t.Fatal("off mode must not extract")
+	}
+	if codingExperienceShouldExtract(ExperienceSaveModeObserve, ExperienceStrategyOff, passed, false) {
+		t.Fatal("off strategy must not extract")
+	}
+	if codingExperienceShouldExtract(ExperienceSaveModeAuto, ExperienceStrategyOnSuccess, horizon, false) {
+		t.Fatal("horizon-owned results must not extract")
+	}
+	if codingExperienceShouldExtract(ExperienceSaveModeObserve, ExperienceStrategyOnRetry, passed, false) {
+		t.Fatal("on_retry_success must wait for a retry")
+	}
+	if !codingExperienceShouldExtract(ExperienceSaveModeObserve, ExperienceStrategyOnRetry, passed, true) {
+		t.Fatal("on_retry_success should extract after a retry")
+	}
+	if !codingExperienceShouldExtract(ExperienceSaveModeAuto, ExperienceStrategyOnSuccess, passed, false) {
+		t.Fatal("auto/on_success should extract a passing task")
+	}
+	if codingExperienceShouldExtract(ExperienceSaveModeAuto, ExperienceStrategyOnSuccess, failed, false) {
+		t.Fatal("on_success must not extract a failed task")
+	}
+	if !codingExperienceShouldExtract(ExperienceSaveModeObserve, ExperienceStrategyAlways, failed, false) {
+		t.Fatal("always should extract failures")
+	}
+}
+
+func TestCodingResultLooksLikeRetrySuccess(t *testing.T) {
+	if codingResultLooksLikeRetrySuccess(&CodingSubAgentResult{
+		CommandsRun: []CodingSubAgentCommandResult{{Command: "go test", Succeeded: true}},
+	}) {
+		t.Fatal("first-try success is not a retry")
+	}
+	if !codingResultLooksLikeRetrySuccess(&CodingSubAgentResult{
+		CommandsRun: []CodingSubAgentCommandResult{
+			{Command: "go test", Succeeded: false},
+			{Command: "go test", Succeeded: true},
+		},
+	}) {
+		t.Fatal("failed then succeeded commands should count as retry success")
+	}
+}
+
+func TestIsSimilarExperienceUsesContentWhenTriggerMissing(t *testing.T) {
+	body := strings.Repeat("always set http client timeouts in production. ", 3)
+	existing := knowledge.CodingExperience{Title: "timeouts", Content: body}
+	dup := knowledge.CodingExperience{Title: "http timeouts", Content: body}
+	if !isSimilarExperience(existing, dup) {
+		t.Fatal("identical content should be treated as a duplicate")
+	}
+	if isSimilarExperience(existing, knowledge.CodingExperience{Title: "other", Content: "unrelated guidance about maps"}) {
+		t.Fatal("unrelated content must not match")
+	}
+}
+
+func TestInferRemoteCodingLanguageDoesNotHardcodePython(t *testing.T) {
+	if got := inferRemoteCodingLanguage(&remoteCodingCallbacks{}); got != "" {
+		t.Fatalf("empty files should leave language unset, got %q", got)
+	}
+	if got := inferRemoteCodingLanguage(&remoteCodingCallbacks{filesModified: []string{"pkg/foo.go"}}); got != "go" {
+		t.Fatalf("go files should infer go, got %q", got)
+	}
+}
+
+func TestFinishCodingKnowledgeSearchPreservesLocalError(t *testing.T) {
+	localErr := fmt.Errorf("db closed")
+	_, err := finishCodingKnowledgeSearch(nil, context.Background(), nil, localErr, "query", "", "", 5)
+	if err != localErr {
+		t.Fatalf("nil app should keep local search error, got %v", err)
+	}
+	_, err = finishCodingKnowledgeSearch(&App{}, context.Background(), nil, localErr, "query", "", "", 5)
+	if err == nil || !strings.Contains(err.Error(), "db closed") {
+		t.Fatalf("empty enterprise merge should not hide local error, got %v", err)
+	}
+}
+
+func TestRemoteResultAsCodingSubAgentResultMapsSuccess(t *testing.T) {
+	got := remoteResultAsCodingSubAgentResult(&RemoteCodingSubAgentResult{
+		Status:                "success",
+		Summary:               "done",
+		RuntimeTaskID:         "task-1",
+		RecalledExperienceIDs: []string{"exp-1"},
+	})
+	if got.Status != TaskExecPassed || got.RuntimeTaskID != "task-1" || got.RecalledExperienceIDs[0] != "exp-1" {
+		t.Fatalf("mapped result = %+v", got)
 	}
 }
 

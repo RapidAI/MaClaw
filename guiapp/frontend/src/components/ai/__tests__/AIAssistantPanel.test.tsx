@@ -8,6 +8,7 @@ import { forgetAIAssistantSessionRounds, type ChatMessage, type CancelAIAssistan
 import type { AgentView } from '../agentViewTypes';
 import { DialogProvider } from '../../CustomDialog';
 import { __resetCloudWorkspaceLeaseEnsureForTests } from '../codingTaskMode';
+import { PreviewTaskResultFile } from '../../../../wailsjs/go/main/App';
 
 const { openFileOrShowInFolderMock, showItemInFolderMock, openProjectDirectoryMock, loadProjectContextMock, loadProjectConversationHistoryMock, loadProjectTabConversationMock, loadProjectTabIndexMock, createProjectTabSessionMock, cancelSessionForSessionMock, clearAIAssistantHistoryForSessionMock, saveCurrentChatAsTaskMock, suggestCurrentTaskNameMock, renameTaskMock, listVirtualEmployeesMock, initiateVEConversationMock, addVEToGroupMock, renameGroupDiscussionMock, getConversationBranchPointsMock, patchConfigFieldsMock, getCodingWorkbenchStatusMock, prepareRemoteCodingEnvironmentMock, prepareRemoteOpsDiagnosisEnvironmentMock, setCodingWorkbenchSessionPlanMock, getTabWorkingDirMock, setTabWorkingDirMock, selectWorkingDirMock, startWorkflowTemplateInTabMock, resumeCloudWorkspaceTaskMock, runtimeEventsOnMock, runtimeEventsOffMock } = vi.hoisted(() => ({
     openFileOrShowInFolderMock: vi.fn().mockResolvedValue(undefined),
@@ -164,6 +165,9 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     LoadProjectContext: loadProjectContextMock,
     LoadProjectConversationHistory: loadProjectConversationHistoryMock,
     SearchTasks: vi.fn().mockResolvedValue([]),
+    ListMobileLibraryItems: vi.fn().mockResolvedValue([]),
+    KnowledgeSearch: vi.fn().mockResolvedValue([]),
+    ListExperts: vi.fn().mockResolvedValue('[]'),
     ResumeTask: vi.fn(),
     SaveCurrentChatAsTask: saveCurrentChatAsTaskMock,
     SuggestCurrentTaskName: suggestCurrentTaskNameMock,
@@ -224,6 +228,18 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     GetCodingWorkbenchDirectory: vi.fn().mockResolvedValue({ entries: [] }),
     DeleteCodingWorkbenchEntry: vi.fn().mockResolvedValue(undefined),
     CloudWorkspaceEntitlement: vi.fn().mockResolvedValue({ enabled: true, workspaces: [] }),
+    PreviewTaskResultFile: vi.fn(async (path: string) => {
+        const name = path.split(/[/\\]/).pop() || path;
+        if (path.toLowerCase().endsWith('.pptx')) return { path, file_name: name, kind: 'pptx', language: 'pptx' };
+        if (path.toLowerCase().endsWith('.pdf')) return { path, file_name: name, kind: 'pdf', language: 'pdf', data_url: "data:" + "application/" + "pdf" + ";base64," + "JVBE" + "Ri0=" };
+        return { path, file_name: name, kind: 'text', language: 'plaintext', content: 'preview body' };
+    }),
+    PptxPreviewEnsure: vi.fn(async () => ({
+        images: ['D:\\preview\\slide_001.png'],
+        slide_count: 1,
+        rendered_count: 1,
+    })),
+    PptxSlideThumbnailDataURL: vi.fn(async () => 'data:image/png;base64,thumb'),
 }));
 
 function makeMsg(overrides: Partial<ChatMessage> & { role: ChatMessage['role'] }): ChatMessage {
@@ -1372,6 +1388,29 @@ describe('AIAssistantPanel property tests', () => {
         expect(queryByTestId('assistant-status-footer')).toBeNull();
     });
 
+    it('does not duplicate the sidebar task list on the welcome/guide page', () => {
+        const { getByTestId, queryByTestId, queryByText } = renderPanel({
+            window: { inline: true },
+            tasks: [
+                {
+                    name: 'Linux system info tool',
+                    project_path: 'F:\\test-prog',
+                    preview: 'Remote coding task',
+                    has_output: true,
+                    last_activity: '2026-09-12T08:00:00.000Z',
+                },
+            ],
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        expect(getByTestId('ai-welcome-container')).toBeTruthy();
+        expect(getByTestId('welcome-reference-quick-tasks')).toBeTruthy();
+        expect(getByTestId('welcome-reference-suggestions')).toBeTruthy();
+        expect(queryByTestId('welcome-reference-recent-tasks')).toBeNull();
+        expect(queryByTestId('welcome-recent-task-list')).toBeNull();
+        expect(queryByText('Linux system info tool')).toBeNull();
+    });
+
     it('keeps the quick-settings bar on digital-employee (VE) chat tabs', async () => {
         const props = defaultPanelProps();
         props.window = { inline: true };
@@ -1521,7 +1560,7 @@ describe('AIAssistantPanel property tests', () => {
             'Notifications',
             'Mobile documents (shared Hub library)',
             'Buy service redemption cards',
-            'Search tasks',
+            'Search tasks, files, knowledge, experts',
             'Knowledge Base',
             'Refresh news',
             'New conversation',
@@ -1579,13 +1618,13 @@ describe('AIAssistantPanel property tests', () => {
     });
 
     it('closes task search when app navigation hides the retained panel', async () => {
-        const { getByTitle, getByPlaceholderText, queryByPlaceholderText, rerender } = renderPanel({
+        const { getByTitle, getByTestId, queryByTestId, rerender } = renderPanel({
             window: { inline: true },
             state: { messages: [], sending: false, streaming: false, ready: true, active: true },
         });
 
-        fireEvent.mouseDown(getByTitle('Search tasks'));
-        await waitFor(() => expect(getByPlaceholderText('Search tasks...')).toBeTruthy());
+        fireEvent.mouseDown(getByTitle('Search tasks, files, knowledge, experts'));
+        await waitFor(() => expect(getByTestId('project-search-input')).toBeTruthy());
 
         rerender(
             <AIAssistantPanel
@@ -1595,7 +1634,7 @@ describe('AIAssistantPanel property tests', () => {
             />
         );
 
-        await waitFor(() => expect(queryByPlaceholderText('Search tasks...')).toBeNull());
+        await waitFor(() => expect(queryByTestId('project-search-input')).toBeNull());
     });
 
     it('hides approval prompts off-page without discarding a live backend request', async () => {
@@ -1859,6 +1898,109 @@ describe('AIAssistantPanel property tests', () => {
         );
 
         expect(container.querySelector('[data-testid="assistant-reasoning-panel"]')).toHaveProperty('open', false);
+        expect(container.querySelector('[data-testid="assistant-reasoning-panel"]')?.getAttribute('data-live')).toBe('false');
+        expect(container.querySelector('[data-testid="assistant-reasoning-label"]')?.textContent).toBe('Thinking process...');
+        expect(container.querySelectorAll('[data-testid="assistant-reasoning-label"]')).toHaveLength(1);
+    });
+
+    it('does not relive a completed thinking panel while a follow-up is in flight', () => {
+        const user = makeMsg({ role: 'user', content: 'First' });
+        const assistant = makeMsg({ id: 'a-done', role: 'assistant', content: 'Done.', reasoning: 'Checked.' });
+        const followUp = makeMsg({ id: 'u-2', role: 'user', content: 'And now?' });
+        const props = defaultPanelProps();
+        const { container } = render(
+            <AIAssistantPanel
+                {...props}
+                lang="zh-Hans"
+                state={{ ...props.state, messages: [user, assistant, followUp], sending: true, streaming: false, ready: true }}
+            />,
+            { wrapper: DialogProvider },
+        );
+        const labels = Array.from(container.querySelectorAll('[data-testid="assistant-reasoning-label"]')).map(el => el.textContent);
+        expect(labels).toContain('思考过程...');
+        expect(labels).toContain('正在思考');
+        expect(container.querySelector('[data-testid="assistant-chat-ai-a-done"] [data-testid="assistant-reasoning-panel"]')?.getAttribute('data-live')).toBe('false');
+    });
+
+    it('changes the thinking-panel label to the current action and marks it live', () => {
+        const user = makeMsg({ role: 'user', content: '成都天气' });
+        const assistant = makeMsg({ id: 'a-live-reasoning', role: 'assistant', content: '', reasoning: '先查天气源。' });
+        const props = defaultPanelProps();
+        const { container, rerender } = render(
+            <AIAssistantPanel
+                {...props}
+                lang="zh-Hans"
+                state={{ ...props.state, messages: [user, assistant], sending: true, streaming: true, ready: true }}
+            />,
+            { wrapper: DialogProvider },
+        );
+
+        const thinkingLabel = container.querySelector('[data-testid="assistant-reasoning-label"]');
+        expect(thinkingLabel?.textContent).toBe('正在思考');
+        expect(thinkingLabel?.className).toContain('assistant-reasoning-live-label');
+        expect(container.querySelector('[data-testid="assistant-reasoning-panel"]')?.getAttribute('data-live')).toBe('true');
+
+        rerender(
+            <AIAssistantPanel
+                {...props}
+                lang="zh-Hans"
+                state={{
+                    ...props.state,
+                    messages: [user, assistant],
+                    progressMessages: [makeMsg({ role: 'progress', content: '正在执行工具: web_fetch' })],
+                    sending: true,
+                    streaming: true,
+                    ready: true,
+                }}
+            />,
+        );
+        expect(container.querySelector('[data-testid="assistant-reasoning-label"]')?.textContent).toBe('正在提取网页');
+
+        rerender(
+            <AIAssistantPanel
+                {...props}
+                lang="zh-Hans"
+                state={{
+                    ...props.state,
+                    messages: [user, assistant],
+                    progressMessages: [makeMsg({ role: 'progress', content: '工具 · 访问网页\nhttps://weather' })],
+                    sending: true,
+                    streaming: false,
+                    ready: true,
+                }}
+            />,
+        );
+        expect(container.querySelector('[data-testid="assistant-reasoning-label"]')?.textContent).toBe('正在提取网页');
+        expect(container.querySelector('[data-testid="assistant-reasoning-panel"]')?.getAttribute('data-live')).toBe('true');
+        expect(container.textContent).not.toContain('正在执行工具');
+        expect(container.textContent).not.toContain('可继续输入');
+        expect((container.querySelector('[data-testid="ai-input"]') as HTMLTextAreaElement).placeholder).not.toMatch(/正在执行|可继续输入|处理中/);
+
+        rerender(
+            <AIAssistantPanel
+                {...props}
+                lang="zh-Hans"
+                state={{
+                    ...props.state,
+                    messages: [user, assistant],
+                    sending: true,
+                    streaming: false,
+                    ready: true,
+                }}
+            />,
+        );
+        expect(container.querySelector('[data-testid="assistant-reasoning-label"]')?.textContent).toBe('正在调用工具');
+        expect(container.querySelectorAll('[data-testid="assistant-reasoning-label"]')).toHaveLength(1);
+
+        rerender(
+            <AIAssistantPanel
+                {...props}
+                lang="zh-Hans"
+                state={{ ...props.state, messages: [user, { ...assistant, content: '晴。' }], sending: false, streaming: false, ready: true }}
+            />,
+        );
+        expect(container.querySelector('[data-testid="assistant-reasoning-label"]')?.textContent).toBe('思考过程...');
+        expect(container.querySelector('[data-testid="assistant-reasoning-panel"]')?.getAttribute('data-live')).toBe('false');
     });
 
     it('keeps completed reasoning folded when the next reply begins streaming', () => {
@@ -2162,23 +2304,30 @@ describe('AIAssistantPanel property tests', () => {
         expect(input.readOnly).toBe(false);
     });
 
-    it('shows thinking placeholder while the assistant is actively streaming', () => {
+    it('keeps the idle composer placeholder while the assistant is actively streaming', () => {
         const { getByTestId } = renderPanel({
             state: { messages: [], sending: true, streaming: true, ready: true, visualBusy: true },
         });
 
         const input = getByTestId('ai-input') as HTMLTextAreaElement;
-        expect(input.placeholder).toBe('Working... (you can keep typing)');
+        expect(input.placeholder).toBe('Enter a task or command...');
+        expect(getByTestId('assistant-reasoning-label').textContent).toBe('Thinking');
+        expect(getByTestId('assistant-reasoning-label').className).toContain('assistant-reasoning-live-label');
+        expect(getByTestId('assistant-reasoning-panel').getAttribute('data-live')).toBe('true');
     });
 
-    it('shows model connection placeholder and visible busy hint before streaming starts', () => {
-        const { getByTestId, getByText } = renderPanel({
+    it('shows thinking on the live panel before streaming starts, not in the composer', () => {
+        const { getByTestId, queryByText } = renderPanel({
             state: { messages: [], sending: true, streaming: false, ready: true, visualBusy: false },
         });
 
         const input = getByTestId('ai-input') as HTMLTextAreaElement;
-        expect(input.placeholder).toBe('Connecting to model...');
-        expect(getByText('Connecting to model...')).toBeTruthy();
+        expect(input.placeholder).toBe('Enter a task or command...');
+        expect(getByTestId('assistant-reasoning-label').textContent).toBe('Thinking');
+        expect(getByTestId('assistant-reasoning-label').className).toContain('assistant-reasoning-live-label');
+        expect(getByTestId('assistant-reasoning-panel').getAttribute('data-live')).toBe('true');
+        expect(queryByText('Connecting to model...')).toBeNull();
+        expect(queryByText('Running tools... (you can keep typing)')).toBeNull();
     });
 
     it('does not send when Enter confirms an active IME composition', () => {
@@ -3286,6 +3435,160 @@ describe('AIAssistantPanel property tests', () => {
         expect(getByTestId('coding-session-plan')).toBeTruthy();
     });
 
+    it('puts live sheen on the current coding thought, then on tool/edit status', async () => {
+        const projectPath = 'D:/tasks/coding-live-sheen';
+        const sessionKey = `desktop-user:${projectPath}`;
+        loadProjectConversationHistoryMock.mockResolvedValue([
+            { role: 'user', content: '了解当前任务' },
+            { role: 'assistant', content: 'seed' },
+        ]);
+        const user = makeMsg({ id: 'coding-live-user', role: 'user', content: '了解当前任务', sessionKey, timestamp: 1 });
+        const thinking = makeMsg({
+            id: 'coding-live-thought',
+            role: 'assistant',
+            content: '',
+            sessionKey,
+            timestamp: 2,
+            codingTimeline: [
+                { id: 't1', sequence: 1, kind: 'thinking', content: 'Let me explore the repository.', timestamp: 2 },
+            ],
+        });
+        const base = defaultPanelProps();
+        const props = {
+            ...base,
+            lang: 'zh-Hans' as const,
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: 'Local coding live sheen',
+                autoSend: false,
+                prepareMode: 'restore-context' as const,
+                agentMode: 'coding_dev',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { ...base.state, messages: [], sending: false, streaming: false, ready: true },
+        };
+        const { rerender, container, getByTestId, queryByTestId } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+        await waitFor(() => expect(container.textContent || '').toContain('了解当前任务'));
+
+        rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={{
+            ...props.state,
+            messages: [user, thinking],
+            sending: true,
+            streaming: true,
+            sendingSessionKey: sessionKey,
+            streamingSessionKey: sessionKey,
+        }} />);
+        await waitFor(() => expect(getByTestId('coding-agent-interleaved-timeline')).toBeTruthy());
+        await waitFor(() => {
+            const live = container.querySelector('[data-live="true"] [data-testid="assistant-reasoning-label"]');
+            expect(live?.textContent).toBe('正在思考');
+            expect(live?.className).toContain('assistant-reasoning-live-label');
+        });
+        expect(container.textContent || '').toContain('Let me explore the repository.');
+        expect(queryByTestId('coding-agent-working-trail')).toBeNull();
+
+        const editing = makeMsg({
+            id: 'coding-live-thought',
+            role: 'assistant',
+            content: '',
+            sessionKey,
+            timestamp: 2,
+            codingTimeline: [
+                { id: 't1', sequence: 1, kind: 'thinking', content: 'Let me explore the repository.', timestamp: 2 },
+                { id: 'p1', sequence: 2, kind: 'progress', content: 'Coding Agent Event: {"agent":"coding","event":"tool_started","phase":"running","detail":"edit_file"}', timestamp: 3 },
+            ],
+        });
+        const editEvent = 'Coding Agent Event: {"agent":"coding","event":"tool_started","phase":"running","detail":"edit_file"}';
+        rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={{
+            ...props.state,
+            messages: [user, editing],
+            progressMessages: [makeMsg({ role: 'progress', content: editEvent, sessionKey })],
+            sending: true,
+            streaming: false,
+            sendingSessionKey: sessionKey,
+            streamingSessionKey: '',
+        }} />);
+        await waitFor(() => {
+            const labels = Array.from(container.querySelectorAll('[data-testid="assistant-reasoning-label"]')).map(el => el.textContent);
+            expect(labels).toContain('思考过程');
+            expect(labels).toContain('正在编辑文件');
+        });
+        const liveEdit = container.querySelector('[data-live="true"] [data-testid="assistant-reasoning-label"]');
+        expect(liveEdit?.textContent).toBe('正在编辑文件');
+        expect(liveEdit?.className).toContain('assistant-reasoning-live-label');
+        expect(container.querySelector('[data-live="false"] [data-testid="assistant-reasoning-label"]')?.textContent).toBe('思考过程');
+
+        const calling = 'Coding Agent Event: {"agent":"coding","event":"tool_started","phase":"running","detail":"unknown_mcp"}';
+        rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={{
+            ...props.state,
+            messages: [user, editing],
+            progressMessages: [makeMsg({ role: 'progress', content: calling, sessionKey })],
+            sending: true,
+            streaming: false,
+            sendingSessionKey: sessionKey,
+            streamingSessionKey: '',
+        }} />);
+        await waitFor(() => {
+            expect(container.querySelector('[data-live="true"] [data-testid="assistant-reasoning-label"]')?.textContent).toBe('正在调用工具');
+        });
+    });
+
+    it('puts live tool sheen on a remote coding workbench', async () => {
+        const projectPath = 'D:/tasks/remote-coding-live-sheen';
+        const sessionKey = `desktop-user:${projectPath}`;
+        loadProjectConversationHistoryMock.mockResolvedValue([
+            { role: 'user', content: '了解当前任务' },
+            { role: 'assistant', content: 'seed' },
+        ]);
+        const user = makeMsg({ id: 'remote-coding-live-user', role: 'user', content: '了解当前任务', sessionKey, timestamp: 1 });
+        const assistant = makeMsg({
+            id: 'remote-coding-live-edit',
+            role: 'assistant',
+            content: '',
+            sessionKey,
+            timestamp: 2,
+            codingTimeline: [
+                { id: 't1', sequence: 1, kind: 'thinking', content: 'Inspect the remote tree.', timestamp: 2 },
+                { id: 'p1', sequence: 2, kind: 'progress', content: 'Coding Agent Event: {"agent":"coding","event":"tool_started","phase":"running","detail":"edit_file"}', timestamp: 3 },
+            ],
+        });
+        const base = defaultPanelProps();
+        const props = {
+            ...base,
+            lang: 'zh-Hans' as const,
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: 'Remote coding live sheen',
+                autoSend: false,
+                prepareMode: 'new-agent' as const,
+                agentMode: 'remote_coding_dev',
+                remoteHost: '10.0.0.21',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { ...base.state, messages: [], sending: false, streaming: false, ready: true },
+        };
+        const { rerender, container, getByTestId } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+        await waitFor(() => expect(container.textContent || '').toContain('了解当前任务'), { timeout: 3000 });
+
+        rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={{
+            ...props.state,
+            messages: [user, assistant],
+            progressMessages: [makeMsg({ role: 'progress', content: 'Coding Agent Event: {"agent":"coding","event":"tool_started","phase":"running","detail":"edit_file"}', sessionKey })],
+            sending: true,
+            streaming: false,
+            sendingSessionKey: sessionKey,
+            streamingSessionKey: '',
+        }} />);
+        await waitFor(() => expect(getByTestId('coding-agent-interleaved-timeline')).toBeTruthy());
+        await waitFor(() => {
+            const labels = Array.from(container.querySelectorAll('[data-testid="assistant-reasoning-label"]')).map(el => el.textContent);
+            expect(labels).toContain('思考过程');
+            expect(labels).toContain('正在编辑文件');
+        });
+        expect(container.querySelector('[data-live="true"] [data-testid="assistant-reasoning-label"]')?.textContent).toBe('正在编辑文件');
+        expect(container.querySelector('[data-live="true"] [data-testid="assistant-reasoning-label"]')?.className).toContain('assistant-reasoning-live-label');
+    });
+
     it('auto-opens the cloud file preview when a restored cloud workspace tab resolves its cache path', async () => {
         getTabWorkingDirMock.mockResolvedValue({
             path: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant/cws_a',
@@ -3298,6 +3601,27 @@ describe('AIAssistantPanel property tests', () => {
                 taskTitle: '云端工作区任务1',
                 autoSend: false,
                 prepareMode: 'restore-context',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+        const workspace = await findByTestId('code-preview-workspace', {}, { timeout: 8000 });
+        expect(workspace.getAttribute('data-cloud-mode')).toBe('true');
+    });
+
+    it('auto-opens the cloud file preview when a coding_dev tab resolves its cache path later', async () => {
+        getTabWorkingDirMock.mockResolvedValue({
+            path: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant/cws_coding',
+            is_default: false,
+        });
+        const { findByTestId } = renderPanel({
+            lang: 'zh-Hans',
+            pendingProjectTabOpen: {
+                projectPath: 'C:/Users/me/.maclaw/data/tasks/yun-duan-bian-cheng-ren-wu',
+                taskTitle: '云端编程任务',
+                autoSend: false,
+                prepareMode: 'restore-context',
+                agentMode: 'coding_dev',
             },
             onPendingProjectTabOpenHandled: vi.fn(),
             state: { messages: [], sending: false, streaming: false, ready: true },
@@ -4040,10 +4364,10 @@ describe('AIAssistantPanel property tests', () => {
         getCodingWorkbenchStatusMock.mockResolvedValue({ kind: 'remote', armed: true, needs_reconnect: false, turn_count: 0, session_plan: '' });
     });
 
-    it('opens the right-hand source preview panel for local coding_dev tasks', async () => {
+    it('does not auto-open the source preview for a new local coding_dev task', async () => {
         createProjectTabSessionMock.mockResolvedValueOnce(undefined);
 
-        const { getByTestId } = renderPanel({
+        const { getByTestId, queryByTestId } = renderPanel({
             pendingProjectTabOpen: {
                 projectPath: 'D:/tasks/coding-open-preview',
                 taskTitle: 'Local coding opens source panel',
@@ -4057,16 +4381,20 @@ describe('AIAssistantPanel property tests', () => {
         });
 
         await waitFor(() => expect(getByTestId('coding-env-banner')).toBeTruthy());
-        // Empty-state source panel still exposes the workspace tree; in local
-        // mode the merged header keeps the tree's own title row instead of the
-        // panel header bar.
+        expect(queryByTestId('code-preview-workspace')).toBeNull();
+        const toggle = getByTestId('workflow-preview-toggle-btn');
+        expect(toggle.getAttribute('aria-checked')).toBe('false');
+        fireEvent.click(toggle);
         await waitFor(() => expect(getByTestId('code-preview-workspace')).toBeTruthy());
+        expect(toggle.getAttribute('aria-checked')).toBe('true');
+        fireEvent.click(toggle);
+        await waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('false'));
     });
 
-    it('opens the right-hand source preview panel for remote_coding_dev tasks', async () => {
+    it('does not auto-open the source preview for a new remote_coding_dev task', async () => {
         createProjectTabSessionMock.mockResolvedValueOnce(undefined);
 
-        const { getByTestId } = renderPanel({
+        const { getByTestId, queryByTestId } = renderPanel({
             pendingProjectTabOpen: {
                 projectPath: 'D:/tasks/remote-coding-open-preview',
                 taskTitle: 'Remote coding opens source panel',
@@ -4081,6 +4409,8 @@ describe('AIAssistantPanel property tests', () => {
         });
 
         await waitFor(() => expect(getByTestId('remote-coding-env-banner')).toBeTruthy());
+        expect(queryByTestId('code-preview-workspace')).toBeNull();
+        fireEvent.click(getByTestId('workflow-preview-toggle-btn'));
         await waitFor(() => expect(getByTestId('code-preview-workspace')).toBeTruthy());
     });
 
@@ -5517,8 +5847,8 @@ describe('AIAssistantPanel property tests', () => {
         expect(getByText('done')).toBeTruthy();
     });
 
-    it('keeps tool-running status in one compact row while busy', () => {
-        const { container, queryByText } = renderPanel({
+    it('keeps tool-running status on the thinking-panel label while busy', () => {
+        const { container, queryByText, getByTestId } = renderPanel({
             lang: 'zh-Hans',
             state: {
                 messages: [makeMsg({ role: 'user', content: '南京天气' })],
@@ -5530,14 +5860,15 @@ describe('AIAssistantPanel property tests', () => {
         });
 
         expect(queryByText('\u{1F680} 正在执行 Skill「Weather Query \u{1F324}」...')).toBeNull();
-        expect(container.textContent).toContain('正在执行 Weather Query');
+        expect(getByTestId('assistant-reasoning-label').textContent).toBe('正在执行技能');
         expect(container.textContent).not.toContain('\u{1F324}');
-        expect(container.textContent).toContain('可继续输入');
-        expect((container.textContent || '').match(/Weather Query/g) || []).toHaveLength(1);
+        expect(container.textContent).not.toContain('可继续输入');
+        expect(container.textContent).not.toContain('正在执行工具');
+        expect((getByTestId('ai-input') as HTMLTextAreaElement).placeholder).not.toMatch(/正在执行|可继续输入/);
     });
 
-    it('summarizes shell-style tool paths without duplicating the chat row', () => {
-        const { container, queryByText } = renderPanel({
+    it('summarizes shell-style tool paths on the thinking-panel label without duplicating the chat row', () => {
+        const { container, queryByText, getByTestId } = renderPanel({
             lang: 'zh-Hans',
             state: {
                 messages: [makeMsg({ role: 'user', content: '南京天气' })],
@@ -5549,10 +5880,10 @@ describe('AIAssistantPanel property tests', () => {
         });
 
         expect(queryByText('\u{1F680} 正在执行 Shell /Weather Query \u{1F324} / ...')).toBeNull();
-        expect(container.textContent).toContain('正在执行 Weather Query');
+        expect(getByTestId('assistant-reasoning-label').textContent).toBe('正在执行命令');
         expect(container.textContent).not.toContain('\u{1F324}');
-        expect(container.textContent).toContain('可继续输入');
-        expect((container.textContent || '').match(/Weather Query/g) || []).toHaveLength(1);
+        expect(container.textContent).not.toContain('可继续输入');
+        expect((getByTestId('ai-input') as HTMLTextAreaElement).placeholder).not.toMatch(/正在执行|可继续输入/);
     });
 
     it('renders coding agent progress as a visible task status row', () => {
@@ -5568,7 +5899,8 @@ describe('AIAssistantPanel property tests', () => {
         });
 
         expect(queryByTestId('coding-agent-progress')).toBeNull();
-        expect((getByTestId('ai-input') as HTMLTextAreaElement).placeholder).toMatch(/\u5904\u7406\u4e2d|Working/);
+        expect(getByTestId('assistant-reasoning-label').textContent).toBe('\u6b63\u5728\u601d\u8003');
+        expect((getByTestId('ai-input') as HTMLTextAreaElement).placeholder).not.toMatch(/\u5904\u7406\u4e2d|Working|Running tools/);
     });
 
     it('compacts multiple coding agent progress messages to the latest row', () => {
@@ -5671,6 +6003,62 @@ describe('AIAssistantPanel property tests', () => {
 
         await waitFor(() => {
             expect(openFileOrShowInFolderMock).toHaveBeenCalledWith('C:\\Users\\demo\\report.pdf');
+        });
+    });
+
+    it('opens the in-app slide preview from the task-result Preview button', async () => {
+        const path = 'F:\\个人介绍\\布偶小猫5岁生日.pptx';
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: 'PPT已生成',
+                localFilePath: path,
+            }),
+        ];
+        const { getByTestId } = renderPanel({
+            lang: 'zh',
+            state: { messages, sending: false, streaming: false, ready: true },
+        });
+
+        fireEvent.click(getByTestId('task-result-preview-btn'));
+
+        await waitFor(() => {
+            expect(document.querySelector('[data-testid="code-preview-panel"]')).toBeTruthy();
+        });
+        expect(PreviewTaskResultFile).not.toHaveBeenCalled();
+        await waitFor(() => {
+            expect(
+                document.querySelector('[data-testid="pptx-preview-panel"]')
+                || document.querySelector('[data-testid="pptx-preview-loading"]'),
+            ).toBeTruthy();
+        });
+    });
+
+    it('opens a PDF in the preview pane from the task-result Preview button', async () => {
+        const path = 'C:\\Users\\demo\\report.pdf';
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: '',
+                localFilePath: path,
+            }),
+        ];
+        const { getByTestId } = renderPanel({
+            lang: 'en',
+            state: { messages, sending: false, streaming: false, ready: true },
+        });
+
+        fireEvent.click(getByTestId('task-result-preview-btn'));
+        expect(getByTestId('task-result-preview-btn').textContent).toBe('Preview');
+
+        await waitFor(() => {
+            expect(document.querySelector('[data-testid="code-preview-panel"]')).toBeTruthy();
+        });
+        await waitFor(() => {
+            expect(
+                document.querySelector('[data-testid="pdf-preview-panel"]')
+                || document.querySelector('[data-testid="pdf-preview-loading"]'),
+            ).toBeTruthy();
         });
     });
 
@@ -6086,6 +6474,136 @@ describe('AIAssistantPanel property tests', () => {
         window.removeEventListener('ai-assistant:forget-session-rounds', onForget);
     });
 
+    it('typed /clear on the local assistant calls clearHistory instead of sending', async () => {
+        const clearHistory = vi.fn().mockResolvedValue(undefined);
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const { getByTestId } = renderPanel({
+            state: {
+                messages: [
+                    makeMsg({ id: 'local-before-clear-user', role: 'user', content: 'old local question' }),
+                    makeMsg({ id: 'local-before-clear-assistant', role: 'assistant', content: 'old local answer' }),
+                ],
+                sending: false,
+                streaming: false,
+                ready: true,
+            },
+            actions: { sendMessage, clearHistory },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: '/clear' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(clearHistory).toHaveBeenCalled());
+        expect(sendMessage).not.toHaveBeenCalled();
+        expect(clearAIAssistantHistoryForSessionMock).not.toHaveBeenCalled();
+    });
+
+    it('typed /clear wipes project tab transcript and durable history without sending a chat turn', async () => {
+        const projectPath = 'D:/tasks/project-slash-clear';
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const onHandled = vi.fn();
+        const base = defaultPanelProps();
+        const props = {
+            ...base,
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: 'Project slash clear',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { ...base.state, messages: [], sending: false, streaming: false, ready: true },
+            actions: { ...base.actions, sendMessage },
+        };
+        const { rerender, getByTestId } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        const oldUser = makeMsg({
+            id: 'project-slash-clear-user',
+            role: 'user',
+            content: 'old history before slash clear',
+            sessionKey: `desktop-user:${projectPath}`,
+        });
+        const oldAssistant = makeMsg({
+            id: 'project-slash-clear-assistant',
+            role: 'assistant',
+            content: 'old answer before slash clear',
+            sessionKey: `desktop-user:${projectPath}`,
+        });
+        rerender(<AIAssistantPanel
+            {...props}
+            pendingProjectTabOpen={null}
+            state={{ ...props.state, messages: [oldUser, oldAssistant] }}
+        />);
+        await waitFor(() => expect(document.body.textContent || '').toContain('old history before slash clear'));
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: '/clear' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(clearAIAssistantHistoryForSessionMock).toHaveBeenCalledWith(`desktop-user:${projectPath}`));
+        expect(sendMessage).not.toHaveBeenCalled();
+        expect(document.body.textContent || '').not.toContain('old history before slash clear');
+        expect(document.body.textContent || '').not.toContain('old answer before slash clear');
+        expect(document.body.textContent || '').not.toContain('Conversation reset');
+        expect(document.body.textContent || '').not.toContain('\u5bf9\u8bdd\u5df2\u91cd\u7f6e');
+    });
+
+    it('typed /clear hides the coding plan checklist on a remote coding tab', async () => {
+        const projectPath = 'D:/tasks/remote-coding-slash-clear-plan';
+        getCodingWorkbenchStatusMock.mockResolvedValue({
+            kind: 'remote',
+            armed: true,
+            needs_reconnect: false,
+            turn_count: 1,
+            requirement_restatement: '在已有工作上继续这次提出的改动，先对齐现有实现再动手。',
+            step_statuses: [{ index: 1, title: 'failed', status: 'failed' }],
+        });
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const onHandled = vi.fn();
+        const { getByTestId, queryByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: 'Linux系统信息工具',
+                autoSend: false,
+                prepareMode: 'new-agent',
+                agentMode: 'remote_coding_dev',
+                remoteHost: 'www.driverdevelop.com',
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        await waitFor(() => expect(getByTestId('coding-agent-plan-checklist')).toBeTruthy());
+        expect(getByTestId('coding-agent-plan-understanding').textContent || '').toContain('对齐现有实现');
+        expect(getByTestId('coding-agent-plan-step-1').textContent || '').toMatch(/T1/);
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: '/clear' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(clearAIAssistantHistoryForSessionMock).toHaveBeenCalledWith(`desktop-user:${projectPath}`));
+        expect(sendMessage).not.toHaveBeenCalled();
+        expect(queryByTestId('coding-agent-plan-checklist')).toBeNull();
+        expect(document.body.textContent || '').not.toContain('对齐现有实现');
+
+        const stepsHandler = runtimeEventsOnMock.mock.calls
+            .filter(([eventName]) => eventName === 'coding-workbench-steps')
+            .at(-1)?.[1] as ((payload: unknown) => void) | undefined;
+        expect(stepsHandler).toEqual(expect.any(Function));
+        act(() => {
+            stepsHandler?.({
+                project_path: projectPath,
+                requirement_restatement: '对齐现有实现再动手。',
+                step_statuses: [{ index: 1, title: 'failed', status: 'failed' }],
+            });
+        });
+        expect(queryByTestId('coding-agent-plan-checklist')).toBeNull();
+        expect(document.body.textContent || '').not.toContain('对齐现有实现');
+    });
+
     it('does not resurrect cleared project tab history after closing and reopening', async () => {
         const projectPath = 'D:/tasks/project-clear-close-reopen';
         const onHandled = vi.fn();
@@ -6322,7 +6840,7 @@ describe('AIAssistantPanel property tests', () => {
         await waitFor(() => expect(onHandled).toHaveBeenCalled());
         fireEvent.click(getByTestId('ai-tab-local'));
         const input = getByTestId('ai-input') as HTMLTextAreaElement;
-        expect(input.placeholder).toBe('Running tools... (you can keep typing)');
+        expect(input.placeholder).toBe('Enter a task or command...');
         fireEvent.change(input, { target: { value: 'local detached should queue' } });
         fireEvent.keyDown(input, { key: 'Enter' });
 
@@ -6356,7 +6874,7 @@ describe('AIAssistantPanel property tests', () => {
 
         await waitFor(() => expect(onHandled).toHaveBeenCalled());
         const input = getByTestId('ai-input') as HTMLTextAreaElement;
-        expect(input.placeholder).toBe('Running tools... (you can keep typing)');
+        expect(input.placeholder).toBe('Enter a task or command...');
         expect(queryByTestId('coding-agent-progress')).toBeNull();
         fireEvent.change(input, { target: { value: 'project detached should queue' } });
         fireEvent.keyDown(input, { key: 'Enter' });
@@ -6389,7 +6907,8 @@ describe('AIAssistantPanel property tests', () => {
         });
 
         await waitFor(() => expect(onHandled).toHaveBeenCalled());
-        expect((getByTestId('ai-input') as HTMLTextAreaElement).placeholder).toBe('Working... (you can keep typing)');
+        expect((getByTestId('ai-input') as HTMLTextAreaElement).placeholder).toBe('Enter a task or command...');
+        expect(getByTestId('assistant-reasoning-label').textContent).toBe('Thinking');
 
         fireEvent.click(getByTestId('ai-tab-local'));
         expect((getByTestId('ai-input') as HTMLTextAreaElement).placeholder).toBe('Enter a task or command...');
@@ -6665,7 +7184,7 @@ describe('AIAssistantPanel property tests', () => {
             window: { inline: true, maximized: false, onToggleMaximize: vi.fn(), onHideWindow: vi.fn() },
         });
 
-        expect(getByTestId('ai-hide-toggle').getAttribute('title')).toBe('Minimize window');
+        expect(getByTestId('ai-hide-toggle').getAttribute('title')).toBe('Hide window');
         expect(getByTestId('ai-hide-toggle').querySelector('svg')).toBeTruthy();
         expect(getByTestId('ai-maximize-toggle').getAttribute('title')).toBe('Maximize window');
     });
@@ -6699,9 +7218,75 @@ describe('AIAssistantPanel property tests', () => {
 
         expect(getByTestId('ai-input-bar')).toBeTruthy();
         expect(getByTestId('ai-maximize-toggle').getAttribute('title')).toBe('Restore window');
+        expect(getByTestId('task-maximize-toggle').getAttribute('title')).toBe('Restore window');
         expect(getByTestId('ai-hide-toggle')).toBeTruthy();
         // Absolute popovers (notifications/update menu) require tools overflow visible.
         expect(getByTestId('ai-titlebar-tools-group').style.overflow).not.toBe('hidden');
+    });
+
+    it('restores a maximized execution view from the task header restore control', () => {
+        const onToggleMaximize = vi.fn();
+        const { getByTestId } = renderPanel({
+            lang: 'zh-Hans',
+            window: { inline: true, maximized: true, onToggleMaximize, onHideWindow: vi.fn() },
+            state: { messages: [{ id: 'msg-1', role: 'user', content: 'hello' }], sending: false, streaming: false, ready: true },
+        });
+
+        const restore = getByTestId('task-maximize-toggle');
+        expect(restore.getAttribute('title')).toBe('还原窗口');
+        expect(restore.getAttribute('aria-pressed')).toBe('true');
+        fireEvent.click(restore);
+        expect(onToggleMaximize).toHaveBeenCalledTimes(1);
+    });
+
+    it('double-clicking the maximized execution title bar restores the original size', () => {
+        const onToggleMaximize = vi.fn();
+        const { getByTestId } = renderPanel({
+            window: { inline: true, maximized: true, onToggleMaximize, onHideWindow: vi.fn() },
+            state: { messages: [{ id: 'msg-1', role: 'user', content: 'hello' }], sending: false, streaming: false, ready: true },
+        });
+
+        fireEvent.doubleClick(getByTestId('task-execution-header'));
+        expect(onToggleMaximize).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not restore when double-clicking a control in the execution header', () => {
+        const onToggleMaximize = vi.fn();
+        const { getByTestId } = renderPanel({
+            window: { inline: true, maximized: true, onToggleMaximize, onHideWindow: vi.fn() },
+            state: { messages: [{ id: 'msg-1', role: 'user', content: 'hello' }], sending: false, streaming: false, ready: true },
+        });
+
+        fireEvent.doubleClick(getByTestId('task-share-btn'));
+        expect(onToggleMaximize).not.toHaveBeenCalled();
+    });
+
+    it('lets the inline execution title bar drag the window, except action controls', () => {
+        const { getByTestId } = renderPanel({
+            window: { inline: true, maximized: false, onToggleMaximize: vi.fn(), onHideWindow: vi.fn() },
+            state: { messages: [{ id: 'msg-1', role: 'user', content: 'hello' }], sending: false, streaming: false, ready: true },
+        });
+
+        const header = getByTestId('task-execution-header');
+        const actions = getByTestId('task-execution-actions');
+        expect(header.hasAttribute('data-window-drag')).toBe(true);
+        expect(header.style.getPropertyValue('--wails-draggable')).toBe('drag');
+        expect(actions.hasAttribute('data-window-no-drag')).toBe(true);
+        expect(actions.style.getPropertyValue('--wails-draggable')).toBe('no-drag');
+
+        const leftoverTitleBar = getByTestId('ai-execution-secondary-titlebar');
+        expect(leftoverTitleBar.style.pointerEvents).toBe('none');
+        expect(leftoverTitleBar.getAttribute('aria-hidden')).toBe('true');
+    });
+
+    it('does not mark the overlay execution title bar as a window drag region', () => {
+        const { getByTestId } = renderPanel({
+            state: { messages: [{ id: 'msg-1', role: 'user', content: 'hello' }], sending: false, streaming: false, ready: true },
+        });
+
+        const header = getByTestId('task-execution-header');
+        expect(header.hasAttribute('data-window-drag')).toBe(false);
+        expect(header.style.getPropertyValue('--wails-draggable')).not.toBe('drag');
     });
 
     it('separates title bar tools from window controls', () => {
@@ -6734,8 +7319,31 @@ describe('AIAssistantPanel property tests', () => {
         expect(btn.getAttribute('title')).toBe('隐藏窗口');
         expect(btn.getAttribute('aria-label')).toBe('隐藏窗口');
         expect(btn.querySelector('svg')).toBeTruthy();
-        fireEvent.mouseDown(btn);
+        fireEvent.mouseDown(btn, { button: 0 });
         expect(onHideWindow).toHaveBeenCalledTimes(1);
+        fireEvent.click(btn, { detail: 0 });
+        expect(onHideWindow).toHaveBeenCalledTimes(2);
+    });
+
+    it('shows a maximize control on the execution header while chatting', () => {
+        const onToggleMaximize = vi.fn();
+        const { getByTestId } = renderPanel({
+            lang: 'zh-Hans',
+            window: { inline: true, maximized: false, onToggleMaximize, onHideWindow: vi.fn() },
+            state: { messages: [{ id: 'msg-1', role: 'user', content: 'hello', timestamp: Date.now() }], sending: false, streaming: false, ready: true },
+        });
+
+        const btn = getByTestId('task-maximize-toggle');
+        const controls = getByTestId('task-window-controls');
+        expect(controls.getAttribute('role')).toBe('group');
+        expect(controls.getAttribute('aria-label')).toBe('窗口控制');
+        expect(btn.getAttribute('title')).toBe('最大化窗口');
+        expect(btn.getAttribute('aria-pressed')).toBe('false');
+        expect(btn.querySelector('svg rect')).toBeTruthy();
+        expect(controls.lastElementChild).toBe(btn);
+        expect(getByTestId('task-hide-window').nextElementSibling).toBe(btn);
+        fireEvent.click(btn);
+        expect(onToggleMaximize).toHaveBeenCalledTimes(1);
     });
 
     it('omits the execution hide control when the window cannot be hidden', () => {
@@ -6745,7 +7353,9 @@ describe('AIAssistantPanel property tests', () => {
         });
 
         expect(getByTestId('task-execution-header')).toBeTruthy();
+        expect(queryByTestId('task-window-controls')).toBeNull();
         expect(queryByTestId('task-hide-window')).toBeNull();
+        expect(queryByTestId('task-maximize-toggle')).toBeNull();
     });
 
     it('Property 8: fields, actions, and errors are fully rendered', () => {

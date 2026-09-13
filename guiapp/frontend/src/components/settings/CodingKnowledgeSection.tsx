@@ -5,7 +5,7 @@ import { localizeText } from '../../i18n';
 import { useDialog } from '../CustomDialog';
 import { cfgVal, saveConfigPatch } from './programmingToolsConfig';
 import { CodingKnowledgeAuditDialog, CodingKnowledgeEditorDialog } from './CodingKnowledgeDialogs';
-import { SCOPE_TABS, TAB_LABELS, toDraft, useDebouncedValue, type ExperienceDraft, type ScopeTab } from './codingKnowledgeHelpers';
+import { SCOPE_TABS, TAB_LABELS, searchFilterFromScopeTab, toDraft, useDebouncedValue, type ExperienceDraft, type ScopeTab } from './codingKnowledgeHelpers';
 
 type Props = {
     config: corelib.AppConfig | null;
@@ -62,7 +62,7 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
         try {
             let results: any[];
             if (debouncedSearch.trim()) {
-                results = await CodingKnowledgeSearch(debouncedSearch, 50);
+                results = await CodingKnowledgeSearch(debouncedSearch, 50, searchFilterFromScopeTab(activeTab));
             } else {
                 const filter: any = { limit: 100 };
                 if (activeTab !== 'all') {
@@ -301,6 +301,16 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
                     {textForLang(lang, 'Knowledge base is empty — experiences will be collected as you code.', '知识库为空，编程时将自动积累经验。', '知識庫為空，程式設計時將自動積累經驗。')}
                 </div>
             )}
+            {autoSaveMode === 'auto' && (stats?.candidate_count || 0) > 0 ? (
+                <div className="prog-tools__kb-action-msg" role="status">
+                    {textForLang(
+                        lang,
+                        `${stats.candidate_count} candidate(s) awaiting review.`,
+                        `${stats.candidate_count} 条候选经验待审核。`,
+                        `${stats.candidate_count} 條候選經驗待審核。`,
+                    )}
+                </div>
+            ) : null}
 
             <div className="prog-tools__kb-config">
                 <div className="prog-tools__kb-config-item">
@@ -364,12 +374,16 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
 						onChange={(e) => patch({ coding_knowledge_max_reviewed_tokens_per_project: Number(e.target.value) || 0 })}
 					/>
 				</div>
+            </div>
+
+            <div className="prog-tools__kb-actions">
                 <button type="button" className="prog-tools__kb-btn" onClick={() => void handleExport()}>{textForLang(lang, 'Export', '导出', '匯出')}</button>
                 <button type="button" className="prog-tools__kb-btn" onClick={() => void handleImport()}>{textForLang(lang, 'Import', '导入', '匯入')}</button>
                 <button type="button" className="prog-tools__kb-btn" onClick={() => void handleContribute()}>{textForLang(lang, 'Submit to organization', '投稿到组织', '投稿到組織')}</button>
                 <button type="button" className="prog-tools__kb-btn" onClick={() => void handleEvict()}>{textForLang(lang, 'Run eviction', '执行淘汰', '執行淘汰')}</button>
                 <button
-                    className="prog-tools__btn-reset prog-tools__btn-reset--danger"
+                    type="button"
+                    className="prog-tools__kb-btn prog-tools__btn-reset prog-tools__btn-reset--danger"
                     onClick={() => void handleReset()}
                     aria-label={textForLang(lang, 'Clear all knowledge', '清空所有知识', '清空所有知識')}
                     title={textForLang(lang, 'Clear all knowledge', '清空所有知识', '清空所有知識')}

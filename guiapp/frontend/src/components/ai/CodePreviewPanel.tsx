@@ -20,10 +20,11 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { CodeFileDiffStat, FileTabBar, cycleFilePath } from './FileTabBar';
 import { CodePreviewFileListButton } from './CodePreviewFileList';
 import { PptxPreviewPanel, isPptxFileName } from './PptxPreviewPanel';
+import { PdfPreviewPanel, isPdfFileName } from './PdfPreviewPanel';
 import { PreviewFileActions } from './PreviewFileActions';
 import type { CodePreviewTheme } from './FileTabBar';
 import type { CodeFile } from './useCodePreviewState';
-import { codeFileLineDeltaHasChange, computeCodeFileLineDelta, getMruCycleOrder, isCodeFileDirty } from './useCodePreviewState';
+import { codeFileLineDeltaHasChange, computeCodeFileLineDelta, getDisplayFilePaths, getMruCycleOrder, isCodeFileDirty } from './useCodePreviewState';
 import { computeDiff } from './diffCompute';
 import type { DiffLine } from './diffCompute';
 import { tokenizeLine } from './syntaxHighlight';
@@ -266,6 +267,18 @@ function CloudWorkspaceNameLabel({ name, theme, compact = false }: { name: strin
 function isMarkdownLanguage(language: string | undefined | null): boolean {
     const key = (language || '').trim().toLowerCase();
     return key === 'markdown' || key === 'md';
+}
+
+function previewFileName(file: Pick<CodeFile, 'fileName' | 'filePath'> | undefined): string {
+    return file?.fileName || file?.filePath || '';
+}
+
+function isVisualDocumentPreview(file: Pick<CodeFile, 'fileName' | 'filePath' | 'absPath' | 'language'> | undefined): boolean {
+    if (!file) return false;
+    const name = previewFileName(file);
+    if (isPptxFileName(name) && file.absPath) return true;
+    if (isPdfFileName(name) || file.language === 'pdf') return true;
+    return false;
 }
 
 // ── Syntax color mapping ──
@@ -1044,11 +1057,6 @@ export function CodePreviewPanel({
     const activeFile = files.get(activeFilePath);
 
     useEffect(() => {
-        if (!projectPath) return;
-        if (cloudMode && activeFilePath && files.has(activeFilePath)) return;
-        setWorkspaceActive(true);
-    }, [projectPath, cloudMode, activeFilePath, files]);
-    useEffect(() => {
         if (!cloudMode) return;
         const focusTree = () => setWorkspaceActive(true);
         window.addEventListener(FOCUS_CLOUD_WORKSPACE_TREE_EVENT, focusTree);
@@ -1059,11 +1067,30 @@ export function CodePreviewPanel({
         if (!activeFilePath || !files.has(activeFilePath)) setWorkspaceActive(true);
     }, [activeFilePath, files]);
 
+    const workspaceTabRef = useRef<HTMLButtonElement>(null);
+    const tabStripRef = useRef<HTMLDivElement>(null);
+
+    const focusFileTab = useCallback((filePath: string) => {
+        const focus = () => {
+            const tabs = tabStripRef.current?.querySelectorAll('[data-testid="file-tab"]');
+            if (!tabs) return false;
+            for (let i = 0; i < tabs.length; i++) {
+                if (tabs[i].getAttribute('data-file-path') === filePath) {
+                    (tabs[i] as HTMLElement).focus();
+                    return true;
+                }
+            }
+            return false;
+        };
+        if (!focus()) requestAnimationFrame(focus);
+    }, []);
+
     const openWorkspaceFile = useCallback((file: CodeFile) => {
         onOpenWorkspaceFile?.(file);
         if (!onOpenWorkspaceFile) onSelectFile(file.filePath);
         setWorkspaceActive(false);
-    }, [onOpenWorkspaceFile, onSelectFile]);
+        focusFileTab(file.filePath);
+    }, [onOpenWorkspaceFile, onSelectFile, focusFileTab]);
 
     const handleWorkspaceFileDeleted = useCallback((deletedPath: string) => {
         if (!onCloseFile || !deletedPath) return;
@@ -1087,7 +1114,13 @@ export function CodePreviewPanel({
     const handleSelectFile = useCallback((filePath: string) => {
         setWorkspaceActive(false);
         onSelectFile(filePath);
-    }, [onSelectFile]);
+        focusFileTab(filePath);
+    }, [onSelectFile, focusFileTab]);
+
+    const activateWorkspaceTab = useCallback(() => {
+        setWorkspaceActive(true);
+        workspaceTabRef.current?.focus();
+    }, []);
 
     // Compute diff lines when active file has original content
     const diffLines = useMemo<DiffLine[] | null>(() => {
@@ -1317,15 +1350,16 @@ export function CodePreviewPanel({
     }, []);
 
     const handlePanelKeyDown = useCallback((e: React.KeyboardEvent) => {
+        const fileViewHotkeys = !workspaceActive;
         // Alt+Z — toggle word wrap (VS Code)
-        if (e.altKey && !e.ctrlKey && !e.metaKey && (e.key === 'z' || e.key === 'Z')) {
+        if (fileViewHotkeys && e.altKey && !e.ctrlKey && !e.metaKey && (e.key === 'z' || e.key === 'Z')) {
             e.preventDefault();
             e.stopPropagation();
             toggleWordWrap();
             return;
         }
         // Ctrl/Cmd + = / + — zoom in; - — zoom out; 0 — reset
-        if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+        if (fileViewHotkeys && (e.ctrlKey || e.metaKey) && !e.altKey) {
             if (e.key === '=' || e.key === '+') {
                 e.preventDefault();
                 e.stopPropagation();
@@ -1344,15 +1378,21 @@ export function CodePreviewPanel({
                 zoomReset();
                 return;
             }
+        }
+        if ((e.ctrlKey || e.metaKey) && !e.altKey) {
             // Ctrl/Cmd+Tab — MRU cycle even when focus is in the content/find area
             // (FileTabBar handles the same shortcut when the tab bar itself is focused).
             if (e.key === 'Tab') {
                 e.preventDefault();
                 e.stopPropagation();
                 if (files.size > 0) {
-                    const order = getMruCycleOrder(files, mruOrder ?? []);
-                    const next = cycleFilePath(order, activeFilePath, e.shiftKey ? -1 : 1);
-                    if (next) handleSelectFile(next);
+                    if (workspaceActive && activeFilePath && files.has(activeFilePath)) {
+                        handleSelectFile(activeFilePath);
+                    } else {
+                        const order = getMruCycleOrder(files, mruOrder ?? []);
+                        const next = cycleFilePath(order, activeFilePath, e.shiftKey ? -1 : 1);
+                        if (next) handleSelectFile(next);
+                    }
                 }
                 return;
             }
@@ -1365,14 +1405,14 @@ export function CodePreviewPanel({
             }
         }
         // Ctrl/Cmd+F — open find bar
-        if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'f' || e.key === 'F')) {
+        if (fileViewHotkeys && (e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'f' || e.key === 'F')) {
             e.preventDefault();
             e.stopPropagation();
             openFind();
             return;
         }
         // Ctrl/Cmd+G — go to line
-        if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'g' || e.key === 'G')) {
+        if (fileViewHotkeys && (e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'g' || e.key === 'G')) {
             e.preventDefault();
             e.stopPropagation();
             openGoto();
@@ -1415,6 +1455,7 @@ export function CodePreviewPanel({
         onCloseFile,
         handleSelectFile,
         openFind,
+        workspaceActive,
         openGoto,
         toggleWordWrap,
         zoomIn,
@@ -1595,9 +1636,23 @@ export function CodePreviewPanel({
                     '--wails-draggable': 'no-drag',
                 } as any}
             >
+                <CodePreviewFileListButton
+                    files={files}
+                    pinnedPaths={pinnedPaths || []}
+                    activeFilePath={activeFilePath}
+                    theme={theme}
+                    lang={lang}
+                    onSelectFile={handleSelectFile}
+                />
                 <div
+                    ref={tabStripRef}
                     data-preview-no-maximize="true"
+                    data-testid="code-preview-tab-strip"
+                    role="tablist"
+                    aria-label={lang.startsWith('zh') ? '代码预览标签' : 'Code preview tabs'}
                     style={{
+                        display: 'flex',
+                        alignItems: 'stretch',
                         flex: 1,
                         minWidth: 0,
                         // Keep open-editors dropdown paintable outside the strip.
@@ -1605,25 +1660,28 @@ export function CodePreviewPanel({
                         '--wails-draggable': 'no-drag',
                     } as any}
                 >
-                    <CodePreviewFileListButton
-                        files={files}
-                        pinnedPaths={pinnedPaths || []}
-                        activeFilePath={activeFilePath}
-                        theme={theme}
-                        lang={lang}
-                        onSelectFile={handleSelectFile}
-                    />
                     <button
+                        ref={workspaceTabRef}
                         type="button"
                         role="tab"
                         aria-selected={workspaceActive}
                         data-testid="code-preview-workspace-tab"
-                        onClick={() => setWorkspaceActive(true)}
+                        onClick={activateWorkspaceTab}
+                        onKeyDown={(event) => {
+                            if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft' && event.key !== 'Home' && event.key !== 'End') return;
+                            const order = getDisplayFilePaths(files, pinnedPaths || []);
+                            if (order.length === 0) return;
+                            event.preventDefault();
+                            event.stopPropagation();
+                            if (event.key === 'Home') return;
+                            const target = event.key === 'ArrowRight' ? order[0] : order[order.length - 1];
+                            handleSelectFile(target);
+                        }}
                         style={{
                             display: 'inline-flex',
                             alignItems: 'center',
                             gap: 6,
-                            flexShrink: 1,
+                            flexShrink: 0,
                             minWidth: 0,
                             height: 36,
                             padding: '0 10px',
@@ -1643,24 +1701,30 @@ export function CodePreviewPanel({
                         {cloudMode ? (lang.startsWith('zh') ? '云端文件' : 'Cloud files') : (lang.startsWith('zh') ? '工作目录' : 'Working directory')}
                         {cloudMode ? <CloudWorkspaceNameLabel name={resolvedCloudName} theme={theme} compact /> : null}
                     </button>
-                    <FileTabBar
-                        files={files}
-                        activeFilePath={activeFilePath}
-                        pinnedPaths={pinnedPaths}
-                        mruOrder={mruOrder}
-                        onSelectFile={handleSelectFile}
-                        onCloseFile={onCloseFile}
-                        onCloseOtherFiles={onCloseOtherFiles}
-                        onCloseFilesToTheRight={onCloseFilesToTheRight}
-                        onCloseAllFiles={onCloseAllFiles}
-                        onMoveFile={onMoveFile}
-                        onTogglePinFile={onTogglePinFile}
-                        theme={theme}
-                        lang={lang}
-                        cloudMode={cloudMode}
-                    />
+                    <div style={{ flex: 1, minWidth: 0, display: 'flex' }}>
+                        <FileTabBar
+                            files={files}
+                            activeFilePath={activeFilePath}
+                            highlightActiveFile={!workspaceActive}
+                            embedded
+                            onArrowBeforeFirst={activateWorkspaceTab}
+                            onArrowAfterLast={activateWorkspaceTab}
+                            pinnedPaths={pinnedPaths}
+                            mruOrder={mruOrder}
+                            onSelectFile={handleSelectFile}
+                            onCloseFile={onCloseFile}
+                            onCloseOtherFiles={onCloseOtherFiles}
+                            onCloseFilesToTheRight={onCloseFilesToTheRight}
+                            onCloseAllFiles={onCloseAllFiles}
+                            onMoveFile={onMoveFile}
+                            onTogglePinFile={onTogglePinFile}
+                            theme={theme}
+                            lang={lang}
+                            cloudMode={cloudMode}
+                        />
+                    </div>
                 </div>
-                {!activeFile || !isPptxFileName(activeFile.fileName || activeFile.filePath) ? (
+                {!workspaceActive && !isVisualDocumentPreview(activeFile) ? (
                 <CodePreviewViewToolbar
                     wordWrap={wordWrap}
                     fontSize={fontSize}
@@ -1868,15 +1932,21 @@ export function CodePreviewPanel({
                 className="ai-chat-scrollbar"
                 style={{
                     flex: 1,
-                    overflowY: 'auto',
-                    overflowX: 'auto',
+                    overflowY: isVisualDocumentPreview(activeFile) ? 'hidden' : 'auto',
+                    overflowX: isVisualDocumentPreview(activeFile) ? 'hidden' : 'auto',
                     minHeight: 0,
                 }}
             >
                 {workspaceActive ? (
-                    <CodePreviewWorkspace projectPath={projectPath} refreshToken={workspaceRefreshToken} resetOnRefresh={workspaceResetOnRefresh} cloudMode={cloudMode} lang={lang} theme={theme} onOpenFile={openWorkspaceFile} onFileDeleted={handleWorkspaceFileDeleted} />
+                    <CodePreviewWorkspace projectPath={projectPath} refreshToken={workspaceRefreshToken} resetOnRefresh={workspaceResetOnRefresh} cloudMode={cloudMode} hideTitle lang={lang} theme={theme} onOpenFile={openWorkspaceFile} onFileDeleted={handleWorkspaceFileDeleted} />
                 ) : activeFile && isPptxFileName(activeFile.fileName || activeFile.filePath) && activeFile.absPath ? (
                     <PptxPreviewPanel absPath={activeFile.absPath} theme={theme} lang={lang} />
+                ) : activeFile && (isPdfFileName(previewFileName(activeFile)) || activeFile.language === 'pdf') ? (
+                    <PdfPreviewPanel
+                        absPath={activeFile.absPath || activeFile.filePath}
+                        theme={theme}
+                        lang={lang}
+                    />
                 ) : activeFile ? (
                     diffLines ? (
                         <DiffView

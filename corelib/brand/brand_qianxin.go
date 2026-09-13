@@ -9,7 +9,7 @@ func init() {
 		DisplayNameCN:   "虎爪",
 		WindowTitle:     "QAgent",
 		TrayTooltip:     "QAgent Dashboard",
-		Slogan:          "像虎一样灵巧勇猛。",
+		Slogan:          "AI Native 组织操作系统",
 		Author:          "Dr. Daniel",
 		BusinessContact: "联系信息：QianXin",
 		WebsiteURL:      "https://www.qianxin.com",

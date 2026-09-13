@@ -181,6 +181,27 @@ func guiRecoveryWorkspaceProber(task codingruntime.Task) (codingruntime.Workspac
 	}
 }
 
+// ensureGUIRemoteGitBaseline is the remote counterpart of
+// codingruntime.EnsureLocalGitBaseline. The read-only workspace probe cannot
+// initialize a repository, so a gated remote writer must establish HEAD on the
+// already-verified SSH session before Runner starts. Failure is logged by the
+// caller; the existing probe then blocks the attempt instead of executing.
+func ensureGUIRemoteGitBaseline(ctx context.Context, handler *IMMessageHandler, sessionID, projectDir, expectedIdentity string) error {
+	sessionID, projectDir, expectedIdentity = strings.TrimSpace(sessionID), strings.TrimSpace(projectDir), strings.TrimSpace(expectedIdentity)
+	if handler == nil || sessionID == "" || projectDir == "" || expectedIdentity == "" {
+		return fmt.Errorf("remote git baseline binding is incomplete")
+	}
+	request, err := codingruntime.NewRemoteGitBaselineRequest(projectDir)
+	if err != nil {
+		return err
+	}
+	output, err := handler.sshExecRuntimeBoundContext(ctx, sessionID, request.Command, 30, expectedIdentity, projectDir)
+	if err != nil {
+		return err
+	}
+	return request.Result(output)
+}
+
 // newGUIRemoteWorkspaceProber checks the currently live SSH session before it
 // submits a deliberately read-only git command. It never reconnects a dead
 // session: reconnecting can silently bind recovery to a different host.

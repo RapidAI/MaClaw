@@ -587,7 +587,6 @@ type RemoteHubCenterHub struct {
 	HubID          string `json:"hub_id"`
 	Name           string `json:"name"`
 	BaseURL        string `json:"base_url"`
-	PWAURL         string `json:"pwa_url"`
 	Visibility     string `json:"visibility"`
 	EnrollmentMode string `json:"enrollment_mode"`
 	Status         string `json:"status"`
@@ -1866,7 +1865,6 @@ func (a *App) ListRemoteHubs(centerURL string, email string) ([]RemoteHubCenterH
 			HubID:          hub.HubID,
 			Name:           hub.Name,
 			BaseURL:        strings.TrimRight(strings.TrimSpace(hub.BaseURL), "/"),
-			PWAURL:         strings.TrimSpace(hub.PWAURL),
 			Visibility:     hub.Visibility,
 			EnrollmentMode: hub.EnrollmentMode,
 			Status:         hub.Status,

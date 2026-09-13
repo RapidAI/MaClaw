@@ -52,9 +52,9 @@ export const GeneralSettingsOptionGrid = ({ effectiveConfig, lang, saveConfigPat
         </label>
 
         <label className="general-settings-option">
-            <input type="checkbox" aria-label={textForLang(lang, 'Show Hub ranking badge', '显示 Hub 排名勋章', '顯示 Hub 排名勳章')} checked={(effectiveConfig as (corelib.AppConfig & { show_hub_ranking?: boolean }) | null)?.show_hub_ranking !== false} onChange={(e) => saveConfigPatch({ show_hub_ranking: e.target.checked })} />
-            <span>{textForLang(lang, 'Show Hub ranking badge', '显示 Hub 排名勋章', '顯示 Hub 排名勳章')}</span>
-            <small>{textForLang(lang, 'Display a medal in the sidebar when you rank top 3 this month.', '本月排名前 3 时在侧边栏显示奖牌。', '本月排名前 3 時在側邊欄顯示獎牌。')}</small>
+            <input type="checkbox" aria-label={textForLang(lang, 'Show Hub ranking', '显示 Hub 排名', '顯示 Hub 排名')} checked={(effectiveConfig as (corelib.AppConfig & { show_hub_ranking?: boolean }) | null)?.show_hub_ranking !== false} onChange={(e) => saveConfigPatch({ show_hub_ranking: e.target.checked })} />
+            <span>{textForLang(lang, 'Show Hub ranking', '显示 Hub 排名', '顯示 Hub 排名')}</span>
+            <small>{textForLang(lang, 'Show ranking in the system menu and open the Hub leaderboard.', '在系统菜单中显示排名，点击后打开 Hub 排行榜。', '在系統選單中顯示排名，點擊後打開 Hub 排行榜。')}</small>
         </label>
     </div>
 );

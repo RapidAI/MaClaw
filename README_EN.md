@@ -213,7 +213,7 @@ MaClaw isn't limited to one interface — collaborate through multiple entry poi
 | **Desktop AI Assistant Panel** | Native GUI with streaming output, workflow previews, expert switching, knowledge and settings |
 | **Terminal TUI** | Command-line interface with chat, memory viewer, skill management, scrollbar, and streaming |
 | **WeChat / Feishu / QQ / Telegram / Lansenger** | Local or Hub-bound IM; Lansenger supports group policy, @-gating, group knowledge sources, and file send |
-| **Hub PWA / Mobile** | Self-hosted Hub `/app` PWA for cross-device sessions and remote collaboration |
+| **Hub Remote Access** | Self-hosted Hub admin console and remote-session APIs for cross-device collaboration |
 | **VS Code ACP** | Built-in ACP host and VS Code extension assets for the coding workbench |
 | **Third-party device gateway** | Local HTTP gateway (default `127.0.0.1:18777`) for ESP32 and custom hardware (voice pairing, message poll) |
 | **REST API (MaClawSrv)** | Multi-tenant REST service for external programs, automation platforms, and control planes |
@@ -303,7 +303,7 @@ Passthrough Tasks are pre-registered commands for **emergency ops, rescue, and r
 * **Digital assets & knowledge share**: Knowledge host, share import, backup merge
 * **Experts & discussion**: Hub expert store; **A2A group discussion** (`corelib/a2a` + desktop `group_discussion`) — multi-agent consultation, invites, majority/unanimous decision policies
 * **Workflow approval & market**: Hub workflow runtime, confirmation/approval, market listing
-* **PWA**: `/app` mobile/browser entry; backup/restore CLI for disaster recovery
+* **Remote access**: Hub admin console and remote-session APIs; backup/restore CLI for disaster recovery
 * **HA**: Multiple Hub Center base URLs (see `docs/hubcenter-ha-3nodes.md`)
 
 Desktop agents can also use `switch_llm_provider`, `set_nickname` (Hub group nicknames), and `im_message` to push text/files to IM targets.

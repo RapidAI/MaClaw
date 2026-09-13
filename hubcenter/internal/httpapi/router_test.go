@@ -503,9 +503,6 @@ func TestRegisterHeartbeatAndResolveHandlers(t *testing.T) {
 	if resolveResult.Mode != "single" {
 		t.Fatalf("expected single mode, got %+v", resolveResult)
 	}
-	if resolveResult.DefaultPWA == "" {
-		t.Fatalf("expected default pwa url, got %+v", resolveResult)
-	}
 	if resolveResult.DefaultHubID != registerResult["hub_id"] {
 		t.Fatalf("expected default hub %v, got %+v", registerResult["hub_id"], resolveResult)
 	}

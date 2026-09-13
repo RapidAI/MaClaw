@@ -176,6 +176,8 @@ export interface AIAssistantPanelProps {
     tasksLoaded?: boolean;
     /** Opens a task-list row that has no open assistant tab yet. */
     onOpenTask?: (projectPath: string, task?: TaskManagementItem) => void;
+    brandId?: string | null;
+    brandDisplayNameCN?: string | null;
 }
 
 export type AIAssistantPanelCompatProps = AIAssistantPanelProps & AIAssistantPanelStateProps & AIAssistantPanelActionProps & AIAssistantPanelWindowProps;

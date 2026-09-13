@@ -32,7 +32,6 @@ This folder now uses a thin-shell structure.
 - im-tab.js: IM sub-pane routing and bridge integrations
 - feishu-tab.js: Feishu settings and bindings
 - invitation-tab.js: recharge/invitation code management
-- pwa-tab.js: PWA approvals and pending logins
 - system-tab.js: mail, TLS, admin profile/password
 - cloud-workspace-tab.js: tenant cloud-workspace settings card and org-tree picker
 - compute-tab.js: compute placeholders

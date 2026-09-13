@@ -1659,6 +1659,40 @@ func TestCreateCodingTaskInheritsCurrentWorkingDir(t *testing.T) {
 	}
 }
 
+func TestCodingWorkbenchPreviewUsesTaskWorkingDirWhenDesktopDiffers(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	desktopDir := filepath.Join(t.TempDir(), "personal-intro")
+	taskDir := filepath.Join(t.TempDir(), "test-prog")
+	for _, dir := range []string{desktopDir, taskDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll(%q): %v", dir, err)
+		}
+	}
+	if err := app.SetTabWorkingDir("", desktopDir); err != nil {
+		t.Fatalf("SetTabWorkingDir main: %v", err)
+	}
+
+	created := app.CreateTaskWithMode("新建本地编程任务", taskDir, "coding_dev")
+	if created.ProjectPath == "" {
+		t.Fatal("CreateTaskWithMode returned empty project path")
+	}
+	if created.WorkingDir != filepath.Clean(taskDir) {
+		t.Fatalf("WorkingDir = %q, want task dir %q", created.WorkingDir, filepath.Clean(taskDir))
+	}
+	// Preview listing happens before CreateProjectTabSession binds the owner
+	// override. It must still use the task workspace, not the main-session dir.
+	if got := app.EffectiveWorkingDirForOwner(projectSessionOwnerID(created.ProjectPath)); filepath.Clean(got) != filepath.Clean(taskDir) {
+		t.Fatalf("unbound owner working dir = %q, want task dir %q (not desktop %q)", got, filepath.Clean(taskDir), filepath.Clean(desktopDir))
+	}
+	root, err := codingWorkbenchBrowserLocalRoot(app, created.ProjectPath)
+	if err != nil {
+		t.Fatalf("codingWorkbenchBrowserLocalRoot: %v", err)
+	}
+	if filepath.Clean(root) != filepath.Clean(taskDir) {
+		t.Fatalf("preview root = %q, want task dir %q (not desktop %q)", root, filepath.Clean(taskDir), filepath.Clean(desktopDir))
+	}
+}
+
 func TestSetTabWorkingDirSyncsCodingWorkbenchDir(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 	initial := filepath.Join(t.TempDir(), "initial")

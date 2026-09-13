@@ -2098,7 +2098,6 @@ func (s *Service) DeleteUserRoute(ctx context.Context, email string, tenantIDOpt
 func (s *Service) registrationCapabilities(ctx context.Context) map[string]any {
 	caps := map[string]any{
 		"supports_remote_control":      true,
-		"supports_pwa":                 true,
 		"supports_tools":               brandTools(),
 		"supports_user_data_migration": true,
 		"brand":                        brand.Current().DisplayName,

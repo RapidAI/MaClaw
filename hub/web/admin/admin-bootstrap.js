@@ -13,7 +13,6 @@
       ['im', 'imTabTitle', 'imTabSubtitle'],
       ['machines', 'machinesTabTitle', 'machinesTabSubtitle'],
       ['invitationcodes', 'invitationCodesTabTitle', 'invitationCodesTabSubtitle'],
-      ['pwarequests', 'pwaRequestsTabTitle', 'pwaRequestsTabSubtitle'],
       ['console', 'consoleTabTitle', 'consoleTabSubtitle']
     ].forEach(function(def) {
       global.AdminTabRegistry.registerTab({
@@ -58,7 +57,7 @@
     var profile = typeof global.adminProfile === 'function' ? global.adminProfile() : null;
     var tenantAdmin = isTenantAdminProfile(profile);
     var tasks = tenantAdmin
-      ? ['loadOverviewTenantInfo', 'loadTenants', 'loadBlockedEmails', 'loadBoundUsers', 'loadInvites', 'loadMachines', 'loadPwaEnrollments', 'loadMarketplace', 'loadTenantMailSenderName', 'loadTenantMigrationSettings', 'loadTenantDigitalAssetsSettings', 'loadTenantCloudWorkspaceSettings', 'loadTenantSystemLLMDefaults', 'checkComputeAuthorization', 'loadLlmProviders', 'loadLlmServiceGroups', 'loadUsageStats', 'loadFailureLogs']
+      ? ['loadOverviewTenantInfo', 'loadTenants', 'loadBlockedEmails', 'loadBoundUsers', 'loadInvites', 'loadMachines', 'loadMarketplace', 'loadTenantMailSenderName', 'loadTenantMigrationSettings', 'loadTenantDigitalAssetsSettings', 'loadTenantCloudWorkspaceSettings', 'loadTenantSystemLLMDefaults', 'checkComputeAuthorization', 'loadLlmProviders', 'loadLlmServiceGroups', 'loadUsageStats', 'loadFailureLogs']
       : ['loadOverviewTenantInfo', 'loadCenterStatus', 'loadMailConfig', 'loadTenants'];
     var results = await Promise.allSettled(tasks.map(callIfAvailable));
     reportRefreshFailures(results);

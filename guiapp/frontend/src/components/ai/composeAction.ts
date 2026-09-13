@@ -172,6 +172,12 @@ export function isBtwCommandText(text: string): boolean {
     return /^\/btw(?:\s|$)/i.test(text.trim());
 }
 
+/** True when text is an explicit conversation-reset slash command. */
+export function isHistoryResetCommandText(text: string): boolean {
+    const trimmed = text.trim().toLowerCase();
+    return trimmed === "/new" || trimmed === "/reset" || trimmed === "/clear";
+}
+
 /**
  * Skill / MCP / Plugin install-or-search commands for the AI assistant panel.
  * Handled immediately by the backend (no agent loop) — same class as /help.

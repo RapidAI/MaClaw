@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from 'react';
 import { useDialog } from '../CustomDialog';
 import { StatusGlyph } from '../ai/WorkbenchIcons';
+import { consumePendingFileLibraryOpen, OPEN_FILE_LIBRARY_EVENT, type FileLibraryOpenDetail } from '../../utils/fileLibraryNavigation';
 
 export type MobileDocumentDraftImage = {
   id: string;
@@ -649,6 +650,9 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
   const [quota, setQuota] = useState<MobileDocumentQuota | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragDepth = useRef(0);
+  const pendingSelectIdRef = useRef('');
+  const draftsRef = useRef<MobileLibraryItem[]>([]);
+  draftsRef.current = drafts;
   // State updates do not take effect until the next render, so use a ref to
   // synchronously guard the destructive confirmation and request lifecycle.
   const deleteInFlightRef = useRef(false);
@@ -671,7 +675,22 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
       ]);
       const next = Array.isArray(list) ? list : [];
       setDrafts(next);
+      draftsRef.current = next;
       if (quotaResult) setQuota(quotaResult);
+      const pendingId = pendingSelectIdRef.current.trim();
+      if (pendingId) {
+        const found = next.find((item) => item.id === pendingId);
+        if (found) {
+          pendingSelectIdRef.current = '';
+          setSelected(found);
+          try {
+            const full = await callGetLibraryItem(found.id);
+            setSelected({ ...found, ...full });
+          } catch {
+            // keep list row
+          }
+        }
+      }
       return next;
     } catch (e: any) {
       setError(String(e?.message || e || 'load failed'));
@@ -683,17 +702,47 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
     }
   }, []);
 
+  const applyLibraryOpen = useCallback((detail?: FileLibraryOpenDetail | null) => {
+    if (!detail) return;
+    const id = String(detail.documentId || '').trim();
+    if (detail.query != null) setFilter(detail.query);
+    else if (id) setFilter('');
+    if (!id) return;
+    pendingSelectIdRef.current = id;
+    const found = draftsRef.current.find((item) => item.id === id);
+    if (!found) return;
+    pendingSelectIdRef.current = '';
+    setSelected(found);
+    void callGetLibraryItem(found.id).then((full) => {
+      setSelected((current) => current?.id === found.id ? { ...found, ...full } : current);
+    }).catch(() => {
+      // keep list row
+    });
+  }, []);
+
   useEffect(() => {
     if (open) {
+      const pending = consumePendingFileLibraryOpen();
       void refresh();
       setSelected(null);
       setBanner('');
       setJobs([]);
-      setFilter('');
+      setFilter(pending?.query || '');
+      pendingSelectIdRef.current = pending?.documentId || '';
       dragDepth.current = 0;
       setDragOver(false);
     }
   }, [open, refresh]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onOpen = (event: Event) => {
+      consumePendingFileLibraryOpen();
+      applyLibraryOpen((event as CustomEvent<FileLibraryOpenDetail>).detail);
+    };
+    window.addEventListener(OPEN_FILE_LIBRARY_EVENT, onOpen);
+    return () => window.removeEventListener(OPEN_FILE_LIBRARY_EVENT, onOpen);
+  }, [applyLibraryOpen, open]);
 
   // Close only via explicit Close / Esc — not when clicking the dimmed main window.
   // Inline mode is a regular page: navigation, not Esc, leaves it.
@@ -714,7 +763,7 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
     const q = filter.trim().toLowerCase();
     if (!q) return drafts;
     return drafts.filter((d) => {
-      const hay = `${d.title || ''} ${d.preview || ''} ${d.id || ''}`.toLowerCase();
+      const hay = `${d.title || ''} ${d.preview || ''} ${d.source_filename || ''} ${d.id || ''}`.toLowerCase();
       return hay.includes(q);
     });
   }, [drafts, filter]);

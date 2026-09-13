@@ -148,6 +148,35 @@ describe('AssistantTitleBar', () => {
         expect(onHideWindow).toHaveBeenCalledTimes(1);
     });
 
+    it('does not toggle twice when the maximize control is double-clicked', () => {
+        const onToggleMaximize = vi.fn();
+        render(
+            <AssistantTitleBar
+                clearHistory={vi.fn()}
+                inline
+                lang="zh"
+                maximized
+                onClose={vi.fn()}
+                onToggleMaximize={onToggleMaximize}
+                projectSearchOpen={false}
+                refreshNews={vi.fn()}
+                showMaximizeToggle
+                theme={overlayTheme}
+                themeMode="light"
+                title="默认任务"
+                trialReflectEnabled={false}
+                toggleProjectSearch={vi.fn()}
+            />,
+        );
+
+        const btn = screen.getByTestId('ai-maximize-toggle');
+        fireEvent.click(btn, { detail: 1 });
+        fireEvent.click(btn, { detail: 2 });
+        fireEvent.doubleClick(btn);
+        expect(onToggleMaximize).toHaveBeenCalledTimes(1);
+        expect(btn.getAttribute('title')).toBe('还原窗口');
+    });
+
     it('shows the Preview toggle for cloud workspaces even when the panel is closed', () => {
         render(
             <AssistantTitleBar

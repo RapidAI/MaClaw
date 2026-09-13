@@ -21,6 +21,10 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     DownloadCodingWorkbenchEntry: vi.fn(async () => ''),
     DeleteCodingWorkbenchEntry: vi.fn(async () => undefined),
     CloudWorkspaceEntitlement: () => cloudEntitlement(),
+    PreviewTaskResultFile: vi.fn(async () => ({ kind: 'pdf' })),
+    PptxPreviewEnsure: vi.fn(async () => ({ images: [] })),
+    PptxSlideThumbnailDataURL: vi.fn(async () => ''),
+    AIAssistantAttachmentFullDataURL: vi.fn(async () => ''),
 }));
 
 vi.mock('../../CustomDialog', () => ({

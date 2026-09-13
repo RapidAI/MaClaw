@@ -1,30 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArchiveProject, DeleteTask, GetArchivedExperience, GetProjectScene, OpenFileOrShowInFolder, PinTask, RenameTask, ResumeTask, SearchTasks } from "../../../wailsjs/go/main/App";
+import { ArchiveProject, DeleteTask, GetArchivedExperience, GetProjectScene, OpenFileOrShowInFolder, PinTask, RenameTask, ResumeTask } from "../../../wailsjs/go/main/App";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { localizeText } from "./aiAssistantI18n";
+import { openFileLibrary } from "../../utils/fileLibraryNavigation";
+import { openKnowledgeSearch } from "../../utils/knowledgeSearchNavigation";
+import { openExpertConversation } from "../../utils/expertConversationNavigation";
 import { ProjectSearchArchivedPanel } from "./ProjectSearchArchivedPanel";
 import { ProjectSearchForkForm } from "./ProjectSearchForkForm";
 import { ProjectSearchIcon } from "./ProjectSearchIcon";
-import { ProjectSceneDetailPanel, type ProjectSceneDetail, type ProjectSearchArtifact } from "./ProjectSceneDetailPanel";
+import { LibrarySearchRow, SearchSectionLabel } from "./ProjectSearchLibraryRows";
+import { ProjectSceneDetailPanel, type ProjectSceneDetail } from "./ProjectSceneDetailPanel";
 import { agentModeFromTaskTags, isCodingWorkflowSourceTags, isPureCodingTaskTags, isRemoteMaintenanceTaskTags, isVisibleTaskRow, remoteHostFromTaskTags } from "./codingTaskMode";
 import { expertIDFromTaskTags, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache } from "./aiAssistantPanelSessionUtils";
 import { useDialog } from "../CustomDialog";
+import { useProjectSearch, type ProjectSearchItem } from "./useProjectSearch";
+import type { HeaderExpertSearchHit, HeaderFileSearchHit, HeaderKnowledgeSearchHit } from "./unifiedHeaderSearch";
 
-interface ProjectSearchItem {
-    id: string;
-    name: string;
-    project_path: string;
-    workflow_type?: string;
-    preview?: string;
-    tags?: string[];
-    last_activity?: string;
-    entry_count?: number;
-    pinned?: boolean;
-    archived?: boolean;
-    has_output?: boolean;
-    source_urls?: string[];
-    recent_artifacts?: ProjectSearchArtifact[];
-}
+export { useProjectSearch } from "./useProjectSearch";
 
 function formatArtifactSummary(item: ProjectSearchItem, lang: string, includeSource = false): string {
     const artifact = item.recent_artifacts?.find(a => a.title || a.preview || a.source_url);
@@ -46,55 +38,6 @@ function formatWorkflowType(type: string | undefined, lang: string): string {
     };
     const hit = labels[type];
     return hit ? (lang === "en" ? hit.en : hit.zh) : type.replace(/_/g, " ");
-}
-
-export function useProjectSearch(lang: string) {
-    const [open, setOpen] = useState(false);
-    const [query, setQuery] = useState("");
-    const [results, setResults] = useState<ProjectSearchItem[]>([]);
-    const [loading, setLoading] = useState(false);
-    const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-    const doSearch = useCallback((q: string) => {
-        setLoading(true);
-        SearchTasks(q, 20)
-            .then(r => setResults(((r || []) as ProjectSearchItem[]).filter(isVisibleTaskRow)))
-            .catch(() => setResults([]))
-            .finally(() => setLoading(false));
-    }, []);
-
-    useEffect(() => { if (open && query === "") doSearch(""); }, [open, query, doSearch]);
-    useEffect(() => () => { if (debounceRef.current) clearTimeout(debounceRef.current); }, []);
-
-    const onQueryChange = useCallback((value: string) => {
-        setQuery(value);
-        if (debounceRef.current) clearTimeout(debounceRef.current);
-        debounceRef.current = setTimeout(() => doSearch(value), 250);
-    }, [doSearch]);
-
-    const close = useCallback(() => { setOpen(false); setQuery(""); }, []);
-    const toggle = useCallback(() => { setOpen(v => !v); }, []);
-    const openWithQuery = useCallback((value = "") => {
-        if (debounceRef.current) clearTimeout(debounceRef.current);
-        setOpen(true);
-        setQuery(value);
-        if (value.trim()) doSearch(value);
-    }, [doSearch]);
-    const refresh = useCallback(() => doSearch(query), [doSearch, query]);
-
-    const formatTime = useCallback((iso?: string): string => {
-        if (!iso) return "";
-        try {
-            const d = new Date(iso);
-            const diffH = Math.floor((Date.now() - d.getTime()) / 3600000);
-            if (diffH < 1) return localizeText(lang, "just now", "\u521a\u521a");
-            if (diffH < 24) return `${diffH}${localizeText(lang, "h ago", "\u5c0f\u65f6\u524d")}`;
-            const diffD = Math.floor(diffH / 24);
-            return diffD < 7 ? `${diffD}${localizeText(lang, "d ago", "\u5929\u524d")}` : d.toLocaleDateString();
-        } catch { return ""; }
-    }, [lang]);
-
-    return { open, query, results, loading, toggle, close, openWithQuery, onQueryChange, refresh, formatTime };
 }
 
 export function ProjectSearchPanel({ search, lang, theme: t, inline, active = true, onProjectSwitch, onCreateProjectTab, onCloseProjectTab, onForkCurrentChat, onTaskPrefsChanged }: {
@@ -131,6 +74,11 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, active = tr
     const activeRef = useRef(active);
     activeRef.current = active;
     const visibleResults = search.results.filter(isVisibleTaskRow);
+    const fileResults = search.fileResults || [];
+    const knowledgeResults = search.knowledgeResults || [];
+    const expertResults = search.expertResults || [];
+    const showSectionLabels = [visibleResults.length, fileResults.length, knowledgeResults.length, expertResults.length].filter(count => count > 0).length > 1;
+    const hasAnyResults = visibleResults.length > 0 || fileResults.length > 0 || knowledgeResults.length > 0 || expertResults.length > 0;
 
     useEffect(() => { if (search.open) inputRef.current?.focus(); }, [search.open]);
     useEffect(() => {
@@ -191,6 +139,18 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, active = tr
         }
     }, [lang, search]);
 
+    const onSelectFile = useCallback((item: HeaderFileSearchHit) => {
+        search.close();
+        openFileLibrary({ documentId: item.id });
+    }, [search]);
+    const onSelectKnowledge = useCallback((item: HeaderKnowledgeSearchHit) => {
+        search.close();
+        openKnowledgeSearch({ query: search.query.trim() || item.title });
+    }, [search]);
+    const onSelectExpert = useCallback((item: HeaderExpertSearchHit) => {
+        search.close();
+        openExpertConversation(item.expert);
+    }, [search]);
     const onSelect = useCallback(async (item: ProjectSearchItem) => {
         if (renamingPath) return;
         if (item.archived) { await openArchived(item); return; }
@@ -220,7 +180,7 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, active = tr
         <div ref={panelRef} style={{ flexShrink: 0, borderBottom: `1px solid ${t.titleBarBorder}`, background: t.titleBarBg, zIndex: 30000, position: "relative", overflow: "visible" }}>
             <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "6px 12px" }}>
                 <span style={{ color: t.textMuted, opacity: 0.8, flexShrink: 0 }}><ProjectSearchIcon name="search" /></span>
-                <input ref={inputRef} type="text" value={search.query} onChange={event => search.onQueryChange(event.target.value)} onKeyDown={event => { if (event.key === "Escape") search.close(); }} placeholder={localizeText(lang, "Search tasks...", "\u641c\u7d22\u4efb\u52a1...")} style={{ flex: 1, border: "none", outline: "none", background: "transparent", color: t.text, fontSize: "13px", fontFamily: "inherit", padding: "4px 0", minWidth: 0 }} />
+                <input ref={inputRef} data-testid="project-search-input" type="text" value={search.query} onChange={event => search.onQueryChange(event.target.value)} onKeyDown={event => { if (event.key === "Escape") search.close(); }} placeholder={localizeText(lang, "Search tasks, files, knowledge, experts...", "\u641c\u7d22\u4efb\u52a1\u3001\u6587\u4ef6\u3001\u77e5\u8bc6\u3001\u4e13\u5bb6...")} style={{ flex: 1, border: "none", outline: "none", background: "transparent", color: t.text, fontSize: "13px", fontFamily: "inherit", padding: "4px 0", minWidth: 0 }} />
                 {onForkCurrentChat && (
                     <button
                         type="button"
@@ -235,9 +195,16 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, active = tr
             </div>
             <ProjectSearchForkForm open={forkNameOpen} lang={lang} theme={t} onCancel={() => setForkNameOpen(false)} onSubmit={name => { setForkNameOpen(false); search.close(); onForkCurrentChat?.(name); }} />
             <div style={{ maxHeight: "320px", overflowY: "auto", padding: "0 4px 4px" }}>
-                {search.loading && <div style={{ padding: "16px", textAlign: "center", color: t.text, opacity: 0.45, fontSize: "12px" }}>{localizeText(lang, "Searching...", "\u641c\u7d22\u4e2d...")}</div>}
-                {!search.loading && visibleResults.length === 0 && <div style={{ padding: "16px", textAlign: "center", color: t.text, opacity: 0.45, fontSize: "12px" }}>{search.query ? localizeText(lang, "No tasks found", "\u672a\u627e\u5230\u4efb\u52a1") : localizeText(lang, "No tasks", "\u6682\u65e0\u4efb\u52a1")}</div>}
-                {!search.loading && visibleResults.map(item => <ProjectSearchRow key={item.id || item.project_path} item={item} lang={lang} theme={t} search={search} renamingPath={renamingPath} renameVal={renameVal} setRenameVal={setRenameVal} setRenamingPath={setRenamingPath} onSelect={onSelect} onShowSceneDetail={openSceneDetail} sceneLoading={sceneLoadingPath === item.project_path} refreshResults={refreshResults} setCtxMenu={setCtxMenu} />)}
+                {search.loading && <div style={{ padding: hasAnyResults ? "6px 10px" : "16px", textAlign: "center", color: t.text, opacity: 0.45, fontSize: "12px" }}>{localizeText(lang, "Searching...", "\u641c\u7d22\u4e2d...")}</div>}
+                {!search.loading && !hasAnyResults && <div style={{ padding: "16px", textAlign: "center", color: t.text, opacity: 0.45, fontSize: "12px" }}>{search.query ? localizeText(lang, "No results found", "\u672a\u627e\u5230\u7ed3\u679c") : localizeText(lang, "No tasks", "\u6682\u65e0\u4efb\u52a1")}</div>}
+                {showSectionLabels && visibleResults.length > 0 && <SearchSectionLabel lang={lang} theme={t} en="Tasks" zh="任务" />}
+                {visibleResults.map(item => <ProjectSearchRow key={item.id || item.project_path} item={item} lang={lang} theme={t} search={search} renamingPath={renamingPath} renameVal={renameVal} setRenameVal={setRenameVal} setRenamingPath={setRenamingPath} onSelect={onSelect} onShowSceneDetail={openSceneDetail} sceneLoading={sceneLoadingPath === item.project_path} refreshResults={refreshResults} setCtxMenu={setCtxMenu} />)}
+                {fileResults.length > 0 && <SearchSectionLabel lang={lang} theme={t} en="Files" zh="文件" testId="search-files-section" />}
+                {fileResults.map(item => <LibrarySearchRow key={`file-${item.id}`} kind={item.type === "audio" ? "AUDIO" : "FILE"} title={item.title} preview={item.preview} lang={lang} theme={t} testId="search-file-row" onSelect={() => onSelectFile(item)} />)}
+                {knowledgeResults.length > 0 && <SearchSectionLabel lang={lang} theme={t} en="Knowledge" zh="知识库" testId="search-knowledge-section" />}
+                {knowledgeResults.map(item => <LibrarySearchRow key={`knowledge-${item.id}`} kind="KNOW" title={item.title} preview={item.preview || item.sourceTitle} lang={lang} theme={t} testId="search-knowledge-row" onSelect={() => onSelectKnowledge(item)} />)}
+                {expertResults.length > 0 && <SearchSectionLabel lang={lang} theme={t} en="Experts" zh="AI专家" testId="search-experts-section" />}
+                {expertResults.map(item => <LibrarySearchRow key={`expert-${item.id}`} kind="AI" title={item.title} preview={item.preview} mark={item.icon || "🤖"} lang={lang} theme={t} testId="search-expert-row" onSelect={() => onSelectExpert(item)} />)}
             </div>
             {(sceneLoadingPath || sceneDetail) && <ProjectSceneDetailPanel detail={sceneDetail} loading={!!sceneLoadingPath} lang={lang} theme={t} formatTime={search.formatTime} onClose={() => setSceneDetail(null)} />}
             {ctxMenu && <ProjectSearchContextMenu ctxMenu={ctxMenu} lang={lang} theme={t} refreshResults={refreshResults} setCtxMenu={setCtxMenu} setRenamingPath={setRenamingPath} setRenameVal={setRenameVal} onCloseProjectTab={onCloseProjectTab} />}

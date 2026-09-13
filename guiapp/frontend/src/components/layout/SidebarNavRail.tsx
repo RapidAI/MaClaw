@@ -2,13 +2,12 @@ import { useState, useEffect, useRef } from 'react';
 import { SIDEBAR_NAV_RAIL_WIDTH } from './sidebarLayout';
 import { SystemPopupMenu, type SystemMenuItem } from './SystemPopupMenu';
 import { FavoriteEmployeeButtons, type FavoriteEmployeeSlot } from './FavoriteEmployeeButtons';
-import { SystemIcon, AboutIcon, SkillsIcon, MCPIcon, GossipIcon, MobileDocsIcon, KnowledgeIcon } from './SidebarNavIcons';
-import { SidebarBrandHeader, SidebarLinkedMedal, SidebarPrimaryNav } from './SidebarNavRailPieces';
-import { IconRankBadge } from '../ai/WorkbenchIcons';
-import { useSidebarHubRanking } from './sidebarHubRanking';
+import { SystemIcon, AboutIcon, SkillsIcon, MCPIcon, GossipIcon, RankingIcon, MobileDocsIcon, KnowledgeIcon } from './SidebarNavIcons';
+import { SidebarBrandHeader, SidebarPrimaryNav } from './SidebarNavRailPieces';
 import { openSettingsTab } from '../../utils/settingsNavigation';
 import { GetHubUserInvitationStatus } from '../../../wailsjs/go/main/App';
 import { BrowserOpenURL } from '../../../wailsjs/runtime';
+import { systemRankingLabel, useSidebarHubRanking } from './sidebarHubRanking';
 import { miniAppShortLabel } from '../../i18n/maclawMiniAppLabels';
 import { expertsNavLabel, expertsPageTitle, toolsNavLabel, toolsPageTitle, utilitiesNavLabel, utilitiesPageTitle } from '../../i18n/utilitiesLabels';
 import { HubInvitationDialog } from '../HubInvitationDialog';
@@ -107,15 +106,11 @@ export const SidebarNavRail = ({
     const libraryMenuOpenerRef = useRef<HTMLElement | null>(null);
     const [invitationEnabled, setInvitationEnabled] = useState(false);
     const [invitationDialogOpen, setInvitationDialogOpen] = useState(false);
-    const showRanking = config?.show_hub_ranking !== false; // default: show
-    const trophyThreshold = config?.ranking_trophy_threshold || 10; // hub-configured: top N use trophy
-    const { medal } = useSidebarHubRanking(showRanking, trophyThreshold, !!remoteActivationStatus?.activated);
+    const rankingURL = buildUserRankingURL(config?.remote_hub_url || '', config?.remote_tenant_id);
+    const showRanking = config?.show_hub_ranking !== false && !!rankingURL;
+    const ranking = useSidebarHubRanking(showRanking, !!remoteActivationStatus?.activated);
+    const rankingLabel = systemRankingLabel(lang, ranking, t('ranking'));
     const invitationRequestSeqRef = useRef(0);
-    const showRegisteredRankingMark = showRanking && !medal && !!remoteActivationStatus?.activated;
-    const openUserRanking = () => {
-        const url = buildUserRankingURL(config?.remote_hub_url || '', config?.remote_tenant_id);
-        if (url) BrowserOpenURL(url);
-    };
 
     // The server is authoritative: a disabled tenant deliberately renders no
     // invitation button or separator, rather than a disabled-looking control.
@@ -171,12 +166,19 @@ export const SidebarNavRail = ({
     const mobileDocsLabel = lang === 'zh-Hans' ? '移动文稿库' : lang === 'zh-Hant' ? '行動文稿庫' : 'Mobile documents';
     const knowledgeLabel = lang === 'zh-Hans' ? '知识库' : lang === 'zh-Hant' ? '知識庫' : 'Knowledge base';
     const knowledgeActive = navTab === 'settings' && settingsTab === 'knowledge';
+    const systemPageActive = navTab === 'about' || (navTab === 'gossip' && gossipAllowed);
     const systemMenuItems: SystemMenuItem[] = [
         { id: 'about', icon: <AboutIcon />, label: t('about'), visible: true },
-        { id: 'skills', icon: <SkillsIcon />, label: t('skills'), visible: true },
-        { id: 'mcp', icon: <MCPIcon />, label: 'MCP', visible: true },
         { id: 'gossip', icon: <GossipIcon />, label: t('gossip'), visible: gossipAllowed },
+        { id: 'ranking', icon: <RankingIcon />, label: rankingLabel, visible: showRanking },
     ];
+    const selectSystemMenuItem = (id: string) => {
+        if (id === 'ranking') {
+            if (rankingURL) BrowserOpenURL(rankingURL);
+            return;
+        }
+        switchTool(id);
+    };
     const extensionsMenuItems: SystemMenuItem[] = [
         { id: 'skills', icon: <SkillsIcon />, label: t('skills'), visible: true },
         { id: 'mcp', icon: <MCPIcon />, label: connectorsLabel, visible: true },
@@ -259,47 +261,17 @@ export const SidebarNavRail = ({
             <div style={{ flex: 1 }} />
             <div className="mc-legacy-rail-footer">
                 <div
-                    className={'sidebar-item left-nav-item ' + (systemMenuOpen ? 'active' : '')}
+                    className={'sidebar-item left-nav-item ' + (systemMenuOpen || systemPageActive ? 'active' : '')}
                     role="button" tabIndex={0} aria-haspopup="menu" aria-expanded={systemMenuOpen} aria-controls="system-popup-menu"
+                    aria-current={systemPageActive ? 'page' : undefined}
                     onClick={event => toggleSystemMenu(event.currentTarget)}
                     onKeyDown={event => { if (event.key !== 'Enter' && event.key !== ' ') return; event.preventDefault(); toggleSystemMenu(event.currentTarget); }}
-                    style={{ flexDirection: 'column', padding: '5px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: '1px solid transparent', boxShadow: systemMenuOpen ? 'inset -1px 0 0 var(--theme-text-muted)' : 'none', justifyContent: 'center' }}
+                    style={{ flexDirection: 'column', padding: '5px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: '1px solid transparent', boxShadow: systemMenuOpen || systemPageActive ? 'inset -1px 0 0 var(--theme-text-muted)' : 'none', justifyContent: 'center' }}
                     title={systemLabel}
                 >
-                    <span className="sidebar-icon" style={{ margin: 0, display: 'inline-flex', color: systemMenuOpen ? 'var(--theme-primary)' : 'var(--theme-text-primary)' }}><SystemIcon /></span>
+                    <span className="sidebar-icon" style={{ margin: 0, display: 'inline-flex', color: systemMenuOpen || systemPageActive ? 'var(--theme-primary)' : 'var(--theme-text-primary)' }}><SystemIcon /></span>
                     <span style={{ fontSize: '0.72rem', lineHeight: 1, fontWeight: 700 }}>{systemLabel}</span>
                 </div>
-                {medal && <SidebarLinkedMedal
-                    medal={medal}
-                    lang={lang}
-                    title={lang === 'zh-Hans' ? '点击查看完整排行榜' : lang === 'zh-Hant' ? '點擊查看完整排行榜' : 'View full leaderboard'}
-                    onClick={openUserRanking}
-                />}
-                {showRegisteredRankingMark && (
-                    <div
-                        className="sidebar-medal-badge"
-                        title={lang === 'zh-Hans' ? '本月排行暂未生成' : lang === 'zh-Hant' ? '本月排行暫未生成' : 'Monthly ranking pending'}
-                        onClick={openUserRanking}
-                        style={{
-                            display: 'flex',
-                            flexDirection: 'column',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            width: '100%',
-                            minHeight: '38px',
-                            padding: '3px 0 5px 0',
-                            cursor: 'pointer',
-                            userSelect: 'none',
-                        }}
-                    >
-                        <span aria-label="monthly ranking" style={{ lineHeight: 1, display: 'flex', alignItems: 'center' }}>
-                            <IconRankBadge size={18} />
-                        </span>
-                        <span style={{ fontSize: '0.58rem', lineHeight: 1, color: 'var(--theme-text-muted)', fontWeight: 700, marginTop: '3px' }}>
-                            {lang === 'en' ? 'Rank' : '排行'}
-                        </span>
-                    </div>
-                )}
                 {invitationEnabled && (
                     <>
                         <div aria-hidden="true" style={{ width: '60%', height: 1, margin: '3px 0', background: 'var(--theme-border)', opacity: .7 }} />
@@ -317,13 +289,13 @@ export const SidebarNavRail = ({
                     </>
                 )}
             </div>
-            <button type="button" role="button" className="mc-profile-rail" data-testid="system-menu-trigger" aria-label={lang === 'en' ? 'System menu' : lang === 'zh-Hant' ? '系統選單' : '系统菜单'} title={lang === 'en' ? 'System menu' : lang === 'zh-Hant' ? '系統選單' : '系统菜单'} aria-haspopup="menu" aria-expanded={systemMenuOpen} aria-controls="system-popup-menu" onClick={event => toggleSystemMenu(event.currentTarget)} onKeyDown={event => { if (event.key !== 'Enter' && event.key !== ' ') return; event.preventDefault(); toggleSystemMenu(event.currentTarget); }}>
+            <button type="button" role="button" className="mc-profile-rail" data-testid="system-menu-trigger" aria-label={lang === 'en' ? 'System menu' : lang === 'zh-Hant' ? '系統選單' : '系统菜单'} title={lang === 'en' ? 'System menu' : lang === 'zh-Hant' ? '系統選單' : '系统菜单'} aria-haspopup="menu" aria-expanded={systemMenuOpen} aria-controls="system-popup-menu" aria-current={systemPageActive ? 'page' : undefined} onClick={event => toggleSystemMenu(event.currentTarget)} onKeyDown={event => { if (event.key !== 'Enter' && event.key !== ' ') return; event.preventDefault(); toggleSystemMenu(event.currentTarget); }}>
                 <span className="mc-profile-rail__avatar mc-profile-rail__avatar--system" aria-hidden="true"><SystemIcon /></span>
             </button>
             {systemMenuOpen && (
                 <SystemPopupMenu
                     items={systemMenuItems}
-                    onSelect={(id) => switchTool(id)}
+                    onSelect={selectSystemMenuItem}
                     onClose={() => setSystemMenuOpen(false)}
                     returnFocus={() => systemMenuOpenerRef.current}
                     ariaLabel={systemLabel}

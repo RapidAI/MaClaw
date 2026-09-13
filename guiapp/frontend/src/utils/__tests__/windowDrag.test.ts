@@ -10,8 +10,11 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
 import {
     DRAG_THRESHOLD_PX,
     installWindowDragHandler,
+    isWindowDragArmTarget,
     resetWindowDragHandlerForTests,
     startNativeWindowDrag,
+    windowDragHandleProps,
+    windowNoDragRegionProps,
 } from '../windowDrag';
 
 function dispatchMouse(
@@ -30,6 +33,45 @@ function dispatchMouse(
         window.dispatchEvent(event);
     }
 }
+
+describe('window drag region helpers', () => {
+    it('marks enabled chrome as a drag handle and leaves overlay chrome unmarked', () => {
+        const enabled = windowDragHandleProps(true, { minHeight: 72 });
+        expect(enabled['data-window-drag']).toBe(true);
+        expect(enabled.style.minHeight).toBe(72);
+        expect(enabled.style['--wails-draggable']).toBe('drag');
+
+        const disabled = windowDragHandleProps(false, { minHeight: 72 });
+        expect(disabled['data-window-drag']).toBeUndefined();
+        expect(disabled.style.minHeight).toBe(72);
+        expect(disabled.style['--wails-draggable']).toBeUndefined();
+        const noDrag = windowNoDragRegionProps();
+        expect(noDrag['data-window-no-drag']).toBe(true);
+        expect(noDrag.style['--wails-draggable']).toBe('no-drag');
+    });
+
+    it('arms drag from empty chrome and title text, but not from controls', () => {
+        const region = document.createElement('div');
+        region.setAttribute('data-window-drag', '');
+        const title = document.createElement('strong');
+        const button = document.createElement('button');
+        const actions = document.createElement('div');
+        actions.setAttribute('data-window-no-drag', '');
+        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        button.append(svg);
+        region.append(title, button, actions);
+        document.body.appendChild(region);
+        try {
+            expect(isWindowDragArmTarget(region)).toBe(true);
+            expect(isWindowDragArmTarget(title)).toBe(true);
+            expect(isWindowDragArmTarget(button)).toBe(false);
+            expect(isWindowDragArmTarget(svg)).toBe(false);
+            expect(isWindowDragArmTarget(actions)).toBe(false);
+        } finally {
+            region.remove();
+        }
+    });
+});
 
 describe('startNativeWindowDrag', () => {
     afterEach(() => {
@@ -144,6 +186,47 @@ describe('installWindowDragHandler', () => {
         } finally {
             outside.remove();
         }
+    });
+
+    it('ignores mousedown on data-window-no-drag descendants of a drag region', () => {
+        const noDrag = document.createElement('div');
+        noDrag.setAttribute('data-window-no-drag', '');
+        dragRegion.appendChild(noDrag);
+        dispatchMouse('mousedown', {
+            button: 0,
+            detail: 1,
+            buttons: 1,
+            screenX: 20,
+            screenY: 20,
+            target: noDrag,
+        });
+        dispatchMouse('mousemove', {
+            buttons: 1,
+            screenX: 20 + DRAG_THRESHOLD_PX + 5,
+            screenY: 20,
+        });
+        expect(wailsInvoke).not.toHaveBeenCalled();
+        expect(beginWindowDrag).not.toHaveBeenCalled();
+    });
+
+    it('ignores mousedown on buttons inside a drag region', () => {
+        const button = document.createElement('button');
+        dragRegion.appendChild(button);
+        dispatchMouse('mousedown', {
+            button: 0,
+            detail: 1,
+            buttons: 1,
+            screenX: 30,
+            screenY: 30,
+            target: button,
+        });
+        dispatchMouse('mousemove', {
+            buttons: 1,
+            screenX: 30 + DRAG_THRESHOLD_PX + 5,
+            screenY: 30,
+        });
+        expect(wailsInvoke).not.toHaveBeenCalled();
+        expect(beginWindowDrag).not.toHaveBeenCalled();
     });
 
     it('cancels arm on mouseup before threshold', () => {

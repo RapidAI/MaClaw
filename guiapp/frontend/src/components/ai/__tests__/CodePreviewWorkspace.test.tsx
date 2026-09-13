@@ -183,6 +183,32 @@ describe('CodePreviewWorkspace hidden entries', () => {
 });
 
 describe('CodePreviewWorkspace merged header', () => {
+    it('vertically centers the working-directory title with the refresh button', async () => {
+        getDirectory.mockResolvedValueOnce({
+            root: 'F:/test-prog',
+            entries: [{ name: 'a.go', path: 'a.go', is_dir: false }],
+        });
+        render(<CodePreviewWorkspace projectPath="local-task" lang="zh-Hans" theme={theme} onOpenFile={vi.fn()} />);
+        const header = await screen.findByTestId('code-preview-workspace-header');
+        expect(header.style.display).toBe('flex');
+        expect(header.style.alignItems).toBe('center');
+        expect(header.style.height).toBe('42px');
+        expect(screen.getByRole('button', { name: '刷新工作目录' })).toBeTruthy();
+        expect(screen.getByTestId('code-preview-workspace-root-label').textContent).toBe('F:/test-prog');
+    });
+
+    it('keeps path and refresh but drops the duplicate title when hideTitle is set', async () => {
+        getDirectory.mockResolvedValueOnce({
+            root: 'F:/test-prog',
+            entries: [{ name: 'a.go', path: 'a.go', is_dir: false }],
+        });
+        render(<CodePreviewWorkspace projectPath="local-task" hideTitle lang="zh-Hans" theme={theme} onOpenFile={vi.fn()} />);
+        expect(await screen.findByTestId('code-preview-workspace-root-label')).toBeTruthy();
+        expect(screen.getByTestId('code-preview-workspace-root-label').textContent).toBe('F:/test-prog');
+        expect(screen.getByRole('button', { name: '刷新工作目录' })).toBeTruthy();
+        expect(screen.queryByText('工作目录')).toBeNull();
+    });
+
     it('hides its own header row when hideHeader is set', async () => {
         getDirectory.mockResolvedValueOnce({
             root: 'C:/proj',

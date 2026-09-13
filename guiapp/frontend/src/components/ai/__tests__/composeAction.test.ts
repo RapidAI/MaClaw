@@ -6,6 +6,7 @@ import {
     getComposeActionLabel,
     getComposeActionPlaceholder,
     isBtwCommandText,
+    isHistoryResetCommandText,
     LOOP_COMMAND_TEMPLATE,
     PLUS_MENU_ACTION_ITEMS,
     PLUS_MENU_COMPOSE_TEMPLATE_ITEMS,
@@ -82,6 +83,19 @@ describe("isBtwCommandText / btwQueryFromText", () => {
     it("does not double-prefix when prefix casing differs", () => {
         expect(applyComposeActionToText("/BTW already", "btw")).toBe("/BTW already");
         expect(applyComposeActionToText("/Goal already", "goal")).toBe("/Goal already");
+    });
+});
+
+describe("isHistoryResetCommandText", () => {
+    it("detects /clear /new /reset and ignores neighboring slash commands", () => {
+        expect(isHistoryResetCommandText("/clear")).toBe(true);
+        expect(isHistoryResetCommandText("  /CLEAR  ")).toBe(true);
+        expect(isHistoryResetCommandText("/new")).toBe(true);
+        expect(isHistoryResetCommandText("/reset")).toBe(true);
+        expect(isHistoryResetCommandText("/clear now")).toBe(false);
+        expect(isHistoryResetCommandText("/help")).toBe(false);
+        expect(isHistoryResetCommandText("/compress")).toBe(false);
+        expect(isHistoryResetCommandText("clear")).toBe(false);
     });
 });
 

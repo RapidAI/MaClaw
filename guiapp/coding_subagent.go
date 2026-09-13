@@ -292,6 +292,10 @@ type CodingSubAgentResult struct {
 	// HorizonOwned marks a LongHorizon inner episode. Knowledge write paths
 	// must treat this result as ineligible.
 	HorizonOwned bool
+	// RecalledExperienceIDs are local coding-knowledge entries injected or
+	// returned by coding_knowledge_search during this task. Terminal
+	// outcomes record one Runtime-backed recall per ID.
+	RecalledExperienceIDs []string
 	// AskQuestion is set when the inner loop paused for the user (captcha,
 	// ask_user, browser status=ask). It is not a successful completion.
 	AskQuestion string
@@ -653,12 +657,16 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 	// so a model's display-oriented `2>&1; echo $?` does not become a terminal
 	// quality failure after the underlying compiler already succeeded.
 	if !s.horizonPosture && !operational && !inquiry && result.Error == "" && !result.HardExit && result.AskUser == nil && !cb.ShouldStop() {
-		if verifyCmd, verifyWorkingDir := cb.recoverableVerification(); verifyCmd != "" {
+		if verifiers := cb.recoverableVerifications(); len(verifiers) > 0 {
 			// The original wrapper already ran successfully.  Recovery exists to
 			// obtain an auditable exit status, not to let an automatic retry alter
 			// the implementation after a transient/environmental verification
 			// failure. A failed direct rerun remains a genuine audit failure.
-			s.runPostLoopVerification(cb, &result, verifyCmd, verifyWorkingDir, traj)
+			// Replay every distinct recovered verifier: a later `--selftest`
+			// display wrapper must not hide an earlier `--tonecheck` wrapper.
+			for _, verifier := range verifiers {
+				s.runPostLoopVerification(cb, &result, verifier.command, verifier.workingDir, traj)
+			}
 		} else if verifyCmd := detectProjectVerifyCommand(s.projectPath); verifyCmd != "" {
 			// Check if model already ran a verification command during the loop
 			if !hasSubAgentSelfVerified(cb) {
@@ -828,37 +836,38 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 
 	inTok, outTok, cost := codingLoopUsageFields(result.Usage)
 	return &CodingSubAgentResult{
-		Status:              status,
-		Summary:             summary,
-		Error:               errMsg,
-		Iterations:          result.Iterations,
-		ToolCalls:           result.ToolCalls,
-		InputTokens:         inTok,
-		OutputTokens:        outTok,
-		EstCostRMB:          cost,
-		RouteModel:          result.Route.Model,
-		RouteSource:         result.Route.Source,
-		RouteTask:           result.Route.TaskType,
-		RouteReason:         result.Route.Reason,
-		FilesModified:       filesModified,
-		FilesCreated:        filesCreated,
-		FilesRead:           filesRead,
-		GitDiffChecked:      diffChecked,
-		GitDiffSummary:      diffSummary,
-		DiffStat:            cb.getDiffStat(),
-		CommandsRun:         commandsRun,
-		SearchesRun:         searchesRun,
-		GuardrailViolations: guardrailViolations,
-		DynamicToolsRun:     dynamicToolsRun,
-		ExplorationStatus:   explorationStatus,
-		ExplorationSummary:  explorationSummary,
-		VerificationStatus:  verificationStatus,
-		VerificationSummary: verificationSummary,
-		QualityStatus:       qualityStatus,
-		QualitySummary:      qualitySummary,
-		QualityIssueCount:   qualityIssueCount,
-		Localization:        cb.localization.snapshot(),
-		HorizonOwned:        s.horizonPosture,
+		Status:                status,
+		Summary:               summary,
+		Error:                 errMsg,
+		Iterations:            result.Iterations,
+		ToolCalls:             result.ToolCalls,
+		InputTokens:           inTok,
+		OutputTokens:          outTok,
+		EstCostRMB:            cost,
+		RouteModel:            result.Route.Model,
+		RouteSource:           result.Route.Source,
+		RouteTask:             result.Route.TaskType,
+		RouteReason:           result.Route.Reason,
+		FilesModified:         filesModified,
+		FilesCreated:          filesCreated,
+		FilesRead:             filesRead,
+		GitDiffChecked:        diffChecked,
+		GitDiffSummary:        diffSummary,
+		DiffStat:              cb.getDiffStat(),
+		CommandsRun:           commandsRun,
+		SearchesRun:           searchesRun,
+		GuardrailViolations:   guardrailViolations,
+		DynamicToolsRun:       dynamicToolsRun,
+		ExplorationStatus:     explorationStatus,
+		ExplorationSummary:    explorationSummary,
+		VerificationStatus:    verificationStatus,
+		VerificationSummary:   verificationSummary,
+		QualityStatus:         qualityStatus,
+		QualitySummary:        qualitySummary,
+		QualityIssueCount:     qualityIssueCount,
+		Localization:          cb.localization.snapshot(),
+		HorizonOwned:          s.horizonPosture,
+		RecalledExperienceIDs: cb.snapshotRecalledExperienceIDs(),
 	}
 }
 
@@ -1053,25 +1062,27 @@ type codingSubAgentCallbacks struct {
 	dynamicSelectionTextBuilt  bool
 
 	// filesModified tracks files written/edited during execution.
-	mu             sync.Mutex
-	filesModified  map[string]bool
-	filesCreated   map[string]bool
-	filesRead      map[string]bool
-	fileSnapshots  map[string]codingFileSnapshot
-	gitDiffChecked bool
-	lastGitDiff    string
-	diffStat       *SubAgentDiffStat
-	commandsRun    []CodingSubAgentCommandResult
-	searchesRun    []CodingSubAgentSearchResult
-	guardrails     []CodingSubAgentGuardrailViolation
-	dynamicTools   []CodingSubAgentDynamicToolResult
-	localization   codingSubAgentLocalizationState
-	eventSeq       uint64
-	firstEditSeq   uint64
-	lastEditSeq    uint64
-	firstReadSeq   uint64
-	firstSearchSeq uint64
-	lastDiffSeq    uint64
+	mu                    sync.Mutex
+	filesModified         map[string]bool
+	filesCreated          map[string]bool
+	filesRead             map[string]bool
+	fileSnapshots         map[string]codingFileSnapshot
+	fileLineDeltas        map[string]SubAgentFileDiffStat
+	gitDiffChecked        bool
+	lastGitDiff           string
+	diffStat              *SubAgentDiffStat
+	commandsRun           []CodingSubAgentCommandResult
+	searchesRun           []CodingSubAgentSearchResult
+	recalledExperienceIDs []string
+	guardrails            []CodingSubAgentGuardrailViolation
+	dynamicTools          []CodingSubAgentDynamicToolResult
+	localization          codingSubAgentLocalizationState
+	eventSeq              uint64
+	firstEditSeq          uint64
+	lastEditSeq           uint64
+	firstReadSeq          uint64
+	firstSearchSeq        uint64
+	lastDiffSeq           uint64
 
 	// Agent-internal Claude Code / Codex-style step checklist for this turn.
 	todos codingAgentTodoState
@@ -5395,7 +5406,7 @@ func (c *codingSubAgentCallbacks) ensureFinalGitDiff(filesModified, filesCreated
 	if alreadyChecked && !isEmptySubAgentDiffOutput(lastDiff) {
 		// Also collect --stat if not already done
 		c.ensureDiffStat()
-		return c.validateFinalGitDiffSummary(lastDiff, filesCreated)
+		return c.validateFinalGitDiffSummary(lastDiff, filesModified, filesCreated)
 	}
 	if len(filesModified) == 0 {
 		return false, ""
@@ -5412,14 +5423,14 @@ func (c *codingSubAgentCallbacks) ensureFinalGitDiff(filesModified, filesCreated
 	}
 	// Collect structured --stat
 	c.ensureDiffStat()
-	return c.validateFinalGitDiffSummary(diffSummary, filesCreated)
+	return c.validateFinalGitDiffSummary(diffSummary, filesModified, filesCreated)
 }
 
-func (c *codingSubAgentCallbacks) validateFinalGitDiffSummary(diffSummary string, filesCreated []string) (bool, string) {
+func (c *codingSubAgentCallbacks) validateFinalGitDiffSummary(diffSummary string, filesModified, filesCreated []string) (bool, string) {
 	if subAgentGitDiffUnavailableBecauseNonGit(diffSummary) {
 		return true, diffSummary
 	}
-	if subAgentDiffOnlyHasUntrackedFiles(diffSummary) && !subAgentFileListsIntersect(untrackedSubAgentDiffFiles(diffSummary), filesCreated) {
+	if subAgentDiffOnlyHasUntrackedFiles(diffSummary) && !subAgentUntrackedFilesCoverTaskChanges(untrackedSubAgentDiffFiles(diffSummary), filesModified, filesCreated) {
 		c.rejectEmptyFinalGitDiff()
 		return false, "git diff 只包含与本任务新建文件无关的未跟踪文件：已记录文件修改，但最终 diff 缺少本任务改动证据。请重新检查改动是否被还原，必要时重新编辑并再次运行 git_diff。"
 	}
@@ -5470,6 +5481,70 @@ func (c *codingSubAgentCallbacks) getDiffStat() *SubAgentDiffStat {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.diffStat
+}
+
+func (c *codingSubAgentCallbacks) getFileLineDeltas() []SubAgentFileDiffStat {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.fileLineDeltas) == 0 {
+		return nil
+	}
+	out := make([]SubAgentFileDiffStat, 0, len(c.fileLineDeltas))
+	for _, stat := range c.fileLineDeltas {
+		out = append(out, stat)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out
+}
+
+func (c *codingSubAgentCallbacks) rememberToolFileLineDeltas(name string, changes []CodingAgentFileChange) {
+	if c == nil || len(changes) == 0 {
+		return
+	}
+	replace := codingToolLineDeltaReplacesFile(name)
+	for _, change := range changes {
+		c.rememberFileLineDelta(change.Path, change.Added, change.Removed, replace)
+	}
+}
+
+func (c *codingSubAgentCallbacks) rememberFileLineDelta(path string, added, removed int, replace bool) {
+	path = strings.TrimSpace(path)
+	if path == "" || (added <= 0 && removed <= 0) {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.fileLineDeltas == nil {
+		c.fileLineDeltas = make(map[string]SubAgentFileDiffStat)
+	}
+	key := filepath.ToSlash(path)
+	prev, ok := c.fileLineDeltas[key]
+	if !ok {
+		for existing, stat := range c.fileLineDeltas {
+			if !subAgentDiffPathsMatch(existing, key) {
+				continue
+			}
+			prev, ok = stat, true
+			preferred := preferredSubAgentDiffPath(existing, key)
+			if preferred != existing {
+				delete(c.fileLineDeltas, existing)
+			}
+			key = preferred
+			break
+		}
+	}
+	if replace || !ok {
+		c.fileLineDeltas[key] = SubAgentFileDiffStat{Path: key, Insertions: added, Deletions: removed}
+		return
+	}
+	c.fileLineDeltas[key] = SubAgentFileDiffStat{
+		Path:       key,
+		Insertions: prev.Insertions + added,
+		Deletions:  prev.Deletions + removed,
+	}
 }
 
 func (c *codingSubAgentCallbacks) requireProjectWriteScope(path string) string {
@@ -5805,24 +5880,108 @@ func subAgentDiffOnlyHasUntrackedFiles(diff string) bool {
 	return len(untrackedSubAgentDiffFiles(diff)) > 0 && !strings.Contains(diff, "diff --git ")
 }
 
-func subAgentFileListsIntersect(a, b []string) bool {
+func subAgentUntrackedFilesCoverTaskChanges(untracked, filesModified, filesCreated []string) bool {
+	return subAgentDiffPathsOverlap(untracked, filesCreated) || subAgentDiffPathsOverlap(untracked, filesModified)
+}
+
+func subAgentDiffPathsOverlap(a, b []string) bool {
 	if len(a) == 0 || len(b) == 0 {
 		return false
 	}
-	seen := make(map[string]bool, len(a))
-	for _, item := range a {
-		item = filepath.ToSlash(strings.TrimSpace(item))
-		if item != "" {
-			seen[item] = true
-		}
-	}
-	for _, item := range b {
-		item = filepath.ToSlash(strings.TrimSpace(item))
-		if item != "" && seen[item] {
-			return true
+	for _, left := range a {
+		for _, right := range b {
+			if subAgentDiffPathsMatch(left, right) {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+func normalizeSubAgentDiffPath(path string) string {
+	path = filepath.ToSlash(strings.TrimSpace(path))
+	path = strings.TrimRight(path, "/")
+	for strings.HasPrefix(path, "./") {
+		path = strings.TrimPrefix(path, "./")
+	}
+	return path
+}
+
+func subAgentDiffPathsMatch(a, b string) bool {
+	a = normalizeSubAgentDiffPath(a)
+	b = normalizeSubAgentDiffPath(b)
+	if a == "" || b == "" {
+		return false
+	}
+	if strings.EqualFold(a, b) {
+		return true
+	}
+	al, bl := strings.ToLower(a), strings.ToLower(b)
+	return strings.HasSuffix(al, "/"+bl) || strings.HasSuffix(bl, "/"+al)
+}
+
+func preferredSubAgentDiffPath(a, b string) string {
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	if a == "" {
+		return b
+	}
+	if b == "" {
+		return a
+	}
+	an, bn := normalizeSubAgentDiffPath(a), normalizeSubAgentDiffPath(b)
+	al, bl := strings.ToLower(an), strings.ToLower(bn)
+	if al == bl {
+		aClean := an == filepath.ToSlash(strings.TrimSpace(a))
+		bClean := bn == filepath.ToSlash(strings.TrimSpace(b))
+		switch {
+		case aClean && !bClean:
+			return a
+		case bClean && !aClean:
+			return b
+		case aClean && bClean:
+			if len(a) <= len(b) {
+				return a
+			}
+			return b
+		default:
+			return an
+		}
+	}
+	if strings.HasSuffix(al, "/"+bl) {
+		return b
+	}
+	if strings.HasSuffix(bl, "/"+al) {
+		return a
+	}
+	if len(an) <= len(bn) {
+		return a
+	}
+	return b
+}
+
+func uniqueSubAgentDiffPaths(files []string) []string {
+	files = uniqueSortedSubAgentStrings(files)
+	if len(files) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(files))
+	for _, path := range files {
+		merged := false
+		for i, existing := range out {
+			if !subAgentDiffPathsMatch(existing, path) {
+				continue
+			}
+			out[i] = preferredSubAgentDiffPath(existing, path)
+			merged = true
+			break
+		}
+		if !merged {
+			out = append(out, path)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func appendSubAgentDiffSummary(summary, diffSummary string) string {
@@ -10310,6 +10469,21 @@ func recoverableSubAgentVerificationCommand(commands []CodingSubAgentCommandResu
 // a package subdirectory), turning a successful verification into an unrelated
 // false failure.
 func recoverableSubAgentVerification(commands []CodingSubAgentCommandResult, lastEditSeq uint64) (command, workingDir string) {
+	all := recoverableSubAgentVerifications(commands, lastEditSeq)
+	if len(all) == 0 {
+		return "", ""
+	}
+	return all[0].command, all[0].workingDir
+}
+
+type recoveredSubAgentVerification struct {
+	command    string
+	workingDir string
+}
+
+func recoverableSubAgentVerifications(commands []CodingSubAgentCommandResult, lastEditSeq uint64) []recoveredSubAgentVerification {
+	seen := make(map[string]struct{})
+	var out []recoveredSubAgentVerification
 	for i := len(commands) - 1; i >= 0; i-- {
 		command := commands[i]
 		// seq==0 is retained for legacy callers/tests that do not have an
@@ -10320,11 +10494,18 @@ func recoverableSubAgentVerification(commands []CodingSubAgentCommandResult, las
 			!isUnsafeSubAgentVerificationCommand(command.Command) {
 			continue
 		}
-		if recovered := recoverSubAgentVerificationCommand(command.Command); recovered != "" {
-			return recovered, command.WorkingDir
+		recovered := recoverSubAgentVerificationCommand(command.Command)
+		if recovered == "" {
+			continue
 		}
+		key := strings.ToLower(strings.Join(strings.Fields(recovered), " ")) + "\x00" + command.WorkingDir
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, recoveredSubAgentVerification{command: recovered, workingDir: command.WorkingDir})
 	}
-	return "", ""
+	return out
 }
 
 func recoverSubAgentVerificationCommand(command string) string {
@@ -10339,7 +10520,7 @@ func recoverSubAgentVerificationCommand(command string) string {
 			return ""
 		}
 		if shellCommandStartsAfterToken(token, segment) {
-			if token != ";" && token != "&&" || !isSubAgentVerificationCommandSegment(segment) || !subAgentVerificationRecoveryTailIsHarmless(fields[i+1:]) {
+			if (token != ";" && token != "&&") || !isSubAgentVerificationCommandSegment(segment) || !subAgentVerificationRecoveryTailIsHarmless(fields[i+1:]) {
 				return ""
 			}
 			candidate := strings.Join(stripShellRedirectionOnlyArgs(segment), " ")
@@ -10371,31 +10552,65 @@ func subAgentVerificationRecoveryTailIsHarmless(segment []string) bool {
 			return false
 		}
 	}
-	segment = stripVerificationCommandPrefixes(segment)
+	if subAgentVerificationRecoveryTailDisplaysExitStatus(segment) {
+		return true
+	}
+	stripped := stripVerificationCommandPrefixes(segment)
+	if len(stripped) == 0 || (len(stripped) == len(segment) && stripped[0] == segment[0]) {
+		return false
+	}
+	return subAgentVerificationRecoveryTailDisplaysExitStatus(stripped)
+}
+
+func subAgentVerificationRecoveryTailDisplaysExitStatus(segment []string) bool {
 	if len(segment) == 0 {
 		return false
 	}
-	switch commandNameBase(segment[0]) {
-	case "echo", "write-output", "printf":
-		// Recovery is deliberately narrow: it is for wrappers added only to
-		// display the prior command's exit status, not arbitrary logging after
-		// a verifier. The extracted verifier is always rerun directly.
-		tail := strings.ToLower(strings.Join(segment[1:], " "))
-		return strings.Contains(tail, "$?") ||
-			strings.Contains(tail, "$lastexitcode") ||
-			strings.Contains(tail, "exit code") ||
-			strings.Contains(tail, "exit_code") ||
-			strings.Contains(tail, "exit status")
-	default:
+	cmd := strings.ToLower(commandNameBase(normalizeShellCommandToken(segment[0])))
+	switch cmd {
+	case "echo", "write-output", "write-host", "printf":
+		return subAgentVerificationTextShowsExitStatus(strings.Join(segment[1:], " "))
+	case "exit":
 		return false
 	}
+	// PowerShell `"exit=$LASTEXITCODE"` is a string expression, not a second
+	// program. Only a single display token is eligible; `foo $LASTEXITCODE`
+	// remains an extra command.
+	if len(segment) != 1 {
+		return false
+	}
+	token := normalizeShellCommandToken(segment[0])
+	if !subAgentVerificationTextShowsExitStatus(token) {
+		return false
+	}
+	if subAgentCommandLooksLikeExecutableRun(token) || isShellWrapperCommand(cmd) {
+		return false
+	}
+	return !isSubAgentVerificationCommandSegment(segment)
+}
+
+func subAgentVerificationTextShowsExitStatus(text string) bool {
+	lower := strings.ToLower(text)
+	return strings.Contains(lower, "$?") ||
+		strings.Contains(lower, "$lastexitcode") ||
+		strings.Contains(lower, "exit code") ||
+		strings.Contains(lower, "exit_code") ||
+		strings.Contains(lower, "exit status")
 }
 
 func (c *codingSubAgentCallbacks) recoverableVerification() (command, workingDir string) {
-	if c == nil {
+	all := c.recoverableVerifications()
+	if len(all) == 0 {
 		return "", ""
 	}
-	return recoverableSubAgentVerification(c.getCommandsRun(), c.lastEditSequence())
+	return all[0].command, all[0].workingDir
+}
+
+func (c *codingSubAgentCallbacks) recoverableVerifications() []recoveredSubAgentVerification {
+	if c == nil {
+		return nil
+	}
+	return recoverableSubAgentVerifications(c.getCommandsRun(), c.lastEditSequence())
 }
 
 // normalizeSubAgentVerificationCommandForExecution mirrors the host's
@@ -10404,10 +10619,13 @@ func (c *codingSubAgentCallbacks) recoverableVerification() (command, workingDir
 // whose exit status we actually observed, preventing false quality failures
 // caused by a safe host-side normalization.
 func normalizeSubAgentVerificationCommandForExecution(command string) string {
-	if runtime.GOOS != "windows" {
-		return command
+	if runtime.GOOS == "windows" {
+		command = rewriteWindowsCompileThenRunSemicolon(command)
 	}
-	return rewriteWindowsCompileThenRunSemicolon(command)
+	if recovered := recoverSubAgentVerificationCommand(command); recovered != "" {
+		return recovered
+	}
+	return command
 }
 
 func isUnsafeSubAgentVerificationCommand(command string) bool {
@@ -13685,6 +13903,7 @@ func (c *codingSubAgentCallbacks) emitToolFinishedEvent(name, argsJSON, result s
 	event.Command = codingToolEventCommand(name, argsJSON)
 	event.Files = codingToolEventFiles(name, argsJSON, c.projectPath())
 	attachCodingToolFileChanges(&event, name, argsJSON, c.getDiffStat())
+	c.rememberToolFileLineDeltas(name, event.FileChanges)
 	event.Outcome = string(outcome)
 	if outcome != codingToolOutcomeSuccess {
 		event.Summary = compactCodingToolResultSummary(result)
@@ -14066,19 +14285,7 @@ func (c *codingSubAgentCallbacks) emitDiffUpdatedEvent(path string, count int) {
 }
 
 func (c *codingSubAgentCallbacks) fileDiffStat(path string) (added, removed int) {
-	stat := c.getDiffStat()
-	if stat == nil {
-		return 0, 0
-	}
-	want := strings.ReplaceAll(strings.TrimSpace(path), "\\", "/")
-	base := filepath.Base(want)
-	for _, file := range stat.FileStats {
-		got := strings.ReplaceAll(strings.TrimSpace(file.Path), "\\", "/")
-		if got == want || filepath.Base(got) == base {
-			return file.Insertions, file.Deletions
-		}
-	}
-	return 0, 0
+	return lookupSubAgentFileDiffStat(c.getDiffStat(), path)
 }
 
 func formatCodingAgentEditedFileCard(path string, added, removed int) string {
@@ -14104,7 +14311,7 @@ func (c *codingSubAgentCallbacks) emitDiffSummaryEvent(filesModified, filesCreat
 	if c.task != nil {
 		title = compactSubAgentTaskTitle(c.task.Title)
 	}
-	emitCodingAgentEvent(c.subagent.onProgress, newCodingAgentDiffSummaryEventWithStat(c.task, title, snapshot, c.getDiffStat()))
+	emitCodingAgentEvent(c.subagent.onProgress, newCodingAgentDiffSummaryEventWithStat(c.task, title, snapshot, mergeSubAgentDiffStat(c.getDiffStat(), c.getFileLineDeltas())))
 }
 
 func (c *codingSubAgentCallbacks) emitFileActivitySummaryEvent(filesRead, filesModified, filesCreated []string) {

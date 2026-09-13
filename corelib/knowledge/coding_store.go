@@ -124,6 +124,7 @@ type CodingExperienceMetadata struct {
 	Language               string                           `json:"language,omitempty"`
 	Frameworks             []string                         `json:"frameworks,omitempty"`
 	TriggerCondition       string                           `json:"trigger_condition"`
+	Content                string                           `json:"content,omitempty"`
 	CodeSnippet            string                           `json:"code_snippet,omitempty"`
 	FailedAttempts         []string                         `json:"failed_attempts,omitempty"`
 	Contraindications      []string                         `json:"contraindications,omitempty"`
@@ -368,6 +369,7 @@ func (s *CodingKnowledgeStore) saveExperience(ctx context.Context, exp CodingExp
 		ProjectPath: exp.ProjectPath,
 		Labels:      labels,
 		DistillMode: "off", // Don't distill coding experiences into cards (we use raw text search)
+		ForceID:     NewID("ksrc"),
 	})
 	if err != nil {
 		return CodingExperience{}, fmt.Errorf("coding knowledge: save: %w", err)
@@ -719,16 +721,7 @@ func (s *CodingKnowledgeStore) projectReviewedExperienceUsageWithPageSize(ctx co
 			if exp.Status != CodingStatusActive && exp.Status != CodingStatusVerified {
 				continue
 			}
-			// Coding experience text is stored in its first document node. A
-			// missing node is tolerated for legacy/corrupt records and falls
-			// back to TriggerCondition, matching codingExperienceTokenCost.
-			nodes, err := s.inner.ListNodesBySource(ctx, exp.ID, 1)
-			if err != nil {
-				return 0, 0, err
-			}
-			if len(nodes) > 0 && strings.TrimSpace(nodes[0].Text) != "" {
-				exp.Content = nodes[0].Text
-			}
+			s.hydrateExperienceContent(ctx, &exp)
 			count++
 			tokens += codingExperienceTokenCost(exp)
 		}
@@ -908,11 +901,7 @@ func (s *CodingKnowledgeStore) GetExperience(ctx context.Context, id string) (Co
 	if err != nil {
 		return CodingExperience{}, err
 	}
-	// Hydrate content from document nodes (full text stored there by SaveText)
-	nodes, nodeErr := s.inner.ListNodesBySource(ctx, id, 1)
-	if nodeErr == nil && len(nodes) > 0 && nodes[0].Text != "" {
-		exp.Content = nodes[0].Text
-	}
+	s.hydrateExperienceContent(ctx, &exp)
 	return exp, nil
 }
 
@@ -1006,9 +995,35 @@ func (s *CodingKnowledgeStore) SearchExperiences(ctx context.Context, opts Codin
 	}
 	out := make([]CodingExperience, 0, len(experiences))
 	for _, candidate := range experiences {
-		out = append(out, candidate.experience)
+		exp := candidate.experience
+		s.hydrateExperienceContent(ctx, &exp)
+		out = append(out, exp)
 	}
 	return out, nil
+}
+
+// hydrateExperienceContent fills Content for legacy records that predate
+// storing the body in TopicHint metadata. Newer records already have Content.
+func (s *CodingKnowledgeStore) hydrateExperienceContent(ctx context.Context, exp *CodingExperience) {
+	if s == nil || s.inner == nil || exp == nil || strings.TrimSpace(exp.ID) == "" {
+		return
+	}
+	if strings.TrimSpace(exp.Content) != "" {
+		return
+	}
+	nodes, err := s.inner.ListNodesBySource(ctx, exp.ID, 32)
+	if err != nil || len(nodes) == 0 {
+		return
+	}
+	parts := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		if text := strings.TrimSpace(node.Text); text != "" {
+			parts = append(parts, text)
+		}
+	}
+	if len(parts) > 0 {
+		exp.Content = strings.Join(parts, "\n\n")
+	}
 }
 
 // ListExperiences returns all experiences matching the given filter.
@@ -1444,6 +1459,7 @@ func experienceToMetadata(exp CodingExperience) CodingExperienceMetadata {
 		Language:               exp.Language,
 		Frameworks:             exp.Frameworks,
 		TriggerCondition:       exp.TriggerCondition,
+		Content:                exp.Content,
 		CodeSnippet:            exp.CodeSnippet,
 		FailedAttempts:         exp.FailedAttempts,
 		Contraindications:      exp.Contraindications,
@@ -1507,6 +1523,7 @@ func sourceToExperience(src Source) (CodingExperience, error) {
 		exp.Language = meta.Language
 		exp.Frameworks = meta.Frameworks
 		exp.TriggerCondition = meta.TriggerCondition
+		exp.Content = meta.Content
 		exp.CodeSnippet = meta.CodeSnippet
 		exp.FailedAttempts = meta.FailedAttempts
 		exp.Contraindications = meta.Contraindications
@@ -1532,11 +1549,8 @@ func sourceToExperience(src Source) (CodingExperience, error) {
 		}
 	}
 
-	// Content is not directly available from Source (stored in document_nodes).
-	// For GetExperience, the caller should read nodes separately if full content
-	// is needed. For search results, content comes from SearchResult.Snippet.
-	// We store a placeholder here; the metadata fields carry the structured data.
-	exp.Content = "" // Populated by caller or from search snippet
+	// Legacy records stored the body only in document nodes. Keep an empty
+	// Content value so callers can hydrate from nodes or search snippets.
 
 	// Apply default confidence if zero (legacy or initial)
 	if exp.Confidence == 0 {

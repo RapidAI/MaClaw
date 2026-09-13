@@ -1,6 +1,7 @@
 import { useEffect, useState, type MouseEvent } from "react";
 import { MobileDocumentsPanel } from "../layout/MobileDocumentsPanel";
 import { localizeText } from "./aiAssistantI18n";
+import { OPEN_FILE_LIBRARY_EVENT, type FileLibraryOpenDetail } from "../../utils/fileLibraryNavigation";
 import { getTitleBarToolButtonStyle, type Theme } from "./aiAssistantPanelTheme";
 import { TitleBarToolIcon } from "./AssistantTitleBarIcons";
 
@@ -20,9 +21,14 @@ const stopMouse = (handler: () => void) => (e: MouseEvent) => {
 export function AssistantMobileDocsControl({ lang, theme: t, inline }: Props) {
     const [open, setOpen] = useState(false);
     useEffect(() => {
-        const openFromRail = () => setOpen(true);
-        window.addEventListener("maclaw:open-files", openFromRail);
-        return () => window.removeEventListener("maclaw:open-files", openFromRail);
+        const openFromRail = (event: Event) => {
+            const detail = (event as CustomEvent<FileLibraryOpenDetail>).detail;
+            // Header search navigates to the files page; don't also open this overlay.
+            if (detail?.documentId || detail?.query) return;
+            setOpen(true);
+        };
+        window.addEventListener(OPEN_FILE_LIBRARY_EVENT, openFromRail);
+        return () => window.removeEventListener(OPEN_FILE_LIBRARY_EVENT, openFromRail);
     }, []);
     const title = localizeText(
         lang,

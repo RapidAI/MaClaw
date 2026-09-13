@@ -15,7 +15,7 @@ import { getComposeActionPlaceholder, type ComposeAction, type FireSlashCommand,
 import type { AttachmentInfo } from "./useBufferQueue";
 import type { UseVoiceInputResult } from "./useVoiceInput";
 import type { AssistantPermissionMode } from "./AssistantInputComposerTypes";
-import { CODING_TASK_COMMAND_MAX_LEN, isCloudWorkspaceTask, type PureCodingAgentMode } from "./codingTaskMode";
+import { CODING_TASK_COMMAND_MAX_LEN, type PureCodingAgentMode } from "./codingTaskMode";
 import {
     getWelcomeOpsPrompt,
     getWelcomeOpsPrompts,
@@ -437,52 +437,6 @@ export type WelcomePromptSubmitMeta = {
     taskKey?: string;
 };
 
-export type WelcomeRecentTask = {
-    id?: string;
-    name?: string;
-    project_path?: string;
-    projectPath?: string;
-    working_dir?: string;
-    workingDir?: string;
-    tags?: string[];
-    preview?: string;
-    created_at?: string;
-    last_activity?: string;
-    has_output?: boolean;
-    active_workflow?: {
-        status?: string;
-        phase?: string;
-        pending_review?: boolean;
-    };
-};
-
-function recentTaskStatus(task: WelcomeRecentTask, isZh: boolean): { label: string; tone: "running" | "completed" | "pending" | "failed" } {
-    const raw = `${task.active_workflow?.status || ""} ${task.active_workflow?.phase || ""}`.toLowerCase();
-    if (/(fail|error|blocked)/.test(raw)) return { label: isZh ? "失败" : "Failed", tone: "failed" };
-    if (task.active_workflow?.pending_review || /(review|confirm|approval|待确认)/.test(raw)) {
-        return { label: isZh ? "待处理" : "Pending", tone: "pending" };
-    }
-    if (/(running|execut|active|processing|进行)/.test(raw)) {
-        return { label: isZh ? "进行中" : "In progress", tone: "running" };
-    }
-    if (/(complete|finish|success|done|已完成)/.test(raw) || task.has_output === true) {
-        return { label: isZh ? "已完成" : "Completed", tone: "completed" };
-    }
-    return { label: isZh ? "待处理" : "Pending", tone: "pending" };
-}
-
-function formatRecentTaskTime(value: string | undefined, isZh: boolean): string {
-    if (!value) return "";
-    const parsed = Date.parse(value);
-    if (!Number.isFinite(parsed)) return "";
-    const date = new Date(parsed);
-    const now = new Date();
-    if (date.toDateString() === now.toDateString()) {
-        return date.toLocaleTimeString(isZh ? "zh-CN" : "en-US", { hour: "2-digit", minute: "2-digit" });
-    }
-    return date.toLocaleDateString(isZh ? "zh-CN" : "en-US", { month: "short", day: "numeric" });
-}
-
 interface AssistantWelcomeViewProps {
     lang: string;
     theme: Theme;
@@ -493,10 +447,6 @@ interface AssistantWelcomeViewProps {
     onPromptSelect: (text: string, meta?: WelcomePromptSubmitMeta) => void;
     /** Insert and immediately send (chat tasks only). */
     onPromptSend?: (text: string, meta?: WelcomePromptSubmitMeta) => void;
-    /** Existing task rows supplied by the live task index. */
-    recentTasks?: WelcomeRecentTask[];
-    /** Open a task row using the existing task restore flow. */
-    onRecentTaskSelect?: (task: WelcomeRecentTask) => void;
     pinnedNews?: ChatMessage[];
     composer: WelcomeComposerProps;
 }
@@ -508,8 +458,6 @@ export function AssistantWelcomeView({
     active = true,
     onPromptSelect,
     onPromptSend,
-    recentTasks = [],
-    onRecentTaskSelect,
     pinnedNews,
     composer: cp,
 }: AssistantWelcomeViewProps) {
@@ -1513,13 +1461,6 @@ export function AssistantWelcomeView({
         const resolved = resolveWelcomeRecentPrompts(recentEntries);
         return filterWelcomeRecentForQuickAccess(resolved, customTemplates, 4);
     }, [recentEntries, customTemplates]);
-    const recentTaskRows = useMemo(() => {
-        return (Array.isArray(recentTasks) ? recentTasks : [])
-            .filter((task) => !!String(task?.name || task?.project_path || "").trim())
-            .slice()
-            .sort((a, b) => Date.parse(String(b.last_activity || b.created_at || "")) - Date.parse(String(a.last_activity || a.created_at || "")))
-            .slice(0, 4);
-    }, [recentTasks]);
     /** Cap custom chips so the quick row does not dominate the welcome screen. */
     const visibleCustomTemplates = useMemo(
         () => customTemplates.slice(0, Math.min(6, WELCOME_CUSTOM_TEMPLATES_MAX)),
@@ -1528,7 +1469,7 @@ export function AssistantWelcomeView({
     const quickHints = useMemo(() => resolveWelcomeQuickHints(), []);
     const showQuickHints = !(cp.inputValue || "").trim();
     const roleLabels = isZh ? ROLE_LABELS_ZH : ROLE_LABELS_EN;
-    const hasQuickAccess = recentTaskRows.length > 0 || visibleCustomTemplates.length > 0 || recentPrompts.length > 0;
+    const hasQuickAccess = visibleCustomTemplates.length > 0 || recentPrompts.length > 0;
     /** Always show the quick section header so users can import even with zero templates. */
     const showQuickSection = true;
     const handleScenarioTabKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
@@ -1840,57 +1781,7 @@ export function AssistantWelcomeView({
                 </details>
             )}
 
-            {/* Reference recent-task list. Legacy templates remain available in
-                the collapsed quick-access disclosure below. */}
-            <div data-testid="welcome-reference-recent-tasks" style={{ width: "100%", maxWidth: CONTENT_MAX_WIDTH, display: "flex", flexDirection: "column", gap: 8 }}>
-                <h3 style={{ margin: "8px 0 0", fontSize: 15, lineHeight: 1.3, fontWeight: 650, color: t.text, fontFamily: "system-ui, -apple-system, sans-serif" }}>
-                    {isZh ? "最近任务" : "Recent tasks"}
-                </h3>
-                {recentTaskRows.length > 0 ? (
-                    <div className="mc-recent-task-list" data-testid="welcome-reference-recent-task-list" role="list" aria-label={isZh ? "最近任务列表" : "Recent task list"}>
-                        {recentTaskRows.map((task, index) => {
-                            const status = recentTaskStatus(task, isZh);
-                            const cloudWorkspace = isCloudWorkspaceTask(task);
-                            const title = String(task.name || task.project_path || (isZh ? "未命名任务" : "Untitled task"));
-                            const detail = String(task.preview || task.project_path || "").trim();
-                            const time = formatRecentTaskTime(task.last_activity || task.created_at, isZh);
-                            const taskKey = task.id || task.project_path || `${title}-${index}`;
-                            return (
-                                <button key={taskKey} type="button" role="listitem" className="mc-recent-task-row" data-testid={`welcome-reference-recent-task-${index}`} data-status={status.tone} title={detail || title} aria-label={`${title} · ${status.label}`} onClick={() => { if (onRecentTaskSelect) onRecentTaskSelect(task); else onPromptSelect(title); }}>
-                                    <span className="mc-recent-task-dot" aria-hidden="true" />
-                                    <span className="mc-recent-task-copy">
-                                        <span className="mc-recent-task-title-line">
-                                            <strong>{title}</strong>
-                                            {cloudWorkspace && (
-                                                <span
-                                                    className="mc-recent-task-cloud-badge"
-                                                    data-testid="welcome-reference-recent-cloud-workspace-badge"
-                                                    aria-label={isZh ? "云端工作区" : "Cloud workspace"}
-                                                    title={isZh ? "云端工作区任务" : "Cloud workspace task"}
-                                                >
-                                                    {isZh ? "云端工作区" : "Cloud workspace"}
-                                                </span>
-                                            )}
-                                        </span>
-                                        <small>{detail || (time ? time : isZh ? "最近更新" : "Recently updated")}</small>
-                                    </span>
-                                    <span className="mc-recent-task-status">{status.label}</span>
-                                    {time && <time dateTime={task.last_activity || task.created_at}>{time}</time>}
-                                    <span className="mc-recent-task-chevron" aria-hidden="true">›</span>
-                                </button>
-                            );
-                        })}
-                    </div>
-                ) : (
-                    <div style={{ padding: "14px", border: `1px solid ${t.fieldBorder}`, borderRadius: 10, color: t.textMuted, fontSize: 12 }}>
-                        {isZh ? "暂无最近任务" : "No recent tasks"}
-                    </div>
-                )}
-            </div>
-
-            {/* Reference category rail and secondary task starters. These cards
-                occupy the lower half of the workbench instead of leaving an
-                empty canvas when the recent-task list is short. */}
+            {/* Reference category rail and secondary task starters. */}
             <div data-testid="welcome-reference-suggestions" style={{ width: "100%", maxWidth: CONTENT_MAX_WIDTH, display: "flex", flexDirection: "column", gap: 10 }}>
                 <div role="tablist" aria-label={isZh ? "任务分类" : "Task categories"} style={{ display: "flex", alignItems: "center", gap: 6, overflowX: "auto", padding: "2px 0 3px", scrollbarWidth: "none" }}>
                     {REFERENCE_TASK_CATEGORIES.map((category) => {
@@ -1966,7 +1857,7 @@ export function AssistantWelcomeView({
                                 color: t.textMuted,
                                 fontFamily: "system-ui, -apple-system, sans-serif",
                             }}>
-                                {isZh ? "最近任务" : "Recent tasks"}
+                                {isZh ? "我的模板" : "My templates"}
                             </div>
                             {(cloudSync.loggedIn || cloudSync.unsupported) && (
                                 <span
@@ -2291,45 +2182,9 @@ export function AssistantWelcomeView({
                     <div
                         data-testid="welcome-custom-templates"
                         role="list"
-                        aria-label={isZh ? "我的模板与最近任务" : "My templates and recent tasks"}
+                        aria-label={isZh ? "我的模板" : "My templates"}
                         style={{ display: "flex", flexWrap: "wrap", gap: 8 }}
                     >
-                        {recentTaskRows.length > 0 && (
-                            <div className="mc-recent-task-list" data-testid="welcome-recent-task-list" role="list" aria-label={isZh ? "最近任务列表" : "Recent task list"}>
-                                {recentTaskRows.map((task, index) => {
-                                    const status = recentTaskStatus(task, isZh);
-                                    const title = String(task.name || task.project_path || (isZh ? "未命名任务" : "Untitled task"));
-                                    const detail = String(task.preview || task.project_path || "").trim();
-                                    const time = formatRecentTaskTime(task.last_activity || task.created_at, isZh);
-                                    const taskKey = task.id || task.project_path || `${title}-${index}`;
-                                    return (
-                                        <button
-                                            key={taskKey}
-                                            type="button"
-                                            role="listitem"
-                                            className="mc-recent-task-row"
-                                            data-testid={`welcome-recent-task-${index}`}
-                                            data-status={status.tone}
-                                            title={detail || title}
-                                            aria-label={`${title} · ${status.label}`}
-                                            onClick={() => {
-                                                if (onRecentTaskSelect) onRecentTaskSelect(task);
-                                                else onPromptSelect(title);
-                                            }}
-                                        >
-                                            <span className="mc-recent-task-dot" aria-hidden="true" />
-                                            <span className="mc-recent-task-copy">
-                                                <strong>{title}</strong>
-                                                <small>{detail || (time ? time : isZh ? "最近更新" : "Recently updated")}</small>
-                                            </span>
-                                            <span className="mc-recent-task-status">{status.label}</span>
-                                            {time && <time dateTime={task.last_activity || task.created_at}>{time}</time>}
-                                            <span className="mc-recent-task-chevron" aria-hidden="true">›</span>
-                                        </button>
-                                    );
-                                })}
-                            </div>
-                        )}
                         {visibleCustomTemplates.map((tpl) => {
                             const isRenaming = renamingTemplateId === tpl.id;
                             const fullIndex = customTemplates.findIndex((c) => c.id === tpl.id);

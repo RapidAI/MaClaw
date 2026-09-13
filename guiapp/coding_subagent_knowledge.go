@@ -94,9 +94,12 @@ func (c *codingSubAgentCallbacks) buildKnowledgePromptSections() string {
 	if len(pack.Items) > 0 {
 		b.WriteString("\n## 相关编码经验（来自编程知识库）\n")
 		b.WriteString("以下经验来自历史编码任务积累，供参考：\n")
+		ids := make([]string, 0, len(pack.Items))
 		for _, item := range pack.Items {
 			b.WriteString(fmt.Sprintf("- **%s**: %s\n", item.Title, truncateRunesForSubAgent(item.Text, 300)))
+			ids = append(ids, item.SourceID)
 		}
+		c.noteRecalledExperienceIDs(ids)
 	}
 
 	// 2. General knowledge (project docs)
@@ -251,10 +254,11 @@ func (c *codingSubAgentCallbacks) executeCodingKnowledgeSearch(argsJSON string) 
 			Limit:       5,
 		})
 	}
-	if c.subagent.handler != nil && c.subagent.handler.app != nil {
-		experiences = c.subagent.handler.app.mergeEnterpriseCodingSearch(ctx, experiences, query, taskLanguage, c.subagent.projectPath, 5)
-		err = nil
+	var app *App
+	if c.subagent.handler != nil {
+		app = c.subagent.handler.app
 	}
+	experiences, err = finishCodingKnowledgeSearch(app, ctx, experiences, err, query, taskLanguage, c.subagent.projectPath, 5)
 	if err != nil {
 		return codingToolExecutionResult{
 			// Knowledge is advisory. A transient DB/index failure must not turn
@@ -278,7 +282,7 @@ func (c *codingSubAgentCallbacks) executeCodingKnowledgeSearch(argsJSON string) 
 			b.WriteString(fmt.Sprintf("   触发条件: %s\n", exp.TriggerCondition))
 		}
 		if exp.Content != "" {
-			content := truncateRunesForSubAgent(exp.Content, 400)
+			content := truncateRunesForSubAgent(exp.Content, 800)
 			b.WriteString(fmt.Sprintf("   %s\n", content))
 		}
 		if exp.CodeSnippet != "" {
@@ -300,6 +304,7 @@ func (c *codingSubAgentCallbacks) executeCodingKnowledgeSearch(argsJSON string) 
 		b.WriteString("\n")
 	}
 
+	c.noteRecalledExperiences(experiences)
 	// Track search for audit
 	c.trackSearchResult("coding_knowledge_search", map[string]interface{}{"query": query},
 		fmt.Sprintf("%d results", len(experiences)), true)
@@ -523,4 +528,71 @@ func parseCodingSubAgentToolArgs(argsJSON string) map[string]interface{} {
 	}
 	_ = json.Unmarshal([]byte(normalized), &args)
 	return args
+}
+
+func finishCodingKnowledgeSearch(app *App, ctx context.Context, local []knowledge.CodingExperience, localErr error, query, language, projectPath string, limit int) ([]knowledge.CodingExperience, error) {
+	if app == nil {
+		return local, localErr
+	}
+	merged := app.mergeEnterpriseCodingSearch(ctx, local, query, language, projectPath, limit)
+	if localErr != nil && len(merged) == 0 {
+		return nil, localErr
+	}
+	return merged, nil
+}
+
+func appendUniqueExperienceIDs(dst []string, ids []string) []string {
+	seen := make(map[string]struct{}, len(dst)+len(ids))
+	for _, id := range dst {
+		seen[id] = struct{}{}
+	}
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		dst = append(dst, id)
+	}
+	return dst
+}
+
+func (c *codingSubAgentCallbacks) noteRecalledExperiences(items []knowledge.CodingExperience) {
+	if c == nil || len(items) == 0 {
+		return
+	}
+	ids := make([]string, 0, len(items))
+	for _, exp := range items {
+		if exp.Status != knowledge.CodingStatusActive && exp.Status != knowledge.CodingStatusVerified && exp.Status != "" {
+			continue
+		}
+		ids = append(ids, exp.ID)
+	}
+	c.noteRecalledExperienceIDs(ids)
+}
+
+func (c *codingSubAgentCallbacks) noteRecalledExperienceIDs(ids []string) {
+	if c == nil || len(ids) == 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.recalledExperienceIDs = appendUniqueExperienceIDs(c.recalledExperienceIDs, ids)
+}
+
+func (c *codingSubAgentCallbacks) snapshotRecalledExperienceIDs() []string {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.recalledExperienceIDs) == 0 {
+		return nil
+	}
+	out := make([]string, len(c.recalledExperienceIDs))
+	copy(out, c.recalledExperienceIDs)
+	return out
 }

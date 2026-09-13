@@ -15595,9 +15595,8 @@ export namespace main {
 	export class RemoteHubCenterHub {
 	    hub_id: string;
 	    name: string;
-	    base_url: string;
-	    pwa_url: string;
-	    visibility: string;
+    base_url: string;
+    visibility: string;
 	    enrollment_mode: string;
 	    status: string;
 	
@@ -15609,9 +15608,8 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.hub_id = source["hub_id"];
 	        this.name = source["name"];
-	        this.base_url = source["base_url"];
-	        this.pwa_url = source["pwa_url"];
-	        this.visibility = source["visibility"];
+        this.base_url = source["base_url"];
+        this.visibility = source["visibility"];
 	        this.enrollment_mode = source["enrollment_mode"];
 	        this.status = source["status"];
 	    }

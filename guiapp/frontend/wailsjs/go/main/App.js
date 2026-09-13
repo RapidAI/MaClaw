@@ -554,8 +554,8 @@ export function CodingKnowledgeSave(arg1) {
   return window['go']['main']['App']['CodingKnowledgeSave'](arg1);
 }
 
-export function CodingKnowledgeSearch(arg1, arg2) {
-  return window['go']['main']['App']['CodingKnowledgeSearch'](arg1, arg2);
+export function CodingKnowledgeSearch(arg1, arg2, arg3) {
+  return window['go']['main']['App']['CodingKnowledgeSearch'](arg1, arg2, arg3);
 }
 
 export function CodingKnowledgeStats() {
@@ -3504,6 +3504,10 @@ export function PptxSlideThumbnailDataURL(arg1) {
 
 export function PptxPreviewEnsure(arg1) {
   return window['go']['main']['App']['PptxPreviewEnsure'](arg1);
+}
+
+export function PreviewTaskResultFile(arg1) {
+  return window['go']['main']['App']['PreviewTaskResultFile'](arg1);
 }
 
 export function PreflightMaclawAppOneClickPublish(arg1) {

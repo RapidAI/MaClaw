@@ -24,7 +24,6 @@ const expectedScripts = [
   'feishu-tab.js',
   'invitation-tab.js',
 	'user-referrals-tab.js',
-  'pwa-tab.js',
   'system-tab.js',
   'cloud-workspace-tab.js',
   'compute-tab.js',
@@ -690,11 +689,6 @@ function assertScopedRefreshHooks() {
       fail('LLM service/provider tabs must keep provider options in sync: ' + marker);
     }
   });
-  const pwa = read('pwa-tab.js');
-  const legacyPendingLoginsPath = '/api/' + 'admin/' + 'enrollments/' + 'pending-logins';
-  if (!pwa.includes('/api/admin/pending-logins') || pwa.includes(legacyPendingLoginsPath)) {
-    fail('pwa-tab.js must use the registered pending-logins admin endpoint.');
-  }
 }
 
 function assertMaclawAppEvidenceReviewMarkers() {

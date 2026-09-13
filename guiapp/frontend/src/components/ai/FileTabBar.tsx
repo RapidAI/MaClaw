@@ -439,6 +439,17 @@ export interface FileTabBarProps {
     lang?: string;
     /** Cloud workspace: never leak the local cache path in tooltips/menus. */
     cloudMode?: boolean;
+    /**
+     * When false, keep `activeFilePath` for overflow/keyboard/MRU but draw no
+     * file tab as selected (the working-directory tab is the current surface).
+     */
+    highlightActiveFile?: boolean;
+    /** Parent already owns `role="tablist"` (workspace tab + these file tabs). */
+    embedded?: boolean;
+    /** ArrowLeft from the first file tab — used to return to the workspace tab. */
+    onArrowBeforeFirst?: () => void;
+    /** ArrowRight from the last file tab — used to wrap to the workspace tab. */
+    onArrowAfterLast?: () => void;
 }
 
 // ── Context Menu ──
@@ -848,6 +859,7 @@ const FileTabButton = React.memo(function FileTabButton({
                 border: 'none',
                 borderRight: `1px solid ${theme.border}`,
                 borderLeft: dragOverSide === 'before' ? `2px solid ${theme.tabActiveText}` : '2px solid transparent',
+                borderBottom: isActive ? `2px solid ${theme.tabActiveText}` : '2px solid transparent',
                 boxShadow: dragOverSide === 'after' ? `inset -2px 0 0 ${theme.tabActiveText}` : undefined,
                 backgroundColor,
                 color: isActive ? theme.tabActiveText : theme.text,
@@ -859,6 +871,8 @@ const FileTabButton = React.memo(function FileTabButton({
                 flexShrink: 0,
                 maxWidth: 180,
                 minWidth: 0,
+                boxSizing: 'border-box',
+                height: '100%',
             }}
         >
             {isPinned && (
@@ -953,6 +967,10 @@ export function FileTabBar({
     theme,
     lang,
     cloudMode = false,
+    highlightActiveFile = true,
+    embedded = false,
+    onArrowBeforeFirst,
+    onArrowAfterLast,
 }: FileTabBarProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     /** Clipped strip only — capacity is measured here so the sticky +N slot is free. */
@@ -1184,6 +1202,11 @@ export function FileTabBar({
         if ((e.ctrlKey || e.metaKey) && e.key === 'Tab') {
             e.preventDefault();
             e.stopPropagation();
+            // Directory is showing: first hop returns to the last-focused file.
+            if (!highlightActiveFile && activeFilePath) {
+                onSelectFile(activeFilePath);
+                return;
+            }
             const next = cycleFilePath(mruCycleOrder, activeFilePath, e.shiftKey ? -1 : 1);
             if (next) onSelectFile(next);
             return;
@@ -1202,10 +1225,38 @@ export function FileTabBar({
         if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
             if (dropdownOpen) return; // list handles its own arrows
             e.preventDefault();
-            const next = cycleFilePath(filePaths, activeFilePath, e.key === 'ArrowRight' ? 1 : -1);
+            const goingRight = e.key === 'ArrowRight';
+            if (!highlightActiveFile) {
+                const edge = goingRight ? filePaths[0] : filePaths[filePaths.length - 1];
+                if (edge) onSelectFile(edge);
+                return;
+            }
+            const current = filePaths.indexOf(activeFilePath);
+            if (!goingRight && current === 0 && onArrowBeforeFirst) {
+                onArrowBeforeFirst();
+                return;
+            }
+            if (goingRight && current === filePaths.length - 1 && onArrowAfterLast) {
+                onArrowAfterLast();
+                return;
+            }
+            const next = cycleFilePath(filePaths, activeFilePath, goingRight ? 1 : -1);
             if (next) onSelectFile(next);
+            return;
         }
-    }, [activeFilePath, closeEditorsPicker, dropdownOpen, filePaths, mruCycleOrder, onCloseFile, onSelectFile, openEditorsPicker]);
+
+        if (e.key === 'Home' || e.key === 'End') {
+            if (dropdownOpen) return;
+            e.preventDefault();
+            if (e.key === 'Home') {
+                if (onArrowBeforeFirst) onArrowBeforeFirst();
+                else if (filePaths[0]) onSelectFile(filePaths[0]);
+                return;
+            }
+            const last = filePaths[filePaths.length - 1];
+            if (last) onSelectFile(last);
+        }
+    }, [activeFilePath, closeEditorsPicker, dropdownOpen, filePaths, highlightActiveFile, mruCycleOrder, onArrowAfterLast, onArrowBeforeFirst, onCloseFile, onSelectFile, openEditorsPicker]);
 
     const handlePickerKeyDown = useCallback((e: React.KeyboardEvent) => {
         if (e.key === 'Escape') {
@@ -1276,9 +1327,9 @@ export function FileTabBar({
                 className="mc-file-tab-bar"
                 onDragEnd={() => setDragOver((prev) => (prev == null ? prev : null))}
                 data-testid="file-tab-bar"
-                role="tablist"
-                tabIndex={0}
-                aria-label="Code preview file tabs"
+                role={embedded ? undefined : 'tablist'}
+                tabIndex={embedded ? undefined : 0}
+                aria-label={embedded ? undefined : 'Code preview file tabs'}
                 onKeyDown={handleKeyDown}
                 style={{
                     display: 'flex',
@@ -1320,7 +1371,7 @@ export function FileTabBar({
                                 key={filePath}
                                 filePath={filePath}
                                 file={file}
-                                isActive={filePath === activeFilePath}
+                                isActive={highlightActiveFile && filePath === activeFilePath}
                                 isPinned={pinnedSet.has(filePath)}
                                 theme={theme}
                                 onSelectFile={onSelectFile}

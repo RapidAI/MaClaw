@@ -1036,6 +1036,16 @@ func TestRemoteCodingRecoveryRequiresSamePinnedConfiguredLiveTarget(t *testing.T
 	}
 }
 
+func TestServiceEnsureRemoteGitBaselineRejectsIncompleteBinding(t *testing.T) {
+	target := codingruntime.RemoteTarget{Host: "build.example.test", User: "deploy", WorkDir: "/srv/app", HostKeyFingerprint: "SHA256:pin"}
+	if err := serviceEnsureRemoteGitBaseline(context.Background(), nil, remoteCodingRuntimeBinding{Target: target, SessionID: "ssh-1"}); err == nil {
+		t.Fatal("nil resources should fail")
+	}
+	if err := serviceEnsureRemoteGitBaseline(context.Background(), &coreAgentSSHResources{}, remoteCodingRuntimeBinding{Target: target}); err == nil {
+		t.Fatal("empty session should fail")
+	}
+}
+
 func TestServiceRemoteWorkspaceProbeParserIgnoresPTYCommandEcho(t *testing.T) {
 	target := codingruntime.RemoteTarget{Host: "build.example.test", User: "deploy", WorkDir: "/srv/app", HostKeyFingerprint: "SHA256:pin"}
 	identity, err := target.Identity()

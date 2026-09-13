@@ -2825,6 +2825,35 @@ body {
     to { transform: translateX(152%); }
 }
 
+.sidebar-task-status-banner {
+    margin: 0 8px 8px;
+    padding: 7px 10px;
+    border-radius: 6px;
+    border: 1px solid color-mix(in srgb, var(--theme-primary) 28%, var(--theme-border));
+    background: color-mix(in srgb, var(--theme-primary) 7%, transparent);
+    color: var(--theme-text-secondary);
+    font-size: 0.7rem;
+    line-height: 1.35;
+}
+
+.sidebar-task-progress__track {
+    display: block;
+    margin-top: 5px;
+    height: 3px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--theme-primary) 18%, transparent);
+}
+
+.sidebar-task-progress__bar {
+    display: block;
+    width: 42%;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--theme-primary);
+    animation: sidebar-task-restore-progress 0.9s ease-in-out infinite alternate;
+}
+
 .sidebar-task-row {
     position: relative;
     background: transparent;
@@ -3035,8 +3064,52 @@ body {
     transition: transform 120ms ease;
 }
 details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg); }
-@media (prefers-reduced-motion: reduce) {
+.assistant-reasoning-summary--plain::before { content: none; width: 0; margin: 0; }
+/* Live activity title: one highlight walks through the glyphs (inherits summary ink). */
+.assistant-reasoning-live-label {
+    display: inline-block;
+    --assistant-sheen-spot: #b8c3d0;
+}
+@supports ((-webkit-background-clip: text) or (background-clip: text)) {
+    .assistant-reasoning-live-label {
+        background-image: linear-gradient(
+            90deg,
+            currentColor 0%,
+            currentColor 34%,
+            var(--assistant-sheen-spot) 50%,
+            currentColor 66%,
+            currentColor 100%
+        );
+        background-size: 220% 100%;
+        background-position: 100% 50%;
+        background-repeat: no-repeat;
+        -webkit-background-clip: text;
+        background-clip: text;
+        -webkit-text-fill-color: transparent;
+        animation: assistant-reasoning-shimmer 1.65s linear infinite;
+    }
+}
+.assistant-reasoning-live-dot {
+    animation: assistant-reasoning-dot-pulse 1.4s ease-in-out infinite;
+}
+@keyframes assistant-reasoning-shimmer {
+    0% { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
+}
+@keyframes assistant-reasoning-dot-pulse {
+    0%, 100% { opacity: 0.5; }
+    50% { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce), (prefers-contrast: more) {
     .assistant-reasoning-summary::before { transition: none; }
+    .assistant-reasoning-live-label {
+        animation: none;
+        background-image: none;
+        -webkit-text-fill-color: currentColor;
+        -webkit-background-clip: border-box;
+        background-clip: border-box;
+    }
+    .assistant-reasoning-live-dot { animation: none; }
 }
 .ai-chat-scrollbar {
     scrollbar-width: auto;
@@ -13208,16 +13281,23 @@ details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg);
 }
 
 .prog-tools__btn-reset {
-    margin-left: auto;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 30px;
-    height: 30px;
+    padding: 4px 10px;
+    min-height: 26px;
+    width: auto;
+    height: auto;
+    min-width: max-content;
     border: 1px solid var(--theme-border);
-    border-radius: 8px;
+    border-radius: 5px;
     background: var(--theme-surface);
-    color: var(--theme-text-tertiary);
+    color: var(--theme-text-secondary);
+    font-size: 0.7rem;
+    font-weight: 600;
+    line-height: 1.2;
+    white-space: nowrap;
+    flex-shrink: 0;
     cursor: pointer;
     transition: all 0.15s;
 }
@@ -13400,14 +13480,29 @@ details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg);
     align-self: center;
 }
 
+.prog-tools__kb-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
 .prog-tools__kb-btn {
-    padding: 4px 8px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4px 10px;
     border: 1px solid var(--theme-border);
     border-radius: 5px;
     background: var(--theme-surface);
     color: var(--theme-text-secondary);
     font-size: 0.7rem;
     font-weight: 600;
+    line-height: 1.2;
+    white-space: nowrap;
+    flex-shrink: 0;
+    width: auto;
+    min-width: max-content;
     cursor: pointer;
     transition: all 0.12s;
 }
@@ -17431,8 +17526,10 @@ details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg);
 
 .sidebar[data-ai-theme='dark'] .left-nav-item.left-nav-item--ai.active,
 .sidebar[data-ai-theme='dark'] .left-nav-item.left-nav-item--ai.active:hover {
-    background: var(--theme-primary-soft);
-    box-shadow: var(--ai-row-active-shadow);
+    background: var(--theme-primary-soft) !important;
+    color: var(--theme-primary-strong) !important;
+    border-color: transparent !important;
+    box-shadow: var(--ai-row-active-shadow) !important;
 }
 
 /* Beat dark `.left-nav-item span { color: inherit }` so labels keep intended contrast. */
@@ -19442,10 +19539,6 @@ button[aria-busy='true']::after, [data-loading='true']::after {
   background: #fff !important;
   border-right: 1px solid #dfe5ed !important;
 }
-.sidebar > .left-nav-item,
-.sidebar .left-nav-item { color: #425466; }
-.sidebar .left-nav-item.active,
-.sidebar .left-nav-item--ai.active { background: #eef5ff !important; color: #1e6bc5 !important; box-shadow: inset 0 -2px 0 #2f78d0 !important; }
 .sidebar-task-row { min-height: 48px; margin: 2px 10px; border-radius: 8px; }
 .sidebar-task-row.is-active { background: #eef5ff !important; border-color: #c9ddf6 !important; box-shadow: none !important; }
 .global-action-bar { min-height: 48px; background: #fff !important; border-bottom: 1px solid #e1e6ed !important; }
@@ -19588,7 +19681,6 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
    wrapper to 24px makes the badge overflow and paint over the label. */
 .sidebar .left-nav-item--ai .sidebar-icon { width: auto; height: auto; }
 .sidebar .left-nav-item > span:last-child { font-size: 12px !important; line-height: 1.2 !important; font-weight: 600 !important; }
-.sidebar .left-nav-item.active { border: 1px solid #d9e7fa !important; box-shadow: 0 2px 8px rgba(47,120,208,.08) !important; }
 
 /* Reference dashboard quick and recent task areas */
 .mc-welcome [data-testid='welcome-quick-access'] { width: min(100%, 820px) !important; margin-top: 8px; }
@@ -19741,10 +19833,60 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 }
 .mc-task-pane .sidebar-task-row.is-active [class*='count'] { background: #dcecff; color: #1769e8; }
 
-/* Reference result and file-change cards */
-.mc-task-execution [data-testid='coding-agent-file-changes'] { margin: 14px auto !important; width: 100%; max-width: 760px; border: 1px solid #c9ddf6 !important; border-radius: 14px !important; background: #fff !important; box-shadow: 0 4px 14px rgba(35,55,80,.05); }
-.mc-task-execution [data-testid='coding-agent-file-change-row'] { min-height: 42px; border-bottom: 1px solid #edf1f5; }
-.mc-task-execution [data-testid='coding-agent-file-change-row']:last-child { border-bottom: 0; }
+/* Compact file-change list — keep it in the trail, not a floating empty card. */
+.coding-agent-file-changes {
+  margin: 6px 0 4px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--mc-line, #d7e2ee) 80%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--mc-muted-surface, #f5f8fc) 88%, transparent);
+  box-shadow: none;
+}
+.coding-agent-file-change-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  column-gap: 8px;
+  align-items: center;
+  min-height: 26px;
+  padding: 2px 6px;
+  margin: 0 -6px;
+  border-radius: 7px;
+  font-size: 12px;
+  line-height: 1.35;
+}
+.coding-agent-file-change-row:hover {
+  background: color-mix(in srgb, var(--mc-accent, #1769e8) 7%, transparent);
+}
+.coding-agent-file-change-row:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--mc-accent, #1769e8) 70%, transparent);
+  outline-offset: -2px;
+}
+.coding-agent-file-change-badge {
+  min-width: 32px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Cascadia Mono", monospace;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-align: center;
+  line-height: 16px;
+}
+.mc-task-execution [data-testid='coding-agent-file-changes'],
+.mc-task-execution .coding-agent-file-changes {
+  margin: 6px 0 4px !important;
+  width: auto !important;
+  max-width: none !important;
+  padding: 8px 10px !important;
+  border: 1px solid color-mix(in srgb, var(--mc-line, #d7e2ee) 80%, transparent) !important;
+  border-radius: 10px !important;
+  background: color-mix(in srgb, var(--mc-muted-surface, #f5f8fc) 88%, transparent) !important;
+  box-shadow: none !important;
+}
+.mc-task-execution [data-testid='coding-agent-file-change-row'] {
+  min-height: 26px !important;
+  border-bottom: 0 !important;
+}
 
 /* Task header status capsule */
 .mc-task-execution-status,
@@ -19867,7 +20009,6 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 /* Reference card hierarchy */
 .mc-welcome [data-testid='welcome-quick-access'] > *,
 .mc-welcome [data-testid='welcome-quick-hints'] > *,
-.mc-task-execution [data-testid='coding-agent-file-changes'],
 .mc-task-execution [data-testid='coding-step-statuses'] { box-shadow: 0 4px 14px rgba(35,55,80,.05); }
 .mc-welcome [data-testid='welcome-quick-access'] > *:hover,
 .mc-welcome [data-testid='welcome-quick-hints'] > *:hover { transform: translateY(-1px); transition: transform .16s ease, border-color .16s ease; }
@@ -19948,14 +20089,17 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .mc-conversation-body [data-testid^='assistant-chat-ai-'] time { display: block; margin-top: 6px; color: #8a95a3; font-size: 10px; }
 
 /* Reference result card actions */
-.mc-task-execution [data-testid='coding-agent-file-changes'] button,
 .mc-task-execution [data-testid='confirmation-card'] button { min-height: 32px; padding-inline: 11px; border-radius: 9px !important; }
-.mc-task-execution [data-testid='coding-agent-file-changes'] button:hover { border-color: #b9d4f5 !important; background: #f5f9ff !important; color: #1769e8 !important; }
+.mc-task-execution [data-testid='coding-agent-file-changes'] button {
+  min-height: 0 !important;
+  padding: 0 !important;
+  border: none !important;
+  background: none !important;
+  box-shadow: none !important;
+}
 
 /* Reference task result heading hierarchy */
-.mc-task-execution [data-testid='coding-agent-file-changes'] h3,
 .mc-task-execution [data-testid='confirmation-card'] h3 { margin: 0; color: #1f2937; font-size: 15px; font-weight: 700; }
-.mc-task-execution [data-testid='coding-agent-file-changes'] p,
 .mc-task-execution [data-testid='confirmation-card'] p { color: #64748b; font-size: 12px; line-height: 1.5; }
 
 /* Reference task completion emphasis */
@@ -19982,30 +20126,54 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .mc-task-execution { background: #fff !important; padding: 24px 32px 16px !important; }
 .mc-task-execution .assistant-chat-user-message, .mc-task-execution [data-role='user-message'] { background: #f2f6ff !important; border: 1px solid #dbe7fb !important; border-radius: 14px !important; }
 .mc-task-execution .assistant-chat-ai-message, .mc-task-execution [data-role='assistant-message'] { background: #fff !important; border: 1px solid #e3e9f1 !important; border-radius: 14px !important; box-shadow: 0 3px 12px rgba(24,63,112,.04); }
-.mc-task-execution-header { display:flex; align-items:center; justify-content:space-between; gap:16px; min-height:64px; padding:0 28px; background:#fff; border-bottom:1px solid #e5eaf1; }
+.mc-task-execution-header { display:flex; align-items:center; justify-content:space-between; gap:16px; min-height:64px; padding:0 28px; background:#fff; border-bottom:1px solid #e5eaf1; user-select:none; cursor:default; }
+.mc-task-execution-header[data-window-drag] { --wails-draggable: drag; }
 .mc-task-execution-header strong { font-size:20px; color:#1f2937; }
 .mc-task-execution-header span { color:#1769e8; font-size:13px; }
-.mc-task-execution-actions { display:flex; align-items:center; gap:10px; flex-shrink:0; }
+.mc-task-execution-actions { display:flex; align-items:center; gap:10px; flex-shrink:0; --wails-draggable: no-drag; }
 .mc-task-execution-actions button { border:1px solid #dbe4ee; background:#fff; border-radius:9px; padding:8px 14px; color:#475569; cursor:pointer; white-space:nowrap; }
-.mc-task-execution-actions .task-hide-btn {
+.mc-task-execution-window-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  margin-left: 2px;
+  --wails-draggable: no-drag;
+}
+.mc-task-execution-actions .task-window-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
   width: 36px;
   height: 32px;
-  margin-left: 4px;
+  margin: 0;
   padding: 0 !important;
   border: 0 !important;
   border-radius: 8px;
   background: transparent !important;
-  color: #526174 !important;
-  box-shadow: none;
+  color: var(--theme-text-secondary, #526174) !important;
+  box-shadow: none !important;
+  line-height: 1;
+  flex-shrink: 0;
+  cursor: pointer;
+  user-select: none;
+  --wails-draggable: no-drag;
 }
-.mc-task-execution-actions .task-hide-btn:hover,
-.mc-task-execution-actions .task-hide-btn:focus-visible {
-  background: #f5f9ff !important;
-  color: #1769e8 !important;
+.mc-task-execution-actions .task-window-btn svg { display: block; }
+.mc-task-execution-actions .task-window-btn:hover,
+.mc-task-execution-actions .task-window-btn:focus-visible {
+  background: var(--theme-surface-muted, #f5f9ff) !important;
+  color: var(--theme-primary, #1769e8) !important;
   outline: none;
 }
-.mc-task-execution-actions .task-hide-btn:focus-visible {
-  box-shadow: 0 0 0 3px rgba(47,128,237,.22);
+.mc-task-execution-actions .task-window-btn:focus-visible {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-primary, #1769e8) 22%, transparent) !important;
+}
+.mc-task-execution-actions .task-window-btn[aria-pressed="true"] {
+  background: var(--theme-surface-muted, #eef2f7) !important;
+  color: var(--theme-text-primary, #1f2937) !important;
+  box-shadow: inset 0 0 0 1px var(--theme-border, #dbe4ee) !important;
 }
 .mc-task-more-menu { position: relative; }
 .mc-task-more-menu > summary { list-style: none; border: 1px solid #dbe4ee; background: #fff; border-radius: 9px; padding: 8px 12px; color: #475569; cursor: pointer; }
@@ -20028,7 +20196,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .mc-task-tab-switcher__title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mc-task-execution-actions .mc-task-tab-switcher__close { flex-shrink: 0; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: #8a95a3; font-size: 13px; line-height: 1; cursor: pointer; }
 .mc-task-execution-actions .mc-task-tab-switcher__close:hover { background: #fde8e8; color: #d14b4b; }
-.mc-task-execution-heading { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.mc-task-execution-heading { min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; gap: 4px; }
 .mc-task-execution-title-row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; min-width: 0; }
 .mc-task-execution-title-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mc-task-execution-title-row .mc-task-execution-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -20139,26 +20307,84 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
     min-height: 48px;
     padding: 0 12px !important;
     border-radius: 11px;
-    background: #1769e8;
-    color: #fff !important;
-    box-shadow: 0 5px 14px rgba(23, 105, 232, .18);
+    background: #eef4fe;
+    border: 1px solid #d9e6fc;
+    color: #1769e8 !important;
+    box-shadow: none;
 }
 .mc-task-pane__create-group > span:first-child {
-    color: #fff !important;
+    color: #155ccc !important;
     font-size: 14px !important;
     letter-spacing: 0 !important;
     white-space: nowrap;
 }
-.mc-task-pane__create-group > button {
+/* Keep the lighter dock treatment above the legacy solid-blue header-button
+   rule (.mc-task-pane > .mc-task-pane__header button) via higher specificity. */
+.mc-task-pane > .mc-task-pane__header .mc-task-pane__create-group > button {
     width: 32px !important;
     height: 32px !important;
-    border-color: rgba(255,255,255,.42) !important;
-    background: rgba(255,255,255,.12) !important;
-    color: #fff !important;
+    border-color: rgba(23, 105, 232, .30) !important;
+    border-radius: 8px !important;
+    background: #fff !important;
+    color: #1769e8 !important;
+    box-shadow: none !important;
 }
-.mc-task-pane__create-group > button:hover:not(:disabled) {
-    background: rgba(255,255,255,.22) !important;
-    border-color: rgba(255,255,255,.72) !important;
+.mc-task-pane > .mc-task-pane__header .mc-task-pane__create-group > button:hover:not(:disabled) {
+    background: #dceafd !important;
+    border-color: rgba(23, 105, 232, .55) !important;
+}
+/* Primary action: the create-task button stays filled so it reads as the one
+   main call-to-action while sibling dock buttons keep the quiet ghost style. */
+.mc-task-pane > .mc-task-pane__header .mc-task-pane__create-group > button.mc-task-pane__create-primary {
+    background: linear-gradient(145deg, #2b7cf4 0%, #1769e8 60%, #1059c9 100%) !important;
+    border-color: rgba(23, 105, 232, .55) !important;
+    color: #fff !important;
+    box-shadow: 0 3px 8px rgba(23, 105, 232, .28) !important;
+}
+.mc-task-pane > .mc-task-pane__header .mc-task-pane__create-group > button.mc-task-pane__create-primary:hover:not(:disabled) {
+    background: linear-gradient(145deg, #3d8bf6 0%, #1d6ce4 60%, #1261d4 100%) !important;
+    border-color: rgba(23, 105, 232, .75) !important;
+    box-shadow: 0 4px 10px rgba(23, 105, 232, .34) !important;
+}
+/* Dark mode: the light blue tint would glow against the dark shell, so the
+   dock falls back to the muted surface with the soft primary accent. */
+[data-ai-theme='dark'] .mc-task-pane__create-group {
+    background: var(--theme-primary-soft, rgba(126, 168, 224, .14));
+    border-color: var(--theme-border);
+    color: var(--theme-primary) !important;
+}
+[data-ai-theme='dark'] .mc-task-pane__create-group > span:first-child { color: var(--theme-primary) !important; }
+[data-ai-theme='dark'] .mc-task-pane > .mc-task-pane__header .mc-task-pane__create-group > button {
+    background: var(--theme-surface-muted) !important;
+    border-color: var(--theme-border) !important;
+    color: var(--theme-primary) !important;
+    box-shadow: none !important;
+}
+[data-ai-theme='dark'] .mc-task-pane > .mc-task-pane__header .mc-task-pane__create-group > button:hover:not(:disabled) {
+    background: var(--theme-surface) !important;
+    border-color: var(--theme-primary) !important;
+}
+[data-ai-theme='dark'] .mc-task-pane > .mc-task-pane__header .mc-task-pane__create-group > button.mc-task-pane__create-primary {
+    background: linear-gradient(145deg, #3d8bf6 0%, #1d6ce4 60%, #1261d4 100%) !important;
+    border-color: rgba(126, 168, 224, .45) !important;
+    color: #fff !important;
+    box-shadow: 0 3px 8px rgba(0, 0, 0, .35) !important;
+}
+[data-ai-theme='dark'] .mc-task-pane > .mc-task-pane__header .mc-task-pane__create-group > button.mc-task-pane__create-primary:hover:not(:disabled) {
+    background: linear-gradient(145deg, #4f97f7 0%, #2579e6 60%, #1a6ad8 100%) !important;
+    border-color: rgba(126, 168, 224, .65) !important;
+}
+/* Save-as-task button keeps the quiet ghost treatment instead of the legacy
+   solid blue that the generic header-button rule would force on it. */
+.mc-task-pane > .mc-task-pane__header .mc-task-pane__save-group > button {
+    border-color: transparent !important;
+    background: transparent !important;
+    color: #64748b !important;
+    box-shadow: none !important;
+}
+.mc-task-pane > .mc-task-pane__header .mc-task-pane__save-group > button:hover:not(:disabled) {
+    background: #f5f9ff !important;
+    color: #1769e8 !important;
 }
 .mc-task-pane__save-group {
     flex: 0 0 auto;
@@ -20278,9 +20504,9 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 }
 .mc-nav-rail .sidebar-item.active:not(.left-nav-item--ai) {
   appearance: none !important;
-  background: rgba(23, 105, 232, .08) !important;
+  background: color-mix(in srgb, var(--theme-primary) 10%, transparent) !important;
   border-color: transparent !important;
-  box-shadow: inset 0 0 0 1px rgba(23, 105, 232, .12) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--theme-primary) 16%, transparent) !important;
 }
 .mc-sidebar-shell { width: 308px !important; min-width: 308px !important; }
 .mc-sidebar-drag-strip { width: 428px !important; }
@@ -20320,71 +20546,6 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   .mc-sidebar-drag-strip { width: 64px !important; }
 }
 
-/* Recent task rows on the live workbench. The task index is the source of
-   truth; legacy template chips remain below these rows for compatibility. */
-.mc-recent-task-list {
-  display: grid;
-  flex-basis: 100%;
-  width: 100%;
-  gap: 0;
-  overflow: hidden;
-  border: 1px solid #e5eaf1;
-  border-radius: 14px;
-  background: #fff;
-}
-.mc-recent-task-row {
-  display: grid !important;
-  grid-template-columns: 10px minmax(0, 1fr) auto auto 18px;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  min-height: 58px;
-  padding: 10px 14px !important;
-  border: 0 !important;
-  border-bottom: 1px solid #edf1f5 !important;
-  border-radius: 0 !important;
-  background: #fff !important;
-  color: #26364a !important;
-  text-align: left;
-  cursor: pointer;
-}
-.mc-recent-task-row:last-child { border-bottom: 0 !important; }
-.mc-recent-task-row:hover { background: #f7faff !important; }
-.mc-recent-task-dot { width: 8px; height: 8px; border-radius: 50%; background: #2f80ed; }
-.mc-recent-task-row[data-status='completed'] .mc-recent-task-dot { background: #18b875; }
-.mc-recent-task-row[data-status='pending'] .mc-recent-task-dot { background: #f39a24; }
-.mc-recent-task-row[data-status='failed'] .mc-recent-task-dot { background: #d64a4a; }
-.mc-recent-task-copy { display: grid; min-width: 0; gap: 3px; }
-.mc-recent-task-copy strong { overflow: hidden; color: #26364a; font-size: 13px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
-.mc-recent-task-copy small { overflow: hidden; color: #8a95a3; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.mc-recent-task-status { color: #1769e8; font-size: 12px; font-weight: 600; white-space: nowrap; }
-.mc-recent-task-row[data-status='completed'] .mc-recent-task-status { color: #15945b; }
-.mc-recent-task-row[data-status='pending'] .mc-recent-task-status { color: #b96b08; }
-.mc-recent-task-row[data-status='failed'] .mc-recent-task-status { color: #d64a4a; }
-.mc-recent-task-row time { color: #8a95a3; font-size: 11px; white-space: nowrap; }
-.mc-recent-task-chevron { color: #98a3b2; font-size: 20px; line-height: 1; }
-.mc-recent-task-title-line { display: flex; align-items: center; min-width: 0; gap: 6px; }
-.mc-recent-task-title-line strong { min-width: 0; }
-.mc-recent-task-cloud-badge {
-    flex: 0 0 auto;
-    max-width: 104px;
-    overflow: hidden;
-    padding: 2px 6px;
-    border: 1px solid #d5c8ff;
-    border-radius: 999px;
-    background: #f2edff;
-    color: #7652d5;
-    font-size: 10px;
-    font-weight: 650;
-    line-height: 1.2;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-@media (max-width: 560px) {
-    .mc-recent-task-row { grid-template-columns: 8px minmax(0, 1fr) auto 16px; gap: 7px; padding-inline: 10px !important; }
-    .mc-recent-task-row time { display: none; }
-    .mc-recent-task-cloud-badge { max-width: 78px; }
-}
 .mc-task-section-label { margin: 2px 4px 7px; color: #64748b; font-size: 11px; font-weight: 700; }
 .mc-task-filter-chips button:hover { background: color-mix(in srgb, var(--theme-primary) 8%, transparent); }
 .mc-task-filter-chips button:focus-visible { outline: 2px solid color-mix(in srgb, var(--theme-primary) 54%, transparent); outline-offset: 1px; }
@@ -20412,10 +20573,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 #App[data-ai-theme='dark'] .mc-header-search-wrap,
 #App[data-ai-theme='dark'] .mc-header-notification,
 #App[data-ai-theme='dark'] .mc-task-pane__save-group,
-#App[data-ai-theme='dark'] .mc-recent-task-list,
-#App[data-ai-theme='dark'] .mc-recent-task-row,
 #App[data-ai-theme='dark'] .mc-task-execution .assistant-chat-ai-message,
-#App[data-ai-theme='dark'] .mc-task-execution [data-testid='coding-agent-file-changes'],
 #App[data-ai-theme='dark'] .mc-task-execution [data-testid='confirmation-card'],
 #App[data-ai-theme='dark'] .mc-task-execution [data-testid='recoverable-session-card'],
 #App[data-ai-theme='dark'] .mc-task-execution [data-testid='unfinished-slot-card'],
@@ -20426,22 +20584,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 #App[data-ai-theme='dark'] .mc-header-notification,
 #App[data-ai-theme='dark'] .mc-task-pane__save-group > button,
 #App[data-ai-theme='dark'] .mc-input-stack button:not(.btn-primary) { color: var(--theme-text-secondary) !important; }
-#App[data-ai-theme='dark'] .mc-recent-task-row { border-bottom-color: var(--theme-border-subtle) !important; }
-#App[data-ai-theme='dark'] .mc-recent-task-row:hover { background: var(--theme-surface-muted) !important; }
-#App[data-ai-theme='dark'] .mc-recent-task-copy strong { color: var(--theme-text-primary); }
-#App[data-ai-theme='dark'] .mc-recent-task-copy small,
-#App[data-ai-theme='dark'] .mc-recent-task-row time,
-#App[data-ai-theme='dark'] .mc-recent-task-chevron { color: var(--theme-text-muted); }
-#App[data-ai-theme='dark'] .mc-recent-task-status { color: var(--theme-primary-strong); }
-#App[data-ai-theme='dark'] .mc-recent-task-cloud-badge {
-    border-color: color-mix(in srgb, #a78bfa 48%, var(--theme-border));
-    background: color-mix(in srgb, #8b5cf6 18%, var(--theme-surface));
-    color: #c4b5fd;
-}
 #App[data-ai-theme='dark'] .mc-task-section-label { color: var(--theme-text-primary); }
-#App[data-ai-theme='dark'] .mc-recent-task-row[data-status='completed'] .mc-recent-task-status { color: var(--theme-success); }
-#App[data-ai-theme='dark'] .mc-recent-task-row[data-status='pending'] .mc-recent-task-status { color: var(--theme-warning); }
-#App[data-ai-theme='dark'] .mc-recent-task-row[data-status='failed'] .mc-recent-task-status { color: var(--theme-danger); }
 #App[data-ai-theme='dark'] .mc-task-execution-status { background: var(--theme-primary-soft) !important; border-color: var(--theme-border) !important; color: var(--theme-primary-strong) !important; }
 #App[data-ai-theme='dark'] .mc-task-execution-status--completed { background: color-mix(in srgb, var(--theme-success) 16%, var(--theme-surface)) !important; border-color: color-mix(in srgb, var(--theme-success) 48%, var(--theme-border)) !important; color: var(--theme-success) !important; }
 #App[data-ai-theme='dark'] .mc-task-execution-status--pending { background: color-mix(in srgb, var(--theme-warning) 16%, var(--theme-surface)) !important; border-color: color-mix(in srgb, var(--theme-warning) 48%, var(--theme-border)) !important; color: var(--theme-warning) !important; }
@@ -20465,9 +20608,14 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   background: transparent !important;
   box-shadow: none !important;
 }
-#App[data-ai-theme='dark'] .mc-task-execution-actions .task-hide-btn { background: transparent !important; border-color: transparent !important; color: var(--theme-text-secondary) !important; }
-#App[data-ai-theme='dark'] .mc-task-execution-actions .task-hide-btn:hover,
-#App[data-ai-theme='dark'] .mc-task-execution-actions .task-hide-btn:focus-visible { background: var(--theme-surface-muted) !important; color: var(--theme-text-primary) !important; }
+#App[data-ai-theme='dark'] .mc-task-execution-actions .task-window-btn { background: transparent !important; border-color: transparent !important; color: var(--theme-text-secondary) !important; }
+#App[data-ai-theme='dark'] .mc-task-execution-actions .task-window-btn:hover,
+#App[data-ai-theme='dark'] .mc-task-execution-actions .task-window-btn:focus-visible { background: var(--theme-surface-muted) !important; color: var(--theme-text-primary) !important; }
+#App[data-ai-theme='dark'] .mc-task-execution-actions .task-window-btn[aria-pressed="true"] {
+  background: var(--theme-surface-muted) !important;
+  color: var(--theme-text-primary) !important;
+  box-shadow: inset 0 0 0 1px var(--theme-border) !important;
+}
 #App[data-ai-theme='dark'] .mc-task-execution .assistant-chat-user-message,
 #App[data-ai-theme='dark'] .mc-task-execution [data-role='user-message'] {
   background: color-mix(in srgb, var(--theme-primary) 16%, var(--theme-surface)) !important;
@@ -20483,15 +20631,23 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   background: var(--theme-surface) !important;
   border-color: var(--theme-border) !important;
 }
+#App[data-ai-theme='dark'] .mc-task-execution [data-testid='coding-agent-file-changes'],
+#App[data-ai-theme='dark'] .mc-task-execution .coding-agent-file-changes {
+  background: color-mix(in srgb, var(--theme-surface-muted, #1b2230) 78%, transparent) !important;
+  border-color: var(--theme-border) !important;
+  box-shadow: none !important;
+  color: var(--theme-text-primary) !important;
+}
 #App[data-ai-theme='dark'] .mc-task-execution [data-testid='coding-agent-file-change-row'] {
-  border-bottom-color: var(--theme-border-subtle) !important;
+  border-bottom: 0 !important;
   color: var(--theme-text-secondary) !important;
 }
-#App[data-ai-theme='dark'] .mc-task-execution [data-testid='coding-agent-file-changes'] h3,
+#App[data-ai-theme='dark'] .mc-task-execution [data-testid='coding-agent-file-change-row']:hover {
+  background: color-mix(in srgb, var(--theme-primary, #7eb6ff) 10%, transparent) !important;
+}
 #App[data-ai-theme='dark'] .mc-task-execution [data-testid='confirmation-card'] h3 {
   color: var(--theme-text-primary) !important;
 }
-#App[data-ai-theme='dark'] .mc-task-execution [data-testid='coding-agent-file-changes'] p,
 #App[data-ai-theme='dark'] .mc-task-execution [data-testid='confirmation-card'] p {
   color: var(--theme-text-secondary) !important;
 }
@@ -23294,10 +23450,7 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 #App .mc-task-execution [class*='timestamp'],
 #App .mc-task-execution [class*='meta'],
 #App .mc-workbench-status-card__row,
-#App .mc-workbench-status-card__online,
-#App .mc-recent-task-copy small,
-#App .mc-recent-task-row time,
-#App .mc-recent-task-chevron {
+#App .mc-workbench-status-card__online {
   color: var(--mc-copy) !important;
 }
 
@@ -23344,7 +23497,6 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 #App .mc-execution-timeline,
 #App [data-testid='coding-step-statuses'],
 #App .mc-task-execution .assistant-reasoning-panel,
-#App .mc-task-execution [data-testid='coding-agent-file-changes'],
 #App .mc-task-execution [data-testid='confirmation-card'],
 #App .mc-task-execution [data-testid='recoverable-session-card'],
 #App .mc-task-execution [data-testid='unfinished-slot-card'] {
@@ -23441,27 +23593,19 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 #App .mc-execution-step[data-status='running'] { background: color-mix(in srgb, var(--mc-accent) 9%, var(--mc-surface)) !important; }
 #App .mc-execution-step[data-status='failed'],
 #App .mc-execution-step[data-status='verify_failed'] { background: color-mix(in srgb, var(--theme-danger) 8%, var(--mc-surface)) !important; }
-#App .mc-execution-step + .mc-execution-step,
-#App .mc-task-execution [data-testid='coding-agent-file-change-row'] { border-color: var(--mc-line-subtle) !important; }
+#App .mc-execution-step + .mc-execution-step { border-color: var(--mc-line-subtle) !important; }
+#App .mc-task-execution [data-testid='coding-agent-file-changes'],
+#App .mc-task-execution .coding-agent-file-changes {
+  background: color-mix(in srgb, var(--mc-muted-surface, #f5f8fc) 88%, transparent) !important;
+  border-color: color-mix(in srgb, var(--mc-line, #d7e2ee) 80%, transparent) !important;
+  box-shadow: none !important;
+}
+#App .mc-task-execution [data-testid='coding-agent-file-change-row'] { border-color: transparent !important; }
 
-#App .mc-recent-task-list,
-#App .mc-recent-task-row {
-  background: var(--mc-surface) !important;
-  border-color: var(--mc-line-subtle) !important;
-  color: var(--mc-ink) !important;
-}
-#App .mc-recent-task-row:hover {
-  background: color-mix(in srgb, var(--mc-accent) 6%, var(--mc-surface)) !important;
-}
-#App .mc-recent-task-copy strong,
 #App .mc-workbench-status-card__row strong,
 #App .mc-workbench-status-card__model strong {
   color: var(--mc-ink) !important;
 }
-#App .mc-recent-task-status { color: var(--mc-accent-strong) !important; }
-#App .mc-recent-task-row[data-status='completed'] .mc-recent-task-status { color: var(--theme-success) !important; }
-#App .mc-recent-task-row[data-status='pending'] .mc-recent-task-status { color: var(--theme-warning) !important; }
-#App .mc-recent-task-row[data-status='failed'] .mc-recent-task-status { color: var(--theme-danger) !important; }
 #App .mc-task-pane [aria-label*='count'],
 #App .mc-task-pane .count,
 #App .mc-task-pane [class*='count'] {
@@ -23519,13 +23663,13 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   border-color: var(--mc-line-subtle) !important;
   color: var(--mc-copy) !important;
 }
-#App .mc-task-execution-actions button,
+#App .mc-task-execution-actions button:not(.task-window-btn),
 #App .mc-task-more-menu > summary {
   background: var(--mc-surface) !important;
   border-color: var(--mc-line) !important;
   color: var(--mc-copy) !important;
 }
-#App .mc-task-execution-actions button:hover:not(:disabled),
+#App .mc-task-execution-actions button:not(.task-window-btn):hover:not(:disabled),
 #App .mc-task-more-menu > summary:hover {
   background: color-mix(in srgb, var(--mc-accent) 7%, var(--mc-surface)) !important;
   border-color: color-mix(in srgb, var(--mc-accent) 42%, var(--mc-line)) !important;

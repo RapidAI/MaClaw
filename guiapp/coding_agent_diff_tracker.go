@@ -71,6 +71,12 @@ func attachCodingDiffFileChanges(event *CodingAgentEvent, snapshot CodingDiffSna
 		return
 	}
 	event.FileChanges = changes
+	files := make([]string, len(changes))
+	for i, change := range changes {
+		files[i] = change.Path
+	}
+	event.Files = files
+	event.Count = len(changes)
 	added, removed := 0, 0
 	if stat != nil && (stat.Insertions > 0 || stat.Deletions > 0) {
 		added, removed = stat.Insertions, stat.Deletions
@@ -98,7 +104,7 @@ func codingAgentFileChangesFromSnapshot(snapshot CodingDiffSnapshot, stat *SubAg
 			files = append(files, path)
 		}
 	}
-	files = uniqueSortedSubAgentStrings(files)
+	files = uniqueSubAgentDiffPaths(files)
 	if len(files) == 0 {
 		return nil
 	}
@@ -117,26 +123,72 @@ func codingAgentFileChangesFromSnapshot(snapshot CodingDiffSnapshot, stat *SubAg
 	return changes
 }
 
+func codingToolLineDeltaReplacesFile(name string) bool {
+	bare := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(name)), "ssh_")
+	return bare == "write_file"
+}
+
+func mergeSubAgentDiffStat(stat *SubAgentDiffStat, fallbacks []SubAgentFileDiffStat) *SubAgentDiffStat {
+	if len(fallbacks) == 0 {
+		return stat
+	}
+	merged := &SubAgentDiffStat{}
+	if stat != nil && len(stat.FileStats) > 0 {
+		merged.FileStats = append([]SubAgentFileDiffStat{}, stat.FileStats...)
+	}
+	for _, fallback := range fallbacks {
+		path := strings.TrimSpace(fallback.Path)
+		if path == "" || (fallback.Insertions <= 0 && fallback.Deletions <= 0) {
+			continue
+		}
+		if i := lookupSubAgentFileDiffStatIndex(merged, path); i >= 0 {
+			merged.FileStats[i].Path = preferredSubAgentDiffPath(merged.FileStats[i].Path, path)
+			if merged.FileStats[i].Insertions > 0 || merged.FileStats[i].Deletions > 0 {
+				continue
+			}
+			merged.FileStats[i].Insertions = fallback.Insertions
+			merged.FileStats[i].Deletions = fallback.Deletions
+			continue
+		}
+		merged.FileStats = append(merged.FileStats, SubAgentFileDiffStat{
+			Path:       path,
+			Insertions: fallback.Insertions,
+			Deletions:  fallback.Deletions,
+		})
+	}
+	if len(merged.FileStats) == 0 {
+		return stat
+	}
+	for _, file := range merged.FileStats {
+		merged.Insertions += file.Insertions
+		merged.Deletions += file.Deletions
+	}
+	merged.FilesChanged = len(merged.FileStats)
+	return merged
+}
+
 func lookupSubAgentFileDiffStat(stat *SubAgentDiffStat, path string) (added, removed int) {
-	if stat == nil {
+	i := lookupSubAgentFileDiffStatIndex(stat, path)
+	if i < 0 {
 		return 0, 0
 	}
-	want := strings.ReplaceAll(strings.TrimSpace(path), "\\", "/")
-	base := want
-	if idx := strings.LastIndex(want, "/"); idx >= 0 {
-		base = want[idx+1:]
+	return stat.FileStats[i].Insertions, stat.FileStats[i].Deletions
+}
+
+func lookupSubAgentFileDiffStatIndex(stat *SubAgentDiffStat, path string) int {
+	if stat == nil {
+		return -1
 	}
-	for _, file := range stat.FileStats {
-		got := strings.ReplaceAll(strings.TrimSpace(file.Path), "\\", "/")
-		gotBase := got
-		if idx := strings.LastIndex(got, "/"); idx >= 0 {
-			gotBase = got[idx+1:]
-		}
-		if got == want || gotBase == base {
-			return file.Insertions, file.Deletions
+	want := strings.TrimSpace(path)
+	if want == "" {
+		return -1
+	}
+	for i, file := range stat.FileStats {
+		if subAgentDiffPathsMatch(file.Path, want) {
+			return i
 		}
 	}
-	return 0, 0
+	return -1
 }
 
 func codingToolMutatesTrackedFiles(name string) bool {

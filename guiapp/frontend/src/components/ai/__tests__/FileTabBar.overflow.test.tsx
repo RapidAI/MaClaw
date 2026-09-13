@@ -214,6 +214,34 @@ describe('FileTabBar overflow management', () => {
         expect(visibleTabs[0].getAttribute('data-file-path')).toBe('/src/e.ts');
     });
 
+    it('keeps the last-focused file visible without selecting it when highlightActiveFile is off', () => {
+        const paths = [
+            '/src/a.ts',
+            '/src/b.ts',
+            '/src/c.ts',
+            '/src/d.ts',
+            '/src/e.ts',
+            '/src/f.ts',
+        ];
+        render(
+            <FileTabBar
+                files={makeFiles(paths)}
+                activeFilePath="/src/e.ts"
+                highlightActiveFile={false}
+                onSelectFile={vi.fn()}
+                theme={lightTheme}
+                lang="en"
+            />,
+        );
+
+        const visibleTabs = screen.getAllByTestId('file-tab');
+        const focused = visibleTabs.find((el) => el.getAttribute('data-file-path') === '/src/e.ts');
+        expect(focused).toBeTruthy();
+        expect(focused?.getAttribute('data-active')).toBe('false');
+        expect(focused?.getAttribute('aria-selected')).toBe('false');
+        expect(visibleTabs.every((el) => el.getAttribute('data-active') === 'false')).toBe(true);
+    });
+
     it('opens overflow dropdown and activates a hidden file', () => {
         const paths = ['/src/a.ts', '/src/b.ts', '/src/c.ts', '/src/d.ts', '/src/e.ts'];
         const onSelect = vi.fn();
@@ -340,6 +368,62 @@ describe('FileTabBar overflow management', () => {
 
         fireEvent.keyDown(bar, { key: 'w', ctrlKey: true });
         expect(onClose).toHaveBeenCalledWith('/src/a.ts');
+    });
+
+    it('ArrowLeft from the first file can leave to a leading workspace tab', () => {
+        mockResizeObserver(800);
+        const onSelect = vi.fn();
+        const onArrowBeforeFirst = vi.fn();
+        render(
+            <FileTabBar
+                files={makeFiles(['/src/a.ts', '/src/b.ts'])}
+                activeFilePath="/src/a.ts"
+                onSelectFile={onSelect}
+                onArrowBeforeFirst={onArrowBeforeFirst}
+                theme={lightTheme}
+            />,
+        );
+
+        fireEvent.keyDown(screen.getByTestId('file-tab-bar'), { key: 'ArrowLeft' });
+        expect(onArrowBeforeFirst).toHaveBeenCalledTimes(1);
+        expect(onSelect).not.toHaveBeenCalled();
+    });
+
+    it('without onArrowBeforeFirst, ArrowLeft from the first file still wraps', () => {
+        mockResizeObserver(800);
+        const onSelect = vi.fn();
+        render(
+            <FileTabBar
+                files={makeFiles(['/src/a.ts', '/src/b.ts'])}
+                activeFilePath="/src/a.ts"
+                onSelectFile={onSelect}
+                theme={lightTheme}
+            />,
+        );
+
+        fireEvent.keyDown(screen.getByTestId('file-tab-bar'), { key: 'ArrowLeft' });
+        expect(onSelect).toHaveBeenCalledWith('/src/b.ts');
+    });
+
+    it('Home with onArrowBeforeFirst leaves to the leading tab', () => {
+        mockResizeObserver(800);
+        const onSelect = vi.fn();
+        const onArrowBeforeFirst = vi.fn();
+        render(
+            <FileTabBar
+                files={makeFiles(['/src/a.ts', '/src/b.ts'])}
+                activeFilePath="/src/b.ts"
+                onSelectFile={onSelect}
+                onArrowBeforeFirst={onArrowBeforeFirst}
+                theme={lightTheme}
+            />,
+        );
+
+        fireEvent.keyDown(screen.getByTestId('file-tab-bar'), { key: 'Home' });
+        expect(onArrowBeforeFirst).toHaveBeenCalledTimes(1);
+        expect(onSelect).not.toHaveBeenCalled();
+        fireEvent.keyDown(screen.getByTestId('file-tab-bar'), { key: 'End' });
+        expect(onSelect).toHaveBeenCalledWith('/src/b.ts');
     });
 
     it('context menu copies path / relative path / file name', async () => {

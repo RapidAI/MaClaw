@@ -113,7 +113,16 @@ function renderTaskManagement(overrides: Partial<ComponentProps<typeof SidebarTa
     };
     const wrap = (node: ReactElement) => <DialogProvider>{node}</DialogProvider>;
     const view = render(wrap(<SidebarTaskManagement {...props} />));
-    return { ...props, container: view.container, rerender: (ui: ReactElement) => view.rerender(wrap(ui)) };
+    const rerenderWith = (next: Partial<ComponentProps<typeof SidebarTaskManagement>> = {}) => {
+        Object.assign(props, next);
+        view.rerender(wrap(<SidebarTaskManagement {...props} />));
+    };
+    return {
+        ...props,
+        container: view.container,
+        rerender: (ui: ReactElement) => view.rerender(wrap(ui)),
+        rerenderWith,
+    };
 }
 
 /** Confirms the remove dialog opened by the task context menu (label follows lang). */
@@ -353,12 +362,17 @@ describe('SidebarTaskManagement', () => {
         fireEvent.click(cloudButton);
         expect(await screen.findByRole('dialog', { name: '创建云端工作区任务' })).toBeTruthy();
     });
-    it('opens the shared system notification center from the sidebar summary', () => {
+    it('toggles the theme from the sidebar dock', () => {
         const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
         try {
             renderTaskManagement();
-            fireEvent.click(screen.getByTestId('sidebar-system-notifications'));
-            expect(dispatchSpy).toHaveBeenCalledWith(expect.objectContaining({ type: 'maclaw:open-system-notifications' }));
+            const lightToggle = screen.getByTestId('sidebar-theme-toggle');
+            expect(lightToggle.getAttribute('aria-label')).toBe('Switch to dark mode');
+            fireEvent.click(lightToggle);
+            expect(dispatchSpy).toHaveBeenCalledWith(expect.objectContaining({ type: 'maclaw:toggle-ai-theme' }));
+            // Icon/label follow the active theme mode.
+            renderTaskManagement({ themeMode: 'dark' });
+            expect(screen.getAllByTestId('sidebar-theme-toggle')[1].getAttribute('aria-label')).toBe('Switch to light mode');
         } finally {
             dispatchSpy.mockRestore();
         }
@@ -397,13 +411,30 @@ describe('SidebarTaskManagement', () => {
     it('shows a loading bar instead of the empty state while tasks load', () => {
         renderTaskManagement({ tasks: [], tasksLoading: true });
         expect(screen.getByTestId('task-list-loading')).toBeTruthy();
+        expect(screen.queryByTestId('task-cloud-sync-progress')).toBeNull();
         expect(screen.queryByText('No tasks')).toBeNull();
+        expect(screen.getByTestId('sidebar-default-task-row')).toBeTruthy();
     });
 
     it('shows the empty state once loading finished with no tasks', () => {
         renderTaskManagement({ tasks: [], tasksLoading: false });
         expect(screen.queryByTestId('task-list-loading')).toBeNull();
         expect(screen.getByText('No tasks')).toBeTruthy();
+    });
+
+    it('does not treat an empty filter group as a full-list load', () => {
+        const runningTask = { ...baseProject, id: 'task-running', name: 'Running task', project_path: 'D:/work/tasks/running-task', active_workflow: { status: 'running' } };
+        renderTaskManagement({
+            tasks: [runningTask],
+            tasksLoading: true,
+            showCloudWorkspaceManagement: false,
+            showCloudWorkspaceCreation: false,
+        });
+        fireEvent.click(screen.getByTestId('task-filter-completed'));
+        expect(screen.queryByTestId('task-list-loading')).toBeNull();
+        expect(screen.queryByTestId('task-cloud-sync-progress')).toBeNull();
+        expect(screen.getByText('No tasks in this group')).toBeTruthy();
+        expect(screen.queryByText('Running task')).toBeNull();
     });
 
     it('sorts by pinned state and creation time instead of mutable activity', () => {
@@ -4064,6 +4095,7 @@ describe('cloud sync progress indicator', () => {
     it('shows the indicator while cloud tasks load, without hiding local tasks', () => {
         renderTaskManagement({ ...cloudSyncOffProps, cloudTasksLoading: true });
         expect(screen.getByTestId('task-cloud-sync-progress')).toBeTruthy();
+        expect(screen.queryByTestId('task-list-loading')).toBeNull();
         // Local rows stay visible while the cloud sync runs.
         expect(screen.getByText('Build dashboard')).toBeTruthy();
     });
@@ -4071,5 +4103,65 @@ describe('cloud sync progress indicator', () => {
     it('hides the indicator when no cloud sync is in flight', () => {
         renderTaskManagement({ ...cloudSyncOffProps, cloudTasksLoading: false });
         expect(screen.queryByTestId('task-cloud-sync-progress')).toBeNull();
+    });
+
+    it('merges local load and cloud sync into a single progress bar at startup', () => {
+        renderTaskManagement({
+            ...cloudSyncOffProps,
+            tasks: [],
+            tasksLoading: true,
+            cloudTasksLoading: true,
+        });
+        expect(screen.getByTestId('task-list-loading')).toBeTruthy();
+        expect(screen.getByText('Loading tasks…')).toBeTruthy();
+        expect(screen.queryByTestId('task-cloud-sync-progress')).toBeNull();
+        expect(screen.queryByText('Syncing cloud tasks…')).toBeNull();
+        expect(screen.queryByText('No tasks')).toBeNull();
+        expect(screen.getByTestId('sidebar-default-task-row')).toBeTruthy();
+        expect(screen.getAllByRole('status').filter(el => {
+            const id = el.getAttribute('data-testid');
+            return id === 'task-list-loading' || id === 'task-cloud-sync-progress';
+        })).toHaveLength(1);
+    });
+
+    it('keeps one bar and switches to cloud-sync copy after local rows arrive', () => {
+        const view = renderTaskManagement({
+            ...cloudSyncOffProps,
+            tasks: [],
+            tasksLoading: true,
+            cloudTasksLoading: true,
+        });
+        expect(screen.getByTestId('task-list-loading')).toBeTruthy();
+        view.rerenderWith({ tasks: [baseProject], tasksLoading: false, cloudTasksLoading: true });
+        expect(screen.queryByTestId('task-list-loading')).toBeNull();
+        expect(screen.getByTestId('task-cloud-sync-progress')).toBeTruthy();
+        expect(screen.getByText('Syncing cloud tasks…')).toBeTruthy();
+        expect(screen.getByText('Build dashboard')).toBeTruthy();
+    });
+
+    it('hides the empty state while cloud sync can still fill an empty list', () => {
+        renderTaskManagement({
+            ...cloudSyncOffProps,
+            tasks: [],
+            tasksLoading: false,
+            cloudTasksLoading: true,
+        });
+        expect(screen.getByTestId('task-cloud-sync-progress')).toBeTruthy();
+        expect(screen.queryByText('No tasks')).toBeNull();
+        expect(screen.getByTestId('sidebar-default-task-row')).toBeTruthy();
+    });
+
+    it('still shows an empty-group message while cloud syncs other rows', () => {
+        const runningTask = { ...baseProject, id: 'task-running', name: 'Running task', project_path: 'D:/work/tasks/running-task', active_workflow: { status: 'running' } };
+        renderTaskManagement({
+            ...cloudSyncOffProps,
+            tasks: [runningTask],
+            tasksLoading: false,
+            cloudTasksLoading: true,
+        });
+        fireEvent.click(screen.getByTestId('task-filter-completed'));
+        expect(screen.getByTestId('task-cloud-sync-progress')).toBeTruthy();
+        expect(screen.getByText('No tasks in this group')).toBeTruthy();
+        expect(screen.queryByText('Running task')).toBeNull();
     });
 });

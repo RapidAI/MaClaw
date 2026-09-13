@@ -1,3 +1,5 @@
+import { isWindowDragExcludedTarget } from "../../utils/windowDrag";
+
 /** Shared chrome helpers for the task execution surface. */
 export const executionSecondaryChromeStyle = {
     position: "absolute" as const,
@@ -9,7 +11,26 @@ export const executionSecondaryChromeStyle = {
     clip: "rect(0, 0, 0, 0)",
     whiteSpace: "nowrap" as const,
     border: 0,
+    pointerEvents: "none" as const,
 };
+
+/** Skip window restore when the double-click landed on a control in the task header. */
+export function isTaskExecutionHeaderInteractiveTarget(target: EventTarget | null, currentTarget: EventTarget | null): boolean {
+    if (!(currentTarget instanceof Element)) return false;
+    // SVG glyphs inside buttons are Element, not HTMLElement.
+    if (!(target instanceof Element) || target === currentTarget) return false;
+    return isWindowDragExcludedTarget(target);
+}
+
+export function handleTaskExecutionHeaderDoubleClick(
+    event: { target: EventTarget | null; currentTarget: EventTarget | null; preventDefault(): void },
+    onToggleMaximize?: () => void,
+): void {
+    if (!onToggleMaximize) return;
+    if (isTaskExecutionHeaderInteractiveTarget(event.target, event.currentTarget)) return;
+    event.preventDefault();
+    onToggleMaximize();
+}
 
 /** Format a task's first message timestamp for the execution header. */
 export function formatTaskCreatedAt(timestamp: number | undefined, lang: string): string {

@@ -1,6 +1,7 @@
 import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { KnowledgeImportDialog } from './KnowledgeImportDialog';
 import { KNOWLEDGE_IMPORT_EXPAND_EVENT, consumeKnowledgeImportExpandFlag, useKnowledgeImportOptional } from './KnowledgeImportContext';
+import { consumePendingKnowledgeSearch, KNOWLEDGE_SEARCH_EVENT, type KnowledgeSearchOpenDetail } from '../../utils/knowledgeSearchNavigation';
 import { ConfirmDialog } from '../modals/ConfirmDialog';
 import { DeepCrawlConfig, DeepCrawlPanel, DeepCrawlPreviewResult, DeepCrawlRunResult } from './DeepCrawlPanel';
 import { buildHubCardStoreURL } from '../../utils/hubCredits';
@@ -1394,6 +1395,44 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
         if (consumeKnowledgeImportExpandFlag()) openDialog();
         window.addEventListener(KNOWLEDGE_IMPORT_EXPAND_EVENT, openDialog);
         return () => window.removeEventListener(KNOWLEDGE_IMPORT_EXPAND_EVENT, openDialog);
+    }, []);
+
+    useEffect(() => {
+        const applyKnowledgeSearch = (detail?: KnowledgeSearchOpenDetail | null) => {
+            if (!detail) return;
+            const query = String(detail.query || '').trim();
+            const sourceId = String(detail.sourceId || '').trim();
+            if (!query && !sourceId) return;
+            setActiveTab('search');
+            setSearchMode('semantic');
+            setSearchForm(form => ({ ...form, query: query || form.query, sourceID: sourceId }));
+            if (!query) return;
+            void (async () => {
+                setBusy('search');
+                setError('');
+                try {
+                    const payload: Record<string, unknown> = { query, limit: 20 };
+                    if (sourceId) payload.source_id = sourceId;
+                    const [results, facetResult] = await Promise.all([
+                        KnowledgeSearch(payload as any),
+                        KnowledgeSearchFacets(payload as any),
+                    ]);
+                    setSearchResults(Array.isArray(results) ? results : []);
+                    setFacets(facetResult || null);
+                } catch (err: any) {
+                    setError(err?.message || String(err));
+                } finally {
+                    setBusy('');
+                }
+            })();
+        };
+        applyKnowledgeSearch(consumePendingKnowledgeSearch());
+        const onSearch = (event: Event) => {
+            consumePendingKnowledgeSearch();
+            applyKnowledgeSearch((event as CustomEvent<KnowledgeSearchOpenDetail>).detail);
+        };
+        window.addEventListener(KNOWLEDGE_SEARCH_EVENT, onSearch);
+        return () => window.removeEventListener(KNOWLEDGE_SEARCH_EVENT, onSearch);
     }, []);
 
     // After global float Dismiss (job cleared), remount dialog so the next open is Step 1.

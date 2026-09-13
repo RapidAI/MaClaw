@@ -3,7 +3,6 @@ package httpapi
 import (
 	"context"
 	"net/http"
-	"strings"
 	"testing"
 	"time"
 
@@ -50,7 +49,7 @@ func TestEntryProbeHandlerReturnsBoundUser(t *testing.T) {
 		t.Fatalf("probe status = %d body=%s", resp.Code, resp.Body.String())
 	}
 	body := resp.Body.String()
-	if !containsAll(body, "\"status\":\"bound\"", "\"phone_number\":\"17090134628\"", "\"bound\":true", "\"can_login\":true", "\"pwa_url\":\"http://127.0.0.1:8080/app?email=bound%40example.com", "entry=app", "autologin=1") {
+	if !containsAll(body, "\"status\":\"bound\"", "\"phone_number\":\"17090134628\"", "\"bound\":true", "\"can_login\":true") {
 		t.Fatalf("unexpected body=%s", body)
 	}
 }
@@ -154,7 +153,7 @@ func TestEntryProbeHandlerRoutesPhoneNumberIdentity(t *testing.T) {
 		t.Fatalf("probe status = %d body=%s", resp.Code, resp.Body.String())
 	}
 	body := resp.Body.String()
-	if !containsAll(body, "\"email\":\"phone:17000000000\"", "\"status\":\"bound\"", "\"bound\":true", "\"can_login\":true", "email=phone%3A17000000000") {
+	if !containsAll(body, "\"email\":\"phone:17000000000\"", "\"status\":\"bound\"", "\"bound\":true", "\"can_login\":true") {
 		t.Fatalf("unexpected body=%s", body)
 	}
 }
@@ -178,7 +177,7 @@ func TestEntryProbeHandlerReturnsBlockedForBlockedEmail(t *testing.T) {
 		t.Fatalf("probe status = %d body=%s", resp.Code, resp.Body.String())
 	}
 	body := resp.Body.String()
-	if !containsAll(body, "\"status\":\"blocked\"", "\"message\":\"Account is blocked\"") || strings.Contains(body, "\"pwa_url\"") {
+	if !containsAll(body, "\"status\":\"blocked\"", "\"message\":\"Account is blocked\"") {
 		t.Fatalf("unexpected body=%s", body)
 	}
 }

@@ -232,8 +232,67 @@ function normalizeCodingAgentFileChanges(changes?: CodingAgentFileChange[]): Cod
 
 export function codingAgentFileChangeRows(progress: CodingAgentProgress): CodingAgentFileChange[] {
     const normalized = normalizeCodingAgentProgress(progress);
-    if (normalized.fileChanges?.length) return normalized.fileChanges;
-    return (normalized.files || []).map((path) => ({ path, added: 0, removed: 0 }));
+    const raw = normalized.fileChanges?.length
+        ? normalized.fileChanges
+        : (normalized.files || []).map((path) => ({ path, added: 0, removed: 0 }));
+    return uniqueCodingAgentFileChangeRows(raw);
+}
+
+function normalizeCodingAgentFilePath(path: string): string {
+    let next = (path || "").trim().replace(/\\/g, "/").replace(/\/+$/, "");
+    while (next.startsWith("./")) next = next.slice(2);
+    return next;
+}
+
+function codingAgentFilePathsMatch(a: string, b: string): boolean {
+    const left = normalizeCodingAgentFilePath(a);
+    const right = normalizeCodingAgentFilePath(b);
+    if (!left || !right) return false;
+    const al = left.toLowerCase();
+    const bl = right.toLowerCase();
+    if (al === bl) return true;
+    return al.endsWith(`/${bl}`) || bl.endsWith(`/${al}`);
+}
+
+function preferredCodingAgentFilePath(a: string, b: string): string {
+    const left = (a || "").trim();
+    const right = (b || "").trim();
+    if (!left) return right;
+    if (!right) return left;
+    const an = normalizeCodingAgentFilePath(left);
+    const bn = normalizeCodingAgentFilePath(right);
+    const al = an.toLowerCase();
+    const bl = bn.toLowerCase();
+    if (al === bl) {
+        const aClean = an === left.replace(/\\/g, "/");
+        const bClean = bn === right.replace(/\\/g, "/");
+        if (aClean && !bClean) return left;
+        if (bClean && !aClean) return right;
+        if (aClean && bClean) return left.length <= right.length ? left : right;
+        return an;
+    }
+    if (al.endsWith(`/${bl}`)) return right;
+    if (bl.endsWith(`/${al}`)) return left;
+    return an.length <= bn.length ? left : right;
+}
+
+function uniqueCodingAgentFileChangeRows(rows: CodingAgentFileChange[]): CodingAgentFileChange[] {
+    const out: CodingAgentFileChange[] = [];
+    for (const row of rows) {
+        const path = (row.path || "").trim();
+        if (!path) continue;
+        const idx = out.findIndex((existing) => codingAgentFilePathsMatch(existing.path, path));
+        if (idx < 0) {
+            out.push({ path, added: row.added, removed: row.removed });
+            continue;
+        }
+        out[idx] = {
+            path: preferredCodingAgentFilePath(out[idx].path, path),
+            added: Math.max(out[idx].added, row.added),
+            removed: Math.max(out[idx].removed, row.removed),
+        };
+    }
+    return out;
 }
 
 /** Paths a trail row can open in the code preview. */
@@ -983,6 +1042,51 @@ function renderCodingAgentFileChangeTable(
     );
 }
 
+export function codingAgentFileExtBadge(path: string): string {
+    const name = (path.split(/[/\\]/).pop() || path).trim();
+    const lower = name.toLowerCase();
+    if (lower === "cmakelists.txt" || lower.endsWith(".cmake")) return "CM";
+    if (lower === "makefile" || lower === "gnumakefile") return "MK";
+    if (lower === "dockerfile") return "DK";
+    if (lower === "go.mod" || lower === "go.sum") return "GO";
+    const dot = name.lastIndexOf(".");
+    if (dot <= 0 || dot === name.length - 1) return "FILE";
+    const ext = name.slice(dot + 1);
+    if (/^(cpp|cxx|cc)$/i.test(ext)) return "C++";
+    if (/^(hpp|hxx|hh)$/i.test(ext)) return "H++";
+    return ext.slice(0, 3).toUpperCase();
+}
+
+function CodingAgentFileChangeStat({
+    added,
+    removed,
+    addColor,
+    delColor,
+}: {
+    added: number;
+    removed: number;
+    addColor: string;
+    delColor: string;
+}): React.ReactElement | null {
+    if (added <= 0 && removed <= 0) return null;
+    return (
+        <span
+            data-testid="coding-agent-file-change-stat"
+            style={{
+                display: "inline-flex",
+                gap: 6,
+                fontFamily: monoFont,
+                fontVariantNumeric: "tabular-nums",
+                fontWeight: 650,
+                fontSize: 11,
+            }}
+        >
+            {added > 0 ? <span style={{ color: addColor }}>+{added}</span> : null}
+            {removed > 0 ? <span style={{ color: delColor }}>-{removed}</span> : null}
+        </span>
+    );
+}
+
 function CodingAgentFileChangeTable({
     progress,
     rows,
@@ -1002,32 +1106,36 @@ function CodingAgentFileChangeTable({
     const removed = progress.removed ?? rows.reduce((sum, row) => sum + row.removed, 0);
     const addColor = t.isDark ? codingAgentAddColor.dark : codingAgentAddColor.light;
     const delColor = t.isDark ? codingAgentDelColor.dark : codingAgentDelColor.light;
-    const count = progress.count && progress.count > rows.length ? progress.count : rows.length;
+    const rawCount = progress.fileChanges?.length || progress.files?.length || rows.length;
+    const count = progress.count && progress.count > rawCount ? progress.count : rows.length;
     const header = lang.startsWith("zh") ? `${count} 个文件已更改` : `${count} files changed`;
     const showAll = lang.startsWith("zh") ? "全部显示" : "Show all";
-    const more = lang.startsWith("zh") ? `+${hidden} 个文件` : `+${hidden} files`;
+    const muted = t.fieldLabel;
     return (
         <div
+            className="coding-agent-file-changes"
             data-testid="coding-agent-file-changes"
-            style={{
-                margin: "2px 0 1px",
-                padding: "2px 0 1px",
-            }}
+            aria-label={header}
         >
             <div
                 style={{
                     display: "flex",
-                    alignItems: "baseline",
+                    alignItems: "center",
                     gap: 8,
                     marginBottom: 4,
-                    fontFamily: monoFont,
-                    fontSize: 11,
+                    minHeight: 20,
+                    fontSize: 12,
                     lineHeight: 1.35,
+                    color: t.text,
                 }}
             >
-                <span style={{ fontWeight: 600, color: t.text, flex: 1, minWidth: 0 }}>{header}</span>
-                <span style={{ color: addColor, fontVariantNumeric: "tabular-nums" }}>+{added}</span>
-                <span style={{ color: delColor, fontVariantNumeric: "tabular-nums" }}>-{removed}</span>
+                <span style={{ fontWeight: 650, flex: 1, minWidth: 0 }}>{header}</span>
+                <CodingAgentFileChangeStat
+                    added={added}
+                    removed={removed}
+                    addColor={addColor}
+                    delColor={delColor}
+                />
                 {hidden > 0 && !expanded && (
                     <button
                         type="button"
@@ -1037,9 +1145,9 @@ function CodingAgentFileChangeTable({
                             padding: 0,
                             border: "none",
                             background: "none",
-                            color: "#3b82f6",
-                            fontFamily: monoFont,
+                            color: "var(--theme-primary, #3b82f6)",
                             fontSize: 11,
+                            fontWeight: 600,
                             cursor: "pointer",
                         }}
                     >
@@ -1051,6 +1159,7 @@ function CodingAgentFileChangeTable({
                 {visible.map((row) => (
                     <div
                         key={row.path}
+                        className="coding-agent-file-change-row"
                         role={onOpenPreviewFile ? "button" : undefined}
                         tabIndex={onOpenPreviewFile ? 0 : undefined}
                         data-testid="coding-agent-file-change-row"
@@ -1063,38 +1172,41 @@ function CodingAgentFileChangeTable({
                             }
                         } : undefined}
                         style={{
-                            display: "grid",
-                            gridTemplateColumns: "minmax(0, 1fr) auto auto",
-                            columnGap: 10,
-                            alignItems: "baseline",
-                            fontFamily: monoFont,
-                            fontSize: 11,
-                            lineHeight: 1.45,
                             color: t.text,
                             cursor: onOpenPreviewFile ? "pointer" : undefined,
                         }}
                         title={row.path}
                     >
                         <span
+                            aria-hidden="true"
+                            className="coding-agent-file-change-badge"
+                            style={{
+                                background: t.isDark ? "rgba(255,255,255,0.06)" : "rgba(15, 23, 42, 0.05)",
+                                color: muted,
+                            }}
+                        >
+                            {codingAgentFileExtBadge(row.path)}
+                        </span>
+                        <span
                             style={{
                                 minWidth: 0,
                                 overflow: "hidden",
                                 textOverflow: "ellipsis",
                                 whiteSpace: "nowrap",
+                                fontWeight: 500,
                             }}
                         >
                             {compactCodingTrailPath(row.path) || row.path}
                         </span>
-                        <span style={{ color: addColor, fontVariantNumeric: "tabular-nums" }}>+{row.added}</span>
-                        <span style={{ color: delColor, fontVariantNumeric: "tabular-nums" }}>-{row.removed}</span>
+                        <CodingAgentFileChangeStat
+                            added={row.added}
+                            removed={row.removed}
+                            addColor={addColor}
+                            delColor={delColor}
+                        />
                     </div>
                 ))}
             </div>
-            {hidden > 0 && !expanded && (
-                <div style={{ marginTop: 3, color: t.fieldLabel, fontFamily: monoFont, fontSize: 10 }}>
-                    {more}
-                </div>
-            )}
         </div>
     );
 }
@@ -1247,6 +1359,28 @@ export function renderCodingAgentActivityFeed(
         />
     );
 }
+
+/** One interleaved timeline tool/progress row. Memoized so live thought updates do not rebuild completed tool chrome. */
+export const CodingAgentTimelineProgressItem = React.memo(function CodingAgentTimelineProgressItem({
+    id,
+    content,
+    timestamp,
+    theme,
+    lang,
+}: {
+    id: string;
+    content: string;
+    timestamp: number;
+    theme: CodingAgentProgressTheme;
+    lang: string;
+}) {
+    return renderCodingAgentActivityFeed([{
+        id,
+        role: "progress",
+        content,
+        timestamp,
+    }], theme, lang);
+});
 
 const MAX_VISIBLE_FEED_LINES = 20;
 

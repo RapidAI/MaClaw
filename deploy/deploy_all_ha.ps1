@@ -471,7 +471,6 @@ function Stage-DeployAssets {
     if ($hubCloudWorkspaceScript -notmatch 'loadTenantCloudWorkspaceSettings' -or $hubCloudWorkspaceScript -notmatch '/api/admin/cloud-workspaces/settings') {
         throw 'Hub cloud workspace admin script is missing settings load/save.'
     }
-    Assert-DeployDirectoryHasFiles -Path (Join-Path $StageRoot 'hub\web\dist') -Label 'hub pwa web dist'
     Assert-DeployDirectoryHasFiles -Path (Join-Path $StageRoot 'hub\web\card_store') -Label 'hub card store web assets'
     Assert-DeployFileExists -Path (Join-Path $StageRoot 'hub\web\card_store\index.html') -Label 'hub card store index'
     Assert-DeployFileExists -Path (Join-Path $StageRoot 'hub\web\card_store\professional.css') -Label 'hub card store stylesheet'

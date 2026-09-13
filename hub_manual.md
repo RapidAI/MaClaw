@@ -46,7 +46,6 @@
 
 - 一套运行中的自部署 `hub`
 - 可访问的 Hub 管理后台
-- 可访问的 Hub PWA 页面
 - 已注册到默认 Hub Center 的 Hub
 
 推荐公网访问关系：
@@ -149,10 +148,6 @@ database:
 identity:
   enrollment_mode: open
   allow_self_enroll: true
-
-pwa:
-  static_dir: ./web/dist
-  route_prefix: /app
 
 center:
   enabled: true
@@ -439,12 +434,11 @@ curl -X GET https://hub.example.com/api/admin/center/status \
 curl -fsSL https://hub.example.com/healthz
 ```
 
-### 16.3 检查 PWA 页面
+### 16.3 检查管理后台页面
 
 确认以下地址可以访问：
 
 - `https://hub.example.com/admin`
-- `https://hub.example.com/app`
 
 ## 18. 常见错误与处理
 

@@ -1,3 +1,4 @@
+import type { CSSProperties } from 'react';
 import { BeginWindowDrag } from '../../wailsjs/go/main/App';
 
 // Custom window-drag handling for the frameless window on Windows.
@@ -19,9 +20,52 @@ import { BeginWindowDrag } from '../../wailsjs/go/main/App';
 // but WailsInvoke/BeginWindowDrag are effectively no-ops for move there.
 //
 // Listeners attach to `window` in the bubble phase so stopPropagation() on
-// inner controls (tool select, title-bar buttons, ...) still blocks drag arming.
+// inner controls still blocks drag arming. Native controls and
+// [data-window-no-drag] regions are ignored even inside a drag region.
 
 export const DRAG_THRESHOLD_PX = 4;
+
+export const WINDOW_DRAG_EXCLUDE_SELECTOR = 'button, a, input, select, textarea, summary, details, [role="button"], [role="menu"], [role="menuitem"], [data-window-no-drag]';
+
+export type WindowDragStyle = CSSProperties & { '--wails-draggable'?: 'drag' | 'no-drag' };
+
+/** True when a mousedown on `target` should arm a native window move. */
+export function isWindowDragArmTarget(target: EventTarget | null): boolean {
+    if (!(target instanceof Element)) return false;
+    if (!target.closest('[data-window-drag]')) return false;
+    return !isWindowDragExcludedTarget(target);
+}
+
+/** True when `target` is a control (or no-drag cluster) inside window chrome. */
+export function isWindowDragExcludedTarget(target: EventTarget | null): boolean {
+    return target instanceof Element && !!target.closest(WINDOW_DRAG_EXCLUDE_SELECTOR);
+}
+
+export function windowDragHandleProps(enabled: boolean, style?: WindowDragStyle): {
+    'data-window-drag'?: true;
+    style: WindowDragStyle;
+} {
+    return {
+        ...(enabled ? { 'data-window-drag': true as const } : {}),
+        style: {
+            ...style,
+            ...(enabled ? { '--wails-draggable': 'drag' as const } : {}),
+        },
+    };
+}
+
+export function windowNoDragRegionProps(style?: WindowDragStyle): {
+    'data-window-no-drag': true;
+    style: WindowDragStyle;
+} {
+    return {
+        'data-window-no-drag': true,
+        style: {
+            ...style,
+            '--wails-draggable': 'no-drag',
+        },
+    };
+}
 
 let armX = 0;
 let armY = 0;
@@ -62,8 +106,7 @@ export function installWindowDragHandler(): void {
             armed = false;
             return;
         }
-        const target = event.target as Element | null;
-        if (!target || !target.closest('[data-window-drag]')) {
+        if (!isWindowDragArmTarget(event.target)) {
             armed = false;
             return;
         }

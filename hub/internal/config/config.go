@@ -33,11 +33,6 @@ type Config struct {
 		AllowSelfEnroll bool   `yaml:"allow_self_enroll"`
 	} `yaml:"identity"`
 
-	PWA struct {
-		StaticDir   string `yaml:"static_dir"`
-		RoutePrefix string `yaml:"route_prefix"`
-	} `yaml:"pwa"`
-
 	Center struct {
 		Enabled  bool     `yaml:"enabled"`
 		BaseURL  string   `yaml:"base_url"`
@@ -181,9 +176,6 @@ func Default() *Config {
 
 	cfg.Identity.EnrollmentMode = "open"
 	cfg.Identity.AllowSelfEnroll = true
-
-	cfg.PWA.StaticDir = "./web/dist"
-	cfg.PWA.RoutePrefix = "/app"
 
 	cfg.Center.Enabled = true
 	cfg.Center.BaseURL = remote.DefaultRemoteHubCenterURLs[0]

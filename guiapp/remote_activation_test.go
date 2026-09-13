@@ -1572,13 +1572,11 @@ func TestActivateRemote_ResolvesHubAndPersistsIdentity(t *testing.T) {
 			"default_hub": map[string]any{
 				"hub_id":   "hub_1",
 				"base_url": hub.URL,
-				"pwa_url":  hub.URL + "/app?email=user@example.com&entry=app",
 			},
 			"hubs": []map[string]any{
 				{
 					"hub_id":   "hub_1",
 					"base_url": hub.URL,
-					"pwa_url":  hub.URL + "/app?email=user@example.com&entry=app",
 				},
 			},
 		})

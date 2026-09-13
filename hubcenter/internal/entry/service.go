@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -22,7 +21,6 @@ type HubAccessView struct {
 	TenantName             string `json:"tenant_name,omitempty"`
 	Name                   string `json:"name"`
 	BaseURL                string `json:"base_url"`
-	PWAURL                 string `json:"pwa_url"`
 	Visibility             string `json:"visibility"`
 	EnrollmentMode         string `json:"enrollment_mode"`
 	CorporateEmailDomain   string `json:"corporate_email_domain,omitempty"`
@@ -35,7 +33,6 @@ type ResolveResult struct {
 	Email        string          `json:"email"`
 	Mode         string          `json:"mode"`
 	DefaultHubID string          `json:"default_hub_id,omitempty"`
-	DefaultPWA   string          `json:"default_pwa_url,omitempty"`
 	Hubs         []HubAccessView `json:"hubs,omitempty"`
 	Message      string          `json:"message,omitempty"`
 }
@@ -444,14 +441,6 @@ func (s *Service) ResolveByDomain(ctx context.Context, domain string) (*ResolveR
 	return snap.resolveDomain(domain), nil
 }
 
-func BuildPWAURL(baseURL, email string, tenantIDOpt ...string) string {
-	query := fmt.Sprintf("email=%s&entry=app&autologin=1", url.QueryEscape(email))
-	if len(tenantIDOpt) > 0 && normalizeViewTenantID(tenantIDOpt[0]) != "" {
-		query += "&tenant_id=" + url.QueryEscape(normalizeViewTenantID(tenantIDOpt[0]))
-	}
-	return fmt.Sprintf("%s/app?%s", strings.TrimRight(baseURL, "/"), query)
-}
-
 func normalizeViewTenantID(tenantID string) string {
 	tenantID = strings.TrimSpace(tenantID)
 	if tenantID == "tenant_default" {
@@ -473,17 +462,12 @@ func hubToAccessViewWithRouteKind(hub *store.HubInstance, email, routeDomain, ro
 	if len(tenantIDOpt) > 0 {
 		tenantID = normalizeViewTenantID(tenantIDOpt[0])
 	}
-	pwaURL := ""
-	if strings.TrimSpace(email) != "" || tenantID != "" {
-		pwaURL = BuildPWAURL(hub.BaseURL, email, tenantID)
-	}
 	return HubAccessView{
 		HubID:                  hub.ID,
 		TenantID:               tenantID,
 		TenantName:             tenantNameForHubTenant(hub, tenantID),
 		Name:                   hub.Name,
 		BaseURL:                hub.BaseURL,
-		PWAURL:                 pwaURL,
 		Visibility:             hub.Visibility,
 		EnrollmentMode:         hub.EnrollmentMode,
 		CorporateEmailDomain:   corporateDomain,

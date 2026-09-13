@@ -2375,7 +2375,7 @@ func (c *coreAgentCallbacks) executeToolStructuredUnguarded(name, argsJSON strin
 		}
 		if c.runtimeRemoteBinding != nil {
 			resources := c.runtimeParentExecutor.sshResourcesForUser(c.principal.TenantID, c.principal.UserID)
-			out, execErr := serviceRemoteSSHExecBound(resources, *c.runtimeRemoteBinding, agent.StringArg(args, "command"), coreAgentIntArg(args, "wait_seconds", 15))
+			out, execErr := serviceRemoteSSHExecBound(c.parentContext(), resources, *c.runtimeRemoteBinding, agent.StringArg(args, "command"), coreAgentIntArg(args, "wait_seconds", 15))
 			if execErr != nil {
 				return agent.ToolExecutionResult{Result: "Error: " + execErr.Error(), Outcome: agent.ToolExecutionOutcomeError}
 			}

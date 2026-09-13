@@ -173,6 +173,93 @@ func TestCodingDiffSnapshotEventIncludesLineStats(t *testing.T) {
 	}
 }
 
+func TestMergeSubAgentDiffStatUsesToolFallbacksWhenGitStatIsEmpty(t *testing.T) {
+	snapshot := newCodingDiffSnapshot([]string{"CMakeLists.txt", "snake.cpp"}, nil, "Untracked files:\n- CMakeLists.txt\n- snake.cpp")
+	merged := mergeSubAgentDiffStat(nil, []SubAgentFileDiffStat{
+		{Path: "CMakeLists.txt", Insertions: 5, Deletions: 0},
+		{Path: "snake.cpp", Insertions: 213, Deletions: 0},
+	})
+	event := newCodingAgentDiffSummaryEventWithStat(&TaskItem{Index: 2, Title: "GUI snake"}, "", snapshot, merged)
+	if event.Added != 218 || event.Removed != 0 {
+		t.Fatalf("expected tool fallback totals, got added=%d removed=%d", event.Added, event.Removed)
+	}
+	if len(event.FileChanges) != 2 {
+		t.Fatalf("expected two file rows, got %#v", event.FileChanges)
+	}
+	if event.FileChanges[0].Path != "CMakeLists.txt" || event.FileChanges[0].Added != 5 {
+		t.Fatalf("CMakeLists.txt row = %#v", event.FileChanges[0])
+	}
+	if event.FileChanges[1].Path != "snake.cpp" || event.FileChanges[1].Added != 213 {
+		t.Fatalf("snake.cpp row = %#v", event.FileChanges[1])
+	}
+}
+
+func TestMergeSubAgentDiffStatReplacesZeroGitRowsWithoutDuplicating(t *testing.T) {
+	git := &SubAgentDiffStat{
+		FilesChanged: 2,
+		FileStats: []SubAgentFileDiffStat{
+			{Path: "CMakeLists.txt", Insertions: 0, Deletions: 0},
+			{Path: "snake.cpp", Insertions: 0, Deletions: 0},
+		},
+	}
+	merged := mergeSubAgentDiffStat(git, []SubAgentFileDiffStat{
+		{Path: "CMakeLists.txt", Insertions: 5, Deletions: 0},
+		{Path: "snake.cpp", Insertions: 213, Deletions: 0},
+	})
+	if merged == nil || merged.FilesChanged != 2 || len(merged.FileStats) != 2 {
+		t.Fatalf("should update in place, got %#v", merged)
+	}
+	if merged.Insertions != 218 || merged.Deletions != 0 {
+		t.Fatalf("totals = +%d -%d", merged.Insertions, merged.Deletions)
+	}
+	if lookupAdded, lookupRemoved := lookupSubAgentFileDiffStat(merged, "snake.cpp"); lookupAdded != 213 || lookupRemoved != 0 {
+		t.Fatalf("snake.cpp lookup = +%d -%d", lookupAdded, lookupRemoved)
+	}
+}
+
+func TestMergeSubAgentDiffStatKeepsGitNonzeroOverFallback(t *testing.T) {
+	git := &SubAgentDiffStat{
+		FilesChanged: 1,
+		Insertions:   12,
+		Deletions:    3,
+		FileStats:    []SubAgentFileDiffStat{{Path: "a.go", Insertions: 12, Deletions: 3}},
+	}
+	merged := mergeSubAgentDiffStat(git, []SubAgentFileDiffStat{{Path: "a.go", Insertions: 99, Deletions: 1}})
+	if merged.Insertions != 12 || merged.Deletions != 3 || merged.FileStats[0].Insertions != 12 {
+		t.Fatalf("git nonzero should win, got %#v", merged)
+	}
+}
+
+func TestCodingDiffSnapshotDedupesRelativeAndAbsolutePaths(t *testing.T) {
+	snapshot := newCodingDiffSnapshot([]string{"snake.cpp"}, nil, "")
+	stat := &SubAgentDiffStat{
+		FilesChanged: 1,
+		Insertions:   213,
+		Deletions:    0,
+		FileStats:    []SubAgentFileDiffStat{{Path: `F:/test-prog/snake.cpp`, Insertions: 213, Deletions: 0}},
+	}
+	event := newCodingAgentDiffSummaryEventWithStat(&TaskItem{Index: 3, Title: "Dedupe"}, "", snapshot, stat)
+	if event.Count != 1 || len(event.FileChanges) != 1 {
+		t.Fatalf("relative and absolute should collapse, got %#v", event)
+	}
+	if event.FileChanges[0].Path != "snake.cpp" || event.FileChanges[0].Added != 213 {
+		t.Fatalf("should keep relative path with git stats, got %#v", event.FileChanges[0])
+	}
+	if got := strings.Join(event.Files, ","); got != "snake.cpp" {
+		t.Fatalf("files = %q", got)
+	}
+}
+
+func TestMergeSubAgentDiffStatKeepsDifferentDirectorySameBasename(t *testing.T) {
+	git := &SubAgentDiffStat{
+		FileStats: []SubAgentFileDiffStat{{Path: "a/main.go", Insertions: 3, Deletions: 0}},
+	}
+	merged := mergeSubAgentDiffStat(git, []SubAgentFileDiffStat{{Path: "b/main.go", Insertions: 5, Deletions: 0}})
+	if merged == nil || len(merged.FileStats) != 2 || merged.Insertions != 8 {
+		t.Fatalf("same basename in different dirs should stay separate, got %#v", merged)
+	}
+}
+
 func TestCodingAgentDisplayPathRelativizesAbsAndRemote(t *testing.T) {
 	if got := codingAgentDisplayPath(`D:\workprj\demo\hello_world.cpp`, `D:\workprj\demo`); got != "hello_world.cpp" {
 		t.Fatalf("local root-relative = %q", got)

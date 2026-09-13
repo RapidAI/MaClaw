@@ -18,6 +18,7 @@ import {
     codingAgentFileActivityStatusLabel,
     codingAgentFileActivityStatusTone,
     codingAgentFileChangeRows,
+    codingAgentFileExtBadge,
     codingAgentFilePreviewText,
     codingAgentGuardrailStatusLabel,
     codingAgentGuardrailStatusTone,
@@ -1313,11 +1314,100 @@ describe('CodingAgentProgressStatus', () => {
         const rows = table.querySelectorAll('[data-testid="coding-agent-file-change-row"]');
         expect(rows).toHaveLength(3);
         expect(rows[0].textContent).toContain('gui/a.go');
-        expect(rows[0].textContent).toContain('+12');
-        expect(rows[0].textContent).toContain('-3');
+        expect(rows[0].querySelector('[data-testid="coding-agent-file-change-stat"]')?.textContent).toBe('+12-3');
         expect(rows[1].textContent).toContain('gui/b.go');
-        expect(rows[1].textContent).toContain('+0');
-        expect(rows[1].textContent).toContain('-2');
+        expect(rows[1].querySelector('[data-testid="coding-agent-file-change-stat"]')?.textContent).toBe('-2');
+        expect(rows[2].textContent).toContain('gui/new.go');
+        expect(rows[2].querySelector('[data-testid="coding-agent-file-change-stat"]')?.textContent).toBe('+2');
+    });
+
+    it('hides +0 -0 on untracked file rows and shows a changed chip', () => {
+        const payload = {
+            version: 1,
+            agent: 'coding',
+            event: 'diff_summary',
+            phase: 'result',
+            task_id: 'T2',
+            title: 'Rewrite snake',
+            count: 2,
+            added: 0,
+            removed: 0,
+            files: ['CMakeLists.txt', 'snake.cpp'],
+            file_changes: [
+                { path: 'CMakeLists.txt', added: 0, removed: 0 },
+                { path: 'snake.cpp', added: 0, removed: 0 },
+            ],
+        };
+        render(
+            <>
+                {renderCodingAgentActivityFeed(
+                    [makeProgressMsg(`Coding Agent Event: ${JSON.stringify(payload)}`)],
+                    { text: '#111827', fieldLabel: '#6b7280' },
+                    'zh-Hans',
+                )}
+            </>,
+        );
+        const table = screen.getByTestId('coding-agent-file-changes');
+        expect(table.textContent).toContain('2 个文件已更改');
+        expect(table.querySelector('[data-testid="coding-agent-file-change-stat"]')).toBeNull();
+        expect(table.textContent).toContain('CMakeLists.txt');
+        expect(table.textContent).toContain('snake.cpp');
+        expect(table.textContent).toContain('CM');
+        expect(table.textContent).toContain('C++');
+        expect(codingAgentFileExtBadge('CMakeLists.txt')).toBe('CM');
+        expect(codingAgentFileExtBadge('snake.cpp')).toBe('C++');
+    });
+
+    it('collapses relative and absolute paths for the same file', () => {
+        expect(codingAgentFileChangeRows({
+            phase: 'result',
+            title: '',
+            fileChanges: [
+                { path: 'F:/test-prog/snake.cpp', added: 213, removed: 0 },
+                { path: 'snake.cpp', added: 1, removed: 0 },
+                { path: 'CMakeLists.txt', added: 5, removed: 0 },
+            ],
+        })).toEqual([
+            { path: 'snake.cpp', added: 213, removed: 0 },
+            { path: 'CMakeLists.txt', added: 5, removed: 0 },
+        ]);
+        expect(codingAgentFileChangeRows({
+            phase: 'result',
+            title: '',
+            fileChanges: [
+                { path: './snake.cpp', added: 8, removed: 0 },
+                { path: 'snake.cpp/', added: 3, removed: 0 },
+            ],
+        })).toEqual([{ path: 'snake.cpp', added: 8, removed: 0 }]);
+    });
+
+    it('does not keep a stale payload count after path aliases collapse', () => {
+        const payload = {
+            version: 1,
+            agent: 'coding',
+            event: 'diff_summary',
+            phase: 'result',
+            task_id: 'T2',
+            title: 'Rewrite snake',
+            count: 2,
+            files: ['snake.cpp', 'F:/test-prog/snake.cpp'],
+            file_changes: [
+                { path: 'snake.cpp', added: 3, removed: 0 },
+                { path: 'F:/test-prog/snake.cpp', added: 3, removed: 0 },
+            ],
+        };
+        render(
+            <>
+                {renderCodingAgentActivityFeed(
+                    [makeProgressMsg(`Coding Agent Event: ${JSON.stringify(payload)}`)],
+                    { text: '#111827', fieldLabel: '#6b7280' },
+                    'zh-Hans',
+                )}
+            </>,
+        );
+        const table = screen.getByTestId('coding-agent-file-changes');
+        expect(table.getAttribute('aria-label')).toBe('1 个文件已更改');
+        expect(table.querySelectorAll('[data-testid="coding-agent-file-change-row"]')).toHaveLength(1);
     });
 
     it('renders a structured assistant note without requiring a tool line first', () => {

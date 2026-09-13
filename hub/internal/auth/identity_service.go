@@ -647,7 +647,7 @@ func (s *IdentityService) RequestEmailLogin(ctx context.Context, email string) (
 			if err != nil {
 				return nil, err
 			}
-			// Create a login token with a long expiry so the PWA can poll for approval.
+			// Create a login token with a long expiry so the login client can poll for approval.
 			// When the admin approves the enrollment, the token will be consumed
 			// and the poll will return "confirmed".
 			pollResult, err := s.createLoginTokenForPoll(ctx, email, 24*time.Hour)
@@ -692,11 +692,11 @@ func (s *IdentityService) RequestEmailLogin(ctx context.Context, email string) (
 
 	// User exists and is active. Try to send a login email, but if the mailer
 	// fails (network issues, misconfiguration, etc.) fall back to creating a
-	// pre-consumed poll token so the PWA can still auto-login via polling.
+	// pre-consumed poll token so the login client can still auto-login via polling.
 	result, err := s.createLoginTokenAndNotify(ctx, email)
 	if err != nil && user.Status == "active" {
 		// Email delivery failed, but the user is already approved.
-		// Create a poll token and immediately consume it so the PWA
+		// Create a poll token and immediately consume it so the login client
 		// poll returns "confirmed" right away.
 		pollResult, pollErr := s.createLoginTokenForPoll(ctx, email, 15*time.Minute)
 		if pollErr != nil {
@@ -843,7 +843,7 @@ func (s *IdentityService) sendRegistrationVerification(ctx context.Context, emai
 	}
 
 	// Use a direct GET endpoint for email verification — user clicks the link
-	// and gets a success page immediately, no PWA frontend required.
+	// and gets a success page immediately, no client frontend required.
 	confirmURL := s.buildVerifyEmailURL(rawToken)
 	verificationCode := registrationVerificationCode(rawToken)
 
@@ -896,7 +896,7 @@ func (s *IdentityService) consumePendingRegistrationVerificationTokens(ctx conte
 
 // createLoginTokenForPoll creates (or refreshes) a login token for the given
 // email with a custom expiry, without sending a confirmation email. This is
-// used for approval-mode enrollments where the PWA needs to poll until the
+// used for approval-mode enrollments where the login client needs to poll until the
 // admin approves.
 func (s *IdentityService) createLoginTokenForPoll(ctx context.Context, email string, expiry time.Duration) (*EmailLoginRequestResult, error) {
 	tenantID := tenantIDFromContext(ctx)
@@ -1038,7 +1038,7 @@ func (s *IdentityService) ConfirmRegistrationVerification(ctx context.Context, r
 
 // PollEmailLogin checks if the login token identified by rawPollToken has been
 // consumed (i.e. the user clicked the email confirmation link). If consumed,
-// it creates a new viewer token and returns it so the original PWA tab can
+// it creates a new viewer token and returns it so the original login tab can
 // automatically sign in.
 func (s *IdentityService) PollEmailLogin(ctx context.Context, rawPollToken string) (*EmailPollResult, error) {
 	loginToken, err := s.loginTok.GetByPollTokenHash(ctx, hashToken(rawPollToken))
@@ -1899,18 +1899,6 @@ func (s *IdentityService) IsEmailBlocked(ctx context.Context, email string) (boo
 	return item != nil, nil
 }
 
-func (s *IdentityService) BuildPWAEntryURL(email string) string {
-	base := s.publicBaseURL
-	if base == "" {
-		base = "http://127.0.0.1:9399"
-	}
-	return fmt.Sprintf(
-		"%s/app?email=%s&entry=app&autologin=1",
-		base,
-		url.QueryEscape(normalizeEmail(email)),
-	)
-}
-
 func (s *IdentityService) ListUsers(ctx context.Context) ([]*store.User, error) {
 	return s.users.List(ctx)
 }
@@ -2363,7 +2351,7 @@ func (s *IdentityService) ApproveEnrollment(ctx context.Context, id string) (*st
 		if err := s.grantInvitationCodeLLMServiceForUser(ctx, tenantID, existing.ID, target.Email); err != nil {
 			return nil, nil, err
 		}
-		// Consume any pending login token so the PWA poll returns "confirmed".
+		// Consume any pending login token so the login poll returns "confirmed".
 		s.consumePendingLoginToken(ctx, target.Email)
 		s.syncUserRoute(ctx, target.Email)
 		return existing, target, nil
@@ -2375,7 +2363,7 @@ func (s *IdentityService) ApproveEnrollment(ctx context.Context, id string) (*st
 	if err != nil {
 		return nil, nil, err
 	}
-	// Consume any pending login token so the PWA poll returns "confirmed".
+	// Consume any pending login token so the login poll returns "confirmed".
 	s.consumePendingLoginToken(ctx, target.Email)
 	s.syncUserRoute(ctx, target.Email)
 	return user, target, nil
@@ -2407,7 +2395,7 @@ func (s *IdentityService) ListPendingLoginTokens(ctx context.Context) ([]*store.
 }
 
 // AdminConfirmLoginByEmail consumes the pending login token for the given email
-// so that the PWA poll will see it as confirmed. If the user does not exist yet,
+// so that the login poll will see it as confirmed. If the user does not exist yet,
 // it creates an approved user first.
 func (s *IdentityService) AdminConfirmLoginByEmail(ctx context.Context, email string) (*store.User, error) {
 	email = normalizeEmail(email)
@@ -2439,7 +2427,7 @@ func (s *IdentityService) AdminConfirmLoginByEmail(ctx context.Context, email st
 		_ = s.enrollments.Approve(ctx, pendingEnr.ID, time.Now())
 	}
 
-	// Consume the pending login token so the PWA poll returns "confirmed".
+	// Consume the pending login token so the login poll returns "confirmed".
 	s.consumePendingLoginToken(ctx, email)
 	s.syncUserRoute(ctx, email)
 
@@ -2447,7 +2435,7 @@ func (s *IdentityService) AdminConfirmLoginByEmail(ctx context.Context, email st
 }
 
 // consumePendingLoginToken consumes the pending login token for the given email
-// (best-effort, errors are ignored). This allows the PWA poll to see the token
+// (best-effort, errors are ignored). This allows the login poll to see the token
 // as consumed and return "confirmed" with an access token.
 func (s *IdentityService) consumePendingLoginToken(ctx context.Context, email string) {
 	pending, err := s.loginTok.GetPendingByTenantEmail(ctx, tenantIDFromContext(ctx), email)

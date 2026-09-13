@@ -10,6 +10,7 @@ import { MemoryHealthDialog } from './MemoryHealthDialog';
 import { SystemDoctorDialog } from './SystemDoctorDialog';
 import { SecurityEventsDialog } from './SecurityEventsDialog';
 import { IconAlert, IconBolt, IconBranch, IconClipboard, IconCross, IconDocument, IconLightbulb, IconLock, IconMessage, IconRankBadge, IconRocket, IconUsers } from './ai/WorkbenchIcons';
+import { brandLineParts, formatBrandLine } from '../utils/brandProductLine';
 
 type BrandInfo = {
     id: string;
@@ -384,30 +385,20 @@ export function AboutPanel({
         }
     };
 
-    const productName = (() => {
-        if (!brandInfo?.id || brandInfo.id === 'maclaw') {
-            return t("aboutProductName");
-        }
-        if (brandInfo.id === 'qianxin') {
-            return '\u864e\u722a 8 \u4e07\u53d8';
-        }
-        if (brandInfo.id === 'metastaff') {
-            return '\u667a\u5458 8 \u4e07\u53d8';
-        }
-        const cnName = String(brandInfo.displayNameCN || '').trim();
-        const displayName = String(brandInfo.displayName || '').trim();
-        return [cnName, displayName].filter(Boolean).join(' ') || t("aboutProductName");
-    })();
+    const productParts = brandLineParts({
+        brandId: brandInfo?.id,
+        displayNameCN: brandInfo?.displayNameCN,
+        localizedDefault: t("aboutProductName"),
+    });
+    const productName = formatBrandLine(productParts);
 
     const renderProductName = () => {
-        const versionMatch = productName.match(/8/);
-        if (!versionMatch || versionMatch.index == null) return productName;
-        const versionIndex = versionMatch.index;
+        if (!productParts.version) return productName;
         return (
             <>
-                {productName.slice(0, versionIndex)}
-                <span className="brand-version-mark" aria-label="8">8</span>
-                {productName.slice(versionIndex + 1)}
+                {productParts.name ? <>{productParts.name}{' '}</> : null}
+                <span className="brand-version-mark" aria-label={productParts.version}>{productParts.version}</span>
+                {productParts.generation ? ` ${productParts.generation}` : ''}
             </>
         );
     };

@@ -1,5 +1,5 @@
 import { BugReportScreenshotPreviewDataURL, CancelDownload, CheckEnvironment, ClampMaximizedWindowToWorkArea, ConsumeReferralHandoff, CreateExpertTask, CreateRemoteCodingTask, CreateRemoteOpsDiagnosisTask, CreateTask, CreateTaskWithCloudWorkspace, CreateTaskWithMode, DeleteSkillDetailed, DeleteTask, DownloadUpdate, DownloadUpdateWithSHA256, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, FetchMaclawLLMProfileModels, FetchProviderModels, GetAdaptiveWindowSize, GetAllLLMProfileTokenUsage, GetAllLLMTokenUsage, GetBrandInfo, GetChatFontSize, GetDigitalEmployeeFeatureStatus, GetEnvCheckInterval, GetFramelessTopInset, GetHubLLMServiceStatus, GetLansengerLocalMode, GetLansengerStatus, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMoASessionState, GetQQBotLocalMode, GetQQBotStatus, GetSystemInfo, GetTelegramLocalMode, GetTelegramStatus, GetThirdPartyGatewayLocalMode, GetThirdPartyGatewayStatus, GetUIZoomFactor, GetUserHomeDir, GetWeixinLocalMode, GetWeixinStatus, GroupDiscussionAcceptInvite, GroupDiscussionProcessPendingInvites, GroupDiscussionPublishProfile, GroupDiscussionRejectInvite, GroupDiscussionStatus, HasPendingBugReportUpload, HideTask, IsGossipAllowed, IsNativeRoundedCorners, IsWindowsTerminalAvailable, LaunchInstallerAndExit, ListBackgroundLoops, ListMyBugReports, ListPythonEnvironments, ListRemoteHubs, ListSkills, ListSkillsWithInstallStatus, ListTasks, LoadConfigForUI, OpenSystemUrl, PackLog, PatchConfigFields, PinTask, PingMaclawLLM, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, QuickSaveMaclawLLMProfile, ReadBBS, ReadThanks, ReadTutorial, RefreshMaclawLLMProfileHealth, RenameTask, ResizeWindow, RespondDigitalEmployeeSensitiveRequest, ResumeCloudWorkspaceTask, ResumeTask, RetryBugReportUpload, SaveConfig, SelectBugReportScreenshots, SelectProjectDir, SetBugReportEnabled, SetDefaultLaunchMode, SetLanguage, SetMaclawLLMCurrentModel, SetMoASticky, SetMoAStickyPreset, ShouldCheckEnvironment, ShowItemInFolder, SubmitBugReport, UpdateLastEnvCheckTime } from '../wailsjs/go/main/App';
-import { BrowserOpenURL, EventsEmit, EventsOff, EventsOn, Quit, WindowHide, WindowIsFullscreen, WindowIsMaximised, WindowToggleMaximise, WindowUnmaximise } from '../wailsjs/runtime';
+import { BrowserOpenURL, EventsEmit, EventsOff, EventsOn, Quit, WindowGetPosition, WindowGetSize, WindowHide, WindowIsFullscreen, WindowIsMaximised, WindowSetPosition, WindowSetSize, WindowToggleMaximise, WindowUnmaximise } from '../wailsjs/runtime';
 import { appVersion, buildNumber } from './version';
 // Keep the in-app navigation and About artwork aligned with the packaged
 // Windows/tray icon rather than the legacy standalone SVG mark.
@@ -19,6 +19,7 @@ import { OnboardingWizard } from './components/remote/OnboardingWizard';
 import type { AssistantUpdatePayload } from './components/ai/AssistantUpdateNotice';
 import type { VirtualEmployeeEntry } from './components/ai/VirtualEmployeeTab';
 import type { AIExecutionProfile } from './components/ai/AITabTypes';
+import { createWindowMaximizeRestoreSession } from './utils/windowRestoreGeometry';
 
 function clipboardImageExtension(mimeType: string): string {
     switch (mimeType.toLowerCase()) {
@@ -31,18 +32,28 @@ function clipboardImageExtension(mimeType: string): string {
     }
 }
 
+const windowMaximizeRestore = createWindowMaximizeRestoreSession({
+    getSize: WindowGetSize,
+    getPosition: WindowGetPosition,
+    setSize: WindowSetSize,
+    setPosition: WindowSetPosition,
+});
+
 /** Toggle maximise, then clamp to work area (Win10 frameless taskbar overflow). */
 async function toggleMaximiseAndClampWorkArea(): Promise<void> {
+    const op = windowMaximizeRestore.beginMaximize();
     try {
-        // Snapshot before toggle: after restore, skip clamp entirely.
         const wasMax = await WindowIsMaximised().catch(() => false);
+        if (!windowMaximizeRestore.isCurrent(op)) return;
+        if (!wasMax) await windowMaximizeRestore.rememberNormal(op);
+        if (!windowMaximizeRestore.isCurrent(op)) return;
         WindowToggleMaximise();
         if (wasMax) {
-            // Restored to normal — no work-area clamp needed.
+            windowMaximizeRestore.restoreNormal();
             return;
         }
-        // Entering maximised: wait for OS geometry then clamp under taskbar.
         await new Promise((r) => setTimeout(r, 80));
+        if (!windowMaximizeRestore.isCurrent(op) || windowMaximizeRestore.shouldSkipClamp()) return;
         await ClampMaximizedWindowToWorkArea();
     } catch {
         // Window state APIs may be unavailable during shutdown.
@@ -119,7 +130,7 @@ import { participantIdentityKeys, participantIdentityMatches } from './component
 import { isDigitalEmployeeAuthorizationUsable, shouldShowDigitalEmployeeFeatureTabs } from './components/ai/digitalEmployeeFeature';
 import type { HistoryDiscussionSummary } from './components/layout/SidebarHistorySessions';
 import { activeCodingAgentProgress, latestCodingAgentTurnSnapshot } from './components/ai/CodingAgentProgressStatus';
-import { readStoredAssistantThemeMode } from './components/ai/assistantThemeStorage';
+import { readStoredAssistantThemeMode, writeStoredAssistantThemeMode } from './components/ai/assistantThemeStorage';
 import { agentModeFromTaskTags, cloudWorkspaceIdFromTaskFields, remoteHostFromTaskTags } from './components/ai/codingTaskMode';
 import { normalizeCodingTaskLaunch, type CodingTaskLaunch } from './components/ai/codingTaskLaunch';
 import { saveRemoteSSHPassword } from './components/ai/welcomeTaskMemory';
@@ -144,6 +155,8 @@ import { PROJECT_PAGE_SIZE, knownProviderEndpoints, recommendedModels, subscript
 import { TOOL_NAMES, getToolLabel, isToolTab, normalizeToolTab } from './config/toolCatalog';
 import { getSettingsTabOptions, resolveSettingsTabId, type SettingsTabId } from './config/settingsTabs';
 import { OPEN_SETTINGS_EVENT } from './utils/settingsNavigation';
+import { OPEN_FILE_LIBRARY_EVENT } from './utils/fileLibraryNavigation';
+import { OPEN_EXPERT_CONVERSATION_EVENT } from './utils/expertConversationNavigation';
 import { SettingsPage } from './components/settings/SettingsPage';
 import { AppSidebarShell } from './components/layout/AppSidebarShell';
 import { isProjectTabOpen } from './components/layout/SidebarTaskManagement';
@@ -470,16 +483,19 @@ function App() {
     const aiPanelMaximizedWindowRef = useRef(false);
     const aiPanelMaximizeSeqRef = useRef(0);
     const [windowMaximized, setWindowMaximized] = useState(false);
-    const restoreAIPanelOwnedWindowMaximize = useCallback(async () => {
+    const restoreAIPanelOwnedWindowMaximize = useCallback(() => {
+        // Only undo a native maximize this panel applied. If the window was
+        // already maximized, restoring the assistant must keep that size.
+        if (!aiPanelMaximizedWindowRef.current) return false;
         aiPanelMaximizedWindowRef.current = false;
         try {
             WindowUnmaximise();
-            setWindowMaximized(false);
-            return true;
         } catch {
             // Window state can be unavailable while closing; CSS restore still applies.
         }
-        return false;
+        windowMaximizeRestore.restoreNormal();
+        setWindowMaximized(false);
+        return true;
     }, []);
     useEffect(() => {
         let debounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -489,6 +505,7 @@ function App() {
             // no-ops when geometry already matches work area.
             if (clampTimer) clearTimeout(clampTimer);
             clampTimer = setTimeout(() => {
+                if (windowMaximizeRestore.shouldSkipClamp()) return;
                 void callBackend(() => ClampMaximizedWindowToWorkArea()).catch(() => undefined);
             }, 80);
         };
@@ -1980,12 +1997,16 @@ function App() {
         try {
             const alreadyMaximized = await callBackend(() => WindowIsMaximised());
             if (maximizeSeq !== aiPanelMaximizeSeqRef.current || navTabRef.current !== 'ai') return;
-            if (!alreadyMaximized) {
-                void toggleMaximiseAndClampWorkArea();
-                aiPanelMaximizedWindowRef.current = true;
+            if (alreadyMaximized) return;
+            aiPanelMaximizedWindowRef.current = true;
+            // Native maximize waits ~80ms before clamping. Await it so a fast
+            // restore cannot be overwritten by the delayed maximize.
+            await toggleMaximiseAndClampWorkArea();
+            if (maximizeSeq !== aiPanelMaximizeSeqRef.current || navTabRef.current !== 'ai') {
+                restoreAIPanelOwnedWindowMaximize();
             }
         } catch {
-            aiPanelMaximizedWindowRef.current = false;
+            restoreAIPanelOwnedWindowMaximize();
         }
     };
 
@@ -2685,6 +2706,19 @@ function App() {
         return () => window.removeEventListener('maclaw:open-system-notifications', revealSystemNotifications);
     }, [navTab, setNavTabNow]);
 
+    // Sidebar dock theme toggle: flip the shell theme. Persist here too so the
+    // choice survives even if the assistant panel (which also writes storage)
+    // is unmounted at the moment of the toggle.
+    useEffect(() => {
+        const toggleAITheme = () => setAIThemeMode(prev => {
+            const next = prev === 'dark' ? 'light' : 'dark';
+            writeStoredAssistantThemeMode(next);
+            return next;
+        });
+        window.addEventListener('maclaw:toggle-ai-theme', toggleAITheme);
+        return () => window.removeEventListener('maclaw:toggle-ai-theme', toggleAITheme);
+    }, []);
+
     useEffect(() => {
         const revealTaskSearch = (event: Event) => {
             // MainTopHeader is present on task, monitor, tools and settings
@@ -2699,6 +2733,26 @@ function App() {
         window.addEventListener('maclaw:open-task-search', revealTaskSearch);
         return () => window.removeEventListener('maclaw:open-task-search', revealTaskSearch);
     }, [navTab, setNavTabNow]);
+
+    useEffect(() => {
+        const revealFileLibrary = () => {
+            if (navTabRef.current === 'files') return;
+            setNavTabNow('files');
+        };
+        window.addEventListener(OPEN_FILE_LIBRARY_EVENT, revealFileLibrary);
+        return () => window.removeEventListener(OPEN_FILE_LIBRARY_EVENT, revealFileLibrary);
+    }, [setNavTabNow]);
+
+    useEffect(() => {
+        const openExpertFromSearch = (event: Event) => {
+            const expert = (event as CustomEvent<{ expert?: ExpertDefinition }>).detail?.expert;
+            if (!String(expert?.id || '').trim()) return;
+            setPendingExpertOpen({ expert });
+            setNavTabNow('ai');
+        };
+        window.addEventListener(OPEN_EXPERT_CONVERSATION_EVENT, openExpertFromSearch);
+        return () => window.removeEventListener(OPEN_EXPERT_CONVERSATION_EVENT, openExpertFromSearch);
+    }, [setNavTabNow]);
 
     useEffect(() => {
         if (navTab !== 'ai' || pendingTaskSearch === null) return;
@@ -5191,7 +5245,7 @@ ${instruction}`;
                 toolDropdownOpen={toolDropdownOpen}
                 setToolDropdownOpen={setToolDropdownOpen}
                 tasks={taskItems}
-                tasksLoading={tasksLoading}
+                tasksLoading={tasksLoading && !taskListLoaded}
                 cloudTasksLoading={cloudTasksLoading}
                 renamingTaskPath={renamingTaskPath}
                 setRenamingTaskPath={setRenamingTaskPath}
@@ -5286,6 +5340,8 @@ ${instruction}`;
                             onClose={() => { switchTool('settings'); }}
                             startOnWorkbenchHome
                             lang={lang}
+                            brandId={brandInfo?.id}
+                            brandDisplayNameCN={brandInfo?.displayNameCN}
                             chatFontSize={chatFontSize}
                             themeMode={aiThemeMode}
                             darkSchemeId={aiDarkSchemeId}
@@ -5327,14 +5383,9 @@ ${instruction}`;
                             onOpenLLMSettings={openLLMSettingsPage}
                             onActiveExecutionProfileChange={setActiveExecutionProfile}
                             onLanguageChange={applyLanguage}
-                            recentTasks={taskItems}
                             tasks={taskItems}
                             tasksLoaded={taskListLoaded}
                             onOpenTask={resumeTask}
-                            onRecentTaskSelect={(task: any) => {
-                                const projectPath = String(task?.project_path || "").trim();
-                                if (projectPath) void resumeTask(projectPath, task);
-                            }}
                             statusSlot={(
                                 <AppStatusMessageBar
                                     variant="inline"

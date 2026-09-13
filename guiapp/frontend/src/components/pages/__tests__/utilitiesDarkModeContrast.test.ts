@@ -153,4 +153,20 @@ describe('dark-mode button/card text contrast', () => {
         }
         expect(anyBody(css, ':root', (b) => hasColorScheme(b, 'light'))).toBe(true);
     });
+
+    it('workbench rail selected state is tokenized (not a light-only fill)', () => {
+        const css = readCss('App.css');
+        const stripped = css.replace(/\/\*[\s\S]*?\*\//g, '');
+        expect(stripped).not.toMatch(/left-nav-item--ai\.active[^}]*#eef5ff/i);
+        expect(stripped).not.toMatch(/left-nav-item--ai\.active[^}]*#1e6bc5/i);
+
+        const darkBodies = ruleBodies(
+            css,
+            ".sidebar[data-ai-theme='dark'] .left-nav-item.left-nav-item--ai.active",
+        ).join('\n');
+        expect(darkBodies.length).toBeGreaterThan(0);
+        expect(darkBodies).toMatch(/background\s*:\s*var\(\s*--theme-primary-soft/);
+        expect(darkBodies).toMatch(/!important/);
+        expect(darkBodies).not.toMatch(/#eef5ff|#ffffff|#fff\b/i);
+    });
 });

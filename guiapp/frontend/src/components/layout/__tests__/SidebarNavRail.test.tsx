@@ -15,32 +15,28 @@ vi.mock('../../../../wailsjs/runtime', () => ({
 
 import { SidebarNavRail } from '../SidebarNavRail';
 import { GetHubUserInvitationStatus, GetHubUserRanking } from '../../../../wailsjs/go/main/App';
-import { BrowserOpenURL, EventsOn } from '../../../../wailsjs/runtime';
+import { BrowserOpenURL } from '../../../../wailsjs/runtime';
 import { miniAppLabels } from '../../../i18n/maclawMiniAppLabels';
 import { OPEN_SETTINGS_EVENT } from '../../../utils/settingsNavigation';
 
-// Go's HubUserRanking always carries the numeric fields + period; error is
-// the only optional field. Build error responses with the full shape.
-const rankingError = (error: string) => ({
+const invitationStatus = (enabled: boolean) => ({ enabled } as Awaited<ReturnType<typeof GetHubUserInvitationStatus>>);
+
+const rankingResult = (overrides: { token_rank?: number; duration_rank?: number; total_users?: number; error?: string } = {}) => ({
     total_tokens: 0,
     duration_seconds: 0,
     token_rank: 0,
     duration_rank: 0,
     total_users: 0,
-    period: '',
-    error,
+    period: 'monthly',
+    ...overrides,
 });
-
-const invitationStatus = (enabled: boolean) => ({ enabled } as Awaited<ReturnType<typeof GetHubUserInvitationStatus>>);
 
 beforeEach(() => {
     vi.mocked(BrowserOpenURL).mockClear();
-    vi.mocked(EventsOn).mockClear();
-    vi.mocked(EventsOn).mockReturnValue(() => {});
-    vi.mocked(GetHubUserRanking).mockReset();
-    vi.mocked(GetHubUserRanking).mockResolvedValue(rankingError('hub not configured'));
     vi.mocked(GetHubUserInvitationStatus).mockReset();
     vi.mocked(GetHubUserInvitationStatus).mockResolvedValue(invitationStatus(false));
+    vi.mocked(GetHubUserRanking).mockReset();
+    vi.mocked(GetHubUserRanking).mockResolvedValue(rankingResult({ error: 'hub not configured' }));
 });
 
 afterEach(() => {
@@ -149,6 +145,23 @@ describe('SidebarNavRail system popup', () => {
         expect(systemTrigger.querySelector('img')).toBeNull();
     });
 
+    it('marks the system menu trigger current on the about and gossip pages', () => {
+        const about = renderRail({ navTab: 'about' });
+        expect(screen.getByTestId('system-menu-trigger').getAttribute('aria-current')).toBe('page');
+        about.unmount();
+
+        const gossip = renderRail({ navTab: 'gossip', gossipAllowed: true });
+        expect(screen.getByTestId('system-menu-trigger').getAttribute('aria-current')).toBe('page');
+        gossip.unmount();
+
+        const gossipHidden = renderRail({ navTab: 'gossip', gossipAllowed: false });
+        expect(screen.getByTestId('system-menu-trigger').getAttribute('aria-current')).toBeNull();
+        gossipHidden.unmount();
+
+        renderRail({ navTab: 'skills' });
+        expect(screen.getByTestId('system-menu-trigger').getAttribute('aria-current')).toBeNull();
+    });
+
     it('keeps the MaClaw mark out of the rail after moving it to the main header', () => {
         renderRail();
 
@@ -163,6 +176,96 @@ describe('SidebarNavRail system popup', () => {
 
         expect(onOpenBackgroundTasks).toHaveBeenCalledTimes(1);
         expect(props.switchTool).not.toHaveBeenCalledWith('remote');
+    });
+
+    it('places ranking last in the system menu after gossip', () => {
+        renderRail({
+            lang: 'zh-Hans',
+            gossipAllowed: true,
+            t: (key) => ({ ranking: '排名', gossip: '八卦', about: '关于' }[key] || key),
+            config: { remote_hub_url: 'https://hub.example/' },
+        });
+
+        fireEvent.click(screen.getByTestId('system-menu-trigger'));
+
+        const items = screen.getAllByRole('menuitem');
+        expect(items[items.length - 1]).toBe(screen.getByTestId('system-menu-ranking'));
+        expect(items[items.length - 2]).toBe(screen.getByTestId('system-menu-gossip'));
+        expect(screen.getByTestId('system-menu-ranking').textContent).toContain('排名');
+        expect(screen.getByTestId('system-menu-ranking').textContent).not.toContain('价格');
+    });
+
+    it('replaces 排名 with 第n名 once Hub ranking loads', async () => {
+        vi.mocked(GetHubUserRanking).mockResolvedValue(rankingResult({
+            token_rank: 2,
+            duration_rank: 1,
+            total_users: 8,
+        }));
+
+        renderRail({
+            lang: 'zh-Hans',
+            remoteActivationStatus: { activated: true },
+            config: { remote_hub_url: 'https://hub.example/' },
+        });
+
+        await waitFor(() => expect(GetHubUserRanking).toHaveBeenCalled());
+        fireEvent.click(screen.getByTestId('system-menu-trigger'));
+
+        await waitFor(() => {
+            const rankingItem = screen.getByTestId('system-menu-ranking');
+            expect(rankingItem.textContent).toContain('第1名');
+            expect(rankingItem.textContent).not.toContain('价格');
+            expect(rankingItem.textContent).not.toContain('排名');
+        });
+    });
+
+    it('opens the hub ranking page from the system menu without switching tools', () => {
+        const props = renderRail({ config: { remote_hub_url: 'https://hub.example/' } });
+
+        fireEvent.click(screen.getByTestId('system-menu-trigger'));
+        fireEvent.click(screen.getByTestId('system-menu-ranking'));
+
+        expect(BrowserOpenURL).toHaveBeenCalledWith('https://hub.example/user-ranking');
+        expect(props.switchTool).not.toHaveBeenCalledWith('ranking');
+        expect(screen.queryByTestId('system-popup-menu')).toBeNull();
+    });
+
+    it('opens the hub ranking page scoped to the configured tenant', () => {
+        renderRail({ config: { remote_hub_url: 'https://hub.example/', remote_tenant_id: 'tenant acme' } });
+
+        fireEvent.click(screen.getByTestId('system-menu-trigger'));
+        fireEvent.click(screen.getByTestId('system-menu-ranking'));
+
+        expect(BrowserOpenURL).toHaveBeenCalledWith('https://hub.example/user-ranking?tenant_id=tenant+acme');
+    });
+
+    it('hides ranking when the hub URL cannot open a ranking page', () => {
+        renderRail({ config: { remote_hub_url: 'not a url', remote_tenant_id: 'tenant acme' } });
+
+        fireEvent.click(screen.getByTestId('system-menu-trigger'));
+
+        expect(screen.queryByTestId('system-menu-ranking')).toBeNull();
+        expect(BrowserOpenURL).not.toHaveBeenCalled();
+    });
+
+    it('hides ranking from the system menu when Hub ranking is disabled', () => {
+        renderRail({ gossipAllowed: true, config: { remote_hub_url: 'https://hub.example/', show_hub_ranking: false } });
+
+        fireEvent.click(screen.getByTestId('system-menu-trigger'));
+
+        expect(screen.queryByTestId('system-menu-ranking')).toBeNull();
+        const items = screen.getAllByRole('menuitem');
+        expect(items[items.length - 1]).toBe(screen.getByTestId('system-menu-gossip'));
+    });
+
+    it('hides ranking when no hub URL is configured', () => {
+        renderRail({ gossipAllowed: true, config: {} });
+
+        fireEvent.click(screen.getByTestId('system-menu-trigger'));
+
+        expect(screen.queryByTestId('system-menu-ranking')).toBeNull();
+        const items = screen.getAllByRole('menuitem');
+        expect(items[items.length - 1]).toBe(screen.getByTestId('system-menu-gossip'));
     });
 });
 
@@ -328,223 +431,6 @@ describe('SidebarNavRail favorite employees', () => {
         expect(aiEntry.getAttribute('style')).toBeNull();
     });
 
-    it('shows a pending ranking mark for registered users without a ranking yet', () => {
-        renderRail({ remoteActivationStatus: { activated: true }, config: { remote_hub_url: 'https://hub.example/' } });
-
-        fireEvent.click(screen.getByTitle('Monthly ranking pending'));
-
-        expect(BrowserOpenURL).toHaveBeenCalledWith('https://hub.example/user-ranking');
-        // Icon title and visible label both say "Rank".
-        expect(screen.getAllByText('Rank').length).toBeGreaterThan(0);
-    });
-
-    it('opens the hub ranking page scoped to the configured tenant', () => {
-        renderRail({ remoteActivationStatus: { activated: true }, config: { remote_hub_url: 'https://hub.example/', remote_tenant_id: 'tenant acme' } });
-
-        fireEvent.click(screen.getByTitle('Monthly ranking pending'));
-
-        expect(BrowserOpenURL).toHaveBeenCalledWith('https://hub.example/user-ranking?tenant_id=tenant+acme');
-    });
-
-    it('does not throw or open a ranking page for an invalid hub URL', () => {
-        renderRail({ remoteActivationStatus: { activated: true }, config: { remote_hub_url: 'not a url', remote_tenant_id: 'tenant acme' } });
-
-        expect(() => fireEvent.click(screen.getByTitle('Monthly ranking pending'))).not.toThrow();
-
-        expect(BrowserOpenURL).not.toHaveBeenCalledWith(expect.stringContaining('/user-ranking'));
-    });
-
-    it('shows returned monthly ranking data even when both ranks are not positive yet', async () => {
-        vi.mocked(GetHubUserRanking).mockResolvedValueOnce({
-            total_tokens: 0,
-            duration_seconds: 0,
-            token_rank: 0,
-            duration_rank: 0,
-            total_users: 1,
-            period: 'monthly',
-        });
-
-        renderRail({ remoteActivationStatus: { activated: true }, config: { remote_hub_url: 'https://hub.example/' } });
-
-        await waitFor(() => expect(screen.getByTitle('This month: Token #-/1, Online #-/1')).toBeTruthy());
-
-        expect(screen.queryByTitle('Monthly ranking pending')).toBeNull();
-        // Icon title and visible label both say "Rank".
-        expect(screen.getAllByText('Rank').length).toBeGreaterThan(0);
-    });
-
-    it('retries startup ranking fetch with exponential backoff until it gets valid data', async () => {
-        vi.useFakeTimers();
-        vi.mocked(GetHubUserRanking)
-            .mockResolvedValueOnce(rankingError('ranking pending'))
-            .mockResolvedValueOnce({
-                total_tokens: 120,
-                duration_seconds: 0,
-                token_rank: 4,
-                duration_rank: 0,
-                total_users: 9,
-                period: 'monthly',
-            });
-
-        renderRail({ remoteActivationStatus: { activated: true }, config: { remote_hub_url: 'https://hub.example/' } });
-
-        await act(async () => {
-            await Promise.resolve();
-        });
-
-        expect(GetHubUserRanking).toHaveBeenCalledTimes(1);
-        expect(screen.getByTitle('Monthly ranking pending')).toBeTruthy();
-
-        await act(async () => {
-            await vi.advanceTimersByTimeAsync(30_000);
-            await Promise.resolve();
-        });
-
-        expect(screen.getByTitle('This month: Token #4/9, Online #-/9')).toBeTruthy();
-        expect(screen.queryByTitle('Monthly ranking pending')).toBeNull();
-        expect(GetHubUserRanking).toHaveBeenCalledTimes(2);
-
-        await act(async () => {
-            await vi.advanceTimersByTimeAsync(2 * 60_000);
-            await Promise.resolve();
-        });
-
-        expect(GetHubUserRanking).toHaveBeenCalledTimes(2);
-    });
-
-    it('stops the startup retry chain when another refresh gets valid data first', async () => {
-        vi.useFakeTimers();
-        vi.mocked(GetHubUserRanking)
-            .mockResolvedValueOnce(rankingError('ranking pending'))
-            .mockResolvedValueOnce({
-                total_tokens: 120,
-                duration_seconds: 0,
-                token_rank: 4,
-                duration_rank: 0,
-                total_users: 9,
-                period: 'monthly',
-            });
-
-        renderRail({ remoteActivationStatus: { activated: true }, config: { remote_hub_url: 'https://hub.example/' } });
-
-        await act(async () => {
-            await Promise.resolve();
-        });
-
-        const tokenUsageHandler = vi.mocked(EventsOn).mock.calls.find(([eventName]) => eventName === 'llm-token-usage-changed')?.[1] as (() => void) | undefined;
-        expect(tokenUsageHandler).toBeTruthy();
-        tokenUsageHandler?.();
-
-        await act(async () => {
-            await vi.advanceTimersByTimeAsync(5_000);
-            await Promise.resolve();
-        });
-
-        expect(screen.getByTitle('This month: Token #4/9, Online #-/9')).toBeTruthy();
-        expect(GetHubUserRanking).toHaveBeenCalledTimes(2);
-
-        await act(async () => {
-            await vi.advanceTimersByTimeAsync(25_000);
-            await Promise.resolve();
-        });
-
-        expect(GetHubUserRanking).toHaveBeenCalledTimes(2);
-    });
-
-    it('continues startup retries when a stale startup response was superseded by a failed refresh', async () => {
-        vi.useFakeTimers();
-        let resolveStartup: (value: ReturnType<typeof rankingError>) => void = () => {};
-        const startupResponse = new Promise<ReturnType<typeof rankingError>>((resolve) => { resolveStartup = resolve; });
-        vi.mocked(GetHubUserRanking)
-            .mockReturnValueOnce(startupResponse)
-            .mockResolvedValueOnce(rankingError('ranking pending'))
-            .mockResolvedValueOnce({
-                total_tokens: 120,
-                duration_seconds: 0,
-                token_rank: 4,
-                duration_rank: 0,
-                total_users: 9,
-                period: 'monthly',
-            });
-
-        renderRail({ remoteActivationStatus: { activated: true }, config: { remote_hub_url: 'https://hub.example/' } });
-
-        await act(async () => {
-            await Promise.resolve();
-        });
-
-        const tokenUsageHandler = vi.mocked(EventsOn).mock.calls.find(([eventName]) => eventName === 'llm-token-usage-changed')?.[1] as (() => void) | undefined;
-        tokenUsageHandler?.();
-
-        await act(async () => {
-            await vi.advanceTimersByTimeAsync(5_000);
-            await Promise.resolve();
-        });
-
-        expect(GetHubUserRanking).toHaveBeenCalledTimes(2);
-
-        await act(async () => {
-            resolveStartup(rankingError('ranking pending'));
-            await Promise.resolve();
-        });
-
-        await act(async () => {
-            await vi.advanceTimersByTimeAsync(30_000);
-            await Promise.resolve();
-        });
-
-        expect(screen.getByTitle('This month: Token #4/9, Online #-/9')).toBeTruthy();
-        expect(GetHubUserRanking).toHaveBeenCalledTimes(3);
-    });
-
-    it('falls back to the 30 minute periodic refresh after startup retries are exhausted', async () => {
-        vi.useFakeTimers();
-        vi.mocked(GetHubUserRanking)
-            .mockResolvedValueOnce(rankingError('ranking pending'))
-            .mockResolvedValueOnce(rankingError('ranking pending'))
-            .mockResolvedValueOnce(rankingError('ranking pending'))
-            .mockResolvedValueOnce(rankingError('ranking pending'))
-            .mockResolvedValueOnce({
-                total_tokens: 120,
-                duration_seconds: 0,
-                token_rank: 4,
-                duration_rank: 0,
-                total_users: 9,
-                period: 'monthly',
-            });
-
-        renderRail({ remoteActivationStatus: { activated: true }, config: { remote_hub_url: 'https://hub.example/' } });
-
-        await act(async () => {
-            await Promise.resolve();
-        });
-
-        expect(GetHubUserRanking).toHaveBeenCalledTimes(1);
-
-        await act(async () => {
-            await vi.advanceTimersByTimeAsync(30_000 + 2 * 60_000 + 8 * 60_000);
-            await Promise.resolve();
-        });
-
-        expect(GetHubUserRanking).toHaveBeenCalledTimes(4);
-        expect(screen.getByTitle('Monthly ranking pending')).toBeTruthy();
-
-        await act(async () => {
-            await vi.advanceTimersByTimeAsync(30 * 60_000 - (30_000 + 2 * 60_000 + 8 * 60_000) - 1);
-            await Promise.resolve();
-        });
-
-        expect(GetHubUserRanking).toHaveBeenCalledTimes(4);
-
-        await act(async () => {
-            await vi.advanceTimersByTimeAsync(1);
-            await Promise.resolve();
-        });
-
-        expect(screen.getByTitle('This month: Token #4/9, Online #-/9')).toBeTruthy();
-        expect(screen.queryByTitle('Monthly ranking pending')).toBeNull();
-    });
-
     it('switches to AI before opening a favorite digital employee conversation', () => {
         const props = renderRail({ showAppEntry: true });
 
@@ -579,8 +465,26 @@ describe('SidebarNavRail favorite employees', () => {
         expect(screen.queryByTestId('extensions-popup-menu')).toBeNull();
     });
 
+    it('keeps skills and MCP only on the extensions menu, not the system menu', () => {
+        renderRail({ lang: 'zh-Hans', gossipAllowed: false, config: {} });
+
+        fireEvent.click(screen.getByTestId('system-menu-trigger'));
+        expect(screen.getAllByRole('menuitem').map(item => item.getAttribute('data-testid'))).toEqual(['system-menu-about']);
+
+        fireEvent.click(screen.getByTestId('sidebar-extensions-nav'));
+        expect(screen.queryByTestId('system-popup-menu')).toBeNull();
+        expect(screen.getAllByRole('menuitem').map(item => item.getAttribute('data-testid'))).toEqual([
+            'extensions-menu-skills',
+            'extensions-menu-mcp',
+        ]);
+    });
+
     it('marks the 扩展 entry active on the skills and mcp pages', () => {
-        renderRail({ navTab: 'skills' });
+        const first = renderRail({ navTab: 'skills' });
+        expect(screen.getByTestId('sidebar-extensions-nav').classList.contains('active')).toBe(true);
+        first.unmount();
+
+        renderRail({ navTab: 'mcp' });
         expect(screen.getByTestId('sidebar-extensions-nav').classList.contains('active')).toBe(true);
     });
 

@@ -1,32 +1,10 @@
 import { AppsRailIcon, ExpertRailIcon, GossipIcon, SettingsIcon, ToolsRailIcon } from './SidebarNavIcons';
-import { IconRankBadge } from '../ai/WorkbenchIcons';
 import type { ReactNode } from 'react';
-
-type SidebarMedal = {
-    rank: number;
-    tokenRank: number;
-    durationRank: number;
-    totalUsers: number;
-    rankChange?: number; // positive = up, negative = down, 0 or undefined = no change
-    trophyThreshold: number; // hub-configured: ranks <= this use trophy icon, beyond use medal
-};
 
 type SidebarBrandHeaderProps = {
     brandId?: string;
     currentIcon: string;
     brandSidebarName: string;
-};
-
-type SidebarMedalBadgeProps = {
-    medal: SidebarMedal;
-    lang: string;
-};
-
-type SidebarLinkedMedalProps = {
-    medal: SidebarMedal;
-    lang: string;
-    title: string;
-    onClick: () => void;
 };
 
 type SidebarPrimaryNavProps = {
@@ -77,78 +55,6 @@ export const SidebarBrandHeader = ({ brandId, currentIcon, brandSidebarName }: S
         </div>
     );
 };
-
-export const SidebarMedalBadge = ({ medal, lang }: SidebarMedalBadgeProps) => {
-    const rank = medal.rank;
-    const rankChange = medal.rankChange || 0;
-
-    const rankText = rank > 0 ? (lang === 'en' ? `#${rank}` : `第${rank}名`) : (lang === 'en' ? 'Rank' : '排行');
-
-    return (
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '100%' }}>
-            {/* Decorative divider line between "About" and ranking */}
-            <div
-                aria-hidden="true"
-                style={{
-                    width: '70%',
-                    height: '1px',
-                    margin: '3px 0 2px 0',
-                    background: 'linear-gradient(90deg, transparent 0%, rgba(139,157,195,0.12) 15%, rgba(139,157,195,0.35) 50%, rgba(139,157,195,0.12) 85%, transparent 100%)',
-                    boxShadow: '0 1px 1px rgba(0,0,0,0.4)',
-                }}
-            />
-
-            <div
-                className="sidebar-medal-badge"
-                title={(() => {
-                    const parts: string[] = [];
-                    const totalText = medal.totalUsers > 0 ? String(medal.totalUsers) : '-';
-                    const tokenRankText = medal.tokenRank > 0 ? String(medal.tokenRank) : '-';
-                    const durationRankText = medal.durationRank > 0 ? String(medal.durationRank) : '-';
-                    parts.push(lang === 'en' ? `Token #${tokenRankText}/${totalText}` : `Token 第${tokenRankText}/${totalText}名`);
-                    parts.push(lang === 'en' ? `Online #${durationRankText}/${totalText}` : `在线 第${durationRankText}/${totalText}名`);
-                    const prefix = lang === 'en' ? 'This month: ' : '本月排名: ';
-                    return prefix + parts.join(', ');
-                })()}
-                style={{
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems: 'center',
-                    padding: '2px 0 5px 0',
-                    width: '100%',
-                    cursor: 'pointer',
-                    userSelect: 'none',
-                    minHeight: '40px',
-                    justifyContent: 'center',
-                }}
-            >
-                <span
-                    className="sidebar-medal-icon"
-                    style={{ lineHeight: 1, display: 'flex', alignItems: 'center' }}
-                >
-                    <IconRankBadge rank={rank} size={20} />
-                </span>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '2px', marginTop: '2px' }}>
-                    <span style={{ fontSize: '0.62rem', lineHeight: 1, color: 'var(--theme-text)', fontWeight: 700 }}>
-                        {rankText}
-                    </span>
-                    {rankChange > 0 && (
-                        <span style={{ fontSize: '0.55rem', fontWeight: 700, color: '#ef4444', lineHeight: 1 }}>↑{rankChange}</span>
-                    )}
-                    {rankChange < 0 && (
-                        <span style={{ fontSize: '0.55rem', fontWeight: 700, color: '#22c55e', lineHeight: 1 }}>↓{Math.abs(rankChange)}</span>
-                    )}
-                </div>
-            </div>
-        </div>
-    );
-};
-
-export const SidebarLinkedMedal = ({ medal, lang, title, onClick }: SidebarLinkedMedalProps) => (
-    <div onClick={onClick} style={{ cursor: 'pointer', width: '100%' }} title={title}>
-        <SidebarMedalBadge medal={medal} lang={lang} />
-    </div>
-);
 
 const HomeRailIcon = () => (
     <svg className="ai-nav-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

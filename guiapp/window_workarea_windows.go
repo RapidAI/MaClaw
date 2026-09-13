@@ -27,6 +27,8 @@ var (
 	procGetWindowWA                = workAreaUser32.NewProc("GetWindow")
 	procGetWindowRectWA            = workAreaUser32.NewProc("GetWindowRect")
 	procSetWindowPosWA             = workAreaUser32.NewProc("SetWindowPos")
+	procGetWindowPlacementWA       = workAreaUser32.NewProc("GetWindowPlacement")
+	procSetWindowPlacementWA       = workAreaUser32.NewProc("SetWindowPlacement")
 	procMonitorFromWindowWA        = workAreaUser32.NewProc("MonitorFromWindow")
 	procGetMonitorInfoWWA          = workAreaUser32.NewProc("GetMonitorInfoW")
 	procEnumWindowsWA              = workAreaUser32.NewProc("EnumWindows")
@@ -41,10 +43,25 @@ const (
 	swpNoZOrder             = 0x0004
 	swpNoActivate           = 0x0010
 	gwOwner                 = 4 // GW_OWNER — skip owned popups/tool windows
+	swShowMaximized         = 3 // SW_SHOWMAXIMIZED — keep clamp from restoring
 )
 
 type workAreaRect struct {
 	Left, Top, Right, Bottom int32
+}
+
+type winPoint struct {
+	X, Y int32
+}
+
+// WINDOWPLACEMENT without the Windows 10 rcDevice tail. Length is set at call time.
+type windowPlacement struct {
+	Length         uint32
+	Flags          uint32
+	ShowCmd        uint32
+	MinPosition    winPoint
+	MaxPosition    winPoint
+	NormalPosition workAreaRect
 }
 
 type workAreaMonitorInfo struct {
@@ -213,18 +230,83 @@ func clampHWNDToWorkArea(hwnd uintptr) bool {
 		return false
 	}
 
+	savedPlace, havePlace := readWindowPlacement(hwnd)
 	if !setWindowRect(hwnd, work) {
 		return false
 	}
 	// Some Win10 builds re-apply maximise frame after SetWindowPos; retry once.
-	var after workAreaRect
-	if ok, _, _ := procGetWindowRectWA.Call(hwnd, uintptr(unsafe.Pointer(&after))); ok != 0 {
-		if windowRectOverflowsWorkArea(after, work) {
-			time.Sleep(30 * time.Millisecond)
-			return setWindowRect(hwnd, work)
+	if hwndOverflowsWorkArea(hwnd, work) {
+		time.Sleep(30 * time.Millisecond)
+		if !setWindowRect(hwnd, work) {
+			return false
+		}
+	}
+	if havePlace {
+		preserveClampedNormalPlacement(hwnd, savedPlace.NormalPosition, work)
+		// SetWindowPlacement can re-apply the maximize frame past the taskbar.
+		if hwndOverflowsWorkArea(hwnd, work) {
+			if !setWindowRect(hwnd, work) {
+				return false
+			}
+			preserveClampedNormalPlacement(hwnd, savedPlace.NormalPosition, work)
 		}
 	}
 	return true
+}
+
+func readWindowPlacement(hwnd uintptr) (windowPlacement, bool) {
+	var place windowPlacement
+	place.Length = uint32(unsafe.Sizeof(place))
+	r, _, _ := procGetWindowPlacementWA.Call(hwnd, uintptr(unsafe.Pointer(&place)))
+	if r == 0 {
+		return windowPlacement{}, false
+	}
+	return place, true
+}
+
+func preserveClampedNormalPlacement(hwnd uintptr, savedNormal, work workAreaRect) {
+	if !shouldPreserveClampedNormalPlacement(savedNormal, work) {
+		return
+	}
+	cur, ok := readWindowPlacement(hwnd)
+	if !ok {
+		return
+	}
+	cur = applyPreservedNormalPlacement(cur, savedNormal)
+	procSetWindowPlacementWA.Call(hwnd, uintptr(unsafe.Pointer(&cur)))
+}
+
+func applyPreservedNormalPlacement(cur windowPlacement, savedNormal workAreaRect) windowPlacement {
+	cur.Length = uint32(unsafe.Sizeof(cur))
+	cur.NormalPosition = savedNormal
+	// SetWindowPos during clamp can clear WS_MAXIMIZE. Leaving ShowCmd as
+	// SW_SHOWNORMAL would restore the window instead of recording the rect.
+	cur.ShowCmd = swShowMaximized
+	return cur
+}
+
+func hwndOverflowsWorkArea(hwnd uintptr, work workAreaRect) bool {
+	var cur workAreaRect
+	if ok, _, _ := procGetWindowRectWA.Call(hwnd, uintptr(unsafe.Pointer(&cur))); ok == 0 {
+		return false
+	}
+	return windowRectOverflowsWorkArea(cur, work)
+}
+
+func shouldPreserveClampedNormalPlacement(savedNormal, work workAreaRect) bool {
+	w := savedNormal.Right - savedNormal.Left
+	h := savedNormal.Bottom - savedNormal.Top
+	if w < 160 || h < 120 {
+		return false
+	}
+	ww := work.Right - work.Left
+	hh := work.Bottom - work.Top
+	if ww <= 0 || hh <= 0 {
+		return false
+	}
+	// Keep a restore rect that is smaller on either axis. Requiring both axes
+	// dropped nearly-maximized-width windows (e.g. 1900x700).
+	return w < ww-16 || h < hh-16
 }
 
 func monitorWorkAreaForHWND(hwnd uintptr) (workAreaRect, bool) {

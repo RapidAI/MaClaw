@@ -6,7 +6,6 @@ MaClaw Hub is the self-hosted remote control service for MaClaw Desktop.
 
 - Manage hub-local identity and SN issuance
 - Receive Desktop session summaries, previews, and important events
-- Host the PWA entry at `/app`
 - Provide admin setup/login and debug APIs
 
 ## Run
