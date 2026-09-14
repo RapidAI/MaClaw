@@ -1,4 +1,4 @@
-import { type KeyboardEvent, type MouseEvent, useState } from "react";
+import { type KeyboardEvent, type MouseEvent, useRef, useState } from "react";
 import { LoadConfig } from "../../../wailsjs/go/main/App";
 import { BrowserOpenURL } from "../../../wailsjs/runtime";
 import { buildHubCardStoreURL } from "../../utils/hubCredits";
@@ -89,18 +89,33 @@ const stopMouse = (handler: () => void) => (e: MouseEvent) => {
 export function AssistantTitleBar({ active = true, clearHistory, clearHistoryDisabled, inline, lang, maximized, onClose, onDismissAppUpdate, onHideWindow, onOpenAppReleaseNotes, onOpenAppUpdate, onOpenKnowledge, onOpenTutorial, onOptimizeExpert, onSaveCurrentTask, onToggleMaximize, onTogglePreviewPanel, onToggleSkillRecording, optimizeExpertBusy, previewPanelOpen, previewAvailable, projectSearchOpen, refreshNews, showMaximizeToggle, skillRecording, skillRecordingAnyTab, skillRecordingCount, theme: t, themeMode, title, trialReflectEnabled, toggleProjectSearch, updateAvailable, workflowActive }: AssistantTitleBarProps) {
     const [searchQuery, setSearchQuery] = useState("");
     const searchComposition = useTextCompositionGuard();
+    const headerSearchComposingRef = useRef(false);
     // Keep title-bar state controls on the active shell palette in both schemes.
     const themeSuccess = "var(--theme-success, #4f7f6f)";
-    const openInlineTaskSearch = () => {
+    const openInlineTaskSearch = (query = searchQuery) => {
         if (typeof window === "undefined") return;
-        window.dispatchEvent(new CustomEvent("maclaw:open-task-search", { detail: { query: searchQuery } }));
+        window.dispatchEvent(new CustomEvent("maclaw:open-task-search", { detail: { query } }));
     };
     const handleSearchTool = () => {
+        if (projectSearchOpen) {
+            toggleProjectSearch();
+            return;
+        }
         if (searchQuery.trim()) openInlineTaskSearch();
         else toggleProjectSearch();
     };
+    const handleHeaderSearchChange = (value: string) => {
+        setSearchQuery(value);
+        if (projectSearchOpen && !headerSearchComposingRef.current) openInlineTaskSearch(value);
+    };
     const handleSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
         if (searchComposition.shouldIgnoreKeyDown(event)) return;
+        if (event.key === "Escape") {
+            if (!projectSearchOpen) return;
+            event.preventDefault();
+            toggleProjectSearch();
+            return;
+        }
         if (event.key !== "Enter") return;
         event.preventDefault();
         openInlineTaskSearch();
@@ -137,7 +152,7 @@ export function AssistantTitleBar({ active = true, clearHistory, clearHistoryDis
                     </span>
                     <span className="mc-header-search-wrap" data-testid="ai-titlebar-search" onMouseDown={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()} style={{ flex: "1 1 180px", width: "clamp(120px, 22vw, 300px)", maxWidth: "300px", minWidth: "120px" }}>
                         <svg className="mc-header-search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4.5 4.5" /></svg>
-                        <input className="mc-header-search" data-testid="ai-titlebar-search-input" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} onCompositionStart={searchComposition.onCompositionStart} onCompositionEnd={searchComposition.onCompositionEnd} onKeyDown={handleSearchKeyDown} onMouseDown={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()} placeholder={lang === "en" ? "Search tasks, files, knowledge, experts..." : "搜索任务、文件、知识、专家…"} aria-label={lang === "en" ? "Search" : "搜索"} />
+                        <input className="mc-header-search" data-testid="ai-titlebar-search-input" value={searchQuery} onChange={(event) => handleHeaderSearchChange(event.target.value)} onCompositionStart={() => { headerSearchComposingRef.current = true; searchComposition.onCompositionStart(); }} onCompositionEnd={(event) => { headerSearchComposingRef.current = false; searchComposition.onCompositionEnd(); if (projectSearchOpen) openInlineTaskSearch(event.currentTarget.value); }} onKeyDown={handleSearchKeyDown} onMouseDown={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()} placeholder={lang === "en" ? "Search tasks, files, knowledge, experts..." : "搜索任务、文件、知识、专家…"} aria-label={lang === "en" ? "Search" : "搜索"} />
                     </span>
                     <span className="mc-header-ready" data-testid="ai-titlebar-ready"><i aria-hidden="true" />{lang === "en" ? "Ready" : "准备就绪"}</span>
                 </>}

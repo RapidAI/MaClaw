@@ -4,6 +4,10 @@ import { stripLeadingEmojiCluster } from "./aiAssistantProgressUtils";
 /** Live activity shown on the reasoning-panel summary while a round is in flight. */
 export type AssistantLiveActivityKind =
     | "thinking"
+    | "preparing"
+    | "syncing_context"
+    | "analyzing"
+    | "accessing_model"
     | "calling_tool"
     | "running_command"
     | "reading_file"
@@ -108,6 +112,14 @@ export function assistantLiveActivityLabel(kind: AssistantLiveActivityKind, lang
     switch (kind) {
         case "thinking":
             return localizeText(lang, "Thinking", "正在思考", "正在思考");
+        case "preparing":
+            return localizeText(lang, "Preparing", "正在准备", "正在準備");
+        case "syncing_context":
+            return localizeText(lang, "Syncing context", "正在同步上下文", "正在同步上下文");
+        case "analyzing":
+            return localizeText(lang, "Analyzing the task", "正在分析任务", "正在分析任務");
+        case "accessing_model":
+            return localizeText(lang, "Contacting the model", "正在访问模型", "正在訪問模型");
         case "running_command":
             return localizeText(lang, "Running command", "正在执行命令", "正在執行命令");
         case "reading_file":
@@ -163,6 +175,7 @@ export function resolveAssistantLiveActivity(opts: {
     streaming: boolean;
     busy: boolean;
     hasReasoning?: boolean;
+    reasoningText?: string;
     progressMessages?: Array<{ content?: string }>;
     codingProgress?: { event?: string; detail?: string } | null;
 }): AssistantLiveActivityKind | null {
@@ -173,31 +186,87 @@ export function resolveAssistantLiveActivity(opts: {
         return assistantLiveActivityFromToolName(opts.codingProgress?.detail || "");
     }
     const latestText = latestProgressText(opts.progressMessages);
-    // Streaming tokens usually mean thinking, but a live "running tools / skill /
-    // shell" line is the current step — keep it on the thinking header. IM
-    // "工具 · …" cards persist after the tool returns, so they stay ignored
-    // while tokens are flowing.
-    if (opts.streaming) {
-        if (isInFlightToolProgressText(latestText)) {
-            return parseLiveActivityFromProgressText(latestText) || "calling_tool";
-        }
-        return "thinking";
+    if (isInFlightToolProgressText(latestText)) {
+        return parseLiveActivityFromProgressText(latestText) || "calling_tool";
     }
-    if (codingEvent === "tool_finished") return "thinking";
+    if (codingEvent === "tool_finished" && opts.streaming) return "thinking";
+    const fromStatus = liveActivityFromReasoningStatus(opts.reasoningText)
+        || liveActivityFromStatusText(latestText);
+    const hasModelThought = opts.hasReasoning || reasoningHasModelThought(opts.reasoningText);
+    // Status-only milestones (environment / context / analyze) stay on the
+    // header until the model actually writes thought tokens.
+    if (opts.streaming && hasModelThought) return "thinking";
+    if (fromStatus) return fromStatus;
+    if (opts.streaming) return "accessing_model";
     const fromProgress = latestText ? parseLiveActivityFromProgressText(latestText) : null;
     if (fromProgress) return fromProgress;
     // After the model has already produced a thought trail, a silent busy
     // gap is the tool round — show that step on the thinking header.
-    // Before any reasoning (the short connect/request phase) stay on thinking.
-    return opts.hasReasoning ? "calling_tool" : "thinking";
+    // Before any model prose, the round is still contacting the model.
+    return hasModelThought ? "calling_tool" : "accessing_model";
+}
+
+/** Thought text that should drive the live header: chat reasoning plus coding-timeline thoughts. */
+export function assistantLiveReasoningSource(msg: {
+    role?: string;
+    content?: string;
+    reasoning?: string;
+    codingTimeline?: Array<{ kind?: string; content?: string }>;
+} | undefined): string {
+    if (!msg || msg.role !== "assistant" || (msg.content || "").trim()) return "";
+    const timelineThoughts = (msg.codingTimeline || [])
+        .filter((item) => item.kind === "thinking")
+        .map((item) => String(item.content || "").trim())
+        .filter(Boolean);
+    return [msg.reasoning || "", ...timelineThoughts].filter(Boolean).join("\n");
+}
+
+export function reasoningHasModelThought(reasoning?: string): boolean {
+    if (!reasoning?.trim()) return false;
+    return reasoning.split(/\r?\n/).some((line) => {
+        const text = line.trim();
+        if (!text) return false;
+        if (text.startsWith("\u2022 ") || text.startsWith("[Status]")) return false;
+        return true;
+    });
+}
+
+function liveActivityFromReasoningStatus(reasoning?: string): AssistantLiveActivityKind | null {
+    if (!reasoning) return null;
+    const lines = reasoning.split(/\r?\n/);
+    for (let i = lines.length - 1; i >= 0; i--) {
+        const text = lines[i].trim();
+        if (!text) continue;
+        if (text.startsWith("\u2022 ") || text.startsWith("[Status]")) {
+            const kind = liveActivityFromStatusText(text);
+            if (kind) return kind;
+        }
+    }
+    return null;
+}
+
+function liveActivityFromStatusText(text: string): AssistantLiveActivityKind | null {
+    const body = (text || "")
+        .trim()
+        .replace(/^\[Status\]\s*/i, "")
+        .replace(/^\u2022\s*/, "")
+        .trim();
+    if (!body) return null;
+    if (/正在执行工具|正在调用工具|running tools?/i.test(body)) return "calling_tool";
+    if (/模型请求|等待响应|访问模型|准备模型请求|contacting the model|building the request/i.test(body)) return "accessing_model";
+    if (/同步会话|同步.*上下文|conversation context/i.test(body)) return "syncing_context";
+    if (/分析任务|analyzing the task/i.test(body)) return "analyzing";
+    if (/准备执行|执行环境|已接收任务|task received|preparing the execution|environment is ready/i.test(body)) return "preparing";
+    return null;
 }
 
 /** Last assistant owns the live header only while it is still the in-flight round. */
 export function assistantMessageOwnsLiveActivity(
     msg: { role?: string; content?: string } | undefined,
     streaming: boolean,
+    isNewestMessage = true,
 ): boolean {
-    if (!msg || msg.role !== "assistant") return false;
+    if (!msg || msg.role !== "assistant" || !isNewestMessage) return false;
     if (streaming) return true;
     return !(msg.content || "").trim();
 }
@@ -216,19 +285,35 @@ export function codingTimelineLiveThoughtIndex(
     return timeline[last]?.kind === "thinking" ? last : -1;
 }
 
+const GENERIC_CODING_LIVE_KINDS: ReadonlySet<AssistantLiveActivityKind> = new Set([
+    "thinking",
+    "preparing",
+    "syncing_context",
+    "analyzing",
+    "accessing_model",
+]);
+
+/** Coding timeline + plan already show generic thinking; do not add a second bar. */
+export function isGenericCodingLiveKind(kind?: AssistantLiveActivityKind | null): boolean {
+    return !!kind && GENERIC_CODING_LIVE_KINDS.has(kind);
+}
+
 /** Live header that is not already attached to a coding timeline thought. */
 export function resolveStandaloneLiveActivityLabel(opts: {
     liveLabel?: string;
+    liveKind?: AssistantLiveActivityKind | null;
     coding: boolean;
     lastAssistantOwnsLive: boolean;
     lastMessageRole?: string;
-    lastTimeline?: Array<{ kind?: string }>;
+    timelineOwnsLiveThought?: boolean;
 }): string | undefined {
     if (!opts.liveLabel) return undefined;
     if (opts.coding) {
-        return codingTimelineLiveThoughtIndex(opts.lastTimeline, opts.lastAssistantOwnsLive) >= 0
-            ? undefined
-            : opts.liveLabel;
+        // Timeline thoughts and the plan card already cover generic thinking.
+        // Require an explicit tool kind so a missing kind cannot resurrect the
+        // extra "正在思考" bar between the transcript and the plan.
+        if (!opts.liveKind || isGenericCodingLiveKind(opts.liveKind) || opts.timelineOwnsLiveThought) return undefined;
+        return opts.liveLabel;
     }
     if (!opts.lastAssistantOwnsLive && opts.lastMessageRole !== "assistant") return opts.liveLabel;
     return undefined;

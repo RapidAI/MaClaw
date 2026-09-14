@@ -2420,7 +2420,7 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 	seenNodes := make(map[string]struct{})
 
 	if wantsSearchType(resultTypes, "card") {
-		cardWhere := []string{"knowledge_cards_fts MATCH ?", "NOT EXISTS (SELECT 1 FROM knowledge_card_suppressions kcs WHERE kcs.card_id = c.id)"}
+		cardWhere := []string{"knowledge_cards_fts MATCH ?", "NOT EXISTS (SELECT 1 FROM knowledge_card_suppressions kcs WHERE kcs.card_id = c.id)", "COALESCE(c.invalid_at, '') = ''"}
 		cardArgs := []interface{}{query}
 		cardWhere, cardArgs = appendSearchFilters(cardWhere, cardArgs, "s", opts)
 		cardArgs = append(cardArgs, candidateLimit)
@@ -2487,7 +2487,7 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 	}
 
 	if wantsSearchType(resultTypes, "fact") {
-		factWhere := []string{"knowledge_facts_fts MATCH ?", "NOT EXISTS (SELECT 1 FROM knowledge_card_suppressions kcs WHERE kcs.card_id = c.id)"}
+		factWhere := []string{"knowledge_facts_fts MATCH ?", "NOT EXISTS (SELECT 1 FROM knowledge_card_suppressions kcs WHERE kcs.card_id = c.id)", "COALESCE(f.invalid_at, '') = ''"}
 		factArgs := []interface{}{query}
 		factWhere, factArgs = appendSearchFilters(factWhere, factArgs, "s", opts)
 		factArgs = append(factArgs, candidateLimit)

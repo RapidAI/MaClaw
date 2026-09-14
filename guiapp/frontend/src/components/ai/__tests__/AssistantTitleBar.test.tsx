@@ -155,6 +155,62 @@ describe('AssistantTitleBar', () => {
         }
     });
 
+    it('closes an already-open header search from the search tool button', () => {
+        const toggleProjectSearch = vi.fn();
+        const seen: unknown[] = [];
+        const listener = (event: Event) => seen.push((event as CustomEvent).detail);
+        window.addEventListener('maclaw:open-task-search', listener);
+        try {
+            render(
+                <AssistantTitleBar
+                    clearHistory={vi.fn()}
+                    inline
+                    lang="en"
+                    maximized={false}
+                    onClose={vi.fn()}
+                    projectSearchOpen
+                    refreshNews={vi.fn()}
+                    showMaximizeToggle={false}
+                    theme={overlayTheme}
+                    themeMode="light"
+                    title="Default task"
+                    trialReflectEnabled={false}
+                    toggleProjectSearch={toggleProjectSearch}
+                />,
+            );
+            fireEvent.change(screen.getByTestId('ai-titlebar-search-input'), { target: { value: 'quarterly report' } });
+            expect(seen).toEqual([{ query: 'quarterly report' }]);
+            fireEvent.mouseDown(screen.getByTestId('ai-titlebar-search-toggle'));
+            expect(toggleProjectSearch).toHaveBeenCalledTimes(1);
+            expect(seen).toEqual([{ query: 'quarterly report' }]);
+        } finally {
+            window.removeEventListener('maclaw:open-task-search', listener);
+        }
+    });
+
+    it('closes an open header search with Escape', () => {
+        const toggleProjectSearch = vi.fn();
+        render(
+            <AssistantTitleBar
+                clearHistory={vi.fn()}
+                inline
+                lang="en"
+                maximized={false}
+                onClose={vi.fn()}
+                projectSearchOpen
+                refreshNews={vi.fn()}
+                showMaximizeToggle={false}
+                theme={overlayTheme}
+                themeMode="light"
+                title="Default task"
+                trialReflectEnabled={false}
+                toggleProjectSearch={toggleProjectSearch}
+            />,
+        );
+        fireEvent.keyDown(screen.getByTestId('ai-titlebar-search-input'), { key: 'Escape' });
+        expect(toggleProjectSearch).toHaveBeenCalledTimes(1);
+    });
+
     it('hides the inline window through the provided window handler', () => {
         const onHideWindow = vi.fn();
         render(

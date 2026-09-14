@@ -70,9 +70,11 @@ export function orderedListIndentPadding(indentCols: number): string | undefined
  * - digits: multi-digit "10." must not become "1" + "0."
  * - ".": version decimals "v2.0. 3." must not peel into "0."
  * - currency symbols: "$10. 00" must not break after "$"
+ * - hyphen / open brackets: line ranges and parentheticals such as
+ *   `(lines 251-504) to confirm` must not become a fake `504)` list item
  */
 const MID_LINE_ORDERED_GLUED =
-    /([^\n\s\d.$€£¥￥])(\d+[.)]\s+)/g;
+    /([^[\n\s\d.$€£¥￥\-–—−‐‑({（「『【])(\d+[.)]\s+)/g;
 
 /**
  * Sentence / closer punctuation, then horizontal space, then an ordered marker.

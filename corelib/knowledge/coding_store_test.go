@@ -1111,6 +1111,54 @@ func TestCodingKnowledgeStore_UpdateExperienceCannotForgeLifecycleEvidence(t *te
 	}
 }
 
+func TestCodingKnowledgeStore_UpdateExperienceHydratesOmittedProjectIdentity(t *testing.T) {
+	store := openTestCodingStore(t)
+	ctx := context.Background()
+	saved, err := store.SaveExperience(ctx, CodingExperience{
+		Title:             "project timeout guidance",
+		Category:          CodingCategoryPattern,
+		Scope:             CodingScopeProject,
+		ProjectPath:       "D:/work/timeout-project",
+		Language:          "go",
+		Frameworks:        []string{"net/http"},
+		TriggerCondition:  "http timeout",
+		Content:           "Always set client timeouts.",
+		FailedAttempts:    []string{"http.Get without context"},
+		Contraindications: []string{"do not apply to in-process calls"},
+		SourceTaskTitle:   "fix client timeouts",
+		Status:            CodingStatusActive,
+	})
+	if err != nil {
+		t.Fatalf("SaveExperience: %v", err)
+	}
+	if err := store.UpdateExperience(ctx, CodingExperience{
+		ID:               saved.ID,
+		Title:            "project timeout guidance v2",
+		Category:         CodingCategoryPattern,
+		Scope:            CodingScopeProject,
+		TriggerCondition: "http timeout",
+		Content:          "Always set client timeouts and cancel contexts.",
+	}); err != nil {
+		t.Fatalf("thin UI update should hydrate omitted identity, err=%v", err)
+	}
+	got, err := store.GetExperience(ctx, saved.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ProjectPath != saved.ProjectPath {
+		t.Fatalf("project path = %q, want %q", got.ProjectPath, saved.ProjectPath)
+	}
+	if got.Title != "project timeout guidance v2" || !strings.Contains(got.Content, "cancel contexts") {
+		t.Fatalf("edited fields not saved: %+v", got)
+	}
+	if len(got.FailedAttempts) != 1 || got.FailedAttempts[0] != "http.Get without context" {
+		t.Fatalf("failed attempts lost: %+v", got.FailedAttempts)
+	}
+	if len(got.Contraindications) != 1 || got.Frameworks[0] != "net/http" || got.SourceTaskTitle != "fix client timeouts" || got.Language != "go" {
+		t.Fatalf("omitted identity fields lost: %+v", got)
+	}
+}
+
 func TestCodingKnowledgeStore_UpdateExperienceCannotRewriteManagedLifecycleLabels(t *testing.T) {
 	store := openTestCodingStore(t)
 	ctx := context.Background()

@@ -20,6 +20,10 @@ import {
     applyActivatePassive,
     applySelectFile,
     applyCloseFile,
+    applyDismissEmptyPreviewWithoutWorkspace,
+    shouldDismissEmptyPreviewWithoutWorkspace,
+    willDismissPreviewAfterClosingAll,
+    willDismissPreviewAfterClosingFile,
     applyCloseOtherFiles,
     applyCloseFilesToTheRight,
     applyCloseAllFiles,
@@ -341,6 +345,34 @@ describe('useCodePreviewState — Property Tests', () => {
         state = applyCloseFile(state, '/src/b.ts');
         expect(state.files.size).toBe(0);
         expect(state.activeFilePath).toBe('');
+        expect(state.active).toBe(true);
+
+        const kept = applyDismissEmptyPreviewWithoutWorkspace(state, '/proj');
+        expect(kept).toBe(state);
+        expect(kept.active).toBe(true);
+
+        const dismissed = applyDismissEmptyPreviewWithoutWorkspace(state, undefined);
+        expect(dismissed.active).toBe(false);
+        expect(dismissed.userClosed).toBe(true);
+        expect(applyDismissEmptyPreviewWithoutWorkspace(dismissed, undefined)).toBe(dismissed);
+
+        let open = applyFileUpdate(initialState(), {
+            filePath: '/src/a.ts', fileName: 'a.ts', content: 'a',
+            opType: 'create', language: 'typescript', updatedAt: 1, forceOpen: true,
+        });
+        expect(shouldDismissEmptyPreviewWithoutWorkspace(0, undefined)).toBe(true);
+        expect(shouldDismissEmptyPreviewWithoutWorkspace(0, '')).toBe(true);
+        expect(shouldDismissEmptyPreviewWithoutWorkspace(0, '/proj')).toBe(false);
+        expect(shouldDismissEmptyPreviewWithoutWorkspace(1, undefined)).toBe(false);
+        expect(willDismissPreviewAfterClosingFile(open, '/src/a.ts', undefined)).toBe(true);
+        expect(willDismissPreviewAfterClosingFile(open, '/src/a.ts', '/proj')).toBe(false);
+        // Display path (cloud cache) keeps the tree even when the event-routing path is empty.
+        expect(willDismissPreviewAfterClosingFile(open, '/src/a.ts', 'C:/Users/me/.maclaw/workspace')).toBe(false);
+        expect(willDismissPreviewAfterClosingFile(open, '/src/missing.ts', undefined)).toBe(false);
+        expect(willDismissPreviewAfterClosingAll(open, undefined)).toBe(true);
+        expect(willDismissPreviewAfterClosingAll(open, '/proj')).toBe(false);
+        open = applySetFilePinned(open, '/src/a.ts', true);
+        expect(willDismissPreviewAfterClosingAll(open, undefined)).toBe(false);
     });
 
     it('applyCloseFile is a no-op for unknown paths', () => {

@@ -935,6 +935,7 @@ func (a *App) OpenRemoteVirtualRepository(id string) (string, error) {
 			if err != nil {
 				return "", err
 			}
+			a.rememberVirtualRepositoryDefinition(repo)
 			data, err := json.Marshal(repo)
 			return string(data), err
 		}

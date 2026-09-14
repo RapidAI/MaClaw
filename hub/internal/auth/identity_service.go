@@ -32,6 +32,7 @@ var (
 	ErrTenantNotFound             = errors.New("tenant not found")
 	ErrTenantInactive             = errors.New("tenant is inactive")
 	ErrUserAlreadyRegistered      = errors.New("user is already registered")
+	ErrReservedSystemAccount      = errors.New("sys_user is a reserved system account")
 	ErrRoutedToAnotherHub         = errors.New("email is routed to another hub")
 	identitySNCounter             atomic.Uint64
 	tenantEmailDomainPattern      = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
@@ -286,10 +287,19 @@ type MachineMetadata struct {
 	HeartbeatIntervalSec int
 }
 
+const ViewerKindLLMEndpointAPIKey = "llm_endpoint_api_key"
+
 type ViewerPrincipal struct {
-	TenantID string
-	UserID   string
-	Email    string
+	TenantID       string
+	UserID         string
+	Email          string
+	Kind           string
+	ServiceGroupID string
+	APIKeyID       string
+}
+
+func (p *ViewerPrincipal) IsLLMEndpointAPIKey() bool {
+	return p != nil && p.Kind == ViewerKindLLMEndpointAPIKey
 }
 
 type IdentityService struct {
@@ -444,6 +454,9 @@ func (s *IdentityService) StartEnrollment(ctx context.Context, email, machineNam
 	}
 	if email == "" {
 		return nil, ErrInvalidEmail
+	}
+	if err := rejectReservedSystemAccount(email); err != nil {
+		return nil, err
 	}
 	if err := s.ensureTenantActive(ctx, tenantID); err != nil {
 		return nil, err
@@ -605,6 +618,9 @@ func (s *IdentityService) RequestEmailLogin(ctx context.Context, email string) (
 	tenantID := tenantIDFromContext(ctx)
 	if email == "" {
 		return nil, ErrInvalidEmail
+	}
+	if err := rejectReservedSystemAccount(email); err != nil {
+		return nil, err
 	}
 	if err := s.ensureTenantActive(ctx, tenantID); err != nil {
 		return nil, err
@@ -2132,6 +2148,9 @@ func (s *IdentityService) grantInvitationCodeLLMServiceForUser(ctx context.Conte
 func (s *IdentityService) RegisterReferralUser(ctx context.Context, email string, phoneNumber string, phoneVerified bool) (*store.User, error) {
 	tenantID := tenantIDFromContext(ctx)
 	email = normalizeEmail(email)
+	if err := rejectReservedSystemAccount(email); err != nil {
+		return nil, err
+	}
 	phoneNumber = normalizePhoneIdentityValue(phoneNumber)
 	if email == "" && phoneNumber == "" {
 		return nil, ErrInvalidEmail
@@ -2402,6 +2421,9 @@ func (s *IdentityService) AdminConfirmLoginByEmail(ctx context.Context, email st
 	if email == "" {
 		return nil, ErrInvalidEmail
 	}
+	if err := rejectReservedSystemAccount(email); err != nil {
+		return nil, err
+	}
 
 	// Ensure the user exists (create if needed).
 	tenantID := tenantIDFromContext(ctx)
@@ -2575,6 +2597,13 @@ func generateSN() string {
 func hashToken(raw string) string {
 	sum := sha256.Sum256([]byte(raw))
 	return hex.EncodeToString(sum[:])
+}
+
+func rejectReservedSystemAccount(email string) error {
+	if llmservice.IsSystemLLMUser("", email) {
+		return ErrReservedSystemAccount
+	}
+	return nil
 }
 
 func defaultIfEmpty(v, fallback string) string {

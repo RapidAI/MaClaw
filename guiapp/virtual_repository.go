@@ -1497,8 +1497,7 @@ func (a *App) BindVirtualRepositoryRoot(inputJSON string) (string, error) {
 			if dirErr != nil {
 				return "", fmt.Errorf("inspect selected root directory: %w", dirErr)
 			}
-			isEmpty := len(entries) == 0 || (len(entries) == 1 && entries[0].Name() == virtualRepositoryDirName)
-			if !isEmpty {
+			if !virtualRepositoryRootAllowsInitialization(entries) {
 				return "", errors.New("the selected directory is not empty; choose an empty directory or one containing this virtual repository")
 			}
 			definition := cloneVirtualRepository(item.Definition)
@@ -1692,16 +1691,44 @@ func (a *App) DeleteVirtualRepository(id string) error {
 	return nil
 }
 
-func (a *App) SelectVirtualRepositoryRoot(initialPath string) string {
-	selection, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
-		Title:                "Select Virtual Repository Root",
-		DefaultDirectory:     strings.TrimSpace(initialPath),
-		CanCreateDirectories: true,
-	})
-	if err != nil {
+// virtualRepositoryDialogDefaultDirectory returns a folder the native picker can
+// open. Wails errors instead of showing a dialog when DefaultDirectory is missing;
+// POSIX paths like /home/vrepo are remote roots and must not be used on Windows.
+func virtualRepositoryDialogDefaultDirectory(path string) string {
+	path = strings.Trim(strings.TrimSpace(path), `"'`)
+	if path == "" {
 		return ""
 	}
-	return selection
+	if goruntime.GOOS == "windows" && strings.HasPrefix(path, "/") {
+		return ""
+	}
+	if info, err := os.Stat(path); err == nil && info.IsDir() {
+		return path
+	}
+	parent := filepath.Dir(filepath.Clean(path))
+	if parent == "" || parent == "." || parent == path {
+		return ""
+	}
+	if info, err := os.Stat(parent); err == nil && info.IsDir() {
+		return parent
+	}
+	return ""
+}
+
+func virtualRepositoryRootDialogOptions(initialPath string) runtime.OpenDialogOptions {
+	return runtime.OpenDialogOptions{
+		Title:                "Select Virtual Repository Root",
+		DefaultDirectory:     virtualRepositoryDialogDefaultDirectory(initialPath),
+		CanCreateDirectories: true,
+	}
+}
+
+func (a *App) SelectVirtualRepositoryRoot(initialPath string) (string, error) {
+	selection, err := runtime.OpenDirectoryDialog(a.ctx, virtualRepositoryRootDialogOptions(initialPath))
+	if err != nil {
+		return "", fmt.Errorf("open directory picker: %w", err)
+	}
+	return selection, nil
 }
 
 func (a *App) CreateVirtualRepositoryDirectory(root, relativePath string) error {
@@ -2514,7 +2541,9 @@ func (a *App) SelectVCSClientExecutable(kind, defaultPath string) string {
 	}
 	options := runtime.OpenDialogOptions{Title: "Select " + strings.ToUpper(kind) + " executable", Filters: []runtime.FileFilter{{DisplayName: name, Pattern: name}}}
 	if defaultPath = strings.TrimSpace(defaultPath); defaultPath != "" {
-		options.DefaultDirectory = filepath.Dir(defaultPath)
+		if dir := virtualRepositoryDialogDefaultDirectory(filepath.Dir(defaultPath)); dir != "" {
+			options.DefaultDirectory = dir
+		}
 	}
 	selection, err := runtime.OpenFileDialog(a.ctx, options)
 	if err != nil {

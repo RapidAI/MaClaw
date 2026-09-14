@@ -413,6 +413,7 @@ button.vrepo-tree__chevron:focus-visible { outline: 2px solid var(--vrepo-primar
 .vrepo-machine-mapping__kind em { font-size: .68rem; font-style: normal; font-weight: 650; white-space: nowrap; }
 .vrepo-machine-mapping__label { display: inline-flex; min-width: 0; align-items: center; gap: 7px; overflow: hidden; color: var(--vrepo-ink); font-size: .78rem; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .vrepo-machine-mapping__default { flex: 0 0 auto; padding: 2px 6px; border: 1px solid color-mix(in srgb, var(--vrepo-primary) 42%, var(--vrepo-border)); border-radius: var(--radius-xs, 4px); background: var(--vrepo-primary-soft); color: var(--vrepo-primary); font-size: .6rem; font-weight: 700; line-height: 1.2; }
+.vrepo-machine-mapping__agent { flex: 0 0 auto; padding: 2px 6px; border: 1px solid var(--vrepo-border-subtle); border-radius: var(--radius-xs, 4px); background: var(--vrepo-surface); color: var(--vrepo-secondary); font-size: .6rem; font-weight: 700; line-height: 1.2; }
 .vrepo-machine-mapping__path { overflow: hidden; color: var(--vrepo-secondary); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .68rem; text-overflow: ellipsis; white-space: nowrap; }
 .vrepo-machine-mapping__actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 .vrepo-machine-mapping__actions button { min-height: 28px; padding: 0 8px; font-size: .66rem; }

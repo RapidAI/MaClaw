@@ -2,12 +2,6 @@ import React from "react";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { useNestedPinnedScroll } from "./useNestedPinnedScroll";
 
-/** Highlight stop for the live-title sheen. Keep App.css fallback in sync. */
-export const ASSISTANT_LIVE_SHEEN_SPOT_LIGHT = "#b8c3d0";
-export const ASSISTANT_LIVE_SHEEN_SPOT_DARK = "#fff";
-
-type LiveLabelStyle = React.CSSProperties & { "--assistant-sheen-spot"?: string };
-
 /**
  * Collapsible activity panel used by the assistant transcript and the coding
  * timeline. Extracted from aiAssistantMarkdown.tsx so the markdown renderer
@@ -63,6 +57,9 @@ export function AssistantReasoningPanel({
         fontWeight: 650,
         opacity: live ? 1 : 0.94,
         listStyleType: "none",
+        minWidth: 0,
+        width: "100%",
+        boxSizing: "border-box",
     };
     const hasBody = hasRenderableReasoningBody(children);
     const liveDot = (
@@ -87,10 +84,7 @@ export function AssistantReasoningPanel({
             style={{
                 flex: "0 0 auto",
                 whiteSpace: "nowrap",
-                ...(live
-                    ? { "--assistant-sheen-spot": t.isDark ? ASSISTANT_LIVE_SHEEN_SPOT_DARK : ASSISTANT_LIVE_SHEEN_SPOT_LIGHT }
-                    : {}),
-            } as LiveLabelStyle}
+            }}
         >
             {label}
         </span>
@@ -98,6 +92,21 @@ export function AssistantReasoningPanel({
     const stepMark = typeof step === "number" ? (
         <span style={{ fontSize: 10, fontWeight: 600, opacity: .72, flex: "0 0 auto", whiteSpace: "nowrap" }}>#{step}</span>
     ) : null;
+    const summaryChildren = (showToggle: boolean) => (
+        <>
+            {liveDot}
+            {liveLabel}
+            {stepMark}
+            {preview && !isOpen && !live && <span style={{ flex: "1 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 450, opacity: .72 }}>{preview}</span>}
+            {showToggle ? (
+                <span aria-live="polite" data-testid="assistant-reasoning-toggle-state" style={{ marginLeft: "auto", fontSize: 10, fontWeight: 500, opacity: .65 }}>
+                    {isOpen
+                        ? (lang === "en" ? "Collapse" : lang === "zh-Hant" ? "收起" : "收起")
+                        : (lang === "en" ? "Expand" : lang === "zh-Hant" ? "展開" : "展开")}
+                </span>
+            ) : null}
+        </>
+    );
     if (!hasBody) {
         return (
             <div
@@ -107,10 +116,8 @@ export function AssistantReasoningPanel({
                 role="status"
                 style={panelChrome}
             >
-                <div className={`assistant-reasoning-summary assistant-reasoning-summary--plain${live ? " assistant-reasoning-summary--live" : ""}`} style={{ ...summaryStyle, cursor: "default" }}>
-                    {liveDot}
-                    {liveLabel}
-                    {stepMark}
+                <div className={`assistant-reasoning-summary assistant-reasoning-summary--plain`} style={{ ...summaryStyle, cursor: "default" }}>
+                    {summaryChildren(false)}
                 </div>
             </div>
         );
@@ -124,16 +131,8 @@ export function AssistantReasoningPanel({
             aria-label={label}
             style={panelChrome}
         >
-            <summary className={`assistant-reasoning-summary${live ? " assistant-reasoning-summary--live" : ""}`} style={summaryStyle}>
-                {liveDot}
-                {liveLabel}
-                {stepMark}
-                {preview && !isOpen && !live && <span style={{ flex: "1 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 450, opacity: .72 }}>{preview}</span>}
-                <span aria-live="polite" data-testid="assistant-reasoning-toggle-state" style={{ marginLeft: "auto", fontSize: 10, fontWeight: 500, opacity: .65 }}>
-                    {isOpen
-                        ? (lang === "en" ? "Collapse" : lang === "zh-Hant" ? "收起" : "收起")
-                        : (lang === "en" ? "Expand" : lang === "zh-Hant" ? "展開" : "展开")}
-                </span>
+            <summary className="assistant-reasoning-summary" style={summaryStyle}>
+                {summaryChildren(true)}
             </summary>
             <div
                 ref={bodyRef}

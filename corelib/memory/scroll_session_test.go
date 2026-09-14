@@ -222,3 +222,20 @@ func TestScrollSessionManager_QueryNormalization(t *testing.T) {
 		t.Error("expected same session for whitespace-trimmed equivalent queries")
 	}
 }
+
+func TestScrollSessionManager_DestroyAllForOwnerEmptyDoesNotTouchNamedOwners(t *testing.T) {
+	store := newScrollTestStore(t, 5)
+	mgr := NewScrollSessionManager()
+	shared := mgr.GetOrCreate("loop-shared", store, "test", "", "", "")
+	owned := mgr.GetOrCreate("loop-owned", store, "test", "", "", "desktop-user")
+	if shared == nil || owned == nil {
+		t.Fatal("expected sessions")
+	}
+	mgr.DestroyAllForOwner("")
+	if got := mgr.GetOrCreate("loop-shared", store, "test", "", "", ""); got == shared {
+		t.Fatal("empty-owner scroll cache must be dropped")
+	}
+	if got := mgr.GetOrCreate("loop-owned", store, "test", "", "", "desktop-user"); got != owned {
+		t.Fatal("named-owner scroll cache must survive empty-owner invalidation")
+	}
+}

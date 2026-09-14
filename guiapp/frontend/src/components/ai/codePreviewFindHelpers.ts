@@ -128,10 +128,12 @@ export const CODE_PREVIEW_VIEW_PREFS_KEY = 'maclaw.codePreview.viewPrefs';
 export interface CodePreviewViewPrefs {
     wordWrap: boolean;
     fontSize: number;
+    /** Right-edge document minimap (thumbnail + page locator). Default on. */
+    minimap: boolean;
 }
 
 export function defaultCodePreviewViewPrefs(): CodePreviewViewPrefs {
-    return { wordWrap: false, fontSize: CODE_PREVIEW_FONT_DEFAULT };
+    return { wordWrap: false, fontSize: CODE_PREVIEW_FONT_DEFAULT, minimap: true };
 }
 
 /** Load wrap/font prefs from localStorage (safe for SSR / restricted storage). */
@@ -148,6 +150,8 @@ export function loadCodePreviewViewPrefs(): CodePreviewViewPrefs {
             fontSize: clampCodePreviewFontSize(
                 typeof parsed.fontSize === 'number' ? parsed.fontSize : CODE_PREVIEW_FONT_DEFAULT,
             ),
+            // Missing key (older prefs) keeps the minimap on.
+            minimap: parsed.minimap !== false,
         };
     } catch {
         return fallback;
@@ -163,6 +167,7 @@ export function saveCodePreviewViewPrefs(prefs: CodePreviewViewPrefs): void {
             JSON.stringify({
                 wordWrap: !!prefs.wordWrap,
                 fontSize: clampCodePreviewFontSize(prefs.fontSize),
+                minimap: prefs.minimap !== false,
             }),
         );
     } catch {

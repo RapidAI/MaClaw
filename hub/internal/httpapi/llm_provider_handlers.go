@@ -1257,13 +1257,13 @@ func RedeemLLMServiceCardHandler(identity *auth.IdentityService, system store.Sy
 
 func LLMV1ModelsHandler(identity *auth.IdentityService, system store.SystemSettingsRepository, securitySvc *security.SecurityService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		principal, err := authenticateViewerRequest(r, identity)
+		principal, err := authenticateLLMEndpointRequest(r, identity, system)
 		if err != nil {
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
 			return
 		}
 		system := scopedSystemSettingsForTenant(principal.TenantID, system)
-		ctx := security.WithTenant(r.Context(), principal.TenantID)
+		ctx := withLLMEndpointPrincipalContext(security.WithTenant(r.Context(), principal.TenantID), principal)
 		status, models, _, serviceReg, err := resolveAuthorizedModels(ctx, r, system, securitySvc, principal.UserID, principal.Email)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
@@ -1279,13 +1279,13 @@ func LLMV1ModelsHandler(identity *auth.IdentityService, system store.SystemSetti
 
 func LLMV1ModelHandler(identity *auth.IdentityService, system store.SystemSettingsRepository, securitySvc *security.SecurityService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		principal, err := authenticateViewerRequest(r, identity)
+		principal, err := authenticateLLMEndpointRequest(r, identity, system)
 		if err != nil {
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
 			return
 		}
 		system := scopedSystemSettingsForTenant(principal.TenantID, system)
-		ctx := security.WithTenant(r.Context(), principal.TenantID)
+		ctx := withLLMEndpointPrincipalContext(security.WithTenant(r.Context(), principal.TenantID), principal)
 		_, models, _, _, err := resolveAuthorizedModels(ctx, r, system, securitySvc, principal.UserID, principal.Email)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
@@ -1322,7 +1322,7 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 		startedAt := time.Now()
 		requestID := newLLMEndpointRequestID()
 		w.Header().Set("X-MaClaw-Request-ID", requestID)
-		principal, err := authenticateViewerRequest(r, identity)
+		principal, err := authenticateLLMEndpointRequest(r, identity, system)
 		if err != nil {
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
 			return
@@ -1332,7 +1332,7 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 			return
 		}
 		system := scopedSystemSettingsForTenant(principal.TenantID, system)
-		ctx := withClassHeadUser(withLLMBillingState(withLLMPromptCacheTenant(store.WithTenant(security.WithTenant(r.Context(), principal.TenantID), principal.TenantID), principal.TenantID), startedAt, requestID), firstNonEmpty(principal.UserID, principal.Email))
+		ctx := withLLMEndpointPrincipalContext(withClassHeadUser(withLLMBillingState(withLLMPromptCacheTenant(store.WithTenant(security.WithTenant(r.Context(), principal.TenantID), principal.TenantID), principal.TenantID), startedAt, requestID), firstNonEmpty(principal.UserID, principal.Email)), principal)
 		r = r.WithContext(ctx)
 		providerReg, err := loadCachedLLMProviderRegistry(ctx, system)
 		if err != nil {
@@ -1341,8 +1341,8 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 		}
 		// Rate-limit wait must happen BEFORE taking a downstream concurrency slot,
 		// otherwise queued users pin gateway capacity for up to max_wait (30s).
-		if result := globalLLMEndpointUserLimiter.acquireForRegistry(r.Context(), principal.TenantID+"\x00"+principal.Email, providerReg); !result.Allowed {
-			writeLLMEndpointUserRateLimited(w, system, principal.Email, llmEndpointClientIP(r), requestID, startedAt, result, nil)
+		if result := globalLLMEndpointUserLimiter.acquireForRegistry(r.Context(), llmEndpointRateLimitBucket(principal), providerReg); !result.Allowed {
+			writeLLMEndpointUserRateLimited(w, system, principal.Email, llmEndpointClientIP(r), requestID, startedAt, result, llmEndpointRateLimitLogMeta(principal, nil))
 			return
 		}
 		downstreamSem, acquired := acquireLLMEndpointDownstreamSlot(r.Context(), principal.TenantID, providerReg)
@@ -1388,6 +1388,7 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 				metadata["upstream_api_url"] = strings.TrimSpace(officialURL)
 				metadata["upstream_host"] = llmEndpointUpstreamHost(officialURL)
 			}
+			attachLLMEndpointAPIKeyLogMeta(metadata, principal)
 			enqueueLLMEndpointAccessLog(system, llmEndpointAccessLogEntry{
 				Email:             principal.Email,
 				ClientIP:          clientIP,
@@ -1664,7 +1665,7 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 		startedAt := time.Now()
 		requestID := newLLMEndpointRequestID()
 		w.Header().Set("X-MaClaw-Request-ID", requestID)
-		principal, err := authenticateViewerRequest(r, identity)
+		principal, err := authenticateLLMEndpointRequest(r, identity, system)
 		if err != nil {
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
 			return
@@ -1674,7 +1675,7 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 			return
 		}
 		system := scopedSystemSettingsForTenant(principal.TenantID, system)
-		ctx := withClassHeadUser(withLLMBillingState(withLLMPromptCacheTenant(store.WithTenant(security.WithTenant(r.Context(), principal.TenantID), principal.TenantID), principal.TenantID), startedAt, requestID), firstNonEmpty(principal.UserID, principal.Email))
+		ctx := withLLMEndpointPrincipalContext(withClassHeadUser(withLLMBillingState(withLLMPromptCacheTenant(store.WithTenant(security.WithTenant(r.Context(), principal.TenantID), principal.TenantID), principal.TenantID), startedAt, requestID), firstNonEmpty(principal.UserID, principal.Email)), principal)
 		r = r.WithContext(ctx)
 		providerReg, err := loadCachedLLMProviderRegistry(ctx, system)
 		if err != nil {
@@ -1682,8 +1683,8 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 			return
 		}
 		// Rate-limit wait before downstream slot — see chat/completions handler.
-		if result := globalLLMEndpointUserLimiter.acquireForRegistry(r.Context(), principal.TenantID+"\x00"+principal.Email, providerReg); !result.Allowed {
-			writeLLMEndpointUserRateLimited(w, system, principal.Email, llmEndpointClientIP(r), requestID, startedAt, result, map[string]any{"wire_api": "responses"})
+		if result := globalLLMEndpointUserLimiter.acquireForRegistry(r.Context(), llmEndpointRateLimitBucket(principal), providerReg); !result.Allowed {
+			writeLLMEndpointUserRateLimited(w, system, principal.Email, llmEndpointClientIP(r), requestID, startedAt, result, llmEndpointRateLimitLogMeta(principal, map[string]any{"wire_api": "responses"}))
 			return
 		}
 		downstreamSem, acquired := acquireLLMEndpointDownstreamSlot(r.Context(), principal.TenantID, providerReg)
@@ -1729,6 +1730,7 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 				metadata["upstream_api_url"] = strings.TrimSpace(officialURL)
 				metadata["upstream_host"] = llmEndpointUpstreamHost(officialURL)
 			}
+			attachLLMEndpointAPIKeyLogMeta(metadata, principal)
 			enqueueLLMEndpointAccessLog(system, llmEndpointAccessLogEntry{
 				Email:             principal.Email,
 				ClientIP:          clientIP,
@@ -4525,7 +4527,7 @@ func registryResponse(r *http.Request, reg *im.LLMProviderRegistry, serviceReg *
 		ExposeModelsURL:          base + "/models",
 		AvailableModels:          availableModels,
 		AuthMode:                 "viewer_bearer_token",
-		AuthHint:                 "Use Authorization: Bearer <viewer access token>. Reuse the access_token returned by /api/auth/email-confirm or /api/auth/email-poll after email sign-in.",
+		AuthHint:                 "Use Authorization: Bearer <token>. Service-group API keys authenticate as sys_user and are limited to the selected service group. Viewer tokens from hub email sign-in still work.",
 		Hints:                    mergedHints,
 		Warnings:                 append([]string(nil), warnings...),
 		ServiceAvailable:         serviceAvailable,
@@ -4775,7 +4777,15 @@ func resolveAuthorizedModelsWithProviderRegistry(ctx context.Context, r *http.Re
 			return nil, nil, nil, err
 		}
 	}
-	status, models, err := llmservice.ResolveStatusFromRegistryForUser(ctx, reg, securitySvc, userID, email, externalLLMBaseURL(r))
+	var (
+		status *llmservice.ServiceStatus
+		models []llmservice.AuthorizedModel
+	)
+	if apiKeyAuth, ok := llmEndpointAPIKeyAuthFromContext(ctx); ok {
+		status, models, err = llmservice.ResolveStatusForForcedServiceGroup(reg, apiKeyAuth.ServiceGroupID, externalLLMBaseURL(r))
+	} else {
+		status, models, err = llmservice.ResolveStatusFromRegistryForUser(ctx, reg, securitySvc, userID, email, externalLLMBaseURL(r))
+	}
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -4809,6 +4819,9 @@ type llmBillingDenial struct {
 }
 
 func filterAuthorizedModelsByBillingEligibility(ctx context.Context, reg *llmservice.Registry, providerReg *im.LLMProviderRegistry, userID string, email string, body map[string]any, models []llmservice.AuthorizedModel) ([]llmservice.AuthorizedModel, map[string]llmBillingDenial, llmBillingDenial) {
+	if _, ok := llmEndpointAPIKeyAuthFromContext(ctx); ok {
+		return append([]llmservice.AuthorizedModel(nil), models...), map[string]llmBillingDenial{}, llmBillingDenial{}
+	}
 	filtered := make([]llmservice.AuthorizedModel, 0, len(models))
 	denied := map[string]llmBillingDenial{}
 	firstDenial := llmBillingDenial{}

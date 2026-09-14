@@ -19,20 +19,32 @@ const baseCredits: SidebarHubCredits = {
     retryAfterAt: '',
 };
 
-function renderStatus(credits: SidebarHubCredits, options: { showHubCreditAction?: boolean; isHubService?: boolean; onOpenBackgroundTasks?: () => void } = {}) {
+function renderStatus(credits: SidebarHubCredits, options: {
+    showHubCreditAction?: boolean;
+    isHubService?: boolean;
+    onOpenBackgroundTasks?: () => void;
+    qqBotStatus?: string;
+    telegramStatus?: string;
+    weixinStatus?: string;
+    lansengerStatus?: string;
+    showLansenger?: boolean;
+    openIMSettingsPage?: () => void;
+} = {}) {
     const openServiceRedeemPage = vi.fn();
     const openHubCreditsPage = vi.fn();
     const openLLMSettingsPage = vi.fn();
     const openHubCardStorePage = vi.fn();
+    const openIMSettingsPage = options.openIMSettingsPage ?? vi.fn();
     const rendered = render(
         <SidebarSystemStatus
             lang="zh-Hans"
             maclawLLMOnline={false}
+            showLansenger={options.showLansenger}
             remoteActivationStatus={{ activated: false }}
-            qqBotStatus=""
-            telegramStatus=""
-            weixinStatus=""
-            lansengerStatus=""
+            qqBotStatus={options.qqBotStatus ?? ''}
+            telegramStatus={options.telegramStatus ?? ''}
+            weixinStatus={options.weixinStatus ?? ''}
+            lansengerStatus={options.lansengerStatus ?? ''}
             backgroundTaskCount={3}
             onOpenBackgroundTasks={options.onOpenBackgroundTasks}
             sidebarCurrentProviderTokenUsage={{ provider: options.isHubService === false ? '\u79c1\u6709\u670d\u52a1\u5546' : 'MaClaw\u5b98\u65b9', isHubService: options.isHubService ?? true, input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0 }}
@@ -48,10 +60,11 @@ function renderStatus(credits: SidebarHubCredits, options: { showHubCreditAction
             openHubCreditsPage={openHubCreditsPage}
             openServiceRedeemPage={openServiceRedeemPage}
             openLLMSettingsPage={openLLMSettingsPage}
+            openIMSettingsPage={openIMSettingsPage}
             openHubCardStorePage={openHubCardStorePage}
         />,
     );
-    return { ...rendered, openServiceRedeemPage, openHubCreditsPage, openLLMSettingsPage, openHubCardStorePage };
+    return { ...rendered, openServiceRedeemPage, openHubCreditsPage, openLLMSettingsPage, openHubCardStorePage, openIMSettingsPage };
 }
 
 describe('SidebarSystemStatus Hub credits', () => {
@@ -875,5 +888,114 @@ describe('SidebarSystemStatus Hub credits', () => {
         expect(card.getAttribute('data-tool-count')).toBe('0');
         expect(card.getAttribute('data-change-count')).toBe('0');
         expect(card.getAttribute('data-file-count')).toBe('0');
+    });
+});
+
+describe('SidebarSystemStatus IM status', () => {
+    it('shows IM status on the system status heading when no messaging channel is connected', () => {
+        renderStatus(baseCredits);
+
+        const heading = screen.getByTestId('workbench-status-card').querySelector('.mc-workbench-status-card__heading');
+        const signals = heading?.querySelector('.mc-workbench-status-card__heading-signals');
+        const im = screen.getByTestId('workbench-im-status');
+        expect(heading?.contains(im)).toBe(true);
+        expect(signals?.querySelector('.mc-workbench-status-card__system')?.textContent).toContain('离线');
+        expect(signals?.contains(im)).toBe(true);
+        expect(heading?.textContent).toContain('状态');
+        expect(im.textContent).toContain('IM 离线');
+        expect(im.textContent).not.toContain('IM状态');
+        expect(im.getAttribute('data-im-kind')).toBe('offline');
+        expect(im.getAttribute('title')).toContain('微信');
+        expect(im.getAttribute('title')).not.toContain('蓝信');
+        expect(screen.queryByText('IM状态')).toBeNull();
+    });
+
+    it('lists connected IM channels and opens IM settings on click', () => {
+        const openIMSettingsPage = vi.fn();
+        const { openLLMSettingsPage } = renderStatus(baseCredits, {
+            weixinStatus: 'connected',
+            qqBotStatus: 'connected',
+            telegramStatus: 'error',
+            openIMSettingsPage,
+        });
+
+        const heading = screen.getByTestId('workbench-status-card').querySelector('.mc-workbench-status-card__heading');
+        const row = screen.getByTestId('workbench-im-status');
+        expect(heading?.contains(row)).toBe(true);
+        expect(row.getAttribute('data-im-kind')).toBe('online');
+        expect(row.textContent).toContain('微信');
+        expect(row.textContent).toContain('QQ');
+        expect(row.textContent).not.toContain('Telegram');
+        expect(row.getAttribute('title')).toContain('已连接');
+        expect(row.getAttribute('title')).toContain('错误');
+        expect(row.getAttribute('title')).not.toContain('\n');
+
+        fireEvent.click(row);
+        expect(openIMSettingsPage).toHaveBeenCalledTimes(1);
+        expect(openLLMSettingsPage).not.toHaveBeenCalled();
+    });
+
+    it('shows connecting, paused, expired, and error states when no channel is online', () => {
+        const { unmount: unmountConnecting } = renderStatus(baseCredits, { weixinStatus: 'connecting' });
+        expect(screen.getByTestId('workbench-im-status').textContent).toContain('连接中');
+        expect(screen.getByTestId('workbench-im-status').getAttribute('data-im-kind')).toBe('pending');
+        unmountConnecting();
+
+        const { unmount: unmountPaused } = renderStatus(baseCredits, { qqBotStatus: 'paused' });
+        expect(screen.getByTestId('workbench-im-status').textContent).toContain('已暂停');
+        expect(screen.getByTestId('workbench-im-status').getAttribute('data-im-kind')).toBe('pending');
+        unmountPaused();
+
+        const { unmount: unmountPausedWithConnecting } = renderStatus(baseCredits, { qqBotStatus: 'paused', weixinStatus: 'reconnecting' });
+        expect(screen.getByTestId('workbench-im-status').textContent).toContain('连接中');
+        expect(screen.getByTestId('workbench-im-status').getAttribute('data-im-kind')).toBe('pending');
+        unmountPausedWithConnecting();
+
+        const { unmount: unmountExpired } = renderStatus(baseCredits, { weixinStatus: 'session_expired' });
+        const expired = screen.getByTestId('workbench-im-status');
+        expect(expired.getAttribute('data-im-kind')).toBe('error');
+        expect(expired.getAttribute('title')).toContain('会话已过期');
+        unmountExpired();
+
+        renderStatus(baseCredits, { telegramStatus: 'error' });
+        expect(screen.getByTestId('workbench-im-status').textContent).toContain('错误');
+        expect(screen.getByTestId('workbench-im-status').getAttribute('data-im-kind')).toBe('error');
+    });
+
+    it('includes Lansenger only when that channel is visible', () => {
+        renderStatus(baseCredits, { showLansenger: true, lansengerStatus: 'connected' });
+
+        const row = screen.getByTestId('workbench-im-status');
+        expect(row.textContent).toContain('蓝信');
+        expect(row.getAttribute('title')).toContain('蓝信');
+    });
+
+    it('does not expose a dead IM-settings control when no navigation handler is available', () => {
+        render(
+            <SidebarSystemStatus
+                lang="zh-Hans"
+                maclawLLMOnline={false}
+                remoteActivationStatus={{}}
+                qqBotStatus=""
+                telegramStatus=""
+                weixinStatus=""
+                lansengerStatus=""
+                sidebarCurrentProviderTokenUsage={{ provider: 'MaClaw官方', isHubService: true, input: 0, output: 0, total: 0 }}
+                sidebarHubCredits={null}
+                formatSidebarTokens={String}
+                formatSidebarHubExpiry={() => ''}
+                formatSidebarHubTotalCredits={() => ''}
+                formatSidebarHubUsedCredits={() => ''}
+                formatSidebarCredit={String}
+                unlimitedHubCreditText="无限"
+                noHubAuthorizationText="无"
+                showHubCreditAction={false}
+                openHubCreditsPage={vi.fn()}
+            />,
+        );
+
+        const row = screen.getByTestId('workbench-im-status');
+        expect(row.tagName).toBe('SPAN');
+        expect(row.hasAttribute('disabled')).toBe(false);
     });
 });

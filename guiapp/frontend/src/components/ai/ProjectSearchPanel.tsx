@@ -6,6 +6,7 @@ import { openFileLibrary } from "../../utils/fileLibraryNavigation";
 import { openKnowledgeSearch } from "../../utils/knowledgeSearchNavigation";
 import { openExpertConversation } from "../../utils/expertConversationNavigation";
 import { ProjectSearchArchivedPanel } from "./ProjectSearchArchivedPanel";
+import { isSearchDismissExemptTarget, searchSurfaceRootStyle } from "./projectSearchSurface";
 import { ProjectSearchForkForm } from "./ProjectSearchForkForm";
 import { ProjectSearchIcon } from "./ProjectSearchIcon";
 import { LibrarySearchRow, SearchSectionLabel } from "./ProjectSearchLibraryRows";
@@ -81,7 +82,12 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, active = tr
     const showSectionLabels = [visibleResults.length, fileResults.length, knowledgeResults.length, expertResults.length].filter(count => count > 0).length > 1;
     const hasAnyResults = visibleResults.length > 0 || fileResults.length > 0 || knowledgeResults.length > 0 || expertResults.length > 0;
 
-    useEffect(() => { if (search.open) inputRef.current?.focus(); }, [search.open]);
+    useEffect(() => {
+        if (!search.open) return;
+        const active = document.activeElement;
+        if (active instanceof HTMLElement && active.closest(".mc-header-search-wrap, [data-testid='ai-titlebar-search']")) return;
+        inputRef.current?.focus();
+    }, [search.open]);
     useEffect(() => {
         if (active) return;
         search.close();
@@ -96,12 +102,13 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, active = tr
     useEffect(() => {
         if (!search.open && !archivedExperience) return;
         const handler = (event: MouseEvent) => {
-            if (panelRef.current && !panelRef.current.contains(event.target as Node)) {
-                search.close();
-                setCtxMenu(null);
-                setArchivedExperience(null);
-                setSceneDetail(null);
-            }
+            const target = event.target;
+            if (panelRef.current && panelRef.current.contains(target as Node)) return;
+            if (isSearchDismissExemptTarget(target)) return;
+            search.close();
+            setCtxMenu(null);
+            setArchivedExperience(null);
+            setSceneDetail(null);
         };
         document.addEventListener("mousedown", handler);
         return () => document.removeEventListener("mousedown", handler);
@@ -124,7 +131,6 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, active = tr
     }, []);
     const openArchived = useCallback(async (item: ProjectSearchItem) => {
         const name = item.name || item.project_path;
-        search.close();
         setArchivedExperience({ name, content: "" });
         setArchivedLoading(true);
         try {
@@ -138,7 +144,7 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, active = tr
         } finally {
             if (activeRef.current) setArchivedLoading(false);
         }
-    }, [lang, search]);
+    }, [lang]);
 
     const onSelectFile = useCallback((item: HeaderFileSearchHit) => {
         search.close();
@@ -178,8 +184,8 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, active = tr
     if (archivedExperience) return <ProjectSearchArchivedPanel name={archivedExperience.name} content={archivedExperience.content} loading={archivedLoading} lang={lang} theme={t} panelRef={panelRef} onClose={() => setArchivedExperience(null)} />;
 
     return (
-        <div ref={panelRef} style={{ flexShrink: 0, borderBottom: `1px solid ${t.titleBarBorder}`, background: t.titleBarBg, zIndex: 30000, position: "relative", overflow: "visible" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "6px 12px" }}>
+        <div ref={panelRef} data-testid="project-search-panel" role="dialog" aria-modal="true" aria-label={localizeText(lang, "Search", "搜索")} style={searchSurfaceRootStyle(t)}>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "6px 12px", flexShrink: 0, borderBottom: `1px solid ${t.titleBarBorder}`, background: t.titleBarBg }}>
                 <span style={{ color: t.textMuted, opacity: 0.8, flexShrink: 0 }}><ProjectSearchIcon name="search" /></span>
                 <input ref={inputRef} data-testid="project-search-input" type="text" value={search.query} onChange={event => { const value = event.target.value; if (composingRef.current) search.onQueryDraft?.(value); else search.onQueryChange(value); }} onCompositionStart={() => { composingRef.current = true; }} onCompositionEnd={event => { composingRef.current = false; search.onQueryChange(event.currentTarget.value); }} onKeyDown={event => { if (event.key === "Escape") search.close(); }} placeholder={localizeText(lang, "Search tasks, files, knowledge, experts...", "\u641c\u7d22\u4efb\u52a1\u3001\u6587\u4ef6\u3001\u77e5\u8bc6\u3001\u4e13\u5bb6...")} style={{ flex: 1, border: "none", outline: "none", background: "transparent", color: t.text, fontSize: "13px", fontFamily: "inherit", padding: "4px 0", minWidth: 0 }} />
                 {onForkCurrentChat && (
@@ -195,7 +201,7 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, active = tr
                 <button {...(inline ? { onMouseDown: (event: React.MouseEvent) => { event.preventDefault(); event.stopPropagation(); search.close(); } } : { onClick: () => search.close() })} style={{ background: "none", border: "none", cursor: "pointer", color: t.text, opacity: 0.5, fontSize: "12px", padding: "2px 4px", lineHeight: 1, flexShrink: 0 }} title={localizeText(lang, "Close", "\u5173\u95ed")}>{"x"}</button>
             </div>
             <ProjectSearchForkForm open={forkNameOpen} lang={lang} theme={t} onCancel={() => setForkNameOpen(false)} onSubmit={name => { setForkNameOpen(false); search.close(); onForkCurrentChat?.(name); }} />
-            <div style={{ maxHeight: "320px", overflowY: "auto", padding: "0 4px 4px" }}>
+            <div data-testid="project-search-results" style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "0 4px 4px" }}>
                 {search.loading && <div style={{ padding: hasAnyResults ? "6px 10px" : "16px", textAlign: "center", color: t.text, opacity: 0.45, fontSize: "12px" }}>{localizeText(lang, "Searching...", "\u641c\u7d22\u4e2d...")}</div>}
                 {!search.loading && !hasAnyResults && <div style={{ padding: "16px", textAlign: "center", color: t.text, opacity: 0.45, fontSize: "12px" }}>{search.query.trim() ? localizeText(lang, "No results found", "\u672a\u627e\u5230\u7ed3\u679c") : localizeText(lang, "No tasks", "\u6682\u65e0\u4efb\u52a1")}</div>}
                 {showSectionLabels && visibleResults.length > 0 && <SearchSectionLabel lang={lang} theme={t} en="Tasks" zh="任务" />}

@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+    applyContinueEditTaskResultDraft,
     codeFileForImmediateTaskResultPreview,
     codeFileFromTaskResultPreview,
+    continueEditTaskResultDraft,
+    continueEditTaskResultPathFromEvent,
     isPdfFileName,
     isPdfInlineDataURL,
     isTaskResultPdfPreviewURL,
+    localizeTaskResultExportError,
     localizeTaskResultPreviewError,
     objectURLFromPdfDataURL,
     pdfInlineDataURLFromBase64,
@@ -93,6 +97,41 @@ describe("previewTaskResultPathFromEvent", () => {
     it("reads the path from the custom event detail", () => {
         const event = new CustomEvent("maclaw:preview-task-result", { detail: { path: " D:\\a.pdf ", messageId: "m1" } });
         expect(previewTaskResultPathFromEvent(event)).toBe("D:\\a.pdf");
+    });
+});
+
+describe("continueEditTaskResultDraft", () => {
+    it("builds a composer draft that names the document and path", () => {
+        expect(continueEditTaskResultDraft("C:\\docs\\report.docx", "zh")).toBe("请继续修改文档「report.docx」（C:\\docs\\report.docx）：\n");
+        expect(continueEditTaskResultDraft("C:\\docs\\report.docx", "en")).toBe('Please continue editing the document "report.docx" (C:\\docs\\report.docx):\n');
+    });
+
+    it("keeps typed text and appends the file prompt when needed", () => {
+        expect(applyContinueEditTaskResultDraft("C:\\docs\\report.docx", "zh", "")).toBe("请继续修改文档「report.docx」（C:\\docs\\report.docx）：\n");
+        expect(applyContinueEditTaskResultDraft("C:\\docs\\report.docx", "zh", "  ")).toBe("请继续修改文档「report.docx」（C:\\docs\\report.docx）：\n");
+        expect(applyContinueEditTaskResultDraft("C:\\docs\\report.docx", "zh", "把第二段改短")).toBe(
+            "把第二段改短\n\n请继续修改文档「report.docx」（C:\\docs\\report.docx）：\n",
+        );
+        expect(applyContinueEditTaskResultDraft("C:\\docs\\report.docx", "zh", "请继续修改文档「report.docx」（C:\\docs\\report.docx）：\n")).toBe(
+            "请继续修改文档「report.docx」（C:\\docs\\report.docx）：\n",
+        );
+        expect(applyContinueEditTaskResultDraft("C:\\docs\\report.docx", "zh", "annual report.docx 的格式")).toBe(
+            "annual report.docx 的格式\n\n请继续修改文档「report.docx」（C:\\docs\\report.docx）：\n",
+        );
+        expect(applyContinueEditTaskResultDraft("C:\\docs\\report.docx", "zh", "请继续改 C:/docs/report.docx")).toBe(
+            "请继续改 C:/docs/report.docx",
+        );
+    });
+
+    it("reads the path from the continue-edit event", () => {
+        const event = new CustomEvent("maclaw:continue-edit-task-result", { detail: { path: " D:\\a.docx ", messageId: "m1" } });
+        expect(continueEditTaskResultPathFromEvent(event)).toBe("D:\\a.docx");
+    });
+
+    it("localizes export errors, including wrapped Wails messages", () => {
+        expect(localizeTaskResultExportError("文件不存在", "en")).toBe("The file does not exist");
+        expect(localizeTaskResultExportError("Error: 文件过大，无法导出", "zh")).toBe("文件过大，无法导出");
+        expect(localizeTaskResultExportError("ExportTaskResultFile: 文件不存在", "en")).toBe("The file does not exist");
     });
 });
 

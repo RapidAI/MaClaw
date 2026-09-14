@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // TaskResultPreview is the in-app preview payload for a generated assistant
@@ -267,6 +268,148 @@ func isTaskResultOfficeExt(ext string) bool {
 	default:
 		return false
 	}
+}
+
+const taskResultExportMaxFileBytes int64 = 512 << 20
+
+var taskResultSaveDialog = func(a *App, title, defaultFilename string) (string, error) {
+	if a == nil || a.ctx == nil {
+		return "", nil
+	}
+	ext := strings.ToLower(filepath.Ext(defaultFilename))
+	filters := []runtime.FileFilter{{DisplayName: "All Files (*.*)", Pattern: "*.*"}}
+	if ext != "" {
+		filters = append([]runtime.FileFilter{{
+			DisplayName: strings.ToUpper(strings.TrimPrefix(ext, ".")) + " (*" + ext + ")",
+			Pattern:     "*" + ext,
+		}}, filters...)
+	}
+	return runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+		Title:           title,
+		DefaultFilename: defaultFilename,
+		Filters:         filters,
+	})
+}
+
+// ExportTaskResultFile copies a generated assistant document to a path the user
+// picks in the save dialog. Empty dest means the user cancelled.
+func (a *App) ExportTaskResultFile(filePath string) (string, error) {
+	cleaned, err := a.normalizeOpenPathForApp(filePath)
+	if err != nil {
+		return "", fmt.Errorf("文件路径无效")
+	}
+	cleaned = strings.TrimSpace(cleaned)
+	if cleaned == "" {
+		return "", fmt.Errorf("文件路径为空")
+	}
+	if abs, absErr := filepath.Abs(cleaned); absErr == nil {
+		cleaned = abs
+	}
+	info, err := os.Stat(cleaned)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("文件不存在")
+		}
+		return "", fmt.Errorf("无法读取文件")
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("不是文件")
+	}
+	if info.Size() > taskResultExportMaxFileBytes {
+		return "", fmt.Errorf("文件过大，无法导出")
+	}
+
+	name := info.Name()
+	dest, _ := taskResultSaveDialog(a, "导出文档 / Export document", name)
+	dest = strings.TrimSpace(dest)
+	if dest == "" {
+		return "", nil
+	}
+	ext := filepath.Ext(name)
+	if filepath.Ext(dest) == "" && ext != "" {
+		dest += ext
+	}
+	if abs, absErr := filepath.Abs(dest); absErr == nil {
+		dest = abs
+	}
+	if sameTaskResultExportPath(cleaned, dest) {
+		return dest, nil
+	}
+	if destInfo, destErr := os.Stat(dest); destErr == nil && destInfo.IsDir() {
+		return "", fmt.Errorf("无法保存文件")
+	}
+	if err := copyTaskResultExportFile(cleaned, dest, taskResultExportMaxFileBytes); err != nil {
+		return "", err
+	}
+	_ = os.Chmod(dest, 0o644)
+	return dest, nil
+}
+
+func sameTaskResultExportPath(src, dest string) bool {
+	src = filepath.Clean(src)
+	dest = filepath.Clean(dest)
+	if src == dest {
+		return true
+	}
+	si, err1 := os.Stat(src)
+	if err1 != nil {
+		return false
+	}
+	di, err2 := os.Stat(dest)
+	if err2 != nil {
+		return false
+	}
+	return os.SameFile(si, di)
+}
+
+func copyTaskResultExportFile(src, dest string, maxBytes int64) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("无法读取文件")
+	}
+	defer in.Close()
+	tmp, err := os.CreateTemp(filepath.Dir(dest), ".maclaw-export-*")
+	if err != nil {
+		return fmt.Errorf("无法保存文件")
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+	n, err := io.Copy(tmp, io.LimitReader(in, maxBytes+1))
+	syncErr := tmp.Sync()
+	closeErr := tmp.Close()
+	if err != nil || syncErr != nil || closeErr != nil {
+		return fmt.Errorf("无法保存文件")
+	}
+	if n > maxBytes {
+		return fmt.Errorf("文件过大，无法导出")
+	}
+	if err := replaceTaskResultExportFile(tmpName, dest); err != nil {
+		return fmt.Errorf("无法保存文件")
+	}
+	return nil
+}
+
+func replaceTaskResultExportFile(tmp, dest string) error {
+	if err := os.Rename(tmp, dest); err == nil {
+		return nil
+	}
+	in, err := os.Open(tmp)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(out, in)
+	syncErr := out.Sync()
+	closeErr := out.Close()
+	if copyErr != nil || syncErr != nil || closeErr != nil {
+		return fmt.Errorf("无法保存文件")
+	}
+	_ = os.Remove(tmp)
+	return nil
 }
 
 func resetTaskResultPreviewLeasesForTest() {

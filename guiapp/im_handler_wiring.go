@@ -532,6 +532,18 @@ type IMMessageHandler struct {
 	// Keyed by userID, value is *atomic.Uint64.
 	snapshotEpoch sync.Map
 
+	// sessionFacts holds the in-task fact overlay per assistant panel / userID.
+	// Unlike the frozen memory snapshot, this is updated mid-session when a tool
+	// or memory save contradicts an earlier claim (for example an IP going down).
+	// Keyed by userID, value is *agent.SessionFactOverlay.
+	sessionFacts sync.Map
+
+	// memoryRetractions is the store-wide set of warehouse edits (delete/update
+	// from the memory-management UI) that live agent instances must honor even
+	// when the same facts still sit in conversation history.
+	memoryRetractionMu sync.Mutex
+	memoryRetractions  *agent.MemoryRetraction
+
 	// taskOrchestrator manages per-task execution during the coding
 	// workflow's Execution Phase. When active, it injects per-task system
 	// messages and constructs focused prompts for the internal CodingSubAgent

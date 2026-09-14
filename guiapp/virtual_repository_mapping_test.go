@@ -266,12 +266,111 @@ func TestAddVirtualRepositoryLocalMappingInitializesEmptyRoot(t *testing.T) {
 		t.Fatalf("initialized manifest id = %q, want %q", initialized.ID, repo.ID)
 	}
 
+	junkRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(junkRoot, "desktop.ini"), []byte("[.ShellClassInfo]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	req.Mapping = VirtualRepositoryMapping{Label: "windows junk", Kind: virtualRepositoryMappingKindLocal, RootPath: junkRoot}
+	raw, _ = json.Marshal(req)
+	if _, err := app.AddVirtualRepositoryMapping(string(raw)); err != nil {
+		t.Fatalf("directory with desktop.ini should still initialize: %v", err)
+	}
+
+	missingRoot := filepath.Join(t.TempDir(), "new-root")
+	req.Mapping = VirtualRepositoryMapping{Label: "missing disk", Kind: virtualRepositoryMappingKindLocal, RootPath: missingRoot}
+	raw, _ = json.Marshal(req)
+	if _, err := app.AddVirtualRepositoryMapping(string(raw)); err != nil {
+		t.Fatalf("missing local directory should be created: %v", err)
+	}
+	if _, err := readVirtualRepository(missingRoot); err != nil {
+		t.Fatalf("missing local directory was not initialized: %v", err)
+	}
+
 	// A directory containing a different repository is rejected.
 	other := writeTestVirtualRepository(t, app, "Other", t.TempDir())
 	req.Mapping = VirtualRepositoryMapping{Label: "conflict", Kind: virtualRepositoryMappingKindLocal, RootPath: other.RootPath}
 	raw, _ = json.Marshal(req)
 	if _, err := app.AddVirtualRepositoryMapping(string(raw)); err == nil {
 		t.Fatal("local mapping over a foreign repository was accepted")
+	}
+}
+
+func TestAddVirtualRepositoryLocalMappingInitializesEmptyRootFromRemoteDefinition(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	repo := &VirtualRepository{
+		Version:  1,
+		ID:       "vrepo_remote_init",
+		Name:     "Remote workspace",
+		RootPath: "/home/vrepo",
+		Remote:   &VirtualRepositoryRemote{Host: "www.example.com", Port: 22, User: "root"},
+		Nodes:    []VirtualRepositoryNode{{ID: "src", Name: "src"}},
+	}
+	if err := app.updateVirtualRepositoryIndex(repo); err != nil {
+		t.Fatal(err)
+	}
+	app.rememberVirtualRepositoryDefinition(repo)
+
+	localRoot := t.TempDir()
+	req := virtualRepositoryMappingRequest{RepositoryID: repo.ID, Mapping: VirtualRepositoryMapping{
+		Label: "this computer", Kind: virtualRepositoryMappingKindLocal, RootPath: localRoot,
+	}}
+	raw, _ := json.Marshal(req)
+	resultJSON, err := app.AddVirtualRepositoryMapping(string(raw))
+	if err != nil {
+		t.Fatalf("initialize local mapping from remote definition: %v", err)
+	}
+	var mappings []VirtualRepositoryMapping
+	if err := json.Unmarshal([]byte(resultJSON), &mappings); err != nil {
+		t.Fatal(err)
+	}
+	var localCount int
+	for _, mapping := range mappings {
+		if mapping.Kind == virtualRepositoryMappingKindLocal {
+			localCount++
+			if !sameVirtualRepositoryPath(mapping.RootPath, localRoot) {
+				t.Fatalf("local mapping root = %q, want %q", mapping.RootPath, localRoot)
+			}
+		}
+	}
+	if localCount != 1 {
+		t.Fatalf("mappings = %s", resultJSON)
+	}
+	initialized, err := readVirtualRepository(localRoot)
+	if err != nil {
+		t.Fatalf("empty local root was not initialized: %v", err)
+	}
+	if initialized.ID != repo.ID || initialized.Name != repo.Name {
+		t.Fatalf("initialized = %#v", initialized)
+	}
+	if initialized.Remote != nil {
+		t.Fatalf("local mapping root must not keep remote coordinates: %#v", initialized.Remote)
+	}
+	if len(initialized.Nodes) != 1 || initialized.Nodes[0].Name != "src" {
+		t.Fatalf("initialized nodes = %#v", initialized.Nodes)
+	}
+}
+
+func TestAddVirtualRepositoryLocalMappingWithoutRemoteDefinitionReportsCopyError(t *testing.T) {
+	keyring.MockInit()
+	app := &App{testHomeDir: t.TempDir()}
+	repo := &VirtualRepository{
+		Version:  1,
+		ID:       "vrepo_remote_missing_def",
+		Name:     "Remote workspace",
+		RootPath: "/home/vrepo",
+		Remote:   &VirtualRepositoryRemote{Host: "www.example.com", Port: 22, User: "root"},
+		Nodes:    []VirtualRepositoryNode{},
+	}
+	if err := app.updateVirtualRepositoryIndex(repo); err != nil {
+		t.Fatal(err)
+	}
+	req := virtualRepositoryMappingRequest{RepositoryID: repo.ID, Mapping: VirtualRepositoryMapping{
+		Label: "this computer", Kind: virtualRepositoryMappingKindLocal, RootPath: t.TempDir(),
+	}}
+	raw, _ := json.Marshal(req)
+	_, err := app.AddVirtualRepositoryMapping(string(raw))
+	if err == nil || !strings.Contains(err.Error(), "cannot copy the remote virtual repository definition") {
+		t.Fatalf("error = %v, want remote definition copy failure", err)
 	}
 }
 
@@ -364,6 +463,49 @@ func TestStartVirtualRepositoryCodingTaskDispatchesByMapping(t *testing.T) {
 	}
 	if status.Kind != "local" || !status.Armed {
 		t.Fatalf("coding workbench status = %#v", status)
+	}
+}
+
+func TestStartVirtualRepositoryCodingTaskLocalMappingStaysLocalWhenRemoteExists(t *testing.T) {
+	keyring.MockInit()
+	app := newProjectSearchTestApp(t)
+	repo := writeTestVirtualRepository(t, app, "Workspace", t.TempDir())
+	addReq := virtualRepositoryMappingRequest{RepositoryID: repo.ID, Mapping: VirtualRepositoryMapping{
+		Label: "dev-server", Kind: virtualRepositoryMappingKindRemoteSSH,
+		RootPath: "/srv/workspace", Host: "dev.example.com", Port: 22, User: "dev",
+	}}
+	raw, _ := json.Marshal(addReq)
+	resultJSON, err := app.AddVirtualRepositoryMapping(string(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mappings []VirtualRepositoryMapping
+	if err := json.Unmarshal([]byte(resultJSON), &mappings); err != nil {
+		t.Fatal(err)
+	}
+	var localID, remoteID string
+	for _, mapping := range mappings {
+		if mapping.Kind == virtualRepositoryMappingKindLocal {
+			localID = mapping.ID
+		}
+		if mapping.Kind == virtualRepositoryMappingKindRemoteSSH {
+			remoteID = mapping.ID
+		}
+	}
+	if localID == "" || remoteID == "" {
+		t.Fatalf("mappings = %#v", mappings)
+	}
+
+	launch, err := app.StartVirtualRepositoryCodingTask(repo.ID, localID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if launch.AgentMode != "coding_dev" {
+		t.Fatalf("local mapping launch = %#v, want coding_dev", launch)
+	}
+
+	if _, err := app.StartVirtualRepositoryCodingTask(repo.ID, remoteID); err == nil || !strings.Contains(err.Error(), "SSH password is unavailable") {
+		t.Fatalf("remote mapping launch error = %v, want SSH preflight", err)
 	}
 }
 

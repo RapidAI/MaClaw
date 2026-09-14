@@ -12,20 +12,20 @@ import {
 } from "./aiAssistantMarkdown";
 import { renderScreenshotPreview } from "./aiAssistantMarkdownMedia";
 import { darkTheme, lightTheme } from "./aiAssistantPanelTheme";
-import { ASSISTANT_LIVE_SHEEN_SPOT_DARK, ASSISTANT_LIVE_SHEEN_SPOT_LIGHT } from "./AssistantReasoningPanel";
 
 // Minimal JPEG stream with a 1x1 SOF0 frame. The renderer only needs header
 // validation before assigning a data URL to img.src; browser image loading is
 // outside jsdom's scope.
 const safeKBImageJPEG = "/9j/2wCEAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDIBCQkJDAsMGA0NGDIhHCEyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMv/AABEIAAEAAQMBIgACEQEDEQH/xAGiAAABBQEBAQEBAQAAAAAAAAAAAQIDBAUGBwgJCgsQAAIBAwMCBAMFBQQEAAABfQECAwAEEQUSITFBBhNRYQcicRQygZGhCCNCscEVUtHwJDNicoIJChYXGBkaJSYnKCkqNDU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+gEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoLEQACAQIEBAMEBwUEBAABAncAAQIDEQQFITEGEkFRB2FxEyIygQgUQpGhscEJIzNS8BVictEKFiQ04SXxFxgZGiYnKCkqNTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqCg4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2dri4+Tl5ufo6ery8/T19vf4+fr/2gAMAwEAAhEDEQA/AOLooor5k/cT/9k=";
 
-const { openFileOrShowInFolderMock, showItemInFolderMock, knowledgeOpenImageAssetMock, attachmentPreviewDataURLMock, attachmentFullDataURLMock, importMobileDocumentFromPathMock } = vi.hoisted(() => ({
+const { openFileOrShowInFolderMock, showItemInFolderMock, knowledgeOpenImageAssetMock, attachmentPreviewDataURLMock, attachmentFullDataURLMock, importMobileDocumentFromPathMock, exportTaskResultFileMock } = vi.hoisted(() => ({
     openFileOrShowInFolderMock: vi.fn(async () => undefined),
     showItemInFolderMock: vi.fn(async () => undefined),
     knowledgeOpenImageAssetMock: vi.fn(async () => undefined),
     attachmentPreviewDataURLMock: vi.fn(async () => "data:image/png;base64,HOSTTHUMB"),
     attachmentFullDataURLMock: vi.fn(async () => "data:image/png;base64,HOSTFULL"),
     importMobileDocumentFromPathMock: vi.fn(async (_path: string) => ({ id: "draft-1" })),
+    exportTaskResultFileMock: vi.fn(async () => "D:\\export\\copy.docx"),
 }));
 
 vi.mock("../../../wailsjs/go/main/App", () => ({
@@ -35,6 +35,7 @@ vi.mock("../../../wailsjs/go/main/App", () => ({
     AIAssistantAttachmentPreviewDataURL: attachmentPreviewDataURLMock,
     AIAssistantAttachmentFullDataURL: attachmentFullDataURLMock,
     ImportMobileDocumentFromPath: importMobileDocumentFromPathMock,
+    ExportTaskResultFile: exportTaskResultFileMock,
 }));
 
 vi.mock("../../../wailsjs/runtime", () => ({
@@ -47,6 +48,7 @@ describe("renderContentWithCodeBlocks", () => {
         showItemInFolderMock.mockClear();
         knowledgeOpenImageAssetMock.mockClear();
         attachmentFullDataURLMock.mockClear();
+        exportTaskResultFileMock.mockClear();
     });
 
     it("normalizes escaped newline sequences before rendering", () => {
@@ -1090,6 +1092,67 @@ describe("renderContentWithCodeBlocks", () => {
         });
     });
 
+    it("opens the saved document with the system handler from View document", async () => {
+        const path = "C:\\Users\\me\\report.docx";
+        render(<div>{renderMessage({
+            id: "saved-local-view",
+            role: "assistant",
+            content: "文档已生成",
+            localFilePath: path,
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, false, "文件已保存", "zh", false)}</div>);
+
+        fireEvent.click(screen.getByTestId("task-result-view-btn"));
+        await waitFor(() => {
+            expect(openFileOrShowInFolderMock).toHaveBeenCalledWith(path);
+        });
+        expect(exportTaskResultFileMock).not.toHaveBeenCalled();
+    });
+
+    it("exports the saved document through a save dialog without opening it", async () => {
+        const path = "C:\\Users\\me\\report.docx";
+        render(<div>{renderMessage({
+            id: "saved-local-export",
+            role: "assistant",
+            content: "文档已生成",
+            localFilePath: path,
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, false, "文件已保存", "zh", false)}</div>);
+
+        fireEvent.click(screen.getByTestId("task-result-export-btn"));
+        await waitFor(() => {
+            expect(exportTaskResultFileMock).toHaveBeenCalledWith(path);
+        });
+        expect(openFileOrShowInFolderMock).not.toHaveBeenCalled();
+        await waitFor(() => {
+            expect(screen.getByTestId("task-result-export-btn").textContent).toBe("已导出");
+        });
+    });
+
+    it("asks the composer to continue editing instead of opening the file", () => {
+        const path = "C:\\Users\\me\\report.docx";
+        const seen: string[] = [];
+        const onContinue = (event: Event) => {
+            seen.push(String((event as CustomEvent<{ path?: string }>).detail?.path || ""));
+        };
+        window.addEventListener("maclaw:continue-edit-task-result", onContinue);
+        try {
+            render(<div>{renderMessage({
+                id: "saved-local-continue",
+                role: "assistant",
+                content: "文档已生成",
+                localFilePath: path,
+                timestamp: Date.now(),
+            }, vi.fn(), lightTheme, false, "文件已保存", "zh", false)}</div>);
+
+            fireEvent.click(screen.getByTestId("task-result-continue-btn"));
+            expect(seen).toEqual([path]);
+            expect(openFileOrShowInFolderMock).not.toHaveBeenCalled();
+        } finally {
+            window.removeEventListener("maclaw:continue-edit-task-result", onContinue);
+        }
+    });
+
     it("dispatches an in-app preview event from the task-result Preview button", () => {
         const path = "F:\\个人介绍\\布偶小猫5岁生日.pptx";
         const seen: string[] = [];
@@ -1680,7 +1743,6 @@ describe("renderMessage assistant display guard", () => {
         expect(screen.getByText("#2")).toBeTruthy();
         expect(screen.queryByText("思考过程")).toBeNull();
         const summary = panel.querySelector(".assistant-reasoning-summary");
-        expect(summary?.className).toContain("assistant-reasoning-summary--live");
         expect(summary?.textContent || "").not.toContain("Need to patch the scanner CLI");
     });
 
@@ -2045,6 +2107,7 @@ describe("renderMessage assistant display guard", () => {
         expect(progress.getAttribute("role")).toBe("status");
         expect(progress.getAttribute("aria-live")).toBe("polite");
         expect(progress.style.justifyContent).toBe("flex-start");
+        expect(progress.querySelector(".assistant-chat-progress-line")).toBeTruthy();
         expect(screen.getByText("Fetching details")).toBeTruthy();
     });
 
@@ -2160,6 +2223,22 @@ describe("renderMessage assistant display guard", () => {
 
         const body = screen.getByTestId("assistant-reasoning-body");
         expect(body.textContent).toContain("歌曲（1996）列表");
+    });
+
+    it("repairs hyphenated line-range wraps inside thinking parentheses", () => {
+        render(<div>{renderCodingAgentThinkingTimelineItem({
+            id: "thought-line-range-wrap",
+            sequence: 6,
+            kind: "thinking",
+            content: "Let me read the rest of\nsnake.cpp (lines 251-\n504) to confirm it's complete.",
+            timestamp: 1,
+        }, lightTheme, "zh", 6)}</div>);
+
+        const body = screen.getByTestId("assistant-reasoning-body");
+        expect(body.textContent).toContain("snake.cpp (lines 251-504)");
+        expect(body.textContent).toContain("to confirm it's complete.");
+        expect(screen.queryByText(/^504\)/)).toBeNull();
+        expect(screen.queryByText(/\(lines 251-$/)).toBeNull();
     });
 
     it("keeps ordinary-chat reasoning open while a tool is running", () => {
@@ -2523,13 +2602,14 @@ describe("renderMessage assistant display guard", () => {
         const label = screen.getByTestId("assistant-reasoning-label");
         expect(label.textContent).toBe("正在写入文件");
         expect(label.className).toContain("assistant-reasoning-live-label");
-        expect(label.className).not.toContain("assistant-reasoning-summary--live");
         expect(screen.queryByText("思考过程...")).toBeNull();
     });
 
     it.each([
         "正在思考",
         "正在调用工具",
+        "正在访问模型",
+        "正在分析任务",
         "正在搜索网络",
         "正在提取网页",
         "正在编辑文件",
@@ -2547,10 +2627,22 @@ describe("renderMessage assistant display guard", () => {
         expect(label.textContent).toBe(liveLabel);
         expect(label.className).toContain("assistant-reasoning-live-label");
         expect((panel.querySelector(".assistant-reasoning-summary") as HTMLElement | null)?.style.opacity).toBe("1");
-        expect(label.style.getPropertyValue("--assistant-sheen-spot")).toBe(ASSISTANT_LIVE_SHEEN_SPOT_LIGHT);
     });
 
-    it("uses a bright sheen spot on dark live titles", () => {
+    it("puts live sheen on the processing placeholder before a thinking panel exists", () => {
+        const message = {
+            id: "assistant-processing-placeholder",
+            role: "assistant" as const,
+            content: "",
+            timestamp: Date.now(),
+        };
+        render(<div>{renderMessage(message, vi.fn(), lightTheme, true, "Saved file", "zh")}</div>);
+        const label = screen.getByTestId("assistant-processing-label");
+        expect(label.textContent).toBe("处理中…");
+        expect(label.className).toContain("assistant-reasoning-live-label");
+    });
+
+    it("keeps the live title class on dark live titles", () => {
         const message = {
             id: "assistant-live-dark",
             role: "assistant" as const,
@@ -2558,7 +2650,7 @@ describe("renderMessage assistant display guard", () => {
             timestamp: Date.now(),
         };
         render(<div>{renderMessage(message, vi.fn(), { ...darkTheme, isDark: true }, true, "Saved file", "zh", false, undefined, undefined, false, undefined, "正在调用工具")}</div>);
-        expect(screen.getByTestId("assistant-reasoning-label").style.getPropertyValue("--assistant-sheen-spot")).toBe(ASSISTANT_LIVE_SHEEN_SPOT_DARK);
+        expect(screen.getByTestId("assistant-reasoning-label").className).toContain("assistant-reasoning-live-label");
     });
 
     it("restores the static thinking-process label after the round ends", () => {

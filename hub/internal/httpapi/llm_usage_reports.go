@@ -231,6 +231,7 @@ type llmUsageReportResponse struct {
 	Rows            []llmUsageReportRow          `json:"rows"`
 	Entities        []llmUsageReportEntityOption `json:"entities,omitempty"`
 	AvailableGroups []llmUsageReportEntityOption `json:"available_groups,omitempty"`
+	SystemUser      *llmUsageReportRow           `json:"system_user,omitempty"`
 	GeneratedAt     time.Time                    `json:"generated_at"`
 }
 
@@ -1253,6 +1254,34 @@ func parseUsageMonth(v string, now time.Time) string {
 	return v
 }
 
+func collectSystemLLMUserUsage(rep *llmUsageReportsStore, period, dayKey, monthKey string) (llmUsageCounters, []llmUsageCounters) {
+	var totals llmUsageCounters
+	if rep == nil || rep.Days == nil {
+		return totals, nil
+	}
+	entryFor := func(day *llmUsageReportDay) *llmUsageReportEntry {
+		if day == nil || day.Users == nil {
+			return nil
+		}
+		return day.Users[llmservice.SystemLLMUserEmail]
+	}
+	if period == "daily" {
+		if entry := entryFor(rep.Days[dayKey]); entry != nil {
+			return entry.Totals, entry.Hours
+		}
+		return totals, nil
+	}
+	for date, day := range rep.Days {
+		if day == nil || !strings.HasPrefix(date, monthKey+"-") {
+			continue
+		}
+		if entry := entryFor(day); entry != nil {
+			addUsageCountersFromTotals(&totals, entry.Totals)
+		}
+	}
+	return totals, nil
+}
+
 func buildLLMUsageReportResponse(ctx context.Context, rep *llmUsageReportsStore, securitySvc *security.SecurityService, scope, period, dayKey, monthKey, entity string, now time.Time, providerNameMaps ...map[string]string) llmUsageReportResponse {
 	normalizeLLMUsageReportCreditComponents(rep)
 	resp := llmUsageReportResponse{
@@ -1270,13 +1299,7 @@ func buildLLMUsageReportResponse(ctx context.Context, rep *llmUsageReportsStore,
 		providerNames = providerNameMaps[0]
 	}
 	entityOptions := map[string]string{}
-	if rep == nil {
-		return resp
-	}
-	addRow := func(id string, totals llmUsageCounters, hours []llmUsageCounters) {
-		if strings.TrimSpace(id) == "" {
-			return
-		}
+	makeRow := func(id string, totals llmUsageCounters, hours []llmUsageCounters) llmUsageReportRow {
 		normalizeLLMUsageCountersRMBCostTotal(&totals)
 		name := id
 		if scope == "group" {
@@ -1287,12 +1310,14 @@ func buildLLMUsageReportResponse(ctx context.Context, rep *llmUsageReportsStore,
 			if display := providerNames[id]; display != "" {
 				name = display
 			}
+		} else if scope == "user" && llmservice.IsSystemLLMUser("", id) {
+			name = llmservice.SystemLLMUserEmail
 		}
 		rowHours := cloneUsageCountersSlice(hours)
 		for i := range rowHours {
 			normalizeLLMUsageCountersRMBCostTotal(&rowHours[i])
 		}
-		resp.Rows = append(resp.Rows, llmUsageReportRow{
+		return llmUsageReportRow{
 			ID:                          id,
 			Name:                        name,
 			InputTokens:                 totals.InputTokens,
@@ -1336,121 +1361,149 @@ func buildLLMUsageReportResponse(ctx context.Context, rep *llmUsageReportsStore,
 			ProviderMultipliers:         usageProviderMultipliersWithNames(totals.ProviderMultipliers, providerNames),
 			ProviderPricing:             usageProviderPricingWithNames(totals.ProviderPricing, providerNames),
 			Hours:                       rowHours,
-		})
-		entityOptions[id] = name
+		}
 	}
-	if period == "daily" {
-		resp.Date = dayKey
-		day := rep.Days[dayKey]
-		if day == nil {
-			return resp
+	addRow := func(id string, totals llmUsageCounters, hours []llmUsageCounters) {
+		if strings.TrimSpace(id) == "" {
+			return
 		}
-		if entity != "" {
-			if scope == "group" {
-				if entry := day.Groups[entity]; entry != nil {
-					resp.Summary = entry.Totals
-					resp.Trend = cloneUsageCountersSlice(entry.Hours)
-					addRow(entity, entry.Totals, entry.Hours)
-				}
-			} else if scope == "provider" {
-				if entry := day.Providers[entity]; entry != nil {
-					resp.Summary = entry.Totals
-					resp.Trend = cloneUsageCountersSlice(entry.Hours)
-					addRow(entity, entry.Totals, entry.Hours)
-				}
-			} else if entry := day.Users[strings.ToLower(entity)]; entry != nil {
-				resp.Summary = entry.Totals
-				resp.Trend = cloneUsageCountersSlice(entry.Hours)
-				addRow(strings.ToLower(entity), entry.Totals, entry.Hours)
-			}
-		} else {
-			if scope != "provider" {
-				resp.Summary = day.Totals
-			}
-			resp.Trend = make([]llmUsageCounters, 24)
-			if scope == "group" {
-				for id, entry := range day.Groups {
-					if entry == nil {
-						continue
-					}
-					addRow(id, entry.Totals, entry.Hours)
-					for i := 0; i < len(entry.Hours) && i < 24; i++ {
-						addUsageCountersFromTotals(&resp.Trend[i], entry.Hours[i])
-					}
-				}
-			} else if scope == "provider" {
-				for id, entry := range day.Providers {
-					if entry == nil {
-						continue
-					}
-					addUsageCountersFromTotals(&resp.Summary, entry.Totals)
-					addRow(id, entry.Totals, entry.Hours)
-					for i := 0; i < len(entry.Hours) && i < 24; i++ {
-						addUsageCountersFromTotals(&resp.Trend[i], entry.Hours[i])
-					}
-				}
-			} else {
-				for id, entry := range day.Users {
-					if entry == nil {
-						continue
-					}
-					addRow(id, entry.Totals, entry.Hours)
-					for i := 0; i < len(entry.Hours) && i < 24; i++ {
-						addUsageCountersFromTotals(&resp.Trend[i], entry.Hours[i])
-					}
-				}
-			}
+		row := makeRow(id, totals, hours)
+		resp.Rows = append(resp.Rows, row)
+		entityOptions[id] = row.Name
+	}
+	pinSystemUser := func() {
+		if scope != "user" {
+			return
 		}
-	} else {
-		resp.Month = monthKey
-		monthly := map[string]llmUsageCounters{}
-		for date, day := range rep.Days {
-			if day == nil || !strings.HasPrefix(date, monthKey+"-") {
+		totals, hours := collectSystemLLMUserUsage(rep, period, dayKey, monthKey)
+		row := makeRow(llmservice.SystemLLMUserEmail, totals, hours)
+		resp.SystemUser = &row
+		entityOptions[llmservice.SystemLLMUserEmail] = llmservice.SystemLLMUserEmail
+		if entity != "" && llmservice.IsSystemLLMUser("", entity) {
+			return
+		}
+		kept := make([]llmUsageReportRow, 0, len(resp.Rows))
+		for i := range resp.Rows {
+			if llmservice.IsSystemLLMUser("", resp.Rows[i].ID) {
 				continue
 			}
-			if entity == "" && scope != "provider" {
-				addUsageCountersFromTotals(&resp.Summary, day.Totals)
-			}
-			if scope == "group" {
-				for id, entry := range day.Groups {
-					if entry == nil {
-						continue
-					}
-					curr := monthly[id]
-					addUsageCountersFromTotals(&curr, entry.Totals)
-					monthly[id] = curr
-				}
-			} else if scope == "provider" {
-				for id, entry := range day.Providers {
-					if entry == nil {
-						continue
-					}
-					if entity == "" {
-						addUsageCountersFromTotals(&resp.Summary, entry.Totals)
-					}
-					curr := monthly[id]
-					addUsageCountersFromTotals(&curr, entry.Totals)
-					monthly[id] = curr
-				}
-			} else {
-				for id, entry := range day.Users {
-					if entry == nil {
-						continue
-					}
-					curr := monthly[id]
-					addUsageCountersFromTotals(&curr, entry.Totals)
-					monthly[id] = curr
-				}
-			}
+			kept = append(kept, resp.Rows[i])
 		}
-		if entity != "" {
-			if totals, ok := monthly[entity]; ok {
-				resp.Summary = totals
-				addRow(entity, totals, nil)
+		resp.Rows = kept
+	}
+	if rep != nil {
+		if period == "daily" {
+			resp.Date = dayKey
+			day := rep.Days[dayKey]
+			if day != nil {
+				if entity != "" {
+					if scope == "group" {
+						if entry := day.Groups[entity]; entry != nil {
+							resp.Summary = entry.Totals
+							resp.Trend = cloneUsageCountersSlice(entry.Hours)
+							addRow(entity, entry.Totals, entry.Hours)
+						}
+					} else if scope == "provider" {
+						if entry := day.Providers[entity]; entry != nil {
+							resp.Summary = entry.Totals
+							resp.Trend = cloneUsageCountersSlice(entry.Hours)
+							addRow(entity, entry.Totals, entry.Hours)
+						}
+					} else if entry := day.Users[strings.ToLower(entity)]; entry != nil {
+						resp.Summary = entry.Totals
+						resp.Trend = cloneUsageCountersSlice(entry.Hours)
+						addRow(strings.ToLower(entity), entry.Totals, entry.Hours)
+					}
+				} else {
+					if scope != "provider" {
+						resp.Summary = day.Totals
+					}
+					resp.Trend = make([]llmUsageCounters, 24)
+					if scope == "group" {
+						for id, entry := range day.Groups {
+							if entry == nil {
+								continue
+							}
+							addRow(id, entry.Totals, entry.Hours)
+							for i := 0; i < len(entry.Hours) && i < 24; i++ {
+								addUsageCountersFromTotals(&resp.Trend[i], entry.Hours[i])
+							}
+						}
+					} else if scope == "provider" {
+						for id, entry := range day.Providers {
+							if entry == nil {
+								continue
+							}
+							addUsageCountersFromTotals(&resp.Summary, entry.Totals)
+							addRow(id, entry.Totals, entry.Hours)
+							for i := 0; i < len(entry.Hours) && i < 24; i++ {
+								addUsageCountersFromTotals(&resp.Trend[i], entry.Hours[i])
+							}
+						}
+					} else {
+						for id, entry := range day.Users {
+							if entry == nil {
+								continue
+							}
+							addRow(id, entry.Totals, entry.Hours)
+							for i := 0; i < len(entry.Hours) && i < 24; i++ {
+								addUsageCountersFromTotals(&resp.Trend[i], entry.Hours[i])
+							}
+						}
+					}
+				}
 			}
 		} else {
-			for id, totals := range monthly {
-				addRow(id, totals, nil)
+			resp.Month = monthKey
+			monthly := map[string]llmUsageCounters{}
+			for date, day := range rep.Days {
+				if day == nil || !strings.HasPrefix(date, monthKey+"-") {
+					continue
+				}
+				if entity == "" && scope != "provider" {
+					addUsageCountersFromTotals(&resp.Summary, day.Totals)
+				}
+				if scope == "group" {
+					for id, entry := range day.Groups {
+						if entry == nil {
+							continue
+						}
+						curr := monthly[id]
+						addUsageCountersFromTotals(&curr, entry.Totals)
+						monthly[id] = curr
+					}
+				} else if scope == "provider" {
+					for id, entry := range day.Providers {
+						if entry == nil {
+							continue
+						}
+						if entity == "" {
+							addUsageCountersFromTotals(&resp.Summary, entry.Totals)
+						}
+						curr := monthly[id]
+						addUsageCountersFromTotals(&curr, entry.Totals)
+						monthly[id] = curr
+					}
+				} else {
+					for id, entry := range day.Users {
+						if entry == nil {
+							continue
+						}
+						curr := monthly[id]
+						addUsageCountersFromTotals(&curr, entry.Totals)
+						monthly[id] = curr
+					}
+				}
+			}
+			if entity != "" {
+				if totals, ok := monthly[entity]; ok {
+					resp.Summary = totals
+					addRow(entity, totals, nil)
+				}
+			} else {
+				for id, totals := range monthly {
+					addRow(id, totals, nil)
+				}
 			}
 		}
 	}
@@ -1464,6 +1517,7 @@ func buildLLMUsageReportResponse(ctx context.Context, rep *llmUsageReportsStore,
 		}
 		return resp.Rows[i].TotalTokens > resp.Rows[j].TotalTokens
 	})
+	pinSystemUser()
 	resp.Entities = make([]llmUsageReportEntityOption, 0, len(entityOptions))
 	for id, name := range entityOptions {
 		resp.Entities = append(resp.Entities, llmUsageReportEntityOption{ID: id, Name: name})

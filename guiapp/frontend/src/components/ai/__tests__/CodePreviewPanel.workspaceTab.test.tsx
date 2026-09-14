@@ -225,4 +225,55 @@ describe('CodePreviewPanel workspace vs file tabs', () => {
         expect(await screen.findByTestId('pdf-preview-panel')).toBeTruthy();
         expect(screen.queryByTestId('code-preview-wrap-toggle')).toBeNull();
     });
+
+    it('closes the preview when the last file is gone and there is no working directory', () => {
+        const onClose = vi.fn();
+        const file = snakeFile();
+        const view = render(
+            <CodePreviewPanel
+                files={new Map([[file.filePath, file]])}
+                activeFilePath={file.filePath}
+                onSelectFile={vi.fn()}
+                onClose={onClose}
+                theme={lightCodePreviewTheme}
+                lang="zh-Hans"
+                hideHeaderClose
+            />,
+        );
+        expect(onClose).not.toHaveBeenCalled();
+
+        view.rerender(
+            <CodePreviewPanel
+                files={new Map()}
+                activeFilePath=""
+                onSelectFile={vi.fn()}
+                onClose={onClose}
+                theme={lightCodePreviewTheme}
+                lang="zh-Hans"
+                hideHeaderClose
+            />,
+        );
+        expect(onClose).toHaveBeenCalledTimes(1);
+        expect(screen.queryByText('工作目录不可用')).toBeNull();
+
+        view.rerender(
+            <CodePreviewPanel
+                files={new Map()}
+                activeFilePath=""
+                onSelectFile={vi.fn()}
+                onClose={onClose}
+                theme={lightCodePreviewTheme}
+                lang="zh-Hans"
+                hideHeaderClose
+            />,
+        );
+        expect(onClose).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the workspace tree when files are empty but a project path is set', async () => {
+        const onClose = vi.fn();
+        renderLocalPreview(new Map(), '', { onClose });
+        expect(onClose).not.toHaveBeenCalled();
+        expect(await screen.findByTestId('code-preview-workspace')).toBeTruthy();
+    });
 });

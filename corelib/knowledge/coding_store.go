@@ -510,6 +510,7 @@ func (s *CodingKnowledgeStore) UpdateExperienceWithBudget(ctx context.Context, e
 	if strings.TrimSpace(exp.Content) == "" {
 		exp.Content = existing.Content
 	}
+	fillOmittedExperienceIdentityOnUpdate(&exp, existing)
 	if exp.CreatedAt.IsZero() {
 		exp.CreatedAt = existing.CreatedAt
 	}
@@ -573,11 +574,6 @@ func (s *CodingKnowledgeStore) UpdateExperienceWithBudget(ctx context.Context, e
 		return fmt.Errorf("coding knowledge: marshal metadata: %w", err)
 	}
 	labels := buildExperienceLabels(exp)
-
-	// Delete old and re-save with the same ID so FTS + metadata stay consistent.
-	if err := s.inner.DeleteSource(ctx, forceID); err != nil {
-		return fmt.Errorf("coding knowledge: delete for re-save: %w", err)
-	}
 
 	source, err := s.inner.SaveText(ctx, TextSaveRequest{
 		Text:           indexText,
@@ -1717,6 +1713,36 @@ func validateStatusTransition(from, to string) error {
 // Callers that only know an old list projection often submit zero values, so
 // zero is treated as omitted for positive counters/confidence; a conflicting
 // non-zero value is rejected rather than trusted.
+func fillOmittedExperienceIdentityOnUpdate(updated *CodingExperience, existing CodingExperience) {
+	if updated == nil {
+		return
+	}
+	if strings.TrimSpace(updated.ProjectPath) == "" {
+		updated.ProjectPath = existing.ProjectPath
+	}
+	if strings.TrimSpace(updated.Language) == "" {
+		updated.Language = existing.Language
+	}
+	if updated.FailedAttempts == nil {
+		updated.FailedAttempts = append([]string(nil), existing.FailedAttempts...)
+	}
+	if updated.Contraindications == nil {
+		updated.Contraindications = append([]string(nil), existing.Contraindications...)
+	}
+	if updated.Frameworks == nil {
+		updated.Frameworks = append([]string(nil), existing.Frameworks...)
+	}
+	if strings.TrimSpace(updated.SourceTaskTitle) == "" {
+		updated.SourceTaskTitle = existing.SourceTaskTitle
+	}
+	if strings.TrimSpace(updated.LanguageVersion) == "" {
+		updated.LanguageVersion = existing.LanguageVersion
+	}
+	if strings.TrimSpace(updated.ValidUntil) == "" {
+		updated.ValidUntil = existing.ValidUntil
+	}
+}
+
 func preserveExperienceLifecycleOnUpdate(updated *CodingExperience, existing CodingExperience) error {
 	if updated == nil {
 		return fmt.Errorf("coding knowledge: update experience is required")

@@ -2748,7 +2748,8 @@ function App() {
     useEffect(() => {
         const openExpertFromSearch = (event: Event) => {
             const expert = (event as CustomEvent<{ expert?: ExpertDefinition }>).detail?.expert;
-            if (!String(expert?.id || '').trim()) return;
+            // Narrow before use: reading `expert.id` in the guard also proves it is defined.
+            if (!expert || !String(expert.id || '').trim()) return;
             setPendingExpertOpen({ expert });
             setNavTabNow('ai');
         };
@@ -3849,6 +3850,11 @@ function App() {
     const openLLMSettingsPage = useCallback(() => {
         setNavTabNow('settings');
         selectSettingsTab('llm');
+    }, [selectSettingsTab]);
+
+    const openIMSettingsPage = useCallback(() => {
+        setNavTabNow('settings');
+        selectSettingsTab('im');
     }, [selectSettingsTab]);
 
     // ── Provider quick-switch: compute available list + handler ──
@@ -5166,7 +5172,7 @@ ${instruction}`;
         backgroundInstallStatus,
         lobsterOffline,
         lobsterHalf,
-        onOpenIMSettings: () => { setNavTabNow('settings'); selectSettingsTab('im'); },
+        onOpenIMSettings: openIMSettingsPage,
         onOpenLLMSettings: () => { setNavTabNow('settings'); selectSettingsTab('llm'); },
     };
 
@@ -5282,6 +5288,7 @@ ${instruction}`;
                 openHubCreditsPage={openHubCreditsPage}
                 openServiceRedeemPage={openServiceRedeemPage}
                 openLLMSettingsPage={openLLMSettingsPage}
+                openIMSettingsPage={openIMSettingsPage}
                 openHubCardStorePage={openHubCardStorePage}
                 codingAgentProgress={codingAgentProgress}
                 codingAgentTurnSnapshot={codingAgentTurnSnapshot}

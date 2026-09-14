@@ -472,6 +472,13 @@ func (h *IMMessageHandler) appendGUIEpilogue(b *strings.Builder, includeMemoryGu
 		h.appendBundleContextBanner(b)
 	}
 
+	// Overlay tails must stay last. RunLoop restrips every known marker then
+	// re-appends working state, session facts, and warehouse retractions.
+	h.appendSessionFactsSection(b, userID, loopCtx)
+	if len(history) > 0 {
+		h.appendMemoryRetractionSection(b)
+	}
+
 	totalElapsed := time.Since(epilogueStart)
 	if totalElapsed > 200*time.Millisecond {
 		log.Printf("[appendGUIEpilogue] slow: memory=%v knowledge=%v total=%v", memoryElapsed, knowledgeElapsed, totalElapsed)

@@ -4,6 +4,7 @@
  */
 import React, { useMemo } from 'react';
 import type { CodePreviewTheme } from './FileTabBar';
+import { markdownPreviewInkFromBg, type MarkdownPreviewInk } from './markdownPreviewInk';
 
 /** Detect a pipe-delimited table row */
 function isMdPreviewTableRow(line: string): boolean {
@@ -29,7 +30,7 @@ function parseMdPreviewTableCells(line: string): string[] {
 }
 
 /** Render a markdown table as an HTML <table> */
-function renderMdPreviewTable(tableLines: string[], theme: CodePreviewTheme): React.ReactNode | null {
+function renderMdPreviewTable(tableLines: string[], ink: MarkdownPreviewInk): React.ReactNode | null {
     const dataRows = tableLines.filter(l => !isMdPreviewSeparatorRow(l));
     if (dataRows.length === 0 || tableLines.length < 2) return null;
     // Need a separator or all rows must start with |
@@ -53,7 +54,7 @@ function renderMdPreviewTable(tableLines: string[], theme: CodePreviewTheme): Re
     });
 
     const cellStyle: React.CSSProperties = {
-        border: `1px solid ${theme.border}`,
+        border: `1px solid ${ink.rule}`,
         padding: '6px 10px',
         fontSize: 13,
         lineHeight: 1.5,
@@ -62,12 +63,12 @@ function renderMdPreviewTable(tableLines: string[], theme: CodePreviewTheme): Re
 
     return (
         <div style={{ overflowX: 'auto', margin: '8px 0' }}>
-            <table style={{ borderCollapse: 'collapse', width: '100%', color: theme.text }}>
+            <table style={{ borderCollapse: 'collapse', width: '100%', color: ink.body }}>
                 <thead>
                     <tr>
                         {headerCells.map((cell, ci) => (
-                            <th key={ci} style={{ ...cellStyle, textAlign: alignments[ci] || 'left', fontWeight: 600, background: theme.lineNumBg }}>
-                                {renderMdInline(cell, theme)}
+                            <th key={ci} style={{ ...cellStyle, textAlign: alignments[ci] || 'left', fontWeight: 600, background: ink.wash, color: ink.emphasis }}>
+                                {renderMdInline(cell, ink)}
                             </th>
                         ))}
                     </tr>
@@ -77,10 +78,10 @@ function renderMdPreviewTable(tableLines: string[], theme: CodePreviewTheme): Re
                         {bodyRows.map((row, ri) => {
                             const cells = parseMdPreviewTableCells(row);
                             return (
-                                <tr key={ri} style={{ background: ri % 2 === 1 ? theme.lineNumBg : undefined }}>
+                                <tr key={ri} style={{ background: ri % 2 === 1 ? ink.wash : undefined }}>
                                     {headerCells.map((_, ci) => (
                                         <td key={ci} style={{ ...cellStyle, textAlign: alignments[ci] || 'left' }}>
-                                            {renderMdInline(cells[ci] || '', theme)}
+                                            {renderMdInline(cells[ci] || '', ink)}
                                         </td>
                                     ))}
                                 </tr>
@@ -151,7 +152,7 @@ interface MdParsedBlock {
  * Parse markdown into line-ranged blocks. Separated from find highlighting so
  * match navigation does not re-run the full markdown/inline parse.
  */
-function parseMarkdownBlocks(content: string, theme: CodePreviewTheme): MdParsedBlock[] {
+function parseMarkdownBlocks(content: string, ink: MarkdownPreviewInk): MdParsedBlock[] {
     const lines = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
     const out: MdParsedBlock[] = [];
     let i = 0;
@@ -166,14 +167,14 @@ function parseMarkdownBlocks(content: string, theme: CodePreviewTheme): MdParsed
         if (tableLines.length === 0) return;
         const start0 = tableStart;
         const end0 = tableStart + tableLines.length - 1;
-        const rendered = renderMdPreviewTable(tableLines, theme);
+        const rendered = renderMdPreviewTable(tableLines, ink);
         if (rendered) {
             pushBlock(start0, end0, rendered);
         } else {
             for (let ti = 0; ti < tableLines.length; ti++) {
                 const tl = tableLines[ti];
                 pushBlock(start0 + ti, start0 + ti, (
-                    <p style={{ margin: '4px 0', lineHeight: 1.6 }}>{renderMdInline(tl, theme)}</p>
+                    <p style={{ margin: '4px 0', lineHeight: 1.6, color: ink.body }}>{renderMdInline(tl, ink)}</p>
                 ));
             }
         }
@@ -202,9 +203,9 @@ function parseMarkdownBlocks(content: string, theme: CodePreviewTheme): MdParsed
             if (i < lines.length) i++; // skip closing fence (only if found)
             const end0 = i - 1;
             pushBlock(start0, end0, (
-                <pre style={{ background: theme.lineNumBg, border: `1px solid ${theme.border}`, borderRadius: 6, padding: '10px 14px', margin: '8px 0', overflow: 'auto', fontSize: 13, lineHeight: 1.5 }}>
-                    <code style={{ color: theme.text, fontFamily: "'Cascadia Code', 'Consolas', monospace" }}>
-                        {fenceLang && <span style={{ color: theme.textMuted, fontSize: 11, display: 'block', marginBottom: 4 }}>{fenceLang}</span>}
+                <pre style={{ background: ink.wash, border: `1px solid ${ink.rule}`, borderRadius: 6, padding: '10px 14px', margin: '8px 0', overflow: 'auto', fontSize: 13, lineHeight: 1.5 }}>
+                    <code style={{ color: ink.body, fontFamily: "'Cascadia Code', 'Consolas', monospace" }}>
+                        {fenceLang && <span style={{ color: ink.muted, fontSize: 11, display: 'block', marginBottom: 4 }}>{fenceLang}</span>}
                         {codeLines.join('\n')}
                     </code>
                 </pre>
@@ -230,8 +231,8 @@ function parseMarkdownBlocks(content: string, theme: CodePreviewTheme): MdParsed
             const sizes: Record<number, number> = { 1: 22, 2: 18, 3: 15, 4: 14, 5: 13, 6: 12 };
             const margins: Record<number, string> = { 1: '16px 0 8px', 2: '14px 0 6px', 3: '12px 0 4px', 4: '10px 0 4px', 5: '8px 0 3px', 6: '8px 0 3px' };
             pushBlock(i, i, (
-                <div style={{ fontSize: sizes[level], fontWeight: level <= 2 ? 700 : 600, margin: margins[level], color: theme.tabActiveText, borderBottom: level <= 2 ? `1px solid ${theme.border}` : undefined, paddingBottom: level <= 2 ? 4 : undefined }}>
-                    {renderMdInline(headingMatch[2], theme)}
+                <div style={{ fontSize: sizes[level], fontWeight: level <= 2 ? 700 : 600, margin: margins[level], color: ink.emphasis, borderBottom: level <= 2 ? `1px solid ${ink.rule}` : undefined, paddingBottom: level <= 2 ? 4 : undefined }}>
+                    {renderMdInline(headingMatch[2], ink)}
                 </div>
             ));
             i++;
@@ -247,9 +248,9 @@ function parseMarkdownBlocks(content: string, theme: CodePreviewTheme): MdParsed
                 i++;
             }
             pushBlock(start0, i - 1, (
-                <blockquote style={{ borderLeft: `1px solid ${theme.border}`, paddingLeft: 12, margin: '6px 0', color: theme.textMuted, fontStyle: 'italic', lineHeight: 1.6 }}>
+                <blockquote style={{ borderLeft: `1px solid ${ink.rule}`, paddingLeft: 12, margin: '6px 0', color: ink.muted, fontStyle: 'italic', lineHeight: 1.6 }}>
                     {quoteLines.map((ql, qi) => (
-                        <div key={qi}>{ql.trim() === '' ? <br /> : renderMdInline(ql, theme)}</div>
+                        <div key={qi}>{ql.trim() === '' ? <br /> : renderMdInline(ql, ink)}</div>
                     ))}
                 </blockquote>
             ));
@@ -271,8 +272,8 @@ function parseMarkdownBlocks(content: string, theme: CodePreviewTheme): MdParsed
                 <div style={{ margin: '4px 0', paddingLeft: 4 }}>
                     {taskItems.map((item, ti) => (
                         <div key={ti} style={{ paddingLeft: 12, margin: '2px 0', display: 'flex', alignItems: 'flex-start', gap: 6 }}>
-                            <span style={{ flexShrink: 0, fontSize: 11, fontWeight: 700, color: theme.textMuted }}>{item.checked ? "DONE" : "TODO"}</span>
-                            <span style={{ textDecoration: item.checked ? 'line-through' : undefined, opacity: item.checked ? 0.7 : 1 }}>{renderMdInline(item.text, theme)}</span>
+                            <span style={{ flexShrink: 0, fontSize: 11, fontWeight: 700, color: ink.muted }}>{item.checked ? "DONE" : "TODO"}</span>
+                            <span style={{ textDecoration: item.checked ? 'line-through' : undefined, opacity: item.checked ? 0.7 : 1, color: ink.body }}>{renderMdInline(item.text, ink)}</span>
                         </div>
                     ))}
                 </div>
@@ -293,7 +294,7 @@ function parseMarkdownBlocks(content: string, theme: CodePreviewTheme): MdParsed
             }
             if (listItems.length === 0) {
                 // Defensive: outer regex matched but no items parsed — treat as paragraph.
-                pushBlock(start0, start0, <p style={{ margin: '4px 0', lineHeight: 1.6 }}>{renderMdInline(line, theme)}</p>);
+                pushBlock(start0, start0, <p style={{ margin: '4px 0', lineHeight: 1.6, color: ink.body }}>{renderMdInline(line, ink)}</p>);
                 continue;
             }
             const baseIndent = Math.min(...listItems.map(it => it.indent));
@@ -301,7 +302,7 @@ function parseMarkdownBlocks(content: string, theme: CodePreviewTheme): MdParsed
                 <ul style={{ margin: '4px 0', paddingLeft: 20, listStyleType: 'disc' }}>
                     {listItems.map((item, li) => (
                         <li key={li} style={{ marginLeft: (item.indent - baseIndent) * 10, marginBottom: 2 }}>
-                            {renderMdInline(item.text, theme)}
+                            {renderMdInline(item.text, ink)}
                         </li>
                     ))}
                 </ul>
@@ -321,7 +322,7 @@ function parseMarkdownBlocks(content: string, theme: CodePreviewTheme): MdParsed
                 i++;
             }
             if (olItems.length === 0) {
-                pushBlock(start0, start0, <p style={{ margin: '4px 0', lineHeight: 1.6 }}>{renderMdInline(line, theme)}</p>);
+                pushBlock(start0, start0, <p style={{ margin: '4px 0', lineHeight: 1.6, color: ink.body }}>{renderMdInline(line, ink)}</p>);
                 continue;
             }
             const baseIndent = Math.min(...olItems.map(it => it.indent));
@@ -329,7 +330,7 @@ function parseMarkdownBlocks(content: string, theme: CodePreviewTheme): MdParsed
                 <ol style={{ margin: '4px 0', paddingLeft: 20 }}>
                     {olItems.map((item, li) => (
                         <li key={li} value={parseInt(item.num, 10)} style={{ marginLeft: (item.indent - baseIndent) * 10, marginBottom: 2 }}>
-                            {renderMdInline(item.text, theme)}
+                            {renderMdInline(item.text, ink)}
                         </li>
                     ))}
                 </ol>
@@ -339,7 +340,7 @@ function parseMarkdownBlocks(content: string, theme: CodePreviewTheme): MdParsed
 
         // Horizontal rule
         if (/^[-*_]{3,}\s*$/.test(line.trim()) && !line.trim().startsWith('|')) {
-            pushBlock(i, i, <hr style={{ border: 'none', borderTop: `1px solid ${theme.border}`, margin: '12px 0' }} />);
+            pushBlock(i, i, <hr style={{ border: 'none', borderTop: `1px solid ${ink.rule}`, margin: '12px 0' }} />);
             i++;
             continue;
         }
@@ -349,8 +350,8 @@ function parseMarkdownBlocks(content: string, theme: CodePreviewTheme): MdParsed
         if (imgMatch) {
             pushBlock(i, i, (
                 <div style={{ margin: '8px 0', textAlign: 'center' }}>
-                    <img src={imgMatch[2]} alt={imgMatch[1]} style={{ maxWidth: '100%', borderRadius: 4, border: `1px solid ${theme.border}` }} />
-                    {imgMatch[1] && <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 4 }}>{imgMatch[1]}</div>}
+                    <img src={imgMatch[2]} alt={imgMatch[1]} style={{ maxWidth: '100%', borderRadius: 4, border: `1px solid ${ink.rule}` }} />
+                    {imgMatch[1] && <div style={{ fontSize: 12, color: ink.muted, marginTop: 4 }}>{imgMatch[1]}</div>}
                 </div>
             ));
             i++;
@@ -369,9 +370,9 @@ function parseMarkdownBlocks(content: string, theme: CodePreviewTheme): MdParsed
             }
             pushBlock(start0, i - 1, (
                 <dl style={{ margin: '6px 0' }}>
-                    <dt style={{ fontWeight: 600 }}>{renderMdInline(term, theme)}</dt>
+                    <dt style={{ fontWeight: 600, color: ink.emphasis }}>{renderMdInline(term, ink)}</dt>
                     {defs.map((d, di) => (
-                        <dd key={di} style={{ marginLeft: 20, margin: '2px 0 2px 20px', color: theme.text }}>{renderMdInline(d, theme)}</dd>
+                        <dd key={di} style={{ marginLeft: 20, margin: '2px 0 2px 20px', color: ink.body }}>{renderMdInline(d, ink)}</dd>
                     ))}
                 </dl>
             ));
@@ -386,7 +387,7 @@ function parseMarkdownBlocks(content: string, theme: CodePreviewTheme): MdParsed
         }
 
         // Default: paragraph
-        pushBlock(i, i, <p style={{ margin: '4px 0', lineHeight: 1.6 }}>{renderMdInline(line, theme)}</p>);
+        pushBlock(i, i, <p style={{ margin: '4px 0', lineHeight: 1.6, color: ink.body }}>{renderMdInline(line, ink)}</p>);
         i++;
     }
     flushTable();
@@ -405,9 +406,9 @@ export const MarkdownPreview = React.memo(function MarkdownPreview({
     activeMatchLine?: number;
 }) {
     const matchSet = useMemo(() => new Set(matchLineIndexes), [matchLineIndexes]);
+    const ink = useMemo(() => markdownPreviewInkFromBg(theme.bg), [theme.bg]);
 
-    // Expensive structure parse — only when content/theme change.
-    const blocks = useMemo(() => parseMarkdownBlocks(content, theme), [content, theme]);
+    const blocks = useMemo(() => parseMarkdownBlocks(content, ink), [content, ink]);
 
     // Cheap find-highlight wrap — re-runs on match navigation without re-parsing markdown.
     const elements = useMemo(
@@ -418,14 +419,14 @@ export const MarkdownPreview = React.memo(function MarkdownPreview({
     return (
         <div
             data-testid="code-preview-markdown-view"
-            style={{ padding: '16px 20px', fontSize: 14, lineHeight: 1.6, color: theme.text, fontFamily: 'inherit', wordBreak: 'break-word' }}
+            style={{ padding: '16px 20px', fontSize: 14, lineHeight: 1.6, color: ink.body, fontFamily: 'inherit', wordBreak: 'break-word' }}
         >
             {elements}
         </div>
     );
 });
 
-function renderMdInline(text: string, theme: CodePreviewTheme): React.ReactNode {
+function renderMdInline(text: string, ink: MarkdownPreviewInk): React.ReactNode {
     const parts: React.ReactNode[] = [];
     // Order matters: longer/more specific patterns first.
     // Patterns: inline code, bold+italic (***), bold (**), strikethrough (~~),
@@ -442,19 +443,19 @@ function renderMdInline(text: string, theme: CodePreviewTheme): React.ReactNode 
         const m = match[0];
         if (m.startsWith('`')) {
             // Inline code
-            parts.push(<code key={key++} style={{ background: theme.lineNumBg, padding: '1px 4px', borderRadius: 3, fontSize: '0.9em', color: theme.syntaxString }}>{m.slice(1, -1)}</code>);
+            parts.push(<code key={key++} style={{ background: ink.wash, padding: '1px 4px', borderRadius: 3, fontSize: '0.9em', color: ink.body }}>{m.slice(1, -1)}</code>);
         } else if (m.startsWith('***') && m.endsWith('***')) {
             // Bold + italic — recurse into inner content for nested formatting
-            parts.push(<strong key={key++}><em>{renderMdInline(m.slice(3, -3), theme)}</em></strong>);
+            parts.push(<strong key={key++} style={{ color: ink.emphasis }}><em>{renderMdInline(m.slice(3, -3), ink)}</em></strong>);
         } else if (m.startsWith('**')) {
             // Bold — recurse into inner content for nested formatting
-            parts.push(<strong key={key++}>{renderMdInline(m.slice(2, -2), theme)}</strong>);
+            parts.push(<strong key={key++} style={{ color: ink.emphasis }}>{renderMdInline(m.slice(2, -2), ink)}</strong>);
         } else if (m.startsWith('~~')) {
             // Strikethrough — recurse into inner content
-            parts.push(<del key={key++} style={{ opacity: 0.7 }}>{renderMdInline(m.slice(2, -2), theme)}</del>);
+            parts.push(<del key={key++} style={{ opacity: 0.7 }}>{renderMdInline(m.slice(2, -2), ink)}</del>);
         } else if (m.startsWith('==')) {
             // Highlight — recurse into inner content
-            parts.push(<mark key={key++} style={{ background: theme.tabHoverBg, color: theme.tabActiveText, padding: '0 2px', borderRadius: 2 }}>{renderMdInline(m.slice(2, -2), theme)}</mark>);
+            parts.push(<mark key={key++} style={{ background: ink.wash, color: ink.emphasis, padding: '0 2px', borderRadius: 2 }}>{renderMdInline(m.slice(2, -2), ink)}</mark>);
         } else if (m.startsWith('![')) {
             // Inline image
             const imgM = m.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
@@ -463,11 +464,11 @@ function renderMdInline(text: string, theme: CodePreviewTheme): React.ReactNode 
         } else if (m.startsWith('[')) {
             // Link
             const linkMatch = m.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
-            if (linkMatch) parts.push(<span key={key++} style={{ color: theme.syntaxFunction, textDecoration: 'underline', cursor: 'pointer' }}>{linkMatch[1]}</span>);
+            if (linkMatch) parts.push(<span key={key++} style={{ color: ink.link, textDecoration: 'underline', cursor: 'pointer' }}>{linkMatch[1]}</span>);
             else parts.push(m);
         } else if (m.startsWith('*') && m.endsWith('*')) {
             // Italic
-            parts.push(<em key={key++}>{m.slice(1, -1)}</em>);
+            parts.push(<em key={key++} style={{ color: ink.body }}>{m.slice(1, -1)}</em>);
         } else {
             parts.push(m);
         }

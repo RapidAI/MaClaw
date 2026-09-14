@@ -86,14 +86,15 @@ describe('findMatchLineIndexes / cycleMatchIndex / parseGoToLineInput', () => {
         expect(loadCodePreviewViewPrefs()).toEqual({
             wordWrap: false,
             fontSize: CODE_PREVIEW_FONT_DEFAULT,
+            minimap: true,
         });
 
-        saveCodePreviewViewPrefs({ wordWrap: true, fontSize: 18 });
-        expect(loadCodePreviewViewPrefs()).toEqual({ wordWrap: true, fontSize: 18 });
+        saveCodePreviewViewPrefs({ wordWrap: true, fontSize: 18, minimap: false });
+        expect(loadCodePreviewViewPrefs()).toEqual({ wordWrap: true, fontSize: 18, minimap: false });
 
-        // Invalid / out-of-range font is clamped.
+        // Invalid / out-of-range font is clamped. Missing minimap key stays on.
         localStorage.setItem(CODE_PREVIEW_VIEW_PREFS_KEY, JSON.stringify({ wordWrap: 1, fontSize: 99 }));
-        expect(loadCodePreviewViewPrefs()).toEqual({ wordWrap: false, fontSize: CODE_PREVIEW_FONT_MAX });
+        expect(loadCodePreviewViewPrefs()).toEqual({ wordWrap: false, fontSize: CODE_PREVIEW_FONT_MAX, minimap: true });
     });
 
     it('formats language labels for the path bar', () => {
@@ -385,7 +386,7 @@ describe('CodePreviewPanel find bar', () => {
     });
 
     it('restores wrap/font prefs from localStorage on mount', () => {
-        saveCodePreviewViewPrefs({ wordWrap: true, fontSize: 16 });
+        saveCodePreviewViewPrefs({ wordWrap: true, fontSize: 16, minimap: true });
 
         render(
             <CodePreviewPanel

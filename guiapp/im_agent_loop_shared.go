@@ -1342,6 +1342,46 @@ func (c *sharedAgentLoopCallbacks) SaveWorkingState(_ *agent.WorkingState) {
 	// Carrier is pendingAskUser / pendingRecordAudio plus LoopContext.ResumeWorkingState.
 }
 
+func (c *sharedAgentLoopCallbacks) LoadSessionFacts() *agent.SessionFactOverlay {
+	if c == nil {
+		return nil
+	}
+	if c.loopCtx != nil && c.loopCtx.SessionFacts != nil {
+		return agent.CloneSessionFactOverlay(c.loopCtx.SessionFacts)
+	}
+	if c.handler != nil {
+		return c.handler.loadSessionFacts(c.userID)
+	}
+	return nil
+}
+
+func (c *sharedAgentLoopCallbacks) SaveSessionFacts(overlay *agent.SessionFactOverlay) {
+	if c == nil {
+		return
+	}
+	cloned := agent.CloneSessionFactOverlay(overlay)
+	if c.loopCtx != nil {
+		c.loopCtx.SessionFacts = cloned
+	}
+	if c.handler != nil {
+		c.handler.storeSessionFacts(c.userID, cloned)
+	}
+}
+
+func (c *sharedAgentLoopCallbacks) OnVerifiedSessionFact(fact agent.SessionFact) {
+	if c == nil || c.handler == nil {
+		return
+	}
+	c.handler.syncVerifiedFactToStores(c.userID, fact)
+}
+
+func (c *sharedAgentLoopCallbacks) LoadMemoryRetractions() *agent.MemoryRetraction {
+	if c == nil || c.handler == nil {
+		return nil
+	}
+	return c.handler.LoadMemoryRetractions()
+}
+
 // ActiveWorkingStateGoal projects only a this-turn-active horizon or
 // goal-continuation objective. Leftover store/session goals stay hidden.
 func (c *sharedAgentLoopCallbacks) ActiveWorkingStateGoal() string {

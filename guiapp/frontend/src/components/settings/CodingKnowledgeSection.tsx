@@ -5,7 +5,8 @@ import { localizeText } from '../../i18n';
 import { useDialog } from '../CustomDialog';
 import { cfgVal, saveConfigPatch } from './programmingToolsConfig';
 import { CodingKnowledgeAuditDialog, CodingKnowledgeEditorDialog } from './CodingKnowledgeDialogs';
-import { SCOPE_TABS, TAB_LABELS, searchFilterFromScopeTab, toDraft, useDebouncedValue, type ExperienceDraft, type ScopeTab } from './codingKnowledgeHelpers';
+import { CodingKnowledgeStatsBar } from './CodingKnowledgeStatsBar';
+import { SCOPE_TABS, TAB_LABELS, formatCodingKnowledgeActionError, searchFilterFromScopeTab, toDraft, useDebouncedValue, type ExperienceDraft, type ScopeTab } from './codingKnowledgeHelpers';
 
 type Props = {
     config: corelib.AppConfig | null;
@@ -15,6 +16,10 @@ type Props = {
 };
 
 const textForLang = localizeText;
+
+function actionError(err: unknown, lang: string, en: string, zh: string, hant = zh): string {
+    return formatCodingKnowledgeActionError(err, textForLang(lang, en, zh, hant));
+}
 
 export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: Props) {
     const { showConfirm, showPrompt } = useDialog();
@@ -26,6 +31,7 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
     const [loading, setLoading] = useState(false);
     const [editorOpen, setEditorOpen] = useState(false);
     const [editorSaving, setEditorSaving] = useState(false);
+    const [editorSaveError, setEditorSaveError] = useState('');
     const [draft, setDraft] = useState<ExperienceDraft | null>(null);
     const [auditExperience, setAuditExperience] = useState<any | null>(null);
     const [auditEvents, setAuditEvents] = useState<knowledge.CodingExperienceLifecycleEvent[]>([]);
@@ -37,7 +43,9 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
     const [mySubmissions, setMySubmissions] = useState<any[]>([]);
     const mountedRef = useRef(true);
     const uid = useId();
-    const autoSaveMode = cfgVal(config, 'coding_knowledge_auto_save_mode', 'observe');
+    // Explicit union: the fallback literal alone would infer `"observe"` and make
+    // the `autoSaveMode === 'auto'` check below look unreachable.
+    const autoSaveMode = cfgVal<'observe' | 'auto' | 'off'>(config, 'coding_knowledge_auto_save_mode', 'observe');
     const saveStrategy = cfgVal(config, 'coding_knowledge_save_strategy', 'on_retry_success');
     const maxTotal = cfgVal(config, 'coding_knowledge_max_total', 1000);
     const maxPerProject = cfgVal(config, 'coding_knowledge_max_per_project', 200);
@@ -53,8 +61,12 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
                 setStats(s);
                 setCapacity(cap);
             }
-        } catch { /* ignore */ }
-    }, []);
+        } catch (err) {
+            if (mountedRef.current) {
+                setActionMessage(actionError(err, lang, 'Failed to load knowledge stats.', '无法加载知识库统计。', '無法載入知識庫統計。'));
+            }
+        }
+    }, [lang]);
 
     const loadExperiences = useCallback(async () => {
         if (!mountedRef.current) return;
@@ -68,12 +80,14 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
                 results = await CodingKnowledgeList({ limit: 100, ...tabFilter });
             }
             if (mountedRef.current) setExperiences(results || []);
-        } catch {
-            if (mountedRef.current) setExperiences([]);
+        } catch (err) {
+            if (mountedRef.current) {
+                setActionMessage(actionError(err, lang, 'Failed to load experiences.', '无法加载经验列表。', '無法載入經驗列表。'));
+            }
         } finally {
             if (mountedRef.current) setLoading(false);
         }
-    }, [activeTab, debouncedSearch]);
+    }, [activeTab, debouncedSearch, lang]);
 
     useEffect(() => () => { mountedRef.current = false; }, []);
     useEffect(() => { void loadStats(); void loadExperiences(); }, [loadStats, loadExperiences]);
@@ -98,7 +112,9 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
             await CodingKnowledgeDelete(id);
             void loadStats();
             void loadExperiences();
-        } catch (err) { console.error('delete experience:', err); }
+        } catch (err) {
+            setActionMessage(actionError(err, lang, 'Delete failed.', '删除失败。', '刪除失敗。'));
+        }
     };
 
     const handleConfirm = async (id: string) => {
@@ -106,7 +122,9 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
             await CodingKnowledgeConfirm(id);
             void loadStats();
             void loadExperiences();
-        } catch (err) { console.error('confirm experience:', err); }
+        } catch (err) {
+            setActionMessage(actionError(err, lang, 'Confirm failed.', '确认失败。', '確認失敗。'));
+        }
     };
 
     const handleMarkConflict = async (id: string) => {
@@ -121,7 +139,9 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
             setActionMessage(textForLang(lang, 'Experience retired as conflicted.', '经验已因冲突退役。', '經驗已因衝突退役。'));
             void loadStats();
             void loadExperiences();
-        } catch (err) { console.error('mark experience conflict:', err); }
+        } catch (err) {
+            setActionMessage(actionError(err, lang, 'Failed to mark conflict.', '标记冲突失败。', '標記衝突失敗。'));
+        }
     };
 
     const handleCreateRevision = async (id: string) => {
@@ -136,7 +156,9 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
             setActionMessage(textForLang(lang, `Created revision candidate: ${candidate.title || candidate.id}.`, `已创建修订候选项：${candidate.title || candidate.id}。`, `已建立修訂候選項：${candidate.title || candidate.id}。`));
             void loadStats();
             void loadExperiences();
-        } catch (err) { console.error('create experience revision:', err); }
+        } catch (err) {
+            setActionMessage(actionError(err, lang, 'Failed to create revision.', '创建修订失败。', '建立修訂失敗。'));
+        }
     };
 
     const openAudit = async (exp: any) => {
@@ -144,7 +166,9 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
             const events = await CodingKnowledgeLifecycle(exp.id);
             setAuditExperience(exp);
             setAuditEvents(events || []);
-        } catch (err) { console.error('load experience lifecycle:', err); }
+        } catch (err) {
+            setActionMessage(actionError(err, lang, 'Failed to load audit history.', '无法加载审计记录。', '無法載入稽核記錄。'));
+        }
     };
 
     const handleReset = async () => {
@@ -157,7 +181,9 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
             await CodingKnowledgeResetFile();
             void loadStats();
             void loadExperiences();
-        } catch (err) { console.error('reset knowledge:', err); }
+        } catch (err) {
+            setActionMessage(actionError(err, lang, 'Reset failed.', '清空失败。', '清空失敗。'));
+        }
     };
 
     const openEditor = async (id: string) => {
@@ -165,13 +191,17 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
             const raw = await CodingKnowledgeGet(id);
             setDraft(toDraft(raw));
             setEditorOpen(true);
+            setEditorSaveError('');
             setActionMessage('');
-        } catch (err) { console.error('get experience:', err); }
+        } catch (err) {
+            setActionMessage(actionError(err, lang, 'Failed to load experience.', '无法加载经验。', '無法載入經驗。'));
+        }
     };
 
     const handleSaveDraft = async () => {
         if (!draft) return;
         setEditorSaving(true);
+        setEditorSaveError('');
         try {
             await CodingKnowledgeUpdate(draft as knowledge.CodingExperience);
             setActionMessage(textForLang(lang, 'Experience saved.', '经验已保存。', '經驗已保存。'));
@@ -179,8 +209,9 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
             setDraft(null);
             void loadStats();
             void loadExperiences();
-        } catch (err) {
+        } catch (err: any) {
             console.error('save experience:', err);
+            setEditorSaveError(actionError(err, lang, 'Save failed.', '保存失败。', '保存失敗。'));
         } finally {
             setEditorSaving(false);
         }
@@ -214,8 +245,8 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
             setActionMessage(textForLang(lang, `Submitted ${result.item_count || selectedIDs.length} experience(s) for review.`, `已投稿 ${result.item_count || selectedIDs.length} 条经验，等待审批。`, `已投稿 ${result.item_count || selectedIDs.length} 條經驗，等待審批。`));
             const items = await DigitalAssetListMySubmissions();
             if (mountedRef.current) setMySubmissions(items || []);
-        } catch (err: any) {
-            setActionMessage(String(err?.message || err || textForLang(lang, 'Contribute failed.', '投稿失败。', '投稿失敗。')));
+        } catch (err) {
+            setActionMessage(actionError(err, lang, 'Contribute failed.', '投稿失败。', '投稿失敗。'));
         }
     };
 
@@ -230,7 +261,9 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
             if (!path) return;
             await CodingKnowledgeExportToFile(path);
             setActionMessage(textForLang(lang, 'Exported experiences.', '已导出经验。', '已匯出經驗。'));
-        } catch (err) { console.error('export knowledge:', err); }
+        } catch (err) {
+            setActionMessage(actionError(err, lang, 'Export failed.', '导出失败。', '匯出失敗。'));
+        }
     };
 
     const handleImport = async () => {
@@ -241,7 +274,9 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
             setActionMessage(textForLang(lang, `Imported ${count} experiences.`, `已导入 ${count} 条经验。`, `已匯入 ${count} 條經驗。`));
             void loadStats();
             void loadExperiences();
-        } catch (err) { console.error('import knowledge:', err); }
+        } catch (err) {
+            setActionMessage(actionError(err, lang, 'Import failed.', '导入失败。', '匯入失敗。'));
+        }
     };
 
     const handleGraduate = async (id: string) => {
@@ -249,7 +284,9 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
             await CodingKnowledgeGraduateToSteering(id);
             void loadStats();
             void loadExperiences();
-        } catch (err) { console.error('graduate experience:', err); }
+        } catch (err) {
+            setActionMessage(actionError(err, lang, 'Failed to graduate experience.', '晋升失败。', '晉升失敗。'));
+        }
     };
 
     const handleEvict = async () => {
@@ -258,52 +295,16 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
             setActionMessage(textForLang(lang, `Evicted ${n} experiences.`, `已淘汰 ${n} 条经验。`, `已淘汰 ${n} 條經驗。`));
             void loadStats();
             void loadExperiences();
-        } catch (err) { console.error('evict knowledge:', err); }
+        } catch (err) {
+            setActionMessage(actionError(err, lang, 'Eviction failed.', '淘汰失败。', '淘汰失敗。'));
+        }
     };
 
-    const totalCount = stats?.total_count || 0;
     const capacityMax = capacity?.max_total ?? maxTotal;
 
     return (
         <div className="prog-tools__card prog-tools__kb">
-            {totalCount > 0 ? (
-                <div className="prog-tools__kb-stats" role="status" aria-live="polite">
-                    <div className="prog-tools__kb-stat">
-                        <span className="prog-tools__kb-stat-value">{totalCount}</span>
-                        <span className="prog-tools__kb-stat-label">{textForLang(lang, 'Total', '总计', '總計')}</span>
-                    </div>
-                    <div className="prog-tools__kb-stat">
-                        <span className="prog-tools__kb-stat-value">/{capacityMax}</span>
-                        <span className="prog-tools__kb-stat-label">{textForLang(lang, 'Capacity', '容量', '容量')}</span>
-                    </div>
-                    <div className="prog-tools__kb-stat" data-type="verified">
-                        <span className="prog-tools__kb-stat-value">{stats?.verified_count || 0}</span>
-                        <span className="prog-tools__kb-stat-label">{textForLang(lang, 'Verified', '已验证', '已驗證')}</span>
-                    </div>
-                    <div className="prog-tools__kb-stat" data-type="active">
-                        <span className="prog-tools__kb-stat-value">{stats?.active_count || 0}</span>
-                        <span className="prog-tools__kb-stat-label">{textForLang(lang, 'Active', '活跃', '活躍')}</span>
-                    </div>
-                    <div className="prog-tools__kb-stat" data-type="candidate">
-                        <span className="prog-tools__kb-stat-value">{stats?.candidate_count || 0}</span>
-                        <span className="prog-tools__kb-stat-label">{textForLang(lang, 'Candidate', '候选', '候選')}</span>
-                    </div>
-                </div>
-            ) : (
-                <div className="prog-tools__kb-stats-empty" role="status">
-                    {textForLang(lang, 'Knowledge base is empty — experiences will be collected as you code.', '知识库为空，编程时将自动积累经验。', '知識庫為空，程式設計時將自動積累經驗。')}
-                </div>
-            )}
-            {autoSaveMode === 'auto' && (stats?.candidate_count || 0) > 0 ? (
-                <div className="prog-tools__kb-action-msg" role="status">
-                    {textForLang(
-                        lang,
-                        `${stats.candidate_count} candidate(s) awaiting review.`,
-                        `${stats.candidate_count} 条候选经验待审核。`,
-                        `${stats.candidate_count} 條候選經驗待審核。`,
-                    )}
-                </div>
-            ) : null}
+            <CodingKnowledgeStatsBar lang={lang} stats={stats} capacityMax={capacityMax} autoSaveMode={autoSaveMode} />
 
             <div className="prog-tools__kb-config">
                 <div className="prog-tools__kb-config-item">
@@ -478,8 +479,9 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
                     lang={lang}
                     draft={draft}
                     editorSaving={editorSaving}
+                    saveError={editorSaveError}
                     onChange={setDraft}
-                    onCancel={() => { setEditorOpen(false); setDraft(null); }}
+                    onCancel={() => { setEditorOpen(false); setDraft(null); setEditorSaveError(''); }}
                     onSave={() => { void handleSaveDraft(); }}
                 />
             )}

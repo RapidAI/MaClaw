@@ -59,7 +59,8 @@ export function filterMobileLibraryHits(
 ): HeaderFileSearchHit[] {
     const list = Array.isArray(items) ? items : [];
     const matched = list.filter((item) => matchLibraryQuery(libraryItemHaystack(item), query));
-    return matched.slice(0, Math.max(0, limit)).map((item) => ({
+    // Annotate the callback result: without it the `type` ternary widens to `string`.
+    return matched.slice(0, Math.max(0, limit)).map((item): HeaderFileSearchHit => ({
         id: String(item.id || "").trim(),
         title: String(item.title || item.source_filename || item.id || "").trim(),
         preview: String(item.preview || item.source_filename || "").trim(),

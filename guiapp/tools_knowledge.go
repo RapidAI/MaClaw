@@ -2357,6 +2357,9 @@ func (a *App) toolKnowledgeSaveText(args map[string]interface{}) string {
 		Labels:      knowledgeToolStringSlice(args["labels"]),
 		AutoLabels:  knowledgeToolBoolArg(args, "auto_labels", true),
 	})
+	if err == nil {
+		a.syncMemoryFromVerifiedKnowledgeText(text)
+	}
 	return knowledgeToolJSON(map[string]interface{}{"source": source}, err)
 }
 

@@ -46,10 +46,22 @@ func (s *SQLiteStore) SaveText(ctx context.Context, req TextSaveRequest) (Source
 			}
 		}
 	}
+	if forceID != "" {
+		// Keep the source row and replace derived rows in this transaction so an
+		// update cannot delete the experience before the replacement is durable.
+		if err := deleteSourceDerivedRows(ctx, tx, forceID); err != nil {
+			return Source{}, err
+		}
+	}
 	if err := insertSource(ctx, tx, source); err != nil {
 		return Source{}, err
 	}
-	if err := addSourceLabelsTx(ctx, tx, source.ID, ingestLabelsForSource(source, req.Labels, req.AutoLabels)); err != nil {
+	labels := ingestLabelsForSource(source, req.Labels, req.AutoLabels)
+	if forceID != "" {
+		if err := replaceSourceLabelsTx(ctx, tx, source.ID, labels); err != nil {
+			return Source{}, err
+		}
+	} else if err := addSourceLabelsTx(ctx, tx, source.ID, labels); err != nil {
 		return Source{}, err
 	}
 	if err := insertDocumentNodes(ctx, tx, nodes); err != nil {
@@ -69,7 +81,11 @@ func (s *SQLiteStore) SaveText(ctx context.Context, req TextSaveRequest) (Source
 	_, _ = s.refreshSourceTopicLinksFast(ctx, source.ID, importTopicLinkLimit, nil)
 	// The source is durable once Commit succeeds. Hydration only enriches the
 	// returned view, so cancellation here must not trigger duplicate retries.
-	return s.finalizeCommittedSource(ctx, source, isDuplicate), nil
+	source = s.finalizeCommittedSource(ctx, source, isDuplicate)
+	if !isDuplicate && strings.TrimSpace(req.ForceID) == "" {
+		s.syncVerifiedTextFact(ctx, source, req)
+	}
+	return source, nil
 }
 
 func buildTextSourceAndNodes(req TextSaveRequest, existing Source) (Source, []DocumentNode, error) {

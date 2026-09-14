@@ -1485,6 +1485,7 @@ describe('CodingAgentProgressStatus', () => {
         expect(trail?.getAttribute('aria-label')).toBe('工作中');
         expect(trail?.getAttribute('aria-live')).toBe('off');
         expect(trail?.querySelector('.coding-agent-working-dot')).toBeTruthy();
+        expect(trail?.querySelector('.assistant-reasoning-live-label')?.textContent).toBe('Working');
     });
 
     it('renders apply_patch as Edit in the activity trail', () => {

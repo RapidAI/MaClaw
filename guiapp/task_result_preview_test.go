@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -256,5 +257,201 @@ func TestPreviewTaskResultFileRejectsBinary(t *testing.T) {
 func TestIsTaskResultOfficeExt(t *testing.T) {
 	if !isTaskResultOfficeExt(".docx") || !isTaskResultOfficeExt(".xlsx") || isTaskResultOfficeExt(".pptx") {
 		t.Fatal("office ext classification")
+	}
+}
+
+func TestExportTaskResultFileCopiesToChosenPath(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "report.docx")
+	if err := os.WriteFile(src, []byte("hello-doc"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(dir, "copy.docx")
+	orig := taskResultSaveDialog
+	t.Cleanup(func() { taskResultSaveDialog = orig })
+	taskResultSaveDialog = func(_ *App, _, _ string) (string, error) {
+		return dest, nil
+	}
+
+	got, err := (*App)(nil).ExportTaskResultFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != dest && !strings.EqualFold(got, dest) {
+		t.Fatalf("dest = %q, want %q", got, dest)
+	}
+	raw, err := os.ReadFile(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "hello-doc" {
+		t.Fatalf("copied %q", raw)
+	}
+}
+
+func TestExportTaskResultFileCancelReturnsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "notes.md")
+	if err := os.WriteFile(src, []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	orig := taskResultSaveDialog
+	t.Cleanup(func() { taskResultSaveDialog = orig })
+	taskResultSaveDialog = func(_ *App, _, _ string) (string, error) {
+		return "", nil
+	}
+	got, err := (*App)(nil).ExportTaskResultFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "" {
+		t.Fatalf("cancelled export returned %q", got)
+	}
+}
+
+func TestExportTaskResultFileAppendsExtension(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "deck.pptx")
+	if err := os.WriteFile(src, []byte("pk"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(dir, "exported")
+	orig := taskResultSaveDialog
+	t.Cleanup(func() { taskResultSaveDialog = orig })
+	taskResultSaveDialog = func(_ *App, _, defaultFilename string) (string, error) {
+		if defaultFilename != "deck.pptx" {
+			t.Fatalf("default filename = %q", defaultFilename)
+		}
+		return dest, nil
+	}
+	got, err := (*App)(nil).ExportTaskResultFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(strings.ToLower(got), ".pptx") {
+		t.Fatalf("expected .pptx suffix, got %q", got)
+	}
+	raw, err := os.ReadFile(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "pk" {
+		t.Fatalf("copied %q", raw)
+	}
+}
+
+func TestExportTaskResultFileRejectsMissingAndDirectory(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := (*App)(nil).ExportTaskResultFile(filepath.Join(dir, "missing.txt")); err == nil || !strings.Contains(err.Error(), "文件不存在") {
+		t.Fatalf("missing-file error = %v", err)
+	}
+	if _, err := (*App)(nil).ExportTaskResultFile(dir); err == nil || !strings.Contains(err.Error(), "不是文件") {
+		t.Fatalf("directory error = %v", err)
+	}
+}
+
+func TestExportTaskResultFileOverwritesExistingDest(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "report.docx")
+	dest := filepath.Join(dir, "copy.docx")
+	if err := os.WriteFile(src, []byte("new-bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dest, []byte("old-bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	orig := taskResultSaveDialog
+	t.Cleanup(func() { taskResultSaveDialog = orig })
+	taskResultSaveDialog = func(_ *App, _, _ string) (string, error) {
+		return dest, nil
+	}
+	got, err := (*App)(nil).ExportTaskResultFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "new-bytes" {
+		t.Fatalf("overwrite copied %q", raw)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".maclaw-export-") {
+			t.Fatalf("leftover temp file %s", entry.Name())
+		}
+	}
+}
+
+func TestExportTaskResultFileCopiesWhenDialogReturnsPathAndError(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "notes.md")
+	dest := filepath.Join(dir, "copy.md")
+	if err := os.WriteFile(src, []byte("keep-me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	orig := taskResultSaveDialog
+	t.Cleanup(func() { taskResultSaveDialog = orig })
+	taskResultSaveDialog = func(_ *App, _, _ string) (string, error) {
+		return dest, fmt.Errorf("dialog warning")
+	}
+	got, err := (*App)(nil).ExportTaskResultFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "keep-me" {
+		t.Fatalf("copied %q", raw)
+	}
+}
+
+func TestExportTaskResultFileDialogErrorWithoutPathIsCancel(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "notes.md")
+	if err := os.WriteFile(src, []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	orig := taskResultSaveDialog
+	t.Cleanup(func() { taskResultSaveDialog = orig })
+	taskResultSaveDialog = func(_ *App, _, _ string) (string, error) {
+		return "", fmt.Errorf("dialog failed")
+	}
+	got, err := (*App)(nil).ExportTaskResultFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "" {
+		t.Fatalf("cancelled export returned %q", got)
+	}
+}
+
+func TestExportTaskResultFileSamePathIsNoop(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "same.md")
+	if err := os.WriteFile(src, []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	orig := taskResultSaveDialog
+	t.Cleanup(func() { taskResultSaveDialog = orig })
+	taskResultSaveDialog = func(_ *App, _, _ string) (string, error) {
+		return src, nil
+	}
+	got, err := (*App)(nil).ExportTaskResultFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "keep" {
+		t.Fatalf("same-path copy clobbered file: %q", raw)
 	}
 }

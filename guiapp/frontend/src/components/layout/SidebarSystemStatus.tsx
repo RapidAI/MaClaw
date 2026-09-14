@@ -2,6 +2,13 @@ import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react
 import type { SidebarCreditDisplayFormatters, SidebarCurrentProviderTokenUsage, SidebarHubCredits, SidebarLLMProviderSummary } from '../../types/appShell';
 import type { CodingAgentProgress, CodingAgentTurnSnapshot } from '../ai/CodingAgentProgressStatus';
 import { localizeText } from '../../i18n';
+import {
+    aggregateIMConnectionKind,
+    connectionStatusGlyphKind,
+    connectionStatusLabel,
+    imPendingIsConnecting,
+    type IMConnectionKind,
+} from '../settings/imSettingsShared';
 import { CodingAgentSidebarStatus } from './CodingAgentSidebarStatus';
 import { IconAlert } from '../ai/WorkbenchIcons';
 import {
@@ -42,6 +49,7 @@ type SidebarSystemStatusProps = SidebarCreditDisplayFormatters & {
     openHubCreditsPage: () => void;
     openServiceRedeemPage?: () => void;
     openLLMSettingsPage?: () => void;
+    openIMSettingsPage?: () => void;
     openHubCardStorePage?: () => void;
     codingAgentProgress?: CodingAgentProgress | null;
     codingAgentTurnSnapshot?: CodingAgentTurnSnapshot | null;
@@ -86,6 +94,31 @@ const CREDIT_SEPARATOR = ` ${String.fromCharCode(0x00b7)} `;
 const DROPDOWN_CHECK = '\u2713';
 
 const textForLang = localizeText;
+
+type IMChannelSnapshot = { label: string; status: string };
+
+function imWorkbenchStatusText(
+    kind: IMConnectionKind,
+    channels: IMChannelSnapshot[],
+    lang: string,
+    onlineText: string,
+    offlineText: string,
+): string {
+    if (kind === 'online') {
+        const connected = channels
+            .filter((channel) => connectionStatusGlyphKind(channel.status) === 'ok')
+            .map((channel) => channel.label);
+        if (connected.length > 0) return connected.join(CREDIT_SEPARATOR);
+        return `IM ${onlineText}`;
+    }
+    if (kind === 'pending') {
+        return imPendingIsConnecting(channels.map((channel) => channel.status))
+            ? textForLang(lang, 'IM connecting', 'IM 连接中', 'IM 連線中')
+            : textForLang(lang, 'IM paused', 'IM 已暂停', 'IM 已暫停');
+    }
+    if (kind === 'error') return textForLang(lang, 'IM error', 'IM 错误', 'IM 錯誤');
+    return `IM ${offlineText}`;
+}
 
 function VisionProviderIcon() {
     return (
@@ -159,6 +192,7 @@ export const SidebarSystemStatus = ({
     openHubCreditsPage,
     openServiceRedeemPage,
     openLLMSettingsPage,
+    openIMSettingsPage,
     openHubCardStorePage,
     codingAgentProgress = null,
     codingAgentTurnSnapshot = null,
@@ -466,7 +500,35 @@ export const SidebarSystemStatus = ({
         : isLocalCacheRate
             ? `${textForLang(lang, 'Local cache hit', '\u672c\u5730\u7f13\u5b58\u547d\u4e2d', '\u672c\u5730\u5feb\u53d6\u547d\u4e2d')}: ${cacheHitRate}%${CREDIT_SEPARATOR}${textForLang(lang, 'Hits', '\u547d\u4e2d', '\u547d\u4e2d')} ${cachedRequests}/${cacheRequests}`
             : `${textForLang(lang, 'Cache hit', '\u7f13\u5b58\u547d\u4e2d', '\u5feb\u53d6\u547d\u4e2d')}: ${cacheHitRate}%${CREDIT_SEPARATOR}${textForLang(lang, 'Read', '\u8bfb\u53d6', '\u8b80\u53d6')} ${formatSidebarTokens(cachedInput)}${CREDIT_SEPARATOR}${textForLang(lang, 'Write', '\u5199\u5165', '\u5beb\u5165')} ${formatSidebarTokens(cacheWrite)}`;
-    const imOnline = qqBotStatus === 'connected' || telegramStatus === 'connected' || weixinStatus === 'connected' || (showLansenger && lansengerStatus === 'connected');
+    const imChannels: IMChannelSnapshot[] = [
+        { label: textForLang(lang, 'WeChat', '微信', '微信'), status: weixinStatus },
+        { label: textForLang(lang, 'QQ', 'QQ', 'QQ'), status: qqBotStatus },
+        { label: 'Telegram', status: telegramStatus },
+        ...(showLansenger ? [{ label: textForLang(lang, 'Lansenger', '蓝信', '藍信'), status: lansengerStatus }] : []),
+    ];
+    const imKind = aggregateIMConnectionKind(imChannels.map((channel) => channel.status));
+    const imOnline = imKind === 'online';
+    const imStatusText = imWorkbenchStatusText(imKind, imChannels, lang, onlineText, offlineText);
+    const imOnlineClass = ` is-${imKind}`;
+    const imTooltip = imChannels
+        .map((channel) => `${channel.label}: ${connectionStatusLabel(channel.status, lang)}`)
+        .join(CREDIT_SEPARATOR);
+    const imStatusAriaLabel = openIMSettingsPage
+        ? textForLang(lang, `IM status: ${imStatusText}. Open IM settings`, `IM状态：${imStatusText}，打开 IM 设置`, `IM狀態：${imStatusText}，開啟 IM 設定`)
+        : textForLang(lang, `IM status: ${imStatusText}`, `IM状态：${imStatusText}`, `IM狀態：${imStatusText}`);
+    const imStatusChipProps = {
+        'data-testid': 'workbench-im-status',
+        'data-im-kind': imKind,
+        'aria-label': imStatusAriaLabel,
+        title: imTooltip,
+        className: `mc-workbench-status-card__online mc-workbench-status-card__im${imOnlineClass}`,
+    };
+    const imStatusChipBody = (
+        <>
+            <i aria-hidden="true" />
+            <span>{imStatusText}</span>
+        </>
+    );
     const backgroundTaskLabel = textForLang(lang, 'Background tasks', '\u540e\u53f0\u4efb\u52a1', '\u5f8c\u53f0\u4efb\u52d9');
     const isChineseLang = lang === 'zh-Hans' || lang === 'zh-Hant' || lang === 'zh';
     const backgroundTaskText = `${backgroundTaskLabel}${isChineseLang ? '\uff1a ' : ': '}${backgroundTaskCount}`;
@@ -597,10 +659,17 @@ export const SidebarSystemStatus = ({
             <section className="mc-workbench-status-card" data-testid="workbench-status-card" aria-label={textForLang(lang, 'Workspace status', '状态', '狀態')}>
                 <div className="mc-workbench-status-card__heading">
                     <strong>{textForLang(lang, 'Status', '状态', '狀態')}</strong>
-                    <span className={`mc-workbench-status-card__online${workbenchOnline ? '' : ' is-offline'}`}>
-                        <i aria-hidden="true" />
-                        {workbenchOnline ? textForLang(lang, 'Online', '在线', '在線') : textForLang(lang, 'Offline', '离线', '離線')}
-                    </span>
+                    <div className="mc-workbench-status-card__heading-signals">
+                        <span className={`mc-workbench-status-card__online mc-workbench-status-card__system${workbenchOnline ? ' is-online' : ' is-offline'}`}>
+                            <i aria-hidden="true" />
+                            {workbenchOnline ? textForLang(lang, 'Online', '在线', '在線') : textForLang(lang, 'Offline', '离线', '離線')}
+                        </span>
+                        {openIMSettingsPage ? (
+                            <button type="button" {...imStatusChipProps} onClick={openIMSettingsPage}>{imStatusChipBody}</button>
+                        ) : (
+                            <span {...imStatusChipProps}>{imStatusChipBody}</span>
+                        )}
+                    </div>
                 </div>
                 <button type="button" aria-label={textForLang(lang, 'Open model settings', '打开大模型设置', '開啟大模型設定')} title={textForLang(lang, 'Open model settings', '打开大模型设置', '開啟大模型設定')} className="mc-workbench-status-card__row mc-workbench-status-card__model" onClick={openLLMSettingsPage} disabled={!openLLMSettingsPage}>
                     <span>{textForLang(lang, 'Model', '当前模型', '目前模型')}</span>

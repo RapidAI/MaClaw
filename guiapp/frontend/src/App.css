@@ -3065,50 +3065,37 @@ body {
 }
 details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg); }
 .assistant-reasoning-summary--plain::before { content: none; width: 0; margin: 0; }
-/* Live activity title: one highlight walks through the glyphs (inherits summary ink).
-   Light --assistant-sheen-spot must match ASSISTANT_LIVE_SHEEN_SPOT_LIGHT. */
+/* Live activity title: a highlight walks through the glyphs only.
+   Same idea as Codex — do not restyle the row background. */
 .assistant-reasoning-live-label {
     display: inline-block;
-    --assistant-sheen-spot: #b8c3d0;
-}
-@supports ((-webkit-background-clip: text) or (background-clip: text)) {
-    .assistant-reasoning-live-label {
-        background-image: linear-gradient(
-            90deg,
-            currentColor 0%,
-            currentColor 34%,
-            var(--assistant-sheen-spot) 50%,
-            currentColor 66%,
-            currentColor 100%
-        );
-        background-size: 220% 100%;
-        background-position: 100% 50%;
-        background-repeat: no-repeat;
-        -webkit-background-clip: text;
-        background-clip: text;
-        -webkit-text-fill-color: transparent;
-        animation: assistant-reasoning-shimmer 1.65s linear infinite;
-    }
+    -webkit-mask-image: linear-gradient(90deg, rgba(0, 0, 0, 0.38) 0%, rgba(0, 0, 0, 0.38) 36%, #000 50%, rgba(0, 0, 0, 0.38) 64%, rgba(0, 0, 0, 0.38) 100%);
+    mask-image: linear-gradient(90deg, rgba(0, 0, 0, 0.38) 0%, rgba(0, 0, 0, 0.38) 36%, #000 50%, rgba(0, 0, 0, 0.38) 64%, rgba(0, 0, 0, 0.38) 100%);
+    -webkit-mask-size: 220% 100%;
+    mask-size: 220% 100%;
+    -webkit-mask-repeat: no-repeat;
+    mask-repeat: no-repeat;
+    -webkit-mask-position: 100% 0;
+    mask-position: 100% 0;
+    animation: assistant-reasoning-shimmer 1.4s linear infinite;
 }
 .assistant-reasoning-live-dot {
     animation: assistant-reasoning-dot-pulse 1.4s ease-in-out infinite;
 }
 @keyframes assistant-reasoning-shimmer {
-    0% { background-position: 100% 50%; }
-    100% { background-position: 0% 50%; }
+    0% { -webkit-mask-position: 100% 0; mask-position: 100% 0; }
+    100% { -webkit-mask-position: -20% 0; mask-position: -20% 0; }
 }
 @keyframes assistant-reasoning-dot-pulse {
     0%, 100% { opacity: 0.5; }
     50% { opacity: 1; }
 }
-@media (prefers-reduced-motion: reduce), (prefers-contrast: more) {
+@media (prefers-reduced-motion: reduce) {
     .assistant-reasoning-summary::before { transition: none; }
     .assistant-reasoning-live-label {
         animation: none;
-        background-image: none;
-        -webkit-text-fill-color: currentColor;
-        -webkit-background-clip: border-box;
-        background-clip: border-box;
+        -webkit-mask-image: none;
+        mask-image: none;
     }
     .assistant-reasoning-live-dot { animation: none; }
 }
@@ -3143,6 +3130,24 @@ details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg);
     background: var(--theme-primary, rgba(60, 100, 200, 0.9));
     border: 2px solid transparent;
     background-clip: padding-box;
+}
+
+.mc-code-preview-minimap:focus {
+    outline: none;
+}
+
+.mc-code-preview-minimap:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--theme-primary, #6b8cce) 80%, transparent);
+    outline-offset: -2px;
+}
+
+.mc-code-preview-minimap-thumb {
+    background: color-mix(in srgb, currentColor 14%, transparent);
+}
+
+.mc-code-preview-minimap:hover .mc-code-preview-minimap-thumb,
+.mc-code-preview-minimap:active .mc-code-preview-minimap-thumb {
+    background: color-mix(in srgb, currentColor 22%, transparent);
 }
 
 .global-action-bar {
@@ -15622,12 +15627,14 @@ details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg);
 
 .im-settings-status[data-status="connecting"],
 .im-settings-status[data-status="reconnecting"],
-.im-settings-status[data-status="paused"] {
+.im-settings-status[data-status="paused"],
+.im-settings-status[data-status="confirmed"] {
     background: var(--theme-info-bg);
     color: var(--theme-primary);
 }
 
-.im-settings-status[data-status="error"] {
+.im-settings-status[data-status="error"],
+.im-settings-status[data-status="session_expired"] {
     background: var(--theme-danger-bg);
     color: var(--theme-danger);
 }
@@ -20745,11 +20752,61 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   box-sizing: border-box;
 }
 .mc-workbench-status-card__heading { margin-bottom: 5px; font-size: 13px; }
-.mc-workbench-status-card__online { display: inline-flex; align-items: center; gap: 7px; color: #334155; font-size: 12px; font-weight: 500; }
-.mc-workbench-status-card__online i { width: 9px; height: 9px; border-radius: 50%; background: #19b46b; box-shadow: 0 0 0 3px #e8f8f0; }
+.mc-workbench-status-card__heading-signals {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+  align-self: stretch;
+}
+.mc-workbench-status-card__system { flex-shrink: 0; white-space: nowrap; }
+.mc-workbench-status-card__online { display: inline-flex; align-items: center; gap: 7px; color: #334155; font-size: 12px; font-weight: 500; line-height: 1; }
+.mc-workbench-status-card__online i { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; background: #19b46b; box-shadow: 0 0 0 3px #e8f8f0; }
+.mc-workbench-status-card__online.is-online i { background: #19b46b; box-shadow: 0 0 0 3px #e8f8f0; }
 .mc-workbench-status-card__online.is-offline i { background: #a7b0bd; box-shadow: 0 0 0 3px #f0f2f5; }
+.mc-workbench-status-card__online.is-pending i { background: #e6a817; box-shadow: 0 0 0 3px #fbf3de; }
+.mc-workbench-status-card__online.is-error i { background: #d64545; box-shadow: 0 0 0 3px #fdecec; }
+.mc-workbench-status-card__im {
+  flex: 0 1 auto;
+  min-width: 2.25em;
+  max-width: 100%;
+  align-self: stretch;
+  border: 0;
+  padding: 0 2px;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+}
+.mc-workbench-status-card__im > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+button.mc-workbench-status-card__im {
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+}
+button.mc-workbench-status-card__im:hover { color: #243447; }
+button.mc-workbench-status-card__im:active { color: #1769e8; }
+button.mc-workbench-status-card__im:focus-visible {
+  outline: 2px solid #1769e8;
+  outline-offset: 2px;
+  border-radius: 8px;
+}
 .mc-workbench-status-card__row { border: 0; padding: 2px 0; background: transparent; color: #536276; font: inherit; font-size: 12px; text-align: left; }
 button.mc-workbench-status-card__row { cursor: pointer; }
+button.mc-workbench-status-card__row:hover:not(:disabled) { color: #243447; }
+button.mc-workbench-status-card__row:active:not(:disabled) { color: #1769e8; }
+button.mc-workbench-status-card__row:focus-visible {
+  outline: 2px solid #1769e8;
+  outline-offset: 2px;
+  border-radius: 8px;
+}
 button.mc-workbench-status-card__row:disabled { cursor: default; }
 .mc-workbench-status-card__row > span { flex-shrink: 0; white-space: nowrap; }
 .mc-workbench-status-card__row strong { color: #243447; font-size: 13px; font-weight: 650; text-align: right; }
@@ -22124,7 +22181,7 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
      chat column. Clipping keeps the card shadow from spilling past the pane. */
   padding: 12px 12px 12px 0;
   overflow: hidden;
-  background: var(--mc-preview-pane-bg, #f6f8fb);
+  background: var(--mc-preview-pane-bg, #f5f5f5);
 }
 .mc-assistant-preview-surface {
   position: relative;
@@ -22135,10 +22192,10 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   min-height: 0;
   height: 100%;
   overflow: hidden;
-  border: 1px solid var(--mc-preview-surface-border, #dfe6ef);
+  border: 1px solid var(--mc-preview-surface-border, #e4e4e4);
   border-radius: 12px;
   background: var(--mc-preview-surface-bg, #fff);
-  box-shadow: var(--mc-preview-surface-shadow, 0 1px 2px rgba(30, 58, 95, 0.05), 0 12px 32px -12px rgba(30, 58, 95, 0.12));
+  box-shadow: var(--mc-preview-surface-shadow, 0 1px 2px rgba(0, 0, 0, 0.04), 0 12px 28px -14px rgba(0, 0, 0, 0.10));
   transition: border-left-color .15s ease;
 }
 .mc-assistant-preview-surface--agent > * {
@@ -22163,36 +22220,34 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
    handle would sit under the border and get clipped by the rounded surface).
    Recolor that border while the handle is hovered, focused or dragged. */
 .mc-assistant-preview-surface:has(.mc-assistant-preview-resize-handle:hover),
-.mc-assistant-preview-surface:has(.mc-assistant-preview-resize-handle:focus-visible) {
-  border-left-color: var(--theme-primary, #2f6fbc);
-}
+.mc-assistant-preview-surface:has(.mc-assistant-preview-resize-handle:focus-visible),
 .mc-assistant-preview-surface:has(.mc-assistant-preview-resize-handle:active) {
-  border-left-color: var(--theme-primary-strong, var(--theme-primary, #2f6fbc));
+  border-left-color: var(--mc-preview-surface-border-active, #c8c8c8);
 }
 .mc-assistant-preview-resize-handle:focus-visible {
   outline: none;
 }
 .mc-assistant-preview-mode-tabs {
   background: var(--mc-preview-surface-bg, #fff) !important;
-  border-left-color: var(--mc-preview-surface-border, #dfe6ef) !important;
+  border-left-color: var(--mc-preview-surface-border, #e4e4e4) !important;
 }
 .mc-assistant-preview-mode-tabs button:focus-visible {
-  outline: 2px solid var(--theme-primary, #2f6fbc);
+  outline: 2px solid var(--mc-preview-surface-border-active, #c8c8c8);
   outline-offset: 1px;
 }
 .mc-assistant-preview-mode-tabs button:not([aria-selected='true']):not(:disabled):hover {
-  background: color-mix(in srgb, var(--theme-primary, #2f6fbc) 10%, transparent) !important;
+  background: color-mix(in srgb, var(--mc-preview-surface-border-active, #c8c8c8) 40%, transparent) !important;
 }
 .mc-file-tab-bar {
   background: var(--mc-preview-surface-bg, #fff) !important;
-  border-bottom: 1px solid var(--mc-preview-surface-border, #dfe6ef);
+  border-bottom: 1px solid var(--mc-preview-surface-border, #e4e4e4);
 }
 .mc-file-tab-bar [data-testid='file-tab-overflow-btn'] {
-  border-left-color: var(--mc-preview-surface-border, #dfe6ef) !important;
+  border-left-color: var(--mc-preview-surface-border, #e4e4e4) !important;
   background: var(--mc-preview-surface-bg, #fff) !important;
 }
 .mc-file-tab-bar:focus-visible {
-  outline: 2px solid var(--theme-primary, #2f6fbc);
+  outline: 2px solid var(--mc-preview-surface-border-active, #c8c8c8);
   outline-offset: -2px;
 }
 @media (max-width: 900px) {
@@ -23769,7 +23824,8 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 #App .mc-workbench-status-card__online {
   color: var(--mc-copy) !important;
 }
-#App .mc-workbench-status-card__online i {
+#App .mc-workbench-status-card__online i,
+#App .mc-workbench-status-card__online.is-online i {
   background: var(--theme-success) !important;
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-success) 14%, var(--mc-surface)) !important;
 }
@@ -23777,8 +23833,38 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   background: var(--mc-muted) !important;
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--mc-muted) 14%, var(--mc-surface)) !important;
 }
+#App .mc-workbench-status-card__online.is-pending i {
+  background: var(--theme-warning, #e6a817) !important;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-warning, #e6a817) 14%, var(--mc-surface)) !important;
+}
+#App .mc-workbench-status-card__online.is-error i {
+  background: var(--theme-danger, #d64545) !important;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-danger, #d64545) 14%, var(--mc-surface)) !important;
+}
 #App .mc-workbench-status-card__row {
   color: var(--mc-copy) !important;
+}
+#App button.mc-workbench-status-card__row:hover:not(:disabled) {
+  color: var(--mc-ink) !important;
+}
+#App button.mc-workbench-status-card__row:active:not(:disabled) {
+  color: var(--mc-accent-strong) !important;
+}
+#App button.mc-workbench-status-card__row:focus-visible {
+  outline: 2px solid var(--mc-accent) !important;
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+#App button.mc-workbench-status-card__im:hover {
+  color: var(--mc-ink) !important;
+}
+#App button.mc-workbench-status-card__im:active {
+  color: var(--mc-accent-strong) !important;
+}
+#App button.mc-workbench-status-card__im:focus-visible {
+  outline: 2px solid var(--mc-accent) !important;
+  outline-offset: 2px;
+  border-radius: 8px;
 }
 #App .mc-workbench-status-card__row strong {
   color: var(--mc-ink) !important;

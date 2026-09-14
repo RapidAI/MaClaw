@@ -526,6 +526,8 @@ export function ExportSurveyXLSX(arg1:string):Promise<string>;
 
 export function ExportSurveyXLSXFiltered(arg1:string,arg2:string):Promise<string>;
 
+export function ExportTaskResultFile(arg1:string):Promise<string>;
+
 export function ExportTextFile(arg1:string,arg2:string):Promise<string>;
 
 export function FetchCodeGenModels():Promise<Array<main.CodeGenModelItem>>;

@@ -4,7 +4,8 @@ import "katex/dist/katex.min.css";
 import { AIAssistantAttachmentPreviewDataURL, OpenFileOrShowInFolder, ShowItemInFolder } from "../../../wailsjs/go/main/App";
 import { BrowserOpenURL } from "../../../wailsjs/runtime";
 import { TaskResultUploadButton, taskResultUploadSupported } from "./TaskResultUploadButton";
-import { dispatchPreviewTaskResult } from "./taskResultPreview";
+import { TaskResultExportButton } from "./TaskResultExportButton";
+import { dispatchContinueEditTaskResult, dispatchPreviewTaskResult } from "./taskResultPreview";
 import type { ChatAction, ChatConfirmation, ChatMessage, ChatRecoverableSession, ChatUnfinishedSlot, CodingAgentTimelineItem } from "./useAIAssistant";
 import { renderCodingAgentProgressStatus } from "./CodingAgentProgressStatus";
 import { attachBareHeadingMarkers, normalizeInlineListMarkers } from "./aiAssistantMarkdownNormalize";
@@ -40,7 +41,9 @@ import {
 import { AssistantMermaidDiagram, isMermaidCodeFence } from "./AssistantMermaidDiagram";
 import { AttachmentImageThumbnail } from "./AttachmentImagePreview";
 import { AssistantReasoningPanel } from "./AssistantReasoningPanel";
+
 import { assistantLiveActivityLabel } from "./assistantLiveActivity";
+import { repairReasoningLineBreaks } from "./reasoningLineBreaks";
 
 export type { Theme } from "./aiAssistantPanelTheme";
 export type { RecordingCompleteResult } from "./RecordingSessionCard";
@@ -1504,17 +1507,6 @@ function UserAttachmentChip({ attachment, theme, lang }: { attachment: NonNullab
     );
 }
 
-/** Repair provider streams that insert a hard newline immediately inside a
- * parenthesized annotation (for example `（` + `1996）`). Such a newline is
- * not a semantic paragraph break and produces the broken display seen in the
- * thinking panel. Restrict this to bracket edges so normal reasoning lines
- * remain untouched. */
-function repairReasoningBracketLineBreaks(text: string): string {
-    return text
-        .replace(/([（(])[ \t]*\r?\n[ \t]*/gu, "$1")
-        .replace(/\r?\n[ \t]*([）)])/gu, "$1");
-}
-
 function reasoningPreviewText(text: string, maxLength = 96): string | undefined {
     const compact = text.replace(/\s+/gu, " ").trim();
     if (compact.length <= 48) return undefined;
@@ -1545,7 +1537,7 @@ export const CodingAgentThinkingTimelineItem = React.memo(function CodingAgentTh
     step?: number;
     liveLabel?: string;
 }) {
-    const displayReasoning = React.useMemo(() => repairReasoningBracketLineBreaks(stripCodingAgentAuditSections(
+    const displayReasoning = React.useMemo(() => repairReasoningLineBreaks(stripCodingAgentAuditSections(
         stripCodingWorkbenchStatusReasoning(truncateRolePrefixForDisplay(sanitizeVisibleChatText(item.content || ""))),
     )), [item.content]);
     const live = !!liveLabel;
@@ -1754,7 +1746,16 @@ export function renderMessage(
                     >
                         {/* Ordinary chat only: coding workbench uses the · Working trail. */}
                         {isLastAssistant && !collapseReasoningByDefault && !msg.content && !msg.fields && !screenshotBase64 && savedPaths.length === 0 && !msg.reasoning && !liveReasoningLabel && (
-                            <span style={{ color: t.textMuted, fontSize: "12px", fontStyle: "italic", opacity: 0.8, animation: "blink 1.2s step-end infinite" }}>
+                            <span
+                                className="assistant-reasoning-live-label"
+                                data-testid="assistant-processing-label"
+                                style={{
+                                    color: t.textMuted,
+                                    fontSize: "12px",
+                                    fontStyle: "italic",
+                                    opacity: 0.8,
+                                }}
+                            >
                                 {lang === "en" ? "Working..." : "\u5904\u7406\u4e2d\u2026"}
                             </span>
                         )}
@@ -1771,7 +1772,7 @@ export function renderMessage(
                                 : (lang === "en" ? "Thinking process..." : "思考过程...");
                             const shouldOpen = isLastAssistant && isStreaming && !collapseReasoningByDefault;
                             // Role-prefix only here; pictograph strip runs inside renderContentWithCodeBlocks.
-                            const displayReasoning = repairReasoningBracketLineBreaks(stripCodingAgentAuditSections(stripCodingWorkbenchStatusReasoning(truncateRolePrefixForDisplay(sanitizeVisibleChatText(msg.reasoning || "")))));
+                            const displayReasoning = repairReasoningLineBreaks(stripCodingAgentAuditSections(stripCodingWorkbenchStatusReasoning(truncateRolePrefixForDisplay(sanitizeVisibleChatText(msg.reasoning || "")))));
                             if (!displayReasoning.trim() && !live) return null;
                             return (
                                 <AssistantReasoningPanel
@@ -1861,9 +1862,9 @@ export function renderMessage(
                             })}</div>
                             <div className="mc-task-result-card__actions">
                                 <button type="button" data-testid="task-result-preview-btn" onClick={(event) => { event.stopPropagation(); dispatchPreviewTaskResult(savedPaths[0], msg.id); }}>{localizeText(lang, "Preview", "预览", "預覽")}</button>
-                                <button type="button" onClick={(event) => openFileInFolder(event, savedPaths[0])}>{lang === "en" ? "View document" : "查看文档"}</button>
-                                <button type="button" onClick={(event) => { event.stopPropagation(); window.dispatchEvent(new CustomEvent("maclaw:export-task-result", { detail: { path: savedPaths[0], messageId: msg.id } })); openFileInFolder(event, savedPaths[0]); }}>{lang === "en" ? "Export" : "导出"}</button>
-                                <button type="button" onClick={() => { (document.querySelector('[data-testid="ai-input"]') as HTMLTextAreaElement | null)?.focus(); }}>{lang === "en" ? "Continue editing" : "继续修改"}</button>
+                                <button type="button" data-testid="task-result-view-btn" onClick={(event) => openFileInFolder(event, savedPaths[0])}>{localizeText(lang, "View document", "查看文档", "查看文件")}</button>
+                                <TaskResultExportButton filePath={savedPaths[0]} lang={lang} />
+                                <button type="button" data-testid="task-result-continue-btn" onClick={(event) => { event.stopPropagation(); dispatchContinueEditTaskResult(savedPaths[0], msg.id); }}>{localizeText(lang, "Continue editing", "继续修改", "繼續修改")}</button>
                             </div>
                         </div>}
                         {(() => {
@@ -1887,7 +1888,7 @@ export function renderMessage(
             }
             return (
                 <div key={msg.id} role="status" aria-live="polite" data-testid={`assistant-chat-progress-${msg.id}`} style={{ display: "flex", justifyContent: "flex-start", margin: "4px 0" }}>
-                    <span style={{
+                    <span className="assistant-chat-progress-line" style={{
                         maxWidth: "84%",
                         minWidth: 0,
                         display: "inline-flex",

@@ -365,6 +365,9 @@ func prepareLLMPricingQuote(ctx context.Context, reg *llmservice.Registry, provi
 // final ledger later charges actual usage and releases this hold in the same
 // registry save.
 func reserveLLMRequestPricing(ctx context.Context, system store.SystemSettingsRepository, userID, email string, model *llmservice.AuthorizedModel) (llmBillingDenial, error) {
+	if _, ok := llmEndpointAPIKeyAuthFromContext(ctx); ok {
+		return llmBillingDenial{}, nil
+	}
 	state := llmBillingStateFrom(ctx)
 	if state == nil || system == nil {
 		return llmBillingDenial{}, nil

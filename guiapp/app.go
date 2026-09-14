@@ -883,8 +883,52 @@ func (a *App) scheduleWarmFrozenMemorySnapshot() {
 // mutation visible to every affected Agent on its very next prompt build.
 // Handlers with private stores (for example hardware runtimes) are excluded.
 func (a *App) refreshActiveAgentMemorySnapshots() {
+	a.notifyMemoryWarehouseChanged(memoryWarehouseChange{})
+}
+
+func warehouseChangeFromEntries(entries []memory.Entry, kind, replacement string) memoryWarehouseChange {
+	change := memoryWarehouseChange{}
+	seen := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		content := strings.TrimSpace(entry.Content)
+		if content == "" {
+			continue
+		}
+		if _, ok := seen[content]; ok {
+			continue
+		}
+		seen[content] = struct{}{}
+		change.Needles = append(change.Needles, content)
+		change.Items = append(change.Items, agent.MemoryRetractionItem{
+			Kind:        kind,
+			Content:     content,
+			Replacement: strings.TrimSpace(replacement),
+		})
+	}
+	return change
+}
+
+func (a *App) memoryEntriesByIDs(ids ...string) []memory.Entry {
 	if a == nil || a.memoryStore == nil {
+		return nil
+	}
+	var out []memory.Entry
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		out = append(out, a.memoryStore.SearchDirectByID(id)...)
+	}
+	return out
+}
+
+func (a *App) notifyMemoryWarehouseChanged(change memoryWarehouseChange) {
+	if a == nil {
 		return
+	}
+	if a.memoryStore != nil {
+		a.memoryStore.InvalidateAllRecallCaches()
 	}
 	handlers := make(map[*IMMessageHandler]struct{}, 8)
 	add := func(handler *IMMessageHandler) {
@@ -922,12 +966,15 @@ func (a *App) refreshActiveAgentMemorySnapshots() {
 		}
 	}
 	for handler := range handlers {
-		if handler.memoryStore != a.memoryStore {
+		if a.memoryStore != nil && handler.memoryStore != a.memoryStore {
 			continue
 		}
 		// Refresh synchronously so the delete call does not return while a
 		// current agent still has the removed content cached in its prompt.
 		handler.RefreshAllMemorySnapshots()
+		if len(change.Items) > 0 || len(change.Needles) > 0 {
+			handler.applyMemoryWarehouseChange(change)
+		}
 	}
 }
 

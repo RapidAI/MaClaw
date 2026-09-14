@@ -78,10 +78,13 @@ describe("ProjectSearchPanel", () => {
         renderPanel(search);
         fireEvent.click(screen.getByText("Archived task"));
 
-        expect(search.close).toHaveBeenCalled();
+        expect(search.close).not.toHaveBeenCalled();
         expect(await screen.findByText("Loading...")).toBeTruthy();
         expect(await screen.findByText("Saved decisions")).toBeTruthy();
         expect(screen.getByText("This task has been archived and cannot be continued.")).toBeTruthy();
+        const archived = screen.getByTestId("project-search-archived-panel");
+        expect(archived.getAttribute("role")).toBe("dialog");
+        expect(archived.style.position).toBe("absolute");
         expect(GetArchivedExperience).toHaveBeenCalledWith("D:/p/a");
         expect(ResumeTask).not.toHaveBeenCalled();
     });
@@ -196,6 +199,63 @@ describe("ProjectSearchPanel", () => {
         resolveScene({ project_path: "D:/p/hidden", name: "Should not render" });
         await Promise.resolve();
         expect(screen.queryByText("Should not render")).toBeNull();
+        expect(search.close).toHaveBeenCalled();
+    });
+
+    it("fills the assistant surface instead of sitting above it as a strip", () => {
+        const search = makeSearch([{ id: "out", name: "Saved output", project_path: "D:/p/output", has_output: true }]);
+
+        renderPanel(search);
+
+        const panel = screen.getByTestId("project-search-panel");
+        expect(panel.getAttribute("role")).toBe("dialog");
+        expect(panel.getAttribute("aria-modal")).toBe("true");
+        expect(panel.style.position).toBe("absolute");
+        expect(["0", "0px"]).toContain(panel.style.inset);
+        const results = screen.getByTestId("project-search-results");
+        expect(results.style.maxHeight).toBe("");
+        expect(results.style.flex).toMatch(/^1\b/);
+    });
+
+    it("does not dismiss when clicking title-bar chrome", () => {
+        const search = makeSearch([{ id: "out", name: "Saved output", project_path: "D:/p/output", has_output: true }]);
+        render(
+            <>
+                <div data-testid="ai-title-bar"><button type="button">maximize</button></div>
+                <ProjectSearchPanel search={search} lang="en" theme={lightTheme} inline={false} onProjectSwitch={vi.fn()} />
+            </>,
+        );
+        fireEvent.mouseDown(screen.getByText("maximize"));
+        expect(search.close).not.toHaveBeenCalled();
+    });
+
+    it("does not steal focus from the header search field", () => {
+        const search = makeSearch([{ id: "out", name: "Saved output", project_path: "D:/p/output", has_output: true }]);
+        search.open = false;
+        const { rerender } = render(
+            <div>
+                <span className="mc-header-search-wrap"><input data-testid="header-q" /></span>
+            </div>,
+        );
+        const header = screen.getByTestId("header-q");
+        header.focus();
+        expect(document.activeElement).toBe(header);
+
+        search.open = true;
+        rerender(
+            <div>
+                <span className="mc-header-search-wrap"><input data-testid="header-q" /></span>
+                <ProjectSearchPanel search={search} lang="en" theme={lightTheme} inline onProjectSwitch={vi.fn()} />
+            </div>,
+        );
+        expect(document.activeElement).toBe(header);
+        expect(screen.getByTestId("project-search-input")).not.toBe(document.activeElement);
+    });
+
+    it("dismisses when clicking outside the search surface and title bar", () => {
+        const search = makeSearch([{ id: "out", name: "Saved output", project_path: "D:/p/output", has_output: true }]);
+        renderPanel(search);
+        fireEvent.mouseDown(document.body);
         expect(search.close).toHaveBeenCalled();
     });
 

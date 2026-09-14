@@ -50,6 +50,8 @@ type Props = {
     onLanguageChange?: (lang: string) => void;
     /** Shell status cluster (inline AppStatusMessageBar); right side of this row. */
     statusSlot?: ReactNode;
+    /** Hide the bar without unmounting (search overlay owns the assistant pane). */
+    hidden?: boolean;
 };
 
 const LANG_CYCLE: Record<string, string> = {
@@ -66,7 +68,7 @@ function langShortLabel(lang: string): string {
     return "中";
 }
 
-export const AssistantQuickSettingsBar = memo(function AssistantQuickSettingsBar({ lang, theme: t, themeMode, active = true, onToggleTheme, ttsEnabled, ttsPlaying, onToggleTts, availableProviders, currentModel, modelOptions, modelsLoading, onSwitchProvider, onSwitchModel, onOpenModelMenu, onDismissModelMenu, activeProfile = "assistant", codingInheritsAssistant = false, providerSelectionPending = false, profileSavePending = false, onOpenLLMSettings, onLanguageChange, statusSlot }: Props) {
+export const AssistantQuickSettingsBar = memo(function AssistantQuickSettingsBar({ lang, theme: t, themeMode, active = true, onToggleTheme, ttsEnabled, ttsPlaying, onToggleTts, availableProviders, currentModel, modelOptions, modelsLoading, onSwitchProvider, onSwitchModel, onOpenModelMenu, onDismissModelMenu, activeProfile = "assistant", codingInheritsAssistant = false, providerSelectionPending = false, profileSavePending = false, onOpenLLMSettings, onLanguageChange, statusSlot, hidden = false }: Props) {
     const tr = useCallback(
         (en: string, zh: string, zhHant: string = zh) => localizeText(lang, en, zh, zhHant),
         [lang]
@@ -284,7 +286,7 @@ export const AssistantQuickSettingsBar = memo(function AssistantQuickSettingsBar
         // chips alone scroll when the window is narrow.
         // Owns the window bottom edge under the composer. Use minHeight (not fixed
         // height) so safe-area padding extends the bar instead of squeezing chips.
-        <div data-testid="assistant-quick-settings-bar" style={{ display: "flex", alignItems: "center", gap: 6, minHeight: 28, padding: "0 10px", paddingBottom: "env(safe-area-inset-bottom, 0px)", borderTop: `1px solid ${t.titleBarBorder}`, background: t.titleBarBg, overflow: "hidden", flexShrink: 0, boxSizing: "border-box", minWidth: 0 }}>
+        <div data-testid="assistant-quick-settings-bar" hidden={hidden} aria-hidden={hidden || undefined} style={{ display: hidden ? "none" : "flex", alignItems: "center", gap: 6, minHeight: 28, padding: "0 10px", paddingBottom: "env(safe-area-inset-bottom, 0px)", borderTop: `1px solid ${t.titleBarBorder}`, background: t.titleBarBg, overflow: "hidden", flexShrink: 0, boxSizing: "border-box", minWidth: 0 }}>
             <div data-testid="assistant-quick-settings-chips" style={{ display: "flex", alignItems: "center", gap: 6, flex: "1 1 auto", minWidth: 0, overflowX: "auto", overflowY: "visible" }}>
             {hasModelMenu && (
                 <div style={{ position: "relative", flexShrink: 0 }}>

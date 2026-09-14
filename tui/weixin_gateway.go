@@ -526,6 +526,13 @@ func (c *tuiWeixinCallbacks) ShouldStop() bool {
 	}
 }
 
+func (c *tuiWeixinCallbacks) OnVerifiedSessionFact(fact agent.SessionFact) {
+	if c == nil || c.app == nil {
+		return
+	}
+	c.app.syncVerifiedFactToStores(fact)
+}
+
 func (c *tuiWeixinCallbacks) EarlyStop() (bool, string, string) {
 	if c == nil || c.app == nil {
 		return false, "", ""

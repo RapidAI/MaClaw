@@ -140,6 +140,28 @@ func (p *CursorPaginator) NextPage(cursorID string) (*PaginatedResult, error) {
 	return result, err
 }
 
+// InvalidateOwner drops every cached recall page for ownerID. Memory writes
+// must call this so a later recall in the same loop does not return the
+// pre-update candidate list.
+func (p *CursorPaginator) InvalidateOwner(userID string) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.cursors, userID)
+}
+
+// InvalidateAll drops every cached recall page.
+func (p *CursorPaginator) InvalidateAll() {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.cursors = make(map[string]*userCursorPool)
+}
+
 // Evict removes expired cursors for a given user (>5min TTL).
 func (p *CursorPaginator) Evict(userID string) {
 	p.mu.Lock()

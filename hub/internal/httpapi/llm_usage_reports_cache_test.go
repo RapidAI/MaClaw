@@ -1097,3 +1097,109 @@ func TestLLMUsageReportScopesUnitemizedLegacySettlements(t *testing.T) {
 		t.Fatalf("row unitemized scope = %+v", resp.Rows)
 	}
 }
+
+func usageReportHasEntity(resp llmUsageReportResponse, id string) bool {
+	for _, item := range resp.Entities {
+		if item.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func TestLLMUsageReportPinsSystemUserOutsideRanking(t *testing.T) {
+	rep := &llmUsageReportsStore{Version: llmUsageReportsVersion, Days: map[string]*llmUsageReportDay{}}
+	ts := time.Date(2026, 4, 21, 9, 30, 0, 0, time.UTC)
+	rep.addUsage(ts, "user@example.com", nil, corelib.TokenUsageStat{
+		InputTokens:  100,
+		OutputTokens: 20,
+		TotalTokens:  120,
+		Requests:     1,
+	}, 0.5)
+	rep.addUsage(ts, llmservice.SystemLLMUserEmail, nil, corelib.TokenUsageStat{
+		InputTokens:  40,
+		OutputTokens: 10,
+		TotalTokens:  50,
+		Requests:     2,
+	}, 0.2)
+
+	resp := buildLLMUsageReportResponse(context.Background(), rep, nil, "user", "daily", "2026-04-21", "2026-04", "", ts)
+	if resp.SystemUser == nil {
+		t.Fatal("system_user missing")
+	}
+	if resp.SystemUser.ID != llmservice.SystemLLMUserEmail || resp.SystemUser.Name != llmservice.SystemLLMUserEmail {
+		t.Fatalf("system_user identity = %#v", resp.SystemUser)
+	}
+	if resp.SystemUser.TotalTokens != 50 || resp.SystemUser.Requests != 2 || resp.SystemUser.Credits != 0.2 {
+		t.Fatalf("system_user totals = %#v", resp.SystemUser)
+	}
+	if len(resp.Rows) != 1 || resp.Rows[0].ID != "user@example.com" {
+		t.Fatalf("ranking should exclude sys_user: %#v", resp.Rows)
+	}
+	if !usageReportHasEntity(resp, llmservice.SystemLLMUserEmail) {
+		t.Fatalf("entities missing sys_user: %#v", resp.Entities)
+	}
+
+	empty := buildLLMUsageReportResponse(context.Background(), &llmUsageReportsStore{Version: llmUsageReportsVersion, Days: map[string]*llmUsageReportDay{}}, nil, "user", "daily", "2026-04-21", "2026-04", "", ts)
+	if empty.SystemUser == nil || empty.SystemUser.ID != llmservice.SystemLLMUserEmail || empty.SystemUser.TotalTokens != 0 {
+		t.Fatalf("empty day should still pin sys_user zeros: %#v", empty.SystemUser)
+	}
+	if len(empty.Rows) != 0 {
+		t.Fatalf("empty ranking = %#v", empty.Rows)
+	}
+	if !usageReportHasEntity(empty, llmservice.SystemLLMUserEmail) {
+		t.Fatalf("empty day entities missing sys_user: %#v", empty.Entities)
+	}
+
+	nilStore := buildLLMUsageReportResponse(context.Background(), nil, nil, "user", "daily", "2026-04-21", "2026-04", "", ts)
+	if nilStore.SystemUser == nil || nilStore.SystemUser.ID != llmservice.SystemLLMUserEmail || nilStore.SystemUser.TotalTokens != 0 {
+		t.Fatalf("nil store should still pin sys_user zeros: %#v", nilStore.SystemUser)
+	}
+	if !usageReportHasEntity(nilStore, llmservice.SystemLLMUserEmail) {
+		t.Fatalf("nil store entities missing sys_user: %#v", nilStore.Entities)
+	}
+
+	nilDays := buildLLMUsageReportResponse(context.Background(), &llmUsageReportsStore{Version: llmUsageReportsVersion}, nil, "user", "monthly", "", "2026-04", "", ts)
+	if nilDays.SystemUser == nil || nilDays.SystemUser.TotalTokens != 0 {
+		t.Fatalf("nil Days should not panic and should pin zeros: %#v", nilDays.SystemUser)
+	}
+
+	lookalikeRep := &llmUsageReportsStore{Version: llmUsageReportsVersion, Days: map[string]*llmUsageReportDay{}}
+	lookalikeRep.addUsage(ts, "sys_user_bot@example.com", nil, corelib.TokenUsageStat{TotalTokens: 9, Requests: 1}, 0)
+	lookalike := buildLLMUsageReportResponse(context.Background(), lookalikeRep, nil, "user", "daily", "2026-04-21", "2026-04", "", ts)
+	if lookalike.SystemUser == nil || lookalike.SystemUser.TotalTokens != 0 {
+		t.Fatalf("lookalike email must not fill sys_user: %#v", lookalike.SystemUser)
+	}
+	if len(lookalike.Rows) != 1 || lookalike.Rows[0].ID != "sys_user_bot@example.com" {
+		t.Fatalf("lookalike email should stay in ranking: %#v", lookalike.Rows)
+	}
+
+	filtered := buildLLMUsageReportResponse(context.Background(), rep, nil, "user", "daily", "2026-04-21", "2026-04", "user@example.com", ts)
+	if filtered.SystemUser == nil || filtered.SystemUser.TotalTokens != 50 {
+		t.Fatalf("filtered user view should still report sys_user: %#v", filtered.SystemUser)
+	}
+	if len(filtered.Rows) != 1 || filtered.Rows[0].ID != "user@example.com" {
+		t.Fatalf("filtered ranking = %#v", filtered.Rows)
+	}
+
+	self := buildLLMUsageReportResponse(context.Background(), rep, nil, "user", "daily", "2026-04-21", "2026-04", llmservice.SystemLLMUserEmail, ts)
+	if self.SystemUser == nil || self.SystemUser.TotalTokens != 50 {
+		t.Fatalf("sys_user filter missing pinned row: %#v", self.SystemUser)
+	}
+	if len(self.Rows) != 1 || self.Rows[0].ID != llmservice.SystemLLMUserEmail || self.Rows[0].TotalTokens != 50 {
+		t.Fatalf("sys_user filter ranking = %#v", self.Rows)
+	}
+
+	group := buildLLMUsageReportResponse(context.Background(), rep, nil, "group", "daily", "2026-04-21", "2026-04", "", ts)
+	if group.SystemUser != nil {
+		t.Fatalf("group scope should not pin sys_user: %#v", group.SystemUser)
+	}
+
+	monthly := buildLLMUsageReportResponse(context.Background(), rep, nil, "user", "monthly", "", "2026-04", "", ts)
+	if monthly.SystemUser == nil || monthly.SystemUser.TotalTokens != 50 {
+		t.Fatalf("monthly sys_user = %#v", monthly.SystemUser)
+	}
+	if len(monthly.Rows) != 1 || monthly.Rows[0].ID != "user@example.com" {
+		t.Fatalf("monthly ranking should exclude sys_user: %#v", monthly.Rows)
+	}
+}

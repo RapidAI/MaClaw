@@ -113,7 +113,8 @@ func isGlobalSystemSettingsKey(key string) bool {
 		"center_registration",
 		"admin_email",
 		"hub_installation_id",
-		"server_public_base_url":
+		"server_public_base_url",
+		llmEndpointAPIKeyIndexKey:
 		return true
 	default:
 		return false

@@ -92,6 +92,7 @@ func (h *IMMessageHandler) clearPerUserSessionState(userID string) {
 
 	// Memory snapshot cache.
 	h.RefreshMemorySnapshot(userID)
+	h.clearSessionFacts(userID)
 
 	h.clearSessionGovernedTasksForUser(userID)
 	h.clearActiveLocalDocumentsForUser(userID)

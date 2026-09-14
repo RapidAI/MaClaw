@@ -3,6 +3,7 @@ import type { PhaseInfo, QualityGateResult } from "./useWorkflowState";
 import { normalizeWorkflowPhaseID, FALLBACK_NON_DOCUMENT_PHASE_IDS } from "./workflowPhase";
 import { localizeText, normalizeLang } from "../../i18n";
 import { WORKFLOW_PHASE_META } from "./workflowPhaseMeta.generated";
+import { withMarkdownProseTheme } from "./markdownPreviewInk";
 
 // ── Mermaid (local npm package, no network required) ──
 
@@ -1090,7 +1091,7 @@ function renderDocTable(tableLines: string[], key: string, theme: DocPreviewThem
                 <thead>
                     <tr>
                         {headerCells.map((cell, ci) => (
-                            <th key={ci} style={{ ...cellStyle, fontWeight: 600, background: theme.headerBg }}>
+                            <th key={ci} style={{ ...cellStyle, fontWeight: 600, background: theme.headerBg, color: theme.headingColor }}>
                                 {renderInline(cell, theme)}
                             </th>
                         ))}
@@ -1373,7 +1374,7 @@ function renderInline(text: string, theme: DocPreviewTheme): React.ReactNode {
                 padding: isSvg ? "4px" : undefined,
             }} />);
         } else if (match[4]) { // bold
-            parts.push(<strong key={key++} style={{ fontWeight: 600 }}>{match[5]}</strong>);
+            parts.push(<strong key={key++} style={{ fontWeight: 600, color: theme.headingColor }}>{match[5]}</strong>);
         } else if (match[6]) { // italic
             parts.push(<em key={key++} style={{ fontStyle: "italic", color: theme.text, fontWeight: 500 }}>{match[7]}</em>);
         } else if (match[8]) { // inline code
@@ -1486,9 +1487,10 @@ export function WorkflowDocPreview({
     // panel while the document itself is unchanged. Markdown parsing builds a full
     // React tree (and may contain Mermaid blocks), so keep that work tied to the
     // actual document or active scheme rather than every progress update.
+    const proseTheme = useMemo(() => withMarkdownProseTheme(theme), [theme]);
     const renderedContent = useMemo(
-        () => content ? renderMarkdown(content, theme) : null,
-        [content, theme],
+        () => content ? renderMarkdown(content, proseTheme) : null,
+        [content, proseTheme],
     );
     const gateResult = gateResults.get(activePhaseID);
     const gateItems = Array.isArray(gateResult?.items) ? gateResult.items : [];
@@ -1564,7 +1566,7 @@ export function WorkflowDocPreview({
                 )}
 
                 {/* Document content — Markdown rendered */}
-                <div className="ai-chat-scrollbar" style={{
+                <div className="ai-chat-scrollbar" data-testid="workflow-doc-markdown" style={{
                     flex: 1,
                     overflowY: "auto",
                     overflowX: "hidden",
@@ -1576,6 +1578,7 @@ export function WorkflowDocPreview({
                     boxSizing: "border-box",
                     wordBreak: "break-word",
                     textAlign: "left",
+                    color: proseTheme.text,
                 }}>
                     {renderedContent
                         ? renderedContent

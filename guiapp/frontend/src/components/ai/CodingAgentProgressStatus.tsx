@@ -1,5 +1,6 @@
 import React from "react";
 import type { ChatMessage } from "./useAIAssistant";
+
 import { sanitizeVisibleChatText } from "./visibleChatText";
 
 interface CodingAgentProgressTheme {
@@ -528,6 +529,7 @@ export function renderCodingAgentWorkingTrail(t: CodingAgentProgressTheme, lang:
                 {"\u00b7"}
             </span>
             <span
+                className="assistant-reasoning-live-label"
                 style={{
                     color: accent,
                     fontFamily: monoFont,

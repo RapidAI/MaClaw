@@ -54,6 +54,12 @@ func FormatSearchResultsForLLM(results []SearchResult) string {
 		if r.Subject != "" {
 			b.WriteString(fmt.Sprintf("**Fact**: %s %s %s\n", r.Subject, r.Predicate, r.Object))
 		}
+		if r.FactID != "" {
+			b.WriteString(fmt.Sprintf("**FactID**: %s\n", r.FactID))
+		}
+		if r.Source.ID != "" {
+			b.WriteString(fmt.Sprintf("**SourceID**: %s\n", r.Source.ID))
+		}
 		if r.NodeType == NodeTypeImage || r.Source.Kind == SourceKindImage {
 			// Standalone images commonly retain their import path in Source.URI.
 			// Tool output enters model context, so image evidence must never fall

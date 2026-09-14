@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import { AssistantPreviewPane } from '../AssistantPreviewPane';
+import { AssistantPreviewPane, PREVIEW_SURFACE_FRAME } from '../AssistantPreviewPane';
 import type { Theme } from '../aiAssistantPanelTheme';
 import type { CodeFile } from '../useCodePreviewState';
 
@@ -226,14 +226,28 @@ describe('AssistantPreviewPane', () => {
         expect(screen.getByText('answer')).toBeTruthy();
     });
 
-    it('drops the duplicate panel header for the empty local source preview', () => {
-        renderPaneWithCodeState(activeEmptyCodePreviewState);
+    it('closes the source preview when it has no files and no working directory', () => {
+        const closeCodePreview = vi.fn();
+        render(
+            <AssistantPreviewPane
+                codePreviewState={activeEmptyCodePreviewState}
+                closeCodePreview={closeCodePreview}
+                closeDocPreview={vi.fn()}
+                lang="en"
+                selectCodeFile={vi.fn()}
+                showAgentView={false}
+                showCodePreview={true}
+                showWorkflowPreview={true}
+                splitRatio={0.42}
+                startPreviewResize={vi.fn()}
+                theme={theme}
+                workflowState={workflowState}
+            />,
+        );
 
         fireEvent.click(screen.getByRole('tab', { name: 'Source' }));
-
-        expect(screen.queryByTestId('code-preview-header')).toBeNull();
-        expect(screen.getByTestId('code-preview-workspace-status')).toBeTruthy();
-        expect(screen.getByText('Working directory unavailable')).toBeTruthy();
+        expect(closeCodePreview).toHaveBeenCalled();
+        expect(screen.queryByText('Working directory unavailable')).toBeNull();
     });
 
     it('keeps Working directory as the default source tab when files are already open', () => {
@@ -725,6 +739,36 @@ describe('AssistantPreviewPane', () => {
         // After the slide-in the transform is cleared so fixed-position context
         // menus inside the panel keep their viewport anchoring.
         await waitFor(() => expect(pane.style.transform).toBe('none'));
+    });
+
+    it('uses a neutral gray frame, not the scheme divider, around the preview surface', () => {
+        renderPane();
+        const pane = document.querySelector('.mc-assistant-preview-pane') as HTMLElement;
+        expect(pane.style.getPropertyValue('--mc-preview-surface-border').trim()).toBe(PREVIEW_SURFACE_FRAME.lightBorder);
+        expect(pane.style.getPropertyValue('--mc-preview-surface-border')).not.toBe(theme.divider);
+        expect(pane.style.getPropertyValue('--mc-preview-surface-shadow')).not.toMatch(/30,\s*58,\s*95/);
+    });
+
+    it('uses a neutral dark frame in dark mode', () => {
+        render(
+            <AssistantPreviewPane
+                codePreviewState={activeCodePreviewState}
+                closeCodePreview={vi.fn()}
+                closeDocPreview={vi.fn()}
+                lang="en"
+                selectCodeFile={vi.fn()}
+                showAgentView={false}
+                showCodePreview={true}
+                showWorkflowPreview={true}
+                splitRatio={0.42}
+                startPreviewResize={vi.fn()}
+                theme={{ ...theme, isDark: true }}
+                workflowState={workflowState}
+            />,
+        );
+        const pane = document.querySelector('.mc-assistant-preview-pane') as HTMLElement;
+        expect(pane.style.getPropertyValue('--mc-preview-surface-border').trim()).toBe(PREVIEW_SURFACE_FRAME.darkBorder);
+        expect(pane.style.getPropertyValue('--mc-preview-surface-border-active').trim()).toBe(PREVIEW_SURFACE_FRAME.darkBorderActive);
     });
 
     it('closes open preview surfaces when the backdrop is clicked', () => {

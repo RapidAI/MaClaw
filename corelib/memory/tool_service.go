@@ -411,6 +411,10 @@ func HandleTool(store *Store, args map[string]interface{}, opts ToolOptions) str
 			}
 			return fmt.Sprintf("save memory failed: %s", err.Error())
 		}
+		if decision.Action != MemoryGovernanceQuarantine {
+			_ = store.ApplyVerifiedFact(VerifiedFact{Claim: content, StrictOwner: opts.StrictOwner}, opts.OwnerID)
+		}
+		invalidateToolRecallCaches(store, opts)
 		if opts.AfterWrite != nil {
 			opts.AfterWrite()
 		}
@@ -453,6 +457,7 @@ func HandleTool(store *Store, args map[string]interface{}, opts ToolOptions) str
 		if err := store.Delete(id); err != nil {
 			return fmt.Sprintf("delete memory failed: %s", err.Error())
 		}
+		invalidateToolRecallCaches(store, opts)
 		if opts.AfterWrite != nil {
 			opts.AfterWrite()
 		}
@@ -463,6 +468,16 @@ func HandleTool(store *Store, args map[string]interface{}, opts ToolOptions) str
 
 	default:
 		return fmt.Sprintf("unknown memory action: %s (use save/recall/summary/candidates/derived/derived_surgery/themes/scenes/trace/delete/list)", rawAction)
+	}
+}
+
+func invalidateToolRecallCaches(store *Store, opts ToolOptions) {
+	if store == nil {
+		return
+	}
+	store.InvalidateRecallCaches(opts.OwnerID)
+	if !opts.StrictOwner && strings.TrimSpace(opts.OwnerID) != "" {
+		store.InvalidateRecallCaches("")
 	}
 }
 

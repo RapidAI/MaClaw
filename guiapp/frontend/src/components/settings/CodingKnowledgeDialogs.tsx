@@ -8,6 +8,7 @@ export function CodingKnowledgeEditorDialog({
     lang,
     draft,
     editorSaving,
+    saveError,
     onChange,
     onCancel,
     onSave,
@@ -15,6 +16,7 @@ export function CodingKnowledgeEditorDialog({
     lang: string;
     draft: ExperienceDraft;
     editorSaving: boolean;
+    saveError?: string;
     onChange: (draft: ExperienceDraft) => void;
     onCancel: () => void;
     onSave: () => void;
@@ -30,6 +32,7 @@ export function CodingKnowledgeEditorDialog({
                 {textForLang(lang, 'Content', '\u5185\u5bb9', '\u5167\u5bb9')}
                 <textarea value={draft.content} onChange={(e) => onChange({ ...draft, content: e.target.value })} />
             </label>
+            {saveError ? <div className="prog-tools__kb-action-msg" role="alert">{saveError}</div> : null}
             <div className="prog-tools__kb-editor-actions">
                 <button type="button" className="prog-tools__kb-btn" onClick={onCancel} disabled={editorSaving}>
                     {textForLang(lang, 'Cancel', '\u53d6\u6d88', '\u53d6\u6d88')}

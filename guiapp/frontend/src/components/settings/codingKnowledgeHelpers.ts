@@ -45,6 +45,10 @@ export type ExperienceDraft = {
     failure_count: number;
 };
 
+// Implementation lives in its own module to keep this file within its size budget;
+// re-exported here so existing importers keep working unchanged.
+export { formatCodingKnowledgeActionError } from './codingKnowledgeActionError';
+
 export function toDraft(raw: any): ExperienceDraft {
     return {
         id: String(raw?.id || ''),

@@ -1087,6 +1087,8 @@ function Write-RemoteScript {
         '      cp -f "$BRIDGE_SRC/config.example.json" "$BRIDGE_DST/config.example.json"',
         '    fi',
         '    if command -v npm >/dev/null 2>&1; then',
+        '      echo "[remote] openclaw-bridge: building with node $(node -v 2>/dev/null || echo unknown) / npm $(npm -v 2>/dev/null || echo unknown)"',
+        '      echo "[remote] openclaw-bridge requires node >=22.19.0; a lower version only produces EBADENGINE warnings"',
         '      echo "[remote] Running npm install in openclaw-bridge..."',
         '      cd "$BRIDGE_DST" && npm install 2>&1 || echo "[WARN] npm install failed for openclaw-bridge"',
         '      echo "[remote] Building openclaw-bridge..."',
@@ -1095,7 +1097,7 @@ function Write-RemoteScript {
         '      npm prune --production 2>&1 || true',
         '      cd "$SRC_ROOT"',
         '    else',
-        '      echo "[WARN] npm not found on remote host, skipping openclaw-bridge dependencies"',
+        '      echo "[WARN] npm not found on remote host, skipping openclaw-bridge dependencies (openclaw-bridge needs node >=22.19.0 and npm; install node 22 before enabling the openclaw IM channel on this host)"',
         '    fi',
         '  fi',
         '}',
@@ -1168,6 +1170,9 @@ function Invoke-Plink {
         [string]$CommandText
     )
 
+    # Only for short, simple one-liners. Anything multi-line or containing
+    # quotes / $() / {} must go through Invoke-PlinkScript instead — see the
+    # comment there.
     & $PlinkExe @ConnectionArgs $CommandText
     if ($LASTEXITCODE -ne 0) {
         throw "Remote command failed: $CommandText"
@@ -1181,11 +1186,88 @@ function Invoke-PlinkCapture {
         [string]$CommandText
     )
 
+    # Same caveat as Invoke-Plink: prefer Invoke-PlinkScript -Capture for
+    # anything that is not a trivial one-liner.
     $output = & $PlinkExe @ConnectionArgs $CommandText
     if ($LASTEXITCODE -ne 0) {
         throw "Remote command failed: $CommandText"
     }
     return ($output | Out-String).Trim()
+}
+
+function Invoke-PlinkScript {
+    param(
+        [string]$PlinkExe,
+        [string[]]$ConnectionArgs,
+        [string]$ScriptText,
+        [string]$Label = 'remote script',
+        [switch]$Capture
+    )
+
+    # Run a multi-line shell script on the remote host.
+    #
+    # Do NOT pass the script text as an inline command argument: PowerShell
+    # rebuilds the native command line from the argv value, and multi-line /
+    # complex shell text does not survive that round trip.  The remote bash
+    # then sees a mangled script ("set: -: invalid option", "syntax error near
+    # unexpected token `fi`") and the step silently misbehaves.  `plink -m`
+    # ships the script as a file instead, byte for byte.
+    $tempFile = Join-Path $env:TEMP ("plink-script-{0}.sh" -f ([guid]::NewGuid().ToString('N')))
+    try {
+        # `plink -m` forwards the file verbatim, so the script must already be
+        # LF-only and BOM-free, otherwise CR / EF BB BF leak into the first
+        # remote commands.
+        $normalized = $ScriptText -replace "`r`n", "`n"
+        $normalized = $normalized -replace "`r", "`n"
+        $normalized = $normalized.TrimStart([char]0xFEFF)
+        if (-not $normalized.EndsWith("`n")) {
+            $normalized += "`n"
+        }
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText($tempFile, $normalized, $utf8NoBom)
+
+        # `-m` is a plink option, so it has to land before the user@host argument
+        # that terminates the connection argument list.
+        $optionArgs = $ConnectionArgs[0..($ConnectionArgs.Length - 2)]
+        $targetSpec = $ConnectionArgs[-1]
+        # Decide success purely from the exit code.  A remote command writing to
+        # stderr (nginx -t warnings, npm warnings) raises a NativeCommandError
+        # record; Windows PowerShell 5.1 does not turn that into a terminating
+        # error even under $ErrorActionPreference = 'Stop' (verified), but
+        # PowerShell 7.4+ does honour it via $PSNativeCommandUseErrorActionPreference.
+        # Scoping the preference keeps this step from ever being skipped into a
+        # misleading "non-fatal WARN" because of harmless remote stderr.
+        $previousErrorActionPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            if ($Capture) {
+                $scriptOutput = & $PlinkExe @optionArgs '-m' $tempFile $targetSpec
+            }
+            else {
+                & $PlinkExe @optionArgs '-m' $tempFile $targetSpec
+            }
+            $exitCode = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $previousErrorActionPreference
+        }
+        if ($exitCode -ne 0) {
+            throw "Remote command failed: $Label"
+        }
+        if ($Capture) {
+            return ($scriptOutput | Out-String).Trim()
+        }
+    }
+    finally {
+        try {
+            if ([System.IO.File]::Exists($tempFile)) {
+                [System.IO.File]::Delete($tempFile)
+            }
+        }
+        catch {
+            Write-Warning ("Failed to remove temporary script {0}: {1}" -f $tempFile, $_.Exception.Message)
+        }
+    }
 }
 
 function Invoke-PscpUpload {
@@ -1242,7 +1324,7 @@ fi
 
     Write-Host ("Ensuring nginx proxy for {0} -> 127.0.0.1:{1} on {2}..." -f $serverName, $proxyPort, $Target.Host) -ForegroundColor Cyan
     try {
-        Invoke-Plink -PlinkExe $PlinkExe -ConnectionArgs $ConnectionArgs -CommandText $command
+        Invoke-PlinkScript -PlinkExe $PlinkExe -ConnectionArgs $ConnectionArgs -ScriptText $command -Label ("nginx proxy fix for {0} on {1}" -f $serverName, $Target.Host)
     } catch {
         Write-Host ("  [WARN] nginx proxy fix skipped (non-fatal): {0}" -f $_.Exception.Message) -ForegroundColor Yellow
     }
@@ -1528,7 +1610,10 @@ function Invoke-RemotePrecheck {
     }
     $checks += 'echo "precheck:ok"'
     $command = ($checks -join ' && ')
-    $output = Invoke-PlinkCapture -PlinkExe $PlinkExe -ConnectionArgs $ConnectionArgs -CommandText $command
+    # Ship the probe via `plink -m`: this text is full of quotes, $() and {} that
+    # do not survive PowerShell's inline native-argument round trip, and a
+    # silently mangled precheck would let a broken host slip through the gate.
+    $output = Invoke-PlinkScript -PlinkExe $PlinkExe -ConnectionArgs $ConnectionArgs -ScriptText $command -Label ("remote precheck for {0}" -f $Target.Host) -Capture
     if ($output -notmatch 'precheck:ok') {
         throw ("Remote precheck failed on {0}: {1}" -f $Target.Host, $output)
     }
@@ -1756,12 +1841,20 @@ try {
         }
         if ($target.DeployHub) {
             Invoke-PscpUpload -PscpExe $pscpExe -ConnectionArgs $connectionArgs -LocalPath $hubConfigPath -RemotePath "$($target.RemoteTmpDir)/$($target.HubConfig)"
-            $remoteModelSentinel = "$($target.RemoteHubDir)/data/models/.models-initialized"
             $remoteModelLock = "$($target.RemoteHubDir)/data/models/.models-downloading"
             $remoteModelDir = "$($target.RemoteHubDir)/data/models"
             $remoteModelFilesList = ($hubModelFiles -split '\s+' | Where-Object { $_ }) -join ' '
-            $modelStateScript = "missing=0; for name in $remoteModelFilesList; do [ -f '$remoteModelDir/`$name' ] || missing=1; done; if [ -f '$remoteModelLock' ]; then echo downloading; elif [ `$missing -eq 0 ]; then echo ready; else echo missing; fi"
-            $modelState = Invoke-PlinkCapture -PlinkExe $plinkExe -ConnectionArgs $connectionArgs -CommandText $modelStateScript
+            # The model name must stay OUTSIDE the single quotes: a single-quoted
+            # '$name' is never expanded by the remote shell, so the probe used to
+            # test for a literal file called "$name", always reported "missing",
+            # and forced a needless model re-seed (~770 MB) on every deploy.
+            $modelStateScript = (
+                "missing=0; for name in $remoteModelFilesList; do " +
+                "[ -f '$remoteModelDir'/" + '"$name"' + " ] || missing=1; done; " +
+                "if [ -f '$remoteModelLock' ]; then echo downloading; " +
+                "elif [ `$missing -eq 0 ]; then echo ready; else echo missing; fi"
+            )
+            $modelState = Invoke-PlinkScript -PlinkExe $plinkExe -ConnectionArgs $connectionArgs -ScriptText $modelStateScript -Label ("hub model state check for {0}" -f $target.Host) -Capture
             if ($modelState -eq 'ready') {
                 $modelStatuses += ("{0}: existing models kept in {1}/data/models" -f $target.Host, $target.RemoteHubDir)
             }

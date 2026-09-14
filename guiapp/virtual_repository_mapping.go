@@ -110,6 +110,11 @@ func (a *App) ensureLocalVirtualRepositoryMappingRoot(item virtualRepositoryInde
 		}
 		return nil
 	case os.IsNotExist(readErr):
+		if _, rootErr := os.Stat(root); os.IsNotExist(rootErr) {
+			if mkErr := os.MkdirAll(root, 0o755); mkErr != nil {
+				return fmt.Errorf("create selected root directory: %w", mkErr)
+			}
+		}
 		if _, manifestErr := os.Stat(virtualRepositoryManifestPath(root)); manifestErr != nil && !os.IsNotExist(manifestErr) {
 			return fmt.Errorf("inspect selected root directory: %w", manifestErr)
 		}
@@ -117,21 +122,15 @@ func (a *App) ensureLocalVirtualRepositoryMappingRoot(item virtualRepositoryInde
 		if dirErr != nil {
 			return fmt.Errorf("inspect selected root directory: %w", dirErr)
 		}
-		isEmpty := len(entries) == 0 || (len(entries) == 1 && entries[0].Name() == virtualRepositoryDirName)
-		if !isEmpty {
+		if !virtualRepositoryRootAllowsInitialization(entries) {
 			return errors.New("the selected directory is not empty; choose an empty directory or one containing this virtual repository")
 		}
-		var definition *VirtualRepository
-		if item.Unbound && item.Definition != nil {
-			definition = cloneVirtualRepository(item.Definition)
-		} else if item.Remote == nil && strings.TrimSpace(item.RootPath) != "" && !sameVirtualRepositoryPath(item.RootPath, root) {
-			current, currentErr := readVirtualRepository(item.RootPath)
-			if currentErr != nil {
-				return fmt.Errorf("read current local definition before initializing the new root: %w", currentErr)
-			}
-			definition = cloneVirtualRepository(current)
-		} else {
-			return errors.New("the selected directory does not contain this virtual repository; bind it through the repository workspace first")
+		definition, defErr := a.virtualRepositoryDefinitionForNewLocalRoot(item, root)
+		if defErr != nil {
+			return defErr
+		}
+		if definition == nil {
+			return errVirtualRepositoryMappingRootUninitialized
 		}
 		definition.RootPath, definition.Remote, definition.Mappings = root, nil, nil
 		if err := writeVirtualRepository(definition); err != nil {
@@ -141,6 +140,104 @@ func (a *App) ensureLocalVirtualRepositoryMappingRoot(item virtualRepositoryInde
 	default:
 		return fmt.Errorf("read selected root directory: %w", readErr)
 	}
+}
+
+func virtualRepositoryRootAllowsInitialization(entries []os.DirEntry) bool {
+	for _, entry := range entries {
+		name := entry.Name()
+		if name == virtualRepositoryDirName || virtualRepositoryBenignEmptyRootName(name) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func virtualRepositoryBenignEmptyRootName(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "desktop.ini", "thumbs.db", ".ds_store":
+		return true
+	default:
+		return false
+	}
+}
+
+func prepareLocalVirtualRepositoryMappingRoot(root string) (string, error) {
+	root = strings.TrimSpace(root)
+	if root != "" {
+		if _, err := os.Stat(root); os.IsNotExist(err) {
+			if mkErr := os.MkdirAll(root, 0o755); mkErr != nil {
+				return "", fmt.Errorf("create selected root directory: %w", mkErr)
+			}
+		}
+	}
+	return cleanVirtualRepositoryRoot(root)
+}
+
+var errVirtualRepositoryMappingRootUninitialized = errors.New("the selected directory does not contain this virtual repository; bind it through the repository workspace first")
+
+// virtualRepositoryDefinitionForNewLocalRoot finds a portable definition that
+// can be written into an empty local mapping root. Remote-default repositories
+// initialize from another local mapping, the definition cache, or a live SSH
+// read — they must not require a prior BindVirtualRepositoryRoot.
+func (a *App) virtualRepositoryDefinitionForNewLocalRoot(item virtualRepositoryIndexEntry, root string) (*VirtualRepository, error) {
+	if item.Unbound && item.Definition != nil {
+		return cloneVirtualRepository(item.Definition), nil
+	}
+	var lastLocalErr error
+	tryLocal := func(path string) *VirtualRepository {
+		if strings.TrimSpace(path) == "" || sameVirtualRepositoryPath(path, root) {
+			return nil
+		}
+		current, err := readVirtualRepository(path)
+		if err != nil {
+			if lastLocalErr == nil {
+				lastLocalErr = err
+			}
+			return nil
+		}
+		if current.ID != item.ID {
+			return nil
+		}
+		return cloneVirtualRepository(current)
+	}
+	if item.Remote == nil {
+		if definition := tryLocal(item.RootPath); definition != nil {
+			return definition, nil
+		}
+	}
+	for _, mapping := range virtualRepositoryIndexEntryMappings(item) {
+		if mapping.Kind != virtualRepositoryMappingKindLocal {
+			continue
+		}
+		if definition := tryLocal(mapping.RootPath); definition != nil {
+			return definition, nil
+		}
+	}
+	if cached := a.cachedVirtualRepositoryDefinition(item.ID, item); cached != nil {
+		return cached, nil
+	}
+	if item.Remote != nil {
+		mapping, mappingErr := resolveVirtualRepositoryMapping(item, "")
+		view := item
+		secretKey := item.ID
+		if mappingErr == nil && mapping != nil && mapping.Kind == virtualRepositoryMappingKindRemoteSSH {
+			view = virtualRepositoryIndexEntryForMapping(item, *mapping)
+			secretKey = virtualRepositoryMappingSecretKey(item.ID, mapping.ID)
+		}
+		repo, err := a.readRemoteVirtualRepositoryWithKey(view, secretKey, "", false)
+		if err != nil {
+			return nil, fmt.Errorf("cannot copy the remote virtual repository definition into the selected directory: %w", err)
+		}
+		if repo != nil && repo.ID == item.ID {
+			a.rememberVirtualRepositoryDefinition(repo)
+			return cloneVirtualRepository(repo), nil
+		}
+	}
+	if lastLocalErr != nil {
+		return nil, fmt.Errorf("read current local definition before initializing the new root: %w", lastLocalErr)
+	}
+	return nil, errVirtualRepositoryMappingRootUninitialized
 }
 
 // updateVirtualRepositoryEntryMappingsLocked runs one mapping mutation against
@@ -291,9 +388,9 @@ func (a *App) ListVirtualRepositoryMappings(repositoryID string) (string, error)
 }
 
 // AddVirtualRepositoryMapping attaches a new (machine, root) pair to a
-// repository. Local roots must already contain this repository (or be an empty
-// directory that can be initialized from the current definition); remote SSH
-// mappings store their password in the system keyring when one is supplied.
+// repository. An empty (or missing) local directory is initialized from the
+// current definition; remote SSH mappings store their password in the system
+// keyring when one is supplied.
 func (a *App) AddVirtualRepositoryMapping(inputJSON string) (string, error) {
 	request, err := parseVirtualRepositoryMappingRequest(inputJSON)
 	if err != nil {
@@ -304,7 +401,7 @@ func (a *App) AddVirtualRepositoryMapping(inputJSON string) (string, error) {
 		return "", err
 	}
 	if mapping.Kind == virtualRepositoryMappingKindLocal {
-		root, err := cleanVirtualRepositoryRoot(mapping.RootPath)
+		root, err := prepareLocalVirtualRepositoryMappingRoot(mapping.RootPath)
 		if err != nil {
 			return "", fmt.Errorf("open selected root directory: %w", err)
 		}
@@ -389,7 +486,7 @@ func (a *App) UpdateVirtualRepositoryMapping(inputJSON string) (string, error) {
 		return "", err
 	}
 	if mapping.Kind == virtualRepositoryMappingKindLocal {
-		root, err := cleanVirtualRepositoryRoot(mapping.RootPath)
+		root, err := prepareLocalVirtualRepositoryMappingRoot(mapping.RootPath)
 		if err != nil {
 			return "", fmt.Errorf("open selected root directory: %w", err)
 		}

@@ -123,6 +123,10 @@ type LoopContext struct {
 	// consume. Ordinary chat and leftover pending maps must not set this.
 	// bindLoopResumeWorkingState clears a reused LoopContext leftover.
 	ResumeWorkingState *agent.WorkingState
+	// SessionFacts is the in-task fact overlay for this agent instance.
+	// Continue turns in the same panel reuse it so updated claims win over
+	// historical recall still sitting in conversation history.
+	SessionFacts *agent.SessionFactOverlay
 	// ClientTools and ClientToolContext are immutable per-turn snapshots. They
 	// keep dynamically declared device tools out of the global tool registry.
 	ClientTools       []agent.ClientToolDefinition

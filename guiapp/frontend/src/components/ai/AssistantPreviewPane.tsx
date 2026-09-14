@@ -70,14 +70,26 @@ function previewTabTooltip(mode: PreviewPaneMode, lang: string, cloudMode = fals
         : (lang === "en" ? "Source" : "\u6e90\u7801\u67e5\u770b");
 }
 
+/** Neutral preview chrome. Keep these out of the assistant scheme's blue-tinted divider. */
+export const PREVIEW_SURFACE_FRAME = {
+    lightBorder: "#e4e4e4",
+    darkBorder: "rgba(255, 255, 255, 0.12)",
+    lightBorderActive: "#c8c8c8",
+    darkBorderActive: "rgba(255, 255, 255, 0.22)",
+} as const;
+
 function previewSurfaceVars(theme: Theme): React.CSSProperties {
+    const dark = theme.isDark === true;
     return {
         "--mc-preview-pane-bg": theme.bg,
         "--mc-preview-surface-bg": theme.bg,
-        "--mc-preview-surface-border": theme.divider,
-        "--mc-preview-surface-shadow": theme.isDark
+        "--mc-preview-surface-border": dark ? PREVIEW_SURFACE_FRAME.darkBorder : PREVIEW_SURFACE_FRAME.lightBorder,
+        "--mc-preview-surface-border-active": dark
+            ? PREVIEW_SURFACE_FRAME.darkBorderActive
+            : PREVIEW_SURFACE_FRAME.lightBorderActive,
+        "--mc-preview-surface-shadow": dark
             ? "0 1px 2px rgba(0, 0, 0, 0.32), 0 12px 32px -12px rgba(0, 0, 0, 0.45)"
-            : "0 1px 2px rgba(30, 58, 95, 0.05), 0 12px 32px -12px rgba(30, 58, 95, 0.12)",
+            : "0 1px 2px rgba(0, 0, 0, 0.04), 0 12px 28px -14px rgba(0, 0, 0, 0.10)",
     } as React.CSSProperties;
 }
 

@@ -204,6 +204,33 @@ func (m *ScrollSessionManager) evictExpiredLocked() {
 	}
 }
 
+// DestroyAllForOwner drops every scroll session owned by ownerID. Memory
+// writes use this so a later recall with the same query cannot keep serving
+// the pre-update candidate cache.
+func (m *ScrollSessionManager) DestroyAllForOwner(ownerID string) {
+	if m == nil {
+		return
+	}
+	ownerID = strings.TrimSpace(ownerID)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if ownerID == "" {
+		// sessionKey("", loopID) is just loopID — no NUL prefix.
+		for key := range m.sessions {
+			if !strings.Contains(key, "\x00") {
+				delete(m.sessions, key)
+			}
+		}
+		return
+	}
+	prefix := ownerID + "\x00"
+	for key := range m.sessions {
+		if key == ownerID || strings.HasPrefix(key, prefix) {
+			delete(m.sessions, key)
+		}
+	}
+}
+
 // Destroy removes the scroll session for the given loopID. Called when the
 // agent loop execution completes (normal exit, cancel, or error).
 func (m *ScrollSessionManager) Destroy(loopID string, ownerID ...string) {
@@ -216,4 +243,14 @@ func (m *ScrollSessionManager) Destroy(loopID string, ownerID ...string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.sessions, key)
+}
+
+// DestroyAll drops every scroll session.
+func (m *ScrollSessionManager) DestroyAll() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sessions = make(map[string]*ScrollSession)
 }

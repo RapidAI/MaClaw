@@ -1443,10 +1443,11 @@ func (a *App) UpdateMemory(id, content, category string, tags []string) error {
 	if a.memoryStore == nil {
 		return fmt.Errorf("memory store not initialized")
 	}
+	previous := a.memoryEntriesByIDs(id)
 	if err := a.memoryStore.UpdateManualMemory(id, content, memory.Category(category), tags); err != nil {
 		return err
 	}
-	a.refreshActiveAgentMemorySnapshots()
+	a.notifyMemoryWarehouseChanged(warehouseChangeFromEntries(previous, "updated", content))
 	return nil
 }
 
@@ -1459,6 +1460,7 @@ func (a *App) DeleteMemory(id string) error {
 	if a.memoryStore == nil {
 		return fmt.Errorf("memory store not initialized")
 	}
+	previous := a.memoryEntriesByIDs(id)
 	out := memory.HandleTool(a.memoryStore, map[string]interface{}{
 		"action": "delete",
 		"id":     id,
@@ -1466,7 +1468,7 @@ func (a *App) DeleteMemory(id string) error {
 	if strings.HasPrefix(out, "delete memory failed:") || strings.HasPrefix(out, "missing ") {
 		return fmt.Errorf("%s", out)
 	}
-	a.refreshActiveAgentMemorySnapshots()
+	a.notifyMemoryWarehouseChanged(warehouseChangeFromEntries(previous, "deleted", ""))
 	return nil
 }
 
@@ -1497,10 +1499,11 @@ func (a *App) DeleteMemories(ids []string) (int, error) {
 	if a.memoryStore == nil {
 		return 0, fmt.Errorf("memory store not initialized")
 	}
+	previous := a.memoryEntriesByIDs(deleteIDs...)
 	if err := a.memoryStore.UpdateEntriesAndDeleteIDs(nil, deleteIDs); err != nil {
 		return 0, fmt.Errorf("delete memory batch failed: %w", err)
 	}
-	a.refreshActiveAgentMemorySnapshots()
+	a.notifyMemoryWarehouseChanged(warehouseChangeFromEntries(previous, "deleted", ""))
 	return len(deleteIDs), nil
 }
 

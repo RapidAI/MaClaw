@@ -3826,6 +3826,13 @@ func (c *tuiCallbacks) RefreshAfterToolExecution(name string) bool {
 	return c != nil && c.activeLLM.consumeSurfaceRefresh()
 }
 
+func (c *tuiCallbacks) OnVerifiedSessionFact(fact agent.SessionFact) {
+	if c == nil || c.app == nil {
+		return
+	}
+	c.app.syncVerifiedFactToStores(fact)
+}
+
 func (c *tuiCallbacks) ShouldStop() bool {
 	if c != nil && c.executionCtx != nil && c.executionCtx.Err() != nil {
 		return true

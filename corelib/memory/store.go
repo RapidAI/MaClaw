@@ -151,6 +151,35 @@ func (s *Store) ScrollSessions() *ScrollSessionManager {
 	return s.scrollSessions
 }
 
+// InvalidateRecallCaches drops paginated/scroll recall snapshots for ownerID
+// so a subsequent recall in the same agent instance sees post-write facts.
+func (s *Store) InvalidateRecallCaches(ownerID string) {
+	if s == nil {
+		return
+	}
+	if p := s.cursorPaginator; p != nil {
+		p.InvalidateOwner(ownerID)
+	}
+	if ss := s.scrollSessions; ss != nil {
+		ss.DestroyAllForOwner(ownerID)
+	}
+}
+
+// InvalidateAllRecallCaches drops every paginated/scroll recall snapshot.
+// GUI memory-management edits are store-wide, so owner-scoped invalidation
+// is not enough for the currently running agent instance.
+func (s *Store) InvalidateAllRecallCaches() {
+	if s == nil {
+		return
+	}
+	if p := s.cursorPaginator; p != nil {
+		p.InvalidateAll()
+	}
+	if ss := s.scrollSessions; ss != nil {
+		ss.DestroyAll()
+	}
+}
+
 type queryEmbeddingCacheEntry struct {
 	vec        []float32
 	generation uint64
@@ -1352,14 +1381,22 @@ func (s *Store) categorySummary(cat Category, maxRunes int) string {
 	}
 
 	var parts []string
+	now := time.Now()
 	for _, e := range s.entries {
-		if e.Category == cat {
-			text := strings.TrimSpace(e.CompactForm)
-			if text == "" {
-				text = strings.TrimSpace(e.Content)
-			}
-			parts = append(parts, text)
+		if e.Category != cat || !e.IsActive() {
+			continue
 		}
+		if e.InvalidAt != nil && !e.InvalidAt.After(now) {
+			continue
+		}
+		text := strings.TrimSpace(e.CompactForm)
+		if text == "" {
+			text = strings.TrimSpace(e.Content)
+		}
+		if text == "" {
+			continue
+		}
+		parts = append(parts, text)
 	}
 	if len(parts) == 0 {
 		return ""

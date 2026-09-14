@@ -74,6 +74,11 @@ type CodingSubAgent struct {
 	// ShouldStop checks loopCtx.IsCancelled().
 	loopCtx *LoopContext
 
+	// sessionFacts is the in-task fact overlay for this SubAgent instance.
+	// Shared with loopCtx.SessionFacts when a parent loop exists so later
+	// todos in the same panel see tool-updated claims.
+	sessionFacts *agent.SessionFactOverlay
+
 	// scopeApproval handles interactive user confirmation when the SubAgent
 	// attempts to access paths outside the declared projectPath. When nil,
 	// out-of-scope access is hard-rejected (legacy behavior).
@@ -2034,6 +2039,52 @@ func (c *codingSubAgentCallbacks) logCacheEvent(cacheName, event string, kv ...i
 		parts = append(parts, fmt.Sprintf("%v=%v", kv[i], kv[i+1]))
 	}
 	log.Printf("[coding-subagent-cache] %s", strings.Join(parts, " "))
+}
+
+func (c *codingSubAgentCallbacks) LoadSessionFacts() *agent.SessionFactOverlay {
+	if c == nil || c.subagent == nil {
+		return nil
+	}
+	if c.subagent.loopCtx != nil && c.subagent.loopCtx.SessionFacts != nil {
+		return agent.CloneSessionFactOverlay(c.subagent.loopCtx.SessionFacts)
+	}
+	return agent.CloneSessionFactOverlay(c.subagent.sessionFacts)
+}
+
+func (c *codingSubAgentCallbacks) SaveSessionFacts(overlay *agent.SessionFactOverlay) {
+	if c == nil || c.subagent == nil {
+		return
+	}
+	cloned := agent.CloneSessionFactOverlay(overlay)
+	c.subagent.sessionFacts = cloned
+	if c.subagent.loopCtx != nil {
+		c.subagent.loopCtx.SessionFacts = agent.CloneSessionFactOverlay(cloned)
+	}
+	if c.subagent.handler != nil {
+		owner := ""
+		if c.subagent.loopCtx != nil {
+			owner = strings.TrimSpace(c.subagent.loopCtx.UserID)
+		}
+		c.subagent.handler.storeSessionFacts(owner, cloned)
+	}
+}
+
+func (c *codingSubAgentCallbacks) OnVerifiedSessionFact(fact agent.SessionFact) {
+	if c == nil || c.subagent == nil || c.subagent.handler == nil {
+		return
+	}
+	owner := ""
+	if c.subagent.loopCtx != nil {
+		owner = strings.TrimSpace(c.subagent.loopCtx.UserID)
+	}
+	c.subagent.handler.syncVerifiedFactToStores(owner, fact)
+}
+
+func (c *codingSubAgentCallbacks) LoadMemoryRetractions() *agent.MemoryRetraction {
+	if c == nil || c.subagent == nil || c.subagent.handler == nil {
+		return nil
+	}
+	return c.subagent.handler.LoadMemoryRetractions()
 }
 
 func (c *codingSubAgentCallbacks) ExecuteTool(name, argsJSON string) string {

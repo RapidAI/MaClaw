@@ -46,6 +46,7 @@ const USAGE_STATS_I18N = {
     trendEmpty: 'No daily trend is available for the selected view.',
     rowsTitle: 'Usage Ranking',
     rowsEmpty: 'No usage data found for the current filter.',
+    systemUserTitle: 'sys_user usage',
     colName: 'Name',
     colTotal: 'Total',
     colInput: 'Input',
@@ -140,6 +141,7 @@ const USAGE_STATS_I18N = {
     trendEmpty: '\u5f53\u524d\u7b5b\u9009\u4e0b\u65e0\u6bcf\u65e5\u8d8b\u52bf\u6570\u636e\u3002',
     rowsTitle: '\u7528\u91cf\u6392\u540d',
     rowsEmpty: '\u5f53\u524d\u7b5b\u9009\u4e0b\u6682\u65e0\u7528\u91cf\u6570\u636e\u3002',
+    systemUserTitle: 'sys_user \u7528\u91cf',
     colName: '\u540d\u79f0',
     colTotal: '\u603b\u8ba1',
     colInput: '\u8f93\u5165',
@@ -683,7 +685,10 @@ function ensureUsageStatsUI() {
     '<div id="usageStatsSummary" class="metrics" style="margin-top:10px;max-width:none;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:8px"></div>' +
     '<div id="usageStatsReconciliation" class="item hidden" style="margin-top:10px;padding:10px 14px"></div>' +
     '<div class="usage-stats-detail-grid">' +
+    '<div class="usage-stats-detail-main">' +
     '<div class="item" style="padding:12px 14px"><div class="item-title" data-icon="chart" style="font-size:14px" id="usageStatsTrendTitle"></div><div id="usageStatsTrend" style="margin-top:8px"></div></div>' +
+    '<div class="item usage-stats-system-user" id="usageStatsSystemUserWrap" style="padding:12px 14px"><div class="item-title" data-icon="list" style="font-size:14px" id="usageStatsSystemUserTitle"></div><div id="usageStatsSystemUser" style="margin-top:8px"></div></div>' +
+    '</div>' +
     '<div class="item" style="padding:12px 14px"><div class="item-title" data-icon="list" style="font-size:14px" id="usageStatsRowsTitle"></div><div id="usageStatsRows" style="margin-top:8px"></div></div>' +
     '</div></div>' +
     '<div id="usageStatsRankingPane" class="hidden" role="tabpanel" aria-labelledby="usageStatsSubtabRanking">' +
@@ -718,6 +723,7 @@ function applyUsageStatsI18n() {
   _s('usageStatsMonthLabel', 'textContent', ust('month'));
   _s('usageStatsEntityLabel', 'textContent', ust('entity'));
   _s('usageStatsTrendTitle', 'textContent', ust('trendTitle'));
+  _s('usageStatsSystemUserTitle', 'textContent', ust('systemUserTitle'));
   _s('usageStatsRowsTitle', 'textContent', ust('rowsTitle'));
   _s('usageStatsSubtabUsage', 'textContent', ust('subtabUsage'));
   _s('usageStatsSubtabRanking', 'textContent', ust('subtabRanking'));
@@ -830,33 +836,72 @@ function renderUsageTrend() {
   }).join('');
   root.innerHTML = '<svg viewBox="0 0 ' + width + ' ' + height + '" style="width:100%;height:auto;background:linear-gradient(180deg,#f9fbff 0%,#eef4ff 100%);border:1px solid var(--line);border-radius:12px"><line x1="' + left + '" y1="10" x2="' + left + '" y2="' + (10 + chartHeight) + '" stroke="rgba(24,49,79,.2)"></line><line x1="' + left + '" y1="' + (10 + chartHeight) + '" x2="' + (left + chartWidth) + '" y2="' + (10 + chartHeight) + '" stroke="rgba(24,49,79,.2)"></line>' + bars + '</svg>';
 }
+function isSystemLLMUserRow(row) {
+  const id = String(row && row.id || '').trim().toLowerCase();
+  const name = String(row && row.name || '').trim().toLowerCase();
+  return id === 'sys_user' || name === 'sys_user';
+}
+function usageRankRowHTML(row, index) {
+  const name = escapeHtml((row && (row.name || row.id)) || '-');
+  const indexHTML = index == null ? '' : '<span class="usage-rank-index">' + index + '</span>';
+  return '' +
+    '<div class="usage-rank-row">' +
+      '<div class="usage-rank-main">' +
+        '<div class="usage-rank-name">' + indexHTML + '<div style="min-width:0"><span class="usage-rank-label">' + ust('colName') + '</span><span class="usage-rank-value mono" title="' + name + '" style="overflow:hidden;text-overflow:ellipsis">' + name + '</span></div></div>' +
+        '<div><span class="usage-rank-label">' + ust('colTotal') + '</span><span class="usage-rank-value">' + fmtInt(row && row.total_tokens) + '</span></div>' +
+        '<div><span class="usage-rank-label">' + ust('colCacheRate') + '</span><span class="usage-rank-value ok">' + fmtPercent(row && row.cached_requests, row && row.requests) + '</span></div>' +
+        '<div><span class="usage-rank-label">' + ust('colRequests') + '</span><span class="usage-rank-value">' + fmtInt(row && row.cached_requests) + ' / ' + fmtInt(row && row.requests) + '</span></div>' +
+      '</div>' +
+      '<div class="usage-rank-sub">' +
+        '<div class="usage-rank-chip"><span class="usage-rank-label">' + ust('colInput') + '</span><span class="usage-rank-value">' + fmtInt(row && row.input_tokens) + '</span></div>' +
+        '<div class="usage-rank-chip"><span class="usage-rank-label">' + ust('colOutput') + '</span><span class="usage-rank-value">' + fmtInt(row && row.output_tokens) + '</span></div>' +
+        '<div class="usage-rank-chip"><span class="usage-rank-label">' + ust('colCacheRead') + '</span><span class="usage-rank-value cache">' + fmtInt(row && row.cached_input_tokens) + '</span></div>' +
+        '<div class="usage-rank-chip"><span class="usage-rank-label">' + ust('colCacheWrite') + '</span><span class="usage-rank-value cache">' + fmtInt(row && row.cache_write_tokens) + '</span></div>' +
+        '<div class="usage-rank-chip"><span class="usage-rank-label">' + usageCreditsLabel(row || {}) + '</span><span class="usage-rank-value">' + fmtCredits(row && row.credits) + '</span></div>' +
+        '<div class="usage-rank-chip"><span class="usage-rank-label">' + ust('colCostRMB') + '</span><span class="usage-rank-value">' + usageRMBValue(row || {}) + '</span></div>' +
+      '</div>' +
+    '</div>';
+}
+function renderUsageSystemUser() {
+  const wrap = document.getElementById('usageStatsSystemUserWrap');
+  const root = document.getElementById('usageStatsSystemUser');
+  if (!root) {
+    if (wrap) wrap.classList.add('hidden');
+    return;
+  }
+  const show = usageStatsState.scope === 'user' && !String(usageStatsState.entity || '').trim();
+  if (wrap) wrap.classList.toggle('hidden', !show);
+  if (!show) {
+    root.innerHTML = '';
+    return;
+  }
+  let row = usageStatsCache && usageStatsCache.system_user;
+  if (!row) {
+    const rows = usageStatsCache && usageStatsCache.rows || [];
+    for (let i = 0; i < rows.length; i++) {
+      if (isSystemLLMUserRow(rows[i])) {
+        row = rows[i];
+        break;
+      }
+    }
+  }
+  if (!row) row = { id: 'sys_user', name: 'sys_user' };
+  root.innerHTML = '<div class="usage-rank-list">' + usageRankRowHTML(row, '') + '</div>';
+}
 function renderUsageRows() {
   const root = document.getElementById('usageStatsRows');
   if (!root) return;
-  const rows = usageStatsCache && usageStatsCache.rows || [];
+  const filteredEntity = String(usageStatsState.entity || '').trim();
+  const rows = (usageStatsCache && usageStatsCache.rows || []).filter(function(row) {
+    if (usageStatsState.scope !== 'user' || filteredEntity) return true;
+    return !isSystemLLMUserRow(row);
+  });
   if (!rows.length) {
     root.innerHTML = '<div class="usage-rank-empty">' + ust('rowsEmpty') + '</div>';
     return;
   }
   const body = rows.slice(0, 20).map(function(row, index) {
-    const name = escapeHtml(row.name || row.id || '-');
-    return '' +
-      '<div class="usage-rank-row">' +
-        '<div class="usage-rank-main">' +
-          '<div class="usage-rank-name"><span class="usage-rank-index">' + (index + 1) + '</span><div style="min-width:0"><span class="usage-rank-label">' + ust('colName') + '</span><span class="usage-rank-value mono" title="' + name + '" style="overflow:hidden;text-overflow:ellipsis">' + name + '</span></div></div>' +
-          '<div><span class="usage-rank-label">' + ust('colTotal') + '</span><span class="usage-rank-value">' + fmtInt(row.total_tokens) + '</span></div>' +
-          '<div><span class="usage-rank-label">' + ust('colCacheRate') + '</span><span class="usage-rank-value ok">' + fmtPercent(row.cached_requests, row.requests) + '</span></div>' +
-          '<div><span class="usage-rank-label">' + ust('colRequests') + '</span><span class="usage-rank-value">' + fmtInt(row.cached_requests) + ' / ' + fmtInt(row.requests) + '</span></div>' +
-        '</div>' +
-        '<div class="usage-rank-sub">' +
-          '<div class="usage-rank-chip"><span class="usage-rank-label">' + ust('colInput') + '</span><span class="usage-rank-value">' + fmtInt(row.input_tokens) + '</span></div>' +
-          '<div class="usage-rank-chip"><span class="usage-rank-label">' + ust('colOutput') + '</span><span class="usage-rank-value">' + fmtInt(row.output_tokens) + '</span></div>' +
-          '<div class="usage-rank-chip"><span class="usage-rank-label">' + ust('colCacheRead') + '</span><span class="usage-rank-value cache">' + fmtInt(row.cached_input_tokens) + '</span></div>' +
-          '<div class="usage-rank-chip"><span class="usage-rank-label">' + ust('colCacheWrite') + '</span><span class="usage-rank-value cache">' + fmtInt(row.cache_write_tokens) + '</span></div>' +
-          '<div class="usage-rank-chip"><span class="usage-rank-label">' + usageCreditsLabel(row) + '</span><span class="usage-rank-value">' + fmtCredits(row.credits) + '</span></div>' +
-          '<div class="usage-rank-chip"><span class="usage-rank-label">' + ust('colCostRMB') + '</span><span class="usage-rank-value">' + usageRMBValue(row) + '</span></div>' +
-        '</div>' +
-      '</div>';
+    return usageRankRowHTML(row, index + 1);
   }).join('');
   root.innerHTML = '<div class="usage-rank-list">' + body + '</div>';
 }
@@ -969,6 +1014,7 @@ function renderUsageStats() {
   renderUsageSummary();
   renderUsageReconciliation();
   renderUsageTrend();
+  renderUsageSystemUser();
   renderUsageRows();
   renderUserRankings();
   const generatedAt = document.getElementById('usageStatsGeneratedAt');

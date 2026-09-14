@@ -495,6 +495,48 @@ export function applyClosePanel(state: CodePreviewUIState): CodePreviewUIState {
     };
 }
 
+/** No open tabs and no directory tree to fall back to. */
+export function shouldDismissEmptyPreviewWithoutWorkspace(
+    fileCount: number,
+    projectPath?: string,
+): boolean {
+    return fileCount === 0 && !projectPath;
+}
+
+/**
+ * After the last tab is gone, keep the pane only when a working directory
+ * can still be shown. Otherwise this is the same as clicking the preview X.
+ */
+export function applyDismissEmptyPreviewWithoutWorkspace(
+    state: CodePreviewUIState,
+    projectPath?: string,
+): CodePreviewUIState {
+    if (!state.active || !shouldDismissEmptyPreviewWithoutWorkspace(state.files.size, projectPath)) {
+        return state;
+    }
+    return applyClosePanel(state);
+}
+
+/** True when closing this tab leaves no files and no working directory to show. */
+export function willDismissPreviewAfterClosingFile(
+    state: CodePreviewUIState,
+    filePath: string,
+    projectPath?: string,
+): boolean {
+    if (!state.active || !state.files.has(filePath)) return false;
+    return shouldDismissEmptyPreviewWithoutWorkspace(state.files.size - 1, projectPath);
+}
+
+/** True when Close All would drop every tab and no working directory remains. */
+export function willDismissPreviewAfterClosingAll(
+    state: CodePreviewUIState,
+    projectPath?: string,
+): boolean {
+    if (!state.active || state.files.size === 0) return false;
+    const remaining = state.pinnedPaths.filter((p) => state.files.has(p)).length;
+    return shouldDismissEmptyPreviewWithoutWorkspace(remaining, projectPath);
+}
+
 /**
  * Reopen the panel. Sets active=true, userClosed=false.
  */
@@ -861,15 +903,21 @@ export function cloneCodePreviewState(state: CodePreviewUIState): CodePreviewUIS
  *   Unscoped events (no project_path) are only accepted by the unbound local tab.
  * @param scope.belongingPath - Extra root (cloud cache) for leftover-file filtering.
  * @param scope.cloudWorkspaceTab - Drop foreign absolute files before the cache path resolves.
+ * @param scope.previewWorkspacePath - Directory shown in the preview tree. When
+ *   the key is present, last-file dismiss uses this instead of the event-routing path
+ *   (cloud cache root can exist while tab.projectPath is still empty).
  */
 export function useCodePreviewState(
     activeTabProjectPath?: string,
     previewEnabled = true,
-    scope?: { belongingPath?: string; cloudWorkspaceTab?: boolean },
+    scope?: { belongingPath?: string; cloudWorkspaceTab?: boolean; previewWorkspacePath?: string },
 ) {
     const [state, setState] = useState<CodePreviewUIState>(initialState);
     const belongingPath = scope?.belongingPath || activeTabProjectPath;
     const cloudWorkspaceTab = scope?.cloudWorkspaceTab === true;
+    const previewWorkspacePath = scope && "previewWorkspacePath" in scope
+        ? (scope.previewWorkspacePath || undefined)
+        : activeTabProjectPath;
     const retainForActiveTab = useCallback((next: CodePreviewUIState) => (
         filterCodePreviewStateForProject(next, activeTabProjectPath, belongingPath, cloudWorkspaceTab)
     ), [activeTabProjectPath, belongingPath, cloudWorkspaceTab]);
@@ -995,8 +1043,11 @@ export function useCodePreviewState(
     }, [activeTabProjectPath]);
 
     const closeFile = useCallback((filePath: string) => {
-        setState(prev => applyCloseFile(prev, filePath));
-    }, []);
+        setState(prev => applyDismissEmptyPreviewWithoutWorkspace(
+            applyCloseFile(prev, filePath),
+            previewWorkspacePath,
+        ));
+    }, [previewWorkspacePath]);
 
     const closeOtherFiles = useCallback((keepPath: string) => {
         setState(prev => applyCloseOtherFiles(prev, keepPath));
@@ -1007,8 +1058,11 @@ export function useCodePreviewState(
     }, []);
 
     const closeAllFiles = useCallback(() => {
-        setState(prev => applyCloseAllFiles(prev));
-    }, []);
+        setState(prev => applyDismissEmptyPreviewWithoutWorkspace(
+            applyCloseAllFiles(prev),
+            previewWorkspacePath,
+        ));
+    }, [previewWorkspacePath]);
 
     const moveFile = useCallback((fromPath: string, toIndex: number) => {
         setState(prev => applyMoveFile(prev, fromPath, toIndex));

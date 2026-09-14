@@ -3,6 +3,7 @@ package memory
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 // FormatMemoryIndexForPrompt renders a compact store table-of-contents for
@@ -92,8 +93,15 @@ func (s *Store) userFactSummaryForPrompt(maxRunes int, ownerID string, strictOwn
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	parts := make([]string, 0)
+	now := time.Now()
 	for _, entry := range s.entries {
 		if entry.Category != CategoryUserFact {
+			continue
+		}
+		if !entry.IsActive() {
+			continue
+		}
+		if entry.InvalidAt != nil && !entry.InvalidAt.After(now) {
 			continue
 		}
 		if strictOwner && entry.OwnerID != ownerID {

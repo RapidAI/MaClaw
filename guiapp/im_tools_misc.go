@@ -2219,6 +2219,9 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 			// Without this, user_fact changes (e.g. "remember my name is X")
 			// are invisible to the LLM until the next /new or topic switch.
 			h.RefreshMemorySnapshot(ownerID)
+			if action == memoryToolActionSave {
+				h.admitSessionFactFromMemorySave(ownerID, stringVal(args, "content"))
+			}
 		},
 	})
 }

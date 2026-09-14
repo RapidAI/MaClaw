@@ -1268,6 +1268,39 @@ func sameInFlightCheckpointState(a, b *conversationSession) bool {
 		a.inFlightSideEffect == b.inFlightSideEffect
 }
 
+// RewriteAllSessions applies rewrite to every stored conversation. A nil return
+// leaves that session unchanged. Used when the user deletes warehouse facts so
+// live agent histories stop treating the removed text as current.
+func (cm *ConversationMemory) RewriteAllSessions(rewrite func(userID string, entries []ConversationEntry) []ConversationEntry) {
+	if cm == nil || rewrite == nil {
+		return
+	}
+	cm.checkpointLockedMutation(func() {
+		now := time.Now()
+		changed := false
+		for i := range cm.shards {
+			sh := cm.shards[i]
+			sh.mu.Lock()
+			for userID, s := range sh.sessions {
+				if s == nil || len(s.entries) == 0 {
+					continue
+				}
+				next := rewrite(userID, s.entries)
+				if next == nil {
+					continue
+				}
+				s.entries = next
+				s.lastAccess = now
+				changed = true
+			}
+			sh.mu.Unlock()
+		}
+		if changed {
+			cm.markDirtyAndScheduleFlush()
+		}
+	})
+}
+
 // checkpointLockedMutation serializes a non-checkpoint session mutation with
 // checkpoint snapshotting. A tool-progress checkpoint must not restore an old
 // session after a concurrent normal Save/Append/slot update committed while

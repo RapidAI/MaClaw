@@ -618,16 +618,17 @@ func (h *IMMessageHandler) appendMemorySection(b *strings.Builder, isFirstTurn b
 // agent loops where the phase prompt is self-sufficient and proactive recall
 // of old project memories would distract the LLM.
 func (h *IMMessageHandler) appendStaticMemoryOnly(b *strings.Builder, userID string) {
-	if h.memoryStore == nil {
-		return
-	}
 	userID = strings.TrimSpace(userID)
 	if userID == "" {
 		userID = desktopUserID
 	}
-	if text, _ := h.loadOrBuildStaticMemorySnapshot(userID); text != "" {
-		b.WriteString(text)
+	if h.memoryStore != nil {
+		if text, _ := h.loadOrBuildStaticMemorySnapshot(userID); text != "" {
+			b.WriteString(text)
+		}
 	}
+	h.appendSessionFactsSection(b, userID, nil)
+	h.appendMemoryRetractionSection(b)
 }
 
 // loadOrBuildStaticMemorySnapshot returns the session-stable static memory

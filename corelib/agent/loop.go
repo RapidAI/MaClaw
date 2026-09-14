@@ -726,6 +726,10 @@ type LoopResult struct {
 	// WorkingState is the task-turn workspace when this loop earned or resumed one.
 	// Hosts may ignore it; AskUser/RecordAudio carriers persist it across RunLoop calls.
 	WorkingState *WorkingState
+	// SessionFacts is the in-task fact overlay for this agent instance.
+	// Hosts persist it across continue turns in the same panel so later items
+	// use the updated claim instead of the historical one.
+	SessionFacts *SessionFactOverlay
 }
 
 // RunLoop executes the core agent loop: LLM call → tool execution → repeat.
@@ -774,6 +778,8 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 	historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: userContent})
 	var displayReasoning strings.Builder
 	workingState := loadInitialWorkingState(cb)
+	sessionFacts := loadInitialSessionFacts(cb)
+	memoryRetractions := loadInitialMemoryRetractions(cb)
 	executedTools := 0
 	finish := func(r LoopResult) LoopResult {
 		if r.Usage.Requests == 0 && usage.Requests > 0 {
@@ -793,13 +799,26 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		if lightUpgraded {
 			r.LightUpgraded = true
 		}
-		if len(r.HistoryDelta) == 0 && len(historyDelta) > 0 {
-			r.HistoryDelta = append([]ConversationEntry(nil), historyDelta...)
-		}
 		if r.Reasoning == "" && displayReasoning.Len() > 0 {
 			r.Reasoning = displayReasoning.String()
 		}
+		needles := MemoryRetractionNeedles(loadInitialMemoryRetractions(cb))
+		if len(needles) > 0 {
+			if next, ok := RedactConversationEntries(historyDelta, needles); ok {
+				historyDelta = next
+			}
+			DropSessionFactsMatching(sessionFacts, needles)
+		}
+		if len(r.HistoryDelta) == 0 && len(historyDelta) > 0 {
+			r.HistoryDelta = append([]ConversationEntry(nil), historyDelta...)
+		} else if len(needles) > 0 {
+			if next, ok := RedactConversationEntries(r.HistoryDelta, needles); ok {
+				r.HistoryDelta = next
+			}
+		}
 		finishWorkingState(cb, &r, workingState)
+		finishSessionFacts(cb, &r, sessionFacts)
+		sanitizeSessionFactsVisible(&r)
 		return r
 	}
 	maxIter := cb.GetMaxIterations()
@@ -1008,6 +1027,17 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		}
 		conversation = FoldComputerUseObserves(conversation)
 		workingState, conversation = spliceWorkingStateAtHead(cb, conversation, workingState, userText, executedTools)
+		memoryRetractions = loadInitialMemoryRetractions(cb)
+		if needles := MemoryRetractionNeedles(memoryRetractions); len(needles) > 0 {
+			conversation = redactConversationInterface(conversation, needles)
+			DropSessionFactsMatching(sessionFacts, needles)
+		}
+		attachWS := ShouldAttachWorkingState(loopPromptProfile(cb), WorkingStateDisabled(), workingState)
+		retractionsForPrompt := memoryRetractions
+		if len(history) == 0 && executedTools == 0 {
+			retractionsForPrompt = nil
+		}
+		conversation = applyPromptOverlays(conversation, workingState, attachWS, sessionFacts, retractionsForPrompt)
 
 		// Call LLM with tools via corelib/llm (streaming for real-time display).
 		// Notify before every request, including the first: hosts flip the
@@ -2389,6 +2419,14 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			// the ledger.
 			if !WorkingStateDisabled() && !replanSkip && !policyRejected && workingState != nil {
 				wsBatch.note(workingState, tc.Function.Name, argsJSON, execResult.Outcome)
+			}
+			if toolExecuted && !replanSkip && !policyRejected {
+				var admitted SessionFact
+				var factOK bool
+				sessionFacts, admitted, factOK = noteSessionFactFromTool(sessionFacts, tc.Function.Name, argsJSON, result, execResult.Outcome)
+				if factOK {
+					notifyVerifiedSessionFact(cb, admitted)
+				}
 			}
 			// OnToolExecuted is an execution lifecycle callback, not a generic
 			// tool-call observation. Calling it for invalid arguments, a policy

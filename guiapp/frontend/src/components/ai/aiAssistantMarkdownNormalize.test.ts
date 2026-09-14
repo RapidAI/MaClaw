@@ -18,6 +18,9 @@ describe("normalizeInlineListMarkers ordered markers", () => {
         expect(normalizeInlineListMarkers("如下： 10. 标题")).toBe("如下：\n10. 标题");
         expect(normalizeInlineListMarkers("text2. glued")).toBe("text\n2. glued");
         expect(normalizeInlineListMarkers("done1) next")).toBe("done\n1) next");
+        expect(normalizeInlineListMarkers("snake.cpp (lines 251-504) to confirm")).toBe(
+            "snake.cpp (lines 251-504) to confirm",
+        );
     });
 
     it("expands compact multi-item ordered lines with two-digit indices", () => {

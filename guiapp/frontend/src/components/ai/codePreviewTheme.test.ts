@@ -169,6 +169,13 @@ describe('Active assistant scheme derivation', () => {
         expect(preview.diffAddBg).toContain('#7aa89a');
     });
 
+    it('uses scheme body text for default ink instead of inline-code color', () => {
+        const preview = createCodePreviewTheme(lightTheme);
+        expect(preview.text).toBe(lightTheme.text);
+        expect(preview.text).not.toBe(lightTheme.codeText);
+        expect(preview.syntaxFunction).toBe(lightTheme.codeText || lightTheme.text);
+    });
+
     it('uses the maximum-contrast ink for the muted dark-mode success fill', () => {
         const successFill = '#7aa89a';
         expect(maximumContrastInkOnFill(successFill)).toBe('#111111');

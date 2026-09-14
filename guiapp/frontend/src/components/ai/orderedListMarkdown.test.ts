@@ -110,6 +110,17 @@ describe("splitMidLineOrderedListMarkers", () => {
         expect(splitMidLineOrderedListMarkers("done1) next")).toBe("done\n1) next");
     });
 
+    it("does not treat hyphenated line ranges or parentheticals as glued lists", () => {
+        expect(splitMidLineOrderedListMarkers("snake.cpp (lines 251-504) to confirm")).toBe(
+            "snake.cpp (lines 251-504) to confirm",
+        );
+        expect(splitMidLineOrderedListMarkers("see (1996) list")).toBe("see (1996) list");
+        expect(splitMidLineOrderedListMarkers("read file.cpp (lines 10-20) next")).toBe(
+            "read file.cpp (lines 10-20) next",
+        );
+        expect(splitMidLineOrderedListMarkers("done-1) next")).toBe("done-1) next");
+    });
+
     it("expands compact multi-item ordered lines including two-digit indices", () => {
         expect(splitMidLineOrderedListMarkers("1. a 2. b 10. c 11. d")).toBe(
             "1. a\n2. b\n10. c\n11. d",

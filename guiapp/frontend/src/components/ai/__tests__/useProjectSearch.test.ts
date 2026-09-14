@@ -53,6 +53,23 @@ describe("useProjectSearch", () => {
         await waitFor(() => expect(SearchTasks).toHaveBeenCalledWith("", 20));
     });
 
+    it("debounces header query updates while search is already open", async () => {
+        const { result } = renderHook(() => useProjectSearch("en"));
+        await act(async () => {
+            result.current.openWithQuery("report");
+        });
+        await waitFor(() => expect(SearchTasks).toHaveBeenCalledWith("report", 20));
+        vi.mocked(SearchTasks).mockClear();
+
+        await act(async () => {
+            result.current.openWithQuery("repo");
+            result.current.openWithQuery("reports");
+        });
+        expect(SearchTasks).not.toHaveBeenCalled();
+        await waitFor(() => expect(SearchTasks).toHaveBeenCalledWith("reports", 20));
+        expect(SearchTasks).toHaveBeenCalledTimes(1);
+    });
+
     it("updates the draft query during IME composition without searching", async () => {
         const { result } = renderHook(() => useProjectSearch("en"));
         await act(async () => {

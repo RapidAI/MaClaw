@@ -163,6 +163,50 @@ func ResolveStatusFromRegistry(ctx context.Context, reg *Registry, securitySvc *
 	return ResolveStatusFromRegistryForUser(ctx, reg, securitySvc, "", email, hubBaseURL)
 }
 
+// ResolveStatusForForcedServiceGroup authorizes only the given service group
+// and ignores user bindings, grants, and new-user benefits. It is used by
+// admin-issued service-group API keys that authenticate as sys_user.
+func ResolveStatusForForcedServiceGroup(reg *Registry, serviceGroupID, hubBaseURL string) (*ServiceStatus, []AuthorizedModel, error) {
+	if reg == nil {
+		reg = &Registry{}
+	}
+	reg.Normalize()
+	serviceGroupID = strings.TrimSpace(serviceGroupID)
+	group := reg.FindModelServiceGroup(serviceGroupID)
+	if serviceGroupID == "" || group == nil {
+		return &ServiceStatus{
+			Active:          false,
+			AuthMode:        "service_group_api_key",
+			InactiveReasons: []string{"service group is not configured"},
+			HubLLMBaseURL:   strings.TrimRight(strings.TrimSpace(hubBaseURL), "/"),
+			TokensPerCredit: reg.TokensPerCredit,
+		}, nil, nil
+	}
+	serviceGroupIDs := []string{group.ID}
+	models, defaultModel := buildAuthorizedModels(reg, serviceGroupIDs)
+	availableModels := make([]string, 0, len(models))
+	for _, model := range models {
+		availableModels = append(availableModels, model.Name)
+	}
+	active := len(models) > 0
+	status := &ServiceStatus{
+		Active:            active,
+		SkipLLMConfig:     active,
+		AuthMode:          "service_group_api_key",
+		ServiceGroupIDs:   append([]string(nil), serviceGroupIDs...),
+		ServiceGroupNames: []string{firstNonEmpty(group.Name, group.ID)},
+		AvailableModels:   availableModels,
+		AuthorizedModels:  models,
+		DefaultModel:      defaultModel,
+		HubLLMBaseURL:     strings.TrimRight(strings.TrimSpace(hubBaseURL), "/"),
+		TokensPerCredit:   reg.TokensPerCredit,
+	}
+	if !active {
+		status.InactiveReasons = []string{"service group has no authorized models"}
+	}
+	return status, models, nil
+}
+
 func ResolveStatusFromRegistryForUser(ctx context.Context, reg *Registry, securitySvc *security.SecurityService, userID, email string, hubBaseURL string) (*ServiceStatus, []AuthorizedModel, error) {
 	if reg == nil {
 		reg = &Registry{}
@@ -1483,6 +1527,9 @@ func GrantDefaultServiceForNewUser(ctx context.Context, system SystemSettingsRep
 }
 
 func GrantDefaultServiceForNewUserID(ctx context.Context, system SystemSettingsRepository, userID, email string) error {
+	if IsSystemLLMUser(userID, email) {
+		return nil
+	}
 	reg, err := LoadRegistry(ctx, system)
 	if err != nil {
 		return err
@@ -1526,6 +1573,9 @@ func EnsureNewUserLimitCardForUserID(ctx context.Context, system SystemSettingsR
 }
 
 func ensureNewUserLimitCardForRegistry(ctx context.Context, system SystemSettingsRepository, reg *Registry, userID, email string) (bool, error) {
+	if IsSystemLLMUser(userID, email) {
+		return false, nil
+	}
 	if reg == nil || reg.NewUserBenefitMode() != NewUserBenefitModeLimitCard {
 		return false, nil
 	}
@@ -1570,7 +1620,7 @@ func IssueNewUserLimitCards(reg *Registry, users []VoucherUser, now time.Time) i
 	issued := 0
 	for _, user := range users {
 		owner := newUserAccountRef(user.ID, user.Email)
-		if owner.empty() {
+		if owner.empty() || IsSystemLLMUser(owner.UserID, owner.Email) {
 			continue
 		}
 		key := voucherOwnerKey(owner)
@@ -1703,6 +1753,9 @@ func hasActiveNewUserLimitCardPolicy(reg *Registry) bool {
 }
 
 func NeedsNewUserLimitCardBackfill(reg *Registry, userID, email string) bool {
+	if IsSystemLLMUser(userID, email) {
+		return false
+	}
 	if reg == nil || reg.NewUserBenefitMode() != NewUserBenefitModeLimitCard || !hasActiveNewUserLimitCardPolicy(reg) {
 		return false
 	}
@@ -2295,6 +2348,9 @@ func grantNewUserBenefitForUserID(ctx context.Context, system SystemSettingsRepo
 }
 
 func grantNewUserBenefitForRegistry(ctx context.Context, system SystemSettingsRepository, reg *Registry, userID, email, source string, ratio float64, useRegistrationWindow bool) error {
+	if IsSystemLLMUser(userID, email) {
+		return nil
+	}
 	owner := newUserAccountRef(userID, email)
 	email = owner.Email
 	if email == "" {

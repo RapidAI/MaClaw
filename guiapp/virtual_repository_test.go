@@ -500,6 +500,61 @@ func TestVirtualRepositoryPathsRejectControlCharactersAndOversizedValues(t *test
 	}
 }
 
+func TestVirtualRepositoryRootDialogOptionsSkipMissingDefaultDirectory(t *testing.T) {
+	existing := t.TempDir()
+	opts := virtualRepositoryRootDialogOptions(existing)
+	if opts.DefaultDirectory != existing {
+		t.Fatalf("existing directory DefaultDirectory = %q, want %q", opts.DefaultDirectory, existing)
+	}
+	if !opts.CanCreateDirectories {
+		t.Fatal("directory picker must allow creating directories")
+	}
+
+	opts = virtualRepositoryRootDialogOptions("")
+	if opts.DefaultDirectory != "" {
+		t.Fatalf("empty path must not seed DefaultDirectory, got %q", opts.DefaultDirectory)
+	}
+
+	missingNested := filepath.Join(existing, "gone", "child")
+	opts = virtualRepositoryRootDialogOptions(missingNested)
+	if opts.DefaultDirectory != "" {
+		t.Fatalf("missing nested path whose parent is also missing must not seed DefaultDirectory, got %q", opts.DefaultDirectory)
+	}
+
+	missingChild := filepath.Join(existing, "gone-child")
+	opts = virtualRepositoryRootDialogOptions(missingChild)
+	if opts.DefaultDirectory != existing {
+		t.Fatalf("missing child DefaultDirectory = %q, want existing parent %q", opts.DefaultDirectory, existing)
+	}
+
+	filePath := filepath.Join(existing, "not-a-dir")
+	if err := os.WriteFile(filePath, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	opts = virtualRepositoryRootDialogOptions(filePath)
+	if opts.DefaultDirectory != existing {
+		t.Fatalf("file path DefaultDirectory = %q, want parent %q", opts.DefaultDirectory, existing)
+	}
+
+	opts = virtualRepositoryRootDialogOptions("  /no-such-vrepo-host-root/vrepo  ")
+	if opts.DefaultDirectory != "" {
+		t.Fatalf("missing remote unix root must not seed DefaultDirectory, got %q", opts.DefaultDirectory)
+	}
+
+	if runtime.GOOS == "windows" {
+		opts = virtualRepositoryRootDialogOptions("/home/vrepo")
+		if opts.DefaultDirectory != "" {
+			t.Fatalf("posix remote root must not seed a Windows dialog, got %q", opts.DefaultDirectory)
+		}
+	}
+
+	quoted := `"` + existing + `"`
+	opts = virtualRepositoryRootDialogOptions(quoted)
+	if opts.DefaultDirectory != existing {
+		t.Fatalf("quoted directory DefaultDirectory = %q, want %q", opts.DefaultDirectory, existing)
+	}
+}
+
 func TestVirtualRepositoryRootUnavailableRecognizesWindowsDriveFailures(t *testing.T) {
 	if !isVirtualRepositoryRootUnavailable(os.ErrNotExist) {
 		t.Fatal("ordinary missing roots must be repairable")

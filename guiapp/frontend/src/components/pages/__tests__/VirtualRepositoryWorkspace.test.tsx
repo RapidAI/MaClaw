@@ -2187,6 +2187,7 @@ describe('Virtual repository utility', () => {
 		expect(row.getAttribute('data-vrepo-mapping-id')).toBe('map_dev');
 		expect(within(row).getByText('dev@dev.example.com:/srv/workspace')).toBeTruthy();
 		expect(within(row).getByRole('img', { name: /Connection failed/ })).toBeTruthy();
+		expect(within(row).getByRole('button', { name: 'Start remote coding' })).toBeTruthy();
 		expect(within(row).getByRole('button', { name: 'Test connection' })).toBeTruthy();
 		expect(within(row).getByRole('button', { name: 'Set as default' })).toBeTruthy();
 		expect(within(row).getByRole('button', { name: 'Edit' })).toBeTruthy();
@@ -2194,6 +2195,7 @@ describe('Virtual repository utility', () => {
 		const localRow = within(table).getByText('Local').closest('[data-vrepo-mapping-id]') as HTMLElement;
 		expect(within(localRow).getByText('Default')).toBeTruthy();
 		expect(within(localRow).getByRole('img', { name: 'Connection healthy' })).toBeTruthy();
+		expect(within(localRow).getByRole('button', { name: 'Start local coding' })).toBeTruthy();
 		expect(within(localRow).getByRole('button', { name: 'Verify path' })).toBeTruthy();
 		expect(within(localRow).queryByRole('button', { name: 'Set as default' })).toBeNull();
 	});
@@ -2218,7 +2220,7 @@ describe('Virtual repository utility', () => {
 		fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'second disk' } });
 		backend.SelectVirtualRepositoryRoot.mockResolvedValue('E:\\workspace');
 		fireEvent.click(within(dialog).getByRole('button', { name: 'Choose' }));
-		await waitFor(() => expect(backend.SelectVirtualRepositoryRoot).toHaveBeenCalled());
+		await waitFor(() => expect(backend.SelectVirtualRepositoryRoot).toHaveBeenCalledWith('D:\\workspace'));
 		fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
 		await waitFor(() => expect(backend.AddVirtualRepositoryMapping).toHaveBeenCalled());
 		const payload = JSON.parse(backend.AddVirtualRepositoryMapping.mock.calls[0][0]);
@@ -2227,6 +2229,183 @@ describe('Virtual repository utility', () => {
 		expect(payload.mapping.label).toBe('second disk');
 		expect(payload.mapping.root_path).toBe('E:\\workspace');
 		expect(await screen.findByText('second disk')).toBeTruthy();
+	});
+
+	it('opens the local directory picker for a new mapping on a remote SSH repository', async () => {
+		const backend = (window as any).go.main.App;
+		const repository = { version: 1, id: 'vrepo_ssh', name: 'vrepo-test', root_path: '/home/vrepo', nodes: [], remote: { host: 'www.driverdevelop.com', port: 22, user: 'root' } };
+		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
+		backend.OpenRemoteVirtualRepository.mockResolvedValue(JSON.stringify(repository));
+		backend.ListVirtualRepositoryMappings = vi.fn().mockResolvedValue(JSON.stringify([
+			{ id: 'default', label: 'remote', kind: 'remote_ssh', root_path: '/home/vrepo', host: 'www.driverdevelop.com', port: 22, user: 'root', is_default: true },
+		]));
+		backend.AddVirtualRepositoryMapping = vi.fn().mockResolvedValue(JSON.stringify([
+			{ id: 'default', label: 'remote', kind: 'remote_ssh', root_path: '/home/vrepo', host: 'www.driverdevelop.com', port: 22, user: 'root', is_default: true },
+			{ id: 'map_local', label: 'this computer', kind: 'local', root_path: 'D:\\workspace', is_default: false },
+		]));
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		fireEvent.click(await screen.findByText('vrepo-test'));
+		fireEvent.click(await screen.findByRole('button', { name: 'Add machine mapping' }));
+		const dialog = await screen.findByRole('dialog', { name: 'Add machine mapping' });
+		fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'this computer' } });
+		backend.SelectVirtualRepositoryRoot.mockResolvedValue('D:\\workspace');
+		fireEvent.click(within(dialog).getByRole('button', { name: 'Choose' }));
+		await waitFor(() => expect(backend.SelectVirtualRepositoryRoot).toHaveBeenCalledWith(''));
+		expect(backend.SelectVirtualRepositoryRoot).not.toHaveBeenCalledWith('/home/vrepo');
+		fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+		await waitFor(() => expect(backend.AddVirtualRepositoryMapping).toHaveBeenCalled());
+		const payload = JSON.parse(backend.AddVirtualRepositoryMapping.mock.calls[0][0]);
+		expect(payload.mapping.kind).toBe('local');
+		expect(payload.mapping.root_path).toBe('D:\\workspace');
+	});
+
+	it('seeds a new local mapping from an existing local mapping on a remote repository', async () => {
+		const backend = (window as any).go.main.App;
+		const repository = { version: 1, id: 'vrepo_ssh', name: 'vrepo-test', root_path: '/home/vrepo', nodes: [], remote: { host: 'www.driverdevelop.com', port: 22, user: 'root' } };
+		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
+		backend.OpenRemoteVirtualRepository.mockResolvedValue(JSON.stringify(repository));
+		backend.ListVirtualRepositoryMappings = vi.fn().mockResolvedValue(JSON.stringify([
+			{ id: 'default', label: 'remote', kind: 'remote_ssh', root_path: '/home/vrepo', host: 'www.driverdevelop.com', port: 22, user: 'root', is_default: true },
+			{ id: 'map_local', label: 'this computer', kind: 'local', root_path: 'D:\\workspace', is_default: false },
+		]));
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		fireEvent.click(await screen.findByText('vrepo-test'));
+		const table = await screen.findByRole('group', { name: 'Machine/root mappings' });
+		await within(table).findByText('this computer');
+		fireEvent.click(within(table).getByRole('button', { name: 'Add machine mapping' }));
+		const dialog = await screen.findByRole('dialog', { name: 'Add machine mapping' });
+		backend.SelectVirtualRepositoryRoot.mockResolvedValue('E:\\workspace');
+		fireEvent.click(within(dialog).getByRole('button', { name: 'Choose' }));
+		await waitFor(() => expect(backend.SelectVirtualRepositoryRoot).toHaveBeenCalledWith('D:\\workspace'));
+		expect(backend.SelectVirtualRepositoryRoot).not.toHaveBeenCalledWith('/home/vrepo');
+	});
+
+	it('seeds a new local mapping from the active local mapping rather than the first one', async () => {
+		const backend = (window as any).go.main.App;
+		const repository = { version: 1, id: 'vrepo_1', name: 'Workspace', root_path: 'D:\\workspace', nodes: [] };
+		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
+		backend.OpenVirtualRepository.mockResolvedValue(JSON.stringify(repository));
+		backend.ListVirtualRepositoryMappings = vi.fn().mockResolvedValue(JSON.stringify([
+			{ id: 'default', label: 'Local', kind: 'local', root_path: 'D:\\workspace', is_default: true },
+			{ id: 'map_second', label: 'second disk', kind: 'local', root_path: 'E:\\workspace', is_default: false },
+		]));
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		fireEvent.click(await screen.findByText('Workspace'));
+		const switcher = await screen.findByLabelText('Active mapping');
+		fireEvent.change(switcher, { target: { value: 'map_second' } });
+		fireEvent.click(await screen.findByRole('button', { name: 'Add machine mapping' }));
+		const dialog = await screen.findByRole('dialog', { name: 'Add machine mapping' });
+		backend.SelectVirtualRepositoryRoot.mockResolvedValue('F:\\workspace');
+		fireEvent.click(within(dialog).getByRole('button', { name: 'Choose' }));
+		await waitFor(() => expect(backend.SelectVirtualRepositoryRoot).toHaveBeenCalledWith('E:\\workspace'));
+	});
+
+	it('seeds the directory picker from an existing local mapping path when editing', async () => {
+		const backend = (window as any).go.main.App;
+		const repository = { version: 1, id: 'vrepo_1', name: 'Workspace', root_path: 'D:\\workspace', nodes: [] };
+		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
+		backend.OpenVirtualRepository.mockResolvedValue(JSON.stringify(repository));
+		backend.ListVirtualRepositoryMappings = vi.fn().mockResolvedValue(JSON.stringify([
+			{ id: 'default', label: 'Local', kind: 'local', root_path: 'D:\\workspace', is_default: true },
+			{ id: 'map_second', label: 'second disk', kind: 'local', root_path: 'E:\\workspace', is_default: false },
+		]));
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		fireEvent.click(await screen.findByText('Workspace'));
+		const table = await screen.findByRole('group', { name: 'Machine/root mappings' });
+		const row = (await within(table).findByText('second disk')).closest('[data-vrepo-mapping-id]') as HTMLElement;
+		fireEvent.click(within(row).getByRole('button', { name: 'Edit' }));
+		const dialog = await screen.findByRole('dialog', { name: 'Edit machine mapping' });
+		backend.SelectVirtualRepositoryRoot.mockResolvedValue('F:\\workspace');
+		fireEvent.click(within(dialog).getByRole('button', { name: 'Choose' }));
+		await waitFor(() => expect(backend.SelectVirtualRepositoryRoot).toHaveBeenCalledWith('E:\\workspace'));
+	});
+
+	it('shows an error when the native directory picker fails', async () => {
+		const backend = (window as any).go.main.App;
+		const repository = { version: 1, id: 'vrepo_ssh', name: 'vrepo-test', root_path: '/home/vrepo', nodes: [], remote: { host: 'www.driverdevelop.com', port: 22, user: 'root' } };
+		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
+		backend.OpenRemoteVirtualRepository.mockResolvedValue(JSON.stringify(repository));
+		backend.ListVirtualRepositoryMappings = vi.fn().mockResolvedValue(JSON.stringify([
+			{ id: 'default', label: 'remote', kind: 'remote_ssh', root_path: '/home/vrepo', host: 'www.driverdevelop.com', port: 22, user: 'root', is_default: true },
+		]));
+		backend.SelectVirtualRepositoryRoot.mockRejectedValue(new Error('open directory picker: default directory \'/home/vrepo\' does not exist'));
+		render(<UtilitiesPage lang="en" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		fireEvent.click(await screen.findByText('vrepo-test'));
+		fireEvent.click(await screen.findByRole('button', { name: 'Add machine mapping' }));
+		const dialog = await screen.findByRole('dialog', { name: 'Add machine mapping' });
+		fireEvent.click(within(dialog).getByRole('button', { name: 'Choose' }));
+		expect((await screen.findByRole('alert')).textContent).toMatch(/open directory picker/i);
+		backend.SelectVirtualRepositoryRoot.mockResolvedValue('D:\\workspace');
+		fireEvent.click(within(dialog).getByRole('button', { name: 'Choose' }));
+		await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+		expect(within(dialog).getByDisplayValue('D:\\workspace')).toBeTruthy();
+	});
+
+	it('localizes a directory picker failure in Chinese', async () => {
+		const backend = (window as any).go.main.App;
+		const repository = { version: 1, id: 'vrepo_ssh', name: 'vrepo-test', root_path: '/home/vrepo', nodes: [], remote: { host: 'www.driverdevelop.com', port: 22, user: 'root' } };
+		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
+		backend.OpenRemoteVirtualRepository.mockResolvedValue(JSON.stringify(repository));
+		backend.ListVirtualRepositoryMappings = vi.fn().mockResolvedValue(JSON.stringify([
+			{ id: 'default', label: 'remote', kind: 'remote_ssh', root_path: '/home/vrepo', host: 'www.driverdevelop.com', port: 22, user: 'root', is_default: true },
+		]));
+		backend.SelectVirtualRepositoryRoot.mockRejectedValue(new Error('open directory picker: default directory \'/home/vrepo\' does not exist'));
+		render(<UtilitiesPage lang="zh-Hans" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		fireEvent.click(await screen.findByText('vrepo-test'));
+		fireEvent.click(await screen.findByRole('button', { name: '添加机器映射' }));
+		const dialog = await screen.findByRole('dialog', { name: '添加机器映射' });
+		fireEvent.click(within(dialog).getByRole('button', { name: '选择目录' }));
+		expect((await screen.findByRole('alert')).textContent).toBe('无法打开目录选择对话框。');
+	});
+
+	it('localizes a missing-root mapping error in Chinese', async () => {
+		const backend = (window as any).go.main.App;
+		const repository = { version: 1, id: 'vrepo_ssh', name: 'vrepo-test', root_path: '/home/vrepo', nodes: [], remote: { host: 'www.driverdevelop.com', port: 22, user: 'root' } };
+		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
+		backend.OpenRemoteVirtualRepository.mockResolvedValue(JSON.stringify(repository));
+		backend.ListVirtualRepositoryMappings = vi.fn().mockResolvedValue(JSON.stringify([
+			{ id: 'default', label: 'remote', kind: 'remote_ssh', root_path: '/home/vrepo', host: 'www.driverdevelop.com', port: 22, user: 'root', is_default: true },
+		]));
+		backend.AddVirtualRepositoryMapping = vi.fn().mockRejectedValue(new Error('the selected directory does not contain this virtual repository; bind it through the repository workspace first'));
+		render(<UtilitiesPage lang="zh-Hans" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		fireEvent.click(await screen.findByText('vrepo-test'));
+		fireEvent.click(await screen.findByRole('button', { name: '添加机器映射' }));
+		const dialog = await screen.findByRole('dialog', { name: '添加机器映射' });
+		fireEvent.change(within(dialog).getByLabelText('名称'), { target: { value: 'newroot' } });
+		backend.SelectVirtualRepositoryRoot.mockResolvedValue('F:\\new-root2');
+		fireEvent.click(within(dialog).getByRole('button', { name: '选择目录' }));
+		await waitFor(() => expect(within(dialog).getByDisplayValue('F:\\new-root2')).toBeTruthy());
+		fireEvent.click(within(dialog).getByRole('button', { name: '保存' }));
+		expect((await screen.findByRole('alert')).textContent).toBe('所选目录还不是此虚拟仓库。请选择空目录以生成本地清单，或选择已包含此仓库的目录。');
+	});
+
+	it('localizes a remote-definition copy failure in Chinese', async () => {
+		const backend = (window as any).go.main.App;
+		const repository = { version: 1, id: 'vrepo_ssh', name: 'vrepo-test', root_path: '/home/vrepo', nodes: [], remote: { host: 'www.driverdevelop.com', port: 22, user: 'root' } };
+		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
+		backend.OpenRemoteVirtualRepository.mockResolvedValue(JSON.stringify(repository));
+		backend.ListVirtualRepositoryMappings = vi.fn().mockResolvedValue(JSON.stringify([
+			{ id: 'default', label: 'remote', kind: 'remote_ssh', root_path: '/home/vrepo', host: 'www.driverdevelop.com', port: 22, user: 'root', is_default: true },
+		]));
+		backend.AddVirtualRepositoryMapping = vi.fn().mockRejectedValue(new Error('cannot copy the remote virtual repository definition into the selected directory: SSH password is unavailable'));
+		render(<UtilitiesPage lang="zh-Hans" />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		fireEvent.click(await screen.findByText('vrepo-test'));
+		fireEvent.click(await screen.findByRole('button', { name: '添加机器映射' }));
+		const dialog = await screen.findByRole('dialog', { name: '添加机器映射' });
+		fireEvent.change(within(dialog).getByLabelText('名称'), { target: { value: 'newroot' } });
+		backend.SelectVirtualRepositoryRoot.mockResolvedValue('F:\\new-root2');
+		fireEvent.click(within(dialog).getByRole('button', { name: '选择目录' }));
+		await waitFor(() => expect(within(dialog).getByDisplayValue('F:\\new-root2')).toBeTruthy());
+		fireEvent.click(within(dialog).getByRole('button', { name: '保存' }));
+		expect((await screen.findByRole('alert')).textContent).toBe('无法从远程仓库复制定义到所选目录。请确认 SSH 密码已保存、主机密钥已信任，或选择空目录后重试。');
 	});
 
 	it('requires a successful connection test before saving a new remote mapping', async () => {
@@ -2285,13 +2464,42 @@ describe('Virtual repository utility', () => {
 		render(<UtilitiesPage lang="en" onOpenVirtualRepositoryTask={onOpen} />);
 		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
 		fireEvent.click(await screen.findByText('Product workspace'));
+		await screen.findByText('dev-server');
 		const actions = await screen.findByRole('group', { name: 'Repository actions' });
 		fireEvent.click(within(actions).getByRole('button', { name: 'Start coding task' }));
 		const dialog = await screen.findByRole('dialog', { name: 'Choose target machine' });
 		expect(within(dialog).getByText('Local')).toBeTruthy();
+		expect(within(dialog).getByText('Local coding')).toBeTruthy();
+		expect(within(dialog).getByText('Remote coding')).toBeTruthy();
 		fireEvent.click(within(dialog).getByText('dev-server'));
 		await waitFor(() => expect(backend.StartVirtualRepositoryCodingTask).toHaveBeenCalledWith('local_1', 'map_dev'));
-		expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({ remote_host: 'dev.example.com' }));
+		expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({ agent_mode: 'remote_coding_dev', remote_host: 'dev.example.com' }));
+	});
+
+	it('starts local or remote coding from the matching mapping row', async () => {
+		const backend = (window as any).go.main.App;
+		const repository = { version: 1, id: 'local_1', name: 'Product workspace', root_path: 'D:\\workspace', nodes: [] };
+		backend.ListVirtualRepositories.mockResolvedValue(JSON.stringify([repository]));
+		backend.OpenVirtualRepository.mockResolvedValue(JSON.stringify(repository));
+		backend.ListVirtualRepositoryMappings = vi.fn().mockResolvedValue(JSON.stringify([
+			{ id: 'default', label: 'Local', kind: 'local', root_path: 'D:\\workspace', is_default: true, last_status: 'ok' },
+			{ id: 'map_dev', label: 'dev-server', kind: 'remote_ssh', root_path: '/srv/workspace', host: 'dev.example.com', port: 22, user: 'dev' },
+		]));
+		backend.StartVirtualRepositoryCodingTask.mockResolvedValue({ project_path: 'D:\\tasks\\local_1', task_title: 'Product workspace', agent_mode: 'coding_dev' });
+		const onOpen = vi.fn();
+		render(<UtilitiesPage lang="en" onOpenVirtualRepositoryTask={onOpen} />);
+		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
+		fireEvent.click(await screen.findByText('Product workspace'));
+		const table = await screen.findByRole('group', { name: 'Machine/root mappings' });
+		const localRow = (await within(table).findByText('Local')).closest('[data-vrepo-mapping-id]') as HTMLElement;
+		fireEvent.click(within(localRow).getByRole('button', { name: 'Start local coding' }));
+		await waitFor(() => expect(backend.StartVirtualRepositoryCodingTask).toHaveBeenCalledWith('local_1', 'default'));
+		expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({ agent_mode: 'coding_dev' }));
+		backend.StartVirtualRepositoryCodingTask.mockResolvedValue({ project_path: 'D:\\tasks\\remote_1', task_title: 'Product workspace', agent_mode: 'remote_coding_dev', remote_host: 'dev.example.com' });
+		const remoteRow = within(table).getByText('dev-server').closest('[data-vrepo-mapping-id]') as HTMLElement;
+		fireEvent.click(within(remoteRow).getByRole('button', { name: 'Start remote coding' }));
+		await waitFor(() => expect(backend.StartVirtualRepositoryCodingTask).toHaveBeenCalledWith('local_1', 'map_dev'));
+		expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({ agent_mode: 'remote_coding_dev', remote_host: 'dev.example.com' }));
 	});
 
 	it('starts a coding task directly when a single mapping exists', async () => {
@@ -2306,6 +2514,7 @@ describe('Virtual repository utility', () => {
 		render(<UtilitiesPage lang="en" />);
 		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
 		fireEvent.click(await screen.findByText('Product workspace'));
+		await screen.findByRole('button', { name: 'Start local coding' });
 		const actions = await screen.findByRole('group', { name: 'Repository actions' });
 		fireEvent.click(within(actions).getByRole('button', { name: 'Start coding task' }));
 		await waitFor(() => expect(backend.StartVirtualRepositoryCodingTask).toHaveBeenCalledWith('local_1', 'default'));
@@ -2528,6 +2737,7 @@ describe('Virtual repository utility', () => {
 		render(<UtilitiesPage lang="en" />);
 		fireEvent.click(screen.getByTestId('utilities-virtual-repository-card'));
 		fireEvent.click(await screen.findByText('Product workspace'));
+		await screen.findByText('dev-server');
 		const actions = await screen.findByRole('group', { name: 'Repository actions' });
 		fireEvent.click(within(actions).getByRole('button', { name: 'Start coding task' }));
 		const dialog = await screen.findByRole('dialog', { name: 'Choose target machine' });

@@ -91,6 +91,7 @@ interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     openHubCreditsPage: () => void;
     openServiceRedeemPage?: () => void;
     openLLMSettingsPage?: () => void;
+    openIMSettingsPage?: () => void;
     openHubCardStorePage?: () => void;
     codingAgentProgress?: CodingAgentProgress | null;
     codingAgentTurnSnapshot?: CodingAgentTurnSnapshot | null;
@@ -207,6 +208,7 @@ export const AppSidebarShell = ({
     openHubCreditsPage,
     openServiceRedeemPage,
     openLLMSettingsPage,
+    openIMSettingsPage,
     openHubCardStorePage,
     codingAgentProgress = null,
     codingAgentTurnSnapshot = null,
@@ -344,7 +346,7 @@ export const AppSidebarShell = ({
                         noHubAuthorizationText={noHubAuthorizationText}
                         showHubCreditAction={showHubCreditAction}
                         openHubCreditsPage={openHubCreditsPage}
-                        openServiceRedeemPage={openServiceRedeemPage} openLLMSettingsPage={openLLMSettingsPage} openHubCardStorePage={openHubCardStorePage}
+                        openServiceRedeemPage={openServiceRedeemPage} openLLMSettingsPage={openLLMSettingsPage} openIMSettingsPage={openIMSettingsPage} openHubCardStorePage={openHubCardStorePage}
                         codingAgentProgress={codingAgentProgress}
                         codingAgentTurnSnapshot={codingAgentTurnSnapshot}
                         handleTaskManagementResizeStart={handleTaskManagementResizeStart}

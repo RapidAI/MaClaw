@@ -8,15 +8,18 @@
  *   4. Syntax highlighting via tokenizeLine
  *   5. DiffView for files with original content (using computeDiff)
  *   6. Scroll position preservation on content update
+ *   7. Right-edge minimap (document thumbnail + page locator)
  *
  * Split modules:
- *   - codePreviewFindHelpers.ts  pure find / prefs / language helpers
- *   - CodePreviewMarkdown.tsx    markdown renderer
- *   - CodePreviewPanel.tsx       this file (shell + code/diff views)
+ *   - codePreviewFindHelpers.ts      pure find / prefs / language helpers
+ *   - codePreviewMinimapHelpers.ts   minimap mapping / thumbnail paint
+ *   - CodePreviewMinimap.tsx         right-edge document locator
+ *   - CodePreviewMarkdown.tsx        markdown renderer
+ *   - CodePreviewPanel.tsx           this file (shell + code/diff views)
  *
  * Uses inline styles based on theme props (no CSS modules).
  */
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { CodeFileDiffStat, FileTabBar, cycleFilePath } from './FileTabBar';
 import { CodePreviewFileListButton } from './CodePreviewFileList';
 import { PptxPreviewPanel, isPptxFileName } from './PptxPreviewPanel';
@@ -24,12 +27,13 @@ import { PdfPreviewPanel, isPdfFileName } from './PdfPreviewPanel';
 import { PreviewFileActions } from './PreviewFileActions';
 import type { CodePreviewTheme } from './FileTabBar';
 import type { CodeFile } from './useCodePreviewState';
-import { codeFileLineDeltaHasChange, computeCodeFileLineDelta, getDisplayFilePaths, getMruCycleOrder, isCodeFileDirty } from './useCodePreviewState';
+import { codeFileLineDeltaHasChange, computeCodeFileLineDelta, getDisplayFilePaths, getMruCycleOrder, isCodeFileDirty, shouldDismissEmptyPreviewWithoutWorkspace } from './useCodePreviewState';
 import { computeDiff } from './diffCompute';
 import type { DiffLine } from './diffCompute';
 import { tokenizeLine } from './syntaxHighlight';
 import type { HighlightToken } from './syntaxHighlight';
 import { MarkdownPreview } from './CodePreviewMarkdown';
+import { CodePreviewMinimap } from './CodePreviewMinimap';
 import { CodePreviewWorkspace } from './CodePreviewWorkspace';
 import { CloudWorkspaceEntitlement } from '../../../wailsjs/go/main/App';
 import { cloudWorkspaceIdFromPath, lookupCloudWorkspaceDisplayName, rememberCloudWorkspaceDisplayNames, FOCUS_CLOUD_WORKSPACE_TREE_EVENT } from './codingTaskMode';
@@ -137,7 +141,7 @@ export function createCodePreviewTheme(theme: Theme): CodePreviewTheme {
 
     return {
         bg: theme.bg,
-        text: theme.codeText || theme.text,
+        text: theme.text,
         textMuted: theme.textMuted,
         border: theme.divider,
         lineNumBg: theme.codeBg,
@@ -741,22 +745,26 @@ const DiffView = React.memo(function DiffView({
     );
 });
 
-/** Compact view toolbar: wrap + font zoom. */
+/** Compact view toolbar: wrap + font zoom + minimap. */
 function CodePreviewViewToolbar({
     wordWrap,
     fontSize,
+    minimap,
     theme,
     lang,
     onToggleWrap,
+    onToggleMinimap,
     onZoomIn,
     onZoomOut,
     onZoomReset,
 }: {
     wordWrap: boolean;
     fontSize: number;
+    minimap: boolean;
     theme: CodePreviewTheme;
     lang: string;
     onToggleWrap: () => void;
+    onToggleMinimap: () => void;
     onZoomIn: () => void;
     onZoomOut: () => void;
     onZoomReset: () => void;
@@ -838,6 +846,21 @@ function CodePreviewViewToolbar({
                 }}
             >
                 A+
+            </button>
+            <button
+                type="button"
+                data-testid="code-preview-minimap-toggle"
+                data-active={minimap ? 'true' : 'false'}
+                onClick={onToggleMinimap}
+                title={isZhHant ? '文件縮略圖 / 按頁定位' : isZh ? '文件缩略图 / 按页定位' : 'Document minimap / jump by page'}
+                style={{
+                    ...btnStyle,
+                    background: minimap ? theme.tabActiveBg : theme.bg,
+                    color: minimap ? theme.tabActiveText : theme.textMuted,
+                    fontWeight: minimap ? 600 : 400,
+                }}
+            >
+                {isZh ? '缩略' : 'Map'}
             </button>
         </div>
     );
@@ -1006,6 +1029,7 @@ export function CodePreviewPanel({
         onToggleMaximize?.();
     };
     const scrollRef = useRef<HTMLDivElement>(null);
+    const scrollDomId = useId();
     const findInputRef = useRef<HTMLInputElement>(null);
     const gotoInputRef = useRef<HTMLInputElement>(null);
     const savedScrollTop = useRef<number>(0);
@@ -1043,16 +1067,17 @@ export function CodePreviewPanel({
     }
     const [wordWrap, setWordWrap] = useState(() => initialViewPrefsRef.current!.wordWrap);
     const [fontSize, setFontSize] = useState(() => initialViewPrefsRef.current!.fontSize);
+    const [minimap, setMinimap] = useState(() => initialViewPrefsRef.current!.minimap);
     const skipNextPrefsSaveRef = useRef(true);
 
-    // Persist view prefs when wrap/font change; skip the mount effect write-back.
+    // Persist view prefs when wrap/font/minimap change; skip the mount effect write-back.
     useEffect(() => {
         if (skipNextPrefsSaveRef.current) {
             skipNextPrefsSaveRef.current = false;
             return;
         }
-        saveCodePreviewViewPrefs({ wordWrap, fontSize });
-    }, [wordWrap, fontSize]);
+        saveCodePreviewViewPrefs({ wordWrap, fontSize, minimap });
+    }, [wordWrap, fontSize, minimap]);
 
     const activeFile = files.get(activeFilePath);
 
@@ -1066,6 +1091,21 @@ export function CodePreviewPanel({
     useEffect(() => {
         if (!activeFilePath || !files.has(activeFilePath)) setWorkspaceActive(true);
     }, [activeFilePath, files]);
+
+    // Last file closed and there is no working directory to fall back to:
+    // dismiss the preview the same way as the header close button, instead of
+    // leaving an empty "working directory unavailable" card.
+    const dismissEmptyPreview = shouldDismissEmptyPreviewWithoutWorkspace(files.size, projectPath);
+    const dismissedEmptyPreviewRef = useRef(false);
+    useLayoutEffect(() => {
+        if (!dismissEmptyPreview) {
+            dismissedEmptyPreviewRef.current = false;
+            return;
+        }
+        if (dismissedEmptyPreviewRef.current) return;
+        dismissedEmptyPreviewRef.current = true;
+        onClose?.();
+    }, [dismissEmptyPreview, onClose]);
 
     const workspaceTabRef = useRef<HTMLButtonElement>(null);
     const tabStripRef = useRef<HTMLDivElement>(null);
@@ -1337,6 +1377,10 @@ export function CodePreviewPanel({
         setWordWrap((v) => !v);
     }, []);
 
+    const toggleMinimap = useCallback(() => {
+        setMinimap((v) => !v);
+    }, []);
+
     const zoomIn = useCallback(() => {
         setFontSize((s) => clampCodePreviewFontSize(s + 1));
     }, []);
@@ -1491,6 +1535,7 @@ export function CodePreviewPanel({
 
     // Empty state: no files
     if (files.size === 0) {
+        if (shouldDismissEmptyPreviewWithoutWorkspace(files.size, projectPath)) return null;
         return (
             <div className="mc-code-preview-panel" style={{
                 display: 'flex',
@@ -1728,9 +1773,11 @@ export function CodePreviewPanel({
                 <CodePreviewViewToolbar
                     wordWrap={wordWrap}
                     fontSize={fontSize}
+                    minimap={minimap}
                     theme={theme}
                     lang={lang}
                     onToggleWrap={toggleWordWrap}
+                    onToggleMinimap={toggleMinimap}
                     onZoomIn={zoomIn}
                     onZoomOut={zoomOut}
                     onZoomReset={zoomReset}
@@ -1928,66 +1975,90 @@ export function CodePreviewPanel({
                 </div>
             )}
             <div
-                ref={scrollRef}
-                className="ai-chat-scrollbar"
                 style={{
                     flex: 1,
-                    overflowY: isVisualDocumentPreview(activeFile) ? 'hidden' : 'auto',
-                    overflowX: isVisualDocumentPreview(activeFile) ? 'hidden' : 'auto',
+                    display: 'flex',
+                    flexDirection: 'row',
                     minHeight: 0,
+                    minWidth: 0,
                 }}
             >
-                {workspaceActive ? (
-                    <CodePreviewWorkspace projectPath={projectPath} refreshToken={workspaceRefreshToken} resetOnRefresh={workspaceResetOnRefresh} cloudMode={cloudMode} hideTitle lang={lang} theme={theme} onOpenFile={openWorkspaceFile} onFileDeleted={handleWorkspaceFileDeleted} />
-                ) : activeFile && isPptxFileName(activeFile.fileName || activeFile.filePath) && activeFile.absPath ? (
-                    <PptxPreviewPanel key={`${activeFile.filePath}:${activeFile.updatedAt}`} absPath={activeFile.absPath} theme={theme} lang={lang} />
-                ) : activeFile && (isPdfFileName(previewFileName(activeFile)) || activeFile.language === 'pdf') ? (
-                    <PdfPreviewPanel
-                        key={`${activeFile.filePath}:${activeFile.updatedAt}`}
-                        absPath={activeFile.absPath || activeFile.filePath}
-                        theme={theme}
-                        lang={lang}
-                    />
-                ) : activeFile ? (
-                    diffLines ? (
-                        <DiffView
-                            diffLines={diffLines}
+                <div
+                    ref={scrollRef}
+                    id={scrollDomId}
+                    className="ai-chat-scrollbar"
+                    style={{
+                        flex: 1,
+                        overflowY: isVisualDocumentPreview(activeFile) ? 'hidden' : 'auto',
+                        overflowX: isVisualDocumentPreview(activeFile) ? 'hidden' : 'auto',
+                        minHeight: 0,
+                        minWidth: 0,
+                    }}
+                >
+                    {workspaceActive ? (
+                        <CodePreviewWorkspace projectPath={projectPath} refreshToken={workspaceRefreshToken} resetOnRefresh={workspaceResetOnRefresh} cloudMode={cloudMode} hideTitle lang={lang} theme={theme} onOpenFile={openWorkspaceFile} onFileDeleted={handleWorkspaceFileDeleted} />
+                    ) : activeFile && isPptxFileName(activeFile.fileName || activeFile.filePath) && activeFile.absPath ? (
+                        <PptxPreviewPanel key={`${activeFile.filePath}:${activeFile.updatedAt}`} absPath={activeFile.absPath} theme={theme} lang={lang} />
+                    ) : activeFile && (isPdfFileName(previewFileName(activeFile)) || activeFile.language === 'pdf') ? (
+                        <PdfPreviewPanel
+                            key={`${activeFile.filePath}:${activeFile.updatedAt}`}
+                            absPath={activeFile.absPath || activeFile.filePath}
                             theme={theme}
-                            matchLineIndexes={matchLineIndexes}
-                            activeMatchLine={activeMatchLine}
-                            wordWrap={wordWrap}
-                            fontSize={fontSize}
+                            lang={lang}
                         />
-                    ) : isMarkdownLanguage(activeFile.language) ? (
-                        <div style={{ fontSize: clampCodePreviewFontSize(fontSize) }}>
-                            <MarkdownPreview
-                                content={activeFile.content}
+                    ) : activeFile ? (
+                        diffLines ? (
+                            <DiffView
+                                diffLines={diffLines}
                                 theme={theme}
                                 matchLineIndexes={matchLineIndexes}
                                 activeMatchLine={activeMatchLine}
+                                wordWrap={wordWrap}
+                                fontSize={fontSize}
                             />
-                        </div>
+                        ) : isMarkdownLanguage(activeFile.language) ? (
+                            <div style={{ fontSize: clampCodePreviewFontSize(fontSize) }}>
+                                <MarkdownPreview
+                                    content={activeFile.content}
+                                    theme={theme}
+                                    matchLineIndexes={matchLineIndexes}
+                                    activeMatchLine={activeMatchLine}
+                                />
+                            </div>
+                        ) : (
+                            <PlainCodeView
+                                content={activeFile.content}
+                                language={activeFile.language}
+                                theme={theme}
+                                matchLineIndexes={matchLineIndexes}
+                                activeMatchLine={activeMatchLine}
+                                wordWrap={wordWrap}
+                                fontSize={fontSize}
+                            />
+                        )
                     ) : (
-                        <PlainCodeView
-                            content={activeFile.content}
-                            language={activeFile.language}
-                            theme={theme}
-                            matchLineIndexes={matchLineIndexes}
-                            activeMatchLine={activeMatchLine}
-                            wordWrap={wordWrap}
-                            fontSize={fontSize}
-                        />
-                    )
-                ) : (
-                    <div style={{
-                        padding: 20,
-                        color: theme.textMuted,
-                        fontSize: 14,
-                        textAlign: 'center',
-                    }}>
-                        File not found
-                    </div>
-                )}
+                        <div style={{
+                            padding: 20,
+                            color: theme.textMuted,
+                            fontSize: 14,
+                            textAlign: 'center',
+                        }}>
+                            File not found
+                        </div>
+                    )}
+                </div>
+                {minimap && !workspaceActive && activeFile && !isVisualDocumentPreview(activeFile) ? (
+                    <CodePreviewMinimap
+                        scrollRef={scrollRef}
+                        scrollId={scrollDomId}
+                        lines={contentLines}
+                        diffLines={diffLines}
+                        matchLineIndexes={matchLineIndexes}
+                        activeMatchLine={activeMatchLine}
+                        theme={theme}
+                        lang={lang}
+                    />
+                ) : null}
             </div>
             </div>
         </div>

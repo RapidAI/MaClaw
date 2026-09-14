@@ -1034,6 +1034,10 @@ export function ExportSurveyXLSXFiltered(arg1, arg2) {
   return window['go']['main']['App']['ExportSurveyXLSXFiltered'](arg1, arg2);
 }
 
+export function ExportTaskResultFile(arg1) {
+  return window['go']['main']['App']['ExportTaskResultFile'](arg1);
+}
+
 export function ExportTextFile(arg1, arg2) {
   return window['go']['main']['App']['ExportTextFile'](arg1, arg2);
 }

@@ -47,10 +47,7 @@ export function useProjectSearch(lang: string) {
                 if (requestId !== requestIdRef.current) return;
                 setResults(((r || []) as ProjectSearchItem[]).filter(isVisibleTaskRow));
             })
-            .catch(() => {
-                if (requestId !== requestIdRef.current) return;
-                setResults([]);
-            });
+            .catch(() => { if (requestId !== requestIdRef.current) return; setResults([]); });
         const jobs = headerLibrarySearchJobs(q, {
             listMobileLibraryItems: ListMobileLibraryItems,
             knowledgeSearch: (opts) => KnowledgeSearch(opts),
@@ -82,9 +79,7 @@ export function useProjectSearch(lang: string) {
     }, [open, doSearch]);
     useEffect(() => () => { if (debounceRef.current) clearTimeout(debounceRef.current); }, []);
 
-    const onQueryDraft = useCallback((value: string) => {
-        setQuery(value);
-    }, []);
+    const onQueryDraft = useCallback((value: string) => { setQuery(value); }, []);
     const onQueryChange = useCallback((value: string) => {
         setQuery(value);
         if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -110,13 +105,18 @@ export function useProjectSearch(lang: string) {
     }, []);
     const toggle = useCallback(() => { setOpen(v => !v); }, []);
     const openWithQuery = useCallback((value = "") => {
-        const next = value.trim();
-        if (debounceRef.current) clearTimeout(debounceRef.current);
-        if (!open) skipOpenSearchRef.current = true;
-        setOpen(true);
-        setQuery(next);
-        doSearch(next);
-    }, [doSearch, open]);
+        if (!open) {
+            if (debounceRef.current) clearTimeout(debounceRef.current);
+            debounceRef.current = null;
+            skipOpenSearchRef.current = true;
+            setOpen(true);
+            const next = value.trim();
+            setQuery(next);
+            doSearch(next);
+            return;
+        }
+        onQueryChange(value);
+    }, [doSearch, onQueryChange, open]);
     const refresh = useCallback(() => doSearch(query), [doSearch, query]);
 
     const formatTime = useCallback((iso?: string): string => {
