@@ -67,29 +67,23 @@ func (r *SubAgentTaskRunner) extractAndSaveExperience(
 	if r == nil || r.handler == nil || r.handler.app == nil {
 		return
 	}
-	codingKB := r.codingKnowledgeStore()
-	if codingKB == nil {
-		return
-	}
 	appCfg, err := r.handler.app.LoadConfig()
 	if err != nil {
 		return
 	}
 	mode := ExperienceSaveMode(appCfg.CodingKnowledgeAutoSaveMode)
 	strategy := ExperienceSaveStrategy(appCfg.CodingKnowledgeSaveStrategy)
-	// Apply defaults for empty config values
 	if mode == "" {
 		mode = ExperienceSaveModeObserve
 	}
 	if strategy == "" {
 		strategy = ExperienceStrategyOnRetry
 	}
-	if mode == ExperienceSaveModeOff || strategy == ExperienceStrategyOff {
-		return
-	}
-
 	wasRetry = wasRetry || codingResultLooksLikeRetrySuccess(result)
 	if !codingExperienceShouldExtract(mode, strategy, result, wasRetry) {
+		return
+	}
+	if r.codingKnowledgeStore() == nil {
 		return
 	}
 
@@ -106,7 +100,12 @@ func (r *SubAgentTaskRunner) recordRecalledExperienceOutcomes(result *CodingSubA
 	if r.handler == nil || r.handler.app == nil {
 		return
 	}
-	go r.doRecordRecalledExperienceOutcomes(result)
+	snapshot := &CodingSubAgentResult{
+		Status:                result.Status,
+		RuntimeTaskID:         result.RuntimeTaskID,
+		RecalledExperienceIDs: append([]string(nil), result.RecalledExperienceIDs...),
+	}
+	go r.doRecordRecalledExperienceOutcomes(snapshot)
 }
 
 func (r *SubAgentTaskRunner) doExtractAndSave(
@@ -221,7 +220,10 @@ func (r *SubAgentTaskRunner) doRecordRecalledExperienceOutcomes(result *CodingSu
 	if store == nil {
 		return
 	}
-	provenance, err := codingExperienceRuntimeProvenance(r.handler.app, result.RuntimeTaskID)
+	runtimeTaskID := result.RuntimeTaskID
+	taskSucceeded := result.Status == TaskExecPassed
+	ids := append([]string(nil), result.RecalledExperienceIDs...)
+	provenance, err := codingExperienceRuntimeProvenance(r.handler.app, runtimeTaskID)
 	if err != nil {
 		log.Printf("[coding-experience] skip recall outcome without provenance: %v", err)
 		return
@@ -232,14 +234,14 @@ func (r *SubAgentTaskRunner) doRecordRecalledExperienceOutcomes(result *CodingSu
 		RuntimeTaskID:    provenance.TaskID,
 		RuntimeAttemptID: provenance.AttemptID,
 		EvidenceDigest:   provenance.EvidenceDigest,
-		TaskSucceeded:    result.Status == TaskExecPassed,
+		TaskSucceeded:    taskSucceeded,
 	}
-	for _, id := range result.RecalledExperienceIDs {
+	for _, id := range ids {
 		id = strings.TrimSpace(id)
 		if id == "" {
 			continue
 		}
-		if recErr := store.RecordRecallOutcome(ctx, id, outcome, r.handler.app.verifyCodingKnowledgeRecallOutcome); recErr != nil {
+		if recErr := store.RecordRecallOutcome(ctx, id, outcome, r.handler.app.verifyCodingKnowledgeRecallOutcome); recErr != nil && !isBenignCodingRecallOutcomeError(recErr) {
 			log.Printf("[coding-experience] recall outcome %s: %v", id, recErr)
 		}
 	}
@@ -525,12 +527,27 @@ func isSimilarExperience(existing, newExp knowledge.CodingExperience) bool {
 	if existContent != "" && newContent != "" && existContent == newContent {
 		return true
 	}
-	if len(existContent) > 40 && len(newContent) > 40 {
-		if strings.Contains(existContent, newContent) || strings.Contains(newContent, existContent) {
-			return true
-		}
+	if codingExperienceContentNearDuplicate(existContent, newContent) {
+		return true
 	}
 	return false
+}
+
+func codingExperienceContentNearDuplicate(existing, incoming string) bool {
+	if existing == "" || incoming == "" {
+		return false
+	}
+	shorter, longer := existing, incoming
+	if len(shorter) > len(longer) {
+		shorter, longer = longer, shorter
+	}
+	if len(shorter) < 40 {
+		return false
+	}
+	if len(shorter)*2 < len(longer) {
+		return false
+	}
+	return strings.Contains(longer, shorter)
 }
 
 func codingExperienceShouldExtract(mode ExperienceSaveMode, strategy ExperienceSaveStrategy, result *CodingSubAgentResult, wasRetry bool) bool {
@@ -557,17 +574,40 @@ func codingResultLooksLikeRetrySuccess(result *CodingSubAgentResult) bool {
 	if result == nil {
 		return false
 	}
-	hadFail := false
+	failed := map[string]struct{}{}
 	for _, cmd := range result.CommandsRun {
-		if !cmd.Succeeded {
-			hadFail = true
+		token := codingCommandFirstToken(cmd.Command)
+		if token == "" {
 			continue
 		}
-		if hadFail {
+		if !cmd.Succeeded {
+			failed[token] = struct{}{}
+			continue
+		}
+		if _, ok := failed[token]; ok {
 			return true
 		}
 	}
 	return false
+}
+
+func codingCommandFirstToken(command string) string {
+	fields := strings.Fields(strings.TrimSpace(command))
+	if len(fields) == 0 {
+		return ""
+	}
+	return strings.ToLower(fields[0])
+}
+
+func isBenignCodingRecallOutcomeError(err error) bool {
+	if err == nil {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "already recorded") ||
+		strings.Contains(msg, "not found") ||
+		strings.Contains(msg, "requires a reviewed") ||
+		strings.Contains(msg, "deprecated experience")
 }
 
 func finalizeRemoteCodingKnowledge(agent *RemoteCodingSubAgent, taskDescription string, result *RemoteCodingSubAgentResult) {

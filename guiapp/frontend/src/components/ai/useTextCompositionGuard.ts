@@ -32,7 +32,7 @@ export function useTextCompositionGuard() {
             commitEnterPendingRef.current = true;
             commitEnterDeadlineRef.current = Date.now() + IME_COMMIT_ENTER_GRACE_MS;
         },
-        shouldIgnoreKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => {
+        shouldIgnoreKeyDown: (event: KeyboardEvent<HTMLTextAreaElement | HTMLInputElement>) => {
             const nativeEvent = event.nativeEvent;
             const isIMEKey = nativeEvent.isComposing || nativeEvent.keyCode === 229 || event.key === "Process";
             if (isIMEKey && (event.key === "Enter" || event.key === "Process")) {

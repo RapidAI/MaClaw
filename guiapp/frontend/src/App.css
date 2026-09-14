@@ -3065,7 +3065,8 @@ body {
 }
 details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg); }
 .assistant-reasoning-summary--plain::before { content: none; width: 0; margin: 0; }
-/* Live activity title: one highlight walks through the glyphs (inherits summary ink). */
+/* Live activity title: one highlight walks through the glyphs (inherits summary ink).
+   Light --assistant-sheen-spot must match ASSISTANT_LIVE_SHEEN_SPOT_LIGHT. */
 .assistant-reasoning-live-label {
     display: inline-block;
     --assistant-sheen-spot: #b8c3d0;

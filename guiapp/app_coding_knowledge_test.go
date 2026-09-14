@@ -100,6 +100,9 @@ func TestCodingKnowledgeWailsBindingsCRUD(t *testing.T) {
 	if len(list) != 1 || list[0].ID != saved.ID {
 		t.Fatalf("list = %+v", list)
 	}
+	if list[0].Content != "" || list[0].CodeSnippet != "" {
+		t.Fatalf("settings list should omit full bodies, got content=%q snippet=%q", list[0].Content, list[0].CodeSnippet)
+	}
 
 	if err := app.CodingKnowledgeConfirm(saved.ID); err != nil {
 		t.Fatalf("CodingKnowledgeConfirm: %v", err)
@@ -118,6 +121,9 @@ func TestCodingKnowledgeWailsBindingsCRUD(t *testing.T) {
 	}
 	if len(found) == 0 {
 		t.Fatal("expected search hit")
+	}
+	if found[0].Content != "" || found[0].CodeSnippet != "" {
+		t.Fatalf("settings search should omit full bodies, got content=%q snippet=%q", found[0].Content, found[0].CodeSnippet)
 	}
 
 	if err := app.CodingKnowledgeDelete(saved.ID); err != nil {

@@ -1,7 +1,7 @@
 import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { KnowledgeImportDialog } from './KnowledgeImportDialog';
 import { KNOWLEDGE_IMPORT_EXPAND_EVENT, consumeKnowledgeImportExpandFlag, useKnowledgeImportOptional } from './KnowledgeImportContext';
-import { consumePendingKnowledgeSearch, KNOWLEDGE_SEARCH_EVENT, type KnowledgeSearchOpenDetail } from '../../utils/knowledgeSearchNavigation';
+import { consumePendingKnowledgeSearch, KNOWLEDGE_SEARCH_EVENT, peekPendingKnowledgeSearch, type KnowledgeSearchOpenDetail } from '../../utils/knowledgeSearchNavigation';
 import { ConfirmDialog } from '../modals/ConfirmDialog';
 import { DeepCrawlConfig, DeepCrawlPanel, DeepCrawlPreviewResult, DeepCrawlRunResult } from './DeepCrawlPanel';
 import { buildHubCardStoreURL } from '../../utils/hubCredits';
@@ -1374,6 +1374,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
     const syncStatusIdentityRef = useRef('');
     const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
     const [searchForm, setSearchForm] = useState({ query: '', resultType: 'all', sourceKind: 'all', domain: '', sourceID: '', labels: '', limit: 20, includeDisabled: false });
+    const headerSearchRequestRef = useRef(0);
     const [searchMode, setSearchMode] = useState<'semantic' | 'structured'>('semantic');
     const [structuredSearchForm, setStructuredSearchForm] = useState({ sheetName: '', columnName: '', matchMode: 'equals', columnValue: '', numberMin: '', numberMax: '', dateStart: '', dateEnd: '' });
     const [sourceFilter, setSourceFilter] = useState({ query: '', kind: 'all', status: 'all', coverage: 'all', domain: '', labels: '', limit: 100 });
@@ -1407,6 +1408,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
             setSearchMode('semantic');
             setSearchForm(form => ({ ...form, query: query || form.query, sourceID: sourceId }));
             if (!query) return;
+            const requestId = ++headerSearchRequestRef.current;
             void (async () => {
                 setBusy('search');
                 setError('');
@@ -1417,22 +1419,32 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                         KnowledgeSearch(payload as any),
                         KnowledgeSearchFacets(payload as any),
                     ]);
+                    if (requestId !== headerSearchRequestRef.current) return;
                     setSearchResults(Array.isArray(results) ? results : []);
                     setFacets(facetResult || null);
                 } catch (err: any) {
+                    if (requestId !== headerSearchRequestRef.current) return;
                     setError(err?.message || String(err));
                 } finally {
-                    setBusy('');
+                    if (requestId === headerSearchRequestRef.current) setBusy('');
                 }
             })();
         };
-        applyKnowledgeSearch(consumePendingKnowledgeSearch());
+        let cancelled = false;
+        applyKnowledgeSearch(peekPendingKnowledgeSearch());
+        const timer = window.setTimeout(() => {
+            if (!cancelled) consumePendingKnowledgeSearch();
+        }, 0);
         const onSearch = (event: Event) => {
             consumePendingKnowledgeSearch();
             applyKnowledgeSearch((event as CustomEvent<KnowledgeSearchOpenDetail>).detail);
         };
         window.addEventListener(KNOWLEDGE_SEARCH_EVENT, onSearch);
-        return () => window.removeEventListener(KNOWLEDGE_SEARCH_EVENT, onSearch);
+        return () => {
+            cancelled = true;
+            window.clearTimeout(timer);
+            window.removeEventListener(KNOWLEDGE_SEARCH_EVENT, onSearch);
+        };
     }, []);
 
     // After global float Dismiss (job cleared), remount dialog so the next open is Step 1.

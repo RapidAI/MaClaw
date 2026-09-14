@@ -2735,7 +2735,9 @@ function App() {
     }, [navTab, setNavTabNow]);
 
     useEffect(() => {
-        const revealFileLibrary = () => {
+        const revealFileLibrary = (event: Event) => {
+            const detail = (event as CustomEvent<{ documentId?: string; query?: string }>).detail;
+            if (!String(detail?.documentId || '').trim() && detail?.query == null) return;
             if (navTabRef.current === 'files') return;
             setNavTabNow('files');
         };

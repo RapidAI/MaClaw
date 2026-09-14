@@ -5053,34 +5053,29 @@ func (c *remoteCodingCallbacks) buildRemoteKnowledgePromptSections() string {
 
 	// 1. Coding knowledge (experiences), plus read-only enterprise technical assets.
 	var pack knowledge.ContextPackResult
+	language := inferRemoteCodingLanguage(c)
 	if c.agent.codingKB != nil {
 		if got, err := c.agent.codingKB.ContextPackForTask(ctx, knowledge.CodingContextPackOptions{
 			Query:       taskQuery,
-			Language:    inferRemoteCodingLanguage(c),
+			Language:    language,
 			ProjectPath: c.agent.projectDir,
 			MaxItems:    4,
 			MaxChars:    1500,
 			MaxTokens:   750,
 		}); err == nil {
 			pack = got
+			c.noteRecalledExperienceIDs(contextPackSourceIDs(got))
 		}
 	}
 	if c.agent.handler != nil && c.agent.handler.app != nil {
-		pack = c.agent.handler.app.mergeEnterpriseCodingPack(ctx, pack, taskQuery, inferRemoteCodingLanguage(c), c.agent.projectDir, 4)
+		pack = c.agent.handler.app.mergeEnterpriseCodingPack(ctx, pack, taskQuery, language, c.agent.projectDir, 4)
 	}
 	if len(pack.Items) > 0 {
 		b.WriteString("\n## 相关编码经验（来自编程知识库）\n")
 		b.WriteString("以下经验来自历史编码任务积累，供参考：\n")
-		ids := make([]string, 0, len(pack.Items))
 		for _, item := range pack.Items {
-			text := item.Text
-			if len([]rune(text)) > 300 {
-				text = string([]rune(text)[:300]) + "..."
-			}
-			b.WriteString(fmt.Sprintf("- **%s**: %s\n", item.Title, text))
-			ids = append(ids, item.SourceID)
+			b.WriteString(fmt.Sprintf("- **%s**: %s\n", item.Title, truncateRunesForSubAgent(item.Text, 300)))
 		}
-		c.noteRecalledExperienceIDs(ids)
 	}
 
 	// 2. General knowledge (project docs)
@@ -5108,7 +5103,10 @@ func (c *remoteCodingCallbacks) buildRemoteKnowledgePromptSections() string {
 
 // executeRemoteCodingKnowledgeSearch handles coding_knowledge_search tool call.
 func (c *remoteCodingCallbacks) executeRemoteCodingKnowledgeSearch(argsJSON string) string {
-	if c.agent.codingKB == nil {
+	if c == nil || c.agent == nil {
+		return "编程知识库未配置。暂无可用的编码经验。"
+	}
+	if c.agent.codingKB == nil && (c.agent.handler == nil || c.agent.handler.app == nil) {
 		return "编程知识库未配置。暂无可用的编码经验。"
 	}
 
@@ -5116,7 +5114,7 @@ func (c *remoteCodingCallbacks) executeRemoteCodingKnowledgeSearch(argsJSON stri
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return fmt.Sprintf("参数解析失败: %v", err)
 	}
-	query, _ := args["query"].(string)
+	query := knowledgeToolStringArg(args, "query")
 	if query == "" {
 		return "Error: query parameter is required"
 	}
@@ -5125,17 +5123,22 @@ func (c *remoteCodingCallbacks) executeRemoteCodingKnowledgeSearch(argsJSON stri
 	defer cancel()
 
 	language := inferRemoteCodingLanguage(c)
-	experiences, err := c.agent.codingKB.SearchExperiences(ctx, knowledge.CodingSearchOptions{
-		Query:       query,
-		Language:    language,
-		ProjectPath: c.agent.projectDir,
-		Status:      []string{knowledge.CodingStatusActive, knowledge.CodingStatusVerified},
-		Limit:       5,
-	})
+	var experiences []knowledge.CodingExperience
+	var err error
+	if c.agent.codingKB != nil {
+		experiences, err = c.agent.codingKB.SearchExperiences(ctx, knowledge.CodingSearchOptions{
+			Query:       query,
+			Language:    language,
+			ProjectPath: c.agent.projectDir,
+			Status:      []string{knowledge.CodingStatusActive, knowledge.CodingStatusVerified},
+			Limit:       5,
+		})
+	}
 	var app *App
 	if c.agent.handler != nil {
 		app = c.agent.handler.app
 	}
+	c.noteRecalledExperiences(experiences)
 	experiences, err = finishCodingKnowledgeSearch(app, ctx, experiences, err, query, language, c.agent.projectDir, 5)
 	if err != nil {
 		return fmt.Sprintf("编程知识库当前不可用；请继续通过 ssh_read_file、ssh_bash 和验证命令完成任务。(%v)", err)
@@ -5143,32 +5146,7 @@ func (c *remoteCodingCallbacks) executeRemoteCodingKnowledgeSearch(argsJSON stri
 	if len(experiences) == 0 {
 		return fmt.Sprintf("未找到与 %q 相关的编码经验。", query)
 	}
-
-	var b strings.Builder
-	b.WriteString(fmt.Sprintf("找到 %d 条相关编码经验：\n\n", len(experiences)))
-	for i, exp := range experiences {
-		b.WriteString(fmt.Sprintf("%d. **%s** [%s/%s] (置信度: %.1f)\n", i+1, exp.Title, exp.Scope, exp.Category, exp.Confidence))
-		if exp.TriggerCondition != "" {
-			b.WriteString(fmt.Sprintf("   触发条件: %s\n", exp.TriggerCondition))
-		}
-		if exp.Content != "" {
-			content := exp.Content
-			if len([]rune(content)) > 800 {
-				content = string([]rune(content)[:800]) + "..."
-			}
-			b.WriteString(fmt.Sprintf("   %s\n", content))
-		}
-		if exp.CodeSnippet != "" {
-			snippet := exp.CodeSnippet
-			if len([]rune(snippet)) > 300 {
-				snippet = string([]rune(snippet)[:300]) + "..."
-			}
-			b.WriteString(fmt.Sprintf("   代码片段:\n   ```\n   %s\n   ```\n", snippet))
-		}
-		b.WriteString("\n")
-	}
-	c.noteRecalledExperiences(experiences)
-	return b.String()
+	return formatCodingExperienceSearchHits(experiences)
 }
 
 func inferRemoteCodingLanguage(c *remoteCodingCallbacks) string {
@@ -5182,14 +5160,10 @@ func inferRemoteCodingLanguage(c *remoteCodingCallbacks) string {
 }
 
 func (c *remoteCodingCallbacks) noteRecalledExperiences(items []knowledge.CodingExperience) {
-	if c == nil || len(items) == 0 {
+	if c == nil {
 		return
 	}
-	ids := make([]string, 0, len(items))
-	for _, exp := range items {
-		ids = append(ids, exp.ID)
-	}
-	c.noteRecalledExperienceIDs(ids)
+	c.noteRecalledExperienceIDs(recalledExperienceIDs(items))
 }
 
 func (c *remoteCodingCallbacks) noteRecalledExperienceIDs(ids []string) {

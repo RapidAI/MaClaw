@@ -67,13 +67,25 @@ describe("PdfPreviewPanel", () => {
             path: "D:/docs/report.pdf",
             file_name: "report.pdf",
             kind: "pdf",
-            preview_url: "/maclaw-preview/v1/file?t=abc",
+            preview_url: "/maclaw-preview/v1/file?t=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         } as never);
         const { getByTestId } = render(
             <PdfPreviewPanel absPath="D:/docs/report.pdf" theme={theme} lang="en" />,
         );
         await waitFor(() => expect(getByTestId("pdf-preview-panel")).toBeTruthy());
-        expect(getByTestId("pdf-preview-panel").getAttribute("src")).toBe("/maclaw-preview/v1/file?t=abc");
+        expect(getByTestId("pdf-preview-panel").getAttribute("src")).toBe("/maclaw-preview/v1/file?t=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    });
+
+    it("ignores an off-origin preview URL", async () => {
+        preview.mockResolvedValueOnce({
+            path: "D:/docs/report.pdf",
+            kind: "pdf",
+            preview_url: "https://example.test/steal",
+        } as never);
+        const { getByTestId } = render(
+            <PdfPreviewPanel absPath="D:/docs/report.pdf" theme={theme} lang="en" />,
+        );
+        await waitFor(() => expect(getByTestId("pdf-preview-error")).toBeTruthy());
     });
 
     it("falls back to extracted text when the backend returns content", async () => {

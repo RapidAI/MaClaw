@@ -61,18 +61,11 @@ export function CodingKnowledgeSection({ config, setConfig, lang, versionRef }: 
         setLoading(true);
         try {
             let results: any[];
+            const tabFilter = searchFilterFromScopeTab(activeTab);
             if (debouncedSearch.trim()) {
-                results = await CodingKnowledgeSearch(debouncedSearch, 50, searchFilterFromScopeTab(activeTab));
+                results = await CodingKnowledgeSearch(debouncedSearch, 50, tabFilter);
             } else {
-                const filter: any = { limit: 100 };
-                if (activeTab !== 'all') {
-                    if (activeTab === 'universal' || activeTab === 'project') filter.scope = activeTab;
-                    else {
-                        filter.scope = 'language';
-                        filter.language = activeTab;
-                    }
-                }
-                results = await CodingKnowledgeList(filter);
+                results = await CodingKnowledgeList({ limit: 100, ...tabFilter });
             }
             if (mountedRef.current) setExperiences(results || []);
         } catch {

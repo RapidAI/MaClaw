@@ -16,6 +16,10 @@ export function openFileLibrary(detail: FileLibraryOpenDetail = {}): void {
     window.dispatchEvent(new CustomEvent(OPEN_FILE_LIBRARY_EVENT, { detail: { ...pendingFileLibraryOpen } }));
 }
 
+export function peekPendingFileLibraryOpen(): FileLibraryOpenDetail | null {
+    return pendingFileLibraryOpen;
+}
+
 export function consumePendingFileLibraryOpen(): FileLibraryOpenDetail | null {
     const value = pendingFileLibraryOpen;
     pendingFileLibraryOpen = null;

@@ -254,11 +254,9 @@ func (a *App) CodingKnowledgeExport() (CodingKnowledgeExportPack, error) {
 	exported := make([]knowledge.CodingExperience, 0, len(experiences))
 	for _, exp := range experiences {
 		if exp.Status == knowledge.CodingStatusActive || exp.Status == knowledge.CodingStatusVerified {
-			// Hydrate content from nodes if empty
-			if exp.Content == "" {
-				nodes, err := store.Inner().ListNodesBySource(ctx, exp.ID, 1)
-				if err == nil && len(nodes) > 0 && nodes[0].Text != "" {
-					exp.Content = nodes[0].Text
+			if strings.TrimSpace(exp.Content) == "" {
+				if full, getErr := store.GetExperience(ctx, exp.ID); getErr == nil {
+					exp.Content = full.Content
 				}
 			}
 			exported = append(exported, knowledge.SanitizeExperienceForExport(exp))

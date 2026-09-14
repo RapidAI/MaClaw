@@ -361,6 +361,12 @@ func (s *CodingKnowledgeStore) saveExperience(ctx context.Context, exp CodingExp
 	// Build labels for the source
 	labels := buildExperienceLabels(exp)
 
+	forceID := ""
+	if allowParent {
+		// Revision candidates copy the parent body. Force a new source ID so
+		// content-hash dedup cannot collapse the candidate onto the retired parent.
+		forceID = NewID("ksrc")
+	}
 	source, err := s.inner.SaveText(ctx, TextSaveRequest{
 		Text:        indexText,
 		Title:       exp.Title,
@@ -369,7 +375,7 @@ func (s *CodingKnowledgeStore) saveExperience(ctx context.Context, exp CodingExp
 		ProjectPath: exp.ProjectPath,
 		Labels:      labels,
 		DistillMode: "off", // Don't distill coding experiences into cards (we use raw text search)
-		ForceID:     NewID("ksrc"),
+		ForceID:     forceID,
 	})
 	if err != nil {
 		return CodingExperience{}, fmt.Errorf("coding knowledge: save: %w", err)
@@ -496,7 +502,7 @@ func (s *CodingKnowledgeStore) UpdateExperienceWithBudget(ctx context.Context, e
 	}
 
 	// Hydrate from the existing record when the caller only changed metadata
-	// (ListExperiences does not populate Content).
+	// (the settings list/search APIs omit Content).
 	existing, err := s.GetExperience(ctx, exp.ID)
 	if err != nil {
 		return fmt.Errorf("coding knowledge: update %s: %w", exp.ID, err)
@@ -943,14 +949,23 @@ func (s *CodingKnowledgeStore) SearchExperiences(ctx context.Context, opts Codin
 	}
 	candidates := make(map[string]scoredExperience, opts.Limit)
 	for _, r := range results {
-		exp, err := sourceToExperience(r.Source)
+		var (
+			exp CodingExperience
+			err error
+		)
+		if opts.OmitContent {
+			exp, err = sourceToExperienceSummary(r.Source)
+		} else {
+			exp, err = sourceToExperience(r.Source)
+		}
 		if err != nil {
 			continue // Skip entries with bad metadata
 		}
 		exp.ID = r.Source.ID
 
 		// Populate Content from search snippet when not hydrated from nodes.
-		if exp.Content == "" {
+		// UI listing skips this: it only needs metadata for ranking/display.
+		if exp.Content == "" && !opts.OmitContent {
 			if r.Snippet != "" {
 				exp.Content = r.Snippet
 			} else if r.Claim != "" {
@@ -996,7 +1011,12 @@ func (s *CodingKnowledgeStore) SearchExperiences(ctx context.Context, opts Codin
 	out := make([]CodingExperience, 0, len(experiences))
 	for _, candidate := range experiences {
 		exp := candidate.experience
-		s.hydrateExperienceContent(ctx, &exp)
+		if opts.OmitContent {
+			exp.Content = ""
+			exp.CodeSnippet = ""
+		} else {
+			s.hydrateExperienceContent(ctx, &exp)
+		}
 		out = append(out, exp)
 	}
 	return out, nil
@@ -1045,7 +1065,15 @@ func (s *CodingKnowledgeStore) ListExperiences(ctx context.Context, filter Codin
 
 	experiences := make([]CodingExperience, 0, len(sources))
 	for _, src := range sources {
-		exp, err := sourceToExperience(src)
+		var (
+			exp CodingExperience
+			err error
+		)
+		if filter.OmitContent {
+			exp, err = sourceToExperienceSummary(src)
+		} else {
+			exp, err = sourceToExperience(src)
+		}
 		if err != nil {
 			continue
 		}
@@ -1083,7 +1111,7 @@ func (s *CodingKnowledgeStore) Stats(ctx context.Context) (CodingKnowledgeStats,
 
 	var totalConf float64
 	for _, src := range sources {
-		exp, err := sourceToExperience(src)
+		exp, err := sourceToExperienceSummary(src)
 		if err != nil {
 			continue
 		}
@@ -1334,6 +1362,9 @@ type CodingSearchOptions struct {
 	Labels      []string // Additional label filters
 	Status      []string // Filter by status (empty = active + verified only)
 	Limit       int
+	// OmitContent skips body hydration. Use it for administrative listing where
+	// only titles/metadata are shown; agent recall must leave this false.
+	OmitContent bool
 }
 
 // CodingListFilter controls listing/enumeration of experiences.
@@ -1345,6 +1376,8 @@ type CodingListFilter struct {
 	ProjectPath string   `json:"project_path,omitempty"`
 	Labels      []string `json:"labels,omitempty"`
 	Limit       int      `json:"limit,omitempty"`
+	// OmitContent skips body fields. Settings listing uses this; export/contribute must not.
+	OmitContent bool `json:"omit_content,omitempty"`
 }
 
 // CodingContextPackOptions controls context pack generation for SubAgent injection.
@@ -1502,6 +1535,28 @@ func parseCodingExperienceTimestamp(value string) time.Time {
 }
 
 func sourceToExperience(src Source) (CodingExperience, error) {
+	return decodeCodingExperience(src, true)
+}
+
+func sourceToExperienceSummary(src Source) (CodingExperience, error) {
+	return decodeCodingExperience(src, false)
+}
+
+type codingExperienceSummaryMetadata struct {
+	Category         string   `json:"category"`
+	Scope            string   `json:"scope"`
+	Language         string   `json:"language,omitempty"`
+	Frameworks       []string `json:"frameworks,omitempty"`
+	TriggerCondition string   `json:"trigger_condition"`
+	CreatedBy        string   `json:"created_by,omitempty"`
+	LastReviewedAt   string   `json:"last_reviewed_at,omitempty"`
+	Confidence       float64  `json:"confidence"`
+	RecallCount      int      `json:"recall_count"`
+	Status           string   `json:"status"`
+	LastRecalledAt   string   `json:"last_recalled_at,omitempty"`
+}
+
+func decodeCodingExperience(src Source, includeBody bool) (CodingExperience, error) {
 	exp := CodingExperience{
 		ID:          src.ID,
 		Title:       src.Title,
@@ -1511,48 +1566,64 @@ func sourceToExperience(src Source) (CodingExperience, error) {
 		UpdatedAt:   src.UpdatedAt,
 	}
 
-	// Parse metadata from TopicHint
 	if src.TopicHint != "" {
-		var meta CodingExperienceMetadata
-		if err := json.Unmarshal([]byte(src.TopicHint), &meta); err != nil {
-			// Not a coding experience or corrupted metadata
-			return CodingExperience{}, fmt.Errorf("coding knowledge: parse metadata for %s: %w", src.ID, err)
-		}
-		exp.Category = meta.Category
-		exp.Scope = meta.Scope
-		exp.Language = meta.Language
-		exp.Frameworks = meta.Frameworks
-		exp.TriggerCondition = meta.TriggerCondition
-		exp.Content = meta.Content
-		exp.CodeSnippet = meta.CodeSnippet
-		exp.FailedAttempts = meta.FailedAttempts
-		exp.Contraindications = meta.Contraindications
-		exp.SourceTaskTitle = meta.SourceTaskTitle
-		exp.LanguageVersion = meta.LanguageVersion
-		exp.ValidUntil = meta.ValidUntil
-		exp.SourceRuntimeTaskID = meta.SourceRuntimeTaskID
-		exp.SourceRuntimeAttemptID = meta.SourceRuntimeAttemptID
-		exp.EvidenceDigest = meta.EvidenceDigest
-		exp.ParentExperienceID = meta.ParentExperienceID
-		exp.LifecycleEvents = append([]CodingExperienceLifecycleEvent(nil), meta.LifecycleEvents...)
-		exp.CreatedBy = meta.CreatedBy
-		exp.LastReviewedAt = parseCodingExperienceTimestamp(meta.LastReviewedAt)
-		exp.Confidence = meta.Confidence
-		exp.RecallCount = meta.RecallCount
-		exp.SuccessCount = meta.SuccessCount
-		exp.FailureCount = meta.FailureCount
-		exp.Status = meta.Status
-		if meta.LastRecalledAt != "" {
-			if t, err := time.Parse(time.RFC3339, meta.LastRecalledAt); err == nil {
-				exp.LastRecalledAt = t
+		if includeBody {
+			var meta CodingExperienceMetadata
+			if err := json.Unmarshal([]byte(src.TopicHint), &meta); err != nil {
+				return CodingExperience{}, fmt.Errorf("coding knowledge: parse metadata for %s: %w", src.ID, err)
+			}
+			exp.Category = meta.Category
+			exp.Scope = meta.Scope
+			exp.Language = meta.Language
+			exp.Frameworks = meta.Frameworks
+			exp.TriggerCondition = meta.TriggerCondition
+			exp.Content = meta.Content
+			exp.CodeSnippet = meta.CodeSnippet
+			exp.FailedAttempts = meta.FailedAttempts
+			exp.Contraindications = meta.Contraindications
+			exp.SourceTaskTitle = meta.SourceTaskTitle
+			exp.LanguageVersion = meta.LanguageVersion
+			exp.ValidUntil = meta.ValidUntil
+			exp.SourceRuntimeTaskID = meta.SourceRuntimeTaskID
+			exp.SourceRuntimeAttemptID = meta.SourceRuntimeAttemptID
+			exp.EvidenceDigest = meta.EvidenceDigest
+			exp.ParentExperienceID = meta.ParentExperienceID
+			exp.LifecycleEvents = append([]CodingExperienceLifecycleEvent(nil), meta.LifecycleEvents...)
+			exp.CreatedBy = meta.CreatedBy
+			exp.LastReviewedAt = parseCodingExperienceTimestamp(meta.LastReviewedAt)
+			exp.Confidence = meta.Confidence
+			exp.RecallCount = meta.RecallCount
+			exp.SuccessCount = meta.SuccessCount
+			exp.FailureCount = meta.FailureCount
+			exp.Status = meta.Status
+			if meta.LastRecalledAt != "" {
+				if t, err := time.Parse(time.RFC3339, meta.LastRecalledAt); err == nil {
+					exp.LastRecalledAt = t
+				}
+			}
+		} else {
+			var meta codingExperienceSummaryMetadata
+			if err := json.Unmarshal([]byte(src.TopicHint), &meta); err != nil {
+				return CodingExperience{}, fmt.Errorf("coding knowledge: parse metadata for %s: %w", src.ID, err)
+			}
+			exp.Category = meta.Category
+			exp.Scope = meta.Scope
+			exp.Language = meta.Language
+			exp.Frameworks = meta.Frameworks
+			exp.TriggerCondition = meta.TriggerCondition
+			exp.CreatedBy = meta.CreatedBy
+			exp.LastReviewedAt = parseCodingExperienceTimestamp(meta.LastReviewedAt)
+			exp.Confidence = meta.Confidence
+			exp.RecallCount = meta.RecallCount
+			exp.Status = meta.Status
+			if meta.LastRecalledAt != "" {
+				if t, err := time.Parse(time.RFC3339, meta.LastRecalledAt); err == nil {
+					exp.LastRecalledAt = t
+				}
 			}
 		}
 	}
 
-	// Legacy records stored the body only in document nodes. Keep an empty
-	// Content value so callers can hydrate from nodes or search snippets.
-
-	// Apply default confidence if zero (legacy or initial)
 	if exp.Confidence == 0 {
 		exp.Confidence = CodingConfidenceInitial
 	}

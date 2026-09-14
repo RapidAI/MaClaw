@@ -81,6 +81,64 @@ func TestPreviewTaskResultFilePDFToken(t *testing.T) {
 	}
 }
 
+func TestPreviewTaskResultFilePDFReusesLiveToken(t *testing.T) {
+	resetTaskResultPreviewLeasesForTest()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "doc.pdf")
+	if err := os.WriteFile(path, []byte("%PDF-1.1\n%%EOF\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	first, err := (*App)(nil).PreviewTaskResultFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := (*App)(nil).PreviewTaskResultFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.PreviewURL == "" || first.PreviewURL != second.PreviewURL {
+		t.Fatalf("token reuse failed: %q vs %q", first.PreviewURL, second.PreviewURL)
+	}
+}
+
+func TestPreviewTaskResultFilePDFAcceptsPrefixedHeader(t *testing.T) {
+	resetTaskResultPreviewLeasesForTest()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "prefixed.pdf")
+	if err := os.WriteFile(path, []byte("junk\n%PDF-1.4\n%%EOF\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := (*App)(nil).PreviewTaskResultFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Kind != "pdf" {
+		t.Fatalf("kind = %q", got.Kind)
+	}
+}
+
+func TestTaskResultPreviewHTTPHead(t *testing.T) {
+	resetTaskResultPreviewLeasesForTest()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "doc.pdf")
+	if err := os.WriteFile(path, []byte("%PDF-1.1\n%%EOF\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := (*App)(nil).PreviewTaskResultFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodHead, got.PreviewURL, nil)
+	rec := httptest.NewRecorder()
+	handleTaskResultPreviewHTTP(nil, rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if rec.Body.Len() != 0 {
+		t.Fatalf("HEAD should not write a body")
+	}
+}
+
 func TestPreviewTaskResultFilePDFRejectsNonPDFHeader(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "fake.pdf")
@@ -92,6 +150,32 @@ func TestPreviewTaskResultFilePDFRejectsNonPDFHeader(t *testing.T) {
 	}
 }
 
+func TestRecordAudioAssetMiddlewareRoutesPreviewHEAD(t *testing.T) {
+	resetTaskResultPreviewLeasesForTest()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "doc.pdf")
+	if err := os.WriteFile(path, []byte("%PDF-1.1\n%%EOF\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := (*App)(nil).PreviewTaskResultFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fellThrough := false
+	handler := recordAudioAssetMiddleware(nil, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		fellThrough = true
+	}))
+	req := httptest.NewRequest(http.MethodHead, got.PreviewURL, nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if fellThrough {
+		t.Fatal("HEAD preview request fell through to the asset server")
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+}
+
 func TestTaskResultPreviewHTTPUnknownToken(t *testing.T) {
 	resetTaskResultPreviewLeasesForTest()
 	req := httptest.NewRequest(http.MethodGet, taskResultPreviewHTTPPath+"?t=deadbeef", nil)
@@ -99,6 +183,35 @@ func TestTaskResultPreviewHTTPUnknownToken(t *testing.T) {
 	handleTaskResultPreviewHTTP(nil, rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d", rec.Code)
+	}
+}
+
+func TestTaskResultPreviewHTTPRefreshTTL(t *testing.T) {
+	resetTaskResultPreviewLeasesForTest()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "doc.pdf")
+	if err := os.WriteFile(path, []byte("%PDF-1.1\n%%EOF\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := (*App)(nil).PreviewTaskResultFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := strings.TrimPrefix(got.PreviewURL, taskResultPreviewHTTPPath+"?t=")
+	taskResultPreviewMu.Lock()
+	lease := taskResultPreviewLeases[token]
+	lease.expires = time.Now().Add(time.Second)
+	taskResultPreviewLeases[token] = lease
+	taskResultPreviewMu.Unlock()
+
+	if _, ok := lookupTaskResultPreviewPath(token); !ok {
+		t.Fatal("expected live token")
+	}
+	taskResultPreviewMu.Lock()
+	refreshed := taskResultPreviewLeases[token]
+	taskResultPreviewMu.Unlock()
+	if time.Until(refreshed.expires) < 9*time.Minute {
+		t.Fatalf("ttl was not refreshed: remaining %v", time.Until(refreshed.expires))
 	}
 }
 

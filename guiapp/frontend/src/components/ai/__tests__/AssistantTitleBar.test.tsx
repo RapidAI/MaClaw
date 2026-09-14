@@ -123,6 +123,38 @@ describe('AssistantTitleBar', () => {
         expect(brand.querySelector('.mc-header-brand-mark svg path')?.getAttribute('d')).toBe('M14 58V22l26 25 26-25v36');
     });
 
+    it('searches the typed header query from the search tool button', () => {
+        const toggleProjectSearch = vi.fn();
+        const seen: unknown[] = [];
+        const listener = (event: Event) => seen.push((event as CustomEvent).detail);
+        window.addEventListener('maclaw:open-task-search', listener);
+        try {
+            render(
+                <AssistantTitleBar
+                    clearHistory={vi.fn()}
+                    inline
+                    lang="en"
+                    maximized={false}
+                    onClose={vi.fn()}
+                    projectSearchOpen={false}
+                    refreshNews={vi.fn()}
+                    showMaximizeToggle={false}
+                    theme={overlayTheme}
+                    themeMode="light"
+                    title="Default task"
+                    trialReflectEnabled={false}
+                    toggleProjectSearch={toggleProjectSearch}
+                />,
+            );
+            fireEvent.change(screen.getByTestId('ai-titlebar-search-input'), { target: { value: 'quarterly report' } });
+            fireEvent.mouseDown(screen.getByTestId('ai-titlebar-search-toggle'));
+            expect(seen).toEqual([{ query: 'quarterly report' }]);
+            expect(toggleProjectSearch).not.toHaveBeenCalled();
+        } finally {
+            window.removeEventListener('maclaw:open-task-search', listener);
+        }
+    });
+
     it('hides the inline window through the provided window handler', () => {
         const onHideWindow = vi.fn();
         render(

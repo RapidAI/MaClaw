@@ -86,6 +86,7 @@ func (c *codingSubAgentCallbacks) buildKnowledgePromptSections() string {
 			MaxTokens:   750,
 		}); err == nil {
 			pack = got
+			c.noteRecalledExperienceIDs(contextPackSourceIDs(got))
 		}
 	}
 	if c.subagent.handler != nil && c.subagent.handler.app != nil {
@@ -94,12 +95,9 @@ func (c *codingSubAgentCallbacks) buildKnowledgePromptSections() string {
 	if len(pack.Items) > 0 {
 		b.WriteString("\n## 相关编码经验（来自编程知识库）\n")
 		b.WriteString("以下经验来自历史编码任务积累，供参考：\n")
-		ids := make([]string, 0, len(pack.Items))
 		for _, item := range pack.Items {
 			b.WriteString(fmt.Sprintf("- **%s**: %s\n", item.Title, truncateRunesForSubAgent(item.Text, 300)))
-			ids = append(ids, item.SourceID)
 		}
-		c.noteRecalledExperienceIDs(ids)
 	}
 
 	// 2. General knowledge (project docs)
@@ -219,6 +217,12 @@ func knowledgeImageSearchToolDef() map[string]interface{} {
 
 // executeCodingKnowledgeSearch handles the coding_knowledge_search tool call.
 func (c *codingSubAgentCallbacks) executeCodingKnowledgeSearch(argsJSON string) codingToolExecutionResult {
+	if c == nil || c.subagent == nil {
+		return codingToolExecutionResult{
+			Text:    "编程知识库未配置。暂无可用的编码经验。",
+			Outcome: codingToolOutcomeSuccess,
+		}
+	}
 	if c.subagent.codingKB == nil && (c.subagent.handler == nil || c.subagent.handler.app == nil) {
 		return codingToolExecutionResult{
 			Text:    "编程知识库未配置。暂无可用的编码经验。",
@@ -227,7 +231,7 @@ func (c *codingSubAgentCallbacks) executeCodingKnowledgeSearch(argsJSON string) 
 	}
 
 	args := parseCodingSubAgentToolArgs(argsJSON)
-	query, _ := args["query"].(string)
+	query := knowledgeToolStringArg(args, "query")
 	if query == "" {
 		return codingToolExecutionResult{
 			Text:    "Error: query parameter is required",
@@ -258,6 +262,7 @@ func (c *codingSubAgentCallbacks) executeCodingKnowledgeSearch(argsJSON string) 
 	if c.subagent.handler != nil {
 		app = c.subagent.handler.app
 	}
+	c.noteRecalledExperiences(experiences)
 	experiences, err = finishCodingKnowledgeSearch(app, ctx, experiences, err, query, taskLanguage, c.subagent.projectPath, 5)
 	if err != nil {
 		return codingToolExecutionResult{
@@ -274,43 +279,11 @@ func (c *codingSubAgentCallbacks) executeCodingKnowledgeSearch(argsJSON string) 
 		}
 	}
 
-	var b strings.Builder
-	b.WriteString(fmt.Sprintf("找到 %d 条相关编码经验：\n\n", len(experiences)))
-	for i, exp := range experiences {
-		b.WriteString(fmt.Sprintf("%d. **%s** [%s/%s] (置信度: %.1f)\n", i+1, exp.Title, exp.Scope, exp.Category, exp.Confidence))
-		if exp.TriggerCondition != "" {
-			b.WriteString(fmt.Sprintf("   触发条件: %s\n", exp.TriggerCondition))
-		}
-		if exp.Content != "" {
-			content := truncateRunesForSubAgent(exp.Content, 800)
-			b.WriteString(fmt.Sprintf("   %s\n", content))
-		}
-		if exp.CodeSnippet != "" {
-			snippet := truncateRunesForSubAgent(exp.CodeSnippet, 300)
-			b.WriteString(fmt.Sprintf("   代码片段:\n   ```\n   %s\n   ```\n", snippet))
-		}
-		if len(exp.FailedAttempts) > 0 {
-			b.WriteString("   失败尝试（不要重复）:\n")
-			for _, fa := range exp.FailedAttempts {
-				b.WriteString(fmt.Sprintf("   - %s\n", truncateRunesForSubAgent(fa, 100)))
-			}
-		}
-		if len(exp.Contraindications) > 0 {
-			b.WriteString("   不适用场景:\n")
-			for _, ci := range exp.Contraindications {
-				b.WriteString(fmt.Sprintf("   - %s\n", truncateRunesForSubAgent(ci, 100)))
-			}
-		}
-		b.WriteString("\n")
-	}
-
-	c.noteRecalledExperiences(experiences)
-	// Track search for audit
 	c.trackSearchResult("coding_knowledge_search", map[string]interface{}{"query": query},
 		fmt.Sprintf("%d results", len(experiences)), true)
 
 	return codingToolExecutionResult{
-		Text:    b.String(),
+		Text:    formatCodingExperienceSearchHits(experiences),
 		Outcome: codingToolOutcomeSuccess,
 	}
 }
@@ -560,18 +533,58 @@ func appendUniqueExperienceIDs(dst []string, ids []string) []string {
 	return dst
 }
 
-func (c *codingSubAgentCallbacks) noteRecalledExperiences(items []knowledge.CodingExperience) {
-	if c == nil || len(items) == 0 {
-		return
+func formatCodingExperienceSearchHits(experiences []knowledge.CodingExperience) string {
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("找到 %d 条相关编码经验：\n\n", len(experiences)))
+	for i, exp := range experiences {
+		b.WriteString(fmt.Sprintf("%d. **%s** [%s/%s] (置信度: %.1f)\n", i+1, exp.Title, exp.Scope, exp.Category, exp.Confidence))
+		if exp.TriggerCondition != "" {
+			b.WriteString(fmt.Sprintf("   触发条件: %s\n", exp.TriggerCondition))
+		}
+		if exp.Content != "" {
+			b.WriteString(fmt.Sprintf("   %s\n", truncateRunesForSubAgent(exp.Content, 800)))
+		}
+		if exp.CodeSnippet != "" {
+			b.WriteString(fmt.Sprintf("   代码片段:\n   ```\n   %s\n   ```\n", truncateRunesForSubAgent(exp.CodeSnippet, 300)))
+		}
+		if len(exp.FailedAttempts) > 0 {
+			b.WriteString("   失败尝试（不要重复）:\n")
+			for _, fa := range exp.FailedAttempts {
+				b.WriteString(fmt.Sprintf("   - %s\n", truncateRunesForSubAgent(fa, 100)))
+			}
+		}
+		if len(exp.Contraindications) > 0 {
+			b.WriteString("   不适用场景:\n")
+			for _, ci := range exp.Contraindications {
+				b.WriteString(fmt.Sprintf("   - %s\n", truncateRunesForSubAgent(ci, 100)))
+			}
+		}
+		b.WriteString("\n")
 	}
+	return b.String()
+}
+
+func contextPackSourceIDs(pack knowledge.ContextPackResult) []string {
+	ids := make([]string, 0, len(pack.Items))
+	for _, item := range pack.Items {
+		ids = append(ids, item.SourceID)
+	}
+	return ids
+}
+
+func recalledExperienceIDs(items []knowledge.CodingExperience) []string {
 	ids := make([]string, 0, len(items))
 	for _, exp := range items {
-		if exp.Status != knowledge.CodingStatusActive && exp.Status != knowledge.CodingStatusVerified && exp.Status != "" {
+		if exp.Status != knowledge.CodingStatusActive && exp.Status != knowledge.CodingStatusVerified {
 			continue
 		}
 		ids = append(ids, exp.ID)
 	}
-	c.noteRecalledExperienceIDs(ids)
+	return ids
+}
+
+func (c *codingSubAgentCallbacks) noteRecalledExperiences(items []knowledge.CodingExperience) {
+	c.noteRecalledExperienceIDs(recalledExperienceIDs(items))
 }
 
 func (c *codingSubAgentCallbacks) noteRecalledExperienceIDs(ids []string) {

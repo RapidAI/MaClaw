@@ -20,6 +20,10 @@ export function openKnowledgeSearch(detail: KnowledgeSearchOpenDetail = {}): voi
     openSettingsTab("knowledge");
 }
 
+export function peekPendingKnowledgeSearch(): KnowledgeSearchOpenDetail | null {
+    return pendingKnowledgeSearch;
+}
+
 export function consumePendingKnowledgeSearch(): KnowledgeSearchOpenDetail | null {
     const value = pendingKnowledgeSearch;
     pendingKnowledgeSearch = null;

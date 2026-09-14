@@ -12,6 +12,7 @@ import { AssistantUpdateNotice, type AssistantUpdatePayload } from "./AssistantU
 import { AssistantMobileDocsControl } from "./AssistantMobileDocsControl";
 import { AssistantTitleBarNotifications } from "./AssistantTitleBarNotifications";
 import { TitleBarToolIcon } from "./AssistantTitleBarIcons";
+import { useTextCompositionGuard } from "./useTextCompositionGuard";
 
 type WailsDragStyle = WindowDragStyle;
 
@@ -87,13 +88,19 @@ const stopMouse = (handler: () => void) => (e: MouseEvent) => {
 };
 export function AssistantTitleBar({ active = true, clearHistory, clearHistoryDisabled, inline, lang, maximized, onClose, onDismissAppUpdate, onHideWindow, onOpenAppReleaseNotes, onOpenAppUpdate, onOpenKnowledge, onOpenTutorial, onOptimizeExpert, onSaveCurrentTask, onToggleMaximize, onTogglePreviewPanel, onToggleSkillRecording, optimizeExpertBusy, previewPanelOpen, previewAvailable, projectSearchOpen, refreshNews, showMaximizeToggle, skillRecording, skillRecordingAnyTab, skillRecordingCount, theme: t, themeMode, title, trialReflectEnabled, toggleProjectSearch, updateAvailable, workflowActive }: AssistantTitleBarProps) {
     const [searchQuery, setSearchQuery] = useState("");
+    const searchComposition = useTextCompositionGuard();
     // Keep title-bar state controls on the active shell palette in both schemes.
     const themeSuccess = "var(--theme-success, #4f7f6f)";
     const openInlineTaskSearch = () => {
         if (typeof window === "undefined") return;
         window.dispatchEvent(new CustomEvent("maclaw:open-task-search", { detail: { query: searchQuery } }));
     };
+    const handleSearchTool = () => {
+        if (searchQuery.trim()) openInlineTaskSearch();
+        else toggleProjectSearch();
+    };
     const handleSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+        if (searchComposition.shouldIgnoreKeyDown(event)) return;
         if (event.key !== "Enter") return;
         event.preventDefault();
         openInlineTaskSearch();
@@ -130,7 +137,7 @@ export function AssistantTitleBar({ active = true, clearHistory, clearHistoryDis
                     </span>
                     <span className="mc-header-search-wrap" data-testid="ai-titlebar-search" onMouseDown={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()} style={{ flex: "1 1 180px", width: "clamp(120px, 22vw, 300px)", maxWidth: "300px", minWidth: "120px" }}>
                         <svg className="mc-header-search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4.5 4.5" /></svg>
-                        <input className="mc-header-search" data-testid="ai-titlebar-search-input" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} onKeyDown={handleSearchKeyDown} onMouseDown={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()} placeholder={lang === "en" ? "Search tasks, files, knowledge, experts..." : "搜索任务、文件、知识、专家…"} aria-label={lang === "en" ? "Search" : "搜索"} />
+                        <input className="mc-header-search" data-testid="ai-titlebar-search-input" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} onCompositionStart={searchComposition.onCompositionStart} onCompositionEnd={searchComposition.onCompositionEnd} onKeyDown={handleSearchKeyDown} onMouseDown={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()} placeholder={lang === "en" ? "Search tasks, files, knowledge, experts..." : "搜索任务、文件、知识、专家…"} aria-label={lang === "en" ? "Search" : "搜索"} />
                     </span>
                     <span className="mc-header-ready" data-testid="ai-titlebar-ready"><i aria-hidden="true" />{lang === "en" ? "Ready" : "准备就绪"}</span>
                 </>}
@@ -152,7 +159,7 @@ export function AssistantTitleBar({ active = true, clearHistory, clearHistoryDis
                     <AssistantTitleBarNotifications active={active} inline={inline} lang={lang} theme={t} />
                     <AssistantMobileDocsControl lang={lang} theme={t} inline={inline} />
                     <button className="ai-titlebar-tool" {...(inline ? { onMouseDown: stopMouse(() => { void openCurrentTenantCardStore(); }) } : { onClick: () => { void openCurrentTenantCardStore(); } })} style={getTitleBarToolButtonStyle(t)} title={localizeText(lang, "Buy service redemption cards", "\u8d2d\u4e70\u670d\u52a1\u5151\u6362\u5361")}><TitleBarToolIcon name="cart" /></button>
-                    <button className="ai-titlebar-tool" {...(inline ? { onMouseDown: stopMouse(toggleProjectSearch) } : { onClick: toggleProjectSearch })} style={getTitleBarToolButtonStyle(t, projectSearchOpen ? "active" : "default")} title={localizeText(lang, "Search tasks, files, knowledge, experts", "\u641c\u7d22\u4efb\u52a1\u3001\u6587\u4ef6\u3001\u77e5\u8bc6\u3001\u4e13\u5bb6")}><TitleBarToolIcon name="search" /></button>
+                    <button className="ai-titlebar-tool" data-testid="ai-titlebar-search-toggle" {...(inline ? { onMouseDown: stopMouse(handleSearchTool) } : { onClick: handleSearchTool })} style={getTitleBarToolButtonStyle(t, projectSearchOpen ? "active" : "default")} title={localizeText(lang, "Search tasks, files, knowledge, experts", "\u641c\u7d22\u4efb\u52a1\u3001\u6587\u4ef6\u3001\u77e5\u8bc6\u3001\u4e13\u5bb6")}><TitleBarToolIcon name="search" /></button>
                     <VEAuthorizationRequestCenter theme={t} lang={lang} inline={inline} />
                     {onOpenKnowledge && <button className="ai-titlebar-tool" {...(inline ? { onMouseDown: stopMouse(onOpenKnowledge) } : { onClick: onOpenKnowledge })} style={getTitleBarToolButtonStyle(t)} title={lang === "en" ? "Knowledge Base" : "\u77e5\u8bc6\u5e93"}><TitleBarToolIcon name="book" /></button>}
                     {onOpenTutorial && <button className="ai-titlebar-tool" {...(inline ? { onMouseDown: onOpenTutorial } : { onClick: onOpenTutorial })} style={getTitleBarToolButtonStyle(t)} title={lang === "en" ? "Tutorial" : "\u6559\u7a0b"}><TitleBarToolIcon name="guide" /></button>}

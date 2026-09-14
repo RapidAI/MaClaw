@@ -44,6 +44,7 @@ function makeSearch(results: any[]) {
         toggle: vi.fn(),
         close: vi.fn(),
         onQueryChange: vi.fn(),
+        onQueryDraft: vi.fn(),
         refresh: vi.fn(),
         formatTime: vi.fn(() => "just now"),
     } as any;

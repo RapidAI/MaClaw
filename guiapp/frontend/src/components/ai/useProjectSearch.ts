@@ -32,15 +32,16 @@ export function useProjectSearch(lang: string) {
     const [loading, setLoading] = useState(false);
     const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const requestIdRef = useRef(0);
+    const queryRef = useRef(query);
+    queryRef.current = query;
+    const skipOpenSearchRef = useRef(false);
 
     const doSearch = useCallback((q: string) => {
         const requestId = ++requestIdRef.current;
         setLoading(true);
-        if (!q.trim()) {
-            setFileResults([]);
-            setKnowledgeResults([]);
-            setExpertResults([]);
-        }
+        setFileResults([]);
+        setKnowledgeResults([]);
+        setExpertResults([]);
         const tasksPromise = SearchTasks(q, HEADER_SEARCH_TASK_LIMIT)
             .then(r => {
                 if (requestId !== requestIdRef.current) return;
@@ -68,16 +69,38 @@ export function useProjectSearch(lang: string) {
         });
     }, []);
 
-    useEffect(() => { if (open && query === "") doSearch(""); }, [open, query, doSearch]);
+    useEffect(() => {
+        if (!open) {
+            skipOpenSearchRef.current = false;
+            return;
+        }
+        if (skipOpenSearchRef.current) {
+            skipOpenSearchRef.current = false;
+            return;
+        }
+        doSearch(queryRef.current);
+    }, [open, doSearch]);
     useEffect(() => () => { if (debounceRef.current) clearTimeout(debounceRef.current); }, []);
 
+    const onQueryDraft = useCallback((value: string) => {
+        setQuery(value);
+    }, []);
     const onQueryChange = useCallback((value: string) => {
         setQuery(value);
         if (debounceRef.current) clearTimeout(debounceRef.current);
+        if (!value.trim()) {
+            doSearch("");
+            return;
+        }
         debounceRef.current = setTimeout(() => doSearch(value), 250);
     }, [doSearch]);
 
     const close = useCallback(() => {
+        requestIdRef.current += 1;
+        skipOpenSearchRef.current = false;
+        if (debounceRef.current) clearTimeout(debounceRef.current);
+        debounceRef.current = null;
+        setLoading(false);
         setOpen(false);
         setQuery("");
         setResults([]);
@@ -87,11 +110,13 @@ export function useProjectSearch(lang: string) {
     }, []);
     const toggle = useCallback(() => { setOpen(v => !v); }, []);
     const openWithQuery = useCallback((value = "") => {
+        const next = value.trim();
         if (debounceRef.current) clearTimeout(debounceRef.current);
+        if (!open) skipOpenSearchRef.current = true;
         setOpen(true);
-        setQuery(value);
-        if (value.trim()) doSearch(value);
-    }, [doSearch]);
+        setQuery(next);
+        doSearch(next);
+    }, [doSearch, open]);
     const refresh = useCallback(() => doSearch(query), [doSearch, query]);
 
     const formatTime = useCallback((iso?: string): string => {
@@ -106,5 +131,5 @@ export function useProjectSearch(lang: string) {
         } catch { return ""; }
     }, [lang]);
 
-    return { open, query, results, fileResults, knowledgeResults, expertResults, loading, toggle, close, openWithQuery, onQueryChange, refresh, formatTime };
+    return { open, query, results, fileResults, knowledgeResults, expertResults, loading, toggle, close, openWithQuery, onQueryDraft, onQueryChange, refresh, formatTime };
 }

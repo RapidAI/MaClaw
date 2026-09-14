@@ -102,7 +102,7 @@ import { ComputerUseReadinessBanner } from "./ComputerUseReadinessBanner";
 import { canShowWorkbenchLanding, useWorkbenchLandingMode } from "./useWorkbenchLandingMode";
 export { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
 import { agentViewHiddenFieldValue, canShowAssistantCodingPreviewForTab, codePreviewModeFromState, commitRestoredCodePreview, hasRestorableProjectConversation, isWorkflowPhaseRunningStatus, isWorkflowPhaseTerminalStatus, loadRestoredProjectConversationHistory, normalizeRestoredProjectHistoryContent, normalizeWorkflowPhaseStatus, readStoredAssistantPreviewState, shouldApplyRestoredAssistantPreview, shouldShowSourcePreviewForAgentMode, shouldShowSourcePreviewForWorkflow, suppressWorkflowReviewActions, withCodePreviewVisibleIfContent, writeStoredAssistantPreviewState, type ConversationBranchPointLike, type StoredAssistantPreviewState } from "./assistantPreviewState";
-import { PREVIEW_TASK_RESULT_EVENT, codeFileForImmediateTaskResultPreview, codeFileFromTaskResultPreview, previewTaskResultPathFromEvent, taskResultPreviewKindFromPath, type TaskResultPreviewPayload } from "./taskResultPreview";
+import { PREVIEW_TASK_RESULT_EVENT, codeFileForImmediateTaskResultPreview, codeFileFromTaskResultPreview, localizeTaskResultPreviewError, previewTaskResultPathFromEvent, taskResultPreviewKindFromPath, type TaskResultPreviewPayload } from "./taskResultPreview";
 export { canShowAssistantCodingPreviewForTab, codePreviewModeFromState, shouldApplyRestoredAssistantPreview, shouldShowSourcePreviewForAgentMode, shouldShowSourcePreviewForWorkflow, withCodePreviewVisibleIfContent } from "./assistantPreviewState";
 const LOCAL_HIGH_RISK_APPROVAL_KIND = "local_high_risk_bash";
 const REMOTE_HIGH_RISK_APPROVAL_KIND = "remote_high_risk_bash";
@@ -3845,7 +3845,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         filePath: path,
                         fileName: path.split(/[/\\]/).pop() || path,
                         absPath: path,
-                        content: message,
+                        content: localizeTaskResultPreviewError(message, lang),
                         language: "plaintext",
                         opType: "read",
                         updatedAt: Date.now(),
@@ -3855,7 +3855,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         };
         window.addEventListener(PREVIEW_TASK_RESULT_EVENT, onPreview);
         return () => window.removeEventListener(PREVIEW_TASK_RESULT_EVENT, onPreview);
-    }, [taskResultPreviewAllowed, openWorkspaceFile]);
+    }, [lang, taskResultPreviewAllowed, openWorkspaceFile]);
     // Keep ref updated so clearActiveHistory (defined earlier) can close all preview panels
     closeAllPreviewPanelsRef.current = () => {
         closeDocPreview();

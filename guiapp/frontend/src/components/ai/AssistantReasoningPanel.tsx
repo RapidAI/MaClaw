@@ -2,6 +2,12 @@ import React from "react";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { useNestedPinnedScroll } from "./useNestedPinnedScroll";
 
+/** Highlight stop for the live-title sheen. Keep App.css fallback in sync. */
+export const ASSISTANT_LIVE_SHEEN_SPOT_LIGHT = "#b8c3d0";
+export const ASSISTANT_LIVE_SHEEN_SPOT_DARK = "#fff";
+
+type LiveLabelStyle = React.CSSProperties & { "--assistant-sheen-spot"?: string };
+
 /**
  * Collapsible activity panel used by the assistant transcript and the coding
  * timeline. Extracted from aiAssistantMarkdown.tsx so the markdown renderer
@@ -81,8 +87,10 @@ export function AssistantReasoningPanel({
             style={{
                 flex: "0 0 auto",
                 whiteSpace: "nowrap",
-                ...(live ? { ["--assistant-sheen-spot"]: t.isDark ? "#fff" : "#b8c3d0" } : {}),
-            } as React.CSSProperties}
+                ...(live
+                    ? { "--assistant-sheen-spot": t.isDark ? ASSISTANT_LIVE_SHEEN_SPOT_DARK : ASSISTANT_LIVE_SHEEN_SPOT_LIGHT }
+                    : {}),
+            } as LiveLabelStyle}
         >
             {label}
         </span>

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { consumePendingFileLibraryOpen, OPEN_FILE_LIBRARY_EVENT, openFileLibrary } from "../fileLibraryNavigation";
+import { consumePendingFileLibraryOpen, OPEN_FILE_LIBRARY_EVENT, openFileLibrary, peekPendingFileLibraryOpen } from "../fileLibraryNavigation";
 
 describe("fileLibraryNavigation", () => {
     afterEach(() => {
@@ -18,5 +18,13 @@ describe("fileLibraryNavigation", () => {
         } finally {
             window.removeEventListener(OPEN_FILE_LIBRARY_EVENT, listener);
         }
+    });
+
+    it("lets a remount peek the pending open before consume", () => {
+        openFileLibrary({ documentId: "doc-2" });
+        expect(peekPendingFileLibraryOpen()).toEqual({ documentId: "doc-2" });
+        expect(peekPendingFileLibraryOpen()).toEqual({ documentId: "doc-2" });
+        expect(consumePendingFileLibraryOpen()).toEqual({ documentId: "doc-2" });
+        expect(peekPendingFileLibraryOpen()).toBeNull();
     });
 });

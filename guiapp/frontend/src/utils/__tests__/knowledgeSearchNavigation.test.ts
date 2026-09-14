@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { OPEN_SETTINGS_EVENT } from "../settingsNavigation";
-import { consumePendingKnowledgeSearch, KNOWLEDGE_SEARCH_EVENT, openKnowledgeSearch } from "../knowledgeSearchNavigation";
+import { consumePendingKnowledgeSearch, KNOWLEDGE_SEARCH_EVENT, openKnowledgeSearch, peekPendingKnowledgeSearch } from "../knowledgeSearchNavigation";
 
 describe("knowledgeSearchNavigation", () => {
     afterEach(() => {
@@ -18,6 +18,7 @@ describe("knowledgeSearchNavigation", () => {
                 { type: KNOWLEDGE_SEARCH_EVENT, detail: { query: "gateway", sourceId: "src-1" } },
                 { type: OPEN_SETTINGS_EVENT, detail: { tab: "knowledge" } },
             ]);
+            expect(peekPendingKnowledgeSearch()).toEqual({ query: "gateway", sourceId: "src-1" });
             expect(consumePendingKnowledgeSearch()).toEqual({ query: "gateway", sourceId: "src-1" });
             expect(consumePendingKnowledgeSearch()).toBeNull();
         } finally {

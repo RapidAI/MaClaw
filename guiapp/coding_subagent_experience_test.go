@@ -133,6 +133,14 @@ func TestCodingResultLooksLikeRetrySuccess(t *testing.T) {
 	}) {
 		t.Fatal("failed then succeeded commands should count as retry success")
 	}
+	if codingResultLooksLikeRetrySuccess(&CodingSubAgentResult{
+		CommandsRun: []CodingSubAgentCommandResult{
+			{Command: "ls", Succeeded: false},
+			{Command: "go test", Succeeded: true},
+		},
+	}) {
+		t.Fatal("an unrelated failed command must not count as retry success")
+	}
 }
 
 func TestIsSimilarExperienceUsesContentWhenTriggerMissing(t *testing.T) {
@@ -145,6 +153,11 @@ func TestIsSimilarExperienceUsesContentWhenTriggerMissing(t *testing.T) {
 	if isSimilarExperience(existing, knowledge.CodingExperience{Title: "other", Content: "unrelated guidance about maps"}) {
 		t.Fatal("unrelated content must not match")
 	}
+	short := strings.Repeat("timeout ", 8)
+	long := short + strings.Repeat("and many extra unrelated details about maps and interfaces. ", 8)
+	if isSimilarExperience(knowledge.CodingExperience{Title: "a", Content: short}, knowledge.CodingExperience{Title: "b", Content: long}) {
+		t.Fatal("a much longer experience must not be treated as a duplicate of a short fragment")
+	}
 }
 
 func TestInferRemoteCodingLanguageDoesNotHardcodePython(t *testing.T) {
@@ -153,6 +166,18 @@ func TestInferRemoteCodingLanguageDoesNotHardcodePython(t *testing.T) {
 	}
 	if got := inferRemoteCodingLanguage(&remoteCodingCallbacks{filesModified: []string{"pkg/foo.go"}}); got != "go" {
 		t.Fatalf("go files should infer go, got %q", got)
+	}
+}
+
+func TestRecalledExperienceIDsIgnoresCandidates(t *testing.T) {
+	ids := recalledExperienceIDs([]knowledge.CodingExperience{
+		{ID: "active-1", Status: knowledge.CodingStatusActive},
+		{ID: "verified-1", Status: knowledge.CodingStatusVerified},
+		{ID: "candidate-1", Status: knowledge.CodingStatusCandidate},
+		{ID: "empty-status"},
+	})
+	if len(ids) != 2 || ids[0] != "active-1" || ids[1] != "verified-1" {
+		t.Fatalf("recalled IDs = %#v", ids)
 	}
 }
 

@@ -38,7 +38,7 @@ func recordAudioAssetMiddleware(app *App, next http.Handler) http.Handler {
 			rw.WriteHeader(http.StatusNoContent)
 			return
 		}
-		if req != nil && req.Method == http.MethodGet &&
+		if req != nil && (req.Method == http.MethodGet || req.Method == http.MethodHead) &&
 			strings.TrimSuffix(req.URL.Path, "/") == taskResultPreviewHTTPPath {
 			handleTaskResultPreviewHTTP(app, rw, req)
 			return

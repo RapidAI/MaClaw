@@ -4,6 +4,7 @@ import type { CodePreviewTheme } from "./FileTabBar";
 import {
     isPdfFileName,
     isPdfInlineDataURL,
+    isTaskResultPdfPreviewURL,
     localizeTaskResultPreviewError,
     objectURLFromPdfDataURL,
     type TaskResultPreviewPayload,
@@ -79,7 +80,7 @@ export function PdfPreviewPanel({ absPath, dataUrl, theme, lang }: PdfPreviewPan
                 const result = await PreviewTaskResultFile(absPath) as TaskResultPreviewPayload;
                 if (cancelled) return;
                 const previewURL = String(result?.preview_url || "").trim();
-                if (previewURL && showSrc(previewURL)) return;
+                if (isTaskResultPdfPreviewURL(previewURL) && showSrc(previewURL)) return;
                 const url = String(result?.data_url || "");
                 if (isPdfInlineDataURL(url) && applyDataURL(url)) return;
                 const body = String(result?.content || "");
@@ -102,36 +103,42 @@ export function PdfPreviewPanel({ absPath, dataUrl, theme, lang }: PdfPreviewPan
         };
     }, [absPath, dataUrl]);
 
+    const fill: React.CSSProperties = { display: "flex", flexDirection: "column", height: "100%", minHeight: 0, background: theme.bg };
     if (error) {
         return (
-            <div data-testid="pdf-preview-error" style={{ padding: 20, color: theme.diffDeleteText, fontSize: 13, lineHeight: 1.6 }}>
+            <div data-testid="pdf-preview-error" style={{ ...fill, padding: 20, color: theme.diffDeleteText, fontSize: 13, lineHeight: 1.6, boxSizing: "border-box" }}>
                 {error}
             </div>
         );
     }
     if (loading) {
         return (
-            <div data-testid="pdf-preview-loading" role="status" style={{ padding: 20, color: theme.textMuted, fontSize: 13 }}>
+            <div data-testid="pdf-preview-loading" role="status" style={{ ...fill, padding: 20, color: theme.textMuted, fontSize: 13, boxSizing: "border-box" }}>
                 {isZh ? "正在加载 PDF 预览…" : "Loading PDF preview…"}
             </div>
         );
     }
     if (src) {
         return (
-            <iframe
-                data-testid="pdf-preview-panel"
-                title={isZh ? "PDF 预览" : "PDF preview"}
-                src={src}
-                style={{ display: "block", width: "100%", height: "100%", border: "none", background: theme.bg }}
-            />
+            <div style={fill}>
+                <iframe
+                    data-testid="pdf-preview-panel"
+                    title={isZh ? "PDF 预览" : "PDF preview"}
+                    src={src}
+                    style={{ flex: 1, minHeight: 0, width: "100%", border: "none", background: theme.bg }}
+                />
+            </div>
         );
     }
     return (
         <pre
             data-testid="pdf-preview-text"
             style={{
+                ...fill,
                 margin: 0,
                 padding: 16,
+                boxSizing: "border-box",
+                overflow: "auto",
                 whiteSpace: "pre-wrap",
                 wordBreak: "break-word",
                 color: theme.text,

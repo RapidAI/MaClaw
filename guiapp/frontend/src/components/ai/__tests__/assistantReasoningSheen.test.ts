@@ -2,11 +2,12 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { ASSISTANT_LIVE_SHEEN_SPOT_LIGHT } from "../AssistantReasoningPanel";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const css = readFileSync(resolve(here, "../../../App.css"), "utf8");
 const sheenStart = css.indexOf("/* Live activity title");
-const sheenEnd = css.indexOf(".ai-chat-scrollbar");
+const sheenEnd = css.indexOf(".ai-chat-scrollbar", sheenStart);
 const sheenCss = css.slice(sheenStart, sheenEnd);
 
 describe("assistant reasoning live sheen", () => {
@@ -19,6 +20,7 @@ describe("assistant reasoning live sheen", () => {
         expect(sheenCss).toContain("animation: assistant-reasoning-shimmer");
         expect(sheenCss).toContain("currentColor");
         expect(sheenCss).toContain("var(--assistant-sheen-spot)");
+        expect(sheenCss).toContain(`--assistant-sheen-spot: ${ASSISTANT_LIVE_SHEEN_SPOT_LIGHT}`);
         expect(sheenCss).not.toContain("color-mix");
         expect(sheenCss).not.toContain("[data-ai-theme='dark'] .assistant-reasoning-live-label");
         expect(sheenCss).not.toMatch(/linear-gradient\([^)]*#fff 50%/);

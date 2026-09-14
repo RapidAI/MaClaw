@@ -4,6 +4,7 @@ import {
     codeFileFromTaskResultPreview,
     isPdfFileName,
     isPdfInlineDataURL,
+    isTaskResultPdfPreviewURL,
     localizeTaskResultPreviewError,
     objectURLFromPdfDataURL,
     pdfInlineDataURLFromBase64,
@@ -19,6 +20,15 @@ describe("isPdfFileName", () => {
         expect(isPdfFileName("report.PDF")).toBe(true);
         expect(isPdfFileName("report.pdf.txt")).toBe(false);
         expect(isPdfFileName("report.pptx")).toBe(false);
+    });
+});
+
+describe("isTaskResultPdfPreviewURL", () => {
+    it("accepts only the local tokenized PDF route", () => {
+        expect(isTaskResultPdfPreviewURL("/maclaw-preview/v1/file?t=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")).toBe(true);
+        expect(isTaskResultPdfPreviewURL("/maclaw-preview/v1/file?t=abc")).toBe(false);
+        expect(isTaskResultPdfPreviewURL("https://example.test/maclaw-preview/v1/file?t=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")).toBe(false);
+        expect(isTaskResultPdfPreviewURL("//example.test/maclaw-preview/v1/file?t=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")).toBe(false);
     });
 });
 

@@ -1940,9 +1940,10 @@ export function CodePreviewPanel({
                 {workspaceActive ? (
                     <CodePreviewWorkspace projectPath={projectPath} refreshToken={workspaceRefreshToken} resetOnRefresh={workspaceResetOnRefresh} cloudMode={cloudMode} hideTitle lang={lang} theme={theme} onOpenFile={openWorkspaceFile} onFileDeleted={handleWorkspaceFileDeleted} />
                 ) : activeFile && isPptxFileName(activeFile.fileName || activeFile.filePath) && activeFile.absPath ? (
-                    <PptxPreviewPanel absPath={activeFile.absPath} theme={theme} lang={lang} />
+                    <PptxPreviewPanel key={`${activeFile.filePath}:${activeFile.updatedAt}`} absPath={activeFile.absPath} theme={theme} lang={lang} />
                 ) : activeFile && (isPdfFileName(previewFileName(activeFile)) || activeFile.language === 'pdf') ? (
                     <PdfPreviewPanel
+                        key={`${activeFile.filePath}:${activeFile.updatedAt}`}
                         absPath={activeFile.absPath || activeFile.filePath}
                         theme={theme}
                         lang={lang}

@@ -33,7 +33,7 @@ const (
 	taskResultPreviewHTTPPath     = "/maclaw-preview/v1/file"
 	taskResultPreviewTokenTTL     = 10 * time.Minute
 	taskResultPreviewMaxTokens    = 32
-	taskResultPreviewPDFPeekBytes = 8
+	taskResultPreviewPDFPeekBytes = 1024
 )
 
 type taskResultPreviewLease struct {
@@ -117,13 +117,15 @@ func previewTaskResultPDF(path string, size int64, out *TaskResultPreview) (*Tas
 	if err != nil {
 		return nil, fmt.Errorf("无法打开文件")
 	}
-	header := make([]byte, taskResultPreviewPDFPeekBytes)
-	n, readErr := io.ReadFull(file, header)
-	file.Close()
-	if readErr != nil && readErr != io.ErrUnexpectedEOF && readErr != io.EOF {
+	ok, peekErr := peekPDFHeader(file)
+	closeErr := file.Close()
+	if peekErr != nil {
 		return nil, fmt.Errorf("无法读取文件")
 	}
-	if n < 4 || !bytes.HasPrefix(header[:n], []byte("%PDF")) {
+	if closeErr != nil {
+		return nil, fmt.Errorf("无法读取文件")
+	}
+	if !ok {
 		return nil, fmt.Errorf("不是有效的 PDF 文件")
 	}
 	token := issueTaskResultPreviewToken(path)
@@ -137,14 +139,21 @@ func previewTaskResultPDF(path string, size int64, out *TaskResultPreview) (*Tas
 }
 
 func issueTaskResultPreviewToken(path string) string {
+	now := time.Now()
+	taskResultPreviewMu.Lock()
+	defer taskResultPreviewMu.Unlock()
+	for id, lease := range taskResultPreviewLeases {
+		if lease.path == path && now.Before(lease.expires) {
+			lease.expires = now.Add(taskResultPreviewTokenTTL)
+			taskResultPreviewLeases[id] = lease
+			return id
+		}
+	}
 	var raw [16]byte
 	if _, err := rand.Read(raw[:]); err != nil {
 		return ""
 	}
 	token := hex.EncodeToString(raw[:])
-	now := time.Now()
-	taskResultPreviewMu.Lock()
-	defer taskResultPreviewMu.Unlock()
 	for id, lease := range taskResultPreviewLeases {
 		if now.After(lease.expires) {
 			delete(taskResultPreviewLeases, id)
@@ -170,7 +179,10 @@ func issueTaskResultPreviewToken(path string) string {
 
 func lookupTaskResultPreviewPath(token string) (string, bool) {
 	token = strings.TrimSpace(token)
-	if token == "" {
+	if len(token) != 32 {
+		return "", false
+	}
+	if _, err := hex.DecodeString(token); err != nil {
 		return "", false
 	}
 	now := time.Now()
@@ -183,11 +195,16 @@ func lookupTaskResultPreviewPath(token string) (string, bool) {
 		}
 		return "", false
 	}
+	lease.expires = now.Add(taskResultPreviewTokenTTL)
+	taskResultPreviewLeases[token] = lease
 	return lease.path, true
 }
 
 func handleTaskResultPreviewHTTP(_ *App, rw http.ResponseWriter, req *http.Request) {
-	if req == nil || req.Method != http.MethodGet {
+	if req == nil || (req.Method != http.MethodGet && req.Method != http.MethodHead) {
+		if rw != nil {
+			rw.Header().Set("Allow", "GET, HEAD")
+		}
 		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -207,7 +224,16 @@ func handleTaskResultPreviewHTTP(_ *App, rw http.ResponseWriter, req *http.Reque
 	}
 	defer file.Close()
 	info, err := file.Stat()
-	if err != nil || info.IsDir() {
+	if err != nil || info.IsDir() || info.Size() <= 0 || info.Size() > agent.MaxOfficeReadFileBytes {
+		http.NotFound(rw, req)
+		return
+	}
+	okPDF, peekErr := peekPDFHeader(file)
+	if peekErr != nil || !okPDF {
+		http.NotFound(rw, req)
+		return
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		http.NotFound(rw, req)
 		return
 	}
@@ -216,6 +242,22 @@ func handleTaskResultPreviewHTTP(_ *App, rw http.ResponseWriter, req *http.Reque
 	rw.Header().Set("Cache-Control", "no-store")
 	rw.Header().Set("Content-Disposition", "inline")
 	http.ServeContent(rw, req, filepath.Base(path), info.ModTime(), file)
+}
+
+func peekPDFHeader(file *os.File) (bool, error) {
+	if file == nil {
+		return false, io.ErrUnexpectedEOF
+	}
+	header := make([]byte, taskResultPreviewPDFPeekBytes)
+	n, err := io.ReadFull(file, header)
+	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+		return false, err
+	}
+	return looksLikePDF(header[:n]), nil
+}
+
+func looksLikePDF(prefix []byte) bool {
+	return bytes.Contains(prefix, []byte("%PDF"))
 }
 
 func isTaskResultOfficeExt(ext string) bool {

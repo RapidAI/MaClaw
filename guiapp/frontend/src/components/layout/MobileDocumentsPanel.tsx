@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from 'react';
 import { useDialog } from '../CustomDialog';
 import { StatusGlyph } from '../ai/WorkbenchIcons';
-import { consumePendingFileLibraryOpen, OPEN_FILE_LIBRARY_EVENT, type FileLibraryOpenDetail } from '../../utils/fileLibraryNavigation';
+import { consumePendingFileLibraryOpen, OPEN_FILE_LIBRARY_EVENT, peekPendingFileLibraryOpen, type FileLibraryOpenDetail } from '../../utils/fileLibraryNavigation';
 
 export type MobileDocumentDraftImage = {
   id: string;
@@ -662,6 +662,36 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
     [isZh],
   );
 
+  const selectLibraryItemById = useCallback(async (id: string, list: MobileLibraryItem[] = draftsRef.current) => {
+    const pendingId = String(id || '').trim();
+    if (!pendingId) return;
+    const found = list.find((item) => item.id === pendingId);
+    if (found) {
+      pendingSelectIdRef.current = '';
+      setSelected(found);
+      try {
+        const full = await callGetLibraryItem(found.id);
+        setSelected((current) => current?.id === found.id ? { ...found, ...full } : current);
+      } catch {
+        // keep list row
+      }
+      return;
+    }
+    try {
+      const full = await callGetLibraryItem(pendingId);
+      if (!full?.id) return;
+      pendingSelectIdRef.current = '';
+      setDrafts((previous) => {
+        const next = previous.some((item) => item.id === full.id) ? previous : [full, ...previous];
+        draftsRef.current = next;
+        return next;
+      });
+      setSelected(full);
+    } catch {
+      pendingSelectIdRef.current = pendingId;
+    }
+  }, []);
+
   // null = request failed (keep prior list); [] = successful empty library.
   // Callers must not treat null like "no items" or they drop rows after a
   // successful mutation when the follow-up list call flakes.
@@ -678,19 +708,7 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
       draftsRef.current = next;
       if (quotaResult) setQuota(quotaResult);
       const pendingId = pendingSelectIdRef.current.trim();
-      if (pendingId) {
-        const found = next.find((item) => item.id === pendingId);
-        if (found) {
-          pendingSelectIdRef.current = '';
-          setSelected(found);
-          try {
-            const full = await callGetLibraryItem(found.id);
-            setSelected({ ...found, ...full });
-          } catch {
-            // keep list row
-          }
-        }
-      }
+      if (pendingId) await selectLibraryItemById(pendingId, next);
       return next;
     } catch (e: any) {
       setError(String(e?.message || e || 'load failed'));
@@ -700,7 +718,7 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [selectLibraryItemById]);
 
   const applyLibraryOpen = useCallback((detail?: FileLibraryOpenDetail | null) => {
     if (!detail) return;
@@ -709,29 +727,28 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
     else if (id) setFilter('');
     if (!id) return;
     pendingSelectIdRef.current = id;
-    const found = draftsRef.current.find((item) => item.id === id);
-    if (!found) return;
-    pendingSelectIdRef.current = '';
-    setSelected(found);
-    void callGetLibraryItem(found.id).then((full) => {
-      setSelected((current) => current?.id === found.id ? { ...found, ...full } : current);
-    }).catch(() => {
-      // keep list row
-    });
-  }, []);
+    void selectLibraryItemById(id);
+  }, [selectLibraryItemById]);
 
   useEffect(() => {
-    if (open) {
-      const pending = consumePendingFileLibraryOpen();
-      void refresh();
-      setSelected(null);
-      setBanner('');
-      setJobs([]);
-      setFilter(pending?.query || '');
-      pendingSelectIdRef.current = pending?.documentId || '';
-      dragDepth.current = 0;
-      setDragOver(false);
-    }
+    if (!open) return;
+    let cancelled = false;
+    const pending = peekPendingFileLibraryOpen();
+    void refresh();
+    setSelected(null);
+    setBanner('');
+    setJobs([]);
+    setFilter(pending?.query || '');
+    pendingSelectIdRef.current = pending?.documentId || '';
+    dragDepth.current = 0;
+    setDragOver(false);
+    const timer = window.setTimeout(() => {
+      if (!cancelled) consumePendingFileLibraryOpen();
+    }, 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
   }, [open, refresh]);
 
   useEffect(() => {

@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -65,7 +66,12 @@ func (a *App) CodingKnowledgeList(filter knowledge.CodingListFilter) ([]knowledg
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return store.ListExperiences(ctx, filter)
+	filter.OmitContent = true
+	items, err := store.ListExperiences(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	return codingExperienceUIList(items), nil
 }
 
 // CodingKnowledgeGet retrieves a single experience by ID.
@@ -261,18 +267,43 @@ func (a *App) CodingKnowledgeSearch(query string, limit int, filter knowledge.Co
 	if store == nil {
 		return nil, fmt.Errorf("coding knowledge store not available")
 	}
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, fmt.Errorf("coding knowledge: query is required")
+	}
 	if limit <= 0 {
 		limit = 20
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return store.SearchExperiences(ctx, knowledge.CodingSearchOptions{
-		Query:    query,
-		Limit:    limit,
-		Scope:    filter.Scope,
-		Language: filter.Language,
-		Status:   []string{knowledge.CodingStatusCandidate, knowledge.CodingStatusActive, knowledge.CodingStatusVerified, knowledge.CodingStatusDeprecated},
+	items, err := store.SearchExperiences(ctx, knowledge.CodingSearchOptions{
+		Query:       query,
+		Limit:       limit,
+		Scope:       filter.Scope,
+		Language:    filter.Language,
+		Status:      []string{knowledge.CodingStatusCandidate, knowledge.CodingStatusActive, knowledge.CodingStatusVerified, knowledge.CodingStatusDeprecated},
+		OmitContent: true,
 	})
+	if err != nil {
+		return nil, err
+	}
+	return codingExperienceUIList(items), nil
+}
+
+func codingExperienceUIList(items []knowledge.CodingExperience) []knowledge.CodingExperience {
+	if len(items) == 0 {
+		return items
+	}
+	out := make([]knowledge.CodingExperience, len(items))
+	for i, exp := range items {
+		exp.Content = ""
+		exp.CodeSnippet = ""
+		exp.FailedAttempts = nil
+		exp.Contraindications = nil
+		exp.LifecycleEvents = nil
+		out[i] = exp
+	}
+	return out
 }
 
 // SelectCodingKnowledgeExportPath opens a save dialog for coding experience packs.

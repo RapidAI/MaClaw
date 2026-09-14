@@ -62,6 +62,7 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, active = tr
     onTaskPrefsChanged?: () => void;
 }) {
     const inputRef = useRef<HTMLInputElement>(null);
+    const composingRef = useRef(false);
     const panelRef = useRef<HTMLDivElement>(null);
     const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; item: ProjectSearchItem } | null>(null);
     const [renamingPath, setRenamingPath] = useState<string | null>(null);
@@ -180,7 +181,7 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, active = tr
         <div ref={panelRef} style={{ flexShrink: 0, borderBottom: `1px solid ${t.titleBarBorder}`, background: t.titleBarBg, zIndex: 30000, position: "relative", overflow: "visible" }}>
             <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "6px 12px" }}>
                 <span style={{ color: t.textMuted, opacity: 0.8, flexShrink: 0 }}><ProjectSearchIcon name="search" /></span>
-                <input ref={inputRef} data-testid="project-search-input" type="text" value={search.query} onChange={event => search.onQueryChange(event.target.value)} onKeyDown={event => { if (event.key === "Escape") search.close(); }} placeholder={localizeText(lang, "Search tasks, files, knowledge, experts...", "\u641c\u7d22\u4efb\u52a1\u3001\u6587\u4ef6\u3001\u77e5\u8bc6\u3001\u4e13\u5bb6...")} style={{ flex: 1, border: "none", outline: "none", background: "transparent", color: t.text, fontSize: "13px", fontFamily: "inherit", padding: "4px 0", minWidth: 0 }} />
+                <input ref={inputRef} data-testid="project-search-input" type="text" value={search.query} onChange={event => { const value = event.target.value; if (composingRef.current) search.onQueryDraft?.(value); else search.onQueryChange(value); }} onCompositionStart={() => { composingRef.current = true; }} onCompositionEnd={event => { composingRef.current = false; search.onQueryChange(event.currentTarget.value); }} onKeyDown={event => { if (event.key === "Escape") search.close(); }} placeholder={localizeText(lang, "Search tasks, files, knowledge, experts...", "\u641c\u7d22\u4efb\u52a1\u3001\u6587\u4ef6\u3001\u77e5\u8bc6\u3001\u4e13\u5bb6...")} style={{ flex: 1, border: "none", outline: "none", background: "transparent", color: t.text, fontSize: "13px", fontFamily: "inherit", padding: "4px 0", minWidth: 0 }} />
                 {onForkCurrentChat && (
                     <button
                         type="button"
@@ -196,7 +197,7 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, active = tr
             <ProjectSearchForkForm open={forkNameOpen} lang={lang} theme={t} onCancel={() => setForkNameOpen(false)} onSubmit={name => { setForkNameOpen(false); search.close(); onForkCurrentChat?.(name); }} />
             <div style={{ maxHeight: "320px", overflowY: "auto", padding: "0 4px 4px" }}>
                 {search.loading && <div style={{ padding: hasAnyResults ? "6px 10px" : "16px", textAlign: "center", color: t.text, opacity: 0.45, fontSize: "12px" }}>{localizeText(lang, "Searching...", "\u641c\u7d22\u4e2d...")}</div>}
-                {!search.loading && !hasAnyResults && <div style={{ padding: "16px", textAlign: "center", color: t.text, opacity: 0.45, fontSize: "12px" }}>{search.query ? localizeText(lang, "No results found", "\u672a\u627e\u5230\u7ed3\u679c") : localizeText(lang, "No tasks", "\u6682\u65e0\u4efb\u52a1")}</div>}
+                {!search.loading && !hasAnyResults && <div style={{ padding: "16px", textAlign: "center", color: t.text, opacity: 0.45, fontSize: "12px" }}>{search.query.trim() ? localizeText(lang, "No results found", "\u672a\u627e\u5230\u7ed3\u679c") : localizeText(lang, "No tasks", "\u6682\u65e0\u4efb\u52a1")}</div>}
                 {showSectionLabels && visibleResults.length > 0 && <SearchSectionLabel lang={lang} theme={t} en="Tasks" zh="任务" />}
                 {visibleResults.map(item => <ProjectSearchRow key={item.id || item.project_path} item={item} lang={lang} theme={t} search={search} renamingPath={renamingPath} renameVal={renameVal} setRenameVal={setRenameVal} setRenamingPath={setRenamingPath} onSelect={onSelect} onShowSceneDetail={openSceneDetail} sceneLoading={sceneLoadingPath === item.project_path} refreshResults={refreshResults} setCtxMenu={setCtxMenu} />)}
                 {fileResults.length > 0 && <SearchSectionLabel lang={lang} theme={t} en="Files" zh="文件" testId="search-files-section" />}

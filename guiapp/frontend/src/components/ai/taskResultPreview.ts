@@ -25,8 +25,22 @@ export function isPdfFileName(name: string): boolean {
     return name.toLowerCase().endsWith(".pdf");
 }
 
+export const TASK_RESULT_PDF_PREVIEW_PATH = "/maclaw-preview/v1/file";
+
 export function isPdfInlineDataURL(value: string): boolean {
     return value.startsWith("data:application/" + "pdf");
+}
+
+export function isTaskResultPdfPreviewURL(value: string): boolean {
+    const raw = String(value || "").trim();
+    if (!raw.startsWith("/") || raw.startsWith("//")) return false;
+    try {
+        const url = new URL(raw, "https://maclaw.local");
+        if (url.pathname !== TASK_RESULT_PDF_PREVIEW_PATH) return false;
+        return /^[0-9a-fA-F]{32}$/.test(url.searchParams.get("t") || "");
+    } catch {
+        return false;
+    }
 }
 
 export function pdfInlineDataURLFromBase64(payload: string): string {

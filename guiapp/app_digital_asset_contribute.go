@@ -194,10 +194,9 @@ func (a *App) CodingKnowledgeContributeToOrg(req DigitalAssetContributeRequest) 
 				continue
 			}
 		}
-		if exp.Content == "" {
-			nodes, nerr := store.Inner().ListNodesBySource(ctx, exp.ID, 1)
-			if nerr == nil && len(nodes) > 0 {
-				exp.Content = nodes[0].Text
+		if strings.TrimSpace(exp.Content) == "" {
+			if full, gerr := store.GetExperience(ctx, exp.ID); gerr == nil {
+				exp.Content = full.Content
 			}
 		}
 		if strings.TrimSpace(exp.Title) == "" || strings.TrimSpace(exp.Content) == "" || strings.TrimSpace(exp.TriggerCondition) == "" {

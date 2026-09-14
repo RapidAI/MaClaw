@@ -12,6 +12,7 @@ import {
 } from "./aiAssistantMarkdown";
 import { renderScreenshotPreview } from "./aiAssistantMarkdownMedia";
 import { darkTheme, lightTheme } from "./aiAssistantPanelTheme";
+import { ASSISTANT_LIVE_SHEEN_SPOT_DARK, ASSISTANT_LIVE_SHEEN_SPOT_LIGHT } from "./AssistantReasoningPanel";
 
 // Minimal JPEG stream with a 1x1 SOF0 frame. The renderer only needs header
 // validation before assigning a data URL to img.src; browser image loading is
@@ -2546,7 +2547,7 @@ describe("renderMessage assistant display guard", () => {
         expect(label.textContent).toBe(liveLabel);
         expect(label.className).toContain("assistant-reasoning-live-label");
         expect((panel.querySelector(".assistant-reasoning-summary") as HTMLElement | null)?.style.opacity).toBe("1");
-        expect(label.style.getPropertyValue("--assistant-sheen-spot")).toBe("#b8c3d0");
+        expect(label.style.getPropertyValue("--assistant-sheen-spot")).toBe(ASSISTANT_LIVE_SHEEN_SPOT_LIGHT);
     });
 
     it("uses a bright sheen spot on dark live titles", () => {
@@ -2557,7 +2558,7 @@ describe("renderMessage assistant display guard", () => {
             timestamp: Date.now(),
         };
         render(<div>{renderMessage(message, vi.fn(), { ...darkTheme, isDark: true }, true, "Saved file", "zh", false, undefined, undefined, false, undefined, "正在调用工具")}</div>);
-        expect(screen.getByTestId("assistant-reasoning-label").style.getPropertyValue("--assistant-sheen-spot")).toBe("#fff");
+        expect(screen.getByTestId("assistant-reasoning-label").style.getPropertyValue("--assistant-sheen-spot")).toBe(ASSISTANT_LIVE_SHEEN_SPOT_DARK);
     });
 
     it("restores the static thinking-process label after the round ends", () => {

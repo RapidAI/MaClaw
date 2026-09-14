@@ -236,6 +236,43 @@ func TestCodingKnowledgeStore_SearchHydratesFullContent(t *testing.T) {
 	if !strings.Contains(found.Content, uniqueTail) {
 		t.Fatalf("search dropped stored content tail: %q", found.Content)
 	}
+	listed, err := store.ListExperiences(ctx, CodingListFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListExperiences: %v", err)
+	}
+	var listedHit CodingExperience
+	for _, exp := range listed {
+		if exp.ID == saved.ID {
+			listedHit = exp
+			break
+		}
+	}
+	if listedHit.ID == "" || !strings.Contains(listedHit.Content, uniqueTail) {
+		t.Fatalf("store list must keep full content for export/contribute, got %q", listedHit.Content)
+	}
+	summaries, err := store.ListExperiences(ctx, CodingListFilter{Limit: 10, OmitContent: true})
+	if err != nil {
+		t.Fatalf("ListExperiences OmitContent: %v", err)
+	}
+	for _, exp := range summaries {
+		if exp.ID == saved.ID && (exp.Content != "" || exp.CodeSnippet != "") {
+			t.Fatalf("OmitContent list should skip bodies, got content=%q", exp.Content)
+		}
+	}
+	listing, err := store.SearchExperiences(ctx, CodingSearchOptions{
+		Query:       "http timeout client",
+		Status:      []string{CodingStatusActive},
+		Limit:       5,
+		OmitContent: true,
+	})
+	if err != nil {
+		t.Fatalf("OmitContent search: %v", err)
+	}
+	for _, exp := range listing {
+		if exp.ID == saved.ID && exp.Content != "" {
+			t.Fatalf("OmitContent search should skip bodies, got %q", exp.Content)
+		}
+	}
 }
 
 func TestCodingKnowledgeStore_ConfidenceUpdate(t *testing.T) {
