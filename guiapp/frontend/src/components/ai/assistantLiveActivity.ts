@@ -108,6 +108,30 @@ const CODING_EVENT_PREFIX = "Coding Agent Event:";
 const RUNNING_TOOLS_LINE = /^(?:\u6b63\u5728\u6267\u884c\u5de5\u5177|running tools?)/i;
 const RUNNING_SKILL_OR_SHELL_LINE = /^(?:\u6b63\u5728\u6267\u884c|\u6b63\u5728\u542f\u52a8|running|executing|starting|launching)\s+(?:skill\b|(?:shell|skill)\s*\/)/i;
 
+const MODEL_ACTIVITY_KINDS: ReadonlySet<AssistantLiveActivityKind> = new Set(["accessing_model"]);
+const TOOL_ACTIVITY_KINDS: ReadonlySet<AssistantLiveActivityKind> = new Set([
+    "calling_tool",
+    "running_command",
+    "reading_file",
+    "writing_file",
+    "editing_file",
+    "listing_dir",
+    "searching_files",
+    "searching_content",
+    "searching_web",
+    "fetching_page",
+    "using_browser",
+    "running_skill",
+    "generating_pdf",
+    "accessing_memory",
+    "remote_exec",
+    "screenshot",
+    "tts",
+    "asr",
+    "opening",
+    "delegating",
+]);
+
 export function assistantLiveActivityLabel(kind: AssistantLiveActivityKind, lang: string): string {
     switch (kind) {
         case "thinking":
@@ -162,6 +186,117 @@ export function assistantLiveActivityLabel(kind: AssistantLiveActivityKind, lang
         default:
             return localizeText(lang, "Calling tools", "正在调用工具", "正在呼叫工具");
     }
+}
+
+/** Plain-text object after the live action, e.g. "MaClaw官方 auto 模型" or "ssh 工具". */
+export function assistantLiveActivityObject(
+    kind: AssistantLiveActivityKind | null | undefined,
+    lang: string,
+    ctx?: {
+        providerName?: string;
+        modelId?: string;
+        isHubService?: boolean;
+        toolName?: string;
+    },
+): string {
+    if (!kind) return "";
+    if (MODEL_ACTIVITY_KINDS.has(kind)) {
+        return formatLiveModelObject(lang, ctx?.providerName, ctx?.modelId, ctx?.isHubService);
+    }
+    if (TOOL_ACTIVITY_KINDS.has(kind)) {
+        const toolName = normalizeLiveToolName(ctx?.toolName);
+        if (!toolName || isImpliedToolName(kind, toolName)) return "";
+        return formatLiveToolObject(lang, toolName);
+    }
+    return "";
+}
+
+const IMPLIED_TOOL_NAMES: Partial<Record<AssistantLiveActivityKind, readonly string[]>> = {
+    searching_web: ["web_search"],
+    fetching_page: ["web_fetch"],
+    reading_file: ["read_file", "read_files", "read_code", "read"],
+    writing_file: ["write_file", "write", "create_file"],
+    editing_file: ["edit_file", "edit_lines", "edit", "str_replace", "apply_patch"],
+    listing_dir: ["list_directory", "list_dir"],
+    generating_pdf: ["generate_pdf"],
+    accessing_memory: ["memory"],
+    screenshot: ["screenshot"],
+    tts: ["tts"],
+    asr: ["asr"],
+};
+
+function isImpliedToolName(kind: AssistantLiveActivityKind, toolName: string): boolean {
+    return (IMPLIED_TOOL_NAMES[kind] || []).includes(toolName.toLowerCase());
+}
+
+export function formatLiveModelObject(lang: string, providerName?: string, modelId?: string, isHubService?: boolean): string {
+    const provider = isHubService
+        ? localizeText(lang, "MaClaw official", "MaClaw官方", "MaClaw官方")
+        : String(providerName || "").trim();
+    const model = String(modelId || "").trim();
+    const name = [provider, model].filter(Boolean).join(" ");
+    if (!name) return "";
+    return localizeText(lang, `${name} model`, `${name} 模型`, `${name} 模型`);
+}
+
+export function formatLiveToolObject(lang: string, toolName?: string): string {
+    const name = normalizeLiveToolName(toolName);
+    if (!name) return "";
+    return localizeText(lang, name, `${name} 工具`, `${name} 工具`);
+}
+
+export function extractInFlightToolName(opts: {
+    codingProgress?: { event?: string; detail?: string } | null;
+    progressMessages?: Array<{ content?: string }>;
+    reasoningText?: string;
+}): string {
+    const codingEvent = (opts.codingProgress?.event || "").trim().toLowerCase();
+    if (codingEvent === "tool_started") {
+        const fromCoding = normalizeLiveToolName(opts.codingProgress?.detail || "");
+        if (fromCoding) return fromCoding;
+    }
+    // Only the latest progress line is current. Walking older named tools
+    // would keep showing web_fetch after the turn had already moved on.
+    const latest = latestProgressText(opts.progressMessages);
+    const fromProgress = extractToolNameFromProgressText(latest);
+    if (fromProgress) return fromProgress;
+    return extractToolNameFromProgressText(opts.reasoningText || "");
+}
+
+function normalizeLiveToolName(name?: string): string {
+    const raw = String(name || "").trim();
+    if (!raw) return "";
+    const token = raw.match(/^[a-zA-Z][a-zA-Z0-9_-]*$/)?.[0] || "";
+    return token;
+}
+
+function extractToolNameFromProgressText(text: string): string {
+    const trimmed = (text || "").trim();
+    if (!trimmed) return "";
+    const coding = parseCodingToolEvent(trimmed);
+    if ((coding?.event || "").trim().toLowerCase() === "tool_started") {
+        return normalizeLiveToolName(coding?.detail || "");
+    }
+    const lines = trimmed.split(/\r?\n/);
+    for (let i = lines.length - 1; i >= 0; i--) {
+        const firstLine = stripLeadingEmojiCluster(lines[i] || "").trim()
+            .replace(/^\[Status\]\s*/i, "")
+            .replace(/^\u2022\s*/, "");
+        if (!firstLine) continue;
+        const isToolStatus = RUNNING_TOOLS_LINE.test(firstLine)
+            || /正在调用工具|calling tools?/i.test(firstLine)
+            || IM_TOOL_STATUS_PREFIX.test(firstLine);
+        if (!isToolStatus) return "";
+        const named = firstLine.match(/[:\uff1a]\s*([a-zA-Z][a-zA-Z0-9_-]*)/);
+        if (named?.[1]) {
+            const token = normalizeLiveToolName(named[1]);
+            if (token) return token;
+        }
+        const prefixed = firstLine.match(IM_TOOL_STATUS_PREFIX);
+        if (prefixed?.[1]) return normalizeLiveToolName(prefixed[1].trim());
+        return "";
+    }
+    return "";
 }
 
 export function assistantLiveActivityFromToolName(name: string): AssistantLiveActivityKind {
@@ -357,7 +492,7 @@ export function parseLiveActivityFromProgressText(text: string): AssistantLiveAc
 
 function parseRunningToolsLine(firstLine: string): AssistantLiveActivityKind | null {
     if (!RUNNING_TOOLS_LINE.test(firstLine)) return null;
-    const named = firstLine.match(/[:\uff1a]\s*([a-z_][a-z0-9_]*)/);
+    const named = firstLine.match(/[:\uff1a]\s*([a-zA-Z][a-zA-Z0-9_-]*)/);
     return named?.[1] ? assistantLiveActivityFromToolName(named[1]) : "calling_tool";
 }
 

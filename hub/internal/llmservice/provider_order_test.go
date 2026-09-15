@@ -61,6 +61,70 @@ func TestOrderProvidersForRequestLoadBalancesEqualBand(t *testing.T) {
 	}
 }
 
+func TestOrderProvidersForRequestLoadBalancesSameCapabilityDifferentPriority(t *testing.T) {
+	requestProviderWRR.Reset()
+	model := &AuthorizedModel{
+		Name:        "auto",
+		ProviderIDs: []string{"mid-a", "mid-b"},
+		ProviderCapabilityTags: map[string][]string{
+			"mid-a": {"tools"},
+			"mid-b": {"tools"},
+		},
+		ProviderPriorities: map[string]int{
+			"mid-a": 10,
+			"mid-b": 90,
+		},
+	}
+	body := map[string]any{"tools": []any{map[string]any{"type": "function"}}}
+	first := OrderProvidersForRequest(body, model)
+	second := OrderProvidersForRequest(body, model)
+	if len(first) != 2 || first[0] != "mid-a" {
+		t.Fatalf("first = %#v, want mid-a (sequence still wins the first gun)", first)
+	}
+	if second[0] != "mid-b" {
+		t.Fatalf("second = %#v, want mid-b so same-tag auto providers share load", second)
+	}
+}
+
+func TestOrderProvidersForRequestDoesNotLoadBalanceDifferentCapabilityTags(t *testing.T) {
+	requestProviderWRR.Reset()
+	model := &AuthorizedModel{
+		Name:        "auto",
+		ProviderIDs: []string{"basic", "tools"},
+		ProviderCapabilityTags: map[string][]string{
+			"tools": {"tools"},
+		},
+	}
+	body := map[string]any{"tools": []any{map[string]any{"type": "function"}}}
+	first := OrderProvidersForRequest(body, model)
+	second := OrderProvidersForRequest(body, model)
+	if len(first) < 1 || first[0] != "tools" {
+		t.Fatalf("first = %#v, want tools", first)
+	}
+	if len(second) < 1 || second[0] != "tools" {
+		t.Fatalf("second = %#v, want tools still first; different tags are failover, not a WRR band", second)
+	}
+}
+
+func TestOrderProvidersForRequestLoadBalancesUnsetAndExplicitResolutionTier(t *testing.T) {
+	requestProviderWRR.Reset()
+	model := &AuthorizedModel{
+		Name:        "official-mid",
+		ProviderIDs: []string{"mid-a", "mid-b"},
+		ProviderResolutionTiers: map[string]int{
+			"mid-b": 1,
+		},
+	}
+	first := OrderProvidersForRequest(nil, model)
+	second := OrderProvidersForRequest(nil, model)
+	if len(first) != 2 || first[0] != "mid-a" {
+		t.Fatalf("first = %#v, want mid-a", first)
+	}
+	if second[0] != "mid-b" {
+		t.Fatalf("second = %#v, want mid-b; unset resolution must share the WRR band with tier 1", second)
+	}
+}
+
 func TestPeekProvidersForRequestDoesNotRotateWRR(t *testing.T) {
 	requestProviderWRR.Reset()
 	model := &AuthorizedModel{Name: "auto", ProviderIDs: []string{"aisi", "oc1"}}

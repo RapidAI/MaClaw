@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -262,7 +263,7 @@ func (s *Service) InternalURLForPublicOrigin(originURL string) string {
 		if peer == nil || !strings.EqualFold(strings.TrimRight(peer.PublicURL, "/"), originURL) {
 			continue
 		}
-		return strings.TrimRight(strings.TrimSpace(peer.BaseURL), "/")
+		return peerTransportURL(peer)
 	}
 	return ""
 }
@@ -415,11 +416,11 @@ func (s *Service) LookupNodeURL(nodeID string) string {
 	selfID := s.nodeID
 	selfURL := strings.TrimRight(strings.TrimSpace(s.clientFacingURL()), "/")
 	s.mu.RUnlock()
-	if nodeID == selfID {
+	if strings.EqualFold(nodeID, selfID) {
 		return selfURL
 	}
 	for _, peer := range s.listPeerStates() {
-		if peer == nil || strings.TrimSpace(peer.NodeID) != nodeID {
+		if peer == nil || !strings.EqualFold(strings.TrimSpace(peer.NodeID), nodeID) {
 			continue
 		}
 		if u := strings.TrimRight(strings.TrimSpace(peer.PublicURL), "/"); u != "" {
@@ -428,6 +429,125 @@ func (s *Service) LookupNodeURL(nodeID string) string {
 		return strings.TrimRight(strings.TrimSpace(peer.BaseURL), "/")
 	}
 	return ""
+}
+
+// LookupInternalURL returns the HA transport base URL for a cluster node ID.
+// Peer calls must use advertise/base URLs, not the public reverse proxy.
+func (s *Service) LookupInternalURL(nodeID string) string {
+	url, _, _ := s.AccessPeer(nodeID)
+	return url
+}
+
+// AccessPeer returns the HA transport URL, reachability, and last RTT for nodeID.
+func (s *Service) AccessPeer(nodeID string) (internalURL string, reachable bool, rttMs int64) {
+	if s == nil {
+		return "", false, 0
+	}
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return "", false, 0
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if strings.EqualFold(nodeID, s.nodeID) {
+		return strings.TrimRight(strings.TrimSpace(s.advertiseURL), "/"), true, 0
+	}
+	peer := s.peers[nodeID]
+	if peer == nil {
+		for id, item := range s.peers {
+			if item != nil && strings.EqualFold(id, nodeID) {
+				peer = item
+				break
+			}
+		}
+	}
+	if peer == nil {
+		return "", false, 0
+	}
+	return peerTransportURL(peer), peer.Reachable, peer.RTTMs
+}
+
+func peerTransportURL(peer *PeerRuntimeState) string {
+	if peer == nil {
+		return ""
+	}
+	url := strings.TrimRight(strings.TrimSpace(peer.BaseURL), "/")
+	if url == "" {
+		url = strings.TrimRight(strings.TrimSpace(peer.PublicURL), "/")
+	}
+	return url
+}
+
+func (s *Service) NodeName() string {
+	if s == nil {
+		return ""
+	}
+	return s.nodeName
+}
+
+// ListAccessNodes returns this node plus configured HA peers for provider
+// access-scope pickers. Self is always listed first and treated as reachable.
+func (s *Service) ListAccessNodes() []AccessNode {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	selfID := strings.TrimSpace(s.nodeID)
+	selfName := strings.TrimSpace(s.nodeName)
+	selfHost := accessNodeHost(s.publicURL)
+	if selfHost == "" {
+		selfHost = accessNodeHost(s.advertiseURL)
+	}
+	s.mu.RUnlock()
+	if selfName == "" {
+		selfName = selfID
+	}
+	out := []AccessNode{{
+		NodeID:    selfID,
+		Name:      selfName,
+		Host:      selfHost,
+		Reachable: true,
+		Self:      true,
+	}}
+	for _, peer := range s.listPeerStates() {
+		if peer == nil {
+			continue
+		}
+		id := strings.TrimSpace(peer.NodeID)
+		if id == "" || strings.EqualFold(id, selfID) {
+			continue
+		}
+		name := strings.TrimSpace(peer.NodeName)
+		if name == "" {
+			name = id
+		}
+		host := accessNodeHost(peer.PublicURL)
+		if host == "" {
+			host = accessNodeHost(peer.BaseURL)
+		}
+		out = append(out, AccessNode{
+			NodeID:    id,
+			Name:      name,
+			Host:      host,
+			Reachable: peer.Reachable,
+		})
+	}
+	return out
+}
+
+func accessNodeHost(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if !strings.Contains(raw, "://") {
+		raw = "https://" + raw
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(parsed.Host)
 }
 
 func (s *Service) PeerNodeIDs() []string {
@@ -587,6 +707,9 @@ func (s *Service) listPeerStates() []*PeerRuntimeState {
 	defer s.mu.RUnlock()
 	out := make([]*PeerRuntimeState, 0, len(s.peers))
 	for _, peer := range s.peers {
+		if peer == nil {
+			continue
+		}
 		cp := *peer
 		out = append(out, &cp)
 	}

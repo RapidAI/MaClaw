@@ -1267,6 +1267,8 @@ export function KnowledgeDeepCrawlPreview(arg1:knowledge.DeepCrawlRequest):Promi
 
 export function KnowledgeDeleteHubShare(arg1:main.KnowledgeHubShareDeleteRequest):Promise<void>;
 
+export function KnowledgeDeleteFragment(arg1:knowledge.SearchResult):Promise<Array<string>>;
+
 export function KnowledgeDeleteSource(arg1:string):Promise<void>;
 
 export function KnowledgeDisableSensitiveSources(arg1:number):Promise<knowledge.SensitiveIsolationResult>;
@@ -1642,6 +1644,8 @@ export function LogFrontendDiagnostic(arg1:Record<string, any>):Promise<void>;
 export function MarkAllNotificationsRead():Promise<void>;
 
 export function MarkNotificationRead(arg1:string):Promise<void>;
+
+export function MaterializeMobileDocumentOriginal(arg1:string):Promise<string>;
 
 export function MaterializeProviderByName(arg1:string):Promise<corelib.MaclawLLMConfig>;
 

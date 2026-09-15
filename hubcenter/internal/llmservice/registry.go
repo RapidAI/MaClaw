@@ -189,6 +189,7 @@ func cloneProviderConfigs(in []llmpool.ProviderConfig) []llmpool.ProviderConfig 
 		out[i] = p
 		out[i].Models = append([]string(nil), p.Models...)
 		out[i].CapabilityTags = append([]string(nil), p.CapabilityTags...)
+		out[i].AllowedNodeIDs = append([]string(nil), p.AllowedNodeIDs...)
 		out[i].CreditMultiplierSchedule = cloneCreditWindows(p.CreditMultiplierSchedule)
 	}
 	return out
@@ -251,12 +252,17 @@ func providerIndex(reg *Registry, id string) int {
 	if reg == nil || id == "" {
 		return -1
 	}
+	folded := -1
 	for i, p := range reg.Providers {
-		if strings.TrimSpace(p.ID) == id {
+		got := strings.TrimSpace(p.ID)
+		if got == id {
 			return i
 		}
+		if folded < 0 && strings.EqualFold(got, id) {
+			folded = i
+		}
 	}
-	return -1
+	return folded
 }
 
 func normalizeRegistry(reg *Registry) {
@@ -266,6 +272,7 @@ func normalizeRegistry(reg *Registry) {
 	ensureDefaultComputeAgent(reg)
 	for i := range reg.Providers {
 		normalizeProviderGatewayLimits(&reg.Providers[i])
+		normalizeProviderAccessScope(&reg.Providers[i])
 		reg.Providers[i].NormalizeBilling()
 	}
 	normalizeProviderSequences(reg)
@@ -322,6 +329,13 @@ func (s *Service) SetDefaultServiceGroup(ctx context.Context, id string) error {
 		reg.DefaultServiceGroupID = got
 		return true, nil
 	})
+}
+
+func normalizeProviderAccessScope(provider *llmpool.ProviderConfig) {
+	if provider == nil {
+		return
+	}
+	provider.AllowedNodeIDs = llmpool.NormalizeAllowedNodeIDs(provider.AllowedNodeIDs)
 }
 
 func normalizeProviderGatewayLimits(provider *llmpool.ProviderConfig) {
@@ -720,6 +734,9 @@ func mergeUnspecifiedProviderFields(existing, incoming llmpool.ProviderConfig) l
 	}
 	if incoming.FailureBackoffMaxMS == 0 {
 		incoming.FailureBackoffMaxMS = existing.FailureBackoffMaxMS
+	}
+	if incoming.AllowedNodeIDs == nil {
+		incoming.AllowedNodeIDs = append([]string(nil), existing.AllowedNodeIDs...)
 	}
 	return incoming
 }

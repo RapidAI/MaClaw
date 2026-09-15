@@ -27,6 +27,9 @@ if (typeof I18N_ZH !== 'undefined') {
       fieldProtocol: 'Protocol', fieldModels: 'Models (comma-separated)', fieldCapabilities: 'Capabilities',
       fieldPriority: 'Priority', fieldConcurrency: 'Max Concurrency', fieldTimeout: 'Timeout (sec)',
       fieldSequence: 'Sequence', sequenceHint: 'Lower numbers are tried first. 0 means unset.',
+      accessScope: 'Access scope', accessScopeAll: 'All nodes', accessScopeSelected: 'Selected nodes',
+      accessScopeHint: 'Default: every HubCenter node may call this provider. Restricting the list makes upstream calls leave only from allowed nodes, to avoid regional model limits.',
+      accessScopeNeedNode: 'Select at least one HubCenter node.', accessScopeOffline: 'offline', accessScopeSelf: 'this node', accessScopeUnreachable: 'unreachable',
       lbGroup: 'LB group', pauseProvider: 'Pause', resumeProvider: 'Resume',
       trafficDay: 'Day', trafficWeek: 'Week', trafficMonth: 'Month', trafficLoading: 'Loading',
       trafficIn: 'In', trafficOut: 'Out', trafficTotal: 'Total',
@@ -173,6 +176,9 @@ if (typeof I18N_ZH !== 'undefined') {
       fieldProtocol: '\u534f\u8bae', fieldModels: '\u6a21\u578b\uff08\u9017\u53f7\u5206\u9694\uff09', fieldCapabilities: '\u80fd\u529b\u6807\u7b7e',
       fieldPriority: '\u4f18\u5148\u7ea7', fieldConcurrency: '\u6700\u5927\u5e76\u53d1', fieldTimeout: '\u8d85\u65f6\uff08\u79d2\uff09',
       fieldSequence: '\u5e8f\u5217', sequenceHint: '\u6570\u5b57\u8d8a\u5c0f\u8d8a\u5148\u8bd5\u30020 \u8868\u793a\u672a\u8bbe\u3002',
+      accessScope: '\u63a5\u5165\u8303\u56f4', accessScopeAll: '\u5168\u90e8\u8282\u70b9', accessScopeSelected: '\u6307\u5b9a\u8282\u70b9',
+      accessScopeHint: '\u9ed8\u8ba4\u5168\u90e8 HubCenter \u8282\u70b9\u53ef\u8c03\u7528\u8be5\u670d\u52a1\u5546\u3002\u6307\u5b9a\u8282\u70b9\u540e\uff0c\u4e0a\u6e38\u8bf7\u6c42\u4ece\u5141\u8bb8\u7684\u8282\u70b9\u53d1\u51fa\uff0c\u4ee5\u907f\u5f00\u6a21\u578b\u533a\u57df\u9650\u5236\u3002',
+      accessScopeNeedNode: '\u8bf7\u81f3\u5c11\u9009\u62e9\u4e00\u4e2a\u8282\u70b9\u3002', accessScopeOffline: '\u5df2\u4e0b\u7ebf', accessScopeSelf: '\u672c\u8282\u70b9', accessScopeUnreachable: '\u4e0d\u53ef\u8fbe',
       lbGroup: 'LB \u7ec4', pauseProvider: '\u6682\u505c', resumeProvider: '\u6062\u590d',
       trafficDay: '\u4eca\u65e5', trafficWeek: '\u672c\u5468', trafficMonth: '\u672c\u6708', trafficLoading: '\u52a0\u8f7d\u4e2d',
       trafficIn: '\u5165', trafficOut: '\u51fa', trafficTotal: '\u603b',
@@ -336,6 +342,10 @@ if (typeof I18N_ZH !== 'undefined') {
   var defaultServiceGroupId = '';
   var providerTestStates = {};
   var providerDialogID = '';
+  var providerDialogSeq = 0;
+  var providerAccessMode = 'all';
+  var providerAccessSelected = {};
+  var providerAccessNodes = [];
   var providerBillingSchedule = [];
   var providerTokenPricingSchedule = [];
   var providerBillingNowTimer = 0;
@@ -705,6 +715,7 @@ if (typeof I18N_ZH !== 'undefined') {
         + (paused ? '<span class="badge warn">' + esc(t('pauseProvider')) + '</span>' : '')
         + (p.lb_group && Number(p.lb_group_size||0) >= 2 ? '<span class="badge info">' + esc(t('lbGroup')) + ' ' + esc(p.lb_group) + '</span>' : '')
         + providerBillingBadge(p)
+        + providerAccessBadge(p)
         + '</div>'
         + '<span class="data-row-meta">' + esc(p.api_url) + ' \u00b7 ' + esc(p.protocol||'openai')
         + (p.has_api_key ? ' \u00b7 key' : '') + (p.lb_group ? ' \u00b7 ' + esc(p.lb_group) : '')
@@ -1270,14 +1281,105 @@ if (typeof I18N_ZH !== 'undefined') {
     if (root) root.classList.toggle('is-invalid', providerBillingWindowInvalid(item));
     refreshProviderBillingNow();
   };
-  window.showProviderDialog = function(mode, id, opts) {
+  async function loadProviderAccessNodes() {
+    try {
+      var data = await api('/api/admin/llm/access-nodes');
+      providerAccessNodes = data.nodes || [];
+    } catch (e) {
+      providerAccessNodes = [];
+    }
+    return providerAccessNodes;
+  }
+  function providerAccessSelectedIDs() {
+    var seen = {};
+    return Object.keys(providerAccessSelected).filter(function(id) {
+      if (!providerAccessSelected[id]) return false;
+      var key = String(id).toLowerCase();
+      if (seen[key]) return false;
+      seen[key] = true;
+      return true;
+    }).sort();
+  }
+  function providerAccessNodeSelected(id) {
+    id = String(id || '').trim();
+    if (!id) return false;
+    if (providerAccessSelected[id]) return true;
+    var key = id.toLowerCase();
+    return Object.keys(providerAccessSelected).some(function(k) { return k.toLowerCase() === key && providerAccessSelected[k]; });
+  }
+  function providerAccessNodeCard(id, name, host, meta, extraClass) {
+    var on = providerAccessNodeSelected(id);
+    return '<button type="button" class="provider-access-node' + (on ? ' is-active' : '') + (extraClass ? ' ' + extraClass : '') + '" onclick="toggleProviderAccessNode(' + jsArg(id) + ')">'
+      + '<span class="provider-access-node-name">' + esc(name || id) + '</span>'
+      + (host ? '<span class="provider-access-node-host">' + esc(host) + '</span>' : '')
+      + (meta ? '<span class="provider-access-node-meta">' + esc(meta) + '</span>' : '')
+      + '</button>';
+  }
+  function providerAccessScopeSection() {
+    var modes = '<div class="provider-access-switch" role="radiogroup" aria-label="' + esc(t('accessScope')) + '">'
+      + '<button type="button" class="provider-access-switch-btn' + (providerAccessMode !== 'nodes' ? ' is-active' : '') + '" onclick="setProviderAccessMode(\'all\')">' + esc(t('accessScopeAll')) + '</button>'
+      + '<button type="button" class="provider-access-switch-btn' + (providerAccessMode === 'nodes' ? ' is-active' : '') + '" onclick="setProviderAccessMode(\'nodes\')">' + esc(t('accessScopeSelected')) + '</button>'
+      + '</div>';
+    var nodes = '';
+    if (providerAccessMode === 'nodes') {
+      var known = {};
+      nodes = '<div class="provider-access-nodes">' + (providerAccessNodes || []).map(function(node) {
+        var id = String(node.node_id || '').trim();
+        if (!id) return '';
+        known[id.toLowerCase()] = true;
+        var meta = node.self ? t('accessScopeSelf') : (!node.reachable ? t('accessScopeUnreachable') : '');
+        return providerAccessNodeCard(id, node.name || id, node.host || '', meta, node.reachable || node.self ? '' : 'is-offline');
+      }).join('') + providerAccessSelectedIDs().filter(function(id){ return !known[String(id).toLowerCase()]; }).map(function(id) {
+        return providerAccessNodeCard(id, id, '', t('accessScopeOffline'), 'is-offline provider-access-stale');
+      }).join('') + '</div>';
+    }
+    return '<div class="provider-access-scope"><div class="provider-billing-title"><strong>' + esc(t('accessScope')) + '</strong></div>'
+      + '<div class="provider-billing-hint">' + esc(t('accessScopeHint')) + '</div>'
+      + modes + nodes + '</div>';
+  }
+  window.setProviderAccessMode = function(mode) {
+    providerAccessMode = mode === 'nodes' ? 'nodes' : 'all';
+    if (providerAccessMode === 'nodes' && !providerAccessSelectedIDs().length) {
+      (providerAccessNodes || []).forEach(function(node) {
+        var id = String(node.node_id || '').trim();
+        if (id) providerAccessSelected[id] = true;
+      });
+    }
+    var root = document.querySelector('.provider-access-scope');
+    if (root) root.outerHTML = providerAccessScopeSection();
+  };
+  window.toggleProviderAccessNode = function(id) {
+    id = String(id || '').trim();
+    if (!id) return;
+    var key = id.toLowerCase();
+    var matched = Object.keys(providerAccessSelected).filter(function(k) {
+      return k.toLowerCase() === key && providerAccessSelected[k];
+    });
+    if (matched.length) matched.forEach(function(k) { delete providerAccessSelected[k]; });
+    else providerAccessSelected[id] = true;
+    var root = document.querySelector('.provider-access-scope');
+    if (root) root.outerHTML = providerAccessScopeSection();
+  };
+  function providerAccessBadge(p) {
+    var ids = (p && p.allowed_node_ids) || [];
+    if (!ids.length) return '';
+    return '<span class="badge">' + esc(t('accessScopeSelected') + ': ' + ids.join(', ')) + '</span>';
+  }
+  window.showProviderDialog = async function(mode, id, opts) {
+    var seq = ++providerDialogSeq;
     var p = mode === 'edit' ? providers.find(function(x){return x.id===id;}) : null;
     providerDialogID = mode === 'edit' ? (id || '') : '';
     sgOpenKind = 'provider';
     if (!(opts && opts.keepBilling)) {
       providerBillingSchedule = cloneProviderBillingSchedule(p && p.credit_multiplier_schedule);
       providerTokenPricingSchedule = cloneProviderTokenPricingSchedule(p && p.token_pricing && p.token_pricing.price_schedule);
+      var savedIDs = (p && p.allowed_node_ids) || [];
+      providerAccessMode = savedIDs.length ? 'nodes' : 'all';
+      providerAccessSelected = {};
+      savedIDs.forEach(function(nodeID){ if (nodeID) providerAccessSelected[String(nodeID)] = true; });
     }
+    await loadProviderAccessNodes();
+    if (seq !== providerDialogSeq) return false;
     var title = mode === 'edit' ? t('providerDialogTitleEdit') : t('providerDialogTitleNew');
     var html = sgDialogChrome(title,
       '<div class="sg-form-grid">'
@@ -1293,6 +1395,7 @@ if (typeof I18N_ZH !== 'undefined') {
       + field('llmPrvConc', t('fieldConcurrency'), p ? String(p.max_concurrency||10) : '10', false, 'number')
       + field('llmPrvTimeout', t('fieldTimeout'), p ? String(p.upstream_timeout_sec||900) : '900', false, 'number')
       + '</div><div class="hint">' + esc(t('sequenceHint')) + '</div>'
+      + providerAccessScopeSection()
       + providerTokenPricingSection(p)
       + providerBillingSection(p, opts),
       '<button class="btn-primary" onclick="saveProvider(' + jsArg(mode==='edit'?id:'') + ')">' + esc(t('save')) + '</button>'
@@ -1300,6 +1403,7 @@ if (typeof I18N_ZH !== 'undefined') {
     openDialog(html, 'sg-form-dialog');
     window.renderProviderCapabilityChips();
     startProviderBillingNowClock();
+    return true;
   };
   window.editLLMProvider = function(id) { window.showProviderDialog('edit', id); };
   function providerModelsField(value) {
@@ -1385,6 +1489,13 @@ if (typeof I18N_ZH !== 'undefined') {
     var tokenPricing = readProviderTokenPricing();
     if (tokenPricing === null) { toast(t('billingInvalid'), 'error'); return; }
     payload.token_pricing = tokenPricing;
+    if (providerAccessMode === 'nodes') {
+      var nodeIDs = providerAccessSelectedIDs();
+      if (!nodeIDs.length) { toast(t('accessScopeNeedNode'), 'error'); return; }
+      payload.allowed_node_ids = nodeIDs;
+    } else {
+      payload.allowed_node_ids = [];
+    }
     var key = val('llmPrvKey');
     if (key) payload.api_key = key;
     try {
@@ -2609,24 +2720,38 @@ if (typeof I18N_ZH !== 'undefined') {
       tpMin: val('llmPrvTpMin'), tpTimezone: val('llmPrvTpTimezone'), tpVersion: val('llmPrvTpVersion'),
       probe: (document.getElementById('llmPrvProbeStatus') || {}).textContent || '',
       choices: (document.getElementById('llmPrvModelChoices') || {}).innerHTML || '',
-      options: (document.getElementById('llmPrvModelOptions') || {}).innerHTML || ''
+      options: (document.getElementById('llmPrvModelOptions') || {}).innerHTML || '',
+      accessMode: providerAccessMode,
+      accessSelected: Object.assign({}, providerAccessSelected)
     };
-    window.showProviderDialog(providerDialogID ? 'edit' : 'create', providerDialogID, {keepBilling:true, timezone:snap.timezone, multiplier:snap.multiplier});
-    function set(id, value) { var node = document.getElementById(id); if (node && value != null) node.value = value; }
-    set('llmPrvID', snap.id); set('llmPrvName', snap.name); set('llmPrvURL', snap.url); set('llmPrvKey', snap.key);
-    set('llmPrvProtocol', snap.protocol); set('llmPrvModels', snap.models); set('llmPrvCaps', snap.caps);
-    set('llmPrvPriority', snap.priority); set('llmPrvSequence', snap.sequence); set('llmPrvConc', snap.conc); set('llmPrvTimeout', snap.timeout);
-    set('llmPrvTimezone', snap.timezone); set('llmPrvMultiplier', snap.multiplier);
-    set('llmPrvTpIn', snap.tpIn); set('llmPrvTpOut', snap.tpOut); set('llmPrvTpRmbIn', snap.tpRmbIn); set('llmPrvTpRmbOut', snap.tpRmbOut);
-    set('llmPrvTpMin', snap.tpMin); set('llmPrvTpTimezone', snap.tpTimezone); set('llmPrvTpVersion', snap.tpVersion);
-    var status = document.getElementById('llmPrvProbeStatus');
-    var choices = document.getElementById('llmPrvModelChoices');
-    var list = document.getElementById('llmPrvModelOptions');
-    if (status && snap.probe) status.textContent = snap.probe;
-    if (choices && snap.choices) choices.innerHTML = snap.choices;
-    if (list && snap.options) list.innerHTML = snap.options;
-    if (typeof window.renderProviderCapabilityChips === 'function') window.renderProviderCapabilityChips();
-    sgRestoreFocus(focus);
+    var opened = window.showProviderDialog(providerDialogID ? 'edit' : 'create', providerDialogID, {keepBilling:true, timezone:snap.timezone, multiplier:snap.multiplier});
+    function restore() {
+      function set(id, value) { var node = document.getElementById(id); if (node && value != null) node.value = value; }
+      set('llmPrvID', snap.id); set('llmPrvName', snap.name); set('llmPrvURL', snap.url); set('llmPrvKey', snap.key);
+      set('llmPrvProtocol', snap.protocol); set('llmPrvModels', snap.models); set('llmPrvCaps', snap.caps);
+      set('llmPrvPriority', snap.priority); set('llmPrvSequence', snap.sequence); set('llmPrvConc', snap.conc); set('llmPrvTimeout', snap.timeout);
+      set('llmPrvTimezone', snap.timezone); set('llmPrvMultiplier', snap.multiplier);
+      set('llmPrvTpIn', snap.tpIn); set('llmPrvTpOut', snap.tpOut); set('llmPrvTpRmbIn', snap.tpRmbIn); set('llmPrvTpRmbOut', snap.tpRmbOut);
+      set('llmPrvTpMin', snap.tpMin); set('llmPrvTpTimezone', snap.tpTimezone); set('llmPrvTpVersion', snap.tpVersion);
+      providerAccessMode = snap.accessMode === 'nodes' ? 'nodes' : 'all';
+      providerAccessSelected = snap.accessSelected || {};
+      var accessRoot = document.querySelector('.provider-access-scope');
+      if (accessRoot) accessRoot.outerHTML = providerAccessScopeSection();
+      var status = document.getElementById('llmPrvProbeStatus');
+      var choices = document.getElementById('llmPrvModelChoices');
+      var list = document.getElementById('llmPrvModelOptions');
+      if (status && snap.probe) status.textContent = snap.probe;
+      if (choices && snap.choices) choices.innerHTML = snap.choices;
+      if (list && snap.options) list.innerHTML = snap.options;
+      if (typeof window.renderProviderCapabilityChips === 'function') window.renderProviderCapabilityChips();
+      sgRestoreFocus(focus);
+    }
+    if (opened && typeof opened.then === 'function') {
+      opened.then(function(openedOk) {
+        if (openedOk === false) return;
+        restore();
+      }).catch(function() {});
+    } else restore();
   }
   function sgRelabelAgentDialog() {
     var focus = sgSnapFocus(document.getElementById('llmDialogContent'));

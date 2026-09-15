@@ -162,6 +162,7 @@ func ForwardStreamViaMaClawWithQuote(ctx context.Context, body []byte, tenantID 
 		}
 		return nil, err
 	}
+	rememberOfficialForwardQuoteForResolved(ctx, quote)
 	return ForwardStreamViaMaClawWithExistingQuote(ctx, quote, body, tenantID, serviceGroupIDs...)
 }
 

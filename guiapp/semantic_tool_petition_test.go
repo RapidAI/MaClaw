@@ -139,52 +139,38 @@ func TestSemanticToolCallPetitionAdmitsReadOnlyLegOnAnyPrimary(t *testing.T) {
 	}
 }
 
-// Effectful petitions are the agent's problem-solving fallback: an office
-// turn whose rendered surface cannot finish the job (the 2026-08-26 PPT turn
-// had no way to craft the deck itself) may petition bash once per turn. The
-// child revision carries the whole shell sibling family, so a script can be
-// written, run, fixed and rerun inside the same turn.
+// Bash is a baseline workspace tool: an office turn already lists it so the
+// agent can fall back to a command runner without spending the effectful
+// petition. The shell family still carries an iterative invocation budget.
 func TestSemanticToolCallPetitionGrantsEffectfulShellLeg(t *testing.T) {
 	cb := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: .98})
 	parent := cb.semanticSurface
-	if semanticGrantNameForAdapter(parent, semanticTrustedShellAdapter) != "" {
-		t.Fatal("fixture must start without a shell grant")
+	if name := semanticGrantNameForAdapter(parent, semanticTrustedShellAdapter); name != "bash" {
+		t.Fatalf("baseline shell grant name=%q, want bash", name)
 	}
-	granted, message := cb.PetitionToolCall("bash")
-	if !granted || !strings.Contains(message, "bash") {
-		t.Fatalf("granted=%v message=%q", granted, message)
+	if !planHasCapabilities(parent.plan, tool.CapabilityDocumentWriteOffice, tool.CapabilityShellExecuteLocal) {
+		t.Fatalf("office plan=%#v", parent.plan.Selections)
 	}
-	child := cb.semanticSurface
-	if child == parent {
-		t.Fatal("petition must publish a child revision")
-	}
-	if !planHasCapabilities(child.plan, tool.CapabilityDocumentWriteOffice, tool.CapabilityShellExecuteLocal) {
-		t.Fatalf("child plan=%#v", child.plan.Selections)
-	}
-	if name := semanticGrantNameForAdapter(child, semanticTrustedShellAdapter); name != "bash" {
-		t.Fatalf("child shell grant name=%q, want bash", name)
-	}
-	// The shell family is budgeted for iterative craft-and-run work.
 	shellSiblings := 0
-	for _, selection := range child.plan.Selections {
+	for _, selection := range parent.plan.Selections {
 		if selection.FitProof.MatchedCapability == tool.CapabilityShellExecuteLocal {
 			shellSiblings++
 		}
 	}
 	if shellSiblings < 2 {
-		t.Fatalf("petitioned shell family must carry an invocation budget, got %d selection(s)", shellSiblings)
+		t.Fatalf("baseline shell family must carry an invocation budget, got %d selection(s)", shellSiblings)
 	}
-	// The parent authority survives.
-	if name := semanticGrantNameForAdapter(child, semanticTrustedOfficeWriteAdapter); name != "office" {
-		t.Fatalf("child office grant name=%q, want office", name)
+	if granted, message := cb.PetitionToolCall("bash"); granted || message != "" {
+		t.Fatalf("already-listed bash is not a petition: granted=%v message=%q", granted, message)
 	}
-	// The effectful budget is spent; the lookup budget is independent and
-	// still available for the same turn.
-	if granted, message := cb.PetitionToolCall("delegate_task"); granted || message != "" {
-		t.Fatalf("second effectful petition must be denied by the budget: granted=%v message=%q", granted, message)
+	if cb.semanticEffectfulPetitionConsumed {
+		t.Fatal("calling listed bash must not consume the effectful petition budget")
+	}
+	if name := semanticGrantNameForAdapter(parent, semanticTrustedOfficeWriteAdapter); name != "office" {
+		t.Fatalf("office grant name=%q, want office", name)
 	}
 	if granted, message := cb.PetitionToolCall("current_datetime"); !granted || !strings.Contains(message, "current_datetime") {
-		t.Fatalf("lookup petition must remain available after an effectful one: granted=%v message=%q", granted, message)
+		t.Fatalf("lookup petition must remain available: granted=%v message=%q", granted, message)
 	}
 }
 
@@ -640,8 +626,11 @@ func TestSemanticToolCallPetitionGrantsOfficeLegOnSearchTurn(t *testing.T) {
 	if !cb.semanticEffectfulPetitionConsumed {
 		t.Fatal("a granted effectful petition must consume the effectful budget")
 	}
-	if granted, _ := cb.PetitionToolCall("bash"); granted {
-		t.Fatal("second effectful petition in one turn must be denied")
+	if name := semanticGrantNameForAdapter(cb.semanticSurface, semanticTrustedShellAdapter); name != "bash" {
+		t.Fatalf("baseline bash must stay listed after an office petition, got %q", name)
+	}
+	if granted, message := cb.PetitionToolCall("bash"); granted || message != "" {
+		t.Fatalf("listed bash is not a second effectful petition: granted=%v message=%q", granted, message)
 	}
 	if granted, message := cb.PetitionToolCall("current_datetime"); !granted || !strings.Contains(message, "current_datetime") {
 		t.Fatalf("read-only petition must remain available after an effectful one: granted=%v message=%q", granted, message)

@@ -155,6 +155,23 @@ func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsReposit
 	}
 	if haSvc != nil {
 		proxyCfg.LookupNodeURL = haSvc.LookupNodeURL
+		proxyCfg.LookupAccessPeer = haSvc.AccessPeer
+		proxyCfg.SignPeerRequest = haSvc.SignPeerRequest
+		proxyCfg.ClusterSecret = haSvc.ClusterSecret
+		proxyCfg.ListAccessNodes = func() []llmservice.AccessNodeView {
+			nodes := haSvc.ListAccessNodes()
+			out := make([]llmservice.AccessNodeView, 0, len(nodes))
+			for _, node := range nodes {
+				out = append(out, llmservice.AccessNodeView{
+					NodeID:    node.NodeID,
+					Name:      node.Name,
+					Host:      node.Host,
+					Reachable: node.Reachable,
+					Self:      node.Self,
+				})
+			}
+			return out
+		}
 	}
 
 	// 5. Create card store service
@@ -244,6 +261,9 @@ func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsReposit
 			cardStoreSvc.SetHubTenantResolver(hubService.ResolveHubTenantDisplayNames)
 		}
 		httpapi.RegisterLLMRoutes(mux, adminService, hubService, llmSvc, proxyCfg, authChecker, cardStoreSvc, statsSvc)
+		if haSvc != nil {
+			mux.HandleFunc("POST /api/internal/ha/llm/upstream", llmservice.UpstreamHopHandler(proxyCfg, haSvc.AuthenticatePeerRequest))
+		}
 	})
 
 	log.Printf("[llm-init] LLM service module initialized (node=%s)", nodeID)

@@ -11,6 +11,7 @@ import {
     KnowledgeShareToHub,
     KnowledgeSearchStructured,
     KnowledgeSearch,
+    KnowledgeDeleteFragment,
     KnowledgeGetImageAssetPaths,
     KnowledgeOpenImageAsset,
     KnowledgeSyncStatus,
@@ -42,6 +43,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => {
         'KnowledgeCapabilities',
         'KnowledgeBackfillSourceAutoLabels',
         'KnowledgeDeleteSource',
+        'KnowledgeDeleteFragment',
         'KnowledgeDiscoverURLs',
         'KnowledgeDoctor',
         'KnowledgeContextPack',
@@ -202,6 +204,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => {
             hub_url: 'https://hub.example',
         })),
         KnowledgeDeleteHubShare: vi.fn(async () => undefined),
+        KnowledgeDeleteFragment: vi.fn(async () => undefined),
         KnowledgeUpdateHubShare: vi.fn(async (req: any) => ({
             knowledge_id: req?.knowledge_id || 'kn_mine',
             title: req?.title || 'Team notes',
@@ -903,5 +906,46 @@ describe('KnowledgeSettingsPanel component', () => {
             source_id: 'architecture-doc',
         })));
         expect((screen.getByPlaceholderText('Search knowledge base...') as HTMLInputElement).value).toBe('gateway topology');
+    });
+
+    it('asks to confirm before deleting a search fragment and removes it after confirm', async () => {
+        vi.mocked(KnowledgeSearch)
+            .mockResolvedValueOnce([{
+                result_type: 'card',
+                node_id: 'node-card',
+                card_id: 'card-patents',
+                card_title: '7.1 已授权中国发明专利(Google Patents)',
+                snippet: 'Google Patents listed the authorized invention.',
+                score: 2.837,
+                source: { id: 'src-card', kind: 'markdown', relative_path: 'znsoft_公开信息调研报告.md' },
+            }] as any)
+            .mockResolvedValueOnce([]);
+
+        render(<KnowledgeSettingsPanel lang="zh-Hans" />);
+        await act(async () => {
+            window.dispatchEvent(new CustomEvent('maclaw:knowledge-search', { detail: { query: '专利' } }));
+        });
+
+        expect(await screen.findByRole('button', { name: '删除片段' })).toBeTruthy();
+        expect(screen.getByText(/已授权中国发明/)).toBeTruthy();
+        fireEvent.click(screen.getByRole('button', { name: '删除片段' }));
+        expect(await screen.findByRole('dialog', { name: '删除片段' })).toBeTruthy();
+        expect(screen.getByText('将删除该段内容')).toBeTruthy();
+
+        fireEvent.click(screen.getByRole('button', { name: '取消' }));
+        expect(KnowledgeDeleteFragment).not.toHaveBeenCalled();
+        expect(screen.getByRole('button', { name: '删除片段' })).toBeTruthy();
+
+        fireEvent.click(screen.getByRole('button', { name: '删除片段' }));
+        fireEvent.click(await screen.findByRole('button', { name: '确认' }));
+
+        await waitFor(() => expect(KnowledgeDeleteFragment).toHaveBeenCalledWith(expect.objectContaining({
+            result_type: 'card',
+            node_id: 'node-card',
+            card_id: 'card-patents',
+        })));
+        await waitFor(() => expect(vi.mocked(KnowledgeSearch).mock.calls.length).toBeGreaterThanOrEqual(2));
+        await waitFor(() => expect(screen.queryByRole('button', { name: '删除片段' })).toBeNull());
+        expect(screen.getByText('暂无检索结果。')).toBeTruthy();
     });
 });

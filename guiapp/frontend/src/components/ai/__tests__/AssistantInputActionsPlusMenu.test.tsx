@@ -70,8 +70,114 @@ describe("AssistantInputActionsLeft plus menu", () => {
         expect((fullControl as HTMLElement).style.color).toBe("rgb(185, 28, 28)");
 
         fireEvent.click(fullControl);
+        // Full control requires an explicit risk acknowledgment first.
+        expect(onPermissionModeChange).not.toHaveBeenCalled();
+        const accept = screen.getByTestId("ai-full-control-confirm-accept") as HTMLButtonElement;
+        expect(accept.disabled).toBe(true);
+        fireEvent.click(screen.getByRole("checkbox"));
+        expect((screen.getByTestId("ai-full-control-confirm-accept") as HTMLButtonElement).disabled).toBe(false);
+        fireEvent.click(screen.getByTestId("ai-full-control-confirm-accept"));
         expect(onPermissionModeChange).toHaveBeenCalledWith("full");
         expect(document.activeElement).toBe(selector);
+    });
+
+    it("keeps the current mode when the full-control confirmation is cancelled", () => {
+        const onPermissionModeChange = vi.fn();
+        renderLeft({ permissionMode: "request", onPermissionModeChange });
+
+        const selector = screen.getByTestId("ai-permission-mode");
+        fireEvent.click(selector);
+        fireEvent.click(screen.getByRole("menuitemradio", { name: "完全控制" }));
+        expect(screen.getByTestId("ai-full-control-confirm-dialog")).toBeTruthy();
+
+        fireEvent.click(screen.getByTestId("ai-full-control-confirm-cancel"));
+        expect(onPermissionModeChange).not.toHaveBeenCalled();
+        expect(screen.queryByTestId("ai-full-control-confirm-dialog")).toBeNull();
+        expect(document.activeElement).toBe(selector);
+    });
+
+    it("renders the full risk-warning content inside the confirmation dialog", () => {
+        const onPermissionModeChange = vi.fn();
+        renderLeft({ permissionMode: "request", onPermissionModeChange });
+
+        fireEvent.click(screen.getByTestId("ai-permission-mode"));
+        fireEvent.click(screen.getByRole("menuitemradio", { name: "完全控制" }));
+
+        const dialog = screen.getByTestId("ai-full-control-confirm-dialog");
+        expect(dialog.getAttribute("role")).toBe("alertdialog");
+        expect(dialog.textContent).toContain("确认允许完全访问?");
+        expect(dialog.textContent).toContain("文件操作");
+        expect(dialog.textContent).toContain("读取、创建、修改、上传或删除此计算机上任意位置的文件");
+        expect(dialog.textContent).toContain("终端命令");
+        expect(dialog.textContent).toContain("访问互联网");
+        expect(dialog.textContent).toContain("我已了解风险，并对自己的数据安全负责");
+        expect(dialog.textContent).toContain("全局持久生效");
+        // Without a workspace option in the menu, the copy must not reference it.
+        expect(dialog.textContent).not.toContain("工作区信任");
+        expect(dialog.getAttribute("aria-describedby")).toBeTruthy();
+    });
+
+    it("requires checking the acknowledgment box before allowing full access", () => {
+        const onPermissionModeChange = vi.fn();
+        renderLeft({ permissionMode: "request", onPermissionModeChange });
+
+        fireEvent.click(screen.getByTestId("ai-permission-mode"));
+        fireEvent.click(screen.getByRole("menuitemradio", { name: "完全控制" }));
+
+        const checkbox = screen.getByRole("checkbox", { name: "我已了解风险，并对自己的数据安全负责" });
+        const accept = screen.getByTestId("ai-full-control-confirm-accept") as HTMLButtonElement;
+        expect(accept.disabled).toBe(true);
+        fireEvent.click(accept);
+        expect(onPermissionModeChange).not.toHaveBeenCalled();
+
+        fireEvent.click(checkbox);
+        expect((screen.getByTestId("ai-full-control-confirm-accept") as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    it("mentions Workspace trust in the warning only when the menu offers it", () => {
+        renderLeft({ permissionMode: "request", showWorkspacePermissionOption: true });
+
+        fireEvent.click(screen.getByTestId("ai-permission-mode"));
+        // With the workspace option the item's accessible name includes its hint.
+        fireEvent.click(screen.getByRole("menuitemradio", { name: /完全控制/ }));
+
+        expect(screen.getByTestId("ai-full-control-confirm-dialog").textContent).toContain("工作区信任");
+    });
+
+    it("dismisses the full-control confirmation with Escape or overlay click", () => {
+        const onPermissionModeChange = vi.fn();
+        renderLeft({ permissionMode: "request", onPermissionModeChange });
+
+        const selector = screen.getByTestId("ai-permission-mode");
+        fireEvent.click(selector);
+        fireEvent.click(screen.getByRole("menuitemradio", { name: "完全控制" }));
+
+        fireEvent.keyDown(window, { key: "Escape" });
+        expect(screen.queryByTestId("ai-full-control-confirm-dialog")).toBeNull();
+        expect(onPermissionModeChange).not.toHaveBeenCalled();
+
+        fireEvent.click(selector);
+        fireEvent.click(screen.getByRole("menuitemradio", { name: "完全控制" }));
+        fireEvent.pointerDown(screen.getByTestId("ai-full-control-confirm-overlay"));
+        expect(screen.queryByTestId("ai-full-control-confirm-dialog")).toBeNull();
+        expect(onPermissionModeChange).not.toHaveBeenCalled();
+    });
+
+    it("focuses Cancel by default and keeps Tab cycling inside the full-control confirmation", async () => {        const onPermissionModeChange = vi.fn();
+        renderLeft({ permissionMode: "request", onPermissionModeChange });
+
+        const selector = screen.getByTestId("ai-permission-mode");
+        fireEvent.click(selector);
+        fireEvent.click(screen.getByRole("menuitemradio", { name: "完全控制" }));
+
+        await vi.waitFor(() => expect(document.activeElement).toBe(screen.getByTestId("ai-full-control-confirm-cancel")));
+        // While the acknowledgment is unchecked, the disabled accept button is
+        // skipped and Tab cycles between Cancel and the checkbox.
+        fireEvent.keyDown(document.activeElement!, { key: "Tab" });
+        expect(document.activeElement).toBe(screen.getByRole("checkbox"));
+        fireEvent.keyDown(document.activeElement!, { key: "Tab" });
+        expect(document.activeElement).toBe(screen.getByTestId("ai-full-control-confirm-cancel"));
+        expect(onPermissionModeChange).not.toHaveBeenCalled();
     });
 
     it("hides the permission selector when the host surface does not support changing it", () => {

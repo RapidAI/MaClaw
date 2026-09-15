@@ -120,6 +120,25 @@ func TestBalanceProviderRoutesGroupsByMultiplierThenScore(t *testing.T) {
 	}
 }
 
+func TestBalanceProviderRoutesWRRSameCapabilityDifferentPriority(t *testing.T) {
+	sched := NewWRRScheduler()
+	candidates := []BalanceCandidate{
+		{Route: DispatchProviderRoute{ProviderID: "low-pri", Priority: 1}, Score: 800, ResolutionTier: 1, EffectiveMultiplier: 1, Sequence: 1, MaxConcurrency: 10},
+		{Route: DispatchProviderRoute{ProviderID: "high-pri", Priority: 90}, Score: 800, ResolutionTier: 1, EffectiveMultiplier: 1, Sequence: 2, MaxConcurrency: 10},
+	}
+	first := BalanceProviderRoutes(sched, "auto", candidates)
+	second := BalanceProviderRoutes(sched, "auto", candidates)
+	if len(first) != 2 || first[0].Route.ProviderID != "low-pri" {
+		t.Fatalf("first pick = %#v, want sequence-1 low-pri", first)
+	}
+	if first[0].BandKey != first[1].BandKey {
+		t.Fatalf("band keys = %s,%s want same-tag siblings in one WRR band", first[0].BandKey, first[1].BandKey)
+	}
+	if second[0].Route.ProviderID != "high-pri" {
+		t.Fatalf("second pick = %s, want high-pri so priority does not pin one vendor", second[0].Route.ProviderID)
+	}
+}
+
 func TestBalanceProviderRoutesWRRThenSequenceFailover(t *testing.T) {
 	sched := NewWRRScheduler()
 	candidates := []BalanceCandidate{

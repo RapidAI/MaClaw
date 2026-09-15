@@ -183,6 +183,9 @@ export type AssistantInputIconName =
     | "monitor"
     | "shieldCheck"
     | "alertTriangle"
+    | "alertCircle"
+    | "terminal"
+    | "globe"
     | "folder";
 
 export function AssistantInputIcon({ name, size = 17 }: { name: AssistantInputIconName; size?: number }) {
@@ -324,6 +327,27 @@ export function AssistantInputIcon({ name, size = 17 }: { name: AssistantInputIc
                     <path {...common} d="m12 3 9 17H3L12 3Z" />
                     <path {...common} d="M12 9v4" />
                     <path {...common} d="M12 17h.01" />
+                </>
+            )}
+            {name === "alertCircle" && (
+                <>
+                    <circle {...common} cx="12" cy="12" r="9" />
+                    <path {...common} d="M12 8v4" />
+                    <path {...common} d="M12 16h.01" />
+                </>
+            )}
+            {name === "terminal" && (
+                <>
+                    <rect {...common} x="3" y="4" width="18" height="16" rx="2" />
+                    <path {...common} d="m7 9 3 3-3 3" />
+                    <path {...common} d="M13 15h4" />
+                </>
+            )}
+            {name === "globe" && (
+                <>
+                    <circle {...common} cx="12" cy="12" r="9" />
+                    <path {...common} d="M3 12h18" />
+                    <path {...common} d="M12 3a15 15 0 0 1 4 9 15 15 0 0 1-4 9 15 15 0 0 1-4-9 15 15 0 0 1 4-9Z" />
                 </>
             )}
             {name === "folder" && (

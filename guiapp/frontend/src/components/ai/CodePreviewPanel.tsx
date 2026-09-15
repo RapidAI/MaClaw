@@ -22,9 +22,8 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { CodeFileDiffStat, FileTabBar, cycleFilePath } from './FileTabBar';
 import { CodePreviewFileListButton } from './CodePreviewFileList';
-import { PptxPreviewPanel, isPptxFileName } from './PptxPreviewPanel';
-import { PdfPreviewPanel, isPdfFileName } from './PdfPreviewPanel';
 import { PreviewFileActions } from './PreviewFileActions';
+import { FilePreviewView, filePreviewUsesSpecialRenderer, isAssistantSourcePreview, isVisualFilePreview } from '../preview/FilePreviewView';
 import type { CodePreviewTheme } from './FileTabBar';
 import type { CodeFile } from './useCodePreviewState';
 import { codeFileLineDeltaHasChange, computeCodeFileLineDelta, getDisplayFilePaths, getMruCycleOrder, isCodeFileDirty, shouldDismissEmptyPreviewWithoutWorkspace } from './useCodePreviewState';
@@ -32,12 +31,12 @@ import { computeDiff } from './diffCompute';
 import type { DiffLine } from './diffCompute';
 import { tokenizeLine } from './syntaxHighlight';
 import type { HighlightToken } from './syntaxHighlight';
-import { MarkdownPreview } from './CodePreviewMarkdown';
 import { CodePreviewMinimap } from './CodePreviewMinimap';
 import { CodePreviewWorkspace } from './CodePreviewWorkspace';
 import { CloudWorkspaceEntitlement } from '../../../wailsjs/go/main/App';
 import { cloudWorkspaceIdFromPath, lookupCloudWorkspaceDisplayName, rememberCloudWorkspaceDisplayNames, FOCUS_CLOUD_WORKSPACE_TREE_EVENT } from './codingTaskMode';
 import { relativeLuminance, type Theme } from './aiAssistantPanelTheme';
+import { markdownPreviewIsDark } from './markdownPreviewInk';
 import {
     CODE_PREVIEW_FONT_DEFAULT,
     CODE_PREVIEW_FONT_MAX,
@@ -77,6 +76,11 @@ export {
 
 // ── Theme Constants ──
 
+/** Light-mode editor chrome: gutter, minimap, path bar, tab strip. Neutral gray, not the chat's blue wash. */
+export const LIGHT_EDITOR_CHROME_BG = '#f5f5f5';
+export const LIGHT_EDITOR_CHROME_BORDER = '#e4e4e4';
+const LIGHT_EDITOR_CHROME_HOVER = '#eeeeee';
+
 /** Dark theme for the code preview panel. */
 export const darkCodePreviewTheme: CodePreviewTheme = {
     bg: '#0f1720',
@@ -107,13 +111,13 @@ export const lightCodePreviewTheme: CodePreviewTheme = {
     bg: '#ffffff',
     text: '#1f2937',
     textMuted: '#64748b',
-    border: '#d8dee8',
-    lineNumBg: '#f8fafc',
+    border: LIGHT_EDITOR_CHROME_BORDER,
+    lineNumBg: LIGHT_EDITOR_CHROME_BG,
     lineNumText: '#94a3b8',
-    tabBg: '#f8fafc',
+    tabBg: LIGHT_EDITOR_CHROME_BG,
     tabActiveBg: '#ffffff',
     tabActiveText: '#111827',
-    tabHoverBg: '#eef2f7',
+    tabHoverBg: LIGHT_EDITOR_CHROME_HOVER,
     diffAddBg: 'rgba(79, 127, 111, 0.12)',
     diffAddText: '#4f7f6f',
     diffDeleteBg: 'rgba(196, 61, 52, 0.10)',
@@ -130,26 +134,40 @@ export const lightCodePreviewTheme: CodePreviewTheme = {
 /**
  * Derive the source-preview palette from the active assistant scheme.
  *
- * The preview used to select one of the two fixed palettes above purely from
- * light/dark mode. That meant alternate assistant schemes changed the chat but
- * left the source review surface looking like it belonged to another app.
+ * Light canvases keep a neutral editor (white paper, gray chrome) so the
+ * chat's blue washes do not surround the source. Ink and syntax still follow
+ * the active scheme. Dark canvases keep scheme surfaces, including when
+ * `isDark` is omitted.
  */
 export function createCodePreviewTheme(theme: Theme): CodePreviewTheme {
     const isDark = theme.isDark === true;
     const success = isDark ? '#7aa89a' : '#3f685b';
     const successBg = `color-mix(in srgb, ${success} ${isDark ? 18 : 12}%, ${theme.fieldBg})`;
+    const canvasIsDark = markdownPreviewIsDark(theme.bg);
+    const chrome = canvasIsDark
+        ? {
+            bg: theme.bg,
+            border: theme.divider,
+            lineNumBg: theme.codeBg,
+            tabBg: theme.bg,
+            tabActiveBg: theme.fieldBg,
+            tabHoverBg: `color-mix(in srgb, ${theme.btnColor} 14%, ${theme.titleBarBg})`,
+        }
+        : {
+            bg: lightCodePreviewTheme.bg,
+            border: lightCodePreviewTheme.border,
+            lineNumBg: lightCodePreviewTheme.lineNumBg,
+            tabBg: lightCodePreviewTheme.tabBg,
+            tabActiveBg: lightCodePreviewTheme.tabActiveBg,
+            tabHoverBg: lightCodePreviewTheme.tabHoverBg,
+        };
 
     return {
-        bg: theme.bg,
         text: theme.text,
         textMuted: theme.textMuted,
-        border: theme.divider,
-        lineNumBg: theme.codeBg,
+        ...chrome,
         lineNumText: theme.textMuted,
-        tabBg: theme.bg,
-        tabActiveBg: theme.fieldBg,
         tabActiveText: theme.headingColor,
-        tabHoverBg: `color-mix(in srgb, ${theme.btnColor} ${isDark ? 14 : 8}%, ${theme.titleBarBg})`,
         diffAddBg: successBg,
         diffAddText: success,
         diffDeleteBg: theme.errorBg,
@@ -210,6 +228,11 @@ export interface CodePreviewPanelProps {
     cloudWorkspaceName?: string;
     /** Preview pane already has a close control; hide the inner header X. */
     hideHeaderClose?: boolean;
+    /**
+     * Embed in another panel (mobile library, dialogs). Hides the file-tab
+     * header and workspace explorer so only find / go-to-line / content remain.
+     */
+    embedded?: boolean;
     /** Hosting preview pane is expanded to full window width. */
     previewExpanded?: boolean;
     /** Toggle the hosting preview pane between split width and full width. */
@@ -267,22 +290,9 @@ function CloudWorkspaceNameLabel({ name, theme, compact = false }: { name: strin
     );
 }
 
-/** True when the file should render with the markdown preview (case-insensitive). */
-function isMarkdownLanguage(language: string | undefined | null): boolean {
-    const key = (language || '').trim().toLowerCase();
-    return key === 'markdown' || key === 'md';
-}
-
-function previewFileName(file: Pick<CodeFile, 'fileName' | 'filePath'> | undefined): string {
-    return file?.fileName || file?.filePath || '';
-}
-
 function isVisualDocumentPreview(file: Pick<CodeFile, 'fileName' | 'filePath' | 'absPath' | 'language'> | undefined): boolean {
-    if (!file) return false;
-    const name = previewFileName(file);
-    if (isPptxFileName(name) && file.absPath) return true;
-    if (isPdfFileName(name) || file.language === 'pdf') return true;
-    return false;
+    if (!file || isAssistantSourcePreview(file)) return false;
+    return isVisualFilePreview(file);
 }
 
 // ── Syntax color mapping ──
@@ -745,7 +755,8 @@ const DiffView = React.memo(function DiffView({
     );
 });
 
-/** Compact view toolbar: wrap + font zoom + minimap. */
+/** Compact view toolbar: wrap + font zoom + minimap. Hosts set the row font
+ * (e.g. the path breadcrumb is monospace), so pin the UI font stack here. */
 function CodePreviewViewToolbar({
     wordWrap,
     fontSize,
@@ -786,13 +797,12 @@ function CodePreviewViewToolbar({
     return (
         <div
             data-testid="code-preview-view-toolbar"
-            data-preview-no-maximize="true"
             style={{
                 display: 'flex',
                 alignItems: 'center',
                 gap: 4,
-                marginLeft: 4,
                 flexShrink: 0,
+                fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', 'Roboto', 'Helvetica Neue', sans-serif",
             }}
         >
             <button
@@ -996,6 +1006,7 @@ export function CodePreviewPanel({
     cloudMode = false,
     cloudWorkspaceName = '',
     hideHeaderClose = false,
+    embedded = false,
     previewExpanded = false,
     onTogglePreviewExpand,
 }: CodePreviewPanelProps) {
@@ -1023,7 +1034,7 @@ export function CodePreviewPanel({
     // Every source-preview opening starts with the project tree. Source files
     // remain open beside it, but never replace the confirmation that a local
     // or remote working directory is available.
-    const [workspaceActive, setWorkspaceActive] = useState(() => Boolean(projectPath));
+    const [workspaceActive, setWorkspaceActive] = useState(() => !embedded && Boolean(projectPath));
     const handleHeaderDoubleClick = (event: React.MouseEvent<HTMLElement>) => {
         if (isPreviewHeaderInteractiveTarget(event.target, event.currentTarget)) return;
         onToggleMaximize?.();
@@ -1089,8 +1100,12 @@ export function CodePreviewPanel({
     }, [cloudMode]);
 
     useEffect(() => {
+        if (embedded) {
+            setWorkspaceActive(false);
+            return;
+        }
         if (!activeFilePath || !files.has(activeFilePath)) setWorkspaceActive(true);
-    }, [activeFilePath, files]);
+    }, [activeFilePath, embedded, files]);
 
     // Last file closed and there is no working directory to fall back to:
     // dismiss the preview the same way as the header close button, instead of
@@ -1158,9 +1173,10 @@ export function CodePreviewPanel({
     }, [onSelectFile, focusFileTab]);
 
     const activateWorkspaceTab = useCallback(() => {
+        if (embedded) return;
         setWorkspaceActive(true);
         workspaceTabRef.current?.focus();
-    }, []);
+    }, [embedded]);
 
     // Compute diff lines when active file has original content
     const diffLines = useMemo<DiffLine[] | null>(() => {
@@ -1533,6 +1549,22 @@ export function CodePreviewPanel({
         };
     }, [activeFilePath, currentContent]);
 
+    // Shared by the embedded toolbar row and the path breadcrumb row.
+    const viewToolbar = (
+        <CodePreviewViewToolbar
+            wordWrap={wordWrap}
+            fontSize={fontSize}
+            minimap={minimap}
+            theme={theme}
+            lang={lang}
+            onToggleWrap={toggleWordWrap}
+            onToggleMinimap={toggleMinimap}
+            onZoomIn={zoomIn}
+            onZoomOut={zoomOut}
+            onZoomReset={zoomReset}
+        />
+    );
+
     // Empty state: no files
     if (files.size === 0) {
         if (shouldDismissEmptyPreviewWithoutWorkspace(files.size, projectPath)) return null;
@@ -1665,6 +1697,7 @@ export function CodePreviewPanel({
                 color: theme.text,
             }}>
             {/* Header with close button - double-click empty area to toggle maximize */}
+            {!embedded ? (
             <div
                 data-testid="code-preview-header"
                 onDoubleClick={handleHeaderDoubleClick}
@@ -1769,20 +1802,6 @@ export function CodePreviewPanel({
                         />
                     </div>
                 </div>
-                {!workspaceActive && !isVisualDocumentPreview(activeFile) ? (
-                <CodePreviewViewToolbar
-                    wordWrap={wordWrap}
-                    fontSize={fontSize}
-                    minimap={minimap}
-                    theme={theme}
-                    lang={lang}
-                    onToggleWrap={toggleWordWrap}
-                    onToggleMinimap={toggleMinimap}
-                    onZoomIn={zoomIn}
-                    onZoomOut={zoomOut}
-                    onZoomReset={zoomReset}
-                />
-                ) : null}
                 {onTogglePreviewExpand ? (
                 <button
                     type="button"
@@ -1831,9 +1850,24 @@ export function CodePreviewPanel({
                 </button>
                 ) : null}
             </div>
+            ) : !isVisualDocumentPreview(activeFile) ? (
+                <div
+                    data-testid="code-preview-embedded-toolbar"
+                    style={{
+                        display: 'flex',
+                        justifyContent: 'flex-end',
+                        padding: '4px 8px',
+                        borderBottom: `1px solid ${theme.border}`,
+                        background: theme.tabBg,
+                        flexShrink: 0,
+                    }}
+                >
+                    {viewToolbar}
+                </div>
+            ) : null}
 
             {/* Active file path breadcrumb (VS Code-style status under tabs) */}
-            {!workspaceActive && activeFile && (
+            {!embedded && !workspaceActive && activeFile && (
                 <div
                     data-testid="code-preview-active-path"
                     title={cloudMode ? activeFile.filePath : (activeFile.absPath || activeFile.filePath)}
@@ -1849,6 +1883,10 @@ export function CodePreviewPanel({
                         lineHeight: 1.4,
                         flexShrink: 0,
                         minWidth: 0,
+                        // The toolbar + badges + actions outgrow very narrow panes;
+                        // wrap them under the path instead of clipping.
+                        flexWrap: 'wrap',
+                        rowGap: 2,
                         fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
                     }}
                 >
@@ -1861,6 +1899,9 @@ export function CodePreviewPanel({
                     }}>
                         {cloudMode ? activeFile.filePath : (activeFile.absPath || activeFile.filePath)}
                     </span>
+                    {/* View toolbar lives on the path row, not the tab row, so narrow
+                        panes never squeeze the file tabs against the right-side controls. */}
+                    {!isVisualDocumentPreview(activeFile) && viewToolbar}
                     <span
                         data-testid="code-preview-lang-badge"
                         style={{
@@ -1997,17 +2038,15 @@ export function CodePreviewPanel({
                 >
                     {workspaceActive ? (
                         <CodePreviewWorkspace projectPath={projectPath} refreshToken={workspaceRefreshToken} resetOnRefresh={workspaceResetOnRefresh} cloudMode={cloudMode} hideTitle lang={lang} theme={theme} onOpenFile={openWorkspaceFile} onFileDeleted={handleWorkspaceFileDeleted} />
-                    ) : activeFile && isPptxFileName(activeFile.fileName || activeFile.filePath) && activeFile.absPath ? (
-                        <PptxPreviewPanel key={`${activeFile.filePath}:${activeFile.updatedAt}`} absPath={activeFile.absPath} theme={theme} lang={lang} />
-                    ) : activeFile && (isPdfFileName(previewFileName(activeFile)) || activeFile.language === 'pdf') ? (
-                        <PdfPreviewPanel
-                            key={`${activeFile.filePath}:${activeFile.updatedAt}`}
-                            absPath={activeFile.absPath || activeFile.filePath}
+                    ) : (
+                        <FilePreviewView
+                            file={activeFile}
                             theme={theme}
                             lang={lang}
-                        />
-                    ) : activeFile ? (
-                        diffLines ? (
+                            matchLineIndexes={matchLineIndexes}
+                            activeMatchLine={activeMatchLine}
+                        >
+                    {activeFile && diffLines && !isVisualDocumentPreview(activeFile) ? (
                             <DiffView
                                 diffLines={diffLines}
                                 theme={theme}
@@ -2016,16 +2055,7 @@ export function CodePreviewPanel({
                                 wordWrap={wordWrap}
                                 fontSize={fontSize}
                             />
-                        ) : isMarkdownLanguage(activeFile.language) ? (
-                            <div style={{ fontSize: clampCodePreviewFontSize(fontSize) }}>
-                                <MarkdownPreview
-                                    content={activeFile.content}
-                                    theme={theme}
-                                    matchLineIndexes={matchLineIndexes}
-                                    activeMatchLine={activeMatchLine}
-                                />
-                            </div>
-                        ) : (
+                    ) : activeFile && !filePreviewUsesSpecialRenderer(activeFile) ? (
                             <PlainCodeView
                                 content={activeFile.content}
                                 language={activeFile.language}
@@ -2035,8 +2065,7 @@ export function CodePreviewPanel({
                                 wordWrap={wordWrap}
                                 fontSize={fontSize}
                             />
-                        )
-                    ) : (
+                    ) : activeFile ? null : (
                         <div style={{
                             padding: 20,
                             color: theme.textMuted,
@@ -2045,6 +2074,8 @@ export function CodePreviewPanel({
                         }}>
                             File not found
                         </div>
+                    )}
+                        </FilePreviewView>
                     )}
                 </div>
                 {minimap && !workspaceActive && activeFile && !isVisualDocumentPreview(activeFile) ? (

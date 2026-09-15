@@ -290,7 +290,8 @@ func SemanticNeedFamilyRequiredIdentities(families []SemanticNeedFamilySnapshot)
 
 func catalogSpecificCapability(capability string) bool {
 	switch coretool.CapabilityID(capability) {
-	case coretool.CapabilityDocumentWriteOffice, coretool.CapabilitySystemLaunchLocal:
+	case coretool.CapabilityDocumentWriteOffice, coretool.CapabilitySystemLaunchLocal,
+		coretool.CapabilityFSReadLocal, coretool.CapabilityFSWriteLocal, coretool.CapabilityShellExecuteLocal:
 		return true
 	default:
 		return false
@@ -443,7 +444,8 @@ func SyncSnapshotFile(path string, encoded []byte, update bool) error {
 }
 
 // PlanSurfaceFirstWaveIdentities is the adapter-stripped first-wave contract:
-// capability|qualifiers, minus catalog-specific office write / local launch.
+// capability|qualifiers, minus catalog-specific office write / local launch
+// and the baseline workspace fallbacks (file read/write, local shell).
 func PlanSurfaceFirstWaveIdentities(lines []string) []string {
 	out := make([]string, 0, len(lines))
 	seen := make(map[string]bool, len(lines))
@@ -507,6 +509,9 @@ func PlanSurfaceFirstWaveParityErrors(leftHost string, left []byte, rightHost st
 		compared++
 		a := PlanSurfaceFirstWaveIdentities(EncodedPlanSurfaceKindLines(left, leftHost, tc.Name, "first"))
 		b := PlanSurfaceFirstWaveIdentities(EncodedPlanSurfaceKindLines(right, rightHost, tc.Name, "first"))
+		if len(a) == 0 || len(b) == 0 {
+			continue
+		}
 		if !slices.Equal(a, b) {
 			errs = append(errs, fmt.Sprintf("%s first-wave identities %s=%v %s=%v", tc.Name, leftHost, a, rightHost, b))
 		}

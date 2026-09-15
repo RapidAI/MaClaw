@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
     assistantLiveActivityFromToolName,
     assistantLiveActivityLabel,
+    assistantLiveActivityObject,
     assistantLiveReasoningSource,
     assistantMessageOwnsLiveActivity,
     codingTimelineLiveThoughtIndex,
+    extractInFlightToolName,
     isGenericCodingLiveKind,
     parseLiveActivityFromProgressText,
     reasoningHasModelThought,
@@ -233,5 +235,53 @@ describe('assistantLiveActivity', () => {
         })).toBe('正在思考');
         expect(isGenericCodingLiveKind('thinking')).toBe(true);
         expect(isGenericCodingLiveKind('editing_file')).toBe(false);
+    });
+
+    it('formats the live object after the action without changing the action copy', () => {
+        expect(assistantLiveActivityLabel('accessing_model', 'zh-Hans')).toBe('正在访问模型');
+        expect(assistantLiveActivityObject('accessing_model', 'zh-Hans', {
+            providerName: 'hub-official',
+            modelId: 'auto',
+            isHubService: true,
+        })).toBe('MaClaw官方 auto 模型');
+        expect(assistantLiveActivityObject('accessing_model', 'en', {
+            providerName: 'hub-official',
+            modelId: 'auto',
+            isHubService: true,
+        })).toBe('MaClaw official auto model');
+        expect(assistantLiveActivityObject('calling_tool', 'zh-Hans', { toolName: 'ssh' })).toBe('ssh 工具');
+        expect(assistantLiveActivityObject('calling_tool', 'zh-Hans', { toolName: 'nsfc-figure' })).toBe('nsfc-figure 工具');
+        expect(assistantLiveActivityObject('remote_exec', 'zh-Hans', { toolName: 'ssh' })).toBe('ssh 工具');
+        expect(assistantLiveActivityObject('fetching_page', 'zh-Hans', { toolName: 'web_fetch' })).toBe('');
+        expect(assistantLiveActivityObject('listing_dir', 'zh-Hans', { toolName: 'list_dir' })).toBe('');
+        expect(assistantLiveActivityObject('fetching_page', 'zh-Hans', { toolName: 'download_file' })).toBe('download_file 工具');
+        expect(assistantLiveActivityObject('thinking', 'zh-Hans', { modelId: 'auto', toolName: 'ssh' })).toBe('');
+    });
+
+    it('reads the in-flight tool name from coding events and progress lines', () => {
+        expect(extractInFlightToolName({
+            codingProgress: { event: 'tool_started', detail: 'ssh' },
+        })).toBe('ssh');
+        expect(extractInFlightToolName({
+            progressMessages: [{ content: '正在执行工具: web_fetch' }],
+        })).toBe('web_fetch');
+        expect(extractInFlightToolName({
+            progressMessages: [{ content: '工具 · bash' }],
+        })).toBe('bash');
+        expect(extractInFlightToolName({
+            progressMessages: [{ content: '工具 · 写入文件' }],
+        })).toBe('');
+        expect(extractInFlightToolName({
+            reasoningText: '[Status] 正在执行工具: ssh',
+        })).toBe('ssh');
+        expect(extractInFlightToolName({
+            progressMessages: [
+                { content: '正在执行工具: web_fetch' },
+                { content: '正在执行工具，请稍候...' },
+            ],
+        })).toBe('');
+        expect(extractInFlightToolName({
+            reasoningText: '[Status] 正在执行工具: web_fetch\nNeed to inspect the host.',
+        })).toBe('');
     });
 });

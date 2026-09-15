@@ -6106,6 +6106,13 @@ details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg);
     background: var(--theme-surface-muted);
 }
 
+.knowledge-row-delete {
+    flex-shrink: 0;
+    min-height: 28px;
+    padding: 4px 10px;
+    font-size: 0.75rem;
+}
+
 .knowledge-row--preview {
     display: block;
 }
@@ -19820,9 +19827,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 
 /* Task execution workspace surface */
 .mc-task-execution { background: #ffffff !important; }
-.mc-task-execution .assistant-reasoning-panel { border: 1px solid #c9ddf6 !important; border-radius: 12px !important; background: #fff !important; }
 .mc-task-execution [data-testid='markdown-table-block'] { background: #fff; box-shadow: 0 2px 8px rgba(35,55,80,.04); }
-.mc-task-execution [data-testid='assistant-reasoning-summary'] { color: #526174 !important; }
 
 /* The task pane heading is rendered by the new sidebar header.  Do not add a
    generated legacy "我的任务" label here; it duplicates the action row and
@@ -20812,6 +20817,17 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 .mc-workbench-status-card__row strong { color: #243447; font-size: 13px; font-weight: 650; text-align: right; }
 .mc-workbench-status-card__limits { display: flex; flex-direction: column; align-items: flex-end; line-height: 1.55; }
 .mc-workbench-status-card__limits > span { display: block; white-space: nowrap; }
+.mc-workbench-status-card__jobs-row { min-height: 28px; }
+.mc-workbench-status-card__row.mc-workbench-status-card__jobs-row strong.mc-workbench-status-card__jobs {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.3;
+}
 .mc-workbench-status-card__model strong { color: #334155; font-weight: 600; }
 .mc-workbench-status-card__model strong span { color: #1769e8; font-size: 15px; }
 .mc-workbench-status-card__meter { height: 6px; margin: 3px 0 8px; overflow: hidden; border-radius: 99px; background: #e7edf5; }
@@ -22089,9 +22105,6 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 .remote-session-list[data-session-tab='background'] .remote-monitor-empty-state {
   min-height: clamp(220px, 30vh, 340px);
 }
-.remote-session-panel--remote .remote-monitor-empty-state--remote {
-  min-height: clamp(220px, 30vh, 340px);
-}
 /* Keep the monitor card anchored below the global header. The empty-state
    body owns its own vertical centering, so the whole page does not float. */
 .remote-sessions-page__scroll:has(.remote-session-list[data-session-tab='background'] .remote-monitor-empty-state) {
@@ -22239,12 +22252,10 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   background: color-mix(in srgb, var(--mc-preview-surface-border-active, #c8c8c8) 40%, transparent) !important;
 }
 .mc-file-tab-bar {
-  background: var(--mc-preview-surface-bg, #fff) !important;
   border-bottom: 1px solid var(--mc-preview-surface-border, #e4e4e4);
 }
 .mc-file-tab-bar [data-testid='file-tab-overflow-btn'] {
   border-left-color: var(--mc-preview-surface-border, #e4e4e4) !important;
-  background: var(--mc-preview-surface-bg, #fff) !important;
 }
 .mc-file-tab-bar:focus-visible {
   outline: 2px solid var(--mc-preview-surface-border-active, #c8c8c8);
@@ -23552,7 +23563,6 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 #App .mc-welcome .welcome-composer,
 #App .mc-execution-timeline,
 #App [data-testid='coding-step-statuses'],
-#App .mc-task-execution .assistant-reasoning-panel,
 #App .mc-task-execution [data-testid='confirmation-card'],
 #App .mc-task-execution [data-testid='recoverable-session-card'],
 #App .mc-task-execution [data-testid='unfinished-slot-card'] {
@@ -23583,6 +23593,88 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   background: color-mix(in srgb, var(--mc-accent) 9%, var(--mc-surface)) !important;
   border-color: var(--mc-accent) !important;
   color: var(--mc-accent-strong) !important;
+}
+/* Queue actions share the composer card with the 34px toolbar lock.
+   Keep them as one compact 24px set; this block must follow the lock. */
+.mc-input-stack button.ai-queue-action,
+#App .mc-input-stack button.ai-queue-action {
+  min-width: 24px !important;
+  min-height: 24px !important;
+  width: 24px !important;
+  height: 24px !important;
+  padding: 0 !important;
+  border-radius: 8px !important;
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+}
+.mc-input-stack button.ai-queue-action:focus-visible,
+#App .mc-input-stack button.ai-queue-action:focus-visible,
+.mc-input-stack button.ai-queue-text-action:focus-visible,
+#App .mc-input-stack button.ai-queue-text-action:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--mc-accent, #1769e8) 48%, transparent);
+  outline-offset: 1px;
+}
+.mc-input-stack button.ai-queue-action--accent,
+#App .mc-input-stack button.ai-queue-action--accent {
+  color: var(--mc-accent, #1769e8) !important;
+  border-color: color-mix(in srgb, var(--mc-accent, #1769e8) 42%, var(--mc-line, #dfe6ef)) !important;
+  background: color-mix(in srgb, var(--mc-accent, #1769e8) 8%, var(--mc-surface, #fff)) !important;
+}
+#App[data-ai-theme='dark'] .mc-input-stack button.ai-queue-action--accent {
+  color: var(--theme-primary) !important;
+  border-color: var(--theme-border) !important;
+  background: color-mix(in srgb, var(--theme-primary) 12%, var(--theme-surface)) !important;
+}
+.mc-input-stack button.ai-queue-action--send,
+#App .mc-input-stack button.ai-queue-action--send {
+  background: var(--mc-accent, #1769e8) !important;
+  border-color: var(--mc-accent, #1769e8) !important;
+  color: #fff !important;
+}
+.mc-input-stack button.ai-queue-action--send:hover:not(:disabled),
+#App .mc-input-stack button.ai-queue-action--send:hover:not(:disabled) {
+  background: var(--mc-accent-strong, #0d5dcc) !important;
+  border-color: var(--mc-accent-strong, #0d5dcc) !important;
+  color: #fff !important;
+}
+#App[data-ai-theme='dark'] .mc-input-stack button.ai-queue-action--send,
+#App[data-ai-theme='dark'] .mc-input-stack button.ai-queue-action--send:hover:not(:disabled) {
+  background: var(--theme-primary) !important;
+  border-color: var(--theme-primary) !important;
+  color: var(--theme-on-primary, #fff) !important;
+}
+.mc-input-stack button.ai-queue-action--danger:hover:not(:disabled),
+#App .mc-input-stack button.ai-queue-action--danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--theme-danger, #c43d34) 10%, var(--mc-surface, #fff)) !important;
+  border-color: color-mix(in srgb, var(--theme-danger, #c43d34) 42%, var(--mc-line, #dfe6ef)) !important;
+  color: var(--theme-danger, #c43d34) !important;
+}
+.mc-input-stack button.ai-queue-text-action,
+#App .mc-input-stack button.ai-queue-text-action {
+  min-width: 36px !important;
+  width: auto !important;
+  min-height: 24px !important;
+  height: 24px !important;
+  padding: 0 8px !important;
+  border-radius: 8px !important;
+  font-size: 11px !important;
+}
+.mc-input-stack button.ai-queue-chip-remove,
+.mc-input-stack button.ai-queue-chip-remove:hover:not(:disabled),
+#App .mc-input-stack button.ai-queue-chip-remove,
+#App .mc-input-stack button.ai-queue-chip-remove:hover:not(:disabled),
+#App[data-ai-theme='dark'] .mc-input-stack button.ai-queue-chip-remove {
+  min-width: 16px !important;
+  width: 16px !important;
+  min-height: 16px !important;
+  height: 16px !important;
+  padding: 0 !important;
+  border: none !important;
+  background: transparent !important;
+  border-radius: 4px !important;
+  box-shadow: none !important;
 }
 /* Full control is the dangerous permission: keep the trigger visibly red
    (warning icon inherits currentColor) despite the neutral composer button

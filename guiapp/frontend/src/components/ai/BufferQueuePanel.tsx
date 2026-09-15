@@ -1,8 +1,10 @@
 import React, { useState, useCallback, useRef } from "react";
 import { AIAssistantAttachmentPreviewDataURL } from "../../../wailsjs/go/main/App";
 import { BufferEntry, AttachmentInfo, getTextPreview } from "./useBufferQueue";
-import { AssistantInputIcon } from "./aiAssistantPanelTheme";
+import { AssistantInputIcon, getInputActionButtonStyle, type Theme } from "./aiAssistantPanelTheme";
 import { insertTextareaLineBreak, isLineBreakShortcut, isPlainEnter } from "./assistantInputShortcuts";
+
+export type { Theme };
 
 // ---------------------------------------------------------------------------
 // Localization helper (same pattern as AIAssistantPanel)
@@ -15,20 +17,39 @@ const localizeText = (
     zhHant: string = zhHans,
 ) => (lang === "zh-Hant" ? zhHant : lang?.startsWith("zh") ? zhHans : en);
 
-// ---------------------------------------------------------------------------
-// Theme interface (subset of AIAssistantPanel Theme used by this component)
-// ---------------------------------------------------------------------------
+/** Compact size so queue actions match each other without the 34px toolbar lock. */
+export const QUEUE_ACTION_BTN_SIZE = 24;
 
-export interface Theme {
-    bg: string;
-    text: string;
-    textMuted: string;
-    headingColor: string;
-    inputBarBg: string;
-    inputBarBorder: string;
-    codeBlockBg: string;
-    codeBlockBorder: string;
-    divider: string;
+function getQueueActionButtonStyle(
+    t: Theme,
+    themeMode: "light" | "dark",
+    tone: "attach" | "send" | "neutral",
+    disabled = false,
+): React.CSSProperties {
+    return {
+        ...getInputActionButtonStyle(t, themeMode, tone, disabled),
+        width: QUEUE_ACTION_BTN_SIZE,
+        height: QUEUE_ACTION_BTN_SIZE,
+        minWidth: QUEUE_ACTION_BTN_SIZE,
+        minHeight: QUEUE_ACTION_BTN_SIZE,
+        borderRadius: "8px",
+        padding: 0,
+        boxSizing: "border-box",
+    };
+}
+
+function getQueueTextActionStyle(
+    t: Theme,
+    themeMode: "light" | "dark",
+    tone: "send" | "neutral",
+): React.CSSProperties {
+    return {
+        ...getQueueActionButtonStyle(t, themeMode, tone),
+        width: "auto",
+        minWidth: 36,
+        padding: "0 8px",
+        fontSize: "11px",
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -183,6 +204,7 @@ export interface BufferQueuePanelProps {
     queue: BufferEntry[];
     lang: string;
     theme: Theme;
+    themeMode?: "light" | "dark";
     editingEntryId: string | null;
     onEdit: (id: string) => void;
     onCancelEdit: () => void;
@@ -214,6 +236,7 @@ export const BufferQueuePanel: React.FC<BufferQueuePanelProps> = ({
     queue,
     lang,
     theme: t,
+    themeMode = t.isDark ? "dark" : "light",
     editingEntryId,
     onEdit,
     onCancelEdit,
@@ -338,16 +361,16 @@ export const BufferQueuePanel: React.FC<BufferQueuePanelProps> = ({
         <div
             data-testid="buffer-queue-panel"
             style={{
-                maxHeight: queue.length > 1 ? "92px" : "44px",
+                maxHeight: queue.length > 1 ? "108px" : "52px",
                 overflowY: "auto",
                 background: t.inputBarBg,
                 borderTop: `1px solid ${t.inputBarBorder}`,
                 borderBottom: `1px solid ${t.divider}`,
-                padding: "2px 10px",
+                padding: "4px 0 6px",
                 flexShrink: 0,
                 display: "flex",
                 flexDirection: "column",
-                gap: "2px",
+                gap: "4px",
             }}
             onPointerMove={handlePointerMove}
             onPointerUp={handlePointerUp}
@@ -406,6 +429,7 @@ export const BufferQueuePanel: React.FC<BufferQueuePanelProps> = ({
                             index={index}
                             lang={lang}
                             theme={t}
+                            themeMode={themeMode}
                             isEditing={editingEntryId === entry.id}
                             onEdit={onEdit}
                             onCancelEdit={onCancelEdit}
@@ -446,6 +470,7 @@ interface BufferEntryRowProps {
     index: number;
     lang: string;
     theme: Theme;
+    themeMode: "light" | "dark";
     isEditing: boolean;
     onEdit: (id: string) => void;
     onCancelEdit: () => void;
@@ -465,6 +490,7 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
     index,
     lang,
     theme: t,
+    themeMode,
     isEditing,
     onEdit,
     onCancelEdit,
@@ -598,6 +624,8 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
                                     {att.fileName}
                                 </span>
                                 <button
+                                    type="button"
+                                    className="ai-queue-chip-remove"
                                     data-testid={`remove-attachment-${idx}`}
                                     onClick={() => handleRemoveAttachment(idx)}
                                     style={{
@@ -608,6 +636,10 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
                                         fontSize: "11px",
                                         padding: "0 2px",
                                         lineHeight: 1,
+                                        width: 16,
+                                        height: 16,
+                                        minWidth: 16,
+                                        minHeight: 16,
                                     }}
                                     aria-label={localizeText(
                                         lang,
@@ -633,31 +665,21 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
                     }}
                 >
                     <button
+                        type="button"
+                        className="ai-queue-text-action"
                         data-testid={`buffer-entry-cancel-${entry.id}`}
                         onClick={handleCancel}
-                        style={{
-                            background: "none",
-                            border: "none",
-                            cursor: "pointer",
-                            color: t.textMuted,
-                            fontSize: "12px",
-                            padding: "2px 6px",
-                        }}
+                        style={getQueueTextActionStyle(t, themeMode, "neutral")}
                         aria-label={localizeText(lang, "Cancel edit", "取消编辑", "取消編輯")}
                     >
                         X
                     </button>
                     <button
+                        type="button"
+                        className="ai-queue-text-action ai-queue-action--send"
                         data-testid={`buffer-entry-confirm-${entry.id}`}
                         onClick={handleSave}
-                        style={{
-                            background: "none",
-                            border: "none",
-                            cursor: "pointer",
-                            color: t.headingColor,
-                            fontSize: "12px",
-                            padding: "2px 6px",
-                        }}
+                        style={getQueueTextActionStyle(t, themeMode, "send")}
                         aria-label={localizeText(lang, "Confirm edit", "确认编辑", "確認編輯")}
                     >
                         OK
@@ -675,9 +697,9 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
             style={{
                 display: "flex",
                 alignItems: "center",
-                gap: "5px",
-                padding: "1px 0 2px",
-                minHeight: "22px",
+                gap: "6px",
+                padding: "2px 0",
+                minHeight: "28px",
                 borderBottom: `1px solid ${t.divider}`,
                 fontSize: "12px",
                 color: t.text,
@@ -767,75 +789,58 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
                 ))}
             </div>
 
-            {/* Right: Fire + Edit + Delete buttons */}
-            {onFireEntry && (
+            <div
+                style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "4px",
+                    flexShrink: 0,
+                }}
+            >
+                {onFireEntry && (
+                    <button
+                        type="button"
+                        className="ai-queue-action ai-queue-action--accent"
+                        data-testid={`fire-btn-${entry.id}`}
+                        onClick={() => { if (!inFlight) onFireEntry(entry.id); }}
+                        disabled={inFlight}
+                        style={getQueueActionButtonStyle(t, themeMode, "attach", inFlight)}
+                        aria-label={localizeText(
+                            lang,
+                            "Attach this instruction to the running task now",
+                            "立即将这条指令接入当前任务",
+                            "立即將這條指令接入目前任務",
+                        )}
+                        title={localizeText(lang, "Attach now", "立即接入", "立即接入")}
+                    >
+                        <AssistantInputIcon name="cornerDownLeft" size={13} />
+                    </button>
+                )}
                 <button
-                    data-testid={`fire-btn-${entry.id}`}
-                    onClick={() => { if (!inFlight) onFireEntry(entry.id); }}
+                    type="button"
+                    className="ai-queue-action"
+                    data-testid={`edit-btn-${entry.id}`}
+                    onClick={handleStartEdit}
                     disabled={inFlight}
-                    style={{
-                        background: "none",
-                        border: `1px solid ${t.headingColor}`,
-                        borderRadius: "3px",
-                        cursor: inFlight ? "default" : "pointer",
-                        color: t.headingColor,
-                        fontSize: "12px",
-                        padding: "1px 4px",
-                        flexShrink: 0,
-                        lineHeight: 1.2,
-                        opacity: inFlight ? 0.45 : 1,
-                    }}
-                    aria-label={localizeText(
-                        lang,
-                        "Attach this instruction to the running task now",
-                        "立即将这条指令接入当前任务",
-                        "立即將這條指令接入目前任務",
-                    )}
-                    title={localizeText(lang, "Attach now", "立即接入", "立即接入")}
+                    style={getQueueActionButtonStyle(t, themeMode, "neutral", inFlight)}
+                    aria-label={localizeText(lang, "Edit entry", "编辑条目", "編輯條目")}
+                    title={localizeText(lang, "Edit", "编辑", "編輯")}
                 >
-                    <AssistantInputIcon name="cornerDownLeft" size={13} />
+                    <AssistantInputIcon name="edit" size={13} />
                 </button>
-            )}
-            <button
-                data-testid={`edit-btn-${entry.id}`}
-                onClick={handleStartEdit}
-                disabled={inFlight}
-                style={{
-                    background: "none",
-                    border: "none",
-                    cursor: inFlight ? "default" : "pointer",
-                    color: t.textMuted,
-                    fontSize: "12px",
-                    padding: "1px 3px",
-                    flexShrink: 0,
-                    lineHeight: 1,
-                    opacity: inFlight ? 0.45 : 1,
-                }}
-                aria-label={localizeText(lang, "Edit entry", "编辑条目", "編輯條目")}
-                title={localizeText(lang, "Edit", "编辑", "編輯")}
-            >
-                <AssistantInputIcon name="edit" size={12} />
-            </button>
-            <button
-                data-testid={`delete-btn-${entry.id}`}
-                onClick={() => { if (!inFlight) onDelete(entry.id); }}
-                disabled={inFlight}
-                style={{
-                    background: "none",
-                    border: "none",
-                    cursor: inFlight ? "default" : "pointer",
-                    color: t.textMuted,
-                    fontSize: "12px",
-                    padding: "1px 3px",
-                    flexShrink: 0,
-                    lineHeight: 1,
-                    opacity: inFlight ? 0.45 : 1,
-                }}
-                aria-label={localizeText(lang, "Delete entry", "删除条目", "刪除條目")}
-                title={localizeText(lang, "Delete", "删除", "刪除")}
-            >
-                <AssistantInputIcon name="trash" size={12} />
-            </button>
+                <button
+                    type="button"
+                    className="ai-queue-action ai-queue-action--danger"
+                    data-testid={`delete-btn-${entry.id}`}
+                    onClick={() => { if (!inFlight) onDelete(entry.id); }}
+                    disabled={inFlight}
+                    style={getQueueActionButtonStyle(t, themeMode, "neutral", inFlight)}
+                    aria-label={localizeText(lang, "Delete entry", "删除条目", "刪除條目")}
+                    title={localizeText(lang, "Delete", "删除", "刪除")}
+                >
+                    <AssistantInputIcon name="trash" size={13} />
+                </button>
+            </div>
         </div>
     );
 };

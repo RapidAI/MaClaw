@@ -960,8 +960,8 @@ func TestOrderProxyDispatchRoutesStreamDoesNotGiveWRRSlotsToNonStream(t *testing
 		{Route: llmpool.DispatchProviderRoute{ProviderID: "resp"}, ResolutionTier: 1},
 		{Route: llmpool.DispatchProviderRoute{ProviderID: "chat-b"}, ResolutionTier: 1},
 	}
-	first := orderProxyDispatchRoutes(nil, reg, group, "auto", scored, acceptLiveStreamProvider, time.Time{}, true)
-	second := orderProxyDispatchRoutes(nil, reg, group, "auto", scored, acceptLiveStreamProvider, time.Time{}, true)
+	first := orderProxyDispatchRoutes(nil, reg, group, "auto", "", scored, acceptLiveStreamProvider, time.Time{}, true)
+	second := orderProxyDispatchRoutes(nil, reg, group, "auto", "", scored, acceptLiveStreamProvider, time.Time{}, true)
 	if len(first) < 1 || first[0].ProviderID != "chat-a" {
 		t.Fatalf("first pick = %#v, want chat-a", first)
 	}
@@ -993,16 +993,16 @@ func TestOrderProxyDispatchRoutesStreamPoolDoesNotResetNonStreamWRR(t *testing.T
 		{Route: llmpool.DispatchProviderRoute{ProviderID: "resp"}, ResolutionTier: 1},
 		{Route: llmpool.DispatchProviderRoute{ProviderID: "chat-b"}, ResolutionTier: 1},
 	}
-	if got := orderProxyDispatchRoutes(nil, reg, group, "auto", scored, acceptLiveProvider, time.Time{}, false); len(got) < 1 || got[0].ProviderID != "chat-a" {
+	if got := orderProxyDispatchRoutes(nil, reg, group, "auto", "", scored, acceptLiveProvider, time.Time{}, false); len(got) < 1 || got[0].ProviderID != "chat-a" {
 		t.Fatalf("non-stream first = %#v, want chat-a", got)
 	}
-	if got := orderProxyDispatchRoutes(nil, reg, group, "auto", scored, acceptLiveStreamProvider, time.Time{}, true); len(got) < 1 || got[0].ProviderID != "chat-a" {
+	if got := orderProxyDispatchRoutes(nil, reg, group, "auto", "", scored, acceptLiveStreamProvider, time.Time{}, true); len(got) < 1 || got[0].ProviderID != "chat-a" {
 		t.Fatalf("stream first = %#v, want chat-a in its own pool", got)
 	}
-	if got := orderProxyDispatchRoutes(nil, reg, group, "auto", scored, acceptLiveProvider, time.Time{}, false); len(got) < 1 || got[0].ProviderID != "resp" {
+	if got := orderProxyDispatchRoutes(nil, reg, group, "auto", "", scored, acceptLiveProvider, time.Time{}, false); len(got) < 1 || got[0].ProviderID != "resp" {
 		t.Fatalf("non-stream second = %s, want resp (stream traffic must not reset this pool)", got[0].ProviderID)
 	}
-	if got := orderProxyDispatchRoutes(nil, reg, group, "auto", scored, acceptLiveStreamProvider, time.Time{}, true); len(got) < 1 || got[0].ProviderID != "chat-b" {
+	if got := orderProxyDispatchRoutes(nil, reg, group, "auto", "", scored, acceptLiveStreamProvider, time.Time{}, true); len(got) < 1 || got[0].ProviderID != "chat-b" {
 		t.Fatalf("stream second = %s, want chat-b", got[0].ProviderID)
 	}
 }
@@ -1059,6 +1059,59 @@ func TestHandleProxyRequestLoadBalancesSameMultiplier(t *testing.T) {
 	}
 }
 
+func TestHandleProxyRequestLoadBalancesOfficialMidDifferentPriority(t *testing.T) {
+	proxyDispatchWRR.Reset()
+	var hits []string
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits = append(hits, "mid-a")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"one"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits = append(hits, "mid-b")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"two"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer second.Close()
+
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "mid-a", Name: "Mid A", APIURL: first.URL, Sequence: 1, MaxConcurrency: 10},
+			{ID: "mid-b", Name: "Mid B", APIURL: second.URL, Sequence: 2, MaxConcurrency: 10},
+		},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID: llmpool.OfficialGroupID, Name: "official",
+			Models: []llmpool.ModelConfig{{Name: llmpool.OfficialTierMid, ProviderConfigs: []llmpool.ModelProviderConfig{
+				{ProviderID: "mid-a", CapabilityTags: []string{"tools"}, Priority: 10},
+				{ProviderID: "mid-b", CapabilityTags: []string{"tools"}, Priority: 90},
+			}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	cfg := &ProxyConfig{Service: svc, AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}), HTTPClient: &http.Client{}}
+	body := map[string]any{"model": llmpool.OfficialTierMid, "tools": []any{map[string]any{"type": "function"}}}
+	firstResp, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{Body: body})
+	if err != nil {
+		t.Fatalf("first request error = %v", err)
+	}
+	secondResp, err := HandleProxyRequest(context.Background(), cfg, &ProxyRequest{Body: body})
+	if err != nil {
+		t.Fatalf("second request error = %v", err)
+	}
+	if firstResp == nil || firstResp.ProviderID != "mid-a" {
+		t.Fatalf("first provider = %#v, want mid-a", firstResp)
+	}
+	if secondResp == nil || secondResp.ProviderID != "mid-b" {
+		t.Fatalf("second provider = %#v, want mid-b so official-mid same-tag vendors share load", secondResp)
+	}
+	if len(hits) != 2 || hits[0] != "mid-a" || hits[1] != "mid-b" {
+		t.Fatalf("hits = %#v, want mid-a then mid-b", hits)
+	}
+}
+
 func TestOrderProxyDispatchRoutesBalancesSameMultiplierExtras(t *testing.T) {
 	proxyDispatchWRR.Reset()
 	reg := &Registry{
@@ -1078,8 +1131,8 @@ func TestOrderProxyDispatchRoutesBalancesSameMultiplierExtras(t *testing.T) {
 	scored := []llmpool.ScoredProviderRoute{
 		{Route: llmpool.DispatchProviderRoute{ProviderID: "deepseek"}, ResolutionTier: 1},
 	}
-	first := orderProxyDispatchRoutes(nil, reg, group, "auto", scored, acceptLiveProvider, time.Time{}, false)
-	second := orderProxyDispatchRoutes(nil, reg, group, "auto", scored, acceptLiveProvider, time.Time{}, false)
+	first := orderProxyDispatchRoutes(nil, reg, group, "auto", "", scored, acceptLiveProvider, time.Time{}, false)
+	second := orderProxyDispatchRoutes(nil, reg, group, "auto", "", scored, acceptLiveProvider, time.Time{}, false)
 	if got := joinedProviderIDs(first); got != "deepseek,opencode-1,opencode-2" {
 		t.Fatalf("first order = %s, want paused primary then extra WRR winner opencode-1", got)
 	}
@@ -1115,8 +1168,8 @@ func TestOrderProxyDispatchRoutesExtraWRRIgnoresBorrowedRoutePolicy(t *testing.T
 	scored := []llmpool.ScoredProviderRoute{
 		{Route: llmpool.DispatchProviderRoute{ProviderID: "deepseek"}, ResolutionTier: 1},
 	}
-	first := orderProxyDispatchRoutes(nil, reg, group, "auto", scored, acceptLiveProvider, time.Time{}, false)
-	second := orderProxyDispatchRoutes(nil, reg, group, "auto", scored, acceptLiveProvider, time.Time{}, false)
+	first := orderProxyDispatchRoutes(nil, reg, group, "auto", "", scored, acceptLiveProvider, time.Time{}, false)
+	second := orderProxyDispatchRoutes(nil, reg, group, "auto", "", scored, acceptLiveProvider, time.Time{}, false)
 	if got := joinedProviderIDsAfter(first, "deepseek"); got != "opencode-1,opencode-2" {
 		t.Fatalf("first extras = %s, want equal-weight vendor group (borrowed tier/markup must not split)", got)
 	}

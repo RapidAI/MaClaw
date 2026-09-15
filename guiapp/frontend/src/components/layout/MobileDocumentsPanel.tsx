@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from 'react';
 import { useDialog } from '../CustomDialog';
+import { darkCodePreviewTheme, lightCodePreviewTheme } from '../ai/CodePreviewPanel';
 import { StatusGlyph } from '../ai/WorkbenchIcons';
+import { FilePreviewHost } from '../preview/FilePreviewHost';
+import { filePreviewKindFromName, languageFromFileName, previewShouldMaterialize, rewriteMarkdownImageUrls } from '../preview/filePreviewKind';
 import { consumePendingFileLibraryOpen, OPEN_FILE_LIBRARY_EVENT, peekPendingFileLibraryOpen, type FileLibraryOpenDetail } from '../../utils/fileLibraryNavigation';
 
 export type MobileDocumentDraftImage = {
@@ -186,6 +189,30 @@ function callSaveOriginal(id: string): Promise<string> {
   return app.SaveMobileDocumentOriginal(id);
 }
 
+function callMaterializeOriginal(id: string): Promise<string> {
+  const app = (window as any)?.go?.main?.App;
+  if (!app?.MaterializeMobileDocumentOriginal) {
+    return Promise.reject(
+      new Error(
+        'Desktop binding missing MaterializeMobileDocumentOriginal — rebuild GUI after pull.',
+      ),
+    );
+  }
+  return app.MaterializeMobileDocumentOriginal(id);
+}
+
+function callPreviewLocalFile(path: string): Promise<{ content?: string }> {
+  const app = (window as any)?.go?.main?.App;
+  if (!app?.PreviewTaskResultFile) {
+    return Promise.reject(
+      new Error(
+        'Desktop binding missing PreviewTaskResultFile — rebuild GUI after pull.',
+      ),
+    );
+  }
+  return app.PreviewTaskResultFile(path);
+}
+
 type MobileDocImagePayload = {
   content_type?: string;
   data_base64?: string;
@@ -225,151 +252,6 @@ function callGetDraftImage(draftId: string, imageId: string): Promise<MobileDocI
   return p;
 }
 
-/** Match Hub markdown image URLs: /api/mobile/documents/drafts/{id}/images/{imgId} */
-const MOBILE_DOC_IMAGE_RE =
-  /!\[([^\]]*)\]\((\/api\/mobile\/documents\/drafts\/([^/]+)\/images\/([^)\s]+))\)/g;
-
-type PreviewSegment =
-  | { kind: 'text'; text: string }
-  | { kind: 'image'; alt: string; draftId: string; imageId: string; url: string };
-
-function splitMarkdownForPreview(markdown: string): PreviewSegment[] {
-  const src = markdown || '';
-  const segments: PreviewSegment[] = [];
-  let last = 0;
-  const re = new RegExp(MOBILE_DOC_IMAGE_RE.source, 'g');
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(src)) !== null) {
-    if (m.index > last) {
-      segments.push({ kind: 'text', text: src.slice(last, m.index) });
-    }
-    segments.push({
-      kind: 'image',
-      alt: m[1] || m[4] || 'image',
-      draftId: m[3],
-      imageId: m[4],
-      url: m[2],
-    });
-    last = m.index + m[0].length;
-  }
-  if (last < src.length) {
-    segments.push({ kind: 'text', text: src.slice(last) });
-  }
-  if (segments.length === 0) {
-    segments.push({ kind: 'text', text: src });
-  }
-  return segments;
-}
-
-function MobileDocImage({
-  draftId,
-  imageId,
-  alt,
-}: {
-  draftId: string;
-  imageId: string;
-  alt: string;
-}) {
-  const [src, setSrc] = useState<string>('');
-  const [err, setErr] = useState('');
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setErr('');
-    setSrc('');
-    void callGetDraftImage(draftId, imageId)
-      .then((payload) => {
-        if (cancelled) return;
-        const b64 = String(payload?.data_base64 || '').trim();
-        const ct = String(payload?.content_type || 'image/png').split(';')[0].trim() || 'image/png';
-        if (!b64) {
-          setErr('empty image');
-          return;
-        }
-        setSrc(`data:${ct};base64,${b64}`);
-      })
-      .catch((e: any) => {
-        if (!cancelled) setErr(String(e?.message || e || 'load failed'));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [draftId, imageId]);
-
-  if (loading) {
-    return (
-      <div style={{ opacity: 0.55, fontSize: '0.78rem', padding: '8px 0' }}>
-        {alt ? `${alt}…` : '…'}
-      </div>
-    );
-  }
-  if (err || !src) {
-    return (
-      <div className="mobile-documents-inline-error" style={{ opacity: 0.65, fontSize: '0.78rem', padding: '6px 0' }}>
-        [{alt || imageId}]
-      </div>
-    );
-  }
-  return (
-    <figure style={{ margin: '10px 0', maxWidth: '100%' }}>
-      <img
-        src={src}
-        alt={alt}
-        style={{
-          maxWidth: '100%',
-          maxHeight: 360,
-          borderRadius: 8,
-          border: '1px solid var(--theme-border, rgba(255,255,255,0.12))',
-          objectFit: 'contain',
-          background: 'color-mix(in srgb, var(--theme-control-well, var(--theme-surface-muted, #000)) 40%, transparent)',
-          display: 'block',
-        }}
-      />
-      {alt ? (
-        <figcaption style={{ fontSize: '0.72rem', opacity: 0.55, marginTop: 4 }}>{alt}</figcaption>
-      ) : null}
-    </figure>
-  );
-}
-
-function MobileDocPreviewBody({
-  markdown,
-  emptyLabel,
-}: {
-  markdown: string;
-  emptyLabel: string;
-}) {
-  const segments = useMemo(() => splitMarkdownForPreview(markdown), [markdown]);
-  if (!markdown.trim()) {
-    return <>{emptyLabel}</>;
-  }
-  return (
-    <>
-      {segments.map((seg, i) => {
-        if (seg.kind === 'text') {
-          return (
-            <span key={`t-${i}`} style={{ whiteSpace: 'pre-wrap' }}>
-              {seg.text}
-            </span>
-          );
-        }
-        return (
-          <MobileDocImage
-            key={`i-${seg.draftId}-${seg.imageId}-${i}`}
-            draftId={seg.draftId}
-            imageId={seg.imageId}
-            alt={seg.alt}
-          />
-        );
-      })}
-    </>
-  );
-}
 function isAudioItem(item: MobileLibraryItem | null | undefined): boolean { return item?.type === 'audio'; }
 
 /** List subtitle when original audio is gone: distinguish user delete vs retention expiry. */
@@ -536,6 +418,92 @@ function MeetingRecordingPlayer({ item }: { item: MobileLibraryItem }) {
   if (error) return <div className="mobile-documents-inline-error">Unable to load embedded playback. You can still open or save the original audio.</div>;
   if (!src) return <div>Loading audio…</div>;
   return <audio controls preload="metadata" src={src} style={{ width: '100%' }} aria-label="Meeting recording playback" />;
+}
+
+function libraryPreviewTheme() {
+  const dark = typeof document !== 'undefined' && document.getElementById('App')?.getAttribute('data-ai-theme') === 'dark';
+  return dark ? darkCodePreviewTheme : lightCodePreviewTheme;
+}
+
+function MobileDraftFilePreview({ item, lang }: { item: MobileLibraryItem; lang: string }) {
+  const isZh = lang !== 'en' && !String(lang).startsWith('en');
+  const fileName = item.source_filename || `${item.title || 'document'}.md`;
+  const kind = filePreviewKindFromName(fileName);
+  const rawMarkdown = item.markdown || item.preview || '';
+  const [absPath, setAbsPath] = useState('');
+  const [content, setContent] = useState(rawMarkdown);
+  const needsOriginal = Boolean(item.has_original && item.id) && previewShouldMaterialize(kind, Boolean(rawMarkdown.trim()));
+  const [loading, setLoading] = useState(needsOriginal);
+  const theme = libraryPreviewTheme();
+
+  useEffect(() => {
+    let cancelled = false;
+    const body = item.markdown || item.preview || '';
+    const name = item.source_filename || `${item.title || 'document'}.md`;
+    const nextKind = filePreviewKindFromName(name);
+    const wantsFile = Boolean(item.has_original && item.id) && previewShouldMaterialize(nextKind, Boolean(body.trim()));
+    setAbsPath('');
+    setContent(body);
+    setLoading(wantsFile);
+
+    const resolveImages = (markdown: string) => rewriteMarkdownImageUrls(markdown, async (draftId, imageId) => {
+      const payload = await callGetDraftImage(draftId, imageId);
+      const b64 = String(payload?.data_base64 || '').trim();
+      const rawType = String(payload?.content_type || 'image/png').split(';')[0].trim().toLowerCase();
+      const ct = /^image\/[a-z0-9.+-]+$/.test(rawType) ? rawType : 'image/png';
+      return b64 ? `data:${ct};base64,${b64}` : '';
+    });
+
+    void (async () => {
+      try {
+        let path = '';
+        if (wantsFile && item.id) {
+          path = String(await callMaterializeOriginal(item.id) || '').trim();
+        }
+        let nextContent = body;
+        if (path && (nextKind === 'code' || nextKind === 'text' || nextKind === 'html')) {
+          try {
+            const preview = await callPreviewLocalFile(path);
+            if (preview?.content) nextContent = String(preview.content);
+          } catch {
+            // Keep Hub markdown if the original cannot be decoded as text.
+          }
+        }
+        if (nextKind === 'office' || nextKind === 'markdown') {
+          nextContent = await resolveImages(nextContent);
+        }
+        if (cancelled) return;
+        setAbsPath(path);
+        setContent(nextContent);
+      } catch {
+        if (!cancelled) setAbsPath('');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [item.has_original, item.id, item.markdown, item.preview, item.source_filename, item.title]);
+
+  if (loading) {
+    return (
+      <div data-testid="mobile-documents-preview-loading" style={{ padding: 24, opacity: 0.7 }}>
+        {isZh ? '正在加载预览…' : 'Loading preview…'}
+      </div>
+    );
+  }
+
+  return (
+    <FilePreviewHost
+      fileName={fileName}
+      absPath={absPath || undefined}
+      content={content}
+      language={languageFromFileName(fileName)}
+      theme={theme}
+      lang={lang}
+    />
+  );
 }
 
 async function fileToBase64(file: File): Promise<string> {
@@ -1736,11 +1704,12 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
               className="mobile-documents-preview-body"
               style={{
                 flex: 1,
-                overflow: 'auto',
-                 padding: '24px 28px',
+                overflow: 'hidden',
+                 padding: selected && !isAudioItem(selected) ? 0 : '24px 28px',
                  fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', sans-serif",
                  fontSize: '0.98rem',
                  lineHeight: 1.65,
+                minHeight: 0,
                 opacity: selected ? 1 : 0.65,
               }}
             >
@@ -1752,7 +1721,7 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
                     {(selected.derived_documents?.transcript_draft_id || selected.derived_documents?.minutes_draft_id) ? <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>{selected.derived_documents?.transcript_draft_id ? <button type="button" style={styles.btn} onClick={() => void openDocumentFromAudio(selected.derived_documents?.transcript_draft_id)}>{t('Open transcript', '打开逐字稿')}</button> : null}{selected.derived_documents?.minutes_draft_id ? <button type="button" style={styles.btnPrimary} onClick={() => void openDocumentFromAudio(selected.derived_documents?.minutes_draft_id)}>{t('Open meeting minutes', '打开会议纪要')}</button> : null}</div> : null}
                     {selected.retention_until ? <div style={{ opacity: 0.58, fontSize: '0.78rem' }}>{t('Original audio retention until', '原始音频保留至')} {formatUpdatedAt(selected.retention_until, isZh)}</div> : null}
                   </div>
-                ) : <MobileDocPreviewBody markdown={selected.markdown || selected.preview || ''} emptyLabel={t('Content preview is not supported', '不支持内容预览')} />
+                ) : <MobileDraftFilePreview key={selected.id} item={selected} lang={lang} />
               ) : (
                 t('Select a draft on the left, or drop original files above to share with Mobile.', '请选择左侧文稿，或将原始文件拖到上方以分享到手机。')
               )}

@@ -1083,6 +1083,17 @@ func semanticNeedsFromClassification(registry *tool.CapabilityRegistry, result i
 	return semanticNeedsFromClassificationContext(context.Background(), registry, result)
 }
 
+func semanticBaselineWorkspaceApplies(result intent.ClassificationResult) bool {
+	switch result.Primary {
+	case intent.LabelSearch, intent.LabelLiveData, intent.LabelLiveDataVisual, intent.LabelWebFetch,
+		intent.LabelOffice, intent.LabelCurrentTime, intent.LabelKnowledgeRead,
+		intent.LabelFileRead, intent.LabelFileWrite, intent.LabelShellCommand:
+		return true
+	default:
+		return false
+	}
+}
+
 // semanticNeedsFromClassificationContext is the request-bound counterpart of
 // semanticNeedsFromClassification.  Need extraction currently uses a supplied
 // UIC result, but it must still share the incoming turn context with future
@@ -1830,6 +1841,9 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	// re-fire; when the parent surface recorded it, mirror it here for every
 	// lookup leg except the petitioned label's own templates.
 	needs = semanticNeedsForPetitionExpansionLookup(needs, requestCtx)
+	if semanticBaselineWorkspaceApplies(planning) {
+		needs = agentservice.ExpandBaselineWorkspaceNeeds(registry, imSemanticIntentRuleSet, planning, true, needs)
+	}
 	catalog := tool.NewToolCatalog(registry)
 	// A semantic provider's registered schema is the trusted source for its
 	// model-facing definition.  Do not build the legacy presentation surface

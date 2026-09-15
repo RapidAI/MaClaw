@@ -817,53 +817,48 @@ func (s *SQLiteStore) SaveDocumentNode(ctx context.Context, node DocumentNode) e
 }
 
 func deleteDocumentNodeTreeTx(ctx context.Context, tx *sql.Tx, rootID string) error {
-	rootID = strings.TrimSpace(rootID)
-	if rootID == "" {
+	nodeIDs, _, err := inspectNodeTreeTx(ctx, tx, rootID)
+	if err != nil {
+		return err
+	}
+	return deleteNodesByIDsTx(ctx, tx, nodeIDs)
+}
+
+const fragmentDeleteIDChunk = 400
+
+func deleteNodesByIDsTx(ctx context.Context, tx *sql.Tx, nodeIDs []string) error {
+	if len(nodeIDs) == 0 {
 		return nil
 	}
-	// Chunking creates one parent level, but recursive traversal also safely
-	// handles pre-existing trees created by callers.
-	const nodeTreeCTE = `WITH RECURSIVE node_tree(id) AS (
-		SELECT id FROM document_nodes WHERE id = ?
-		UNION
-		SELECT n.id FROM document_nodes n JOIN node_tree p ON n.parent_id = p.id
-	)`
-	// Derived cards/facts are evidence for the old node contents. Removing them
-	// avoids serving stale claims while the caller regenerates derived records.
-	if _, err := tx.ExecContext(ctx, nodeTreeCTE+`
-	DELETE FROM knowledge_embedding_metadata
-	WHERE entity_type = 'card' AND entity_id IN (SELECT id FROM knowledge_cards WHERE node_id IN (SELECT id FROM node_tree))`, rootID); err != nil {
-		return err
+	for start := 0; start < len(nodeIDs); start += fragmentDeleteIDChunk {
+		end := start + fragmentDeleteIDChunk
+		if end > len(nodeIDs) {
+			end = len(nodeIDs)
+		}
+		chunk := nodeIDs[start:end]
+		placeholders := strings.TrimRight(strings.Repeat("?,", len(chunk)), ",")
+		args := make([]interface{}, len(chunk))
+		for i, id := range chunk {
+			args[i] = id
+		}
+		stmts := []string{
+			`DELETE FROM knowledge_embedding_metadata WHERE entity_type = 'card' AND entity_id IN (SELECT id FROM knowledge_cards WHERE node_id IN (` + placeholders + `))`,
+			`DELETE FROM knowledge_facts_fts WHERE fact_id IN (SELECT id FROM knowledge_facts WHERE card_id IN (SELECT id FROM knowledge_cards WHERE node_id IN (` + placeholders + `)))`,
+			`DELETE FROM knowledge_cards_fts WHERE card_id IN (SELECT id FROM knowledge_cards WHERE node_id IN (` + placeholders + `))`,
+			`DELETE FROM knowledge_facts WHERE card_id IN (SELECT id FROM knowledge_cards WHERE node_id IN (` + placeholders + `))`,
+			`DELETE FROM knowledge_card_suppressions WHERE card_id IN (SELECT id FROM knowledge_cards WHERE node_id IN (` + placeholders + `))`,
+			`DELETE FROM knowledge_cards WHERE node_id IN (` + placeholders + `)`,
+			`DELETE FROM knowledge_embedding_metadata WHERE entity_type = 'node' AND entity_id IN (` + placeholders + `)`,
+			`DELETE FROM document_nodes_fts WHERE node_id IN (` + placeholders + `)`,
+			`DELETE FROM document_nodes WHERE id IN (` + placeholders + `)`,
+		}
+		for _, stmt := range stmts {
+			if _, err := tx.ExecContext(ctx, stmt, args...); err != nil {
+				return err
+			}
+		}
 	}
-	if _, err := tx.ExecContext(ctx, nodeTreeCTE+`
-	DELETE FROM knowledge_facts_fts
-	WHERE fact_id IN (SELECT id FROM knowledge_facts WHERE card_id IN (SELECT id FROM knowledge_cards WHERE node_id IN (SELECT id FROM node_tree)))`, rootID); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, nodeTreeCTE+`
-	DELETE FROM knowledge_cards_fts WHERE card_id IN (SELECT id FROM knowledge_cards WHERE node_id IN (SELECT id FROM node_tree))`, rootID); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, nodeTreeCTE+`
-	DELETE FROM knowledge_facts WHERE card_id IN (SELECT id FROM knowledge_cards WHERE node_id IN (SELECT id FROM node_tree))`, rootID); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, nodeTreeCTE+`
-	DELETE FROM knowledge_cards WHERE node_id IN (SELECT id FROM node_tree)`, rootID); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, nodeTreeCTE+`
-	DELETE FROM knowledge_embedding_metadata
-	WHERE entity_type = 'node' AND entity_id IN (SELECT id FROM node_tree)`, rootID); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, nodeTreeCTE+`
-	DELETE FROM document_nodes_fts WHERE node_id IN (SELECT id FROM node_tree)`, rootID); err != nil {
-		return err
-	}
-	_, err := tx.ExecContext(ctx, nodeTreeCTE+`
-	DELETE FROM document_nodes WHERE id IN (SELECT id FROM node_tree)`, rootID)
-	return err
+	return nil
 }
 
 func saveDocumentNodeTx(ctx context.Context, tx *sql.Tx, node DocumentNode) error {
@@ -1836,6 +1831,294 @@ func (s *SQLiteStore) DeleteSource(ctx context.Context, id string) error {
 	}
 	s.invalidateVectorANN()
 	return nil
+}
+
+// DeleteFragment removes one search-hit fragment without deleting the source.
+// It returns the document-node IDs removed when the target is a node tree, so
+// callers can drop descendant hits that the original search row did not name.
+func (s *SQLiteStore) DeleteFragment(ctx context.Context, result SearchResult) ([]string, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("knowledge store is nil")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	kind, id, err := resolveFragmentDeleteTarget(result)
+	if err != nil {
+		return nil, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	var nodeIDs []string
+	var imageRefs []imageAssetRef
+	if kind == "node" {
+		nodeIDs, imageRefs, err = inspectNodeTreeTx(ctx, tx, id)
+		if err != nil {
+			return nil, err
+		}
+		if s.imageAssets == nil {
+			imageRefs = nil
+		}
+	}
+	switch kind {
+	case "node":
+		err = deleteNodesByIDsTx(ctx, tx, nodeIDs)
+	case "card":
+		err = deleteCardTx(ctx, tx, id)
+	case "fact":
+		err = deleteFactTx(ctx, tx, id)
+	case "table_row":
+		err = deleteTableRowTx(ctx, tx, id)
+	default:
+		err = fmt.Errorf("unsupported fragment type %q", kind)
+	}
+	if err != nil {
+		return nil, err
+	}
+	resultType := strings.ToLower(strings.TrimSpace(result.ResultType))
+	if kind != "card" {
+		if cardID := strings.TrimSpace(result.CardID); cardID != "" && resultType != "fact" {
+			if err := deleteCardTx(ctx, tx, cardID); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if kind != "fact" {
+		if factID := strings.TrimSpace(result.FactID); factID != "" {
+			if err := deleteFactTx(ctx, tx, factID); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	s.invalidateVectorANN()
+	s.reclaimFragmentImageAssets(ctx, imageRefs)
+	if nodeIDs == nil {
+		nodeIDs = []string{}
+	}
+	return nodeIDs, nil
+}
+
+func resolveFragmentDeleteTarget(result SearchResult) (kind, id string, err error) {
+	resultType := strings.ToLower(strings.TrimSpace(result.ResultType))
+	nodeID := strings.TrimSpace(result.NodeID)
+	cardID := strings.TrimSpace(result.CardID)
+	factID := strings.TrimSpace(result.FactID)
+	rowID := strings.TrimSpace(result.RowID)
+	switch resultType {
+	case "table_row":
+		if rowID == "" {
+			return "", "", fmt.Errorf("row id is required")
+		}
+		return "table_row", rowID, nil
+	case "fact":
+		if rowID != "" {
+			return "table_row", rowID, nil
+		}
+		if factID == "" {
+			return "", "", fmt.Errorf("fact id is required")
+		}
+		return "fact", factID, nil
+	case "card":
+		if nodeID != "" {
+			return "node", nodeID, nil
+		}
+		if rowID != "" {
+			return "table_row", rowID, nil
+		}
+		if cardID == "" {
+			return "", "", fmt.Errorf("card id is required")
+		}
+		return "card", cardID, nil
+	case "node":
+		if nodeID == "" {
+			return "", "", fmt.Errorf("node id is required")
+		}
+		return "node", nodeID, nil
+	}
+	if rowID != "" {
+		return "table_row", rowID, nil
+	}
+	if nodeID != "" {
+		return "node", nodeID, nil
+	}
+	if cardID != "" {
+		return "card", cardID, nil
+	}
+	if factID != "" {
+		return "fact", factID, nil
+	}
+	return "", "", fmt.Errorf("fragment id is required")
+}
+
+func deleteCardTx(ctx context.Context, tx *sql.Tx, cardID string) error {
+	cardID = strings.TrimSpace(cardID)
+	if cardID == "" {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM knowledge_embedding_metadata WHERE entity_type = 'card' AND entity_id = ?`, cardID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM knowledge_facts_fts WHERE fact_id IN (SELECT id FROM knowledge_facts WHERE card_id = ?)`, cardID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM knowledge_facts WHERE card_id = ?`, cardID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM knowledge_card_suppressions WHERE card_id = ?`, cardID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM knowledge_cards_fts WHERE card_id = ?`, cardID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM knowledge_cards WHERE id = ?`, cardID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM kb_facts_fts WHERE fact_id IN (SELECT id FROM kb_facts WHERE card_id = ?)`, cardID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM kb_facts WHERE card_id = ?`, cardID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM kb_cards_fts WHERE card_id = ?`, cardID); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `DELETE FROM kb_cards WHERE id = ?`, cardID)
+	return err
+}
+
+func deleteFactTx(ctx context.Context, tx *sql.Tx, factID string) error {
+	factID = strings.TrimSpace(factID)
+	if factID == "" {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM knowledge_facts_fts WHERE fact_id = ?`, factID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM knowledge_facts WHERE id = ?`, factID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM kb_facts_fts WHERE fact_id = ?`, factID); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `DELETE FROM kb_facts WHERE id = ?`, factID)
+	return err
+}
+
+func deleteTableRowTx(ctx context.Context, tx *sql.Tx, rowID string) error {
+	rowID = strings.TrimSpace(rowID)
+	if rowID == "" {
+		return nil
+	}
+	var tableID string
+	if err := tx.QueryRowContext(ctx, `SELECT table_id FROM kb_rows WHERE id = ?`, rowID).Scan(&tableID); err != nil {
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM knowledge_embedding_metadata
+		WHERE (entity_type = 'table_row' AND entity_id = ?)
+			OR (entity_type = 'card' AND entity_id IN (SELECT id FROM kb_cards WHERE row_id = ?))`, rowID, rowID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM kb_facts_fts WHERE fact_id IN (SELECT id FROM kb_facts WHERE row_id = ?)`, rowID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM kb_facts WHERE row_id = ?`, rowID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM kb_cards_fts WHERE card_id IN (SELECT id FROM kb_cards WHERE row_id = ?)`, rowID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM kb_cards WHERE row_id = ?`, rowID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM kb_cells WHERE row_id = ?`, rowID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM kb_rows_fts WHERE row_id = ?`, rowID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM kb_rows WHERE id = ?`, rowID); err != nil {
+		return err
+	}
+	if strings.TrimSpace(tableID) == "" {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE kb_tables SET row_count = CASE WHEN row_count > 0 THEN row_count - 1 ELSE 0 END, updated_at = ? WHERE id = ?`, formatTime(time.Now().UTC()), tableID)
+	return err
+}
+
+type imageAssetRef struct {
+	SourceID string
+	AssetID  string
+}
+
+func inspectNodeTreeTx(ctx context.Context, tx *sql.Tx, rootID string) ([]string, []imageAssetRef, error) {
+	rootID = strings.TrimSpace(rootID)
+	if rootID == "" {
+		return nil, nil, nil
+	}
+	const nodeTreeCTE = `WITH RECURSIVE node_tree(id) AS (
+		SELECT id FROM document_nodes WHERE id = ?
+		UNION
+		SELECT n.id FROM document_nodes n JOIN node_tree p ON n.parent_id = p.id
+	)`
+	rows, err := tx.QueryContext(ctx, nodeTreeCTE+`
+		SELECT n.id, n.source_id, n.type, json_extract(COALESCE(n.metadata_json, '{}'), '$.`+MetaImageAssetID+`')
+		FROM document_nodes n
+		WHERE n.id IN (SELECT id FROM node_tree)`, rootID)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	nodeIDs := make([]string, 0)
+	refs := make([]imageAssetRef, 0)
+	for rows.Next() {
+		var nodeID, sourceID, nodeType, assetID sql.NullString
+		if err := rows.Scan(&nodeID, &sourceID, &nodeType, &assetID); err != nil {
+			return nil, nil, err
+		}
+		if id := nodeID.String; id != "" {
+			nodeIDs = append(nodeIDs, id)
+		}
+		ref := imageAssetRef{SourceID: sourceID.String, AssetID: assetID.String}
+		if nodeType.String != NodeTypeImage || ref.SourceID == "" || ref.AssetID == "" || ref.AssetID == ref.SourceID || !ImageAssetIDBelongsToSourceID(ref.AssetID, ref.SourceID) {
+			continue
+		}
+		refs = append(refs, ref)
+	}
+	return nodeIDs, refs, rows.Err()
+}
+
+func (s *SQLiteStore) reclaimFragmentImageAssets(ctx context.Context, refs []imageAssetRef) {
+	if s == nil || s.imageAssets == nil || len(refs) == 0 {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	seen := make(map[string]struct{}, len(refs))
+	for _, ref := range refs {
+		if _, ok := seen[ref.AssetID]; ok {
+			continue
+		}
+		seen[ref.AssetID] = struct{}{}
+		var remaining int
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM document_nodes
+			WHERE type = ? AND json_extract(COALESCE(metadata_json, '{}'), '$.`+MetaImageAssetID+`') = ?`, NodeTypeImage, ref.AssetID).Scan(&remaining); err != nil || remaining > 0 {
+			continue
+		}
+		if err := s.imageAssets.DeleteAssets(ref.AssetID); err != nil {
+			log.Printf("[knowledge-image] delete fragment asset %s: %v", ref.AssetID, err)
+		}
+	}
 }
 
 // DeleteSourcesByIDPrefix deletes every knowledge_sources row whose id starts with prefix

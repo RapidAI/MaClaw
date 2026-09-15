@@ -175,7 +175,7 @@ func TestRunLLMProviderMonitorCycleReportsOnlyFailedProviders(t *testing.T) {
 	}
 
 	mailer := &llmMonitorTestMailer{}
-	runLLMProviderMonitorCycle(ctx, svc, mailer)
+	runLLMProviderMonitorCycle(ctx, svc, mailer, nil)
 
 	if len(mailer.sent) != 1 {
 		t.Fatalf("notification emails sent = %d, want 1", len(mailer.sent))
@@ -289,7 +289,7 @@ func TestRunLLMProviderMonitorCycleAlertsOnRegistryError(t *testing.T) {
 	svc := llmservice.NewService(settings)
 	mailer := &llmMonitorTestMailer{}
 
-	runLLMProviderMonitorCycle(t.Context(), svc, mailer)
+	runLLMProviderMonitorCycle(t.Context(), svc, mailer, nil)
 
 	if len(mailer.sent) != 1 {
 		t.Fatalf("alert emails sent = %d, want 1", len(mailer.sent))
@@ -309,7 +309,7 @@ func TestRunLLMProviderMonitorCycleRegistryErrorWithoutRecipientSkips(t *testing
 	mailer := &llmMonitorTestMailer{}
 
 	// Must log-and-skip without panicking.
-	runLLMProviderMonitorCycle(t.Context(), svc, mailer)
+	runLLMProviderMonitorCycle(t.Context(), svc, mailer, nil)
 
 	if len(mailer.sent) != 0 {
 		t.Fatalf("alert emails sent = %d, want 0", len(mailer.sent))
@@ -326,7 +326,7 @@ func TestRunLLMProviderMonitorCycleRecipientPriority(t *testing.T) {
 			llmProviderMonitorConfigKey: `{"enabled":true,"interval_hours":3,"notify_email":"captured@example.com"}`,
 		})
 		mailer := &llmMonitorTestMailer{}
-		runLLMProviderMonitorCycle(t.Context(), svc, mailer)
+		runLLMProviderMonitorCycle(t.Context(), svc, mailer, nil)
 		if len(mailer.sent) != 1 || len(mailer.sent[0].to) != 1 || mailer.sent[0].to[0] != "admin@example.com" {
 			t.Fatalf("alert recipient = %+v, want admin@example.com", mailer.sent)
 		}
@@ -336,7 +336,7 @@ func TestRunLLMProviderMonitorCycleRecipientPriority(t *testing.T) {
 			llmProviderMonitorConfigKey: `{"enabled":true,"interval_hours":3,"notify_email":"captured@example.com"}`,
 		})
 		mailer := &llmMonitorTestMailer{}
-		runLLMProviderMonitorCycle(t.Context(), svc, mailer)
+		runLLMProviderMonitorCycle(t.Context(), svc, mailer, nil)
 		if len(mailer.sent) != 1 || len(mailer.sent[0].to) != 1 || mailer.sent[0].to[0] != "captured@example.com" {
 			t.Fatalf("alert recipient = %+v, want captured@example.com", mailer.sent)
 		}
@@ -442,8 +442,8 @@ func TestLLMProviderMonitorTickElectsSingleRunner(t *testing.T) {
 	stateA := &llmProviderMonitorState{lastRun: now.Add(-4 * time.Hour)}
 	stateB := &llmProviderMonitorState{lastRun: now.Add(-4 * time.Hour)}
 
-	llmProviderMonitorTick(t.Context(), svcA, mailerA, "node-a", ttl, stateA, now)
-	llmProviderMonitorTick(t.Context(), svcB, mailerB, "node-b", ttl, stateB, now)
+	llmProviderMonitorTick(t.Context(), svcA, mailerA, "node-a", ttl, stateA, now, nil)
+	llmProviderMonitorTick(t.Context(), svcB, mailerB, "node-b", ttl, stateB, now, nil)
 
 	if len(mailerA.sent) != 1 {
 		t.Fatalf("holder alerts = %d, want 1", len(mailerA.sent))
@@ -485,7 +485,7 @@ func TestLLMProviderMonitorTickTakeoverResumesHolderSchedule(t *testing.T) {
 		mailer := &llmMonitorTestMailer{}
 		state := &llmProviderMonitorState{lastRun: now}
 
-		llmProviderMonitorTick(t.Context(), svc, mailer, "node-b", ttl, state, now)
+		llmProviderMonitorTick(t.Context(), svc, mailer, "node-b", ttl, state, now, nil)
 
 		if len(mailer.sent) != 0 {
 			t.Fatalf("takeover burst: %d alerts, want 0", len(mailer.sent))
@@ -501,7 +501,7 @@ func TestLLMProviderMonitorTickTakeoverResumesHolderSchedule(t *testing.T) {
 		mailer := &llmMonitorTestMailer{}
 		state := &llmProviderMonitorState{lastRun: now}
 
-		llmProviderMonitorTick(t.Context(), svc, mailer, "node-b", ttl, state, now)
+		llmProviderMonitorTick(t.Context(), svc, mailer, "node-b", ttl, state, now, nil)
 
 		if len(mailer.sent) != 1 {
 			t.Fatalf("alerts = %d, want 1", len(mailer.sent))

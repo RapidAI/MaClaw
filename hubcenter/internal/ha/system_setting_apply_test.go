@@ -40,6 +40,28 @@ func (s *fakeSystemSettings) List(_ context.Context) ([]*store.SystemSettingEntr
 	return nil, nil
 }
 
+func TestApplySystemSettingOpPreservesProviderAccessScope(t *testing.T) {
+	settings := &fakeSystemSettings{data: map[string]string{}}
+	svc := &Service{settings: settings}
+	registryJSON := `{"providers":[{"id":"openai","allowed_node_ids":["hc-us","hc-sg"]}]}`
+	payload, err := json.Marshal(systemSettingPayload{
+		Key:       llmservice.RegistrySettingKey,
+		ValueJSON: registryJSON,
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	if err := svc.applySystemSettingOp(context.Background(), &store.HASyncOp{
+		OpType:      OpUpsert,
+		PayloadJSON: string(payload),
+	}); err != nil {
+		t.Fatalf("applySystemSettingOp: %v", err)
+	}
+	if got := settings.data[llmservice.RegistrySettingKey]; got != registryJSON {
+		t.Fatalf("stored value = %q, want opaque registry JSON with allowed_node_ids", got)
+	}
+}
+
 func TestApplySystemSettingOpInvalidatesLLMRegistryCache(t *testing.T) {
 	settings := &fakeSystemSettings{data: map[string]string{}}
 	invalidated := 0

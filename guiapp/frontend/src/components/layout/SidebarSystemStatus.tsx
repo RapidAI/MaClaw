@@ -16,6 +16,7 @@ import {
     providerDropdownPosEqual,
     type ProviderDropdownPos,
 } from './sidebarProviderDropdownPos';
+import { formatWorkbenchTaskCountLine, type WorkbenchTaskCounts } from './backgroundTaskCount';
 
 export type LLMProfileStatusSummary = {
     profile: 'assistant' | 'coding';
@@ -38,6 +39,8 @@ type SidebarSystemStatusProps = SidebarCreditDisplayFormatters & {
     weixinStatus: string;
     lansengerStatus: string;
     backgroundTaskCount?: number;
+    /** Live counts for the task-monitor tabs shown on the workbench status card. */
+    workbenchTaskCounts?: WorkbenchTaskCounts;
     /** Opens System > Monitor with the background-task view selected. */
     onOpenBackgroundTasks?: () => void;
     localLLMCacheEnabled?: boolean;
@@ -177,6 +180,7 @@ export const SidebarSystemStatus = ({
     weixinStatus,
     lansengerStatus,
     backgroundTaskCount = 0,
+    workbenchTaskCounts,
     onOpenBackgroundTasks,
     localLLMCacheEnabled = false,
     sidebarCurrentProviderTokenUsage,
@@ -532,6 +536,20 @@ export const SidebarSystemStatus = ({
     const backgroundTaskLabel = textForLang(lang, 'Background tasks', '\u540e\u53f0\u4efb\u52a1', '\u5f8c\u53f0\u4efb\u52d9');
     const isChineseLang = lang === 'zh-Hans' || lang === 'zh-Hant' || lang === 'zh';
     const backgroundTaskText = `${backgroundTaskLabel}${isChineseLang ? '\uff1a ' : ': '}${backgroundTaskCount}`;
+    const resolvedWorkbenchTaskCounts: WorkbenchTaskCounts = {
+        background: workbenchTaskCounts?.background ?? backgroundTaskCount,
+        scheduled: workbenchTaskCounts?.scheduled ?? 0,
+        passthrough: workbenchTaskCounts?.passthrough ?? 0,
+    };
+    const workbenchTaskCountLabels = {
+        background: textForLang(lang, 'Background', '后台', '後台'),
+        scheduled: textForLang(lang, 'Scheduled', '计划', '計劃'),
+        passthrough: textForLang(lang, 'Passthrough', '直通', '直通'),
+    };
+    const workbenchTaskCountText = formatWorkbenchTaskCountLine(resolvedWorkbenchTaskCounts, workbenchTaskCountLabels, CREDIT_SEPARATOR);
+    const workbenchTaskRowAria = onOpenBackgroundTasks
+        ? textForLang(lang, `${backgroundTaskLabel}: ${workbenchTaskCountText}. Open task monitor`, `${backgroundTaskLabel}：${workbenchTaskCountText}，打开任务监控`, `${backgroundTaskLabel}：${workbenchTaskCountText}，開啟任務監控`)
+        : `${backgroundTaskLabel}${isChineseLang ? '\uff1a' : ': '}${workbenchTaskCountText}`;
     const renderStatusSignal = (label: string, on: boolean, extraTitle?: string, ariaLabel?: string, kind?: 'llm' | 'hub' | 'im') => (
         <span
             className={`sidebar-system-status__signal${kind ? ` sidebar-system-status__signal--${kind}` : ''}`}
@@ -695,6 +713,18 @@ export const SidebarSystemStatus = ({
                         </strong>
                     </div>
                 )}
+                <button
+                    type="button"
+                    data-testid="workbench-task-counts"
+                    className="mc-workbench-status-card__row mc-workbench-status-card__jobs-row"
+                    title={workbenchTaskCountText}
+                    aria-label={workbenchTaskRowAria}
+                    onClick={onOpenBackgroundTasks}
+                    disabled={!onOpenBackgroundTasks}
+                >
+                    <span>{backgroundTaskLabel}</span>
+                    <strong className="mc-workbench-status-card__jobs">{workbenchTaskCountText}</strong>
+                </button>
             </section>
             <div className="sidebar-system-status__panel">
                 <div className="sidebar-system-status__signals" aria-label="System status">

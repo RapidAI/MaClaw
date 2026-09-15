@@ -1421,13 +1421,13 @@ func documentGenerateDesktopBeforeSearch(t *testing.T, userText string, classifi
 	for _, selection := range surface.plan.Selections {
 		switch selection.FitProof.MatchedCapability {
 		case "information.search.web", "document.generate.file", "artifact.deliver.current_channel", tool.CapabilityInformationFetchWeb,
-			tool.CapabilityArtifactAcquireRemote, tool.CapabilityFSReadLocal:
+			tool.CapabilityArtifactAcquireRemote, tool.CapabilityFSReadLocal, tool.CapabilityFSWriteLocal, tool.CapabilityShellExecuteLocal:
 			// The retrieval archetype bundle adds the optional web_fetch
 			// offers; the lookup+generate composite is a document-archetype
 			// turn, so the document bundle's acquire/read offers ride along
 			// too (2026-08-28 PPT turn: petition-only download starved the
-			// effectful petition budget). Anything else would be a host-owned
-			// addition.
+			// effectful petition budget). Baseline workspace tools (file
+			// write, local shell) stay listed as last-resort fallbacks.
 		default:
 			t.Fatalf("host-owned desktop dest must not add extra selections: %#v", surface.plan.Selections)
 		}

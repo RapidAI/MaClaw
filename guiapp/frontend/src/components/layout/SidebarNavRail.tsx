@@ -21,9 +21,6 @@ type SidebarNavRailProps = {
     lang: string;
     maclawLLMOnline?: boolean;
     remoteActivationStatus?: any;
-    runningTaskCount: number;
-    onOpenBackgroundTasks?: () => void;
-    remoteSessionTab?: 'remote' | 'background' | 'scheduled' | 'passthrough';
     t: (key: string) => string;
     gossipAllowed: boolean;
     config: any;
@@ -79,8 +76,6 @@ export const SidebarNavRail = ({
     switchTool,
     lang,
     remoteActivationStatus,
-    onOpenBackgroundTasks,
-    remoteSessionTab = 'remote',
     t,
     gossipAllowed,
     config,
@@ -160,6 +155,9 @@ export const SidebarNavRail = ({
     const resolvedToolsLabel = toolsNavLabel(lang);
     const resolvedToolsTitle = toolsPageTitle(lang);
     const systemLabel = lang === 'zh-Hans' ? zhHans.system : lang === 'zh-Hant' ? zhHant.system : 'System';
+    // The running-task badge moved to SidebarSystemStatus (see WorkbenchTaskCounts);
+    // the rail keeps an explicit 0-count tap target so the nav item stays stable.
+    const runningTaskCount = 0;
     const extensionsLabel = lang === 'zh-Hans' ? '扩展' : lang === 'zh-Hant' ? '擴展' : 'Extensions';
     const connectorsLabel = lang === 'zh-Hans' ? '连接器' : lang === 'zh-Hant' ? '連接器' : 'Connectors';
     const libraryLabel = lang === 'zh-Hans' ? '资料库' : lang === 'zh-Hant' ? '資料庫' : 'Library';
@@ -233,7 +231,7 @@ export const SidebarNavRail = ({
             position: 'relative',
         }}>
             <SidebarBrandHeader brandId={brandInfo?.id} currentIcon={currentIcon} brandSidebarName={brandSidebarName} />
-            <SidebarPrimaryNav navTab={navTab} aiAssistantLabel={aiAssistantLabel} appsLabel={appsLabel} showAppEntry={showAppEntry} showUtilitiesEntry={showUtilitiesEntry} showToolsEntry={showToolsEntry} switchTool={switchTool} onOpenBackgroundTasks={onOpenBackgroundTasks} remoteSessionTab={remoteSessionTab} extensionsLabel={extensionsLabel} extensionsMenuOpen={extensionsMenuOpen} onToggleExtensionsMenu={toggleExtensionsMenu} libraryMenuOpen={libraryMenuOpen} onToggleLibraryMenu={toggleLibraryMenu} knowledgeActive={knowledgeActive} workflowLabel={workflowLabel} utilitiesLabel={resolvedUtilitiesLabel} utilitiesTitle={resolvedUtilitiesTitle} toolsLabel={resolvedToolsLabel} toolsTitle={resolvedToolsTitle} />
+            <SidebarPrimaryNav navTab={navTab} aiAssistantLabel={aiAssistantLabel} appsLabel={appsLabel} showAppEntry={showAppEntry} showUtilitiesEntry={showUtilitiesEntry} showToolsEntry={showToolsEntry} switchTool={switchTool} extensionsLabel={extensionsLabel} extensionsMenuOpen={extensionsMenuOpen} onToggleExtensionsMenu={toggleExtensionsMenu} libraryMenuOpen={libraryMenuOpen} onToggleLibraryMenu={toggleLibraryMenu} knowledgeActive={knowledgeActive} workflowLabel={workflowLabel} utilitiesLabel={resolvedUtilitiesLabel} utilitiesTitle={resolvedUtilitiesTitle} toolsLabel={resolvedToolsLabel} toolsTitle={resolvedToolsTitle} />
             {showAppEntry && veAuthorized && favoriteEmployees.length > 0 && (
                 <div
                     aria-hidden="true"

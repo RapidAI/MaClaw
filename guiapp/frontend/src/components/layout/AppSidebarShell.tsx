@@ -12,6 +12,7 @@ import { SIDEBAR_AI_PANE_GAP, SIDEBAR_NAV_RAIL_WIDTH } from './sidebarLayout';
 import type { AssistantDarkSchemeId } from '../ai/assistantDarkSchemes';
 import { DEFAULT_ASSISTANT_LIGHT_SCHEME_ID, type AssistantLightSchemeId } from '../ai/assistantLightSchemes';
 import type { LLMProfileStatusSummary } from './SidebarSystemStatus';
+import type { WorkbenchTaskCounts } from './backgroundTaskCount';
 interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     navTab: string;
     taskManagementPaneWidth: number;
@@ -30,8 +31,8 @@ interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     telegramStatus: string;
     weixinStatus: string;
     lansengerStatus: string;
-    runningTaskCount: number;
     backgroundTaskCount?: number;
+    workbenchTaskCounts?: WorkbenchTaskCounts;
     onOpenBackgroundTasks?: () => void;
     /** Keep cloud workspace/project controls for external coding surfaces. */
     showCloudWorkspaceManagement?: boolean;
@@ -39,7 +40,6 @@ interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     showCloudWorkspaceCreation?: boolean;
     /** Restore durable cloud task rows while keeping project controls hidden. */
     restoreCloudWorkspaceTasks?: boolean;
-    remoteSessionTab?: 'remote' | 'background' | 'scheduled' | 'passthrough';
     t: (key: string) => string;
     gossipAllowed: boolean;
     config: any;
@@ -157,13 +157,12 @@ export const AppSidebarShell = ({
     telegramStatus,
     weixinStatus,
     lansengerStatus,
-    runningTaskCount,
     backgroundTaskCount = 0,
+    workbenchTaskCounts,
     onOpenBackgroundTasks,
     showCloudWorkspaceManagement,
     showCloudWorkspaceCreation,
     restoreCloudWorkspaceTasks,
-    remoteSessionTab = 'remote',
     t,
     gossipAllowed,
     config,
@@ -272,9 +271,6 @@ export const AppSidebarShell = ({
                     lang={lang}
                     maclawLLMOnline={maclawLLMOnline}
                     remoteActivationStatus={remoteActivationStatus}
-                    runningTaskCount={runningTaskCount}
-                    onOpenBackgroundTasks={onOpenBackgroundTasks}
-                    remoteSessionTab={remoteSessionTab}
                     t={t}
                     gossipAllowed={gossipAllowed}
                     config={config}
@@ -304,6 +300,7 @@ export const AppSidebarShell = ({
                         weixinStatus={weixinStatus}
                         lansengerStatus={lansengerStatus}
                         backgroundTaskCount={backgroundTaskCount}
+                        workbenchTaskCounts={workbenchTaskCounts}
                         onOpenBackgroundTasks={onOpenBackgroundTasks}
                         showCloudWorkspaceManagement={showCloudWorkspaceManagement}
                         showCloudWorkspaceCreation={showCloudWorkspaceCreation}

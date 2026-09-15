@@ -747,6 +747,29 @@ describe('AssistantPreviewPane', () => {
         expect(pane.style.getPropertyValue('--mc-preview-surface-border').trim()).toBe(PREVIEW_SURFACE_FRAME.lightBorder);
         expect(pane.style.getPropertyValue('--mc-preview-surface-border')).not.toBe(theme.divider);
         expect(pane.style.getPropertyValue('--mc-preview-surface-shadow')).not.toMatch(/30,\s*58,\s*95/);
+        expect(pane.style.getPropertyValue('--mc-preview-surface-bg').trim()).toBe('#ffffff');
+    });
+
+    it('does not paint the preview surface with a blue scheme canvas', () => {
+        render(
+            <AssistantPreviewPane
+                codePreviewState={activeCodePreviewState}
+                closeCodePreview={vi.fn()}
+                closeDocPreview={vi.fn()}
+                lang="en"
+                selectCodeFile={vi.fn()}
+                showAgentView={false}
+                showCodePreview={true}
+                showWorkflowPreview={false}
+                splitRatio={0.42}
+                startPreviewResize={vi.fn()}
+                theme={{ ...theme, bg: '#f3f8ff' }}
+                workflowState={workflowState}
+            />,
+        );
+        const pane = document.querySelector('.mc-assistant-preview-pane') as HTMLElement;
+        expect(pane.style.getPropertyValue('--mc-preview-surface-bg').trim()).not.toBe('#f3f8ff');
+        expect(pane.style.getPropertyValue('--mc-preview-surface-bg').trim()).toBe('#ffffff');
     });
 
     it('uses a neutral dark frame in dark mode', () => {
@@ -769,6 +792,27 @@ describe('AssistantPreviewPane', () => {
         const pane = document.querySelector('.mc-assistant-preview-pane') as HTMLElement;
         expect(pane.style.getPropertyValue('--mc-preview-surface-border').trim()).toBe(PREVIEW_SURFACE_FRAME.darkBorder);
         expect(pane.style.getPropertyValue('--mc-preview-surface-border-active').trim()).toBe(PREVIEW_SURFACE_FRAME.darkBorderActive);
+    });
+
+    it('uses a dark frame when the canvas is dark even if isDark is omitted', () => {
+        render(
+            <AssistantPreviewPane
+                codePreviewState={activeCodePreviewState}
+                closeCodePreview={vi.fn()}
+                closeDocPreview={vi.fn()}
+                lang="en"
+                selectCodeFile={vi.fn()}
+                showAgentView={false}
+                showCodePreview={true}
+                showWorkflowPreview={false}
+                splitRatio={0.42}
+                startPreviewResize={vi.fn()}
+                theme={{ ...theme, bg: '#0f141b' }}
+                workflowState={workflowState}
+            />,
+        );
+        const pane = document.querySelector('.mc-assistant-preview-pane') as HTMLElement;
+        expect(pane.style.getPropertyValue('--mc-preview-surface-border').trim()).toBe(PREVIEW_SURFACE_FRAME.darkBorder);
     });
 
     it('closes open preview surfaces when the backdrop is clicked', () => {

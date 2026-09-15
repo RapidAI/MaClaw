@@ -115,6 +115,109 @@ func TestClassifyAndRouteSkipsL1ForConcreteModel(t *testing.T) {
 	}
 }
 
+func TestClassifyAndRoutePinUsesWorkflowForAvailability(t *testing.T) {
+	header := http.Header{}
+	header.Set(WorkflowTypeHeader, "business_plan")
+	group := &ServiceGroup{
+		Kind: ServiceGroupKindDynamic,
+		Models: []ModelConfig{
+			{Name: OfficialTierHigh},
+			{Name: OfficialTierMid, ProviderIDs: []string{"p-mid"}},
+			{Name: OfficialTierLow, ProviderIDs: []string{"p-low"}},
+		},
+		Routes: DefaultOfficialAutoRoutes(),
+	}
+	dec := ClassifyAndRouteModel(header, map[string]any{"model": OfficialTierHigh}, group, OfficialTierHigh)
+	if !dec.Passthrough || dec.Class != WorkloadClassPlan || dec.Source != ClassSourceWorkflow {
+		t.Fatalf("decision = %#v, want pin passthrough plan/workflow", dec)
+	}
+	if dec.ResolvedModel != OfficialTierMid || !dec.AvailabilityFallback {
+		t.Fatalf("decision = %#v, want official-mid, not low", dec)
+	}
+}
+
+func TestClassifyAndRoutePinPlanDoesNotLandOnLow(t *testing.T) {
+	group := &ServiceGroup{
+		Kind: ServiceGroupKindDynamic,
+		Models: []ModelConfig{
+			{Name: OfficialTierHigh},
+			{Name: OfficialTierMid},
+			{Name: OfficialTierLow, ProviderIDs: []string{"p-low"}},
+		},
+		Routes: DefaultOfficialAutoRoutes(),
+	}
+	dec := ClassifyAndRouteModel(nil, map[string]any{"model": OfficialTierHigh}, group, OfficialTierHigh)
+	if dec.ResolvedModel != OfficialTierLow || !dec.AvailabilityFallback {
+		t.Fatalf("unclassified pin fallback = %#v, want official-low", dec)
+	}
+	header := http.Header{}
+	header.Set(WorkflowTypeHeader, "business_plan")
+	dec = ClassifyAndRouteModel(header, map[string]any{"model": OfficialTierHigh}, group, OfficialTierHigh)
+	if dec.AvailabilityFallback || dec.ResolvedModel != OfficialTierHigh {
+		t.Fatalf("plan pin must not land on low, got %#v", dec)
+	}
+}
+
+func TestClassifyAndRoutePlanDoesNotUseLowRouteTarget(t *testing.T) {
+	header := http.Header{}
+	header.Set(WorkloadClassHeader, "plan")
+	group := &ServiceGroup{
+		Kind: ServiceGroupKindDynamic,
+		Models: []ModelConfig{
+			{Name: OfficialTierHigh, ProviderIDs: []string{"p-high"}},
+			{Name: OfficialTierMid, ProviderIDs: []string{"p-mid"}},
+			{Name: OfficialTierLow, ProviderIDs: []string{"p-low"}},
+		},
+		Routes: []WorkloadRoute{{Class: WorkloadClassPlan, Model: OfficialTierLow, Quality: QualityLow}},
+	}
+	dec := ClassifyAndRouteModel(header, map[string]any{"model": "auto"}, group, "auto")
+	if dec.ResolvedModel == OfficialTierLow {
+		t.Fatalf("plan must not resolve to official-low, got %#v", dec)
+	}
+	if dec.ResolvedModel != OfficialTierMid && dec.ResolvedModel != OfficialTierHigh {
+		t.Fatalf("plan = %#v, want official-mid or official-high", dec)
+	}
+}
+
+func TestClassifyAndRoutePlanDoesNotUseLowQualityConcreteModel(t *testing.T) {
+	header := http.Header{}
+	header.Set(WorkloadClassHeader, "plan")
+	group := &ServiceGroup{
+		Kind: ServiceGroupKindDynamic,
+		Models: []ModelConfig{
+			{Name: OfficialTierHigh, ProviderIDs: []string{"p-high"}},
+			{Name: OfficialTierMid, ProviderIDs: []string{"p-mid"}},
+			{Name: "gpt-4o-mini", ProviderIDs: []string{"p-mini"}},
+		},
+		Routes: []WorkloadRoute{{Class: WorkloadClassPlan, Model: "gpt-4o-mini", Quality: QualityLow}},
+	}
+	dec := ClassifyAndRouteModel(header, map[string]any{"model": "auto"}, group, "auto")
+	if dec.ResolvedModel == "gpt-4o-mini" || dec.ResolvedModel == OfficialTierLow {
+		t.Fatalf("plan must not resolve to low-quality model, got %#v", dec)
+	}
+	if dec.ResolvedModel != OfficialTierMid && dec.ResolvedModel != OfficialTierHigh {
+		t.Fatalf("plan = %#v, want official-mid or official-high", dec)
+	}
+}
+
+func TestClassifyAndRoutePinLowStaysOnLowForPlan(t *testing.T) {
+	header := http.Header{}
+	header.Set(WorkloadClassHeader, "plan")
+	group := &ServiceGroup{
+		Kind: ServiceGroupKindDynamic,
+		Models: []ModelConfig{
+			{Name: OfficialTierHigh, ProviderIDs: []string{"p-high"}},
+			{Name: OfficialTierMid, ProviderIDs: []string{"p-mid"}},
+			{Name: OfficialTierLow, ProviderIDs: []string{"p-low"}},
+		},
+		Routes: DefaultOfficialAutoRoutes(),
+	}
+	dec := ClassifyAndRouteModel(header, map[string]any{"model": OfficialTierLow}, group, OfficialTierLow)
+	if !dec.Passthrough || dec.ResolvedModel != OfficialTierLow {
+		t.Fatalf("pin of official-low must stay, got %#v", dec)
+	}
+}
+
 func TestValidateDynamicServiceGroupRequiredRoutes(t *testing.T) {
 	group := &ServiceGroup{
 		Kind: ServiceGroupKindDynamic,
@@ -194,6 +297,99 @@ func officialDynamicFixture() *ServiceGroup {
 		Kind:   ServiceGroupKindDynamic,
 		Models: []ModelConfig{{Name: OfficialTierHigh}, {Name: OfficialTierMid}, {Name: OfficialTierLow}},
 		Routes: DefaultOfficialAutoRoutes(),
+	}
+}
+
+func TestFallbackAvailableModelDowngradesHighToMid(t *testing.T) {
+	group := &ServiceGroup{
+		Kind: ServiceGroupKindDynamic,
+		Models: []ModelConfig{
+			{Name: OfficialTierHigh},
+			{Name: OfficialTierMid, ProviderIDs: []string{"p-mid"}},
+			{Name: OfficialTierLow, ProviderIDs: []string{"p-low"}},
+		},
+		Routes: DefaultOfficialAutoRoutes(),
+	}
+	got, ok := FallbackAvailableModel(group, OfficialTierHigh, WorkloadClassPlan)
+	if !ok || got != OfficialTierMid {
+		t.Fatalf("plan high fallback = %s ok=%v, want official-mid", got, ok)
+	}
+	got, ok = FallbackAvailableModel(group, OfficialTierHigh, WorkloadClassChat)
+	if !ok || got != OfficialTierMid {
+		t.Fatalf("chat high fallback = %s ok=%v, want official-mid first", got, ok)
+	}
+}
+
+func TestFallbackAvailableModelDoesNotSendPlanToLow(t *testing.T) {
+	group := &ServiceGroup{
+		Kind: ServiceGroupKindDynamic,
+		Models: []ModelConfig{
+			{Name: OfficialTierHigh},
+			{Name: OfficialTierMid},
+			{Name: OfficialTierLow, ProviderIDs: []string{"p-low"}},
+		},
+		Routes: DefaultOfficialAutoRoutes(),
+	}
+	got, ok := FallbackAvailableModel(group, OfficialTierHigh, WorkloadClassPlan)
+	if ok || got != OfficialTierHigh {
+		t.Fatalf("plan must not fall through to low, got %s ok=%v", got, ok)
+	}
+	got, ok = FallbackAvailableModel(group, OfficialTierHigh, WorkloadClassChat)
+	if !ok || got != OfficialTierLow {
+		t.Fatalf("chat high→low = %s ok=%v", got, ok)
+	}
+}
+
+func TestFallbackAvailableModelUpgradesLowToMid(t *testing.T) {
+	group := &ServiceGroup{
+		Kind: ServiceGroupKindDynamic,
+		Models: []ModelConfig{
+			{Name: OfficialTierHigh, ProviderIDs: []string{"p-high"}},
+			{Name: OfficialTierMid, ProviderIDs: []string{"p-mid"}},
+			{Name: OfficialTierLow},
+		},
+		Routes: DefaultOfficialAutoRoutes(),
+	}
+	got, ok := FallbackAvailableModel(group, OfficialTierLow, WorkloadClassChat)
+	if !ok || got != OfficialTierMid {
+		t.Fatalf("low upgrade = %s ok=%v, want official-mid", got, ok)
+	}
+}
+
+func TestRouteWorkloadClassFallsBackWhenHighMissing(t *testing.T) {
+	group := &ServiceGroup{
+		Kind: ServiceGroupKindDynamic,
+		Models: []ModelConfig{
+			{Name: OfficialTierMid, ProviderIDs: []string{"p-mid"}},
+			{Name: OfficialTierLow, ProviderIDs: []string{"p-low"}},
+		},
+		Routes: DefaultOfficialAutoRoutes(),
+	}
+	routed, model, quality := RouteWorkloadClass(group, WorkloadClassPlan)
+	if routed != WorkloadClassPlan || model != OfficialTierMid || quality != QualityMid {
+		t.Fatalf("got routed=%s model=%s quality=%s, want plan/official-mid/mid", routed, model, quality)
+	}
+}
+
+func TestClassifyAndRouteAutoFallsBackWhenHighUnavailable(t *testing.T) {
+	header := http.Header{}
+	header.Set(WorkloadClassHeader, "plan")
+	group := &ServiceGroup{
+		ID:   OfficialGroupID,
+		Kind: ServiceGroupKindDynamic,
+		Models: []ModelConfig{
+			{Name: OfficialTierHigh},
+			{Name: OfficialTierMid, ProviderIDs: []string{"p-mid"}},
+			{Name: OfficialTierLow, ProviderIDs: []string{"p-low"}},
+		},
+		Routes: DefaultOfficialAutoRoutes(),
+	}
+	dec := ClassifyAndRoute(header, map[string]any{"model": "auto"}, group)
+	if dec.ResolvedModel != OfficialTierMid || !dec.AvailabilityFallback {
+		t.Fatalf("decision = %#v, want official-mid with availability fallback", dec)
+	}
+	if dec.Attribution.SelectionReason != "official tier availability fallback" {
+		t.Fatalf("reason = %q", dec.Attribution.SelectionReason)
 	}
 }
 

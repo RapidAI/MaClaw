@@ -112,7 +112,8 @@ export function AssistantInputStack(props: AssistantInputStackProps) {
         <BufferQueuePanel
             queue={queue}
             lang={lang}
-            theme={{ bg: t.bg, text: t.text, textMuted: t.textMuted, headingColor: t.headingColor, inputBarBg: t.inputBarBg, inputBarBorder: t.inputBarBorder, codeBlockBg: t.codeBlockBg, codeBlockBorder: t.codeBlockBorder, divider: t.divider }}
+            theme={t}
+            themeMode={themeMode}
             editingEntryId={editingEntryId}
             onEdit={handleEditEntry}
             onCancelEdit={handleCancelEdit}

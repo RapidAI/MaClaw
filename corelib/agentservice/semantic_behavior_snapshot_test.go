@@ -184,6 +184,8 @@ func TestPlanSurfaceFirstWaveIdentitiesStripsAdapterAndCatalogSpecific(t *testin
 	got := PlanSurfaceFirstWaveIdentities([]string{
 		"information.search.web|freshness=reference|host_a|n=2",
 		"document.write.office|-|office_adapter",
+		"fs.read.local|-|read_file",
+		"shell.execute.local|-|bash",
 		"information.search.web|freshness=reference|host_b",
 		"information.fetch.web|-|host_fetch",
 	})

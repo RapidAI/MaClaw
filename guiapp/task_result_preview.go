@@ -84,8 +84,13 @@ func (a *App) PreviewTaskResultFile(filePath string) (*TaskResultPreview, error)
 		out.Kind = "pptx"
 		out.Language = "pptx"
 		return out, nil
-	case ".pdf":
-		return previewTaskResultPDF(cleaned, info.Size(), out)
+	}
+
+	if kind, _ := previewHTTPContentType(ext); kind != "" {
+		if kind == "pdf" {
+			return previewTaskResultPDF(cleaned, info.Size(), out)
+		}
+		return previewTaskResultBinary(cleaned, kind, out)
 	}
 
 	if isTaskResultOfficeExt(ext) {
@@ -94,7 +99,7 @@ func (a *App) PreviewTaskResultFile(filePath string) (*TaskResultPreview, error)
 			return nil, fmt.Errorf("无法预览该文档")
 		}
 		out.Kind = "text"
-		out.Language = "plaintext"
+		out.Language = "markdown"
 		out.Content = text
 		return out, nil
 	}
@@ -201,6 +206,66 @@ func lookupTaskResultPreviewPath(token string) (string, bool) {
 	return lease.path, true
 }
 
+func previewHTTPContentType(ext string) (kind, contentType string) {
+	switch strings.ToLower(ext) {
+	case ".pdf":
+		return "pdf", "application/pdf"
+	case ".png":
+		return "image", "image/png"
+	case ".jpg", ".jpeg":
+		return "image", "image/jpeg"
+	case ".gif":
+		return "image", "image/gif"
+	case ".webp":
+		return "image", "image/webp"
+	case ".bmp":
+		return "image", "image/bmp"
+	case ".svg":
+		return "image", "image/svg+xml"
+	case ".ico":
+		return "image", "image/x-icon"
+	case ".tif", ".tiff":
+		return "image", "image/tiff"
+	case ".heic":
+		return "image", "image/heic"
+	case ".mp4", ".m4v":
+		return "video", "video/mp4"
+	case ".webm":
+		return "video", "video/webm"
+	case ".mov":
+		return "video", "video/quicktime"
+	case ".avi":
+		return "video", "video/x-msvideo"
+	case ".mkv":
+		return "video", "video/x-matroska"
+	case ".mp3":
+		return "audio", "audio/mpeg"
+	case ".wav":
+		return "audio", "audio/wav"
+	case ".ogg", ".oga":
+		return "audio", "audio/ogg"
+	case ".m4a":
+		return "audio", "audio/mp4"
+	case ".aac":
+		return "audio", "audio/aac"
+	case ".flac":
+		return "audio", "audio/flac"
+	default:
+		return "", ""
+	}
+}
+
+func previewTaskResultBinary(path, kind string, out *TaskResultPreview) (*TaskResultPreview, error) {
+	token := issueTaskResultPreviewToken(path)
+	if token == "" {
+		return nil, fmt.Errorf("无法预览该文档")
+	}
+	out.Kind = kind
+	out.Language = kind
+	out.PreviewURL = taskResultPreviewHTTPPath + "?t=" + token
+	return out, nil
+}
+
 func handleTaskResultPreviewHTTP(_ *App, rw http.ResponseWriter, req *http.Request) {
 	if req == nil || (req.Method != http.MethodGet && req.Method != http.MethodHead) {
 		if rw != nil {
@@ -214,7 +279,8 @@ func handleTaskResultPreviewHTTP(_ *App, rw http.ResponseWriter, req *http.Reque
 		http.NotFound(rw, req)
 		return
 	}
-	if !strings.EqualFold(filepath.Ext(path), ".pdf") {
+	kind, contentType := previewHTTPContentType(filepath.Ext(path))
+	if contentType == "" {
 		http.NotFound(rw, req)
 		return
 	}
@@ -229,16 +295,18 @@ func handleTaskResultPreviewHTTP(_ *App, rw http.ResponseWriter, req *http.Reque
 		http.NotFound(rw, req)
 		return
 	}
-	okPDF, peekErr := peekPDFHeader(file)
-	if peekErr != nil || !okPDF {
-		http.NotFound(rw, req)
-		return
+	if kind == "pdf" {
+		okPDF, peekErr := peekPDFHeader(file)
+		if peekErr != nil || !okPDF {
+			http.NotFound(rw, req)
+			return
+		}
+		if _, err := file.Seek(0, io.SeekStart); err != nil {
+			http.NotFound(rw, req)
+			return
+		}
 	}
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		http.NotFound(rw, req)
-		return
-	}
-	rw.Header().Set("Content-Type", "application/pdf")
+	rw.Header().Set("Content-Type", contentType)
 	rw.Header().Set("X-Content-Type-Options", "nosniff")
 	rw.Header().Set("Cache-Control", "no-store")
 	rw.Header().Set("Content-Disposition", "inline")

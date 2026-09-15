@@ -234,9 +234,10 @@ func ClassifyAndRouteWithHead(header http.Header, body map[string]any, group *Se
 	}
 	dec.Class = class
 	dec.Source = source
-	routedClass, model, quality := RouteWorkloadClass(group, class)
+	routedClass, model, quality, fallback := routeWorkloadClass(group, class)
 	dec.RoutedClass = routedClass
 	dec.ResolvedModel = model
 	dec.Quality = quality
+	dec.AvailabilityFallback = fallback
 	return finishDecision(dec, group, requestedModel)
 }

@@ -70,15 +70,67 @@ func classificationHasIntentLabel(result intent.ClassificationResult, label inte
 	return result.HasLabel(label)
 }
 
+// BaselineWorkspaceLabels are last-resort workspace tools kept on every
+// managed turn. When a specialized provider is missing, exhausted, or never
+// classified, the agent can still read/write files and run a local command
+// instead of stalling on a spent petition budget.
+func BaselineWorkspaceLabels() []intent.IntentLabel {
+	return []intent.IntentLabel{intent.LabelFileRead, intent.LabelFileWrite, intent.LabelShellCommand}
+}
+
+const baselineWorkspaceEvidence = "intent:baseline_workspace"
+const archetypeBundleEvidence = "intent:archetype_bundle"
+
 // ExpandArchetypeBundleNeeds adds optional companion needs for the turn's
 // archetype. Delivery legs are never offered here: they stay on the producing
 // label's own rule and unlock through the plan DAG.
 func ExpandArchetypeBundleNeeds(registry *coretool.CapabilityRegistry, rules map[intent.IntentLabel][]IntentCapabilityNeedTemplate, result intent.ClassificationResult, managed bool, needs []coretool.CapabilityNeed, bundleKey intent.IntentLabel) []coretool.CapabilityNeed {
+	companions, ok := SemanticArchetypeBundles()[bundleKey]
+	if !ok || len(companions) == 0 {
+		return needs
+	}
+	return expandCompanionLabelNeeds(registry, rules, result, managed, needs, companions, archetypeBundleEvidence)
+}
+
+// ExpandBaselineWorkspaceNeeds keeps file-read, file-write, and local shell
+// on a managed turn as optional, policy-omittable fallbacks. Capabilities
+// already offered by the primary or archetype stay as they are; baseline
+// only fills gaps so a search turn still has a last-resort command runner.
+func ExpandBaselineWorkspaceNeeds(registry *coretool.CapabilityRegistry, rules map[intent.IntentLabel][]IntentCapabilityNeedTemplate, result intent.ClassificationResult, managed bool, needs []coretool.CapabilityNeed) []coretool.CapabilityNeed {
 	if !managed {
 		return needs
 	}
-	companions, ok := SemanticArchetypeBundles()[bundleKey]
-	if !ok || len(companions) == 0 {
+	templates := make([]IntentCapabilityNeedTemplate, 0, 3)
+	for _, label := range BaselineWorkspaceLabels() {
+		for _, template := range rules[label] {
+			if strings.HasPrefix(string(template.Capability), "artifact.deliver.") {
+				continue
+			}
+			template.Required = false
+			switch template.Capability {
+			case coretool.CapabilityFSReadLocal:
+				if template.MaxInvocations < 12 {
+					template.MaxInvocations = 12
+				}
+			case coretool.CapabilityFSWriteLocal, coretool.CapabilityShellExecuteLocal:
+				if template.MaxInvocations < 8 {
+					template.MaxInvocations = 8
+				}
+			}
+			templates = append(templates, template)
+		}
+	}
+	if len(templates) == 0 {
+		return needs
+	}
+	synthetic := map[intent.IntentLabel][]IntentCapabilityNeedTemplate{
+		intent.LabelFileRead: templates,
+	}
+	return expandCompanionLabelNeeds(registry, synthetic, result, managed, needs, []intent.IntentLabel{intent.LabelFileRead}, baselineWorkspaceEvidence)
+}
+
+func expandCompanionLabelNeeds(registry *coretool.CapabilityRegistry, rules map[intent.IntentLabel][]IntentCapabilityNeedTemplate, result intent.ClassificationResult, managed bool, needs []coretool.CapabilityNeed, companions []intent.IntentLabel, evidence string) []coretool.CapabilityNeed {
+	if !managed || len(companions) == 0 {
 		return needs
 	}
 	type familyRange struct {
@@ -107,21 +159,31 @@ func ExpandArchetypeBundleNeeds(registry *coretool.CapabilityRegistry, rules map
 			}
 			budget := coretool.RepeatSiblingBudget(template.MaxInvocations)
 			if entry, exists := offered[template.Capability]; exists {
+				if evidence == baselineWorkspaceEvidence {
+					continue
+				}
 				if entry.ambiguous || budget <= entry.count {
 					continue
 				}
-				out = append(out, coretool.ExtendRepeatFamily(out[entry.start], entry.count, budget, result.Confidence, []string{"intent:archetype_bundle"})...)
+				out = append(out, coretool.ExtendRepeatFamily(out[entry.start], entry.count, budget, result.Confidence, []string{evidence})...)
 				entry.count = budget
 				offered[template.Capability] = entry
+				continue
+			}
+			if registry == nil {
 				continue
 			}
 			if _, exists := registry.Lookup(template.Capability); !exists {
 				continue
 			}
+					idPrefix := "need:"
+			if evidence == baselineWorkspaceEvidence {
+				idPrefix = "need:zz-baseline:"
+			}
 			siblings := ExpandNeedTemplateSiblings(template, ExpandNeedTemplateOptions{
-				IDPrefix:      "need:",
+				IDPrefix:      idPrefix,
 				Confidence:    result.Confidence,
-				EvidenceIDs:   []string{"intent:archetype_bundle"},
+				EvidenceIDs:   []string{evidence},
 				ForceOptional: true,
 			})
 			offered[template.Capability] = familyRange{start: len(out), count: len(siblings)}

@@ -106,6 +106,23 @@ func adminListLLMProviders(svc *llmservice.Service) http.HandlerFunc {
 	}
 }
 
+func adminListLLMAccessNodes(proxyCfg *llmservice.ProxyConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var nodes []llmservice.AccessNodeView
+		if proxyCfg != nil && proxyCfg.ListAccessNodes != nil {
+			nodes = proxyCfg.ListAccessNodes()
+		}
+		if len(nodes) == 0 {
+			nodeID := ""
+			if proxyCfg != nil {
+				nodeID = proxyCfg.NodeID
+			}
+			nodes = llmservice.DefaultAccessNodes(nodeID)
+		}
+		writeJSONResp(w, http.StatusOK, map[string]any{"nodes": nodes})
+	}
+}
+
 func adminAddLLMProvider(svc *llmservice.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var provider llmpool.ProviderConfig
@@ -220,7 +237,7 @@ func adminSetLLMProviderSequences(svc *llmservice.Service) http.HandlerFunc {
 	}
 }
 
-func adminProbeLLMProviderModels(svc *llmservice.Service) http.HandlerFunc {
+func adminProbeLLMProviderModels(svc *llmservice.Service, proxyCfg *llmservice.ProxyConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			ProviderID string `json:"provider_id"`
@@ -232,17 +249,29 @@ func adminProbeLLMProviderModels(svc *llmservice.Service) http.HandlerFunc {
 			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 			return
 		}
-		if req.APIKey == "" && req.ProviderID != "" && svc != nil {
-			existing, err := svc.GetProvider(r.Context(), req.ProviderID)
+		var existing *llmpool.ProviderConfig
+		if req.ProviderID != "" && svc != nil {
+			got, err := svc.GetProvider(r.Context(), req.ProviderID)
 			if err != nil {
 				writeJSONResp(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 				return
 			}
-			if existing != nil {
-				req.APIKey = existing.APIKey
-			}
+			existing = got
 		}
-		models, err := probeLLMProviderModels(r.Context(), req.APIURL, req.APIKey, req.Protocol)
+		var (
+			models []string
+			err    error
+		)
+		// A saved provider's key must not be sent to a caller-supplied URL.
+		if existing != nil && strings.TrimSpace(req.APIKey) == "" {
+			if proxyCfg != nil && !llmpool.ProviderAllowedOnNode(*existing, proxyCfg.NodeID) {
+				models, err = llmservice.ProbeProviderModelsWithScope(r.Context(), proxyCfg, existing, existing.APIURL, existing.APIKey, existing.Protocol)
+			} else {
+				models, err = probeLLMProviderModels(r.Context(), existing.APIURL, existing.APIKey, existing.Protocol)
+			}
+		} else {
+			models, err = probeLLMProviderModels(r.Context(), req.APIURL, req.APIKey, req.Protocol)
+		}
 		if err != nil {
 			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
@@ -341,7 +370,7 @@ func llmModelsEndpoint(apiURL, protocol string) (string, error) {
 // a configured provider. Unlike probe-models (which only checks /v1/models
 // reachability), this sends an actual chat request and verifies a response is
 // returned — the same test the client would exercise.
-func adminTestLLMProviderChat(svc *llmservice.Service) http.HandlerFunc {
+func adminTestLLMProviderChat(svc *llmservice.Service, proxyCfg *llmservice.ProxyConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			ProviderID string `json:"provider_id"`
@@ -382,6 +411,17 @@ func adminTestLLMProviderChat(svc *llmservice.Service) http.HandlerFunc {
 			timeoutSec = existing.UpstreamTimeoutSec
 			if req.Model == "" && len(existing.Models) > 0 {
 				req.Model = existing.Models[0]
+			}
+			if proxyCfg != nil && !llmpool.ProviderAllowedOnNode(*existing, proxyCfg.NodeID) {
+				ctx, cancel := context.WithTimeout(r.Context(), llmProviderTestTimeout(corelib.MaclawLLMConfig{TimeoutSec: timeoutSec}))
+				defer cancel()
+				reply, errMsg, latencyMs, model := llmservice.TestProviderChatWithScope(ctx, proxyCfg, existing, req.Model)
+				if errMsg != "" {
+					writeJSONResp(w, http.StatusOK, map[string]any{"success": false, "error": errMsg, "latency_ms": latencyMs})
+					return
+				}
+				writeJSONResp(w, http.StatusOK, map[string]any{"success": true, "reply": reply, "model": model, "latency_ms": latencyMs})
+				return
 			}
 		}
 		if req.APIURL == "" || req.Model == "" {
@@ -428,7 +468,7 @@ func adminTestLLMProviderChat(svc *llmservice.Service) http.HandlerFunc {
 // "Test Status" button against a saved provider. It is used by the background
 // provider monitor; the model is the provider's first configured model, which
 // mirrors the model the admin UI picks for the manual test.
-func testLLMProviderChatStatus(ctx context.Context, svc *llmservice.Service, providerID string) (success bool, errMsg string, latencyMs int64) {
+func testLLMProviderChatStatus(ctx context.Context, svc *llmservice.Service, proxyCfg *llmservice.ProxyConfig, providerID string) (success bool, errMsg string, latencyMs int64) {
 	if svc == nil {
 		return false, "provider service unavailable", 0
 	}
@@ -445,6 +485,10 @@ func testLLMProviderChatStatus(ctx context.Context, svc *llmservice.Service, pro
 	}
 	if strings.TrimSpace(existing.APIURL) == "" || model == "" {
 		return false, "api_url and model are required", 0
+	}
+	if proxyCfg != nil && !llmpool.ProviderAllowedOnNode(*existing, proxyCfg.NodeID) {
+		_, errMsg, latencyMs, _ := llmservice.TestProviderChatWithScope(ctx, proxyCfg, existing, model)
+		return errMsg == "", errMsg, latencyMs
 	}
 	cfg := corelib.MaclawLLMConfig{
 		URL:        existing.APIURL,

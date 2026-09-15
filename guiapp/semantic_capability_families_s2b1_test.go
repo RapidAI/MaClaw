@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
@@ -84,7 +85,7 @@ func TestSemanticS2b1FamiliesAreManagedAndMapToGovernedNeeds(t *testing.T) {
 			// siblings or archetype-bundle offers. Same-capability ceiling
 			// siblings used to be required; they are an exposure budget.
 			bundled := make(map[tool.CapabilityID]bool)
-			for _, companion := range semanticArchetypeBundles[tc.label] {
+			for _, companion := range append(append([]intent.IntentLabel(nil), semanticArchetypeBundles[tc.label]...), agentservice.BaselineWorkspaceLabels()...) {
 				for _, template := range imSemanticIntentRuleSet[companion] {
 					if !strings.HasPrefix(string(template.Capability), "artifact.deliver.") {
 						bundled[template.Capability] = true

@@ -96,6 +96,8 @@ func DefaultDefinitions() []IntentDefinition {
 			EmbedTexts: []string{
 				"登录服务器查看日志",
 				"连接远程服务器",
+				"用ssh访问",
+				"用ssh登录查看服务器状态",
 				"SSH到生产环境检查状态",
 				"帮我登录服务器重启服务",
 				"查看服务器上的GPU占用率",

@@ -16,8 +16,6 @@ type SidebarPrimaryNavProps = {
     /** Split navigation mode: expose a dedicated Tools rail item. */
     showToolsEntry?: boolean;
     switchTool: (tool: string) => void;
-    onOpenBackgroundTasks?: () => void;
-    remoteSessionTab?: 'remote' | 'background' | 'scheduled' | 'passthrough';
     extensionsLabel: string;
     extensionsMenuOpen: boolean;
     onToggleExtensionsMenu?: (target: HTMLElement) => void;
@@ -127,7 +125,7 @@ const SemanticNavItem = ({ id, label, legacyLabel, icon, active, current, onClic
     </button>
 );
 
-export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showAppEntry, showUtilitiesEntry = true, showToolsEntry = false, switchTool, onOpenBackgroundTasks, remoteSessionTab = 'remote', extensionsLabel, extensionsMenuOpen, onToggleExtensionsMenu, libraryMenuOpen = false, onToggleLibraryMenu, knowledgeActive = false, workflowLabel, utilitiesLabel, utilitiesTitle, toolsLabel, toolsTitle }: SidebarPrimaryNavProps) => {
+export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showAppEntry, showUtilitiesEntry = true, showToolsEntry = false, switchTool, extensionsLabel, extensionsMenuOpen, onToggleExtensionsMenu, libraryMenuOpen = false, onToggleLibraryMenu, knowledgeActive = false, workflowLabel, utilitiesLabel, utilitiesTitle, toolsLabel, toolsTitle }: SidebarPrimaryNavProps) => {
     // The rail is also used by the English and Traditional-Chinese builds. The
     // existing localized labels are the only language signal available here,
     // so infer the display language without changing the parent component API.
@@ -167,7 +165,7 @@ export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showApp
                 aiStyle
             />
             <div aria-hidden="true" style={{ width: '70%', height: '2px', margin: '4px 0 6px 0', borderRadius: '1px', background: 'linear-gradient(90deg, transparent 0%, var(--theme-border) 20%, var(--theme-text-muted) 50%, var(--theme-border) 80%, transparent 100%)', opacity: 0.5 }} />
-            <SemanticNavItem id="tasks" label={labels.tasks} icon={<TaskRailIcon />} active={navTab === 'remote' && remoteSessionTab !== 'scheduled'} onClick={onOpenBackgroundTasks || (() => switchTool('remote'))} title={isEnglish ? 'Background task monitor' : isTraditional ? '後台任務監控' : '后台任务监控'} testId="sidebar-task-monitor-nav" />
+            <SemanticNavItem id="tasks" label={labels.tasks} icon={<TaskRailIcon />} active={navTab === 'remote'} onClick={() => switchTool('remote')} title={isEnglish ? 'Task monitor' : isTraditional ? '任務監控' : '任务监控'} testId="sidebar-task-monitor-nav" />
             {showAppEntry && <SemanticNavItem id="apps" label={labels.apps} legacyLabel={appsLabel} icon={<AppsRailIcon />} active={navTab === 'apps'} onClick={() => switchTool('apps')} title={appsLabel} testId="sidebar-apps-nav" />}
             <SemanticNavItem id="experts" label={expertLabel} legacyLabel={showToolsEntry ? undefined : utilitiesLabel} icon={<ExpertRailIcon />} active={navTab === 'utilities'} onClick={() => switchTool('utilities')} title={expertTitle} testId="sidebar-utilities-nav" visible={showUtilitiesEntry} />
             <SemanticNavItem id="tools" label={toolLabel} icon={<ToolsRailIcon />} active={navTab === 'tools'} onClick={() => switchTool('tools')} title={toolsTitle || toolLabel} testId="sidebar-tools-nav" visible={showToolsEntry} />

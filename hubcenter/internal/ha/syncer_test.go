@@ -72,6 +72,57 @@ func TestNewSyncerAllowsLargePullBatch(t *testing.T) {
 	}
 }
 
+func TestPullOpsRetriesSmallerBatchOnTimeout(t *testing.T) {
+	var mu sync.Mutex
+	var limits []int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		limit := 0
+		fmt.Sscanf(r.URL.Query().Get("limit"), "%d", &limit)
+		mu.Lock()
+		limits = append(limits, limit)
+		mu.Unlock()
+		if limit > 10 {
+			time.Sleep(80 * time.Millisecond)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(&PullOpsResponse{
+			NodeID: "hc-1",
+			Ops:    []*store.HASyncOp{{Seq: 9, EntityType: EntitySystemSetting, EntityID: "llm_service_registry"}},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	syncer := NewSyncer(&Service{}, time.Second, 40)
+	syncer.client = &http.Client{Timeout: 30 * time.Millisecond}
+	got, err := syncer.pullOps(context.Background(), &PeerRuntimeState{NodeID: "hc-1", BaseURL: server.URL}, 0)
+	if err != nil {
+		t.Fatalf("pullOps: %v limits=%v", err, limits)
+	}
+	if got == nil || len(got.Ops) != 1 || got.Ops[0].Seq != 9 {
+		t.Fatalf("got %#v", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(limits) < 2 || limits[0] != 40 || limits[len(limits)-1] > 10 {
+		t.Fatalf("limits = %v, want shrink from 40 down to <=10", limits)
+	}
+}
+
+func TestPullOpsUsesPublicURLWhenBaseEmpty(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(&PullOpsResponse{NodeID: "hc-1", NextAfterSeq: 1})
+	}))
+	t.Cleanup(server.Close)
+	syncer := NewSyncer(&Service{}, time.Second, 10)
+	got, err := syncer.pullOps(context.Background(), &PeerRuntimeState{NodeID: "hc-1", PublicURL: server.URL}, 0)
+	if err != nil {
+		t.Fatalf("pullOps: %v", err)
+	}
+	if got == nil || got.NodeID != "hc-1" {
+		t.Fatalf("got %#v", got)
+	}
+}
+
 func TestSyncPeerAdvancesCursorFromEmptyResponseNextSeq(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(&PullOpsResponse{

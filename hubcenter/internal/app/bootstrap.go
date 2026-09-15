@@ -73,19 +73,7 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 		if err != nil {
 			return nil, err
 		}
-		peers := make([]ha.StaticPeer, 0, len(cfg.HA.Peers))
-		for _, peer := range cfg.HA.Peers {
-			if !peer.Enabled || strings.TrimSpace(peer.NodeID) == "" || strings.TrimSpace(peer.BaseURL) == "" {
-				continue
-			}
-			peers = append(peers, ha.StaticPeer{
-				NodeID:       peer.NodeID,
-				NodeName:     peer.Name,
-				BaseURL:      peer.BaseURL,
-				PublicURL:    peer.PublicURL,
-				PublicKeyPEM: peer.PublicKeyPEM,
-			})
-		}
+		peers := ha.StaticPeersFromConfig(cfg.HA)
 		haSvc = ha.NewService(cfg.HA.NodeID, cfg.HA.NodeName, cfg.HA.AdvertiseURL, cfg.HA.ClusterSecret, peers)
 		haSvc.SetPublicURL(cfg.Server.PublicBaseURL)
 		haSvc.SetNodeKeyMaterial(keyMaterial)
@@ -308,7 +296,9 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 		}
 		log.Printf("[llm-monitor] HA enabled; provider monitor self-elects a single runner via lease (node=%s, lease_ttl=%s)", monitorNodeID, leaseTTL)
 	}
-	app.goBackground(func(ctx context.Context) { httpapi.RunLLMProviderMonitor(ctx, llmModule.Service, mailer, monitorNodeID, leaseTTL) })
+	app.goBackground(func(ctx context.Context) {
+		httpapi.RunLLMProviderMonitor(ctx, llmModule.Service, mailer, monitorNodeID, leaseTTL, llmModule.ProxyCfg)
+	})
 	if haSvc != nil {
 		// The HA syncer may apply compute-market operations as soon as it starts.
 		// Initialize and attach the LLM repositories first; otherwise a pulled

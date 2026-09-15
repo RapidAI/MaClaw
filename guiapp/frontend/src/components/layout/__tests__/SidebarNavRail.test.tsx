@@ -52,7 +52,6 @@ function renderRail(overrides: Partial<React.ComponentProps<typeof SidebarNavRai
         brandSidebarName: 'MaClaw',
         switchTool: vi.fn(),
         lang: 'en',
-        runningTaskCount: 0,
         t: (key) => key,
         gossipAllowed: false,
         config: {},
@@ -69,7 +68,7 @@ function renderRail(overrides: Partial<React.ComponentProps<typeof SidebarNavRai
 
 describe('SidebarNavRail system popup', () => {
     it('opens About first from the system menu without duplicating settings or the task monitor', () => {
-        const props = renderRail({ lang: 'zh-Hans', runningTaskCount: 3 });
+        const props = renderRail({ lang: 'zh-Hans' });
 
         fireEvent.click(screen.getByTitle('系统菜单'));
 
@@ -168,14 +167,17 @@ describe('SidebarNavRail system popup', () => {
         expect(screen.queryByTestId('sidebar-brand-mark')).toBeNull();
     });
 
-    it('keeps the task rail as the background monitor entry', () => {
-        const onOpenBackgroundTasks = vi.fn();
-        const props = renderRail({ onOpenBackgroundTasks });
+    it('opens the task monitor from the tasks rail', () => {
+        const props = renderRail();
 
         fireEvent.click(screen.getByTestId('sidebar-task-monitor-nav'));
 
-        expect(onOpenBackgroundTasks).toHaveBeenCalledTimes(1);
-        expect(props.switchTool).not.toHaveBeenCalledWith('remote');
+        expect(props.switchTool).toHaveBeenCalledWith('remote');
+    });
+
+    it('keeps the tasks rail active while the task monitor is open', () => {
+        renderRail({ navTab: 'remote' });
+        expect(screen.getByTestId('sidebar-task-monitor-nav').className).toContain('active');
     });
 
     it('places ranking last in the system menu after gossip', () => {

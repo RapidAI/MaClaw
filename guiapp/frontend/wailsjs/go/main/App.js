@@ -2510,6 +2510,10 @@ export function KnowledgeDeleteHubShare(arg1) {
   return window['go']['main']['App']['KnowledgeDeleteHubShare'](arg1);
 }
 
+export function KnowledgeDeleteFragment(arg1) {
+  return window['go']['main']['App']['KnowledgeDeleteFragment'](arg1);
+}
+
 export function KnowledgeDeleteSource(arg1) {
   return window['go']['main']['App']['KnowledgeDeleteSource'](arg1);
 }
@@ -3272,6 +3276,10 @@ export function MarkAllNotificationsRead() {
 
 export function MarkNotificationRead(arg1) {
   return window['go']['main']['App']['MarkNotificationRead'](arg1);
+}
+
+export function MaterializeMobileDocumentOriginal(arg1) {
+  return window['go']['main']['App']['MaterializeMobileDocumentOriginal'](arg1);
 }
 
 export function MaterializeProviderByName(arg1) {

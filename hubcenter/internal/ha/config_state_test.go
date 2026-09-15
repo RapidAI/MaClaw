@@ -113,3 +113,48 @@ func TestConfigServiceSaveNormalizesURLsAndPeers(t *testing.T) {
 		t.Fatalf("unexpected peers after normalize: %+v", got.Peers)
 	}
 }
+
+func TestStaticPeersFromConfigFallsBackToNodes(t *testing.T) {
+	cfg := config.HAConfig{
+		NodeID: "hc-2",
+		Nodes: []config.HANodeConfig{
+			{NodeID: "hc-1", NodeName: "cn", AdvertiseURL: "http://10.0.0.1:9388", PublicURL: "https://hubs.mypapers.top", Enabled: true},
+			{NodeID: "hc-2", NodeName: "us", AdvertiseURL: "http://10.0.0.2:9388", Enabled: true},
+			{NodeID: "hc-3", NodeName: "us2", AdvertiseURL: "http://10.0.0.3:9388", Enabled: true},
+		},
+	}
+	got := StaticPeersFromConfig(cfg)
+	if len(got) != 2 {
+		t.Fatalf("peers = %#v, want hc-1 and hc-3", got)
+	}
+	if got[0].NodeID != "hc-1" || got[0].BaseURL != "http://10.0.0.1:9388" {
+		t.Fatalf("first peer = %#v", got[0])
+	}
+	if got[1].NodeID != "hc-3" {
+		t.Fatalf("second peer = %#v", got[1])
+	}
+}
+
+func TestStaticPeersFromConfigFillsGapsFromNodes(t *testing.T) {
+	cfg := config.HAConfig{
+		NodeID: "hc-2",
+		Peers: []config.HAPeerConfig{
+			{NodeID: "hc-3", Name: "us2", BaseURL: "http://10.0.0.3:9388", Enabled: true},
+		},
+		Nodes: []config.HANodeConfig{
+			{NodeID: "hc-1", NodeName: "cn", AdvertiseURL: "http://10.0.0.1:9388", PublicURL: "https://hubs.mypapers.top", Enabled: true},
+			{NodeID: "hc-2", NodeName: "us", AdvertiseURL: "http://10.0.0.2:9388", Enabled: true},
+			{NodeID: "hc-3", NodeName: "us2", AdvertiseURL: "http://10.0.0.9:9388", Enabled: true},
+		},
+	}
+	got := StaticPeersFromConfig(cfg)
+	if len(got) != 2 {
+		t.Fatalf("peers = %#v, want hc-3 from peers plus hc-1 from nodes", got)
+	}
+	if got[0].NodeID != "hc-3" || got[0].BaseURL != "http://10.0.0.3:9388" {
+		t.Fatalf("peer list must keep explicit hc-3 URL, got %#v", got[0])
+	}
+	if got[1].NodeID != "hc-1" || got[1].BaseURL != "http://10.0.0.1:9388" {
+		t.Fatalf("missing catalog node hc-1: %#v", got)
+	}
+}

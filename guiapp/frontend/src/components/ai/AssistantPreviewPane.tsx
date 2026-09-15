@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CodePreviewPanel, createCodePreviewTheme, maximumContrastInkOnFill } from "./CodePreviewPanel";
+import { CodePreviewPanel, createCodePreviewTheme, LIGHT_EDITOR_CHROME_BORDER, maximumContrastInkOnFill, type CodePreviewTheme } from "./CodePreviewPanel";
 import { WorkflowDocPreview } from "./WorkflowDocPreview";
 import { contrastingInkOnFill, type Theme } from "./aiAssistantPanelTheme";
+import { markdownPreviewIsDark } from "./markdownPreviewInk";
 import { AgentTaskPanel } from "./AgentTaskPanel";
 import { useSafeBackdropDismiss } from "../../hooks/useSafeBackdropDismiss";
 import { usePreviewSlideLifecycle } from "./previewSlide";
@@ -72,17 +73,21 @@ function previewTabTooltip(mode: PreviewPaneMode, lang: string, cloudMode = fals
 
 /** Neutral preview chrome. Keep these out of the assistant scheme's blue-tinted divider. */
 export const PREVIEW_SURFACE_FRAME = {
-    lightBorder: "#e4e4e4",
+    lightBorder: LIGHT_EDITOR_CHROME_BORDER,
     darkBorder: "rgba(255, 255, 255, 0.12)",
     lightBorderActive: "#c8c8c8",
     darkBorderActive: "rgba(255, 255, 255, 0.22)",
 } as const;
 
-function previewSurfaceVars(theme: Theme): React.CSSProperties {
-    const dark = theme.isDark === true;
+function previewChromeIsDark(theme: Theme): boolean {
+    return markdownPreviewIsDark(theme.bg, theme.isDark);
+}
+
+function previewSurfaceVars(theme: Theme, codeTheme: CodePreviewTheme): React.CSSProperties {
+    const dark = previewChromeIsDark(theme);
     return {
-        "--mc-preview-pane-bg": theme.bg,
-        "--mc-preview-surface-bg": theme.bg,
+        "--mc-preview-pane-bg": codeTheme.tabBg,
+        "--mc-preview-surface-bg": codeTheme.bg,
         "--mc-preview-surface-border": dark ? PREVIEW_SURFACE_FRAME.darkBorder : PREVIEW_SURFACE_FRAME.lightBorder,
         "--mc-preview-surface-border-active": dark
             ? PREVIEW_SURFACE_FRAME.darkBorderActive
@@ -100,13 +105,14 @@ const overlaySurfaceStyle: React.CSSProperties = {
 };
 
 function previewRailStyle(theme: Theme): React.CSSProperties {
+    const dark = previewChromeIsDark(theme);
     return {
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
         padding: "8px 4px",
-        borderLeft: `1px solid ${theme.divider}`,
-        background: theme.bg,
+        borderLeft: `1px solid ${dark ? PREVIEW_SURFACE_FRAME.darkBorder : PREVIEW_SURFACE_FRAME.lightBorder}`,
+        background: "var(--mc-preview-surface-bg, #fff)",
         flexShrink: 0,
         width: "32px",
     };
@@ -687,7 +693,7 @@ export function AssistantPreviewPane({
             <div
                 className="mc-assistant-preview-pane"
                 data-preview-mode={renderedMode}
-                style={{ ...paneStyle, ...previewSurfaceVars(theme) }}
+                style={{ ...paneStyle, ...previewSurfaceVars(theme, codeTheme) }}
             >
                 {renderedBody}
             </div>

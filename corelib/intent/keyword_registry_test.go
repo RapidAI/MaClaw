@@ -26,6 +26,12 @@ func TestNewKeywordRegistry_StrongAndWeakEvidence(t *testing.T) {
 	if !foundBareSSHWeak {
 		t.Fatal("bare ssh should remain weak diagnostic evidence")
 	}
+	if label, ok := r.strongIndex["用ssh"]; !ok || label != LabelSSH {
+		t.Fatalf("strongIndex[用ssh]=%s ok=%v, want ssh true", label, ok)
+	}
+	if label, ok := r.strongIndex["登录服务器"]; !ok || label != LabelSSH {
+		t.Fatalf("strongIndex[登录服务器]=%s ok=%v, want ssh true", label, ok)
+	}
 	if len(r.weakByLabel[LabelBrowser]) == 0 {
 		t.Fatal("browser should have weak diagnostic evidence")
 	}

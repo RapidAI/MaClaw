@@ -1146,6 +1146,15 @@ func TestAdminPageLLMProviderBillingEditor(t *testing.T) {
 		`payload.credit_multiplier_schedule = billing.credit_multiplier_schedule`,
 		`copyProviderExtraFields(existing)`,
 		`providerBillingBadge(p)`,
+		`/api/admin/llm/access-nodes`,
+		`payload.allowed_node_ids`,
+		`function providerAccessScopeSection(`,
+		`provider-access-switch`,
+		`provider-access-node-host`,
+		`k.toLowerCase() === key && providerAccessSelected[k]`,
+		`if (seen[key]) return false`,
+		`accessScope: 'Access scope'`,
+		`accessScope: '\u63a5\u5165\u8303\u56f4'`,
 	})
 	saveFn := regexp.MustCompile(`window\.saveProvider = async function[\s\S]*?window\.deleteLLMProvider`)
 	save := saveFn.FindString(js)
@@ -1154,6 +1163,9 @@ func TestAdminPageLLMProviderBillingEditor(t *testing.T) {
 	}
 	if !strings.Contains(save, `payload.timezone = billing.timezone`) || !strings.Contains(save, `payload.credit_multiplier = billing.credit_multiplier`) {
 		t.Fatal("saveProvider must persist vendor timezone and multiplier")
+	}
+	if !strings.Contains(save, `payload.allowed_node_ids`) {
+		t.Fatal("saveProvider must persist provider access scope")
 	}
 	if !strings.Contains(save, `toast(t('billingDroppedWindows'), 'error')`) || !strings.Contains(save, `return;`) {
 		t.Fatal("saveProvider must block when a time window is empty or has identical start/end")
@@ -1171,6 +1183,8 @@ func TestAdminPageLLMProviderBillingEditor(t *testing.T) {
 		`.provider-billing-window{`,
 		`.provider-billing-fields{`,
 		`.provider-billing-empty{`,
+		`.provider-access-node{display:flex`,
+		`height:auto;min-height:58px`,
 		`.provider-billing-window.is-invalid{`,
 		`.provider-billing-title{`,
 		`.provider-day-chip`,

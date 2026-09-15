@@ -137,6 +137,10 @@ func (r *KeywordRegistry) Match(text string) []KeywordMatch {
 var defaultKeywords = []KeywordEntry{
 	{Keyword: "ssh", Label: LabelSSH, Strength: Weak},
 	{Keyword: "ssh into", Label: LabelSSH, Strength: Strong},
+	{Keyword: "用ssh", Label: LabelSSH, Strength: Strong},
+	{Keyword: "ssh访问", Label: LabelSSH, Strength: Strong},
+	{Keyword: "ssh登录", Label: LabelSSH, Strength: Strong},
+	{Keyword: "登录服务器", Label: LabelSSH, Strength: Strong},
 	{Keyword: "remote server", Label: LabelSSH, Strength: Strong},
 	{Keyword: "server logs", Label: LabelSSH, Strength: Strong},
 	{Keyword: "restart service", Label: LabelSSH, Strength: Strong},

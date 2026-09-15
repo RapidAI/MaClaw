@@ -254,6 +254,39 @@ func TestPreviewTaskResultFileRejectsBinary(t *testing.T) {
 	}
 }
 
+func TestPreviewTaskResultFileImageToken(t *testing.T) {
+	resetTaskResultPreviewLeasesForTest()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "shot.png")
+	raw := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := (*App)(nil).PreviewTaskResultFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Kind != "image" || got.Language != "image" {
+		t.Fatalf("image preview = %+v", got)
+	}
+	if !strings.HasPrefix(got.PreviewURL, taskResultPreviewHTTPPath+"?t=") {
+		t.Fatalf("preview url = %q", got.PreviewURL)
+	}
+	req := httptest.NewRequest(http.MethodGet, got.PreviewURL, nil)
+	rec := httptest.NewRecorder()
+	handleTaskResultPreviewHTTP(nil, rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if !strings.Contains(rec.Header().Get("Content-Type"), "png") {
+		t.Fatalf("content-type = %q", rec.Header().Get("Content-Type"))
+	}
+	body, _ := io.ReadAll(rec.Body)
+	if string(body) != string(raw) {
+		t.Fatalf("served image mismatch")
+	}
+}
+
 func TestIsTaskResultOfficeExt(t *testing.T) {
 	if !isTaskResultOfficeExt(".docx") || !isTaskResultOfficeExt(".xlsx") || isTaskResultOfficeExt(".pptx") {
 		t.Fatal("office ext classification")

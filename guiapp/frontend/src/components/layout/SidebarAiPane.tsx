@@ -13,6 +13,7 @@ import { SidebarMiddleTabs } from './SidebarMiddleTabs';
 import { SidebarHistorySessions, type HistoryDiscussionSummary } from './SidebarHistorySessions';
 import { isDigitalEmployeeAuthorizationUsable, shouldShowDigitalEmployeeFeatureTabs } from '../ai/digitalEmployeeFeature';
 import type { LLMProfileStatusSummary } from './SidebarSystemStatus';
+import type { WorkbenchTaskCounts } from './backgroundTaskCount';
 
 export { isDigitalEmployeeAuthorizationUsable } from '../ai/digitalEmployeeFeature';
 
@@ -56,6 +57,7 @@ type SidebarAiPaneProps = SidebarCreditDisplayFormatters & {
     weixinStatus: string;
     lansengerStatus: string;
     backgroundTaskCount?: number;
+    workbenchTaskCounts?: WorkbenchTaskCounts;
     onOpenBackgroundTasks?: () => void;
     /** Keep cloud workspace/project controls for external coding surfaces. */
     showCloudWorkspaceManagement?: boolean;
@@ -169,6 +171,7 @@ export const SidebarAiPane = ({
     weixinStatus,
     lansengerStatus,
     backgroundTaskCount = 0,
+    workbenchTaskCounts,
     onOpenBackgroundTasks,
     showCloudWorkspaceManagement,
     showCloudWorkspaceCreation,
@@ -309,7 +312,7 @@ export const SidebarAiPane = ({
                     {middleTab === 'employees' && showDigitalEmployeeTabs && <div data-testid="sidebar-middle-pane-employees" style={middlePaneStyle}><VirtualEmployeeTab lang={lang} theme={veTheme} onStartConversation={(ve) => onOpenVEConversation?.(ve)} favoriteEmployeeIds={favoriteEmployeeIds} favoriteEmployeeNames={favoriteEmployeeNames} onSetFavorite={onSetFavoriteEmployee} onRemoveFavorite={onRemoveFavoriteEmployee} onRenameEmployee={onRenameEmployee} /></div>}
                     {middleTab === 'history' && showDigitalEmployeeTabs && <div data-testid="sidebar-middle-pane-history" style={middlePaneStyle}><SidebarHistorySessions lang={lang} enabled={showDigitalEmployeeTabs} onOpenDiscussion={(discussion) => onOpenHistoryDiscussion?.(discussion)} /></div>}
                 </div>
-                <SidebarSystemStatus lang={lang} maclawLLMOnline={maclawLLMOnline} showLansenger={showLansenger} remoteActivationStatus={remoteActivationStatus} qqBotStatus={qqBotStatus} telegramStatus={telegramStatus} weixinStatus={weixinStatus} lansengerStatus={lansengerStatus} backgroundTaskCount={backgroundTaskCount} onOpenBackgroundTasks={onOpenBackgroundTasks} localLLMCacheEnabled={(config as any)?.llm_prompt_cache?.enabled === true} sidebarCurrentProviderTokenUsage={sidebarCurrentProviderTokenUsage} sidebarHubCredits={sidebarHubCredits} formatSidebarTokens={formatSidebarTokens} formatSidebarHubExpiry={formatSidebarHubExpiry} formatSidebarHubTotalCredits={formatSidebarHubTotalCredits} formatSidebarHubUsedCredits={formatSidebarHubUsedCredits} formatSidebarCredit={formatSidebarCredit} unlimitedHubCreditText={unlimitedHubCreditText} noHubAuthorizationText={noHubAuthorizationText} showHubCreditAction={showHubCreditAction} openHubCreditsPage={openHubCreditsPage} openServiceRedeemPage={openServiceRedeemPage} openLLMSettingsPage={openLLMSettingsPage} openIMSettingsPage={openIMSettingsPage} openHubCardStorePage={openHubCardStorePage} codingAgentProgress={codingAgentProgress} codingAgentTurnSnapshot={codingAgentTurnSnapshot} isDark={aiThemeMode === 'dark'} availableProviders={availableProviders} onSwitchProvider={onSwitchProvider} currentModel={currentModel} modelOptions={modelOptions} modelsLoading={modelsLoading} onSwitchModel={onSwitchModel} onOpenModelMenu={onOpenModelMenu} onDismissModelMenu={onDismissModelMenu} moaSticky={moaSticky} onToggleMoASticky={onToggleMoASticky} profileSummaries={profileSummaries} activeProfile={activeProfile} codingInheritsAssistant={codingInheritsAssistant} providerSelectionPending={providerSelectionPending} profileSavePending={profileSavePending} />
+                <SidebarSystemStatus lang={lang} maclawLLMOnline={maclawLLMOnline} showLansenger={showLansenger} remoteActivationStatus={remoteActivationStatus} qqBotStatus={qqBotStatus} telegramStatus={telegramStatus} weixinStatus={weixinStatus} lansengerStatus={lansengerStatus} backgroundTaskCount={backgroundTaskCount} workbenchTaskCounts={workbenchTaskCounts} onOpenBackgroundTasks={onOpenBackgroundTasks} localLLMCacheEnabled={(config as any)?.llm_prompt_cache?.enabled === true} sidebarCurrentProviderTokenUsage={sidebarCurrentProviderTokenUsage} sidebarHubCredits={sidebarHubCredits} formatSidebarTokens={formatSidebarTokens} formatSidebarHubExpiry={formatSidebarHubExpiry} formatSidebarHubTotalCredits={formatSidebarHubTotalCredits} formatSidebarHubUsedCredits={formatSidebarHubUsedCredits} formatSidebarCredit={formatSidebarCredit} unlimitedHubCreditText={unlimitedHubCreditText} noHubAuthorizationText={noHubAuthorizationText} showHubCreditAction={showHubCreditAction} openHubCreditsPage={openHubCreditsPage} openServiceRedeemPage={openServiceRedeemPage} openLLMSettingsPage={openLLMSettingsPage} openIMSettingsPage={openIMSettingsPage} openHubCardStorePage={openHubCardStorePage} codingAgentProgress={codingAgentProgress} codingAgentTurnSnapshot={codingAgentTurnSnapshot} isDark={aiThemeMode === 'dark'} availableProviders={availableProviders} onSwitchProvider={onSwitchProvider} currentModel={currentModel} modelOptions={modelOptions} modelsLoading={modelsLoading} onSwitchModel={onSwitchModel} onOpenModelMenu={onOpenModelMenu} onDismissModelMenu={onDismissModelMenu} moaSticky={moaSticky} onToggleMoASticky={onToggleMoASticky} profileSummaries={profileSummaries} activeProfile={activeProfile} codingInheritsAssistant={codingInheritsAssistant} providerSelectionPending={providerSelectionPending} profileSavePending={profileSavePending} />
             </div>
             <div
                 className="mc-task-pane-resize-handle"

@@ -117,6 +117,90 @@ func TestSaveMobileDocumentOriginalWithoutDialog(t *testing.T) {
 	_ = filepath.Base(path)
 }
 
+func TestMaterializeMobileDocumentOriginalCachesByDraft(t *testing.T) {
+	raw := []byte("preview-original-bytes")
+	sourceHits := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/mobile/documents/drafts/d4", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"draft":{"id":"d4","has_original":true,"source_filename":"deck.pptx","source_size":22,"source_download_url":"/api/mobile/documents/drafts/d4/source"}}`))
+	})
+	mux.HandleFunc("/api/mobile/documents/drafts/d4/source", func(w http.ResponseWriter, r *http.Request) {
+		sourceHits++
+		_, _ = w.Write(raw)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	app := &App{
+		configCacheValid: true,
+		configCache: corelib.AppConfig{
+			RemoteHubURL:      srv.URL,
+			RemoteViewerToken: "viewer-token",
+		},
+	}
+	first, err := app.MaterializeMobileDocumentOriginal("d4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(first, "deck.pptx") {
+		t.Fatalf("path=%q", first)
+	}
+	data, err := os.ReadFile(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != string(raw) {
+		t.Fatalf("file=%q", data)
+	}
+	second, err := app.MaterializeMobileDocumentOriginal("d4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != second {
+		t.Fatalf("cache miss: %q vs %q", first, second)
+	}
+	if sourceHits != 1 {
+		t.Fatalf("source downloads = %d, want 1", sourceHits)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(first)) })
+}
+
+func TestMaterializeMobileDocumentOriginalCachesWithoutSourceSize(t *testing.T) {
+	raw := []byte("no-size-original")
+	sourceHits := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/mobile/documents/drafts/d5", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"draft":{"id":"d5","has_original":true,"source_filename":"note.txt","source_download_url":"/api/mobile/documents/drafts/d5/source"}}`))
+	})
+	mux.HandleFunc("/api/mobile/documents/drafts/d5/source", func(w http.ResponseWriter, r *http.Request) {
+		sourceHits++
+		_, _ = w.Write(raw)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	app := &App{
+		configCacheValid: true,
+		configCache: corelib.AppConfig{
+			RemoteHubURL:      srv.URL,
+			RemoteViewerToken: "viewer-token",
+		},
+	}
+	first, err := app.MaterializeMobileDocumentOriginal("d5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := app.MaterializeMobileDocumentOriginal("d5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != second {
+		t.Fatalf("cache miss: %q vs %q", first, second)
+	}
+	if sourceHits != 1 {
+		t.Fatalf("source downloads = %d, want 1", sourceHits)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(first)) })
+}
+
 func TestFetchMobileDocumentOriginalRejectsMissingOriginal(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/mobile/documents/drafts/d3", func(w http.ResponseWriter, r *http.Request) {

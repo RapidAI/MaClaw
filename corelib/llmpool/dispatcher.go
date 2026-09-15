@@ -31,7 +31,7 @@ type DispatchProviderRoute struct {
 	OriginalIndex    int
 }
 
-// ScoredProviderRoute is a dispatch route plus the capability/priority score
+// ScoredProviderRoute is a dispatch route plus the capability-match score
 // used to keep same-band load balancing from mixing failover tiers.
 type ScoredProviderRoute struct {
 	Route          DispatchProviderRoute
@@ -76,27 +76,11 @@ func OrderScoredProviderRoutes(body map[string]any, model *DispatchModel) []Scor
 	scored := make([]ScoredProviderRoute, 0, len(routes))
 
 	for _, route := range routes {
-		score := 0
-		tags := map[string]struct{}{}
-		for _, tag := range routeCapabilityTags(model, route) {
-			tag = strings.ToLower(strings.TrimSpace(tag))
-			if tag == "" {
-				continue
-			}
-			tags[tag] = struct{}{}
-		}
-		for need, weight := range capabilityNeeds {
-			if _, ok := tags[need]; ok {
-				score += weight * 100
-			}
-		}
-		priority := routePriority(model, route)
-		score += priority
-
+		route = normalizeDispatchRoute(model, route)
 		scored = append(scored, ScoredProviderRoute{
-			Route:          normalizeDispatchRoute(model, route),
-			Score:          score,
-			ResolutionTier: normalizedResolutionTier(routeResolutionTier(model, route)),
+			Route:          route,
+			Score:          CapabilityMatchScore(route.CapabilityTags, capabilityNeeds),
+			ResolutionTier: route.ResolutionTier,
 		})
 	}
 
@@ -118,6 +102,29 @@ func OrderScoredProviderRoutes(body map[string]any, model *DispatchModel) []Scor
 	return scored
 }
 
+// CapabilityMatchScore is the WRR band key for a provider. It counts only
+// tag overlap with the request; admin priority is a sort tie-break, not a band.
+func CapabilityMatchScore(tags []string, needs map[string]int) int {
+	if len(needs) == 0 {
+		return 0
+	}
+	have := map[string]struct{}{}
+	for _, tag := range tags {
+		tag = strings.ToLower(strings.TrimSpace(tag))
+		if tag == "" {
+			continue
+		}
+		have[tag] = struct{}{}
+	}
+	score := 0
+	for need, weight := range needs {
+		if _, ok := have[need]; ok {
+			score += weight * 100
+		}
+	}
+	return score
+}
+
 // DetectCapabilityNeeds analyzes an OpenAI-compatible request body and
 // returns capability tags with weights indicating how strongly the request
 // requires each capability.
@@ -135,15 +142,15 @@ func DetectCapabilityNeeds(body map[string]any) map[string]int {
 	text := strings.ToLower(extractRequestText(body))
 	addKeywordWeight := func(tag string, weight int, keywords ...string) {
 		for _, keyword := range keywords {
-			if strings.Contains(text, keyword) {
+			if textHasCapabilityKeyword(text, keyword) {
 				needs[tag] += weight
 				return
 			}
 		}
 	}
-	addKeywordWeight("document", 8, "document", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "word", "excel", "spreadsheet", "markdown", "contract", "manual", "spec", "report", "summary", "summarize", "read file")
+	addKeywordWeight("document", 8, "document", "pdf", "docs", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "word", "excel", "spreadsheet", "markdown", "contract", "manual", "spec", "report", "summary", "summarize", "read file")
 	addKeywordWeight("reasoning", 5, "reason", "analyze", "analysis", "think", "math", "proof", "deduce")
-	addKeywordWeight("tools", 8, "tool", "browser", "search", "function", "call tool", "execute", "fetch")
+	addKeywordWeight("tools", 8, "tools", "tool", "browser", "search", "function", "call tool", "execute", "fetch")
 	return needs
 }
 
@@ -152,10 +159,8 @@ func DetectCapabilityNeeds(body map[string]any) map[string]int {
 // ---------------------------------------------------------------------------
 
 func capabilityTagsForProvider(model *DispatchModel, providerID string) []string {
-	if model.ProviderCapabilityTags != nil {
-		if tags, ok := model.ProviderCapabilityTags[providerID]; ok && len(tags) > 0 {
-			return tags
-		}
+	if tags, ok := lookupProviderValue(model.ProviderCapabilityTags, providerID); ok && len(tags) > 0 {
+		return tags
 	}
 	return model.CapabilityTags
 }
@@ -191,8 +196,8 @@ func dispatchRoutes(model *DispatchModel) []DispatchProviderRoute {
 func normalizeDispatchRoute(model *DispatchModel, route DispatchProviderRoute) DispatchProviderRoute {
 	route.CapabilityTags = routeCapabilityTags(model, route)
 	route.Priority = routePriority(model, route)
-	route.ResolutionTier = normalizedResolutionTier(routeResolutionTier(model, route))
-	route.CreditMultiplier = normalizeCreditMultiplier(routeCreditMultiplier(model, route))
+	route.ResolutionTier = NormalizedResolutionTier(routeResolutionTier(model, route))
+	route.CreditMultiplier = NormalizeCreditMultiplier(routeCreditMultiplier(model, route))
 	return route
 }
 
@@ -240,44 +245,78 @@ func routeCreditMultiplier(model *DispatchModel, route DispatchProviderRoute) fl
 }
 
 func priorityForProvider(model *DispatchModel, providerID string) int {
-	if model.ProviderPriorities != nil {
-		if p, ok := model.ProviderPriorities[providerID]; ok {
-			return p
-		}
+	if p, ok := lookupProviderValue(model.ProviderPriorities, providerID); ok {
+		return p
 	}
 	return model.Priority
 }
 
 func resolutionTierForProvider(model *DispatchModel, providerID string) int {
-	if model.ProviderResolutionTiers != nil {
-		if t, ok := model.ProviderResolutionTiers[providerID]; ok {
-			return t
-		}
+	if t, ok := lookupProviderValue(model.ProviderResolutionTiers, providerID); ok {
+		return t
 	}
 	return model.ResolutionTier
 }
 
 func creditMultiplierForProvider(model *DispatchModel, providerID string) float64 {
-	if model.ProviderCreditMultipliers != nil {
-		if m, ok := model.ProviderCreditMultipliers[providerID]; ok && m > 0 {
-			return m
-		}
+	if m, ok := lookupProviderValue(model.ProviderCreditMultipliers, providerID); ok && m > 0 {
+		return m
 	}
 	return model.CreditMultiplier
 }
 
-func normalizedResolutionTier(t int) int {
+func lookupProviderValue[T any](m map[string]T, providerID string) (T, bool) {
+	var zero T
+	if len(m) == 0 {
+		return zero, false
+	}
+	if v, ok := m[providerID]; ok {
+		return v, true
+	}
+	want := strings.ToLower(strings.TrimSpace(providerID))
+	if want == "" || want == providerID {
+		return zero, false
+	}
+	v, ok := m[want]
+	return v, ok
+}
+
+func NormalizedResolutionTier(t int) int {
 	if t <= 0 {
 		return 1
 	}
 	return t
 }
 
-func normalizeCreditMultiplier(v float64) float64 {
-	if v <= 0 {
-		return 1
+func textHasCapabilityKeyword(text, keyword string) bool {
+	keyword = strings.ToLower(strings.TrimSpace(keyword))
+	if text == "" || keyword == "" {
+		return false
 	}
-	return v
+	if strings.Contains(keyword, " ") {
+		return strings.Contains(text, keyword)
+	}
+	// Short tokens false-positive as substrings (doc⊂docker, search⊂research,
+	// excel⊂excellent). Longer stems like "document" still use substring match.
+	if len(keyword) > 6 {
+		return strings.Contains(text, keyword)
+	}
+	for {
+		i := strings.Index(text, keyword)
+		if i < 0 {
+			return false
+		}
+		left := i == 0 || !isCapabilityKeywordByte(text[i-1])
+		right := i+len(keyword) == len(text) || !isCapabilityKeywordByte(text[i+len(keyword)])
+		if left && right {
+			return true
+		}
+		text = text[i+1:]
+	}
+}
+
+func isCapabilityKeywordByte(b byte) bool {
+	return b == '_' || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9')
 }
 
 func extractRequestText(body map[string]any) string {

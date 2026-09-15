@@ -78,19 +78,22 @@ var OptionalDynamicRoutes = []string{
 
 // WorkloadDecision is the L1 result for one request.
 type WorkloadDecision struct {
-	Class         string           `json:"class"`
-	RoutedClass   string           `json:"routed_class,omitempty"`
-	Source        string           `json:"class_source,omitempty"`
-	ResolvedModel string           `json:"resolved_model,omitempty"`
-	Quality       string           `json:"quality,omitempty"`
-	Upgraded      bool             `json:"capability_upgraded,omitempty"`
-	Passthrough   bool             `json:"passthrough,omitempty"`
-	HeadClass     string           `json:"head_class,omitempty"`
-	HeadMaxP      float64          `json:"head_max_p,omitempty"`
-	HeadUsed      bool             `json:"head_used,omitempty"`
-	RuleClass     string           `json:"rule_class,omitempty"`
-	RuleSource    string           `json:"rule_source,omitempty"`
-	Attribution   RouteAttribution `json:"attribution,omitempty"`
+	Class         string `json:"class"`
+	RoutedClass   string `json:"routed_class,omitempty"`
+	Source        string `json:"class_source,omitempty"`
+	ResolvedModel string `json:"resolved_model,omitempty"`
+	Quality       string `json:"quality,omitempty"`
+	Upgraded      bool   `json:"capability_upgraded,omitempty"`
+	// AvailabilityFallback is set when the routed high/mid/low model was not
+	// usable and a sibling quality tier in the same group was selected instead.
+	AvailabilityFallback bool             `json:"availability_fallback,omitempty"`
+	Passthrough          bool             `json:"passthrough,omitempty"`
+	HeadClass            string           `json:"head_class,omitempty"`
+	HeadMaxP             float64          `json:"head_max_p,omitempty"`
+	HeadUsed             bool             `json:"head_used,omitempty"`
+	RuleClass            string           `json:"rule_class,omitempty"`
+	RuleSource           string           `json:"rule_source,omitempty"`
+	Attribution          RouteAttribution `json:"attribution,omitempty"`
 }
 
 // RouteAttribution is the documented L1/L3 audit payload.
@@ -110,6 +113,8 @@ func AttributionFrom(dec WorkloadDecision, requestedGroup, requestedModel string
 	requestedModel = strings.TrimSpace(requestedModel)
 	reason := "manual model selection"
 	switch {
+	case dec.AvailabilityFallback:
+		reason = "official tier availability fallback"
 	case !dec.Passthrough:
 		reason = "dynamic workload route"
 	case requestedModel != "" && !IsAutoModel(requestedModel):
@@ -251,6 +256,47 @@ func QualityForOfficialTier(model string) string {
 	default:
 		return ""
 	}
+}
+
+// OfficialTierForQuality is the inverse of QualityForOfficialTier.
+func OfficialTierForQuality(quality string) string {
+	switch NormalizeQuality(quality) {
+	case QualityHigh:
+		return OfficialTierHigh
+	case QualityMid:
+		return OfficialTierMid
+	case QualityLow:
+		return OfficialTierLow
+	default:
+		return ""
+	}
+}
+
+// QualityAvailabilityChain is the same-group retry order for a quality band.
+// Downgrade is preferred (high→mid→low, mid→low then high); low can only upgrade.
+// plan/design never include low.
+func QualityAvailabilityChain(selectedQuality, class string) []string {
+	var chain []string
+	switch NormalizeQuality(selectedQuality) {
+	case QualityHigh:
+		chain = []string{QualityHigh, QualityMid, QualityLow}
+	case QualityMid:
+		chain = []string{QualityMid, QualityLow, QualityHigh}
+	case QualityLow:
+		chain = []string{QualityLow, QualityMid, QualityHigh}
+	default:
+		return nil
+	}
+	if class != WorkloadClassPlan && class != WorkloadClassDesign {
+		return chain
+	}
+	out := make([]string, 0, len(chain))
+	for _, quality := range chain {
+		if quality != QualityLow {
+			out = append(out, quality)
+		}
+	}
+	return out
 }
 
 // DefaultOfficialAutoRoutes is the HubCenter official Auto table.
@@ -415,20 +461,152 @@ func heuristicClass(in ClassifyInput) string {
 
 // RouteWorkloadClass picks a logical model from group.routes.
 // Missing optional classes fall back to balanced. The class itself is never upgraded.
+// If the routed high/mid/low model is missing or has no providers, a sibling
+// quality tier in the same group is used so the request can still be served.
 func RouteWorkloadClass(group *ServiceGroup, class string) (routedClass, model, quality string) {
+	routedClass, model, quality, _ = routeWorkloadClass(group, class)
+	return routedClass, model, quality
+}
+
+func routeWorkloadClass(group *ServiceGroup, class string) (routedClass, model, quality string, fallback bool) {
 	class = NormalizeWorkloadClass(class)
 	if class == "" {
 		class = WorkloadFallbackBalanced
 	}
 	if route, ok := findWorkloadRoute(group, class); ok {
-		return class, strings.TrimSpace(route.Model), effectiveRouteQuality(group, class, route)
+		model, quality, fallback = applyAvailabilityFallback(group, strings.TrimSpace(route.Model), class, effectiveRouteQuality(group, class, route))
+		model, quality, fallback = upgradePlanRouteAwayFromLow(group, class, model, quality, fallback)
+		return class, model, quality, fallback
 	}
 	if class != WorkloadFallbackBalanced {
 		if route, ok := findWorkloadRoute(group, WorkloadFallbackBalanced); ok {
-			return WorkloadFallbackBalanced, strings.TrimSpace(route.Model), effectiveRouteQuality(group, WorkloadFallbackBalanced, route)
+			model, quality, fallback = applyAvailabilityFallback(group, strings.TrimSpace(route.Model), class, effectiveRouteQuality(group, WorkloadFallbackBalanced, route))
+			model, quality, fallback = upgradePlanRouteAwayFromLow(group, class, model, quality, fallback)
+			return WorkloadFallbackBalanced, model, quality, fallback
 		}
 	}
-	return WorkloadFallbackBalanced, "", effectiveRouteQuality(group, WorkloadFallbackBalanced, WorkloadRoute{})
+	return WorkloadFallbackBalanced, "", effectiveRouteQuality(group, WorkloadFallbackBalanced, WorkloadRoute{}), false
+}
+
+func upgradePlanRouteAwayFromLow(group *ServiceGroup, class, model, quality string, fallback bool) (string, string, bool) {
+	if class != WorkloadClassPlan && class != WorkloadClassDesign {
+		return model, quality, fallback
+	}
+	if QualityForOfficialTier(model) != QualityLow && NormalizeQuality(quality) != QualityLow && modelQuality(group, model) != QualityLow {
+		return model, quality, fallback
+	}
+	for _, band := range []string{QualityMid, QualityHigh} {
+		name := firstUsableModelForQuality(group, band)
+		if name == "" || strings.EqualFold(name, model) {
+			continue
+		}
+		return name, band, true
+	}
+	return model, quality, fallback
+}
+
+// FallbackAvailableModel returns a same-group sibling when selected cannot serve.
+// Downgrade high→mid→low; upgrade low→mid→high. plan/design never land on low.
+func FallbackAvailableModel(group *ServiceGroup, selected, class string) (string, bool) {
+	model, _, ok := applyAvailabilityFallback(group, selected, class, "")
+	return model, ok
+}
+
+func applyAvailabilityFallback(group *ServiceGroup, selected, class, quality string) (string, string, bool) {
+	selected = strings.TrimSpace(selected)
+	if selected == "" || group == nil {
+		return selected, quality, false
+	}
+	if modelIsUsable(group, selected) {
+		return selected, quality, false
+	}
+	selectedQuality := NormalizeQuality(quality)
+	if selectedQuality == "" {
+		selectedQuality = modelQuality(group, selected)
+	}
+	if selectedQuality == "" {
+		selectedQuality = QualityForOfficialTier(selected)
+	}
+	for _, band := range QualityAvailabilityChain(selectedQuality, class) {
+		name := firstUsableModelForQuality(group, band)
+		if name == "" || strings.EqualFold(name, selected) {
+			continue
+		}
+		nextQuality := NormalizeQuality(band)
+		if q := QualityForOfficialTier(name); q != "" {
+			nextQuality = q
+		} else if q := modelQuality(group, name); q != "" {
+			nextQuality = q
+		}
+		if nextQuality == "" {
+			nextQuality = quality
+		}
+		return name, nextQuality, true
+	}
+	return selected, quality, false
+}
+
+func firstUsableModelForQuality(group *ServiceGroup, quality string) string {
+	quality = NormalizeQuality(quality)
+	if quality == "" || group == nil {
+		return ""
+	}
+	if official := OfficialTierForQuality(quality); official != "" && modelIsUsable(group, official) {
+		return official
+	}
+	for i := range group.Models {
+		name := strings.TrimSpace(group.Models[i].Name)
+		if name == "" || IsAutoModel(name) {
+			continue
+		}
+		if modelQuality(group, name) != quality {
+			continue
+		}
+		if modelIsUsable(group, name) {
+			return name
+		}
+	}
+	return ""
+}
+
+func modelIsUsable(group *ServiceGroup, name string) bool {
+	model := findGroupModel(group, name)
+	if model == nil || IsAutoModel(model.Name) {
+		return false
+	}
+	if modelHasProviders(model) {
+		return true
+	}
+	return !groupHasAnyProviders(group)
+}
+
+func modelHasProviders(model *ModelConfig) bool {
+	if model == nil {
+		return false
+	}
+	for _, id := range model.ProviderIDs {
+		if strings.TrimSpace(id) != "" {
+			return true
+		}
+	}
+	for _, pc := range model.ProviderConfigs {
+		if strings.TrimSpace(pc.ProviderID) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func groupHasAnyProviders(group *ServiceGroup) bool {
+	if group == nil {
+		return false
+	}
+	for i := range group.Models {
+		if modelHasProviders(&group.Models[i]) {
+			return true
+		}
+	}
+	return false
 }
 
 func findWorkloadRoute(group *ServiceGroup, class string) (WorkloadRoute, bool) {
@@ -483,34 +661,36 @@ func ClassifyAndRouteModel(header http.Header, body map[string]any, group *Servi
 		return finishDecision(WorkloadDecision{Passthrough: true, ResolvedModel: strings.TrimSpace(requestedModel)}, group, requestedModel)
 	}
 	if !IsAutoModel(requestedModel) {
-		class := hintClass(ClassifyInput{Header: header, Body: body})
-		source := ClassSourceHint
-		if class == "" {
-			class = WorkloadUnclassified
-			source = ClassSourceNone
-		}
+		// Pin keeps the model; classify only so plan/design availability omits low.
+		class, source := ClassifyWorkload(ClassifyInput{Header: header, Body: body})
+		model := strings.TrimSpace(requestedModel)
+		quality := QualityForOfficialTier(model)
+		model, quality, availabilityFallback := applyAvailabilityFallback(group, model, class, quality)
 		return finishDecision(WorkloadDecision{
-			Class:         class,
-			RoutedClass:   class,
-			Source:        source,
-			ResolvedModel: strings.TrimSpace(requestedModel),
-			Passthrough:   true,
+			Class:                class,
+			RoutedClass:          class,
+			Source:               source,
+			ResolvedModel:        model,
+			Quality:              quality,
+			AvailabilityFallback: availabilityFallback,
+			Passthrough:          true,
 		}, group, requestedModel)
 	}
 	class, source := ClassifyWorkload(ClassifyInput{Header: header, Body: body})
-	routedClass, model, quality := RouteWorkloadClass(group, class)
+	routedClass, model, quality, availabilityFallback := routeWorkloadClass(group, class)
 	upgraded := false
 	if upgradedModel, ok := upgradeModelInBand(group, model, quality, capabilityNeeds(body)); ok {
 		model = upgradedModel
 		upgraded = true
 	}
 	return finishDecision(WorkloadDecision{
-		Class:         class,
-		RoutedClass:   routedClass,
-		Source:        source,
-		ResolvedModel: model,
-		Quality:       quality,
-		Upgraded:      upgraded,
+		Class:                class,
+		RoutedClass:          routedClass,
+		Source:               source,
+		ResolvedModel:        model,
+		Quality:              quality,
+		Upgraded:             upgraded,
+		AvailabilityFallback: availabilityFallback,
 	}, group, requestedModel)
 }
 
@@ -541,6 +721,13 @@ func upgradeModelInBand(group *ServiceGroup, selected, quality string, needs map
 		}
 	}
 	return bestName, improved
+}
+
+func QualityForModel(group *ServiceGroup, modelName string) string {
+	if q := modelQuality(group, modelName); q != "" {
+		return q
+	}
+	return NormalizeQuality(modelName)
 }
 
 func modelQuality(group *ServiceGroup, modelName string) string {

@@ -3,8 +3,10 @@ package ha
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -148,7 +150,7 @@ func (s *Syncer) syncPeer(ctx context.Context, peer *PeerRuntimeState) {
 			s.endPeerSync(peer.NodeID)
 		}
 	}()
-	if peer == nil || strings.TrimSpace(peer.NodeID) == "" || strings.TrimSpace(peer.BaseURL) == "" {
+	if peer == nil || strings.TrimSpace(peer.NodeID) == "" || peerTransportURL(peer) == "" {
 		return
 	}
 	cursor, err := s.svc.cursors.Get(ctx, peer.NodeID)
@@ -246,7 +248,32 @@ func (s *Syncer) recordPeerCursorError(ctx context.Context, nodeID string, lastS
 }
 
 func (s *Syncer) pullOps(ctx context.Context, peer *PeerRuntimeState, afterSeq int64) (*PullOpsResponse, error) {
-	u := strings.TrimRight(peer.BaseURL, "/") + "/api/internal/ha/ops?after_seq=" + strconv.FormatInt(afterSeq, 10) + "&limit=" + strconv.Itoa(s.limit)
+	limit := s.limit
+	if limit <= 0 {
+		limit = 200
+	}
+	for {
+		out, err := s.pullOpsWithLimit(ctx, peer, afterSeq, limit)
+		if err == nil {
+			return out, nil
+		}
+		if ctx.Err() != nil || !isHAPullTimeout(err) || limit <= 1 {
+			return nil, err
+		}
+		next := limit / 4
+		if next < 1 {
+			next = 1
+		}
+		limit = next
+	}
+}
+
+func (s *Syncer) pullOpsWithLimit(ctx context.Context, peer *PeerRuntimeState, afterSeq int64, limit int) (*PullOpsResponse, error) {
+	base := peerTransportURL(peer)
+	if base == "" {
+		return nil, fmt.Errorf("no URL for hubcenter node %s", peer.NodeID)
+	}
+	u := base + "/api/internal/ha/ops?after_seq=" + strconv.FormatInt(afterSeq, 10) + "&limit=" + strconv.Itoa(limit)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err
@@ -270,4 +297,19 @@ func (s *Syncer) pullOps(ctx context.Context, peer *PeerRuntimeState, afterSeq i
 		return nil, err
 	}
 	return &out, nil
+}
+
+func isHAPullTimeout(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "timeout") || strings.Contains(msg, "deadline exceeded")
 }

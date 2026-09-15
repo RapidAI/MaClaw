@@ -65,6 +65,48 @@ func TestLookupNodeURLReturnsSelfAndPeerAddresses(t *testing.T) {
 	if got := svc.LookupNodeURL("missing"); got != "" {
 		t.Fatalf("unknown node URL = %q", got)
 	}
+	if got := svc.LookupNodeURL("HC-2"); got != "https://hubs.maclaw.top" {
+		t.Fatalf("case-insensitive peer URL = %q", got)
+	}
+}
+
+func TestLookupInternalURLUsesAdvertiseAndPeerBaseURL(t *testing.T) {
+	svc := NewService("hc-1", "HubCenter 1", "https://internal-hc-1", "secret", []StaticPeer{
+		{NodeID: "hc-2", NodeName: "HubCenter 2", BaseURL: "https://internal-hc-2", PublicURL: "https://hubs.maclaw.top"},
+	})
+
+	if got := svc.LookupInternalURL("hc-1"); got != "https://internal-hc-1" {
+		t.Fatalf("self internal URL = %q", got)
+	}
+	if got := svc.LookupInternalURL("hc-2"); got != "https://internal-hc-2" {
+		t.Fatalf("peer internal URL = %q, want base URL not public URL", got)
+	}
+	nodes := svc.ListAccessNodes()
+	if len(nodes) != 2 || !nodes[0].Self || nodes[0].NodeID != "hc-1" || nodes[1].NodeID != "hc-2" {
+		t.Fatalf("ListAccessNodes() = %#v", nodes)
+	}
+	if nodes[0].Host != "internal-hc-1" {
+		t.Fatalf("self host = %q", nodes[0].Host)
+	}
+	if nodes[1].Host != "hubs.maclaw.top" {
+		t.Fatalf("peer host = %q, want public domain", nodes[1].Host)
+	}
+}
+
+func TestAccessPeerFallsBackToPublicURL(t *testing.T) {
+	svc := NewService("hc-2", "HubCenter 2", "https://internal-hc-2", "secret", []StaticPeer{
+		{NodeID: "hc-1", NodeName: "HubCenter 1", PublicURL: "https://hubs.mypapers.top"},
+	})
+	url, reachable, _ := svc.AccessPeer("hc-1")
+	if url != "https://hubs.mypapers.top" {
+		t.Fatalf("AccessPeer URL = %q, want public URL when advertise/base is empty", url)
+	}
+	if reachable {
+		t.Fatal("unknown peer should not be marked reachable")
+	}
+	if got := svc.InternalURLForPublicOrigin("https://hubs.mypapers.top"); got != "https://hubs.mypapers.top" {
+		t.Fatalf("InternalURLForPublicOrigin = %q, want public URL when base is empty", got)
+	}
 }
 
 func TestForceBroadcastSkillHubSnapshotBypassesHashDedup(t *testing.T) {

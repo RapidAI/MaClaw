@@ -2114,6 +2114,11 @@ func forwardAuthorizedResponsesRequestWithCache(r *http.Request, reg *im.LLMProv
 		serviceGroupIDs := llmservice.ChargedServiceGroupIDs(model, provider.ID)
 		return respBody, statusCode, provider.ID, serviceGroupIDs, usageStat, false, true, nil
 	}
+	if fb, fallbackChat := availabilityFallbackAttempt(model, chatBody, lastStatus, lastErr); fb != nil {
+		fallbackResponses := rewriteAvailabilityFallbackModel(responsesBody, fb.Name)
+		_, r = bindAvailabilityFallbackMeta(r.Context(), r, fb.Name)
+		return forwardAuthorizedResponsesRequestWithCache(r, reg, fb, fallbackResponses, fallbackChat, fb.Name, promptCacheSource, cacheCfg)
+	}
 	if lastBody != nil && lastStatus > 0 {
 		return lastBody, lastStatus, lastProviderID, nil, corelib.TokenUsageStat{}, false, true, nil
 	}
@@ -2244,6 +2249,11 @@ func streamAuthorizedResponsesRequest(w http.ResponseWriter, r *http.Request, re
 			return statusCode, provider.ID, llmservice.ChargedServiceGroupIDs(model, provider.ID), usageStat, wroteStream, copyErr
 		}
 		return statusCode, provider.ID, llmservice.ChargedServiceGroupIDs(model, provider.ID), usageStat, wroteStream, nil
+	}
+	if fb, fallbackChat := availabilityFallbackAttempt(model, chatBody, lastStatus, lastErr); fb != nil {
+		fallbackResponses := rewriteAvailabilityFallbackModel(responsesBody, fb.Name)
+		_, r = bindAvailabilityFallbackMeta(r.Context(), r, fb.Name)
+		return streamAuthorizedResponsesRequest(w, r, reg, fb, fallbackResponses, fallbackChat, fb.Name, fb.Name, selectedModelDebug)
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("no authorized providers available for model %q", model.Name)
@@ -2437,6 +2447,10 @@ func streamAuthorizedModelRequest(w http.ResponseWriter, r *http.Request, reg *i
 		}
 		return statusCode, provider.ID, llmservice.ChargedServiceGroupIDs(model, provider.ID), usageStat, wroteStream, nil
 	}
+	if fb, fallbackBody := availabilityFallbackAttempt(model, body, lastStatus, lastErr); fb != nil {
+		_, r = bindAvailabilityFallbackMeta(r.Context(), r, fb.Name)
+		return streamAuthorizedModelRequest(w, r, reg, fb, fallbackBody, fb.Name, selectedModelDebug)
+	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("no authorized providers available for model %q", model.Name)
 	}
@@ -2452,7 +2466,7 @@ func openMaClawOfficialStreamRequest(r *http.Request, body map[string]any, servi
 		return nil, fmt.Errorf("marshal maclaw official stream request: %w", err)
 	}
 	forwardStream := func(candidate []byte, useAdmissionQuote bool) (*http.Response, error) {
-		if quote, ok := snapshotOfficialForwardQuote(r.Context()); ok && useAdmissionQuote {
+		if quote, ok := snapshotOfficialForwardQuote(r.Context()); ok && useAdmissionQuote && officialAdmissionQuoteApplies(r.Context()) {
 			return ForwardStreamViaMaClawWithExistingQuote(r.Context(), quote, candidate, store.TenantIDFromContext(r.Context()), serviceGroupIDs...)
 		}
 		if _, quotedAtAdmission := snapshotOfficialForwardQuote(r.Context()); !quotedAtAdmission {
@@ -3902,6 +3916,10 @@ func executeAuthorizedModelRequestWithCache(ctx context.Context, r *http.Request
 			localCacheHit:   false,
 		}, nil
 	}
+	if fb, fallbackBody := availabilityFallbackAttempt(model, body, lastStatus, lastErr); fb != nil {
+		ctx, r = bindAvailabilityFallbackMeta(ctx, r, fb.Name)
+		return executeAuthorizedModelRequestWithCache(ctx, r, reg, fb, fallbackBody, fb.Name, promptCache, cacheCfg)
+	}
 	if lastBody != nil && lastStatus > 0 {
 		// An HTTP response (including a 4xx validation error) proves that the
 		// request crossed Hub's dispatch boundary. Do not later classify it as a
@@ -3930,7 +3948,7 @@ func forwardMaClawOfficialRequestWithCompatRetry(ctx context.Context, body map[s
 		if err != nil {
 			return nil, 0, true, fmt.Errorf("marshal maclaw official request: %w", err)
 		}
-		if quote, ok := snapshotOfficialForwardQuote(ctx); ok && reflect.DeepEqual(candidate, body) {
+		if quote, ok := snapshotOfficialForwardQuote(ctx); ok && reflect.DeepEqual(candidate, body) && officialAdmissionQuoteApplies(ctx) {
 			result, err := ForwardViaMaClawDetailedWithQuote(ctx, quote, payload, tenantID, serviceGroupIDs...)
 			return result.Body, result.StatusCode, result.NoUpstreamDispatch, err
 		}
@@ -3950,6 +3968,7 @@ func forwardMaClawOfficialRequestWithCompatRetry(ctx context.Context, body map[s
 			}
 			return nil, 0, true, err
 		}
+		rememberOfficialForwardQuoteForResolved(ctx, quote)
 		result, err := ForwardViaMaClawDetailedWithQuote(ctx, quote, payload, tenantID, serviceGroupIDs...)
 		return result.Body, result.StatusCode, result.NoUpstreamDispatch, err
 	}
@@ -4213,6 +4232,85 @@ func hubProviderDispatchMetas(reg *im.LLMProviderRegistry) map[string]llmpool.Pr
 		}
 	}
 	return metas
+}
+
+func availabilityFallbackAttempt(model *llmservice.AuthorizedModel, body map[string]any, statusCode int, err error) (*llmservice.AuthorizedModel, map[string]any) {
+	if !shouldRetryOfficialAvailabilityFallback(statusCode, err) {
+		return nil, nil
+	}
+	fb := nextAvailabilityFallbackModel(model)
+	if fb == nil {
+		return nil, nil
+	}
+	log.Printf("[LLM-V1] model %q unavailable (status=%d err=%v), trying availability fallback %q", strings.TrimSpace(model.Name), statusCode, err, fb.Name)
+	return fb, rewriteAvailabilityFallbackModel(body, fb.Name)
+}
+
+func rewriteAvailabilityFallbackModel(body map[string]any, modelName string) map[string]any {
+	fallbackBody := cloneLLMEndpointBody(body)
+	if fallbackBody == nil {
+		fallbackBody = map[string]any{}
+	}
+	fallbackBody["model"] = modelName
+	return fallbackBody
+}
+
+func bindAvailabilityFallbackMeta(ctx context.Context, r *http.Request, modelName string) (context.Context, *http.Request) {
+	modelName = strings.TrimSpace(modelName)
+	if ctx == nil && r != nil {
+		ctx = r.Context()
+	}
+	if modelName == "" || ctx == nil {
+		return ctx, r
+	}
+	meta := llmservice.OfficialForwardMetaFrom(ctx)
+	if r != nil {
+		if src := llmservice.OfficialForwardMetaFrom(r.Context()); strings.TrimSpace(meta.RequestID) == "" && strings.TrimSpace(src.RequestID) != "" {
+			meta = src
+		}
+	}
+	meta.ResolvedModel = modelName
+	ctx = llmservice.WithOfficialForwardMeta(ctx, meta)
+	if r != nil {
+		r = r.WithContext(ctx)
+	}
+	return ctx, r
+}
+
+func shouldRetryOfficialAvailabilityFallback(statusCode int, err error) bool {
+	if err != nil && statusCode == 0 {
+		return true
+	}
+	return statusCode >= 500 ||
+		statusCode == http.StatusNotFound ||
+		statusCode == http.StatusUnprocessableEntity ||
+		statusCode == http.StatusUnauthorized ||
+		statusCode == http.StatusForbidden ||
+		statusCode == http.StatusTooManyRequests
+}
+
+func nextAvailabilityFallbackModel(model *llmservice.AuthorizedModel) *llmservice.AuthorizedModel {
+	if model == nil || len(model.AvailabilityFallbacks) == 0 {
+		return nil
+	}
+	fb := llmservice.CloneAuthorizedModel(&model.AvailabilityFallbacks[0])
+	if fb == nil {
+		return nil
+	}
+	if len(model.AvailabilityFallbacks) > 1 {
+		fb.AvailabilityFallbacks = make([]llmservice.AuthorizedModel, 0, len(model.AvailabilityFallbacks)-1)
+		for i := 1; i < len(model.AvailabilityFallbacks); i++ {
+			next := llmservice.CloneAuthorizedModel(&model.AvailabilityFallbacks[i])
+			if next == nil {
+				continue
+			}
+			next.AvailabilityFallbacks = nil
+			fb.AvailabilityFallbacks = append(fb.AvailabilityFallbacks, *next)
+		}
+	} else {
+		fb.AvailabilityFallbacks = nil
+	}
+	return fb
 }
 
 func orderAuthorizedProviders(body map[string]any, model *llmservice.AuthorizedModel, reg *im.LLMProviderRegistry) []llmpool.BalancedRoute {

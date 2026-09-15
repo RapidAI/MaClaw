@@ -35,6 +35,9 @@ type ProviderConfig struct {
 	CircuitBreakerCooldownMS int          `json:"circuit_breaker_cooldown_ms,omitempty"` // base cooldown; HubCenter treats <=0 as 10s
 	FailureBackoffBaseMS     int          `json:"failure_backoff_base_ms,omitempty"`
 	FailureBackoffMaxMS      int          `json:"failure_backoff_max_ms,omitempty"` // cap for exponential cooldown; HubCenter treats <=0 as 5m
+	// AllowedNodeIDs is the HubCenter node allowlist that may egress this
+	// provider. Empty means every cluster node may call upstream (default).
+	AllowedNodeIDs []string `json:"allowed_node_ids,omitempty"`
 }
 
 // ServiceGroup defines a set of models with associated provider routing.

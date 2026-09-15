@@ -1,6 +1,22 @@
 import React from "react";
 import type { Theme } from "./aiAssistantPanelTheme";
+import { markdownPreviewIsDark } from "./markdownPreviewInk";
 import { useNestedPinnedScroll } from "./useNestedPinnedScroll";
+
+/** Mix muted ink into the panel surface — never into `transparent` (black). */
+export function reasoningPanelChrome(t: Pick<Theme, "bg" | "textMuted" | "isDark">): React.CSSProperties {
+    const dark = markdownPreviewIsDark(t.bg, t.isDark);
+    const ink = t.textMuted;
+    const surface = t.bg;
+    return {
+        margin: "5px 0 7px 0",
+        fontSize: "12px",
+        color: ink,
+        borderLeft: `2px solid color-mix(in srgb, ${ink} ${dark ? "48%" : "32%"}, ${surface})`,
+        background: `color-mix(in srgb, ${ink} ${dark ? "8%" : "4.5%"}, ${surface})`,
+        borderRadius: "0 7px 7px 0",
+    };
+}
 
 /**
  * Collapsible activity panel used by the assistant transcript and the coding
@@ -17,6 +33,7 @@ export function AssistantReasoningPanel({
     theme: t,
     contentKey,
     live = false,
+    objectLabel,
     children,
 }: {
     defaultOpen: boolean;
@@ -30,6 +47,8 @@ export function AssistantReasoningPanel({
     contentKey: string;
     /** True while the current round is in flight — any live activity title + sheen. */
     live?: boolean;
+    /** Plain object after the live action, e.g. model or tool name. Sheen stays on `label`. */
+    objectLabel?: string;
     children: React.ReactNode;
 }) {
     const [isOpen, setIsOpen] = React.useState(defaultOpen);
@@ -37,15 +56,9 @@ export function AssistantReasoningPanel({
     React.useLayoutEffect(() => {
         setIsOpen(defaultOpen);
     }, [defaultOpen]);
-    const liveFg = t.isDark ? "#cbd5e1" : t.textMuted;
-    const panelChrome = {
-        margin: "5px 0 7px 0",
-        fontSize: "12px",
-        color: t.textMuted,
-        borderLeft: `2px solid ${t.isDark ? "rgba(148,163,184,.55)" : `color-mix(in srgb, ${t.textMuted} 42%, transparent)`}`,
-        background: t.isDark ? "rgba(30, 41, 59, .28)" : `color-mix(in srgb, ${t.textMuted} 7%, transparent)`,
-        borderRadius: "0 7px 7px 0",
-    } as React.CSSProperties;
+    const dark = markdownPreviewIsDark(t.bg, t.isDark);
+    const liveFg = dark ? "#cbd5e1" : t.textMuted;
+    const panelChrome = reasoningPanelChrome(t);
     const summaryStyle: React.CSSProperties = {
         cursor: "pointer",
         display: "flex",
@@ -70,23 +83,54 @@ export function AssistantReasoningPanel({
                 width: 6,
                 height: 6,
                 borderRadius: "50%",
-                background: t.isDark ? "#94a3b8" : t.textMuted,
+                background: dark ? "#94a3b8" : t.textMuted,
                 flex: "0 0 auto",
-                boxShadow: hasBody && isOpen ? `0 0 0 3px ${t.isDark ? "rgba(148,163,184,.16)" : `color-mix(in srgb, ${t.textMuted} 14%, transparent)`}` : undefined,
+                boxShadow: hasBody && isOpen
+                    ? `0 0 0 3px color-mix(in srgb, ${t.textMuted} ${dark ? "16%" : "10%"}, ${t.bg})`
+                    : undefined,
             }}
         />
     );
+    const objectText = live ? String(objectLabel || "").trim() : "";
+    const statusLabel = objectText ? `${label} ${objectText}` : label;
     const liveLabel = (
         <span
-            className={live ? "assistant-reasoning-live-label" : undefined}
-            data-testid="assistant-reasoning-label"
             aria-live={live ? "polite" : undefined}
             style={{
-                flex: "0 0 auto",
-                whiteSpace: "nowrap",
+                display: "inline-flex",
+                alignItems: "baseline",
+                gap: 6,
+                minWidth: 0,
+                flex: objectText ? "1 1 auto" : "0 1 auto",
             }}
         >
-            {label}
+            <span
+                className={live ? "assistant-reasoning-live-label" : undefined}
+                data-testid="assistant-reasoning-label"
+                style={{
+                    flex: "0 0 auto",
+                    whiteSpace: "nowrap",
+                }}
+            >
+                {label}
+            </span>
+            {objectText ? (
+                <span
+                    data-testid="assistant-reasoning-object"
+                    title={objectText}
+                    style={{
+                        flex: "1 1 auto",
+                        minWidth: 0,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                        fontWeight: 450,
+                        opacity: 0.78,
+                    }}
+                >
+                    {objectText}
+                </span>
+            ) : null}
         </span>
     );
     const stepMark = typeof step === "number" ? (
@@ -107,16 +151,17 @@ export function AssistantReasoningPanel({
             ) : null}
         </>
     );
+    const panelAttrs = {
+        className: "assistant-reasoning-panel",
+        "data-testid": "assistant-reasoning-panel",
+        "data-live": live ? "true" : "false",
+        "aria-label": statusLabel,
+        style: panelChrome,
+    };
     if (!hasBody) {
         return (
-            <div
-                data-testid="assistant-reasoning-panel"
-                data-live={live ? "true" : "false"}
-                aria-label={label}
-                role="status"
-                style={panelChrome}
-            >
-                <div className={`assistant-reasoning-summary assistant-reasoning-summary--plain`} style={{ ...summaryStyle, cursor: "default" }}>
+            <div {...panelAttrs} role="status">
+                <div className="assistant-reasoning-summary assistant-reasoning-summary--plain" style={{ ...summaryStyle, cursor: "default" }}>
                     {summaryChildren(false)}
                 </div>
             </div>
@@ -126,10 +171,7 @@ export function AssistantReasoningPanel({
         <details
             open={isOpen}
             onToggle={(event) => setIsOpen(event.currentTarget.open)}
-            data-testid="assistant-reasoning-panel"
-            data-live={live ? "true" : "false"}
-            aria-label={label}
-            style={panelChrome}
+            {...panelAttrs}
         >
             <summary className="assistant-reasoning-summary" style={summaryStyle}>
                 {summaryChildren(true)}

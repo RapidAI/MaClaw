@@ -5,7 +5,7 @@ import { consumePendingKnowledgeSearch, KNOWLEDGE_SEARCH_EVENT, peekPendingKnowl
 import { ConfirmDialog } from '../modals/ConfirmDialog';
 import { DeepCrawlConfig, DeepCrawlPanel, DeepCrawlPreviewResult, DeepCrawlRunResult } from './DeepCrawlPanel';
 import { buildHubCardStoreURL } from '../../utils/hubCredits';
-import { EnterpriseKnowledgeListLibraries, EnterpriseKnowledgeSetLibraryUserSync, EnterprisePurgeRevokedLibrary, EnterpriseSetSyncPaused, EnterpriseSyncNow, EnterpriseSyncStatus, GetHubLLMServiceStatus, KnowledgeBackfillSourceAutoLabels, KnowledgeCapabilities, KnowledgeClearAll, KnowledgeContextPack, KnowledgeDeepCrawl, KnowledgeDeepCrawlPreview, KnowledgeDeleteHubShare, KnowledgeDeleteSource, KnowledgeDisableSensitiveSources, KnowledgeDisableSource, KnowledgeDisableSources, KnowledgeDisableSourcesByFilter, KnowledgeDiscoverURLs, KnowledgeDoctor, KnowledgeEnableSource, KnowledgeEnableSourcesByFilter, KnowledgeEntityProfile, KnowledgeExecuteSourceQualityMaintenancePlan, KnowledgeExplain, KnowledgeExportSnapshotWithOptions, KnowledgeFactGraph, KnowledgeFactIndex, KnowledgeGetImageAssetPaths, KnowledgeHealth, KnowledgeImportDirectory, KnowledgeImportFiles, KnowledgeImportHubShare, KnowledgeImportJobStatus, KnowledgeImportSnapshot, KnowledgeLinkSources, KnowledgeListCardsBySource, KnowledgeListDuplicateCards, KnowledgeListFactsBySource, KnowledgeListImportBatches, KnowledgeListImportItems, KnowledgeListMyHubShares, KnowledgeListSourceLabels, KnowledgeListSourceLinkEvents, KnowledgeListSourceLinks, KnowledgeListSourceVersions, KnowledgeListSources, KnowledgeListSuppressedCards, KnowledgeListURLDomainPolicies, KnowledgeMaintain, KnowledgeOpenImageAsset, KnowledgePreviewNodesBySource, KnowledgePreviewSourceRefresh, KnowledgePreviewSourceTopicLinks, KnowledgePreviewSourcesRefreshByFilter, KnowledgeQualityMaintenancePolicies, KnowledgeRebuildSourceDerived, KnowledgeRebuildSourcesDerived, KnowledgeRebuildSourcesDerivedByFilter, KnowledgeRefreshChangedSources, KnowledgeRefreshChangedSourcesByFilter, KnowledgeRefreshSource, KnowledgeRefreshSourceTopicLinks, KnowledgeRefreshSourceTopicLinksByFilter, KnowledgeRefreshSources, KnowledgeRefreshSourcesByFilter, KnowledgeRestoreSuppressedCards, KnowledgeRetryImportBatch, KnowledgeSaveText, KnowledgeSaveURL, KnowledgeSaveURLs, KnowledgeScanDirectory, KnowledgeScanFiles, KnowledgeScanSensitiveContent, KnowledgeSearch, KnowledgeSearchFacets, KnowledgeSearchStructured, DigitalAssetListContributableLibraries, DigitalAssetListMySubmissions, DigitalAssetWithdrawSubmission, KnowledgeContributeToOrg, KnowledgeShareToHub, KnowledgeSourceDigest, KnowledgeSourceGraph, KnowledgeSourceNeighborhood, KnowledgeSourcePath, KnowledgeSourceQualityMaintenancePlan, KnowledgeSourceQualityReport, KnowledgeSourceTimeline, KnowledgeStartImportDirectory, KnowledgeStructuredCatalog, KnowledgeSuggest, KnowledgeSuppressDuplicateCards, KnowledgeSyncDelete, KnowledgeSyncDownload, KnowledgeSyncStatus, KnowledgeSyncUpload, KnowledgeSyncVerifyPassword, KnowledgeTopicRelevance, KnowledgeUnlinkSources, KnowledgeUpdateHubShare, KnowledgeUpdateSourceLabels, KnowledgeUpdateSourceMetadata, KnowledgeUpdateURLDomainPolicies, LoadConfig, OpenFileOrShowInFolder, OpenSystemUrl, SelectKnowledgeDirectory, SelectKnowledgeFiles, SelectKnowledgeSnapshotExportPath, SelectKnowledgeSnapshotFile } from '../../../wailsjs/go/main/App';
+import { EnterpriseKnowledgeListLibraries, EnterpriseKnowledgeSetLibraryUserSync, EnterprisePurgeRevokedLibrary, EnterpriseSetSyncPaused, EnterpriseSyncNow, EnterpriseSyncStatus, GetHubLLMServiceStatus, KnowledgeBackfillSourceAutoLabels, KnowledgeCapabilities, KnowledgeClearAll, KnowledgeContextPack, KnowledgeDeepCrawl, KnowledgeDeepCrawlPreview, KnowledgeDeleteHubShare, KnowledgeDeleteFragment, KnowledgeDeleteSource, KnowledgeDisableSensitiveSources, KnowledgeDisableSource, KnowledgeDisableSources, KnowledgeDisableSourcesByFilter, KnowledgeDiscoverURLs, KnowledgeDoctor, KnowledgeEnableSource, KnowledgeEnableSourcesByFilter, KnowledgeEntityProfile, KnowledgeExecuteSourceQualityMaintenancePlan, KnowledgeExplain, KnowledgeExportSnapshotWithOptions, KnowledgeFactGraph, KnowledgeFactIndex, KnowledgeGetImageAssetPaths, KnowledgeHealth, KnowledgeImportDirectory, KnowledgeImportFiles, KnowledgeImportHubShare, KnowledgeImportJobStatus, KnowledgeImportSnapshot, KnowledgeLinkSources, KnowledgeListCardsBySource, KnowledgeListDuplicateCards, KnowledgeListFactsBySource, KnowledgeListImportBatches, KnowledgeListImportItems, KnowledgeListMyHubShares, KnowledgeListSourceLabels, KnowledgeListSourceLinkEvents, KnowledgeListSourceLinks, KnowledgeListSourceVersions, KnowledgeListSources, KnowledgeListSuppressedCards, KnowledgeListURLDomainPolicies, KnowledgeMaintain, KnowledgeOpenImageAsset, KnowledgePreviewNodesBySource, KnowledgePreviewSourceRefresh, KnowledgePreviewSourceTopicLinks, KnowledgePreviewSourcesRefreshByFilter, KnowledgeQualityMaintenancePolicies, KnowledgeRebuildSourceDerived, KnowledgeRebuildSourcesDerived, KnowledgeRebuildSourcesDerivedByFilter, KnowledgeRefreshChangedSources, KnowledgeRefreshChangedSourcesByFilter, KnowledgeRefreshSource, KnowledgeRefreshSourceTopicLinks, KnowledgeRefreshSourceTopicLinksByFilter, KnowledgeRefreshSources, KnowledgeRefreshSourcesByFilter, KnowledgeRestoreSuppressedCards, KnowledgeRetryImportBatch, KnowledgeSaveText, KnowledgeSaveURL, KnowledgeSaveURLs, KnowledgeScanDirectory, KnowledgeScanFiles, KnowledgeScanSensitiveContent, KnowledgeSearch, KnowledgeSearchFacets, KnowledgeSearchStructured, DigitalAssetListContributableLibraries, DigitalAssetListMySubmissions, DigitalAssetWithdrawSubmission, KnowledgeContributeToOrg, KnowledgeShareToHub, KnowledgeSourceDigest, KnowledgeSourceGraph, KnowledgeSourceNeighborhood, KnowledgeSourcePath, KnowledgeSourceQualityMaintenancePlan, KnowledgeSourceQualityReport, KnowledgeSourceTimeline, KnowledgeStartImportDirectory, KnowledgeStructuredCatalog, KnowledgeSuggest, KnowledgeSuppressDuplicateCards, KnowledgeSyncDelete, KnowledgeSyncDownload, KnowledgeSyncStatus, KnowledgeSyncUpload, KnowledgeSyncVerifyPassword, KnowledgeTopicRelevance, KnowledgeUnlinkSources, KnowledgeUpdateHubShare, KnowledgeUpdateSourceLabels, KnowledgeUpdateSourceMetadata, KnowledgeUpdateURLDomainPolicies, LoadConfig, OpenFileOrShowInFolder, OpenSystemUrl, SelectKnowledgeDirectory, SelectKnowledgeFiles, SelectKnowledgeSnapshotExportPath, SelectKnowledgeSnapshotFile } from '../../../wailsjs/go/main/App';
 import { knowledge } from '../../../wailsjs/go/models';
 
 type Props = {
@@ -1158,6 +1158,64 @@ export function knowledgeHealthActionManualLabel(action: any) {
     return reason ? `Manual: ${reason}` : 'Manual';
 }
 
+export function knowledgeSearchFragmentDeletable(result: SearchResult | null | undefined) {
+    if (!result) return false;
+    return [result.node_id, result.card_id, result.fact_id, result.row_id].some(value => String(value || '').trim());
+}
+
+export function knowledgeSearchFragmentPayload(result: SearchResult) {
+    return {
+        result_type: String(result.result_type || '').trim(),
+        node_id: String(result.node_id || '').trim(),
+        card_id: String(result.card_id || '').trim(),
+        fact_id: String(result.fact_id || '').trim(),
+        row_id: String(result.row_id || '').trim(),
+    };
+}
+
+export function knowledgeStructuredSearchHasFilter(form: { columnName?: string; columnValue?: string; numberMin?: string; numberMax?: string; dateStart?: string; dateEnd?: string }) {
+    return !!String(form.columnName || '').trim() && (
+        !!String(form.columnValue || '').trim() ||
+        !!String(form.numberMin || '').trim() ||
+        !!String(form.numberMax || '').trim() ||
+        !!String(form.dateStart || '').trim() ||
+        !!String(form.dateEnd || '').trim()
+    );
+}
+
+export function knowledgeSearchShouldReload(mode: 'semantic' | 'structured', query: string, structured: { columnName?: string; columnValue?: string; numberMin?: string; numberMax?: string; dateStart?: string; dateEnd?: string }) {
+    if (mode === 'structured') {
+        return !!String(query || '').trim() || knowledgeStructuredSearchHasFilter(structured);
+    }
+    return !!String(query || '').trim();
+}
+
+export function knowledgeSearchFragmentMatchesDeleted(item: SearchResult, deleted: SearchResult, deletedNodeIDs?: string[] | null) {
+    const type = String(deleted.result_type || '').trim().toLowerCase();
+    const deletedNode = String(deleted.node_id || '').trim();
+    const deletedCard = String(deleted.card_id || '').trim();
+    const deletedFact = String(deleted.fact_id || '').trim();
+    const deletedRow = String(deleted.row_id || '').trim();
+    const itemNode = String(item.node_id || '').trim();
+    const itemParent = String(item.parent_node_id || '').trim();
+    const itemCard = String(item.card_id || '').trim();
+    const itemFact = String(item.fact_id || '').trim();
+    const itemRow = String(item.row_id || '').trim();
+    if (Array.isArray(deletedNodeIDs) && deletedNodeIDs.length) {
+        const extra = new Set(deletedNodeIDs.map(id => String(id || '').trim()).filter(Boolean));
+        if (extra.has(itemNode) || extra.has(itemParent)) return true;
+    }
+    if (deletedRow && itemRow === deletedRow) return true;
+    if (type === 'fact' && deletedFact) return itemFact === deletedFact;
+    if ((type === 'node' || type === 'card') && deletedNode) {
+        return itemNode === deletedNode || itemParent === deletedNode || (!!deletedCard && itemCard === deletedCard);
+    }
+    if (deletedNode && itemNode === deletedNode) return true;
+    if (deletedCard && itemCard === deletedCard) return true;
+    if (deletedFact && itemFact === deletedFact) return true;
+    return false;
+}
+
 type KnowledgeSubTab = 'overview' | 'ingest' | 'export' | 'sync' | 'enterprise' | 'search' | 'sources' | 'quality';
 
 type EnterpriseLibrary = {
@@ -1371,6 +1429,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
     const hubShareDescriptionRef = useRef<HTMLTextAreaElement | null>(null);
     const busyRef = useRef(busy);
     const enterprisePurgeInFlightRef = useRef(false);
+    const fragmentDeleteInFlightRef = useRef(false);
     const syncStatusIdentityRef = useRef('');
     const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
     const [searchForm, setSearchForm] = useState({ query: '', resultType: 'all', sourceKind: 'all', domain: '', sourceID: '', labels: '', limit: 20, includeDisabled: false });
@@ -2546,45 +2605,37 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
         }, { refreshSources: true, refreshHealth: true });
     };
 
+    const loadSearchResults = async () => {
+        const payload: any = {
+            limit: normalizeKnowledgeSourceLimit(searchForm.limit, 20, 200),
+            include_disabled: searchForm.includeDisabled,
+        };
+        let results: any[] = [];
+        let facetResult: any = null;
+        if (searchMode === 'structured') {
+            applyKnowledgeStructuredSearchPayload(payload, { ...searchForm, ...structuredSearchForm });
+            results = await KnowledgeSearchStructured(payload);
+        } else {
+            payload.query = searchForm.query.trim();
+            applyKnowledgeSearchFilterPayload(payload, searchForm);
+            [results, facetResult] = await Promise.all([
+                KnowledgeSearch(payload),
+                KnowledgeSearchFacets(payload),
+            ]);
+        }
+        setSearchResults(Array.isArray(results) ? results : []);
+        setFacets(facetResult || null);
+        return { count: Array.isArray(results) ? results.length : 0 };
+    };
+
     const runSearch = async () => {
-        const structuredHasColumnFilter = !!structuredSearchForm.columnName.trim() && (
-            !!structuredSearchForm.columnValue.trim() ||
-            !!structuredSearchForm.numberMin.trim() ||
-            !!structuredSearchForm.numberMax.trim() ||
-            !!structuredSearchForm.dateStart.trim() ||
-            !!structuredSearchForm.dateEnd.trim()
-        );
-        if (searchMode === 'semantic' && !searchForm.query.trim()) {
-            setError(t('Search query is required.', '请输入搜索问题。'));
+        if (!knowledgeSearchShouldReload(searchMode, searchForm.query, structuredSearchForm)) {
+            setError(searchMode === 'structured'
+                ? t('Enter a query or at least one table column filter.', '请输入问题，或至少填写一个表格列筛选条件。')
+                : t('Search query is required.', '请输入搜索问题。'));
             return;
         }
-        if (searchMode === 'structured' && !searchForm.query.trim() && !structuredHasColumnFilter) {
-            setError(t('Enter a query or at least one table column filter.', '请输入问题，或至少填写一个表格列筛选条件。'));
-            return;
-        }
-        await runTask('search', async () => {
-            const payload: any = {
-                limit: normalizeKnowledgeSourceLimit(searchForm.limit, 20, 200),
-                include_disabled: searchForm.includeDisabled,
-            };
-            let results: any[] = [];
-            let facetResult: any = null;
-            if (searchMode === 'structured') {
-                applyKnowledgeStructuredSearchPayload(payload, { ...searchForm, ...structuredSearchForm });
-                results = await KnowledgeSearchStructured(payload);
-                facetResult = null;
-            } else {
-                payload.query = searchForm.query.trim();
-                applyKnowledgeSearchFilterPayload(payload, searchForm);
-                [results, facetResult] = await Promise.all([
-                    KnowledgeSearch(payload),
-                    KnowledgeSearchFacets(payload),
-                ]);
-            }
-            setSearchResults(Array.isArray(results) ? results : []);
-            setFacets(facetResult || null);
-            return { count: Array.isArray(results) ? results.length : 0 };
-        });
+        await runTask('search', loadSearchResults);
     };
 
     const loadQuality = async () => {
@@ -2635,6 +2686,38 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
             onConfirm: async () => {
                 setConfirmDialog(prev => ({ ...prev, show: false }));
                 await runTask('deleteSource', () => KnowledgeDeleteSource(source.id || ''), { refreshSources: true, refreshHealth: true });
+            },
+        });
+    };
+
+    const deleteSearchFragment = (result: SearchResult) => {
+        if (!knowledgeSearchFragmentDeletable(result) || busy || busyRef.current || fragmentDeleteInFlightRef.current) return;
+        setConfirmDialog({
+            show: true,
+            title: t('Delete fragment', '删除片段'),
+            message: t('This fragment will be deleted.', '将删除该段内容'),
+            onConfirm: async () => {
+                if (busyRef.current || fragmentDeleteInFlightRef.current) return;
+                fragmentDeleteInFlightRef.current = true;
+                setConfirmDialog(prev => ({ ...prev, show: false }));
+                try {
+                    await runTask('deleteFragment', async () => {
+                        const deletedNodeIDs = await KnowledgeDeleteFragment(knowledgeSearchFragmentPayload(result) as knowledge.SearchResult);
+                        setSearchResults(prev => prev.filter(item => !knowledgeSearchFragmentMatchesDeleted(item, result, Array.isArray(deletedNodeIDs) ? deletedNodeIDs : [])));
+                        if (knowledgeSearchShouldReload(searchMode, searchForm.query, structuredSearchForm)) {
+                            try {
+                                await loadSearchResults();
+                            } catch {
+                                // Keep the optimistic removal if a follow-up search fails.
+                            }
+                        }
+                        return { ok: true };
+                    }, {
+                        successMessage: t('Fragment deleted.', '该段内容已删除。'),
+                    });
+                } finally {
+                    fragmentDeleteInFlightRef.current = false;
+                }
             },
         });
     };
@@ -3662,7 +3745,14 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                     </div>
                     <div className="knowledge-two-column">
                         <PanelBlock title={`${t('Results', '结果')} (${searchResults.length})`}>
-                            <ResultList results={searchResults} empty={t('No results yet.', '暂无检索结果。')} query={searchForm.query} />
+                            <ResultList
+                                results={searchResults}
+                                empty={t('No results yet.', '暂无检索结果。')}
+                                query={searchForm.query}
+                                t={t}
+                                busy={busy}
+                                onDelete={deleteSearchFragment}
+                            />
                         </PanelBlock>
                         <PanelBlock title={t('Facets', '分面')}>
                             {searchMode === 'structured' ? (
@@ -3882,12 +3972,20 @@ function ImageResultThumbnail({ assetID, title }: { assetID: string; title: stri
     );
 }
 
-function ResultList({ results, empty, query }: { results: SearchResult[]; empty: string; query?: string }) {
+function ResultList({ results, empty, query, t, busy, onDelete }: {
+    results: SearchResult[];
+    empty: string;
+    query?: string;
+    t: (en: string, zhHans: string, zhHant?: string) => string;
+    busy?: string;
+    onDelete: (result: SearchResult) => void;
+}) {
     if (!results.length) return <div className="knowledge-empty">{empty}</div>;
     const regex = buildHighlightRegex((query || '').trim());
     return <div className="knowledge-list">{results.map((result, index) => {
         const isImage = result.node_type === 'image' || result.source?.kind === 'image';
         const isTableRow = result.result_type === 'table_row';
+        const canDelete = knowledgeSearchFragmentDeletable(result);
         const sourceLabel = isTableRow
             ? (result.claim || result.source?.title || result.source?.relative_path || 'Table row')
             : (result.card_title || result.node_title || result.subject || result.source?.title || result.source?.relative_path || 'Result');
@@ -3912,6 +4010,23 @@ function ResultList({ results, empty, query }: { results: SearchResult[]; empty:
                     <span className="knowledge-muted-line">{meta}</span>
                     <span>{highlightText(result.summary || result.claim || result.snippet || [result.subject, result.predicate, result.object].filter(Boolean).join(' '), regex)}</span>
                 </div>
+                {canDelete ? (
+                    <button
+                        type="button"
+                        className="knowledge-button knowledge-button--danger knowledge-row-delete"
+                        disabled={!!busy}
+                        data-testid={`knowledge-search-delete-${result.node_id || result.card_id || result.fact_id || result.row_id || index}`}
+                        aria-label={t('Delete fragment', '删除片段')}
+                        title={t('Delete fragment', '删除片段')}
+                        onClick={event => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            onDelete(result);
+                        }}
+                    >
+                        {t('Delete', '删除')}
+                    </button>
+                ) : null}
             </div>
         );
     })}</div>;

@@ -2836,6 +2836,15 @@ func (a *App) KnowledgeDeleteSource(id string) error {
 	return store.DeleteSource(a.knowledgeContext(), id)
 }
 
+func (a *App) KnowledgeDeleteFragment(result knowledge.SearchResult) ([]string, error) {
+	store, err := a.openKnowledgeStore()
+	if err != nil {
+		return nil, err
+	}
+	defer store.Close()
+	return store.DeleteFragment(a.knowledgeContext(), result)
+}
+
 func (a *App) KnowledgeDisableSource(id string) (knowledge.Source, error) {
 	store, err := a.openKnowledgeStore()
 	if err != nil {

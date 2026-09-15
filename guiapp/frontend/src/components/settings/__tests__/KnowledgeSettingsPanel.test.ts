@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyKnowledgeDomainFilterPayload, applyKnowledgeSearchFilterPayload, applyKnowledgeStructuredSearchPayload, knowledgeCoverageAliasSummary, knowledgeCoverageFilterSummary, knowledgeExecutionActionSourceIDs, knowledgeExecutionFailureDetails, knowledgeExecutionResultSourceIDs, knowledgeExecutionSourceFilterLabel, knowledgeHealthActionConfirmMessage, knowledgeHealthActionExecutable, knowledgeHealthActionExecutionPayload, knowledgeHealthActionManualLabel, knowledgeHealthSummaryModel, knowledgeQualityExecutionContextLabel, knowledgeSourceCoverageOptions, knowledgeSourceCoverageStateValue, knowledgeSourceListPayload, normalizeKnowledgeCoverageOption, normalizeKnowledgeDomainFilter, normalizeKnowledgeFilterToken, normalizeKnowledgeSourceLimit, parseDomainList, parseLabelList, parseURLBatch, resolveKnowledgeCoverageOption } from '../KnowledgeSettingsPanel';
+import { applyKnowledgeDomainFilterPayload, applyKnowledgeSearchFilterPayload, applyKnowledgeStructuredSearchPayload, knowledgeCoverageAliasSummary, knowledgeCoverageFilterSummary, knowledgeExecutionActionSourceIDs, knowledgeExecutionFailureDetails, knowledgeExecutionResultSourceIDs, knowledgeExecutionSourceFilterLabel, knowledgeHealthActionConfirmMessage, knowledgeHealthActionExecutable, knowledgeHealthActionExecutionPayload, knowledgeHealthActionManualLabel, knowledgeHealthSummaryModel, knowledgeQualityExecutionContextLabel, knowledgeSearchFragmentDeletable, knowledgeSearchFragmentMatchesDeleted, knowledgeSearchFragmentPayload, knowledgeSearchShouldReload, knowledgeSourceCoverageOptions, knowledgeSourceCoverageStateValue, knowledgeSourceListPayload, normalizeKnowledgeCoverageOption, normalizeKnowledgeDomainFilter, normalizeKnowledgeFilterToken, normalizeKnowledgeSourceLimit, parseDomainList, parseLabelList, parseURLBatch, resolveKnowledgeCoverageOption } from '../KnowledgeSettingsPanel';
 
 describe('normalizeKnowledgeCoverageOption', () => {
     it('matches backend coverage filter key normalization style', () => {
@@ -626,5 +626,54 @@ describe('parseLabelList', () => {
 
     it('splits common Chinese label separators', () => {
         expect(parseLabelList('治理，文档；项目、知识库')).toEqual(['治理', '文档', '项目', '知识库']);
+    });
+});
+
+describe('knowledgeSearchFragment helpers', () => {
+    it('requires at least one fragment identity', () => {
+        expect(knowledgeSearchFragmentDeletable({})).toBe(false);
+        expect(knowledgeSearchFragmentDeletable({ card_id: 'card-1' })).toBe(true);
+        expect(knowledgeSearchFragmentDeletable({ node_id: 'node-1' })).toBe(true);
+        expect(knowledgeSearchFragmentDeletable({ row_id: 'row-1' })).toBe(true);
+    });
+
+    it('sends trimmed identities to the delete API', () => {
+        expect(knowledgeSearchFragmentPayload({
+            result_type: ' card ',
+            node_id: ' node-1 ',
+            card_id: 'card-1',
+            fact_id: '',
+            row_id: undefined,
+        })).toEqual({
+            result_type: 'card',
+            node_id: 'node-1',
+            card_id: 'card-1',
+            fact_id: '',
+            row_id: '',
+        });
+    });
+
+    it('drops sibling hits from the same deleted node or row', () => {
+        const deleted = { result_type: 'card', node_id: 'node-1', card_id: 'card-1' };
+        expect(knowledgeSearchFragmentMatchesDeleted({ result_type: 'node', node_id: 'node-1' }, deleted)).toBe(true);
+        expect(knowledgeSearchFragmentMatchesDeleted({ result_type: 'node', node_id: 'child-1', parent_node_id: 'node-1' }, deleted)).toBe(true);
+        expect(knowledgeSearchFragmentMatchesDeleted({ result_type: 'node', node_id: 'grandchild' }, deleted, ['node-1', 'grandchild'])).toBe(true);
+        expect(knowledgeSearchFragmentMatchesDeleted({ result_type: 'fact', card_id: 'card-1' }, deleted)).toBe(true);
+        expect(knowledgeSearchFragmentMatchesDeleted({ result_type: 'card', card_id: 'card-2', node_id: 'node-2' }, deleted)).toBe(false);
+        expect(knowledgeSearchFragmentMatchesDeleted({ result_type: 'table_row', row_id: 'row-1' }, { result_type: 'table_row', row_id: 'row-1' })).toBe(true);
+        expect(knowledgeSearchFragmentMatchesDeleted({ result_type: 'card', card_id: 'card-row', row_id: 'row-1' }, { result_type: 'fact', fact_id: 'fact-1', row_id: 'row-1' })).toBe(true);
+        expect(knowledgeSearchFragmentMatchesDeleted({ result_type: 'fact', fact_id: 'fact-1' }, { result_type: 'fact', fact_id: 'fact-2' })).toBe(false);
+    });
+});
+
+describe('knowledgeSearchShouldReload', () => {
+    it('requires a semantic query', () => {
+        expect(knowledgeSearchShouldReload('semantic', '', {})).toBe(false);
+        expect(knowledgeSearchShouldReload('semantic', ' patents ', {})).toBe(true);
+    });
+
+    it('allows structured reload from a column filter without a query', () => {
+        expect(knowledgeSearchShouldReload('structured', '', { columnName: '部门', columnValue: '法务' })).toBe(true);
+        expect(knowledgeSearchShouldReload('structured', '', { columnName: '部门' })).toBe(false);
     });
 });

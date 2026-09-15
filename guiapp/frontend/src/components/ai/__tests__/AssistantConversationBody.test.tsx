@@ -70,4 +70,20 @@ describe('AssistantConversationBody standalone live header', () => {
         expect(label.className).toContain('assistant-reasoning-live-label');
         expect(screen.queryByText('有什么可以帮你的？')).toBeNull();
     });
+
+    it('keeps sheen on the action and shows the object as plain text', () => {
+        renderSplash({
+            ready: true,
+            liveActivityLabel: '正在访问模型',
+            liveActivityObject: 'MaClaw官方 auto 模型',
+        });
+        const label = screen.getByTestId('assistant-reasoning-label');
+        const object = screen.getByTestId('assistant-reasoning-object');
+        expect(label.textContent).toBe('正在访问模型');
+        expect(label.className).toContain('assistant-reasoning-live-label');
+        expect(object.textContent).toBe('MaClaw官方 auto 模型');
+        expect(object.getAttribute('title')).toBe('MaClaw官方 auto 模型');
+        expect(object.className).not.toContain('assistant-reasoning-live-label');
+        expect(screen.getByTestId('assistant-reasoning-panel').getAttribute('aria-label')).toBe('正在访问模型 MaClaw官方 auto 模型');
+    });
 });

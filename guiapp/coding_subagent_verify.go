@@ -258,7 +258,7 @@ func (s *CodingSubAgent) runPostLoopVerifyFixCycle(
 // Fallback: keyword detection for tools that don't report exit code.
 func isSubAgentVerificationFailure(output string) bool {
 	output = strings.TrimSpace(output)
-	if output == "" || output == "(command completed with no output)" {
+	if output == "" || strings.HasPrefix(output, "(command completed with no output)") {
 		return false // No output usually means success for build commands
 	}
 

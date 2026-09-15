@@ -2587,6 +2587,22 @@ describe("renderMessage assistant display guard", () => {
         expect(screen.queryByTestId("assistant-reasoning-body")).toBeNull();
     });
 
+    it("keeps live sheen on the tool action and renders the tool object in plain text", () => {
+        const message = {
+            id: "assistant-live-ssh",
+            role: "assistant" as const,
+            content: "",
+            timestamp: Date.now(),
+        };
+        render(<div>{renderMessage(message, vi.fn(), lightTheme, true, "Saved file", "zh", false, undefined, undefined, false, undefined, "正在调用工具", "ssh 工具")}</div>);
+        const label = screen.getByTestId("assistant-reasoning-label");
+        const object = screen.getByTestId("assistant-reasoning-object");
+        expect(label.textContent).toBe("正在调用工具");
+        expect(label.className).toContain("assistant-reasoning-live-label");
+        expect(object.textContent).toBe("ssh 工具");
+        expect(object.className).not.toContain("assistant-reasoning-live-label");
+    });
+
     it("shows a live action label with shimmer while a tool is running", () => {
         const message = {
             id: "assistant-live-write",
@@ -2597,6 +2613,7 @@ describe("renderMessage assistant display guard", () => {
         };
         render(<div>{renderMessage(message, vi.fn(), lightTheme, true, "Saved file", "zh", false, undefined, undefined, false, undefined, "正在写入文件")}</div>);
         const panel = screen.getByTestId("assistant-reasoning-panel");
+        expect(panel.className).toContain("assistant-reasoning-panel");
         expect(panel.getAttribute("data-live")).toBe("true");
         expect(panel).toHaveProperty("open", false);
         const label = screen.getByTestId("assistant-reasoning-label");

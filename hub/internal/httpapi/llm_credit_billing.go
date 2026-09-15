@@ -278,6 +278,64 @@ func snapshotOfficialForwardQuote(ctx context.Context) (llmservice.OfficialPrici
 	return *state.officialQuote, true
 }
 
+func officialAdmissionQuoteApplies(ctx context.Context) bool {
+	resolved := strings.TrimSpace(llmservice.OfficialForwardMetaFrom(ctx).ResolvedModel)
+	if resolved == "" {
+		return true
+	}
+	local, ok := snapshotLLMPricingQuote(ctx, llmservice.MaClawOfficialProviderID)
+	if !ok {
+		return true
+	}
+	return llmPricingQuoteAppliesToModel(local, &llmservice.AuthorizedModel{Name: resolved})
+}
+
+func rememberOfficialForwardQuoteForResolved(ctx context.Context, quote llmservice.OfficialPricingQuote) {
+	if strings.TrimSpace(quote.ProviderID) == "" {
+		return
+	}
+	state := llmBillingStateFrom(ctx)
+	if state == nil {
+		return
+	}
+	resolved := strings.TrimSpace(llmservice.OfficialForwardMetaFrom(ctx).ResolvedModel)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	copyQuote := quote
+	state.officialQuote = &copyQuote
+	if state.quotes == nil {
+		state.quotes = map[string]llmpool.PricingQuoteSnapshot{}
+	}
+	key := strings.ToLower(strings.TrimSpace(llmservice.MaClawOfficialProviderID))
+	snap := state.quotes[key]
+	if resolved != "" {
+		snap.LogicalModel = resolved
+	}
+	if strings.TrimSpace(snap.ProviderID) == "" {
+		snap.ProviderID = llmservice.MaClawOfficialProviderID
+	}
+	snap.UpstreamModel = strings.TrimSpace(quote.UpstreamModel)
+	snap.Pricing = quote.Pricing
+	if quote.ProviderMultiplier > 0 {
+		snap.ProviderMultiplier = llmpool.NormalizeCreditMultiplier(quote.ProviderMultiplier)
+	}
+	if src := strings.TrimSpace(quote.PricingSource); src != "" {
+		snap.PricingSource = src
+	}
+	state.quotes[key] = snap
+}
+
+func llmPricingQuoteAppliesToModel(quote llmpool.PricingQuoteSnapshot, model *llmservice.AuthorizedModel) bool {
+	quoted := strings.TrimSpace(quote.LogicalModel)
+	if quoted == "" {
+		return true
+	}
+	if model == nil || strings.TrimSpace(model.Name) == "" {
+		return true
+	}
+	return strings.EqualFold(quoted, strings.TrimSpace(model.Name))
+}
+
 func snapshotLLMPricingQuote(ctx context.Context, providerID string) (llmpool.PricingQuoteSnapshot, bool) {
 	state := llmBillingStateFrom(ctx)
 	if state == nil {
@@ -767,7 +825,7 @@ func computeLLMRequestBilling(ctx context.Context, model *llmservice.AuthorizedM
 		credits = llmservice.EstimateTokenPricingCreditsWithCache(snapshot.InputTokens, snapshot.OutputTokens, snapshot.CachedInputTokens, snapshot.CacheWriteTokens, snapshot.Pricing, multiplier)
 		return credits, multiplier
 	}
-	if quote, ok := snapshotLLMPricingQuote(ctx, providerID); ok {
+	if quote, ok := snapshotLLMPricingQuote(ctx, providerID); ok && llmPricingQuoteAppliesToModel(quote, model) {
 		multiplier = llmpool.CombineCreditMultipliers(quote.ProviderMultiplier, quote.BillingGroupMultiplier)
 		if !hasBillableTokenLeg(usage.InputTokens, usage.OutputTokens, usage.CachedInputTokens, usage.CacheWriteTokens) {
 			return 0, multiplier
@@ -882,7 +940,7 @@ func chargeLoggedLLMEndpointUsage(ctx context.Context, system store.SystemSettin
 	if hasOfficialDirectionalSnapshot {
 		copyPricing := officialSnapshot.Pricing
 		pricing = &copyPricing
-	} else if quote, ok := snapshotLLMPricingQuote(ctx, providerID); ok {
+	} else if quote, ok := snapshotLLMPricingQuote(ctx, providerID); ok && llmPricingQuoteAppliesToModel(quote, model) {
 		copyPricing := quote.Pricing
 		pricing = &copyPricing
 	} else if !IsMaClawProviderRequest(providerID) {
@@ -907,7 +965,7 @@ func chargeLoggedLLMEndpointUsage(ctx context.Context, system store.SystemSettin
 			// probe cannot see that dynamic failure, so label the actual
 			// supplier here instead of re-deriving it from the configuration.
 			usage.PricingSource = llmpool.PricingSourceProvider
-		} else if quote, ok := snapshotLLMPricingQuote(ctx, providerID); ok && strings.TrimSpace(quote.PricingSource) != "" {
+		} else if quote, ok := snapshotLLMPricingQuote(ctx, providerID); ok && llmPricingQuoteAppliesToModel(quote, model) && strings.TrimSpace(quote.PricingSource) != "" {
 			usage.PricingSource = strings.TrimSpace(quote.PricingSource)
 		} else {
 			usage.PricingSource = llmservice.PricingSourceForProviderRoute(model, providerID, billingUpstreamModel(model, providerID))

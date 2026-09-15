@@ -1336,7 +1336,8 @@ function Invoke-UrlStatusCheck {
         [string]$Method = 'Get',
         [string]$Body = $null,
         [string]$ContentType = 'application/json',
-        [int]$TimeoutSec = 10
+        [int]$TimeoutSec = 10,
+        [int]$Attempts = 3
     )
 
     $curlExe = Get-Command 'curl.exe' -ErrorAction SilentlyContinue
@@ -1355,11 +1356,42 @@ function Invoke-UrlStatusCheck {
             $curlArgs += @('--header', ("Content-Type: {0}" -f $ContentType), '--data', $Body)
         }
         $curlArgs += $Url
-        $output = & $curlExe.Source @curlArgs
-        if ($LASTEXITCODE -eq 0 -and $output -match '^\d{3}$') {
-            return [int]$output
+
+        # A freshly restarted service can be slow on its very first request
+        # (cold caches, template/JIT warmup), so a single timeout must not be
+        # reported as a failed rollout.  Retry a few times and only fail when
+        # no attempt produced a real HTTP status code.
+        $lastExit = 0
+        $lastOutput = ''
+        for ($attempt = 1; $attempt -le [Math]::Max(1, $Attempts); $attempt++) {
+            $output = & $curlExe.Source @curlArgs
+            $lastExit = $LASTEXITCODE
+            $lastOutput = ($output | Out-String).Trim()
+            # curl exits 0 on success, or 28 when --max-time elapsed.  On exit
+            # 28 --write-out still emits the status code if the response headers
+            # already arrived, which is a healthy response rather than a
+            # failure.  Exit 28 with 000 means nothing was received at all.
+            # Every other exit code (DNS, TLS, connection refused, ...) is a
+            # genuine error and must never be treated as success.
+            if ($lastExit -eq 0 -or $lastExit -eq 28) {
+                if ($lastOutput -match '^[1-5]\d{2}$') {
+                    if ($attempt -gt 1) {
+                        Write-Host ("    (retry {0} succeeded for {1})" -f $attempt, $Url) -ForegroundColor DarkGray
+                    }
+                    elseif ($lastExit -ne 0) {
+                        Write-Host ("    (curl exit {0} but HTTP {1} received for {2})" -f $lastExit, $lastOutput, $Url) -ForegroundColor DarkGray
+                    }
+                    return [int]$lastOutput
+                }
+            }
+            else {
+                Write-Host ("    (curl exit {0} for {1}: {2})" -f $lastExit, $Url, $lastOutput) -ForegroundColor DarkGray
+            }
+            if ($attempt -lt [Math]::Max(1, $Attempts)) {
+                Start-Sleep -Seconds 3
+            }
         }
-        throw ("curl smoke check failed (exit {0}): {1}" -f $LASTEXITCODE, ($output | Out-String).Trim())
+        throw ("curl smoke check failed after {0} attempt(s) (exit {1}): {2} ({3})" -f [Math]::Max(1, $Attempts), $lastExit, $lastOutput, $Url)
     }
 
     try {
@@ -1507,7 +1539,10 @@ function Invoke-PostDeploySmokeCheck {
         [object[]]$Targets,
         [string]$ExpectedHubCenterProblemReportsScriptSrc,
         [pscustomobject]$ExpectedHubCenterPetStoreAssetSources,
-        [int]$TimeoutSec = 10
+        # 20s rather than 10s: the first /admin render after a restart is a cold
+        # template/asset path and was measured at ~6.5s on the slowest host
+        # (Ubuntu 18.04), leaving too little headroom for a transient stall.
+        [int]$TimeoutSec = 20
     )
 
     $failures = @()
@@ -1905,6 +1940,8 @@ try {
     }
     else {
         Write-Host 'Running post-deploy smoke checks...' -ForegroundColor Cyan
+        # Give the just-restarted services a moment to finish coming up before
+        # the first probe, so the cold-start request is not the one that times out.
         Start-Sleep -Seconds 3
         Invoke-PostDeploySmokeCheck -Targets $targets -ExpectedHubCenterProblemReportsScriptSrc $expectedHubCenterProblemReportsScriptSrc -ExpectedHubCenterPetStoreAssetSources $expectedHubCenterPetStoreAssetSources
     }

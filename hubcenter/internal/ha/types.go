@@ -10,6 +10,16 @@ type StaticPeer struct {
 	PublicKeyPEM string
 }
 
+// AccessNode is one HubCenter node that can be selected as a provider egress
+// target. Self is the local process; peers come from HA config.
+type AccessNode struct {
+	NodeID    string `json:"node_id"`
+	Name      string `json:"name"`
+	Host      string `json:"host,omitempty"`
+	Reachable bool   `json:"reachable"`
+	Self      bool   `json:"self,omitempty"`
+}
+
 type PeerRuntimeState struct {
 	NodeID        string     `json:"node_id"`
 	NodeName      string     `json:"node_name"`

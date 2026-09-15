@@ -5899,7 +5899,13 @@ func compactSubAgentDiff(diff string) string {
 
 func isEmptySubAgentDiffOutput(diff string) bool {
 	diff = strings.TrimSpace(diff)
-	return diff == "" || diff == "(command completed with no output)" || diff == "(命令执行完成，无输出)" || diff == "git diff 无输出"
+	if diff == "" || diff == "(command completed with no output)" || diff == "(命令执行完成，无输出)" || diff == "git diff 无输出" {
+		return true
+	}
+	// The bash tool now appends "command exited with code 0" to every success
+	// output so the exit status is always visible; a diff probe that produced
+	// nothing is still an empty diff.
+	return strings.HasPrefix(diff, "(command completed with no output)\ncommand exited with code 0")
 }
 
 func untrackedSubAgentDiffFiles(diff string) []string {
@@ -10392,15 +10398,16 @@ func summarizeSubAgentVerification(filesModified []string, commands []CodingSubA
 }
 
 func subAgentUnsafeVerificationWasRecovered(unsafe CodingSubAgentCommandResult, commands []CodingSubAgentCommandResult, lastEditSeq uint64) bool {
-	recovered := recoverSubAgentVerificationCommand(unsafe.Command)
+	recovered := recoverUnsafeSubAgentVerificationCommand(unsafe.Command)
 	if recovered == "" || unsafe.seq == 0 {
 		return false
 	}
+	want := strings.Join(strings.Fields(recovered), " ")
 	for _, command := range commands {
 		if command.seq <= unsafe.seq || (lastEditSeq > 0 && command.seq < lastEditSeq) || !command.Succeeded {
 			continue
 		}
-		if strings.EqualFold(strings.Join(strings.Fields(command.Command), " "), strings.Join(strings.Fields(recovered), " ")) {
+		if strings.EqualFold(strings.Join(strings.Fields(command.Command), " "), want) {
 			return true
 		}
 	}
@@ -10545,7 +10552,7 @@ func recoverableSubAgentVerifications(commands []CodingSubAgentCommandResult, la
 			!isUnsafeSubAgentVerificationCommand(command.Command) {
 			continue
 		}
-		recovered := recoverSubAgentVerificationCommand(command.Command)
+		recovered := recoverUnsafeSubAgentVerificationCommand(command.Command)
 		if recovered == "" {
 			continue
 		}
@@ -10571,18 +10578,232 @@ func recoverSubAgentVerificationCommand(command string) string {
 			return ""
 		}
 		if shellCommandStartsAfterToken(token, segment) {
-			if (token != ";" && token != "&&") || !isSubAgentVerificationCommandSegment(segment) || !subAgentVerificationRecoveryTailIsHarmless(fields[i+1:]) {
+			if token != ";" && token != "&&" {
 				return ""
 			}
-			candidate := strings.Join(stripShellRedirectionOnlyArgs(segment), " ")
-			if candidate != "" && !isUnsafeSubAgentVerificationCommand(candidate) && isSubAgentVerificationCommand(candidate) {
-				return candidate
+			if recovered := recoverSubAgentVerificationTail(segment, fields[i+1:]); recovered != "" {
+				return recovered
 			}
 			return ""
 		}
 		segment = append(segment, token)
 	}
 	return ""
+}
+
+// recoverSubAgentVerificationTail turns `verifier [;|&& continuation...] ;
+// display tail` into the clean verifier replayable by the host. The display
+// tail must be an inert exit-status echo; the chain variant additionally
+// keeps a legit compile->run continuation between the verifier and the
+// display tail. Both reject pipes, fallbacks, redirections, and non-display
+// follow-ups, and a tail without any display portion never rewrites the
+// command.
+func recoverSubAgentVerificationTail(segment []string, tail []string) string {
+	if len(segment) == 0 || !isSubAgentVerificationCommandSegment(segment) {
+		return ""
+	}
+	if subAgentVerificationRecoveryTailIsHarmless(tail) {
+		candidate := strings.Join(stripShellRedirectionOnlyArgs(segment), " ")
+		if candidate != "" && !isUnsafeSubAgentVerificationCommand(candidate) && isSubAgentVerificationCommand(candidate) {
+			return candidate
+		}
+		return ""
+	}
+	// `verifier && compile->run continuation ; display tail` keeps the
+	// verifier auditable: recover the chain without the display tail so
+	// the host can replay it. Without this, a trailing `; echo $LASTEXITCODE`
+	// left the whole wrapper unrecoverable and the later generic
+	// post-loop build could not neutralize the poisoned audit.
+	if candidate, ok := recoverSubAgentVerificationChainTail(segment, tail); ok {
+		return candidate
+	}
+	return ""
+}
+
+// recoveredVerifierSegment records a verification segment together with the
+// field index of the boundary that ended it, so recovery can tell which
+// verifiers a boundary-level candidate already covers.
+type recoveredVerifierSegment struct {
+	segment  []string
+	boundary int
+}
+
+// recoverUnsafeSubAgentVerificationCommand is the audit-time counterpart of
+// recoverSubAgentVerificationCommand for commands already classified unsafe.
+// Execution-time normalization keeps the stricter first-boundary recovery so
+// non-unsafe commands always run exactly what the model wrote; at audit time a
+// leading benign probe (e.g. `c++ --version;`) must not block recovery of the
+// real verifier that a display tail masked (2026-09-15 T1: the c++ syntax-check
+// wrapper stayed unrecoverable and poisoned an otherwise fully verified task).
+// Pipes, fallbacks, background operators, redirections, or any non-benign
+// segment still make the whole wrapper unrecoverable.
+func recoverUnsafeSubAgentVerificationCommand(command string) string {
+	fields := shellCommandFields(command)
+	segment := make([]string, 0, len(fields))
+	benignSoFar := true
+	found := ""
+	foundAt := -1
+	var verifiers []recoveredVerifierSegment
+	for i, field := range fields {
+		token := normalizeShellCommandToken(field)
+		if token == "" {
+			continue
+		}
+		if isShellVerificationOutputRedirectionToken(token) {
+			return ""
+		}
+		if shellCommandStartsAfterToken(token, segment) {
+			if token != ";" && token != "&&" {
+				return ""
+			}
+			if isSubAgentVerificationCommandSegment(segment) {
+				verifiers = append(verifiers, recoveredVerifierSegment{segment: segment, boundary: i})
+			}
+			if benignSoFar {
+				if recovered := recoverSubAgentVerificationTail(segment, fields[i+1:]); recovered != "" {
+					if found == "" {
+						found = recovered
+						foundAt = i
+					}
+				}
+			}
+			if !isSubAgentVerificationCommandSegment(segment) && !subAgentVerificationProbeSegmentIsBenign(segment) {
+				benignSoFar = false
+			}
+			segment = nil
+			continue
+		}
+		segment = append(segment, token)
+	}
+	// Boundary recovery covers `verifier [&& continuation] ; display tail`.
+	// A candidate found at one boundary can leave EARLIER verifiers uncovered
+	// (`build ; echo exit=$? ; test ; echo exit2=$?` recovers `test` at the
+	// last boundary while build's failure stays masked): prepend every earlier
+	// verifier the candidate does not already contain so the replay reruns
+	// every verifier fail-closed.
+	if found != "" {
+		var prepend [][]string
+		for _, verifier := range verifiers {
+			if verifier.boundary >= foundAt {
+				continue
+			}
+			part := strings.Join(stripShellRedirectionOnlyArgs(verifier.segment), " ")
+			if part == "" || strings.Contains(found, part) {
+				continue
+			}
+			prepend = append(prepend, verifier.segment)
+		}
+		if len(prepend) == 0 {
+			return found
+		}
+		// Prepending turns the candidate into `earlier... && found`; if that
+		// joined chain does not validate, stay unrecoverable (conservative)
+		// rather than returning a candidate that leaves verifiers uncovered.
+		return joinRecoveredVerifierChain(append(prepend, []string{found}))
+	}
+	// When boundary recovery found nothing, a trailing verifier after benign
+	// probes/display echoes determines the shell exit status on its own (the
+	// earlier `;` made the command unsafe, but nothing masks the verifiers).
+	// Recover ALL verification segments as one && chain: replaying only the
+	// last one would hide an earlier verifier's masked failure (false green),
+	// while the chain reruns every verifier fail-closed.
+	if benignSoFar {
+		if isSubAgentVerificationCommandSegment(segment) {
+			verifiers = append(verifiers, recoveredVerifierSegment{segment: segment, boundary: len(fields)})
+		}
+		segments := make([][]string, 0, len(verifiers))
+		for _, verifier := range verifiers {
+			segments = append(segments, verifier.segment)
+		}
+		return joinRecoveredVerifierChain(segments)
+	}
+	return ""
+}
+
+// joinRecoveredVerifierChain joins every verification segment of an unsafe
+// wrapper into one replayable && chain, dropping the benign probes and display
+// echoes between them. The chain must itself be a clean, non-suppressing
+// verification command.
+func joinRecoveredVerifierChain(segments [][]string) string {
+	if len(segments) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(segments))
+	for _, seg := range segments {
+		part := strings.Join(stripShellRedirectionOnlyArgs(seg), " ")
+		if part == "" {
+			return ""
+		}
+		parts = append(parts, part)
+	}
+	candidate := strings.Join(parts, " && ")
+	if candidate == "" || isUnsafeSubAgentVerificationCommand(candidate) || !isSubAgentVerificationCommand(candidate) {
+		return ""
+	}
+	return candidate
+}
+
+// subAgentVerificationProbeSegmentIsBenign reports whether a non-verification
+// segment preceding the real verifier may be skipped during audit-time
+// recovery. The probe is dropped from the recovered replay, so plain variable
+// expansion ($VAR, $?) is harmless; command substitution ($(), ${}, backticks)
+// and control metacharacters could hide side effects or mask the verifier's
+// exit status and keep the whole wrapper unrecoverable.
+func subAgentVerificationProbeSegmentIsBenign(segment []string) bool {
+	for _, field := range segment {
+		token := normalizeShellCommandToken(field)
+		if token == "" {
+			continue
+		}
+		if strings.ContainsAny(token, "|<>;&()") {
+			return false
+		}
+		// The tokenizer splits `$(` / backticks into standalone "$" / "`"
+		// fields; a lone one means command substitution, not a plain variable.
+		if token == "$" || token == "`" ||
+			strings.Contains(token, "$(") || strings.Contains(token, "${") {
+			return false
+		}
+	}
+	return true
+}
+
+// recoverSubAgentVerificationChainTail handles `verifier && continuation... ;
+// display tail`: the display tail is an inert exit-status echo and the
+// continuation is a legit compile->run chain, so replaying the chain without
+// the display tail yields clean verification evidence. A display portion is
+// mandatory: without it the command is not a masking wrapper, and rewriting
+// benign `verifier ; run` separators would change what non-unsafe commands
+// execute. Fallbacks, pipes, file redirection, and arbitrary follow-ups in
+// the continuation keep the wrapper unrecoverable via the candidate-safety
+// recheck.
+func recoverSubAgentVerificationChainTail(segment []string, tail []string) (string, bool) {
+	split := -1
+	for i, field := range tail {
+		if normalizeShellCommandToken(field) == ";" {
+			split = i
+			break
+		}
+	}
+	if split < 0 {
+		return "", false
+	}
+	continuation, display := tail[:split], tail[split+1:]
+	if len(continuation) == 0 {
+		return "", false
+	}
+	if !subAgentVerificationRecoveryTailIsHarmless(display) {
+		return "", false
+	}
+	candidateFields := make([]string, 0, len(segment)+1+len(continuation))
+	candidateFields = append(candidateFields, segment...)
+	candidateFields = append(candidateFields, "&&")
+	candidateFields = append(candidateFields, continuation...)
+	candidate := strings.Join(stripShellRedirectionOnlyArgs(candidateFields), " ")
+	if candidate != "" && !isUnsafeSubAgentVerificationCommand(candidate) && isSubAgentVerificationCommand(candidate) {
+		return candidate, true
+	}
+	return "", false
 }
 
 func subAgentVerificationRecoveryTailIsHarmless(segment []string) bool {
@@ -15383,6 +15604,7 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 - Do not mutate files through bash redirection or shell helpers: >, >>, tee/Tee-Object, Set-Content/Add-Content/Out-File, touch/mkdir, Copy-Item/Move-Item/Rename-Item, sed -i, perl -pi, Node fs write/copy/rename/rm/mkdir APIs, Python open(..., "w")/Path write/touch/rename/remove APIs, or dd of=. Use the file editing tools instead.
 - Verification wrappers timeout/gtimeout, env/cross-env/time, cmd /c, powershell -Command, bash -lc are OK only when the wrapped command runs tests/build/lint/typecheck.
 - Do not use failure-suppressing or non-auditable verification shells: no || true, pipes, output redirection, help/list/collect-only flags, watch/UI modes, mutating flags such as --fix/--write, or chained post-verification commands.
+- 验证命令不要追加 echo exit=$LASTEXITCODE 显示尾：bash 结果末尾自带 command exited with code N（含成功 0），此类尾巴会判 failure-suppressing 而失败。
 `))
 
 	b.WriteString(fmt.Sprintf("\n## 项目路径\n%s\n", projectPath))

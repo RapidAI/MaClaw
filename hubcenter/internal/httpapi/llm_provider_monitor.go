@@ -172,7 +172,7 @@ type llmProviderMonitorFailure struct {
 // keep ticking so they take over within one lease TTL after the holder dies.
 // leaseTTL must comfortably exceed the HA replication lag of system settings;
 // bootstrap derives it from the sync intervals.
-func RunLLMProviderMonitor(ctx context.Context, svc *llmservice.Service, mailer mail.Mailer, nodeID string, leaseTTL time.Duration) {
+func RunLLMProviderMonitor(ctx context.Context, svc *llmservice.Service, mailer mail.Mailer, nodeID string, leaseTTL time.Duration, proxyCfg *llmservice.ProxyConfig) {
 	if svc == nil || mailer == nil {
 		log.Printf("[llm-monitor] provider monitor not started: svc=%t mailer=%t", svc != nil, mailer != nil)
 		return
@@ -189,7 +189,7 @@ func RunLLMProviderMonitor(ctx context.Context, svc *llmservice.Service, mailer 
 			return
 		case <-ticker.C:
 		}
-		llmProviderMonitorTick(ctx, svc, mailer, nodeID, leaseTTL, state, time.Now())
+		llmProviderMonitorTick(ctx, svc, mailer, nodeID, leaseTTL, state, time.Now(), proxyCfg)
 	}
 }
 
@@ -200,7 +200,7 @@ type llmProviderMonitorState struct {
 
 // llmProviderMonitorTick executes one monitor tick: reload config, elect the
 // single runner via the lease, and run a check cycle when one is due.
-func llmProviderMonitorTick(ctx context.Context, svc *llmservice.Service, mailer mail.Mailer, nodeID string, leaseTTL time.Duration, state *llmProviderMonitorState, now time.Time) {
+func llmProviderMonitorTick(ctx context.Context, svc *llmservice.Service, mailer mail.Mailer, nodeID string, leaseTTL time.Duration, state *llmProviderMonitorState, now time.Time, proxyCfg *llmservice.ProxyConfig) {
 	cfg := loadLLMProviderMonitorConfig(ctx, svc)
 	if !cfg.Enabled {
 		// Restart the interval when monitoring is (re)enabled, so an
@@ -229,7 +229,7 @@ func llmProviderMonitorTick(ctx context.Context, svc *llmservice.Service, mailer
 		return
 	}
 	state.lastRun = now
-	runLLMProviderMonitorCycle(ctx, svc, mailer)
+	runLLMProviderMonitorCycle(ctx, svc, mailer, proxyCfg)
 	recordLLMProviderMonitorCycle(ctx, svc, nodeID, leaseTTL, now)
 }
 
@@ -355,8 +355,8 @@ var (
 // sends a single failure report listing only the failed providers. A registry
 // load failure also notifies the admin — otherwise a broken registry would
 // silently disable monitoring.
-func runLLMProviderMonitorCycle(ctx context.Context, svc *llmservice.Service, mailer mail.Mailer) {
-	failures, err := collectLLMProviderMonitorFailures(ctx, svc)
+func runLLMProviderMonitorCycle(ctx context.Context, svc *llmservice.Service, mailer mail.Mailer, proxyCfg *llmservice.ProxyConfig) {
+	failures, err := collectLLMProviderMonitorFailures(ctx, svc, proxyCfg)
 	if err != nil {
 		adminEmail := llmProviderMonitorNotifyEmail(ctx, svc)
 		if adminEmail == "" {
@@ -401,7 +401,7 @@ func llmProviderMonitorNotifyEmail(ctx context.Context, svc *llmservice.Service)
 
 // collectLLMProviderMonitorFailures tests every non-paused provider that has
 // at least one configured model and returns only the ones that failed.
-func collectLLMProviderMonitorFailures(ctx context.Context, svc *llmservice.Service) ([]llmProviderMonitorFailure, error) {
+func collectLLMProviderMonitorFailures(ctx context.Context, svc *llmservice.Service, proxyCfg *llmservice.ProxyConfig) ([]llmProviderMonitorFailure, error) {
 	reg, err := svc.LoadRegistry(ctx)
 	if err != nil {
 		return nil, err
@@ -419,7 +419,7 @@ func collectLLMProviderMonitorFailures(ctx context.Context, svc *llmservice.Serv
 			// nothing to test.
 			continue
 		}
-		success, errMsg, latencyMs := testLLMProviderChatStatus(ctx, svc, provider.ID)
+		success, errMsg, latencyMs := testLLMProviderChatStatus(ctx, svc, proxyCfg, provider.ID)
 		if success {
 			continue
 		}

@@ -1173,6 +1173,54 @@ func (a *App) SaveMobileDocumentOriginal(draftID string) (string, error) {
 	return dest, nil
 }
 
+// MaterializeMobileDocumentOriginal downloads the Hub original to a cached temp
+// file and returns the local path without opening it. Previewers (PPTX slides,
+// PDF reader, images) use this path.
+func (a *App) MaterializeMobileDocumentOriginal(draftID string) (string, error) {
+	if a == nil {
+		return "", fmt.Errorf("app is not initialized")
+	}
+	id := strings.TrimSpace(draftID)
+	if id == "" {
+		return "", fmt.Errorf("draft id is required")
+	}
+	draft, err := a.GetMobileDocumentDraft(id)
+	if err != nil {
+		return "", err
+	}
+	if draft == nil || !draft.HasOriginal {
+		return "", fmt.Errorf("this draft has no original file on Hub")
+	}
+	filename := mobileDraftOriginalFilename(draft)
+	dir := filepath.Join(os.TempDir(), "maclaw_mobile_originals", sanitizeMobileOriginalFilename(id))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	safe := sanitizeMobileOriginalFilename(filename)
+	dest := filepath.Join(dir, safe)
+	if info, statErr := os.Stat(dest); statErr == nil && !info.IsDir() && info.Size() > 0 {
+		if draft.SourceSize <= 0 || info.Size() == int64(draft.SourceSize) {
+			return dest, nil
+		}
+	}
+	_, raw, err := a.downloadMobileDocumentOriginal(draft)
+	if err != nil {
+		return "", err
+	}
+	tmp := dest + fmt.Sprintf(".%d.part", time.Now().UnixNano())
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		return "", fmt.Errorf("write temp original: %w", err)
+	}
+	if err := os.Rename(tmp, dest); err != nil {
+		_ = os.Remove(dest)
+		if err2 := os.Rename(tmp, dest); err2 != nil {
+			_ = os.Remove(tmp)
+			return "", fmt.Errorf("write temp original: %w", err2)
+		}
+	}
+	return dest, nil
+}
+
 // OpenMobileDocumentOriginal downloads the Hub original to a temp file and opens
 // it with the OS default app. Returns the temp path.
 func (a *App) OpenMobileDocumentOriginal(draftID string) (string, error) {
@@ -1203,11 +1251,35 @@ func (a *App) OpenMobileDocumentOriginal(draftID string) (string, error) {
 	return dest, nil
 }
 
+func mobileDraftOriginalFilename(draft *MobileDocumentDraftSummary) string {
+	if draft == nil {
+		return "original.bin"
+	}
+	filename := strings.TrimSpace(draft.SourceFilename)
+	if filename == "" {
+		filename = strings.TrimSpace(draft.Title)
+	}
+	if filename == "" {
+		filename = strings.TrimSpace(draft.ID) + ".bin"
+	}
+	if filename == "" {
+		return "original.bin"
+	}
+	return filepath.Base(filename)
+}
+
 // fetchMobileDocumentOriginal downloads original bytes for a draft the viewer owns.
 func (a *App) fetchMobileDocumentOriginal(draftID string) (filename string, raw []byte, err error) {
 	draft, err := a.GetMobileDocumentDraft(draftID)
 	if err != nil {
 		return "", nil, err
+	}
+	return a.downloadMobileDocumentOriginal(draft)
+}
+
+func (a *App) downloadMobileDocumentOriginal(draft *MobileDocumentDraftSummary) (filename string, raw []byte, err error) {
+	if a == nil {
+		return "", nil, fmt.Errorf("app is not initialized")
 	}
 	if draft == nil || !draft.HasOriginal {
 		return "", nil, fmt.Errorf("this draft has no original file on Hub")
@@ -1253,15 +1325,7 @@ func (a *App) fetchMobileDocumentOriginal(draftID string) (filename string, raw 
 	if len(body) > mobileDocumentOriginalMaxBytes {
 		return "", nil, fmt.Errorf("decoded original file exceeds 400MB safety limit")
 	}
-	filename = strings.TrimSpace(draft.SourceFilename)
-	if filename == "" {
-		filename = strings.TrimSpace(draft.Title)
-	}
-	if filename == "" {
-		filename = draft.ID + ".bin"
-	}
-	filename = filepath.Base(filename)
-	return filename, body, nil
+	return mobileDraftOriginalFilename(draft), body, nil
 }
 
 func sanitizeMobileOriginalFilename(name string) string {

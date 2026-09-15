@@ -23,6 +23,7 @@ function renderStatus(credits: SidebarHubCredits, options: {
     showHubCreditAction?: boolean;
     isHubService?: boolean;
     onOpenBackgroundTasks?: () => void;
+    workbenchTaskCounts?: { background: number; scheduled: number; passthrough: number };
     qqBotStatus?: string;
     telegramStatus?: string;
     weixinStatus?: string;
@@ -46,6 +47,7 @@ function renderStatus(credits: SidebarHubCredits, options: {
             weixinStatus={options.weixinStatus ?? ''}
             lansengerStatus={options.lansengerStatus ?? ''}
             backgroundTaskCount={3}
+            workbenchTaskCounts={options.workbenchTaskCounts ?? { background: 3, scheduled: 1, passthrough: 4 }}
             onOpenBackgroundTasks={options.onOpenBackgroundTasks}
             sidebarCurrentProviderTokenUsage={{ provider: options.isHubService === false ? '\u79c1\u6709\u670d\u52a1\u5546' : 'MaClaw\u5b98\u65b9', isHubService: options.isHubService ?? true, input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0 }}
             sidebarHubCredits={credits}
@@ -207,6 +209,29 @@ describe('SidebarSystemStatus Hub credits', () => {
 
         expect(onOpenBackgroundTasks).toHaveBeenCalledTimes(1);
         unmount();
+    });
+
+    it('shows background, scheduled, and passthrough counts on one workbench status row', () => {
+        renderStatus(baseCredits, { workbenchTaskCounts: { background: 3, scheduled: 1, passthrough: 4 } });
+
+        const row = screen.getByTestId('workbench-task-counts');
+        expect(row.className).toContain('mc-workbench-status-card__row');
+        expect(row.textContent).toContain('后台任务');
+        expect(row.textContent).not.toContain('远程');
+        expect(row.textContent).toContain('后台 3');
+        expect(row.textContent).toContain('计划 1');
+        expect(row.textContent).toContain('直通 4');
+        expect(row.querySelector('.mc-workbench-status-card__jobs')?.textContent).toBe('后台 3 · 计划 1 · 直通 4');
+        expect(screen.getByTestId('workbench-status-card').contains(row)).toBe(true);
+    });
+
+    it('opens the task monitor from the workbench background-task row', () => {
+        const onOpenBackgroundTasks = vi.fn();
+        renderStatus(baseCredits, { onOpenBackgroundTasks, workbenchTaskCounts: { background: 3, scheduled: 1, passthrough: 4 } });
+
+        fireEvent.click(screen.getByRole('button', { name: /打开任务监控/ }));
+
+        expect(onOpenBackgroundTasks).toHaveBeenCalledTimes(1);
     });
 
     it('does not expose a dead background-task control when no navigation handler is available', () => {

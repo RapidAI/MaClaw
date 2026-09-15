@@ -179,19 +179,35 @@ func ResolveDynamicAuthorizedModelWithHead(header http.Header, body map[string]a
 	}
 	groupIDs := authorizedGroupIDs(models)
 	if !llmpool.IsAutoModel(requested) {
-		for i := range models {
-			if strings.EqualFold(strings.TrimSpace(models[i].Name), requested) {
-				selected := cloneAuthorizedModel(&models[i])
-				pinChargedGroup(selected, reg)
-				dec := llmpool.WorkloadDecision{
-					Class:         llmpool.HintClassFromRequest(header, body),
-					Source:        classSourceForPin(header, body),
-					ResolvedModel: selected.Name,
-					Passthrough:   true,
-				}
-				dec.Attribution = llmpool.AttributionFrom(dec, requestedGroupID, requested)
-				return selected, requested, &dec, nil
+		class, source := llmpool.ClassifyWorkload(llmpool.ClassifyInput{Header: header, Body: body})
+		if selected := findAuthorizedModelInGroups(models, requested, requestedGroupID); selected != nil && authorizedModelServesGroups(selected, requestedGroupID) {
+			clone := cloneAuthorizedModel(selected)
+			pinChargedGroup(clone, reg, requestedGroupID)
+			clone.AvailabilityFallbacks = siblingAuthorizedModels(models, clone, class)
+			dec := llmpool.WorkloadDecision{
+				Class:         class,
+				Source:        source,
+				ResolvedModel: clone.Name,
+				Quality:       llmpool.QualityForOfficialTier(clone.Name),
+				Passthrough:   true,
 			}
+			dec.Attribution = llmpool.AttributionFrom(dec, requestedGroupID, requested)
+			return clone, requested, &dec, nil
+		}
+		if fallback := fallbackAuthorizedOfficialModel(models, requested, class, requestedGroupID); fallback != nil {
+			clone := cloneAuthorizedModel(fallback)
+			pinChargedGroup(clone, reg, requestedGroupID)
+			clone.AvailabilityFallbacks = siblingAuthorizedModels(models, clone, class)
+			dec := llmpool.WorkloadDecision{
+				Class:                class,
+				Source:               source,
+				ResolvedModel:        clone.Name,
+				Quality:              llmpool.QualityForOfficialTier(clone.Name),
+				AvailabilityFallback: true,
+				Passthrough:          true,
+			}
+			dec.Attribution = llmpool.AttributionFrom(dec, requestedGroupID, requested)
+			return clone, requested, &dec, nil
 		}
 		return nil, requested, nil, fmt.Errorf("model %q is not authorized for this account", requested)
 	}
@@ -201,36 +217,61 @@ func ResolveDynamicAuthorizedModelWithHead(header http.Header, body map[string]a
 		if strings.TrimSpace(dec.ResolvedModel) == "" {
 			return nil, requested, &dec, fmt.Errorf("dynamic service group %s did not resolve a logical model", group.ID)
 		}
-		selected := findAuthorizedModel(models, dec.ResolvedModel)
+		selected := findAuthorizedModelInGroups(models, dec.ResolvedModel, group.ID)
+		if selected != nil && !authorizedModelServesGroups(selected, group.ID) {
+			selected = nil
+		}
+		if selected == nil {
+			if fallback := fallbackAuthorizedOfficialModel(models, dec.ResolvedModel, dec.Class, group.ID); fallback != nil {
+				selected = fallback
+				dec.ResolvedModel = fallback.Name
+				if q := llmpool.QualityForOfficialTier(fallback.Name); q != "" {
+					dec.Quality = q
+				}
+				dec.AvailabilityFallback = true
+			}
+		}
+		if selected != nil {
+			if upgraded := upgradePlanAwayFromLow(models, selected, dec.Class, group.ID); upgraded != nil && upgraded != selected {
+				selected = upgraded
+				dec.ResolvedModel = upgraded.Name
+				if q := llmpool.QualityForOfficialTier(upgraded.Name); q != "" {
+					dec.Quality = q
+				}
+				dec.AvailabilityFallback = true
+			}
+		}
 		if selected == nil {
 			return nil, requested, &dec, fmt.Errorf("resolved model %q is not authorized for this account", dec.ResolvedModel)
 		}
 		clone := cloneAuthorizedModel(selected)
 		clone.ChargedServiceGroupIDs = []string{group.ID}
 		clone.Kind = llmpool.ServiceGroupKindDynamic
+		restrictAuthorizedModelToChargedGroup(clone)
+		clone.AvailabilityFallbacks = siblingAuthorizedModels(models, clone, dec.Class)
 		dec.BindRequestedGroup(group.ID)
 		return clone, clone.Name, &dec, nil
 	}
+	class, source := llmpool.ClassifyWorkload(llmpool.ClassifyInput{Header: header, Body: body})
 	selected := SelectBestModelForRequest(body, models)
 	if selected == nil {
 		selected = &models[0]
 	}
+	if upgraded := upgradePlanAwayFromLow(models, selected, class, requestedGroupID); upgraded != nil {
+		selected = upgraded
+	}
 	clone := cloneAuthorizedModel(selected)
+	pinChargedGroup(clone, reg, requestedGroupID)
+	clone.AvailabilityFallbacks = siblingAuthorizedModels(models, clone, class)
 	dec := llmpool.WorkloadDecision{
-		Class:         llmpool.WorkloadFallbackBalanced,
-		Source:        llmpool.ClassSourceFallback,
+		Class:         class,
+		Source:        source,
 		ResolvedModel: clone.Name,
+		Quality:       llmpool.QualityForOfficialTier(clone.Name),
 		Passthrough:   true,
 	}
 	dec.Attribution = llmpool.AttributionFrom(dec, requestedGroupID, requested)
 	return clone, clone.Name, &dec, nil
-}
-
-func classSourceForPin(header http.Header, body map[string]any) string {
-	if llmpool.HintClassFromRequest(header, body) != "" {
-		return llmpool.ClassSourceHint
-	}
-	return llmpool.ClassSourceNone
 }
 
 func authorizedGroupIDs(models []AuthorizedModel) []string {
@@ -254,8 +295,20 @@ func authorizedGroupIDs(models []AuthorizedModel) []string {
 }
 
 func findAuthorizedModel(models []AuthorizedModel, name string) *AuthorizedModel {
+	return findAuthorizedModelInGroups(models, name)
+}
+
+func findAuthorizedModelInGroups(models []AuthorizedModel, name string, groupIDs ...string) *AuthorizedModel {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil
+	}
+	seed := authorizedGroupSeed(groupIDs...)
 	for i := range models {
-		if strings.EqualFold(strings.TrimSpace(models[i].Name), strings.TrimSpace(name)) {
+		if !strings.EqualFold(strings.TrimSpace(models[i].Name), name) {
+			continue
+		}
+		if seed == nil || sharesAuthorizedGroup(seed, &models[i]) {
 			return &models[i]
 		}
 	}
@@ -282,7 +335,136 @@ func cloneAuthorizedModel(model *AuthorizedModel) *AuthorizedModel {
 	clone.ProviderBillingModes = cloneStringMap(model.ProviderBillingModes)
 	clone.ProviderTokenPricing = cloneTokenPricingMap(model.ProviderTokenPricing)
 	clone.ProviderRouteBilling = cloneProviderRouteBillingMap(model.ProviderRouteBilling)
+	if len(model.AvailabilityFallbacks) > 0 {
+		clone.AvailabilityFallbacks = make([]AuthorizedModel, 0, len(model.AvailabilityFallbacks))
+		for i := range model.AvailabilityFallbacks {
+			fb := cloneAuthorizedModel(&model.AvailabilityFallbacks[i])
+			if fb == nil {
+				continue
+			}
+			fb.AvailabilityFallbacks = nil
+			clone.AvailabilityFallbacks = append(clone.AvailabilityFallbacks, *fb)
+		}
+	} else {
+		clone.AvailabilityFallbacks = nil
+	}
 	return &clone
+}
+
+func upgradePlanAwayFromLow(models []AuthorizedModel, selected *AuthorizedModel, class string, groupIDs ...string) *AuthorizedModel {
+	if selected == nil || llmpool.QualityForOfficialTier(selected.Name) != llmpool.QualityLow {
+		return selected
+	}
+	if class != llmpool.WorkloadClassPlan && class != llmpool.WorkloadClassDesign {
+		return selected
+	}
+	for _, name := range []string{llmpool.OfficialTierMid, llmpool.OfficialTierHigh} {
+		if found := findAuthorizedModelInGroups(models, name, groupIDs...); found != nil && authorizedModelServesGroups(found, groupIDs...) {
+			return found
+		}
+	}
+	return selected
+}
+
+func fallbackAuthorizedOfficialModel(models []AuthorizedModel, selected, class string, groupIDs ...string) *AuthorizedModel {
+	seed := authorizedGroupSeed(groupIDs...)
+	if seed == nil {
+		return nil
+	}
+	quality := llmpool.QualityForOfficialTier(selected)
+	if quality == "" {
+		quality = llmpool.NormalizeQuality(selected)
+	}
+	for _, band := range llmpool.QualityAvailabilityChain(quality, class) {
+		name := llmpool.OfficialTierForQuality(band)
+		if name == "" || strings.EqualFold(name, selected) {
+			continue
+		}
+		found := findAuthorizedModelInGroups(models, name, groupIDs...)
+		if found == nil || !authorizedModelServesGroups(found, groupIDs...) {
+			continue
+		}
+		return found
+	}
+	return nil
+}
+
+func authorizedGroupSeed(groupIDs ...string) *AuthorizedModel {
+	ids := make([]string, 0, len(groupIDs))
+	for _, id := range groupIDs {
+		if trimmed := strings.TrimSpace(id); trimmed != "" {
+			ids = append(ids, trimmed)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	return &AuthorizedModel{ServiceGroupIDs: ids, ChargedServiceGroupIDs: ids}
+}
+
+func siblingAuthorizedModels(models []AuthorizedModel, selected *AuthorizedModel, class string) []AuthorizedModel {
+	if selected == nil {
+		return nil
+	}
+	quality := llmpool.QualityForOfficialTier(selected.Name)
+	if quality == "" {
+		return nil
+	}
+	var out []AuthorizedModel
+	seen := map[string]struct{}{strings.ToLower(strings.TrimSpace(selected.Name)): {}}
+	groupIDs := authorizedModelGroupIDs(selected)
+	for _, band := range llmpool.QualityAvailabilityChain(quality, class) {
+		name := llmpool.OfficialTierForQuality(band)
+		if name == "" {
+			continue
+		}
+		candidate := findAuthorizedModelInGroups(models, name, groupIDs...)
+		if candidate == nil || !sharesAuthorizedGroup(selected, candidate) || !authorizedModelServesGroups(candidate, groupIDs...) {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(candidate.Name))
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		clone := cloneAuthorizedModel(candidate)
+		clone.AvailabilityFallbacks = nil
+		if len(selected.ChargedServiceGroupIDs) > 0 {
+			clone.ChargedServiceGroupIDs = append([]string(nil), selected.ChargedServiceGroupIDs...)
+		}
+		if selected.Kind != "" {
+			clone.Kind = selected.Kind
+		}
+		restrictAuthorizedModelToChargedGroup(clone)
+		if len(selected.ProviderIDs) > 0 && len(clone.ProviderIDs) == 0 {
+			continue
+		}
+		out = append(out, *clone)
+	}
+	return out
+}
+
+func sharesAuthorizedGroup(a, b *AuthorizedModel) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	for _, id := range authorizedModelGroupIDs(a) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		for _, other := range b.ServiceGroupIDs {
+			if strings.EqualFold(strings.TrimSpace(other), id) {
+				return true
+			}
+		}
+		for _, other := range b.ChargedServiceGroupIDs {
+			if strings.EqualFold(strings.TrimSpace(other), id) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // CloneAuthorizedModel returns a request-safe copy of an authorized model.
@@ -382,20 +564,118 @@ func cloneTokenPricing(pricing llmpool.TokenPricing) llmpool.TokenPricing {
 	return pricing
 }
 
-func pinChargedGroup(model *AuthorizedModel, reg *Registry) {
+func authorizedModelGroupIDs(model *AuthorizedModel) []string {
 	if model == nil {
-		return
+		return nil
 	}
 	if len(model.ChargedServiceGroupIDs) > 0 {
+		return append([]string(nil), model.ChargedServiceGroupIDs...)
+	}
+	return append([]string(nil), model.ServiceGroupIDs...)
+}
+
+func pinChargedGroup(model *AuthorizedModel, reg *Registry, preferredGroupIDs ...string) {
+	if model == nil || reg == nil || len(model.ChargedServiceGroupIDs) > 0 {
 		return
 	}
-	for _, id := range model.ServiceGroupIDs {
-		if group := reg.FindModelServiceGroup(id); group != nil && group.IsDynamic() {
-			model.ChargedServiceGroupIDs = []string{group.ID}
-			model.Kind = llmpool.ServiceGroupKindDynamic
-			return
+	pin := func(id string) bool {
+		group := reg.FindModelServiceGroup(id)
+		if group == nil || !group.IsDynamic() {
+			return false
+		}
+		model.ChargedServiceGroupIDs = []string{group.ID}
+		model.Kind = llmpool.ServiceGroupKindDynamic
+		restrictAuthorizedModelToChargedGroup(model)
+		return true
+	}
+	try := func(ids []string, requireServe bool) bool {
+		for _, id := range ids {
+			if !sharesAuthorizedGroup(authorizedGroupSeed(id), model) {
+				continue
+			}
+			if requireServe && !authorizedModelServesGroups(model, id) {
+				continue
+			}
+			if pin(id) {
+				return true
+			}
+		}
+		return false
+	}
+	if try(preferredGroupIDs, true) || try(model.ServiceGroupIDs, true) {
+		return
+	}
+	_ = try(preferredGroupIDs, false) || try(model.ServiceGroupIDs, false)
+}
+
+func restrictAuthorizedModelToChargedGroup(model *AuthorizedModel) {
+	if model == nil || len(model.ChargedServiceGroupIDs) == 0 || len(model.ProviderServiceGroups) == 0 {
+		return
+	}
+	charged := map[string]struct{}{}
+	for _, id := range model.ChargedServiceGroupIDs {
+		id = strings.ToLower(strings.TrimSpace(id))
+		if id != "" {
+			charged[id] = struct{}{}
 		}
 	}
+	if len(charged) == 0 {
+		return
+	}
+	keep := make([]string, 0, len(model.ProviderIDs))
+	seen := map[string]struct{}{}
+	for _, providerID := range model.ProviderIDs {
+		key := normalizedProviderKey(providerID)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		if !providerSharesChargedGroup(model, providerID, charged) {
+			continue
+		}
+		seen[key] = struct{}{}
+		keep = append(keep, providerID)
+	}
+	model.ProviderIDs = keep
+}
+
+func providerSharesChargedGroup(model *AuthorizedModel, providerID string, charged map[string]struct{}) bool {
+	if model == nil || len(charged) == 0 {
+		return false
+	}
+	for _, id := range model.ProviderServiceGroups[normalizedProviderKey(providerID)] {
+		if _, ok := charged[strings.ToLower(strings.TrimSpace(id))]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func authorizedModelServesGroups(model *AuthorizedModel, groupIDs ...string) bool {
+	if model == nil {
+		return false
+	}
+	if len(model.ProviderIDs) == 0 || len(model.ProviderServiceGroups) == 0 {
+		return true
+	}
+	charged := map[string]struct{}{}
+	for _, id := range groupIDs {
+		id = strings.ToLower(strings.TrimSpace(id))
+		if id != "" {
+			charged[id] = struct{}{}
+		}
+	}
+	if len(charged) == 0 {
+		return true
+	}
+	for _, providerID := range model.ProviderIDs {
+		if providerSharesChargedGroup(model, providerID, charged) {
+			return true
+		}
+	}
+	return false
 }
 
 func ChargedServiceGroupIDs(model *AuthorizedModel, providerID string) []string {

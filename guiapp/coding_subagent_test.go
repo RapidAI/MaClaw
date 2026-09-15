@@ -5673,6 +5673,26 @@ func TestExecuteCodingBashReturnsStructuredOutcome(t *testing.T) {
 	}
 }
 
+func TestExecuteCodingBashReportsExitStatusOnSuccess(t *testing.T) {
+	// The exit status must be visible on success too; models otherwise append
+	// `; echo "exit=$LASTEXITCODE"` display tails to confirm exit 0, which the
+	// quality audit classifies as failure-suppressing shell syntax.
+	success := executeCodingBash(map[string]interface{}{"command": successCmdForPlatform("ok")}, nil)
+	if success.Kind != codingCommandResultOK || success.ExitCode != 0 {
+		t.Fatalf("success result = %#v", success)
+	}
+	if !strings.Contains(success.Text, "command exited with code 0") {
+		t.Fatalf("success output must surface the exit status, got %q", success.Text)
+	}
+}
+
+func successCmdForPlatform(marker string) string {
+	if runtime.GOOS == "windows" {
+		return "Write-Output " + marker
+	}
+	return "echo " + marker
+}
+
 func TestConvertUnquotedAndAndForPowerShellPreservesQuotedText(t *testing.T) {
 	cases := []struct {
 		name    string

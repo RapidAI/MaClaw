@@ -1530,12 +1530,14 @@ export const CodingAgentThinkingTimelineItem = React.memo(function CodingAgentTh
     lang,
     step,
     liveLabel,
+    liveObject,
 }: {
     item: CodingAgentTimelineItem;
     theme: Theme;
     lang: string;
     step?: number;
     liveLabel?: string;
+    liveObject?: string;
 }) {
     const displayReasoning = React.useMemo(() => repairReasoningLineBreaks(stripCodingAgentAuditSections(
         stripCodingWorkbenchStatusReasoning(truncateRolePrefixForDisplay(sanitizeVisibleChatText(item.content || ""))),
@@ -1553,6 +1555,7 @@ export const CodingAgentThinkingTimelineItem = React.memo(function CodingAgentTh
         <AssistantReasoningPanel
             defaultOpen={false}
             label={live && liveLabel ? liveLabel : localizeText(lang, "Thought", "思考过程", "思考過程")}
+            objectLabel={live ? liveObject : undefined}
             step={step}
             lang={lang}
             preview={preview}
@@ -1571,6 +1574,7 @@ export function renderCodingAgentThinkingTimelineItem(
     lang: string,
     step?: number,
     liveLabel?: string,
+    liveObject?: string,
 ): React.ReactNode {
     return (
         <CodingAgentThinkingTimelineItem
@@ -1579,6 +1583,7 @@ export function renderCodingAgentThinkingTimelineItem(
             lang={lang}
             step={step}
             liveLabel={liveLabel}
+            liveObject={liveObject}
         />
     );
 }
@@ -1635,6 +1640,8 @@ export function renderMessage(
     incrementalReasoningRenderer?: (formattedReasoning: string) => React.ReactNode[],
     /** Live status for the last in-flight assistant (any current activity title). */
     liveReasoningLabel?: string,
+    /** Plain object after the live action (model or tool). Sheen stays on the action. */
+    liveReasoningObject?: string,
 ): React.ReactNode {
     switch (msg.role) {
         case "user":
@@ -1779,6 +1786,7 @@ export function renderMessage(
                                     key="reasoning"
                                     defaultOpen={shouldOpen}
                                     label={reasoningLabel}
+                                    objectLabel={live ? liveReasoningObject : undefined}
                                     lang={lang}
                                     theme={t}
                                     contentKey={displayReasoning}

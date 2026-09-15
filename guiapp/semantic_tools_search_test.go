@@ -38,7 +38,7 @@ func TestSemanticToolsSearchIsRenderedOnGovernedSurface(t *testing.T) {
 
 // A Chinese natural-language query must resolve to the exact stable names,
 // marked with their live status: office is listed on the fixture surface,
-// bash is petitionable.
+// bash is a listed baseline workspace tool.
 func TestSemanticToolsSearchFindsExactNames(t *testing.T) {
 	cb := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: .98})
 	got := semanticToolsSearchRun(cb, `{"query":"生成ppt并网上找照片"}`)
@@ -51,12 +51,14 @@ func TestSemanticToolsSearchFindsExactNames(t *testing.T) {
 		t.Fatalf("listed office must carry the listed status: %s", got)
 	}
 	got = semanticToolsSearchRun(cb, `{"query":"运行脚本生成带图片的幻灯片"}`)
-	if !strings.Contains(got, "bash") || !strings.Contains(got, "[可请愿：直接调用一次]") {
-		t.Fatalf("bash must be discoverable as petitionable: %s", got)
+	if !strings.Contains(got, "bash") || !strings.Contains(got, "[已在当前工具面]") {
+		t.Fatalf("bash must be discoverable as a listed baseline tool: %s", got)
 	}
-	// Discovery is not authorization: no grant is minted by a query.
-	if _, ok := cb.semanticSurface.grants["bash"]; ok {
-		t.Fatal("discovery must not mint a grant")
+	// Discovery is not authorization: a query must not mint extra grants.
+	before := len(cb.semanticSurface.grants)
+	_ = semanticToolsSearchRun(cb, `{"query":"运行脚本生成带图片的幻灯片"}`)
+	if len(cb.semanticSurface.grants) != before {
+		t.Fatalf("discovery must not mint extra grants: before=%d after=%d", before, len(cb.semanticSurface.grants))
 	}
 	// Garbage arguments fail closed without touching the surface.
 	if got := semanticToolsSearchRun(cb, `not json`); !strings.Contains(got, "tools_search_arguments_invalid") {
@@ -165,8 +167,8 @@ func TestSemanticToolsSearchStatusesAreHonestAboutThisTurn(t *testing.T) {
 	}
 	cb.semanticEffectfulPetitionConsumed = true
 	got = semanticToolsSearchRun(cb, `{"query":"运行脚本"}`)
-	if !strings.Contains(got, "[本轮请愿机会已用完，不要调用]") {
-		t.Fatalf("spent petition budget must be stated: %s", got)
+	if !strings.Contains(got, "bash") || !strings.Contains(got, "[已在当前工具面]") {
+		t.Fatalf("baseline bash must stay listed after the petition budget is spent: %s", got)
 	}
 	got = semanticToolsSearchRun(cb, `{"query":"生成ppt幻灯片"}`)
 	if !strings.Contains(got, "[本轮请愿机会已用完，不要调用]") {

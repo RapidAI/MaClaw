@@ -80,9 +80,10 @@ describe('CodePreviewPanel merged header', () => {
         await waitFor(() => expect(getDirectory).toHaveBeenCalledTimes(2));
     });
 
-    it('disables the header refresh when there is no project path', () => {
+    it('dismisses the panel entirely when there is no project path', () => {
+        // An empty preview without a workspace is dismissed outright instead of
+        // rendering a disabled header — see shouldDismissEmptyPreviewWithoutWorkspace.
         renderPanel({ projectPath: undefined });
-        const refresh = screen.getByTestId('code-preview-header-refresh') as HTMLButtonElement;
-        expect(refresh.disabled).toBe(true);
+        expect(screen.queryByTestId('code-preview-header-refresh')).toBeNull();
     });
 });

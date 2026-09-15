@@ -1864,20 +1864,6 @@ func (c *sharedAgentLoopCallbacks) PetitionToolCall(name string) (bool, string) 
 	if name == "" {
 		return false, ""
 	}
-	effectful := semanticPetitionIsEffectful(name)
-	if effectful {
-		if c.semanticEffectfulPetitionConsumed {
-			return false, ""
-		}
-		// A group-restricted context denies local administration at execution
-		// time; granting the capability first would surface a tool that can only
-		// fail. Deny the petition instead so the model gets one clean refusal.
-		if c.groupPolicy() != nil {
-			return false, ""
-		}
-	} else if c.semanticPetitionConsumed {
-		return false, ""
-	}
 	surface := c.semanticSurface
 	// Rendered or already-consumed names are not petitions; the core loop owns
 	// the consumed-grant text. A retired stable name must not re-issue the
@@ -1903,10 +1889,12 @@ func (c *sharedAgentLoopCallbacks) PetitionToolCall(name string) (bool, string) 
 	if !ok {
 		return false, ""
 	}
-	// A name already in the plan is not an expansion. Re-planning it fails
-	// the strict-superset validator ("added no governed need") and used to
-	// burn the turn's one effectful rescue. If the selection is ready, issue
-	// it; if not, deny without spending the expansion budget.
+	// A name already in the plan is not an expansion — including baseline
+	// workspace tools (bash, read_file, write_file) that stay listed for the
+	// whole turn. Re-planning it fails the strict-superset validator and used
+	// to burn the turn's one effectful rescue when memory or another lookup
+	// had already spent that budget. If the selection is ready, issue it;
+	// if not, deny without spending the expansion budget.
 	if semanticPlanHasCapability(surface.plan, capability) {
 		granted, message := c.exposeAlreadyPlannedPetition(name, capability)
 		if granted && c.semanticGrantNamed(name) {
@@ -1919,6 +1907,20 @@ func (c *sharedAgentLoopCallbacks) PetitionToolCall(name string) (bool, string) 
 			return true, message
 		}
 		log.Printf("[semantic-routing] tool petition %q already planned, not yet exposable", name)
+		return false, ""
+	}
+	effectful := semanticPetitionIsEffectful(name)
+	if effectful {
+		if c.semanticEffectfulPetitionConsumed {
+			return false, ""
+		}
+		// A group-restricted context denies local administration at execution
+		// time; granting the capability first would surface a tool that can only
+		// fail. Deny the petition instead so the model gets one clean refusal.
+		if c.groupPolicy() != nil {
+			return false, ""
+		}
+	} else if c.semanticPetitionConsumed {
 		return false, ""
 	}
 	// The budget is consumed once the gate has admitted a true expansion,

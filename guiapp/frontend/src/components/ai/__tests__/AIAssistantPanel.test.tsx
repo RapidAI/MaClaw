@@ -1964,6 +1964,54 @@ describe('AIAssistantPanel property tests', () => {
         expect(container.querySelector('[data-testid="assistant-chat-ai-a-done"] [data-testid="assistant-reasoning-panel"]')?.getAttribute('data-live')).toBe('false');
     });
 
+    it('puts the current model next to the live accessing-model action as plain text', () => {
+        const user = makeMsg({ role: 'user', content: 'First' });
+        const assistant = makeMsg({ id: 'a-done', role: 'assistant', content: 'Done.', reasoning: 'Checked.' });
+        const followUp = makeMsg({ id: 'u-2', role: 'user', content: '使用ssh访问呀' });
+        const props = defaultPanelProps();
+        const { container } = render(
+            <AIAssistantPanel
+                {...props}
+                lang="zh-Hans"
+                currentModel="auto"
+                availableProviders={[{ name: 'hub-official', url: '', isHubService: true, configured: true, model: 'auto' }]}
+                state={{ ...props.state, messages: [user, assistant, followUp], sending: true, streaming: false, ready: true }}
+            />,
+            { wrapper: DialogProvider },
+        );
+        const live = container.querySelector('[data-live="true"]');
+        expect(live?.querySelector('[data-testid="assistant-reasoning-label"]')?.textContent).toBe('正在访问模型');
+        expect(live?.querySelector('[data-testid="assistant-reasoning-label"]')?.className).toContain('assistant-reasoning-live-label');
+        expect(live?.querySelector('[data-testid="assistant-reasoning-object"]')?.textContent).toBe('MaClaw官方 auto 模型');
+        expect(live?.querySelector('[data-testid="assistant-reasoning-object"]')?.className).not.toContain('assistant-reasoning-live-label');
+    });
+
+    it('puts the in-flight tool next to the live tool action as plain text', () => {
+        const user = makeMsg({ role: 'user', content: '查服务器' });
+        const assistant = makeMsg({ id: 'a-live', role: 'assistant', content: '', reasoning: '先连上主机。' });
+        const props = defaultPanelProps();
+        const { container } = render(
+            <AIAssistantPanel
+                {...props}
+                lang="zh-Hans"
+                state={{
+                    ...props.state,
+                    messages: [user, assistant],
+                    progressMessages: [makeMsg({ role: 'progress', content: '正在执行工具: ssh' })],
+                    sending: true,
+                    streaming: true,
+                    ready: true,
+                }}
+            />,
+            { wrapper: DialogProvider },
+        );
+        const live = container.querySelector('[data-live="true"]');
+        expect(live?.querySelector('[data-testid="assistant-reasoning-label"]')?.textContent).toBe('正在远程操作');
+        expect(live?.querySelector('[data-testid="assistant-reasoning-label"]')?.className).toContain('assistant-reasoning-live-label');
+        expect(live?.querySelector('[data-testid="assistant-reasoning-object"]')?.textContent).toBe('ssh 工具');
+        expect(live?.querySelector('[data-testid="assistant-reasoning-object"]')?.className).not.toContain('assistant-reasoning-live-label');
+    });
+
     it('changes the thinking-panel label to the current action and marks it live', () => {
         const user = makeMsg({ role: 'user', content: '成都天气' });
         const assistant = makeMsg({ id: 'a-live-reasoning', role: 'assistant', content: '', reasoning: '先查天气源。' });

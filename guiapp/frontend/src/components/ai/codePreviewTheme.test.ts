@@ -10,6 +10,7 @@ import { describe, it, expect } from 'vitest';
 import {
     createCodePreviewTheme,
     darkCodePreviewTheme,
+    LIGHT_EDITOR_CHROME_BG,
     lightCodePreviewTheme,
     maximumContrastInkOnFill,
     type CodePreviewTheme,
@@ -139,7 +140,7 @@ describe('Active assistant scheme derivation', () => {
         expect(preview.diffDeleteText).toBe(darkTheme.errorText);
     });
 
-    it('changes with the selected assistant scheme instead of only its mode', () => {
+    it('keeps scheme ink while light editor chrome stays neutral', () => {
         const alternateLight = {
             ...lightTheme,
             bg: '#f3f8ff',
@@ -152,11 +153,11 @@ describe('Active assistant scheme derivation', () => {
 
         const preview = createCodePreviewTheme(alternateLight);
 
-        expect(preview.bg).toBe(alternateLight.bg);
-        expect(preview.tabBg).toBe(alternateLight.bg);
-        expect(preview.border).toBe(alternateLight.divider);
         expect(preview.syntaxKeyword).toBe(alternateLight.linkColor);
         expect(preview.syntaxNumber).toBe(alternateLight.pathColor);
+        expect(preview.tabActiveText).toBe(alternateLight.headingColor);
+        expect(preview.bg).toBe(lightCodePreviewTheme.bg);
+        expect(preview.border).toBe(lightCodePreviewTheme.border);
     });
 
     it('uses explicit dark-state semantics when deriving success tones', () => {
@@ -179,5 +180,42 @@ describe('Active assistant scheme derivation', () => {
     it('uses the maximum-contrast ink for the muted dark-mode success fill', () => {
         const successFill = '#7aa89a';
         expect(maximumContrastInkOnFill(successFill)).toBe('#111111');
+    });
+
+    it('uses a neutral light editor instead of scheme blue washes', () => {
+        const preview = createCodePreviewTheme(lightTheme);
+        expect(preview.bg).toBe(lightCodePreviewTheme.bg);
+        expect(preview.lineNumBg).toBe(LIGHT_EDITOR_CHROME_BG);
+        expect(preview.border).toBe(lightCodePreviewTheme.border);
+        expect(preview.tabBg).toBe(LIGHT_EDITOR_CHROME_BG);
+        expect(preview.tabActiveBg).toBe(lightCodePreviewTheme.tabActiveBg);
+        expect(preview.tabHoverBg).toBe(lightCodePreviewTheme.tabHoverBg);
+        expect(preview.lineNumBg).not.toBe(lightTheme.codeBg);
+        expect(preview.border).not.toBe(lightTheme.divider);
+        expect(preview.tabActiveBg).not.toBe(lightTheme.fieldBg);
+        expect(lightCodePreviewTheme.lineNumBg).toBe(LIGHT_EDITOR_CHROME_BG);
+        expect(lightCodePreviewTheme.tabBg).toBe(LIGHT_EDITOR_CHROME_BG);
+    });
+
+    it('keeps the light editor neutral when the scheme canvas is blue-tinted', () => {
+        const preview = createCodePreviewTheme({
+            ...lightTheme,
+            bg: '#f3f8ff',
+            codeBg: '#d6e8ff',
+            divider: '#9bb8d6',
+            fieldBg: '#e5f0ff',
+        });
+        expect(preview.bg).toBe(lightCodePreviewTheme.bg);
+        expect(preview.bg).not.toBe('#f3f8ff');
+        expect(preview.lineNumBg).toBe(LIGHT_EDITOR_CHROME_BG);
+        expect(preview.lineNumBg).not.toBe('#d6e8ff');
+        expect(preview.border).toBe(lightCodePreviewTheme.border);
+        expect(preview.tabActiveBg).toBe(lightCodePreviewTheme.tabActiveBg);
+    });
+
+    it('keeps a dark gutter on a dark canvas even when isDark is omitted', () => {
+        const preview = createCodePreviewTheme(darkTheme);
+        expect(preview.lineNumBg).toBe(darkTheme.codeBg);
+        expect(preview.lineNumBg).not.toBe(LIGHT_EDITOR_CHROME_BG);
     });
 });

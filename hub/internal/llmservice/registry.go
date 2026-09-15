@@ -338,6 +338,9 @@ type AuthorizedModel struct {
 	// upstream model. ProviderTokenPricing is retained as a compatibility
 	// projection for callers that only know the provider ID.
 	ProviderRouteBilling map[string]map[string]ProviderRouteBilling `json:"provider_route_billing,omitempty"`
+	// AvailabilityFallbacks are same-group high/mid/low siblings to try when
+	// this model's providers cannot serve the request. Not persisted.
+	AvailabilityFallbacks []AuthorizedModel `json:"-"`
 }
 
 // ProviderRouteBilling is the provider-owned billing configuration for one

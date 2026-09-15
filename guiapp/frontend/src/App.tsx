@@ -1,4 +1,4 @@
-import { BugReportScreenshotPreviewDataURL, CancelDownload, CheckEnvironment, ClampMaximizedWindowToWorkArea, ConsumeReferralHandoff, CreateExpertTask, CreateRemoteCodingTask, CreateRemoteOpsDiagnosisTask, CreateTask, CreateTaskWithCloudWorkspace, CreateTaskWithMode, DeleteSkillDetailed, DeleteTask, DownloadUpdate, DownloadUpdateWithSHA256, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, FetchMaclawLLMProfileModels, FetchProviderModels, GetAdaptiveWindowSize, GetAllLLMProfileTokenUsage, GetAllLLMTokenUsage, GetBrandInfo, GetChatFontSize, GetDigitalEmployeeFeatureStatus, GetEnvCheckInterval, GetFramelessTopInset, GetHubLLMServiceStatus, GetLansengerLocalMode, GetLansengerStatus, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMoASessionState, GetQQBotLocalMode, GetQQBotStatus, GetSystemInfo, GetTelegramLocalMode, GetTelegramStatus, GetThirdPartyGatewayLocalMode, GetThirdPartyGatewayStatus, GetUIZoomFactor, GetUserHomeDir, GetWeixinLocalMode, GetWeixinStatus, GroupDiscussionAcceptInvite, GroupDiscussionProcessPendingInvites, GroupDiscussionPublishProfile, GroupDiscussionRejectInvite, GroupDiscussionStatus, HasPendingBugReportUpload, HideTask, IsGossipAllowed, IsNativeRoundedCorners, IsWindowsTerminalAvailable, LaunchInstallerAndExit, ListBackgroundLoops, ListMyBugReports, ListPythonEnvironments, ListRemoteHubs, ListSkills, ListSkillsWithInstallStatus, ListTasks, LoadConfigForUI, OpenSystemUrl, PackLog, PatchConfigFields, PinTask, PingMaclawLLM, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, QuickSaveMaclawLLMProfile, ReadBBS, ReadThanks, ReadTutorial, RefreshMaclawLLMProfileHealth, RenameTask, ResizeWindow, RespondDigitalEmployeeSensitiveRequest, ResumeCloudWorkspaceTask, ResumeTask, RetryBugReportUpload, SaveConfig, SelectBugReportScreenshots, SelectProjectDir, SetBugReportEnabled, SetDefaultLaunchMode, SetLanguage, SetMaclawLLMCurrentModel, SetMoASticky, SetMoAStickyPreset, ShouldCheckEnvironment, ShowItemInFolder, SubmitBugReport, UpdateLastEnvCheckTime } from '../wailsjs/go/main/App';
+import { BugReportScreenshotPreviewDataURL, CancelDownload, CheckEnvironment, ClampMaximizedWindowToWorkArea, ConsumeReferralHandoff, CreateExpertTask, CreateRemoteCodingTask, CreateRemoteOpsDiagnosisTask, CreateTask, CreateTaskWithCloudWorkspace, CreateTaskWithMode, DeleteSkillDetailed, DeleteTask, DownloadUpdate, DownloadUpdateWithSHA256, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, FetchMaclawLLMProfileModels, FetchProviderModels, GetAdaptiveWindowSize, GetAllLLMProfileTokenUsage, GetAllLLMTokenUsage, GetBrandInfo, GetChatFontSize, GetDigitalEmployeeFeatureStatus, GetEnvCheckInterval, GetFramelessTopInset, GetHubLLMServiceStatus, GetLansengerLocalMode, GetLansengerStatus, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMoASessionState, GetQQBotLocalMode, GetQQBotStatus, GetSystemInfo, GetTelegramLocalMode, GetTelegramStatus, GetThirdPartyGatewayLocalMode, GetThirdPartyGatewayStatus, GetUIZoomFactor, GetUserHomeDir, GetWeixinLocalMode, GetWeixinStatus, GroupDiscussionAcceptInvite, GroupDiscussionProcessPendingInvites, GroupDiscussionPublishProfile, GroupDiscussionRejectInvite, GroupDiscussionStatus, HasPendingBugReportUpload, HideTask, IsGossipAllowed, IsNativeRoundedCorners, IsWindowsTerminalAvailable, LaunchInstallerAndExit, ListBackgroundLoops, ListMyBugReports, ListPassthroughCommands, ListPythonEnvironments, ListRemoteHubs, ListScheduledTasks, ListSkills, ListSkillsWithInstallStatus, ListTasks, LoadConfigForUI, OpenSystemUrl, PackLog, PatchConfigFields, PinTask, PingMaclawLLM, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, QuickSaveMaclawLLMProfile, ReadBBS, ReadThanks, ReadTutorial, RefreshMaclawLLMProfileHealth, RenameTask, ResizeWindow, RespondDigitalEmployeeSensitiveRequest, ResumeCloudWorkspaceTask, ResumeTask, RetryBugReportUpload, SaveConfig, SelectBugReportScreenshots, SelectProjectDir, SetBugReportEnabled, SetDefaultLaunchMode, SetLanguage, SetMaclawLLMCurrentModel, SetMoASticky, SetMoAStickyPreset, ShouldCheckEnvironment, ShowItemInFolder, SubmitBugReport, UpdateLastEnvCheckTime } from '../wailsjs/go/main/App';
 import { BrowserOpenURL, EventsEmit, EventsOff, EventsOn, Quit, WindowGetPosition, WindowGetSize, WindowHide, WindowIsFullscreen, WindowIsMaximised, WindowSetPosition, WindowSetSize, WindowToggleMaximise, WindowUnmaximise } from '../wailsjs/runtime';
 import { appVersion, buildNumber } from './version';
 // Keep the in-app navigation and About artwork aligned with the packaged
@@ -13,6 +13,8 @@ import { a2a, corelib } from '../wailsjs/go/models';
 import { EVENT_APP_UPDATE_AVAILABLE, EVENT_PROJECT_INDEX_CHANGED, EVENT_PROJECT_TASK_ACTIVATE, EVENT_TASKS_CHANGED } from './constants/events';
 import { useRemotePanel } from './components/remote/useRemotePanel';
 import { TERMINAL_SESSION_STATUSES } from './components/remote/types';
+import type { SessionTab } from './components/remote/sessionTabs';
+import { startVisibleInterval } from './utils/visibleInterval';
 import { useAudioDevices } from './components/ai/useAudioDevices';
 import { IMAuditPanel } from './components/remote/IMAuditPanel';
 import { OnboardingWizard } from './components/remote/OnboardingWizard';
@@ -162,7 +164,7 @@ import { AppSidebarShell } from './components/layout/AppSidebarShell';
 import { isProjectTabOpen } from './components/layout/SidebarTaskManagement';
 import { coerceActiveAssistantTask, expertIDFromTaskTags, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sameActiveAssistantTask, type ActiveAssistantTaskIdentity } from './components/ai/aiAssistantPanelSessionUtils';
 import { FavoriteEmployeeReplacePicker } from './components/layout/FavoriteEmployeeReplacePicker';
-import { countActiveBackgroundLoops } from './components/layout/backgroundTaskCount';
+import { countActiveBackgroundLoops, countLiveAISessions, countPassthroughCommands, countVisibleScheduledTasks } from './components/layout/backgroundTaskCount';
 import { MAX_USER_FAVORITES, normalizeFavoriteEmployeeIds } from './components/settings/favoriteEmployees';
 import { MainTopHeader } from './components/layout/MainTopHeader';
 import { AppStatusMessageBar } from './components/layout/AppStatusMessageBar';
@@ -477,7 +479,7 @@ function App() {
     // Keep Utilities alive after its first visit so long-running virtual-repository
     // work continues when the user briefly switches to the AI assistant.
     const [utilitiesPageVisited, setUtilitiesPageVisited] = useState(false);
-    const [remoteInitialSessionTab, setRemoteInitialSessionTab] = useState<"remote" | "background" | "scheduled" | "passthrough">("remote");
+    const [remoteInitialSessionTab, setRemoteInitialSessionTab] = useState<SessionTab>("background");
     const audioDevices = useAudioDevices();
     const [aiPanelMaximized, setAiPanelMaximized] = useState(false);
     const aiPanelMaximizedWindowRef = useRef(false);
@@ -2655,7 +2657,6 @@ function App() {
         }
         setNavTabNow(tool);
         setToolDropdownOpen(false);
-        if (tool === 'remote') setRemoteInitialSessionTab('remote');
         if (tool === 'message') {
             switchTool('ai');
             return;
@@ -2953,7 +2954,6 @@ function App() {
         saveRemoteConfigField,
         sendRemoteInput,
         killRemoteSession,
-        interruptRemoteSession,
         refreshSessionsOnly,
         clearRemoteActivationState,
         invitationCodeRequired,
@@ -4430,49 +4430,59 @@ function App() {
         }) || null;
     }, [remoteSessions, activeTool]);
 
-    // Track manageable background loops for the sidebar badge and system status.
+    // Track manageable background loops, scheduled tasks, and passthrough
+    // commands for the sidebar badge and workbench status card.
     const [sidebarBgLoops, setSidebarBgLoops] = useState<any[]>([]);
+    const [sidebarScheduledTasks, setSidebarScheduledTasks] = useState<any[]>([]);
+    const [sidebarPassthroughCommands, setSidebarPassthroughCommands] = useState<any[]>([]);
     useEffect(() => {
+        if (navTab !== 'ai') return;
         let cancelled = false;
         const refresh = async () => {
-            try {
-                const loops = await ListBackgroundLoops();
-                if (!cancelled) setSidebarBgLoops(Array.isArray(loops) ? loops : []);
-            } catch {
-                if (!cancelled) {
-                    setSidebarBgLoops([]);
-                }
+            const [loops, scheduled, passthrough] = await Promise.allSettled([
+                ListBackgroundLoops(),
+                ListScheduledTasks(),
+                ListPassthroughCommands(),
+            ]);
+            if (cancelled) return;
+            if (loops.status === 'fulfilled') {
+                setSidebarBgLoops(Array.isArray(loops.value) ? loops.value : []);
+            }
+            if (scheduled.status === 'fulfilled') {
+                setSidebarScheduledTasks(Array.isArray(scheduled.value) ? scheduled.value : []);
+            }
+            if (passthrough.status === 'fulfilled') {
+                setSidebarPassthroughCommands(Array.isArray(passthrough.value) ? passthrough.value : []);
             }
         };
-        refresh();
-        const cleanup = safeEventsOn("background-loops-changed", refresh);
-        const timer = setInterval(refresh, 5000);
+        void refresh();
+        const cleanupLoops = safeEventsOn("background-loops-changed", refresh);
+        const cleanupScheduled = safeEventsOn("scheduled-tasks-changed", refresh);
+        const stopInterval = startVisibleInterval(() => { void refresh(); }, 5000);
         return () => {
             cancelled = true;
-            clearInterval(timer);
-            if (typeof cleanup === "function") cleanup(); else safeEventsOff("background-loops-changed");
+            stopInterval();
+            if (typeof cleanupLoops === "function") cleanupLoops(); else safeEventsOff("background-loops-changed");
+            if (typeof cleanupScheduled === "function") cleanupScheduled(); else safeEventsOff("scheduled-tasks-changed");
         };
-    }, []);
+    }, [navTab]);
 
     const activeBackgroundLoopCount = useMemo(() => countActiveBackgroundLoops(sidebarBgLoops), [sidebarBgLoops]);
+    const scheduledTaskCount = useMemo(() => countVisibleScheduledTasks(sidebarScheduledTasks), [sidebarScheduledTasks]);
+    const passthroughTaskCount = useMemo(() => countPassthroughCommands(sidebarPassthroughCommands), [sidebarPassthroughCommands]);
 
-    // Count running (non-terminal) sessions + background loops for the sidebar badge
-    const runningTaskCount = useMemo(() => {
-        const remoteCount = remoteSessions.filter((session) => {
-            const status = String(session.status || session.summary?.status || "").toLowerCase();
-            return !TERMINAL_SESSION_STATUSES.has(status);
-        }).length;
-        return remoteCount + activeBackgroundLoopCount;
-    }, [remoteSessions, activeBackgroundLoopCount]);
-
-    const backgroundTaskCount = useMemo(() => {
-        const aiSessionCount = remoteSessions.filter((session) => {
-            if ((session.launch_source || "") !== "ai") return false;
-            const status = String(session.status || session.summary?.status || "").toLowerCase();
-            return !TERMINAL_SESSION_STATUSES.has(status);
-        }).length;
-        return activeBackgroundLoopCount + aiSessionCount;
-    }, [remoteSessions, activeBackgroundLoopCount]);
+    const backgroundTaskCount = useMemo(
+        () => activeBackgroundLoopCount + countLiveAISessions(remoteSessions),
+        [remoteSessions, activeBackgroundLoopCount],
+    );
+    const workbenchTaskCounts = useMemo(
+        () => ({
+            background: backgroundTaskCount,
+            scheduled: scheduledTaskCount,
+            passthrough: passthroughTaskCount,
+        }),
+        [backgroundTaskCount, scheduledTaskCount, passthroughTaskCount],
+    );
 
     // Show onboarding only after the environment-check completion path has
     // resized and painted the main workbench. The wizard is portaled to
@@ -5242,10 +5252,9 @@ ${instruction}`;
                 telegramStatus={telegramStatus}
                 weixinStatus={weixinStatus}
                 lansengerStatus={lansengerStatus}
-                runningTaskCount={runningTaskCount}
                 backgroundTaskCount={backgroundTaskCount}
+                workbenchTaskCounts={workbenchTaskCounts}
                 onOpenBackgroundTasks={openBackgroundTaskMonitor}
-                remoteSessionTab={remoteInitialSessionTab}
                 t={t}
                 gossipAllowed={gossipAllowed}
                 config={config}
@@ -5553,12 +5562,9 @@ ${instruction}`;
                             remoteSessions={remoteSessions}
                             remoteInputDrafts={remoteInputDrafts}
                             setRemoteInputDrafts={setRemoteInputDrafts}
-                            interruptRemoteSession={interruptRemoteSession}
                             killRemoteSession={killRemoteSession}
                             refreshSessionsOnly={refreshSessionsOnly}
                             showToastMessage={showToastMessage}
-                            translate={translate}
-                            formatText={formatText}
                             localizeText={localizeText}
                             initialSessionTab={remoteInitialSessionTab}
                             onSessionTabChange={setRemoteInitialSessionTab}

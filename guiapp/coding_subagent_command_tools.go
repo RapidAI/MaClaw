@@ -242,6 +242,12 @@ func executeCodingBashWithContext(parent context.Context, args map[string]interf
 		if output == "" {
 			output = "(command completed with no output)"
 		}
+		// Always surface the exit status, including success. Models habitually
+		// append `; echo "exit=$LASTEXITCODE"` display tails to *see* the exit
+		// code on success; those tails are classified as failure-suppressing
+		// shell syntax by the coding quality audit and caused false failures
+		// (2026-09-15 T1). A visible `exit code 0` removes the motivation.
+		output = appendCodingCommandExitStatus(output, 0)
 		return codingCommandExecutionResult{Text: output, Kind: codingCommandResultOK, ExitCode: 0}
 	}
 	if ctx.Err() == context.DeadlineExceeded {

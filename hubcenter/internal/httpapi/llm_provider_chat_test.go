@@ -87,7 +87,7 @@ func TestAdminTestLLMProviderChatRequiresSuccessfulCompletion(t *testing.T) {
 			}
 			req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/providers/test-chat", bytes.NewReader(body))
 			rec := httptest.NewRecorder()
-			adminTestLLMProviderChat(nil)(rec, req)
+			adminTestLLMProviderChat(nil, nil)(rec, req)
 
 			if rec.Code != http.StatusOK {
 				t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
@@ -146,7 +146,7 @@ func TestAdminTestLLMProviderChatUsesResponsesAPI(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/providers/test-chat", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
-	adminTestLLMProviderChat(nil)(rec, req)
+	adminTestLLMProviderChat(nil, nil)(rec, req)
 
 	var got struct {
 		Success bool   `json:"success"`
@@ -197,7 +197,7 @@ func TestAdminTestLLMProviderChatUsesAnthropicAPI(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/providers/test-chat", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
-	adminTestLLMProviderChat(nil)(rec, req)
+	adminTestLLMProviderChat(nil, nil)(rec, req)
 
 	var got struct {
 		Success bool   `json:"success"`
@@ -231,7 +231,7 @@ func TestAdminTestLLMProviderChatAnthropicThinkingFallback(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/providers/test-chat", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
-	adminTestLLMProviderChat(nil)(rec, req)
+	adminTestLLMProviderChat(nil, nil)(rec, req)
 
 	var got struct {
 		Success bool   `json:"success"`
@@ -272,7 +272,7 @@ func TestAdminTestLLMProviderChatOpenAIReasoningFallback(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/providers/test-chat", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
-	adminTestLLMProviderChat(nil)(rec, req)
+	adminTestLLMProviderChat(nil, nil)(rec, req)
 
 	var got struct {
 		Success bool   `json:"success"`
@@ -316,7 +316,7 @@ func TestAdminTestLLMProviderChatProviderIDDoesNotUseCallerEndpoint(t *testing.T
 	}
 	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/providers/test-chat", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
-	adminTestLLMProviderChat(svc)(rec, req)
+	adminTestLLMProviderChat(svc, nil)(rec, req)
 
 	var got struct {
 		Success bool `json:"success"`
@@ -334,7 +334,7 @@ func TestAdminTestLLMProviderChatRejectsUnknownProviderID(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/providers/test-chat", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	svc := llmservice.NewService(&llmDeleteTestSettings{data: map[string]string{}})
-	adminTestLLMProviderChat(svc)(rec, req)
+	adminTestLLMProviderChat(svc, nil)(rec, req)
 
 	var got struct {
 		Success bool   `json:"success"`
@@ -363,7 +363,7 @@ func TestAdminTestLLMProviderChatTrimsProviderID(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/providers/test-chat", strings.NewReader(`{"provider_id":" configured ","model":"selected-model"}`))
 	rec := httptest.NewRecorder()
-	adminTestLLMProviderChat(svc)(rec, req)
+	adminTestLLMProviderChat(svc, nil)(rec, req)
 
 	var got struct {
 		Success bool   `json:"success"`

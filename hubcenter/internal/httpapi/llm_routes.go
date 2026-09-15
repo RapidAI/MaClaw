@@ -45,13 +45,14 @@ func RegisterLLMRoutes(
 
 	// --- Admin: LLM Providers ---
 	mux.HandleFunc("GET /api/admin/llm/providers", RequireAdmin(adminService, adminListLLMProviders(llmSvc)))
+	mux.HandleFunc("GET /api/admin/llm/access-nodes", RequireAdmin(adminService, adminListLLMAccessNodes(proxyCfg)))
 	if statsSvc != nil {
 		mux.HandleFunc("GET /api/admin/llm/providers/traffic", RequireAdmin(adminService, adminLLMProviderTrafficHandler(statsSvc)))
 		mux.HandleFunc("GET /api/admin/llm/service-groups/traffic", RequireAdmin(adminService, adminLLMServiceGroupTrafficHandler(statsSvc)))
 	}
 	mux.HandleFunc("POST /api/admin/llm/providers", RequireAdmin(adminService, adminAddLLMProvider(llmSvc)))
-	mux.HandleFunc("POST /api/admin/llm/providers/probe-models", RequireAdmin(adminService, adminProbeLLMProviderModels(llmSvc)))
-	mux.HandleFunc("POST /api/admin/llm/providers/test-chat", RequireAdmin(adminService, adminTestLLMProviderChat(llmSvc)))
+	mux.HandleFunc("POST /api/admin/llm/providers/probe-models", RequireAdmin(adminService, adminProbeLLMProviderModels(llmSvc, proxyCfg)))
+	mux.HandleFunc("POST /api/admin/llm/providers/test-chat", RequireAdmin(adminService, adminTestLLMProviderChat(llmSvc, proxyCfg)))
 	mux.HandleFunc("PUT /api/admin/llm/providers/sequences", RequireAdmin(adminService, adminSetLLMProviderSequences(llmSvc)))
 	mux.HandleFunc("PUT /api/admin/llm/providers/{id}", RequireAdmin(adminService, adminUpdateLLMProvider(llmSvc)))
 	mux.HandleFunc("PUT /api/admin/llm/providers/{id}/paused", RequireAdmin(adminService, adminSetLLMProviderPaused(llmSvc)))

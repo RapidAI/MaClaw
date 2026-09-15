@@ -237,7 +237,7 @@ func BalanceProviderRoutes(sched *WRRScheduler, pool string, candidates []Balanc
 			continue
 		}
 		candidate.EffectiveMultiplier = NormalizeCreditMultiplier(candidate.EffectiveMultiplier)
-		candidate.ResolutionTier = normalizedResolutionTier(candidate.ResolutionTier)
+		candidate.ResolutionTier = NormalizedResolutionTier(candidate.ResolutionTier)
 		key := bandKey(candidate)
 		item, ok := index[key]
 		if !ok {

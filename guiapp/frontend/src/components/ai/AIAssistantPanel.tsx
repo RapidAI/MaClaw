@@ -58,7 +58,7 @@ import { AssistantWorkflowMaximizeSuggestion } from "./AssistantWorkflowMaximize
 import { useAssistantThemeMode } from "./useAssistantThemeMode";
 import { activeCodingAgentProgress, codingAgentComposerStatusText, codingAgentMessagesHavePlainTrail, isCodingAgentProgressContent, latestCodingAgentTurnSnapshot, renderCodingAgentWorkingTrail } from "./CodingAgentProgressStatus";
 import { isToolProgressMessage } from "./aiAssistantProgressUtils";
-import { assistantLiveActivityLabel, assistantLiveReasoningSource, assistantMessageOwnsLiveActivity, codingTimelineLiveThoughtIndex, reasoningHasModelThought, resolveAssistantLiveActivity, resolveStandaloneLiveActivityLabel } from "./assistantLiveActivity";
+import { assistantLiveActivityLabel, assistantLiveActivityObject, assistantLiveReasoningSource, assistantMessageOwnsLiveActivity, codingTimelineLiveThoughtIndex, extractInFlightToolName, reasoningHasModelThought, resolveAssistantLiveActivity, resolveStandaloneLiveActivityLabel } from "./assistantLiveActivity";
 import { IconBranch, IconRocket } from "./WorkbenchIcons";
 import { AITabBar } from "./AITabBar";
 import { localAssistantTabTitle } from "./aiAssistantI18n";
@@ -105,6 +105,7 @@ import { ComputerUseReadinessBanner } from "./ComputerUseReadinessBanner";
 import { canShowWorkbenchLanding, useWorkbenchLandingMode } from "./useWorkbenchLandingMode";
 export { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
 import { agentViewHiddenFieldValue, canShowAssistantCodingPreviewForTab, codePreviewModeFromState, commitRestoredCodePreview, hasRestorableProjectConversation, isWorkflowPhaseRunningStatus, isWorkflowPhaseTerminalStatus, loadRestoredProjectConversationHistory, normalizeRestoredProjectHistoryContent, normalizeWorkflowPhaseStatus, readStoredAssistantPreviewState, shouldApplyRestoredAssistantPreview, shouldShowSourcePreviewForAgentMode, shouldShowSourcePreviewForWorkflow, suppressWorkflowReviewActions, withCodePreviewVisibleIfContent, writeStoredAssistantPreviewState, type ConversationBranchPointLike, type StoredAssistantPreviewState } from "./assistantPreviewState";
+import type { SidebarLLMProviderSummary } from "../../types/appShell";
 import { PREVIEW_TASK_RESULT_EVENT, codeFileForImmediateTaskResultPreview, codeFileFromTaskResultPreview, localizeTaskResultPreviewError, previewTaskResultPathFromEvent, taskResultPreviewKindFromPath, type TaskResultPreviewPayload } from "./taskResultPreview";
 export { canShowAssistantCodingPreviewForTab, codePreviewModeFromState, shouldApplyRestoredAssistantPreview, shouldShowSourcePreviewForAgentMode, shouldShowSourcePreviewForWorkflow, withCodePreviewVisibleIfContent } from "./assistantPreviewState";
 const LOCAL_HIGH_RISK_APPROVAL_KIND = "local_high_risk_bash";
@@ -3848,7 +3849,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             const generation = ++taskResultPreviewGenRef.current;
             setTaskResultPreviewOpen(true);
             const immediateKind = taskResultPreviewKindFromPath(path);
-            if (immediateKind === "pptx" || immediateKind === "pdf") {
+            if (immediateKind) {
                 openWorkspaceFile(codeFileForImmediateTaskResultPreview(path, immediateKind));
                 return;
             }
@@ -4115,6 +4116,27 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         codingProgress: liveCodingProgress,
     }), [activeSessionIsStreaming, displayProgressMessages, isBusy, lastAssistantReasoningText, liveCodingProgress]);
     const liveReasoningLabel = liveReasoningKind ? assistantLiveActivityLabel(liveReasoningKind, lang) : undefined;
+    const liveReasoningObject = useMemo(() => {
+        if (!liveReasoningKind) return undefined;
+        const modelId = String(currentModel || "").trim();
+        // availableProviders is untyped on props; narrow it so the lookup below is checked.
+        const providers = (availableProviders || []) as SidebarLLMProviderSummary[];
+        const currentProvider = (modelId
+            ? providers.find((provider) => provider.model === modelId || (provider.models || []).includes(modelId))
+            : undefined)
+            || providers[0];
+        const object = assistantLiveActivityObject(liveReasoningKind, lang, {
+            providerName: currentProvider?.name,
+            modelId: modelId || String(currentProvider?.model || "").trim(),
+            isHubService: !!currentProvider?.isHubService,
+            toolName: extractInFlightToolName({
+                codingProgress: liveCodingProgress,
+                progressMessages: displayProgressMessages,
+                reasoningText: lastAssistantReasoningText,
+            }),
+        });
+        return object || undefined;
+    }, [availableProviders, currentModel, displayProgressMessages, lang, lastAssistantReasoningText, liveCodingProgress, liveReasoningKind]);
     const projectSearch = useProjectSearch(lang);
     useEffect(() => {
         if (!panelActive) projectSearch.close();
@@ -5483,6 +5505,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                                 lang={lang}
                                                 step={step}
                                                 liveLabel={index === lastThinkingIndex ? liveReasoningLabel : undefined}
+                                                liveObject={index === lastThinkingIndex ? liveReasoningObject : undefined}
                                             />
                                         )
                                         : (
@@ -5507,7 +5530,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             // Include the actual text, not just its length. Tool retries and stream
             // corrections can replace content in place without changing the length.
             const liveLabelForMessage = assistantMessageOwnsLiveActivity(msg, activeSessionIsStreaming, idx === otherMessages.length - 1) ? liveReasoningLabel : undefined;
-            const contentKey = `${msg.content ?? '__undefined__'}|${msg.kind ?? ''}|${msg.reasoning ?? ''}|${msg.actions?.length ?? 0}|${isLast ? 1 : 0}|${isLast && isBusy ? 1 : 0}|${isLast && activeSessionHasWork ? 1 : 0}|${isLast && activeSessionIsStreaming ? 1 : 0}|${liveLabelForMessage ?? ''}|${msg.confirmation ? 1 : 0}|${msg.unfinishedSlot ? 1 : 0}|${msg.localFilePath ?? ''}|${msg.localFilePaths?.length ?? 0}|${msg.attachments?.length ?? 0}|${msg.thumbnailBase64 ? 1 : 0}|${msg.imageKey ? 1 : 0}|${msg.recordingSession ? `${msg.recordingSession.active ? 1 : 0}:${msg.recordingSession.title}` : ''}|${isPureCodingEnvironment ? 1 : 0}`;
+            const liveObjectForMessage = liveLabelForMessage ? liveReasoningObject : undefined;
+            const contentKey = `${msg.content ?? '__undefined__'}|${msg.kind ?? ''}|${msg.reasoning ?? ''}|${msg.actions?.length ?? 0}|${isLast ? 1 : 0}|${isLast && isBusy ? 1 : 0}|${isLast && activeSessionHasWork ? 1 : 0}|${isLast && activeSessionIsStreaming ? 1 : 0}|${liveLabelForMessage ?? ''}|${liveObjectForMessage ?? ''}|${msg.confirmation ? 1 : 0}|${msg.unfinishedSlot ? 1 : 0}|${msg.localFilePath ?? ''}|${msg.localFilePaths?.length ?? 0}|${msg.attachments?.length ?? 0}|${msg.thumbnailBase64 ? 1 : 0}|${msg.imageKey ? 1 : 0}|${msg.recordingSession ? `${msg.recordingSession.active ? 1 : 0}:${msg.recordingSession.title}` : ''}|${isPureCodingEnvironment ? 1 : 0}`;
             const cached = cache.get(msg.id);
             if (cached && cached.contentKey === contentKey) {
                 return cached.node;
@@ -5540,7 +5564,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         incRef.state = createIncrementalRenderState();
                     }
                     return renderContentIncremental(formattedReasoning, t, incRef.state);
-                }, liveLabelForMessage);
+                }, liveLabelForMessage, liveObjectForMessage);
             } else {
                 // Reset incremental state when streaming ends
                 // so the final render is a clean full parse (100% correct).
@@ -5552,7 +5576,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         reasoningIncrementalStateRef.current = { messageId: '', state: createIncrementalRenderState() };
                     }
                 }
-                node = renderMessage(suppressWorkflowReviewActions(msg), panelExecuteAction, t, isLast, savedFileLabel, lang, isLast && activeSessionIsStreaming, undefined, handleRecordingComplete, isPureCodingEnvironment, undefined, liveLabelForMessage);
+                node = renderMessage(suppressWorkflowReviewActions(msg), panelExecuteAction, t, isLast, savedFileLabel, lang, isLast && activeSessionIsStreaming, undefined, handleRecordingComplete, isPureCodingEnvironment, undefined, liveLabelForMessage, liveObjectForMessage);
             }
             cache.set(msg.id, { contentKey, node });
             const branchPoint = msg.role === 'user' ? branchPointByDisplayIndex.get(idx) : undefined;
@@ -6529,7 +6553,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     ) : null}
                     {showPureCodingEmptyState ? pureCodingEmptyContent : null}
                     <CodingAgentPreviewFocusContext.Provider value={focusCodeFile}>
-                    <AssistantConversationBody emptyContent={isPureCodingEnvironment ? null : undefined} initLabel={initLabel} lang={lang} messages={displayMessages} onOpenOnboarding={onOpenOnboarding} onboardingIncomplete={onboardingIncomplete} pinnedNews={pinnedNews} ready={ready} renderedOtherMessages={renderedOtherMessages} renderedProgressMessages={renderedProgressMessages} liveActivityLabel={standaloneLiveActivityLabel} busyAccessory={hideWorkingTrail ? null : codingWorkingTrail} theme={t} brandId={brandId} brandDisplayNameCN={brandDisplayNameCN} />
+                    <AssistantConversationBody emptyContent={isPureCodingEnvironment ? null : undefined} initLabel={initLabel} lang={lang} messages={displayMessages} onOpenOnboarding={onOpenOnboarding} onboardingIncomplete={onboardingIncomplete} pinnedNews={pinnedNews} ready={ready} renderedOtherMessages={renderedOtherMessages} renderedProgressMessages={renderedProgressMessages} liveActivityLabel={standaloneLiveActivityLabel} liveActivityObject={standaloneLiveActivityLabel ? liveReasoningObject : undefined} busyAccessory={hideWorkingTrail ? null : codingWorkingTrail} theme={t} brandId={brandId} brandDisplayNameCN={brandDisplayNameCN} />
                     </CodingAgentPreviewFocusContext.Provider>
                     <div ref={outputEndRef} />
                 </div></>)}

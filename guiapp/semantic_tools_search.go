@@ -24,7 +24,7 @@ func semanticToolsSearchDefinition() map[string]interface{} {
 		"type": "function",
 		"function": map[string]interface{}{
 			"name":        semanticToolsSearchName,
-			"description": "Query the task-scoped capability catalog. Read-only; the query text is explanatory and never selects tools.",
+			"description": "Query the task-scoped capability catalog. The query text is explanatory and does not pick tools; user-declared capabilities such as ssh can join the current scope. bash, read_file, and write_file are baseline workspace tools when listed.",
 			"parameters": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -221,6 +221,7 @@ func semanticToolsSearchRun(cb *sharedAgentLoopCallbacks, argsJSON string) strin
 		// task-scoped surface and makes a caller's invalid request look valid.
 		return "[system rejected] tools_search_needs_invalid"
 	}
+	semanticToolsSearchMaybeExpandScope(cb, query)
 	entries := semanticToolsSearchCatalog(cb)
 	if len(needs) > 0 {
 		filtered := make([]semanticToolsSearchEntry, 0, len(entries))
@@ -276,8 +277,93 @@ func semanticToolsSearchRun(cb *sharedAgentLoopCallbacks, argsJSON string) strin
 		}
 		fmt.Fprintf(&out, "next_page_token=%s\n", nextToken)
 	}
-	out.WriteString("只有标记「可请愿」的未列出名字才可以直接调用一次请愿（每轮每类限一次）；标记「已列入本轮计划/已用尽/不可用」的名字调用必被拒绝，不要尝试。查询文字不会改变本轮工具集合。")
+	out.WriteString("只有标记「可请愿」的未列出名字才可以直接调用一次请愿（每轮每类限一次）；bash、read_file、write_file 是保底工具，已列出即可反复调用。用户已声明的能力（如 ssh）会扩进当前范围；查询文字本身不会挑选工具。")
 	return out.String()
+}
+
+// semanticToolsSearchMaybeExpandScope widens the live plan when the current
+// user text already declared a missing petitionable capability — for example
+// the user said "用ssh访问" after a search-shaped turn. Discovery still does
+// not select tools from query wording alone.
+func semanticToolsSearchMaybeExpandScope(cb *sharedAgentLoopCallbacks, query string) {
+	if cb == nil || cb.semanticSurface == nil {
+		return
+	}
+	if !semanticUserTextDeclaresSSH(cb.userText) && !semanticUserTextDeclaresSSH(query) {
+		return
+	}
+	if !semanticUserTextDeclaresSSH(cb.userText) && !semanticUserTextSupportsRemote(cb.userText) {
+		return
+	}
+	if semanticPlanHasCapability(cb.semanticSurface.plan, tool.CapabilityShellExecuteRemoteHost) {
+		return
+	}
+	if _, ok := cb.semanticSurface.grants["ssh"]; ok {
+		return
+	}
+	// Unbound SSH has no managed provider. Petitioning it would still spend the
+	// effectful budget on a guaranteed expansion failure and starve later legs.
+	if cb.handler == nil || !semanticTrustedSSHPublished(cb.handler) {
+		return
+	}
+	cb.PetitionToolCall("ssh")
+}
+
+func semanticUserTextDeclaresSSH(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	for _, needle := range []string{"用ssh", "ssh访问", "ssh登录", "登录服务器"} {
+		if strings.Contains(lower, needle) {
+			return true
+		}
+	}
+	return hasASCIIToken(lower, "ssh")
+}
+
+func semanticUserTextSupportsRemote(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	for _, needle := range []string{"服务器", "远程", "主机"} {
+		if strings.Contains(lower, needle) {
+			return true
+		}
+	}
+	for _, needle := range []string{"server", "remote"} {
+		if hasASCIIToken(lower, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasASCIIToken(lower, token string) bool {
+	token = strings.TrimSpace(token)
+	if token == "" || !strings.Contains(lower, token) {
+		return false
+	}
+	start := 0
+	for {
+		idx := strings.Index(lower[start:], token)
+		if idx < 0 {
+			return false
+		}
+		idx += start
+		beforeOK := idx == 0 || !isASCIILetterOrDigit(lower[idx-1])
+		after := idx + len(token)
+		afterOK := after >= len(lower) || !isASCIILetterOrDigit(lower[after])
+		if beforeOK && afterOK {
+			return true
+		}
+		start = idx + len(token)
+	}
+}
+
+func isASCIILetterOrDigit(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9')
 }
 
 // semanticToolsSearchStringArg validates optional string arguments instead of

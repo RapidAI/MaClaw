@@ -110,6 +110,8 @@ interface AssistantConversationBodyProps {
     renderedProgressMessages: ReactNode;
     /** Live activity title shown at the panel position when no assistant bubble owns it. */
     liveActivityLabel?: string;
+    /** Plain object after the live action (model or tool). Sheen stays on the action. */
+    liveActivityObject?: string;
     busyAccessory?: ReactNode;
     theme: Theme;
     brandId?: string | null;
@@ -128,6 +130,7 @@ export function AssistantConversationBody({
     renderedOtherMessages,
     renderedProgressMessages,
     liveActivityLabel,
+    liveActivityObject,
     busyAccessory,
     theme: t,
     brandId,
@@ -196,9 +199,10 @@ export function AssistantConversationBody({
                 <AssistantReasoningPanel
                     defaultOpen={false}
                     label={liveActivityLabel}
+                    objectLabel={liveActivityObject}
                     lang={lang}
                     theme={t}
-                    contentKey={liveActivityLabel}
+                    contentKey={`${liveActivityLabel}|${liveActivityObject || ""}`}
                     live
                 >
                     {null}

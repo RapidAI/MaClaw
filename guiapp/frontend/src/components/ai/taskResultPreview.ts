@@ -1,11 +1,12 @@
 import type { CodeFile } from "./useCodePreviewState";
+import { filePreviewKindFromName } from "../preview/filePreviewKind";
 
 /** Custom event the task-result card fires so the assistant panel can open preview. */
 export const PREVIEW_TASK_RESULT_EVENT = "maclaw:preview-task-result";
 /** Custom event so the assistant panel can focus the composer for a follow-up edit. */
 export const CONTINUE_EDIT_TASK_RESULT_EVENT = "maclaw:continue-edit-task-result";
 
-export type TaskResultPreviewKind = "pptx" | "pdf" | "text";
+export type TaskResultPreviewKind = "pptx" | "pdf" | "image" | "video" | "audio" | "text";
 
 export type TaskResultPreviewPayload = {
     path: string;
@@ -49,10 +50,11 @@ export function pdfInlineDataURLFromBase64(payload: string): string {
     return "data:" + "application/" + "pdf" + ";base64," + payload;
 }
 
-export function taskResultPreviewKindFromPath(path: string): TaskResultPreviewKind | "" {
-    const base = (path.split(/[/\\]/).pop() || path).toLowerCase();
-    if (base.endsWith(".pptx")) return "pptx";
-    if (base.endsWith(".pdf")) return "pdf";
+// "text" is never returned here: a text result still needs the backend payload,
+// so an unknown extension falls through to "".
+export function taskResultPreviewKindFromPath(path: string): Exclude<TaskResultPreviewKind, "text"> | "" {
+    const kind = filePreviewKindFromName(path);
+    if (kind === "pptx" || kind === "pdf" || kind === "image" || kind === "video" || kind === "audio") return kind;
     return "";
 }
 
@@ -171,8 +173,11 @@ function taskResultCodeFile(
     };
 }
 
-/** Immediate PPTX/PDF tab so the pane opens without waiting on the backend. */
-export function codeFileForImmediateTaskResultPreview(path: string, kind: "pptx" | "pdf"): CodeFile {
+/** Immediate visual tab so the pane opens without waiting on the backend. */
+export function codeFileForImmediateTaskResultPreview(
+    path: string,
+    kind: "pptx" | "pdf" | "image" | "video" | "audio",
+): CodeFile {
     return taskResultCodeFile(path, fileNameFromPath(path), kind, "");
 }
 
@@ -180,8 +185,9 @@ export function codeFileFromTaskResultPreview(preview: TaskResultPreviewPayload,
     const path = String(preview?.path || fallbackPath || "").trim();
     const fileName = fileNameFromPath(path, preview?.file_name);
     const kind = String(preview?.kind || "").trim().toLowerCase();
-    if (kind === "pptx") return taskResultCodeFile(path, fileName, "pptx", "");
-    if (kind === "pdf") return taskResultCodeFile(path, fileName, "pdf", "");
+    if (kind === "pptx" || kind === "pdf" || kind === "image" || kind === "video" || kind === "audio") {
+        return taskResultCodeFile(path, fileName, kind, "");
+    }
     return taskResultCodeFile(
         path,
         fileName,

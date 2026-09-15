@@ -1425,44 +1425,22 @@ func orderProvidersForRequest(body map[string]any, model *AuthorizedModel, metas
 	if now.IsZero() {
 		now = time.Now()
 	}
-	capabilityNeeds := detectCapabilityNeeds(body)
-	candidates := make([]llmpool.BalanceCandidate, 0, len(model.ProviderIDs))
-	for idx, providerID := range model.ProviderIDs {
-		score := 0
-		tags := map[string]struct{}{}
-		for _, tag := range CapabilityTagsForProvider(model, providerID) {
-			tag = strings.ToLower(strings.TrimSpace(tag))
-			if tag == "" {
-				continue
-			}
-			tags[tag] = struct{}{}
-		}
-		for need, weight := range capabilityNeeds {
-			if _, ok := tags[need]; ok {
-				score += weight * 100
-			}
-		}
-		priority := PriorityForProvider(model, providerID)
-		score += priority
-		route := llmpool.DispatchProviderRoute{
-			ProviderID:       providerID,
-			Priority:         priority,
-			ResolutionTier:   normalizedResolutionTier(ResolutionTierForProvider(model, providerID)),
-			CreditMultiplier: normalizeCreditMultiplier(CreditMultiplierForProvider(model, providerID)),
-			OriginalIndex:    idx,
-		}
+	scored := llmpool.OrderScoredProviderRoutes(body, dispatchModelFromAuthorized(model))
+	candidates := make([]llmpool.BalanceCandidate, 0, len(scored))
+	for _, item := range scored {
+		providerID := item.Route.ProviderID
 		meta, ok := metas[normalizedProviderKey(providerID)]
 		if !ok {
-			meta = llmpool.ProviderDispatchMeta{ID: providerID, Sequence: idx + 1}
+			meta = llmpool.ProviderDispatchMeta{ID: providerID, Sequence: item.Route.OriginalIndex + 1}
 		}
 		if meta.Sequence <= 0 {
-			meta.Sequence = idx + 1
+			meta.Sequence = item.Route.OriginalIndex + 1
 		}
 		candidates = append(candidates, llmpool.BalanceCandidate{
-			Route:               route,
-			Score:               score,
-			ResolutionTier:      route.ResolutionTier,
-			EffectiveMultiplier: llmpool.EffectiveRouteMultiplier(meta, route, now),
+			Route:               item.Route,
+			Score:               item.Score,
+			ResolutionTier:      item.ResolutionTier,
+			EffectiveMultiplier: llmpool.EffectiveRouteMultiplier(meta, item.Route, now),
 			Sequence:            meta.Sequence,
 			MaxConcurrency:      meta.MaxConcurrency,
 			SkipWRR:             meta.SkipWRR,
@@ -1476,6 +1454,39 @@ func orderProvidersForRequest(body map[string]any, model *AuthorizedModel, metas
 		pool = strings.TrimSpace(model.Name)
 	}
 	return llmpool.BalanceProviderRoutes(sched, pool, candidates)
+}
+
+func dispatchModelFromAuthorized(model *AuthorizedModel) *llmpool.DispatchModel {
+	if model == nil {
+		return nil
+	}
+	dm := &llmpool.DispatchModel{
+		Name:                      model.Name,
+		CapabilityTags:            append([]string(nil), model.CapabilityTags...),
+		Priority:                  model.Priority,
+		ResolutionTier:            model.ResolutionTier,
+		CreditMultiplier:          model.CreditMultiplier,
+		ProviderCapabilityTags:    map[string][]string{},
+		ProviderPriorities:        map[string]int{},
+		ProviderResolutionTiers:   map[string]int{},
+		ProviderCreditMultipliers: map[string]float64{},
+	}
+	for _, id := range model.ProviderIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		dm.ProviderIDs = append(dm.ProviderIDs, id)
+		if tags := CapabilityTagsForProvider(model, id); len(tags) > 0 {
+			dm.ProviderCapabilityTags[id] = tags
+		}
+		dm.ProviderPriorities[id] = PriorityForProvider(model, id)
+		if tier := ResolutionTierForProvider(model, id); tier != 0 {
+			dm.ProviderResolutionTiers[id] = tier
+		}
+		dm.ProviderCreditMultipliers[id] = CreditMultiplierForProvider(model, id)
+	}
+	return dm
 }
 
 func providerIDsFromBalancedRoutes(routes []llmpool.BalancedRoute) []string {
@@ -4076,26 +4087,23 @@ func SelectBestModelForRequestWithDebug(body map[string]any, models []Authorized
 		creditMultiplier float64
 		matchedTags      []string
 	}
-	capabilityNeeds := detectCapabilityNeeds(body)
+	capabilityNeeds := llmpool.DetectCapabilityNeeds(body)
 	scored := make([]scoredModel, 0, len(models))
 	for i, model := range models {
-		score := 0
-		tags := map[string]struct{}{}
+		score := llmpool.CapabilityMatchScore(model.CapabilityTags, capabilityNeeds)
+		matchedTags := make([]string, 0, len(capabilityNeeds))
+		have := map[string]struct{}{}
 		for _, tag := range model.CapabilityTags {
 			tag = strings.ToLower(strings.TrimSpace(tag))
-			if tag == "" {
-				continue
+			if tag != "" {
+				have[tag] = struct{}{}
 			}
-			tags[tag] = struct{}{}
 		}
-		matchedTags := make([]string, 0, len(capabilityNeeds))
-		for need, weight := range capabilityNeeds {
-			if _, ok := tags[need]; ok {
-				score += weight * 100
+		for need := range capabilityNeeds {
+			if _, ok := have[need]; ok {
 				matchedTags = append(matchedTags, need)
 			}
 		}
-		score += model.Priority
 		scored = append(scored, scoredModel{idx: i, score: score, resolutionTier: normalizedResolutionTier(model.ResolutionTier), priority: model.Priority, creditMultiplier: normalizeCreditMultiplier(model.CreditMultiplier), matchedTags: matchedTags})
 	}
 	sort.Slice(scored, func(i, j int) bool {
@@ -4148,74 +4156,4 @@ func normalizedResolutionTier(v int) int {
 		return 1000
 	}
 	return v
-}
-
-func detectCapabilityNeeds(body map[string]any) map[string]int {
-	needs := map[string]int{}
-	if body == nil {
-		return needs
-	}
-	if tools, ok := body["tools"].([]any); ok && len(tools) > 0 {
-		needs["tools"] += 8
-	}
-	if toolChoice := strings.TrimSpace(strings.ToLower(stringValue(body["tool_choice"]))); toolChoice != "" && toolChoice != "none" {
-		needs["tools"] += 4
-	}
-	text := strings.ToLower(extractRequestText(body))
-	addKeywordWeight := func(tag string, weight int, keywords ...string) {
-		for _, keyword := range keywords {
-			if strings.Contains(text, keyword) {
-				needs[tag] += weight
-				return
-			}
-		}
-	}
-	addKeywordWeight("document", 8, "document", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "word", "excel", "spreadsheet", "markdown", "contract", "manual", "spec", "report", "summary", "summarize", "read file")
-	addKeywordWeight("reasoning", 5, "reason", "analyze", "analysis", "think", "math", "proof", "deduce")
-	addKeywordWeight("tools", 8, "tool", "browser", "search", "function", "call tool", "execute", "fetch")
-	return needs
-}
-
-func extractRequestText(body map[string]any) string {
-	if body == nil {
-		return ""
-	}
-	var parts []string
-	if messages, ok := body["messages"].([]any); ok {
-		for _, item := range messages {
-			parts = append(parts, flattenAnyText(item))
-		}
-	}
-	if input, ok := body["input"]; ok {
-		parts = append(parts, flattenAnyText(input))
-	}
-	return strings.Join(parts, " ")
-}
-
-func flattenAnyText(v any) string {
-	switch val := v.(type) {
-	case string:
-		return val
-	case []any:
-		parts := make([]string, 0, len(val))
-		for _, item := range val {
-			parts = append(parts, flattenAnyText(item))
-		}
-		return strings.Join(parts, " ")
-	case map[string]any:
-		parts := make([]string, 0, len(val))
-		for _, key := range []string{"content", "text", "input", "name", "description", "arguments"} {
-			if sub, ok := val[key]; ok {
-				parts = append(parts, flattenAnyText(sub))
-			}
-		}
-		return strings.Join(parts, " ")
-	default:
-		return ""
-	}
-}
-
-func stringValue(v any) string {
-	s, _ := v.(string)
-	return s
 }
