@@ -20479,7 +20479,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   box-shadow: 0 3px 10px rgba(47,128,237,.14);
 }
 .mc-profile-rail__avatar--image { object-fit: cover; }
-.mc-profile-rail__avatar--system {
+.mc-profile-rail .mc-profile-rail__avatar--system {
   width: 42px;
   height: 42px;
   border: 1px solid rgba(255, 255, 255, .24);
@@ -20491,6 +20491,16 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .mc-profile-rail__avatar--system svg { width: 25px; height: 25px; display: block; }
 .mc-profile-rail:hover .mc-profile-rail__avatar,
 .mc-profile-rail:focus-visible .mc-profile-rail__avatar { border-color: #1769e8; }
+/* Keep the system-menu trigger visually transparent: the generic office-theme
+   .sidebar button rules (hover/active background, 10px radius, inset bar)
+   would otherwise paint a full-size light panel behind the 42px icon square. */
+.sidebar .mc-profile-rail,
+.sidebar .mc-profile-rail:hover,
+.sidebar .mc-profile-rail[aria-current='page'] {
+  border-radius: 14px;
+  background: transparent !important;
+  box-shadow: none;
+}
 .sidebar[data-ai-theme='light'] {
   --theme-page-bg: #f0f6ff;
   --theme-surface: #f0f6ff;
@@ -23969,4 +23979,29 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 }
 #App .mc-workbench-status-card__meter > span {
   background: var(--mc-accent) !important;
+}
+
+/* ===== 新任务配置条弹层（src/components/ai/task-config）===== */
+.mc-taskcfg-pop {
+    animation: mc-taskcfg-pop-in 150ms cubic-bezier(.2, .7, .3, 1);
+}
+@keyframes mc-taskcfg-pop-in {
+    from { opacity: 0; transform: translateY(-6px) scale(.98); }
+    to { opacity: 1; transform: none; }
+}
+.mc-taskcfg-pane {
+    animation: mc-taskcfg-pane-in 160ms ease-out;
+}
+@keyframes mc-taskcfg-pane-in {
+    from { opacity: 0; transform: translateX(14px); }
+    to { opacity: 1; transform: none; }
+}
+.mc-taskcfg-item {
+    transition: background 120ms ease;
+}
+@media (prefers-reduced-motion: reduce) {
+    .mc-taskcfg-pop,
+    .mc-taskcfg-pane {
+        animation: none;
+    }
 }

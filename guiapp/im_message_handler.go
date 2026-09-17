@@ -72,6 +72,14 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	if msg.Platform != "goal-continuation" && h.app != nil && h.app.goalContinuation != nil {
 		h.app.goalContinuation.OnUserMessage(msg.UserID)
 	}
+	// P0-1 (0b-i): any new inbound message for the user immediately
+	// invalidates a pending degraded-turn recovery (the continuation would
+	// operate on a stale turn). Cancel flows arrive as messages too.
+	if strings.TrimSpace(msg.UserID) != "" {
+		if mgr := h.degradedTurnRecovery(); mgr != nil {
+			mgr.bumpGeneration(msg.UserID)
+		}
+	}
 
 	// /moa one-shot: arm multi-model council and rewrite to plain user text.
 	// Group turns must not mutate the per-user MoA session before normal group

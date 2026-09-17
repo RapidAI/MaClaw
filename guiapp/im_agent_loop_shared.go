@@ -712,6 +712,15 @@ func (h *IMMessageHandler) executeSharedTurn(
 		}
 	}
 
+	// P0-1 (0b-i): widen the late-verdict adoption window once more before the
+	// turn finalizes. A tree verdict that landed while the loop was running
+	// (but after planning) is adopted here for post-loop consumers; the
+	// existing read-only whitelist guards in adoptLateTreeSemanticIntent are
+	// unchanged, and write-class labels stay non-adoptable by design.
+	if ctx != nil {
+		h.adoptLateTreeSemanticIntent(ctx, userID, userText, history)
+	}
+
 	resp := &IMAgentResponse{
 		Text:           sharedLoopUserFacingText(loopResult.Text),
 		Reasoning:      sharedLoopDisplayReasoning(loopResult),
@@ -776,6 +785,12 @@ func (h *IMMessageHandler) executeSharedTurn(
 	telemetry.Attach(resp)
 	if onStreamDone != nil {
 		onStreamDone()
+	}
+	// P0-1 (0b-i): a degraded turn that silently lost its write tools gets a
+	// chance to self-recover (tombstone + async reclassification + model
+	// re-decision continuation, or an explicit notice).
+	if loopResult.Error == "" {
+		h.maybeRecoverDegradedTurn(ctx, userID, userText, requestID, cb.tools, platform, "")
 	}
 	_ = loopID
 	return resp
@@ -2127,6 +2142,16 @@ func (c *sharedAgentLoopCallbacks) ExecuteTool(name, argsJSON string) string {
 	if c.legacySurface.HasSnapshot() && !c.legacySurface.Allows(name) {
 		return legacyToolSurfaceDeniedText(name)
 	}
+	// Absolute gateway policy rejects legacy-model MCP/skill selection before
+	// catalog/provision and argument checks: without a live reviewed adapter
+	// provision the catalog check below would mask this more specific signal
+	// with catalog_incomplete.
+	if isLegacyModelMCPGateway(name) {
+		return legacyModelMCPGatewayDeniedText()
+	}
+	if isLegacyModelManageSkillGateway(name, argsJSON) {
+		return legacyModelManageSkillGatewayDeniedText()
+	}
 	if c.legacySurface.HasSnapshot() && !c.legacySurface.AllowsLiveProvision(name) {
 		return legacyAdapterCatalogDeniedText(name)
 	}
@@ -2134,12 +2159,6 @@ func (c *sharedAgentLoopCallbacks) ExecuteTool(name, argsJSON string) string {
 		if err := c.legacySurface.AllowsArguments(name, argsJSON); err != nil {
 			return legacyToolArgumentDeniedText(name, err)
 		}
-	}
-	if isLegacyModelMCPGateway(name) {
-		return legacyModelMCPGatewayDeniedText()
-	}
-	if isLegacyModelManageSkillGateway(name, argsJSON) {
-		return legacyModelManageSkillGatewayDeniedText()
 	}
 	if c.legacySurface.IsClientTool(name) {
 		clientTool, ok := clientToolForLoop(c.loopCtx, name)
@@ -2171,15 +2190,15 @@ func (c *sharedAgentLoopCallbacks) executeToolCallWithExecutionContext(name, arg
 	} else {
 		if c != nil && c.legacySurface.HasSnapshot() && !c.legacySurface.Allows(name) {
 			result = agent.ToolExecutionResult{Result: legacyToolSurfaceDeniedText(name), Outcome: agent.ToolExecutionOutcomeError}
+		} else if c != nil && isLegacyModelMCPGateway(name) {
+			result = agent.ToolExecutionResult{Result: legacyModelMCPGatewayDeniedText(), Outcome: agent.ToolExecutionOutcomeError}
+		} else if c != nil && isLegacyModelManageSkillGateway(name, argsJSON) {
+			result = agent.ToolExecutionResult{Result: legacyModelManageSkillGatewayDeniedText(), Outcome: agent.ToolExecutionOutcomeError}
 		} else if c != nil && c.legacySurface.HasSnapshot() && !c.legacySurface.AllowsLiveProvision(name) {
 			result = agent.ToolExecutionResult{Result: legacyAdapterCatalogDeniedText(name), Outcome: agent.ToolExecutionOutcomeError}
 		} else if c != nil && c.legacySurface.HasSnapshot() {
 			if err := c.legacySurface.AllowsArguments(name, argsJSON); err != nil {
 				result = agent.ToolExecutionResult{Result: legacyToolArgumentDeniedText(name, err), Outcome: agent.ToolExecutionOutcomeError}
-			} else if isLegacyModelMCPGateway(name) {
-				result = agent.ToolExecutionResult{Result: legacyModelMCPGatewayDeniedText(), Outcome: agent.ToolExecutionOutcomeError}
-			} else if isLegacyModelManageSkillGateway(name, argsJSON) {
-				result = agent.ToolExecutionResult{Result: legacyModelManageSkillGatewayDeniedText(), Outcome: agent.ToolExecutionOutcomeError}
 			} else if c.legacySurface.IsClientTool(name) {
 				clientTool, ok := clientToolForLoop(c.loopCtx, name)
 				if !ok {
@@ -3707,6 +3726,12 @@ func (c *sharedAgentLoopCallbacks) executeTrustedKnowledgeIngest(_ tool.PlannedS
 	text, url, path, err := semanticTrustedKnowledgeIngestArgsAllowed(args)
 	if err != nil {
 		return "[system rejected] " + err.Error()
+	}
+	// P0-4 credential gate: the semantic ingest adapter bypasses the registry
+	// tool executor, so the fence is applied here (identical card/timeout/
+	// cancel semantics via credentialGateBlock).
+	if proceed, gateText := c.handler.credentialGateSemanticIngest(c.loopCtx, c.semanticPrincipalID(), c.userText, text, url, path); !proceed {
+		return gateText
 	}
 	result, err := c.handler.ingestTrustedKnowledge(c.semanticPrincipalID(), text, url, path)
 	if err != nil {
@@ -5315,17 +5340,27 @@ func (c *sharedAgentLoopCallbacks) TransformConversation(conversation []interfac
 	effectiveLimit := c.llmCfg.EffectiveContextTokens()
 	if !c.firstRequestBudgetApplied {
 		c.firstRequestBudgetApplied = true
-		beforeTokens := estimateConversationTokens(next) + agent.EstimateToolsTokens(c.tools)
-		budgetedLimit := firstAgentLoopRequestTokenLimit(effectiveLimit, next, c.tools)
-		compacted := c.handler.compactAgentLoopConversation(c.loopCtx, c.userID, next, c.tools, budgetedLimit, agent.EstimateToolsTokens(c.tools), true)
-		afterTokens := estimateConversationTokens(compacted) + agent.EstimateToolsTokens(c.tools)
-		if afterTokens < beforeTokens || budgetedLimit < effectiveLimit {
-			loopID := ""
-			if c.loopCtx != nil {
-				loopID = c.loopCtx.ID
+		toolsTokens := agent.EstimateToolsTokens(c.tools)
+		beforeTokens := estimateConversationTokens(next) + toolsTokens
+		// The latency budget exists to keep an over-window turn's first request
+		// small. A conversation that already fits the provider window keeps the
+		// normal limit: it must not lose middle history (e.g. the user's earlier
+		// requirements) to the latency cap, and trimConversation leaves it
+		// untouched, so no checkpoint spill I/O is paid either. The estimate
+		// matches trimConversation's own arithmetic (Σ estimateSingleMsgTokens),
+		// so the guard and the trim cannot disagree.
+		limit, budgeted := firstRequestCompactionLimit(effectiveLimit, beforeTokens, next, c.tools)
+		compacted := c.handler.compactAgentLoopConversation(c.loopCtx, c.userID, next, c.tools, limit, toolsTokens, true)
+		if budgeted {
+			afterTokens := estimateConversationTokens(compacted) + toolsTokens
+			if afterTokens < beforeTokens {
+				loopID := ""
+				if c.loopCtx != nil {
+					loopID = c.loopCtx.ID
+				}
+				log.Printf("[first-request-budget] loop=%q before~=%d after~=%d limit=%d normal_limit=%d tools=%d",
+					loopID, beforeTokens, afterTokens, limit, effectiveLimit, len(c.tools))
 			}
-			log.Printf("[first-request-budget] loop=%q before~=%d after~=%d limit=%d normal_limit=%d tools=%d",
-				loopID, beforeTokens, afterTokens, budgetedLimit, effectiveLimit, len(c.tools))
 		}
 		if injected == "" && sameConversationElements(compacted, conversation) {
 			return nil

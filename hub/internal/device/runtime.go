@@ -734,11 +734,6 @@ func (s *Service) ListAllMachines(ctx context.Context) ([]MachineRuntimeInfo, er
 	s.runtime.mu.RLock()
 	defer s.runtime.mu.RUnlock()
 
-	log.Printf("[device] ListAllMachines: DB returned %d machines, runtime has %d in desktopsByMachine", len(items), len(s.runtime.desktopsByMachine))
-	for mid, conn := range s.runtime.desktopsByMachine {
-		log.Printf("[device] ListAllMachines: runtime entry machine_id=%s conn_nil=%v ws_nil=%v user_id=%s", mid, conn == nil, conn != nil && conn.Conn == nil, safeConnUserID(conn))
-	}
-
 	out := make([]MachineRuntimeInfo, 0, len(items)+len(s.runtime.desktopsByMachine))
 	seen := make(map[string]struct{}, len(items))
 	for _, item := range items {
@@ -749,7 +744,6 @@ func (s *Service) ListAllMachines(ctx context.Context) ([]MachineRuntimeInfo, er
 		if _, ok := seen[machineID]; ok || conn == nil {
 			continue
 		}
-		log.Printf("[device] ListAllMachines: machine_id=%s -> ONLINE (runtime-only)", machineID)
 		out = append(out, s.runtimeOnlyMachineInfo(machineID, conn))
 	}
 	return out, nil
@@ -901,7 +895,6 @@ func (s *Service) mergeMachineInfo(item *store.Machine) MachineRuntimeInfo {
 		if info.Status == "" || strings.EqualFold(info.Status, "offline") {
 			info.Status = "online"
 		}
-		log.Printf("[device] mergeMachineInfo: machine_id=%s -> ONLINE (conn found, ws valid)", item.ID)
 	} else {
 		// No active WebSocket connection — machine is offline regardless
 		// of what the DB status column says. This corrects "ghost online"
@@ -911,7 +904,6 @@ func (s *Service) mergeMachineInfo(item *store.Machine) MachineRuntimeInfo {
 		if strings.EqualFold(info.Status, "online") {
 			info.Status = "offline"
 		}
-		log.Printf("[device] mergeMachineInfo: machine_id=%s -> OFFLINE (db_status=%s)", item.ID, item.Status)
 	}
 	return info
 }

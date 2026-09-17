@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"strconv"
@@ -195,7 +196,12 @@ func (s *Syncer) syncPeer(ctx context.Context, peer *PeerRuntimeState) {
 			return
 		}
 		if err := s.svc.ApplyRemoteOps(ctx, resp.Ops); err != nil {
+			// Persist and log: a failing apply aborts the whole batch and the
+			// cursor stops advancing, so without this the peer silently falls
+			// behind forever (hc-1 sat ~51k ops / ~10h behind for days).
 			s.svc.markPeerError(peer.NodeID, err.Error())
+			s.recordPeerCursorError(ctx, peer.NodeID, afterSeq, cursor, err.Error())
+			log.Printf("[hubcenter][ha] apply pulled ops from %s after_seq=%d count=%d: %v", peer.NodeID, afterSeq, len(resp.Ops), err)
 			return
 		}
 		lastSeq := resp.Ops[len(resp.Ops)-1].Seq

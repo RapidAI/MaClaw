@@ -158,7 +158,10 @@ func (a *App) extractDeviceAmbientWeather(ctx context.Context, city string, resu
 		map[string]string{"role": "user", "content": "Requested location: " + city + "\nSearch evidence:\n" + evidence.String()},
 	}
 	llmCtx := llm.WithRequestTrace(ctx, llm.RequestTrace{Caller: "device-ambient-weather", OwnerID: "device-ambient"})
-	resp, err := doSimpleLLMRequest(llmCtx, llmCfg, messages, &http.Client{Timeout: 30 * time.Second}, 30*time.Second)
+	// No client-level Timeout: the helper enforces the budget per request and
+	// a client Timeout would kill the connection at ~30s, truncating the P0-3
+	// detached read before its grace window (adoption would always fail).
+	resp, err := doSimpleLLMRequest(llmCtx, llmCfg, messages, nil, 30*time.Second)
 	if err != nil {
 		return deviceAmbientWeather{}, err
 	}

@@ -16,6 +16,8 @@ import type { AttachmentInfo } from "./useBufferQueue";
 import type { UseVoiceInputResult } from "./useVoiceInput";
 import type { AssistantPermissionMode } from "./AssistantInputComposerTypes";
 import { CODING_TASK_COMMAND_MAX_LEN, type PureCodingAgentMode } from "./codingTaskMode";
+import { TaskConfigBar, type CloudWorkspaceOption, type ExpertOption, type WorkflowOption } from "./task-config/TaskConfigBar";
+import type { TaskDraft } from "./task-config/taskDraft";
 import {
     getWelcomeOpsPrompt,
     getWelcomeOpsPrompts,
@@ -449,6 +451,28 @@ interface AssistantWelcomeViewProps {
     onPromptSend?: (text: string, meta?: WelcomePromptSubmitMeta) => void;
     pinnedNews?: ChatMessage[];
     composer: WelcomeComposerProps;
+    /** New-task wizard config bar (TaskConfigBar) rendered as a strip below the composer card (WorkBuddy-style). */
+    taskConfig?: WelcomeTaskConfig;
+}
+
+/** Welcome-page binding of the TaskConfigBar wizard (design new-task-wizard §5/§6). */
+export interface WelcomeTaskConfig {
+    draft: TaskDraft;
+    onDraftChange: (draft: TaskDraft) => void;
+    experts: ExpertOption[];
+    workflows: WorkflowOption[];
+    cloudWorkspaces?: CloudWorkspaceOption[];
+    recentLocalPaths?: string[];
+    onBrowseLocal?: () => void | Promise<string | null | undefined>;
+    onCreateCloud?: () => void;
+    onOpenMarket?: () => void;
+    disabled?: boolean;
+    /** Creation in flight — blocks the config bar chips. */
+    sending?: boolean;
+    /** Last creation failure, shown under the input card. */
+    error?: string;
+    /** New-task wizard tab: expand the four config chips by default. */
+    defaultExpanded?: boolean;
 }
 
 export function AssistantWelcomeView({
@@ -460,6 +484,7 @@ export function AssistantWelcomeView({
     onPromptSend,
     pinnedNews,
     composer: cp,
+    taskConfig,
 }: AssistantWelcomeViewProps) {
     const isZh = !lang?.startsWith("en");
 
@@ -1655,7 +1680,46 @@ export function AssistantWelcomeView({
                     updateInputValue={cp.updateInputValue}
                     voiceInput={cp.voiceInput}
                 />
+                {taskConfig ? (
+                    // WorkBuddy-style config strip：卡片下方独立一行（左对齐），
+                    // 与卡片内的输入动作分组，工具条不再因宽度不足折行。
+                    <div data-testid="welcome-task-config" role="group" aria-label={isZh ? "任务配置" : "Task config"} style={{ padding: "8px 8px 0" }}>
+                        <TaskConfigBar
+                            draft={taskConfig.draft}
+                            onChange={taskConfig.onDraftChange}
+                            experts={taskConfig.experts}
+                            workflows={taskConfig.workflows}
+                            cloudWorkspaces={taskConfig.cloudWorkspaces}
+                            theme={t}
+                            lang={lang}
+                            disabled={taskConfig.disabled || taskConfig.sending}
+                            recentLocalPaths={taskConfig.recentLocalPaths}
+                            onBrowseLocal={taskConfig.onBrowseLocal}
+                            onCreateCloud={taskConfig.onCreateCloud}
+                            onOpenMarket={taskConfig.onOpenMarket}
+                            defaultExpanded={taskConfig.defaultExpanded}
+                            variant="bare"
+                        />
+                    </div>
+                ) : null}
             </div>
+            {taskConfig?.error ? (
+                <div
+                    data-testid="welcome-task-config-error"
+                    role="alert"
+                    style={{
+                        width: "100%",
+                        maxWidth: CONTENT_MAX_WIDTH,
+                        // 配置条（welcome-task-config）始终渲染在横幅上方，留出小间距。
+                        marginTop: 2,
+                        fontSize: 12,
+                        color: t.errorText || "#ef4444",
+                        fontFamily: "system-ui, -apple-system, sans-serif",
+                    }}
+                >
+                    {taskConfig.error}
+                </div>
+            ) : null}
 
             {/* Reference quick tasks: exactly four composer fills. */}
             <div data-testid="welcome-reference-quick-tasks" style={{ width: "100%", maxWidth: CONTENT_MAX_WIDTH, display: "flex", flexDirection: "column", gap: 8 }}>

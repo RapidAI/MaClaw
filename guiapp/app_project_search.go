@@ -204,6 +204,10 @@ type ProjectSearchResult struct {
 	Name            string                  `json:"name"`         // Human-readable project name
 	ProjectPath     string                  `json:"project_path"` // Canonical absolute path
 	WorkingDir      string                  `json:"working_dir,omitempty"`
+	// ExecutionDir is the directory tools actually run in for a managed task
+	// (the working_dir tag, else the workspace/ sandbox). Empty when execution
+	// happens in the project path itself, and for cloud workspace rows.
+	ExecutionDir    string                  `json:"execution_dir,omitempty"`
 	WorkflowType    string                  `json:"workflow_type"` // e.g. "coding", "product_design"
 	ActiveWorkflow  *ProjectWorkflowState   `json:"active_workflow,omitempty"`
 	Preview         string                  `json:"preview"`       // Short content preview (~150 chars)
@@ -313,7 +317,7 @@ func (a *App) SearchProjects(query string, limit int) []ProjectSearchResult {
 
 	results := make([]ProjectSearchResult, 0, len(records))
 	for _, rec := range records {
-		result := projectRecordToSearchResult(pi, rec)
+		result := a.projectRecordToSearchResult(pi, rec)
 		if scene, ok := a.sceneRecordForProjectPath(rec.ProjectPath, scenesByPath); ok {
 			enrichProjectSearchResultWithScene(&result, scene)
 		}
@@ -454,7 +458,7 @@ func (a *App) SearchTasks(query string, limit int) []ProjectSearchResult {
 		if pi.IsHidden(rec.ProjectPath) || pi.IsArchived(rec.ProjectPath) {
 			continue
 		}
-		result := projectRecordToSearchResult(pi, rec)
+		result := a.projectRecordToSearchResult(pi, rec)
 		if localCloudWorkspaceID(rec) != "" || cloudWorkspaceIDFromPathString(result.WorkingDir) != "" {
 			result.Tags = scrubCloudWorkspaceIdentityTags(result.Tags)
 		}
@@ -765,7 +769,7 @@ func preferRecentTaskRecord(candidate, current memory.ProjectRecord) bool {
 	return candidate.LastActivity.After(current.LastActivity)
 }
 
-func projectRecordToSearchResult(pi *memory.ProjectIndex, rec memory.ProjectRecord) ProjectSearchResult {
+func (a *App) projectRecordToSearchResult(pi *memory.ProjectIndex, rec memory.ProjectRecord) ProjectSearchResult {
 	r := ProjectSearchResult{
 		ID:           rec.ProjectPath,
 		Name:         rec.Name,
@@ -789,6 +793,7 @@ func projectRecordToSearchResult(pi *memory.ProjectIndex, rec memory.ProjectReco
 	} else if r.Name == "" {
 		r.Name = deriveTaskName(rec)
 	}
+	r.ExecutionDir = a.managedTaskExecutionDirForDisplay(rec.ProjectPath)
 	return r
 }
 
@@ -1014,7 +1019,7 @@ func (a *App) CreateExpertTask(expertID, expertName string) ProjectSearchResult 
 		if pi.IsHidden(rec.ProjectPath) || pi.IsArchived(rec.ProjectPath) {
 			continue
 		}
-		return projectRecordToSearchResult(pi, rec)
+		return a.projectRecordToSearchResult(pi, rec)
 	}
 
 	title := strings.TrimSpace(expertName)
@@ -1064,7 +1069,7 @@ func (a *App) EnsureAssistantTabTask(tabType, tabIdentity, title, projectPath st
 	}
 	if projectPath != "" {
 		if rec := pi.Get(projectPath); rec != nil && isTaskManagementRecord(*rec) && !pi.IsHidden(projectPath) && !pi.IsArchived(projectPath) {
-			return projectRecordToSearchResult(pi, *rec)
+			return a.projectRecordToSearchResult(pi, *rec)
 		}
 	}
 
@@ -1080,7 +1085,7 @@ func (a *App) EnsureAssistantTabTask(tabType, tabIdentity, title, projectPath st
 		if pi.IsHidden(rec.ProjectPath) || pi.IsArchived(rec.ProjectPath) {
 			continue
 		}
-		return projectRecordToSearchResult(pi, rec)
+		return a.projectRecordToSearchResult(pi, rec)
 	}
 
 	title = normalizeRecentTaskName(title)
@@ -1612,7 +1617,7 @@ func (a *App) FindRemoteCodingTaskByMeta(sshHost, sshUser, workDir string) Proje
 		if pi.IsHidden(rec.ProjectPath) || pi.IsArchived(rec.ProjectPath) {
 			continue
 		}
-		return projectRecordToSearchResult(pi, rec)
+		return a.projectRecordToSearchResult(pi, rec)
 	}
 	return ProjectSearchResult{}
 }
@@ -3231,12 +3236,12 @@ func (a *App) ForkRecentTask(sourceProjectPath string) ProjectSearchResult {
 			if rec := pi.Get(sourceProjectPath); rec != nil && projectRecordHasTag(*rec, taskForkedTag) {
 				a.ensureRecentTaskWorkspace(rec.ProjectPath, rec.Name)
 				log.Printf("[project_search] ForkRecentTask reuse existing fork source=%q fork=%q reason=source_is_fork elapsed=%s", sourceProjectPath, rec.ProjectPath, time.Since(started).Round(time.Millisecond))
-				return projectRecordToSearchResult(pi, *rec)
+				return a.projectRecordToSearchResult(pi, *rec)
 			}
 			if existing := findVisibleForkForSource(pi, sourceProjectPath); existing != nil {
 				a.ensureRecentTaskWorkspace(existing.ProjectPath, existing.Name)
 				log.Printf("[project_search] ForkRecentTask reuse existing fork source=%q fork=%q elapsed=%s", sourceProjectPath, existing.ProjectPath, time.Since(started).Round(time.Millisecond))
-				return projectRecordToSearchResult(pi, *existing)
+				return a.projectRecordToSearchResult(pi, *existing)
 			}
 		}
 
@@ -3487,6 +3492,21 @@ func (a *App) syncCodingWorkbenchWorkingDir(projectPath, newDir string) {
 		}
 	}
 	handler.rearmStickyLocalCodingEnvironment(userID, newDir)
+}
+
+// managedTaskExecutionDirForDisplay is the directory tools actually run in
+// for a managed task record: the persistent working_dir tag, else the
+// workspace/ sandbox beside the task metadata. Local coding workbenches keep
+// their own exec-dir resolution (tagged work root or the desktop default),
+// and non-managed records execute in their project path, so both return "".
+func (a *App) managedTaskExecutionDirForDisplay(projectPath string) string {
+	if a == nil || !a.isManagedRecentTaskWorkspacePath(projectPath) {
+		return ""
+	}
+	if a.projectPathIsLocalCodingWorkbench(projectPath) {
+		return ""
+	}
+	return a.recentTaskExecutionProjectPath(projectPath)
 }
 
 func (a *App) recentTaskExecutionProjectPath(projectPath string) string {
@@ -4156,7 +4176,7 @@ func (a *App) createTaskRecordWithWorkingDir(taskName, taskContent string, extra
 		return ProjectSearchResult{ID: taskDir, Name: displayTitle, ProjectPath: taskDir, WorkingDir: workingDir, CreatedAt: now.Format(time.RFC3339), LastActivity: now.Format(time.RFC3339), EntryCount: 1, HasOutput: true}
 	}
 	if rec := pi.Get(taskDir); rec != nil {
-		return projectRecordToSearchResult(pi, *rec)
+		return a.projectRecordToSearchResult(pi, *rec)
 	}
 	return ProjectSearchResult{ID: taskDir, Name: displayTitle, ProjectPath: taskDir, WorkingDir: workingDir, CreatedAt: now.Format(time.RFC3339), LastActivity: now.Format(time.RFC3339), EntryCount: 1, HasOutput: true}
 }
@@ -5921,7 +5941,8 @@ func (a *App) BoundWorkingDirForOwner(ownerID string) string {
 // and the ProjectDirBar share for one runtime conversation owner. A configured
 // tab override wins; a local coding task without an override uses its
 // working_dir tag; a project-session owner otherwise stays in the project
-// named by its owner id; every other unconfigured owner follows the main tab.
+// named by its owner id; an unconfigured managed task runs in its workspace
+// sandbox; every other unconfigured owner follows the main tab.
 func (a *App) EffectiveWorkingDirForOwner(ownerID string) string {
 	projectPath := projectPathFromSessionOwnerID(ownerID)
 	cloudDir := ""
@@ -5942,6 +5963,12 @@ func (a *App) EffectiveWorkingDirForOwner(ownerID string) string {
 	}
 	if wd := a.codingTaskTaggedWorkRoot(projectPath); wd != "" {
 		return wd
+	}
+	if execDir := a.managedTaskExecutionDirForDisplay(projectPath); execDir != "" {
+		// An unconfigured managed task executes in its workspace/ sandbox
+		// (see im_tools_local.go), never the desktop default. Return the same
+		// directory so the tab chip, header and prompts agree with execution.
+		return execDir
 	}
 	return normalizeProjectSessionPath(corelib.EffectiveWorkspaceDir())
 }

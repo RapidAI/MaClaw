@@ -82,19 +82,29 @@ type MaClawProviderClient struct {
 	HTTPClient *http.Client
 
 	mu                 sync.RWMutex
-	boundURL           string               // preferred HubCenter URL for unpinned tenants
-	candidateURLs      []string             // ordered HubCenter failover candidates
-	tenantBound        map[string]tenantPin // tenantID -> owner HubCenter URL
-	nodeURLs           map[string]string    // nodeID -> HubCenter URL
-	ownerCooldown      map[string]time.Time // owner URL -> last unreachable time
+	boundURL           string                        // preferred HubCenter URL for unpinned tenants
+	candidateURLs      []string                      // ordered HubCenter failover candidates
+	tenantBound        map[string]tenantPin          // tenantID -> owner HubCenter URL
+	nodeURLs           map[string]string             // nodeID -> HubCenter URL
+	ownerCooldown      map[string]time.Time          // owner URL -> pool-unhealthy skip expiry
+	ownerExcluded      map[string]time.Time          // owner URL -> unreachable exclusion expiry
+	ownerRelease       map[string]*ownerReleaseState // owner URL -> binding release state
 	failureCount       int
 	lastFailureAt      time.Time
 	refreshCredentials func() (hubID, hubSecret string) // lazy refresh after registration
+	stopCh             chan struct{}
+	closeOnce          sync.Once
 }
 
 type tenantPin struct {
 	URL      string
 	PinnedAt time.Time
+}
+
+type ownerReleaseState struct {
+	failTimes     []time.Time
+	lastReleaseAt time.Time
+	releasing     bool
 }
 
 const (
@@ -109,6 +119,20 @@ var officialTenantPinTTL = 10 * time.Minute
 // officialOwnerCooldown skips a just-failed owner so the next request
 // does not wait out the full upstream timeout on a dead node.
 var officialOwnerCooldown = 30 * time.Second
+
+// officialNodeExcludeTTL is the sliding pool-exclusion duration for an owner
+// node that just proved unreachable; every failure refreshes it.
+var officialNodeExcludeTTL = 5 * time.Minute
+
+var officialOwnerReleaseThreshold = 3 // failures inside the window that trigger a binding release
+
+var officialOwnerReleaseWindow = 10 * time.Minute
+
+var officialOwnerReleaseCooldown = 5 * time.Minute // min interval between release attempts for one owner
+
+// officialNodeRecoverProbeInterval is how often the background loop probes
+// excluded owner nodes and re-admits the ones that recovered.
+var officialNodeRecoverProbeInterval = 30 * time.Second
 
 // officialOwnerProbeTimeout bounds the cheap reachability check before a
 // 409 redirect hops to the bound owner. The real LLM POST still uses the
@@ -134,7 +158,7 @@ func NewMaClawProviderClient(cfg MaClawProviderConfig) *MaClawProviderClient {
 		}
 	}
 	client := &http.Client{Timeout: time.Duration(timeout) * time.Second}
-	return &MaClawProviderClient{
+	c := &MaClawProviderClient{
 		Config:        cfg,
 		HTTPClient:    client,
 		boundURL:      cfg.HubCenterURL,
@@ -142,6 +166,109 @@ func NewMaClawProviderClient(cfg MaClawProviderConfig) *MaClawProviderClient {
 		tenantBound:   map[string]tenantPin{},
 		nodeURLs:      map[string]string{},
 		ownerCooldown: map[string]time.Time{},
+		ownerExcluded: map[string]time.Time{},
+		ownerRelease:  map[string]*ownerReleaseState{},
+		stopCh:        make(chan struct{}),
+	}
+	interval := officialNodeRecoverProbeInterval
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	go c.recoverProbeLoop(interval)
+	return c
+}
+
+// Close stops the background recovery probe loop. The client is process-lifetime
+// in production; Close exists so tests do not leak goroutines.
+func (c *MaClawProviderClient) Close() error {
+	if c == nil {
+		return nil
+	}
+	c.closeOnce.Do(func() { close(c.stopCh) })
+	return nil
+}
+
+// recoverProbeLoop periodically re-probes excluded owner nodes and re-admits
+// the ones that are reachable again, so a revived node does not stay out of
+// the candidate pool until its sliding exclusion TTL expires. The interval is
+// captured at construction so tests can adjust the package var safely.
+func (c *MaClawProviderClient) recoverProbeLoop(interval time.Duration) {
+	for {
+		timer := time.NewTimer(interval)
+		select {
+		case <-c.stopCh:
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+		c.probeExcludedOwners()
+	}
+}
+
+// probeExcludedOwners snapshots the still-excluded owner nodes under the lock
+// (no network I/O while locked) and probes each one outside the lock. A
+// reachable node is re-admitted: its exclusion entry and accumulated release
+// failure times are cleared. Unreachable nodes are left alone; the normal
+// failure paths keep refreshing their exclusion. Nodes skipped only by the
+// short pool-unhealthy cooldown are not probed here: reachability says nothing
+// about pool health, and re-admitting them would defeat the soft skip.
+func (c *MaClawProviderClient) probeExcludedOwners() {
+	now := time.Now()
+	// Purge residue first: expired exclusion/cooldown entries are only lazily
+	// deleted when queried, so a node that left the candidate set would
+	// otherwise linger in these maps (and in ownerRelease) forever.
+	c.mu.Lock()
+	for key, expiresAt := range c.ownerExcluded {
+		if !expiresAt.IsZero() && !now.Before(expiresAt) {
+			delete(c.ownerExcluded, key)
+		}
+	}
+	for key, expiresAt := range c.ownerCooldown {
+		if !expiresAt.IsZero() && !now.Before(expiresAt) {
+			delete(c.ownerCooldown, key)
+		}
+	}
+	for key, st := range c.ownerRelease {
+		if st == nil || st.releasing || len(st.failTimes) != 0 || !st.lastReleaseAt.IsZero() {
+			continue // in flight, still counting toward a threshold, or release history worth keeping
+		}
+		if _, ok := c.ownerExcluded[key]; ok {
+			continue
+		}
+		if _, ok := c.ownerCooldown[key]; ok {
+			continue
+		}
+		delete(c.ownerRelease, key)
+	}
+	c.mu.Unlock()
+	c.mu.RLock()
+	excluded := make([]string, 0, len(c.ownerExcluded))
+	expiry := make(map[string]time.Time, len(c.ownerExcluded))
+	for key, expiresAt := range c.ownerExcluded {
+		if expiresAt.IsZero() || now.Before(expiresAt) {
+			excluded = append(excluded, key)
+			expiry[key] = expiresAt
+		}
+	}
+	c.mu.RUnlock()
+	for _, key := range excluded {
+		if err := c.probeHubCenterReachable(context.Background(), key); err != nil {
+			continue
+		}
+		c.mu.Lock()
+		// Re-admit only when no failure refreshed the exclusion while we were
+		// probing; deleting a freshly renewed entry would put a node that just
+		// died again straight back into the candidate pool.
+		if cur, ok := c.ownerExcluded[key]; !ok || cur.After(expiry[key]) {
+			c.mu.Unlock()
+			continue
+		}
+		delete(c.ownerExcluded, key)
+		if st := c.ownerRelease[key]; st != nil {
+			st.failTimes = nil
+		}
+		c.mu.Unlock()
+		log.Printf("[maclaw-provider] excluded hubcenter node %s recovered; re-admitted to candidate pool", key)
 	}
 }
 
@@ -306,7 +433,12 @@ func (c *MaClawProviderClient) ForwardDetailed(ctx context.Context, body []byte,
 			if redirect, ok := parseHubCenterBindingRedirect(result.StatusCode, result.Body, result.Header); ok {
 				next, owner, stop := c.applyBindingRedirect(ctx, tenantID, redirect, tried, targets)
 				if stop != nil {
-					return OfficialForwardResult{}, c.failRequiredOwnerUnlessCanceled(ctx, redirect.NodeID, owner, stop)
+					ownerErr, released := c.failRequiredOwnerUnlessCanceled(ctx, redirect.NodeID, owner, stop)
+					if released {
+						targets = next
+						continue
+					}
+					return OfficialForwardResult{}, ownerErr
 				}
 				if owner != "" {
 					requiredOwner = owner
@@ -321,7 +453,17 @@ func (c *MaClawProviderClient) ForwardDetailed(ctx context.Context, body []byte,
 			return result, nil
 		}
 		if requiredOwner != "" && sameHubCenterURL(key, requiredOwner) {
-			return OfficialForwardResult{}, c.failRequiredOwnerUnlessCanceled(ctx, requiredNodeID, requiredOwner, err)
+			ownerErr, released := c.failRequiredOwnerUnlessCanceled(ctx, requiredNodeID, requiredOwner, err)
+			if released {
+				continue
+			}
+			return OfficialForwardResult{}, ownerErr
+		}
+		if hubCenterAllProvidersFailed(result.Body) {
+			// The node's pool is sick, not the node itself: skip it for the
+			// owner cooldown so subsequent requests go straight to a healthy
+			// candidate instead of paying the pool's probe-wait again.
+			c.markOwnerPoolUnhealthy(key)
 		}
 		log.Printf("[maclaw-provider] LLM upstream failed hubcenter=%s status=%d err=%v; trying next candidate", target, result.StatusCode, err)
 	}
@@ -479,14 +621,31 @@ func (c *MaClawProviderClient) ForwardDetailedWithQuote(ctx context.Context, quo
 	if hubID == "" || token == "" {
 		return OfficialForwardResult{NoUpstreamDispatch: true}, fmt.Errorf("maclaw official provider: hub not registered to HubCenter yet")
 	}
-	return c.forwardToWithQuote(ctx, c.httpClient(), quote.targetURL, body, hubID, token, tenantID, quote.Token, serviceGroupIDs...)
+	result, err := c.forwardToWithQuote(ctx, c.httpClient(), quote.targetURL, body, hubID, token, tenantID, quote.Token, serviceGroupIDs...)
+	if err == nil && result.StatusCode == http.StatusServiceUnavailable && hubCenterAllProvidersFailed(result.Body) {
+		// The quoted node's pool is exhausted. The quote path pins to a single
+		// node by design, so without this the same sick node would be quoted
+		// and pinned again on the next request. Skip it for the owner cooldown
+		// and drop any affinity pin pointing at it so the next quote comes
+		// from a healthy candidate.
+		c.markOwnerPoolUnhealthy(quote.targetURL)
+		c.clearTenantPin(tenantID, quote.targetURL)
+	} else if err != nil && !requestCanceled(ctx, err) {
+		// Transport failure to the quoted node: same soft-skip, otherwise the
+		// next quote would be pinned to an unreachable node again.
+		c.markOwnerPoolUnhealthy(quote.targetURL)
+		c.clearTenantPin(tenantID, quote.targetURL)
+	}
+	return result, err
 }
 
 // shouldFailoverHubCenter only treats failures before a HubCenter application
 // response as node failures. A JSON 5xx is a real HubCenter/provider error and
 // is returned unchanged: replaying it on another node can duplicate LLM usage
-// or tool side effects. Reverse-proxy HTML/text 5xx responses are safe to try
-// on another configured HubCenter node.
+// or tool side effects. The exception is a HubCenter "all providers failed"
+// error: it guarantees no upstream provider accepted the request on that node,
+// so replaying it on another configured HubCenter node is usage-safe.
+// Reverse-proxy HTML/text 5xx responses are likewise safe to retry.
 func shouldFailoverHubCenter(status int, responseBody []byte, err error) bool {
 	if err != nil || status == http.StatusConflict {
 		return true
@@ -494,7 +653,19 @@ func shouldFailoverHubCenter(status int, responseBody []byte, err error) bool {
 	if status < 500 {
 		return false
 	}
-	return !json.Valid(bytes.TrimSpace(responseBody))
+	trimmed := bytes.TrimSpace(responseBody)
+	if !json.Valid(trimmed) {
+		return true
+	}
+	return hubCenterAllProvidersFailed(trimmed)
+}
+
+// hubCenterAllProvidersFailed reports whether a HubCenter JSON error body means
+// every provider route failed before any upstream accepted the request (as
+// opposed to an upstream that failed mid-request after billing started).
+func hubCenterAllProvidersFailed(responseBody []byte) bool {
+	msg := string(responseBody)
+	return strings.Contains(msg, "all providers failed") || strings.Contains(msg, "all stream providers failed")
 }
 
 func (c *MaClawProviderClient) forwardTo(ctx context.Context, httpClient *http.Client, targetURL string, body []byte, hubID, token, tenantID string, serviceGroupIDs ...string) (OfficialForwardResult, error) {
@@ -672,13 +843,15 @@ func (c *MaClawProviderClient) orderedTargets(tenantID string) []string {
 	defer c.mu.Unlock()
 	now := time.Now()
 	start := c.boundURL
-	if pinned := c.liveTenantPinLocked(strings.TrimSpace(tenantID), now); pinned != "" && !c.coolingDownLocked(pinned, now) {
+	// Exclusion always wins over affinity: a pinned tenant must not be sent to
+	// a node that is out of the pool, even if a pin somehow outlives it.
+	if pinned := c.liveTenantPinLocked(strings.TrimSpace(tenantID), now); pinned != "" && !c.coolingDownLocked(pinned, now) && !c.excludedLocked(pinned, now) {
 		start = pinned
 	}
 	ordered := orderedHubCenterURLs(start, append([]string(nil), c.candidateURLs...))
 	filtered := make([]string, 0, len(ordered))
 	for _, raw := range ordered {
-		if !c.coolingDownLocked(raw, now) {
+		if !c.coolingDownLocked(raw, now) && !c.excludedLocked(raw, now) {
 			filtered = append(filtered, raw)
 		}
 	}
@@ -705,6 +878,9 @@ func (c *MaClawProviderClient) rememberSuccessfulTarget(tenantID, rawURL string)
 	}
 	if c.ownerCooldown != nil {
 		delete(c.ownerCooldown, url)
+	}
+	if c.ownerExcluded != nil {
+		delete(c.ownerExcluded, url)
 	}
 	if !hadPin {
 		c.boundURL = url
@@ -737,25 +913,51 @@ func (c *MaClawProviderClient) liveTenantPinLocked(tenantID string, now time.Tim
 }
 
 func (c *MaClawProviderClient) coolingDownLocked(rawURL string, now time.Time) bool {
-	if c == nil || c.ownerCooldown == nil || officialOwnerCooldown <= 0 {
+	if c == nil || c.ownerCooldown == nil {
 		return false
 	}
 	key := normalizeHubCenterURLOne(rawURL)
 	if key == "" {
 		return false
 	}
-	failedAt, ok := c.ownerCooldown[key]
-	if !ok || failedAt.IsZero() {
+	expiresAt, ok := c.ownerCooldown[key]
+	if !ok || expiresAt.IsZero() {
 		return false
 	}
-	if now.Sub(failedAt) >= officialOwnerCooldown {
+	if !now.Before(expiresAt) {
 		delete(c.ownerCooldown, key)
 		return false
 	}
 	return true
 }
 
-func (c *MaClawProviderClient) markOwnerUnreachable(rawURL string) {
+// excludedLocked reports whether rawURL is currently excluded from the
+// candidate pool as an unreachable node. Expired entries are dropped lazily.
+func (c *MaClawProviderClient) excludedLocked(rawURL string, now time.Time) bool {
+	if c == nil || c.ownerExcluded == nil {
+		return false
+	}
+	key := normalizeHubCenterURLOne(rawURL)
+	if key == "" {
+		return false
+	}
+	expiresAt, ok := c.ownerExcluded[key]
+	if !ok || expiresAt.IsZero() {
+		return false
+	}
+	if !now.Before(expiresAt) {
+		delete(c.ownerExcluded, key)
+		return false
+	}
+	return true
+}
+
+// markOwnerPoolUnhealthy temporarily deprioritizes a HubCenter node whose
+// provider pool just reported "all providers failed". Unlike
+// markOwnerUnreachable it keeps tenant pins and the bound URL untouched: the
+// node is only skipped until the owner cooldown expires, after which the next
+// request probes it again and a success restores it as the preferred target.
+func (c *MaClawProviderClient) markOwnerPoolUnhealthy(rawURL string) {
 	url := normalizeHubCenterURLOne(rawURL)
 	if c == nil || url == "" {
 		return
@@ -765,8 +967,54 @@ func (c *MaClawProviderClient) markOwnerUnreachable(rawURL string) {
 	if c.ownerCooldown == nil {
 		c.ownerCooldown = map[string]time.Time{}
 	}
+	if officialOwnerCooldown > 0 {
+		c.ownerCooldown[url] = time.Now().Add(officialOwnerCooldown)
+	}
+}
+
+// clearTenantPin drops an affinity pin pointing at rawURL so subsequent
+// orderedTargets no longer prefer a node whose pool just proved exhausted.
+// Pins exist for performance affinity only; clearing one never breaks
+// HubCenter-enforced tenant bindings (those arrive as 409 redirects).
+func (c *MaClawProviderClient) clearTenantPin(tenantID, rawURL string) {
+	url := normalizeHubCenterURLOne(rawURL)
+	if c == nil || url == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.tenantBound == nil {
+		return
+	}
+	if tid := strings.TrimSpace(tenantID); tid != "" {
+		if pin, ok := c.tenantBound[tid]; ok && sameHubCenterURL(pin.URL, url) {
+			delete(c.tenantBound, tid)
+		}
+		return
+	}
+	for id, pin := range c.tenantBound {
+		if sameHubCenterURL(pin.URL, url) {
+			delete(c.tenantBound, id)
+		}
+	}
+}
+
+func (c *MaClawProviderClient) markOwnerUnreachable(rawURL string) {
+	url := normalizeHubCenterURLOne(rawURL)
+	if c == nil || url == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.ownerExcluded == nil {
+		c.ownerExcluded = map[string]time.Time{}
+	}
 	now := time.Now()
-	c.ownerCooldown[url] = now
+	if officialNodeExcludeTTL > 0 {
+		c.ownerExcluded[url] = now.Add(officialNodeExcludeTTL)
+	} else {
+		delete(c.ownerExcluded, url)
+	}
 	for id, pin := range c.tenantBound {
 		if sameHubCenterURL(pin.URL, url) {
 			delete(c.tenantBound, id)
@@ -774,7 +1022,7 @@ func (c *MaClawProviderClient) markOwnerUnreachable(rawURL string) {
 	}
 	if sameHubCenterURL(c.boundURL, url) {
 		for _, cand := range c.candidateURLs {
-			if cand == "" || sameHubCenterURL(cand, url) || c.coolingDownLocked(cand, now) {
+			if cand == "" || sameHubCenterURL(cand, url) || c.coolingDownLocked(cand, now) || c.excludedLocked(cand, now) {
 				continue
 			}
 			c.boundURL = cand
@@ -790,23 +1038,171 @@ func requestCanceled(ctx context.Context, err error) bool {
 	return errors.Is(err, context.Canceled)
 }
 
-func (c *MaClawProviderClient) failRequiredOwnerUnlessCanceled(ctx context.Context, nodeID, owner string, cause error) error {
+// failRequiredOwnerUnlessCanceled reports the bound owner as unreachable and,
+// once enough failures accumulated, asks HubCenter to release this Hub's
+// bindings on the dead owner node. The second return value is true when a
+// release succeeded and the caller may continue the candidate loop.
+func (c *MaClawProviderClient) failRequiredOwnerUnlessCanceled(ctx context.Context, nodeID, owner string, cause error) (error, bool) {
 	if requestCanceled(ctx, cause) {
 		if ctx != nil && ctx.Err() != nil {
-			return ctx.Err()
+			return ctx.Err(), false
 		}
-		return cause
+		return cause, false
 	}
-	return c.failRequiredOwner(nodeID, owner, cause)
+	return c.failRequiredOwner(ctx, nodeID, owner, cause)
 }
 
-func (c *MaClawProviderClient) failRequiredOwner(nodeID, owner string, cause error) error {
+func (c *MaClawProviderClient) failRequiredOwner(ctx context.Context, nodeID, owner string, cause error) (error, bool) {
 	c.markOwnerUnreachable(owner)
 	c.recordFailure()
-	if errors.Is(cause, corellm.ErrOfficialOwnerUnreachable) {
-		return cause
+	released := false
+	if c.noteOwnerFailure(owner) {
+		log.Printf("[maclaw-provider] owner %s (node %s) reached %d unreachable failures within %s; requesting binding release",
+			owner, nodeID, officialOwnerReleaseThreshold, officialOwnerReleaseWindow)
+		released = c.releaseOwnerBinding(ctx, nodeID, owner)
 	}
-	return ownerUnreachableError(nodeID, owner, cause)
+	if errors.Is(cause, corellm.ErrOfficialOwnerUnreachable) {
+		return cause, released
+	}
+	return ownerUnreachableError(nodeID, owner, cause), released
+}
+
+// noteOwnerFailure records one owner-unreachable failure and reports whether
+// the release threshold is met: at least officialOwnerReleaseThreshold failures
+// inside officialOwnerReleaseWindow and no release attempt within
+// officialOwnerReleaseCooldown.
+func (c *MaClawProviderClient) noteOwnerFailure(owner string) bool {
+	ownerKey := normalizeHubCenterURLOne(owner)
+	if c == nil || ownerKey == "" || officialOwnerReleaseThreshold <= 0 {
+		return false
+	}
+	now := time.Now()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.ownerRelease == nil {
+		c.ownerRelease = map[string]*ownerReleaseState{}
+	}
+	st := c.ownerRelease[ownerKey]
+	if st == nil {
+		st = &ownerReleaseState{}
+		c.ownerRelease[ownerKey] = st
+	}
+	if officialOwnerReleaseWindow > 0 {
+		cutoff := now.Add(-officialOwnerReleaseWindow)
+		kept := st.failTimes[:0]
+		for _, at := range st.failTimes {
+			if at.After(cutoff) {
+				kept = append(kept, at)
+			}
+		}
+		st.failTimes = kept
+	}
+	st.failTimes = append(st.failTimes, now)
+	if len(st.failTimes) < officialOwnerReleaseThreshold {
+		return false
+	}
+	if officialOwnerReleaseCooldown > 0 && now.Sub(st.lastReleaseAt) < officialOwnerReleaseCooldown {
+		return false
+	}
+	return !st.releasing
+}
+
+// releaseOwnerBinding asks a healthy HubCenter node to release this Hub's
+// tenant bindings on the dead owner node. It reports true only when HubCenter
+// confirmed the release. The caller's cancellation must not abort the release
+// POST: it is a side effect we want to land even when the user request that
+// discovered the dead owner goes away (callers short-circuit canceled requests
+// before reaching this method).
+func (c *MaClawProviderClient) releaseOwnerBinding(ctx context.Context, ownerNodeID, ownerURL string) bool {
+	ownerKey := normalizeHubCenterURLOne(ownerURL)
+	if c == nil || ownerKey == "" {
+		return false
+	}
+	if ctx != nil {
+		ctx = context.WithoutCancel(ctx)
+	}
+	c.mu.Lock()
+	if c.ownerRelease == nil {
+		c.ownerRelease = map[string]*ownerReleaseState{}
+	}
+	st := c.ownerRelease[ownerKey]
+	if st == nil {
+		st = &ownerReleaseState{}
+		c.ownerRelease[ownerKey] = st
+	}
+	if st.releasing {
+		c.mu.Unlock()
+		return false
+	}
+	st.releasing = true
+	c.mu.Unlock()
+
+	released := false
+	target := ""
+	started := time.Now()
+	defer func() {
+		c.mu.Lock()
+		st.releasing = false
+		st.lastReleaseAt = time.Now()
+		if released {
+			st.failTimes = nil
+			if c.ownerExcluded != nil {
+				delete(c.ownerExcluded, ownerKey)
+			}
+		}
+		c.mu.Unlock()
+		if released {
+			c.markOwnerUnreachable(ownerURL)
+			log.Printf("[maclaw-provider] released bindings on dead owner=%s node=%s via hubcenter=%s in %s", ownerKey, ownerNodeID, target, time.Since(started))
+		} else {
+			log.Printf("[maclaw-provider] failed to release bindings on dead owner=%s node=%s after %s", ownerKey, ownerNodeID, time.Since(started))
+		}
+	}()
+
+	hubID, token := c.ensureCredentials()
+	if hubID == "" || token == "" {
+		return false
+	}
+	httpClient := c.adminHTTPClient()
+	body, err := json.Marshal(map[string]string{"node_id": strings.TrimSpace(ownerNodeID)})
+	if err != nil {
+		return false
+	}
+	attempts := 0
+	for _, candidate := range c.orderedTargets("") {
+		if attempts >= 2 {
+			break
+		}
+		attempts++
+		endpoint := strings.TrimRight(candidate, "/") + "/api/llm/v1/binding/release"
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+		if err != nil {
+			return false
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("X-Hub-ID", hubID)
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			// ctx carries no cancellation here (see WithoutCancel above), so a
+			// transport error only means this candidate is unreachable.
+			continue
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode == http.StatusNotFound {
+			// Old HubCenter without the release endpoint: another candidate may
+			// still support it, so keep trying instead of giving up here.
+			continue
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			continue
+		}
+		target = candidate
+		released = true
+		return true
+	}
+	return false
 }
 
 // TenantHubCenterURL returns the HubCenter URL pinned for this tenant, if any.
@@ -982,7 +1378,8 @@ func (c *MaClawProviderClient) applyBindingRedirect(ctx context.Context, tenantI
 	}
 	ownerKey := normalizeHubCenterURLOne(owner)
 	c.mu.Lock()
-	cooling := c.coolingDownLocked(ownerKey, time.Now())
+	now := time.Now()
+	cooling := c.coolingDownLocked(ownerKey, now) || c.excludedLocked(ownerKey, now)
 	c.mu.Unlock()
 	if _, seen := tried[ownerKey]; seen || cooling {
 		return targets, owner, ownerUnreachableError(redirect.NodeID, owner, nil)
@@ -995,6 +1392,9 @@ func (c *MaClawProviderClient) applyBindingRedirect(ctx context.Context, tenantI
 			}
 			return targets, owner, err
 		}
+		// Accounting (exclusion, failure count, threshold release) happens once
+		// in failRequiredOwner at the call site; doing it here as well would
+		// count a single dead-owner observation twice.
 		return targets, owner, ownerUnreachableError(redirect.NodeID, owner, err)
 	}
 	log.Printf("[maclaw-provider] tenant %s bound to %s; redirecting official LLM to %s", tenantID, redirect.NodeID, owner)
@@ -1089,7 +1489,11 @@ func (c *MaClawProviderClient) ForwardStream(ctx context.Context, body []byte, t
 		resp, err := c.forwardStreamTo(ctx, httpClient, target, body, hubID, token, tenantID, serviceGroupIDs...)
 		if err != nil {
 			if requiredOwner != "" && sameHubCenterURL(key, requiredOwner) {
-				return nil, c.failRequiredOwnerUnlessCanceled(ctx, requiredNodeID, requiredOwner, err)
+				ownerErr, released := c.failRequiredOwnerUnlessCanceled(ctx, requiredNodeID, requiredOwner, err)
+				if released {
+					continue
+				}
+				return nil, ownerErr
 			}
 			lastErr = err
 			log.Printf("[maclaw-provider] streaming LLM upstream failed hubcenter=%s err=%v; trying next candidate", target, err)
@@ -1108,7 +1512,12 @@ func (c *MaClawProviderClient) ForwardStream(ctx context.Context, body []byte, t
 			sawBindingRedirect = true
 			next, owner, stop := c.applyBindingRedirect(ctx, tenantID, redirect, tried, targets)
 			if stop != nil {
-				return nil, c.failRequiredOwnerUnlessCanceled(ctx, redirect.NodeID, owner, stop)
+				ownerErr, released := c.failRequiredOwnerUnlessCanceled(ctx, redirect.NodeID, owner, stop)
+				if released {
+					targets = next
+					continue
+				}
+				return nil, ownerErr
 			}
 			if owner != "" {
 				requiredOwner = owner
@@ -1121,7 +1530,16 @@ func (c *MaClawProviderClient) ForwardStream(ctx context.Context, body []byte, t
 		if shouldFailoverHubCenter(resp.StatusCode, failureBody, nil) {
 			_ = resp.Body.Close()
 			if requiredOwner != "" && sameHubCenterURL(key, requiredOwner) {
-				return nil, c.failRequiredOwnerUnlessCanceled(ctx, requiredNodeID, requiredOwner, fmt.Errorf("HTTP %d", resp.StatusCode))
+				ownerErr, released := c.failRequiredOwnerUnlessCanceled(ctx, requiredNodeID, requiredOwner, fmt.Errorf("HTTP %d", resp.StatusCode))
+				if released {
+					continue
+				}
+				return nil, ownerErr
+			}
+			if hubCenterAllProvidersFailed(failureBody) {
+				// Same soft-skip as the non-streaming path: a pool-wide failure
+				// must not make every later request pay this node's probe-wait.
+				c.markOwnerPoolUnhealthy(key)
 			}
 			lastErr = fmt.Errorf("maclaw official: stream upstream HTTP %d", resp.StatusCode)
 			log.Printf("[maclaw-provider] streaming LLM upstream failed hubcenter=%s status=%d; trying next candidate", target, resp.StatusCode)
@@ -1152,7 +1570,28 @@ func (c *MaClawProviderClient) ForwardStreamWithQuote(ctx context.Context, quote
 	if hubID == "" || token == "" {
 		return nil, fmt.Errorf("maclaw official provider: hub not registered to HubCenter yet")
 	}
-	return c.forwardStreamToWithQuote(ctx, streamHTTPClientFrom(c.httpClient()), quote.targetURL, body, hubID, token, tenantID, quote.Token, serviceGroupIDs...)
+	resp, err := c.forwardStreamToWithQuote(ctx, streamHTTPClientFrom(c.httpClient()), quote.targetURL, body, hubID, token, tenantID, quote.Token, serviceGroupIDs...)
+	if err != nil {
+		if !requestCanceled(ctx, err) {
+			c.markOwnerPoolUnhealthy(quote.targetURL)
+			c.clearTenantPin(tenantID, quote.targetURL)
+		}
+		return nil, err
+	}
+	if resp == nil {
+		return nil, nil
+	}
+	if resp.StatusCode == http.StatusServiceUnavailable {
+		// A 503 arrives before any stream bytes; read it to decide whether the
+		// quoted node's pool is exhausted, then restore the body for the caller.
+		failureBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		resp.Body = io.NopCloser(bytes.NewReader(failureBody))
+		if hubCenterAllProvidersFailed(failureBody) {
+			c.markOwnerPoolUnhealthy(quote.targetURL)
+			c.clearTenantPin(tenantID, quote.targetURL)
+		}
+	}
+	return resp, nil
 }
 
 func (c *MaClawProviderClient) forwardStreamTo(ctx context.Context, httpClient *http.Client, targetURL string, body []byte, hubID, token, tenantID string, serviceGroupIDs ...string) (*http.Response, error) {

@@ -379,9 +379,11 @@ func clearWebviewAssetCacheForFingerprint(userDataPath string, fingerprintFunc f
 }
 
 func clearWebviewAssetCacheDirs(userDataPath string) {
-	target := filepath.Join(userDataPath, "EBWebView")
-	if err := os.RemoveAll(target); err != nil {
-		log.Printf("[webview-cache] failed to remove %s: %v", target, err)
+	for _, rel := range webviewAssetCacheDirs() {
+		target := filepath.Join(userDataPath, rel)
+		if err := os.RemoveAll(target); err != nil {
+			log.Printf("[webview-cache] failed to remove %s: %v", target, err)
+		}
 	}
 }
 

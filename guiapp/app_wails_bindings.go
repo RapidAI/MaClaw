@@ -2224,6 +2224,10 @@ type AIAssistantSendRequest struct {
 	IMTargetUID                 string                      `json:"im_target_uid,omitempty"`
 	IMTaskTitle                 string                      `json:"im_task_title,omitempty"`
 	IMIsGroup                   bool                        `json:"im_is_group,omitempty"`
+	// NoWorkflowInterception is set by the welcome-page wizard when the draft
+	// workflow = "none": the first message must skip workflow semantic
+	// interception/starts. Additive — absent/zero keeps the current behavior.
+	NoWorkflowInterception bool `json:"no_workflow_interception,omitempty"`
 }
 
 type AIAssistantContextMessage struct {
@@ -2846,6 +2850,7 @@ func (a *App) runAIAssistantMessageAsyncForUser(req AIAssistantSendRequest, hubC
 		ResumeRecoverableSessionID:  strings.TrimSpace(req.ResumeSessionID),
 		DismissRecoverableSessionID: strings.TrimSpace(req.DismissRecoverableSessionID),
 		UIAction:                    req.UIAction,
+		NoWorkflowInterception:      req.NoWorkflowInterception,
 	}
 	// A Coding relation can only originate at this desktop-host request
 	// boundary. The token is in-process only (`json:"-"`) and is removed after

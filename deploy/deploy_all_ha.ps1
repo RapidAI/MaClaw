@@ -9,10 +9,34 @@ param(
 
     [switch]$CleanHubCenterDB,
 
+    # Skip rebuilding the openclaw-bridge node package on the remote hosts
+    # (skips source sync + npm install + tsc + prune). The bridge is not enabled
+    # on any current host, so this only saves time; the existing remote
+    # openclaw-bridge directory is left completely untouched.
+    # Can also be enabled with DEPLOY_SKIP_BRIDGE_BUILD=1.
+    [switch]$SkipOpenClawBridgeBuild,
+
     [switch]$NoCheck
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Lightweight per-stage timing so the deploy log shows where the wall-clock time
+# actually goes. Output only -- it never affects deployment behaviour.
+$script:DeployStageWatch = [System.Diagnostics.Stopwatch]::StartNew()
+$script:DeployTotalWatch = [System.Diagnostics.Stopwatch]::StartNew()
+
+function Write-DeployStage {
+    param([string]$Message)
+
+    $seconds = 0.0
+    if ($null -ne $script:DeployStageWatch) {
+        $seconds = $script:DeployStageWatch.Elapsed.TotalSeconds
+    }
+    $script:DeployStageWatch = [System.Diagnostics.Stopwatch]::StartNew()
+    Write-Host ("    [timing] previous stage took {0:N1}s" -f $seconds) -ForegroundColor DarkGray
+    Write-Host $Message -ForegroundColor Cyan
+}
 
 function ConvertFrom-Psd1Ast {
     param([System.Management.Automation.Language.Ast]$Ast)
@@ -722,6 +746,7 @@ function Write-RemoteScript {
         ': "${REMOTE_HUBCENTER_DIR:=/data/soft/hubcenter}"',
         ': "${DEPLOY_HUBCENTER:=1}"',
         ': "${DEPLOY_HUB:=0}"',
+        ': "${BUILD_OPENCLAW_BRIDGE:=1}"',
         ': "${ENSURE_HUB_MODELS:=0}"',
         ': "${HUB_MODEL_BASE_URL:=https://github.com/RapidAI/MaClaw/releases/download/Model_Release}"',
         ': "${HUB_MODEL_FILES:=embeddinggemma-300M-Q8_0.gguf sensevoice-small-q8.gguf omniparser-v2.yolow kokoro-v1_0.koro kokoro_82m_selected_voices_koro_v2.zip}"',
@@ -1076,7 +1101,9 @@ function Write-RemoteScript {
         '  backup_and_write_config "$REMOTE_HUB_DIR/configs/config.yaml" "$REMOTE_TMP_DIR/$HUB_CONFIG_BASENAME"',
         '  BRIDGE_SRC="$SRC_ROOT/openclaw-bridge"',
         '  BRIDGE_DST="$REMOTE_HUB_DIR/openclaw-bridge"',
-        '  if [ -d "$BRIDGE_SRC" ] && [ -f "$BRIDGE_SRC/package.json" ]; then',
+        '  if [ "$BUILD_OPENCLAW_BRIDGE" != "1" ]; then',
+        '    echo "[remote] openclaw-bridge: build skipped (BUILD_OPENCLAW_BRIDGE=0), leaving $BRIDGE_DST untouched"',
+        '  elif [ -d "$BRIDGE_SRC" ] && [ -f "$BRIDGE_SRC/package.json" ]; then',
         '    echo "[remote] Deploying openclaw-bridge..."',
         '    mkdir -p "$BRIDGE_DST"',
         '    cp -f "$BRIDGE_SRC/package.json" "$BRIDGE_DST/package.json"',
@@ -1100,6 +1127,37 @@ function Write-RemoteScript {
         '      echo "[WARN] npm not found on remote host, skipping openclaw-bridge dependencies (openclaw-bridge needs node >=22.19.0 and npm; install node 22 before enabling the openclaw IM channel on this host)"',
         '    fi',
         '  fi',
+        '}',
+        '',
+        'install_logrotate_config() {',
+        '  if ! command -v logrotate >/dev/null 2>&1; then',
+        '    echo "[WARN] logrotate not found on remote host, skipping log rotation config"',
+        '    return 0',
+        '  fi',
+        '  cat > /etc/logrotate.d/maclaw-hub <<LOGROTATEEOF',
+        '$REMOTE_HUB_DIR/data/logs/*.out.log $REMOTE_HUBCENTER_DIR/*.out $REMOTE_HUBCENTER_DIR/data/logs/*.log {',
+        '    weekly',
+        '    rotate 4',
+        '    compress',
+        '    missingok',
+        '    notifempty',
+        '    copytruncate',
+        '    maxsize 512M',
+        '}',
+        '$REMOTE_HUB_DIR/data/logs/hub.log $REMOTE_HUB_DIR/data/logs/registration.log {',
+        '    weekly',
+        '    rotate 4',
+        '    compress',
+        '    missingok',
+        '    notifempty',
+        '    copytruncate',
+        '    maxsize 64M',
+        '}',
+        'LOGROTATEEOF',
+        '  chmod 644 /etc/logrotate.d/maclaw-hub',
+        '  logrotate -d /etc/logrotate.d/maclaw-hub >/dev/null 2>&1 \',
+        '    && echo "[remote] logrotate config installed: /etc/logrotate.d/maclaw-hub" \',
+        '    || echo "[WARN] logrotate config failed validation: /etc/logrotate.d/maclaw-hub"',
         '}',
         '',
         'if [ "$DEPLOY_HUBCENTER" = "1" ]; then',
@@ -1131,6 +1189,8 @@ function Write-RemoteScript {
         '    ./start.sh',
         '  fi',
         'fi',
+        '',
+        'install_logrotate_config',
         '',
         'rm -rf "$SRC_ROOT"',
         'rm -f "$ARCHIVE_PATH" "$REMOTE_TMP_DIR/remote_deploy.sh"',
@@ -1429,6 +1489,73 @@ function Invoke-UrlStatusCheck {
     }
 }
 
+function Wait-DeploymentReady {
+    <#
+      Block until every readiness URL answers 200, or the budget runs out.
+
+      A restart is not the same thing as ready.  hubcenter replays its HA op
+      history during startup before it binds 9388, and that replay is long:
+      on hc-3 it was measured at ~66s with ops=16017 (2026-09-16, run13),
+      i.e. ~72s from process launch to "listening on 0.0.0.0:9388".  Probing
+      before the listener exists makes nginx answer 502 and turned a healthy
+      rollout into a failed deploy.  The op history only grows, so the window
+      only widens - waiting for readiness is what makes the smoke check
+      meaningful instead of a race.
+
+      Returns $true when ready, $false on timeout.  Callers still run their
+      assertions afterwards either way, so a genuinely broken host reports the
+      real problem rather than just "not ready".
+    #>
+    param(
+        [string[]]$Urls,
+        [int]$TimeoutSec = 180,
+        [int]$IntervalSec = 5,
+        [int]$ProbeTimeoutSec = 10
+    )
+
+    $pending = @($Urls | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($pending.Count -eq 0) {
+        return $true
+    }
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    $attempt = 0
+    while ($true) {
+        $attempt++
+        $notReady = @()
+        foreach ($url in $pending) {
+            $ok = $false
+            try {
+                if ((Invoke-UrlStatusCheck -Url $url -TimeoutSec $ProbeTimeoutSec -Attempts 1) -eq 200) {
+                    $ok = $true
+                }
+            }
+            catch {
+                # A connection refusal or timeout while the service is still
+                # starting up is exactly what we are waiting on.
+            }
+            if (-not $ok) {
+                $notReady += $url
+            }
+        }
+
+        if ($notReady.Count -eq 0) {
+            if ($attempt -gt 1) {
+                Write-Host ("    (ready after {0} probe(s))" -f $attempt) -ForegroundColor DarkGray
+            }
+            return $true
+        }
+
+        if ((Get-Date) -ge $deadline) {
+            Write-Host ("    [WARN] still not ready after {0}s: {1}" -f $TimeoutSec, ($notReady -join ', ')) -ForegroundColor Yellow
+            return $false
+        }
+
+        Write-Host ("    waiting for readiness ({0} pending, {1}s elapsed)..." -f $notReady.Count, [int]((Get-Date) - $deadline.AddSeconds($TimeoutSec)).TotalSeconds) -ForegroundColor DarkGray
+        Start-Sleep -Seconds $IntervalSec
+    }
+}
+
 function Assert-HubCenterProblemReportAdminAsset {
     param(
         [string]$BaseUrl,
@@ -1542,11 +1669,31 @@ function Invoke-PostDeploySmokeCheck {
         # 20s rather than 10s: the first /admin render after a restart is a cold
         # template/asset path and was measured at ~6.5s on the slowest host
         # (Ubuntu 18.04), leaving too little headroom for a transient stall.
-        [int]$TimeoutSec = 20
+        [int]$TimeoutSec = 20,
+        # Budget for waiting on a freshly restarted service to bind its port.
+        # Must exceed hubcenter's HA-op replay (~72s measured), and that replay
+        # grows with the op history, so this is deliberately generous.
+        [int]$ReadyTimeoutSec = 180
     )
 
     $failures = @()
     foreach ($target in $Targets) {
+        # Wait for the restarted services to actually serve before asserting on
+        # them.  Only the last host is usually cold here (the earlier hosts were
+        # restarted minutes ago while the remaining uploads ran), so in the
+        # common case this costs two quick probes and one real wait.
+        $readyUrls = @()
+        if ($target.DeployHubCenter) {
+            $readyUrls += ("https://{0}/healthz" -f $target.Host)
+        }
+        if ($target.DeployHub -and -not [string]::IsNullOrWhiteSpace($target.HubPublicUrl)) {
+            $readyUrls += ("{0}/healthz" -f $target.HubPublicUrl.TrimEnd('/'))
+        }
+        if ($readyUrls.Count -gt 0) {
+            Write-Host ("  waiting for {0} to be ready..." -f $target.Host) -ForegroundColor DarkGray
+            $null = Wait-DeploymentReady -Urls $readyUrls -TimeoutSec $ReadyTimeoutSec
+        }
+
         $checks = @()
         if ($target.DeployHubCenter) {
             $checks += [pscustomobject]@{ Label = 'hubcenter healthz'; Url = ("https://{0}/healthz" -f $target.Host); Want = 200 }
@@ -1798,7 +1945,7 @@ try {
     }
 
     Write-Host ''
-    Write-Host '[1/9] Deployment topology' -ForegroundColor Cyan
+    Write-DeployStage '[1/9] Deployment topology'
     foreach ($target in $targets) {
         if ($target.DeployHubCenter -and $target.DeployHub) {
             Write-Host ("  - {0}: hubcenter[{1}] + hub[{2}]" -f $target.Host, $target.RemoteHubCenterDir, $target.RemoteHubDir)
@@ -1813,26 +1960,26 @@ try {
     Write-Host ("  Shared cluster secret: {0}" -f $secretSource)
     Write-Host ''
 
-    Write-Host '[2/9] Running remote prechecks...' -ForegroundColor Cyan
+    Write-DeployStage '[2/9] Running remote prechecks...'
     foreach ($target in $targets) {
         $connectionArgs = Get-ConnectionArgs -UserName $sshUser -HostName $target.Host -Port $sshPort -Password $password -HostKey $target.HostKey
         Write-Host ("  - checking {0}" -f $target.Host)
         [void](Invoke-RemotePrecheck -PlinkExe $plinkExe -ConnectionArgs $connectionArgs -Target $target)
     }
 
-    Write-Host '[3/9] Preparing build workspace...' -ForegroundColor Cyan
+    Write-DeployStage '[3/9] Preparing build workspace...'
     New-CleanDirectory -Path $buildRoot
     New-Item -ItemType Directory -Path $stageRoot -Force | Out-Null
     New-CleanDirectory -Path $renderedDir
 
-    Write-Host '[4/9] Rendering hubcenter/hub configs...' -ForegroundColor Cyan
+    Write-DeployStage '[4/9] Rendering hubcenter/hub configs...'
     Write-InventoryFile -Path $inventoryPath -ClusterSecret $clusterSecret
     & $powerShellExe -NoProfile -ExecutionPolicy Bypass -File $renderScript -InventoryPath $inventoryPath -OutputDir $renderedDir
     if ($LASTEXITCODE -ne 0) {
         throw 'HA config rendering failed.'
     }
 
-    Write-Host '[5/9] Building local Linux binaries and staging deploy assets...' -ForegroundColor Cyan
+    Write-DeployStage '[5/9] Building local Linux binaries and staging deploy assets...'
     $shouldBuildHub = @($targets | Where-Object { $_.DeployHub }).Count -gt 0
     $shouldBuildHubCenter = @($targets | Where-Object { $_.DeployHubCenter }).Count -gt 0
     Build-LocalBinaries -SourceRoot $rootDir -OutputRoot $stageRoot -HubBinaryName $hubBinaryName -HubCenterBinaryName $hubCenterBinaryName -MeetingASRWorkerBinaryName $meetingASRWorkerBinaryName -BrandBuildTag $brandBuildTag -BuildHub $shouldBuildHub -BuildHubCenter $shouldBuildHubCenter
@@ -1842,13 +1989,13 @@ try {
     Write-Host ("  - HubCenter problem reports script: {0}" -f $expectedHubCenterProblemReportsScriptSrc)
     Write-Host ("  - HubCenter Pet Store assets: {0}, {1}" -f $expectedHubCenterPetStoreAssetSources.CSS, $expectedHubCenterPetStoreAssetSources.Script)
 
-    Write-Host '[6/9] Creating deploy archive...' -ForegroundColor Cyan
+    Write-DeployStage '[6/9] Creating deploy archive...'
     & $tarExe -czf $archivePath -C $stageRoot .
     if ($LASTEXITCODE -ne 0) {
         throw 'Failed to create deploy archive.'
     }
 
-    Write-Host '[7/9] Writing remote deployment script...' -ForegroundColor Cyan
+    Write-DeployStage '[7/9] Writing remote deployment script...'
     Write-RemoteScript -Path $remoteScriptPath
 
     $targetIndex = 0
@@ -1867,7 +2014,7 @@ try {
         }
 
         Write-Host ''
-        Write-Host ("[8/9][{0}/{1}] Uploading artifacts to {2}..." -f $targetIndex, $targets.Count, $target.Host) -ForegroundColor Cyan
+        Write-DeployStage ("[8/9][{0}/{1}] Uploading artifacts to {2}..." -f $targetIndex, $targets.Count, $target.Host)
         Invoke-Plink -PlinkExe $plinkExe -ConnectionArgs $connectionArgs -CommandText "mkdir -p $($target.RemoteTmpDir)"
         Invoke-PscpUpload -PscpExe $pscpExe -ConnectionArgs $connectionArgs -LocalPath $archivePath -RemotePath "$($target.RemoteTmpDir)/maclaw-deploy.tar.gz"
         Invoke-PscpUpload -PscpExe $pscpExe -ConnectionArgs $connectionArgs -LocalPath $remoteScriptPath -RemotePath "$($target.RemoteTmpDir)/remote_deploy.sh"
@@ -1905,12 +2052,15 @@ try {
         $deployHubFlag = if ($target.DeployHub) { '1' } else { '0' }
         $deployHubCenterFlag = if ($target.DeployHubCenter) { '1' } else { '0' }
         $cleanHubCenterDBFlag = if ($CleanHubCenterDB) { '1' } else { '0' }
+        $skipBridgeBuild = $SkipOpenClawBridgeBuild -or ((Get-EnvOrDefault 'DEPLOY_SKIP_BRIDGE_BUILD' '0') -eq '1')
+        $buildOpenClawBridgeFlag = if ($skipBridgeBuild) { '0' } else { '1' }
         $envParts = @(
             ("export REMOTE_TMP_DIR={0}" -f (Quote-ShellEnvValue $target.RemoteTmpDir)),
             ("export REMOTE_HUB_DIR={0}" -f (Quote-ShellEnvValue $target.RemoteHubDir)),
             ("export REMOTE_HUBCENTER_DIR={0}" -f (Quote-ShellEnvValue $target.RemoteHubCenterDir)),
             ("export DEPLOY_HUBCENTER={0}" -f (Quote-ShellEnvValue $deployHubCenterFlag)),
             ("export DEPLOY_HUB={0}" -f (Quote-ShellEnvValue $deployHubFlag)),
+            ("export BUILD_OPENCLAW_BRIDGE={0}" -f (Quote-ShellEnvValue $buildOpenClawBridgeFlag)),
             ("export CLEAN_HUBCENTER_DB={0}" -f (Quote-ShellEnvValue $cleanHubCenterDBFlag)),
             ("export HUBCENTER_DB_PATH={0}" -f (Quote-ShellEnvValue $target.HubCenterDBPath)),
             ("export ENSURE_HUB_MODELS={0}" -f (Quote-ShellEnvValue $ensureHubModels)),
@@ -1929,7 +2079,7 @@ try {
 
         $remoteCommand = "sed -i 's/\r$//' $($target.RemoteTmpDir)/remote_deploy.sh && chmod +x $($target.RemoteTmpDir)/remote_deploy.sh && {0} && $($target.RemoteTmpDir)/remote_deploy.sh" -f ($envParts -join ' && ')
 
-        Write-Host ("[9/9][{0}/{1}] Deploying uploaded binaries on {2}..." -f $targetIndex, $targets.Count, $target.Host) -ForegroundColor Cyan
+        Write-DeployStage ("[9/9][{0}/{1}] Deploying uploaded binaries on {2}..." -f $targetIndex, $targets.Count, $target.Host)
         Invoke-Plink -PlinkExe $plinkExe -ConnectionArgs $connectionArgs -CommandText $remoteCommand
         Invoke-RemoteNginxHubProxyFix -PlinkExe $plinkExe -ConnectionArgs $connectionArgs -Target $target
     }
@@ -1947,6 +2097,7 @@ try {
     }
 
     Write-Host 'Deployment completed successfully.' -ForegroundColor Green
+    Write-Host ("Total deploy wall time: {0:N1}s" -f $script:DeployTotalWatch.Elapsed.TotalSeconds) -ForegroundColor Green
     Write-Host ("Rendered configs: {0}" -f $renderedDir)
     Write-Host 'Services deployed:'
     foreach ($target in $targets) {

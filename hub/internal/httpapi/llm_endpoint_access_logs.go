@@ -18,10 +18,12 @@ import (
 )
 
 const (
-	llmEndpointAccessLogsKey         = "llm_endpoint_access_logs_v1"
-	llmEndpointAccessLogsVersion     = 1
-	llmEndpointAccessLogsKeepEntries = 200
-	llmEndpointAccessLogsBodyLimit   = 65535
+	llmEndpointAccessLogsKey          = "llm_endpoint_access_logs_v1"
+	llmEndpointAccessLogsVersion      = 1
+	llmEndpointAccessLogsKeepEntries  = 200
+	llmEndpointAccessLogsBodyLimit    = 65535
+	llmEndpointAccessLogMaxIPCounts   = 1000
+	llmEndpointAccessLogOtherIPBucket = "_other"
 )
 
 type llmEndpointAccessLogEntry struct {
@@ -249,6 +251,32 @@ func pruneLLMEndpointAccessLogs(store *llmEndpointAccessLogStore) {
 		}
 		store.Entries = store.Entries[:llmEndpointAccessLogsKeepEntries]
 	}
+	realIPs := len(store.IPCounts)
+	if _, ok := store.IPCounts[llmEndpointAccessLogOtherIPBucket]; ok {
+		realIPs--
+	}
+	if realIPs <= llmEndpointAccessLogMaxIPCounts {
+		return
+	}
+	ips := make([]string, 0, realIPs)
+	for ip := range store.IPCounts {
+		if ip == llmEndpointAccessLogOtherIPBucket {
+			continue
+		}
+		ips = append(ips, ip)
+	}
+	sort.Slice(ips, func(i, j int) bool {
+		if store.IPCounts[ips[i]] != store.IPCounts[ips[j]] {
+			return store.IPCounts[ips[i]] > store.IPCounts[ips[j]]
+		}
+		return ips[i] < ips[j]
+	})
+	var other int64
+	for _, ip := range ips[llmEndpointAccessLogMaxIPCounts:] {
+		other += store.IPCounts[ip]
+		delete(store.IPCounts, ip)
+	}
+	store.IPCounts[llmEndpointAccessLogOtherIPBucket] += other
 }
 
 func mergeLLMEndpointAccessLogs(dst, src *llmEndpointAccessLogStore) {
@@ -347,6 +375,11 @@ func buildLLMEndpointAccessLogSummary(logs *llmEndpointAccessLogStore) llmEndpoi
 	}
 	summary.TotalRequests = logs.TotalRequests
 	summary.UniqueIPCount = len(logs.IPCounts)
+	if _, ok := logs.IPCounts[llmEndpointAccessLogOtherIPBucket]; ok {
+		// The synthetic "_other" bucket aggregates many IPs; it is not a
+		// unique address and must not inflate the count.
+		summary.UniqueIPCount--
+	}
 	if n := len(logs.Entries); n > 0 {
 		summary.LatestRequestAt = logs.Entries[n-1].CreatedAt.UTC().Format(time.RFC3339)
 	}

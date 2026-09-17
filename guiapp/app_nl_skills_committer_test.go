@@ -76,12 +76,32 @@ func TestDirectorySkillCommitWaitsForInstallMutex(t *testing.T) {
 }
 
 func TestConfigSkillCommitWaitsForInstallMutex(t *testing.T) {
-	app := &App{skillExecutor: &SkillExecutor{}}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("AppData", filepath.Join(home, "AppData", "Roaming"))
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(t.TempDir())
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	app := &App{testHomeDir: home}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	t.Cleanup(func() { app.shutdown(context.Background()) })
+	// Name validation runs before the lock; use a pending evolution
+	// compensation record so the commit still fails, but only after the
+	// install mutex is acquired.
+	if err := skill.PersistEvolutionCompensation(skill.NewEvolutionCompensationRecord(
+		"req-config-commit-mutex", "mutex-blocked-config-skill", "repair", "", nil, false, nil, "rollback_incomplete",
+	)); err != nil {
+		t.Fatalf("PersistEvolutionCompensation() error = %v", err)
+	}
+	// Infra init is unrelated to the mutex ordering under test; skip it so the
+	// commit reaches the admission check quickly.
+	app.remoteInfraReady.Store(true)
 	app.installMutex.Lock()
 	done := make(chan error, 1)
 	go func() {
 		done <- app.commitNLSkillDefinitionAfterAdmission(
-			context.Background(), corelib.NLSkillEntry{}, "install",
+			context.Background(), corelib.NLSkillEntry{Name: "mutex-blocked-config-skill"}, "install",
 			"skill:definition_installed", true, "test", nil,
 		)
 	}()
@@ -93,8 +113,8 @@ func TestConfigSkillCommitWaitsForInstallMutex(t *testing.T) {
 	app.installMutex.Unlock()
 	select {
 	case err := <-done:
-		if err == nil || !strings.Contains(err.Error(), "skill name is required") {
-			t.Fatalf("config commit error = %v, want validation after lock release", err)
+		if err == nil || !strings.Contains(err.Error(), "pending evolution compensation") {
+			t.Fatalf("config commit error = %v, want admission validation after lock release", err)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("config commit did not resume after install mutex was released")

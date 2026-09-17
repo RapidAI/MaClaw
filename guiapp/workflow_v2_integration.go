@@ -475,6 +475,17 @@ func isWordBoundaryChar(r rune) bool {
 // routeWithWorkflowV2 is the V2 replacement for routeWorkflowIMMessage.
 // Returns a workflowIMRouteResult compatible with the existing entry context.
 func (h *IMMessageHandler) routeWithWorkflowV2(msg IMUserMessage, trimmed string) workflowIMRouteResult {
+	// Wizard「无工作流」handoff: this message must not be intercepted or start
+	// a workflow — pass it straight through to the agent loop. Additive: only
+	// messages carrying the one-shot host flag take this exit. The bypass is
+	// intentionally total for this message: it also skips explicit
+	// `__workflow_choice__` command handling and other in-router command
+	// branches — the wizard's「无」selection is authoritative for the handoff
+	// message, so a flagged choice command is treated as plain task text.
+	if msg.NoWorkflowInterception {
+		log.Printf("[workflow-v2] routing bypassed (no_workflow_interception): user=%s", msg.UserID)
+		return workflowIMRouteResult{}
+	}
 	wf := h.getWorkflowV2()
 	if wf == nil {
 		log.Printf("[workflow-v2] routeWithWorkflowV2: wf is nil, app=%v app.workflowV2=%v", h.app != nil, h.app != nil && h.app.workflowV2 != nil)

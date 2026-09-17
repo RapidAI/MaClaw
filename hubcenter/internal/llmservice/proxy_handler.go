@@ -3,11 +3,13 @@ package llmservice
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -460,10 +462,33 @@ func writeProxyRequestError(w http.ResponseWriter, err error) {
 		return
 	}
 	if strings.Contains(errMsg, "all providers failed") {
+		w.Header().Set("Retry-After", proxyRetryAfterSeconds(err))
 		writeJSONError(w, http.StatusServiceUnavailable, errMsg)
 		return
 	}
 	writeJSONError(w, http.StatusInternalServerError, errMsg)
+}
+
+// proxyRetryAfterSeconds picks a Retry-After hint that matches the pool state
+// the error was built from: an in-flight half-open probe asks the client to
+// wait out this node's probe-wait budget, an open circuit tells it when the
+// next probe window opens (capped), and anything else gets a short generic
+// backoff.
+func proxyRetryAfterSeconds(err error) string {
+	var re *llmpool.ResilienceError
+	if errors.As(err, &re) {
+		switch {
+		case re.State == "probe":
+			return strconv.Itoa(int(math.Ceil(defaultProxyCircuitProbeWait.Seconds())))
+		case re.CooldownLeft > 0:
+			seconds := int(math.Ceil(re.CooldownLeft.Seconds()))
+			if seconds > 30 {
+				seconds = 30
+			}
+			return strconv.Itoa(seconds)
+		}
+	}
+	return "5"
 }
 
 func writeProxyStreamError(w io.Writer, code int, message string) {

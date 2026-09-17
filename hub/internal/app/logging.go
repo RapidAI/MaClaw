@@ -10,8 +10,6 @@ import (
 	"sync"
 )
 
-const hubLogRotateBytes = 10 * 1024 * 1024
-
 // hubLogFiles keeps process-lifetime file handles open so log.SetOutput stays valid.
 var hubLogFiles struct {
 	mu    sync.Mutex
@@ -24,6 +22,9 @@ var hubLogFiles struct {
 // Files:
 //   - hub.log            — all hub logs
 //   - registration.log   — only onboarding/registration lines
+//
+// Rotation is owned by the OS logrotate config (deploy/tools/logrotate), not by
+// the process: an in-process rotator fights logrotate over the same .1 files.
 //
 // Writers are flushed independently (not io.MultiWriter) so a broken stderr sink
 // cannot suppress file writes.
@@ -38,8 +39,6 @@ func ConfigureLogging(dir string) error {
 
 	hubPath := filepath.Join(dir, "hub.log")
 	regPath := filepath.Join(dir, "registration.log")
-	rotateLogIfLarge(hubPath)
-	rotateLogIfLarge(regPath)
 
 	hubFile, err := os.OpenFile(hubPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
@@ -68,14 +67,6 @@ func ConfigureLogging(dir string) error {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	log.Printf("[hub] logging initialized hub_log=%s registration_log=%s", hubPath, regPath)
 	return nil
-}
-
-func rotateLogIfLarge(logPath string) {
-	if info, err := os.Stat(logPath); err == nil && info.Size() > hubLogRotateBytes {
-		prev := logPath + ".1"
-		_ = os.Remove(prev)
-		_ = os.Rename(logPath, prev)
-	}
 }
 
 // hubLogWriter mirrors GUI detailAwareLogWriter: independent sinks, registration tee.

@@ -33,9 +33,12 @@ func TestManagedSemanticIgnoresExpertToolNameAllowList(t *testing.T) {
 	if err != nil || !handled || surface == nil || len(defs) == 0 {
 		t.Fatalf("managed search must still plan under a name-only expert, handled=%v err=%v defs=%#v", handled, err, defs)
 	}
+	// baseline 工作区工具（bash 等）是规划器对每个受管回合的固有注入，
+	// 不是 expert 允许列表或 ToolNames 扩进来的，断言时需排除。
+	baseline := semanticBaselineGrantNames(surface)
 	for _, def := range defs {
 		name := extractToolName(def)
-		if name == "bash" || isLegacySemanticBypassName(name) {
+		if !baseline[name] && (name == "bash" || isLegacySemanticBypassName(name)) {
 			t.Fatalf("expert allow-list or ToolNames expanded the surface with %q", name)
 		}
 		if _, ok := surface.grants[name]; !ok {
@@ -43,8 +46,14 @@ func TestManagedSemanticIgnoresExpertToolNameAllowList(t *testing.T) {
 		}
 	}
 	stripped := filterToolsForExpert(defs, expertDefForUserID(userID))
-	if len(stripped) != 0 {
-		t.Fatalf("legacy name filter would keep %#v; managed path must not apply it", stripped)
+	var strippedNonBaseline []map[string]interface{}
+	for _, def := range stripped {
+		if name := extractToolName(def); !baseline[name] {
+			strippedNonBaseline = append(strippedNonBaseline, def)
+		}
+	}
+	if len(strippedNonBaseline) != 0 {
+		t.Fatalf("legacy name filter would keep %#v; managed path must not apply it", strippedNonBaseline)
 	}
 	if len(defs) == 0 {
 		t.Fatal("managed path ignored the planner surface")
@@ -54,12 +63,22 @@ func TestManagedSemanticIgnoresExpertToolNameAllowList(t *testing.T) {
 		map[string]interface{}{"type": "function", "function": map[string]interface{}{"name": "call_mcp_tool"}},
 	)
 	closed := closedManagedSemanticDefinitions(poisoned, surface.grants)
-	if len(closed) != len(defs) {
-		t.Fatalf("closed count=%d want %d", len(closed), len(defs))
+	// 按名字集合比较：baseline bash 已出现在 defs 里，投毒的重复 bash
+	// 关闭后只是同名多一条，不应让任何未授权名字漏进来。
+	closedNames := map[string]bool{}
+	for _, def := range closed {
+		closedNames[extractToolName(def)] = true
+	}
+	defNames := map[string]bool{}
+	for _, def := range defs {
+		defNames[extractToolName(def)] = true
+	}
+	if len(closedNames) != len(defNames) {
+		t.Fatalf("closed names=%#v want %#v", closedNames, defNames)
 	}
 	for _, def := range closed {
 		name := extractToolName(def)
-		if name == "bash" || isLegacySemanticBypassName(name) {
+		if !baseline[name] && (name == "bash" || isLegacySemanticBypassName(name)) {
 			t.Fatalf("allow-list union survived close: %q", name)
 		}
 	}

@@ -40,6 +40,8 @@ func writeLLMProviderError(w http.ResponseWriter, err error) {
 	code := http.StatusBadRequest
 	if errors.Is(err, llmservice.ErrProviderNotFound) {
 		code = http.StatusNotFound
+	} else if errors.Is(err, llmservice.ErrProviderInUse) {
+		code = http.StatusConflict
 	}
 	writeJSONResp(w, code, map[string]string{"error": err.Error()})
 }
@@ -739,11 +741,45 @@ func adminDeleteLLMProvider(svc *llmservice.Service) http.HandlerFunc {
 			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": "provider id required"})
 			return
 		}
-		if err := svc.DeleteProvider(r.Context(), id); err != nil {
+		prune := r.URL.Query().Get("prune") == "1" || strings.EqualFold(r.URL.Query().Get("prune"), "true")
+		pruned, err := svc.DeleteProvider(r.Context(), id, prune)
+		if err != nil {
+			if errors.Is(err, llmservice.ErrProviderInUse) {
+				writeJSONResp(w, http.StatusConflict, map[string]any{"error": "provider_in_use", "groups": pruned})
+				return
+			}
 			writeLLMProviderError(w, err)
 			return
 		}
-		writeJSONResp(w, http.StatusOK, map[string]string{"status": "ok"})
+		resp := map[string]any{"status": "ok"}
+		if len(pruned) > 0 {
+			resp["pruned_groups"] = pruned
+		}
+		writeJSONResp(w, http.StatusOK, resp)
+	}
+}
+
+func adminListLLMProviderReferences(svc *llmservice.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if id == "" {
+			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": "provider id required"})
+			return
+		}
+		groups, err := svc.ProviderReferences(r.Context(), id)
+		if err != nil {
+			writeJSONResp(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		type groupRef struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		}
+		refs := make([]groupRef, 0, len(groups))
+		for _, g := range groups {
+			refs = append(refs, groupRef{ID: g.ID, Name: g.Name})
+		}
+		writeJSONResp(w, http.StatusOK, map[string]any{"groups": refs})
 	}
 }
 

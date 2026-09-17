@@ -368,6 +368,11 @@ type ActiveGrant struct {
 	CreditsTotal      float64                 `json:"credits_total,omitempty"`
 	CreditsUsed       float64                 `json:"credits_used,omitempty"`
 	CreditsAvailable  float64                 `json:"credits_available,omitempty"`
+	// HeldCredits is the owner-scoped share of this grant's service group that
+	// is currently held by in-flight billing reservations. Admission subtracts
+	// the same amount, so the UI can show why spendable credit is lower than
+	// the raw period window remaining.
+	HeldCredits       float64                 `json:"held_credits,omitempty"`
 	RetryAfterSeconds int64                   `json:"retry_after_seconds,omitempty"`
 	RetryAfterAt      string                  `json:"retry_after_at,omitempty"`
 	CreditsRemaining  float64                 `json:"credits_remaining,omitempty"`
@@ -1247,6 +1252,84 @@ func (r *Registry) PurgeOrphanedServiceGroupReferences() bool {
 	r.Grants = r.Grants[:n]
 
 	return changed
+}
+
+// PruneProviders removes the given provider IDs from every model service
+// group: each model's ProviderIDs and ProviderConfigs entries that reference
+// a removed provider are dropped, and the per-model derived fields are
+// rebuilt from the surviving provider configs. Models left without any
+// provider are kept (empty models are retained and groups are never
+// deleted), matching the HubCenter-side convention. Returns true when any
+// group configuration changed.
+func (r *Registry) PruneProviders(providerIDs []string) bool {
+	if r == nil || len(providerIDs) == 0 {
+		return false
+	}
+	remove := make(map[string]struct{}, len(providerIDs))
+	for _, id := range providerIDs {
+		key := strings.ToLower(strings.TrimSpace(id))
+		if key != "" {
+			remove[key] = struct{}{}
+		}
+	}
+	if len(remove) == 0 {
+		return false
+	}
+	changed := false
+	for i := range r.ModelServiceGroups {
+		g := &r.ModelServiceGroups[i]
+		for j := range g.Models {
+			if g.Models[j].pruneProviders(remove) {
+				changed = true
+			}
+		}
+	}
+	return changed
+}
+
+func (m *ModelServiceModel) pruneProviders(remove map[string]struct{}) bool {
+	changed := false
+	ids := make([]string, 0, len(m.ProviderIDs))
+	for _, id := range m.ProviderIDs {
+		if _, ok := remove[strings.ToLower(strings.TrimSpace(id))]; ok {
+			changed = true
+			continue
+		}
+		ids = append(ids, id)
+	}
+	configs := make([]ModelServiceProviderConfig, 0, len(m.ProviderConfigs))
+	for _, cfg := range m.ProviderConfigs {
+		if _, ok := remove[strings.ToLower(strings.TrimSpace(cfg.ProviderID))]; ok {
+			changed = true
+			continue
+		}
+		configs = append(configs, cfg)
+	}
+	if !changed {
+		return false
+	}
+	m.ProviderIDs = ids
+	m.ProviderConfigs = configs
+	m.normalizeProviderConfigs()
+	return true
+}
+
+// PruneProvidersFromGroups loads the LLM service registry, drops the given
+// provider IDs from all model service groups, and persists the registry only
+// when something changed. Callers pass a tenant-scoped settings repository so
+// only that tenant's service groups are pruned.
+func PruneProvidersFromGroups(ctx context.Context, system SystemSettingsRepository, providerIDs []string) (bool, error) {
+	if system == nil || len(providerIDs) == 0 {
+		return false, nil
+	}
+	reg, err := LoadRegistry(ctx, system)
+	if err != nil {
+		return false, err
+	}
+	if !reg.PruneProviders(providerIDs) {
+		return false, nil
+	}
+	return true, SaveRegistry(ctx, system, reg)
 }
 
 func (r *Registry) FindCardByCode(code string) (*RechargeCard, int) {

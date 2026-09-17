@@ -267,6 +267,15 @@ func UpdateLLMProvidersHandler(system store.SystemSettingsRepository, accessCtrl
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_LOAD_FAILED", err.Error())
 			return
 		}
+		// Providers that disappear from the list are pruned from every model
+		// service group of this tenant, so groups never keep routing to a
+		// deleted provider. Groups referencing providers that exist in neither
+		// the old nor the new registry are still rejected below.
+		removedProviderIDs := im.RemovedProviderIDs(oldReg, &req)
+		serviceGroupsChanged := false
+		if len(removedProviderIDs) > 0 {
+			serviceGroupsChanged = serviceReg.PruneProviders(removedProviderIDs)
+		}
 		if issues := collectLLMServiceProviderReferenceIssues(serviceReg, &req); len(issues) > 0 {
 			writeError(w, http.StatusBadRequest, "LLM_PROVIDER_IN_USE", strings.Join(issues, "; "))
 			return
@@ -274,6 +283,12 @@ func UpdateLLMProvidersHandler(system store.SystemSettingsRepository, accessCtrl
 		if err := im.SaveLLMProviderRegistry(r.Context(), system, &req); err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_PROVIDER_SAVE_FAILED", err.Error())
 			return
+		}
+		if serviceGroupsChanged {
+			if err := llmservice.SaveRegistry(r.Context(), system, serviceReg); err != nil {
+				writeError(w, http.StatusInternalServerError, "LLM_SERVICE_SAVE_FAILED", err.Error())
+				return
+			}
 		}
 		invalidateLLMRuntimeCaches(system)
 		if shouldReloadSharedRuntimeForRequest(r) {
@@ -1432,18 +1447,20 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 				logUpstreamStatus = upstreamStatus
 			}
 			fields := llmEndpointDiagnosticFields(requestID, logFailureStage, logProviderID, logUpstreamStatus, status, startedAt, providerReg)
+			if status == http.StatusServiceUnavailable || status == http.StatusBadGateway {
+				// Backoff hint for temporary upstream unavailability: covers a
+				// HubCenter pool's half-open probe window before the client
+				// retries the official service.
+				w.Header().Set("Retry-After", "15")
+			}
 			writeErrorWithFields(w, status, code, message, fields)
 		}
 		writeLoggedBillingDenied := func(status int, denial llmBillingDenial) {
 			logStatusCode = status
 			logErrorCode = denial.Code
-			fields := map[string]any{}
+			fields := llmBillingDenialFields(denial)
 			if denial.RetryAfterSeconds > 0 {
 				w.Header().Set("Retry-After", strconv.FormatInt(denial.RetryAfterSeconds, 10))
-				fields["retry_after_seconds"] = denial.RetryAfterSeconds
-			}
-			if denial.RetryAfterAt != "" {
-				fields["retry_after_at"] = denial.RetryAfterAt
 			}
 			writeErrorWithFields(w, status, denial.Code, denial.Message, fields)
 		}
@@ -1775,6 +1792,9 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 			}
 			fields := llmEndpointDiagnosticFields(requestID, logFailureStage, logProviderID, logUpstreamStatus, status, startedAt, providerReg)
 			fields["wire_api"] = "responses"
+			if status == http.StatusServiceUnavailable || status == http.StatusBadGateway {
+				w.Header().Set("Retry-After", "15")
+			}
 			writeErrorWithFields(w, status, code, message, fields)
 		}
 		var body map[string]any
@@ -2001,13 +2021,9 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 }
 
 func writeLLMBillingDenied(w http.ResponseWriter, denial llmBillingDenial) {
-	fields := map[string]any{}
+	fields := llmBillingDenialFields(denial)
 	if denial.RetryAfterSeconds > 0 {
 		w.Header().Set("Retry-After", strconv.FormatInt(denial.RetryAfterSeconds, 10))
-		fields["retry_after_seconds"] = denial.RetryAfterSeconds
-	}
-	if denial.RetryAfterAt != "" {
-		fields["retry_after_at"] = denial.RetryAfterAt
 	}
 	writeErrorWithFields(w, llmBillingDenialHTTPStatus(denial), denial.Code, denial.Message, fields)
 }
@@ -4914,6 +4930,24 @@ type llmBillingDenial struct {
 	Message           string
 	RetryAfterSeconds int64
 	RetryAfterAt      string
+	// HeldCredits is the amount currently occupied by in-flight billing
+	// reservations; it explains why available can be far below the visible
+	// period window remaining.
+	HeldCredits float64
+}
+
+func llmBillingDenialFields(denial llmBillingDenial) map[string]any {
+	fields := map[string]any{}
+	if denial.RetryAfterSeconds > 0 {
+		fields["retry_after_seconds"] = denial.RetryAfterSeconds
+	}
+	if denial.RetryAfterAt != "" {
+		fields["retry_after_at"] = denial.RetryAfterAt
+	}
+	if denial.HeldCredits > 0 {
+		fields["held_credits"] = denial.HeldCredits
+	}
+	return fields
 }
 
 func filterAuthorizedModelsByBillingEligibility(ctx context.Context, reg *llmservice.Registry, providerReg *im.LLMProviderRegistry, userID string, email string, body map[string]any, models []llmservice.AuthorizedModel) ([]llmservice.AuthorizedModel, map[string]llmBillingDenial, llmBillingDenial) {

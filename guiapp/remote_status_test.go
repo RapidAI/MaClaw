@@ -175,8 +175,8 @@ func TestLaunchToolUsesProjectWorkflowPolicy(t *testing.T) {
 	startDocOnlyCodingWorkflowForProject(t, app, projectPath)
 
 	err := app.LaunchTool("codex", false, false, false, "", projectPath, false)
-	if err == nil || !strings.Contains(err.Error(), "remote_session_start") {
-		t.Fatalf("desktop launch tool should be blocked by project workflow policy, err=%v", err)
+	if err == nil || !strings.Contains(err.Error(), "external programming tools are disabled") {
+		t.Fatalf("desktop LaunchTool should be disabled (workflow policy unreachable through it), err=%v", err)
 	}
 }
 

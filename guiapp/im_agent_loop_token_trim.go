@@ -12,7 +12,9 @@ const (
 	// window limit. Reasoning providers commonly spend materially longer before
 	// the first token when a new turn includes a large archived transcript.
 	// Later rounds return to the provider's normal context limit so tool-heavy
-	// work is not artificially constrained.
+	// work is not artificially constrained. Callers must only apply it via
+	// firstRequestCompactionLimit, i.e. to turns that already exceed the
+	// provider window — a fitting conversation keeps its full history.
 	firstAgentLoopRequestTargetTokens = 24_000
 	// Keep enough prior context for a follow-up to remain coherent after the
 	// system prompt, tools and current user message are accounted for.
@@ -50,6 +52,19 @@ func firstAgentLoopRequestTokenLimit(effectiveLimit int, conversation []interfac
 		return effectiveLimit
 	}
 	return limit
+}
+
+// firstRequestCompactionLimit decides the compaction limit for the first
+// provider request of a turn. The latency budget only applies when the turn
+// would otherwise exceed the provider window; a conversation that already
+// fits keeps the normal limit so middle history (e.g. the user's earlier
+// requirements) is never sacrificed for first-token latency.
+// beforeTokens must be the caller's estimate of conversation + tool tokens.
+func firstRequestCompactionLimit(effectiveLimit, beforeTokens int, conversation []interface{}, tools []map[string]interface{}) (limit int, budgeted bool) {
+	if beforeTokens <= effectiveLimit {
+		return effectiveLimit, false
+	}
+	return firstAgentLoopRequestTokenLimit(effectiveLimit, conversation, tools), true
 }
 
 func calibratedAgentLoopTokenLimit(cfg corelib.MaclawLLMConfig, conversation []interface{}, lastInputTokens int, lastOutputTokens int) (int, int) {

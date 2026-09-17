@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/tooldef"
 )
 
 type workingStateHolderCB struct {
@@ -50,6 +51,7 @@ func TestRunLoop_WorkingStateAfterToolAndNoHistoryLeak(t *testing.T) {
 		maxIter:    10,
 		sysPrompt:  "You are a helpful assistant.",
 		toolResult: "ok",
+		tools:      []map[string]interface{}{tooldef.BuildToolDef("write_file", "Write", map[string]interface{}{"type": "object"})},
 	}
 	result := RunLoop(cb, "fix compile error please", nil, nil)
 	if result.Error != "" {
@@ -98,7 +100,7 @@ func TestRunLoop_WorkingStateOffLeavesNil(t *testing.T) {
 	}
 }
 
-func TestRunLoop_WorkingStateNotesPolicyRejectAfterTool(t *testing.T) {
+func TestRunLoop_WorkingStatePolicyRejectLeavesNoStaleOpen(t *testing.T) {
 	callCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount++
@@ -121,16 +123,23 @@ func TestRunLoop_WorkingStateNotesPolicyRejectAfterTool(t *testing.T) {
 		sysPrompt:  "sys",
 		toolResult: "ok",
 		allowed:    map[string]bool{"write_file": true},
+		tools: []map[string]interface{}{
+			tooldef.BuildToolDef("write_file", "Write", map[string]interface{}{"type": "object"}),
+			tooldef.BuildToolDef("bash", "Run a command", map[string]interface{}{"type": "object"}),
+		},
 	}
 	result := RunLoop(cb, "fix compile error please", nil, nil)
 	if result.Error != "" {
 		t.Fatal(result.Error)
 	}
-	if result.WorkingState == nil || result.WorkingState.LastAction != ActionRetryDiagnose {
-		t.Fatalf("denied bash after a file ok should open: %#v", result.WorkingState)
+	// Host policy denials are fail-closed routing guardrails: they must not be
+	// recorded as WorkingState opens (a stale "unresolved" item would later
+	// trigger a spurious finish-nudge) nor overwrite the successful file state.
+	if result.WorkingState == nil || result.WorkingState.LastAction != ActionTrust {
+		t.Fatalf("denied bash after a file ok should keep the trust state: %#v", result.WorkingState)
 	}
-	if UnclosedOpenCount(result.WorkingState) == 0 {
-		t.Fatalf("expected open from policy deny: %+v", result.WorkingState.Open)
+	if UnclosedOpenCount(result.WorkingState) != 0 {
+		t.Fatalf("policy deny must not open a stale unresolved item: %+v", result.WorkingState.Open)
 	}
 }
 
@@ -146,6 +155,7 @@ func TestRunLoop_WorkingStateAskUserCarriesAndHolderSaves(t *testing.T) {
 			maxIter:    10,
 			sysPrompt:  "sys",
 			toolResult: `__ASK_USER__{"question":"Choose one","options":["A","B"],"input_type":"choice"}`,
+			tools:      []map[string]interface{}{tooldef.BuildToolDef("ask_user", "Ask the user", map[string]interface{}{"type": "object"})},
 		},
 	}
 	result := RunLoop(cb, "need a choice", nil, nil)
@@ -376,6 +386,7 @@ func TestRunLoop_WorkingStateSteerClearsLiveKeepsGoal(t *testing.T) {
 		maxIter:    10,
 		sysPrompt:  "sys",
 		toolResult: "ok",
+		tools:      []map[string]interface{}{tooldef.BuildToolDef("write_file", "Write", map[string]interface{}{"type": "object"})},
 	}}
 	result := RunLoop(cb, "fix compile error please", nil, nil, cb)
 	if result.Error != "" {
@@ -429,6 +440,7 @@ func TestRunLoop_WorkingStateDoneCheckNudgesWhenIterationsRemain(t *testing.T) {
 		sysPrompt:   "sys",
 		toolResult:  "fail",
 		toolOutcome: ToolExecutionOutcomeError,
+		tools:       []map[string]interface{}{tooldef.BuildToolDef("bash", "Run a command", map[string]interface{}{"type": "object"})},
 	}
 	result := RunLoop(cb, "run it", nil, nil)
 	if result.Error != "" {
@@ -459,6 +471,7 @@ func TestRunLoop_WorkingStateDoneCheckDoesNotEatLastIteration(t *testing.T) {
 		sysPrompt:   "sys",
 		toolResult:  "fail",
 		toolOutcome: ToolExecutionOutcomeError,
+		tools:       []map[string]interface{}{tooldef.BuildToolDef("bash", "Run a command", map[string]interface{}{"type": "object"})},
 	}
 	result := RunLoop(cb, "run it", nil, nil)
 	if result.Error != "" {
@@ -496,6 +509,7 @@ func TestRunLoop_WorkingStateSurvivesCompactAfterTool(t *testing.T) {
 		maxIter:    10,
 		sysPrompt:  "You are a helpful assistant.",
 		toolResult: "ok",
+		tools:      []map[string]interface{}{tooldef.BuildToolDef("write_file", "Write", map[string]interface{}{"type": "object"})},
 	}
 	result := RunLoop(cb, "fix compile error please", nil, nil, wipeSystemAfterToolHooks{})
 	if result.Error != "" {
@@ -838,6 +852,7 @@ func TestRunLoop_WorkingStateSameSigInject(t *testing.T) {
 		sysPrompt:   "sys",
 		toolResult:  "fail",
 		toolOutcome: ToolExecutionOutcomeError,
+		tools:       []map[string]interface{}{tooldef.BuildToolDef("bash", "Run a command", map[string]interface{}{"type": "object"})},
 	}
 	result := RunLoop(cb, "run it", nil, nil)
 	if result.Error != "" {
@@ -868,6 +883,7 @@ func TestRunLoop_WorkingStateSameSigInjectSkipsLastIteration(t *testing.T) {
 		sysPrompt:   "sys",
 		toolResult:  "fail",
 		toolOutcome: ToolExecutionOutcomeError,
+		tools:       []map[string]interface{}{tooldef.BuildToolDef("bash", "Run a command", map[string]interface{}{"type": "object"})},
 	}
 	result := RunLoop(cb, "run it", nil, nil)
 	if result.Error != "max iterations reached" {

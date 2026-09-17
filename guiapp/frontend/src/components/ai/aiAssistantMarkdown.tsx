@@ -10,7 +10,8 @@ import type { ChatAction, ChatConfirmation, ChatMessage, ChatRecoverableSession,
 import { renderCodingAgentProgressStatus } from "./CodingAgentProgressStatus";
 import { attachBareHeadingMarkers, normalizeInlineListMarkers } from "./aiAssistantMarkdownNormalize";
 import { buildMarkdownTableModel, isMarkdownTableRow, isMarkdownTableSeparatorRow, normalizeMarkdownTableLine, parseMarkdownTableCells, repairMixedNarrativeTable } from "./aiAssistantMarkdownTable";
-import { localAssistantTabTitle, localizeAIAssistantError, localizeText } from "./aiAssistantI18n";
+import { localAssistantTabTitle, localizeAIAssistantError, describeAIAssistantError, localizeText } from "./aiAssistantI18n";
+import { renderConfirmationCard, type ConfirmationCardDeps } from "./confirmationCard";
 import { cloudSafePathLabel, cloudWorkspaceRootFromPath, isCloudWorkspaceFilePath, isCloudWorkspacePath, REVEAL_CLOUD_WORKSPACE_FILES_EVENT } from "./codingTaskMode";
 import { baseInputBtnStyle, type Theme } from "./aiAssistantPanelTheme";
 import { ChatBubbleFrame, CHAT_SPEAKER_LABEL_GAP, userChatBubbleBackground } from "./ChatBubbleFrame";
@@ -1054,96 +1055,6 @@ function formatActionLabel(action: ChatAction, lang: string): string {
     return action.label;
 }
 
-function renderConfirmationList(testId: string, title: string, items: string[], t: Theme): React.ReactNode {
-    if (items.length === 0) return null;
-    return (
-        <div data-testid={testId} style={{ marginTop: "8px" }}>
-            <div style={{ color: t.fieldLabel, fontSize: "11px", marginBottom: "4px" }}>{title}</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                {items.map((item, index) => (
-                    <div key={`${testId}-${index}`} style={{ minHeight: "1.4em", color: t.text }}>
-                        <span style={{ color: t.bulletColor }}>{"\u2022"}</span>{" "}
-                        {renderInlineMarkdown(item, t)}
-                    </div>
-                ))}
-            </div>
-        </div>
-    );
-}
-
-function renderConfirmationCard(
-    confirmation: ChatConfirmation,
-    actions: ChatAction[] | undefined,
-    executeAction: (command: string) => void,
-    t: Theme,
-    lang: string,
-): React.ReactNode {
-    const targetPaths = confirmation.targetPaths || [];
-    const plannedActions = confirmation.plannedActions || [];
-    const riskFlags = confirmation.riskFlags || [];
-    const revisionHints = confirmation.revisionHints || [];
-    const taskType = confirmation.taskType?.trim() || '';
-    const status = confirmation.status?.trim() || '';
-    const labels = confirmation.labels;
-    const titleLabel = labels?.title || localizeText(lang, "Pre-execution confirmation", "\u6267\u884c\u524d\u786e\u8ba4", "\u57f7\u884c\u524d\u78ba\u8a8d");
-    const statusLabel = labels?.status || localizeText(lang, "Status", "\u72b6\u6001", "\u72c0\u614b");
-    const targetPathsLabel = labels?.target_paths || localizeText(lang, "Target paths", "\u76ee\u6807\u8def\u5f84", "\u76ee\u6a19\u8def\u5f91");
-    const plannedActionsLabel = labels?.planned_actions || localizeText(lang, "Planned actions", "\u8ba1\u5212\u64cd\u4f5c", "\u8a08\u5283\u64cd\u4f5c");
-    const riskFlagsLabel = labels?.risk_flags || localizeText(lang, "Risk flags", "\u98ce\u9669\u6807\u8bb0", "\u98a8\u96aa\u6a19\u8a18");
-    const revisionHintsLabel = labels?.revision_hints || localizeText(lang, "Revision hints", "\u4fee\u8ba2\u63d0\u793a", "\u4fee\u8a02\u63d0\u793a");
-    return (
-        <div
-            data-testid="confirmation-card"
-            style={{
-                marginTop: "8px",
-                padding: "10px 12px",
-                borderRadius: "8px",
-                border: `1px solid ${t.inputBarBorder}`,
-                background: t.fieldBg,
-            }}
-        >
-            <div style={{ color: t.headingColor, fontWeight: 700, marginBottom: "6px" }}>
-                {taskType ? `${titleLabel} - ${formatConfirmationTaskType(taskType, lang)}` : titleLabel}
-            </div>
-            {status && (
-                <div data-testid="confirmation-status" style={{ color: t.fieldLabel, fontSize: "11px", marginBottom: "6px" }}>
-                    {statusLabel}: {formatConfirmationStatus(status, lang)}
-                </div>
-            )}
-            <div data-testid="confirmation-summary" style={{ color: t.text, whiteSpace: "pre-wrap", overflowWrap: "break-word" }}>
-                {renderContentWithCodeBlocks(confirmation.summary, t)}
-            </div>
-            {renderConfirmationList("confirmation-target-paths", targetPathsLabel, targetPaths, t)}
-            {renderConfirmationList("confirmation-planned-actions", plannedActionsLabel, plannedActions, t)}
-            {renderConfirmationList("confirmation-risk-flags", riskFlagsLabel, riskFlags, t)}
-            {renderConfirmationList("confirmation-revision-hints", revisionHintsLabel, revisionHints, t)}
-            {actions && actions.length > 0 && renderActions(actions, executeAction, t, lang)}
-        </div>
-    );
-}
-
-function formatConfirmationStatus(status: string, lang: string): string {
-    const normalized = status.trim().toLowerCase();
-    const labels: Record<string, string> = {
-        pending: localizeText(lang, "Pending", "\u5f85\u786e\u8ba4", "\u5f85\u78ba\u8a8d"),
-        running: localizeText(lang, "Running", "\u6267\u884c\u4e2d", "\u57f7\u884c\u4e2d"),
-        confirmed: localizeText(lang, "Confirmed", "\u5df2\u786e\u8ba4", "\u5df2\u78ba\u8a8d"),
-        cancelled: localizeText(lang, "Cancelled", "\u5df2\u53d6\u6d88", "\u5df2\u53d6\u6d88"),
-        canceled: localizeText(lang, "Cancelled", "\u5df2\u53d6\u6d88", "\u5df2\u53d6\u6d88"),
-        expired: localizeText(lang, "Expired", "\u5df2\u8fc7\u671f", "\u5df2\u904e\u671f"),
-    };
-    return labels[normalized] || status;
-}
-
-function formatConfirmationTaskType(taskType: string, lang: string): string {
-    const normalized = taskType.trim().toLowerCase();
-    const labels: Record<string, string> = {
-        coding: localizeText(lang, "Coding", "\u4ee3\u7801\u4efb\u52a1", "\u7a0b\u5f0f\u78bc\u4efb\u52d9"),
-        ssh: localizeText(lang, "SSH", "\u8fdc\u7a0b\u4efb\u52a1", "\u9060\u7aef\u4efb\u52d9"),
-        ambiguous: localizeText(lang, "Ambiguous", "\u5f85\u6f84\u6e05\u4efb\u52a1", "\u5f85\u91d0\u6e05\u4efb\u52d9"),
-    };
-    return labels[normalized] || taskType;
-}
 
 function formatUnfinishedSlotStatus(status: string, lang: string) {
     const key = status.trim().toLowerCase();
@@ -1643,6 +1554,14 @@ export function renderMessage(
     /** Plain object after the live action (model or tool). Sheen stays on the action. */
     liveReasoningObject?: string,
 ): React.ReactNode {
+    // The confirmation card lives in its own module to keep this file under the
+    // 2000-line UI guard cap; it receives its renderers by injection so that
+    // module stays a leaf (importing back would be a cycle).
+    const confirmationCardDeps: ConfirmationCardDeps = {
+        renderContentWithCodeBlocks,
+        renderInlineMarkdown,
+        renderActions,
+    };
     switch (msg.role) {
         case "user":
             const isGuideInjection = msg.kind === "guideInjection";
@@ -1844,7 +1763,7 @@ export function renderMessage(
                             }
                             return renderContentWithCodeBlocks(formattedContent, t);
                         })()}
-                        {msg.confirmation && renderConfirmationCard(msg.confirmation, msg.actions, executeAction, t, lang)}
+                        {msg.confirmation && renderConfirmationCard(confirmationCardDeps, msg.confirmation, msg.actions, executeAction, t, lang)}
                         {msg.unfinishedSlot && renderUnfinishedSlotCard(msg.unfinishedSlot, executeAction, t, lang)}
                         {msg.recoverableSession && renderRecoverableSessionCard(msg.recoverableSession, executeAction, t, lang)}
                         {msg.recordingSession && (
@@ -1934,24 +1853,54 @@ export function renderMessage(
                 </div>
             );
         case "error":
-            return (
-                <div key={msg.id} role="alert" data-testid={`assistant-chat-error-${msg.id}`} style={{ display: "flex", justifyContent: "flex-start", margin: "10px 0" }}>
-                    <div style={{
-                        maxWidth: "84%",
-                        boxSizing: "border-box",
-                        color: t.errorText,
-                        background: t.errorBg,
-                        border: `1px solid ${t.errorBorder}`,
-                        padding: "8px 12px",
-                        borderRadius: "8px",
-                        fontSize: "12px",
-                        lineHeight: 1.55,
-                        overflowWrap: "break-word",
-                    }}>
-                        {prepareChatBodyForDisplay(localizeAIAssistantError(msg.content, lang))}
+            {
+                const description = describeAIAssistantError(localizeAIAssistantError(msg.content, lang), lang);
+                if (!description.title) return null;
+                return (
+                    // role="alert" lives on the content bubble, not this full-width flex
+                    // wrapper: App.css gives every [role='alert'] a background+border, which
+                    // would paint a full-width pink strip behind the compact bubble.
+                    <div key={msg.id} data-testid={`assistant-chat-error-${msg.id}`} style={{ display: "flex", justifyContent: "flex-start", margin: "10px 0" }}>
+                        <div role="alert" data-testid={`assistant-error-bubble-${msg.id}`} style={{
+                            maxWidth: "84%",
+                            width: "fit-content",
+                            boxSizing: "border-box",
+                            display: "flex",
+                            alignItems: "flex-start",
+                            gap: 8,
+                            color: t.errorText,
+                            background: t.errorBg,
+                            border: `1px solid ${t.errorBorder}`,
+                            padding: "8px 12px",
+                            borderRadius: 10,
+                            fontSize: "12px",
+                            lineHeight: 1.55,
+                            overflowWrap: "break-word",
+                        }}>
+                            <span aria-hidden="true" style={{ flex: "0 0 auto", display: "inline-flex", marginTop: 2 }}>
+                                <StatusGlyph kind="error" size={13} color={t.errorText} />
+                            </span>
+                            {/* Inner testids must not start with "assistant-chat-error-": App.css scopes
+                                margin rules to that prefix and would override the compact inner layout. */}
+                            <span style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 2 }}>
+                                <span data-testid={`assistant-error-title-${msg.id}`} style={{ fontWeight: 600, color: t.errorText }}>
+                                    {prepareChatBodyForDisplay(description.title)}
+                                </span>
+                                {description.detail && (
+                                    <span data-testid={`assistant-error-detail-${msg.id}`} style={{ color: t.text }}>
+                                        {prepareChatBodyForDisplay(description.detail)}
+                                    </span>
+                                )}
+                                {description.hint && (
+                                    <span data-testid={`assistant-error-hint-${msg.id}`} style={{ color: t.textMuted, fontSize: 11 }}>
+                                        {description.hint}
+                                    </span>
+                                )}
+                            </span>
+                        </div>
                     </div>
-                </div>
-            );
+                );
+            }
         default:
             return null;
     }

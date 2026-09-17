@@ -297,6 +297,7 @@ func (a *App) SaveExpert(expertJSON string) (string, error) {
 		return "", err
 	}
 	invalidateExpertDefCache(def.ID)
+	a.emitEvent(EventExpertsChanged)
 	localOnly, localOnlyErr := defaultExpertStore.IsLocalOnly(def.ID)
 	if localOnlyErr != nil {
 		log.Printf("[experts] inspect local-only state %q failed: %v", def.ID, localOnlyErr)
@@ -357,6 +358,7 @@ func (a *App) DeleteExpert(id string) error {
 		return err
 	}
 	invalidateExpertDefCache(id)
+	a.emitEvent(EventExpertsChanged)
 	deletedAt, markErr := defaultExpertStore.MarkPendingHubDelete(id)
 	if markErr != nil {
 		log.Printf("[experts] mark pending Hub delete %q failed: %v", id, markErr)
@@ -386,6 +388,7 @@ func (a *App) ResetBuiltinExpert(id string) error {
 		return err
 	}
 	invalidateExpertDefCache(id)
+	a.emitEvent(EventExpertsChanged)
 	return nil
 }
 

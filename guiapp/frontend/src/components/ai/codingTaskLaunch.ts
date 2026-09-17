@@ -42,6 +42,8 @@ export interface CodingTaskLaunch {
     remoteSafety?: "diagnosis";
     /** True only when SSH must be re-established before task intents may run. */
     remoteNeedsReconnect?: boolean;
+    /** Degradation note from CreateTaskUnified (workflow start / remote prepare failed). */
+    warning?: string;
     /** Workflow template to start after its dedicated assistant tab is ready. */
     workflowType?: string;
     imPlatform?: string;
@@ -49,6 +51,12 @@ export interface CodingTaskLaunch {
     imIsGroup?: boolean;
     /** One-shot local context shown after a task-management creation. */
     newTaskContext?: NewTaskContext;
+    /**
+     * Wizard「无工作流」handoff: the auto-sent first message carries
+     * no_workflow_interception so workflow semantic interception/starts are
+     * skipped for it (additive; absent = unchanged behavior).
+     */
+    noWorkflowInterception?: boolean;
 }
 
 /** Coerce untrusted Wails/event payloads into the one safe launch contract. */
@@ -90,10 +98,12 @@ export function normalizeCodingTaskLaunch(input: Partial<CodingTaskLaunch> | nul
             : undefined,
         // A local task must never inherit a stale reconnect flag.
         remoteNeedsReconnect: agentMode === "remote_coding_dev" ? input?.remoteNeedsReconnect === true : undefined,
+        warning: String(input?.warning || "").trim() || undefined,
         workflowType: String(input?.workflowType || "").trim() || undefined,
         imPlatform: String(input?.imPlatform || "").trim() || undefined,
         imTargetUID: String(input?.imTargetUID || "").trim() || undefined,
         imIsGroup: input?.imIsGroup === true,
         newTaskContext,
+        noWorkflowInterception: input?.noWorkflowInterception === true,
     };
 }

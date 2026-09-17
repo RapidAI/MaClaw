@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"fmt"
+	"log"
 	"reflect"
 	"sync"
 	"time"
@@ -14,7 +15,14 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
-const llmRuntimeCacheTTL = 3 * time.Second
+// llmRuntimeCacheTTL bounds how long a cached registry survives without a
+// invalidation signal. Registries are multi-MB JSON documents (tens of MB in
+// production), so re-reading and re-unmarshalling on a short TTL dominates hub
+// CPU when many machines poll service-account endpoints. Every mutation path
+// (card store, provider config, credit billing, system-free, …) calls
+// invalidateLLMRuntimeCaches, so a long TTL only delays convergence for
+// changes written through paths that missed invalidation wiring.
+const llmRuntimeCacheTTL = 60 * time.Second
 
 type llmRuntimeCacheState struct {
 	mu           sync.RWMutex
@@ -100,6 +108,15 @@ func loadCachedLLMServiceRegistry(ctx context.Context, system store.SystemSettin
 	}
 	reg, err := llmservice.LoadRegistry(ctx, system)
 	if err == nil && reg != nil {
+		ledgerBefore := len(reg.BillingLedger)
+		llmservice.TrimBillingLedgerForRegistry(reg)
+		// Persist the shrink so the multi-MB registry row converges instead of
+		// re-parsing the full append-only ledger on every reload.
+		if len(reg.BillingLedger) != ledgerBefore {
+			if saveErr := llmservice.SaveRegistry(ctx, system, reg); saveErr != nil {
+				log.Printf("[llm-runtime-cache] trim billing ledger persist failed: %v", saveErr)
+			}
+		}
 		// One-shot repair for historical metered grants that were queued behind
 		// an active grant under the old redeem policy. After promote+save, later
 		// loads see StartsAt <= now and skip this path.
@@ -158,17 +175,52 @@ func invalidateLLMEntitlementCaches(system store.SystemSettingsRepository) {
 	globalLLMRuntimeCache.mu.Unlock()
 }
 
+// llmRuntimeCacheKey returns a stable identity for a settings repository.
+// Handlers wrap the root repository in per-request decorators
+// (tenantScopedSystemSettings, userReferralMetricSystemSettings), so keying on
+// the wrapper itself — or formatting a wrapper struct with %v — produces a new
+// key per request and silently disables the cache. Unwrap to the root
+// repository and key on its pointer plus the tenant scope.
 func llmRuntimeCacheKey(system store.SystemSettingsRepository) string {
-	rv := reflect.ValueOf(system)
-	if !rv.IsValid() {
+	if system == nil {
 		return "<nil>"
 	}
+	tenantID := ""
+	root := system
+	for root != nil {
+		switch v := root.(type) {
+		case tenantScopedSystemSettings:
+			if tenantID == "" {
+				tenantID = v.tenantID
+			}
+			root = v.base
+		case *tenantScopedSystemSettings:
+			if tenantID == "" {
+				tenantID = v.tenantID
+			}
+			root = v.base
+		case userReferralMetricSystemSettings:
+			root = v.SystemSettingsRepository
+		case *userReferralMetricSystemSettings:
+			root = v.SystemSettingsRepository
+		default:
+			goto unwrapped
+		}
+	}
+unwrapped:
+	if root == nil {
+		if tenantID == "" {
+			return "<nil>"
+		}
+		return tenantID + "|<nil>"
+	}
+	rv := reflect.ValueOf(root)
+	var ptr uintptr
 	switch rv.Kind() {
 	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan:
-		return fmt.Sprintf("%T:%x", system, rv.Pointer())
-	default:
-		return fmt.Sprintf("%T:%v", system, system)
+		ptr = rv.Pointer()
 	}
+	return fmt.Sprintf("%s|%T:%x", tenantID, root, ptr)
 }
 
 func cloneLLMProviderRegistry(reg *im.LLMProviderRegistry) *im.LLMProviderRegistry {

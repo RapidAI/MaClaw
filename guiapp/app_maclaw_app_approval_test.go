@@ -13,6 +13,30 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 )
 
+// pinApprovalWorkflowTestLLMConfig selects a loopback no-auth LLM provider so
+// skill runs that start the default-on GUI OpenAI proxy (corelib.NeedsOpenAIProxyAuto)
+// pass upstream validation instead of inheriting the machine's real provider.
+func pinApprovalWorkflowTestLLMConfig(t *testing.T, app *App) {
+	t.Helper()
+	llmServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-approval-test","object":"chat.completion","model":"approval-test-model","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	t.Cleanup(llmServer.Close)
+	providers := []corelib.MaclawLLMProvider{{
+		Name:          "ApprovalWorkflowTestLLM",
+		URL:           llmServer.URL,
+		Model:         "approval-test-model",
+		Protocol:      "openai",
+		IsCustom:      true,
+		AuthType:      "none",
+		ContextLength: 16000,
+	}}
+	if err := app.SaveMaclawLLMProviders(providers, "ApprovalWorkflowTestLLM"); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
+	}
+}
+
 func TestApplyMaclawAppDataSrvTestEvidenceMetadataPromotesNestedApprovalResultPackage(t *testing.T) {
 	metadata := map[string]interface{}{}
 	testEvidence := map[string]any{
@@ -512,6 +536,7 @@ func TestMaclawAppDependencyRepairAllowsInstallAndWorkflowRun(t *testing.T) {
 	}
 
 	workflowJSON := `{"approval_instance":{"status":"approved","lane":"handled","workflow_instance_id":"wf-repaired-1","approval_id":"approval-repaired-1","record_id":"expense-repaired-1","dataset_id":"finance.expense_forms","object_role":"expense_report","workflow_skill_id":"expense-workflow","workflow_version":"2.0.0","workflow_node_id":"expense.result","workflow_node_ids":["expense.submit","manager.approval","expense.result"],"workflow_decision_id":"decision-repaired-1","business_status":"finance_approved","result_status":"approved","result":"approved after dependency repair","result_payload":{"approval_result":"approved","business_status":"finance_approved","business_record":{"id":"expense-repaired-1","status":"finance_approved"},"text":"approved after dependency repair"},"outputs":[{"type":"content","title":"Workflow Decision","text":"approved after dependency repair","status":"approved"}]}}`
+	pinApprovalWorkflowTestLLMConfig(t, app)
 	workflowResultPath := filepath.Join(tmpHome, "workflow-repaired-result.txt")
 	if err := os.WriteFile(workflowResultPath, []byte("workflow_result="+workflowJSON+"\n"), 0o644); err != nil {
 		t.Fatalf("write workflow result fixture: %v", err)
@@ -1828,6 +1853,7 @@ func TestStartMaclawAppApprovalWorkflowRunsWorkflowSkillResult(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	app.skillExecutor = NewSkillExecutor(app, nil, nil)
 	workflowJSON := `{"progress_instances":[{"status":"pending","workflow_instance_id":"wf-runner-1","approval_id":"approval-runner-1","record_id":"expense-runner-1","dataset_id":"finance.expense_forms","object_role":"expense_report","workflow_skill_id":"expense-workflow","workflow_version":"2.0.0","workflow_node_id":"manager.approval","workflow_node_ids":["expense.submit","manager.approval"],"current_assignee":"manager","current_assignee_type":"user","business_status":"finance_pending","result_status":"running","result":"manager review started","result_payload":{"text":"manager review started","business_record":{"id":"expense-runner-1","status":"finance_pending"}},"outputs":[{"type":"content","title":"Workflow Progress","text":"manager review started","status":"running"}]}],"approval_instance":{"status":"approved","lane":"handled","workflow_instance_id":"wf-runner-1","approval_id":"approval-runner-1","record_id":"expense-runner-1","dataset_id":"finance.expense_forms","object_role":"expense_report","workflow_skill_id":"expense-workflow","workflow_version":"2.0.0","workflow_node_id":"expense.result","workflow_node_ids":["expense.submit","manager.approval","expense.result"],"workflow_decision_id":"decision-runner-1","business_status":"finance_approved","result_status":"approved","result":"approved by workflow skill","result_payload":{"approval_result":"approved","business_status":"finance_approved","business_record":{"id":"expense-runner-1","status":"finance_approved"},"text":"approved by workflow skill"},"outputs":[{"type":"content","title":"Workflow Decision","text":"approved by workflow skill"},{"type":"artifact","title":"Workflow PDF","artifact":{"id":"runner-pdf","name":"runner-approved.pdf","uri":"artifact://runner/approved.pdf","status":"ready"}}],"artifacts":[{"id":"runner-pdf","name":"runner-approved.pdf","uri":"artifact://runner/approved.pdf","status":"ready"}]}}`
+	pinApprovalWorkflowTestLLMConfig(t, app)
 	workflowResultPath := filepath.Join(app.testHomeDir, "workflow-result.txt")
 	if err := os.WriteFile(workflowResultPath, []byte("workflow_result="+workflowJSON+"\n"), 0o644); err != nil {
 		t.Fatalf("write workflow result fixture: %v", err)
@@ -2014,6 +2040,7 @@ func TestStartMaclawAppApprovalWorkflowRunsAttentionViewOnlyWorkflowResult(t *te
 	app := &App{testHomeDir: t.TempDir()}
 	app.skillExecutor = NewSkillExecutor(app, nil, nil)
 	workflowJSON := `{"approval_instance":{"status":"attention","lane":"attention","workflow_instance_id":"wf-attn-runner-1","approval_id":"approval-attn-runner-1","record_id":"expense-attn-runner-1","dataset_id":"finance.expense_forms","object_role":"expense_report","workflow_skill_id":"expense-workflow","workflow_version":"2.0.0","workflow_node_id":"expense.attention","workflow_node_ids":["expense.submit","manager.approval","expense.attention"],"business_status":"finance_attention","result_status":"attention","result":"invoice missing, view only","result_payload":{"approval_result":"attention","business_status":"finance_attention","business_record":{"id":"expense-attn-runner-1","status":"finance_attention"},"text":"invoice missing, view only"},"outputs":[{"type":"content","title":"Needs attention","text":"invoice missing, view only","status":"attention"}]}}`
+	pinApprovalWorkflowTestLLMConfig(t, app)
 	workflowResultPath := filepath.Join(app.testHomeDir, "workflow-attention-result.txt")
 	if err := os.WriteFile(workflowResultPath, []byte("workflow_result="+workflowJSON+"\n"), 0o644); err != nil {
 		t.Fatalf("write workflow attention result fixture: %v", err)
@@ -2164,6 +2191,7 @@ func TestStartMaclawAppApprovalWorkflowRunsRejectedWorkflowResult(t *testing.T) 
 	app := &App{testHomeDir: t.TempDir()}
 	app.skillExecutor = NewSkillExecutor(app, nil, nil)
 	workflowJSON := `{"approval_instance":{"status":"rejected","lane":"handled","workflow_instance_id":"wf-reject-runner-1","approval_id":"approval-reject-runner-1","record_id":"expense-reject-runner-1","dataset_id":"finance.expense_forms","object_role":"expense_report","workflow_skill_id":"expense-workflow","workflow_version":"2.0.0","workflow_node_id":"expense.result","workflow_node_ids":["expense.submit","manager.approval","expense.result"],"workflow_decision_id":"decision-reject-runner-1","business_status":"finance_rejected","result_status":"rejected","result":"rejected by policy","result_payload":{"approval_result":"rejected","business_status":"finance_rejected","business_record":{"id":"expense-reject-runner-1","status":"finance_rejected"},"text":"rejected by policy"},"outputs":[{"type":"content","title":"Workflow Decision","text":"rejected by policy","status":"rejected"}]}}`
+	pinApprovalWorkflowTestLLMConfig(t, app)
 	workflowResultPath := filepath.Join(app.testHomeDir, "workflow-rejected-result.txt")
 	if err := os.WriteFile(workflowResultPath, []byte("workflow_result="+workflowJSON+"\n"), 0o644); err != nil {
 		t.Fatalf("write workflow rejected result fixture: %v", err)
@@ -2321,6 +2349,7 @@ func TestStartMaclawAppApprovalWorkflowRunsTimeoutWorkflowResult(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	app.skillExecutor = NewSkillExecutor(app, nil, nil)
 	workflowJSON := `{"approval_instance":{"status":"timeout","lane":"handled","workflow_instance_id":"wf-timeout-runner-1","approval_id":"approval-timeout-runner-1","record_id":"expense-timeout-runner-1","dataset_id":"finance.expense_forms","object_role":"expense_report","workflow_skill_id":"expense-workflow","workflow_version":"2.0.0","workflow_node_id":"expense.timeout","workflow_node_ids":["expense.submit","manager.approval","expense.timeout"],"workflow_decision_id":"decision-timeout-runner-1","business_status":"approval_timeout","result_status":"timeout","result":"approval timed out","result_payload":{"approval_result":"timeout","business_status":"approval_timeout","business_record":{"id":"expense-timeout-runner-1","status":"approval_timeout"},"text":"approval timed out"},"outputs":[{"type":"content","title":"Workflow Timeout","text":"approval timed out","status":"timeout"}]}}`
+	pinApprovalWorkflowTestLLMConfig(t, app)
 	workflowResultPath := filepath.Join(app.testHomeDir, "workflow-timeout-result.txt")
 	if err := os.WriteFile(workflowResultPath, []byte("workflow_result="+workflowJSON+"\n"), 0o644); err != nil {
 		t.Fatalf("write workflow timeout result fixture: %v", err)
@@ -2478,6 +2507,7 @@ func TestStartMaclawAppApprovalWorkflowRunsCancelledWorkflowResult(t *testing.T)
 	app := &App{testHomeDir: t.TempDir()}
 	app.skillExecutor = NewSkillExecutor(app, nil, nil)
 	workflowJSON := `{"approval_instance":{"status":"cancelled","lane":"handled","workflow_instance_id":"wf-cancel-runner-1","approval_id":"approval-cancel-runner-1","record_id":"expense-cancel-runner-1","dataset_id":"finance.expense_forms","object_role":"expense_report","workflow_skill_id":"expense-workflow","workflow_version":"2.0.0","workflow_node_id":"expense.cancelled","workflow_node_ids":["expense.submit","manager.approval","expense.cancelled"],"workflow_decision_id":"decision-cancel-runner-1","business_status":"approval_cancelled","result_status":"cancelled","result":"approval cancelled by requester","result_payload":{"approval_result":"cancelled","business_status":"approval_cancelled","business_record":{"id":"expense-cancel-runner-1","status":"approval_cancelled"},"text":"approval cancelled by requester"},"outputs":[{"type":"content","title":"Workflow Cancelled","text":"approval cancelled by requester","status":"cancelled"}]}}`
+	pinApprovalWorkflowTestLLMConfig(t, app)
 	workflowResultPath := filepath.Join(app.testHomeDir, "workflow-cancelled-result.txt")
 	if err := os.WriteFile(workflowResultPath, []byte("workflow_result="+workflowJSON+"\n"), 0o644); err != nil {
 		t.Fatalf("write workflow cancelled result fixture: %v", err)
@@ -2635,6 +2665,7 @@ func TestStartMaclawAppApprovalWorkflowRunsRequiresInputWorkflowResult(t *testin
 	app := &App{testHomeDir: t.TempDir()}
 	app.skillExecutor = NewSkillExecutor(app, nil, nil)
 	workflowJSON := `{"approval_instance":{"status":"requires_input","workflow_instance_id":"wf-input-runner-1","approval_id":"approval-input-runner-1","record_id":"expense-input-runner-1","dataset_id":"finance.expense_forms","object_role":"expense_report","workflow_skill_id":"expense-workflow","workflow_version":"2.0.0","workflow_node_id":"expense.require_input","workflow_node_ids":["expense.submit","expense.require_input"],"workflow_decision_id":"decision-input-runner-1","business_status":"waiting_for_requester","result_status":"requires_input","result":"missing invoice attachment","result_payload":{"approval_result":"requires_input","business_status":"waiting_for_requester","requires_input":{"fields":["invoice_attachment"],"message":"missing invoice attachment"},"business_record":{"id":"expense-input-runner-1","status":"waiting_for_requester"},"text":"missing invoice attachment"},"outputs":[{"type":"content","kind":"requires_input","title":"Missing materials","text":"missing invoice attachment","status":"requires_input"}]}}`
+	pinApprovalWorkflowTestLLMConfig(t, app)
 	workflowResultPath := filepath.Join(app.testHomeDir, "workflow-requires-input-result.txt")
 	if err := os.WriteFile(workflowResultPath, []byte("workflow_result="+workflowJSON+"\n"), 0o644); err != nil {
 		t.Fatalf("write workflow requires_input result fixture: %v", err)
@@ -2793,6 +2824,7 @@ func TestStartMaclawAppApprovalWorkflowContinuesRequiresInputWithSupplement(t *t
 	app := &App{testHomeDir: t.TempDir()}
 	app.skillExecutor = NewSkillExecutor(app, nil, nil)
 	workflowJSON := `{"approval_instance":{"status":"approved","lane":"handled","workflow_instance_id":"wf-input-runner-2","approval_id":"approval-input-runner-2","record_id":"expense-input-runner-2","dataset_id":"finance.expense_forms","object_role":"expense_report","workflow_skill_id":"expense-workflow","workflow_version":"2.0.0","workflow_node_id":"expense.result","workflow_node_ids":["expense.require_input","manager.approval","expense.result"],"workflow_decision_id":"decision-input-runner-2","business_status":"finance_approved","result_status":"approved","result":"approved after supplemental input","result_payload":{"approval_result":"approved","business_status":"finance_approved","business_record":{"id":"expense-input-runner-2","status":"finance_approved"},"text":"approved after supplemental input"},"outputs":[{"type":"content","title":"Workflow Decision","text":"approved after supplemental input","status":"approved"}]}}`
+	pinApprovalWorkflowTestLLMConfig(t, app)
 	workflowResultPath := filepath.Join(app.testHomeDir, "workflow-supplement-approved-result.txt")
 	if err := os.WriteFile(workflowResultPath, []byte("workflow_result="+workflowJSON+"\n"), 0o644); err != nil {
 		t.Fatalf("write workflow supplement result fixture: %v", err)

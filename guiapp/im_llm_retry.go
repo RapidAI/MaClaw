@@ -115,7 +115,7 @@ func (h *IMMessageHandler) retryAgentLoopLLMRequestAdaptive(
 			}
 		}
 		retryMetrics := &llmStreamMetrics{}
-		result.Response, result.Err = h.doLLMRequestStream(reqCtx, cfg, conversation, tools, httpClient, onToken, retryMetrics)
+		result.Response, result.Err = h.doLLMRequestStream(reqCtx, cfg, llmEndpointCategoryMainStream, conversation, tools, httpClient, onToken, retryMetrics)
 		markLLMRetryResponse(result, retryMetrics)
 		if !firstRequestMarked || firstRequestMetrics.RequestBuildElapsed == 0 {
 			firstRequestMetrics.AddStreamMetrics(retryMetrics)
@@ -177,7 +177,7 @@ func (h *IMMessageHandler) retryAgentLoopLLMRequestFallback(
 			}
 		}
 		retryMetrics := &llmStreamMetrics{}
-		result.Response, result.Err = h.doLLMRequestStream(reqCtx, cfg, conversation, tools, httpClient, onToken, retryMetrics)
+		result.Response, result.Err = h.doLLMRequestStream(reqCtx, cfg, llmEndpointCategoryMainStream, conversation, tools, httpClient, onToken, retryMetrics)
 		markLLMRetryResponse(result, retryMetrics)
 		firstRequestMetrics.AddStreamMetrics(retryMetrics)
 		if result.Err == nil && streamDoneCallback != nil {

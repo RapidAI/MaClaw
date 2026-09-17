@@ -60,6 +60,11 @@ type UserMessage struct {
 	// format: UserID, request text, model calls and transport metadata must not
 	// be able to manufacture a semantic Coding task relation.
 	CodingTaskIngressToken string `json:"-"`
+	// NoWorkflowInterception is a one-shot host flag attached by a trusted
+	// desktop wizard handoff (workflow = "none"): the message must bypass
+	// workflow semantic interception/starts entirely. It is in-process only
+	// (`json:"-"`) and never inferred from message text.
+	NoWorkflowInterception bool `json:"-"`
 	// DeliveryTarget is the server-owned current-channel destination available
 	// to a planned delivery selection. It is not an agent tool argument.
 	DeliveryTarget *DeliveryTarget `json:"-"`

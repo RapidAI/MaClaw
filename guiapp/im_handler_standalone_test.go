@@ -333,6 +333,10 @@ func TestHandleIMMessage_TaskContextSwitchSignalsClearUI(t *testing.T) {
 		{Role: "user", Content: "旧任务：推荐一个大模型"},
 		{Role: "assistant", Content: "建议部署 Qwen3.5-122B-A10B"},
 	})
+	// Foreground turns no longer consult the LLM classifier for ambiguous
+	// task switches (ResolveFast preserves context); an explicit user
+	// cancellation of the previous task is the supported ClearUI boundary.
+	h.markTaskCancelledByUser("u-clear")
 
 	resp := h.HandleIMMessage(IMUserMessage{
 		UserID:   "u-clear",

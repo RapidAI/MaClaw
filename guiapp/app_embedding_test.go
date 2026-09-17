@@ -186,7 +186,7 @@ func TestBuildUICLLMContextFuncSendsStrictStructuredIntentContract(t *testing.T)
 		t.Fatalf("SaveConfig: %v", err)
 	}
 
-	response, err := app.buildUICLLMContextFunc()(context.Background(), "classify", "北京天气，输出格式化PDF报告")
+	response, err := app.buildUICLLMContextFunc()(context.Background(), context.Background(), "classify", "北京天气，输出格式化PDF报告")
 	if err != nil {
 		t.Fatalf("classifier callback: %v", err)
 	}
@@ -221,14 +221,14 @@ func TestBuildUICLLMContextFuncPreservesStructuredIntentContractForConservativeR
 	app := &App{testHomeDir: t.TempDir()}
 	if err := app.SaveConfig(corelib.AppConfig{
 		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
-			ID: "test", Name: "Qwen", URL: server.URL, Key: "test-key", Model: "qwen-coder", Protocol: "openai", WireAPI: "responses",
+			ID: "test-responses", Name: "ResponsesTest", URL: server.URL, Key: "test-key", Model: "qwen-coder", Protocol: "openai", WireAPI: "responses",
 		}},
-		MaclawLLMCurrentProvider: "Qwen",
+		MaclawLLMCurrentProvider: "ResponsesTest",
 	}); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
 
-	response, err := app.buildUICLLMContextFunc()(context.Background(), "classify", "北京天气，输出格式化PDF报告")
+	response, err := app.buildUICLLMContextFunc()(context.Background(), context.Background(), "classify", "北京天气，输出格式化PDF报告")
 	if err != nil || response == "" {
 		t.Fatalf("classifier callback response=%q err=%v", response, err)
 	}
@@ -305,18 +305,18 @@ func TestBuildUICLLMContextFuncOwnDeadlineDoesNotTripEndpointGate(t *testing.T) 
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	if _, err := app.buildUICLLMContextFunc()(ctx, "classify", "杭州天气，生成pdf报告"); err == nil {
+	if _, err := app.buildUICLLMContextFunc()(ctx, context.Background(), "classify", "杭州天气，生成pdf报告"); err == nil {
 		t.Fatal("want deadline error from the hanging server")
 	}
 	cfg := app.GetMaclawLLMConfig()
-	if _, skip := app.shouldSkipLightweightLLM(cfg); skip {
+	if _, skip := app.shouldSkipLightweightLLM(cfg, llmEndpointCategoryUICTree); skip {
 		t.Fatal("own fusion deadline must not trip the endpoint failure gate")
 	}
 
 	// The gate itself must still record genuine network failures (the exact
 	// dial error text is platform-dependent, so feed a canonical one directly).
-	app.observeLLMEndpointResult(cfg, fmt.Errorf("dial tcp 127.0.0.1:1: connectex: connection refused"))
-	if _, skip := app.shouldSkipLightweightLLM(cfg); !skip {
+	app.observeLLMEndpointResult(cfg, llmEndpointCategoryUICTree, false, fmt.Errorf("dial tcp 127.0.0.1:1: connectex: connection refused"))
+	if _, skip := app.shouldSkipLightweightLLM(cfg, llmEndpointCategoryUICTree); !skip {
 		t.Fatal("genuine network failure must trip the endpoint failure gate")
 	}
 }

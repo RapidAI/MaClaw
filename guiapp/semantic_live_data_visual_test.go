@@ -19,8 +19,16 @@ func TestLiveDataVisualPlansClosedArtifactPipeline(t *testing.T) {
 		"user-1", "生成一张北京天气实况图", "desktop", "root-live-visual", "turn-live-visual", liveDataVisualClassification(), nil,
 	)
 	// The face is the declared search plus the retrieval bundle's web_fetch
-	// offer.
-	if err != nil || !handled || surface == nil || len(defs) != 2 {
+	// offer. baseline 工作区工具（read_file/write_file/bash 等）是规划器对
+	// 每个受管回合的固有注入，不计入这张脸。
+	baseline := semanticBaselineGrantNames(surface)
+	face := 0
+	for _, def := range defs {
+		if !baseline[extractToolName(def)] {
+			face++
+		}
+	}
+	if err != nil || !handled || surface == nil || face != 2 {
 		t.Fatalf("defs=%#v handled=%v surface=%#v err=%v", defs, handled, surface, err)
 	}
 	if !planHasCapabilities(surface.plan, "information.search.web", "visual.render.live_data", "artifact.deliver.current_channel") {
@@ -59,7 +67,14 @@ func TestLiveDataVisualHostClosesModelStopGap(t *testing.T) {
 	defs, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassificationAndAttachments(
 		"user-1", "生成一张北京天气实况图", "desktop", "root-live-visual-auto", "turn-live-visual-auto", liveDataVisualClassification(), nil,
 	)
-	if err != nil || !handled || surface == nil || len(defs) != 2 {
+	baseline := semanticBaselineGrantNames(surface)
+	face := 0
+	for _, def := range defs {
+		if !baseline[extractToolName(def)] {
+			face++
+		}
+	}
+	if err != nil || !handled || surface == nil || face != 2 {
 		t.Fatalf("defs=%#v handled=%v surface=%#v err=%v", defs, handled, surface, err)
 	}
 	searchName := semanticGrantNameForAdapter(surface, semanticTrustedWebSearchAdapter)

@@ -93,6 +93,17 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 		text := legacyToolSurfaceDeniedText(name)
 		return toolExecutionResult{Text: text, ToolName: name, ToolKind: classifyAgentToolKind(name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
 	}
+	// Absolute gateway policy rejects legacy-model MCP/skill selection before
+	// catalog/provision checks so the specific gateway signal is not masked by
+	// catalog_incomplete when no live reviewed adapter provision exists.
+	if isLegacyModelMCPGateway(tc.Function.Name) {
+		name := strings.TrimSpace(tc.Function.Name)
+		return toolExecutionResult{Text: legacyModelMCPGatewayDeniedText(), ToolName: name, ToolKind: classifyAgentToolKind(name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+	}
+	if isLegacyModelManageSkillGateway(tc.Function.Name, tc.Function.Arguments) {
+		name := strings.TrimSpace(tc.Function.Name)
+		return toolExecutionResult{Text: legacyModelManageSkillGatewayDeniedText(), ToolName: name, ToolKind: classifyAgentToolKind(name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+	}
 	if opts.LegacySurface.HasSnapshot() && !opts.LegacySurface.AllowsLiveProvision(tc.Function.Name) {
 		name := strings.TrimSpace(tc.Function.Name)
 		text := legacyAdapterCatalogDeniedText(name)
@@ -103,14 +114,6 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 			name := strings.TrimSpace(tc.Function.Name)
 			return toolExecutionResult{Text: legacyToolArgumentDeniedText(name, err), ToolName: name, ToolKind: classifyAgentToolKind(name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
 		}
-	}
-	if isLegacyModelMCPGateway(tc.Function.Name) {
-		name := strings.TrimSpace(tc.Function.Name)
-		return toolExecutionResult{Text: legacyModelMCPGatewayDeniedText(), ToolName: name, ToolKind: classifyAgentToolKind(name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
-	}
-	if isLegacyModelManageSkillGateway(tc.Function.Name, tc.Function.Arguments) {
-		name := strings.TrimSpace(tc.Function.Name)
-		return toolExecutionResult{Text: legacyModelManageSkillGatewayDeniedText(), ToolName: name, ToolKind: classifyAgentToolKind(name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
 	}
 	// Tool visibility is not an execution boundary: a model can still emit a
 	// stale/hallucinated computer_* call after a local attachment turn has
@@ -1101,6 +1104,16 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeContextAndContextTokens
 			}
 			if execCtx.Err() != nil {
 				return toolExecutionResult{Text: execCtx.Err().Error(), Outcome: toolOutcomeFailed, FailureKind: toolFailureHandlerReported}
+			}
+			// P0-4 credential gate: a knowledge write whose payload matches
+			// the authoritative secret scanner suspends here until the user
+			// approves the one-shot credential card. Covers every dispatch
+			// path (L3 main, Layer=4 local authorization, degraded
+			// continuation) since they all funnel through this function.
+			if credentialGatedKnowledgeWriteTool(name) {
+				if proceed, gateResult := h.credentialGateBlock(execCtx, policyUserID, name, argsJSON, userText); !proceed {
+					return gateResult
+				}
 			}
 			if tool.HandlerCtx != nil {
 				text := tool.HandlerCtx(execCtx, args, onProgress)

@@ -95,6 +95,35 @@ var managedSchemaGateBaseline = map[string]map[string]string{
 		"dataset_id":         reasonReadOnlyLegacyFamily,
 		"record_id":          reasonReadOnlyLegacyFamily,
 	},
+	// The database tool is the legacy multiplexer for business.data.mis: the
+	// model names the profile/connection/job/favorite it already listed and
+	// hands over an open statements payload, exactly like mis_data. The host
+	// profile store authorizes the connection itself, so identifiers have no
+	// per-subject host binding to close against; deleting these entries needs
+	// a trusted adapter whose schema carries only capability parameters.
+	"database": {
+		"connection_id":       reasonLegacyManagedFamily,
+		"favorite_id":         reasonLegacyManagedFamily,
+		"job_id":              reasonLegacyManagedFamily,
+		"profile_id":          reasonLegacyManagedFamily,
+		"file_path":           reasonLegacyManagedFamily,
+		"host":                reasonLegacyManagedFamily,
+		"statements[]":        reasonLegacyManagedFamily,
+		"statements[].params": reasonLegacyManagedFamily,
+	},
+	// The read-only projection carries the same crossings for the same
+	// reason, minus nothing the split removed: batch execution and the open
+	// statement payload stay on the write adapter only.
+	"database_query": {
+		"connection_id":       reasonReadOnlyLegacyFamily,
+		"favorite_id":         reasonReadOnlyLegacyFamily,
+		"job_id":              reasonReadOnlyLegacyFamily,
+		"profile_id":          reasonReadOnlyLegacyFamily,
+		"file_path":           reasonReadOnlyLegacyFamily,
+		"host":                reasonReadOnlyLegacyFamily,
+		"statements[]":        reasonReadOnlyLegacyFamily,
+		"statements[].params": reasonReadOnlyLegacyFamily,
+	},
 }
 
 // managedCallSurfaceSchemas returns every model-facing invocation schema the
@@ -219,8 +248,16 @@ func TestManagedCallSurfaceParameterAuthorizationIsComplete(t *testing.T) {
 // business state, and the two are not interchangeable debt.
 func TestManagedSchemaGateLegacySurfaceDoesNotGrow(t *testing.T) {
 	const (
-		reviewedLegacyCrossings         = 6
-		reviewedReadOnlyLegacyCrossings = 5
+		// mis_data contributes 6 and the database legacy multiplexer
+		// (corelib/database/tool.go, committed as the business.data.mis
+		// provider) contributes 8: profile/connection/job/favorite
+		// identifiers, host/file_path locations, and the open statements
+		// payload including its params object.
+		reviewedLegacyCrossings = 14
+		// mis_query contributes 5 and the database_query read-only
+		// projection contributes the same 8 crossings minus the write-only
+		// payload distinctions, i.e. all 8 of its published crossings.
+		reviewedReadOnlyLegacyCrossings = 13
 	)
 	closedByDesign := map[string]bool{
 		reasonWorkspaceConfinedLocation: true,

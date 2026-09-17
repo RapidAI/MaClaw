@@ -71,7 +71,7 @@ func HubUserUsageSyncHandler(hubService *hubs.Service, repo centerUserUsageRepo)
 			return
 		}
 		var req hubUserUsageSyncRequest
-		if err := decodeLimitedJSON(w, r, &req, defaultJSONBodyLimit); err != nil {
+		if err := decodeLimitedJSON(w, r, &req, userUsageSyncBodyLimit); err != nil {
 			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
 			return
 		}

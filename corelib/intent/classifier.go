@@ -72,6 +72,16 @@ type UnifiedIntentClassifier struct {
 	cache       sync.Map // map[string]*ClassificationResult
 	cacheEpoch  atomic.Uint64
 	fusionCache sync.Map // map[string]FusionResult — stores fusion details for diagnostics
+	// cacheSource records the provenance of each stored cache entry
+	// (CacheSourceTree / CacheSourceL2) so consumers can tell an adopted L3
+	// verdict apart from a local-only result without re-deriving it from Layer.
+	cacheSource sync.Map // map[string]string, keyed like cache
+	// cacheTombstones suppresses cache stores for one specific
+	// (UserID, Text, history) scope — key WITHOUT the epoch prefix — so a
+	// degraded-turn recovery can invalidate exactly one message instead of
+	// orphaning every user's cache via a global epoch bump. Values are expiry
+	// times; a hit drops the store (and the current entry for that key).
+	cacheTombstones sync.Map // map[string]time.Time
 
 	// Separate cache for ClassifyEmbeddingOnly results. Kept apart from the
 	// main cache so lower-quality L2-only results never satisfy full Classify
@@ -80,7 +90,12 @@ type UnifiedIntentClassifier struct {
 	embOnlyCount atomic.Int64
 
 	// lateTree is the single-flight set for background tree verdicts scheduled
-	// after a fusion-deadline timeout. Keys are classification cache keys.
+	// after a fusion-deadline timeout. Keys are epoch-agnostic classification
+	// scopes (UserID + Text + RecentHistory, i.e. cacheKeyScope(cacheKey)):
+	// detached slow-response reads, late-verdict re-runs, and P0-1
+	// reclassifications all guard on the same functional key so the first
+	// channel to claim a scope wins and never double-sends the same tree call
+	// across an epoch bump (P0-3).
 	lateTree sync.Map
 
 	// workflowCandidates is the set of IntentLabels that may trigger a
@@ -504,6 +519,14 @@ func (u *UnifiedIntentClassifier) ClassifyContext(ctx context.Context, msg Messa
 				ControlPlaneFailure: true,
 			}
 		}
+		// A budget timeout only degraded THIS turn. The tree verdict remains
+		// durable knowledge for the same classification input — including the
+		// tree-only path (no embedding), whose 30s budget is the design's slow-
+		// endpoint tier. Schedule the background verdict (single-flight: a
+		// detached read of the same payload is adopted instead of re-sent,
+		// P0-3); the fusion path below schedules the same scope again, which
+		// the claim deduplicates.
+		u.scheduleLateTreeVerdict(cacheKey, msg.Text)
 	}
 
 	// L3 is the route authority after an ambiguous L2 escalation. A search or
@@ -517,8 +540,12 @@ func (u *UnifiedIntentClassifier) ClassifyContext(ctx context.Context, msg Messa
 		result := lookupHintOrUnknownFromL2(l2Result, skipTree)
 		if skipTree {
 			// Policy skip is stable for this text, unlike an L3 timeout.
-			// cacheAndLog refuses all Degraded results; store the hint here.
-			u.cache.Store(cacheKey, &result)
+			// cacheAndLog refuses all Degraded results; store the hint here,
+			// subject to the same per-key tombstone guard as every other store.
+			if !u.cacheStoreSuppressed(cacheKey) {
+				u.cache.Store(cacheKey, &result)
+				u.cacheSource.Store(cacheKey, CacheSourceL2)
+			}
 		} else {
 			// A timeout only degraded THIS turn. The tree verdict remains
 			// durable knowledge for the same classification input: the user's
@@ -634,7 +661,7 @@ func classifyByTreeWithTimeout(parent context.Context, llmContextFn LLMClassifyC
 	}
 	ch := make(chan result, 1)
 	go func() {
-		candidates, err := ClassifyByTreeContext(ctx, llmContextFn, llmFn, treeText, text)
+		candidates, err := ClassifyByTreeContext(ctx, parent, llmContextFn, llmFn, treeText, text)
 		ch <- result{candidates: candidates, err: err}
 	}()
 	select {
@@ -703,6 +730,10 @@ func (u *UnifiedIntentClassifier) InvalidateCache() {
 		return true
 	})
 	u.embOnlyCount.Store(0)
+	u.cacheSource.Range(func(key, _ any) bool {
+		u.cacheSource.Delete(key)
+		return true
+	})
 }
 
 // ClassifyEmbeddingOnly performs L2 embedding-only classification without
@@ -927,6 +958,137 @@ func classificationCacheKey(epoch uint64, msg MessageContext) string {
 	return b.String()
 }
 
+// Cache provenance markers stored alongside cached classification entries.
+const (
+	// CacheSourceTree marks an entry whose Layer 3 (or fusion) verdict was
+	// adopted — durable routing knowledge that consumers may trust.
+	CacheSourceTree = "tree"
+	// CacheSourceL2 marks a local-only entry that never escalated to Layer 3.
+	CacheSourceL2 = "l2"
+)
+
+// CacheTombstoneTTL is how long a per-key tombstone suppresses cache stores
+// for one classification scope. Sized to the actual protection need: a late
+// verdict (≤30s) plus scheduling grace, well under one recovery
+// reclassification window (60s). A successful recovery lifts its tombstone
+// immediately, so the TTL only covers abandoned/failed recoveries.
+const CacheTombstoneTTL = 3 * time.Minute
+
+// cacheTombstoneSeq makes every armed tombstone unique even when two
+// AddCacheTombstone calls land in the same clock tick — the expiry alone is
+// not a safe disarm token (equal values would let one recovery disarm
+// another's guard via CompareAndDelete).
+var cacheTombstoneSeq atomic.Uint64
+
+// CacheTombstoneToken is the disarm token returned by AddCacheTombstone. It
+// identifies exactly one armed tombstone; pass it back to
+// RemoveCacheTombstone to lift only that tombstone.
+type CacheTombstoneToken struct {
+	expiry time.Time
+	seq    uint64
+}
+
+// cacheKeyScope strips the leading epoch segment from a cache key. Tombstones
+// deliberately exclude the epoch: epoch bumps already orphan cache entries
+// globally, while a tombstone must follow one message across epoch changes
+// until it expires.
+func cacheKeyScope(cacheKey string) string {
+	if i := strings.IndexByte(cacheKey, 0); i >= 0 {
+		return cacheKey[i+1:]
+	}
+	return cacheKey
+}
+
+// AddCacheTombstone invalidates exactly one classification scope: stores bound
+// to (UserID, Text, RecentHistory) stop being written (and the current entry
+// for the scope is dropped) until the tombstone expires. Late tree verdicts
+// scheduled before the tombstone are dropped by the same guard when they land.
+//
+// It returns a disarm token. Two degraded turns with the same text arm the
+// same scope concurrently; RemoveCacheTombstone only accepts the token it
+// returned, so each recovery disarms exactly its own tombstone and can never
+// drop a newer one armed by the other recovery.
+func (u *UnifiedIntentClassifier) AddCacheTombstone(msg MessageContext) CacheTombstoneToken {
+	cacheKey := classificationCacheKey(u.cacheEpoch.Load(), msg)
+	scope := cacheKeyScope(cacheKey)
+	token := CacheTombstoneToken{expiry: time.Now().Add(CacheTombstoneTTL), seq: cacheTombstoneSeq.Add(1)}
+	u.cacheTombstones.Store(scope, token)
+	u.cache.Delete(cacheKey)
+	u.cacheSource.Delete(cacheKey)
+	return token
+}
+
+// RemoveCacheTombstone lifts a scope's tombstone before its TTL, so stores
+// become cacheable again immediately. A successful P0-1 recovery calls this
+// once its fresh authoritative verdict is in hand — otherwise the scope
+// could not be cached (and every resend would re-pay the L3 call) for the
+// whole TTL. The token must be the value AddCacheTombstone returned for this
+// scope; a mismatched token (another recovery re-armed the scope in the
+// meantime) leaves the current tombstone untouched — CompareAndDelete, never
+// a bare Delete: a stale in-flight late verdict must not become cacheable
+// because an unrelated recovery disarmed someone else's guard.
+func (u *UnifiedIntentClassifier) RemoveCacheTombstone(msg MessageContext, token CacheTombstoneToken) {
+	cacheKey := classificationCacheKey(u.cacheEpoch.Load(), msg)
+	u.cacheTombstones.CompareAndDelete(cacheKeyScope(cacheKey), token)
+}
+
+// StoreRecoveredClassification stores an authoritative classification result
+// for msg as durable cache knowledge. The P0-1 recovery uses it after lifting
+// its tombstone: the fresh verdict's own store was suppressed during the
+// tombstone window, and re-sending the LLM just to warm the cache would burn
+// a call. A still-tombstoned scope (e.g. a newer recovery pass re-raised one)
+// is left alone rather than fought.
+func (u *UnifiedIntentClassifier) StoreRecoveredClassification(msg MessageContext, result ClassificationResult) {
+	if result.Degraded {
+		return
+	}
+	cacheKey := classificationCacheKey(u.cacheEpoch.Load(), msg)
+	if u.cacheStoreSuppressed(cacheKey) {
+		return
+	}
+	stored := result
+	u.cache.Store(cacheKey, &stored)
+	u.cacheSource.Store(cacheKey, classificationProvenance(&stored))
+}
+
+// cacheStoreSuppressed reports whether a store for cacheKey is currently
+// tombstoned, clearing the tombstone lazily once it has expired.
+func (u *UnifiedIntentClassifier) cacheStoreSuppressed(cacheKey string) bool {
+	scope := cacheKeyScope(cacheKey)
+	token, ok := u.cacheTombstones.Load(scope)
+	if !ok {
+		return false
+	}
+	if time.Now().After(token.(CacheTombstoneToken).expiry) {
+		// CompareAndDelete, not Delete: a concurrent AddCacheTombstone may
+		// have re-armed this scope with a fresh token between our Load and
+		// here; a bare Delete would silently drop the fresh tombstone.
+		u.cacheTombstones.CompareAndDelete(scope, token)
+		return false
+	}
+	return true
+}
+
+// CachedClassificationProvenance returns the provenance marker of the cached
+// classification for msg: CacheSourceTree when the entry adopted an L3
+// verdict, CacheSourceL2 for a local-only result. ok is false when nothing is
+// cached for the scope.
+func (u *UnifiedIntentClassifier) CachedClassificationProvenance(msg MessageContext) (source string, ok bool) {
+	cacheKey := classificationCacheKey(u.cacheEpoch.Load(), msg)
+	stored, found := u.cacheSource.Load(cacheKey)
+	if !found {
+		return "", false
+	}
+	return stored.(string), true
+}
+
+func classificationProvenance(result *ClassificationResult) string {
+	if result.Layer >= 3 {
+		return CacheSourceTree
+	}
+	return CacheSourceL2
+}
+
 func fusionCacheKey(epoch uint64, text string) string {
 	return fmt.Sprintf("%d\x00%s", epoch, text)
 }
@@ -938,7 +1100,15 @@ func (u *UnifiedIntentClassifier) cacheAndLog(cacheKey, text string, result *Cla
 	// authoritative route for the same request scope.
 	ReleaseNamedSkillFromWorkflowIntercept(text, result)
 	if !result.Degraded {
-		u.cache.Store(cacheKey, result)
+		if u.cacheStoreSuppressed(cacheKey) {
+			// A degraded-turn recovery tombstoned this exact scope: the store is
+			// dropped so a background late verdict cannot poison the re-run.
+			log.Printf("[UnifiedIntentClassifier] cache store dropped by tombstone: text_len=%d primary=%s layer=%d",
+				len([]rune(text)), result.Primary, result.Layer)
+		} else {
+			u.cache.Store(cacheKey, result)
+			u.cacheSource.Store(cacheKey, classificationProvenance(result))
+		}
 	}
 	log.Printf("[UnifiedIntentClassifier] result: text_len=%d primary=%s conf=%.2f layer=%d reason=%s",
 		len([]rune(text)), result.Primary, result.Confidence, result.Layer, result.Reason)
@@ -950,9 +1120,13 @@ func (u *UnifiedIntentClassifier) cacheAndLog(cacheKey, text string, result *Cla
 // cache read, and the tree often lands before leftover tool assembly. The
 // same cache also turns a user resend into a correctly routed turn. The
 // result mirrors the synchronous tree-success path (workflow type, composite
-// normalization, affordances, tool affinity). Single-flight per cache key; a
-// cache epoch change orphans the key, so a stale verdict can never satisfy a
-// newer configuration's classification.
+// normalization, affordances, tool affinity). Single-flight per epoch-agnostic
+// scope (cacheKeyScope), shared with detached slow-response reads and P0-1
+// reclassifications; the first channel to claim a scope wins, so a concurrent
+// retry never double-sends. The verdict itself still stores under the
+// captured epoch-bound cacheKey, so a stale verdict can never satisfy a newer
+// configuration's classification even though the in-flight claim survives an
+// epoch bump.
 func (u *UnifiedIntentClassifier) scheduleLateTreeVerdict(cacheKey, text string) {
 	u.mu.RLock()
 	llmFn := u.llmFunc
@@ -966,11 +1140,12 @@ func (u *UnifiedIntentClassifier) scheduleLateTreeVerdict(cacheKey, text string)
 	if timeout <= 0 {
 		timeout = DefaultLLMTimeout
 	}
-	if _, loaded := u.lateTree.LoadOrStore(cacheKey, struct{}{}); loaded {
+	scope := cacheKeyScope(cacheKey)
+	if _, loaded := u.lateTree.LoadOrStore(scope, struct{}{}); loaded {
 		return
 	}
 	go func() {
-		defer u.lateTree.Delete(cacheKey)
+		defer u.lateTree.Delete(scope)
 		candidates, err := classifyByTreeWithTimeout(context.Background(), llmContextFn, llmFn, treeText, text, timeout)
 		if err != nil || len(candidates) == 0 {
 			return
@@ -1162,7 +1337,12 @@ func (u *UnifiedIntentClassifier) classifyWithFusion(text string) FusionResult {
 	defer cancelTree()
 	go func() {
 		t := time.Now()
-		candidates, err := ClassifyByTreeContext(treeCtx, llmContextFn, llmFn, u.treeText, text)
+		// parentCtx is context.Background() because classifyWithFusion currently
+		// has NO production callers (tests only) and therefore no turn context
+		// to propagate. When this path is wired into the live turn, the caller
+		// MUST pass the turn ctx here — a detached Background would sever user
+		// cancellation from the tree channel (and break detached-read adoption).
+		candidates, err := ClassifyByTreeContext(treeCtx, context.Background(), llmContextFn, llmFn, u.treeText, text)
 		treeCh <- treeResult{candidates: candidates, ms: float64(time.Since(t).Milliseconds()), err: err}
 	}()
 

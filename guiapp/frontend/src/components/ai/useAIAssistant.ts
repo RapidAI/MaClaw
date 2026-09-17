@@ -161,6 +161,13 @@ interface SendMessageOptions {
 	 im_platform?: string;
 	 im_target_uid?: string;
 	 im_task_title?: string;
+    /** Group-chat flag for the IM completion route (backend im_is_group). */
+    im_is_group?: boolean;
+    /**
+     * Wizard「无工作流」handoff: let this message bypass workflow semantic
+     * interception/starts (additive; messages without the flag are unchanged).
+     */
+    no_workflow_interception?: boolean;
 }
 
 /** Explicit session context for an action-button dispatch. */
@@ -1096,6 +1103,8 @@ function buildAIAssistantSendPayload(
 	if (options?.im_platform) payload.im_platform = String(options.im_platform).trim();
 	if (options?.im_target_uid) payload.im_target_uid = String(options.im_target_uid).trim();
 	if (options?.im_task_title) payload.im_task_title = String(options.im_task_title).trim();
+	if (options?.im_is_group !== undefined) payload.im_is_group = options.im_is_group === true;
+    if (options?.no_workflow_interception) payload.no_workflow_interception = true;
     return payload;
 }
 
@@ -1313,6 +1322,39 @@ function markLatestConfirmationAsRunning(messages: ChatMessage[]): ChatMessage[]
         },
     };
     return next;
+}
+
+// P0-4 credential gate: terminal statuses a credential card can end in.
+// 'running' is NOT terminal — the confirm click marks it while the fenced
+// tool call executes, and the terminal update lands afterwards.
+const credentialCardTerminalStatuses = new Set(['cancelled', 'canceled', 'expired', 'confirmed', 'void']);
+
+// credentialCardIdleBypassWindowMs bounds how long a pending credential card
+// keeps bypassing the wait-for-idle send discipline. Must stay longer than
+// the 2-minute backend fence so a genuinely pending card always qualifies.
+const credentialCardIdleBypassWindowMs = 3 * 60 * 1000;
+
+// setCredentialCardStatusInMessages moves credential cards (taskType
+// 'credential') to a terminal status. Every channel that can resolve a card
+// MUST do this: a resolved card left 'pending' in the persisted message list
+// keeps hasPendingCredentialCard latched forever and silently disables the
+// wait-for-idle send discipline for the rest of the session. Only credential
+// cards are touched — plan confirmations manage their own status lifecycle.
+// When cardId is omitted, all non-terminal credential cards are updated (the
+// free-text void path, which deterministically voids every pending card).
+function setCredentialCardStatusInMessages(messages: ChatMessage[], status: string, cardId?: string): ChatMessage[] {
+    let changed = false;
+    const next = messages.map(message => {
+        const card = message.confirmation;
+        if (!card || card.taskType !== 'credential') return message;
+        if (cardId && card.id !== cardId) return message;
+        const current = (card.status || '').trim().toLowerCase();
+        if (credentialCardTerminalStatuses.has(current)) return message; // already terminal
+        if (current === status.trim().toLowerCase()) return message;
+        changed = true;
+        return { ...message, confirmation: { ...card, status } };
+    });
+    return changed ? next : messages;
 }
 
 function findLatestConfirmationAction(messages: ChatMessage[], command: string): ChatAction | undefined {
@@ -4744,6 +4786,119 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         return () => { off(); };
     }, [clearPendingTaskForRequest, clearTransientProgress, emitPetStateForAssistant, finalizeRound, flushStreamTokenBuffer, forgetInFlightRound, preferences, recoverGoalContinuationRound, resetStreamTokenBuffer, startEventDrivenForegroundRound, stopResponseTimeout]);
 
+    // P0-1 (0b-i) degraded-turn recovery channel. When a degraded write turn
+    // self-recovers, the backend re-runs it and streams the result on
+    // "ai-continuation" — never via RESPONSE_EVENT, because no round owns a
+    // continuation and the round-bound handler drops unknown request ids.
+    // "notice" renders a standalone assistant message (e.g. the explicit
+    // "分类服务暂时不可用，请稍后重发" hint); "token"/"final" maintain one
+    // appended assistant message keyed by the continuation request id.
+    useEffect(() => {
+        const handler = (payload: any) => {
+            let event: { request_id?: string; session_key?: string; kind?: string; text?: string };
+            try {
+                event = typeof payload === 'string' ? JSON.parse(payload) : payload;
+            } catch {
+                return;
+            }
+            if (!event || !event.request_id || !event.kind) {
+                return;
+            }
+            const requestId = event.request_id;
+            const sessionKey = normalizeRuntimeSessionKey(event.session_key || 'desktop-user');
+            if (event.kind === 'notice') {
+                const text = String(event.text || '').trim();
+                // P0-4 credential gate: timeout / loop-cancel notices carry
+                // request_id "credential-card-<id>". Move that card to a
+                // terminal status so the idle-wait bypass cannot outlive the
+                // fence (the card copy stays honest and the persisted
+                // message list never keeps a zombie 'pending' card).
+                const cardNoticeMatch = typeof requestId === 'string'
+                    ? requestId.match(/^credential-card-(.+)$/)
+                    : null;
+                if (cardNoticeMatch) {
+                    setMessages(prev => setCredentialCardStatusInMessages(prev, 'expired', cardNoticeMatch[1]));
+                }
+                if (!text) return;
+                emitPetStateForAssistant('alert', 'ai:continuation-notice', 1500);
+                setMessages(prev => [...prev, {
+                    id: nextId(),
+                    role: 'assistant' as const,
+                    content: text,
+                    sessionKey,
+                    timestamp: Date.now(),
+                }]);
+                return;
+            }
+            // P0-4 credential gate: a mid-loop confirmation card (sensitive
+            // knowledge write). Rendered exactly like a pre-execution
+            // confirmation card — the action buttons send the structured
+            // __confirm_execution__ / __cancel_execution__ commands back
+            // through the normal pipeline, where preflight resolves the
+            // fenced tool call.
+            if (event.kind === 'confirmation') {
+                const rawEvent = event as { confirmation?: unknown; actions?: unknown; text?: string };
+                const confirmation = normalizeConfirmation(rawEvent.confirmation as any);
+                if (!confirmation) return;
+                const actions = normalizeActions(rawEvent.actions);
+                emitPetStateForAssistant('alert', 'ai:confirmation-request', 1500);
+                setMessages(prev => [...prev, {
+                    id: nextId(),
+                    role: 'assistant' as const,
+                    content: String(rawEvent.text || '').trim(),
+                    confirmation,
+                    actions,
+                    requestId,
+                    sessionKey,
+                    timestamp: Date.now(),
+                }]);
+                return;
+            }
+            if (event.kind === 'token') {
+                const delta = String(event.text || '');
+                if (!delta) return;
+                emitPetStateForAssistant('speaking', 'ai:continuation-token', 1800);
+                setMessages(prev => {
+                    const idx = prev.findIndex(m => m.requestId === requestId && m.role === 'assistant');
+                    if (idx < 0) {
+                        return [...prev, {
+                            id: nextId(),
+                            role: 'assistant' as const,
+                            content: delta,
+                            requestId,
+                            sessionKey,
+                            timestamp: Date.now(),
+                        }];
+                    }
+                    const updated = { ...prev[idx], content: (prev[idx].content || '') + delta };
+                    return [...prev.slice(0, idx), updated, ...prev.slice(idx + 1)];
+                });
+                return;
+            }
+            if (event.kind === 'final') {
+                const text = String(event.text || '');
+                emitPetStateForAssistant('done', 'ai:continuation-final', 1500);
+                setMessages(prev => {
+                    const idx = prev.findIndex(m => m.requestId === requestId && m.role === 'assistant');
+                    if (idx < 0) {
+                        return [...prev, {
+                            id: nextId(),
+                            role: 'assistant' as const,
+                            content: text,
+                            requestId,
+                            sessionKey,
+                            timestamp: Date.now(),
+                        }];
+                    }
+                    const updated = { ...prev[idx], content: text };
+                    return [...prev.slice(0, idx), updated, ...prev.slice(idx + 1)];
+                });
+            }
+        };
+        const off = subscribeEvent('ai-continuation', handler);
+        return () => { off(); };
+    }, [emitPetStateForAssistant]);
+
     const sendMessageNow = useCallback(async (text: string, options?: SendMessageOptions): Promise<boolean> => {
         // Callers (e.g. handleSend in AIAssistantPanel) are responsible for
         // embedding file paths into `text` via buildOutgoingMessageMulti before calling here.
@@ -4761,7 +4916,64 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                 projectPath: options?.project_path || '',
             });
         }
-        await waitForForegroundIdle(sessionKey);
+        // Confirmation action commands (__confirm_execution__ /
+        // __cancel_execution__) must NOT wait for the session to go idle: a
+        // P0-4 credential card is pushed MID-LOOP while the fenced tool call
+        // still owns the active round, and the backend answers these commands
+        // in preflight before the session lock. Waiting for idle here would
+        // deadlock the card button against the very tool call it resolves.
+        // The in-flight round map keeps the fenced round's final response
+        // matched by request id, so an independent foreground send is safe.
+        const isConfirmationActionCommand =
+            options?.uiAction === true
+            && /^__(?:confirm|cancel)_execution__\s+\S+$/.test(outgoingText);
+        // A normal free-text send must also skip the idle wait when a
+        // credential card is pending: the card copy tells the user that
+        // typing voids the confirmation, and the backend voids it in
+        // preflight without touching the session lock — so there is no
+        // deadlock, but waiting for idle would hold the message until the
+        // 2-minute fence timeout for nothing. Restricted to CREDENTIAL
+        // cards: a pending plan confirmation keeps the original
+        // wait-for-idle behavior.
+        //
+        // Belt and braces: only cards created within the last
+        // credentialCardIdleBypassWindowMs count. Terminal-status updates
+        // cover every known resolution path, but any missed path must not
+        // be able to disable the wait-for-idle discipline forever — the
+        // window is longer than the 2-minute fence, so a genuinely pending
+        // card always still qualifies.
+        const hasPendingCredentialCard = ((): boolean => {
+            const messages = latestMessagesRef.current;
+            const now = Date.now();
+            for (let i = messages.length - 1; i >= 0; i--) {
+                const message = messages[i];
+                if (message.role !== 'assistant') continue;
+                const card = message.confirmation;
+                if (!card) continue;
+                if (card.taskType !== 'credential') continue;
+                if (card.status && card.status !== 'pending') continue;
+                const createdAt = typeof message.timestamp === 'number' ? message.timestamp : 0;
+                if (createdAt <= 0 || now - createdAt > credentialCardIdleBypassWindowMs) continue;
+                return true;
+            }
+            return false;
+        })();
+        if (hasPendingCredentialCard && !isConfirmationActionCommand) {
+            // Free text deterministically voids every pending credential
+            // card on the backend (handleCredentialCardAction); mark them
+            // void up front so the idle-wait bypass cannot outlive this send
+            // even if the void response is lost.
+            setMessages(prev => setCredentialCardStatusInMessages(prev, 'void'));
+        }
+        const skipIdleWait = isConfirmationActionCommand || hasPendingCredentialCard;
+        if (!skipIdleWait) {
+            await waitForForegroundIdle(sessionKey);
+        } else if (currentRoundBeforeWait.phase !== 'idle' && currentRoundBeforeWait.requestId) {
+            // Stash the still-running round (the fenced loop) so its final
+            // response stays matched by request id after the active round is
+            // replaced below.
+            rememberInFlightRound(currentRoundBeforeWait);
+        }
 
         const generation = activeRoundRef.current.generation + 1;
         const assistantMessageId = nextId();
@@ -5223,20 +5435,38 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         }
         const executionConfirmMatch = command.match(/^__confirm_execution__\s+(\S+)$/);
         if (executionConfirmMatch) {
+            const cardId = executionConfirmMatch[1] || '';
             const action = findLatestConfirmationAction(latestMessagesRef.current, command);
-            return sendActionMessage(command, {
+            const sent = await sendActionMessage(command, {
                 uiAction: true,
                 displayText: localizedExecutionActionText(command, action?.label, uiLang),
                 markConfirmationRunning: true,
             });
+            if (sent) {
+                // Terminal status for credential cards ('running' from
+                // markConfirmationRunning is only intermediate). Plan
+                // confirmations are untouched — the helper filters by
+                // taskType. A backend "expired" reply still renders its own
+                // text; only the card badge is optimistic here.
+                setMessages(prev => setCredentialCardStatusInMessages(prev, 'confirmed', cardId));
+            }
+            return sent;
         }
         const executionCancelMatch = command.match(/^__cancel_execution__\s+(\S+)$/);
         if (executionCancelMatch) {
+            const cardId = executionCancelMatch[1] || '';
             const action = findLatestConfirmationAction(latestMessagesRef.current, command);
-            return sendActionMessage(command, {
+            const sent = await sendActionMessage(command, {
                 uiAction: true,
                 displayText: localizedExecutionActionText(command, action?.label, uiLang),
             });
+            if (sent) {
+                // Terminal status: without this the card stayed 'pending'
+                // forever and hasPendingCredentialCard kept skipping the
+                // wait-for-idle discipline for the rest of the session.
+                setMessages(prev => setCredentialCardStatusInMessages(prev, 'cancelled', cardId));
+            }
+            return sent;
         }
         const legacyConfirmationAction = findLatestConfirmationAction(latestMessagesRef.current, command);
         if (isConfirmationApprovalAction(legacyConfirmationAction)) {

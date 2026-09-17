@@ -236,7 +236,11 @@ func TestTrustedOfficeWriteUsesConfiguredMainTabWorkingDir(t *testing.T) {
 }
 
 // The configured main-tab directory is the main tab's own explicit choice;
-// isolated owners (project/expert/group sessions) must not inherit it.
+// isolated owners (project/expert/group sessions) must not inherit it — they
+// resolve to their own provisioned session workspace instead, so workspace
+// tools stay usable (2026-09-15: expert sessions got
+// trusted_file_write_path_unavailable on every write) without breaking
+// isolation from the main tab's directory.
 func TestTrustedPrincipalBoundWorkspaceDoesNotLeakMainTabDirToIsolatedOwners(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 	workspace := filepath.Join(t.TempDir(), "个人介绍")
@@ -245,11 +249,69 @@ func TestTrustedPrincipalBoundWorkspaceDoesNotLeakMainTabDirToIsolatedOwners(t *
 	}
 	h := &IMMessageHandler{app: app}
 
-	if got := trustedPrincipalBoundWorkspace(h, expertSessionUserID("code-reviewer")); got != "" {
+	expert := expertSessionUserID("code-reviewer")
+	got := trustedPrincipalBoundWorkspace(h, expert)
+	if got == "" {
+		t.Fatalf("expert owner must have a provisioned session workspace")
+	}
+	if wantParent := filepath.Join(app.getMaclawBaseDir(), "session-workspaces"); filepath.Dir(got) != wantParent {
+		t.Fatalf("provisioned workspace must live under %q, got %q", wantParent, got)
+	}
+	if got == filepath.Clean(workspace) {
 		t.Fatalf("expert owner must not inherit the main tab dir, got %q", got)
+	}
+	// Resolution must be canonical regardless of caller trimming habits.
+	if trimmed := trustedPrincipalBoundWorkspace(h, "  "+expert+"  "); trimmed != got {
+		t.Fatalf("whitespace-padded principal must resolve identically: %q vs %q", trimmed, got)
+	}
+	if other := trustedPrincipalBoundWorkspace(h, expertSessionUserID("pptx-maker")); other == got {
+		t.Fatalf("distinct expert owners must get distinct workspaces, both %q", got)
+	}
+	if info, statErr := os.Stat(got); statErr != nil || !info.IsDir() {
+		t.Fatalf("provisioned workspace must exist as a directory: %v", statErr)
 	}
 	if got := trustedPrincipalBoundWorkspace(h, ""); got != "" {
 		t.Fatalf("empty principal must stay unavailable, got %q", got)
+	}
+}
+
+// Regression for the 2026-09-15 production failure: an expert session
+// (desktop-user:expert:builtin-pptx-maker) has no explicit tab bind and no
+// project path in its owner id, so write_file failed with
+// trusted_file_write_path_unavailable while the turn injection told the
+// model "bash, write_file 可用". The write must land in the expert's own
+// provisioned workspace.
+func TestTrustedFileWriteWorksForExpertSessionOwner(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	h := &IMMessageHandler{app: app}
+	principal := expertSessionUserID("builtin-pptx-maker")
+
+	written, err := h.writeTrustedFile(principal, "notes.txt", "hello expert", "")
+	if err != nil {
+		t.Fatalf("write=%q err=%v", written, err)
+	}
+	workspace := trustedPrincipalBoundWorkspace(h, principal)
+	if workspace == "" {
+		t.Fatalf("expert owner must have a workspace")
+	}
+	if _, statErr := os.Stat(filepath.Join(workspace, "notes.txt")); statErr != nil {
+		t.Fatalf("file missing in the provisioned workspace: %v", statErr)
+	}
+}
+
+func TestTrustedOwnerWorkspaceDirNameSanitizesAndDisambiguates(t *testing.T) {
+	a := trustedOwnerWorkspaceDirName("desktop-user:expert:builtin-pptx-maker")
+	if strings.ContainsAny(a, `:`) {
+		t.Fatalf("dir name must not contain Windows-illegal characters: %q", a)
+	}
+	if a == "desktop-user:expert:builtin-pptx-maker" {
+		t.Fatalf("dir name must differ from the raw owner id")
+	}
+	if got := trustedOwnerWorkspaceDirName("a:b"); got == trustedOwnerWorkspaceDirName("a_b") {
+		t.Fatalf("distinct owner ids must not collide: %q", got)
+	}
+	if got := trustedOwnerWorkspaceDirName("same"); got != trustedOwnerWorkspaceDirName("same") {
+		t.Fatalf("dir name must be deterministic: %q vs %q", got, trustedOwnerWorkspaceDirName("same"))
 	}
 }
 

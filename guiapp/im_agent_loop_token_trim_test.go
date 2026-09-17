@@ -183,3 +183,102 @@ func TestFirstRequestTrimNeverDropsOversizedCurrentUserMessage(t *testing.T) {
 		t.Fatalf("trim mutated the caller's archived history: %#v", conversation)
 	}
 }
+
+func TestSharedFirstRequestSkipsTrimWhenConversationFitsWindow(t *testing.T) {
+	t.Setenv("MACLAW_CONTEXT_CHECKPOINT", "off")
+	h := &IMMessageHandler{}
+	conversation := []interface{}{
+		map[string]string{"role": "system", "content": "policy"},
+		map[string]string{"role": "user", "content": "earlier requirements"},
+		map[string]string{"role": "assistant", "content": "acknowledged"},
+		map[string]string{"role": "user", "content": "CURRENT_REQUEST"},
+	}
+
+	cb := &sharedAgentLoopCallbacks{
+		handler: h,
+		userID:  "first-request-fits-window-test",
+		llmCfg:  corelib.MaclawLLMConfig{ContextLength: 100_000},
+	}
+	if got := cb.TransformConversation(conversation); got != nil {
+		t.Fatalf("conversation that fits the provider window must not be trimmed on first request: %#v", got)
+	}
+	if !cb.firstRequestBudgetApplied {
+		t.Fatal("first request budget was not marked applied")
+	}
+}
+
+func TestFirstRequestTrimSummarizesDroppedHistory(t *testing.T) {
+	conversation := []interface{}{
+		map[string]string{"role": "system", "content": "policy"},
+	}
+	for i := 0; i < 8; i++ {
+		conversation = append(conversation, map[string]string{
+			"role":    "assistant",
+			"content": strings.Repeat("archived work ", 1_000),
+		})
+	}
+	conversation = append(conversation, map[string]string{"role": "user", "content": "CURRENT_REQUEST"})
+
+	var summarizerInput string
+	summarizer := func(raw string) string {
+		summarizerInput = raw
+		return "SUMMARY_OF_DROPPED_HISTORY"
+	}
+	trimmed := trimConversation(conversation, firstAgentLoopRequestTargetTokens, 0, summarizer)
+	if len(trimmed) >= len(conversation) {
+		t.Fatalf("archived history was not trimmed: before=%d after=%d", len(conversation), len(trimmed))
+	}
+	if !strings.Contains(summarizerInput, "archived work ") {
+		t.Fatalf("summarizer did not receive the dropped history: len=%d", len(summarizerInput))
+	}
+	foundSummary := false
+	for _, message := range trimmed {
+		m, ok := message.(map[string]string)
+		if !ok {
+			continue
+		}
+		if strings.Contains(m["content"], "[对话历史摘要]") && strings.Contains(m["content"], "SUMMARY_OF_DROPPED_HISTORY") {
+			foundSummary = true
+		}
+	}
+	if !foundSummary {
+		t.Fatalf("dropped history was not replaced by a summary placeholder: %#v", trimmed)
+	}
+	last, ok := trimmed[len(trimmed)-1].(map[string]string)
+	if !ok || last["content"] != "CURRENT_REQUEST" {
+		t.Fatalf("current request lost after summarized trim: %#v", trimmed[len(trimmed)-1])
+	}
+}
+
+func TestFirstRequestCompactionLimitFitsWindowKeepsNormalLimit(t *testing.T) {
+	conversation := []interface{}{
+		map[string]string{"role": "system", "content": "policy"},
+		map[string]string{"role": "user", "content": "small request"},
+	}
+	beforeTokens := estimateConversationTokens(conversation) // well below 80_000
+	limit, budgeted := firstRequestCompactionLimit(80_000, beforeTokens, conversation, nil)
+	if budgeted {
+		t.Fatalf("fitting conversation was budgeted: before=%d", beforeTokens)
+	}
+	if limit != 80_000 {
+		t.Fatalf("limit = %d, want normal limit 80000", limit)
+	}
+}
+
+func TestFirstRequestCompactionLimitOverWindowAppliesBudget(t *testing.T) {
+	conversation := []interface{}{
+		map[string]string{"role": "system", "content": strings.Repeat("policy ", 2_000)},
+		map[string]string{"role": "user", "content": strings.Repeat("context ", 32_000)},
+	}
+	beforeTokens := estimateConversationTokens(conversation)
+	if beforeTokens <= 80_000 {
+		t.Fatalf("test conversation must exceed the window: before=%d", beforeTokens)
+	}
+	limit, budgeted := firstRequestCompactionLimit(80_000, beforeTokens, conversation, nil)
+	if !budgeted {
+		t.Fatalf("over-window conversation was not budgeted: before=%d", beforeTokens)
+	}
+	if limit > 80_000 {
+		t.Fatalf("budgeted limit %d exceeds provider window 80000", limit)
+	}
+}

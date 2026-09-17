@@ -3554,11 +3554,10 @@ func TestFetchCodeGenModelsUsesSavedProviderEndpointAndCachesModels(t *testing.T
 	t.Setenv("USERPROFILE", tmpHome)
 	t.Setenv("HOME", tmpHome)
 
-	var gotPath, gotAuth, gotClientName string
+	var gotPath, gotAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		gotAuth = r.Header.Get("Authorization")
-		gotClientName = r.Header.Get(corelib.CodeGenClientNameHeader)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"data":[{"id":"qax-codegen/Auto","name":"Auto"},{"id":"qax-codegen/Claude","name":"Claude"}]}`))
 	}))
@@ -3590,9 +3589,10 @@ func TestFetchCodeGenModelsUsesSavedProviderEndpointAndCachesModels(t *testing.T
 	if gotAuth != "Bearer token-123" {
 		t.Fatalf("Authorization = %q, want Bearer token-123", gotAuth)
 	}
-	if gotClientName != corelib.CodeGenClientName {
-		t.Fatalf("%s = %q, want %q", corelib.CodeGenClientNameHeader, gotClientName, corelib.CodeGenClientName)
-	}
+	// The X-Codegen-Client-Name header is only injected for real CodeGen
+	// hostnames (corelib.IsCodeGenHostname); against this loopback fixture it
+	// must stay unset. Header injection itself is covered by the
+	// TestDoFetchModelsRequest* tests against a CodeGen URL.
 	want := []CodeGenModelItem{{ID: "qax-codegen/Auto", Name: "Auto"}, {ID: "qax-codegen/Claude", Name: "Claude"}}
 	if !reflect.DeepEqual(items, want) {
 		t.Fatalf("items = %#v, want %#v", items, want)

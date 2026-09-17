@@ -215,6 +215,7 @@ func (a *App) InstallExpertMarketListingWithExpectedHash(id, expectedHash string
 		return nil, err
 	}
 	report("installed", "", result, nil)
+	a.emitEvent(EventExpertsChanged)
 	return result, nil
 }
 
@@ -248,6 +249,7 @@ func (a *App) UninstallExpertMarketListing(localExpertID string) error {
 		return err
 	}
 	invalidateExpertDefCache(localExpertID)
+	a.emitEvent(EventExpertsChanged)
 	return nil
 }
 

@@ -15,6 +15,10 @@ import (
 func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 	defs := []map[string]interface{}{
 		toolDef("list_sessions", "列出当前所有远程会话及其状态", nil, nil),
+		toolDef("list_providers", "列出指定编程工具的可用服务商/模型列表。",
+			map[string]interface{}{
+				"coding_tool": map[string]string{"type": "string", "description": "编程工具名（如 claude/codex/gemini）"},
+			}, []string{"coding_tool"}),
 		toolDefFromCore("ssh", "SSH 远程服务器管理（connect/exec/exec_background/check_task/wait_task/list_tasks/kill_task/upload/download/list/close）。适用于服务器登录、远程命令、日志排查、服务重启与文件传输。长命令请优先使用 exec_background。重要：连接后如果要执行后台任务，请先用 list_tasks 检查是否已有相同任务在运行，避免重复创建。",
 			map[string]interface{}{
 				"command": map[string]interface{}{"type": "string", "description": "要执行的命令（exec/exec_background 时必填）。长脚本请先写入/上传脚本文件，再执行脚本路径。", "maxLength": maxAgentLoopInlineSSHCommandRunes},

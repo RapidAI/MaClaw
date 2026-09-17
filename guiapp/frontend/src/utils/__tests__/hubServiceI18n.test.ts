@@ -14,6 +14,8 @@ describe('hubServiceI18n', () => {
         expect(localizeHubServiceReason('Error: grant credits are exhausted', 'zh-Hans')).toBe('授权额度已用尽。');
         expect(localizeHubServiceReason('insufficient credits for this request: need 14.039 credits, available 9.360', 'zh-Hans')).toBe('本次请求额度不足：需要 14.039 Credits，当前可用 9.360 Credits。');
         expect(localizeHubServiceReason('insufficient credits for this request: need 14.039 credits, available 9.360', 'en')).toBe('Insufficient credits for this request: need 14.039 credits, available 9.360 credits.');
+        expect(localizeHubServiceReason('insufficient credits for this request: need 56.003 credits, available 6.430 (993.570 held by in-flight requests)', 'zh-Hans')).toBe('本次请求额度不足：需要 56.003 Credits，当前可用 6.430 Credits，其中 993.570 Credits 被在途请求冻结。');
+        expect(localizeHubServiceReason('insufficient credits for this request: need 56.003 credits, available 6.430 (993.570 held by in-flight requests)', 'en')).toBe('Insufficient credits for this request: need 56.003 credits, available 6.430 credits (993.570 held by in-flight requests).');
         expect(localizeHubServiceReason('grant has expired', 'zh-Hant')).toBe('授權已過期。');
         expect(localizeHubServiceReason('hub access token is missing', 'en')).toBe('Hub access token is missing. Reconnect Hub and try again.');
     });

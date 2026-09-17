@@ -119,11 +119,19 @@ export function getAssistantInputComposerStyles({
             display: "flex",
             alignItems: "center",
             gap: "6px",
+            // Grow/shrink with the row so the addon (e.g. TaskConfigBar)
+            // wraps onto its own line inside this group before the
+            // hint/send group can ever be squeezed off the card.
+            flex: "1 1 auto",
+            minWidth: 0,
+            flexWrap: "wrap",
+            rowGap: "2px",
         },
         toolbarRightStyle: {
             display: "flex",
             alignItems: "center",
             gap: "6px",
+            flexShrink: 0,
         },
     };
 }

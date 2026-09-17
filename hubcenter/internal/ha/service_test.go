@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1486,6 +1487,63 @@ func TestTakePeerPushBatchCoalescesQueuedOps(t *testing.T) {
 	}
 }
 
+func TestTakePeerPushBatchBySizeRespectsByteBudget(t *testing.T) {
+	svc := NewService("hc-1", "hc-1", "", "secret", []StaticPeer{{NodeID: "hc-2", NodeName: "hc-2", BaseURL: "http://hc-2"}})
+	bigPayload := strings.Repeat("x", 100*1024)
+	svc.pushMu.Lock()
+	for i := 0; i < 10; i++ {
+		svc.pushPending["hc-2"] = append(svc.pushPending["hc-2"], &store.HASyncOp{
+			OpID:        fmt.Sprintf("op-%d", i),
+			EntityType:  "llm_provider",
+			EntityID:    fmt.Sprintf("provider-%d", i),
+			PayloadJSON: bigPayload,
+		})
+	}
+	svc.pushRunning["hc-2"] = true
+	svc.pushMu.Unlock()
+
+	budget := 350 * 1024
+	total := 0
+	seen := map[string]bool{}
+	batches := 0
+	for {
+		ops, ok := svc.takePeerPushBatchBySize("hc-2", budget)
+		if !ok || len(ops) == 0 {
+			break
+		}
+		batches++
+		payload, err := json.Marshal(map[string]any{"ops": ops})
+		if err != nil {
+			t.Fatalf("marshal batch: %v", err)
+		}
+		if len(payload) > budget+len(`{"ops":[]}`)+len(ops) {
+			t.Fatalf("batch body = %d bytes, want <= budget %d", len(payload), budget)
+		}
+		for _, op := range ops {
+			if seen[op.OpID] {
+				t.Fatalf("op %q pushed twice", op.OpID)
+			}
+			seen[op.OpID] = true
+			total++
+		}
+		if batches > 10 {
+			t.Fatal("push queue never drained")
+		}
+	}
+	if total != 10 {
+		t.Fatalf("drained ops = %d, want 10 (no op may be lost)", total)
+	}
+	if batches < 3 {
+		t.Fatalf("batches = %d, want >= 3 for 100KB ops under a 350KB budget", batches)
+	}
+	svc.pushMu.Lock()
+	running := svc.pushRunning["hc-2"]
+	svc.pushMu.Unlock()
+	if running {
+		t.Fatal("push queue still marked running after draining")
+	}
+}
+
 func TestEnqueuePushOpTrimsPeerQueueUnderBackpressure(t *testing.T) {
 	svc := NewService("hc-1", "hc-1", "", "secret", []StaticPeer{{NodeID: "hc-2", NodeName: "hc-2", BaseURL: "http://hc-2"}})
 	peer := svc.listPeerStates()[0]
@@ -1510,6 +1568,48 @@ func TestEnqueuePushOpTrimsPeerQueueUnderBackpressure(t *testing.T) {
 	peers := svc.listPeerStates()
 	if peers[0].Backlog < 1 || peers[0].LastError == "" {
 		t.Fatalf("peer deferred state not recorded after trim: %+v", peers[0])
+	}
+}
+
+// A single system_setting snapshot can reach ~1MB (llm_official_class_head_v1
+// carries the classifier training store), so the op-count cap alone let a peer's
+// queue grow to gigabytes and OOM-kill the process (hc-3, 15.5GB RSS,
+// 2026-09-16). The byte cap must bound the retained queue on its own.
+func TestEnqueuePushOpTrimsPeerQueueByBytes(t *testing.T) {
+	svc := NewService("hc-1", "hc-1", "", "secret", []StaticPeer{{NodeID: "hc-2", NodeName: "hc-2", BaseURL: "http://hc-2"}})
+	peer := svc.listPeerStates()[0]
+	bigPayload := strings.Repeat("x", 1024*1024)
+	svc.pushMu.Lock()
+	svc.pushRunning["hc-2"] = true
+	svc.pushMu.Unlock()
+
+	// maxPendingPushOpsPerPeer is far above the byte budget at 1MB per op, so
+	// only the byte cap can bound this queue.
+	enqueued := maxPendingPushBytesPerPeer/(1024*1024) + 20
+	for i := 0; i < enqueued; i++ {
+		svc.enqueuePushOp(peer, &store.HASyncOp{
+			OpID:        fmt.Sprintf("op-%d", i),
+			EntityType:  EntitySystemSetting,
+			EntityID:    fmt.Sprintf("setting-%d", i),
+			PayloadJSON: bigPayload,
+		})
+	}
+
+	svc.pushMu.Lock()
+	pending := append([]*store.HASyncOp(nil), svc.pushPending["hc-2"]...)
+	svc.pushMu.Unlock()
+	if len(pending) == 0 || len(pending) >= enqueued {
+		t.Fatalf("pending len = %d, want 0 < len < %d", len(pending), enqueued)
+	}
+	if got := pending[len(pending)-1].OpID; got != fmt.Sprintf("op-%d", enqueued-1) {
+		t.Fatalf("newest op was not retained: last=%q", got)
+	}
+	if retained := pendingPushOpsBytes(pending); retained > maxPendingPushBytesPerPeer {
+		t.Fatalf("retained push queue = %d bytes, want <= %d", retained, maxPendingPushBytesPerPeer)
+	}
+	peers := svc.listPeerStates()
+	if peers[0].Backlog < 1 || peers[0].LastError == "" {
+		t.Fatalf("peer deferred state not recorded after byte trim: %+v", peers[0])
 	}
 }
 

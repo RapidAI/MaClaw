@@ -229,7 +229,9 @@ VerifyAndActivateNLSkill       WaitWeixinQRLogin              ...
 |---|---:|---|
 | **高置信（5 个）** | 5 | `im_memory_recall_mode.go`、`im_tool_list_sessions.go`、`im_tool_session_control_action.go`、`session_observer.go`、`session_terminal_status.go` |
 | 中等（19 个，部分符号死） | 19 | `manager_interfaces.go`(5/80，接口实现)、`app_init_optimized.go`(11/24)、`im_message_handler_workflow_initiate.go`(15/24)、`openhuman_background.go`(8/21)、`context_compressor.go`(11/13)、`diff_computer.go`(6/9)、`coding_subagent_rollout.go`(9/13)、`im_pending_media.go`(4/8)、`file_snapshot_store.go`、`self_review_adapters.go`、`provider_resolver.go`、`im_tools_create_session_*.go`(4 个)、`im_tools_session_guard.go`、`im_message_handler_selfconfirm.go`、`im_tools_session_send_observe_orchestrator.go`、`remote_tool_update_status.go` |
-| 低置信（16 个，勿盲删） | 16 | `app_maclaw_apps_test_helpers.go`、`browser_replay_scheduler.go`、`im_agent_reply_quality.go`、`im_confirmation_action.go`、`im_passthrough.go`、`im_tool_skill_refresh.go`、`im_tools_create_session_{context,project,result,runner}.go`、`im_tools_list_providers.go`、`im_tools_session.go`、`mac_compat_other.go`（平台文件）、`prompt_skill_index.go`、`scheduled_action_type_kind.go`、`screenshot_native_windows.go`（平台文件）、`skill_verification_status.go` |
+| 低置信（15 个，勿盲删） | 15 | `app_maclaw_apps_test_helpers.go`、`browser_replay_scheduler.go`、`im_agent_reply_quality.go`、`im_confirmation_action.go`、`im_passthrough.go`、`im_tool_skill_refresh.go`、`im_tools_create_session_{context,project,result,runner}.go`、`im_tools_session.go`、`mac_compat_other.go`（平台文件）、`prompt_skill_index.go`、`scheduled_action_type_kind.go`、`screenshot_native_windows.go`（平台文件）、`skill_verification_status.go` |
+
+> 2026-09-17 更新：`im_tools_list_providers.go` 已确认**非死代码**并从本表移除——`toolListProviders` handler 由 `executeTool` 路由分发（`TestExecuteTool_ListProvidersRouting` 锁定），此前仅 `buildToolDefinitions` 里的定义在 gui→guiapp 迁移中丢失导致表面上无入口，定义已恢复（见 `im_tool_definitions.go`）。
 
 **为什么低置信不能删**：这些文件的符号在别处出现 —— 典型是
 **IM 工具注册表**（`im_tools_*.go` 通过 map 注册）、**平台特定文件**（`*_windows.go` / `*_other.go`）、

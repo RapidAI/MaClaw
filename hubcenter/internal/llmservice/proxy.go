@@ -48,6 +48,11 @@ type ProxyConfig struct {
 	// Returns (allowed, redirectNodeID). If nil, binding checks are skipped.
 	CheckBinding func(ctx context.Context, hubID, tenantID string) (allowed bool, redirectNodeID string)
 
+	// ReleaseBinding tombstones this hub's leases on a (presumably dead)
+	// HubCenter node so tenants can rebind immediately. If nil, the release
+	// endpoint reports zero releases (node has no HA binding manager).
+	ReleaseBinding func(ctx context.Context, hubID, nodeID string) (int, error)
+
 	// LookupNodeURL maps a HubCenter node ID to its client-facing base URL.
 	// Used to populate 409 redirect_url so Hub can jump to the tenant owner.
 	LookupNodeURL func(nodeID string) string
@@ -543,6 +548,11 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 	// Index loop so a 429 can append other same-group providers mid-request.
 	var lastErr error
 	gate := newProviderAttemptGate()
+	// Bound the total time spent waiting for in-flight half-open probes across
+	// all routes of this request, so a full outage fails after one budget
+	// instead of one wait period per provider in the failover chain.
+	gateCtx, cancelGateWait := context.WithTimeout(ctx, defaultProxyCircuitProbeWait)
+	defer cancelGateWait()
 	for i := 0; i < len(orderedRoutes); i++ {
 		route := orderedRoutes[i]
 		providerID := route.ProviderID
@@ -558,7 +568,7 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 
 		// Runtime health: cooldown after consecutive failures, then one probe
 		// covering every remaining route for this provider in the request.
-		fresh, err := gate.before(cfg, provider)
+		fresh, err := gate.before(gateCtx, cfg, provider)
 		if err != nil {
 			lastErr = err
 			continue
@@ -589,10 +599,12 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 
 		if fwdErr != nil || resp == nil || shouldRetryProxyProviderStatus(resp.StatusCode) {
 			if fwdErr != nil {
+				log.Printf("[llm-proxy] provider %s transport failure: %v (logical=%s upstream=%s request=%s)", providerID, fwdErr, logicalModel, upstreamModel, req.RequestID)
 				lastErr = fmt.Errorf("provider %s failed for logical model %s upstream model %s: %w", providerID, logicalModel, upstreamModel, fwdErr)
 			} else if resp == nil {
 				lastErr = fmt.Errorf("provider %s failed for logical model %s upstream model %s: empty response", providerID, logicalModel, upstreamModel)
 			} else {
+				log.Printf("[llm-proxy] provider %s attempt failed: HTTP %d%s (logical=%s upstream=%s request=%s)", providerID, resp.StatusCode, proxyProviderErrorSnippet(resp.Body), logicalModel, upstreamModel, req.RequestID)
 				lastErr = fmt.Errorf("provider %s failed for logical model %s upstream model %s: HTTP %d%s", providerID, logicalModel, upstreamModel, resp.StatusCode, proxyProviderErrorSnippet(resp.Body))
 			}
 			if resp != nil && isProxyRateLimitStatus(resp.StatusCode) {
@@ -705,7 +717,7 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 	}
 
 	// All providers failed
-	log.Printf("[llm-proxy] all providers failed for model=%s service_group=%s hub=%s tenant=%s lastErr=%v", model, matchedGroup.ID, req.HubID, req.TenantID, lastErr)
+	log.Printf("[llm-proxy] all providers failed for model=%s service_group=%s hub=%s tenant=%s request=%s lastErr=%v", model, matchedGroup.ID, req.HubID, req.TenantID, req.RequestID, lastErr)
 	if lastErr != nil {
 		return nil, fmt.Errorf("all providers failed, last error: %w", lastErr)
 	}
@@ -959,13 +971,17 @@ func HandleProxyStreamRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyR
 func handleProxyStreamDispatches(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest, dst ProxyStreamWriter, dispatches []*proxyDispatch) (*proxyDispatch, error) {
 	var lastErr error
 	gate := newProviderAttemptGate()
+	// Bound the total time spent waiting for in-flight half-open probes across
+	// all dispatches of this request (same budget as the non-streaming path).
+	gateCtx, cancelGateWait := context.WithTimeout(ctx, defaultProxyCircuitProbeWait)
+	defer cancelGateWait()
 	for i := 0; i < len(dispatches); i++ {
 		dispatch := dispatches[i]
 		if dispatch == nil || dispatch.provider == nil {
 			continue
 		}
 		providerID := dispatch.provider.ID
-		fresh, err := gate.before(cfg, dispatch.provider)
+		fresh, err := gate.before(gateCtx, cfg, dispatch.provider)
 		if err != nil {
 			lastErr = err
 			continue
@@ -994,6 +1010,7 @@ func handleProxyStreamDispatches(ctx context.Context, cfg *ProxyConfig, req *Pro
 				proxyAbortResilienceProbe(cfg, providerID)
 				return nil, ctx.Err()
 			}
+			log.Printf("[llm-proxy] stream provider %s transport failure: %v (logical=%s upstream=%s request=%s)", providerID, err, dispatch.model, upstreamModel, req.RequestID)
 			if !hasLaterDispatchForProvider(dispatches, i, providerID) {
 				proxyRecordResilienceFailure(cfg, dispatch.provider)
 			}
@@ -1014,6 +1031,7 @@ func handleProxyStreamDispatches(ctx context.Context, cfg *ProxyConfig, req *Pro
 		if result.statusCode >= http.StatusBadRequest {
 			lastErr = fmt.Errorf("stream provider %s failed for logical model %s upstream model %s: HTTP %d%s", providerID, dispatch.model, upstreamModel, result.statusCode, proxyProviderErrorSnippet(result.errorBody))
 			if shouldRetryProxyProviderStatus(result.statusCode) {
+				log.Printf("[llm-proxy] stream provider %s attempt failed: HTTP %d%s (logical=%s upstream=%s request=%s)", providerID, result.statusCode, proxyProviderErrorSnippet(result.errorBody), dispatch.model, upstreamModel, req.RequestID)
 				if proxyCanceledWithoutStreamSuccess(ctx, result) {
 					proxyAbortResilienceProbe(cfg, providerID)
 					return nil, ctx.Err()
@@ -1039,6 +1057,7 @@ func handleProxyStreamDispatches(ctx context.Context, cfg *ProxyConfig, req *Pro
 		return dispatch, nil
 	}
 	if lastErr != nil {
+		log.Printf("[llm-proxy] all stream providers failed for model=%s hub=%s tenant=%s request=%s lastErr=%v", req.Model, req.HubID, req.TenantID, req.RequestID, lastErr)
 		return nil, fmt.Errorf("all stream providers failed, last error: %w", lastErr)
 	}
 	return nil, fmt.Errorf("no stream-capable providers available")
@@ -1886,9 +1905,9 @@ func (g *providerAttemptGate) block(providerID string, err error) {
 	g.blocked[id] = err
 }
 
-func (g *providerAttemptGate) before(cfg *ProxyConfig, provider *llmpool.ProviderConfig) (fresh bool, err error) {
+func (g *providerAttemptGate) before(ctx context.Context, cfg *ProxyConfig, provider *llmpool.ProviderConfig) (fresh bool, err error) {
 	if g == nil {
-		return false, proxyBeforeAttempt(cfg, provider)
+		return false, proxyBeforeAttempt(ctx, cfg, provider)
 	}
 	if provider == nil {
 		return false, fmt.Errorf("provider is required")
@@ -1903,7 +1922,7 @@ func (g *providerAttemptGate) before(cfg *ProxyConfig, provider *llmpool.Provide
 	if _, ok := g.admitted[id]; ok {
 		return false, nil
 	}
-	if err := proxyBeforeAttempt(cfg, provider); err != nil {
+	if err := proxyBeforeAttempt(ctx, cfg, provider); err != nil {
 		g.blocked[id] = err
 		return false, err
 	}
@@ -1939,16 +1958,20 @@ const (
 	defaultProxyCircuitThreshold = 2
 	defaultProxyCircuitBaseMS    = 10_000
 	defaultProxyCircuitMaxMS     = 300_000
+	// How long a dispatch may wait for an in-flight half-open probe to settle
+	// before skipping the provider. Prevents instantaneous pool-wide 503s
+	// while a recovering provider's probe request is still upstream.
+	defaultProxyCircuitProbeWait = 15 * time.Second
 	// One 429 should take that upstream out of the same-group WRR pool long
 	// enough for other members to absorb traffic. Matches corelib LLM failover.
 	proxyRateLimitCooldownMS = 60_000
 )
 
-func proxyBeforeAttempt(cfg *ProxyConfig, provider *llmpool.ProviderConfig) error {
+func proxyBeforeAttempt(ctx context.Context, cfg *ProxyConfig, provider *llmpool.ProviderConfig) error {
 	if cfg == nil || cfg.Resilience == nil || provider == nil {
 		return nil
 	}
-	return cfg.Resilience.BeforeAttempt(provider.ID, proxyCircuitThreshold(provider), proxyCircuitBaseMS(provider))
+	return cfg.Resilience.BeforeAttemptWithProbeWait(ctx, provider.ID, proxyCircuitThreshold(provider), proxyCircuitBaseMS(provider), defaultProxyCircuitProbeWait)
 }
 
 func proxyRecordResilienceFailure(cfg *ProxyConfig, provider *llmpool.ProviderConfig) {

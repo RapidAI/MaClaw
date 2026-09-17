@@ -1,6 +1,7 @@
 package llmservice
 
 import (
+	"fmt"
 	"math"
 	"testing"
 	"time"
@@ -174,5 +175,36 @@ func TestBillingLedgerRequestIDIsIdempotent(t *testing.T) {
 	AppendBillingLedgerEntry(reg, BillingLedgerEntry{RequestID: "REQ-1", DeductedCredits: 2})
 	if len(reg.BillingLedger) != 1 || !HasBillingRequest(reg, "req-1") {
 		t.Fatalf("ledger = %#v", reg.BillingLedger)
+	}
+}
+
+func TestTrimBillingLedgerForRegistryKeepsNewestEntries(t *testing.T) {
+	reg := &Registry{}
+	for i := 0; i < BillingLedgerRegistryKeep+500; i++ {
+		AppendBillingLedgerEntry(reg, BillingLedgerEntry{RequestID: fmt.Sprintf("req-%d", i), DeductedCredits: 1})
+	}
+	if len(reg.BillingLedger) != BillingLedgerRegistryKeep {
+		t.Fatalf("ledger len = %d, want %d", len(reg.BillingLedger), BillingLedgerRegistryKeep)
+	}
+	if !HasBillingRequest(reg, fmt.Sprintf("req-%d", BillingLedgerRegistryKeep+499)) {
+		t.Fatal("newest entry missing after trim")
+	}
+	if HasBillingRequest(reg, "req-0") {
+		t.Fatal("oldest entry should have been trimmed")
+	}
+	// Idempotency still works within the retained window.
+	before := len(reg.BillingLedger)
+	AppendBillingLedgerEntry(reg, BillingLedgerEntry{RequestID: fmt.Sprintf("req-%d", BillingLedgerRegistryKeep+499), DeductedCredits: 1})
+	if len(reg.BillingLedger) != before {
+		t.Fatal("duplicate request ID must not append")
+	}
+}
+
+func TestTrimBillingLedgerForRegistryNoOpUnderLimit(t *testing.T) {
+	reg := &Registry{}
+	AppendBillingLedgerEntry(reg, BillingLedgerEntry{RequestID: "req-a", DeductedCredits: 1})
+	TrimBillingLedgerForRegistry(reg)
+	if len(reg.BillingLedger) != 1 {
+		t.Fatalf("ledger len = %d, want 1", len(reg.BillingLedger))
 	}
 }

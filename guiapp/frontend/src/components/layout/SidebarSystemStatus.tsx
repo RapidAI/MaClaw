@@ -604,6 +604,9 @@ export const SidebarSystemStatus = ({
         && !sidebarHubCredits.unlimited
         && !!sidebarHubCredits.showPeriodAvailable;
     const newUserLimitCards = sidebarHubCredits?.newUserLimitCards || [];
+    // In-flight billing reservations hold part of the window; the admission
+    // check subtracts them, so the readout must too.
+    const limitAvailable = (limit: number, used: number, held?: number) => Math.max(0, limit - used - (held ?? 0));
     // The sidebar is a status readout, not an entitlement statement. Keep the
     // visible line to the two numbers users need right now.
     const newUserLimitCardCompactDetails = (() => {
@@ -615,11 +618,11 @@ export const SidebarSystemStatus = ({
                 const label = card.fiveHourRolling
                     ? textForLang(lang, '5h', '近5小时', '近5小時')
                     : textForLang(lang, '5h', '5小时', '5小時');
-                const available = Math.max(0, card.fiveHourLimit - card.fiveHourUsed);
+                const available = limitAvailable(card.fiveHourLimit, card.fiveHourUsed, card.heldCredits);
                 items.push(`${label} ${formatSidebarCredit(available)}/${formatSidebarCredit(card.fiveHourLimit)}`);
             }
             if (card.dailyLimit > 0) {
-                const available = Math.max(0, card.dailyLimit - card.dailyUsed);
+                const available = limitAvailable(card.dailyLimit, card.dailyUsed, card.heldCredits);
                 items.push(`${textForLang(lang, 'Today', '今日', '今日')} ${formatSidebarCredit(available)}/${formatSidebarCredit(card.dailyLimit)}`);
             }
             return items.join(CREDIT_SEPARATOR);
@@ -636,17 +639,21 @@ export const SidebarSystemStatus = ({
                 const label = card.fiveHourRolling
                     ? textForLang(lang, '5h limit', '近5小时限额', '近5小時限額')
                     : textForLang(lang, '5h limit', '5小时限额', '5小時限額');
-                const available = Math.max(0, card.fiveHourLimit - card.fiveHourUsed);
+                const available = limitAvailable(card.fiveHourLimit, card.fiveHourUsed, card.heldCredits);
                 lines.push(`${prefix}${label} ${formatSidebarCredit(available)}/${formatSidebarCredit(card.fiveHourLimit)}`);
             }
             if (card.dailyLimit > 0) {
-                const available = Math.max(0, card.dailyLimit - card.dailyUsed);
+                const available = limitAvailable(card.dailyLimit, card.dailyUsed, card.heldCredits);
                 lines.push(`${prefix}${textForLang(lang, 'Daily limit', '今日限额', '今日限額')} ${formatSidebarCredit(available)}/${formatSidebarCredit(card.dailyLimit)}`);
             }
         });
         return lines;
     })();
     const showNewUserBenefit = !!newUserLimitCardCompactDetails;
+    const planLimitsLabel = textForLang(lang, 'Plan limits', '套餐额度', '方案額度');
+    const planLimitsTitle = showNewUserBenefit
+        ? `${planLimitsLabel}${CREDIT_SEPARATOR}${newUserLimitCardCompactDetails}${CREDIT_SEPARATOR}${textForLang(lang, 'Click to open Service Redeem', '点击前往服务兑换', '點擊前往服務兌換')}`
+        : '';
     const creditTitle = sidebarHubCredits
         ? textForLang(lang, 'Expires', '\u6709\u6548\u671f', '\u6709\u6548\u671f') + ': ' + formatSidebarHubExpiry(sidebarHubCredits)
             + CREDIT_SEPARATOR + textForLang(lang, 'Total', '\u603b\u91cf', '\u7e3d\u91cf') + ' ' + formatSidebarHubTotalCredits(sidebarHubCredits)
@@ -704,14 +711,21 @@ export const SidebarSystemStatus = ({
                     </button>
                 )}
                 {isOfficialProvider && newUserLimitCardLines.length > 0 && (
-                    <div className="mc-workbench-status-card__row" title={newUserLimitCardCompactDetails}>
-                        <span>{textForLang(lang, 'Plan limits', '套餐额度', '方案額度')}</span>
+                    <button
+                        type="button"
+                        className="mc-workbench-status-card__row"
+                        onClick={openServiceRedeemPage}
+                        disabled={!openServiceRedeemPage}
+                        title={planLimitsTitle}
+                        aria-label={planLimitsTitle}
+                    >
+                        <span>{planLimitsLabel}</span>
                         <strong className="mc-workbench-status-card__limits">
                             {newUserLimitCardLines.map((line, index) => (
                                 <span key={index}>{line}</span>
                             ))}
                         </strong>
-                    </div>
+                    </button>
                 )}
                 <button
                     type="button"

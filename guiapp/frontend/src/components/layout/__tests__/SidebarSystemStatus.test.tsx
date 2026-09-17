@@ -112,6 +112,28 @@ describe('SidebarSystemStatus Hub credits', () => {
         expect(screen.queryByText('套餐额度')).not.toBeNull();
     });
 
+    it('subtracts in-flight held credits from the visible plan limit remaining', () => {
+        renderStatus({
+            ...baseCredits,
+            newUserLimitCards: [{ serviceGroupID: 'g1', fiveHourLimit: 1000, fiveHourUsed: 0, heldCredits: 990, fiveHourRolling: false, fiveHourResetAt: '', dailyLimit: 2000, dailyUsed: 3, dailyResetAt: '', permanent: false, expiresAt: '', status: '', retryAfterSeconds: 0, retryAfterAt: '' }],
+        });
+
+        const limits = screen.getByText('套餐额度').parentElement;
+        expect(limits?.textContent).toContain('5小时限额 10/1000');
+        expect(limits?.textContent).not.toContain('冻结');
+        expect(limits?.textContent).toContain('今日限额 1007/2000');
+    });
+
+    it('opens the service redeem page when the plan limits row is clicked', () => {
+        const { openServiceRedeemPage } = renderStatus({
+            ...baseCredits,
+            newUserLimitCards: [{ serviceGroupID: 'g1', fiveHourLimit: 1000, fiveHourUsed: 100, fiveHourRolling: false, fiveHourResetAt: '', dailyLimit: 2500, dailyUsed: 3, dailyResetAt: '', permanent: false, expiresAt: '', status: '', retryAfterSeconds: 0, retryAfterAt: '' }],
+        });
+
+        fireEvent.click(screen.getByText('套餐额度'));
+        expect(openServiceRedeemPage).toHaveBeenCalledTimes(1);
+    });
+
     it('does not infer image input from an unknown capability value', () => {
         render(
             <SidebarSystemStatus

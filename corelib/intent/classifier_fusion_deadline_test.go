@@ -180,7 +180,7 @@ func TestFusionTreeDeadlineCancelsContextAwareLLM(t *testing.T) {
 	canceled := make(chan struct{})
 	uic := New(Config{
 		Embedder: emb,
-		LLMContextFunc: func(ctx context.Context, _, _ string) (string, error) {
+		LLMContextFunc: func(ctx context.Context, _ context.Context, _, _ string) (string, error) {
 			<-ctx.Done()
 			close(canceled)
 			return "", ctx.Err()
@@ -668,7 +668,7 @@ func TestLateTreeVerdictCachesForRepeatedRequest(t *testing.T) {
 	var calls atomic.Int32
 	uic := New(Config{
 		Embedder: emb,
-		LLMContextFunc: func(ctx context.Context, _, _ string) (string, error) {
+		LLMContextFunc: func(ctx context.Context, _ context.Context, _, _ string) (string, error) {
 			n := calls.Add(1)
 			if n == 1 {
 				// The synchronous attempt loses to the fusion deadline.
@@ -730,7 +730,7 @@ func TestLateTreeVerdictContradictedByLocalIsNotCached(t *testing.T) {
 	var calls atomic.Int32
 	uic := New(Config{
 		Embedder: emb,
-		LLMContextFunc: func(ctx context.Context, _, _ string) (string, error) {
+		LLMContextFunc: func(ctx context.Context, _ context.Context, _, _ string) (string, error) {
 			n := calls.Add(1)
 			if n == 1 {
 				// The synchronous attempt loses to the fusion deadline.
@@ -799,7 +799,7 @@ func TestSyncTreeVerdictContradictedByLocalFallsBackToL2Hint(t *testing.T) {
 	var calls atomic.Int32
 	uic := New(Config{
 		Embedder: emb,
-		LLMContextFunc: func(ctx context.Context, _, _ string) (string, error) {
+		LLMContextFunc: func(ctx context.Context, _ context.Context, _, _ string) (string, error) {
 			n := calls.Add(1)
 			if n == 1 {
 				// The live tree ruling is confident and grossly wrong.

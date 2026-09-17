@@ -104,12 +104,15 @@ func (m *fallbackLifecycleFailureCallbacks) BuildToolsForModelRequest(string, in
 	if m.calls == 1 {
 		return []map[string]interface{}{tooldef.BuildToolDef("first_tool", "first", map[string]interface{}{"type": "object"})}
 	}
+	// The wire projection coerces or drops malformed scalar fields (e.g. a
+	// non-string description), so it can no longer fail the successor manifest.
+	// A value that cannot survive the freeze's JSON snapshot still can.
 	return []map[string]interface{}{{
 		"type": "function",
 		"function": map[string]interface{}{
 			"name":        "invalid_successor",
-			"description": 42,
-			"parameters":  map[string]interface{}{"type": "object"},
+			"description": "successor",
+			"parameters":  map[string]interface{}{"type": "object", "unserializable": make(chan int)},
 		},
 	}}
 }
@@ -2003,7 +2006,7 @@ func TestRunLoopInputBreakdownUsesActualRequestToolSurface(t *testing.T) {
 	if len(cb.breakdown) != 1 {
 		t.Fatalf("breakdowns=%#v", cb.breakdown)
 	}
-	want := EstimateLoopInputBreakdown([]interface{}{map[string]string{"role": "system", "content": "sys"}, map[string]interface{}{"role": "user", "content": "test"}}, []map[string]interface{}{actualTool})
+	want := EstimateLoopInputBreakdown([]interface{}{map[string]string{"role": "system", "content": "sys"}, map[string]interface{}{"role": "user", "content": "test"}}, prepareToolsForToolSurfaceReceipt(cb.GetLLMConfig(), []map[string]interface{}{actualTool}))
 	if cb.breakdown[0].ToolDefinitionTokens != want.ToolDefinitionTokens {
 		t.Fatalf("tool definition tokens=%d want actual rendered=%d (wide=%d)", cb.breakdown[0].ToolDefinitionTokens, want.ToolDefinitionTokens, EstimateLoopInputBreakdown(nil, []map[string]interface{}{wideTool}).ToolDefinitionTokens)
 	}
@@ -2065,7 +2068,7 @@ func TestRunLoopInputBreakdownRecordsEveryActualRequestAttempt(t *testing.T) {
 	if len(cb.breakdown) != 2 {
 		t.Fatalf("breakdowns=%#v, want one record per actual request", cb.breakdown)
 	}
-	want := EstimateLoopInputBreakdown([]interface{}{map[string]string{"role": "system", "content": "sys"}, map[string]interface{}{"role": "user", "content": "test"}}, []map[string]interface{}{actualTool})
+	want := EstimateLoopInputBreakdown([]interface{}{map[string]string{"role": "system", "content": "sys"}, map[string]interface{}{"role": "user", "content": "test"}}, prepareToolsForToolSurfaceReceipt(cb.GetLLMConfig(), []map[string]interface{}{actualTool}))
 	for i, breakdown := range cb.breakdown {
 		if breakdown.ToolDefinitionTokens != want.ToolDefinitionTokens {
 			t.Fatalf("attempt %d tool definition tokens=%d, want %d", i+1, breakdown.ToolDefinitionTokens, want.ToolDefinitionTokens)
@@ -2132,7 +2135,7 @@ func TestRunLoopInputBreakdownRecordsOuterRetryRequest(t *testing.T) {
 	if len(cb.breakdown) != 2 {
 		t.Fatalf("breakdowns=%#v, want one record per actual request", cb.breakdown)
 	}
-	want := EstimateLoopInputBreakdown([]interface{}{map[string]string{"role": "system", "content": "sys"}, map[string]interface{}{"role": "user", "content": "test"}}, []map[string]interface{}{actualTool})
+	want := EstimateLoopInputBreakdown([]interface{}{map[string]string{"role": "system", "content": "sys"}, map[string]interface{}{"role": "user", "content": "test"}}, prepareToolsForToolSurfaceReceipt(cb.GetLLMConfig(), []map[string]interface{}{actualTool}))
 	for i, breakdown := range cb.breakdown {
 		if breakdown.ToolDefinitionTokens != want.ToolDefinitionTokens {
 			t.Fatalf("attempt %d tool definition tokens=%d, want %d", i+1, breakdown.ToolDefinitionTokens, want.ToolDefinitionTokens)
@@ -3863,6 +3866,7 @@ func TestRunLoopFailedExecutionRefreshesSurfaceWithoutEscalation(t *testing.T) {
 		sysPrompt:   "sys",
 		toolResult:  "Error: write failed",
 		toolOutcome: ToolExecutionOutcomeError,
+		tools:       []map[string]interface{}{tooldef.BuildToolDef("write_file", "Write", map[string]interface{}{"type": "object"})},
 	}}
 	result := RunLoop(cb, "write", nil, server.Client(), cb)
 	if result.Error != "" || result.Text != "reported failure" {
@@ -3980,7 +3984,7 @@ func TestRunLoopStopsWhenToolBatchCheckpointFails(t *testing.T) {
 		_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"","tool_calls":[{"id":"a","type":"function","function":{"name":"write_file","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
 	}))
 	defer server.Close()
-	cb := &mockCallbacks{config: corelib.MaclawLLMConfig{URL: server.URL, Model: "test"}, maxIter: 3, sysPrompt: "sys", toolResult: "ok"}
+	cb := &mockCallbacks{config: corelib.MaclawLLMConfig{URL: server.URL, Model: "test"}, maxIter: 3, sysPrompt: "sys", toolResult: "ok", tools: []map[string]interface{}{tooldef.BuildToolDef("write_file", "Write", map[string]interface{}{"type": "object"})}}
 	hooks := &toolBatchCommitCallbacks{fail: true}
 	result := RunLoop(cb, "task", nil, server.Client(), hooks)
 	if result.Error != "recovery_checkpoint_failed" || !result.HardExit || len(cb.toolCalls) != 1 || len(hooks.batches) != 1 {
@@ -4008,7 +4012,10 @@ func TestRunLoopAbandonsPreExecutionCheckpointForInteractivePause(t *testing.T) 
 		_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"","tool_calls":[{"id":"ask","type":"function","function":{"name":"ask_user","arguments":"{}"}},{"id":"sibling","type":"function","function":{"name":"write_file","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
 	}))
 	defer server.Close()
-	cb := &mockCallbacks{config: corelib.MaclawLLMConfig{URL: server.URL, Model: "test"}, maxIter: 3, sysPrompt: "sys", toolResult: ToolAskUser(map[string]interface{}{"question": "continue?"})}
+	cb := &mockCallbacks{config: corelib.MaclawLLMConfig{URL: server.URL, Model: "test"}, maxIter: 3, sysPrompt: "sys", toolResult: ToolAskUser(map[string]interface{}{"question": "continue?"}), tools: []map[string]interface{}{
+		tooldef.BuildToolDef("ask_user", "Ask the user", map[string]interface{}{"type": "object"}),
+		tooldef.BuildToolDef("write_file", "Write", map[string]interface{}{"type": "object"}),
+	}}
 	hooks := &toolBatchCommitCallbacks{}
 	result := RunLoop(cb, "task", nil, server.Client(), hooks)
 	if result.AskUser == nil || len(hooks.starts) != 1 || len(hooks.abandons) != 1 || len(hooks.batches) != 0 {
@@ -4162,6 +4169,7 @@ func TestRunLoop_WithToolCall_ExecutesAndContinues(t *testing.T) {
 		maxIter:    10,
 		sysPrompt:  "You are a helpful assistant.",
 		toolResult: "hello\n",
+		tools:      []map[string]interface{}{tooldef.BuildToolDef("bash", "Run a command", map[string]interface{}{"type": "object"})},
 	}
 
 	result := RunLoop(cb, "run echo hello", nil, nil)
@@ -4892,6 +4900,7 @@ func TestRunLoop_AskUserReturnsEarly(t *testing.T) {
 		maxIter:    10,
 		sysPrompt:  "You are a helpful assistant.",
 		toolResult: `__ASK_USER__{"question":"Choose one","options":["A","B"],"input_type":"choice"}`,
+		tools:      []map[string]interface{}{tooldef.BuildToolDef("ask_user", "Ask the user", map[string]interface{}{"type": "object"})},
 	}
 
 	result := RunLoop(cb, "need help", nil, nil)
@@ -4949,6 +4958,7 @@ func TestRunLoop_RecordAudioReturnsEarly(t *testing.T) {
 		maxIter:    10,
 		sysPrompt:  "You are a helpful assistant.",
 		toolResult: marker,
+		tools:      []map[string]interface{}{tooldef.BuildToolDef("record_audio", "Record audio", map[string]interface{}{"type": "object"})},
 	}
 
 	result := RunLoop(cb, "开始会议录音", nil, nil)
@@ -5022,6 +5032,10 @@ func TestRunLoop_RecordAudioPauseUsesCurrentToolCallIDInBatch(t *testing.T) {
 		maxIter:    10,
 		sysPrompt:  "You are a helpful assistant.",
 		toolResult: ToolRecordAudio(map[string]interface{}{"title": "A"}),
+		tools: []map[string]interface{}{
+			tooldef.BuildToolDef("record_audio", "Record audio", map[string]interface{}{"type": "object"}),
+			tooldef.BuildToolDef("bash", "Run a command", map[string]interface{}{"type": "object"}),
+		},
 	}
 
 	result := RunLoop(cb, "录音", nil, nil)
@@ -5110,6 +5124,10 @@ func TestRunLoop_CancelBetweenToolCallsSkipsRemainingTools(t *testing.T) {
 		maxIter:    3,
 		sysPrompt:  "test",
 		toolResult: "ok",
+		tools: []map[string]interface{}{
+			tooldef.BuildToolDef("first", "first tool", map[string]interface{}{"type": "object"}),
+			tooldef.BuildToolDef("second", "second tool", map[string]interface{}{"type": "object"}),
+		},
 	}}
 
 	hooks := &toolBatchCommitCallbacks{}

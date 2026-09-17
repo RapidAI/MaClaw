@@ -22,6 +22,8 @@ if (typeof I18N_ZH !== 'undefined') {
       llmTabTitle: 'LLM Service', llmTabDesc: 'Manage LLM providers, compute agents, and model service groups.',
       providersTitle: 'LLM Providers', providersDesc: 'Backend LLM API endpoints for model routing.',
       addProvider: 'Add Provider', editProvider: 'Edit', deleteProvider: 'Delete', noProviders: 'No providers configured.',
+      deleteProviderBound: 'This provider is bound to the following service groups:', deleteProviderPruneHint: 'Deleting it will automatically remove it from these service groups.',
+      deleteProviderInUse: 'Delete blocked: the provider is still bound to service groups:',
       providerDialogTitleNew: 'New Provider', providerDialogTitleEdit: 'Edit Provider',
       fieldID: 'Provider ID', fieldName: 'Name', fieldURL: 'API URL', fieldKey: 'API Key',
       fieldProtocol: 'Protocol', fieldModels: 'Models (comma-separated)', fieldCapabilities: 'Capabilities',
@@ -171,6 +173,8 @@ if (typeof I18N_ZH !== 'undefined') {
       llmTabTitle: 'LLM \u670d\u52a1', llmTabDesc: '\u7ba1\u7406 LLM \u670d\u52a1\u5546\u3001\u7b97\u529b\u4ee3\u7406\u5546\u548c\u6a21\u578b\u670d\u52a1\u7ec4\u3002',
       providersTitle: 'LLM \u670d\u52a1\u5546', providersDesc: '\u540e\u7aef LLM API \u7aef\u70b9\u914d\u7f6e\u3002',
       addProvider: '\u6dfb\u52a0\u670d\u52a1\u5546', editProvider: '\u7f16\u8f91', deleteProvider: '\u5220\u9664', noProviders: '\u672a\u914d\u7f6e\u670d\u52a1\u5546\u3002',
+      deleteProviderBound: '\u8be5\u670d\u52a1\u5546\u5df2\u88ab\u4ee5\u4e0b\u670d\u52a1\u7ec4\u7ed1\u5b9a\uff1a', deleteProviderPruneHint: '\u5220\u9664\u540e\u5c06\u81ea\u52a8\u4ece\u8fd9\u4e9b\u670d\u52a1\u7ec4\u4e2d\u79fb\u9664\u8be5\u670d\u52a1\u5546\u3002',
+      deleteProviderInUse: '\u5220\u9664\u88ab\u963b\u6b62\uff1a\u670d\u52a1\u5546\u4ecd\u7ed1\u5b9a\u4ee5\u4e0b\u670d\u52a1\u7ec4\uff1a',
       providerDialogTitleNew: '\u65b0\u5efa\u670d\u52a1\u5546', providerDialogTitleEdit: '\u7f16\u8f91\u670d\u52a1\u5546',
       fieldID: '\u670d\u52a1\u5546 ID', fieldName: '\u540d\u79f0', fieldURL: 'API \u5730\u5740', fieldKey: 'API \u5bc6\u94a5',
       fieldProtocol: '\u534f\u8bae', fieldModels: '\u6a21\u578b\uff08\u9017\u53f7\u5206\u9694\uff09', fieldCapabilities: '\u80fd\u529b\u6807\u7b7e',
@@ -1505,9 +1509,33 @@ if (typeof I18N_ZH !== 'undefined') {
     } catch(e) { toast(e.message, 'error'); }
   };
   window.deleteLLMProvider = async function(id) {
-    if (!sgConfirm(t('deleteProvider') + ': ' + id + '?')) return;
-    try { await api('/api/admin/llm/providers/' + encodeURIComponent(id), { method: 'DELETE' }); toast(t('deleted'), 'success'); loadProviders({ traffic: false }); }
-    catch(e) { toast(e.message, 'error'); }
+    try {
+      var refData = await api('/api/admin/llm/providers/' + encodeURIComponent(id) + '/references');
+      var groups = (refData && refData.groups) || [];
+      var msg = t('deleteProvider') + ': ' + id + '?';
+      if (groups.length) {
+        var names = groups.map(function(g){ return '- ' + (g.name || g.id); }).join('\n');
+        msg = t('deleteProviderBound') + '\n' + names + '\n\n' + t('deleteProviderPruneHint') + '\n\n' + msg;
+      }
+      if (!sgConfirm(msg)) return;
+      await api('/api/admin/llm/providers/' + encodeURIComponent(id) + '?prune=1', { method: 'DELETE' });
+      toast(t('deleted'), 'success'); loadProviders({ traffic: false }); loadServiceGroups();
+    } catch(e) {
+      if (e && e.message === 'provider_in_use') {
+        var stuckGroups = null;
+        try { stuckGroups = (JSON.parse(e.responseBody || '{}').groups) || null; } catch (ignore) {}
+        if (!stuckGroups) {
+          try {
+            var again = await api('/api/admin/llm/providers/' + encodeURIComponent(id) + '/references');
+            stuckGroups = (again && again.groups) || null;
+          } catch (ignore) {}
+        }
+        var stuck = ((stuckGroups) || []).map(function(g){ return '- ' + (g.name || g.id); }).join('\n');
+        window.alert(t('deleteProviderInUse') + (stuck ? '\n' + stuck : ''));
+        return;
+      }
+      toast(e.message, 'error');
+    }
   };
   window.moveLLMProvider = async function(id, delta) {
     providersLoadSeq += 1;

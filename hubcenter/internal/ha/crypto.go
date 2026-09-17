@@ -36,6 +36,11 @@ const (
 // truncated while an oversized body is rejected on the pre-auth path.
 const haMaxSignedBodyBytes = 128 << 20
 
+// haMaxPushBodyBudget caps the serialized size of a single HA ops push batch.
+// It is half of haMaxSignedBodyBytes so a batch plus framing, signature and
+// base64 overhead always stays under the signed-body ceiling.
+const haMaxPushBodyBudget = 64 << 20
+
 type NodeKeyMaterial struct {
 	PrivateKey     *rsa.PrivateKey
 	PublicKeyPEM   string

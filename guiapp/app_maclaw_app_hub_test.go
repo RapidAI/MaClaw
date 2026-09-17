@@ -4760,6 +4760,10 @@ func TestInstallSharedPublishedApprovalFixtureFromHubInstallsDependenciesAndRegi
 			// Hub-authoritative approval directory (reconcile/list best-effort merge):
 			// this fixture has no hub-bound workflow items.
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}, "total": 0, "page": 1, "page_size": 50})
+		case "/api/llm/service/account", "/api/llm/service/status":
+			// This fixture has no Hub LLM service; the status sync must fail
+			// gracefully (404 fallback) without touching local providers.
+			http.Error(w, `{"message":"not found"}`, http.StatusNotFound)
 		default:
 			t.Fatalf("unexpected Hub path: %s", r.URL.Path)
 		}
@@ -4854,6 +4858,7 @@ func TestInstallSharedPublishedApprovalFixtureFromHubInstallsDependenciesAndRegi
 	if len(records) != 1 || records[0].AppID != "approval-ready-app" || records[0].DataSrvRegistration["status"] != "ready" {
 		t.Fatalf("shared fixture install should be persisted with DataSrv evidence: %#v", records)
 	}
+	pinApprovalWorkflowTestLLMConfig(t, app)
 	app.skillExecutor = NewSkillExecutor(app, nil, nil)
 	workflowJSON := `{"progress_instances":[{"status":"pending","workflow_instance_id":"wf-ready-run-1","approval_id":"approval-ready-run-1","record_id":"expense-ready-run-1","dataset_id":"finance.expense_forms","object_role":"expense_request","workflow_skill_id":"approval-ready-workflow","workflow_version":"1.0.0","workflow_node_id":"expense.manager_review","workflow_node_ids":["expense.submit","expense.manager_review"],"current_node_status":"waiting_review","node_tasks":[{"id":"task-manager-review","title":"Manager review","assignee":"manager","status":"open"}],"current_assignee":"manager","current_assignee_type":"user","business_status":"finance_pending","result_status":"running","result":"manager review started","result_payload":{"text":"manager review started","business_record":{"id":"expense-ready-run-1","status":"finance_pending"}},"outputs":[{"type":"content","title":"Workflow Progress","text":"manager review started","status":"running"}]}],"approval_instance":{"status":"approved","lane":"handled","workflow_instance_id":"wf-ready-run-1","approval_id":"approval-ready-run-1","record_id":"expense-ready-run-1","dataset_id":"finance.expense_forms","object_role":"expense_request","workflow_skill_id":"approval-ready-workflow","workflow_version":"1.0.0","workflow_node_id":"expense.result","workflow_node_ids":["expense.submit","expense.manager_review","expense.result"],"current_node_status":"completed","node_tasks":[{"id":"task-result","title":"Result package","status":"done"}],"workflow_decision_id":"decision-ready-run-1","business_status":"finance_approved","result_status":"approved","result":"approved by shared workflow","result_payload":{"approval_result":"approved","business_status":"finance_approved","business_record":{"id":"expense-ready-run-1","status":"finance_approved"},"text":"approved by shared workflow"},"outputs":[{"type":"content","title":"Workflow Decision","text":"approved by shared workflow"},{"type":"artifact","title":"Approval PDF","artifact":{"id":"ready-run-pdf","name":"approval-ready-run.pdf","uri":"artifact://ready/run.pdf","status":"ready"}}],"artifacts":[{"id":"ready-run-pdf","name":"approval-ready-run.pdf","uri":"artifact://ready/run.pdf","status":"ready"}]}}`
 	workflowResultPath := filepath.Join(app.testHomeDir, "shared-ready-workflow-result.txt")
@@ -5220,6 +5225,10 @@ func TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv(t *testing.T) {
 			// Hub-authoritative approval directory (reconcile/list best-effort merge):
 			// this fixture has no hub-bound workflow items.
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}, "total": 0, "page": 1, "page_size": 50})
+		case "/api/llm/service/account", "/api/llm/service/status":
+			// This fixture has no Hub LLM service; the status sync must fail
+			// gracefully (404 fallback) without touching local providers.
+			http.Error(w, `{"message":"not found"}`, http.StatusNotFound)
 		default:
 			t.Fatalf("unexpected Hub path: %s", r.URL.Path)
 		}
@@ -5520,6 +5529,7 @@ func TestInstallSignedHubApprovalAppRunsApprovalThroughDataSrv(t *testing.T) {
 	}
 
 	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	pinApprovalWorkflowTestLLMConfig(t, app)
 	workflowResultPath := filepath.Join(app.testHomeDir, "installed-golden-workflow-result.txt")
 	writeWorkflowResult := func(body string) {
 		t.Helper()

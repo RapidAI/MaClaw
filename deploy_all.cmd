@@ -42,6 +42,11 @@ if /I "%~1"=="--clean-hubcenter-db" (
   shift
   goto parse_args
 )
+if /I "%~1"=="--skip-bridge-build" (
+  set "PS_ARGS=%PS_ARGS% -SkipOpenClawBridgeBuild"
+  shift
+  goto parse_args
+)
 if /I "%~1"=="-NoCheck" (
   set "PS_ARGS=%PS_ARGS% -NoCheck"
   shift
@@ -88,7 +93,10 @@ exit /b %EXIT_CODE%
 
 :usage
 echo Usage:
-echo   deploy_all.cmd [full^|hubcenter-only^|hub-only] [--no-check] [--clean-hubcenter-db] [--brand rapidai^|tigerclaw] [--skip-targets hc-3,hubs2.maclaw.top,hub2.maclaw.top]
+echo   deploy_all.cmd [full^|hubcenter-only^|hub-only] [--no-check] [--clean-hubcenter-db] [--skip-bridge-build] [--brand rapidai^|tigerclaw] [--skip-targets hc-3,hubs2.maclaw.top,hub2.maclaw.top]
 echo.
 echo   --clean-hubcenter-db  Backup and rebuild remote HubCenter SQLite DB without ha_sync_ops/ha_applied_ops.
+echo   --skip-bridge-build   Skip rebuilding the openclaw-bridge node package on the remote hosts.
+echo                         Saves 3-5 minutes per run. The bridge is not enabled on any host today,
+echo                         and the existing remote openclaw-bridge directory is left untouched.
 exit /b 0

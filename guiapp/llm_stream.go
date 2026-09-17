@@ -970,9 +970,14 @@ func withFirstTokenMetrics(onToken llm.TokenCallback, metrics *llmStreamMetrics)
 
 // The ctx parameter carries cancellation from the LoopContext so that
 // in-flight HTTP requests are aborted promptly when the user cancels.
+// category identifies the call class for the endpoint failure gate
+// (main-stream vs lightweight-classify); budgetFired is derived from
+// reqCtx.Err() at the observe point so caller-side deadlines and user
+// cancellation never count as endpoint failure evidence.
 func (h *IMMessageHandler) doLLMRequestStream(
 	reqCtx context.Context,
 	cfg corelib.MaclawLLMConfig,
+	category string,
 	messages []interface{},
 	tools []map[string]interface{},
 	httpClient *http.Client,
@@ -1021,7 +1026,7 @@ func (h *IMMessageHandler) doLLMRequestStream(
 	}
 	globalLLMScheduler.ObserveResult(trace, err)
 	if h.app != nil {
-		h.app.observeLLMEndpointResult(cfg, err)
+		h.app.observeLLMEndpointResult(cfg, category, reqCtx.Err() != nil, err)
 	}
 	if err != nil || responseHasToolCalls(resp) {
 		tokenBuffer.Discard()

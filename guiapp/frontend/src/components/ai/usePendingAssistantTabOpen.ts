@@ -17,6 +17,8 @@ export type PendingProjectTabOpen = CodingTaskLaunch;
 /** Pending expert tab open request (e.g. clicking an expert card on the utilities page). */
 export interface PendingExpertOpen {
     expert: ExpertDefinition;
+    /** Wizard first message: sent through the expert tab once it opens. */
+    initialMessage?: string;
 }
 
 /** Receipt returned after a queued project-tab request has been handled. */
@@ -124,6 +126,16 @@ function workflowStartFailureMessage(lang?: string) {
     };
 }
 
+/** Degradation note from CreateTaskUnified (workflow start / remote prepare failed). */
+function launchWarningMessage(warning: string) {
+    return {
+        id: `launch-warning-${Date.now()}`,
+        role: "system" as const,
+        content: warning,
+        timestamp: Date.now(),
+    };
+}
+
 function looksLikeRawDiscussionTitle(value: string): boolean {
     return /^(disc|discussion|consultation|session)[-_][A-Za-z0-9-]+$|^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
@@ -154,6 +166,8 @@ interface PendingAssistantTabOpenOptions {
     onPendingProjectTabOpenHandled?: (result: PendingProjectTabOpenResult) => void;
     pendingExpertOpen?: PendingExpertOpen | null;
     onPendingExpertOpenHandled?: () => void;
+    /** Send the wizard's first message through the freshly opened expert tab. */
+    sendExpertMessage?: (text: string, expertId: string) => void | Promise<unknown>;
     /** Persist the expert in task management before its tab is opened. */
     onEnsureExpertTask?: (expert: ExpertDefinition) => Promise<void> | void;
     /** Persist a non-main assistant tab before it is opened. */
@@ -180,6 +194,7 @@ export function usePendingAssistantTabOpen({
     onPendingProjectTabOpenHandled,
     pendingExpertOpen,
     onPendingExpertOpenHandled,
+    sendExpertMessage,
     onEnsureExpertTask,
     onEnsureAssistantTabTask,
 }: PendingAssistantTabOpenOptions) {
@@ -358,7 +373,7 @@ export function usePendingAssistantTabOpen({
 
         // Capture request data synchronously. The parent clears the one-shot
         // pending state through the receipt callback below.
-        const { launchId, projectPath, taskTitle, initialMessage, autoSend, prepareMode, openIntent, cloudWorkspaceId, agentMode, remoteHost, remoteSafety, remoteNeedsReconnect, workflowType, imPlatform, imTargetUID, imIsGroup, newTaskContext } = pendingProjectTabOpen;
+        const { launchId, projectPath, taskTitle, initialMessage, autoSend, prepareMode, openIntent, cloudWorkspaceId, agentMode, remoteHost, remoteSafety, remoteNeedsReconnect, workflowType, imPlatform, imTargetUID, imIsGroup, newTaskContext, noWorkflowInterception, warning } = pendingProjectTabOpen;
         // Check if the tab already exists in the tab list BEFORE creating it.
         // This is a synchronous read of tabStateRef — reliable for tabs that were
         // restored from localStorage (synchronous on mount) or from the backend
@@ -389,16 +404,26 @@ export function usePendingAssistantTabOpen({
         // accidentally carries autoSend: true alongside its local task receipt.
         const shouldAutoSend = autoSend === true && !newTaskContext;
         const shouldAddTaskContext = !tabExistedInList && !hasExistingConversation && !hasExistingTaskContext && !!taskContext;
-        const stateAfterTaskContext = shouldAddTaskContext && taskContext
+        // Degradation from CreateTaskUnified (workflow start / remote prepare
+        // failed): the task is still openable, so show why it degraded. Only a
+        // genuinely new tab gets the card; a reused tab keeps its history.
+        const launchWarning = String(warning || "").trim() && !tabExistedInList && !hasExistingConversation
+            ? launchWarningMessage(String(warning || "").trim())
+            : null;
+        const stateAfterTaskContext = (shouldAddTaskContext && taskContext) || launchWarning
             ? {
                 ...initialState,
-                history: [...(Array.isArray(initialState?.history) ? initialState.history : []), taskContext],
+                history: [
+                    ...(Array.isArray(initialState?.history) ? initialState.history : []),
+                    ...(shouldAddTaskContext && taskContext ? [taskContext] : []),
+                    ...(launchWarning ? [launchWarning] : []),
+                ],
                 scrollTop: 0,
                 inputText: "",
                 lastActiveAt: Date.now(),
             }
             : initialState;
-        if (shouldAddTaskContext) {
+        if (shouldAddTaskContext || launchWarning) {
             saveTabStateRef.current?.(tab.id, stateAfterTaskContext || {});
         }
         // A duplicate/stale event can focus a pre-existing task tab. Do not
@@ -480,7 +505,16 @@ export function usePendingAssistantTabOpen({
             if (shouldDeferRemoteInitialSend) return;
 
             const msg = initialMessage || taskTitle;
-            await send(msg, { tabId: tab.id, project_path: tab.projectPath, im_platform: imPlatform, im_target_uid: imTargetUID, im_is_group: !!imIsGroup, im_task_title: taskTitle }).catch(() => {});
+            await send(msg, {
+                tabId: tab.id,
+                project_path: tab.projectPath,
+                im_platform: imPlatform,
+                im_target_uid: imTargetUID,
+                im_is_group: !!imIsGroup,
+                im_task_title: taskTitle,
+                // Wizard「无工作流」：首条消息跳过工作流语义拦截。
+                ...(noWorkflowInterception ? { no_workflow_interception: true } : {}),
+            }).catch(() => {});
         })();
     }, [pendingProjectTabOpen]);
     // ↑ ONLY pendingProjectTabOpen in deps. All callbacks accessed via refs.
@@ -500,6 +534,8 @@ export function usePendingAssistantTabOpen({
     onExpertHandledRef.current = onPendingExpertOpenHandled;
     const ensureExpertTaskRef = useRef(onEnsureExpertTask);
     ensureExpertTaskRef.current = onEnsureExpertTask;
+    const sendExpertMessageRef = useRef(sendExpertMessage);
+    sendExpertMessageRef.current = sendExpertMessage;
     /** Reject a stale async registration when a newer expert launch wins. */
     const expertOpenRequestRef = useRef(0);
     const expertLangRef = useRef(lang);
@@ -511,12 +547,24 @@ export function usePendingAssistantTabOpen({
         onExpertHandledRef.current?.();
         const expertId = String(expert?.id || "").trim();
         if (!expertId) return;
+        const initialMessage = String(pendingExpertOpen.initialMessage || "").trim();
         const requestID = ++expertOpenRequestRef.current;
 
         const openExpertTab = () => {
             if (requestID !== expertOpenRequestRef.current) return;
             const create = createExpertTabRef.current;
             if (!create) return;
+
+            // Wizard handoff: the backend expert branch relies on this first
+            // user message to trigger its flow, so it is sent even when the tab
+            // already existed (a repeated wizard launch is a new request).
+            const sendInitialMessage = () => {
+                if (!initialMessage) return;
+                void Promise.resolve(sendExpertMessageRef.current?.(initialMessage, expertId))
+                    .catch((error) => {
+                        console.warn("[task_management] expert initial message send failed:", error);
+                    });
+            };
 
             // Check existence BEFORE creating so the welcome seed only happens on
             // first creation (dedupe-activation must not re-seed).
@@ -525,12 +573,19 @@ export function usePendingAssistantTabOpen({
                 .some(t => t.id === tabId || (t.type === "expert" && t.expertId === expertId));
 
             const tab = create(expert);
-            if (!tab || existedBefore) return;
+            if (!tab) return;
+            if (existedBefore) {
+                sendInitialMessage();
+                return;
+            }
 
             const existing = getTabStateRef.current?.(tab.id);
             const hasConversation = Array.isArray(existing?.history)
                 && existing.history.some((m) => isConversationMessage(m) && (m.role === "user" || m.role === "assistant"));
-            if (hasConversation) return;
+            if (hasConversation) {
+                sendInitialMessage();
+                return;
+            }
 
             const sessionKey = expertSessionKey(expertId) || undefined;
             saveTabStateForExpertRef.current?.(tab.id, {
@@ -545,6 +600,7 @@ export function usePendingAssistantTabOpen({
                 inputText: "",
                 lastActiveAt: Date.now(),
             });
+            sendInitialMessage();
         };
         const ensureTask = ensureExpertTaskRef.current;
         if (!ensureTask) {

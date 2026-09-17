@@ -52,6 +52,7 @@ export function normalizeSidebarHubCredits(status?: SidebarHubServiceStatus | nu
                 serviceGroupID,
                 fiveHourLimit: 0,
                 fiveHourUsed: 0,
+                heldCredits: 0,
                 fiveHourRolling: false,
                 fiveHourResetAt: '',
                 dailyLimit: 0,
@@ -67,6 +68,10 @@ export function normalizeSidebarHubCredits(status?: SidebarHubServiceStatus | nu
                 ...summary,
                 fiveHourLimit: summary.fiveHourLimit + numeric(limits?.five_hour ?? limits?.FiveHour),
                 fiveHourUsed: summary.fiveHourUsed + numeric(fiveHour?.credits_used ?? fiveHour?.CreditsUsed),
+                // The server attributes a service group's in-flight reservation
+                // holds to every grant of that group; merging must keep the
+                // maximum, not sum duplicates.
+                heldCredits: Math.max(summary.heldCredits ?? 0, numeric(grant.held_credits ?? grant.HeldCredits)),
                 fiveHourRolling: summary.fiveHourRolling || Boolean(fiveHour?.rolling ?? fiveHour?.Rolling ?? grant.rolling_five_hour ?? grant.RollingFiveHour),
                 fiveHourResetAt: latestWindowEnd(summary.fiveHourResetAt, fiveHour?.window_end ?? fiveHour?.WindowEnd),
                 dailyLimit: summary.dailyLimit + numeric(limits?.daily ?? limits?.Daily),

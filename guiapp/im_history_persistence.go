@@ -556,7 +556,7 @@ func (h *IMMessageHandler) classifyPendingUserReplyAnswer(userID, question, answ
 		SystemPrompt: `Classify whether the user message answers the assistant's pending question or starts a new task.
 Reply with exactly one word: answer or new. If uncertain, reply new.`,
 		UserMessage:       fmt.Sprintf("Assistant question:\n%s\n\nUser message:\n%s", truncateRunes(question, 500), truncateRunes(answer, 500)),
-		TimeoutSec:        2,
+		TimeoutSec:        5,
 		Tag:               "pending-reply-answer",
 		PreferLightweight: true,
 	})

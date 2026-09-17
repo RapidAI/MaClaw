@@ -246,11 +246,20 @@ func TestSemanticS2b2BuiltinCatalogAnnotations(t *testing.T) {
 	for _, name := range []string{"manage_template", "create_template", "list_templates", "launch_template"} {
 		assertProvision(t, name, tool.CapabilityTemplateManageSession, tool.EffectSensitive)
 	}
+	// project_manage 是有意保留 capability 标注的例外：registered for
+	// unmanaged/legacy turns（tool_registry_builtin.go:140-147 注释），受管
+	// catalog 另行取消发布。其余会话族工具根本不进注册表——受管面经
+	// 硬编码 name→capability 映射识别并按 session.manage.coding 整组拒绝，
+	// 注册成能力工具反而会让规划器提供受管阶段不得 materialize 的名字。
+	assertProvision(t, "project_manage", tool.CapabilitySessionManageCoding, tool.EffectSensitive)
 	for _, name := range []string{
-		"list_sessions", "project_manage", "list_providers", "send_input",
+		"list_sessions", "list_providers", "send_input",
 		"get_session_output", "get_session_events", "interrupt_session", "kill_session",
 	} {
-		assertProvision(t, name, tool.CapabilitySessionManageCoding, tool.EffectSensitive)
+		registered, ok := h.registry.Get(name)
+		if ok && registered.SemanticCatalogState == SemanticCatalogCapability {
+			t.Fatalf("%s must not carry capability catalog state: managed session family is deny-grouped", name)
+		}
 	}
 	for _, name := range []string{"delegate_task", "parallel_execute"} {
 		assertProvision(t, name, tool.CapabilityAgentDelegateSubtask, tool.EffectSensitive)

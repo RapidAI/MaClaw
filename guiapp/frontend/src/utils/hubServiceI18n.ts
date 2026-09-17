@@ -40,14 +40,17 @@ const HUB_SERVICE_STATUS_ERROR_TRANSLATIONS: Array<[string, string, string, stri
 export function localizeHubServiceReason(reason: unknown, lang?: string): string {
     const raw = String(reason || "").trim().replace(/^Error:\s*/i, "");
     const normalized = raw.toLowerCase();
-    const insufficientCredits = normalized.match(/insufficient\s+credits?(?:\s+for\s+this\s+request)?\s*:\s*need\s+([\d.,]+)\s+credits?\s*,\s*available\s+([\d.,]+)/i);
+    const insufficientCredits = normalized.match(/insufficient\s+credits?(?:\s+for\s+this\s+request)?\s*:\s*need\s+([\d.,]+)\s+credits?\s*,\s*available\s+([\d.,]+)(?:\s+credits?)?(?:\s*\(\s*([\d.,]+)\s+held\s+by\s+in-flight\s+requests\s*\))?/i);
     if (insufficientCredits) {
-        const [, need, available] = insufficientCredits;
+        const [, need, available, held] = insufficientCredits;
+        const heldEn = held ? ` (${held} held by in-flight requests)` : '';
+        const heldZh = held ? `，其中 ${held} Credits 被在途请求冻结` : '';
+        const heldZhHant = held ? `，其中 ${held} Credits 被在途請求凍結` : '';
         return localizeByLang(
             lang,
-            `Insufficient credits for this request: need ${need} credits, available ${available} credits.`,
-            `本次请求额度不足：需要 ${need} Credits，当前可用 ${available} Credits。`,
-            `本次請求額度不足：需要 ${need} Credits，目前可用 ${available} Credits。`,
+            `Insufficient credits for this request: need ${need} credits, available ${available} credits${heldEn}.`,
+            `本次请求额度不足：需要 ${need} Credits，当前可用 ${available} Credits${heldZh}。`,
+            `本次請求額度不足：需要 ${need} Credits，目前可用 ${available} Credits${heldZhHant}。`,
         );
     }
     for (const [needle, en, zhHans, zhHant] of HUB_SERVICE_REASON_TRANSLATIONS) {

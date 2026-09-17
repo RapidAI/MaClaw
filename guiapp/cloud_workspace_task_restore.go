@@ -230,7 +230,7 @@ func (a *App) unhideCloudWorkspaceTask(workspaceID string, existing ProjectSearc
 		workingDir = a.cloudWorkspaceCachePath(a.cloudWorkspaceTenantID(), workspaceID)
 	}
 	if rec := pi.Get(path); rec != nil {
-		existing = projectRecordToSearchResult(pi, *rec)
+		existing = a.projectRecordToSearchResult(pi, *rec)
 	}
 	bound := a.bindPreparedCloudWorkspaceTask(workspaceID, existing, workingDir)
 	return bound

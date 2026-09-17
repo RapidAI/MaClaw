@@ -330,12 +330,15 @@ func workflowTypeAllowed(label IntentLabel, workflowType string) bool {
 // The treeText parameter should be pre-built via BuildIntentTreeText
 // to avoid rebuilding on every call.
 func ClassifyByTree(llmFunc LLMClassifyFunc, treeText, message string) ([]TreeCandidate, error) {
-	return ClassifyByTreeContext(context.Background(), nil, llmFunc, treeText, message)
+	return ClassifyByTreeContext(context.Background(), context.Background(), nil, llmFunc, treeText, message)
 }
 
 // ClassifyByTreeContext runs tree reasoning with a caller-owned cancellation
-// context. The original callback remains supported for compatibility.
-func ClassifyByTreeContext(ctx context.Context, llmContextFunc LLMClassifyContextFunc, llmFunc LLMClassifyFunc, treeText, message string) ([]TreeCandidate, error) {
+// context. The original callback remains supported for compatibility. ctx
+// carries the classification budget; parentCtx is the caller's user/turn
+// context passed through to the context-aware callback (see
+// LLMClassifyContextFunc).
+func ClassifyByTreeContext(ctx context.Context, parentCtx context.Context, llmContextFunc LLMClassifyContextFunc, llmFunc LLMClassifyFunc, treeText, message string) ([]TreeCandidate, error) {
 	if llmContextFunc == nil && llmFunc == nil {
 		return nil, fmt.Errorf("LLM classify function is nil")
 	}
@@ -350,7 +353,7 @@ func ClassifyByTreeContext(ctx context.Context, llmContextFunc LLMClassifyContex
 	var response string
 	var err error
 	if llmContextFunc != nil {
-		response, err = llmContextFunc(ctx, prompt, message)
+		response, err = llmContextFunc(ctx, parentCtx, prompt, message)
 	} else {
 		response, err = llmFunc(prompt, message)
 	}

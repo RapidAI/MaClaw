@@ -457,7 +457,15 @@ func TestIMSemanticSSHBrowserCURequireBoundRuntime(t *testing.T) {
 }
 
 func TestIMSemanticDelegatePublishesWhenHostAvailable(t *testing.T) {
-	h := &IMMessageHandler{registry: NewToolRegistry(), unifiedClassifier: semanticClassifierForLabel(t, intent.LabelDelegateTask), app: &App{}}
+	// 语义路由状态落在 App base dir 下；裸 &App{} 会解析到真实 ~/.maclaw，
+	// 固定 root/principal ID 的 lineage 在多次运行间累积，必然撞
+	// route_revision_conflict。用隔离 home 与生产数据隔开。
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	app := &App{testHomeDir: tempHome}
+	defer app.closeSemanticInvocationStore()
+	h := &IMMessageHandler{registry: NewToolRegistry(), unifiedClassifier: semanticClassifierForLabel(t, intent.LabelDelegateTask), app: app}
 	registerBuiltinTools(h.registry, h)
 	defs, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
 		"user-1", "交给子代理", "lansenger", "root-del-host", "turn-del-host", &intent.ClassificationResult{Primary: intent.LabelDelegateTask, Confidence: .98},
@@ -474,7 +482,13 @@ func TestIMSemanticDelegatePublishesWhenHostAvailable(t *testing.T) {
 }
 
 func TestIMSemanticComputerUsePublishesWhenDesktopHostEnabled(t *testing.T) {
-	h := &IMMessageHandler{registry: NewToolRegistry(), unifiedClassifier: semanticClassifierForLabel(t, intent.LabelComputerUse), app: &App{}}
+	// 同 TestIMSemanticDelegatePublishesWhenHostAvailable：隔离语义路由状态存储。
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	app := &App{testHomeDir: tempHome}
+	defer app.closeSemanticInvocationStore()
+	h := &IMMessageHandler{registry: NewToolRegistry(), unifiedClassifier: semanticClassifierForLabel(t, intent.LabelComputerUse), app: app}
 	if !semanticTrustedComputerUsePublished(h) {
 		t.Fatal("desktop host with default CU enabled must publish")
 	}

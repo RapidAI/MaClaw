@@ -508,7 +508,10 @@ func TestAdoptCodingWorkbenchConflict(t *testing.T) {
 	run(wt.Path, "commit", "-m", "wt change")
 
 	h := &IMMessageHandler{}
-	userID := "desktop-user:adopt-test"
+	// Pin the sticky-conflict store inside a temp dir: a bare relative name
+	// resolves under the package working directory and accumulates conflicts
+	// across runs (and the polluted store is even tracked in git).
+	userID := "desktop-user:" + filepath.Join(t.TempDir(), "adopt-test")
 	h.storeStickyCodingConflict(userID, codingWorkbenchConflict{
 		StepIndex:   3,
 		Path:        wt.Path,

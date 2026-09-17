@@ -153,8 +153,11 @@ func TestIMSemanticKnowledgeIngestScopesStoreToPrincipal(t *testing.T) {
 	if err != nil || !strings.Contains(ownerListed, "owned notes") {
 		t.Fatalf("user-1 list=%q err=%v", ownerListed, err)
 	}
-	if _, err := h.ingestTrustedKnowledge("user-1", "", "", `C:\Windows\System32\drivers\etc\hosts`); err == nil || !strings.Contains(err.Error(), "trusted_knowledge_ingest_path_unavailable") {
-		t.Fatalf("empty workspace absolute path err=%v", err)
+	// Every provisioned principal now has a workspace (per-owner session
+	// workspace), so an absolute path outside it is an escape attempt and is
+	// rejected as such — the write is refused either way.
+	if _, err := h.ingestTrustedKnowledge("user-1", "", "", `C:\Windows\System32\drivers\etc\hosts`); err == nil || !strings.Contains(err.Error(), "trusted_knowledge_ingest_path_rejected") {
+		t.Fatalf("outside-workspace absolute path err=%v", err)
 	}
 
 	workspace := t.TempDir()

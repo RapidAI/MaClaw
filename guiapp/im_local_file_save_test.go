@@ -34,3 +34,41 @@ func TestFindIdenticalWorkspaceFileReusesProducerWrite(t *testing.T) {
 		t.Fatalf("unreadable workspace must not match: %q", got)
 	}
 }
+
+// Regression for the 2026-09-15 totality fix: isolated owners (expert
+// sessions) previously had no workspace, so current-channel delivery fell
+// back to the host artifact store. Now the provisioned per-owner session
+// workspace is the user-facing landing directory — the delivery must land
+// there, next to the files the semantic tools wrote.
+func TestSaveFileDataForLocalDeliveryLandsInExpertSessionWorkspace(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	h := &IMMessageHandler{app: app}
+	owner := expertSessionUserID("builtin-pptx-maker")
+	payload := []byte("deck-bytes")
+	encoded := base64.StdEncoding.EncodeToString(payload)
+
+	saved, err := h.saveFileDataForLocalDelivery(owner, "deck.pptx", encoded)
+	if err != nil {
+		t.Fatalf("save=%q err=%v", saved, err)
+	}
+	workspace := trustedPrincipalBoundWorkspace(h, owner)
+	if workspace == "" {
+		t.Fatalf("expert owner must have a provisioned workspace")
+	}
+	if filepath.Dir(saved) != workspace {
+		t.Fatalf("delivery must land in the provisioned workspace %q, got %q", workspace, saved)
+	}
+	if data, readErr := os.ReadFile(saved); readErr != nil || string(data) != string(payload) {
+		t.Fatalf("delivered bytes mismatch: %v", readErr)
+	}
+
+	// A second delivery of identical bytes must reuse the existing file
+	// instead of stacking a synthetically named duplicate.
+	again, err := h.saveFileDataForLocalDelivery(owner, "attachment_1.pptx", encoded)
+	if err != nil {
+		t.Fatalf("second save=%q err=%v", again, err)
+	}
+	if again != saved {
+		t.Fatalf("identical bytes must reuse the first delivery, got %q want %q", again, saved)
+	}
+}

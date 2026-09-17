@@ -50,6 +50,13 @@ const (
 	// signal to drop orphaned tab/history caches.
 	EventExpertTaskDeleted = "expert-task:deleted"
 
+	// EventExpertsChanged is a pure signal (no payload) emitted after any
+	// expert-list mutation: local expert save/delete, expert market
+	// install/uninstall, and managed industry expert install. Frontend
+	// listeners re-fetch their expert lists instead of diffing payloads.
+	// Frontend listener: AIAssistantPanel.tsx wizard-bar expert loader.
+	EventExpertsChanged = "experts:changed"
+
 	// EventAppUpdateAvailable is emitted when the background update checker
 	// (startup delay + periodic re-check) finds a newer application release.
 	EventAppUpdateAvailable = "app-update-available"

@@ -87,10 +87,21 @@ func TestClosedManagedSemanticDefinitionsEmptyGrantsAdmitNothing(t *testing.T) {
 		{"type": "function", "function": map[string]interface{}{"name": "write_file"}},
 		{"type": "function", "function": map[string]interface{}{"name": "web_fetch"}},
 		{"type": "function", "function": map[string]interface{}{"name": "bash"}},
+		{"type": "function", "function": map[string]interface{}{"name": "call_mcp_tool"}},
 	}
-	if closed := closedManagedSemanticDefinitions(poisoned, nil); len(closed) != 0 {
-		t.Fatalf("empty grants must not fail-open: %#v", closed)
+	// nil grants = headless unmigrated close (corelib ClosedManagedDefinitions
+	// doc comment): only legacy dynamic gateways drop; plain host names stay
+	// visible because no grant system is in play.
+	closed := closedManagedSemanticDefinitions(poisoned, nil)
+	if len(closed) != 3 || extractToolName(closed[0]) != "write_file" {
+		t.Fatalf("nil-grant close must drop only gateways, got: %#v", closed)
 	}
+	for _, def := range closed {
+		if tool.IsLegacyDynamicGatewayName(extractToolName(def)) {
+			t.Fatalf("nil-grant close must still drop gateways: %#v", def)
+		}
+	}
+	// A grant table that is present but empty is the fail-closed managed case.
 	if closed := closedManagedSemanticDefinitions(poisoned, map[string]tool.InvocationGrant{}); len(closed) != 0 {
 		t.Fatalf("zero grants must not fail-open: %#v", closed)
 	}

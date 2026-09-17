@@ -110,6 +110,13 @@ export interface AITabState {
     pendingRemoteInitialMessage?: {
         text: string;
     };
+    /**
+     * New-task wizard marker (local tab only): set by the task-pane "新建任务"
+     * button; the first send from this tab always creates a task via
+     * CreateTaskUnified (even with an all-default draft). Cleared after the
+     * task is created. In-memory only — never persisted.
+     */
+    newTaskWizard?: boolean;
 }
 /** Overall state of the AI Assistant Panel tab system */
 export interface AIAssistantPanelTabState {

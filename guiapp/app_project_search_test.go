@@ -2126,19 +2126,22 @@ func TestAssistantTabWorkingDirectoriesAreIsolatedAndRestore(t *testing.T) {
 	_ = app.CreateProjectTabSession(firstTab, firstTask.ProjectPath)
 	_ = app.CreateProjectTabSession(secondTab, secondTask.ProjectPath)
 
-	if got := app.GetTabWorkingDir(firstTab)["path"]; got != filepath.Clean(mainDir) {
-		t.Fatalf("unset first tab dir = %q, want inherited main dir %q", got, mainDir)
+	// An unset managed-task tab resolves to its own workspace/ sandbox — the
+	// directory tools actually run in — not the main tab's directory.
+	firstWorkspace := filepath.Join(firstTask.ProjectPath, "workspace")
+	if got := app.GetTabWorkingDir(firstTab)["path"]; got != filepath.Clean(firstWorkspace) {
+		t.Fatalf("unset first tab dir = %q, want task workspace %q", got, firstWorkspace)
 	}
 	if err := app.SetTabWorkingDir(firstTab, firstDir); err != nil {
 		t.Fatalf("SetTabWorkingDir first: %v", err)
 	}
-	// An unset tab must track later main-tab changes rather than retaining a
-	// snapshot of the directory that was active when it was created.
+	// A main-tab change must not leak into the other task's sandbox tab.
 	if err := app.SetTabWorkingDir("", updatedMainDir); err != nil {
 		t.Fatalf("SetTabWorkingDir updated main: %v", err)
 	}
-	if got := app.GetTabWorkingDir(secondTab)["path"]; got != filepath.Clean(updatedMainDir) {
-		t.Fatalf("unset second tab dir after main change = %q, want inherited main dir %q", got, updatedMainDir)
+	secondWorkspace := filepath.Join(secondTask.ProjectPath, "workspace")
+	if got := app.GetTabWorkingDir(secondTab)["path"]; got != filepath.Clean(secondWorkspace) {
+		t.Fatalf("unset second tab dir after main change = %q, want task workspace %q", got, secondWorkspace)
 	}
 	if got := app.GetTabWorkingDir(firstTab)["path"]; got != filepath.Clean(firstDir) {
 		t.Fatalf("private first tab dir after main change = %q, want %q", got, firstDir)
@@ -2214,6 +2217,39 @@ func TestExpertTabWorkingDirectoryIsPrivateAndFallsBackToMain(t *testing.T) {
 	}
 	if got := app.GetTabWorkingDir("expert-code-reviewer")["path"]; got != filepath.Clean(expertDir) {
 		t.Fatalf("reopened expert dir = %q, want restored private dir %q", got, expertDir)
+	}
+}
+
+func TestUnconfiguredManagedTaskResolvesToWorkspaceSandbox(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	task := app.CreateRecentTask("paper translate")
+	if task.ProjectPath == "" {
+		t.Fatal("task creation failed")
+	}
+	workspace := filepath.Join(task.ProjectPath, "workspace")
+	if got := app.EffectiveWorkingDirForOwner(projectSessionOwnerID(task.ProjectPath)); got != filepath.Clean(workspace) {
+		t.Fatalf("effective owner dir = %q, want task workspace %q", got, workspace)
+	}
+	tabID := "proj-managed-sandbox"
+	_ = app.CreateProjectTabSession(tabID, task.ProjectPath)
+	if got := app.GetTabWorkingDir(tabID)["path"]; got != filepath.Clean(workspace) {
+		t.Fatalf("tab working dir = %q, want task workspace %q", got, workspace)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		for _, item := range app.ListTasks(50) {
+			if item.ProjectPath != task.ProjectPath {
+				continue
+			}
+			if item.ExecutionDir != workspace {
+				t.Fatalf("list execution_dir = %q, want task workspace %q", item.ExecutionDir, workspace)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("ListTasks did not surface task %q", task.ProjectPath)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

@@ -95,6 +95,8 @@ export interface SidebarHubCreditGrant {
     credits_used?: number;
     credits_remaining?: number;
     credits_available?: number;
+    /** Credits currently held by in-flight billing reservations on this grant's service group. */
+    held_credits?: number;
     period_limits?: SidebarHubPeriodLimits;
     period_usage?: SidebarHubPeriodUsage;
     permanent?: boolean;
@@ -111,6 +113,7 @@ export interface SidebarHubCreditGrant {
     CreditsUsed?: number;
     CreditsRemaining?: number;
     CreditsAvailable?: number;
+    HeldCredits?: number;
     PeriodLimits?: SidebarHubPeriodLimits;
     PeriodUsage?: SidebarHubPeriodUsage;
     Permanent?: boolean;
@@ -173,6 +176,8 @@ export interface SidebarHubCredits {
         serviceGroupID: string;
         fiveHourLimit: number;
         fiveHourUsed: number;
+        /** Group-scoped credits held by in-flight requests; subtracted from the visible remaining. */
+        heldCredits?: number;
         fiveHourRolling: boolean;
         fiveHourResetAt: string;
         dailyLimit: number;

@@ -7,6 +7,7 @@ import type { VirtualEmployeeEntry } from '../ai/VirtualEmployeeTab';
 import type { FavoriteEmployeeSlot } from './FavoriteEmployeeButtons';
 import type { HistoryDiscussionSummary } from './SidebarHistorySessions';
 import type { TaskManagementItem, TaskContextMenu } from './SidebarTaskManagement';
+import type { ExpertDefinition } from '../ai/expertTypes';
 import type { ActiveAssistantTaskIdentity } from '../ai/aiAssistantPanelSessionUtils';
 import { SIDEBAR_AI_PANE_GAP, SIDEBAR_NAV_RAIL_WIDTH } from './sidebarLayout';
 import type { AssistantDarkSchemeId } from '../ai/assistantDarkSchemes';
@@ -68,6 +69,8 @@ interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
         remote?: { host: string; port: number; user: string; password: string; workDir: string },
         workspaceId?: string,
     ) => Promise<void> | void;
+    /** Expert-task creation path used by the chat task type in the create dialog. */
+    onCreateExpertTask?: (expert: ExpertDefinition) => Promise<void> | void;
     refreshTasks: () => void;
     taskContextMenu: TaskContextMenu;
     setTaskContextMenu: (menu: TaskContextMenu) => void;
@@ -183,6 +186,7 @@ export const AppSidebarShell = ({
     assistantReady = true,
     onTaskSwitchBlocked,
     createTask,
+    onCreateExpertTask,
     refreshTasks,
     taskContextMenu,
     setTaskContextMenu,
@@ -321,6 +325,7 @@ export const AppSidebarShell = ({
                         assistantReady={assistantReady}
                         onTaskSwitchBlocked={onTaskSwitchBlocked}
                         createTask={createTask}
+                        onCreateExpertTask={onCreateExpertTask}
                         refreshTasks={refreshTasks}
                         taskContextMenu={taskContextMenu}
                         setTaskContextMenu={setTaskContextMenu}

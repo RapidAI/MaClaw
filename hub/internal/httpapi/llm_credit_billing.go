@@ -406,15 +406,36 @@ func prepareLLMPricingQuote(ctx context.Context, reg *llmservice.Registry, provi
 	// existing registry model. Only finite positive wallet balances participate
 	// in the preflight check.
 	if available > 0 && quote.ReservedMicrocredits > creditsToMicrocredits(available) {
+		held := insufficientCreditsHeld(reg, userID, email, groups, now)
 		return llmBillingDenial{
-			Code:    "LLM_SERVICE_CREDITS_INSUFFICIENT_FOR_REQUEST",
-			Message: fmt.Sprintf("insufficient credits for this request: need %.3f credits, available %.3f", llmpool.MicrocreditsToCredits(quote.ReservedMicrocredits), available),
+			Code:        "LLM_SERVICE_CREDITS_INSUFFICIENT_FOR_REQUEST",
+			Message:     insufficientCreditsMessage(llmpool.MicrocreditsToCredits(quote.ReservedMicrocredits), available, held),
+			HeldCredits: held,
 		}, fmt.Errorf("insufficient credits for quoted request")
 	}
 	if llmBillingRequestID(ctx) != "" {
 		rememberLLMPricingQuote(ctx, quote)
 	}
 	return llmBillingDenial{}, nil
+}
+
+// insufficientCreditsMessage builds the admission denial message. When
+// in-flight reservations hold part of the balance, the held amount is
+// included so the denial explains why available sits below the visible
+// period window remaining.
+func insufficientCreditsMessage(need, available, held float64) string {
+	message := fmt.Sprintf("insufficient credits for this request: need %.3f credits, available %.3f", need, available)
+	if held > 0 {
+		message = fmt.Sprintf("%s (%.3f held by in-flight requests)", message, held)
+	}
+	return message
+}
+
+func insufficientCreditsHeld(reg *llmservice.Registry, userID, email string, serviceGroupIDs []string, now time.Time) float64 {
+	if reg == nil {
+		return 0
+	}
+	return llmservice.HeldBillingCreditsForServiceGroupsForUserID(reg, userID, email, serviceGroupIDs, now)
 }
 
 // reserveLLMRequestPricing turns the selected request's conservative quote
@@ -459,7 +480,8 @@ func reserveLLMRequestPricing(ctx context.Context, system store.SystemSettingsRe
 	reserved, ok := llmservice.ReserveBillingCreditsForUserID(reg, userID, email, chosen.ServiceGroupIDs, requestID, llmpool.MicrocreditsToCredits(chosen.ReservedMicrocredits), chosen.ExpiresAt, now)
 	if !ok {
 		available := llmservice.AvailableCreditsForServiceGroupsForUserID(reg, userID, email, chosen.ServiceGroupIDs, now)
-		return llmBillingDenial{Code: "LLM_SERVICE_CREDITS_INSUFFICIENT_FOR_REQUEST", Message: fmt.Sprintf("insufficient credits for this request: need %.3f credits, available %.3f", llmpool.MicrocreditsToCredits(chosen.ReservedMicrocredits), available)}, fmt.Errorf("insufficient credits for quoted request")
+		held := insufficientCreditsHeld(reg, userID, email, chosen.ServiceGroupIDs, now)
+		return llmBillingDenial{Code: "LLM_SERVICE_CREDITS_INSUFFICIENT_FOR_REQUEST", Message: insufficientCreditsMessage(llmpool.MicrocreditsToCredits(chosen.ReservedMicrocredits), available, held), HeldCredits: held}, fmt.Errorf("insufficient credits for quoted request")
 	}
 	if reserved > 0 {
 		if err := llmservice.SaveRegistry(ctx, system, reg); err != nil {
@@ -584,23 +606,59 @@ func markLLMBillingReservationSent(ctx context.Context, system store.SystemSetti
 // OfficialBillingReconciliationResult makes background recovery observable
 // without exposing request content or pricing quote tokens.
 type OfficialBillingReconciliationResult struct {
-	Scanned int
-	Settled int
-	Pending int
-	Failed  int
+	Scanned  int
+	Settled  int
+	Pending  int
+	Failed   int
+	Released int
+}
+
+// officialBillingAttemptNotFoundGrace bounds how long a sent reservation may
+// be held before a HubCenter "attempt not found" answer is trusted. An
+// upstream call can legitimately outlive its quote TTL while streaming, so a
+// 404 is proof of "no billable work" only once this dispatch window has
+// passed; younger holds stay pending and are re-checked on a later pass.
+const officialBillingAttemptNotFoundGrace = 15 * time.Minute
+
+// markReconciledNotFoundBillingReservation releases a hold whose upstream
+// attempt HubCenter definitively does not know, retaining the row as terminal
+// usage_unresolved evidence. The ledger is rechecked under the billing lock so
+// a concurrent online settlement is never undone.
+func markReconciledNotFoundBillingReservation(ctx context.Context, system store.SystemSettingsRepository, requestID string) bool {
+	if system == nil || strings.TrimSpace(requestID) == "" {
+		return false
+	}
+	llmCreditChargeMu.Lock()
+	defer llmCreditChargeMu.Unlock()
+	reg, err := loadCachedLLMServiceRegistry(ctx, system)
+	if err != nil || llmservice.HasBillingRequest(reg, requestID) {
+		return false
+	}
+	if !llmservice.MarkBillingReservationUsageUnresolved(reg, requestID, time.Now().UTC()) {
+		return false
+	}
+	if err := llmservice.SaveRegistry(ctx, system, reg); err != nil {
+		return false
+	}
+	invalidateLLMRuntimeCaches(system)
+	return true
 }
 
 // reconcileOfficialBillingReservations settles sent official requests whose
 // response/trailer did not reach Hub. HubCenter's authenticated attempt
-// endpoint is the sole source of recovered usage; missing or unknown attempts
-// deliberately retain their reservations.
+// endpoint is the sole source of recovered usage. Missing or unknown attempts
+// retain their reservations, except that a definitive not-found answer past
+// the dispatch grace window releases the hold (kept as usage_unresolved
+// evidence): HubCenter records every billable attempt durably on completion,
+// so by then it proves the request never consumed billable upstream work.
 func reconcileOfficialBillingReservations(ctx context.Context, system store.SystemSettingsRepository, reservations []llmservice.BillingReservation) OfficialBillingReconciliationResult {
 	result := OfficialBillingReconciliationResult{}
 	if system == nil {
 		return result
 	}
+	now := time.Now().UTC()
 	for _, reservation := range reservations {
-		if !IsMaClawProviderRequest(reservation.ProviderID) || reservation.BillingGroupMultiplier <= 0 {
+		if !IsMaClawProviderRequest(reservation.ProviderID) {
 			continue
 		}
 		// A completed request may already have been settled by the online path
@@ -614,11 +672,36 @@ func reconcileOfficialBillingReservations(ctx context.Context, system store.Syst
 		attemptCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		attempt, status, err := ReconcileMaClawBillingAttempt(attemptCtx, store.TenantIDFromContext(ctx), reservation.RequestID)
 		cancel()
+		// HubCenter durably records every billable attempt only after the
+		// upstream request completed. A not-found answer past the dispatch
+		// grace window therefore proves no billable work occurred; releasing
+		// the hold unblocks balances that lost-response holds would otherwise
+		// squat on indefinitely. This recovery deliberately runs before the
+		// BillingGroupMultiplier gate below: the frozen multiplier is only
+		// needed to settle a real charge, while rows that crashed between
+		// mark-sent and detail-freeze (or predate the details feature) would
+		// otherwise hold credits forever yet never reach this scan's cleanup.
+		if status == http.StatusNotFound {
+			if now.Sub(reservation.SentAt) >= officialBillingAttemptNotFoundGrace {
+				if markReconciledNotFoundBillingReservation(ctx, system, reservation.RequestID) {
+					log.Printf("[llm-billing] released reservation %s as usage_unresolved after HubCenter reported no billing attempt (sent_at=%s, credits=%.3f)", reservation.RequestID, reservation.SentAt.UTC().Format(time.RFC3339), reservation.Credits)
+					result.Released++
+				} else {
+					result.Pending++
+				}
+			} else {
+				result.Pending++
+			}
+			continue
+		}
 		if err != nil {
 			result.Failed++
 			continue
 		}
-		if status < http.StatusOK || status >= http.StatusMultipleChoices || !validOfficialBillingAttempt(attempt) {
+		// Settlement needs the frozen service-group multiplier recorded at
+		// dispatch; without it the debit cannot be reconstructed, so the hold
+		// stays for a later pass instead of guessing a price.
+		if reservation.BillingGroupMultiplier <= 0 || status < http.StatusOK || status >= http.StatusMultipleChoices || !validOfficialBillingAttempt(attempt) {
 			result.Pending++
 			continue
 		}

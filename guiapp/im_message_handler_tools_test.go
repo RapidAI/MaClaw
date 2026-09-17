@@ -1482,10 +1482,18 @@ func TestGetTools_FallbackWithoutGenerator(t *testing.T) {
 		t.Fatal("expected builtin Glob so vision fallthrough can search files")
 	}
 
-	// Verify first exposed tool is ssh after session tools are filtered.
+	// Verify the exposed list keeps definition order with coding-session tools
+	// filtered: the first surviving tool is the first non-session definition.
+	var wantFirst string
+	for _, def := range handler.buildToolDefinitions() {
+		if name := extractToolName(def); !coretool.IsCodingSessionTool(name) {
+			wantFirst = name
+			break
+		}
+	}
 	name := extractToolName(tools[0])
-	if name != "ssh" {
-		t.Errorf("expected first tool to be ssh, got %s", name)
+	if name != wantFirst {
+		t.Errorf("expected first tool to be %s, got %s", wantFirst, name)
 	}
 }
 

@@ -249,6 +249,10 @@ type HubLLMActiveGrant struct {
 	CreditsTotal      float64             `json:"credits_total,omitempty"`
 	CreditsUsed       float64             `json:"credits_used,omitempty"`
 	CreditsAvailable  float64             `json:"credits_available,omitempty"`
+	// HeldCredits mirrors the hub's per-group in-flight reservation holds so
+	// the sidebar can explain why spendable credit is below the raw period
+	// window remaining. Older hubs omit the field; zero is a safe default.
+	HeldCredits       float64             `json:"held_credits,omitempty"`
 	RetryAfterSeconds int64               `json:"retry_after_seconds,omitempty"`
 	RetryAfterAt      string              `json:"retry_after_at,omitempty"`
 	CreditsRemaining  float64             `json:"credits_remaining,omitempty"`

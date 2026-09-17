@@ -27,12 +27,13 @@ func TestCheckpointConversationIsLosslessAndPreservesGroups(t *testing.T) {
 			map[string]interface{}{"role": "tool", "tool_call_id": id, "content": strings.Repeat("result ", 400)},
 		)
 	}
+	root := t.TempDir()
 	result := CheckpointConversation(conversation, ContextCheckpointOptions{
 		ContextLimit: 5000,
 		SessionKey:   "owner-a",
 		Tools:        []map[string]interface{}{checkpointReaderTool()},
 		KeepGroups:   6,
-		Root:         t.TempDir(),
+		Root:         root,
 	})
 	if !result.Applied || result.Handle == nil {
 		t.Fatalf("checkpoint not applied: %+v", result)
@@ -46,12 +47,20 @@ func TestCheckpointConversationIsLosslessAndPreservesGroups(t *testing.T) {
 	if MsgRole(result.Conversation[1]) != "user" {
 		t.Fatalf("checkpoint role = %q, want user to avoid creating a second system prompt", MsgRole(result.Conversation[1]))
 	}
-	data, err := os.ReadFile(result.Handle.Path)
+	// context_checkpoint 的 spill 在落盘时被强制 AES-256-GCM 加密
+	// （toolresult.isEncryptedToolResult），必须经 toolresult.Read 解密读取，
+	// 直接读原始字节会得到密文。
+	stored, err := toolresult.Read(toolresult.ReadOptions{
+		ID:         result.Handle.ID,
+		SessionKey: "owner-a",
+		Root:       root,
+		Limit:      toolresult.MaxReadLimit,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	var dropped []interface{}
-	if err := json.Unmarshal(data, &dropped); err != nil || len(dropped) != result.DroppedCount {
+	if err := json.Unmarshal([]byte(stored.Content), &dropped); err != nil || len(dropped) != result.DroppedCount {
 		t.Fatalf("stored dropped messages invalid: err=%v count=%d want=%d", err, len(dropped), result.DroppedCount)
 	}
 	assertNoOrphanedCheckpointToolMessages(t, result.Conversation)
@@ -325,8 +334,10 @@ func TestCheckpointConversationNoSavingsRemovesUnexposedHandle(t *testing.T) {
 		t.Fatalf("unexpected result: %+v", result)
 	}
 	var files int
-	err := filepath.WalkDir(root, func(_ string, entry os.DirEntry, err error) error {
-		if err == nil && !entry.IsDir() {
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		// 加密 spill 会在 store root 创建持久的密钥文件（toolresult .store.key），
+		// 它是存储设施而非孤儿 handle，不计入。
+		if err == nil && !entry.IsDir() && filepath.Base(path) != ".store.key" {
 			files++
 		}
 		return err

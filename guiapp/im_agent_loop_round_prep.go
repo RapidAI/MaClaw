@@ -156,15 +156,17 @@ func (h *IMMessageHandler) prepareAgentLoopRound(opts agentLoopRoundPrepOptions)
 	effectiveTokenLimit, _ := calibratedAgentLoopTokenLimit(opts.Config, conversation, opts.LastInputTokens, opts.LastOutputTokens)
 	compactionTokenLimit := effectiveTokenLimit
 	if opts.FirstRequest {
-		normalLimit := effectiveTokenLimit
-		compactionTokenLimit = firstAgentLoopRequestTokenLimit(effectiveTokenLimit, conversation, tools)
-		if compactionTokenLimit < normalLimit {
+		// Same guard as the shared loop: the latency budget only applies to a
+		// turn that would otherwise exceed the provider window.
+		beforeTokens := estimateConversationTokens(conversation) + toolsTokenBudget
+		if limit, budgeted := firstRequestCompactionLimit(effectiveTokenLimit, beforeTokens, conversation, tools); budgeted {
+			compactionTokenLimit = limit
 			requestID, loopID := "", ""
 			if ctx != nil {
 				requestID, loopID = ctx.Runtime.RequestID, ctx.ID
 			}
 			log.Printf("[first-request-budget] request_id=%q loop=%q limit=%d normal_limit=%d tools=%d path=legacy",
-				requestID, loopID, compactionTokenLimit, normalLimit, len(tools))
+				requestID, loopID, compactionTokenLimit, effectiveTokenLimit, len(tools))
 		}
 	}
 	conversation = h.compactAgentLoopConversation(ctx, opts.UserID, conversation, tools, compactionTokenLimit, toolsTokenBudget, opts.FirstRequest)
@@ -299,11 +301,13 @@ func (h *IMMessageHandler) agentLoopCompactionSummarizer() func(string) string {
 func (h *IMMessageHandler) compactAgentLoopConversation(ctx *LoopContext, userID string, conversation []interface{}, tools []map[string]interface{}, effectiveTokenLimit, toolsTokenBudget int, firstRequestLatencyBudget bool) []interface{} {
 	// A first-response latency budget is intentionally smaller than the normal
 	// context window. Checkpoints are lossless, but their file flush/spill work
-	// is still avoidable local I/O on the critical path. For this one request,
-	// use the fast structural compactor; subsequent rounds go through the normal
-	// lossless checkpointing and its lossless handles.
+	// is still avoidable local I/O on the critical path, so this one request
+	// still skips checkpointing. Dropped history is nevertheless summarized
+	// (guarded, 15s watchdog) instead of replaced by a bare placeholder —
+	// otherwise a chat-style task that lives entirely on first requests loses
+	// its earlier requirements every turn.
 	if firstRequestLatencyBudget {
-		return trimConversation(conversation, effectiveTokenLimit, toolsTokenBudget, nil)
+		return trimConversation(conversation, effectiveTokenLimit, toolsTokenBudget, h.agentLoopCompactionSummarizer())
 	}
 	summarizer := h.agentLoopCompactionSummarizer()
 	sessionKey := userID

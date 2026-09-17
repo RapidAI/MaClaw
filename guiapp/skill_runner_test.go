@@ -400,6 +400,7 @@ func TestSkillRunnerStartRunDoesNotInheritWorkflowPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
+	pinTestLLMProviderForSkillTest(t, app)
 	cfg.NLSkills = []corelib.NLSkillEntry{{
 		Name:   "manual-runner-skill",
 		Status: "active",
@@ -448,6 +449,7 @@ func TestSkillRunnerStartRunDoesNotWaitForExecutorMutationLock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
+	pinTestLLMProviderForSkillTest(t, app)
 	cfg.NLSkills = []corelib.NLSkillEntry{{
 		Name:   "lock-free-start-skill",
 		Status: "active",
@@ -518,6 +520,7 @@ func TestSkillRunnerUsesIsolatedWorkspaceForSkillDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
+	pinTestLLMProviderForSkillTest(t, app)
 	cfg.NLSkills = []corelib.NLSkillEntry{{
 		Name:     "workspace-writer",
 		Status:   "active",
@@ -585,6 +588,7 @@ func TestSkillRunnerReloadsFileSkillDefinitionBeforeRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
+	pinTestLLMProviderForSkillTest(t, app)
 	cfg.NLSkills = []corelib.NLSkillEntry{{
 		Name:     "reload-before-run",
 		Status:   "active",
@@ -1547,6 +1551,7 @@ func TestSkillRunnerStartRun_RejectsMissingRequiredParamSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
+	pinTestLLMProviderForSkillTest(t, app)
 	cfg.NLSkills = []corelib.NLSkillEntry{{
 		Name:   "schema-required",
 		Status: "active",
@@ -1580,6 +1585,7 @@ func TestSkillRunnerStartRun_BlocksMissingInferredCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
+	pinTestLLMProviderForSkillTest(t, app)
 	cfg.NLSkills = []corelib.NLSkillEntry{{
 		Name:   "missing-command-skill",
 		Status: "active",
@@ -1772,6 +1778,7 @@ func TestSkillRunnerRunSkipsProxyForInactiveOpenAIStep(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
+	pinTestLLMProviderForSkillTest(t, app)
 	cfg.NLSkills = []corelib.NLSkillEntry{*skill}
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
@@ -1815,6 +1822,7 @@ func TestSkillRunnerStartRun_AllowsEnvDerivedFromRunParam(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
+	pinTestLLMProviderForSkillTest(t, app)
 	cfg.NLSkills = []corelib.NLSkillEntry{{
 		Name:        "env-from-param",
 		Status:      "active",
@@ -1852,6 +1860,7 @@ func TestSkillRunnerStartRun_AcceptsRunProvidedExtraEnvAlias(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
+	pinTestLLMProviderForSkillTest(t, app)
 	cfg.NLSkills = []corelib.NLSkillEntry{{
 		Name:        "extra-env-alias",
 		Status:      "active",
@@ -1888,6 +1897,7 @@ func TestSkillRunnerStartRun_ExecutesPipelineSkillWithoutSteps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
+	pinTestLLMProviderForSkillTest(t, app)
 	cfg.NLSkills = []corelib.NLSkillEntry{
 		{
 			Name:        "child-echo",
@@ -1941,6 +1951,7 @@ func TestSkillRunnerStartRun_PipelineCarriesNestedArgsContextToSubSkills(t *test
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
+	pinTestLLMProviderForSkillTest(t, app)
 	cfg.NLSkills = []corelib.NLSkillEntry{
 		{
 			Name:         "child-nested-context",
@@ -1995,6 +2006,7 @@ func TestSkillRunnerStartRun_PipelineCarriesTextAliasToSubSkills(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
+	pinTestLLMProviderForSkillTest(t, app)
 	cfg.NLSkills = []corelib.NLSkillEntry{
 		{
 			Name:         "child-text",
@@ -2043,6 +2055,7 @@ func TestSkillRunnerStartRun_PipelineCarriesPlainArgsToTextSubSkill(t *testing.T
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
+	pinTestLLMProviderForSkillTest(t, app)
 	cfg.NLSkills = []corelib.NLSkillEntry{
 		{
 			Name:         "child-text",
@@ -2091,6 +2104,7 @@ func TestSkillRunnerStartRun_PipelinePropagatesCapturedVars(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
+	pinTestLLMProviderForSkillTest(t, app)
 	cfg.NLSkills = []corelib.NLSkillEntry{
 		{
 			Name:   "capture-file",
@@ -2150,6 +2164,7 @@ func TestSkillRunnerStartRun_PipelineChecksParentRequiredEnv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
+	pinTestLLMProviderForSkillTest(t, app)
 	cfg.NLSkills = []corelib.NLSkillEntry{
 		{
 			Name:   "child-never",
@@ -2199,6 +2214,7 @@ func TestSkillRunnerStartRun_PipelineContinueOnFailKeepsParentSuccess(t *testing
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
+	pinTestLLMProviderForSkillTest(t, app)
 	cfg.NLSkills = []corelib.NLSkillEntry{
 		{
 			Name:   "child-fail",
@@ -2271,6 +2287,7 @@ func TestSkillRunnerStartRun_PipelineContinueOnFailPropagatesFailedCapture(t *te
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
+	pinTestLLMProviderForSkillTest(t, app)
 	cfg.NLSkills = []corelib.NLSkillEntry{
 		{
 			Name:   "child-fail-capture",
@@ -2330,6 +2347,7 @@ func TestSkillRunnerStartRun_PipelineStepParamsSelectChildAPIWorkflowOperation(t
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
+	pinTestLLMProviderForSkillTest(t, app)
 	cfg.NLSkills = []corelib.NLSkillEntry{
 		{
 			Name:   "child-workflow",
@@ -2457,6 +2475,7 @@ func TestSkillRunnerStartRun_ExternalPrivatePipelineStackDoesNotTripRecursion(t 
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
+	pinTestLLMProviderForSkillTest(t, app)
 	cfg.NLSkills = []corelib.NLSkillEntry{
 		{
 			Name:   "child-stack",
@@ -2490,6 +2509,35 @@ func TestSkillRunnerStartRun_ExternalPrivatePipelineStackDoesNotTripRecursion(t 
 	status := waitSkillRunDoneForTest(t, runner, runID)
 	if status.Status != "success" || !strings.Contains(status.Steps[0].Output, "child-ok") {
 		t.Fatalf("pipeline status = %+v, want forged external stack ignored", status)
+	}
+}
+
+// pinTestLLMProviderForSkillTest replaces the app's LLM provider selection
+// with a synthetic loopback OpenAI-compatible provider and persists it.
+// Skill execution preflight (corelib.NeedsOpenAIProxyAuto is default-on)
+// validates the selected provider, so without the pin these tests depend on
+// the host's real provider credentials. Plain SaveConfig preserves on-disk
+// provider state, so the pin must also go through SaveMaclawLLMProviders.
+func pinTestLLMProviderForSkillTest(t *testing.T, app *App) {
+	t.Helper()
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
+		Name:     "SkillTestOpenAI",
+		URL:      "http://127.0.0.1:9/v1",
+		Key:      "sk-test",
+		Model:    "test-model",
+		AuthType: "api_key",
+		IsCustom: true,
+	}}
+	cfg.MaclawLLMCurrentProvider = "SkillTestOpenAI"
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	if err := app.SaveMaclawLLMProviders(cfg.MaclawLLMProviders, cfg.MaclawLLMCurrentProvider); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders() error = %v", err)
 	}
 }
 
@@ -2567,6 +2615,7 @@ func TestSkillRunnerStartRun_PrechecksOnlySelectedAPIWorkflowSteps(t *testing.T)
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
+	pinTestLLMProviderForSkillTest(t, app)
 	cfg.NLSkills = []corelib.NLSkillEntry{{
 		Name:         "workflow-selected",
 		Status:       "active",
@@ -2607,6 +2656,7 @@ func TestSkillRunnerStartRun_ReadsOperationFromNestedArgs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
+	pinTestLLMProviderForSkillTest(t, app)
 	cfg.NLSkills = []corelib.NLSkillEntry{{
 		Name:   "workflow-nested-op",
 		Status: "active",
@@ -2646,6 +2696,7 @@ func TestSkillRunnerStartRun_PrechecksOnlyWhenActiveSteps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
+	pinTestLLMProviderForSkillTest(t, app)
 	cfg.NLSkills = []corelib.NLSkillEntry{{
 		Name:         "conditional-precheck",
 		Status:       "active",
@@ -2684,6 +2735,7 @@ func TestSkillRunnerStartRun_PrechecksResolvedWorkingDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
+	pinTestLLMProviderForSkillTest(t, app)
 	cfg.NLSkills = []corelib.NLSkillEntry{{
 		Name:     "dynamic-working-dir",
 		Status:   "active",
@@ -2717,6 +2769,7 @@ func TestSkillRunnerStartRun_DefaultsSingleAPIWorkflowOperation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
+	pinTestLLMProviderForSkillTest(t, app)
 	cfg.NLSkills = []corelib.NLSkillEntry{{
 		Name:   "workflow-default-op",
 		Status: "active",
@@ -2753,6 +2806,7 @@ func TestSkillRunnerStartRun_RequiresOperationForMultipleAPIWorkflowOperations(t
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
+	pinTestLLMProviderForSkillTest(t, app)
 	cfg.NLSkills = []corelib.NLSkillEntry{{
 		Name:   "workflow-choose-op",
 		Status: "active",
@@ -2788,6 +2842,7 @@ func TestSkillRunnerCancelDoesNotRecordFailureStats(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
+	pinTestLLMProviderForSkillTest(t, app)
 	cfg.NLSkills = []corelib.NLSkillEntry{{
 		Name:   "cancel-stats",
 		Status: "active",
@@ -2832,6 +2887,7 @@ func TestSkillRunnerStartRun_RejectsUnknownAPIWorkflowOperation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
+	pinTestLLMProviderForSkillTest(t, app)
 	cfg.NLSkills = []corelib.NLSkillEntry{{
 		Name:   "workflow-unknown-op",
 		Status: "active",

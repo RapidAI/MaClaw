@@ -10,7 +10,7 @@ import lobsterHalf from './assets/images/lobster_half.svg';
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
 import { a2a, corelib } from '../wailsjs/go/models';
-import { EVENT_APP_UPDATE_AVAILABLE, EVENT_PROJECT_INDEX_CHANGED, EVENT_PROJECT_TASK_ACTIVATE, EVENT_TASKS_CHANGED } from './constants/events';
+import { EVENT_APP_UPDATE_AVAILABLE, EVENT_OPEN_NEW_TASK_WIZARD, EVENT_OPEN_TASK_LAUNCH, EVENT_PROJECT_INDEX_CHANGED, EVENT_PROJECT_TASK_ACTIVATE, EVENT_TASKS_CHANGED, type OpenTaskLaunchDetail } from './constants/events';
 import { useRemotePanel } from './components/remote/useRemotePanel';
 import { TERMINAL_SESSION_STATUSES } from './components/remote/types';
 import type { SessionTab } from './components/remote/sessionTabs';
@@ -661,7 +661,7 @@ function App() {
     }, [openExpertTabIDs, openProjectTabIdentities, openProjectTabPaths]);
     const [renamingTaskPath, setRenamingTaskPath] = useState<string | null>(null);
     const [renameValue, setRenameValue] = useState("");
-    const [taskItems, setTaskItems] = useState<Array<{ id?: string; name?: string; project_path: string; working_dir?: string; workflow_type?: string; active_workflow?: { id?: string; type?: string; phase?: string; status?: string; project_path?: string; pending_review?: boolean }; preview?: string; tags?: string[]; created_at?: string; last_activity?: string; pinned?: boolean; has_output?: boolean }>>(() => loadTaskItemsSnapshot());
+    const [taskItems, setTaskItems] = useState<Array<{ id?: string; name?: string; project_path: string; working_dir?: string; execution_dir?: string; workflow_type?: string; active_workflow?: { id?: string; type?: string; phase?: string; status?: string; project_path?: string; pending_review?: boolean }; preview?: string; tags?: string[]; created_at?: string; last_activity?: string; pinned?: boolean; has_output?: boolean }>>(() => loadTaskItemsSnapshot());
     // Starts true: the mount effect below fires the first ListTasks immediately.
     const [tasksLoading, setTasksLoading] = useState(true);
     // Flips once the first ListTasks settles. The AI panel's orphan-tab
@@ -2748,10 +2748,12 @@ function App() {
 
     useEffect(() => {
         const openExpertFromSearch = (event: Event) => {
-            const expert = (event as CustomEvent<{ expert?: ExpertDefinition }>).detail?.expert;
+            const detail = (event as CustomEvent<{ expert?: ExpertDefinition; initialMessage?: string }>).detail;
+            const expert = detail?.expert;
             // Narrow before use: reading `expert.id` in the guard also proves it is defined.
             if (!expert || !String(expert.id || '').trim()) return;
-            setPendingExpertOpen({ expert });
+            const initialMessage = String(detail?.initialMessage || '').trim();
+            setPendingExpertOpen({ expert, ...(initialMessage ? { initialMessage } : {}) });
             setNavTabNow('ai');
         };
         window.addEventListener(OPEN_EXPERT_CONVERSATION_EVENT, openExpertFromSearch);
@@ -3136,6 +3138,12 @@ function App() {
             throw error;
         }
     }, [lang, refreshTasks, showAlert, upsertTaskItem]);
+    /** Create-dialog entry point: register the expert task, then open/focus its assistant tab. */
+    const createExpertTask = useCallback(async (expert: ExpertDefinition) => {
+        await ensureExpertTask(expert);
+        setPendingExpertOpen({ expert });
+        switchTool('ai');
+    }, [ensureExpertTask, switchTool]);
     /** Durable registration gateway for every secondary assistant tab. */
     const ensureAssistantTabTask = useCallback(async (tabType: string, tabIdentity: string, title: string, projectPath?: string) => {
         const created = await EnsureAssistantTabTask(tabType, tabIdentity, title, projectPath || '');
@@ -3153,6 +3161,41 @@ function App() {
         refreshTasks();
         return true;
     }, [enqueueProjectTabOpen, refreshTasks, switchTool]);
+
+    // Welcome-page TaskConfigBar wizard: the task record was already created
+    // via CreateTaskUnified; open its assistant tab and auto-send the first
+    // message (design new-task-wizard §6.4).
+    useEffect(() => {
+        const openTaskLaunch = (event: Event) => {
+            const detail = (event as CustomEvent<OpenTaskLaunchDetail>).detail;
+            const projectPath = String(detail?.projectPath || '').trim();
+            if (!projectPath) return;
+            openCodingTask({
+                projectPath,
+                taskTitle: String(detail?.taskTitle || '').trim() || projectPath,
+                initialMessage: String(detail?.initialMessage || '').trim() || undefined,
+                autoSend: true,
+                prepareMode: 'new-agent',
+                agentMode: detail?.agentMode,
+                cloudWorkspaceId: String(detail?.cloudWorkspaceId || '').trim() || undefined,
+                remoteHost: String(detail?.remoteHost || '').trim() || undefined,
+                remoteSafety: detail?.remoteSafety === 'diagnosis' ? 'diagnosis' : undefined,
+                remoteNeedsReconnect: detail?.remoteNeedsReconnect === true,
+                warning: String(detail?.warning || '').trim() || undefined,
+                noWorkflowInterception: detail?.noWorkflowInterception === true,
+            });
+        };
+        window.addEventListener(EVENT_OPEN_TASK_LAUNCH, openTaskLaunch);
+        return () => window.removeEventListener(EVENT_OPEN_TASK_LAUNCH, openTaskLaunch);
+    }, [openCodingTask]);
+
+    // Task-pane "新建任务" button: reveal the AI assistant (the retained panel
+    // owns the actual wizard-opening logic via the same event).
+    useEffect(() => {
+        const revealAI = () => setNavTabNow('ai');
+        window.addEventListener(EVENT_OPEN_NEW_TASK_WIZARD, revealAI);
+        return () => window.removeEventListener(EVENT_OPEN_NEW_TASK_WIZARD, revealAI);
+    }, [setNavTabNow]);
 
     const startWorkflowInNewAssistantTab = useCallback(async (workflowType: string, workflowLabel: string) => {
         if (workflowTabLaunchRef.current) {
@@ -5273,6 +5316,7 @@ ${instruction}`;
                 assistantReady={aiAssistant.ready}
                 onTaskSwitchBlocked={() => showToastMessage(localizeText('System is warming up. Please switch later.', '系统正在预热，请稍后切换。', '系統正在預熱，請稍後切換。'))}
                 createTask={createTask}
+                onCreateExpertTask={createExpertTask}
                 refreshTasks={refreshTasks}
                 taskContextMenu={taskContextMenu}
                 setTaskContextMenu={setTaskContextMenu}

@@ -31,7 +31,7 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
         pendingAttachmentsTestId, permissionMode, showPermissionMode, showWorkspacePermissionOption, onPermissionModeChange, placeholderText, ready, recallHistory, rememberHistoryEdit, removeSelectedFile,
         resizeInput, selectedFilePaths, sendButtonStyle, sendButtonTestId, setPendingAttachments, showBusySpinner,
         showMemoryUsage = true, showVoiceInput = true, submittedPrompts: submittedPromptsProp, textareaAriaLabel, textareaTestId = "ai-input",
-        theme: t, themeMode, toolbarTestId = "ai-input-toolbar", trailingToolbarContent, updateInputValue, voiceInput,
+        theme: t, themeMode, toolbarAddon, toolbarTestId = "ai-input-toolbar", trailingToolbarContent, updateInputValue, voiceInput,
     } = props;
 
     // Stable empty fallback — default param `= []` would allocate a new array every render.
@@ -203,6 +203,13 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
                         finishVoicePointer={finishVoicePointer}
                     />
                     {trailingToolbarContent}
+                    {toolbarAddon ? (
+                        // The left group wraps internally so an expanded config
+                        // bar never squeezes the hint/send group off the card.
+                        <div data-testid="ai-input-toolbar-addon" style={{ display: "flex", alignItems: "center", minWidth: 0 }}>
+                            {toolbarAddon}
+                        </div>
+                    ) : null}
                 </div>
                 <div style={toolbarRightStyle}>
                     {showMemoryUsage && <MemoryUsageRing theme={t} themeMode={themeMode} lang={lang} size={20} />}

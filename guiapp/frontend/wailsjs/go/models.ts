@@ -7873,6 +7873,7 @@ export namespace main {
 	    im_target_uid?: string;
 	    im_task_title?: string;
 	    im_is_group?: boolean;
+	    no_workflow_interception?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new AIAssistantSendRequest(source);
@@ -7897,6 +7898,7 @@ export namespace main {
 	        this.im_target_uid = source["im_target_uid"];
 	        this.im_task_title = source["im_task_title"];
 	        this.im_is_group = source["im_is_group"];
+	        this.no_workflow_interception = source["no_workflow_interception"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -15384,6 +15386,7 @@ export namespace main {
 	    name: string;
 	    project_path: string;
 	    working_dir?: string;
+	    execution_dir?: string;
 	    workflow_type: string;
 	    active_workflow?: ProjectWorkflowState;
 	    preview: string;
@@ -15407,6 +15410,7 @@ export namespace main {
 	        this.name = source["name"];
 	        this.project_path = source["project_path"] ?? source["ProjectPath"];
 	        this.working_dir = source["working_dir"] ?? source["WorkingDir"];
+	        this.execution_dir = source["execution_dir"] ?? source["ExecutionDir"];
 	        this.workflow_type = source["workflow_type"];
 	        this.active_workflow = this.convertValues(source["active_workflow"], ProjectWorkflowState);
 	        this.preview = source["preview"];
@@ -15644,6 +15648,30 @@ export namespace main {
 	        this.session_status = source["session_status"];
 	        this.host_online = source["host_online"];
 	        this.message = source["message"];
+	    }
+	}
+	// MANUAL SYNC (wails generate module unavailable on this machine): mirrors
+	// guiapp/app_task_create.go RemoteTarget.
+	export class RemoteTarget {
+	    host: string;
+	    port: number;
+	    user: string;
+	    password: string;
+	    workDir: string;
+	    safety: string;
+
+	    static createFrom(source: any = {}) {
+	        return new RemoteTarget(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.host = source["host"];
+	        this.port = source["port"];
+	        this.user = source["user"];
+	        this.password = source["password"];
+	        this.workDir = source["workDir"];
+	        this.safety = source["safety"];
 	    }
 	}
 	export class RemoteLaunchProject {
@@ -17359,6 +17387,54 @@ export namespace main {
 	        this.archived = source["archived"];
 	    }
 	}
+	// MANUAL SYNC (wails generate module unavailable on this machine): mirrors
+	// guiapp/app_task_create.go TaskCreateOptions.
+	export class TaskCreateOptions {
+	    name: string;
+	    mode: string;
+	    workingDir: string;
+	    remote?: RemoteTarget;
+	    cloudWorkspaceId: string;
+	    expertId: string;
+	    expertName: string;
+	    workflowTemplateId: string;
+	    params?: Record<string, string>;
+
+	    static createFrom(source: any = {}) {
+	        return new TaskCreateOptions(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.mode = source["mode"];
+	        this.workingDir = source["workingDir"];
+	        this.remote = this.convertValues(source["remote"], RemoteTarget);
+	        this.cloudWorkspaceId = source["cloudWorkspaceId"];
+	        this.expertId = source["expertId"];
+	        this.expertName = source["expertName"];
+	        this.workflowTemplateId = source["workflowTemplateId"];
+	        this.params = source["params"];
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class TestWebSearchEngineRequest {
 	    engine: corelib.WebSearchEngineConfig;
 	    use_saved_key: boolean;
@@ -17559,6 +17635,20 @@ export namespace main {
 	    }
 	}
 
+	export class UnifiedTaskCreateResult {
+	    projectPath: string;
+	    warning?: string;
+
+	    static createFrom(source: any = {}) {
+	        return new UnifiedTaskCreateResult(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.projectPath = source["projectPath"];
+	        this.warning = source["warning"];
+	    }
+	}
 	export class UpdateResult {
 	    has_update: boolean;
 	    latest_version: string;
@@ -19278,6 +19368,32 @@ export namespace main {
 	        this.max_compressed_bytes = source["max_compressed_bytes"];
 	        this.current_export = source["current_export"];
 	        this.configuration_reason = source["configuration_reason"];
+	    }
+	}
+	// MANUAL SYNC (wails generate module unavailable on this machine): mirrors
+	// guiapp/app_task_create.go WorkflowTemplateSummary.
+	export class WorkflowTemplateSummary {
+	    id: string;
+	    title: string;
+	    category: string;
+	    phaseCount: number;
+	    requiresWorkingDir: boolean;
+	    hasParamSlots: boolean;
+	    semanticOnly: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new WorkflowTemplateSummary(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.title = source["title"];
+	        this.category = source["category"];
+	        this.phaseCount = source["phaseCount"];
+	        this.requiresWorkingDir = source["requiresWorkingDir"];
+	        this.hasParamSlots = source["hasParamSlots"];
+	        this.semanticOnly = source["semanticOnly"];
 	    }
 	}
 

@@ -34,6 +34,37 @@ func semanticClassifierForLabel(t *testing.T, label intent.IntentLabel) *intent.
 	}})
 }
 
+// nonBaselineSelections 过滤掉受管回合固有的 baseline 工作区 selection
+// （need:zz-baseline: 前缀，见 corelib/agentservice ExpandBaselineWorkspaceNeeds）。
+func nonBaselineSelections(plan tool.ToolPlan) []tool.PlannedSelection {
+	var out []tool.PlannedSelection
+	for _, s := range plan.Selections {
+		if !strings.Contains(string(s.NeedID), "zz-baseline:") {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// semanticBaselineGrantNames 返回 baseline 工作区 selection 渲染出的工具名。
+// baseline 是受管面固有组成，断言"表面恰为某集合"前需将其排除。
+func semanticBaselineGrantNames(surface *semanticCallSurface) map[string]bool {
+	names := map[string]bool{}
+	if surface == nil {
+		return names
+	}
+	for name, grant := range surface.grants {
+		selection, ok := tool.PlanSelectionByID(surface.plan, grant.SelectionID)
+		if !ok {
+			continue
+		}
+		if strings.Contains(string(selection.NeedID), "zz-baseline:") {
+			names[name] = true
+		}
+	}
+	return names
+}
+
 func TestIMSemanticNeedResolverIgnoresLegacyToolNames(t *testing.T) {
 	registry := newIMSemanticCapabilityRegistry()
 	needs, managed, err := semanticIntentNeedsFromClassification(registry, intent.ClassificationResult{
@@ -1043,7 +1074,8 @@ func TestSemanticPlanUsesTurnClassificationInsteadOfReclassifying(t *testing.T) 
 	}
 	classification := &intent.ClassificationResult{Primary: intent.LabelCurrentTime, Confidence: .98}
 	prepared, handled, err := h.semanticPlanForTurnWithClassification("user", "unrelated wording", "lansenger", "root", "turn", classification)
-	if !handled || err != nil || prepared == nil || len(prepared.plan.Selections) != 1 {
+	// 受管回合会额外注入 baseline 工作区 selection，断言只针对分类产生的 capability。
+	if !handled || err != nil || prepared == nil || len(nonBaselineSelections(prepared.plan)) != 1 {
 		t.Fatalf("prepared=%#v handled=%v err=%v", prepared, handled, err)
 	}
 }
@@ -2155,6 +2187,9 @@ func TestSemanticBoundSkillExecutesExactStableIdentityWithoutAliasDrift(t *testi
 	base := t.TempDir()
 	app := &App{testHomeDir: base}
 	defer app.closeSemanticInvocationStore()
+	// executeBoundSkill 走 SkillRunner 的 OpenAI 代理预检（NeedsOpenAIProxyAuto
+	// 默认开），不钉死 provider 时依赖宿主真实凭据。
+	pinTestLLMProviderForSkillTest(t, app)
 	config, err := app.LoadConfig()
 	if err != nil {
 		t.Fatal(err)

@@ -369,7 +369,7 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 			"session_id":      map[string]string{"type": "string", "description": "SSH session ID"},
 			"command":         map[string]string{"type": "string", "description": "Remote command"},
 			"wait_seconds":    map[string]string{"type": "integer", "description": "Wait time for output, default 5"},
-			"task_id":         map[string]string{"type": "string", "description": "Background task ID"},
+			"task_id":         map[string]string{"type": "string", "description": "Background task ID for check_task, wait_task, kill_task"},
 			"tail_lines":      map[string]string{"type": "integer", "description": "Tail lines for task output"},
 			"local_path":      map[string]string{"type": "string", "description": "Local file path"},
 			"remote_path":     map[string]string{"type": "string", "description": "Remote file path"},

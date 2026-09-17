@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -577,7 +578,7 @@ func (a *App) DeleteCodingWorkbenchEntry(projectPath, relativePath string) error
 			return err
 		}
 	}
-	_, err = collectCloudWorkspaceDeletePaths(cacheRoot, cacheRel, isDir)
+	paths, err := collectCloudWorkspaceDeletePaths(cacheRoot, cacheRel, isDir)
 	if err != nil {
 		return err
 	}
@@ -596,10 +597,20 @@ func (a *App) DeleteCodingWorkbenchEntry(projectPath, relativePath string) error
 	ctx, cancel := a.cloudWorkspaceSyncContext()
 	defer cancel()
 	proto := a.cloudWorkspaceProtocol(workspaceID)
+	// Op-based delete first: per-file delete operations need no writable
+	// mount, never upload unrelated local edits, and keep the local cache
+	// in place until the remote delete landed. Accepted deletes stay
+	// durably dropped from sync state even when a later path fails.
+	if err := proto.DeletePaths(ctx, cacheRoot, paths); err == nil {
+		return removeLocal()
+	} else if !errors.Is(err, errCloudWorkspaceV2Unavailable) {
+		return err
+	}
+	// Legacy Push fallback for Hubs without the v2 operation endpoints.
+	// Legacy Push scans the cache, so the local file must already be gone.
 	if _, ok := heldWritableCloudWorkspacePath(workspaceID); !ok {
 		return fmt.Errorf("cloud workspace is read-only")
 	}
-	// Legacy Push scans the cache, so the local file must already be gone.
 	if err := removeLocal(); err != nil {
 		return err
 	}

@@ -36,6 +36,22 @@ var internalCommandPrefixes = []string{
 	"__start_new_task__",
 }
 
+// isConfirmationActionCommandText reports whether text is a
+// __confirm_execution__ / __cancel_execution__ card action command. Unlike
+// isInternalCommand (all structured button prefixes), this covers only the
+// two commands whose deterministic preflight routing must bypass the inline
+// interrupt scheduler — everywhere else (e.g. the pending-ask-user binding
+// guard) the broader isInternalCommand stays authoritative.
+func isConfirmationActionCommandText(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	for _, prefix := range []string{confirmationApproveCommandPrefix + " ", confirmationCancelCommandPrefix + " "} {
+		if strings.HasPrefix(trimmed, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func shouldResumeIncompleteTask(text string) bool {
 	lower := strings.ToLower(strings.TrimSpace(text))
 	if lower == "" {
@@ -364,6 +380,17 @@ func (h *IMMessageHandler) bindPendingUserReplyAnswer(msg IMUserMessage, trimmed
 
 func (h *IMMessageHandler) consumePendingAskUserAnswer(userID, trimmed string, entries []agent.ConversationEntry) (string, *agent.WorkingState, bool) {
 	if h == nil {
+		return "", nil, false
+	}
+	// Structured internal commands (button clicks such as
+	// __confirm_execution__ / __cancel_execution__) are deterministic routing
+	// signals handled by the confirmation gate in preflight. They must never
+	// be swallowed as a pending ask_user answer — doing so would both lose the
+	// command and resume a working state the user never answered.
+	if isInternalCommand(trimmed) {
+		if _, hadPending := h.pendingAskUser.LoadAndDelete(userID); hadPending {
+			log.Printf("[AskUser] discarded by internal command for user=%s cmd_len=%d", userID, len(trimmed))
+		}
 		return "", nil, false
 	}
 	raw, ok := h.pendingAskUser.LoadAndDelete(userID)

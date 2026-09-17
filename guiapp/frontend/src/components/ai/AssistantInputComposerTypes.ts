@@ -86,6 +86,8 @@ export interface AssistantInputComposerProps {
     toolbarTestId?: string;
     /** Extra content rendered in the left toolbar group, after the permission-mode button. */
     trailingToolbarContent?: ReactNode;
+    /** Extra content rendered in the footer toolbar row, after the 📎/🎤 actions and before the hint/send group (e.g. the welcome-page TaskConfigBar). */
+    toolbarAddon?: ReactNode;
     updateInputValue: (value: string) => void;
     voiceInput: UseVoiceInputResult;
 }

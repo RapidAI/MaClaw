@@ -86,6 +86,13 @@ func ToolScopePlanFromToolPlan(plan ToolPlan, scopeID string, maxSelections int)
 			if producerID != "" {
 				hasToolDependency = true
 				addScopeDependency(scope.Dependencies, adapter, producerID)
+			} else if strings.TrimSpace(dependency.ArtifactID) != "" {
+				// Host-bound input: the planner committed a trusted pre-existing
+				// artifact (ArtifactID/Artifact binding, see trustedArtifactDependency)
+				// instead of an in-plan producer. Execution resolves it via
+				// consumeTrustedInput, so no in-plan closure edge applies and the
+				// consumer stays a root. Only a required dependency with neither
+				// producer nor committed artifact is a genuine closure failure.
 			} else if dependency.Contract.Required {
 				hasToolDependency = true
 				addScopeDependency(scope.Dependencies, adapter, "artifact_producer_required")

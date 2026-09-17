@@ -2,7 +2,6 @@ package guiapp
 
 import (
 	"context"
-	"net/http"
 	"strings"
 	"time"
 
@@ -243,7 +242,10 @@ func (c *sessionStartLLMCaller) ChatCallContext(ctx context.Context, messages []
 	for i, m := range messages {
 		iface[i] = m
 	}
-	result, err := doSimpleLLMRequest(ctx, attachLightweightHubHint(cfg, llm.TaskSummary), iface, &http.Client{Timeout: 30 * time.Second}, 30*time.Second)
+	// No client-level Timeout: the helper enforces the budget per request and
+	// a client Timeout would kill the connection at ~30s, truncating the P0-3
+	// detached read before its grace window (adoption would always fail).
+	result, err := doSimpleLLMRequest(ctx, attachLightweightHubHint(cfg, llm.TaskSummary), iface, nil, 30*time.Second)
 	if err != nil {
 		return "", err
 	}

@@ -2077,9 +2077,16 @@ describe("renderMessage assistant display guard", () => {
             timestamp: Date.now(),
         }, vi.fn(), lightTheme, false, "Saved file", "en", false)}</div>);
 
-        const error = screen.getByTestId("assistant-chat-error-request-failed");
-        expect(error.getAttribute("role")).toBe("alert");
-        expect(error.style.justifyContent).toBe("flex-start");
+        const row = screen.getByTestId("assistant-chat-error-request-failed");
+        expect(row.style.justifyContent).toBe("flex-start");
+        // The full-width row must not carry role="alert": App.css paints a
+        // background+border on every [role='alert'], which would show as a
+        // wide pink strip behind the compact bubble.
+        expect(row.getAttribute("role")).toBeNull();
+        expect(row.style.background).toBe("");
+        const bubble = screen.getByTestId("assistant-error-bubble-request-failed");
+        expect(bubble.getAttribute("role")).toBe("alert");
+        expect(bubble.style.width).toBe("fit-content");
         expect(screen.getByText("Request failed")).toBeTruthy();
     });
 
@@ -2091,8 +2098,59 @@ describe("renderMessage assistant display guard", () => {
             timestamp: Date.now(),
         }, vi.fn(), lightTheme, false, "Saved file", "zh-Hans", false)}</div>);
 
-        expect(screen.getByText("LLM 调用失败：本次请求额度不足，需要 14.039 Credits，当前可用 9.360 Credits。")).toBeTruthy();
+        expect(screen.getByTestId("assistant-error-title-credit-limit-failed").textContent).toBe("额度不足");
+        expect(screen.getByTestId("assistant-error-detail-credit-limit-failed").textContent).toBe("本次请求需要 14.039 Credits，当前可用 9.360 Credits。");
+        expect(screen.getByTestId("assistant-error-hint-credit-limit-failed").textContent).toContain("重试");
         expect(screen.queryByText(/insufficient credits for this request/)).toBeNull();
+    });
+
+    it("splits official-service denials into headline and advice", () => {
+        render(<div>{renderMessage({
+            id: "official-denied",
+            role: "error",
+            content: "MaClaw 官方额度已用尽：请兑换额度或切换其他模型提供方。",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, false, "Saved file", "zh-Hans", false)}</div>);
+
+        expect(screen.getByTestId("assistant-error-title-official-denied").textContent).toBe("MaClaw 官方额度已用尽");
+        expect(screen.getByTestId("assistant-error-detail-official-denied").textContent).toBe("请兑换额度或切换其他模型提供方。");
+        expect(screen.queryByTestId("assistant-error-hint-official-denied")).toBeNull();
+    });
+
+    it("renders no alert bubble for empty error content", () => {
+        render(<div>{renderMessage({
+            id: "empty-failed",
+            role: "error",
+            content: "   ",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, false, "Saved file", "en", false)}</div>);
+
+        expect(screen.queryByTestId("assistant-chat-error-empty-failed")).toBeNull();
+    });
+
+    it("keeps unknown errors as a single compact alert line", () => {
+        render(<div>{renderMessage({
+            id: "unknown-failed",
+            role: "error",
+            content: "Request failed",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, false, "Saved file", "en", false)}</div>);
+
+        expect(screen.getByTestId("assistant-error-title-unknown-failed").textContent).toBe("Request failed");
+        expect(screen.queryByTestId("assistant-error-detail-unknown-failed")).toBeNull();
+        expect(screen.queryByTestId("assistant-error-hint-unknown-failed")).toBeNull();
+    });
+
+    it("surfaces a retry hint for LLM timeout errors", () => {
+        render(<div>{renderMessage({
+            id: "timeout-failed",
+            role: "error",
+            content: "LLM call failed: timeout",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, false, "Saved file", "zh-Hans", false)}</div>);
+
+        expect(screen.getByTestId("assistant-error-title-timeout-failed").textContent).toBe("请求超时");
+        expect(screen.getByTestId("assistant-error-hint-timeout-failed").textContent).toContain("稍后重试");
     });
 
     it("renders ordinary progress as a compact status instead of a log line", () => {

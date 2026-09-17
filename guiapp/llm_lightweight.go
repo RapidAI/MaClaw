@@ -104,7 +104,7 @@ func (h *IMMessageHandler) LLMClassify(ctx context.Context, req LLMClassifyReque
 		return nil, fmt.Errorf("LLM not configured")
 	}
 	if h.app != nil {
-		if reason, skip := h.app.shouldSkipLightweightLLM(cfg); skip {
+		if reason, skip := h.app.shouldSkipLightweightLLM(cfg, llmEndpointCategoryLightweightClassify); skip {
 			err := fmt.Errorf("%s LLM endpoint temporarily unavailable after recent network failure: %s", req.Tag, reason)
 			log.Printf("[%s] skipped due to recent endpoint network failure: %v", req.Tag, err)
 			return nil, err
@@ -122,13 +122,16 @@ func (h *IMMessageHandler) LLMClassify(ctx context.Context, req LLMClassifyReque
 
 	// Create a dedicated short-lived HTTP client with tight timeout.
 	// Don't reuse h.client which has a longer timeout for streaming.
+	// NOTE: this is the doLLMRequestStream path (pending-reply-fast), not the
+	// doSimpleLLMRequest detachable path — P0-3 detached reads do not apply
+	// here, so a client-level Timeout is correct and intentionally retained.
 	client := &http.Client{
 		Timeout: time.Duration(req.TimeoutSec) * time.Second,
 	}
 
 	startedAt := time.Now()
 	metrics := &llmStreamMetrics{}
-	resp, err := h.doLLMRequestStream(ctx, cfg, messages, tools, client, nil, metrics)
+	resp, err := h.doLLMRequestStream(ctx, cfg, llmEndpointCategoryLightweightClassify, messages, tools, client, nil, metrics)
 	latency := time.Since(startedAt)
 
 	if err != nil {

@@ -196,6 +196,42 @@ func (r *LLMProviderRegistry) FindProvider(id string) *LLMProvider {
 	return nil
 }
 
+// RemovedProviderIDs returns the provider IDs present in oldReg but absent
+// from nextReg, preserving the original casing and order of the old registry.
+// It is used when a provider-list replacement is saved so callers can drop
+// the disappeared providers from any configuration that references them.
+func RemovedProviderIDs(oldReg, nextReg *LLMProviderRegistry) []string {
+	if oldReg == nil {
+		return nil
+	}
+	nextIDs := make(map[string]struct{}, len(nextReg.Providers))
+	if nextReg != nil {
+		for _, p := range nextReg.Providers {
+			if key := strings.ToLower(strings.TrimSpace(p.ID)); key != "" {
+				nextIDs[key] = struct{}{}
+			}
+		}
+	}
+	seen := map[string]struct{}{}
+	removed := make([]string, 0)
+	for _, p := range oldReg.Providers {
+		id := strings.TrimSpace(p.ID)
+		key := strings.ToLower(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := nextIDs[key]; ok {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		removed = append(removed, id)
+	}
+	return removed
+}
+
 func (r *LLMProviderRegistry) CurrentProvider() *LLMProvider {
 	if r == nil {
 		return nil

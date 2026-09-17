@@ -189,6 +189,17 @@ type IMMessageHandler struct {
 	// Pending confirmation store for pre-execution confirmation gating.
 	confirmationStore *aiConfirmationStore
 
+	// degradedRecovery is the P0-1 degraded-turn recovery state machine
+	// (see im_degraded_turn_recovery.go). Lazily initialized; the Once guards
+	// the lazy init so zero-value handlers (tests) stay race-free.
+	degradedRecoveryInit sync.Once
+	degradedRecovery     *degradedTurnRecoveryManager
+
+	// credentialFenceMgr is the P0-4 mid-loop credential gate waiter registry
+	// (see im_credential_gate.go). Lazily initialized like degradedRecovery.
+	credentialFenceInit sync.Once
+	credentialFenceMgr  *credentialFenceManager
+
 	// Session template manager (lazily initialized via setter).
 	templateManager *remote.SessionTemplateManager
 

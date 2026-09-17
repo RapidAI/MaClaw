@@ -7,10 +7,11 @@ import { openCurrentTenantCardStore } from '../AssistantTitleBar';
 import { forgetAIAssistantSessionRounds, type ChatMessage, type CancelAIAssistantResult, type NewsCardData, type ChatAction } from '../useAIAssistant';
 import type { AgentView } from '../agentViewTypes';
 import { DialogProvider } from '../../CustomDialog';
+import { EVENT_OPEN_NEW_TASK_WIZARD, EVENT_OPEN_TASK_LAUNCH } from '../../../constants/events';
 import { __resetCloudWorkspaceLeaseEnsureForTests } from '../codingTaskMode';
 import { ExportTaskResultFile, PreviewTaskResultFile } from '../../../../wailsjs/go/main/App';
 
-const { openFileOrShowInFolderMock, showItemInFolderMock, openProjectDirectoryMock, loadProjectContextMock, loadProjectConversationHistoryMock, loadProjectTabConversationMock, loadProjectTabIndexMock, createProjectTabSessionMock, cancelSessionForSessionMock, clearAIAssistantHistoryForSessionMock, saveCurrentChatAsTaskMock, suggestCurrentTaskNameMock, renameTaskMock, listVirtualEmployeesMock, initiateVEConversationMock, addVEToGroupMock, renameGroupDiscussionMock, getConversationBranchPointsMock, patchConfigFieldsMock, getCodingWorkbenchStatusMock, prepareRemoteCodingEnvironmentMock, prepareRemoteOpsDiagnosisEnvironmentMock, setCodingWorkbenchSessionPlanMock, getTabWorkingDirMock, setTabWorkingDirMock, selectWorkingDirMock, startWorkflowTemplateInTabMock, resumeCloudWorkspaceTaskMock, runtimeEventsOnMock, runtimeEventsOffMock } = vi.hoisted(() => ({
+const { openFileOrShowInFolderMock, showItemInFolderMock, openProjectDirectoryMock, loadProjectContextMock, loadProjectConversationHistoryMock, loadProjectTabConversationMock, loadProjectTabIndexMock, createProjectTabSessionMock, cancelSessionForSessionMock, clearAIAssistantHistoryForSessionMock, saveCurrentChatAsTaskMock, suggestCurrentTaskNameMock, renameTaskMock, listVirtualEmployeesMock, initiateVEConversationMock, addVEToGroupMock, renameGroupDiscussionMock, getConversationBranchPointsMock, patchConfigFieldsMock, getCodingWorkbenchStatusMock, prepareRemoteCodingEnvironmentMock, prepareRemoteOpsDiagnosisEnvironmentMock, setCodingWorkbenchSessionPlanMock, getTabWorkingDirMock, setTabWorkingDirMock, selectWorkingDirMock, startWorkflowTemplateInTabMock, resumeCloudWorkspaceTaskMock, createTaskUnifiedMock, listManagedIndustryExpertsMock, runtimeEventsOnMock, runtimeEventsOffMock } = vi.hoisted(() => ({
     openFileOrShowInFolderMock: vi.fn().mockResolvedValue(undefined),
     showItemInFolderMock: vi.fn().mockResolvedValue(undefined),
     openProjectDirectoryMock: vi.fn().mockResolvedValue(undefined),
@@ -42,6 +43,8 @@ const { openFileOrShowInFolderMock, showItemInFolderMock, openProjectDirectoryMo
     selectWorkingDirMock: vi.fn().mockResolvedValue(''),
     startWorkflowTemplateInTabMock: vi.fn().mockResolvedValue('workflow-request'),
     resumeCloudWorkspaceTaskMock: vi.fn().mockResolvedValue({ project_path: 'D:/tasks/cloud-math' }),
+    createTaskUnifiedMock: vi.fn().mockResolvedValue({ projectPath: 'D:/tasks/wizard-task' }),
+    listManagedIndustryExpertsMock: vi.fn().mockResolvedValue('[]'),
     runtimeEventsOnMock: vi.fn(),
     runtimeEventsOffMock: vi.fn(),
 }));
@@ -158,6 +161,7 @@ vi.mock('../../../../wailsjs/runtime', () => ({
 vi.mock('../../../../wailsjs/go/main/App', () => ({
     OpenFileOrShowInFolder: openFileOrShowInFolderMock,
     ShowItemInFolder: showItemInFolderMock,
+    CreateTaskUnified: createTaskUnifiedMock,
     AIAssistantAttachmentPreviewDataURL: vi.fn().mockResolvedValue('data:image/png;base64,THUMB'),
     AIAssistantAttachmentFullDataURL: vi.fn().mockResolvedValue('data:image/png;base64,FULL'),
     SelectProjectDir: vi.fn(),
@@ -168,6 +172,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     ListMobileLibraryItems: vi.fn().mockResolvedValue([]),
     KnowledgeSearch: vi.fn().mockResolvedValue([]),
     ListExperts: vi.fn().mockResolvedValue('[]'),
+    ListManagedIndustryExperts: listManagedIndustryExpertsMock,
     ResumeTask: vi.fn(),
     SaveCurrentChatAsTask: saveCurrentChatAsTaskMock,
     SuggestCurrentTaskName: suggestCurrentTaskNameMock,
@@ -372,6 +377,10 @@ describe('AIAssistantPanel property tests', () => {
         startWorkflowTemplateInTabMock.mockResolvedValue('workflow-request');
         resumeCloudWorkspaceTaskMock.mockReset();
         resumeCloudWorkspaceTaskMock.mockResolvedValue({ project_path: 'D:/tasks/cloud-math' });
+        createTaskUnifiedMock.mockReset();
+        createTaskUnifiedMock.mockResolvedValue({ projectPath: 'D:/tasks/wizard-task' });
+        listManagedIndustryExpertsMock.mockReset();
+        listManagedIndustryExpertsMock.mockResolvedValue('[]');
         __resetCloudWorkspaceLeaseEnsureForTests();
         saveCurrentChatAsTaskMock.mockReset();
         saveCurrentChatAsTaskMock.mockResolvedValue({ project_path: 'D:/tasks/saved', name: 'Saved task' });
@@ -396,6 +405,21 @@ describe('AIAssistantPanel property tests', () => {
         else delete (URL as any).createObjectURL;
         if (originalRevokeObjectURL) Object.defineProperty(URL, 'revokeObjectURL', originalRevokeObjectURL);
         else delete (URL as any).revokeObjectURL;
+    });
+
+    it('refreshes wizard experts when the experts:changed event fires', async () => {
+        renderPanel();
+        await waitFor(() => expect(listManagedIndustryExpertsMock).toHaveBeenCalledTimes(1));
+        const changedHandler = runtimeEventsOnMock.mock.calls
+            .filter(([eventName]) => eventName === 'experts:changed')
+            .at(-1)?.[1];
+        expect(typeof changedHandler).toBe('function');
+        // Simulate a managed industry expert appearing in the market list.
+        listManagedIndustryExpertsMock.mockResolvedValue(JSON.stringify([
+            { asset_id: 'asset-1', listing_id: 'listing-1', local_expert_id: 'expert-mkt-1', name: 'Market Expert', description: 'desc', installed: true },
+        ]));
+        await act(async () => { changedHandler(); });
+        await waitFor(() => expect(listManagedIndustryExpertsMock).toHaveBeenCalledTimes(2));
     });
 
     it('publishes no task identity while the local AI assistant tab is active', async () => {
@@ -7799,5 +7823,166 @@ describe('thinking panel auto-expands with real hook state shape', () => {
         );
 
         expect(container.querySelector('[data-testid="assistant-reasoning-panel"]')).toHaveProperty('open', true);
+    });
+});
+
+describe('new-task wizard page (task-pane 新建任务 button)', () => {
+    afterEach(() => {
+        cleanup();
+        window.localStorage.clear();
+        createTaskUnifiedMock.mockReset();
+        createTaskUnifiedMock.mockResolvedValue({ projectPath: 'D:/tasks/wizard-task' });
+    });
+
+    function typeAndEnter(text: string) {
+        const input = screen.getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: text } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+    }
+
+    it('first send from a wizard tab always creates a task with only the name (default draft)', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        renderPanel({
+            window: { inline: true },
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        // Open the wizard page (task-pane "新建任务" button behavior).
+        act(() => {
+            window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
+        });
+        // The wizard marker lands one tick after activation.
+        await waitFor(() => {
+            expect(screen.getByTestId('welcome-task-config')).toBeTruthy();
+        });
+
+        typeAndEnter('整理本周周报');
+
+        await waitFor(() => {
+            expect(createTaskUnifiedMock).toHaveBeenCalledTimes(1);
+        });
+        const opts = createTaskUnifiedMock.mock.calls[0][0] as Record<string, unknown>;
+        // TaskCreateOptions carries only the name (+ chat mode); nothing else.
+        expect(opts).toEqual({
+            name: '整理本周周报',
+            mode: 'chat',
+            workingDir: '',
+            cloudWorkspaceId: '',
+            expertId: '',
+            expertName: '',
+            workflowTemplateId: '',
+        });
+        // The legacy local send path is bypassed; the launch handoff owns the first message.
+        expect(sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('a quick second Enter during the wizard create does not create a second task', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        let resolveCreate: ((result: { projectPath: string }) => void) | null = null;
+        createTaskUnifiedMock.mockImplementation(() => new Promise<{ projectPath: string }>(resolve => { resolveCreate = resolve; }));
+        renderPanel({
+            window: { inline: true },
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        act(() => {
+            window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
+        });
+        await waitFor(() => {
+            expect(screen.getByTestId('welcome-task-config')).toBeTruthy();
+        });
+
+        typeAndEnter('整理本周周报');
+        await waitFor(() => {
+            expect(createTaskUnifiedMock).toHaveBeenCalledTimes(1);
+        });
+        // While the create is still in flight, a repeat Enter must be dropped.
+        typeAndEnter('整理本周周报');
+        expect(createTaskUnifiedMock).toHaveBeenCalledTimes(1);
+
+        await act(async () => {
+            resolveCreate?.({ projectPath: 'D:/tasks/wizard-task' });
+        });
+        await waitFor(() => {
+            expect(createTaskUnifiedMock).toHaveBeenCalledTimes(1);
+        });
+        expect(sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('clears the wizard marker after the task is created (tab returns to normal assistant)', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        renderPanel({
+            window: { inline: true },
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        act(() => {
+            window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
+        });
+        await waitFor(() => {
+            expect(screen.getByTestId('welcome-task-config')).toBeTruthy();
+        });
+
+        typeAndEnter('任务一');
+        await waitFor(() => {
+            expect(createTaskUnifiedMock).toHaveBeenCalledTimes(1);
+        });
+
+        // After creation the marker is retired: a plain send on the (still
+        // welcome) local tab keeps the legacy zero-config behavior.
+        typeAndEnter('普通闲聊一句');
+        await waitFor(() => {
+            expect(sendMessage).toHaveBeenCalled();
+        });
+        expect(createTaskUnifiedMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('plain empty welcome session keeps the legacy path (zero-config sends create nothing)', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        renderPanel({
+            window: { inline: true },
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        typeAndEnter('随便聊聊');
+        await waitFor(() => {
+            expect(sendMessage).toHaveBeenCalledTimes(1);
+        });
+        expect(createTaskUnifiedMock).not.toHaveBeenCalled();
+    });
+
+    it('dispatches the task launch with the first message after wizard creation', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        renderPanel({
+            window: { inline: true },
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        act(() => {
+            window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
+        });
+        await waitFor(() => {
+            expect(screen.getByTestId('welcome-task-config')).toBeTruthy();
+        });
+
+        const launches: CustomEvent[] = [];
+        const listener = (event: Event) => launches.push(event as CustomEvent);
+        window.addEventListener(EVENT_OPEN_TASK_LAUNCH, listener);
+        try {
+            typeAndEnter('整理本周周报');
+            await waitFor(() => {
+                expect(createTaskUnifiedMock).toHaveBeenCalledTimes(1);
+            });
+            expect(launches).toHaveLength(1);
+            expect((launches[0].detail as { projectPath: string; initialMessage: string }).projectPath).toBe('D:/tasks/wizard-task');
+            expect((launches[0].detail as { initialMessage: string }).initialMessage).toBe('整理本周周报');
+        } finally {
+            window.removeEventListener(EVENT_OPEN_TASK_LAUNCH, listener);
+        }
     });
 });

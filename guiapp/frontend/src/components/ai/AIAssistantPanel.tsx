@@ -45,6 +45,7 @@ import type { ComposeAction, FireSlashCommand, PlusMenuActionId } from "./compos
 import { applyComposeActionToText, btwQueryFromText, getComposeActionPlaceholder, isBtwCommandText, isHistoryResetCommandText, isInstallCommandText, normalizeInstallCommandText } from "./composeAction";
 import { InlineChatCard } from "./InlineChatCard";
 import { AssistantWelcomeView, syncLocalStartMenuTemplates, type WelcomePromptSubmitMeta } from "./AssistantWelcomeView";
+import { useTaskConfigWiring } from "./task-config/useTaskConfigWiring";
 import { WelcomeTemplateSaveOfferBanner } from "./WelcomeTemplateSaveOffer";
 import {
     loadRemoteSSHPassword,
@@ -85,7 +86,7 @@ import { activeAssistantTaskIdentity, buildProjectTabRecentMessages, chatHistori
 import { DEFAULT_EXPERT_ICON, expertWelcomeMessageText } from "./expertTypes";
 import { ExpertOptimizeEditorDialog } from "./ExpertOptimizeEditorDialog";
 import { useExpertOptimize } from "./useExpertOptimize";
-import { AdoptBaseCodingWorkbenchConflict, AdoptCodingWorkbenchConflict, ApplyCodingWorkbenchConflictPreviewSide, CancelAIAssistantSessionForSession, ClearAIAssistantHistoryForSession, ClearCodingWorkbenchConflictLog, ComputerUseStop, DiscardAllCodingWorkbenchConflicts, DiscardCodingWorkbenchConflict, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, ExportCodingWorkbenchConflictLog, GetCodingWorkbenchCheckpointSidecarStats, GetCodingWorkbenchConflictDiffs, GetCodingWorkbenchConflictFilePreview, GetCodingWorkbenchConflictFileTriple, GetCodingWorkbenchPermission, GetCodingWorkbenchPlanMode, GetCodingWorkbenchRoutePref, GetCodingWorkbenchStatus, GetCodingWorkbenchWorktreeMode, GetComputerUseStatus, GetConversationBranchPoints, GroupDiscussionRenameConsultation, KeepMainCodingWorkbenchConflict, ListCodingWorkbenchCheckpoints, ListCodingWorkbenchConflicts, LoadConfig, OpenCodingWorkbenchConflictFile, PatchConfigFields, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, PruneCodingWorkbenchCheckpoints, RefreshWorkflowV2StateForTab, RenameTask, ResolveCodingWorkbenchConflict, RestoreCodingWorkbenchCheckpointByLabel, RestoreCodingWorkbenchCheckpointEx, ResumeCloudWorkspaceTask, RunCodingWorkbenchBackgroundVerify, SaveCodingWorkbenchCheckpoint, SetCodingWorkbenchConflictUIState, SetCodingWorkbenchPermission, SetCodingWorkbenchPlanMode, SetCodingWorkbenchRoutePref, SetCodingWorkbenchSessionPlan, SetCodingWorkbenchWorktreeMode, UpdateCodingWorkbenchPendingPlan, WriteCodingWorkbenchConflictFileContent } from "../../../wailsjs/go/main/App";
+import { AdoptBaseCodingWorkbenchConflict, AdoptCodingWorkbenchConflict, ApplyCodingWorkbenchConflictPreviewSide, CancelAIAssistantSessionForSession, ClearAIAssistantHistoryForSession, ClearCodingWorkbenchConflictLog, ComputerUseStop, CreateTaskUnified, DiscardAllCodingWorkbenchConflicts, DiscardCodingWorkbenchConflict, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, ExportCodingWorkbenchConflictLog, GetCodingWorkbenchCheckpointSidecarStats, GetCodingWorkbenchConflictDiffs, GetCodingWorkbenchConflictFilePreview, GetCodingWorkbenchConflictFileTriple, GetCodingWorkbenchPermission, GetCodingWorkbenchPlanMode, GetCodingWorkbenchRoutePref, GetCodingWorkbenchStatus, GetCodingWorkbenchWorktreeMode, GetComputerUseStatus, GetConversationBranchPoints, GroupDiscussionRenameConsultation, KeepMainCodingWorkbenchConflict, ListCodingWorkbenchCheckpoints, ListCodingWorkbenchConflicts, ListWorkflowTemplateSummaries, LoadConfig, OpenCodingWorkbenchConflictFile, PatchConfigFields, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, PruneCodingWorkbenchCheckpoints, RefreshWorkflowV2StateForTab, RenameTask, ResolveCodingWorkbenchConflict, RestoreCodingWorkbenchCheckpointByLabel, RestoreCodingWorkbenchCheckpointEx, ResumeCloudWorkspaceTask, RunCodingWorkbenchBackgroundVerify, SaveCodingWorkbenchCheckpoint, SelectProjectDir, SetCodingWorkbenchConflictUIState, SetCodingWorkbenchPermission, SetCodingWorkbenchPlanMode, SetCodingWorkbenchRoutePref, SetCodingWorkbenchSessionPlan, SetCodingWorkbenchWorktreeMode, UpdateCodingWorkbenchPendingPlan, WriteCodingWorkbenchConflictFileContent } from "../../../wailsjs/go/main/App";
 import { suggestSessionPlanFromMessages } from "./codingSessionPlanUtils";
 import { CodingAgentPlanChecklist } from "./CodingAgentPlanChecklist";
 import { buildCodingBannerChrome, codingStepGlyph, codingStepStatusColor, codingStepStatusLabel, CodingWorkbenchControlPanel, CodingControlSection } from "./CodingWorkbenchControlPanel";
@@ -3513,6 +3514,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         onPendingProjectTabOpenHandled: props.onPendingProjectTabOpenHandled,
         pendingExpertOpen: props.pendingExpertOpen,
         onPendingExpertOpenHandled: props.onPendingExpertOpenHandled,
+        // Wizard expert handoff: deliver the composer's first message through
+        // the freshly opened expert tab (backend expert branch triggers on it).
+        sendExpertMessage: (text, expertId) => sendMessageForTab(text, { queue_session_key: expertSessionKey(expertId) }),
         onEnsureExpertTask: props.onEnsureExpertTask,
         onEnsureAssistantTabTask: props.onEnsureAssistantTabTask,
     });
@@ -5025,6 +5029,17 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             sendInFlightRef.current = false;
         }
     }, [activeSessionIsSending, activeSessionIsStreaming, activeSessionKey, activeTab.id, activeTab.projectPath, activeTab.type, addEntry, busySessionKeys, cancelPending, clearComposerDraft, codingTaskReadyForIntents, composeAction, dismissWorkbenchHome, dispatchBtwText, inputValue, pendingAttachments, queueEditDraftActive, recordSubmittedPrompt, recordingActive, refreshQueueInFlight, remoteReconnect.success, selectedFilePaths, sendBtwMessage, sendMessageForTab, sending, sendingSessionKey, startOnWorkbenchHome, streaming, streamingSessionKey, streamingSessionKeys, submitLocked, updateInputValue, workbenchHomeRequested]);
+
+    // --- New-task wizard (TaskConfigBar) wiring ---
+    // Draft state, expert/workflow loading and the send orchestration live in
+    // task-config/useTaskConfigWiring.ts; the panel only forwards its own scope.
+    const taskConfigWiring = useTaskConfigWiring({
+        activeTab, isLocalTabActive, lang, taskListProp, inputRef, inputValue,
+        composeAction, inputLocked, messages, handleSend, handleWelcomePromptSend,
+        clearComposerDraft, clearActiveHistory, getTabs, getTabState, saveTabState,
+        activateTab, setQueueInteractionStarted, setQueueEditDraftActive, setEditingEntryId,
+    });
+
     useEffect(() => {
         if (queue.length === 0) {
             continueQueueDrainSessionKeysRef.current.delete(activeSessionKey);
@@ -6456,8 +6471,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                             themeMode={themeMode}
                             active={panelActive}
                             onPromptSelect={handleWelcomePromptSelect}
-                            onPromptSend={handleWelcomePromptSend}
+                            onPromptSend={taskConfigWiring.handleWelcomePromptSendWithTaskConfig}
                             pinnedNews={pinnedNews}
+                            taskConfig={taskConfigWiring.taskConfig}
                             composer={{
                                 browseFile,
                                 canSend,
@@ -6472,7 +6488,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                 handleDragOver,
                                 handleDrop,
                                 handlePaste,
-                                handleSend,
+                                handleSend: taskConfigWiring.handleSendWithTaskConfig,
                                 handleVoiceClick,
                                 handleVoicePointerDown,
                                 handleVoicePointerLeave,

@@ -29,6 +29,11 @@ const AccessPolicyGrantRequired = "grant_required"
 // ErrProviderNotFound is returned when a provider id is missing from the registry.
 var ErrProviderNotFound = errors.New("provider not found")
 
+// ErrProviderInUse is returned when deleting a provider that is still
+// referenced by one or more service groups and the caller did not request
+// pruning those references.
+var ErrProviderInUse = errors.New("provider in use")
+
 // ComputeAgent represents an upstream compute reseller/agent used for settlement.
 type ComputeAgent struct {
 	ID          string    `json:"id"`
@@ -834,23 +839,140 @@ func (s *Service) ListProviderBilling(ctx context.Context) []llmpool.ProviderBil
 	return llmpool.ProviderBillingPolicies(reg.Providers)
 }
 
-// DeleteProvider removes a provider from the registry.
-func (s *Service) DeleteProvider(ctx context.Context, id string) error {
+// DeleteProvider removes a provider from the registry. When the provider is
+// still referenced by service groups, prune=false fails with ErrProviderInUse
+// and the returned names list the binding groups; prune=true deletes the
+// provider and strips its id from every service group's model ProviderIDs and
+// ProviderConfigs, returning the names of the groups that were cleaned. The
+// provider removal and group cleanup land in a single registry write. Models
+// left without any provider are kept intact for the admin to fix.
+func (s *Service) DeleteProvider(ctx context.Context, id string, prune bool) ([]string, error) {
 	defer s.lockRegistryWrite()()
 	reg, err := s.LoadRegistry(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	idx := providerIndex(reg, id)
 	if idx < 0 {
-		return fmt.Errorf("%w: %s", ErrProviderNotFound, strings.TrimSpace(id))
+		return nil, fmt.Errorf("%w: %s", ErrProviderNotFound, strings.TrimSpace(id))
 	}
+	id = strings.TrimSpace(reg.Providers[idx].ID)
+
+	var referenced []llmpool.ServiceGroup
+	for _, g := range reg.ServiceGroups {
+		if groupReferencesProvider(g, id) {
+			referenced = append(referenced, g)
+		}
+	}
+	if len(referenced) > 0 && !prune {
+		return serviceGroupNames(referenced), fmt.Errorf("%w: %s", ErrProviderInUse, id)
+	}
+
 	filtered := make([]llmpool.ProviderConfig, 0, len(reg.Providers)-1)
 	filtered = append(filtered, reg.Providers[:idx]...)
 	filtered = append(filtered, reg.Providers[idx+1:]...)
 	next := cloneRegistry(reg)
 	next.Providers = filtered
-	return s.persistRegistry(ctx, next)
+	var pruned []string
+	if prune {
+		pruned = pruneProviderFromGroups(next, id)
+	}
+	if err := s.persistRegistry(ctx, next); err != nil {
+		return nil, err
+	}
+	return pruned, nil
+}
+
+// ProviderReferences returns the service groups that reference the provider in
+// any model's ProviderIDs or ProviderConfigs. Returned groups are deep copies
+// so callers cannot mutate the cached registry.
+func (s *Service) ProviderReferences(ctx context.Context, id string) ([]llmpool.ServiceGroup, error) {
+	reg, err := s.LoadRegistry(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var matched []llmpool.ServiceGroup
+	for _, g := range reg.ServiceGroups {
+		if groupReferencesProvider(g, strings.TrimSpace(id)) {
+			matched = append(matched, g)
+		}
+	}
+	return cloneServiceGroups(matched), nil
+}
+
+// groupReferencesProvider reports whether the provider id appears in any of
+// the group's model ProviderIDs or ProviderConfigs.
+func groupReferencesProvider(g llmpool.ServiceGroup, id string) bool {
+	if id == "" {
+		return false
+	}
+	for _, m := range g.Models {
+		for _, pid := range m.ProviderIDs {
+			if strings.TrimSpace(pid) == id {
+				return true
+			}
+		}
+		for _, pc := range m.ProviderConfigs {
+			if strings.TrimSpace(pc.ProviderID) == id {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// pruneProviderFromGroups strips providerID from every service group's model
+// ProviderIDs and ProviderConfigs in reg. Models left without any provider are
+// kept intact for the admin to fix. Returns the names of groups that
+// referenced the provider.
+func pruneProviderFromGroups(reg *Registry, providerID string) []string {
+	var pruned []string
+	for i := range reg.ServiceGroups {
+		g := &reg.ServiceGroups[i]
+		changed := false
+		for j := range g.Models {
+			model := &g.Models[j]
+			ids := make([]string, 0, len(model.ProviderIDs))
+			for _, pid := range model.ProviderIDs {
+				if strings.TrimSpace(pid) == providerID {
+					changed = true
+					continue
+				}
+				ids = append(ids, pid)
+			}
+			configs := make([]llmpool.ModelProviderConfig, 0, len(model.ProviderConfigs))
+			for _, pc := range model.ProviderConfigs {
+				if strings.TrimSpace(pc.ProviderID) == providerID {
+					changed = true
+					continue
+				}
+				configs = append(configs, pc)
+			}
+			if changed {
+				model.ProviderIDs = ids
+				model.ProviderConfigs = configs
+			}
+		}
+		if changed {
+			pruned = append(pruned, serviceGroupDisplayName(*g))
+		}
+	}
+	return pruned
+}
+
+func serviceGroupNames(groups []llmpool.ServiceGroup) []string {
+	names := make([]string, 0, len(groups))
+	for _, g := range groups {
+		names = append(names, serviceGroupDisplayName(g))
+	}
+	return names
+}
+
+func serviceGroupDisplayName(g llmpool.ServiceGroup) string {
+	if name := strings.TrimSpace(g.Name); name != "" {
+		return name
+	}
+	return strings.TrimSpace(g.ID)
 }
 
 // GetProvider returns a provider by ID.

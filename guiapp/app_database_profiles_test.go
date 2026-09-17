@@ -16,7 +16,15 @@ func newDatabaseProfileTestApp(t *testing.T) *App {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
 	t.Setenv("HOME", tmpHome)
-	return &App{testHomeDir: tmpHome}
+	app := &App{testHomeDir: tmpHome}
+	t.Cleanup(func() {
+		// ensureMemoryStore opens a SQLite memory.db under the temp home; on
+		// Windows the open handle blocks t.TempDir cleanup.
+		if app.memoryStore != nil {
+			app.memoryStore.Stop()
+		}
+	})
+	return app
 }
 
 // installFakeDatabaseKeyring swaps the package-level keyring hooks for an

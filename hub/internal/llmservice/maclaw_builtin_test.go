@@ -463,15 +463,19 @@ func TestFailRequiredOwnerUnlessCanceledDoesNotCoolOwner(t *testing.T) {
 	client := NewMaClawProviderClient(MaClawProviderConfig{HubCenterURL: "https://hubs.maclaw.top", HubID: "hub1", MachineToken: "secret"})
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	err := client.failRequiredOwnerUnlessCanceled(ctx, "hc-3", "https://hubs2.maclaw.top", context.Canceled)
+	err, released := client.failRequiredOwnerUnlessCanceled(ctx, "hc-3", "https://hubs2.maclaw.top", context.Canceled)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("error = %v, want context canceled", err)
 	}
+	if released {
+		t.Fatal("canceled request must not release owner bindings")
+	}
 	client.mu.Lock()
 	_, cooling := client.ownerCooldown["https://hubs2.maclaw.top"]
+	_, excluded := client.ownerExcluded["https://hubs2.maclaw.top"]
 	client.mu.Unlock()
-	if cooling {
-		t.Fatal("canceled request must not cool the bound owner")
+	if cooling || excluded {
+		t.Fatal("canceled request must not cool or exclude the bound owner")
 	}
 }
 

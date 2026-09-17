@@ -72,7 +72,7 @@ func (h *IMMessageHandler) runActiveSessionBonusRound(opts agentLoopBonusRoundOp
 		opts.OnNewRound()
 	}
 	bonusMetrics := &llmStreamMetrics{}
-	bonusResp, err := h.doLLMRequestStream(opts.RequestContext, opts.Config, conversation, opts.Tools, opts.HTTPClient, opts.OnToken, bonusMetrics)
+	bonusResp, err := h.doLLMRequestStream(opts.RequestContext, opts.Config, llmEndpointCategoryMainStream, conversation, opts.Tools, opts.HTTPClient, opts.OnToken, bonusMetrics)
 	opts.FirstRequestMetrics.AddStreamMetrics(bonusMetrics)
 	if err == nil && opts.StreamDoneCallback != nil {
 		opts.StreamDoneCallback()

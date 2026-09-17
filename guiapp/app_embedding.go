@@ -906,16 +906,17 @@ func (a *App) buildIntentLLMFunc() tool.LLMClassifyFunc {
 		if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
 			return "", fmt.Errorf("LLM not configured")
 		}
-		if reason, skip := a.shouldSkipLightweightLLM(cfg); skip {
+		if reason, skip := a.shouldSkipLightweightLLM(cfg, llmEndpointCategoryLightweightClassify); skip {
 			return "", fmt.Errorf("intent-classifier LLM endpoint temporarily unavailable after recent network failure: %s", reason)
 		}
 		messages := []interface{}{
 			map[string]string{"role": "user", "content": prompt},
 		}
-		client := &http.Client{Timeout: 35 * time.Second}
-		ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "intent-classifier"})
-		resp, err := doSimpleLLMRequest(ctx, cfg, messages, client, 30*time.Second)
-		a.observeLLMEndpointResult(cfg, err)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		ctx = llm.WithRequestTrace(ctx, llm.RequestTrace{Caller: "intent-classifier"})
+		resp, err := doSimpleLLMRequest(ctx, cfg, messages, nil, 30*time.Second)
+		a.observeLLMEndpointResult(cfg, llmEndpointCategoryLightweightClassify, ctx.Err() != nil || isLLMBudgetFiredError(err), err)
 		if err != nil {
 			return "", err
 		}
@@ -936,20 +937,21 @@ func (a *App) buildUICLLMFunc() intent.LLMClassifyFunc {
 		if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
 			return "", fmt.Errorf("LLM not configured")
 		}
-		if reason, skip := a.shouldSkipLightweightLLM(cfg); skip {
+		if reason, skip := a.shouldSkipLightweightLLM(cfg, llmEndpointCategoryUICTree); skip {
 			return "", fmt.Errorf("unified-intent-classifier LLM endpoint temporarily unavailable after recent network failure: %s", reason)
 		}
 		messages := []interface{}{
 			map[string]string{"role": "system", "content": systemPrompt},
 			map[string]string{"role": "user", "content": userText},
 		}
-		client := &http.Client{Timeout: 35 * time.Second}
-		ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "unified-intent-classifier"})
-		resp, err := doSimpleLLMRequestWithOptions(ctx, attachLightweightHubHint(cfg, llm.TaskIntent), messages, client, 30*time.Second, simpleLLMRequestOptions{
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		ctx = llm.WithRequestTrace(ctx, llm.RequestTrace{Caller: "unified-intent-classifier"})
+		resp, err := doSimpleLLMRequestWithOptions(ctx, attachLightweightHubHint(cfg, llm.TaskIntent), messages, nil, 30*time.Second, simpleLLMRequestOptions{
 			ResponseFormat:         intentTreeResponseFormat(),
 			PreserveResponseFormat: true,
 		})
-		a.observeLLMEndpointResult(cfg, err)
+		a.observeLLMEndpointResult(cfg, llmEndpointCategoryUICTree, ctx.Err() != nil || isLLMBudgetFiredError(err), err)
 		if err != nil {
 			return "", err
 		}
@@ -957,37 +959,50 @@ func (a *App) buildUICLLMFunc() intent.LLMClassifyFunc {
 	}
 }
 
-// buildUICLLMContextFunc is the production L3 callback. Its context comes
-// from the fusion deadline, so a slow classification call is cancelled at the
-// transport layer instead of continuing in the background.
+// buildUICLLMContextFunc is the production L3 callback. The classification
+// budget rides on ctx (fusion deadline or tree-only timeout); parentCtx is
+// the caller's user/turn context. The request is detachable (P0-3): when the
+// budget fires, the helper returns a budget error but keeps the connection
+// alive in the background, deriving the detached read from parentCtx — a
+// user cancellation still aborts the read, and a late-verdict retry with the
+// same payload adopts the result instead of double-sending. A detached read
+// that completes successfully feeds the endpoint gate a positive health
+// signal for the uic-tree category.
 func (a *App) buildUICLLMContextFunc() intent.LLMClassifyContextFunc {
-	return func(ctx context.Context, systemPrompt, userText string) (string, error) {
+	return func(ctx context.Context, parentCtx context.Context, systemPrompt, userText string) (string, error) {
 		cfg := a.GetMaclawLLMConfig()
 		if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
 			return "", fmt.Errorf("LLM not configured")
 		}
-		if reason, skip := a.shouldSkipLightweightLLM(cfg); skip {
+		if reason, skip := a.shouldSkipLightweightLLM(cfg, llmEndpointCategoryUICTree); skip {
 			return "", fmt.Errorf("unified-intent-classifier LLM endpoint temporarily unavailable after recent network failure: %s", reason)
+		}
+		if parentCtx == nil {
+			parentCtx = context.Background()
 		}
 		messages := []interface{}{
 			map[string]string{"role": "system", "content": systemPrompt},
 			map[string]string{"role": "user", "content": userText},
 		}
-		client := &http.Client{Timeout: 35 * time.Second}
 		ctx = llm.WithRequestTrace(ctx, llm.RequestTrace{Caller: "unified-intent-classifier"})
-		resp, err := doSimpleLLMRequestWithOptions(ctx, attachLightweightHubHint(cfg, llm.TaskIntent), messages, client, 30*time.Second, simpleLLMRequestOptions{
+		resp, err := doSimpleLLMRequestWithOptions(ctx, attachLightweightHubHint(cfg, llm.TaskIntent), messages, nil, 30*time.Second, simpleLLMRequestOptions{
 			ResponseFormat:         intentTreeResponseFormat(),
 			PreserveResponseFormat: true,
+			DetachParentCtx:        parentCtx,
+			OnDetachedComplete: func(detachErr error) {
+				if detachErr == nil {
+					a.observeLLMEndpointLightweightSuccess(cfg, llmEndpointCategoryUICTree)
+				}
+			},
 		})
-		// A failure raised by our own fusion deadline (ctx fires first) says
-		// nothing about endpoint health. Reporting it to the endpoint gate
-		// poisoned the next 30s of classifications: one slow tree call made
-		// every following ambiguous turn skip the tree and degrade to
-		// unknown (2026-08-25 production chain). Successes and errors from a
-		// still-live context remain endpoint evidence.
-		if err == nil || ctx.Err() == nil {
-			a.observeLLMEndpointResult(cfg, err)
-		}
+		// A failure raised by our own budget (fusion deadline, request budget,
+		// or the detach handoff — i.e. ctx fires first or the helper reports a
+		// budget-fired error) says nothing about endpoint health. Reporting it
+		// to the endpoint gate poisoned the next 30s of classifications: one
+		// slow tree call made every following ambiguous turn skip the tree and
+		// degrade to unknown (2026-08-25 production chain). Successes and
+		// errors from a still-live context remain endpoint evidence.
+		a.observeLLMEndpointResult(cfg, llmEndpointCategoryUICTree, ctx.Err() != nil || isLLMBudgetFiredError(err), err)
 		if err != nil {
 			return "", err
 		}

@@ -110,8 +110,22 @@ func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsReposit
 		}
 	}
 	bindingMgr := ha.NewLLMBindingManager(nodeID, bindingRepo)
+	// Expired leases and release tombstones otherwise stay in the table
+	// forever: nothing else calls CleanupExpired, and every HA node applies
+	// every peer's binding ops.
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			bindingMgr.CleanupExpired(context.Background())
+		}
+	}()
 	if haSvc != nil {
 		bindingMgr.SetSyncBinding(haSvc.AppendLLMNodeBinding)
+		// A binding op replicated from a peer (e.g. a release tombstone)
+		// must evict the local caches or TryBind keeps trusting a stale
+		// cached lease until its wall-clock expiry.
+		haSvc.SetBindingInvalidator(bindingMgr.InvalidateCachedBinding)
 	}
 
 	// 4. Create proxy config
@@ -155,6 +169,9 @@ func InitLLMModule(provider *sqlite.Provider, system store.SystemSettingsReposit
 	}
 	if haSvc != nil {
 		proxyCfg.LookupNodeURL = haSvc.LookupNodeURL
+		proxyCfg.ReleaseBinding = func(ctx context.Context, hubID, nodeID string) (int, error) {
+			return bindingMgr.ReleaseBindingsForHubNode(ctx, hubID, nodeID, time.Now().UTC())
+		}
 		proxyCfg.LookupAccessPeer = haSvc.AccessPeer
 		proxyCfg.SignPeerRequest = haSvc.SignPeerRequest
 		proxyCfg.ClusterSecret = haSvc.ClusterSecret

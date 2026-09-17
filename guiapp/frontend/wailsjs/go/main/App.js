@@ -698,6 +698,11 @@ export function CreateTaskWithCloudWorkspace(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['CreateTaskWithCloudWorkspace'](arg1, arg2, arg3, arg4);
 }
 
+// MANUAL SYNC (wails generate module unavailable on this machine): mirrors guiapp/app_task_create.go.
+export function CreateTaskUnified(arg1) {
+  return window['go']['main']['App']['CreateTaskUnified'](arg1);
+}
+
 export function ProvisionCloudWorkspaceTask(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['ProvisionCloudWorkspaceTask'](arg1, arg2, arg3, arg4);
 }
@@ -3212,6 +3217,11 @@ export function ListSwarmRuns() {
 
 export function ListTasks(arg1) {
   return window['go']['main']['App']['ListTasks'](arg1);
+}
+
+// MANUAL SYNC (wails generate module unavailable on this machine): mirrors guiapp/app_task_create.go.
+export function ListWorkflowTemplateSummaries() {
+  return window['go']['main']['App']['ListWorkflowTemplateSummaries']();
 }
 
 export function ListTemplates() {

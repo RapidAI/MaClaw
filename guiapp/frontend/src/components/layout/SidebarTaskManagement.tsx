@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
-import { AbortCloudWorkspaceTaskProvision, CloudWorkspaceCacheDir, CloudWorkspaceEntitlement, CompleteCloudWorkspaceTaskProvision, CreateCloudWorkspace, DeleteCloudWorkspace, ForceDeleteCloudWorkspace, GetProjectScene, GetRemoteCodingTaskMeta, OpenProjectDirectory, PrepareCloudWorkspace, ProvisionCloudWorkspaceTask, RenameCloudWorkspace, RestoreCloudWorkspace, SelectWorkingDir, TestRemoteSSHConnection, UpdateRemoteCodingTaskMeta } from '../../../wailsjs/go/main/App';
+import { AbortCloudWorkspaceTaskProvision, CloudWorkspaceCacheDir, CloudWorkspaceEntitlement, CompleteCloudWorkspaceTaskProvision, CreateCloudWorkspace, DeleteCloudWorkspace, ForceDeleteCloudWorkspace, GetProjectScene, GetRemoteCodingTaskMeta, ListExperts, ListManagedIndustryExperts, OpenProjectDirectory, PrepareCloudWorkspace, ProvisionCloudWorkspaceTask, RenameCloudWorkspace, RestoreCloudWorkspace, SelectWorkingDir, TestRemoteSSHConnection, UpdateRemoteCodingTaskMeta } from '../../../wailsjs/go/main/App';
 import { EventsEmit } from '../../../wailsjs/runtime';
-import { EVENT_OPEN_CREATE_CODING_TASK, EVENT_PROJECT_TASK_ACTIVATE, EVENT_PROJECT_TASK_CLOSED, type OpenCreateCodingTaskDetail } from '../../constants/events';
+import { EVENT_OPEN_CREATE_CODING_TASK, EVENT_OPEN_NEW_TASK_WIZARD, EVENT_PROJECT_TASK_ACTIVATE, EVENT_PROJECT_TASK_CLOSED, type OpenCreateCodingTaskDetail } from '../../constants/events';
 import { localizeText } from '../../i18n';
 import { restoreCloudWorkspaceTasksShared, invalidateCloudWorkspaceTaskRestore } from '../../utils/cloudWorkspaceTaskRestore';
 import { ProjectSearchIcon } from '../ai/ProjectSearchIcon';
@@ -13,8 +13,10 @@ import { truncatePathMiddle } from '../ai/SessionWorkingDirChip';
 import { IconFolder } from '../ai/WorkbenchIcons';
 import { extractErrorMessage } from '../ai/participantAddError';
 import { localAssistantTabTitle } from '../ai/aiAssistantI18n';
+import { DEFAULT_EXPERT_ICON, parseExpertListJSON, parseInstalledManagedIndustryExpertsJSON, type ExpertDefinition } from '../ai/expertTypes';
 import { normalizeWorkflowStatus, WorkflowStatus } from '../ai/workflowStatus';
 import { useDialog } from '../CustomDialog';
+import { WorkspaceTypeBadge } from '../ai/task-config/WorkspaceTypeBadge';
 import { SidebarTaskEvidencePanel } from './SidebarTaskEvidencePanel';
 
 export type TaskManagementItem = {
@@ -33,6 +35,8 @@ export type TaskManagementItem = {
     preview?: string;
     tags?: string[];
     working_dir?: string;
+    /** Actual tool execution directory for managed tasks (working_dir tag or the workspace/ sandbox). */
+    execution_dir?: string;
     created_at?: string;
     last_activity?: string;
     pinned?: boolean;
@@ -132,6 +136,26 @@ const isRemoteCodingTask = (proj: TaskManagementItem): boolean =>
 
 const isRemoteMaintenanceTask = (proj: TaskManagementItem): boolean =>
     isRemoteCodingTask(proj) && isRemoteMaintenanceTaskTags(proj.tags);
+
+/** 工作空间三种类型（设计 §5）：本地文件夹 / 云端工作区 / 远程服务器目录。 */
+export type TaskWorkspaceKind = 'local' | 'cloud' | 'remote';
+
+/** 工作空间类型推导：云端工作区 > 远程编程 > 本地。 */
+const workspaceKindForTask = (proj: TaskManagementItem): TaskWorkspaceKind => {
+    if (isCloudWorkspaceTask(proj)) return 'cloud';
+    if (isRemoteCodingTask(proj)) return 'remote';
+    return 'local';
+};
+
+const workspaceKindLabel = (kind: TaskWorkspaceKind, lang: string) =>
+    kind === 'cloud'
+        ? textForLang(lang, 'Cloud', '云端', '雲端')
+        : kind === 'remote'
+            ? textForLang(lang, 'Remote', '远程', '遠端')
+            : textForLang(lang, 'Local', '本地', '本地');
+
+const workspaceSectionLabel = (lang: string) =>
+    textForLang(lang, 'Workspace', '工作空间', '工作空間');
 
 const taskIconLabel = (kind: TaskIconKind, lang: string, maintenance = false) => {
     if (kind === 'default') return textForLang(lang, 'Default task', '默认任务', '預設任務');
@@ -382,6 +406,8 @@ type SidebarTaskManagementProps = {
         remote?: { host: string; port: number; user: string; password: string; workDir: string; safety?: 'diagnosis' },
         workspaceId?: string,
     ) => Promise<void> | void;
+    /** Expert-task creation path for the chat task type; falls back to createTask when absent. */
+    onCreateExpertTask?: (expert: ExpertDefinition) => Promise<void> | void;
     refreshTasks: () => void;
     taskContextMenu: TaskContextMenu;
     setTaskContextMenu: (menu: TaskContextMenu) => void;
@@ -1140,6 +1166,7 @@ export const SidebarTaskManagement = ({
     assistantReady = true,
     onTaskSwitchBlocked,
     createTask,
+    onCreateExpertTask,
     refreshTasks,
     taskContextMenu,
     setTaskContextMenu,
@@ -1164,6 +1191,11 @@ export const SidebarTaskManagement = ({
     const [newTaskWorkingDir, setNewTaskWorkingDir] = useState('');
     /** '' | coding_dev | remote_coding_dev */
     const [newTaskMode, setNewTaskMode] = useState<'' | 'coding_dev' | 'remote_coding_dev'>('');
+    /** AI experts offered by the chat task type; '' keeps the general assistant path. */
+    const [createExperts, setCreateExperts] = useState<ExpertDefinition[]>([]);
+    const [createExpertId, setCreateExpertId] = useState('');
+    const [expertPickerOpen, setExpertPickerOpen] = useState(false);
+    const [expertFilter, setExpertFilter] = useState('');
     const [remoteHost, setRemoteHost] = useState('');
     const [remotePort, setRemotePort] = useState('22');
     const [remoteUser, setRemoteUser] = useState('');
@@ -1249,6 +1281,41 @@ export const SidebarTaskManagement = ({
     /** Drops stale CloudWorkspaceEntitlement results when the dialog is reopened. */
     const entitlementFetchGenRef = useRef(0);
     const mountedRef = useRef(true);
+    const createSelectedExpert = createExperts.find(e => e.id === createExpertId) || null;
+    const expertFilterQuery = expertFilter.trim().toLowerCase();
+    const filteredCreateExperts = createExperts.filter(e =>
+        !expertFilterQuery
+        || e.name.toLowerCase().includes(expertFilterQuery)
+        || e.description.toLowerCase().includes(expertFilterQuery));
+    // Refresh the expert catalog whenever the create dialog opens so the picker
+    // never shows a stale list after experts were added or edited elsewhere.
+    useEffect(() => {
+        if (!createDialogOpen) return;
+        let cancelled = false;
+        void (async () => {
+            try {
+                const raw = typeof ListExperts === 'function' ? await ListExperts() : '';
+                // Installed managed-industry experts are excluded from ListExperts
+                // (the backend keeps them off the ordinary LWW surface); merge
+                // them in so the picker matches the AI-experts page catalog.
+                let managedRaw = '';
+                try {
+                    managedRaw = typeof ListManagedIndustryExperts === 'function' ? await ListManagedIndustryExperts() : '';
+                } catch {
+                    managedRaw = '';
+                }
+                if (cancelled || !mountedRef.current) return;
+                const personal = parseExpertListJSON(raw);
+                const seen = new Set(personal.map(e => e.id));
+                const managed = parseInstalledManagedIndustryExpertsJSON(managedRaw).filter(e => !seen.has(e.id));
+                setCreateExperts([...personal, ...managed]);
+            } catch {
+                if (cancelled || !mountedRef.current) return;
+                setCreateExperts([]);
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [createDialogOpen]);
     const finishCloudRestoreWait = () => {
         pendingRestoreWorkspaceIdsRef.current = null;
         if (restoreWaitTimerRef.current != null) {
@@ -1363,6 +1430,12 @@ export const SidebarTaskManagement = ({
     // the other's in-flight state.
     const cloudSyncInProgress = cloudRestorePending || cloudTasksLoading;
     const [taskFilter, setTaskFilter] = useState<TaskStatusFilter>('all');
+    const [workspaceFilter, setWorkspaceFilter] = useState<'all' | TaskWorkspaceKind>('all');
+    const workspaceFilterCounts = useMemo(() => {
+        const counts: Record<TaskWorkspaceKind, number> = { local: 0, cloud: 0, remote: 0 };
+        for (const task of visibleTasks) counts[workspaceKindForTask(task)] += 1;
+        return counts;
+    }, [visibleTasks]);
     const taskFilterCounts = useMemo(() => {
         const counts: Record<Exclude<TaskStatusFilter, 'all'>, number> = { running: 0, pending: 0, completed: 0, paused: 0, shared: 0 };
         for (const task of visibleTasks) {
@@ -1373,10 +1446,13 @@ export const SidebarTaskManagement = ({
         return counts;
     }, [visibleTasks]);
     const filteredTasks = useMemo(() => {
-        if (taskFilter === 'all') return visibleTasks;
-        if (taskFilter === 'shared') return visibleTasks.filter(isSharedTaskRow);
-        return visibleTasks.filter(task => taskStatusBucketFor(task) === taskFilter);
-    }, [visibleTasks, taskFilter]);
+        const base = workspaceFilter === 'all'
+            ? visibleTasks
+            : visibleTasks.filter(task => workspaceKindForTask(task) === workspaceFilter);
+        if (taskFilter === 'all') return base;
+        if (taskFilter === 'shared') return base.filter(isSharedTaskRow);
+        return base.filter(task => taskStatusBucketFor(task) === taskFilter);
+    }, [visibleTasks, taskFilter, workspaceFilter]);
     // One bar for first ListTasks and Hub restore. Unfiltered emptiness so an
     // empty status chip is not a full-list load, and "No tasks" cannot flash
     // while cloud restore can still add rows.
@@ -1426,6 +1502,15 @@ export const SidebarTaskManagement = ({
         if (taskFilterCounts.shared > 0 || taskFilter === 'shared') chips.push({ key: 'shared', label: textForLang(lang, 'Shared with me', '分享给我的', '分享給我的'), count: taskFilterCounts.shared });
         return chips;
     }, [lang, taskFilter, visibleTasks.length, taskFilterCounts]);
+    const workspaceFilterChips = useMemo(() => {
+        const chips: { key: 'all' | TaskWorkspaceKind; label: string; count: number }[] = [
+            { key: 'all', label: textForLang(lang, 'All', '全部', '全部'), count: visibleTasks.length },
+            { key: 'local', label: workspaceKindLabel('local', lang), count: workspaceFilterCounts.local },
+            { key: 'cloud', label: workspaceKindLabel('cloud', lang), count: workspaceFilterCounts.cloud },
+            { key: 'remote', label: workspaceKindLabel('remote', lang), count: workspaceFilterCounts.remote },
+        ];
+        return chips;
+    }, [lang, visibleTasks.length, workspaceFilterCounts]);
     const taskListRef = useRef<HTMLDivElement | null>(null);
     const activeRowPresent = visibleTasks.some(proj => isActiveTaskRow(proj, activeAssistantTask));
     useEffect(() => {
@@ -1744,6 +1829,9 @@ export const SidebarTaskManagement = ({
         setNewTaskName('');
         setNewTaskWorkingDir('');
         setNewTaskMode('');
+        setCreateExpertId('');
+        setExpertPickerOpen(false);
+        setExpertFilter('');
         setRemoteHost('');
         setRemotePort('22');
         setRemoteUser('');
@@ -2195,6 +2283,12 @@ export const SidebarTaskManagement = ({
                 : '';
         if (newTaskMode === nextMode && workspaceKind !== 'cloud') return;
         setNewTaskMode(nextMode);
+        if (nextMode !== '') {
+            // Expert selection only applies to the chat task type.
+            setCreateExpertId('');
+            setExpertPickerOpen(false);
+            setExpertFilter('');
+        }
         setWorkspaceKind('local');
         if (nextMode === 'remote_coding_dev') {
             setSelectedCloudWorkspaceId('');
@@ -2458,11 +2552,18 @@ export const SidebarTaskManagement = ({
         }
         try {
             const workingDir = newTaskWorkingDir.trim();
-            if (!isRemoteCreate && !cloudCreateSelected && isCloudWorkspacePath(workingDir)) {
+            const selectedExpert = (!isRemoteCreate && !cloudCreateSelected && newTaskMode === '') ? createSelectedExpert : null;
+            // The expert path ignores the working directory entirely, so a
+            // stale picked folder must not trip the cloud-cache guard below.
+            if (!selectedExpert && !isRemoteCreate && !cloudCreateSelected && isCloudWorkspacePath(workingDir)) {
                 setCreateError(textForLang(lang, 'That folder is a cloud workspace cache. Pick another folder, or use a Cloud workspace task instead.', '\u8be5\u76ee\u5f55\u662f\u4e91\u7aef\u5de5\u4f5c\u533a\u7f13\u5b58\u76ee\u5f55\uff0c\u8bf7\u9009\u62e9\u5176\u4ed6\u76ee\u5f55\uff0c\u6216\u6539\u7528\u4e91\u7aef\u5de5\u4f5c\u533a\u4efb\u52a1\u3002', '\u8a72\u76ee\u9304\u662f\u96f2\u7aef\u5de5\u4f5c\u5340\u5feb\u53d6\u76ee\u9304\uff0c\u8acb\u9078\u64c7\u5176\u4ed6\u76ee\u9304\uff0c\u6216\u6539\u7528\u96f2\u7aef\u5de5\u4f5c\u5340\u4efb\u52d9\u3002'));
                 return;
             }
-            if (isRemoteCreate) {
+            if (selectedExpert && onCreateExpertTask) {
+                // Expert path: taskName and workingDir are ignored; the expert
+                // task is registered and its assistant tab opened by the caller.
+                await onCreateExpertTask(selectedExpert);
+            } else if (isRemoteCreate) {
                 const portNum = parseRemotePort(remotePort);
                 if (portNum == null) return;
                 await createTask(taskName, undefined, 'remote_coding_dev', {
@@ -2521,6 +2622,9 @@ export const SidebarTaskManagement = ({
                 setNewTaskName('');
                 setNewTaskWorkingDir('');
                 setNewTaskMode('');
+                setCreateExpertId('');
+                setExpertPickerOpen(false);
+                setExpertFilter('');
                 setRemoteHost('');
                 setRemotePort('22');
                 setRemoteUser('');
@@ -2785,10 +2889,11 @@ export const SidebarTaskManagement = ({
                 <button
                     type="button"
                     className="mc-task-pane__create-primary"
-                    onClick={() => openCreateDialog()}
+                    data-testid="task-pane-new-task-wizard"
+                    onClick={() => window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD))}
                     disabled={creatingTask}
-                    aria-label={textForLang(lang, 'Create task', '创建任务', '建立任務')}
-                    title={textForLang(lang, 'Create task', '创建任务', '建立任務')}
+                    aria-label={textForLang(lang, 'New task', '新建任务', '新建任務')}
+                    title={textForLang(lang, 'New task (configure on the welcome page)', '新建任务（在引导页配置后发送创建）', '新建任務（在引導頁配置後傳送建立）')}
                     style={taskHeaderActionButtonStyle(creatingTask)}
                 >
                     <CreateTaskIcon />
@@ -2932,6 +3037,35 @@ export const SidebarTaskManagement = ({
                 );
             })}
         </div>
+        <div className="mc-task-filter-chips" role="group" aria-label={textForLang(lang, 'Filter tasks by workspace', '按工作空间筛选任务', '按工作空間篩選任務')} style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', padding: '0 8px 8px', marginTop: '-4px' }}>
+            {workspaceFilterChips.map(chip => {
+                const selected = workspaceFilter === chip.key;
+                return (
+                    <button
+                        type="button"
+                        key={chip.key}
+                        data-testid={`task-workspace-filter-${chip.key}`}
+                        aria-pressed={selected}
+                        title={`${workspaceSectionLabel(lang)} · ${chip.label}`}
+                        onClick={() => setWorkspaceFilter(chip.key)}
+                        style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            padding: '2px 9px',
+                            borderRadius: '999px',
+                            fontSize: '0.66rem',
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                            border: selected ? '1px solid var(--theme-primary)' : '1px solid var(--theme-border)',
+                            background: selected ? 'color-mix(in srgb, var(--theme-primary) 14%, transparent)' : 'transparent',
+                            color: selected ? 'var(--theme-primary)' : 'var(--theme-text-secondary)',
+                            opacity: chip.count === 0 && !selected ? 0.55 : 1,
+                        }}
+                    >{chip.label}<b>{chip.count}</b></button>
+                );
+            })}
+        </div>
         {showTaskListProgress ? (
             <SidebarTaskStatusBanner
                 testId={localTasksLoading ? 'task-list-loading' : 'task-cloud-sync-progress'}
@@ -2981,7 +3115,7 @@ export const SidebarTaskManagement = ({
         </div>
         {filteredTasks.length === 0 && !suppressEmptyState ? (
             <div style={{ padding: '24px 8px', textAlign: 'center', fontSize: '0.78rem', color: 'var(--theme-text-muted)', opacity: 0.65 }}>
-                {taskFilter === 'all'
+                {taskFilter === 'all' && workspaceFilter === 'all'
                     ? textForLang(lang, 'No tasks', '\u6682\u65e0\u4efb\u52a1', '\u66ab\u7121\u4efb\u52d9')
                     : textForLang(lang, 'No tasks in this group', '\u8be5\u5206\u7ec4\u6682\u65e0\u4efb\u52a1', '\u8a72\u5206\u7d44\u66ab\u7121\u4efb\u52d9')}
             </div>
@@ -3017,18 +3151,34 @@ export const SidebarTaskManagement = ({
                     : '';
             const rowPathHint = cloudWorkspace
                 ? cloudSafePathLabel(proj.working_dir || proj.project_path, taskSecondaryLabel || cloudBadge || 'cloud')
-                : proj.project_path;
+                : (proj.working_dir || proj.execution_dir || proj.project_path);
             const taskTitleText = String(proj.name || '').trim()
                 || (cloudWorkspace ? (taskSecondaryLabel || cloudBadge || rowPathHint) : proj.project_path);
             const identitySubtitle = taskSecondaryLabel && taskSecondaryLabel !== taskTitleText ? taskSecondaryLabel : '';
-            // When a cloud workspace supplies the fallback title, keep the row
-            // compact instead of rendering the same workspace name twice.
-            const secondaryText = secondaryStatusLabel
-                || identitySubtitle
-                || (taskSidebarSummary !== taskTitleText ? taskSidebarSummary : '');
+            // Workspace row line (设计 §5): badge (📁 local / ☁ cloud / 🖧 remote)
+            // plus the matching value — local working dir, cloud workspace name,
+            // or remote host:workDir. Remote host/workDir come from the durable
+            // task tags; without them the row falls back to a generic label.
+            const workspaceKind = workspaceKindForTask(proj);
+            const remoteMeta = workspaceKind === 'remote' ? remoteCodingMetaFromTaskTags(proj.tags) : null;
             // Local tasks surface their working directory under the subtitle;
             // cloud workspace rows keep the existing compact layout.
-            const localWorkingDir = cloudWorkspace ? '' : String(proj.working_dir || proj.project_path || '').trim();
+            const localWorkingDir = cloudWorkspace ? '' : String(proj.working_dir || proj.execution_dir || proj.project_path || '').trim();
+            const workspaceValue = workspaceKind === 'cloud'
+                ? (taskSecondaryLabel || cloudBadge)
+                : workspaceKind === 'remote'
+                    ? (remoteMeta?.host
+                        ? (remoteMeta.workDir ? `${remoteMeta.host}:${remoteMeta.workDir}` : remoteMeta.host)
+                        : textForLang(lang, 'Remote server', '远程服务器', '遠端伺服器'))
+                    : localWorkingDir;
+            const workspaceValueText = workspaceKind === 'local'
+                ? truncatePathMiddle(workspaceValue, 42)
+                : workspaceValue;
+            // When the workspace line already carries the identity text (cloud
+            // workspace name), keep the muted subtitle from repeating it.
+            const secondaryText = secondaryStatusLabel
+                || (identitySubtitle && identitySubtitle !== workspaceValue ? identitySubtitle : '')
+                || (taskSidebarSummary !== taskTitleText && taskSidebarSummary !== workspaceValue ? taskSidebarSummary : '');
             const rowStyle: CSSProperties = {
                 display: 'flex',
                 flexDirection: 'row',
@@ -3106,17 +3256,20 @@ export const SidebarTaskManagement = ({
                         )}
                         {renamingTaskPath === proj.project_path ? <input autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onBlur={async () => { const trimmed = renameValue.trim(); if (trimmed && trimmed !== proj.name) { await renameTask(proj.project_path, trimmed); refreshTasks(); } setRenamingTaskPath(null); }} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setRenamingTaskPath(null); }} onClick={e => e.stopPropagation()} style={{ width: '100%', fontSize: '0.74rem', fontWeight: 700, color: 'var(--theme-text-primary)', background: 'var(--theme-surface)', border: '1px solid var(--theme-primary)', borderRadius: '4px', padding: '2px 4px', outline: 'none' }} /> : <span className="mc-sidebar-task-title-row"><span style={{ display: 'block', minWidth: 0, flex: 1, fontWeight: 700, fontSize: '0.74rem', color: 'var(--theme-text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>{taskTitleText}</span>{recentTimeLabel && <time className="mc-sidebar-task-time" dateTime={proj.last_activity || proj.created_at}>{recentTimeLabel}</time>}</span>}
                         {secondaryText ? <span data-testid="task-secondary-label" style={{ display: 'block', marginTop: '3px', color: 'var(--theme-text-muted)', fontSize: '0.66rem', lineHeight: 1.3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>{secondaryText}</span> : null}
-                        {localWorkingDir ? (
+                        {workspaceValue ? (
                             <span
                                 data-testid="task-working-dir"
                                 className="mc-task-working-dir"
-                                title={localWorkingDir}
-                                onClick={e => { e.stopPropagation(); OpenProjectDirectory(localWorkingDir).catch(() => {}); }}
+                                title={`${workspaceSectionLabel(lang)} · ${workspaceKindLabel(workspaceKind, lang)}: ${workspaceValue}`}
+                                onClick={workspaceKind === 'local' ? e => { e.stopPropagation(); OpenProjectDirectory(workspaceValue).catch(() => {}); } : undefined}
                                 onDoubleClick={e => e.stopPropagation()}
-                                style={{ display: 'flex', alignItems: 'center', gap: '4px', marginTop: '2px', color: 'var(--theme-text-secondary)', fontSize: '0.66rem', lineHeight: 1.3, whiteSpace: 'nowrap', overflow: 'hidden', textAlign: 'left', cursor: 'pointer' }}
+                                style={{ display: 'flex', alignItems: 'center', gap: '4px', marginTop: '2px', color: 'var(--theme-text-secondary)', fontSize: '0.66rem', lineHeight: 1.3, whiteSpace: 'nowrap', overflow: 'hidden', textAlign: 'left', cursor: workspaceKind === 'local' ? 'pointer' : 'default' }}
                             >
-                                <span style={{ display: 'inline-flex', flexShrink: 0, opacity: 0.8 }}><IconFolder size={11} /></span>
-                                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{truncatePathMiddle(localWorkingDir, 42)}</span>
+                                <WorkspaceTypeBadge kind={workspaceKind} label={workspaceKindLabel(workspaceKind, lang)} style={{ flexShrink: 0 }} />
+                                {workspaceKind === 'local' && (
+                                    <span style={{ display: 'inline-flex', flexShrink: 0, opacity: 0.8 }}><IconFolder size={11} /></span>
+                                )}
+                                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{workspaceValueText}</span>
                             </span>
                         ) : null}
                         {!isRemoving && openingTaskPath !== proj.project_path && createdAtLabel && <span data-testid="task-created-at" style={{ display: 'block', marginTop: '2px', color: 'var(--theme-text-muted)', fontSize: '0.6rem', lineHeight: 1.25, opacity: 0.82, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>{createdAtLabel}</span>}
@@ -3427,7 +3580,93 @@ export const SidebarTaskManagement = ({
                                 </div>
                             )}
                         </div>
-                        {newTaskMode !== 'remote_coding_dev' && !cloudCreateSelected && (
+                        {newTaskMode === '' && !cloudCreateSelected && (
+                            <div data-testid="task-expert-type" style={{ display: 'flex', flexDirection: 'column', gap: '7px', padding: '9px 10px', borderRadius: '8px', border: '1px solid var(--theme-border)', background: 'var(--theme-surface-muted)' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '7px', minWidth: 0 }}>
+                                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', color: 'var(--theme-text-secondary)', fontSize: '0.72rem', whiteSpace: 'nowrap' }}>
+                                        <ProjectSearchIcon name="book" size={14} />
+                                        {textForLang(lang, 'Expert type', '专家类型', '專家類型')}
+                                    </span>
+                                    <button
+                                        type="button"
+                                        data-testid="task-expert-picker-toggle"
+                                        onClick={() => { setExpertPickerOpen(prev => !prev); setExpertFilter(''); }}
+                                        disabled={creatingTask}
+                                        aria-label={textForLang(lang, 'Choose expert type', '选择专家类型', '選擇專家類型')}
+                                        aria-expanded={expertPickerOpen}
+                                        title={createSelectedExpert ? createSelectedExpert.name : textForLang(lang, 'General expert', '通用专家', '通用專家')}
+                                        style={{ maxWidth: '250px', minWidth: 0, display: 'inline-flex', alignItems: 'center', gap: '5px', border: '1px solid color-mix(in srgb, var(--theme-primary) 22%, transparent)', borderRadius: '6px', background: 'color-mix(in srgb, var(--theme-primary) 9%, transparent)', color: 'var(--theme-primary)', cursor: creatingTask ? 'default' : 'pointer', padding: '5px 8px', fontSize: '0.72rem', lineHeight: 1.2, opacity: creatingTask ? 0.58 : 1 }}
+                                    >
+                                        <span aria-hidden="true">{createSelectedExpert ? (createSelectedExpert.icon || DEFAULT_EXPERT_ICON) : DEFAULT_EXPERT_ICON}</span>
+                                        <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                            {createSelectedExpert ? createSelectedExpert.name : textForLang(lang, 'General expert', '通用专家', '通用專家')}
+                                        </span>
+                                        <span aria-hidden="true" style={{ flexShrink: 0 }}>▾</span>
+                                    </button>
+                                </div>
+                                {expertPickerOpen && (
+                                    <div
+                                        data-testid="task-expert-picker"
+                                        style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}
+                                        onKeyDown={e => {
+                                            // Collapse the picker first; the form-level Escape
+                                            // handler would otherwise close the whole dialog.
+                                            if (e.key === 'Escape') {
+                                                e.stopPropagation();
+                                                setExpertPickerOpen(false);
+                                            }
+                                        }}
+                                    >
+                                        <input
+                                            data-testid="task-expert-filter"
+                                            value={expertFilter}
+                                            onChange={e => setExpertFilter(e.target.value)}
+                                            disabled={creatingTask}
+                                            placeholder={textForLang(lang, 'Search experts', '搜索专家', '搜尋專家')}
+                                            autoComplete="off"
+                                            // Focus moves straight into filtering when the picker opens.
+                                            autoFocus
+                                            style={{ width: '100%', boxSizing: 'border-box', fontSize: '0.74rem', color: 'var(--theme-text-primary)', background: 'var(--theme-surface-muted)', border: '1px solid var(--theme-border)', borderRadius: '6px', padding: '5px 8px', outline: 'none' }}
+                                        />
+                                        <div style={{ maxHeight: '180px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                            <button
+                                                type="button"
+                                                data-testid="task-expert-option"
+                                                data-expert-id=""
+                                                onClick={() => { setCreateExpertId(''); setExpertPickerOpen(false); }}
+                                                style={{ textAlign: 'left', border: createExpertId ? '1px solid var(--theme-border)' : '1px solid color-mix(in srgb, var(--theme-primary) 45%, var(--theme-border))', borderRadius: '7px', background: createExpertId ? 'var(--theme-surface)' : 'color-mix(in srgb, var(--theme-primary) 7%, var(--theme-surface))', color: 'var(--theme-text-primary)', cursor: 'pointer', padding: '6px 8px' }}
+                                            >
+                                                <span aria-hidden="true" style={{ marginRight: '5px' }}>{DEFAULT_EXPERT_ICON}</span>
+                                                <span style={{ fontSize: '0.72rem', fontWeight: 700 }}>{textForLang(lang, 'General expert', '通用专家', '通用專家')}</span>
+                                                <span style={{ display: 'block', marginTop: '2px', fontSize: '0.64rem', color: 'var(--theme-text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                    {textForLang(lang, 'No expert; use the general assistant', '不指定专家，使用通用助手', '不指定專家，使用通用助手')}
+                                                </span>
+                                            </button>
+                                            {filteredCreateExperts.map(expert => {
+                                                const selected = createExpertId === expert.id;
+                                                return (
+                                                    <button
+                                                        key={`create-expert-${expert.id}`}
+                                                        type="button"
+                                                        data-testid="task-expert-option"
+                                                        data-expert-id={expert.id}
+                                                        onClick={() => { setCreateExpertId(expert.id); setNewTaskWorkingDir(''); setExpertPickerOpen(false); }}
+                                                        style={{ textAlign: 'left', border: selected ? '1px solid color-mix(in srgb, var(--theme-primary) 45%, var(--theme-border))' : '1px solid var(--theme-border)', borderRadius: '7px', background: selected ? 'color-mix(in srgb, var(--theme-primary) 7%, var(--theme-surface))' : 'var(--theme-surface)', color: 'var(--theme-text-primary)', cursor: 'pointer', padding: '6px 8px' }}
+                                                    >
+                                                        <span aria-hidden="true" style={{ marginRight: '5px' }}>{expert.icon || DEFAULT_EXPERT_ICON}</span>
+                                                        <span style={{ fontSize: '0.72rem', fontWeight: 700 }}>{expert.name}</span>
+                                                        <span style={{ display: 'block', marginTop: '2px', fontSize: '0.64rem', color: 'var(--theme-text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                            {expert.description}
+                                                        </span>
+                                                    </button>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                        {newTaskMode !== 'remote_coding_dev' && !cloudCreateSelected && !(newTaskMode === '' && !!createSelectedExpert) && (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '7px', padding: '9px 10px', borderRadius: '8px', border: '1px solid var(--theme-border)', background: 'var(--theme-surface-muted)' }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '7px', minWidth: 0 }}>
                                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', color: 'var(--theme-text-secondary)', fontSize: '0.72rem', whiteSpace: 'nowrap' }}>

@@ -465,6 +465,13 @@ func (h *IMMessageHandler) handlePendingExecutionConfirmation(msg *IMUserMessage
 		return pendingExecutionConfirmationResult{}
 	}
 
+	// P0-4 credential card: button/internal-command only, free text voids the
+	// card. This runs before any plan-confirmation LLM classification so a
+	// typed "好的" can never approve a credential write.
+	if isCredentialConfirmationCard(pending) {
+		return h.handleCredentialCardAction(msg, trimmed, pending, action, confirmationID, hasConfirmationAction)
+	}
+
 	saveCancelContext := func() {
 		if pending.OriginalText == "" || h.memory == nil {
 			return

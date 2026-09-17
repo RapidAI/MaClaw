@@ -63,28 +63,36 @@ export function localizeAIAssistantError(error: unknown, lang?: string | null): 
     // Normalize both backend wording variants so switching the UI language
     // also works for errors that were already localized by the service.
     const chineseInsufficientCredits = raw.match(
-        /(?:额度不足|額度不足)[：:，,]?\s*(?:需要|需)\s*([\d.,]+)\s*(?:credits?|额度|額度)?[，,]\s*(?:当前可用|目前可用)\s*([\d.,]+)\s*(?:credits?|额度|額度)?/i,
+        /(?:额度不足|額度不足)[：:，,]?\s*(?:需要|需)\s*([\d.,]+)\s*(?:credits?|额度|額度)?[，,]\s*(?:当前可用|目前可用)\s*([\d.,]+)\s*(?:credits?|额度|額度)?(?:\s*[，,]\s*其中\s*([\d.,]+)\s*(?:credits?\s*)?(?:被在途请求冻结|被在途請求凍結))?/i,
     );
     if (chineseInsufficientCredits) {
-        const [, need, available] = chineseInsufficientCredits;
+        const need = chineseInsufficientCredits[1];
+        const available = chineseInsufficientCredits[2];
+        const held = chineseInsufficientCredits[3] ?? '';
+        const heldEn = held ? ` (${held} held by in-flight requests)` : '';
+        const heldZh = held ? `，其中 ${held} Credits 被在途请求冻结` : '';
+        const heldZhHant = held ? `，其中 ${held} Credits 被在途請求凍結` : '';
         return localizeText(
             lang,
-            `LLM call failed: insufficient credits for this request: need ${need} credits, available ${available}`,
-            `LLM 调用失败：本次请求额度不足，需要 ${need} Credits，当前可用 ${available} Credits。`,
-            `LLM 調用失敗：本次請求額度不足，需要 ${need} Credits，目前可用 ${available} Credits。`,
+            `LLM call failed: insufficient credits for this request: need ${need} credits, available ${available}${heldEn}`,
+            `LLM 调用失败：本次请求额度不足，需要 ${need} Credits，当前可用 ${available} Credits${heldZh}。`,
+            `LLM 調用失敗：本次請求額度不足，需要 ${need} Credits，目前可用 ${available} Credits${heldZhHant}。`,
         );
     }
 
     const insufficientCredits = raw.match(
-        /^(?:Error:\s*)?(?:LLM\s+(?:call\s+failed|调用失败|調用失敗))\s*[:：]\s*insufficient\s+credits?(?:\s+for\s+this\s+request)?\s*:\s*need\s+([\d.,]+)\s+credits?\s*,\s*available\s+([\d.,]+)(?:\s+credits?)?\s*[.!]?$/i,
+        /^(?:Error:\s*)?(?:LLM\s+(?:call\s+failed|调用失败|調用失敗))\s*[:：]\s*insufficient\s+credits?(?:\s+for\s+this\s+request)?\s*:\s*need\s+([\d.,]+)\s+credits?\s*,\s*available\s+([\d.,]+)(?:\s+credits?)?(?:\s*\(\s*([\d.,]+)\s+held\s+by\s+in-flight\s+requests\s*\))?\s*[.!]?$/i,
     );
     if (insufficientCredits) {
-        const [, need, available] = insufficientCredits;
+        const [, need, available, held] = insufficientCredits;
+        const heldEn = held ? ` (${held} held by in-flight requests)` : '';
+        const heldZh = held ? `，其中 ${held} Credits 被在途请求冻结` : '';
+        const heldZhHant = held ? `，其中 ${held} Credits 被在途請求凍結` : '';
         return localizeText(
             lang,
-            `LLM call failed: insufficient credits for this request: need ${need} credits, available ${available}`,
-            `LLM 调用失败：本次请求额度不足，需要 ${need} Credits，当前可用 ${available} Credits。`,
-            `LLM 調用失敗：本次請求額度不足，需要 ${need} Credits，目前可用 ${available} Credits。`,
+            `LLM call failed: insufficient credits for this request: need ${need} credits, available ${available}${heldEn}`,
+            `LLM 调用失败：本次请求额度不足，需要 ${need} Credits，当前可用 ${available} Credits${heldZh}。`,
+            `LLM 調用失敗：本次請求額度不足，需要 ${need} Credits，目前可用 ${available} Credits${heldZhHant}。`,
         );
     }
 
@@ -165,6 +173,10 @@ export function localizeAIAssistantError(error: unknown, lang?: string | null): 
 
     return raw;
 }
+
+// Implementation moved to ./aiAssistantErrorDescription to keep this module
+// under its file-size budget; re-exported so existing imports keep working.
+export { describeAIAssistantError, type AIAssistantErrorDescription } from "./aiAssistantErrorDescription";
 
 function localizeHubRetry(value: string, lang?: string | null): string {
     const raw = String(value || "").trim();

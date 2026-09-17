@@ -212,7 +212,8 @@ describe("usePendingAssistantTabOpen expert welcome seed", () => {
     });
 
     function renderExpertOpen(lang = "zh-Hans") {
-        return renderHook(() => {
+        const sendExpertMessage = vi.fn();
+        const hook = renderHook(() => {
             const manager = useAITabManager();
             const [pending, setPending] = useState<PendingExpertOpen | null>(null);
             usePendingAssistantTabOpen({
@@ -227,9 +228,11 @@ describe("usePendingAssistantTabOpen expert welcome seed", () => {
                 getTabList: manager.getTabs,
                 pendingExpertOpen: pending,
                 onPendingExpertOpenHandled: () => setPending(null),
+                sendExpertMessage,
             });
             return { manager, setPending };
         });
+        return { ...hook, sendExpertMessage };
     }
 
     it("seeds exactly one local welcome message on first open (no duplicate on re-open)", () => {
@@ -275,6 +278,62 @@ describe("usePendingAssistantTabOpen expert welcome seed", () => {
         const state = result.current.manager.getTabState(tabId);
         expect(state?.history?.length).toBe(1);
         expect((state!.history as any[])[0].content).toBe("Hi, I'm PPT 制作. How can I help you?");
+    });
+
+    // Wizard handoff (new-task wizard → expert branch): the first message is
+    // sent through the freshly opened expert tab via sendExpertMessage, on
+    // BOTH sub-paths — tab created now and tab that already existed.
+    it("wizard handoff sends the initial message through a newly created expert tab", () => {
+        const { result, sendExpertMessage } = renderExpertOpen();
+        act(() => {
+            result.current.setPending({ expert: expertA, initialMessage: "帮我润色摘要" });
+        });
+        const tabId = expertTabId(expertA.id);
+        expect(result.current.manager.tabState.activeTabId).toBe(tabId);
+        // The local welcome seed still happens; the message itself travels the
+        // expert chat channel, not the local history.
+        expect(result.current.manager.getTabState(tabId)?.history?.length).toBe(1);
+        expect(sendExpertMessage).toHaveBeenCalledTimes(1);
+        expect(sendExpertMessage).toHaveBeenCalledWith("帮我润色摘要", "exp-paper-polish");
+    });
+
+    it("wizard handoff still sends the initial message when the expert tab already exists", () => {
+        const { result, sendExpertMessage } = renderExpertOpen();
+        act(() => {
+            result.current.setPending({ expert: expertA });
+        });
+        const tabId = expertTabId(expertA.id);
+        // Simulate an existing conversation so re-open must not re-seed.
+        act(() => {
+            result.current.manager.saveTabState(tabId, {
+                history: [
+                    ...(result.current.manager.getTabState(tabId)!.history as any[]),
+                    { id: "u1", role: "user", content: "hi", timestamp: 2 },
+                ],
+            });
+        });
+        act(() => {
+            result.current.manager.activateTab("local");
+        });
+        act(() => {
+            result.current.setPending({ expert: expertA, initialMessage: "第二段也润色一下" });
+        });
+        expect(result.current.manager.tabState.activeTabId).toBe(tabId);
+        expect(sendExpertMessage).toHaveBeenCalledTimes(1);
+        expect(sendExpertMessage).toHaveBeenCalledWith("第二段也润色一下", "exp-paper-polish");
+        // No re-seed: history keeps exactly the welcome + the prior user turn.
+        expect(result.current.manager.getTabState(tabId)?.history?.length).toBe(2);
+    });
+
+    it("expert open without an initial message never calls sendExpertMessage", () => {
+        const { result, sendExpertMessage } = renderExpertOpen();
+        act(() => {
+            result.current.setPending({ expert: expertA });
+        });
+        act(() => {
+            result.current.setPending({ expert: expertA });
+        });
+        expect(sendExpertMessage).not.toHaveBeenCalled();
     });
 });
 

@@ -325,5 +325,9 @@ type MessageContext struct {
 type LLMClassifyFunc func(systemPrompt, userText string) (string, error)
 
 // LLMClassifyContextFunc lets latency-sensitive callers cancel the underlying
-// LLM transport when a classification deadline has expired.
-type LLMClassifyContextFunc func(ctx context.Context, systemPrompt, userText string) (string, error)
+// LLM transport when a classification deadline has expired. ctx carries the
+// classification budget and may be cancelled at the scheduling deadline;
+// parentCtx is the caller's (turn/user) context, which outlives that budget.
+// A detached slow-response read MUST derive from parentCtx, not ctx, so that
+// a user cancellation still aborts the in-flight read after the budget fired.
+type LLMClassifyContextFunc func(ctx context.Context, parentCtx context.Context, systemPrompt, userText string) (string, error)

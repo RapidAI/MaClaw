@@ -274,10 +274,13 @@ func ResolveStatusFromRegistryForUser(ctx context.Context, reg *Registry, securi
 	if len(grants) > 0 {
 		status.ActiveGrants = make([]ActiveGrant, 0, len(grants))
 		var nearest *time.Time
+		activeHeldByGroup := reservedBillingCreditsByGroup(reg, owner, now)
 		for _, g := range grants {
 			g = effectiveGrantForRegistry(reg, g)
 			creditsAvailable += availableGrantCredits(g, now)
-			status.ActiveGrants = append(status.ActiveGrants, grantSummary(g, now))
+			summary := grantSummary(g, now)
+			summary.HeldCredits = activeHeldByGroup[strings.ToLower(strings.TrimSpace(summary.ServiceGroupID))]
+			status.ActiveGrants = append(status.ActiveGrants, summary)
 			// Permanent grants use a far-future storage sentinel. It is not a
 			// customer-visible expiry date, so do not surface year 9999 through
 			// nearest_expires_at.
@@ -431,6 +434,16 @@ func creditGrantSummariesForOwner(reg *Registry, owner userAccountRef, now time.
 	}
 	if len(items) == 0 && latestExpired != nil {
 		items = append(items, grantSummary(*latestExpired, now))
+	}
+	if len(items) > 0 {
+		// Attribute the group's in-flight reservation holds to each visible grant
+		// so status consumers can render "frozen" credit alongside period windows.
+		// The value is group-scoped, not grant-scoped; consumers merging several
+		// grants of one group must take the maximum, not the sum.
+		heldByGroup := reservedBillingCreditsByGroup(reg, owner, now)
+		for i := range items {
+			items[i].HeldCredits = heldByGroup[strings.ToLower(strings.TrimSpace(items[i].ServiceGroupID))]
+		}
 	}
 	sort.Slice(items, func(i, j int) bool {
 		if rankI, rankJ := grantSummarySortRank(items[i]), grantSummarySortRank(items[j]); rankI != rankJ {
@@ -2698,6 +2711,25 @@ func BillingLedgerEntryForRequest(reg *Registry, requestID string) (BillingLedge
 	return BillingLedgerEntry{}, false
 }
 
+// BillingLedgerRegistryKeep bounds how many settlement entries are retained
+// inside the service registry JSON. The registry is hot-loaded on every
+// service-account poll, so an unbounded append-only ledger (tens of MB in
+// production) dominated hub CPU. Durable settlement facts live in the
+// dedicated llm_billing_ledger SQLite table; the registry-embedded copy only
+// backs the request-replay idempotency check and the transient mirror-repair
+// lookup, both of which only need recent entries.
+const BillingLedgerRegistryKeep = 2000
+
+// TrimBillingLedgerForRegistry drops the oldest registry-embedded ledger
+// entries beyond BillingLedgerRegistryKeep, preserving the newest entries.
+// Callers persist the registry afterwards when they save it for any reason.
+func TrimBillingLedgerForRegistry(reg *Registry) {
+	if reg == nil || len(reg.BillingLedger) <= BillingLedgerRegistryKeep {
+		return
+	}
+	reg.BillingLedger = append([]BillingLedgerEntry(nil), reg.BillingLedger[len(reg.BillingLedger)-BillingLedgerRegistryKeep:]...)
+}
+
 func AppendBillingLedgerEntry(reg *Registry, entry BillingLedgerEntry) {
 	if reg == nil || strings.TrimSpace(entry.RequestID) == "" || HasBillingRequest(reg, entry.RequestID) {
 		return
@@ -2719,6 +2751,7 @@ func AppendBillingLedgerEntry(reg *Registry, entry BillingLedgerEntry) {
 		entry.DeductedMicrocredits = int64(math.Round(entry.DeductedCredits * float64(llmpool.MicrocreditsPerCredit)))
 	}
 	reg.BillingLedger = append(reg.BillingLedger, entry)
+	TrimBillingLedgerForRegistry(reg)
 }
 
 func applyCreditUsageToRegistry(reg *Registry, owner userAccountRef, serviceGroupIDs []string, credits float64, now time.Time) float64 {
@@ -2872,6 +2905,15 @@ func AvailableCreditsForServiceGroupsForUserID(reg *Registry, userID, email stri
 	return availableCreditsForServiceGroups(reg, newUserAccountRef(userID, email), serviceGroupIDs, now)
 }
 
+// HeldBillingCreditsForServiceGroupsForUserID reports how many of the owner's
+// credits are currently held by in-flight billing reservations on the given
+// service groups. Admission subtracts these holds from the spendable balance;
+// callers surface the same number so a denial or status readout can explain
+// why the available amount is lower than the raw period window remaining.
+func HeldBillingCreditsForServiceGroupsForUserID(reg *Registry, userID, email string, serviceGroupIDs []string, now time.Time) float64 {
+	return reservedBillingCreditsForServiceGroups(reg, newUserAccountRef(userID, email), serviceGroupIDs, now)
+}
+
 // ReserveBillingCreditsForUserID records a short-lived admission hold without
 // prematurely adding usage to a grant. This makes concurrent preflight checks
 // see each other's maximum possible cost while preserving the existing rule
@@ -2939,6 +2981,26 @@ func ReleaseBillingReservation(reg *Registry, requestID string, now time.Time) b
 	}
 	reg.BillingReservations = out
 	return removed
+}
+
+// MarkBillingReservationUsageUnresolved releases a sent hold while retaining
+// the row as terminal audit evidence, mirroring the local lost-response path:
+// the hold stops counting against the balance (see reservationHoldReleased)
+// and a later prune pass drops the row after the evidence retention window.
+// It returns false when no live (unsettled, non-terminal) row matches.
+func MarkBillingReservationUsageUnresolved(reg *Registry, requestID string, now time.Time) bool {
+	if reg == nil || strings.TrimSpace(requestID) == "" {
+		return false
+	}
+	pruneExpiredBillingReservations(reg, now)
+	for i := range reg.BillingReservations {
+		if reg.BillingReservations[i].Status != "" || !strings.EqualFold(strings.TrimSpace(reg.BillingReservations[i].RequestID), strings.TrimSpace(requestID)) {
+			continue
+		}
+		reg.BillingReservations[i].Status = BillingReservationUsageUnresolved
+		return true
+	}
+	return false
 }
 
 // MarkBillingReservationSent records the point at which the request may have
@@ -3102,6 +3164,32 @@ func reservedBillingCreditsForServiceGroups(reg *Registry, owner userAccountRef,
 		}
 	}
 	return roundCredits(total)
+}
+
+// reservedBillingCreditsByGroup attributes every live hold of the owner to each
+// of its service groups in one reservation pass. A hold spanning several
+// groups counts toward each of them, matching what per-group admission checks
+// would subtract for that group.
+func reservedBillingCreditsByGroup(reg *Registry, owner userAccountRef, now time.Time) map[string]float64 {
+	out := map[string]float64{}
+	if reg == nil || owner.empty() {
+		return out
+	}
+	for _, reservation := range reg.BillingReservations {
+		if (reservation.SentAt.IsZero() && (reservation.ExpiresAt.IsZero() || !reservation.ExpiresAt.After(now))) || reservationHoldReleased(reservation, now) || !sameReservationOwner(reservation, owner) {
+			continue
+		}
+		for _, id := range reservation.ServiceGroupIDs {
+			key := strings.ToLower(strings.TrimSpace(id))
+			if key != "" {
+				out[key] += reservation.Credits
+			}
+		}
+	}
+	for key, total := range out {
+		out[key] = roundCredits(total)
+	}
+	return out
 }
 
 func sameReservationOwner(reservation BillingReservation, owner userAccountRef) bool {

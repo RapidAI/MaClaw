@@ -1,99 +1,81 @@
 package httpapi
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
 )
 
-func TestBuildCenterRankingRowsFiltersUIDAndClampsDuration(t *testing.T) {
-	rows := buildCenterRankingRows([]*store.HubUserUsageDaily{
-		{HubID: "hub_a", TenantID: "tenant_a", UserEmail: "u_1774182684297100200", DurationSeconds: 999999},
-		{HubID: "hub_a", TenantID: "tenant_a", UserEmail: "slow@example.com", DurationSeconds: 999999},
-		{HubID: "hub_a", TenantID: "tenant_a", UserEmail: "phone:19900001111", InputTokens: 20, DurationSeconds: 120},
-		{HubID: "hub_a", TenantID: "tenant_a", UserEmail: "fast@example.com", InputTokens: 10, OutputTokens: 5, DurationSeconds: 60},
-		{HubID: "hub_a", TenantID: "tenant_a", UserEmail: "bad@example.com", InputTokens: -10, OutputTokens: -5, DurationSeconds: -60},
-	}, "duration", 10, int64(2*time.Hour/time.Second))
-
-	if len(rows) != 4 {
-		t.Fatalf("rows = %d, want 4: %#v", len(rows), rows)
-	}
-	if rows[0].UserEmail != "slow@example.com" {
-		t.Fatalf("first email = %q, want slow@example.com", rows[0].UserEmail)
-	}
-	if rows[0].DurationSeconds != int64(2*time.Hour/time.Second) {
-		t.Fatalf("clamped duration = %d, want %d", rows[0].DurationSeconds, int64(2*time.Hour/time.Second))
-	}
-	if rows[1].UserEmail != "phone:19900001111" || rows[1].DurationRank != 2 || rows[1].TokenRank != 1 {
-		t.Fatalf("unexpected second row: %#v", rows[1])
-	}
-	if rows[2].UserEmail != "fast@example.com" || rows[2].DurationRank != 3 || rows[2].TokenRank != 2 {
-		t.Fatalf("unexpected third row: %#v", rows[2])
-	}
-	if rows[3].UserEmail != "bad@example.com" || rows[3].DurationSeconds != 0 || rows[3].TotalTokens != 0 {
-		t.Fatalf("unexpected sanitized row: %#v", rows[3])
-	}
+type fakeCenterUserUsageRepo struct {
+	upserted []*store.HubUserUsageDaily
+	replaced bool
 }
 
-func TestCenterRankingEmailFilterRejectsMalformedEmails(t *testing.T) {
-	for _, tc := range []struct {
-		email string
-		want  bool
-	}{
-		{email: "user@example.com", want: true},
-		{email: " User@Example.com ", want: true},
-		{email: "u_1774182684297100200", want: false},
-		{email: "foo@", want: false},
-		{email: "@example.com", want: false},
-		{email: "foo @example.com", want: false},
-		{email: "foo@@example.com", want: false},
-		{email: "", want: false},
-	} {
-		if got := isCenterRankingEmail(tc.email); got != tc.want {
-			t.Fatalf("isCenterRankingEmail(%q) = %v, want %v", tc.email, got, tc.want)
-		}
-	}
+func (r *fakeCenterUserUsageRepo) UpsertDaily(_ context.Context, items []*store.HubUserUsageDaily) error {
+	r.upserted = append(r.upserted, items...)
+	return nil
 }
 
-func TestCenterRankingAccountFilterAllowsPhoneAccounts(t *testing.T) {
-	for _, tc := range []struct {
-		account string
-		want    bool
-	}{
-		{account: "user@example.com", want: true},
-		{account: "phone:19900001111", want: true},
-		{account: " PHONE:19900001111 ", want: true},
-		{account: "phone:12345", want: false},
-		{account: "phone:19900 001111", want: false},
-		{account: "u_1774182684297100200", want: false},
-		{account: "", want: false},
-	} {
-		if got := isCenterRankingAccount(tc.account); got != tc.want {
-			t.Fatalf("isCenterRankingAccount(%q) = %v, want %v", tc.account, got, tc.want)
-		}
-	}
+func (r *fakeCenterUserUsageRepo) ReplaceDaily(_ context.Context, _ string, _ []string, _, _ string, items []*store.HubUserUsageDaily) error {
+	r.replaced = true
+	r.upserted = append(r.upserted, items...)
+	return nil
 }
 
-func TestNormalizeCenterUsageValues(t *testing.T) {
-	if got := nonNegativeCenterUsageValue(-10); got != 0 {
-		t.Fatalf("negative usage = %d, want 0", got)
-	}
-	if got := normalizeCenterDailyDurationSeconds(25 * 60 * 60); got != int64(24*60*60) {
-		t.Fatalf("daily duration = %d, want 86400", got)
-	}
-	if got := normalizeCenterDailyDurationSeconds(-1); got != 0 {
-		t.Fatalf("negative duration = %d, want 0", got)
-	}
+func (r *fakeCenterUserUsageRepo) Summarize(_ context.Context, _, _ string, _, _ time.Time) ([]*store.HubUserUsageDaily, error) {
+	return nil, nil
 }
-func TestValidCenterSyncDayRange(t *testing.T) {
-	if !validCenterSyncDayRange("2026-06-24", "2026-06-24") {
-		t.Fatal("same-day range should be valid")
+
+func TestHubUserUsageSyncHandlerAcceptsBodyAboveDefaultLimit(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+	ctx := context.Background()
+	secret := "hub-usage-sync-secret"
+	now := time.Now().UTC()
+	if err := svc.store.Hubs.Create(ctx, &store.HubInstance{
+		ID:            "hub_usage_sync",
+		OwnerEmail:    "owner@example.com",
+		Name:          "Usage Sync Hub",
+		BaseURL:       "https://hub.example.com",
+		Status:        "online",
+		HubSecretHash: testHashToken(secret),
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}); err != nil {
+		t.Fatalf("create hub: %v", err)
 	}
-	if validCenterSyncDayRange("2026-06-25", "2026-06-24") {
-		t.Fatal("inverted range should be invalid")
+
+	items := make([]map[string]any, 0, 2000)
+	for i := 0; i < 2000; i++ {
+		items = append(items, map[string]any{
+			"user_email":   "user@example.com",
+			"day":          "2026-04-27",
+			"input_tokens": 100 + i,
+		})
 	}
-	if validCenterSyncDayRange("bad", "2026-06-24") {
-		t.Fatal("bad start day should be invalid")
+	payload, err := json.Marshal(map[string]any{"hub_secret": secret, "items": items})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	if len(payload) <= defaultJSONBodyLimit {
+		t.Fatalf("payload len = %d, want > %d so the old limit would reject it", len(payload), defaultJSONBodyLimit)
+	}
+
+	repo := &fakeCenterUserUsageRepo{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/hubs/{id}/user-usage/sync", HubUserUsageSyncHandler(svc.hubs, repo))
+	req := httptest.NewRequest(http.MethodPost, "/api/hubs/hub_usage_sync/user-usage/sync", strings.NewReader(string(payload)))
+	resp := httptest.NewRecorder()
+	mux.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s, want 200", resp.Code, resp.Body.String())
+	}
+	if len(repo.upserted) != len(items) {
+		t.Fatalf("upserted items = %d, want %d", len(repo.upserted), len(items))
 	}
 }

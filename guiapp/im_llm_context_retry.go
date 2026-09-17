@@ -33,7 +33,7 @@ func (h *IMMessageHandler) retryLLMRequestAfterContextWindowExceeded(
 
 	attempt := func() (done bool) {
 		retryMetrics := &llmStreamMetrics{}
-		resp, retryErr := h.doLLMRequestStream(reqCtx, cfg, conversation, tools, httpClient, onToken, retryMetrics)
+		resp, retryErr := h.doLLMRequestStream(reqCtx, cfg, llmEndpointCategoryMainStream, conversation, tools, httpClient, onToken, retryMetrics)
 		result.Response = resp
 		result.Err = retryErr
 		result.Conversation = conversation

@@ -360,6 +360,9 @@ export function CreateTaskWithMode(arg1:string,arg2:string,arg3:string):Promise<
 
 export function CreateTaskWithCloudWorkspace(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.ProjectSearchResult>;
 
+// MANUAL SYNC (wails generate module unavailable on this machine): mirrors guiapp/app_task_create.go.
+export function CreateTaskUnified(arg1:main.TaskCreateOptions):Promise<main.UnifiedTaskCreateResult>;
+
 export function ProvisionCloudWorkspaceTask(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.CloudWorkspaceTaskProvision>;
 
 export function CloudWorkspaceTaskProvisionStatus(arg1:string):Promise<main.CloudWorkspaceTaskProvision>;
@@ -1612,6 +1615,9 @@ export function ListSurveys(arg1:string):Promise<string>;
 export function ListSwarmRuns():Promise<Array<swarm.SwarmRunSummary>>;
 
 export function ListTasks(arg1:number):Promise<Array<main.ProjectSearchResult>>;
+
+// MANUAL SYNC (wails generate module unavailable on this machine): mirrors guiapp/app_task_create.go.
+export function ListWorkflowTemplateSummaries():Promise<Array<main.WorkflowTemplateSummary>>;
 
 export function ListTemplates():Promise<Array<remote.SessionTemplate>>;
 

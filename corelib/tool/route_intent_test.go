@@ -98,6 +98,9 @@ func TestRouteWithOptions_UsesRewrittenQuery(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		tools = append(tools, makeToolDef(fmt.Sprintf("noise_%d", i), "qqqzzz nonmatching gibberish"))
 	}
+	provisionRouterFixtureTools(t,
+		append([]string{"session_search", "deck_maker", "slide_viewer"},
+			numberedFixtureNames("noise_", 10)...)...)
 
 	// Original message is useless for retrieval; rewrite points at deck_maker.
 	intent := &RouteIntent{

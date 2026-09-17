@@ -26,7 +26,11 @@ type LLMBinding = store.LLMNodeBinding
 type LLMBindingRepository = store.LLMNodeBindingRepository
 
 func bindingExpired(b *LLMBinding, now time.Time) bool {
-	return b == nil || now.After(b.ExpiresAt)
+	// A lease is valid only while ExpiresAt is strictly in the future. A
+	// tombstone carries ExpiresAt=now and must read as expired immediately,
+	// even on hosts whose coarse clock has not advanced past the tombstone
+	// timestamp yet.
+	return b == nil || !b.ExpiresAt.After(now)
 }
 
 func bindingKey(b *LLMBinding) string {
@@ -131,8 +135,18 @@ func (m *LLMBindingManager) TryBind(ctx context.Context, hubID, tenantID string)
 	m.remoteMu.RLock()
 	remote := cloneBinding(m.remoteBindings[key])
 	m.remoteMu.RUnlock()
-	if remote != nil && !bindingExpired(remote, now) && remote.NodeID != m.nodeID {
-		return false, remote, nil
+	if remote != nil {
+		if !bindingExpired(remote, now) && remote.NodeID != m.nodeID {
+			return false, remote, nil
+		}
+		if bindingExpired(remote, now) {
+			// Treat a wall-clock-expired cached lease as a miss and evict it
+			// so a laggard tombstone (replication delay or HA outage) cannot
+			// keep redirecting tenants to a dead owner for the whole TTL.
+			m.remoteMu.Lock()
+			delete(m.remoteBindings, key)
+			m.remoteMu.Unlock()
+		}
 	}
 
 	persisted, err := m.repo.Get(ctx, hubID, tenantID)
@@ -181,7 +195,14 @@ func (m *LLMBindingManager) RenewBinding(ctx context.Context, hubID, tenantID st
 	key := hubID + "\x00" + tenantID
 	now := time.Now().UTC()
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	if b := m.bindings[key]; b != nil && b.NodeID == m.nodeID {
+		if bindingExpired(b, now) {
+			// An expired cached lease must not be revived by a renewal; drop
+			// it so the next TryBind competes for a fresh binding.
+			delete(m.bindings, key)
+			return
+		}
 		renewed := cloneBinding(b)
 		renewed.LastActive = now
 		renewed.ExpiresAt = now.Add(BindingLeaseTTL)
@@ -190,7 +211,93 @@ func (m *LLMBindingManager) RenewBinding(ctx context.Context, hubID, tenantID st
 			m.sync(ctx, renewed)
 		}
 	}
+}
+
+// ReleaseBindingsForHubNode tombstones every lease this hub holds on the
+// given node so its tenants can rebind immediately instead of waiting out
+// the TTL. A tombstone loses to any newer LastActive, so an owner that is
+// actually alive simply renews over it through normal replication.
+func (m *LLMBindingManager) ReleaseBindingsForHubNode(ctx context.Context, hubID, nodeID string, now time.Time) (int, error) {
+	if m == nil || m.repo == nil {
+		return 0, fmt.Errorf("binding repository is not configured")
+	}
+	bindings, err := m.repo.ListByNode(ctx, nodeID)
+	if err != nil {
+		return 0, fmt.Errorf("list bindings for node: %w", err)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	released := 0
+	for _, b := range bindings {
+		if b == nil || b.HubID != hubID {
+			continue
+		}
+		// Already-expired rows (a previous tombstone, or a lease that lapsed
+		// naturally before cleanup ran) need no tombstone: tenants can already
+		// rebind. Skipping them also keeps repeated release calls idempotent
+		// instead of forcing a fresh HA op per retry.
+		if bindingExpired(b, now) {
+			continue
+		}
+		// The list is a snapshot taken before m.mu was acquired. A concurrent
+		// TryBind may have rebound this tenant elsewhere or renewed the lease
+		// after the snapshot; re-read the durable record and skip when it no
+		// longer matches the target node or is a strictly newer lease, so
+		// release never clobbers a live or moved binding.
+		current, err := m.repo.Get(ctx, b.HubID, b.TenantID)
+		if err != nil {
+			return released, fmt.Errorf("check binding: %w", err)
+		}
+		if current == nil || current.NodeID != nodeID || bindingExpired(current, now) ||
+			current.LastActive.After(b.LastActive) || current.ExpiresAt.After(b.ExpiresAt) {
+			continue
+		}
+		key := bindingKey(b)
+		tombstone := cloneBinding(current)
+		tombstone.LastActive = now
+		tombstone.ExpiresAt = now
+		if err := m.repo.Upsert(ctx, tombstone); err != nil {
+			return released, fmt.Errorf("release binding: %w", err)
+		}
+		// m.sync throttles per key; a tombstone must replicate even when it
+		// lands right after the lease it replaces.
+		m.syncMu.Lock()
+		delete(m.lastSynced, key)
+		m.syncMu.Unlock()
+		m.sync(ctx, tombstone)
+		delete(m.bindings, key)
+		released++
+	}
+	// Evict cached foreign leases for this hub on the released node even when
+	// the repo loop above found nothing (e.g. the records were already
+	// cleaned up), so a stale cache entry cannot keep redirecting tenants to
+	// a dead owner.
+	m.remoteMu.Lock()
+	for key, b := range m.remoteBindings {
+		if b.HubID == hubID && b.NodeID == nodeID {
+			delete(m.remoteBindings, key)
+		}
+	}
+	m.remoteMu.Unlock()
+	return released, nil
+}
+
+// InvalidateCachedBinding evicts in-memory binding state for a (hub, tenant)
+// key. HA replication calls it after applying a binding op written by another
+// node, so a replicated tombstone takes effect immediately instead of after
+// the cached lease's wall-clock expiry. The next TryBind re-reads the durable
+// record and rebuilds whatever cache state is still valid.
+func (m *LLMBindingManager) InvalidateCachedBinding(hubID, tenantID string) {
+	if m == nil {
+		return
+	}
+	key := hubID + "\x00" + tenantID
+	m.mu.Lock()
+	delete(m.bindings, key)
 	m.mu.Unlock()
+	m.remoteMu.Lock()
+	delete(m.remoteBindings, key)
+	m.remoteMu.Unlock()
 }
 
 // GetLocalBindings returns all bindings owned by this node.

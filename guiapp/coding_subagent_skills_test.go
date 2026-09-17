@@ -725,16 +725,22 @@ func TestCodingSubAgentAllowedSkillActions(t *testing.T) {
 }
 
 func TestExecuteManageSkill_CaseInsensitiveToolName(t *testing.T) {
-	// LLM might output "Manage_Skill" or "MANAGE_SKILL" — should still route correctly.
-	// Simulate what executeToolWithOutcome does: canonicalize then check dynamic tools.
-	canonical := canonicalCodingSubAgentToolName("Manage_Skill")
-	if canonical != "manage_skill" {
-		t.Errorf("expected canonical name 'manage_skill', got %q", canonical)
+	// manage_skill was removed from the coding SubAgent surface: case variants
+	// must NOT canonicalize to a routable name anymore, and the model callback
+	// path must reject them before any skill machinery runs.
+	if canonical := canonicalCodingSubAgentToolName("Manage_Skill"); canonical == "manage_skill" {
+		t.Errorf("manage_skill is no longer exposed; Manage_Skill must not canonicalize to it")
 	}
-
-	canonical2 := canonicalCodingSubAgentToolName("MANAGE_SKILL")
-	if canonical2 != "manage_skill" {
-		t.Errorf("expected canonical name 'manage_skill', got %q", canonical2)
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: t.TempDir()}}
+	for _, name := range []string{"Manage_Skill", "MANAGE_SKILL"} {
+		result := cb.executeToolWithOutcome(name, `{"action":"status","name":"ui"}`)
+		if result.Outcome != codingToolOutcomeFailed || !strings.Contains(result.Text, "unknown tool") {
+			t.Errorf("%s should be rejected as unknown tool, got outcome=%q text=%q", name, result.Outcome, result.Text)
+		}
+	}
+	// Case-insensitive canonicalization still works for exposed tools.
+	if canonical := canonicalCodingSubAgentToolName("Grep_Search"); canonical != "ripgrep" {
+		t.Errorf("expected canonical name 'ripgrep' for Grep_Search, got %q", canonical)
 	}
 }
 

@@ -202,6 +202,7 @@ func (a *App) installManagedIndustryExpert(item managedIndustryExpertRecord, acq
 	}
 	managedIndustryInstallFailures.Delete(installKey)
 	invalidateExpertDefCache(result.Expert.ID)
+	a.emitEvent(EventExpertsChanged)
 }
 
 // reconcileManagedIndustryExpertBeforeSave closes the long installation window:
@@ -282,5 +283,6 @@ func (a *App) PurchaseAndInstallManagedIndustryExpert(assetID, listingID string)
 	}
 	managedIndustryInstallFailures.Delete(managedIndustryInstallKey(scope, assetID))
 	invalidateExpertDefCache(result.Expert.ID)
+	a.emitEvent(EventExpertsChanged)
 	return nil
 }

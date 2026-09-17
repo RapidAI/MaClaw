@@ -353,6 +353,7 @@ func TestToolRunSkill_ForwardsModeToWhenCondition(t *testing.T) {
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
+	pinTestLLMProviderForSkillTest(t, app)
 	app.skillExecutor = NewSkillExecutor(app, nil, nil)
 	app.skillRunner = NewSkillRunner(app.skillExecutor)
 	h := &IMMessageHandler{app: app}
@@ -386,6 +387,7 @@ func TestToolRunSkill_ForwardsQueryToWhenCondition(t *testing.T) {
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
+	pinTestLLMProviderForSkillTest(t, app)
 	app.skillExecutor = NewSkillExecutor(app, nil, nil)
 	app.skillRunner = NewSkillRunner(app.skillExecutor)
 	h := &IMMessageHandler{app: app}
@@ -480,6 +482,7 @@ func TestToolRunSkill_ExternalPrivatePipelineStackDoesNotTripRecursion(t *testin
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
+	pinTestLLMProviderForSkillTest(t, app)
 	app.skillExecutor = NewSkillExecutor(app, nil, nil)
 	app.skillRunner = NewSkillRunner(app.skillExecutor)
 	h := &IMMessageHandler{app: app}
@@ -543,6 +546,8 @@ func TestToolRunSkill_ReportsRunMeta(t *testing.T) {
 	if err := app.SaveConfig(cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
+
+	pinTestLLMProviderForSkillTest(t, app)
 
 	app.skillExecutor = NewSkillExecutor(app, nil, nil)
 	app.skillRunner = NewSkillRunner(app.skillExecutor)

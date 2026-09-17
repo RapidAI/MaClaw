@@ -142,8 +142,14 @@ func TestPrepareCodingDynamicSemanticPlanForVerifiedCodingTaskRejectsPartialPoli
 	if err != nil {
 		t.Fatalf("prepare policy plan: %v", err)
 	}
-	if len(prepared.Plan.Selections) != 12 || len(prepared.Plan.Unmet) != 18 {
-		t.Fatalf("partial policy plan must remain explicit: selections=%d unmet=%#v", len(prepared.Plan.Selections), prepared.Plan.Unmet)
+	// The reviewed rule expands to 30 needs (12 read + 8 write + 4 VCS +
+	// 6 build/verify). Only fs.read.local is servable here, so its 12
+	// siblings are selected. Each unserved family contributes exactly one
+	// required (base) need to Unmet; its optional repeat siblings are
+	// recorded in Omitted, not Unmet — that distinction is pinned by
+	// corelib/tool/semantic_planner_optional_test.go.
+	if len(prepared.Plan.Selections) != 12 || len(prepared.Plan.Unmet) != 3 || len(prepared.Plan.Omitted) != 15 {
+		t.Fatalf("partial policy plan must remain explicit: selections=%d unmet=%#v omitted=%#v", len(prepared.Plan.Selections), prepared.Plan.Unmet, prepared.Plan.Omitted)
 	}
 	for _, selection := range prepared.Plan.Selections {
 		if selection.Provider.ProviderID != "trusted-server" || selection.Provider.ImplementationID != "read_workspace" || selection.FitProof.MatchedCapability != tool.CapabilityFSReadLocal {

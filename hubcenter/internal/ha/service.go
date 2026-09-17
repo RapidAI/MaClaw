@@ -53,6 +53,19 @@ const (
 
 	maxPendingPushOpsPerPeer = 4000
 	haOpsFallbackPageSize    = 1000
+
+	// maxPendingPushBytesPerPeer caps the *retained bytes* of the per-peer push
+	// queue. The op-count cap above is not enough on its own: a single
+	// system_setting snapshot (llm_official_class_head_v1 keeps its training
+	// samples in one setting) can be ~1MB, so 4000 queued ops is up to ~4GB of
+	// resident memory per peer and OOM-killed hc-3 (15.5GB RSS) on 2026-09-16.
+	// Two signed-body budgets (64MB each) leave room for a full batch plus the
+	// next one already queued.
+	maxPendingPushBytesPerPeer = 2 * haMaxPushBodyBudget
+
+	// pendingPushOpFramingBytes approximates the per-op JSON overhead that
+	// json.Marshal adds around the payload (keys, quotes, escaping, separators).
+	pendingPushOpFramingBytes = 256
 )
 
 var (
@@ -125,6 +138,12 @@ type Service struct {
 	snapshotHashes map[string]string
 	refresher      interface{ Rebuild(context.Context) error }
 	recorder       *diagnostics.FailureEventRecorder
+
+	// bindingInvalidate evicts the local binding manager's cached state for a
+	// (hub, tenant) key after a replicated binding op is applied, so a
+	// tombstone written by another node's release is visible to TryBind
+	// immediately instead of after the cached lease wall-clock expires.
+	bindingInvalidate func(hubID, tenantID string)
 }
 
 func (s *Service) SetFailureEventRecorder(recorder *diagnostics.FailureEventRecorder) {
@@ -387,6 +406,15 @@ func (s *Service) AttachLLMBindings(repo store.LLMNodeBindingRepository) {
 		return
 	}
 	s.llmBindings = repo
+}
+
+// SetBindingInvalidator registers a callback that evicts the local binding
+// manager's cached state for a key whenever a replicated binding op lands.
+func (s *Service) SetBindingInvalidator(fn func(hubID, tenantID string)) {
+	if s == nil {
+		return
+	}
+	s.bindingInvalidate = fn
 }
 
 func (s *Service) SetRouteSnapshotRefresher(refresher interface{ Rebuild(context.Context) error }) {
@@ -1474,10 +1502,9 @@ func (s *Service) enqueuePushOp(peer *PeerRuntimeState, op *store.HASyncOp) {
 	if !s.replacePendingPushOpLocked(nodeID, op) {
 		s.pushPending[nodeID] = append(s.pushPending[nodeID], op)
 	}
-	deferred := false
-	if len(s.pushPending[nodeID]) > maxPendingPushOpsPerPeer {
-		s.pushPending[nodeID] = append([]*store.HASyncOp(nil), s.pushPending[nodeID][len(s.pushPending[nodeID])-maxPendingPushOpsPerPeer:]...)
-		deferred = true
+	trimmed, deferred := trimPendingPushLocked(s.pushPending[nodeID], maxPendingPushOpsPerPeer, maxPendingPushBytesPerPeer)
+	if trimmed != nil {
+		s.pushPending[nodeID] = trimmed
 	}
 	if s.pushRunning[nodeID] {
 		s.pushMu.Unlock()
@@ -1492,6 +1519,65 @@ func (s *Service) enqueuePushOp(peer *PeerRuntimeState, op *store.HASyncOp) {
 		s.markPeerPushDeferred(nodeID, "push queue trimmed; waiting for pull sync")
 	}
 	go s.runPeerPushQueue(*peer)
+}
+
+// pendingPushOpBytes approximates how many bytes a queued op retains. Payloads
+// dominate the marshalled size and a single one can reach several MB, so
+// len(PayloadJSON) is a cheap and safe proxy that avoids a json.Marshal on
+// every enqueue.
+func pendingPushOpBytes(op *store.HASyncOp) int {
+	if op == nil {
+		return 0
+	}
+	return len(op.PayloadJSON) + pendingPushOpFramingBytes
+}
+
+func pendingPushOpsBytes(ops []*store.HASyncOp) int {
+	total := 0
+	for _, op := range ops {
+		total += pendingPushOpBytes(op)
+	}
+	return total
+}
+
+// trimPendingPushLocked enforces both the op-count and the retained-bytes budget
+// of a per-peer push queue. It keeps the NEWEST ops and drops the oldest
+// overflow, matching the op-count behaviour this function replaced.
+// Dropping from the queue never loses data: the queue is only a latency
+// accelerator, and the authoritative path is the peer's cursor-based pull, which
+// reads the ops straight out of ha_sync_ops.
+// It always keeps at least the newest op even when that single op exceeds the
+// byte budget on its own: pushOpsToPeer has an explicit signed-body guard that
+// drops such an op and requeues the rest, so the queue can still make progress.
+// A nil result means "nothing to change"; otherwise the returned slice is a
+// fresh copy.
+func trimPendingPushLocked(pending []*store.HASyncOp, maxOps, maxBytes int) ([]*store.HASyncOp, bool) {
+	if len(pending) == 0 || (maxOps <= 0 && maxBytes <= 0) {
+		return nil, false
+	}
+	start := 0
+	if maxOps > 0 && len(pending) > maxOps {
+		start = len(pending) - maxOps
+	}
+	if maxBytes > 0 {
+		used := 0
+		cut := start
+		for i := len(pending) - 1; i >= start; i-- {
+			used += pendingPushOpBytes(pending[i])
+			cut = i
+			if used > maxBytes && i < len(pending)-1 {
+				cut = i + 1
+				break
+			}
+		}
+		if cut > start {
+			start = cut
+		}
+	}
+	if start == 0 {
+		return nil, false
+	}
+	return append([]*store.HASyncOp(nil), pending[start:]...), true
 }
 
 func (s *Service) replacePendingPushOpLocked(nodeID string, op *store.HASyncOp) bool {
@@ -1536,8 +1622,8 @@ func (s *Service) runPeerPushQueue(peer PeerRuntimeState) {
 		timer.Stop()
 	}
 	for {
-		ops := s.takePeerPushBatch(peer.NodeID, 2000)
-		if len(ops) == 0 {
+		ops, ok := s.takePeerPushBatchBySize(peer.NodeID, haMaxPushBodyBudget)
+		if !ok || len(ops) == 0 {
 			return
 		}
 		if !s.pushOpsToPeer(&peer, ops) {
@@ -1582,6 +1668,44 @@ func (s *Service) takePeerPushBatch(nodeID string, limit int) []*store.HASyncOp 
 	return out
 }
 
+func (s *Service) takePeerPushBatchBySize(nodeID string, maxBytes int) ([]*store.HASyncOp, bool) {
+	if s == nil {
+		return nil, false
+	}
+	s.pushMu.Lock()
+	defer s.pushMu.Unlock()
+	pending := s.pushPending[nodeID]
+	if len(pending) == 0 {
+		if s.pushRunning != nil {
+			delete(s.pushRunning, nodeID)
+		}
+		return nil, false
+	}
+	if maxBytes <= 0 {
+		maxBytes = haMaxPushBodyBudget
+	}
+	out := make([]*store.HASyncOp, 0, len(pending))
+	used := 0
+	for i, op := range pending {
+		size := 0
+		if raw, err := json.Marshal(op); err == nil {
+			size = len(raw)
+		}
+		if i > 0 && used+size > maxBytes {
+			break
+		}
+		out = append(out, op)
+		used += size
+	}
+	taken := len(out)
+	if taken == len(pending) {
+		delete(s.pushPending, nodeID)
+	} else {
+		s.pushPending[nodeID] = append([]*store.HASyncOp(nil), pending[taken:]...)
+	}
+	return out, true
+}
+
 func (s *Service) pushOpsToPeer(peer *PeerRuntimeState, ops []*store.HASyncOp) bool {
 	if s == nil || peer == nil || len(ops) == 0 {
 		return false
@@ -1599,6 +1723,16 @@ func (s *Service) pushOpsToPeer(peer *PeerRuntimeState, ops []*store.HASyncOp) b
 	payload, err := json.Marshal(map[string]any{"ops": ops})
 	if err != nil {
 		return false
+	}
+	if int64(len(payload)) > haMaxSignedBodyBytes {
+		// A batch over the signed-body ceiling would be rejected on every
+		// retry and loop forever; the byte-budgeted take normally prevents
+		// this, so a breach means a single poison op. Drop the oldest op and
+		// requeue the rest; returning true keeps the caller from requeueing
+		// the poison op again.
+		log.Printf("[hubcenter][ha] push batch to %s exceeds signed body limit (%d > %d bytes); dropping oldest op %q", peer.NodeID, len(payload), int64(haMaxSignedBodyBytes), strings.TrimSpace(ops[0].OpID))
+		s.deferPeerPushBatch(peer.NodeID, ops[1:], "dropped oversized op from push batch")
+		return true
 	}
 	url := strings.TrimRight(peer.BaseURL, "/") + "/api/internal/ha/ops/apply"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
@@ -1641,8 +1775,11 @@ func (s *Service) deferPeerPushBatch(nodeID string, ops []*store.HASyncOp, msg s
 	}
 	combined := append([]*store.HASyncOp(nil), ops...)
 	combined = append(combined, s.pushPending[nodeID]...)
-	if len(combined) > maxPendingPushOpsPerPeer {
-		combined = combined[:maxPendingPushOpsPerPeer]
+	// Same trim as the enqueue path. Dropped ops are not lost: the peer recovers
+	// them through its cursor-based pull, which is why the caller also raises
+	// "push failed; waiting for pull sync".
+	if trimmed, _ := trimPendingPushLocked(combined, maxPendingPushOpsPerPeer, maxPendingPushBytesPerPeer); trimmed != nil {
+		combined = trimmed
 	}
 	s.pushPending[nodeID] = combined
 	if s.pushRunning != nil {
@@ -2495,7 +2632,13 @@ func (s *Service) applyLLMNodeBindingOp(ctx context.Context, op *store.HASyncOp)
 	if llmBindingEntityID(&item) != op.EntityID {
 		return fmt.Errorf("llm node binding identity mismatch")
 	}
-	return s.llmBindings.Upsert(ctx, &item)
+	if err := s.llmBindings.Upsert(ctx, &item); err != nil {
+		return err
+	}
+	if s.bindingInvalidate != nil {
+		s.bindingInvalidate(item.HubID, item.TenantID)
+	}
+	return nil
 }
 
 func (s *Service) applyNotificationOp(ctx context.Context, op *store.HASyncOp) error {

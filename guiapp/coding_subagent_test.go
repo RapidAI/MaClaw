@@ -5565,10 +5565,6 @@ func TestCodingSubAgentRejectsInvalidNumericAndBooleanArgumentTypes(t *testing.T
 		{name: "edit start fractional", tool: "edit_lines", args: `{"path":"main.go","operation":"replace","start_line":1.5,"end_line":2,"content":"x"}`, field: "start_line", kind: "type", expected: "integer"},
 		{name: "edit start negative", tool: "edit_lines", args: `{"path":"main.go","operation":"replace","start_line":-1,"end_line":2,"content":"x"}`, field: "start_line", kind: "value", expected: "integer >= 0"},
 		{name: "git staged", tool: "git_diff", args: `{"staged":"true"}`, field: "staged", kind: "type", expected: "boolean"},
-		{name: "manage skill action type", tool: "manage_skill", args: `{"action":123,"name":"ui"}`, field: "action", kind: "type", expected: "string"},
-		{name: "manage skill args object", tool: "manage_skill", args: `{"action":"run","name":"ui","args":"bad"}`, field: "args", kind: "type", expected: "object"},
-		{name: "mcp server id type", tool: "call_mcp_tool", args: `{"server_id":7,"tool_name":"shot"}`, field: "server_id", kind: "type", expected: "string"},
-		{name: "mcp arguments object", tool: "call_mcp_tool", args: `{"server_id":"browser","tool_name":"shot","arguments":[]}`, field: "arguments", kind: "type", expected: "object"},
 		{name: "coding knowledge query type", tool: "coding_knowledge_search", args: `{"query":123}`, field: "query", kind: "type", expected: "string"},
 		{name: "project knowledge query type", tool: "knowledge_search", args: `{"query":[]}`, field: "query", kind: "type", expected: "string"},
 		{name: "bash timeout type", tool: "bash", args: `{"command":"Write-Output should-not-run","timeout":"30"}`, field: "timeout", kind: "type", expected: "integer", mustNotRun: true},
@@ -5589,6 +5585,28 @@ func TestCodingSubAgentRejectsInvalidNumericAndBooleanArgumentTypes(t *testing.T
 				t.Fatalf("bash command with invalid %s should not execute, commands=%#v", tc.field, cb.getCommandsRun())
 			}
 		})
+	}
+}
+
+// TestCodingSubAgentRejectsLegacySkillMCPGatewayDocumentsSurfaceRemoval pins
+// the post-removal contract: manage_skill/call_mcp_tool are no longer exposed
+// on the coding SubAgent surface (see codingSubAgentDynamicToolNames), so the
+// model callback path must reject them as unknown tools instead of running
+// argument-type validation for a tool the model can never dispatch.
+func TestCodingSubAgentRejectsLegacySkillMCPGatewayDocumentsSurfaceRemoval(t *testing.T) {
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: t.TempDir()}}
+	for _, tool := range []string{"manage_skill", "call_mcp_tool", "Manage_Skill", "CALL_MCP_TOOL"} {
+		beforeCommands := len(cb.getCommandsRun())
+		result := cb.executeToolWithOutcome(tool, `{"action":"run","name":"ui","server_id":"s","tool_name":"x"}`)
+		if result.Outcome != codingToolOutcomeFailed {
+			t.Fatalf("%s outcome = %q, want failed; result=%s", tool, result.Outcome, result.Text)
+		}
+		if !strings.Contains(result.Text, "unknown tool") {
+			t.Fatalf("%s should be rejected as unknown tool, got %q", tool, result.Text)
+		}
+		if len(cb.getCommandsRun()) != beforeCommands {
+			t.Fatalf("%s must not execute anything, commands=%#v", tool, cb.getCommandsRun())
+		}
 	}
 }
 func TestCodingSubAgentOnToolCallDoesNotEmitRawProgress(t *testing.T) {

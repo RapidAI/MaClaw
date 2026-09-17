@@ -5,6 +5,7 @@ import type { CodingAgentProgress, CodingAgentTurnSnapshot } from '../ai/CodingA
 import { SidebarToolSelector } from './SidebarToolSelector';
 import { SidebarTaskManagement, type TaskManagementItem, type TaskContextMenu } from './SidebarTaskManagement';
 import type { ActiveAssistantTaskIdentity } from '../ai/aiAssistantPanelSessionUtils';
+import type { ExpertDefinition } from '../ai/expertTypes';
 import { SidebarSystemStatus } from './SidebarSystemStatus';
 import { VirtualEmployeeTab, type VirtualEmployeeEntry } from '../ai/VirtualEmployeeTab';
 import { getAssistantDarkScheme, type AssistantDarkSchemeId } from '../ai/assistantDarkSchemes';
@@ -89,6 +90,8 @@ type SidebarAiPaneProps = SidebarCreditDisplayFormatters & {
         remote?: { host: string; port: number; user: string; password: string; workDir: string },
         workspaceId?: string,
     ) => Promise<void> | void;
+    /** Expert-task creation path used by the chat task type in the create dialog. */
+    onCreateExpertTask?: (expert: ExpertDefinition) => Promise<void> | void;
     refreshTasks: () => void;
     taskContextMenu: TaskContextMenu;
     setTaskContextMenu: (menu: TaskContextMenu) => void;
@@ -192,6 +195,7 @@ export const SidebarAiPane = ({
     assistantReady = true,
     onTaskSwitchBlocked,
     createTask,
+    onCreateExpertTask,
     refreshTasks,
     taskContextMenu,
     setTaskContextMenu,
@@ -307,7 +311,7 @@ export const SidebarAiPane = ({
                             flexDirection: 'column',
                         }}
                     >
-                        <SidebarTaskManagement lang={lang} themeMode={aiThemeMode} tasks={tasks} tasksLoading={tasksLoading} cloudTasksLoading={cloudTasksLoading} renamingTaskPath={renamingTaskPath} setRenamingTaskPath={setRenamingTaskPath} renameValue={renameValue} setRenameValue={setRenameValue} resumeTask={resumeTask} continueWorkflowProject={continueWorkflowProject} assistantReady={assistantReady} onTaskSwitchBlocked={onTaskSwitchBlocked} createTask={createTask} refreshTasks={refreshTasks} taskContextMenu={taskContextMenu} setTaskContextMenu={setTaskContextMenu} renameTask={renameTask} pinTask={pinTask} hideTask={hideTask} activateTask={activateTask} openProjectTabPaths={openProjectTabPaths} openProjectTabIdentities={openProjectTabIdentities} openExpertTabIDs={openExpertTabIDs} activeAssistantTask={activeAssistantTask} taskListVisible={middleTab === 'tasks'} showCloudWorkspaceManagement={showCloudWorkspaceManagement ?? showCodingToolEntry} showCloudWorkspaceCreation={showCloudWorkspaceCreation ?? showCloudWorkspaceManagement ?? showCodingToolEntry} restoreCloudWorkspaceTasks={restoreCloudWorkspaceTasks} />
+                        <SidebarTaskManagement lang={lang} themeMode={aiThemeMode} tasks={tasks} tasksLoading={tasksLoading} cloudTasksLoading={cloudTasksLoading} renamingTaskPath={renamingTaskPath} setRenamingTaskPath={setRenamingTaskPath} renameValue={renameValue} setRenameValue={setRenameValue} resumeTask={resumeTask} continueWorkflowProject={continueWorkflowProject} assistantReady={assistantReady} onTaskSwitchBlocked={onTaskSwitchBlocked} createTask={createTask} onCreateExpertTask={onCreateExpertTask} refreshTasks={refreshTasks} taskContextMenu={taskContextMenu} setTaskContextMenu={setTaskContextMenu} renameTask={renameTask} pinTask={pinTask} hideTask={hideTask} activateTask={activateTask} openProjectTabPaths={openProjectTabPaths} openProjectTabIdentities={openProjectTabIdentities} openExpertTabIDs={openExpertTabIDs} activeAssistantTask={activeAssistantTask} taskListVisible={middleTab === 'tasks'} showCloudWorkspaceManagement={showCloudWorkspaceManagement ?? showCodingToolEntry} showCloudWorkspaceCreation={showCloudWorkspaceCreation ?? showCloudWorkspaceManagement ?? showCodingToolEntry} restoreCloudWorkspaceTasks={restoreCloudWorkspaceTasks} />
                     </div>
                     {middleTab === 'employees' && showDigitalEmployeeTabs && <div data-testid="sidebar-middle-pane-employees" style={middlePaneStyle}><VirtualEmployeeTab lang={lang} theme={veTheme} onStartConversation={(ve) => onOpenVEConversation?.(ve)} favoriteEmployeeIds={favoriteEmployeeIds} favoriteEmployeeNames={favoriteEmployeeNames} onSetFavorite={onSetFavoriteEmployee} onRemoveFavorite={onRemoveFavoriteEmployee} onRenameEmployee={onRenameEmployee} /></div>}
                     {middleTab === 'history' && showDigitalEmployeeTabs && <div data-testid="sidebar-middle-pane-history" style={middlePaneStyle}><SidebarHistorySessions lang={lang} enabled={showDigitalEmployeeTabs} onOpenDiscussion={(discussion) => onOpenHistoryDiscussion?.(discussion)} /></div>}

@@ -597,17 +597,15 @@ func TestLaunchToolLocalUsesSharedEnvBuilderForCodexConfig(t *testing.T) {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 
-	// Launch will fail later (binary missing) after native config is prepared.
-	_ = app.LaunchTool("codex", false, false, false, "", projectDir, false)
+	// LaunchTool is deliberately disabled in the current architecture (external
+	// programming tools are retired in favor of the built-in AI assistant), so
+	// the launch must fail fast and must not write any native tool config.
+	err := app.LaunchTool("codex", false, false, false, "", projectDir, false)
+	if err == nil || !strings.Contains(err.Error(), "external programming tools are disabled") {
+		t.Fatalf("local LaunchTool should be disabled, err=%v", err)
+	}
 
-	if _, err := os.Stat(filepath.Join(tempHome, ".codex", "config.toml")); err != nil {
-		t.Fatalf("local LaunchTool should write ~/.codex via shared builder: %v", err)
-	}
-	data, err := os.ReadFile(filepath.Join(tempHome, ".codex", "config.toml"))
-	if err != nil {
-		t.Fatalf("read config.toml: %v", err)
-	}
-	if !strings.Contains(string(data), "api.example.com") {
-		t.Fatalf("config.toml missing provider URL:\n%s", data)
+	if _, err := os.Stat(filepath.Join(tempHome, ".codex", "config.toml")); !os.IsNotExist(err) {
+		t.Fatalf("disabled LaunchTool must not write ~/.codex config: %v", err)
 	}
 }

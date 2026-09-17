@@ -373,6 +373,7 @@ func trimConversation(msgs []interface{}, tokenLimit int, toolsTokens int, summa
 
 		// Try to summarize the dropped messages (one LLM call only).
 		placeholder := fallbackPlaceholder
+		summarized := false
 		if summarizer != nil && len(dropped) > 0 {
 			var sb strings.Builder
 			for _, g := range dropped {
@@ -409,6 +410,7 @@ func trimConversation(msgs []interface{}, tokenLimit int, toolsTokens int, summa
 						summary = string(runes[:5000]) + "…"
 					}
 				}
+				summarized = true
 				placeholder = []interface{}{
 					map[string]string{"role": "user", "content": "[对话历史摘要]\n" + summary},
 					map[string]string{"role": "assistant", "content": "好的，我已了解之前的对话上下文。", "reasoning_content": ""},
@@ -424,6 +426,7 @@ func trimConversation(msgs []interface{}, tokenLimit int, toolsTokens int, summa
 		}
 		// If summary made it larger than fallback, just use fallback.
 		if estimateConversationTokens(result) > msgBudget {
+			summarized = false
 			result = result[:0]
 			result = append(result, systemMsg...)
 			result = append(result, fallbackPlaceholder...)
@@ -431,6 +434,16 @@ func trimConversation(msgs []interface{}, tokenLimit int, toolsTokens int, summa
 				result = append(result, msgs[g.start:g.end]...)
 			}
 		}
+		droppedTokens := 0
+		for _, gt := range groupTokens[:bestDropCount] {
+			droppedTokens += gt
+		}
+		placeholderKind := "static"
+		if summarized {
+			placeholderKind = "summary"
+		}
+		log.Printf("[trim-conversation] dropped_groups=%d dropped_tokens~=%d placeholder=%s msg_budget=%d",
+			bestDropCount, droppedTokens, placeholderKind, msgBudget)
 		return result
 	}
 
@@ -439,6 +452,7 @@ func trimConversation(msgs []interface{}, tokenLimit int, toolsTokens int, summa
 	lastG := groups[len(groups)-1]
 	result := truncateLastGroup(msgs, lastG.start, lastG.end, systemMsg, fallbackPlaceholder)
 	if estimateConversationTokens(result) <= msgBudget {
+		log.Printf("[trim-conversation] mode=last_group_truncate msg_budget=%d msgs=%d", msgBudget, len(msgs))
 		return result
 	}
 
@@ -446,6 +460,7 @@ func trimConversation(msgs []interface{}, tokenLimit int, toolsTokens int, summa
 	// while keeping tool-call pairs intact.
 	result = truncateAssistantContent(result, msgBudget)
 	if estimateConversationTokens(result) <= msgBudget {
+		log.Printf("[trim-conversation] mode=assistant_content_truncate msg_budget=%d msgs=%d", msgBudget, len(msgs))
 		return result
 	}
 
@@ -465,12 +480,14 @@ func trimConversation(msgs []interface{}, tokenLimit int, toolsTokens int, summa
 		result = append(result, systemMsg...)
 		result = append(result, fallbackPlaceholder...)
 		result = append(result, msgs[i:]...)
+		log.Printf("[trim-conversation] mode=tail_keep_over_budget from_idx=%d msg_budget=%d", i, msgBudget)
 		return result
 	}
 
 	// A malformed history without a user turn has no request to protect. Keep
 	// the provider-valid minimal fallback rather than risking an orphaned tool
 	// result.
+	log.Printf("[trim-conversation] mode=minimal_system_only msg_budget=%d msgs=%d", msgBudget, len(msgs))
 	result = make([]interface{}, 0, len(systemMsg)+len(fallbackPlaceholder))
 	result = append(result, systemMsg...)
 	return append(result, fallbackPlaceholder...)

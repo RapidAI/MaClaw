@@ -450,3 +450,49 @@ func TestSyncHubLLMServiceStatusPatchesWithoutStaleOverwrite(t *testing.T) {
 		t.Fatal("hub service provider should remain after sync")
 	}
 }
+
+func TestHubLLMActiveGrantRoundTripsHeldCredits(t *testing.T) {
+	// The sidebar's "held" readout only works if the grant mirror struct keeps
+	// the hub's per-group in-flight reservation holds across the
+	// unmarshal/cache/remarshal path to the frontend.
+	body := `{"service_group_id":"official","source":"new_user_limit_card","active":true,"held_credits":993.57}`
+	var grant HubLLMActiveGrant
+	if err := json.Unmarshal([]byte(body), &grant); err != nil {
+		t.Fatalf("unmarshal grant: %v", err)
+	}
+	if grant.HeldCredits != 993.57 {
+		t.Fatalf("HeldCredits = %v, want 993.57", grant.HeldCredits)
+	}
+	out, err := json.Marshal(grant)
+	if err != nil {
+		t.Fatalf("marshal grant: %v", err)
+	}
+	if !strings.Contains(string(out), `"held_credits":993.57`) {
+		t.Fatalf("remarshaled grant dropped held_credits: %s", out)
+	}
+}
+
+func TestHubServiceStatusCacheDetectsHeldCreditsChanges(t *testing.T) {
+	clearHubServiceStatusCache()
+	t.Cleanup(clearHubServiceStatusCache)
+
+	base := HubLLMServiceStatus{
+		Active: true,
+		CreditGrants: []HubLLMActiveGrant{{
+			ID:             "welcome-limit-card",
+			ServiceGroupID: "welcome",
+			Source:         "new_user_limit_card",
+			Active:         true,
+			HeldCredits:    10,
+		}},
+	}
+	if changed := storeHubServiceStatusCache("https://hub.example.com", "token-a", base); changed {
+		t.Fatal("first store should report no change")
+	}
+	updated := base
+	updated.CreditGrants = append([]HubLLMActiveGrant(nil), base.CreditGrants...)
+	updated.CreditGrants[0].HeldCredits = 60
+	if changed := storeHubServiceStatusCache("https://hub.example.com", "token-a", updated); !changed {
+		t.Fatal("held-credits change must mark the status as changed so the sidebar refreshes")
+	}
+}

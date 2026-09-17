@@ -197,7 +197,12 @@ func TestSkillExecutorExecuteSkillSteps_RejectsMissingArgsBeforeCommand(t *testi
 }
 
 func TestSkillExecutorExecuteSkillSteps_UsesSharedStepResolverDefaults(t *testing.T) {
-	exec := NewSkillExecutor(nil, nil, nil)
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	app := &App{testHomeDir: tempHome}
+	pinTestLLMProviderForSkillTest(t, app)
+	exec := NewSkillExecutor(app, nil, nil)
 	output, err := exec.executeSkillSteps(&corelib.NLSkillEntry{
 		Name: "defaults",
 		Params: []corelib.NLSkillParam{
@@ -224,7 +229,12 @@ func TestSkillExecutorExecuteSkillSteps_UsesSharedStepResolverDefaults(t *testin
 }
 
 func TestSkillExecutorExecuteSkillStepsWithArgs_FillsRequiredCityFromUserPrompt(t *testing.T) {
-	exec := NewSkillExecutor(nil, nil, nil)
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	app := &App{testHomeDir: tempHome}
+	pinTestLLMProviderForSkillTest(t, app)
+	exec := NewSkillExecutor(app, nil, nil)
 	output, err := exec.executeSkillStepsWithArgs(&corelib.NLSkillEntry{
 		Name:         "weather",
 		RequiredArgs: []string{"city"},
@@ -246,7 +256,12 @@ func TestSkillExecutorExecuteSkillStepsWithArgs_FillsRequiredCityFromUserPrompt(
 }
 
 func TestSkillExecutorExecuteSkillStepsWithArgs_MergesExtraEnvIntoBash(t *testing.T) {
-	exec := NewSkillExecutor(nil, nil, nil)
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	app := &App{testHomeDir: tempHome}
+	pinTestLLMProviderForSkillTest(t, app)
+	exec := NewSkillExecutor(app, nil, nil)
 	command := "echo $API_TOKEN"
 	if runtime.GOOS == "windows" {
 		command = "echo %API_TOKEN%"
@@ -275,7 +290,12 @@ func TestSkillExecutorExecuteSkillStepsWithArgs_MergesExtraEnvIntoBash(t *testin
 }
 
 func TestSkillExecutorExecuteSkillStepsWithArgs_MergesNestedArgsExtraEnvIntoBash(t *testing.T) {
-	exec := NewSkillExecutor(nil, nil, nil)
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	app := &App{testHomeDir: tempHome}
+	pinTestLLMProviderForSkillTest(t, app)
+	exec := NewSkillExecutor(app, nil, nil)
 	command := "echo $API_TOKEN"
 	if runtime.GOOS == "windows" {
 		command = "echo %API_TOKEN%"
@@ -337,7 +357,12 @@ func TestSkillExecutorExecuteSkillStepsWithArgs_MergesExtraEnvIntoCraftTool(t *t
 }
 
 func TestSkillExecutorCaptureUsesSharedFullMatchSemantics(t *testing.T) {
-	exec := NewSkillExecutor(nil, nil, nil)
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	app := &App{testHomeDir: tempHome}
+	pinTestLLMProviderForSkillTest(t, app)
+	exec := NewSkillExecutor(app, nil, nil)
 	output, err := exec.executeSkillStepsWithArgs(&corelib.NLSkillEntry{
 		Name: "capture-shared",
 		Steps: []corelib.NLSkillStep{
@@ -374,6 +399,7 @@ func TestSkillExecutorExecuteWithArgs_IncludesRunnerWarnings(t *testing.T) {
 	}
 
 	app := &App{testHomeDir: tempHome}
+	pinTestLLMProviderForSkillTest(t, app)
 	exec := NewSkillExecutor(app, nil, nil)
 	if err := exec.Register(corelib.NLSkillEntry{
 		Name:     "warning-skill",
@@ -410,6 +436,7 @@ func TestSkillExecutorExecuteWithArgs_ExecutesPipelineSkillAndPropagatesExtraEnv
 		command = "echo %API_TOKEN% {{input}}"
 	}
 	app := &App{testHomeDir: tempHome}
+	pinTestLLMProviderForSkillTest(t, app)
 	exec := NewSkillExecutor(app, nil, nil)
 	if err := exec.Register(corelib.NLSkillEntry{
 		Name:        "child-env",
@@ -458,6 +485,7 @@ func TestSkillExecutorExecuteWithArgs_PipelinePropagatesNestedJSONArgsContext(t 
 		command = "echo %API_TOKEN% {{input}}"
 	}
 	app := &App{testHomeDir: tempHome}
+	pinTestLLMProviderForSkillTest(t, app)
 	exec := NewSkillExecutor(app, nil, nil)
 	if err := exec.Register(corelib.NLSkillEntry{
 		Name:         "child-json-context",
@@ -510,6 +538,7 @@ func TestSkillExecutorExecuteWithArgs_PipelineStepEnvMergesWithParentEnv(t *test
 		command = "echo %API_TOKEN% %SHARED% %STEP_ONLY%"
 	}
 	app := &App{testHomeDir: tempHome}
+	pinTestLLMProviderForSkillTest(t, app)
 	exec := NewSkillExecutor(app, nil, nil)
 	if err := exec.Register(corelib.NLSkillEntry{
 		Name:        "child-step-env",
@@ -559,6 +588,7 @@ func TestSkillExecutorExecuteWithArgs_PipelinePropagatesInputForChildInference(t
 	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
 
 	app := &App{testHomeDir: tempHome}
+	pinTestLLMProviderForSkillTest(t, app)
 	exec := NewSkillExecutor(app, nil, nil)
 	if err := exec.Register(corelib.NLSkillEntry{
 		Name:         "child-city",
@@ -598,6 +628,7 @@ func TestSkillExecutorExecuteWithArgs_PipelinePropagatesCapturedVars(t *testing.
 	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
 
 	app := &App{testHomeDir: tempHome}
+	pinTestLLMProviderForSkillTest(t, app)
 	exec := NewSkillExecutor(app, nil, nil)
 	for _, entry := range []corelib.NLSkillEntry{
 		{
@@ -650,6 +681,7 @@ func TestSkillExecutorExecuteWithArgs_PipelineChecksParentRequiredEnv(t *testing
 	t.Setenv("API_TOKEN", "")
 
 	app := &App{testHomeDir: tempHome}
+	pinTestLLMProviderForSkillTest(t, app)
 	exec := NewSkillExecutor(app, nil, nil)
 	for _, entry := range []corelib.NLSkillEntry{
 		{
@@ -699,6 +731,7 @@ func TestSkillExecutorExecuteWithArgs_PipelineContinueOnFailCountsSuccess(t *tes
 	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
 
 	app := &App{testHomeDir: tempHome}
+	pinTestLLMProviderForSkillTest(t, app)
 	exec := NewSkillExecutor(app, nil, nil)
 	for _, entry := range []corelib.NLSkillEntry{
 		{
@@ -772,6 +805,7 @@ func TestSkillExecutorExecuteWithArgs_PipelineStepParamsSelectChildAPIWorkflowOp
 
 	missingCommand := "definitely-missing-sync-pipeline-child-workflow-command"
 	app := &App{testHomeDir: tempHome}
+	pinTestLLMProviderForSkillTest(t, app)
 	exec := NewSkillExecutor(app, nil, nil)
 	for _, entry := range []corelib.NLSkillEntry{
 		{
@@ -818,6 +852,7 @@ func TestSkillExecutorExecuteWithArgs_PipelineHonorsGlobalTimeout(t *testing.T) 
 	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
 
 	app := &App{testHomeDir: tempHome}
+	pinTestLLMProviderForSkillTest(t, app)
 	exec := NewSkillExecutor(app, nil, nil)
 	for _, entry := range []corelib.NLSkillEntry{
 		{
@@ -982,6 +1017,7 @@ func TestSkillExecutorExecuteWithArgsUpdatesUsageWhenRunByDirName(t *testing.T) 
 	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
 
 	app := &App{testHomeDir: tempHome}
+	pinTestLLMProviderForSkillTest(t, app)
 	exec := NewSkillExecutor(app, nil, nil)
 	if err := exec.Register(corelib.NLSkillEntry{
 		Name:         "Weather Display",
@@ -1101,6 +1137,7 @@ func TestSkillExecutorExecuteWithArgs_PublicPipelineStackArgDoesNotSkipStats(t *
 	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
 
 	app := &App{testHomeDir: tempHome}
+	pinTestLLMProviderForSkillTest(t, app)
 	exec := NewSkillExecutor(app, nil, nil)
 	if err := exec.Register(corelib.NLSkillEntry{
 		Name:   "public-stack-arg",
@@ -1133,6 +1170,7 @@ func TestSkillExecutorExecuteWithArgs_PrivatePipelineStackWithoutMarkerDoesNotSk
 	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
 
 	app := &App{testHomeDir: tempHome}
+	pinTestLLMProviderForSkillTest(t, app)
 	exec := NewSkillExecutor(app, nil, nil)
 	if err := exec.Register(corelib.NLSkillEntry{
 		Name:   "private-stack-arg",
@@ -1165,6 +1203,7 @@ func TestSkillExecutorExecuteWithArgs_ForgedPipelineInternalMarkerDoesNotSkipSta
 	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
 
 	app := &App{testHomeDir: tempHome}
+	pinTestLLMProviderForSkillTest(t, app)
 	exec := NewSkillExecutor(app, nil, nil)
 	if err := exec.Register(corelib.NLSkillEntry{
 		Name:   "forged-pipeline-marker",
@@ -1200,6 +1239,7 @@ func TestSkillExecutorExecuteWithArgs_PipelineStepParamsCannotOverrideInternalMa
 	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
 
 	app := &App{testHomeDir: tempHome}
+	pinTestLLMProviderForSkillTest(t, app)
 	exec := NewSkillExecutor(app, nil, nil)
 	for _, entry := range []corelib.NLSkillEntry{
 		{
@@ -1262,6 +1302,7 @@ func TestSkillExecutorExecuteWithArgs_ExternalPrivatePipelineStackDoesNotTripRec
 	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
 
 	app := &App{testHomeDir: tempHome}
+	pinTestLLMProviderForSkillTest(t, app)
 	exec := NewSkillExecutor(app, nil, nil)
 	for _, entry := range []corelib.NLSkillEntry{
 		{
@@ -1314,7 +1355,12 @@ func TestSkillExecutorExecuteSkillSteps_SkipsInactiveOpenAIProxyProbe(t *testing
 	t.Setenv("OPENAI_API_KEY", "")
 	t.Setenv("OPENAI_BASE_URL", "")
 
-	exec := NewSkillExecutor(nil, nil, nil)
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	app := &App{testHomeDir: tempHome}
+	pinTestLLMProviderForSkillTest(t, app)
+	exec := NewSkillExecutor(app, nil, nil)
 	output, err := exec.executeSkillSteps(&corelib.NLSkillEntry{
 		Name: "inactive-openai",
 		Steps: []corelib.NLSkillStep{
@@ -1348,7 +1394,12 @@ func TestSkillExecutorExecuteSkillSteps_SkipsInactiveOpenAIProxyProbe(t *testing
 }
 
 func TestSkillExecutorExecuteSkillSteps_ConditionSkipsFollowRuntimeState(t *testing.T) {
-	exec := NewSkillExecutor(nil, nil, nil)
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	app := &App{testHomeDir: tempHome}
+	pinTestLLMProviderForSkillTest(t, app)
+	exec := NewSkillExecutor(app, nil, nil)
 	output, err := exec.executeSkillSteps(&corelib.NLSkillEntry{
 		Name: "condition-chain",
 		Steps: []corelib.NLSkillStep{

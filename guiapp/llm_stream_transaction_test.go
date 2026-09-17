@@ -21,7 +21,7 @@ func TestDoLLMRequestStreamSuppressesPreambleForToolCallRound(t *testing.T) {
 	defer server.Close()
 
 	var streamed string
-	resp, err := (&IMMessageHandler{}).doLLMRequestStream(context.Background(), streamTestConfig(server.URL), []interface{}{
+	resp, err := (&IMMessageHandler{}).doLLMRequestStream(context.Background(), streamTestConfig(server.URL), llmEndpointCategoryMainStream, []interface{}{
 		map[string]interface{}{"role": "user", "content": "save alpha"},
 	}, []map[string]interface{}{streamTestTool("knowledge_save_text")}, server.Client(), func(delta string) {
 		streamed += delta
@@ -47,7 +47,7 @@ func TestDoLLMRequestStreamFlushesFinalAnswerTokens(t *testing.T) {
 	defer server.Close()
 
 	var streamed string
-	resp, err := (&IMMessageHandler{}).doLLMRequestStream(context.Background(), streamTestConfig(server.URL), []interface{}{
+	resp, err := (&IMMessageHandler{}).doLLMRequestStream(context.Background(), streamTestConfig(server.URL), llmEndpointCategoryMainStream, []interface{}{
 		map[string]interface{}{"role": "user", "content": "say final"},
 	}, []map[string]interface{}{streamTestTool("knowledge_save_text")}, server.Client(), func(delta string) {
 		streamed += delta
@@ -76,7 +76,7 @@ func TestDoLLMRequestStreamReturnsOnFinishReasonBeforeDone(t *testing.T) {
 	defer server.Close()
 
 	started := time.Now()
-	resp, err := (&IMMessageHandler{}).doLLMRequestStream(context.Background(), streamTestConfig(server.URL), []interface{}{
+	resp, err := (&IMMessageHandler{}).doLLMRequestStream(context.Background(), streamTestConfig(server.URL), llmEndpointCategoryMainStream, []interface{}{
 		map[string]interface{}{"role": "user", "content": "say done"},
 	}, nil, server.Client(), nil, &llmStreamMetrics{})
 	if err != nil {
@@ -106,7 +106,7 @@ func TestDoLLMRequestStreamResponsesReturnsOnCompletedBeforeDone(t *testing.T) {
 	defer server.Close()
 
 	started := time.Now()
-	resp, err := (&IMMessageHandler{}).doLLMRequestStream(context.Background(), responsesStreamTestConfig(server.URL), []interface{}{
+	resp, err := (&IMMessageHandler{}).doLLMRequestStream(context.Background(), responsesStreamTestConfig(server.URL), llmEndpointCategoryMainStream, []interface{}{
 		map[string]interface{}{"role": "user", "content": "say done"},
 	}, nil, server.Client(), nil, &llmStreamMetrics{})
 	if err != nil {

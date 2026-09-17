@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -97,6 +98,78 @@ func TestGetLLMEndpointAccessLogsHandlerUsesTenantScopedSettings(t *testing.T) {
 	}
 	if resp.Total != 1 || len(resp.Logs) != 1 || resp.Logs[0].Email != "tenant@example.com" {
 		t.Fatalf("tenant access logs should not read global settings: total=%d logs=%#v", resp.Total, resp.Logs)
+	}
+}
+
+func TestPruneLLMEndpointAccessLogsBucketsOverflowingIPCounts(t *testing.T) {
+	logs := newLLMEndpointAccessLogStore()
+	for i := 0; i < 5000; i++ {
+		logs.add(llmEndpointAccessLogEntry{
+			Email:      "user@example.com",
+			ClientIP:   fmt.Sprintf("10.0.%d.%d", i/256, i%256),
+			StatusCode: http.StatusOK,
+			CreatedAt:  time.Unix(int64(i), 0).UTC(),
+		})
+	}
+	if len(logs.IPCounts) > llmEndpointAccessLogMaxIPCounts+1 {
+		t.Fatalf("ip_counts len = %d, want <= %d (top %d plus %q)", len(logs.IPCounts), llmEndpointAccessLogMaxIPCounts+1, llmEndpointAccessLogMaxIPCounts, llmEndpointAccessLogOtherIPBucket)
+	}
+	if got := logs.IPCounts[llmEndpointAccessLogOtherIPBucket]; got != 4000 {
+		t.Fatalf("_other count = %d, want 4000", got)
+	}
+	var kept int64
+	for ip, count := range logs.IPCounts {
+		if ip == llmEndpointAccessLogOtherIPBucket {
+			continue
+		}
+		kept += count
+	}
+	if kept != 1000 {
+		t.Fatalf("kept ip counts sum = %d, want 1000", kept)
+	}
+}
+
+func TestFlushLLMEndpointAccessLogsPrunesMergedIPCounts(t *testing.T) {
+	system := newTestLLMServiceSystemSettings()
+	pending := newLLMEndpointAccessLogStore()
+	for i := 0; i < 3000; i++ {
+		pending.add(llmEndpointAccessLogEntry{
+			Email:      "user@example.com",
+			ClientIP:   fmt.Sprintf("10.1.%d.%d", i/256, i%256),
+			StatusCode: http.StatusOK,
+			CreatedAt:  time.Unix(int64(i), 0).UTC(),
+		})
+	}
+	if err := flushLLMEndpointAccessLogs(context.Background(), system, pending); err != nil {
+		t.Fatalf("flush access logs: %v", err)
+	}
+	stored, err := loadLLMEndpointAccessLogs(context.Background(), system)
+	if err != nil {
+		t.Fatalf("load access logs: %v", err)
+	}
+	if len(stored.IPCounts) > llmEndpointAccessLogMaxIPCounts+1 {
+		t.Fatalf("stored ip_counts len = %d, want <= %d", len(stored.IPCounts), llmEndpointAccessLogMaxIPCounts+1)
+	}
+	if got := stored.IPCounts[llmEndpointAccessLogOtherIPBucket]; got != 2000 {
+		t.Fatalf("stored _other count = %d, want 2000", got)
+	}
+}
+
+func TestMergeLLMEndpointAccessLogsPrunesIPCounts(t *testing.T) {
+	dst := newLLMEndpointAccessLogStore()
+	for i := 0; i < 600; i++ {
+		dst.add(llmEndpointAccessLogEntry{ClientIP: fmt.Sprintf("10.2.%d.%d", i/256, i%256), StatusCode: http.StatusOK, CreatedAt: time.Unix(int64(i), 0).UTC()})
+	}
+	src := newLLMEndpointAccessLogStore()
+	for i := 0; i < 600; i++ {
+		src.add(llmEndpointAccessLogEntry{ClientIP: fmt.Sprintf("10.3.%d.%d", i/256, i%256), StatusCode: http.StatusOK, CreatedAt: time.Unix(int64(1000+i), 0).UTC()})
+	}
+	mergeLLMEndpointAccessLogs(dst, src)
+	if len(dst.IPCounts) > llmEndpointAccessLogMaxIPCounts+1 {
+		t.Fatalf("merged ip_counts len = %d, want <= %d", len(dst.IPCounts), llmEndpointAccessLogMaxIPCounts+1)
+	}
+	if got := dst.IPCounts[llmEndpointAccessLogOtherIPBucket]; got != 200 {
+		t.Fatalf("merged _other count = %d, want 200", got)
 	}
 }
 

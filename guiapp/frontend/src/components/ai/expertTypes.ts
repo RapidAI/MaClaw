@@ -144,3 +144,40 @@ export function parseExpertListJSON(raw: string | null | undefined): ExpertDefin
         return [];
     }
 }
+
+/**
+ * Map ListManagedIndustryExperts output to selectable ExpertDefinitions.
+ * Only installed entries (backed by a real local expert id) are returned;
+ * metadata-only catalog placeholders (purchase-required / still installing)
+ * are not usable experts and are dropped.
+ */
+export function parseInstalledManagedIndustryExpertsJSON(raw: string | null | undefined): ExpertDefinition[] {
+    if (!raw) return [];
+    try {
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [];
+        const out: ExpertDefinition[] = [];
+        for (const item of parsed) {
+            const localId = String(item?.local_expert_id || "").trim();
+            if (!item?.installed || !localId) continue;
+            out.push({
+                id: localId,
+                name: String(item?.name || ""),
+                description: String(item?.description || ""),
+                icon: String(item?.icon || ""),
+                system_prompt: "",
+                tools: [],
+                skills: [],
+                builtin: false,
+                created_at: "",
+                updated_at: "",
+                managed_industry: true,
+                industry_asset_id: String(item?.asset_id || ""),
+                industry_installed: true,
+            });
+        }
+        return out;
+    } catch {
+        return [];
+    }
+}

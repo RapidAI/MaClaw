@@ -31,6 +31,7 @@ func RegisterLLMRoutes(
 		mux.HandleFunc("POST /api/llm/v1/chat/completions", RequireHubMachine(hubService, hubIDFromProxyRequest, llmservice.ProxyHandler(proxyCfg)))
 		mux.HandleFunc("POST /api/llm/v1/quotes", RequireHubMachine(hubService, hubIDFromProxyRequest, llmservice.ProxyQuoteHandler(proxyCfg)))
 		mux.HandleFunc("GET /api/llm/v1/billing-attempts/{request_id}", RequireHubMachine(hubService, hubIDFromProxyRequest, llmservice.ProxyBillingAttemptHandler(proxyCfg)))
+		mux.HandleFunc("POST /api/llm/v1/binding/release", RequireHubMachine(hubService, hubIDFromProxyRequest, llmservice.ProxyBindingReleaseHandler(proxyCfg)))
 		if statsSvc != nil {
 			mux.HandleFunc("GET /api/llm/v1/usage/reconciliation", RequireHubMachine(hubService, hubIDFromProxyRequest, llmservice.UsageReconciliationHandler(statsSvc)))
 		}
@@ -58,6 +59,7 @@ func RegisterLLMRoutes(
 	mux.HandleFunc("PUT /api/admin/llm/providers/{id}/paused", RequireAdmin(adminService, adminSetLLMProviderPaused(llmSvc)))
 	mux.HandleFunc("PUT /api/admin/llm/providers/{id}/sequence", RequireAdmin(adminService, adminSetLLMProviderSequence(llmSvc)))
 	mux.HandleFunc("DELETE /api/admin/llm/providers/{id}", RequireAdmin(adminService, adminDeleteLLMProvider(llmSvc)))
+	mux.HandleFunc("GET /api/admin/llm/providers/{id}/references", RequireAdmin(adminService, adminListLLMProviderReferences(llmSvc)))
 
 	// --- Admin: Provider Monitor ---
 	mux.HandleFunc("GET /api/admin/llm/provider-monitor/config", RequireAdmin(adminService, adminGetLLMProviderMonitorConfig(llmSvc)))

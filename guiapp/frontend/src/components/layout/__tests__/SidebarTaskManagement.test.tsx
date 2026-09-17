@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { cloudWorkspaceNameMapFromEntitlement, isActiveTaskRow, isProjectTabOpen, SidebarTaskManagement, sortTaskManagementItems, taskCreationLabel, taskSecondaryLabelFor, workflowStatusForTask, workflowStatusForTaskRow } from '../SidebarTaskManagement';
 import type { ComponentProps, ReactElement } from 'react';
 import { GetProjectScene, OpenFileOrShowInFolder, OpenProjectDirectory, SelectWorkingDir } from '../../../../wailsjs/go/main/App';
 import { EventsEmit } from '../../../../wailsjs/runtime';
+import { EVENT_OPEN_CREATE_CODING_TASK } from '../../../constants/events';
 import { DialogProvider } from '../../CustomDialog';
 import { __resetCloudWorkspaceDisplayNamesForTests, __resetCloudWorkspaceLeaseEnsureForTests, markCloudWorkspaceLeaseEnsured, rememberCloudWorkspaceDisplayName } from '../../ai/codingTaskMode';
 import { __resetCloudWorkspaceTaskRestoreForTests } from '../../../utils/cloudWorkspaceTaskRestore';
@@ -29,6 +30,8 @@ const {
     prepareCloudWorkspaceMock,
     syncCloudWorkspaceFilesMock,
     cloudWorkspaceCacheDirMock,
+    listExpertsMock,
+    listManagedIndustryExpertsMock,
 } = vi.hoisted(() => {
     return {
         getProjectSceneMock: vi.fn(),
@@ -50,6 +53,8 @@ const {
         prepareCloudWorkspaceMock: vi.fn().mockResolvedValue({ local_path: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_a' }),
         syncCloudWorkspaceFilesMock: vi.fn().mockResolvedValue({ local_path: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_a' }),
         cloudWorkspaceCacheDirMock: vi.fn().mockResolvedValue({ local_path: '' }),
+        listExpertsMock: vi.fn().mockResolvedValue('[]'),
+        listManagedIndustryExpertsMock: vi.fn().mockResolvedValue('[]'),
     };
 });
 
@@ -75,6 +80,8 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     CloudWorkspaceCacheDir: cloudWorkspaceCacheDirMock,
     PrepareCloudWorkspace: prepareCloudWorkspaceMock,
     SyncCloudWorkspaceFiles: syncCloudWorkspaceFilesMock,
+    ListExperts: listExpertsMock,
+    ListManagedIndustryExperts: listManagedIndustryExpertsMock,
 }));
 
 vi.mock('../../../../wailsjs/runtime', () => ({
@@ -131,6 +138,19 @@ async function confirmRemoveDialog(labelText = 'Remove') {
     fireEvent.click(within(dialog).getByRole('button', { name: labelText }));
 }
 
+/**
+ * Opens the create-task dialog the way remaining entries do: the welcome
+ * coding-card event. The header "新建任务" button now opens the assistant
+ * wizard page instead (see EVENT_OPEN_NEW_TASK_WIZARD). The event carries a
+ * mode prefill; reset it to the pristine default (local/chat).
+ */
+function openCreateDialog() {
+    act(() => {
+        window.dispatchEvent(new CustomEvent(EVENT_OPEN_CREATE_CODING_TASK, { detail: { mode: 'coding_dev' } }));
+    });
+    fireEvent.click(screen.getByTestId('task-workspace-kind-local'));
+}
+
 afterEach(async () => {
     // Flush pending openEditRemoteDialog / save / test microtasks so unmount is quiet.
     await act(async () => {
@@ -161,6 +181,10 @@ afterEach(async () => {
     syncCloudWorkspaceFilesMock.mockResolvedValue({ local_path: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_a' });
     cloudWorkspaceCacheDirMock.mockReset();
     cloudWorkspaceCacheDirMock.mockResolvedValue({ local_path: '' });
+    listExpertsMock.mockReset();
+    listExpertsMock.mockResolvedValue('[]');
+    listManagedIndustryExpertsMock.mockReset();
+    listManagedIndustryExpertsMock.mockResolvedValue('[]');
     __resetCloudWorkspaceDisplayNamesForTests();
     __resetCloudWorkspaceLeaseEnsureForTests();
     __resetCloudWorkspaceTaskRestoreForTests();
@@ -406,6 +430,98 @@ describe('SidebarTaskManagement', () => {
         fireEvent.click(pausedChip);
         expect(pausedChip.getAttribute('aria-pressed')).toBe('true');
         expect(screen.getByText('Paused task')).toBeTruthy();
+    });
+
+    it('marks each task row with a workspace type badge matching its kind', () => {
+        const localTask = { ...baseProject, id: 'task-local', name: 'Local task', project_path: 'D:/work/tasks/local-task', working_dir: 'D:/work/tasks/local-task', tags: ['task_management'] };
+        const cloudTask = {
+            ...baseProject,
+            id: 'task-cloud',
+            name: 'Cloud task',
+            project_path: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant/cws_a',
+            working_dir: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant/cws_a',
+            tags: ['task_management', 'cloud_workspace:cws_a'],
+        };
+        const remoteTask = {
+            ...baseProject,
+            id: 'task-remote',
+            name: 'Remote task',
+            project_path: 'D:/work/tasks/remote-task',
+            tags: ['remote_coding_dev', 'remote_host:10.0.0.8', 'remote_user:ubuntu', 'remote_port:22', 'remote_workdir:/app'],
+        };
+        renderTaskManagement({ tasks: [localTask, cloudTask, remoteTask] });
+
+        const rows = screen.getAllByTestId('sidebar-task-row');
+        expect(rows).toHaveLength(3);
+        const rowByName = (name: string) => screen.getByText(name).closest('[data-task-path]') as HTMLElement;
+        const workspaceLine = (row: HTMLElement) => row.querySelector('[data-testid="task-working-dir"]') as HTMLElement;
+
+        const localRow = rowByName('Local task');
+        expect(localRow.querySelector('[data-testid="workspace-badge-local"]')).toBeTruthy();
+        expect(workspaceLine(localRow).textContent).toContain('D:/work/tasks/local-task');
+
+        const cloudRow = rowByName('Cloud task');
+        expect(cloudRow.querySelector('[data-testid="workspace-badge-cloud"]')).toBeTruthy();
+        expect(workspaceLine(cloudRow).textContent).not.toMatch(/cloud-workspaces/i);
+
+        const remoteRow = rowByName('Remote task');
+        expect(remoteRow.querySelector('[data-testid="workspace-badge-remote"]')).toBeTruthy();
+        expect(workspaceLine(remoteRow).textContent).toContain('10.0.0.8:/app');
+    });
+
+    it('falls back to a generic label when a remote task has no host meta', () => {
+        renderTaskManagement({
+            tasks: [{
+                ...baseProject,
+                id: 'task-remote-no-host',
+                name: 'Remote no host',
+                project_path: 'D:/work/tasks/remote-no-host',
+                tags: ['remote_coding_dev'],
+            }],
+        });
+
+        const row = screen.getByText('Remote no host').closest('[data-task-path]') as HTMLElement;
+        expect(row.querySelector('[data-testid="workspace-badge-remote"]')).toBeTruthy();
+        expect(row.querySelector('[data-testid="task-working-dir"]')?.textContent).toContain('Remote server');
+    });
+
+    it('filters the task list by workspace type chips', () => {
+        const localTask = { ...baseProject, id: 'task-local', name: 'Local task', project_path: 'D:/work/tasks/local-task', working_dir: 'D:/work/tasks/local-task', tags: ['task_management'] };
+        const cloudTask = {
+            ...baseProject,
+            id: 'task-cloud',
+            name: 'Cloud task',
+            project_path: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant/cws_a',
+            tags: ['task_management', 'cloud_workspace:cws_a'],
+        };
+        const remoteTask = {
+            ...baseProject,
+            id: 'task-remote',
+            name: 'Remote task',
+            project_path: 'D:/work/tasks/remote-task',
+            tags: ['remote_coding_dev', 'remote_host:10.0.0.8'],
+        };
+        renderTaskManagement({ tasks: [localTask, cloudTask, remoteTask] });
+
+        expect(screen.getByTestId('task-workspace-filter-all').textContent).toContain('3');
+        expect(screen.getByTestId('task-workspace-filter-local').textContent).toContain('1');
+        expect(screen.getByTestId('task-workspace-filter-cloud').textContent).toContain('1');
+        expect(screen.getByTestId('task-workspace-filter-remote').textContent).toContain('1');
+
+        fireEvent.click(screen.getByTestId('task-workspace-filter-cloud'));
+        expect(screen.getByTestId('task-workspace-filter-cloud').getAttribute('aria-pressed')).toBe('true');
+        expect(screen.getByText('Cloud task')).toBeTruthy();
+        expect(screen.queryByText('Local task')).toBeNull();
+        expect(screen.queryByText('Remote task')).toBeNull();
+
+        fireEvent.click(screen.getByTestId('task-workspace-filter-remote'));
+        expect(screen.getByText('Remote task')).toBeTruthy();
+        expect(screen.queryByText('Cloud task')).toBeNull();
+
+        fireEvent.click(screen.getByTestId('task-workspace-filter-all'));
+        expect(screen.getByText('Local task')).toBeTruthy();
+        expect(screen.getByText('Cloud task')).toBeTruthy();
+        expect(screen.getByText('Remote task')).toBeTruthy();
     });
 
     it('shows a loading bar instead of the empty state while tasks load', () => {
@@ -690,10 +806,27 @@ describe('SidebarTaskManagement', () => {
     it('uses a clear SVG create icon instead of a plain plus glyph', () => {
         renderTaskManagement();
 
-        const createButton = screen.getByTitle('Create task');
+        const createButton = screen.getByTestId('task-pane-new-task-wizard');
 
         expect(createButton.querySelector('svg')).toBeTruthy();
         expect(createButton.textContent).not.toContain('+');
+    });
+
+    it('header 新建任务 button opens the assistant wizard page instead of the create dialog', () => {
+        renderTaskManagement();
+
+        const wizardEvent = new CustomEvent('maclaw:open-new-task-wizard');
+        const listener = vi.fn();
+        window.addEventListener('maclaw:open-new-task-wizard', listener);
+        try {
+            fireEvent.click(screen.getByTestId('task-pane-new-task-wizard'));
+            expect(listener).toHaveBeenCalledTimes(1);
+            expect(wizardEvent.type).toBe('maclaw:open-new-task-wizard');
+        } finally {
+            window.removeEventListener('maclaw:open-new-task-wizard', listener);
+        }
+        // The legacy create dialog stays closed.
+        expect(screen.queryByTestId('task-create-guidance')).toBeNull();
     });
 
     it('requests saving the current main chat as a task from the header button', () => {
@@ -1339,7 +1472,7 @@ describe('SidebarTaskManagement', () => {
         const createTask = vi.fn();
         renderTaskManagement({ createTask });
 
-        fireEvent.click(screen.getByTitle('Create task'));
+        openCreateDialog();
         expect(screen.queryByLabelText('Task command')).toBeNull();
         expect(screen.getByTestId('task-create-guidance')).toBeTruthy();
         fireEvent.click(screen.getByRole('button', { name: 'Create & open' }));
@@ -1350,7 +1483,7 @@ describe('SidebarTaskManagement', () => {
     it('exposes local and remote coding modes in the create dialog footer', () => {
         renderTaskManagement();
 
-        fireEvent.click(screen.getByTitle('Create task'));
+        openCreateDialog();
 
         const codingToggle = screen.getByRole('button', { name: 'Coding' });
         const remoteToggle = screen.getByRole('button', { name: 'Remote' });
@@ -1365,7 +1498,7 @@ describe('SidebarTaskManagement', () => {
         const createTask = vi.fn();
         renderTaskManagement({ createTask });
 
-        fireEvent.click(screen.getByTitle('Create task'));
+        openCreateDialog();
         fireEvent.click(screen.getByRole('button', { name: 'Coding' }));
         fireEvent.click(screen.getByRole('button', { name: 'Create & open' }));
 
@@ -1698,7 +1831,7 @@ describe('SidebarTaskManagement', () => {
         const createTask = vi.fn();
         renderTaskManagement({ createTask });
 
-        fireEvent.click(screen.getByTitle('Create task'));
+        openCreateDialog();
         fireEvent.click(document.getElementById('task-management-remote-coding-mode')!);
         expect(screen.getByTestId('remote-coding-fields')).toBeTruthy();
         expect(screen.queryByLabelText('Choose working folder')).toBeNull();
@@ -1725,7 +1858,7 @@ describe('SidebarTaskManagement', () => {
         }));
         renderTaskManagement({ createTask });
 
-        fireEvent.click(screen.getByTitle('Create task'));
+        openCreateDialog();
         fireEvent.click(screen.getByRole('button', { name: 'Remote' }));
         fireEvent.change(screen.getByLabelText('Host / domain'), { target: { value: '10.0.0.8' } });
         fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'ubuntu' } });
@@ -1758,7 +1891,7 @@ describe('SidebarTaskManagement', () => {
             }],
         });
 
-        fireEvent.click(screen.getByTitle('Create task'));
+        openCreateDialog();
         fireEvent.click(document.getElementById('task-management-remote-coding-mode')!);
 
         expect((screen.getByLabelText('Host / domain') as HTMLInputElement).value).toBe('10.1.1.1');
@@ -1772,7 +1905,7 @@ describe('SidebarTaskManagement', () => {
         const createTask = vi.fn();
         renderTaskManagement({ createTask });
 
-        fireEvent.click(screen.getByTitle('Create task'));
+        openCreateDialog();
         fireEvent.click(screen.getByRole('button', { name: 'Remote' }));
 
         const ok = screen.getByRole('button', { name: 'Create & open' }) as HTMLButtonElement;
@@ -1785,7 +1918,7 @@ describe('SidebarTaskManagement', () => {
         const createTask = vi.fn();
         renderTaskManagement({ createTask });
 
-        fireEvent.click(screen.getByTitle('Create task'));
+        openCreateDialog();
         fireEvent.click(screen.getByRole('button', { name: 'Remote' }));
         fireEvent.change(screen.getByLabelText('Host / domain'), { target: { value: '10.0.0.8' } });
         fireEvent.change(screen.getByLabelText('Port'), { target: { value: '22abc' } });
@@ -1820,7 +1953,7 @@ describe('SidebarTaskManagement', () => {
         const createTask = vi.fn().mockRejectedValue(new Error('无法连接到远程服务器'));
         renderTaskManagement({ createTask });
 
-        fireEvent.click(screen.getByTitle('Create task'));
+        openCreateDialog();
         fireEvent.click(document.getElementById('task-management-remote-coding-mode')!);
         fireEvent.change(screen.getByLabelText('Host / domain'), { target: { value: '10.0.0.1' } });
         fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'root' } });
@@ -1846,7 +1979,7 @@ describe('SidebarTaskManagement', () => {
         const createTask = vi.fn();
         renderTaskManagement({ createTask });
 
-        fireEvent.click(screen.getByTitle('Create task'));
+        openCreateDialog();
         fireEvent.click(screen.getByRole('button', { name: 'Choose working folder' }));
         await waitFor(() => expect(screen.getByText('D:/work/selected-folder')).toBeTruthy());
         fireEvent.click(screen.getByLabelText('Coding'));
@@ -1860,7 +1993,7 @@ describe('SidebarTaskManagement', () => {
         const createTask = vi.fn();
         renderTaskManagement({ createTask });
 
-        fireEvent.click(screen.getByTitle('Create task'));
+        openCreateDialog();
         fireEvent.click(screen.getByRole('button', { name: 'Choose working folder' }));
 
         expect(SelectWorkingDir).toHaveBeenCalledTimes(1);
@@ -1880,7 +2013,7 @@ describe('SidebarTaskManagement', () => {
             }],
         });
 
-        fireEvent.click(screen.getByTitle('Create task'));
+        openCreateDialog();
 
         expect(document.getElementById('task-working-directory')?.getAttribute('title')).toBe('Choose working folder');
     });
@@ -1904,7 +2037,7 @@ describe('SidebarTaskManagement', () => {
             ],
         });
 
-        fireEvent.click(screen.getByTitle('Create task'));
+        openCreateDialog();
 
         expect(document.getElementById('task-working-directory')?.getAttribute('title')).toBe('D:/work/coding-project');
     });
@@ -1914,7 +2047,7 @@ describe('SidebarTaskManagement', () => {
         const createTask = vi.fn();
         renderTaskManagement({ createTask });
 
-        fireEvent.click(screen.getByTitle('Create task'));
+        openCreateDialog();
         fireEvent.click(screen.getByRole('button', { name: 'Choose working folder' }));
 
         await screen.findByText(/cloud workspace cache/);
@@ -2449,8 +2582,10 @@ describe('SidebarTaskManagement', () => {
         });
 
         await waitFor(() => {
-            expect(screen.getByTestId('task-secondary-label').textContent).toBe('长江学者课题申请材料');
+            expect(screen.getByTestId('task-working-dir').textContent).toContain('长江学者课题申请材料');
         });
+        expect(screen.getByTestId('workspace-badge-cloud')).toBeTruthy();
+        expect(screen.queryByTestId('task-secondary-label')).toBeNull();
         const title = screen.getByTestId('sidebar-task-row').querySelector('.sidebar-task-row')?.getAttribute('title') || '';
         expect(title).toContain('长江学者申请');
         expect(title).toContain('长江学者课题申请材料');
@@ -2499,8 +2634,12 @@ describe('SidebarTaskManagement', () => {
         });
 
         await waitFor(() => {
-            expect(screen.getByTestId('task-secondary-label').textContent).toBe('标书项目');
+            expect(screen.getByTestId('task-working-dir').textContent).toContain('标书项目');
         });
+        expect(screen.getByTestId('workspace-badge-cloud')).toBeTruthy();
+        // The workspace name now lives in the workspace line, not the subtitle.
+        expect(screen.queryByTestId('task-secondary-label')).toBeNull();
+        expect(screen.queryByText('最近编辑了投标文件')).toBeNull();
     });
 
     it('does not show a workspace id or duplicate title when Hub naming data is unavailable', async () => {
@@ -2537,8 +2676,10 @@ describe('SidebarTaskManagement', () => {
         });
 
         await waitFor(() => {
-            expect(screen.getByTestId('task-secondary-label').textContent).toBe('旧标书工作区');
+            expect(screen.getByTestId('task-working-dir').textContent).toContain('旧标书工作区');
         });
+        expect(screen.getByTestId('workspace-badge-cloud')).toBeTruthy();
+        expect(screen.queryByTestId('task-secondary-label')).toBeNull();
     });
 
     it('shows the maintenance intent for remote diagnosis tasks', () => {
@@ -2579,7 +2720,7 @@ describe('SidebarTaskManagement', () => {
     it('marks the create dialog with the current theme', () => {
         renderTaskManagement({ themeMode: 'dark' });
 
-        fireEvent.click(screen.getByTitle('Create task'));
+        openCreateDialog();
 
         expect(screen.getByRole('dialog').closest('.modal-backdrop')?.getAttribute('data-ai-theme')).toBe('dark');
     });
@@ -2591,7 +2732,7 @@ describe('SidebarTaskManagement', () => {
         document.body.appendChild(appRoot);
         renderTaskManagement({ themeMode: undefined });
 
-        fireEvent.click(screen.getByTitle('Create task'));
+        openCreateDialog();
 
         expect(screen.getByRole('dialog').closest('.modal-backdrop')?.getAttribute('data-ai-theme')).toBe('dark');
     });
@@ -2604,7 +2745,7 @@ describe('SidebarTaskManagement', () => {
         document.body.appendChild(appRoot);
         renderTaskManagement({ themeMode: 'dark' });
 
-        fireEvent.click(screen.getByTitle('Create task'));
+        openCreateDialog();
 
         expect(screen.getByRole('dialog').closest('.modal-backdrop')?.getAttribute('data-ai-dark-scheme')).toBe('graphite');
     });
@@ -2612,7 +2753,7 @@ describe('SidebarTaskManagement', () => {
     it('portals the create dialog outside the sidebar container so the backdrop covers the window', () => {
         const { container } = renderTaskManagement();
 
-        fireEvent.click(screen.getByTitle('Create task'));
+        openCreateDialog();
 
         const backdrop = screen.getByRole('dialog').closest('.modal-backdrop');
         expect(backdrop).toBeTruthy();
@@ -2623,7 +2764,7 @@ describe('SidebarTaskManagement', () => {
     it('raises the create dialog backdrop above app chrome and fixed dropdowns', () => {
         renderTaskManagement();
 
-        fireEvent.click(screen.getByTitle('Create task'));
+        openCreateDialog();
 
         const backdrop = screen.getByRole('dialog').closest('.modal-backdrop') as HTMLElement;
         expect(Number(backdrop.style.zIndex)).toBeGreaterThan(99999);
@@ -2636,7 +2777,7 @@ describe('SidebarTaskManagement', () => {
             taskContextMenu: { x: 10, y: 20, projectPath: baseProject.project_path, name: baseProject.name, pinned: false },
         });
 
-        fireEvent.click(screen.getByTitle('Create task'));
+        openCreateDialog();
 
         expect(setTaskContextMenu).toHaveBeenCalledWith(null);
         expect(screen.getByRole('dialog', { name: 'Create task' })).toBeTruthy();
@@ -2646,7 +2787,7 @@ describe('SidebarTaskManagement', () => {
         const setTaskContextMenu = vi.fn();
         renderTaskManagement({ setTaskContextMenu, taskContextMenu: null });
 
-        fireEvent.click(screen.getByTitle('Create task'));
+        openCreateDialog();
 
         expect(setTaskContextMenu).not.toHaveBeenCalled();
         expect(screen.getByRole('dialog', { name: 'Create task' })).toBeTruthy();
@@ -2655,7 +2796,7 @@ describe('SidebarTaskManagement', () => {
     it('closes the create dialog with Escape from any dialog control', () => {
         renderTaskManagement();
 
-        fireEvent.click(screen.getByTitle('Create task'));
+        openCreateDialog();
         fireEvent.keyDown(screen.getByRole('button', { name: 'Cancel' }), { key: 'Escape' });
 
         expect(screen.queryByRole('dialog')).toBeNull();
@@ -2664,7 +2805,7 @@ describe('SidebarTaskManagement', () => {
     it('does not close the create dialog when a backdrop click starts inside the dialog', () => {
         renderTaskManagement();
 
-        fireEvent.click(screen.getByTitle('Create task'));
+        openCreateDialog();
         const input = screen.getByRole('dialog');
         const backdrop = input.closest('.modal-backdrop') as HTMLElement;
         const dialog = input.closest('.modal-content') as HTMLElement;
@@ -2679,7 +2820,7 @@ describe('SidebarTaskManagement', () => {
         const createTask = vi.fn();
         renderTaskManagement({ createTask });
 
-        fireEvent.click(screen.getByTitle('Create task'));
+        openCreateDialog();
         expect(screen.queryByLabelText('Task command')).toBeNull();
         expect(screen.getByTestId('task-create-guidance')).toBeTruthy();
         fireEvent.click(screen.getByRole('button', { name: 'Create & open' }));
@@ -2694,8 +2835,9 @@ describe('SidebarTaskManagement', () => {
         }));
         renderTaskManagement({ createTask });
 
-        const createButton = screen.getByTitle('Create task');
+        const createButton = screen.getByTestId('task-pane-new-task-wizard');
         fireEvent.click(createButton);
+        openCreateDialog();
         const submitButton = screen.getByRole('button', { name: 'Create & open' });
         fireEvent.click(submitButton);
         fireEvent.click(submitButton);
@@ -2727,7 +2869,7 @@ describe('SidebarTaskManagement', () => {
 
         expect(await screen.findByTestId('task-cloud-create')).toBeTruthy();
 
-        fireEvent.click(screen.getByTitle('创建任务'));
+        openCreateDialog();
 
         expect(screen.getByRole('dialog', { name: '创建任务' })).toBeTruthy();
         const cloudBtn = await screen.findByTestId('task-workspace-kind-cloud') as HTMLButtonElement;
@@ -2767,7 +2909,7 @@ describe('SidebarTaskManagement', () => {
         });
 
         const cloudButton = await screen.findByTestId('task-cloud-overview');
-        const createButton = screen.getByTitle('创建任务');
+        const createButton = screen.getByTestId('task-pane-new-task-wizard');
         const cloudSvg = cloudButton.querySelector('svg');
         const cloudPath = cloudSvg?.querySelector('path');
         expect(cloudSvg).toBeTruthy();
@@ -3276,7 +3418,7 @@ describe('SidebarTaskManagement', () => {
         fireEvent.keyDown(window, { key: 'Escape' });
         expect(screen.queryByTestId('task-cloud-overview-dialog')).toBeNull();
 
-        fireEvent.click(screen.getByTitle('创建任务'));
+        openCreateDialog();
         expect(await screen.findByRole('dialog', { name: '创建任务' })).toBeTruthy();
         fireEvent.click(screen.getByTestId('task-cloud-overview'));
         expect(await screen.findByTestId('task-cloud-overview-dialog')).toBeTruthy();
@@ -3356,7 +3498,7 @@ describe('SidebarTaskManagement', () => {
         fireEvent.click(await screen.findByTestId('task-cloud-overview'));
         expect(await screen.findByTestId('task-cloud-overview-syncing')).toBeTruthy();
         fireEvent.click(screen.getByTestId('task-cloud-overview-close'));
-        fireEvent.click(screen.getByTitle('创建任务'));
+        openCreateDialog();
 
         expect(refreshTasks).not.toHaveBeenCalled();
         resolveRestore([]);
@@ -3490,7 +3632,7 @@ describe('SidebarTaskManagement', () => {
         cloudWorkspaceEntitlementMock.mockResolvedValue({ enabled: false, reason: 'machine_unbound' });
         renderTaskManagement({ lang: 'zh' });
 
-        fireEvent.click(screen.getByTitle('创建任务'));
+        openCreateDialog();
         await waitFor(() => {
             expect(screen.getByTestId('task-cloud-workspace-denied').textContent).toContain('尚未绑定 Hub 用户');
         });
@@ -3505,7 +3647,7 @@ describe('SidebarTaskManagement', () => {
         });
         renderTaskManagement({ lang: 'zh' });
 
-        fireEvent.click(screen.getByTitle('创建任务'));
+        openCreateDialog();
 
         expect(screen.getByRole('dialog', { name: '创建任务' })).toBeTruthy();
         expect((await screen.findByTestId('task-cloud-workspace-hub-banner')).textContent).toBe('Hub 不可用，云端工作区暂不可用');
@@ -3534,7 +3676,7 @@ describe('SidebarTaskManagement', () => {
         const createTask = vi.fn();
         renderTaskManagement({ lang: 'zh', createTask });
 
-        fireEvent.click(screen.getByTitle('创建任务'));
+        openCreateDialog();
         expect(await screen.findByTestId('task-workspace-kind')).toBeTruthy();
         expect(screen.getByTestId('task-workspace-kind-local')).toBeTruthy();
         expect(screen.getByTestId('task-workspace-kind-cloud')).toBeTruthy();
@@ -3567,7 +3709,7 @@ describe('SidebarTaskManagement', () => {
         const createTask = vi.fn();
         renderTaskManagement({ lang: 'zh', createTask });
 
-        fireEvent.click(screen.getByTitle('创建任务'));
+        openCreateDialog();
         fireEvent.click(document.getElementById('task-management-coding-mode')!);
         fireEvent.click(await screen.findByTestId('task-workspace-kind-cloud'));
         expect(screen.getByTestId('task-workspace-kind-cloud').getAttribute('aria-pressed')).toBe('true');
@@ -3593,7 +3735,7 @@ describe('SidebarTaskManagement', () => {
         const createTask = vi.fn();
         renderTaskManagement({ lang: 'zh', createTask });
 
-        fireEvent.click(screen.getByTitle('创建任务'));
+        openCreateDialog();
         fireEvent.click(await screen.findByTestId('task-workspace-kind-cloud'));
         fireEvent.click(screen.getByRole('button', { name: '创建并打开' }));
         await waitFor(() => {
@@ -3622,7 +3764,7 @@ describe('SidebarTaskManagement', () => {
             }],
         });
 
-        fireEvent.click(screen.getByTitle('创建任务'));
+        openCreateDialog();
         fireEvent.click(await screen.findByTestId('task-workspace-kind-cloud'));
         const workspaceList = await screen.findByTestId('task-cloud-workspace-list');
         expect(within(workspaceList).getByText('空闲工作区')).toBeTruthy();
@@ -3673,7 +3815,7 @@ describe('SidebarTaskManagement', () => {
             }],
         });
 
-        fireEvent.click(screen.getByTitle('创建任务'));
+        openCreateDialog();
         fireEvent.click(await screen.findByTestId('task-workspace-kind-cloud'));
         expect(within(await screen.findByTestId('task-cloud-workspace-list')).getByText('工作区 1')).toBeTruthy();
         expect(screen.getByTestId('task-cloud-workspace-bound').textContent).toContain('新面板');
@@ -3723,7 +3865,7 @@ describe('SidebarTaskManagement', () => {
             }],
         });
 
-        fireEvent.click(screen.getByTitle('创建任务'));
+        openCreateDialog();
         fireEvent.click(await screen.findByTestId('task-workspace-kind-cloud'));
         fireEvent.click(screen.getByRole('button', { name: '创建并打开' }));
         await waitFor(() => expect(provisionCloudWorkspaceTaskMock).toHaveBeenCalledWith('新建云端工作区任务', '', '', ''));
@@ -3764,7 +3906,7 @@ describe('SidebarTaskManagement', () => {
             }],
         });
 
-        fireEvent.click(screen.getByTitle('创建任务'));
+        openCreateDialog();
         fireEvent.click(await screen.findByTestId('task-workspace-kind-cloud'));
         expect(await screen.findByTestId('task-cloud-workspace-bound')).toBeTruthy();
         fireEvent.click(screen.getByRole('button', { name: '创建并打开' }));
@@ -3794,7 +3936,7 @@ describe('SidebarTaskManagement', () => {
             }],
         });
 
-        fireEvent.click(screen.getByTitle('创建任务'));
+        openCreateDialog();
         fireEvent.click(await screen.findByTestId('task-workspace-kind-cloud'));
         expect(await screen.findByRole('button', { name: '打开现有任务' })).toBeTruthy();
         expect((screen.getByRole('button', { name: '创建并打开' }) as HTMLButtonElement).disabled).toBe(true);
@@ -3819,7 +3961,7 @@ describe('SidebarTaskManagement', () => {
         }));
         renderTaskManagement({ lang: 'zh', createTask });
 
-        fireEvent.click(screen.getByTitle('创建任务'));
+        openCreateDialog();
         fireEvent.click(await screen.findByTestId('task-workspace-kind-cloud'));
         fireEvent.click(await screen.findByRole('button', { name: '创建并打开' }));
         expect(await screen.findByTestId('task-autocreate-progress')).toBeTruthy();
@@ -3844,7 +3986,7 @@ describe('SidebarTaskManagement', () => {
         const createTask = vi.fn().mockResolvedValue(undefined);
         renderTaskManagement({ lang: 'zh', createTask });
 
-        fireEvent.click(screen.getByTitle('创建任务'));
+        openCreateDialog();
         fireEvent.click(await screen.findByTestId('task-workspace-kind-cloud'));
         expect(await screen.findByText('标书项目')).toBeTruthy();
 
@@ -3852,7 +3994,7 @@ describe('SidebarTaskManagement', () => {
         cloudWorkspaceEntitlementMock.mockImplementation(() => new Promise(resolve => {
             resolveStale = resolve;
         }));
-        fireEvent.click(screen.getByTitle('创建任务'));
+        openCreateDialog();
         fireEvent.click(await screen.findByTestId('task-workspace-kind-cloud'));
         fireEvent.click(screen.getByTestId('task-cloud-workspace-create'));
         expect(await screen.findByText('工作区 2')).toBeTruthy();
@@ -3890,7 +4032,7 @@ describe('SidebarTaskManagement', () => {
         });
         renderTaskManagement({ lang: 'zh' });
 
-        fireEvent.click(screen.getByTitle('创建任务'));
+        openCreateDialog();
         expect(await screen.findByTestId('task-workspace-kind')).toBeTruthy();
         fireEvent.click(screen.getByTestId('task-workspace-kind-cloud'));
         expect(await screen.findByTestId('task-cloud-workspace-list')).toBeTruthy();
@@ -3914,7 +4056,7 @@ describe('SidebarTaskManagement', () => {
         });
         renderTaskManagement({ lang: 'zh' });
 
-        fireEvent.click(screen.getByTitle('创建任务'));
+        openCreateDialog();
         fireEvent.click(await screen.findByTestId('task-workspace-kind-cloud'));
         expect((await screen.findByTestId('task-cloud-workspace-lease')).textContent).toContain('占用中（其他设备：other-pc）');
     });
@@ -3930,7 +4072,7 @@ describe('SidebarTaskManagement', () => {
         const createTask = vi.fn();
         renderTaskManagement({ createTask });
 
-        fireEvent.click(screen.getByTitle('Create task'));
+        openCreateDialog();
         expect(await screen.findByTestId('task-workspace-kind-cloud')).toBeTruthy();
         fireEvent.click(document.getElementById('task-management-remote-coding-mode')!);
 
@@ -3991,7 +4133,7 @@ describe('SidebarTaskManagement', () => {
         });
         renderTaskManagement({ lang: 'zh' });
 
-        fireEvent.click(screen.getByTitle('创建任务'));
+        openCreateDialog();
         fireEvent.click(await screen.findByTestId('task-workspace-kind-cloud'));
         const createBtn = await screen.findByTestId('task-cloud-workspace-create') as HTMLButtonElement;
         expect(createBtn.disabled).toBe(true);
@@ -4009,7 +4151,7 @@ describe('SidebarTaskManagement', () => {
         });
         renderTaskManagement({ lang: 'zh' });
 
-        fireEvent.click(screen.getByTitle('创建任务'));
+        openCreateDialog();
         fireEvent.click(await screen.findByTestId('task-workspace-kind-cloud'));
         const createBtn = await screen.findByTestId('task-cloud-workspace-create') as HTMLButtonElement;
         expect(createBtn.disabled).toBe(true);
@@ -4037,7 +4179,7 @@ describe('SidebarTaskManagement', () => {
         });
         renderTaskManagement({ lang: 'zh' });
 
-        fireEvent.click(screen.getByTitle('创建任务'));
+        openCreateDialog();
         fireEvent.click(await screen.findByTestId('task-workspace-kind-cloud'));
         expect(await screen.findByTestId('task-cloud-workspace-deleted')).toBeTruthy();
         expect(screen.getByText('旧项目')).toBeTruthy();
@@ -4068,7 +4210,7 @@ describe('SidebarTaskManagement', () => {
         forceDeleteCloudWorkspaceMock.mockResolvedValue(undefined);
         renderTaskManagement({ lang: 'zh' });
 
-        fireEvent.click(screen.getByTitle('创建任务'));
+        openCreateDialog();
         fireEvent.click(await screen.findByTestId('task-workspace-kind-cloud'));
         fireEvent.click(await screen.findByTestId('task-cloud-workspace-force-delete'));
 
@@ -4163,5 +4305,163 @@ describe('cloud sync progress indicator', () => {
         expect(screen.getByTestId('task-cloud-sync-progress')).toBeTruthy();
         expect(screen.getByText('No tasks in this group')).toBeTruthy();
         expect(screen.queryByText('Running task')).toBeNull();
+    });
+});
+
+
+describe('create dialog expert type picker', () => {
+    const codeExpert = {
+        id: 'expert-code-reviewer',
+        name: 'Code Reviewer',
+        description: 'Reviews code quality and style',
+        icon: '🔍',
+        system_prompt: '',
+        tools: [],
+        skills: [],
+        builtin: false,
+        created_at: '',
+        updated_at: '',
+    };
+    const paperExpert = {
+        id: 'expert-paper-writer',
+        name: 'Paper Writer',
+        description: 'Drafts academic paper sections',
+        icon: '✍️',
+        system_prompt: '',
+        tools: [],
+        skills: [],
+        builtin: false,
+        created_at: '',
+        updated_at: '',
+    };
+
+    beforeEach(() => {
+        listExpertsMock.mockResolvedValue(JSON.stringify([codeExpert, paperExpert]));
+    });
+
+    it('keeps the general expert default on the chat type and submits via createTask', async () => {
+        const createTask = vi.fn().mockResolvedValue(undefined);
+        const onCreateExpertTask = vi.fn().mockResolvedValue(undefined);
+        renderTaskManagement({ createTask, onCreateExpertTask });
+
+        openCreateDialog();
+        expect(screen.getByTestId('task-expert-type')).toBeTruthy();
+        expect(screen.getByTestId('task-expert-picker-toggle').textContent).toContain('General expert');
+        // Working directory row stays visible without a concrete expert.
+        expect(document.getElementById('task-working-directory')).toBeTruthy();
+
+        fireEvent.click(screen.getByRole('button', { name: 'Create & open' }));
+
+        await waitFor(() => expect(createTask).toHaveBeenCalledWith('New task'));
+        expect(onCreateExpertTask).not.toHaveBeenCalled();
+    });
+
+    it('filters the expert list, hides the working directory row, and submits via onCreateExpertTask', async () => {
+        const createTask = vi.fn().mockResolvedValue(undefined);
+        const onCreateExpertTask = vi.fn().mockResolvedValue(undefined);
+        renderTaskManagement({ createTask, onCreateExpertTask });
+
+        openCreateDialog();
+        fireEvent.click(screen.getByTestId('task-expert-picker-toggle'));
+
+        const filter = await screen.findByTestId('task-expert-filter');
+        fireEvent.change(filter, { target: { value: 'paper' } });
+
+        expect(screen.queryByText('Code Reviewer')).toBeNull();
+        const paperOption = await screen.findByText('Paper Writer');
+        fireEvent.click(paperOption.closest('button')!);
+
+        // Picker collapses and the working directory row is gone.
+        expect(screen.queryByTestId('task-expert-picker')).toBeNull();
+        expect(document.getElementById('task-working-directory')).toBeNull();
+        expect(screen.getByTestId('task-expert-picker-toggle').textContent).toContain('Paper Writer');
+
+        fireEvent.click(screen.getByRole('button', { name: 'Create & open' }));
+
+        await waitFor(() => expect(onCreateExpertTask).toHaveBeenCalledWith(expect.objectContaining({ id: 'expert-paper-writer' })));
+        expect(createTask).not.toHaveBeenCalled();
+    });
+
+    it('clears a previously picked working folder once an expert is selected', async () => {
+        selectWorkingDirMock.mockResolvedValue('D:/work/selected-folder');
+        const createTask = vi.fn().mockResolvedValue(undefined);
+        const onCreateExpertTask = vi.fn().mockResolvedValue(undefined);
+        renderTaskManagement({ createTask, onCreateExpertTask });
+
+        openCreateDialog();
+        fireEvent.click(screen.getByRole('button', { name: 'Choose working folder' }));
+        await waitFor(() => expect(screen.getByText('D:/work/selected-folder')).toBeTruthy());
+
+        fireEvent.click(screen.getByTestId('task-expert-picker-toggle'));
+        fireEvent.click((await screen.findByText('Code Reviewer')).closest('button')!);
+        // Working directory row is hidden and the stale folder is dropped.
+        expect(document.getElementById('task-working-directory')).toBeNull();
+
+        // Switching back to the general expert restores the row without the stale folder.
+        fireEvent.click(screen.getByTestId('task-expert-picker-toggle'));
+        fireEvent.click(within(screen.getByTestId('task-expert-picker')).getByText('General expert'));
+        expect(document.getElementById('task-working-directory')?.getAttribute('title')).toBe('Choose working folder');
+
+        // Back to the expert; the ignored folder must not reach the create call.
+        fireEvent.click(screen.getByTestId('task-expert-picker-toggle'));
+        fireEvent.click(within(screen.getByTestId('task-expert-picker')).getByText('Code Reviewer'));
+        fireEvent.click(screen.getByRole('button', { name: 'Create & open' }));
+        await waitFor(() => expect(onCreateExpertTask).toHaveBeenCalledWith(expect.objectContaining({ id: 'expert-code-reviewer' })));
+        expect(createTask).not.toHaveBeenCalled();
+    });
+
+    it('merges installed managed-industry experts and skips catalog placeholders', async () => {
+        listManagedIndustryExpertsMock.mockResolvedValue(JSON.stringify([
+            { asset_id: 'asset-1', local_expert_id: 'managed-local-1', installed: true, name: 'Industry Paper Pro', description: 'Managed paper expert', icon: '🏭' },
+            { asset_id: 'asset-2', local_expert_id: '', installed: false, name: 'Paid Expert', description: 'Purchase required', icon: '🔒', purchase_required: true },
+        ]));
+        const createTask = vi.fn().mockResolvedValue(undefined);
+        const onCreateExpertTask = vi.fn().mockResolvedValue(undefined);
+        renderTaskManagement({ createTask, onCreateExpertTask });
+
+        openCreateDialog();
+        fireEvent.click(screen.getByTestId('task-expert-picker-toggle'));
+
+        // Installed managed expert is selectable via its real local id…
+        const managedOption = await screen.findByText('Industry Paper Pro');
+        fireEvent.click(managedOption.closest('button')!);
+        // …while the purchase-required placeholder never appears.
+        expect(screen.queryByText('Paid Expert')).toBeNull();
+
+        fireEvent.click(screen.getByRole('button', { name: 'Create & open' }));
+        await waitFor(() => expect(onCreateExpertTask).toHaveBeenCalledWith(expect.objectContaining({ id: 'managed-local-1' })));
+        expect(createTask).not.toHaveBeenCalled();
+    });
+
+    it('hides the expert row for the local coding type and submits createTask with the mode', async () => {
+        const createTask = vi.fn().mockResolvedValue(undefined);
+        const onCreateExpertTask = vi.fn().mockResolvedValue(undefined);
+        renderTaskManagement({ createTask, onCreateExpertTask });
+
+        openCreateDialog();
+        expect(screen.getByTestId('task-expert-type')).toBeTruthy();
+
+        fireEvent.click(screen.getByRole('button', { name: 'Coding' }));
+        expect(screen.queryByTestId('task-expert-type')).toBeNull();
+
+        fireEvent.click(screen.getByRole('button', { name: 'Create & open' }));
+        await waitFor(() => expect(createTask).toHaveBeenCalledWith('New local coding task', undefined, 'coding_dev'));
+        expect(onCreateExpertTask).not.toHaveBeenCalled();
+    });
+
+    it('resets the expert selection to the general expert when the dialog is closed and reopened', async () => {
+        const onCreateExpertTask = vi.fn().mockResolvedValue(undefined);
+        renderTaskManagement({ onCreateExpertTask });
+
+        openCreateDialog();
+        fireEvent.click(screen.getByTestId('task-expert-picker-toggle'));
+        fireEvent.click((await screen.findByText('Code Reviewer')).closest('button')!);
+        expect(screen.getByTestId('task-expert-picker-toggle').textContent).toContain('Code Reviewer');
+
+        fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+        openCreateDialog();
+
+        expect(screen.getByTestId('task-expert-picker-toggle').textContent).toContain('General expert');
+        expect(document.getElementById('task-working-directory')).toBeTruthy();
     });
 });

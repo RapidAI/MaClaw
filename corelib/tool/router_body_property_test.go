@@ -145,6 +145,10 @@ func buildLargeToolSet(reg *Registry) []map[string]interface{} {
 // When not configured, no Rerank call.
 // **Validates: Requirements 8.1, 8.2, 8.4, 9.3**
 func TestProperty_RerankerCallContract(t *testing.T) {
+	// Provision fixture names once for the whole property run: the legacy
+	// adapter catalog filters unprovisioned names before ranking, which would
+	// leave the reranker with zero candidates in every iteration.
+	provisionRouterFixtureTools(t, numberedFixtureNames("extra_", MaxToolBudget+5)...)
 	rapid.Check(t, func(t *rapid.T) {
 		useReranker := rapid.Bool().Draw(t, "useReranker")
 

@@ -2,6 +2,7 @@ package guiapp
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/intent"
@@ -212,11 +213,19 @@ func TestToolRouter_RelevanceRanking(t *testing.T) {
 	}
 }
 
-func TestToolRouter_RelevanceRanking_AboveBudget(t *testing.T) {
+// TestToolRouter_UnprovisionedDynamicsNeverRouted locks the current contract:
+// the legacy adapter provision catalog (corelib/tool/legacy_adapter_catalog.go)
+// is a compile-time, owner-reviewed list with no test-time seeding by design —
+// a model-visible host name without a live reviewed provision is
+// catalog_incomplete and must never become a routing candidate, no matter how
+// relevant its description is. The old RelevanceRanking_AboveBudget premise
+// (BM25 rescues an unprovisioned dynamic tool into over-budget slots) tested
+// the pre-provision-gate architecture and cannot be recreated without an
+// owner-reviewed catalog entry.
+func TestToolRouter_UnprovisionedDynamicsNeverRouted(t *testing.T) {
 	builtins := makeBuiltinDefs()
-	// Add enough dynamic tools to exceed budget regardless of builtin count.
 	var dynamic []map[string]interface{}
-	dynamic = append(dynamic, makeDynamicTool("search_web", "Search the web for information"))
+	dynamic = append(dynamic, makeDynamicTool("search_web", "Search the web for information — exactly matches this query"))
 	for i := 0; i < 30; i++ {
 		dynamic = append(dynamic, makeDynamicTool(
 			fmt.Sprintf("filler_%d", i),
@@ -228,16 +237,11 @@ func TestToolRouter_RelevanceRanking_AboveBudget(t *testing.T) {
 	router := NewToolRouter(nil)
 	result := router.Route("search the web for golang tutorials", allTools)
 
-	// search_web should be included due to high relevance.
-	found := false
 	for _, tool := range result {
-		if extractToolName(tool) == "search_web" {
-			found = true
-			break
+		name := extractToolName(tool)
+		if name == "search_web" || strings.HasPrefix(name, "filler_") {
+			t.Errorf("unprovisioned dynamic tool %q must never be routed, got result with it", name)
 		}
-	}
-	if !found {
-		t.Error("search_web tool should be included due to high relevance")
 	}
 }
 

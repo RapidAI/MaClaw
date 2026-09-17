@@ -46,6 +46,13 @@ export const EVENT_PROJECT_TASK_RENAMED = "project-task:renamed";
  */
 export const EVENT_EXPERT_TASK_DELETED = "expert-task:deleted";
 
+/**
+ * Pure signal (no payload) emitted after any expert-list mutation: local
+ * expert save/delete, expert market install/uninstall, and managed industry
+ * expert install. Frontend listeners re-fetch their expert lists.
+ */
+export const EVENT_EXPERTS_CHANGED = "experts:changed";
+
 /** Emitted when the background update checker (startup delay + periodic re-check) finds a newer application release. */
 export const EVENT_APP_UPDATE_AVAILABLE = "app-update-available";
 
@@ -146,4 +153,45 @@ export type OpenCreateCodingTaskDetail = {
     remoteSafety?: "diagnosis";
     /** When true and required env is present, create the task immediately. */
     autoCreate?: boolean;
+};
+
+/**
+ * Dispatched by the task-pane "新建任务" header button; opens the AI assistant
+ * welcome page as a new-task wizard (local tab, marked in tab state). The task
+ * is only created when the user sends the first message from that wizard page.
+ */
+export const EVENT_OPEN_NEW_TASK_WIZARD = "maclaw:open-new-task-wizard";
+
+/**
+ * Dispatched after the welcome-page TaskConfigBar wizard already created a
+ * task via CreateTaskUnified; handled by App to open the new task's assistant
+ * tab and auto-send the first message (design §6.4).
+ *
+ * detail: {
+ *   projectPath: string;            // CreateTaskUnified 返回值
+ *   taskTitle?: string;
+ *   initialMessage?: string;        // 输入框原文，作为首条消息发送
+ *   agentMode?: 'coding_dev' | 'remote_coding_dev';
+ *   cloudWorkspaceId?: string;
+ *   remoteHost?: string;
+ *   remoteSafety?: 'diagnosis';
+ *   remoteNeedsReconnect?: boolean; // 远程武装失败：首条消息延迟到 SSH 重连后
+ *   warning?: string;               // 次级步骤失败的降级说明，展示在新页签内
+ *   noWorkflowInterception?: boolean; // 工作流=无：首条消息跳过工作流语义拦截
+ * }
+ */
+export const EVENT_OPEN_TASK_LAUNCH = "maclaw:open-task-launch";
+
+/** Payload shape for EVENT_OPEN_TASK_LAUNCH. */
+export type OpenTaskLaunchDetail = {
+    projectPath: string;
+    taskTitle?: string;
+    initialMessage?: string;
+    agentMode?: "coding_dev" | "remote_coding_dev";
+    cloudWorkspaceId?: string;
+    remoteHost?: string;
+    remoteSafety?: "diagnosis";
+    remoteNeedsReconnect?: boolean;
+    warning?: string;
+    noWorkflowInterception?: boolean;
 };

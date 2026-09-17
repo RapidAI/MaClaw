@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"log"
 	"mime"
 	"net/http"
@@ -376,14 +377,26 @@ func projectPathFromUserID(userID string) string {
 	return projectPathFromSessionOwnerID(userID)
 }
 
-// trustedPrincipalBoundWorkspace returns the explicit tab bind or
-// desktop-user:<project> path. The main local tab is special: its 切换目录
-// choice is an explicit user decision too, but SetTabWorkingDir stores it in
-// the global working_directory config rather than the per-owner map, so a
-// plain "desktop-user" principal resolves to that configured directory. It
-// deliberately does not fall back to the built-in ~/.maclaw/workspace
-// default, and isolated owners (project/expert/ACP/group sessions) never
-// inherit the main tab's directory.
+// trustedPrincipalBoundWorkspace resolves the workspace every semantic tool
+// (write_file, bash, office write, ...) confines itself to. The invariant is
+// total: any non-empty principal running in a live app context has a
+// workspace, so a tool that is advertised to the model can never fail with
+// "workspace unavailable". Resolution order:
+//
+//  1. the explicit per-owner tab bind (BoundWorkingDirForOwner),
+//  2. the project path carried by a desktop-user:<project> owner id,
+//  3. the main local tab's configured working_directory — but only for the
+//     plain "desktop-user" principal, since SetTabWorkingDir stores that
+//     choice in the global config rather than the per-owner map,
+//  4. a provisioned per-owner session workspace under
+//     <app base dir>/session-workspaces/<id> (getMaclawBaseDir tracks the
+//     data_dir config; it is never the built-in ~/.maclaw/workspace default).
+//
+// Isolation is preserved by construction: an owner without an explicit
+// choice never inherits the main tab's directory (nor the built-in
+// ~/.maclaw/workspace default) — it gets its own dedicated directory, one per
+// owner id, so expert/ACP/group sessions stay sandboxed from each other and
+// from the main tab while remaining fully functional.
 func trustedPrincipalBoundWorkspace(h *IMMessageHandler, principalID string) string {
 	if h != nil && h.app != nil {
 		if dir := strings.TrimSpace(h.app.BoundWorkingDirForOwner(principalID)); dir != "" {
@@ -400,7 +413,49 @@ func trustedPrincipalBoundWorkspace(h *IMMessageHandler, principalID string) str
 			}
 		}
 	}
-	return ""
+	return trustedOwnerSessionWorkspace(h, principalID)
+}
+
+// trustedOwnerSessionWorkspace provisions the fallback workspace for owners
+// without an explicit directory choice (2026-09-15: expert sessions like
+// desktop-user:expert:builtin-pptx-maker resolve nothing through the three
+// explicit steps and every workspace tool failed with
+// trusted_file_write_path_unavailable while the turn prompt advertised those
+// tools as available). The directory is deterministic per owner id and
+// created on demand; an empty principal or an unprovisionable directory
+// stays "unavailable" rather than silently falling back to a shared location.
+func trustedOwnerSessionWorkspace(h *IMMessageHandler, principalID string) string {
+	principalID = strings.TrimSpace(principalID)
+	if h == nil || h.app == nil || principalID == "" {
+		return ""
+	}
+	dir := filepath.Join(h.app.getMaclawBaseDir(), "session-workspaces", trustedOwnerWorkspaceDirName(principalID))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return ""
+	}
+	return dir
+}
+
+// trustedOwnerWorkspaceDirName maps an owner id to a safe, unique directory
+// name. Owner ids contain characters that are illegal in Windows file names
+// (notably ':'), so every run outside [A-Za-z0-9._-] collapses to '_' and a
+// stable FNV-1a suffix keeps distinct ids ("a:b" vs "a_b") from colliding.
+func trustedOwnerWorkspaceDirName(principalID string) string {
+	var b strings.Builder
+	b.Grow(len(principalID) + 9)
+	for _, r := range principalID {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == '.', r == '-', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	sum := fnv.New32a()
+	_, _ = sum.Write([]byte(principalID))
+	fmt.Fprintf(&b, "_%08x", sum.Sum32())
+	return b.String()
 }
 
 func (h *IMMessageHandler) executionProjectPathForOwner(ownerID string) string {

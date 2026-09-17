@@ -159,6 +159,14 @@ type WorkflowTemplate struct {
 	// (IUM LLM) which returns this type as the category. This prevents
 	// accidental BM25 token overlaps from triggering the workflow.
 	SemanticOnly bool
+
+	// NoWorkingDirRequired declares the template can run without a working
+	// directory (e.g. pure document/Q&A workflows). The zero value false keeps
+	// the task-wizard convention "unset = required": templates that do not
+	// declare anything are treated as needing a working directory. guiapp's
+	// ListWorkflowTemplateSummaries reports the negation as
+	// WorkflowTemplateSummary.RequiresWorkingDir.
+	NoWorkingDirRequired bool
 }
 
 // BackfillPhaseDependenciesFromTemplate adds dependencies introduced by a newer

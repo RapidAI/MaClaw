@@ -172,7 +172,7 @@ func (h *IMMessageHandler) executeAgentLoopLLMRound(opts agentLoopLLMRoundOption
 		LoopID:    loopID,
 		Iteration: opts.Iteration,
 	})
-	resp, err := h.doLLMRequestStream(reqCtx, opts.Config, opts.Conversation, opts.Tools, opts.HTTPClient, opts.OnToken, streamMetrics)
+	resp, err := h.doLLMRequestStream(reqCtx, opts.Config, llmEndpointCategoryMainStream, opts.Conversation, opts.Tools, opts.HTTPClient, opts.OnToken, streamMetrics)
 	if !opts.FirstRequestMarked || opts.FirstRequestMetrics.RequestBuildElapsed == 0 {
 		opts.FirstRequestMetrics.AddStreamMetrics(streamMetrics)
 	}

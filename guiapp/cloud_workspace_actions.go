@@ -744,7 +744,7 @@ func (a *App) findLocalCloudWorkspaceTask(workspaceID string, includeHidden bool
 	for _, rec := range pi.ListAllMatching(func(candidate memory.ProjectRecord) bool {
 		return recordIsLocalCloudWorkspaceTask(candidate, workspaceID)
 	}) {
-		result := projectRecordToSearchResult(pi, rec)
+		result := a.projectRecordToSearchResult(pi, rec)
 		if pi.IsArchived(rec.ProjectPath) {
 			if includeHidden && strings.TrimSpace(archived.ProjectPath) == "" {
 				archived = result
@@ -794,7 +794,7 @@ func (a *App) visibleCloudWorkspaceTaskAt(workspaceID, projectPath string) Proje
 	if !recordIsLocalCloudWorkspaceTask(*rec, workspaceID) {
 		return ProjectSearchResult{}
 	}
-	return projectRecordToSearchResult(pi, *rec)
+	return a.projectRecordToSearchResult(pi, *rec)
 }
 
 func (a *App) bindPreparedCloudWorkspaceTask(workspaceID string, result ProjectSearchResult, localPath string) ProjectSearchResult {
