@@ -227,7 +227,7 @@ func (h *IMMessageHandler) executeBonusRoundToolWithConfig(tc llm.ToolCall, onPr
 		return result
 	}
 	// Expert allow-list gate (execution layer), same as the main loop path.
-	if text := expertToolExecutionRejection(userID, tc.Function.Name, tc.Function.Arguments); text != "" {
+	if text := h.expertToolExecutionRejection(userID, tc.Function.Name, tc.Function.Arguments); text != "" {
 		log.Printf("[agent-loop] rejected bonus-round tool outside expert allow-list %q (user=%s)", tc.Function.Name, userID)
 		return toolExecutionResult{Text: text, ToolName: tc.Function.Name, ToolKind: classifyAgentToolKind(tc.Function.Name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
 	}

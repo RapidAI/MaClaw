@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"os/signal"
 	"strconv"
@@ -188,6 +189,20 @@ func runServer(args []string) error {
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- server.ListenAndServe()
+	}()
+
+	// Localhost-only pprof endpoint for production CPU/memory diagnosis.
+	// Binds 127.0.0.1 so only someone with host access can read profiles.
+	pprofMux := http.NewServeMux()
+	pprofMux.HandleFunc("/debug/pprof/", pprof.Index)
+	pprofMux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	pprofMux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	pprofMux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	pprofMux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	go func() {
+		if err := http.ListenAndServe("127.0.0.1:6061", pprofMux); err != nil {
+			log.Printf("[hubcenter] pprof listener stopped: %v", err)
+		}
 	}()
 
 	select {

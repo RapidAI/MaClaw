@@ -38,7 +38,7 @@ func weatherPDFRouteTools() []map[string]interface{} {
 		// task-relevant tools
 		{"web_fetch", "Fetch content from a web page URL"},
 		{"web_search", "Search the web for current information"},
-		{"generate_pdf", "Generate a formatted PDF document from markdown or HTML"},
+		{"generate_pdf", "Generate a formatted PDF document"},
 		// noise tools
 		{"git_status", "Show the working tree status and recent changes"},
 		{"knowledge_search", "Search the local knowledge base"},
@@ -91,7 +91,7 @@ func TestRouter_WeatherPDFTaskKeepsNeededTools(t *testing.T) {
 			t.Fatalf("task-needed tool %q missing from routed surface: %#v", want, names)
 		}
 	}
-	for _, forbidden := range []string{"ssh", "browser", "screenshot"} {
+	for _, forbidden := range []string{"ssh", "browser", "screenshot", "computer_click"} {
 		if names[forbidden] {
 			t.Fatalf("sensitive conditional tool %q must stay fail-closed: %#v", forbidden, names)
 		}

@@ -49,6 +49,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/steering"
 	"github.com/RapidAI/CodeClaw/corelib/task"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/corelib/tts"
 	"github.com/RapidAI/CodeClaw/corelib/weixin"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
@@ -1479,6 +1480,12 @@ func (m *tuiModel) handleSlashCommand(text string) tea.Cmd {
 			msg = msg + "\n" + line
 		}
 		if line := agent.FormatPromptProfileLine(); line != "" {
+			msg = msg + "\n" + line
+		}
+		if line := tool.FormatRoutingLine(); line != "" {
+			msg = msg + "\n" + line
+		}
+		if line := tool.FormatPermissionDualEvalLine(); line != "" {
 			msg = msg + "\n" + line
 		}
 		if !agent.LightToolRetryEnabled() {
@@ -3360,6 +3367,8 @@ func applyConfigValue(cfg *corelib.AppConfig, key, value string) {
 
 // tuiCallbacks implements agent.LoopCallbacks for the TUI.
 type tuiCallbacks struct {
+	usageTrackerFeed
+
 	app      *TUIApp
 	program  *tea.Program
 	stopped  bool
@@ -3406,6 +3415,10 @@ type tuiCallbacks struct {
 	// Attempt as waiting_child, while explicit Runtime cancellation closes this
 	// child context as well as its durable task subtree.
 	executionCtx context.Context
+	// dispatcherOnce builds the Phase 2 pilot ToolDispatcher at most once per
+	// callback; dispatcher stays nil unless MACLAW_TOOL_DISPATCHER=on.
+	dispatcherOnce sync.Once
+	dispatcher     *agent.NameDispatcher
 }
 
 // CurrentPromptProfile implements agent.PromptProfileProvider for light-tool deny.
@@ -3939,6 +3952,8 @@ var tuiBtwToolNames = map[string]bool{
 }
 
 type tuiBtwCallbacks struct {
+	usageTrackerFeed
+
 	app       *TUIApp
 	program   *tea.Program
 	stopped   bool
@@ -4040,6 +4055,10 @@ func (c *tuiBtwCallbacks) BuildTools(userText string) []map[string]interface{} {
 	// Definitions are request-owned, including for a minimal /btw query. A
 	// retry or later model round must rebuild its complete replacement from the
 	// current registry instead of reusing an in-memory predecessor slice.
+	// Filter-policy note (phase0 baseline §1.2/§1.3 finding #2): the light
+	// filter stays intentionally absent — /btw's minimal set is deliberate
+	// policy, not a missing filter, and its Execute side already enforces
+	// recall-only memory use.
 	return buildTuiBtwToolDefinitions(c.app)
 }
 

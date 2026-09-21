@@ -15,6 +15,7 @@ import {
     type RecordingCompleteResult,
 } from "./RecordingSessionCard";
 import { createIncrementalRenderState, renderContentIncremental, type IncrementalRenderState } from "./IncrementalMarkdownRenderer";
+import { matchTaskSnapshotForProject, buildExecutionSnapshotRaw, executionSnapshotRawIsRunning } from "./taskExecutionSnapshot";
 import { formFieldInputStyle, formFieldLabelColor, maximizedInlineStyle, overlayStyle, primaryFilledButtonStyle, type Theme } from "./aiAssistantPanelTheme";
 import { getAssistantDarkScheme } from "./assistantDarkSchemes";
 import { DEFAULT_ASSISTANT_LIGHT_SCHEME_ID, getAssistantLightScheme } from "./assistantLightSchemes";
@@ -3960,6 +3961,23 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         if (changed) setProjectTabRouteVersion(version => version + 1);
     }, [busySessionKeys, getTabState, messages, persistProjectTabMsgIds, rawBusySessionKeys, saveTabState]);
     const hasExplicitBusySessionList = Array.isArray(rawBusySessionKeys);
+    // Durable snapshot of the active task's execution state. Live round
+    // tracking (busySessionKeys) only covers sessions this panel instance
+    // sent, so a task still running after a switch/restore (e.g. remote
+    // coding steps) would leave the composer looking idle while the badge
+    // shows 进行中.
+    const activeTaskExecutionSnapshot = useMemo(() => {
+        const activeTask = matchTaskSnapshotForProject(taskListProp, String(activeTab?.projectPath || ""));
+        const raw = buildExecutionSnapshotRaw({
+            activeTask,
+            workflowCurrentPhaseStatus,
+            workflowAwaitingReview,
+            workflowActive: workflowState.active,
+            codingStepStatuses,
+        });
+        return { task: activeTask, raw };
+    }, [activeTab?.projectPath, codingStepStatuses, taskListProp, workflowAwaitingReview, workflowCurrentPhaseStatus, workflowState.active]);
+    const activeTaskSnapshotRunning = useMemo(() => executionSnapshotRawIsRunning(activeTaskExecutionSnapshot.raw), [activeTaskExecutionSnapshot]);
     const hasExplicitStreamingSessionList = Array.isArray(rawStreamingSessionKeys);
     const panelSessionIsSending = panelSendInFlightSessionKeys.has(activeSessionKey);
     const activeSessionIsSending = panelSessionIsSending || (hasExplicitBusySessionList
@@ -4083,7 +4101,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     latestShowChatUIRef.current = showChatUI;
     const showThinkingState = activeSessionIsStreaming;
     const showProcessingState = workflowAwaitingForm || workflowFormGeneratingDocument || (isBusy && (!activeSessionIsStreaming || hasActiveDetachedProjectRound));
-    const inputVisualBusy = isBusy || workflowAwaitingForm || workflowFormGeneratingDocument;
+    const inputVisualBusy = isBusy || activeTaskSnapshotRunning || workflowAwaitingForm || workflowFormGeneratingDocument;
     const showBusySpinner = inputVisualBusy;
     const codingAgentTurnSnapshot = useMemo(() => activeSessionHasWork ? latestCodingAgentTurnSnapshot(displayProgressMessages) : null, [activeSessionHasWork, displayProgressMessages]);
     const codingAgentProgress = useMemo(() => codingAgentTurnSnapshot?.latest || activeCodingAgentProgress(displayProgressMessages, activeSessionHasWork), [activeSessionHasWork, codingAgentTurnSnapshot, displayProgressMessages]);
@@ -4505,23 +4523,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const taskCreatedTimestamp = displayMessages.find((message: ChatMessage) => message.role === "user")?.timestamp ?? displayMessages[0]?.timestamp;
     const taskCreatedLabel = formatTaskCreatedAt(taskCreatedTimestamp, lang);
     const taskExecutionStatus = useMemo(() => {
-        const activeProjectPath = String(activeTab?.projectPath || "").trim().replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
-        const activeTask = Array.isArray(taskListProp)
-            ? taskListProp.find((task) => {
-                const candidate = String(task?.project_path || task?.active_workflow?.project_path || "").trim().replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
-                return !!candidate && !!activeProjectPath && candidate === activeProjectPath;
-            })
-            : undefined;
-        const workflowRaw = [
-            activeTask?.active_workflow?.status,
-            activeTask?.active_workflow?.phase,
-            activeTask?.active_workflow?.pending_review ? "pending_review" : "",
-            workflowCurrentPhaseStatus,
-            workflowAwaitingReview ? "waiting_confirm" : "",
-            workflowState.active ? "active" : "",
-        ].filter(Boolean).join(" ").toLowerCase();
-        const stepRaw = codingStepStatuses.map((step) => String(step.status || "").toLowerCase()).join(" ");
-        const raw = `${workflowRaw} ${stepRaw}`;
+        const activeTask = activeTaskExecutionSnapshot.task;
+        const raw = activeTaskExecutionSnapshot.raw;
         if (/(fail|error|blocked|verify_failed|失败|错误|阻塞)/.test(raw)) {
             return { label: localizeText(lang, "Failed", "失败", "失敗"), tone: "failed" as const };
         }
@@ -4544,7 +4547,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             return { label: localizeText(lang, "Completed", "已完成", "已完成"), tone: "completed" as const };
         }
         return { label: localizeText(lang, "Pending", "待处理", "待處理"), tone: "pending" as const };
-    }, [activeProjectPreparing, activeTab?.projectPath, cancelPending, codingStepStatuses, displayMessages.length, isBusy, lang, taskListProp, workflowAwaitingReview, workflowCurrentPhaseRunning, workflowCurrentPhaseStatus, workflowState.active]);
+    }, [activeProjectPreparing, activeTaskExecutionSnapshot, cancelPending, codingStepStatuses, displayMessages.length, isBusy, lang, workflowAwaitingReview, workflowCurrentPhaseRunning, workflowState.active]);
+    // Report the live running signal so the sidebar task stats can merge it with
+    // the durable snapshot (a pure agent loop run leaves no running snapshot).
+    useEffect(() => {
+        const onChange = props.onActiveTaskRunningChange as ((running: boolean) => void) | undefined;
+        if (typeof onChange !== "function") return;
+        onChange(taskExecutionStatus.tone === "running");
+    }, [taskExecutionStatus.tone, props.onActiveTaskRunningChange]);
     const pureCodingEmptyTitle = isRemoteMaintenanceEnvironment
         ? (remoteCodingNeedsReconnect
             ? localizeText(lang, "Remote maintenance needs SSH reconnect", "远程维护需要重新连接 SSH", "遠端維護需要重新連線 SSH")
@@ -5035,7 +5045,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     // task-config/useTaskConfigWiring.ts; the panel only forwards its own scope.
     const taskConfigWiring = useTaskConfigWiring({
         activeTab, isLocalTabActive, lang, taskListProp, inputRef, inputValue,
-        composeAction, inputLocked, messages, handleSend, handleWelcomePromptSend,
+        composeAction, inputLocked, assistantBusy: isBusy || cancelPending, messages, handleSend, handleWelcomePromptSend,
         clearComposerDraft, clearActiveHistory, getTabs, getTabState, saveTabState,
         activateTab, setQueueInteractionStarted, setQueueEditDraftActive, setEditingEntryId,
     });

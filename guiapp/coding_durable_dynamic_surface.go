@@ -405,6 +405,28 @@ func (s *codingDurableDynamicSurface) ExecuteBoundSelection(ctx context.Context,
 	if err != nil {
 		return rejectedCodingDynamicSelection(err.Error())
 	}
+	// Same legacy-shape wash as the shared-loop admission path: conversation
+	// history shows the full ssh tool's action/session_id/host/password
+	// arguments, and this bound route serves shell.execute.remote_host too.
+	if selection.FitProof.MatchedCapability == tool.CapabilityShellExecuteRemoteHost {
+		if definitions := dynamic.Catalog.Definitions; definitions != nil {
+			if definition, ok := definitions[selection.AdapterName]; ok {
+				if function, ok := definition["function"].(map[string]interface{}); ok {
+					if params, ok := function["parameters"].(map[string]interface{}); ok {
+						washed, washErr := semanticSSHInvocationArgs(argsJSON, semanticSSHSchemaIsConnectMode(params))
+						if washErr != nil {
+							admission := tool.SemanticExecutionAdmission{
+								Identity: tool.HostCallIdentity{Protocol: protocol, ConnectionID: connectionID, CallID: toolCallID, SurfaceEpoch: s.epoch},
+								Grant:    grant, RequestDigest: "invalid:" + tool.SchemaDigest([]byte(argsJSON)), Scope: scope, Selection: selection, Now: now,
+							}
+							return s.rejectBoundSelection(admission, semanticModelParameterRejection(semanticCanonicalRejectionText(washErr)), "parameter_schema_invalid")
+						}
+						argsJSON = washed
+					}
+				}
+			}
+		}
+	}
 	canonical, canonicalErr := dynamic.Catalog.CanonicalizeSelectionArguments(selection, argsJSON)
 	requestDigest := "invalid:" + tool.SchemaDigest([]byte(argsJSON))
 	if canonicalErr == nil {

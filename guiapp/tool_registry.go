@@ -3,12 +3,14 @@ package guiapp
 import (
 	"context"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"sync"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
+	"github.com/RapidAI/CodeClaw/corelib/toolid"
 )
 
 type ToolCategory string
@@ -56,6 +58,14 @@ type RegisteredTool struct {
 	Required          []string               `json:"required"`
 	Source            string                 `json:"source"`
 	ExecutionContract map[string]interface{} `json:"x_execution_contract,omitempty"`
+	// ID is the host-side canonical identity for first-party tools
+	// ("{namespace}:{name}", e.g. "core:web_search"), mirroring
+	// corelib/agent.ToolEntry.ID semantics. It is NOT model-visible —
+	// rendered definitions keep using Name. When zero at registration time
+	// the registry derives it as "core:<name>"; a name outside the toolid
+	// charset leaves the ID zero (logged) and the tool stays name-addressable
+	// but outside ID-keyed dispatch.
+	ID toolid.ToolID `json:"-"`
 	// CapabilityProvisions and SemanticEffects are catalog declarations for
 	// capability-first routing. They are registration metadata, not a tool-name
 	// decision channel: planners consume only the declared capability contract.
@@ -96,6 +106,18 @@ func (r *ToolRegistry) Register(registered RegisteredTool) error {
 	}
 	if registered.Status == "" {
 		registered.Status = RegToolAvailable
+	}
+	if registered.ID.IsZero() {
+		id, err := toolid.New(toolid.NamespaceCore, registered.Name)
+		if err != nil {
+			// Unlike corelib/agent's CoreToolRegistry (whose Register cannot
+			// return an error and therefore skips the whole registration),
+			// this registry keeps the tool name-addressable and only leaves
+			// it outside ID-keyed dispatch.
+			log.Printf("[tool-registry] tool %q has no derivable tool ID: %v", registered.Name, err)
+		} else {
+			registered.ID = id
+		}
 	}
 	if toolAcceptsRuntimePolicyOwnerArg(registered.Name) {
 		registered.RuntimePolicyOwnerArg = true
@@ -171,6 +193,22 @@ func (r *ToolRegistry) Get(name string) (*RegisteredTool, bool) {
 	cp.SemanticProduces = cloneSemanticArtifactContracts(t.SemanticProduces)
 	cp.SemanticCatalogState = t.SemanticCatalogState
 	return &cp, true
+}
+
+// FindByID returns the tool registered under the given canonical tool ID, or
+// false when no tool carries that ID (including zero-ID entries).
+func (r *ToolRegistry) FindByID(id toolid.ToolID) (*RegisteredTool, bool) {
+	if id.IsZero() {
+		return nil, false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, t := range r.tools {
+		if t.ID == id {
+			return r.Get(t.Name)
+		}
+	}
+	return nil, false
 }
 
 func (r *ToolRegistry) List() []RegisteredTool {

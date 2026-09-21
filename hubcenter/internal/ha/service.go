@@ -1304,6 +1304,22 @@ func (s *Service) MaxOpSeq(ctx context.Context) (int64, error) {
 	return s.ops.GetMaxSeq(ctx)
 }
 
+// MinOpSeq returns the oldest seq still present in the local op log, or 0 when
+// the store cannot report it. Pull responses expose it so peers can detect
+// that their cursor has fallen below the pruned window.
+func (s *Service) MinOpSeq(ctx context.Context) (int64, error) {
+	if s == nil || s.ops == nil {
+		return 0, errors.New("ha sync store not configured")
+	}
+	repo, ok := s.ops.(interface {
+		GetMinSeq(context.Context) (int64, error)
+	})
+	if !ok {
+		return 0, nil
+	}
+	return repo.GetMinSeq(ctx)
+}
+
 func (s *Service) HasEntityVersion(ctx context.Context, entityType, entityID string) (bool, error) {
 	if s == nil || s.versions == nil {
 		return false, nil
@@ -1885,13 +1901,23 @@ func (s *Service) applyRemoteOp(ctx context.Context, op *store.HASyncOp, rebuild
 	if err != nil {
 		return false, err
 	}
+	if current != nil && !shouldApplyRemoteVersion(current, op) {
+		// Obsolete or duplicate: a newer (or deterministically winning) state
+		// for this entity is already local. Do NOT record the op in the local
+		// op log. Older code inserted it here, which let pruned history
+		// re-enter the log forever: after the log and applied-marker prunes
+		// dropped the op, peers holding old history re-sent it, it was
+		// re-inserted at the current tail seq, and the time prune could never
+		// catch up (multi-GB ha_sync_ops). Pruning always retains the newest
+		// op per entity, so the local log still serves the latest state of
+		// every entity to pullers; skipping the insert only stops the obsolete
+		// copy from bloating the tail of the log.
+		return false, s.markApplied(ctx, op)
+	}
 	if recorder, ok := s.ops.(remoteOpRecorder); ok {
 		if err := recorder.AppendRemoteIfMissing(ctx, op); err != nil {
 			return false, err
 		}
-	}
-	if current != nil && !shouldApplyRemoteVersion(current, op) {
-		return false, s.markApplied(ctx, op)
 	}
 	if err := s.applyEntityOp(ctx, op); err != nil {
 		return false, err
@@ -2464,6 +2490,15 @@ func (s *Service) applySystemSettingOp(ctx context.Context, op *store.HASyncOp) 
 		if localRaw, err := s.settings.Get(ctx, LLMProviderMonitorLeaseKey); err == nil && llmProviderMonitorLeaseFence(localRaw, payload.ValueJSON) {
 			// A lagging replicated lease write must not demote a fresher
 			// local lease (split-brain fencing for the monitor election).
+			return nil
+		}
+	}
+	if officialClassHeadSettingKey(payload.Key) {
+		if localRaw, err := s.settings.Get(ctx, payload.Key); err == nil && officialClassHeadFence(localRaw, payload.ValueJSON) {
+			// The classifier training store is rewritten on every training
+			// sample, so a burst of replicas can arrive out of order and
+			// overwrite a peer's fresher store with an older one. Keep the
+			// local copy when the incoming store is not newer.
 			return nil
 		}
 	}

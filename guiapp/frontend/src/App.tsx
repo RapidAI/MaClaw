@@ -10,7 +10,8 @@ import lobsterHalf from './assets/images/lobster_half.svg';
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './App.css';
 import { a2a, corelib } from '../wailsjs/go/models';
-import { EVENT_APP_UPDATE_AVAILABLE, EVENT_OPEN_NEW_TASK_WIZARD, EVENT_OPEN_TASK_LAUNCH, EVENT_PROJECT_INDEX_CHANGED, EVENT_PROJECT_TASK_ACTIVATE, EVENT_TASKS_CHANGED, type OpenTaskLaunchDetail } from './constants/events';
+import { EVENT_APP_UPDATE_AVAILABLE, EVENT_CLOUD_WORKSPACE_SHARE_PASSWORD, EVENT_OPEN_NEW_TASK_WIZARD, EVENT_OPEN_TASK_LAUNCH, EVENT_PROJECT_INDEX_CHANGED, EVENT_PROJECT_TASK_ACTIVATE, EVENT_TASKS_CHANGED, type OpenTaskLaunchDetail } from './constants/events';
+import { CloudWorkspaceShareJoinDialog } from './components/layout/CloudWorkspaceShareDialog';
 import { useRemotePanel } from './components/remote/useRemotePanel';
 import { TERMINAL_SESSION_STATUSES } from './components/remote/types';
 import type { SessionTab } from './components/remote/sessionTabs';
@@ -641,6 +642,8 @@ function App() {
         const next = coerceActiveAssistantTask(identity);
         setActiveAssistantTask(prev => (sameActiveAssistantTask(prev, next) ? prev : next));
     }, []);
+    /** Live "executing" signal for the visible assistant tab (mirrors the header badge). */
+    const [activeAssistantTaskRunning, setActiveAssistantTaskRunning] = useState(false);
     const hideTaskGuarded = useCallback(async (projectPath: string, tags?: string[], force?: boolean): Promise<boolean> => {
         // Guard against silent deletion of an open task. The sidebar's remove
         // flow passes force after the user confirms in the dialog; DeleteTask
@@ -961,6 +964,16 @@ function App() {
         void callBackend(() => ConsumeReferralHandoff()).then(applyHandoff).catch(() => {});
         return () => { if (typeof unsubscribe === "function") unsubscribe(); };
     }, [requestOnboarding]);
+
+    const [cloudShareJoinURL, setCloudShareJoinURL] = useState('');
+    useEffect(() => {
+        const applySharePassword = (payload: any) => {
+            const url = String(payload?.url || payload?.URL || "").trim();
+            if (url) setCloudShareJoinURL(url);
+        };
+        const unsubscribe = safeEventsOn(EVENT_CLOUD_WORKSPACE_SHARE_PASSWORD, applySharePassword);
+        return () => { if (typeof unsubscribe === "function") unsubscribe(); };
+    }, []);
 
     // --- Favorite Employees state ---
     const [favoriteEmployeeIds, setFavoriteEmployeeIds] = useState<string[]>([]);
@@ -3110,6 +3123,31 @@ function App() {
             settle();
         });
     }, []);
+    // A coding run start/end flips the live running signal from the assistant
+    // panel. Re-pull the task list at that boundary so the backend coding
+    // runtime merge (running/pending snapshot on the durable row) is applied
+    // when the run starts and cleared when it finishes, even if the run was
+    // launched from another tab. The first render is skipped: the mount
+    // effect above already pulls the list. The trailing debounce coalesces
+    // tone flapping (e.g. "Stopping" while cancelling flips running→pending→
+    // running) into one ListTasks per burst.
+    const activeAssistantTaskRunningMountedRef = useRef(false);
+    const activeAssistantTaskRunningRefreshTimerRef = useRef(0);
+    useEffect(() => {
+        if (!activeAssistantTaskRunningMountedRef.current) {
+            activeAssistantTaskRunningMountedRef.current = true;
+            return;
+        }
+        window.clearTimeout(activeAssistantTaskRunningRefreshTimerRef.current);
+        activeAssistantTaskRunningRefreshTimerRef.current = window.setTimeout(() => {
+            activeAssistantTaskRunningRefreshTimerRef.current = 0;
+            refreshTasks();
+        }, TASK_LIST_REFRESH_DEBOUNCE_MS);
+        return () => {
+            window.clearTimeout(activeAssistantTaskRunningRefreshTimerRef.current);
+            activeAssistantTaskRunningRefreshTimerRef.current = 0;
+        };
+    }, [activeAssistantTaskRunning, refreshTasks]);
     // Insert a newly-created row immediately and invalidate any ListTasks
     // request that was started before creation. Without the generation bump,
     // a slower stale response can replace the optimistic row and make a new
@@ -3319,6 +3357,12 @@ function App() {
             const status = String(state?.status || '').toLowerCase();
             if (status && status !== 'active' && status !== 'running') refresh();
         });
+        // Coding runs emit session start/end around the coding runtime
+        // attempt. The task list merges that ledger into each row's status, so
+        // a session boundary is another point where the durable running
+        // snapshot appears or clears (the debounced refresh coalesces bursts).
+        const offCodeSessionStart = safeEventsOn('code:session_start', refresh);
+        const offCodeSessionEnd = safeEventsOn('code:session_end', refresh);
         // The ready event can fire before this listener is mounted when the
         // assistant restores a persisted session quickly. Restore immediately
         // for an already-ready assistant; otherwise keep the event fallback.
@@ -3336,6 +3380,8 @@ function App() {
             if (typeof offProjectIndexChanged === 'function') offProjectIndexChanged(); else safeEventsOff(EVENT_PROJECT_INDEX_CHANGED);
             if (typeof offTasksChanged === 'function') offTasksChanged(); else safeEventsOff(EVENT_TASKS_CHANGED);
             if (typeof offWorkflowPhaseUpdate === 'function') offWorkflowPhaseUpdate(); else safeEventsOff('workflow:phase_update');
+            if (typeof offCodeSessionStart === 'function') offCodeSessionStart(); else safeEventsOff('code:session_start');
+            if (typeof offCodeSessionEnd === 'function') offCodeSessionEnd(); else safeEventsOff('code:session_end');
             if (typeof offAssistantReady === 'function') offAssistantReady(); else safeEventsOff('ai-assistant-init-progress');
         };
     }, [aiAssistant.ready, refreshTasks]);
@@ -5328,6 +5374,7 @@ ${instruction}`;
                 openProjectTabIdentities={openProjectTabIdentities}
                 openExpertTabIDs={openExpertTabIDs}
                 activeAssistantTask={activeAssistantTask}
+                activeAssistantTaskRunning={activeAssistantTaskRunning}
                 sidebarCurrentProviderTokenUsage={sidebarCurrentProviderTokenUsage}
                 sidebarHubCredits={sidebarHubCredits}
                 formatSidebarTokens={formatSidebarTokens}
@@ -5364,7 +5411,7 @@ ${instruction}`;
                 showAppEntry={showAppEntryEnabled}
 				showUtilitiesEntry={showUtilitiesEntryEnabled}
 				showToolsEntry={showToolsEntryEnabled}
-				showCloudWorkspaceManagement={false}
+				showCloudWorkspaceManagement={true}
 				showCloudWorkspaceCreation={true}
 				restoreCloudWorkspaceTasks
                 showCodingToolEntry={false}
@@ -5425,6 +5472,7 @@ ${instruction}`;
                             onOpenProjectTabIdentitiesChange={handleOpenProjectTabIdentitiesChange}
                             onOpenExpertTabsChange={handleOpenExpertTabsChange}
                             onActiveAssistantTaskChange={handleActiveAssistantTaskChange}
+                            onActiveTaskRunningChange={setActiveAssistantTaskRunning}
                             activeAssistantTask={activeAssistantTask}
                             appUpdateAvailable={appUpdateAvailable}
                             onOpenAppReleaseNotes={handleOpenAppReleaseNotes}
@@ -6480,6 +6528,13 @@ ${instruction}`;
                 />
             )}
 
+            <CloudWorkspaceShareJoinDialog
+                open={!!cloudShareJoinURL}
+                lang={lang}
+                themeMode={aiThemeMode}
+                shareURL={cloudShareJoinURL}
+                onClose={() => setCloudShareJoinURL('')}
+            />
             {/* MaClaw Onboarding Wizard */}
             {/* MaClaw Onboarding Wizard */}
             {showMaclawLLMPopup && (

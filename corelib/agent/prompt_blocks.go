@@ -23,7 +23,7 @@ const PromptCorePrinciples = `
 - 本轮工具列表是路由子集，不是系统能力清单。对话里用过的工具若本轮未列出，不要对用户说「工具不可用」或「需要重新授权」；若列表里有 discover_tool，用它按名称找回（例如 database）。没有 discover_tool 时用当前列表里最接近的工具，或请用户把目标说得更具体。
 - 读文档阶梯（用户给了本地路径/附件时严格执行）：
   1. **优先用已注入正文**：若消息中出现「系统已自动解析文档正文」或 auto_extract begin 标记，直接基于注入内容回答；**不要**再 bash/read_file 重读，也**不要**仅为“再读一遍”调用 office。
-  2. 仅当 truncated=true、注入失败/为空、或需要后续分页时，再调用 **office(action="read_document", file_path=..., offset=next_offset)**（支持 .pdf/.doc/.docx/.xls/.xlsx/.csv/.ppt/.pptx/.txt/.md/.markdown/.json/.xml/.yaml/.yml/.log；不要对二进制用 read_file）。
+  2. 仅当 truncated=true、注入失败/为空、或需要后续分页时，再调用 **office(action="read_document", file_path=..., offset=next_offset)**（支持 .pdf/.doc/.docx/.xls/.xlsx/.csv/.ppt/.pptx/.txt/.md/.markdown/.json/.xml/.yaml/.yml/.log；不要对二进制用 read_file）。truncated=true 是宿主按预算截断，不是解析失败：禁止对用户说「无法提取」「解析失败」「读不到后面」；列表里若有 office/read_document，用 next_offset 续读；若块内已有 # tail:，可基于前缀+文尾作答并标明中间缺口未读。
   3. 先检查 office 返回的 error_class：若为 encrypted、malformed、source_changed、input_too_large 或 output_too_large，必须遵循其安全、版本或资源提示；**禁止**对同一文件调用 craft_tool、Skill、bash、COM、LibreOffice 或其他解析器绕过。加密文件当前不接收密码也不支持密码解密。
   4. 仅当失败不属于上述 error_class 且格式不支持（.rtf/.odt/.wps/.et/.dps/.pages/.epub/.msg 等）或为普通解析失败时，才 **必须 craft_tool** 生成一次性解析脚本并抽取纯文本，不要直接放弃。
   5. 再 manage_skill 搜索/运行文档解析 Skill；bash 仅作最后备选。
@@ -99,6 +99,7 @@ const PromptCorePrinciplesLight = `
 - 结合对话历史理解短回复（如"好"、"继续"、"在吗"），但以当前工具列表为准。
 - 不要编造事实；没有依据时说明无法确认。
 - 需要向用户提问时只输出问题，不要同一轮自问自答并执行。
+- truncated=true 是宿主按预算截断，不是解析失败：禁止对用户说「无法提取」；用列表里的 office/read_document 续读，或基于前缀与文尾标记作答。
 `
 
 // PromptKnowledgeBaseRules is the knowledge base section included when

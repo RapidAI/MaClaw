@@ -1,8 +1,41 @@
 package intent
 
 import (
+	"strings"
 	"testing"
 )
+
+func TestDefaultDefinitions_MarkdownFileWriteStaysOffDocumentGenerate(t *testing.T) {
+	defs := DefaultDefinitions()
+	var fileWrite, docGen *IntentDefinition
+	for i := range defs {
+		switch defs[i].Label {
+		case LabelFileWrite:
+			fileWrite = &defs[i]
+		case LabelDocumentGenerate:
+			docGen = &defs[i]
+		}
+	}
+	if fileWrite == nil || docGen == nil {
+		t.Fatal("missing file_write or document_generate definition")
+	}
+	found := false
+	for _, text := range fileWrite.EmbedTexts {
+		if text == "生成markdown" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("file_write embed texts must include 生成markdown")
+	}
+	if !strings.Contains(fileWrite.TreeText, "markdown") {
+		t.Fatal("file_write TreeText must cover markdown files")
+	}
+	if !strings.Contains(docGen.TreeText, "file_write") || !strings.Contains(docGen.TreeText, "markdown") {
+		t.Fatal("document_generate must exclude markdown file writes toward file_write")
+	}
+}
 
 func TestDefaultDefinitions_AllLabelsHaveTreeText(t *testing.T) {
 	defs := DefaultDefinitions()
@@ -253,6 +286,12 @@ func TestFullDefinitions_ToolAffinityRoundTrip(t *testing.T) {
 	if len(origBrowser) != len(defsBrowser) {
 		t.Errorf("Browser tool count mismatch: original=%d, fromDefs=%d",
 			len(origBrowser), len(defsBrowser))
+	}
+
+	origCU := original.ToolsFor(LabelComputerUse)
+	defsCU := fromDefs.ToolsFor(LabelComputerUse)
+	if len(origCU) == 0 || len(origCU) != len(defsCU) {
+		t.Errorf("ComputerUse tool count mismatch: original=%v, fromDefs=%v", origCU, defsCU)
 	}
 
 	origTime := original.ToolsFor(LabelCurrentTime)

@@ -5,7 +5,7 @@ import {
     compactCodingAgentProgressMessages,
     groupCodingAgentProgressForRender,
 } from "../compactCodingAgentProgressMessages";
-import { isCodingAgentBoardProgressContent, reasoningHasCodingStatusMilestone, stripCodingAgentAuditSections, stripCodingWorkbenchStatusReasoning } from "../codingAgentUserFinish";
+import { isCodingAgentBoardProgressContent, reasoningHasCodingStatusMilestone, stripCodingAgentAuditSections, stripCodingWorkbenchStatusReasoning, stripLeadingCodingWorkbenchStatus } from "../codingAgentUserFinish";
 
 const message = (id: string, content: string): ChatMessage => ({
     id,
@@ -290,5 +290,30 @@ describe("stripCodingWorkbenchStatusReasoning", () => {
         expect(stripCodingWorkbenchStatusReasoning("\u2022 \u6536\u5230\uff0c\u6b63\u5728\u5904\u7406")).toBe("");
         expect(stripCodingWorkbenchStatusReasoning("\u6536\u5230\uff0c\u6b63\u5728\u5904\u7406")).toBe("");
         expect(stripCodingWorkbenchStatusReasoning("[Status] Task received")).toBe("");
+        expect(stripCodingWorkbenchStatusReasoning("已接收任务，正在准备执行路径")).toBe("");
+        expect(stripCodingWorkbenchStatusReasoning("• 执行环境已就绪\n• 正在分析任务并开始处理\nI'll write hello.cpp.")).toBe("I'll write hello.cpp.");
+        expect(stripCodingWorkbenchStatusReasoning("[Status] Analyzing the task and starting work")).toBe("");
+        expect(stripCodingWorkbenchStatusReasoning("[status] Task received")).toBe("");
+    });
+});
+
+describe("stripLeadingCodingWorkbenchStatus", () => {
+    it("drops a leading status run but keeps a later quoted status line", () => {
+        const body = [
+            "• 执行环境已就绪",
+            "• 正在分析任务并开始处理",
+            "",
+            "泸州菜和成都菜同属川菜，但风格差异挺明显：",
+            "有人把“执行环境已就绪”写进了正文，这行必须保留。",
+        ].join("\n");
+        const stripped = stripLeadingCodingWorkbenchStatus(body);
+        expect(stripped.startsWith("泸州菜和成都菜同属川菜")).toBe(true);
+        expect(stripped).toContain("有人把“执行环境已就绪”写进了正文，这行必须保留。");
+    });
+
+    it("does not treat an official line that only shares a status prefix as a host bullet", () => {
+        const answer = "正在分析任务的复杂之处\n然后给出结论。";
+        expect(stripLeadingCodingWorkbenchStatus(answer)).toBe(answer);
+        expect(stripCodingWorkbenchStatusReasoning(answer)).toBe(answer);
     });
 });

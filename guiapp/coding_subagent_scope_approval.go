@@ -20,13 +20,16 @@ package guiapp
 
 import (
 	"fmt"
+	"log"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/permission"
 	"github.com/RapidAI/CodeClaw/corelib/security"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // scopeApprovalTimeout is the countdown before the backend resolves a pending
@@ -75,6 +78,96 @@ type scopeApprovalState struct {
 	approvedDirs       map[string]bool       // directories approved with "allow_dir" (case-insensitive keys on Windows)
 	onScopeApproval    ScopeApprovalCallback // nil = hard reject (legacy behavior)
 	auditApproval      func(ScopeApprovalRequest, ScopeApprovalDecision, string)
+	// dualEvalSnapshot optionally resolves the App's permission snapshot for
+	// dual-run comparison (Phase 1, R3). Nil on hosts without an App and in
+	// unit tests: dual-eval stays silent.
+	dualEvalSnapshot func() *permission.Snapshot
+}
+
+// setDualEvalSnapshot installs (or replaces) the snapshot resolver used for
+// dual-run comparison.
+func (s *scopeApprovalState) setDualEvalSnapshot(fn func() *permission.Snapshot) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.dualEvalSnapshot = fn
+	s.mu.Unlock()
+}
+
+// scopeApprovalDualEvalSnapshotFunc builds the snapshot resolver for a gate
+// state living under handler. The resolver is nil-safe on handler/app (TUI
+// standalone) and honors the MACLAW_PERMISSION_DUAL_EVAL kill switch via
+// App.permissionSnapshot.
+func scopeApprovalDualEvalSnapshotFunc(handler *IMMessageHandler) func() *permission.Snapshot {
+	return func() *permission.Snapshot {
+		if handler == nil || handler.app == nil {
+			return nil
+		}
+		return handler.app.permissionSnapshot()
+	}
+}
+
+// scopeApprovalDualEvalMismatchHook mirrors the other gates' mismatch hooks:
+// replaceable in tests to capture mismatch reports.
+var scopeApprovalDualEvalMismatchHook = func(tool string, legacyEffect, newEffect permission.Effect, rule *permission.Rule) {
+	coretool.RecordPermissionDualEvalMismatch("scope_approval", tool, string(legacyEffect), string(newEffect))
+	src := ""
+	reason := ""
+	if rule != nil {
+		src = rule.Source
+		reason = rule.Reason
+	}
+	log.Printf("[permission-dual-eval] gate=scope_approval tool=%q legacy=%s new=%s rule_source=%s reason=%q",
+		tool, legacyEffect, newEffect, src, reason)
+}
+
+// scopeApprovalDualEval compares one legacy gate outcome with the snapshot's
+// decision for the same call, as a dual-run observation. No rule source
+// contributes scope rules yet, so Decide almost always returns Default
+// (silent) today; this path is RULE-READY — the args convention is fixed now
+// so a future rule fires this divergence log without further gate changes:
+//
+//   - file-scope checks (check) carry {"path", "project_path"}; a future
+//     deny with ArgsPredicate Prefix on "path" over a protected root
+//     (e.g. /etc/) matches here;
+//   - high-risk bash (checkHighRisk/checkTaskModeGuard) carries {"command",
+//     "working_dir", "project_path"}; a future ask/allow rule on "command"
+//     matches here.
+//
+// Only CONCRETE snapshot matches (dec.Rule != nil) are reported —
+// Decision.Default carries no policy intent. Never changes behavior.
+func scopeApprovalDualEval(snap *permission.Snapshot, toolName string, args map[string]interface{}, legacyEffect permission.Effect) {
+	if snap == nil {
+		return
+	}
+	toolName = strings.TrimSpace(toolName)
+	dec := snap.Decide(toolName, permission.BuiltinKind(toolName), args)
+	if dec.Rule == nil {
+		return
+	}
+	if dec.Effect == legacyEffect {
+		return
+	}
+	scopeApprovalDualEvalMismatchHook(toolName, legacyEffect, dec.Effect, dec.Rule)
+}
+
+// dualEval runs the dual-run comparison for one gate evaluation. No-op when
+// no snapshot resolver is installed or the resolver returns nil. The
+// resolver read is mutex-guarded: setDualEvalSnapshot writes it under s.mu
+// and this runs on the same goroutine path as the gate, but installs can
+// race with in-flight checks on other goroutines.
+func (s *scopeApprovalState) dualEval(toolName string, args map[string]interface{}, legacyEffect permission.Effect) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	fn := s.dualEvalSnapshot
+	s.mu.Unlock()
+	if fn == nil {
+		return
+	}
+	scopeApprovalDualEval(fn(), toolName, args, legacyEffect)
 }
 
 // newScopeApprovalState creates a new approval state.
@@ -97,11 +190,21 @@ func newScopeApprovalState(callback ScopeApprovalCallback, fullAccess bool) *sco
 //   - toolName: the tool attempting the access (for display)
 //   - path: the out-of-scope path being accessed
 //   - projectPath: the declared project boundary
-func (s *scopeApprovalState) check(toolName, path, projectPath string) string {
+func (s *scopeApprovalState) check(toolName, path, projectPath string) (rejection string) {
 	if s == nil {
 		// No approval state = hard reject (legacy behavior).
 		return formatScopeRejection(toolName, path, projectPath)
 	}
+	// Dual-run observation (Phase 1, R3): legacyEffect is fixed at each
+	// decision point below and the deferred call compares it against the
+	// permission snapshot once, on the way out. Hard rejects (no callback)
+	// and user deny/timeout map to deny, pre-approved / granted passes map to
+	// allow, and the user-prompt point maps to ask ("approval shown, user will
+	// decide"). Never changes the returned rejection.
+	legacyEffect := permission.EffectDeny
+	defer func() {
+		s.dualEval(toolName, map[string]interface{}{"path": path, "project_path": projectPath}, legacyEffect)
+	}()
 
 	// Full access granted — skip all scope checks.
 	s.mu.Lock()
@@ -111,6 +214,7 @@ func (s *scopeApprovalState) check(toolName, path, projectPath string) string {
 		if audit != nil {
 			audit(ScopeApprovalRequest{ToolName: toolName, Path: path, ProjectPath: projectPath}, ScopeApprovalFullAccess, "automatic")
 		}
+		legacyEffect = permission.EffectAllow
 		return ""
 	}
 	s.mu.Unlock()
@@ -130,6 +234,7 @@ func (s *scopeApprovalState) check(toolName, path, projectPath string) string {
 		if audit != nil {
 			audit(ScopeApprovalRequest{ToolName: toolName, Path: path, ProjectPath: projectPath, Directory: dir}, ScopeApprovalAllowDir, "automatic")
 		}
+		legacyEffect = permission.EffectAllow
 		return "" // pre-approved, allow immediately
 	}
 
@@ -139,6 +244,7 @@ func (s *scopeApprovalState) check(toolName, path, projectPath string) string {
 	}
 
 	// Ask the user.
+	legacyEffect = permission.EffectAsk
 	decision := s.onScopeApproval(ScopeApprovalRequest{
 		ToolName:    toolName,
 		Path:        path,
@@ -149,14 +255,19 @@ func (s *scopeApprovalState) check(toolName, path, projectPath string) string {
 
 	switch decision {
 	case ScopeApprovalAllowOnce:
+		legacyEffect = permission.EffectAllow
 		return "" // allow this single call
 	case ScopeApprovalAllowDir:
 		s.approveDir(dir)
+		legacyEffect = permission.EffectAllow
 		return "" // allow and remember for this task
 	case ScopeApprovalFullAccess:
 		s.grantFullAccess()
+		legacyEffect = permission.EffectAllow
 		return "" // allow everything permanently (persisted by callback layer)
 	default:
+		// User deny or prompt timeout: the ask was shown and declined.
+		legacyEffect = permission.EffectDeny
 		return formatScopeRejection(toolName, path, projectPath)
 	}
 }
@@ -164,10 +275,17 @@ func (s *scopeApprovalState) check(toolName, path, projectPath string) string {
 // checkHighRisk asks the user before a shell command covered by a guardrail is
 // executed. An allow_dir decision is not meaningful for a command, and a
 // timeout must remain a denial.
-func (s *scopeApprovalState) checkHighRisk(toolName, command, projectPath, workingDir, rejection string) string {
+func (s *scopeApprovalState) checkHighRisk(toolName, command, projectPath, workingDir, rejection string) (result string) {
 	if s == nil {
 		return rejection
 	}
+	// Dual-run observation: same mapping as check() — hard reject → deny,
+	// sticky high-risk grant → allow, user prompt → ask. Never changes the
+	// returned rejection.
+	legacyEffect := permission.EffectDeny
+	defer func() {
+		s.dualEval(toolName, map[string]interface{}{"command": command, "working_dir": workingDir, "project_path": projectPath}, legacyEffect)
+	}()
 	s.mu.Lock()
 	if s.highRiskFullAccess {
 		audit := s.auditApproval
@@ -175,6 +293,7 @@ func (s *scopeApprovalState) checkHighRisk(toolName, command, projectPath, worki
 		if audit != nil {
 			audit(ScopeApprovalRequest{ToolName: toolName, Path: command, ProjectPath: projectPath, Directory: workingDir, Kind: localHighRiskApprovalKind}, ScopeApprovalFullAccess, "automatic")
 		}
+		legacyEffect = permission.EffectAllow
 		return ""
 	}
 	callback := s.onScopeApproval
@@ -182,6 +301,7 @@ func (s *scopeApprovalState) checkHighRisk(toolName, command, projectPath, worki
 	if callback == nil {
 		return rejection
 	}
+	legacyEffect = permission.EffectAsk
 	decision := callback(ScopeApprovalRequest{
 		ToolName:    toolName,
 		Path:        command,
@@ -193,11 +313,15 @@ func (s *scopeApprovalState) checkHighRisk(toolName, command, projectPath, worki
 	})
 	switch decision {
 	case ScopeApprovalAllowOnce:
+		legacyEffect = permission.EffectAllow
 		return ""
 	case ScopeApprovalFullAccess:
 		s.grantHighRiskFullAccess()
+		legacyEffect = permission.EffectAllow
 		return ""
 	default:
+		// User deny or prompt timeout: the ask was shown and declined.
+		legacyEffect = permission.EffectDeny
 		return rejection
 	}
 }
@@ -207,16 +331,25 @@ func (s *scopeApprovalState) checkHighRisk(toolName, command, projectPath, worki
 // high-risk allowance: answering "allow risky commands" is a statement about
 // danger, not about widening what a run/build turn is, so each widening stays
 // an explicit per-command decision the user actually sees.
-func (s *scopeApprovalState) checkTaskModeGuard(toolName, command, projectPath, workingDir, rejection string) string {
+func (s *scopeApprovalState) checkTaskModeGuard(toolName, command, projectPath, workingDir, rejection string) (result string) {
 	if s == nil {
 		return rejection
 	}
+	// Dual-run observation: same mapping as checkHighRisk() (the sticky
+	// high-risk grant is deliberately not consulted here — that asymmetry is
+	// the point of this gate — so the automatic-allow branch does not exist
+	// and a pending prompt is the only ask). Never changes the outcome.
+	legacyEffect := permission.EffectDeny
+	defer func() {
+		s.dualEval(toolName, map[string]interface{}{"command": command, "working_dir": workingDir, "project_path": projectPath}, legacyEffect)
+	}()
 	s.mu.Lock()
 	callback := s.onScopeApproval
 	s.mu.Unlock()
 	if callback == nil {
 		return rejection
 	}
+	legacyEffect = permission.EffectAsk
 	switch callback(ScopeApprovalRequest{
 		ToolName:    toolName,
 		Path:        command,
@@ -227,8 +360,11 @@ func (s *scopeApprovalState) checkTaskModeGuard(toolName, command, projectPath, 
 		AutoAllow:   false,
 	}) {
 	case ScopeApprovalAllowOnce, ScopeApprovalFullAccess:
+		legacyEffect = permission.EffectAllow
 		return ""
 	default:
+		// User deny or prompt timeout: the ask was shown and declined.
+		legacyEffect = permission.EffectDeny
 		return rejection
 	}
 }
@@ -274,6 +410,12 @@ func (s *scopeApprovalState) approveDir(dir string) {
 
 // grantFullAccess permanently disables scope checking for this SubAgent
 // and all future SubAgent instances (persisted via onFullAccessGranted callback).
+//
+// MIGRATION NOTE (R3 flip slice): "Full Access" grants are session/user-scoped
+// widenings recorded by the gate. A future permission rule must NEVER be able
+// to widen them — at flip time rules can only NARROW what a granted session
+// may do (e.g. a deny rule still wins over a full-access grant), never
+// silently extend a grant to paths or commands the user never approved.
 func (s *scopeApprovalState) grantFullAccess() {
 	s.mu.Lock()
 	defer s.mu.Unlock()

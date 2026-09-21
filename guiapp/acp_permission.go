@@ -4,11 +4,79 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/permission"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
+
+// acpPermissionDualEvalMismatchHook mirrors the other gates' mismatch hooks:
+// replaceable in tests to capture mismatch reports.
+var acpPermissionDualEvalMismatchHook = func(tool string, legacyEffect, newEffect permission.Effect, rule *permission.Rule) {
+	coretool.RecordPermissionDualEvalMismatch("acp_permission", tool, string(legacyEffect), string(newEffect))
+	src := ""
+	reason := ""
+	if rule != nil {
+		src = rule.Source
+		reason = rule.Reason
+	}
+	log.Printf("[permission-dual-eval] gate=acp_permission tool=%q legacy=%s new=%s rule_source=%s reason=%q",
+		tool, legacyEffect, newEffect, src, reason)
+}
+
+// acpPermissionDualEval compares one ACP permission check outcome with the
+// snapshot's decision for the same call, as a dual-run observation. Legacy
+// mapping: check() only exposes allow/deny — the ask happens inside the
+// client prompt (requestClientPermission) and is invisible at this
+// granularity — so allowed → EffectAllow, denied → EffectDeny. Only CONCRETE
+// snapshot matches (dec.Rule != nil) are reported; Decision.Default (no host
+// rule cares about this call) is silent. Never changes the check outcome.
+//
+// SCOPING: ACP session permissions are CLIENT-NEGOTIATED per session; the
+// permission snapshot is HOST policy. This comparison observes whether host
+// policy and client-negotiated policy disagree — which matters exactly when a
+// host rule is stricter than what the client granted. At flip time host deny
+// rules cap client allowances (rules narrow, never widen negotiated grants —
+// same principle as the scope-approval Full Access grant comment).
+func acpPermissionDualEval(snap *permission.Snapshot, toolName, argsJSON string, allowed bool) {
+	if snap == nil {
+		return
+	}
+	var args map[string]interface{}
+	if strings.TrimSpace(argsJSON) != "" {
+		if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+			args = nil
+		}
+	}
+	toolName = strings.TrimSpace(toolName)
+	dec := snap.Decide(toolName, permission.BuiltinKind(toolName), args)
+	if dec.Rule == nil {
+		return
+	}
+	legacyEffect := permission.EffectDeny
+	if allowed {
+		legacyEffect = permission.EffectAllow
+	}
+	if dec.Effect == legacyEffect {
+		return
+	}
+	acpPermissionDualEvalMismatchHook(toolName, legacyEffect, dec.Effect, dec.Rule)
+}
+
+// acpPermissionDualEvalSnapshot resolves the App's snapshot for the ACP
+// permission dual-eval. Nil-safe on a nil handler/App (TUI standalone); the
+// MACLAW_PERMISSION_DUAL_EVAL kill switch is honored inside
+// App.permissionSnapshot.
+func (h *IMMessageHandler) acpPermissionDualEvalSnapshot() *permission.Snapshot {
+	if h == nil || h.app == nil {
+		return nil
+	}
+	return h.app.permissionSnapshot()
+}
 
 // acpPermissionGate asks the VS Code client (via bridge reverse RPC) before
 // running risky tools. Workspace-local file edits auto-allow; bash/delete ask.

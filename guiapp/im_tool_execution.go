@@ -154,7 +154,7 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 	// Expert allow-list gate (execution layer): the prompt-layer tool filter only
 	// hides tools from the LLM; a call emitted by name must still be stopped here.
 	if result.Text == "" {
-		if text := expertToolExecutionRejection(opts.UserID, tc.Function.Name, tc.Function.Arguments); text != "" {
+		if text := h.expertToolExecutionRejection(opts.UserID, tc.Function.Name, tc.Function.Arguments); text != "" {
 			result = toolExecutionResult{Text: text, ToolName: tc.Function.Name, ToolKind: classifyAgentToolKind(tc.Function.Name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
 			h.appendToolPolicyTrace(opts.Context, opts.UserID, tc.Function.Name, "expert.allowlist", text)
 			log.Printf("[agent-loop] rejected tool outside expert allow-list %q (iter=%d user=%s)", tc.Function.Name, opts.Iteration, opts.UserID)
@@ -183,7 +183,11 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 				defer pcancel()
 			}
 		}
-		if allowed, reason := globalACPPermission.check(pctx, requestID, tc.Function.Name, tc.Function.Arguments); !allowed {
+		allowed, reason := globalACPPermission.check(pctx, requestID, tc.Function.Name, tc.Function.Arguments)
+		// Dual-run observation (Phase 1, R3): compares the client-negotiated
+		// decision with host policy; never changes the check outcome.
+		acpPermissionDualEval(h.acpPermissionDualEvalSnapshot(), tc.Function.Name, tc.Function.Arguments, allowed)
+		if !allowed {
 			msg := "[system rejected] " + reason
 			if strings.TrimSpace(reason) == "" {
 				msg = "[system rejected] tool not permitted"

@@ -564,14 +564,23 @@ func TestReviewedDynamicIntentRulesResolveSSHWithoutLocalShell(t *testing.T) {
 		Registry: registry, Rules: ReviewedDynamicIntentCapabilityNeedRules(),
 	}
 	resolution, err := resolver.ResolveDynamicCapabilityNeeds(context.Background(), DynamicCapabilityNeedRequest{UserText: "登录服务器查看日志"})
-	if err != nil || !resolution.Managed || len(resolution.Needs) != 1 {
+	if err != nil || !resolution.Managed || len(resolution.Needs) == 0 {
 		t.Fatalf("resolution=%#v err=%v", resolution, err)
 	}
-	if resolution.Needs[0].Capability != CapabilitySSHExecute {
+	// Server work is multi-command: the ssh family now expands to a bounded
+	// sibling budget (same mechanism as shell.execute.local's 8). The first
+	// sibling is required; the rest are one live invocation each after the
+	// previous success.
+	if len(resolution.Needs) != coretool.RepeatSiblingBudget(8) {
+		t.Fatalf("ssh sibling budget=%d, want %d", len(resolution.Needs), coretool.RepeatSiblingBudget(8))
+	}
+	if resolution.Needs[0].Capability != CapabilitySSHExecute || !resolution.Needs[0].Required {
 		t.Fatalf("need=%#v", resolution.Needs[0])
 	}
-	if resolution.Needs[0].Capability == CapabilityShellExecute || resolution.Needs[0].Capability == CapabilityInformationLookup {
-		t.Fatal("ssh must not resolve to shell.execute.local or information.lookup")
+	for _, need := range resolution.Needs {
+		if need.Capability != CapabilitySSHExecute {
+			t.Fatalf("ssh sibling resolved to %q", need.Capability)
+		}
 	}
 }
 

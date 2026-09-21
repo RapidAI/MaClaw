@@ -152,7 +152,38 @@ func routingMissWantsHostAdapter(result intent.ClassificationResult) bool {
 	return false
 }
 
-func applyRoutingMissLeftoverTools(tools, allTools []map[string]interface{}, ctx *LoopContext) []map[string]interface{} {
+// routingMissReadOnlyFloor lists read-only lookup tools guaranteed to survive
+// a routing-miss leftover surface regardless of how the legacy name router
+// ranked them. A degraded turn (tree timeout, planner miss) is exactly when
+// the model most needs to consult existing knowledge — "查询驱网登录信息"
+// collapsed to [web_fetch, web_search] in production 2026-09-18 because
+// knowledge_search/memory_recall ranked below the cut, and the model had no
+// way to look up what the user had already saved. Read-only, zero-risk:
+// they answer from local stores and grant no capability.
+var routingMissReadOnlyFloor = map[string]bool{
+	"knowledge_search": true,
+	"memory_recall":    true,
+}
+
+// routingMissFloorDefinitions resolves the read-only floor directly from the
+// builtin registry, independent of catalog composition (the unmanaged legacy
+// catalog may exclude capability-catalogued tools like knowledge_search).
+func (h *IMMessageHandler) routingMissFloorDefinitions() []map[string]interface{} {
+	if h == nil || h.registry == nil {
+		return nil
+	}
+	var out []map[string]interface{}
+	for name := range routingMissReadOnlyFloor {
+		registered, ok := h.registry.Get(name)
+		if !ok || registered == nil || registered.Status != RegToolAvailable {
+			continue
+		}
+		out = append(out, registeredToolToDef(*registered))
+	}
+	return out
+}
+
+func applyRoutingMissLeftoverTools(tools, allTools, floorCatalog []map[string]interface{}, ctx *LoopContext) []map[string]interface{} {
 	if !loopContextHasRoutingMissFallback(ctx) {
 		return tools
 	}
@@ -168,6 +199,28 @@ func applyRoutingMissLeftoverTools(tools, allTools []map[string]interface{}, ctx
 			seen[name] = true
 		}
 	}
+	// Guarantee the read-only lookup floor: pull any floored tool the ranker
+	// dropped from the full catalog. (read-only tools are never in the
+	// privilege-strip set, so this is purely additive — EXCEPT the group
+	// boundary, which ran before this filter and must not be re-expanded:
+	// a group that denies knowledge or uses the narrowed memory view would
+	// otherwise get the full tools back through the floor.)
+	for name := range routingMissReadOnlyFloor {
+		if seen[name] {
+			continue
+		}
+		if ctx != nil && ctx.LansengerGroupPermissions != nil && !lansengerGroupFloorAllowed(name, *ctx.LansengerGroupPermissions) {
+			continue
+		}
+		for _, def := range floorCatalog {
+			if extractToolName(def) != name {
+				continue
+			}
+			filtered = append(filtered, def)
+			seen[name] = true
+			break
+		}
+	}
 	if !loopContextHasHostAdapterLeftover(ctx) || ctx == nil || !semanticFileDeliveryPublished(ctx.Platform) {
 		return filtered
 	}
@@ -181,6 +234,24 @@ func applyRoutingMissLeftoverTools(tools, allTools []map[string]interface{}, ctx
 		return append(filtered, def)
 	}
 	return filtered
+}
+
+// lansengerGroupFloorAllowed gates the read-only floor against the group
+// permission boundary, which runs BEFORE applyRoutingMissLeftoverTools and
+// must not be silently re-expanded. Groups that allow knowledge already get
+// knowledge_search re-added by ensureLansengerGroupKnowledgeSearchTool (the
+// seen-check skips the floor); groups that deny it must not receive it here.
+// memory_recall is never floored into a group: group chats carry the
+// narrowed "memory" recall view instead (fail-closed default in allowsTool).
+func lansengerGroupFloorAllowed(name string, policy lansengerGroupPermissionPolicy) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "knowledge_search":
+		return policy.allowsKnowledge()
+	case "memory_recall":
+		return false
+	default:
+		return true
+	}
 }
 
 type semanticUnmetNeedsError struct {

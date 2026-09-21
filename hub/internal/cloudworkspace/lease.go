@@ -261,13 +261,11 @@ func (s *Store) Acquire(ctx context.Context, p AcquireParams, now time.Time) (*A
 	}
 	var out *AcquireOutcome
 	err := s.withImmediate(ctx, func(q queryer) error {
-		ws, err := getOwned(ctx, q, p.TenantID, p.UserID, p.WorkspaceID)
+		ws, err := requireActiveAccess(ctx, q, p.TenantID, p.UserID, p.WorkspaceID, true)
 		if err != nil {
 			return err
 		}
-		if ws.Status != StatusActive {
-			return ErrNotFound
-		}
+		_ = ws
 		current, err := getActiveLease(ctx, q, p.WorkspaceID)
 		if err != nil {
 			return err
@@ -348,7 +346,7 @@ func (s *Store) RequestHandoffWithSession(ctx context.Context, tenantID, userID,
 	}
 	var out *Lease
 	err := s.withImmediate(ctx, func(q queryer) error {
-		if _, err := requireActiveOwned(ctx, q, tenantID, userID, workspaceID); err != nil {
+		if _, err := requireActiveAccess(ctx, q, tenantID, userID, workspaceID, true); err != nil {
 			return err
 		}
 		lease, err := getActiveLease(ctx, q, workspaceID)

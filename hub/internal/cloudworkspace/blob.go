@@ -513,7 +513,7 @@ func (s *BlobStore) finalizeReadyObject(ctx context.Context, workspaceID, sha256
 	workspaceStore := NewStore(s.DB)
 	return workspaceStore.withImmediate(ctx, func(q queryer) error {
 		if guard != nil {
-			if _, err := requireActiveOwned(ctx, q, guard.TenantID, guard.UserID, workspaceID); err != nil {
+			if _, err := requireActiveAccess(ctx, q, guard.TenantID, guard.UserID, workspaceID, true); err != nil {
 				return err
 			}
 			if err := assertLeaseHeldForSession(ctx, q, workspaceID, guard.MachineID, guard.ClientInstanceID, guard.FencingToken, guard.Now); err != nil {
@@ -545,7 +545,7 @@ func (s *BlobStore) finalizeObjectMeta(ctx context.Context, workspaceID, sha256h
 	workspaceStore := NewStore(s.DB)
 	return workspaceStore.withImmediate(ctx, func(q queryer) error {
 		if guard != nil {
-			if _, err := requireActiveOwned(ctx, q, guard.TenantID, guard.UserID, workspaceID); err != nil {
+			if _, err := requireActiveAccess(ctx, q, guard.TenantID, guard.UserID, workspaceID, true); err != nil {
 				return err
 			}
 			if err := assertLeaseHeldForSession(ctx, q, workspaceID, guard.MachineID, guard.ClientInstanceID, guard.FencingToken, guard.Now); err != nil {

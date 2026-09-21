@@ -29,6 +29,12 @@ var remoteCodingSpawnRoleTools = map[codingSubAgentRole]map[string]bool{
 	},
 	codingRoleReviewer: {
 		"ssh_read_file": true, "ssh_list_dir": true, "ssh_check_task": true,
+		// Reviewer-only: shell validation under the read-only whitelist in
+		// codingagent.reviewerShellInvocationAllowed (ToolPolicy.IsToolCallAllowed
+		// gates ssh_bash the same way as local bash). The prompt promises shell
+		// checks, so the surface must actually admit them — and only through the
+		// whitelist. The explorer map stays shell-free by design.
+		"ssh_bash": true,
 		codeNavigationToolName: true, reportLocalizationToolName: true,
 		"web_search": true, "web_fetch": true, "current_datetime": true,
 		"coding_knowledge_search": true, "knowledge_search": true, "knowledge_image_search": true,

@@ -15,9 +15,12 @@ package agent
 import (
 	"context"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/RapidAI/CodeClaw/corelib/toolid"
 )
 
 // ToolHandler is a function that executes a tool and returns the result.
@@ -28,6 +31,11 @@ type ToolHandlerCtx func(ctx context.Context, args map[string]interface{}) strin
 
 // ToolEntry binds a tool's LLM-facing definition with its execution handler.
 type ToolEntry struct {
+	// ID is the host-side canonical identity for first-party tools
+	// ("{namespace}:{name}", e.g. "core:bash"). It is NOT model-visible —
+	// rendered definitions keep using Name. When zero at registration time,
+	// the registry derives it as "core:<name>".
+	ID          toolid.ToolID
 	Name        string
 	Description string
 	Properties  map[string]interface{}
@@ -49,8 +57,20 @@ func NewCoreToolRegistry() *CoreToolRegistry {
 }
 
 // Register adds a tool to the registry. If a tool with the same name exists,
-// it is replaced.
+// it is replaced. When entry.ID is zero it is derived as "core:<name>"; a name
+// outside the toolid charset makes the ID derivation fail, in which case the
+// registration is skipped with a log line instead of panicking.
 func (r *CoreToolRegistry) Register(entry ToolEntry) {
+	id := entry.ID
+	if id.IsZero() {
+		parsed, err := toolid.New(toolid.NamespaceCore, entry.Name)
+		if err != nil {
+			log.Printf("agent: skipping registration of tool %q: %v", entry.Name, err)
+			return
+		}
+		id = parsed
+	}
+	entry.ID = id
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, exists := r.tools[entry.Name]; !exists {
@@ -139,6 +159,27 @@ func (r *CoreToolRegistry) Lookup(name string) (ToolEntry, bool) {
 		out.Required = append([]string(nil), entry.Required...)
 	}
 	return out, true
+}
+
+// FindByID returns the registered tool entry whose canonical ToolID matches
+// id. ToolIDs are host-side identity (registration, dispatch, authorization)
+// and are never rendered into model-visible definitions.
+func (r *CoreToolRegistry) FindByID(id toolid.ToolID) (ToolEntry, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, name := range r.order {
+		entry := r.tools[name]
+		if entry == nil || entry.ID != id {
+			continue
+		}
+		out := *entry
+		out.Properties = cloneToolDefinitionProperties(entry.Properties)
+		if len(entry.Required) > 0 {
+			out.Required = append([]string(nil), entry.Required...)
+		}
+		return out, true
+	}
+	return ToolEntry{}, false
 }
 
 // MissingTools returns tool names that are in the required set but not

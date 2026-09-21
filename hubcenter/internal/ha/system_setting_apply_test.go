@@ -234,6 +234,77 @@ func TestApplySystemSettingOpDoesNotAckPerGroupClassHead(t *testing.T) {
 	}
 }
 
+func applyClassHeadOp(t *testing.T, svc *Service, key, valueJSON string) {
+	t.Helper()
+	payload, err := json.Marshal(systemSettingPayload{Key: key, ValueJSON: valueJSON})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	if err := svc.applySystemSettingOp(context.Background(), &store.HASyncOp{OpType: OpUpsert, PayloadJSON: string(payload)}); err != nil {
+		t.Fatalf("applySystemSettingOp: %v", err)
+	}
+}
+
+// A stale replica of the classifier training store must not roll the local
+// store backwards. The store is rewritten on every training sample, so two
+// peers' replicas interleave and "latest wins" alone would discard samples.
+func TestApplySystemSettingOpFencesStaleClassHeadStore(t *testing.T) {
+	fresh := officialHeadStore("2026-09-18T02:00:00Z", "2026-09-18T03:00:00Z")
+	settings := &fakeSystemSettings{data: map[string]string{llmservice.OfficialClassHeadKey: fresh}}
+	svc := &Service{settings: settings}
+
+	applyClassHeadOp(t, svc, llmservice.OfficialClassHeadKey, officialHeadStore("2026-09-18T01:00:00Z"))
+
+	if got := settings.data[llmservice.OfficialClassHeadKey]; got != fresh {
+		t.Fatalf("stale class head store overwrote the fresher local one: %q", got)
+	}
+}
+
+func TestApplySystemSettingOpAppliesNewerClassHeadStore(t *testing.T) {
+	settings := &fakeSystemSettings{data: map[string]string{
+		llmservice.OfficialClassHeadKey: officialHeadStore("2026-09-18T01:00:00Z"),
+	}}
+	svc := &Service{settings: settings}
+
+	newer := officialHeadStore("2026-09-18T01:00:00Z", "2026-09-18T04:00:00Z")
+	applyClassHeadOp(t, svc, llmservice.OfficialClassHeadKey, newer)
+
+	if got := settings.data[llmservice.OfficialClassHeadKey]; got != newer {
+		t.Fatalf("newer class head store was not applied: %q", got)
+	}
+}
+
+// Per-group stores are separate keys carrying the same versioned store shape,
+// so they need the same protection.
+func TestApplySystemSettingOpFencesPerGroupClassHeadStore(t *testing.T) {
+	key := llmservice.OfficialClassHeadKey + ":coding-auto"
+	fresh := officialHeadStore("2026-09-18T03:00:00Z")
+	settings := &fakeSystemSettings{data: map[string]string{key: fresh}}
+	svc := &Service{settings: settings}
+
+	applyClassHeadOp(t, svc, key, officialHeadStore("2026-09-18T01:00:00Z"))
+
+	if got := settings.data[key]; got != fresh {
+		t.Fatalf("stale per-group store overwrote the fresher local one: %q", got)
+	}
+}
+
+// The fence must apply to class head stores only: other keys, including the
+// sibling per-group training key, keep latest-wins semantics.
+func TestApplySystemSettingOpDoesNotFenceOtherKeys(t *testing.T) {
+	settings := &fakeSystemSettings{data: map[string]string{}}
+	svc := &Service{settings: settings}
+
+	first := officialHeadStore("2026-09-18T03:00:00Z")
+	second := officialHeadStore("2026-09-18T01:00:00Z")
+	applyClassHeadOp(t, svc, "llm_class_head_v1:coding-auto", first)
+	applyClassHeadOp(t, svc, "llm_class_head_v1:coding-auto", second)
+
+	if got := settings.data["llm_class_head_v1:coding-auto"]; got != second {
+		t.Fatalf("unfenced key must stay latest-wins: %q", got)
+	}
+}
+
 func applyMonitorLeaseOp(t *testing.T, svc *Service, valueJSON string) {
 	t.Helper()
 	payload, err := json.Marshal(systemSettingPayload{Key: LLMProviderMonitorLeaseKey, ValueJSON: valueJSON})

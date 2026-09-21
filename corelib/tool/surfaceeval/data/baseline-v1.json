@@ -1,0 +1,78 @@
+{
+  "version": 1,
+  "samples": [
+    {
+      "id": "ssh-connect-1",
+      "user_text": "帮我连上服务器 10.0.0.1，查一下磁盘使用情况",
+      "expect_tools": ["ssh"],
+      "categories": ["conditional_activation"],
+      "simulated_intent": {"label": "ssh", "confidence": 0.9, "tool_names": ["ssh"]}
+    },
+    {
+      "id": "code-edit-1",
+      "user_text": "帮我看一下 corelib/tool/router.go 里 BM25 的评分逻辑，把权重从 0.50 改成 0.60",
+      "expect_tools": ["read_file", "edit_file"],
+      "categories": ["code_editing"]
+    },
+    {
+      "id": "web-lookup-1",
+      "user_text": "查一下 Go 1.24 的 release notes 里有哪些新特性",
+      "expect_tools": ["web_search"],
+      "categories": ["web_lookup"]
+    },
+    {
+      "id": "file-find-1",
+      "user_text": "在项目里帮我找所有叫 config.yaml 的配置文件",
+      "expect_tools": ["glob"],
+      "categories": ["file_find", "catalog_gap"]
+    },
+    {
+      "id": "knowledge-1",
+      "user_text": "我之前在知识库里存过测试服务器的连接信息吗？帮我查一下",
+      "expect_tools": ["knowledge_search"],
+      "categories": ["knowledge_query"]
+    },
+    {
+      "id": "file-read-1",
+      "user_text": "读一下 docs/design/tool-routing-improvement-plan-zh.md 的前 100 行，给我总结一下",
+      "expect_tools": ["read_file"],
+      "categories": ["code_editing"]
+    },
+    {
+      "id": "shell-1",
+      "user_text": "帮我跑一下 go test ./corelib/tool/... 看看有没有挂掉的用例",
+      "expect_tools": ["bash"],
+      "categories": ["shell"]
+    },
+    {
+      "id": "web-fetch-1",
+      "user_text": "把 https://go.dev/doc/effective_go 的内容抓下来，提炼出要点",
+      "expect_tools": ["web_fetch"],
+      "categories": ["web_lookup"]
+    },
+    {
+      "id": "time-1",
+      "user_text": "现在几点了？顺便告诉我今天的日期",
+      "expect_tools": ["current_datetime"],
+      "categories": ["time"]
+    },
+    {
+      "id": "file-write-1",
+      "user_text": "新建一个 scripts/hello.py，内容就是打印 hello world",
+      "expect_tools": ["write_file"],
+      "categories": ["code_editing"]
+    },
+    {
+      "id": "cost-chat-1",
+      "user_text": "你好，今天天气不错，随便聊聊",
+      "expect_tools": [],
+      "categories": ["cost_measurement"]
+    },
+    {
+      "id": "cost-thanks-1",
+      "user_text": "好的，谢谢，没事了",
+      "expect_tools": [],
+      "categories": ["cost_measurement"]
+    }
+  ]
+}

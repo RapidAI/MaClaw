@@ -63,11 +63,14 @@ type agentLoopStartState struct {
 
 func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions) agentLoopStartState {
 	ctx := opts.Context
-	if ctx != nil && len(opts.History) > 0 {
-		// Planning reads LoopContext.History. The live conversation is the
-		// start-state snapshot; without this bind, a restated weather+PDF
-		// turn still thinks lookup facts are missing.
-		ctx.History = opts.History
+	if ctx != nil {
+		ctx.autoExtractExpandedText = ""
+		if len(opts.History) > 0 {
+			// Planning reads LoopContext.History. The live conversation is the
+			// start-state snapshot; without this bind, a restated weather+PDF
+			// turn still thinks lookup facts are missing.
+			ctx.History = opts.History
+		}
 	}
 	telemetry := opts.Telemetry
 	cleanupFns := make([]func(), 0, 2)
@@ -158,6 +161,21 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 		markClassifierTimeoutLookup(ctx)
 		applySemanticChatProjection(ctx)
 		applySemanticRoutingMissFallback(ctx)
+		// HostKeep continuation pins look for truncated=true on auto_extract
+		// markers. Those markers are produced by expansion, which otherwise
+		// happens only when building user content after this leftover route.
+		// Rank leftover tools on the raw picker prompt; HostKeep reads the
+		// expanded extract from LoopContext so BM25 does not score the body.
+		if agent.CurrentLocalFilePathPromptIndex(userText) >= 0 {
+			originalText := userText
+			userText = agent.ExpandUserSelectedFilePathsWithContext(userText, cfg.EffectiveContextTokens())
+			if ctx != nil {
+				ctx.autoExtractExpandedText = userText
+				toolRoutingText = computerUseRoutingText(originalText, attachments)
+			} else {
+				toolRoutingText = computerUseRoutingText(userText, attachments)
+			}
+		}
 		toolSet = h.prepareAgentLoopTools(opts.UserID, toolRoutingText, ctx, phase)
 		tools = toolSet.Tools
 		baseTools = toolSet.BaseTools

@@ -113,6 +113,60 @@ func (s *SQLiteStore) GetTask(taskID string) (*Task, error) {
 	return s.getTask(s.db, taskID)
 }
 
+// activeCodingRuntimeStatusPriority ranks non-terminal statuses so a ref with
+// several live runs surfaces under its strongest state.
+func activeCodingRuntimeStatusPriority(status TaskStatus) int {
+	switch status {
+	case TaskRunning:
+		return 4
+	case TaskWaitingApproval, TaskBlocked:
+		return 3
+	case TaskInterrupted:
+		return 2
+	case TaskQueued, TaskWaitingChild:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// ListActiveTaskStatusesByProjectRef returns the strongest non-terminal
+// coding runtime status per project_ref. Pure agent loop coding runs (local
+// and remote) never create a workflow snapshot, so the task list merges this
+// ledger status into its status stats; refs whose runs all reached a terminal
+// state are omitted. Running-adjacent statuses (queued, waiting on children)
+// surface as "running"; approval/blocked runs surface under their own status
+// so the UI can file them as pending instead of completed.
+func (s *SQLiteStore) ListActiveTaskStatusesByProjectRef() (map[string]string, error) {
+	if s == nil || s.db == nil {
+		return nil, nil
+	}
+	rows, err := s.db.Query(`SELECT project_ref, status FROM coding_runtime_tasks WHERE status NOT IN (?, ?, ?)`,
+		TaskCompleted, TaskFailed, TaskCancelled)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	byRef := map[string]string{}
+	for rows.Next() {
+		var ref, status string
+		if err := rows.Scan(&ref, &status); err != nil {
+			return nil, err
+		}
+		ref = strings.TrimSpace(ref)
+		if ref == "" {
+			continue
+		}
+		if cur, ok := byRef[ref]; !ok || activeCodingRuntimeStatusPriority(TaskStatus(status)) > activeCodingRuntimeStatusPriority(TaskStatus(cur)) {
+			byRef[ref] = status
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return byRef, nil
+}
+
 func (s *SQLiteStore) ListChildTasks(parentTaskID string) ([]*Task, error) {
 	if _, err := s.GetTask(parentTaskID); err != nil {
 		return nil, err

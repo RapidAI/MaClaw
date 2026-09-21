@@ -3,31 +3,46 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>TigerProxy</title>
+  <title>CodexProxy</title>
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
-  <main class="shell">
-    <section class="topbar">
-      <div>
-        <h1>TigerProxy</h1>
+  <button id="hideBtn" class="window-hide" type="button" title="隐藏主界面" aria-label="隐藏主界面">×</button>
+
+  <main id="onboarding" class="shell onboarding" hidden>
+    <div class="chooser">
+      <div class="chooser-head">
+        <div>
+          <h1>选择登录方式</h1>
+          <p class="sub">第一次使用请选一种上游。之后可在主界面切换，切换后会自动重启生效。</p>
+        </div>
       </div>
+      <div id="authModeGrid" class="method-grid"></div>
+      <section id="onboardingForm" class="panel config-panel onboarding-form" hidden></section>
+      <div class="chooser-foot">
+        <button id="onboardingContinue" class="primary" type="button">继续</button>
+      </div>
+    </div>
+  </main>
+
+  <main id="main" class="shell">
+    <section class="topbar">
+      <div><h1>CodexProxy</h1></div>
       <div id="tokenStats" class="token-stats">
         <span title="实际输入 / 原始输入 tokens">↑ <strong id="promptTokens">0</strong><small id="promptBefore" class="before-cache"></small></span>
         <span title="实际输出 / 原始输出 tokens">↓ <strong id="completionTokens">0</strong><small id="completionBefore" class="before-cache"></small></span>
         <span title="实际总计 / 原始总计 tokens">Σ <strong id="totalTokens">0</strong><small id="totalBefore" class="before-cache"></small></span>
         <span title="缓存节省率" class="cache-stat">💾 <strong id="cacheSaving">-</strong></span>
         <span class="token-period-switcher">
-          <button class="period-btn active" data-period="today" title="今天">日</button>
-          <button class="period-btn" data-period="week" title="本周">周</button>
-          <button class="period-btn" data-period="month" title="本月">月</button>
-          <button class="period-btn" data-period="all" title="累计">全</button>
+          <button class="period-btn active" data-period="today" title="今天" type="button">日</button>
+          <button class="period-btn" data-period="week" title="本周" type="button">周</button>
+          <button class="period-btn" data-period="month" title="本月" type="button">月</button>
+          <button class="period-btn" data-period="all" title="累计" type="button">全</button>
         </span>
       </div>
       <div class="status-group">
         <span class="author">作者：Daniel 博士</span>
         <span id="loginChip" class="chip muted">未登录</span>
-        <button id="hideBtn" class="window-hide" type="button" title="隐藏主界面" aria-label="隐藏主界面">×</button>
       </div>
     </section>
 
@@ -37,11 +52,11 @@
         <span id="statusBadge" class="badge">启动中</span>
       </div>
       <div class="actions">
-        <button id="installCodexBtn" class="ghost codex-btn" style="display:none;">安装 Codex Desktop</button>
-        <button id="configCodexBtn" class="ghost codex-btn">配置 Codex</button>
-		<button id="restoreCodexBtn" class="ghost codex-btn">恢复 Codex</button>
-        <button id="loginBtn" class="primary">SSO 登录</button>
-        <button id="logoutBtn" class="ghost danger" style="display:none;">退出登录</button>
+        <button id="installCodexBtn" class="ghost codex-btn" type="button" style="display:none;">安装 Codex Desktop</button>
+        <button id="configCodexBtn" class="ghost codex-btn" type="button">配置 Codex</button>
+        <button id="restoreCodexBtn" class="ghost codex-btn" type="button">恢复 Codex</button>
+        <button id="loginActionBtn" class="primary" type="button">登录</button>
+        <button id="logoutBtn" class="ghost danger" type="button" style="display:none;">退出登录</button>
       </div>
       <div id="codexProgress" class="codex-progress" style="display:none;">
         <div class="codex-progress-info">
@@ -56,57 +71,38 @@
 
     <section class="panel quick-guide-panel">
       <h3>快速使用指南</h3>
-      <ol class="guide-steps" role="list">
-        <li>确认 <strong>Codex Desktop</strong> 已安装 <span class="step-hint">未安装则点击安装按钮</span></li>
-        <li>点击 <strong>SSO 登录</strong> 完成认证 <span class="step-hint">登录后自动获取模型列表</span></li>
-        <li>选择 <strong>默认模型</strong> 并点击 <strong>保存</strong></li>
-        <li>点击 <strong>配置 Codex</strong> 按钮</li>
-        <li>启动 <strong>Codex Desktop</strong> 开始使用</li>
-      </ol>
+      <ol id="guideSteps" class="guide-steps" role="list"></ol>
     </section>
 
     <section class="layout-grid">
       <section class="panel config-panel">
         <div class="section-head">
           <h2>配置</h2>
-          <button id="saveBtn" class="primary compact">保存</button>
+          <button id="saveBtn" class="primary compact" type="button">保存</button>
         </div>
-
         <div class="field-stack">
+          <div class="field">
+            <label>登录方式 <span class="label-hint">切换后将自动重启生效</span></label>
+            <select id="authMode"></select>
+          </div>
+          <div id="modeFields"></div>
+          <div class="divider"></div>
+          <div class="local-head">本地服务</div>
           <div class="field">
             <label>监听地址 <span class="label-hint">默认监听全部地址，可用 127.0.0.1 或局域网 IP 访问</span></label>
             <input id="listenAddress" spellcheck="false" />
           </div>
-
           <div class="field">
-            <label>API Key <span class="label-hint">OpenAI 与 Anthropic 共用同一个本地 API Key</span></label>
-            <div class="inline"><input id="apiKey" spellcheck="false" /><button id="genKeyBtn" class="ghost">生成</button></div>
+            <label>本地 API Key <span class="label-hint">OpenAI 与 Anthropic 共用，给 Codex 用</span></label>
+            <div class="inline"><input id="apiKey" spellcheck="false" /><button id="genKeyBtn" class="ghost" type="button">生成</button></div>
           </div>
-
           <label class="check-row" for="autoStart">
             <input id="autoStart" type="checkbox" />
             <span>
               <strong>开机自动启动</strong>
-              <small>登录 Windows 时自动启动 TigerProxy</small>
+              <small>登录 Windows 时自动启动 CodexProxy</small>
             </span>
           </label>
-
-          <div class="field">
-            <label>上游 Base URL</label>
-            <input id="baseURL" spellcheck="false" />
-          </div>
-
-          <div class="two-fields">
-            <div class="field">
-              <label>默认模型</label>
-              <select id="modelID"></select>
-            </div>
-            <div class="field">
-              <label>账号</label>
-              <input id="email" disabled />
-            </div>
-          </div>
-
           <div class="codex-context-settings" aria-labelledby="codexContextTitle">
             <div class="codex-context-settings__head">
               <strong id="codexContextTitle">Codex 上下文与压缩</strong>
@@ -115,14 +111,14 @@
             <div class="two-fields">
               <div class="field">
                 <label for="codexContextWindow">上下文长度 <span class="label-hint">Token</span></label>
-                <input id="codexContextWindow" type="number" min="1" max="2147483647" step="1000" inputmode="numeric" aria-describedby="codexContextHint" />
+                <input id="codexContextWindow" type="number" min="1" max="2147483647" step="1000" inputmode="numeric" />
               </div>
               <div class="field">
                 <label for="codexAutoCompactTokenLimit">压缩启动长度 <span class="label-hint">Token</span></label>
-                <input id="codexAutoCompactTokenLimit" type="number" min="1" max="2147483647" step="1000" inputmode="numeric" aria-describedby="codexContextHint" />
+                <input id="codexAutoCompactTokenLimit" type="number" min="1" max="2147483647" step="1000" inputmode="numeric" />
               </div>
             </div>
-            <p id="codexContextHint" class="codex-context-settings__hint">未配置时使用程序默认值。压缩启动长度必须小于上下文长度。</p>
+            <p class="codex-context-settings__hint">未配置时使用程序默认值。压缩启动长度必须小于上下文长度。</p>
           </div>
         </div>
       </section>
@@ -134,12 +130,10 @@
           <div class="endpoint"><span>Anthropic</span><code id="anthropicURL" class="full-url clickable" title="点击复制"></code></div>
           <div class="endpoint"><span>Health</span><code id="healthURL" class="full-url clickable" title="点击复制"></code></div>
         </div>
-
         <div class="lan-block">
           <h3>局域网地址</h3>
           <div id="lanURLs" class="lan"></div>
         </div>
-
         <div class="cache-block">
           <h3>响应缓存</h3>
           <div class="cache-info">
@@ -152,13 +146,22 @@
           <div class="cache-diagnostic" id="cacheDiagnostic" title="">
             <div class="cache-diagnostic-line">最近一次 <strong id="cacheDecisionSummary">-</strong><span id="cacheDecisionExtra" class="cache-diagnostic-extra"></span></div>
           </div>
-          <button id="clearCacheBtn" class="ghost compact">清除缓存</button>
+          <button id="clearCacheBtn" class="ghost compact" type="button">清除缓存</button>
         </div>
-
       </aside>
     </section>
   </main>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <div id="dialogMask" class="dialog-mask" hidden>
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="dialogTitle">
+      <h3 id="dialogTitle">请确认</h3>
+      <p id="dialogMessage"></p>
+      <div class="dialog-actions">
+        <button id="dialogCancel" class="ghost" type="button">取消</button>
+        <button id="dialogOk" class="primary" type="button">确定</button>
+      </div>
+    </div>
+  </div>
   <script src="./app.js"></script>
 </body>
 </html>

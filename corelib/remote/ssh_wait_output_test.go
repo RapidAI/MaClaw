@@ -303,3 +303,68 @@ func TestNewLinesSinceClampsDroppedPrefix(t *testing.T) {
 		t.Fatalf("got %v", lines)
 	}
 }
+
+// TestProbeFrameSurvivesRingResize pins the durable-runtime recovery probe's
+// availability floor: the probe frames its read-only git status between
+// markers inside this preview ring, and a git status larger than the
+// historical 2000-line ring evicted the begin marker, failing the whole task
+// closed on an otherwise healthy workspace. Frames above the historical cap
+// but below the current cap must survive intact (markers + HEAD line).
+// The residual limit (frames larger than sshPreviewMaxLines itself) must
+// stay fail-closed: eviction of the begin marker, never a wrong frame.
+func TestProbeFrameSurvivesRingResize(t *testing.T) {
+	const (
+		markerStart = "PROBE-BEGIN-9f3a"
+		markerEnd   = "PROBE-END-9f3a"
+		headLine    = "9f3aeadc1234567890abcdef1234567890abcdef12"
+	)
+	buildFrame := func(statusLines int) []string {
+		frame := make([]string, 0, statusLines+3)
+		frame = append(frame, markerStart)
+		for i := 0; i < statusLines; i++ {
+			frame = append(frame, " M internal/pkg/file_0001.go")
+		}
+		frame = append(frame, markerEnd, headLine)
+		return frame
+	}
+	appendFrame := func(s *SSHManagedSession, frame []string) int {
+		absBefore := s.droppedLines + len(s.PreviewLines)
+		s.PreviewLines = append(s.PreviewLines, frame...)
+		s.trimPreviewLocked()
+		return absBefore
+	}
+
+	t.Run("frame above historical 2000-line cap survives", func(t *testing.T) {
+		s := &SSHManagedSession{}
+		frame := buildFrame(15000)
+		s.mu.Lock()
+		absBefore := appendFrame(s, frame)
+		s.mu.Unlock()
+
+		lines, _ := s.NewLinesSince(absBefore)
+		joined := strings.Join(lines, "\n")
+		if !strings.Contains(joined, markerStart) {
+			t.Fatalf("begin marker evicted; ring=%d dropped=%d", len(s.PreviewLines), s.droppedLines)
+		}
+		if !strings.Contains(joined, markerEnd) {
+			t.Fatal("end marker missing from capture")
+		}
+		if !strings.Contains(joined, headLine) {
+			t.Fatal("HEAD line missing from capture")
+		}
+	})
+
+	t.Run("frame larger than the new cap still fails closed", func(t *testing.T) {
+		s := &SSHManagedSession{}
+		frame := buildFrame(sshPreviewMaxLines + 500)
+		s.mu.Lock()
+		absBefore := appendFrame(s, frame)
+		s.mu.Unlock()
+
+		lines, _ := s.NewLinesSince(absBefore)
+		joined := strings.Join(lines, "\n")
+		if strings.Contains(joined, markerStart) {
+			t.Fatal("begin marker unexpectedly survived: eviction floor regressed")
+		}
+	})
+}

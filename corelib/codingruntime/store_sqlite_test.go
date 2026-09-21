@@ -322,3 +322,58 @@ func TestSQLiteStoreUnstartedChildInterruptsWaitingParent(t *testing.T) {
 		t.Fatalf("child=%+v err=%v", child, err)
 	}
 }
+
+func TestSQLiteStoreListActiveTaskStatusesByProjectRef(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "runtime.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 9, 18, 22, 0, 0, 0, time.UTC)
+	// Running remote run on /home/testprj-2.
+	remote, err := store.CreateTask(Task{TaskID: "remote-run", ProjectRef: "/home/testprj-2", Mode: "remote"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.StartAttempt(remote.TaskID, "worker", time.Minute, PolicySnapshot{ProjectRoot: "/home/testprj-2", Mode: "remote"}, now); err != nil {
+		t.Fatal(err)
+	}
+	// Terminal local run on F:\test-prog must not surface.
+	done, err := store.CreateTask(Task{TaskID: "done-run", ProjectRef: `F:\test-prog`, Mode: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := store.StartAttempt(done.TaskID, "worker", time.Minute, PolicySnapshot{ProjectRoot: `F:\test-prog`, Mode: "local"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FinishAttempt(attempt.AttemptID, "worker", FinishInput{Status: TaskCompleted, SideEffectState: SideEffectObserved}, now); err != nil {
+		t.Fatal(err)
+	}
+	// A blocked run on another ref surfaces under its own status.
+	blocked, err := store.CreateTask(Task{TaskID: "blocked-run", ProjectRef: "/opt/app", Mode: "remote"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	blockedAttempt, err := store.StartAttempt(blocked.TaskID, "worker", time.Minute, PolicySnapshot{ProjectRoot: "/opt/app", Mode: "remote"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FinishAttempt(blockedAttempt.AttemptID, "worker", FinishInput{Status: TaskBlocked, SideEffectState: SideEffectNone}, now); err != nil {
+		t.Fatal(err)
+	}
+
+	active, err := store.ListActiveTaskStatusesByProjectRef()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := active["/home/testprj-2"]; got != string(TaskRunning) {
+		t.Fatalf("remote ref status=%q", got)
+	}
+	if got := active["/opt/app"]; got != string(TaskBlocked) {
+		t.Fatalf("blocked ref status=%q", got)
+	}
+	if _, ok := active[`F:\test-prog`]; ok {
+		t.Fatalf("terminal ref surfaced: %v", active)
+	}
+}

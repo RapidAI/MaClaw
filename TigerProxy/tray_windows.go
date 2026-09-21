@@ -37,11 +37,11 @@ func setupTray(app *App, appOptions *options.App) {
 		stdruntime.LockOSThread()
 		systray.Run(func() {
 			systray.SetIcon(trayIcon)
-			systray.SetTitle("TigerProxy")
-			systray.SetTooltip("TigerProxy")
+			systray.SetTitle("CodexProxy")
+			systray.SetTooltip("CodexProxy")
 
 			mShowHide := systray.AddMenuItem("隐藏", "显示/隐藏主界面")
-			mQuit := systray.AddMenuItem("退出", "退出 TigerProxy")
+			mQuit := systray.AddMenuItem("退出", "退出 CodexProxy")
 
 			// visible is guarded by trayVisibilityMu to prevent data race
 			// between tray goroutine (toggle) and main goroutine (UpdateTrayVisibility).

@@ -70,15 +70,18 @@ export function stripCodingAgentAuditSections(text: string): string {
 }
 
 const CODING_WORKBENCH_STATUS_MILESTONE =
-    /^(?:Task received|Preparing the execution|Execution environment is ready|Building the request|Step complete|Received, (?:now )?processing|\u6536\u5230\uff0c\u6b63\u5728\u5904\u7406|\u5df2\u63a5\u6536\u4efb\u52a1|\u6b63\u5728\u51c6\u5907\u6267\u884c\u8def\u5f84|\u4f1a\u8bdd\u9884\u68c0\u5b8c\u6210|\u4f1a\u8bdd\u5df2\u5c31\u7eea|\u4e0a\u4e0b\u6587\u5df2\u51c6\u5907|\u6b63\u5728\u6574\u7406\u4e0a\u4e0b\u6587|\u6a21\u578b\u8bf7\u6c42\u5df2\u53d1\u9001|\u5df2\u5339\u914d\u76f4\u63a5\u6267\u884c|\u5df2\u9009\u62e9\u5feb\u901f\u6267\u884c|\u5df2\u9009\u62e9\u5b8c\u6574\u6267\u884c|\u6b63\u5728\u542f\u52a8\u4efb\u52a1)/i;
+    /^(?:Task received|Preparing the execution(?: path)?|Execution environment is ready|Synchronizing conversation context|Analyzing the task(?: and starting work)?|Building the request|Step complete|Received, (?:now )?processing|\u6536\u5230\uff0c\u6b63\u5728\u5904\u7406|\u5df2\u63a5\u6536\u4efb\u52a1|\u6b63\u5728\u51c6\u5907\u6267\u884c\u8def\u5f84|\u6267\u884c\u73af\u5883\u5df2\u5c31\u7eea|\u6b63\u5728\u540c\u6b65\u4f1a\u8bdd\u4e0a\u4e0b\u6587|\u6b63\u5728\u5206\u6790\u4efb\u52a1(?:\u5e76\u5f00\u59cb\u5904\u7406)?|\u4f1a\u8bdd\u9884\u68c0\u5b8c\u6210|\u4f1a\u8bdd\u5df2\u5c31\u7eea|\u4e0a\u4e0b\u6587\u5df2\u51c6\u5907|\u6b63\u5728\u6574\u7406\u4e0a\u4e0b\u6587|\u6a21\u578b\u8bf7\u6c42\u5df2\u53d1\u9001|\u5df2\u5339\u914d\u76f4\u63a5\u6267\u884c|\u5df2\u9009\u62e9\u5feb\u901f\u6267\u884c|\u5df2\u9009\u62e9\u5b8c\u6574\u6267\u884c|\u6b63\u5728\u542f\u52a8\u4efb\u52a1)$/i;
 
 function isCodingWorkbenchStatusLine(line: string): boolean {
     const trimmed = (line || "").trim();
     if (!trimmed) return false;
     let body = trimmed;
     if (body.startsWith("\u2022 ")) body = body.slice(2).trim();
-    else if (body.startsWith("[Status]")) body = body.replace(/^\[Status\]\s*/, "").trim();
-    return CODING_WORKBENCH_STATUS_MILESTONE.test(body);
+    else if (/^\[Status\]/i.test(body)) body = body.replace(/^\[Status\]\s*/i, "").trim();
+    if (CODING_WORKBENCH_STATUS_MILESTONE.test(body)) return true;
+    // Host sometimes joins two milestones on one line ("已接收任务，正在准备执行路径").
+    const parts = body.split(/[，,、]/).map((part) => part.trim()).filter(Boolean);
+    return parts.length >= 2 && parts.every((part) => CODING_WORKBENCH_STATUS_MILESTONE.test(part));
 }
 
 /** True when reasoning still contains chat [Status] milestones. */
@@ -90,6 +93,21 @@ export function reasoningHasCodingStatusMilestone(reasoning: string): boolean {
 export function stripCodingWorkbenchStatusReasoning(reasoning: string): string {
     const kept = (reasoning || "").split(/\r?\n/).filter((line) => !isCodingWorkbenchStatusLine(line));
     return kept.join("\n").replace(/^\n+|\n+$/g, "");
+}
+
+/** Drop only a leading run of host status lines from a chat body. Mid-body quotes stay. */
+export function stripLeadingCodingWorkbenchStatus(text: string): string {
+    const lines = (text || "").split(/\r?\n/);
+    let index = 0;
+    while (index < lines.length) {
+        const trimmed = lines[index].trim();
+        if (!trimmed || isCodingWorkbenchStatusLine(lines[index])) {
+            index += 1;
+            continue;
+        }
+        break;
+    }
+    return lines.slice(index).join("\n").replace(/^\n+|\n+$/g, "");
 }
 
 /** Workbench / workflow board banners that are not Coding Agent Event lines. */

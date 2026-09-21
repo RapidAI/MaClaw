@@ -11,6 +11,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	workflow "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
@@ -3656,5 +3657,163 @@ func TestRepairMergedTaskIdentityEntriesRestoresAbsorbedTasks(t *testing.T) {
 	}
 	if !paths[taskA.ProjectPath] || !paths[taskB.ProjectPath] {
 		t.Fatalf("ListTasks = %#v, want both surviving and absorbed tasks", paths)
+	}
+}
+
+func TestSearchProjectsMergesRemoteCodingRuntimeRunningStatus(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.workflowEngine = nil
+
+	store, err := codingruntime.NewSQLiteStore(filepath.Join(t.TempDir(), "coding_runtime.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	app.codingRuntimeStore = store
+
+	created := app.CreateRemoteCodingTask("Remote run task", "10.0.0.8", "ubuntu", "/home/testprj-2", 22)
+	if created.ProjectPath == "" {
+		t.Fatal("CreateRemoteCodingTask returned empty project path")
+	}
+	// No runtime row yet: the task files under its regular (completed) bucket.
+	recent := app.SearchProjects("Remote run task", 10)
+	if len(recent) != 1 {
+		t.Fatalf("SearchProjects = %+v, want the remote task row", recent)
+	}
+	if recent[0].ActiveWorkflow != nil {
+		t.Fatalf("ActiveWorkflow = %#v, want nil before any run", recent[0].ActiveWorkflow)
+	}
+
+	// A remote coding runtime attempt starts on the same workdir.
+	runtimeTask, err := store.CreateTask(codingruntime.Task{TaskID: "rt-remote", ProjectRef: "/home/testprj-2", Mode: "remote"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.StartAttempt(runtimeTask.TaskID, "worker", time.Minute, codingruntime.PolicySnapshot{ProjectRoot: "/home/testprj-2", Mode: "remote"}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	recent = app.SearchProjects("Remote run task", 10)
+	if len(recent) != 1 {
+		t.Fatalf("SearchProjects = %+v, want the remote task row", recent)
+	}
+	if got := recent[0].ActiveWorkflow; got == nil || got.Status != string(codingruntime.TaskRunning) {
+		t.Fatalf("ActiveWorkflow = %#v, want coding runtime running snapshot", got)
+	}
+}
+
+func TestSearchProjectsMergesLocalCodingRuntimeBlockedStatus(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.workflowEngine = nil
+
+	store, err := codingruntime.NewSQLiteStore(filepath.Join(t.TempDir(), "coding_runtime.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	app.codingRuntimeStore = store
+
+	workingDir := filepath.Join(t.TempDir(), "coding-workdir")
+	created := app.CreateTaskWithMode("Local coding task", workingDir, "coding_dev")
+	if created.ProjectPath == "" {
+		t.Fatal("CreateTaskWithMode returned empty project path")
+	}
+
+	runtimeTask, err := store.CreateTask(codingruntime.Task{TaskID: "rt-local", ProjectRef: filepath.Clean(workingDir), Mode: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := store.StartAttempt(runtimeTask.TaskID, "worker", time.Minute, codingruntime.PolicySnapshot{ProjectRoot: filepath.Clean(workingDir), Mode: "local"}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FinishAttempt(attempt.AttemptID, "worker", codingruntime.FinishInput{Status: codingruntime.TaskBlocked, SideEffectState: codingruntime.SideEffectNone}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	recent := app.SearchProjects("Local coding task", 10)
+	if len(recent) != 1 {
+		t.Fatalf("SearchProjects = %+v, want the local coding task row", recent)
+	}
+	got := recent[0].ActiveWorkflow
+	if got == nil || !got.PendingReview || got.Status != "waiting_review" {
+		t.Fatalf("ActiveWorkflow = %#v, want waiting_review/pending-review snapshot", got)
+	}
+}
+
+func TestCodingRuntimeRefForTaskTagsPrefersRemoteWorkDir(t *testing.T) {
+	tags := []string{
+		"task_management",
+		"remote_coding_dev",
+		"coding_dev",
+		`working_dir:F:\test-prog`,
+		"remote_host:www.driverdevelop.com",
+		"remote_workdir:/home/testprj-2",
+	}
+	if ref := codingRuntimeRefForTaskTags(tags); ref != "/home/testprj-2" {
+		t.Fatalf("ref = %q, want remote workdir", ref)
+	}
+	if ref := codingRuntimeRefForTaskTags([]string{"coding_dev", `working_dir:F:\test-prog`}); ref != `F:\test-prog` {
+		t.Fatalf("ref = %q, want local working dir", ref)
+	}
+	if ref := codingRuntimeRefForTaskTags([]string{"task_management", `working_dir:F:\test-prog`}); ref != "" {
+		t.Fatalf("ref = %q, want empty for non-coding row", ref)
+	}
+}
+
+func TestSearchProjectsKeepsActiveWorkflowSnapshotOverCodingRuntimeMerge(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.workflowEngine = nil
+	app.workflowV2 = buildWorkflowV2State(workflow.NewMemoryStore())
+
+	store, err := codingruntime.NewSQLiteStore(filepath.Join(t.TempDir(), "coding_runtime.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	app.codingRuntimeStore = store
+
+	created := app.CreateRemoteCodingTask("Snapshot precedence task", "10.0.0.8", "ubuntu", "/home/testprj-2", 22)
+	if created.ProjectPath == "" {
+		t.Fatal("CreateRemoteCodingTask returned empty project path")
+	}
+	// Active workflow snapshot for the task row itself: it must win over the
+	// coding runtime merge so phase detail is preserved.
+	now := time.Now()
+	state := &workflow.WorkflowState{
+		ID:          workflow.GenerateID(projectSessionOwnerID(created.ProjectPath)),
+		UserID:      projectSessionOwnerID(created.ProjectPath),
+		Type:        string(workflow.WorkflowCoding),
+		ProjectPath: created.ProjectPath,
+		Summary:     "review phase",
+		Phases: []workflow.Phase{{
+			ID:     "review",
+			Name:   "Review",
+			Status: workflow.PhaseRunning,
+		}},
+		CurrentPhase: 0,
+		Status:       workflow.StatusActive,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if err := app.workflowV2.store.Save(state); err != nil {
+		t.Fatalf("workflowV2 Save failed: %v", err)
+	}
+	// A coding runtime run is also active on the same remote workdir.
+	runtimeTask, err := store.CreateTask(codingruntime.Task{TaskID: "rt-precedence", ProjectRef: "/home/testprj-2", Mode: "remote"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.StartAttempt(runtimeTask.TaskID, "worker", time.Minute, codingruntime.PolicySnapshot{ProjectRoot: "/home/testprj-2", Mode: "remote"}, now); err != nil {
+		t.Fatal(err)
+	}
+
+	recent := app.SearchProjects("Snapshot precedence task", 10)
+	if len(recent) != 1 {
+		t.Fatalf("SearchProjects = %+v, want the remote task row", recent)
+	}
+	got := recent[0].ActiveWorkflow
+	if got == nil || got.Status != string(workflow.StatusActive) || got.Phase != "review" {
+		t.Fatalf("ActiveWorkflow = %#v, want active workflow snapshot with phase detail", got)
 	}
 }

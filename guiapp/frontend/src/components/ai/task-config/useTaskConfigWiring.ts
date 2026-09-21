@@ -12,6 +12,7 @@ import {
 } from "../../../../wailsjs/go/main/App";
 import {
     EVENT_EXPERTS_CHANGED,
+    EVENT_NEW_TASK_WIZARD_BLOCKED,
     EVENT_OPEN_NEW_TASK_WIZARD,
     EVENT_OPEN_TASK_LAUNCH,
     type OpenTaskLaunchDetail,
@@ -61,6 +62,8 @@ export interface TaskConfigWiringOptions {
     inputValue: string;
     composeAction: unknown;
     inputLocked: boolean;
+    /** True only while an agent turn is actually executing (busy or cancelling). The new-task wizard uses this — not the broader inputLocked — to decide that a running task blocks the wizard, so the "task is running" notice never fires for recording/ACP locks. */
+    assistantBusy?: boolean;
     messages: unknown[];
     handleSend: () => void;
     handleWelcomePromptSend: (text: string, meta?: WelcomePromptSubmitMeta) => unknown;
@@ -105,7 +108,7 @@ export interface TaskConfigWiring {
 export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfigWiring {
     const {
         activeTab, isLocalTabActive, lang, taskListProp,
-        inputRef, inputValue, composeAction, inputLocked, messages,
+        inputRef, inputValue, composeAction, inputLocked, assistantBusy = false, messages,
         handleSend, handleWelcomePromptSend, clearComposerDraft, clearActiveHistory,
         getTabs, getTabState, saveTabState, activateTab,
         setQueueInteractionStarted, setQueueEditDraftActive, setEditingEntryId,
@@ -378,9 +381,21 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
             const msg = m as { role?: unknown };
             return !!msg && typeof msg === "object" && (msg.role === "user" || msg.role === "assistant");
         }) || messages.length > 0;
+        if (hasConversation && assistantBusy) {
+            // The wizard only renders on the welcome page, which a running task
+            // keeps hidden; opening it now would be a silent no-op (and the flag
+            // would pop up later). Surface the blockage instead.
+            window.dispatchEvent(new CustomEvent(EVENT_NEW_TASK_WIZARD_BLOCKED));
+            return;
+        }
         if (hasConversation && !inputLocked) {
             // Same reset as the title-bar "New conversation" control.
             void Promise.resolve(clearActiveHistory()).catch(() => {});
+        } else if (hasConversation) {
+            // Locked for a non-busy reason (recording, ACP mirror, arming) while
+            // the conversation stays: the welcome wizard page cannot render on
+            // top of history, so don't leave a stale flag that pops up later.
+            return;
         }
         setQueueInteractionStarted(false);
         setQueueEditDraftActive(false);

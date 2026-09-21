@@ -11,6 +11,7 @@ import {
     KnowledgeShareToHub,
     KnowledgeSearchStructured,
     KnowledgeSearch,
+    KnowledgeSearchFacets,
     KnowledgeDeleteFragment,
     KnowledgeGetImageAssetPaths,
     KnowledgeOpenImageAsset,
@@ -778,11 +779,11 @@ describe('KnowledgeSettingsPanel component', () => {
         render(<KnowledgeSettingsPanel lang="en" />);
 
         fireEvent.click(screen.getByRole('tab', { name: 'Search' }));
-        fireEvent.click(await screen.findByRole('button', { name: 'Table Filters' }));
+        fireEvent.click(await screen.findByRole('radio', { name: 'Table Filters' }));
         await waitFor(() => expect(KnowledgeStructuredCatalog).toHaveBeenCalledTimes(1));
         fireEvent.change(screen.getByPlaceholderText('Column name, e.g. Department'), { target: { value: 'Department' } });
         fireEvent.change(screen.getByPlaceholderText('Text value'), { target: { value: 'Legal' } });
-        fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+        fireEvent.keyDown(screen.getByPlaceholderText('Text value'), { key: 'Enter' });
 
         await waitFor(() => expect(KnowledgeSearchStructured).toHaveBeenCalledTimes(1));
         expect(KnowledgeSearchStructured).toHaveBeenCalledWith(expect.objectContaining({
@@ -790,6 +791,9 @@ describe('KnowledgeSettingsPanel component', () => {
             limit: 20,
             include_disabled: false,
         }));
+        expect(screen.getByTestId('knowledge-search-layout').className).toContain('knowledge-search-results-only');
+        expect(screen.queryByRole('heading', { name: 'Facets' })).toBeNull();
+        expect(screen.queryByRole('heading', { name: 'Last Operation' })).toBeNull();
     });
 
     it('previews persisted OfficeRead Markdown nodes without reopening a document', async () => {
@@ -903,9 +907,16 @@ describe('KnowledgeSettingsPanel component', () => {
         expect(screen.getByRole('tab', { name: 'Search' }).getAttribute('aria-selected')).toBe('true');
         await waitFor(() => expect(KnowledgeSearch).toHaveBeenCalledWith(expect.objectContaining({
             query: 'gateway topology',
-            source_id: 'architecture-doc',
+            source_ids: ['architecture-doc'],
+            include_disabled: false,
+            limit: 20,
         })));
+        expect(vi.mocked(KnowledgeSearch).mock.calls.at(-1)?.[0]).not.toHaveProperty('source_kinds');
+        expect(vi.mocked(KnowledgeSearch).mock.calls.at(-1)?.[0]).not.toHaveProperty('result_types');
         expect((screen.getByPlaceholderText('Search knowledge base...') as HTMLInputElement).value).toBe('gateway topology');
+        expect(screen.getByTestId('knowledge-search-source-chip').textContent).toContain('architecture-doc');
+        expect((screen.getByDisplayValue('All kinds') as HTMLSelectElement).value).toBe('all');
+        expect((screen.getByDisplayValue('All types') as HTMLSelectElement).value).toBe('all');
     });
 
     it('asks to confirm before deleting a search fragment and removes it after confirm', async () => {
@@ -947,5 +958,106 @@ describe('KnowledgeSettingsPanel component', () => {
         await waitFor(() => expect(vi.mocked(KnowledgeSearch).mock.calls.length).toBeGreaterThanOrEqual(2));
         await waitFor(() => expect(screen.queryByRole('button', { name: '删除片段' })).toBeNull());
         expect(screen.getByText('暂无检索结果。')).toBeTruthy();
+    });
+
+    it('keeps search filters labeled and facets grouped beside results', async () => {
+        const longSnippet = '国务院关于印发新一代人工智能发展规划的通知 '.repeat(12);
+        const searchHit = {
+            result_type: 'node',
+            node_id: 'n-long',
+            node_title: '中国博士后科学基金面上资助申请书-lxs-v2.0-2026.08.13 part 2 part 3',
+            snippet: longSnippet,
+            score: 2.895,
+            source: { id: 'src-docx', kind: 'docx', relative_path: '中国博士后科学基金面上资助申请书-lxs-v2.0-2026.08.13.docx' },
+        };
+        const facetPayload = {
+            count: 20,
+            result_types: [{ label: 'node', count: 20 }],
+            source_kinds: [{ label: 'docx', count: 11 }, { label: 'markdown', count: 9 }],
+            domains: [{ domain: 'local', label: 'local', count: 20 }],
+            labels: [{ label: 'kind:docx', count: 11 }, { label: 'scope:personal', count: 11 }],
+            sources: [{ label: 'orphan', count: 1 }, { label: '申请书', source_id: 'src-docx', count: 3 }],
+        };
+        vi.mocked(KnowledgeSearch).mockResolvedValue([searchHit] as any);
+        vi.mocked(KnowledgeSearchFacets).mockResolvedValue(facetPayload as any);
+        const showToastMessage = vi.fn();
+
+        render(<KnowledgeSettingsPanel lang="zh-Hans" showToastMessage={showToastMessage} />);
+        fireEvent.click(screen.getByRole('tab', { name: '检索' }));
+
+        expect(screen.getByTestId('knowledge-search-layout')).toBeTruthy();
+        expect(screen.getByTestId('knowledge-search-filters')).toBeTruthy();
+        expect(screen.getByText('结果类型')).toBeTruthy();
+        expect(screen.getByText('来源种类')).toBeTruthy();
+        expect(screen.getByText('条数')).toBeTruthy();
+        expect((screen.getByTestId('knowledge-search-limit') as HTMLInputElement).value).toBe('20');
+        expect((screen.getByDisplayValue('全部种类') as HTMLSelectElement).value).toBe('all');
+        expect((screen.getByDisplayValue('全部类型') as HTMLSelectElement).querySelector('option[value="table_row"]')).toBeTruthy();
+
+        fireEvent.change(screen.getByPlaceholderText('搜索知识库...'), { target: { value: '新建' } });
+        fireEvent.click(screen.getByRole('button', { name: '检索' }));
+
+        const facetGroups = await screen.findByTestId('knowledge-search-facet-groups');
+        const searchCallsAfterFirst = vi.mocked(KnowledgeSearch).mock.calls.length;
+        fireEvent.keyDown(screen.getByPlaceholderText('搜索知识库...'), { key: 'Enter', isComposing: true });
+        expect(vi.mocked(KnowledgeSearch).mock.calls.length).toBe(searchCallsAfterFirst);
+        expect(facetGroups.textContent).toContain('结果类型');
+        expect(facetGroups.textContent).toContain('node 20');
+        expect(facetGroups.textContent).toContain('docx 11');
+        expect(facetGroups.textContent).toContain('kind:docx 11');
+        expect(facetGroups.textContent).not.toContain('orphan');
+        expect(screen.queryByRole('heading', { name: '最近操作' })).toBeNull();
+        expect(screen.getAllByText(/中国博士后科学基金面上资助申请书/).length).toBeGreaterThan(0);
+        expect(document.querySelector('.knowledge-result-snippet')).toBeTruthy();
+        expect(document.querySelector('.knowledge-result-snippet')?.getAttribute('title')).toContain('国务院');
+        expect(document.querySelector('.knowledge-two-column--search')).toBeTruthy();
+        expect(document.querySelector('.knowledge-search-results')).toBeTruthy();
+        expect(document.querySelector('.knowledge-search-facets')).toBeTruthy();
+
+        fireEvent.click(screen.getByRole('radio', { name: '表格筛选' }));
+        await waitFor(() => expect(KnowledgeSearchStructured).toHaveBeenCalledWith(expect.objectContaining({ query: '新建' })));
+        expect(screen.getByTestId('knowledge-search-layout').className).toContain('knowledge-search-results-only');
+        fireEvent.click(screen.getByRole('radio', { name: '语义检索' }));
+        await waitFor(() => expect(document.querySelector('.knowledge-two-column--search')).toBeTruthy());
+
+        fireEvent.click(screen.getByRole('button', { name: 'docx 11' }));
+        await waitFor(() => expect(KnowledgeSearch).toHaveBeenCalledWith(expect.objectContaining({
+            query: '新建',
+            source_kinds: ['docx'],
+        })));
+        expect((screen.getByDisplayValue('docx') as HTMLSelectElement).value).toBe('docx');
+        expect(screen.getByRole('button', { name: 'docx 11' }).getAttribute('aria-pressed')).toBe('true');
+        expect(showToastMessage).not.toHaveBeenCalled();
+
+        let resolveHang: (value: any) => void = () => {};
+        vi.mocked(KnowledgeSearch).mockImplementationOnce(() => new Promise<any>(resolve => {
+            resolveHang = resolve;
+        }));
+        fireEvent.change(screen.getByDisplayValue('docx'), { target: { value: 'markdown' } });
+        expect(screen.getByRole('button', { name: 'markdown 9' }).hasAttribute('disabled')).toBe(false);
+        expect(screen.getByRole('button', { name: 'docx 11' }).hasAttribute('disabled')).toBe(false);
+        resolveHang([searchHit]);
+
+        await waitFor(() => expect(KnowledgeSearch).toHaveBeenCalledWith(expect.objectContaining({
+            query: '新建',
+            source_kinds: ['markdown'],
+        })));
+        expect((screen.getByDisplayValue('markdown') as HTMLSelectElement).value).toBe('markdown');
+
+        fireEvent.click(screen.getByRole('button', { name: '申请书 3' }));
+        await waitFor(() => expect(KnowledgeSearch).toHaveBeenCalledWith(expect.objectContaining({
+            query: '新建',
+            source_ids: ['src-docx'],
+        })));
+        expect(screen.getByTestId('knowledge-search-source-chip').textContent).toContain('src-docx');
+
+        fireEvent.click(screen.getByTestId('knowledge-search-source-chip'));
+        await waitFor(() => {
+            const last = vi.mocked(KnowledgeSearch).mock.calls.at(-1)?.[0] as { query?: string; source_ids?: string[] };
+            expect(last?.query).toBe('新建');
+            expect(last?.source_ids).toBeUndefined();
+        });
+        expect(screen.queryByTestId('knowledge-search-source-chip')).toBeNull();
+        expect(showToastMessage).not.toHaveBeenCalled();
     });
 });

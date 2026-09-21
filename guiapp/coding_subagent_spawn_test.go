@@ -179,8 +179,21 @@ func TestToolAllowedForRole(t *testing.T) {
 	if !rev.toolAllowedForRole("git_diff") {
 		t.Fatal("reviewer should inspect git diff")
 	}
-	if rev.toolAllowedForRole("write_file") || rev.toolAllowedForRole("edit_file") || rev.toolAllowedForRole("bash") {
-		t.Fatal("reviewer must be strictly read-only")
+	if rev.toolAllowedForRole("write_file") || rev.toolAllowedForRole("edit_file") {
+		t.Fatal("reviewer must not write")
+	}
+	// Reviewer bash is definition-visible but execution-gated: the whitelist
+	// in codingagent admits read-only validation forms only.
+	if !rev.toolAllowedForRole("bash") {
+		t.Fatal("reviewer should see bash for validation (whitelist-gated)")
+	}
+	if ok, _ := rev.toolCallAllowedForRole("bash", map[string]interface{}{"command": "go test ./..."}); !ok {
+		t.Fatal("reviewer bash should run read-only validation (go test)")
+	}
+	for _, denied := range []string{"rm -rf /", "echo x > build.log", "git commit -m w", "python -c 'import os'"} {
+		if ok, _ := rev.toolCallAllowedForRole("bash", map[string]interface{}{"command": denied}); ok {
+			t.Fatalf("reviewer bash %q must be denied", denied)
+		}
 	}
 	for _, key := range []string{"save_path", "output", "dest", "path", "filename"} {
 		if ok, _ := rev.toolCallAllowedForRole("web_fetch", map[string]interface{}{key: "report.pdf"}); ok {

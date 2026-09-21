@@ -240,18 +240,19 @@ func TestSemanticExternalEffectFamiliesCatalogRegisteredButUnmanaged(t *testing.
 }
 
 // TestSemanticExternalEffectMixedRequestFailsClosed: unbound SSH on a mixed
-// turn must miss to leftover (builtin ssh), not HostReject the other family
-// as unmet. Browser/CU still fail closed without a bound runtime.
-func TestSemanticExternalEffectMixedRequestFailsClosed(t *testing.T) {
+// turn must plan the connect surface, not HostReject the other family as
+// unmet. Browser/CU still fail closed without a bound runtime.
+func TestSemanticExternalEffectMixedRequestPlansConnectSurface(t *testing.T) {
 	h := &IMMessageHandler{registry: NewToolRegistry()}
 	registerBuiltinTools(h.registry, h)
 	classification := &intent.ClassificationResult{
 		Primary: intent.LabelSearch, Secondary: []intent.IntentLabel{intent.LabelSSH}, Confidence: .98,
 	}
 	prepared, handled, err := h.semanticPlanForTurnWithClassification("user", "search and restart the server", "lansenger", "root", "turn", classification)
-	if handled || prepared != nil || err != nil {
-		t.Fatalf("search+ssh without ssh runtime must miss to leftover handled=%v err=%v prepared=%#v", handled, err, prepared)
+	if err != nil || !handled || prepared == nil {
+		t.Fatalf("search+ssh without ssh runtime must plan the connect surface handled=%v err=%v prepared=%#v", handled, err, prepared)
 	}
+	assertPlanHasSSHConnectSelection(t, prepared.plan)
 }
 
 // TestSemanticBuiltinExternalEffectStillFailsClosedWithoutReceipt pins the

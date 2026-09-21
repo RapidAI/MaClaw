@@ -54,6 +54,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/longhorizon"
 	"github.com/RapidAI/CodeClaw/corelib/textutil"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // CodingSubAgent executes a single coding task in a clean context.
@@ -1036,6 +1037,10 @@ type codingSubAgentCallbacks struct {
 	// future S1-C ownership boundary explicit without allowing the legacy S0.5
 	// renderer/dispatcher to construct an adapter on its own.
 	dynamicLifecycleRelay *codingBoundDynamicRequestLifecycleRelay
+	// dispatcherOnce builds the Phase 2 pilot ToolDispatcher at most once per
+	// callback; dispatcher stays nil unless MACLAW_TOOL_DISPATCHER=on.
+	dispatcherOnce sync.Once
+	dispatcher     *agent.NameDispatcher
 	// llmReplanRevision is the host-owned revision of the newest steering that
 	// TransformConversation has already incorporated. RunLoop uses it to cancel
 	// a stale request and emit the unique steered disposition for its surface.
@@ -2089,6 +2094,16 @@ func (c *codingSubAgentCallbacks) LoadMemoryRetractions() *agent.MemoryRetractio
 
 func (c *codingSubAgentCallbacks) ExecuteTool(name, argsJSON string) string {
 	return c.ExecuteToolStructured(name, argsJSON).Result
+}
+
+// UsageTracker implements agent.UsageTrackerProvider so coding SubAgent
+// executions feed real tool outcomes into the shared usage tracker, closing
+// the routing quality loop for the coding surface.
+func (c *codingSubAgentCallbacks) UsageTracker() *tool.UsageTracker {
+	if c == nil || c.subagent == nil || c.subagent.handler == nil {
+		return nil
+	}
+	return c.subagent.handler.UsageTracker()
 }
 
 func (c *codingSubAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.ToolExecutionResult {
@@ -3548,6 +3563,8 @@ func rejectDisallowedCodingBashCommand(command string) string {
 		disallowed = true
 	case hasDisallowedRecursiveDeleteCommand(normalized):
 		disallowed = true
+	case hasFindWritePrimary(normalized):
+		disallowed = true
 	case hasDisallowedShellFileMutation(normalized):
 		disallowed = true
 	}
@@ -3716,6 +3733,50 @@ func hasDisallowedRecursiveDeleteCommand(normalizedCommand string) bool {
 			case "rm", "remove-item", "ri", "del", "erase", "rd", "rmdir":
 				if hasRecursiveDeleteFlag(strings.Join(commandSegmentFields(fields[i+1:]), " ")) {
 					return true
+				}
+			}
+		}
+		commandPosition = false
+	}
+	return false
+}
+
+// hasFindWritePrimary reports whether a find(1) invocation carries write
+// primaries (-delete/-exec family/-fprint*). The recursive-delete and shell
+// mutation detectors only match rm-family heads and shell-level writes, so
+// "find . -delete" or "find . -exec rm {} \;" would otherwise bypass the
+// high-risk approval flow while deleting files just as effectively.
+func hasFindWritePrimary(normalizedCommand string) bool {
+	fields := shellCommandFields(normalizedCommand)
+	commandPosition := true
+	for i := 0; i < len(fields); i++ {
+		token := normalizeShellCommandToken(fields[i])
+		if token == "" {
+			continue
+		}
+		if isShellCommandStartMarker(token) {
+			commandPosition = true
+			continue
+		}
+		if commandPosition {
+			if consumed, ok := shellCommandPrefixLength(fields[i:]); ok {
+				i += consumed - 1
+				commandPosition = true
+				continue
+			}
+			if commandNameBase(normalizeShellExecutableToken(token)) == "find" {
+				for _, field := range fields[i+1:] {
+					arg := normalizeShellCommandToken(field)
+					if isShellCommandStartMarker(arg) {
+						break
+					}
+					switch arg {
+					case "-delete", "-exec", "-execdir", "-ok", "-okdir", "-fls":
+						return true
+					}
+					if strings.HasPrefix(arg, "-fprint") {
+						return true
+					}
 				}
 			}
 		}
@@ -4123,7 +4184,10 @@ func stripShellInlineQuotedLiterals(text string) string {
 func hasShellOutputRedirection(fields []string) bool {
 	for _, field := range fields {
 		token := normalizeShellCommandToken(field)
-		if token == "2>&1" {
+		// fd duplication (2>&1 / 1>&2) is harmless plumbing, not file output.
+		// Both forms must stay exempt or the reviewer whitelist (which admits
+		// both) and the high-risk classifier disagree on the same command.
+		if token == "2>&1" || token == "1>&2" {
 			continue
 		}
 		if isShellVerificationOutputRedirectionToken(token) {
@@ -4203,7 +4267,10 @@ func isShellVerificationOutputRedirectionToken(token string) bool {
 
 func isShellCommandBoundary(token string) bool {
 	switch token {
-	case "|", ";", "&&", "||", "&", "(", ")":
+	// "|&" is bash's stdout+stderr pipe — a command separator like "|" and
+	// must reset command-position tracking, or "cmd1 |& rm -rf build" hides
+	// the rm from every position-aware detector.
+	case "|", "|&", ";", "&&", "||", "&", "(", ")":
 		return true
 	}
 	return false
@@ -16336,6 +16403,8 @@ func runTaskWithSubAgentRuntimeOptions(
 		}
 		fullAccess := handler.stickyCodingEffectiveFullAccess(userID, globalFull)
 		sa.SetScopeApprovalCallback(buildSubAgentScopeApprovalCallback(handler, loopCtx, onProgress), fullAccess)
+		// Dual-run observation only (Phase 1, R3): the gate outcome never changes.
+		sa.scopeApproval.setDualEvalSnapshot(scopeApprovalDualEvalSnapshotFunc(handler))
 		sa.scopeApproval.setAuditCallback(func(req ScopeApprovalRequest, decision ScopeApprovalDecision, source string) {
 			recordScopeApprovalAudit(handler, "", req, decision, source)
 			// Multi-turn continuity: remember allow_dir / path trust / high-risk trust

@@ -21,9 +21,12 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/bm25"
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/llm/moa"
+	"github.com/RapidAI/CodeClaw/corelib/permission"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/corelib/tooldef"
 )
 
@@ -34,6 +37,16 @@ type TurnRouter interface {
 	// RouteTurn returns a (possibly overridden) LLM config and a RouteDecision.
 	// applied=false means keep GetLLMConfig() / default primary routing.
 	RouteTurn(userText string) (cfg corelib.MaclawLLMConfig, decision RouteDecision, applied bool)
+}
+
+// UsageTrackerProvider is an optional LoopCallbacks extension that closes the
+// routing quality loop: after each genuine tool execution, RunLoop feeds the
+// tool name, the BM25-tokenized user text, and the outcome class into the
+// returned tracker so future Router scoring can learn from real results.
+// Hosts without a tracker simply do not implement this interface (or return
+// nil); the loop treats a nil tracker as a no-op and is otherwise unaffected.
+type UsageTrackerProvider interface {
+	UsageTracker() *tool.UsageTracker
 }
 
 // LoopCallbacks defines the capabilities the agent loop needs from its host.
@@ -852,7 +865,9 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		// route (including any MoA aggregator) is known. Do not capture the
 		// first route's ResponseHeaderTimeout here: a tool can promote a 32K
 		// light route to a 200K/400K reasoning route with a longer timeout.
-		httpClient = &http.Client{}
+		// The shared LLM transport keeps idle connections to the hub alive so
+		// iterations do not pay a fresh TCP+TLS handshake per request.
+		httpClient = llm.NewSharedHTTPClient()
 	}
 
 	totalToolCalls := 0
@@ -1913,7 +1928,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		reasoningContent := StripRolePrefixHallucinationLeading(choice.Message.ReasoningContent)
 		appendLoopDisplayReasoning(&displayReasoning, reasoningContent)
 		content := choice.Message.Content
-		if content == "" && reasoningContent != "" {
+		if strings.TrimSpace(content) == "" && reasoningContent != "" {
 			content = reasoningContent
 		}
 		content = StripRolePrefixHallucination(content)
@@ -2263,10 +2278,12 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			// share the same exact rendered-name admission rule before any executor
 			// (including the epoch-less compatibility fallback) can run.
 			if !toolCallNameWasRendered(tools, tc.Function.Name) {
+				tool.RecordUnrenderedToolCallDenial()
 				denial := unrenderedToolCallDeniedMessage(tc.Function.Name)
 				if _, ok := succeededToolNames[strings.TrimSpace(tc.Function.Name)]; ok {
 					// An already-consumed grant keeps its dedicated denial text; the
 					// earlier success still stands and must not be reinterpreted.
+					tool.RecordConsumedGrantDenial()
 					denial = consumedGrantToolCallDeniedMessage(tc.Function.Name)
 				} else if petitioner, ok := cb.(ToolCallPetitioner); ok {
 					// A governed host may rescue a call that names a real cataloged
@@ -2274,6 +2291,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					// the granted message replaces the denial so the model re-issues
 					// the call against the widened surface of the next iteration.
 					if granted, message := petitioner.PetitionToolCall(tc.Function.Name); granted && strings.TrimSpace(message) != "" {
+						tool.RecordPetitionGrant()
 						denial = message
 					}
 				}
@@ -2437,6 +2455,13 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			if toolExecuted {
 				h.OnToolExecuted(tc.Function.Name, argsJSON, result, toolSuccess)
 				executedToolNames = append(executedToolNames, tc.Function.Name)
+				// Routing quality closed loop: only a real dispatcher invocation
+				// earns a usage record. Policy denials, invalid-argument rejects,
+				// and replan skips above never reach this block, so they cannot
+				// poison the tracker's outcome stats.
+				if trackerProvider, ok := cb.(UsageTrackerProvider); ok {
+					recordLoopToolUsage(trackerProvider.UsageTracker(), tc.Function.Name, userText, toolSuccess)
+				}
 				// Escalation changes the execution budget used when projecting this
 				// tool result (for example a document reader's read-back window), so
 				// it remains per-execution. Only the model-visible surface refresh is
@@ -2839,11 +2864,13 @@ func invalidLoopToolArgumentNames(calls []llm.ToolCall) []string {
 }
 
 func authorizeLoopTool(cb LoopCallbacks, name, argsJSON string) (ToolExecutionResult, bool) {
+	dualEval := resolveDualEvalDecision(cb, name, argsJSON)
 	// Host grant/policy boundaries win over the adaptive light allowlist.
 	// A governed lookup that denies write_file/web_fetch must not emit the
 	// light-upgrade hint ("set PROFILE=full"); that text made the model ask
 	// the user to re-authorize tools that this turn cannot run.
 	if authorizer, ok := cb.(ToolAuthorizer); ok && !authorizer.IsToolAllowed(name) {
+		dualEvalPermissionDecision("tool_authorizer", name, dualEval, permission.EffectDeny)
 		return ToolExecutionResult{
 			Result:  resolveToolAuthorizerDenyMessage(cb, name),
 			Outcome: ToolExecutionOutcomeError,
@@ -2851,6 +2878,7 @@ func authorizeLoopTool(cb LoopCallbacks, name, argsJSON string) (ToolExecutionRe
 	}
 	if pp, ok := cb.(PromptProfileProvider); ok && pp.CurrentPromptProfile().IsLight() {
 		if !isToolAllowedForPromptProfile(cb, name, pp.CurrentPromptProfile()) {
+			dualEvalPermissionDecision("light_allowlist", name, dualEval, permission.EffectDeny)
 			RecordLightToolDeny(name)
 			return ToolExecutionResult{
 				Result:  LightToolDenyMessage(name),
@@ -2858,6 +2886,7 @@ func authorizeLoopTool(cb LoopCallbacks, name, argsJSON string) (ToolExecutionRe
 			}, true
 		}
 		if lightDeniedDatabaseWrite(name, argsJSON) {
+			dualEvalPermissionDecision("light_database_write", name, dualEval, permission.EffectDeny)
 			RecordLightToolDeny(name)
 			return ToolExecutionResult{
 				Result:  LightToolDenyMessage(name + " write"),
@@ -2867,6 +2896,7 @@ func authorizeLoopTool(cb LoopCallbacks, name, argsJSON string) (ToolExecutionRe
 	}
 	if authorizer, ok := cb.(ToolCallAuthorizer); ok {
 		if allowed, reason := authorizer.IsToolCallAllowed(name, argsJSON); !allowed {
+			dualEvalPermissionDecision("tool_call_authorizer", name, dualEval, permission.EffectDeny)
 			if strings.TrimSpace(reason) == "" {
 				reason = fmt.Sprintf("tool call %q is not allowed by the current execution policy", name)
 			}
@@ -2876,6 +2906,7 @@ func authorizeLoopTool(cb LoopCallbacks, name, argsJSON string) (ToolExecutionRe
 			}, true
 		}
 	}
+	dualEvalPermissionDecision("authorize_fallthrough", name, dualEval, permission.EffectAllow)
 	return ToolExecutionResult{}, false
 }
 
@@ -3039,6 +3070,29 @@ func prepareToolsForToolSurfaceReceipt(cfg corelib.MaclawLLMConfig, tools []map[
 }
 
 func executeAuthorizedLoopToolCallWithContext(cb LoopCallbacks, name, argsJSON, callID string, execution ToolCallExecutionContext) ToolExecutionResult {
+	// Phase 2 dispatcher consultation comes first: a host that registers
+	// handlers owns those names outright. handled=false falls through to
+	// the legacy executor chain unchanged.
+	if provider, ok := cb.(ToolDispatcherProvider); ok {
+		if d := provider.ToolDispatcher(); d != nil {
+			if result, handled, err := d.Dispatch(name, argsJSON, callID, execution); handled {
+				if err != nil {
+					if result.Result == "" {
+						result.Result = "Error: " + err.Error()
+					} else {
+						// Result takes precedence over the error, but the
+						// error must not vanish silently.
+						log.Printf("[tool-dispatcher] dispatch error for %q (result preserved): %v", name, err)
+					}
+				}
+				if result.Outcome == "" {
+					outcome := classifyToolResult(result.Result)
+					result.Outcome = executionOutcomeFromToolOutcome(outcome.kind)
+				}
+				return result
+			}
+		}
+	}
 	if contextual, ok := cb.(ToolCallContextExecutor); ok {
 		result := contextual.ExecuteToolCallWithContext(name, argsJSON, callID, execution)
 		if result.Outcome == "" {
@@ -3115,6 +3169,50 @@ func toolOutcomeFromExecutionResult(result ToolExecutionResult) toolOutcome {
 		outcome.kind = toolOutcomeOK
 	}
 	return outcome
+}
+
+// recordLoopToolUsage feeds one genuine tool execution outcome into the shared
+// usage tracker (best-effort). It mirrors the producer contract documented on
+// UsageTracker.Record: queryTokens are the BM25-tokenized user message, capped
+// at the tracker's five-token window. Failures are recorded as decisive
+// failures with no FollowUp: the consumer weights them as a bounded mild
+// negative (usageOutcomeWeight -0.3) and they cannot trigger consecutive-
+// failure suppression, which requires an explicit retry/abandon follow-up the
+// loop does not claim to know. The write runs in a goroutine because
+// RecordExperience persists the rolling record window to disk on every call.
+func recordLoopToolUsage(tracker *tool.UsageTracker, toolName, userText string, success bool) {
+	if tracker == nil {
+		return
+	}
+	toolName = strings.TrimSpace(toolName)
+	if toolName == "" {
+		return
+	}
+	var tokens []string
+	if userText = strings.TrimSpace(userText); userText != "" {
+		tokens = bm25.Tokenize(userText)
+		if len(tokens) > 5 {
+			tokens = tokens[:5]
+		}
+	}
+	exp := tool.ToolExperience{
+		ToolName:    toolName,
+		QueryTokens: tokens,
+		Success:     success,
+	}
+	go func() {
+		startedAt := time.Now()
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[tool-usage] panic tool=%q panic=%v", toolName, r)
+				return
+			}
+			if elapsed := time.Since(startedAt); elapsed >= 500*time.Millisecond {
+				log.Printf("[tool-usage] async_done tool=%q success=%v elapsed=%s", toolName, success, elapsed.Round(time.Millisecond))
+			}
+		}()
+		tracker.RecordExperience(exp)
+	}()
 }
 
 func executionOutcomeFromToolOutcome(kind toolOutcomeKind) ToolExecutionOutcome {

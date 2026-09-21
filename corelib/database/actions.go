@@ -2,17 +2,29 @@ package database
 
 import "strings"
 
+// writeActions is the single source of truth for mutating/exporting database
+// tool actions. IsWriteAction, WriteActions consumers (permission predicates,
+// workflow phases), and RefuseWriteForReadOnlyTool all derive from this list
+// — do not maintain a second copy.
+var writeActions = []string{"execute", "batch_execute", "write_table", "export_excel", "propose_profile"}
+
+// WriteActions returns a copy of the mutating/exporting action list.
+func WriteActions() []string {
+	return append([]string(nil), writeActions...)
+}
+
 // IsWriteAction reports whether a database tool action mutates data or
 // exports it across a trust boundary. Query/inspect stay read-only; hosts
 // use this to split light-prompt and workflow-phase risk from the single
 // tool name.
 func IsWriteAction(action string) bool {
-	switch strings.ToLower(strings.TrimSpace(action)) {
-	case "execute", "batch_execute", "write_table", "export_excel", "propose_profile":
-		return true
-	default:
-		return false
+	a := strings.ToLower(strings.TrimSpace(action))
+	for _, w := range writeActions {
+		if a == w {
+			return true
+		}
 	}
+	return false
 }
 
 // IsReadAction is the complementary projection used by light turns and

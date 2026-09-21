@@ -14,7 +14,6 @@ import (
 	"os"
 	pathpkg "path"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -1922,31 +1921,6 @@ func resolvePathWithBase(p, base string) string {
 		p = filepath.Join(base, p)
 	}
 	return filepath.Clean(p)
-}
-
-// pathContainedInBase reports whether absPath is the base directory itself or a
-// descendant. Used to keep download_file / web_fetch(save_path) inside workdir.
-func pathContainedInBase(absPath, base string) bool {
-	absPath = filepath.Clean(strings.TrimSpace(absPath))
-	base = filepath.Clean(strings.TrimSpace(base))
-	if absPath == "" || base == "" {
-		return false
-	}
-	// Windows paths are case-insensitive; normalize before Rel so C:\Work vs
-	// c:\work\file is treated as contained.
-	if runtime.GOOS == "windows" {
-		absPath = strings.ToLower(absPath)
-		base = strings.ToLower(base)
-	}
-	rel, err := filepath.Rel(base, absPath)
-	if err != nil {
-		return false
-	}
-	if rel == "." {
-		return true
-	}
-	rel = filepath.ToSlash(rel)
-	return rel != ".." && !strings.HasPrefix(rel, "../")
 }
 
 // resolveDownloadSavePath sanitizes a relative save_path, resolves against base,

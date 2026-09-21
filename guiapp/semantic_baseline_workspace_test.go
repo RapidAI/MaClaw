@@ -74,15 +74,19 @@ func TestSemanticToolsSearchExpandsSSHWhenUserDeclaredIt(t *testing.T) {
 	}
 }
 
-func TestSemanticToolsSearchDoesNotPetitionUnboundSSH(t *testing.T) {
+func TestSemanticToolsSearchPetitionsUnboundSSHForConnect(t *testing.T) {
 	cb := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{Primary: intent.LabelSearch, Confidence: .98})
 	cb.userText = "查看驱网服务器状态，用ssh访问"
 	semanticToolsSearchMaybeExpandScope(cb, "run remote command ssh host server shell")
-	if cb.semanticEffectfulPetitionConsumed {
-		t.Fatal("unbound ssh discovery must not spend the effectful petition")
+	// Unbound ssh now publishes the connect provider, so discovery must spend
+	// the effectful petition and expand the plan with the connect leg
+	// (production 2026-09-18 08:26: without this the "密码是 …" turn had no
+	// connect path at all).
+	if !cb.semanticEffectfulPetitionConsumed {
+		t.Fatal("unbound ssh discovery must spend the effectful petition on the connect surface")
 	}
-	if planHasCapabilities(cb.semanticSurface.plan, tool.CapabilityShellExecuteRemoteHost) {
-		t.Fatal("unbound ssh must not enter the managed plan")
+	if !planHasCapabilities(cb.semanticSurface.plan, tool.CapabilityShellExecuteRemoteHost) {
+		t.Fatal("unbound ssh must enter the managed plan as a connect selection")
 	}
 }
 

@@ -15,7 +15,35 @@ import (
 
 const cloudWorkspaceInstanceSessionHeader = "X-Cloud-Workspace-Instance-Session"
 
+func bearerToken(r *http.Request) string {
+	raw := strings.TrimSpace(r.Header.Get("Authorization"))
+	if len(raw) >= 7 && strings.EqualFold(raw[:7], "Bearer ") {
+		return strings.TrimSpace(raw[7:])
+	}
+	return ""
+}
+
 func authenticateCloudWorkspaceMachine(w http.ResponseWriter, r *http.Request, svc *cloudworkspace.Service, authenticator veMachineAuthenticator) (*auth.MachinePrincipal, bool) {
+	if svc != nil {
+		if token := bearerToken(r); strings.HasPrefix(token, cloudworkspace.ShareAccessTokenPrefix) {
+			rec, err := svc.ResolveShareAccess(r.Context(), token)
+			if err != nil {
+				writeCloudWorkspaceError(w, err)
+				return nil, false
+			}
+			principal := &auth.MachinePrincipal{
+				TenantID:  rec.WorkspaceTenantID,
+				UserID:    rec.RecipientKey,
+				MachineID: cloudworkspace.ShareAccessMachinePrefix + rec.RecipientKey,
+			}
+			if raw := strings.TrimSpace(r.Header.Get("X-Cloud-Workspace-Fencing")); raw != "" {
+				if fencing, parseErr := strconv.ParseInt(raw, 10, 64); parseErr == nil && fencing > 0 {
+					principal.FencingToken = fencing
+				}
+			}
+			return principal, true
+		}
+	}
 	principal, ok := authenticateVEMachine(w, r, authenticator)
 	if !ok {
 		return nil, false
@@ -105,6 +133,14 @@ func requireCloudWorkspaceGrant(w http.ResponseWriter, r *http.Request, svc *clo
 	if svc == nil {
 		writeError(w, http.StatusForbidden, "CLOUD_WORKSPACE_FORBIDDEN", "cloud workspace is not enabled")
 		return false
+	}
+	if principal != nil && cloudworkspace.SharePrincipal(*principal) {
+		return true
+	}
+	if principal != nil {
+		if id := strings.TrimSpace(r.PathValue("id")); id != "" && svc.HasShareAccess(r.Context(), principal.UserID, id) {
+			return true
+		}
 	}
 	ok, err := svc.Granted(r.Context(), *principal)
 	if err != nil {
@@ -273,6 +309,18 @@ func writeCloudWorkspaceError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "CLOUD_WORKSPACE_REVISION_CONFLICT", "cloud workspace revision conflict")
 	case errors.Is(err, cloudworkspace.ErrVolumeFull), errors.Is(err, cloudworkspace.ErrDiskFull):
 		writeError(w, http.StatusInsufficientStorage, "CLOUD_WORKSPACE_VOLUME_FULL", "cloud workspace volume is full")
+	case errors.Is(err, cloudworkspace.ErrShareReadOnly):
+		writeError(w, http.StatusForbidden, "CLOUD_WORKSPACE_SHARE_READ_ONLY", "cloud workspace share is read-only")
+	case errors.Is(err, cloudworkspace.ErrShareSelf):
+		writeError(w, http.StatusBadRequest, "CLOUD_WORKSPACE_SHARE_SELF", "cannot accept your own cloud workspace share")
+	case errors.Is(err, cloudworkspace.ErrShareRevoked):
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "cloud workspace share is revoked")
+	case errors.Is(err, cloudworkspace.ErrShareExpired):
+		writeError(w, http.StatusGone, "CLOUD_WORKSPACE_SHARE_EXPIRED", "cloud workspace share has expired")
+	case errors.Is(err, cloudworkspace.ErrSharePasswordRequired):
+		writeError(w, http.StatusForbidden, "CLOUD_WORKSPACE_SHARE_PASSWORD_REQUIRED", "cloud workspace share password required")
+	case errors.Is(err, cloudworkspace.ErrSharePasswordInvalid):
+		writeError(w, http.StatusForbidden, "CLOUD_WORKSPACE_SHARE_PASSWORD_INVALID", "cloud workspace share password is incorrect")
 	case errors.Is(err, cloudworkspace.ErrInvalidName),
 		errors.Is(err, cloudworkspace.ErrInvalidInput),
 		errors.Is(err, cloudworkspace.ErrInvalidPath),
@@ -326,6 +374,10 @@ func CloudWorkspaceTaskProvisionHandler(svc *cloudworkspace.Service, identity ve
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal, ok := authenticateCloudWorkspaceMachine(w, r, svc, identity)
 		if !ok || !requireCloudWorkspaceGrant(w, r, svc, principal) {
+			return
+		}
+		if cloudworkspace.SharePrincipal(*principal) {
+			writeError(w, http.StatusForbidden, "CLOUD_WORKSPACE_FORBIDDEN", "share access cannot create a workspace")
 			return
 		}
 		if !requireCloudWorkspaceProtocol(w, r) {
@@ -556,6 +608,10 @@ func CloudWorkspaceCreateHandler(svc *cloudworkspace.Service, identity veMachine
 		if !requireCloudWorkspaceGrant(w, r, svc, principal) {
 			return
 		}
+		if cloudworkspace.SharePrincipal(*principal) {
+			writeError(w, http.StatusForbidden, "CLOUD_WORKSPACE_FORBIDDEN", "share access cannot create a workspace")
+			return
+		}
 		if !requireCloudWorkspaceProtocol(w, r) {
 			return
 		}
@@ -612,6 +668,9 @@ func CloudWorkspaceRenameHandler(svc *cloudworkspace.Service, identity veMachine
 			return
 		}
 		if !requireCloudWorkspaceGrant(w, r, svc, principal) {
+			return
+		}
+		if rejectSharePrincipalManage(w, principal) {
 			return
 		}
 		if !requireCloudWorkspaceProtocol(w, r) {
@@ -682,6 +741,9 @@ func CloudWorkspaceDeleteHandler(svc *cloudworkspace.Service, identity veMachine
 		if !requireCloudWorkspaceGrant(w, r, svc, principal) {
 			return
 		}
+		if rejectSharePrincipalManage(w, principal) {
+			return
+		}
 		if !requireCloudWorkspaceProtocol(w, r) {
 			return
 		}
@@ -733,6 +795,9 @@ func CloudWorkspaceHardDeleteHandler(svc *cloudworkspace.Service, identity veMac
 		if !ok || !requireCloudWorkspaceGrant(w, r, svc, principal) {
 			return
 		}
+		if rejectSharePrincipalManage(w, principal) {
+			return
+		}
 		if !requireCloudWorkspaceProtocol(w, r) {
 			return
 		}
@@ -777,6 +842,9 @@ func CloudWorkspaceRestoreHandler(svc *cloudworkspace.Service, identity veMachin
 			return
 		}
 		if !requireCloudWorkspaceGrant(w, r, svc, principal) {
+			return
+		}
+		if rejectSharePrincipalManage(w, principal) {
 			return
 		}
 		if !requireCloudWorkspaceProtocol(w, r) {

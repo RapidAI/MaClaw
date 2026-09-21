@@ -85,6 +85,32 @@ func registerKnowledgeTools(registry *ToolRegistry, app *App) {
 		},
 	})
 	registry.Register(RegisteredTool{
+		Name:        "coding_knowledge_search",
+		Description: "搜索本机编码经验知识库（coding_knowledge.db）：历史编码任务的经验卡片、验证结论和恢复模式。适合开始编码任务前查询类似问题既往如何解决；只读，返回带引用的经验条目。",
+		Category:    ToolCategoryBuiltin,
+		Tags:        []string{"knowledge", "coding", "search", "local", "experience", "recall"},
+		Priority:    10,
+		Status:      RegToolAvailable,
+		Required:    []string{"query"},
+		InputSchema: map[string]interface{}{
+			"query": map[string]string{"type": "string", "description": "编码经验搜索查询"},
+			"limit": map[string]string{"type": "integer", "description": "Max results, default 5"},
+		},
+		Source: "builtin:knowledge",
+		Handler: func(args map[string]interface{}) string {
+			query, _ := args["query"].(string)
+			if strings.TrimSpace(query) == "" {
+				return "Error: query parameter is required"
+			}
+			var kb *knowledge.CodingKnowledgeStore
+			if app != nil {
+				kb = app.ensureCodingKnowledgeStore()
+			}
+			text, _ := runCodingKnowledgeSearch(app, kb, query, "", "")
+			return text
+		},
+	})
+	registry.Register(RegisteredTool{
 		Name:        "knowledge_explain",
 		Description: "Explain local knowledge recall without calling an LLM. Returns ranked card/fact/node hits plus citations with source URL/path, page, sheet, and row/column hints when available. Use before answering from stored knowledge when the user needs sources or asks why something was recalled.",
 		Category:    ToolCategoryBuiltin,

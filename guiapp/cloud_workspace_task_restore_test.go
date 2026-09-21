@@ -283,26 +283,18 @@ func TestRestoreCloudWorkspaceClearsTombstone(t *testing.T) {
 	if got := app.RestoreCloudWorkspaceTasks(); len(got) != 0 {
 		t.Fatalf("tombstone restore=%+v", got)
 	}
-	// DeleteTask also soft-deletes the Hub workspace. Clearing the local
-	// tombstone is not enough until the workspace itself is restored.
 	app.clearDismissedCloudWorkspaceTask("cws_del")
 	resetCloudWorkspaceEntitlementCache()
-	if got := app.RestoreCloudWorkspaceTasks(); len(got) != 0 {
-		t.Fatalf("deleted workspace must stay gone: %+v", got)
-	}
-	if _, err := app.RestoreCloudWorkspace("cws_del"); err != nil {
-		t.Fatalf("RestoreCloudWorkspace: %v", err)
-	}
 	restored := app.RestoreCloudWorkspaceTasks()
 	if len(restored) != 1 || restored[0].Name != "云端任务" {
-		t.Fatalf("after workspace restore=%+v", restored)
+		t.Fatalf("cleared tombstone should restore remaining workspace: %+v", restored)
 	}
 	if restored[0].ProjectPath == created.ProjectPath {
 		t.Fatalf("deleted record must not be reused: %q", restored[0].ProjectPath)
 	}
 }
 
-func TestDeleteTaskSoftDeletesCloudWorkspace(t *testing.T) {
+func TestDeleteTaskKeepsCloudWorkspaceOnHub(t *testing.T) {
 	resetCloudWorkspaceEntitlementCache()
 	t.Cleanup(resetCloudWorkspaceEntitlementCache)
 	hub := newRestoreCloudWorkspaceTestHub("cws_release", "人工智能数学基础书编写", taskCodingDevTag, true)
@@ -316,14 +308,14 @@ func TestDeleteTaskSoftDeletesCloudWorkspace(t *testing.T) {
 	}
 	resetCloudWorkspaceEntitlementCache()
 	ent := app.CloudWorkspaceEntitlement()
-	if ent.Used != 0 || len(ent.Workspaces) != 0 {
-		t.Fatalf("workspace should be released: used=%d workspaces=%+v", ent.Used, ent.Workspaces)
+	if ent.Used != 1 || len(ent.Workspaces) != 1 || ent.Workspaces[0].ID != "cws_release" {
+		t.Fatalf("workspace should remain: used=%d workspaces=%+v", ent.Used, ent.Workspaces)
 	}
-	if len(ent.Deleted) != 1 || ent.Deleted[0].ID != "cws_release" {
+	if len(ent.Deleted) != 0 {
 		t.Fatalf("deleted=%+v", ent.Deleted)
 	}
 	if got := app.RestoreCloudWorkspaceTasks(); len(got) != 0 {
-		t.Fatalf("released workspace must not restore a task: %+v", got)
+		t.Fatalf("tombstoned task must not restore: %+v", got)
 	}
 }
 
@@ -359,8 +351,9 @@ func TestDeleteTaskHidesReplacementRowForSameWorkspace(t *testing.T) {
 	if err := app.DeleteTask(created.ProjectPath); err != nil {
 		t.Fatalf("DeleteTask: %v", err)
 	}
-	if got := app.ListTasks(10); len(got) != 0 {
-		t.Fatalf("replacement row still listed: %+v", got)
+	got := app.ListTasks(10)
+	if len(got) != 1 || got[0].ProjectPath != dup.ProjectPath {
+		t.Fatalf("sibling task should remain: %+v", got)
 	}
 }
 

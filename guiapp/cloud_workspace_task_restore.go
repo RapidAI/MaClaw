@@ -127,6 +127,29 @@ func (a *App) clearDismissedCloudWorkspaceTask(workspaceID string) {
 	a.saveDismissedCloudWorkspaceTasks(ids)
 }
 
+func (a *App) countVisibleCloudWorkspaceTasks(workspaceID, exceptPath string) int {
+	workspaceID = strings.TrimSpace(workspaceID)
+	exceptPath = normalizeProjectSessionPath(exceptPath)
+	if a == nil || workspaceID == "" || a.memoryStore == nil {
+		return 0
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return 0
+	}
+	n := 0
+	for _, rec := range pi.ListAllMatching(func(candidate memory.ProjectRecord) bool {
+		return recordIsLocalCloudWorkspaceTask(candidate, workspaceID)
+	}) {
+		path := normalizeProjectSessionPath(rec.ProjectPath)
+		if path == "" || path == exceptPath || pi.IsArchived(path) || pi.IsHidden(path) {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
 func (a *App) dismissCloudWorkspaceTaskByPath(projectPath string) {
 	if id := a.lookupCloudWorkspaceIDForProject(projectPath); id != "" {
 		a.dismissCloudWorkspaceTask(id)
@@ -366,8 +389,8 @@ func (a *App) entitlementForCloudWorkspaceRestore() CloudWorkspaceEntitlement {
 // RestoreCloudWorkspaceTasks materializes Hub cloud workspaces into the local
 // task list without acquiring leases. A new machine therefore sees the same
 // cloud tasks after login. HideTask on this machine is remembered locally so a
-// retry can rebind the same workspace; DeleteTask also soft-deletes the Hub
-// workspace (7-day restore), so a deleted task does not linger as a named blank slot.
+// retry can rebind the same workspace. DeleteTask removes the local task only;
+// the Hub workspace stays until the user deletes it from the management dialog.
 func (a *App) RestoreCloudWorkspaceTasks() []ProjectSearchResult {
 	if a == nil {
 		return nil
@@ -387,7 +410,10 @@ type cloudWorkspaceTranscriptFetch struct {
 
 func (a *App) restoreCloudWorkspaceTasks() []ProjectSearchResult {
 	ent := a.entitlementForCloudWorkspaceRestore()
-	if !ent.Enabled || ent.HubUnavailable {
+	if ent.HubUnavailable {
+		return nil
+	}
+	if !ent.Enabled && len(ent.Shared) == 0 {
 		return nil
 	}
 	a.ensureMemoryStore()
@@ -401,9 +427,15 @@ func (a *App) restoreCloudWorkspaceTasks() []ProjectSearchResult {
 	skippedDismissed := 0
 	skippedInvalid := 0
 	existingCount := 0
+	shareByID := map[string]CloudWorkspaceSharedWorkspace{}
+	restoreRows := append([]CloudWorkspaceEntitlementWorkspace{}, ent.Workspaces...)
+	for _, shared := range ent.Shared {
+		shareByID[strings.TrimSpace(shared.ID)] = shared
+		restoreRows = append(restoreRows, shared.CloudWorkspaceEntitlementWorkspace)
+	}
 	cloudWorkspaceRestoreMu.Lock()
 	dismissed := a.loadDismissedCloudWorkspaceTasks()
-	for _, ws := range ent.Workspaces {
+	for _, ws := range restoreRows {
 		workspaceID := strings.TrimSpace(ws.ID)
 		if workspaceID == "" {
 			skippedInvalid++
@@ -425,6 +457,9 @@ func (a *App) restoreCloudWorkspaceTasks() []ProjectSearchResult {
 		}
 		if hidden {
 			bound := a.unhideCloudWorkspaceTask(workspaceID, existing)
+			if shared, ok := shareByID[workspaceID]; ok {
+				bound = a.tagSharedCloudWorkspaceTask(bound, workspaceID, shared.SharePermission, firstNonEmpty(shared.OwnerEmail, shared.OwnerUserID))
+			}
 			restored = append(restored, bound)
 			keepCloudWorkspacePath(keep, workspaceID, bound.ProjectPath)
 			unhid++
@@ -475,6 +510,9 @@ func (a *App) restoreCloudWorkspaceTasks() []ProjectSearchResult {
 			break
 		}
 		created := a.restoreCloudWorkspaceTaskRecord(ws, name, mode)
+		if shared, ok := shareByID[workspaceID]; ok {
+			created = a.tagSharedCloudWorkspaceTask(created, workspaceID, shared.SharePermission, firstNonEmpty(shared.OwnerEmail, shared.OwnerUserID))
+		}
 		cloudWorkspaceRestoreMu.Unlock()
 		if strings.TrimSpace(created.ProjectPath) == "" {
 			log.Printf("[cloud_workspace] restore task failed workspace=%s", workspaceID)

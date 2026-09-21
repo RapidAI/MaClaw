@@ -29,7 +29,7 @@ func (s *Store) ReserveStagingChunk(ctx context.Context, tenantID, userID, works
 	tenantID = store.NormalizeTenantID(tenantID)
 	userID, workspaceID = strings.TrimSpace(userID), strings.TrimSpace(workspaceID)
 	return s.withImmediate(ctx, func(q queryer) error {
-		if _, err := requireActiveOwned(ctx, q, tenantID, userID, workspaceID); err != nil {
+		if _, err := requireActiveAccess(ctx, q, tenantID, userID, workspaceID, true); err != nil {
 			return err
 		}
 		if err := assertLeaseHeldForSession(ctx, q, workspaceID, machineID, clientInstanceID, fencingToken, now); err != nil {
@@ -86,7 +86,7 @@ func (s *Store) FinalizeStagingChunkWithSession(ctx context.Context, tenantID, u
 	tenantID = store.NormalizeTenantID(tenantID)
 	userID, workspaceID, sha256hex = strings.TrimSpace(userID), strings.TrimSpace(workspaceID), strings.TrimSpace(sha256hex)
 	return s.withImmediate(ctx, func(q queryer) error {
-		if _, err := requireActiveOwned(ctx, q, tenantID, userID, workspaceID); err != nil {
+		if _, err := requireActiveAccess(ctx, q, tenantID, userID, workspaceID, true); err != nil {
 			return err
 		}
 		if err := assertLeaseHeldForSession(ctx, q, workspaceID, machineID, clientInstanceID, fencingToken, now); err != nil {

@@ -227,6 +227,12 @@ func TestPathContainedInBaseAndResolveDownloadSavePath(t *testing.T) {
 			t.Fatal("case-normalized containment should hold on windows")
 		}
 	}
+	if got := trustedRelDisplayPath(base, inside, "raw"); got != "papers/a.pdf" && got != filepath.ToSlash(filepath.Join("papers", "a.pdf")) {
+		t.Fatalf("display inside workspace = %q", got)
+	}
+	if got := trustedRelDisplayPath(base, outside, "raw"); got != "raw" {
+		t.Fatalf("display outside workspace = %q, want raw", got)
+	}
 }
 
 func TestMergeSkillPersistSafeKeepsPrev(t *testing.T) {

@@ -482,6 +482,30 @@ export function CloudWorkspaceEntitlement() {
   return window['go']['main']['App']['CloudWorkspaceEntitlement']();
 }
 
+export function GetCloudWorkspaceShare(arg1) {
+  return window['go']['main']['App']['GetCloudWorkspaceShare'](arg1);
+}
+
+export function CreateCloudWorkspaceShare(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['CreateCloudWorkspaceShare'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function StopCloudWorkspaceShare(arg1) {
+  return window['go']['main']['App']['StopCloudWorkspaceShare'](arg1);
+}
+
+export function UpdateCloudWorkspaceShareRecipient(arg1, arg2, arg3) {
+  return window['go']['main']['App']['UpdateCloudWorkspaceShareRecipient'](arg1, arg2, arg3);
+}
+
+export function RemoveCloudWorkspaceShareRecipient(arg1, arg2) {
+  return window['go']['main']['App']['RemoveCloudWorkspaceShareRecipient'](arg1, arg2);
+}
+
+export function AcceptCloudWorkspaceShare(arg1, arg2) {
+  return window['go']['main']['App']['AcceptCloudWorkspaceShare'](arg1, arg2);
+}
+
 export function CodingKnowledgeCapacity() {
   return window['go']['main']['App']['CodingKnowledgeCapacity']();
 }

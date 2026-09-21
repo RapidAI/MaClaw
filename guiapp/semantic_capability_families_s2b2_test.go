@@ -199,9 +199,26 @@ func TestSemanticS2b2CatalogOnlyFamiliesStayUnmanaged(t *testing.T) {
 		Primary: intent.LabelFileRead, Secondary: []intent.IntentLabel{intent.LabelSSH}, Confidence: .98,
 	}
 	prepared, handled, err := h.semanticPlanForTurnWithClassification("user", "read a file and restart the server", "lansenger", "root", "turn", mixed)
-	if handled || prepared != nil || err != nil {
-		t.Fatalf("file_read+ssh without ssh runtime must miss to leftover handled=%v err=%v prepared=%#v", handled, err, prepared)
+	if err != nil || !handled || prepared == nil {
+		t.Fatalf("file_read+ssh without ssh runtime must plan the connect surface handled=%v err=%v prepared=%#v", handled, err, prepared)
 	}
+	assertPlanHasSSHConnectSelection(t, prepared.plan)
+}
+
+// assertPlanHasSSHConnectSelection pins the session-less ssh mechanism: an
+// unbound ssh need must resolve to the connect provider, not fail the plan.
+func assertPlanHasSSHConnectSelection(t *testing.T, plan tool.ToolPlan) {
+	t.Helper()
+	for _, selection := range plan.Selections {
+		if selection.FitProof.MatchedCapability != tool.CapabilityShellExecuteRemoteHost {
+			continue
+		}
+		if selection.Provider.ImplementationID != semanticTrustedSSHConnectImplementation {
+			t.Fatalf("unbound ssh selection implementation=%q, want %s", selection.Provider.ImplementationID, semanticTrustedSSHConnectImplementation)
+		}
+		return
+	}
+	t.Fatal("plan must include the shell.execute.remote_host selection")
 }
 
 // TestSemanticS2b2BuiltinCatalogAnnotations verifies the real registration

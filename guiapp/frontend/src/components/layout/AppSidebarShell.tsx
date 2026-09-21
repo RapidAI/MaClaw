@@ -86,6 +86,8 @@ interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     openExpertTabIDs?: string[];
     /** Currently visible assistant tab. Null/empty clears the task-list highlight. */
     activeAssistantTask?: ActiveAssistantTaskIdentity | null;
+    /** Live "executing" signal for that tab; merges with the durable snapshot in status stats. */
+    activeAssistantTaskRunning?: boolean;
     sidebarCurrentProviderTokenUsage: SidebarCurrentProviderTokenUsage;
     sidebarHubCredits: SidebarHubCredits | null;
     unlimitedHubCreditText: string;
@@ -198,6 +200,7 @@ export const AppSidebarShell = ({
     openProjectTabIdentities,
     openExpertTabIDs,
     activeAssistantTask,
+    activeAssistantTaskRunning = false,
     sidebarCurrentProviderTokenUsage,
     sidebarHubCredits,
     formatSidebarTokens,
@@ -289,6 +292,8 @@ export const AppSidebarShell = ({
 					showToolsEntry={showToolsEntry}
                     utilitiesLabel={utilitiesLabel}
                     settingsTab={settingsTab}
+                    runningTaskCount={workbenchTaskCounts?.background ?? backgroundTaskCount}
+                    onOpenBackgroundTasks={onOpenBackgroundTasks}
                 />        {navTab === 'ai' && (
                     <SidebarAiPane
                         taskManagementPaneWidth={taskManagementPaneWidth}
@@ -337,6 +342,7 @@ export const AppSidebarShell = ({
                         openProjectTabIdentities={openProjectTabIdentities}
                         openExpertTabIDs={openExpertTabIDs}
                         activeAssistantTask={activeAssistantTask}
+                        activeAssistantTaskRunning={activeAssistantTaskRunning}
                         sidebarCurrentProviderTokenUsage={sidebarCurrentProviderTokenUsage}
                         sidebarHubCredits={sidebarHubCredits}
                         formatSidebarTokens={formatSidebarTokens}

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // legacyDiscoverToolMaxPerTurn bounds discover_tool on one loop. Discovery is
@@ -117,6 +118,7 @@ func (h *IMMessageHandler) toolDiscoverToolForOwner(ownerID string, args map[str
 	}
 
 	if len(docs) == 0 {
+		tool.RecordDiscoverToolCall(false)
 		return "No additional tools found beyond the core set."
 	}
 
@@ -135,8 +137,10 @@ func (h *IMMessageHandler) toolDiscoverToolForOwner(ownerID string, args map[str
 	ranked = finalizeDiscoveryRanking(mentioned, ranked)
 
 	if len(ranked) == 0 {
+		tool.RecordDiscoverToolCall(false)
 		return fmt.Sprintf("No matching tools found for: %q. Try rephrasing your need or use craft_tool to create a custom script.", need)
 	}
+	tool.RecordDiscoverToolCall(true)
 
 	onSurface := map[string]bool{}
 	if loopCtx != nil {

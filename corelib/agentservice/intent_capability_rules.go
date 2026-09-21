@@ -68,7 +68,10 @@ func IMSemanticIntentCapabilityNeedRules() map[intent.IntentLabel][]IntentCapabi
 			{Capability: CapabilityArtifactDeliverSpecified, Qualifiers: map[string]string{QualifierArtifactFormat: ArtifactFormatFile}, Required: true},
 		},
 		intent.LabelSSH: {
-			{Capability: coretool.CapabilityShellExecuteRemoteHost, Required: true},
+			// Server work is multi-command: one-shot per turn left the model
+			// unable to finish a scan after a single exec (production
+			// 2026-09-18: "SSH 工具配额用尽" after the first command).
+			{Capability: coretool.CapabilityShellExecuteRemoteHost, Required: true, MaxInvocations: 8},
 		},
 		intent.LabelBrowser: {
 			{Capability: coretool.CapabilityBrowserControlWeb, Required: true},

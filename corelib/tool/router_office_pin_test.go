@@ -66,6 +66,7 @@ func TestRoute_GUIDocxPathDoesNotGrantOffice(t *testing.T) {
 		toolDefForRoute("get_session_output"),
 		toolDefForRoute("get_session_events"),
 		toolDefForRoute("read_tool_result"),
+		toolDefForRoute("read_document"),
 	}
 	msg := "对比评分表 技术部分能得多少分\n\n[用户选择的本地文件路径]\nC:\\Users\\ma139\\Desktop\\对比评分表 技术部分能得多少分.docx\n\n" +
 		"[系统已自动解析文档正文 — 优先基于下列内容回答]\n--- auto_extract: begin path=\"C:\\\\x.docx\" format=\"docx\" truncated=true ---"
@@ -75,12 +76,41 @@ func TestRoute_GUIDocxPathDoesNotGrantOffice(t *testing.T) {
 	for _, tdef := range selected {
 		names[ExtractToolName(tdef)] = true
 	}
-	if names["office"] {
+	if names["office"] || names["read_document"] {
 		var list []string
 		for n := range names {
 			list = append(list, n)
 		}
-		t.Fatalf("GUI path marker must not pin office, got %v", list)
+		t.Fatalf("GUI path marker must not pin continuation readers, got %v", list)
+	}
+}
+
+func TestRoute_HostKeepOfficeWhenAutoExtractTruncated(t *testing.T) {
+	r := NewRouter(nil)
+	all := []map[string]interface{}{
+		toolDefForRoute("bash"),
+		toolDefForRoute("read_file"),
+		toolDefForRoute("office"),
+		toolDefForRoute("read_document"),
+		toolDefForRoute("memory"),
+		toolDefForRoute("task"),
+		toolDefForRoute("web_fetch"),
+		toolDefForRoute("discover_tool"),
+		toolDefForRoute("tts"),
+		toolDefForRoute("asr"),
+	}
+	msg := "[用户选择的本地文件路径]\nC:\\docs\\paper.pdf\n\n" +
+		`--- auto_extract: begin path="C:\docs\paper.pdf" format="pdf" truncated=true next_offset=10 ---`
+	selected := r.RouteWithOptions(msg, all, RouteOptions{
+		SkipUnifiedClassifier: true,
+		HostKeepTools:         []string{"office", "read_document"},
+	})
+	names := map[string]bool{}
+	for _, tdef := range selected {
+		names[ExtractToolName(tdef)] = true
+	}
+	if !names["office"] || !names["read_document"] {
+		t.Fatalf("host extract truncation must keep office and read_document, got %v", names)
 	}
 }
 

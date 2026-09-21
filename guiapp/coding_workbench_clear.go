@@ -306,6 +306,8 @@ func (h *IMMessageHandler) approveCodingWorkspaceClear(userID, projectPath strin
 		callback = buildSubAgentScopeApprovalCallback(h, loopCtx, onProgress)
 	}
 	state := newScopeApprovalState(callback, fullAccess)
+	// Dual-run observation only (Phase 1, R3): the gate outcome never changes.
+	state.setDualEvalSnapshot(scopeApprovalDualEvalSnapshotFunc(h))
 	rejection := fmt.Sprintf("清空工作区目录（删除该目录下全部内容，保留目录本身）：%s", projectPath)
 	return state.checkHighRisk("clear_workspace", projectPath, projectPath, projectPath, rejection)
 }

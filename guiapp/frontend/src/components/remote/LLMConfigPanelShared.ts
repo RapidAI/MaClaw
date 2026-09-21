@@ -27,6 +27,8 @@ export interface LLMProvider {
     models?: string[];
     /** Model IDs whose image-input capability has been confirmed. */
     vision_models?: string[];
+    /** Model IDs that have completed a vision probe (supported or not). */
+    vision_tested_models?: string[];
     supports_vision?: boolean; // whether the model supports image input
     wire_api?: string; // "chat" (default), "responses", or "responses-ws"
 }

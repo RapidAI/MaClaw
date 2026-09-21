@@ -45,6 +45,8 @@ func (f *fakeHASyncReader) ListOpsAfterSeq(_ context.Context, afterSeq int64, li
 
 func (f *fakeHASyncReader) MaxOpSeq(_ context.Context) (int64, error) { return f.maxSeq, nil }
 
+func (f *fakeHASyncReader) MinOpSeq(_ context.Context) (int64, error) { return 0, nil }
+
 func (f *fakeHASyncReader) ApplyRemoteOps(_ context.Context, ops []*store.HASyncOp) error {
 	if f.applyErr != nil {
 		return f.applyErr

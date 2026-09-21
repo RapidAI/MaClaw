@@ -28,6 +28,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/llm/moa"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
+	"github.com/RapidAI/CodeClaw/corelib/permission"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	"github.com/RapidAI/CodeClaw/corelib/task"
@@ -139,6 +140,14 @@ type CoreAgentExecutor struct {
 	closeOnce       sync.Once
 	closeErr        error
 	closed          bool
+
+	// permissionSnapshotOnce builds the dual-eval permission snapshot at most
+	// once per executor (docs/design/tool-routing-improvement-plan-zh.md
+	// Phase 1, R3). The snapshot is immutable, so the core loop's dual-eval
+	// harness can hold the returned pointer without further synchronization.
+	permissionSnapshotOnce sync.Once
+	permissionSnapshotVal  *permission.Snapshot
+	permissionSnapshotErr  error
 }
 
 // Close releases process-scoped resources owned by the executor. GUI and srv
@@ -442,6 +451,10 @@ type coreAgentCallbacks struct {
 	trustedBrowser             func(context.Context, Principal, string, string) (string, error)
 	trustedComputerUse         func(context.Context, Principal, string) (string, error)
 	executor                   *CoreAgentExecutor
+	// dispatcherOnce builds the Phase 2 pilot ToolDispatcher at most once per
+	// callback; dispatcher stays nil unless MACLAW_TOOL_DISPATCHER=on.
+	dispatcherOnce sync.Once
+	dispatcher     *agent.NameDispatcher
 }
 
 // CurrentPromptProfile implements agent.PromptProfileProvider for light-tool deny.
@@ -1457,6 +1470,9 @@ func (c *coreAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool
 	if c.runtimePrompt != "" {
 		bundle.SessionContext = strings.TrimSpace(bundle.SessionContext + "\n\n" + c.runtimePrompt)
 	}
+	if note := c.remoteRuntimeSessionContextNote(); note != "" {
+		bundle.SessionContext = strings.TrimSpace(bundle.SessionContext + "\n\n" + note)
+	}
 	if !managedSemantic && c.imMessageHandler != nil && c.imFileHandler != nil {
 		bundle.SessionContext = strings.TrimSpace(bundle.SessionContext + `
 
@@ -1590,6 +1606,41 @@ func applySSHActionEnum(c *coreAgentCallbacks, specs []coreToolSpec) {
 		}
 		props["action"] = map[string]interface{}{"type": "string", "enum": sshAllowedActions(c.allowSSHFileTransfer)}
 	}
+}
+
+// narrowSSHDefinitionForRemoteRuntime rewrites the generic ssh definition to
+// the only surface remoteCodingRuntimeToolCallAllowed dispatches under a
+// remote runtime binding: exec on the pre-bound verified session, with only
+// the arguments the gate reads. Connection, file-transfer, and background
+// task arguments are deliberately absent — advertising them would invite
+// calls the gate must reject. session_id stays model-facing because the gate
+// enforces an exact echo of the bound id; BuildSystemPrompt publishes that id
+// through remoteRuntimeSessionContextNote. Any argument added here must have
+// a matching read in the gate or the bound exec handler.
+func narrowSSHDefinitionForRemoteRuntime() map[string]interface{} {
+	parameters := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"action":       map[string]interface{}{"type": "string", "enum": []string{"exec"}, "description": "Only exec is dispatchable on the verified remote coding session"},
+			"session_id":   map[string]string{"type": "string", "description": "Verified SSH session id for this remote coding task; must exactly match the id published in your session context"},
+			"command":      map[string]string{"type": "string", "description": "Shell command to execute on the verified session"},
+			"wait_seconds": map[string]string{"type": "integer", "description": "Seconds to wait for command output before returning (default 15, max 600)"},
+		},
+		"required": []string{"action", "session_id", "command"},
+	}
+	return tooldef.BuildToolDef("ssh", "Execute a single shell command on the pre-bound verified remote coding session. Only action=exec is available; the session cannot be created, switched, reconnected, or used for file transfer.", parameters)
+}
+
+// remoteRuntimeSessionContextNote publishes the frozen remote binding to the
+// model. Without it the model cannot pass the gate's session_id echo: the id
+// is assigned inside bindRemoteCodingRuntime after runtime prompts are
+// contributed, and it otherwise appears only in tool outputs that follow a
+// first successful call — which can never happen.
+func (c *coreAgentCallbacks) remoteRuntimeSessionContextNote() string {
+	if c == nil || c.runtimeRemoteBinding == nil {
+		return ""
+	}
+	return fmt.Sprintf("Remote coding runtime binding: this task is locked to the verified SSH session id %q. Every ssh tool call must pass action=exec with exactly this session_id; connect, upload, download, background task, and close actions, plus any other session id, are rejected before execution.", c.runtimeRemoteBinding.SessionID)
 }
 
 func imFileToolParameters(_ bool) map[string]interface{} {
@@ -1811,13 +1862,13 @@ func (c *coreAgentCallbacks) BuildTools(userText string) []map[string]interface{
 		tools = append(tools, serviceReadOnlyChildSpawnToolDefinition())
 	}
 	if c != nil && c.runtimeRemoteBinding != nil {
-		filtered := tools[:0]
+		narrowed := make([]map[string]interface{}, 0, len(tools))
 		for _, tool := range tools {
 			if tooldef.Name(tool) == "ssh" {
-				filtered = append(filtered, tool)
+				narrowed = append(narrowed, narrowSSHDefinitionForRemoteRuntime())
 			}
 		}
-		return filtered
+		return narrowed
 	}
 	if c != nil && c.runtimeReadOnlyChild {
 		return filterServiceReadOnlyChildToolDefinitions(tools)
@@ -1834,7 +1885,8 @@ func (c *coreAgentCallbacks) BuildTools(userText string) []map[string]interface{
 			profile, _ = agent.ResolvePromptProfile(userText, llm.ClassifyHints{})
 		}
 		var managedTools []map[string]interface{}
-		if surface := c.dynamicSemanticSurface; surface != nil {
+		surface := c.dynamicSemanticSurface
+		if surface != nil {
 			managedTools = append(managedTools, coretool.ClosedManagedDefinitionsForProfile(semanticDefs, surface.plan, surface.grants, profile.IsLight())...)
 		} else {
 			managedTools = append(managedTools, closedManagedSemanticDefinitions(semanticDefs)...)
@@ -1844,6 +1896,9 @@ func (c *coreAgentCallbacks) BuildTools(userText string) []map[string]interface{
 			// append shared modules only for names not already in that plan.
 			managedTools = appendRuntimeModuleTools(managedTools, c.runtimeTools)
 		}
+		// Phase 1 dual-run: log which surface tools the permission snapshot
+		// would unconditionally deny/ask — behavior unchanged.
+		c.dualEvalManagedSurfacePermissions(managedTools, surface)
 		return agent.FilterToolDefinitionsForPromptProfile(c, managedTools, profile)
 	} else {
 		// The legacy bound adapter surface remains only for request families not
@@ -1857,7 +1912,9 @@ func (c *coreAgentCallbacks) BuildTools(userText string) []map[string]interface{
 		}
 	}
 	if allowed := c.hardwareExpertToolAllowSet(); len(allowed) > 0 {
-		filtered := tools[:0]
+		// Fresh backing array: tools may be observed elsewhere after this
+		// filter (light-profile pass below), so never reuse the input slice.
+		filtered := make([]map[string]interface{}, 0, len(tools))
 		for _, tool := range tools {
 			fn, _ := tool["function"].(map[string]interface{})
 			name, _ := fn["name"].(string)
@@ -2010,10 +2067,20 @@ func (c *coreAgentCallbacks) ExecuteTool(name, argsJSON string) string {
 }
 
 // ExecuteToolCall is the host-protocol-aware dynamic semantic boundary. The
-// core loop supplies the model/provider call ID so a durable HostCallJournal
+// core loop supplies the model/provider tool ID so a durable HostCallJournal
 // can replay the original outcome after reconnect instead of consuming a
 // second invocation grant or dispatching the provider again.
 func (c *coreAgentCallbacks) ExecuteToolCall(name, argsJSON, callID string) agent.ToolExecutionResult {
+	return c.executeToolCallLegacy(name, argsJSON, callID)
+}
+
+// executeToolCallLegacy is the full legacy entry point. ExecuteToolCall
+// delegates here, and the Phase 2 ToolDispatcher pilot handlers call here too,
+// so a dispatched name runs byte-identical logic to the legacy chain —
+// CanonicalizeToolCallJSON, the runtime-tool invoker branch, the managed
+// semantic surface (callID-bound replay, governed marking, replan recovery),
+// and the ExecuteToolStructured preamble guards all stay on the path.
+func (c *coreAgentCallbacks) executeToolCallLegacy(name, argsJSON, callID string) agent.ToolExecutionResult {
 	name, argsJSON, _ = agentruntime.CanonicalizeToolCallJSON(name, argsJSON)
 	if c != nil && c.runtimeToolInvoker != nil && c.runtimeToolExposed(name) {
 		if !c.IsToolAllowed(strings.TrimSpace(name)) {

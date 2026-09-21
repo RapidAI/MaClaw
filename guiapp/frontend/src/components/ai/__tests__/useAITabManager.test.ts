@@ -142,8 +142,30 @@ describe("useAITabManager - Property Tests for Tab Creation", () => {
             );
         });
 
-        it("keeps ACP mirrors distinct by owner even when their project path is shared", () => {
+        it("dedupes a path whose segment carries incidental padding", () => {
+            // Regression: normalizeProjectSessionPath used to trim only the whole
+            // string, so "! /" normalized to "! " (trailing space kept), while
+            // re-normalizing that stored result yielded "!". Because dedup
+            // compares by re-normalizing, the lookup missed and a second,
+            // indistinguishable tab was created for the same project.
+            expect(normalizeProjectSessionPath("! /")).toBe(normalizeProjectSessionPath("!"));
+
             const { result } = renderHook(() => useAITabManager());
+            let first!: AITab;
+            let second!: AITab;
+
+            act(() => {
+                first = result.current.createProjectTab("! /", "!")!;
+            });
+            act(() => {
+                second = result.current.createProjectTab("! /", "!")!;
+            });
+
+            expect(first.id).toBe(second.id);
+            expect(result.current.tabState.tabs.filter(t => t.type === "project")).toHaveLength(1);
+        });
+
+        it("keeps ACP mirrors distinct by owner even when their project path is shared", () => {            const { result } = renderHook(() => useAITabManager());
             const path = "D:/tasks/shared";
             act(() => {
                 result.current.createProjectTab(path, "First ACP", { sessionKey: "desktop-user:acp:first" });

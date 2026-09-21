@@ -50,7 +50,7 @@ func (s *Store) PrepareObjectPutWithSession(ctx context.Context, tenantID, userI
 	machineID = strings.TrimSpace(machineID)
 	ts := now.UTC().Format(time.RFC3339)
 	err = s.withImmediate(ctx, func(q queryer) error {
-		if _, err := requireActiveOwned(ctx, q, tenantID, userID, workspaceID); err != nil {
+		if _, err := requireActiveAccess(ctx, q, tenantID, userID, workspaceID, true); err != nil {
 			return err
 		}
 		// The v1 service always supplies machine/session identity. Keep the empty
@@ -122,7 +122,7 @@ func (s *Store) RequireLeaseWithSessionAndToken(ctx context.Context, tenantID, u
 	userID = strings.TrimSpace(userID)
 	workspaceID = strings.TrimSpace(workspaceID)
 	machineID = strings.TrimSpace(machineID)
-	ws, err := requireActiveOwned(ctx, s.db, tenantID, userID, workspaceID)
+	ws, err := requireActiveAccess(ctx, s.db, tenantID, userID, workspaceID, true)
 	if err != nil {
 		return nil, err
 	}

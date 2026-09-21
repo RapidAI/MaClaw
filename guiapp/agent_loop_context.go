@@ -98,6 +98,10 @@ type LoopContext struct {
 	// cannot accidentally re-enable desktop automation later in the same loop.
 	// Explicit @computer / "computer use" requests never set this flag.
 	ComputerUseBlockedForLocalFileWork bool
+	// autoExtractExpandedText is the host-expanded picker prompt for this
+	// leftover turn. HostKeep reads it so truncated=true is visible without
+	// feeding the injected body into BM25 ranking.
+	autoExtractExpandedText string
 	// ComputerUseFresh is this turn's CU gate "new task" bit (not sticky).
 	// It must not be stored on the process-global session.
 	ComputerUseFresh bool

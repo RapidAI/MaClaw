@@ -16,6 +16,23 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
+// llmSimpleHTTPError carries the HTTP status of a failed simple (non-stream)
+// LLM request so control-plane callers — e.g. the unified intent classifier —
+// can classify 5xx endpoint health through the structural HTTPStatusCode()
+// interface without parsing message text. dumpLLMContext's plain-error
+// formats predate that interface, and the Responses wire builds its message
+// via classifyResponsesAPIHTTPError; both wrap into this type at their
+// non-OK exits.
+type llmSimpleHTTPError struct {
+	status int
+	msg    string
+}
+
+func (e *llmSimpleHTTPError) Error() string { return e.msg }
+func (e *llmSimpleHTTPError) HTTPStatusCode() int {
+	return e.status
+}
+
 // dumpLLMContext reports LLM HTTP failures without persisting prompt/request
 // bodies. Those bodies may contain browser observations, screenshots OCR, or
 // user secrets, so writing them under ~/.maclaw would leak private context.
@@ -25,7 +42,10 @@ func dumpLLMContext(statusCode int, respMsg string, requestBody []byte, tempDir 
 	if statusCode != http.StatusInternalServerError {
 		return fmt.Errorf("HTTP %d: %s (context %d bytes)", statusCode, respMsg, ctxLen)
 	}
-	return fmt.Errorf("HTTP %d (context %d bytes, request body not dumped): %s", statusCode, ctxLen, respMsg)
+	return &llmSimpleHTTPError{
+		status: statusCode,
+		msg:    fmt.Sprintf("HTTP %d (context %d bytes, request body not dumped): %s", statusCode, ctxLen, respMsg),
+	}
 }
 
 // llmSimpleResponse is a minimal response from a simple (non-tool-calling) LLM request.
@@ -130,7 +150,7 @@ func detachedSimpleLLMReadKey(cfg corelib.MaclawLLMConfig, messages []interface{
 	}
 	_, _ = h.Write([]byte("|"))
 	_, _ = h.Write([]byte(fmt.Sprintf("%#v", messages)))
-	return fmt.Sprintf("%x", h.Sum64)
+	return fmt.Sprintf("%x", h.Sum64())
 }
 
 // attachLightweightHubHint marks classify/summary/intent helper calls so Hub
@@ -469,7 +489,7 @@ func doSimpleOpenAIRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, mes
 	log.Printf("[LLM] POST %s model=%s configured_model=%s protocol=%s simple=true structured=%t %s", endpoint, upstreamModel, cfg.Model, cfg.Protocol, opts.ResponseFormat != nil, traceFields)
 	startedAt := time.Now()
 	if client == nil {
-		client = http.DefaultClient
+		client = llm.SharedHTTPClient
 	}
 	httpResp, err := client.Do(req)
 	if err != nil {
@@ -513,7 +533,7 @@ func doSimpleResponsesRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, 
 		opts = requestOpts[0]
 	}
 	if client == nil {
-		client = http.DefaultClient
+		client = llm.SharedHTTPClient
 	}
 
 	requestBody := map[string]interface{}(nil)
@@ -546,7 +566,10 @@ func doSimpleResponsesRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, 
 		if httpResp.StatusCode == http.StatusInternalServerError {
 			return nil, dumpLLMContext(httpResp.StatusCode, classifyResponsesAPIHTTPError(httpResp.StatusCode, body, endpoint, upstreamModel, cfg.ProviderName), data, "")
 		}
-		return nil, fmt.Errorf("%s", classifyResponsesAPIHTTPError(httpResp.StatusCode, body, endpoint, upstreamModel, cfg.ProviderName))
+		return nil, &llmSimpleHTTPError{
+			status: httpResp.StatusCode,
+			msg:    classifyResponsesAPIHTTPError(httpResp.StatusCode, body, endpoint, upstreamModel, cfg.ProviderName),
+		}
 	}
 
 	parsed, parseErr := llm.ParseNonStreamResponsesAPIResponse(httpResp)

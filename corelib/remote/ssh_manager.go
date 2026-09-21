@@ -10,7 +10,15 @@ import (
 
 // sshPreviewMaxLines is the in-memory ring size for PTY preview text.
 // Older lines are dropped from the front; absolute line indices stay stable via droppedLines.
-const sshPreviewMaxLines = 2000
+//
+// Why 20000: the durable-runtime recovery probe (agentservice) frames its
+// read-only git status between markers inside this same ring. If a probe's
+// git status output exceeds the ring, the begin marker is evicted before the
+// frame completes and the probe fails closed (TaskBlocked) on an otherwise
+// healthy workspace. 20000 lines keeps realistic monorepo status frames
+// intact; preview consumers are tail-based (PreviewTail) so retention growth
+// is invisible to them.
+const sshPreviewMaxLines = 20000
 
 // SSHManagedSession 是 SSHSessionManager 管理的单个 SSH 会话。
 type SSHManagedSession struct {

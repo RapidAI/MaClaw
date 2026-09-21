@@ -17,9 +17,9 @@ import { baseInputBtnStyle, type Theme } from "./aiAssistantPanelTheme";
 import { ChatBubbleFrame, CHAT_SPEAKER_LABEL_GAP, userChatBubbleBackground } from "./ChatBubbleFrame";
 import { renderScreenshotPreview } from "./aiAssistantMarkdownMedia";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
-import { stripRolePrefixForDisplay, truncateRolePrefixForDisplay } from "./rolePrefixDisplay";
-import { sanitizeVisibleChatText } from "./visibleChatText";
-import { stripCodingAgentAuditSections, stripCodingWorkbenchStatusReasoning } from "./codingAgentUserFinish";
+import { stripRolePrefixForDisplay } from "./rolePrefixDisplay";
+import { stripCodingAgentAuditSections } from "./codingAgentUserFinish";
+import { cleanReasoningTrailForBody, resolveVisibleAssistantReply, separateReasoningFromBody } from "./assistantReasoningBody";
 import {
     prepareChatBodyForDisplay,
     prepareChatBodyLines,
@@ -44,7 +44,6 @@ import { AttachmentImageThumbnail } from "./AttachmentImagePreview";
 import { AssistantReasoningPanel } from "./AssistantReasoningPanel";
 
 import { assistantLiveActivityLabel } from "./assistantLiveActivity";
-import { repairReasoningLineBreaks } from "./reasoningLineBreaks";
 
 export type { Theme } from "./aiAssistantPanelTheme";
 export type { RecordingCompleteResult } from "./RecordingSessionCard";
@@ -1450,9 +1449,7 @@ export const CodingAgentThinkingTimelineItem = React.memo(function CodingAgentTh
     liveLabel?: string;
     liveObject?: string;
 }) {
-    const displayReasoning = React.useMemo(() => repairReasoningLineBreaks(stripCodingAgentAuditSections(
-        stripCodingWorkbenchStatusReasoning(truncateRolePrefixForDisplay(sanitizeVisibleChatText(item.content || ""))),
-    )), [item.content]);
+    const displayReasoning = React.useMemo(() => cleanReasoningTrailForBody(item.content || ""), [item.content]);
     const live = !!liveLabel;
     const body = React.useMemo(
         () => displayReasoning.trim() ? renderContentWithCodeBlocks(displayReasoning, t) : null,
@@ -1511,7 +1508,7 @@ export function assistantMessageHasVisibleBody(msg: ChatMessage): boolean {
     // In the coding workbench reasoning is rendered as ordered timeline nodes.
     // Do not leave an empty assistant bubble at the original placeholder.
     const reasoningVisibleHere = !msg.codingTimeline?.length
-        && stripCodingAgentAuditSections(stripCodingWorkbenchStatusReasoning((msg.reasoning || "").trim()));
+        && cleanReasoningTrailForBody(msg.reasoning || "").trim();
     const hasRenderableScreenshot = hasRenderableAssistantScreenshot(msg, visibleFields.length > 0);
     return !!(
         stripCodingAgentAuditSections((msg.content || "").trim())
@@ -1629,6 +1626,14 @@ export function renderMessage(
             if (collapseReasoningByDefault && !assistantMessageHasVisibleBody(msg)) {
                 return null;
             }
+            const liveForReasoning = isLastAssistant && (isStreaming || !!liveReasoningLabel);
+            const cleanedReasoning = cleanReasoningTrailForBody(msg.reasoning || "");
+            // After the stream ends, peel CoT out of a mixed body. Ordinary chat
+            // may still lift a hidden non-monologue deliverable; coding workbench
+            // only separates, so thoughts stay on the timeline.
+            const visibleReply = (msg.codingTimeline?.length || collapseReasoningByDefault)
+                ? separateReasoningFromBody(msg.content || "", cleanedReasoning)
+                : resolveVisibleAssistantReply(msg.content || "", cleanedReasoning, { live: liveForReasoning });
             return (
                 <div key={msg.id} role="group" data-testid={`assistant-chat-ai-${msg.id}`} aria-label={localizeText(lang, "AI assistant message", "AI 助手消息")} style={{
                     display: "flex",
@@ -1639,7 +1644,7 @@ export function renderMessage(
                 }}>
                     <span style={{ display: "inline-flex", alignItems: "center", gap: 6, margin: `0 4px ${CHAT_SPEAKER_LABEL_GAP}px`, color: t.textMuted, fontSize: 11, lineHeight: 1.2 }}><span className="mc-message-avatar mc-message-avatar--assistant" aria-hidden="true">M</span><span>{localAssistantTabTitle(lang)}</span></span>
                     {(() => {
-                        const copyPayload = buildAssistantReplyCopyText(msg.content, msg.unfinishedSlot, lang);
+                        const copyPayload = buildAssistantReplyCopyText(visibleReply.content, msg.unfinishedSlot, lang);
                         const showCopy = copyPayload.trim().length > 0;
                         return (
                     <ChatBubbleFrame
@@ -1671,7 +1676,7 @@ export function renderMessage(
                         }}
                     >
                         {/* Ordinary chat only: coding workbench uses the · Working trail. */}
-                        {isLastAssistant && !collapseReasoningByDefault && !msg.content && !msg.fields && !screenshotBase64 && savedPaths.length === 0 && !msg.reasoning && !liveReasoningLabel && (
+                        {isLastAssistant && !collapseReasoningByDefault && !visibleReply.content && !msg.fields && !screenshotBase64 && savedPaths.length === 0 && !visibleReply.reasoning && !liveReasoningLabel && (
                             <span
                                 className="assistant-reasoning-live-label"
                                 data-testid="assistant-processing-label"
@@ -1691,14 +1696,13 @@ export function renderMessage(
                             when the stream ends (stream-done fires per LLM round).
                             Live tool steps reuse this same header. The coding
                             workbench stays folded. */}
-                        {!msg.codingTimeline?.length && (msg.reasoning || (isLastAssistant && liveReasoningLabel)) && (() => {
-                            const live = isLastAssistant && (isStreaming || !!liveReasoningLabel);
+                        {!msg.codingTimeline?.length && (visibleReply.reasoning || (isLastAssistant && liveReasoningLabel)) && (() => {
+                            const live = liveForReasoning;
                             const reasoningLabel = live
                                 ? (liveReasoningLabel || assistantLiveActivityLabel("thinking", lang))
                                 : (lang === "en" ? "Thinking process..." : "思考过程...");
                             const shouldOpen = isLastAssistant && isStreaming && !collapseReasoningByDefault;
-                            // Role-prefix only here; pictograph strip runs inside renderContentWithCodeBlocks.
-                            const displayReasoning = repairReasoningLineBreaks(stripCodingAgentAuditSections(stripCodingWorkbenchStatusReasoning(truncateRolePrefixForDisplay(sanitizeVisibleChatText(msg.reasoning || "")))));
+                            const displayReasoning = visibleReply.reasoning;
                             if (!displayReasoning.trim() && !live) return null;
                             return (
                                 <AssistantReasoningPanel
@@ -1725,7 +1729,7 @@ export function renderMessage(
                             // renderContentWithCodeBlocks re-strips after compact-heading normalize
                             // (idempotent; that second pass catches "### <pictograph> …").
                             const rawFormattedContent = stripCodingAgentAuditSections(prepareChatBodyForDisplay(
-                                formatUnfinishedSlotNotice(msg.content, msg.unfinishedSlot, lang),
+                                formatUnfinishedSlotNotice(visibleReply.content, msg.unfinishedSlot, lang),
                             ));
                             // /btw side query results are collapsible to reduce space.
                             // Detection: requestId starts with "btw-" (set by sendBtwMessage)

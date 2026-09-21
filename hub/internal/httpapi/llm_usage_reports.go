@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -1053,6 +1054,69 @@ func pruneLLMUsageReports(rep *llmUsageReportsStore, now time.Time) {
 	}
 }
 
+// llmUsageReportsCacheTTL bounds how long a parsed usage-reports document may
+// be served without re-reading the settings row. The blob is multi-MB in
+// production and grows with retained days × users × hourly buckets, so
+// re-unmarshalling it on every service-account poll dominates hub CPU. Usage
+// flushes every accumulator interval rewrite the row via saveLLMUsageReports,
+// which invalidates the cache, so a short TTL only masks writes that bypassed
+// the save path (imports, direct DB edits).
+const llmUsageReportsCacheTTL = 5 * time.Second
+
+type cachedLLMUsageReports struct {
+	loadedAt time.Time
+	value    *llmUsageReportsStore
+	err      error
+}
+
+var (
+	globalLLMUsageReportsCache      = map[string]cachedLLMUsageReports{}
+	globalLLMUsageReportsCacheMu    sync.RWMutex
+	globalLLMUsageReportsCacheLocks sync.Map // key -> *sync.Mutex (per-scope load serialization)
+)
+
+// loadCachedLLMUsageReports returns a shared, read-only parsed reports
+// document. Callers must not mutate the result: merge/prune paths use
+// loadLLMUsageReports directly, and saveLLMUsageReports invalidates the entry.
+func loadCachedLLMUsageReports(ctx context.Context, system store.SystemSettingsRepository) (*llmUsageReportsStore, error) {
+	if system == nil {
+		return loadLLMUsageReports(ctx, system)
+	}
+	key := llmRuntimeCacheKey(system)
+	now := time.Now()
+	globalLLMUsageReportsCacheMu.RLock()
+	entry, ok := globalLLMUsageReportsCache[key]
+	globalLLMUsageReportsCacheMu.RUnlock()
+	if ok && now.Sub(entry.loadedAt) < llmUsageReportsCacheTTL {
+		return entry.value, entry.err
+	}
+	lockRaw, _ := globalLLMUsageReportsCacheLocks.LoadOrStore(key, &sync.Mutex{})
+	lock := lockRaw.(*sync.Mutex)
+	lock.Lock()
+	defer lock.Unlock()
+	globalLLMUsageReportsCacheMu.RLock()
+	entry, ok = globalLLMUsageReportsCache[key]
+	globalLLMUsageReportsCacheMu.RUnlock()
+	if ok && now.Sub(entry.loadedAt) < llmUsageReportsCacheTTL {
+		return entry.value, entry.err
+	}
+	rep, err := loadLLMUsageReports(ctx, system)
+	globalLLMUsageReportsCacheMu.Lock()
+	globalLLMUsageReportsCache[key] = cachedLLMUsageReports{loadedAt: time.Now(), value: rep, err: err}
+	globalLLMUsageReportsCacheMu.Unlock()
+	return rep, err
+}
+
+func invalidateLLMUsageReportsCache(system store.SystemSettingsRepository) {
+	if system == nil {
+		return
+	}
+	key := llmRuntimeCacheKey(system)
+	globalLLMUsageReportsCacheMu.Lock()
+	delete(globalLLMUsageReportsCache, key)
+	globalLLMUsageReportsCacheMu.Unlock()
+}
+
 func loadLLMUsageReports(ctx context.Context, system store.SystemSettingsRepository) (*llmUsageReportsStore, error) {
 	if system == nil {
 		return &llmUsageReportsStore{Version: llmUsageReportsVersion, Days: map[string]*llmUsageReportDay{}}, nil
@@ -1094,7 +1158,7 @@ func loadLLMUsageReports(ctx context.Context, system store.SystemSettingsReposit
 }
 
 func llmUsageTotalsForUser(ctx context.Context, system store.SystemSettingsRepository, email string) (llmUsageCounters, error) {
-	rep, err := loadLLMUsageReports(ctx, system)
+	rep, err := loadCachedLLMUsageReports(ctx, system)
 	if err != nil {
 		return llmUsageCounters{}, err
 	}
@@ -1130,7 +1194,11 @@ func saveLLMUsageReports(ctx context.Context, system store.SystemSettingsReposit
 	if err != nil {
 		return err
 	}
-	return system.Set(ctx, llmUsageReportsKey, string(data))
+	if err := system.Set(ctx, llmUsageReportsKey, string(data)); err != nil {
+		return err
+	}
+	invalidateLLMUsageReportsCache(system)
+	return nil
 }
 
 func flushLLMUsageReports(ctx context.Context, system store.SystemSettingsRepository, pending *llmUsageReportsStore) error {

@@ -195,7 +195,7 @@ func (s *Store) GetManifest(ctx context.Context, tenantID, userID, workspaceID, 
 	workspaceID = strings.TrimSpace(workspaceID)
 	_ = strings.TrimSpace(machineID)
 	_ = now
-	ws, err := requireActiveOwned(ctx, s.db, tenantID, userID, workspaceID)
+	ws, err := requireActiveAccess(ctx, s.db, tenantID, userID, workspaceID, false)
 	if err != nil {
 		return nil, err
 	}
@@ -226,7 +226,7 @@ func (s *Store) ReplaceManifestWithSession(ctx context.Context, tenantID, userID
 	ts := now.UTC().Format(time.RFC3339)
 	var out *Manifest
 	err = s.withImmediate(ctx, func(q queryer) error {
-		ws, err := requireActiveOwned(ctx, q, tenantID, userID, workspaceID)
+		ws, err := requireActiveAccess(ctx, q, tenantID, userID, workspaceID, true)
 		if err != nil {
 			return err
 		}
@@ -332,7 +332,7 @@ func (s *Store) RestoreSnapshotWithSession(ctx context.Context, tenantID, userID
 	}
 	var out *Manifest
 	err := s.withImmediate(ctx, func(q queryer) error {
-		ws, err := requireActiveOwned(ctx, q, tenantID, userID, workspaceID)
+		ws, err := requireActiveAccess(ctx, q, tenantID, userID, workspaceID, true)
 		if err != nil {
 			return err
 		}
@@ -452,7 +452,7 @@ func (s *Store) ApplyManifestDeltaWithSession(ctx context.Context, tenantID, use
 	}
 	var out *Manifest
 	err = s.withImmediate(ctx, func(q queryer) error {
-		ws, err := requireActiveOwned(ctx, q, tenantID, userID, workspaceID)
+		ws, err := requireActiveAccess(ctx, q, tenantID, userID, workspaceID, true)
 		if err != nil {
 			return err
 		}

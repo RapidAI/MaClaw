@@ -96,7 +96,7 @@ func (s *Store) ApplyOperation(ctx context.Context, tenantID, userID, workspaceI
 	}
 	var out *OperationResult
 	err = s.withImmediate(ctx, func(q queryer) error {
-		if _, err := requireActiveOwned(ctx, q, tenantID, userID, workspaceID); err != nil {
+		if _, err := requireActiveAccess(ctx, q, tenantID, userID, workspaceID, true); err != nil {
 			return err
 		}
 		if err := bootstrapFilesFromManifest(ctx, q, workspaceID); err != nil {

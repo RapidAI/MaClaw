@@ -483,11 +483,12 @@ func registerComputerUseTools(registry *ToolRegistry, app *App) {
 	log.Printf("[computer-use] tools registered (text-primary, OmniParser=%v OCR=available-on-demand)", yolo != nil)
 
 	// Catalog registration only: the computer-use family drives external
-	// desktop effects without a trusted receipt boundary, so no intent rule
-	// maps LabelComputerUse to this capability and managed routing stays
-	// disabled for it. Every computer_* entry is a complete user-facing entry
-	// point (there is no merged dispatcher), so each one declares the shared
-	// outcome contract.
+	// desktop effects, so it is served on managed turns exclusively by the
+	// trusted host adapter (intent rule LabelComputerUse →
+	// computer.control.desktop, published only when a desktop runtime is
+	// enabled; a confident turn without one HostRejects as unmet). Every
+	// computer_* entry is a complete user-facing entry point (there is no
+	// merged dispatcher), so each one declares the shared outcome contract.
 	for _, name := range []string{
 		"computer_observe", "computer_click", "computer_type", "computer_key",
 		"computer_scroll", "computer_select", "computer_scroll_into_view",

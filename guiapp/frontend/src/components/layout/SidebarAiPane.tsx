@@ -40,6 +40,9 @@ const middlePaneStyle: CSSProperties = {
     boxSizing: 'border-box',
 };
 
+/** Same box as the other middle panes, hidden instead of unmounted on other tabs. */
+const tasksPaneStyle = (active: boolean): CSSProperties => ({ ...middleContentSlotStyle, display: active ? 'flex' : 'none' });
+
 export function shouldShowDigitalEmployeeMiddleTabs(status: any, nowMs = Date.now()): boolean {
     return shouldShowDigitalEmployeeFeatureTabs(status, nowMs);
 }
@@ -106,6 +109,8 @@ type SidebarAiPaneProps = SidebarCreditDisplayFormatters & {
     openExpertTabIDs?: string[];
     /** Currently visible assistant tab. Null/empty clears the task-list highlight. */
     activeAssistantTask?: ActiveAssistantTaskIdentity | null;
+    /** Live "executing" signal for that tab; merges with the durable snapshot in status stats. */
+    activeAssistantTaskRunning?: boolean;
     sidebarCurrentProviderTokenUsage: SidebarCurrentProviderTokenUsage;
     sidebarHubCredits: SidebarHubCredits | null;
     unlimitedHubCreditText: string;
@@ -207,6 +212,7 @@ export const SidebarAiPane = ({
     openProjectTabIdentities,
     openExpertTabIDs,
     activeAssistantTask,
+    activeAssistantTaskRunning = false,
     sidebarCurrentProviderTokenUsage,
     sidebarHubCredits,
     formatSidebarTokens,
@@ -303,15 +309,9 @@ export const SidebarAiPane = ({
                     <div
                         data-testid="sidebar-middle-pane-tasks"
                         // Keep mounted (hidden) on other middle tabs so welcome coding events still open create dialog.
-                        style={{
-                            display: middleTab === 'tasks' ? 'flex' : 'none',
-                            flex: 1,
-                            minHeight: 0,
-                            overflow: 'hidden',
-                            flexDirection: 'column',
-                        }}
+                        style={tasksPaneStyle(middleTab === 'tasks')}
                     >
-                        <SidebarTaskManagement lang={lang} themeMode={aiThemeMode} tasks={tasks} tasksLoading={tasksLoading} cloudTasksLoading={cloudTasksLoading} renamingTaskPath={renamingTaskPath} setRenamingTaskPath={setRenamingTaskPath} renameValue={renameValue} setRenameValue={setRenameValue} resumeTask={resumeTask} continueWorkflowProject={continueWorkflowProject} assistantReady={assistantReady} onTaskSwitchBlocked={onTaskSwitchBlocked} createTask={createTask} onCreateExpertTask={onCreateExpertTask} refreshTasks={refreshTasks} taskContextMenu={taskContextMenu} setTaskContextMenu={setTaskContextMenu} renameTask={renameTask} pinTask={pinTask} hideTask={hideTask} activateTask={activateTask} openProjectTabPaths={openProjectTabPaths} openProjectTabIdentities={openProjectTabIdentities} openExpertTabIDs={openExpertTabIDs} activeAssistantTask={activeAssistantTask} taskListVisible={middleTab === 'tasks'} showCloudWorkspaceManagement={showCloudWorkspaceManagement ?? showCodingToolEntry} showCloudWorkspaceCreation={showCloudWorkspaceCreation ?? showCloudWorkspaceManagement ?? showCodingToolEntry} restoreCloudWorkspaceTasks={restoreCloudWorkspaceTasks} />
+                        <SidebarTaskManagement lang={lang} themeMode={aiThemeMode} tasks={tasks} tasksLoading={tasksLoading} cloudTasksLoading={cloudTasksLoading} renamingTaskPath={renamingTaskPath} setRenamingTaskPath={setRenamingTaskPath} renameValue={renameValue} setRenameValue={setRenameValue} resumeTask={resumeTask} continueWorkflowProject={continueWorkflowProject} assistantReady={assistantReady} onTaskSwitchBlocked={onTaskSwitchBlocked} createTask={createTask} onCreateExpertTask={onCreateExpertTask} refreshTasks={refreshTasks} taskContextMenu={taskContextMenu} setTaskContextMenu={setTaskContextMenu} renameTask={renameTask} pinTask={pinTask} hideTask={hideTask} activateTask={activateTask} openProjectTabPaths={openProjectTabPaths} openProjectTabIdentities={openProjectTabIdentities} openExpertTabIDs={openExpertTabIDs} activeAssistantTask={activeAssistantTask} activeAssistantTaskRunning={activeAssistantTaskRunning} taskListVisible={middleTab === 'tasks'} showCloudWorkspaceManagement={showCloudWorkspaceManagement ?? showCodingToolEntry} showCloudWorkspaceCreation={showCloudWorkspaceCreation ?? showCloudWorkspaceManagement ?? showCodingToolEntry} restoreCloudWorkspaceTasks={restoreCloudWorkspaceTasks} />
                     </div>
                     {middleTab === 'employees' && showDigitalEmployeeTabs && <div data-testid="sidebar-middle-pane-employees" style={middlePaneStyle}><VirtualEmployeeTab lang={lang} theme={veTheme} onStartConversation={(ve) => onOpenVEConversation?.(ve)} favoriteEmployeeIds={favoriteEmployeeIds} favoriteEmployeeNames={favoriteEmployeeNames} onSetFavorite={onSetFavoriteEmployee} onRemoveFavorite={onRemoveFavoriteEmployee} onRenameEmployee={onRenameEmployee} /></div>}
                     {middleTab === 'history' && showDigitalEmployeeTabs && <div data-testid="sidebar-middle-pane-history" style={middlePaneStyle}><SidebarHistorySessions lang={lang} enabled={showDigitalEmployeeTabs} onOpenDiscussion={(discussion) => onOpenHistoryDiscussion?.(discussion)} /></div>}

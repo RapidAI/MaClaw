@@ -5,6 +5,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 const getState = vi.fn();
 const saveProfiles = vi.fn();
 const testProfile = vi.fn();
+const fetchProfileModels = vi.fn();
 const eventsOn = vi.fn();
 const eventsOff = vi.fn();
 
@@ -12,6 +13,7 @@ vi.mock("../../../../wailsjs/go/main/App", () => ({
     GetMaclawLLMProfilePanelState: (...args: unknown[]) => getState(...args),
     SaveMaclawLLMProfiles: (...args: unknown[]) => saveProfiles(...args),
     TestMaclawLLMProfile: (...args: unknown[]) => testProfile(...args),
+    FetchMaclawLLMProfileModels: (...args: unknown[]) => fetchProfileModels(...args),
 }));
 
 vi.mock("../../../../wailsjs/runtime", () => ({
@@ -19,7 +21,7 @@ vi.mock("../../../../wailsjs/runtime", () => ({
     EventsOff: (...args: unknown[]) => eventsOff(...args),
 }));
 
-import { LLMProfileAssignments, captionModelMissingVision } from "../LLMProfileAssignments";
+import { LLMProfileAssignments, captionModelMissingVision, modelVisionStatus } from "../LLMProfileAssignments";
 
 const state = {
     providers: [
@@ -50,6 +52,8 @@ describe("LLMProfileAssignments", () => {
         getState.mockReset();
         saveProfiles.mockReset();
         testProfile.mockReset();
+        fetchProfileModels.mockReset();
+        fetchProfileModels.mockResolvedValue([]);
         eventsOn.mockReset();
         eventsOff.mockReset();
     });
@@ -88,6 +92,23 @@ describe("LLMProfileAssignments", () => {
 
         expect((await screen.findByRole("alert")).textContent).toBe("Error: unavailable");
         expect(screen.getByRole("button", { name: "Import other agents" })).toBeTruthy();
+    });
+
+    it("lists persisted and live provider models in the assignment picker", async () => {
+        fetchProfileModels.mockImplementation(async (providerID: string) => {
+            if (providerID === "assistant") return [{ id: "gpt-5-nano" }];
+            if (providerID === "coding") return [{ id: "deepseek-chat" }];
+            return [];
+        });
+        getState.mockResolvedValue(state);
+        render(<LLMProfileAssignments lang="en" />);
+
+        await screen.findByRole("heading", { name: "Model assignments" });
+        await waitFor(() => expect(fetchProfileModels).toHaveBeenCalledWith("assistant"));
+        const assistantOptions = Array.from(document.getElementById("assistant-profile-models")?.querySelectorAll("option") || []).map(option => option.value);
+        expect(assistantOptions).toEqual(expect.arrayContaining(["gpt-5", "gpt-5-mini", "gpt-5-nano"]));
+        const codingOptions = Array.from(document.getElementById("coding-profile-models")?.querySelectorAll("option") || []).map(option => option.value);
+        expect(codingOptions).toEqual(expect.arrayContaining(["deepseek-coder", "deepseek-chat"]));
     });
 
     it("renders only the connection-tested providers returned by the assignment API", async () => {
@@ -152,6 +173,7 @@ describe("LLMProfileAssignments", () => {
         const follow = await screen.findByRole("checkbox", { name: "Follow AI assistant" });
         fireEvent.click(follow);
         expect(screen.queryByLabelText("Coding provider")).toBeNull();
+        expect(screen.getAllByRole("button", { name: "Test connection" })).toHaveLength(2);
         expect(screen.getByText("Effective after save: OpenAI · gpt-5")).toBeTruthy();
         fireEvent.change(screen.getByLabelText("Assistant model"), { target: { value: "gpt-5-mini" } });
         expect(screen.getByText("Effective after save: OpenAI · gpt-5-mini")).toBeTruthy();
@@ -378,7 +400,173 @@ describe("LLMProfileAssignments", () => {
 
         fireEvent.change(await screen.findByLabelText("Caption provider"), { target: { value: "assistant" } });
         fireEvent.change(screen.getByLabelText("Caption model"), { target: { value: "gpt-5-mini" } });
+        expect(screen.getByText("This model's image support has not been tested. Captioning unlabeled boxes needs a vision model.")).toBeTruthy();
+        expect(screen.getAllByRole("button", { name: "Test connection and image support" }).length).toBeGreaterThan(0);
+    });
+
+    it("tests image support for an untested assigned model without saving the assignment", async () => {
+        getState.mockResolvedValue({
+            ...state,
+            providers: [
+                { id: "assistant", name: "OpenAI", model: "gpt-5", models: ["gpt-5", "gpt-5-mini"], supports_vision: true, vision_models: ["gpt-5"], vision_tested_models: ["gpt-5"], connection_test_passed: true },
+                state.providers[1],
+            ],
+        });
+        testProfile.mockResolvedValue({ profile: "assistant", health: "configured", supports_vision: true, vision_probe_status: "supported" });
+        render(<LLMProfileAssignments lang="en" />);
+
+        fireEvent.change(await screen.findByLabelText("Assistant model"), { target: { value: "gpt-5-mini" } });
+        expect(screen.getByText("Vision support: not tested")).toBeTruthy();
+        fireEvent.click(screen.getByRole("button", { name: "Test connection and image support" }));
+
+        await waitFor(() => expect(testProfile).toHaveBeenCalledWith("assistant", "assistant", "gpt-5-mini"));
+        expect(saveProfiles).not.toHaveBeenCalled();
+        expect(screen.getByText("Connected")).toBeTruthy();
+        expect(screen.getByText("Vision support: enabled")).toBeTruthy();
+        expect(screen.queryByText("Vision support: not tested")).toBeNull();
+        expect(screen.queryByRole("button", { name: "Test connection and image support" })).toBeNull();
+    });
+
+    it("accepts Wails PascalCase vision fields from an assignment probe", async () => {
+        getState.mockResolvedValue({
+            ...state,
+            providers: [
+                { id: "assistant", name: "OpenAI", model: "gpt-5", models: ["gpt-5", "gpt-5-mini"], supports_vision: true, vision_models: ["gpt-5"], vision_tested_models: ["gpt-5"], connection_test_passed: true },
+                state.providers[1],
+            ],
+        });
+        testProfile.mockResolvedValue({ profile: "assistant", health: "configured", SupportsVision: true, VisionProbeStatus: "supported" });
+        render(<LLMProfileAssignments lang="en" />);
+
+        fireEvent.change(await screen.findByLabelText("Assistant model"), { target: { value: "gpt-5-mini" } });
+        fireEvent.click(screen.getByRole("button", { name: "Test connection and image support" }));
+
+        expect(await screen.findByText("Vision support: enabled")).toBeTruthy();
+        expect(screen.queryByRole("button", { name: "Test connection and image support" })).toBeNull();
+    });
+
+    it("keeps image testing available when a vision result cannot be saved", async () => {
+        getState.mockResolvedValue({
+            ...state,
+            providers: [
+                { id: "assistant", name: "OpenAI", model: "gpt-5", models: ["gpt-5", "gpt-5-mini"], supports_vision: true, vision_models: ["gpt-5"], vision_tested_models: ["gpt-5"], connection_test_passed: true },
+                state.providers[1],
+            ],
+        });
+        testProfile.mockResolvedValue({
+            profile: "assistant",
+            health: "configured",
+            supports_vision: true,
+            vision_probe_status: "supported",
+            vision_persist_failed: true,
+        });
+        render(<LLMProfileAssignments lang="en" />);
+
+        fireEvent.change(await screen.findByLabelText("Assistant model"), { target: { value: "gpt-5-mini" } });
+        fireEvent.click(screen.getByRole("button", { name: "Test connection and image support" }));
+
+        expect(await screen.findByText("The image-support result could not be saved. Test it again.")).toBeTruthy();
+        expect(screen.getByRole("button", { name: "Test connection and image support" })).toBeTruthy();
+        expect(screen.getByText("Vision support: not confirmed; please retry")).toBeTruthy();
+        expect(screen.queryByText("Vision support: enabled")).toBeNull();
+    });
+
+    it("rewrites the assignment draft to the probed model ID", async () => {
+        getState.mockResolvedValue({
+            ...state,
+            providers: [
+                { id: "assistant", name: "OpenAI", model: "gpt-5", models: ["gpt-5", "gpt-5-mini"], supports_vision: true, vision_models: ["gpt-5"], vision_tested_models: ["gpt-5"], connection_test_passed: true },
+                state.providers[1],
+            ],
+        });
+        testProfile.mockResolvedValue({
+            profile: "assistant",
+            health: "configured",
+            supports_vision: true,
+            vision_probe_status: "supported",
+            provider_id: "assistant",
+            model: "canonical-mini",
+        });
+        render(<LLMProfileAssignments lang="en" />);
+
+        fireEvent.change(await screen.findByLabelText("Assistant model"), { target: { value: "gpt-5-mini" } });
+        fireEvent.click(screen.getByRole("button", { name: "Test connection and image support" }));
+
+        await waitFor(() => expect((screen.getByLabelText("Assistant model") as HTMLInputElement).value).toBe("canonical-mini"));
+        expect(screen.getByText("Vision support: enabled")).toBeTruthy();
+    });
+
+    it("records an unsupported assignment vision result without treating it as capable", async () => {
+        getState.mockResolvedValue({
+            ...state,
+            providers: [
+                { id: "assistant", name: "OpenAI", model: "gpt-5", models: ["gpt-5", "gpt-5-mini"], supports_vision: true, vision_models: ["gpt-5"], vision_tested_models: ["gpt-5"], connection_test_passed: true },
+                state.providers[1],
+            ],
+        });
+        testProfile.mockResolvedValue({ profile: "assistant", health: "configured", supports_vision: false, vision_probe_status: "unsupported" });
+        render(<LLMProfileAssignments lang="en" />);
+
+        fireEvent.change(await screen.findByLabelText("Assistant model"), { target: { value: "gpt-5-mini" } });
+        fireEvent.click(screen.getByRole("button", { name: "Test connection and image support" }));
+
+        await waitFor(() => expect(screen.queryByRole("button", { name: "Test connection and image support" })).toBeNull());
+        expect(screen.getAllByText("Vision support: disabled").length).toBeGreaterThan(0);
+        fireEvent.change(screen.getByLabelText("Caption provider"), { target: { value: "assistant" } });
+        fireEvent.change(screen.getByLabelText("Caption model"), { target: { value: "gpt-5-mini" } });
         expect(screen.getByText("This model was not marked vision-capable. Captioning unlabeled boxes needs a vision model.")).toBeTruthy();
+    });
+
+    it("does not keep a stale inconclusive vision result after the same model is confirmed", async () => {
+        getState.mockResolvedValue({
+            ...state,
+            providers: [
+                { id: "assistant", name: "OpenAI", model: "gpt-5", models: ["gpt-5", "gpt-5-mini"], supports_vision: true, vision_models: ["gpt-5"], vision_tested_models: ["gpt-5"], connection_test_passed: true },
+                state.providers[1],
+            ],
+        });
+        testProfile
+            .mockResolvedValueOnce({ profile: "caption", health: "configured", vision_probe_status: "inconclusive" })
+            .mockResolvedValueOnce({ profile: "assistant", health: "configured", supports_vision: true, vision_probe_status: "supported", model: "gpt-5-mini" });
+        render(<LLMProfileAssignments lang="en" />);
+
+        fireEvent.change(await screen.findByLabelText("Assistant model"), { target: { value: "gpt-5-mini" } });
+        fireEvent.change(screen.getByLabelText("Caption provider"), { target: { value: "assistant" } });
+        fireEvent.change(screen.getByLabelText("Caption model"), { target: { value: "gpt-5-mini" } });
+        const visionButtons = screen.getAllByRole("button", { name: "Test connection and image support" });
+        fireEvent.click(visionButtons[visionButtons.length - 1]);
+        expect(await screen.findByText("Vision support: not confirmed; please retry")).toBeTruthy();
+
+        fireEvent.click(screen.getAllByRole("button", { name: "Test connection and image support" })[0]);
+        await waitFor(() => expect(screen.queryByText("Vision support: not confirmed; please retry")).toBeNull());
+        expect(screen.getAllByText("Vision support: enabled").length).toBeGreaterThan(0);
+    });
+
+    it("does not offer an image probe for Hub-managed models", async () => {
+        getState.mockResolvedValue({
+            ...state,
+            providers: [
+                { id: "hub", name: "MaClaw Official", model: "hub-model", models: ["hub-model"], is_hub_service: true, connection_test_passed: true },
+            ],
+            profiles: {
+                version: 1,
+                assistant: { provider_id: "hub", model: "hub-model" },
+                coding: { inherit_assistant: true },
+            },
+            assistant: { profile: "assistant", provider_id: "hub", provider_name: "MaClaw Official", model: "hub-model", health: "configured" },
+            coding: { profile: "coding", inherit_assistant: true, provider_id: "hub", model: "hub-model", health: "configured" },
+        });
+        render(<LLMProfileAssignments lang="en" />);
+
+        await screen.findByRole("heading", { name: "Model assignments" });
+        expect(screen.queryByRole("button", { name: "Test connection and image support" })).toBeNull();
+        expect(screen.getAllByRole("button", { name: "Test connection" }).length).toBeGreaterThan(0);
+        expect(screen.getAllByText("Vision support: not verified locally").length).toBeGreaterThan(0);
+        expect(screen.queryByText("Vision support: not tested")).toBeNull();
+
+        fireEvent.change(screen.getByLabelText("Caption provider"), { target: { value: "hub" } });
+        expect(screen.getByText("Hub models are not image-tested here. Captioning unlabeled boxes needs a vision model.")).toBeTruthy();
+        expect(screen.queryByRole("button", { name: "Test connection and image support" })).toBeNull();
     });
 
     it("matches backend vision-model rules for caption warnings", () => {
@@ -386,5 +574,8 @@ describe("LLMProfileAssignments", () => {
         expect(captionModelMissingVision({ id: "p", name: "P", supports_vision: true, model: "" }, "llava")).toBe(true);
         expect(captionModelMissingVision({ id: "p", name: "P", supports_vision: true, vision_models: ["llava"] }, "LLAVA")).toBe(false);
         expect(captionModelMissingVision({ id: "p", name: "P", supports_vision: false }, "deepseek-coder")).toBe(true);
+        expect(modelVisionStatus({ id: "p", name: "P", supports_vision: true, vision_models: ["gpt-5"], vision_tested_models: ["gpt-5"], connection_test_passed: true, model: "gpt-5" }, "gpt-5-mini")).toBe("untested");
+        expect(modelVisionStatus({ id: "p", name: "P", supports_vision: false, vision_tested_models: ["text-only"], connection_test_passed: true, model: "gpt-5" }, "text-only")).toBe("unsupported");
+        expect(modelVisionStatus({ id: "hub", name: "Hub", is_hub_service: true, connection_test_passed: true, model: "hub-model" }, "hub-model")).toBe("untested");
     });
 });

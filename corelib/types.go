@@ -976,6 +976,10 @@ type MaclawLLMProvider struct {
 	// for Model, so older configuration files keep their existing behaviour.
 	VisionModels   []string `json:"vision_models,omitempty"`
 	SupportsVision bool     `json:"supports_vision"`
+	// VisionTestedModels records model IDs that have completed a vision probe,
+	// whether the result was supported or unsupported. Catalog names missing
+	// from this list are untested.
+	VisionTestedModels []string `json:"vision_tested_models,omitempty"`
 	AgentType      string   `json:"agent_type,omitempty"` // "openclaw" (default) or "claude" → controls User-Agent header
 	// ── 新增 OAuth 字段 ──
 	AuthType                     string  `json:"auth_type,omitempty"`

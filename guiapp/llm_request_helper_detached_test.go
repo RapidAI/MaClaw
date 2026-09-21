@@ -59,6 +59,33 @@ func resetDetachedSimpleLLMReadsForTest(t *testing.T) {
 	})
 }
 
+// TestDetachedReadKeyDifferentiatesPayloads: the single-flight key must depend
+// on the endpoint and the message payload. A constant key (the historical
+// %x-of-func-value bug) collapses every in-flight read into one bucket: a
+// retry carrying a DIFFERENT payload adopts an unrelated read, and concurrent
+// duplicates tear down each other's connections.
+func TestDetachedReadKeyDifferentiatesPayloads(t *testing.T) {
+	cfg := corelib.MaclawLLMConfig{URL: "https://hub.example.com/api/llm/v1/chat/completions", Model: "auto", Protocol: "openai"}
+	msgsA := []interface{}{map[string]string{"role": "user", "content": "connect to the server"}}
+	msgsB := []interface{}{map[string]string{"role": "user", "content": "check the password"}}
+
+	keyA := detachedSimpleLLMReadKey(cfg, msgsA, false)
+	keyA2 := detachedSimpleLLMReadKey(cfg, msgsA, false)
+	keyB := detachedSimpleLLMReadKey(cfg, msgsB, false)
+	if keyA != keyA2 {
+		t.Fatalf("same payload produced different keys: %q vs %q", keyA, keyA2)
+	}
+	if keyA == keyB {
+		t.Fatalf("different payloads share one detached-read key %q: cross-payload adoption possible", keyA)
+	}
+
+	otherModel := cfg
+	otherModel.Model = "other-model"
+	if k := detachedSimpleLLMReadKey(otherModel, msgsA, false); k == keyA {
+		t.Fatalf("different models share one detached-read key %q", keyA)
+	}
+}
+
 // TestDetachedReadAdoptedWithinGrace models the 30s-budget / >35s-latency
 // acceptance shape at unit scale: the endpoint answers after the scheduling
 // budget fired but inside the grace window (min(2×budget, 60s, keepalive)).

@@ -593,6 +593,30 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
             const models = await FetchProviderModels(fetchUrl, fetchKey, fetchProtocol, fetchAgent);
             if (fetchSeq !== fetchModelsSeqRef.current) return;
             setProviderModels(models || []);
+            const ids = (models || []).map(item => String(item?.id || "").trim()).filter(Boolean);
+            if (ids.length > 0 && dlgSelectedIdx !== null) {
+                setDlgProviders(prev => {
+                    const copy = [...prev];
+                    const current = copy[dlgSelectedIdx];
+                    if (!current) return prev;
+                    const merged: string[] = [];
+                    const seen = new Set<string>();
+                    const add = (value: string) => {
+                        const next = String(value || "").trim();
+                        if (!next) return;
+                        const key = next.toLowerCase();
+                        if (seen.has(key)) return;
+                        seen.add(key);
+                        merged.push(next);
+                    };
+                    ids.forEach(add);
+                    (current.models || []).forEach(add);
+                    add(current.model || "");
+                    copy[dlgSelectedIdx] = { ...current, models: merged };
+                    return copy;
+                });
+                setDlgDirty(true);
+            }
             if (!models || models.length === 0) {
                 setProviderModelsError(t("No models returned", "服务商返回了空的模型列表"));
                 setProviderModelListOpen(false);
@@ -617,7 +641,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                 setProviderModelsFetching(false);
             }
         }
-    }, [dlgProvider, t]);
+    }, [dlgProvider, dlgSelectedIdx, t]);
 
     const dlgUpdateField = useCallback((field: keyof LLMProvider, value: string) => {
         if (dlgSelectedIdx === null) return;

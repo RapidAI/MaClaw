@@ -10,6 +10,8 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/permission"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // ---------------------------------------------------------------------------
@@ -308,9 +310,102 @@ func expertToolCallRejectionWithDef(def *ExpertDefinition, toolName, argsJSON st
 }
 
 // expertToolExecutionRejection resolves the expert for userID and evaluates
-// the dispatch-time gate. Returns "" for non-expert sessions.
+// the dispatch-time gate. Returns "" for non-expert sessions. This free
+// function runs without an App (tests, TUI paths) and therefore performs no
+// dual-eval; IMMessageHandler.expertToolExecutionRejection is the production
+// entry point that passes the App's permission snapshot.
 func expertToolExecutionRejection(userID, toolName, argsJSON string) string {
-	return expertToolCallRejectionWithDef(expertDefForUserID(userID), toolName, argsJSON)
+	return expertToolExecutionRejectionWithSnapshot(userID, toolName, argsJSON, nil)
+}
+
+// expertToolExecutionRejectionWithSnapshot evaluates the legacy gate and, when
+// snap is non-nil, dual-evaluates the call against the permission snapshot
+// (subject = expert id). The comparison is observation-only: the returned
+// rejection is always the legacy outcome, never the snapshot's.
+func expertToolExecutionRejectionWithSnapshot(userID, toolName, argsJSON string, snap *permission.Snapshot) string {
+	def := expertDefForUserID(userID)
+	rejection := expertToolCallRejectionWithDef(def, toolName, argsJSON)
+	expertGateDualEval(snap, def, toolName, argsJSON, rejection)
+	return rejection
+}
+
+// expertGateDualEvalMismatchHook mirrors corelib/agent's dualEvalMismatchHook:
+// replaceable in tests to capture mismatch reports.
+var expertGateDualEvalMismatchHook = func(expertID, tool string, legacyEffect, newEffect permission.Effect, rule *permission.Rule) {
+	coretool.RecordPermissionDualEvalMismatch("expert_whitelist", tool, string(legacyEffect), string(newEffect))
+	src := ""
+	reason := ""
+	if rule != nil {
+		src = rule.Source
+		reason = rule.Reason
+	}
+	// Field order matches the uniform corelib/agent hook shape; the expert id
+	// is appended at the END so base fields stay in the same positions as the
+	// other gates' lines.
+	log.Printf("[permission-dual-eval] gate=expert_whitelist tool=%q legacy=%s new=%s rule_source=%s reason=%q expert=%q",
+		tool, legacyEffect, newEffect, src, reason, expertID)
+}
+
+// expertGateDualEval compares the legacy gate outcome with the snapshot's
+// subject-scoped decision for the same call. A legacy rejection maps to
+// EffectDeny, a legacy pass to EffectAllow. Only CONCRETE snapshot matches
+// (dec.Rule != nil) are reported — Decision.Default carries no policy intent
+// (notably the untranslatable "non-whitelisted tool" case; see
+// expert_permission_rules.go) and must not spam the log. Never changes
+// behavior; observation only.
+//
+// NOTE (skill-level deny unrepresentable): a legacy rejection from the
+// skill whitelist (manage_skill run of a non-whitelisted skill) is
+// indistinguishable here from a tool-whitelist rejection, and the snapshot
+// can only model a tool-level manage_skill allow. The flip slice MUST add
+// skill-predicate rule support BEFORE flipping this gate; flip stays BLOCKED
+// for experts with a non-empty Skills list (see expert_permission_rules.go
+// header).
+func expertGateDualEval(snap *permission.Snapshot, def *ExpertDefinition, toolName, argsJSON, legacyRejection string) {
+	if snap == nil || def == nil {
+		return
+	}
+	expertID := strings.TrimSpace(def.ID)
+	if expertID == "" {
+		return
+	}
+	var args map[string]interface{}
+	if strings.TrimSpace(argsJSON) != "" {
+		if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+			args = nil
+		}
+	}
+	toolName = strings.TrimSpace(toolName)
+	dec := snap.DecideFor(expertID, toolName, permission.BuiltinKind(toolName), args)
+	if dec.Rule == nil {
+		return
+	}
+	legacyEffect := permission.EffectAllow
+	if legacyRejection != "" {
+		legacyEffect = permission.EffectDeny
+	}
+	if dec.Effect == legacyEffect {
+		return
+	}
+	expertGateDualEvalMismatchHook(expertID, toolName, legacyEffect, dec.Effect, dec.Rule)
+}
+
+// expertToolExecutionRejection is the production gate entry point: same
+// legacy outcome as the free function, plus dual-eval against the App's
+// permission snapshot when one is available. TUI standalone mode (nil app)
+// skips dual-eval silently.
+func (h *IMMessageHandler) expertToolExecutionRejection(userID, toolName, argsJSON string) string {
+	return expertToolExecutionRejectionWithSnapshot(userID, toolName, argsJSON, h.expertGateDualEvalSnapshot())
+}
+
+// expertGateDualEvalSnapshot resolves the App's snapshot for the expert gate.
+// permissionSnapshot() itself is nil-safe and honors the MACLAW_PERMISSION_DUAL_EVAL
+// kill switch, so a nil return here simply disables dual-eval.
+func (h *IMMessageHandler) expertGateDualEvalSnapshot() *permission.Snapshot {
+	if h == nil || h.app == nil {
+		return nil
+	}
+	return h.app.permissionSnapshot()
 }
 
 // filterToolsForExpertUser resolves the expert for userID and filters tools.

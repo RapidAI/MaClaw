@@ -136,6 +136,10 @@ func NewIMMessageHandlerStandalone(cfg StandaloneConfig) *IMMessageHandler {
 		localClassifier = intent.New(intent.Config{
 			Embedder:   embedding.NoopEmbedder{},
 			LLMTimeout: 30 * time.Second,
+			// 宁慢勿乱 (2026-09-18): same principle as the desktop classifier —
+			// a short tree deadline degrades slow-hub turns into guessed
+			// surfaces; see the improvement plan §7.
+			FusionTreeDeadline: 30 * time.Second,
 		})
 	}
 

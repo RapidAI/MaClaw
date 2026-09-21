@@ -2758,4 +2758,80 @@ describe("renderMessage assistant display guard", () => {
         expect(screen.queryByText("思考过程...")).toBeNull();
         expect(screen.queryByText(/hidden tool echo/)).toBeNull();
     });
+
+    it("surfaces a long reasoning-only deliverable in the body instead of hiding it in thinking", () => {
+        const reasoning = "Major comment: missing scratch-prompt baseline. ".repeat(20);
+        const content = "评审意见上一条已给出。是否需要英文版 Reviewer Report？";
+        render(<div>{renderMessage({
+            id: "assistant-hidden-review",
+            role: "assistant",
+            content,
+            reasoning,
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, true, "Saved file", "zh", false)}</div>);
+
+        expect(screen.getByText(/missing scratch-prompt baseline/)).toBeTruthy();
+        expect(screen.getByText(/英文版 Reviewer Report/)).toBeTruthy();
+        expect(screen.queryByTestId("assistant-reasoning-panel")).toBeNull();
+    });
+
+    it("keeps short thinking in the panel next to a real answer", () => {
+        render(<div>{renderMessage({
+            id: "assistant-short-thought",
+            role: "assistant",
+            content: "今天宁波晴。",
+            reasoning: "Checking the forecast.",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, true, "Saved file", "zh", false)}</div>);
+
+        expect(screen.getByText("今天宁波晴。")).toBeTruthy();
+        expect(screen.getByTestId("assistant-reasoning-panel")).toBeTruthy();
+        expect(screen.getByText("Checking the forecast.")).toBeTruthy();
+    });
+
+    it("keeps long cuisine CoT in 思考过程 instead of mixing it into the official answer", () => {
+        const reasoning = [
+            "• 执行环境已就绪",
+            "• 正在分析任务并开始处理",
+            "The user is asking about the difference between Luzhou cuisine and Chengdu cuisine. This is a general knowledge question that I can answer without tools. The system prompt says to prefer answering without tools.",
+            "Let me think about what I know: 泸州菜 and 成都菜 are both part of 川菜. Chengdu is 上河帮; Luzhou is 小河帮.",
+            "I should answer concisely in Chinese. No tools needed - this is general knowledge. Keep it reasonably concise per the \"light\" profile.",
+            "padding to make the trail long enough to previously trigger body promotion. ".repeat(8),
+        ].join("\n");
+        const content = [
+            "泸州菜和成都菜同属川菜，但风格差异挺明显：",
+            "",
+            "流派归属",
+            "• 成都菜属川菜“上河帮”，讲究精细、调味层次多，是川菜正统的代表。",
+            "• 泸州菜偏“小河帮”风格，带浓厚的江湖气息，做法更豪放。",
+        ].join("\n");
+        render(<div>{renderMessage({
+            id: "assistant-cuisine-mix",
+            role: "assistant",
+            content,
+            reasoning,
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, true, "Saved file", "zh", false)}</div>);
+
+        expect(screen.getByText(/泸州菜和成都菜同属川菜/)).toBeTruthy();
+        expect(screen.getByTestId("assistant-reasoning-panel")).toBeTruthy();
+        expect(screen.getByText(/The user is asking/)).toBeTruthy();
+        expect(screen.queryByText("执行环境已就绪")).toBeNull();
+        expect(screen.queryByText("正在分析任务并开始处理")).toBeNull();
+    });
+
+    it("does not lift a long trail into the body on the coding workbench", () => {
+        const reasoning = "Major comment: missing scratch-prompt baseline. ".repeat(20);
+        const content = "评审意见上一条已给出。是否需要英文版 Reviewer Report？";
+        render(<div>{renderMessage({
+            id: "assistant-coding-hidden-review",
+            role: "assistant",
+            content,
+            reasoning,
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, true, "Saved file", "zh", false, undefined, undefined, true)}</div>);
+
+        expect(screen.getByTestId("assistant-reasoning-panel")).toBeTruthy();
+        expect(screen.getByText(/英文版 Reviewer Report/)).toBeTruthy();
+    });
 });

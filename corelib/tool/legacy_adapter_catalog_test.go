@@ -115,6 +115,61 @@ func TestRouterRecordsOnlyReviewedCapabilityRecommendations(t *testing.T) {
 	}
 }
 
+func TestLowercaseGlobGrepResolveToReviewedProvisions(t *testing.T) {
+	now := time.Date(2026, 8, 22, 0, 0, 0, 0, time.UTC)
+	aliases := map[string]string{"glob": "Glob", "grep": "ripgrep"}
+	for alias, exact := range aliases {
+		aliasP, ok := LegacyAdapterProvisionForTool(alias, now)
+		if !ok {
+			t.Fatalf("lowercase %q has no live reviewed provision", alias)
+		}
+		exactP, ok := LegacyAdapterProvisionForTool(exact, now)
+		if !ok {
+			t.Fatalf("exact-case %q provision missing", exact)
+		}
+		// The alias resolves to the SAME reviewed migration contract, not a
+		// new capability: capability, owner, contract and effects must match.
+		if aliasP.Capability != exactP.Capability || aliasP.Owner != exactP.Owner ||
+			aliasP.AdapterContract != exactP.AdapterContract ||
+			len(aliasP.Effects) != len(exactP.Effects) || aliasP.DeleteAfter != exactP.DeleteAfter {
+			t.Fatalf("alias %q provision %+v diverges from %q provision %+v", alias, aliasP, exact, exactP)
+		}
+		// Unknown spellings still miss: the alias table is not a prefix/case
+		// fold, only reviewed alternate spellings resolve.
+		if _, ok := LegacyAdapterProvisionForTool(alias+"_tool", now); ok {
+			t.Fatalf("unreviewed spelling %q received a provision", alias+"_tool")
+		}
+		if _, ok := LegacyAdapterProvisionForTool("GLOB", now); ok {
+			t.Fatal("case-folding beyond the reviewed alias set must not grant a provision")
+		}
+	}
+	if _, ok := LegacyAdapterProvisionForTool("not_a_real_tool", now); ok {
+		t.Fatal("unknown tool received a legacy adapter provision")
+	}
+	if LegacyAdapterCatalogIncomplete("glob", now) {
+		t.Fatal("lowercase glob must not be catalog_incomplete")
+	}
+}
+
+func TestRouterSelectsLowercaseGlobAlias(t *testing.T) {
+	router := NewRouter(NewDefinitionGenerator(nil, nil))
+	tools := []map[string]interface{}{
+		makeToolDef("bash", "run a shell command"),
+		makeToolDef("read_file", "read a local file"),
+		makeToolDef("glob", "按照文件名模式在工作区内查找匹配的文件"),
+	}
+	routed := router.Route("帮我找所有叫 config.yaml 的配置文件", tools)
+	found := false
+	for _, definition := range routed {
+		if ExtractToolName(definition) == "glob" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("lowercase glob must be selectable via the reviewed alias: %#v", routed)
+	}
+}
+
 func TestSearchAndInstallSkillHintHasLiveLegacyProvision(t *testing.T) {
 	hint := SearchAndInstallSkillHint()
 	name := ExtractToolName(hint)

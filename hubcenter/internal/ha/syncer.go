@@ -30,6 +30,12 @@ type PullOpsResponse struct {
 	NextAfterSeq int64             `json:"next_after_seq"`
 	HasMore      bool              `json:"has_more"`
 	MaxSeq       int64             `json:"max_seq"`
+	// MinSeq is the oldest seq still present in the peer's op log. A cursor
+	// below it means some ops were pruned before this node pulled them. That
+	// is convergence-safe (pruning never removes the newest op of an entity,
+	// so the retained log still carries every entity's latest state), but it
+	// is logged so operators can see which peer is falling behind.
+	MinSeq int64 `json:"min_seq"`
 }
 
 type Syncer struct {
@@ -172,6 +178,9 @@ func (s *Syncer) syncPeer(ctx context.Context, peer *PeerRuntimeState) {
 			return
 		}
 		now := time.Now().UTC()
+		if afterSeq+1 < resp.MinSeq {
+			log.Printf("[hubcenter][ha] peer %s op log pruned below cursor: after_seq=%d min_seq=%d (missed intermediate ops; newest op per entity is retained so state still converges)", peer.NodeID, afterSeq, resp.MinSeq)
+		}
 		if len(resp.Ops) == 0 {
 			nextSeq := resp.NextAfterSeq
 			if nextSeq < afterSeq {

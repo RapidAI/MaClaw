@@ -379,28 +379,51 @@ func TestIMSemanticDelegateRequiresChildReceipt(t *testing.T) {
 	}
 }
 
-func TestIMSemanticSSHUnboundMissesToLeftover(t *testing.T) {
+func TestIMSemanticSSHUnboundPlansConnectSurface(t *testing.T) {
 	h := &IMMessageHandler{registry: NewToolRegistry(), unifiedClassifier: semanticClassifierForLabel(t, intent.LabelSSH)}
 	registerBuiltinTools(h.registry, h)
-	_, _, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
+	defs, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
 		"user-1", "do it", "lansenger", "root-ssh-unbound", "turn-ssh-unbound",
 		&intent.ClassificationResult{Primary: intent.LabelSSH, Confidence: .98, ToolNames: []string{"ssh"}},
 	)
-	if handled || err != nil {
-		t.Fatalf("unbound ssh must miss to leftover handled=%v err=%v", handled, err)
+	if err != nil || !handled || surface == nil {
+		t.Fatalf("unbound ssh must plan the connect surface handled=%v err=%v", handled, err)
 	}
+	assertPlanHasSSHConnectSelection(t, surface.plan)
+	assertSurfaceRendersSSHConnectSchema(t, defs)
 }
 
-func TestIMSemanticMixedSSHUnboundMissesToLeftover(t *testing.T) {
+func TestIMSemanticMixedSSHUnboundPlansConnectSurface(t *testing.T) {
 	h := &IMMessageHandler{registry: NewToolRegistry(), unifiedClassifier: semanticClassifierForLabel(t, intent.LabelSSH)}
 	registerBuiltinTools(h.registry, h)
-	_, _, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
+	defs, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
 		"user-1", "do it", "lansenger", "root-ssh-mixed-unbound", "turn-ssh-mixed-unbound",
 		&intent.ClassificationResult{Primary: intent.LabelSearch, Secondary: []intent.IntentLabel{intent.LabelSSH}, Confidence: .98},
 	)
-	if handled || err != nil {
-		t.Fatalf("mixed unbound ssh must miss to leftover handled=%v err=%v", handled, err)
+	if err != nil || !handled || surface == nil {
+		t.Fatalf("mixed unbound ssh must plan the connect surface handled=%v err=%v", handled, err)
 	}
+	assertPlanHasSSHConnectSelection(t, surface.plan)
+	assertSurfaceRendersSSHConnectSchema(t, defs)
+}
+
+// assertSurfaceRendersSSHConnectSchema pins that the model-visible ssh tool
+// admits host/user/password when no session is bound (the connect surface).
+func assertSurfaceRendersSSHConnectSchema(t *testing.T, defs []map[string]interface{}) {
+	t.Helper()
+	for _, definition := range defs {
+		function, _ := definition["function"].(map[string]interface{})
+		if function["name"] != "ssh" {
+			continue
+		}
+		params, _ := function["parameters"].(map[string]interface{})
+		props, _ := params["properties"].(map[string]interface{})
+		if _, ok := props["host"]; !ok {
+			t.Fatalf("unbound ssh surface must admit host, got %v", props)
+		}
+		return
+	}
+	t.Fatalf("ssh definition missing from surface %v", defs)
 }
 
 func TestIMSemanticSSHUsesTrustedAdapterWhenBound(t *testing.T) {

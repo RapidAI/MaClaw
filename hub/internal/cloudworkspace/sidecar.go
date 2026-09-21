@@ -292,13 +292,15 @@ func (s *Service) PutSidecarWithRevision(ctx context.Context, principal auth.Mac
 	// v1-sequential has one writer for every sidecar, including session.json.
 	// The old session-only multi-writer exception could resurrect stale history
 	// and bypass the lease/fencing boundary during handoff.
-	if _, err := s.Workspaces.RequireLeaseWithSessionAndToken(ctx, principal.TenantID, principal.UserID, workspaceID, principal.MachineID, principal.ClientInstanceID, principal.FencingToken, s.now()); err != nil {
+	ws, err := s.Workspaces.RequireLeaseWithSessionAndToken(ctx, principal.TenantID, principal.UserID, workspaceID, principal.MachineID, principal.ClientInstanceID, principal.FencingToken, s.now())
+	if err != nil {
 		return nil, err
 	}
+	ownerID := ws.UserID
 	if err := s.admitBandwidth(ctx, principal, int64(len(plaintext)), 0); err != nil {
 		return nil, err
 	}
-	dir, err := blobs.SidecarsDir(principal.TenantID, principal.UserID, workspaceID)
+	dir, err := blobs.SidecarsDir(ws.TenantID, ownerID, workspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -318,7 +320,7 @@ func (s *Service) PutSidecarWithRevision(ctx context.Context, principal auth.Mac
 		taskBinding = &task
 	}
 	newRevision := sidecarRevision(plaintext)
-	path, err := blobs.SidecarPath(principal.TenantID, principal.UserID, workspaceID, name)
+	path, err := blobs.SidecarPath(ws.TenantID, ownerID, workspaceID, name)
 	if err != nil {
 		return nil, err
 	}
@@ -328,7 +330,7 @@ func (s *Service) PutSidecarWithRevision(ctx context.Context, principal auth.Mac
 	defer sidecarWriteMu.Unlock()
 	// The canonical file content is the CAS baseline: its plaintext hash is the
 	// current revision, and a missing file means the sidecar does not exist.
-	current, currentErr := blobs.GetSidecar(ctx, principal.TenantID, principal.UserID, workspaceID, name)
+	current, currentErr := blobs.GetSidecar(ctx, ws.TenantID, ownerID, workspaceID, name)
 	if currentErr != nil && !errors.Is(currentErr, ErrBlobNotFound) {
 		return nil, currentErr
 	}
@@ -345,20 +347,21 @@ func (s *Service) PutSidecarWithRevision(ctx context.Context, principal auth.Mac
 	// never deleted out from under readers. A crash between commit and rename
 	// leaves the DB revision ahead of the file, which the next write's CAS (the
 	// file hash is the baseline) heals on retry.
-	staged, err := blobs.stageSidecarFile(ctx, principal.TenantID, principal.UserID, workspaceID, name, path, plaintext)
+	staged, err := blobs.stageSidecarFile(ctx, ws.TenantID, ownerID, workspaceID, name, path, plaintext)
 	if err != nil {
 		return nil, err
 	}
 	out := &Sidecar{Data: append([]byte(nil), plaintext...), Revision: newRevision}
 	now := s.now().UTC()
 	err = s.Workspaces.withImmediate(ctx, func(q queryer) error {
-		if _, err := requireActiveOwned(ctx, q, principal.TenantID, principal.UserID, workspaceID); err != nil {
+		accessed, err := requireActiveAccess(ctx, q, principal.TenantID, principal.UserID, workspaceID, true)
+		if err != nil {
 			return err
 		}
 		if err := assertLeaseHeldForSession(ctx, q, workspaceID, principal.MachineID, principal.ClientInstanceID, principal.FencingToken, now); err != nil {
 			return err
 		}
-		if taskBinding != nil {
+		if taskBinding != nil && accessed.UserID == principal.UserID {
 			if _, err := upsertTaskBindingTx(ctx, q, principal.TenantID, principal.UserID, workspaceID, taskBinding.CloudTaskID, "", taskBinding.Name, taskBinding.Mode, taskBinding.Tag, taskBinding.BindingVersion, now.Format(time.RFC3339)); err != nil {
 				return err
 			}
@@ -404,14 +407,14 @@ func (s *Service) GetSidecarWithRevision(ctx context.Context, principal auth.Mac
 	if s.Workspaces == nil {
 		return nil, ErrUnavailable
 	}
-	ws, err := s.Workspaces.GetOwned(ctx, principal.TenantID, principal.UserID, workspaceID)
+	ws, err := s.Workspaces.RequireAccess(ctx, principal.TenantID, principal.UserID, workspaceID, false)
 	if err != nil {
 		return nil, err
 	}
 	if ws == nil || ws.Status != StatusActive {
 		return nil, ErrNotFound
 	}
-	out, err := blobs.GetSidecarWithRevision(ctx, principal.TenantID, principal.UserID, workspaceID, name)
+	out, err := blobs.GetSidecarWithRevision(ctx, ws.TenantID, ws.UserID, workspaceID, name)
 	if err != nil {
 		return nil, err
 	}

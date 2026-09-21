@@ -1,6 +1,7 @@
 package llmservice
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/llmpool"
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
 )
 
 func seedReadyOfficialHead(t *testing.T, svc *Service) {
@@ -155,6 +157,83 @@ func TestRecordOfficialClassHeadSamplePerGroup(t *testing.T) {
 	}
 	if seen["coding-auto"] {
 		t.Fatalf("later group should replace last_seen group, got %#v", official.Samples)
+	}
+}
+
+// countingSystemSettings wraps mockSystemSettings and counts writes per key, so
+// tests can assert that a repeat observation does NOT rewrite the store. Each
+// store write becomes one HA op (haSystemSettings.Set -> AppendSystemSetting ->
+// AppendUpsert -> broadcast), so "no write" means "no replicated op".
+type countingSystemSettings struct {
+	inner  mockSystemSettings
+	writes map[string]int
+}
+
+func newCountingSystemSettings() *countingSystemSettings {
+	return &countingSystemSettings{inner: mockSystemSettings{data: map[string]string{}}, writes: map[string]int{}}
+}
+
+func (s *countingSystemSettings) Set(ctx context.Context, key, val string) error {
+	s.writes[key]++
+	return s.inner.Set(ctx, key, val)
+}
+
+func (s *countingSystemSettings) Get(ctx context.Context, key string) (string, error) {
+	return s.inner.Get(ctx, key)
+}
+
+func (s *countingSystemSettings) List(ctx context.Context) ([]*store.SystemSettingEntry, error) {
+	return s.inner.List(ctx)
+}
+
+func (s *countingSystemSettings) writesFor(key string) int { return s.writes[key] }
+
+// A repeated identical observation must not rewrite the store: the whole store
+// (~1MB) is re-marshalled on every write, and each write becomes one HA op. This
+// is the regression guard for the HA op-volume incident, where per-request
+// sample recording produced 10k+ ops/day.
+func TestRecordOfficialClassHeadSampleRepeatObservationDoesNotRewrite(t *testing.T) {
+	settings := newCountingSystemSettings()
+	svc := NewService(settings)
+
+	svc.RecordOfficialClassHeadSample("design a system", llmpool.WorkloadClassDesign, llmpool.ClassSourceHint, "", 0, llmpool.OfficialGroupID, false)
+	first := settings.writesFor(OfficialClassHeadKey)
+	if first != 1 {
+		t.Fatalf("first observation must write once, writes = %d", first)
+	}
+
+	// Same preview, same verdict, 50 times: no further writes.
+	for i := 0; i < 50; i++ {
+		svc.RecordOfficialClassHeadSample("design a system", llmpool.WorkloadClassDesign, llmpool.ClassSourceHint, "", 0, llmpool.OfficialGroupID, false)
+	}
+	if got := settings.writesFor(OfficialClassHeadKey); got != first {
+		t.Fatalf("repeat observations must not rewrite the store: writes = %d, want %d", got, first)
+	}
+
+	// A changed verdict must still be persisted.
+	svc.RecordOfficialClassHeadSample("design a system", llmpool.WorkloadClassPlan, llmpool.ClassSourceHint, "", 0, llmpool.OfficialGroupID, false)
+	if got := settings.writesFor(OfficialClassHeadKey); got <= first {
+		t.Fatalf("changed verdict must write, writes = %d, want > %d", got, first)
+	}
+}
+
+// A brand-new preview must still be recorded and persisted.
+func TestRecordOfficialClassHeadSampleNewPreviewWrites(t *testing.T) {
+	settings := newCountingSystemSettings()
+	svc := NewService(settings)
+
+	svc.RecordOfficialClassHeadSample("first", llmpool.WorkloadClassChat, llmpool.ClassSourceHint, "", 0, llmpool.OfficialGroupID, false)
+	before := settings.writesFor(OfficialClassHeadKey)
+	svc.RecordOfficialClassHeadSample("second", llmpool.WorkloadClassChat, llmpool.ClassSourceHint, "", 0, llmpool.OfficialGroupID, false)
+	if got := settings.writesFor(OfficialClassHeadKey); got != before+1 {
+		t.Fatalf("new preview must write once, writes = %d, want %d", got, before+1)
+	}
+
+	officialClassHeadMu.Lock()
+	data := svc.loadOfficialClassHeadLocked(t.Context(), "")
+	officialClassHeadMu.Unlock()
+	if len(data.Samples) != 2 {
+		t.Fatalf("both previews must be retained, got %#v", data.Samples)
 	}
 }
 

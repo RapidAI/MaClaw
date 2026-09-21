@@ -16,9 +16,11 @@ const (
 	CapabilityShellExecuteRemoteHost  CapabilityID = "shell.execute.remote_host"
 	CapabilityBuildVerifyLocal        CapabilityID = "build.verify.local"
 	CapabilityFSReadLocal             CapabilityID = "fs.read.local"
+	CapabilityFSReadRemote            CapabilityID = "fs.read.remote"
 	CapabilityFSWriteLocal            CapabilityID = "fs.write.local"
 	CapabilitySystemLaunchLocal       CapabilityID = "system.launch.local"
 	CapabilityRepoInspectVCS          CapabilityID = "repo.inspect.vcs"
+	CapabilityRepoInspectRemote       CapabilityID = "repo.inspect.remote"
 	CapabilityRepoMutateVCS           CapabilityID = "repo.mutate.vcs"
 	CapabilityDocumentWriteOffice     CapabilityID = "document.write.office"
 	CapabilityDocumentRenderPDF       CapabilityID = "document.render.pdf"
@@ -111,6 +113,15 @@ func BuiltinCapabilityOntology() []CapabilityDescriptor {
 			Effects: []EffectClass{EffectReadOnly},
 		},
 		{
+			// fs.read.remote mirrors fs.read.local across an authenticated remote
+			// session: the locality is part of the capability because the binding
+			// proof (a verified session handle) differs from a local workspace
+			// handle, and the two are never interchangeable.
+			ID: CapabilityFSReadRemote, Version: "v1", Owner: builtinCapabilityOntologyOwner,
+			Summary: "Read or search filesystem content on a remote host over an authenticated session.",
+			Effects: []EffectClass{EffectReadOnly},
+		},
+		{
 			ID: CapabilityFSWriteLocal, Version: "v1", Owner: builtinCapabilityOntologyOwner,
 			Summary: "Create or modify local filesystem content.",
 			Effects: []EffectClass{EffectSensitive},
@@ -123,6 +134,13 @@ func BuiltinCapabilityOntology() []CapabilityDescriptor {
 		{
 			ID: CapabilityRepoInspectVCS, Version: "v1", Owner: builtinCapabilityOntologyOwner,
 			Summary: "Inspect version-control status and diffs without mutating the repository.",
+			Effects: []EffectClass{EffectReadOnly},
+		},
+		{
+			// repo.inspect.remote is the remote-session counterpart of
+			// repo.inspect.vcs: same inspected outcome, different binding proof.
+			ID: CapabilityRepoInspectRemote, Version: "v1", Owner: builtinCapabilityOntologyOwner,
+			Summary: "Inspect version-control status and diffs on a remote host over an authenticated session.",
 			Effects: []EffectClass{EffectReadOnly},
 		},
 		{

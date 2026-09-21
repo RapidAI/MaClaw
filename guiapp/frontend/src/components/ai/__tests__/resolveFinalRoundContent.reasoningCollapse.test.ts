@@ -41,6 +41,32 @@ describe('resolveFinalRoundContent — reasoning-trail collapse', () => {
         expect(result).toBe(streamed);
     });
 
+    it('does not treat host status bullets as a reasoning trail for Layer 3 collapse', () => {
+        const finalText = '这是最终答复，包含完整的交付内容与后续建议，足够长以避免触发片段保护。';
+        const streamed = '中间过程\n\n' + finalText;
+        const message = makeMessage(streamed, '• 已接收任务\n• 正在准备执行路径');
+        const result = resolveFinalRoundContent(message, { text: finalText, response_source: 'agent_loop' });
+        expect(result).toBe(streamed);
+    });
+
+    it('does not lift reasoning into the body on a coding-agent turn', () => {
+        const finalText = '评审意见上一条已给出。是否需要英文版？';
+        const reasoning = 'Major comment: missing scratch-prompt baseline. '.repeat(20);
+        const message: ChatMessage = {
+            ...makeMessage(finalText, reasoning),
+            pendingCodingThoughts: [{
+                id: 't1',
+                sequence: 1,
+                kind: 'thinking',
+                content: reasoning,
+                timestamp: Date.now(),
+            }],
+        };
+        const result = resolveFinalRoundContent(message, { text: finalText, response_source: 'agent_loop' });
+        expect(result).toBe(finalText);
+        expect(result).not.toContain('missing scratch-prompt baseline');
+    });
+
     it('keeps the Layer 2 fragment guard ahead of the reasoning collapse', () => {
         // streamed >= 2x final → final text is a tail fragment, keep the
         // accumulated body even when a reasoning trail exists.
@@ -49,5 +75,27 @@ describe('resolveFinalRoundContent — reasoning-trail collapse', () => {
         const message = makeMessage(streamed, '思考过程');
         const result = resolveFinalRoundContent(message, { text: finalText, response_source: 'agent_loop' });
         expect(result).toBe(streamed);
+    });
+
+    it('leaves a reasoning-only deliverable in reasoning; the render path owns display lift', () => {
+        const finalText = '评审意见上一条已给出。是否需要英文版？';
+        const reasoning = 'Major comment: missing scratch-prompt baseline. '.repeat(20);
+        const message = makeMessage(finalText, reasoning);
+        const result = resolveFinalRoundContent(message, { text: finalText, response_source: 'agent_loop' });
+        expect(result).toBe(finalText);
+        expect(result).not.toContain('missing scratch-prompt baseline');
+    });
+
+    it('does not prepend a long trail onto Layer 2 streamed content at persist time', () => {
+        const finalText = '请确认以上方案。';
+        const streamed = '这是一份已经足够长的正式答复正文，不应当被思考过程覆盖。'.repeat(30) + '\n\n' + finalText;
+        const reasoning = 'Major comment: missing scratch-prompt baseline. '.repeat(20);
+        expect(streamed.length).toBeGreaterThanOrEqual(finalText.length * 2);
+        const result = resolveFinalRoundContent(makeMessage(streamed, reasoning), {
+            text: finalText,
+            response_source: 'agent_loop',
+        });
+        expect(result).toBe(streamed);
+        expect(result.startsWith('Major comment:')).toBe(false);
     });
 });

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -283,7 +284,7 @@ func (h *IMMessageHandler) runPostConversationProcessing(bgCtx context.Context, 
 	startedAt := time.Now()
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("[post-conversation] panic user=%s request_id=%q panic=%v", userID, requestID, r)
+			log.Printf("[post-conversation] panic user=%s request_id=%q panic=%v\n%s", userID, requestID, r, debug.Stack())
 		}
 		log.Printf("[post-conversation] done user=%s request_id=%q duration=%s cancelled=%v history_len=%d", userID, requestID, time.Since(startedAt).Round(time.Millisecond), bgCtx.Err() != nil, len(history))
 		imPerfLog("post_conversation", startedAt, requestID, userID, "cancelled", bgCtx.Err() != nil, "history_len", len(history), "deferred", len(deferredMessages))

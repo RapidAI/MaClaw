@@ -345,6 +345,46 @@ func TestCodingInquiryToolFiltersAreReadOnly(t *testing.T) {
 	}
 }
 
+// TestCodingInquiryFilterCompositionDropsRemoteToolsOnLocalHost pins the
+// load-bearing composition order in codingSubAgentCallbacks.BuildTools: the
+// local inquiry allow-list still carries historical ssh_* union entries, so
+// the local-host compatibility filter that runs immediately after it is what
+// keeps cross-mode names off a local inquiry surface. If the order flips or
+// the host filter is dropped, this test fails instead of the isolation
+// silently regressing (review P3-2).
+func TestCodingInquiryFilterCompositionDropsRemoteToolsOnLocalHost(t *testing.T) {
+	tools := testToolDefs("read_file", "bash", "ssh_read_file", "ssh_bash", "write_file")
+	filtered := filterCodingStaticCompatibilitySurface(codingStaticCompatibilityHostLocal, filterCodingInquiryTools(tools))
+	names := map[string]bool{}
+	for _, def := range filtered {
+		names[extractToolName(def)] = true
+	}
+	for _, want := range []string{"read_file", "bash"} {
+		if !names[want] {
+			t.Fatalf("local inquiry surface must keep %q, got %v", want, names)
+		}
+	}
+	for _, ban := range []string{"ssh_read_file", "ssh_bash", "write_file"} {
+		if names[ban] {
+			t.Fatalf("local inquiry surface must drop %q, got %v", ban, names)
+		}
+	}
+}
+
+// TestCodingOperationalFilterIsSelfContained pins that the local operational
+// allow-list carries no ssh_* union entries: unlike the inquiry list, its
+// cross-mode isolation must not depend on the downstream host filter
+// (review P3-2).
+func TestCodingOperationalFilterIsSelfContained(t *testing.T) {
+	tools := testToolDefs("bash", "read_file", "ssh_write_file", "ssh_bash")
+	filtered := filterCodingOperationalTools(tools)
+	for _, def := range filtered {
+		if name := extractToolName(def); strings.HasPrefix(name, "ssh_") {
+			t.Fatalf("local operational allow-list must not admit %q before the host filter", name)
+		}
+	}
+}
+
 func TestCodingOperationalToolFiltersAreNonMutating(t *testing.T) {
 	for _, name := range []string{"bash", "read_file", "Glob", "ripgrep", "code_navigation", "knowledge_image_search"} {
 		if !isCodingOperationalTool(name) {

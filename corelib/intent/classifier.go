@@ -30,6 +30,16 @@ const DefaultFusionTreeDeadline = 12 * time.Second
 // chat models when embedding is unavailable.
 const DefaultLLMTimeout = 30 * time.Second
 
+// treeEndpointFailureSkipWindow bounds how long after a Layer 3 tree call
+// failed because the endpoint is unhealthy — its own deadline fired, or it
+// answered 5xx — subsequent L2-ambiguous escalations fail fast into
+// the L2 fallback instead of paying another round trip the endpoint is likely
+// to fail anyway. Such a failure says the endpoint is struggling RIGHT NOW,
+// not that it is permanently down (network-classified failures are the
+// endpoint gate's job, with its own TTL), so the window stays short and the
+// next probe outside it resumes normal tree authority.
+const treeEndpointFailureSkipWindow = 10 * time.Second
+
 // Config holds initialization parameters for the UnifiedIntentClassifier.
 type Config struct {
 	Embedder       embedding.Embedder
@@ -97,6 +107,22 @@ type UnifiedIntentClassifier struct {
 	// channel to claim a scope wins and never double-sends the same tree call
 	// across an epoch bump (P0-3).
 	lateTree sync.Map
+
+	// treeEndpointFailAt is the unix-nano timestamp of the most recent Layer 3
+	// tree call that failed because the endpoint is unhealthy — its own
+	// deadline fired, or it answered 5xx (as opposed to the enclosing
+	// turn being cancelled) — and treeEndpointFailScope is the epoch-agnostic
+	// scope (UserID + Text + RecentHistory, i.e. cacheKeyScope) that paid for
+	// it. While the sample is inside treeEndpointFailureSkipWindow, escalations
+	// for OTHER scopes skip the tree call and land in the same L2 fallback the
+	// failure would have produced — a slow or erroring hub used to make every
+	// ambiguous turn in a burst pay a full round trip per classification
+	// (serial pre-loop calls stacked 12s+12s). A repeat of the SAME scope
+	// still escalates: it adopts the in-flight detached read of the identical
+	// payload instead of double-sending, so the resend-recovery path keeps
+	// working and costs ~0 while the read is alive.
+	treeEndpointFailAt    atomic.Int64
+	treeEndpointFailScope atomic.Value // string, written only with treeEndpointFailAt
 
 	// workflowCandidates is the set of IntentLabels that may trigger a
 	// multi-phase workflow, derived from IntentDefinition.MayTriggerWorkflow.
@@ -204,6 +230,64 @@ func sameAnchorSnapshot(current, snapshot []intentAnchor) bool {
 		return true
 	}
 	return &current[0] == &snapshot[0]
+}
+
+// noteTreeEndpointFailure records that a Layer 3 tree call could not deliver a
+// verdict because the endpoint is unhealthy right now: either its own deadline
+// fired, or the endpoint answered 5xx. Turn cancellation, protocol
+// violations, and 4xx errors say nothing about endpoint health and do not
+// count.
+func (u *UnifiedIntentClassifier) noteTreeEndpointFailure(scope string) {
+	u.treeEndpointFailScope.Store(scope)
+	u.treeEndpointFailAt.Store(time.Now().UnixNano())
+}
+
+// httpStatusCoder is implemented by errors that carry an HTTP status code
+// (e.g. *llm.HTTPStatusError). Matching the method structurally keeps this
+// package free of a corelib/llm import: corelib/tool already imports intent,
+// and llm transitively imports corelib/tool, so a direct import cycles.
+type httpStatusCoder interface{ HTTPStatusCode() int }
+
+// isTreeEndpointFailure reports whether err means the tree endpoint failed to
+// answer: the call's own deadline fired, or the endpoint returned a 5xx
+// upstream error. Either way, another wait for a different scope would land in
+// the same L2 fallback, so the sample feeds the fast-degrade memory.
+func isTreeEndpointFailure(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var coder httpStatusCoder
+	if errors.As(err, &coder) {
+		code := coder.HTTPStatusCode()
+		return code >= 500 && code < 600
+	}
+	return false
+}
+
+// clearTreeEndpointFailure lifts the fast-degrade memory: a tree verdict inside
+// the budget (foreground or late-verdict background) is positive endpoint
+// health evidence, so later escalations must not stay suppressed for the rest
+// of the window.
+func (u *UnifiedIntentClassifier) clearTreeEndpointFailure() {
+	u.treeEndpointFailAt.Store(0)
+}
+
+// skipTreeForRecentEndpointFailure reports whether an escalation for scope
+// should fail fast into the L2 fallback: a recent tree endpoint failure
+// (deadline fired or 5xx) is still fresh AND belongs to a different scope. A
+// repeat of the failed scope itself is never skipped — it would adopt the
+// still-in-flight detached read of the identical payload, keeping the
+// resend-recovery path cheap and correct.
+func (u *UnifiedIntentClassifier) skipTreeForRecentEndpointFailure(scope string) bool {
+	at := u.treeEndpointFailAt.Load()
+	if at <= 0 {
+		return false
+	}
+	if time.Since(time.Unix(0, at)) >= treeEndpointFailureSkipWindow {
+		return false
+	}
+	failed, _ := u.treeEndpointFailScope.Load().(string)
+	return failed != scope
 }
 
 // Classify returns the ClassificationResult for the given message.
@@ -318,6 +402,11 @@ func (u *UnifiedIntentClassifier) ClassifyContext(ctx context.Context, msg Messa
 
 	// L3 is reached only when embedding is unavailable or cannot separate the
 	// candidate intents with enough confidence.
+	// treeSkippedSlowEndpoint records that this turn's escalation went straight
+	// to the L2 fallback because a recent tree endpoint failure is still fresh;
+	// the fallback section below reads it to skip the speculative late-verdict
+	// send.
+	treeSkippedSlowEndpoint := false
 	if canTree {
 		u.mu.RLock()
 		llmFn := u.llmFunc
@@ -335,198 +424,225 @@ func (u *UnifiedIntentClassifier) ClassifyContext(ctx context.Context, msg Messa
 			llmTimeout = treeDeadline
 		}
 
-		candidates, err := classifyByTreeWithTimeout(ctx, llmContextFn, llmFn, u.treeText, msg.Text, llmTimeout)
-		if err == nil && len(candidates) > 0 {
-			top := candidates[0]
-			bestResult := ClassificationResult{
-				Primary:      top.Label,
-				Confidence:   top.Score,
-				Secondary:    secondaryTreeLabels(candidates),
-				Layer:        3,
-				Reason:       fmt.Sprintf("tree-after-embedding: %s (%.3f)", top.Label, top.Score),
-				WorkflowType: top.WorkflowType,
-			}
-			if top.Label == LabelCoding && top.WorkflowType == "coding" {
-				bestResult.CreationOriented = true
-			}
-			// A weak tree verdict must not override a stronger usable L2 leader.
-			// The tree's own score guide bands 0.40-0.64 as "uncertain"; below
-			// 0.50 the model is guessing. Requiring EmbeddingConfidentMinScore
-			// (0.78) here is vacuous for the 0.70–0.78 band that actually
-			// escalates. Production 2026-08-29: a book-writing turn
-			// L2=workflow_task 0.74 was replaced by tree=task_track 0.38.
-			// task_track is a managed family, so the turn locked onto a
-			// task-tracking surface.
-			// The 0.50 tree floor still preserves mid-band synthesis (0.59).
-			if l2Ran && retainEmbeddingOverWeakTree(l2Result, top.Score) {
-				l2Result.Reason = fmt.Sprintf("embedding retained over weak tree verdict: l2=%s (%.3f), tree=%s (%.3f)", l2Result.Primary, l2Result.Confidence, top.Label, top.Score)
-				NormalizeDeclaredComposite(&l2Result)
-				applyExecutionAffordances(msg.Text, &l2Result)
-				l2Result.ToolNames = u.affinity.Resolve(l2Result.Primary, l2Result.Secondary)
-				u.cacheAndLog(cacheKey, msg.Text, &l2Result)
-				return l2Result
-			}
-			// The weak-verdict guard above catches an explicitly uncertain
-			// tree; this one catches a confidently wrong one. A single LLM
-			// sample whose label grossly contradicts a locally confident,
-			// unrelated leader must not route the turn: the 2026-08-26
-			// production turn classified a PPT request as browser 0.90 and
-			// died at plan rejection (browser.control.web has no feasible
-			// provider on this host), refusing the whole request. Fall back
-			// to the L2 hint exactly like a tree timeout; the degraded office
-			// hint keeps the turn alive and the governed surface can still
-			// expand (petition) from there.
-			if l2Ran {
-				if contradicted, leader, leaderScore, verdictScore := u.verdictContradictedByLocal(msg.Text, top.Label); contradicted {
-					log.Printf("[UnifiedIntentClassifier] tree verdict contradicted by local cross-check: text_len=%d verdict=%s(tree %.3f, local %.3f) local_leader=%s(%.3f)",
-						utf8.RuneCountInString(msg.Text), top.Label, top.Score, verdictScore, leader, leaderScore)
-					result := lookupHintOrUnknownFromL2(l2Result, false)
-					result.Reason = fmt.Sprintf("tree verdict %s(%.3f) contradicted by local leader %s(%.3f); keeping L2 hint", top.Label, top.Score, leader, leaderScore)
-					u.scheduleLateTreeVerdict(cacheKey, msg.Text)
-					u.cacheAndLog(cacheKey, msg.Text, &result)
-					return result
+		// A recent tree endpoint failure (deadline fired or 5xx) is fresh
+		// evidence that the endpoint is struggling right now. Another full
+		// wait for a DIFFERENT scope would land in the exact L2 fallback
+		// below anyway, so escalate straight to it. The skip is transient
+		// (never cached) and never schedules a speculative background
+		// re-send — the whole point is to stop adding tree traffic while
+		// the endpoint is demonstrably unhealthy. The failed scope itself
+		// still escalates: its detached read may be adoptable, which is
+		// the resend-recovery path.
+		if l2Ran && u.skipTreeForRecentEndpointFailure(cacheKeyScope(cacheKey)) {
+			treeSkippedSlowEndpoint = true
+			log.Printf("[UnifiedIntentClassifier] L3 skipped: recent tree endpoint failure within %s; using L2 fallback", treeEndpointFailureSkipWindow)
+		} else {
+			candidates, err := classifyByTreeWithTimeout(ctx, llmContextFn, llmFn, u.treeText, msg.Text, llmTimeout)
+			if err == nil && len(candidates) > 0 {
+				// A tree verdict inside the budget is positive endpoint health
+				// evidence: lift the fast-degrade memory immediately instead of
+				// letting a stale sample suppress the next escalations for the
+				// rest of the window.
+				u.clearTreeEndpointFailure()
+				top := candidates[0]
+				bestResult := ClassificationResult{
+					Primary:      top.Label,
+					Confidence:   top.Score,
+					Secondary:    secondaryTreeLabels(candidates),
+					Layer:        3,
+					Reason:       fmt.Sprintf("tree-after-embedding: %s (%.3f)", top.Label, top.Score),
+					WorkflowType: top.WorkflowType,
 				}
-			}
-			// Escalation path discards L2, but L2 may hold the complementary half
-			// of a declared composite (e.g. L2=document_generate 0.79, tree=live_data/web_fetch 0.59).
-			// Synthesize the composite without keyword heuristics so any
-			// lookup+generate phrasing is recovered even when the tree returns a single label.
-			// The complementary half may be L2's runner-up rather than its leader:
-			// a lookup request whose document half scored a close second
-			// (e.g. search 0.690 / document_generate 0.683, tree says web_fetch)
-			// used to lose the composite here and ship without the artifact
-			// capability. RunnerUp is escalation evidence only; promotion still
-			// requires a declared pair with the tree's verdict.
-			// Synthesis is skipped only when the tree's own candidate list
-			// already forms the declared composite; extra non-composite
-			// candidates (e.g. web_fetch 0.95 + search 0.60) must not suppress
-			// it, which previously cost the artifact capability on the
-			// "全网搜索…生成pdf清单" turn.
-			treeAlreadyComposite := false
-			for _, sec := range bestResult.Secondary {
-				if declaredCompositeIntentPair(sec, bestResult.Primary) {
-					treeAlreadyComposite = true
-					break
+				if top.Label == LabelCoding && top.WorkflowType == "coding" {
+					bestResult.CreationOriented = true
 				}
-			}
-			if l2Ran && !treeAlreadyComposite && l2Result.Primary != LabelUnknown && l2Result.Primary != LabelAmbiguous {
-				type l2Half struct {
-					label IntentLabel
-					score float64
+				// A weak tree verdict must not override a stronger usable L2 leader.
+				// The tree's own score guide bands 0.40-0.64 as "uncertain"; below
+				// 0.50 the model is guessing. Requiring EmbeddingConfidentMinScore
+				// (0.78) here is vacuous for the 0.70–0.78 band that actually
+				// escalates. Production 2026-08-29: a book-writing turn
+				// L2=workflow_task 0.74 was replaced by tree=task_track 0.38.
+				// task_track is a managed family, so the turn locked onto a
+				// task-tracking surface.
+				// The 0.50 tree floor still preserves mid-band synthesis (0.59).
+				if l2Ran && retainEmbeddingOverWeakTree(l2Result, top.Score) {
+					l2Result.Reason = fmt.Sprintf("embedding retained over weak tree verdict: l2=%s (%.3f), tree=%s (%.3f)", l2Result.Primary, l2Result.Confidence, top.Label, top.Score)
+					NormalizeDeclaredComposite(&l2Result)
+					applyExecutionAffordances(msg.Text, &l2Result)
+					l2Result.ToolNames = u.affinity.Resolve(l2Result.Primary, l2Result.Secondary)
+					u.cacheAndLog(cacheKey, msg.Text, &l2Result)
+					return l2Result
 				}
-				halves := []l2Half{{l2Result.Primary, l2Result.Confidence}}
-				// The declared-composite evidence attached by the L2 guards is
-				// the strongest synthesis candidate: it already paired with the
-				// L2 leader under the taxonomy, and the runner-up slot may be
-				// held by an unrelated label (e.g. live_data_visual outranking
-				// document_generate on "杭州天气，生成pdf报告").
-				for _, sec := range l2Result.Secondary {
-					if sec == "" || sec == l2Result.Primary {
-						continue
+				// The weak-verdict guard above catches an explicitly uncertain
+				// tree; this one catches a confidently wrong one. A single LLM
+				// sample whose label grossly contradicts a locally confident,
+				// unrelated leader must not route the turn: the 2026-08-26
+				// production turn classified a PPT request as browser 0.90 and
+				// died at plan rejection (browser.control.web has no feasible
+				// provider on this host), refusing the whole request. Fall back
+				// to the L2 hint exactly like a tree timeout; the degraded office
+				// hint keeps the turn alive and the governed surface can still
+				// expand (petition) from there.
+				if l2Ran {
+					if contradicted, leader, leaderScore, verdictScore := u.verdictContradictedByLocal(msg.Text, top.Label); contradicted {
+						log.Printf("[UnifiedIntentClassifier] tree verdict contradicted by local cross-check: text_len=%d verdict=%s(tree %.3f, local %.3f) local_leader=%s(%.3f)",
+							utf8.RuneCountInString(msg.Text), top.Label, top.Score, verdictScore, leader, leaderScore)
+						result := lookupHintOrUnknownFromL2(l2Result, false)
+						result.Reason = fmt.Sprintf("tree verdict %s(%.3f) contradicted by local leader %s(%.3f); keeping L2 hint", top.Label, top.Score, leader, leaderScore)
+						u.scheduleLateTreeVerdict(cacheKey, msg.Text)
+						u.cacheAndLog(cacheKey, msg.Text, &result)
+						return result
 					}
-					secScore := EmbeddingLookupCompositeFloor
-					if sec == l2Result.RunnerUp {
-						secScore = l2Result.RunnerUpScore
-					}
-					halves = append(halves, l2Half{sec, secScore})
 				}
-				if l2Result.RunnerUp != "" && l2Result.RunnerUp != l2Result.Primary && l2Result.RunnerUpScore > 0 {
-					halves = append(halves, l2Half{l2Result.RunnerUp, l2Result.RunnerUpScore})
-				}
-				var half l2Half
-				for _, candidate := range halves {
-					if candidate.label != bestResult.Primary && declaredCompositeIntentPair(candidate.label, bestResult.Primary) {
-						half = candidate
+				// Escalation path discards L2, but L2 may hold the complementary half
+				// of a declared composite (e.g. L2=document_generate 0.79, tree=live_data/web_fetch 0.59).
+				// Synthesize the composite without keyword heuristics so any
+				// lookup+generate phrasing is recovered even when the tree returns a single label.
+				// The complementary half may be L2's runner-up rather than its leader:
+				// a lookup request whose document half scored a close second
+				// (e.g. search 0.690 / document_generate 0.683, tree says web_fetch)
+				// used to lose the composite here and ship without the artifact
+				// capability. RunnerUp is escalation evidence only; promotion still
+				// requires a declared pair with the tree's verdict.
+				// Synthesis is skipped only when the tree's own candidate list
+				// already forms the declared composite; extra non-composite
+				// candidates (e.g. web_fetch 0.95 + search 0.60) must not suppress
+				// it, which previously cost the artifact capability on the
+				// "全网搜索…生成pdf清单" turn.
+				treeAlreadyComposite := false
+				for _, sec := range bestResult.Secondary {
+					if declaredCompositeIntentPair(sec, bestResult.Primary) {
+						treeAlreadyComposite = true
 						break
 					}
 				}
-				if half.label != "" {
-					// The composite's confidence is the STRONGER half's evidence:
-					// either authority (tree verdict or local L2 half) strongly
-					// backing the declared pair suffices to keep the turn managed.
-					// min() dragged under the resolver/tree floors (0.78/0.70) —
-					// 2026-08-25: tree web_fetch 0.950 + document_generate 0.683 →
-					// composite 0.68 → unmanaged ("PDF 生成工具不可用"). Taking
-					// only the tree score drags the mirror case —
-					// 2026-08-26: tree web_fetch 0.599 + local office 0.855 →
-					// composite 0.60 → 24-tool legacy dump, search "missing"
-					// again on the identical PPT request.
-					compConf := bestResult.Confidence
-					if half.score > compConf {
-						compConf = half.score
+				if l2Ran && !treeAlreadyComposite && l2Result.Primary != LabelUnknown && l2Result.Primary != LabelAmbiguous {
+					type l2Half struct {
+						label IntentLabel
+						score float64
 					}
-					// Split the pair into its artifact half and lookup half
-					// instead of assuming the artifact is always
-					// document_generate: an office or live_data_visual half
-					// mislabeled as document_generate would route the turn to
-					// the PDF chain and drop the deck/visual capability.
-					artifactHalf, lookupHalf := bestResult.Primary, half.label
-					if isLookupIntentLabel(artifactHalf) {
-						artifactHalf, lookupHalf = lookupHalf, artifactHalf
+					halves := []l2Half{{l2Result.Primary, l2Result.Confidence}}
+					// The declared-composite evidence attached by the L2 guards is
+					// the strongest synthesis candidate: it already paired with the
+					// L2 leader under the taxonomy, and the runner-up slot may be
+					// held by an unrelated label (e.g. live_data_visual outranking
+					// document_generate on "杭州天气，生成pdf报告").
+					for _, sec := range l2Result.Secondary {
+						if sec == "" || sec == l2Result.Primary {
+							continue
+						}
+						secScore := EmbeddingLookupCompositeFloor
+						if sec == l2Result.RunnerUp {
+							secScore = l2Result.RunnerUpScore
+						}
+						halves = append(halves, l2Half{sec, secScore})
 					}
-					synth := ClassificationResult{
-						Confidence: compConf,
-						Layer:      3,
-						Reason:     fmt.Sprintf("tree-after-embedding+synthesized composite: %s(%.3f)+%s(%.3f)", bestResult.Primary, bestResult.Confidence, half.label, half.score),
+					if l2Result.RunnerUp != "" && l2Result.RunnerUp != l2Result.Primary && l2Result.RunnerUpScore > 0 {
+						halves = append(halves, l2Half{l2Result.RunnerUp, l2Result.RunnerUpScore})
 					}
-					switch artifactHalf {
-					case LabelDocumentGenerate:
-						// Build a synthetic composite and let canonical direction
-						// (lookup Primary) be enforced by NormalizeDeclaredComposite.
-						synth.Primary = LabelDocumentGenerate
-						synth.Secondary = []IntentLabel{lookupHalf}
-						NormalizeDeclaredComposite(&synth)
-						if len(synth.Secondary) == 0 || synth.Primary == LabelDocumentGenerate {
+					var half l2Half
+					for _, candidate := range halves {
+						if candidate.label != bestResult.Primary && declaredCompositeIntentPair(candidate.label, bestResult.Primary) {
+							half = candidate
+							break
+						}
+					}
+					if half.label != "" {
+						// The composite's confidence is the STRONGER half's evidence:
+						// either authority (tree verdict or local L2 half) strongly
+						// backing the declared pair suffices to keep the turn managed.
+						// min() dragged under the resolver/tree floors (0.78/0.70) —
+						// 2026-08-25: tree web_fetch 0.950 + document_generate 0.683 →
+						// composite 0.68 → unmanaged ("PDF 生成工具不可用"). Taking
+						// only the tree score drags the mirror case —
+						// 2026-08-26: tree web_fetch 0.599 + local office 0.855 →
+						// composite 0.60 → 24-tool legacy dump, search "missing"
+						// again on the identical PPT request.
+						compConf := bestResult.Confidence
+						if half.score > compConf {
+							compConf = half.score
+						}
+						// Split the pair into its artifact half and lookup half
+						// instead of assuming the artifact is always
+						// document_generate: an office or live_data_visual half
+						// mislabeled as document_generate would route the turn to
+						// the PDF chain and drop the deck/visual capability.
+						artifactHalf, lookupHalf := bestResult.Primary, half.label
+						if isLookupIntentLabel(artifactHalf) {
+							artifactHalf, lookupHalf = lookupHalf, artifactHalf
+						}
+						synth := ClassificationResult{
+							Confidence: compConf,
+							Layer:      3,
+							Reason:     fmt.Sprintf("tree-after-embedding+synthesized composite: %s(%.3f)+%s(%.3f)", bestResult.Primary, bestResult.Confidence, half.label, half.score),
+						}
+						switch artifactHalf {
+						case LabelDocumentGenerate:
+							// Build a synthetic composite and let canonical direction
+							// (lookup Primary) be enforced by NormalizeDeclaredComposite.
+							synth.Primary = LabelDocumentGenerate
+							synth.Secondary = []IntentLabel{lookupHalf}
+							NormalizeDeclaredComposite(&synth)
+							if len(synth.Secondary) == 0 || synth.Primary == LabelDocumentGenerate {
+								synth = ClassificationResult{}
+							}
+						case LabelOffice, LabelLiveDataVisual:
+							// Office/visual artifact gates key on the artifact label
+							// (execution profile, plan rules), so the artifact stays
+							// Primary and the read-only lookup prerequisite rides in
+							// Secondary for needs derivation.
+							synth.Primary = artifactHalf
+							synth.Secondary = []IntentLabel{lookupHalf}
+						default:
 							synth = ClassificationResult{}
 						}
-					case LabelOffice, LabelLiveDataVisual:
-						// Office/visual artifact gates key on the artifact label
-						// (execution profile, plan rules), so the artifact stays
-						// Primary and the read-only lookup prerequisite rides in
-						// Secondary for needs derivation.
-						synth.Primary = artifactHalf
-						synth.Secondary = []IntentLabel{lookupHalf}
-					default:
-						synth = ClassificationResult{}
-					}
-					if synth.Primary != "" {
-						bestResult = synth
-						bestResult.WorkflowType = top.WorkflowType
+						if synth.Primary != "" {
+							bestResult = synth
+							bestResult.WorkflowType = top.WorkflowType
+						}
 					}
 				}
+				NormalizeDeclaredComposite(&bestResult)
+				applyExecutionAffordances(msg.Text, &bestResult)
+				bestResult.ToolNames = u.affinity.Resolve(bestResult.Primary, bestResult.Secondary)
+				u.cacheAndLog(cacheKey, msg.Text, &bestResult)
+				return bestResult
 			}
-			NormalizeDeclaredComposite(&bestResult)
-			applyExecutionAffordances(msg.Text, &bestResult)
-			bestResult.ToolNames = u.affinity.Resolve(bestResult.Primary, bestResult.Secondary)
-			u.cacheAndLog(cacheKey, msg.Text, &bestResult)
-			return bestResult
-		}
-		log.Printf("[UnifiedIntentClassifier] Layer 3 failed: %v; keeping L2 lookup as hint or collapsing non-lookup", err)
-		if err := ctx.Err(); err != nil {
-			return cancelledClassificationResult(err)
-		}
-		var protocolErr *TreeResponseProtocolError
-		if errors.As(err, &protocolErr) {
-			// A 200 response with prose instead of the classifier's contract is
-			// not an unknown intent.  Preserve that distinction so the shared
-			// loop can stop before its legacy router creates a tools=0 request.
-			return ClassificationResult{
-				Primary:             LabelUnknown,
-				Confidence:          0.30,
-				Layer:               3,
-				Reason:              "intent classification structured-output protocol violation",
-				Degraded:            true,
-				ControlPlaneFailure: true,
+			log.Printf("[UnifiedIntentClassifier] Layer 3 failed: %v; keeping L2 lookup as hint or collapsing non-lookup", err)
+			if err := ctx.Err(); err != nil {
+				return cancelledClassificationResult(err)
 			}
+			var protocolErr *TreeResponseProtocolError
+			if errors.As(err, &protocolErr) {
+				// A 200 response with prose instead of the classifier's contract is
+				// not an unknown intent.  Preserve that distinction so the shared
+				// loop can stop before its legacy router creates a tools=0 request.
+				return ClassificationResult{
+					Primary:             LabelUnknown,
+					Confidence:          0.30,
+					Layer:               3,
+					Reason:              "intent classification structured-output protocol violation",
+					Degraded:            true,
+					ControlPlaneFailure: true,
+				}
+			}
+			if isTreeEndpointFailure(err) {
+				// The endpoint is unhealthy right now (own deadline fired, or
+				// 5xx): remember it (and the scope that paid) so
+				// further escalations for other scopes inside the window fail
+				// fast into the L2 fallback instead of each paying another
+				// full round trip the endpoint is likely to fail anyway.
+				u.noteTreeEndpointFailure(cacheKeyScope(cacheKey))
+			}
+			// A budget timeout only degraded THIS turn. The tree verdict remains
+			// durable knowledge for the same classification input — including the
+			// tree-only path (no embedding), whose 30s budget is the design's slow-
+			// endpoint tier. Schedule the background verdict (single-flight: a
+			// detached read of the same payload is adopted instead of re-sent,
+			// P0-3); the fusion path below schedules the same scope again, which
+			// the claim deduplicates.
+			u.scheduleLateTreeVerdict(cacheKey, msg.Text)
 		}
-		// A budget timeout only degraded THIS turn. The tree verdict remains
-		// durable knowledge for the same classification input — including the
-		// tree-only path (no embedding), whose 30s budget is the design's slow-
-		// endpoint tier. Schedule the background verdict (single-flight: a
-		// detached read of the same payload is adopted instead of re-sent,
-		// P0-3); the fusion path below schedules the same scope again, which
-		// the claim deduplicates.
-		u.scheduleLateTreeVerdict(cacheKey, msg.Text)
 	}
 
 	// L3 is the route authority after an ambiguous L2 escalation. A search or
@@ -546,12 +662,15 @@ func (u *UnifiedIntentClassifier) ClassifyContext(ctx context.Context, msg Messa
 				u.cache.Store(cacheKey, &result)
 				u.cacheSource.Store(cacheKey, CacheSourceL2)
 			}
-		} else {
+		} else if !treeSkippedSlowEndpoint {
 			// A timeout only degraded THIS turn. The tree verdict remains
 			// durable knowledge for the same classification input: the user's
 			// natural recovery move is to resend the request, and a warm cache
 			// turns that repeat from a second degraded turn into a correctly
 			// routed one. Single-flight; a cache epoch change orphans the key.
+			// A slow-endpoint skip deliberately does NOT schedule one: no tree
+			// request is in flight to adopt, and a speculative background
+			// re-send would add load exactly when the endpoint is struggling.
 			u.scheduleLateTreeVerdict(cacheKey, msg.Text)
 		}
 		u.cacheAndLog(cacheKey, msg.Text, &result)
@@ -604,6 +723,13 @@ func skipTreeForShortAmbiguousLookup(text string, result ClassificationResult) b
 // governed hint; every other family collapses to unknown. Secondary labels,
 // workflow type, and tool names are cleared: a leftover document_generate or
 // affinity pin would HostReject the turn.
+//
+// The collapsed result preserves the L2 primary as RunnerUp escalation
+// evidence (2026-09-18): a tree-timeout collapse used to destroy non-lookup
+// signals entirely (e.g. ssh at 0.83), leaving later layers no
+// machine-readable way to keep the capability reachable on degraded turns.
+// RunnerUp is never an authorized intent — surfaces that honor it apply their
+// own reviewed policy (for ssh: the resolver-floor exemption).
 func lookupHintOrUnknownFromL2(l2 ClassificationResult, skipTree bool) ClassificationResult {
 	reason := fmt.Sprintf("embedding ambiguous; tree classification unavailable (l2=%s conf=%.2f)", l2.Primary, l2.Confidence)
 	if skipTree {
@@ -616,6 +742,10 @@ func lookupHintOrUnknownFromL2(l2 ClassificationResult, skipTree bool) Classific
 			Layer:      2,
 			Reason:     reason,
 			Degraded:   true,
+			RunnerUp:   l2.Primary,
+			// RunnerUpScore rides along even when Primary is a non-capability
+			// label; consumers gate on the label they recognize.
+			RunnerUpScore: l2.Confidence,
 		}
 	}
 	keepHint := l2.Primary == LabelSearch || l2.Primary == LabelLiveData ||
@@ -1176,6 +1306,10 @@ func (u *UnifiedIntentClassifier) scheduleLateTreeVerdict(cacheKey, text string)
 				utf8.RuneCountInString(text), result.Primary, verdictScore, leader, leaderScore)
 			return
 		}
+		// A successful background verdict is positive endpoint health evidence:
+		// lift the fast-degrade memory so the remaining window does not keep
+		// suppressing escalations after the endpoint has recovered.
+		u.clearTreeEndpointFailure()
 		u.cacheAndLog(cacheKey, text, &result)
 	}()
 }

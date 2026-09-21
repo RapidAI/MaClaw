@@ -5,7 +5,7 @@ import { cloudWorkspaceNameMapFromEntitlement, isActiveTaskRow, isProjectTabOpen
 import type { ComponentProps, ReactElement } from 'react';
 import { GetProjectScene, OpenFileOrShowInFolder, OpenProjectDirectory, SelectWorkingDir } from '../../../../wailsjs/go/main/App';
 import { EventsEmit } from '../../../../wailsjs/runtime';
-import { EVENT_OPEN_CREATE_CODING_TASK } from '../../../constants/events';
+import { EVENT_NEW_TASK_WIZARD_BLOCKED, EVENT_OPEN_CREATE_CODING_TASK } from '../../../constants/events';
 import { DialogProvider } from '../../CustomDialog';
 import { __resetCloudWorkspaceDisplayNamesForTests, __resetCloudWorkspaceLeaseEnsureForTests, markCloudWorkspaceLeaseEnsured, rememberCloudWorkspaceDisplayName } from '../../ai/codingTaskMode';
 import { __resetCloudWorkspaceTaskRestoreForTests } from '../../../utils/cloudWorkspaceTaskRestore';
@@ -32,6 +32,11 @@ const {
     cloudWorkspaceCacheDirMock,
     listExpertsMock,
     listManagedIndustryExpertsMock,
+    getCloudWorkspaceShareMock,
+    createCloudWorkspaceShareMock,
+    stopCloudWorkspaceShareMock,
+    updateCloudWorkspaceShareRecipientMock,
+    removeCloudWorkspaceShareRecipientMock,
 } = vi.hoisted(() => {
     return {
         getProjectSceneMock: vi.fn(),
@@ -55,6 +60,16 @@ const {
         cloudWorkspaceCacheDirMock: vi.fn().mockResolvedValue({ local_path: '' }),
         listExpertsMock: vi.fn().mockResolvedValue('[]'),
         listManagedIndustryExpertsMock: vi.fn().mockResolvedValue('[]'),
+        getCloudWorkspaceShareMock: vi.fn().mockResolvedValue({ recipients: [] }),
+        createCloudWorkspaceShareMock: vi.fn().mockImplementation(async (_id: string, permission: string) => ({
+            share_url: 'https://hub.example/hub/cloud-workspaces/shares/abc',
+            token: 'abc',
+            default_permission: permission || 'read',
+            recipients: [],
+        })),
+        stopCloudWorkspaceShareMock: vi.fn().mockResolvedValue(undefined),
+        updateCloudWorkspaceShareRecipientMock: vi.fn().mockResolvedValue(undefined),
+        removeCloudWorkspaceShareRecipientMock: vi.fn().mockResolvedValue(undefined),
     };
 });
 
@@ -82,6 +97,11 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     SyncCloudWorkspaceFiles: syncCloudWorkspaceFilesMock,
     ListExperts: listExpertsMock,
     ListManagedIndustryExperts: listManagedIndustryExpertsMock,
+    GetCloudWorkspaceShare: getCloudWorkspaceShareMock,
+    CreateCloudWorkspaceShare: createCloudWorkspaceShareMock,
+    StopCloudWorkspaceShare: stopCloudWorkspaceShareMock,
+    UpdateCloudWorkspaceShareRecipient: updateCloudWorkspaceShareRecipientMock,
+    RemoveCloudWorkspaceShareRecipient: removeCloudWorkspaceShareRecipientMock,
 }));
 
 vi.mock('../../../../wailsjs/runtime', () => ({
@@ -368,7 +388,8 @@ describe('SidebarTaskManagement', () => {
 
         expect(screen.getByText('Cloud workspace task')).toBeTruthy();
         expect(screen.getByTestId('task-cloud-workspace-icon')).toBeTruthy();
-        expect(screen.getByTestId('task-cloud-workspace-badge')).toBeTruthy();
+        expect(screen.getByTestId('workspace-badge-cloud').textContent || '').toMatch(/Cloud|云端|雲端/);
+        expect(screen.queryByTestId('task-cloud-workspace-badge')).toBeNull();
         expect(screen.queryByTestId('task-cloud-overview')).toBeNull();
         expect(screen.queryByTestId('task-cloud-workspace-list')).toBeNull();
     });
@@ -411,6 +432,20 @@ describe('SidebarTaskManagement', () => {
         expect(screen.queryByTestId('task-filter-paused')).toBeNull();
         expect(screen.queryByTestId('task-filter-shared')).toBeNull();
 
+        const statusGroup = screen.getByTestId('task-filter-all').closest('.mc-task-filter-row');
+        const workspaceGroup = screen.getByTestId('task-workspace-filter-all').closest('.mc-task-filter-row');
+        expect(statusGroup).toBeTruthy();
+        expect(workspaceGroup).toBeTruthy();
+        expect(statusGroup?.parentElement?.classList.contains('mc-task-filter-stack')).toBe(true);
+        expect(statusGroup).not.toBe(workspaceGroup);
+        expect((statusGroup as HTMLElement).getAttribute('style')).toBeNull();
+        expect((workspaceGroup as HTMLElement).getAttribute('style')).toBeNull();
+        expect(screen.getByTestId('task-filter-all').className).toContain('mc-task-filter-btn');
+        expect(screen.getByTestId('task-filter-all').getAttribute('data-count')).toBe('2');
+        expect(screen.getByTestId('task-filter-all').getAttribute('aria-label')).toBe('All 2');
+        expect(screen.getByTestId('task-filter-pending').getAttribute('data-count')).toBe('0');
+        expect(screen.getByTestId('task-filter-pending').getAttribute('aria-pressed')).toBe('false');
+
         fireEvent.click(screen.getByTestId('task-filter-completed'));
         expect(screen.getByTestId('task-filter-completed').getAttribute('aria-pressed')).toBe('true');
         expect(screen.queryByText('Running task')).toBeNull();
@@ -419,6 +454,93 @@ describe('SidebarTaskManagement', () => {
         fireEvent.click(screen.getByTestId('task-filter-all'));
         expect(screen.getByText('Running task')).toBeTruthy();
         expect(screen.getByText('Done task')).toBeTruthy();
+    });
+
+    it('scrolls overflowing task rows inside the list and keeps filters pinned', () => {
+        const tasks = Array.from({ length: 12 }, (_, i) => ({
+            ...baseProject,
+            id: `task-${i}`,
+            name: `Task ${i}`,
+            project_path: `D:/work/tasks/task-${i}`,
+        }));
+        renderTaskManagement({
+            tasks,
+            activeAssistantTask: { projectPath: tasks[0].project_path },
+        });
+
+        const pane = document.querySelector('.mc-task-pane') as HTMLElement;
+        const list = screen.getByTestId('sidebar-task-list');
+        expect(pane.style.minHeight).toBe('0px');
+        expect(pane.style.overflow).toBe('hidden');
+        expect(list.style.minHeight).toBe('0px');
+        expect(list.style.overflowY).toBe('auto');
+        expect(list.contains(screen.getByTestId('sidebar-default-task-row'))).toBe(true);
+        expect(list.contains(screen.getByText('Task 11'))).toBe(true);
+        expect(list.contains(screen.getByTestId('task-filter-all'))).toBe(false);
+        expect(pane.contains(screen.getByTestId('task-filter-all'))).toBe(true);
+        expect(pane.contains(screen.getByTestId('current-task-card'))).toBe(true);
+        expect(list.contains(screen.getByTestId('current-task-card'))).toBe(false);
+        expect(list.style.flex).toBe('1 1 0%');
+        expect(list.parentElement?.classList.contains('mc-task-pane')).toBe(true);
+    });
+
+    it('scrolls overflowing rows on the home recent-task list with filters pinned', () => {
+        const tasks = Array.from({ length: 12 }, (_, i) => ({
+            ...baseProject,
+            id: `task-home-${i}`,
+            name: `Home task ${i}`,
+            project_path: `D:/work/tasks/home-task-${i}`,
+        }));
+        renderTaskManagement({ tasks });
+
+        const pane = document.querySelector('.mc-task-pane') as HTMLElement;
+        const list = screen.getByTestId('sidebar-task-list');
+        expect(pane.getAttribute('data-execution-sidebar')).toBe('false');
+        expect(screen.queryByTestId('current-task-card')).toBeNull();
+        expect(list.contains(screen.getByTestId('sidebar-default-task-row'))).toBe(true);
+        expect(list.contains(screen.getByText('Home task 11'))).toBe(true);
+        expect(list.contains(screen.getByTestId('task-filter-all'))).toBe(false);
+        expect(pane.contains(screen.getByTestId('task-filter-all'))).toBe(true);
+    });
+
+    it('keeps a visible scrollbar on the task list inside the sidebar content slot', async () => {
+        const { readFileSync } = await import('node:fs');
+        const { join } = await import('node:path');
+        const css = readFileSync(join(process.cwd(), 'src/App.css'), 'utf8');
+        expect(css).not.toMatch(/\[data-testid='sidebar-ai-content-slot'\] \*/);
+        expect(css).not.toMatch(/\[data-testid='sidebar-ai-content-slot'\]::-webkit-scrollbar\s*\{[^}]*display:\s*none/);
+        expect(css).toMatch(/\[data-testid='sidebar-ai-content-slot'\] \.mc-task-list::-webkit-scrollbar \{\s*display:\s*block;/);
+    });
+
+    it('counts the live-running assistant task as in progress instead of completed', () => {
+        // A pure agent loop run leaves no running snapshot on the durable row,
+        // and has_output stays true from earlier runs — without the live signal
+        // the task would be misfiled into the completed bucket.
+        const doneTask = { ...baseProject, id: 'task-done', name: 'Done task', project_path: 'D:/work/tasks/done-task', has_output: true };
+        renderTaskManagement({
+            tasks: [doneTask],
+            activeAssistantTask: { projectPath: 'D:/work/tasks/done-task' },
+            activeAssistantTaskRunning: true,
+        });
+
+        expect(screen.getByTestId('task-filter-running').textContent).toContain('1');
+        expect(screen.getByTestId('task-filter-completed').textContent).toContain('0');
+
+        fireEvent.click(screen.getByTestId('task-filter-running'));
+        expect(within(screen.getByTestId('sidebar-task-row')).getByText('Done task')).toBeTruthy();
+
+        // The live-running row must not also appear under completed: the
+        // filtered list follows the same bucket override as the chip counts.
+        fireEvent.click(screen.getByTestId('task-filter-completed'));
+        expect(screen.queryByTestId('sidebar-task-row')).toBeNull();
+    });
+
+    it('shows an explanation notice when the new-task wizard is blocked by a running task', () => {
+        renderTaskManagement();
+        act(() => {
+            window.dispatchEvent(new CustomEvent(EVENT_NEW_TASK_WIZARD_BLOCKED));
+        });
+        expect(screen.getByTestId('task-list-notice').textContent).toContain('running');
     });
 
     it('shows the paused chip only when a paused task exists and filters to it', () => {
@@ -462,6 +584,8 @@ describe('SidebarTaskManagement', () => {
 
         const cloudRow = rowByName('Cloud task');
         expect(cloudRow.querySelector('[data-testid="workspace-badge-cloud"]')).toBeTruthy();
+        expect(workspaceLine(cloudRow).textContent).toMatch(/Cloud|云端|雲端/);
+        expect(workspaceLine(cloudRow).textContent).not.toMatch(/Cloud workspace|云端工作区|雲端工作區/i);
         expect(workspaceLine(cloudRow).textContent).not.toMatch(/cloud-workspaces/i);
 
         const remoteRow = rowByName('Remote task');
@@ -2100,7 +2224,7 @@ describe('SidebarTaskManagement', () => {
         expect(screen.queryByTestId('task-context-edit-remote-ssh')).toBeNull();
     });
 
-    it('shows Browse in the context menu for cloud workspace tasks', () => {
+    it('shows Browse in the context menu for cloud workspace tasks', async () => {
         renderTaskManagement({
             lang: 'zh',
             taskContextMenu: {
@@ -2115,6 +2239,27 @@ describe('SidebarTaskManagement', () => {
         expect(screen.getByTestId('task-context-browse-cloud')).toBeTruthy();
         expect(screen.getByText('浏览')).toBeTruthy();
         expect(screen.queryByTestId('task-context-browse-cloud')?.getAttribute('data-disabled')).toBeNull();
+        expect(screen.getByTestId('task-context-share-cloud')).toBeTruthy();
+        expect(screen.getByText('分享…')).toBeTruthy();
+        fireEvent.click(screen.getByTestId('task-context-share-cloud'));
+        expect(await screen.findByTestId('task-cloud-share-dialog')).toBeTruthy();
+        expect(screen.getByText('分享「云端工作区任务1」')).toBeTruthy();
+    });
+
+    it('hides Share in the context menu for received cloud shares', () => {
+        renderTaskManagement({
+            lang: 'zh',
+            taskContextMenu: {
+                x: 10,
+                y: 20,
+                projectPath: baseProject.project_path,
+                name: '云端工作区任务1',
+                pinned: false,
+                tags: ['cloud_workspace:cws_a', 'cloud_workspace_share:read'],
+            },
+        });
+        expect(screen.getByTestId('task-context-browse-cloud')).toBeTruthy();
+        expect(screen.queryByTestId('task-context-share-cloud')).toBeNull();
     });
 
     it('hides Browse for ordinary tasks', () => {
@@ -2520,7 +2665,8 @@ describe('SidebarTaskManagement', () => {
             }],
         });
 
-        expect(screen.getByTestId('task-cloud-workspace-badge').textContent || '').toMatch(/云端工作区|Cloud workspace/i);
+        expect(screen.getByTestId('workspace-badge-cloud').textContent || '').toContain('云端');
+        expect(screen.queryByTestId('task-cloud-workspace-badge')).toBeNull();
         expect(screen.queryByTestId('task-remote-coding-badge')).toBeNull();
         expect(screen.queryByTestId('task-coding-badge')).toBeNull();
         expect(screen.getByTestId('sidebar-task-row').getAttribute('data-task-kind')).toBe('cloud_workspace');
@@ -2540,7 +2686,8 @@ describe('SidebarTaskManagement', () => {
             }],
         });
 
-        expect(screen.getByTestId('task-cloud-workspace-badge').textContent || '').toContain('云端工作区');
+        expect(screen.getByTestId('workspace-badge-cloud').textContent || '').toContain('云端');
+        expect(screen.queryByTestId('task-cloud-workspace-badge')).toBeNull();
         expect(screen.queryByTestId('task-coding-badge')).toBeNull();
         expect(screen.queryByTestId('task-remote-coding-badge')).toBeNull();
         expect(screen.getByTestId('sidebar-task-row').getAttribute('data-task-kind')).toBe('cloud_workspace');
@@ -2559,7 +2706,9 @@ describe('SidebarTaskManagement', () => {
         });
 
         expect(screen.getByLabelText('Cloud workspace task')).toBeTruthy();
-        expect(screen.getByTestId('task-cloud-workspace-badge').textContent || '').toMatch(/Cloud workspace|云端工作区|雲端工作區/i);
+        expect(screen.getByTestId('workspace-badge-cloud').textContent || '').toMatch(/Cloud|云端|雲端/);
+        expect(screen.getByTestId('task-working-dir').textContent || '').not.toMatch(/Cloud workspace|云端工作区|雲端工作區/i);
+        expect(screen.queryByTestId('task-cloud-workspace-badge')).toBeNull();
         expect(screen.getByTestId('sidebar-task-row').getAttribute('data-task-kind')).toBe('cloud_workspace');
     });
 
@@ -2584,11 +2733,13 @@ describe('SidebarTaskManagement', () => {
         await waitFor(() => {
             expect(screen.getByTestId('task-working-dir').textContent).toContain('长江学者课题申请材料');
         });
-        expect(screen.getByTestId('workspace-badge-cloud')).toBeTruthy();
+        expect(screen.getByTestId('workspace-badge-cloud').textContent || '').toContain('云端');
+        expect(screen.queryByTestId('task-cloud-workspace-badge')).toBeNull();
         expect(screen.queryByTestId('task-secondary-label')).toBeNull();
         const title = screen.getByTestId('sidebar-task-row').querySelector('.sidebar-task-row')?.getAttribute('title') || '';
         expect(title).toContain('长江学者申请');
         expect(title).toContain('长江学者课题申请材料');
+        expect(title).not.toMatch(/云端工作区|Cloud workspace/i);
         expect(title).not.toMatch(/cloud-workspaces/i);
         expect(title).not.toContain('C:/Users/me/.maclaw');
     });
@@ -2657,6 +2808,9 @@ describe('SidebarTaskManagement', () => {
         const row = screen.getByTestId('sidebar-task-row');
         expect(row.textContent || '').toContain('新建云端工作区任务');
         expect(row.textContent || '').not.toContain('cws_offline');
+        expect(screen.getByTestId('workspace-badge-cloud')).toBeTruthy();
+        expect(screen.getByTestId('task-working-dir').textContent || '').not.toMatch(/Cloud workspace|云端工作区|雲端工作區/i);
+        expect(screen.queryByTestId('task-cloud-workspace-badge')).toBeNull();
         expect(screen.queryByTestId('task-secondary-label')).toBeNull();
     });
 
@@ -2863,6 +3017,24 @@ describe('SidebarTaskManagement', () => {
         expect(screen.queryByTestId('task-cloud-overview-dialog')).toBeNull();
     });
 
+    it('opens the management dialog from the header cloud button, not the create-task wizard', async () => {
+        cloudWorkspaceEntitlementMock.mockResolvedValue({
+            enabled: true,
+            quota: 5,
+            used: 1,
+            workspaces: [{ id: 'cws_a', name: '工作区 1' }],
+            deleted: [],
+        });
+        renderTaskManagement({ lang: 'zh' });
+
+        const cloudButton = await screen.findByTestId('task-cloud-overview');
+        fireEvent.click(cloudButton);
+        expect(await screen.findByTestId('task-cloud-overview-dialog')).toBeTruthy();
+        expect(screen.getByRole('dialog', { name: '云端工作区' })).toBeTruthy();
+        expect(screen.queryByRole('dialog', { name: '创建云端工作区任务' })).toBeNull();
+        expect(screen.queryByTestId('task-workspace-kind-cloud')).toBeNull();
+    });
+
     it('shows a disabled cloud task type when entitlement is not granted', async () => {
         cloudWorkspaceEntitlementMock.mockResolvedValue({ enabled: false });
         renderTaskManagement({ lang: 'zh', showCloudWorkspaceManagement: false, showCloudWorkspaceCreation: true });
@@ -2923,18 +3095,56 @@ describe('SidebarTaskManagement', () => {
         expect(await screen.findByTestId('task-cloud-overview-dialog')).toBeTruthy();
         expect(screen.getByTestId('task-cloud-overview-summary').textContent).toBe('现有 2 个工作区 / 最多 5 个 · 1 个已关联任务 · 1 个未关联');
         expect(screen.getByTestId('task-cloud-overview-summary').getAttribute('title')).toBe('Hub 管理员最多允许 5 个云端工作区');
-        expect(screen.getByText('打开任务：跨设备任务')).toBeTruthy();
-        expect(screen.getByText('未关联任务 · 创建云端任务')).toBeTruthy();
-        expect(screen.getByText('删除工作区')).toBeTruthy();
+        expect(screen.getAllByText('1 个关联任务').length).toBeGreaterThan(0);
+        expect(screen.getByText('无关联任务')).toBeTruthy();
+        expect(screen.getByTestId('task-cloud-overview-delete-blocked')).toBeTruthy();
 
         fireEvent.click(screen.getByTestId('task-cloud-overview-bound'));
-        await waitFor(() => {
-            expect(resumeTask).toHaveBeenCalledWith(
-                baseProject.project_path,
-                expect.objectContaining({ name: '跨设备任务' }),
-            );
+        expect(screen.getByTestId('task-cloud-overview-dialog')).toBeTruthy();
+        expect(screen.getByTestId('task-cloud-overview-task').textContent).toContain('跨设备任务');
+        expect(resumeTask).not.toHaveBeenCalled();
+    });
+
+    it('opens a share dialog from an owned cloud task row', async () => {
+        cloudWorkspaceEntitlementMock.mockResolvedValue({ enabled: true, quota: 5, used: 1, workspaces: [{ id: 'cws_a', name: '标书项目' }] });
+        renderTaskManagement({
+            lang: 'zh',
+            tasks: [{
+                ...baseProject,
+                name: '跨设备任务',
+                tags: ['task_management', 'cloud_workspace:cws_a'],
+            }],
         });
-        expect(screen.queryByTestId('task-cloud-overview-dialog')).toBeNull();
+
+        fireEvent.click(screen.getByTestId('task-cloud-share'));
+        expect(await screen.findByTestId('task-cloud-share-dialog')).toBeTruthy();
+        expect(screen.getByText('分享「跨设备任务」')).toBeTruthy();
+        expect(await screen.findByTestId('task-cloud-share-ttl-never')).toBeTruthy();
+        expect(screen.getByTestId('task-cloud-share-password')).toBeTruthy();
+        fireEvent.change(screen.getByTestId('task-cloud-share-password'), { target: { value: 'secret' } });
+        fireEvent.click(screen.getByTestId('task-cloud-share-ttl-7d'));
+        fireEvent.click(await screen.findByTestId('task-cloud-share-generate'));
+        await waitFor(() => expect(createCloudWorkspaceShareMock).toHaveBeenCalledWith('cws_a', 'read', 'secret', '7d', false));
+        expect(await screen.findByTestId('task-cloud-share-url')).toBeTruthy();
+        fireEvent.click(screen.getByTestId('task-cloud-share-permission-write'));
+        expect(screen.getByTestId('task-cloud-share-update-permission')).toBeTruthy();
+        fireEvent.click(screen.getByTestId('task-cloud-share-update-permission'));
+        await waitFor(() => expect(createCloudWorkspaceShareMock).toHaveBeenCalledWith('cws_a', 'write', '', '7d', false));
+    });
+
+    it('marks a received shared cloud task with the owner and hides the share button', async () => {
+        cloudWorkspaceEntitlementMock.mockResolvedValue({ enabled: true, quota: 5, used: 0, workspaces: [] });
+        renderTaskManagement({
+            lang: 'zh',
+            tasks: [{
+                ...baseProject,
+                name: '跨设备任务',
+                tags: ['task_management', 'cloud_workspace:cws_a', 'cloud_workspace_share:read', 'cloud_workspace_shared_from:u1@x.com'],
+            }],
+        });
+
+        expect(screen.getByTestId('task-cloud-shared-from').textContent).toBe('来自 u1@x.com · 只读');
+        expect(screen.queryByTestId('task-cloud-share')).toBeNull();
     });
 
     it('omits the hub quota from the overview summary when it is unknown', async () => {
@@ -2958,7 +3168,7 @@ describe('SidebarTaskManagement', () => {
         expect(summary.getAttribute('title')).toBeNull();
     });
 
-    it('opens a cloud create dialog from a blank workspace and can be closed', async () => {
+    it('selects a blank workspace in the management dialog without creating a task', async () => {
         cloudWorkspaceEntitlementMock.mockResolvedValue({
             enabled: true,
             quota: 5,
@@ -2970,9 +3180,9 @@ describe('SidebarTaskManagement', () => {
 
         fireEvent.click(await screen.findByTestId('task-cloud-overview'));
         fireEvent.click(await screen.findByTestId('task-cloud-overview-blank'));
-        expect(await screen.findByRole('dialog', { name: '创建云端工作区任务' })).toBeTruthy();
-        expect(screen.queryByTestId('task-cloud-overview-dialog')).toBeNull();
-        expect(screen.getByTestId('task-workspace-kind-cloud').getAttribute('aria-pressed')).toBe('true');
+        expect(screen.getByTestId('task-cloud-overview-dialog')).toBeTruthy();
+        expect(screen.getByTestId('task-cloud-overview-selected').textContent).toContain('空白工作区');
+        expect(screen.queryByRole('dialog', { name: '创建云端工作区任务' })).toBeNull();
     });
 
     it('deletes an unlinked workspace from the overview into recently deleted', async () => {
@@ -3384,7 +3594,7 @@ describe('SidebarTaskManagement', () => {
         expect(screen.getByTestId('task-cloud-overview-blank')).toBeTruthy();
     });
 
-    it('opens a new cloud task dialog from the overview and closes with the close button', async () => {
+    it('creates a cloud workspace from the overview new button', async () => {
         cloudWorkspaceEntitlementMock.mockResolvedValue({
             enabled: true,
             quota: 5,
@@ -3392,6 +3602,7 @@ describe('SidebarTaskManagement', () => {
             workspaces: [],
             deleted: [],
         });
+        createCloudWorkspaceMock.mockResolvedValue({ id: 'cws_new', name: '工作区 1' });
         renderTaskManagement({ lang: 'zh' });
 
         fireEvent.click(await screen.findByTestId('task-cloud-overview'));
@@ -3400,7 +3611,63 @@ describe('SidebarTaskManagement', () => {
 
         fireEvent.click(screen.getByTestId('task-cloud-overview'));
         fireEvent.click(await screen.findByTestId('task-cloud-overview-new'));
-        expect(await screen.findByRole('dialog', { name: '创建云端工作区任务' })).toBeTruthy();
+        await waitFor(() => expect(createCloudWorkspaceMock).toHaveBeenCalled());
+        expect(screen.getByTestId('task-cloud-overview-dialog')).toBeTruthy();
+        expect(screen.queryByRole('dialog', { name: '创建云端工作区任务' })).toBeNull();
+    });
+
+    it('adds another default workspace from the overview when one already exists', async () => {
+        cloudWorkspaceEntitlementMock.mockResolvedValue({
+            enabled: true,
+            quota: 10,
+            used: 1,
+            workspaces: [{ id: 'cws_a', name: '工作区 1' }],
+            deleted: [],
+        });
+        createCloudWorkspaceMock.mockResolvedValue({ id: 'cws_b', name: '工作区 2' });
+        renderTaskManagement({ lang: 'zh' });
+
+        fireEvent.click(await screen.findByTestId('task-cloud-overview'));
+        expect(await screen.findByTestId('task-cloud-overview-blank')).toBeTruthy();
+        expect(screen.getByTestId('task-cloud-overview-blank').textContent).toContain('工作区 1');
+        createCloudWorkspaceMock.mockClear();
+        fireEvent.click(await screen.findByTestId('task-cloud-overview-new'));
+        await waitFor(() => expect(createCloudWorkspaceMock).toHaveBeenCalledWith(''));
+        expect(screen.queryByTestId('task-cloud-overview-error')).toBeNull();
+        await waitFor(() => {
+            expect(screen.getByTestId('task-cloud-overview-selected').textContent).toContain('工作区 2');
+        });
+    });
+
+    it('ignores a second overview new click while create is in flight', async () => {
+        let resolveCreate: (value: { id: string; name: string }) => void = () => {};
+        cloudWorkspaceEntitlementMock.mockResolvedValue({
+            enabled: true,
+            quota: 10,
+            used: 1,
+            workspaces: [{ id: 'cws_a', name: '工作区 1' }],
+            deleted: [],
+        });
+        createCloudWorkspaceMock.mockImplementation(() => new Promise(resolve => {
+            resolveCreate = resolve;
+        }));
+        renderTaskManagement({ lang: 'zh' });
+
+        fireEvent.click(await screen.findByTestId('task-cloud-overview'));
+        const createNew = await screen.findByTestId('task-cloud-overview-new');
+        fireEvent.click(createNew);
+        fireEvent.click(createNew);
+        expect(createCloudWorkspaceMock).toHaveBeenCalledTimes(1);
+        await waitFor(() => {
+            expect(createNew.textContent).toContain('正在创建');
+        });
+        await act(async () => {
+            resolveCreate({ id: 'cws_b', name: '工作区 2' });
+        });
+        await waitFor(() => {
+            expect(screen.getByTestId('task-cloud-overview-selected').textContent).toContain('工作区 2');
+        });
+        expect(screen.getByTestId('task-cloud-overview-new').textContent).toContain('新建云端工作区');
     });
 
     it('closes the cloud overview with Escape and does not stack it on the create dialog', async () => {
@@ -3446,8 +3713,8 @@ describe('SidebarTaskManagement', () => {
 
         fireEvent.click(await screen.findByTestId('task-cloud-overview'));
         expect(await screen.findByTestId('task-cloud-overview-blank')).toBeTruthy();
-        expect(screen.getByTestId('task-cloud-workspace-lease').textContent).toContain('占用中（其他设备');
-        expect(screen.getByTestId('task-cloud-workspace-reconcile').textContent).toContain('完整扫描');
+        expect(screen.getAllByTestId('task-cloud-workspace-lease')[0].textContent).toContain('占用中（其他设备');
+        expect(screen.getAllByTestId('task-cloud-workspace-reconcile')[0].textContent).toContain('完整扫描');
         expect(await screen.findByTestId('task-cloud-overview-hub-banner')).toBeTruthy();
     });
 
@@ -3477,7 +3744,7 @@ describe('SidebarTaskManagement', () => {
         fireEvent.click(await screen.findByTestId('task-cloud-overview-bound'));
         expect(screen.getByTestId('task-cloud-overview-dialog')).toBeTruthy();
         expect(resumeTask).not.toHaveBeenCalled();
-        expect(onTaskSwitchBlocked).toHaveBeenCalled();
+        expect(onTaskSwitchBlocked).not.toHaveBeenCalled();
     });
 
     it('still refreshes restored tasks if the overview or create dialog opens first', async () => {
@@ -3522,7 +3789,7 @@ describe('SidebarTaskManagement', () => {
         fireEvent.click(await screen.findByTestId('task-cloud-overview'));
         const blank = await screen.findByTestId('task-cloud-overview-blank') as HTMLButtonElement;
         const createNew = screen.getByTestId('task-cloud-overview-new') as HTMLButtonElement;
-        expect(blank.disabled).toBe(true);
+        expect(blank.disabled).toBe(false);
         expect(createNew.disabled).toBe(true);
         fireEvent.click(blank);
         fireEvent.click(createNew);
@@ -3551,7 +3818,7 @@ describe('SidebarTaskManagement', () => {
 
         fireEvent.click(await screen.findByTestId('task-cloud-overview'));
         expect(await screen.findByTestId('task-cloud-overview-syncing')).toBeTruthy();
-        expect((screen.getByTestId('task-cloud-overview-blank') as HTMLButtonElement).disabled).toBe(true);
+        expect((screen.getByTestId('task-cloud-overview-blank') as HTMLButtonElement).disabled).toBe(false);
 
         rendered.rerender(
             <SidebarTaskManagement
@@ -3606,7 +3873,7 @@ describe('SidebarTaskManagement', () => {
             await Promise.resolve();
         });
         expect(screen.getByTestId('task-cloud-overview-syncing')).toBeTruthy();
-        expect((screen.getByTestId('task-cloud-overview-blank') as HTMLButtonElement).disabled).toBe(true);
+        expect((screen.getByTestId('task-cloud-overview-blank') as HTMLButtonElement).disabled).toBe(false);
     });
 
     it('closes the overview if Hub entitlement is revoked while it is open', async () => {
@@ -4158,12 +4425,12 @@ describe('SidebarTaskManagement', () => {
         expect(createBtn.title).toContain('配额');
     });
 
-    it('restores a recently deleted cloud workspace', async () => {
+    it('keeps restore and force-delete out of the create-task cloud picker', async () => {
         cloudWorkspaceEntitlementMock.mockResolvedValue({
             enabled: true,
             quota: 5,
-            used: 0,
-            workspaces: [],
+            used: 1,
+            workspaces: [{ id: 'cws_live', name: '进行中' }],
             deleted: [{
                 id: 'cws_dead',
                 name: '旧项目',
@@ -4171,58 +4438,18 @@ describe('SidebarTaskManagement', () => {
                 purge_after: '2026-09-03T10:00:00Z',
             }],
         });
-        restoreCloudWorkspaceMock.mockResolvedValue({
-            id: 'cws_dead',
-            name: '旧项目',
-            used_bytes: 0,
-            updated_at: '2026-08-28T12:00:00Z',
-        });
         renderTaskManagement({ lang: 'zh' });
 
         openCreateDialog();
         fireEvent.click(await screen.findByTestId('task-workspace-kind-cloud'));
-        expect(await screen.findByTestId('task-cloud-workspace-deleted')).toBeTruthy();
-        expect(screen.getByText('旧项目')).toBeTruthy();
-        expect(screen.getByText('7 天内可恢复')).toBeTruthy();
-
-        fireEvent.click(screen.getByTestId('task-cloud-workspace-restore'));
-        await waitFor(() => {
-            expect(restoreCloudWorkspaceMock).toHaveBeenCalledWith('cws_dead');
-        });
-        await waitFor(() => {
-            expect((screen.getByRole('button', { name: '创建并打开' }) as HTMLButtonElement).disabled).toBe(false);
-        });
+        expect(await screen.findByTestId('task-cloud-workspace-list')).toBeTruthy();
+        expect(screen.getByTestId('task-cloud-workspace-row').textContent).toContain('进行中');
+        expect(screen.getByTestId('task-cloud-workspace-create')).toBeTruthy();
         expect(screen.queryByTestId('task-cloud-workspace-deleted')).toBeNull();
-    });
-
-    it('force-deletes a recently deleted workspace from the create dialog with a custom confirm', async () => {
-        const confirmSpy = vi.spyOn(window, 'confirm');
-        cloudWorkspaceEntitlementMock.mockResolvedValue({
-            enabled: true,
-            quota: 5,
-            used: 0,
-            workspaces: [],
-            deleted: [{
-                id: 'cws_dead',
-                name: '旧项目',
-            }],
-        });
-        forceDeleteCloudWorkspaceMock.mockResolvedValue(undefined);
-        renderTaskManagement({ lang: 'zh' });
-
-        openCreateDialog();
-        fireEvent.click(await screen.findByTestId('task-workspace-kind-cloud'));
-        fireEvent.click(await screen.findByTestId('task-cloud-workspace-force-delete'));
-
-        const dialog = await screen.findByRole('dialog', { name: '强制删除' });
-        expect(within(dialog).getByText('永久删除「旧项目」及全部远程文件？此操作不可撤销。')).toBeTruthy();
-        expect(confirmSpy).not.toHaveBeenCalled();
-        fireEvent.click(within(dialog).getByRole('button', { name: '确定' }));
-
-        await waitFor(() => expect(forceDeleteCloudWorkspaceMock).toHaveBeenCalledWith('cws_dead'));
-        await waitFor(() => expect(screen.queryByTestId('task-cloud-workspace-deleted')).toBeNull());
-        expect(screen.getByRole('dialog', { name: '创建云端工作区任务' })).toBeTruthy();
-        confirmSpy.mockRestore();
+        expect(screen.queryByTestId('task-cloud-workspace-restore')).toBeNull();
+        expect(screen.queryByTestId('task-cloud-workspace-force-delete')).toBeNull();
+        expect(screen.queryByTestId('task-cloud-workspace-rename')).toBeNull();
+        expect(screen.queryByTestId('task-cloud-workspace-delete')).toBeNull();
     });
 });
 

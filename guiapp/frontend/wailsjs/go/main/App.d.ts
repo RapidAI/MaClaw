@@ -252,6 +252,18 @@ export function CloudWorkspaceCacheDir(arg1:string):Promise<main.PreparedCloudWo
 
 export function CloudWorkspaceEntitlement():Promise<main.CloudWorkspaceEntitlement>;
 
+export function GetCloudWorkspaceShare(arg1:string):Promise<Record<string, any>>;
+
+export function CreateCloudWorkspaceShare(arg1:string,arg2:string,arg3:string,arg4:string,arg5:boolean):Promise<Record<string, any>>;
+
+export function StopCloudWorkspaceShare(arg1:string):Promise<void>;
+
+export function UpdateCloudWorkspaceShareRecipient(arg1:string,arg2:string,arg3:string):Promise<void>;
+
+export function RemoveCloudWorkspaceShareRecipient(arg1:string,arg2:string):Promise<void>;
+
+export function AcceptCloudWorkspaceShare(arg1:string,arg2:string):Promise<main.ProjectSearchResult>;
+
 export function CodingKnowledgeCapacity():Promise<main.CodingKnowledgeCapacityStatus>;
 
 export function CodingKnowledgeConfirm(arg1:string):Promise<void>;

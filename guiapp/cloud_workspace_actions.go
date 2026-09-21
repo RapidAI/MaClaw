@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -63,6 +64,7 @@ func resetCloudWorkspaceDialogMocks() {
 	cloudWorkspaceConfirmStealFn = nil
 	cloudWorkspaceConfirmDiscardDirtyFn = nil
 	resetCloudWorkspaceMounts()
+	resetCloudWorkspaceShareAccessCache()
 	cloudWorkspaceRestoreGen.Store(0)
 	cloudWorkspaceDialogMu.Lock()
 	defer cloudWorkspaceDialogMu.Unlock()
@@ -181,6 +183,16 @@ func cloudWorkspaceAPIError(status int, data []byte) error {
 		return fmt.Errorf("未开通云端工作区")
 	case "CLOUD_WORKSPACE_LEASE_REQUIRED":
 		return fmt.Errorf("云端工作区租约无效，请重新打开")
+	case "CLOUD_WORKSPACE_SESSION_REQUIRED", "CLOUD_WORKSPACE_SESSION_INVALID":
+		return fmt.Errorf("%s", cloudWorkspaceTr("Cloud workspace session is invalid. Open the share link again.", "云端工作区会话无效，请重新打开分享链接", "雲端工作區會話無效，請重新打開分享連結"))
+	case "CLOUD_WORKSPACE_SHARE_PASSWORD_REQUIRED":
+		return wrapCloudWorkspaceShareError(errCloudWorkspaceSharePasswordRequired)
+	case "CLOUD_WORKSPACE_SHARE_PASSWORD_INVALID":
+		return wrapCloudWorkspaceShareError(errCloudWorkspaceSharePasswordInvalid)
+	case "CLOUD_WORKSPACE_SHARE_EXPIRED":
+		return wrapCloudWorkspaceShareError(errCloudWorkspaceShareExpired)
+	case "CLOUD_WORKSPACE_SHARE_SELF":
+		return wrapCloudWorkspaceShareError(errCloudWorkspaceShareSelf)
 	case "CLOUD_WORKSPACE_REVISION_CONFLICT":
 		return fmt.Errorf("云端工作区版本冲突，请重试")
 	case "FENCED":
@@ -208,12 +220,18 @@ func cloudWorkspaceAPIError(status int, data []byte) error {
 	case "CLOUD_WORKSPACE_IN_USE":
 		return fmt.Errorf("云端工作区占用中（其他设备）")
 	case "NOT_FOUND":
-		return fmt.Errorf("云端工作区不存在或已超过 7 天恢复期限")
+		if strings.Contains(strings.ToLower(payload.Message), "share") {
+			return wrapCloudWorkspaceShareError(errCloudWorkspaceShareRevoked)
+		}
+		return fmt.Errorf("%s", cloudWorkspaceTr("Cloud workspace not found, or the 7-day restore window has passed.", "云端工作区不存在或已超过 7 天恢复期限", "雲端工作區不存在或已超過 7 天恢復期限"))
 	case "INVALID_INPUT":
+		if strings.Contains(strings.ToLower(payload.Message), "share password") {
+			return fmt.Errorf("%s", cloudWorkspaceTr("Share password must be 4-64 characters.", "分享密码需为 4–64 个字符", "分享密碼需為 4–64 個字元"))
+		}
 		if strings.TrimSpace(payload.Message) != "" {
 			return fmt.Errorf("%s", payload.Message)
 		}
-		return fmt.Errorf("云端工作区名称无效")
+		return fmt.Errorf("%s", cloudWorkspaceTr("Invalid cloud workspace name.", "云端工作区名称无效", "雲端工作區名稱無效"))
 	}
 	if msg := strings.TrimSpace(payload.Message); msg != "" {
 		return fmt.Errorf("%s", msg)
@@ -233,17 +251,24 @@ func decodeCloudWorkspaceHubRow(data []byte) (cloudWorkspaceHubRow, error) {
 }
 
 func (a *App) cloudWorkspaceMutate(method, path string, body any, okStatus ...int) (cloudWorkspaceHubRow, error) {
+	var keyMaterial []byte
+	if body != nil {
+		keyMaterial, _ = json.Marshal(body)
+	}
+	return a.cloudWorkspaceMutateWithKey(method, path, body, keyMaterial, okStatus...)
+}
+
+func (a *App) cloudWorkspaceMutateWithKey(method, path string, body any, keyMaterial []byte, okStatus ...int) (cloudWorkspaceHubRow, error) {
 	ctx, cancel := a.cloudWorkspaceRequestContext()
 	defer cancel()
-	opt := cloudWorkspaceHTTPOptions{timeout: cloudWorkspaceRequestTimeout, maxRead: cloudWorkspaceResponseMaxSize, accept: "application/json"}
+	opt := cloudWorkspaceHTTPOptions{
+		timeout: cloudWorkspaceRequestTimeout,
+		maxRead: cloudWorkspaceResponseMaxSize,
+		accept:  "application/json",
+		headers: map[string]string{"Idempotency-Key": cloudWorkspaceIdempotencyKey(method+":"+path, keyMaterial)},
+	}
 	if body != nil {
 		opt.jsonBody = body
-		if raw, marshalErr := json.Marshal(body); marshalErr == nil {
-			opt.headers = map[string]string{"Idempotency-Key": cloudWorkspaceIdempotencyKey(method+":"+path, raw)}
-		}
-	}
-	if opt.headers == nil {
-		opt.headers = map[string]string{"Idempotency-Key": cloudWorkspaceIdempotencyKey(method+":"+path, nil)}
 	}
 	data, status, err := a.cloudWorkspaceHubDo(ctx, method, path, opt)
 	if err != nil {
@@ -259,11 +284,25 @@ func (a *App) cloudWorkspaceMutate(method, path string, body any, okStatus ...in
 	return decodeCloudWorkspaceHubRow(data)
 }
 
+func cloudWorkspaceUniqueKeyMaterial(base []byte) []byte {
+	var nonce [8]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return append(append([]byte(nil), base...), []byte(":"+strconv.FormatInt(time.Now().UnixNano(), 10))...)
+	}
+	return append(append([]byte(nil), base...), nonce[:]...)
+}
+
 // CreateCloudWorkspace POST /api/v1/cloud-workspaces. Empty name lets Hub assign 工作区 N.
 func (a *App) CreateCloudWorkspace(name string) (CloudWorkspaceEntitlementWorkspace, error) {
-	row, err := a.cloudWorkspaceMutate(http.MethodPost, cloudWorkspaceCollectionPath, map[string]string{
-		"name": strings.TrimSpace(name),
-	}, http.StatusCreated)
+	name = strings.TrimSpace(name)
+	body := map[string]string{"name": name}
+	raw, _ := json.Marshal(body)
+	// An empty name means "allocate another default workspace". Hashing only
+	// {"name":""} would replay the previous create and look like a no-op.
+	if name == "" {
+		raw = cloudWorkspaceUniqueKeyMaterial(raw)
+	}
+	row, err := a.cloudWorkspaceMutateWithKey(http.MethodPost, cloudWorkspaceCollectionPath, body, raw, http.StatusCreated)
 	if err != nil {
 		return CloudWorkspaceEntitlementWorkspace{}, err
 	}
@@ -281,9 +320,15 @@ func (a *App) ProvisionCloudWorkspaceTask(name, mode, tag, deviceTaskID string) 
 		"tag": strings.TrimSpace(tag), "device_task_id": strings.TrimSpace(deviceTaskID),
 	}
 	rawBody, _ := json.Marshal(body)
+	keyMaterial := rawBody
+	if strings.TrimSpace(deviceTaskID) == "" {
+		// Bound-workspace "Create & open" allocates a new Hub workspace each
+		// click. A stable hash of the same task name would replay the last one.
+		keyMaterial = cloudWorkspaceUniqueKeyMaterial(rawBody)
+	}
 	data, status, err := a.cloudWorkspaceHubDo(ctx, http.MethodPost, cloudWorkspaceTaskProvisionPath, cloudWorkspaceHTTPOptions{
 		accept: "application/json", jsonBody: body,
-		headers: map[string]string{"Idempotency-Key": cloudWorkspaceIdempotencyKey("workspace-task-provision", rawBody)},
+		headers: map[string]string{"Idempotency-Key": cloudWorkspaceIdempotencyKey("workspace-task-provision", keyMaterial)},
 	})
 	if err != nil {
 		return CloudWorkspaceTaskProvision{}, err
@@ -558,6 +603,11 @@ func (a *App) ForceDeleteCloudWorkspace(id string) error {
 			return fmt.Errorf("flush local cloud workspace before purge: %w", releaseErr)
 		}
 	}
+	for _, path := range a.localCloudWorkspaceTaskPaths(id) {
+		if err := a.DeleteTask(path); err != nil {
+			log.Printf("[cloud_workspace] force-delete leftover task path=%s err=%v", path, err)
+		}
+	}
 	data, status, err := a.cloudWorkspaceHubDo(ctx, http.MethodDelete, cloudWorkspaceItemPath(id)+"/purge", cloudWorkspaceHTTPOptions{accept: "application/json", headers: map[string]string{"Idempotency-Key": cloudWorkspaceIdempotencyKey("workspace-purge", []byte(id))}})
 	if err != nil {
 		a.recordCloudWorkspaceAudit(cloudWorkspaceAuditEvent{WorkspaceID: id, Operation: "remote_purge", Outcome: "failed", Detail: err.Error()})
@@ -726,6 +776,33 @@ func recordIsLocalCloudWorkspaceTask(candidate memory.ProjectRecord, workspaceID
 	return workspaceID != "" && localCloudWorkspaceID(candidate) == workspaceID
 }
 
+func (a *App) localCloudWorkspaceTaskPaths(workspaceID string) []string {
+	workspaceID = strings.TrimSpace(workspaceID)
+	if a == nil || workspaceID == "" || a.memoryStore == nil {
+		return nil
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return nil
+	}
+	var paths []string
+	seen := map[string]struct{}{}
+	for _, rec := range pi.ListAllMatching(func(candidate memory.ProjectRecord) bool {
+		return recordIsLocalCloudWorkspaceTask(candidate, workspaceID)
+	}) {
+		path := normalizeProjectSessionPath(rec.ProjectPath)
+		if path == "" || pi.IsArchived(path) {
+			continue
+		}
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		paths = append(paths, path)
+	}
+	return paths
+}
+
 func (a *App) findLocalCloudWorkspaceTask(workspaceID string, includeHidden bool) ProjectSearchResult {
 	workspaceID = strings.TrimSpace(workspaceID)
 	if workspaceID == "" {
@@ -888,7 +965,13 @@ func (a *App) ResumeCloudWorkspaceTask(workspaceID, projectPath string) (Project
 	if path, ok := heldWritableCloudWorkspacePath(workspaceID); ok && strings.TrimSpace(path) != "" {
 		alreadyHeld = true
 	}
-	prepared, err := a.PrepareCloudWorkspace(workspaceID)
+	var prepared PreparedCloudWorkspace
+	var err error
+	if cloudWorkspaceTaskIsReadShare(existing) {
+		prepared, err = a.PrepareCloudWorkspaceReadOnly(workspaceID)
+	} else {
+		prepared, err = a.PrepareCloudWorkspace(workspaceID)
+	}
 	if err != nil {
 		log.Printf("[cloud_workspace] resume prepare failed id=%s err=%v", workspaceID, err)
 		return ProjectSearchResult{}, err

@@ -1451,6 +1451,49 @@ func RunMigrations(db *sql.DB) error {
 			object_sha256 TEXT, client_instance_id TEXT NOT NULL DEFAULT '',
 			conflict_of_seq INTEGER, created_at TEXT NOT NULL)`,
 		`CREATE INDEX IF NOT EXISTS idx_cws_events_workspace_seq ON cloud_workspace_events(workspace_id, seq)`,
+		`CREATE TABLE IF NOT EXISTS cloud_workspace_shares (
+			id TEXT PRIMARY KEY,
+			workspace_id TEXT NOT NULL,
+			tenant_id TEXT NOT NULL,
+			owner_user_id TEXT NOT NULL,
+			token TEXT NOT NULL UNIQUE,
+			default_permission TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'active',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			password_hash TEXT NOT NULL DEFAULT '',
+			expires_at TEXT NOT NULL DEFAULT ''
+		)`,
+		`ALTER TABLE cloud_workspace_shares ADD COLUMN password_hash TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE cloud_workspace_shares ADD COLUMN expires_at TEXT NOT NULL DEFAULT ''`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_cws_share_active ON cloud_workspace_shares(workspace_id) WHERE status = 'active'`,
+		`CREATE INDEX IF NOT EXISTS idx_cws_share_token ON cloud_workspace_shares(token)`,
+		`CREATE INDEX IF NOT EXISTS idx_cws_share_owner ON cloud_workspace_shares(tenant_id, owner_user_id, status)`,
+		`CREATE TABLE IF NOT EXISTS cloud_workspace_share_recipients (
+			workspace_id TEXT NOT NULL,
+			tenant_id TEXT NOT NULL,
+			share_id TEXT NOT NULL,
+			recipient_user_id TEXT NOT NULL,
+			permission TEXT NOT NULL,
+			accepted_at TEXT NOT NULL,
+			PRIMARY KEY (workspace_id, recipient_user_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_cws_share_recipients_user ON cloud_workspace_share_recipients(tenant_id, recipient_user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_cws_share_recipients_share ON cloud_workspace_share_recipients(share_id)`,
+		`ALTER TABLE cloud_workspace_share_recipients ADD COLUMN home_hub TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE cloud_workspace_share_recipients ADD COLUMN home_user_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE cloud_workspace_share_recipients ADD COLUMN display_name TEXT NOT NULL DEFAULT ''`,
+		`CREATE TABLE IF NOT EXISTS cloud_workspace_share_access (
+			token_hash TEXT PRIMARY KEY,
+			workspace_id TEXT NOT NULL,
+			share_id TEXT NOT NULL,
+			recipient_user_id TEXT NOT NULL,
+			permission TEXT NOT NULL,
+			home_hub TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			last_used_at TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_cws_share_access_workspace ON cloud_workspace_share_access(workspace_id, recipient_user_id)`,
 	)
 
 	for _, stmt := range alterStmts {

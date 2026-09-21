@@ -615,6 +615,22 @@ func TestLookupHintOrUnknownFromL2KeepsOnlySearchFamilies(t *testing.T) {
 		t.Fatalf("non-lookup = %+v, want unknown", other)
 	}
 
+	// 2026-09-18: the collapsed result must preserve the L2 primary as
+	// RunnerUp escalation evidence. A tree-timeout collapse used to destroy
+	// non-lookup signals entirely (production: ssh at 0.83 collapsed to bare
+	// unknown and every ssh availability layer stayed dark). RunnerUp is not
+	// an authorized intent — surfaces that honor it apply their own policy.
+	ssh := lookupHintOrUnknownFromL2(ClassificationResult{Primary: LabelSSH, Confidence: 0.83}, false)
+	if ssh.RunnerUp != LabelSSH || ssh.RunnerUpScore != 0.83 {
+		t.Fatalf("collapsed ssh must survive as RunnerUp evidence: %+v", ssh)
+	}
+	if ssh.HasLabel(LabelSSH) {
+		t.Fatalf("RunnerUp must not leak into declared labels: %+v", ssh.Labels())
+	}
+	if other.RunnerUp != LabelFileRead || other.RunnerUpScore != 0.66 {
+		t.Fatalf("file_read collapse must also preserve evidence: %+v", other)
+	}
+
 	// An office guess at the lookup floor keeps a governed hint: it plans
 	// through the office capability surface instead of stripping document
 	// tools off the turn when the tree times out.
@@ -835,3 +851,157 @@ func TestSyncTreeVerdictContradictedByLocalFallsBackToL2Hint(t *testing.T) {
 		}
 	}
 }
+
+// A budget-fired tree timeout must not make every other ambiguous turn in the
+// burst pay the full fusion deadline again: escalations for a DIFFERENT scope
+// fail fast into the L2 fallback while the failure is still fresh, a repeat of
+// the SAME scope still escalates (its detached read may be adoptable — the
+// resend-recovery path), and a successful late verdict lifts the suppression
+// for everything that follows.
+func TestBudgetFiredTreeTimeoutSkipsOtherScopesOnly(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0, 0}}
+	var calls atomic.Int32
+	releaseLate := make(chan struct{})
+	uic := New(Config{
+		Embedder: emb,
+		LLMContextFunc: func(ctx context.Context, _ context.Context, _, _ string) (string, error) {
+			n := calls.Add(1)
+			if n == 1 {
+				// The first turn's tree call loses to the fusion deadline.
+				<-ctx.Done()
+				return "", ctx.Err()
+			}
+			if n == 2 {
+				// The scheduled late verdict: gate it so the suppression
+				// window is observed while the failure is still unresolved.
+				<-releaseLate
+			}
+			return `{"top":[{"skill":"office","score":0.92}]}`, nil
+		},
+		FusionTreeDeadline: 30 * time.Millisecond,
+		LLMTimeout:         5 * time.Second,
+	})
+	uic.mu.Lock()
+	uic.ready = true
+	uic.anchors = []intentAnchor{
+		{Label: LabelOffice, Vecs: [][]float32{{1, 0, 0}}},
+		// A second non-pair label tied with office keeps L2 ambiguous so the
+		// turn escalates to the tree; either leader discards a coding verdict.
+		{Label: LabelDocumentRead, Vecs: [][]float32{{1, 0, 0}}},
+		{Label: LabelCoding, Vecs: [][]float32{{0, 1, 0}}},
+	}
+	uic.mu.Unlock()
+
+	first := uic.ClassifyContext(context.Background(), MessageContext{Text: "生成庆祝生日会的PPT"})
+	if !first.Degraded {
+		t.Fatalf("first = %+v, want degraded hint after fusion timeout", first)
+	}
+	// The timeout schedules a background late verdict; wait until it has
+	// claimed the scope and is blocked on the gate, so its pending success
+	// cannot leak into the suppression assertions below.
+	deadline := time.Now().Add(2 * time.Second)
+	for calls.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if calls.Load() < 2 {
+		t.Fatalf("background late verdict never started; calls=%d", calls.Load())
+	}
+	before := calls.Load()
+
+	// A different ambiguous scope while the failure is still fresh must not
+	// pay another tree call: it lands straight in the L2 fallback.
+	other := uic.ClassifyContext(context.Background(), MessageContext{Text: "发邮件给团队更新项目进度"})
+	if !other.Degraded {
+		t.Fatalf("other = %+v, want degraded L2 fallback without a tree call", other)
+	}
+	if calls.Load() != before {
+		t.Fatalf("other scope paid a tree call despite the fresh endpoint failure: calls=%d", calls.Load())
+	}
+
+	// Let the late verdict land: it recovers the failed scope (cache-warmed)
+	// and lifts the suppression for everything after.
+	close(releaseLate)
+	deadline = time.Now().Add(3 * time.Second)
+	for calls.Load() < 3 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	again := uic.ClassifyContext(context.Background(), MessageContext{Text: "生成庆祝生日会的PPT"})
+	if again.Primary != LabelOffice || again.Degraded {
+		t.Fatalf("repeat = %+v, want office route for the failed scope", again)
+	}
+	recovered := uic.ClassifyContext(context.Background(), MessageContext{Text: "整理会议纪要并群发"})
+	if recovered.Primary != LabelOffice || recovered.Degraded {
+		t.Fatalf("post-recovery scope = %+v, want probing to resume after the late verdict lifted suppression", recovered)
+	}
+}
+
+// A 5xx from the tree endpoint (e.g. an HTTP 502 upstream failure) is the same
+// health evidence as a budget-fired timeout: escalations for OTHER scopes fail
+// fast into the L2 fallback while the failure is still fresh, and the failed
+// scope itself still escalates on repeat.
+func TestTree5xxFailureSkipsOtherScopesOnly(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0, 0}}
+	var calls atomic.Int32
+	releaseLate := make(chan struct{})
+	uic := New(Config{
+		Embedder: emb,
+		LLMContextFunc: func(ctx context.Context, _ context.Context, _, _ string) (string, error) {
+			n := calls.Add(1)
+			if n == 1 {
+				return "", &httpStatusError{status: 502}
+			}
+			if n == 2 {
+				<-releaseLate
+			}
+			return `{"top":[{"skill":"office","score":0.92}]}`, nil
+		},
+		FusionTreeDeadline: 30 * time.Millisecond,
+		LLMTimeout:         5 * time.Second,
+	})
+	uic.mu.Lock()
+	uic.ready = true
+	uic.anchors = []intentAnchor{
+		{Label: LabelOffice, Vecs: [][]float32{{1, 0, 0}}},
+		{Label: LabelDocumentRead, Vecs: [][]float32{{1, 0, 0}}},
+		{Label: LabelCoding, Vecs: [][]float32{{0, 1, 0}}},
+	}
+	uic.mu.Unlock()
+
+	first := uic.ClassifyContext(context.Background(), MessageContext{Text: "生成庆祝生日会的PPT"})
+	if !first.Degraded {
+		t.Fatalf("first = %+v, want degraded hint after 5xx", first)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for calls.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if calls.Load() < 2 {
+		t.Fatalf("background late verdict never started; calls=%d", calls.Load())
+	}
+	before := calls.Load()
+
+	other := uic.ClassifyContext(context.Background(), MessageContext{Text: "发邮件给团队更新项目进度"})
+	if !other.Degraded {
+		t.Fatalf("other = %+v, want degraded L2 fallback without a tree call", other)
+	}
+	if calls.Load() != before {
+		t.Fatalf("other scope paid a tree call despite the fresh 5xx: calls=%d", calls.Load())
+	}
+
+	close(releaseLate)
+	deadline = time.Now().Add(3 * time.Second)
+	for calls.Load() < 3 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	again := uic.ClassifyContext(context.Background(), MessageContext{Text: "生成庆祝生日会的PPT"})
+	if again.Primary != LabelOffice || again.Degraded {
+		t.Fatalf("repeat = %+v, want office route for the failed scope", again)
+	}
+}
+
+// httpStatusError mimics corelib/llm.HTTPStatusError for tests in this
+// package (which cannot import llm without an import cycle).
+type httpStatusError struct{ status int }
+
+func (e *httpStatusError) Error() string       { return "HTTP 502: body_len=434" }
+func (e *httpStatusError) HTTPStatusCode() int { return e.status }

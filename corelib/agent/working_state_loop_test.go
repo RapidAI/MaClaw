@@ -451,6 +451,71 @@ func TestRunLoop_WorkingStateDoneCheckNudgesWhenIterationsRemain(t *testing.T) {
 	}
 }
 
+func TestRunLoop_ReasoningOnlyAnswerSurfacesBeforeFinishNudge(t *testing.T) {
+	review := "Major comment: missing scratch-prompt baseline. " + strings.Repeat("analysis ", 40)
+	cases := []struct {
+		name   string
+		round2 func(string) map[string]interface{}
+	}{
+		{"empty content", reasoningOnlyResponse},
+		{"whitespace content", whitespaceContentReasoningResponse},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var thirdUser string
+			callCount := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				callCount++
+				body, _ := io.ReadAll(r.Body)
+				if callCount == 3 {
+					thirdUser = lastUserContentFromRequest(body)
+				}
+				var resp map[string]interface{}
+				switch callCount {
+				case 1:
+					resp = toolCallResponse("bash", `{"command":"true"}`)
+				case 2:
+					resp = tc.round2(review)
+				default:
+					resp = textResponse("ask the user")
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(resp)
+			}))
+			defer server.Close()
+			cb := &mockCallbacks{
+				config:      corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+				maxIter:     4,
+				sysPrompt:   "sys",
+				toolResult:  "fail",
+				toolOutcome: ToolExecutionOutcomeError,
+				tools:       []map[string]interface{}{tooldef.BuildToolDef("bash", "Run a command", map[string]interface{}{"type": "object"})},
+			}
+			result := RunLoop(cb, "review the paper", nil, nil)
+			if result.Error != "" {
+				t.Fatal(result.Error)
+			}
+			if !strings.Contains(thirdUser, "还有未关闭问题") {
+				t.Fatalf("expected done-check nudge: %q", thirdUser)
+			}
+			found := false
+			for _, entry := range result.HistoryDelta {
+				if entry.Role != "assistant" {
+					continue
+				}
+				text, _ := entry.Content.(string)
+				if strings.Contains(text, "missing scratch-prompt baseline") {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("reasoning-only answer missing from assistant history: %+v", result.HistoryDelta)
+			}
+		})
+	}
+}
+
 func TestRunLoop_WorkingStateDoneCheckDoesNotEatLastIteration(t *testing.T) {
 	callCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -955,6 +1020,36 @@ func textResponse(text string) map[string]interface{} {
 				"message": map[string]interface{}{
 					"role":    "assistant",
 					"content": text,
+				},
+				"finish_reason": "stop",
+			},
+		},
+	}
+}
+
+func reasoningOnlyResponse(reasoning string) map[string]interface{} {
+	return map[string]interface{}{
+		"choices": []map[string]interface{}{
+			{
+				"message": map[string]interface{}{
+					"role":              "assistant",
+					"content":           "",
+					"reasoning_content": reasoning,
+				},
+				"finish_reason": "stop",
+			},
+		},
+	}
+}
+
+func whitespaceContentReasoningResponse(reasoning string) map[string]interface{} {
+	return map[string]interface{}{
+		"choices": []map[string]interface{}{
+			{
+				"message": map[string]interface{}{
+					"role":              "assistant",
+					"content":           " \n\t",
+					"reasoning_content": reasoning,
 				},
 				"finish_reason": "stop",
 			},

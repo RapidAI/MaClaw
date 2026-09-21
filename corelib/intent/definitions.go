@@ -347,7 +347,8 @@ func DefaultDefinitions() []IntentDefinition {
 			TreeText: "用户要把当前已有事实渲染成一份 PDF 文件。" +
 				"语义判据：目标是单阶段排版/导出 PDF，产出物由已收集的事实或用户给出的正文决定，不需要多阶段设计决策。" +
 				"排除：撰写商业计划、研究报告、论文、竞品分析等需要受众/结构/论证设计的多阶段任务 → workflow_task；" +
-				"打开已有本地文档 → document_open；发送到指定目标 → document_delivery；把本轮已上传附件原样发回 → attachment_delivery。",
+				"打开已有本地文档 → document_open；发送到指定目标 → document_delivery；把本轮已上传附件原样发回 → attachment_delivery；" +
+				"保存为 markdown/.md 文本文件而不是 PDF → file_write。",
 			EmbedTexts: []string{
 				"生成一份PDF文档并发给我",
 				"生成pdf报告",
@@ -644,7 +645,7 @@ func DefaultDefinitions() []IntentDefinition {
 			Label:  LabelFileWrite,
 			Domain: "本地文件 (Local Files)",
 			TreeText: "用户要把指定内容写入、保存到本机文件，或直接修改某个已有的本地文件。" +
-				"语义判据：用户目标是创建/覆盖/追加/编辑一个具体的本地文件，产出物就是该文件本身。" +
+				"语义判据：用户目标是创建/覆盖/追加/编辑一个具体的本地文件，产出物就是该文件本身，包括 markdown/.md 文本。" +
 				"边界：「从零开发软件/功能」→ coding；「生成 Word/Excel/PPT 办公文档」→ office；" +
 				"「生成 PDF」→ document_generate；「把内容录入知识库」→ knowledge_write。",
 			EmbedTexts: []string{
@@ -653,8 +654,12 @@ func DefaultDefinitions() []IntentDefinition {
 				"修改 hosts 文件添加一条记录",
 				"把这串配置写进 .env 文件",
 				"在这个文件末尾追加一行",
+				"生成markdown",
+				"把刚才的内容保存为 markdown",
+				"写成 md 文件",
 				"save this text to a local file",
 				"create a file called todo.md with this content",
+				"export this as a markdown file",
 				"edit the config file and change the port",
 				"append this line to the end of the file",
 				"overwrite the old notes file with this",

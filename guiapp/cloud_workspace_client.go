@@ -89,7 +89,7 @@ func issueCloudWorkspaceInstanceSession(ctx context.Context, hubURL, machineToke
 	req.Header.Set("X-Machine-ID", machineID)
 	req.Header.Set("X-Cloud-Workspace-Protocol", cloudWorkspaceProtocolVersion)
 	req.Header.Set("Accept", "application/json")
-	resp, err := (&http.Client{Timeout: cloudWorkspaceRequestTimeout}).Do(req)
+	resp, err := cloudWorkspaceHTTPClient(cloudWorkspaceRequestTimeout).Do(req)
 	if err != nil {
 		return cloudWorkspaceInstanceSession{}, err
 	}
@@ -152,6 +152,13 @@ func ensureCloudWorkspaceInstanceSession(ctx context.Context, hubURL, machineTok
 	}
 }
 
+func dropCloudWorkspaceInstanceSession(hubURL, machineToken, machineID string) {
+	key := cloudWorkspaceInstanceSessionCacheKey(hubURL, machineID, machineToken)
+	cloudWorkspaceSessions.Lock()
+	delete(cloudWorkspaceSessions.items, key)
+	cloudWorkspaceSessions.Unlock()
+}
+
 func invalidateCloudWorkspaceInstanceSession(hubURL, machineToken, machineID, usedToken string) {
 	key := cloudWorkspaceInstanceSessionCacheKey(hubURL, machineID, machineToken)
 	cloudWorkspaceSessions.Lock()
@@ -176,6 +183,18 @@ func cloudWorkspaceSessionRejected(status int, data []byte) bool {
 
 func cloudWorkspaceItemPath(id string) string {
 	return cloudWorkspaceCollectionPath + "/" + url.PathEscape(strings.TrimSpace(id))
+}
+
+func cloudWorkspaceSharePath(id string) string {
+	return cloudWorkspaceItemPath(id) + "/share"
+}
+
+func cloudWorkspaceShareRecipientPath(id, userID string) string {
+	return cloudWorkspaceSharePath(id) + "/recipients/" + url.PathEscape(strings.TrimSpace(userID))
+}
+
+func cloudWorkspaceShareAcceptPath(token string) string {
+	return "/api/v1/cloud-workspace-shares/" + url.PathEscape(strings.TrimSpace(token)) + "/accept"
 }
 
 func cloudWorkspaceRestorePath(id string) string {
@@ -240,22 +259,158 @@ func cloudWorkspaceTransferTimeout(sizeBytes int64) time.Duration {
 }
 
 type cloudWorkspaceHTTPOptions struct {
-	timeout     time.Duration
-	maxRead     int64
-	accept      string
-	contentType string
-	jsonBody    any
-	rawBody     []byte
-	headers     map[string]string
+	timeout         time.Duration
+	maxRead         int64
+	accept          string
+	contentType     string
+	jsonBody        any
+	rawBody         []byte
+	headers         map[string]string
+	instanceSession bool
 }
 
-func (a *App) cloudWorkspaceHubDo(ctx context.Context, method, path string, opt cloudWorkspaceHTTPOptions) ([]byte, int, error) {
-	hubURL, token, machineID, err := a.virtualRepositorySyncClient()
+func (a *App) cloudWorkspaceHubDoRemote(ctx context.Context, hubURL, accessToken, method, path string, opt cloudWorkspaceHTTPOptions) ([]byte, int, error) {
+	hubURL = strings.TrimRight(strings.TrimSpace(hubURL), "/")
+	if hubURL == "" {
+		return nil, 0, fmt.Errorf("Hub URL not configured")
+	}
+	var reader io.Reader
+	var contentLength int64
+	switch {
+	case opt.rawBody != nil:
+		reader = bytes.NewReader(opt.rawBody)
+		contentLength = int64(len(opt.rawBody))
+	case opt.jsonBody != nil:
+		raw, marshalErr := json.Marshal(opt.jsonBody)
+		if marshalErr != nil {
+			return nil, 0, marshalErr
+		}
+		reader = bytes.NewReader(raw)
+		contentLength = int64(len(raw))
+	}
+	reqURL := hubURL + path
+	req, err := http.NewRequestWithContext(ctx, method, reqURL, reader)
 	if err != nil {
 		return nil, 0, err
 	}
+	if strings.TrimSpace(accessToken) != "" {
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+	}
+	if strings.HasPrefix(path, cloudWorkspaceCollectionPath) || strings.HasPrefix(path, cloudWorkspaceTaskProvisionPath) || strings.HasPrefix(path, "/api/v1/cloud-workspace-shares/") {
+		req.Header.Set("X-Cloud-Workspace-Protocol", cloudWorkspaceProtocolVersion)
+	}
+	for key, value := range opt.headers {
+		if strings.TrimSpace(key) != "" {
+			req.Header.Set(key, value)
+		}
+	}
+	if strings.TrimSpace(opt.accept) != "" {
+		req.Header.Set("Accept", opt.accept)
+	} else {
+		req.Header.Set("Accept", "application/json")
+	}
+	switch {
+	case opt.rawBody != nil:
+		ct := strings.TrimSpace(opt.contentType)
+		if ct == "" {
+			ct = "application/octet-stream"
+		}
+		req.Header.Set("Content-Type", ct)
+		req.ContentLength = contentLength
+	case opt.jsonBody != nil:
+		req.Header.Set("Content-Type", "application/json")
+		req.ContentLength = contentLength
+	}
+	timeout := opt.timeout
+	if timeout <= 0 {
+		timeout = cloudWorkspaceRequestTimeout
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(deadline); remaining <= 0 {
+			return nil, 0, ctx.Err()
+		} else if remaining < timeout {
+			timeout = remaining
+		}
+	}
+	maxRead := opt.maxRead
+	if maxRead <= 0 {
+		maxRead = cloudWorkspaceResponseMaxSize
+	}
+	resp, err := cloudWorkspaceHTTPClient(timeout).Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+	data, readErr := io.ReadAll(io.LimitReader(resp.Body, maxRead+1))
+	if readErr != nil {
+		return data, resp.StatusCode, fmt.Errorf("read Hub response: %w", readErr)
+	}
+	if int64(len(data)) > maxRead {
+		return nil, resp.StatusCode, fmt.Errorf("Hub response exceeds %d byte limit", maxRead)
+	}
+	return data, resp.StatusCode, nil
+}
+
+func cloudWorkspaceHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout: timeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return fmt.Errorf("stopped after 5 redirects")
+			}
+			if len(via) == 0 || req == nil || req.URL == nil || via[0] == nil || via[0].URL == nil {
+				return http.ErrUseLastResponse
+			}
+			orig := via[0].URL
+			if !strings.EqualFold(req.URL.Scheme, orig.Scheme) || !strings.EqualFold(req.URL.Host, orig.Host) {
+				return http.ErrUseLastResponse
+			}
+			return nil
+		},
+	}
+}
+
+func (a *App) cloudWorkspaceHubDoWithShare(ctx context.Context, sess cloudWorkspaceShareAccessSession, method, path string, opt cloudWorkspaceHTTPOptions) ([]byte, int, error) {
+	headers := map[string]string{}
+	for key, value := range opt.headers {
+		headers[key] = value
+	}
+	if workspaceID := cloudWorkspaceWorkspaceIDFromPath(path); workspaceID != "" {
+		if mount := lookupHeldCloudWorkspace(workspaceID); mount != nil {
+			mount.mu.Lock()
+			token := mount.FencingToken
+			leaseID := mount.LeaseID
+			mount.mu.Unlock()
+			if token > 0 {
+				headers["X-Cloud-Workspace-Fencing"] = strconv.FormatInt(token, 10)
+			}
+			if strings.TrimSpace(leaseID) != "" {
+				headers["X-Cloud-Workspace-Session"] = leaseID
+			}
+		}
+	}
+	opt.headers = headers
+	return a.cloudWorkspaceHubDoRemote(ctx, sess.HubURL, sess.AccessToken, method, path, opt)
+}
+
+func (a *App) cloudWorkspaceHubDo(ctx context.Context, method, path string, opt cloudWorkspaceHTTPOptions) ([]byte, int, error) {
+	workspaceID := cloudWorkspaceWorkspaceIDFromPath(path)
+	if workspaceID != "" {
+		if sess, ok := a.lookupForeignShareAccessSession(workspaceID); ok {
+			return a.cloudWorkspaceHubDoWithShare(ctx, sess, method, path, opt)
+		}
+	}
+	hubURL, token, machineID, err := a.virtualRepositorySyncClient()
+	if err != nil {
+		if workspaceID != "" {
+			if sess, ok := a.lookupShareAccessSession(workspaceID); ok && validReferralHandoffHubURL(sess.HubURL) {
+				return a.cloudWorkspaceHubDoWithShare(ctx, sess, method, path, opt)
+			}
+		}
+		return nil, 0, err
+	}
 	var instanceSession cloudWorkspaceInstanceSession
-	requiresInstanceSession := (strings.HasPrefix(path, cloudWorkspaceCollectionPath) && path != cloudWorkspaceEntitlementPath) || strings.HasPrefix(path, cloudWorkspaceTaskProvisionPath)
+	requiresInstanceSession := opt.instanceSession || (strings.HasPrefix(path, cloudWorkspaceCollectionPath) && path != cloudWorkspaceEntitlementPath) || strings.HasPrefix(path, cloudWorkspaceTaskProvisionPath)
 	if requiresInstanceSession {
 		instanceSession, err = ensureCloudWorkspaceInstanceSession(ctx, hubURL, token, machineID)
 		if err != nil {
@@ -290,7 +445,7 @@ func (a *App) cloudWorkspaceHubDo(ctx context.Context, method, path string, opt 
 	// including workspace-task provisioning paths that do not contain a
 	// workspace id yet. Lease/session fencing is attached only when an id can
 	// be resolved from the URL.
-	if strings.HasPrefix(path, cloudWorkspaceCollectionPath) || strings.HasPrefix(path, cloudWorkspaceTaskProvisionPath) {
+	if strings.HasPrefix(path, cloudWorkspaceCollectionPath) || strings.HasPrefix(path, cloudWorkspaceTaskProvisionPath) || strings.TrimSpace(instanceSession.SessionToken) != "" {
 		req.Header.Set("X-Cloud-Workspace-Protocol", cloudWorkspaceProtocolVersion)
 	}
 	if workspaceID := cloudWorkspaceWorkspaceIDFromPath(path); workspaceID != "" {
@@ -344,7 +499,7 @@ func (a *App) cloudWorkspaceHubDo(ctx context.Context, method, path string, opt 
 	if maxRead <= 0 {
 		maxRead = cloudWorkspaceResponseMaxSize
 	}
-	resp, err := (&http.Client{Timeout: timeout}).Do(req)
+	resp, err := cloudWorkspaceHTTPClient(timeout).Do(req)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -358,6 +513,11 @@ func (a *App) cloudWorkspaceHubDo(ctx context.Context, method, path string, opt 
 	}
 	if requiresInstanceSession && cloudWorkspaceSessionRejected(resp.StatusCode, data) {
 		invalidateCloudWorkspaceInstanceSession(hubURL, token, machineID, instanceSession.SessionToken)
+	}
+	if workspaceID != "" && cloudWorkspaceShareFallbackStatus(resp.StatusCode, path) {
+		if sess, ok := a.lookupShareAccessSession(workspaceID); ok && validReferralHandoffHubURL(sess.HubURL) {
+			return a.cloudWorkspaceHubDoWithShare(ctx, sess, method, path, opt)
+		}
 	}
 	return data, resp.StatusCode, nil
 }
@@ -387,7 +547,7 @@ func (a *App) revokeCloudWorkspaceInstanceSession(ctx context.Context) error {
 	req.Header.Set("X-Cloud-Workspace-Protocol", cloudWorkspaceProtocolVersion)
 	req.Header.Set(cloudWorkspaceInstanceSessionHeader, session.SessionToken)
 	req.Header.Set("Accept", "application/json")
-	resp, err := (&http.Client{Timeout: cloudWorkspaceRequestTimeout}).Do(req)
+	resp, err := cloudWorkspaceHTTPClient(cloudWorkspaceRequestTimeout).Do(req)
 	if err != nil {
 		return err
 	}
@@ -406,6 +566,18 @@ func (a *App) revokeCloudWorkspaceInstanceSession(ctx context.Context) error {
 // cloudWorkspaceWorkspaceIDFromPath extracts the escaped workspace segment
 // from any cloud-workspace API path. It is deliberately conservative so a
 // non-workspace request cannot accidentally inherit a fencing token.
+func cloudWorkspaceShareFallbackStatus(status int, path string) bool {
+	if status == http.StatusUnauthorized || status == http.StatusForbidden {
+		return true
+	}
+	if status != http.StatusNotFound {
+		return false
+	}
+	// Missing blobs are 404 for owners and recipients alike; retrying those
+	// with a share token only doubles the round trip.
+	return !strings.Contains(path, "/objects/")
+}
+
 func cloudWorkspaceWorkspaceIDFromPath(raw string) string {
 	const prefix = "/api/v1/cloud-workspaces/"
 	if !strings.HasPrefix(raw, prefix) {

@@ -1723,6 +1723,27 @@ body {
     color: var(--theme-text-primary);
 }
 
+/* Running-task counter on the Tasks rail entry. Mirrors the workbench status
+   card total, so it must read as an alert without competing with the icon. */
+.left-nav-item__badge {
+    position: absolute;
+    top: -4px;
+    right: -8px;
+    min-width: 15px;
+    height: 15px;
+    padding: 0 4px;
+    border-radius: 8px;
+    background: var(--theme-danger, #d64545);
+    color: #fff;
+    font-size: 0.58rem;
+    font-weight: 700;
+    line-height: 15px;
+    text-align: center;
+    letter-spacing: 0;
+    box-shadow: 0 0 0 1.5px var(--theme-page-bg);
+    pointer-events: none;
+}
+
 .left-nav-item.left-nav-item--ai.active .ai-nav-label,
 .left-nav-item.left-nav-item--ai:hover .ai-nav-label {
     color: var(--theme-primary);
@@ -5623,16 +5644,33 @@ details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg);
     display: grid;
 }
 
-.knowledge-stack { gap: 16px; }
+.knowledge-stack { gap: 16px; container-type: inline-size; }
 .knowledge-block-body { gap: 12px; }
 .knowledge-list { gap: 8px; }
-.knowledge-row-main { min-width: 0; gap: 4px; color: var(--theme-text-primary); font-size: 0.82rem; }
+.knowledge-row-main { min-width: 0; gap: 4px; color: var(--theme-text-primary); font-size: 0.82rem; overflow-wrap: anywhere; }
+.knowledge-row-main > strong { min-width: 0; overflow-wrap: anywhere; }
 
 .knowledge-two-column {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     align-items: start;
     gap: 16px;
+    min-width: 0;
+    width: 100%;
+}
+
+.knowledge-two-column > * {
+    min-width: 0;
+    max-width: 100%;
+}
+
+.knowledge-two-column--search {
+    grid-template-columns: minmax(0, 1fr) minmax(200px, 280px);
+}
+
+.knowledge-search-results-only {
+    min-width: 0;
+    width: 100%;
 }
 
 .knowledge-exchange-box {
@@ -6080,6 +6118,7 @@ details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg);
 .knowledge-stat-value { margin-top: 4px; color: var(--theme-text-primary); font-size: 1.05rem; font-weight: 700; }
 
 .knowledge-block {
+    min-width: 0;
     padding: 14px 16px;
     border-color: var(--theme-border);
 }
@@ -6097,6 +6136,7 @@ details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg);
     justify-content: space-between;
     align-items: flex-start;
     gap: 10px;
+    min-width: 0;
     padding: 10px 12px;
     border-radius: 8px;
     transition: background-color var(--transition-fast);
@@ -6111,6 +6151,7 @@ details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg);
     min-height: 28px;
     padding: 4px 10px;
     font-size: 0.75rem;
+    white-space: nowrap;
 }
 
 .knowledge-row--preview {
@@ -6143,12 +6184,37 @@ details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg);
 }
 
 .knowledge-chip {
+    max-width: 100%;
     border: 1px solid var(--theme-border-subtle);
     border-radius: 6px;
     padding: 3px 8px;
     color: var(--theme-text-secondary);
     background: var(--theme-surface-muted);
     font-size: 0.76rem;
+    overflow-wrap: anywhere;
+}
+button.knowledge-chip {
+    cursor: pointer;
+    font: inherit;
+    text-align: left;
+}
+button.knowledge-chip:hover:not(:disabled) {
+    border-color: var(--theme-primary-soft);
+    color: var(--theme-text-primary);
+}
+button.knowledge-chip:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--theme-primary-soft);
+}
+button.knowledge-chip:disabled {
+    cursor: not-allowed;
+    opacity: 0.65;
+}
+.knowledge-chip--active {
+    border-color: var(--theme-primary-soft);
+    background: var(--theme-info-bg);
+    color: color-mix(in srgb, var(--theme-primary-strong) 75%, var(--theme-text-primary));
+    font-weight: 600;
 }
 
 .knowledge-chip--badge {
@@ -6379,8 +6445,55 @@ details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg);
 .knowledge-search-filters {
     display: flex;
     flex-wrap: wrap;
-    gap: 8px;
-    align-items: center;
+    gap: 8px 10px;
+    align-items: flex-end;
+}
+.knowledge-search-filter {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+    flex: 1 1 148px;
+}
+.knowledge-search-filter--fixed {
+    flex: 1 1 132px;
+    max-width: 180px;
+}
+.knowledge-search-filter--grow {
+    flex: 1 1 160px;
+}
+.knowledge-search-filter > span {
+    color: var(--theme-text-muted);
+    font-size: 0.7rem;
+    font-weight: 650;
+    letter-spacing: 0.02em;
+    text-align: left;
+    white-space: nowrap;
+}
+.knowledge-search-filter .knowledge-input,
+.knowledge-search-filter .knowledge-input--compact {
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+}
+.knowledge-search-filter--limit {
+    flex: 0 0 96px;
+    max-width: 96px;
+}
+.knowledge-search-filter-check {
+    flex: 0 0 auto;
+    align-self: flex-end;
+    min-height: 34px;
+    margin-bottom: 2px;
+}
+.knowledge-search-source-chip {
+    flex: 0 1 auto;
+    align-self: flex-end;
+    max-width: 220px;
+    margin-bottom: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 .knowledge-input--compact {
     width: auto;
@@ -6389,6 +6502,37 @@ details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg);
     min-height: 30px;
     padding: 5px 8px;
     font-size: 0.76rem;
+}
+.knowledge-facet-groups {
+    display: grid;
+    gap: 12px;
+    min-width: 0;
+}
+.knowledge-facet-group {
+    display: grid;
+    gap: 6px;
+    min-width: 0;
+}
+.knowledge-facet-group-title {
+    color: var(--theme-text-muted);
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-align: left;
+    text-transform: uppercase;
+}
+.knowledge-search-facets .knowledge-chip-list {
+    min-width: 0;
+}
+.knowledge-result-snippet {
+    display: -webkit-box;
+    -webkit-line-clamp: 5;
+    line-clamp: 5;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+    color: var(--theme-text-secondary);
+    line-height: 1.5;
 }
 
 .knowledge-structured-filter-panel {
@@ -6446,6 +6590,13 @@ details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg);
     opacity: 0.55;
     cursor: not-allowed;
     text-decoration: none;
+}
+
+@container (max-width: 720px) {
+    .knowledge-two-column,
+    .knowledge-two-column--search {
+        grid-template-columns: minmax(0, 1fr);
+    }
 }
 
 @media (max-width: 760px) {
@@ -20128,9 +20279,9 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .mc-execution-step > span:last-child { text-transform: none; font-size: 11px; }
 
 /* Real Wails sidebar shell alignment */
-.mc-sidebar-shell { width: 308px !important; background: #fff !important; border-right: 0 !important; }
-.mc-sidebar-shell .mc-task-pane { background: #fff !important; padding: 14px 14px 10px !important; }
-.mc-sidebar-shell [data-testid="sidebar-middle-pane-tasks"] { background: #fff; }
+.mc-sidebar-shell { width: 308px !important; height: 100%; min-height: 0; overflow: hidden; background: #fff !important; border-right: 0 !important; }
+.mc-sidebar-shell .mc-task-pane { background: #fff !important; padding: 14px 14px 10px !important; min-height: 0; }
+.mc-sidebar-shell [data-testid="sidebar-middle-pane-tasks"] { background: #fff; min-height: 0; overflow: hidden; }
 .mc-sidebar-shell .mc-sidebar-middle-tabs { display: none !important; }
 @media (max-width: 1100px) { .mc-sidebar-shell { width: 280px !important; } }
 /* Apply reference hierarchy to the live conversation chrome */
@@ -20570,8 +20721,68 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 }
 
 .mc-task-section-label { margin: 2px 4px 7px; color: #64748b; font-size: 11px; font-weight: 700; }
-.mc-task-filter-chips button:hover { background: color-mix(in srgb, var(--theme-primary) 8%, transparent); }
-.mc-task-filter-chips button:focus-visible { outline: 2px solid color-mix(in srgb, var(--theme-primary) 54%, transparent); outline-offset: 1px; }
+/* Under .mc-task-pane to beat `.sidebar button`. flex-start + equal padding
+   center the inner chips; primary wash keeps the outer pill visible when
+   light sidebar sets --theme-surface-muted to white. */
+.mc-task-pane .mc-task-filter-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+  margin: 0 4px 8px;
+}
+.mc-task-pane .mc-task-filter-row {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  box-sizing: border-box;
+  max-width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--theme-border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--theme-primary) 6%, var(--theme-surface-muted));
+}
+.mc-task-pane .mc-task-filter-btn {
+  appearance: none;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  gap: 4px;
+  margin: 0;
+  padding: 4px 9px;
+  border: 1px solid var(--theme-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--theme-text-secondary);
+  font-family: inherit;
+  font-size: 0.66rem;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color .15s ease, border-color .15s ease, color .15s ease;
+}
+.mc-task-pane .mc-task-filter-btn b {
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.mc-task-pane .mc-task-filter-btn[data-count='0']:not([aria-pressed='true']) { opacity: 0.55; }
+.mc-task-pane .mc-task-filter-btn[aria-pressed='true'] {
+  border-color: var(--theme-primary);
+  background: color-mix(in srgb, var(--theme-primary) 14%, transparent);
+  color: var(--theme-primary);
+}
+.mc-task-pane .mc-task-filter-btn:hover {
+  background: color-mix(in srgb, var(--theme-primary) 8%, transparent);
+  color: var(--theme-primary);
+}
+.mc-task-pane .mc-task-filter-btn[aria-pressed='true']:hover {
+  background: color-mix(in srgb, var(--theme-primary) 18%, transparent);
+}
 
 /* Dark surfaces for the live redesign. These rules intentionally follow the
    existing palette variables so every dark scheme keeps the same hierarchy. */
@@ -21374,6 +21585,24 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   color: #26364a !important;
   font-size: 13px !important;
   font-weight: 700 !important;
+}
+/* Task rows must scroll in the remaining pane height. Flex items default to
+   min-height:auto, which stopped overflow:auto from ever activating. */
+.mc-task-pane {
+  display: flex !important;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.mc-task-pane > :not(.mc-task-list) {
+  flex-shrink: 0;
+}
+.mc-task-list {
+  flex: 1 1 0%;
+  min-height: 0 !important;
+  overflow-x: hidden;
+  overflow-y: auto !important;
+  overscroll-behavior: contain;
 }
 .mc-task-pane .sidebar-task-row.is-active {
   background: #f2f6fc !important;
@@ -22383,18 +22612,29 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 #App[data-nav-tab='ai'] .sidebar.office-agent-shell {
   border-right: 0 !important;
   background: var(--theme-page-bg) !important;
+  min-height: 0;
+  height: 100%;
+  align-items: stretch;
 }
-/* The middle pane's own scrollbar sits flush against the resize divider below
-   and the two fuse into one thick strip. Scope the hiding to the content slot
-   (task / employee / history lists) so popup menus in the status card below
-   keep their scroll affordance; scrolling itself still works via wheel/touch. */
-[data-testid='sidebar-ai-content-slot'],
-[data-testid='sidebar-ai-content-slot'] * {
-  scrollbar-width: none;
+/* Task rows scroll inside the padded pane, so the thumb stays inset from the
+   resize divider. Do not hide descendant scrollbars on the content slot. */
+[data-testid='sidebar-ai-content-slot'] .mc-task-list {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--theme-text-muted) 55%, transparent) transparent;
 }
-[data-testid='sidebar-ai-content-slot']::-webkit-scrollbar,
-[data-testid='sidebar-ai-content-slot'] *::-webkit-scrollbar {
-  display: none;
+[data-testid='sidebar-ai-content-slot'] .mc-task-list::-webkit-scrollbar {
+  display: block;
+  width: 8px;
+}
+[data-testid='sidebar-ai-content-slot'] .mc-task-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+[data-testid='sidebar-ai-content-slot'] .mc-task-list::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--theme-text-muted) 45%, transparent);
+  border-radius: 999px;
+}
+[data-testid='sidebar-ai-content-slot'] .mc-task-list::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--theme-text-muted) 65%, transparent);
 }
 .mc-task-pane-resize-handle {
   isolation: isolate;
@@ -22447,6 +22687,10 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
     width: var(--mc-task-pane-width, 308px) !important;
     min-width: var(--mc-task-pane-width, 308px) !important;
     flex: 0 0 var(--mc-task-pane-width, 308px) !important;
+    min-height: 0 !important;
+    height: 100%;
+    overflow: hidden;
+    align-self: stretch;
   }
 }
 
@@ -22493,6 +22737,10 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
     width: var(--mc-task-pane-width, 308px) !important;
     min-width: var(--mc-task-pane-width, 308px) !important;
     flex: 0 0 var(--mc-task-pane-width, 308px) !important;
+    min-height: 0 !important;
+    height: 100%;
+    overflow: hidden;
+    align-self: stretch;
   }
 }
 

@@ -438,6 +438,9 @@ func (s *Store) SoftDeleteWithSessionAndToken(ctx context.Context, tenantID, use
 		ws.Status = StatusDeleted
 		ws.DeletedAt = ts
 		ws.UpdatedAt = ts
+		if err := revokeSharesTx(ctx, q, id); err != nil {
+			return err
+		}
 		out = ws
 		return stageAtomicIdempotency(ctx, q, out)
 	})
@@ -530,6 +533,9 @@ func (s *Store) HardDeleteDeleted(ctx context.Context, tenantID, userID, id stri
 			return ErrNotFound
 		}
 		for _, stmt := range []string{
+			`DELETE FROM cloud_workspace_share_access WHERE workspace_id = ?`,
+			`DELETE FROM cloud_workspace_share_recipients WHERE workspace_id = ?`,
+			`DELETE FROM cloud_workspace_shares WHERE workspace_id = ?`,
 			`DELETE FROM cloud_workspace_task_provisions WHERE workspace_id = ?`,
 			`DELETE FROM cloud_workspace_staging_chunks WHERE workspace_id = ?`,
 			`DELETE FROM cloud_workspace_task_bindings WHERE workspace_id = ?`,

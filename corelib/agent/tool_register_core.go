@@ -134,6 +134,9 @@ func OverlayCoreToolSchema(name string, extraProps map[string]interface{}) (prop
 
 // RegisterCoreTools registers all platform-agnostic tools into the registry.
 // This is the single source of truth for tool definitions and handlers.
+// Every built-in name is a host-controlled constant in the toolid charset, so
+// each entry automatically carries the canonical ID "core:<name>" (derived by
+// CoreToolRegistry.Register; no per-entry ID field needed here).
 func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 	r.Register(ToolEntry{
 		Name:        "bash",
@@ -547,7 +550,7 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 
 	r.Register(ToolEntry{
 		Name:        "generate_pdf",
-		Description: "Render Markdown content to a PDF. title is the cover heading; phase_id/doc_type optionally select a stable ASCII filename prefix.",
+		Description: "Render current facts as a PDF. title is the cover heading; phase_id/doc_type optionally select a stable ASCII filename prefix.",
 		Properties: map[string]interface{}{
 			"content":  map[string]string{"type": "string", "description": "Markdown document body"},
 			"title":    map[string]string{"type": "string", "description": "PDF cover title"},

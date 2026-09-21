@@ -55,7 +55,7 @@ type semanticToolsSearchEntry struct {
 var semanticToolsSearchInventory = []semanticToolsSearchEntry{
 	{"web_search", "Search the public web.", "information.search.web"},
 	{"web_fetch", "Fetch the content of one web page.", tool.CapabilityInformationFetchWeb},
-	{"generate_pdf", "Render Markdown content into a PDF and deliver it.", "document.generate.file"},
+	{"generate_pdf", "Render current facts as a PDF and deliver it.", "document.generate.file"},
 	{"office", "Write a spreadsheet (.xlsx) or presentation (.pptx) into the workspace.", tool.CapabilityDocumentWriteOffice},
 	{"bash", "Run one local command in the bound workspace.", tool.CapabilityShellExecuteLocal},
 	{"delegate_task", "Delegate one self-contained subtask to the coding agent.", tool.CapabilityAgentDelegateSubtask},
@@ -301,9 +301,11 @@ func semanticToolsSearchMaybeExpandScope(cb *sharedAgentLoopCallbacks, query str
 	if _, ok := cb.semanticSurface.grants["ssh"]; ok {
 		return
 	}
-	// Unbound SSH has no managed provider. Petitioning it would still spend the
-	// effectful budget on a guaranteed expansion failure and starve later legs.
-	if cb.handler == nil || !semanticTrustedSSHPublished(cb.handler) {
+	// Without either mode published the capability has no provider and
+	// petitioning would spend the effectful budget on a guaranteed expansion
+	// failure. Connect mode (session-less) is petitionable: its provider can
+	// resolve the expansion and open a session on the re-issued call.
+	if cb.handler == nil || (!semanticTrustedSSHPublished(cb.handler) && !semanticTrustedSSHConnectPublished(cb.handler)) {
 		return
 	}
 	cb.PetitionToolCall("ssh")

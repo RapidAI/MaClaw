@@ -41,6 +41,17 @@ func (e *HTTPStatusError) Error() string {
 	return fmt.Sprintf("HTTP %d: body_len=%d", e.StatusCode, len(e.Body))
 }
 
+// HTTPStatusCode exposes the status without requiring callers to import this
+// concrete type: corelib/intent matches it through a structural interface to
+// classify 5xx endpoint failures, and a direct import would cycle
+// (llm → corelib → … → corelib/tool → intent).
+func (e *HTTPStatusError) HTTPStatusCode() int {
+	if e == nil {
+		return 0
+	}
+	return e.StatusCode
+}
+
 // newHTTPStatusError returns a structured non-OK HTTP error with a copied body.
 // status<=0 means no HTTP response (network/cancel) — returns nil so callers
 // keep the original transport error instead of inventing "HTTP 0".

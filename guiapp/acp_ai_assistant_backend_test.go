@@ -23,6 +23,43 @@ func TestAcpProgrammingUserText(t *testing.T) {
 	if acpProgrammingUserText("", "hi") != "hi" {
 		t.Fatal("empty cwd should pass through")
 	}
+	wrapped := acpProgrammingUserText(`F:\个人介绍`, "继续")
+	if inner := acpInnerUserRequest(wrapped); inner != "继续" {
+		t.Fatalf("acpInnerUserRequest=%q, want 继续", inner)
+	}
+	if acpInnerUserRequest("请继续") != "请继续" {
+		t.Fatal("plain text must pass through")
+	}
+	nested := acpProgrammingUserText(`D:\work\demo`, "see User request: keep this")
+	if inner := acpInnerUserRequest(nested); inner != "see User request: keep this" {
+		t.Fatalf("inner must keep the user's own User request: phrase, got %q", inner)
+	}
+	if acpUserFacingText(nested) != acpInnerUserRequest(nested) {
+		t.Fatal("chit-chat unwrap must use the same inner request as planning")
+	}
+}
+
+func TestACPWrappedContinueStaysStructurallyFull(t *testing.T) {
+	_, forced := hardStructuralFullExecutionProfile(IMUserMessage{
+		RequestID: "acp-test",
+		Text:      acpProgrammingUserText(`F:\个人介绍`, "继续"),
+	}, false, false)
+	if !forced {
+		t.Fatal("ACP cwd path must keep 继续 on the full agent so markdown write_file can still plan")
+	}
+}
+
+func TestACPPreferLightProfileSkipsBareContinue(t *testing.T) {
+	for _, inner := range []string{"继续", "继续。", "请继续", "重试", "continue", "继续…"} {
+		msg := IMUserMessage{RequestID: "acp-test", Text: acpProgrammingUserText(`F:\个人介绍`, inner)}
+		if acpPreferLightProfile(msg) {
+			t.Fatalf("ACP %q must not take the light profile; markdown write_file planning needs full", inner)
+		}
+	}
+	hi := IMUserMessage{RequestID: "acp-test", Text: acpProgrammingUserText(`F:\个人介绍`, "hi")}
+	if !acpPreferLightProfile(hi) {
+		t.Fatal("short ACP greeting can stay light")
+	}
 }
 
 func TestCollectACPResultPaths(t *testing.T) {

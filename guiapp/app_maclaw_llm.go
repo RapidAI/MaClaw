@@ -60,6 +60,7 @@ type MaclawLLMProfileProviderSummary struct {
 	IsHubService         bool     `json:"is_hub_service,omitempty"`
 	SupportsVision       bool     `json:"supports_vision"`
 	VisionModels         []string `json:"vision_models,omitempty"`
+	VisionTestedModels   []string `json:"vision_tested_models,omitempty"`
 	AuthType             string   `json:"auth_type,omitempty"`
 }
 
@@ -105,12 +106,15 @@ type MaclawLLMProfilePanelState struct {
 // profile draft. It intentionally omits endpoint addresses, credentials and
 // transport error text so it is safe for settings and sidebar consumers.
 type MaclawLLMProfileProbeResult struct {
-	Profile    string `json:"profile"`
-	ProviderID string `json:"provider_id,omitempty"`
-	Model      string `json:"model,omitempty"`
-	Health     string `json:"health"`
-	CheckedAt  string `json:"checked_at,omitempty"`
-	ReasonCode string `json:"reason_code,omitempty"`
+	Profile             string `json:"profile"`
+	ProviderID          string `json:"provider_id,omitempty"`
+	Model               string `json:"model,omitempty"`
+	Health              string `json:"health"`
+	CheckedAt           string `json:"checked_at,omitempty"`
+	ReasonCode          string `json:"reason_code,omitempty"`
+	SupportsVision      bool   `json:"supports_vision"`
+	VisionProbeStatus   string `json:"vision_probe_status,omitempty"`
+	VisionPersistFailed bool   `json:"vision_persist_failed,omitempty"`
 }
 
 func newMaclawLLMProviderID() string {
@@ -285,6 +289,43 @@ func normalizeVisionModelIDs(models []string) []string {
 	return normalized
 }
 
+func markMaclawLLMProviderVisionTested(provider *corelib.MaclawLLMProvider, model string, supportsVision bool) {
+	if provider == nil {
+		return
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return
+	}
+	provider.VisionTestedModels = normalizeVisionModelIDs(append(append([]string(nil), provider.VisionTestedModels...), model))
+	provider.VisionModels = visionModelsWithResult(provider.VisionModels, model, supportsVision)
+	if strings.EqualFold(strings.TrimSpace(provider.Model), model) {
+		provider.SupportsVision = supportsVision
+	}
+}
+
+func providerVisionTestStatus(provider corelib.MaclawLLMProvider, model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return "untested"
+	}
+	if providerSupportsVisionForModel(provider, model) {
+		return "supported"
+	}
+	if provider.IsHubService {
+		return "untested"
+	}
+	for _, tested := range provider.VisionTestedModels {
+		if strings.EqualFold(strings.TrimSpace(tested), model) {
+			return "unsupported"
+		}
+	}
+	if provider.ConnectionTestPassed && strings.EqualFold(strings.TrimSpace(provider.Model), model) {
+		return "unsupported"
+	}
+	return "untested"
+}
+
 func visionModelsWithResult(models []string, model string, supportsVision bool) []string {
 	model = strings.TrimSpace(model)
 	filtered := make([]string, 0, len(models)+1)
@@ -326,6 +367,13 @@ func normalizeMaclawLLMProvider(provider corelib.MaclawLLMProvider) corelib.Macl
 			break
 		}
 	}
+	tested := append([]string(nil), provider.VisionTestedModels...)
+	tested = append(tested, provider.VisionModels...)
+	if provider.ConnectionTestPassed && provider.Model != "" {
+		// Test & Save always probes vision for the model it just used.
+		tested = append(tested, provider.Model)
+	}
+	provider.VisionTestedModels = normalizeVisionModelIDs(tested)
 	return provider
 }
 
@@ -1043,10 +1091,20 @@ func (a *App) saveMaclawLLMProviders(providers []corelib.MaclawLLMProvider, curr
 			return err
 		}
 	}
+	for i := range providers {
+		mergeProviderModelCatalog(&providers[i])
+	}
+	if profiles != nil {
+		mergeProfileModelsIntoProviderCatalogs(providers, *profiles)
+	}
 	cfg.MaclawLLMProviders = providers
 	cfg.MaclawLLMProfiles = profiles
 	remapLegacyZhipuCodingProfileModels(profiles, providers)
-	if err := applyAssistantProfileCompatibilityProjection(&cfg, *profiles); err != nil {
+	// Provider management owns the tested/default model ID. Projecting the
+	// assistant assignment back onto provider.Model would undo a just-tested
+	// custom name (for example glm-5.3-flash → glm-5.3) and hide it from the
+	// assignment picker.
+	if err := projectAssistantProfileCompatibility(&cfg, *profiles, false); err != nil {
 		return err
 	}
 	persistStart := time.Now()
@@ -1775,7 +1833,9 @@ func (a *App) GetMaclawLLMProfilePanelState() (MaclawLLMProfilePanelState, error
 			Model: strings.TrimSpace(provider.Model), Models: append([]string(nil), provider.Models...),
 			ConnectionTestPassed: provider.ConnectionTestPassed,
 			IsHubService:         provider.IsHubService, SupportsVision: provider.SupportsVision,
-			VisionModels: append([]string(nil), provider.VisionModels...), AuthType: provider.AuthType,
+			VisionModels:       append([]string(nil), provider.VisionModels...),
+			VisionTestedModels: append([]string(nil), provider.VisionTestedModels...),
+			AuthType:           provider.AuthType,
 		})
 	}
 	assistant, assistantErr := a.ResolveMaclawLLMProfile(maclawLLMProfileAssistant)
@@ -1816,6 +1876,10 @@ func (a *App) GetMaclawLLMProfilePanelState() (MaclawLLMProfilePanelState, error
 }
 
 func applyAssistantProfileCompatibilityProjection(cfg *corelib.AppConfig, profiles corelib.MaclawLLMProfiles) error {
+	return projectAssistantProfileCompatibility(cfg, profiles, true)
+}
+
+func projectAssistantProfileCompatibility(cfg *corelib.AppConfig, profiles corelib.MaclawLLMProfiles, overwriteProviderModel bool) error {
 	provider, ok := resolveMaclawLLMProviderByID(cfg.MaclawLLMProviders, profiles.Assistant.ProviderID)
 	if !ok {
 		return fmt.Errorf("assistant references an unavailable provider")
@@ -1824,12 +1888,15 @@ func applyAssistantProfileCompatibilityProjection(cfg *corelib.AppConfig, profil
 		if cfg.MaclawLLMProviders[i].ID != provider.ID {
 			continue
 		}
-		// The provider-level model remains an assistant-only legacy projection.
-		// Coding profiles never write this shared field.
-		cfg.MaclawLLMProviders[i].Model = profiles.Assistant.Model
-		if !containsStringFold(cfg.MaclawLLMProviders[i].Models, profiles.Assistant.Model) {
-			cfg.MaclawLLMProviders[i].Models = append(cfg.MaclawLLMProviders[i].Models, profiles.Assistant.Model)
+		// Assignment saves project the assistant model onto the shared
+		// provider.Model field for legacy readers. Provider management must
+		// keep the ID that was just tested or edited, otherwise a custom
+		// name is reverted to the assignment default and disappears from
+		// the picker.
+		if overwriteProviderModel {
+			cfg.MaclawLLMProviders[i].Model = profiles.Assistant.Model
 		}
+		mergeProviderModelCatalog(&cfg.MaclawLLMProviders[i], profiles.Assistant.Model)
 		provider = cfg.MaclawLLMProviders[i]
 		break
 	}
@@ -1841,6 +1908,89 @@ func applyAssistantProfileCompatibilityProjection(cfg *corelib.AppConfig, profil
 	cfg.MaclawLLMContextLength = provider.ContextLength
 	cfg.MaclawLLMTimeoutSec = provider.TimeoutSec
 	return nil
+}
+
+func mergeProviderModelCatalog(provider *corelib.MaclawLLMProvider, extra ...string) {
+	if provider == nil {
+		return
+	}
+	merged := make([]string, 0, len(extra)+len(provider.Models)+1)
+	seen := make(map[string]struct{}, cap(merged))
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		key := strings.ToLower(value)
+		if _, exists := seen[key]; exists {
+			return
+		}
+		seen[key] = struct{}{}
+		merged = append(merged, value)
+	}
+	for _, value := range extra {
+		add(value)
+	}
+	for _, value := range provider.Models {
+		add(value)
+	}
+	add(provider.Model)
+	provider.Models = merged
+}
+
+func mergeProfileModelsIntoProviderCatalogs(providers []corelib.MaclawLLMProvider, profiles corelib.MaclawLLMProfiles) {
+	add := func(providerID, model string) {
+		providerID = strings.TrimSpace(providerID)
+		model = strings.TrimSpace(model)
+		if providerID == "" || model == "" {
+			return
+		}
+		for i := range providers {
+			if maclawLLMProviderIDForRead(providers[i]) != providerID &&
+				corelib.MaclawLLMLegacyProviderID(providers[i].Name) != providerID {
+				continue
+			}
+			mergeProviderModelCatalog(&providers[i], model)
+			return
+		}
+	}
+	add(profiles.Assistant.ProviderID, profiles.Assistant.Model)
+	if !profiles.Coding.InheritAssistant {
+		add(profiles.Coding.ProviderID, profiles.Coding.Model)
+	}
+	if maclawLLMProfileAssigned(profiles.Caption) {
+		add(profiles.Caption.ProviderID, profiles.Caption.Model)
+	}
+}
+
+func (a *App) discoverMaclawLLMProviderModelIDs(provider corelib.MaclawLLMProvider) []string {
+	if a == nil {
+		return nil
+	}
+	resolved := a.materializeMaclawLLMProvider(provider)
+	if strings.TrimSpace(resolved.URL) == "" {
+		return nil
+	}
+	items, err := a.fetchProviderModels(resolved.URL, resolved.Key, resolved.Protocol, resolved.UserAgent(), true)
+	if err != nil {
+		log.Printf("[LLM] discover provider models failed provider=%q: %v", provider.Name, err)
+		return nil
+	}
+	ids := make([]string, 0, len(items))
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		id := strings.TrimSpace(item.ID)
+		if id == "" {
+			continue
+		}
+		key := strings.ToLower(id)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 func containsStringFold(values []string, value string) bool {
@@ -1858,6 +2008,92 @@ func containsStringFold(values []string, value string) bool {
 // It is deliberately separate from SaveMaclawLLMProviders so a coding-only
 // change cannot clear the assistant's MoA session state or overwrite shared
 // fields.
+func uniqueAssignedProfileModels(profiles corelib.MaclawLLMProfiles) []assignedProfileModel {
+	seen := make(map[string]struct{})
+	var out []assignedProfileModel
+	add := func(profile, providerID, model string) {
+		providerID = strings.TrimSpace(providerID)
+		model = strings.TrimSpace(model)
+		if providerID == "" || model == "" {
+			return
+		}
+		key := providerID + "\x00" + strings.ToLower(model)
+		if _, exists := seen[key]; exists {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, assignedProfileModel{profile: profile, providerID: providerID, model: model})
+	}
+	add(maclawLLMProfileAssistant, profiles.Assistant.ProviderID, profiles.Assistant.Model)
+	if !profiles.Coding.InheritAssistant {
+		add(maclawLLMProfileCoding, profiles.Coding.ProviderID, profiles.Coding.Model)
+	}
+	if maclawLLMProfileAssigned(profiles.Caption) {
+		add(maclawLLMProfileCaption, profiles.Caption.ProviderID, profiles.Caption.Model)
+	}
+	return out
+}
+
+type assignedProfileModel struct {
+	profile    string
+	providerID string
+	model      string
+}
+
+type assignedModelVisionProbe struct {
+	providerID string
+	model      string
+	supported  bool
+}
+
+func (a *App) probeUntestedAssignedProfileModels(profiles corelib.MaclawLLMProfiles, providers []corelib.MaclawLLMProvider) ([]assignedModelVisionProbe, error) {
+	var outcomes []assignedModelVisionProbe
+	for _, item := range uniqueAssignedProfileModels(profiles) {
+		provider, ok := resolveMaclawLLMProviderByID(providers, item.providerID)
+		if !ok || provider.IsHubService || !provider.ConnectionTestPassed {
+			continue
+		}
+		if providerVisionTestStatus(provider, item.model) != "untested" {
+			continue
+		}
+		resolved := a.materializeMaclawLLMProvider(provider)
+		resolved.Model = item.model
+		result, err := a.TestMaclawLLM(resolved)
+		if err != nil {
+			return nil, fmt.Errorf("%s model %q failed its assignment test: %w", item.profile, item.model, err)
+		}
+		if result.VisionProbeStatus == string(visionProbeInconclusive) {
+			continue
+		}
+		outcomes = append(outcomes, assignedModelVisionProbe{
+			providerID: item.providerID,
+			model:      item.model,
+			supported:  result.SupportsVision,
+		})
+		markMaclawLLMProviderVisionTested(&provider, item.model, result.SupportsVision)
+		for i := range providers {
+			if maclawLLMProviderIDForRead(providers[i]) == maclawLLMProviderIDForRead(provider) {
+				providers[i] = provider
+				break
+			}
+		}
+	}
+	return outcomes, nil
+}
+
+func applyAssignedModelVisionProbes(providers []corelib.MaclawLLMProvider, outcomes []assignedModelVisionProbe) {
+	for _, outcome := range outcomes {
+		for i := range providers {
+			if maclawLLMProviderIDForRead(providers[i]) != outcome.providerID &&
+				corelib.MaclawLLMLegacyProviderID(providers[i].Name) != outcome.providerID {
+				continue
+			}
+			markMaclawLLMProviderVisionTested(&providers[i], outcome.model, outcome.supported)
+			break
+		}
+	}
+}
+
 func (a *App) SaveMaclawLLMProfiles(profiles corelib.MaclawLLMProfiles, revision string) error {
 	profiles.Version = maclawLLMProfilesVersion
 	profiles.Assistant.ProviderID = strings.TrimSpace(profiles.Assistant.ProviderID)
@@ -1870,6 +2106,23 @@ func (a *App) SaveMaclawLLMProfiles(profiles corelib.MaclawLLMProfiles, revision
 	revision = strings.TrimSpace(revision)
 	if revision == "" {
 		return fmt.Errorf("LLM profile revision is required")
+	}
+
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return err
+	}
+	previewProviders := cfg.MaclawLLMProviders
+	if len(previewProviders) == 0 {
+		previewProviders = defaultMaclawLLMProviders()
+	}
+	previewProviders = ensureMaclawLLMProviderIDs(normalizeMaclawLLMProviders(previewProviders), cfg.MaclawLLMProviders)
+	remapLegacyProfileProviderIDs(&profiles, cfg.MaclawLLMProviders, previewProviders)
+	remapLegacyZhipuCodingProfileModels(&profiles, previewProviders)
+	remapOpenCodeProfileModels(&profiles, previewProviders)
+	visionOutcomes, err := a.probeUntestedAssignedProfileModels(profiles, previewProviders)
+	if err != nil {
+		return err
 	}
 
 	assistantChanged := false
@@ -1902,6 +2155,7 @@ func (a *App) SaveMaclawLLMProfiles(profiles corelib.MaclawLLMProfiles, revision
 			validationErr = err
 			return false
 		}
+		applyAssignedModelVisionProbes(providers, visionOutcomes)
 		assistantChanged = previous == nil || !sameMaclawLLMProfileProviderID(previous.Assistant.ProviderID, profiles.Assistant.ProviderID, providers) || previous.Assistant.Model != profiles.Assistant.Model
 		cfg.MaclawLLMProviders = append([]corelib.MaclawLLMProvider(nil), providers...)
 		cfg.MaclawLLMProfiles = &profiles
@@ -1985,8 +2239,9 @@ func (a *App) QuickSaveMaclawLLMProfile(profile, providerID, model, revision str
 }
 
 // TestMaclawLLMProfile tests an effective profile selection without persisting
-// it. The returned result is intentionally safe to show in settings: detailed
-// diagnostics stay in backend logs while the UI receives an enum/reason code.
+// the assignment. Catalog models that have not been vision-tested run the same
+// text-plus-image probe as assignment save; already-tested models only ping
+// connectivity. A conclusive image result is recorded on the provider.
 func (a *App) TestMaclawLLMProfile(profile, providerID, model string) (MaclawLLMProfileProbeResult, error) {
 	profile = strings.ToLower(strings.TrimSpace(profile))
 	providerID = strings.TrimSpace(providerID)
@@ -2024,19 +2279,45 @@ func (a *App) TestMaclawLLMProfile(profile, providerID, model string) (MaclawLLM
 		// materialize again after a possible token refresh, keeping the draft
 		// model independent from the provider's legacy default model.
 		if refreshedProvider, refreshedFound := resolveMaclawLLMProviderByID(a.GetMaclawLLMProviders().Providers, providerID); refreshedFound {
-			resolved = a.materializeMaclawLLMProvider(refreshedProvider)
+			provider = refreshedProvider
+			resolved = a.materializeMaclawLLMProvider(provider)
 			resolved.Model = model
-			resolved.SupportsVision = providerSupportsVisionForModel(refreshedProvider, model)
+			resolved.SupportsVision = providerSupportsVisionForModel(provider, model)
 			resolved.Profile = profile
 			resolved.RouteSource = "base"
 		}
-		status = a.pingResolvedMaclawLLMConfigWithAuthStatus(resolved, true)
+		status = a.probeAssignedProfileSelection(&result, provider, resolved)
 	}
 	health := maclawLLMProfileHealthFromPing(status)
 	result.Health = health.Health
 	result.CheckedAt = health.CheckedAt
 	result.ReasonCode = health.ReasonCode
 	return result, nil
+}
+
+func (a *App) probeAssignedProfileSelection(result *MaclawLLMProfileProbeResult, provider corelib.MaclawLLMProvider, resolved corelib.MaclawLLMConfig) MaclawLLMStatus {
+	if result == nil {
+		return MaclawLLMStatus{Configured: true, Error: "invalid_configuration"}
+	}
+	visionStatus := providerVisionTestStatus(provider, result.Model)
+	if provider.IsHubService || visionStatus != "untested" {
+		result.VisionProbeStatus = visionStatus
+		result.SupportsVision = visionStatus == "supported"
+		return a.pingResolvedMaclawLLMConfigWithAuthStatus(resolved, true)
+	}
+	testResult, err := a.TestMaclawLLM(resolved)
+	if err != nil {
+		return MaclawLLMStatus{Configured: true, Error: err.Error()}
+	}
+	result.SupportsVision = testResult.SupportsVision
+	result.VisionProbeStatus = testResult.VisionProbeStatus
+	if testResult.VisionProbeStatus != string(visionProbeInconclusive) {
+		if err := a.saveVisionProbeResult(maclawLLMProviderIDForRead(provider), provider.Name, result.Model, testResult.SupportsVision); err != nil {
+			log.Printf("[LLM] persist assignment vision probe failed provider=%s model=%s: %v", provider.Name, result.Model, err)
+			result.VisionPersistFailed = true
+		}
+	}
+	return MaclawLLMStatus{Online: true, Configured: true}
 }
 
 // isMaclawLLMConfigured returns true if the current MaClaw LLM selection
@@ -2413,9 +2694,11 @@ func (a *App) TestAndSaveMaclawLLMProviders(providers []corelib.MaclawLLMProvide
 		return corelib.MaclawLLMTestResult{}, err
 	}
 	if result.VisionProbeStatus != string(visionProbeInconclusive) {
-		providers[providerIndex].VisionModels = visionModelsWithResult(providers[providerIndex].VisionModels, providers[providerIndex].Model, result.SupportsVision)
-		providers[providerIndex].SupportsVision = result.SupportsVision
+		markMaclawLLMProviderVisionTested(&providers[providerIndex], providers[providerIndex].Model, result.SupportsVision)
 	}
+	// Persist the live catalog so Model assignments can offer every name the
+	// provider actually supports, not only the single ID that was just tested.
+	mergeProviderModelCatalog(&providers[providerIndex], a.discoverMaclawLLMProviderModelIDs(providers[providerIndex])...)
 	if err := a.saveMaclawLLMProviders(providers, current, maclawLLMProviderRevision(cfg), providerID); err != nil {
 		return corelib.MaclawLLMTestResult{}, err
 	}
@@ -3232,40 +3515,94 @@ func probeVisionResponsesAPIResult(probeCfg corelib.MaclawLLMConfig) visionProbe
 // saveVisionProbeResultForProvider persists a vision probe result for the
 // provider that was tested, regardless of which provider is currently selected.
 func (a *App) saveVisionProbeResultForProvider(providerName, model string, supportsVision bool) error {
+	return a.saveVisionProbeResult("", providerName, model, supportsVision)
+}
+
+func canonicalMaclawLLMProviderDisplayName(name string) string {
+	return strings.TrimSpace(canonicalVolcengineTokenPlanProviderName(canonicalHubServiceProviderName(name)))
+}
+
+func visionProbeProviderMatchID(provider corelib.MaclawLLMProvider, providerID string) bool {
+	providerID = strings.TrimSpace(providerID)
+	if providerID == "" {
+		return false
+	}
+	if maclawLLMProviderIDForRead(provider) == providerID {
+		return true
+	}
+	if corelib.MaclawLLMLegacyProviderID(provider.Name) == providerID {
+		return true
+	}
+	canonical := canonicalMaclawLLMProviderDisplayName(provider.Name)
+	return canonical != "" && corelib.MaclawLLMLegacyProviderID(canonical) == providerID
+}
+
+func visionProbeProviderMatchName(provider corelib.MaclawLLMProvider, providerName string) bool {
+	providerName = strings.TrimSpace(providerName)
+	if providerName == "" {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(provider.Name), providerName) {
+		return true
+	}
+	canonical := canonicalMaclawLLMProviderDisplayName(provider.Name)
+	return canonical != "" && strings.EqualFold(canonical, providerName)
+}
+
+func (a *App) saveVisionProbeResult(providerID, providerName, model string, supportsVision bool) error {
+	providerID = strings.TrimSpace(providerID)
 	providerName = strings.TrimSpace(providerName)
 	model = strings.TrimSpace(model)
-	if providerName == "" {
-		return fmt.Errorf("provider name is required")
+	if providerID == "" && providerName == "" {
+		return fmt.Errorf("provider is required")
 	}
 	if model == "" {
 		return fmt.Errorf("model is required")
 	}
 	providerFound := false
 	_, err := a.PatchConfigIfChanged(func(cfg *corelib.AppConfig) bool {
-		for i := range cfg.MaclawLLMProviders {
-			if !strings.EqualFold(strings.TrimSpace(cfg.MaclawLLMProviders[i].Name), providerName) {
-				continue
+		idx := -1
+		if providerID != "" {
+			for i := range cfg.MaclawLLMProviders {
+				if visionProbeProviderMatchID(cfg.MaclawLLMProviders[i], providerID) {
+					idx = i
+					break
+				}
 			}
-			providerFound = true
-			provider := &cfg.MaclawLLMProviders[i]
-			visionModels := visionModelsWithResult(provider.VisionModels, model, supportsVision)
-			modelIsDefault := strings.EqualFold(strings.TrimSpace(provider.Model), model)
-			if reflect.DeepEqual(provider.VisionModels, visionModels) && (!modelIsDefault || provider.SupportsVision == supportsVision) {
-				return false
-			}
-			provider.VisionModels = visionModels
-			if modelIsDefault {
-				provider.SupportsVision = supportsVision
-			}
-			return true
 		}
-		return false
+		if idx < 0 && providerName != "" {
+			for i := range cfg.MaclawLLMProviders {
+				if visionProbeProviderMatchName(cfg.MaclawLLMProviders[i], providerName) {
+					idx = i
+					break
+				}
+			}
+		}
+		if idx < 0 {
+			return false
+		}
+		providerFound = true
+		provider := &cfg.MaclawLLMProviders[idx]
+		beforeTested := append([]string(nil), provider.VisionTestedModels...)
+		beforeVision := append([]string(nil), provider.VisionModels...)
+		beforeSupports := provider.SupportsVision
+		markMaclawLLMProviderVisionTested(provider, model, supportsVision)
+		if reflect.DeepEqual(provider.VisionTestedModels, beforeTested) &&
+			reflect.DeepEqual(provider.VisionModels, beforeVision) &&
+			provider.SupportsVision == beforeSupports {
+			return false
+		}
+		return true
 	})
 	if err != nil {
 		return fmt.Errorf("save vision probe result: %w", err)
 	}
 	if !providerFound {
-		return fmt.Errorf("provider %q not found", providerName)
+		label := providerName
+		if label == "" {
+			label = providerID
+		}
+		return fmt.Errorf("provider %q not found", label)
 	}
 	return nil
 }

@@ -18,12 +18,7 @@ func isACPProgrammingMessage(msg IMUserMessage) bool {
 // acpUserFacingText returns the bare user request when the body was wrapped by
 // acpProgrammingUserText (so length / chit-chat / light routing stay accurate).
 func acpUserFacingText(text string) string {
-	text = strings.TrimSpace(text)
-	const marker = "User request:\n"
-	if i := strings.LastIndex(text, marker); i >= 0 {
-		return strings.TrimSpace(text[i+len(marker):])
-	}
-	return text
+	return acpInnerUserRequest(text)
 }
 
 // acpPreferLightProfile: short free-form ACP turns should not pay for full
@@ -34,6 +29,12 @@ func acpPreferLightProfile(msg IMUserMessage) bool {
 	}
 	text := acpUserFacingText(msg.Text)
 	if text == "" || msg.IsBackground || len(msg.Attachments) > 0 {
+		return false
+	}
+	// Bare 继续 after a markdown write still needs the full surface so leftover
+	// / planner can HostKeep write_file. The ACP cwd wrapper currently forces
+	// structural full first; this keeps 继续 off light if that gate is unwrapped.
+	if semanticBareContinueQuery(text) {
 		return false
 	}
 	if hasStructuralFullExecutionSignal(text) {

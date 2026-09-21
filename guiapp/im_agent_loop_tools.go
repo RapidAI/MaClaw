@@ -82,8 +82,8 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 		tools = ensureIMManagementToolsRouted(tools, allTools, userText)
 	}
 	tools = mergeAmbientRetrievalTools(tools, allTools)
-	tools = applyRoutingMissLeftoverTools(tools, allTools, ctx)
-	baseTools = applyRoutingMissLeftoverTools(baseTools, allTools, ctx)
+	tools = applyRoutingMissLeftoverTools(tools, allTools, h.routingMissFloorDefinitions(), ctx)
+	baseTools = applyRoutingMissLeftoverTools(baseTools, allTools, h.routingMissFloorDefinitions(), ctx)
 	if !phase.ForceSkillPreference {
 		tools, baseTools = applyLoopDiscoveredConditionalTools(tools, baseTools, allTools, ctx)
 	}

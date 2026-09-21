@@ -57,6 +57,18 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 	}
 	log.Printf("[hubcenter] sqlite migrations complete for %s", cfg.Database.DSN)
 
+	// Rewrite legacy occurred_at values that carry a numeric timezone offset
+	// into canonical UTC strings. Offset-formatted values sort after
+	// same-instant UTC strings, so they escape the lexical time cutoff used by
+	// HA history pruning and pile up forever (observed: multi-GB ha_sync_ops).
+	// Best-effort: a failure must not block startup, the prune just stays
+	// partially effective until the next boot.
+	if fixed, err := sqlite.NormalizeHAOccuredAtUTC(context.Background(), provider.Write, 500); err != nil {
+		log.Printf("[hubcenter] normalize ha occurred_at: %v", err)
+	} else if fixed > 0 {
+		log.Printf("[hubcenter] normalized %d ha occurred_at values to UTC", fixed)
+	}
+
 	st := sqlite.NewStore(provider)
 	failureRecorder := diagnostics.NewFailureEventRecorder(st.FailureLogs)
 	dataDir := filepath.Dir(cfg.Database.DSN)

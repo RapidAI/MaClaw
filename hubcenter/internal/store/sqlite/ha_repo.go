@@ -117,7 +117,7 @@ func (r *haSyncOpRepo) appendLocalWithVersion(ctx context.Context, op *store.HAS
 		op.EntityID,
 		op.OpType,
 		op.EntityVersion,
-		op.OccurredAt.Format(time.RFC3339),
+		formatHAOccuredAt(op.OccurredAt),
 		op.PayloadJSON,
 		op.PayloadHash,
 	); err != nil {
@@ -169,6 +169,15 @@ func normalizedNoisyHAPayload(entityType, payloadJSON string) (map[string]any, b
 	return payload, true
 }
 
+func formatHAOccuredAt(t time.Time) string {
+	// occurred_at is compared lexically against the RFC3339 UTC cutoff during
+	// history pruning. Rows written from non-UTC times (entity paths passing
+	// local wall-clock values) used to keep their "+08:00"-style offsets,
+	// which sorted after same-instant UTC strings and let old ops escape the
+	// time-based prune forever. Normalize every write to UTC.
+	return t.UTC().Format(time.RFC3339)
+}
+
 func (r *haSyncOpRepo) Append(ctx context.Context, op *store.HASyncOp) error {
 	return execWrite(ctx, r.batch, r.db, `
 		INSERT INTO ha_sync_ops (
@@ -182,7 +191,7 @@ func (r *haSyncOpRepo) Append(ctx context.Context, op *store.HASyncOp) error {
 		op.EntityID,
 		op.OpType,
 		op.EntityVersion,
-		op.OccurredAt.Format(time.RFC3339),
+		formatHAOccuredAt(op.OccurredAt),
 		op.PayloadJSON,
 		op.PayloadHash,
 	)
@@ -204,7 +213,7 @@ func (r *haSyncOpRepo) AppendRemoteIfMissing(ctx context.Context, op *store.HASy
 		op.EntityID,
 		op.OpType,
 		op.EntityVersion,
-		op.OccurredAt.Format(time.RFC3339),
+		formatHAOccuredAt(op.OccurredAt),
 		op.PayloadJSON,
 		op.PayloadHash,
 	); err != nil {
@@ -333,6 +342,14 @@ func (r *haSyncOpRepo) GetMaxSeq(ctx context.Context) (int64, error) {
 	return seq.Int64, nil
 }
 
+func (r *haSyncOpRepo) GetMinSeq(ctx context.Context) (int64, error) {
+	var seq sql.NullInt64
+	if err := r.readDB.QueryRowContext(ctx, `SELECT COALESCE(MIN(seq), 0) FROM ha_sync_ops`).Scan(&seq); err != nil {
+		return 0, err
+	}
+	return seq.Int64, nil
+}
+
 func (r *haSyncOpRepo) Count(ctx context.Context) (int64, error) {
 	var count int64
 	err := r.readDB.QueryRowContext(ctx, `SELECT COUNT(1) FROM ha_sync_ops`).Scan(&count)
@@ -359,6 +376,16 @@ func (r *haSyncOpRepo) PruneHistory(ctx context.Context, cutoff time.Time, maxRe
 	result := &store.HAPruneResult{MaxSeq: maxSeq}
 	if deleteByTime {
 		deleted, err := r.pruneSyncOpsBefore(ctx, cutoffText, batchSize)
+		if err != nil {
+			return nil, err
+		}
+		result.DeletedOps += deleted
+		// One-shot entities (a new entity id per op) never receive a newer op,
+		// so the newest-op protection above would pin every one of them forever
+		// and the table would grow without bound. Their ops are immutable,
+		// self-contained facts, so the configured time cutoff alone decides how
+		// long peers get to pull them — the same intent as retention_days.
+		deleted, err = r.pruneOneShotOpsBefore(ctx, cutoffText, batchSize)
 		if err != nil {
 			return nil, err
 		}
@@ -435,6 +462,97 @@ func (r *haSyncOpRepo) pruneSyncOpsAtOrBeforeSeq(ctx context.Context, seqFloor i
 		ORDER BY candidate.seq ASC
 		LIMIT ?
 	`, seqFloor, batchSize)
+}
+
+// pruneOneShotOpsBefore deletes ops whose entity id is unique per op (so the
+// newest-op protection can never apply) once they are older than the time
+// cutoff. Matches ha.EntityLLMUsageBatch, kept as a literal to avoid an
+// import cycle with the ha package.
+func (r *haSyncOpRepo) pruneOneShotOpsBefore(ctx context.Context, cutoffText string, batchSize int64) (int64, error) {
+	var deleted int64
+	for {
+		res, err := r.db.ExecContext(ctx, `
+			DELETE FROM ha_sync_ops WHERE seq IN (
+				SELECT seq
+				FROM ha_sync_ops INDEXED BY idx_ha_sync_ops_occurred_at
+				WHERE entity_type = 'llm_usage_batch'
+				  AND occurred_at < ?
+				ORDER BY occurred_at ASC, seq ASC
+				LIMIT ?
+			)
+		`, cutoffText, batchSize)
+		if err != nil {
+			return deleted, err
+		}
+		rows, _ := res.RowsAffected()
+		deleted += rows
+		if rows == 0 || rows < batchSize {
+			break
+		}
+	}
+	return deleted, nil
+}
+
+// NormalizeHAOccuredAtUTC rewrites legacy occurred_at values that carry a
+// numeric timezone offset (e.g. "+08:00") into canonical UTC strings. Before
+// formatHAOccuredAt existed, entity paths passing local wall-clock times wrote
+// offset-formatted values, which sort after same-instant UTC strings and
+// escape the lexical time cutoff used by history pruning. Runs batched;
+// returns the number of rows rewritten.
+func NormalizeHAOccuredAtUTC(ctx context.Context, db *sql.DB, batchSize int64) (int64, error) {
+	if db == nil {
+		return 0, errors.New("nil sqlite database")
+	}
+	if batchSize <= 0 {
+		batchSize = 500
+	}
+	var total int64
+	for {
+		rows, err := db.QueryContext(ctx, `
+			SELECT seq, occurred_at
+			FROM ha_sync_ops
+			WHERE occurred_at LIKE '%+%'
+			ORDER BY seq ASC
+			LIMIT ?
+		`, batchSize)
+		if err != nil {
+			return total, err
+		}
+		type fix struct {
+			seq int64
+			at  string
+		}
+		var batch []fix
+		for rows.Next() {
+			var f fix
+			if err := rows.Scan(&f.seq, &f.at); err != nil {
+				rows.Close()
+				return total, err
+			}
+			batch = append(batch, f)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return total, err
+		}
+		if len(batch) == 0 {
+			break
+		}
+		for _, f := range batch {
+			t, err := time.Parse(time.RFC3339, f.at)
+			if err != nil {
+				continue
+			}
+			if _, err := db.ExecContext(ctx, `UPDATE ha_sync_ops SET occurred_at = ? WHERE seq = ?`, formatHAOccuredAt(t), f.seq); err != nil {
+				return total, err
+			}
+			total++
+		}
+		if int64(len(batch)) < batchSize {
+			break
+		}
+	}
+	return total, nil
 }
 
 func (r *haSyncOpRepo) pruneSyncOps(ctx context.Context, batchSize int64, selectSQL string, args ...any) (int64, error) {

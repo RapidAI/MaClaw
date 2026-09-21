@@ -42,6 +42,9 @@ type cloudWorkspaceHTTPTestLease struct {
 var cloudWorkspaceHTTPTestLeases sync.Map
 
 func cloudWorkspaceHTTPTestNeedsSession(path string) bool {
+	if strings.HasPrefix(path, "/api/v1/cloud-workspace-shares/") {
+		return false
+	}
 	return (strings.HasPrefix(path, "/api/v1/cloud-workspaces") && path != "/api/v1/cloud-workspaces/entitlement") || strings.HasPrefix(path, "/api/v1/cloud-workspace-tasks")
 }
 
@@ -241,6 +244,13 @@ func newCloudWorkspaceUserEnv(t *testing.T, mode string, quota int, departmentID
 	mux.HandleFunc("POST /api/v1/cloud-workspaces/{id}/objects/{sha256}/complete", CloudWorkspaceCompleteObjectHandler(svc, authn))
 	mux.HandleFunc("GET /api/v1/cloud-workspaces/{id}/sidecars/{name}", CloudWorkspaceGetSidecarHandler(svc, authn))
 	mux.HandleFunc("PUT /api/v1/cloud-workspaces/{id}/sidecars/{name}", CloudWorkspacePutSidecarHandler(svc, authn))
+	mux.HandleFunc("POST /api/v1/cloud-workspaces/{id}/share", CloudWorkspaceCreateShareHandler(svc, authn))
+	mux.HandleFunc("GET /api/v1/cloud-workspaces/{id}/share", CloudWorkspaceGetShareHandler(svc, authn))
+	mux.HandleFunc("DELETE /api/v1/cloud-workspaces/{id}/share", CloudWorkspaceRevokeShareHandler(svc, authn))
+	mux.HandleFunc("PATCH /api/v1/cloud-workspaces/{id}/share/recipients/{user_id}", CloudWorkspaceUpdateShareRecipientHandler(svc, authn))
+	mux.HandleFunc("DELETE /api/v1/cloud-workspaces/{id}/share/recipients/{user_id}", CloudWorkspaceRemoveShareRecipientHandler(svc, authn))
+	mux.HandleFunc("POST /api/v1/cloud-workspace-shares/{token}/accept", CloudWorkspaceAcceptShareHandler(svc, authn))
+	mux.HandleFunc("GET /hub/cloud-workspaces/shares/{token}", CloudWorkspaceSharePublicPageHandler(svc))
 	mux.HandleFunc("GET /api/admin/cloud-workspaces/settings", GetCloudWorkspaceSettingsAdminHandler(svc))
 	mux.HandleFunc("GET /api/admin/cloud-workspaces/metrics", GetCloudWorkspaceMetricsAdminHandler(svc))
 	return svc, mux, authn

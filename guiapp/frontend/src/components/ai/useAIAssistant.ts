@@ -12,6 +12,7 @@ import { isHistoryResetCommandText } from "./composeAction";
 import { isCodingAgentChatHiddenEvent, isCodingAgentProgressContent, parseCodingAgentProgress } from "./CodingAgentProgressStatus";
 import { reasoningHasCodingStatusMilestone, stripCodingWorkbenchStatusReasoning } from "./codingAgentUserFinish";
 import { clearAssistantRoundProse } from "./assistantRoundProse";
+import { cleanReasoningTrailForBody } from "./assistantReasoningBody";
 
 export interface CancelAIAssistantResult {
     canceledText: string;
@@ -2432,49 +2433,48 @@ export function resolveFinalRoundContent(message: ChatMessage, response: any): s
     // the response text is just the last iteration's fragment from a
     // multi-round agent loop. Preserve the complete accumulated output.
     const finalTextLen = finalText.trim().length;
+    const reasoningText = cleanReasoningTrailForBody(
+        message.reasoning || (typeof response?.reasoning === 'string' ? response.reasoning : ''),
+    );
+    // Host status bullets are not a model reasoning trail. Counting them as
+    // one skipped Layer 3 and dropped accumulated streamed prose.
+    const hasReasoningTrail = Boolean(reasoningText);
+    let chosen = '';
     if (streamedContent && finalText && finalTextLen > 0
         && streamedContent.length >= finalTextLen * 2
         && (!responseSource || responseSource === 'agent_loop')) {
         // Apply role prefix stripping - streamedContent bypasses backend
         // post-processing (stripRolePrefixHallucination) because it comes
         // from the streaming token path, not from resp.Text.
-        return stripRolePrefixFrontend(streamedContent);
-    }
-
-    // --- Layer 3: endsWith fallback ---
-    // Original improvement #19: if streamed content ends with the response
-    // text, the response text is the final iteration's tail - keep the full
-    // streamed content.
-    // Exception: when the turn carries a reasoning trail (the collapsible
-    // "思考过程" panel), the multi-round working narrative belongs to that
-    // panel. Piling intermediate round texts into the completed body showed
-    // up as widely-spaced stale paragraphs, so collapse to the clean final
-    // answer instead. Layer 2's 2x fragment guard above still applies.
-    const hasReasoningTrail = Boolean(stripRolePrefixReasoning(message.reasoning || '').trim())
-        || Boolean(typeof response?.reasoning === 'string' && response.reasoning.trim());
-    if (!hasReasoningTrail && streamedContent && finalText && streamedContent.length > finalText.length) {
-        if (streamedContent.endsWith(finalText)) {
-            return stripRolePrefixFrontend(streamedContent);
+        chosen = stripRolePrefixFrontend(streamedContent);
+    } else {
+        // --- Layer 3: endsWith fallback ---
+        // Original improvement #19: if streamed content ends with the response
+        // text, the response text is the final iteration's tail - keep the full
+        // streamed content.
+        // Exception: when the turn carries a reasoning trail (the collapsible
+        // "思考过程" panel), the multi-round working narrative belongs to that
+        // panel. Piling intermediate round texts into the completed body showed
+        // up as widely-spaced stale paragraphs, so collapse to the clean final
+        // answer instead. Layer 2's 2x fragment guard above still applies.
+        if (!hasReasoningTrail && streamedContent && finalText && streamedContent.length > finalText.length
+            && streamedContent.endsWith(finalText)) {
+            chosen = stripRolePrefixFrontend(streamedContent);
+        } else if (finalText) {
+            chosen = finalText;
+        } else if (hasVisibleTerminalPayload(response)) {
+            chosen = stripRolePrefixFrontend(streamedContent);
+        } else if (isFailedTerminalTraceStatus(response?.trace_status)) {
+            chosen = buildEmptyTerminalFallback(response);
+        } else if (streamedContent) {
+            chosen = stripRolePrefixFrontend(streamedContent);
+        } else if (reasoningText) {
+            chosen = '';
+        } else {
+            chosen = buildEmptyTerminalFallback(response);
         }
     }
-
-    // --- Subsequent fallbacks (unchanged) ---
-    if (finalText) {
-        return finalText;
-    }
-    if (hasVisibleTerminalPayload(response)) {
-        return stripRolePrefixFrontend(streamedContent);
-    }
-    if (isFailedTerminalTraceStatus(response?.trace_status)) {
-        return buildEmptyTerminalFallback(response);
-    }
-    if (streamedContent) {
-        return stripRolePrefixFrontend(streamedContent);
-    }
-    if (typeof response?.reasoning === 'string' && response.reasoning.trim()) {
-        return '';
-    }
-    return buildEmptyTerminalFallback(response);
+    return chosen;
 }
 
 function hasStructuredResponsePayload(response: any): boolean {

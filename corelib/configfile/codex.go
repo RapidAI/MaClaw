@@ -60,7 +60,10 @@ func WriteCodexConfigWithClientName(apiKey, baseURL, modelID, providerName, wire
 }
 
 // WriteTigerProxyCodexConfig writes the TigerProxy-specific Codex settings.
-// Unlike the generic writer, it configures the CodeGen context window defaults.
+// Unlike the generic writer, it configures the CodeGen context window defaults
+// and stores the proxy API key in config.toml as an Authorization bearer
+// header on [model_providers.tigerproxy]. ~/.codex/auth.json is left untouched
+// so an official OpenAI login is preserved.
 func WriteTigerProxyCodexConfig(apiKey, baseURL, modelID string) error {
 	return WriteTigerProxyCodexConfigWithContext(apiKey, baseURL, modelID, 0, 0)
 }
@@ -83,9 +86,10 @@ type CodexCredentialSyncResult struct {
 }
 
 // SyncTigerProxyCodexAPIKeyIfConfigured updates Codex's saved credential when
-// its active provider is TigerProxy. It deliberately leaves every other
-// provider untouched, so generating a new TigerProxy key cannot overwrite an
-// official OpenAI or unrelated third-party credential.
+// its active provider is TigerProxy. The proxy API key is written to
+// config.toml as [model_providers.tigerproxy] http_headers.Authorization.
+// auth.json and every other provider are left untouched, so rotating a
+// TigerProxy key cannot overwrite an official OpenAI or unrelated credential.
 //
 // The update is atomic, but a running Codex process may need to be restarted
 // before it reads the new credential.
@@ -104,34 +108,21 @@ func SyncTigerProxyCodexAPIKeyIfConfigured(apiKey string) (CodexCredentialSyncRe
 		}
 		return CodexCredentialSyncResult{}, fmt.Errorf("read Codex config: %w", err)
 	}
-	if !codexConfigUsesProvider(string(config), tigerProxyCodexProviderName) {
+	content := string(config)
+	if !codexConfigUsesProvider(content, tigerProxyCodexProviderName) {
 		return CodexCredentialSyncResult{}, nil
 	}
 	result := CodexCredentialSyncResult{Configured: true}
-
-	authPath := filepath.Join(codexDir, "auth.json")
-	auth := map[string]interface{}{}
-	if data, err := os.ReadFile(authPath); err == nil {
-		if err := json.Unmarshal(data, &auth); err != nil {
-			// Do not overwrite a malformed credential file: it may contain
-			// recoverable user data, and the caller needs an actionable warning.
-			return result, fmt.Errorf("parse Codex auth: %w", err)
-		}
-		if auth == nil {
-			// JSON null is valid JSON but not a credential object. Treat it as
-			// invalid rather than panicking while assigning OPENAI_API_KEY.
-			return result, fmt.Errorf("parse Codex auth: expected a JSON object")
-		}
-	} else if !os.IsNotExist(err) {
-		return result, fmt.Errorf("read Codex auth: %w", err)
-	}
-	if savedKey, _ := auth["OPENAI_API_KEY"].(string); savedKey == apiKey {
+	if tigerProxyAPIKeyFromConfig(content) == apiKey {
 		return result, nil
 	}
 
-	auth["OPENAI_API_KEY"] = apiKey
-	if err := AtomicWriteJSON(authPath, auth); err != nil {
-		return result, fmt.Errorf("write Codex auth: %w", err)
+	updated := updateCodexProviderManagedHTTPHeaders(content, tigerProxyCodexProviderName, tigerProxyCodexHTTPHeaders(apiKey))
+	if updated == content {
+		return result, nil
+	}
+	if err := AtomicWrite(configPath, []byte(updated)); err != nil {
+		return result, fmt.Errorf("write Codex config: %w", err)
 	}
 	result.Updated = true
 	return result, nil
@@ -193,7 +184,7 @@ func writeCodexConfigAtWithClientName(codexDir, apiKey, baseURL, modelID, provid
 	configPath := filepath.Join(codexDir, "config.toml")
 
 	// Ensure directory exists
-	dir := filepath.Dir(authPath)
+	dir := filepath.Dir(configPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("create codex dir: %w", err)
 	}
@@ -202,32 +193,43 @@ func writeCodexConfigAtWithClientName(codexDir, apiKey, baseURL, modelID, provid
 	oldAuth, _ := os.ReadFile(authPath)
 	oldConfig, _ := os.ReadFile(configPath)
 
-	// Step 1: Write auth.json
-	if apiKey != "" {
-		auth := map[string]string{"OPENAI_API_KEY": apiKey}
-		if err := AtomicWriteJSON(authPath, auth); err != nil {
-			return fmt.Errorf("write codex auth: %w", err)
+	// Generic providers still persist OPENAI_API_KEY in auth.json. TigerProxy
+	// stores its key in config.toml http_headers instead, so an official
+	// OpenAI login in auth.json is not overwritten.
+	wroteAuth := false
+	if !configureTigerProxyContext {
+		wroteAuth = true
+		if apiKey != "" {
+			auth := map[string]string{"OPENAI_API_KEY": apiKey}
+			if err := AtomicWriteJSON(authPath, auth); err != nil {
+				return fmt.Errorf("write codex auth: %w", err)
+			}
+		} else if err := os.Remove(authPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove stale codex auth: %w", err)
 		}
-	} else if err := os.Remove(authPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove stale codex auth: %w", err)
 	}
 
-	// Step 2: Build config.toml with incremental editing
-	configToml, err := buildCodexConfigTomlWithOptions(configPath, baseURL, modelID, providerName, wireApi, clientName, configureTigerProxyContext, contextWindow, autoCompactTokenLimit)
+	// Build config.toml with incremental editing
+	configToml, err := buildCodexConfigTomlWithOptions(configPath, baseURL, modelID, providerName, wireApi, clientName, apiKey, configureTigerProxyContext, contextWindow, autoCompactTokenLimit)
 	if err != nil {
-		// Rollback auth.json
-		rollbackFile(authPath, oldAuth)
+		if wroteAuth {
+			rollbackFile(authPath, oldAuth)
+		}
 		return fmt.Errorf("build codex config: %w", err)
 	}
 
 	if err := AtomicWrite(configPath, []byte(configToml)); err != nil {
-		rollbackFile(authPath, oldAuth)
+		if wroteAuth {
+			rollbackFile(authPath, oldAuth)
+		}
 		return fmt.Errorf("write codex config: %w", err)
 	}
 
 	if err := syncCodexSessionState(codexDir, CodexProviderKey(providerName), modelID); err != nil {
 		rollbackFile(configPath, oldConfig)
-		rollbackFile(authPath, oldAuth)
+		if wroteAuth {
+			rollbackFile(authPath, oldAuth)
+		}
 		return fmt.Errorf("sync codex session state: %w", err)
 	}
 
@@ -241,10 +243,10 @@ func buildCodexConfigToml(configPath, baseURL, modelID, providerName, wireApi st
 }
 
 func buildCodexConfigTomlWithClientName(configPath, baseURL, modelID, providerName, wireApi, clientName string) (string, error) {
-	return buildCodexConfigTomlWithOptions(configPath, baseURL, modelID, providerName, wireApi, clientName, false, 0, 0)
+	return buildCodexConfigTomlWithOptions(configPath, baseURL, modelID, providerName, wireApi, clientName, "", false, 0, 0)
 }
 
-func buildCodexConfigTomlWithOptions(configPath, baseURL, modelID, providerName, wireApi, clientName string, configureTigerProxyContext bool, contextWindow, autoCompactTokenLimit int) (string, error) {
+func buildCodexConfigTomlWithOptions(configPath, baseURL, modelID, providerName, wireApi, clientName, apiKey string, configureTigerProxyContext bool, contextWindow, autoCompactTokenLimit int) (string, error) {
 	if configureTigerProxyContext {
 		contextWindow, autoCompactTokenLimit = normalizeTigerProxyCodexContext(contextWindow, autoCompactTokenLimit)
 	}
@@ -258,6 +260,7 @@ func buildCodexConfigTomlWithOptions(configPath, baseURL, modelID, providerName,
 	if wireApi == "" {
 		wireApi = "responses"
 	}
+	httpHeaders := codexManagedHTTPHeaders(baseURL, clientName, apiKey, configureTigerProxyContext)
 
 	// Read existing config
 	existing, _ := os.ReadFile(configPath)
@@ -265,13 +268,13 @@ func buildCodexConfigTomlWithOptions(configPath, baseURL, modelID, providerName,
 
 	if strings.TrimSpace(existingStr) == "" {
 		// No existing config, generate fresh
-		return generateFreshCodexToml(providerName, modelID, baseURL, wireApi, codexProviderHTTPHeaders(baseURL, clientName), configureTigerProxyContext, contextWindow, autoCompactTokenLimit), nil
+		return generateFreshCodexToml(providerName, modelID, baseURL, wireApi, httpHeaders, configureTigerProxyContext, contextWindow, autoCompactTokenLimit), nil
 	}
 
 	// Incremental edit: update only provider-related fields
 	// We use line-based editing to preserve comments and formatting
 	lines := strings.Split(existingStr, "\n")
-	result := incrementalUpdateCodexToml(lines, providerName, modelID, baseURL, wireApi, codexProviderHTTPHeaders(baseURL, clientName), configureTigerProxyContext, contextWindow, autoCompactTokenLimit)
+	result := incrementalUpdateCodexToml(lines, providerName, modelID, baseURL, wireApi, httpHeaders, configureTigerProxyContext, contextWindow, autoCompactTokenLimit)
 	return result, nil
 }
 
@@ -302,6 +305,139 @@ func codexProviderHTTPHeaders(baseURL, clientName string) map[string]string {
 		return nil
 	}
 	return map[string]string{corelib.CodeGenClientNameHeader: corelib.NormalizeCodeGenClientName(clientName)}
+}
+
+func tigerProxyCodexHTTPHeaders(apiKey string) map[string]string {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return nil
+	}
+	return map[string]string{"Authorization": "Bearer " + apiKey}
+}
+
+func codexManagedHTTPHeaders(baseURL, clientName, apiKey string, configureTigerProxyContext bool) map[string]string {
+	headers := codexProviderHTTPHeaders(baseURL, clientName)
+	if !configureTigerProxyContext {
+		return headers
+	}
+	for key, value := range tigerProxyCodexHTTPHeaders(apiKey) {
+		if headers == nil {
+			headers = map[string]string{}
+		}
+		headers[key] = value
+	}
+	return headers
+}
+
+func isCodexModelProviderSection(section, providerName string) bool {
+	return section == fmt.Sprintf("model_providers.%s", providerName) ||
+		section == fmt.Sprintf("model_providers.%q", providerName) ||
+		section == fmt.Sprintf("model_providers.'%s'", providerName)
+}
+
+func tigerProxyAPIKeyFromAuthorization(value string) string {
+	value = strings.TrimSpace(value)
+	const prefix = "Bearer "
+	if len(value) >= len(prefix) && strings.EqualFold(value[:len(prefix)], prefix) {
+		return strings.TrimSpace(value[len(prefix):])
+	}
+	return value
+}
+
+func tigerProxyAPIKeyFromConfig(content string) string {
+	headers := parseCodexProviderHTTPHeaders(content, tigerProxyCodexProviderName)
+	for key, value := range headers {
+		if strings.EqualFold(key, "Authorization") {
+			return tigerProxyAPIKeyFromAuthorization(value)
+		}
+	}
+	return ""
+}
+
+func parseCodexProviderHTTPHeaders(content, providerName string) map[string]string {
+	providerName = CodexProviderKey(providerName)
+	currentSection := ""
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if section := codexTomlSectionName(trimmed); section != "" {
+			if isCodexModelProviderSection(section, providerName) {
+				currentSection = fmt.Sprintf("model_providers.%s", providerName)
+			} else {
+				currentSection = section
+			}
+			continue
+		}
+		if currentSection != fmt.Sprintf("model_providers.%s", providerName) || codexTomlKey(trimmed) != "http_headers" {
+			continue
+		}
+		_, rawValue, ok := strings.Cut(trimmed, "=")
+		if !ok {
+			return nil
+		}
+		mapValue, _ := splitTomlValueComment(rawValue)
+		headers, ok := parseTomlInlineStringMap(mapValue)
+		if !ok {
+			return nil
+		}
+		return headers
+	}
+	return nil
+}
+
+func updateCodexProviderManagedHTTPHeaders(content, providerName string, managed map[string]string) string {
+	if len(managed) == 0 {
+		return content
+	}
+	providerName = CodexProviderKey(providerName)
+	lines := strings.Split(content, "\n")
+	var result []string
+	currentSection := ""
+	foundProviderSection := false
+	updatedHeaders := false
+
+	flushMissingHeaders := func() {
+		if !foundProviderSection || updatedHeaders {
+			return
+		}
+		result = append(result, fmt.Sprintf("http_headers = %s", tomlInlineStringMap(managed)))
+		updatedHeaders = true
+	}
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if section := codexTomlSectionName(trimmed); section != "" {
+			if currentSection == fmt.Sprintf("model_providers.%s", providerName) {
+				flushMissingHeaders()
+			}
+			currentSection = section
+			if isCodexModelProviderSection(section, providerName) {
+				currentSection = fmt.Sprintf("model_providers.%s", providerName)
+				foundProviderSection = true
+			}
+			result = append(result, line)
+			continue
+		}
+		if currentSection == fmt.Sprintf("model_providers.%s", providerName) && codexTomlKey(trimmed) == "http_headers" {
+			result = append(result, mergeHTTPHeaderLine(line, managed))
+			updatedHeaders = true
+			continue
+		}
+		result = append(result, line)
+	}
+	if currentSection == fmt.Sprintf("model_providers.%s", providerName) {
+		flushMissingHeaders()
+	}
+	if !foundProviderSection {
+		if len(result) > 0 && strings.TrimSpace(result[len(result)-1]) != "" {
+			result = append(result, "")
+		}
+		result = append(result,
+			fmt.Sprintf("[model_providers.%s]", providerName),
+			fmt.Sprintf("name = %s", tomlString(providerName)),
+			fmt.Sprintf("http_headers = %s", tomlInlineStringMap(managed)),
+		)
+	}
+	return strings.Join(result, "\n")
 }
 
 // incrementalUpdateCodexToml updates provider fields in existing TOML while
@@ -348,7 +484,7 @@ func incrementalUpdateCodexToml(lines []string, providerName, modelID, baseURL, 
 				appendMissingTargetFields()
 			}
 			currentSection = section
-			if section == fmt.Sprintf("model_providers.%s", providerName) || section == fmt.Sprintf("model_providers.%q", providerName) || section == fmt.Sprintf("model_providers.'%s'", providerName) {
+			if isCodexModelProviderSection(section, providerName) {
 				currentSection = fmt.Sprintf("model_providers.%s", providerName)
 				foundProviderSection = true
 			}

@@ -166,6 +166,13 @@ export interface AIAssistantPanelProps {
      * sidebar highlight can clear.
      */
     onActiveAssistantTaskChange?: (identity: ActiveAssistantTaskIdentity | null) => void;
+    /**
+     * Live "running" signal for the currently visible tab: true while its task
+     * is actively executing (agent loop streaming or workflow phase running),
+     * mirroring the execution header badge. The sidebar merges this with the
+     * durable task snapshot so in-progress runs are not misfiled as completed.
+     */
+    onActiveTaskRunningChange?: (running: boolean) => void;
     /** Sidebar-visible task list mirrored by the header task switcher. */
     tasks?: TaskManagementItem[];
     /**

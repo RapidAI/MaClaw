@@ -19,6 +19,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
@@ -314,6 +315,7 @@ func (a *App) SearchProjects(query string, limit int) []ProjectSearchResult {
 	records = collapseRecentTaskForkRecords(records)
 
 	scenesByPath := projectSceneMap(a.memoryStore.SceneIndex(limit * 2))
+	codingActiveByRef := a.activeCodingRuntimeStatusesByRef()
 
 	results := make([]ProjectSearchResult, 0, len(records))
 	for _, rec := range records {
@@ -322,6 +324,11 @@ func (a *App) SearchProjects(query string, limit int) []ProjectSearchResult {
 			enrichProjectSearchResultWithScene(&result, scene)
 		}
 		result.ActiveWorkflow = a.activeWorkflowForProject(projectWorkflowProjectPathForRecord(rec))
+		if !projectWorkflowSnapshotActive(result.ActiveWorkflow) {
+			if runtimeState := activeCodingRuntimeWorkflowForTags(result.Tags, codingActiveByRef); runtimeState != nil {
+				result.ActiveWorkflow = runtimeState
+			}
+		}
 		results = append(results, result)
 	}
 
@@ -450,6 +457,7 @@ func (a *App) SearchTasks(query string, limit int) []ProjectSearchResult {
 	records = collapseDuplicateCloudWorkspaceRecords(records)
 	scenesByPath := projectSceneMap(a.sceneIndexForTaskList(searchLimit * 2))
 	v2WorkflowStates := a.v2WorkflowStatesByOwner()
+	codingActiveByRef := a.activeCodingRuntimeStatusesByRef()
 	results := make([]ProjectSearchResult, 0, len(records))
 	for _, rec := range records {
 		if !isTaskManagementRecord(rec) {
@@ -466,6 +474,11 @@ func (a *App) SearchTasks(query string, limit int) []ProjectSearchResult {
 			enrichProjectSearchResultWithScene(&result, scene)
 		}
 		result.ActiveWorkflow = a.activeWorkflowForProjectFromCache(projectWorkflowProjectPathForRecord(rec), v2WorkflowStates)
+		if !projectWorkflowSnapshotActive(result.ActiveWorkflow) {
+			if runtimeState := activeCodingRuntimeWorkflowForTags(result.Tags, codingActiveByRef); runtimeState != nil {
+				result.ActiveWorkflow = runtimeState
+			}
+		}
 		results = append(results, result)
 	}
 	if strings.TrimSpace(query) == "" {
@@ -4021,6 +4034,122 @@ func (a *App) activeWorkflowForProjectFromCache(projectPath string, v2Cache map[
 	return nil
 }
 
+// projectWorkflowSnapshotActive mirrors the frontend status bucketing: a
+// snapshot counts as live only while its status/phase says it is running.
+func projectWorkflowSnapshotActive(state *ProjectWorkflowState) bool {
+	if state == nil {
+		return false
+	}
+	raw := strings.ToLower(strings.TrimSpace(state.Status) + " " + strings.TrimSpace(state.Phase))
+	for _, keyword := range []string{"running", "execut", "active", "processing"} {
+		if strings.Contains(raw, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+// normalizeCodingRuntimeRef folds a coding runtime project_ref for map
+// lookups: local dirs differ in drive-letter case and slash style between
+// the ledger row and the task tag.
+func normalizeCodingRuntimeRef(ref string) string {
+	ref = strings.TrimSpace(ref)
+	ref = strings.ReplaceAll(ref, `\`, "/")
+	ref = strings.TrimRight(ref, "/")
+	return strings.ToLower(ref)
+}
+
+// codingRuntimeRefForTaskTags resolves the coding runtime ledger key for a
+// task row: remote coding tasks key by remote workdir, local coding tasks by
+// their working directory. Rows without a coding mode tag never match a
+// runtime row, so ordinary chat tasks are unaffected. Remote wins over local
+// because remote task rows may also carry legacy local coding tags.
+func codingRuntimeRefForTaskTags(tags []string) string {
+	isRemote := false
+	isCoding := false
+	remoteWorkDir := ""
+	localWorkDir := ""
+	for _, tag := range tags {
+		switch {
+		case tag == "remote_coding_dev":
+			isRemote = true
+		case tag == "coding_dev":
+			isCoding = true
+		case strings.HasPrefix(tag, taskRemoteWorkDirTagPrefix):
+			if workDir := strings.TrimSpace(strings.TrimPrefix(tag, taskRemoteWorkDirTagPrefix)); workDir != "" && remoteWorkDir == "" {
+				remoteWorkDir = workDir
+			}
+		case strings.HasPrefix(tag, recentTaskWorkingDirTagPrefix):
+			if workDir := strings.TrimSpace(strings.TrimPrefix(tag, recentTaskWorkingDirTagPrefix)); workDir != "" && localWorkDir == "" {
+				localWorkDir = workDir
+			}
+		}
+	}
+	if isRemote && remoteWorkDir != "" {
+		return remoteWorkDir
+	}
+	if isCoding && localWorkDir != "" {
+		return localWorkDir
+	}
+	return ""
+}
+
+// activeCodingRuntimeStatusesByRef loads the non-terminal coding runtime
+// statuses keyed by normalized project_ref. It deliberately reuses an already
+// opened store instead of ensuring one: SearchTasks runs on every task list
+// refresh, and apps that never run coding work should not create the ledger
+// database as a side effect of opening the sidebar.
+func (a *App) activeCodingRuntimeStatusesByRef() map[string]string {
+	if a == nil {
+		return nil
+	}
+	a.codingRuntimeStoreMu.Lock()
+	store := a.codingRuntimeStore
+	a.codingRuntimeStoreMu.Unlock()
+	if store == nil {
+		return nil
+	}
+	byRef, err := store.ListActiveTaskStatusesByProjectRef()
+	if err != nil {
+		log.Printf("[task-search] coding runtime status load failed: %v", err)
+		return nil
+	}
+	out := make(map[string]string, len(byRef))
+	for ref, status := range byRef {
+		out[normalizeCodingRuntimeRef(ref)] = status
+	}
+	return out
+}
+
+// activeCodingRuntimeWorkflowForTags merges the durable coding runtime ledger
+// into a task row's status snapshot. Pure coding runs (local and remote) never
+// create a workflow snapshot, so without this merge an in-progress run is
+// filed as completed (has_output stays true from earlier runs).
+func activeCodingRuntimeWorkflowForTags(tags []string, activeByRef map[string]string) *ProjectWorkflowState {
+	ref := codingRuntimeRefForTaskTags(tags)
+	if ref == "" || len(activeByRef) == 0 {
+		return nil
+	}
+	status, ok := activeByRef[normalizeCodingRuntimeRef(ref)]
+	if !ok {
+		return nil
+	}
+	switch codingruntime.TaskStatus(status) {
+	case codingruntime.TaskRunning, codingruntime.TaskQueued, codingruntime.TaskWaitingChild:
+		return &ProjectWorkflowState{Status: string(codingruntime.TaskRunning)}
+	case codingruntime.TaskWaitingApproval, codingruntime.TaskBlocked:
+		// Approval/blocked runs are alive but need the user. "waiting_review"
+		// (not "blocked") keeps the surfaces consistent: the chat header maps
+		// the substring "blocked" to 失败, while the sidebar files
+		// pending_review rows as 待处理.
+		return &ProjectWorkflowState{Status: "waiting_review", PendingReview: true}
+	case codingruntime.TaskInterrupted:
+		return &ProjectWorkflowState{Status: string(codingruntime.TaskInterrupted), PendingReview: true}
+	default:
+		return nil
+	}
+}
+
 func projectWorkflowStateFromV2(state *v2.WorkflowState) *ProjectWorkflowState {
 	if state == nil {
 		return nil
@@ -4783,7 +4912,8 @@ func (a *App) HideTask(projectPath string) {
 
 // DeleteTask permanently removes a task and all state scoped to it. Unlike
 // HideTask (used for recoverable rollback), this makes a later launch through
-// onboarding or a shortcut a genuinely new task.
+// onboarding or a shortcut a genuinely new task. Cloud workspaces stay on Hub
+// until the user deletes the workspace itself from the management dialog.
 func (a *App) DeleteTask(projectPath string) error {
 	projectPath = normalizeProjectSessionPath(projectPath)
 	if projectPath == "" {
@@ -4791,14 +4921,11 @@ func (a *App) DeleteTask(projectPath string) error {
 	}
 	log.Printf("[project_search] DeleteTask requested path=%q", projectPath)
 	workspaceID := a.lookupCloudWorkspaceIDForProject(projectPath)
-	a.dismissCloudWorkspaceTaskByPath(projectPath)
 	a.releaseCloudWorkspaceForProjectPath(projectPath)
 	forgetCloudWorkspaceTaskByPath(projectPath)
-	if workspaceID != "" {
-		if _, err := a.deleteCloudWorkspaceOnHub(workspaceID); err != nil {
-			log.Printf("[cloud_workspace] delete after task removal workspace=%s path=%q err=%v", workspaceID, projectPath, err)
-		}
-		a.hideOtherLocalCloudWorkspaceTasks(workspaceID, projectPath)
+	if workspaceID != "" && a.countVisibleCloudWorkspaceTasks(workspaceID, projectPath) == 0 {
+		a.dismissCloudWorkspaceTask(workspaceID)
+		a.dropShareAccessSession(workspaceID)
 	}
 	// Directory updates and task deletion both mutate the same tab session files
 	// and runtime maps. Hold the lifecycle mutex so a picker completion cannot

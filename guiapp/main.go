@@ -72,6 +72,9 @@ func Main(v string) {
 	app := NewApp()
 	app.applyInitialLanguage()
 	app.setPendingReferralHandoff(referralHandoffFromArgs(args))
+	if launch := cloudWorkspaceShareFromArgs(args); launch.Token != "" {
+		app.setPendingCloudWorkspaceShare(launch)
+	}
 
 	// Check for command line arguments
 	if len(args) > 1 {
@@ -187,6 +190,9 @@ func Main(v string) {
 				}
 				if handoff := referralHandoffFromArgs(secondInstanceData.Args); handoff.Handoff != "" {
 					app.setPendingReferralHandoff(handoff)
+				}
+				if launch := cloudWorkspaceShareFromArgs(secondInstanceData.Args); launch.Token != "" {
+					app.setPendingCloudWorkspaceShare(launch)
 				}
 
 				if !shouldShowWindow {

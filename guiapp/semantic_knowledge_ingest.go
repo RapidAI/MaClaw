@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -195,38 +194,19 @@ func trustedKnowledgeIngestContext(parent context.Context, url, path string) (co
 }
 
 func trustedKnowledgeIngestResolvePath(workspace, path string) (string, error) {
-	workspace = strings.TrimSpace(workspace)
-	path = strings.TrimSpace(path)
-	if workspace == "" {
+	abs, _, kind := resolvePathInsideWorkspace(workspace, path)
+	switch kind {
+	case trustedPathOK:
+		return abs, nil
+	case trustedPathNoWorkspace:
 		return "", fmt.Errorf("trusted_knowledge_ingest_path_unavailable")
-	}
-	if path == "" {
+	default:
 		return "", fmt.Errorf("trusted_knowledge_ingest_path_rejected")
 	}
-	base, err := filepath.Abs(workspace)
-	if err != nil {
-		return "", fmt.Errorf("trusted_knowledge_ingest_path_unavailable")
-	}
-	candidate := path
-	if !filepath.IsAbs(path) {
-		candidate = filepath.Join(base, path)
-	}
-	abs, err := filepath.Abs(candidate)
-	if err != nil {
-		return "", fmt.Errorf("trusted_knowledge_ingest_path_rejected")
-	}
-	rel, err := filepath.Rel(base, abs)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("trusted_knowledge_ingest_path_rejected")
-	}
-	return abs, nil
 }
 
 func trustedKnowledgeIngestDisplayPath(workspace, absPath, raw string) string {
-	if rel, err := filepath.Rel(workspace, absPath); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return filepath.ToSlash(rel)
-	}
-	return strings.TrimSpace(raw)
+	return trustedRelDisplayPath(workspace, absPath, raw)
 }
 
 func semanticTrustedKnowledgeIngestProjection(kind string, source knowledge.Source) string {

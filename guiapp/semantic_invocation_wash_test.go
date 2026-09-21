@@ -2,6 +2,7 @@ package guiapp
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/intent"
@@ -40,6 +41,94 @@ func TestSemanticShellInvocationArgsWashesTimeoutShapes(t *testing.T) {
 	mixed := `{"command":"ls","workdir":"/tmp"}`
 	if got := semanticShellInvocationArgs(mixed); got != mixed {
 		t.Fatalf("unknown key must pass through: %s", got)
+	}
+}
+
+// Legacy exec-shaped ssh calls (action/session_id/host/password from the
+// unpublished full ssh tool, still visible in conversation history) must wash
+// to the bare {command} the closed schema binds; connect-shaped calls get a
+// dedicated already-bound rejection instead of burning the grant on a schema
+// error. Keys that would change execution semantics pass through for
+// canonicalization to reject.
+func TestSemanticSSHInvocationArgsWashesLegacyShapes(t *testing.T) {
+	washed, err := semanticSSHInvocationArgs(`{"action":"exec","command":"df -h","session_id":"ssh_root@host:22_1"}`, false)
+	if err != nil {
+		t.Fatalf("exec-shaped wash must not error: %v", err)
+	}
+	got := parseWashedArgs(t, washed)
+	if got["command"] != "df -h" {
+		t.Fatalf("command must survive: %#v", got)
+	}
+	if _, ok := got["session_id"]; ok {
+		t.Fatalf("host-bound session_id must be dropped: %#v", got)
+	}
+	if _, ok := got["action"]; ok {
+		t.Fatalf("host-bound action must be dropped: %#v", got)
+	}
+
+	washed, err = semanticSSHInvocationArgs(`{"action":"connect","host":"h","user":"root","password":"s3cret","label":"驱网"}`, false)
+	if err == nil || !strings.Contains(err.Error(), "trusted_ssh_session_already_bound") {
+		t.Fatalf("exec-mode connect shape must be rejected as already bound, got washed=%q err=%v", washed, err)
+	}
+
+	// Bare command passes through untouched.
+	bare := `{"command":"df -h"}`
+	if washed, err = semanticSSHInvocationArgs(bare, false); err != nil || washed != bare {
+		t.Fatalf("bare command must pass through: washed=%q err=%v", washed, err)
+	}
+	// Execution-affecting keys are not decoration: they survive the wash so
+	// canonicalization rejects them instead of silently ignoring them.
+	mixed := `{"command":"df -h","wait_seconds":120}`
+	if washed, err = semanticSSHInvocationArgs(mixed, false); err != nil || washed != mixed {
+		t.Fatalf("execution-affecting key must pass through: washed=%q err=%v", washed, err)
+	}
+	// Garbage passes through.
+	garbage := `not json`
+	if washed, err = semanticSSHInvocationArgs(garbage, false); err != nil || washed != garbage {
+		t.Fatalf("garbage must pass through: washed=%q err=%v", washed, err)
+	}
+}
+
+// Connect mode admits the connection fields itself; only pure legacy
+// decoration (action/session_id) washes away, because the model's natural
+// call shape — copied from the legacy tool in conversation history — is
+// {"action":"connect","host":…,"password":…}. Rejecting it on the action
+// field would burn an iteration for nothing.
+func TestSemanticSSHInvocationArgsConnectModeAbsorbsAction(t *testing.T) {
+	washed, err := semanticSSHInvocationArgs(`{"action":"connect","host":"h","user":"root","password":"s3cret","label":"驱网","session_id":"ssh_x_1"}`, true)
+	if err != nil {
+		t.Fatalf("connect-shaped wash must not error: %v", err)
+	}
+	got := parseWashedArgs(t, washed)
+	if got["host"] != "h" || got["user"] != "root" || got["password"] != "s3cret" || got["label"] != "驱网" {
+		t.Fatalf("connect fields must survive: %#v", got)
+	}
+	if _, ok := got["action"]; ok {
+		t.Fatalf("legacy action must be dropped in connect mode: %#v", got)
+	}
+	if _, ok := got["session_id"]; ok {
+		t.Fatalf("legacy session_id must be dropped in connect mode: %#v", got)
+	}
+	// Clean connect args pass through untouched.
+	bare := `{"host":"h","user":"root"}`
+	if washed, err = semanticSSHInvocationArgs(bare, true); err != nil || washed != bare {
+		t.Fatalf("bare connect args must pass through: washed=%q err=%v", washed, err)
+	}
+	// Unknown / execution-affecting keys stay for canonicalization to reject.
+	mixed := `{"host":"h","user":"root","wait_seconds":30}`
+	if washed, err = semanticSSHInvocationArgs(mixed, true); err != nil || washed != mixed {
+		t.Fatalf("unknown key must pass through in connect mode: washed=%q err=%v", washed, err)
+	}
+	// The optional post-connect command is a declared connect-schema field and
+	// must survive the wash so the adapter can run it after connecting.
+	withCommand := `{"host":"h","user":"root","password":"x","command":"uptime"}`
+	washed, err = semanticSSHInvocationArgs(withCommand, true)
+	if err != nil {
+		t.Fatalf("connect+command wash must not error: %v", err)
+	}
+	got = parseWashedArgs(t, washed)
+	if got["command"] != "uptime" || got["host"] != "h" {
+		t.Fatalf("connect+command must survive the wash: %#v", got)
 	}
 }
 

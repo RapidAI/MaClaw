@@ -339,6 +339,9 @@ func assertPlan(plan tool.ToolPlan, sample Sample, now time.Time, facts []tool.R
 	if err := assertUnmet(plan, sample.Expected.Unmet); err != nil {
 		return err
 	}
+	if err := assertOmitted(plan, sample.Expected.Omitted); err != nil {
+		return err
+	}
 	if err := assertArtifactEdges(plan, sample.Expected.ArtifactEdges); err != nil {
 		return err
 	}
@@ -481,6 +484,28 @@ func assertUnmet(plan tool.ToolPlan, expected []UnmetExpectation) error {
 	for _, want := range expected {
 		if got[want.NeedID] != want.Reason {
 			return fmt.Errorf("unmet %s=%q, want %q", want.NeedID, got[want.NeedID], want.Reason)
+		}
+	}
+	return nil
+}
+
+// assertOmitted mirrors assertUnmet for plan.Omitted: the exact-set channel
+// for unservable optional needs. Coding-family samples pin optional repeat
+// siblings and optional capabilities landing here instead of Unmet.
+func assertOmitted(plan tool.ToolPlan, expected []UnmetExpectation) error {
+	if expected == nil {
+		return nil
+	}
+	got := make(map[string]string, len(plan.Omitted))
+	for _, omitted := range plan.Omitted {
+		got[omitted.NeedID] = omitted.ReasonCode
+	}
+	if len(got) != len(expected) {
+		return fmt.Errorf("omitted=%v, want %d entries", plan.Omitted, len(expected))
+	}
+	for _, want := range expected {
+		if got[want.NeedID] != want.Reason {
+			return fmt.Errorf("omitted %s=%q, want %q", want.NeedID, got[want.NeedID], want.Reason)
 		}
 	}
 	return nil

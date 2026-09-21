@@ -57,6 +57,7 @@ import (
 	llmcompat "github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
+	"github.com/RapidAI/CodeClaw/corelib/permission"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/security"
 	"github.com/RapidAI/CodeClaw/corelib/session"
@@ -76,11 +77,13 @@ type App struct {
 	// suitePurchases caches the latest purchase entitlement per Suite so the
 	// subsequent download/install request can carry purchase_id without
 	// exposing payment identifiers in the UI state.
-	suitePurchasesMu       sync.Mutex
-	suitePurchases         map[string]string
-	referralHandoffMu      sync.Mutex
-	pendingReferralHandoff ReferralHandoffLaunch
-	watcher                *fsnotify.Watcher
+	suitePurchasesMu           sync.Mutex
+	suitePurchases             map[string]string
+	referralHandoffMu          sync.Mutex
+	pendingReferralHandoff     ReferralHandoffLaunch
+	cloudWorkspaceShareMu      sync.Mutex
+	pendingCloudWorkspaceShare CloudWorkspaceShareLaunch
+	watcher                    *fsnotify.Watcher
 	// llmProfileHealth holds only non-sensitive, effective-profile probe
 	// results. It is deliberately separate from AppConfig: connection health is
 	// ephemeral and must never be persisted alongside credentials.
@@ -500,6 +503,14 @@ type App struct {
 
 	// Notification cache: in-memory LRU cache of up to 10 unread notifications.
 	notifCache *notificationCache
+
+	// permissionSnapshotOnce builds the dual-eval permission snapshot at most
+	// once per App (docs/design/tool-routing-improvement-plan-zh.md Phase 1,
+	// R3). The snapshot is immutable, so the core loop's dual-eval harness can
+	// hold the returned pointer without further synchronization.
+	permissionSnapshotOnce sync.Once
+	permissionSnapshotVal  *permission.Snapshot
+	permissionSnapshotErr  error
 }
 
 type pendingBugReportUpload struct {
@@ -2760,6 +2771,7 @@ func (a *App) domReady(ctx context.Context) {
 	if handoff := a.peekPendingReferralHandoff(); handoff.Handoff != "" {
 		a.emitEvent("referral-handoff", handoff)
 	}
+	a.applyPendingCloudWorkspaceShare()
 }
 
 func (a *App) markFrontendHTMLReady() {
@@ -2783,6 +2795,7 @@ func (a *App) markFrontendReactReady() {
 		bootLog("replaying env-check-done after late React load")
 		a.emitEvent("env-check-done")
 	}
+	go a.applyPendingCloudWorkspaceShare()
 }
 
 type ReferralHandoffLaunch struct {

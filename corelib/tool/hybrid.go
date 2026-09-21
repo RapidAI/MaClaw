@@ -79,6 +79,11 @@ type diskCacheEnvelope struct {
 	Entries map[string][]float32 // sha256(text) → embedding vector
 }
 
+// toolEmbeddingCachePathFn resolves the disk cache path; tests redirect it to
+// a temp dir so SaveToDisk never touches the real user cache (and never races
+// a running app that owns it).
+var toolEmbeddingCachePathFn = toolEmbeddingCachePath
+
 // toolEmbeddingCachePath returns <MaclawBaseDir>/cache/tool_embeddings.gob.
 func toolEmbeddingCachePath() string {
 	base := maclawBaseDirFallback()
@@ -141,7 +146,7 @@ func (c *ToolEmbeddingCache) WarmUpAsync(toolTexts map[string]string) {
 // loadFromDisk restores cached embeddings from the gob file.
 // If the model fingerprint doesn't match, the disk cache is ignored.
 func (c *ToolEmbeddingCache) loadFromDisk() {
-	p := toolEmbeddingCachePath()
+	p := toolEmbeddingCachePathFn()
 	if p == "" {
 		return
 	}
@@ -180,9 +185,45 @@ func (c *ToolEmbeddingCache) loadFromDisk() {
 	log.Printf("[ToolEmbeddingCache] restored %d embeddings from disk cache", len(c.cache))
 }
 
+// toolEmbeddingDiskMu serializes read-modify-write across ToolEmbeddingCache
+// instances. Every retriever embeds a different tool subset but they all share
+// one on-disk file: with only the per-instance saveMu, two instances saving
+// concurrently each wrote just their own entries and the second rename
+// clobbered the first — observed in production as a ~7-entry save overwriting
+// a 126-entry cache, forcing a full recompute on the next start.
+// The lock is process-wide: two PROCESSES sharing the file (GUI + CLI) can
+// still interleave read-modify-write, but the atomic .tmp+rename keeps the
+// file itself consistent and the worst outcome is a lost warm entry —
+// recompute, never corruption.
+var toolEmbeddingDiskMu sync.Mutex
+
+// readDiskEnvelopeQuietly decodes the on-disk cache without logging; ok=false
+// covers a missing file, decode failure, and model-fingerprint/dim mismatch
+// (the same validation loadFromDisk applies).
+func readDiskEnvelopeQuietly(p, modelID string, embDim int) (*diskCacheEnvelope, bool) {
+	f, err := os.Open(p)
+	if err != nil {
+		return nil, false
+	}
+	defer f.Close()
+	var env diskCacheEnvelope
+	if err := gob.NewDecoder(f).Decode(&env); err != nil {
+		return nil, false
+	}
+	if env.ModelID != modelID || modelID == "" {
+		return nil, false
+	}
+	if embDim > 0 && env.EmbDim > 0 && env.EmbDim != embDim {
+		return nil, false
+	}
+	return &env, true
+}
+
 // SaveToDisk persists the current in-memory cache to disk.
 // Safe to call from any goroutine. No-op if nothing changed since last save.
-// Serialized via saveMu to prevent concurrent writes.
+// Serialized via saveMu to prevent concurrent writes; the file write is a
+// read-modify-write merged under toolEmbeddingDiskMu so concurrent
+// retrievers cannot drop each other's entries.
 func (c *ToolEmbeddingCache) SaveToDisk() {
 	c.saveMu.Lock()
 	defer c.saveMu.Unlock()
@@ -202,13 +243,29 @@ func (c *ToolEmbeddingCache) SaveToDisk() {
 
 	embDim := c.embedder.Dim()
 
-	p := toolEmbeddingCachePath()
+	p := toolEmbeddingCachePathFn()
 	if p == "" {
 		return
 	}
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		log.Printf("[ToolEmbeddingCache] mkdir error: %v", err)
 		return
+	}
+
+	toolEmbeddingDiskMu.Lock()
+	defer toolEmbeddingDiskMu.Unlock()
+
+	// Merge over whatever is on disk: this instance only knows its own tool
+	// texts, and a smaller instance's save must not drop entries other
+	// retrievers computed (they hash the same texts to the same keys, so the
+	// union is exactly the warm-up the next process start wants).
+	own := len(entries)
+	if existing, ok := readDiskEnvelopeQuietly(p, modelID, embDim); ok {
+		for k, v := range existing.Entries {
+			if _, have := entries[k]; !have && len(v) > 0 {
+				entries[k] = v
+			}
+		}
 	}
 
 	env := diskCacheEnvelope{
@@ -241,7 +298,7 @@ func (c *ToolEmbeddingCache) SaveToDisk() {
 	c.dirty = false
 	c.mu.Unlock()
 
-	log.Printf("[ToolEmbeddingCache] saved %d embeddings to disk cache", len(entries))
+	log.Printf("[ToolEmbeddingCache] saved %d embeddings to disk cache (%d from this cache)", len(entries), own)
 }
 
 // scheduleSave triggers an async disk save with proper debounce.

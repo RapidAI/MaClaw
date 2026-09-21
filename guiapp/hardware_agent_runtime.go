@@ -178,6 +178,9 @@ func (a *App) newHardwareIntentClassifier() *intent.UnifiedIntentClassifier {
 		LLMFunc:        a.buildUICLLMFunc(),
 		LLMContextFunc: a.buildUICLLMContextFunc(),
 		LLMTimeout:     30 * time.Second,
+		// 宁慢勿乱 (2026-09-18): match the desktop classifier — a short tree
+		// deadline degrades slow-hub turns into guessed surfaces.
+		FusionTreeDeadline: 30 * time.Second,
 	})
 }
 

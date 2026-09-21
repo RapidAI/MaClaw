@@ -478,7 +478,7 @@ func resolveOfficeSlideImages(workspace string, data map[string]interface{}) err
 			}
 			abs, err := trustedFileWriteResolvePath(workspace, path)
 			if err != nil {
-				return fmt.Errorf("trusted_office_write_image_path_rejected: %s", strings.TrimSpace(path))
+				return fmt.Errorf("trusted_office_write_image_path_rejected: %s (%s)", strings.TrimSpace(path), err.Error())
 			}
 			if info, statErr := os.Stat(abs); statErr != nil || info.IsDir() {
 				return fmt.Errorf("trusted_office_write_image_missing: %s", strings.TrimSpace(path))
@@ -560,7 +560,7 @@ func semanticOfficeSlideImageCheck(workspace, argsJSON string) error {
 			path = strings.TrimSpace(path)
 			abs, err := trustedFileWriteResolvePath(workspace, path)
 			if err != nil {
-				return &semanticCanonicalDetailedRejection{text: fmt.Sprintf("[system rejected] trusted_office_write_image_path_rejected: %s. The call was refused before execution, so the tool remains available: reference the image by the workspace-relative Path reported when it was acquired, then call again.", path)}
+				return &semanticCanonicalDetailedRejection{text: fmt.Sprintf("[system rejected] trusted_office_write_image_path_rejected: %s (%s). The call was refused before execution, so the tool remains available: use a path inside the writable directory, then call again.", path, err.Error())}
 			}
 			if info, statErr := os.Stat(abs); statErr != nil || info.IsDir() {
 				return &semanticCanonicalDetailedRejection{text: fmt.Sprintf("[system rejected] trusted_office_write_image_missing: %s. The call was refused before execution, so the tool remains available: reference the image by the workspace-relative Path reported when it was acquired, then call again.%s", path, semanticWorkspaceImageHint(workspace))}

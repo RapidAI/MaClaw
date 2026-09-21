@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyKnowledgeDomainFilterPayload, applyKnowledgeSearchFilterPayload, applyKnowledgeStructuredSearchPayload, knowledgeCoverageAliasSummary, knowledgeCoverageFilterSummary, knowledgeExecutionActionSourceIDs, knowledgeExecutionFailureDetails, knowledgeExecutionResultSourceIDs, knowledgeExecutionSourceFilterLabel, knowledgeHealthActionConfirmMessage, knowledgeHealthActionExecutable, knowledgeHealthActionExecutionPayload, knowledgeHealthActionManualLabel, knowledgeHealthSummaryModel, knowledgeQualityExecutionContextLabel, knowledgeSearchFragmentDeletable, knowledgeSearchFragmentMatchesDeleted, knowledgeSearchFragmentPayload, knowledgeSearchShouldReload, knowledgeSourceCoverageOptions, knowledgeSourceCoverageStateValue, knowledgeSourceListPayload, normalizeKnowledgeCoverageOption, normalizeKnowledgeDomainFilter, normalizeKnowledgeFilterToken, normalizeKnowledgeSourceLimit, parseDomainList, parseLabelList, parseURLBatch, resolveKnowledgeCoverageOption } from '../KnowledgeSettingsPanel';
+import { applyKnowledgeDomainFilterPayload, applyKnowledgeSearchFilterPayload, applyKnowledgeStructuredSearchPayload, knowledgeCoverageAliasSummary, knowledgeCoverageFilterSummary, knowledgeExecutionActionSourceIDs, knowledgeExecutionFailureDetails, knowledgeExecutionResultSourceIDs, knowledgeExecutionSourceFilterLabel, knowledgeHealthActionConfirmMessage, knowledgeHealthActionExecutable, knowledgeHealthActionExecutionPayload, knowledgeHealthActionManualLabel, knowledgeHealthSummaryModel, knowledgeQualityExecutionContextLabel, knowledgeSearchFacetActive, knowledgeSearchFragmentDeletable, knowledgeSearchFragmentMatchesDeleted, knowledgeSearchFragmentPayload, knowledgeSearchKindOptions, knowledgeSearchResultTypeOptions, knowledgeSearchShouldReload, knowledgeSourceCoverageOptions, knowledgeSourceCoverageStateValue, knowledgeSourceListPayload, normalizeKnowledgeCoverageOption, normalizeKnowledgeDomainFilter, normalizeKnowledgeFilterToken, normalizeKnowledgeSourceLimit, parseDomainList, parseLabelList, parseURLBatch, resolveKnowledgeCoverageOption, toggleKnowledgeSearchFacet } from '../KnowledgeSettingsPanel';
 
 describe('normalizeKnowledgeCoverageOption', () => {
     it('matches backend coverage filter key normalization style', () => {
@@ -516,6 +516,45 @@ describe('applyKnowledgeSearchFilterPayload', () => {
         });
 
         expect(payload).toEqual({ query: 'alpha' });
+    });
+});
+
+describe('knowledge search facet helpers', () => {
+    const form = { resultType: 'all', sourceKind: 'all', domain: '', sourceID: '', labels: '' };
+
+    it('keeps html/image kinds and unknown current or facet kinds in the select', () => {
+        expect(knowledgeSearchKindOptions()).toEqual(expect.arrayContaining(['html', 'image', 'docx']));
+        expect(knowledgeSearchKindOptions('Notebook', [{ label: 'JSON' }, { kind: 'docx' }])).toEqual(
+            expect.arrayContaining(['html', 'image', 'docx', 'notebook', 'json']),
+        );
+        expect(knowledgeSearchKindOptions('all')).not.toContain('all');
+        expect(knowledgeSearchResultTypeOptions()).toEqual(expect.arrayContaining(['node', 'card', 'fact', 'table_row']));
+        expect(knowledgeSearchResultTypeOptions('Entity', [{ label: 'table_row' }])).toEqual(
+            expect.arrayContaining(['table_row', 'entity']),
+        );
+    });
+
+    it('toggles result type, source kind, domain, labels, and source id', () => {
+        const withKind = toggleKnowledgeSearchFacet(form, 'source_kinds', 'DOCX');
+        expect(withKind.sourceKind).toBe('docx');
+        expect(knowledgeSearchFacetActive(withKind, 'source_kinds', 'DOCX')).toBe(true);
+        expect(toggleKnowledgeSearchFacet(withKind, 'source_kinds', 'docx').sourceKind).toBe('all');
+
+        const withType = toggleKnowledgeSearchFacet(form, 'result_types', 'node');
+        expect(withType.resultType).toBe('node');
+        expect(toggleKnowledgeSearchFacet(withType, 'result_types', 'node').resultType).toBe('all');
+
+        const withDomain = toggleKnowledgeSearchFacet(form, 'domains', 'local');
+        expect(withDomain.domain).toBe('local');
+        expect(toggleKnowledgeSearchFacet(withDomain, 'domains', 'local').domain).toBe('');
+
+        const withLabel = toggleKnowledgeSearchFacet(form, 'labels', 'kind:docx');
+        expect(withLabel.labels).toBe('kind:docx');
+        expect(toggleKnowledgeSearchFacet(withLabel, 'labels', 'kind:docx').labels).toBe('');
+
+        const withSource = toggleKnowledgeSearchFacet(form, 'sources', 'src-1');
+        expect(withSource.sourceID).toBe('src-1');
+        expect(toggleKnowledgeSearchFacet(withSource, 'sources', 'src-1').sourceID).toBe('');
     });
 });
 

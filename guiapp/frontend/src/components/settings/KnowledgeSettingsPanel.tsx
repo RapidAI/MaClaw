@@ -709,14 +709,6 @@ type KnowledgeSuggestResult = {
     notes?: string[];
 };
 
-type SearchFilterOverrides = {
-    resultType?: string;
-    sourceKind?: string;
-    domain?: string;
-    sourceID?: string;
-    labels?: string;
-};
-
 type ContextPackItem = {
     label?: string;
     result_type?: string;
@@ -736,7 +728,8 @@ type ContextPackResult = {
     notes?: string[];
 };
 
-const sourceKindOptions = ['url', 'pdf', 'ppt', 'pptx', 'doc', 'docx', 'xls', 'xlsx', 'csv', 'markdown', 'text', 'conversation', 'workflow_artifact'];
+const sourceKindOptions = ['url', 'html', 'pdf', 'ppt', 'pptx', 'doc', 'docx', 'xls', 'xlsx', 'csv', 'markdown', 'text', 'image', 'conversation', 'workflow_artifact'];
+const resultTypeOptions = ['node', 'card', 'fact', 'table_row'];
 const sourceStatusOptions = ['pending', 'parsed', 'distilled', 'failed', 'stale', 'disabled'];
 const sourceCoverageOptions = ['missing_nodes', 'missing_cards', 'missing_facts', 'missing_links', 'missing_labels', 'pdf_ocr_needed', 'complete', 'has_nodes', 'has_cards', 'has_facts', 'has_links'];
 const refreshableSourceKinds = new Set(['url', 'html', 'pdf', 'doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx', 'csv', 'markdown', 'text']);
@@ -874,6 +867,86 @@ export function applyKnowledgeSearchFilterPayload(payload: any, filters: {
     if (sourceID) payload.source_ids = [sourceID];
     const labels = parseLabelList(filters.labels || '');
     if (labels.length) payload.labels = labels;
+}
+
+export type KnowledgeSearchFacetGroup = 'result_types' | 'source_kinds' | 'domains' | 'labels' | 'sources';
+
+export type KnowledgeSearchFormFilters = {
+    resultType: string;
+    sourceKind: string;
+    domain: string;
+    sourceID: string;
+    labels: string;
+};
+
+export function knowledgeSearchTokenOptions(preset: readonly string[], current?: string, extras: Array<{ label?: string; kind?: string }> = []): string[] {
+    const seen = new Set<string>();
+    const options: string[] = [];
+    for (const kind of [...preset, current || '', ...extras.map(item => item.label || item.kind || '')]) {
+        const token = normalizeKnowledgeFilterToken(kind);
+        if (!token || token === 'all' || seen.has(token)) continue;
+        seen.add(token);
+        options.push(token);
+    }
+    return options;
+}
+
+export function knowledgeSearchKindOptions(currentKind?: string, facetKinds: Array<{ label?: string; kind?: string }> = []): string[] {
+    return knowledgeSearchTokenOptions(sourceKindOptions, currentKind, facetKinds);
+}
+
+export function knowledgeSearchResultTypeOptions(currentType?: string, facetTypes: Array<{ label?: string; kind?: string }> = []): string[] {
+    return knowledgeSearchTokenOptions(resultTypeOptions, currentType, facetTypes);
+}
+
+export function knowledgeSearchFacetActive(form: KnowledgeSearchFormFilters, group: KnowledgeSearchFacetGroup, value: string): boolean {
+    const token = String(value || '').trim();
+    if (!token) return false;
+    switch (group) {
+        case 'result_types':
+            return normalizeKnowledgeFilterToken(form.resultType) === normalizeKnowledgeFilterToken(token);
+        case 'source_kinds':
+            return normalizeKnowledgeFilterToken(form.sourceKind) === normalizeKnowledgeFilterToken(token);
+        case 'domains': {
+            const current = normalizeKnowledgeDomainFilter(form.domain);
+            const next = normalizeKnowledgeDomainFilter(token);
+            return !!current && current === next;
+        }
+        case 'labels':
+            return parseLabelList(form.labels).some(label => normalizeKnowledgeFilterToken(label) === normalizeKnowledgeFilterToken(token));
+        case 'sources':
+            return form.sourceID.trim() === token;
+        default:
+            return false;
+    }
+}
+
+export function toggleKnowledgeSearchFacet<T extends KnowledgeSearchFormFilters>(form: T, group: KnowledgeSearchFacetGroup, value: string): T {
+    const token = String(value || '').trim();
+    if (!token) return form;
+    const active = knowledgeSearchFacetActive(form, group, token);
+    switch (group) {
+        case 'result_types':
+            return { ...form, resultType: active ? 'all' : normalizeKnowledgeFilterToken(token) };
+        case 'source_kinds':
+            return { ...form, sourceKind: active ? 'all' : normalizeKnowledgeFilterToken(token) };
+        case 'domains':
+            return { ...form, domain: active ? '' : (normalizeKnowledgeDomainFilter(token) || token) };
+        case 'labels': {
+            const labels = parseLabelList(form.labels);
+            const needle = normalizeKnowledgeFilterToken(token);
+            return {
+                ...form,
+                labels: active
+                    ? labels.filter(label => normalizeKnowledgeFilterToken(label) !== needle).join(', ')
+                    : [...labels, needle].join(', '),
+            };
+        }
+        case 'sources':
+            return { ...form, sourceID: active ? '' : token };
+        default:
+            return form;
+    }
 }
 
 export function applyKnowledgeStructuredSearchPayload(payload: any, filters: {
@@ -1428,14 +1501,23 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
     const hubShareDialogRef = useRef<HTMLElement | null>(null);
     const hubShareDescriptionRef = useRef<HTMLTextAreaElement | null>(null);
     const busyRef = useRef(busy);
+    const workGenRef = useRef(0);
     const enterprisePurgeInFlightRef = useRef(false);
     const fragmentDeleteInFlightRef = useRef(false);
     const syncStatusIdentityRef = useRef('');
     const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
     const [searchForm, setSearchForm] = useState({ query: '', resultType: 'all', sourceKind: 'all', domain: '', sourceID: '', labels: '', limit: 20, includeDisabled: false });
-    const headerSearchRequestRef = useRef(0);
+    const searchFormRef = useRef(searchForm);
+    const searchRequestRef = useRef(0);
+    const loadSearchResultsRef = useRef<(form?: typeof searchForm) => Promise<{ count: number }>>(async () => ({ count: 0 }));
+    const runPanelSearchRef = useRef<(form: typeof searchForm) => Promise<unknown>>(async () => null);
     const [searchMode, setSearchMode] = useState<'semantic' | 'structured'>('semantic');
+    const searchModeRef = useRef(searchMode);
     const [structuredSearchForm, setStructuredSearchForm] = useState({ sheetName: '', columnName: '', matchMode: 'equals', columnValue: '', numberMin: '', numberMax: '', dateStart: '', dateEnd: '' });
+    const structuredSearchFormRef = useRef(structuredSearchForm);
+    searchFormRef.current = searchForm;
+    searchModeRef.current = searchMode;
+    structuredSearchFormRef.current = structuredSearchForm;
     const [sourceFilter, setSourceFilter] = useState({ query: '', kind: 'all', status: 'all', coverage: 'all', domain: '', labels: '', limit: 100 });
     const [qualityFilter, setQualityFilter] = useState({ query: '', kind: 'all', status: 'all', coverage: 'all', domain: '', labels: '', limit: 100 });
     const [qualityOptions, setQualityOptions] = useState({ policy: 'balanced', dryRun: true, distillMode: '', maxSourcesPerAction: 100, allowSensitiveDisable: false, allowDuplicateSuppression: true });
@@ -1444,6 +1526,17 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
     const [enterprisePurgePending, setEnterprisePurgePending] = useState(false);
     const [deepCrawlBusy, setDeepCrawlBusy] = useState(false);
     const knowledgeImportGlobal = useKnowledgeImportOptional();
+    const beginWork = (name: string) => {
+        const gen = ++workGenRef.current;
+        busyRef.current = name;
+        setBusy(name);
+        return gen;
+    };
+    const endWork = (gen: number) => {
+        if (gen !== workGenRef.current) return;
+        busyRef.current = '';
+        setBusy('');
+    };
 
     // Keep global float hidden while the dialog is open; reopen on Expand from any page.
     useEffect(() => {
@@ -1464,30 +1557,21 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
             const sourceId = String(detail.sourceId || '').trim();
             if (!query && !sourceId) return;
             setActiveTab('search');
+            const next = {
+                ...searchFormRef.current,
+                query: query || searchFormRef.current.query,
+                sourceID: sourceId,
+                resultType: 'all',
+                sourceKind: 'all',
+                domain: '',
+                labels: '',
+            };
+            searchFormRef.current = next;
+            searchModeRef.current = 'semantic';
             setSearchMode('semantic');
-            setSearchForm(form => ({ ...form, query: query || form.query, sourceID: sourceId }));
+            setSearchForm(next);
             if (!query) return;
-            const requestId = ++headerSearchRequestRef.current;
-            void (async () => {
-                setBusy('search');
-                setError('');
-                try {
-                    const payload: Record<string, unknown> = { query, limit: 20 };
-                    if (sourceId) payload.source_id = sourceId;
-                    const [results, facetResult] = await Promise.all([
-                        KnowledgeSearch(payload as any),
-                        KnowledgeSearchFacets(payload as any),
-                    ]);
-                    if (requestId !== headerSearchRequestRef.current) return;
-                    setSearchResults(Array.isArray(results) ? results : []);
-                    setFacets(facetResult || null);
-                } catch (err: any) {
-                    if (requestId !== headerSearchRequestRef.current) return;
-                    setError(err?.message || String(err));
-                } finally {
-                    if (requestId === headerSearchRequestRef.current) setBusy('');
-                }
-            })();
+            void runPanelSearchRef.current(next);
         };
         let cancelled = false;
         applyKnowledgeSearch(peekPendingKnowledgeSearch());
@@ -1788,8 +1872,8 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
         };
     }, [showHubShareDialog]);
 
-    const runTask = async (name: string, task: () => Promise<any>, options: { refreshSources?: boolean; refreshHealth?: boolean; successMessage?: string | false } = {}) => {
-        setBusy(name);
+    const runTask = async (name: string, task: () => Promise<any>, options: { refreshSources?: boolean; refreshHealth?: boolean; successMessage?: string | false; recordResult?: boolean } = {}) => {
+        const gen = beginWork(name);
         setError('');
         if (name !== 'executeQuality') {
             setExecutionResult(null);
@@ -1797,7 +1881,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
         }
         try {
             const result = await task();
-            setOperationResult(result ?? { ok: true });
+            if (options.recordResult !== false) setOperationResult(result ?? { ok: true });
             if (options.refreshSources) await refreshSourceList();
             if (options.refreshHealth) await refresh();
             if (options.successMessage !== false) {
@@ -1808,7 +1892,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
             setError(err?.message || String(err));
             return null;
         } finally {
-            setBusy('');
+            endWork(gen);
         }
     };
 
@@ -2500,7 +2584,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
             const result = await KnowledgeStructuredCatalog(payload);
             setStructuredCatalog(result || null);
             return { tables: result?.count || 0 };
-        }, { successMessage: false });
+        }, { successMessage: false, recordResult: false });
     };
 
     const saveText = async () => {
@@ -2605,37 +2689,80 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
         }, { refreshSources: true, refreshHealth: true });
     };
 
-    const loadSearchResults = async () => {
+    const loadSearchResults = async (form = searchFormRef.current) => {
+        const requestId = ++searchRequestRef.current;
         const payload: any = {
-            limit: normalizeKnowledgeSourceLimit(searchForm.limit, 20, 200),
-            include_disabled: searchForm.includeDisabled,
+            limit: normalizeKnowledgeSourceLimit(form.limit, 20, 200),
+            include_disabled: form.includeDisabled,
         };
         let results: any[] = [];
         let facetResult: any = null;
-        if (searchMode === 'structured') {
-            applyKnowledgeStructuredSearchPayload(payload, { ...searchForm, ...structuredSearchForm });
+        if (searchModeRef.current === 'structured') {
+            applyKnowledgeStructuredSearchPayload(payload, { ...form, ...structuredSearchFormRef.current });
             results = await KnowledgeSearchStructured(payload);
         } else {
-            payload.query = searchForm.query.trim();
-            applyKnowledgeSearchFilterPayload(payload, searchForm);
+            payload.query = form.query.trim();
+            applyKnowledgeSearchFilterPayload(payload, form);
             [results, facetResult] = await Promise.all([
                 KnowledgeSearch(payload),
                 KnowledgeSearchFacets(payload),
             ]);
         }
+        if (requestId !== searchRequestRef.current) return { count: Array.isArray(results) ? results.length : 0 };
         setSearchResults(Array.isArray(results) ? results : []);
         setFacets(facetResult || null);
         return { count: Array.isArray(results) ? results.length : 0 };
     };
+    loadSearchResultsRef.current = loadSearchResults;
+    const requestPanelSearch = (form: typeof searchForm) => runTask('search', () => loadSearchResultsRef.current(form), { successMessage: false, recordResult: false });
+    runPanelSearchRef.current = requestPanelSearch;
+
+    const commitSearchFilters = (next: typeof searchForm, reload: boolean) => {
+        searchFormRef.current = next;
+        setSearchForm(next);
+        if (!reload) return;
+        if (busyRef.current && busyRef.current !== 'search') return;
+        if (!knowledgeSearchShouldReload(searchModeRef.current, next.query, structuredSearchFormRef.current)) return;
+        void requestPanelSearch(next);
+    };
 
     const runSearch = async () => {
-        if (!knowledgeSearchShouldReload(searchMode, searchForm.query, structuredSearchForm)) {
-            setError(searchMode === 'structured'
+        const form = searchFormRef.current;
+        if (!knowledgeSearchShouldReload(searchModeRef.current, form.query, structuredSearchFormRef.current)) {
+            setError(searchModeRef.current === 'structured'
                 ? t('Enter a query or at least one table column filter.', '请输入问题，或至少填写一个表格列筛选条件。')
                 : t('Search query is required.', '请输入搜索问题。'));
             return;
         }
-        await runTask('search', loadSearchResults);
+        if (busyRef.current && busyRef.current !== 'search') return;
+        await requestPanelSearch(form);
+    };
+
+    const applySearchFacet = (group: KnowledgeSearchFacetGroup, value: string) => {
+        if (busyRef.current && busyRef.current !== 'search') return;
+        commitSearchFilters(toggleKnowledgeSearchFacet(searchFormRef.current, group, value), true);
+    };
+
+    const changeSearchMode = (mode: 'semantic' | 'structured') => {
+        if (searchModeRef.current === mode) return;
+        searchModeRef.current = mode;
+        setSearchMode(mode);
+        if (busyRef.current && busyRef.current !== 'search') return;
+        if (!knowledgeSearchShouldReload(mode, searchFormRef.current.query, structuredSearchFormRef.current)) return;
+        void requestPanelSearch(searchFormRef.current);
+    };
+
+    const commitStructuredForm = (patch: Partial<typeof structuredSearchForm>) => {
+        const next = { ...structuredSearchFormRef.current, ...patch };
+        structuredSearchFormRef.current = next;
+        setStructuredSearchForm(next);
+    };
+
+    const onSearchEnter = (event: { key: string; preventDefault: () => void; isComposing?: boolean; nativeEvent?: { isComposing?: boolean; keyCode?: number }; keyCode?: number }) => {
+        if (event.key !== 'Enter') return;
+        if (event.isComposing || event.nativeEvent?.isComposing || event.keyCode === 229 || event.nativeEvent?.keyCode === 229) return;
+        event.preventDefault();
+        void runSearch();
     };
 
     const loadQuality = async () => {
@@ -2704,9 +2831,9 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                     await runTask('deleteFragment', async () => {
                         const deletedNodeIDs = await KnowledgeDeleteFragment(knowledgeSearchFragmentPayload(result) as knowledge.SearchResult);
                         setSearchResults(prev => prev.filter(item => !knowledgeSearchFragmentMatchesDeleted(item, result, Array.isArray(deletedNodeIDs) ? deletedNodeIDs : [])));
-                        if (knowledgeSearchShouldReload(searchMode, searchForm.query, structuredSearchForm)) {
+                        if (knowledgeSearchShouldReload(searchModeRef.current, searchFormRef.current.query, structuredSearchFormRef.current)) {
                             try {
-                                await loadSearchResults();
+                                await loadSearchResults(searchFormRef.current);
                             } catch {
                                 // Keep the optimistic removal if a follow-up search fails.
                             }
@@ -3676,10 +3803,10 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                     <div className="knowledge-search-hero">
                             <div className="knowledge-search-mode-row">
                                 <div className="knowledge-search-mode-toggle" role="radiogroup" aria-label={t('Search mode', '检索模式')}>
-                                    <button type="button" className="knowledge-mode-button" data-active={searchMode === 'semantic' ? 'true' : undefined} onClick={() => setSearchMode('semantic')}>
+                                    <button type="button" className="knowledge-mode-button" role="radio" aria-checked={searchMode === 'semantic'} data-active={searchMode === 'semantic' ? 'true' : undefined} onClick={() => changeSearchMode('semantic')}>
                                         {t('Semantic Search', '语义检索')}
                                     </button>
-                                    <button type="button" className="knowledge-mode-button" data-active={searchMode === 'structured' ? 'true' : undefined} onClick={() => setSearchMode('structured')}>
+                                    <button type="button" className="knowledge-mode-button" role="radio" aria-checked={searchMode === 'structured'} data-active={searchMode === 'structured' ? 'true' : undefined} onClick={() => changeSearchMode('structured')}>
                                         {t('Table Filters', '表格筛选')}
                                     </button>
                                 </div>
@@ -3692,45 +3819,102 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                                 <input
                                     className="knowledge-input knowledge-search-input--hero"
                                     value={searchForm.query}
-                                    onChange={event => setSearchForm({ ...searchForm, query: event.target.value })}
-                                    onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); void runSearch(); } }}
+                                    onChange={event => {
+                                        const next = { ...searchFormRef.current, query: event.target.value };
+                                        searchFormRef.current = next;
+                                        setSearchForm(next);
+                                    }}
+                                    onKeyDown={onSearchEnter}
                                     placeholder={searchMode === 'structured' ? t('Optional keywords inside matched rows...', '可选：在匹配行内继续按关键词筛选...') : t('Search knowledge base...', '搜索知识库...')}
                                     autoFocus
                                 />
-                                <button type="button" className="knowledge-button knowledge-button--primary knowledge-search-button" disabled={!!busy} onClick={runSearch}>
+                                <button type="button" className="knowledge-button knowledge-button--primary knowledge-search-button" disabled={!!busy && busy !== 'search'} onClick={runSearch}>
                                     {busy === 'search' ? t('Searching...', '检索中...') : t('Search', '检索')}
                                 </button>
                             </div>
-                            <div className="knowledge-search-filters">
-                                <select className="knowledge-input knowledge-input--compact" value={searchForm.resultType} onChange={event => setSearchForm({ ...searchForm, resultType: event.target.value })}><option value="all">{t('All types', '全部类型')}</option><option value="node">node</option><option value="card">card</option><option value="fact">fact</option></select>
-                                <input className="knowledge-input knowledge-input--compact" value={searchForm.sourceKind} onChange={event => setSearchForm({ ...searchForm, sourceKind: event.target.value })} placeholder={t('Kind', '类型')} />
-                                <input className="knowledge-input knowledge-input--compact" value={searchForm.domain} onChange={event => setSearchForm({ ...searchForm, domain: event.target.value })} placeholder={t('Domain', '域名')} />
-                                <input className="knowledge-input knowledge-input--compact" value={searchForm.labels} onChange={event => setSearchForm({ ...searchForm, labels: event.target.value })} placeholder={t('Labels', '标签')} />
-                                <input className="knowledge-input knowledge-input--compact" type="number" value={searchForm.limit} onChange={event => setSearchForm({ ...searchForm, limit: Number(event.target.value) })} title={t('Max results', '最大结果数')} style={{ width: 60 }} />
-                                <label className="knowledge-checkbox"><input type="checkbox" checked={searchForm.includeDisabled} onChange={event => setSearchForm({ ...searchForm, includeDisabled: event.target.checked })} /> {t('Disabled', '含禁用')}</label>
+                            <div className="knowledge-search-filters" data-testid="knowledge-search-filters">
+                                <label className="knowledge-search-filter knowledge-search-filter--fixed">
+                                    <span>{t('Result type', '结果类型')}</span>
+                                    <select className="knowledge-input knowledge-input--compact" value={normalizeKnowledgeFilterToken(searchForm.resultType) || 'all'} onChange={event => commitSearchFilters({ ...searchFormRef.current, resultType: event.target.value }, true)}>
+                                        <option value="all">{t('All types', '全部类型')}</option>
+                                        {knowledgeSearchResultTypeOptions(searchForm.resultType, facets?.result_types).map(type => <option key={type} value={type}>{type}</option>)}
+                                    </select>
+                                </label>
+                                <label className="knowledge-search-filter knowledge-search-filter--fixed">
+                                    <span>{t('Kind', '来源种类')}</span>
+                                    <select className="knowledge-input knowledge-input--compact" value={normalizeKnowledgeFilterToken(searchForm.sourceKind) || 'all'} onChange={event => commitSearchFilters({ ...searchFormRef.current, sourceKind: event.target.value }, true)}>
+                                        <option value="all">{t('All kinds', '全部种类')}</option>
+                                        {knowledgeSearchKindOptions(searchForm.sourceKind, facets?.source_kinds).map(kind => <option key={kind} value={kind}>{kind}</option>)}
+                                    </select>
+                                </label>
+                                <label className="knowledge-search-filter knowledge-search-filter--grow">
+                                    <span>{t('Domain', '域名')}</span>
+                                    <input className="knowledge-input knowledge-input--compact" value={searchForm.domain} onChange={event => {
+                                        const next = { ...searchFormRef.current, domain: event.target.value };
+                                        searchFormRef.current = next;
+                                        setSearchForm(next);
+                                    }} onKeyDown={onSearchEnter} placeholder={t('Any domain', '任意域名')} />
+                                </label>
+                                <label className="knowledge-search-filter knowledge-search-filter--grow">
+                                    <span>{t('Labels', '标签')}</span>
+                                    <input className="knowledge-input knowledge-input--compact" value={searchForm.labels} onChange={event => {
+                                        const next = { ...searchFormRef.current, labels: event.target.value };
+                                        searchFormRef.current = next;
+                                        setSearchForm(next);
+                                    }} onKeyDown={onSearchEnter} placeholder={t('Any labels', '任意标签')} />
+                                </label>
+                                <label className="knowledge-search-filter knowledge-search-filter--limit">
+                                    <span>{t('Limit', '条数')}</span>
+                                    <input className="knowledge-input knowledge-input--compact" type="number" min={1} max={200} value={searchForm.limit} onChange={event => {
+                                        const parsed = Number(event.target.value);
+                                        if (!Number.isFinite(parsed)) return;
+                                        const next = { ...searchFormRef.current, limit: parsed };
+                                        searchFormRef.current = next;
+                                        setSearchForm(next);
+                                    }} onKeyDown={onSearchEnter} title={t('Max results', '最大结果数')} data-testid="knowledge-search-limit" />
+                                </label>
+                                <label className="knowledge-checkbox knowledge-search-filter-check"><input type="checkbox" checked={searchForm.includeDisabled} onChange={event => commitSearchFilters({ ...searchFormRef.current, includeDisabled: event.target.checked }, true)} /> {t('Disabled', '含禁用')}</label>
+                                {searchForm.sourceID.trim() ? (
+                                    <button
+                                        type="button"
+                                        className="knowledge-chip knowledge-chip--active knowledge-search-source-chip"
+                                        data-testid="knowledge-search-source-chip"
+                                        disabled={!!busy && busy !== 'search'}
+                                        title={searchForm.sourceID}
+                                        aria-label={`${t('Clear source filter', '清除来源筛选')}: ${searchForm.sourceID}`}
+                                        onClick={() => applySearchFacet('sources', searchForm.sourceID)}
+                                    >
+                                        {t('Source', '来源')} {searchForm.sourceID}
+                                    </button>
+                                ) : null}
                             </div>
                             {searchMode === 'structured' && (
                                 <div className="knowledge-structured-filter-panel" aria-label={t('Structured table filters', '结构化表格筛选')}>
                                     <div className="knowledge-structured-filter-grid">
-                                        <input className="knowledge-input" list="knowledge-structured-column-options" value={structuredSearchForm.columnName} onChange={event => setStructuredSearchForm({ ...structuredSearchForm, columnName: event.target.value })} placeholder={t('Column name, e.g. Department', '列名，例如：部门')} />
+                                        <input className="knowledge-input" list="knowledge-structured-column-options" value={structuredSearchForm.columnName} onChange={event => commitStructuredForm({ columnName: event.target.value })} onKeyDown={onSearchEnter} placeholder={t('Column name, e.g. Department', '列名，例如：部门')} />
                                         <datalist id="knowledge-structured-column-options">
                                             {structuredColumnSuggestions.map(column => <option key={`${column.column_name}-${column.value_type || ''}`} value={column.column_name || ''}>{column.value_type || ''}</option>)}
                                         </datalist>
-                                        <select className="knowledge-input" value={structuredSearchForm.matchMode} onChange={event => setStructuredSearchForm({ ...structuredSearchForm, matchMode: event.target.value })}>
+                                        <select className="knowledge-input" value={structuredSearchForm.matchMode} onChange={event => {
+                                            commitStructuredForm({ matchMode: event.target.value });
+                                            if (busyRef.current && busyRef.current !== 'search') return;
+                                            if (!knowledgeSearchShouldReload('structured', searchFormRef.current.query, structuredSearchFormRef.current)) return;
+                                            void requestPanelSearch(searchFormRef.current);
+                                        }}>
                                             <option value="equals">{t('Equals', '等于')}</option>
                                             <option value="contains">{t('Contains', '包含')}</option>
                                         </select>
-                                        <input className="knowledge-input" value={structuredSearchForm.columnValue} onChange={event => setStructuredSearchForm({ ...structuredSearchForm, columnValue: event.target.value })} placeholder={t('Text value', '文本值')} />
-                                        <input className="knowledge-input" list="knowledge-structured-sheet-options" value={structuredSearchForm.sheetName} onChange={event => setStructuredSearchForm({ ...structuredSearchForm, sheetName: event.target.value })} placeholder={t('Sheet name (optional)', 'Sheet 名（可选）')} />
+                                        <input className="knowledge-input" value={structuredSearchForm.columnValue} onChange={event => commitStructuredForm({ columnValue: event.target.value })} onKeyDown={onSearchEnter} placeholder={t('Text value', '文本值')} />
+                                        <input className="knowledge-input" list="knowledge-structured-sheet-options" value={structuredSearchForm.sheetName} onChange={event => commitStructuredForm({ sheetName: event.target.value })} onKeyDown={onSearchEnter} placeholder={t('Sheet name (optional)', 'Sheet 名（可选）')} />
                                         <datalist id="knowledge-structured-sheet-options">
                                             {structuredSheetSuggestions.map(sheet => <option key={sheet} value={sheet} />)}
                                         </datalist>
                                     </div>
                                     <div className="knowledge-structured-filter-grid knowledge-structured-filter-grid--ranges">
-                                        <input className="knowledge-input" type="number" value={structuredSearchForm.numberMin} onChange={event => setStructuredSearchForm({ ...structuredSearchForm, numberMin: event.target.value })} placeholder={t('Number min', '数字下限')} />
-                                        <input className="knowledge-input" type="number" value={structuredSearchForm.numberMax} onChange={event => setStructuredSearchForm({ ...structuredSearchForm, numberMax: event.target.value })} placeholder={t('Number max', '数字上限')} />
-                                        <input className="knowledge-input" type="date" value={structuredSearchForm.dateStart} onChange={event => setStructuredSearchForm({ ...structuredSearchForm, dateStart: event.target.value })} title={t('Date start', '日期起始')} />
-                                        <input className="knowledge-input" type="date" value={structuredSearchForm.dateEnd} onChange={event => setStructuredSearchForm({ ...structuredSearchForm, dateEnd: event.target.value })} title={t('Date end', '日期结束')} />
+                                        <input className="knowledge-input" type="number" value={structuredSearchForm.numberMin} onChange={event => commitStructuredForm({ numberMin: event.target.value })} onKeyDown={onSearchEnter} placeholder={t('Number min', '数字下限')} />
+                                        <input className="knowledge-input" type="number" value={structuredSearchForm.numberMax} onChange={event => commitStructuredForm({ numberMax: event.target.value })} onKeyDown={onSearchEnter} placeholder={t('Number max', '数字上限')} />
+                                        <input className="knowledge-input" type="date" value={structuredSearchForm.dateStart} onChange={event => commitStructuredForm({ dateStart: event.target.value })} onKeyDown={onSearchEnter} title={t('Date start', '日期起始')} />
+                                        <input className="knowledge-input" type="date" value={structuredSearchForm.dateEnd} onChange={event => commitStructuredForm({ dateEnd: event.target.value })} onKeyDown={onSearchEnter} title={t('Date end', '日期结束')} />
                                     </div>
                                     <div className="knowledge-structured-filter-help">
                                         {t('Tip: use one column at a time for precise row evidence. Text and range filters can be combined on the same column.', '提示：一次使用一个列名以获得精准行证据；同一列可以组合文本值和范围条件。')}
@@ -3743,8 +3927,11 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                                 </div>
                             )}
                     </div>
-                    <div className="knowledge-two-column">
-                        <PanelBlock title={`${t('Results', '结果')} (${searchResults.length})`}>
+                    <div
+                        className={searchMode === 'structured' ? 'knowledge-search-results-only' : 'knowledge-two-column knowledge-two-column--search'}
+                        data-testid="knowledge-search-layout"
+                    >
+                        <PanelBlock title={`${t('Results', '结果')} (${searchResults.length})`} className="knowledge-search-results">
                             <ResultList
                                 results={searchResults}
                                 empty={t('No results yet.', '暂无检索结果。')}
@@ -3754,16 +3941,18 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                                 onDelete={deleteSearchFragment}
                             />
                         </PanelBlock>
-                        <PanelBlock title={t('Facets', '分面')}>
-                            {searchMode === 'structured' ? (
-                                <div className="knowledge-empty">{t('Facets are available for semantic search. Structured table filters return row evidence directly.', '分面用于语义检索；表格筛选会直接返回行级证据。')}</div>
-                            ) : <KeyValueList values={[
-                                ...(facets?.result_types || []).map(item => `${item.label || item.kind} ${item.count || 0}`),
-                                ...(facets?.source_kinds || []).map(item => `${item.label || item.kind} ${item.count || 0}`),
-                                ...(facets?.domains || []).map(item => `${item.domain || item.label} ${item.count || 0}`),
-                                ...(facets?.labels || []).map(item => `${item.label} ${item.count || 0}`),
-                            ]} empty={t('Run a search to see facets.', '执行检索后显示分面。')} />}
-                        </PanelBlock>
+                        {searchMode === 'semantic' ? (
+                            <PanelBlock title={t('Facets', '分面')} className="knowledge-search-facets">
+                                <FacetGroups
+                                    facets={facets}
+                                    empty={t('Run a search to see facets.', '执行检索后显示分面。')}
+                                    t={t}
+                                    form={searchForm}
+                                    disabled={!!busy && busy !== 'search'}
+                                    onToggle={applySearchFacet}
+                                />
+                            </PanelBlock>
+                        ) : null}
                     </div>
                 </div>
             )}
@@ -3909,8 +4098,81 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
     );
 }
 
-function PanelBlock({ title, children }: { title: string; children: ReactNode }) {
-    return <div className="knowledge-block"><h3 className="knowledge-block-title">{title}</h3><div className="knowledge-block-body">{children}</div></div>;
+function PanelBlock({ title, children, className }: { title: string; children: ReactNode; className?: string }) {
+    return <div className={['knowledge-block', className].filter(Boolean).join(' ')}><h3 className="knowledge-block-title">{title}</h3><div className="knowledge-block-body">{children}</div></div>;
+}
+
+function facetChipLabel(item: SearchFacetBucket): string {
+    const label = String(item.label || item.kind || item.domain || '').trim();
+    if (!label) return '';
+    const count = Number(item.count || 0);
+    return count ? `${label} ${count}` : label;
+}
+
+function facetFilterValue(item: SearchFacetBucket, group: KnowledgeSearchFacetGroup): string {
+    if (group === 'sources') return String(item.source_id || item.label || '').trim();
+    if (group === 'domains') return String(item.domain || item.label || '').trim();
+    return String(item.label || item.kind || '').trim();
+}
+
+function FacetGroups({
+    facets,
+    empty,
+    t,
+    form,
+    disabled,
+    onToggle,
+}: {
+    facets: SearchFacetsResult | null;
+    empty: string;
+    t: (en: string, zhHans: string, zhHant?: string) => string;
+    form: KnowledgeSearchFormFilters;
+    disabled?: boolean;
+    onToggle: (group: KnowledgeSearchFacetGroup, value: string) => void;
+}) {
+    const groups = ([
+        { key: 'result_types' as const, title: t('Result type', '结果类型'), items: facets?.result_types || [] },
+        { key: 'source_kinds' as const, title: t('Source kind', '来源种类'), items: facets?.source_kinds || [] },
+        { key: 'domains' as const, title: t('Domain', '域名'), items: facets?.domains || [] },
+        { key: 'labels' as const, title: t('Labels', '标签'), items: facets?.labels || [] },
+        { key: 'sources' as const, title: t('Sources', '来源'), items: facets?.sources || [] },
+    ]).map(group => ({
+        ...group,
+        chips: group.items.flatMap(item => {
+            if (group.key === 'sources' && !String(item.source_id || '').trim()) return [];
+            const value = facetFilterValue(item, group.key);
+            const label = facetChipLabel(item);
+            return value && label ? [{ value, label }] : [];
+        }),
+    })).filter(group => group.chips.length);
+    if (!groups.length) return <div className="knowledge-empty">{empty}</div>;
+    return (
+        <div className="knowledge-facet-groups" data-testid="knowledge-search-facet-groups">
+            {groups.map(group => (
+                <div key={group.key} className="knowledge-facet-group">
+                    <div className="knowledge-facet-group-title">{group.title}</div>
+                    <div className="knowledge-chip-list">
+                        {group.chips.map(chip => {
+                            const active = knowledgeSearchFacetActive(form, group.key, chip.value);
+                            return (
+                                <button
+                                    key={`${group.key}-${chip.value}`}
+                                    type="button"
+                                    className={['knowledge-chip', active ? 'knowledge-chip--active' : ''].filter(Boolean).join(' ')}
+                                    aria-pressed={active}
+                                    disabled={disabled}
+                                    data-testid={`knowledge-search-facet-${group.key}-${chip.value}`}
+                                    onClick={() => onToggle(group.key, chip.value)}
+                                >
+                                    {chip.label}
+                                </button>
+                            );
+                        })}
+                    </div>
+                </div>
+            ))}
+        </div>
+    );
 }
 
 function KeyValueList({ values, empty }: { values: string[]; empty: string }) {
@@ -3998,6 +4260,7 @@ function ResultList({ results, empty, query, t, busy, onDelete }: {
             result.source?.relative_path || result.source?.uri,
             result.score ? `score ${result.score.toFixed(3)}` : '',
         ].filter(Boolean).join(' · ');
+        const snippet = result.summary || result.claim || result.snippet || [result.subject, result.predicate, result.object].filter(Boolean).join(' ');
         return (
             <div key={`${result.result_type || 'result'}-${result.node_id || result.card_id || result.fact_id || result.row_id || index}`} className={`knowledge-row ${isImage ? 'knowledge-row--image' : ''}`}>
                 {isImage && result.media?.asset_id && <ImageResultThumbnail assetID={result.media.asset_id} title={sourceLabel} />}
@@ -4008,7 +4271,7 @@ function ResultList({ results, empty, query, t, busy, onDelete }: {
                         {highlightText(sourceLabel, regex)}
                     </strong>
                     <span className="knowledge-muted-line">{meta}</span>
-                    <span>{highlightText(result.summary || result.claim || result.snippet || [result.subject, result.predicate, result.object].filter(Boolean).join(' '), regex)}</span>
+                    <span className="knowledge-result-snippet" title={snippet}>{highlightText(snippet, regex)}</span>
                 </div>
                 {canDelete ? (
                     <button

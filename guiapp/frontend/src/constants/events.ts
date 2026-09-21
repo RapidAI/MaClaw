@@ -17,6 +17,9 @@
 /** Emitted when ProjectIndex is updated (new project or activity change). */
 export const EVENT_PROJECT_INDEX_CHANGED = "project-index:changed";
 
+/** Backend needs a share-link password before joining a cloud workspace. Payload: {url:string}. */
+export const EVENT_CLOUD_WORKSPACE_SHARE_PASSWORD = "cloud-workspace-share:password";
+
 /** Backend asks the desktop UI to present a custom confirm dialog. */
 export const EVENT_SHOW_CONFIRM = "show-confirm";
 
@@ -161,6 +164,14 @@ export type OpenCreateCodingTaskDetail = {
  * is only created when the user sends the first message from that wizard page.
  */
 export const EVENT_OPEN_NEW_TASK_WIZARD = "maclaw:open-new-task-wizard";
+
+/**
+ * Dispatched by the new-task wizard wiring when the click cannot be honored:
+ * the local tab still has a conversation and the assistant is busy (task
+ * running), so the wizard page cannot open. Sidebar surfaces listen to show
+ * an explanation instead of staying silent.
+ */
+export const EVENT_NEW_TASK_WIZARD_BLOCKED = "maclaw:new-task-wizard-blocked";
 
 /**
  * Dispatched after the welcome-page TaskConfigBar wizard already created a

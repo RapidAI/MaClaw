@@ -68,7 +68,7 @@ func (h *IMMessageHandler) restoreToolsAfterSkillRecover(userID string, ctx *Loo
 		tools = filterToolsForLansengerGroupPermissions(tools, *ctx.LansengerGroupPermissions)
 	}
 	tools = filterComputerUseToolsForLocalFileWork(ctx, "", tools)
-	tools = applyRoutingMissLeftoverTools(tools, leftoverToolCatalog(h, ctx, nil), ctx)
+	tools = applyRoutingMissLeftoverTools(tools, leftoverToolCatalog(h, ctx, nil), h.routingMissFloorDefinitions(), ctx)
 	tools = h.pinClassifierTimeoutWebLookup(userID, ctx, tools, h.filterPolicyRejectedSurfaceTools(catalog))
 
 	tools = stripExecutionContractMetadataForLLM(tools)

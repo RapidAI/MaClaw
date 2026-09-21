@@ -1161,6 +1161,55 @@ func TestSaveMaclawLLMProvidersPreservesProfilesWhenEditingProviderCatalog(t *te
 	if got := app.GetCodingLLMConfig(); got.ProviderID != "coding" || got.Model != "coding-selected" || got.URL != "https://coding-updated.example/v1" {
 		t.Fatalf("coding resolution after provider save = %#v", got)
 	}
+	if saved.MaclawLLMProviders[0].Model != "assistant-default" {
+		t.Fatalf("provider save overwrote tested/default model: %#v", saved.MaclawLLMProviders[0])
+	}
+	if !containsStringFold(saved.MaclawLLMProviders[0].Models, "assistant-new") || !containsStringFold(saved.MaclawLLMProviders[0].Models, "assistant-selected") {
+		t.Fatalf("assistant catalog was not saved: %#v", saved.MaclawLLMProviders[0].Models)
+	}
+	if !containsStringFold(saved.MaclawLLMProviders[1].Models, "coding-new") || !containsStringFold(saved.MaclawLLMProviders[1].Models, "coding-selected") {
+		t.Fatalf("coding catalog was not saved: %#v", saved.MaclawLLMProviders[1].Models)
+	}
+}
+
+func TestSaveMaclawLLMProvidersKeepsEditedModelAndCatalog(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	providers := []corelib.MaclawLLMProvider{
+		{ID: "zhipu", Name: corelib.ZhipuCodingProviderName, URL: "https://open.bigmodel.cn/api/anthropic", Key: "glm-key", Model: corelib.ZhipuCodingDefaultModel, Protocol: "anthropic", ConnectionTestPassed: true},
+	}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: providers, MaclawLLMCurrentProvider: corelib.ZhipuCodingProviderName,
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{Version: 1,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "zhipu", Model: corelib.ZhipuCodingDefaultModel},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	updated := append([]corelib.MaclawLLMProvider(nil), providers...)
+	updated[0].Model = "glm-5.3-flash"
+	updated[0].Models = []string{"glm-5.3", "glm-5.3-flash", "glm-4.7"}
+	if err := app.SaveMaclawLLMProviders(updated, corelib.ZhipuCodingProviderName); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders: %v", err)
+	}
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if saved.MaclawLLMProviders[0].Model != "glm-5.3-flash" {
+		t.Fatalf("provider model = %q, want glm-5.3-flash", saved.MaclawLLMProviders[0].Model)
+	}
+	if saved.MaclawLLMProfiles == nil || saved.MaclawLLMProfiles.Assistant.Model != corelib.ZhipuCodingDefaultModel {
+		t.Fatalf("provider save overwrote assistant assignment: %#v", saved.MaclawLLMProfiles)
+	}
+	for _, want := range []string{"glm-5.3", "glm-5.3-flash", "glm-4.7"} {
+		if !containsStringFold(saved.MaclawLLMProviders[0].Models, want) {
+			t.Fatalf("saved catalog = %#v, missing %q", saved.MaclawLLMProviders[0].Models, want)
+		}
+	}
 }
 
 func TestSaveMaclawLLMProvidersRejectsRemovingAssistantProfileProvider(t *testing.T) {
@@ -1976,6 +2025,74 @@ func TestTestAndSaveMaclawLLMProvidersMarksSuccessfulConnectionTest(t *testing.T
 	provider := saved.MaclawLLMProviders[0]
 	if !provider.ConnectionTestPassed || provider.URL != srv.URL || provider.Key != "new-key" {
 		t.Fatalf("saved provider = %#v, want tested new connection", provider)
+	}
+}
+
+func TestTestAndSaveMaclawLLMProvidersKeepsTestedModelAndCatalog(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/models", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"glm-5.3"},{"id":"glm-5.3-flash"},{"id":"glm-4.7"}]}`))
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"hello"}}]}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			ID: "zhipu", Name: corelib.ZhipuCodingProviderName, URL: srv.URL, Key: "glm-key",
+			Model: corelib.ZhipuCodingDefaultModel, Protocol: "openai", ConnectionTestPassed: true,
+		}},
+		MaclawLLMCurrentProvider: corelib.ZhipuCodingProviderName,
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{Version: 1,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "zhipu", Model: corelib.ZhipuCodingDefaultModel},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	providers := []corelib.MaclawLLMProvider{{
+		ID: "zhipu", Name: corelib.ZhipuCodingProviderName, URL: srv.URL, Key: "glm-key",
+		Model: "glm-5.3-flash", Protocol: "openai",
+	}}
+	if _, err := app.TestAndSaveMaclawLLMProviders(providers, corelib.ZhipuCodingProviderName, corelib.ZhipuCodingProviderName); err != nil {
+		t.Fatalf("TestAndSaveMaclawLLMProviders: %v", err)
+	}
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if saved.MaclawLLMProviders[0].Model != "glm-5.3-flash" {
+		t.Fatalf("provider model = %q, want tested glm-5.3-flash", saved.MaclawLLMProviders[0].Model)
+	}
+	if saved.MaclawLLMProfiles == nil || saved.MaclawLLMProfiles.Assistant.Model != corelib.ZhipuCodingDefaultModel {
+		t.Fatalf("assistant assignment changed: %#v", saved.MaclawLLMProfiles)
+	}
+	for _, want := range []string{"glm-5.3", "glm-5.3-flash", "glm-4.7"} {
+		if !containsStringFold(saved.MaclawLLMProviders[0].Models, want) {
+			t.Fatalf("saved catalog = %#v, missing %q", saved.MaclawLLMProviders[0].Models, want)
+		}
+	}
+	state, err := app.GetMaclawLLMProfilePanelState()
+	if err != nil {
+		t.Fatalf("GetMaclawLLMProfilePanelState: %v", err)
+	}
+	if len(state.Providers) != 1 {
+		t.Fatalf("assignment providers = %#v", state.Providers)
+	}
+	for _, want := range []string{"glm-5.3", "glm-5.3-flash", "glm-4.7"} {
+		if !containsStringFold(state.Providers[0].Models, want) {
+			t.Fatalf("assignment catalog = %#v, missing %q", state.Providers[0].Models, want)
+		}
 	}
 }
 
@@ -2832,6 +2949,290 @@ func TestSaveVisionProbeResultForProviderTracksOnlyTheTestedModel(t *testing.T) 
 	provider = app.GetMaclawLLMProviders().Providers[0]
 	if provider.SupportsVision || len(provider.VisionModels) != 0 {
 		t.Fatalf("default result did not clear only default capability: %#v", provider)
+	}
+}
+
+func TestSaveVisionProbeResultMatchesProviderIDWhenNameDiffers(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			ID: "llmp_abc", Name: "Stored Alias", Model: "gpt-5",
+			VisionModels: []string{"gpt-5"}, ConnectionTestPassed: true, IsCustom: true,
+		}},
+		MaclawLLMCurrentProvider: "Stored Alias",
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	if err := app.saveVisionProbeResult("llmp_abc", "Canonical Display", "gpt-5-mini", true); err != nil {
+		t.Fatalf("saveVisionProbeResult() error = %v", err)
+	}
+	provider := app.GetMaclawLLMProviders().Providers[0]
+	if !containsStringFold(provider.VisionModels, "gpt-5-mini") {
+		t.Fatalf("vision_models = %#v, want gpt-5-mini persisted by ID", provider.VisionModels)
+	}
+	if !containsStringFold(provider.VisionTestedModels, "gpt-5-mini") {
+		t.Fatalf("vision_tested_models = %#v, want gpt-5-mini persisted by ID", provider.VisionTestedModels)
+	}
+}
+
+func TestVisionProbeProviderMatchAcceptsCanonicalizedLegacyID(t *testing.T) {
+	stored := corelib.MaclawLLMProvider{Name: legacyVolcengineTokenPlanProviderName}
+	canonical := canonicalVolcengineTokenPlanProviderName(stored.Name)
+	if canonical == stored.Name {
+		t.Fatalf("test requires a name alias, got %q", stored.Name)
+	}
+	id := corelib.MaclawLLMLegacyProviderID(canonical)
+	if !visionProbeProviderMatchID(stored, id) {
+		t.Fatalf("legacy volcengine record should match canonicalized UI ID %q", id)
+	}
+	if !visionProbeProviderMatchName(stored, canonical) {
+		t.Fatalf("legacy volcengine record should match canonical name %q", canonical)
+	}
+	if visionProbeProviderMatchID(stored, "llmp_other") {
+		t.Fatal("unrelated ID matched a legacy volcengine record")
+	}
+}
+
+func TestSaveVisionProbeResultMatchesCanonicalizedProviderName(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			Name: legacyVolcengineTokenPlanProviderName, URL: "https://ark.cn-beijing.volces.com/api/plan",
+			Model: "Auto", ConnectionTestPassed: true,
+		}},
+		MaclawLLMCurrentProvider: legacyVolcengineTokenPlanProviderName,
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	canonical := canonicalVolcengineTokenPlanProviderName(legacyVolcengineTokenPlanProviderName)
+	if err := app.saveVisionProbeResult("", canonical, "vision-model", true); err != nil {
+		t.Fatalf("saveVisionProbeResult() error = %v", err)
+	}
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	var provider corelib.MaclawLLMProvider
+	found := false
+	for _, candidate := range saved.MaclawLLMProviders {
+		if visionProbeProviderMatchName(candidate, canonical) {
+			provider = candidate
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("canonical volcengine provider missing: %#v", saved.MaclawLLMProviders)
+	}
+	if !containsStringFold(provider.VisionModels, "vision-model") {
+		t.Fatalf("vision_models = %#v, want vision-model persisted via canonical name", provider.VisionModels)
+	}
+}
+
+func TestProviderVisionTestStatus(t *testing.T) {
+	provider := corelib.MaclawLLMProvider{
+		Model:                "gpt-5",
+		SupportsVision:       true,
+		VisionModels:         []string{"gpt-5"},
+		VisionTestedModels:   []string{"gpt-5", "text-only"},
+		ConnectionTestPassed: true,
+	}
+	if got := providerVisionTestStatus(provider, "gpt-5"); got != "supported" {
+		t.Fatalf("gpt-5 status = %q, want supported", got)
+	}
+	if got := providerVisionTestStatus(provider, "text-only"); got != "unsupported" {
+		t.Fatalf("text-only status = %q, want unsupported", got)
+	}
+	if got := providerVisionTestStatus(provider, "gpt-5-mini"); got != "untested" {
+		t.Fatalf("gpt-5-mini status = %q, want untested", got)
+	}
+	if got := providerVisionTestStatus(corelib.MaclawLLMProvider{
+		Model: "default-model", ConnectionTestPassed: true,
+	}, "default-model"); got != "unsupported" {
+		t.Fatalf("connection-tested default without vision list = %q, want unsupported", got)
+	}
+	if got := providerVisionTestStatus(corelib.MaclawLLMProvider{
+		Model: "hub-model", ConnectionTestPassed: true, IsHubService: true,
+	}, "hub-model"); got != "untested" {
+		t.Fatalf("hub default without a vision probe = %q, want untested", got)
+	}
+}
+
+func saveAssignmentVisionFixture(t *testing.T, url string) *App {
+	t.Helper()
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			ID: "assistant", Name: "OpenAI", URL: url, Key: "key",
+			Model: "gpt-5", Models: []string{"gpt-5", "gpt-5-mini"},
+			SupportsVision: true, VisionModels: []string{"gpt-5"},
+			VisionTestedModels:   []string{"gpt-5"},
+			ConnectionTestPassed: true, IsCustom: true,
+		}},
+		MaclawLLMCurrentProvider: "OpenAI",
+		MaclawLLMProfiles: &corelib.MaclawLLMProfiles{
+			Version:   maclawLLMProfilesVersion,
+			Assistant: corelib.MaclawLLMProfile{ProviderID: "assistant", Model: "gpt-5"},
+			Coding:    corelib.MaclawLLMProfile{InheritAssistant: true},
+		},
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	return app
+}
+
+func TestMaclawLLMProfileProbesUntestedAssignedModelVision(t *testing.T) {
+	var posts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"data":[{"id":"gpt-5"},{"id":"gpt-5-mini"}]}`))
+			return
+		}
+		n := posts.Add(1)
+		body, _ := io.ReadAll(r.Body)
+		if n == 1 {
+			if bytes.Contains(body, []byte("image_url")) {
+				t.Fatalf("text test sent an image: %s", body)
+			}
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+			return
+		}
+		if !bytes.Contains(body, []byte("image_url")) {
+			t.Fatalf("vision probe missing image: %s", body)
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"red"}}]}`))
+	}))
+	defer srv.Close()
+
+	app := saveAssignmentVisionFixture(t, srv.URL)
+	result, err := app.TestMaclawLLMProfile("assistant", "assistant", "gpt-5-mini")
+	if err != nil {
+		t.Fatalf("TestMaclawLLMProfile: %v", err)
+	}
+	if result.Health != "configured" {
+		t.Fatalf("health = %q, want configured", result.Health)
+	}
+	if result.VisionProbeStatus != string(visionProbeSupported) || !result.SupportsVision {
+		t.Fatalf("vision = %#v", result)
+	}
+	if posts.Load() != 2 {
+		t.Fatalf("posts = %d, want 2 (text test plus vision probe)", posts.Load())
+	}
+
+	providers := app.GetMaclawLLMProviders().Providers
+	if len(providers) == 0 || !containsStringFold(providers[0].VisionModels, "gpt-5-mini") {
+		t.Fatalf("vision_models = %#v", providers)
+	}
+	if !containsStringFold(providers[0].VisionTestedModels, "gpt-5-mini") {
+		t.Fatalf("vision_tested_models = %#v", providers[0].VisionTestedModels)
+	}
+
+	posts.Store(0)
+	result, err = app.TestMaclawLLMProfile("assistant", "assistant", "gpt-5-mini")
+	if err != nil {
+		t.Fatalf("retest: %v", err)
+	}
+	if posts.Load() != 0 {
+		t.Fatalf("already-tested model was probed again: %d", posts.Load())
+	}
+	if result.VisionProbeStatus != "supported" || !result.SupportsVision {
+		t.Fatalf("stored vision = %#v", result)
+	}
+
+	posts.Store(0)
+	result, err = app.TestMaclawLLMProfile("assistant", "assistant", "gpt-5")
+	if err != nil {
+		t.Fatalf("tested default: %v", err)
+	}
+	if posts.Load() != 0 {
+		t.Fatalf("already-tested default model was probed again: %d", posts.Load())
+	}
+	if result.VisionProbeStatus != "supported" {
+		t.Fatalf("default vision = %q", result.VisionProbeStatus)
+	}
+}
+
+func TestMaclawLLMProfileUntestedModelTextFailureDoesNotPersistVision(t *testing.T) {
+	var posts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"data":[]}`))
+			return
+		}
+		posts.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"message":"model unavailable"}}`))
+	}))
+	defer srv.Close()
+
+	app := saveAssignmentVisionFixture(t, srv.URL)
+	result, err := app.TestMaclawLLMProfile("assistant", "assistant", "gpt-5-mini")
+	if err != nil {
+		t.Fatalf("TestMaclawLLMProfile: %v", err)
+	}
+	if result.Health == "configured" {
+		t.Fatalf("health = %q, want a failed probe", result.Health)
+	}
+	if result.SupportsVision || result.VisionProbeStatus == string(visionProbeSupported) || result.VisionProbeStatus == string(visionProbeUnsupported) {
+		t.Fatalf("failed text test recorded a vision result: %#v", result)
+	}
+	if posts.Load() != 1 {
+		t.Fatalf("posts = %d, want 1 (text test only)", posts.Load())
+	}
+	provider := app.GetMaclawLLMProviders().Providers[0]
+	if containsStringFold(provider.VisionModels, "gpt-5-mini") || containsStringFold(provider.VisionTestedModels, "gpt-5-mini") {
+		t.Fatalf("failed probe persisted vision state: %#v", provider)
+	}
+}
+
+func TestMaclawLLMProfilePersistsUnsupportedAssignedModelVision(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"data":[]}`))
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		if bytes.Contains(body, []byte("image_url")) {
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"I'm a text-only model and cannot view images."}}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer srv.Close()
+
+	app := saveAssignmentVisionFixture(t, srv.URL)
+	result, err := app.TestMaclawLLMProfile("assistant", "assistant", "gpt-5-mini")
+	if err != nil {
+		t.Fatalf("TestMaclawLLMProfile: %v", err)
+	}
+	if result.Health != "configured" || result.SupportsVision || result.VisionProbeStatus != string(visionProbeUnsupported) {
+		t.Fatalf("unsupported vision = %#v", result)
+	}
+	provider := app.GetMaclawLLMProviders().Providers[0]
+	if containsStringFold(provider.VisionModels, "gpt-5-mini") {
+		t.Fatalf("unsupported model kept in vision_models: %#v", provider.VisionModels)
+	}
+	if !containsStringFold(provider.VisionTestedModels, "gpt-5-mini") {
+		t.Fatalf("unsupported model missing from vision_tested_models: %#v", provider.VisionTestedModels)
 	}
 }
 

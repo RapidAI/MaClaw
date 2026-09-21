@@ -1,6 +1,7 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useTaskConfigWiring, type TaskConfigWiringOptions } from '../useTaskConfigWiring';
+import { EVENT_NEW_TASK_WIZARD_BLOCKED, EVENT_OPEN_NEW_TASK_WIZARD } from '../../../../constants/events';
 
 const selectWorkingDirMock = vi.fn();
 vi.mock('../../../../../wailsjs/go/main/App', () => ({
@@ -88,5 +89,79 @@ describe('useTaskConfigWiring onBrowseLocal', () => {
         });
         expect(picked).toBe('D:/from/tasklist');
         expect(result.current.taskConfig.recentLocalPaths).toEqual(['D:/from/tasklist']);
+    });
+});
+
+describe('useTaskConfigWiring new-task wizard opening', () => {
+    afterEach(() => {
+        cleanup();
+    });
+
+    it('marks the clean local tab as a wizard page when the sidebar button is clicked', async () => {
+        const saveTabState = vi.fn();
+        const clearActiveHistory = vi.fn();
+        renderHook(() => useTaskConfigWiring(makeOptions({ saveTabState, clearActiveHistory })));
+
+        act(() => {
+            window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
+        });
+
+        await waitFor(() => {
+            expect(saveTabState).toHaveBeenCalledWith('tab-1', { newTaskWizard: true });
+        });
+    });
+
+    it('notifies and leaves the tab untouched when a running task blocks the wizard', async () => {
+        const saveTabState = vi.fn();
+        const clearActiveHistory = vi.fn();
+        const blockedSpy = vi.fn();
+        window.addEventListener(EVENT_NEW_TASK_WIZARD_BLOCKED, blockedSpy);
+        try {
+            renderHook(() => useTaskConfigWiring(makeOptions({
+                assistantBusy: true,
+                getTabState: () => ({ history: [{ role: 'user', content: 'hi' }] }),
+                saveTabState,
+                clearActiveHistory,
+            })));
+
+            act(() => {
+                window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
+            });
+
+            await waitFor(() => {
+                expect(blockedSpy).toHaveBeenCalled();
+            });
+            expect(saveTabState).not.toHaveBeenCalled();
+            expect(clearActiveHistory).not.toHaveBeenCalled();
+        } finally {
+            window.removeEventListener(EVENT_NEW_TASK_WIZARD_BLOCKED, blockedSpy);
+        }
+    });
+
+    it('leaves no stale wizard flag for non-busy input locks (e.g. recording)', async () => {
+        const saveTabState = vi.fn();
+        const clearActiveHistory = vi.fn();
+        const blockedSpy = vi.fn();
+        window.addEventListener(EVENT_NEW_TASK_WIZARD_BLOCKED, blockedSpy);
+        try {
+            renderHook(() => useTaskConfigWiring(makeOptions({
+                inputLocked: true,
+                assistantBusy: false,
+                getTabState: () => ({ history: [{ role: 'user', content: 'hi' }] }),
+                saveTabState,
+                clearActiveHistory,
+            })));
+
+            act(() => {
+                window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
+            });
+
+            await new Promise((resolve) => setTimeout(resolve, 10));
+            expect(saveTabState).not.toHaveBeenCalled();
+            expect(clearActiveHistory).not.toHaveBeenCalled();
+            expect(blockedSpy).not.toHaveBeenCalled();
+        } finally {
+            window.removeEventListener(EVENT_NEW_TASK_WIZARD_BLOCKED, blockedSpy);
+        }
     });
 });

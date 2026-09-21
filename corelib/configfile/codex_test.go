@@ -897,10 +897,46 @@ func TestWriteTigerProxyCodexConfigAddsContextSettings(t *testing.T) {
 	for _, want := range []string{
 		`model_context_window = 199000`,
 		`model_auto_compact_token_limit = 180000`,
+		`http_headers = { "Authorization" = "Bearer sk-test" }`,
+		`[model_providers.tigerproxy]`,
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("TigerProxy config missing %q:\n%s", want, content)
 		}
+	}
+	if _, err := os.Stat(CodexAuthPath()); !os.IsNotExist(err) {
+		t.Fatalf("TigerProxy config must not write auth.json, stat err = %v", err)
+	}
+}
+
+func TestWriteTigerProxyCodexConfigLeavesOfficialAuthUntouched(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
+
+	if err := os.MkdirAll(filepath.Dir(CodexAuthPath()), 0o755); err != nil {
+		t.Fatalf("create Codex dir: %v", err)
+	}
+	if err := AtomicWriteJSON(CodexAuthPath(), map[string]string{"OPENAI_API_KEY": "sk-official"}); err != nil {
+		t.Fatalf("seed auth.json: %v", err)
+	}
+	if err := WriteTigerProxyCodexConfig("tigerproxy-local-key", "http://127.0.0.1:18086/v1", "gpt-5.5"); err != nil {
+		t.Fatalf("WriteTigerProxyCodexConfig: %v", err)
+	}
+	data, err := os.ReadFile(CodexConfigPath())
+	if err != nil {
+		t.Fatalf("read config.toml: %v", err)
+	}
+	if !strings.Contains(string(data), `http_headers = { "Authorization" = "Bearer tigerproxy-local-key" }`) {
+		t.Fatalf("TigerProxy API key was not written to config.toml:\n%s", data)
+	}
+	auth, err := ReadCodexAuth()
+	if err != nil {
+		t.Fatalf("read auth.json: %v", err)
+	}
+	if got, _ := auth["OPENAI_API_KEY"].(string); got != "sk-official" {
+		t.Fatalf("official auth.json key = %q, want sk-official", got)
 	}
 }
 
@@ -955,10 +991,11 @@ func TestSyncTigerProxyCodexAPIKeyIfConfiguredUpdatesOnlyTigerProxy(t *testing.T
 	if err := AtomicWrite(filepath.Join(codexDir, "config.toml"), []byte("model_provider = 'tigerproxy' # active local provider\n")); err != nil {
 		t.Fatal(err)
 	}
-	if err := AtomicWriteJSON(filepath.Join(codexDir, "auth.json"), map[string]interface{}{
+	authSeed := map[string]interface{}{
 		"OPENAI_API_KEY": "old-proxy-key",
 		"tokens":         map[string]interface{}{"access_token": "preserve-me"},
-	}); err != nil {
+	}
+	if err := AtomicWriteJSON(filepath.Join(codexDir, "auth.json"), authSeed); err != nil {
 		t.Fatal(err)
 	}
 
@@ -966,12 +1003,19 @@ func TestSyncTigerProxyCodexAPIKeyIfConfiguredUpdatesOnlyTigerProxy(t *testing.T
 	if err != nil || !result.Configured || !result.Updated {
 		t.Fatalf("SyncTigerProxyCodexAPIKeyIfConfigured = %+v, %v; want configured and updated, nil", result, err)
 	}
+	content, err := os.ReadFile(filepath.Join(codexDir, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(content), `http_headers = { "Authorization" = "Bearer new-proxy-key" }`) {
+		t.Fatalf("config.toml missing updated Authorization header:\n%s", content)
+	}
 	auth, err := ReadCodexAuth()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := auth["OPENAI_API_KEY"].(string); got != "new-proxy-key" {
-		t.Fatalf("OPENAI_API_KEY = %q, want updated key", got)
+	if got, _ := auth["OPENAI_API_KEY"].(string); got != "old-proxy-key" {
+		t.Fatalf("OPENAI_API_KEY = %q, want original auth.json key left untouched", got)
 	}
 	if _, ok := auth["tokens"]; !ok {
 		t.Fatal("unrelated auth.json fields were not preserved")
@@ -1012,7 +1056,7 @@ func TestSyncTigerProxyCodexAPIKeyIfConfiguredLeavesOtherProvidersUntouched(t *t
 	}
 }
 
-func TestSyncTigerProxyCodexAPIKeyIfConfiguredRefusesMalformedAuth(t *testing.T) {
+func TestSyncTigerProxyCodexAPIKeyIfConfiguredLeavesMalformedAuthUntouched(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("USERPROFILE", tmpHome)
@@ -1031,8 +1075,8 @@ func TestSyncTigerProxyCodexAPIKeyIfConfiguredRefusesMalformedAuth(t *testing.T)
 	}
 
 	result, err := SyncTigerProxyCodexAPIKeyIfConfigured("new-proxy-key")
-	if err == nil || !result.Configured || result.Updated {
-		t.Fatalf("SyncTigerProxyCodexAPIKeyIfConfigured = %+v, %v; want configured and parse error", result, err)
+	if err != nil || !result.Configured || !result.Updated {
+		t.Fatalf("SyncTigerProxyCodexAPIKeyIfConfigured = %+v, %v; want configured and updated, nil", result, err)
 	}
 	after, err := os.ReadFile(authPath)
 	if err != nil {
@@ -1041,9 +1085,16 @@ func TestSyncTigerProxyCodexAPIKeyIfConfiguredRefusesMalformedAuth(t *testing.T)
 	if string(after) != string(malformed) {
 		t.Fatalf("malformed auth was overwritten: got %q, want %q", after, malformed)
 	}
+	content, err := os.ReadFile(filepath.Join(codexDir, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(content), `http_headers = { "Authorization" = "Bearer new-proxy-key" }`) {
+		t.Fatalf("config.toml missing Authorization header:\n%s", content)
+	}
 }
 
-func TestSyncTigerProxyCodexAPIKeyIfConfiguredRefusesNullAuth(t *testing.T) {
+func TestSyncTigerProxyCodexAPIKeyIfConfiguredLeavesNullAuthUntouched(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("USERPROFILE", tmpHome)
@@ -1061,8 +1112,8 @@ func TestSyncTigerProxyCodexAPIKeyIfConfiguredRefusesNullAuth(t *testing.T) {
 	}
 
 	result, err := SyncTigerProxyCodexAPIKeyIfConfigured("new-proxy-key")
-	if err == nil || !result.Configured || result.Updated {
-		t.Fatalf("SyncTigerProxyCodexAPIKeyIfConfigured = %+v, %v; want configured and parse error", result, err)
+	if err != nil || !result.Configured || !result.Updated {
+		t.Fatalf("SyncTigerProxyCodexAPIKeyIfConfigured = %+v, %v; want configured and updated, nil", result, err)
 	}
 	after, err := os.ReadFile(authPath)
 	if err != nil {
@@ -1073,7 +1124,7 @@ func TestSyncTigerProxyCodexAPIKeyIfConfiguredRefusesNullAuth(t *testing.T) {
 	}
 }
 
-func TestSyncTigerProxyCodexAPIKeyIfConfiguredCreatesMissingAuth(t *testing.T) {
+func TestSyncTigerProxyCodexAPIKeyIfConfiguredAddsMissingAuthorizationHeader(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("USERPROFILE", tmpHome)
@@ -1090,12 +1141,51 @@ func TestSyncTigerProxyCodexAPIKeyIfConfiguredCreatesMissingAuth(t *testing.T) {
 	if err != nil || !result.Configured || !result.Updated {
 		t.Fatalf("SyncTigerProxyCodexAPIKeyIfConfigured = %+v, %v; want configured and updated, nil", result, err)
 	}
-	auth, err := ReadCodexAuth()
+	content, err := os.ReadFile(filepath.Join(codexDir, "config.toml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := auth["OPENAI_API_KEY"].(string); got != "new-proxy-key" {
-		t.Fatalf("OPENAI_API_KEY = %q, want new-proxy-key", got)
+	if !strings.Contains(string(content), `http_headers = { "Authorization" = "Bearer new-proxy-key" }`) {
+		t.Fatalf("config.toml missing Authorization header:\n%s", content)
+	}
+	if _, err := os.Stat(filepath.Join(codexDir, "auth.json")); !os.IsNotExist(err) {
+		t.Fatalf("sync must not create auth.json, stat err = %v", err)
+	}
+}
+
+func TestSyncTigerProxyCodexAPIKeyIfConfiguredMergesExistingHeaders(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+
+	codexDir := filepath.Join(tmpHome, ".codex")
+	if err := os.MkdirAll(codexDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	seed := `model_provider = "tigerproxy"
+
+[model_providers.tigerproxy]
+name = "tigerproxy"
+http_headers = { "X-Custom" = "keep" }
+`
+	if err := AtomicWrite(filepath.Join(codexDir, "config.toml"), []byte(seed)); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := SyncTigerProxyCodexAPIKeyIfConfigured("tigerproxy-local-key")
+	if err != nil || !result.Configured || !result.Updated {
+		t.Fatalf("SyncTigerProxyCodexAPIKeyIfConfigured = %+v, %v; want configured and updated, nil", result, err)
+	}
+	content, err := os.ReadFile(filepath.Join(codexDir, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(content)
+	if !strings.Contains(got, `"Authorization" = "Bearer tigerproxy-local-key"`) {
+		t.Fatalf("config.toml missing Authorization header:\n%s", got)
+	}
+	if !strings.Contains(got, `"X-Custom" = "keep"`) {
+		t.Fatalf("custom http_headers were not preserved:\n%s", got)
 	}
 }
 

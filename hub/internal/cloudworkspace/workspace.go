@@ -203,6 +203,7 @@ type Entitlement struct {
 	UnreferencedBytes   int64                         `json:"unreferenced_retained_bytes"`
 	Workspaces          []EntitlementWorkspace        `json:"workspaces"`
 	Deleted             []EntitlementDeletedWorkspace `json:"deleted"`
+	Shared              []EntitlementSharedWorkspace  `json:"shared"`
 	Reason              string                        `json:"reason,omitempty"`
 }
 
@@ -215,6 +216,7 @@ func emptyEntitlement(settings Settings) Entitlement {
 		TenantMaxTotalBytes: settings.TenantMaxTotalBytes,
 		Workspaces:          []EntitlementWorkspace{},
 		Deleted:             []EntitlementDeletedWorkspace{},
+		Shared:              []EntitlementSharedWorkspace{},
 	}
 }
 
@@ -246,7 +248,21 @@ func (s *Service) EntitlementFor(ctx context.Context, principal auth.MachinePrin
 	if err != nil {
 		return Entitlement{}, err
 	}
-	leases, err := s.Workspaces.ListActiveLeases(ctx, tenantID, userID)
+	ownedIDs := make([]string, 0, len(rows))
+	for _, ws := range rows {
+		if ws != nil {
+			ownedIDs = append(ownedIDs, ws.ID)
+		}
+	}
+	sharedRows, err := s.Workspaces.ListSharedWithUser(ctx, tenantID, userID)
+	if err != nil {
+		return Entitlement{}, err
+	}
+	leaseIDs := append([]string{}, ownedIDs...)
+	for _, item := range sharedRows {
+		leaseIDs = append(leaseIDs, item.ID)
+	}
+	leases, err := s.Workspaces.ListActiveLeasesForIDs(ctx, leaseIDs)
 	if err != nil {
 		return Entitlement{}, err
 	}
@@ -319,6 +335,27 @@ func (s *Service) EntitlementFor(ctx context.Context, principal auth.MachinePrin
 				PurgeAfter:        purgeAfter(ws.DeletedAt),
 			})
 		}
+	}
+	now = s.now()
+	for i := range sharedRows {
+		item := sharedRows[i]
+		if s.Users != nil {
+			if owner, err := s.Users.GetByID(ctx, item.OwnerUserID); err == nil && owner != nil {
+				item.OwnerEmail = strings.TrimSpace(owner.Email)
+			}
+		}
+		if lease := leases[item.ID]; lease != nil {
+			item.Lease = &EntitlementLease{
+				Held:               !leaseExpired(lease.ExpiresAt, now),
+				MachineID:          lease.MachineID,
+				MachineName:        lease.MachineName,
+				IsSelf:             lease.MachineID == principal.MachineID,
+				ExpiresAt:          lease.ExpiresAt,
+				HandoffRequestedAt: lease.HandoffRequestedAt,
+			}
+			projectEntitlementLease(&item.EntitlementWorkspace)
+		}
+		out.Shared = append(out.Shared, item)
 	}
 	return out, nil
 }

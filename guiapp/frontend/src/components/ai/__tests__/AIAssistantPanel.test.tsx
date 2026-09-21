@@ -873,6 +873,30 @@ describe('AIAssistantPanel property tests', () => {
         expect(input.getAttribute('aria-label') || '').toContain('Generating the workflow document');
     });
 
+    it('keeps the input spinner spinning when switching to a task that is still running remotely', async () => {
+        const projectPath = 'D:/tasks/remote-virus-scan';
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: { projectPath, taskTitle: 'Remote virus scan', autoSend: false },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            tasks: [
+                {
+                    name: 'Remote virus scan',
+                    project_path: projectPath,
+                    active_workflow: { status: 'running', phase: 'implementation' },
+                },
+            ],
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        await waitFor(() => expect(document.querySelector('[data-testid^="ai-tab-proj-"]')).toBeTruthy());
+        // No live round is tracked for this panel (the run was started
+        // earlier/elsewhere), but the durable task snapshot says running:
+        // the send button must show the spinner, not the idle send icon.
+        const sendButton = within(getByTestId('ai-input-bar')).getByLabelText('Send') as HTMLButtonElement;
+        expect(sendButton.querySelector('span')).toBeTruthy();
+        expect(sendButton.querySelector('svg')).toBeNull();
+    });
+
     it('does not show workflow document generation chrome for non-document execution forms', async () => {
         // coding.implementation is a non-document execution phase (expects_document: false).
         const workflowForm: AgentView = {
@@ -7791,9 +7815,18 @@ describe('thinking panel auto-expands with real hook state shape', () => {
         cleanup();
     });
 
+    // The reasoning panel is a <details> only when it has a renderable body;
+    // with an empty trail it degrades to <div role="status"> (no `open`
+    // property). So the fixture must carry reasoning that survives
+    // `stripCodingWorkbenchStatusReasoning` — the old fixture was two host
+    // status milestones ("执行环境已就绪" / "正在同步会话上下文"), which that
+    // cleaner strips, leaving an empty trail and rendering the <div> branch.
+    const reasoningDetails = (root: HTMLElement) =>
+        root.querySelector<HTMLDetailsElement>('details[data-testid="assistant-reasoning-panel"]');
+
     it('auto-expands when streamingSessionKeys lists the active session', () => {
         const user = makeMsg({ role: 'user', content: 'Nanjing weather' });
-        const assistant = makeMsg({ id: 'a-repro-expand', role: 'assistant', content: '', reasoning: '• 执行环境已就绪\n• 正在同步会话上下文' });
+        const assistant = makeMsg({ id: 'a-repro-expand', role: 'assistant', content: '', reasoning: 'Checking the forecast for Nanjing.\nRain is likely in the afternoon.' });
         const props = defaultPanelProps();
         const initialProps: React.ComponentProps<typeof AIAssistantPanel> = {
             ...props,
@@ -7809,7 +7842,7 @@ describe('thinking panel auto-expands with real hook state shape', () => {
         };
         const { container, rerender } = render(<AIAssistantPanel {...initialProps} />, { wrapper: DialogProvider });
 
-        expect(container.querySelector('[data-testid="assistant-reasoning-panel"]')).toHaveProperty('open', false);
+        expect(reasoningDetails(container)?.open).toBe(false);
 
         rerender(
             <AIAssistantPanel
@@ -7822,7 +7855,7 @@ describe('thinking panel auto-expands with real hook state shape', () => {
             />,
         );
 
-        expect(container.querySelector('[data-testid="assistant-reasoning-panel"]')).toHaveProperty('open', true);
+        expect(reasoningDetails(container)?.open).toBe(true);
     });
 });
 

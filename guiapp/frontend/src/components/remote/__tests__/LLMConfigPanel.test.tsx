@@ -150,7 +150,13 @@ describe('LLMConfigPanel test-and-save flow', () => {
 
         await waitFor(() => {
             expect(TestAndSaveMaclawLLMProvidersMock).toHaveBeenCalledWith(
-                [expect.objectContaining({ name: 'Custom1', url: 'https://api.example.com/v1', key: 'secret', model: 'gpt-test' })],
+                [expect.objectContaining({
+                    name: 'Custom1',
+                    url: 'https://api.example.com/v1',
+                    key: 'secret',
+                    model: 'gpt-test',
+                    models: expect.arrayContaining(['gpt-test']),
+                })],
                 'Custom1',
                 'Custom1',
             );

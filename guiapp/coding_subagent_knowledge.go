@@ -503,6 +503,40 @@ func parseCodingSubAgentToolArgs(argsJSON string) map[string]interface{} {
 	return args
 }
 
+// runCodingKnowledgeSearch is the shared executor behind coding_knowledge_search
+// for both the remote coding surface (executeRemoteCodingKnowledgeSearch) and
+// the registry (IM/desktop) dispatch. Callers layer their own transport
+// parsing, recall tracking, and language inference on top; the search itself —
+// coding-KB store lookup, app-side finish/merge, and hit formatting — lives
+// here exactly once. The returned experience list lets the remote caller keep
+// its recalled-experience audit; registry callers can ignore it.
+func runCodingKnowledgeSearch(app *App, kb *knowledge.CodingKnowledgeStore, query, language, projectPath string) (string, []knowledge.CodingExperience) {
+	if app == nil && kb == nil {
+		return "编程知识库未配置。暂无可用的编码经验。", nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	var experiences []knowledge.CodingExperience
+	var err error
+	if kb != nil {
+		experiences, err = kb.SearchExperiences(ctx, knowledge.CodingSearchOptions{
+			Query:       query,
+			Language:    language,
+			ProjectPath: projectPath,
+			Status:      []string{knowledge.CodingStatusActive, knowledge.CodingStatusVerified},
+			Limit:       5,
+		})
+	}
+	experiences, err = finishCodingKnowledgeSearch(app, ctx, experiences, err, query, language, projectPath, 5)
+	if err != nil {
+		return fmt.Sprintf("编程知识库当前不可用；请继续通过 ssh_read_file、ssh_bash 和验证命令完成任务。(%v)", err), experiences
+	}
+	if len(experiences) == 0 {
+		return fmt.Sprintf("未找到与 %q 相关的编码经验。", query), experiences
+	}
+	return formatCodingExperienceSearchHits(experiences), experiences
+}
+
 func finishCodingKnowledgeSearch(app *App, ctx context.Context, local []knowledge.CodingExperience, localErr error, query, language, projectPath string, limit int) ([]knowledge.CodingExperience, error) {
 	if app == nil {
 		return local, localErr

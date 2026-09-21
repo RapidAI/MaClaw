@@ -276,3 +276,47 @@ func TestFilterToolDefsForLightTurn(t *testing.T) {
 		t.Fatalf("names=%v", names)
 	}
 }
+
+// R4 regression: when the allowlist would strip every tool, the surface must
+// degrade to the core read-only fallback set — never fail-open to the full
+// list (a misclassification or unrecognised surface must not silently expand
+// a light turn).
+func TestFilterToolDefsForLightTurnFailClosedFallback(t *testing.T) {
+	defs := []map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": "bash"}},
+		{"type": "function", "function": map[string]interface{}{"name": "read_file"}},
+		{"type": "function", "function": map[string]interface{}{"name": "edit_file"}},
+	}
+	got := FilterToolDefsForLightTurn(defs)
+	if len(got) != 0 {
+		t.Fatalf("expected empty surface, got %+v", got)
+	}
+	// Surface containing both blocked tools and core fallback tools.
+	mixed := []map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": "bash"}},
+		{"type": "function", "function": map[string]interface{}{"name": "web_search"}},
+		{"type": "function", "function": map[string]interface{}{"name": "current_datetime"}},
+	}
+	got = FilterToolDefsForLightTurn(mixed)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 fallback tools, got %+v", got)
+	}
+	names := map[string]bool{}
+	for _, d := range got {
+		names[toolDefName(d)] = true
+	}
+	if !names["web_search"] || !names["current_datetime"] || names["bash"] {
+		t.Fatalf("names=%v", names)
+	}
+}
+
+func TestStrippedLightToolNamesFailClosedFallback(t *testing.T) {
+	defs := []map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": "bash"}},
+		{"type": "function", "function": map[string]interface{}{"name": "web_search"}},
+	}
+	stripped := StrippedLightToolNames(defs)
+	if len(stripped) != 1 || stripped[0] != "bash" {
+		t.Fatalf("stripped=%v", stripped)
+	}
+}

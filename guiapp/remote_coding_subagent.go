@@ -37,6 +37,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // RemoteCodingSubAgent executes coding tasks on a remote server via SSH.
@@ -143,7 +144,9 @@ type RemoteCodingSubAgent struct {
 
 // ExecuteReadOnlyChild implements the shared corelib child executor contract
 // for a live, already-verified SSH session. The role-level tool filter is the
-// final authority and excludes ssh_bash/write/edit tools for children.
+// final authority: write/edit tools stay excluded for children, explorer has
+// no shell at all, and reviewer ssh_bash passes only through the read-only
+// whitelist gate (codingagent.reviewerShellInvocationAllowed, review P2-1).
 func (r *RemoteCodingSubAgent) ExecuteReadOnlyChild(ctx context.Context, request codingruntime.ExecutionRequest) codingruntime.ChildTaskResult {
 	if r == nil || (r.role != codingRoleExplorer && r.role != codingRoleReviewer) {
 		return codingruntime.ChildTaskResult{Status: codingruntime.TaskFailed, Summary: "remote read-only child adapter requires explorer or reviewer role"}
@@ -1977,6 +1980,11 @@ type remoteCodingCallbacks struct {
 	// SSH/provider correlation value or durable authorization token.
 	staticCompatibilityEpoch string
 
+	// dispatcherOnce builds the Phase 2 pilot ToolDispatcher at most once per
+	// callback; dispatcher stays nil unless MACLAW_TOOL_DISPATCHER=on.
+	dispatcherOnce sync.Once
+	dispatcher     *agent.NameDispatcher
+
 	// Agent-internal Claude Code / Codex-style step checklist for this turn.
 	todos codingAgentTodoState
 }
@@ -2343,9 +2351,21 @@ func (c *remoteCodingCallbacks) recordStaticCompatibilitySurface(definitions []m
 			userID = c.agent.loopCtx.UserID
 		}
 	}
-	// Remote catalog/binding migration is S2 work. Explicitly recording
-	// not_prepared makes the absence observable without inventing a local plan.
-	observation := newCodingStaticCompatibilitySurfaceObservation(codingStaticCompatibilityHostRemote, revision, posture, definitions, nil, nil)
+	// Remote shadow plan (slice 5, S0.5 observation level): compute the
+	// remote read-only shadow plan from the verified session binding and
+	// record it alongside the rendered legacy band. The plan is audit
+	// evidence only — it never drives rendering, grants, or dispatch, and
+	// the remote static band keeps serving unchanged.
+	var identity *trustedCodingInvocationIdentity
+	prepared := prepareCodingStaticRemoteShadowPlanForRemoteSubagent(c.agent, posture, time.Now().UTC())
+	if c.agent != nil {
+		identity = c.agent.dynamicInvocationIdentity
+	}
+	// Degradation (checklist Q①, explicitly accepted): an absent session
+	// binding yields prepared != nil with catalog_incomplete Unmet needs —
+	// the shadow comparison records the gap while ssh_read_file /
+	// ssh_list_dir stay available via the existing legacy path.
+	observation := newCodingStaticCompatibilitySurfaceObservation(codingStaticCompatibilityHostRemote, revision, posture, definitions, identity, prepared)
 	c.staticCompatibilitySurfaceMu.Lock()
 	c.staticCompatibilityLast = observation
 	c.staticCompatibilitySurfaceMu.Unlock()
@@ -2444,6 +2464,15 @@ func (c *remoteCodingCallbacks) quarantineStaticCompatibilitySurface() {
 
 func (c *remoteCodingCallbacks) ExecuteTool(name, argsJSON string) string {
 	return c.ExecuteToolStructured(name, argsJSON).Result
+}
+
+// UsageTracker implements agent.UsageTrackerProvider so remote coding
+// executions feed real tool outcomes into the shared usage tracker.
+func (c *remoteCodingCallbacks) UsageTracker() *tool.UsageTracker {
+	if c == nil || c.agent == nil || c.agent.handler == nil {
+		return nil
+	}
+	return c.agent.handler.UsageTracker()
 }
 
 func (c *remoteCodingCallbacks) BuildToolsForModelRequest(userText string, iteration int) []map[string]interface{} {
@@ -4580,9 +4609,11 @@ func buildRemoteInspectionRoleSystemPrompt(projectDir, workDir string, role codi
 	sb.WriteString(fmt.Sprintf("## 环境信息\n- 远程项目目录: %s\n- 工作目录: %s\n\n", projectDir, workDir))
 	sb.WriteString(`## 可用工具
 - ssh_read_file / ssh_list_dir：读取与列目录
-- ssh_bash：探索/诊断/验证命令（不要用 shell 改写文件或 Git 工作区）
 `)
+	// ssh_bash is reviewer-only (remoteCodingSpawnRoleTools): listing it to
+	// explorer made the model call a tool that the role gate always rejects.
 	if role == codingRoleReviewer {
+		sb.WriteString("- ssh_bash：探索/诊断/验证命令（不要用 shell 改写文件或 Git 工作区）\n")
 		sb.WriteString("- ssh_check_task：跟进后台长任务\n")
 	}
 	sb.WriteString(`
@@ -4590,8 +4621,11 @@ func buildRemoteInspectionRoleSystemPrompt(projectDir, workDir string, role codi
 1. 先找到相关路径与符号，再深入阅读关键文件
 1a. 仅当任务是修复已有代码的 bug 时：优先 code_navigation，形成症状、候选、根因、因果路径、复现与反证，并调用 report_localization。探索项目、补齐功能、核对 CLI 不要提交定位报告。
 1b. 遇到陌生概念/精确报错、第三方依赖/API/协议、版本或兼容性事实，必须 web_search 搜索精确错误与组件版本，优先核对官方文档并记录来源；若只是“无结果”，换一条保留组件/版本/错误码的查询再试一次，provider/网络/配置明确失败则不要重复空转；纯仓内 bug 才需要说明为何无需联网
-2. 用 ssh_bash 做只读探查（find/rg/ls/git status/diff/test 等）
-3. git status/diff/log 自检不要加 2>/dev/null 或 >/dev/null；若目录不是 Git 仓库，直接在结论中说明即可，不要用重定向掩盖 fatal 信息
+`)
+	if role == codingRoleReviewer {
+		sb.WriteString("2. 用 ssh_bash 做只读探查（find/rg/ls/git status/diff/test 等）\n")
+	}
+	sb.WriteString(`3. git status/diff/log 自检不要加 2>/dev/null 或 >/dev/null；若目录不是 Git 仓库，直接在结论中说明即可，不要用重定向掩盖 fatal 信息
 4. 完成后给出结构化发现：关键路径、结论、风险/建议
 5. 禁止写文件或改仓库状态；只输出发现与建议
 `)
@@ -5119,34 +5153,13 @@ func (c *remoteCodingCallbacks) executeRemoteCodingKnowledgeSearch(argsJSON stri
 		return "Error: query parameter is required"
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
-
-	language := inferRemoteCodingLanguage(c)
-	var experiences []knowledge.CodingExperience
-	var err error
-	if c.agent.codingKB != nil {
-		experiences, err = c.agent.codingKB.SearchExperiences(ctx, knowledge.CodingSearchOptions{
-			Query:       query,
-			Language:    language,
-			ProjectPath: c.agent.projectDir,
-			Status:      []string{knowledge.CodingStatusActive, knowledge.CodingStatusVerified},
-			Limit:       5,
-		})
-	}
 	var app *App
 	if c.agent.handler != nil {
 		app = c.agent.handler.app
 	}
+	text, experiences := runCodingKnowledgeSearch(app, c.agent.codingKB, query, inferRemoteCodingLanguage(c), c.agent.projectDir)
 	c.noteRecalledExperiences(experiences)
-	experiences, err = finishCodingKnowledgeSearch(app, ctx, experiences, err, query, language, c.agent.projectDir, 5)
-	if err != nil {
-		return fmt.Sprintf("编程知识库当前不可用；请继续通过 ssh_read_file、ssh_bash 和验证命令完成任务。(%v)", err)
-	}
-	if len(experiences) == 0 {
-		return fmt.Sprintf("未找到与 %q 相关的编码经验。", query)
-	}
-	return formatCodingExperienceSearchHits(experiences)
+	return text
 }
 
 func inferRemoteCodingLanguage(c *remoteCodingCallbacks) string {

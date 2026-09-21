@@ -215,7 +215,14 @@ export function normalizeProjectSessionPath(projectPath?: string | null): string
     const absolute = path.startsWith("/") || /^[A-Z]:\//.test(path);
     const prefix = /^[A-Z]:\//.test(path) ? path.slice(0, 3) : (path.startsWith("/") ? "/" : "");
     const body = prefix ? path.slice(prefix.length) : path;
-    for (const part of body.split("/")) {
+    // Trim each segment, not just the whole string. A segment may carry
+    // incidental padding around a separator (for example "dir /sub"), and
+    // leaving it in place made this function non-idempotent: re-normalizing
+    // the stored result then stripped it. Callers compare paths by
+    // re-normalizing both sides, so that asymmetry silently broke tab
+    // deduplication and produced duplicate tabs for one project.
+    for (const rawPart of body.split("/")) {
+        const part = rawPart.trim();
         if (!part || part === ".") continue;
         if (part === ".." && parts.length > 0 && parts[parts.length - 1] !== "..") {
             parts.pop();

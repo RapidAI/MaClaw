@@ -268,6 +268,8 @@ func stdinHasData() bool {
 // ---------------------------------------------------------------------------
 
 type pipeCallbacks struct {
+	usageTrackerFeed
+
 	app       *TUIApp
 	cancelCh  chan struct{}
 	stopped   bool
@@ -333,7 +335,18 @@ func (c *pipeCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) str
 }
 
 func (c *pipeCallbacks) BuildTools(userText string) []map[string]interface{} {
-	return c.app.toolRegistry.BuildDefinitions()
+	defs := c.app.toolRegistry.BuildDefinitions()
+	// Policy consistency with tuiCallbacks (phase0 baseline §1.2/§1.3 finding #2):
+	// this variant never classifies text or reports a profile itself, so the
+	// light filter applies ONLY when MACLAW_PROMPT_PROFILE forces light globally
+	// — a provable no-op in the default state, and under a forced-light env the
+	// surface now matches the light system prompt instead of staying full.
+	// Read-only-child filtering is intentionally absent: this struct has no
+	// runtimeReadOnlyChild state, so that filter could never fire.
+	if profile, ok := agent.EnvPromptProfileOverride(); ok && profile.IsLight() {
+		return agent.FilterToolDefsForLightTurn(defs)
+	}
+	return defs
 }
 
 func (c *pipeCallbacks) ExecuteTool(name, argsJSON string) string {

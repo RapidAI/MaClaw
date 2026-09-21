@@ -28,6 +28,10 @@ type SidebarPrimaryNavProps = {
     utilitiesTitle?: string;
     toolsLabel?: string;
     toolsTitle?: string;
+    /** Live running-task total, rendered as a badge on the Tasks entry. */
+    runningTaskCount?: number;
+    /** Prefers the background-task view when the Tasks entry is activated. */
+    onOpenBackgroundTasks?: () => void;
 };
 
 const railItemLabelStyle = { fontSize: '0.72rem', lineHeight: 1.15, fontWeight: 700, textAlign: 'center', width: '100%' } as const;
@@ -104,28 +108,45 @@ type SemanticNavItemProps = {
     aiStyle?: boolean;
     visible?: boolean;
     menuTrigger?: { expanded: boolean; controls: string };
+    /** Positive count rendered as a corner badge; hidden when 0 or absent. */
+    badgeCount?: number;
+    /** Appended to the accessible name so the badge is not visual-only. */
+    badgeLabel?: string;
 };
 
-const SemanticNavItem = ({ id, label, legacyLabel, icon, active, current, onClick, title, testId, aiStyle = false, visible = true, menuTrigger }: SemanticNavItemProps) => (
-    <button
-        type="button"
-        data-reference-nav={id}
-        data-testid={testId}
-        className={'sidebar-item left-nav-item' + (aiStyle ? ' left-nav-item--ai' : '') + (active ? ' active' : '')}
-        onClick={onClick}
-        title={title || label}
-        aria-label={label}
-        aria-current={(current ?? active) ? 'page' : undefined}
-        {...(menuTrigger ? { 'aria-haspopup': 'menu' as const, 'aria-expanded': menuTrigger.expanded, 'aria-controls': menuTrigger.controls } : {})}
-        style={aiStyle ? (visible ? undefined : { display: 'none' }) : { flexDirection: 'column', padding: '5px 0', width: '100%', gap: '4px', border: 'none', justifyContent: 'center', position: 'relative', ...(visible ? {} : { display: 'none' }) }}
-    >
-        <span className="sidebar-icon" style={{ margin: 0, display: 'inline-flex', color: active ? 'var(--theme-primary-strong)' : 'var(--theme-text-primary)' }}>{icon}</span>
-        <span className={aiStyle ? 'ai-nav-label' : undefined} style={aiStyle ? undefined : railItemLabelStyle}>{label}</span>
-        {legacyLabel && legacyLabel !== label && <span aria-hidden="true" style={hiddenLegacyLabelStyle}>{legacyLabel}</span>}
-    </button>
-);
+const SemanticNavItem = ({ id, label, legacyLabel, icon, active, current, onClick, title, testId, aiStyle = false, visible = true, menuTrigger, badgeCount, badgeLabel }: SemanticNavItemProps) => {
+    const badgeTotal = Math.max(0, Math.trunc(Number(badgeCount) || 0));
+    const showBadge = badgeTotal > 0;
+    const resolvedTitle = showBadge && badgeLabel ? `${title || label}${badgeLabel}` : (title || label);
+    const resolvedAriaLabel = showBadge && badgeLabel ? `${label}${badgeLabel}` : label;
+    return (
+        <button
+            type="button"
+            data-reference-nav={id}
+            data-testid={testId}
+            className={'sidebar-item left-nav-item' + (aiStyle ? ' left-nav-item--ai' : '') + (active ? ' active' : '')}
+            onClick={onClick}
+            title={resolvedTitle}
+            aria-label={resolvedAriaLabel}
+            aria-current={(current ?? active) ? 'page' : undefined}
+            {...(menuTrigger ? { 'aria-haspopup': 'menu' as const, 'aria-expanded': menuTrigger.expanded, 'aria-controls': menuTrigger.controls } : {})}
+            style={aiStyle ? (visible ? undefined : { display: 'none' }) : { flexDirection: 'column', padding: '5px 0', width: '100%', gap: '4px', border: 'none', justifyContent: 'center', position: 'relative', ...(visible ? {} : { display: 'none' }) }}
+        >
+            <span className="sidebar-icon" style={{ margin: 0, display: 'inline-flex', color: active ? 'var(--theme-primary-strong)' : 'var(--theme-text-primary)', position: 'relative' }}>
+                {icon}
+                {showBadge && (
+                    <span className="left-nav-item__badge" data-testid={testId ? `${testId}-badge` : undefined} aria-hidden="true">
+                        {badgeTotal > 99 ? '99+' : badgeTotal}
+                    </span>
+                )}
+            </span>
+            <span className={aiStyle ? 'ai-nav-label' : undefined} style={aiStyle ? undefined : railItemLabelStyle}>{label}</span>
+            {legacyLabel && legacyLabel !== label && <span aria-hidden="true" style={hiddenLegacyLabelStyle}>{legacyLabel}</span>}
+        </button>
+    );
+};
 
-export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showAppEntry, showUtilitiesEntry = true, showToolsEntry = false, switchTool, extensionsLabel, extensionsMenuOpen, onToggleExtensionsMenu, libraryMenuOpen = false, onToggleLibraryMenu, knowledgeActive = false, workflowLabel, utilitiesLabel, utilitiesTitle, toolsLabel, toolsTitle }: SidebarPrimaryNavProps) => {
+export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showAppEntry, showUtilitiesEntry = true, showToolsEntry = false, switchTool, extensionsLabel, extensionsMenuOpen, onToggleExtensionsMenu, libraryMenuOpen = false, onToggleLibraryMenu, knowledgeActive = false, workflowLabel, utilitiesLabel, utilitiesTitle, toolsLabel, toolsTitle, runningTaskCount = 0, onOpenBackgroundTasks }: SidebarPrimaryNavProps) => {
     // The rail is also used by the English and Traditional-Chinese builds. The
     // existing localized labels are the only language signal available here,
     // so infer the display language without changing the parent component API.
@@ -165,7 +186,7 @@ export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showApp
                 aiStyle
             />
             <div aria-hidden="true" style={{ width: '70%', height: '2px', margin: '4px 0 6px 0', borderRadius: '1px', background: 'linear-gradient(90deg, transparent 0%, var(--theme-border) 20%, var(--theme-text-muted) 50%, var(--theme-border) 80%, transparent 100%)', opacity: 0.5 }} />
-            <SemanticNavItem id="tasks" label={labels.tasks} icon={<TaskRailIcon />} active={navTab === 'remote'} onClick={() => switchTool('remote')} title={isEnglish ? 'Task monitor' : isTraditional ? '任務監控' : '任务监控'} testId="sidebar-task-monitor-nav" />
+            <SemanticNavItem id="tasks" label={labels.tasks} icon={<TaskRailIcon />} active={navTab === 'remote'} onClick={() => { if (onOpenBackgroundTasks) onOpenBackgroundTasks(); else switchTool('remote'); }} title={isEnglish ? 'Task monitor' : isTraditional ? '任務監控' : '任务监控'} testId="sidebar-task-monitor-nav" badgeCount={runningTaskCount} badgeLabel={isEnglish ? `: ${Math.max(0, Math.trunc(Number(runningTaskCount) || 0))} running` : isTraditional ? `：${Math.max(0, Math.trunc(Number(runningTaskCount) || 0))} 個執行中` : `：${Math.max(0, Math.trunc(Number(runningTaskCount) || 0))} 个执行中`} />
             {showAppEntry && <SemanticNavItem id="apps" label={labels.apps} legacyLabel={appsLabel} icon={<AppsRailIcon />} active={navTab === 'apps'} onClick={() => switchTool('apps')} title={appsLabel} testId="sidebar-apps-nav" />}
             <SemanticNavItem id="experts" label={expertLabel} legacyLabel={showToolsEntry ? undefined : utilitiesLabel} icon={<ExpertRailIcon />} active={navTab === 'utilities'} onClick={() => switchTool('utilities')} title={expertTitle} testId="sidebar-utilities-nav" visible={showUtilitiesEntry} />
             <SemanticNavItem id="tools" label={toolLabel} icon={<ToolsRailIcon />} active={navTab === 'tools'} onClick={() => switchTool('tools')} title={toolsTitle || toolLabel} testId="sidebar-tools-nav" visible={showToolsEntry} />

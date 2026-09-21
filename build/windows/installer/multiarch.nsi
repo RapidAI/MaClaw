@@ -357,9 +357,9 @@ Section
     Delete "$DESKTOP\${INFO_PRODUCTNAME}.lnk"
     CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
 
-    # Browser invitation pages use maclaw://onboarding to transfer an opaque,
-    # short-lived handoff to the installed desktop app. Keep the scheme fixed
-    # across OEM brands: it is part of the public invitation URL contract.
+    # Browser pages use maclaw:// to open the installed desktop app
+    # (invitation onboarding and cloud-workspace share import). Keep the
+    # scheme fixed across OEM brands: it is part of the public URL contract.
     WriteRegStr HKLM "Software\Classes\maclaw" "" "MaClaw invitation onboarding link"
     WriteRegStr HKLM "Software\Classes\maclaw" "URL Protocol" ""
     WriteRegStr HKLM "Software\Classes\maclaw\DefaultIcon" "" "$INSTDIR\${PRODUCT_EXECUTABLE},0"

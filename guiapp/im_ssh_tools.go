@@ -57,6 +57,15 @@ func (h *IMMessageHandler) sshExecRuntimeBound(sessionID, command string, waitSe
 // contract while allowing a runtime child to stop waiting promptly. It does
 // not send an interrupt to the shared SSH session: cancellation only prevents
 // this caller from accepting further output or issuing another tool call.
+//
+// codingStaticRemoteExecFenceVersion pins the cancellation-fence semantics
+// shared by this caller and the exec-channel assembler (corelib/remote
+// RunSSHCommand): a cancelled or timed-out exec returns no partial output as
+// a complete result. The hermetic conformance suite
+// (coding_static_remote_exec_conformance_test.go) pins its own version
+// constant against this one.
+const codingStaticRemoteExecFenceVersion = "coding-remote-exec-v1"
+
 func (h *IMMessageHandler) sshExecRuntimeBoundContext(ctx context.Context, sessionID, command string, waitSeconds int, expectedIdentity, workDir string) (string, error) {
 	if h == nil {
 		return "", fmt.Errorf("remote coding runtime handler is unavailable")
@@ -356,6 +365,12 @@ func (h *IMMessageHandler) sshConnect(args map[string]interface{}) string {
 				errMsg += "\n\nSSH password was not provided; retry with password or key_path/auth_method."
 			} else {
 				errMsg += "\n\npassword was provided but authentication still failed; check that the password is correct"
+				if cfg.User == "root" {
+					// 2026-09-18 production: a "PasswordAuthentication yes" server
+					// still refused root password auth — PermitRootLogin governs
+					// root separately, and auth.log names the exact refusal.
+					errMsg += "\n\nfor root logins also check the SERVER side: PermitRootLogin / AllowUsers in sshd_config, and the exact refusal reason in /var/log/auth.log (Failed password = wrong password; not allowed = policy blocks root password login)"
+				}
 			}
 		}
 		return errMsg

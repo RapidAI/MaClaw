@@ -951,6 +951,17 @@ func (h *IMMessageHandler) SetUsageTracker(tracker *tool.UsageTracker) {
 	h.usageTracker = tracker
 }
 
+// UsageTracker exposes the configured tracker so agent.LoopCallbacks hosts
+// built on this handler can implement agent.UsageTrackerProvider and feed
+// real tool-execution outcomes back into routing. Returns nil when no tracker
+// is configured; the core loop treats nil as a no-op.
+func (h *IMMessageHandler) UsageTracker() *tool.UsageTracker {
+	if h == nil {
+		return nil
+	}
+	return h.usageTracker
+}
+
 // SetSessionPrecheck configures the session precheck for environment validation.
 func (h *IMMessageHandler) SetSessionPrecheck(precheck *SessionPrecheck) {
 	h.sessionPrecheck = precheck
@@ -1237,14 +1248,15 @@ func (h *IMMessageHandler) routeSessionToolsWithRanking(userID, userMessage stri
 	// LLM request just to rewrite a message before the main Agent can respond.
 	// BM25 plus optional local embedding provides enough pruning; uncertain
 	// conditional tools stay hidden and can be discovered explicitly later.
+	routeMessage := markdownFileWritePlanningText(userMessage, loopHistory(ctx))
 	routeOpts := tool.RouteOptions{
 		SkipUnifiedClassifier: skipUnifiedClassifier,
 		PreferEmbeddingOnly:   true,
 		PreResolved:           preResolved,
-		CacheMessage:          classificationCacheMessageForTurn(ctx, userID, userMessage, loopHistory(ctx)),
-		HostKeepTools:         h.hostKeepToolsForMessage(userMessage),
+		CacheMessage:          classificationCacheMessageForTurn(ctx, userID, routeMessage, loopHistory(ctx)),
+		HostKeepTools:         h.hostKeepToolsForTurn(ctx, routeMessage),
 	}
-	routed := router.RouteForSession(userID, userMessage, allTools, routeOpts)
+	routed := router.RouteForSession(userID, routeMessage, allTools, routeOpts)
 	// Capture the router's raw ranked selection before the mandatory merges
 	// below; it is the closed replacement's pruning order, not an authority.
 	rankedNames := agentLoopToolNamesForLog(routed)
@@ -1281,11 +1293,34 @@ func (h *IMMessageHandler) routeSessionToolsWithRanking(userID, userMessage stri
 	return routed, rankedNames
 }
 
-func (h *IMMessageHandler) hostKeepToolsForMessage(userMessage string) []string {
-	if h == nil || h.databaseManager == nil || !h.databaseManager.HostReadGrant(userMessage) {
-		return nil
+func hostKeepMessageForTurn(ctx *LoopContext, userMessage string) string {
+	if ctx != nil {
+		if expanded := strings.TrimSpace(ctx.autoExtractExpandedText); expanded != "" {
+			return expanded
+		}
 	}
-	return append([]string{}, database.HostReadToolNames...)
+	return userMessage
+}
+
+func (h *IMMessageHandler) hostKeepToolsForTurn(ctx *LoopContext, userMessage string) []string {
+	var names []string
+	if h != nil && h.databaseManager != nil && h.databaseManager.HostReadGrant(userMessage) {
+		names = append(names, database.HostReadToolNames...)
+	}
+	if agent.AutoExtractNeedsContinuation(hostKeepMessageForTurn(ctx, userMessage)) {
+		names = append(names, agent.AutoExtractContinuationToolNames()...)
+	}
+	// discover_tool grants are loop-scoped. Putting them in HostKeep makes
+	// them mustKeepCore so the closed leftover plan cannot prune an unranked
+	// write_file after "granted for the next request" (2026-09-21 生成markdown).
+	if ctx != nil {
+		names = append(names, ctx.discoveredConditionalToolNames()...)
+	}
+	return names
+}
+
+func (h *IMMessageHandler) hostKeepToolsForMessage(userMessage string) []string {
+	return h.hostKeepToolsForTurn(nil, userMessage)
 }
 
 // unmanagedRetrievalToolForNeed is the host-owned name that satisfies an
@@ -1320,10 +1355,16 @@ func ambientRetrievalNeedsForUnmanaged() []tool.CapabilityNeed {
 var classifierTimeoutWebLookupToolNames = []string{"web_search", "web_fetch"}
 
 func keepClassifierTimeoutLookupTools(tools []map[string]interface{}) []map[string]interface{} {
-	if len(tools) == 0 { return tools }
+	if len(tools) == 0 {
+		return tools
+	}
 	wanted := map[string]bool{"web_search": true, "web_fetch": true}
 	out := make([]map[string]interface{}, 0, 2)
-	for _, t := range tools { if wanted[extractToolName(t)] { out = append(out, t) } }
+	for _, t := range tools {
+		if wanted[extractToolName(t)] {
+			out = append(out, t)
+		}
+	}
 	return out
 }
 

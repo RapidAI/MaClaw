@@ -4,8 +4,33 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 )
+
+func leftoverMarkdownCatalogHandler(t *testing.T) *IMMessageHandler {
+	t.Helper()
+	defs := []map[string]interface{}{
+		toolDef("bash", "run local shell", nil, nil),
+		toolDef("read_file", "read file", nil, nil),
+		toolDef("write_file", "write a file", nil, nil),
+		toolDef("discover_tool", "discover tools", nil, nil),
+		toolDef("generate_pdf", "生成 PDF 文档。将 Markdown 内容渲染为 PDF。", nil, nil),
+		toolDef("office", "Office/PDF tool. action: generate_pdf", nil, nil),
+	}
+	registry := NewToolRegistry()
+	for _, name := range []string{"bash", "read_file", "write_file", "discover_tool", "generate_pdf", "office"} {
+		if err := registry.Register(RegisteredTool{Name: name, Description: name, Category: ToolCategoryBuiltin, Status: RegToolAvailable}); err != nil {
+			t.Fatalf("Register %s: %v", name, err)
+		}
+	}
+	gen := NewToolDefinitionGenerator(nil, defs)
+	return &IMMessageHandler{
+		registry:   registry,
+		toolDefGen: gen,
+		toolRouter: NewToolRouter(gen),
+	}
+}
 
 func leftoverSSHCatalogHandler(t *testing.T) *IMMessageHandler {
 	t.Helper()
@@ -167,6 +192,126 @@ func TestSkillPreferenceLeftoverDoesNotApplyDiscoveryGrant(t *testing.T) {
 	set := h.prepareAgentLoopTools(owner, "continue", loop, agentLoopPhase{ForceSkillPreference: true})
 	if toolListContainsName(set.Tools, "ssh") {
 		t.Fatalf("skill-preference leftover must not apply discovery grants, got %v", agentLoopToolNamesForLog(set.Tools))
+	}
+}
+
+func TestLeftoverContinueAfterMarkdownKeepsWriteFileHidesPDF(t *testing.T) {
+	h := leftoverMarkdownCatalogHandler(t)
+	ctx := leftoverRoutingContext()
+	ctx.History = []agent.ConversationEntry{
+		{Role: "user", Content: "生成markdown"},
+		{Role: "assistant", Content: "回复继续即可"},
+	}
+	set := h.prepareAgentLoopTools("desktop-user", "继续", ctx, agentLoopPhase{})
+	names := agentLoopToolNamesForLog(set.Tools)
+	if !toolListContainsName(set.Tools, "write_file") {
+		t.Fatalf("leftover 继续 after 生成markdown must keep write_file, got %v", names)
+	}
+	if toolListContainsName(set.Tools, "generate_pdf") {
+		t.Fatalf("leftover 继续 after 生成markdown must hide generate_pdf, got %v", names)
+	}
+}
+
+func TestLeftoverContinueAfterMarkdownNoPDFKeepsWriteFile(t *testing.T) {
+	h := leftoverMarkdownCatalogHandler(t)
+	ctx := leftoverRoutingContext()
+	ctx.History = []agent.ConversationEntry{
+		{Role: "user", Content: "生成markdown，不要PDF"},
+		{Role: "assistant", Content: "回复继续即可"},
+	}
+	set := h.prepareAgentLoopTools("desktop-user", "继续", ctx, agentLoopPhase{})
+	names := agentLoopToolNamesForLog(set.Tools)
+	if !toolListContainsName(set.Tools, "write_file") {
+		t.Fatalf("leftover 继续 after 不要PDF markdown write must keep write_file, got %v", names)
+	}
+	if toolListContainsName(set.Tools, "generate_pdf") {
+		t.Fatalf("leftover 继续 after 不要PDF markdown write must hide generate_pdf, got %v", names)
+	}
+}
+
+func TestLeftoverACPWrappedContinueAfterMarkdownNoPDFKeepsWriteFile(t *testing.T) {
+	h := leftoverMarkdownCatalogHandler(t)
+	ctx := leftoverRoutingContext()
+	ctx.History = []agent.ConversationEntry{
+		{Role: "user", Content: acpProgrammingUserText(`F:\个人介绍`, "生成markdown，不要PDF")},
+		{Role: "assistant", Content: "回复继续即可"},
+	}
+	set := h.prepareAgentLoopTools("desktop-user", acpProgrammingUserText(`F:\个人介绍`, "继续"), ctx, agentLoopPhase{})
+	names := agentLoopToolNamesForLog(set.Tools)
+	if !toolListContainsName(set.Tools, "write_file") {
+		t.Fatalf("ACP-wrapped leftover 继续 after 不要PDF markdown write must keep write_file, got %v", names)
+	}
+	if toolListContainsName(set.Tools, "generate_pdf") {
+		t.Fatalf("ACP-wrapped leftover 继续 after 不要PDF markdown write must hide generate_pdf, got %v", names)
+	}
+}
+
+func TestLeftoverACPWrappedContinueAfterMarkdownKeepsWriteFile(t *testing.T) {
+	h := leftoverMarkdownCatalogHandler(t)
+	ctx := leftoverRoutingContext()
+	ctx.History = []agent.ConversationEntry{
+		{Role: "user", Content: acpProgrammingUserText(`F:\个人介绍`, "生成markdown")},
+		{Role: "assistant", Content: "回复继续即可"},
+	}
+	set := h.prepareAgentLoopTools("desktop-user", acpProgrammingUserText(`F:\个人介绍`, "继续"), ctx, agentLoopPhase{})
+	names := agentLoopToolNamesForLog(set.Tools)
+	if !toolListContainsName(set.Tools, "write_file") {
+		t.Fatalf("ACP-wrapped leftover 继续 after 生成markdown must keep write_file, got %v", names)
+	}
+	if toolListContainsName(set.Tools, "generate_pdf") {
+		t.Fatalf("ACP-wrapped leftover 继续 after 生成markdown must hide generate_pdf, got %v", names)
+	}
+}
+
+func TestLeftoverACPWrappedMarkdownReadMatchesUnwrapped(t *testing.T) {
+	h := leftoverMarkdownCatalogHandler(t)
+	ctx := leftoverRoutingContext()
+	inner := "解释这段 markdown"
+	plain := h.prepareAgentLoopTools("desktop-user", inner, ctx, agentLoopPhase{})
+	wrapped := h.prepareAgentLoopTools("desktop-user", acpProgrammingUserText(`F:\个人介绍`, inner), ctx, agentLoopPhase{})
+	want := agentLoopToolNamesForLog(plain.Tools)
+	got := agentLoopToolNamesForLog(wrapped.Tools)
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("ACP wrapper must not change leftover tools: wrapped=%v plain=%v", got, want)
+	}
+	md := h.prepareAgentLoopTools("desktop-user", acpProgrammingUserText(`F:\个人介绍`, "生成markdown"), ctx, agentLoopPhase{})
+	if toolListContainsName(md.Tools, "generate_pdf") {
+		t.Fatalf("ACP-wrapped 生成markdown must still hide generate_pdf, got %v", agentLoopToolNamesForLog(md.Tools))
+	}
+}
+
+func TestLeftoverGenerateMarkdownKeepsWriteFileHidesPDF(t *testing.T) {
+	h := leftoverMarkdownCatalogHandler(t)
+	ctx := leftoverRoutingContext()
+	set := h.prepareAgentLoopTools("desktop-user", "生成markdown", ctx, agentLoopPhase{})
+	names := agentLoopToolNamesForLog(set.Tools)
+	if !toolListContainsName(set.Tools, "write_file") {
+		t.Fatalf("leftover 生成markdown must keep write_file, got %v", names)
+	}
+	if toolListContainsName(set.Tools, "generate_pdf") {
+		t.Fatalf("leftover 生成markdown must hide generate_pdf, got %v", names)
+	}
+	if toolListContainsName(set.Tools, "office") {
+		t.Fatalf("leftover 生成markdown must hide office, got %v", names)
+	}
+}
+
+func TestDiscoverToolGrantsWriteFileOnLeftoverWeatherTurn(t *testing.T) {
+	// Grants must HostKeep into the next closed leftover surface. Injection
+	// after ranking used to be pruned as an unranked tail (2026-09-21).
+	h := leftoverMarkdownCatalogHandler(t)
+	owner := "desktop-user:D:/tasks/md"
+	loop := leftoverRoutingContext()
+	h.setSessionLoopCtx(owner, loop)
+	loop.setExposedToolNames([]string{"read_file", "discover_tool"})
+
+	out := h.toolDiscoverToolForOwner(owner, map[string]interface{}{"need": "write_file"})
+	if !strings.Contains(out, "(granted for the next request)") {
+		t.Fatalf("discover should grant write_file, got %q", out)
+	}
+	set := h.prepareAgentLoopTools(owner, "今天天气怎么样", loop, agentLoopPhase{})
+	if !toolListContainsName(set.Tools, "write_file") {
+		t.Fatalf("granted write_file must survive leftover weather routing, got %v", agentLoopToolNamesForLog(set.Tools))
 	}
 }
 

@@ -521,6 +521,20 @@ func (s *Service) HeadRuntimeForGroup(groupID, userID string) *llmpool.HeadRunti
 	}
 }
 
+// RecordOfficialClassHeadSample appends or refreshes one training sample.
+//
+// This runs on every proxied LLM request (recordProxyClassHeadSample), i.e. at
+// request rate. It must therefore produce a byte-identical store for an
+// unchanged observation: the HA layer dedupes ops by payload hash (see
+// appendLocalWithVersion), and re-stamping sample.At on every call would defeat
+// that dedupe and emit one ~1MB HA op per request — historically the dominant
+// driver of HA op volume (10k+ ops/day on a busy proxy node, per peer).
+//
+// At is therefore only advanced when the sample's classification actually
+// changes, and an unchanged observation is a no-op: it neither rewrites the
+// store nor emits an HA op. Repeat observations of the same preview with the
+// same verdict are the common case at request rate, and collapsing them into
+// one op is exactly the point.
 func (s *Service) RecordOfficialClassHeadSample(preview, ruleClass, ruleSource, headClass string, headMaxP float64, groupID string, passthrough bool) {
 	if s == nil || passthrough || strings.TrimSpace(groupID) == "" {
 		return
@@ -556,28 +570,48 @@ func (s *Service) RecordOfficialClassHeadSample(preview, ruleClass, ruleSource, 
 			sample.ID = id
 		}
 		human := officialHeadHasReview(data.Reviews, id)
-		sample.At = now
+		changed := false
 		sample.Preview = preview
-		if groupID != "" {
+		if groupID != "" && sample.GroupID != groupID {
 			sample.GroupID = groupID
+			changed = true
 		}
-		if strings.TrimSpace(headClass) != "" {
+		if strings.TrimSpace(headClass) != "" && (sample.HeadClass != headClass || sample.HeadMaxP != headMaxP) {
 			sample.HeadClass = headClass
 			sample.HeadMaxP = headMaxP
+			changed = true
 		}
 		if !human {
 			if gold {
+				if !sample.Gold || sample.GoldClass != goldClass {
+					changed = true
+				}
 				sample.Gold = true
 				if goldClass != "" {
 					sample.GoldClass = goldClass
 				}
+				if sample.RuleClass != ruleClass || sample.RuleSource != ruleSource {
+					changed = true
+				}
 				sample.RuleClass = ruleClass
 				sample.RuleSource = ruleSource
-			} else if !sample.Gold {
+			} else if !sample.Gold && (sample.RuleClass != ruleClass || sample.RuleSource != ruleSource) {
 				sample.RuleClass = ruleClass
 				sample.RuleSource = ruleSource
+				changed = true
 			}
 		}
+		if !changed {
+			// Same observation as the stored one: keep the record and its At
+			// untouched so the payload hash is stable and HA dedupes this op.
+			// Note this also skips the move-to-front below, so repeat
+			// observations no longer reshuffle the sample order. That ordering
+			// only feeds pruneOfficialHeadSamples' eviction order, and treating
+			// a repeated identical observation as a non-event is the point of
+			// this change.
+			return
+		}
+		sample.At = now
 		data.Samples = append(append([]OfficialClassHeadSample{sample}, data.Samples[:idx]...), data.Samples[idx+1:]...)
 	} else {
 		data.Samples = append([]OfficialClassHeadSample{{

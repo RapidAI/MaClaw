@@ -180,6 +180,46 @@ describe('SidebarNavRail system popup', () => {
         expect(screen.getByTestId('sidebar-task-monitor-nav').className).toContain('active');
     });
 
+    it('renders no running-task badge when nothing is running', () => {
+        renderRail({ runningTaskCount: 0 });
+
+        expect(screen.queryByTestId('sidebar-task-monitor-nav-badge')).toBeNull();
+        expect(screen.getByTestId('sidebar-task-monitor-nav').getAttribute('aria-label')).toBe('Tasks');
+    });
+
+    it('mirrors the live running-task count on the tasks rail', () => {
+        renderRail({ runningTaskCount: 3 });
+
+        expect(screen.getByTestId('sidebar-task-monitor-nav-badge').textContent).toBe('3');
+        // The badge must not be visual-only: the accessible name carries the count.
+        expect(screen.getByTestId('sidebar-task-monitor-nav').getAttribute('aria-label')).toBe('Tasks: 3 running');
+    });
+
+    it('caps the running-task badge so a long count cannot break the rail', () => {
+        renderRail({ runningTaskCount: 250 });
+
+        expect(screen.getByTestId('sidebar-task-monitor-nav-badge').textContent).toBe('99+');
+    });
+
+    it('ignores a non-numeric running-task count instead of rendering NaN', () => {
+        renderRail({ runningTaskCount: Number.NaN });
+
+        expect(screen.queryByTestId('sidebar-task-monitor-nav-badge')).toBeNull();
+        expect(screen.getByTestId('sidebar-task-monitor-nav').getAttribute('aria-label')).toBe('Tasks');
+    });
+
+    it('prefers the background-task monitor when the tasks rail is opened', () => {
+        const onOpenBackgroundTasks = vi.fn();
+        const props = renderRail({ onOpenBackgroundTasks });
+
+        fireEvent.click(screen.getByTestId('sidebar-task-monitor-nav'));
+
+        expect(onOpenBackgroundTasks).toHaveBeenCalledTimes(1);
+        // The handler already selects the remote tab; switching again would
+        // reset the sub-tab it just chose.
+        expect(props.switchTool).not.toHaveBeenCalled();
+    });
+
     it('places ranking last in the system menu after gossip', () => {
         renderRail({
             lang: 'zh-Hans',

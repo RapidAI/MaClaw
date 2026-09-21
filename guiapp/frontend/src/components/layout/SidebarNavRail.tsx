@@ -36,6 +36,10 @@ type SidebarNavRailProps = {
     utilitiesLabel?: string;
     /** Current settings tab, used to highlight the library entry for the Knowledge page. */
     settingsTab?: string;
+    /** Live running-task count, mirrored from the workbench status card. */
+    runningTaskCount?: number;
+    /** Opens System > Monitor with the background-task view selected. */
+    onOpenBackgroundTasks?: () => void;
 };
 
 const HUB_INVITATION_STATUS_REFRESH_INTERVAL_MS = 30_000;
@@ -90,6 +94,8 @@ export const SidebarNavRail = ({
     showToolsEntry = false,
     utilitiesLabel,
     settingsTab,
+    runningTaskCount = 0,
+    onOpenBackgroundTasks,
 }: SidebarNavRailProps) => {
     const [systemMenuOpen, setSystemMenuOpen] = useState(false);
     const systemMenuOpenerRef = useRef<HTMLElement | null>(null);
@@ -155,9 +161,10 @@ export const SidebarNavRail = ({
     const resolvedToolsLabel = toolsNavLabel(lang);
     const resolvedToolsTitle = toolsPageTitle(lang);
     const systemLabel = lang === 'zh-Hans' ? zhHans.system : lang === 'zh-Hant' ? zhHant.system : 'System';
-    // The running-task badge moved to SidebarSystemStatus (see WorkbenchTaskCounts);
-    // the rail keeps an explicit 0-count tap target so the nav item stays stable.
-    const runningTaskCount = 0;
+    // The workbench status card owns the detailed breakdown (see
+    // WorkbenchTaskCounts); the rail only mirrors the running total as a badge on
+    // the Tasks entry, so the two readouts can never disagree.
+    const runningTaskTotal = Math.max(0, Math.trunc(Number(runningTaskCount) || 0));
     const extensionsLabel = lang === 'zh-Hans' ? '扩展' : lang === 'zh-Hant' ? '擴展' : 'Extensions';
     const connectorsLabel = lang === 'zh-Hans' ? '连接器' : lang === 'zh-Hant' ? '連接器' : 'Connectors';
     const libraryLabel = lang === 'zh-Hans' ? '资料库' : lang === 'zh-Hant' ? '資料庫' : 'Library';
@@ -231,7 +238,7 @@ export const SidebarNavRail = ({
             position: 'relative',
         }}>
             <SidebarBrandHeader brandId={brandInfo?.id} currentIcon={currentIcon} brandSidebarName={brandSidebarName} />
-            <SidebarPrimaryNav navTab={navTab} aiAssistantLabel={aiAssistantLabel} appsLabel={appsLabel} showAppEntry={showAppEntry} showUtilitiesEntry={showUtilitiesEntry} showToolsEntry={showToolsEntry} switchTool={switchTool} extensionsLabel={extensionsLabel} extensionsMenuOpen={extensionsMenuOpen} onToggleExtensionsMenu={toggleExtensionsMenu} libraryMenuOpen={libraryMenuOpen} onToggleLibraryMenu={toggleLibraryMenu} knowledgeActive={knowledgeActive} workflowLabel={workflowLabel} utilitiesLabel={resolvedUtilitiesLabel} utilitiesTitle={resolvedUtilitiesTitle} toolsLabel={resolvedToolsLabel} toolsTitle={resolvedToolsTitle} />
+            <SidebarPrimaryNav navTab={navTab} aiAssistantLabel={aiAssistantLabel} appsLabel={appsLabel} showAppEntry={showAppEntry} showUtilitiesEntry={showUtilitiesEntry} showToolsEntry={showToolsEntry} switchTool={switchTool} extensionsLabel={extensionsLabel} extensionsMenuOpen={extensionsMenuOpen} onToggleExtensionsMenu={toggleExtensionsMenu} libraryMenuOpen={libraryMenuOpen} onToggleLibraryMenu={toggleLibraryMenu} knowledgeActive={knowledgeActive} workflowLabel={workflowLabel} utilitiesLabel={resolvedUtilitiesLabel} utilitiesTitle={resolvedUtilitiesTitle} toolsLabel={resolvedToolsLabel} toolsTitle={resolvedToolsTitle} runningTaskCount={runningTaskTotal} onOpenBackgroundTasks={onOpenBackgroundTasks} />
             {showAppEntry && veAuthorized && favoriteEmployees.length > 0 && (
                 <div
                     aria-hidden="true"

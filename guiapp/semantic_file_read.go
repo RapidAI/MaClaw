@@ -177,31 +177,18 @@ func trustedFileReadContext(query, filePattern string) (context.Context, context
 }
 
 func trustedFileReadResolvePath(workspace, path string) (string, error) {
-	workspace = strings.TrimSpace(workspace)
-	path = strings.TrimSpace(path)
-	if workspace == "" {
-		return "", fmt.Errorf("trusted_file_read_path_unavailable")
-	}
-	if path == "" {
+	if strings.TrimSpace(path) == "" {
 		path = "."
 	}
-	base, err := filepath.Abs(workspace)
-	if err != nil {
+	abs, _, kind := resolvePathInsideWorkspace(workspace, path)
+	switch kind {
+	case trustedPathOK:
+		return abs, nil
+	case trustedPathNoWorkspace:
 		return "", fmt.Errorf("trusted_file_read_path_unavailable")
-	}
-	candidate := path
-	if !filepath.IsAbs(path) {
-		candidate = filepath.Join(base, path)
-	}
-	abs, err := filepath.Abs(candidate)
-	if err != nil {
+	default:
 		return "", fmt.Errorf("trusted_file_read_path_rejected")
 	}
-	rel, err := filepath.Rel(base, abs)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("trusted_file_read_path_rejected")
-	}
-	return abs, nil
 }
 
 func trustedFileReadList(absPath, display string) (string, error) {
@@ -268,6 +255,7 @@ func trustedFileReadRewriteWorkspace(workspace, text string) string {
 	if err != nil {
 		return text
 	}
+	abs = normalizeProjectSessionPath(abs)
 	replacements := []string{abs + string(filepath.Separator), filepath.ToSlash(abs) + "/", abs, filepath.ToSlash(abs)}
 	for _, prefix := range replacements {
 		text = strings.ReplaceAll(text, prefix, "")

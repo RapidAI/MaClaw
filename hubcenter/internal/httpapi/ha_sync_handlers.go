@@ -19,6 +19,7 @@ type haSyncReader interface {
 	NodeID() string
 	ListOpsAfterSeq(ctx context.Context, afterSeq int64, limit int) ([]*store.HASyncOp, error)
 	MaxOpSeq(ctx context.Context) (int64, error)
+	MinOpSeq(ctx context.Context) (int64, error)
 	AuthenticatePeerRequest(r *http.Request) error
 }
 
@@ -68,6 +69,11 @@ func HAOpsPullHandler(svc haSyncReader) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "HA_PULL_FAILED", err.Error())
 			return
 		}
+		minSeq, err := svc.MinOpSeq(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "HA_PULL_FAILED", err.Error())
+			return
+		}
 		nextAfterSeq := afterSeq
 		if len(ops) > 0 {
 			nextAfterSeq = ops[len(ops)-1].Seq
@@ -78,6 +84,7 @@ func HAOpsPullHandler(svc haSyncReader) http.HandlerFunc {
 			"next_after_seq": nextAfterSeq,
 			"has_more":       maxSeq > nextAfterSeq,
 			"max_seq":        maxSeq,
+			"min_seq":        minSeq,
 		})
 	}
 }

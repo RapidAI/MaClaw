@@ -41,8 +41,21 @@ func TestRemoteToolAllowedForRole(t *testing.T) {
 	if !rev.remoteToolAllowedForRole("ssh_check_task") {
 		t.Fatal("reviewer should check task")
 	}
-	if rev.remoteToolAllowedForRole("ssh_write_file") || rev.remoteToolAllowedForRole("ssh_bash") {
-		t.Fatal("reviewer must be strictly read-only")
+	// Reviewer ssh_bash is definition-visible but call-gated by the shared
+	// read-only whitelist (codingagent.reviewerShellInvocationAllowed).
+	if !rev.remoteToolAllowedForRole("ssh_bash") {
+		t.Fatal("reviewer should see ssh_bash for shell validation")
+	}
+	if rev.remoteToolAllowedForRole("ssh_write_file") || rev.remoteToolAllowedForRole("ssh_edit_file") {
+		t.Fatal("reviewer must not write files")
+	}
+	if ok, _ := rev.remoteToolCallAllowedForRole("ssh_bash", map[string]interface{}{"command": "cd /repo && go test ./..."}); !ok {
+		t.Fatal("reviewer ssh_bash should run whitelisted validation commands")
+	}
+	for _, denied := range []string{"rm -rf /", "echo x > build.log", "git commit -m w", "python -c 'x'"} {
+		if ok, _ := rev.remoteToolCallAllowedForRole("ssh_bash", map[string]interface{}{"command": denied}); ok {
+			t.Fatalf("reviewer ssh_bash must reject %q", denied)
+		}
 	}
 	for _, key := range []string{"save_path", "output", "dest", "path", "filename"} {
 		if ok, _ := rev.remoteToolCallAllowedForRole("web_fetch", map[string]interface{}{key: "report.pdf"}); ok {

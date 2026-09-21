@@ -155,6 +155,11 @@ func semanticRenderedReuseCue(id CapabilityID) string {
 		return " This step is optional when listed with other tools. Call only with a real HTTP(S) URL; never placeholder or reserved hosts such as example.invalid. Skipping it does not block the other listed tools."
 	case CapabilityID("information.search.web"):
 		return " This step is optional when listed with other tools. Call only with a real search query. Skipping it does not block the other listed tools."
+	case CapabilityFSWriteLocal:
+		// 2026-09-18 production: a turn tried to persist a server password
+		// into a local file via write_file. Credentials are use-once and must
+		// never land in files, knowledge, or documents.
+		return semanticListedCallCue + " Never write credentials (passwords, private keys, tokens) into files; decline and tell the user credentials are use-once and must not persist."
 	case CapabilityDocumentWriteOffice:
 		return semanticListedCallCue + " Presentation slides accept native editable charts on slides[].charts (bar/column/bar_h/line/radar/pie/area)."
 	default:

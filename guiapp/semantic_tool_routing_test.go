@@ -610,6 +610,80 @@ func TestIMSemanticDesktopDocumentContinuationUsesHostBoundContext(t *testing.T)
 			t.Fatalf("document continuation exposed a path schema: %#v", props)
 		}
 	}
+	name := tool.LiveGrantNameForCapability(surface.plan, surface.grants, "document.read.local")
+	if name == "" {
+		t.Fatal("missing live document.read grant")
+	}
+	got := (&sharedAgentLoopCallbacks{handler: h, semanticSurface: surface}).ExecuteTool(name, `{}`)
+	if strings.Contains(got, "artifact_projection_invalid") {
+		t.Fatalf("host-bound desktop document must project into the turn scope, got %q", got)
+	}
+	if !strings.Contains(got, "trusted desktop resume body") {
+		t.Fatalf("continuation read=%q", got)
+	}
+}
+
+func TestIMSemanticDesktopPickerFirstTurnBindsTrustedInputAndPagesOffset(t *testing.T) {
+	h := &IMMessageHandler{registry: NewToolRegistry()}
+	// Downloads-style path: outside any task workspace, path-picked not attached.
+	dir := filepath.Join(t.TempDir(), "Downloads")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "KNOSYS-D-26-18030_reviewer.txt")
+	head := strings.Repeat("prefix-page ", 80)
+	tail := "LIMITATIONS_AND_CONCLUSION_MARKER"
+	if err := os.WriteFile(path, []byte(head+tail), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	firstTurn := "评审本篇论文\n\n" + filePathPromptPrefix + "\n" + path + "\n"
+	if err := h.captureSelectedLocalDocuments("desktop-user", "desktop", "", firstTurn); err != nil {
+		t.Fatalf("capture selected document: %v", err)
+	}
+	defs, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassificationAndAttachments(
+		"desktop-user", firstTurn, "desktop", "root-picker-first", "turn-picker-first",
+		&intent.ClassificationResult{Primary: intent.LabelDocumentRead, Confidence: .98}, nil,
+	)
+	if err != nil || !handled || surface == nil || len(defs) == 0 {
+		t.Fatalf("defs=%#v handled=%v surface=%#v err=%v", defs, handled, surface, err)
+	}
+	var docSel tool.PlannedSelection
+	for _, sel := range surface.plan.Selections {
+		if sel.AdapterName == "semantic_read_trusted_document" {
+			docSel = sel
+			break
+		}
+	}
+	if docSel.ID == "" {
+		t.Fatalf("document read selection missing: %+v", surface.plan.Selections)
+	}
+	if err := tool.UniqueTrustedInputCount(len(docSel.ArtifactDependencies)); err != nil {
+		t.Fatalf("path-only picker must bind exactly one trusted input: %v deps=%#v", err, docSel.ArtifactDependencies)
+	}
+	name := tool.LiveGrantNameForCapability(surface.plan, surface.grants, "document.read.local")
+	if name == "" {
+		t.Fatal("missing live document.read grant")
+	}
+	cb := &sharedAgentLoopCallbacks{handler: h, semanticSurface: surface}
+	offset := len([]rune(head))
+	got := cb.ExecuteTool(name, fmt.Sprintf(`{"offset":%d}`, offset))
+	if strings.Contains(got, "artifact_projection_invalid") {
+		t.Fatalf("path-picked trusted input must project into the turn scope, got %q", got)
+	}
+	if !strings.Contains(got, tail) {
+		t.Fatalf("invoke offset=%d must return the document tail, got %q", offset, got)
+	}
+	want := semanticDocumentReadResultProjection(agent.ToolReadDocumentWithContext(map[string]interface{}{
+		"file_path": path, "offset": offset,
+	}, h.getMaclawLLMConfig().EffectiveContextTokens()))
+	if strings.TrimSpace(got) != strings.TrimSpace(want) {
+		t.Fatalf("invoke window=%q office window=%q", got, want)
+	}
+	truncated := firstTurn + "\n" + agent.AutoExtractBeginMarker + `path="` + path + `" format="text" truncated=true next_offset=10 ---`
+	cb.maybeOverlayDocumentContinuationForTurn(truncated)
+	if cb.legacyPetitionTools["office"] || cb.legacyPetitionTools["read_document"] {
+		t.Fatalf("bound document.read must not overlay continuation tools, got %v", cb.legacyPetitionTools)
+	}
 }
 
 func TestIMSemanticDesktopDocumentContinuationFailsClosedWhenSourceChanges(t *testing.T) {
@@ -807,6 +881,21 @@ func TestActiveLocalDocumentContextMatchesSemanticRoutingDestination(t *testing.
 	)
 	if err != nil || !handled || prepared == nil || !planHasCapabilities(prepared.plan, "document.read.local") {
 		t.Fatalf("context must use the same destination scope as routing: prepared=%#v handled=%v err=%v", prepared, handled, err)
+	}
+}
+
+func TestSemanticActiveLocalDocumentInputsRequireSessionIdentity(t *testing.T) {
+	h := &IMMessageHandler{}
+	path := filepath.Join(t.TempDir(), "resume.txt")
+	if err := os.WriteFile(path, []byte("resume"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.captureSelectedLocalDocuments("desktop-user", "desktop", "", filePathPromptPrefix+"\n"+path+"\n"); err != nil {
+		t.Fatal(err)
+	}
+	_, active, err := h.semanticActiveLocalDocumentInputsForTurn("root", "turn", "", "desktop-user", "desktop", "")
+	if !active || err == nil || !strings.Contains(err.Error(), "trusted_document_input_identity_required") {
+		t.Fatalf("empty session must fail closed: active=%v err=%v", active, err)
 	}
 }
 
@@ -2624,7 +2713,7 @@ func TestRoutingMissLeftoverDropsPrivilegeAndGovernedGenerate(t *testing.T) {
 		map[string]interface{}{"function": map[string]interface{}{"name": "generate_pdf"}},
 		map[string]interface{}{"function": map[string]interface{}{"name": "office"}},
 	)
-	got := applyRoutingMissLeftoverTools(routed, all, ctx)
+	got := applyRoutingMissLeftoverTools(routed, all, nil, ctx)
 	names := make(map[string]bool, len(got))
 	for _, def := range got {
 		names[extractToolName(def)] = true
@@ -2647,6 +2736,67 @@ func TestRoutingMissLeftoverDropsPrivilegeAndGovernedGenerate(t *testing.T) {
 	}
 	if names["office"] {
 		t.Fatal("generate miss must not pin office; leftover lexical pins keep it when the user named a document")
+	}
+}
+
+// 2026-09-18 17:42 production incident: a degraded turn ranked only
+// web_fetch/web_search and knowledge_search/memory_recall fell below the cut,
+// so the model could not look up information the user had already saved.
+// The read-only floor must restore them regardless of ranker output.
+func TestRoutingMissLeftoverRestoresReadOnlyLookupFloor(t *testing.T) {
+	ctx := &LoopContext{
+		Platform: "desktop",
+		Runtime: RuntimeContext{
+			SemanticIntent: &intent.ClassificationResult{Primary: intent.LabelUnknown, Confidence: 0.30, Degraded: true},
+		},
+	}
+	applySemanticRoutingMissFallback(ctx)
+	routed := []map[string]interface{}{
+		{"function": map[string]interface{}{"name": "web_fetch"}},
+		{"function": map[string]interface{}{"name": "web_search"}},
+	}
+	floor := []map[string]interface{}{
+		{"function": map[string]interface{}{"name": "knowledge_search"}},
+		{"function": map[string]interface{}{"name": "memory_recall"}},
+	}
+	got := applyRoutingMissLeftoverTools(routed, nil, floor, ctx)
+	names := make(map[string]bool, len(got))
+	for _, def := range got {
+		names[extractToolName(def)] = true
+	}
+	for _, name := range []string{"web_fetch", "web_search", "knowledge_search", "memory_recall"} {
+		if !names[name] {
+			t.Fatalf("read-only floor must restore %s: %v", name, names)
+		}
+	}
+}
+
+// The read-only floor must never re-expand a group boundary: the group
+// filter runs before applyRoutingMissLeftoverTools, and a group that denies
+// knowledge (or uses the narrowed memory view) would otherwise receive the
+// full tools back through the floor.
+func TestRoutingMissReadOnlyFloorRespectsGroupBoundary(t *testing.T) {
+	ctx := &LoopContext{
+		Platform: "lansenger",
+		Runtime: RuntimeContext{
+			SemanticIntent: &intent.ClassificationResult{Primary: intent.LabelUnknown, Confidence: 0.30, Degraded: true},
+		},
+		LansengerGroupPermissions: &lansengerGroupPermissionPolicy{},
+	}
+	applySemanticRoutingMissFallback(ctx)
+	routed := []map[string]interface{}{
+		{"function": map[string]interface{}{"name": "web_fetch"}},
+	}
+	floor := []map[string]interface{}{
+		{"function": map[string]interface{}{"name": "knowledge_search"}},
+		{"function": map[string]interface{}{"name": "memory_recall"}},
+	}
+	got := applyRoutingMissLeftoverTools(routed, nil, floor, ctx)
+	for _, def := range got {
+		name := extractToolName(def)
+		if name == "knowledge_search" || name == "memory_recall" {
+			t.Fatalf("floor must not re-expand the group boundary with %s", name)
+		}
 	}
 }
 
@@ -2694,6 +2844,7 @@ func TestRoutingMissLeftoverDoesNotPinGenerateOnVE(t *testing.T) {
 			{"function": map[string]interface{}{"name": "read_file"}},
 			{"function": map[string]interface{}{"name": "generate_pdf"}},
 		},
+		nil,
 		ctx,
 	)
 	for _, def := range got {
@@ -2725,6 +2876,7 @@ func TestRoutingMissClearsStaleHostAdapterOnChatProjection(t *testing.T) {
 	got := applyRoutingMissLeftoverTools(
 		[]map[string]interface{}{{"function": map[string]interface{}{"name": "memory"}}},
 		[]map[string]interface{}{{"function": map[string]interface{}{"name": "generate_pdf"}}},
+		nil,
 		ctx,
 	)
 	for _, def := range got {
@@ -2769,6 +2921,7 @@ func TestRoutingMissUnknownIntentStillBoundsLeftover(t *testing.T) {
 			{"function": map[string]interface{}{"name": "edit_file"}},
 		},
 		nil,
+		nil,
 		ctx,
 	)
 	if len(got) != 1 || extractToolName(got[0]) != "memory" {
@@ -2800,6 +2953,7 @@ func TestRoutingMissWorkflowGenerateDoesNotReopenLegacyAdapter(t *testing.T) {
 			{"function": map[string]interface{}{"name": "bash"}},
 		},
 		[]map[string]interface{}{{"function": map[string]interface{}{"name": "generate_pdf"}}},
+		nil,
 		ctx,
 	)
 	names := make(map[string]bool, len(got))
@@ -2828,6 +2982,7 @@ func TestRoutingMissNilIntentStillBoundsLeftover(t *testing.T) {
 			{"function": map[string]interface{}{"name": "edit_file"}},
 		},
 		[]map[string]interface{}{{"function": map[string]interface{}{"name": "generate_pdf"}}},
+		nil,
 		ctx,
 	)
 	names := make(map[string]bool, len(got))
@@ -2865,6 +3020,7 @@ func TestLoopContextLeftoverRequiresThisTurnFlags(t *testing.T) {
 			{"function": map[string]interface{}{"name": "bash"}},
 		},
 		[]map[string]interface{}{{"function": map[string]interface{}{"name": "generate_pdf"}}},
+		nil,
 		ctx,
 	)
 	if len(got) != 2 {
@@ -2887,6 +3043,7 @@ func TestRoutingMissChatProjectionAlsoStripsPrivilege(t *testing.T) {
 			{"function": map[string]interface{}{"name": "memory"}},
 			{"function": map[string]interface{}{"name": "edit_file"}},
 		},
+		nil,
 		nil,
 		ctx,
 	)

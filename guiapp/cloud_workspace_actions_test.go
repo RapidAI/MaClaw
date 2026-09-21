@@ -128,6 +128,130 @@ func TestCreateRenameDeleteRestoreCloudWorkspaceHub(t *testing.T) {
 	}
 }
 
+func TestCreateCloudWorkspaceEmptyNameUsesUniqueIdempotencyKeys(t *testing.T) {
+	var keys []string
+	n := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == cloudWorkspaceInstanceSessionsPath {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"session_id":"cwses_test","session_token":"cwst_test","client_instance_id":"cwi_test","protocol":"v1-sequential","expires_at":"2099-01-01T00:00:00Z"}`))
+			return
+		}
+		if r.Method != http.MethodPost || r.URL.Path != cloudWorkspaceCollectionPath {
+			http.NotFound(w, r)
+			return
+		}
+		keys = append(keys, r.Header.Get("Idempotency-Key"))
+		n++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprintf(w, `{"id":"cws_%d","name":"工作区 %d","status":"active"}`, n, n)
+	}))
+	defer server.Close()
+
+	app := configureCloudWorkspaceEntitlementTestApp(t, server.URL)
+	first, err := app.CreateCloudWorkspace("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := app.CreateCloudWorkspace("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID == second.ID {
+		t.Fatalf("second empty create reused first workspace: %+v", second)
+	}
+	if len(keys) != 2 || keys[0] == "" || keys[0] == keys[1] {
+		t.Fatalf("idempotency keys=%q", keys)
+	}
+}
+
+func TestCreateCloudWorkspaceNamedUsesStableIdempotencyKey(t *testing.T) {
+	var keys []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != cloudWorkspaceCollectionPath {
+			http.NotFound(w, r)
+			return
+		}
+		keys = append(keys, r.Header.Get("Idempotency-Key"))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":"cws_named","name":"标书项目","status":"active"}`))
+	}))
+	defer server.Close()
+
+	app := configureCloudWorkspaceEntitlementTestApp(t, server.URL)
+	if _, err := app.CreateCloudWorkspace("标书项目"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.CreateCloudWorkspace("标书项目"); err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 2 || keys[0] == "" || keys[0] != keys[1] {
+		t.Fatalf("named create keys=%q, want a stable retry key", keys)
+	}
+}
+
+func TestProvisionCloudWorkspaceTaskEmptyDeviceUsesUniqueIdempotencyKeys(t *testing.T) {
+	var keys []string
+	n := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != cloudWorkspaceTaskProvisionPath {
+			http.NotFound(w, r)
+			return
+		}
+		keys = append(keys, r.Header.Get("Idempotency-Key"))
+		n++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprintf(w, `{"operation_id":"op_%d","workspace_id":"cws_%d","cloud_task_id":"ct_%d","state":"pending"}`, n, n, n)
+	}))
+	defer server.Close()
+
+	app := configureCloudWorkspaceEntitlementTestApp(t, server.URL)
+	first, err := app.ProvisionCloudWorkspaceTask("跨设备任务", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := app.ProvisionCloudWorkspaceTask("跨设备任务", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.WorkspaceID == second.WorkspaceID {
+		t.Fatalf("empty-device provision reused workspace: %+v", second)
+	}
+	if len(keys) != 2 || keys[0] == "" || keys[0] == keys[1] {
+		t.Fatalf("provision idempotency keys=%q", keys)
+	}
+}
+
+func TestProvisionCloudWorkspaceTaskBoundDeviceReusesIdempotencyKey(t *testing.T) {
+	var keys []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != cloudWorkspaceTaskProvisionPath {
+			http.NotFound(w, r)
+			return
+		}
+		keys = append(keys, r.Header.Get("Idempotency-Key"))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"operation_id":"op_bound","workspace_id":"cws_bound","cloud_task_id":"ct_bound","device_task_id":"local-task-1","state":"pending"}`))
+	}))
+	defer server.Close()
+
+	app := configureCloudWorkspaceEntitlementTestApp(t, server.URL)
+	if _, err := app.ProvisionCloudWorkspaceTask("跨设备任务", "", "", "local-task-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.ProvisionCloudWorkspaceTask("跨设备任务", "", "", "local-task-1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 2 || keys[0] == "" || keys[0] != keys[1] {
+		t.Fatalf("bound provision keys=%q, want a stable retry key", keys)
+	}
+}
+
 func TestPurgeCloudWorkspaceLocalCachesRemovesWriterAndReadOnlyCopies(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	workspaceID := "cws-purge-copies"
@@ -612,6 +736,8 @@ func TestCloudWorkspaceAPIErrorChineseCodes(t *testing.T) {
 		"CLOUD_WORKSPACE_SIZE":              "容量",
 		"CLOUD_WORKSPACE_TENANT_DISK":       "总容量",
 		"CLOUD_WORKSPACE_IN_USE":            "占用中",
+		"CLOUD_WORKSPACE_SHARE_SELF":        "自己的云端工作区",
+		"CLOUD_WORKSPACE_SHARE_EXPIRED":     "已过期",
 	}
 	for code, want := range cases {
 		err := cloudWorkspaceAPIError(409, []byte(`{"code":"`+code+`","message":"english"}`))

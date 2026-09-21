@@ -423,6 +423,8 @@ func (g *tuiWeixinGateway) SendProactiveText(text string) error {
 // It reuses the TUIApp's infrastructure (tools, memory, steering) but runs
 // independently of the Bubble Tea UI (no streaming to terminal).
 type tuiWeixinCallbacks struct {
+	usageTrackerFeed
+
 	app        *TUIApp
 	onProgress func(string)
 	stopCh     <-chan struct{} // closed when gateway is stopping
@@ -454,7 +456,17 @@ func (c *tuiWeixinCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool
 }
 
 func (c *tuiWeixinCallbacks) BuildTools(userText string) []map[string]interface{} {
-	return c.app.toolRegistry.BuildDefinitions()
+	defs := c.app.toolRegistry.BuildDefinitions()
+	// Policy consistency with tuiCallbacks (phase0 baseline §1.2/§1.3 finding #2):
+	// the gateway never classifies text or reports a profile itself, so the
+	// light filter applies ONLY when MACLAW_PROMPT_PROFILE forces light globally
+	// — a provable no-op in the default state; under a forced-light env the
+	// surface matches the light system prompt. Read-only-child filtering is
+	// intentionally absent: this struct has no runtimeReadOnlyChild state.
+	if profile, ok := agent.EnvPromptProfileOverride(); ok && profile.IsLight() {
+		return agent.FilterToolDefsForLightTurn(defs)
+	}
+	return defs
 }
 
 func (c *tuiWeixinCallbacks) ExecuteTool(name, argsJSON string) string {

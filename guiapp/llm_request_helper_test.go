@@ -3,6 +3,7 @@ package guiapp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -374,5 +375,35 @@ func TestAttachLightweightHubHint_OnlyHubManaged(t *testing.T) {
 	}, llm.TaskIntent)
 	if marked.TaskTypeHint != string(llm.TaskIntent) {
 		t.Fatalf("explicit HubManaged should still attach hint: %#v", marked)
+	}
+}
+
+// TestSimpleLLMHTTPErrorsCarryStatus: the non-OK exits of the simple-request
+// paths must expose HTTPStatusCode() so control-plane callers (the unified
+// intent classifier) can classify 5xx endpoint health through the structural
+// interface instead of parsing message text. Regression guard: dumpLLMContext
+// used to return a plain fmt.Errorf for HTTP 500, and the Responses wire used
+// fmt.Errorf("%s", ...), making 5xx detection unreachable there.
+func TestSimpleLLMHTTPErrorsCarryStatus(t *testing.T) {
+	coder := func(err error) (int, bool) {
+		var c interface{ HTTPStatusCode() int }
+		if !errors.As(err, &c) {
+			return 0, false
+		}
+		return c.HTTPStatusCode(), true
+	}
+
+	err500 := dumpLLMContext(http.StatusInternalServerError, "llm request failed", []byte(`{"x":1}`), "")
+	if code, ok := coder(err500); !ok || code != 500 {
+		t.Fatalf("dumpLLMContext(500) status=(%d,%v), want (500,true)", code, ok)
+	}
+	err400 := dumpLLMContext(http.StatusBadRequest, "bad request", nil, "")
+	if _, ok := coder(err400); ok {
+		t.Fatalf("dumpLLMContext(400) unexpectedly carries a status code: %v", err400)
+	}
+
+	var err error = &llmSimpleHTTPError{status: 503, msg: "service unavailable"}
+	if code, ok := coder(err); !ok || code != 503 {
+		t.Fatalf("llmSimpleHTTPError(503) status=(%d,%v), want (503,true)", code, ok)
 	}
 }

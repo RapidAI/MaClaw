@@ -90,12 +90,36 @@ func cloneLegacyAdapterProvision(in LegacyAdapterProvision) LegacyAdapterProvisi
 // a legacy name. A missing or expired provision is catalog_incomplete; callers
 // must not infer a capability from a tool name, description, BM25 score, or
 // prior session state.
+//
+// Lookup resolves a small set of reviewed alternate spellings first (see
+// legacyAdapterProvisionAliases): lowercase "glob"/"grep" are live spellings
+// in host surfaces (corelib/permission builtinKinds, guiapp IM/ACP progress
+// and permission handlers) while the reviewed provisions register the
+// exact-case host tool names "Glob"/"ripgrep". An alias resolves to the SAME
+// reviewed provision; it grants no new capability.
 func LegacyAdapterProvisionForTool(name string, now time.Time) (LegacyAdapterProvision, bool) {
-	p, ok := legacyAdapterProvisions[strings.TrimSpace(name)]
+	p, ok := legacyAdapterProvisions[canonicalLegacyAdapterName(name)]
 	if !ok || (!now.IsZero() && now.After(p.DeleteAfter)) {
 		return LegacyAdapterProvision{}, false
 	}
 	return cloneLegacyAdapterProvision(p), true
+}
+
+// legacyAdapterProvisionAliases maps alternate legacy spellings onto the
+// reviewed provision they name. Entries are added only for spellings that
+// already appear in reviewed host surfaces; each alias must resolve to an
+// existing provision row.
+var legacyAdapterProvisionAliases = map[string]string{
+	"glob": "Glob",
+	"grep": "ripgrep",
+}
+
+func canonicalLegacyAdapterName(name string) string {
+	name = strings.TrimSpace(name)
+	if alias, ok := legacyAdapterProvisionAliases[name]; ok {
+		return alias
+	}
+	return name
 }
 
 // LegacyAdapterProvisionForToolAt is the explicit-time variant used by
@@ -167,7 +191,7 @@ func mustLegacyAdapterProvisions(entries []LegacyAdapterProvision) map[string]Le
 			panic(err)
 		}
 		if _, duplicate := result[entry.ToolName]; duplicate {
-			panic(fmt.Sprintf("duplicate legacy adapter provision %q", entry.ToolName))
+			panic(fmt.Errorf("duplicate legacy adapter provision %q", entry.ToolName))
 		}
 		result[entry.ToolName] = cloneLegacyAdapterProvision(entry)
 	}
@@ -381,15 +405,24 @@ var legacyAdapterProvisions = mustLegacyAdapterProvisions([]LegacyAdapterProvisi
 	{ToolName: "tts_render", Capability: "audio.render.speech", Owner: "media-platform", AdapterContract: "legacy-tts-render-v1", Effects: []EffectClass{EffectLocalMutation}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
 })
 
+// init fails fast on catalog inconsistency. The first two loops look
+// tautological today because LegacyCandidateToolNames is derived from the
+// same provision map; they are the tripwire for the day that derivation
+// changes and the two sets can drift apart.
 func init() {
 	for name := range LegacyCandidateToolNames {
 		if _, ok := legacyAdapterProvisions[name]; !ok {
-			panic(fmt.Sprintf("legacy candidate %q has no reviewed adapter provision", name))
+			panic(fmt.Errorf("legacy candidate %q has no reviewed adapter provision", name))
 		}
 	}
 	for name := range legacyAdapterProvisions {
 		if !LegacyCandidateToolNames[name] {
-			panic(fmt.Sprintf("legacy adapter provision %q is not in the candidate catalog", name))
+			panic(fmt.Errorf("legacy adapter provision %q is not in the candidate catalog", name))
+		}
+	}
+	for alias, target := range legacyAdapterProvisionAliases {
+		if _, ok := legacyAdapterProvisions[target]; !ok {
+			panic(fmt.Errorf("legacy adapter alias %q resolves to missing provision %q", alias, target))
 		}
 	}
 }

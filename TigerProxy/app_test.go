@@ -96,12 +96,12 @@ func TestGenerateAPIKeySynchronizesConfiguredCodexCredential(t *testing.T) {
 	if !result.CodexCredentialSync.Configured || !result.CodexCredentialSync.Updated || result.CodexCredentialSync.Error != "" {
 		t.Fatalf("Codex sync = %+v, want configured and updated without error", result.CodexCredentialSync)
 	}
-	auth, err := configfile.ReadCodexAuth()
+	content, err := configfile.ReadCodexConfigToml()
 	if err != nil {
-		t.Fatalf("read Codex auth: %v", err)
+		t.Fatalf("read Codex config: %v", err)
 	}
-	if got, _ := auth["OPENAI_API_KEY"].(string); got != key {
-		t.Fatalf("Codex key = %q, want generated key", got)
+	if !strings.Contains(content, `http_headers = { "Authorization" = "Bearer `+key+`" }`) {
+		t.Fatalf("Codex config missing generated Authorization header:\n%s", content)
 	}
 }
 
@@ -125,12 +125,12 @@ func TestSaveSettingsSynchronizesConfiguredCodexCredentialAfterManualKeyChange(t
 	if status.CodexCredentialSync == nil || !status.CodexCredentialSync.Configured || !status.CodexCredentialSync.Updated || status.CodexCredentialSync.Error != "" {
 		t.Fatalf("Codex sync = %+v, want configured and updated without error", status.CodexCredentialSync)
 	}
-	auth, err := configfile.ReadCodexAuth()
+	content, err := configfile.ReadCodexConfigToml()
 	if err != nil {
-		t.Fatalf("read Codex auth: %v", err)
+		t.Fatalf("read Codex config: %v", err)
 	}
-	if got, _ := auth["OPENAI_API_KEY"].(string); got != "manual-new-proxy-key" {
-		t.Fatalf("Codex key = %q, want manually saved key", got)
+	if !strings.Contains(content, `http_headers = { "Authorization" = "Bearer manual-new-proxy-key" }`) {
+		t.Fatalf("Codex config missing manually saved Authorization header:\n%s", content)
 	}
 }
 

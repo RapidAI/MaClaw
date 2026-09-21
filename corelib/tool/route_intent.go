@@ -56,9 +56,167 @@ type RouteOptions struct {
 // MinRouteIntentConfidence is the floor below which a rewrite is ignored.
 const MinRouteIntentConfidence = 0.45
 
-// MinCandidateRouteScore skips zero/noise candidates instead of padding the
-// budget with irrelevant tools (computer_*, etc.).
-const MinCandidateRouteScore = 1e-6
+// MinCandidateRouteScore skips near-zero candidates instead of padding the
+// budget. It must stay below typical #2 BM25/hybrid scores (weather+PDF
+// web_search is ~0.26 fused-normalized) while still dropping exact zeros.
+// Desktop computer_* tools are fail-closed separately; this gate is not
+// their privilege boundary.
+const MinCandidateRouteScore = 0.12
+
+// QueryWantsMarkdownFile reports a .md file write, not a PDF conversion.
+// Shared by leftover hide/HostKeep and the managed planner so "生成markdown"
+// cannot mint generate_pdf.
+func QueryWantsMarkdownFile(userMessage string) bool {
+	return queryWantsMarkdownFile(userMessage)
+}
+
+func queryWantsMarkdownFile(userMessage string) bool {
+	q := strings.ToLower(strings.TrimSpace(userMessage))
+	if q == "" {
+		return false
+	}
+	// "把 markdown 转成 pdf" must keep generate_pdf. A negation ("不要 pdf，
+	// 生成 markdown") is still a .md write: leftover HostKeep write_file
+	// and hide generate_pdf, including when 继续 maps onto that history.
+	if strings.Contains(stripMarkdownPDFNegations(q), "pdf") {
+		return false
+	}
+	return queryMentionsMarkdownFile(q) && queryMentionsFileWrite(q)
+}
+
+func stripMarkdownPDFNegations(q string) string {
+	for _, n := range []string{
+		"不要 pdf", "不要pdf",
+		"别生成 pdf", "别生成pdf",
+		"不是 pdf", "不是pdf",
+		"非 pdf", "非pdf",
+		"not pdf", "no pdf",
+	} {
+		q = strings.ReplaceAll(q, n, " ")
+	}
+	return q
+}
+
+func queryMentionsMarkdownFile(q string) bool {
+	if containsASCIIToken(q, "markdown") || hasDottedExt(q, ".md") {
+		return true
+	}
+	for _, marker := range []string{"md文件", "md 文件", "成md", "为md", "成 md", "为 md"} {
+		if strings.Contains(q, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasDottedExt reports ext (including the leading dot) as a file suffix, not a
+// longer token that only shares the prefix (.md vs .md5, .doc vs .document).
+func hasDottedExt(q, ext string) bool {
+	if ext == "" {
+		return false
+	}
+	for start := 0; ; {
+		idx := strings.Index(q[start:], ext)
+		if idx < 0 {
+			return false
+		}
+		after := start + idx + len(ext)
+		if after == len(q) || !isASCIIAlphaNum(q[after]) {
+			return true
+		}
+		start += idx + 1
+	}
+}
+
+func queryMentionsFileWrite(q string) bool {
+	for _, marker := range []string{
+		"生成", "保存", "写成", "写出", "导出", "输出", "转成", "转为",
+		"儲存", "寫成", "輸出", "轉成", "轉為",
+	} {
+		if strings.Contains(q, marker) {
+			return true
+		}
+	}
+	for _, word := range []string{
+		"create", "creates", "created", "creating",
+		"write", "writes", "writing",
+		"save", "saves", "saved", "saving",
+		"export", "exports", "exported", "exporting",
+	} {
+		if containsASCIIToken(q, word) {
+			return true
+		}
+	}
+	return false
+}
+
+// QueryMentionsOfficeSource reports an existing Office/spreadsheet/slides file
+// the turn needs to read. Plain "生成markdown" has none.
+func QueryMentionsOfficeSource(userMessage string) bool {
+	return queryMentionsOfficeSource(userMessage)
+}
+
+// queryMentionsOfficeSource reports an existing Office/spreadsheet/slides file
+// the turn needs to read. Plain "生成markdown" has none; hiding office then
+// prevents office(action=generate_pdf) from substituting for write_file.
+func queryMentionsOfficeSource(userMessage string) bool {
+	q := strings.ToLower(strings.TrimSpace(userMessage))
+	if q == "" {
+		return false
+	}
+	for _, ext := range []string{".xlsx", ".xls", ".csv", ".pptx", ".ppt", ".docx", ".doc"} {
+		if hasDottedExt(q, ext) {
+			return true
+		}
+	}
+	for _, marker := range []string{
+		"幻灯片", "演示文稿", "工作簿", "电子表格",
+		"word文档", "word 文档", "word文件", "word 文件",
+	} {
+		if strings.Contains(q, marker) {
+			return true
+		}
+	}
+	// File-type tokens must be whole words: substring "xlsx" would match
+	// "xlsxish", the same class of miss as excel⊂excellent.
+	for _, word := range []string{"excel", "spreadsheet", "powerpoint", "xlsx", "pptx", "docx", "xls", "csv", "ppt"} {
+		if containsASCIIToken(q, word) {
+			return true
+		}
+	}
+	return false
+}
+
+// applyMarkdownFileSurface hides PDF-producing tools for a .md file write and
+// returns this-turn host keeps (write_file, and office when a workbook/slides
+// source is named). HostKeep still wins: applyHostKeepTools runs afterward.
+func applyMarkdownFileSurface(userMessage string, condKeep, suppressedTools map[string]bool) []string {
+	if !queryWantsMarkdownFile(userMessage) {
+		return nil
+	}
+	officeSource := queryMentionsOfficeSource(userMessage)
+	if suppressedTools != nil {
+		suppressedTools["generate_pdf"] = true
+		// Production 2026-09-20 also ranked craft_generate_pdf via skill match
+		// and exposed search_and_install_skill. A .md write does not need a
+		// Skill install hop.
+		suppressedTools["search_and_install_skill"] = true
+		if !officeSource {
+			suppressedTools["office"] = true
+		}
+	}
+	if condKeep != nil {
+		delete(condKeep, "generate_pdf")
+		if !officeSource {
+			delete(condKeep, "office")
+		}
+	}
+	keep := []string{"write_file"}
+	if officeSource {
+		keep = append(keep, "office")
+	}
+	return keep
+}
 
 // ShouldAttemptRouteIntentRewrite reports whether a short/ambiguous message
 // is worth a lightweight LLM rewrite before tool routing.

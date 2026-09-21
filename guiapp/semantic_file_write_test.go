@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
@@ -72,6 +73,234 @@ func TestIMSemanticFileWriteUsesClosedHostAdapter(t *testing.T) {
 	}
 	if got := cb.ExecuteTool(name, `{"path":"notes.txt","content":"hi","phase_id":"p1","doc_type":"plan"}`); !strings.Contains(got, "parameter_unknown_field") && !strings.Contains(got, "parameter_reserved_field") {
 		t.Fatalf("forged write fields=%q", got)
+	}
+}
+
+func TestMarkdownFileWritePlanningTextMapsBareContinue(t *testing.T) {
+	history := []agent.ConversationEntry{
+		{Role: "user", Content: "生成markdown"},
+		{Role: "assistant", Content: "回复继续即可"},
+	}
+	for _, msg := range []string{"继续", "继续。", "请继续", "重试", "continue", "继续…"} {
+		if got := markdownFileWritePlanningText(msg, history); got != "生成markdown" {
+			t.Fatalf("msg=%q planning=%q, want 生成markdown", msg, got)
+		}
+	}
+	if got := markdownFileWritePlanningText("今天天气怎么样", history); got != "今天天气怎么样" {
+		t.Fatalf("non-continue must stay itself, got %q", got)
+	}
+	weatherHistory := []agent.ConversationEntry{{Role: "user", Content: "今天天气怎么样"}}
+	if got := markdownFileWritePlanningText("继续", weatherHistory); got != "继续" {
+		t.Fatalf("continue after weather must stay 继续, got %q", got)
+	}
+	if got := markdownFileWritePlanningText(acpProgrammingUserText(`F:\个人介绍`, "继续"), weatherHistory); got != "继续" {
+		t.Fatalf("ACP-wrapped continue after weather must stay 继续, got %q", got)
+	}
+	skippedContinues := []agent.ConversationEntry{
+		{Role: "user", Content: "生成markdown"},
+		{Role: "assistant", Content: "回复继续即可"},
+		{Role: "user", Content: "继续"},
+	}
+	if got := markdownFileWritePlanningText("请继续", skippedContinues); got != "生成markdown" {
+		t.Fatalf("continue after a cancelled continue must still find 生成markdown, got %q", got)
+	}
+	parts := []agent.ConversationEntry{
+		{Role: "user", Content: []interface{}{map[string]interface{}{"type": "text", "text": "生成markdown"}}},
+	}
+	if got := markdownFileWritePlanningText("继续", parts); got != "生成markdown" {
+		t.Fatalf("multipart user content must still map, got %q", got)
+	}
+	if got := markdownFileWritePlanningText("继续", []agent.ConversationEntry{
+		{Role: "user", Content: map[string]interface{}{"markdown": true, "path": "notes.md"}},
+	}); got != "继续" {
+		t.Fatalf("struct-shaped content must not look like a markdown write, got %q", got)
+	}
+	wrappedContinue := acpProgrammingUserText(`F:\个人介绍`, "继续")
+	if got := markdownFileWritePlanningText(wrappedContinue, history); got != "生成markdown" {
+		t.Fatalf("ACP-wrapped 继续 must map onto 生成markdown, got %q", got)
+	}
+	wrappedMarkdown := acpProgrammingUserText(`F:\个人介绍`, "生成markdown")
+	wrappedHistory := []agent.ConversationEntry{
+		{Role: "user", Content: wrappedMarkdown},
+		{Role: "assistant", Content: "回复继续即可"},
+	}
+	if got := markdownFileWritePlanningText(wrappedContinue, wrappedHistory); got != "生成markdown" {
+		t.Fatalf("ACP-wrapped 继续 after ACP-wrapped 生成markdown must plan the inner write, got %q", got)
+	}
+	if got := markdownFileWritePlanningText(wrappedMarkdown, nil); got != "生成markdown" {
+		t.Fatalf("ACP-wrapped 生成markdown leftover text must be the User request, got %q", got)
+	}
+	explain := acpProgrammingUserText(`F:\个人介绍`, "解释这段 markdown")
+	if got := markdownFileWritePlanningText(explain, nil); got != "解释这段 markdown" {
+		t.Fatalf("ACP wrapper must not mint a markdown-file write from ASCII write, got %q", got)
+	}
+	noPDF := []agent.ConversationEntry{
+		{Role: "user", Content: "生成markdown，不要PDF"},
+		{Role: "assistant", Content: "回复继续即可"},
+	}
+	if got := markdownFileWritePlanningText("继续", noPDF); got != "生成markdown，不要PDF" {
+		t.Fatalf("继续 after 不要PDF markdown write must still map, got %q", got)
+	}
+}
+
+func TestSemanticMarkdownFileWriteWeakTreePlansWriteFile(t *testing.T) {
+	// Production 2026-09-21: tree file_write 0.55 after L2 document_generate
+	// 0.84 missed the 0.70 floor; leftover ranked generate_pdf #1.
+	h := &IMMessageHandler{registry: NewToolRegistry(), unifiedClassifier: semanticClassifierForLabel(t, intent.LabelFileWrite)}
+	h.semanticTrustedFileWrite = func(string, string, string, string) (string, error) { return "ok", nil }
+	registerBuiltinTools(h.registry, h)
+	defs, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
+		"user-1", "生成markdown", "desktop", "root-md-weak", "turn-md-weak",
+		&intent.ClassificationResult{
+			Primary: intent.LabelFileWrite, Confidence: 0.55, Layer: 3,
+			Reason: "tree-after-embedding: file_write (0.550)",
+		},
+	)
+	if err != nil || !handled || surface == nil {
+		t.Fatalf("markdown-file query must plan at tree 0.55: handled=%v err=%v", handled, err)
+	}
+	if !planHasCapabilities(surface.plan, tool.CapabilityFSWriteLocal) {
+		t.Fatalf("selections=%#v, want fs.write.local", surface.plan.Selections)
+	}
+	if semanticGrantNameForAdapter(surface, semanticTrustedFileWriteAdapter) != "write_file" {
+		t.Fatalf("model name=%q, want write_file", semanticGrantNameForAdapter(surface, semanticTrustedFileWriteAdapter))
+	}
+	for _, def := range defs {
+		switch extractToolName(def) {
+		case "generate_pdf":
+			t.Fatal("generate_pdf must not appear for 生成markdown")
+		}
+	}
+}
+
+func TestSemanticMarkdownQueryRedirectsDocumentGenerateToFileWrite(t *testing.T) {
+	h := registerDocumentGeneratePDF(t)
+	h.semanticTrustedFileWrite = func(string, string, string, string) (string, error) { return "ok", nil }
+	registerBuiltinTools(h.registry, h)
+	defs, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
+		"user-1", "生成markdown", "desktop", "root-md-l2", "turn-md-l2",
+		&intent.ClassificationResult{Primary: intent.LabelDocumentGenerate, Confidence: 0.84, Layer: 2},
+	)
+	if err != nil || !handled || surface == nil {
+		t.Fatalf("L2 document_generate + 生成markdown must plan file_write: handled=%v err=%v", handled, err)
+	}
+	if !planHasCapabilities(surface.plan, tool.CapabilityFSWriteLocal) {
+		t.Fatalf("selections=%#v, want fs.write.local", surface.plan.Selections)
+	}
+	if planHasCapabilities(surface.plan, "document.generate.file") {
+		t.Fatalf("markdown-file query must not mint generate_pdf: %#v", surface.plan.Selections)
+	}
+	if semanticGrantNameForAdapter(surface, semanticTrustedFileWriteAdapter) != "write_file" {
+		t.Fatalf("model name=%q, want write_file", semanticGrantNameForAdapter(surface, semanticTrustedFileWriteAdapter))
+	}
+	for _, def := range defs {
+		if extractToolName(def) == "generate_pdf" {
+			t.Fatal("generate_pdf must not be listed for 生成markdown")
+		}
+	}
+}
+
+func TestSemanticMarkdownQueryDoesNotHostRejectGenerateDeliveryConflict(t *testing.T) {
+	h := registerDocumentGeneratePDF(t)
+	h.semanticTrustedFileWrite = func(string, string, string, string) (string, error) { return "ok", nil }
+	registerBuiltinTools(h.registry, h)
+	_, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
+		"user-1", "生成markdown", "desktop", "root-md-conflict", "turn-md-conflict",
+		&intent.ClassificationResult{
+			Primary:    intent.LabelDocumentGenerate,
+			Secondary:  []intent.IntentLabel{intent.LabelAttachmentDelivery},
+			Confidence: 0.9,
+			Layer:      2,
+		},
+	)
+	if err != nil || !handled || surface == nil {
+		t.Fatalf("markdown-file query must not inherit generate+delivery HostReject: handled=%v err=%v", handled, err)
+	}
+	if !planHasCapabilities(surface.plan, tool.CapabilityFSWriteLocal) {
+		t.Fatalf("selections=%#v, want fs.write.local", surface.plan.Selections)
+	}
+}
+
+func TestSemanticContinueAfterMarkdownPlansWriteFile(t *testing.T) {
+	h := &IMMessageHandler{registry: NewToolRegistry()}
+	h.semanticTrustedFileWrite = func(string, string, string, string) (string, error) { return "ok", nil }
+	registerBuiltinTools(h.registry, h)
+	ctx := &LoopContext{
+		History: []agent.ConversationEntry{
+			{Role: "user", Content: "生成markdown"},
+			{Role: "assistant", Content: "回复继续即可"},
+		},
+		Runtime: RuntimeContext{
+			SemanticIntent: &intent.ClassificationResult{
+				Primary: intent.LabelContinuation, Confidence: 0.9, Layer: 3,
+			},
+		},
+	}
+	defs, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithContextAndAttachments(ctx, "user-1", "继续。", "desktop", nil)
+	if err != nil || !handled || surface == nil {
+		t.Fatalf("继续。 after 生成markdown must plan file_write: handled=%v err=%v", handled, err)
+	}
+	if !planHasCapabilities(surface.plan, tool.CapabilityFSWriteLocal) {
+		t.Fatalf("selections=%#v, want fs.write.local", surface.plan.Selections)
+	}
+	if semanticGrantNameForAdapter(surface, semanticTrustedFileWriteAdapter) != "write_file" {
+		t.Fatalf("model name=%q, want write_file", semanticGrantNameForAdapter(surface, semanticTrustedFileWriteAdapter))
+	}
+	for _, def := range defs {
+		if extractToolName(def) == "generate_pdf" {
+			t.Fatal("generate_pdf must not appear when continuing a markdown-file write")
+		}
+	}
+	wrappedContinue := acpProgrammingUserText(`F:\个人介绍`, "请继续")
+	wrappedDefs, wrappedSurface, wrappedHandled, wrappedErr := h.semanticCallSurfaceForSharedTurnWithContextAndAttachments(ctx, "user-1", wrappedContinue, "desktop", nil)
+	if wrappedErr != nil || !wrappedHandled || wrappedSurface == nil {
+		t.Fatalf("ACP-wrapped 请继续 after 生成markdown must plan file_write: handled=%v err=%v", wrappedHandled, wrappedErr)
+	}
+	if !planHasCapabilities(wrappedSurface.plan, tool.CapabilityFSWriteLocal) {
+		t.Fatalf("ACP-wrapped continue selections=%#v, want fs.write.local", wrappedSurface.plan.Selections)
+	}
+	if semanticGrantNameForAdapter(wrappedSurface, semanticTrustedFileWriteAdapter) != "write_file" {
+		t.Fatalf("ACP-wrapped continue model name=%q, want write_file", semanticGrantNameForAdapter(wrappedSurface, semanticTrustedFileWriteAdapter))
+	}
+	for _, def := range wrappedDefs {
+		if extractToolName(def) == "generate_pdf" {
+			t.Fatal("generate_pdf must not appear when ACP-wrapped continue follows a markdown-file write")
+		}
+	}
+}
+
+func TestSemanticContinueAfterWeatherDoesNotPlanFileWrite(t *testing.T) {
+	h := &IMMessageHandler{registry: NewToolRegistry()}
+	registerBuiltinTools(h.registry, h)
+	ctx := &LoopContext{
+		History: []agent.ConversationEntry{
+			{Role: "user", Content: "今天天气怎么样"},
+			{Role: "assistant", Content: "晴"},
+		},
+		Runtime: RuntimeContext{
+			SemanticIntent: &intent.ClassificationResult{
+				Primary: intent.LabelContinuation, Confidence: 0.9, Layer: 3,
+			},
+		},
+	}
+	_, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithContextAndAttachments(ctx, "user-1", "继续", "desktop", nil)
+	if err != nil || handled || surface != nil {
+		t.Fatalf("继续 after weather must not mint write_file: handled=%v err=%v surface=%#v", handled, err, surface)
+	}
+}
+
+func TestSemanticWeakTreeFileWriteWithoutMarkdownStillMisses(t *testing.T) {
+	h := &IMMessageHandler{registry: NewToolRegistry()}
+	registerBuiltinTools(h.registry, h)
+	_, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
+		"user-1", "保存 notes.txt", "desktop", "root-weak-write", "turn-weak-write",
+		&intent.ClassificationResult{
+			Primary: intent.LabelFileWrite, Confidence: 0.55, Layer: 3,
+			Reason: "tree-after-embedding: file_write (0.550)",
+		},
+	)
+	if err != nil || handled || surface != nil {
+		t.Fatalf("tree file_write 0.55 without markdown evidence must miss: handled=%v err=%v surface=%#v", handled, err, surface)
 	}
 }
 
@@ -201,11 +430,84 @@ func TestIMSemanticFileWriteStaysInsideBoundWorkspace(t *testing.T) {
 	if err != nil || string(data) != "hello write more" {
 		t.Fatalf("appended file=%q err=%v", data, err)
 	}
-	if _, err := h.writeTrustedFile(principal, `..\escape.txt`, "nope", ""); err == nil || !strings.Contains(err.Error(), "trusted_file_write_path_rejected") {
-		t.Fatalf("escape path err=%v", err)
+	_, escapeErr := h.writeTrustedFile(principal, `..\escape.txt`, "nope", "")
+	if escapeErr == nil || !strings.Contains(escapeErr.Error(), "trusted_file_write_path_rejected") {
+		t.Fatalf("escape path err=%v", escapeErr)
+	}
+	base, absErr := filepath.Abs(workspace)
+	if absErr != nil {
+		t.Fatal(absErr)
+	}
+	base = normalizeProjectSessionPath(base)
+	if !strings.Contains(escapeErr.Error(), base) {
+		t.Fatalf("rejection must name the writable dir %q: %v", base, escapeErr)
 	}
 	if _, err := os.Stat(filepath.Join(filepath.Dir(workspace), "escape.txt")); err == nil {
 		t.Fatal("escaped write must not create a sibling file")
+	}
+}
+
+func TestTrustedFileWriteResolvePathAcceptsWindowsDriveLetterCase(t *testing.T) {
+	workspace := t.TempDir()
+	base, err := filepath.Abs(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base = normalizeProjectSessionPath(base)
+	got, err := trustedFileWriteResolvePath(base, "notes.txt")
+	if err != nil {
+		t.Fatalf("relative write err=%v", err)
+	}
+	if !pathContainedInBase(got, base) {
+		t.Fatalf("resolved %q outside %q", got, base)
+	}
+	if len(base) < 2 || base[1] != ':' {
+		return
+	}
+	mixed := strings.ToLower(base[:1]) + base[1:]
+	cased, err := trustedFileWriteResolvePath(base, filepath.Join(mixed, "cased.txt"))
+	if err != nil {
+		t.Fatalf("drive-letter case write err=%v", err)
+	}
+	if !pathContainedInBase(cased, base) {
+		t.Fatalf("cased path %q outside %q", cased, base)
+	}
+	if got := trustedFileWriteDisplayPath(mixed, cased, "raw"); got != "cased.txt" {
+		t.Fatalf("display path with mixed drive letter = %q, want cased.txt", got)
+	}
+}
+
+func TestTrustedFileWriteResolvePathRejectsHomeTildeWithWorkspaceHint(t *testing.T) {
+	workspace := t.TempDir()
+	base, err := filepath.Abs(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base = normalizeProjectSessionPath(base)
+	_, err = trustedFileWriteResolvePath(base, "~/escape.svg")
+	if err == nil || !strings.Contains(err.Error(), "trusted_file_write_path_rejected") || !strings.Contains(err.Error(), "writes stay inside") {
+		t.Fatalf("home-tilde write must name the writable dir, err=%v", err)
+	}
+	if strings.Contains(err.Error(), base) == false {
+		t.Fatalf("rejection must include %q: %v", base, err)
+	}
+}
+
+func TestTrustedPrincipalBoundWorkspacePrefersBotWorkingDirectory(t *testing.T) {
+	botDir := t.TempDir()
+	mainDir := t.TempDir()
+	app := newProjectSearchTestApp(t)
+	if err := app.SetTabWorkingDir("", mainDir); err != nil {
+		t.Fatalf("SetTabWorkingDir: %v", err)
+	}
+	owner := "lansenger-bot-user"
+	assistantBindingByUserID.Store(owner, &assistantBindingTurnScope{
+		binding: agent.AssistantBinding{WorkingDirectory: botDir},
+	})
+	t.Cleanup(func() { assistantBindingByUserID.Delete(owner) })
+	h := &IMMessageHandler{app: app}
+	if got := trustedPrincipalBoundWorkspace(h, owner); got != filepath.Clean(botDir) {
+		t.Fatalf("bot trusted workspace = %q, want %q (not main %q)", got, botDir, mainDir)
 	}
 }
 

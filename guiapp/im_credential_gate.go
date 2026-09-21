@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
+	"github.com/RapidAI/CodeClaw/corelib/permission"
 	"github.com/RapidAI/CodeClaw/corelib/security"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // P0-4 (0b-ii) write-tool execution-layer credential gate.
@@ -188,6 +190,69 @@ func scanCredentialPayload(detector *security.SensitiveDetector, argsJSON, userT
 	return matches
 }
 
+// credentialFenceDualEvalMismatchHook mirrors expertGateDualEvalMismatchHook:
+// replaceable in tests to capture mismatch reports.
+var credentialFenceDualEvalMismatchHook = func(tool string, legacyEffect, newEffect permission.Effect, rule *permission.Rule) {
+	coretool.RecordPermissionDualEvalMismatch("credential_fence", tool, string(legacyEffect), string(newEffect))
+	src := ""
+	reason := ""
+	if rule != nil {
+		src = rule.Source
+		reason = rule.Reason
+	}
+	log.Printf("[permission-dual-eval] gate=credential_fence tool=%q legacy=%s new=%s rule_source=%s reason=%q",
+		tool, legacyEffect, newEffect, src, reason)
+}
+
+// credentialFenceDualEval compares the fence trigger decision (secret scan
+// hit → the call suspends for user approval) with the snapshot's global
+// decision for the same call, as a dual-run observation. Legacy mapping:
+// triggered → EffectAsk, not triggered → EffectAllow. Only CONCRETE snapshot
+// matches (dec.Rule != nil) are reported — Decision.Default carries no policy
+// intent and must not spam the log. Never changes the fence outcome.
+//
+// SCOPING: snapshot args-predicate rules match FIELD VALUES (action=name,
+// path=..., never payload CONTENT). The secret scanner and the permission
+// rules are complementary detectors: a rule cannot express "the payload
+// contains a secret", and the scanner stays authoritative for content. This
+// comparison only surfaces rule-vs-legacy divergence; it never replaces the
+// scanner.
+func credentialFenceDualEval(snap *permission.Snapshot, toolName, argsJSON string, triggered bool) {
+	if snap == nil {
+		return
+	}
+	var args map[string]interface{}
+	if strings.TrimSpace(argsJSON) != "" {
+		if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+			args = nil
+		}
+	}
+	toolName = strings.TrimSpace(toolName)
+	dec := snap.Decide(toolName, permission.BuiltinKind(toolName), args)
+	if dec.Rule == nil {
+		return
+	}
+	legacyEffect := permission.EffectAllow
+	if triggered {
+		legacyEffect = permission.EffectAsk
+	}
+	if dec.Effect == legacyEffect {
+		return
+	}
+	credentialFenceDualEvalMismatchHook(toolName, legacyEffect, dec.Effect, dec.Rule)
+}
+
+// credentialGateDualEvalSnapshot resolves the App's snapshot for the fence's
+// dual-eval. permissionSnapshot() itself is nil-safe and honors the
+// MACLAW_PERMISSION_DUAL_EVAL kill switch, so a nil return here (TUI
+// standalone, kill switch) simply disables dual-eval.
+func (h *IMMessageHandler) credentialGateDualEvalSnapshot() *permission.Snapshot {
+	if h == nil || h.app == nil {
+		return nil
+	}
+	return h.app.permissionSnapshot()
+}
+
 // credentialGateBlock is the tool-execution-layer fence. It returns
 // blocked=false when the payload is clean (or the fence is unavailable, in
 // which case it fails closed with an error result) and blocked=true with an
@@ -199,6 +264,11 @@ func (h *IMMessageHandler) credentialGateBlock(execCtx context.Context, policyUs
 	}
 	detector := security.NewSensitiveDetector()
 	matches := scanCredentialPayload(detector, argsJSON, userText)
+	// Dual-run observation (Phase 1, R3): compare the trigger decision with
+	// the permission snapshot. Runs before every return path below so both
+	// the clean and the triggered outcomes are covered. Never alters the
+	// fence result.
+	credentialFenceDualEval(h.credentialGateDualEvalSnapshot(), toolName, argsJSON, len(matches) > 0)
 	if len(matches) == 0 {
 		return true, okResult // clean payload: original path, zero added latency
 	}
@@ -313,6 +383,13 @@ func (h *IMMessageHandler) credentialGateBlock(execCtx context.Context, policyUs
 		return finish(false, toolOutcomeFailed, toolFailureHandlerReported,
 			"[system rejected] "+i18n.T(i18n.MsgCredentialCancelled, lang))
 	case <-timer.C:
+		// R5 PIN (docs/design/tool-routing-improvement-plan-zh.md): the
+		// fence's timeout-default-reject semantics (unconfirmed = rejected)
+		// must be pinned as a rule property when this gate is migrated — an
+		// ask-rule carrying "timeout → deny" so the future engine evaluation
+		// reproduces this default instead of an open-ended ask. Deliberately
+		// NOT built in this slice (dual-eval observation only); the flip
+		// slice must encode it before the snapshot can own this decision.
 		h.app.emitAIContinuationEvent(AIContinuationEvent{
 			RequestID:  fmt.Sprintf("credential-card-%s", item.ID),
 			SessionKey: userID,

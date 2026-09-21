@@ -87,6 +87,9 @@ func TestSemanticOfficeSlideImageCheckIsPreExecution(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "trusted_office_write_image_path_rejected") {
 		t.Fatalf("escaping path must be rejected: %v", err)
 	}
+	if !strings.Contains(err.Error(), "writes stay inside") {
+		t.Fatalf("image path rejection must name the writable dir: %v", err)
+	}
 }
 
 // Image paths are resolved against the bound workspace with the same
@@ -128,8 +131,8 @@ func TestResolveOfficeSlideImages(t *testing.T) {
 			map[string]interface{}{"images": []interface{}{map[string]interface{}{"path": "../outside.png"}}},
 		},
 	}
-	if err := resolveOfficeSlideImages(workspace, escaping); err == nil || !strings.Contains(err.Error(), "trusted_office_write_image_path_rejected") {
-		t.Fatalf("escaping image path must be rejected, got %v", err)
+	if err := resolveOfficeSlideImages(workspace, escaping); err == nil || !strings.Contains(err.Error(), "trusted_office_write_image_path_rejected") || !strings.Contains(err.Error(), "writes stay inside") {
+		t.Fatalf("escaping image path must be rejected with writable dir, got %v", err)
 	}
 }
 

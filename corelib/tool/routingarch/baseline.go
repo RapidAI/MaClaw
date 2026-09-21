@@ -85,6 +85,14 @@ const (
 	// does not touch a tool set. It stays listed so the detector keeps its
 	// width instead of being narrowed until it stops catching real cases.
 	ReasonNameMatchOnly Reason = "matches the detector prefix but modifies no tool set"
+
+	// ReasonZeroValueSentinel marks a composite literal the literal detector
+	// recorded only because the symbol appears in an empty failure return
+	// (for example `return InvocationGrant{}, err`). No fact, grant or
+	// artifact identity is authored at the site. It stays listed so the
+	// literal detector keeps its width; deleted only if the sentinel return
+	// is rewritten to a pointer or nil form.
+	ReasonZeroValueSentinel Reason = "zero-value sentinel in an error/failure return, not an authored fact/grant/ref; listed so the literal detector keeps its width"
 )
 
 // Baseline maps a rule to the reviewed sites for that rule, keyed by
@@ -95,113 +103,138 @@ var Baseline = map[Rule]map[string]Reason{
 		"corelib/tool/semantic_artifact_store.go:ArtifactPayload": ReasonSemanticOwner,
 		"corelib/tool/semantic_planner.go:ArtifactRef":            ReasonSemanticOwner,
 		"corelib/tool/semantic_route_state_store.go:ArtifactRef":  ReasonSemanticOwner,
-		"gui/semantic_artifacts.go:ArtifactRef":                   ReasonSemanticOwner,
-		"gui/semantic_artifacts.go:ArtifactPayload":               ReasonSemanticOwner,
-		"gui/im_agent_loop_shared.go:ArtifactPayload":             ReasonChannelTransportProjection,
-		"gui/lansenger_gateway.go:ArtifactPayload":                ReasonChannelTransportProjection,
-		"gui/weixin_gateway.go:ArtifactPayload":                   ReasonChannelTransportProjection,
+		"guiapp/semantic_artifacts.go:ArtifactRef":                ReasonSemanticOwner,
+		"guiapp/semantic_artifacts.go:ArtifactPayload":            ReasonSemanticOwner,
+		"guiapp/im_agent_loop_shared.go:ArtifactPayload":          ReasonChannelTransportProjection,
+		"guiapp/lansenger_gateway.go:ArtifactPayload":             ReasonChannelTransportProjection,
+		"guiapp/weixin_gateway.go:ArtifactPayload":                ReasonChannelTransportProjection,
+		// Empty sentinel on the not-found path of the repeat-family artifact
+		// lookup; no artifact identity is authored at the site.
+		"corelib/tool/semantic_artifact_projection.go:ArtifactRef": ReasonZeroValueSentinel,
 	},
 	RuleInvocationGrantMint: {
 		"corelib/tool/semantic_invocation.go:InvocationGrant":                                 ReasonSemanticOwner,
 		"corelib/tool/semantic_invocation.go:NewInvocationIssuerWithStore":                    ReasonSemanticOwner,
 		"corelib/tool/semantic_invocation.go:NewRandomInvocationIssuerWithStore":              ReasonSemanticOwner,
 		"corelib/agentservice/dynamic_semantic_routing_store.go:NewInvocationIssuerWithStore": ReasonSemanticOwner,
-		"gui/semantic_invocation_store.go:NewInvocationIssuerWithStore":                       ReasonSemanticOwner,
-		"gui/semantic_invocation_store.go:NewRandomInvocationIssuer":                          ReasonSemanticOwner,
+		"guiapp/semantic_invocation_store.go:NewInvocationIssuerWithStore":                    ReasonSemanticOwner,
+		"guiapp/semantic_invocation_store.go:NewRandomInvocationIssuer":                       ReasonSemanticOwner,
+		// The SQLite execution coordinator mints surface-ready grants inside
+		// the render/issue transaction; the issuer signs and persists them.
+		"corelib/tool/semantic_execution_coordinator.go:InvocationGrant": ReasonSemanticOwner,
+		// Empty sentinels on failure paths; no grant is authored at the site.
+		"corelib/tool/semantic_model_request_surface.go:InvocationGrant": ReasonZeroValueSentinel,
+		"corelib/tool/semantic_repeat.go:InvocationGrant":                ReasonZeroValueSentinel,
+		"guiapp/coding_durable_dynamic_surface.go:InvocationGrant":       ReasonZeroValueSentinel,
+		"guiapp/im_agent_loop_shared.go:InvocationGrant":                 ReasonZeroValueSentinel,
 	},
 	RuleProviderNameCall: {
 		"corelib/agentservice/mcp_integration.go:CallTool": ReasonSemanticOwner,
-		"gui/local_mcp_manager.go:CallTool":                ReasonControlPlaneProbe,
-		"gui/mcp_auto_discovery.go:CallTool":               ReasonControlPlaneProbe,
+		"guiapp/local_mcp_manager.go:CallTool":             ReasonControlPlaneProbe,
+		"guiapp/mcp_auto_discovery.go:CallTool":            ReasonControlPlaneProbe,
 
 		// The model-facing name gateways. Every entry here is a place a model
 		// can still choose a Skill or an MCP tool by writing its name.
-		"gui/tool_registry_builtin.go:toolCallMCPTool":      ReasonProviderNameCallLegacy,
-		"gui/tool_registry_builtin.go:toolRunSkill":         ReasonProviderNameCallLegacy,
-		"gui/im_tool_manage_skill.go:toolRunSkill":          ReasonProviderNameCallLegacy,
-		"gui/im_tool_skill_run.go:StartRunForOwner":         ReasonProviderNameCallLegacy,
-		"gui/im_tools_misc.go:CallToolForOwner":             ReasonProviderNameCallLegacy,
-		"gui/coding_subagent.go:executeCallMCPTool":         ReasonProviderNameCallLegacy,
-		"gui/coding_subagent_mcp.go:toolCallMCPTool":        ReasonProviderNameCallLegacy,
-		"gui/remote_coding_subagent.go:executeCallMCPTool":  ReasonProviderNameCallLegacy,
+		"guiapp/tool_registry_builtin.go:toolCallMCPTool":   ReasonProviderNameCallLegacy,
+		"guiapp/tool_registry_builtin.go:toolRunSkill":      ReasonProviderNameCallLegacy,
+		"guiapp/im_tool_manage_skill.go:toolRunSkill":       ReasonProviderNameCallLegacy,
+		"guiapp/im_tool_skill_run.go:StartRunForOwner":      ReasonProviderNameCallLegacy,
+		"guiapp/im_tools_misc.go:CallToolForOwner":          ReasonProviderNameCallLegacy,
+		"guiapp/coding_subagent_mcp.go:toolCallMCPTool":     ReasonProviderNameCallLegacy,
 		"tui/tool_manage_skill.go:skillRunDetailed":         ReasonProviderNameCallLegacy,
 		"tui/tool_manage_skill.go:skillRunPipelineDetailed": ReasonProviderNameCallLegacy,
 
-		"gui/app_nl_mcp.go:CallToolForOwner":                 ReasonProviderNameTransport,
-		"gui/local_mcp_manager.go:CallToolForOwner":          ReasonProviderNameTransport,
-		"gui/semantic_dynamic_providers.go:CallToolForOwner": ReasonProviderNameTransport,
-		"gui/app_nl_skills.go:ExecuteWithArgs":               ReasonProviderNameTransport,
-		"gui/app_nl_skills.go:executeSkillByNameDetailed":    ReasonProviderNameTransport,
-		"gui/skill_runner.go:StartRunForOwner":               ReasonProviderNameTransport,
+		"guiapp/app_nl_mcp.go:CallToolForOwner":                 ReasonProviderNameTransport,
+		"guiapp/local_mcp_manager.go:CallToolForOwner":          ReasonProviderNameTransport,
+		"guiapp/semantic_dynamic_providers.go:CallToolForOwner": ReasonProviderNameTransport,
+		"guiapp/app_nl_skills.go:ExecuteWithArgs":               ReasonProviderNameTransport,
+		"guiapp/app_nl_skills.go:executeSkillByNameDetailed":    ReasonProviderNameTransport,
+		"guiapp/skill_runner.go:StartRunForOwner":               ReasonProviderNameTransport,
 
-		"gui/agent_view_mcp.go:toolCallMCPTool":    ReasonHumanDirectedInvocation,
-		"gui/agent_view_skill.go:StartRunForOwner": ReasonHumanDirectedInvocation,
-		"gui/app_nl_skills.go:StartRunForOwner":    ReasonHumanDirectedInvocation,
+		"guiapp/agent_view_mcp.go:toolCallMCPTool":    ReasonHumanDirectedInvocation,
+		"guiapp/agent_view_skill.go:StartRunForOwner": ReasonHumanDirectedInvocation,
+		"guiapp/app_nl_skills.go:StartRunForOwner":    ReasonHumanDirectedInvocation,
 
-		"corelib/skill/pipeline.go:RunSubSkill":                     ReasonInstalledDefinitionStep,
-		"gui/app_maclaw_app_approval.go:executeSkillByNameDetailed": ReasonInstalledDefinitionStep,
-		"gui/app_nl_skills.go:CallToolForOwner":                     ReasonInstalledDefinitionStep,
-		"gui/skill_runner.go:CallToolForOwner":                      ReasonInstalledDefinitionStep,
+		"corelib/skill/pipeline.go:RunSubSkill":                        ReasonInstalledDefinitionStep,
+		"guiapp/app_maclaw_app_approval.go:executeSkillByNameDetailed": ReasonInstalledDefinitionStep,
+		"guiapp/app_nl_skills.go:CallToolForOwner":                     ReasonInstalledDefinitionStep,
+		"guiapp/skill_runner.go:CallToolForOwner":                      ReasonInstalledDefinitionStep,
 
 		"tui/main.go:RunSkill":                 ReasonCLICommandDispatch,
 		"tui/commands/run_capture.go:RunSkill": ReasonCLICommandDispatch,
+
+		// agentservice CoreAgent's manage_skill(action="run") handler: the
+		// model writes the skill name, the same shape as the gateways above.
+		"corelib/agentservice/skill_integration.go:RunSkill": ReasonProviderNameCallLegacy,
 	},
 	RuleRoutingFactAuthoring: {
 		"corelib/agentservice/dynamic_host_docread.go:RoutingFact":                ReasonTrustedFactProducer,
 		"corelib/agentservice/reviewed_dynamic_capabilities.go:RoutingConstraint": ReasonTrustedFactProducer,
-		"gui/expert_capability_policy.go:RoutingConstraint":                       ReasonTrustedFactProducer,
-		"gui/semantic_capability_policy.go:RoutingConstraint":                     ReasonTrustedFactProducer,
-		"gui/semantic_audio_transcribe.go:RoutingFact":                            ReasonTrustedFactProducer,
-		"gui/semantic_tool_routing.go:RoutingFact":                                ReasonTrustedFactProducer,
-		"gui/semantic_tool_routing.go:RoutingConstraint":                          ReasonTrustedFactProducer,
+		"guiapp/expert_capability_policy.go:RoutingConstraint":                    ReasonTrustedFactProducer,
+		"guiapp/semantic_capability_policy.go:RoutingConstraint":                  ReasonTrustedFactProducer,
+		"guiapp/semantic_audio_transcribe.go:RoutingFact":                         ReasonTrustedFactProducer,
+		"guiapp/semantic_tool_routing.go:RoutingFact":                             ReasonTrustedFactProducer,
+		"guiapp/semantic_tool_routing.go:RoutingConstraint":                       ReasonTrustedFactProducer,
+		// Phase-1 permission snapshot -> planner bridge: reviewed policy
+		// decisions enter planning as AuthorityPolicy constraints.
+		"corelib/agentservice/permission_planner_bridge.go:RoutingConstraint": ReasonTrustedFactProducer,
+		// Coding static catalogs record the host posture (no mutation provider
+		// on inquiry/operational turns) as explicit planner deny constraints.
+		"guiapp/coding_static_catalog.go:RoutingConstraint":        ReasonTrustedFactProducer,
+		"guiapp/coding_static_remote_catalog.go:RoutingConstraint": ReasonTrustedFactProducer,
 	},
 	RuleToolSurfaceMutation: {
-		"gui/im_handler_wiring.go:routeTools":                 ReasonLegacyNameRouter,
-		"gui/im_handler_wiring.go:routeToolsForUser":          ReasonLegacyNameRouter,
-		"gui/im_agent_loop_tools.go:routeToolsForUser":        ReasonLegacyNameRouter,
-		"gui/im_agent_loop_tool_augment.go:routeToolsForUser": ReasonLegacyNameRouter,
-		"gui/im_tool_sync_warmup.go:routeToolsForUser":        ReasonLegacyNameRouter,
+		"guiapp/im_handler_wiring.go:routeTools":                 ReasonLegacyNameRouter,
+		"guiapp/im_handler_wiring.go:routeToolsForUser":          ReasonLegacyNameRouter,
+		"guiapp/im_agent_loop_tool_augment.go:routeToolsForUser": ReasonLegacyNameRouter,
 
-		"gui/im_agent_loop_tool_augment.go:augmentToolsFromInjection":   ReasonLegacyNameRouter,
-		"gui/im_agent_loop_tool_augment.go:augmentToolsFromSessionPins": ReasonLegacyNameRouter,
-		"gui/im_agent_loop_round_prep.go:augmentToolsFromInjection":     ReasonLegacyNameRouter,
-		"gui/im_agent_loop_round_prep.go:augmentToolsFromSessionPins":   ReasonLegacyNameRouter,
+		"guiapp/im_agent_loop_tool_augment.go:augmentToolsFromInjection":   ReasonLegacyNameRouter,
+		"guiapp/im_agent_loop_tool_augment.go:augmentToolsFromSessionPins": ReasonLegacyNameRouter,
+		"guiapp/im_agent_loop_round_prep.go:augmentToolsFromInjection":     ReasonLegacyNameRouter,
+		"guiapp/im_agent_loop_round_prep.go:augmentToolsFromSessionPins":   ReasonLegacyNameRouter,
 
-		"gui/im_agent_loop_recovery.go:restoreToolsAfterSkillRecover":     ReasonLegacyNameRouter,
-		"gui/im_agent_loop_tool_restore.go:restoreToolsAfterSkillRecover": ReasonLegacyNameRouter,
-		"gui/im_agent_loop_shared.go:removeToolDefinitionByName":          ReasonLegacyNameRouter,
-		"gui/im_agent_loop_tools.go:ensureToolResultReader":               ReasonLegacyNameRouter,
+		"guiapp/im_agent_loop_recovery.go:restoreToolsAfterSkillRecover":     ReasonLegacyNameRouter,
+		"guiapp/im_agent_loop_tool_restore.go:restoreToolsAfterSkillRecover": ReasonLegacyNameRouter,
+		"guiapp/im_agent_loop_shared.go:removeToolDefinitionByName":          ReasonLegacyNameRouter,
+		"guiapp/im_agent_loop_tools.go:ensureToolResultReader":               ReasonLegacyNameRouter,
 
-		"gui/im_execution_profile.go:filterToolsForExecutionProfile":                 ReasonLegacyPolicyFilter,
-		"gui/im_agent_loop_tools.go:filterToolsForExecutionProfile":                  ReasonLegacyPolicyFilter,
-		"gui/im_agent_loop_tool_exec.go:filterToolsForExecutionProfile":              ReasonLegacyPolicyFilter,
-		"gui/im_agent_loop_tools.go:filterToolsForHardwareAutoSpeech":                ReasonLegacyPolicyFilter,
-		"gui/expert_session_policy.go:filterToolsForExpert":                          ReasonLegacyPolicyFilter,
-		"gui/expert_session_policy.go:filterToolsForExpertUser":                      ReasonLegacyPolicyFilter,
-		"gui/im_agent_loop_tools.go:filterToolsForExpertUser":                        ReasonLegacyPolicyFilter,
-		"gui/im_agent_loop_tool_augment.go:filterToolsForExpertUser":                 ReasonLegacyPolicyFilter,
-		"gui/im_agent_loop_tool_exec.go:filterToolsForExpertUser":                    ReasonLegacyPolicyFilter,
-		"gui/lansenger_group_permissions.go:filterToolsForLansengerGroupPermissions": ReasonLegacyPolicyFilter,
-		"gui/im_agent_loop_tools.go:filterToolsForLansengerGroupPermissions":         ReasonLegacyPolicyFilter,
-		"gui/im_agent_loop_tool_augment.go:filterToolsForLansengerGroupPermissions":  ReasonLegacyPolicyFilter,
-		"gui/im_agent_loop_tool_exec.go:filterToolsForLansengerGroupPermissions":     ReasonLegacyPolicyFilter,
-		"gui/im_agent_loop_tool_restore.go:filterToolsForLansengerGroupPermissions":  ReasonLegacyPolicyFilter,
-		"gui/im_agent_loop_truncation.go:filterToolsForLansengerGroupPermissions":    ReasonLegacyPolicyFilter,
-		"gui/ve_tool_policy.go:filterToolsForVE":                                     ReasonLegacyPolicyFilter,
-		"gui/ve_tool_policy.go:filterToolsForVEWithConfig":                           ReasonLegacyPolicyFilter,
-		"gui/app_ve_handler.go:filterToolsForVEWithConfig":                           ReasonLegacyPolicyFilter,
-		"gui/im_skill_preference.go:filterToolsForSkillPreference":                   ReasonLegacyPolicyFilter,
-		"gui/im_skill_preference.go:filterToolsForRemoteSkillSearch":                 ReasonLegacyPolicyFilter,
-		"gui/im_agent_loop_tools.go:filterToolsForSkillPreference":                   ReasonLegacyPolicyFilter,
-		"gui/im_agent_loop_tools.go:filterToolsForRemoteSkillSearch":                 ReasonLegacyPolicyFilter,
-		"gui/im_agent_loop_truncation.go:filterToolsForSkillPreference":              ReasonLegacyPolicyFilter,
-		"gui/im_agent_loop_truncation.go:filterToolsForRemoteSkillSearch":            ReasonLegacyPolicyFilter,
-		"gui/coding_subagent.go:filterToolsByHorizonSurface":                         ReasonLegacyPolicyFilter,
+		"guiapp/im_execution_profile.go:filterToolsForExecutionProfile":                 ReasonLegacyPolicyFilter,
+		"guiapp/im_agent_loop_tools.go:filterToolsForExecutionProfile":                  ReasonLegacyPolicyFilter,
+		"guiapp/im_agent_loop_tool_exec.go:filterToolsForExecutionProfile":              ReasonLegacyPolicyFilter,
+		"guiapp/im_agent_loop_tools.go:filterToolsForHardwareAutoSpeech":                ReasonLegacyPolicyFilter,
+		"guiapp/expert_session_policy.go:filterToolsForExpert":                          ReasonLegacyPolicyFilter,
+		"guiapp/expert_session_policy.go:filterToolsForExpertUser":                      ReasonLegacyPolicyFilter,
+		"guiapp/im_agent_loop_tools.go:filterToolsForExpertUser":                        ReasonLegacyPolicyFilter,
+		"guiapp/im_agent_loop_tool_augment.go:filterToolsForExpertUser":                 ReasonLegacyPolicyFilter,
+		"guiapp/im_agent_loop_tool_exec.go:filterToolsForExpertUser":                    ReasonLegacyPolicyFilter,
+		"guiapp/lansenger_group_permissions.go:filterToolsForLansengerGroupPermissions": ReasonLegacyPolicyFilter,
+		"guiapp/im_agent_loop_tools.go:filterToolsForLansengerGroupPermissions":         ReasonLegacyPolicyFilter,
+		"guiapp/im_agent_loop_tool_augment.go:filterToolsForLansengerGroupPermissions":  ReasonLegacyPolicyFilter,
+		"guiapp/im_agent_loop_tool_exec.go:filterToolsForLansengerGroupPermissions":     ReasonLegacyPolicyFilter,
+		"guiapp/im_agent_loop_tool_restore.go:filterToolsForLansengerGroupPermissions":  ReasonLegacyPolicyFilter,
+		"guiapp/im_agent_loop_truncation.go:filterToolsForLansengerGroupPermissions":    ReasonLegacyPolicyFilter,
+		"guiapp/ve_tool_policy.go:filterToolsForVE":                                     ReasonLegacyPolicyFilter,
+		"guiapp/ve_tool_policy.go:filterToolsForVEWithConfig":                           ReasonLegacyPolicyFilter,
+		"guiapp/app_ve_handler.go:filterToolsForVEWithConfig":                           ReasonLegacyPolicyFilter,
+		"guiapp/im_skill_preference.go:filterToolsForSkillPreference":                   ReasonLegacyPolicyFilter,
+		"guiapp/im_skill_preference.go:filterToolsForRemoteSkillSearch":                 ReasonLegacyPolicyFilter,
+		"guiapp/im_agent_loop_tools.go:filterToolsForSkillPreference":                   ReasonLegacyPolicyFilter,
+		"guiapp/im_agent_loop_tools.go:filterToolsForRemoteSkillSearch":                 ReasonLegacyPolicyFilter,
+		"guiapp/im_agent_loop_truncation.go:filterToolsForSkillPreference":              ReasonLegacyPolicyFilter,
+		"guiapp/im_agent_loop_truncation.go:filterToolsForRemoteSkillSearch":            ReasonLegacyPolicyFilter,
+		"guiapp/coding_subagent.go:filterToolsByHorizonSurface":                         ReasonLegacyPolicyFilter,
+		// Agent-guided workflow surface suppression; same policy-narrowing
+		// class as the skill-preference filters above.
+		"guiapp/im_skill_preference.go:filterToolsForAgentGuidedWorkflow": ReasonLegacyPolicyFilter,
+		// Leftover pin union re-applies the expert/lansenger allow-lists to
+		// the post-pin surface in the IM wiring.
+		"guiapp/im_handler_wiring.go:filterToolsForExpertUser":                ReasonLegacyPolicyFilter,
+		"guiapp/im_handler_wiring.go:filterToolsForLansengerGroupPermissions": ReasonLegacyPolicyFilter,
 
-		"corelib/mcp/filter.go:FilterTools": ReasonDiscoveryListing,
-		"gui/im_tools_misc.go:FilterTools":  ReasonDiscoveryListing,
+		"corelib/mcp/filter.go:FilterTools":   ReasonDiscoveryListing,
+		"guiapp/im_tools_misc.go:FilterTools": ReasonDiscoveryListing,
 
-		"gui/tool_cache_maintenance.go:ensureToolCachePath":          ReasonNameMatchOnly,
-		"gui/openhuman_wiring.go:injectToolMemoryHint":               ReasonNameMatchOnly,
+		"guiapp/tool_cache_maintenance.go:ensureToolCachePath": ReasonNameMatchOnly,
+		"guiapp/openhuman_wiring.go:injectToolMemoryHint":      ReasonNameMatchOnly,
 	},
 }

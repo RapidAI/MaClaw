@@ -26,6 +26,7 @@ import (
 	coreim "github.com/RapidAI/CodeClaw/corelib/im"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/security"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/corelib/toolresult"
 )
 
@@ -898,9 +899,9 @@ func (c *cli) runCostMergeExports(args []string) error {
 				Shadow:    merged.RouteShadow,
 			},
 			DailyFleet: llm.CostDailyFleetView{
-				CostUSD:    merged.DailyCostUSD,
-				Calls:      merged.DailyCalls,
-				Instances:  merged.DailyInstances,
+				CostUSD:   merged.DailyCostUSD,
+				Calls:     merged.DailyCalls,
+				Instances: merged.DailyInstances,
 			},
 			Summary: merged.Summary,
 		}
@@ -1194,9 +1195,17 @@ func sharedLoopResult(configPath string, appCfg corelib.AppConfig, action string
 		"hint":           "",
 		"adaptivePrompt": adaptivePromptPayload(),
 	}
+	summary := doctor.FormatSharedLoopLine(env)
 	if line := agent.FormatPromptProfileLine(); line != "" {
-		out["summary"] = doctor.FormatSharedLoopLine(env) + "\n" + line
+		summary = summary + "\n" + line
 	}
+	if routing := tool.FormatRoutingLine(); routing != "" {
+		summary = summary + "\n" + routing
+	}
+	if dualEval := tool.FormatPermissionDualEvalLine(); dualEval != "" {
+		summary = summary + "\n" + dualEval
+	}
+	out["summary"] = summary
 	if env.EnvOverride != "" {
 		out["hint"] = "MACLAW_SHARED_AGENT_LOOP is set and overrides config at runtime; unset it for the config toggle to take effect"
 	} else if action == "enable" || action == "disable" {

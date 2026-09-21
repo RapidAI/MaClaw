@@ -94,6 +94,30 @@ export function isCloudWorkspacePath(path?: string | null): boolean {
 }
 
 /** Task list / resume: tagged or mounted on a cloud-workspace cache. */
+export function cloudWorkspaceSharePermissionFromTags(tags?: string[] | null): 'read' | 'write' | '' {
+    if (!tags?.length) return '';
+    for (const raw of tags) {
+        const t = String(raw || '').trim();
+        if (t === 'cloud_workspace_share:write') return 'write';
+        if (t === 'cloud_workspace_share:read') return 'read';
+    }
+    return '';
+}
+
+export function cloudWorkspaceSharedFromFromTags(tags?: string[] | null): string {
+    if (!tags?.length) return '';
+    const prefix = 'cloud_workspace_shared_from:';
+    for (const raw of tags) {
+        const t = String(raw || '').trim();
+        if (t.startsWith(prefix)) return t.slice(prefix.length).trim();
+    }
+    return '';
+}
+
+export function isOwnedCloudWorkspaceTask(task?: Parameters<typeof isCloudWorkspaceTask>[0]): boolean {
+    return !!isCloudWorkspaceTask(task) && !cloudWorkspaceSharePermissionFromTags(task?.tags);
+}
+
 export function isCloudWorkspaceTask(task?: {
     tags?: string[] | null;
     project_path?: string | null;

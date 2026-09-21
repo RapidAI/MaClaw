@@ -328,10 +328,14 @@ func codingBoundDynamicRequestReasonForDisposition(disposition agent.ToolSurface
 // WebSocket dial, catalog read, plan publication, or alias materialization.
 func newQualifiedCodingBoundDynamicRequestLifecycleRelay(handler *IMMessageHandler, identity *trustedCodingInvocationIdentity, cfg corelib.MaclawLLMConfig) *codingBoundDynamicRequestLifecycleRelay {
 	// E1--E4 qualification is evidence for a future cutover, not an implicit
-	// production enable switch. Until the callback receives the exact host
-	// scope plan and dynamic binding admission, keep the relay absent. The
-	// package-internal override is reserved for hermetic E3/E4 composition tests
-	// and is the only path allowed to construct the rehearsal relay.
+	// production enable switch. Until the callback hands the relay a complete
+	// codingDynamicProductionComposition ({ToolScopePlan, admitted dynamic
+	// bindings, durable surface publish fn, coordinator route} — remediation
+	// §9.12 gate #3), keep the relay absent: the composition eligibility gate
+	// rejects any candidate missing a component, and no production caller can
+	// supply one yet. The package-internal override is reserved for hermetic
+	// E3/E4 composition tests and is the only path allowed to construct the
+	// rehearsal relay.
 	if codingDynamicProductionAdapterQualificationOverride == nil {
 		return nil
 	}
@@ -348,12 +352,49 @@ func newQualifiedCodingBoundDynamicRequestLifecycleRelay(handler *IMMessageHandl
 	return newCodingBoundDynamicRequestLifecycleRelay(handler, identity, reserveCodingBoundDynamicRequestAdapter)
 }
 
-// reserveCodingBoundDynamicRequestAdapter is the sole future callback
-// construction path. It is deliberately not called while qualification is
-// disabled. The order is intentional: reserve the live channel first, then
-// prepare a complete host-policy plan, then let RunLoop render/publish the
-// surface using the exact reservation tuple and loop-assigned epoch.
+// reserveCodingBoundDynamicRequestAdapter is the hermetic rehearsal
+// construction path (E3/E4). It derives the host-policy plan itself from the
+// catalog. Production wiring must use
+// reserveCodingBoundDynamicRequestAdapterFromComposition, which consumes the
+// single immutable composition input instead of deriving anything locally.
 func reserveCodingBoundDynamicRequestAdapter(ctx context.Context, handler *IMMessageHandler, identity *trustedCodingInvocationIdentity, cfg corelib.MaclawLLMConfig) (*codingBoundDynamicRequestAdapter, error) {
+	dynamic, err := handler.codingDynamicCatalogForIdentity(ctx, identity)
+	if err != nil {
+		return nil, err
+	}
+	prepared, err := prepareCodingDynamicSemanticPlan(identity, dynamic, codingDynamicCapabilityNeeds(), nil, nil, tool.PlanningBudget{}, time.Now().UTC())
+	if err != nil {
+		return nil, err
+	}
+	return assembleCodingBoundDynamicRequestAdapter(ctx, handler, identity, cfg, dynamic, prepared)
+}
+
+// reserveCodingBoundDynamicRequestAdapterFromComposition is the production
+// factory entry required by remediation §9.12 gate #3: it consumes exactly
+// one immutable composition input ({ToolScopePlan, admitted dynamic bindings,
+// durable surface publish fn, coordinator route}) and rejects any candidate
+// missing any component — with no by-name recovery. The plan comes from the
+// composition, never from a local re-derivation. Note the channel is reserved
+// after the plan is already prepared here: with an externally prepared
+// immutable plan, reservation freshness is bounded by the relay's own
+// single-active-holder fence rather than by plan derivation order.
+func reserveCodingBoundDynamicRequestAdapterFromComposition(ctx context.Context, handler *IMMessageHandler, identity *trustedCodingInvocationIdentity, cfg corelib.MaclawLLMConfig, composition *codingDynamicProductionComposition) (*codingBoundDynamicRequestAdapter, error) {
+	if !codingDynamicProductionCompositionEligible(composition) {
+		return nil, nil
+	}
+	dynamic, err := handler.codingDynamicCatalogForIdentity(ctx, identity)
+	if err != nil {
+		return nil, err
+	}
+	return assembleCodingBoundDynamicRequestAdapter(ctx, handler, identity, cfg, dynamic, composition.plan)
+}
+
+// assembleCodingBoundDynamicRequestAdapter shares the channel reservation,
+// qualification validation, and adapter construction between the rehearsal
+// factory (self-derived plan) and the production factory (composition plan).
+// Both stay on the same production deny boundary: without the package-internal
+// qualification override, nothing is reserved.
+func assembleCodingBoundDynamicRequestAdapter(ctx context.Context, handler *IMMessageHandler, identity *trustedCodingInvocationIdentity, cfg corelib.MaclawLLMConfig, dynamic codingDynamicCatalogSnapshot, prepared codingDynamicPlanPreparation) (*codingBoundDynamicRequestAdapter, error) {
 	// Keep the low-level factory on the same production deny boundary as the
 	// relay constructor. It is package-private today, but allowing a future
 	// callback or helper to call it directly would otherwise bypass the missing
@@ -374,16 +415,6 @@ func reserveCodingBoundDynamicRequestAdapter(ctx context.Context, handler *IMMes
 		return nil, err
 	}
 	if err := validateCodingDynamicQualifiedRequestChannel(qualification, cfg, channel); err != nil {
-		channel.Close(err)
-		return nil, err
-	}
-	dynamic, err := handler.codingDynamicCatalogForIdentity(ctx, identity)
-	if err != nil {
-		channel.Close(err)
-		return nil, err
-	}
-	prepared, err := prepareCodingDynamicSemanticPlan(identity, dynamic, codingDynamicCapabilityNeeds(), nil, nil, tool.PlanningBudget{}, time.Now().UTC())
-	if err != nil {
 		channel.Close(err)
 		return nil, err
 	}

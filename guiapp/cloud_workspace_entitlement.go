@@ -38,6 +38,14 @@ type CloudWorkspaceEntitlementWorkspace struct {
 	ReconcileReason   string `json:"reconcile_reason,omitempty"`
 }
 
+// CloudWorkspaceSharedWorkspace is a workspace shared with this user.
+type CloudWorkspaceSharedWorkspace struct {
+	CloudWorkspaceEntitlementWorkspace
+	OwnerUserID     string `json:"owner_user_id,omitempty"`
+	OwnerEmail      string `json:"owner_email,omitempty"`
+	SharePermission string `json:"share_permission,omitempty"`
+}
+
 type cloudWorkspaceHubLease struct {
 	Held               bool   `json:"held"`
 	MachineID          string `json:"machine_id"`
@@ -115,6 +123,7 @@ type CloudWorkspaceEntitlement struct {
 	UnreferencedBytes   int64                                `json:"unreferenced_retained_bytes"`
 	Workspaces          []CloudWorkspaceEntitlementWorkspace `json:"workspaces"`
 	Deleted             []CloudWorkspaceDeletedWorkspace     `json:"deleted"`
+	Shared              []CloudWorkspaceSharedWorkspace      `json:"shared"`
 	Reason              string                               `json:"reason,omitempty"`
 	HubUnavailable      bool                                 `json:"hub_unavailable"`
 	Banner              string                               `json:"banner"`
@@ -164,6 +173,11 @@ func cloneCloudWorkspaceEntitlement(src CloudWorkspaceEntitlement) CloudWorkspac
 	} else {
 		dst.Deleted = []CloudWorkspaceDeletedWorkspace{}
 	}
+	if src.Shared != nil {
+		dst.Shared = append([]CloudWorkspaceSharedWorkspace(nil), src.Shared...)
+	} else {
+		dst.Shared = []CloudWorkspaceSharedWorkspace{}
+	}
 	return dst
 }
 
@@ -173,6 +187,7 @@ func emptyCloudWorkspaceEntitlement() CloudWorkspaceEntitlement {
 		ReadOnlyAllowed: true,
 		Workspaces:      []CloudWorkspaceEntitlementWorkspace{},
 		Deleted:         []CloudWorkspaceDeletedWorkspace{},
+		Shared:          []CloudWorkspaceSharedWorkspace{},
 	}
 }
 

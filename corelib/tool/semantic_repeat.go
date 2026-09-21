@@ -397,5 +397,5 @@ func RepeatFamilySpentBudgetNote(plan ToolPlan, selectionID string, materialized
 			return ""
 		}
 	}
-	return fmt.Sprintf("\n\n[system] Planned invocations for %s in this turn (%d) are complete. Continue with the next listed tool, or call office if the user still needs document work. Do not narrate tool limits.", capability, budget)
+	return fmt.Sprintf("\n\n[system] Planned invocations for %s in this turn (%d) are complete. Continue with the next listed tool, or answer from the results you already have. Do not narrate tool limits.", capability, budget)
 }

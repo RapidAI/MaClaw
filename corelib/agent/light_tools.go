@@ -39,6 +39,19 @@ var LightTurnToolAllowlist = map[string]bool{
 	"database_query": true,
 }
 
+// LightTurnCoreFallbackTools is the minimal read-only core restored when the
+// allowlist filter would otherwise empty the rendered surface (R4: replaces
+// the old fail-open-to-full-surface behavior). Every entry must be safe under
+// ANY arguments — no args-gated names (database), no write-capable names
+// (memory), no device-effect names (tts), no skill execution (manage_skill).
+var LightTurnCoreFallbackTools = map[string]bool{
+	"web_search":       true,
+	"web_fetch":        true,
+	"current_datetime": true,
+	"knowledge_search": true,
+	"read_tool_result": true,
+}
+
 // IsLightTurnToolAllowed reports whether name may run on a light prompt profile.
 // Empty name is not allowed.
 func IsLightTurnToolAllowed(name string) bool {
@@ -78,7 +91,10 @@ func LightToolDenyMessage(name string) string {
 
 // FilterToolDefsForLightTurn keeps only light-safe tool definitions.
 // Tool defs follow OpenAI shape: {"type":"function","function":{"name":"..."}}.
-// If filtering would remove everything, the original list is returned (fail-open).
+// If the allowlist would remove everything, the surface degrades to the core
+// read-only fallback set (LightTurnCoreFallbackTools) instead of the original
+// full list — fail-closed (R4), so a misclassification or an unrecognised
+// surface can never silently expand a light turn to the full tool surface.
 func FilterToolDefsForLightTurn(defs []map[string]interface{}) []map[string]interface{} {
 	if len(defs) == 0 {
 		return defs
@@ -94,7 +110,13 @@ func FilterToolDefsForLightTurn(defs []map[string]interface{}) []map[string]inte
 		}
 	}
 	if len(out) == 0 {
-		return defs
+		out = out[:0]
+		for _, def := range defs {
+			name := toolDefName(def)
+			if name != "" && LightTurnCoreFallbackTools[name] {
+				out = append(out, def)
+			}
+		}
 	}
 	return out
 }
@@ -118,7 +140,9 @@ func FilterToolDefinitionsForPromptProfile(cb LoopCallbacks, defs []map[string]i
 }
 
 // StrippedLightToolNames returns tool names removed by the light allowlist.
-// Empty when nothing would be stripped (or fail-open would apply).
+// When the allowlist would remove everything, the surface degrades to the
+// core read-only fallback set, so names outside that set are reported as
+// stripped (nothing is silently kept via fail-open).
 func StrippedLightToolNames(defs []map[string]interface{}) []string {
 	if len(defs) == 0 {
 		return nil
@@ -136,9 +160,20 @@ func StrippedLightToolNames(defs []map[string]interface{}) []string {
 			stripped = append(stripped, name)
 		}
 	}
-	if kept == 0 {
-		// fail-open path — nothing effectively stripped
-		return nil
+	if kept > 0 {
+		return stripped
+	}
+	stripped = stripped[:0]
+	for _, def := range defs {
+		name := toolDefName(def)
+		if name == "" {
+			continue
+		}
+		if LightTurnCoreFallbackTools[name] {
+			kept++
+		} else {
+			stripped = append(stripped, name)
+		}
 	}
 	return stripped
 }

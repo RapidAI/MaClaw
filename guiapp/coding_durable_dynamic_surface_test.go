@@ -178,6 +178,60 @@ func TestCodingDurableDynamicSurfaceFixedBridgeRejectsAndJournalsInvalidArgument
 	}
 }
 
+// The durable bound route serves shell.execute.remote_host too, so it must
+// apply the same legacy-shape wash as the shared-loop admission path:
+// exec-shaped legacy arguments wash to the bare {command} schema instead of
+// being rejected as unknown fields, and connect-shaped calls get the
+// dedicated already-bound rejection — both before admission consumes a grant.
+func TestCodingDurableDynamicSurfaceWashesLegacySSHArguments(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(app.closeSemanticInvocationStore)
+	h := &IMMessageHandler{app: app}
+	identity := &trustedCodingInvocationIdentity{TenantID: "desktop", PrincipalID: "principal", SessionID: "session", RootTaskID: "root", TurnID: "turn"}
+	contract := agentservice.DynamicCapabilityContract{
+		Provisions: []tool.CapabilityProvision{{Capability: tool.CapabilityShellExecuteRemoteHost, Quality: 1}},
+		Effects:    []tool.EffectClass{tool.EffectExternalEffect},
+	}
+	catalog, err := agentservice.BuildDynamicSemanticCatalog([]agentservice.MCPToolEntry{{
+		ServerID: "trusted-server", ToolName: "ssh_bash",
+		InputSchema: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"command": map[string]interface{}{"type": "string"}}, "required": []string{"command"}, "additionalProperties": false}, Contract: contract,
+	}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dynamic := codingDynamicCatalogSnapshot{Catalog: catalog, Coverage: tool.CatalogCoverage{State: tool.CatalogCoverageComplete}}
+	prepared, err := prepareCodingDynamicSemanticPlan(identity, dynamic, []tool.CapabilityNeed{{ID: "ssh", Capability: tool.CapabilityShellExecuteRemoteHost, Required: true}}, nil, nil, tool.PlanningBudget{}, time.Unix(1, 0).UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	surface, err := app.publishCodingDurableDynamicSurface(identity, prepared, dynamic, "test-provider/v1", "connection-a", time.Unix(2, 0).UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var alias string
+	for name := range surface.aliases {
+		alias = name
+	}
+	if alias == "" {
+		t.Fatal("ssh selection was not published with an alias")
+	}
+	if err := surface.BindResponse("response-a", time.Unix(3, 0).UTC()); err != nil {
+		t.Fatal(err)
+	}
+	// Connect-shaped legacy call: dedicated already-bound rejection, pre-admission.
+	connect := surface.ExecuteBoundSelection(context.Background(), identity, dynamic, h, "test-provider/v1", "connection-a", "response-a", "call-connect", alias, `{"action":"connect","host":"h","user":"root","password":"s3cret"}`, time.Unix(4, 0).UTC())
+	if connect.ReasonCode != "parameter_schema_invalid" || connect.Succeeded || !strings.Contains(connect.Result, "trusted_ssh_session_already_bound") {
+		t.Fatalf("connect shape must be rejected as already bound: %#v", connect)
+	}
+	// Exec-shaped legacy call: session_id washes away, so canonicalization
+	// accepts the call and it fails downstream (no live provider in this
+	// fixture), never with a schema rejection.
+	exec := surface.ExecuteBoundSelection(context.Background(), identity, dynamic, h, "test-provider/v1", "connection-a", "response-a", "call-exec", alias, `{"action":"exec","command":"df -h","session_id":"ssh_root@h:22_1"}`, time.Unix(5, 0).UTC())
+	if exec.ReasonCode == "parameter_schema_invalid" || strings.Contains(exec.Result, "parameter_unknown_field") {
+		t.Fatalf("exec-shaped legacy args must wash to {command}: %#v", exec)
+	}
+}
+
 func TestPrepareAndPublishCodingDurableDynamicSurfaceRejectsMissingCorrelation(t *testing.T) {
 	h := &IMMessageHandler{app: &App{testHomeDir: t.TempDir()}}
 	t.Cleanup(h.app.closeSemanticInvocationStore)

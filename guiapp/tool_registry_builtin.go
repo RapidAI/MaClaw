@@ -418,7 +418,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		"phase_id": map[string]string{"type": "string", "description": workflowDocPhaseIDSchemaDescription()},
 		"doc_type": map[string]string{"type": "string", "description": workflowDocTypeSchemaDescription()},
 	})
-	reg("write_file", "写入内容到本机文件（UTF-8 编码，支持覆盖或追加，允许空内容，会创建不存在的目录。内容无长度限制，超长内容系统会自动处理。超过约6000字符时建议分块写入：先 overwrite 第一部分，再 append 后续部分）",
+	reg("write_file", "写入内容到本机文件（UTF-8 编码，支持覆盖或追加，允许空内容，会创建不存在的目录。内容无长度限制，超长内容系统会自动处理。超过约6000字符时建议分块写入：先 overwrite 第一部分，再 append 后续部分。安全规则：绝不把凭据（密码、私钥、token）写入任何文件或知识库——用户提供的凭据只用于即时连接、用完即弃；如用户要求保存服务器信息，密码字段写已脱敏占位符）",
 		ToolCategoryBuiltin, []string{"file", "write"},
 		writeFileSchema, writeFileRequired,
 		func(args map[string]interface{}) string { return h.toolWriteFile(args) })
@@ -468,6 +468,17 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			return h.toolGlobFiles(ctx, args)
 		})
 	annotateSemanticTool(registry, "Glob", []tool.CapabilityProvision{{
+		Capability: tool.CapabilityFSReadLocal, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectReadOnly})
+
+	ripgrepSchema, ripgrepRequired := overlayCoreToolSchema("ripgrep", nil)
+	regCtxP("ripgrep", "在本机文件中递归搜索文本或正则表达式，返回 file:line:content。适合查找函数、变量、配置项、错误信息；先用 ripgrep 定位候选行，再用 read_file 查看上下文。",
+		ToolCategoryBuiltin, []string{"file", "ripgrep", "search"},
+		ripgrepSchema, ripgrepRequired,
+		func(ctx context.Context, args map[string]interface{}, _ tool.ProgressCallback) string {
+			return h.toolRipgrepFiles(ctx, args)
+		})
+	annotateSemanticTool(registry, "ripgrep", []tool.CapabilityProvision{{
 		Capability: tool.CapabilityFSReadLocal, Quality: 1,
 	}}, []tool.EffectClass{tool.EffectReadOnly})
 
@@ -934,7 +945,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		"phase_id": map[string]string{"type": "string", "description": workflowDocGeneratePDFPhaseIDSchemaDescription()},
 		"doc_type": map[string]string{"type": "string", "description": "文档类型（可选）: requirements/design/task_plan。影响文件名前缀，不传则使用通用前缀。"},
 	})
-	reg("generate_pdf", "生成 PDF 文档并发送给用户。将 Markdown 内容渲染为专业排版的 PDF 文件。参数 title 用作 PDF 封面标题，doc_type 可选用于文件名前缀分类。",
+	reg("generate_pdf", "生成 PDF 文档并发送给用户。将正文渲染为专业排版的 PDF 文件。参数 title 用作 PDF 封面标题，doc_type 可选用于文件名前缀分类。",
 		ToolCategoryBuiltin, []string{"pdf", "document", "generate"},
 		generatePDFSchema, generatePDFRequired,
 		func(args map[string]interface{}) string {

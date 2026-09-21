@@ -858,7 +858,11 @@ D2a 的 local/remote 对称回归已通过真实 `codingagent.Run` 覆盖 reques
 2. `newQualifiedCodingBoundDynamicRequestLifecycleRelay` 在生产路径返回 nil；`guiapp` 仅允许 package-internal qualification override 构造 hermetic E3/E4 rehearsal relay。测试夹具不构成发布接线。
 3. 动态 factory 尚未把 callback 的 `ToolScopePlan`、host dynamic binding admission、durable surface 和 coordinator route 绑定成同一不可变输入。因此在真实 scope/admission 接线完成、并有负例证明“缺 plan/缺 binding/候选消失即拒绝”之前，Skill/MCP 必须继续 zero materialization。
 
-同一复审还确认两项已落地的基础性质：`tools_search` 现在必须验证当前 `scope_id + catalog_digest`，分页 token 绑定 scope、目录和 capability filter，query 只回显而不参与集合选择；旧 grant/route/artifact 行的空 `ToolSnapshotID` 只可由可信 canonical scope 补齐，历史 HMAC payload 仍按原布局验证，直接 `Validate` 不接受猜测的快照。`gui`（受 Git 跟踪）与未纳入 Git 的 `guiapp` 测试树仍需在发布前选定唯一来源并做 parity 检查，不能用未跟踪夹具替代生产证据。
+同一复审还确认两项已落地的基础性质：`tools_search` 现在必须验证当前 `scope_id + catalog_digest`，分页 token 绑定 scope、目录和 capability filter，query 只回显而不参与集合选择；旧 grant/route/artifact 行的空 `ToolSnapshotID` 只可由可信 canonical scope 补齐，历史 HMAC payload 仍按原布局验证，直接 `Validate` 不接受猜测的快照。
+
+**源码唯一来源裁决（2026-09-18 复审更新，取代下方旧注）**：旧注"`gui`（受 Git 跟踪）与未纳入 Git 的 `guiapp`"**两半均已过时**——`gui/` 是 2026-09-09 提交 `290048ba` 退役并整体 gitignore 的旧单体（残留 3 个孤儿测试，引用已不存在的符号），**唯一事实源就是 `guiapp`**（3,981 个受跟踪文件，E1–E5 证据套件全部在跟踪树内）。遗留动作只有一个：本切片周期新增的未跟踪证据文件（切片 1 的组合输入与测试、dispatcher 试点、权限双跑等 18 个 .go 文件）需要随切片 2 同提交入 Git——该动作需要用户授权执行 git 提交，已记入改进计划 §10 Phase 3 进度。下方旧句保留仅供参考：
+
+~~`gui`（受 Git 跟踪）与未纳入 Git 的 `guiapp` 测试树仍需在发布前选定唯一来源并做 parity 检查，不能用未跟踪夹具替代生产证据。~~
 
 
 
@@ -878,4 +882,30 @@ tools_search 目录中的展示别名可能共享一个 capability。此前状�
 `tools_search` 不再把动态 selection 的内部 `AdapterName` 当作模型工具名。稳定 host adapter 使用规范化的 `SemanticModelFunctionName`；动态 MCP/Skill 只有在 grant 已 materialize 时才用实际 opaque grant key（含 retired key 的耗尽状态）展示，schema map 只提供描述。该修复消除了“目录列出内部名、真实 surface 只有 invoke token”的漏召回/工具消失根因，并在 GUI/GUIApp 两端加入回归测试。
 #### 9.17 动态 scope identity 不能取 placeholder function.name（2026-09-07）
 
-动态 Skill/MCP source definition 的 `function.name` 是固定占位符 `dynamic_provider`，只用于防止 provider 身份泄露；resolver 仍以 trusted definitions map key / `PlannedSelection.AdapterName` 为准。若 route closure 继续调用按 `ExtractToolName` 的 slice API，所有动态 selection 都会变成 missing，publication 以 `scope_plan_incomplete` fail-closed，造成已授权工具整面消失。现以 `RouteForScopePlanByAdapter` 校验 adapter-keyed map，校验结果保留原始 source definition，之后仍由 renderer 统一替换为 opaque grant function name。该边界与 tools_search 的“只展示实际渲染名”规则配套，GUI/GUIApp 均有回归测试。
+动态 Skill/MCP source definition 的 `function.name` 是固定占位符 `dynamic_provider`，只用于防止 provider 身份泄露；resolver 仍以 trusted definitions map key / `PlannedSelection.AdapterName` 为准。若 route closure 继续调用按 `ExtractToolName` 的 slice API，所有动态 selection 都会变成 missing，publication 以 `scope_plan_incomplete` fail-closed，造成已授权工具整面消失。现以 `RouteForScopePlanByAdapter` 校验 adapter-keyed map，校验结果保留原始 source definition，之后仍由 renderer 统一替换为 opaque grant function name。该边界与 tools_search 的“只展示实际渲染名”规则配套，GUI/GUIApp 均有回归测试。#### 9.18 已落地：§9.12 门禁 #3 切片 1——动态 factory 的单一不可变生产组合输入（2026-09-19）
+
+动态 factory 现在消费单一不可变生产组合输入 `codingDynamicProductionComposition`（`guiapp/coding_dynamic_production_composition.go`），四组件齐备才可成为合格候选：`ToolScopePlan`（`codingDynamicPlanPreparation`，构造时以 plan JSON 的 SchemaDigest 钉住身份）、host admitted dynamic bindings 快照（`admitted=false` 即缺组件；显式空准入 `admitted=true`+nil 列表为有效"本 scope 无动态 provider"）、durable surface publish fn（绑定 `App.publishCodingDurableDynamicSurface` 形状）、coordinator route（`tool.RouteRevisionRef`）。`codingDynamicProductionCompositionEligible` 缺一即拒（log + 不合格），**绝无 by-name 回退**；plan 构造后被改写（digest drift）同样拒绝。生产入口 `reserveCodingBoundDynamicRequestAdapterFromComposition` 把 eligibility gate 作为第一条语句消费，plan 一律取自组合输入而非本地再推导；原自推导 plan 的 `reserveCodingBoundDynamicRequestAdapter` 显式降级为 E3/E4 hermetic rehearsal 路径，装配体（channel 预订 + qualification 校验 + adapter 构造 + 生产 deny 边界）经 `assembleCodingBoundDynamicRequestAdapter` 共享、无逻辑复制。
+
+负例钉住（`guiapp/coding_dynamic_composition_test.go`）：nil 候选 / 缺 plan / 缺 admitted bindings / 缺 publish fn / 缺 route / digest drift 全部拒绝；完整输入成为合格候选；factory 在 override 缺席时即使有完整组合也返回 (nil, nil)（生产 deny 边界），不完整组合在 gate 处即 (nil, nil)。红线不变：`codingDynamicAliasesMayMaterialize()`（local 与 remote）仍为 false、qualification override 仍为 nil、kill switch 未被本切片触碰——materialization 是切片 2 的 cutover。E3/E4/E5 全套（hermetic matrix、cohort kill-switch drill、atomic cutover 派生）与 `TestCodingSubAgent` 回归子集全绿，证明 rehearsal 装配重构零行为漂移。
+
+剩余：切片 2 需要真实 callback scope/admission 接线把组合输入递到生产 relay（含 publish fn 与 coordinator route 的真实来源），并在 E5 同提交打开 materialization、删除首批 family 的 legacy 路径。
+#### 9.19 已落地：切片 5（shadow-only）——远程只读 catalog provider specs 与观察接线（2026-09-19）
+
+远程 Coding 的 S0 观察从 `not_prepared` 升级为真实 shadow plan（`guiapp/coding_static_remote_catalog.go`），仍保持 S0.5 shadow/观察级别：远程静态带照旧服务，plan 只被计算、记录、对账，永不渲染、永不签发、永不 dispatch。**Spec/binding 设计**：新 ontology 能力 `fs.read.remote` 与 `repo.inspect.remote`（`corelib/tool/capability_ontology.go`，沿 `artifact.acquire.remote` 的裸 `remote` 地域后缀先例注册，EffectReadOnly；远程 inventory 的审计标签 `fs.read.remote` 由此成为正式受评审词汇）。绑定证明是 `codingStaticRemoteSessionBinding{SessionHandle, HostKind:"remote"}`——与本地 `codingStaticWorkspaceBinding` 是**不同类型**，`complete()` 硬编码 HostKind，本地/远程绑定不可互换；每个 spec 的 ProviderID 形如 `coding-remote-session:<handle>`，selection 的 FitProof 绑死这一个已验证会话。桥接只从 `RemoteCodingSubAgent.sessionID`（已连接 SSH 会话句柄）取绑定，绝不从任务文本或配置重建。
+
+**观察接线**：`remoteCodingCallbacks.recordStaticCompatibilitySurface` 现在计算远程 shadow plan 并以既有 `codingStaticCompatibilitySurfaceObservation` 形状记录（ShadowState=prepared / PlanID / CatalogGeneration / LegacyOnly/ShadowOnly 能力对账），与本地 S1-A 同一对账结构。对账如实暴露差距：shadow 覆盖 `fs.read.remote`（legacy-only 中不再出现），`repo.inspect.remote` 因尚无远程 git 工具被记录为 shadow-only，`shell.execute.remote_host` 保持 legacy-only。
+
+**Q① 降级答案（代码注释与观察中显式记录）**：会话绑定缺席时 plan 仍以 `catalog_incomplete` Unmet 记录（selections 为 0），远程带的 `ssh_read_file`/`ssh_list_dir` 继续经既有 legacy 路径可用——"记录缺口"被显式接受，"发明绑定"被拒绝。负例钉住：绑定互换（local HostKind 冒充）→ specs 为 nil、plan 零 selection、Unmet=catalog_incomplete；绑定缺席 → 同上降级；identity 不完整 → 无 plan（`not_prepared` 路径不变）。
+
+红线不变（测试钉死）：shadow plan 永不驱动渲染（安装真实 surface 后 fence 仍只准入 legacy 名，shadow adapter 名 `coding_static_remote_*` 永不准入）；渲染名集合与接线前逐字节一致；`codingDynamicAliasesMayMaterialize()` 仍为 false。`TestRemoteCoding*`、`TestCodingStatic*`、`TestCodingSubAgent` 回归与 ontology 计数测试全绿。
+
+剩余：切片 5 的执行侧（remote S1-B executor seam 与 S1-C correlation 门）与 S2 durable 迁移仍未开始；`repo.inspect.remote` 的 legacy 远程工具缺口需 Phase 3 远程工具带整改时补齐。
+#### 9.20 切片 5（续）：远程会话绑定的 transport conformance 证据与显式接受缺口（2026-09-19）
+
+远程会话绑定（`codingStaticRemoteSessionBinding`，guiapp/coding_static_remote_catalog.go）补齐 E1 纪律的 hermetic conformance 证据（`guiapp/coding_static_remote_binding_conformance_test.go`）。版本钉死：`codingStaticRemoteBindingVersion`（实现侧编译期常量）与 suite 常量 `codingStaticRemoteBindingConformanceVersion` 由 `TestCodingStaticRemoteBindingVersionMatchesConformanceSuite` 钉相等；`codingStaticRemoteBindingConformanceCoverage` 以函数引用映射三个 Has* 证据字段（缺项/改名即编译错误），meta-test `TestCodingStaticRemoteBindingConformanceFieldsHaveCoverage` 反射枚举断言全覆盖。
+
+**可 hermetic 证明的性质**（全部在 plan/binding 层，零网络）：`HasOpaqueHostOwnedHandle`——任意不含 URL/主机/凭据内容的不透明 host 句柄可完成绑定并绑定 plan selection，权威只来自 host 签发、不来自句柄内任何可解析内容；`HasCrossHandleInvalidation`——H1 下计划的 selection 在 H2 绑定检查下全部失败（双向），rebind 失效是精确字符串恒等、不是传输性质；`HasSwapRejection`——检查读取的是**存活绑定**而非 plan 文本：local HostKind、空句柄、错误句柄的绑定均不满足。执行检查入口 `codingStaticRemoteSelectionBoundToSession` 即未来 remote S1-B executor 的运行前门槛。
+
+**显式接受缺口（不伪造证据）**：①"两次顺序拨号得到不同句柄"——manager 计数语义（`ssh_<hostID>_<n>`，`corelib/remote/ssh_manager.go` Create）经代码核验，但执行 Create 需要真实 SSH 拨号、无 hermetic seam，接受为未证；②"重连保持会话 ID"——`reconnectSession` 复用同一会话 pin 经代码核验，live 重连不可 hermetic 证明，接受为未证（含义：rebind 失效在 plan/binding 层已证，传输层重连复用是文档化语义而非 conformance 性质）；③~~exec 取消栅栏~~——**已于 2026-09-19 退役（本节修正）**。复审发现 hermetic seam 其实已存在：`corelib/remote/ssh_exec_test.go` 的进程内 SSH server（loopback TCP，真实 x/crypto/ssh 协议栈，无外部网络）。当日语义核验：`RunSSHCommand` 取消/超时路径原样返回 partial 结果+error（调用方 `sshExecChannelContext`/`sshExecRuntimeBoundContext` 均 discard-on-error，仓库内无追踪消费者依赖 partial-on-cancel——grep 证据），故按 (a) 修复 assembler 语义：取消/超时返回零值结果 + 错误，partial 永不作为完整结果出现（corelib/remote/ssh_exec.go，doc comment 记录语义与依据）。证据：corelib 侧 `TestRunSSHCommandCancelFencesPartialOutput`（fake `__PARTIAL_SLEEP__` 命令先写后挂：cancel/timeout 均零结果、后续 exec 不收到迟到 partial）；guiapp 侧 E1 纪律 sibling suite（`guiapp/coding_static_remote_exec_conformance_test.go`，版本常量 `codingStaticRemoteExecFenceVersion`="coding-remote-exec-v1" 与 suite 常量钉相等 + coverage meta-test 三字段）在真实调用方层（`sshExecChannelContext`，经冻结目标 identity 校验的托管会话）证明 `HasCancelFencesPartialOutput`/`HasLateOutputNotDelivered`/`HasConcurrentCancelIdempotent`（-race 通过）。剩余缺口收紧为①②（拨号唯一性、重连 pin，仍须 live SSH），证明前远程维持 S0.5 只读 containment。
+
+红线不变：`codingDynamicAliasesMayMaterialize()` 仍为 false（suite meta-test 内引用式断言，不重复展开）；远程静态带照旧经 legacy 路径服务；`TestCodingStaticRemote*`、`TestRemoteCoding*` 全绿。

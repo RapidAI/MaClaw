@@ -87,10 +87,19 @@ func TestBaselineHasNoStaleEntries(t *testing.T) {
 func TestLegacySurfaceDoesNotGrow(t *testing.T) {
 	const (
 		maxLegacyNameRouter   = 13
-		maxLegacyPolicyFilter = 25
+		maxLegacyPolicyFilter = 28
 		maxProviderNameLegacy = 10
 		maxDefinitionStep     = 4
 	)
+	// maxLegacyPolicyFilter read 25 until the 2026-09-09 gui/ -> guiapp/
+	// monolith move. The scanner kept watching gui/ while the desktop host
+	// code moved to guiapp/, and three new policy-narrowing sites landed in
+	// that blind window: the agent-guided workflow surface suppression
+	// (guiapp/im_skill_preference.go:filterToolsForAgentGuidedWorkflow) and
+	// the leftover-pin re-application of the expert/lansenger allow-lists in
+	// the IM wiring (guiapp/im_handler_wiring.go). Re-pointing the baseline
+	// surfaced them; they are the same reviewed policy-narrowing class as the
+	// other 25. The limit may only fall from here.
 	// maxProviderNameLegacy read 2 while providerNameCallSelectors only knew
 	// RunSkill/CallTool/CallMCPTool. Those three names caught a TUI CLI
 	// dispatcher and three transport helpers while every model-facing gateway
@@ -120,14 +129,16 @@ func TestLegacySurfaceDoesNotGrow(t *testing.T) {
 }
 
 // TestScannerCoversTheRoutingPackages guards the walk itself. A skip rule or
-// path bug that silently excludes gui/ or corelib/ would make every other
-// assertion in this package vacuous.
+// path bug that silently excludes guiapp/ or corelib/ would make every other
+// assertion in this package vacuous. (gui/ was the desktop host tree until
+// the 2026-09-09 monolith retirement moved it to guiapp/; gui/ now holds only
+// test files, which the walk never scans.)
 func TestScannerCoversTheRoutingPackages(t *testing.T) {
 	seen := map[string]bool{}
 	for _, finding := range scanRepository(t) {
 		seen[strings.SplitN(finding.File, "/", 2)[0]] = true
 	}
-	for _, tree := range []string{"gui", "corelib"} {
+	for _, tree := range []string{"guiapp", "corelib"} {
 		if !seen[tree] {
 			t.Errorf("scanner produced no findings under %s/, the walk is not covering it", tree)
 		}

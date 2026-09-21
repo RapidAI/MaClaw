@@ -12,12 +12,12 @@ import (
 // fails here instead of passing silently.
 var zeroInvariantEvidence = map[ZeroInvariant][]string{
 	ZeroInvariantControlPlaneOverreach: {
-		"gui:TestBuiltinDynamicGatewaysAreClassifiedAsControlPlane",
-		"gui:TestManagedSemanticSurfaceRejectsLegacyBypassUnion",
-		"gui:TestClosedManagedSemanticDefinitionsEmptyGrantsAdmitNothing",
-		"gui:TestSemanticReplanSubsetRejectsWidenedAuthority",
-		"gui:TestSemanticReplanBindingReplacementCannotAddParameterAuthority",
-		"gui:TestManagedCallSurfaceParameterAuthorizationIsComplete",
+		"guiapp:TestBuiltinDynamicGatewaysAreClassifiedAsControlPlane",
+		"guiapp:TestManagedSemanticSurfaceRejectsLegacyBypassUnion",
+		"guiapp:TestClosedManagedSemanticDefinitionsEmptyGrantsAdmitNothing",
+		"guiapp:TestSemanticReplanSubsetRejectsWidenedAuthority",
+		"guiapp:TestSemanticReplanBindingReplacementCannotAddParameterAuthority",
+		"guiapp:TestManagedCallSurfaceParameterAuthorizationIsComplete",
 		"corelib/tool:TestCatalogGateRejectsNonProvisionProviderWithProvisions",
 		"corelib/tool:TestInvocationIssuerDoesNotAuthorizeBlockedPlanNodes",
 		"corelib/tool:TestCanonicalizeInvocationArgumentsRejectsDuplicateUnknownAndReservedFields",
@@ -58,8 +58,8 @@ var zeroInvariantEvidence = map[ZeroInvariant][]string{
 		"corelib/tool:TestExternalEffectFencedOffAfterNewRevision",
 		"corelib/tool:TestHostCallJournalReconcilesInterruptedCallsToUnknown",
 		"corelib/agentservice:TestCoreDynamicSemanticBindingStalePublishesOneChildRevision",
-		"gui:TestSemanticDynamicBindingStalePublishesRestrictedReplacementRevision",
-		"gui:TestSemanticReplanCancellationNeverPublishesChildRevision",
+		"guiapp:TestSemanticDynamicBindingStalePublishesRestrictedReplacementRevision",
+		"guiapp:TestSemanticReplanCancellationNeverPublishesChildRevision",
 	},
 }
 

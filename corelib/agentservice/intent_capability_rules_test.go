@@ -77,6 +77,9 @@ func TestIMAndReviewedIntentRulesShareRepeatBudgets(t *testing.T) {
 	if coretool.RepeatSiblingBudget(im[intent.LabelShellCommand][0].MaxInvocations) != coretool.RepeatSiblingBudget(reviewed[intent.LabelShellCommand][0].MaxInvocations) {
 		t.Errorf("shell budget drifted: IM=%d reviewed=%d", im[intent.LabelShellCommand][0].MaxInvocations, reviewed[intent.LabelShellCommand][0].MaxInvocations)
 	}
+	if coretool.RepeatSiblingBudget(im[intent.LabelSSH][0].MaxInvocations) != coretool.RepeatSiblingBudget(reviewed[intent.LabelSSH][0].MaxInvocations) {
+		t.Errorf("ssh budget drifted: IM=%d reviewed=%d", im[intent.LabelSSH][0].MaxInvocations, reviewed[intent.LabelSSH][0].MaxInvocations)
+	}
 }
 
 func TestSemanticArchetypeBundlesArePinnedToRules(t *testing.T) {

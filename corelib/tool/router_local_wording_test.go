@@ -61,7 +61,7 @@ func TestRouterLocalWordingNeverActivatesConditionalTools(t *testing.T) {
 		{
 			name:     "desktop gui memory",
 			message:  "Previous task observed a desktop window and typed text.",
-			rejected: []string{"browser"},
+			rejected: []string{"browser", "computer_observe", "computer_click"},
 		},
 		{
 			name:     "mixed automation memory",
@@ -101,6 +101,8 @@ func routeLocalWording(message string) map[string]bool {
 		makeToolDef("craft_tool", "生成内容"),
 		makeToolDef("browser", "浏览器自动化工具"),
 		makeToolDef("screenshot", "截取屏幕"),
+		makeToolDef("computer_observe", "Observe the desktop screen"),
+		makeToolDef("computer_click", "Click on the screen at coordinates"),
 		makeToolDef("gui_observe", "观察桌面窗口"),
 		makeToolDef("gui_verify", "校验桌面窗口"),
 	)
@@ -121,6 +123,12 @@ func TestIsFailClosedConditionalTool(t *testing.T) {
 	}
 	if !IsFailClosedConditionalTool("screenshot") {
 		t.Fatal("screenshot must be fail-closed")
+	}
+	if !IsFailClosedConditionalTool("computer_observe") {
+		t.Fatal("computer_observe must be fail-closed")
+	}
+	if !IsFailClosedConditionalTool("computer_click") {
+		t.Fatal("computer_click must be fail-closed")
 	}
 	if IsFailClosedConditionalTool("web_search") {
 		t.Fatal("score-eligible web_search must not be fail-closed")

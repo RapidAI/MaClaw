@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/tool"
@@ -284,38 +283,21 @@ func (h *IMMessageHandler) editTrustedFile(principalID, path, oldString, newStri
 }
 
 func trustedFileWriteResolvePath(workspace, path string) (string, error) {
-	workspace = strings.TrimSpace(workspace)
-	path = strings.TrimSpace(path)
-	if workspace == "" {
+	abs, base, kind := resolvePathInsideWorkspace(workspace, path)
+	switch kind {
+	case trustedPathOK:
+		return abs, nil
+	case trustedPathNoWorkspace:
 		return "", fmt.Errorf("trusted_file_write_path_unavailable")
-	}
-	if path == "" {
+	case trustedPathEmpty:
 		return "", fmt.Errorf("trusted_file_write_path_rejected")
+	default:
+		return "", fmt.Errorf("trusted_file_write_path_rejected: writes stay inside %s", base)
 	}
-	base, err := filepath.Abs(workspace)
-	if err != nil {
-		return "", fmt.Errorf("trusted_file_write_path_unavailable")
-	}
-	candidate := path
-	if !filepath.IsAbs(path) {
-		candidate = filepath.Join(base, path)
-	}
-	abs, err := filepath.Abs(candidate)
-	if err != nil {
-		return "", fmt.Errorf("trusted_file_write_path_rejected")
-	}
-	rel, err := filepath.Rel(base, abs)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("trusted_file_write_path_rejected")
-	}
-	return abs, nil
 }
 
 func trustedFileWriteDisplayPath(workspace, absPath, raw string) string {
-	if rel, err := filepath.Rel(workspace, absPath); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return filepath.ToSlash(rel)
-	}
-	return strings.TrimSpace(raw)
+	return trustedRelDisplayPath(workspace, absPath, raw)
 }
 
 func semanticTrustedFileWriteResultProjection(text string) (string, error) {

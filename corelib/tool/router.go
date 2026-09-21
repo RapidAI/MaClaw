@@ -15,6 +15,7 @@ import (
 	"unicode"
 
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
+	"github.com/RapidAI/CodeClaw/corelib/computeruse"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 )
@@ -89,8 +90,9 @@ type conditionalKeepRule struct {
 	// expansion beyond everyday surfaces) and may compete as normal scored
 	// candidates instead of being filtered out whenever the semantic
 	// classifier does not activate them. Sensitive tools (ssh, browser,
-	// screenshot, record_audio, craft_tool, mis_data, IM delivery) stay
-	// fail-closed: they are exposed only through classifier activation.
+	// computer_use, screenshot, record_audio, craft_tool, mis_data, IM
+	// delivery) stay fail-closed: they are exposed only through classifier
+	// activation.
 	scoreEligible bool
 }
 
@@ -100,6 +102,11 @@ type conditionalKeepRule struct {
 var allBrowserToolNames = []string{
 	"browser",
 }
+
+// allComputerUseToolNames is the desktop-control family. It is fail-closed:
+// BM25/embedding noise and usage-hint recency must not pad an unrelated
+// turn with computer_observe/click/type. Activation is LabelComputerUse.
+var allComputerUseToolNames = append([]string(nil), computeruse.ToolNames...)
 
 // NoEagerPinToolNames returns a copy of the noEagerPinTools set as a slice.
 // Used by diagnostic code to derive tool sets from the canonical source.
@@ -134,6 +141,12 @@ var conditionalKeepRules = []conditionalKeepRule{
 	{keepTools: []string{"send_file", "send_to_im", "im_message", "open"}},
 	{keepTools: []string{"craft_tool"}},
 	{keepTools: allBrowserToolNames, noMemoryPin: true},
+	// Desktop GUI control is an external-effect family, same class as
+	// browser/screenshot. Leaving these as ordinary candidates lets fused
+	// noise plus routing-hint recency fill MaxToolBudget (production
+	// 2026-09-20: "生成markdown" exposed 10 computer_* tools and the model
+	// called computer_observe).
+	{keepTools: allComputerUseToolNames, noMemoryPin: true},
 	{keepTools: []string{"office"}, scoreEligible: true},
 	{keepTools: []string{"generate_pdf", "office"}, scoreEligible: true},
 	// Microphone capture is sensitive and must be selected from a semantic
@@ -1422,7 +1435,9 @@ func (r *Router) RouteWithOptions(userMessage string, allTools []map[string]inte
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.routeWithOptionsLocked(userMessage, allTools, opts)
+	selected := r.routeWithOptionsLocked(userMessage, allTools, opts)
+	RecordLegacyRoute(len(selected))
+	return selected
 }
 
 // LegacyRouteCalls returns the number of calls through the deprecated text
@@ -1448,6 +1463,7 @@ func (r *Router) RecommendWithOptions(userMessage string, allTools []map[string]
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	selected := r.routeWithOptionsLocked(userMessage, allTools, opts)
+	RecordLegacyRoute(len(selected))
 	return selected, r.lastRecommendation.clone()
 }
 
@@ -1500,6 +1516,7 @@ func (r *Router) routeWithOptionsLocked(userMessage string, allTools []map[strin
 	uicResult := r.lookupRouteClassification(userMessage, opts)
 	uicUsable := classificationActivatesTools(uicResult, routeCacheActivationMin(opts))
 	if uicUsable {
+		RecordConditionalRouteActivation()
 		skillInstallEligible = uicSkillInstallEligible(uicResult)
 		// Leftover skip may consume a cached tree only to force-keep
 		// score-eligible tools. It must not inherit coding skill constraints
@@ -1655,8 +1672,16 @@ func (r *Router) routeWithOptionsLocked(userMessage string, allTools []map[strin
 	}
 	suppressedTools["git_commit"] = true
 	suppressedTools["git_push"] = true
+	// "生成markdown" is a .md file write. generate_pdf descriptions used to
+	// mention Markdown as input, so retrieval ranked it #1; the agent prompt
+	// then requires calling generate_pdf whenever it is listed. Hide the PDF
+	// alias and the merged office tool (action=generate_pdf) unless the host
+	// kept them or the prompt names an Office source to read. Force write_file
+	// into core: production 2026-09-20 never even selected it.
+	hostKeep := append([]string(nil), opts.HostKeepTools...)
+	hostKeep = append(hostKeep, applyMarkdownFileSurface(userMessage, condKeep, suppressedTools)...)
 
-	applyHostKeepTools(opts.HostKeepTools, condKeep, condFilterOut, suppressedTools)
+	applyHostKeepTools(hostKeep, condKeep, condFilterOut, suppressedTools)
 
 	// Skill matching is recommendation evidence only on this compatibility
 	// route. Dynamic Skills must enter the model surface through a managed,
@@ -1693,6 +1718,7 @@ func (r *Router) routeWithOptionsLocked(userMessage string, allTools []map[strin
 		}
 	}
 
+	mustKeepCore := hostKeepSet(hostKeep)
 	var core, candidates []map[string]interface{}
 	var candidateNames []string
 	seenNames := make(map[string]bool, len(allTools))
@@ -1705,16 +1731,20 @@ func (r *Router) routeWithOptionsLocked(userMessage string, allTools []map[strin
 		if suppressedTools[name] {
 			continue
 		}
-		if !legacyAdapterCandidateAllowed(name, routeNow) {
+		if !mustKeepCore[name] && !legacyAdapterCandidateAllowed(name, routeNow) {
 			// A model-visible host name without a live reviewed provision is
 			// catalog_incomplete, not a candidate. This covers expired catalog
 			// entries and newly registered static tools that were never reviewed
 			// into the legacy adapter catalog. Letting them rank lets BM25
 			// select them; the closed replacement then used to reject the
 			// entire surface as unprovisioned.
+			// HostKeep is a this-turn host grant (truncated auto_extract
+			// continuation), so it may admit a core reader such as
+			// read_document that is not a petitionable adapter. UIC/condKeep
+			// pins must not inherit that exception.
 			continue
 		}
-		if LegacyBootstrapToolNames[name] || condKeep[name] || legacyRouteFallbackTool(name) {
+		if LegacyBootstrapToolNames[name] || condKeep[name] || mustKeepCore[name] || legacyRouteFallbackTool(name) {
 			core = append(core, t)
 		} else if condFilterOut[name] {
 			// This tool has a conditional keep rule that did NOT match this
@@ -1725,8 +1755,6 @@ func (r *Router) routeWithOptionsLocked(userMessage string, allTools []map[strin
 			candidateNames = append(candidateNames, name)
 		}
 	}
-
-	mustKeepCore := hostKeepSet(opts.HostKeepTools)
 	matchedSkillCapabilities := r.matchedSkillCapabilities(matchedSkills)
 	core = trimCoreToolsToBudget(core, condKeep, mustKeepCore)
 	remainingSlots := MaxToolBudget - len(core)

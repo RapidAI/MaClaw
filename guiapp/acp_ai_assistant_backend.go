@@ -103,6 +103,27 @@ User request:
 %s`, workspace, userText)
 }
 
+const acpProgrammingWorkspacePrefix = "[VS Code / ACP programming workspace]"
+const acpProgrammingUserRequestMarker = "User request:"
+
+// acpInnerUserRequest returns the User request body from acpProgrammingUserText.
+// Bare-continue planning must see "继续", not the VS Code workspace wrapper.
+func acpInnerUserRequest(userText string) string {
+	trimmed := strings.TrimSpace(userText)
+	if !strings.HasPrefix(trimmed, acpProgrammingWorkspacePrefix) {
+		return trimmed
+	}
+	idx := strings.Index(trimmed, acpProgrammingUserRequestMarker)
+	if idx < 0 {
+		return trimmed
+	}
+	inner := strings.TrimSpace(trimmed[idx+len(acpProgrammingUserRequestMarker):])
+	if inner == "" {
+		return trimmed
+	}
+	return inner
+}
+
 // RunAIAssistantProgrammingPrompt runs the same desktop AI assistant path as
 // the GUI chat, bound to a project/workspace directory (programming agent).
 // It blocks until the turn finishes or ctx is cancelled.

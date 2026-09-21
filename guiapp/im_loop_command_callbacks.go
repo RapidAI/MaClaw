@@ -133,6 +133,15 @@ func (c *loopCycleCallbacks) GetLLMConfig() corelib.MaclawLLMConfig {
 	return c.parent.llmCfg
 }
 
+// UsageTracker implements agent.UsageTrackerProvider so /loop modify cycles
+// feed real tool-execution outcomes into the shared usage tracker.
+func (c *loopCycleCallbacks) UsageTracker() *coretool.UsageTracker {
+	if c == nil || c.parent == nil || c.parent.handler == nil {
+		return nil
+	}
+	return c.parent.handler.UsageTracker()
+}
+
 func (c *loopCycleCallbacks) RouteTurn(userText string) (corelib.MaclawLLMConfig, agent.RouteDecision, bool) {
 	if c == nil || c.parent == nil || c.parent.handler == nil {
 		return c.GetLLMConfig(), agent.RouteDecision{}, false

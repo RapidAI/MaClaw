@@ -39,7 +39,10 @@ func TestEnrichmentStore_GetSearchTextMergesBuiltinAndStored(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := s.GetSearchText(RegisteredTool{Name: "database", Description: "SQL data source", Tags: []string{"mysql"}})
-	if !containsSubstring(text, "查看库") {
+	// The database (write-capable) builtin enrichment carries the
+	// write-oriented phrases; the schema-inspection phrases live on
+	// database_query only (see TestDatabaseEnrichmentAliasTokensDisjoint).
+	if !containsSubstring(text, "修改数据库数据") {
 		t.Fatalf("expected builtin database enrichment, got %q", text)
 	}
 	if !containsSubstring(text, "rapidbi") {
@@ -159,6 +162,38 @@ func TestBuiltinEnrichments_Coverage(t *testing.T) {
 	queries, ok := BuiltinEnrichments["edit_file"]
 	if !ok || len(queries) == 0 {
 		t.Fatal("expected edit_file builtin enrichments")
+	}
+}
+
+// TestDatabaseEnrichmentAliasTokensDisjoint guards the database vs
+// database_query enrichment split: database is the sensitive write-capable
+// tool, database_query the read-only one. Shared alias text would tie the
+// two under BM25 and let a schema-inspection query surface the sensitive
+// tool; their whitespace-token sets must therefore be disjoint.
+func TestDatabaseEnrichmentAliasTokensDisjoint(t *testing.T) {
+	tokens := func(name string) map[string]bool {
+		set := map[string]bool{}
+		for _, phrase := range BuiltinEnrichments[name] {
+			for _, tok := range strings.Fields(phrase) {
+				set[tok] = true
+			}
+		}
+		return set
+	}
+	db := tokens("database")
+	ro := tokens("database_query")
+	for tok := range db {
+		if ro[tok] {
+			t.Fatalf("alias token %q shared between database and database_query enrichments", tok)
+		}
+	}
+	// Whole-phrase duplicates must be gone too (the original tie).
+	for _, p := range BuiltinEnrichments["database"] {
+		for _, q := range BuiltinEnrichments["database_query"] {
+			if p == q {
+				t.Fatalf("duplicate alias phrase %q in both entries", p)
+			}
+		}
 	}
 }
 

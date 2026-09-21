@@ -50,6 +50,11 @@ func (a *App) initEarlyClassifier() {
 			LLMFunc:        a.buildUICLLMFunc(),
 			LLMContextFunc: a.buildUICLLMContextFunc(),
 			LLMTimeout:     30 * time.Second,
+			// 宁慢勿乱 (2026-09-18): a 12s tree deadline turned every slow-hub
+			// turn into a degraded guess — missing tools, rescue chains, wrong
+			// surfaces. Waiting out the full LLM timeout trades first-token
+			// latency for a correct classification and a stable surface.
+			FusionTreeDeadline: 30 * time.Second,
 		})
 		a.unifiedClassifier = uic
 
@@ -929,8 +934,11 @@ func (a *App) buildIntentLLMFunc() tool.LLMClassifyFunc {
 // messages. Used by the UnifiedIntentClassifier's Layer 3.
 //
 // Timeout: 30s for the HTTP/LLM call itself (tree-only Classify can still use
-// DefaultLLMTimeout). Dual-channel fusion only waits DefaultFusionTreeDeadline
-// (12s) before degrading to embedding-only — see corelib/intent.classifyWithFusion.
+// DefaultLLMTimeout). Dual-channel fusion waits cfg.FusionTreeDeadline before
+// degrading to embedding-only — the desktop app sets it to 30s so a slow hub
+// degrades the ANSWER's latency instead of the answer's correctness
+// (product principle 2026-09-18: 宁慢勿乱 — a degraded guess surfaces missing
+// tools and rescue chains; a waited-on verdict surfaces the right plan).
 func (a *App) buildUICLLMFunc() intent.LLMClassifyFunc {
 	return func(systemPrompt, userText string) (string, error) {
 		cfg := a.GetMaclawLLMConfig()

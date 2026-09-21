@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "transcript": [
+    {
+      "user_text": "帮我连上测试服务器 10.0.0.1，看一下磁盘占用",
+      "called_tools": ["ssh"],
+      "simulated_intent": {"label": "ssh", "confidence": 0.9, "tool_names": ["ssh"]}
+    },
+    {
+      "user_text": "连上之后跑一下 df -h",
+      "called_tools": ["ssh"],
+      "simulated_intent": {"label": "ssh", "confidence": 0.95, "tool_names": ["ssh"]}
+    }
+  ]
+}

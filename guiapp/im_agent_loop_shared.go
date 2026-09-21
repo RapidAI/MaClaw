@@ -1334,6 +1334,10 @@ type sharedAgentLoopCallbacks struct {
 	// conversation boundary (rather than the later HTTP-start boundary) closes
 	// the race where steering arrives between transform and request creation.
 	llmReplanRevision atomic.Int64
+	// dispatcherOnce builds the Phase 2 pilot ToolDispatcher at most once per
+	// callback; dispatcher stays nil unless MACLAW_TOOL_DISPATCHER=on.
+	dispatcherOnce sync.Once
+	dispatcher     *agent.NameDispatcher
 }
 
 func sharedLoopUserFacingText(text string) string {
@@ -1430,6 +1434,17 @@ func (c *sharedAgentLoopCallbacks) effectivePlatform() string {
 
 func (c *sharedAgentLoopCallbacks) GetLLMConfig() corelib.MaclawLLMConfig {
 	return c.llmCfg
+}
+
+// UsageTracker implements agent.UsageTrackerProvider: feeds genuine tool
+// executions from the shared RunLoop into the host's usage tracker, closing
+// the routing quality loop. The legacy IM loop records outcomes in its own
+// machinery; the shared loop has no such layer and would otherwise stay silent.
+func (c *sharedAgentLoopCallbacks) UsageTracker() *tool.UsageTracker {
+	if c == nil || c.handler == nil {
+		return nil
+	}
+	return c.handler.UsageTracker()
 }
 
 func (c *sharedAgentLoopCallbacks) RefreshLLMAuth(ctx context.Context) (corelib.MaclawLLMConfig, bool) {
@@ -1538,6 +1553,11 @@ func (c *sharedAgentLoopCallbacks) IsToolAllowedForPromptProfile(name string, pr
 		if resolved == semanticToolsSearchName {
 			// The discovery meta-tool is host-executed and read-only; it has no
 			// grant by design, so the grant lookup below can never admit it.
+			return true
+		}
+		if c.legacyPetitionAllows(resolved) {
+			// Host-owned overlays (SQL inspect, truncated auto_extract continuation)
+			// are not semantic grants but are admitted on this turn.
 			return true
 		}
 		if _, ok := c.semanticSurface.grants[resolved]; !ok {
@@ -1835,6 +1855,7 @@ func (c *sharedAgentLoopCallbacks) BuildToolsForModelRequest(userText string, it
 	}
 	if c.semanticSurface != nil {
 		c.maybeOverlaySQLDatabaseForTurn(userText)
+		c.maybeOverlayDocumentContinuationForTurn(userText)
 		definitions, err := visibleSemanticCallSurfaceDefinitions(c.semanticSurface)
 		if err != nil {
 			log.Printf("[semantic-routing] request-bound surface render failed: %v", err)
@@ -1857,7 +1878,11 @@ func (c *sharedAgentLoopCallbacks) BuildToolsForModelRequest(userText string, it
 	c.phase = c.handler.initialAgentLoopPhase(c.userText, c.loopCtx)
 	routingText := computerUseRoutingTextForLocalFileWork(c.userText, c.hasLocalFileWork)
 	toolSet := c.handler.prepareAgentLoopTools(c.userID, routingText, c.loopCtx, c.phase)
-	c.tools = toolSet.Tools
+	// Re-apply petition overlays (e.g. the legacy ssh rescue granted on a
+	// surface-less fallback turn): the rebuild above starts from the policy
+	// surface, and without this the re-issued call after a granted petition
+	// would be denied again on the successor request.
+	c.setVisibleToolDefinitions(toolSet.Tools)
 	c.legacySurface = c.legacySurface.replaceDefinitions(c.tools, toolSet.ClientToolNames)
 	return c.tools
 }
@@ -1872,12 +1897,25 @@ func (c *sharedAgentLoopCallbacks) BuildToolsForModelRequest(userText string, it
 // group-restricted contexts, and the strict-superset expansion validator.
 // Everything else keeps the hard denial.
 func (c *sharedAgentLoopCallbacks) PetitionToolCall(name string) (bool, string) {
-	if c == nil || c.handler == nil || c.semanticSurface == nil {
+	if c == nil || c.handler == nil {
 		return false, ""
 	}
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return false, ""
+	}
+	if c.semanticSurface == nil {
+		// Fallback/legacy-router turns carry no managed surface, so the
+		// expansion path below is unreachable. ssh still gets a rescue: the
+		// live legacy ssh tool is the same surface leftover would have
+		// exposed on a non-degraded LabelSSH turn, and it is the only
+		// connect-capable tool (production 2026-09-18 11:04: a degraded
+		// fallback turn answered "SSH 工具不在可用工具列表" because this
+		// branch used to return bare false).
+		if granted, message := c.grantLegacySQLDatabasePetition(name); granted {
+			return true, message
+		}
+		return c.grantLegacySSHPetition(name)
 	}
 	surface := c.semanticSurface
 	// Rendered or already-consumed names are not petitions; the core loop owns
@@ -1957,6 +1995,12 @@ func (c *sharedAgentLoopCallbacks) PetitionToolCall(name string) (bool, string) 
 	}
 	c.semanticSurface = child
 	c.setVisibleToolDefinitions(definitions)
+	if capability == tool.CapabilityShellExecuteRemoteHost {
+		// §B4 observability: the trajectory records this model-visible message;
+		// the [ssh-rescue:...] token makes the rescuing layer machine-readable.
+		logSSHAvailabilityEvent("rescue", "layer=petition_expand", "mode="+sshAvailabilityMode(c.handler))
+		return true, semanticPetitionGrantedMessage(name) + " [ssh-rescue:petition_expand]"
+	}
 	if legacySQLDatabaseToolName(name) && (child == nil || child.grants[name].Token == "") {
 		if granted, message := c.grantLegacySQLDatabasePetition(name); granted {
 			return true, message
@@ -2010,6 +2054,148 @@ func (c *sharedAgentLoopCallbacks) maybeOverlaySQLDatabaseForTurn(userText strin
 	_, _ = c.grantLegacySQLDatabasePetition("database")
 }
 
+func (c *sharedAgentLoopCallbacks) maybeOverlayDocumentContinuationForTurn(userText string) {
+	if c == nil || c.semanticSurface == nil {
+		return
+	}
+	userText = c.autoExtractContinuationText(userText)
+	if !agent.AutoExtractNeedsContinuation(userText) {
+		return
+	}
+	// A bound document.read grant already pages this file with no path
+	// parameter. Overlaying write-capable office would be extra privilege.
+	if semanticLiveGrantNameForCapability(c.semanticSurface, "document.read.local") != "" {
+		return
+	}
+	for _, name := range agent.AutoExtractContinuationToolNames() {
+		if c.semanticGrantNamed(name) || c.legacyPetitionAllows(name) {
+			return
+		}
+	}
+	if c.legacyPetitionTools == nil {
+		c.legacyPetitionTools = map[string]bool{}
+	}
+	var added []string
+	for _, name := range agent.AutoExtractContinuationToolNames() {
+		if c.continuationOverlayDefinitionByName(name) == nil {
+			continue
+		}
+		c.legacyPetitionTools[name] = true
+		added = append(added, name)
+		// One host-owned continuation reader is enough; prefer read_document
+		// (listed first) over write-capable office.
+		break
+	}
+	if len(added) > 0 {
+		log.Printf("[doc-extract] continuation overlay truncated=true tools=%v", added)
+	}
+}
+
+func (c *sharedAgentLoopCallbacks) autoExtractContinuationText(userText string) string {
+	if agent.AutoExtractNeedsContinuation(userText) {
+		return userText
+	}
+	if c == nil {
+		return userText
+	}
+	if strings.TrimSpace(userText) == "" && agent.AutoExtractNeedsContinuation(c.userText) {
+		return c.userText
+	}
+	// Expansion happens when preparing user content, after routing. The raw
+	// picker prompt never contains truncated=true; the injected extract does.
+	for i := len(c.checkpointHistory) - 1; i >= 0; i-- {
+		if c.checkpointHistory[i].Role != "user" {
+			continue
+		}
+		text := conversationEntryText(c.checkpointHistory[i].Content)
+		if agent.AutoExtractNeedsContinuation(text) {
+			return text
+		}
+		break
+	}
+	return userText
+}
+
+func (c *sharedAgentLoopCallbacks) continuationOverlayDefinitionByName(name string) map[string]interface{} {
+	def := c.liveLegacyPetitionDefinitionByName(name)
+	if def == nil {
+		return nil
+	}
+	if strings.EqualFold(strings.TrimSpace(name), "office") {
+		return restrictOfficeDefinitionToContinuationRead(def)
+	}
+	return cloneMISInterfaceMap(def)
+}
+
+func restrictOfficeDefinitionToContinuationRead(def map[string]interface{}) map[string]interface{} {
+	out := cloneMISInterfaceMap(def)
+	fn, _ := out["function"].(map[string]interface{})
+	if fn == nil {
+		return out
+	}
+	fn["description"] = "Read a local document to page a truncated auto_extract. action: read_document (preferred), read_excel, read_pptx. Use offset=next_offset when truncated=true. Write and generate actions are not available."
+	params, _ := fn["parameters"].(map[string]interface{})
+	props, _ := params["properties"].(map[string]interface{})
+	if props != nil {
+		if action, ok := props["action"].(map[string]interface{}); ok {
+			action["description"] = "read_document/read_doc/read_docx/read_pdf/read_excel/read_pptx"
+			action["enum"] = []interface{}{"read_document", "read_doc", "read_docx", "read_pdf", "read_excel", "read_pptx"}
+		}
+		for _, writeKey := range []string{"content", "title", "data", "preview", "doc_type"} {
+			delete(props, writeKey)
+		}
+	}
+	return out
+}
+
+func officeContinuationReadAction(action string) bool {
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "read_document", "read", "read_doc", "read_docx", "read_pdf", "read_word", "read_excel", "read_pptx":
+		return true
+	default:
+		return false
+	}
+}
+
+func officeActionFromArgsJSON(argsJSON string) string {
+	var args map[string]interface{}
+	if json.Unmarshal([]byte(argsJSON), &args) != nil {
+		return ""
+	}
+	action, _ := args["action"].(string)
+	return action
+}
+
+func (c *sharedAgentLoopCallbacks) continuationOverlayDenial(name, argsJSON string) string {
+	if c == nil || !c.legacyPetitionAllows(name) || !strings.EqualFold(strings.TrimSpace(name), "office") {
+		return ""
+	}
+	action := officeActionFromArgsJSON(argsJSON)
+	if strings.TrimSpace(action) == "" || officeContinuationReadAction(action) {
+		return ""
+	}
+	return fmt.Sprintf("[system rejected] continuation overlay office action %q is read-only; call read_document with offset=next_offset", action)
+}
+
+func (c *sharedAgentLoopCallbacks) continuationOverlayArgsJSON(name, argsJSON string) string {
+	if c == nil || !c.legacyPetitionAllows(name) || !strings.EqualFold(strings.TrimSpace(name), "office") {
+		return argsJSON
+	}
+	if strings.TrimSpace(officeActionFromArgsJSON(argsJSON)) != "" {
+		return argsJSON
+	}
+	var args map[string]interface{}
+	if json.Unmarshal([]byte(argsJSON), &args) != nil || args == nil {
+		args = map[string]interface{}{}
+	}
+	args["action"] = "read_document"
+	encoded, err := json.Marshal(args)
+	if err != nil {
+		return argsJSON
+	}
+	return string(encoded)
+}
+
 func (c *sharedAgentLoopCallbacks) semanticGrantNamed(name string) bool {
 	if c == nil || c.semanticSurface == nil || c.semanticSurface.grants == nil {
 		return false
@@ -2023,6 +2209,75 @@ func (c *sharedAgentLoopCallbacks) setVisibleToolDefinitions(definitions []map[s
 		return
 	}
 	c.tools = c.appendLegacyPetitionedDatabaseTools(definitions)
+}
+
+// grantLegacySSHPetition rescues a direct ssh call on a turn without a
+// managed surface (routing-miss fallback or legacy-router turns). The live
+// legacy ssh tool is connect-capable and is the exact surface leftover
+// exposes for a non-degraded LabelSSH miss, so petitioning for it costs no
+// authority the turn would not otherwise have had. The same effectful-petition
+// budget and group-policy gate as managed petitions apply.
+func (c *sharedAgentLoopCallbacks) grantLegacySSHPetition(name string) (bool, string) {
+	name = strings.TrimSpace(name)
+	if name != "ssh" {
+		return false, ""
+	}
+	if c == nil || c.handler == nil || c.handler.registry == nil {
+		return false, ""
+	}
+	if c.groupPolicy() != nil {
+		return false, ""
+	}
+	if c.semanticEffectfulPetitionConsumed {
+		return false, ""
+	}
+	if _, ok := c.handler.registry.Get("ssh"); !ok {
+		return false, ""
+	}
+	c.semanticEffectfulPetitionConsumed = true
+	if c.legacyPetitionTools == nil {
+		c.legacyPetitionTools = map[string]bool{}
+	}
+	c.legacyPetitionTools[name] = true
+	c.tools = c.appendLegacyPetitionedDatabaseTools(c.tools)
+	logSSHAvailabilityEvent("rescue", "layer=legacy_overlay")
+	log.Printf("[semantic-routing] tool petition %q granted via live legacy ssh tool (no managed surface)", name)
+	// The generic message says "re-issue with unchanged arguments", but the
+	// legacy ssh schema requires action=connect/exec/... — name the shape so
+	// the model does not burn an iteration discovering it (production
+	// 2026-09-18 14:41: the re-issued connect-shaped call was refused for a
+	// missing action parameter). The [ssh-rescue:...] token is the
+	// §B4 trajectory marker for the rescuing layer.
+	return true, fmt.Sprintf("工具 ssh 已由主机授权并加入当前工具面，请立即重新发起调用：这是完整的 ssh 工具，必须带 action 参数（如 {\"action\":\"connect\",\"host\":...,\"user\":...,\"password\":...}，或 action=exec 加 session_id 和 command）。[ssh-rescue:legacy_overlay]")
+}
+
+// liveLegacyPetitionDefinitionByName resolves an overlaid petitioned tool's
+// definition. SQL database names go through the reviewed adapter lookup; ssh
+// resolves from the builtin registry (its legacy definition is unpublished
+// from managed catalogs, not from the registry).
+func (c *sharedAgentLoopCallbacks) liveLegacyPetitionDefinitionByName(name string) map[string]interface{} {
+	if c == nil || c.handler == nil {
+		return nil
+	}
+	if def := c.handler.liveLegacyDefinitionByName(name); def != nil {
+		return def
+	}
+	// Continuation readers may exist on the host registry without a reviewed
+	// adapter provision (read_document is a core reader, not a petitionable
+	// write adapter). Overlay must still be able to render them.
+	for _, continuation := range agent.AutoExtractContinuationToolNames() {
+		if strings.EqualFold(continuation, name) {
+			return c.handler.continuationHostDefinitionByName(name)
+		}
+	}
+	if strings.TrimSpace(name) != "ssh" || c.handler.registry == nil {
+		return nil
+	}
+	registered, ok := c.handler.registry.Get("ssh")
+	if !ok || registered == nil || registered.Status != RegToolAvailable {
+		return nil
+	}
+	return registeredToolToDef(*registered)
 }
 
 func (c *sharedAgentLoopCallbacks) grantLegacySQLDatabasePetition(name string) (bool, string) {
@@ -2063,8 +2318,8 @@ func (c *sharedAgentLoopCallbacks) appendLegacyPetitionedDatabaseTools(definitio
 		if present[name] {
 			continue
 		}
-		if def := c.handler.liveLegacyDefinitionByName(name); def != nil {
-			definitions = append(definitions, cloneMISInterfaceMap(def))
+		if def := c.continuationOverlayDefinitionByName(name); def != nil {
+			definitions = append(definitions, def)
 		}
 	}
 	return definitions
@@ -2089,6 +2344,33 @@ func (h *IMMessageHandler) liveLegacyDefinitionByName(name string) map[string]in
 			if extractToolName(def) == name {
 				return def
 			}
+		}
+	}
+	return nil
+}
+
+// continuationHostDefinitionByName looks up a host-owned tool definition
+// without requiring a reviewed adapter provision. Used for truncated
+// auto_extract continuation readers such as read_document.
+func (h *IMMessageHandler) continuationHostDefinitionByName(name string) map[string]interface{} {
+	name = strings.TrimSpace(name)
+	if h == nil || name == "" {
+		return nil
+	}
+	if h.registry != nil {
+		if registered, ok := h.registry.Get(name); ok && registered != nil && registered.Status == RegToolAvailable {
+			return registeredToolToDef(*registered)
+		}
+		for _, def := range NewDynamicToolBuilder(h.registry).BuildAll() {
+			if extractToolName(def) == name {
+				return def
+			}
+		}
+	}
+	live, _ := h.unmanagedLegacyHostDefinitions()
+	for _, def := range live {
+		if extractToolName(def) == name {
+			return def
 		}
 	}
 	return nil
@@ -2134,7 +2416,10 @@ func (c *sharedAgentLoopCallbacks) ExecuteTool(name, argsJSON string) string {
 		return "handler unavailable"
 	}
 	if c.legacyPetitionAllows(name) {
-		return c.executeToolWithoutSemanticSurface(name, argsJSON)
+		if denied := c.continuationOverlayDenial(name, argsJSON); denied != "" {
+			return denied
+		}
+		return c.executeToolWithoutSemanticSurface(name, c.continuationOverlayArgsJSON(name, argsJSON))
 	}
 	if c.semanticSurface != nil {
 		return c.executeSemanticTool(name, argsJSON)
@@ -2345,7 +2630,11 @@ func (c *sharedAgentLoopCallbacks) executeToolWithoutSemanticSurface(name, argsJ
 	}
 	toolCallID := newACPToolCallID(name)
 	if isACPProgrammingRequestID(requestID) {
-		if allowed, reason := globalACPPermission.check(execCtx, requestID, name, argsJSON); !allowed {
+		allowed, reason := globalACPPermission.check(execCtx, requestID, name, argsJSON)
+		// Dual-run observation (Phase 1, R3): compares the client-negotiated
+		// decision with host policy; never changes the check outcome.
+		acpPermissionDualEval(c.handler.acpPermissionDualEvalSnapshot(), name, argsJSON, allowed)
+		if !allowed {
 			msg := "[system rejected] " + reason
 			if strings.TrimSpace(reason) == "" {
 				msg = "[system rejected] tool not permitted"
@@ -4351,6 +4640,31 @@ func (c *sharedAgentLoopCallbacks) executeTrustedSSH(_ tool.PlannedSelection, ca
 	if err := json.Unmarshal(canonicalArgs.CanonicalJSON, &args); err != nil {
 		return "[system rejected] canonical_ssh_arguments_invalid"
 	}
+	// Connect mode (session-less catalog): the same adapter name carries a
+	// host/user/password schema and opens (or reuses) a session via the legacy
+	// connect path. A failed connect stays a rejection so the grant survives
+	// for a corrected retry within the turn's sibling budget. An optional
+	// command runs on the session right after connecting — the catalog is
+	// bound for the whole turn, so this is the only way to execute within the
+	// same turn as the connect.
+	if _, isConnect := args["host"]; isConnect {
+		connectArgs, err := semanticTrustedSSHConnectArgsAllowed(args)
+		if err != nil {
+			return "[system rejected] " + err.Error()
+		}
+		result := c.handler.sshConnect(connectArgs)
+		if strings.HasPrefix(result, "SSH 连接成功") || strings.HasPrefix(result, "复用已有 SSH 会话") {
+			if command, _ := args["command"].(string); strings.TrimSpace(command) != "" {
+				out, err := c.handler.executeTrustedSSH(c.semanticPrincipalID(), command)
+				if err != nil {
+					return result + "\n\n[命令执行失败] " + err.Error()
+				}
+				return result + "\n\n--- 命令输出 ---\n" + out
+			}
+			return result
+		}
+		return "[system rejected] " + result
+	}
 	command, err := semanticTrustedSSHArgsAllowed(args)
 	if err != nil {
 		return "[system rejected] " + err.Error()
@@ -4515,6 +4829,12 @@ func (c *sharedAgentLoopCallbacks) semanticCanonicalArguments(selection tool.Pla
 		argsJSON = semanticOfficeWriteInvocationArgs(argsJSON)
 	case tool.CapabilityShellExecuteLocal:
 		argsJSON = semanticShellInvocationArgs(argsJSON)
+	case tool.CapabilityShellExecuteRemoteHost:
+		var err error
+		argsJSON, err = semanticSSHInvocationArgs(argsJSON, semanticSSHSchemaIsConnectMode(schema))
+		if err != nil {
+			return tool.CanonicalRequest{}, err
+		}
 	case tool.CapabilityFSWriteLocal:
 		argsJSON = semanticFileWriteInvocationArgs(argsJSON)
 	case tool.CapabilityArtifactAcquireRemote:

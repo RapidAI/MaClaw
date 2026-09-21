@@ -19,7 +19,7 @@ var assets embed.FS
 //go:embed assets/maclaw.ico
 var trayIcon []byte
 
-// initLogging sets up file-based logging to ~/.tigerproxy/logs/.
+// initLogging sets up file-based logging to ~/.codexproxy/logs/.
 // Both stderr and the file receive every application log line. Proxy request
 // summaries are deliberately structural and never include credentials.
 // Returns a closer function.
@@ -32,7 +32,7 @@ func initLogging() func() {
 	if err := os.MkdirAll(logsDir, 0755); err != nil {
 		return func() {}
 	}
-	fileName := fmt.Sprintf("tigerproxy_%s.log", time.Now().Format("2006-01-02"))
+	fileName := fmt.Sprintf("codexproxy_%s.log", time.Now().Format("2006-01-02"))
 	logPath := filepath.Join(logsDir, fileName)
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
@@ -69,26 +69,26 @@ func cleanOldLogs(dir string, maxDays int) {
 func main() {
 	closeLog := initLogging()
 	defer closeLog()
-	log.Printf("[tigerproxy] starting")
+	log.Printf("[codexproxy] starting")
 
 	app := NewApp()
 	startHidden := hasStartHiddenArg(os.Args[1:])
 	app.shown = !startHidden
 	appOptions := &options.App{
-		Title:                    "TigerProxy",
+		Title:                    "CodexProxy",
 		Frameless:                true,
 		StartHidden:              startHidden,
-		Width:                    920,
-		Height:                   786,
-		MinWidth:                 780,
-		MinHeight:                647,
+		Width:                    1080,
+		Height:                   780,
+		MinWidth:                 900,
+		MinHeight:                680,
 		EnableDefaultContextMenu: true,
-		BackgroundColour:         &options.RGBA{R: 246, G: 248, B: 251, A: 255},
+		BackgroundColour:         &options.RGBA{R: 244, G: 247, B: 251, A: 255},
 		AssetServer:              &assetserver.Options{Assets: assets},
 		OnStartup:                app.startup,
 		OnShutdown:               app.shutdown,
 		SingleInstanceLock: &options.SingleInstanceLock{
-			UniqueId: "tigerproxy-lock",
+			UniqueId: "codexproxy-lock",
 			OnSecondInstanceLaunch: func(secondInstanceData options.SecondInstanceData) {
 				_ = secondInstanceData
 				go app.ShowMainWindow()

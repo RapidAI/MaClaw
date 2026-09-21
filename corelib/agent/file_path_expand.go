@@ -76,6 +76,11 @@ const (
 	defaultAutoInjectMaxRunesPerFile = 80_000
 	defaultAutoInjectMaxRunesTotal   = 120_000
 
+	// autoExtractRemainderSlack is the largest tail the last document may
+	// keep past the remaining budget (conclusion / limitations / references).
+	// It is not extra quota for an arbitrarily long leftover.
+	autoExtractRemainderSlack = 24_000
+
 	// Keep automatic injection and read_document on the same full-source
 	// boundary. Paging limits the result sent to the model, but extraction still
 	// needs to parse the complete container and therefore cannot safely bypass
@@ -181,8 +186,11 @@ func expandUserSelectedFilePathsWithSettingsAndBudget(text string, settings offi
 // injection (bounded). Returns "" only when the path is not a document type.
 // Soft failures still return a short error block so the model can fall back.
 func FormatAutoExtractedDocument(filePath string) string {
-	block, _ := formatAutoExtractedDocumentWithSettings(filePath, defaultAutoInjectMaxRunesPerFile, currentOfficeReadSettings())
-	return block
+	blocks := formatAutoExtractedDocumentsWithSettings([]string{filePath}, defaultAutoInjectMaxRunesPerFile, defaultAutoInjectMaxRunesTotal, nil, currentOfficeReadSettings())
+	if len(blocks) == 0 {
+		return ""
+	}
+	return blocks[0]
 }
 
 // FormatAutoExtractedDocuments extracts multiple documents under a shared total
@@ -358,20 +366,17 @@ func formatAutoExtractedDocumentsWithSettings(filePaths []string, perFile, total
 	if len(filePaths) == 0 {
 		return nil
 	}
+	lastInjectable := autoExtractLastInjectableIndex(filePaths, skipPaths)
 	// One output slot per input path (may be "") so callers can zip by index.
 	out := make([]string, 0, len(filePaths))
 	budget := totalBudget
 	// When budget is exhausted, emit a single skip note on the first remaining
 	// document instead of N identical blocks (keeps context small).
 	budgetExhaustedNoted := false
-	for _, p := range filePaths {
+	for i, p := range filePaths {
 		p = strings.TrimSpace(p)
-		if p == "" || !IsDocumentFilePath(p) {
+		if !autoExtractShouldInject(p, skipPaths) {
 			out = append(out, "")
-			continue
-		}
-		if skipPaths != nil && pathInSkipSet(skipPaths, p) {
-			out = append(out, "") // already injected earlier this turn
 			continue
 		}
 		if budget <= 0 {
@@ -388,10 +393,16 @@ func formatAutoExtractedDocumentsWithSettings(filePaths []string, perFile, total
 			continue
 		}
 		limit := perFile
-		if limit > budget {
+		slack := 0
+		if i == lastInjectable {
+			// Last file uses leftover total budget. A short overshoot is kept
+			// whole; a larger one keeps head+tail so conclusion/references survive.
+			limit = budget
+			slack = autoExtractRemainderSlack
+		} else if limit > budget {
 			limit = budget
 		}
-		block, used := formatAutoExtractedDocumentWithSettings(p, limit, settings)
+		block, used := formatAutoExtractedDocumentWithSettings(p, limit, slack, settings)
 		out = append(out, block)
 		if used > 0 {
 			budget -= used
@@ -400,8 +411,126 @@ func formatAutoExtractedDocumentsWithSettings(filePaths []string, perFile, total
 	return out
 }
 
+func autoExtractShouldInject(p string, skipPaths map[string]struct{}) bool {
+	p = strings.TrimSpace(p)
+	if p == "" || !IsDocumentFilePath(p) {
+		return false
+	}
+	return skipPaths == nil || !pathInSkipSet(skipPaths, p)
+}
+
+func autoExtractLastInjectableIndex(filePaths []string, skipPaths map[string]struct{}) int {
+	last := -1
+	for i, p := range filePaths {
+		if autoExtractShouldInject(p, skipPaths) {
+			last = i
+		}
+	}
+	return last
+}
+
+// autoExtractKeepShortTail reports whether a document that overshoots maxRunes
+// by at most slack should still be injected in full. A larger overshoot is
+// truncated at maxRunes so slack cannot become a hidden extra page.
+func autoExtractKeepShortTail(total, maxRunes, slack int) bool {
+	if total <= maxRunes {
+		return true
+	}
+	if slack <= 0 || maxRunes < 0 {
+		return false
+	}
+	return total-maxRunes <= slack && total <= maxOfficeReadMaxRunes
+}
+
+// autoExtractHeadTail splits a truncated last document into a prefix and a
+// suffix whose sizes sum to maxRunes. The suffix is capped by slack so a
+// paper review still sees limitations/conclusion/references. Earlier files
+// pass slack=0 and receive a prefix only.
+func autoExtractHeadTail(total, maxRunes, slack int) (head, tail int) {
+	if maxRunes < 0 {
+		maxRunes = 0
+	}
+	if total <= maxRunes {
+		return total, 0
+	}
+	if slack <= 0 || maxRunes < 8 {
+		return maxRunes, 0
+	}
+	tail = slack
+	if capTail := maxRunes / 4; tail > capTail {
+		tail = capTail
+	}
+	if tail <= 0 || tail >= maxRunes {
+		return maxRunes, 0
+	}
+	return maxRunes - tail, tail
+}
+
+func autoExtractInjectWindow(total, maxRunes, slack int) (head, tail int, truncated bool) {
+	if maxRunes < 0 {
+		maxRunes = 0
+	}
+	if autoExtractKeepShortTail(total, maxRunes, slack) {
+		return total, 0, false
+	}
+	head, tail = autoExtractHeadTail(total, maxRunes, slack)
+	if head < 0 {
+		head = 0
+	}
+	if head > total {
+		head = total
+		tail = 0
+	}
+	if tail > 0 && total-tail < head {
+		tail = 0
+	}
+	return head, tail, true
+}
+
+func autoExtractContinueChars(total, head, tail, maxRunes int) int {
+	if maxRunes < 0 {
+		maxRunes = 0
+	}
+	gap := total - head - tail
+	if gap < 0 {
+		gap = 0
+	}
+	if gap < maxRunes {
+		return gap
+	}
+	return maxRunes
+}
+
 func isAutoExtractBeginLine(trimmed string) bool {
 	return strings.HasPrefix(trimmed, AutoExtractBeginMarker) && strings.Contains(trimmed, "path=")
+}
+
+// AutoExtractContinuationToolNames are the host-owned readers that can page a
+// truncated or failed auto-extract. They are not inferred from user prose.
+func AutoExtractContinuationToolNames() []string {
+	return []string{"read_document", "office"}
+}
+
+// AutoExtractNeedsContinuation reports whether this turn's extract subsystem
+// truncated or failed a document. The notice text mentions truncated=true as
+// an instruction; only begin-marker attributes count as host extract output.
+func AutoExtractNeedsContinuation(text string) bool {
+	if text == "" || !strings.Contains(text, AutoExtractBeginMarker) {
+		return false
+	}
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !isAutoExtractBeginLine(trimmed) {
+			continue
+		}
+		if strings.Contains(trimmed, "truncated=true") {
+			return true
+		}
+		if strings.Contains(trimmed, "error=") || strings.Contains(trimmed, "error_class=") {
+			return true
+		}
+	}
+	return false
 }
 
 func hasAutoExtractBegin(text string) bool {
@@ -471,10 +600,10 @@ func extractIntAttr(line, key string) int {
 // formatAutoExtractedDocument returns (block, injectedRuneCount).
 // injectedRuneCount is 0 for soft-error blocks (they do not consume the budget).
 func formatAutoExtractedDocument(filePath string, maxRunes int) (string, int) {
-	return formatAutoExtractedDocumentWithSettings(filePath, maxRunes, currentOfficeReadSettings())
+	return formatAutoExtractedDocumentWithSettings(filePath, maxRunes, 0, currentOfficeReadSettings())
 }
 
-func formatAutoExtractedDocumentWithSettings(filePath string, maxRunes int, settings officeReadSettings) (string, int) {
+func formatAutoExtractedDocumentWithSettings(filePath string, maxRunes, slack int, settings officeReadSettings) (string, int) {
 	filePath = strings.TrimSpace(filePath)
 	if filePath == "" || !IsDocumentFilePath(filePath) {
 		return "", 0
@@ -484,6 +613,9 @@ func formatAutoExtractedDocumentWithSettings(filePath string, maxRunes int, sett
 	}
 	if maxRunes > maxOfficeReadMaxRunes {
 		maxRunes = maxOfficeReadMaxRunes
+	}
+	if slack < 0 {
+		slack = 0
 	}
 
 	resolved := resolveOfficeToolPath(filePath)
@@ -547,15 +679,14 @@ func formatAutoExtractedDocumentWithSettings(filePath string, maxRunes int, sett
 
 	runes := []rune(text)
 	total := len(runes)
-	truncated := false
-	nextOffset := -1
+	head, tail, truncated := autoExtractInjectWindow(total, maxRunes, slack)
 	injected := total
+	nextOffset := -1
 	body := text
-	if total > maxRunes {
-		body = string(runes[:maxRunes])
-		injected = maxRunes
-		truncated = true
-		nextOffset = maxRunes
+	if truncated {
+		body = string(runes[:head])
+		injected = head + tail
+		nextOffset = head
 	}
 
 	var b strings.Builder
@@ -569,7 +700,12 @@ func formatAutoExtractedDocumentWithSettings(filePath string, maxRunes int, sett
 	b.WriteString(body)
 	if truncated {
 		fmt.Fprintf(&b, "\n\n# truncated: true\n# next_offset: %d\n# continue: office(action=\"read_document\", file_path=%q, offset=%d, max_chars=%d)\n",
-			nextOffset, filePath, nextOffset, maxRunes)
+			nextOffset, filePath, nextOffset, autoExtractContinueChars(total, head, tail, maxRunes))
+		if tail > 0 {
+			// The suffix is the document end, not the next contiguous page.
+			fmt.Fprintf(&b, "# tail: offset=%d\n", total-tail)
+			b.WriteString(string(runes[total-tail:]))
+		}
 	}
 	b.WriteByte('\n')
 	fmt.Fprintf(&b, "%spath=%q ---", AutoExtractEndMarker, filePath)

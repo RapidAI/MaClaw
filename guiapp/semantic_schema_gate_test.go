@@ -34,6 +34,12 @@ const (
 	// it cannot become a mutation, so it is tracked against its own ceiling
 	// rather than pooled with the crossings that can.
 	reasonReadOnlyLegacyFamily = "legacy multiplexer still serves this managed family, on a read-only projection"
+	// The ssh connect surface takes the login password because opening a
+	// session is the capability parameter. The reviewed connect path
+	// (sshConnect) uses it only for the authenticated dial and never persists
+	// it; deleting the entry needs a credential broker the host can bind per
+	// subject.
+	reasonTrustedSSHConnectCredential = "login password is the connect capability parameter, used for the dial only and never persisted"
 )
 
 // managedSchemaGateBaseline maps an adapter to the crossings that were reviewed
@@ -54,6 +60,16 @@ var managedSchemaGateBaseline = map[string]map[string]string{
 	// headers and browser escalation the legacy downloader exposed are gone.
 	"semantic_acquire_trusted_remote": {
 		"url": reasonCapabilityTargetURL,
+	},
+	// The ssh adapter publishes exactly one mode per catalog build. Exec mode
+	// is command-only; connect mode (session-less) carries the connection
+	// parameters because opening a session cannot be expressed without them —
+	// the same reason as the remote acquirer. The host-side connect path
+	// (sshConnect) validates the host, keeps the password in memory only for
+	// the dial, and pins the host key under the same rules as the legacy tool.
+	"semantic_execute_trusted_ssh": {
+		"host":     reasonCapabilityTargetURL,
+		"password": reasonTrustedSSHConnectCredential,
 	},
 	// business.data.mis is reachable from LabelBusinessData and is served by
 	// the legacy MIS multiplexer: the model supplies every record identifier
@@ -252,8 +268,10 @@ func TestManagedSchemaGateLegacySurfaceDoesNotGrow(t *testing.T) {
 		// (corelib/database/tool.go, committed as the business.data.mis
 		// provider) contributes 8: profile/connection/job/favorite
 		// identifiers, host/file_path locations, and the open statements
-		// payload including its params object.
-		reviewedLegacyCrossings = 14
+		// payload including its params object. The ssh connect surface
+		// (2026-09-18, reviewed) adds 1: the login password is the connect
+		// capability parameter and is used for the dial only.
+		reviewedLegacyCrossings = 15
 		// mis_query contributes 5 and the database_query read-only
 		// projection contributes the same 8 crossings minus the write-only
 		// payload distinctions, i.e. all 8 of its published crossings.

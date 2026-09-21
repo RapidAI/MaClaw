@@ -84,17 +84,28 @@ func (h *IMMessageHandler) captureSelectedLocalDocuments(userID, channel, destin
 	return captureErr
 }
 
-func snapshotActiveLocalDocument(path string) (activeLocalDocumentContext, error) {
+func canonicalActiveLocalDocumentPath(path string) (string, error) {
 	clean, err := filepath.Abs(strings.TrimSpace(path))
 	if err != nil {
-		return activeLocalDocumentContext{}, fmt.Errorf("trusted_document_context_path_invalid")
+		return "", fmt.Errorf("trusted_document_context_path_invalid")
 	}
 	// Resolve a link once at authorization time so a later link retarget cannot
-	// quietly turn an existing grant into access to another document.
-	if resolved, resolveErr := filepath.EvalSymlinks(clean); resolveErr == nil {
-		clean = resolved
-	} else if !os.IsNotExist(resolveErr) {
-		return activeLocalDocumentContext{}, fmt.Errorf("trusted_document_context_unavailable")
+	// quietly turn an existing grant into access to another document. A missing
+	// link target keeps the absolute path so capture and picker-match agree.
+	resolved, resolveErr := filepath.EvalSymlinks(clean)
+	if resolveErr == nil {
+		return resolved, nil
+	}
+	if os.IsNotExist(resolveErr) {
+		return clean, nil
+	}
+	return "", fmt.Errorf("trusted_document_context_unavailable")
+}
+
+func snapshotActiveLocalDocument(path string) (activeLocalDocumentContext, error) {
+	clean, err := canonicalActiveLocalDocumentPath(path)
+	if err != nil {
+		return activeLocalDocumentContext{}, err
 	}
 	format, mimeType, ok := agent.DocumentAttachmentFormat(filepath.Base(clean), "")
 	if !ok {
@@ -234,13 +245,8 @@ func activeLocalDocumentContextsMatchPicker(contexts []activeLocalDocumentContex
 		if !agent.IsDocumentFilePath(path) {
 			continue
 		}
-		canonical, err := filepath.Abs(strings.TrimSpace(path))
+		canonical, err := canonicalActiveLocalDocumentPath(path)
 		if err != nil {
-			return false
-		}
-		if resolved, err := filepath.EvalSymlinks(canonical); err == nil {
-			canonical = resolved
-		} else {
 			return false
 		}
 		want[strings.ToLower(filepath.Clean(canonical))] = struct{}{}
@@ -309,7 +315,10 @@ func semanticDocumentReadNeedPresent(needs []tool.CapabilityNeed) bool {
 // context into this turn's artifact. Revalidation is intentionally performed
 // on every use; a changed/missing file fails closed instead of following its
 // remembered path.
-func (h *IMMessageHandler) semanticActiveLocalDocumentInputsForTurn(rootTaskID, turnID, userID, channel, destination string) ([]semanticTrustedArtifactInput, bool, error) {
+func (h *IMMessageHandler) semanticActiveLocalDocumentInputsForTurn(rootTaskID, turnID, sessionID, userID, channel, destination string) ([]semanticTrustedArtifactInput, bool, error) {
+	if strings.TrimSpace(sessionID) == "" || strings.TrimSpace(userID) == "" {
+		return nil, true, fmt.Errorf("trusted_document_input_identity_required")
+	}
 	if !h.hasActiveLocalDocument(userID, channel, destination) {
 		return nil, false, nil
 	}
@@ -320,7 +329,9 @@ func (h *IMMessageHandler) semanticActiveLocalDocumentInputsForTurn(rootTaskID, 
 		return nil, true, fmt.Errorf("trusted_document_context_invalid")
 	}
 	inputs := make([]semanticTrustedArtifactInput, 0, len(contexts))
-	scope := tool.InvocationScope{RootTaskID: rootTaskID, PlanID: tool.TrustedInputPlanID(turnID), SessionID: userID, TurnID: turnID, PrincipalID: userID}
+	// Same identity as channel attachments so IssueProjectedAccessGrant can
+	// project the snapshot into this turn's surface scope.
+	scope := tool.InvocationScope{RootTaskID: rootTaskID, PlanID: tool.TrustedInputPlanID(turnID), SessionID: sessionID, TurnID: turnID, PrincipalID: userID}
 	for _, context := range contexts {
 		if context.ExpiresAt.IsZero() || !time.Now().UTC().Before(context.ExpiresAt) || len(context.Digest) < 24 {
 			h.activeLocalDocuments.Delete(activeLocalDocumentContextKey(userID, channel, destination))

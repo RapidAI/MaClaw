@@ -996,6 +996,26 @@ func TestRemoteCodingRuntimeRestrictsToolsToBoundSession(t *testing.T) {
 	if len(tools) != 1 || tooldef.Name(tools[0]) != "ssh" {
 		t.Fatalf("remote runtime tool surface = %#v", tools)
 	}
+	fn, _ := tools[0]["function"].(map[string]interface{})
+	if fn == nil {
+		t.Fatal("remote runtime ssh definition lost its function envelope")
+	}
+	params, _ := fn["parameters"].(map[string]interface{})
+	props, _ := params["properties"].(map[string]interface{})
+	if len(props) != 4 {
+		t.Fatalf("remote runtime ssh definition must expose exactly action/command/session_id/wait_seconds, got %v", props)
+	}
+	for _, key := range []string{"host", "user", "port", "auth_method", "key_path", "password", "label", "initial_command", "timeout", "task_id", "tail_lines", "local_path", "remote_path"} {
+		if _, ok := props[key]; ok {
+			t.Fatalf("remote runtime ssh definition advertises an argument the gate rejects: %q", key)
+		}
+	}
+	if enum, _ := props["action"].(map[string]interface{})["enum"].([]string); len(enum) != 1 || enum[0] != "exec" {
+		t.Fatalf("remote runtime ssh action enum = %v", props["action"])
+	}
+	if note := cb.remoteRuntimeSessionContextNote(); !strings.Contains(note, "ssh-bound") {
+		t.Fatalf("remote runtime session context note must publish the bound id: %q", note)
+	}
 	for _, denied := range []string{"bash", "read_file", "write_file", "edit_file", "spawn_coding_agent"} {
 		if cb.IsToolAllowed(denied) || func() bool { ok, _ := cb.IsToolCallAllowed(denied, `{}`); return ok }() {
 			t.Fatalf("remote runtime allowed %q", denied)

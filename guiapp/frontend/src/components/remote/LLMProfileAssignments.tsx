@@ -1,13 +1,28 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { GetMaclawLLMProfilePanelState, SaveMaclawLLMProfiles, TestMaclawLLMProfile } from "../../../wailsjs/go/main/App";
+import { FetchMaclawLLMProfileModels, GetMaclawLLMProfilePanelState, SaveMaclawLLMProfiles, TestMaclawLLMProfile } from "../../../wailsjs/go/main/App";
 import { EventsOff, EventsOn } from "../../../wailsjs/runtime";
 import { colors } from "./styles";
 import { inputStyle, labelStyle } from "./LLMConfigPanelShared";
 
 type Profile = { provider_id?: string; model?: string; inherit_assistant?: boolean };
-type Provider = { id: string; name: string; model?: string; models?: string[]; connection_test_passed?: boolean; supports_vision?: boolean; vision_models?: string[] };
+type Provider = { id: string; name: string; model?: string; models?: string[]; connection_test_passed?: boolean; is_hub_service?: boolean; supports_vision?: boolean; vision_models?: string[]; vision_tested_models?: string[] };
 type Summary = { provider_id?: string; provider_name?: string; model?: string; inherit_assistant?: boolean; health?: string };
-type ProbeResult = { profile: "assistant" | "coding" | "caption"; health: string; reason_code?: string };
+type ProbeResult = {
+    profile: "assistant" | "coding" | "caption";
+    health?: string;
+    Health?: string;
+    reason_code?: string;
+    provider_id?: string;
+    ProviderID?: string;
+    model?: string;
+    Model?: string;
+    supports_vision?: boolean;
+    SupportsVision?: boolean;
+    vision_probe_status?: string;
+    VisionProbeStatus?: string;
+    vision_persist_failed?: boolean;
+    VisionPersistFailed?: boolean;
+};
 type PanelState = {
     providers: Provider[];
     profiles: { version: number; assistant: Profile; coding: Profile; caption?: Profile };
@@ -39,19 +54,72 @@ const cloneProfiles = (profiles: PanelState["profiles"]): PanelState["profiles"]
 });
 
 export function captionModelMissingVision(provider?: Provider, model?: string): boolean {
-    if (!provider) return false;
+    if (!String(model || "").trim()) return false;
+    return modelVisionStatus(provider, model) !== "supported";
+}
+
+export function modelVisionStatus(provider?: Provider, model?: string): "supported" | "unsupported" | "untested" {
+    if (!provider) return "untested";
     const selected = String(model || "").trim();
-    if (!selected) return false;
-    const probed = (provider.vision_models || []).map(value => String(value || "").trim()).filter(Boolean);
-    if (probed.length > 0) {
-        const want = selected.toLowerCase();
-        return !probed.some(value => value.toLowerCase() === want);
-    }
-    if (provider.supports_vision === true) {
+    if (!selected) return "untested";
+    const want = selected.toLowerCase();
+    const visionModels = (provider.vision_models || []).map(value => String(value || "").trim()).filter(Boolean);
+    if (visionModels.some(value => value.toLowerCase() === want)) return "supported";
+    if (visionModels.length === 0 && provider.supports_vision === true) {
         const fallback = String(provider.model || "").trim();
-        return fallback === "" || fallback.toLowerCase() !== selected.toLowerCase();
+        if (fallback && fallback.toLowerCase() === want) return "supported";
     }
-    return provider.supports_vision === false;
+    if (provider.is_hub_service) return "untested";
+    const tested = (provider.vision_tested_models || []).map(value => String(value || "").trim()).filter(Boolean);
+    if (tested.some(value => value.toLowerCase() === want)) return "unsupported";
+    if (provider.connection_test_passed && String(provider.model || "").trim().toLowerCase() === want) {
+        return "unsupported";
+    }
+    return "untested";
+}
+
+function probeHealth(result: ProbeResult): string {
+    return result.health || result.Health || "";
+}
+
+// Optional parameter, matching probeVisionPersistFailed below: callers hold a
+// possibly-absent probe, and the non-null `probe || {}` fallback they used to
+// need here did not satisfy ProbeResult.
+function probeVisionStatus(result?: ProbeResult): string | undefined {
+    return result?.vision_probe_status || result?.VisionProbeStatus;
+}
+
+function probeVisionPersistFailed(result?: ProbeResult): boolean {
+    return !!(result?.vision_persist_failed || result?.VisionPersistFailed);
+}
+
+function shownVisionStatus(stored: "supported" | "unsupported" | "untested", probe?: ProbeResult): string {
+    if (stored === "supported" || stored === "unsupported") return stored;
+    if (probeVisionPersistFailed(probe)) return "inconclusive";
+    return probeVisionStatus(probe) || stored;
+}
+
+function providerLookupKey(id?: string): string {
+    return String(id || "").trim().toLowerCase();
+}
+
+function applyVisionProbeToProvider(provider: Provider, model: string, status?: string): Provider {
+    if (status !== "supported" && status !== "unsupported") return provider;
+    const selected = String(model || "").trim();
+    if (!selected) return provider;
+    const want = selected.toLowerCase();
+    const keep = (values: string[] | undefined) => (values || []).map(value => String(value || "").trim()).filter(Boolean);
+    const replaceFold = (values: string[], value: string) => [...values.filter(item => item.toLowerCase() !== want), value];
+    const tested = replaceFold(keep(provider.vision_tested_models), selected);
+    const others = keep(provider.vision_models).filter(value => value.toLowerCase() !== want);
+    const supported = status === "supported";
+    const fallback = String(provider.model || "").trim();
+    return {
+        ...provider,
+        vision_tested_models: tested,
+        vision_models: supported ? [...others, selected] : others,
+        supports_vision: fallback.toLowerCase() === want ? supported : provider.supports_vision,
+    };
 }
 
 export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0, descriptionAction }: Props) {
@@ -64,6 +132,8 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
     const [error, setError] = useState("");
     const [testingProfile, setTestingProfile] = useState<"assistant" | "coding" | "caption" | null>(null);
     const [probeResults, setProbeResults] = useState<Partial<Record<"assistant" | "coding" | "caption", ProbeResult>>>({});
+    const [catalogByProvider, setCatalogByProvider] = useState<Record<string, string[]>>({});
+    const catalogFetchSeqRef = useRef<Record<string, number>>({});
     const dirtyRef = useRef(false);
     const loadGenerationRef = useRef(0);
     const eligibilityRefreshQueuedRef = useRef(false);
@@ -92,6 +162,7 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
             if (generation !== loadGenerationRef.current) return;
             setState(next);
             setDraft(cloneProfiles(next.profiles));
+            setCatalogByProvider({});
             invalidateProbeResults("assistant", "coding", "caption");
         } catch (err) {
             if (generation !== loadGenerationRef.current) return;
@@ -119,6 +190,7 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
             }
             setState(next);
             setDraft(cloneProfiles(next.profiles));
+            setCatalogByProvider({});
             invalidateProbeResults("assistant", "coding", "caption");
         } catch {
             // The existing state remains usable. A later profile-change event
@@ -166,7 +238,14 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
     }, [scheduleEligibleProviderRefresh]);
 
     const providers = state?.providers || [];
-    const providerByID = useMemo(() => new Map(providers.map(p => [p.id, p])), [providers]);
+    const providerByID = useMemo(() => {
+        const map = new Map<string, Provider>();
+        for (const provider of providers) {
+            const key = providerLookupKey(provider.id);
+            if (key) map.set(key, provider);
+        }
+        return map;
+    }, [providers]);
     const assistant = draft?.assistant;
     const coding = draft?.coding;
     const caption = draft?.caption;
@@ -175,7 +254,7 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
     // draft, not the last persisted panel snapshot. Otherwise changing the
     // assistant provider/model makes coding appear to keep the old choice
     // until after Save + reload, which contradicts the follow relationship.
-    const followingAssistantProvider = providerByID.get(String(assistant?.provider_id || ""));
+    const followingAssistantProvider = providerByID.get(providerLookupKey(assistant?.provider_id));
     const followingAssistantProviderName = followingAssistantProvider?.name || t("No provider", "未配置服务商");
     const followingAssistantModel = assistant?.model || t("No model", "未配置模型");
     const followingPreviewPending = codingFollows && !!state && (
@@ -212,6 +291,7 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
 
     useEffect(() => () => {
         loadGenerationRef.current += 1;
+        catalogFetchSeqRef.current = {};
         eligibilityRefreshQueuedRef.current = false;
         eligibilityRefreshRunningRef.current = false;
         eligibilityRefreshRerunRef.current = false;
@@ -228,10 +308,47 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
         return () => window.removeEventListener("beforeunload", onBeforeUnload);
     }, []);
 
+    const refreshProviderCatalog = useCallback(async (providerID: string) => {
+        const id = String(providerID || "").trim();
+        if (!id) return;
+        const generation = (catalogFetchSeqRef.current[id] || 0) + 1;
+        catalogFetchSeqRef.current[id] = generation;
+        try {
+            const items = await FetchMaclawLLMProfileModels(id) as Array<{ id?: string; ID?: string; name?: string; Name?: string }>;
+            if (catalogFetchSeqRef.current[id] !== generation) return;
+            const ids = (Array.isArray(items) ? items : [])
+                .map(item => String(item?.id ?? item?.ID ?? "").trim())
+                .filter(Boolean);
+            if (ids.length === 0) return;
+            setCatalogByProvider(prev => {
+                const existing = prev[id] || [];
+                return { ...prev, [id]: Array.from(new Set([...ids, ...existing])) };
+            });
+        } catch {
+            // The persisted provider.models catalog remains the assignment list.
+        }
+    }, []);
+
+    useEffect(() => {
+        const ids = [
+            assistant?.provider_id,
+            codingFollows ? "" : coding?.provider_id,
+            caption?.provider_id,
+        ].map(value => String(value || "").trim()).filter(Boolean);
+        for (const id of Array.from(new Set(ids))) {
+            void refreshProviderCatalog(id);
+        }
+    }, [assistant?.provider_id, caption?.provider_id, coding?.provider_id, codingFollows, refreshProviderCatalog]);
+
     const providerModels = (providerID?: string) => {
-        const provider = providerByID.get(String(providerID || ""));
+        const id = String(providerID || "");
+        const provider = providerByID.get(providerLookupKey(id));
         if (!provider) return [];
-        const options = [provider.model, ...(provider.models || [])].map(value => String(value || "").trim()).filter(Boolean);
+        const options = [
+            ...(catalogByProvider[id] || []),
+            provider.model,
+            ...(provider.models || []),
+        ].map(value => String(value || "").trim()).filter(Boolean);
         return Array.from(new Set(options));
     };
     const setProvider = (profile: "assistant" | "coding" | "caption", providerID: string) => {
@@ -278,9 +395,10 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
     };
     const probeLabel = (result?: ProbeResult) => {
         if (!result) return "";
-        if (result.health === "configured") return t("Connected", "已连接");
-        if (result.health === "unavailable") return t("Unavailable", "不可用");
-        if (result.health === "invalid") return t("Invalid configuration", "配置无效");
+        const health = probeHealth(result);
+        if (health === "configured") return t("Connected", "已连接");
+        if (health === "unavailable") return t("Unavailable", "不可用");
+        if (health === "invalid") return t("Invalid configuration", "配置无效");
         return t("Unverified — try again", "未验证，请重试");
     };
     const testProfile = async (profile: "assistant" | "coding" | "caption") => {
@@ -296,7 +414,40 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
         try {
             const result = await TestMaclawLLMProfile(effectiveProfile, effectiveValue.provider_id || "", effectiveValue.model || "") as unknown as ProbeResult;
             if (probeGenerationRef.current[profile] === generation) {
-                setProbeResults(prev => ({ ...prev, [profile]: { ...result, profile } }));
+                const health = probeHealth(result);
+                const visionStatus = probeVisionStatus(result);
+                const persistFailed = probeVisionPersistFailed(result);
+                setProbeResults(prev => ({ ...prev, [profile]: { ...result, profile, health, vision_probe_status: visionStatus, vision_persist_failed: persistFailed } }));
+                const providerID = String(result.provider_id || result.ProviderID || effectiveValue.provider_id || "").trim();
+                const model = String(result.model || result.Model || effectiveValue.model || "").trim();
+                if (persistFailed) {
+                    setError(t("The image-support result could not be saved. Test it again.", "图片能力检测结果未能保存。请再测一次。"));
+                } else if (health === "configured" && providerID && model) {
+                    const providerKey = providerLookupKey(providerID);
+                    const previousModel = String(effectiveValue.model || "").trim();
+                    setState(prev => prev ? {
+                        ...prev,
+                        providers: prev.providers.map(provider => providerLookupKey(provider.id) === providerKey
+                            ? applyVisionProbeToProvider(provider, model, visionStatus)
+                            : provider),
+                    } : prev);
+                    if (previousModel && previousModel.toLowerCase() !== model.toLowerCase()) {
+                        setDraft(prev => {
+                            if (!prev) return prev;
+                            const next = cloneProfiles(prev);
+                            const previousKey = previousModel.toLowerCase();
+                            (["assistant", "coding", "caption"] as const).forEach(key => {
+                                const row = next[key];
+                                if (!row) return;
+                                if (providerLookupKey(row.provider_id) === providerKey &&
+                                    String(row.model || "").trim().toLowerCase() === previousKey) {
+                                    next[key] = { ...row, model };
+                                }
+                            });
+                            return next;
+                        });
+                    }
+                }
             }
         } catch {
             if (probeGenerationRef.current[profile] === generation) {
@@ -333,15 +484,45 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
             </div>
         </div>
     );
-    const renderProbeAction = (profile: "assistant" | "coding" | "caption") => (
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
-            <button type="button" onClick={() => void testProfile(profile)} disabled={testingProfile !== null || (profile === "caption" && !(caption?.provider_id && caption?.model))}
-                style={{ fontSize: "0.7rem", padding: "4px 8px", cursor: testingProfile ? "wait" : "pointer", background: colors.surface, color: colors.primaryDark, border: `1px solid ${colors.border}`, borderRadius: 4 }}>
-                {testingProfile === profile ? t("Checking…", "正在检查…") : t("Test connection", "测试连接")}
-            </button>
-            {probeResults[profile] && <span role="status" style={{ fontSize: "0.7rem", color: probeResults[profile]?.health === "configured" ? colors.success : probeResults[profile]?.health === "unavailable" || probeResults[profile]?.health === "invalid" ? colors.danger : colors.textMuted }}>{probeLabel(probeResults[profile])}</span>}
-        </div>
-    );
+    const visionSelection = (profile: "assistant" | "coding" | "caption") => {
+        const value = profile === "assistant" ? assistant
+            : profile === "caption" ? caption
+            : (codingFollows ? assistant : coding);
+        const provider = providerByID.get(providerLookupKey(value?.provider_id));
+        return { provider, model: String(value?.model || "").trim(), status: modelVisionStatus(provider, value?.model) };
+    };
+    const visionStatusLabel = (status: string, hub?: boolean) => {
+        if (status === "supported") return t("Vision support: enabled", "图片理解：支持");
+        if (status === "unsupported") return t("Vision support: disabled", "图片理解：不支持");
+        if (hub) return t("Vision support: not verified locally", "图片理解：未在本地验证");
+        if (status === "inconclusive") return t("Vision support: not confirmed; please retry", "图片理解：未确认，请重试");
+        return t("Vision support: not tested", "图片理解：未测试");
+    };
+    const renderProbeAction = (profile: "assistant" | "coding" | "caption") => {
+        if (profile === "coding" && codingFollows) return null;
+        const { provider, model, status } = visionSelection(profile);
+        const probe = probeResults[profile];
+        const health = probe ? probeHealth(probe) : "";
+        const shownVision = shownVisionStatus(status, probe);
+        const canProbeVision = !!provider && !!model && !provider.is_hub_service && shownVision !== "supported" && shownVision !== "unsupported";
+        const captionWarningVisible = profile === "caption" && !!caption?.provider_id && captionModelMissingVision(provider, model);
+        const hideDuplicateVisionLine = captionWarningVisible && shownVision !== "inconclusive";
+        const testDisabled = testingProfile !== null || (profile === "caption" && !(caption?.provider_id && caption?.model));
+        return (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <button type="button" onClick={() => void testProfile(profile)} disabled={testDisabled}
+                        style={{ fontSize: "0.7rem", padding: "4px 8px", cursor: testingProfile ? "wait" : "pointer", background: colors.surface, color: colors.primaryDark, border: `1px solid ${colors.border}`, borderRadius: 4 }}>
+                        {testingProfile === profile ? t("Checking…", "正在检查…") : canProbeVision
+                            ? t("Test connection and image support", "测试连接与图片能力")
+                            : t("Test connection", "测试连接")}
+                    </button>
+                    {probe && <span role="status" style={{ fontSize: "0.7rem", color: health === "configured" ? colors.success : health === "unavailable" || health === "invalid" ? colors.danger : colors.textMuted }}>{probeLabel(probe)}</span>}
+                </div>
+                {provider && model && !hideDuplicateVisionLine ? <span role="status" style={{ fontSize: "0.7rem", color: shownVision === "supported" ? colors.success : colors.textMuted }}>{visionStatusLabel(shownVision, provider.is_hub_service)}</span> : null}
+            </div>
+        );
+    };
 
     const sectionStyle = {
         marginBottom: 16,
@@ -370,6 +551,7 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
     if (loading) return wrapSection(<div role="status" style={{ color: colors.textMuted, fontSize: "0.78rem" }}>{t("Loading model assignments…", "正在加载模型分配…")}</div>);
     if (!state || !draft) return wrapSection(<div role="alert" style={{ color: colors.danger, fontSize: "0.76rem" }}>{error || t("Could not load model assignments.", "无法加载模型分配。")}</div>);
 
+    const captionVision = visionSelection("caption");
     return wrapSection(<>
         {providers.length === 0 && <div role="status" style={{ margin: "0 0 14px", padding: "8px 10px", borderRadius: 4, background: colors.bg, color: colors.textSecondary, fontSize: "0.72rem", lineHeight: 1.45 }}>
             {t("No eligible providers yet. Test and save a provider in Provider management, or keep using the current assistant provider.", "暂无可用服务商。请先在服务商管理中检测并保存，或继续使用当前助手服务商。")}
@@ -395,9 +577,13 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
                 <div style={{ minWidth: 0 }}><strong style={{ fontSize: "0.78rem", color: colors.text }}>{t("Caption model", "Caption 模型")}</strong><p style={{ margin: "3px 0 0", color: colors.textMuted, fontSize: "0.68rem", lineHeight: 1.35 }}>{t("Used only when the chat model cannot see images. Labels unlabeled Computer Use boxes after OCR and accessibility. Leave empty to skip.", "仅在聊天模型不支持视觉、又需要给未标注控件补标签时使用。OCR / 无障碍已有文字时不会调用。留空则跳过。")}</p></div>
                 <div style={{ minWidth: 0 }}>
                     {renderSelectors("caption", caption || {})}
-                    {caption?.provider_id && captionModelMissingVision(providerByID.get(String(caption.provider_id)), caption?.model) && (
+                    {caption?.provider_id && captionModelMissingVision(captionVision.provider, caption?.model) && (
                         <p style={{ margin: "6px 0 0", color: colors.textMuted, fontSize: "0.68rem", lineHeight: 1.4 }}>
-                            {t("This model was not marked vision-capable. Captioning unlabeled boxes needs a vision model.", "该模型未标记为支持视觉。给未标注控件补标签需要视觉模型。")}
+                            {captionVision.provider?.is_hub_service
+                                ? t("Hub models are not image-tested here. Captioning unlabeled boxes needs a vision model.", "Hub 模型不会在此检测图片能力。给未标注控件补标签需要视觉模型。")
+                                : captionVision.status === "untested"
+                                    ? t("This model's image support has not been tested. Captioning unlabeled boxes needs a vision model.", "该模型尚未测试图片能力。给未标注控件补标签需要视觉模型。")
+                                    : t("This model was not marked vision-capable. Captioning unlabeled boxes needs a vision model.", "该模型未标记为支持视觉。给未标注控件补标签需要视觉模型。")}
                         </p>
                     )}
                     {renderProbeAction("caption")}

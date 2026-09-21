@@ -23,6 +23,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/codingagent"
 	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
@@ -2896,6 +2897,144 @@ func TestRemoteDiffSelfCheckCommandAllowedByWindowsShellGuard(t *testing.T) {
 	}
 }
 
+// TestReviewerValidationVocabularyPassesHighRiskClassifier pins layer
+// consistency between the corelib reviewer whitelist
+// (corelib/codingagent/reviewer_shell.go) and the guiapp high-risk classifier
+// (rejectDisallowedCodingBashCommand): every command the whitelist admits must
+// reach execution without a classifier denial, otherwise the reviewer sees a
+// confusing rejection for a command its own policy granted. If a new
+// classifier rule breaks one of these, either exempt it (like 2>&1/1>&2 fd
+// duplication) or remove it from the whitelist — never leave both layers
+// disagreeing. Keep this list representative of reviewer_shell.go's
+// vocabulary; extend it when the whitelist grows.
+func TestReviewerValidationVocabularyPassesHighRiskClassifier(t *testing.T) {
+	for _, command := range []string{
+		"go test ./...",
+		"go vet ./...",
+		"go build ./...",
+		"go test ./... < /dev/null",
+		"timeout 60 go test ./...",
+		"cd /repo && go test ./...",
+		"git status",
+		"git diff --stat",
+		"git log --oneline -5",
+		"git -c core.quotepath=false log",
+		"git grep -n TODO .",
+		"find . -name *.go",
+		"rg -n TODO .",
+		"cat go.mod",
+		"python -m pytest -q",
+		"pytest -q",
+		"make test",
+		"npm test",
+		"cargo test",
+		// fourteenth pass: quote/escape-normalized forms the whitelist now
+		// admits must stay inside the classifier and evidence-gate agreement
+		"\"git\" status",
+		"\\git status",
+		"rg 'error$'",
+		"rg \"err$\"",
+		"rg '\\$PATH'",
+		"PYTHONPATH=. python -m pytest",
+		// fifteenth pass: exec/config-channel deny rules must not regress the
+		// project-relative forms
+		"npm test --prefix ./packages/foo",
+		"make -C build test",
+		"pytest -p no:cacheprovider -q",
+		// sixteenth pass: bare read-only heads keep their safe forms, and
+		// GOWORK=off stays the one allowed workspace direction
+		"sort -r --output-delimiter=, list.txt",
+		"date -u",
+		"GOWORK=off go test ./...",
+		// seventeenth pass: timeout's own flags resolve past the wrapper, and
+		// npm's project-relative -C alias keeps working
+		"timeout -k 5 10 go test ./...",
+		"npm -C ./packages/foo test",
+		// eighteenth pass: printing forms of the bare heads stay available,
+		// and post-subcommand -p remains the patch flag
+		"tree /repo/src",
+		"hostname",
+		"git --no-pager log -p",
+		// nineteenth pass: fallback-before-verification keeps the real exit
+		// status, and a verification-tailed && chains evidence
+		"git status || go test ./...",
+		"go test ./... && go vet ./...",
+	} {
+		if msg := rejectDisallowedCodingBashCommand(command); msg != "" {
+			t.Errorf("whitelist-allowed reviewer command %q must pass the high-risk classifier, got %q", command, msg)
+		}
+		if suppressesVerificationFailure(command) {
+			t.Errorf("whitelist-allowed reviewer command %q must not trip the verification-evidence suppression gate", command)
+		}
+	}
+	// the reason the whitelist denies verifier|pipe: the pipeline exit status
+	// is the last command's, so the evidence gate reads it as suppression
+	if !suppressesVerificationFailure("go test ./... 2>&1 | tail -20") {
+		t.Fatal("verifier piped into tail must be flagged as verification-failure suppression")
+	}
+}
+
+// TestReviewerVerificationVocabularyAgreesAcrossLayers pins the layer
+// agreement the nineteenth pass established: for every command shape that is
+// (a) inside the reviewer whitelist vocabulary and (b) treated as
+// verification by the host evidence gate, the corelib whitelist must refuse
+// the failure-masking chain/pipe forms AT GATE TIME — not let them run and
+// merely flag them afterwards. This is the cross-layer guard against
+// vocabulary drift: if the whitelist widens (e.g. admits a new validation
+// head) without extending the validation-head set, or the evidence gate
+// starts treating an admitted head as verification that the whitelist's
+// chain/pipe denials do not cover, this test fails.
+func TestReviewerVerificationVocabularyAgreesAcrossLayers(t *testing.T) {
+	verifications := []string{
+		// whitelist heads whose verification forms the evidence gate counts
+		"go test ./...", "go vet ./...", "go build ./...",
+		"cargo test", "cargo check",
+		"npm test", "npm run lint",
+		"make", "make test",
+		"pytest", "pytest -q",
+		"python -m pytest", "python -m unittest",
+		// wrapper and env-prefix forms resolve to the same verification heads
+		"timeout 60 go test ./...",
+		"timeout -k 5 10 make test",
+	}
+	masking := []struct {
+		suffix string
+		label  string
+	}{
+		{" || echo ok", "|| fallback masks the exit status"},
+		{" | tail -1", "| pipe reports the tail's status"},
+		{" & echo bg", "& backgrounding detaches the status"},
+		{" && git status", "&& non-verification tail reports the tail's status"},
+		{" ; git status", "; non-verification tail reports the tail's status"},
+	}
+	for _, verification := range verifications {
+		if !isSubAgentVerificationCommand(verification) {
+			t.Errorf("host evidence gate no longer treats %q as verification — the cross-layer contract list needs updating", verification)
+			continue
+		}
+		for _, m := range masking {
+			command := verification + m.suffix
+			if ok, reason := codingagent.ReviewerShellGateAllows(map[string]interface{}{"command": command}); ok {
+				t.Errorf("whitelist allowed %q (%s) — gate-time denial and evidence-gate marking have drifted apart", command, m.label)
+			} else if reason == "" {
+				t.Errorf("whitelist denied %q without a reason", command)
+			}
+		}
+	}
+	// the benign mirror: a verification command preceded by a non-verification
+	// fallback keeps its real exit status and must stay allowed on both layers
+	allowed := []string{
+		"git status || go test ./...",
+		"go test ./... && go vet ./...",
+		"go test ./... 2>&1 && go vet ./... 2>&1",
+	}
+	for _, command := range allowed {
+		if ok, reason := codingagent.ReviewerShellGateAllows(map[string]interface{}{"command": command}); !ok {
+			t.Errorf("cross-layer benign form %q rejected: %s", command, reason)
+		}
+	}
+}
+
 func TestSubAgentCommandSummarySoftensNonGitDiffSelfCheckFailure(t *testing.T) {
 	status, summary := summarizeSubAgentCommands([]CodingSubAgentCommandResult{
 		{Command: "git diff --stat", Succeeded: false, Summary: "fatal: not a git repository"},
@@ -3515,6 +3654,10 @@ func TestRemoteCodingSubAgentRejectsHighRiskBashBeforeSSH(t *testing.T) {
 		"git reset --hard HEAD",
 		"git checkout -- .",
 		"rm -rf build",
+		"echo x |& rm -rf build",
+		"find . -name '*.go' -delete",
+		"find . -exec rm {} \\;",
+		"find src -fprint0 files.list",
 		"sed -i 's/a/b/' src/main.go",
 		"python -c \"open('src/main.go','w').write('x')\"",
 	} {
@@ -3524,6 +3667,18 @@ func TestRemoteCodingSubAgentRejectsHighRiskBashBeforeSSH(t *testing.T) {
 		}
 		if strings.Contains(result, "handler unavailable") {
 			t.Fatalf("remote ssh_bash should reject %q before checking SSH handler, got %q", command, result)
+		}
+	}
+}
+
+func TestCodingBashClassifierAllowsReadOnlyFind(t *testing.T) {
+	for _, command := range []string{
+		"find . -name '*.go'",
+		"find . -type f -name x | head -5",
+		"git status |& cat",
+	} {
+		if msg := rejectDisallowedCodingBashCommand(command); msg != "" {
+			t.Fatalf("read-only command should not be rejected: %q: %s", command, msg)
 		}
 	}
 }

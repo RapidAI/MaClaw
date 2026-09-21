@@ -72,6 +72,9 @@ func (s *CallbackServer) StartOnPort(callbackPath string, port int) error {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc(callbackPath, s.handleCallback)
+	if callbackPath != "/" {
+		mux.HandleFunc(callbackPath+"/", s.handleCallback)
+	}
 
 	s.server = &http.Server{Handler: mux}
 	go s.server.Serve(ln) //nolint:errcheck
@@ -130,29 +133,47 @@ func (s *CallbackServer) Stop() {
 	}
 }
 
+func writeOAuthCORS(w http.ResponseWriter, r *http.Request) {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		origin = "*"
+	}
+	w.Header().Set("Access-Control-Allow-Origin", origin)
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+	w.Header().Set("Access-Control-Allow-Private-Network", "true")
+	w.Header().Set("Vary", "Origin")
+}
+
 // handleCallback 处理 OAuth 回调请求。
 func (s *CallbackServer) handleCallback(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-
-	if errParam := q.Get("error"); errParam != "" {
-		desc := q.Get("error_description")
+	writeOAuthCORS(w, r)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	_ = r.ParseForm()
+	if errParam := r.FormValue("error"); errParam != "" {
+		desc := r.FormValue("error_description")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprintf(w, errorHTML, html.EscapeString(errParam), html.EscapeString(desc))
-		s.errCh <- fmt.Errorf("oauth error: %s: %s", errParam, desc)
+		select {
+		case s.errCh <- fmt.Errorf("oauth error: %s: %s", errParam, desc):
+		default:
+		}
 		return
 	}
 
-	code := q.Get("code")
+	code := r.FormValue("code")
 	if code == "" {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprintf(w, errorHTML, "missing_code", html.EscapeString("回调请求中缺少 code 参数"))
-		s.errCh <- fmt.Errorf("oauth error: missing code parameter in callback")
+		// Probes / CORS preflights from the IdP page must not abort the wait.
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprint(w, successHTML)
-	state := q.Get("state")
+	state := r.FormValue("state")
 	select {
 	case s.codeCh <- code:
 	default:

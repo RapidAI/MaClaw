@@ -13,7 +13,8 @@ import (
 
 const (
 	autoStartRegistryPath = `Software\Microsoft\Windows\CurrentVersion\Run`
-	autoStartRegistryName = "TigerProxy"
+	autoStartRegistryName       = "CodexProxy"
+	legacyAutoStartRegistryName = "TigerProxy"
 )
 
 func autoStartSupported() bool {
@@ -32,7 +33,10 @@ func isAutoStartEnabled() (bool, error) {
 
 	value, _, err := key.GetStringValue(autoStartRegistryName)
 	if err == registry.ErrNotExist {
-		return false, nil
+		value, _, err = key.GetStringValue(legacyAutoStartRegistryName)
+		if err == registry.ErrNotExist {
+			return false, nil
+		}
 	}
 	if err != nil {
 		return false, err
@@ -53,6 +57,9 @@ func setAutoStartEnabled(enabled bool) error {
 		if err := key.DeleteValue(autoStartRegistryName); err != nil && err != registry.ErrNotExist {
 			return err
 		}
+		if err := key.DeleteValue(legacyAutoStartRegistryName); err != nil && err != registry.ErrNotExist {
+			return err
+		}
 		return nil
 	}
 
@@ -66,7 +73,11 @@ func setAutoStartEnabled(enabled bool) error {
 	if err != nil {
 		return err
 	}
-	return key.SetStringValue(autoStartRegistryName, command)
+	if err := key.SetStringValue(autoStartRegistryName, command); err != nil {
+		return err
+	}
+	_ = key.DeleteValue(legacyAutoStartRegistryName)
+	return nil
 }
 
 func autoStartCommand() (string, error) {

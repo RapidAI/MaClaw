@@ -45,6 +45,15 @@ func TestPromptCorePrinciplesKeepsOfficeFailClosedClasses(t *testing.T) {
 	}
 }
 
+func TestPromptCorePrinciplesTreatsTruncationAsBudgetCut(t *testing.T) {
+	if !strings.Contains(PromptCorePrinciples, "禁止对用户说「无法提取」") {
+		t.Fatal("truncated auto_extract must not be described as extract failure")
+	}
+	if !strings.Contains(PromptCorePrinciplesLight, "禁止对用户说「无法提取」") {
+		t.Fatal("light prompt must carry the same truncation wording")
+	}
+}
+
 func TestToolReadDocument_Docx(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sample.docx")
@@ -1494,6 +1503,47 @@ func TestExtractPDFTextRejectsNonPDFAfterSnapshot(t *testing.T) {
 				t.Fatalf("ExtractPDFText = text=%q err=%v, want %v", text, err, tc.want)
 			}
 		})
+	}
+}
+
+func TestRenderPDFPageExtractsKeepsEmptyPagesAndErrors(t *testing.T) {
+	text, gotAny := renderPDFPageExtracts(4, func(pageIndex int) (string, error) {
+		switch pageIndex {
+		case 0:
+			return "abstract", nil
+		case 1:
+			return "", nil
+		case 2:
+			return "", errors.New("parser timeout")
+		case 3:
+			return "  limitations and conclusion  ", nil
+		default:
+			t.Fatalf("unexpected page %d", pageIndex)
+			return "", nil
+		}
+	})
+	if !gotAny {
+		t.Fatal("expected gotAny when some pages have text")
+	}
+	if !strings.Contains(text, "## Page 1\nabstract") {
+		t.Fatalf("missing page 1 text:\n%s", text)
+	}
+	if !strings.Contains(text, "## Page 2\n[empty page]") {
+		t.Fatalf("empty page must stay visible:\n%s", text)
+	}
+	if !strings.Contains(text, "## Page 3\n[page extract error: parser timeout]") {
+		t.Fatalf("page error marker missing:\n%s", text)
+	}
+	if !strings.Contains(text, "## Page 4\nlimitations and conclusion") {
+		t.Fatalf("tail page dropped:\n%s", text)
+	}
+
+	empty, got := renderPDFPageExtracts(2, func(int) (string, error) { return "", nil })
+	if got {
+		t.Fatalf("all-empty extract should not count as text, got:\n%s", empty)
+	}
+	if !strings.Contains(empty, pdfEmptyPageMarker) {
+		t.Fatalf("all-empty still records page markers:\n%s", empty)
 	}
 }
 

@@ -833,11 +833,15 @@ func loopContextIsVisionFallthrough(ctx *LoopContext) bool {
 
 // leftoverKeepsRemoteHostClassification is a capability-family check, not a
 // user-text heuristic. Managed SSH is the bound-session adapter; an unbound
-// UIC LabelSSH turn (primary or secondary) misses to leftover so builtin ssh
-// can connect/exec. Chat-projecting that classification would strip the
-// leftover skip's PreResolved keep and hide the tool.
+// UIC LabelSSH turn (primary, secondary, or RunnerUp escalation evidence)
+// misses to leftover so builtin ssh can connect/exec. Chat-projecting that
+// classification would strip the leftover skip's PreResolved keep and hide
+// the tool.
 func leftoverKeepsRemoteHostClassification(result intent.ClassificationResult) bool {
-	return !result.Degraded && classificationHasLabel(result, intent.LabelSSH) && result.Confidence >= intent.EmbeddingLookupMinScore
+	if result.Degraded || result.Confidence < intent.EmbeddingLookupMinScore {
+		return false
+	}
+	return classificationHasSSHSignal(result)
 }
 
 func loopContextBlocksLegacyToolRouter(ctx *LoopContext) bool {
@@ -1043,8 +1047,130 @@ func semanticLookupClassificationForPlanning(result intent.ClassificationResult)
 	return out
 }
 
+// semanticBareContinueQuery reports a bare continue/retry token after
+// unwrapping acpProgrammingUserText. The workspace template is not a continue.
+func semanticBareContinueQuery(userText string) bool {
+	q := strings.ToLower(strings.TrimSpace(acpInnerUserRequest(userText)))
+	q = strings.TrimSpace(strings.Trim(q, "。.!！?？~～、,，;；:：\"'“”‘’…⋯"))
+	switch q {
+	case "继续", "繼續", "continue", "重试", "重試", "retry", "请继续", "請繼續":
+		return true
+	default:
+		return false
+	}
+}
+
+// markdownFileWritePlanningText maps a bare "继续" onto the previous
+// markdown-file write so leftover/planner still HostKeep write_file.
+// Production 2026-09-21: the GUI asked the user to reply 继续 after
+// write_file grants failed; the next turn's query was 继续, which does not
+// match QueryWantsMarkdownFile. ACP Mode B wraps the same 继续 in
+// acpProgrammingUserText; leftover must see the User request body, not the
+// workspace template (it contains ASCII "write").
+func markdownFileWritePlanningText(userText string, history []agent.ConversationEntry) string {
+	inner := acpInnerUserRequest(userText)
+	if tool.QueryWantsMarkdownFile(inner) {
+		return inner
+	}
+	if !semanticBareContinueQuery(inner) {
+		return inner
+	}
+	for i := len(history) - 1; i >= 0; i-- {
+		if strings.ToLower(strings.TrimSpace(history[i].Role)) != "user" {
+			continue
+		}
+		text := acpInnerUserRequest(markdownHistoryUserText(history[i].Content))
+		if text == "" || semanticBareContinueQuery(text) {
+			continue
+		}
+		if tool.QueryWantsMarkdownFile(text) {
+			return text
+		}
+		return inner
+	}
+	return inner
+}
+
+// markdownHistoryUserText reads user prose only. fmt.Sprint of maps/structs
+// can contain "markdown" as a key name and must not count as a write request.
+func markdownHistoryUserText(content any) string {
+	switch v := content.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case []interface{}:
+		return strings.TrimSpace(conversationEntryText(v))
+	case map[string]interface{}:
+		s, _ := v["text"].(string)
+		return strings.TrimSpace(s)
+	default:
+		return ""
+	}
+}
+
+// semanticMarkdownFileWritePlanningClassification projects a markdown-file
+// write onto LabelFileWrite. Query evidence is stronger than a weak tree
+// score or an L2 document_generate collision. Strip generate, office, and
+// attachment delivery unless the prompt names an Office source to read.
+func semanticMarkdownFileWritePlanningClassification(result intent.ClassificationResult, userText string) intent.ClassificationResult {
+	out := semanticLookupClassificationForPlanning(result)
+	out.Primary = intent.LabelFileWrite
+	keepOffice := tool.QueryMentionsOfficeSource(userText)
+	kept := make([]intent.IntentLabel, 0, len(out.Secondary))
+	for _, label := range out.Secondary {
+		switch label {
+		case intent.LabelDocumentGenerate, intent.LabelFileWrite, intent.LabelAttachmentDelivery:
+			continue
+		case intent.LabelOffice:
+			if !keepOffice {
+				continue
+			}
+		}
+		kept = append(kept, label)
+	}
+	out.Secondary = kept
+	return out
+}
+
+// semanticSSHDegradedPlanningClassification projects a degraded
+// classification that carries an ssh signal into one that may resolve needs
+// during a petition re-plan: ssh itself plus the governed read-only families
+// (the same set the below-floor lookup gate admits) survive; every other
+// mutating capability label is dropped, so a classifier-timeout guess still
+// cannot mint bash or file writes through this exemption. Degraded is cleared
+// and the confidence is raised to the resolver floor, exactly like the lookup
+// projection — the authorization evidence here is the petition itself
+// (model-named tool, effectful budget spent, provider mode bounding the
+// surface), not the classifier score.
+func semanticSSHDegradedPlanningClassification(result intent.ClassificationResult) intent.ClassificationResult {
+	out := semanticLookupClassificationForPlanning(result)
+	if !out.Primary.IsNonCapabilityLabel() && out.Primary != intent.LabelSSH && !semanticReadOnlyGovernedLabel(out.Primary) {
+		out.Primary = intent.LabelUnknown
+	}
+	kept := make([]intent.IntentLabel, 0, len(out.Secondary))
+	for _, label := range out.Secondary {
+		if label == intent.LabelSSH || label.IsNonCapabilityLabel() || semanticReadOnlyGovernedLabel(label) {
+			kept = append(kept, label)
+		}
+	}
+	out.Secondary = kept
+	return out
+}
+
 func classificationHasLabel(result intent.ClassificationResult, label intent.IntentLabel) bool {
 	return result.HasLabel(label)
+}
+
+// classificationHasSSHSignal reports whether the classification carries an
+// ssh signal in any machine-readable field: declared labels, or the L2
+// RunnerUp escalation evidence preserved by the classifier's tree-timeout
+// collapse (2026-09-18 — previously the signal survived only in the Reason
+// text and every availability layer stayed dark). RunnerUp is never an
+// authorized intent; honoring it here IS the reviewed ssh exemption path.
+func classificationHasSSHSignal(result intent.ClassificationResult) bool {
+	if classificationHasLabel(result, intent.LabelSSH) {
+		return true
+	}
+	return result.RunnerUp == intent.LabelSSH && result.RunnerUpScore >= intent.EmbeddingLookupMinScore
 }
 
 // imSemanticIntentIsManagedForLoop is the shared workflow gate for dispatcher
@@ -1256,7 +1382,8 @@ func (h *IMMessageHandler) semanticCallSurfaceForSharedTurnWithContextAndAttachm
 	if ctx != nil {
 		h.adoptLateTreeSemanticIntent(ctx, userID, userText, ctx.History)
 	}
-	defs, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithContextAndIdentityAndClassificationAndAttachmentsWithSession(requestCtx, userID, userText, channel, rootTaskID, turnID, sessionID, semanticIntentFromLoopContext(ctx), attachments)
+	planningText := markdownFileWritePlanningText(userText, loopHistory(ctx))
+	defs, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithContextAndIdentityAndClassificationAndAttachmentsWithSession(requestCtx, userID, planningText, channel, rootTaskID, turnID, sessionID, semanticIntentFromLoopContext(ctx), attachments)
 	if handled && err == nil && surface != nil && ctx != nil {
 		removeFence, current := ctx.RegisterSemanticTurnFence(turnGeneration, func() {
 			cancelSemanticCallSurface(surface)
@@ -1706,6 +1833,23 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 		classification = uic.ClassifyContext(requestCtx, intent.MessageContext{Text: semanticUserIntentText(userText), UserID: userID})
 	}
 	normalizeSemanticClassificationForTurn(&classification)
+	// 2026-09-18 (17:42 production incident): a tree-timeout collapse preserves
+	// a strong L2 ssh signal only as RunnerUp — no declared label — so every
+	// downstream gate (managed check, floor exemption, leftover keep) saw a
+	// bare unknown and the turn lost ssh entirely. Promote RunnerUp-ssh into
+	// Secondary here: the same promotion fusion applies to RunnerUp on
+	// ambiguous verdicts, applied one layer up for the L2-fallback collapse.
+	// Only ssh gets this treatment (reviewed exception); the floor exemption's
+	// protective projection remains the authorization boundary on degraded
+	// turns, and the miss-to-leftover gate below still applies when no ssh
+	// provider is published.
+	if classification.RunnerUp == intent.LabelSSH &&
+		classification.RunnerUpScore >= intent.EmbeddingLookupMinScore &&
+		!classificationHasLabel(classification, intent.LabelSSH) {
+		classification.Secondary = append(append([]intent.IntentLabel(nil), classification.Secondary...), intent.LabelSSH)
+		classification.RunnerUp = ""
+		classification.RunnerUpScore = 0
+	}
 	activeDocumentUse := h.activeLocalDocumentUseForTurn(userID, channel, semanticDestination(requestCtx), userText)
 	if len(attachments) == 0 && activeDocumentUse == activeLocalDocumentReuse && activeDocumentContinuationIntent(classification, userText) {
 		classification = classificationWithActiveDocumentRead(classification)
@@ -1742,22 +1886,29 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	if semanticHostStagedImageUnderstand(userText, attachments, classification) {
 		return nil, false, nil
 	}
-	// Managed SSH is the bound-session adapter (command only). A new-host
-	// connect/exec request cannot carry host/password on that surface, so a
-	// declared SSH turn (primary or secondary) misses to leftover where the
-	// builtin ssh tool lives. Planning the other family first HostRejects
+	// Managed SSH publishes exactly one mode per catalog build: the bound-session
+	// exec adapter when a session is live, or the connect adapter when none is.
+	// Only when NEITHER mode is published (e.g. several ambiguous live sessions
+	// and no runtime binding) does a declared SSH turn miss to leftover, where
+	// the builtin ssh tool lives. Planning the other family first HostRejects
 	// the whole turn as unmet.
-	if classificationHasLabel(classification, intent.LabelSSH) && !semanticTrustedSSHPublished(h) {
+	if classificationHasLabel(classification, intent.LabelSSH) && !semanticTrustedSSHPublished(h) && !semanticTrustedSSHConnectPublished(h) {
 		return nil, false, nil
+	}
+	// Rewrite before coverage gates: a bare "继续" arrives as
+	// continuation/unknown (not managed), and L2 document_generate+delivery
+	// would HostReject before write_file could replace it.
+	if planningQuery := acpInnerUserRequest(userText); tool.QueryWantsMarkdownFile(planningQuery) {
+		classification = semanticMarkdownFileWritePlanningClassification(classification, planningQuery)
+	}
+	if classificationHasLabel(classification, intent.LabelAttachmentDelivery) && classificationHasLabel(classification, intent.LabelDocumentGenerate) {
+		return nil, true, errSemanticGenerateDeliveryConflict
 	}
 	if !imSemanticIntentIsManagedForLoop(semanticWorkflowAgentLoop(requestCtx), classification) {
 		return nil, false, nil
 	}
 	if configErr != nil {
 		return nil, true, fmt.Errorf("semantic_routing_config_unavailable: %w", configErr)
-	}
-	if classificationHasLabel(classification, intent.LabelAttachmentDelivery) && classificationHasLabel(classification, intent.LabelDocumentGenerate) {
-		return nil, true, errSemanticGenerateDeliveryConflict
 	}
 	// 0.78 is the resolver mint-writes floor and L2 early-exit. It is not a
 	// second vote after L3 already named the family. Tree-confirmed (layer
@@ -1766,14 +1917,34 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	// above 0.70, and a degraded L2 office hint at the lookup floor plans
 	// through the governed office surface. Other degraded mutating families
 	// stay a miss so leftover cannot mint bash from a timeout guess. Weak L2
-	// generate stays a miss.
+	// generate stays a miss. ssh is the one reviewed exception below: the
+	// published adapter mode bounds the surface (connect needs real
+	// credentials, exec needs a live bound session), so a degraded or
+	// sub-floor ssh label still plans instead of losing the only connect
+	// path to a classifier outage (production 2026-09-18 11:04).
+	// Markdown-file queries are rewritten above and therefore meet the floor.
 	declaredManaged, unmapped := imSemanticIntentCoverage(classification)
 	planning := classification
 	if !semanticClassificationMeetsResolverFloor(classification) {
 		if !semanticClassificationPlansBelowResolverFloor(classification) {
-			return nil, false, nil
+			// Degraded verdicts must not mint mutating families from a
+			// timeout guess — with one reviewed exception: a declared or
+			// petitioned ssh label while an ssh provider is published. The
+			// published mode bounds what the surface can do (connect needs
+			// real credentials; exec needs a live bound session), and
+			// without this the connect path dies with the classifier: no
+			// plan, no leftover keep (degraded drops it), and the petition
+			// re-plan dies right here (production 2026-09-18 11:04:
+			// "连接驱网服务器，查看状态" answered "SSH 工具不在可用工具列表"
+			// after the tree channel 502'd).
+			if !classificationHasSSHSignal(classification) || !semanticTrustedSSHAnyPublished(h) {
+				return nil, false, nil
+			}
+			planning = semanticSSHDegradedPlanningClassification(classification)
+			logSSHAvailabilityEvent("rescue", "layer=plan_exemption", "mode="+sshAvailabilityMode(h))
+		} else {
+			planning = semanticLookupClassificationForPlanning(classification)
 		}
-		planning = semanticLookupClassificationForPlanning(classification)
 		declaredManaged, unmapped = imSemanticIntentCoverage(planning)
 	}
 	if unmapped != "" {
@@ -1791,6 +1962,10 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	needs, managed, err := semanticNeedsFromClassificationContext(requestCtx, registry, planning)
 	if err != nil {
 		return nil, true, fmt.Errorf("resolve IM semantic capability needs: %w", err)
+	}
+	if classificationHasLabel(planning, intent.LabelSSH) && semanticTrustedSSHAnyPublished(h) && sshAvailabilityCountEligible(turnID) {
+		// Denominator for the ssh rescue-rate observability stream (§D1).
+		logSSHAvailabilityEvent("turn_total", "mode="+sshAvailabilityMode(h))
 	}
 	if !managed || len(needs) == 0 {
 		// A governed family already passed coverage. Falling through to the
@@ -1810,7 +1985,7 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	// fill a malformed/image attachment request from an older desktop document.
 	// Likewise, a bare path in prose is not an authorized picker selection.
 	if len(documentInputs) == 0 && len(attachments) == 0 && activeDocumentUse == activeLocalDocumentReuse && semanticDocumentReadNeedPresent(needs) {
-		activeInputs, active, activeErr := h.semanticActiveLocalDocumentInputsForTurn(rootTaskID, turnID, userID, channel, semanticDestination(requestCtx))
+		activeInputs, active, activeErr := h.semanticActiveLocalDocumentInputsForTurn(rootTaskID, turnID, sessionID, userID, channel, semanticDestination(requestCtx))
 		if activeErr != nil {
 			return nil, true, activeErr
 		}
@@ -3853,6 +4028,13 @@ func appendClosedHostSemanticProviders(providers *[]tool.ProviderSpec, defsByNam
 	}
 	if semanticTrustedSSHPublished(h) {
 		items = append(items, hostProvider{semanticTrustedSSHAdapter, semanticTrustedSSHImplementation, semanticTrustedSSHDefinition(), semanticTrustedSSHInvocationSchema(), tool.CapabilityShellExecuteRemoteHost, nil, []tool.EffectClass{tool.EffectExternalEffect}, true})
+	} else if semanticTrustedSSHConnectPublished(h) {
+		// Session-less turns still need a connect path: petitions and planned
+		// ssh surfaces would otherwise have no provider to resolve against
+		// (production 2026-09-18 08:26: "密码是 …" turn could not connect at
+		// all). The same adapter name carries the connect schema for this
+		// catalog build; exec and connect modes never coexist in one build.
+		items = append(items, hostProvider{semanticTrustedSSHAdapter, semanticTrustedSSHConnectImplementation, semanticTrustedSSHConnectDefinition(), semanticTrustedSSHConnectSchema(), tool.CapabilityShellExecuteRemoteHost, nil, []tool.EffectClass{tool.EffectExternalEffect}, true})
 	}
 	if semanticTrustedBrowserPublished(h) {
 		items = append(items, hostProvider{semanticTrustedBrowserAdapter, semanticTrustedBrowserImplementation, semanticTrustedBrowserDefinition(), semanticTrustedBrowserInvocationSchema(), tool.CapabilityBrowserControlWeb, nil, []tool.EffectClass{tool.EffectExternalEffect}, true})

@@ -10,14 +10,15 @@ import (
 )
 
 func (s *Service) requireActiveWorkspace(ctx context.Context, principal auth.MachinePrincipal, workspaceID string) error {
-	ws, err := s.Workspaces.GetOwned(ctx, principal.TenantID, principal.UserID, workspaceID)
-	if err != nil {
-		return err
+	_, err := s.accessibleWorkspace(ctx, principal, workspaceID, false)
+	return err
+}
+
+func (s *Service) accessibleWorkspace(ctx context.Context, principal auth.MachinePrincipal, workspaceID string, write bool) (*Workspace, error) {
+	if s == nil || s.Workspaces == nil {
+		return nil, ErrUnavailable
 	}
-	if ws == nil || ws.Status != StatusActive {
-		return ErrNotFound
-	}
-	return nil
+	return s.Workspaces.RequireAccess(ctx, principal.TenantID, principal.UserID, workspaceID, write)
 }
 
 func (s *Service) blobs() (*BlobStore, error) {
@@ -72,8 +73,12 @@ func (s *Service) PutManifest(ctx context.Context, principal auth.MachinePrincip
 	if err != nil {
 		return nil, err
 	}
+	ws, err := s.accessibleWorkspace(ctx, principal, workspaceID, true)
+	if err != nil {
+		return nil, err
+	}
 	for _, e := range normalized {
-		has, err := blobs.Has(ctx, principal.TenantID, principal.UserID, workspaceID, e.SHA256)
+		has, err := blobs.Has(ctx, ws.TenantID, ws.UserID, workspaceID, e.SHA256)
 		if err != nil {
 			return nil, err
 		}
@@ -110,7 +115,8 @@ func (s *Service) GetObject(ctx context.Context, principal auth.MachinePrincipal
 	if !ValidSHA256Hex(sha256hex) {
 		return nil, ErrInvalidBlobKey
 	}
-	if err := s.requireActiveWorkspace(ctx, principal, workspaceID); err != nil {
+	ws, err := s.accessibleWorkspace(ctx, principal, workspaceID, false)
+	if err != nil {
 		return nil, err
 	}
 	// Pre-admit the download against the hourly window using the committed
@@ -126,7 +132,7 @@ func (s *Service) GetObject(ctx context.Context, principal auth.MachinePrincipal
 			return nil, err
 		}
 	}
-	return blobs.Get(ctx, principal.TenantID, principal.UserID, workspaceID, sha256hex)
+	return blobs.Get(ctx, ws.TenantID, ws.UserID, workspaceID, sha256hex)
 }
 
 // PutObject admits, hashes, and seals a whole-object plaintext body.
@@ -147,9 +153,11 @@ func (s *Service) PutObject(ctx context.Context, principal auth.MachinePrincipal
 	// All object finalization is writer-only in v1-sequential. Check the lease
 	// before the idempotent fast path as well, otherwise a stale/deleted writer
 	// could still mutate object metadata.
-	if _, err := s.Workspaces.RequireLeaseWithSessionAndToken(ctx, principal.TenantID, principal.UserID, workspaceID, principal.MachineID, principal.ClientInstanceID, principal.FencingToken, s.now()); err != nil {
+	ws, err := s.Workspaces.RequireLeaseWithSessionAndToken(ctx, principal.TenantID, principal.UserID, workspaceID, principal.MachineID, principal.ClientInstanceID, principal.FencingToken, s.now())
+	if err != nil {
 		return PutResult{}, err
 	}
+	ownerID := ws.UserID
 	// Charge the hourly bandwidth window before touching disk. The bytes have
 	// already crossed the wire; failed uploads are not refunded so retry loops
 	// cannot amplify transfer beyond the tenant-configured quota.
@@ -158,10 +166,10 @@ func (s *Service) PutObject(ctx context.Context, principal auth.MachinePrincipal
 	}
 	// A whole-object PUT supersedes any partial chunk upload for the same hash;
 	// release its aggregate reservation before admitting the final object.
-	if err := blobs.RemovePart(principal.TenantID, principal.UserID, workspaceID, sha256hex); err != nil {
+	if err := blobs.RemovePart(ws.TenantID, ownerID, workspaceID, sha256hex); err != nil {
 		return PutResult{}, err
 	}
-	has, err := blobs.Has(ctx, principal.TenantID, principal.UserID, workspaceID, sha256hex)
+	has, err := blobs.Has(ctx, ws.TenantID, ownerID, workspaceID, sha256hex)
 	if err != nil {
 		return PutResult{}, err
 	}
@@ -174,7 +182,7 @@ func (s *Service) PutObject(ctx context.Context, principal auth.MachinePrincipal
 		return result, nil
 	}
 	maxWS, tenantMax := s.syncLimits(ctx, principal)
-	objectsDir, err := blobs.ObjectsDir(principal.TenantID, principal.UserID, workspaceID)
+	objectsDir, err := blobs.ObjectsDir(ws.TenantID, ownerID, workspaceID)
 	if err != nil {
 		return PutResult{}, err
 	}
@@ -185,7 +193,7 @@ func (s *Service) PutObject(ctx context.Context, principal auth.MachinePrincipal
 		return PutResult{}, err
 	}
 	guard := &objectFinalizeGuard{TenantID: principal.TenantID, UserID: principal.UserID, MachineID: principal.MachineID, ClientInstanceID: principal.ClientInstanceID, FencingToken: principal.FencingToken, Now: s.now()}
-	return blobs.PutExpectedWithGuard(ctx, principal.TenantID, principal.UserID, workspaceID, sha256hex, plaintext, guard)
+	return blobs.PutExpectedWithGuard(ctx, ws.TenantID, ownerID, workspaceID, sha256hex, plaintext, guard)
 }
 
 // PutObjectChunk stages one plaintext slice. used_bytes is not updated.
@@ -197,9 +205,11 @@ func (s *Service) PutObjectChunk(ctx context.Context, principal auth.MachinePrin
 	if !ValidSHA256Hex(sha256hex) {
 		return ErrInvalidBlobKey
 	}
-	if _, err := s.Workspaces.RequireLeaseWithSessionAndToken(ctx, principal.TenantID, principal.UserID, workspaceID, principal.MachineID, principal.ClientInstanceID, principal.FencingToken, s.now()); err != nil {
+	ws, err := s.Workspaces.RequireLeaseWithSessionAndToken(ctx, principal.TenantID, principal.UserID, workspaceID, principal.MachineID, principal.ClientInstanceID, principal.FencingToken, s.now())
+	if err != nil {
 		return err
 	}
+	ownerID := ws.UserID
 	// Chunks are charged per slice because each slice crosses the wire; the
 	// ready-object idempotent no-op below still consumed upload bandwidth.
 	if err := s.admitBandwidth(ctx, principal, int64(len(data)), 0); err != nil {
@@ -208,15 +218,15 @@ func (s *Service) PutObjectChunk(ctx context.Context, principal auth.MachinePrin
 	// A ready content-addressed object makes every chunk for the same digest an
 	// idempotent no-op. Reclaim any abandoned part directory so ready bytes and
 	// duplicate staging bytes cannot remain charged at the same time.
-	if has, err := blobs.Has(ctx, principal.TenantID, principal.UserID, workspaceID, sha256hex); err != nil {
+	if has, err := blobs.Has(ctx, ws.TenantID, ownerID, workspaceID, sha256hex); err != nil {
 		return err
 	} else if has {
-		if err := blobs.RemovePart(principal.TenantID, principal.UserID, workspaceID, sha256hex); err != nil {
+		if err := blobs.RemovePart(ws.TenantID, ownerID, workspaceID, sha256hex); err != nil {
 			return err
 		}
 		return s.Workspaces.FinalizeStagingChunkWithSession(ctx, principal.TenantID, principal.UserID, workspaceID, principal.MachineID, principal.ClientInstanceID, principal.FencingToken, sha256hex, index, int64(len(data)), s.now())
 	}
-	objectsDir, err := blobs.ObjectsDir(principal.TenantID, principal.UserID, workspaceID)
+	objectsDir, err := blobs.ObjectsDir(ws.TenantID, ownerID, workspaceID)
 	if err != nil {
 		return err
 	}
@@ -227,7 +237,7 @@ func (s *Service) PutObjectChunk(ctx context.Context, principal auth.MachinePrin
 	if err := s.Workspaces.ReserveStagingChunk(ctx, principal.TenantID, principal.UserID, workspaceID, principal.MachineID, principal.ClientInstanceID, principal.FencingToken, sha256hex, index, int64(len(data)), maxWS, tenantMax, s.now()); err != nil {
 		return err
 	}
-	if err := blobs.PutChunk(ctx, principal.TenantID, principal.UserID, workspaceID, sha256hex, index, data); err != nil {
+	if err := blobs.PutChunk(ctx, ws.TenantID, ownerID, workspaceID, sha256hex, index, data); err != nil {
 		_ = s.Workspaces.ReleaseStagingChunk(ctx, workspaceID, sha256hex, index)
 		return err
 	}
@@ -243,15 +253,17 @@ func (s *Service) CompleteObject(ctx context.Context, principal auth.MachinePrin
 	if !ValidSHA256Hex(sha256hex) {
 		return PutResult{}, ErrInvalidBlobKey
 	}
-	if _, err := s.Workspaces.RequireLeaseWithSessionAndToken(ctx, principal.TenantID, principal.UserID, workspaceID, principal.MachineID, principal.ClientInstanceID, principal.FencingToken, s.now()); err != nil {
+	ws, err := s.Workspaces.RequireLeaseWithSessionAndToken(ctx, principal.TenantID, principal.UserID, workspaceID, principal.MachineID, principal.ClientInstanceID, principal.FencingToken, s.now())
+	if err != nil {
 		return PutResult{}, err
 	}
-	has, err := blobs.Has(ctx, principal.TenantID, principal.UserID, workspaceID, sha256hex)
+	ownerID := ws.UserID
+	has, err := blobs.Has(ctx, ws.TenantID, ownerID, workspaceID, sha256hex)
 	if err != nil {
 		return PutResult{}, err
 	}
 	if has {
-		if err := blobs.RemovePart(principal.TenantID, principal.UserID, workspaceID, sha256hex); err != nil {
+		if err := blobs.RemovePart(ws.TenantID, ownerID, workspaceID, sha256hex); err != nil {
 			return PutResult{}, err
 		}
 		// Complete is also an idempotent read-after-commit operation.  Return the
@@ -274,7 +286,7 @@ func (s *Service) CompleteObject(ctx context.Context, principal auth.MachinePrin
 		}
 		return result, nil
 	}
-	plain, err := blobs.AssembleChunks(principal.TenantID, principal.UserID, workspaceID, sha256hex)
+	plain, err := blobs.AssembleChunks(ws.TenantID, ownerID, workspaceID, sha256hex)
 	if err != nil {
 		if errors.Is(err, ErrBlobHashMismatch) {
 			_ = s.Workspaces.ReleaseStagingChunks(ctx, workspaceID, sha256hex)
@@ -282,7 +294,7 @@ func (s *Service) CompleteObject(ctx context.Context, principal auth.MachinePrin
 		return PutResult{}, err
 	}
 	maxWS, tenantMax := s.syncLimits(ctx, principal)
-	objectsDir, err := blobs.ObjectsDir(principal.TenantID, principal.UserID, workspaceID)
+	objectsDir, err := blobs.ObjectsDir(ws.TenantID, ownerID, workspaceID)
 	if err != nil {
 		return PutResult{}, err
 	}
@@ -295,11 +307,11 @@ func (s *Service) CompleteObject(ctx context.Context, principal auth.MachinePrin
 		return PutResult{}, err
 	}
 	guard := &objectFinalizeGuard{TenantID: principal.TenantID, UserID: principal.UserID, MachineID: principal.MachineID, ClientInstanceID: principal.ClientInstanceID, FencingToken: principal.FencingToken, Now: s.now()}
-	got, err := blobs.PutExpectedWithGuard(ctx, principal.TenantID, principal.UserID, workspaceID, sha256hex, plain, guard)
+	got, err := blobs.PutExpectedWithGuard(ctx, ws.TenantID, ownerID, workspaceID, sha256hex, plain, guard)
 	if err != nil {
 		return PutResult{}, err
 	}
-	if err := blobs.RemovePart(principal.TenantID, principal.UserID, workspaceID, sha256hex); err != nil {
+	if err := blobs.RemovePart(ws.TenantID, ownerID, workspaceID, sha256hex); err != nil {
 		return PutResult{}, err
 	}
 	if err := s.Workspaces.ReleaseStagingChunks(ctx, workspaceID, sha256hex); err != nil {

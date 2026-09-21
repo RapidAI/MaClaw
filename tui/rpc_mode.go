@@ -343,6 +343,8 @@ func emitRPCEvent(event RPCEvent) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 type rpcCallbacks struct {
+	usageTrackerFeed
+
 	app       *TUIApp
 	requestID string
 	ctx       context.Context
@@ -399,7 +401,17 @@ func (c *rpcCallbacks) BuildTools(userText string) []map[string]interface{} {
 	if c.app.toolRegistry == nil {
 		return nil
 	}
-	return c.app.toolRegistry.BuildDefinitions()
+	defs := c.app.toolRegistry.BuildDefinitions()
+	// Policy consistency with tuiCallbacks (phase0 baseline §1.2/§1.3 finding #2):
+	// RPC mode never classifies text or reports a profile itself, so the light
+	// filter applies ONLY when MACLAW_PROMPT_PROFILE forces light globally — a
+	// provable no-op in the default state; under a forced-light env the surface
+	// matches the light system prompt. Read-only-child filtering is
+	// intentionally absent: this struct has no runtimeReadOnlyChild state.
+	if profile, ok := agent.EnvPromptProfileOverride(); ok && profile.IsLight() {
+		return agent.FilterToolDefsForLightTurn(defs)
+	}
+	return defs
 }
 
 func (c *rpcCallbacks) ExecuteTool(name, argsJSON string) string {

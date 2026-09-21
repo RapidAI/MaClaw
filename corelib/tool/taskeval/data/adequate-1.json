@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "transcript": [
+    {
+      "user_text": "帮我看一下 corelib/tool/router.go 里 RouteWithOptions 的实现，总结一下它的过滤步骤",
+      "called_tools": ["read_file"]
+    },
+    {
+      "user_text": "然后跑一下 go test ./corelib/tool/ 看看有没有失败的用例",
+      "called_tools": ["bash"]
+    },
+    {
+      "user_text": "好的，谢谢",
+      "called_tools": []
+    },
+    {
+      "user_text": "把刚才的总结写到 notes.md 里",
+      "called_tools": ["write_file"]
+    }
+  ]
+}

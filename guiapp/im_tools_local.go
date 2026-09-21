@@ -335,6 +335,9 @@ func (h *IMMessageHandler) resolveFileToolPathForOwner(path, ownerID string) (st
 		if dir := h.projectTabWorkDirForOwner(ownerID); dir != "" {
 			return dir
 		}
+		if dir := trustedPrincipalBoundWorkspace(h, ownerID); dir != "" {
+			return dir
+		}
 		if h == nil || h.app == nil {
 			if wd, err := os.Getwd(); err == nil {
 				return wd
@@ -383,47 +386,42 @@ func projectPathFromUserID(userID string) string {
 // workspace, so a tool that is advertised to the model can never fail with
 // "workspace unavailable". Resolution order:
 //
-//  1. the explicit per-owner tab bind (BoundWorkingDirForOwner),
-//  2. the project path carried by a desktop-user:<project> owner id,
-//  3. the main local tab's configured working_directory — but only for the
-//     plain "desktop-user" principal, since SetTabWorkingDir stores that
-//     choice in the global config rather than the per-owner map,
-//  4. a provisioned per-owner session workspace under
-//     <app base dir>/session-workspaces/<id> (getMaclawBaseDir tracks the
-//     data_dir config; it is never the built-in ~/.maclaw/workspace default).
-//
-// Isolation is preserved by construction: an owner without an explicit
-// choice never inherits the main tab's directory (nor the built-in
-// ~/.maclaw/workspace default) — it gets its own dedicated directory, one per
-// owner id, so expert/ACP/group sessions stay sandboxed from each other and
-// from the main tab while remaining fully functional.
+//  1. a live bot-profile WorkingDirectory, which is an isolation boundary,
+//  2. EffectiveWorkingDirForOwner — same directory as the tab chip, header
+//     and turn prompt, including an expert tab that shows "默认" and follows
+//     the main assistant directory (2026-09-20: 完全控制 still rejected
+//     write_file to that advertised path because this function used a hidden
+//     session-workspaces sandbox instead),
+//  3. the project path carried by a desktop-user:<project> owner id,
+//  4. a per-owner session-workspaces directory when the live app has no
+//     displayed directory at all.
 func trustedPrincipalBoundWorkspace(h *IMMessageHandler, principalID string) string {
+	principalID = strings.TrimSpace(principalID)
+	if principalID == "" {
+		return ""
+	}
+	if binding := assistantBindingForUserID(principalID); binding != nil {
+		if dir := strings.TrimSpace(binding.WorkingDirectory); dir != "" {
+			return normalizeProjectSessionPath(dir)
+		}
+	}
 	if h != nil && h.app != nil {
-		if dir := strings.TrimSpace(h.app.BoundWorkingDirForOwner(principalID)); dir != "" {
+		if dir := strings.TrimSpace(h.app.EffectiveWorkingDirForOwner(principalID)); dir != "" {
 			return dir
 		}
 	}
 	if dir := strings.TrimSpace(projectPathFromUserID(principalID)); dir != "" {
 		return dir
 	}
-	if strings.TrimSpace(principalID) == desktopUserID && h != nil && h.app != nil {
-		if cfg, err := h.app.LoadConfig(); err == nil {
-			if dir := strings.TrimSpace(cfg.WorkingDirectory); dir != "" {
-				return filepath.Clean(dir)
-			}
-		}
-	}
 	return trustedOwnerSessionWorkspace(h, principalID)
 }
 
-// trustedOwnerSessionWorkspace provisions the fallback workspace for owners
-// without an explicit directory choice (2026-09-15: expert sessions like
-// desktop-user:expert:builtin-pptx-maker resolve nothing through the three
-// explicit steps and every workspace tool failed with
-// trusted_file_write_path_unavailable while the turn prompt advertised those
-// tools as available). The directory is deterministic per owner id and
-// created on demand; an empty principal or an unprovisionable directory
-// stays "unavailable" rather than silently falling back to a shared location.
+// trustedOwnerSessionWorkspace provisions the last-resort workspace when
+// EffectiveWorkingDirForOwner is empty (no live App, or no displayed
+// directory). 2026-09-15: expert sessions previously resolved nothing and
+// every workspace tool failed with trusted_file_write_path_unavailable.
+// An empty principal or an unprovisionable directory stays "unavailable"
+// rather than silently falling back to a shared location.
 func trustedOwnerSessionWorkspace(h *IMMessageHandler, principalID string) string {
 	principalID = strings.TrimSpace(principalID)
 	if h == nil || h.app == nil || principalID == "" {
@@ -582,9 +580,8 @@ func (h *IMMessageHandler) ensureRecentTaskWorkspaceForProjectPath(projectPath s
 
 // resolveToolWorkDir resolves the working directory for tool execution.
 // When an explicit working_dir is provided, it is resolved normally.
-// When empty, it checks if the current session is a Project Tab and uses
-// the bound projectPath as the working directory. Falls back to the default
-// workspace directory (~/.maclaw/workspace) if not in a Project Tab context.
+// When empty, Project Tab owners use the bound project path, then the same
+// directory semantic writes confine themselves to.
 func (h *IMMessageHandler) resolveToolWorkDir(workingDir string) string {
 	return h.resolveToolWorkDirForOwner(workingDir, h.currentRuntimeOrLegacyPolicyOwnerID())
 }
@@ -609,7 +606,12 @@ func (h *IMMessageHandler) resolveToolWorkDirForOwner(workingDir, ownerID string
 	if dir := h.projectTabWorkDirForOwner(ownerID); dir != "" {
 		return dir
 	}
-	// Default: ~/.maclaw/workspace (same as resolvePath(""))
+	// Same directory write_file/bash/office confine themselves to, including
+	// an expert tab that follows the main assistant directory or a private
+	// override. resolvePath("") is only the last resort when that is empty.
+	if dir := trustedPrincipalBoundWorkspace(h, ownerID); dir != "" {
+		return dir
+	}
 	return resolvePath("")
 }
 
@@ -988,6 +990,37 @@ func (h *IMMessageHandler) toolGlobFiles(ctx context.Context, args map[string]in
 	}
 	args["path"] = absPath
 	return agent.ToolGlobDetailedCtx(ctx, args).Text
+}
+
+// toolRipgrepFiles mirrors toolGlobFiles: same runtime-owner, canonicalization
+// and path-resolution wiring, with the ripgrep search executor. The coding
+// workbench surface already serves "ripgrep" through this same executor
+// (coding_subagent.go executeToolWithOutcome); registering it here gives the
+// name a canonical tool ID and a registry-backed dispatch identity without
+// duplicating search logic.
+func (h *IMMessageHandler) toolRipgrepFiles(ctx context.Context, args map[string]interface{}) string {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cloned := make(map[string]interface{}, len(args)+2)
+	for k, v := range args {
+		cloned[k] = v
+	}
+	args = cloned
+	ownerID, hasRuntimeOwner := consumeRuntimePolicyOwnerIDFromToolArgsWithPresence(args)
+	if hasRuntimeOwner && ownerID == "" {
+		return "ripgrep failed: runtime owner is missing; isolated runtime will not fall back to desktop working directory"
+	}
+	_, rewrittenArgs, rewritten := canonicalizeLocalFileSearchToolCall("ripgrep", args)
+	if rewritten && rewrittenArgs != nil {
+		args = rewrittenArgs
+	}
+	absPath, err := h.resolveFileToolPathForOwner(agent.StringArg(args, "path"), ownerID)
+	if err != nil {
+		return err.Error()
+	}
+	args["path"] = absPath
+	return agent.ToolRipgrepDetailedCtx(ctx, args).Text
 }
 
 func (h *IMMessageHandler) toolListDirectory(args map[string]interface{}) string {

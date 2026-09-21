@@ -44,6 +44,8 @@ const maxOfficeReadMaxRunes = 500_000
 // call bypass the migration's memory/latency guard.
 const MaxOfficeReadFileBytes int64 = 32 << 20
 
+const pdfEmptyPageMarker = "[empty page]"
+
 // officeExtractFileVersion is the identity used by the page cache and its
 // in-flight de-duplication. mtime and size make cache inspection cheap to
 // understand, while digest is the authoritative content identity. In
@@ -1178,28 +1180,11 @@ func extractPDFText(filePath string) (text string, err error) {
 		if err := validatePDFPageCount(numPages); err != nil {
 			return "", err
 		}
-		var b strings.Builder
-		gotAny := false
-		for i := 0; i < numPages; i++ {
-			pageText, pErr := gopdf2.ExtractPageText(data, i)
-			if pErr != nil {
-				// Non-fatal: keep going; mark the gap so the agent can re-try that page.
-				fmt.Fprintf(&b, "\n\n## Page %d\n[page extract error: %v]\n", i+1, pErr)
-				continue
-			}
-			pageText = strings.TrimSpace(pageText)
-			if pageText == "" {
-				continue
-			}
-			gotAny = true
-			if b.Len() > 0 {
-				b.WriteString("\n\n")
-			}
-			fmt.Fprintf(&b, "## Page %d\n", i+1)
-			b.WriteString(pageText)
-		}
+		text, gotAny := renderPDFPageExtracts(numPages, func(pageIndex int) (string, error) {
+			return gopdf2.ExtractPageText(data, pageIndex)
+		})
 		if gotAny {
-			return b.String(), nil
+			return text, nil
 		}
 	}
 
@@ -1211,6 +1196,36 @@ func extractPDFText(filePath string) (text string, err error) {
 		return "", fmt.Errorf("PDF 中没有可读取的文本内容（可能是扫描件，需 OCR）")
 	}
 	return text, nil
+}
+
+// renderPDFPageExtracts keeps every page in document order. Empty pages and
+// per-page errors stay as markers so a later limitations/references page is
+// not silently dropped just because native text was blank.
+func renderPDFPageExtracts(numPages int, extract func(pageIndex int) (string, error)) (string, bool) {
+	if numPages <= 0 || extract == nil {
+		return "", false
+	}
+	var b strings.Builder
+	gotAny := false
+	for i := 0; i < numPages; i++ {
+		pageText, pErr := extract(i)
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
+		fmt.Fprintf(&b, "## Page %d\n", i+1)
+		if pErr != nil {
+			fmt.Fprintf(&b, "[page extract error: %v]", pErr)
+			continue
+		}
+		pageText = strings.TrimSpace(pageText)
+		if pageText == "" {
+			b.WriteString(pdfEmptyPageMarker)
+			continue
+		}
+		gotAny = true
+		b.WriteString(pageText)
+	}
+	return b.String(), gotAny
 }
 
 // validatePDFPageCount keeps the agent-facing extractor within the same page
