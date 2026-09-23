@@ -1611,7 +1611,7 @@ func TestRemoteCreatedFileContextEvidenceMatchesLocalGreenfieldRule(t *testing.T
 
 func TestRemoteWorkspaceBootstrapCapturesPreCreationState(t *testing.T) {
 	command := remoteCodingWorkspaceBootstrapCommand("/repo/new project")
-	if !strings.Contains(command, remoteCodingWorkspaceEmptyMarker) || !strings.Contains(command, "mkdir -p --") || strings.Contains(command, "2>/dev/null") {
+	if !strings.Contains(command, remoteCodingWorkspaceEmptyMarker) || !strings.Contains(command, "mkdir -p --") || strings.Contains(command, "2>/dev/null") || !strings.Contains(command, "! -name .git") {
 		t.Fatalf("bootstrap command must emit the empty-workspace marker without suppressed errors: %q", command)
 	}
 	if !remoteCodingWorkspaceWasEmptyFromBootstrap("" + remoteCodingWorkspaceEmptyMarker + "1\nEXIT: 0") {
@@ -9517,6 +9517,22 @@ func TestSummarizeSubAgentCreatedFileContextEvidence(t *testing.T) {
 	warning = summarizeSubAgentCreatedFileContextEvidence([]string{"main.cpp"}, nil, nil, nil, true)
 	if warning != "" {
 		t.Fatalf("an authoritative empty-workspace inventory should satisfy greenfield context evidence, got %q", warning)
+	}
+}
+
+func TestProjectWorkspaceWasEmptyTreatsGitBaselineAsGreenfield(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !projectWorkspaceWasEmpty(dir) {
+		t.Fatal("a new project whose only entry is the host git baseline must stay greenfield")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if projectWorkspaceWasEmpty(dir) {
+		t.Fatal("project files must not count as an empty workspace")
 	}
 }
 

@@ -20,7 +20,7 @@ dependencies:
       type: service
     version: 0.5.3
   espressif/dl_fft:
-    component_hash: a955ca29581de2177ddf25759273bd83f082b3c805e735fe6ee105858643989b
+    component_hash: 3e8f7d34e04bfa6333f289a6d126745bebe0cee9311b81a6a5d106047f63ef65
     dependencies:
     - name: idf
       require: private
@@ -28,7 +28,7 @@ dependencies:
     source:
       registry_url: https://components.espressif.com
       type: service
-    version: 0.6.0
+    version: 0.7.0
   espressif/esp-dsp:
     component_hash: 12e44db246517a627bc0fe2b255b8335410c0215c98bfba2df5a8e3edea839ef
     dependencies:
@@ -128,6 +128,6 @@ direct_dependencies:
 - espressif/qrcode
 - idf
 - waveshare/esp_lcd_touch_cst9217
-manifest_hash: dd5852f95684df94a7fb8aad20114bf81d55959fd2bdf88f307de7bf86e96d9b
+manifest_hash: e0e065b74f490469defaa3edfb81ac6bcf0d991156d9816b9158f7fb099126b0
 target: esp32s3
 version: 3.0.0

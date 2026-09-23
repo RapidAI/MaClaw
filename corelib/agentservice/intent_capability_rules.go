@@ -74,10 +74,12 @@ func IMSemanticIntentCapabilityNeedRules() map[intent.IntentLabel][]IntentCapabi
 			{Capability: coretool.CapabilityShellExecuteRemoteHost, Required: true, MaxInvocations: 8},
 		},
 		intent.LabelBrowser: {
-			{Capability: coretool.CapabilityBrowserControlWeb, Required: true},
+			// Browser work is multi-step. One call per turn dropped the tool
+			// after the first click.
+			{Capability: coretool.CapabilityBrowserControlWeb, Required: true, MaxInvocations: 8},
 		},
 		intent.LabelComputerUse: {
-			{Capability: coretool.CapabilityComputerControlDesktop, Required: true},
+			{Capability: coretool.CapabilityComputerControlDesktop, Required: true, MaxInvocations: 8},
 		},
 		intent.LabelAttachmentDelivery: {
 			{Capability: CapabilityArtifactDeliverCurrent, Qualifiers: map[string]string{QualifierArtifactFormat: ArtifactFormatFile}, Required: true},

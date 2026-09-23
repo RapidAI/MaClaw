@@ -10,6 +10,7 @@
 export type TaskExecutionSnapshotLike = {
     project_path?: string;
     has_output?: boolean;
+    tags?: string[];
     active_workflow?: {
         project_path?: string;
         status?: string;

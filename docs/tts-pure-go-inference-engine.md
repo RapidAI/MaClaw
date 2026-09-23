@@ -288,7 +288,7 @@ SIMD 使用 float32 累加（标量版本使用 float64），最大差异 < 0.00
 | `conv_simd_test.go` | SIMD 正确性测试 + Benchmark |
 | `ops_test.go` | 基础算子测试 |
 | `g2p_test.go` | G2P 测试 |
-| `cmd/piper_test/main.go` | 端到端合成 + RTF 测量 |
+| `opus_encode_test.go` | 端到端合成（NewPiper）+ opus 编码验证 |
 
 ## 7. 使用方式
 

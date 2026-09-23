@@ -87,10 +87,10 @@ func TestIMSemanticWebNeedResolverIgnoresLegacyToolNames(t *testing.T) {
 		Primary: intent.LabelLiveData, Confidence: .98,
 		ToolNames: []string{"call_mcp_tool", "send_to_im", "reference_lookup"},
 	})
-	// The declared search family (1 required invocation + the archetype
-	// bundle's 4 optional ceiling siblings, §4.2 max-budget rule) plus the
-	// retrieval archetype bundle's 5 optional web_fetch siblings.
-	if err != nil || !managed || len(needs) != 10 {
+	// The declared search family is one required invocation plus the archetype
+	// ceiling (4 optional siblings). Fetch stays latent until the turn asks
+	// for it, so it is not part of this cold lookup face.
+	if err != nil || !managed || len(needs) != 5 {
 		t.Fatalf("needs=%#v managed=%v err=%v", needs, managed, err)
 	}
 	if needs[0].Capability != "information.search.web" || needs[0].Qualifiers["freshness"] != "current" || strings.Contains(needs[0].ID, "mcp") {
@@ -342,10 +342,9 @@ func TestIMSemanticNeedResolverLiveDataKeepsNeedWhenSecondaryIsNonCoding(t *test
 	needs, managed, err := semanticIntentNeedsFromClassification(registry, intent.ClassificationResult{
 		Primary: intent.LabelLiveData, Secondary: []intent.IntentLabel{intent.LabelNonCoding}, Confidence: .90,
 	})
-	// The declared live_data family (1 required invocation + the bundle's 4
-	// optional ceiling siblings, §4.2 max-budget rule) plus the retrieval
-	// bundle's 5 optional web_fetch siblings.
-	if err != nil || !managed || len(needs) != 10 {
+	// The declared live_data family is one required invocation plus the
+	// archetype ceiling. Fetch stays latent on a cold lookup face.
+	if err != nil || !managed || len(needs) != 5 {
 		t.Fatalf("generic secondary discarded live_data need: needs=%#v managed=%v err=%v", needs, managed, err)
 	}
 	if needs[0].Capability != "information.search.web" || needs[0].Qualifiers["freshness"] != "current" {

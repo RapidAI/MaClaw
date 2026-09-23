@@ -254,18 +254,8 @@ export function ChatBubbleFrame({
             )}
             {topRight ? (
                 <div
-                    className="mc-chat-bubble-top-right"
+                    className="mc-chat-bubble-top-right cbf-top-right"
                     data-testid={testId ? `${testId}-top-right` : undefined}
-                    style={{
-                        position: "absolute",
-                        top: 4,
-                        right: 8,
-                        zIndex: 3,
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 2,
-                        pointerEvents: "auto",
-                    }}
                 >
                     {topRight}
                 </div>

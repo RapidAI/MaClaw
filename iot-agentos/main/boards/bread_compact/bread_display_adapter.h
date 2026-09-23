@@ -23,6 +23,7 @@
 #include "driver/gpio.h"
 #include "driver/ledc.h"
 #include "driver/spi_master.h"
+#include "boards/board_gpio_check.h"
 #include "esp_heap_caps.h"
 #include "esp_check.h"
 #include "esp_log.h"
@@ -259,6 +260,11 @@ static inline esp_err_t compact_display_adapter_init_hardware(
         s_bread_display_spi_initialized || s_bread_display_backlight_initialized ||
         s_bread_display_backlight_timer_configured) {
         return ESP_ERR_INVALID_STATE;
+    }
+    /* Hardcoded pin: fail fast at the adapter boundary. */
+    if (board_check_output_gpio(BREAD_DISPLAY_BACKLIGHT, "bread_display",
+                                "backlight") != ESP_OK) {
+        return ESP_ERR_INVALID_ARG;
     }
     s_bread_display_transfer_done = transfer_done;
 

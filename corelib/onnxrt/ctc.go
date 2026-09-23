@@ -171,6 +171,26 @@ const (
 	ctcMaxBuf = 2 << 20
 )
 
+// ctcRowExpClamp computes row[i] = exp(max(row[i]-m, -80)) in place. On
+// AVX-512 the fused ZMM kernel handles the 16-aligned body and the vek32
+// pipeline handles the remainder (bit-identical for every finite input;
+// see ctcRowExpAVX512).
+func ctcRowExpClamp(row []float32, m float32) {
+	n := len(row)
+	if n >= 16 && hasAVX512ZMM {
+		body := n &^ 15
+		ctcRowExpAVX512(&row[0], body, m)
+		if body == n {
+			return
+		}
+		row = row[body:]
+		n -= body
+	}
+	vek32.SubNumber_Inplace(row, m)
+	vek32.MaximumNumber_Inplace(row, -80)
+	vek32.Exp_Inplace(row)
+}
+
 // ctcChunkCols is the GEMM column-block size for the fused head: the
 // [T, chunk] block stays cache-resident between the GEMM store and the
 // argmax/expsum epilogue. 512 columns keeps the PP-OCRv6 [48,18710,120]
@@ -237,9 +257,7 @@ func ctcHeadKernel(a, bT, bias []float32, T, N, K int) (ids []int, probs []float
 				}
 				// exp(row - m) clamped at -80, in place: the logits are no
 				// longer needed once the block max/argmax is recorded.
-				vek32.SubNumber_Inplace(row, m)
-				vek32.MaximumNumber_Inplace(row, -80)
-				vek32.Exp_Inplace(row)
+				ctcRowExpClamp(row, m)
 				var s float64
 				for _, v := range row {
 					s += float64(v)

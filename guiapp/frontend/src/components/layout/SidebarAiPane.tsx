@@ -3,7 +3,8 @@ import type { SidebarCreditDisplayFormatters, SidebarCurrentProviderTokenUsage, 
 import { EVENT_OPEN_CREATE_CODING_TASK } from '../../constants/events';
 import type { CodingAgentProgress, CodingAgentTurnSnapshot } from '../ai/CodingAgentProgressStatus';
 import { SidebarToolSelector } from './SidebarToolSelector';
-import { SidebarTaskManagement, type TaskManagementItem, type TaskContextMenu } from './SidebarTaskManagement';
+import type { TaskManagementItem, TaskContextMenu } from './SidebarTaskManagement';
+import { SidebarTasksPane, middleContentSlotStyle } from './SidebarTasksPane';
 import type { ActiveAssistantTaskIdentity } from '../ai/aiAssistantPanelSessionUtils';
 import type { ExpertDefinition } from '../ai/expertTypes';
 import { SidebarSystemStatus } from './SidebarSystemStatus';
@@ -22,14 +23,6 @@ type MiddleTab = 'tasks' | 'employees' | 'history';
 
 const middlePaneInsetPx = 6;
 
-const middleContentSlotStyle: CSSProperties = {
-    flex: 1,
-    minHeight: 0,
-    overflow: 'hidden',
-    display: 'flex',
-    flexDirection: 'column',
-};
-
 const middlePaneStyle: CSSProperties = {
     flex: 1,
     minHeight: 0,
@@ -39,9 +32,6 @@ const middlePaneStyle: CSSProperties = {
     padding: `0 ${middlePaneInsetPx}px`,
     boxSizing: 'border-box',
 };
-
-/** Same box as the other middle panes, hidden instead of unmounted on other tabs. */
-const tasksPaneStyle = (active: boolean): CSSProperties => ({ ...middleContentSlotStyle, display: active ? 'flex' : 'none' });
 
 export function shouldShowDigitalEmployeeMiddleTabs(status: any, nowMs = Date.now()): boolean {
     return shouldShowDigitalEmployeeFeatureTabs(status, nowMs);
@@ -111,6 +101,8 @@ type SidebarAiPaneProps = SidebarCreditDisplayFormatters & {
     activeAssistantTask?: ActiveAssistantTaskIdentity | null;
     /** Live "executing" signal for that tab; merges with the durable snapshot in status stats. */
     activeAssistantTaskRunning?: boolean;
+    /** Busy task identities (normalized project paths + expert IDs) across all assistant tabs, incl. detached runs. */
+    busyTaskRuns?: { projectPaths: string[]; expertIds: string[] };
     sidebarCurrentProviderTokenUsage: SidebarCurrentProviderTokenUsage;
     sidebarHubCredits: SidebarHubCredits | null;
     unlimitedHubCreditText: string;
@@ -213,6 +205,7 @@ export const SidebarAiPane = ({
     openExpertTabIDs,
     activeAssistantTask,
     activeAssistantTaskRunning = false,
+    busyTaskRuns,
     sidebarCurrentProviderTokenUsage,
     sidebarHubCredits,
     formatSidebarTokens,
@@ -306,13 +299,7 @@ export const SidebarAiPane = ({
                 <SidebarToolSelector activeTool={activeTool} toolDropdownOpen={toolDropdownOpen} setToolDropdownOpen={setToolDropdownOpen} config={config} switchTool={switchTool} visible={showCodingToolEntry} />
                 {visibleTabs.length > 1 && <SidebarMiddleTabs active={middleTab} labels={tabLabels} onChange={setMiddleTab} visibleTabs={visibleTabs} />}
                 <div data-testid="sidebar-ai-content-slot" style={middleContentSlotStyle}>
-                    <div
-                        data-testid="sidebar-middle-pane-tasks"
-                        // Keep mounted (hidden) on other middle tabs so welcome coding events still open create dialog.
-                        style={tasksPaneStyle(middleTab === 'tasks')}
-                    >
-                        <SidebarTaskManagement lang={lang} themeMode={aiThemeMode} tasks={tasks} tasksLoading={tasksLoading} cloudTasksLoading={cloudTasksLoading} renamingTaskPath={renamingTaskPath} setRenamingTaskPath={setRenamingTaskPath} renameValue={renameValue} setRenameValue={setRenameValue} resumeTask={resumeTask} continueWorkflowProject={continueWorkflowProject} assistantReady={assistantReady} onTaskSwitchBlocked={onTaskSwitchBlocked} createTask={createTask} onCreateExpertTask={onCreateExpertTask} refreshTasks={refreshTasks} taskContextMenu={taskContextMenu} setTaskContextMenu={setTaskContextMenu} renameTask={renameTask} pinTask={pinTask} hideTask={hideTask} activateTask={activateTask} openProjectTabPaths={openProjectTabPaths} openProjectTabIdentities={openProjectTabIdentities} openExpertTabIDs={openExpertTabIDs} activeAssistantTask={activeAssistantTask} activeAssistantTaskRunning={activeAssistantTaskRunning} taskListVisible={middleTab === 'tasks'} showCloudWorkspaceManagement={showCloudWorkspaceManagement ?? showCodingToolEntry} showCloudWorkspaceCreation={showCloudWorkspaceCreation ?? showCloudWorkspaceManagement ?? showCodingToolEntry} restoreCloudWorkspaceTasks={restoreCloudWorkspaceTasks} />
-                    </div>
+                    <SidebarTasksPane {...{ lang, themeMode: aiThemeMode, tasks, tasksLoading, cloudTasksLoading, renamingTaskPath, setRenamingTaskPath, renameValue, setRenameValue, resumeTask, continueWorkflowProject, assistantReady, onTaskSwitchBlocked, createTask, onCreateExpertTask, refreshTasks, taskContextMenu, setTaskContextMenu, renameTask, pinTask, hideTask, activateTask, openProjectTabPaths, openProjectTabIdentities, openExpertTabIDs, activeAssistantTask, activeAssistantTaskRunning, busyTaskRuns, taskListVisible: middleTab === 'tasks', showCloudWorkspaceManagement: showCloudWorkspaceManagement ?? showCodingToolEntry, showCloudWorkspaceCreation: showCloudWorkspaceCreation ?? showCloudWorkspaceManagement ?? showCodingToolEntry, restoreCloudWorkspaceTasks }} />
                     {middleTab === 'employees' && showDigitalEmployeeTabs && <div data-testid="sidebar-middle-pane-employees" style={middlePaneStyle}><VirtualEmployeeTab lang={lang} theme={veTheme} onStartConversation={(ve) => onOpenVEConversation?.(ve)} favoriteEmployeeIds={favoriteEmployeeIds} favoriteEmployeeNames={favoriteEmployeeNames} onSetFavorite={onSetFavoriteEmployee} onRemoveFavorite={onRemoveFavoriteEmployee} onRenameEmployee={onRenameEmployee} /></div>}
                     {middleTab === 'history' && showDigitalEmployeeTabs && <div data-testid="sidebar-middle-pane-history" style={middlePaneStyle}><SidebarHistorySessions lang={lang} enabled={showDigitalEmployeeTabs} onOpenDiscussion={(discussion) => onOpenHistoryDiscussion?.(discussion)} /></div>}
                 </div>

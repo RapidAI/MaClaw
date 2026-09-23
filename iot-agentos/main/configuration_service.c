@@ -38,8 +38,8 @@
 #define CONFIGURATION_STORE_MAGIC 0x43464731u /* CFG1 */
 #define CONFIGURATION_STORE_VERSION 8u
 /* secret_storage records live alongside the V8 store so a single
- * `nvs_flash_erase`-equivalent erases everything; the dedicated namespace
- * alias clarifies intent at the call site. */
+ * flash-erase operation on the whole NVS partition erases everything; the
+ * dedicated namespace alias clarifies intent at the call site. */
 #define CONFIGURATION_SECRET_NAMESPACE CONFIGURATION_NAMESPACE
 
 /* NVS keys for V8 at-rest ciphertext.  The "_staged" suffix separates a

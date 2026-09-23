@@ -177,7 +177,7 @@ git ls-files 总数        = 12,628
 - [ ] `.maclaw-tmp-capture-win.ps1`、`.waveshare-syntax-command.txt`（已删）、`esptool.spec`、`test_funasr.py` — 脚本与代码，按定义**保留**
 - [ ] `live_probe.go`、`_run_live_probe.cmd`、`_run_registration_tests.cmd` — 代码与脚本，按定义**保留**
 - [ ] `deploy_all_maclinux 2.sh` — 脚本副本，按定义**保留**
-- [ ] `deploy_iworker.cmd` — 脚本，按定义**保留**（iWorker 系列已下线，可随该模块一并处理）
+- [x] `deploy_iworker.cmd` — 已随 iWorker/iWorkerCenter 清除一并删除
 - [x] `build_exit.txt`、`.DS_Store`
 
 ### 1.4 额外的磁盘空间（不含 git，可安全清理）

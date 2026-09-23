@@ -2,6 +2,7 @@ package tensor
 
 import (
 	"fmt"
+	"math/rand"
 	"math"
 	"testing"
 )
@@ -160,6 +161,39 @@ func TestMultiDot4DualB(t *testing.T) {
 		if math.Abs(float64(got2[4+r]-r1[r])) > 1e-3 {
 			t.Fatalf("tail b1 row %d: got %v want %v", r, got2[4+r], r1[r])
 		}
+	}
+}
+
+func TestMultiDot4DualBGeneric16SmallK(t *testing.T) {
+	// K=8/16/24 hit the ZMM generic kernel with an empty 32-wide main loop;
+	// the 16/8-wide zero-padded tails must reproduce the scalar reference.
+	for _, K := range []int{8, 16, 24, 32, 40} {
+		t.Run(fmt.Sprintf("K%d", K), func(t *testing.T) {
+			a := make([]float32, 4*K)
+			b0, b1 := make([]float32, K), make([]float32, K)
+			for i := range a {
+				a[i] = float32((i%17)-8) * 0.125
+			}
+			for i := range b0 {
+				b0[i] = float32((i%19)-9) * 0.0625
+				b1[i] = float32((i%13)-6) * 0.09375
+			}
+			var got [8]float32
+			multiDot4DualB(&got, a, b0, b1, K)
+			for r := 0; r < 4; r++ {
+				var w0, w1 float32
+				for k := 0; k < K; k++ {
+					w0 += a[r*K+k] * b0[k]
+					w1 += a[r*K+k] * b1[k]
+				}
+				if diff := math.Abs(float64(got[r] - w0)); diff > 1e-4 {
+					t.Fatalf("b0 row %d: got %v want %v", r, got[r], w0)
+				}
+				if diff := math.Abs(float64(got[4+r] - w1)); diff > 1e-4 {
+					t.Fatalf("b1 row %d: got %v want %v", r, got[4+r], w1)
+				}
+			}
+		})
 	}
 }
 
@@ -703,5 +737,74 @@ func TestMatMulQ8BiasAdd_FFNDown(t *testing.T) {
 		if math.Abs(float64(out[i]-ref[i])) > 2e-3 {
 			t.Fatalf("idx %d (m=%d n=%d): got %v want %v", i, i/N, i%N, out[i], ref[i])
 		}
+	}
+}
+
+// BenchmarkQKDotTile4 compares the attention Q·K inner loop shapes at
+// headDim=256: 4 independent dots (old gqaHead loop) vs one multiDot4
+// (B loaded once). On AVX2-only machines Dot resolves to dot256AVX2.
+func BenchmarkQKDotTile4(b *testing.B) {
+	const K = 256
+	rng := rand.New(rand.NewSource(7))
+	q := make([]float32, 4*K)
+	kv := make([]float32, 512*K)
+	for i := range q {
+		q[i] = rng.Float32()*2 - 1
+	}
+	for i := range kv {
+		kv[i] = rng.Float32()*2 - 1
+	}
+	var d4 [4]float32
+	b.Run("old_4x_dot256AVX2", func(b *testing.B) {
+		var s float32
+		for i := 0; i < b.N; i++ {
+			for r := 0; r < 512; r++ {
+				for t := 0; t < 4; t++ {
+					s += dot256AVX2(&q[t*K], &kv[r*K])
+				}
+			}
+		}
+		_ = s
+	})
+	b.Run("old_4x_dot256AVX512", func(b *testing.B) {
+		var s float32
+		for i := 0; i < b.N; i++ {
+			for r := 0; r < 512; r++ {
+				for t := 0; t < 4; t++ {
+					s += dot256AVX512(&q[t*K], &kv[r*K])
+				}
+			}
+		}
+		_ = s
+	})
+	b.Run("multiDot4", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			for r := 0; r < 512; r++ {
+				multiDot4(&d4, q, kv[r*K:(r+1)*K], K)
+			}
+		}
+	})
+}
+
+// BenchmarkMultiDot4DualB measures the dual GEMM kernel across small-K
+// widths newly routed to the ZMM generic16 kernel (K=8/16/24) vs a
+// control width (K=12, still on AVX2 dual).
+func BenchmarkMultiDot4DualB(b *testing.B) {
+	for _, K := range []int{8, 12, 16, 24, 48} {
+		a := make([]float32, 4*K)
+		b0, b1 := make([]float32, K), make([]float32, K)
+		for i := range a {
+			a[i] = float32(i%17) * 0.125
+		}
+		for i := range b0 {
+			b0[i] = float32(i%19) * 0.0625
+			b1[i] = float32(i%13) * 0.09375
+		}
+		var out [8]float32
+		b.Run(fmt.Sprintf("K%d", K), func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				multiDot4DualB(&out, a, b0, b1, K)
+			}
+		})
 	}
 }

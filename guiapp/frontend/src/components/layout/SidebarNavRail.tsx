@@ -242,13 +242,7 @@ export const SidebarNavRail = ({
             {showAppEntry && veAuthorized && favoriteEmployees.length > 0 && (
                 <div
                     aria-hidden="true"
-                    style={{
-                        width: '60%',
-                        height: '1px',
-                        margin: '6px 0',
-                        background: 'linear-gradient(90deg, transparent 0%, var(--theme-border) 25%, var(--theme-text-muted) 50%, var(--theme-border) 75%, transparent 100%)',
-                        opacity: 0.4,
-                    }}
+                    className="snr-divider"
                 />
             )}
             <FavoriteEmployeeButtons
@@ -263,7 +257,7 @@ export const SidebarNavRail = ({
                 onRename={onRenameFavorite}
                 lang={lang}
             />
-            <div style={{ flex: 1 }} />
+            <div className="snr-spacer" />
             <div className="mc-legacy-rail-footer">
                 <div
                     className={'sidebar-item left-nav-item ' + (systemMenuOpen || systemPageActive ? 'active' : '')}
@@ -275,11 +269,11 @@ export const SidebarNavRail = ({
                     title={systemLabel}
                 >
                     <span className="sidebar-icon" style={{ margin: 0, display: 'inline-flex', color: systemMenuOpen || systemPageActive ? 'var(--theme-primary)' : 'var(--theme-text-primary)' }}><SystemIcon /></span>
-                    <span style={{ fontSize: '0.72rem', lineHeight: 1, fontWeight: 700 }}>{systemLabel}</span>
+                    <span className="snr-system-label">{systemLabel}</span>
                 </div>
                 {invitationEnabled && (
                     <>
-                        <div aria-hidden="true" style={{ width: '60%', height: 1, margin: '3px 0', background: 'var(--theme-border)', opacity: .7 }} />
+                        <div aria-hidden="true" className="snr-invite-divider" />
                         <button
                             type="button"
                             className="sidebar-item left-nav-item"
@@ -287,9 +281,9 @@ export const SidebarNavRail = ({
                             title={lang === 'zh-Hans' ? '邀请好友' : lang === 'zh-Hant' ? '邀請好友' : 'Invite friends'}
                             style={{ flexDirection: 'column', padding: '5px 0', width: '100%', gap: '2px', border: 'none', background: 'transparent', color: 'var(--theme-primary)', cursor: 'pointer', position: 'relative' }}
                         >
-                            <span className="sidebar-icon" style={{ margin: 0, display: 'inline-flex' }}><InviteGiftIcon /></span>
-                            <span style={{ fontSize: '.66rem', lineHeight: 1, fontWeight: 800 }}>{lang === 'en' ? 'Invite' : '邀请'}</span>
-                            <span aria-hidden="true" style={{ position: 'absolute', top: 5, right: '25%', width: 5, height: 5, borderRadius: '50%', background: '#ef5d6c' }} />
+                            <span className="sidebar-icon snr-invite-icon"><InviteGiftIcon /></span>
+                            <span className="snr-invite-label">{lang === 'en' ? 'Invite' : '邀请'}</span>
+                            <span aria-hidden="true" className="snr-invite-dot" />
                         </button>
                     </>
                 )}

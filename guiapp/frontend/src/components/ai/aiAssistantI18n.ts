@@ -3,10 +3,10 @@
 export { localizeText } from '../../i18n';
 import { localizeText } from '../../i18n';
 
-/** English label for the fixed main AI assistant tab / panel chrome. */
-export const LOCAL_ASSISTANT_TITLE_EN = "Default Task";
-/** Chinese (Hans/Hant) label for the fixed main AI assistant tab / panel chrome. */
-export const LOCAL_ASSISTANT_TITLE_ZH = "默认任务";
+/** English label for the new-task page. It is not a task. */
+export const LOCAL_ASSISTANT_TITLE_EN = "New task";
+/** Chinese (Hans/Hant) label for the new-task page. It is not a task. */
+export const LOCAL_ASSISTANT_TITLE_ZH = "新建任务";
 
 const OFFICIAL_SERVICE_MESSAGES: Array<[needle: string, en: string, zhHans: string, zhHant: string]> = [
     ["MaClaw 官方周期限流：当前周期额度已用尽", "MaClaw official service is period-limited: current-period credits are exhausted. Please try again later.", "MaClaw 官方周期限流：当前周期额度已用尽。", "MaClaw 官方週期限流：目前週期額度已用盡。"],

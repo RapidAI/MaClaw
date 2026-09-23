@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import { useState } from 'react';
 import { render, cleanup, fireEvent, waitFor, act, within, screen } from '@testing-library/react';
 import * as fc from 'fast-check';
 import { AIAssistantPanel, canShowAssistantCodingPreviewForTab, codePreviewModeFromState, shouldApplyRestoredAssistantPreview, shouldShowSourcePreviewForAgentMode, shouldShowSourcePreviewForWorkflow, withCodePreviewVisibleIfContent } from '../AIAssistantPanel';
@@ -7,7 +8,7 @@ import { openCurrentTenantCardStore } from '../AssistantTitleBar';
 import { forgetAIAssistantSessionRounds, type ChatMessage, type CancelAIAssistantResult, type NewsCardData, type ChatAction } from '../useAIAssistant';
 import type { AgentView } from '../agentViewTypes';
 import { DialogProvider } from '../../CustomDialog';
-import { EVENT_OPEN_NEW_TASK_WIZARD, EVENT_OPEN_TASK_LAUNCH } from '../../../constants/events';
+import { EVENT_OPEN_NEW_TASK_WIZARD, EVENT_OPEN_TASK_LAUNCH, EVENT_PROJECT_TASK_ACTIVATE } from '../../../constants/events';
 import { __resetCloudWorkspaceLeaseEnsureForTests } from '../codingTaskMode';
 import { ExportTaskResultFile, PreviewTaskResultFile } from '../../../../wailsjs/go/main/App';
 
@@ -53,6 +54,22 @@ const scrollIntoViewMock = vi.fn();
 const scrollToMock = vi.fn();
 const originalCreateObjectURL = Object.getOwnPropertyDescriptor(URL, 'createObjectURL');
 const originalRevokeObjectURL = Object.getOwnPropertyDescriptor(URL, 'revokeObjectURL');
+
+/**
+ * Focus the local assistant page the way the task list does.
+ *
+ * The new-task guide is a page rather than a tab, so it no longer renders an
+ * `ai-tab-local` button. Tests trigger the same activation event the product
+ * uses (`project-task:activate` with `local: true`), which only switches the
+ * active tab and never opens the new-task wizard.
+ */
+function activateLocalTab() {
+    const handler = runtimeEventsOnMock.mock.calls
+        .filter(([eventName]) => eventName === EVENT_PROJECT_TASK_ACTIVATE)
+        .at(-1)?.[1] as ((payload: { local?: boolean }) => void) | undefined;
+    expect(handler, 'project-task:activate handler should be registered').toBeTruthy();
+    act(() => { handler?.({ local: true }); });
+}
 
 describe('shouldShowSourcePreviewForWorkflow', () => {
     it('keeps source previews closed while a non-programming workflow is active', () => {
@@ -1118,7 +1135,7 @@ describe('AIAssistantPanel property tests', () => {
         />);
         await waitFor(() => expect(getByRole('tab', { name: 'Next project' })).toBeTruthy());
 
-        fireEvent.click(getByTestId('ai-tab-local'));
+        activateLocalTab();
         await waitFor(() => expect(queryByTestId('code-preview-header')).toBeNull());
         expect(document.body.textContent || '').not.toContain('Hello from hidden local');
         expect(document.body.textContent || '').not.toContain('polluted_project_preview');
@@ -1332,7 +1349,7 @@ describe('AIAssistantPanel property tests', () => {
         expect(titleBar.style.boxSizing).toBe('border-box');
 
         const toolsGroup = getByTestId('ai-titlebar-tools-group');
-        expect(toolsGroup.style.minWidth).toBe('0px');
+        expect(toolsGroup.className).toContain('atb-tools-group');
 
         const windowGroup = getByTestId('ai-titlebar-window-group');
         expect(windowGroup.style.flexShrink).toBe('0');
@@ -1368,9 +1385,7 @@ describe('AIAssistantPanel property tests', () => {
         });
 
         const body = getByTestId('ai-panel-body');
-        expect(body.style.flex).toBe('1 1 0%');
-        expect(body.style.minHeight).toBe('0px');
-        expect(body.style.overflow).toBe('hidden');
+        expect(body.className).toContain('aap-panel-body');
 
         const output = getByTestId('ai-output-container');
         expect(output.style.flex).toBe('1 1 0%');
@@ -2534,7 +2549,8 @@ describe('AIAssistantPanel property tests', () => {
         expect(sendMessage).not.toHaveBeenCalled();
 
         fireEvent.keyDown(input, { key: 'Enter' });
-        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('quick send', expect.objectContaining({ tabId: 'local' })));
+        await waitFor(() => expect(createTaskUnifiedMock).toHaveBeenCalledWith(expect.objectContaining({ name: 'quick send' })));
+        expect(sendMessage).not.toHaveBeenCalled();
     });
 
     it('does not send when an IME Enter keydown is reported with keyCode 229', () => {
@@ -2987,7 +3003,7 @@ describe('AIAssistantPanel property tests', () => {
             onPendingProjectTabOpenHandled: onHandled,
             state: { ...base.state, messages: [], sending: false, streaming: false, ready: true },
         };
-        const { rerender, getByTestId } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+        const { rerender } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
 
         await waitFor(() => expect(onHandled).toHaveBeenCalled());
         await waitFor(() => expect(document.body.textContent || '').toContain('已恢复任务上下文'));
@@ -3032,7 +3048,8 @@ describe('AIAssistantPanel property tests', () => {
         await waitFor(() => expect(onHandled).toHaveBeenCalled());
         await waitFor(() => expect(document.body.textContent || '').toContain('question before closing project tab'));
         expect(document.body.textContent || '').toContain('answer before closing project tab');
-        expect(getByTestId('ai-tab-local')).toBeTruthy();
+        // The reopened task owns a tab; the guide is a page, not a tab.
+        expect(document.querySelector('[data-testid^="ai-tab-proj-"]')).toBeTruthy();
     });
 
     it('restores backend-copied conversation when opening a forked task with a fresh project path', async () => {
@@ -3242,7 +3259,7 @@ describe('AIAssistantPanel property tests', () => {
             resolveHistory = resolve;
         }));
         const onHandled = vi.fn();
-        const { getByTestId } = renderPanel({
+        renderPanel({
             pendingProjectTabOpen: { projectPath, taskTitle: 'Close while loading', autoSend: false },
             onPendingProjectTabOpenHandled: onHandled,
             state: { messages: [], sending: false, streaming: false, ready: true },
@@ -3260,7 +3277,8 @@ describe('AIAssistantPanel property tests', () => {
             ]);
         });
 
-        await waitFor(() => expect(getByTestId('ai-tab-local')).toBeTruthy());
+        // Closing the task drops its tab and leaves the guide page behind.
+        await waitFor(() => expect(document.querySelector('[data-testid^="ai-tab-proj-"]')).toBeNull());
         expect(document.body.textContent || '').not.toContain('late user message');
         expect(document.body.textContent || '').not.toContain('late assistant message');
     });
@@ -3991,6 +4009,46 @@ describe('AIAssistantPanel property tests', () => {
             expect(desc).toMatch(/skill|mcp/i);
             expect(desc).toMatch(/multi-turn|多轮|多輪|续写|續寫/i);
         }, { timeout: 3000 });
+    });
+
+    it('shows remote host and directory in the execution header and working-dir chip', async () => {
+        getTabWorkingDirMock.mockResolvedValue({
+            path: 'C:\\Users\\me\\.maclaw\\data\\你好呀-1789995819852879500\\workspace',
+            is_default: true,
+        });
+        getCodingWorkbenchStatusMock.mockResolvedValue({
+            kind: 'remote',
+            armed: true,
+            needs_reconnect: false,
+            turn_count: 0,
+            remote_host: 'www.driverdevelopment.com',
+            remote_work_dir: '/home/ubuntu/app',
+            session_plan: '',
+        });
+        const { getByTestId } = renderPanel({
+            lang: 'zh',
+            pendingProjectTabOpen: {
+                projectPath: 'C:\\Users\\me\\.maclaw\\data\\你好呀-1789995819852879500\\workspace',
+                taskTitle: '你好呀',
+                autoSend: false,
+                prepareMode: 'restore-context',
+                agentMode: 'remote_coding_dev',
+                remoteHost: 'www.driverdevelopment.com',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            tasks: [{
+                project_path: 'C:\\Users\\me\\.maclaw\\data\\你好呀-1789995819852879500\\workspace',
+                name: '你好呀',
+                tags: ['remote_coding_dev', 'remote_host:www.driverdevelopment.com', 'remote_workdir:/home/ubuntu/app'],
+            }],
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        await waitFor(() => expect(getByTestId('task-execution-meta').textContent || '').toContain('www.driverdevelopment.com:/home/ubuntu/app'));
+        expect(getByTestId('task-execution-meta').textContent || '').not.toMatch(/你好呀-1789995819852879500/);
+        await waitFor(() => expect(getByTestId('working-dir-chip').textContent || '').toContain('www.driverdevelopment.com:/home/ubuntu/app'));
+        expect(getByTestId('working-dir-chip').textContent || '').not.toMatch(/你好呀-1789995819852879500/);
+        expect(getByTestId('working-dir-chip').textContent || '').not.toContain('默认');
     });
 
     it('uses maintenance copy while a remote diagnosis environment is preparing', async () => {
@@ -4776,7 +4834,7 @@ describe('AIAssistantPanel property tests', () => {
         await waitFor(() => expect(document.body.textContent || '').toContain('weather query'));
         expect(document.body.textContent || '').toContain('checking weather');
 
-        fireEvent.click(getByTestId('ai-tab-local'));
+        activateLocalTab();
         expect(getByText(/local before auto-send/)).toBeTruthy();
         expect(document.body.textContent || '').not.toContain('weather query');
         expect(document.body.textContent || '').not.toContain('checking weather');
@@ -4786,6 +4844,37 @@ describe('AIAssistantPanel property tests', () => {
         await waitFor(() => expect(document.body.textContent || '').not.toContain('weather query'));
         expect(document.body.textContent || '').not.toContain('checking weather');
         expect(onHandled).toHaveBeenCalled();
+    });
+
+    it('delivers a new-task message into an already-open task tab', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const projectPath = 'D:/tasks/existing-remote';
+        const base = defaultPanelProps();
+        const { rerender } = render(<AIAssistantPanel
+            {...base}
+            pendingProjectTabOpen={{ projectPath, taskTitle: 'Existing remote', autoSend: false }}
+            onPendingProjectTabOpenHandled={vi.fn()}
+            actions={{ ...base.actions, sendMessage }}
+        />, { wrapper: DialogProvider });
+        await waitFor(() => expect(document.querySelector('[data-testid^="ai-tab-proj-"]')).toBeTruthy());
+        sendMessage.mockClear();
+
+        rerender(<AIAssistantPanel
+            {...base}
+            pendingProjectTabOpen={{
+                projectPath,
+                taskTitle: 'Existing remote',
+                initialMessage: 'follow up on the server',
+                autoSend: true,
+                deliverInitialMessage: true,
+            }}
+            onPendingProjectTabOpenHandled={vi.fn()}
+            actions={{ ...base.actions, sendMessage }}
+        />);
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('follow up on the server', expect.objectContaining({
+            project_path: projectPath,
+        })));
     });
 
     it('lets local assistant submit while a project tab round is running', async () => {
@@ -4815,7 +4904,7 @@ describe('AIAssistantPanel property tests', () => {
         })));
         rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={{ ...props.state, sending: true, streaming: true }} />);
 
-        fireEvent.click(getByTestId('ai-tab-local'));
+        activateLocalTab();
         const input = getByTestId('ai-input') as HTMLTextAreaElement;
         fireEvent.change(input, { target: { value: 'local question during project' } });
         fireEvent.keyDown(input, { key: 'Enter' });
@@ -4864,7 +4953,7 @@ describe('AIAssistantPanel property tests', () => {
         const projectTabId = (((sendMessage as any).mock.calls[0]?.[1]) as any)?.tabId as string;
 
         rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={{ ...props.state, messages: [localBefore, projectUser, projectAssistant], sending: true, streaming: true }} />);
-        fireEvent.click(getByTestId('ai-tab-local'));
+        activateLocalTab();
         const localInput = getByTestId('ai-input') as HTMLTextAreaElement;
         fireEvent.change(localInput, { target: { value: 'local takes over stale project' } });
         fireEvent.keyDown(localInput, { key: 'Enter' });
@@ -5005,7 +5094,7 @@ describe('AIAssistantPanel property tests', () => {
         expect(document.body.textContent || '').not.toContain('嗯，接住了');
         expect(document.querySelector('[data-testid="guide-receipt"]')).toBeNull();
 
-        fireEvent.click(getByTestId('ai-tab-local'));
+        activateLocalTab();
         expect(document.body.textContent || '').not.toContain('project guide context');
         expect(document.querySelector('[data-testid="guide-receipt"]')).toBeNull();
     });
@@ -5045,7 +5134,7 @@ describe('AIAssistantPanel property tests', () => {
         fireEvent.click(fireButton!);
         await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledWith('delayed project guide', 'desktop-user:D:/tasks/delayed-guide', expect.any(String)));
 
-        fireEvent.click(getByTestId('ai-tab-local'));
+        activateLocalTab();
         resolveGuide(true);
         await waitFor(() => expect(document.body.textContent || '').not.toContain('delayed project guide'));
 
@@ -5108,7 +5197,7 @@ describe('AIAssistantPanel property tests', () => {
         });
 
         await waitFor(() => expect(onHandled).toHaveBeenCalled());
-        fireEvent.click(getByTestId('ai-tab-local'));
+        activateLocalTab();
         const projectTab = document.querySelector('[data-testid^="ai-tab-proj-"]') as HTMLElement | null;
         if (projectTab) {
             fireEvent.click(projectTab);
@@ -5158,7 +5247,7 @@ describe('AIAssistantPanel property tests', () => {
         expect(document.body.textContent || '').not.toContain('second project guide');
         expect(document.querySelector('[data-testid="guide-receipt"]')).toBeNull();
 
-        fireEvent.click(getByTestId('ai-tab-local'));
+        activateLocalTab();
         expect(document.body.textContent || '').not.toContain('first project guide');
         expect(document.body.textContent || '').not.toContain('second project guide');
     });
@@ -5186,12 +5275,20 @@ describe('AIAssistantPanel property tests', () => {
         expect(getByTestId('ai-pending-attachments').textContent || '').toContain('PDF');
 
         fireEvent.change(input, { target: { value: 'please review' } });
-        fireEvent.keyDown(input, { key: 'Enter' });
-
-        await waitFor(() => expect(sendMessage).toHaveBeenCalled());
-        const outgoing = String(sendMessage.mock.calls[0]?.[0] || '');
-        expect(outgoing).toContain('please review');
-        expect(outgoing).toContain('D:\\cases\\contract.pdf');
+        const launches: CustomEvent[] = [];
+        const listener = (event: Event) => launches.push(event as CustomEvent);
+        window.addEventListener(EVENT_OPEN_TASK_LAUNCH, listener);
+        try {
+            fireEvent.keyDown(input, { key: 'Enter' });
+            await waitFor(() => expect(launches).toHaveLength(1));
+            const detail = launches[0].detail as { taskTitle?: string; initialMessage?: string };
+            expect(detail.taskTitle).toBe('please review');
+            expect(detail.initialMessage).toContain('please review');
+            expect(detail.initialMessage).toContain('D:\\cases\\contract.pdf');
+            expect(sendMessage).not.toHaveBeenCalled();
+        } finally {
+            window.removeEventListener(EVENT_OPEN_TASK_LAUNCH, listener);
+        }
     });
 
     it('keeps queued pasted image thumbnails visible after the composer releases its temporary URL', async () => {
@@ -6370,7 +6467,7 @@ describe('AIAssistantPanel property tests', () => {
         const sendMessage = vi.fn<() => Promise<void>>().mockResolvedValue();
         const recordSubmittedPrompt = vi.fn();
         const { getByTestId } = renderPanel({
-            state: { messages: [], submittedPrompts: [], sending: false, streaming: false, ready: true },
+            state: { messages: [makeMsg({ role: 'user', content: 'earlier' })], submittedPrompts: [], sending: false, streaming: false, ready: true },
             actions: {
                 sendMessage,
                 recordSubmittedPrompt,
@@ -6494,7 +6591,7 @@ describe('AIAssistantPanel property tests', () => {
         const setDraftInputValue = vi.fn();
         const onHandled = vi.fn();
 
-        const { getByTestId, getByText } = renderPanel({
+        const { getByTestId } = renderPanel({
             pendingProjectTabOpen: {
                 projectPath: 'D:/tasks/draft-isolated',
                 taskTitle: 'Draft isolated task',
@@ -6514,11 +6611,12 @@ describe('AIAssistantPanel property tests', () => {
         fireEvent.change(input, { target: { value: 'project draft' } });
         expect(setDraftInputValue).not.toHaveBeenCalledWith('project draft');
 
-        fireEvent.click(getByTestId('ai-tab-local'));
+        activateLocalTab();
         await waitFor(() => expect((getByTestId('ai-input') as HTMLTextAreaElement).value).toBe('local draft'));
 
-        fireEvent.click(getByTestId('ai-tab-overflow-btn'));
-        fireEvent.click(getByText('Draft isolated task'));
+        // The guide takes no tab slot, so the task tab sits in the bar itself.
+        // It stays in the DOM behind the welcome layer, hence hidden: true.
+        fireEvent.click(screen.getByRole('tab', { name: 'Draft isolated task', hidden: true }));
         await waitFor(() => expect((getByTestId('ai-input') as HTMLTextAreaElement).value).toBe('project draft'));
     });
 
@@ -7012,7 +7110,7 @@ describe('AIAssistantPanel property tests', () => {
         });
 
         await waitFor(() => expect(onHandled).toHaveBeenCalled());
-        fireEvent.click(getByTestId('ai-tab-local'));
+        activateLocalTab();
         const input = getByTestId('ai-input') as HTMLTextAreaElement;
         expect(input.placeholder).toBe('Enter a task or command...');
         fireEvent.change(input, { target: { value: 'local tab should not inherit project busy' } });
@@ -7047,7 +7145,7 @@ describe('AIAssistantPanel property tests', () => {
         });
 
         await waitFor(() => expect(onHandled).toHaveBeenCalled());
-        fireEvent.click(getByTestId('ai-tab-local'));
+        activateLocalTab();
         const input = getByTestId('ai-input') as HTMLTextAreaElement;
         expect(input.placeholder).toBe('Enter a task or command...');
         fireEvent.change(input, { target: { value: 'local detached should queue' } });
@@ -7055,6 +7153,44 @@ describe('AIAssistantPanel property tests', () => {
 
         await waitFor(() => expect(getByText('local detached should queue')).toBeTruthy());
         expect(sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('publishes every busy run identity, including detached project and expert sessions', async () => {
+        const onBusyTaskRunsChange = vi.fn();
+        const onHandled = vi.fn();
+
+        renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/project-active-local-detached',
+                taskTitle: 'Project active local detached',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            onBusyTaskRunsChange,
+            state: {
+                messages: [],
+                sending: true,
+                sendingSessionKey: 'desktop-user:D:/tasks/project-active-local-detached',
+                busySessionKeys: [
+                    'desktop-user',
+                    'desktop-user:D:/tasks/project-active-local-detached',
+                    'desktop-user:D:/tasks/project-detached-other',
+                    'desktop-user:expert:exp_42',
+                ],
+                streaming: true,
+                streamingSessionKey: 'desktop-user:D:/tasks/project-active-local-detached',
+                ready: true,
+            },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        // The local 'desktop-user' session carries no project identity and
+        // must not leak into the published set.
+        await waitFor(() => {
+            const last = onBusyTaskRunsChange.mock.calls.at(-1)?.[0];
+            expect(last?.projectPaths).toEqual(['D:/tasks/project-active-local-detached', 'D:/tasks/project-detached-other']);
+            expect(last?.expertIds).toEqual(['exp_42']);
+        });
     });
 
     it('keeps a project tab queued when its detached session remains busy after the active round idles', async () => {
@@ -7119,7 +7255,7 @@ describe('AIAssistantPanel property tests', () => {
         expect((getByTestId('ai-input') as HTMLTextAreaElement).placeholder).toBe('Enter a task or command...');
         expect(getByTestId('assistant-reasoning-label').textContent).toBe('Contacting the model');
 
-        fireEvent.click(getByTestId('ai-tab-local'));
+        activateLocalTab();
         expect((getByTestId('ai-input') as HTMLTextAreaElement).placeholder).toBe('Enter a task or command...');
     });
 
@@ -7159,7 +7295,7 @@ describe('AIAssistantPanel property tests', () => {
         localStorage.removeItem('ai_assistant_buffer_queue');
         const onHandled = vi.fn();
 
-        const { getByTestId, queryByTestId, getByText } = renderPanel({
+        const { getByTestId, queryByTestId } = renderPanel({
             pendingProjectTabOpen: {
                 projectPath: 'D:/tasks/queue-isolated',
                 taskTitle: 'Queue isolated task',
@@ -7175,11 +7311,11 @@ describe('AIAssistantPanel property tests', () => {
         fireEvent.keyDown(input, { key: 'Enter' });
         await waitFor(() => expect(getByTestId('buffer-queue-panel').textContent || '').toContain('project queued only'));
 
-        fireEvent.click(getByTestId('ai-tab-local'));
+        activateLocalTab();
         await waitFor(() => expect(queryByTestId('buffer-queue-panel')).toBeNull());
 
-        fireEvent.click(getByTestId('ai-tab-overflow-btn'));
-        fireEvent.click(getByText('Queue isolated task'));
+        // The guide takes no tab slot, so the task tab sits in the bar itself.
+        fireEvent.click(screen.getByRole('tab', { name: 'Queue isolated task' }));
         await waitFor(() => expect(getByTestId('buffer-queue-panel').textContent || '').toContain('project queued only'));
     });
 
@@ -7223,8 +7359,10 @@ describe('AIAssistantPanel property tests', () => {
         // Switch away to the local assistant tab first. In jsdom the tab bar is
         // zero-width, so the inactive project tab collapses into the overflow
         // menu and leaves the DOM until it is active again.
-        fireEvent.click(tabFor('Default Task')!);
-        await waitFor(() => expect(tabFor('Default Task')?.getAttribute('aria-selected')).toBe('true'));
+        act(() => {
+            window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
+        });
+        await waitFor(() => expect(tabFor('Activate target task')?.getAttribute('aria-selected')).toBe('false'));
         loadProjectTabConversationMock.mockClear();
 
         const activateHandler = runtimeEventsOnMock.mock.calls.filter(([eventName]) => eventName === 'project-task:activate').at(-1)?.[1];
@@ -7232,7 +7370,8 @@ describe('AIAssistantPanel property tests', () => {
         act(() => activateHandler({ projectPath: 'D:/tasks/activate-target' }));
 
         await waitFor(() => expect(tabFor('Activate target task')?.getAttribute('aria-selected')).toBe('true'));
-        expect(tabFor('Default Task')?.getAttribute('aria-selected')).toBe('false');
+        expect(screen.queryByRole('tab', { name: 'Default Task' })).toBeNull();
+        expect(screen.queryByRole('tab', { name: 'New task' })).toBeNull();
         // Focus-only: no transcript reload for the reactivated tab.
         expect(loadProjectTabConversationMock).not.toHaveBeenCalled();
     });
@@ -7779,10 +7918,9 @@ describe('expert tabs', () => {
         // Clear, then switch local → expert: the cleared conversation must not come back.
         fireEvent.click(screen.getByTitle('New conversation'));
         await waitFor(() => expect(clearAIAssistantHistoryForSessionMock).toHaveBeenCalledWith('desktop-user:expert:exp-1'));
-        fireEvent.click(screen.getByTestId('ai-tab-local'));
-        // jsdom has no layout width, so the inactive expert tab lives in the overflow menu.
-        fireEvent.click(screen.getByTestId('ai-tab-overflow-btn'));
-        fireEvent.click(within(screen.getByTestId('ai-tab-overflow-dropdown')).getByText('Polisher'));
+        activateLocalTab();
+        // The guide takes no tab slot, so the expert tab stays in the bar itself.
+        fireEvent.click(screen.getByTestId('ai-tab-expert-exp-1'));
         // ai-expert-empty only renders when displayMessages is empty — its presence
         // after the local → expert roundtrip proves the cleared history did not resurrect.
         await screen.findByTestId('ai-expert-empty');
@@ -7856,6 +7994,20 @@ describe('thinking panel auto-expands with real hook state shape', () => {
         );
 
         expect(reasoningDetails(container)?.open).toBe(true);
+    });
+});
+
+describe('local execution heading', () => {
+    it('uses the localized assistant title instead of the stored Chinese default', () => {
+        renderPanel({
+            lang: 'en',
+            state: { messages: [makeMsg({ role: 'user', content: 'hi' })], sending: false, streaming: false, ready: true },
+        });
+        const header = screen.getByTestId('task-execution-header');
+        expect(header.textContent).toContain('New task');
+        expect(header.textContent).not.toContain('Default Task');
+        expect(header.textContent).not.toContain('默认任务');
+        expect(header.textContent).not.toContain('Created by you');
     });
 });
 
@@ -7944,7 +8096,7 @@ describe('new-task wizard page (task-pane 新建任务 button)', () => {
         expect(sendMessage).not.toHaveBeenCalled();
     });
 
-    it('clears the wizard marker after the task is created (tab returns to normal assistant)', async () => {
+    it('keeps the guide as a new-task page so the next send creates another task', async () => {
         const sendMessage = vi.fn().mockResolvedValue(true);
         renderPanel({
             window: { inline: true },
@@ -7964,16 +8116,15 @@ describe('new-task wizard page (task-pane 新建任务 button)', () => {
             expect(createTaskUnifiedMock).toHaveBeenCalledTimes(1);
         });
 
-        // After creation the marker is retired: a plain send on the (still
-        // welcome) local tab keeps the legacy zero-config behavior.
+        // The guide stays the new-task page, so another send creates another task.
         typeAndEnter('普通闲聊一句');
         await waitFor(() => {
-            expect(sendMessage).toHaveBeenCalled();
+            expect(createTaskUnifiedMock).toHaveBeenCalledTimes(2);
         });
-        expect(createTaskUnifiedMock).toHaveBeenCalledTimes(1);
+        expect(sendMessage).not.toHaveBeenCalled();
     });
 
-    it('plain empty welcome session keeps the legacy path (zero-config sends create nothing)', async () => {
+    it('startup guide creates a task from a zero-config send', async () => {
         const sendMessage = vi.fn().mockResolvedValue(true);
         renderPanel({
             window: { inline: true },
@@ -7983,9 +8134,10 @@ describe('new-task wizard page (task-pane 新建任务 button)', () => {
 
         typeAndEnter('随便聊聊');
         await waitFor(() => {
-            expect(sendMessage).toHaveBeenCalledTimes(1);
+            expect(createTaskUnifiedMock).toHaveBeenCalledTimes(1);
         });
-        expect(createTaskUnifiedMock).not.toHaveBeenCalled();
+        expect(createTaskUnifiedMock.mock.calls[0][0]).toEqual(expect.objectContaining({ name: '随便聊聊', mode: 'chat' }));
+        expect(sendMessage).not.toHaveBeenCalled();
     });
 
     it('dispatches the task launch with the first message after wizard creation', async () => {
@@ -8017,5 +8169,87 @@ describe('new-task wizard page (task-pane 新建任务 button)', () => {
         } finally {
             window.removeEventListener(EVENT_OPEN_TASK_LAUNCH, listener);
         }
+    });
+
+    it('opens the wizard over a running conversation and can return without clearing it', async () => {
+        const clearHistory = vi.fn().mockResolvedValue(undefined);
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const user = makeMsg({ role: 'user', content: 'Chongzhou weather' });
+        renderPanel({
+            window: { inline: true },
+            state: { messages: [user], sending: true, streaming: false, ready: true },
+            actions: { clearHistory, sendMessage },
+        });
+        expect(screen.getByTestId('ai-panel-root').getAttribute('data-ai-view')).toBe('execution');
+
+        act(() => {
+            window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
+        });
+
+        await waitFor(() => {
+            expect(screen.getByTestId('ai-panel-root').getAttribute('data-ai-view')).toBe('welcome');
+        });
+        expect(screen.getByTestId('welcome-task-config')).toBeTruthy();
+        expect(screen.getByTestId('new-task-wizard-running-banner')).toBeTruthy();
+        expect(clearHistory).not.toHaveBeenCalled();
+
+        fireEvent.click(screen.getByTestId('new-task-wizard-back'));
+        await waitFor(() => {
+            expect(screen.getByTestId('ai-panel-root').getAttribute('data-ai-view')).toBe('execution');
+        });
+        expect(screen.getByText('Chongzhou weather')).toBeTruthy();
+
+        act(() => {
+            window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
+        });
+        await waitFor(() => {
+            expect(screen.getByTestId('welcome-task-config')).toBeTruthy();
+        });
+        const input = screen.getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: '整理本周周报' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+        await waitFor(() => {
+            expect(createTaskUnifiedMock).toHaveBeenCalledTimes(1);
+        });
+        expect(sendMessage).not.toHaveBeenCalled();
+        expect(clearHistory).not.toHaveBeenCalled();
+        await waitFor(() => {
+            expect(screen.getByText('Chongzhou weather')).toBeTruthy();
+        });
+    });
+
+    it('opens the guide from another task and keeps an unsent guide draft', async () => {
+        const controls: { openProject?: () => void } = {};
+        function Harness() {
+            const [activeTask, setActiveTask] = useState<{ projectPath?: string; cloudWorkspaceId?: string; expertId?: string } | null>(null);
+            const [pending, setPending] = useState<{ projectPath: string; taskTitle: string; autoSend: boolean } | null>(null);
+            const [draft, setDraft] = useState('');
+            const base = defaultPanelProps();
+            controls.openProject = () => setPending({ projectPath: 'D:/tasks/workspace-1', taskTitle: '工作区 1', autoSend: false });
+            return (
+                <AIAssistantPanel
+                    {...base}
+                    window={{ inline: true }}
+                    state={{ ...base.state, messages: [], sending: false, streaming: false, ready: true, draftInputValue: draft }}
+                    actions={{ ...base.actions, setDraftInputValue: setDraft }}
+                    activeAssistantTask={activeTask}
+                    onActiveAssistantTaskChange={setActiveTask}
+                    pendingProjectTabOpen={pending}
+                    onPendingProjectTabOpenHandled={() => setPending(null)}
+                />
+            );
+        }
+        render(<Harness />, { wrapper: DialogProvider });
+        await waitFor(() => expect(screen.getByTestId('welcome-task-config')).toBeTruthy());
+        fireEvent.change(screen.getByTestId('ai-input'), { target: { value: 'half written' } });
+
+        act(() => controls.openProject?.());
+        await waitFor(() => expect(screen.getByTestId('ai-panel-root').getAttribute('data-ai-view')).toBe('execution'));
+
+        act(() => {
+            window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
+        });
+        await waitFor(() => expect(screen.getByTestId('welcome-task-config')).toBeTruthy());
+        expect((screen.getByTestId('ai-input') as HTMLTextAreaElement).value).toBe('half written');
     });
 });

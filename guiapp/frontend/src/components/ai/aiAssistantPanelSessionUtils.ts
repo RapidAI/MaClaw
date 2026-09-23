@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { buildOutgoingMessageMulti, type ChatMessage } from "./useAIAssistant";
 import { expertTabId } from "./expertTypes";
 import { cloudWorkspaceIdFromPath } from "./codingTaskMode";
@@ -47,6 +48,8 @@ export function projectSessionKey(projectPath?: string | null): string {
 /** Session key prefix shared by all expert conversations: desktop-user:expert:<id>. */
 const EXPERT_SESSION_KEY_PREFIX = "desktop-user:expert:";
 const ACP_SESSION_KEY_PREFIX = "desktop-user:acp:";
+/** Stable sidebar identity for VS Code Mode B. Session ids change on reconnect. */
+export const ACP_ASSISTANT_TAB_IDENTITY = "acp";
 /** Durable task-management tag that binds a workspace row to an expert id. */
 const EXPERT_TASK_SOURCE_PREFIX = "source:expert:";
 const ASSISTANT_TAB_TASK_SOURCE_PREFIX = "source:assistant_tab:";
@@ -110,6 +113,20 @@ export function assistantTabTypeFromTaskTags(tags?: string[] | null): string {
         if (/^[a-z0-9_-]+$/.test(type)) return type;
     }
     return "";
+}
+
+/** Sidebar snapshot/list rows created for VS Code Mode B. */
+export function isAutoACPAssistantTabTaskItem(item: { project_path?: unknown; tags?: unknown; name?: unknown } | null | undefined): boolean {
+    if (!item || typeof item !== "object") return false;
+    const tags = Array.isArray(item.tags) ? item.tags.map((tag) => String(tag)) : [];
+    if (assistantTabTypeFromTaskTags(tags) === "acp") return true;
+    const path = normalizeProjectSessionPath(typeof item.project_path === "string" ? item.project_path : "");
+    const base = path.split("/").filter(Boolean).pop() || "";
+    const dash = base.lastIndexOf("-");
+    const slug = dash > 0 && /^\d{10,}$/.test(base.slice(dash + 1)) ? base.slice(0, dash) : base;
+    if (slug.toLowerCase() !== "vs-code-acp") return false;
+    const name = typeof item.name === "string" ? item.name.trim().toLowerCase() : "";
+    return name === "" || name === "vs code / acp";
 }
 
 /** Return the expert identity carried by a durable task-management row. */
@@ -189,10 +206,42 @@ export function isACPAssistantSessionKey(sessionKey?: string | null): boolean {
     return typeof sessionKey === "string" && sessionKey.trim().startsWith(ACP_SESSION_KEY_PREFIX);
 }
 
+/**
+ * VE / discussion tabs must not open if their sidebar row cannot be saved.
+ * ACP is a VS Code connection: a dismissed or missing sidebar row must not
+ * block the mirror tab, or a deleted "VS Code / ACP" task would hide the chat.
+ */
+export function shouldBlockAssistantTabOpenOnTaskRegistration(tabType?: string | null): boolean {
+    return String(tabType || "").trim().toLowerCase() !== "acp";
+}
+
 /** Reverse of expertSessionKey: extract the expert id, or "" for non-expert keys. */
 export function expertIdFromSessionKey(sessionKey?: string | null): string {
     const key = typeof sessionKey === "string" ? sessionKey.trim() : "";
     return key.startsWith(EXPERT_SESSION_KEY_PREFIX) ? key.slice(EXPERT_SESSION_KEY_PREFIX.length).trim() : "";
+}
+
+/**
+ * Publishes every busy task identity (normalized project paths and expert
+ * IDs, deduped and sorted for a stable payload) so the sidebar can mark all
+ * concurrently running task rows as in progress — including runs that keep
+ * executing as detached rounds after the user switches away from their tab.
+ * Non-project sessions (local assistant, ACP) carry no identity and drop out.
+ */
+export function useBusyTaskRunsSignal(
+    busySessionKeys: string[],
+    onChange?: (runs: { projectPaths: string[]; expertIds: string[] }) => void,
+) {
+    useEffect(() => {
+        if (typeof onChange !== "function") return;
+        const projectPaths = Array.from(new Set(
+            busySessionKeys.map(key => projectPathFromSessionKey(key)).filter(Boolean),
+        )).sort();
+        const expertIds = Array.from(new Set(
+            busySessionKeys.map(key => expertIdFromSessionKey(key)).filter(Boolean),
+        )).sort();
+        onChange({ projectPaths, expertIds });
+    }, [busySessionKeys, onChange]);
 }
 
 export function projectPathFromSessionKey(sessionKey?: string | null): string {

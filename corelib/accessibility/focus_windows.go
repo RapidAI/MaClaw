@@ -7,6 +7,8 @@ import (
 	"strings"
 	"syscall"
 	"unsafe"
+
+	"github.com/RapidAI/CodeClaw/corelib/computeruse"
 )
 
 var (
@@ -29,37 +31,63 @@ var (
 
 const swRestore = 9
 
-func focusWindow(titleSubstring string) error {
-	titleSubstring = strings.TrimSpace(titleSubstring)
-	if titleSubstring == "" {
-		return fmt.Errorf("window title required")
-	}
-	want := strings.ToLower(titleSubstring)
-	var found uintptr
+type visibleWindow struct {
+	hwnd  uintptr
+	title string
+}
 
+func listVisibleWindows() []visibleWindow {
+	var hits []visibleWindow
 	cb := syscall.NewCallback(func(hwnd uintptr, lparam uintptr) uintptr {
 		vis, _, _ := procIsWindowVisible.Call(hwnd)
 		if vis == 0 {
 			return 1
 		}
-		n, _, _ := procGetWindowTextLengthW.Call(hwnd)
-		if n == 0 {
+		title := windowText(hwnd)
+		if title == "" {
 			return 1
 		}
-		buf := make([]uint16, n+1)
-		procGetWindowTextW.Call(hwnd, uintptr(unsafe.Pointer(&buf[0])), uintptr(n+1))
-		title := strings.ToLower(syscall.UTF16ToString(buf))
-		if strings.Contains(title, want) {
-			found = hwnd
-			return 0 // stop
-		}
+		hits = append(hits, visibleWindow{hwnd: hwnd, title: title})
 		return 1
 	})
-
 	procEnumWindows.Call(cb, 0)
-	if found == 0 {
+	return hits
+}
+
+// pickBestVisible chooses the window whose title best answers hint.
+// EnumWindows is topmost-first, and BestWindowTitle keeps that order on ties.
+func pickBestVisible(hint string) (visibleWindow, bool) {
+	hits := listVisibleWindows()
+	if len(hits) == 0 {
+		return visibleWindow{}, false
+	}
+	titles := make([]string, len(hits))
+	for i, hit := range hits {
+		titles[i] = hit.title
+	}
+	best, ok := computeruse.BestWindowTitle(hint, titles)
+	if !ok {
+		return visibleWindow{}, false
+	}
+	want := computeruse.NormalizeWindowTitle(best)
+	for _, hit := range hits {
+		if computeruse.NormalizeWindowTitle(hit.title) == want {
+			return hit, true
+		}
+	}
+	return visibleWindow{}, false
+}
+
+func focusWindow(titleSubstring string) error {
+	titleSubstring = strings.TrimSpace(titleSubstring)
+	if titleSubstring == "" {
+		return fmt.Errorf("window title required")
+	}
+	picked, ok := pickBestVisible(titleSubstring)
+	if !ok {
 		return fmt.Errorf("no visible window matching %q", titleSubstring)
 	}
+	found := picked.hwnd
 
 	// Restore if minimized, then force foreground (AttachThreadInput trick).
 	procShowWindow.Call(found, swRestore)
@@ -140,27 +168,11 @@ func namedWindowBounds(titleSubstring string) (WindowBounds, bool) {
 	if titleSubstring == "" {
 		return WindowBounds{}, false
 	}
-	want := strings.ToLower(titleSubstring)
-	var found WindowBounds
-	var okFound bool
-	cb := syscall.NewCallback(func(hwnd uintptr, lparam uintptr) uintptr {
-		vis, _, _ := procIsWindowVisible.Call(hwnd)
-		if vis == 0 {
-			return 1
-		}
-		title := strings.ToLower(windowText(hwnd))
-		if title == "" || !strings.Contains(title, want) {
-			return 1
-		}
-		if b, ok := hwndWindowBounds(hwnd); ok {
-			found = b
-			okFound = true
-			return 0
-		}
-		return 1
-	})
-	procEnumWindows.Call(cb, 0)
-	return found, okFound
+	picked, ok := pickBestVisible(titleSubstring)
+	if !ok {
+		return WindowBounds{}, false
+	}
+	return hwndWindowBounds(picked.hwnd)
 }
 
 // windowTitleAtPoint resolves the top-level window owning screen point (x,y)

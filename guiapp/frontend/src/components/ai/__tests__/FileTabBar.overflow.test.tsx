@@ -194,7 +194,7 @@ describe('FileTabBar overflow management', () => {
         );
 
         expect(screen.getByTestId('file-tab-bar').style.overflowX).toBe('visible');
-        expect(screen.getByTestId('file-tab-strip').style.overflow).toBe('hidden');
+        expect(screen.getByTestId('file-tab-strip').className).toContain('ftb-strip');
         const overflowBtn = screen.getByTestId('file-tab-overflow-btn');
         expect(overflowBtn).toBeTruthy();
         // Compact stable label: +N for hidden count.

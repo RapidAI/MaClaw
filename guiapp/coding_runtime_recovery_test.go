@@ -140,6 +140,13 @@ func TestGUIRemoteWorkspaceProbeRejectsPTYEchoAndIncompleteFrames(t *testing.T) 
 	if _, err := guiRemoteWorkspaceProbeFromOutput(task, "sha256:target", "/srv/repo", "ambiguous head value\n"+begin+"\n"+end, begin, end, time.Now()); err == nil {
 		t.Fatal("ambiguous HEAD was accepted")
 	}
+	empty, err := guiRemoteWorkspaceProbeFromOutput(task, "sha256:target", "/home/prj001", "abc123\n"+begin+"\n"+end+"\n", begin, end, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if empty.Head != "abc123" || empty.WorkDir != "/home/prj001" || empty.StatusHash == "" {
+		t.Fatalf("empty new project must still be a usable baseline: %#v", empty)
+	}
 }
 
 func TestGUIRemoteWorkspaceProbeMarkersAreFreshAndPaired(t *testing.T) {

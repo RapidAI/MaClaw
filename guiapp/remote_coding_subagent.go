@@ -444,13 +444,40 @@ func (r *RemoteCodingSubAgent) ExecuteTask(taskDescription, taskContext string) 
 	if remoteTarget == "" {
 		return &RemoteCodingSubAgentResult{Status: "failed", Error: "remote coding runtime requires an existing SSH session with a pinned host key and absolute project directory"}
 	}
-	if !execution.readOnlyInquiry {
+	// A child-result review must repeat the parent attempt's frozen ReadOnly
+	// bit. A fresh inquiry stays read-only on an empty new directory; writers
+	// still create an empty Git HEAD so development can start with no files.
+	var priorAttempts []*codingruntime.Attempt
+	if existing := strings.TrimSpace(r.runtimeExistingTaskID); existing != "" {
+		attempts, listErr := store.ListAttempts(existing)
+		if listErr != nil || remoteCodingLatestAttempt(attempts) == nil {
+			return &RemoteCodingSubAgentResult{Status: "failed", Error: "coding execution ledger could not load the frozen attempt policy"}
+		}
+		priorAttempts = attempts
+	}
+	readOnly := remoteCodingLedgerReadOnly(execution.readOnlyInquiry, priorAttempts)
+	if readOnly {
+		// No workspace gate is attached. The tool list has to match, including
+		// a review of an inquiry parent.
+		execution.readOnlyInquiry = true
+		execution.operationalRequest = false
+	}
+	var baselineErr error
+	if !readOnly {
 		if err := ensureGUIRemoteGitBaseline(ctx, r.handler, r.sessionID, r.projectDir, remoteTarget); err != nil {
+			baselineErr = err
 			log.Printf("[coding-runtime] GUI remote git baseline init failed for %s: %v", r.projectDir, err)
 		}
 	}
 	var unregisterRuntimeCancellation func()
-	result, _, ledgerErr := runGUIRemoteCodingTaskWithStartAndContinuation(ctx, store, ownerID, workflowID, phaseID, remoteTarget, r.projectDir, taskDescription+"\n"+taskContext, newGUIRemoteWorkspaceProber(r.handler, r.sessionID, r.projectDir, remoteTarget), r.runtimeExistingTaskID, r.runtimeParentContinuationAttemptID, func(request codingruntime.ExecutionRequest) {
+	var workspaceProber codingruntime.WorkspaceProber
+	if !readOnly {
+		workspaceProber = newGUIRemoteWorkspaceProber(r.handler, r.sessionID, r.projectDir, remoteTarget)
+		if workspaceProber == nil {
+			return &RemoteCodingSubAgentResult{Status: "failed", Error: "remote coding runtime requires a read-only workspace probe before a writer starts"}
+		}
+	}
+	result, finishedAttempt, ledgerErr := runGUIRemoteCodingTaskWithStartAndContinuation(ctx, store, ownerID, workflowID, phaseID, remoteTarget, r.projectDir, taskDescription+"\n"+taskContext, readOnly, workspaceProber, r.runtimeExistingTaskID, r.runtimeParentContinuationAttemptID, func(request codingruntime.ExecutionRequest) {
 		execution.runtimeStore = store
 		attempt := request.Attempt
 		execution.runtimeAttempt = &attempt
@@ -497,6 +524,11 @@ func (r *RemoteCodingSubAgent) ExecuteTask(taskDescription, taskContext string) 
 	if ledgerErr != nil {
 		return &RemoteCodingSubAgentResult{Status: "failed", Error: "coding execution ledger failed: " + ledgerErr.Error()}
 	}
+	if result != nil && finishedAttempt != nil {
+		if msg := remoteCodingBaselineBlockError(baselineErr, finishedAttempt, result.Error); msg != result.Error {
+			result.Error = msg
+		}
+	}
 	if result != nil && strings.EqualFold(result.Status, "waiting_child") {
 		result.RuntimeHandoff = true
 	}
@@ -514,6 +546,38 @@ func (r *RemoteCodingSubAgent) ExecuteTask(taskDescription, taskContext string) 
 // parent's one-shot desktop ingress token.
 func (r *RemoteCodingSubAgent) mayReadDesktopCodingIngress() bool {
 	return r != nil && r.nestDepth == 0 && r.verifiedTaskHandle == nil
+}
+
+func remoteCodingLatestAttempt(attempts []*codingruntime.Attempt) *codingruntime.Attempt {
+	for i := len(attempts) - 1; i >= 0; i-- {
+		if attempts[i] != nil {
+			return attempts[i]
+		}
+	}
+	return nil
+}
+
+// remoteCodingLedgerReadOnly is the frozen authority for this remote attempt.
+// A continuation repeats the latest parent attempt. A new turn uses the
+// request kind, so an inquiry on an empty directory does not become a writer.
+func remoteCodingLedgerReadOnly(turnInquiry bool, attempts []*codingruntime.Attempt) bool {
+	if latest := remoteCodingLatestAttempt(attempts); latest != nil {
+		return latest.Policy.ReadOnly
+	}
+	return turnInquiry
+}
+
+// remoteCodingBaselineBlockError replaces the generic pre-execution block
+// text when Git initialization already explained why an empty directory still
+// has no HEAD. Other failures keep the ledger summary.
+func remoteCodingBaselineBlockError(baselineErr error, attempt *codingruntime.Attempt, fallback string) string {
+	if baselineErr == nil || attempt == nil || attempt.ErrorCode != "workspace_before_probe_failed" {
+		return fallback
+	}
+	if msg := strings.TrimSpace(baselineErr.Error()); msg != "" {
+		return msg
+	}
+	return fallback
 }
 
 func resolveRemoteCodingRequestFlags(kind codingRequestKind, taskDescription string) (readOnlyInquiry, operationalRequest bool) {
@@ -648,7 +712,7 @@ func remoteCodingWorkspaceBootstrapCommand(projectDir string) string {
 	quotedProjectDir := remoteShellQuote(projectDir)
 	return strings.Join([]string{
 		"if [ -d " + quotedProjectDir + " ]; then",
-		"  __maclaw_workspace_entries=$(find " + quotedProjectDir + " -mindepth 1 -maxdepth 1 -print -quit)",
+		"  __maclaw_workspace_entries=$(find " + quotedProjectDir + " -mindepth 1 -maxdepth 1 ! -name .git -print -quit)",
 		"  __maclaw_workspace_probe_status=$?",
 		"  if [ \"$__maclaw_workspace_probe_status\" -ne 0 ]; then",
 		"    printf '" + remoteCodingWorkspaceEmptyMarker + remoteCodingWorkspaceUnknownMarker + "\\n'",

@@ -157,13 +157,13 @@ export function AssistantConversationBody({
     return (
         <div className="mc-conversation-body">
             {onboardingIncomplete ? (
-                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", gap: "16px" }}>
+                <div className="acb-empty">
                     <div style={{ color: t.textMuted, fontSize: "13px" }}>
                         {lang === "en" ? "Setup not completed" : "\u8bbe\u7f6e\u672a\u5b8c\u6210"}
                     </div>
                     <button
                         onClick={onOpenOnboarding}
-                        style={{ padding: "10px 28px", fontSize: "15px", fontWeight: 600, background: t.sendBtnBg || t.btnColor || "#2f78d0", color: t.sendBtnColor || "#fff", border: `1px solid ${t.sendBtnBorder || t.sendBtnBg || t.btnColor || "#2f78d0"}`, borderRadius: "8px", cursor: "pointer", transition: "opacity 0.2s" }}
+                        style={{ padding: "10px 28px", fontSize: "15px", fontWeight: 600, background: t.sendBtnBg || t.btnColor || "#2e75cb", color: t.sendBtnColor || "#fff", border: `1px solid ${t.sendBtnBorder || t.sendBtnBg || t.btnColor || "#2e75cb"}`, borderRadius: "8px", cursor: "pointer", transition: "opacity 0.2s" }}
                         onMouseEnter={e => (e.currentTarget.style.opacity = "0.85")}
                         onMouseLeave={e => (e.currentTarget.style.opacity = "1")}
                     >
@@ -171,11 +171,11 @@ export function AssistantConversationBody({
                     </button>
                 </div>
             ) : !ready ? (
-                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", gap: "18px" }}>
-                    <div data-testid="assistant-brand-splash" aria-label={brandLabel} style={{ display: "flex", alignItems: "baseline", gap: "7px", animation: "maclaw-brand-breathe 2.4s ease-in-out infinite" }}>
+                <div className="acb-loading">
+                    <div data-testid="assistant-brand-splash" aria-label={brandLabel} className="acb-brand">
                         {brandParts.name ? <span style={{ fontSize: "28px", fontWeight: 700, color: t.text, letterSpacing: "0" }}>{brandParts.name}</span> : null}
-                        <span className="brand-version-mark" style={{ fontSize: '30px' }}>{brandParts.version}</span>
-                        {brandParts.generation ? <span style={{ fontSize: "21px", fontWeight: 650, color: '#7a2330', letterSpacing: '0.04em' }}>{brandParts.generation}</span> : null}
+                        <span className="brand-version-mark acb-brand-version">{brandParts.version}</span>
+                        {brandParts.generation ? <span className="acb-brand-gen">{brandParts.generation}</span> : null}
                     </div>
                     <div style={{ color: t.textMuted, fontSize: "11px", opacity: 0.7 }}>{initLabel}</div>
                 </div>

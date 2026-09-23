@@ -144,6 +144,10 @@ func syncComputerUseTurn(h *IMMessageHandler, ctx *LoopContext, fallbackUserID, 
 	}
 	active, _ := recordComputerUseGate(h, ctx, text)
 	if !active {
+		// The classifier often names computer_use for "写一份简历". The gate
+		// refused the surface; drop that label so the semantic planner does
+		// not still require desktop control.
+		releaseFalseComputerUseClassification(ctx)
 		return
 	}
 	setComputerUseOwner(owner)

@@ -2,7 +2,7 @@ export type ProjectSearchIconName = "info" | "arrowRight" | "externalLink" | "se
 
 export function ProjectSearchIcon({ name, size = 13 }: { name: ProjectSearchIconName; size?: number }) {
     const common = { fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
-    return <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false" style={{ display: "block" }}>
+    return <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false" className="psicon-glyph">
         {name === "info" && <><circle {...common} cx="12" cy="12" r="10" /><path {...common} d="M12 16v-4" /><path {...common} d="M12 8h.01" /></>}
         {name === "search" && <><circle {...common} cx="11" cy="11" r="7" /><path {...common} d="m20 20-3.5-3.5" /></>}
         {name === "arrowRight" && <><path {...common} d="M5 12h14" /><path {...common} d="m13 6 6 6-6 6" /></>}

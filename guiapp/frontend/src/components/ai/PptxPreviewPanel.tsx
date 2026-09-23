@@ -193,36 +193,26 @@ export function PptxPreviewPanel({ absPath, theme, lang }: PptxPreviewPanelProps
                             }}
                         >
                             {url ? (
-                                <img src={url} alt="" draggable={false} style={{ display: "block", width: "100%", height: "auto" }} />
+                                <img src={url} alt="" draggable={false} className="pptx-thumb-img" />
                             ) : (
                                 <span style={{ display: "block", width: "100%", aspectRatio: "16 / 9", background: theme.lineNumBg }} />
                             )}
-                            <span style={{
-                                position: "absolute",
-                                left: 4,
-                                bottom: 4,
-                                padding: "0 5px",
-                                borderRadius: 4,
-                                background: "rgba(15, 23, 42, 0.65)",
-                                color: "#fff",
-                                fontSize: 10,
-                                lineHeight: "16px",
-                            }}>
+                            <span className="pptx-thumb-num">
                                 {index + 1}
                             </span>
                         </button>
                     );
                 })}
             </div>
-            <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column" }}>
-                <div style={{ flex: 1, minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center", padding: 12, boxSizing: "border-box" }}>
+            <div className="pptx-main-col">
+                <div className="pptx-stage">
                     {currentUrl ? (
                         <img
                             src={currentUrl}
                             alt={isZh ? `第 ${current + 1} 页` : `Slide ${current + 1}`}
                             draggable={false}
                             data-testid="pptx-preview-slide"
-                            style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: 4, boxShadow: "0 2px 12px rgba(15, 23, 42, 0.18)" }}
+                            className="pptx-slide-img"
                         />
                     ) : thumbs.get(current) ? (
                         // Full-fidelity bytes still on the way: hold the page
@@ -232,7 +222,7 @@ export function PptxPreviewPanel({ absPath, theme, lang }: PptxPreviewPanelProps
                             alt={isZh ? `第 ${current + 1} 页（预览）` : `Slide ${current + 1} (preview)`}
                             draggable={false}
                             data-testid="pptx-preview-slide-placeholder"
-                            style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: 4, opacity: 0.8 }}
+                            className="pptx-slide-img pptx-slide-img--placeholder"
                         />
                     ) : (
                         <span data-testid="pptx-preview-slide-loading" role="status" style={{ color: theme.textMuted, fontSize: 12 }}>

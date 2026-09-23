@@ -17,6 +17,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -32,6 +33,20 @@ var proxyDebugSecretPatterns = []*regexp.Regexp{
 const proxySystemFreeAliasServiceGroupID = "system-free"
 
 var proxyComputeFallbackServiceGroupIDs = []string{"redeem", "maclaw-official"}
+
+var proxyServiceGroupAliasLogLast atomic.Int64
+
+func logProxyServiceGroupAliasResolution(requestedGroupID, matchedGroupID, model, hubID, tenantID string) {
+	now := time.Now().UnixNano()
+	last := proxyServiceGroupAliasLogLast.Load()
+	if now-last < int64(time.Minute) {
+		return
+	}
+	if !proxyServiceGroupAliasLogLast.CompareAndSwap(last, now) {
+		return
+	}
+	log.Printf("[llm-proxy] resolved service_group alias requested=%s matched=%s model=%s hub=%s tenant=%s", requestedGroupID, matchedGroupID, model, hubID, tenantID)
+}
 
 // ProxyConfig holds runtime dependencies for the LLM proxy.
 type ProxyConfig struct {
@@ -112,6 +127,7 @@ type ProxyBillingAttemptStore struct {
 	mu         sync.Mutex
 	items      map[string]ProxyBillingAttempt
 	repository ProxyBillingAttemptRepository
+	lastSweep  time.Time
 }
 
 func NewProxyBillingAttemptStore(repository ...ProxyBillingAttemptRepository) *ProxyBillingAttemptStore {
@@ -159,10 +175,13 @@ func (s *ProxyBillingAttemptStore) RecordContext(ctx context.Context, attempt Pr
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now().UTC()
-	for key, item := range s.items {
-		if !item.CompletedAt.Add(proxyBillingAttemptTTL).After(now) {
-			delete(s.items, key)
+	if now.Sub(s.lastSweep) >= proxyBillingAttemptTTL/2 {
+		for key, item := range s.items {
+			if !item.CompletedAt.Add(proxyBillingAttemptTTL).After(now) {
+				delete(s.items, key)
+			}
 		}
+		s.lastSweep = now
 	}
 	// A billing attempt is the final, HubCenter-authenticated reconciliation
 	// fact for one Hub request ID. Keep the first completed attempt so a retry
@@ -242,8 +261,9 @@ type ProxyQuote struct {
 // already routes a tenant to one owner. A quote is never regenerated from a
 // token; missing, expired, mismatched, or already-claimed quotes are rejected.
 type ProxyQuoteStore struct {
-	mu    sync.Mutex
-	items map[string]ProxyQuote
+	mu        sync.Mutex
+	items     map[string]ProxyQuote
+	lastSweep time.Time
 }
 
 func NewProxyQuoteStore() *ProxyQuoteStore {
@@ -274,10 +294,13 @@ func (s *ProxyQuoteStore) Put(quote ProxyQuote) (ProxyQuote, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now().UTC()
-	for token, item := range s.items {
-		if !item.ExpiresAt.After(now) {
-			delete(s.items, token)
+	if now.Sub(s.lastSweep) >= proxyQuoteTTL/2 {
+		for token, item := range s.items {
+			if !item.ExpiresAt.After(now) {
+				delete(s.items, token)
+			}
 		}
+		s.lastSweep = now
 	}
 	s.items[quote.Token] = quote
 	return quote, nil
@@ -480,7 +503,7 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 		req.Body["model"] = model
 	}
 	if requestedGroupID := strings.TrimSpace(req.ServiceGroupID); requestedGroupID != "" && !strings.EqualFold(requestedGroupID, strings.TrimSpace(matchedGroup.ID)) {
-		log.Printf("[llm-proxy] resolved service_group alias requested=%s matched=%s model=%s hub=%s tenant=%s", requestedGroupID, matchedGroup.ID, model, req.HubID, req.TenantID)
+		logProxyServiceGroupAliasResolution(requestedGroupID, matchedGroup.ID, model, req.HubID, req.TenantID)
 	}
 
 	// 3. Check tenant authorization only when this service group requires a card/grant.
@@ -1222,7 +1245,7 @@ func prepareProxyDispatches(ctx context.Context, cfg *ProxyConfig, req *ProxyReq
 		req.Body["model"] = model
 	}
 	if requestedGroupID := strings.TrimSpace(req.ServiceGroupID); requestedGroupID != "" && !strings.EqualFold(requestedGroupID, strings.TrimSpace(matchedGroup.ID)) {
-		log.Printf("[llm-proxy] resolved service_group alias requested=%s matched=%s model=%s hub=%s tenant=%s", requestedGroupID, matchedGroup.ID, model, req.HubID, req.TenantID)
+		logProxyServiceGroupAliasResolution(requestedGroupID, matchedGroup.ID, model, req.HubID, req.TenantID)
 	}
 
 	var auth *TenantAuthorization
@@ -1298,9 +1321,18 @@ type providerStreamResult struct {
 	inputTokensObserved   bool
 	outputTokensObserved  bool
 	outputText            string
+	outputTextBuilder     strings.Builder
 	wroteStream           bool
 	wroteBusinessStream   bool
 	estimatedUsageWritten bool
+}
+
+func (r *providerStreamResult) appendOutputText(text string) {
+	if text == "" {
+		return
+	}
+	r.outputTextBuilder.WriteString(text)
+	r.outputText = r.outputTextBuilder.String()
 }
 
 func streamProviderToWriter(ctx context.Context, client *http.Client, provider *llmpool.ProviderConfig, body map[string]any, upstreamModel, responseModel string, dst ProxyStreamWriter) (*providerStreamResult, error) {
@@ -1406,16 +1438,27 @@ func streamProviderToWriter(ctx context.Context, client *http.Client, provider *
 	return result, nil
 }
 
+type proxyStreamingClientKey struct {
+	base    *http.Client
+	timeout time.Duration
+}
+
+var proxyStreamingClientCache sync.Map
+
 func proxyStreamingHTTPClient(base *http.Client, cfg corelib.MaclawLLMConfig) *http.Client {
 	if base == nil {
 		base = corelib.NewLLMEndpointHTTPClient(cfg)
 	}
-	streamClient := *base
-	streamClient.Timeout = 0
 	headerTimeout := time.Duration(cfg.EffectiveTimeoutSec()) * time.Second
 	if headerTimeout <= 0 {
 		headerTimeout = time.Duration(corelib.DefaultLLMTimeoutSec) * time.Second
 	}
+	key := proxyStreamingClientKey{base: base, timeout: headerTimeout}
+	if cached, ok := proxyStreamingClientCache.Load(key); ok {
+		return cached.(*http.Client)
+	}
+	streamClient := *base
+	streamClient.Timeout = 0
 	if transport, ok := base.Transport.(*http.Transport); ok && transport != nil {
 		clone := transport.Clone()
 		if clone.ResponseHeaderTimeout <= 0 || clone.ResponseHeaderTimeout > headerTimeout {
@@ -1429,7 +1472,9 @@ func proxyStreamingHTTPClient(base *http.Client, cfg corelib.MaclawLLMConfig) *h
 			streamClient.Transport = clone
 		}
 	}
-	return &streamClient
+	client := &streamClient
+	actual, _ := proxyStreamingClientCache.LoadOrStore(key, client)
+	return actual.(*http.Client)
 }
 
 func providerSupportsProxyStreaming(provider *llmpool.ProviderConfig) bool {
@@ -1504,10 +1549,6 @@ func proxyProviderSSE(src io.Reader, dst ProxyStreamWriter, responseModel string
 			event = event[:0]
 			return nil
 		}
-		if streamErr := proxyStreamErrorFromData(eventType, []byte(combinedData)); streamErr != nil {
-			event = event[:0]
-			return streamErr
-		}
 		if len(dataLines) > 1 {
 			for _, line := range event {
 				trimmed := strings.TrimSpace(line)
@@ -1519,8 +1560,11 @@ func proxyProviderSSE(src io.Reader, dst ProxyStreamWriter, responseModel string
 				}
 			}
 			forwardData := combinedData
-			if patched, err := proxyStreamPatchAndMeasureData([]byte(combinedData), responseModel, result); err == nil && patched != nil {
-				forwardData = string(patched)
+			if processed, err := proxyStreamProcessData([]byte(combinedData), eventType, responseModel, result, true); err != nil {
+				event = event[:0]
+				return err
+			} else if processed != nil {
+				forwardData = string(processed)
 			}
 			if _, err := io.WriteString(dst, "data: "+forwardData+"\n\n"); err != nil {
 				return err
@@ -1548,16 +1592,15 @@ func proxyProviderSSE(src io.Reader, dst ProxyStreamWriter, responseModel string
 					result.wroteStream = true
 					continue
 				}
-				streamErr := proxyStreamErrorFromData(eventType, []byte(data))
-				if streamErr != nil {
-					event = event[:0]
-					return streamErr
-				}
 				forwardLine := line
 				if data != "" {
-					patched, err := proxyStreamPatchAndMeasureData([]byte(data), responseModel, result)
-					if err == nil && patched != nil {
-						forwardLine = "data: " + string(patched)
+					processed, err := proxyStreamProcessData([]byte(data), eventType, responseModel, result, true)
+					if err != nil {
+						event = event[:0]
+						return err
+					}
+					if processed != nil {
+						forwardLine = "data: " + string(processed)
 					}
 				}
 				if _, err := io.WriteString(dst, forwardLine+"\n"); err != nil {
@@ -1649,13 +1692,70 @@ func proxySSECombinedData(dataLines []string) string {
 }
 
 func proxyStreamErrorFromData(eventType string, data []byte) error {
+	_, err := proxyStreamProcessData(data, eventType, "", nil, true)
+	return err
+}
+
+func proxyStreamProcessData(data []byte, eventType, responseModel string, result *providerStreamResult, checkStreamError bool) ([]byte, error) {
 	var payload map[string]any
 	if err := json.Unmarshal(data, &payload); err != nil {
-		if strings.EqualFold(eventType, "error") && strings.TrimSpace(string(data)) != "" {
-			return fmt.Errorf("upstream stream error: %s", strings.TrimSpace(string(data)))
+		if checkStreamError && strings.EqualFold(eventType, "error") && strings.TrimSpace(string(data)) != "" {
+			return nil, fmt.Errorf("upstream stream error: %s", strings.TrimSpace(string(data)))
 		}
-		return nil
+		return nil, nil
 	}
+	if checkStreamError {
+		if streamErr := proxyStreamErrorFromPayload(eventType, payload); streamErr != nil {
+			return nil, streamErr
+		}
+	}
+	if strings.TrimSpace(responseModel) != "" {
+		payload["model"] = responseModel
+	}
+	if result == nil {
+		patched, err := json.Marshal(payload)
+		if err != nil {
+			return nil, nil
+		}
+		return patched, nil
+	}
+	if usage, _ := payload["usage"].(map[string]any); usage != nil {
+		fields := corelib.ParseLLMUsageFields(usage)
+		if fields.InputObserved {
+			result.inputTokens = fields.Input
+			result.inputTokensObserved = true
+			rewriteProxyUsageToken(usage, "prompt_tokens", "input_tokens", fields.Input)
+		}
+		if fields.OutputObserved {
+			result.outputTokens = fields.Output
+			result.outputTokensObserved = true
+			rewriteProxyUsageToken(usage, "completion_tokens", "output_tokens", fields.Output)
+		}
+		if (fields.InputObserved || fields.OutputObserved) && hasProxyUsageKey(usage, "total_tokens") {
+			usage["total_tokens"] = fields.Input + fields.Output
+		}
+		// Usage can be emitted in more than one SSE event. Preserve the last
+		// provider-reported value, but do not overwrite it with zero merely
+		// because an intermediate event omitted cache details. Explicit zero is
+		// still a measured value and therefore marks the source as observed.
+		if fields.CachedObserved {
+			result.cachedInputTokens = fields.Cached
+			result.cacheReadObserved = true
+		}
+		if fields.WrittenObserved {
+			result.cacheWriteTokens = fields.Written
+			result.cacheWriteObserved = true
+		}
+	}
+	result.appendOutputText(proxyStreamChunkText(payload))
+	patched, err := json.Marshal(payload)
+	if err != nil {
+		return nil, nil
+	}
+	return patched, nil
+}
+
+func proxyStreamErrorFromPayload(eventType string, payload map[string]any) error {
 	rawErr, ok := payload["error"]
 	if (!ok || rawErr == nil) && proxyStreamPayloadLooksLikeTopLevelError(payload) {
 		return fmt.Errorf("upstream stream error: %s", strings.TrimSpace(payload["message"].(string)))
@@ -1698,54 +1798,7 @@ func proxyStreamPayloadLooksLikeTopLevelError(payload map[string]any) bool {
 }
 
 func proxyStreamPatchAndMeasureData(data []byte, responseModel string, result *providerStreamResult) ([]byte, error) {
-	var payload map[string]any
-	if err := json.Unmarshal(data, &payload); err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(responseModel) != "" {
-		payload["model"] = responseModel
-	}
-	if result == nil {
-		patched, err := json.Marshal(payload)
-		if err != nil {
-			return data, err
-		}
-		return patched, nil
-	}
-	if usage, _ := payload["usage"].(map[string]any); usage != nil {
-		fields := corelib.ParseLLMUsageFields(usage)
-		if fields.InputObserved {
-			result.inputTokens = fields.Input
-			result.inputTokensObserved = true
-			rewriteProxyUsageToken(usage, "prompt_tokens", "input_tokens", fields.Input)
-		}
-		if fields.OutputObserved {
-			result.outputTokens = fields.Output
-			result.outputTokensObserved = true
-			rewriteProxyUsageToken(usage, "completion_tokens", "output_tokens", fields.Output)
-		}
-		if (fields.InputObserved || fields.OutputObserved) && hasProxyUsageKey(usage, "total_tokens") {
-			usage["total_tokens"] = fields.Input + fields.Output
-		}
-		// Usage can be emitted in more than one SSE event. Preserve the last
-		// provider-reported value, but do not overwrite it with zero merely
-		// because an intermediate event omitted cache details. Explicit zero is
-		// still a measured value and therefore marks the source as observed.
-		if fields.CachedObserved {
-			result.cachedInputTokens = fields.Cached
-			result.cacheReadObserved = true
-		}
-		if fields.WrittenObserved {
-			result.cacheWriteTokens = fields.Written
-			result.cacheWriteObserved = true
-		}
-	}
-	result.outputText += proxyStreamChunkText(payload)
-	patched, err := json.Marshal(payload)
-	if err != nil {
-		return nil, err
-	}
-	return patched, nil
+	return proxyStreamProcessData(data, "", responseModel, result, false)
 }
 
 func rewriteProxyUsageToken(usage map[string]any, primary, alias string, value int64) {

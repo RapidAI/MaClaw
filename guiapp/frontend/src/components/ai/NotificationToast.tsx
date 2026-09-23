@@ -225,7 +225,7 @@ export function NotificationToast({
     width: "8px",
     height: "8px",
     borderRadius: "50%",
-    background: "#dc2626",
+    background: "var(--theme-danger)",
     flexShrink: 0,
     marginTop: "4px",
     boxShadow: "0 0 6px rgba(220, 38, 38, 0.5)",

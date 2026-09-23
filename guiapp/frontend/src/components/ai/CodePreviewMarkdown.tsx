@@ -62,7 +62,7 @@ function renderMdPreviewTable(tableLines: string[], ink: MarkdownPreviewInk): Re
     };
 
     return (
-        <div style={{ overflowX: 'auto', margin: '8px 0' }}>
+        <div className="cpm-table-scroll">
             <table style={{ borderCollapse: 'collapse', width: '100%', color: ink.body }}>
                 <thead>
                     <tr>
@@ -269,9 +269,9 @@ function parseMarkdownBlocks(content: string, ink: MarkdownPreviewInk): MdParsed
                 i++;
             }
             pushBlock(start0, i - 1, (
-                <div style={{ margin: '4px 0', paddingLeft: 4 }}>
+                <div className="cpm-tasks">
                     {taskItems.map((item, ti) => (
-                        <div key={ti} style={{ paddingLeft: 12, margin: '2px 0', display: 'flex', alignItems: 'flex-start', gap: 6 }}>
+                        <div key={ti} className="cpm-task-item">
                             <span style={{ flexShrink: 0, fontSize: 11, fontWeight: 700, color: ink.muted }}>{item.checked ? "DONE" : "TODO"}</span>
                             <span style={{ textDecoration: item.checked ? 'line-through' : undefined, opacity: item.checked ? 0.7 : 1, color: ink.body }}>{renderMdInline(item.text, ink)}</span>
                         </div>
@@ -299,7 +299,7 @@ function parseMarkdownBlocks(content: string, ink: MarkdownPreviewInk): MdParsed
             }
             const baseIndent = Math.min(...listItems.map(it => it.indent));
             pushBlock(start0, i - 1, (
-                <ul style={{ margin: '4px 0', paddingLeft: 20, listStyleType: 'disc' }}>
+                <ul className="cpm-ul">
                     {listItems.map((item, li) => (
                         <li key={li} style={{ marginLeft: (item.indent - baseIndent) * 10, marginBottom: 2 }}>
                             {renderMdInline(item.text, ink)}
@@ -327,7 +327,7 @@ function parseMarkdownBlocks(content: string, ink: MarkdownPreviewInk): MdParsed
             }
             const baseIndent = Math.min(...olItems.map(it => it.indent));
             pushBlock(start0, i - 1, (
-                <ol style={{ margin: '4px 0', paddingLeft: 20 }}>
+                <ol className="cpm-ol">
                     {olItems.map((item, li) => (
                         <li key={li} value={parseInt(item.num, 10)} style={{ marginLeft: (item.indent - baseIndent) * 10, marginBottom: 2 }}>
                             {renderMdInline(item.text, ink)}
@@ -349,7 +349,7 @@ function parseMarkdownBlocks(content: string, ink: MarkdownPreviewInk): MdParsed
         const imgMatch = line.trim().match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
         if (imgMatch) {
             pushBlock(i, i, (
-                <div style={{ margin: '8px 0', textAlign: 'center' }}>
+                <div className="cpm-img-wrap">
                     <img src={imgMatch[2]} alt={imgMatch[1]} style={{ maxWidth: '100%', borderRadius: 4, border: `1px solid ${ink.rule}` }} />
                     {imgMatch[1] && <div style={{ fontSize: 12, color: ink.muted, marginTop: 4 }}>{imgMatch[1]}</div>}
                 </div>
@@ -369,7 +369,7 @@ function parseMarkdownBlocks(content: string, ink: MarkdownPreviewInk): MdParsed
                 i++;
             }
             pushBlock(start0, i - 1, (
-                <dl style={{ margin: '6px 0' }}>
+                <dl className="cpm-dl">
                     <dt style={{ fontWeight: 600, color: ink.emphasis }}>{renderMdInline(term, ink)}</dt>
                     {defs.map((d, di) => (
                         <dd key={di} style={{ marginLeft: 20, margin: '2px 0 2px 20px', color: ink.body }}>{renderMdInline(d, ink)}</dd>
@@ -381,7 +381,7 @@ function parseMarkdownBlocks(content: string, ink: MarkdownPreviewInk): MdParsed
 
         // Empty line
         if (line.trim() === '') {
-            pushBlock(i, i, <div style={{ height: 8 }} />);
+            pushBlock(i, i, <div className="cpm-spacer" />);
             i++;
             continue;
         }
@@ -452,14 +452,14 @@ function renderMdInline(text: string, ink: MarkdownPreviewInk): React.ReactNode 
             parts.push(<strong key={key++} style={{ color: ink.emphasis }}>{renderMdInline(m.slice(2, -2), ink)}</strong>);
         } else if (m.startsWith('~~')) {
             // Strikethrough — recurse into inner content
-            parts.push(<del key={key++} style={{ opacity: 0.7 }}>{renderMdInline(m.slice(2, -2), ink)}</del>);
+            parts.push(<del key={key++} className="cpm-del">{renderMdInline(m.slice(2, -2), ink)}</del>);
         } else if (m.startsWith('==')) {
             // Highlight — recurse into inner content
             parts.push(<mark key={key++} style={{ background: ink.wash, color: ink.emphasis, padding: '0 2px', borderRadius: 2 }}>{renderMdInline(m.slice(2, -2), ink)}</mark>);
         } else if (m.startsWith('![')) {
             // Inline image
             const imgM = m.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
-            if (imgM) parts.push(<img key={key++} src={imgM[2]} alt={imgM[1]} style={{ maxHeight: 200, verticalAlign: 'middle', borderRadius: 3 }} />);
+            if (imgM) parts.push(<img key={key++} className="cpm-inline-img" src={imgM[2]} alt={imgM[1]} />);
             else parts.push(m);
         } else if (m.startsWith('[')) {
             // Link

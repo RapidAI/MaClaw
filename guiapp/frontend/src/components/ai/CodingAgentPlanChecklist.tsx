@@ -68,7 +68,7 @@ export function CodingAgentPlanChecklist({
                 lineHeight: 1.45,
             }}
         >
-            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, marginBottom: 8 }}>
+            <div className="capc-head">
                 <div style={{ fontWeight: 650, color: chrome.accentStrong }}>
                     {title}
                     {steps.length > 0 ? <span style={{ marginLeft: 8, fontWeight: 500, color: chrome.muted }}>{codingPlanProgressLabel(steps)}</span> : null}
@@ -100,7 +100,7 @@ export function CodingAgentPlanChecklist({
                     <div>{restatement}</div>
                 </div>
             ) : null}
-            <ol style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: 4 }}>
+            <ol className="capc-steps">
                 {steps.map((st) => {
                     const color = codingStepStatusColor(st.status, dark, chrome);
                     const active = (st.status || "").toLowerCase() === "running" || (st.status || "").toLowerCase() === "in_progress";
@@ -117,15 +117,15 @@ export function CodingAgentPlanChecklist({
                                 fontWeight: active ? 650 : 400,
                             }}
                         >
-                            <span aria-hidden style={{ width: 14, flexShrink: 0 }}>{codingStepGlyph(st.status)}</span>
-                            <span style={{ flexShrink: 0, opacity: 0.86 }}>T{st.index}</span>
-                            <span style={{ minWidth: 0, flex: 1 }}>{st.title || st.status}</span>
+                            <span aria-hidden className="capc-glyph">{codingStepGlyph(st.status)}</span>
+                            <span className="capc-step-idx">T{st.index}</span>
+                            <span className="capc-step-title">{st.title || st.status}</span>
                         </li>
                     );
                 })}
             </ol>
             {pendingApproval && (
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+                <div className="capc-actions">
                     <button
                         type="button"
                         data-testid="coding-agent-plan-approve"

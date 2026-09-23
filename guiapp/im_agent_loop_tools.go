@@ -119,12 +119,14 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 			liftComputerUseStopForFreshRequest(requestID)
 		}
 		tools = ensureComputerUseTools(tools, allTools, true)
-	} else if localFileWorkBlocksComputerUse(cuGateText) {
-		// The regular intent router can return a broad list while an attachment
-		// is being parsed. Keep Computer Use unavailable on this turn even when
-		// the generic route happens to include its definitions; otherwise their
-		// presence alone can lure the model into opening a terminal or Explorer.
-		tools = removeComputerUseTools(tools)
+	} else {
+		// The name router can still rank computer_* from a false computer_use
+		// label. The gate is the authority: a closed gate drops that family.
+		// Legacy gui_* stays for non-CU turns; attachment turns drop those too.
+		tools = removeRefComputerUseTools(tools)
+		if localFileWorkBlocksComputerUse(cuGateText) {
+			tools = removeComputerUseTools(tools)
+		}
 	}
 
 	browserBeforeWF := len(browserDiagExtractNames(tools))
@@ -505,6 +507,23 @@ func (h *IMMessageHandler) visionFallthroughExecutionTools(userID string) []map[
 // gives a model the same confusing Explorer/terminal detour through a different
 // tool family. Keep this classifier shared with the execution gate so a stale
 // or hallucinated legacy call is rejected before it can touch the desktop.
+// removeRefComputerUseTools drops the ref-based computer_* family. Legacy
+// gui_* tools are left for turns that are not desktop-control sessions.
+func removeRefComputerUseTools(tools []map[string]interface{}) []map[string]interface{} {
+	if len(tools) == 0 {
+		return tools
+	}
+	filtered := make([]map[string]interface{}, 0, len(tools))
+	for _, def := range tools {
+		name := strings.ToLower(strings.TrimSpace(extractToolName(def)))
+		if computeruse.IsComputerUseTool(name) || strings.HasPrefix(name, "computer_") {
+			continue
+		}
+		filtered = append(filtered, def)
+	}
+	return filtered
+}
+
 func removeComputerUseTools(tools []map[string]interface{}) []map[string]interface{} {
 	if len(tools) == 0 {
 		return tools
@@ -531,13 +550,39 @@ func localFileWorkBlocksComputerUse(userText string) bool {
 }
 
 // filterComputerUseToolsForLocalFileWork is the final defense for every path
-// that composes a tool list. The context flag carries the decision after the
-// initial turn text has been replaced by a steering or recovery message.
+// that composes a tool list. A settled closed gate drops computer_* so recovery
+// and injection cannot put them back. A local-file fence also drops legacy gui_*.
 func filterComputerUseToolsForLocalFileWork(ctx *LoopContext, userText string, tools []map[string]interface{}) []map[string]interface{} {
+	if computerUseGateClosed(ctx) {
+		tools = removeRefComputerUseTools(tools)
+	}
 	if localFileWorkBlocksComputerUseExecution(ctx, userText, "computer_observe") {
 		return removeComputerUseTools(tools)
 	}
 	return tools
+}
+
+// computerUseGateClosed reports that this turn already ran the Computer Use
+// gate and the gate stayed shut. An unsettled context is not a refusal.
+func computerUseGateClosed(ctx *LoopContext) bool {
+	return ctx != nil && ctx.ComputerUseGateSettled && !ctx.ComputerUseActive
+}
+
+func isRefComputerUseToolName(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	return computeruse.IsComputerUseTool(name) || strings.HasPrefix(name, "computer_") || name == semanticTrustedComputerUseAdapter
+}
+
+// computerUseExecutionRejection refuses a desktop-control call the current
+// turn did not authorize. Empty means the call may proceed.
+func computerUseExecutionRejection(ctx *LoopContext, userText, toolName string) string {
+	if localFileWorkBlocksComputerUseExecution(ctx, userText, toolName) {
+		return "[system rejected] Computer Use is unavailable while handling the current local attachment. Use the local file/document tools instead."
+	}
+	if computerUseGateClosed(ctx) && isRefComputerUseToolName(toolName) {
+		return "[system rejected] Computer Use is not active for this turn. It stays off unless the request operates a desktop app or says @computer."
+	}
+	return ""
 }
 
 // localFileWorkBlocksComputerUseExecution is the enforcement predicate shared

@@ -52,8 +52,10 @@ export interface TaskConfigBarProps {
     cloudWorkspaces?: CloudWorkspaceOption[];
     /** 「浏览目录…」；回调可返回所选路径（则直接选中）。 */
     onBrowseLocal?: () => void | Promise<string | null | undefined>;
-    /** 「新建云端工作区…」入口。 */
-    onCreateCloud?: () => void;
+    /** 「新建云端工作区…」确认名称后创建。 */
+    onCreateCloud?: (name: string) => void | Promise<void>;
+    /** 云端工作区行右侧「改名」。 */
+    onRenameCloud?: (id: string, name: string) => void | Promise<void>;
     /** 「专家市场…」入口。 */
     onOpenMarket?: () => void;
     /** 选中带参数槽的工作流模板时触发（父级打开参数弹窗）。 */
@@ -89,6 +91,7 @@ export function TaskConfigBar({
     cloudWorkspaces,
     onBrowseLocal,
     onCreateCloud,
+    onRenameCloud,
     onOpenMarket,
     onPickTemplateParams,
     hasMoreWorkflows,
@@ -368,6 +371,7 @@ export function TaskConfigBar({
                     onSelectRemote={(remote: RemoteTarget) => { onChange(withRemoteWorkspace(draft, remote)); closeMenu('workspace'); }}
                     onBrowseLocal={onBrowseLocal}
                     onCreateCloud={onCreateCloud}
+                    onRenameCloud={onRenameCloud}
                     expertWorkspaceLocked={expertWorkspaceLocked}
                     onClose={() => closeMenu('workspace')}
                 />

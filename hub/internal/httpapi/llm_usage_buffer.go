@@ -946,8 +946,9 @@ func persistLLMUsageRecords(system store.SystemSettingsRepository, providerID st
 	model := strings.TrimSpace(meta.ResolvedModel)
 	preview := strings.TrimSpace(meta.Preview)
 	now := time.Now().UTC()
+	recs := make([]*store.LLMUsageRecord, 0, len(ids))
 	for _, groupID := range ids {
-		rec := &store.LLMUsageRecord{
+		recs = append(recs, &store.LLMUsageRecord{
 			TenantID:       tenantIDForSystemSettings(system),
 			UserID:         strings.TrimSpace(userID),
 			Email:          email,
@@ -962,7 +963,17 @@ func persistLLMUsageRecords(system store.SystemSettingsRepository, providerID st
 			TotalTokens:    usage.TotalTokens,
 			Credits:        credits,
 			CreatedAt:      now,
+		})
+	}
+	if batch, ok := repo.(interface {
+		InsertBatch(ctx context.Context, recs []*store.LLMUsageRecord) error
+	}); ok {
+		if err := batch.InsertBatch(context.Background(), recs); err != nil {
+			log.Printf("[llm-usage] persist usage records failed: %v", err)
 		}
+		return
+	}
+	for _, rec := range recs {
 		if err := repo.Insert(context.Background(), rec); err != nil {
 			log.Printf("[llm-usage] persist usage record failed: %v", err)
 		}

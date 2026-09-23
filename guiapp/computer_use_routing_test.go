@@ -95,6 +95,76 @@ func TestFilterComputerUseToolsForLocalFileWork(t *testing.T) {
 	}
 }
 
+func TestClosedComputerUseGateDropsToolsAndRejectsCalls(t *testing.T) {
+	tools := []map[string]interface{}{
+		toolDef("read_file", "read local file", nil, nil),
+		toolDef("computer_observe", "observe desktop", nil, nil),
+		toolDef("gui_click", "legacy desktop click", nil, nil),
+	}
+	open := NewLoopContext("cu-open", 1, nil)
+	open.ComputerUseGateSettled = true
+	open.ComputerUseActive = true
+	openNames := toolNameSetForWorkflowFilterTest(filterComputerUseToolsForLocalFileWork(open, "打开记事本程序", tools))
+	if !openNames["computer_observe"] || !openNames["read_file"] {
+		t.Fatalf("an open gate must keep computer tools: %#v", openNames)
+	}
+
+	closed := NewLoopContext("cu-closed", 1, nil)
+	closed.ComputerUseGateSettled = true
+	names := toolNameSetForWorkflowFilterTest(filterComputerUseToolsForLocalFileWork(closed, "帮我写一份简历", tools))
+	if names["computer_observe"] || !names["gui_click"] || !names["read_file"] {
+		t.Fatalf("closed gate must drop computer_* and keep other tools: %#v", names)
+	}
+	unsettled := NewLoopContext("cu-unsettled", 1, nil)
+	unsettledNames := toolNameSetForWorkflowFilterTest(filterComputerUseToolsForLocalFileWork(unsettled, "帮我写一份简历", tools))
+	if !unsettledNames["computer_observe"] {
+		t.Fatalf("an unsettled context must not invent a refusal: %#v", unsettledNames)
+	}
+
+	if got := computerUseExecutionRejection(closed, "帮我写一份简历", "computer_click"); !strings.Contains(got, "not active") {
+		t.Fatalf("closed gate rejection = %q", got)
+	}
+	if got := computerUseExecutionRejection(closed, "帮我写一份简历", semanticTrustedComputerUseAdapter); !strings.Contains(got, "not active") {
+		t.Fatalf("trusted desktop rejection = %q", got)
+	}
+	if computerUseExecutionRejection(closed, "帮我写一份简历", "read_file") != "" {
+		t.Fatal("closed gate must not reject document tools")
+	}
+	if computerUseExecutionRejection(open, "打开记事本程序", "computer_click") != "" {
+		t.Fatal("open gate must allow computer tools")
+	}
+}
+
+func TestClosedGateDeniesComputerUsePetition(t *testing.T) {
+	closed := NewLoopContext("cu-petition-closed", 1, nil)
+	closed.ComputerUseGateSettled = true
+	cb := &sharedAgentLoopCallbacks{
+		handler:  &IMMessageHandler{},
+		loopCtx:  closed,
+		userText: "帮我写一份简历",
+	}
+	if granted, message := cb.PetitionToolCall("computer_use"); granted || message != "" {
+		t.Fatalf("closed gate granted computer_use: granted=%v message=%q", granted, message)
+	}
+	if granted, _ := cb.PetitionToolCall("computer_observe"); granted {
+		t.Fatal("closed gate granted computer_observe")
+	}
+
+	open := NewLoopContext("cu-petition-open", 1, nil)
+	open.ComputerUseGateSettled = true
+	open.ComputerUseActive = true
+	openCB := &sharedAgentLoopCallbacks{
+		handler:  &IMMessageHandler{},
+		loopCtx:  open,
+		userText: "打开记事本程序",
+	}
+	// No managed surface: the petition falls through. The closed-gate check
+	// must not be what rejects an authorized desktop turn.
+	if _, message := openCB.PetitionToolCall("computer_use"); strings.Contains(message, "not active") {
+		t.Fatalf("open gate must not use the closed-gate refusal, message=%q", message)
+	}
+}
+
 func TestLocalFileWorkComputerUseExecutionFence(t *testing.T) {
 	ctx := NewLoopContext("local-file-execution", 1, nil)
 	ctx.ComputerUseBlockedForLocalFileWork = true
@@ -230,6 +300,89 @@ func TestShouldActivateComputerUseSemanticGate(t *testing.T) {
 	}
 }
 
+func TestSemanticRoutingContextComputerUseFollowsGate(t *testing.T) {
+	closed := &LoopContext{ComputerUseRoutingText: "帮我写一份word简历"}
+	requestCtx, cancel := semanticRoutingContext(closed)
+	defer cancel()
+	if semanticComputerUseActive(requestCtx) {
+		t.Fatal("routing text alone must not mark computer use active")
+	}
+	open := &LoopContext{ComputerUseRoutingText: "打开word程序写一份简历", ComputerUseActive: true}
+	requestCtx, cancel = semanticRoutingContext(open)
+	defer cancel()
+	if !semanticComputerUseActive(requestCtx) {
+		t.Fatal("a settled open gate must mark computer use active")
+	}
+}
+
+func TestSyncComputerUseTurnDemotesFalseComputerUse(t *testing.T) {
+	resetComputerUseSessionForTest(t)
+	h := &IMMessageHandler{unifiedClassifier: intent.New(intent.Config{Embedder: embedding.NewNoopEmbedder()})}
+	ctx := &LoopContext{
+		ComputerUseRoutingText: "帮我写一份word简历",
+		Runtime: RuntimeContext{SemanticIntent: &intent.ClassificationResult{
+			Primary: intent.LabelComputerUse, Confidence: 0.90,
+		}},
+	}
+	syncComputerUseTurn(h, ctx, "u", "帮我写一份word简历")
+	if ctx.ComputerUseActive {
+		t.Fatal("a resume request must not open computer use")
+	}
+	if ctx.Runtime.SemanticIntent == nil || ctx.Runtime.SemanticIntent.Primary == intent.LabelComputerUse {
+		t.Fatalf("false computer_use must be demoted, got %+v", ctx.Runtime.SemanticIntent)
+	}
+}
+
+func TestShouldActivateComputerUseRequiresAppOperation(t *testing.T) {
+	resetComputerUseSessionForTest(t)
+	// "word" is inside the computer-use anchor, so a resume request embeds as
+	// computer_use even though the user did not ask to drive the Word window.
+	uic := intent.New(intent.Config{Embedder: &cuGateStubEmbedder{hit: "word"}})
+	waitUICReady(t, uic)
+	h := &IMMessageHandler{unifiedClassifier: uic}
+
+	if h.shouldActivateComputerUse("帮我写一份word简历") {
+		t.Fatal("document request must not open computer use")
+	}
+	if h.shouldActivateComputerUse("这个软件怎么用") {
+		t.Fatal("asking about software must not open computer use")
+	}
+	wrapped := acpProgrammingUserText(`F:\desktop\notes`, "生成markdown")
+	if h.shouldActivateComputerUse(wrapped) {
+		t.Fatal("ACP wrapper cwd must not count as a desktop operation")
+	}
+	if !h.shouldActivateComputerUse("打开word程序写一份简历") {
+		t.Fatal("opening the Word program should still activate")
+	}
+}
+
+func TestComputerUseGateTextDropsWrapper(t *testing.T) {
+	wrapped := acpProgrammingUserText(`F:\desktop\notes`, "继续操作")
+	if got := computerUseGateText(wrapped); got != "继续操作" {
+		t.Fatalf("gate text = %q", got)
+	}
+	staged := "打开微信\n[附件: notes.zip → 已保存到 C:\\tmp\\notes.zip]"
+	if got := computerUseGateText(staged); strings.Contains(got, "附件") || strings.Contains(got, "打开微信") == false {
+		t.Fatalf("gate text = %q", got)
+	}
+	if computeruse.RequestsDesktopAppOperation(computerUseGateText(wrapped)) {
+		t.Fatal("wrapper must not become a desktop operation")
+	}
+}
+
+func TestComputerUseStickyFollowUpPhrases(t *testing.T) {
+	for _, text := range []string{"继续操作", "还不错，继续", "好的。", "好的～", "是的。", "继续！", "下一步", "第二段改成简介", "把第二段改短一点", "保存", "保存一下", "点一下确定", "点击窗口上的确定", "不要继续了，点一下保存", "往下滚一点", "滚动一下"} {
+		if !computerUseStickyFollowUp(text) {
+			t.Errorf("computerUseStickyFollowUp(%q) = false, want true", text)
+		}
+	}
+	for _, text := range []string{"随便聊聊", "然后帮我写一份报告", "接着帮我写一份报告", "下一步我们讨论预算", "修改短文的开头", "确定一下需求", "输入法怎么设置", "帮我写一份word简历", "是的，帮我写一份新简历", "请点击查看详情", "不要继续了", "别继续", "不继续了", "别再继续", "往下写一段", "滚动条怎么自定义"} {
+		if computerUseStickyFollowUp(text) {
+			t.Errorf("computerUseStickyFollowUp(%q) = true, want false", text)
+		}
+	}
+}
+
 func TestShouldActivateComputerUseDegradedFailsClosed(t *testing.T) {
 	resetComputerUseSessionForTest(t)
 
@@ -247,9 +400,15 @@ func TestShouldActivateComputerUseStickySession(t *testing.T) {
 	resetComputerUseSessionForTest(t)
 	markComputerUseSessionActive()
 	h := &IMMessageHandler{}
-	// Without a classifier, sticky alone keeps the gate open (degraded TTL).
-	if !h.shouldActivateComputerUse("随便聊聊") {
-		t.Fatal("active CU session should keep the gate open")
+	if h.shouldActivateComputerUse("随便聊聊") {
+		t.Fatal("chat must not inherit a desktop session when intent cannot be rechecked")
+	}
+	if computerUseSessionActive() {
+		t.Fatal("unrelated chat must clear sticky")
+	}
+	markComputerUseSessionActive()
+	if !h.shouldActivateComputerUse("继续操作") {
+		t.Fatal("a short follow-up should keep the desktop session")
 	}
 }
 
@@ -317,11 +476,15 @@ func TestShouldActivateComputerUseStickyKeepsStop(t *testing.T) {
 	sess := installStoppedComputerUseSessionForTest(t)
 	markComputerUseSessionActive()
 	h := &IMMessageHandler{}
-	// Sticky continuation (degraded, no classifier) keeps the gate open but is
-	// not a fresh open — the in-flight turn stays blocked.
-	active, fresh := h.gateComputerUse("随便聊聊")
+	// A follow-up keeps the gate open but is not a fresh open — the in-flight
+	// turn stays blocked. Unrelated chat must not.
+	if active, _ := h.gateComputerUse("随便聊聊"); active {
+		t.Fatal("unrelated chat must not keep the gate open")
+	}
+	markComputerUseSessionActive()
+	active, fresh := h.gateComputerUse("继续操作")
 	if !active {
-		t.Fatal("sticky session should keep the gate open")
+		t.Fatal("sticky follow-up should keep the gate open")
 	}
 	if fresh {
 		t.Fatal("sticky continuation must not count as a fresh open")
@@ -377,13 +540,24 @@ func TestDecideComputerUseActivation(t *testing.T) {
 			wantReason: "explicit_trigger",
 		},
 		{
-			name: "semantic opens",
+			name: "semantic opens when the user asked to operate an app",
 			in: computerUseActivationInput{
 				HasClassification: true,
+				DesktopOperation:  true,
 				Classification:    intent.ClassificationResult{Primary: intent.LabelComputerUse, Confidence: 0.80},
 			},
 			wantActive: true,
 			wantReason: "semantic_computer_use",
+		},
+		{
+			name: "semantic computer_use without an app operation stays closed",
+			in: computerUseActivationInput{
+				HasClassification: true,
+				DesktopOperation:  false,
+				Classification:    intent.ClassificationResult{Primary: intent.LabelComputerUse, Confidence: 0.92},
+			},
+			wantActive: false,
+			wantReason: "inactive",
 		},
 		{
 			name: "semantic blocked by competing secondary",
@@ -411,12 +585,65 @@ func TestDecideComputerUseActivation(t *testing.T) {
 		{
 			name: "sticky continues for office follow-up",
 			in: computerUseActivationInput{
-				Sticky: true, StickyAge: time.Minute,
+				Sticky: true, StickyAge: time.Minute, StickyFollowUp: true,
 				HasClassification: true,
 				Classification:    intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: 0.90},
 			},
 			wantActive: true,
 			wantReason: "sticky",
+		},
+		{
+			name: "sticky office without a follow-up ends the desktop task",
+			in: computerUseActivationInput{
+				Sticky: true, StickyAge: time.Minute,
+				HasClassification: true,
+				Classification:    intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: 0.90},
+			},
+			wantActive: false,
+			wantClear:  true,
+			wantReason: "sticky_unrelated",
+		},
+		{
+			name: "continuation without a follow-up ends the desktop task",
+			in: computerUseActivationInput{
+				Sticky: true, StickyAge: time.Minute,
+				HasClassification: true,
+				Classification:    intent.ClassificationResult{Primary: intent.LabelContinuation, Confidence: 0.90},
+			},
+			wantActive: false,
+			wantClear:  true,
+			wantReason: "sticky_unrelated",
+		},
+		{
+			name: "continuation follow-up stays available",
+			in: computerUseActivationInput{
+				Sticky: true, StickyAge: time.Minute, StickyFollowUp: true,
+				HasClassification: true,
+				Classification:    intent.ClassificationResult{Primary: intent.LabelContinuation, Confidence: 0.90},
+			},
+			wantActive: true,
+			wantReason: "sticky",
+		},
+		{
+			name: "sticky time check stays available",
+			in: computerUseActivationInput{
+				Sticky: true, StickyAge: time.Minute,
+				HasClassification: true,
+				Classification:    intent.ClassificationResult{Primary: intent.LabelCurrentTime, Confidence: 0.90},
+			},
+			wantActive: true,
+			wantReason: "sticky",
+		},
+		{
+			name: "sticky computer_use label without an operation ends",
+			in: computerUseActivationInput{
+				Sticky: true, StickyAge: time.Minute,
+				HasClassification: true,
+				Classification:    intent.ClassificationResult{Primary: intent.LabelComputerUse, Confidence: 0.90},
+			},
+			wantActive: false,
+			wantClear:  true,
+			wantReason: "sticky_unrelated",
 		},
 		{
 			name: "sticky released by strong non_coding",
@@ -430,14 +657,25 @@ func TestDecideComputerUseActivation(t *testing.T) {
 			wantReason: "sticky_released",
 		},
 		{
-			name: "sticky degraded within short ttl",
+			name: "sticky degraded within short ttl for a follow-up",
 			in: computerUseActivationInput{
-				Sticky: true, StickyAge: time.Minute,
+				Sticky: true, StickyAge: time.Minute, StickyFollowUp: true,
 				HasClassification: true,
 				Classification:    intent.ClassificationResult{Degraded: true, Primary: intent.LabelUnknown, Confidence: 0.3},
 			},
 			wantActive: true,
 			wantReason: "sticky_degraded",
+		},
+		{
+			name: "sticky degraded chat does not inherit the desktop task",
+			in: computerUseActivationInput{
+				Sticky: true, StickyAge: time.Minute,
+				HasClassification: true,
+				Classification:    intent.ClassificationResult{Degraded: true, Primary: intent.LabelUnknown, Confidence: 0.3},
+			},
+			wantActive: false,
+			wantClear:  true,
+			wantReason: "sticky_degraded_unrelated",
 		},
 		{
 			name: "sticky degraded past short ttl clears",
@@ -740,6 +978,9 @@ func TestPrepareAgentLoopToolsComputerUseActivation(t *testing.T) {
 
 	inactive := h.prepareAgentLoopTools("u1", "把昨天的文件发给我", nil, agentLoopPhase{})
 	inactiveNames := toolNameSetForWorkflowFilterTest(inactive.Tools)
+	if inactiveNames["computer_observe"] || inactiveNames["computer_click"] {
+		t.Fatalf("closed gate must drop computer_* tools: %#v", inactiveNames)
+	}
 	if !inactiveNames["gui_click"] {
 		t.Fatalf("legacy gui tools should remain when CU inactive: %#v", inactiveNames)
 	}

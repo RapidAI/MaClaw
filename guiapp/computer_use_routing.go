@@ -131,6 +131,8 @@ func clearComputerUseSessionActive() {
 // computerUseActivationInput is the pure input to the CU gate (testable without UIC).
 type computerUseActivationInput struct {
 	Explicit          bool
+	DesktopOperation  bool
+	StickyFollowUp    bool
 	LocalFileWork     bool
 	Sticky            bool
 	StickyAge         time.Duration
@@ -148,9 +150,12 @@ type computerUseActivationDecision struct {
 // decideComputerUseActivation is the pure root-cause gate:
 //
 //  1. Explicit @computer / "computer use" → open
-//  2. Confident LabelComputerUse → open
+//  2. Confident LabelComputerUse AND a desktop-app operation in the user text → open
 //  3. Sticky from recent computer_* activity → open only while the user has not
 //     clearly left desktop control; shortened when classification is unavailable
+//
+// Classifier similarity alone must not open a fresh session. "写一份 word 简历"
+// often embeds near the computer-use anchors.
 func decideComputerUseActivation(in computerUseActivationInput) computerUseActivationDecision {
 	if in.Explicit {
 		return computerUseActivationDecision{Active: true, Reason: "explicit_trigger"}
@@ -168,7 +173,7 @@ func decideComputerUseActivation(in computerUseActivationInput) computerUseActiv
 		}
 	}
 
-	if in.HasClassification && computerUseIntentActivated(in.Classification) {
+	if in.HasClassification && computerUseIntentActivated(in.Classification) && in.DesktopOperation {
 		return computerUseActivationDecision{Active: true, Reason: "semantic_computer_use"}
 	}
 
@@ -176,11 +181,17 @@ func decideComputerUseActivation(in computerUseActivationInput) computerUseActiv
 		return computerUseActivationDecision{Active: false, Reason: "inactive"}
 	}
 
-	// Sticky path: cannot reclassify → short degraded TTL only.
+	// Sticky path: cannot reclassify → short degraded TTL, and only for a
+	// follow-up of the desktop task. "随便聊聊" must not inherit the tools.
 	if !in.HasClassification || in.Classification.Degraded {
 		if in.StickyAge > computerUseStickyDegradedTTL {
 			return computerUseActivationDecision{
 				Active: false, ClearSticky: true, Reason: "sticky_degraded_ttl",
+			}
+		}
+		if !in.StickyFollowUp {
+			return computerUseActivationDecision{
+				Active: false, ClearSticky: true, Reason: "sticky_degraded_unrelated",
 			}
 		}
 		return computerUseActivationDecision{Active: true, Reason: "sticky_degraded"}
@@ -189,6 +200,14 @@ func decideComputerUseActivation(in computerUseActivationInput) computerUseActiv
 	if computerUseStickyShouldRelease(in.Classification) {
 		return computerUseActivationDecision{
 			Active: false, ClearSticky: true, Reason: "sticky_released",
+		}
+	}
+	// Office, unknown, computer_use, and a bare "continuation" label also match
+	// chat that is not the desktop task. Keep the tools only when this sentence
+	// still continues it. A clock check stays, so "现在几点" does not drop it.
+	if computerUseStickyNeedsFollowUp(in.Classification) && !in.StickyFollowUp && !in.DesktopOperation {
+		return computerUseActivationDecision{
+			Active: false, ClearSticky: true, Reason: "sticky_unrelated",
 		}
 	}
 	return computerUseActivationDecision{Active: true, Reason: "sticky"}
@@ -211,15 +230,21 @@ func (h *IMMessageHandler) gateComputerUse(userText string) (active, fresh bool)
 	}
 
 	sticky, stickyAge := computerUseStickyState()
+	// Classify and match cues on the user sentence only. The ACP wrapper's
+	// cwd can contain "desktop", and its instructions say "open and use"
+	// files; that text must not decide the desktop-control gate.
+	text := computerUseGateText(userText)
 	in := computerUseActivationInput{
-		Explicit:      hasExplicitComputerUseRequest(userText),
-		LocalFileWork: hasCurrentLocalFileWork(userText),
-		Sticky:        sticky,
-		StickyAge:     stickyAge,
+		Explicit:         computeruse.HasExplicitTrigger(text),
+		DesktopOperation: computeruse.RequestsDesktopAppOperation(text),
+		StickyFollowUp:   computerUseStickyFollowUp(text),
+		LocalFileWork:    hasCurrentLocalFileWork(userText),
+		Sticky:           sticky,
+		StickyAge:        stickyAge,
 	}
 	if uic := h.getUnifiedClassifier(); uic != nil {
 		in.HasClassification = true
-		in.Classification = uic.ClassifyEmbeddingOnly(intent.MessageContext{Text: userText})
+		in.Classification = uic.ClassifyEmbeddingOnly(intent.MessageContext{Text: text})
 	}
 
 	d := decideComputerUseActivation(in)
@@ -233,6 +258,91 @@ func (h *IMMessageHandler) gateComputerUse(userText string) (active, fresh bool)
 	}
 	fresh = d.Active && d.Reason != "sticky" && d.Reason != "sticky_degraded"
 	return d.Active, fresh
+}
+
+// computerUseGateText is the user-authored sentence. Attachment excerpts and
+// the VS Code workspace wrapper are not requests to drive the desktop.
+func computerUseGateText(userText string) string {
+	if cut := currentLocalFileWorkMarkerOffset(userText); cut >= 0 {
+		userText = userText[:cut]
+	}
+	return strings.TrimSpace(acpInnerUserRequest(userText))
+}
+
+// computerUseStickyFollowUp reports whether this utterance continues the
+// desktop task already in progress. Pure chat does not. Ordinary words such
+// as 然后, 输入, and 确定 do not count unless the whole message is that ack.
+func computerUseStickyFollowUp(userText string) bool {
+	text := userText
+	if cut := currentLocalFileWorkMarkerOffset(text); cut >= 0 {
+		text = text[:cut]
+	}
+	text = strings.TrimSpace(acpInnerUserRequest(text))
+	if text == "" {
+		return false
+	}
+	if computeruse.RequestsDesktopAppOperation(text) {
+		return true
+	}
+	stopped := computerUseStickyStop(text)
+	if !stopped {
+		// "好的。" and "继续！" are the same ack. Trim only for this exact match.
+		ack := strings.Trim(strings.ToLower(text), "。.!！?？~～…、 ")
+		switch ack {
+		case "好", "好的", "好吧", "行", "行吧", "可以", "可以的", "嗯", "嗯嗯", "对", "是", "是的", "确定", "取消", "保存", "继续", "下一步", "ok", "yes", "continue", "go on", "keep going":
+			return true
+		}
+	}
+	for _, phrase := range []string{
+		"继续", "改成", "改短一点", "改短些", "改一下", "第二段",
+		"保存一下", "点一下", "点确定", "按确定", "滚动一下", "往下滚", "往上滚", "向下滚", "向上滚",
+	} {
+		if phrase == "继续" && (stopped || continueIsNegated(text)) {
+			continue
+		}
+		if strings.Contains(text, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+// computerUseStickyStop is a request to leave the desktop task. "不要继续了，点一下保存"
+// still counts: the phrase loop keeps 点一下 and skips bare 继续.
+func computerUseStickyStop(text string) bool {
+	if continueIsNegated(text) {
+		return true
+	}
+	for _, phrase := range []string{"停止操作", "停下", "到此为止", "到此為止"} {
+		if strings.Contains(text, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+// continueIsNegated matches a negation of 继续 itself. "还不错，继续" contains
+// 不 but that 不 belongs to 不错, so it must stay a follow-up.
+func continueIsNegated(text string) bool {
+	for _, phrase := range []string{
+		"不要继续", "不继续", "不再继续", "不用继续", "不用繼續",
+		"别继续", "别再继续", "別繼續", "別再繼續",
+	} {
+		if strings.Contains(text, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+// computerUseDesktopOperationRequested reads only the user-authored request.
+// ACP workspace wrappers mention paths like F:\desktop, and attachment text
+// can quote "点击窗口"; neither is the user asking to drive an app.
+func computerUseDesktopOperationRequested(text string) bool {
+	if cut := currentLocalFileWorkMarkerOffset(text); cut >= 0 {
+		text = text[:cut]
+	}
+	return computeruse.RequestsDesktopAppOperation(acpInnerUserRequest(text))
 }
 
 // hasExplicitComputerUseRequest recognizes an intentional desktop-control
@@ -354,6 +464,24 @@ func liftComputerUseStopForFreshRequest(requestID string) {
 	}
 }
 
+// releaseFalseComputerUseClassification drops a computer_use primary after the
+// gate stayed closed. Otherwise a managed turn still plans desktop control.
+func releaseFalseComputerUseClassification(ctx *LoopContext) {
+	if ctx == nil || ctx.ComputerUseActive || ctx.Runtime.SemanticIntent == nil {
+		return
+	}
+	if ctx.Runtime.SemanticIntent.Primary != intent.LabelComputerUse {
+		return
+	}
+	projected := semanticChatProjection(*ctx.Runtime.SemanticIntent)
+	if !strings.Contains(projected.Reason, "without desktop operation") {
+		projected.Reason = strings.TrimSpace(projected.Reason + "; without desktop operation")
+	}
+	projected.ToolNames = nil
+	ctx.Runtime.SemanticIntent = &projected
+	log.Printf("[computer-use] demoted computer_use classification: no desktop operation request")
+}
+
 // computerUseIntentActivated is the pure decision on a UIC result: the gate
 // opens only for a confident, non-degraded computer_use primary intent.
 // Competing secondaries (office/browser/content) require a clearer win.
@@ -382,6 +510,14 @@ func computerUseHasCompetingSecondary(res intent.ClassificationResult) bool {
 		}
 	}
 	return false
+}
+
+// computerUseStickyNeedsFollowUp is true when the label alone is not evidence
+// that the user is still driving the desktop. A clock check is the exception.
+// Continuation still needs a follow-up phrase: the classifier calls many
+// unrelated turns "continuation", including "不要继续了".
+func computerUseStickyNeedsFollowUp(res intent.ClassificationResult) bool {
+	return res.Primary != intent.LabelCurrentTime
 }
 
 // computerUseStickyShouldRelease ends sticky injection only when the user has

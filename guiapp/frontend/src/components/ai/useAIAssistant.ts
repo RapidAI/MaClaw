@@ -6255,6 +6255,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     const panelActions: AIAssistantPanelHookActions = useMemo(() => ({
         browseFile,
         clearSelectedFile,
+        setSelectedFilePaths: setSelectedFiles,
         removeSelectedFile,
         sendMessage,
         sendBtwMessage,
@@ -6270,7 +6271,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         submitAgentView,
         dismissAgentView,
         deactivateRecordingSession,
-    }), [browseFile, clearSelectedFile, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, injectSupplementary, guideLaunchReference, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, doFetchNews, cancelSession, submitAgentView, dismissAgentView, deactivateRecordingSession]);
+    }), [browseFile, clearSelectedFile, setSelectedFiles, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, injectSupplementary, guideLaunchReference, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, doFetchNews, cancelSession, submitAgentView, dismissAgentView, deactivateRecordingSession]);
 
     return { messages, submittedPrompts, draftInputValue, progressMessages, sending, sendingSessionKey, busySessionKeys, streaming, streamingSessionKey, streamingSessionKeys, visualBusy, ready, initStatus, selectedFilePaths, trialReflectEnabled, agentView, browseFile, clearSelectedFile, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews: doFetchNews, scrollToTopSeq, cancelSession, injectSupplementary, guideLaunchReference, submitAgentView, dismissAgentView, panelState, panelActions };
 }

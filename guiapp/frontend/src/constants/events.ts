@@ -159,17 +159,16 @@ export type OpenCreateCodingTaskDetail = {
 };
 
 /**
- * Dispatched by the task-pane "新建任务" header button; opens the AI assistant
- * welcome page as a new-task wizard (local tab, marked in tab state). The task
- * is only created when the user sends the first message from that wizard page.
+ * Dispatched by the task-pane "新建任务" header button. Opens the same AI
+ * assistant guide page the app shows at startup. That page is the new-task
+ * surface: the task is created when the user sends the first message.
  */
 export const EVENT_OPEN_NEW_TASK_WIZARD = "maclaw:open-new-task-wizard";
 
 /**
- * Dispatched by the new-task wizard wiring when the click cannot be honored:
- * the local tab still has a conversation and the assistant is busy (task
- * running), so the wizard page cannot open. Sidebar surfaces listen to show
- * an explanation instead of staying silent.
+ * Dispatched when the new-task wizard cannot open at all. A running turn does
+ * not emit this: the welcome page covers that conversation and the turn keeps
+ * running. Sidebar surfaces listen so a hard block still explains itself.
  */
 export const EVENT_NEW_TASK_WIZARD_BLOCKED = "maclaw:new-task-wizard-blocked";
 
@@ -205,4 +204,6 @@ export type OpenTaskLaunchDetail = {
     remoteNeedsReconnect?: boolean;
     warning?: string;
     noWorkflowInterception?: boolean;
+    /** Send initialMessage even if this task's tab is already open. */
+    deliverInitialMessage?: boolean;
 };

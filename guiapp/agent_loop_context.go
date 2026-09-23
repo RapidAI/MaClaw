@@ -10,6 +10,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // ---------------------------------------------------------------------------
@@ -93,6 +94,24 @@ type LoopContext struct {
 	// lineage.  The fields stay private so neither a provider nor the model can
 	// select or restore a semantic root by name.
 	semanticInvocation semanticLoopInvocationIdentity
+	// semanticResidueCandidateNeeds is the capability set of the managed plan
+	// published for this loop. Settle copies it onto the desktop conversation
+	// residue after the loop returns. It is not a grant and not a route revision.
+	semanticResidueCandidateNeeds []tool.CapabilityNeed
+	semanticResidueCandidateText  string
+	// semanticResidueUsed counts successful invocations in this loop, keyed by
+	// capability. semanticResidueRemaining is the session ceiling still
+	// available at the start of the loop. LookupFacts says this task already
+	// has a host web-lookup result.
+	semanticResidueUsed        map[string]int
+	semanticResidueRemaining   map[string]int
+	semanticResidueLookupFacts bool
+	semanticResidueLookupUsed  bool
+	// semanticSessionCeilingSpent closes this turn. No legacy tool name may run.
+	semanticSessionCeilingSpent bool
+	// semanticTurnAnswerOnly is a greeting while a desktop task is still open.
+	// This turn lists no tools. It does not spend or close that task.
+	semanticTurnAnswerOnly bool
 	// ComputerUseBlockedForLocalFileWork is a per-turn control-plane fence. It
 	// survives tool recovery and dynamic augmentation so a staged attachment
 	// cannot accidentally re-enable desktop automation later in the same loop.
@@ -244,6 +263,37 @@ func bindLoopResumeWorkingState(loopCtx *LoopContext, resume *agent.WorkingState
 }
 
 // NewLoopContext creates a LoopContext for a chat loop.
+func (c *LoopContext) noteSemanticResidueUse(capability tool.CapabilityID) {
+	if c == nil || strings.TrimSpace(string(capability)) == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.semanticResidueUsed == nil {
+		c.semanticResidueUsed = map[string]int{}
+	}
+	c.semanticResidueUsed[string(capability)]++
+	if tool.IsWebLookupCapability(capability) {
+		c.semanticResidueLookupUsed = true
+	}
+}
+
+func (c *LoopContext) semanticResidueUsage() (used map[string]int, lookupUsed bool) {
+	if c == nil {
+		return nil, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.semanticResidueUsed) == 0 {
+		return nil, c.semanticResidueLookupUsed
+	}
+	used = make(map[string]int, len(c.semanticResidueUsed))
+	for key, value := range c.semanticResidueUsed {
+		used[key] = value
+	}
+	return used, c.semanticResidueLookupUsed
+}
+
 func NewLoopContext(id string, maxIter int, httpClient *http.Client) *LoopContext {
 	return &LoopContext{
 		ID:            id,

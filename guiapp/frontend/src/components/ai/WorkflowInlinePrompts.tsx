@@ -51,12 +51,12 @@ export function WorkflowReviewInlinePrompt({
                 color: t.text,
             }}
         >
-            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-                <div style={{ minWidth: 220, flex: "1 1 260px" }}>
-                    <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 3 }}>{title}</div>
+            <div className="wip-head">
+                <div className="wip-text">
+                    <div className="wip-title">{title}</div>
                     <div style={{ color: t.textMuted, fontSize: 12 }}>{description}</div>
                 </div>
-                <div style={{ display: "flex", gap: 7, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                <div className="wip-actions">
                     <button
                         type="button"
                         onClick={onViewDocument}
@@ -78,7 +78,7 @@ export function WorkflowReviewInlinePrompt({
                     <button
                         type="button"
                         onClick={onAbort}
-                        style={{ ...baseButtonStyle, background: "transparent", color: "#dc2626", borderColor: "color-mix(in srgb, #dc2626 45%, transparent)" }}
+                        style={{ ...baseButtonStyle, background: "transparent", color: "var(--theme-danger)", borderColor: "color-mix(in srgb, var(--theme-danger) 45%, transparent)" }}
                     >
                         {abortLabel}
                     </button>
@@ -142,8 +142,8 @@ export function WorkflowFormInlinePrompt({
                 fontSize: 12,
             }}
         >
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 6 }}>
-                <span style={{ fontWeight: 800 }}>{title}</span>
+            <div className="wip-row">
+                <span className="wip-strong">{title}</span>
                 <span style={{ color: t.textMuted }}>{statusText}</span>
             </div>
             <div style={{ color: t.textMuted, marginBottom: 7 }}>{description}</div>

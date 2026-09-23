@@ -334,14 +334,14 @@ func TestSemanticEarlyStopIgnoresUnclaimedOptionalLegs(t *testing.T) {
 	optionalLeft := 0
 	for _, selection := range surface.plan.Selections {
 		// Leave the optional bundle search offers uncompleted; complete the rest.
-		if selection.FitProof.MatchedCapability == "information.search.web" {
+		if selection.FitProof.MatchedCapability == tool.CapabilityArtifactAcquireRemote || selection.FitProof.MatchedCapability == tool.CapabilityFSReadLocal {
 			optionalLeft++
 			continue
 		}
 		surface.completed[selection.ID] = true
 	}
 	if optionalLeft == 0 {
-		t.Fatal("fixture plan must include the optional bundle search offers")
+		t.Fatal("fixture plan must include an optional companion leg")
 	}
 	stop, code, _ := cb.EarlyStop()
 	if !stop || code != "" {
@@ -354,7 +354,11 @@ func TestSemanticEarlyStopIgnoresUnclaimedOptionalLegs(t *testing.T) {
 // searches more than once, and the single-shot companion stranded production
 // PPT turns after the first search.
 func TestSemanticOfficeCompanionSearchBudgetIsThree(t *testing.T) {
-	cb := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: .98})
+	cold := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: .98})
+	if name := semanticGrantNameForAdapter(cold.semanticSurface, semanticTrustedWebSearchAdapter); name != "" {
+		t.Fatalf("cold office turn listed latent search as %q", name)
+	}
+	cb := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{Primary: intent.LabelOffice, Secondary: []intent.IntentLabel{intent.LabelSearch}, Confidence: .98})
 	for i := 1; i <= 5; i++ {
 		if got := cb.ExecuteTool("web_search", `{"query":"ragdoll photos"}`); !strings.Contains(got, "found:") {
 			t.Fatalf("bundle search %d must succeed through a sibling grant: %q", i, got)
@@ -626,11 +630,11 @@ func TestSemanticToolCallPetitionGrantsOfficeLegOnSearchTurn(t *testing.T) {
 	if !cb.semanticEffectfulPetitionConsumed {
 		t.Fatal("a granted effectful petition must consume the effectful budget")
 	}
-	if name := semanticGrantNameForAdapter(cb.semanticSurface, semanticTrustedShellAdapter); name != "bash" {
-		t.Fatalf("baseline bash must stay listed after an office petition, got %q", name)
+	if name := semanticGrantNameForAdapter(cb.semanticSurface, semanticTrustedShellAdapter); name != "" {
+		t.Fatalf("office petition must not add baseline bash, got %q", name)
 	}
 	if granted, message := cb.PetitionToolCall("bash"); granted || message != "" {
-		t.Fatalf("listed bash is not a second effectful petition: granted=%v message=%q", granted, message)
+		t.Fatalf("effectful petition budget is already spent: granted=%v message=%q", granted, message)
 	}
 	if granted, message := cb.PetitionToolCall("current_datetime"); !granted || !strings.Contains(message, "current_datetime") {
 		t.Fatalf("read-only petition must remain available after an effectful one: granted=%v message=%q", granted, message)

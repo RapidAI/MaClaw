@@ -230,7 +230,7 @@ export function CodingConflictSidePanel({
     });
 
     const body: ReactNode = (
-            <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+            <div className="ccs-body">
                 <div
                     style={{
                         flexShrink: 0,
@@ -243,10 +243,10 @@ export function CodingConflictSidePanel({
                         background: t.titleBarBg || t.bg,
                     }}
                 >
-                    <div style={{ minWidth: 0, flex: 1 }}>
+                    <div className="ccs-head-text">
                         <div style={{ fontWeight: 700, color: dangerColor, fontSize: 13 }}>
                             {localizeText(lang, "Isolation conflicts", "隔离冲突", "隔離衝突")}
-                            <span style={{ marginLeft: 8, fontWeight: 600, opacity: 0.85 }}>
+                            <span className="ccs-remaining">
                                 {remaining}
                                 {total > remaining ? ` / ${total}` : ""}
                             </span>
@@ -260,7 +260,7 @@ export function CodingConflictSidePanel({
                             )}
                         </div>
                         {total > 0 ? (
-                            <div data-testid="coding-conflict-progress" style={{ marginTop: 8 }} title={`${resolved}/${total}`}>
+                            <div className="ccs-progress" data-testid="coding-conflict-progress" title={`${resolved}/${total}`}>
                                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: t.textMuted || t.promptColor, marginBottom: 3 }}>
                                     <span>{localizeText(lang, "Resolution progress", "解决进度", "解決進度")}</span>
                                     <span data-testid="coding-conflict-progress-label">
@@ -293,7 +293,7 @@ export function CodingConflictSidePanel({
                             </div>
                         ) : null}
                     </div>
-                    <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                    <div className="ccs-head-actions">
                         <button
                             type="button"
                             data-testid="coding-conflict-discard-all"
@@ -315,13 +315,13 @@ export function CodingConflictSidePanel({
                     </div>
                 </div>
 
-                <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: "10px 12px" }}>
+                <div className="ccs-scroll">
                     {conflicts.length === 0 ? (
                         <div data-testid="coding-conflict-side-empty" style={{ fontSize: 12, color: t.textMuted || t.promptColor, padding: "12px 4px" }}>
                             {localizeText(lang, "No isolation conflicts right now.", "当前没有隔离冲突。", "目前沒有隔離衝突。")}
                         </div>
                     ) : null}
-                    <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}>
+                    <div className="ccs-list">
                         {conflicts.map((c) => (
                             <div
                                 key={c.id}
@@ -405,7 +405,7 @@ export function CodingConflictSidePanel({
                                     borderBottom: `1px solid ${t.fieldBorder || "rgba(127,127,127,0.2)"}`,
                                 }}
                             >
-                                <label style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer", fontSize: 12 }}>
+                                <label className="ccs-select-all">
                                     <input
                                         type="checkbox"
                                         data-testid="coding-conflict-select-all"
@@ -445,27 +445,27 @@ export function CodingConflictSidePanel({
                                             : (t.fieldBg || "transparent"),
                                     }}
                                 >
-                                    <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 6, alignItems: "center" }}>
-                                        <label style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, cursor: "pointer" }}>
+                                    <div className="ccs-file-head">
+                                        <label className="ccs-file-check">
                                             <input
                                                 type="checkbox"
                                                 data-testid={`coding-conflict-file-check-${d.path}`}
                                                 checked={selected.includes(d.path)}
                                                 onChange={() => onToggleFile(d.path)}
                                             />
-                                            <strong style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12 }}>{d.path}</strong>
+                                            <strong className="ccs-file-path">{d.path}</strong>
                                         </label>
-                                        <span style={{ opacity: 0.8, flexShrink: 0, fontSize: 11 }}>
+                                        <span className="ccs-file-status">
                                             {d.status}
                                             {d.three_way || d.base_head ? ` · ${localizeText(lang, "3-way", "三路", "三路")}` : ""}
                                         </span>
                                     </div>
                                     {d.three_way ? (
-                                        <pre data-testid="coding-conflict-three-way" style={{ margin: "0 0 8px", whiteSpace: "pre-wrap", fontSize: 11, maxHeight: 120, overflow: "auto" }}>{d.three_way}</pre>
+                                        <pre className="ccs-diff-pre" data-testid="coding-conflict-three-way">{d.three_way}</pre>
                                     ) : d.unified ? (
-                                        <pre style={{ margin: "0 0 8px", whiteSpace: "pre-wrap", fontSize: 11, maxHeight: 100, overflow: "auto" }}>{d.unified}</pre>
+                                        <pre className="ccs-diff-pre ccs-diff-pre--unified">{d.unified}</pre>
                                     ) : null}
-                                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                                    <div className="ccs-file-actions">
                                         <button type="button" disabled={busy} onClick={() => onAdoptFile(activeId, d.path)} style={btnSm({ primary: true })}>
                                             {localizeText(lang, "Adopt theirs", "采纳隔离侧", "採納隔離側")}
                                         </button>
@@ -496,8 +496,8 @@ export function CodingConflictSidePanel({
                                     </div>
 
                                     {focusFile === d.path && preview && preview.path === d.path ? (
-                                        <div data-testid="coding-conflict-preview-panel" style={{ marginTop: 10 }}>
-                                            <div style={{ display: "flex", gap: 4, marginBottom: 8, flexWrap: "wrap", alignItems: "center" }}>
+                                        <div className="ccs-preview-panel" data-testid="coding-conflict-preview-panel">
+                                            <div className="ccs-preview-bar">
                                                 {(["main", "theirs", "base"] as const).map((side) => (
                                                     <button
                                                         key={side}
@@ -518,7 +518,7 @@ export function CodingConflictSidePanel({
                                                     </button>
                                                 ))}
                                                 {preview.truncated ? (
-                                                    <span style={{ fontSize: 11, opacity: 0.75 }}>{localizeText(lang, "truncated", "已截断", "已截斷")}</span>
+                                                    <span className="ccs-truncated">{localizeText(lang, "truncated", "已截断", "已截斷")}</span>
                                                 ) : null}
                                                 <button
                                                     type="button"
@@ -547,7 +547,7 @@ export function CodingConflictSidePanel({
                                                 // language once rather than once per column/render.
                                                 const language = detectLanguage(d.path);
                                                 return (
-                                                <div data-testid="coding-conflict-triple" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, marginBottom: 8 }}>
+                                                <div className="ccs-triple" data-testid="coding-conflict-triple">
                                                     {([
                                                         { key: "base" as const, label: "base", data: triple.base },
                                                         { key: "main" as const, label: "main", data: triple.main },
@@ -604,7 +604,7 @@ export function CodingConflictSidePanel({
                                                                         color: codeTheme.text,
                                                                     }}
                                                                 >
-                                                                    <table style={{ borderCollapse: "collapse", width: "100%", tableLayout: "fixed" }}>
+                                                                    <table className="ccs-triple-table">
                                                                         <tbody>
                                                                             {lines.map((line, li) => (
                                                                                 <tr key={`${col.key}-${li}`}>
@@ -627,8 +627,8 @@ export function CodingConflictSidePanel({
                                                                                         {col.data?.missing ? "" : li + 1}
                                                                                     </td>
                                                                                     <td
+                                                                                        className="ccs-triple-code"
                                                                                         data-testid={li === 0 ? `coding-conflict-triple-code-${col.key}` : undefined}
-                                                                                        style={{ padding: "0 4px", whiteSpace: "pre", overflowWrap: "normal", wordBreak: "keep-all", verticalAlign: "top" }}
                                                                                     >
                                                                                         {col.data?.missing || line === "(empty)" || line === "—"
                                                                                             ? (line || " ")
@@ -654,7 +654,7 @@ export function CodingConflictSidePanel({
                                             })() : null}
 
                                             {preview.missing ? (
-                                                <pre style={{ margin: 0, whiteSpace: "pre-wrap", fontSize: 11, maxHeight: 160, overflow: "auto", opacity: 0.7 }}>
+                                                <pre className="ccs-missing-pre">
                                                     {localizeText(lang, "(missing on this side)", "（此侧不存在）", "（此側不存在）")}
                                                 </pre>
                                             ) : (
@@ -691,9 +691,9 @@ export function CodingConflictSidePanel({
 
                     {conflictLog.length > 0 ? (
                         <div data-testid="coding-conflict-log" style={{ marginTop: 12, fontSize: 11, color: t.textMuted || t.promptColor, opacity: 0.95 }}>
-                            <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 4, alignItems: "center" }}>
-                                <span style={{ fontWeight: 600 }}>{localizeText(lang, "Conflict log", "冲突日志", "衝突日誌")}</span>
-                                <span style={{ display: "flex", gap: 8 }}>
+                            <div className="ccs-log-head">
+                                <span className="ccs-log-title">{localizeText(lang, "Conflict log", "冲突日志", "衝突日誌")}</span>
+                                <span className="ccs-log-actions">
                                     <button type="button" data-testid="coding-conflict-log-export" onClick={onExportLog} style={{ border: "none", background: "transparent", color: t.headingColor || t.btnColor || t.textMuted, fontSize: 11, cursor: "pointer", padding: 0 }}>
                                         {localizeText(lang, "Export", "导出", "匯出")}
                                     </button>
@@ -703,7 +703,7 @@ export function CodingConflictSidePanel({
                                 </span>
                             </div>
                             {conflictLog.slice().reverse().slice(0, 8).map((line, i) => (
-                                <div key={`${i}-${line.slice(0, 24)}`} style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{line}</div>
+                                <div className="ccs-log-line" key={`${i}-${line.slice(0, 24)}`}>{line}</div>
                             ))}
                         </div>
                     ) : null}
@@ -734,16 +734,11 @@ export function CodingConflictSidePanel({
             style={paneStyle}
         >
             <div
+                className="ccs-resize"
                 data-testid="coding-conflict-side-resize"
                 onMouseDown={(e) => {
                     e.preventDefault();
                     startPreviewResize?.();
-                }}
-                style={{
-                    width: 6,
-                    cursor: "col-resize",
-                    flexShrink: 0,
-                    background: "transparent",
                 }}
                 title={localizeText(lang, "Drag to resize", "拖动调整宽度", "拖曳調整寬度")}
             />

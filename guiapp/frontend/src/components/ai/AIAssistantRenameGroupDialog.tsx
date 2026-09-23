@@ -30,7 +30,7 @@ export function AIAssistantRenameGroupDialog({
             aria-modal="true"
             aria-labelledby="rename-group-title"
             onMouseDown={event => { if (!saving && event.target === event.currentTarget) onClose(); }}
-            style={{ position: "absolute", inset: 0, zIndex: 30050, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, background: "rgba(15, 23, 42, 0.34)" }}
+            className="aargd-overlay"
         >
             <div
                 onMouseDown={event => event.stopPropagation()}
@@ -63,7 +63,7 @@ export function AIAssistantRenameGroupDialog({
                         {error}
                     </div>
                 )}
-                <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+                <div className="aargd-actions">
                     <button type="button" onClick={onClose} disabled={saving} style={{ border: `1px solid ${t.divider}`, borderRadius: 6, background: t.fieldBg, color: t.text, padding: "7px 12px", cursor: saving ? "not-allowed" : "pointer", opacity: saving ? 0.55 : 1 }}>
                         {localizeText(lang, "Cancel", "取消", "取消")}
                     </button>

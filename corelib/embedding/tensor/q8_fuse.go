@@ -17,7 +17,13 @@ func MatMulQ8PackedQKV(q, k, v, a []float32, wq, wk, wv *Q8Tensor, seq, maxWorke
 	if seq <= 0 {
 		return
 	}
-	if maxWorkers != 1 && packedQKVGemmaShort(q, k, v, a, wq, wk, wv, seq) {
+	if packedQKVGemmaShort(q, k, v, a, wq, wk, wv, seq, maxWorkers) {
+		return
+	}
+	if gemmaVNNIQKV(q, k, v, a, wq, wk, wv, seq, maxWorkers) {
+		return
+	}
+	if gemmaMaddwdQKV(q, k, v, a, wq, wk, wv, seq, maxWorkers) {
 		return
 	}
 	for m0 := 0; m0 < seq; m0 += mt {
@@ -56,7 +62,13 @@ func MatMulQ8DualOut(gate, up, a []float32, wGate, wUp *Q8Tensor, seq, maxWorker
 		SiLUMul(gate[:seq*N], up[:seq*N])
 		return
 	}
-	if maxWorkers != 1 && packedDualOutGemmaShort(gate, up, a, wGate, wUp, seq) {
+	if packedDualOutGemmaShort(gate, up, a, wGate, wUp, seq, maxWorkers) {
+		return
+	}
+	if gemmaVNNIDualOut(gate, up, a, wGate, wUp, seq, maxWorkers) {
+		return
+	}
+	if gemmaMaddwdDualOut(gate, up, a, wGate, wUp, seq, maxWorkers) {
 		return
 	}
 	run := func(ns, ne int) {
@@ -303,7 +315,13 @@ func MatMulQ8RMSResidual(x, a, yTile []float32, b *Q8Tensor, wRMS []float32, seq
 	if seq <= 0 || N <= 0 || K <= 0 {
 		return
 	}
-	if maxWorkers != 1 && rmsResidualGemmaShort(x, a, yTile, b, wRMS, seq, N, K, eps) {
+	if rmsResidualGemmaShort(x, a, yTile, b, wRMS, seq, N, K, eps, maxWorkers) {
+		return
+	}
+	if gemmaVNNIRMSResidual(x, a, b, wRMS, seq, N, K, maxWorkers, eps) {
+		return
+	}
+	if gemmaMaddwdRMSResidual(x, a, b, wRMS, seq, N, K, maxWorkers, eps) {
 		return
 	}
 	if mt <= 0 || mt > 8 {

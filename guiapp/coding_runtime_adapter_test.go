@@ -2,6 +2,7 @@ package guiapp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -219,6 +220,79 @@ func TestGUILocalWorkspaceProberUsesReadOnlyGitBaseline(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, ".git")); !os.IsNotExist(err) {
 		t.Fatalf("read-only probe unexpectedly created .git: %v", err)
+	}
+}
+
+func TestRemoteCodingLedgerReadOnlyFollowsLatestAttempt(t *testing.T) {
+	if !remoteCodingLedgerReadOnly(true, nil) || remoteCodingLedgerReadOnly(false, nil) {
+		t.Fatal("a new turn must follow the request kind")
+	}
+	writer := &codingruntime.Attempt{Policy: codingruntime.PolicySnapshot{ReadOnly: false}}
+	inquiry := &codingruntime.Attempt{Policy: codingruntime.PolicySnapshot{ReadOnly: true}}
+	if remoteCodingLedgerReadOnly(false, []*codingruntime.Attempt{writer, inquiry}) != true {
+		t.Fatal("review of an inquiry parent must stay read-only")
+	}
+	if remoteCodingLedgerReadOnly(true, []*codingruntime.Attempt{inquiry, writer}) != false {
+		t.Fatal("review of a writer parent must stay a writer")
+	}
+	if remoteCodingLedgerReadOnly(false, []*codingruntime.Attempt{inquiry, nil}) != true {
+		t.Fatal("a nil tail must not hide the latest real attempt")
+	}
+	if !remoteCodingLedgerReadOnly(true, []*codingruntime.Attempt{nil}) || remoteCodingLatestAttempt(nil) != nil {
+		t.Fatal("no real attempt falls back to the turn kind")
+	}
+}
+
+func TestRemoteCodingBaselineBlockErrorKeepsUnrelatedFailures(t *testing.T) {
+	baselineErr := errors.New("remote git baseline: git is unavailable or could not create an empty HEAD")
+	blocked := &codingruntime.Attempt{ErrorCode: "workspace_before_probe_failed"}
+	if got := remoteCodingBaselineBlockError(baselineErr, blocked, "writer execution requires a successful read-only workspace baseline"); got != baselineErr.Error() {
+		t.Fatalf("blocked empty directory surfaced %q", got)
+	}
+	other := &codingruntime.Attempt{ErrorCode: "final_workspace_unchanged"}
+	if got := remoteCodingBaselineBlockError(baselineErr, other, "unchanged"); got != "unchanged" {
+		t.Fatalf("unrelated failure was replaced: %q", got)
+	}
+	if got := remoteCodingBaselineBlockError(nil, blocked, "generic"); got != "generic" {
+		t.Fatalf("missing baseline error was replaced: %q", got)
+	}
+}
+
+func TestRunGUIRemoteCodingTaskReadOnlyInquiryProceedsWithoutWorkspaceBaseline(t *testing.T) {
+	store := codingruntime.NewMemoryStore()
+	calls := 0
+	result, attempt, err := runGUIRemoteCodingTaskWithStartAndContinuation(
+		context.Background(), store, "owner", "workflow", "phase", "remote-target", "/home/prj001", "查看本机状态", true,
+		codingruntime.WorkspaceProberFunc(func(context.Context, codingruntime.Task, codingruntime.Attempt) (*codingruntime.WorkspaceProbe, error) {
+			return nil, errors.New("not a git repository")
+		}),
+		"", "", nil,
+		func() *RemoteCodingSubAgentResult {
+			calls++
+			return &RemoteCodingSubAgentResult{Status: "success", Summary: "host is up"}
+		},
+	)
+	if err != nil || result == nil || attempt == nil || calls != 1 || attempt.Status != codingruntime.TaskCompleted || !attempt.Policy.ReadOnly || attempt.Policy.FinalWorkspaceGateRequired {
+		t.Fatalf("result=%#v attempt=%#v calls=%d err=%v", result, attempt, calls, err)
+	}
+}
+
+func TestRunGUIRemoteCodingTaskWriterStillBlocksWhenEmptyDirectoryHasNoBaseline(t *testing.T) {
+	store := codingruntime.NewMemoryStore()
+	calls := 0
+	result, attempt, err := runGUIRemoteCodingTaskWithStartAndContinuation(
+		context.Background(), store, "owner", "workflow", "phase", "remote-target", "/home/prj001", "add main.go", false,
+		codingruntime.WorkspaceProberFunc(func(context.Context, codingruntime.Task, codingruntime.Attempt) (*codingruntime.WorkspaceProbe, error) {
+			return nil, errors.New("remote read-only git probe returned no unambiguous HEAD")
+		}),
+		"", "", nil,
+		func() *RemoteCodingSubAgentResult {
+			calls++
+			return &RemoteCodingSubAgentResult{Status: "success"}
+		},
+	)
+	if err != nil || calls != 0 || result == nil || attempt == nil || attempt.Status != codingruntime.TaskBlocked || attempt.ErrorCode != "workspace_before_probe_failed" {
+		t.Fatalf("result=%#v attempt=%#v calls=%d err=%v", result, attempt, calls, err)
 	}
 }
 
@@ -456,7 +530,7 @@ func TestRunGUIRemoteCodingTaskWithLedgerStartsFreshAttemptForExplicitChildRevie
 	if err != nil || continuation == nil {
 		t.Fatalf("prepare continuation=%#v err=%v", continuation, err)
 	}
-	review, reviewAttempt, err := runGUIRemoteCodingTaskWithStartAndContinuation(context.Background(), store, "owner", "workflow", "phase", "remote-target", "/srv/repo", "review only bounded remote child result", nil, continuation.Task.TaskID, continuation.ParentAttemptID, nil, func() *RemoteCodingSubAgentResult {
+	review, reviewAttempt, err := runGUIRemoteCodingTaskWithStartAndContinuation(context.Background(), store, "owner", "workflow", "phase", "remote-target", "/srv/repo", "review only bounded remote child result", false, nil, continuation.Task.TaskID, continuation.ParentAttemptID, nil, func() *RemoteCodingSubAgentResult {
 		return &RemoteCodingSubAgentResult{Status: "success", Summary: "reviewed remote child evidence"}
 	})
 	if err != nil || review == nil || reviewAttempt == nil || reviewAttempt.AttemptID == parentAttempt.AttemptID || reviewAttempt.AttemptNo != 2 || review.RuntimeTaskID != result.RuntimeTaskID {
@@ -480,7 +554,7 @@ func TestRunGUIRemoteCodingTaskWithLedgerRejectsConcurrentChildReviewWithoutSeco
 		t.Fatal(err)
 	}
 	calls := 0
-	result, attempt, err := runGUIRemoteCodingTaskWithStartAndContinuation(context.Background(), store, "second-review", "workflow", "phase", "remote-target", "/srv/repo", "review", nil, task.TaskID, "", nil, func() *RemoteCodingSubAgentResult {
+	result, attempt, err := runGUIRemoteCodingTaskWithStartAndContinuation(context.Background(), store, "second-review", "workflow", "phase", "remote-target", "/srv/repo", "review", false, nil, task.TaskID, "", nil, func() *RemoteCodingSubAgentResult {
 		calls++
 		return &RemoteCodingSubAgentResult{Status: "success"}
 	})

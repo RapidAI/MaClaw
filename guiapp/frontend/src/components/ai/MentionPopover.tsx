@@ -148,12 +148,7 @@ export function MentionPopover({
                         />
                         {/* Name */}
                         <span
-                            style={{
-                                overflow: "hidden",
-                                textOverflow: "ellipsis",
-                                whiteSpace: "nowrap",
-                                flex: 1,
-                            }}
+                            className="mp-name"
                         >
                             {p.name}
                         </span>

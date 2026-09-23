@@ -3,28 +3,28 @@ package computeruse
 import (
 	"fmt"
 	"strings"
+	"unicode"
 )
 
-// blockedWindowHints are substrings that must never be automated.
-var blockedWindowHints = []string{
+// blockedWindowPhrases are OS security surfaces that must never be automated.
+// App login dialogs ("登录 - 微信"), settings pages ("隐私设置"), and document
+// titles are ordinary Computer Use targets and are intentionally not listed.
+var blockedWindowPhrases = []string{
 	"user account control",
-	"uac",
 	"用户账户控制",
 	"用户帐户控制",
-	"credential",
-	"credentials",
 	"windows security",
+	"windows 安全中心",
 	"windows 安全",
 	"security and maintenance",
-	"锁屏",
+	"安全和维护",
 	"lock screen",
-	"sign in",
-	"登录",
-	"privacy",
-	"隐私",
+	"锁屏",
+	"锁定屏幕",
+	"凭据管理器",
+	"credential manager",
+	"windows 凭据",
 	"screen recording",
-	"辅助功能",
-	"accessibility",
 }
 
 // Policy gates computer actions.
@@ -164,8 +164,20 @@ func titleBlocked(title string) bool {
 	if t == "" {
 		return false
 	}
-	for _, h := range blockedWindowHints {
-		if strings.Contains(t, strings.ToLower(h)) {
+	for _, h := range blockedWindowPhrases {
+		if strings.Contains(t, h) {
+			return true
+		}
+	}
+	// "uac" as a raw substring also matches unrelated titles such as "guacamole".
+	return hasASCIIToken(t, "uac")
+}
+
+func hasASCIIToken(text, token string) bool {
+	for _, part := range strings.FieldsFunc(text, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	}) {
+		if part == token {
 			return true
 		}
 	}

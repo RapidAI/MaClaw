@@ -899,6 +899,31 @@ export function knowledgeSearchResultTypeOptions(currentType?: string, facetType
     return knowledgeSearchTokenOptions(resultTypeOptions, currentType, facetTypes);
 }
 
+export function splitKnowledgeFacetChip(label: string, count = 0): { kicker: string; name: string; count: number } {
+    const name = String(label || '').trim();
+    const colon = name.indexOf(':');
+    if (colon > 0 && colon < name.length - 1 && !name.includes('://')) {
+        return { kicker: name.slice(0, colon), name: name.slice(colon + 1).trim(), count };
+    }
+    return { kicker: '', name, count };
+}
+
+export function clusterKnowledgeFacetChips<T extends { kicker: string }>(chips: T[]): Array<{ kicker: string; chips: T[] }> {
+    const clusters: Array<{ kicker: string; chips: T[] }> = [];
+    const index = new Map<string, number>();
+    for (const chip of chips) {
+        const key = chip.kicker || '';
+        let slot = index.get(key);
+        if (slot === undefined) {
+            slot = clusters.length;
+            index.set(key, slot);
+            clusters.push({ kicker: key, chips: [] });
+        }
+        clusters[slot].chips.push(chip);
+    }
+    return clusters;
+}
+
 export function knowledgeSearchFacetActive(form: KnowledgeSearchFormFilters, group: KnowledgeSearchFacetGroup, value: string): boolean {
     const token = String(value || '').trim();
     if (!token) return false;
@@ -2716,12 +2741,20 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
     loadSearchResultsRef.current = loadSearchResults;
     const requestPanelSearch = (form: typeof searchForm) => runTask('search', () => loadSearchResultsRef.current(form), { successMessage: false, recordResult: false });
     runPanelSearchRef.current = requestPanelSearch;
+    const isSearchBlockingBusy = (name: string) => !!name && name !== 'search' && name !== 'structuredCatalog';
+
+    const commitSearchForm = (patch: Partial<typeof searchForm>) => {
+        const next = { ...searchFormRef.current, ...patch };
+        searchFormRef.current = next;
+        setSearchForm(next);
+        return next;
+    };
 
     const commitSearchFilters = (next: typeof searchForm, reload: boolean) => {
         searchFormRef.current = next;
         setSearchForm(next);
         if (!reload) return;
-        if (busyRef.current && busyRef.current !== 'search') return;
+        if (isSearchBlockingBusy(busyRef.current)) return;
         if (!knowledgeSearchShouldReload(searchModeRef.current, next.query, structuredSearchFormRef.current)) return;
         void requestPanelSearch(next);
     };
@@ -2734,12 +2767,12 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                 : t('Search query is required.', '请输入搜索问题。'));
             return;
         }
-        if (busyRef.current && busyRef.current !== 'search') return;
+        if (isSearchBlockingBusy(busyRef.current)) return;
         await requestPanelSearch(form);
     };
 
     const applySearchFacet = (group: KnowledgeSearchFacetGroup, value: string) => {
-        if (busyRef.current && busyRef.current !== 'search') return;
+        if (isSearchBlockingBusy(busyRef.current)) return;
         commitSearchFilters(toggleKnowledgeSearchFacet(searchFormRef.current, group, value), true);
     };
 
@@ -2747,7 +2780,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
         if (searchModeRef.current === mode) return;
         searchModeRef.current = mode;
         setSearchMode(mode);
-        if (busyRef.current && busyRef.current !== 'search') return;
+        if (isSearchBlockingBusy(busyRef.current)) return;
         if (!knowledgeSearchShouldReload(mode, searchFormRef.current.query, structuredSearchFormRef.current)) return;
         void requestPanelSearch(searchFormRef.current);
     };
@@ -2764,6 +2797,16 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
         event.preventDefault();
         void runSearch();
     };
+
+    const onSearchModeKeyDown = (event: { key: string; preventDefault: () => void; currentTarget: HTMLElement }) => {
+        if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft' && event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+        event.preventDefault();
+        const next = searchModeRef.current === 'semantic' ? 'structured' : 'semantic';
+        changeSearchMode(next);
+        event.currentTarget.querySelector<HTMLElement>(`[role="radio"][data-mode="${next}"]`)?.focus();
+    };
+
+    const searchFiltersLocked = isSearchBlockingBusy(busy);
 
     const loadQuality = async () => {
         await runTask('quality', async () => {
@@ -3802,11 +3845,11 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                 <div className="knowledge-stack" role="tabpanel" id="knowledge-panel-search" aria-labelledby="knowledge-tab-search">
                     <div className="knowledge-search-hero">
                             <div className="knowledge-search-mode-row">
-                                <div className="knowledge-search-mode-toggle" role="radiogroup" aria-label={t('Search mode', '检索模式')}>
-                                    <button type="button" className="knowledge-mode-button" role="radio" aria-checked={searchMode === 'semantic'} data-active={searchMode === 'semantic' ? 'true' : undefined} onClick={() => changeSearchMode('semantic')}>
+                                <div className="knowledge-search-mode-toggle" role="radiogroup" aria-label={t('Search mode', '检索模式')} onKeyDown={onSearchModeKeyDown}>
+                                    <button type="button" className="knowledge-mode-button" role="radio" data-mode="semantic" aria-checked={searchMode === 'semantic'} tabIndex={searchMode === 'semantic' ? 0 : -1} data-active={searchMode === 'semantic' ? 'true' : undefined} onClick={() => changeSearchMode('semantic')}>
                                         {t('Semantic Search', '语义检索')}
                                     </button>
-                                    <button type="button" className="knowledge-mode-button" role="radio" aria-checked={searchMode === 'structured'} data-active={searchMode === 'structured' ? 'true' : undefined} onClick={() => changeSearchMode('structured')}>
+                                    <button type="button" className="knowledge-mode-button" role="radio" data-mode="structured" aria-checked={searchMode === 'structured'} tabIndex={searchMode === 'structured' ? 0 : -1} data-active={searchMode === 'structured' ? 'true' : undefined} onClick={() => changeSearchMode('structured')}>
                                         {t('Table Filters', '表格筛选')}
                                     </button>
                                 </div>
@@ -3819,16 +3862,12 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                                 <input
                                     className="knowledge-input knowledge-search-input--hero"
                                     value={searchForm.query}
-                                    onChange={event => {
-                                        const next = { ...searchFormRef.current, query: event.target.value };
-                                        searchFormRef.current = next;
-                                        setSearchForm(next);
-                                    }}
+                                    onChange={event => commitSearchForm({ query: event.target.value })}
                                     onKeyDown={onSearchEnter}
                                     placeholder={searchMode === 'structured' ? t('Optional keywords inside matched rows...', '可选：在匹配行内继续按关键词筛选...') : t('Search knowledge base...', '搜索知识库...')}
                                     autoFocus
                                 />
-                                <button type="button" className="knowledge-button knowledge-button--primary knowledge-search-button" disabled={!!busy && busy !== 'search'} onClick={runSearch}>
+                                <button type="button" className="knowledge-button knowledge-button--primary knowledge-search-button" disabled={searchFiltersLocked} onClick={runSearch}>
                                     {busy === 'search' ? t('Searching...', '检索中...') : t('Search', '检索')}
                                 </button>
                             </div>
@@ -3849,28 +3888,18 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                                 </label>
                                 <label className="knowledge-search-filter knowledge-search-filter--grow">
                                     <span>{t('Domain', '域名')}</span>
-                                    <input className="knowledge-input knowledge-input--compact" value={searchForm.domain} onChange={event => {
-                                        const next = { ...searchFormRef.current, domain: event.target.value };
-                                        searchFormRef.current = next;
-                                        setSearchForm(next);
-                                    }} onKeyDown={onSearchEnter} placeholder={t('Any domain', '任意域名')} />
+                                    <input className="knowledge-input knowledge-input--compact" value={searchForm.domain} onChange={event => commitSearchForm({ domain: event.target.value })} onKeyDown={onSearchEnter} placeholder={t('Any domain', '任意域名')} />
                                 </label>
                                 <label className="knowledge-search-filter knowledge-search-filter--grow">
                                     <span>{t('Labels', '标签')}</span>
-                                    <input className="knowledge-input knowledge-input--compact" value={searchForm.labels} onChange={event => {
-                                        const next = { ...searchFormRef.current, labels: event.target.value };
-                                        searchFormRef.current = next;
-                                        setSearchForm(next);
-                                    }} onKeyDown={onSearchEnter} placeholder={t('Any labels', '任意标签')} />
+                                    <input className="knowledge-input knowledge-input--compact" value={searchForm.labels} onChange={event => commitSearchForm({ labels: event.target.value })} onKeyDown={onSearchEnter} placeholder={t('Any labels', '任意标签')} />
                                 </label>
                                 <label className="knowledge-search-filter knowledge-search-filter--limit">
                                     <span>{t('Limit', '条数')}</span>
                                     <input className="knowledge-input knowledge-input--compact" type="number" min={1} max={200} value={searchForm.limit} onChange={event => {
                                         const parsed = Number(event.target.value);
                                         if (!Number.isFinite(parsed)) return;
-                                        const next = { ...searchFormRef.current, limit: parsed };
-                                        searchFormRef.current = next;
-                                        setSearchForm(next);
+                                        commitSearchForm({ limit: parsed });
                                     }} onKeyDown={onSearchEnter} title={t('Max results', '最大结果数')} data-testid="knowledge-search-limit" />
                                 </label>
                                 <label className="knowledge-checkbox knowledge-search-filter-check"><input type="checkbox" checked={searchForm.includeDisabled} onChange={event => commitSearchFilters({ ...searchFormRef.current, includeDisabled: event.target.checked }, true)} /> {t('Disabled', '含禁用')}</label>
@@ -3879,7 +3908,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                                         type="button"
                                         className="knowledge-chip knowledge-chip--active knowledge-search-source-chip"
                                         data-testid="knowledge-search-source-chip"
-                                        disabled={!!busy && busy !== 'search'}
+                                        disabled={searchFiltersLocked}
                                         title={searchForm.sourceID}
                                         aria-label={`${t('Clear source filter', '清除来源筛选')}: ${searchForm.sourceID}`}
                                         onClick={() => applySearchFacet('sources', searchForm.sourceID)}
@@ -3897,7 +3926,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                                         </datalist>
                                         <select className="knowledge-input" value={structuredSearchForm.matchMode} onChange={event => {
                                             commitStructuredForm({ matchMode: event.target.value });
-                                            if (busyRef.current && busyRef.current !== 'search') return;
+                                            if (isSearchBlockingBusy(busyRef.current)) return;
                                             if (!knowledgeSearchShouldReload('structured', searchFormRef.current.query, structuredSearchFormRef.current)) return;
                                             void requestPanelSearch(searchFormRef.current);
                                         }}>
@@ -3920,7 +3949,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                                         {t('Tip: use one column at a time for precise row evidence. Text and range filters can be combined on the same column.', '提示：一次使用一个列名以获得精准行证据；同一列可以组合文本值和范围条件。')}
                                         {' '}
                                         {structuredCatalog?.count ? t(`${structuredCatalog.count} table(s) indexed.`, `已索引 ${structuredCatalog.count} 张表。`) : t('No table catalog loaded yet.', '尚未加载表格目录。')}
-                                        <button type="button" className="knowledge-inline-link-button" disabled={!!busy} onClick={loadStructuredCatalog}>
+                                        <button type="button" className="knowledge-inline-link-button" disabled={searchFiltersLocked} onClick={loadStructuredCatalog}>
                                             {busy === 'structuredCatalog' ? t('Loading catalog...', '加载目录中...') : t('Refresh catalog', '刷新目录')}
                                         </button>
                                     </div>
@@ -3948,7 +3977,7 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                                     empty={t('Run a search to see facets.', '执行检索后显示分面。')}
                                     t={t}
                                     form={searchForm}
-                                    disabled={!!busy && busy !== 'search'}
+                                    disabled={searchFiltersLocked}
                                     onToggle={applySearchFacet}
                                 />
                             </PanelBlock>
@@ -4102,13 +4131,6 @@ function PanelBlock({ title, children, className }: { title: string; children: R
     return <div className={['knowledge-block', className].filter(Boolean).join(' ')}><h3 className="knowledge-block-title">{title}</h3><div className="knowledge-block-body">{children}</div></div>;
 }
 
-function facetChipLabel(item: SearchFacetBucket): string {
-    const label = String(item.label || item.kind || item.domain || '').trim();
-    if (!label) return '';
-    const count = Number(item.count || 0);
-    return count ? `${label} ${count}` : label;
-}
-
 function facetFilterValue(item: SearchFacetBucket, group: KnowledgeSearchFacetGroup): string {
     if (group === 'sources') return String(item.source_id || item.label || '').trim();
     if (group === 'domains') return String(item.domain || item.label || '').trim();
@@ -4141,36 +4163,53 @@ function FacetGroups({
         chips: group.items.flatMap(item => {
             if (group.key === 'sources' && !String(item.source_id || '').trim()) return [];
             const value = facetFilterValue(item, group.key);
-            const label = facetChipLabel(item);
-            return value && label ? [{ value, label }] : [];
+            const label = String(item.label || item.kind || item.domain || '').trim();
+            if (!value || !label) return [];
+            const count = Number(item.count || 0);
+            return [{ value, label: count ? `${label} ${count}` : label, ...splitKnowledgeFacetChip(label, count) }];
         }),
     })).filter(group => group.chips.length);
     if (!groups.length) return <div className="knowledge-empty">{empty}</div>;
     return (
         <div className="knowledge-facet-groups" data-testid="knowledge-search-facet-groups">
-            {groups.map(group => (
-                <div key={group.key} className="knowledge-facet-group">
-                    <div className="knowledge-facet-group-title">{group.title}</div>
-                    <div className="knowledge-chip-list">
-                        {group.chips.map(chip => {
-                            const active = knowledgeSearchFacetActive(form, group.key, chip.value);
-                            return (
-                                <button
-                                    key={`${group.key}-${chip.value}`}
-                                    type="button"
-                                    className={['knowledge-chip', active ? 'knowledge-chip--active' : ''].filter(Boolean).join(' ')}
-                                    aria-pressed={active}
-                                    disabled={disabled}
-                                    data-testid={`knowledge-search-facet-${group.key}-${chip.value}`}
-                                    onClick={() => onToggle(group.key, chip.value)}
-                                >
-                                    {chip.label}
-                                </button>
-                            );
-                        })}
+            {groups.map(group => {
+                const clusters = clusterKnowledgeFacetChips(group.chips);
+                const namedClusters = clusters.filter(cluster => cluster.kicker).length;
+                const splitClusters = namedClusters > 1 || (namedClusters >= 1 && clusters.length > namedClusters);
+                return (
+                    <div key={group.key} className="knowledge-facet-group" data-facet={group.key}>
+                        <div className="knowledge-facet-group-title">{group.title}</div>
+                        {(splitClusters ? clusters : [{ kicker: '', chips: group.chips }]).map(cluster => (
+                            <div key={cluster.kicker || group.key} className={splitClusters ? 'knowledge-facet-subgroup' : undefined}>
+                                {splitClusters && cluster.kicker ? <div className="knowledge-facet-subgroup-title">{cluster.kicker}</div> : null}
+                                <div className="knowledge-chip-list knowledge-facet-chip-list">
+                                    {cluster.chips.map(chip => {
+                                        const active = knowledgeSearchFacetActive(form, group.key, chip.value);
+                                        const showKicker = !splitClusters && !!chip.kicker;
+                                        return (
+                                            <button
+                                                key={`${group.key}-${chip.value}`}
+                                                type="button"
+                                                className={['knowledge-chip', 'knowledge-facet-chip', active ? 'knowledge-chip--active' : ''].filter(Boolean).join(' ')}
+                                                aria-pressed={active}
+                                                aria-label={chip.label}
+                                                disabled={disabled}
+                                                title={chip.label}
+                                                data-testid={`knowledge-search-facet-${group.key}-${chip.value}`}
+                                                onClick={() => onToggle(group.key, chip.value)}
+                                            >
+                                                {showKicker ? <span className="knowledge-facet-chip-kicker">{chip.kicker}</span> : null}
+                                                <span className="knowledge-facet-chip-name">{chip.name}</span>
+                                                {chip.count ? <span className="knowledge-facet-chip-count">{chip.count}</span> : null}
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        ))}
                     </div>
-                </div>
-            ))}
+                );
+            })}
         </div>
     );
 }

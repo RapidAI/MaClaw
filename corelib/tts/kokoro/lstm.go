@@ -2,6 +2,8 @@ package kokoro
 
 import (
 	"fmt"
+	"runtime"
+	"sync"
 )
 
 type LSTMWeights struct {
@@ -31,8 +33,24 @@ func LSTMLayer(out []float32, x []float32, steps int, w LSTMWeights, reverse boo
 	h := make([]float32, w.Hidden)
 	c := make([]float32, w.Hidden)
 	gates := make([]float32, 4*w.Hidden)
-	ihScratch := make([]float32, w.InputDim)
-	hhScratch := make([]float32, w.Hidden)
+	rows := 4 * w.Hidden
+	rowWork := rows * (w.InputDim + w.Hidden)
+	workers := 1
+	if optRound2 && rowWork >= 1<<18 && runtime.GOMAXPROCS(0) > 1 {
+		workers = runtime.GOMAXPROCS(0)
+		if workers > 8 {
+			workers = 8
+		}
+	}
+	chunk := (rows + workers - 1) / workers
+	// Each gate-row worker owns dequant scratch so Q8 weights stay safe.
+	ihScratches := make([][]float32, workers)
+	hhScratches := make([][]float32, workers)
+	for i := range ihScratches {
+		ihScratches[i] = make([]float32, w.InputDim)
+		hhScratches[i] = make([]float32, w.Hidden)
+	}
+	var wg sync.WaitGroup
 	for step := 0; step < steps; step++ {
 		t := step
 		if reverse {
@@ -49,22 +67,70 @@ func LSTMLayer(out []float32, x []float32, steps int, w LSTMWeights, reverse boo
 			}
 			gates[i] = v
 		}
-		for g := 0; g < 4*w.Hidden; g++ {
-			if w.WeightIHTensor != nil {
-				if err := w.WeightIHTensor.DequantQ8Row(g, ihScratch); err != nil {
-					return err
+		if workers == 1 {
+			ihScr := ihScratches[0]
+			hhScr := hhScratches[0]
+			for g := 0; g < rows; g++ {
+				if w.WeightIHTensor != nil {
+					if err := w.WeightIHTensor.DequantQ8Row(g, ihScr); err != nil {
+						return err
+					}
+					gates[g] += dot32(xt, ihScr)
+				} else {
+					gates[g] += dot32(xt, w.WeightIH[g*w.InputDim:(g+1)*w.InputDim])
 				}
-				gates[g] += dot32(xt, ihScratch)
-			} else {
-				gates[g] += dot32(xt, w.WeightIH[g*w.InputDim:(g+1)*w.InputDim])
+				if w.WeightHHTensor != nil {
+					if err := w.WeightHHTensor.DequantQ8Row(g, hhScr); err != nil {
+						return err
+					}
+					gates[g] += dot32(h, hhScr)
+				} else {
+					gates[g] += dot32(h, w.WeightHH[g*w.Hidden:(g+1)*w.Hidden])
+				}
 			}
-			if w.WeightHHTensor != nil {
-				if err := w.WeightHHTensor.DequantQ8Row(g, hhScratch); err != nil {
-					return err
+		} else {
+			errCh := make(chan error, workers)
+			for wk := 0; wk < workers; wk++ {
+				g0 := wk * chunk
+				g1 := g0 + chunk
+				if g1 > rows {
+					g1 = rows
 				}
-				gates[g] += dot32(h, hhScratch)
-			} else {
-				gates[g] += dot32(h, w.WeightHH[g*w.Hidden:(g+1)*w.Hidden])
+				if g0 >= g1 {
+					break
+				}
+				wg.Add(1)
+				go func(wk, g0, g1 int) {
+					defer wg.Done()
+					ihScr := ihScratches[wk]
+					hhScr := hhScratches[wk]
+					for g := g0; g < g1; g++ {
+						if w.WeightIHTensor != nil {
+							if err := w.WeightIHTensor.DequantQ8Row(g, ihScr); err != nil {
+								errCh <- err
+								return
+							}
+							gates[g] += dot32(xt, ihScr)
+						} else {
+							gates[g] += dot32(xt, w.WeightIH[g*w.InputDim:(g+1)*w.InputDim])
+						}
+						if w.WeightHHTensor != nil {
+							if err := w.WeightHHTensor.DequantQ8Row(g, hhScr); err != nil {
+								errCh <- err
+								return
+							}
+							gates[g] += dot32(h, hhScr)
+						} else {
+							gates[g] += dot32(h, w.WeightHH[g*w.Hidden:(g+1)*w.Hidden])
+						}
+					}
+				}(wk, g0, g1)
+			}
+			wg.Wait()
+			select {
+			case err := <-errCh:
+				return err
+			default:
 			}
 		}
 		for i := 0; i < w.Hidden; i++ {
@@ -92,11 +158,33 @@ func BiLSTMLayer(out []float32, x []float32, steps int, w BiLSTMWeights) error {
 	}
 	fw := make([]float32, steps*h)
 	rv := make([]float32, steps*h)
-	if err := LSTMLayer(fw, x, steps, w.Forward, false); err != nil {
-		return err
-	}
-	if err := LSTMLayer(rv, x, steps, w.Reverse, true); err != nil {
-		return err
+	// The two directions only read x and write disjoint outputs.
+	if optRound2 {
+		var wg sync.WaitGroup
+		var fwErr, rvErr error
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			fwErr = LSTMLayer(fw, x, steps, w.Forward, false)
+		}()
+		go func() {
+			defer wg.Done()
+			rvErr = LSTMLayer(rv, x, steps, w.Reverse, true)
+		}()
+		wg.Wait()
+		if fwErr != nil {
+			return fwErr
+		}
+		if rvErr != nil {
+			return rvErr
+		}
+	} else {
+		if err := LSTMLayer(fw, x, steps, w.Forward, false); err != nil {
+			return err
+		}
+		if err := LSTMLayer(rv, x, steps, w.Reverse, true); err != nil {
+			return err
+		}
 	}
 	for t := 0; t < steps; t++ {
 		copy(out[t*2*h:t*2*h+h], fw[t*h:(t+1)*h])

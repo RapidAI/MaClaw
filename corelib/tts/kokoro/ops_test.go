@@ -100,7 +100,7 @@ func TestConv1DSIMDFusedInterior(t *testing.T) {
 	wT := make([]float32, outC*kernel*inC)
 	transposeConv1DWeight(wT, w, inC, outC, kernel)
 	got := make([]float32, outC*inT)
-	if err := conv1DSIMDTransposedWeight(got, x, wT, b, inC, inT, outC, kernel, 1, 1, 1, inT); err != nil {
+	if err := conv1DSIMDTransposedWeight(got, x, wT, b, nil, inC, inT, outC, kernel, 1, 1, 1, inT); err != nil {
 		t.Fatal(err)
 	}
 	want := make([]float32, outC*inT)
@@ -131,7 +131,7 @@ func TestConv1DSIMDFusedDilatedInterior(t *testing.T) {
 	wT := make([]float32, outC*kernel*inC)
 	transposeConv1DWeight(wT, w, inC, outC, kernel)
 	got := make([]float32, outC*inT)
-	if err := conv1DSIMDTransposedWeight(got, x, wT, b, inC, inT, outC, kernel, 1, padding, dilation, inT); err != nil {
+	if err := conv1DSIMDTransposedWeight(got, x, wT, b, nil, inC, inT, outC, kernel, 1, padding, dilation, inT); err != nil {
 		t.Fatal(err)
 	}
 	want := make([]float32, outC*inT)

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -21,6 +21,7 @@ import {
     type TaskDraft,
 } from '../taskDraft';
 import { TaskConfigBar, type ExpertOption, type WorkflowOption } from '../TaskConfigBar';
+import { nextDefaultCloudWorkspaceName } from '../WorkspacePickerPopover';
 import { RemoteServerForm } from '../RemoteServerPopover';
 
 const testRemoteSSHConnection = vi.fn();
@@ -347,8 +348,8 @@ describe('TaskConfigBar', () => {
         expect(draft.workspace).toEqual({ kind: 'cloud', cloudWorkspaceId: 'cws-1', cloudName: '研发环境' });
     });
 
-    it('shows an empty cloud list notice and a clickable create row when onCreateCloud is provided', () => {
-        const onCreateCloud = vi.fn();
+    it('opens an editable default name for a new cloud workspace and creates it on Enter', async () => {
+        const onCreateCloud = vi.fn().mockResolvedValue(undefined);
         renderBar(defaultTaskDraft(), vi.fn(), { onCreateCloud });
         fireEvent.click(screen.getByTestId('task-config-collapsed'));
         fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
@@ -356,7 +357,232 @@ describe('TaskConfigBar', () => {
         expect(screen.getByTestId('workspace-cloud-search').getAttribute('placeholder')).toBe('搜索云端工作区');
         expect(screen.getByText('暂无云端工作区')).toBeTruthy();
         fireEvent.click(screen.getByTestId('workspace-cloud-create'));
+        expect(onCreateCloud).not.toHaveBeenCalled();
+        const input = screen.getByTestId('workspace-cloud-create-name') as HTMLInputElement;
+        expect(input.value).toBe('工作区 1');
+        expect(input.getAttribute('placeholder')).toBe('工作区名称');
+        const renameButton = screen.getByTestId('workspace-cloud-create-rename');
+        expect(renameButton.textContent).toBe('改名');
+        // The button shares the input's row. The hint sits underneath, so it cannot pull the button down.
+        expect(renameButton.parentElement).toBe(input.parentElement);
+        expect(input.parentElement?.textContent).not.toContain('输入名称');
+        fireEvent.keyDown(input, { key: 'Enter', keyCode: 229 });
+        expect(onCreateCloud).not.toHaveBeenCalled();
+        fireEvent.change(input, { target: { value: '  标书项目  ' } });
+        await act(async () => {
+            fireEvent.keyDown(input, { key: 'Enter' });
+        });
         expect(onCreateCloud).toHaveBeenCalledTimes(1);
+        expect(onCreateCloud).toHaveBeenCalledWith('标书项目');
+    });
+
+    it('numbers default cloud workspace names the way Hub does, including 工作区1', () => {
+        expect(nextDefaultCloudWorkspaceName([])).toBe('工作区 1');
+        expect(nextDefaultCloudWorkspaceName(['工作区 1', '工作区 3', 'other'])).toBe('工作区 2');
+        expect(nextDefaultCloudWorkspaceName(['工作区 1 extra', '工作区 01'])).toBe('工作区 1');
+        expect(nextDefaultCloudWorkspaceName(['工作区1'])).toBe('工作区 2');
+    });
+
+    it('moves a taken default name to the next 工作区 N and keeps a custom name', async () => {
+        const onCreateCloud = vi.fn()
+            .mockRejectedValueOnce(new Error('云端工作区名称已存在'))
+            .mockRejectedValueOnce(new Error('云端工作区名称已存在'))
+            .mockRejectedValueOnce(new Error('云端工作区名称已存在'));
+        renderBar(defaultTaskDraft(), vi.fn(), { onCreateCloud });
+        fireEvent.click(screen.getByTestId('task-config-collapsed'));
+        fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
+        fireEvent.click(screen.getByTestId('workspace-row-cloud'));
+        fireEvent.click(screen.getByTestId('workspace-cloud-create'));
+        await act(async () => {
+            fireEvent.keyDown(screen.getByTestId('workspace-cloud-create-name'), { key: 'Enter' });
+        });
+        const advanced = screen.getByTestId('workspace-cloud-create-name') as HTMLInputElement;
+        expect(advanced.value).toBe('工作区 2');
+        expect(advanced.readOnly).toBe(false);
+        expect(document.activeElement).toBe(advanced);
+        expect(screen.getByTestId('workspace-cloud-error').textContent).toContain('名称已存在');
+        await act(async () => {
+            fireEvent.keyDown(screen.getByTestId('workspace-cloud-create-name'), { key: 'Enter' });
+        });
+        expect((screen.getByTestId('workspace-cloud-create-name') as HTMLInputElement).value).toBe('工作区 3');
+        fireEvent.change(screen.getByTestId('workspace-cloud-create-name'), { target: { value: '标书项目' } });
+        await act(async () => {
+            fireEvent.keyDown(screen.getByTestId('workspace-cloud-create-name'), { key: 'Enter' });
+        });
+        expect((screen.getByTestId('workspace-cloud-create-name') as HTMLInputElement).value).toBe('标书项目');
+    });
+
+    it('fills the next 工作区 N and creates that default name on Enter', async () => {
+        const onCreateCloud = vi.fn().mockResolvedValue(undefined);
+        renderBar(defaultTaskDraft(), vi.fn(), {
+            onCreateCloud,
+            cloudWorkspaces: [
+                { id: 'cws-1', name: '工作区 1', spec: '0 B', state: '可用' },
+                { id: 'cws-3', name: '工作区 3', spec: '0 B', state: '可用' },
+                { id: 'cws-x', name: '标书项目', spec: '1 B', state: '可用' },
+            ],
+        });
+        fireEvent.click(screen.getByTestId('task-config-collapsed'));
+        fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
+        fireEvent.click(screen.getByTestId('workspace-row-cloud'));
+        fireEvent.click(screen.getByTestId('workspace-cloud-create'));
+        const input = screen.getByTestId('workspace-cloud-create-name') as HTMLInputElement;
+        expect(input.value).toBe('工作区 2');
+        await act(async () => {
+            fireEvent.keyDown(input, { key: 'Enter' });
+        });
+        expect(onCreateCloud).toHaveBeenCalledWith('工作区 2');
+    });
+
+    it('creates the named workspace when the new row rename button is clicked', async () => {
+        const onCreateCloud = vi.fn().mockResolvedValue(undefined);
+        renderBar(defaultTaskDraft(), vi.fn(), { onCreateCloud });
+        fireEvent.click(screen.getByTestId('task-config-collapsed'));
+        fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
+        fireEvent.click(screen.getByTestId('workspace-row-cloud'));
+        fireEvent.click(screen.getByTestId('workspace-cloud-create'));
+        fireEvent.change(screen.getByTestId('workspace-cloud-create-name'), { target: { value: '标书项目' } });
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('workspace-cloud-create-rename'));
+        });
+        expect(onCreateCloud).toHaveBeenCalledWith('标书项目');
+    });
+
+    it('keeps the rename button at regular weight on the selected workspace name line', () => {
+        renderBar(withCloudWorkspace(defaultTaskDraft(), 'cws-1', '工作区 1'), vi.fn(), {
+            onRenameCloud: vi.fn(),
+            cloudWorkspaces: [{ id: 'cws-1', name: '工作区 1', spec: '0 B', state: '可用' }],
+        });
+        fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
+        fireEvent.click(screen.getByTestId('workspace-row-cloud'));
+        const button = screen.getByTestId('workspace-cloud-rename-cws-1') as HTMLButtonElement;
+        expect(button.style.fontWeight).toBe('400');
+        expect(button.style.height).toBe('28px');
+        expect(button.parentElement?.textContent).toContain('工作区 1');
+        expect(button.parentElement?.textContent).not.toContain('0 B');
+    });
+
+    it('renames a cloud workspace from the right-side button without selecting the row', async () => {
+        const onChange = vi.fn();
+        const onRenameCloud = vi.fn().mockResolvedValue(undefined);
+        renderBar(defaultTaskDraft(), onChange, {
+            onRenameCloud,
+            cloudWorkspaces: [
+                { id: 'cws-1', name: '工作区 1', spec: '0 B', state: 'active' },
+            ],
+        });
+        fireEvent.click(screen.getByTestId('task-config-collapsed'));
+        fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
+        fireEvent.click(screen.getByTestId('workspace-row-cloud'));
+        const idleRename = screen.getByTestId('workspace-cloud-rename-cws-1');
+        expect(idleRename.parentElement?.textContent).toContain('工作区 1');
+        expect(idleRename.parentElement?.textContent).not.toContain('0 B');
+        fireEvent.click(idleRename);
+        expect(onChange).not.toHaveBeenCalled();
+        const input = screen.getByTestId('workspace-cloud-rename-input-cws-1') as HTMLInputElement;
+        expect(input.value).toBe('工作区 1');
+        fireEvent.keyDown(input, { key: 'Enter' });
+        expect(onRenameCloud).not.toHaveBeenCalled();
+        expect(screen.queryByTestId('workspace-cloud-rename-input-cws-1')).toBeNull();
+        fireEvent.click(screen.getByTestId('workspace-cloud-rename-cws-1'));
+        fireEvent.change(screen.getByTestId('workspace-cloud-rename-input-cws-1'), { target: { value: '标书项目' } });
+        await act(async () => {
+            fireEvent.keyDown(screen.getByTestId('workspace-cloud-rename-input-cws-1'), { key: 'Enter' });
+        });
+        expect(onRenameCloud).toHaveBeenCalledWith('cws-1', '标书项目');
+        expect(onChange).not.toHaveBeenCalled();
+        fireEvent.click(screen.getByTestId('workspace-cloud-cws-1'));
+        expect((onChange.mock.calls[0][0] as TaskDraft).workspace).toEqual({
+            kind: 'cloud',
+            cloudWorkspaceId: 'cws-1',
+            cloudName: '工作区 1',
+        });
+    });
+
+    it('saves a rename from the button that stays visible while editing', async () => {
+        const onRenameCloud = vi.fn().mockResolvedValue(undefined);
+        renderBar(defaultTaskDraft(), vi.fn(), {
+            onRenameCloud,
+            cloudWorkspaces: [{ id: 'cws-1', name: '工作区 1', spec: '0 B', state: '可用' }],
+        });
+        fireEvent.click(screen.getByTestId('task-config-collapsed'));
+        fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
+        fireEvent.click(screen.getByTestId('workspace-row-cloud'));
+        fireEvent.click(screen.getByTestId('workspace-cloud-rename-cws-1'));
+        expect(screen.getByTestId('workspace-cloud-rename-cws-1').textContent).toBe('改名');
+        fireEvent.change(screen.getByTestId('workspace-cloud-rename-input-cws-1'), { target: { value: '标书项目' } });
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('workspace-cloud-rename-cws-1'));
+        });
+        expect(onRenameCloud).toHaveBeenCalledWith('cws-1', '标书项目');
+    });
+
+    it('drops a blank rename without saving', () => {
+        const onRenameCloud = vi.fn();
+        renderBar(defaultTaskDraft(), vi.fn(), {
+            onRenameCloud,
+            cloudWorkspaces: [{ id: 'cws-1', name: '工作区 1', spec: '0 B', state: '可用' }],
+        });
+        fireEvent.click(screen.getByTestId('task-config-collapsed'));
+        fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
+        fireEvent.click(screen.getByTestId('workspace-row-cloud'));
+        fireEvent.click(screen.getByTestId('workspace-cloud-rename-cws-1'));
+        fireEvent.change(screen.getByTestId('workspace-cloud-rename-input-cws-1'), { target: { value: '   ' } });
+        fireEvent.keyDown(screen.getByTestId('workspace-cloud-rename-input-cws-1'), { key: 'Enter' });
+        expect(onRenameCloud).not.toHaveBeenCalled();
+        expect(screen.queryByTestId('workspace-cloud-rename-input-cws-1')).toBeNull();
+        expect(screen.getByTestId('workspace-cloud-cws-1').textContent).toContain('工作区 1');
+    });
+
+    it('lets Escape leave the name editor before closing the popover, and ignores IME Escape', () => {
+        renderBar(defaultTaskDraft(), vi.fn(), { onCreateCloud: vi.fn() });
+        fireEvent.click(screen.getByTestId('task-config-collapsed'));
+        fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
+        fireEvent.click(screen.getByTestId('workspace-row-cloud'));
+        fireEvent.click(screen.getByTestId('workspace-cloud-create'));
+        fireEvent.change(screen.getByTestId('workspace-cloud-create-name'), { target: { value: '标书' } });
+        fireEvent.keyDown(document, { key: 'Escape', keyCode: 229 });
+        expect(screen.getByTestId('workspace-cloud-create-name')).toBeTruthy();
+        fireEvent.keyDown(document, { key: 'Escape' });
+        expect(screen.queryByTestId('workspace-cloud-create-editor')).toBeNull();
+        expect(screen.getByTestId('workspace-cloud-create')).toBeTruthy();
+        expect(screen.getByTestId('task-config-popover-workspace')).toBeTruthy();
+        fireEvent.keyDown(document, { key: 'Escape' });
+        expect(screen.queryByTestId('task-config-popover-workspace')).toBeNull();
+    });
+
+    it('shows a create failure inside the cloud pane and keeps the typed name', async () => {
+        const onCreateCloud = vi.fn().mockRejectedValue(new Error('hub down'));
+        renderBar(defaultTaskDraft(), vi.fn(), { onCreateCloud });
+        fireEvent.click(screen.getByTestId('task-config-collapsed'));
+        fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
+        fireEvent.click(screen.getByTestId('workspace-row-cloud'));
+        fireEvent.click(screen.getByTestId('workspace-cloud-create'));
+        fireEvent.change(screen.getByTestId('workspace-cloud-create-name'), { target: { value: '标书项目' } });
+        await act(async () => {
+            fireEvent.keyDown(screen.getByTestId('workspace-cloud-create-name'), { key: 'Enter' });
+        });
+        expect(screen.getByTestId('workspace-cloud-error').textContent).toContain('hub down');
+        expect((screen.getByTestId('workspace-cloud-create-name') as HTMLInputElement).value).toBe('标书项目');
+    });
+
+    it('does not select another workspace while a create is in flight', async () => {
+        let release: () => void = () => {};
+        const onCreateCloud = vi.fn().mockImplementation(() => new Promise<void>((resolve) => { release = resolve; }));
+        const onChange = vi.fn();
+        renderBar(defaultTaskDraft(), onChange, {
+            onCreateCloud,
+            cloudWorkspaces: [{ id: 'cws-1', name: '工作区 1', spec: '0 B', state: '可用' }],
+        });
+        fireEvent.click(screen.getByTestId('task-config-collapsed'));
+        fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
+        fireEvent.click(screen.getByTestId('workspace-row-cloud'));
+        fireEvent.click(screen.getByTestId('workspace-cloud-create'));
+        fireEvent.change(screen.getByTestId('workspace-cloud-create-name'), { target: { value: '标书项目' } });
+        fireEvent.keyDown(screen.getByTestId('workspace-cloud-create-name'), { key: 'Enter' });
+        fireEvent.click(screen.getByTestId('workspace-cloud-cws-1'));
+        expect(onChange).not.toHaveBeenCalled();
+        await act(async () => { release(); });
     });
 
     it('selects the directory returned by onBrowseLocal and closes the popover', async () => {

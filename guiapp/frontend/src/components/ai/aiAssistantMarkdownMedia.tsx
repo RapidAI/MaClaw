@@ -18,7 +18,7 @@ export function renderScreenshotPreview(
     const isZh = !lang.startsWith("en");
     const fileName = localFilePath ? baseName(localFilePath) : (isZh ? "截图" : "screenshot");
     return (
-        <div data-testid="screenshot-preview-block" style={{ margin: "4px 0 6px 0", maxWidth: "100%", minWidth: 0, boxSizing: "border-box", overflow: "hidden" }}>
+        <div data-testid="screenshot-preview-block" className="aamm-shot-wrap">
             {/* The tool reports a downscaled screenshot; the overlay re-reads the
                 saved file so the full-resolution capture is what gets zoomed. */}
             <AttachmentImageThumbnail

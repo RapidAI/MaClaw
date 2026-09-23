@@ -62,10 +62,10 @@ const localizeText = (
 ) => (lang === "zh-Hant" ? zhHant : lang?.startsWith("zh") ? zhHans : en);
 
 const CATEGORY_META: Record<NotificationCategory, CategoryMeta> = {
-    system_announcement: { labelEn: "System", labelZh: "系统公告", color: "#3b82f6" },
-    feature_update: { labelEn: "Feature", labelZh: "功能更新", color: "#10b981" },
-    security_alert: { labelEn: "Security", labelZh: "安全警报", color: "#ef4444" },
-    maintenance: { labelEn: "Ops", labelZh: "运维通知", color: "#f59e0b" },
+    system_announcement: { labelEn: "System", labelZh: "系统公告", color: "var(--theme-primary)" },
+    feature_update: { labelEn: "Feature", labelZh: "功能更新", color: "var(--theme-success)" },
+    security_alert: { labelEn: "Security", labelZh: "安全警报", color: "var(--theme-danger)" },
+    maintenance: { labelEn: "Ops", labelZh: "运维通知", color: "var(--theme-warning)" },
     custom: { labelEn: "Custom", labelZh: "自定义", color: "#8b5cf6" },
 };
 
@@ -175,9 +175,9 @@ const NotificationItem: React.FC<NotificationItemProps> = React.memo(({
               : "";
     const priorityStyle: React.CSSProperties | undefined =
         notification.priority === "urgent"
-            ? { color: "#ef4444", fontWeight: 700 }
+            ? { color: "var(--theme-danger)", fontWeight: 700 }
             : notification.priority === "important"
-              ? { color: "#f59e0b", fontWeight: 600 }
+              ? { color: "var(--theme-warning)", fontWeight: 600 }
               : undefined;
     const titleText = (notification.title || "").trim();
     const contentPreview = stripMarkdownPreview(notification.content || "");
@@ -211,12 +211,7 @@ const NotificationItem: React.FC<NotificationItemProps> = React.memo(({
             }}
         >
             <div
-                style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "6px",
-                    fontSize: "11px",
-                }}
+                className="np-head-row"
             >
                 <span
                     style={{
@@ -553,11 +548,7 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({
 
             <div
                 data-testid="notification-list"
-                style={{
-                    flex: 1,
-                    overflowY: "auto",
-                    padding: "4px 0",
-                }}
+                className="np-list"
             >
                 {filteredNotifications.length === 0 ? (
                     <div
@@ -574,7 +565,7 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({
                             gap: "8px",
                         }}
                     >
-                        <span style={{ opacity: 0.45, display: "inline-flex" }}><IconBell size={28} /></span>
+                        <span className="np-empty-icon"><IconBell size={28} /></span>
                         <span>
                             {categoryFilter
                                 ? localizeText(lang, "No notifications in this category", "该分类没有通知", "該分類沒有通知")

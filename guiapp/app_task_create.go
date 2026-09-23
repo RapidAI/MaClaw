@@ -87,7 +87,7 @@ func (a *App) CreateTaskUnified(opts TaskCreateOptions) (UnifiedTaskCreateResult
 	if a == nil {
 		return zero, fmt.Errorf("app unavailable")
 	}
-	name := normalizeRecentTaskName(opts.Name)
+	name := taskNameForCreate(opts.Name, true)
 	if name == "" {
 		return zero, fmt.Errorf("task name is required")
 	}
@@ -152,13 +152,13 @@ func (a *App) CreateTaskUnified(opts TaskCreateOptions) (UnifiedTaskCreateResult
 		// so route the record creation through the cloud branch.
 		projectPath := ""
 		if opts.Mode == "cloud" {
-			result, err := a.CreateTaskWithCloudWorkspace(opts.Name, opts.WorkingDir, "", opts.CloudWorkspaceID)
+			result, err := a.createTaskWithCloudWorkspace(opts.Name, opts.WorkingDir, "", opts.CloudWorkspaceID, true)
 			if err != nil {
 				return zero, err
 			}
 			projectPath = result.ProjectPath
 		} else {
-			result := a.CreateTaskWithMode(opts.Name, opts.WorkingDir, opts.Mode)
+			result := a.createTaskWithMode(opts.Name, opts.WorkingDir, opts.Mode, true)
 			projectPath = result.ProjectPath
 		}
 		if strings.TrimSpace(projectPath) == "" {
@@ -179,13 +179,13 @@ func (a *App) CreateTaskUnified(opts TaskCreateOptions) (UnifiedTaskCreateResult
 
 	switch opts.Mode {
 	case "", "chat":
-		result := a.CreateTask(opts.Name, opts.WorkingDir)
+		result := a.createTaskWithMode(opts.Name, opts.WorkingDir, "", true)
 		if strings.TrimSpace(result.ProjectPath) == "" {
 			return zero, fmt.Errorf("task record creation failed")
 		}
 		return UnifiedTaskCreateResult{ProjectPath: result.ProjectPath}, nil
 	case "coding_dev":
-		result := a.CreateTaskWithMode(opts.Name, opts.WorkingDir, opts.Mode)
+		result := a.createTaskWithMode(opts.Name, opts.WorkingDir, opts.Mode, true)
 		if strings.TrimSpace(result.ProjectPath) == "" {
 			return zero, fmt.Errorf("task record creation failed")
 		}
@@ -193,7 +193,7 @@ func (a *App) CreateTaskUnified(opts TaskCreateOptions) (UnifiedTaskCreateResult
 	case "remote_coding_dev":
 		return a.createUnifiedRemoteTask(opts)
 	case "cloud":
-		result, err := a.CreateTaskWithCloudWorkspace(opts.Name, opts.WorkingDir, "", opts.CloudWorkspaceID)
+		result, err := a.createTaskWithCloudWorkspace(opts.Name, opts.WorkingDir, "", opts.CloudWorkspaceID, true)
 		if err != nil {
 			return zero, err
 		}
@@ -218,9 +218,9 @@ func (a *App) createUnifiedRemoteTask(opts TaskCreateOptions) (UnifiedTaskCreate
 	diagnosis := strings.EqualFold(strings.TrimSpace(remote.Safety), "diagnosis")
 	var result ProjectSearchResult
 	if diagnosis {
-		result = a.CreateRemoteOpsDiagnosisTask(opts.Name, remote.Host, remote.User, remote.WorkDir, port)
+		result = a.createRemoteCodingTaskWithTagsKeepingName(opts.Name, remote.Host, remote.User, remote.WorkDir, port, true, taskSourceRemoteOpsDiagnosisTag)
 	} else {
-		result = a.CreateRemoteCodingTask(opts.Name, remote.Host, remote.User, remote.WorkDir, port)
+		result = a.createRemoteCodingTaskWithTagsKeepingName(opts.Name, remote.Host, remote.User, remote.WorkDir, port, true)
 	}
 	if strings.TrimSpace(result.ProjectPath) == "" {
 		return UnifiedTaskCreateResult{}, fmt.Errorf("remote task creation failed")

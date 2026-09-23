@@ -32,6 +32,8 @@ type llmModelListResponse struct {
 	} `json:"models"`
 }
 
+var llmProviderProbeHTTPClient = &http.Client{Timeout: 20 * time.Second}
+
 // ---------------------------------------------------------------------------
 // LLM Provider admin handlers
 // ---------------------------------------------------------------------------
@@ -304,8 +306,7 @@ func probeLLMProviderModels(ctx context.Context, apiURL, apiKey, protocol string
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 	req.Header.Set("Accept", "application/json")
-	client := &http.Client{Timeout: 20 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := llmProviderProbeHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

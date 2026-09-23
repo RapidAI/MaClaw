@@ -28,9 +28,9 @@ function renderConfirmationList(
 ): React.ReactNode {
     if (items.length === 0) return null;
     return (
-        <div data-testid={testId} style={{ marginTop: "8px" }}>
+        <div data-testid={testId} className="ccard-items">
             <div style={{ color: t.fieldLabel, fontSize: "11px", marginBottom: "4px" }}>{title}</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+            <div className="ccard-items-list">
                 {items.map((item, index) => (
                     <div key={`${testId}-${index}`} style={{ minHeight: "1.4em", color: t.text }}>
                         <span style={{ color: t.bulletColor }}>{"\u2022"}</span>{" "}

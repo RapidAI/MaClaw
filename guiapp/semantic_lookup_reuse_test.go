@@ -47,8 +47,8 @@ func TestLookupTopicKeyStripsGenerateAffordance(t *testing.T) {
 }
 
 func TestConversationReusesSameTopicSearchFacts(t *testing.T) {
-	if !conversationHasReusableLookupFacts(sameTopicPengzhouHistory(), pengzhouWeatherPDFText()) {
-		t.Fatal("same-topic prior search must satisfy generate facts")
+	if conversationHasReusableLookupFacts(sameTopicPengzhouHistory(), pengzhouWeatherPDFText()) {
+		t.Fatal("history topic text must not count as reusable lookup facts")
 	}
 }
 
@@ -69,8 +69,8 @@ func TestConversationReusesSameTopicAssistantReport(t *testing.T) {
 		{Role: "user", Content: "\u5f6d\u5dde\u5929\u6c14\uff0c\u751f\u6210pdf"},
 		{Role: "assistant", Content: pengzhouWeatherReport()},
 	}
-	if !conversationHasReusableLookupFacts(history, pengzhouWeatherPDFText()) {
-		t.Fatal("same-topic assistant report must satisfy generate facts")
+	if conversationHasReusableLookupFacts(history, pengzhouWeatherPDFText()) {
+		t.Fatal("assistant prose must not count as reusable lookup facts")
 	}
 }
 
@@ -80,7 +80,7 @@ func TestSemanticNeedsDropLookupWhenConversationHasFacts(t *testing.T) {
 		{ID: "generate", Capability: "document.generate.file", Required: true},
 		{ID: "deliver", Capability: "artifact.deliver.current_channel", Required: true},
 	}
-	ctx := withSemanticConversationHistory(context.Background(), sameTopicPengzhouHistory())
+	ctx := withSemanticReusableLookupFacts(context.Background())
 	got := semanticNeedsForReusableConversationLookup(needs, ctx, pengzhouWeatherPDFText())
 	if semanticNeedsHaveWebLookup(got) || !semanticNeedsHaveGenerate(got) || len(got) != 2 {
 		t.Fatalf("reusable facts must drop only web lookup: %#v", got)
@@ -92,8 +92,8 @@ func TestConversationReusesFetchResultsAndIgnoresKnowledgeSearch(t *testing.T) {
 		{Role: "user", Content: "彭州天气，生成pdf"},
 		{Role: "tool", ToolName: "web_fetch", Content: "Pengzhou weather: cloudy, 26C, light rain in the afternoon."},
 	}
-	if !conversationHasReusableLookupFacts(fetchHistory, pengzhouWeatherPDFText()) {
-		t.Fatal("same-topic prior fetch must satisfy generate facts")
+	if conversationHasReusableLookupFacts(fetchHistory, pengzhouWeatherPDFText()) {
+		t.Fatal("history fetch text must not count as reusable lookup facts")
 	}
 	knowledgeHistory := []agent.ConversationEntry{
 		{Role: "user", Content: "彭州天气，生成pdf"},
@@ -110,7 +110,7 @@ func TestSemanticNeedsKeepClockWhenConversationHasWebFacts(t *testing.T) {
 		{ID: "clock", Capability: "information.current_time", Required: true},
 		{ID: "generate", Capability: "document.generate.file", Required: true},
 	}
-	ctx := withSemanticConversationHistory(context.Background(), sameTopicPengzhouHistory())
+	ctx := withSemanticReusableLookupFacts(context.Background())
 	got := semanticNeedsForReusableConversationLookup(needs, ctx, pengzhouWeatherPDFText())
 	if semanticNeedsHaveWebLookup(got) {
 		t.Fatalf("web lookup should drop: %#v", got)
@@ -143,7 +143,7 @@ func TestSemanticNeedsKeepLookupForLiveDataVisual(t *testing.T) {
 		{ID: "generate", Capability: "document.generate.file", Required: true},
 		{ID: "render", Capability: "visual.render.live_data", Required: true},
 	}
-	ctx := withSemanticConversationHistory(context.Background(), sameTopicPengzhouHistory())
+	ctx := withSemanticReusableLookupFacts(context.Background())
 	got := semanticNeedsForReusableConversationLookup(needs, ctx, pengzhouWeatherPDFText()+"，生成天气实况图")
 	if !semanticNeedsHaveLookup(got) {
 		t.Fatalf("live-data visual must retain current lookup: %#v", got)
@@ -152,7 +152,7 @@ func TestSemanticNeedsKeepLookupForLiveDataVisual(t *testing.T) {
 
 func TestIMSemanticRepeatWeatherPDFOmitsLookupNeed(t *testing.T) {
 	h := registerDocumentGenerateAndSearch(t)
-	ctx := withSemanticConversationHistory(context.Background(), sameTopicPengzhouHistory())
+	ctx := withSemanticReusableLookupFacts(context.Background())
 	prepared, handled, err := h.semanticPlanForTurnWithContextAndClassificationAndAttachments(
 		ctx, "user", pengzhouWeatherPDFText(), "desktop", "root-reuse", "turn-reuse", liveDataGenerateClassification(), nil,
 	)
@@ -179,7 +179,7 @@ func TestIMSemanticRepeatWeatherPDFOmitsLookupNeed(t *testing.T) {
 
 func TestIMSemanticRefreshKeepsLookupNeed(t *testing.T) {
 	h := registerDocumentGenerateAndSearch(t)
-	ctx := withSemanticConversationHistory(context.Background(), sameTopicPengzhouHistory())
+	ctx := withSemanticReusableLookupFacts(context.Background())
 	prepared, handled, err := h.semanticPlanForTurnWithContextAndClassificationAndAttachments(
 		ctx, "user", pengzhouRefreshWeatherPDFText(), "desktop", "root-refresh", "turn-refresh", liveDataGenerateClassification(), nil,
 	)
@@ -214,6 +214,7 @@ func TestIMSemanticRepeatWeatherPDFIssuesGenerateFirst(t *testing.T) {
 		UserID: "user-1", Platform: "desktop", Text: pengzhouWeatherPDFText(),
 	}, nil, false, false)
 	loopCtx.History = sameTopicPengzhouHistory()
+	loopCtx.semanticResidueLookupFacts = true
 	requestCtx, cancel := semanticRoutingContext(loopCtx)
 	t.Cleanup(cancel)
 	defs, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithContextAndIdentityAndClassificationAndAttachments(

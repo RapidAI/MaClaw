@@ -38,8 +38,10 @@ import {
     isCodingWorkflowSourceTags,
     isPureCodingTaskTags,
     isRemoteMaintenanceTaskTags,
+    pickRemoteWorkspaceLocation,
     remoteCodingMetaFromTaskTags,
     remoteHostFromTaskTags,
+    remoteWorkspaceLocationLabel,
 } from "../codingTaskMode";
 
 describe("codingTaskMode", () => {
@@ -464,5 +466,28 @@ describe("codingTaskMode", () => {
             port: 2222,
             workDir: "/home/ubuntu/app",
         });
+    });
+
+    it("formats remote workspace as host:workDir", () => {
+        expect(remoteWorkspaceLocationLabel("www.driverdevelopment.com", "/srv/app")).toBe("www.driverdevelopment.com:/srv/app");
+        expect(remoteWorkspaceLocationLabel("10.0.0.8", "")).toBe("10.0.0.8");
+        expect(remoteWorkspaceLocationLabel("", "/srv/app")).toBe("/srv/app");
+        expect(remoteWorkspaceLocationLabel("", "")).toBe("");
+    });
+
+    it("picks live SSH location over tab host and tags", () => {
+        expect(pickRemoteWorkspaceLocation({
+            liveHost: "live.example.test",
+            liveWorkDir: "/live",
+            tabHost: "tab.example.test",
+            tags: ["remote_host:tag.example.test", "remote_workdir:/from-tags"],
+        })).toEqual({ host: "live.example.test", workDir: "/live" });
+        expect(pickRemoteWorkspaceLocation({
+            tabHost: "tab.example.test",
+            tags: ["remote_host:tag.example.test", "remote_workdir:/from-tags"],
+        })).toEqual({ host: "tab.example.test", workDir: "/from-tags" });
+        expect(pickRemoteWorkspaceLocation({
+            tags: ["remote_host:tag.example.test", "remote_workdir:/from-tags"],
+        })).toEqual({ host: "tag.example.test", workDir: "/from-tags" });
     });
 });

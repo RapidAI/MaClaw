@@ -91,13 +91,13 @@ export function WelcomeTemplatesImportPreviewPanel({
                         ].filter(Boolean).join(isZh ? "、" : ", ")}
                     </span>
                 )}
-                <span style={{ display: "block", marginTop: 4, opacity: 0.9 }}>
+                <span className="wtip-hint">
                     {isZh ? "Esc 取消 · Enter 确认（焦点在确认按钮时）" : "Esc to cancel · Enter confirms when focused"}
                 </span>
             </div>
 
             {preview.toAdd.length > 0 && (
-                <div style={{ marginBottom: 8 }} data-testid="welcome-import-preview-add">
+                <div className="wtip-section" data-testid="welcome-import-preview-add">
                     <div style={{ fontSize: 11, fontWeight: 600, color: t.text, marginBottom: 4 }}>
                         {isZh ? "将新增" : "To add"}
                     </div>
@@ -117,7 +117,7 @@ export function WelcomeTemplatesImportPreviewPanel({
             )}
 
             {preview.toSkip.length > 0 && (
-                <div style={{ marginBottom: 8 }} data-testid="welcome-import-preview-skip">
+                <div className="wtip-section" data-testid="welcome-import-preview-skip">
                     <div style={{ fontSize: 11, fontWeight: 600, color: t.text, marginBottom: 4 }}>
                         {isZh ? "将跳过" : "To skip"}
                     </div>
@@ -144,7 +144,7 @@ export function WelcomeTemplatesImportPreviewPanel({
                 </div>
             )}
 
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+            <div className="wtip-footer">
                 <button
                     type="button"
                     data-testid="welcome-import-preview-cancel"

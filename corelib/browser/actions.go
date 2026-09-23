@@ -86,16 +86,16 @@ func (s *BrowserAgentSession) Navigate(url string) (*BrowserActionResult, error)
 	if _, err := s.session.Navigate(url); err != nil {
 		return policyBlockResult(s, "browser_navigate", err)
 	}
-	s.waitForActionSettle(3*time.Second, 300*time.Millisecond)
-	obs, blocked, err := s.observeAfterAction("browser_navigate")
-	if blocked != nil || err != nil {
-		return blocked, err
+	followed := s.followAction("browser_navigate", 3*time.Second, 300*time.Millisecond, true, 0, 0, "navigate")
+	if blocked, ferr := followed.fail(); blocked != nil || ferr != nil {
+		return blocked, ferr
 	}
+	obs := followed.obs
 	s.appendActionTrace("navigate", fmt.Sprintf("navigate to %s", url))
-	return s.completeAction("browser_navigate", fmt.Sprintf("navigated to %s", url), url, obs, map[string]interface{}{
+	return followed.stamp(s.completeAction("browser_navigate", fmt.Sprintf("navigated to %s", url), url, obs, map[string]interface{}{
 		"url":   obs.Snapshot.URL,
 		"title": obs.Snapshot.Title,
-	}, true), nil
+	}, true)), nil
 }
 
 func (s *BrowserAgentSession) waitForActionSettle(timeout, quiet time.Duration) {
@@ -356,7 +356,7 @@ func (s *BrowserAgentSession) guardSubmitClick(key string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.submitClickRecentLocked(key, time.Now()) {
-		return fmt.Errorf("non-idempotent browser click was already attempted recently; observe/verify page state before retrying")
+		return fmt.Errorf("non-idempotent browser click was already attempted recently; probe the page before another submit")
 	}
 	return nil
 }
@@ -428,31 +428,31 @@ func (s *BrowserAgentSession) Click(snapshotID, ref, selector string) (*BrowserA
 	resolvedSelector, attempts, err := s.clickWithCandidates(candidates, resolvedRef)
 	if err != nil {
 		if ref != "" {
-			return nil, fmt.Errorf("ref %s is stale; run observe again to get fresh refs", ref)
+			return nil, fmt.Errorf("ref %s is stale; run probe again to get fresh refs", ref)
 		}
 		return nil, err
 	}
 	if attempts > 1 && ref != "" {
 		s.appendActionTrace("retry", fmt.Sprintf("click fallback selector succeeded %s -> %s", ref, resolvedSelector))
 	}
-	s.waitForActionSettle(2*time.Second, 250*time.Millisecond)
-	obs, blocked, err := s.observeAfterAction("browser_click")
-	if blocked != nil || err != nil {
-		return blocked, err
+	clickWait, clickSettle := batchClickURLWatch(resolvedRef, selector)
+	followed := s.followAction("browser_click", 2*time.Second, 250*time.Millisecond, submitKey != "", clickWait, clickSettle, "submit")
+	if blocked, ferr := followed.fail(); blocked != nil || ferr != nil {
+		return blocked, ferr
 	}
 	target := resolvedSelector
 	if resolvedRef != nil {
 		target = resolvedRef.Ref
 	}
 	s.appendActionTrace("click", fmt.Sprintf("click %s", target))
-	result := s.completeAction("browser_click", fmt.Sprintf("clicked %s", target), target, obs, map[string]interface{}{
+	result := s.completeAction("browser_click", fmt.Sprintf("clicked %s", target), target, followed.obs, map[string]interface{}{
 		"target": target,
 	}, activatingRef(resolvedRef))
 	if result != nil {
 		result.GoalClass = submitKey != ""
 		result.submitRememberKey = submitKey
 	}
-	return result, nil
+	return followed.stamp(result), nil
 }
 
 // ClickText clicks an element from the latest snapshot by visible text/name.
@@ -483,22 +483,22 @@ func (s *BrowserAgentSession) ClickText(snapshotID, text string) (*BrowserAction
 	}
 	resolvedSelector, attempts, err := s.clickWithCandidates(candidates, resolvedRef)
 	if err != nil {
-		return nil, fmt.Errorf("text %q is stale; run observe again to get fresh refs", text)
+		return nil, fmt.Errorf("text %q is stale; run probe again to get fresh refs", text)
 	}
 	if attempts > 1 {
 		s.appendActionTrace("retry", fmt.Sprintf("click text fallback selector succeeded %s -> %s", text, resolvedSelector))
 	}
-	s.waitForActionSettle(2*time.Second, 250*time.Millisecond)
-	obs, blocked, err := s.observeAfterAction("browser_click")
-	if blocked != nil || err != nil {
-		return blocked, err
+	clickWait, clickSettle := batchClickURLWatch(resolvedRef, "")
+	followed := s.followAction("browser_click", 2*time.Second, 250*time.Millisecond, submitKey != "", clickWait, clickSettle, "submit")
+	if blocked, ferr := followed.fail(); blocked != nil || ferr != nil {
+		return blocked, ferr
 	}
 	target := text
 	if resolvedRef != nil {
 		target = resolvedRef.Ref
 	}
 	s.appendActionTrace("click", fmt.Sprintf("click text %s", text))
-	result := s.completeAction("browser_click", fmt.Sprintf("clicked text %s", text), target, obs, map[string]interface{}{
+	result := s.completeAction("browser_click", fmt.Sprintf("clicked text %s", text), target, followed.obs, map[string]interface{}{
 		"target": target,
 		"text":   text,
 	}, activatingRef(resolvedRef))
@@ -506,7 +506,7 @@ func (s *BrowserAgentSession) ClickText(snapshotID, text string) (*BrowserAction
 		result.GoalClass = submitKey != ""
 		result.submitRememberKey = submitKey
 	}
-	return result, nil
+	return followed.stamp(result), nil
 }
 
 // Type enters text into an element by ref or selector.
@@ -537,17 +537,16 @@ func (s *BrowserAgentSession) TypeContentAppend(snapshotID, ref, selector, text,
 		if err := s.session.TypeActiveContent(text, contentFormat); err != nil {
 			return nil, err
 		}
-		s.waitForActionSettle(1*time.Second, 200*time.Millisecond)
-		obs, blocked, err := s.observeAfterAction("browser_type")
-		if blocked != nil || err != nil {
-			return blocked, err
+		followed := s.followAction("browser_type", time.Second, 200*time.Millisecond, false, 0, 0, "")
+		if blocked, ferr := followed.fail(); blocked != nil || ferr != nil {
+			return blocked, ferr
 		}
 		s.appendActionTrace("type", "typed into active element")
-		return s.completeAction("browser_type", fmt.Sprintf("typed %d chars into active element", len([]rune(text))), "activeElement", obs, map[string]interface{}{
+		return followed.stamp(s.completeAction("browser_type", fmt.Sprintf("typed %d chars into active element", len([]rune(text))), "activeElement", followed.obs, map[string]interface{}{
 			"target":         "activeElement",
 			"text_length":    len([]rune(text)),
 			"content_format": contentFormat,
-		}, false), nil
+		}, false)), nil
 	}
 	var resolvedRef *BrowserElementRef
 	var err error
@@ -561,28 +560,27 @@ func (s *BrowserAgentSession) TypeContentAppend(snapshotID, ref, selector, text,
 	resolvedSelector, attempts, err := s.typeWithCandidates(candidates, text, contentFormat, appendText, resolvedRef)
 	if err != nil {
 		if ref != "" {
-			return nil, fmt.Errorf("ref %s is stale; run observe again to get fresh refs", ref)
+			return nil, fmt.Errorf("ref %s is stale; run probe again to get fresh refs", ref)
 		}
 		return nil, err
 	}
 	if attempts > 1 && ref != "" {
 		s.appendActionTrace("retry", fmt.Sprintf("type fallback selector succeeded %s -> %s", ref, resolvedSelector))
 	}
-	s.waitForActionSettle(1*time.Second, 200*time.Millisecond)
-	obs, blocked, err := s.observeAfterAction("browser_type")
-	if blocked != nil || err != nil {
-		return blocked, err
+	followed := s.followAction("browser_type", time.Second, 200*time.Millisecond, false, 0, 0, "")
+	if blocked, ferr := followed.fail(); blocked != nil || ferr != nil {
+		return blocked, ferr
 	}
 	target := resolvedSelector
 	if resolvedRef != nil {
 		target = resolvedRef.Ref
 	}
 	s.appendActionTrace("type", fmt.Sprintf("type into %s", target))
-	return s.completeAction("browser_type", fmt.Sprintf("typed %d chars into %s", len([]rune(text)), target), target, obs, map[string]interface{}{
+	return followed.stamp(s.completeAction("browser_type", fmt.Sprintf("typed %d chars into %s", len([]rune(text)), target), target, followed.obs, map[string]interface{}{
 		"target":         target,
 		"text_length":    len([]rune(text)),
 		"content_format": contentFormat,
-	}, false), nil
+	}, false)), nil
 }
 
 func waitTimeoutSec(durationMS int) int {
@@ -601,7 +599,6 @@ func (s *BrowserAgentSession) Wait(snapshotID, ref, selector string, durationMS 
 		return nil, fmt.Errorf("browser target is gone (destroyed or detached); retry the operation — session will auto-recover")
 	}
 	var resolvedRef *BrowserElementRef
-	var err error
 	resolvedSelector := strings.TrimSpace(selector)
 	if resolvedSelector != "" {
 		candidates, resolved, err := s.selectorCandidatesForAction(snapshotID, "", resolvedSelector)
@@ -620,7 +617,7 @@ func (s *BrowserAgentSession) Wait(snapshotID, ref, selector string, durationMS 
 		resolvedRef = refInfo
 		resolvedSelector, attempts, err := s.waitWithCandidates(candidates, waitTimeoutSec(durationMS), resolvedRef)
 		if err != nil {
-			return nil, fmt.Errorf("ref %s is stale; run observe again to get fresh refs", ref)
+			return nil, fmt.Errorf("ref %s is stale; run probe again to get fresh refs", ref)
 		}
 		if attempts > 1 {
 			s.appendActionTrace("retry", fmt.Sprintf("wait fallback selector succeeded %s -> %s", ref, resolvedSelector))
@@ -632,15 +629,14 @@ func (s *BrowserAgentSession) Wait(snapshotID, ref, selector string, durationMS 
 		}
 		time.Sleep(time.Duration(durationMS) * time.Millisecond)
 	}
-	s.waitForActionSettle(2*time.Second, 250*time.Millisecond)
-	obs, blocked, err := s.observeAfterAction("browser_wait")
-	if blocked != nil || err != nil {
-		return blocked, err
+	followed := s.followAction("browser_wait", 2*time.Second, 250*time.Millisecond, false, 0, 0, "")
+	if blocked, ferr := followed.fail(); blocked != nil || ferr != nil {
+		return blocked, ferr
 	}
 	s.appendActionTrace("wait", "wait for page stability")
-	return s.completeAction("browser_wait", "wait complete", "", obs, map[string]interface{}{
+	return followed.stamp(s.completeAction("browser_wait", "wait complete", "", followed.obs, map[string]interface{}{
 		"duration_ms": durationMS,
-	}, false), nil
+	}, false)), nil
 }
 
 // Refresh reloads the current page and refreshes snapshot state.
@@ -722,7 +718,7 @@ func (s *BrowserAgentSession) Extract(snapshotID, ref, selector, query, format s
 		var attempts int
 		resolvedSelector, value, attempts, err = s.extractWithCandidates(candidates, resolved)
 		if err != nil {
-			return nil, fmt.Errorf("ref %s is stale; run observe again to get fresh refs", ref)
+			return nil, fmt.Errorf("ref %s is stale; run probe again to get fresh refs", ref)
 		}
 		if attempts > 1 {
 			s.appendActionTrace("retry", fmt.Sprintf("extract fallback selector succeeded %s -> %s", ref, resolvedSelector))
@@ -836,6 +832,7 @@ func (s *BrowserAgentSession) extractPageTextWindow(offset, maxChars int) (strin
 }
 
 const unchangedDisplaySuffix = "; page did not change — observe and verify before retrying"
+const unchangedBatchSuffix = "; page did not change — probe before another submit"
 
 func (s *BrowserAgentSession) completeAction(action, display, detail string, obs *BrowserObservation, extra map[string]interface{}, requireChange bool) *BrowserActionResult {
 	snapshotID := ""
@@ -851,7 +848,11 @@ func (s *BrowserAgentSession) completeAction(action, display, detail string, obs
 		s.mu.RUnlock()
 		if prior != "" && prior == snapshotFingerprint(obs.Snapshot) && (sess == nil || !sess.hasPendingDialog()) {
 			status = "unchanged"
-			display = display + unchangedDisplaySuffix
+			suffix := unchangedDisplaySuffix
+			if s.fastBatchActive() {
+				suffix = unchangedBatchSuffix
+			}
+			display = display + suffix
 			data["delta"] = expectDelta(obs, fmt.Errorf("page did not change after %s", action))
 		}
 	}
@@ -988,19 +989,18 @@ func (s *BrowserAgentSession) Hover(snapshotID, ref, selector string) (*BrowserA
 		}
 		return nil, fmt.Errorf("missing ref or selector")
 	}
-	s.waitForActionSettle(1*time.Second, 200*time.Millisecond)
-	obs, blocked, err := s.observeAfterAction("browser_hover")
-	if blocked != nil || err != nil {
-		return blocked, err
+	followed := s.followAction("browser_hover", time.Second, 200*time.Millisecond, false, 0, 0, "")
+	if blocked, ferr := followed.fail(); blocked != nil || ferr != nil {
+		return blocked, ferr
 	}
 	target := used
 	if resolved != nil {
 		target = resolved.Ref
 	}
 	s.appendActionTrace("hover", fmt.Sprintf("hover %s", target))
-	return s.completeAction("browser_hover", fmt.Sprintf("hovered %s", target), target, obs, map[string]interface{}{
+	return followed.stamp(s.completeAction("browser_hover", fmt.Sprintf("hovered %s", target), target, followed.obs, map[string]interface{}{
 		"target": target,
-	}, false), nil
+	}, false)), nil
 }
 
 func (s *BrowserAgentSession) Press(key string) (*BrowserActionResult, error) {
@@ -1013,15 +1013,14 @@ func (s *BrowserAgentSession) Press(key string) (*BrowserActionResult, error) {
 	if err := s.session.Press(key); err != nil {
 		return nil, err
 	}
-	s.waitForActionSettle(1*time.Second, 200*time.Millisecond)
-	obs, blocked, err := s.observeAfterAction("browser_press")
-	if blocked != nil || err != nil {
-		return blocked, err
+	followed := s.followAction("browser_press", time.Second, 200*time.Millisecond, false, batchLinkURLWait, batchURLPollInterval, "")
+	if blocked, ferr := followed.fail(); blocked != nil || ferr != nil {
+		return blocked, ferr
 	}
 	s.appendActionTrace("press", "press "+key)
-	return s.completeAction("browser_press", fmt.Sprintf("pressed %s", key), key, obs, map[string]interface{}{
+	return followed.stamp(s.completeAction("browser_press", fmt.Sprintf("pressed %s", key), key, followed.obs, map[string]interface{}{
 		"key": key,
-	}, false), nil
+	}, false)), nil
 }
 
 func (s *BrowserAgentSession) HandleDialog(accept bool, promptText string) (*BrowserActionResult, error) {
@@ -1034,19 +1033,18 @@ func (s *BrowserAgentSession) HandleDialog(accept bool, promptText string) (*Bro
 	if err := s.session.HandleDialog(accept, promptText); err != nil {
 		return nil, err
 	}
-	s.waitForActionSettle(1*time.Second, 200*time.Millisecond)
-	obs, blocked, err := s.observeAfterAction("browser_dialog")
-	if blocked != nil || err != nil {
-		return blocked, err
+	followed := s.followAction("browser_dialog", time.Second, 200*time.Millisecond, true, 0, 0, "dialog")
+	if blocked, ferr := followed.fail(); blocked != nil || ferr != nil {
+		return blocked, ferr
 	}
 	action := "dismiss"
 	if accept {
 		action = "accept"
 	}
 	s.appendActionTrace("dialog", action)
-	return s.completeAction("browser_dialog", "dialog "+action, action, obs, map[string]interface{}{
+	return followed.stamp(s.completeAction("browser_dialog", "dialog "+action, action, followed.obs, map[string]interface{}{
 		"accept": accept,
-	}, false), nil
+	}, false)), nil
 }
 
 func (s *BrowserAgentSession) SelectOption(snapshotID, ref, selector, value string) (*BrowserActionResult, error) {
@@ -1095,20 +1093,19 @@ func (s *BrowserAgentSession) SelectOption(snapshotID, ref, selector, value stri
 		}
 		return nil, fmt.Errorf("missing ref or selector")
 	}
-	s.waitForActionSettle(1*time.Second, 200*time.Millisecond)
-	obs, blocked, err := s.observeAfterAction("browser_select")
-	if blocked != nil || err != nil {
-		return blocked, err
+	followed := s.followAction("browser_select", time.Second, 200*time.Millisecond, false, batchLinkURLWait, batchURLPollInterval, "")
+	if blocked, ferr := followed.fail(); blocked != nil || ferr != nil {
+		return blocked, ferr
 	}
 	target := used
 	if resolved != nil {
 		target = resolved.Ref
 	}
 	s.appendActionTrace("select", fmt.Sprintf("select %s = %s", target, value))
-	return s.completeAction("browser_select", fmt.Sprintf("selected %s on %s", value, target), target, obs, map[string]interface{}{
+	return followed.stamp(s.completeAction("browser_select", fmt.Sprintf("selected %s on %s", value, target), target, followed.obs, map[string]interface{}{
 		"target": target,
 		"value":  value,
-	}, true), nil
+	}, true)), nil
 }
 
 func (s *BrowserAgentSession) ScrollBy(snapshotID, ref, selector string, deltaX, deltaY int) (*BrowserActionResult, error) {
@@ -1153,16 +1150,15 @@ func (s *BrowserAgentSession) ScrollBy(snapshotID, ref, selector string, deltaX,
 	} else if err := s.session.Scroll(deltaX, deltaY); err != nil {
 		return nil, err
 	}
-	s.waitForActionSettle(800*time.Millisecond, 150*time.Millisecond)
-	obs, blocked, err := s.observeAfterAction("browser_scroll")
-	if blocked != nil || err != nil {
-		return blocked, err
+	followed := s.followAction("browser_scroll", 800*time.Millisecond, 150*time.Millisecond, false, 0, 0, "")
+	if blocked, ferr := followed.fail(); blocked != nil || ferr != nil {
+		return blocked, ferr
 	}
 	s.appendActionTrace("scroll", fmt.Sprintf("scroll dx=%d dy=%d", deltaX, deltaY))
-	return s.completeAction("browser_scroll", fmt.Sprintf("scrolled dx=%d dy=%d", deltaX, deltaY), "", obs, map[string]interface{}{
+	return followed.stamp(s.completeAction("browser_scroll", fmt.Sprintf("scrolled dx=%d dy=%d", deltaX, deltaY), "", followed.obs, map[string]interface{}{
 		"delta_x": deltaX,
 		"delta_y": deltaY,
-	}, false), nil
+	}, false)), nil
 }
 
 func (s *BrowserAgentSession) SetFilesOn(snapshotID, ref, selector string, files []string) (*BrowserActionResult, error) {
@@ -1217,18 +1213,17 @@ func (s *BrowserAgentSession) SetFilesOn(snapshotID, ref, selector string, files
 		}
 		return nil, fmt.Errorf("missing ref or selector")
 	}
-	s.waitForActionSettle(1*time.Second, 200*time.Millisecond)
-	obs, blocked, err := s.observeAfterAction("browser_set_files")
-	if blocked != nil || err != nil {
-		return blocked, err
+	followed := s.followAction("browser_set_files", time.Second, 200*time.Millisecond, false, batchLinkURLWait, batchURLPollInterval, "")
+	if blocked, ferr := followed.fail(); blocked != nil || ferr != nil {
+		return blocked, ferr
 	}
 	target := used
 	if resolved != nil {
 		target = resolved.Ref
 	}
 	s.appendActionTrace("set_files", fmt.Sprintf("set %d files on %s", len(files), target))
-	return s.completeAction("browser_set_files", fmt.Sprintf("set %d files on %s", len(files), target), target, obs, map[string]interface{}{
+	return followed.stamp(s.completeAction("browser_set_files", fmt.Sprintf("set %d files on %s", len(files), target), target, followed.obs, map[string]interface{}{
 		"target": target,
 		"files":  len(files),
-	}, false), nil
+	}, false)), nil
 }

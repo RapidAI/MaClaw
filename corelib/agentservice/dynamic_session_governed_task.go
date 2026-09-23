@@ -133,6 +133,7 @@ func ClassificationFromGrantedNeeds(needs []coretool.CapabilityNeed, rules map[i
 	hasGenerate := false
 	hasImageDeliver := false
 	hasFileDeliver := false
+	hasLiveDataVisual := false
 	seen := make(map[intent.IntentLabel]bool)
 	labels := make([]intent.IntentLabel, 0, len(needs))
 	add := func(label intent.IntentLabel) {
@@ -161,6 +162,9 @@ func ClassificationFromGrantedNeeds(needs []coretool.CapabilityNeed, rules map[i
 			// app_launch and document_open share this capability. Replay
 			// keeps a single label so the planner emits one launch need.
 			add(intent.LabelAppLaunch)
+		case CapabilityLiveDataVisual:
+			hasLiveDataVisual = true
+			add(intent.LabelLiveDataVisual)
 		case CapabilityVisualCapture:
 			add(intent.LabelScreenshot)
 		case CapabilityArtifactDeliverCurrent:
@@ -183,7 +187,10 @@ func ClassificationFromGrantedNeeds(needs []coretool.CapabilityNeed, rules map[i
 			}
 		}
 	}
-	if hasImageDeliver {
+	// A weather card delivers an image after visual.render.live_data. That
+	// deliver is not a desktop screenshot. Treating it as LabelScreenshot made
+	// the next city ("崇州天气") plan only visual.capture.desktop.
+	if hasImageDeliver && !hasLiveDataVisual {
 		add(intent.LabelScreenshot)
 	}
 	if hasFileDeliver && !hasGenerate {

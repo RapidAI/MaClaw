@@ -27,6 +27,8 @@ export type AssistantDarkScheme = {
         dangerBg: string;
         linkColor: string;
         infoBg: string;
+        /** Foreground on primary-filled controls; feeds --theme-on-primary. */
+        onPrimary: string;
     };
     assistantTheme: Theme;
 };
@@ -66,6 +68,7 @@ export const graphiteDarkScheme: AssistantDarkScheme = {
         dangerBg: "rgba(244, 112, 103, 0.12)",
         linkColor: "#7ea8e0",
         infoBg: "rgba(126, 168, 224, 0.10)",
+        onPrimary: "#0f141b",
     },
     assistantTheme: {
         bg: "#0f141b",
@@ -145,6 +148,7 @@ export const classicDarkScheme: AssistantDarkScheme = {
         dangerBg: "rgba(196, 61, 52, 0.12)",
         linkColor: "#9bc2ea",
         infoBg: "rgba(96, 140, 184, 0.14)",
+        onPrimary: "#0b1220",
     },
     assistantTheme: {
         bg: "#0b1220",
@@ -224,6 +228,7 @@ export const auroraDarkScheme: AssistantDarkScheme = {
         dangerBg: "rgba(240, 138, 132, 0.12)",
         linkColor: "#93ddff",
         infoBg: "rgba(56, 189, 248, 0.13)",
+        onPrimary: "#041018",
     },
     assistantTheme: {
         bg: "#071018",
@@ -303,6 +308,7 @@ export const emberDarkScheme: AssistantDarkScheme = {
         dangerBg: "rgba(224, 107, 94, 0.12)",
         linkColor: "#8fb0d4",
         infoBg: "rgba(143, 176, 212, 0.10)",
+        onPrimary: "#140e0a",
     },
     assistantTheme: {
         bg: "#140e0a",
@@ -382,6 +388,7 @@ export const violetDarkScheme: AssistantDarkScheme = {
         dangerBg: "rgba(239, 128, 120, 0.12)",
         linkColor: "#9db9e8",
         infoBg: "rgba(157, 185, 232, 0.10)",
+        onPrimary: "#0e0a18",
     },
     assistantTheme: {
         bg: "#0e0a18",

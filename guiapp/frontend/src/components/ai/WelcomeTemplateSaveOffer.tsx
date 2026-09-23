@@ -107,16 +107,9 @@ export function WelcomeTemplateSaveOfferBanner({
                 overflow: "hidden",
             }}
         >
-            <div style={{
-                display: "flex",
-                flexWrap: "wrap",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 8,
-                padding: "8px 12px",
-            }}>
-                <div style={{ minWidth: 0, flex: "1 1 180px" }}>
-                    <div style={{ fontSize: 12, fontWeight: 600, lineHeight: 1.35 }}>
+            <div className="wtso-banner">
+                <div className="wtso-text">
+                    <div className="wtso-title">
                         {isZh ? "保存为常用模板？" : "Save as a reusable template?"}
                     </div>
                     <div style={{
@@ -130,7 +123,7 @@ export function WelcomeTemplateSaveOfferBanner({
                     }}>
                         {title}
                         {autoDismissMs > 0 && (
-                            <span style={{ marginLeft: 6, opacity: 0.85 }}>
+                            <span className="wtso-meta">
                                 {paused
                                     ? (isZh ? "· 已暂停" : "· paused")
                                     : (isZh ? "· 稍后自动关闭" : "· auto-closes")}
@@ -138,7 +131,7 @@ export function WelcomeTemplateSaveOfferBanner({
                         )}
                     </div>
                 </div>
-                <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+                <div className="wtso-actions">
                     <button
                         type="button"
                         data-testid="welcome-template-save-offer-dismiss"

@@ -447,6 +447,16 @@ func resolveIntentLabelCapabilityNeeds(registry *coretool.CapabilityRegistry, ru
 	}
 	seen := make(map[string]bool)
 	needs := make([]coretool.CapabilityNeed, 0)
+	// live_data (freshness=current) and search (freshness=reference) both
+	// require information.search.web. A second required family makes the
+	// first planning wave larger than a light lookup's selection cap, so
+	// the planner drops every selection. Keep the earlier qualifier and
+	// only raise that family's ceiling.
+	offered := make(map[coretool.CapabilityID]struct {
+		start    int
+		count    int
+		polarity coretool.NeedPolarity
+	})
 	for _, label := range classification.Labels() {
 		templates := rules[label]
 		if len(templates) == 0 {
@@ -461,11 +471,34 @@ func resolveIntentLabelCapabilityNeeds(registry *coretool.CapabilityRegistry, ru
 				continue
 			}
 			seen[key] = true
-			needs = append(needs, ExpandNeedTemplateSiblings(template, ExpandNeedTemplateOptions{
+			// freshness=current and freshness=reference are one web_search.
+			// Image, file, and voice delivery share a capability id but are
+			// different contracts, so they stay separate families.
+			if template.Capability == CapabilityInformationSearchWeb {
+				if entry, exists := offered[template.Capability]; exists && entry.polarity == needTemplatePolarity(template) {
+					budget := coretool.RepeatSiblingBudget(template.MaxInvocations)
+					if budget > entry.count {
+						needs = append(needs, coretool.ExtendRepeatFamily(needs[entry.start], entry.count, budget, classification.Confidence, []string{"intent:" + string(label)})...)
+						entry.count = budget
+						offered[template.Capability] = entry
+					}
+					continue
+				}
+			}
+			siblings := ExpandNeedTemplateSiblings(template, ExpandNeedTemplateOptions{
 				IDPrefix:    "need:",
 				Confidence:  classification.Confidence,
 				EvidenceIDs: []string{"intent:" + string(label)},
-			})...)
+			})
+			if len(siblings) == 0 {
+				continue
+			}
+			offered[template.Capability] = struct {
+				start    int
+				count    int
+				polarity coretool.NeedPolarity
+			}{start: len(needs), count: len(siblings), polarity: siblings[0].Polarity}
+			needs = append(needs, siblings...)
 		}
 	}
 	sort.Slice(needs, func(i, j int) bool { return needs[i].ID < needs[j].ID })

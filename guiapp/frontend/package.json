@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "prebuild": "cd ../.. && node scripts/check-encoding.mjs guiapp/frontend/src guiapp/frontend/index.html guiapp/frontend/package.json guiapp/frontend/tsconfig.json guiapp/frontend/vite.config.ts --strict-mojibake && node scripts/check-main-ui-guards.mjs --self-test-config-persistence && node scripts/check-main-ui-guards.mjs && go run scripts/check_wails_bindings.go",
+    "prebuild": "node scripts/gen-theme-schemes-css.mjs && node scripts/assemble-app-css.mjs && node scripts/check-css-discipline.mjs && cd ../.. && node scripts/check-encoding.mjs guiapp/frontend/src guiapp/frontend/index.html guiapp/frontend/package.json guiapp/frontend/tsconfig.json guiapp/frontend/vite.config.ts --strict-mojibake && node scripts/check-main-ui-guards.mjs --self-test-config-persistence && node scripts/check-main-ui-guards.mjs && go run scripts/check_wails_bindings.go",
     "build": "tsc && vite build --config vite.config.ts",
     "preview": "vite preview",
     "test": "vitest --run"

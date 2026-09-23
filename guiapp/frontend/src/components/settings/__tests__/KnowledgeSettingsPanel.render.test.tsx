@@ -985,6 +985,12 @@ describe('KnowledgeSettingsPanel component', () => {
         render(<KnowledgeSettingsPanel lang="zh-Hans" showToastMessage={showToastMessage} />);
         fireEvent.click(screen.getByRole('tab', { name: '检索' }));
 
+        const modeGroup = screen.getByRole('radiogroup', { name: '检索模式' });
+        fireEvent.keyDown(modeGroup, { key: 'ArrowRight' });
+        expect(screen.getByRole('radio', { name: '表格筛选' }).getAttribute('aria-checked')).toBe('true');
+        fireEvent.keyDown(modeGroup, { key: 'ArrowLeft' });
+        expect(screen.getByRole('radio', { name: '语义检索' }).getAttribute('aria-checked')).toBe('true');
+
         expect(screen.getByTestId('knowledge-search-layout')).toBeTruthy();
         expect(screen.getByTestId('knowledge-search-filters')).toBeTruthy();
         expect(screen.getByText('结果类型')).toBeTruthy();
@@ -1002,9 +1008,10 @@ describe('KnowledgeSettingsPanel component', () => {
         fireEvent.keyDown(screen.getByPlaceholderText('搜索知识库...'), { key: 'Enter', isComposing: true });
         expect(vi.mocked(KnowledgeSearch).mock.calls.length).toBe(searchCallsAfterFirst);
         expect(facetGroups.textContent).toContain('结果类型');
-        expect(facetGroups.textContent).toContain('node 20');
-        expect(facetGroups.textContent).toContain('docx 11');
-        expect(facetGroups.textContent).toContain('kind:docx 11');
+        expect(facetGroups.textContent).toMatch(/node\s*20/);
+        expect(facetGroups.textContent).toContain('docx');
+        expect(facetGroups.textContent).toContain('kind');
+        expect(screen.getByRole('button', { name: 'kind:docx 11' })).toBeTruthy();
         expect(facetGroups.textContent).not.toContain('orphan');
         expect(screen.queryByRole('heading', { name: '最近操作' })).toBeNull();
         expect(screen.getAllByText(/中国博士后科学基金面上资助申请书/).length).toBeGreaterThan(0);

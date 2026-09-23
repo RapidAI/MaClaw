@@ -1,0 +1,143 @@
+/* WCAG AA contrast fix: --theme-success darkened (#4f7f6f → #4b796a; was 4.23:1 on success-bg). */
+:root {
+    color-scheme: light;
+    /* Legacy pre-theme variables were removed (2026-08): every consumer now
+       uses the --theme-* system, which all dark blocks rebind properly. */
+    /* UI polish scale: 4/6/10/14px radii + soft blue-tinted shadows.
+       Dark-mode overrides live in the [data-ai-theme='dark'] blocks below. */
+    --shadow-sm: 0 1px 2px rgba(30, 58, 95, 0.06);
+    --shadow-md: 0 1px 2px rgba(30, 58, 95, 0.05), 0 4px 12px -2px rgba(30, 58, 95, 0.10);
+    --shadow-lg: 0 8px 28px -6px rgba(30, 58, 95, 0.18);
+    /* Overlay/modal elevation (expert-market & share shells). */
+    --shadow-xl: 0 12px 40px -8px rgba(30, 58, 95, 0.22);
+    --radius-xs: 4px;
+    --radius-sm: 6px;
+    --radius-md: 10px;
+    --radius-lg: 14px;
+    --radius-pill: 999px;
+    --space-1: 4px;
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-5: 24px;
+    --space-6: 32px;
+    --transition-fast: 120ms cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-normal: 180ms cubic-bezier(0.4, 0, 0.2, 1);
+    --theme-primary: #2f6fbc;
+    --theme-primary-strong: #235a9e;
+    --theme-primary-soft: rgba(47, 111, 188, 0.10);
+    --theme-page-bg: #f4f7fb;
+    --theme-surface: #ffffff;
+    --theme-surface-muted: #f0f4f9;
+    --theme-text-primary: #1c2733;
+    --theme-text-secondary: #44546a;
+    --theme-text-muted: #657384;
+    /* Derived on theme roots via :is(...) block below (must rebind per cascade). */
+    --theme-text-tertiary: color-mix(in srgb, var(--theme-text-muted) 72%, var(--theme-surface));
+    --theme-border: #d9e1ec;
+    --theme-border-subtle: #e8eef5;
+    --theme-success: #4b796a;
+    --theme-success-bg: #f3f7f5;
+    --theme-warning: #64748b;
+    --theme-warning-bg: #f8fafc;
+    --theme-danger: #c43d34;
+    --theme-danger-bg: #fbf1f0;
+    --theme-link-color: #2f6fbc;
+    --theme-info-bg: #f3f7fb;
+    --theme-overlay-color: #0f172a;
+    --theme-overlay: rgba(15, 23, 42, 0.48);
+    --theme-on-primary: #ffffff;
+    /*
+     * Shared iOS-style switch chrome. Off-track uses text-muted mixed into
+     * surface so it stays readable when surface-muted ≈ surface (default dark).
+     * Thumb stays white in both themes (do not use --theme-on-primary: dark
+     * schemes set that for soft primary buttons, which would hide the knob).
+     *
+     * NOTE: Derived tokens that reference other theme vars must be re-declared
+     * on every theme root (see block below). Custom properties inherit their
+     * computed value; a formula only on :root would freeze light-theme mixes.
+     */
+    --theme-switch-track-off: color-mix(in srgb, var(--theme-text-muted) 42%, var(--theme-surface));
+    --theme-switch-thumb: #ffffff;
+    --theme-switch-thumb-shadow: 0 1px 3px rgba(15, 23, 42, 0.28), 0 0 0 1px rgba(15, 23, 42, 0.06);
+    /* Nested wells/chips on cards — slightly lifted vs surface in dark mode. */
+    --theme-control-well: color-mix(in srgb, var(--theme-text-muted) 15%, var(--theme-surface));
+    /* UI polish motion tokens (used by the "UI Polish" section at file end). */
+    --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+    --dur-fast: 140ms;
+    --dur-med: 220ms;
+}
+
+/* Spread live task conversations across the available chat column.  The
+   previous 920px centered canvas made short exchanges look trapped in the
+   middle, especially when a file preview was open.  Keep the assistant on
+   the left and pin the complete user cluster (avatar + bubble) to the right.
+   The message cards retain a readable maximum so long prose still wraps. */
+[data-testid='ai-panel-root'][data-ai-view='execution'] .mc-task-execution {
+  padding-inline: clamp(12px, 1.8vw, 28px) !important;
+}
+[data-testid='ai-panel-root'][data-ai-view='execution'] .mc-task-execution .mc-conversation-body {
+  width: 100% !important;
+  max-width: none !important;
+  margin: 0 !important;
+  padding: 24px clamp(4px, 1.2vw, 18px) 120px !important;
+  box-sizing: border-box !important;
+}
+[data-testid='ai-panel-root'][data-ai-view='execution'] .mc-conversation-body > [data-testid^='assistant-chat-user-'],
+[data-testid='ai-panel-root'][data-ai-view='execution'] .mc-conversation-body > [data-testid^='assistant-chat-ai-'] {
+  width: 100% !important;
+  max-width: none !important;
+  box-sizing: border-box !important;
+}
+[data-testid='ai-panel-root'][data-ai-view='execution'] .mc-conversation-body > [data-testid^='assistant-chat-user-'] {
+  justify-content: flex-end !important;
+  align-items: flex-end !important;
+}
+[data-testid='ai-panel-root'][data-ai-view='execution'] .mc-conversation-body [data-testid^='assistant-chat-user-bubble-'] {
+  flex: 0 1 auto !important;
+  width: fit-content !important;
+  max-width: min(84%, 900px) !important;
+  margin-left: 0 !important;
+}
+[data-testid='ai-panel-root'][data-ai-view='execution'] .mc-conversation-body > [data-testid^='assistant-chat-ai-'] {
+  justify-content: flex-start !important;
+  align-items: flex-start !important;
+}
+[data-testid='ai-panel-root'][data-ai-view='execution'] .mc-conversation-body [data-testid^='assistant-chat-ai-bubble-'] {
+  flex: 0 1 auto !important;
+  width: fit-content !important;
+  max-width: min(92%, 980px) !important;
+  margin-right: 0 !important;
+}
+@media (max-width: 720px) {
+  [data-testid='ai-panel-root'][data-ai-view='execution'] .mc-task-execution {
+    padding-inline: 8px !important;
+  }
+  [data-testid='ai-panel-root'][data-ai-view='execution'] .mc-task-execution .mc-conversation-body {
+    padding-inline: 2px !important;
+  }
+  [data-testid='ai-panel-root'][data-ai-view='execution'] .mc-conversation-body [data-testid^='assistant-chat-user-bubble-'],
+  [data-testid='ai-panel-root'][data-ai-view='execution'] .mc-conversation-body [data-testid^='assistant-chat-ai-bubble-'] {
+    max-width: 100% !important;
+  }
+}
+
+/*
+ * Re-bind derived theme tokens on every node that may override surface/muted.
+ * Keep formulas identical to :root so scheme switches recompute correctly.
+ */
+:is(
+    :root,
+    #App,
+    .main-container,
+    .sidebar,
+    .global-action-bar,
+    .app-loading-shell,
+    .modal-backdrop,
+    [data-ai-theme],
+    [data-ai-light-scheme]
+) {
+    --theme-text-tertiary: color-mix(in srgb, var(--theme-text-muted) 72%, var(--theme-surface));
+    --theme-switch-track-off: color-mix(in srgb, var(--theme-text-muted) 42%, var(--theme-surface));
+    --theme-control-well: color-mix(in srgb, var(--theme-text-muted) 15%, var(--theme-surface));
+}

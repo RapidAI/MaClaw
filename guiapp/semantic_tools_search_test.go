@@ -167,8 +167,8 @@ func TestSemanticToolsSearchStatusesAreHonestAboutThisTurn(t *testing.T) {
 	}
 	cb.semanticEffectfulPetitionConsumed = true
 	got = semanticToolsSearchRun(cb, `{"query":"运行脚本"}`)
-	if !strings.Contains(got, "bash") || !strings.Contains(got, "[已在当前工具面]") {
-		t.Fatalf("baseline bash must stay listed after the petition budget is spent: %s", got)
+	if !strings.Contains(got, "bash") || !strings.Contains(got, "[本轮请愿机会已用完，不要调用]") {
+		t.Fatalf("unlisted bash must report the spent effectful petition, not a baseline listing: %s", got)
 	}
 	got = semanticToolsSearchRun(cb, `{"query":"生成ppt幻灯片"}`)
 	if !strings.Contains(got, "[本轮请愿机会已用完，不要调用]") {
@@ -269,6 +269,23 @@ func TestSemanticToolsSearchAllowsEmptyQueryOnBoundSurface(t *testing.T) {
 	}
 	if !strings.Contains(got, "dynamic_000") {
 		t.Fatalf("bound directory page omitted the catalog entry: %s", got)
+	}
+}
+
+func TestSemanticToolsSearchNeedsNameDoesNotBlankTheDirectory(t *testing.T) {
+	cb := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: .98})
+	for _, args := range []string{
+		`{"query":"崇州天气","needs":["web_search"]}`,
+		`{"query":"崇州天气","needs":["not-a-capability"]}`,
+	} {
+		got := semanticToolsSearchRun(cb, args)
+		if strings.Contains(got, "no capability in this task scope") || !strings.Contains(got, "web_search") {
+			t.Fatalf("needs filter erased the directory: args=%s result=%s", args, got)
+		}
+	}
+	got := semanticToolsSearchRun(cb, `{"query":"崇州天气","needs":["information.search.web"]}`)
+	if !strings.Contains(got, "web_search") || strings.Contains(got, "office — ") {
+		t.Fatalf("a real capability filter must stay narrow: %s", got)
 	}
 }
 

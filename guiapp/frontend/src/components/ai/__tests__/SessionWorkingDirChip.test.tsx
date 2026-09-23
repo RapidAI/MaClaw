@@ -50,6 +50,29 @@ describe('SessionWorkingDirChip', () => {
         expect(screen.queryByLabelText('选择其他工作目录')).toBeNull();
     });
 
+    it('shows remote host and directory instead of the local sandbox path', async () => {
+        getTabWorkingDir.mockResolvedValue({
+            path: 'C:\\Users\\me\\.maclaw\\data\\你好呀-1789995819852879500\\workspace',
+            is_default: true,
+        });
+        const writeText = vi.fn().mockResolvedValue(undefined);
+        Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+        render(<SessionWorkingDirChip
+            tabId="proj-remote-1"
+            theme={theme}
+            lang="zh"
+            remoteHost="www.driverdevelopment.com"
+            remoteWorkDir="/home/ubuntu/app"
+        />);
+        expect(await screen.findByText('www.driverdevelopment.com:/home/ubuntu/app')).toBeTruthy();
+        expect(screen.queryByText(/你好呀/)).toBeNull();
+        expect(screen.queryByText('默认')).toBeNull();
+        fireEvent.click(screen.getByTestId('working-dir-chip'));
+        expect(screen.queryByLabelText('选择其他工作目录')).toBeNull();
+        fireEvent.click(await screen.findByLabelText('复制工作目录路径'));
+        expect(writeText).toHaveBeenCalledWith('www.driverdevelopment.com:/home/ubuntu/app');
+    });
+
     it('keeps local directory switching for ordinary folders', async () => {
         getTabWorkingDir.mockResolvedValueOnce({ path: 'D:/work/app', is_default: false });
         getTabWorkingDir.mockResolvedValue({ path: 'D:/work/other', is_default: false });
@@ -150,6 +173,14 @@ describe('workingDirDisplayLabel', () => {
         expect(label.length).toBeLessThanOrEqual(42);
         expect(label).toContain('...');
         expect(workingDirDisplayLabel('D:/work/app', 'zh')).toBe('D:/work/app');
+    });
+
+    it('prefers remote host and directory over the local sandbox path', () => {
+        expect(workingDirDisplayLabel(
+            'C:\\Users\\me\\.maclaw\\data\\你好呀-1\\workspace',
+            'zh',
+            { host: 'www.driverdevelopment.com', workDir: '/srv/app' },
+        )).toBe('www.driverdevelopment.com:/srv/app');
     });
 });
 

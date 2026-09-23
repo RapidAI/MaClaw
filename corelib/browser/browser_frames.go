@@ -216,7 +216,7 @@ func scopedLocatedCall(selector string, scope frameScope) string {
 }
 
 func errFrameGone() error {
-	return fmt.Errorf("browser frame is gone; run observe again")
+	return fmt.Errorf("browser frame is gone; run probe again")
 }
 
 func isFrameGoneErr(err error) bool {
@@ -387,6 +387,10 @@ func observableAttachedFrame(frame attachedFrame, activeTabID string) bool {
 }
 
 func (s *Session) observeAttachedFrames(startIdx int) []BrowserElementRef {
+	return s.observeAttachedFramesWith(startIdx, browserObserveScript)
+}
+
+func (s *Session) observeAttachedFramesWith(startIdx int, script string) []BrowserElementRef {
 	if s == nil {
 		return nil
 	}
@@ -404,7 +408,10 @@ func (s *Session) observeAttachedFrames(startIdx int) []BrowserElementRef {
 		if frame.SessionID == "" {
 			continue
 		}
-		raw, err := s.EvalOn(frame.TargetID, browserObserveScript)
+		if strings.TrimSpace(script) == "" {
+			script = browserObserveScript
+		}
+		raw, err := s.EvalOn(frame.TargetID, script)
 		if err != nil || strings.TrimSpace(raw) == "" {
 			continue
 		}

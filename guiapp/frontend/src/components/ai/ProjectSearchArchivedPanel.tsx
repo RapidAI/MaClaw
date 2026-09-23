@@ -19,7 +19,7 @@ export function ProjectSearchArchivedPanel({ name, content, loading, lang, theme
                 <span style={{ fontSize: "10px", padding: "2px 8px", borderRadius: "999px", background: "rgba(100,116,139,0.10)", color: t.textMuted, border: `1px solid ${t.titleBarBorder}`, flexShrink: 0 }}>{localizeText(lang, "Archived", "\u5df2\u5f52\u6863")}</span>
                 <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: t.text, opacity: 0.5, fontSize: "12px", padding: "2px 4px", lineHeight: 1, flexShrink: 0 }} title={localizeText(lang, "Close", "\u5173\u95ed")}>{"x"}</button>
             </div>
-            <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "12px 16px" }}>
+            <div className="psap-list">
                 {loading ? <div style={{ padding: "16px", textAlign: "center", color: t.text, opacity: 0.45, fontSize: "12px" }}>{localizeText(lang, "Loading...", "\u52a0\u8f7d\u4e2d...")}</div> : <div style={{ fontSize: "12px", color: t.text, lineHeight: 1.7, whiteSpace: "pre-wrap", opacity: 0.85 }}>{content}</div>}
             </div>
             <div style={{ padding: "8px 16px", borderTop: `1px solid ${t.titleBarBorder}`, fontSize: "11px", color: t.text, opacity: 0.4, textAlign: "center", flexShrink: 0 }}>{localizeText(lang, "This task has been archived and cannot be continued.", "\u6b64\u4efb\u52a1\u5df2\u5f52\u6863\uff0c\u4e0d\u53ef\u7ee7\u7eed\u3002")}</div>

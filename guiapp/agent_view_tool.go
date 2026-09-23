@@ -355,9 +355,8 @@ func (h *IMMessageHandler) handleRegisteredToolAgentViewSubmit(toolName string, 
 	// current loop's local-file Computer Use fence on this direct-handler path
 	// too, otherwise a stale computer_* panel can bypass the normal execution
 	// gateway and drive the desktop after an attachment has been staged.
-	if localFileWorkBlocksComputerUseExecution(h.runtimeLoopContextForOwner(policyOwnerID), "", toolName) {
-		text := "[system rejected] Computer Use is unavailable while handling the current local attachment. Use the local file/document tools instead."
-		return &IMAgentResponse{Text: text, Error: text, ResponseSource: imResponseSourceAgentViewSubmit.String()}
+	if rejection := computerUseExecutionRejection(h.runtimeLoopContextForOwner(policyOwnerID), "", toolName); rejection != "" {
+		return &IMAgentResponse{Text: rejection, Error: rejection, ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
 	if rejection := h.registeredToolWorkflowPolicyRejectionForOwner(policyOwnerID, toolName, args); rejection != nil {
 		return rejection

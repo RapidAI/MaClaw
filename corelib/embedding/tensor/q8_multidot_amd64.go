@@ -389,7 +389,7 @@ const enableGemmaM3VNNI = true
 
 // packedQKVGemmaShort: one N-split over Q's 768 cols; Dual3 workers covering
 // [0,256) also write K/V so those GEMMs are not serial after Q's join.
-func packedQKVGemmaShort(q, k, v, a []float32, wq, wk, wv *Q8Tensor, seq int) bool {
+func packedQKVGemmaShort(q, k, v, a []float32, wq, wk, wv *Q8Tensor, seq, maxWorkers int) bool {
 	const K, Nq, Nkv = 768, 768, 256
 	if seq != 3 || !hasAVX512 || wq == nil || wk == nil || wv == nil {
 		return false
@@ -402,19 +402,19 @@ func packedQKVGemmaShort(q, k, v, a []float32, wq, wk, wv *Q8Tensor, seq int) bo
 		len(wq.Packed) >= Nq*768 && len(wk.Packed) >= Nkv*768 && len(wv.Packed) >= Nkv*768
 	if useVNNI {
 		aq = gemmaM3AQPool.Get().(*gemmaM3AQ)
-		quantizeGemmaM3Q8U(aq.q[:3*768], aq.s[:72], a, 768)
+		gemmaQuantizeQ8URow(aq.q[:3*768], aq.s[:3], a, 3, 768)
 	}
 	run := func(ns, ne int) {
 		if aq != nil {
-			gemmaVNNIPackedM3N24(q, aq.q[:3*768], aq.s[:72], a, wq, Nq, ns, ne)
+			gemmaVNNIRowM3N24(q, aq.q[:3*768], aq.s[:3], a, wq, Nq, ns, ne)
 			if ns < Nkv {
 				ke := ne
 				if ke > Nkv {
 					ke = Nkv
 				}
 				if ns < ke {
-					gemmaVNNIPackedM3N24(k, aq.q[:3*768], aq.s[:72], a, wk, Nkv, ns, ke)
-					gemmaVNNIPackedM3N24(v, aq.q[:3*768], aq.s[:72], a, wv, Nkv, ns, ke)
+					gemmaVNNIRowM3N24(k, aq.q[:3*768], aq.s[:3], a, wk, Nkv, ns, ke)
+					gemmaVNNIRowM3N24(v, aq.q[:3*768], aq.s[:3], a, wv, Nkv, ns, ke)
 				}
 			}
 		} else if len(wq.Packed) >= ne*768 && len(wk.Packed) >= Nkv*768 && len(wv.Packed) >= Nkv*768 {
@@ -444,7 +444,7 @@ func packedQKVGemmaShort(q, k, v, a []float32, wq, wk, wv *Q8Tensor, seq int) bo
 		}
 		vzeroupperASM()
 	}
-	if !shouldParallel(seq, Nq, K) {
+	if maxWorkers == 1 || !shouldParallel(seq, Nq, K) {
 		run(0, Nq)
 	} else {
 		parallelRangesWithWorkers(Nq, matMulWorkersFor(seq, Nq, K), run)
@@ -457,7 +457,7 @@ func packedQKVGemmaShort(q, k, v, a []float32, wq, wk, wv *Q8Tensor, seq int) bo
 
 // packedDualOutGemmaShort: Dual3 packed n-loop N-split + per-range SiLU
 // (no extra full-array SiLUMul join after the GEMM wait).
-func rmsResidualGemmaShort(x, a, y []float32, b *Q8Tensor, wRMS []float32, seq, N, K int, eps float32) bool {
+func rmsResidualGemmaShort(x, a, y []float32, b *Q8Tensor, wRMS []float32, seq, N, K int, eps float32, maxWorkers int) bool {
 	if seq != 3 || !hasAVX512 || b == nil || N != gemmaDim {
 		return false
 	}
@@ -468,20 +468,23 @@ func rmsResidualGemmaShort(x, a, y []float32, b *Q8Tensor, wRMS []float32, seq, 
 		return false
 	}
 	var aq *gemmaM3AQ
-	if enableGemmaM3VNNI && hasAVX512VNNI && K == 768 && len(b.Packed) >= N*768 {
+	// Row-scale VNNI covers the K=768 projections; the K=1152 FFN-down keeps the
+	// f32 packed M3 kernel — per-row quantization of the SiLU-gated FFN row is
+	// too coarse for 2-3 token embeddings (gate: "你好" cosine 0.998 < 0.999).
+	if enableGemmaM3VNNI && hasAVX512VNNI && K == 768 && len(b.Packed) >= N*K {
 		aq = gemmaM3AQPool.Get().(*gemmaM3AQ)
-		quantizeGemmaM3Q8U(aq.q[:3*768], aq.s[:72], a, 768)
+		gemmaQuantizeQ8URow(aq.q[:3*768], aq.s[:3], a, 3, 768)
 	}
 	run := func(ns, ne int) {
 		if aq != nil {
-			gemmaVNNIPackedM3N24(y, aq.q[:3*768], aq.s[:72], a, b, N, ns, ne)
+			gemmaVNNIRowM3N24(y, aq.q[:3*K], aq.s[:3], a, b, N, ns, ne)
 		} else if K == 768 {
 			gemmaGemmM3N24(y, a, b, N, ns, ne)
 		} else {
 			gemmaGemmM3N36(y, a, b, N, ns, ne)
 		}
 	}
-	if !shouldParallel(seq, N, K) {
+	if maxWorkers == 1 || !shouldParallel(seq, N, K) {
 		run(0, N)
 	} else {
 		parallelRangesWithWorkers(N, matMulWorkersFor(seq, N, K), run)
@@ -500,7 +503,7 @@ func rmsResidualGemmaShort(x, a, y []float32, b *Q8Tensor, wRMS []float32, seq, 
 //go:noescape
 func gemmaDualOutM3N24FusedPackedAVX512(gate, up, a *float32, packedG, packedU *byte, scalesG, scalesU *float32, N, ns, ne int)
 
-func packedDualOutGemmaShort(gate, up, a []float32, wG, wU *Q8Tensor, seq int) bool {
+func packedDualOutGemmaShort(gate, up, a []float32, wG, wU *Q8Tensor, seq, maxWorkers int) bool {
 	const K, N = 768, 1152
 	if seq != 3 || !hasAVX512 || wG == nil || wU == nil {
 		return false
@@ -515,12 +518,12 @@ func packedDualOutGemmaShort(gate, up, a []float32, wG, wU *Q8Tensor, seq int) b
 	useVNNI := enableGemmaM3VNNI && hasAVX512VNNI && len(wG.Packed) >= N*768 && len(wU.Packed) >= N*768
 	if useVNNI {
 		aq = gemmaM3AQPool.Get().(*gemmaM3AQ)
-		quantizeGemmaM3Q8U(aq.q[:3*768], aq.s[:72], a, 768)
+		gemmaQuantizeQ8URow(aq.q[:3*768], aq.s[:3], a, 3, 768)
 	}
 	run := func(ns, ne int) {
 		if aq != nil && ne > ns {
-			gemmaVNNIPackedM3N24(gate, aq.q[:3*768], aq.s[:72], a, wG, N, ns, ne)
-			gemmaVNNIPackedM3N24(up, aq.q[:3*768], aq.s[:72], a, wU, N, ns, ne)
+			gemmaVNNIRowM3N24(gate, aq.q[:3*768], aq.s[:3], a, wG, N, ns, ne)
+			gemmaVNNIRowM3N24(up, aq.q[:3*768], aq.s[:3], a, wU, N, ns, ne)
 		} else if ne > ns+1 && len(wG.Packed) >= ne*768 && len(wU.Packed) >= ne*768 {
 			gemmaDualOutM3N24FusedPackedAVX512(&gate[0], &up[0], &a[0],
 				&wG.Packed[0], &wU.Packed[0], &wG.Scales[0], &wU.Scales[0], N, ns, ne)
@@ -536,7 +539,7 @@ func packedDualOutGemmaShort(gate, up, a []float32, wG, wU *Q8Tensor, seq int) b
 			SiLUMul(gate[off:r*N+ne], up[off:r*N+ne])
 		}
 	}
-	if !shouldParallel(seq, N, K) {
+	if maxWorkers == 1 || !shouldParallel(seq, N, K) {
 		run(0, N)
 		return true
 	}
@@ -567,49 +570,7 @@ type gemmaM3AQ struct {
 var gemmaM3AQPool = sync.Pool{New: func() any { return new(gemmaM3AQ) }}
 
 func quantizeGemmaM3Q8U(q []byte, s []float32, a []float32, K int) {
-	nBlocks := K / q8BlockSize
-	for r := 0; r < 3; r++ {
-		row := a[r*K : (r+1)*K]
-		qs := q[r*K : (r+1)*K]
-		ss := s[r*nBlocks : (r+1)*nBlocks]
-		for b := 0; b < nBlocks; b++ {
-			blk := row[b*32 : (b+1)*32]
-			amax := float32(0)
-			for i := 0; i < 32; i++ {
-				v := blk[i]
-				if v < 0 {
-					v = -v
-				}
-				if v > amax {
-					amax = v
-				}
-			}
-			if amax <= 1e-8 {
-				ss[b] = 0
-				for i := 0; i < 32; i++ {
-					qs[b*32+i] = 128
-				}
-				continue
-			}
-			ss[b] = amax / 127
-			inv := 127 / amax
-			dst := qs[b*32 : (b+1)*32]
-			for i := 0; i < 32; i++ {
-				x := blk[i] * inv
-				qi := int(x + 0.5)
-				if x < 0 {
-					qi = int(x - 0.5)
-				}
-				if qi > 127 {
-					qi = 127
-				}
-				if qi < -127 {
-					qi = -127
-				}
-				dst[i] = byte(qi + 128)
-			}
-		}
-	}
+	gemmaQuantizeQ8U(q, s, a, 3, K)
 }
 
 func gemmaVNNIPackedM3N24(out []float32, aQ []byte, aS []float32, a []float32, b *Q8Tensor, N, ns, ne int) {
@@ -635,6 +596,42 @@ func gemmaPackedM3N24(out, a []float32, b *Q8Tensor, N, ns, ne int) {
 
 //go:noescape
 func gemmaVNNIM3N24PackedAVX512(out *float32, aQ *byte, aS *float32, packed *byte, bS *float32, N, ns, ne int)
+
+//go:noescape
+func gemmaVNNIRowM3N24PackedAVX512(out *float32, aQ *byte, aS *float32, packed *byte, bS *float32, N, ns, ne int)
+
+//go:noescape
+func gemmaVNNIRowM3N36PackedAVX512(out *float32, aQ *byte, aS *float32, packed *byte, bS *float32, N, ns, ne int)
+
+// gemmaVNNIRowM3N24/N36 run the row-scale M3 VNNI kernel over [ns,ne) with
+// odd column edges on the f32 tail path (same pattern as gemmaVNNIPackedM3N24).
+func gemmaVNNIRowM3N24(out []float32, aQ []byte, aS []float32, a []float32, b *Q8Tensor, N, ns, ne int) {
+	n := ns
+	if n&1 != 0 {
+		gemmaStoreTailCol(out, a, b, 3, N, 768, n)
+		n++
+	}
+	if n+1 < ne {
+		gemmaVNNIRowM3N24PackedAVX512(&out[0], &aQ[0], &aS[0], &b.Packed[0], &b.Scales[0], N, n, ne)
+	}
+	if (ne-n)&1 != 0 {
+		gemmaStoreTailCol(out, a, b, 3, N, 768, ne-1)
+	}
+}
+
+func gemmaVNNIRowM3N36(out []float32, aQ []byte, aS []float32, a []float32, b *Q8Tensor, N, ns, ne int) {
+	n := ns
+	if n&1 != 0 {
+		gemmaStoreTailCol(out, a, b, 3, N, 1152, n)
+		n++
+	}
+	if n+1 < ne {
+		gemmaVNNIRowM3N36PackedAVX512(&out[0], &aQ[0], &aS[0], &b.Packed[0], &b.Scales[0], N, n, ne)
+	}
+	if (ne-n)&1 != 0 {
+		gemmaStoreTailCol(out, a, b, 3, N, 1152, ne-1)
+	}
+}
 
 func gemmaPackedM3N36(out, a []float32, b *Q8Tensor, N, ns, ne int) {
 	gemmaGemmM3N36PackedAVX512(&out[0], &a[0], &b.Packed[0], &b.Scales[0], N, ns, ne)
@@ -1051,35 +1048,78 @@ func quantizePanel8Q8U(ap *q8APanel8, a []float32) {
 // stays hot (mirrors float dual-m in matMulQ8RangeFusedAccumScaledBias).
 const enableFusedAccumVNNI = true
 
+// q8AccumScratchPool holds the 8-row scratch output used by the zero-padded
+// tail panel (the 8-row kernel always writes 8 rows; valid rows are copied).
+var q8AccumScratchPool = sync.Pool{New: func() any {
+	s := make([]float32, 8*512)
+	return &s
+}}
+
+// q8K2048PanelsFor quantizes every full/partial 8-row group of a [M,2048] A
+// into panels (the last panel is zero-padded). Caller returns the panels to
+// q8APanelPool. Hoists the panel quantize out of per-worker N ranges.
+func q8K2048PanelsFor(a []float32, M int) []*q8APanel8 {
+	n := (M + 7) / 8
+	panels := make([]*q8APanel8, n)
+	for i := 0; i < n; i++ {
+		ap := q8APanelPool.Get().(*q8APanel8)
+		m0 := i * 8
+		if m0+8 <= M {
+			quantizePanel8Q8U(ap, a[m0*2048:(m0+8)*2048])
+		} else {
+			var aPad [8 * 2048]float32
+			copy(aPad[:(M-m0)*2048], a[m0*2048:M*2048])
+			clear(aPad[(M-m0)*2048:])
+			quantizePanel8Q8U(ap, aPad[:])
+		}
+		panels[i] = ap
+	}
+	return panels
+}
+
 func tryFusedAccumVNNI(out, a []float32, b *Q8Tensor, bias []float32, M, ns, ne, nBlocks int) bool {
+	return fusedAccumVNNI(out, a, b, bias, M, ns, ne, nBlocks, nil)
+}
+
+func fusedAccumVNNI(out, a []float32, b *Q8Tensor, bias []float32, M, ns, ne, nBlocks int, panels []*q8APanel8) bool {
 	if !enableFusedAccumVNNI || !hasAVX512VNNI || nBlocks != 64 || len(a) < M*2048 || len(b.Scales) < b.Rows*nBlocks {
 		return false
 	}
 	// Panels are only consumed by 8-row blocks. Very short utterances take the
 	// scalar remainder below, so avoid even the first pool round-trip for M < 8.
-	var ap0 *q8APanel8
-	if M >= 8 {
-		ap0 = q8APanelPool.Get().(*q8APanel8)
-	}
-	// The second panel is used only by the 16-row loop below.
-	var ap1 *q8APanel8
-	if M >= 16 {
-		ap1 = q8APanelPool.Get().(*q8APanel8)
+	var ap0, ap1 *q8APanel8
+	panelAt := func(i int) *q8APanel8 {
+		if panels != nil {
+			return panels[i]
+		}
+		if ap0 == nil {
+			ap0 = q8APanelPool.Get().(*q8APanel8)
+			if M >= 16 {
+				ap1 = q8APanelPool.Get().(*q8APanel8)
+			}
+		}
+		if i&1 == 0 || ap1 == nil {
+			return ap0
+		}
+		return ap1
 	}
 	m := 0
 	// 16-row outer: two prequant panels share each B group.
 	for ; m+15 < M; m += 16 {
 		a0 := a[m*2048 : (m+8)*2048]
 		a1 := a[(m+8)*2048 : (m+16)*2048]
-		quantizePanel8Q8U(ap0, a0)
-		quantizePanel8Q8U(ap1, a1)
+		p0, p1 := panelAt(m/8), panelAt(m/8+1)
+		if panels == nil {
+			quantizePanel8Q8U(p0, a0)
+			quantizePanel8Q8U(p1, a1)
+		}
 		n := ns
 		// Dual-B VNNI (vector float accums). Quad 4B variants measured slower /
 		// incorrect under register pressure; keep dual only.
 		for ; n+1 < ne; n += 2 {
 			bn0, bn1 := bias[n], bias[n+1]
-			q8Dual8AccumVNNIKnown(out, ap0, b, m, n, bn0, bn1)
-			q8Dual8AccumVNNIKnown(out, ap1, b, m+8, n, bn0, bn1)
+			q8Dual8AccumVNNIKnown(out, p0, b, m, n, bn0, bn1)
+			q8Dual8AccumVNNIKnown(out, p1, b, m+8, n, bn0, bn1)
 		}
 		for ; n < ne; n++ {
 			var d8 [8]float32
@@ -1092,10 +1132,13 @@ func tryFusedAccumVNNI(out, a []float32, b *Q8Tensor, bias []float32, M, ns, ne,
 	}
 	for ; m+7 < M; m += 8 {
 		aPanel := a[m*2048 : (m+8)*2048]
-		quantizePanel8Q8U(ap0, aPanel)
+		p := panelAt(m / 8)
+		if panels == nil {
+			quantizePanel8Q8U(p, aPanel)
+		}
 		n := ns
 		for ; n+1 < ne; n += 2 {
-			q8Dual8AccumVNNIKnown(out, ap0, b, m, n, bias[n], bias[n+1])
+			q8Dual8AccumVNNIKnown(out, p, b, m, n, bias[n], bias[n+1])
 		}
 		for ; n < ne; n++ {
 			var d8 [8]float32
@@ -1103,43 +1146,48 @@ func tryFusedAccumVNNI(out, a []float32, b *Q8Tensor, bias []float32, M, ns, ne,
 			storeDot8Accum(out, m, n, 512, &d8, bias[n])
 		}
 	}
-	// Remainder rows < 8: float dual path
+	// Remainder rows < 8: zero-pad the tail to a full 8-row panel and run the
+	// VNNI kernel into scratch (valid rows are accumulated into out).
 	if m < M {
-		var dDual0, dDual1 [8]float32
-		var d4 [4]float32
-		var d8 [8]float32
-		for ; m+3 < M; m += 4 {
-			aPanel := a[m*2048 : (m+4)*2048]
-			n := ns
-			for ; n+1 < ne; n += 2 {
-				q8DualMultiDot4T(&dDual0, aPanel, b, n, n+1, nBlocks, 2048)
-				storeDual4Accum(out, m, n, 512, &dDual0, bias[n], bias[n+1])
+		rows := M - m
+		if panels != nil {
+			ap0 = panels[m/8]
+		} else {
+			ap0 = panelAt(0)
+			var aPad [8 * 2048]float32
+			copy(aPad[:rows*2048], a[m*2048:M*2048])
+			clear(aPad[rows*2048:])
+			quantizePanel8Q8U(ap0, aPad[:])
+		}
+		sp := q8AccumScratchPool.Get().(*[]float32)
+		scratch := *sp
+		n := ns
+		for ; n+1 < ne; n += 2 {
+			// The kernel accumulates into scratch; zero the 16 target cells.
+			for r := 0; r < 8; r++ {
+				scratch[r*512+n] = 0
+				scratch[r*512+n+1] = 0
 			}
-			for ; n < ne; n++ {
-				q8MultiDot4T(&d4, aPanel, b, n, nBlocks, 2048)
-				storeDot4Accum(out, m, n, 512, &d4, bias[n])
+			q8Dual8AccumVNNIKnown(scratch, ap0, b, 0, n, bias[n], bias[n+1])
+			for r := 0; r < rows; r++ {
+				out[(m+r)*512+n] += scratch[r*512+n]
+				out[(m+r)*512+n+1] += scratch[r*512+n+1]
 			}
 		}
-		for ; m < M; m++ {
-			aRow := a[m*2048 : m*2048+2048]
-			n := ns
-			for ; n+1 < ne; n += 2 {
-				s0, s1 := DotQ8RowDualScaled(aRow, b, n, n+1)
-				out[m*512+n] += s0 + bias[n]
-				out[m*512+n+1] += s1 + bias[n+1]
-			}
-			for ; n < ne; n++ {
-				out[m*512+n] += DotQ8RowScaled(aRow, b, n) + bias[n]
+		q8AccumScratchPool.Put(sp)
+		for ; n < ne; n++ {
+			for r := 0; r < rows; r++ {
+				out[(m+r)*512+n] += DotQ8RowScaled(a[(m+r)*2048:(m+r)*2048+2048], b, n) + bias[n]
 			}
 		}
-		_ = dDual1
-		_ = d8
 	}
-	if ap0 != nil {
-		q8APanelPool.Put(ap0)
-	}
-	if ap1 != nil {
-		q8APanelPool.Put(ap1)
+	if panels == nil {
+		if ap0 != nil {
+			q8APanelPool.Put(ap0)
+		}
+		if ap1 != nil {
+			q8APanelPool.Put(ap1)
+		}
 	}
 	return true
 }
@@ -1264,3 +1312,4 @@ func dotQ8RowScaledScalar(a []float32, data []byte, scales []float32, rowOff, nB
 	}
 	return sum
 }
+

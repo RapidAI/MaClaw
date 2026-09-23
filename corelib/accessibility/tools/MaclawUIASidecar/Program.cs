@@ -162,14 +162,88 @@ namespace MaclawUIASidecar
             if (string.IsNullOrEmpty(window)) return null;
             var root = AutomationElement.RootElement;
             var wins = root.FindAll(TreeScope.Children, Condition.TrueCondition);
-            string needle = window.ToLowerInvariant();
+            AutomationElement best = null;
+            int bestScore = 0;
             foreach (AutomationElement w in wins)
             {
                 string n = SafeName(w);
-                if (!string.IsNullOrEmpty(n) && n.ToLowerInvariant().Contains(needle))
-                    return w;
+                int score = ScoreWindowTitle(window, n);
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    best = w;
+                }
             }
-            return null;
+            return best;
+        }
+
+        // Same ranking as corelib/computeruse.ScoreWindowHint for the cases that
+        // do not need the alias table: exact, app suffix, or chat-app prefix.
+        // A raw Contains match focused the wrong lookalike window (devtools vs chat).
+        static int ScoreWindowTitle(string hint, string title)
+        {
+            hint = NormTitle(hint);
+            title = NormTitle(title);
+            if (hint.Length == 0 || title.Length == 0) return 0;
+            if (hint == title) return 1000;
+            if (hint.Length < 2) return 0;
+            string suf = TitleSuffix(title);
+            string pre = TitlePrefix(title);
+            if (hint == suf) return 920;
+            if (pre != title && hint == pre) return 880;
+            return 0;
+        }
+
+        static string NormTitle(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return "";
+            s = s.Replace("\u200b", "").Replace("\u200c", "").Replace("\u200d", "").Replace("\ufeff", "");
+            s = s.Trim().TrimStart('*').Trim().ToLowerInvariant();
+            var parts = s.Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            return string.Join(" ", parts);
+        }
+
+        static string TitleSuffix(string title)
+        {
+            int at;
+            int sep;
+            if (!LastTitleSep(title, out at, out sep)) return title;
+            return title.Substring(at + sep).Trim();
+        }
+
+        static string TitlePrefix(string title)
+        {
+            int at;
+            int sep;
+            if (!FirstTitleSep(title, out at, out sep)) return title;
+            return title.Substring(0, at).Trim();
+        }
+
+        static readonly string[] TitleSeps = { " - ", " — ", " – ", " | " };
+
+        static bool LastTitleSep(string title, out int at, out int sepLen)
+        {
+            at = -1;
+            sepLen = 0;
+            foreach (string sep in TitleSeps)
+            {
+                int i = title.LastIndexOf(sep, StringComparison.Ordinal);
+                if (i > at) { at = i; sepLen = sep.Length; }
+            }
+            return at >= 0;
+        }
+
+        static bool FirstTitleSep(string title, out int at, out int sepLen)
+        {
+            at = int.MaxValue;
+            sepLen = 0;
+            bool found = false;
+            foreach (string sep in TitleSeps)
+            {
+                int i = title.IndexOf(sep, StringComparison.Ordinal);
+                if (i >= 0 && i < at) { at = i; sepLen = sep.Length; found = true; }
+            }
+            return found;
         }
 
         static Dictionary<string, object> NodeFromElement(AutomationElement el, int depth)

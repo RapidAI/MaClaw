@@ -1765,7 +1765,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                     <span>!</span>
                     <span>{state.error ? formatError(state.error, isZh) : (isZh ? "\u8fde\u63a5\u5df2\u65ad\u5f00\uff0c\u6b63\u5728\u91cd\u8fde" : "Connection lost, reconnecting")}</span>
                     {state.connectionState === "reconnecting" && (
-                        <span style={{ marginLeft: "auto", fontSize: 11, opacity: 0.7 }}>
+                        <span className="vecv-reconnect-status">
                             {isZh ? `\u91cd\u8fde\u4e2d (${state.reconnectAttempt}/${MAX_RECONNECT_RETRIES})...` : `Reconnecting (${state.reconnectAttempt}/${MAX_RECONNECT_RETRIES})...`}
                         </span>
                     )}
@@ -1774,12 +1774,8 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
 
             {/* Message List */}
             <div
+                className="vecv-message-list"
                 data-testid="ve-message-list"
-                style={{
-                    flex: 1,
-                    overflowY: "auto",
-                    padding: "12px 16px",
-                }}
             >
                 {state.messages.map((msg) => (
                     <MessageBubble
@@ -1802,7 +1798,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
 
                 {/* Awaiting visible response — status chip, no speaker name → no name tail */}
                 {awaitingReplyVisible && !state.streaming && (
-                    <div className="mc-ve-thinking" data-testid="ve-thinking-indicator" style={{ marginTop: 8 }}>
+                    <div className="mc-ve-thinking vecv-thinking" data-testid="ve-thinking-indicator">
                         <ChatBubbleFrame
                             side="left"
                             background={theme.fieldBg}
@@ -1820,8 +1816,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                 {state.streaming && (
                     <div
                         data-testid="ve-streaming-indicator"
-                        className="mc-ve-message mc-ve-message--streaming"
-                        style={{ marginTop: 8, display: "flex", flexDirection: "column", alignItems: "flex-start" }}
+                        className="mc-ve-message mc-ve-message--streaming vecv-streaming"
                     >
                         <div
                             style={{
@@ -1839,10 +1834,10 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                         >
                             {streamingFromPrimaryAssistant && assistantAvatar && (
                                 <img
+                                    className="vecv-avatar"
                                     data-testid="ve-streaming-avatar"
                                     src={assistantAvatar}
                                     alt=""
-                                    style={{ width: 18, height: 18, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }}
                                 />
                             )}
                             <span>{readableSpeakerName(state.streamFromName, state.streamFromId, participants, assistantDisplayName)}</span>
@@ -1873,7 +1868,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
                                     ))}
                                 </div>
                             )}
-                            <span className="ve-cursor-blink" style={{ opacity: 0.6 }}>{"|"}</span>
+                            <span className="ve-cursor-blink vecv-cursor">{"|"}</span>
                         </ChatBubbleFrame>
                     </div>
                 )}
@@ -2162,10 +2157,10 @@ function MessageBubble({ message, sessionId, theme, isZh, assistantName, userNam
             >
                 {!isUser && assistantAvatarDataURL && (
                     <img
+                        className="vecv-avatar"
                         data-testid={`ve-msg-avatar-${message.id}`}
                         src={assistantAvatarDataURL}
                         alt=""
-                        style={{ width: 18, height: 18, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }}
                     />
                 )}
                 {isLocalIntro && (
@@ -2241,7 +2236,7 @@ function MessageBubble({ message, sessionId, theme, isZh, assistantName, userNam
             )}
 
             {hasAttachments && (
-                <div style={{ marginTop: 4, display: "flex", flexWrap: "wrap", gap: 4, maxWidth: "80%" }}>
+                <div className="vecv-attachments">
                     {message.attachments?.map((att, idx) => (
                         <AttachmentDisplay key={`${att.type}-${att.filename}-${att.fileUrl || att.localPath || idx}`} attachment={att} sessionId={sessionId || ""} theme={theme} />
                     ))}
@@ -2380,7 +2375,7 @@ function AttachmentDisplay({ attachment, sessionId, theme, prefetchRemoteImage =
                         <AttachmentTypeBadge label="IMG" theme={theme} />
                     </div>
                 )}
-                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11, fontWeight: 600 }}>
+                <span className="vecv-file-name">
                     {attachment.filename}
                 </span>
                 {formatFileSize(attachment.sizeBytes ?? 0) && (
@@ -2417,8 +2412,8 @@ function AttachmentDisplay({ attachment, sessionId, theme, prefetchRemoteImage =
             onClick={openAttachment}
         >
             <AttachmentTypeBadge label={typeLabel} theme={theme} />
-            <span style={{ minWidth: 0, display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 2 }}>
-                <span style={{ maxWidth: 150, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 600 }}>
+            <span className="vecv-file-meta">
+                <span className="vecv-file-title">
                     {attachment.filename}
                 </span>
                 <span style={{ color: theme.textMuted, fontSize: 10 }}>

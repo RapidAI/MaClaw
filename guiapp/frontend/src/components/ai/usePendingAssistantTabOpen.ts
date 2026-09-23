@@ -373,7 +373,7 @@ export function usePendingAssistantTabOpen({
 
         // Capture request data synchronously. The parent clears the one-shot
         // pending state through the receipt callback below.
-        const { launchId, projectPath, taskTitle, initialMessage, autoSend, prepareMode, openIntent, cloudWorkspaceId, agentMode, remoteHost, remoteSafety, remoteNeedsReconnect, workflowType, imPlatform, imTargetUID, imIsGroup, newTaskContext, noWorkflowInterception, warning } = pendingProjectTabOpen;
+        const { launchId, projectPath, taskTitle, initialMessage, autoSend, prepareMode, openIntent, cloudWorkspaceId, agentMode, remoteHost, remoteSafety, remoteNeedsReconnect, workflowType, imPlatform, imTargetUID, imIsGroup, newTaskContext, noWorkflowInterception, warning, deliverInitialMessage } = pendingProjectTabOpen;
         // Check if the tab already exists in the tab list BEFORE creating it.
         // This is a synchronous read of tabStateRef — reliable for tabs that were
         // restored from localStorage (synchronous on mount) or from the backend
@@ -432,7 +432,8 @@ export function usePendingAssistantTabOpen({
         // IM launches can defer their initial prompt until reconnect. A newly
         // created task never carries a hidden initial prompt to send later.
         const shouldDeferRemoteInitialSend = shouldAutoSend && agentMode === "remote_coding_dev" && !!remoteNeedsReconnect;
-        if (!newTaskContext && !tabExistedInList && !hasExistingConversation && (imPlatform && imTargetUID || shouldDeferRemoteInitialSend)) {
+        const wizardDelivery = deliverInitialMessage === true && !!(String(initialMessage || taskTitle || "").trim());
+        if (!newTaskContext && (wizardDelivery || (!tabExistedInList && !hasExistingConversation)) && (imPlatform && imTargetUID || shouldDeferRemoteInitialSend)) {
             saveTabStateRef.current?.(tab.id, {
                 ...stateAfterTaskContext,
                 ...(imPlatform && imTargetUID ? {
@@ -497,8 +498,10 @@ export function usePendingAssistantTabOpen({
             // state in tabStatesRef yet (restoration only adds to tabs array, not
             // to the state map).
             //
-            // Either signal being true means this is a reused tab → skip autoSend.
-            if (hasExistingConversation || tabExistedInList) return;
+            // A reused tab normally skips autoSend so a replay cannot duplicate
+            // the original prompt. The new-task page opts in: its text is a new
+            // instruction, including when the remote or cloud task already exists.
+            if ((hasExistingConversation || tabExistedInList) && !deliverInitialMessage) return;
 
             // The remote panel flushes this prompt only after its SSH workbench
             // has reconnected successfully.

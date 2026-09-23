@@ -95,5 +95,6 @@ func (h *IMMessageHandler) clearPerUserSessionState(userID string) {
 	h.clearSessionFacts(userID)
 
 	h.clearSessionGovernedTasksForUser(userID)
+	h.clearSemanticSessionResidue(userID)
 	h.clearActiveLocalDocumentsForUser(userID)
 }

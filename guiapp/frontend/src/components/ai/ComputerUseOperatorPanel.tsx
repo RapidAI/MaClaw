@@ -453,22 +453,13 @@ export function ComputerUseOperatorPanel({ lang = "en" }: Props) {
     return (
         <div style={shellStyle} data-testid="computer-use-operator-panel">
             <div
-                style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    padding: "8px 10px",
-                    borderBottom: "1px solid rgba(127,127,127,0.25)",
-                    fontWeight: 600,
-                    gap: 6,
-                    flexShrink: 0,
-                }}
+                className="cuop-head"
             >
-                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                <span className="cuop-ellipsis">
                     {t("Computer Use", "桌面操控", "桌面操控")}
                     {observe?.element_count != null ? ` · ${observe.element_count}` : ""}
                 </span>
-                <span style={{ display: "flex", alignItems: "center", flexShrink: 0 }}>
+                <span className="cuop-head-actions">
                     <button
                         type="button"
                         title={pinned ? t("Unpin", "取消固定", "取消固定") : t("Pin", "固定", "固定")}
@@ -502,9 +493,9 @@ export function ComputerUseOperatorPanel({ lang = "en" }: Props) {
                     }}
                 >
                     {(pinned || statusLine) && statusLine && (
-                        <div style={{ opacity: 0.85, fontSize: 11 }}>{statusLine}</div>
+                        <div className="cuop-note85">{statusLine}</div>
                     )}
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                    <div className="cuop-btn-row">
                         <button
                             type="button"
                             disabled={ctrlBusy || stopped || paused}
@@ -780,10 +771,10 @@ export function ComputerUseOperatorPanel({ lang = "en" }: Props) {
                         </button>
                     </div>
                     {ctrlError && (
-                        <div style={{ color: "#f28b82", fontSize: 11 }}>{ctrlError}</div>
+                        <div className="cuop-err-text">{ctrlError}</div>
                     )}
                     {exportMsg && (
-                        <div style={{ opacity: 0.85, fontSize: 11, wordBreak: "break-all" }}>{exportMsg}</div>
+                        <div className="cuop-note85-wrap">{exportMsg}</div>
                     )}
                     {lastE2E && (lastE2E.ok === true || lastE2E.ok === false) && (
                         <div
@@ -803,7 +794,7 @@ export function ComputerUseOperatorPanel({ lang = "en" }: Props) {
                                 gap: 4,
                             }}
                         >
-                            <div style={{ fontWeight: 600 }}>
+                            <div className="cuop-strong">
                                 {t("Last E2E", "最近 E2E", "最近 E2E")}
                                 {lastE2E.interact ? "+" : ""}:{" "}
                                 <span
@@ -827,10 +818,10 @@ export function ComputerUseOperatorPanel({ lang = "en" }: Props) {
                                 {lastE2E.skip_reason ? ` · ${lastE2E.skip_reason}` : ""}
                             </div>
                             {lastE2E.error ? (
-                                <div style={{ opacity: 0.9 }}>{String(lastE2E.error).slice(0, 220)}</div>
+                                <div className="cuop-dim9">{String(lastE2E.error).slice(0, 220)}</div>
                             ) : null}
                             {(lastE2E.diagnostics_path || lastE2E.history_csv_path) && (
-                                <div style={{ opacity: 0.75, wordBreak: "break-all" }}>
+                                <div className="cuop-note75-wrap">
                                     {lastE2E.diagnostics_path
                                         ? `diag: …/${String(lastE2E.diagnostics_path).split(/[/\\]/).pop()}`
                                         : ""}
@@ -839,7 +830,7 @@ export function ComputerUseOperatorPanel({ lang = "en" }: Props) {
                                         : ""}
                                 </div>
                             )}
-                            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                            <div className="cuop-btn-row">
                                 {lastE2E.diagnostics_path ? (
                                     <button
                                         type="button"
@@ -936,7 +927,7 @@ export function ComputerUseOperatorPanel({ lang = "en" }: Props) {
                     {(historyLine || historyTotals.length > 0) && (
                         <div data-testid="cu-observe-history">
                             {historyLine && (
-                                <div style={{ opacity: 0.8, fontSize: 11 }}>{historyLine}</div>
+                                <div className="cuop-note8">{historyLine}</div>
                             )}
                             {historyTotals.length > 0 && (
                                 <ObserveHistorySparkline values={historyTotals} />
@@ -945,27 +936,18 @@ export function ComputerUseOperatorPanel({ lang = "en" }: Props) {
                     )}
                     {lastError && (lastError.error || lastError.guidance) && (
                         <div
-                            style={{
-                                border: "1px solid rgba(242,139,130,0.45)",
-                                background: "rgba(242,139,130,0.1)",
-                                borderRadius: 8,
-                                padding: "6px 8px",
-                                fontSize: 11,
-                                display: "flex",
-                                flexDirection: "column",
-                                gap: 4,
-                            }}
+                            className="cuop-err-card"
                         >
-                            <div style={{ fontWeight: 600, color: "#f28b82" }}>
+                            <div className="cuop-err-title">
                                 {t("Last error", "最近错误", "最近錯誤")}
                                 {lastError.stage ? ` · ${lastError.stage}` : ""}
                             </div>
                             {lastError.guidance && <div>{lastError.guidance}</div>}
                             {lastError.error && !lastError.guidance && <div>{lastError.error}</div>}
                             {lastError.error && lastError.guidance && (
-                                <div style={{ opacity: 0.75 }}>{lastError.error}</div>
+                                <div className="cuop-dim75">{lastError.error}</div>
                             )}
-                            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                            <div className="cuop-btn-row">
                                 {lastError.action ? (
                                     <button
                                         type="button"
@@ -998,7 +980,7 @@ export function ComputerUseOperatorPanel({ lang = "en" }: Props) {
                         </div>
                     )}
                     {observe && (observe.timing_ms || observe.total_ms != null) && (
-                        <div style={{ opacity: 0.8, fontSize: 11 }} data-testid="cu-observe-timing">
+                        <div className="cuop-note8" data-testid="cu-observe-timing">
                             {t("Timing", "耗时", "耗時")}: {formatTiming(observe.timing_ms, observe.total_ms)}
                             {observe.yolo_count != null || observe.a11y_count != null || observe.ocr_count != null
                                 ? ` · y=${observe.yolo_count ?? "?"} a=${observe.a11y_count ?? "?"} o=${observe.ocr_count ?? "?"}`
@@ -1006,7 +988,7 @@ export function ComputerUseOperatorPanel({ lang = "en" }: Props) {
                         </div>
                     )}
                     {!observe && actions.length === 0 && pinned && !lastError && (
-                        <div style={{ opacity: 0.7 }}>
+                        <div className="cuop-dim7">
                             {t(
                                 "No activity yet. Ask the agent to operate the desktop (@computer), or run Smoke.",
                                 "尚无活动。可让助手操作桌面（@computer），或点「冒烟」。",
@@ -1056,30 +1038,30 @@ export function ComputerUseOperatorPanel({ lang = "en" }: Props) {
                     {elements.length > 0 && (
                         <div style={{ maxHeight: docked ? 220 : 120, overflow: "auto" }}>
                             {elements.slice(0, docked ? 32 : 16).map((el) => (
-                                <div key={el.ref} style={{ opacity: 0.92, lineHeight: 1.35 }}>
-                                    <code style={{ color: "var(--theme-primary, #8ab4f8)" }}>{el.ref}</code>{" "}
+                                <div key={el.ref} className="cuop-el-row">
+                                    <code className="cuop-el-ref">{el.ref}</code>{" "}
                                     {el.name || el.type || "—"}
                                     {el.source ? (
-                                        <span style={{ opacity: 0.55 }}> · {el.source}</span>
+                                        <span className="cuop-dim55"> · {el.source}</span>
                                     ) : null}
                                 </div>
                             ))}
                         </div>
                     )}
                     {observe?.windows && observe.windows.length > 0 && (
-                        <div style={{ opacity: 0.75, fontSize: 11 }}>
+                        <div className="cuop-note75">
                             {t("Windows", "窗口", "視窗")}: {observe.windows.slice(0, 6).join(" · ")}
                         </div>
                     )}
                     {observe?.ocr_excerpt && (
-                        <div style={{ opacity: 0.75, fontSize: 11 }}>
+                        <div className="cuop-note75">
                             OCR: {observe.ocr_excerpt.slice(0, 200)}
                             {observe.ocr_excerpt.length > 200 ? "…" : ""}
                         </div>
                     )}
                     {actions.length > 0 && (
                         <div>
-                            <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                            <div className="cuop-section-title">
                                 {t("Recent actions", "最近动作", "最近動作")}
                             </div>
                             {actions.map((a, i) => (
@@ -1096,7 +1078,7 @@ export function ComputerUseOperatorPanel({ lang = "en" }: Props) {
                             ))}
                         </div>
                     )}
-                    <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                    <div className="cuop-footer">
                         {!pinned && (
                             <button
                                 type="button"
@@ -1105,14 +1087,7 @@ export function ComputerUseOperatorPanel({ lang = "en" }: Props) {
                                     setObserve(null);
                                     setActions([]);
                                 }}
-                                style={{
-                                    background: "transparent",
-                                    border: "1px solid rgba(127,127,127,0.4)",
-                                    borderRadius: 6,
-                                    color: "inherit",
-                                    padding: "2px 8px",
-                                    cursor: "pointer",
-                                }}
+                                className="cuop-btn"
                             >
                                 {t("Dismiss", "关闭", "關閉")}
                             </button>
@@ -1125,14 +1100,7 @@ export function ComputerUseOperatorPanel({ lang = "en" }: Props) {
                                     setActions([]);
                                     setLastError(null);
                                 }}
-                                style={{
-                                    background: "transparent",
-                                    border: "1px solid rgba(127,127,127,0.4)",
-                                    borderRadius: 6,
-                                    color: "inherit",
-                                    padding: "2px 8px",
-                                    cursor: "pointer",
-                                }}
+                                className="cuop-btn"
                             >
                                 {t("Clear log", "清空日志", "清空日誌")}
                             </button>
@@ -1151,14 +1119,7 @@ export function ComputerUseOperatorPanel({ lang = "en" }: Props) {
                                     }
                                 })();
                             }}
-                            style={{
-                                background: "transparent",
-                                border: "1px solid rgba(127,127,127,0.4)",
-                                borderRadius: 6,
-                                color: "inherit",
-                                padding: "2px 8px",
-                                cursor: "pointer",
-                            }}
+                            className="cuop-btn"
                         >
                             {t("Refresh metrics", "刷新指标", "刷新指標")}
                         </button>
@@ -1191,14 +1152,7 @@ function ObserveHistorySparkline({ values }: { values: number[] }) {
         <div
             data-testid="cu-history-sparkline"
             title={values.map((v, i) => `#${i + 1}: ${v}ms`).join("\n")}
-            style={{
-                display: "flex",
-                alignItems: "flex-end",
-                gap: 2,
-                height: 28,
-                marginTop: 4,
-                padding: "2px 0",
-            }}
+            className="cuop-sparkline"
         >
             {values.map((v, i) => {
                 const h = Math.max(2, Math.round((v / max) * 26));
@@ -1217,7 +1171,7 @@ function ObserveHistorySparkline({ values }: { values: number[] }) {
                     />
                 );
             })}
-            <span style={{ marginLeft: 6, fontSize: 10, opacity: 0.75, alignSelf: "center" }}>
+            <span className="cuop-spark-last">
                 {last}ms
             </span>
         </div>

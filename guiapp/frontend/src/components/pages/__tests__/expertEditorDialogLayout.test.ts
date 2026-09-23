@@ -36,7 +36,7 @@ describe('expert editor dialog layout', () => {
         const actions = ruleBody('.expert-editor__actions');
         expect(actions).toMatch(/flex\s*:\s*0\s+0\s+auto/);
         expect(actions).toMatch(/min-height\s*:\s*44px/);
-        expect(actions).toMatch(/background\s*:\s*var\(--theme-surface,\s*#fff\)/);
+        expect(actions).toMatch(/background\s*:\s*var\(--theme-surface,\s*#ffffff\)/);
         expect(actions).not.toMatch(/z-index\s*:/);
     });
 

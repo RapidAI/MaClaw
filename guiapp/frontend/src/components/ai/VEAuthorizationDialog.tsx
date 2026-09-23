@@ -239,18 +239,7 @@ export function VEAuthorizationDialog({
             role="dialog"
             aria-modal="true"
             aria-labelledby="ve-auth-dialog-title"
-            style={{
-                position: "fixed",
-                top: 0,
-                left: 0,
-                right: 0,
-                bottom: 0,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                background: "rgba(0,0,0,0.4)",
-                zIndex: 10000,
-            }}
+            className="vead-overlay"
         >
             <div
                 style={{
@@ -286,7 +275,7 @@ export function VEAuthorizationDialog({
                         }}
                     >
                         <div style={{ fontSize: 13, color: theme.text, marginBottom: 8 }}>
-                            <div style={{ marginBottom: 4 }}>
+                            <div className="vead-req-block">
                                 <span style={{ color: theme.textMuted, fontSize: 12 }}>
                                     {isZh ? "请求者：" : "Requester: "}
                                 </span>
@@ -300,7 +289,7 @@ export function VEAuthorizationDialog({
                             </div>
                         </div>
 
-                        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                        <div className="vead-actions">
                             <button
                                 data-testid={`ve-auth-deny-${req.id}`}
                                 onClick={() => handleDecision(req.id, "deny")}
@@ -399,7 +388,7 @@ function removeTrackedAuthRequestIds(
 
 function AuthBellIcon({ size = 14 }: { size?: number }) {
     return (
-        <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false" style={{ display: "block" }}>
+        <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false" className="vead-bell-icon">
             <path d="M15 17h5l-1.4-1.4A2 2 0 0 1 18 14.2V11a6 6 0 1 0-12 0v3.2a2 2 0 0 1-.6 1.4L4 17h5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
             <path d="M9 17a3 3 0 0 0 6 0" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
@@ -596,7 +585,7 @@ export function VEAuthorizationRequestCenter({ theme, lang, respondAuthRequest, 
                         zIndex: 40000,
                     }}
                 >
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start", marginBottom: 10 }}>
+                    <div className="vead-pop-head">
                         <div>
                             <div style={{ fontSize: 14, fontWeight: 800, color: theme.headingColor || theme.text }}>{title}</div>
                             <div style={{ fontSize: 12, lineHeight: 1.45, color: theme.textMuted, marginTop: 3 }}>{hint}</div>
@@ -604,7 +593,7 @@ export function VEAuthorizationRequestCenter({ theme, lang, respondAuthRequest, 
                         </div>
                         <button type="button" onClick={() => setOpen(false)} aria-label={isZh ? "关闭" : "Close"} style={{ border: "none", background: "transparent", color: theme.textMuted, cursor: "pointer", fontSize: 12, lineHeight: 1, fontWeight: 700 }}>X</button>
                     </div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                    <div className="vead-pop-body">
                         {requests.map((req) => {
                             const requester = readableAuthName(req.requester_name, req.requester_machine_id, isZh, "Requester", "请求者");
                             const target = readableAuthName(req.target_ve_name, req.target_ve_id, isZh, "Digital employee", "数字员工");
@@ -619,7 +608,7 @@ export function VEAuthorizationRequestCenter({ theme, lang, respondAuthRequest, 
                                         <span>{isZh ? "关系" : "Relation"}</span><span>{isZh ? "首次访问" : "First access"}</span>
                                         {req.message && <><span>{isZh ? "留言" : "Message"}</span><span>{req.message}</span></>}
                                     </div>
-                                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, justifyContent: "flex-end", marginTop: 10 }}>
+                                    <div className="vead-pop-actions">
                                         <button data-testid={`ve-auth-deny-${req.id}`} disabled={busy} onClick={() => respond(req.id, "deny")} className="ve-auth-action ve-auth-action--ghost">{isZh ? "拒绝" : "Deny"}</button>
                                         <button data-testid={`ve-auth-block-${req.id}`} disabled={busy} onClick={() => respond(req.id, "block")} className="ve-auth-action ve-auth-action--danger">{isZh ? "拒绝并拉黑" : "Block"}</button>
                                         <button data-testid={`ve-auth-allow-once-${req.id}`} disabled={busy} onClick={() => respond(req.id, "allow_once")} className="ve-auth-action ve-auth-action--secondary">{isZh ? "允许一次" : "Allow once"}</button>
@@ -736,7 +725,7 @@ export function VEAuthBlinkingIndicator({ theme, lang }: VEAuthBlinkingIndicator
             }}
             title={isZh ? `${pendingCount} 个授权请求待处理` : `${pendingCount} pending auth request(s)`}
         >
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+            <span className="vead-badge">
                 <IconBell size={12} color="currentColor" />
                 {pendingCount}
             </span>

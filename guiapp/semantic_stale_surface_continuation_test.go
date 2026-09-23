@@ -145,8 +145,10 @@ func TestSemanticStaleEpochCrossFamilyRebindingStillRejected(t *testing.T) {
 		return "Fetched web evidence.\nURL: " + url, nil
 	}
 	registerBuiltinTools(h.registry, h)
+	fetch := webFetchClassification()
+	fetch.Secondary = append(append([]intent.IntentLabel(nil), fetch.Secondary...), intent.LabelFileRead)
 	_, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
-		"user-1", "抓取这几个链接的内容", "lansenger", "root-batch-xfam", "turn-batch-xfam", webFetchClassification(),
+		"user-1", "抓取这几个链接的内容", "lansenger", "root-batch-xfam", "turn-batch-xfam", fetch,
 	)
 	if err != nil || !handled || surface == nil {
 		t.Fatalf("handled=%v err=%v", handled, err)
@@ -188,7 +190,7 @@ func TestSemanticStaleEpochCrossFamilyRebindingStillRejected(t *testing.T) {
 // on the child, but the old epoch was never issued there — a late call from
 // the parent revision's batch must not bind the child's grant.
 func TestSemanticStaleEpochCrossRevisionBatchCallStillRejected(t *testing.T) {
-	cb := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: .98})
+	cb := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{Primary: intent.LabelOffice, Secondary: []intent.IntentLabel{intent.LabelSearch}, Confidence: .98})
 	parent := cb.semanticSurface
 	if name := semanticGrantNameForAdapter(parent, semanticTrustedWebSearchAdapter); name != "web_search" {
 		t.Fatalf("fixture must render web_search, got %q", name)

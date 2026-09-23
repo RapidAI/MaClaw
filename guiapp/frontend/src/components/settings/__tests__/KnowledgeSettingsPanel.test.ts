@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyKnowledgeDomainFilterPayload, applyKnowledgeSearchFilterPayload, applyKnowledgeStructuredSearchPayload, knowledgeCoverageAliasSummary, knowledgeCoverageFilterSummary, knowledgeExecutionActionSourceIDs, knowledgeExecutionFailureDetails, knowledgeExecutionResultSourceIDs, knowledgeExecutionSourceFilterLabel, knowledgeHealthActionConfirmMessage, knowledgeHealthActionExecutable, knowledgeHealthActionExecutionPayload, knowledgeHealthActionManualLabel, knowledgeHealthSummaryModel, knowledgeQualityExecutionContextLabel, knowledgeSearchFacetActive, knowledgeSearchFragmentDeletable, knowledgeSearchFragmentMatchesDeleted, knowledgeSearchFragmentPayload, knowledgeSearchKindOptions, knowledgeSearchResultTypeOptions, knowledgeSearchShouldReload, knowledgeSourceCoverageOptions, knowledgeSourceCoverageStateValue, knowledgeSourceListPayload, normalizeKnowledgeCoverageOption, normalizeKnowledgeDomainFilter, normalizeKnowledgeFilterToken, normalizeKnowledgeSourceLimit, parseDomainList, parseLabelList, parseURLBatch, resolveKnowledgeCoverageOption, toggleKnowledgeSearchFacet } from '../KnowledgeSettingsPanel';
+import { applyKnowledgeDomainFilterPayload, applyKnowledgeSearchFilterPayload, applyKnowledgeStructuredSearchPayload, clusterKnowledgeFacetChips, knowledgeCoverageAliasSummary, knowledgeCoverageFilterSummary, knowledgeExecutionActionSourceIDs, knowledgeExecutionFailureDetails, knowledgeExecutionResultSourceIDs, knowledgeExecutionSourceFilterLabel, knowledgeHealthActionConfirmMessage, knowledgeHealthActionExecutable, knowledgeHealthActionExecutionPayload, knowledgeHealthActionManualLabel, knowledgeHealthSummaryModel, knowledgeQualityExecutionContextLabel, knowledgeSearchFacetActive, knowledgeSearchFragmentDeletable, knowledgeSearchFragmentMatchesDeleted, knowledgeSearchFragmentPayload, knowledgeSearchKindOptions, knowledgeSearchResultTypeOptions, knowledgeSearchShouldReload, knowledgeSourceCoverageOptions, knowledgeSourceCoverageStateValue, knowledgeSourceListPayload, normalizeKnowledgeCoverageOption, normalizeKnowledgeDomainFilter, normalizeKnowledgeFilterToken, normalizeKnowledgeSourceLimit, parseDomainList, parseLabelList, parseURLBatch, resolveKnowledgeCoverageOption, splitKnowledgeFacetChip, toggleKnowledgeSearchFacet } from '../KnowledgeSettingsPanel';
 
 describe('normalizeKnowledgeCoverageOption', () => {
     it('matches backend coverage filter key normalization style', () => {
@@ -555,6 +555,23 @@ describe('knowledge search facet helpers', () => {
         const withSource = toggleKnowledgeSearchFacet(form, 'sources', 'src-1');
         expect(withSource.sourceID).toBe('src-1');
         expect(toggleKnowledgeSearchFacet(withSource, 'sources', 'src-1').sourceID).toBe('');
+    });
+
+    it('splits kind/scope labels for compact facet chips', () => {
+        expect(splitKnowledgeFacetChip('kind:docx', 11)).toEqual({ kicker: 'kind', name: 'docx', count: 11 });
+        expect(splitKnowledgeFacetChip('scope:personal', 2)).toEqual({ kicker: 'scope', name: 'personal', count: 2 });
+        expect(splitKnowledgeFacetChip('node', 16)).toEqual({ kicker: '', name: 'node', count: 16 });
+        expect(splitKnowledgeFacetChip('https://example.com/path', 1)).toEqual({ kicker: '', name: 'https://example.com/path', count: 1 });
+        expect(clusterKnowledgeFacetChips([
+            { kicker: 'kind', name: 'docx' },
+            { kicker: 'scope', name: 'personal' },
+            { kicker: 'kind', name: 'pdf' },
+            { kicker: '', name: 'inbox' },
+        ])).toEqual([
+            { kicker: 'kind', chips: [{ kicker: 'kind', name: 'docx' }, { kicker: 'kind', name: 'pdf' }] },
+            { kicker: 'scope', chips: [{ kicker: 'scope', name: 'personal' }] },
+            { kicker: '', chips: [{ kicker: '', name: 'inbox' }] },
+        ]);
     });
 });
 

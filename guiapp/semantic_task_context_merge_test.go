@@ -68,7 +68,7 @@ func TestClassifyWithTaskContextMerge(t *testing.T) {
 	h := &IMMessageHandler{unifiedClassifier: uic}
 	history := []agent.ConversationEntry{{Role: "user", Content: "生成庆祝布偶宝宝5岁生日的PPT"}}
 
-	merged, ok := h.classifyWithTaskContextMerge(context.Background(), IMUserMessage{UserID: "user-1", Text: "再加上照片"}, history, nil)
+	merged, ok := h.classifyWithTaskContextMerge(context.Background(), IMUserMessage{UserID: "user-1", Text: "再加上照片"}, history, nil, "")
 	if !ok || merged.Primary != intent.LabelOffice {
 		t.Fatalf("merged=%+v ok=%v", merged, ok)
 	}
@@ -76,7 +76,12 @@ func TestClassifyWithTaskContextMerge(t *testing.T) {
 		t.Fatalf("merged reason must carry the merge marker: %q", merged.Reason)
 	}
 	// No history → no merge.
-	if _, ok := h.classifyWithTaskContextMerge(context.Background(), IMUserMessage{UserID: "user-1", Text: "再加上照片"}, nil, nil); ok {
+	if _, ok := h.classifyWithTaskContextMerge(context.Background(), IMUserMessage{UserID: "user-1", Text: "再加上照片"}, nil, nil, ""); ok {
 		t.Fatal("merge without prior user task must not fire")
+	}
+	// Compacted history still classifies from the stored task summary.
+	fromSummary, ok := h.classifyWithTaskContextMerge(context.Background(), IMUserMessage{UserID: "user-1", Text: "再加上照片"}, nil, nil, "生成庆祝布偶宝宝5岁生日的PPT")
+	if !ok || fromSummary.Primary != intent.LabelOffice {
+		t.Fatalf("summary merge=%+v ok=%v", fromSummary, ok)
 	}
 }

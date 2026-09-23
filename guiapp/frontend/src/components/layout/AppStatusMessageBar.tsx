@@ -145,8 +145,8 @@ export const AppStatusMessageBar = ({
                         onClick={() => { if (isImIssue) { onOpenIMSettings(); } else { onOpenLLMSettings(); } }}
                         title={lang?.startsWith('zh') ? '点击配置' : 'Click to configure'}
                     >
-                        <img src={(!maclawLLMOnline && !remoteActivated) ? lobsterOffline : lobsterHalf} alt="" style={{ width: '14px', height: '14px', flexShrink: 0 }} />
-                        <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        <img src={(!maclawLLMOnline && !remoteActivated) ? lobsterOffline : lobsterHalf} alt="" className="asmb-warn-icon" />
+                        <span className="asmb-ellipsis">
                             {!maclawLLMOnline
                                 ? (maclawLLMConfigured
                                     ? (lang?.startsWith('zh') ? 'LLM unreachable, remote commands unavailable' : 'LLM unreachable, remote commands unavailable')
@@ -174,18 +174,9 @@ export const AppStatusMessageBar = ({
                         title={installStatus}
                     >
                         {!successMarker && (
-                            <span style={{
-                                display: 'inline-block',
-                                width: '10px',
-                                height: '10px',
-                                border: '2px solid var(--theme-text-muted, #64748b)',
-                                borderTopColor: 'transparent',
-                                borderRadius: '50%',
-                                animation: 'spin 1s linear infinite',
-                                flexShrink: 0,
-                            }}></span>
+                            <span className="asmb-spinner"></span>
                         )}
-                        <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{installStatus}</span>
+                        <span className="asmb-ellipsis">{installStatus}</span>
                     </span>
                 )}
             </div> : null}

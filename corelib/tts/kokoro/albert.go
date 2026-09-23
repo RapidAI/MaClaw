@@ -3,6 +3,8 @@ package kokoro
 import (
 	"fmt"
 	"math"
+	"runtime"
+	"sync"
 )
 
 func (m *Model) tensor(name string) (*Tensor, error) {
@@ -175,28 +177,53 @@ func (m *Model) albertLayer(x []float32, seq, hidden, heads int) ([]float32, err
 
 	headDim := hidden / heads
 	ctx := make([]float32, seq*hidden)
-	scores := make([]float32, seq)
-	for h := 0; h < heads; h++ {
+	attnHead := func(h int) {
 		base := h * headDim
 		scale := float32(1 / math.Sqrt(float64(headDim)))
+		scores := make([]float32, seq)
 		for i := 0; i < seq; i++ {
+			qRow := q[i*hidden+base : i*hidden+base+headDim]
 			for j := 0; j < seq; j++ {
-				dot := float32(0)
-				qoff := i*hidden + base
-				koff := j*hidden + base
-				for d := 0; d < headDim; d++ {
-					dot += q[qoff+d] * k[koff+d]
-				}
-				scores[j] = dot * scale
+				scores[j] = dot32(qRow, k[j*hidden+base:j*hidden+base+headDim]) * scale
 			}
 			softmaxInplace(scores)
-			for d := 0; d < headDim; d++ {
-				sum := float32(0)
-				for j := 0; j < seq; j++ {
-					sum += scores[j] * v[j*hidden+base+d]
-				}
-				ctx[i*hidden+base+d] = sum
+			ctxRow := ctx[i*hidden+base : i*hidden+base+headDim]
+			for d := range ctxRow {
+				ctxRow[d] = 0
 			}
+			for j := 0; j < seq; j++ {
+				axpyInplace(ctxRow, v[j*hidden+base:j*hidden+base+headDim], scores[j])
+			}
+		}
+	}
+	if heads >= 2 && seq >= 16 && runtime.GOMAXPROCS(0) > 1 {
+		workers := runtime.GOMAXPROCS(0)
+		if workers > heads {
+			workers = heads
+		}
+		var wg sync.WaitGroup
+		chunk := (heads + workers - 1) / workers
+		for w := 0; w < workers; w++ {
+			start := w * chunk
+			end := start + chunk
+			if end > heads {
+				end = heads
+			}
+			if start >= end {
+				break
+			}
+			wg.Add(1)
+			go func(h0, h1 int) {
+				defer wg.Done()
+				for h := h0; h < h1; h++ {
+					attnHead(h)
+				}
+			}(start, end)
+		}
+		wg.Wait()
+	} else {
+		for h := 0; h < heads; h++ {
+			attnHead(h)
 		}
 	}
 
@@ -204,9 +231,7 @@ func (m *Model) albertLayer(x []float32, seq, hidden, heads int) ([]float32, err
 	if err := LinearSequenceTensor(proj, ctx, denseW, denseB, seq, hidden, hidden); err != nil {
 		return nil, err
 	}
-	for i := range proj {
-		proj[i] += x[i]
-	}
+	addInplace32(proj, x)
 	if err := LayerNormLastDim(proj, proj, attnLnW, attnLnB, seq, hidden, 1e-12); err != nil {
 		return nil, err
 	}
@@ -216,16 +241,12 @@ func (m *Model) albertLayer(x []float32, seq, hidden, heads int) ([]float32, err
 	if err := LinearSequenceTensor(ff, proj, ffW, ffB, seq, hidden, intermediate); err != nil {
 		return nil, err
 	}
-	for i := range ff {
-		ff[i] = gelu(ff[i])
-	}
+	parallelApply32(ff, gelu)
 	ffOut := make([]float32, seq*hidden)
 	if err := LinearSequenceTensor(ffOut, ff, ffOutW, ffOutB, seq, intermediate, hidden); err != nil {
 		return nil, err
 	}
-	for i := range ffOut {
-		ffOut[i] += proj[i]
-	}
+	addInplace32(ffOut, proj)
 	if err := LayerNormLastDim(ffOut, ffOut, fullLnW, fullLnB, seq, hidden, 1e-12); err != nil {
 		return nil, err
 	}

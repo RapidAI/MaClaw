@@ -250,7 +250,7 @@ function WelcomePromptIcon({ name, color }: { name: string; color: string }) {
         spark: (<><path {...s} d="m12 3 1.2 4.2L17.5 8.5 13.2 9.8 12 14l-1.2-4.2L6.5 8.5l4.3-1.3L12 3Z" /><path {...s} d="m6 15 .7 2.2L9 18l-2.3.6L6 20.8l-.7-2.2L3 18l2.3-.8L6 15Z" /><path {...s} d="m17 15 .7 2.2 2.3.8-2.3.8-.7 2.2-.7-2.2-2.3-.8 2.3-.8.7-2.2Z" /></>),
     };
     return (
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true" style={{ flexShrink: 0, marginTop: 1 }}>
+        <svg className="awv-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
             {paths[name] || paths.plan}
         </svg>
     );
@@ -464,7 +464,8 @@ export interface WelcomeTaskConfig {
     cloudWorkspaces?: CloudWorkspaceOption[];
     recentLocalPaths?: string[];
     onBrowseLocal?: () => void | Promise<string | null | undefined>;
-    onCreateCloud?: () => void;
+    onCreateCloud?: (name: string) => void | Promise<void>;
+    onRenameCloud?: (id: string, name: string) => void | Promise<void>;
     onOpenMarket?: () => void;
     disabled?: boolean;
     /** Creation in flight — blocks the config bar chips. */
@@ -1526,21 +1527,14 @@ export function AssistantWelcomeView({
     return (
         <div
             role="region"
-            className="mc-welcome"
+            className="mc-welcome awv-region"
             data-testid="mc-workbench-home"
             aria-label={isZh ? "工作台任务入口" : "Workbench task entry"}
-            style={{
-                display: "flex",
-                flexDirection: "column",
-                height: "100%",
-                boxSizing: "border-box",
-                overflowY: "auto",
-            }}
         >
             {/* Pinned news cards pinned to top */}
             {hasNews && (
-                <div className="mc-welcome-pinned-news" data-testid="welcome-pinned-news" hidden style={{ flexShrink: 0, padding: "12px 16px 0", display: "flex", justifyContent: "center" }}>
-                    <div style={{ width: "100%", maxWidth: "520px" }}>
+                <div className="mc-welcome-pinned-news awv-news" data-testid="welcome-pinned-news" hidden>
+                    <div className="awv-news-inner">
                         <AssistantPinnedNewsCards messages={pinnedNews} theme={t} />
                     </div>
                 </div>
@@ -1549,18 +1543,7 @@ export function AssistantWelcomeView({
             {/* Main content centered in remaining space.
                 Uses margin:auto instead of justifyContent:center to avoid
                 top-clipping when content overflows a short panel. */}
-            <div className="mc-welcome-main-content" style={{
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                width: "100%",
-                minWidth: 0,
-                boxSizing: "border-box",
-                padding: "16px 16px 16px",
-                gap: "14px",
-                margin: "auto 0",
-                flexShrink: 0,
-            }}>
+            <div className="mc-welcome-main-content awv-main">
 
             {/* Workbench headline from the new home design */}
             <h2 className="mc-welcome__title" style={{
@@ -1585,15 +1568,7 @@ export function AssistantWelcomeView({
                 <summary style={{ cursor: "pointer", color: t.textMuted, fontSize: 11, textAlign: "center", userSelect: "none" }}>
                     {isZh ? "更多工作台工具" : "More workbench tools"}
                 </summary>
-                <div className="mc-welcome__composer" data-testid="welcome-toolbar" style={{
-                    width: "100%",
-                    display: "flex",
-                    flexWrap: "wrap",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    gap: 10,
-                    paddingTop: 8,
-                }}>
+                <div className="mc-welcome__composer awv-toolbar" data-testid="welcome-toolbar">
                     <label data-testid="welcome-role-picker" style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 11, color: t.textMuted, fontFamily: "system-ui, -apple-system, sans-serif" }}>
                         <span>{isZh ? "角色" : "Role"}</span>
                         <select aria-label={isZh ? "工作角色" : "Workbench role"} data-testid="welcome-role-select" value={userRole} onChange={(e) => applyUserRole(e.target.value as WelcomeUserRole)} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${t.fieldBorder}`, background: t.fieldBg, color: t.text, fontSize: 12, fontFamily: "system-ui, -apple-system, sans-serif", cursor: "pointer", maxWidth: 160 }}>
@@ -1683,7 +1658,7 @@ export function AssistantWelcomeView({
                 {taskConfig ? (
                     // WorkBuddy-style config strip：卡片下方独立一行（左对齐），
                     // 与卡片内的输入动作分组，工具条不再因宽度不足折行。
-                    <div data-testid="welcome-task-config" role="group" aria-label={isZh ? "任务配置" : "Task config"} style={{ padding: "8px 8px 0" }}>
+                    <div className="awv-task-config" data-testid="welcome-task-config" role="group" aria-label={isZh ? "任务配置" : "Task config"}>
                         <TaskConfigBar
                             draft={taskConfig.draft}
                             onChange={taskConfig.onDraftChange}
@@ -1696,6 +1671,7 @@ export function AssistantWelcomeView({
                             recentLocalPaths={taskConfig.recentLocalPaths}
                             onBrowseLocal={taskConfig.onBrowseLocal}
                             onCreateCloud={taskConfig.onCreateCloud}
+                            onRenameCloud={taskConfig.onRenameCloud}
                             onOpenMarket={taskConfig.onOpenMarket}
                             defaultExpanded={taskConfig.defaultExpanded}
                             variant="bare"
@@ -1726,7 +1702,7 @@ export function AssistantWelcomeView({
                 <h3 style={{ margin: 0, fontSize: 15, lineHeight: 1.3, fontWeight: 650, color: t.text, fontFamily: "system-ui, -apple-system, sans-serif" }}>
                     {isZh ? "快捷任务" : "Quick tasks"}
                 </h3>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+                <div className="awv-quick-tasks">
                     {REFERENCE_QUICK_TASKS.map((task) => (
                         <button
                             key={task.id}
@@ -1750,7 +1726,7 @@ export function AssistantWelcomeView({
                     {isZh ? "更多模板建议" : "More template suggestions"}
                 </summary>
                 {showQuickHints && quickHints.length > 0 && (
-                    <div data-testid="welcome-quick-hints" style={{ width: "100%", display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6, paddingTop: 8 }}>
+                    <div className="awv-hints" data-testid="welcome-quick-hints">
                         {quickHints.map((hint) => (
                             <button key={hint.id} type="button" data-testid={`welcome-quick-hint-${hint.id}`} onClick={() => openPrompt(hint.prompt, hint.tabId)} style={{ padding: "3px 9px", borderRadius: 999, border: `1px dashed ${t.fieldBorder}`, background: "transparent", color: t.textMuted, fontSize: 11, cursor: "pointer", fontFamily: "system-ui, -apple-system, sans-serif" }}>
                                 {isZh ? hint.label : hint.labelEn}
@@ -1766,7 +1742,7 @@ export function AssistantWelcomeView({
                     <summary style={{ cursor: "pointer", color: t.textMuted, fontSize: 11, userSelect: "none" }}>
                         {isZh ? "剪贴板推荐" : "Clipboard suggestions"}
                     </summary>
-                    <div data-testid="welcome-clipboard-suggest" style={{ width: "100%", display: "flex", flexDirection: "column", gap: 8, paddingTop: 8 }}>
+                    <div className="awv-clipboard" data-testid="welcome-clipboard-suggest">
                     <div style={{
                         fontSize: 11,
                         fontWeight: 600,
@@ -1791,7 +1767,7 @@ export function AssistantWelcomeView({
                             {clipboardSnippet}
                         </p>
                     )}
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                    <div className="awv-clipboard-hits">
                         {clipboardHits.map((hit) => (
                             <button
                                 key={hit.key}
@@ -1820,18 +1796,8 @@ export function AssistantWelcomeView({
                                 }}
                             >
                                 <WelcomePromptIcon name={hit.prompt.icon} color={t.textMuted} />
-                                <span style={{
-                                    display: "flex",
-                                    flexDirection: "column",
-                                    gap: 2,
-                                    minWidth: 0,
-                                }}>
-                                    <span style={{
-                                        overflow: "hidden",
-                                        textOverflow: "ellipsis",
-                                        whiteSpace: "nowrap",
-                                        maxWidth: 220,
-                                    }}>
+                                <span className="awv-hit-text">
+                                    <span className="awv-hit-label">
                                         {isZh ? hit.prompt.text : hit.prompt.textEn}
                                     </span>
                                     <span style={{ fontSize: 10, color: t.textMuted }}>
@@ -1847,7 +1813,7 @@ export function AssistantWelcomeView({
 
             {/* Reference category rail and secondary task starters. */}
             <div data-testid="welcome-reference-suggestions" style={{ width: "100%", maxWidth: CONTENT_MAX_WIDTH, display: "flex", flexDirection: "column", gap: 10 }}>
-                <div role="tablist" aria-label={isZh ? "任务分类" : "Task categories"} style={{ display: "flex", alignItems: "center", gap: 6, overflowX: "auto", padding: "2px 0 3px", scrollbarWidth: "none" }}>
+                <div className="awv-cat-tabs" role="tablist" aria-label={isZh ? "任务分类" : "Task categories"}>
                     {REFERENCE_TASK_CATEGORIES.map((category) => {
                         const selected = referenceTaskCategory === category.id;
                         return (
@@ -1900,21 +1866,9 @@ export function AssistantWelcomeView({
                     <summary style={{ cursor: "pointer", color: t.textMuted, fontSize: 11, userSelect: "none" }}>
                         {isZh ? "更多模板与同步" : "More templates and sync"}
                     </summary>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 8, paddingTop: 8 }}>
-                    <div style={{
-                        display: "flex",
-                        flexWrap: "wrap",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        gap: 8,
-                    }}>
-                        <div style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 8,
-                            flexWrap: "wrap",
-                            minWidth: 0,
-                        }}>
+                    <div className="awv-templates">
+                    <div className="awv-templates-head">
+                        <div className="awv-templates-actions">
                             <div style={{
                                 fontSize: 11,
                                 fontWeight: 600,
@@ -1946,7 +1900,7 @@ export function AssistantWelcomeView({
                                 </span>
                             )}
                         </div>
-                        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                        <div className="awv-templates-more">
                             <button
                                 type="button"
                                 data-testid="welcome-cloud-auto-sync"
@@ -2131,7 +2085,7 @@ export function AssistantWelcomeView({
                                 data-testid="welcome-templates-import-input"
                                 type="file"
                                 accept="application/json,.json"
-                                style={{ display: "none" }}
+                                className="awv-import-input"
                                 onChange={(e) => {
                                     const file = e.target.files?.[0] || null;
                                     importCustomTemplatesFromFile(file);
@@ -2245,9 +2199,9 @@ export function AssistantWelcomeView({
                     )}
                     <div
                         data-testid="welcome-custom-templates"
+                        className="awv-custom-templates"
                         role="list"
                         aria-label={isZh ? "我的模板" : "My templates"}
-                        style={{ display: "flex", flexWrap: "wrap", gap: 8 }}
                     >
                         {visibleCustomTemplates.map((tpl) => {
                             const isRenaming = renamingTemplateId === tpl.id;
@@ -2357,11 +2311,7 @@ export function AssistantWelcomeView({
                                             }}
                                         >
                                             <WelcomePromptIcon name="spark" color={t.textMuted} />
-                                            <span style={{
-                                                overflow: "hidden",
-                                                textOverflow: "ellipsis",
-                                                whiteSpace: "nowrap",
-                                            }}>
+                                            <span className="awv-tpl-name">
                                                 {tpl.title}
                                             </span>
                                         </button>
@@ -2445,12 +2395,7 @@ export function AssistantWelcomeView({
                                 }}
                             >
                                 <WelcomePromptIcon name={prompt.icon} color={t.textMuted} />
-                                <span style={{
-                                    overflow: "hidden",
-                                    textOverflow: "ellipsis",
-                                    whiteSpace: "nowrap",
-                                    maxWidth: 200,
-                                }}>
+                                <span className="awv-prompt-text">
                                     {isZh ? prompt.text : prompt.textEn}
                                 </span>
                             </button>
@@ -2466,7 +2411,7 @@ export function AssistantWelcomeView({
                 <summary style={{ cursor: "pointer", color: t.textMuted, fontSize: 11, userSelect: "none" }}>
                     {isZh ? "更多任务模板" : "More task templates"}
                 </summary>
-                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10, paddingTop: 8 }}>
+                <div className="awv-more-templates">
             {/* Scenario tabs — outer scroll container + inner centering wrapper.
                 Using a wrapper div with margin:auto to center tabs when they fit,
                 while allowing left-aligned overflow scroll when they don't.
@@ -2482,13 +2427,7 @@ export function AssistantWelcomeView({
                     scrollbarWidth: "none",
                 }}
             >
-                <div style={{
-                    display: "flex",
-                    flexWrap: "nowrap",
-                    gap: "6px",
-                    width: "fit-content",
-                    margin: "0 auto",
-                }}>
+                <div className="awv-scenario-tabs">
                 {SCENARIO_TABS.map((tab, index) => {
                     const isActive = tab.id === activeTab;
                         return (
@@ -2554,7 +2493,7 @@ export function AssistantWelcomeView({
                         boxSizing: "border-box",
                     }}
                 >
-                    <div style={{ minWidth: 0 }}>
+                    <div className="awv-min-w-0">
                         <div style={{ color: t.text, fontSize: "12px", fontWeight: 600, lineHeight: 1.35 }}>
                             {isZh ? "选择运维任务类型" : "Choose an ops task type"}
                         </div>
@@ -2672,7 +2611,7 @@ export function AssistantWelcomeView({
                         }}
                     >
                         <WelcomePromptIcon name={prompt.icon} color={t.textMuted} />
-                        <div style={{ display: "flex", flexDirection: "column", gap: "3px", minWidth: 0 }}>
+                        <div className="awv-prompt-body">
                             <span style={{
                                 fontSize: "13px",
                                 fontWeight: 500,

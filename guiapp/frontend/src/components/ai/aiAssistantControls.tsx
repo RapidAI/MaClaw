@@ -60,7 +60,7 @@ export function VoiceLevelVisualizer({ onAudioLevelRef, isSpeaking, themeColor, 
     }, [onAudioLevelRef]);
 
     return (
-        <div ref={barsRef} style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "1px", width: "22px", height: "18px", overflow: "hidden" }} aria-hidden="true">
+        <div ref={barsRef} className="aac-bars" aria-hidden="true">
             {Array.from({ length: NUM_BARS }, (_, i) => <div key={i} style={{ width: "2px", height: "2px", flex: "0 0 2px", borderRadius: "1px", background: themeColor, transition: "height 0.08s ease-out" }} />)}
         </div>
     );

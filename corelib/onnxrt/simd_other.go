@@ -5,10 +5,29 @@ package onnxrt
 // hasAVX2FMA is always false off amd64 (no AVX2 kernels there).
 const hasAVX2FMA = false
 
+// hasAVX512ZMM is always false off amd64 (no AVX-512 kernels there).
+const hasAVX512ZMM = false
+
+// ctcRowExpClamp now lives in ctc.go (untagged): it calls ctcRowExpAVX512 only
+// when hasAVX512ZMM, and otherwise runs the same portable vek32 pipeline that
+// used to sit here. Only the fused kernel needs a !amd64 counterpart.
+
+// ctcRowExpAVX512 is the !amd64 stub; ctcRowExpClamp never calls it because
+// hasAVX512ZMM is false.
+func ctcRowExpAVX512(row *float32, n int, m float32) {
+	panic("onnxrt: ctcRowExpAVX512 is amd64-only")
+}
+
 // transpose8x8F32 is the !amd64 stub; transposePlanesRange never calls it
 // because hasAVX2FMA is false.
 func transpose8x8F32(dst *float32, ldDst int, src *float32, ldSrc int) {
 	panic("onnxrt: transpose8x8F32 is amd64-only")
+}
+
+// im2row3x3AVX512 is the !amd64 stub; im2rowFast never calls it because
+// hasAVX512ZMM is false.
+func im2row3x3AVX512(dst, x *float32, rowOff *int, groups, K, HW, Cg, srcOff int) {
+	panic("onnxrt: im2row3x3AVX512 is amd64-only")
 }
 
 // fmaddScalarInto computes out[i] += w*x[i] (portable fallback).

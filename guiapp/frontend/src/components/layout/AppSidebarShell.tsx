@@ -88,6 +88,8 @@ interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     activeAssistantTask?: ActiveAssistantTaskIdentity | null;
     /** Live "executing" signal for that tab; merges with the durable snapshot in status stats. */
     activeAssistantTaskRunning?: boolean;
+    /** Busy task identities (normalized project paths + expert IDs) across all assistant tabs, incl. detached runs. */
+    busyTaskRuns?: { projectPaths: string[]; expertIds: string[] };
     sidebarCurrentProviderTokenUsage: SidebarCurrentProviderTokenUsage;
     sidebarHubCredits: SidebarHubCredits | null;
     unlimitedHubCreditText: string;
@@ -201,6 +203,7 @@ export const AppSidebarShell = ({
     openExpertTabIDs,
     activeAssistantTask,
     activeAssistantTaskRunning = false,
+    busyTaskRuns,
     sidebarCurrentProviderTokenUsage,
     sidebarHubCredits,
     formatSidebarTokens,
@@ -343,6 +346,7 @@ export const AppSidebarShell = ({
                         openExpertTabIDs={openExpertTabIDs}
                         activeAssistantTask={activeAssistantTask}
                         activeAssistantTaskRunning={activeAssistantTaskRunning}
+                        busyTaskRuns={busyTaskRuns}
                         sidebarCurrentProviderTokenUsage={sidebarCurrentProviderTokenUsage}
                         sidebarHubCredits={sidebarHubCredits}
                         formatSidebarTokens={formatSidebarTokens}

@@ -3,6 +3,23 @@ import {resolve} from 'node:path'
 import {defineConfig, type Plugin} from 'vite'
 import react from '@vitejs/plugin-react'
 import {rewriteWebviewFirstPaintHtml} from './webview-first-paint'
+import {buildBootThemePalette, renderBootThemeScript} from './src/components/ai/themeBootPalette'
+
+const BOOT_THEME_PLACEHOLDER = '<!-- @maclaw-boot-theme -->'
+
+function bootThemePlugin(): Plugin {
+  return {
+    name: 'maclaw-boot-theme',
+    transformIndexHtml: {
+      order: 'pre',
+      handler(html) {
+        if (!html.includes(BOOT_THEME_PLACEHOLDER)) return html
+        const script = renderBootThemeScript(buildBootThemePalette())
+        return html.replace(BOOT_THEME_PLACEHOLDER, `<script>\n      ${script}\n    </script>`)
+      },
+    },
+  }
+}
 
 function webviewFirstPaintPlugin(): Plugin {
   const rewriteIndex = () => {
@@ -44,6 +61,7 @@ export default defineConfig({
   base: './',
   plugins: [
     react(),
+    bootThemePlugin(),
     webviewFirstPaintPlugin(),
   ],
   build: {

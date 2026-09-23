@@ -238,7 +238,7 @@ export function ImagePreviewOverlay({ filePath, fileName, thumbnailSrc, lang, th
                     </div>
                     <div
                         data-testid="attachment-image-preview-controls"
-                        style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}
+                        className="aipo-controls"
                     >
                         {filePath && !isCloudWorkspacePath(filePath) && (
                             <PreviewFileActions absPath={filePath} lang={lang} color={t.textMuted} />
@@ -258,15 +258,7 @@ export function ImagePreviewOverlay({ filePath, fileName, thumbnailSrc, lang, th
                 </div>
                 <div
                     data-testid="attachment-image-preview-body"
-                    style={{
-                        flex: 1,
-                        minHeight: 0,
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        padding: 16,
-                        boxSizing: "border-box",
-                    }}
+                    className="aipo-body"
                 >
                     {imageBroken ? (
                         <div

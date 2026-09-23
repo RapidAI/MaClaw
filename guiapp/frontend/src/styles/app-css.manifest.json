@@ -1,0 +1,18 @@
+[
+  "partials/00-tokens.css",
+  "partials/10-about-hub.css",
+  "partials/20-app-shell.css",
+  "partials/30-settings-knowledge.css",
+  "partials/40-pets-expert.css",
+  "partials/50-pet-provider.css",
+  "partials/60-hub-updates-models.css",
+  "partials/70-progress-web-im.css",
+  "partials/80-im-lansenger.css",
+  "partials/90-im-channels-markdown.css",
+  {
+    "generated": "themeSchemes"
+  },
+  "partials/100-pet-store-mc.css",
+  "partials/110-mc-app-shell.css",
+  "partials/120-app-responsive.css"
+]

@@ -709,9 +709,7 @@ describe("GroupMessageBubble", () => {
         expect(attachment.style.maxWidth).toBe("100%");
         expect(action?.style.flex).toBe("1 1 auto");
         expect(action?.style.minWidth).toBe("0px");
-        expect(filename?.style.overflow).toBe("hidden");
-        expect(filename?.style.textOverflow).toBe("ellipsis");
-        expect(filename?.style.whiteSpace).toBe("nowrap");
+        expect(filename?.className).toContain("vegc-att-name-btn");
     });
 });
 
@@ -760,7 +758,7 @@ describe("VEGroupChatView", () => {
         expect(screen.getByTestId("group-chat-header")).toBeTruthy();
         const messageList = screen.getByTestId("group-message-list") as HTMLElement;
         expect(messageList).toBeTruthy();
-        expect(messageList.style.minHeight).toBe("0px");
+        expect(messageList.className).toContain("vegc-msg-list");
     });
 
     it("adds participants by machine_id when discoverable id differs", async () => {

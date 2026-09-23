@@ -369,8 +369,6 @@ type App struct {
 	acpHostMu                        sync.Mutex
 	imGatewaySyncMu                  sync.Mutex
 	passthroughRegistry              *PassthroughRegistry
-	iworkerGoalWatch                 *IWorkerGoalWatchService
-	iworkerGoalWatchMu               sync.Mutex
 	// configMu serializes writers (load/mutate/publish). Hot-path readers do NOT
 	// take configMu: they copy from configSnap (atomic.Pointer to an immutable
 	// AppConfig). Writers always publish a fresh heap snapshot via
@@ -1131,6 +1129,7 @@ func (a *App) ensureMemoryStore() {
 		if n := a.recoverManagedTaskRecordsFromDisk(); n > 0 {
 			log.Printf("[ensureMemoryStore] recovered %d managed task records from disk", n)
 		}
+		a.reconcileDismissedACPAssistantTabTasks()
 	}
 	if compressorToConfigure != nil {
 		// Newly opened store: refresh the memory-evolution LLM outside the
@@ -2696,7 +2695,6 @@ func (a *App) startup(ctx context.Context) {
 		}()
 		// Migrate OAuth credentials from config.json to independent credential store.
 		go a.migrateOAuthCredentialsOnStartup(config)
-		go a.startIWorkerGoalWatchIfConfigured(config)
 		go func() {
 			time.Sleep(90 * time.Second)
 			a.recoverSkillUploadQueueAfterStartup()
@@ -2920,7 +2918,6 @@ func (a *App) shutdown(ctx context.Context) {
 	a.maybeCleanToolCacheOnExit()
 	// Clean up workstation mode (restore lock screen policy, etc.)
 	a.setWorkstationMode(false, 0)
-	a.stopIWorkerGoalWatch()
 	if a.localMCPManager != nil {
 		a.localMCPManager.StopAll()
 	}

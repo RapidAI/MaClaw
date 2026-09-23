@@ -8,7 +8,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
-const captchaAskQuestion = "页面出现人机验证（滑块/reCAPTCHA）。请在浏览器中完成验证后继续。继续之后必须先 observe，再 click/type。"
+const captchaAskQuestion = "页面出现人机验证（滑块/reCAPTCHA）。请在浏览器中完成验证后继续。继续之后必须先 probe，再 click/type。"
 
 // browserPageFlagsCollectJS assumes pageText/anyIframeSrc/anySelector exist.
 const browserPageFlagsCollectJS = `
@@ -239,7 +239,7 @@ func (s *BrowserAgentSession) captchaAskResult(action string) *BrowserActionResu
 		SessionID: sessionID,
 		Action:    "browser_" + strings.TrimPrefix(action, "browser_"),
 		Status:    "ask",
-		Display:   "page has a captcha challenge; solve it in the browser, then observe before clicking",
+		Display:   "page has a captcha challenge; solve it in the browser, then probe before clicking",
 		Detail:    "captcha_widget",
 		AskUser:   captchaAskUserRequest(ctx),
 		Data: map[string]interface{}{
@@ -252,7 +252,12 @@ func (s *BrowserAgentSession) captchaAskResult(action string) *BrowserActionResu
 }
 
 func (s *BrowserAgentSession) rememberSubmitClickIfOK(key string, result *BrowserActionResult) {
-	if s == nil || result == nil || result.Status != "ok" {
+	if s == nil || result == nil || key == "" {
+		return
+	}
+	// "unchanged" still means the click was sent. Remember it so a fast batch
+	// stop does not turn into an immediate second submit.
+	if result.Status != "ok" && result.Status != "unchanged" {
 		return
 	}
 	s.rememberSubmitClick(key)

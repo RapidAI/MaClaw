@@ -323,21 +323,55 @@ func svMultiHeadAttentionFused(out, qkv []float32, nFrames, nHeads, headDim, hid
 	packQKVHeads(bufs.q, bufs.k, bufs.v, qkv, nFrames, nHeads, headDim, hidden, scale)
 
 	if nFrames >= 16 && nHeads > 1 && nHeads <= 12 {
+		// Split each head's query rows into C chunks so the pool sees
+		// nHeads*C tasks instead of just nHeads: at 4 heads only 4 of the
+		// ~12 free workers were busy (~3x head-parallel speedup left unused
+		// on the long-attention benchmark: 322 µs for the fused path at
+		// 98 frames × 4 heads, ~296 µs for one head serial — pack + 4 tasks
+		// barely beat a single head). FSMN usually occupies one worker while
+		// attention runs, so target ~12 tasks, not the full 12-worker pool.
+		// Chunks round up to whole 8-query tiles (qf0 stays a multiple of 8)
+		// so per-element tile decomposition — and results — are bit-identical.
+		C := 1
+		if headDim == 128 && svAttnChunkTasks {
+			for nHeads*C < 12 && nHeads*(C+1) <= 16 && nFrames/(C+1) >= 8 {
+				C++
+			}
+		}
+		chunk := ((nFrames/C + 7) / 8) * 8
+		nTasks := nHeads * C
+		// Pre-grow scratch so chunk tasks never realloc mid-flight.
+		ensureAttnScratchTask(bufs, nFrames, headDim, 0, nTasks)
 		// Reuse structured pool tasks — avoids a captured range closure per layer.
 		wg := svWaitGroupPool.Get().(*sync.WaitGroup)
-		var tasks [12]*svAttnTask
+		var tasks [16]*svAttnTask
+		ti := 0
 		for h := 0; h < nHeads; h++ {
-			t := svAttnTaskPool.Get().(*svAttnTask)
-			t.out, t.bufs = out, bufs
-			t.frames, t.heads, t.headDim, t.hidden, t.head = nFrames, nHeads, headDim, hidden, h
-			tasks[h] = t
-			tensor.RunAsyncTask(t, wg)
+			for c := 0; c < C; c++ {
+				qf0 := c * chunk
+				qf1 := qf0 + chunk
+				if c == C-1 || qf1 > nFrames {
+					qf1 = nFrames
+				}
+				if qf0 >= qf1 {
+					continue // chunk rounds up to tiles; last chunks may be empty
+				}
+				t := svAttnTaskPool.Get().(*svAttnTask)
+				scores, _ := ensureAttnScratchTask(bufs, nFrames, headDim, ti, nTasks)
+				t.out, t.bufs = out, bufs
+				t.frames, t.heads, t.headDim, t.hidden, t.head = nFrames, nHeads, headDim, hidden, h
+				t.qf0, t.qf1, t.scores = qf0, qf1, scores
+				tasks[ti] = t
+				ti++
+				tensor.RunAsyncTask(t, wg)
+			}
 		}
 		wg.Wait()
 		svWaitGroupPool.Put(wg)
-		for h := 0; h < nHeads; h++ {
-			t := tasks[h]
-			t.out, t.bufs = nil, nil
+		for i := 0; i < ti; i++ {
+			t := tasks[i]
+			t.out, t.bufs, t.scores = nil, nil, nil
+			t.qf0, t.qf1 = 0, 0
 			svAttnTaskPool.Put(t)
 		}
 		return
@@ -361,12 +395,32 @@ type svAttnTask struct {
 	bufs                           *svEncoderBufs
 	frames, heads, headDim, hidden int
 	head                           int
+	qf0, qf1                       int // query range; qf1==qf0 means whole head (non-128 fallback)
+	scores                         []float32
 }
 
 var svAttnTaskPool = sync.Pool{New: func() any { return new(svAttnTask) }}
 
 func (t *svAttnTask) RunAsyncTask() {
+	if t.scores != nil {
+		svFusedAttnHeadRange(t.out, t.bufs, t.frames, t.hidden, t.head, t.qf0, t.qf1, t.scores)
+		return
+	}
 	svFusedAttnHead(t.out, t.bufs, t.frames, t.heads, t.headDim, t.hidden, t.head)
+}
+
+// svFusedAttnHeadRange evaluates query rows [qf0,qf1) of one packed head.
+// headDim is 128 here (the fused NS kernel); the packed Q/K/V head base is
+// shared with svFusedAttnHead. Own tile-local scores scratch must not overlap
+// other concurrently running tasks.
+func svFusedAttnHeadRange(out []float32, bufs *svEncoderBufs, nFrames, hidden, h, qf0, qf1 int, scores []float32) {
+	hOff := h * 128
+	base := h * nFrames * 128
+	qPack := bufs.q[base : base+nFrames*128]
+	kPack := bufs.k[base : base+nFrames*128]
+	vPack := bufs.v[base : base+nFrames*128]
+	// Scale is already in Q; packed V stride=128.
+	svAttnScoresPackedQ128NSRange(out, qPack, kPack, vPack, scores, qf0, qf1, nFrames, hidden, hOff)
 }
 
 // svFusedAttnHead evaluates one packed attention head without a captured closure.
@@ -381,10 +435,24 @@ func svFusedAttnHead(out []float32, bufs *svEncoderBufs, nFrames, nHeads, headDi
 	svAttnScoresPackedQ(out, qPack, kPack, vPack, scores, nFrames, hidden, headDim, hOff, 0, headDim, 1)
 }
 
+// svAttnChunkTasks splits attention across (head × query-range) pool tasks
+// (benchmarks A/B it; false = one task per head).
+var svAttnChunkTasks = true
+
 // packQKVHeads packs fused QKV into contiguous [nHeads][nFrames][headDim] for Q, K, V.
 // qScale is fused into Q (attention 1/sqrt(headDim)); K/V are plain copies.
 // Frame-major over heads keeps each qkv row hot in L1.
-// Kept serial: FSMN often runs concurrently and competing BW thrashing hurts more than pack parallel helps.
+// svPackParallel splits packQKVHeads across the pool for long sequences (it
+// sits on the attention critical path with all workers idle). Interleaved A/B
+// (TestPackAB): −3~4% end-to-end at 97 frames.
+var svPackParallel = true
+
+// packQKVHeads packs fused QKV into contiguous [nHeads][nFrames][headDim] for Q, K, V.
+// qScale is fused into Q (attention 1/sqrt(headDim)); K/V are plain copies.
+// Frame-major over heads keeps each qkv row hot in L1.
+// The nHeads==4 long-sequence path parallelizes over frame ranges: pack sits
+// on the attention critical path (every worker waits on it), so the pool is
+// otherwise idle here. (Generic head counts stay serial.)
 func packQKVHeads(qDst, kDst, vDst, qkv []float32, nFrames, nHeads, headDim, hidden int, qScale float32) {
 	qkvStride := 3 * hidden
 	if headDim == 128 {
@@ -392,6 +460,14 @@ func packQKVHeads(qDst, kDst, vDst, qkv []float32, nFrames, nHeads, headDim, hid
 		// (one call keeps the [Q|K|V] row hot vs 4×PackQKV128).
 		f := 0
 		if nHeads == 4 {
+			if svPackParallel && nFrames >= 48 {
+				tensor.ParallelRanges(nFrames, func(fs, fe int) {
+					for ff := fs; ff < fe; ff++ {
+						tensor.PackQKV4Heads128(qDst, kDst, vDst, qkv[ff*qkvStride:], nFrames, ff, qScale)
+					}
+				})
+				return
+			}
 			for ; f < nFrames; f++ {
 				tensor.PackQKV4Heads128(qDst, kDst, vDst, qkv[f*qkvStride:], nFrames, f, qScale)
 			}
@@ -478,6 +554,21 @@ func ensureAttnScratchHead(bufs *svEncoderBufs, nFrames, headDim, h, nHeads int)
 	base := h * perHead
 	scores = bufs.scoresScratch[base : base+8*nFrames]
 	qPanel = bufs.scoresScratch[base+8*nFrames : base+perHead]
+	return
+}
+
+// ensureAttnScratchTask returns the score/Q-panel region for chunk-task i of
+// nTasks (head×query-range parallel attention). Same per-task layout as
+// ensureAttnScratchHead so the serial/small-frame paths keep their regions.
+func ensureAttnScratchTask(bufs *svEncoderBufs, nFrames, headDim, i, nTasks int) (scores, qPanel []float32) {
+	perTask := 8*nFrames + 8*headDim
+	need := nTasks * perTask
+	if cap(bufs.scoresScratch) < need {
+		bufs.scoresScratch = make([]float32, need)
+	}
+	base := i * perTask
+	scores = bufs.scoresScratch[base : base+8*nFrames]
+	qPanel = bufs.scoresScratch[base+8*nFrames : base+perTask]
 	return
 }
 
@@ -731,10 +822,22 @@ func svAttnScoresPackedQ(out, qPack, kPack, vSrc, scores []float32, nFrames, hid
 
 // svAttnScoresPackedQ128NS: SenseVoice fused attention hot path.
 // headDim=128, Q pre-scaled, V contiguous; no per-score scale multiplies.
+// Thin wrapper over the ranged kernel so existing callers/tests are untouched.
 func svAttnScoresPackedQ128NS(out, qPack, kPack, vBase, scores []float32, nFrames, hidden, hOff int) {
+	svAttnScoresPackedQ128NSRange(out, qPack, kPack, vBase, scores, 0, nFrames, nFrames, hidden, hOff)
+}
+
+// svAttnScoresPackedQ128NSRange evaluates query rows [qf0,qf1) of one head.
+// qf0 must be a multiple of 8 (callers round chunk sizes up to whole 8-query
+// tiles) so the 8/4/1 tile decomposition of [qf0,qf1) is exactly the tail of
+// the full-range decomposition — same tiles, same kernels, same per-element
+// op order as svAttnScoresPackedQ128NS, hence bit-identical outputs.
+// The scores scratch stays tile-local (rows t=0..7 per 8-query tile), so
+// disjoint query ranges of the same head can run concurrently on own scratch.
+func svAttnScoresPackedQ128NSRange(out, qPack, kPack, vBase, scores []float32, qf0, qf1, nFrames, hidden, hOff int) {
 	const headDim = 128
-	qf := 0
-	for ; qf+7 < nFrames; qf += 8 {
+	qf := qf0
+	for ; qf+7 < qf1; qf += 8 {
 		aPanel := qPack[qf*128 : (qf+8)*128]
 		var dTri0, dTri1 [12]float32
 		var dLo, dHi [8]float32
@@ -760,7 +863,7 @@ func svAttnScoresPackedQ128NS(out, qPack, kPack, vBase, scores []float32, nFrame
 		}
 		tensor.SoftmaxWeightedSumBatched(out, scores, vBase, 8, nFrames, 128, 128, hidden, hOff, qf)
 	}
-	for ; qf+3 < nFrames; qf += 4 {
+	for ; qf+3 < qf1; qf += 4 {
 		aPanel := qPack[qf*128 : (qf+4)*128]
 		var dTri [12]float32
 		var dDual [8]float32
@@ -785,7 +888,7 @@ func svAttnScoresPackedQ128NS(out, qPack, kPack, vBase, scores []float32, nFrame
 		}
 		tensor.SoftmaxWeightedSumBatched(out, scores, vBase, 4, nFrames, 128, 128, hidden, hOff, qf)
 	}
-	for ; qf < nFrames; qf++ {
+	for ; qf < qf1; qf++ {
 		qVec := qPack[qf*128 : (qf+1)*128]
 		sc := scores[:nFrames]
 		kf := 0

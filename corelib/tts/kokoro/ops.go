@@ -3,11 +3,18 @@ package kokoro
 import (
 	"fmt"
 	"math"
+	"os"
 	"runtime"
 	"sync"
 )
 
 var float32BufferPool sync.Pool
+
+var (
+	genericDbgOnce sync.Once
+	genericDbgSeen map[string]bool
+	genericDbgMu   sync.Mutex
+)
 
 func getFloat32Buffer(n int) []float32 {
 	if n <= 0 {
@@ -35,10 +42,68 @@ func putFloat32Buffer(buf []float32) {
 	float32BufferPool.Put(buf[:0])
 }
 
+var kokoroConvScratchPool sync.Pool
+
+// getConvScratch returns a pooled float32 scratch buffer of length n. The
+// buffer is exclusively owned by the caller until putConvScratch.
+func getConvScratch(n int) []float32 {
+	if n <= 0 {
+		return nil
+	}
+	if v := kokoroConvScratchPool.Get(); v != nil {
+		if b, ok := v.([]float32); ok && cap(b) >= n {
+			return b[:n]
+		}
+	}
+	return make([]float32, n)
+}
+
+func putConvScratch(b []float32) {
+	if cap(b) == 0 || cap(b) > 256<<20 {
+		return
+	}
+	kokoroConvScratchPool.Put(b[:0])
+}
+
 func zeroFloat32s(buf []float32) {
 	for i := range buf {
 		buf[i] = 0
 	}
+}
+
+// parallelApply32 applies fn element-wise, splitting work across goroutines
+// for large slices.
+func parallelApply32(x []float32, fn func(float32) float32) {
+	workers := runtime.GOMAXPROCS(0)
+	if len(x) < 1<<15 || workers < 2 {
+		for i := range x {
+			x[i] = fn(x[i])
+		}
+		return
+	}
+	if workers > 8 {
+		workers = 8
+	}
+	var wg sync.WaitGroup
+	chunk := (len(x) + workers - 1) / workers
+	for w := 0; w < workers; w++ {
+		start := w * chunk
+		end := start + chunk
+		if end > len(x) {
+			end = len(x)
+		}
+		if start >= end {
+			break
+		}
+		wg.Add(1)
+		go func(lo, hi int) {
+			defer wg.Done()
+			for i := lo; i < hi; i++ {
+				x[i] = fn(x[i])
+			}
+		}(start, end)
+	}
+	wg.Wait()
 }
 
 func sigmoid(x float32) float32 {
@@ -69,6 +134,31 @@ func Linear(out, x, weight, bias []float32, in, outDim int) error {
 	}
 	if len(out) != outDim {
 		return fmt.Errorf("kokoro: linear output length %d, want %d", len(out), outDim)
+	}
+	if useKokoroStridedFMA() && in >= 8 {
+		// Four output rows share each x load (one FMA pass, taps=1).
+		o := 0
+		for ; o+4 <= outDim; o += 4 {
+			r0, r1, r2, r3 := dotStridedFMA4(x, in, weight[o*in:], in, in, 1, in)
+			if bias != nil {
+				r0 += bias[o]
+				r1 += bias[o+1]
+				r2 += bias[o+2]
+				r3 += bias[o+3]
+			}
+			out[o] = r0
+			out[o+1] = r1
+			out[o+2] = r2
+			out[o+3] = r3
+		}
+		for ; o < outDim; o++ {
+			sum := dot32(x, weight[o*in:(o+1)*in])
+			if bias != nil {
+				sum += bias[o]
+			}
+			out[o] = sum
+		}
+		return nil
 	}
 	for o := 0; o < outDim; o++ {
 		sum := dot32(x, weight[o*in:(o+1)*in])
@@ -127,6 +217,44 @@ func LinearSequenceTensor(out, x []float32, weight *Tensor, bias []float32, step
 	if len(x) != steps*in || len(out) != steps*outDim {
 		return fmt.Errorf("kokoro: linear sequence tensor shape mismatch")
 	}
+	workers := runtime.GOMAXPROCS(0)
+	if steps >= 8 && in*outDim >= 1<<16 && workers > 1 {
+		if workers > steps {
+			workers = steps
+		}
+		if workers > 8 {
+			workers = 8
+		}
+		var wg sync.WaitGroup
+		errCh := make(chan error, workers)
+		chunk := (steps + workers - 1) / workers
+		for w := 0; w < workers; w++ {
+			start := w * chunk
+			end := start + chunk
+			if end > steps {
+				end = steps
+			}
+			if start >= end {
+				break
+			}
+			wg.Add(1)
+			go func(t0, t1 int) {
+				defer wg.Done()
+				for t := t0; t < t1; t++ {
+					if err := LinearTensor(out[t*outDim:(t+1)*outDim], x[t*in:(t+1)*in], weight, bias, in, outDim); err != nil {
+						errCh <- err
+						return
+					}
+				}
+			}(start, end)
+		}
+		wg.Wait()
+		close(errCh)
+		for err := range errCh {
+			return err
+		}
+		return nil
+	}
 	for t := 0; t < steps; t++ {
 		if err := LinearTensor(out[t*outDim:(t+1)*outDim], x[t*in:(t+1)*in], weight, bias, in, outDim); err != nil {
 			return err
@@ -181,6 +309,41 @@ func LayerNormLastDim(out, x, gamma, beta []float32, rows, dim int, eps float32)
 	return nil
 }
 
+// transposeChannelTime writes dst[t*channels+c] = x[c*T+t] using 8x8 AVX2
+// blocks with scalar fallbacks for edge blocks.
+func transposeChannelTime(dst, x []float32, channels, T int) {
+	if useKokoroSIMD() && channels >= 8 && T >= 8 {
+		cBlocks := channels / 8
+		tBlocks := T / 8
+		for tb := 0; tb < tBlocks; tb++ {
+			t0 := tb * 8
+			for cb := 0; cb < cBlocks; cb++ {
+				c0 := cb * 8
+				transpose8x8F32AVX2(x[c0*T+t0:], T, dst[t0*channels+c0:], channels)
+			}
+			// remainder channels for these time rows
+			for c := cBlocks * 8; c < channels; c++ {
+				for j := 0; j < 8; j++ {
+					dst[(t0+j)*channels+c] = x[c*T+t0+j]
+				}
+			}
+		}
+		// remainder time rows (all channels)
+		for t := tBlocks * 8; t < T; t++ {
+			for c := 0; c < channels; c++ {
+				dst[t*channels+c] = x[c*T+t]
+			}
+		}
+		return
+	}
+	for c := 0; c < channels; c++ {
+		src := x[c*T : (c+1)*T]
+		for t, v := range src {
+			dst[t*channels+c] = v
+		}
+	}
+}
+
 // Conv1D computes PyTorch-style Conv1d over [C,T] input and [Out, C/groups, K]
 // weights, returning [Out,Tout].
 func Conv1D(out, x, weight, bias []float32, inC, inT, outC, kernel, stride, padding, dilation, groups int) error {
@@ -232,13 +395,9 @@ func Conv1D(out, x, weight, bias []float32, inC, inT, outC, kernel, stride, padd
 }
 
 func conv1DMatMul(out, x, weight, bias []float32, inC, inT, outC, kernel, stride, padding, dilation, outT int) error {
-	inputT := make([]float32, inT*inC)
-	for ic := 0; ic < inC; ic++ {
-		src := x[ic*inT : (ic+1)*inT]
-		for t, v := range src {
-			inputT[t*inC+ic] = v
-		}
-	}
+	inputT := getConvScratch(inT * inC)
+	defer putConvScratch(inputT)
+	transposeChannelTime(inputT, x, inC, inT)
 	partial := make([]float32, outT*outC)
 	weightK := make([]float32, inC*outC)
 	inputK := make([]float32, outT*inC)
@@ -290,13 +449,9 @@ func transposePointwiseConv1DWeight(weightColMajor, weight []float32, inC, outC 
 }
 
 func conv1DPointwiseSIMDColMajor(out, x, weightColMajor, bias []float32, inC, inT, outC int) error {
-	inputT := make([]float32, inT*inC)
-	for ic := 0; ic < inC; ic++ {
-		src := x[ic*inT : (ic+1)*inT]
-		for t, v := range src {
-			inputT[t*inC+ic] = v
-		}
-	}
+	inputT := getConvScratch(inT * inC)
+	defer putConvScratch(inputT)
+	transposeChannelTime(inputT, x, inC, inT)
 	outT := make([]float32, inT*outC)
 	matMulInto32(outT, inputT, weightColMajor, inC)
 	for oc := 0; oc < outC; oc++ {
@@ -389,7 +544,7 @@ func WeightNormConv1DWeightTransposed(out, v, g []float32, outC, inCPerGroup, ke
 func conv1DSIMD(out, x, weight, bias []float32, inC, inT, outC, kernel, stride, padding, dilation, outT int) error {
 	weightT := make([]float32, outC*kernel*inC)
 	transposeConv1DWeight(weightT, weight, inC, outC, kernel)
-	return conv1DSIMDTransposedWeight(out, x, weightT, bias, inC, inT, outC, kernel, stride, padding, dilation, outT)
+	return conv1DSIMDTransposedWeight(out, x, weightT, bias, nil, inC, inT, outC, kernel, stride, padding, dilation, outT)
 }
 
 func transposeConv1DWeight(weightT, weight []float32, inC, outC, kernel int) {
@@ -403,35 +558,232 @@ func transposeConv1DWeight(weightT, weight []float32, inC, outC, kernel int) {
 	}
 }
 
-func conv1DSIMDTransposedWeight(out, x, weightT, bias []float32, inC, inT, outC, kernel, stride, padding, dilation, outT int) error {
-	inputT := make([]float32, inT*inC)
-	for ic := 0; ic < inC; ic++ {
-		src := x[ic*inT : (ic+1)*inT]
-		for t, v := range src {
-			inputT[t*inC+ic] = v
-		}
+func conv1DSIMDTransposedWeight(out, x, weightT, bias, residual []float32, inC, inT, outC, kernel, stride, padding, dilation, outT int) error {
+	// For the fused stride-1 path, surround the time-transposed input with a
+	// zero halo of `padding` rows on both sides. Interior reads then satisfy
+	// 0 <= it+padRows and it+padRows+(kernel-1)*dilation < inT+2*padRows for
+	// every output position, so edges flow through the same blocked kernels as
+	// the interior instead of a separate per-tap checked dot.
+	padRows := 0
+	if useKokoroStridedFMA() && padding > 0 {
+		padRows = padding
 	}
+	inputT := getConvScratch((inT + 2*padRows) * inC)
+	defer putConvScratch(inputT)
+	if padRows > 0 {
+		zeroFloat32s(inputT[:padRows*inC])
+		zeroFloat32s(inputT[(padRows+inT)*inC:])
+	}
+	transposeChannelTime(inputT[padRows*inC:], x, inC, inT)
+	dilInC := dilation * inC
 	workers := runtime.GOMAXPROCS(0)
-	if workers > outC {
-		workers = outC
-	}
 	if workers < 1 {
 		workers = 1
 	}
-	var wg sync.WaitGroup
-	chunk := (outC + workers - 1) / workers
-	for w := 0; w < workers; w++ {
-		start := w * chunk
-		end := start + chunk
-		if end > outC {
-			end = outC
+	// Split the time axis instead of the channel axis when the input is the
+	// larger stream: channel-split re-reads the whole input once per channel
+	// quad (outC/4 passes), while time-split streams the small weight set per
+	// worker and reads each input byte exactly once.
+	xBytes := int64(inT) * int64(inC) * 4
+	wBytes := int64(outC) * int64(kernel) * int64(inC) * 4
+	timeSplit := wBytes*int64(workers) < xBytes*int64(outC/4)
+	var chunk int
+	if timeSplit {
+		if workers > outT/32 {
+			workers = outT / 32
 		}
-		if start >= end {
+		if workers < 1 {
+			workers = 1
+		}
+		chunk = (outT + workers - 1) / workers
+	} else {
+		if workers > outC {
+			workers = outC
+		}
+		// Align worker ranges to groups of 4 output channels so the blocked
+		// kernels below never straddle a goroutine boundary.
+		chunk = ((outC+workers-1)/workers + 3) &^ 3
+	}
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		ocStart, ocEnd, otStart, otEnd := 0, outC, 0, outT
+		if timeSplit {
+			otStart = w * chunk
+			otEnd = otStart + chunk
+			if otEnd > outT {
+				otEnd = outT
+			}
+		} else {
+			ocStart = w * chunk
+			ocEnd = ocStart + chunk
+			if ocEnd > outC {
+				ocEnd = outC
+			}
+		}
+		if ocStart >= ocEnd || otStart >= otEnd {
 			break
 		}
 		wg.Add(1)
-		go func(ocStart, ocEnd int) {
+		go func(ocStart, ocEnd, otStart, otEnd int) {
 			defer wg.Done()
+			if useKokoroStridedFMA() {
+				// Accumulate all kernel taps in one FMA pass per output, four
+				// output channels at a time. The zero halo on inputT lets every
+				// position, edges included, flow through these blocked kernels.
+				// The time axis is tiled so each tile's x window stays resident
+				// in this core's L2 while every channel quad of the worker
+				// passes over it.
+				winRows := (kernel-1)*dilation + 1
+				tileRows := 512*1024/(inC*4) - winRows
+				if tileRows < 8 {
+					tileRows = 8
+				}
+				// Halo row index for output ot: it+padRows = ot*stride+xPadOff.
+				xPadOff := padRows - padding
+				ocQuadsEnd := ocStart + (ocEnd-ocStart)/4*4
+				for qg := ocStart; qg < ocQuadsEnd; qg += 16 {
+					qgEnd := qg + 16
+					if qgEnd > ocQuadsEnd {
+						qgEnd = ocQuadsEnd
+					}
+					for t0 := otStart; t0 < otEnd; t0 += tileRows {
+						t1 := t0 + tileRows
+						if t1 > otEnd {
+							t1 = otEnd
+						}
+						for oc := qg; oc < qgEnd; oc += 4 {
+							var b0, b1, b2, b3 float32
+							if bias != nil {
+								b0, b1, b2, b3 = bias[oc], bias[oc+1], bias[oc+2], bias[oc+3]
+							}
+							outRow0 := out[oc*outT : (oc+1)*outT]
+							outRow1 := out[(oc+1)*outT : (oc+2)*outT]
+							outRow2 := out[(oc+2)*outT : (oc+3)*outT]
+							outRow3 := out[(oc+3)*outT : (oc+4)*outT]
+							var res0, res1, res2, res3 []float32
+							if residual != nil {
+								res0 = residual[oc*outT : (oc+1)*outT]
+								res1 = residual[(oc+1)*outT : (oc+2)*outT]
+								res2 = residual[(oc+2)*outT : (oc+3)*outT]
+								res3 = residual[(oc+3)*outT : (oc+4)*outT]
+							}
+							weightBase := oc * kernel * inC
+							weightQuad := weightT[weightBase:]
+							ot := t0
+							if stride == 1 {
+								for ; ot+1 < t1; ot += 2 {
+									xRow := inputT[(ot+xPadOff)*inC:]
+									r0, r1, r2, r3, r4, r5, r6, r7 := dotStridedFMA4x2(xRow, dilInC, weightQuad, inC, kernel*inC, kernel, inC)
+									if residual != nil {
+										r0 += res0[ot]
+										r1 += res0[ot+1]
+										r2 += res1[ot]
+										r3 += res1[ot+1]
+										r4 += res2[ot]
+										r5 += res2[ot+1]
+										r6 += res3[ot]
+										r7 += res3[ot+1]
+									}
+									outRow0[ot] = b0 + r0
+									outRow0[ot+1] = b0 + r1
+									outRow1[ot] = b1 + r2
+									outRow1[ot+1] = b1 + r3
+									outRow2[ot] = b2 + r4
+									outRow2[ot+1] = b2 + r5
+									outRow3[ot] = b3 + r6
+									outRow3[ot+1] = b3 + r7
+								}
+							} else {
+								// stride>1: adjacent outputs sit `stride` rows
+								// apart; the generalized kernel handles the
+								// position offset and stores directly.
+								var bias4 []float32
+								if bias != nil {
+									bias4 = bias[oc : oc+4]
+								}
+								for ; ot+1 < t1; ot += 2 {
+									var res4 []float32
+									if residual != nil {
+										res4 = residual[oc*outT+ot:]
+									}
+									conv4x2G(inputT[(ot*stride+xPadOff)*inC:], dilInC, weightQuad, inC, kernel*inC, kernel, inC, stride*inC,
+										out[oc*outT+ot:], outT, 1, bias4, res4)
+								}
+							}
+							for ; ot < t1; ot++ {
+								xRow := inputT[(ot*stride+xPadOff)*inC:]
+								s0 := dotStridedFMA(xRow, dilInC, weightQuad, inC, kernel, inC)
+								s1 := dotStridedFMA(xRow, dilInC, weightT[weightBase+kernel*inC:], inC, kernel, inC)
+								s2 := dotStridedFMA(xRow, dilInC, weightT[weightBase+2*kernel*inC:], inC, kernel, inC)
+								s3 := dotStridedFMA(xRow, dilInC, weightT[weightBase+3*kernel*inC:], inC, kernel, inC)
+								if residual != nil {
+									s0 += res0[ot]
+									s1 += res1[ot]
+									s2 += res2[ot]
+									s3 += res3[ot]
+								}
+								outRow0[ot] = b0 + s0
+								outRow1[ot] = b1 + s1
+								outRow2[ot] = b2 + s2
+								outRow3[ot] = b3 + s3
+							}
+						}
+					}
+				}
+				// Remaining channels (fewer than 4): two outputs share
+				// each weight load.
+				for t0 := otStart; t0 < otEnd; t0 += tileRows {
+					t1 := t0 + tileRows
+					if t1 > otEnd {
+						t1 = otEnd
+					}
+					for oc := ocQuadsEnd; oc < ocEnd; oc++ {
+						b := float32(0)
+						if bias != nil {
+							b = bias[oc]
+						}
+						outRow := out[oc*outT : (oc+1)*outT]
+						weightBase := oc * kernel * inC
+						weightRow := weightT[weightBase : weightBase+kernel*inC]
+						var resRow []float32
+						if residual != nil {
+							resRow = residual[oc*outT : (oc+1)*outT]
+						}
+						ot := t0
+						if stride == 1 {
+							for ; ot+1 < t1; ot += 2 {
+								r0, r1 := dotStridedFMA2(inputT[(ot+xPadOff)*inC:], dilInC, weightRow, inC, kernel, inC)
+								if residual != nil {
+									r0 += resRow[ot]
+									r1 += resRow[ot+1]
+								}
+								outRow[ot] = b + r0
+								outRow[ot+1] = b + r1
+							}
+						}
+						for ; ot < t1; ot++ {
+							s := dotStridedFMA(inputT[(ot*stride+xPadOff)*inC:], dilInC, weightRow, inC, kernel, inC)
+							if residual != nil {
+								s += resRow[ot]
+							}
+							outRow[ot] = b + s
+						}
+					}
+				}
+				return
+			}
+			if os.Getenv("KOKORO_DBG_GENERIC") != "" {
+				genericDbgOnce.Do(func() {
+					genericDbgSeen = map[string]bool{}
+				})
+				key := fmt.Sprintf("conv1D fallback stride=%d k=%d inC=%d outC=%d inT=%d outT=%d dil=%d", stride, kernel, inC, outC, inT, outT, dilation)
+				genericDbgMu.Lock()
+				if !genericDbgSeen[key] {
+					genericDbgSeen[key] = true
+					println("GENERIC:", key)
+				}
+				genericDbgMu.Unlock()
+			}
 			for oc := ocStart; oc < ocEnd; oc++ {
 				b := float32(0)
 				if bias != nil {
@@ -439,70 +791,11 @@ func conv1DSIMDTransposedWeight(out, x, weightT, bias []float32, inC, inT, outC,
 				}
 				outRow := out[oc*outT : (oc+1)*outT]
 				weightBase := oc * kernel * inC
-				if stride == 1 && dilation == 1 {
-					fullStart := padding
-					if fullStart < 0 {
-						fullStart = 0
-					}
-					fullEnd := inT + padding - kernel + 1
-					if fullEnd > outT {
-						fullEnd = outT
-					}
-					if fullEnd < fullStart {
-						fullEnd = fullStart
-					}
-					for ot := 0; ot < fullStart; ot++ {
-						outRow[ot] = conv1DSIMDEdgeDot(inputT, weightT, b, inC, inT, kernel, padding, weightBase, ot)
-					}
-					weightRow := weightT[weightBase : weightBase+kernel*inC]
-					for ot := fullStart; ot < fullEnd; ot++ {
-						it := ot - padding
-						outRow[ot] = b + dot32(inputT[it*inC:(it+kernel)*inC], weightRow)
-					}
-					for ot := fullEnd; ot < outT; ot++ {
-						outRow[ot] = conv1DSIMDEdgeDot(inputT, weightT, b, inC, inT, kernel, padding, weightBase, ot)
-					}
-					continue
-				}
-				if useKokoroFusedConvASM() && stride == 1 && kernel == 3 {
-					fullStart := padding
-					if fullStart < 0 {
-						fullStart = 0
-					}
-					fullEnd := inT + padding - (kernel-1)*dilation
-					if fullEnd > outT {
-						fullEnd = outT
-					}
-					if fullEnd < fullStart {
-						fullEnd = fullStart
-					}
-					for ot := 0; ot < fullStart; ot++ {
-						outRow[ot] = conv1DSIMDGenericDot(inputT, weightT, b, inC, inT, kernel, stride, padding, dilation, weightBase, ot)
-					}
-					w0 := weightT[weightBase : weightBase+inC]
-					w1 := weightT[weightBase+inC : weightBase+2*inC]
-					w2 := weightT[weightBase+2*inC : weightBase+3*inC]
-					for ot := fullStart; ot < fullEnd; ot++ {
-						it := ot - padding
-						outRow[ot] = b + dot3Fused(
-							inputT[it*inC:(it+1)*inC],
-							inputT[(it+dilation)*inC:(it+dilation+1)*inC],
-							inputT[(it+2*dilation)*inC:(it+2*dilation+1)*inC],
-							w0,
-							w1,
-							w2,
-						)
-					}
-					for ot := fullEnd; ot < outT; ot++ {
-						outRow[ot] = conv1DSIMDGenericDot(inputT, weightT, b, inC, inT, kernel, stride, padding, dilation, weightBase, ot)
-					}
-					continue
-				}
-				for ot := 0; ot < outT; ot++ {
+				for ot := otStart; ot < otEnd; ot++ {
 					outRow[ot] = conv1DSIMDGenericDot(inputT, weightT, b, inC, inT, kernel, stride, padding, dilation, weightBase, ot)
 				}
 			}
-		}(start, end)
+		}(ocStart, ocEnd, otStart, otEnd)
 	}
 	wg.Wait()
 	return nil
@@ -581,13 +874,9 @@ func conv1DParallel(out, x, weight, bias []float32, inC, inT, outC, kernel, stri
 }
 
 func convTranspose1DSIMD(out, x, weight, bias []float32, inC, inT, outC, kernel, stride, padding, outT int) error {
-	inputT := make([]float32, inT*inC)
-	for ic := 0; ic < inC; ic++ {
-		src := x[ic*inT : (ic+1)*inT]
-		for t, v := range src {
-			inputT[t*inC+ic] = v
-		}
-	}
+	inputT := getConvScratch(inT * inC)
+	defer putConvScratch(inputT)
+	transposeChannelTime(inputT, x, inC, inT)
 	weightT := make([]float32, kernel*outC*inC)
 	transposeConvTranspose1DWeight(weightT, weight, inC, outC, kernel)
 	workers := runtime.GOMAXPROCS(0)
@@ -651,13 +940,23 @@ func transposeConvTranspose1DWeight(weightT, weight []float32, inC, outC, kernel
 }
 
 func convTranspose1DSIMDTransposedWeight(out, x, weightT, bias []float32, inC, inT, outC, kernel, stride, padding, outT int) error {
-	inputT := make([]float32, inT*inC)
-	for ic := 0; ic < inC; ic++ {
-		src := x[ic*inT : (ic+1)*inT]
-		for t, v := range src {
-			inputT[t*inC+ic] = v
-		}
+	// For the fused path, surround the time-transposed input with a zero halo
+	// of H rows on both sides. Taps whose input position falls outside
+	// [0, inT) then read zeros and contribute nothing, so every output
+	// position evaluates exactly ktab[residue] taps with no clamping logic,
+	// and positions `stride` apart (same residue class) share their weight
+	// walk and can be evaluated as a pair.
+	halo := 0
+	if useKokoroStridedFMA() {
+		halo = (kernel + stride) / stride
 	}
+	inputT := getConvScratch((inT + 2*halo) * inC)
+	defer putConvScratch(inputT)
+	if halo > 0 {
+		zeroFloat32s(inputT[:halo*inC])
+		zeroFloat32s(inputT[(halo+inT)*inC:])
+	}
+	transposeChannelTime(inputT[halo*inC:], x, inC, inT)
 	workers := runtime.GOMAXPROCS(0)
 	if workers > outC {
 		workers = outC
@@ -665,8 +964,10 @@ func convTranspose1DSIMDTransposedWeight(out, x, weightT, bias []float32, inC, i
 	if workers < 1 {
 		workers = 1
 	}
+	// Align worker ranges to groups of 4 output channels so the blocked
+	// kernel below never straddles a goroutine boundary.
+	chunk := ((outC+workers-1)/workers + 3) &^ 3
 	var wg sync.WaitGroup
-	chunk := (outC + workers - 1) / workers
 	for w := 0; w < workers; w++ {
 		start := w * chunk
 		end := start + chunk
@@ -679,6 +980,84 @@ func convTranspose1DSIMDTransposedWeight(out, x, weightT, bias []float32, inC, i
 		wg.Add(1)
 		go func(ocStart, ocEnd int) {
 			defer wg.Done()
+			if useKokoroStridedFMA() {
+				// Taps per position depend only on the residue class of
+				// ot+padding mod stride; precompute them once.
+				ktab := make([]int, stride)
+				for k0 := 0; k0 < stride; k0++ {
+					ktab[k0] = (kernel-1-k0)/stride + 1
+				}
+				wStride := -stride * outC * inC
+				ocQuadsEnd := ocStart + (ocEnd-ocStart)/4*4
+				for oc := ocStart; oc < ocQuadsEnd; oc += 4 {
+					var bias4 []float32
+					if bias != nil {
+						bias4 = bias[oc : oc+4]
+					}
+					weightBase := (oc * inC)
+					// Pair positions (ot, ot+stride): they share the
+					// residue class, weights and tap count. Within each
+					// residue class r (mod stride) the pair starts are
+					// r, r+2*stride, ... — equivalently ot where
+					// ot mod 2*stride < stride.
+					ot := 0
+					for otb := 0; otb+stride < outT; otb += 2 * stride {
+						lim := otb + stride
+						if lim > outT {
+							lim = outT
+						}
+						for oti := otb; oti < lim; oti++ {
+							ot := oti
+							base := ot + padding
+							k0 := base % stride
+							count := ktab[k0]
+							it0 := (base - k0) / stride
+							kMax := k0 + (count-1)*stride
+							// Walk taps from the largest k (lowest x address) up
+							// so the x stride is positive; the negative weight
+							// stride is handled directly by the kernel.
+							conv4x2G(
+								inputT[(it0-(count-1)+halo)*inC:], inC,
+								weightT[(kMax*outC)*inC+weightBase:], wStride, inC,
+								count, inC, inC,
+								out[oc*outT+ot:], outT, stride, bias4, nil)
+						}
+					}
+					for ; ot < outT; ot++ {
+						base := ot + padding
+						k0 := base % stride
+						count := ktab[k0]
+						it0 := (base - k0) / stride
+						kMax := k0 + (count-1)*stride
+						r0, r1, r2, r3 := dotStridedFMA4(
+							inputT[(it0-(count-1)+halo)*inC:], inC,
+							weightT[(kMax*outC)*inC+weightBase:], wStride, inC,
+							count, inC)
+						out[oc*outT+ot] = biasOrZero(bias4, 0) + r0
+						out[(oc+1)*outT+ot] = biasOrZero(bias4, 1) + r1
+						out[(oc+2)*outT+ot] = biasOrZero(bias4, 2) + r2
+						out[(oc+3)*outT+ot] = biasOrZero(bias4, 3) + r3
+					}
+				}
+				for oc := ocQuadsEnd; oc < ocEnd; oc++ {
+					var bias1 []float32
+					if bias != nil {
+						bias1 = bias[oc : oc+1]
+					}
+					for ot := 0; ot < outT; ot++ {
+						base := ot + padding
+						k0 := base % stride
+						count := ktab[k0]
+						it0 := (base - k0) / stride
+						kMax := k0 + (count-1)*stride
+						out[oc*outT+ot] = biasOrZero(bias1, 0) + dotStridedFMA(
+							inputT[(it0-(count-1)+halo)*inC:], inC,
+							weightT[(kMax*outC+oc)*inC:], wStride,
+							count, inC)
+					}
+				}
+				return
+			}
 			for oc := ocStart; oc < ocEnd; oc++ {
 				b := float32(0)
 				if bias != nil {
@@ -706,6 +1085,14 @@ func convTranspose1DSIMDTransposedWeight(out, x, weightT, bias []float32, inC, i
 	wg.Wait()
 	return nil
 }
+
+func biasOrZero(bias []float32, i int) float32 {
+	if bias == nil {
+		return 0
+	}
+	return bias[i]
+}
+
 func convTranspose1DParallel(out, x, weight, bias []float32, inC, inT, outC, kernel, stride, padding, outputPadding, groups, outT int) error {
 	workers := runtime.GOMAXPROCS(0)
 	if workers > outC {

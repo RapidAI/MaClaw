@@ -292,7 +292,7 @@ export function ComputerUseReadinessBanner({ lang, theme: t }: Props) {
                     {tr("Computer Use setup", "Computer Use 准备", "Computer Use 準備")}
                     {issues.length > 1 ? ` · ${issues.length}` : ""}
                 </strong>
-                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                <div className="curb-actions">
                     <button
                         type="button"
                         disabled={busy}
@@ -342,7 +342,7 @@ export function ComputerUseReadinessBanner({ lang, theme: t }: Props) {
             </div>
             {issues.map((iss) => (
                 <div key={iss.id} style={row} data-testid={`cu-issue-${iss.id}`}>
-                    <div style={{ flex: 1, minWidth: 160 }}>{msgFor(iss)}</div>
+                    <div className="curb-issue-msg">{msgFor(iss)}</div>
                     {iss.action ? (
                         <button type="button" disabled={busy} style={btn} onClick={() => void runAction(iss.action)}>
                             {busy ? tr("Working…", "处理中…", "處理中…") : actionLabel(iss.action)}

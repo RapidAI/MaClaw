@@ -91,8 +91,8 @@ const MetricChipView = ({ chip, isDark }: { chip: MetricChip; isDark?: boolean }
                 textOverflow: 'ellipsis',
             }}
         >
-            <span style={{ opacity: 0.78, fontWeight: 500 }}>{chip.label}</span>
-            <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{chip.value}</span>
+            <span className="cass-chip-label">{chip.label}</span>
+            <span className="cass-chip-value">{chip.value}</span>
         </span>
     );
 };
@@ -290,7 +290,7 @@ export const CodingAgentSidebarStatus = ({ progress, snapshot, lang, isDark }: C
             role="group"
             aria-label={cardText}
             title={cardText}
-            className={`coding-agent-turn-card coding-agent-turn-card--${normalizedOutcome}`}
+            className={`coding-agent-turn-card coding-agent-turn-card--${normalizedOutcome} cass-card`}
             data-turn-id={snapshot?.turnID || normalized.turnID || ''}
             data-tool={snapshot?.tool || ''}
             data-tool-outcome={snapshot?.toolOutcome || ''}
@@ -319,11 +319,6 @@ export const CodingAgentSidebarStatus = ({ progress, snapshot, lang, isDark }: C
             data-diff-check-state={snapshot?.diffCheckStatus ? diffCheckState : ''}
             data-change-count={formatOptionalCount(snapshot?.changeCount ?? normalized.count)}
             data-file-count={formatOptionalListCount(allFiles)}
-            style={{
-                display: 'grid',
-                gap: '4px',
-                minWidth: 0,
-            }}
         >
             <CodingAgentCompactStatus
                 progress={headerProgress}
@@ -348,14 +343,7 @@ export const CodingAgentSidebarStatus = ({ progress, snapshot, lang, isDark }: C
                         <div
                             data-testid="sidebar-coding-agent-tool-trace"
                             aria-label={traceText || [snapshot?.tool, durationText].filter(Boolean).join(' ')}
-                            style={{
-                                minWidth: 0,
-                                display: 'flex',
-                                flexWrap: 'wrap',
-                                alignItems: 'center',
-                                gap: '3px',
-                                color: 'var(--theme-text)',
-                            }}
+                            className="cass-trace"
                         >
                             {tools.length > 0
                                 ? tools.map((tool, index) => {
@@ -374,10 +362,10 @@ export const CodingAgentSidebarStatus = ({ progress, snapshot, lang, isDark }: C
                                     return (
                                         <span
                                             key={`${tool.name}-${index}`}
-                                            style={{ display: 'inline-flex', alignItems: 'center', gap: '3px', minWidth: 0 }}
+                                            className="cass-trace-item"
                                         >
                                             {index > 0 && (
-                                                <span aria-hidden="true" style={{ color: 'var(--theme-text-muted)', opacity: 0.7 }}>
+                                                <span aria-hidden="true" className="cass-trace-arrow">
                                                     {'\u2192'}
                                                 </span>
                                             )}
@@ -413,20 +401,7 @@ export const CodingAgentSidebarStatus = ({ progress, snapshot, lang, isDark }: C
                                         data-tool-trace-outcome={snapshot.toolOutcome || ''}
                                         data-tool-trace-outcome-state={normalizedOutcome}
                                         title={[snapshot.tool, durationText].filter(Boolean).join(' ')}
-                                        style={{
-                                            minWidth: 0,
-                                            maxWidth: '140px',
-                                            overflow: 'hidden',
-                                            textOverflow: 'ellipsis',
-                                            whiteSpace: 'nowrap',
-                                            color: 'var(--theme-text)',
-                                            border: '1px solid rgba(100, 116, 139, 0.18)',
-                                            background: 'rgba(100, 116, 139, 0.06)',
-                                            borderRadius: '4px',
-                                            padding: '0 4px',
-                                            fontWeight: 500,
-                                            fontSize: '0.62rem',
-                                        }}
+                                        className="cass-trace-fallback"
                                     >
                                         {[snapshot.tool, durationText].filter(Boolean).join(' ')}
                                     </span>
@@ -435,13 +410,7 @@ export const CodingAgentSidebarStatus = ({ progress, snapshot, lang, isDark }: C
                     )}
                     {chips.length > 0 && (
                         <div
-                            style={{
-                                display: 'flex',
-                                flexWrap: 'wrap',
-                                gap: '3px',
-                                alignItems: 'center',
-                                minWidth: 0,
-                            }}
+                            className="cass-chips"
                         >
                             {chips.map((chip) => (
                                 <MetricChipView key={chip.key} chip={chip} isDark={dark} />
@@ -450,25 +419,13 @@ export const CodingAgentSidebarStatus = ({ progress, snapshot, lang, isDark }: C
                     )}
                     {(filePreview || diffSummary) && (
                         <div
-                            style={{
-                                minWidth: 0,
-                                display: 'flex',
-                                gap: '6px',
-                                alignItems: 'center',
-                                overflow: 'hidden',
-                            }}
+                            className="cass-files"
                         >
                             {filePreview && (
                                 <>
-                                    <span style={{ flexShrink: 0 }}>{filesLabel}</span>
+                                    <span className="cass-shrink">{filesLabel}</span>
                                     <span
-                                        style={{
-                                            minWidth: 0,
-                                            overflow: 'hidden',
-                                            textOverflow: 'ellipsis',
-                                            whiteSpace: 'nowrap',
-                                            color: 'var(--theme-text)',
-                                        }}
+                                        className="cass-ellipsis"
                                     >
                                         {filePreview}
                                     </span>
@@ -476,16 +433,10 @@ export const CodingAgentSidebarStatus = ({ progress, snapshot, lang, isDark }: C
                             )}
                             {diffSummary && (
                                 <>
-                                    {filePreview && <span style={{ opacity: 0.45 }}>{'\u00b7'}</span>}
-                                    <span style={{ flexShrink: 0 }}>{diffLabel}</span>
+                                    {filePreview && <span className="cass-dot-sep">{'\u00b7'}</span>}
+                                    <span className="cass-shrink">{diffLabel}</span>
                                     <span
-                                        style={{
-                                            minWidth: 0,
-                                            overflow: 'hidden',
-                                            textOverflow: 'ellipsis',
-                                            whiteSpace: 'nowrap',
-                                            color: 'var(--theme-text)',
-                                        }}
+                                        className="cass-ellipsis"
                                     >
                                         {diffSummary}
                                     </span>

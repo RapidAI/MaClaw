@@ -12,6 +12,7 @@
 #include "boards/round_input_profile.h"
 #include "device_api.h"
 #include "driver/gpio.h"
+#include "boards/board_gpio_check.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -30,6 +31,10 @@ static inline const round_input_profile_t *waveshare_input_profile(void) {
 }
 
 static inline esp_err_t waveshare_input_initialize_activate_key(void) {
+    /* Hardcoded pin: fail fast at the adapter boundary. */
+    esp_err_t err = board_check_gpio(WAVESHARE_INPUT_ACTIVATE_KEY_GPIO,
+                                     "waveshare_input", "activate key");
+    if (err != ESP_OK) return err;
     const gpio_config_t config = {
         .pin_bit_mask = 1ULL << WAVESHARE_INPUT_ACTIVATE_KEY_GPIO,
         .mode = GPIO_MODE_INPUT,

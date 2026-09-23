@@ -5,7 +5,7 @@ import "fmt"
 // BrandConfig 描述一个品牌变体的完整配置。
 type BrandConfig struct {
 	ID              string         // 品牌标识符，如 "maclaw"、"qianxin"
-	DisplayName     string         // 产品显示名称，如 "MaClaw"、"QAgent"
+	DisplayName     string         // 产品显示名称，如 "MaClaw"、"TigerClaw"
 	DisplayNameCN   string         // 中文显示名称，如 "码卡龙"、"虎爪"
 	WindowTitle     string         // GUI 窗口标题
 	TrayTooltip     string         // 系统托盘提示文字

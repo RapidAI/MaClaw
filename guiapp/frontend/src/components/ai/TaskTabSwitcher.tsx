@@ -113,12 +113,11 @@ export function TaskTabSwitcher({ tabs, activeTabId, lang, onActivate, onClose, 
 
     let rows: SwitcherRow[];
     if (!tasks) {
-        rows = tabs.map(tabRow);
+        // The local tab is the new-task guide, not a task in the list.
+        rows = tabs.filter(tab => tab.type !== "local").map(tabRow);
     } else {
         rows = [];
         const matchedTabIds = new Set<string>();
-        const localTab = tabs.find(tab => tab.type === "local");
-        if (localTab) rows.push(tabRow(localTab));
         visibleTaskRows(tasks).forEach((task, index) => {
             const taskPath = normalizeProjectSessionPath(task.project_path || "");
             const wsId = cloudWorkspaceIdFromTaskFields(task);

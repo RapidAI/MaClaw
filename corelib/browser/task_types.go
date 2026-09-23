@@ -16,8 +16,10 @@ type TaskSpec struct {
 	Description     string          `json:"description"`
 	Steps           []StepSpec      `json:"steps"`
 	SuccessCriteria []CriterionSpec `json:"success_criteria"`
-	MaxRetries      int             `json:"max_retries"`  // default 3
+	MaxRetries      int             `json:"max_retries"`  // default 3; fast batch defaults to 0
 	StepTimeout     time.Duration   `json:"step_timeout"` // default 30s
+	// FastBatch runs same-page steps without a full observe after each one.
+	FastBatch bool `json:"fast_batch,omitempty"`
 }
 
 // StepTargetSpec identifies the intended browsing context for a step.
@@ -75,23 +77,29 @@ const (
 	TaskStatusRunning   TaskStatus = "running"
 	TaskStatusPaused    TaskStatus = "paused"
 	TaskStatusCompleted TaskStatus = "completed"
+	TaskStatusStopped   TaskStatus = "stopped"
 	TaskStatusFailed    TaskStatus = "failed"
 	TaskStatusCancelled TaskStatus = "cancelled"
 )
 
 // TaskState holds the runtime state of a browser task execution.
 type TaskState struct {
-	ID               string                `json:"id"`
-	Status           TaskStatus            `json:"status"`
-	CurrentStep      int                   `json:"current_step"`
-	TotalSteps       int                   `json:"total_steps"`
-	RetryCount       int                   `json:"retry_count"`
-	LastError        string                `json:"last_error,omitempty"`
-	Checkpoints      []Checkpoint          `json:"checkpoints,omitempty"`
-	StepTraces       []StepTrace           `json:"step_traces,omitempty"`
-	AskUser          *agent.AskUserRequest `json:"ask_user,omitempty"`
-	LastResultStatus string                `json:"last_result_status,omitempty"`
-	StartedAt        time.Time             `json:"started_at"`
+	ID               string                 `json:"id"`
+	Status           TaskStatus             `json:"status"`
+	CurrentStep      int                    `json:"current_step"`
+	TotalSteps       int                    `json:"total_steps"`
+	RetryCount       int                    `json:"retry_count"`
+	LastError        string                 `json:"last_error,omitempty"`
+	Checkpoints      []Checkpoint           `json:"checkpoints,omitempty"`
+	StepTraces       []StepTrace            `json:"step_traces,omitempty"`
+	AskUser          *agent.AskUserRequest  `json:"ask_user,omitempty"`
+	LastResultStatus string                 `json:"last_result_status,omitempty"`
+	StartedAt        time.Time              `json:"started_at"`
+	StoppedReason    string                 `json:"stopped_reason,omitempty"`
+	SnapshotID       string                 `json:"snapshot_id,omitempty"`
+	Observation      string                 `json:"observation,omitempty"`
+	ObservationData  map[string]interface{} `json:"observation_data,omitempty"`
+	ObservationError string                 `json:"observation_error,omitempty"`
 }
 
 // Checkpoint is a snapshot taken after each step execution.

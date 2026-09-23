@@ -778,6 +778,7 @@ func (h *IMMessageHandler) prepareIMLoopContext(provided *LoopContext, msg IMUse
 	// Runtime must not keep the previous generate pin, privilege strip, or
 	// unknown+chat leftover identity that would look like a new miss.
 	resetLoopSemanticLeftoverState(loopCtx)
+	resetSemanticTurnLocalState(loopCtx)
 	if loopCtx.HTTPClient == nil {
 		loopCtx.HTTPClient = httpClient
 	}

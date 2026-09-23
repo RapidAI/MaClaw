@@ -1052,13 +1052,57 @@ func omitOptionalBudgetOverflow(plan *ToolPlan, optional []PlannedSelection) {
 }
 
 func planningWaveExceedsBudget(kept, wave []PlannedSelection, budget PlanningBudget) bool {
-	if budget.MaxSelections > 0 && len(kept)+len(wave) > budget.MaxSelections {
+	if budget.MaxSelections <= 0 && budget.MaxSchemaTokens <= 0 {
+		return false
+	}
+	// Repeat-ceiling siblings share one family schema and are issued one at a
+	// time. They must not consume a selection or schema slot of their own, or
+	// a read-12 family crowds out the later required wave.
+	haveFamilies, haveTokens := budgetChargeAgainst(nil, kept)
+	addFamilies, addTokens := budgetChargeAgainst(kept, wave)
+	if budget.MaxSelections > 0 && haveFamilies+addFamilies > budget.MaxSelections {
 		return true
 	}
-	if budget.MaxSchemaTokens > 0 && selectionSchemaTokenCost(kept)+selectionSchemaTokenCost(wave) > budget.MaxSchemaTokens {
+	if budget.MaxSchemaTokens > 0 && haveTokens+addTokens > budget.MaxSchemaTokens {
 		return true
 	}
 	return false
+}
+
+func plannedFamilyKey(selection PlannedSelection) string {
+	id := strings.TrimSpace(selection.NeedID)
+	if id == "" {
+		id = selection.ID
+	}
+	return RepeatFamilyID(id)
+}
+
+func selectionFamilySchemaTokens(selection PlannedSelection) int {
+	total := 24
+	total += 8 * len(selection.ParameterAuthorization.AllowedFields)
+	if strings.TrimSpace(selection.ParameterAuthorization.Digest) != "" {
+		total += 4
+	}
+	return total
+}
+
+// budgetChargeAgainst counts families in extra that are not already present in
+// base. The token charge is one schema per new family.
+func budgetChargeAgainst(base, extra []PlannedSelection) (families, tokens int) {
+	seen := make(map[string]struct{}, len(base)+len(extra))
+	for _, selection := range base {
+		seen[plannedFamilyKey(selection)] = struct{}{}
+	}
+	for _, selection := range extra {
+		key := plannedFamilyKey(selection)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		families++
+		tokens += selectionFamilySchemaTokens(selection)
+	}
+	return families, tokens
 }
 
 // selectionSchemaTokenCost is a conservative, deterministic estimate of the

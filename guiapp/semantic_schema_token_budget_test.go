@@ -76,14 +76,16 @@ func TestIMSemanticHostSchemaTokenBudgetSmallReportsBudgetExceeded(t *testing.T)
 		ctx, "user", "查询南京天气，并生成pdf报告", "desktop", "root-schema-small", "turn-schema-small",
 		liveDataGenerateClassification(), nil,
 	)
-	if !handled || prepared == nil {
-		t.Fatalf("budgeted plan must remain inspectable, handled=%v err=%v", handled, err)
+	if err != nil || !handled || prepared == nil {
+		t.Fatalf("a schema-token cut that keeps search must still run, handled=%v err=%v", handled, err)
 	}
-	if err == nil || !strings.Contains(err.Error(), "unmet") {
-		t.Fatalf("schema-token cut must not be silent, err=%v", err)
+	for _, selection := range prepared.plan.Selections {
+		if selection.FitProof.MatchedCapability != "information.search.web" {
+			t.Fatalf("small schema-token budget must keep only the search family: %#v", prepared.plan.Selections)
+		}
 	}
-	if len(prepared.plan.Selections) != 1 || prepared.plan.Selections[0].FitProof.MatchedCapability != "information.search.web" {
-		t.Fatalf("small schema-token budget must keep the search wave: %#v", prepared.plan.Selections)
+	if len(prepared.plan.Selections) == 0 {
+		t.Fatal("search family missing")
 	}
 	if len(prepared.plan.Unmet) != 2 {
 		t.Fatalf("generate and deliver must remain unmet, unmet=%#v", prepared.plan.Unmet)
@@ -92,6 +94,15 @@ func TestIMSemanticHostSchemaTokenBudgetSmallReportsBudgetExceeded(t *testing.T)
 		if item.ReasonCode != "budget_exceeded" && item.ReasonCode != "planning_budget_exceeded" {
 			t.Fatalf("unmet %s=%q, want a budget reason", item.NeedID, item.ReasonCode)
 		}
+	}
+}
+
+func TestBudgetUnmetIsNotReportedAsCatalogMiss(t *testing.T) {
+	resp := semanticHostRejectResponseForManagedSurfaceFailure(semanticUnmetNeedsError{
+		Unmet: []tool.UnmetNeed{{NeedID: "need:visual.render.live_data", ReasonCode: "budget_exceeded"}},
+	})
+	if resp == nil || strings.Contains(resp.Text, "当前能力目录未覆盖") || resp.Error != "semantic_plan_budget_exceeded" {
+		t.Fatalf("budget unmet response = %+v", resp)
 	}
 }
 

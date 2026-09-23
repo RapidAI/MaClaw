@@ -29,14 +29,8 @@ const sidebarToolSelectorLabels = ['Claude Code', 'CodeBuddy', 'Kilo Code'];
 /** Premium decorative divider shown when coding tool entry is hidden. */
 function PremiumDivider() {
     return (
-        <div style={{ flexShrink: 0, padding: '12px 16px' }}>
-            <div style={{
-                height: '3px',
-                borderRadius: '1.5px',
-                background: 'linear-gradient(90deg, transparent 0%, color-mix(in srgb, var(--theme-primary) 15%, transparent) 10%, color-mix(in srgb, var(--theme-primary) 40%, var(--theme-border)) 30%, var(--theme-primary) 50%, color-mix(in srgb, var(--theme-primary) 40%, var(--theme-border)) 70%, color-mix(in srgb, var(--theme-primary) 15%, transparent) 90%, transparent 100%)',
-                boxShadow: '0 1px 3px color-mix(in srgb, var(--theme-primary) 20%, transparent), inset 0 0.5px 0 rgba(255,255,255,0.15)',
-                opacity: 0.7,
-            }} />
+        <div className="sts-divider-wrap">
+            <div className="sts-divider" />
         </div>
     );
 }
@@ -61,7 +55,7 @@ export const SidebarToolSelector = ({
     const activeToolIcon = toolIcons[safeActiveTool];
 
     return (
-        <div style={{ flexShrink: 0, borderBottom: '1px solid var(--theme-border)' }}>
+        <div className="sts-root">
             <button
                 type="button"
                 aria-expanded={toolDropdownOpen}
@@ -69,13 +63,13 @@ export const SidebarToolSelector = ({
                 style={{ display: 'flex', alignItems: 'center', width: '100%', height: '58px', padding: '0 18px', gap: '12px', cursor: 'pointer', border: 0, background: 'transparent', color: 'inherit', textAlign: 'left' }}
             >
                 {activeToolIcon
-                    ? <img src={activeToolIcon} style={{ width: '18px', height: '18px', flexShrink: 0 }} alt="" />
-                    : <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--theme-primary)', flexShrink: 0 }} />}
-                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '0.82rem', fontWeight: 700, color: 'var(--theme-text-primary)', flex: 1 }}>{getToolLabel(safeActiveTool)}</span>
-                <span style={{ fontSize: '0.72rem', opacity: 0.55, flexShrink: 0 }}>{toolDropdownOpen ? '\u25B4' : '\u25BE'}</span>
+                    ? <img src={activeToolIcon} className="sts-tool-icon" alt="" />
+                    : <span className="sts-tool-dot" />}
+                <span className="sts-tool-name">{getToolLabel(safeActiveTool)}</span>
+                <span className="sts-tool-caret">{toolDropdownOpen ? '\u25B4' : '\u25BE'}</span>
             </button>
             {toolDropdownOpen && (
-                <div role="group" aria-label="Coding tools" data-ui-guard-labels={sidebarToolSelectorLabels.join(', ')} style={{ padding: '0 8px 8px' }}>
+                <div role="group" aria-label="Coding tools" data-ui-guard-labels={sidebarToolSelectorLabels.join(', ')} className="sts-menu">
                     {tools.map(tool => (
                         <button
                             type="button"
@@ -84,9 +78,9 @@ export const SidebarToolSelector = ({
                             onClick={() => switchTool(tool.id)}
                             style={{ display: 'flex', alignItems: 'center', width: '100%', gap: '8px', padding: '7px 10px', borderRadius: '6px', cursor: 'pointer', border: 0, fontSize: '0.82rem', color: 'var(--theme-text-primary)', background: safeActiveTool === tool.id ? 'color-mix(in srgb, var(--theme-primary) 16%, transparent)' : 'transparent', fontWeight: safeActiveTool === tool.id ? 700 : 500, textAlign: 'left' }}
                         >
-                            {toolIcons[tool.id] && <img src={toolIcons[tool.id]} style={{ width: '16px', height: '16px' }} alt="" />}
-                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{tool.name}</span>
-                            {safeActiveTool === tool.id && <span style={{ fontSize: '0.7rem', opacity: 0.65 }}>OK</span>}
+                            {toolIcons[tool.id] && <img src={toolIcons[tool.id]} className="sts-menu-icon" alt="" />}
+                            <span className="sts-menu-name">{tool.name}</span>
+                            {safeActiveTool === tool.id && <span className="sts-menu-check">OK</span>}
                         </button>
                     ))}
                 </div>

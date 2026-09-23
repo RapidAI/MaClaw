@@ -57,6 +57,11 @@ export interface CodingTaskLaunch {
      * skipped for it (additive; absent = unchanged behavior).
      */
     noWorkflowInterception?: boolean;
+    /**
+     * New-task page: deliver initialMessage even when this task tab is already
+     * open. Reused remote and cloud tasks would otherwise drop the user's text.
+     */
+    deliverInitialMessage?: boolean;
 }
 
 /** Coerce untrusted Wails/event payloads into the one safe launch contract. */
@@ -105,5 +110,6 @@ export function normalizeCodingTaskLaunch(input: Partial<CodingTaskLaunch> | nul
         imIsGroup: input?.imIsGroup === true,
         newTaskContext,
         noWorkflowInterception: input?.noWorkflowInterception === true,
+        deliverInitialMessage: input?.deliverInitialMessage === true,
     };
 }

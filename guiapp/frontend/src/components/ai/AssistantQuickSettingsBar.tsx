@@ -287,9 +287,9 @@ export const AssistantQuickSettingsBar = memo(function AssistantQuickSettingsBar
         // Owns the window bottom edge under the composer. Use minHeight (not fixed
         // height) so safe-area padding extends the bar instead of squeezing chips.
         <div data-testid="assistant-quick-settings-bar" hidden={hidden} aria-hidden={hidden || undefined} style={{ display: hidden ? "none" : "flex", alignItems: "center", gap: 6, minHeight: 28, padding: "0 10px", paddingBottom: "env(safe-area-inset-bottom, 0px)", borderTop: `1px solid ${t.titleBarBorder}`, background: t.titleBarBg, overflow: "hidden", flexShrink: 0, boxSizing: "border-box", minWidth: 0 }}>
-            <div data-testid="assistant-quick-settings-chips" style={{ display: "flex", alignItems: "center", gap: 6, flex: "1 1 auto", minWidth: 0, overflowX: "auto", overflowY: "visible" }}>
+            <div data-testid="assistant-quick-settings-chips" className="aqs-chips">
             {hasModelMenu && (
-                <div style={{ position: "relative", flexShrink: 0 }}>
+                <div className="aqs-model-wrap">
                     <button
                         type="button"
                         ref={setModelChipRef}
@@ -304,7 +304,7 @@ export const AssistantQuickSettingsBar = memo(function AssistantQuickSettingsBar
                             ? tr("View coding model settings", "查看编程模型设置", "檢視編程模型設定")
                             : tr("Switch model or provider", "切换模型或服务商", "切換模型或服務商")}
                     >
-                        <span style={{ maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{modelChipLabel}</span>
+                        <span className="aqs-model-label">{modelChipLabel}</span>
                         <svg
                             width="7"
                             height="7"
@@ -344,11 +344,11 @@ export const AssistantQuickSettingsBar = memo(function AssistantQuickSettingsBar
                 <span aria-hidden="true" style={{ display: "inline-flex", opacity: ttsPlaying ? 0 : 1, transition: "opacity 150ms" }}>
                     <TitleBarToolIcon name={ttsEnabled ? "volumeOn" : "volumeOff"} />
                 </span>
-                {ttsPlaying && <span aria-hidden="true" style={{ position: "absolute", left: 8 }}><TTSLevelBars accentColor={t.headingColor} /></span>}
+                {ttsPlaying && <span aria-hidden="true" className="aqs-tts-bars"><TTSLevelBars accentColor={t.headingColor} /></span>}
                 {tr("Voice", "语音", "語音")}
             </button>
             <button type="button" data-testid="qs-theme-toggle" onClick={onToggleTheme} style={chipStyle(themeMode === "dark")} title={themeMode === "dark" ? tr("Switch to light mode", "切换到普通模式", "切換到普通模式") : tr("Switch to dark mode", "切换到暗黑模式", "切換到暗黑模式")} aria-label={themeMode === "dark" ? tr("Switch to light mode", "切换到普通模式", "切換到普通模式") : tr("Switch to dark mode", "切换到暗黑模式", "切換到暗黑模式")}>
-                <span aria-hidden="true" style={{ display: "inline-flex" }}>
+                <span aria-hidden="true" className="aqs-icon">
                     <TitleBarToolIcon name={themeMode === "dark" ? "moon" : "sun"} />
                 </span>
                 {themeMode === "dark" ? tr("Dark", "暗黑", "暗黑") : tr("Light", "浅色", "淺色")}

@@ -99,7 +99,7 @@ func mergeTaskContextText(current string, priorUserTexts []string) string {
 // merged into the classified text, and accepts the retry only when it lands
 // on a managed capability route. One extra classification, no new durable
 // state, no change to clear first-shot intents.
-func (h *IMMessageHandler) classifyWithTaskContextMerge(ctx context.Context, msg IMUserMessage, history []agent.ConversationEntry, recentHistory []string) (intent.ClassificationResult, bool) {
+func (h *IMMessageHandler) classifyWithTaskContextMerge(ctx context.Context, msg IMUserMessage, history []agent.ConversationEntry, recentHistory []string, taskSummary string) (intent.ClassificationResult, bool) {
 	uic := h.getUnifiedClassifier()
 	if uic == nil {
 		return intent.ClassificationResult{}, false
@@ -110,7 +110,11 @@ func (h *IMMessageHandler) classifyWithTaskContextMerge(ctx context.Context, msg
 	if utf8.RuneCountInString(current) > 120 {
 		return intent.ClassificationResult{}, false
 	}
-	merged := mergeTaskContextText(current, recentUserTaskTexts(history, 2))
+	priors := recentUserTaskTexts(history, 2)
+	if summary := truncateRunes(strings.TrimSpace(taskSummary), 120); summary != "" {
+		priors = append([]string{summary}, priors...)
+	}
+	merged := mergeTaskContextText(current, priors)
 	if merged == "" || merged == current {
 		return intent.ClassificationResult{}, false
 	}

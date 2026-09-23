@@ -38,14 +38,14 @@ const railItemLabelStyle = { fontSize: '0.72rem', lineHeight: 1.15, fontWeight: 
 
 const sharedHeaderStyle = { justifyContent: 'flex-start', width: '100%', flexDirection: 'column' } as const;
 const maclawHeaderStyle = { ...sharedHeaderStyle, height: '64px', padding: '0 0 2px 0', gap: '0' } as const;
-const tigerClawHeaderStyle = { ...sharedHeaderStyle, height: '56px', padding: '4px 0 2px 0', gap: '1px' } as const;
+const tigerClawHeaderStyle = { ...sharedHeaderStyle, padding: '2px 0 0 0', gap: '2px' } as const;
 
 export const SidebarBrandHeader = ({ brandId, currentIcon, brandSidebarName }: SidebarBrandHeaderProps) => {
     const isTigerClaw = brandId === 'qianxin';
     return (
         <div className={`sidebar-header ${isTigerClaw ? 'sidebar-header--tiger' : 'sidebar-header--maclaw'}`} style={isTigerClaw ? tigerClawHeaderStyle : maclawHeaderStyle}>
             {isTigerClaw ? (
-                <img src={currentIcon} alt="Logo" className="sidebar-logo" style={{ width: '30px', height: '30px', objectFit: 'contain' }} />
+                <img src={currentIcon} alt="Logo" className="sidebar-logo snrp-brand-logo" />
             ) : (
                 <span className="mc-sidebar-brand-mark mc-sidebar-brand-mark--compact" aria-label="MaClaw">
                     <svg viewBox="0 0 80 80" focusable="false" aria-hidden="true">
@@ -53,7 +53,7 @@ export const SidebarBrandHeader = ({ brandId, currentIcon, brandSidebarName }: S
                     </svg>
                 </span>
             )}
-            {isTigerClaw && <div style={{ color: 'var(--theme-primary-strong)', fontSize: '0.64rem', fontWeight: 800, lineHeight: 1, fontFamily: 'Georgia, serif' }}>{brandSidebarName}</div>}
+            {isTigerClaw && <div className="snrp-brand-name">{brandSidebarName}</div>}
         </div>
     );
 };
@@ -81,18 +81,6 @@ const FolderRailIcon = () => (
         <path d="M3 6.5a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
     </svg>
 );
-
-const hiddenLegacyLabelStyle = {
-    position: 'absolute',
-    width: '1px',
-    height: '1px',
-    padding: 0,
-    margin: '-1px',
-    overflow: 'hidden',
-    clip: 'rect(0, 0, 0, 0)',
-    whiteSpace: 'nowrap',
-    border: 0,
-} as const;
 
 type SemanticNavItemProps = {
     id: string;
@@ -141,7 +129,7 @@ const SemanticNavItem = ({ id, label, legacyLabel, icon, active, current, onClic
                 )}
             </span>
             <span className={aiStyle ? 'ai-nav-label' : undefined} style={aiStyle ? undefined : railItemLabelStyle}>{label}</span>
-            {legacyLabel && legacyLabel !== label && <span aria-hidden="true" style={hiddenLegacyLabelStyle}>{legacyLabel}</span>}
+            {legacyLabel && legacyLabel !== label && <span aria-hidden="true" className="snrp-legacy-label">{legacyLabel}</span>}
         </button>
     );
 };
@@ -185,7 +173,7 @@ export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showApp
                 title={aiAssistantLabel}
                 aiStyle
             />
-            <div aria-hidden="true" style={{ width: '70%', height: '2px', margin: '4px 0 6px 0', borderRadius: '1px', background: 'linear-gradient(90deg, transparent 0%, var(--theme-border) 20%, var(--theme-text-muted) 50%, var(--theme-border) 80%, transparent 100%)', opacity: 0.5 }} />
+            <div aria-hidden="true" className="snrp-divider" />
             <SemanticNavItem id="tasks" label={labels.tasks} icon={<TaskRailIcon />} active={navTab === 'remote'} onClick={() => { if (onOpenBackgroundTasks) onOpenBackgroundTasks(); else switchTool('remote'); }} title={isEnglish ? 'Task monitor' : isTraditional ? '任務監控' : '任务监控'} testId="sidebar-task-monitor-nav" badgeCount={runningTaskCount} badgeLabel={isEnglish ? `: ${Math.max(0, Math.trunc(Number(runningTaskCount) || 0))} running` : isTraditional ? `：${Math.max(0, Math.trunc(Number(runningTaskCount) || 0))} 個執行中` : `：${Math.max(0, Math.trunc(Number(runningTaskCount) || 0))} 个执行中`} />
             {showAppEntry && <SemanticNavItem id="apps" label={labels.apps} legacyLabel={appsLabel} icon={<AppsRailIcon />} active={navTab === 'apps'} onClick={() => switchTool('apps')} title={appsLabel} testId="sidebar-apps-nav" />}
             <SemanticNavItem id="experts" label={expertLabel} legacyLabel={showToolsEntry ? undefined : utilitiesLabel} icon={<ExpertRailIcon />} active={navTab === 'utilities'} onClick={() => switchTool('utilities')} title={expertTitle} testId="sidebar-utilities-nav" visible={showUtilitiesEntry} />

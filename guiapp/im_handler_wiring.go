@@ -657,6 +657,11 @@ type IMMessageHandler struct {
 	// sessionGovernedTaskKey(userID, channel, destination).
 	sessionGovernedTasks sync.Map
 
+	// semanticSessionResidues stores the open capability needs of a desktop
+	// conversation. Keyed by the desktop session key (userID, including the
+	// project suffix). It is not a grant and is not a RouteState session.
+	semanticSessionResidues sync.Map
+
 	// activeLocalDocuments is a host-owned, owner/channel scoped reference to
 	// the current desktop-picker document. It is a resource context, not a
 	// sticky tool grant, and is revalidated before every semantic read.

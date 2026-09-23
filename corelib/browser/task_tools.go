@@ -3,8 +3,10 @@ package browser
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
@@ -21,7 +23,7 @@ func RegisterTaskTools(registry *tool.Registry, supervisor *BrowserTaskSuperviso
 	tools := []tool.RegisteredTool{
 		{
 			Name:        "browser_task_run",
-			Description: "Run stable browser automation steps. Requires session_id; eval/click_at are disabled. Type steps may target the focused editable element after a click.",
+			Description: "Run probed browser steps in one call. Skips a full observe after every step and observes once at the end. Stops early on navigate, submit, dialog, or a URL change. eval/click_at are disabled. Type steps may target the focused editable element after a click.",
 			Category:    tool.CategoryBuiltin,
 			Tags:        []string{"browser", "automation", "task"},
 			Priority:    5,
@@ -42,7 +44,7 @@ func RegisterTaskTools(registry *tool.Registry, supervisor *BrowserTaskSuperviso
 				},
 				"max_retries": map[string]interface{}{
 					"type":        "integer",
-					"description": "maximum retry count, default 3",
+					"description": "maximum retry count per step, default 0",
 				},
 				"content_format": map[string]interface{}{
 					"type":        "string",
@@ -68,17 +70,23 @@ func RegisterTaskTools(registry *tool.Registry, supervisor *BrowserTaskSuperviso
 				}
 				var steps []StepSpec
 				if strings.TrimSpace(stepsJSON) != "" {
-					if err := json.Unmarshal([]byte(stepsJSON), &steps); err != nil {
+					parsed, err := parseTaskSteps(stepsJSON)
+					if err != nil {
 						return fmt.Sprintf("steps JSON parse failed: %v", err)
 					}
-					normalizeStepParams(stepsJSON, steps)
+					steps = parsed
 					applyDefaultContentFormatToTypeSteps(steps, strVal(args, "content_format"))
 				}
 
+				maxRetries := 0
+				if _, ok := args["max_retries"]; ok {
+					maxRetries = intVal(args, "max_retries", 0)
+				}
 				spec := TaskSpec{
 					Steps:       steps,
 					Description: strVal(args, "description"),
-					MaxRetries:  intVal(args, "max_retries", 3),
+					MaxRetries:  maxRetries,
+					FastBatch:   true,
 				}
 
 				if resumeID != "" {
@@ -93,6 +101,12 @@ func RegisterTaskTools(registry *tool.Registry, supervisor *BrowserTaskSuperviso
 						spec = prev
 						spec.Steps = append([]StepSpec(nil), prev.Steps[from:]...)
 						spec.ID = ""
+						spec.FastBatch = true
+						if _, ok := args["max_retries"]; ok {
+							spec.MaxRetries = maxRetries
+						} else {
+							spec.MaxRetries = 0
+						}
 					}
 				}
 
@@ -313,6 +327,7 @@ func marshalTaskRunResult(state *TaskState, err error) string {
 			errResp["total"] = state.TotalSteps
 			errResp["retries"] = state.RetryCount
 			errResp["task_id"] = state.ID
+			appendBatchObservation(errResp, state)
 		}
 		result, _ := json.Marshal(errResp)
 		return string(result)
@@ -332,8 +347,30 @@ func marshalTaskRunResult(state *TaskState, err error) string {
 		"step":    state.CurrentStep,
 		"total":   state.TotalSteps,
 	}
+	appendBatchObservation(payload, state)
 	result, _ := json.Marshal(payload)
 	return string(result)
+}
+
+func appendBatchObservation(payload map[string]interface{}, state *TaskState) {
+	if state == nil || payload == nil {
+		return
+	}
+	if state.StoppedReason != "" {
+		payload["stopped_reason"] = state.StoppedReason
+	}
+	if state.SnapshotID != "" {
+		payload["snapshot_id"] = state.SnapshotID
+	}
+	if state.Observation != "" {
+		payload["observation"] = state.Observation
+	}
+	if state.ObservationData != nil {
+		payload["observation_data"] = state.ObservationData
+	}
+	if state.ObservationError != "" {
+		payload["observation_error"] = state.ObservationError
+	}
 }
 
 func marshalTaskState(state *TaskState) string {
@@ -479,6 +516,217 @@ func RegisterRecorderTools(registry *tool.Registry, recorder *BrowserRecorder, r
 	}
 }
 
+// parseTaskSteps accepts a step array or one step object. Models often send
+// a single step as an object; rejecting that drops the batch back to one click at a time.
+// A numeric timeout is seconds when it is below 1000, otherwise milliseconds.
+// JSON would otherwise store that number as nanoseconds and cancel the step immediately.
+func parseTaskSteps(stepsJSON string) ([]StepSpec, error) {
+	stepsJSON = strings.TrimSpace(stepsJSON)
+	if stepsJSON == "" {
+		return nil, nil
+	}
+	rawSteps, err := rawStepList(stepsJSON)
+	if err != nil {
+		return nil, err
+	}
+	steps := make([]StepSpec, 0, len(rawSteps))
+	for _, raw := range rawSteps {
+		timeout, hasTimeout := takeStepTimeout(raw)
+		stringifyParamMap(raw)
+		encoded, err := json.Marshal(raw)
+		if err != nil {
+			return nil, err
+		}
+		var step StepSpec
+		if err := json.Unmarshal(encoded, &step); err != nil {
+			return nil, err
+		}
+		if hasTimeout {
+			step.Timeout = timeout
+		}
+		steps = append(steps, step)
+	}
+	rebuilt, err := json.Marshal(rawSteps)
+	if err != nil {
+		return nil, err
+	}
+	normalizeStepParams(string(rebuilt), steps)
+	return steps, nil
+}
+
+func rawStepList(stepsJSON string) ([]map[string]interface{}, error) {
+	var list []map[string]interface{}
+	if err := json.Unmarshal([]byte(stepsJSON), &list); err == nil {
+		return list, nil
+	}
+	var one map[string]interface{}
+	if err := json.Unmarshal([]byte(stepsJSON), &one); err != nil {
+		return nil, fmt.Errorf("steps JSON parse failed: %w", err)
+	}
+	action, _ := one["action"].(string)
+	if strings.TrimSpace(action) == "" {
+		return nil, fmt.Errorf("steps JSON parse failed")
+	}
+	return []map[string]interface{}{one}, nil
+}
+
+func takeStepTimeout(raw map[string]interface{}) (time.Duration, bool) {
+	if raw == nil {
+		return 0, false
+	}
+	value, ok := raw["timeout"]
+	if !ok || value == nil {
+		return 0, false
+	}
+	delete(raw, "timeout")
+	var timeout time.Duration
+	switch n := value.(type) {
+	case float64:
+		timeout = normalizeJSONTimeout(int64(n))
+	case string:
+		text := strings.TrimSpace(n)
+		if text == "" {
+			return 0, false
+		}
+		if d, err := time.ParseDuration(text); err == nil {
+			timeout = d
+		} else if i, err := strconv.ParseInt(text, 10, 64); err == nil {
+			timeout = normalizeJSONTimeout(i)
+		}
+	}
+	if timeout <= 0 {
+		return 0, false
+	}
+	noteWaitDuration(raw, timeout)
+	return timeout, true
+}
+
+func noteWaitDuration(raw map[string]interface{}, timeout time.Duration) {
+	action, _ := raw["action"].(string)
+	if !strings.EqualFold(strings.TrimSpace(action), "wait") || hasWaitDuration(raw) {
+		return
+	}
+	ms := int64(timeout / time.Millisecond)
+	if ms < 1 {
+		ms = 1
+	}
+	text := strconv.FormatInt(ms, 10)
+	if params, ok := raw["params"].(map[string]interface{}); ok {
+		params["duration_ms"] = text
+		return
+	}
+	raw["duration_ms"] = text
+}
+
+func hasWaitDuration(raw map[string]interface{}) bool {
+	if params, ok := raw["params"].(map[string]interface{}); ok {
+		if nonEmptyJSON(params["duration_ms"]) || nonEmptyJSON(params["ms"]) || nonEmptyJSON(params["timeout"]) {
+			return true
+		}
+	}
+	return nonEmptyJSON(raw["duration_ms"]) || nonEmptyJSON(raw["ms"])
+}
+
+// stringifyParamMap turns numeric and boolean param values into strings.
+// StepSpec.Params is map[string]string, so a raw number otherwise rejects the batch.
+func stringifyParamMap(raw map[string]interface{}) {
+	params, ok := raw["params"].(map[string]interface{})
+	if !ok {
+		return
+	}
+	for key, value := range params {
+		if text, ok := jsonScalarString(value); ok {
+			params[key] = text
+		}
+	}
+}
+
+func jsonScalarString(value interface{}) (string, bool) {
+	switch n := value.(type) {
+	case string:
+		return n, true
+	case float64:
+		if n == float64(int64(n)) {
+			return strconv.FormatInt(int64(n), 10), true
+		}
+		return strconv.FormatFloat(n, 'f', -1, 64), true
+	case bool:
+		if n {
+			return "true", true
+		}
+		return "false", true
+	case []interface{}:
+		parts := make([]string, 0, len(n))
+		for _, item := range n {
+			text, ok := jsonScalarString(item)
+			if !ok || strings.TrimSpace(text) == "" {
+				continue
+			}
+			parts = append(parts, strings.TrimSpace(text))
+		}
+		encoded, err := json.Marshal(parts)
+		if err != nil {
+			return "", false
+		}
+		return string(encoded), true
+	default:
+		return "", false
+	}
+}
+
+func splitStepList(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	if strings.HasPrefix(raw, "[") {
+		var items []string
+		if err := json.Unmarshal([]byte(raw), &items); err == nil {
+			out := make([]string, 0, len(items))
+			for _, item := range items {
+				item = strings.TrimSpace(item)
+				if item != "" {
+					out = append(out, item)
+				}
+			}
+			return out
+		}
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func nonEmptyJSON(value interface{}) bool {
+	switch n := value.(type) {
+	case string:
+		return strings.TrimSpace(n) != ""
+	case float64:
+		return true
+	default:
+		return value != nil
+	}
+}
+
+func normalizeJSONTimeout(n int64) time.Duration {
+	if n <= 0 {
+		return 0
+	}
+	if n < 1000 {
+		return time.Duration(n) * time.Second
+	}
+	if n < 10_000_000 {
+		return time.Duration(n) * time.Millisecond
+	}
+	return time.Duration(n)
+}
+
 // normalizeStepParams handles LLM outputs that put step parameters at the
 // top level (e.g. {"action":"click","ref":"@e1"}) instead of inside a "params"
 // sub-object ({"action":"click","params":{"ref":"@e1"}}). This is a common
@@ -519,7 +767,11 @@ func normalizeStepParams(stepsJSON string, steps []StepSpec) {
 			case bool:
 				extras[k] = fmt.Sprintf("%v", val)
 			default:
-				// For arrays/objects, marshal back to JSON string.
+				if text, ok := jsonScalarString(val); ok {
+					extras[k] = text
+					continue
+				}
+				// For objects, marshal back to JSON string.
 				if b, err := json.Marshal(val); err == nil {
 					extras[k] = string(b)
 				}

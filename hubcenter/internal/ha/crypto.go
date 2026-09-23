@@ -148,6 +148,8 @@ func encodeRSAPublicKeyPEM(key *rsa.PublicKey) string {
 	return string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
 }
 
+var safeHAKeyFileNamePattern = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
+
 func safeHAKeyFileName(nodeID, fqdn string) string {
 	base := strings.TrimSpace(nodeID)
 	if base == "" {
@@ -156,8 +158,7 @@ func safeHAKeyFileName(nodeID, fqdn string) string {
 	if base == "" {
 		base = "hubcenter-node"
 	}
-	re := regexp.MustCompile(`[^A-Za-z0-9._-]+`)
-	base = re.ReplaceAllString(base, "_")
+	base = safeHAKeyFileNamePattern.ReplaceAllString(base, "_")
 	base = strings.Trim(base, "._-")
 	if base == "" {
 		base = "hubcenter-node"

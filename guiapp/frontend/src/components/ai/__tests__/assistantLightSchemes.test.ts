@@ -10,6 +10,7 @@ import {
     readStoredAssistantLightSchemeId,
     ASSISTANT_LIGHT_SCHEME_STORAGE_KEY,
 } from "../assistantLightSchemes";
+import { buildBootThemePalette, renderBootThemeScript } from "../themeBootPalette";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const frontendSrc = resolve(here, "../../..");
@@ -57,6 +58,7 @@ const cssTokenMap = {
     dangerBg: "--theme-danger-bg",
     linkColor: "--theme-link-color",
     infoBg: "--theme-info-bg",
+    onPrimary: "--theme-on-primary",
 } as const;
 
 describe("assistant light schemes", () => {
@@ -87,7 +89,7 @@ describe("assistant light schemes", () => {
     it("exposes the Fluent Azure palette tokens", () => {
         const scheme = getAssistantLightScheme("fluent");
         expect(scheme.cssVars.pageBg).toBe("#ffffff");
-        expect(scheme.cssVars.primary).toBe("#2f78d0");
+        expect(scheme.cssVars.primary).toBe("#2e75cb");
         expect(scheme.cssVars.surface).toBe("#ffffff");
         expect(scheme.assistantTheme.sendBtnBg).toBe("#1769e8");
     });
@@ -115,7 +117,7 @@ describe("assistant light schemes", () => {
     });
 
     it("keeps CSS scheme tokens in sync with TypeScript palettes", () => {
-        const css = readFileSync(resolve(frontendSrc, "App.css"), "utf8");
+        const css = readFileSync(resolve(frontendSrc, "styles/generated/themeSchemes.generated.css"), "utf8");
         for (const scheme of assistantLightSchemes) {
             const vars = parseSchemeBlock(css, scheme.id);
             for (const [key, cssName] of Object.entries(cssTokenMap)) {
@@ -126,10 +128,14 @@ describe("assistant light schemes", () => {
 
     it("paints the first frame with the Fluent page background by default", () => {
         const html = readFileSync(resolve(frontendSrc, "../index.html"), "utf8");
-        expect(html).toContain(": '#ffffff'");
         expect(html).toContain("background-color: var(--theme-page-bg, #ffffff)");
+        // The boot palette is generated at build time from the scheme modules
+        // (single source of truth); index.html only carries a placeholder.
+        expect(html).toContain("<!-- @maclaw-boot-theme -->");
+        const script = renderBootThemeScript(buildBootThemePalette());
         for (const scheme of assistantLightSchemes) {
-            expect(html.toLowerCase(), scheme.id).toContain(scheme.cssVars.pageBg);
+            expect(script.toLowerCase(), scheme.id).toContain(scheme.cssVars.pageBg);
         }
+        expect(script).not.toContain("aurora' ? '#071018'");
     });
 });

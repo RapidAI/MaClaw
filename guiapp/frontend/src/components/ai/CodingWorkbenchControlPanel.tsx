@@ -39,7 +39,7 @@ type BuildCodingBannerChromeOpts = {
  * accent (foreground), not a fill. White-on-btnColor fails WCAG badly on graphite/etc.
  */
 export function buildCodingBannerChrome({ isDark, remote, theme: t }: BuildCodingBannerChromeOpts): CodingBannerChrome {
-    const accentFallback = isDark ? "#5f89b8" : "#2f78d0";
+    const accentFallback = isDark ? "#5f89b8" : "#2e75cb";
     const productAccent = t.btnColor || accentFallback;
     const accent = remote
         ? (isDark ? "#38bdf8" : "#0284c7")
@@ -557,15 +557,7 @@ export function CodingWorkbenchControlPanel({
                 {conflictCount > 0 && (
                     <span
                         data-testid="coding-control-chip-conflicts"
-                        style={{
-                            fontSize: 10,
-                            fontWeight: 700,
-                            color: "#dc2626",
-                            background: "color-mix(in srgb, #dc2626 12%, transparent)",
-                            borderRadius: 999,
-                            padding: "2px 6px",
-                            whiteSpace: "nowrap",
-                        }}
+                        className="cwcp-conflict-chip"
                     >
                         {localizeText(lang, `Conflict ${conflictCount}`, `冲突 ${conflictCount}`, `衝突 ${conflictCount}`)}
                     </span>
@@ -668,7 +660,7 @@ export function CodingControlSection({
     testId?: string;
 }) {
     return (
-        <div data-testid={testId} style={{ marginBottom: 10 }}>
+        <div data-testid={testId} className="cwcp-section">
             <div
                 style={{
                     fontSize: 10,

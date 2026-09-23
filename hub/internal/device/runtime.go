@@ -49,6 +49,9 @@ type Runtime struct {
 	desktopsByMachine map[string]*ws.ConnContext
 	metadataByMachine map[string]MachineRuntimeInfo
 	lastHeartbeatAt   map[string]time.Time
+	// lastMetadataWrite mirrors the metadata last persisted by the
+	// heartbeat/online paths so unchanged heartbeats can skip the DB write.
+	lastMetadataWrite map[string]store.MachineMetadata
 	events            []MachineEvent
 }
 
@@ -106,6 +109,7 @@ func NewRuntime() *Runtime {
 		desktopsByMachine: map[string]*ws.ConnContext{},
 		metadataByMachine: map[string]MachineRuntimeInfo{},
 		lastHeartbeatAt:   map[string]time.Time{},
+		lastMetadataWrite: map[string]store.MachineMetadata{},
 		events:            make([]MachineEvent, 0, 128),
 	}
 }
@@ -365,6 +369,16 @@ func (s *Service) MarkOnline(ctx context.Context, machineID string, hello ws.Mac
 		log.Printf("[device] MarkOnline ERROR: UpdateMetadata failed for machine_id=%s: %v", machineID, err)
 		return err
 	}
+	s.runtime.mu.Lock()
+	s.runtime.lastMetadataWrite[machineID] = store.MachineMetadata{
+		Name:                 info.Name,
+		Platform:             info.Platform,
+		Hostname:             info.Hostname,
+		Arch:                 info.Arch,
+		AppVersion:           info.AppVersion,
+		HeartbeatIntervalSec: info.HeartbeatIntervalSec,
+	}
+	s.runtime.mu.Unlock()
 	if err := s.repo.UpdateStatus(ctx, machineID, "online"); err != nil {
 		log.Printf("[device] MarkOnline ERROR: UpdateStatus failed for machine_id=%s: %v", machineID, err)
 		return err
@@ -434,15 +448,24 @@ func (s *Service) Heartbeat(ctx context.Context, machineID string, heartbeat ws.
 	if s.repo == nil {
 		return nil
 	}
-	if err := s.repo.UpdateMetadata(ctx, machineID, store.MachineMetadata{
+	meta := store.MachineMetadata{
 		Name:                 defaultMachineName(info.Name),
 		Platform:             defaultMachinePlatform(info.Platform),
 		Hostname:             info.Hostname,
 		Arch:                 info.Arch,
 		AppVersion:           info.AppVersion,
 		HeartbeatIntervalSec: info.HeartbeatIntervalSec,
-	}); err != nil {
-		return err
+	}
+	s.runtime.mu.RLock()
+	metadataUnchanged := s.runtime.lastMetadataWrite[machineID] == meta
+	s.runtime.mu.RUnlock()
+	if !metadataUnchanged {
+		if err := s.repo.UpdateMetadata(ctx, machineID, meta); err != nil {
+			return err
+		}
+		s.runtime.mu.Lock()
+		s.runtime.lastMetadataWrite[machineID] = meta
+		s.runtime.mu.Unlock()
 	}
 	if !shouldAccept {
 		return nil

@@ -227,7 +227,7 @@ func (r *countingHubDomainRouteRepo) ListEnabledDomainCalls() int {
 	return r.listEnabledDomainCalls
 }
 
-func (f *fakeSyncRecorder) SyncHubHeartbeat(context.Context, string)                {}
+func (f *fakeSyncRecorder) SyncHubHeartbeat(context.Context, *store.HubInstance)    {}
 func (f *fakeSyncRecorder) AppendBlockedEmail(context.Context, *store.BlockedEmail) {}
 func (f *fakeSyncRecorder) DeleteBlockedEmail(context.Context, string)              {}
 func (f *fakeSyncRecorder) AppendBlockedIP(context.Context, *store.BlockedIP)       {}

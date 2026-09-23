@@ -93,7 +93,7 @@ function ParticipantTypeIcon({ participant, theme }: { participant: Participant;
                     src={avatarDataURL}
                     alt=""
                     aria-hidden="true"
-                    style={{ width: "100%", height: "100%", borderRadius: 5, objectFit: "cover", display: "block" }}
+                    className="gpp-avatar-img"
                 />
             ) : participant.isLocal ? (
                 <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true" focusable="false">
@@ -379,7 +379,7 @@ export function GroupParticipantPanel({
                 color: theme.textMuted,
                 borderBottom: `1px solid ${theme.divider}`,
             }}>
-                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                <span className="gpp-head-title">
                     {isZh ? `\u53c2\u4e0e\u8005 (${visibleParticipants.length})` : `Participants (${visibleParticipants.length})`}
                 </span>
                 {readOnly && (
@@ -390,11 +390,7 @@ export function GroupParticipantPanel({
             </div>
 
             {/* Participant list */}
-            <div style={{
-                flex: 1,
-                overflowY: "auto",
-                padding: "4px 0",
-            }}>
+            <div className="gpp-list">
                 {visibleParticipants.map((p, index) => {
                     const displayName = participantDisplayNameFor(p, index, isZh, lang);
                     return (
@@ -414,12 +410,7 @@ export function GroupParticipantPanel({
                     >
                         <ParticipantTypeIcon participant={p} theme={theme} />
                         {/* Name */}
-                        <span style={{
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            whiteSpace: "nowrap",
-                            flex: 1,
-                        }}>
+                        <span className="gpp-name">
                             {displayName}
                         </span>
                     </div>

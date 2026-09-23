@@ -7,14 +7,85 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib/computeruse"
 )
+
+type wmWindow struct {
+	id    string
+	title string
+	x, y  int
+	w, h  int
+}
+
+func listWmctrlWindows() []wmWindow {
+	out, err := exec.Command("wmctrl", "-lG").Output()
+	if err != nil {
+		return nil
+	}
+	var hits []wmWindow
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 8 {
+			continue
+		}
+		wx, errX := strconv.Atoi(fields[2])
+		wy, errY := strconv.Atoi(fields[3])
+		ww, errW := strconv.Atoi(fields[4])
+		wh, errH := strconv.Atoi(fields[5])
+		if errX != nil || errY != nil || errW != nil || errH != nil {
+			continue
+		}
+		hits = append(hits, wmWindow{
+			id:    fields[0],
+			title: strings.Join(fields[7:], " "),
+			x:     wx, y: wy, w: ww, h: wh,
+		})
+	}
+	return hits
+}
+
+func bestWmctrlWindow(hint string) (wmWindow, bool) {
+	return pickWmctrlWindow(listWmctrlWindows(), hint)
+}
+
+func pickWmctrlWindow(hits []wmWindow, hint string) (wmWindow, bool) {
+	if len(hits) == 0 {
+		return wmWindow{}, false
+	}
+	titles := make([]string, len(hits))
+	for i, hit := range hits {
+		titles[i] = hit.title
+	}
+	best, ok := computeruse.BestWindowTitle(hint, titles)
+	if !ok {
+		return wmWindow{}, false
+	}
+	want := computeruse.NormalizeWindowTitle(best)
+	for _, hit := range hits {
+		if computeruse.NormalizeWindowTitle(hit.title) == want && hit.w >= 64 && hit.h >= 64 {
+			return hit, true
+		}
+	}
+	return wmWindow{}, false
+}
 
 func focusWindow(titleSubstring string) error {
 	titleSubstring = strings.TrimSpace(titleSubstring)
 	if titleSubstring == "" {
 		return fmt.Errorf("window title required")
 	}
-	// Prefer wmctrl -a (substring activate), then xdotool.
+	if hits := listWmctrlWindows(); len(hits) > 0 {
+		hit, ok := pickWmctrlWindow(hits, titleSubstring)
+		if !ok {
+			return fmt.Errorf("no visible window matching %q", titleSubstring)
+		}
+		if err := exec.Command("wmctrl", "-i", "-a", hit.id).Run(); err != nil {
+			return fmt.Errorf("focus window %q: %w", hit.title, err)
+		}
+		return nil
+	}
+	// wmctrl listing unavailable: substring activate, then xdotool.
 	if err := exec.Command("wmctrl", "-a", titleSubstring).Run(); err == nil {
 		return nil
 	}
@@ -116,34 +187,15 @@ func foregroundWindowBounds() (WindowBounds, bool) {
 }
 
 func namedWindowBounds(titleSubstring string) (WindowBounds, bool) {
-	titleSubstring = strings.ToLower(strings.TrimSpace(titleSubstring))
+	titleSubstring = strings.TrimSpace(titleSubstring)
 	if titleSubstring == "" {
 		return WindowBounds{}, false
 	}
-	out, err := exec.Command("wmctrl", "-lG").Output()
-	if err != nil {
+	hit, ok := bestWmctrlWindow(titleSubstring)
+	if !ok {
 		return WindowBounds{}, false
 	}
-	for _, line := range strings.Split(string(out), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 8 {
-			continue
-		}
-		title := strings.ToLower(strings.Join(fields[7:], " "))
-		if !strings.Contains(title, titleSubstring) {
-			continue
-		}
-		wx, errX := strconv.Atoi(fields[2])
-		wy, errY := strconv.Atoi(fields[3])
-		ww, errW := strconv.Atoi(fields[4])
-		wh, errH := strconv.Atoi(fields[5])
-		if errX != nil || errY != nil || errW != nil || errH != nil || ww < 64 || wh < 64 {
-			continue
-		}
-		return WindowBounds{
-			X: wx, Y: wy, Width: ww, Height: wh,
-			Title: strings.Join(fields[7:], " "),
-		}, true
-	}
-	return WindowBounds{}, false
+	return WindowBounds{
+		X: hit.x, Y: hit.y, Width: hit.w, Height: hit.h, Title: hit.title,
+	}, true
 }

@@ -58,12 +58,13 @@ type C3k2 struct {
 func (c *C3k2) Forward(x *Tensor) *Tensor {
 	y := c.CV1.Forward(x)
 	halfC := y.Shape[1] / 2
-	chunks := []*Tensor{
-		y.SliceChannel(0, halfC),
-		y.SliceChannel(halfC, y.Shape[1]),
-	}
+	// SliceChannel already returns zero-copy views for batch == 1; the
+	// halves are consumed read-only (GEMM B operand / module input).
+	y1 := y.SliceChannel(0, halfC)
+	y2 := y.SliceChannel(halfC, y.Shape[1])
 
-	current := chunks[len(chunks)-1]
+	chunks := []*Tensor{y1, y2}
+	current := y2
 	for _, m := range c.Modules {
 		current = m.Forward(current)
 		chunks = append(chunks, current)

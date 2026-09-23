@@ -54,16 +54,7 @@ function TTSLevelBarsInner({ accentColor }: { accentColor: string }) {
         <span
             ref={containerRef}
             aria-hidden="true"
-            className="tts-bars-idle"
-            style={{
-                position: "absolute",
-                inset: 0,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: "2px",
-                pointerEvents: "none",
-            }}
+            className="tts-bars-idle ttslb-container"
         >
             {[0, 1, 2, 3].map((i) => (
                 <span

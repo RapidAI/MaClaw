@@ -393,14 +393,7 @@ export const CodePreviewMinimap = React.memo(function CodePreviewMinimap({
                 ref={canvasRef}
                 data-testid="code-preview-minimap-canvas"
                 aria-hidden="true"
-                style={{
-                    position: 'absolute',
-                    inset: 0,
-                    width: '100%',
-                    height: '100%',
-                    pointerEvents: 'none',
-                    display: 'block',
-                }}
+                className="cpmm-canvas"
             />
             <div
                 className="mc-code-preview-minimap-thumb"

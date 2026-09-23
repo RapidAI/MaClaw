@@ -3,7 +3,9 @@ package kokoro
 import (
 	"fmt"
 	"math"
+	"runtime"
 	"strings"
+	"sync"
 )
 
 func (m *Model) GeneratorForward(feat *DecoderFeatures, f0n *F0NResult, voice *TensorFile) ([]float32, error) {
@@ -26,9 +28,7 @@ func (m *Model) GeneratorForward(feat *DecoderFeatures, f0n *F0NResult, voice *T
 	upsampleRates := []int{10, 6}
 	upsampleKernels := []int{20, 12}
 	for i := 0; i < 2; i++ {
-		for j := range x {
-			x[j] = leakyReLU(x[j], 0.1)
-		}
+		leakyReLUInplace(x, 0.1)
 		outC := 256
 		if i == 1 {
 			outC = 128
@@ -49,9 +49,7 @@ func (m *Model) GeneratorForward(feat *DecoderFeatures, f0n *F0NResult, voice *T
 		if err != nil {
 			return nil, err
 		}
-		for j := range x {
-			x[j] += xSource[j]
-		}
+		addInplace32(x, xSource)
 		var sum []float32
 		for j := 0; j < 3; j++ {
 			blockIdx := i*3 + j
@@ -62,19 +60,13 @@ func (m *Model) GeneratorForward(feat *DecoderFeatures, f0n *F0NResult, voice *T
 			if sum == nil {
 				sum = y
 			} else {
-				for n := range sum {
-					sum[n] += y[n]
-				}
+				addInplace32(sum, y)
 			}
 		}
-		for n := range sum {
-			sum[n] /= 3
-		}
+		mulNumberInplace32(sum, 1.0/3)
 		x = sum
 	}
-	for i := range x {
-		x[i] = leakyReLU(x[i], 0.01)
-	}
+	leakyReLUInplace(x, 0.01)
 	x, err = m.weightNormConv1D(x, 128, frames, 22, 7, 1, 3, 1, 1, "decoder.module.generator.conv_post")
 	if err != nil {
 		return nil, err
@@ -83,9 +75,7 @@ func (m *Model) GeneratorForward(feat *DecoderFeatures, f0n *F0NResult, voice *T
 	mag := make([]float32, bins*frames)
 	phase := make([]float32, bins*frames)
 	for b := 0; b < bins; b++ {
-		for t := 0; t < frames; t++ {
-			mag[b*frames+t] = float32(math.Exp(float64(x[b*frames+t])))
-		}
+		expInto32(mag[b*frames:(b+1)*frames], x[b*frames:(b+1)*frames])
 		copy(phase[b*frames:(b+1)*frames], x[(bins+b)*frames:(bins+b+1)*frames])
 		sinInplace32(phase[b*frames : (b+1)*frames])
 	}
@@ -114,31 +104,91 @@ func (m *Model) generatorAdaINResBlock1(x []float32, channels, frames int, style
 	copy(out, x)
 	for i := 0; i < 3; i++ {
 		xt := make([]float32, len(out))
-		if err := adaIN1D(xt, out, channels, frames, style, mustTensorData(m, fmt.Sprintf("%s.adain1.%d.fc.weight", prefix, i)), mustTensorData(m, fmt.Sprintf("%s.adain1.%d.fc.bias", prefix, i))); err != nil {
+		if err := adaINSnake1D(xt, out, channels, frames, style, mustTensorData(m, fmt.Sprintf("%s.adain1.%d.fc.weight", prefix, i)), mustTensorData(m, fmt.Sprintf("%s.adain1.%d.fc.bias", prefix, i)), mustTensorData(m, fmt.Sprintf("%s.alpha1.%d", prefix, i))); err != nil {
 			return nil, err
 		}
-		alpha1 := mustTensorData(m, fmt.Sprintf("%s.alpha1.%d", prefix, i))
-		snakeInplace(xt, alpha1, channels, frames)
 		var err error
 		xt, err = m.weightNormConv1D(xt, channels, frames, channels, kernelForGeneratorBlock(prefix), 1, paddingForKernel(kernelForGeneratorBlock(prefix), dilationForIndex(i)), dilationForIndex(i), 1, fmt.Sprintf("%s.convs1.%d", prefix, i))
 		if err != nil {
 			return nil, err
 		}
 		xt2 := make([]float32, len(xt))
-		if err := adaIN1D(xt2, xt, channels, frames, style, mustTensorData(m, fmt.Sprintf("%s.adain2.%d.fc.weight", prefix, i)), mustTensorData(m, fmt.Sprintf("%s.adain2.%d.fc.bias", prefix, i))); err != nil {
+		if err := adaINSnake1D(xt2, xt, channels, frames, style, mustTensorData(m, fmt.Sprintf("%s.adain2.%d.fc.weight", prefix, i)), mustTensorData(m, fmt.Sprintf("%s.adain2.%d.fc.bias", prefix, i)), mustTensorData(m, fmt.Sprintf("%s.alpha2.%d", prefix, i))); err != nil {
 			return nil, err
 		}
-		alpha2 := mustTensorData(m, fmt.Sprintf("%s.alpha2.%d", prefix, i))
-		snakeInplace(xt2, alpha2, channels, frames)
-		xt2, err = m.weightNormConv1D(xt2, channels, frames, channels, kernelForGeneratorBlock(prefix), 1, paddingForKernel(kernelForGeneratorBlock(prefix), 1), 1, 1, fmt.Sprintf("%s.convs2.%d", prefix, i))
-		if err != nil {
+		// convs2 accumulates straight into out (fused residual epilogue).
+		if err := m.weightNormConv1DResidual(out, xt2, channels, frames, channels, kernelForGeneratorBlock(prefix), 1, paddingForKernel(kernelForGeneratorBlock(prefix), 1), 1, 1, fmt.Sprintf("%s.convs2.%d", prefix, i), out); err != nil {
 			return nil, err
-		}
-		for n := range out {
-			out[n] += xt2[n]
 		}
 	}
 	return out, nil
+}
+
+// adaINSnake1D fuses adaIN1D with the following snake activation: it writes
+// the normalized rows to out (the conv input) and applies
+// out += sin(alpha*out)^2 / alpha in place, using one fused normalization
+// pass that also emits the scaled snake argument.
+func adaINSnake1D(out, x []float32, channels, frames int, style, fcW, fcB, alpha []float32) error {
+	if len(out) != channels*frames || len(x) != channels*frames {
+		return fmt.Errorf("kokoro: adain snake shape mismatch")
+	}
+	params := make([]float32, channels*2)
+	if err := Linear(params, style, fcW, fcB, len(style), channels*2); err != nil {
+		return err
+	}
+	normRange := func(c0, c1 int) {
+		scratch := make([]float32, frames)
+		for c := c0; c < c1; c++ {
+			row := x[c*frames : (c+1)*frames]
+			dst := out[c*frames : (c+1)*frames]
+			mean := sum32(row) / float32(frames)
+			variance := dot32(row, row)/float32(frames) - mean*mean
+			if variance < 0 {
+				variance = 0
+			}
+			inv := 1 / float32(math.Sqrt(float64(variance+1e-5)))
+			gamma := params[c]
+			beta := params[channels+c]
+			a := alpha[c]
+			if a == 0 {
+				a = 1
+			}
+			normScaleScaledInto(dst, scratch, row, mean, inv*(1+gamma), beta, a)
+			sinInplace32(scratch)
+			squareInplace(scratch)
+			axpyInplace(dst, scratch, 1/a)
+		}
+	}
+	workers := runtime.GOMAXPROCS(0)
+	if channels*frames < 1<<15 || workers < 2 {
+		normRange(0, channels)
+		return nil
+	}
+	if workers > channels {
+		workers = channels
+	}
+	if workers > 8 {
+		workers = 8
+	}
+	var wg sync.WaitGroup
+	chunk := (channels + workers - 1) / workers
+	for w := 0; w < workers; w++ {
+		start := w * chunk
+		end := start + chunk
+		if end > channels {
+			end = channels
+		}
+		if start >= end {
+			break
+		}
+		wg.Add(1)
+		go func(c0, c1 int) {
+			defer wg.Done()
+			normRange(c0, c1)
+		}(start, end)
+	}
+	wg.Wait()
+	return nil
 }
 
 func kernelForGeneratorBlock(prefix string) int {
@@ -184,24 +234,51 @@ func snakeInplace(x, alpha []float32, channels, frames int) {
 	if frames == 0 {
 		return
 	}
-	scratch := make([]float32, frames)
-	for c := 0; c < channels; c++ {
-		a := alpha[c]
-		if a == 0 {
-			a = 1
+	snakeRange := func(c0, c1 int) {
+		scratch := make([]float32, frames)
+		for c := c0; c < c1; c++ {
+			a := alpha[c]
+			if a == 0 {
+				a = 1
+			}
+			row := x[c*frames : (c+1)*frames]
+			// scratch = (sin(a*row))^2 / a, then row += scratch.
+			// Fused into four passes: scale, sin, square, axpy.
+			mulNumberInto32(scratch, row, a)
+			sinInplace32(scratch)
+			squareInplace(scratch)
+			axpyInplace(row, scratch, 1/a)
 		}
-		row := x[c*frames : (c+1)*frames]
-		copy(scratch, row)
-		if a != 1 {
-			mulNumberInplace32(scratch, a)
-		}
-		sinInplace32(scratch)
-		for i, v := range scratch {
-			scratch[i] = v * v
-		}
-		mulNumberInplace32(scratch, 1/a)
-		addInplace32(row, scratch)
 	}
+	workers := runtime.GOMAXPROCS(0)
+	if channels*frames < 1<<15 || workers < 2 {
+		snakeRange(0, channels)
+		return
+	}
+	if workers > channels {
+		workers = channels
+	}
+	if workers > 8 {
+		workers = 8
+	}
+	var wg sync.WaitGroup
+	chunk := (channels + workers - 1) / workers
+	for w := 0; w < workers; w++ {
+		start := w * chunk
+		end := start + chunk
+		if end > channels {
+			end = channels
+		}
+		if start >= end {
+			break
+		}
+		wg.Add(1)
+		go func(c0, c1 int) {
+			defer wg.Done()
+			snakeRange(c0, c1)
+		}(start, end)
+	}
+	wg.Wait()
 }
 
 func reflectionPadLeft1(x []float32, channels, frames int) []float32 {
@@ -236,8 +313,11 @@ func (m *Model) generatorSourceForStage(f0 []float32, frames, channels int, styl
 		for h := 0; h < 9; h++ {
 			sum += harmonics[t*9+h] * w[h]
 		}
-		merged[t] = tanh(sum)
+		merged[t] = sum
 	}
+	// tanh elementwise via exp: tanh(x) = 1 - 2/(e^{2x}+1); one fused
+	// vector pass instead of 1.7M scalar math.Tanh calls.
+	tanhInplace32(merged)
 	mag, phase, stftFrames := stftMagnitudePhase(merged, 20, 5)
 	har := make([]float32, 22*stftFrames)
 	for c := 0; c < 11; c++ {
@@ -302,7 +382,7 @@ func (m *Model) plainConv1D(x []float32, inC, inT, outC, kernel, stride, padding
 		if err != nil {
 			return nil, err
 		}
-		if err := conv1DSIMDTransposedWeight(out, x, wT, b, inC, inT, outC, kernel, stride, padding, dilation, outT); err != nil {
+		if err := conv1DSIMDTransposedWeight(out, x, wT, b, nil, inC, inT, outC, kernel, stride, padding, dilation, outT); err != nil {
 			return nil, err
 		}
 		return out, nil

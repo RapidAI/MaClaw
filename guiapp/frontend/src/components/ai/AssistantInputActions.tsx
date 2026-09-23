@@ -354,7 +354,7 @@ export function AssistantInputActionsLeft({
                 <span style={{ display: "inline-flex", color: iconColor, flexShrink: 0 }}>
                     <AssistantInputIcon name={item.icon} size={15} />
                 </span>
-                <span style={{ flex: 1, minWidth: 0 }}>{label}</span>
+                <span className="aia-item-label">{label}</span>
                 {active && <span style={{ fontSize: "11px", color: t.textMuted, flexShrink: 0 }}>{isZh ? "已选" : "On"}</span>}
             </button>
         );
@@ -367,7 +367,7 @@ export function AssistantInputActionsLeft({
     return (
         <>
             {plusMenuEnabled && (
-                <div style={{ position: "relative", display: "inline-flex", alignItems: "center" }}>
+                <div className="aia-plus-wrap">
                     <button
                         ref={plusButtonRef}
                         type="button"
@@ -459,7 +459,7 @@ export function AssistantInputActionsLeft({
                 >
                     <AssistantInputIcon name={getComposeActionIcon(composeAction)} size={12} />
                     <span>{getComposeActionLabel(composeAction, isZh)}</span>
-                    <span aria-hidden="true" style={{ opacity: 0.7, fontSize: "12px", marginLeft: "1px" }}>×</span>
+                    <span aria-hidden="true" className="aia-clear-mark">×</span>
                 </button>
             )}
             <button type="button" onClick={browseFile} disabled={!ready || inputLocked} style={getInputActionButtonStyle(t, themeMode, "attach", !ready || inputLocked)} title={localizeText(lang, "Choose file", "\u9009\u62e9\u6587\u4ef6")} aria-label={localizeText(lang, "Choose file", "\u9009\u62e9\u6587\u4ef6")} data-testid={attachButtonTestId}>
@@ -496,7 +496,7 @@ export function AssistantInputActionsRight({ canSend, cancelSession, handleCance
             aria-label={localizeText(lang, "Cancel", "\u53d6\u6d88")}
         >
             {showBusySpinner ? <span aria-hidden="true" style={{ width: "14px", height: "14px", borderRadius: "50%", border: `2px solid ${themeMode === "dark" ? "rgba(199, 215, 232, 0.24)" : `color-mix(in srgb, ${t.btnColor} 18%, transparent)`}`, borderTopColor: themeMode === "dark" ? "#c7d7e8" : t.btnColor, borderRightColor: themeMode === "dark" ? "#c7d7e8" : t.btnColor, animation: "ai-spinner-spin 0.8s linear infinite" }} /> : <AssistantInputIcon name="stop" size={13} />}
-            <span style={{ position: "absolute", opacity: 0, pointerEvents: "none" }}>{localizeText(lang, "Cancel", "\u53d6\u6d88")}</span>
+            <span className="aia-cancel-a11y">{localizeText(lang, "Cancel", "")}</span>
         </button>
     ) : (
         <>

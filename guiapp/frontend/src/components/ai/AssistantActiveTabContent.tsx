@@ -301,14 +301,9 @@ function UnifiedVEGroupWrapper({ tab, theme, lang, getTabState, saveTabState, on
     return (
         <div
             data-testid="live-group-tab"
-            style={{
-                display: "flex",
-                flexDirection: "row",
-                height: "100%",
-                width: "100%",
-            }}
+            className="aatc-live-row"
         >
-            <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+            <div className="aatc-live-col">
                 <VEConversationView
                     ref={veRef}
                     veId={tab.veId!}

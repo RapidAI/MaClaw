@@ -20,22 +20,18 @@ func envBool(name string) bool {
 
 func useKokoroSIMD() bool { return kokoroSIMDEnabled }
 
+// optRound2 gates the round-2 optimizations (LSTM parallelism, conv-transpose
+// pairing, vectorized tanh / istft trig) so benchmarks can A/B them in a
+// single process. Defaults on; not env-configurable by design.
+var optRound2 = true
+
+func setRound2Opts(on bool) { optRound2 = on }
+
 func useKokoroQ8Direct() bool { return kokoroQ8DirectEnabled }
 
 func useKokoroConvMatMul() bool { return kokoroConvMatMulEnabled }
 
 func useKokoroBufferPool() bool { return kokoroBufferPoolEnabled }
-
-func dot32(a, b []float32) float32 {
-	if useKokoroSIMD() {
-		return vek32.Dot(a, b)
-	}
-	sum := float32(0)
-	for i, v := range a {
-		sum += v * b[i]
-	}
-	return sum
-}
 
 func sum32(x []float32) float32 {
 	if useKokoroSIMD() {
@@ -95,6 +91,35 @@ func sinInplace32(x []float32) {
 	}
 	for i, v := range x {
 		x[i] = float32(math.Sin(float64(v)))
+	}
+}
+
+// tanhInplace32 replaces x with tanh(x). The vectorized path uses
+// tanh(x) = 1 - 2/(exp(2x)+1); the limits work out for large |x| because
+// exp overflows to +Inf (giving 1) and underflows to 0 (giving -1).
+func tanhInplace32(x []float32) {
+	if useKokoroSIMD() && optRound2 {
+		vek32.MulNumber_Inplace(x, 2)
+		vek32.Exp_Inplace(x)
+		vek32.AddNumber_Inplace(x, 1)
+		vek32.Inv_Inplace(x)
+		vek32.MulNumber_Inplace(x, 2)
+		vek32.Neg_Inplace(x)
+		vek32.AddNumber_Inplace(x, 1)
+		return
+	}
+	for i, v := range x {
+		x[i] = tanh(v)
+	}
+}
+
+func expInto32(dst, x []float32) {
+	if useKokoroSIMD() {
+		vek32.Exp_Into(dst, x)
+		return
+	}
+	for i, v := range x {
+		dst[i] = float32(math.Exp(float64(v)))
 	}
 }
 

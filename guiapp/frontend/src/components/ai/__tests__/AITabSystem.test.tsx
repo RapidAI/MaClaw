@@ -54,13 +54,13 @@ describe('AITabTypes', () => {
         expect(LOCAL_TAB.closable).toBe(false);
         expect(LOCAL_TAB.type).toBe("local");
         expect(LOCAL_TAB.id).toBe("local");
-        expect(LOCAL_TAB.title).toBe("默认任务");
+        expect(LOCAL_TAB.title).toBe("新建任务");
     });
 
     it('createInitialTabState clones LOCAL_TAB so mutations cannot corrupt the constant', () => {
         const state = createInitialTabState();
         state.tabs[0].title = "mutated";
-        expect(LOCAL_TAB.title).toBe("默认任务");
+        expect(LOCAL_TAB.title).toBe("新建任务");
         expect(state.tabs[0]).not.toBe(LOCAL_TAB);
     });
 });
@@ -107,8 +107,8 @@ describe('useAITabManager', () => {
         expect(localStorage.getItem('ai_assistant_local_tab_custom_title')).toBeNull();
     });
 
-    it('keeps a lone local tab visible when it can be renamed', () => {
-        const { getByTestId } = render(<AITabBar
+    it('hides the tab bar while only the new-task guide is open', () => {
+        const { queryByTestId } = render(<AITabBar
             tabs={[LOCAL_TAB]}
             activeTabId="local"
             theme={{ bg: '#fff', text: '#111', textMuted: '#666', btnColor: '#2563eb', divider: '#ddd' } as any}
@@ -117,7 +117,9 @@ describe('useAITabManager', () => {
             onRenameLocalTab={vi.fn()}
         />);
 
-        expect(getByTestId('ai-tab-bar')).toBeTruthy();
+        // The guide is a page, not a task tab. With no task tabs there is
+        // nothing to switch between, so the bar stays out of the layout.
+        expect(queryByTestId('ai-tab-bar')).toBeNull();
     });
 
     it('updates an open project tab after its task is renamed elsewhere', () => {

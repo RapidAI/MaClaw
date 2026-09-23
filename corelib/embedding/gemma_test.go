@@ -235,6 +235,38 @@ func BenchmarkEmbedBatch(b *testing.B) {
 	}
 }
 
+// BenchmarkEmbed_Long benchmarks a long text (~450 tokens) where attention
+// (O(seq²·heads·dim)) starts to rival the GEMMs — the regime that motivates
+// int8 Q·K attention kernels.
+func BenchmarkEmbed_Long(b *testing.B) {
+	modelPath := findModelBench(b)
+	emb, err := NewGemmaEmbedder(modelPath, 256)
+	if err != nil {
+		b.Fatalf("load failed: %v", err)
+	}
+	defer emb.Close()
+
+	sentence := "The quick brown fox jumps over the lazy dog while seventeen curious mathematicians " +
+		"quietly rearrange their wooden bookshelves, sip lukewarm green tea, and argue about " +
+		"whether deterministic finite automata can dream of non-deterministic sheep. "
+	var sb strings.Builder
+	for sb.Len() < 3200 {
+		sb.WriteString(sentence)
+	}
+	text := sb.String()
+	if n := len(emb.tokenizer.Encode(text)); n < 300 {
+		b.Fatalf("long text tokenizes to only %d tokens, want >=300", n)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := emb.Embed(text)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.StopTimer() // Close/unmap is not Embed
+}
+
 func TestEmbedBatchDoesNotMutateMatMulParallel(t *testing.T) {
 	tensor.SetMatMulMaxParallel(7)
 	defer tensor.SetMatMulMaxParallel(0)

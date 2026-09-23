@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { AcceptCloudWorkspaceShare, CreateCloudWorkspaceShare, GetCloudWorkspaceShare, RemoveCloudWorkspaceShareRecipient, StopCloudWorkspaceShare, UpdateCloudWorkspaceShareRecipient } from '../../../wailsjs/go/main/App';
 import { EventsEmit } from '../../../wailsjs/runtime';
 import { EVENT_PROJECT_INDEX_CHANGED } from '../../constants/events';
+import { useToast } from '../Toast';
 import { extractErrorMessage } from '../ai/participantAddError';
 import { useDialog } from '../CustomDialog';
 
@@ -62,6 +63,23 @@ const SHARE_TTL_OPTIONS: { id: ShareTTL; en: string; zh: string; zhHant: string 
     { id: '90d', en: '90 days', zh: '90 天', zhHant: '90 天' },
     { id: 'never', en: 'No expiry', zh: '永久', zhHant: '永久' },
 ];
+
+export const cloudWorkspaceShareJoinLooksLikeOwn = (text: string) => {
+    const lower = text.toLowerCase();
+    return text.includes('自己的云端工作区')
+        || text.includes('自己的雲端工作區')
+        || lower.includes('your own cloud workspace')
+        || lower.includes('cannot accept your own');
+};
+
+export const cloudWorkspaceShareJoinLooksLikeDeadLink = (text: string) => {
+    const lower = text.toLowerCase();
+    return text.includes('已过期')
+        || text.includes('已過期')
+        || text.includes('已停止分享')
+        || lower.includes('has expired')
+        || lower.includes('no longer active');
+};
 
 const ttlFromExpiresAt = (raw: string): ShareTTL => {
     const expires = Date.parse(raw);
@@ -259,36 +277,34 @@ export function CloudWorkspaceShareDialog({
 
     return createPortal(
         <div
-            className="modal-backdrop"
+            className="modal-backdrop cwshare-backdrop"
             data-testid="task-cloud-share-dialog"
             data-ai-theme={getPortalThemeMode(themeMode)}
             data-ai-dark-scheme={getPortalDarkScheme()}
             data-ai-light-scheme={getPortalLightScheme()}
-            style={{ zIndex: 11000 }}
             onClick={e => { if (e.target === e.currentTarget && !busy) onClose(); }}
         >
             <div
                 ref={dialogRef}
-                className="modal-content"
+                className="modal-content cwshare-dialog cwshare-dialog--share"
                 role="dialog"
                 aria-modal="true"
                 aria-labelledby="task-cloud-share-title"
                 onClick={e => e.stopPropagation()}
-                style={{ width: '480px', maxWidth: '92vw', textAlign: 'left' }}
             >
                 <div className="modal-header">
-                    <h3 id="task-cloud-share-title" style={{ fontSize: '0.88rem', margin: 0 }}>
+                    <h3 id="task-cloud-share-title" className="cwshare-title">
                         {textForLang(lang, `Share “${task.name}”`, `分享「${task.name}」`, `分享「${task.name}」`)}
                     </h3>
                     <button type="button" className="btn-close" data-testid="task-cloud-share-close" aria-label={textForLang(lang, 'Close', '关闭', '關閉')} disabled={busy} onClick={onClose}>X</button>
                 </div>
-                <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                    <div style={{ fontSize: '0.72rem', color: 'var(--theme-text-secondary)', lineHeight: 1.45 }}>
+                <div className="modal-body cwshare-body">
+                    <div className="cwshare-hint">
                         {textForLang(lang, 'Hub users who open the link can join this cloud workspace. Read-only viewers coexist; writers sync to your workspace and take the exclusive writer lock.', '打开链接的 Hub 用户会加入该云端工作区。只读可同时查看；可读写会同步到你的工作区，同一时间仍由一人写入。', '打開連結的 Hub 使用者會加入該雲端工作區。唯讀可同時查看；可讀寫會同步到你的工作區，同一時間仍由一人寫入。')}
                     </div>
                     <div>
-                        <div style={{ marginBottom: '6px', fontSize: '0.72rem', fontWeight: 700, color: 'var(--theme-text-secondary)' }}>{textForLang(lang, 'Permission', '权限', '權限')}</div>
-                        <div role="group" style={{ display: 'flex', gap: '8px' }}>
+                        <div className="cwshare-field-label">{textForLang(lang, 'Permission', '权限', '權限')}</div>
+                        <div role="group" className="cwshare-permission-row">
                             {(['read', 'write'] as const).map(id => (
                                 <button
                                     key={id}
@@ -299,8 +315,8 @@ export function CloudWorkspaceShareDialog({
                                     onClick={() => setPermission(id)}
                                     style={{ flex: 1, border: permission === id ? '1px solid var(--theme-primary)' : '1px solid var(--theme-border)', borderRadius: '8px', background: permission === id ? 'color-mix(in srgb, var(--theme-primary) 12%, var(--theme-surface))' : 'var(--theme-surface)', color: permission === id ? 'var(--theme-primary)' : 'var(--theme-text-primary)', padding: '8px 10px', textAlign: 'left', cursor: busy ? 'default' : 'pointer' }}
                                 >
-                                    <span style={{ display: 'block', fontSize: '0.74rem', fontWeight: 700 }}>{id === 'read' ? textForLang(lang, 'Read-only', '只读', '唯讀') : textForLang(lang, 'Read & write', '可读写', '可讀寫')}</span>
-                                    <span style={{ display: 'block', marginTop: '2px', fontSize: '0.62rem', color: 'var(--theme-text-muted)' }}>
+                                    <span className="cwshare-option-name">{id === 'read' ? textForLang(lang, 'Read-only', '只读', '唯讀') : textForLang(lang, 'Read & write', '可读写', '可讀寫')}</span>
+                                    <span className="cwshare-option-detail">
                                         {id === 'read'
                                             ? textForLang(lang, 'Open and view files', '可打开查看，不能改文件', '可開啟查看，不能改檔案')
                                             : textForLang(lang, 'Sync and edit your workspace', '挂载你的工作区并同步修改', '掛載你的工作區並同步修改')}
@@ -310,8 +326,8 @@ export function CloudWorkspaceShareDialog({
                         </div>
                     </div>
                     <div>
-                        <div style={{ marginBottom: '6px', fontSize: '0.72rem', fontWeight: 700, color: 'var(--theme-text-secondary)' }}>{textForLang(lang, 'Expiry', '有效期', '有效期')}</div>
-                        <div role="group" style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                        <div className="cwshare-field-label">{textForLang(lang, 'Expiry', '有效期', '有效期')}</div>
+                        <div role="group" className="cwshare-ttl-row">
                             {SHARE_TTL_OPTIONS.map(opt => (
                                 <button
                                     key={opt.id}
@@ -328,7 +344,7 @@ export function CloudWorkspaceShareDialog({
                         </div>
                     </div>
                     <div>
-                        <div style={{ marginBottom: '6px', fontSize: '0.72rem', fontWeight: 700, color: 'var(--theme-text-secondary)' }}>{textForLang(lang, 'Share password', '分享密码', '分享密碼')}</div>
+                        <div className="cwshare-field-label">{textForLang(lang, 'Share password', '分享密码', '分享密碼')}</div>
                         <input
                             type="password"
                             data-testid="task-cloud-share-password"
@@ -339,26 +355,26 @@ export function CloudWorkspaceShareDialog({
                             placeholder={passwordSet
                                 ? textForLang(lang, 'Leave blank to keep the current password', '留空则保持现有密码', '留空則保持現有密碼')
                                 : textForLang(lang, 'Optional. Recipients enter this to join.', '可选。打开链接时需要输入。', '可選。打開連結時需要輸入。')}
-                            style={{ width: '100%', boxSizing: 'border-box', fontSize: '0.72rem', color: 'var(--theme-text-primary)', background: 'var(--theme-surface)', border: '1px solid var(--theme-border)', borderRadius: '6px', padding: '6px 8px' }}
+                            className="cwshare-input"
                         />
                         {passwordSet ? (
-                            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '6px', fontSize: '0.68rem', color: 'var(--theme-text-secondary)' }}>
+                            <label className="cwshare-clear-label">
                                 <input type="checkbox" data-testid="task-cloud-share-clear-password" checked={clearPassword} disabled={busy} onChange={e => { setClearPassword(e.target.checked); if (e.target.checked) setPassword(''); }} />
                                 {textForLang(lang, 'Remove password', '清除密码', '清除密碼')}
                             </label>
                         ) : null}
                     </div>
                     <div>
-                        <div style={{ marginBottom: '6px', fontSize: '0.72rem', fontWeight: 700, color: 'var(--theme-text-secondary)' }}>{textForLang(lang, 'Share link', '分享链接', '分享連結')}</div>
+                        <div className="cwshare-field-label">{textForLang(lang, 'Share link', '分享链接', '分享連結')}</div>
                         {shareURL ? (
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                                <div style={{ display: 'flex', gap: '6px' }}>
-                                    <input readOnly value={shareURL} data-testid="task-cloud-share-url" style={{ flex: 1, minWidth: 0, fontSize: '0.72rem', color: 'var(--theme-text-primary)', background: 'var(--theme-surface-muted)', border: '1px solid var(--theme-border)', borderRadius: '6px', padding: '6px 8px' }} />
+                            <div className="cwshare-link-column">
+                                <div className="cwshare-link-row">
+                                    <input readOnly value={shareURL} data-testid="task-cloud-share-url" className="cwshare-url" />
                                     <button type="button" className="btn-primary" data-testid="task-cloud-share-copy" disabled={busy} onClick={() => { void copy(); }}>{copied ? textForLang(lang, 'Copied', '已复制', '已複製') : textForLang(lang, 'Copy', '复制', '複製')}</button>
                                     <button type="button" className="btn-secondary" data-testid="task-cloud-share-stop" disabled={busy} onClick={() => { void stopShare(); }}>{textForLang(lang, 'Stop sharing', '停止分享', '停止分享')}</button>
                                 </div>
                                 {settingsDirty ? (
-                                    <button type="button" className="btn-secondary" data-testid="task-cloud-share-update-permission" disabled={busy} onClick={() => { void generate(); }} style={{ alignSelf: 'flex-start' }}>
+                                    <button type="button" className="btn-secondary cwshare-update-btn" data-testid="task-cloud-share-update-permission" disabled={busy} onClick={() => { void generate(); }}>
                                         {textForLang(lang, 'Update share settings', '更新分享设置', '更新分享設定')}
                                     </button>
                                 ) : null}
@@ -369,13 +385,13 @@ export function CloudWorkspaceShareDialog({
                             </button>
                         )}
                     </div>
-                    {error ? <div role="alert" data-testid="task-cloud-share-error" style={{ padding: '7px 10px', borderRadius: '6px', border: '1px solid color-mix(in srgb, var(--theme-danger, #ef4444) 35%, var(--theme-border))', background: 'color-mix(in srgb, var(--theme-danger, #ef4444) 10%, transparent)', color: 'var(--theme-danger, #ef4444)', fontSize: '0.72rem' }}>{error}</div> : null}
+                    {error ? <div role="alert" data-testid="task-cloud-share-error" className="cwshare-alert cwshare-alert--error">{error}</div> : null}
                     <div>
-                        <div style={{ marginBottom: '6px', fontSize: '0.72rem', fontWeight: 700, color: 'var(--theme-text-secondary)' }}>
+                        <div className="cwshare-field-label">
                             {textForLang(lang, `Recipients · ${recipients.length}`, `接受者  共 ${recipients.length} 人`, `接受者  共 ${recipients.length} 人`)}
                         </div>
                         {recipients.length === 0 ? (
-                            <div data-testid="task-cloud-share-empty" style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)', lineHeight: 1.4 }}>
+                            <div data-testid="task-cloud-share-empty" className="cwshare-empty">
                                 {textForLang(lang, 'No one has opened this link yet.', '还没有人打开此链接。', '還沒有人打開此連結。')}
                             </div>
                         ) : recipients.map(rec => {
@@ -384,15 +400,15 @@ export function CloudWorkspaceShareDialog({
                             const homeHub = shareText(rec as Record<string, unknown>, 'home_hub', 'HomeHub');
                             const recPerm = shareText(rec as Record<string, unknown>, 'permission', 'Permission') === 'write' ? 'write' : 'read';
                             return (
-                                <div key={id || email} data-testid="task-cloud-share-recipient" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', padding: '7px 8px', border: '1px solid var(--theme-border)', borderRadius: '8px', marginBottom: '6px' }}>
-                                    <span style={{ minWidth: 0 }}>
-                                        <span style={{ display: 'block', fontSize: '0.74rem', fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{email}</span>
-                                        <span style={{ display: 'block', fontSize: '0.62rem', color: 'var(--theme-text-muted)' }}>
+                                <div key={id || email} data-testid="task-cloud-share-recipient" className="cwshare-recipient">
+                                    <span className="cwshare-recipient-id">
+                                        <span className="cwshare-recipient-email">{email}</span>
+                                        <span className="cwshare-recipient-perm">
                                             {recPerm === 'write' ? textForLang(lang, 'Read & write', '可读写', '可讀寫') : textForLang(lang, 'Read-only', '只读', '唯讀')}
                                             {homeHub ? ` · ${homeHub}` : ''}
                                         </span>
                                     </span>
-                                    <span style={{ display: 'inline-flex', gap: '6px', flexShrink: 0 }}>
+                                    <span className="cwshare-recipient-actions">
                                         <button type="button" data-testid="task-cloud-share-recipient-toggle" disabled={busy} onClick={() => { void changeRecipient(id, recPerm === 'write' ? 'read' : 'write'); }} style={{ border: 'none', background: 'transparent', color: 'var(--theme-primary)', cursor: busy ? 'default' : 'pointer', fontSize: '0.66rem' }}>
                                             {recPerm === 'write' ? textForLang(lang, 'Make read-only', '改为只读', '改為唯讀') : textForLang(lang, 'Make writable', '改为可读写', '改為可讀寫')}
                                         </button>
@@ -424,6 +440,7 @@ export function CloudWorkspaceShareJoinDialog({
     shareURL: string;
     onClose: () => void;
 }) {
+    const { showToast } = useToast();
     const [password, setPassword] = useState('');
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState('');
@@ -438,13 +455,6 @@ export function CloudWorkspaceShareJoinDialog({
 
     if (!open || !shareURL.trim()) return null;
 
-    const emitShareToast = (message: string, type: 'success' | 'error' | 'info') => {
-        EventsEmit('show-toast', { message, type, duration: 3500 });
-    };
-    const isOwnShareError = (text: string) => {
-        const lower = text.toLowerCase();
-        return text.includes('自己的云端工作区') || text.includes('自己的雲端工作區') || lower.includes('you own') || lower.includes('cannot accept your own');
-    };
     const submit = async () => {
         if (busy) return;
         setBusy(true);
@@ -455,18 +465,24 @@ export function CloudWorkspaceShareJoinDialog({
                 || textForLang(lang, 'Cloud workspace', '云端工作区', '雲端工作區');
             const tags = result?.tags || result?.Tags || [];
             const from = tags.map(tag => String(tag || '')).find(tag => tag.startsWith('cloud_workspace_shared_from:'))?.slice('cloud_workspace_shared_from:'.length) || '';
-            emitShareToast(
+            showToast(
                 from
                     ? textForLang(lang, `Joined “${name}” (from ${from})`, `已加入「${name}」（来自 ${from}）`, `已加入「${name}」（來自 ${from}）`)
                     : textForLang(lang, `Joined shared cloud workspace “${name}”`, `已加入分享的云端工作区「${name}」`, `已加入分享的雲端工作區「${name}」`),
                 'success',
+                3500,
             );
             EventsEmit(EVENT_PROJECT_INDEX_CHANGED);
             onClose();
         } catch (err) {
             const text = extractErrorMessage(err) || textForLang(lang, 'Failed to join cloud workspace', '加入云端工作区失败', '加入雲端工作區失敗');
-            if (isOwnShareError(text)) {
-                emitShareToast(text, 'info');
+            if (cloudWorkspaceShareJoinLooksLikeOwn(text)) {
+                showToast(text, 'info', 3500);
+                onClose();
+                return;
+            }
+            if (cloudWorkspaceShareJoinLooksLikeDeadLink(text)) {
+                showToast(text, 'error', 3500);
                 onClose();
                 return;
             }
@@ -478,30 +494,28 @@ export function CloudWorkspaceShareJoinDialog({
 
     return createPortal(
         <div
-            className="modal-backdrop"
+            className="modal-backdrop cwshare-backdrop"
             data-testid="task-cloud-share-join-dialog"
             data-ai-theme={getPortalThemeMode(themeMode)}
             data-ai-dark-scheme={getPortalDarkScheme()}
             data-ai-light-scheme={getPortalLightScheme()}
-            style={{ zIndex: 11000 }}
             onClick={e => { if (e.target === e.currentTarget && !busy) onClose(); }}
         >
             <div
-                className="modal-content"
+                className="modal-content cwshare-dialog cwshare-dialog--join"
                 role="dialog"
                 aria-modal="true"
                 aria-labelledby="task-cloud-share-join-title"
                 onClick={e => e.stopPropagation()}
-                style={{ width: '400px', maxWidth: '92vw', textAlign: 'left' }}
             >
                 <div className="modal-header">
-                    <h3 id="task-cloud-share-join-title" style={{ fontSize: '0.88rem', margin: 0 }}>
+                    <h3 id="task-cloud-share-join-title" className="cwshare-title">
                         {textForLang(lang, 'Enter share password', '输入分享密码', '輸入分享密碼')}
                     </h3>
                     <button type="button" className="btn-close" data-testid="task-cloud-share-join-close" aria-label={textForLang(lang, 'Close', '关闭', '關閉')} disabled={busy} onClick={onClose}>X</button>
                 </div>
-                <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                    <div style={{ fontSize: '0.72rem', color: 'var(--theme-text-secondary)', lineHeight: 1.45 }}>
+                <div className="modal-body cwshare-body cwshare-body--join">
+                    <div className="cwshare-hint">
                         {textForLang(lang, 'This cloud workspace share is password-protected.', '该云端工作区分享设有密码。', '該雲端工作區分享設有密碼。')}
                     </div>
                     <input
@@ -513,11 +527,11 @@ export function CloudWorkspaceShareJoinDialog({
                         value={password}
                         onChange={e => setPassword(e.target.value)}
                         onKeyDown={e => { if (e.key === 'Enter') void submit(); }}
-                        style={{ width: '100%', boxSizing: 'border-box', fontSize: '0.72rem', color: 'var(--theme-text-primary)', background: 'var(--theme-surface)', border: '1px solid var(--theme-border)', borderRadius: '6px', padding: '6px 8px' }}
+                        className="cwshare-input"
                     />
-                    {error ? <div role="alert" data-testid="task-cloud-share-join-error" style={{ padding: '7px 10px', borderRadius: '6px', border: '1px solid color-mix(in srgb, var(--theme-danger, #ef4444) 35%, var(--theme-border))', background: 'color-mix(in srgb, var(--theme-danger, #ef4444) 10%, transparent)', color: 'var(--theme-danger, #ef4444)', fontSize: '0.72rem' }}>{error}</div> : null}
+                    {error ? <div role="alert" data-testid="task-cloud-share-join-error" className="cwshare-alert cwshare-alert--error">{error}</div> : null}
                 </div>
-                <div className="modal-footer" style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+                <div className="modal-footer cwshare-footer">
                     <button type="button" className="btn-secondary" disabled={busy} onClick={onClose}>{textForLang(lang, 'Cancel', '取消', '取消')}</button>
                     <button type="button" className="btn-primary" data-testid="task-cloud-share-join-submit" disabled={busy || !password.trim()} onClick={() => { void submit(); }}>
                         {busy ? textForLang(lang, 'Joining…', '正在加入…', '正在加入…') : textForLang(lang, 'Join', '加入', '加入')}

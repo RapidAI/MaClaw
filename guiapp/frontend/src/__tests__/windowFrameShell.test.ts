@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { buildBootThemePalette, renderBootThemeScript } from '../components/ai/themeBootPalette';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const frontendSrc = resolve(here, '..');
@@ -106,9 +107,13 @@ describe('frameless window shell regression guards', () => {
         const splash = readSource('components/startup/EnvCheckSplash.tsx');
 
         expect(indexHtml).toContain('id="maclaw-boot-splash"');
-        expect(indexHtml).toContain("document.documentElement.style.backgroundColor = c");
-        expect(indexHtml).toContain('<script>');
-        expect(indexHtml.indexOf('<script>')).toBeLessThan(indexHtml.indexOf('<body>'));
+        // The boot theme script is generated from the scheme modules at build
+        // time and injected where this placeholder sits in <head>.
+        expect(indexHtml).toContain('<!-- @maclaw-boot-theme -->');
+        expect(indexHtml.indexOf('<!-- @maclaw-boot-theme -->')).toBeLessThan(indexHtml.indexOf('<body>'));
+        const bootScript = renderBootThemeScript(buildBootThemePalette());
+        expect(bootScript).toContain('document.documentElement.style.backgroundColor = c');
+        expect(bootScript).toContain('localStorage.getItem("ai_assistant_theme_mode")');
         expect(indexHtml).toContain('环境准备中');
         expect(indexHtml).toContain('window.go.main = window.go.guiapp');
         expect(indexHtml).toContain('Preparing Environment');

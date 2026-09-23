@@ -1160,8 +1160,8 @@ export function RecordingSessionCard({
                 maxWidth: 420,
             }}
         >
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 8 }}>
-                <div style={{ minWidth: 0 }}>
+            <div className="rsc-head">
+                <div className="rsc-title-wrap">
                     <div style={{ fontWeight: 600, color: t.text, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                         {title || (zh ? "录音" : "Recording")}
                     </div>
@@ -1182,14 +1182,7 @@ export function RecordingSessionCard({
                 >
                     {phase === "recording" ? (
                         <span
-                            style={{
-                                width: 8,
-                                height: 8,
-                                borderRadius: "50%",
-                                background: "#e74c3c",
-                                boxShadow: "0 0 0 0 rgba(231,76,60,0.5)",
-                                animation: "recording-pulse 1.2s ease-out infinite",
-                            }}
+                            className="rsc-live-dot"
                         />
                     ) : null}
                     <span>{statusLabel}</span>
@@ -1200,14 +1193,7 @@ export function RecordingSessionCard({
             <div
                 data-testid="recording-waveform"
                 aria-hidden
-                style={{
-                    display: "flex",
-                    alignItems: "flex-end",
-                    gap: 2,
-                    height: 48,
-                    marginBottom: 12,
-                    padding: "0 2px",
-                }}
+                className="rsc-waveform"
             >
                 {levels.map((lv, i) => (
                     <div
@@ -1230,11 +1216,11 @@ export function RecordingSessionCard({
             </div>
 
             {error ? (
-                <div style={{ color: "#e74c3c", fontSize: 12, marginBottom: 8 }}>{error}</div>
+                <div className="rsc-error">{error}</div>
             ) : null}
 
             {isLive ? (
-                <div style={{ display: "flex", gap: 8 }}>
+                <div className="rsc-live-actions">
                     <button
                         type="button"
                         data-testid="recording-pause-btn"
@@ -1262,9 +1248,9 @@ export function RecordingSessionCard({
                             flex: 1,
                             padding: "8px 10px",
                             borderRadius: 8,
-                            border: "1px solid #c0392b",
-                            background: "#e74c3c",
-                            color: "#fff",
+                            border: "1px solid var(--theme-danger)",
+                            background: "var(--theme-danger)",
+                            color: "var(--theme-on-primary)",
                             cursor: phase === "starting" ? "not-allowed" : "pointer",
                             fontSize: 13,
                             fontWeight: 600,

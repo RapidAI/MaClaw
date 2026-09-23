@@ -200,7 +200,7 @@ function MermaidBlock({ code, theme }: { code: string; theme: DocPreviewTheme })
     } else if (svg) {
         content = (
             <div
-                style={{ margin: "8px 0", overflow: "auto" }}
+                className="wdp-diagram"
                 dangerouslySetInnerHTML={{ __html: svg }}
             />
         );
@@ -214,7 +214,7 @@ function MermaidBlock({ code, theme }: { code: string; theme: DocPreviewTheme })
 
     return (
         <>
-            <div ref={containerRef} style={{ position: "absolute", width: 0, height: 0, overflow: "hidden" }} />
+            <div ref={containerRef} className="wdp-measure-host" />
             {content}
         </>
     );
@@ -792,8 +792,8 @@ function WorkflowProgressBoard({
             background: theme.headerBg,
             flexShrink: 0,
         }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", marginBottom: "9px" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: "8px", minWidth: 0 }}>
+            <div className="wdp-progress-head">
+                <div className="wdp-progress-title">
                     <div style={{ fontSize: "12px", fontWeight: 700, color: theme.text }}>
                         {localizeText(lang || "zh-Hans", "Workflow progress", "工作流进度", "工作流進度")}
                     </div>
@@ -937,7 +937,7 @@ function WorkflowProgressBoard({
                             } as any}
                             title={`${phaseLabel} · ${statusLabel}`}
                         >
-                            <span style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px", minWidth: 0 }}>
+                            <span className="wdp-node-title">
                                 <span style={{
                                     width: "24px",
                                     height: "24px",
@@ -1086,7 +1086,7 @@ function renderDocTable(tableLines: string[], key: string, theme: DocPreviewThem
     };
 
     return (
-        <div key={key} style={{ overflowX: "auto", margin: "8px 0" }}>
+        <div key={key} className="wdp-table-scroll">
             <table style={{ borderCollapse: "collapse", width: "100%", color: theme.text }}>
                 <thead>
                     <tr>
@@ -1130,9 +1130,9 @@ function renderMarkdown(md: string, theme: DocPreviewTheme): React.ReactNode[] {
     const flushList = () => {
         if (listItems.length === 0) return;
         nodes.push(
-            <ul key={`ul-${nodes.length}`} style={{ margin: "6px 0", paddingLeft: "20px" }}>
+            <ul key={`ul-${nodes.length}`} className="wdp-list">
                 {listItems.map((item, idx) => (
-                    <li key={idx} style={{ marginBottom: "3px" }}>{renderInline(item, theme)}</li>
+                    <li key={idx} className="wdp-list-item">{renderInline(item, theme)}</li>
                 ))}
             </ul>
         );
@@ -1257,9 +1257,9 @@ function renderMarkdown(md: string, theme: DocPreviewTheme): React.ReactNode[] {
                 i++;
             }
             nodes.push(
-                <ol key={`ol-${nodes.length}`} style={{ margin: "6px 0", paddingLeft: "20px" }}>
+                <ol key={`ol-${nodes.length}`} className="wdp-list">
                     {olItems.map((item, idx) => (
-                        <li key={idx} style={{ marginBottom: "3px" }}>{renderInline(item, theme)}</li>
+                        <li key={idx} className="wdp-list-item">{renderInline(item, theme)}</li>
                     ))}
                 </ol>
             );
@@ -1289,7 +1289,7 @@ function renderMarkdown(md: string, theme: DocPreviewTheme): React.ReactNode[] {
                 // Not a real table (single pipe-line), render as paragraph
                 for (const tl of tblLines) {
                     nodes.push(
-                        <p key={`p-tbl-${nodes.length}`} style={{ margin: "6px 0", lineHeight: "1.7" }}>
+                        <p key={`p-tbl-${nodes.length}`} className="wdp-para">
                             {renderInline(tl, theme)}
                         </p>
                     );
@@ -1313,7 +1313,7 @@ function renderMarkdown(md: string, theme: DocPreviewTheme): React.ReactNode[] {
             const src = imgMatch[2] || "";
             const isSvg = src.includes("image/svg+xml") || src.toLowerCase().endsWith(".svg");
             nodes.push(
-                <div key={`img-${i}`} style={{ margin: "12px 0", textAlign: "center" }}>
+                <div key={`img-${i}`} className="wdp-img-wrap">
                     <img src={src} alt={alt} loading="lazy" style={{
                         maxWidth: "100%",
                         maxHeight: "600px",
@@ -1334,7 +1334,7 @@ function renderMarkdown(md: string, theme: DocPreviewTheme): React.ReactNode[] {
         // Paragraph
         flushList();
         nodes.push(
-            <p key={`p-${i}`} style={{ margin: "6px 0", lineHeight: "1.7" }}>
+            <p key={`p-${i}`} className="wdp-para">
                 {renderInline(line, theme)}
             </p>
         );
@@ -1558,7 +1558,7 @@ export function WorkflowDocPreview({
                             <span style={{ marginLeft: "8px", color: theme.textMuted }}>暂无检查项</span>
                         )}
                         {gateItems.map((item, i) => (
-                            <span key={i} style={{ marginLeft: "8px" }}>
+                            <span key={i} className="wdp-gate-item">
                                 {item.passed ? "OK" : "WARN"} {item.description}
                             </span>
                         ))}

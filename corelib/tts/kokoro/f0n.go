@@ -3,6 +3,8 @@ package kokoro
 import (
 	"fmt"
 	"math"
+	"runtime"
+	"sync"
 )
 
 type F0NResult struct {
@@ -205,7 +207,7 @@ func (m *Model) weightNormConv1D(x []float32, inC, inT, outC, kernel, stride, pa
 		if err != nil {
 			return nil, err
 		}
-		if err := conv1DSIMDTransposedWeight(out, x, wT, bias, inC, inT, outC, kernel, stride, padding, dilation, outT); err != nil {
+		if err := conv1DSIMDTransposedWeight(out, x, wT, bias, nil, inC, inT, outC, kernel, stride, padding, dilation, outT); err != nil {
 			return nil, err
 		}
 		return out, nil
@@ -224,6 +226,44 @@ func (m *Model) weightNormConv1D(x []float32, inC, inT, outC, kernel, stride, pa
 		return nil, err
 	}
 	return out, nil
+}
+
+// weightNormConv1DResidual is weightNormConv1D with a fused residual
+// epilogue: out = conv(x) + residual, avoiding a separate elementwise pass
+// over the output. out and residual must both have length outC*outT.
+func (m *Model) weightNormConv1DResidual(out, x []float32, inC, inT, outC, kernel, stride, padding, dilation, groups int, prefix string, residual []float32) error {
+	outT := (inT+2*padding-dilation*(kernel-1)-1)/stride + 1
+	if len(out) != outC*outT || len(residual) != len(out) {
+		return fmt.Errorf("kokoro: residual conv shape mismatch")
+	}
+	if useKokoroSIMD() && groups == 1 && inC >= 16 && outC*outT*inC*kernel > 50000 && stride == 1 && useKokoroStridedFMA() {
+		wT, err := m.cachedFloat32(prefix+".weight_norm_transposed", func() ([]float32, error) {
+			wT := make([]float32, outC*kernel*inC)
+			wv, err := m.tensorData(prefix + ".weight_v")
+			if err != nil {
+				return nil, err
+			}
+			wg, err := m.tensorData(prefix + ".weight_g")
+			if err != nil {
+				return nil, err
+			}
+			if err := WeightNormConv1DWeightTransposed(wT, wv, wg, outC, inC, kernel); err != nil {
+				return nil, err
+			}
+			return wT, nil
+		})
+		if err != nil {
+			return err
+		}
+		bias, _ := m.tensorData(prefix + ".bias")
+		return conv1DSIMDTransposedWeight(out, x, wT, bias, residual, inC, inT, outC, kernel, stride, padding, dilation, outT)
+	}
+	xt2, err := m.weightNormConv1D(x, inC, inT, outC, kernel, stride, padding, dilation, groups, prefix)
+	if err != nil {
+		return err
+	}
+	addInto32(out, xt2, residual)
+	return nil
 }
 
 func (m *Model) weightNormConvTranspose1D(x []float32, inC, inT, outC, kernel, stride, padding, outputPadding, groups int, prefix string) ([]float32, error) {
@@ -296,24 +336,49 @@ func adaIN1D(out, x []float32, channels, frames int, style, fcW, fcB []float32) 
 	if err := Linear(params, style, fcW, fcB, len(style), channels*2); err != nil {
 		return err
 	}
-	for c := 0; c < channels; c++ {
-		mean := float32(0)
-		for t := 0; t < frames; t++ {
-			mean += x[c*frames+t]
-		}
-		mean /= float32(frames)
-		variance := float32(0)
-		for t := 0; t < frames; t++ {
-			d := x[c*frames+t] - mean
-			variance += d * d
-		}
-		inv := 1 / float32(math.Sqrt(float64(variance/float32(frames)+1e-5)))
-		gamma := params[c]
-		beta := params[channels+c]
-		for t := 0; t < frames; t++ {
-			out[c*frames+t] = (1+gamma)*(x[c*frames+t]-mean)*inv + beta
+	normRange := func(c0, c1 int) {
+		for c := c0; c < c1; c++ {
+			row := x[c*frames : (c+1)*frames]
+			mean := sum32(row) / float32(frames)
+			variance := dot32(row, row)/float32(frames) - mean*mean
+			if variance < 0 {
+				variance = 0
+			}
+			inv := 1 / float32(math.Sqrt(float64(variance+1e-5)))
+			gamma := params[c]
+			beta := params[channels+c]
+			normScaleInto(out[c*frames:(c+1)*frames], row, mean, inv*(1+gamma), beta)
 		}
 	}
+	workers := runtime.GOMAXPROCS(0)
+	if channels*frames < 1<<15 || workers < 2 {
+		normRange(0, channels)
+		return nil
+	}
+	if workers > channels {
+		workers = channels
+	}
+	if workers > 8 {
+		workers = 8
+	}
+	var wg sync.WaitGroup
+	chunk := (channels + workers - 1) / workers
+	for w := 0; w < workers; w++ {
+		start := w * chunk
+		end := start + chunk
+		if end > channels {
+			end = channels
+		}
+		if start >= end {
+			break
+		}
+		wg.Add(1)
+		go func(c0, c1 int) {
+			defer wg.Done()
+			normRange(c0, c1)
+		}(start, end)
+	}
+	wg.Wait()
 	return nil
 }
 

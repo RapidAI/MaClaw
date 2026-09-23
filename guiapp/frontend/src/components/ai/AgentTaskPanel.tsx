@@ -472,7 +472,7 @@ function renderDataValue(value: unknown, theme: Theme, depth = 0): React.ReactNo
     if (Array.isArray(value)) {
         if (value.length === 0) return <span style={{ color: theme.textMuted }}>-</span>;
         return (
-            <div style={{ display: "grid", gap: 4 }}>
+            <div className="atp-grid-4">
                 {value.slice(0, 8).map((item, index) => (
                     <div key={index} style={{ color: theme.text }}>
                         {renderDataValue(item, theme, depth + 1)}
@@ -487,9 +487,9 @@ function renderDataValue(value: unknown, theme: Theme, depth = 0): React.ReactNo
         if (entries.length === 0) return <span style={{ color: theme.textMuted }}>-</span>;
         if (depth >= 2) return <span style={{ color: theme.textMuted }}>{entries.length} fields</span>;
         return (
-            <div style={{ display: "grid", gap: 5 }}>
+            <div className="atp-grid-5">
                 {entries.slice(0, 10).map(([key, nested]) => (
-                    <div key={key} style={{ display: "grid", gridTemplateColumns: "110px 1fr", gap: 8 }}>
+                    <div className="atp-kv-row" key={key}>
                         <span style={{ color: theme.textMuted }}>{key}</span>
                         <span>{renderDataValue(nested, theme, depth + 1)}</span>
                     </div>
@@ -555,7 +555,7 @@ function renderField(
         browseLabel = s.browse,
         inputLabel?: string,
     ) => (
-        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 8 }}>
+        <div className="atp-input-grid">
             <input
                 id={inputId}
                 aria-label={inputId ? undefined : inputLabel}
@@ -613,7 +613,7 @@ function renderField(
         browseLabel = s.browse,
         inputLabel?: string,
     ) => (
-        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 8 }}>
+        <div className="atp-input-grid">
             <input
                 id={inputId}
                 aria-label={inputId ? undefined : inputLabel}
@@ -668,9 +668,9 @@ function renderField(
         control = (
             <>
                 {isFilePathList && currentLines.length > 0 ? (
-                    <details style={{ marginBottom: 2 }}>
+                    <details className="atp-details">
                         <summary style={{ fontSize: 11, color: theme.textMuted, cursor: "pointer", userSelect: "none" }}>
-                            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><IconEdit size={12} /> {label}</span>
+                            <span className="atp-summary-row"><IconEdit size={12} /> {label}</span>
                         </summary>
                         <textarea
                             id={controlId}
@@ -702,7 +702,7 @@ function renderField(
                     />
                 )}
                 {isFilePathList && (
-                    <div role="list" aria-label={label} style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 4 }}>
+                    <div className="atp-file-list" role="list" aria-label={label}>
                         {currentLines.map((line, index) => {
                             const fileName = line.split(/[\\/]/).pop() || line;
                             return (
@@ -781,7 +781,7 @@ function renderField(
                     const nestedValue = objectValue[column.name];
                     const nestedControlId = `${controlId}-${column.name.replace(/[^A-Za-z0-9_-]/g, "_")}`;
                     return (
-                        <div key={column.name} style={{ display: "grid", gridTemplateColumns: "120px 1fr", gap: 8, alignItems: "center" }}>
+                        <div className="atp-col-row" key={column.name}>
                             <label htmlFor={nestedControlId} style={{ color: theme.fieldLabel, fontSize: 12 }}>
                                 {column.label || column.name}
                                 {column.required && <span style={{ color: theme.errorText }}> *</span>}
@@ -851,7 +851,7 @@ function renderField(
             setValue(field.name, nextRows);
         };
         control = (
-            <div style={{ display: "grid", gap: 8 }}>
+            <div className="atp-grid-8">
                 <div style={{ overflowX: "auto", border: `1px solid ${theme.fieldBorder}`, borderRadius: 8 }}>
                     <table style={{ width: "100%", borderCollapse: "collapse", minWidth: Math.max(360, columns.length * 130) }}>
                         <thead>
@@ -880,7 +880,7 @@ function renderField(
                                                         checked={Boolean(cellValue)}
                                                         disabled={cellReadOnly}
                                                         onChange={(event) => updateCell(rowIndex, column, event.target.checked)}
-                                                        style={{ margin: 8 }}
+                                                        className="atp-check-margin"
                                                     />
                                                 ) : column.type === "select" ? (
                                                     <select value={formatValue(cellValue)} disabled={cellReadOnly} onChange={(event) => updateCell(rowIndex, column, event.target.value)} style={cellStyle}>
@@ -1034,7 +1034,7 @@ function renderField(
     }
 
     return (
-        <div key={field.name} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        <div className="atp-field-col6" key={field.name}>
             <label htmlFor={controlId} style={labelStyle}>
                 <span>{label}</span>
                 {field.required && <span style={{ color: theme.errorText }}>*</span>}
@@ -1091,7 +1091,7 @@ function databaseResultTable(data: Record<string, unknown> | undefined, theme: T
             {guidance ? <div style={{ color: theme.text, fontSize: 12, marginTop: 8, whiteSpace: "pre-wrap" }}>{guidance}</div> : null}
             {(columns.length > 0 || rows.length > 0) && (
         <div style={{ overflow: "auto", maxHeight: 360, marginTop: 8, border: `1px solid ${theme.divider}`, borderRadius: 6 }}>
-            <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12 }}>
+            <table className="atp-table">
                 {headers.length > 0 && (
                     <thead>
                         <tr>
@@ -1123,9 +1123,9 @@ function databaseResultTable(data: Record<string, unknown> | undefined, theme: T
 function keyValueList(data: Record<string, unknown> | undefined, theme: Theme) {
     if (!data || Object.keys(data).length === 0) return null;
     return (
-        <div style={{ display: "grid", gap: 8 }}>
+        <div className="atp-grid-8">
             {Object.entries(data).map(([key, value]) => (
-                <div key={key} style={{ display: "grid", gridTemplateColumns: "120px 1fr", gap: 8, alignItems: "start" }}>
+                <div className="atp-kv-row-start" key={key}>
                     <div style={{ color: theme.textMuted, fontSize: 12 }}>{key}</div>
                     <div style={{ color: theme.text, fontSize: 12, minWidth: 0, wordBreak: "break-word" }}>
                         {renderDataValue(value, theme)}
@@ -1180,15 +1180,15 @@ function ApprovalDecisionPanel({
     };
 
     return (
-        <div style={{ display: "flex", flexDirection: "column", gap: 14, width: "100%", maxWidth: 640, margin: "0 auto" }}>
+        <div className="atp-panel-640">
             <div style={{ border: `1px solid ${theme.divider}`, borderRadius: 8, padding: 12, background: theme.fieldBg }}>
-                <div style={{ fontWeight: 700, marginBottom: 8 }}>{view.action.summary}</div>
+                <div className="atp-title-mb">{view.action.summary}</div>
                 {view.action.risk && <div style={{ color: theme.textMuted, fontSize: 12 }}>{s.risk}: {view.action.risk}</div>}
             </div>
             {view.action.effects && view.action.effects.length > 0 && (
                 <div>
                     <div style={{ color: theme.fieldLabel, fontSize: 12, fontWeight: 700, marginBottom: 8 }}>{s.effects}</div>
-                    <ul style={{ margin: 0, paddingLeft: 18 }}>{view.action.effects.map((effect) => <li key={effect}>{effect}</li>)}</ul>
+                    <ul className="atp-list">{view.action.effects.map((effect) => <li key={effect}>{effect}</li>)}</ul>
                 </div>
             )}
             {view.action.reviewData && Object.keys(view.action.reviewData).length > 0 && (
@@ -1198,7 +1198,7 @@ function ApprovalDecisionPanel({
                 </div>
             )}
             {keyValueList(view.action.parameters, theme)}
-            <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <label className="atp-field-col6">
                 <span style={{ color: theme.fieldLabel, fontSize: 12, fontWeight: 600 }}>
                     {view.noteLabel || s.decisionNote}
                     {(requireAlways || requireOnReject) && <span style={{ color: theme.errorText }}> *</span>}
@@ -1234,7 +1234,7 @@ function ApprovalDecisionPanel({
                     {localError}
                 </div>
             )}
-            <div style={{ display: "flex", gap: 8 }}>
+            <div className="atp-row-8">
                 <button
                     type="button"
                     disabled={submitting}
@@ -1482,14 +1482,14 @@ function AgentTaskPanelContent({ view, onDismiss, onResizeStart, splitRatio = 0.
                     // after pointerdown; avoid starting the resize twice there.
                     if (typeof window.PointerEvent === "undefined") onResizeStart?.(event.nativeEvent);
                 }}
-                style={{ width: 10, cursor: "col-resize", position: "absolute", left: 0, top: 0, bottom: 0, zIndex: 4, touchAction: "none", userSelect: "none" }}
+                className="atp-resize"
             />
             <header
                 data-testid="agent-task-panel-header"
                 onDoubleClick={handleHeaderDoubleClick}
                 style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "14px 14px", borderBottom: `1px solid ${theme.divider}`, background: theme.titleBarBg, "--wails-draggable": "no-drag" } as React.CSSProperties}
             >
-                <div style={{ minWidth: 0 }}>
+                <div className="atp-min-w-0">
                     <div style={{ color: theme.titleText, fontWeight: 700, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", letterSpacing: "-0.01em" }}>
                         {view.title}
                     </div>
@@ -1501,10 +1501,10 @@ function AgentTaskPanelContent({ view, onDismiss, onResizeStart, splitRatio = 0.
                     </button>
                 )}
             </header>
-            <div className="ai-chat-scrollbar" style={{ flex: 1, minHeight: 0, overflow: "auto", padding: "16px 14px" }}>
+            <div className="ai-chat-scrollbar atp-scroll">
                 {view.type === "form" && (
                     <form
-                        style={{ display: "flex", flexDirection: "column", gap: 16, width: "100%" }}
+                        className="atp-form"
                         onSubmit={(event) => {
                             event.preventDefault();
                             if (validationErrors.length > 0 || submitting || dismissing) return;
@@ -1552,7 +1552,7 @@ function AgentTaskPanelContent({ view, onDismiss, onResizeStart, splitRatio = 0.
                             />
                         )}
                         {view.variants && view.variants.length > 0 && (
-                            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                            <div className="atp-field-col6">
                                 <label htmlFor="agent-view-variant-mode" style={{ color: theme.fieldLabel, fontSize: 12, fontWeight: 600 }}>{s.mode}</label>
                                 <select
                                     id="agent-view-variant-mode"
@@ -1587,7 +1587,7 @@ function AgentTaskPanelContent({ view, onDismiss, onResizeStart, splitRatio = 0.
                                 {s.pleaseFix}{validationErrors.join(", ")}
                             </div>
                         )}
-                        <div style={{ display: "flex", flexDirection: "row", gap: 10, marginTop: 4, alignItems: "center" }}>
+                        <div className="atp-row-10">
                             <button type="submit" disabled={submitting || dismissing} style={{ ...primaryButtonStyle, flex: 1, opacity: submitting || dismissing ? 0.65 : 1, cursor: submitting || dismissing ? "wait" : "pointer" }}>{submitting ? s.submitting : view.submitLabel || s.submit}</button>
                             {view.id?.startsWith("workflow:form:") && onDismiss && (
                                 <button type="button" disabled={submitting || dismissing} onClick={async () => {
@@ -1610,7 +1610,7 @@ function AgentTaskPanelContent({ view, onDismiss, onResizeStart, splitRatio = 0.
                 )}
                 {view.type === "wizard" && activeWizardStep && (
                     <form
-                        style={{ display: "flex", flexDirection: "column", gap: 14, width: "100%", maxWidth: 640, margin: "0 auto" }}
+                        className="atp-form-640"
                         onSubmit={(event) => {
                             event.preventDefault();
                             if (submitting) return;
@@ -1627,8 +1627,8 @@ function AgentTaskPanelContent({ view, onDismiss, onResizeStart, splitRatio = 0.
                                 {view.formErrors.map((error) => <div key={error}>{error}</div>)}
                             </div>
                         )}
-                        <div style={{ display: "grid", gap: 8 }}>
-                            <div style={{ display: "flex", gap: 6 }}>
+                        <div className="atp-grid-8">
+                            <div className="atp-row-6">
                                 {view.steps.map((step, index) => (
                                     <button
                                         key={step.id}
@@ -1641,7 +1641,7 @@ function AgentTaskPanelContent({ view, onDismiss, onResizeStart, splitRatio = 0.
                             </div>
                             <div>
                                 <div style={{ color: theme.fieldLabel, fontSize: 12 }}>{s.stepOf(wizardStepIndex + 1, view.steps.length)}</div>
-                                <div style={{ fontWeight: 700, marginTop: 4 }}>{activeWizardStep.title}</div>
+                                <div className="atp-title-mt">{activeWizardStep.title}</div>
                                 {activeWizardStep.description && <div style={{ color: theme.textMuted, fontSize: 12, lineHeight: 1.4, marginTop: 4 }}>{activeWizardStep.description}</div>}
                             </div>
                         </div>
@@ -1651,7 +1651,7 @@ function AgentTaskPanelContent({ view, onDismiss, onResizeStart, splitRatio = 0.
                                 {s.pleaseFix}{wizardValidationErrors.join(", ")}
                             </div>
                         )}
-                        <div style={{ display: "flex", gap: 8, justifyContent: "space-between" }}>
+                        <div className="atp-split">
                             <button type="button" disabled={wizardStepIndex === 0 || submitting} onClick={() => setWizardStepIndex((current) => Math.max(0, current - 1))} style={{ ...buttonStyle, opacity: wizardStepIndex === 0 || submitting ? 0.6 : 1, cursor: wizardStepIndex === 0 || submitting ? "not-allowed" : "pointer" }}>{s.back}</button>
                             <button type="submit" disabled={submitting} style={{ ...primaryButtonStyle, opacity: submitting ? 0.65 : 1, cursor: submitting ? "wait" : "pointer" }}>
                                 {submitting ? s.submitting : wizardStepIndex < view.steps.length - 1 ? s.next : view.submitLabel || s.submit}
@@ -1661,7 +1661,7 @@ function AgentTaskPanelContent({ view, onDismiss, onResizeStart, splitRatio = 0.
                 )}
                 {view.type === "table_editor" && tableEditorField && (
                     <form
-                        style={{ display: "flex", flexDirection: "column", gap: 14, width: "100%", maxWidth: 560, margin: "0 auto" }}
+                        className="atp-form-560"
                         onSubmit={(event) => {
                             event.preventDefault();
                             if (tableValidationErrors.length > 0 || submitting) return;
@@ -1684,7 +1684,7 @@ function AgentTaskPanelContent({ view, onDismiss, onResizeStart, splitRatio = 0.
                 )}
                 {view.type === "resource_picker" && (
                     <form
-                        style={{ display: "flex", flexDirection: "column", gap: 14, width: "100%", maxWidth: 640, margin: "0 auto" }}
+                        className="atp-form-640"
                         onSubmit={(event) => {
                             event.preventDefault();
                             if (resourceValidationErrors.length > 0 || submitting) return;
@@ -1722,10 +1722,10 @@ function AgentTaskPanelContent({ view, onDismiss, onResizeStart, splitRatio = 0.
                                 </option>
                             ))}
                         </select>
-                        <div style={{ display: "grid", gap: 8 }}>
+                        <div className="atp-grid-8">
                             {view.options.filter((option) => view.multiple ? normalizeMultiValue(resourceSelection).includes(option.value) : resourceSelection === option.value).map((option) => (
                                 <div key={option.value} style={{ border: `1px solid ${theme.divider}`, borderRadius: 8, padding: 10, background: theme.fieldBg }}>
-                                    <div style={{ fontWeight: 700 }}>{option.label}</div>
+                                    <div className="atp-strong">{option.label}</div>
                                     {option.description && <div style={{ color: theme.textMuted, fontSize: 12, marginTop: 4 }}>{option.description}</div>}
                                     {option.data && keyValueList(option.data, theme)}
                                 </div>
@@ -1741,16 +1741,16 @@ function AgentTaskPanelContent({ view, onDismiss, onResizeStart, splitRatio = 0.
                 )}
                 {view.type === "field_mapper" && (
                     <form
-                        style={{ display: "flex", flexDirection: "column", gap: 14, width: "100%", maxWidth: 520, margin: "0 auto" }}
+                        className="atp-form-520"
                         onSubmit={(event) => {
                             event.preventDefault();
                             if (fieldMappingErrors.length > 0 || submitting) return;
                             void submitAgentView({ ...(view.hiddenData || {}), [view.dataKey || "mapping"]: fieldMapping });
                         }}
                     >
-                        <div style={{ display: "grid", gap: 8 }}>
+                        <div className="atp-grid-8">
                             {view.targetFields.map((target) => (
-                                <label key={target.name} style={{ display: "grid", gridTemplateColumns: "minmax(110px, 0.8fr) minmax(140px, 1fr)", gap: 10, alignItems: "center" }}>
+                                <label className="atp-target-row" key={target.name}>
                                     <span style={{ color: theme.fieldLabel, fontSize: 12, fontWeight: 600 }}>
                                         {target.label || target.name}
                                         {target.required && <span style={{ color: theme.errorText }}> *</span>}
@@ -1805,18 +1805,18 @@ function AgentTaskPanelContent({ view, onDismiss, onResizeStart, splitRatio = 0.
                     />
                 )}
                 {view.type === "progress" && (
-                    <div style={{ display: "grid", gap: 10, width: "100%", maxWidth: 640, margin: "0 auto" }}>
+                    <div className="atp-grid-panel-640">
                         {view.steps.map((step, index) => (
                             <div key={step.id || `${step.title}-${index}`} style={{ display: "grid", gridTemplateColumns: "72px 1fr", gap: 10, borderBottom: `1px solid ${theme.divider}`, paddingBottom: 10 }}>
                                 <span style={{ color: step.status === "error" ? theme.errorText : theme.textMuted, fontSize: 12 }}>{step.status || s.pending}</span>
                                 <div>
-                                    <div style={{ fontWeight: 700 }}>{step.title}</div>
+                                    <div className="atp-strong">{step.title}</div>
                                     {step.description && <div style={{ color: theme.textMuted, fontSize: 12, marginTop: 4 }}>{step.description}</div>}
                                 </div>
                             </div>
                         ))}
                         {view.actions && view.actions.length > 0 && (
-                            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                            <div className="atp-wrap-row">
                                 {view.actions.map((action) => (
                                     <button
                                         key={`${action.viewId || view.id || "progress"}-${action.label}`}
@@ -1833,10 +1833,10 @@ function AgentTaskPanelContent({ view, onDismiss, onResizeStart, splitRatio = 0.
                     </div>
                 )}
                 {view.type === "result_browser" && (
-                    <div style={{ display: "grid", gap: 10, width: "100%", maxWidth: 720, margin: "0 auto" }}>
+                    <div className="atp-grid-panel-720">
                         {view.results.map((result, index) => (
                             <article key={result.id || `${result.title}-${index}`} style={{ border: `1px solid ${theme.divider}`, borderRadius: 8, padding: 12, background: theme.fieldBg }}>
-                                <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                                <div className="atp-split-b">
                                     <strong>{result.title}</strong>
                                     {result.status && <span style={{ color: theme.textMuted, fontSize: 12 }}>{result.status}</span>}
                                 </div>
@@ -1844,7 +1844,7 @@ function AgentTaskPanelContent({ view, onDismiss, onResizeStart, splitRatio = 0.
                                 {databaseResultTable(result.data, theme)}
                                 {keyValueList(omitDatabaseTableFields(result.data), theme)}
                                 {result.actions && result.actions.length > 0 && (
-                                    <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+                                    <div className="atp-wrap-row-mt">
                                         {result.actions.map((action) => (
                                             <button
                                                 key={`${action.viewId || view.id || "result"}-${action.label}`}
@@ -1864,7 +1864,7 @@ function AgentTaskPanelContent({ view, onDismiss, onResizeStart, splitRatio = 0.
                 )}
                 {view.type === "artifact" && (
                     <div style={{ border: `1px solid ${theme.divider}`, borderRadius: 8, padding: 12, background: theme.fieldBg }}>
-                        <div style={{ fontWeight: 700 }}>{view.artifact.label || view.title}</div>
+                        <div className="atp-strong">{view.artifact.label || view.title}</div>
                         {view.artifact.kind && <div style={{ color: theme.textMuted, fontSize: 12, marginTop: 4 }}>{s.kind}: {view.artifact.kind}</div>}
                         {view.artifact.uri && <div style={{ color: theme.linkColor, fontSize: 12, marginTop: 4, wordBreak: "break-all" }}>{view.artifact.uri}</div>}
                         {view.artifact.summary && <div style={{ color: theme.text, fontSize: 13, marginTop: 10, whiteSpace: "pre-wrap" }}>{view.artifact.summary}</div>}
@@ -1941,8 +1941,8 @@ function ResumeUploadSection({ theme, phaseID, onPrefilled }: ResumeUploadSectio
 
     return (
         <div style={containerStyle}>
-            <IconDocument size={20} color="currentColor" style={{ opacity: 0.8 }} />
-            <div style={{ flex: 1, minWidth: 0 }}>
+            <IconDocument size={20} color="currentColor" className="atp-icon-doc" />
+            <div className="atp-grow">
                 {status === "idle" && (
                     <div style={{ color: theme.textMuted, fontSize: 12, lineHeight: 1.5 }}>
                         上传简历/CV 自动填充表单（支持 PDF、Word、PowerPoint、Excel、Markdown、TXT）
@@ -1954,7 +1954,7 @@ function ResumeUploadSection({ theme, phaseID, onPrefilled }: ResumeUploadSectio
                     </div>
                 )}
                 {status === "done" && (
-                    <div style={{ color: "var(--theme-success, #16a34a)", fontSize: 12, display: "flex", alignItems: "center", gap: 6 }}>
+                    <div className="atp-success-row">
                         <IconCheck size={13} color="currentColor" /> 已从简历中提取 {filledCount} 个字段，请核对后提交
                     </div>
                 )}
@@ -2088,9 +2088,9 @@ function SupplementaryUploadSection({ theme, config, onFilesChanged }: Supplemen
 
     return (
         <div style={containerStyle}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <IconPaperclip size={18} color="currentColor" style={{ opacity: 0.85 }} />
-                <div style={{ flex: 1 }}>
+            <div className="atp-inline-row8">
+                <IconPaperclip size={18} color="currentColor" className="atp-icon-clip" />
+                <div className="atp-flex-1">
                     <div style={{ color: theme.text, fontSize: 12, fontWeight: 600 }}>{config.label}</div>
                     <div style={{ color: theme.textMuted, fontSize: 11, lineHeight: 1.4, marginTop: 2 }}>{config.description}</div>
                 </div>
@@ -2116,7 +2116,7 @@ function SupplementaryUploadSection({ theme, config, onFilesChanged }: Supplemen
                 )}
             </div>
             {files.length > 0 && (
-                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                <div className="atp-col-4">
                     {files.map((file, index) => (
                         <div key={file.path} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 8px", background: theme.fieldBg, borderRadius: 6, fontSize: 12 }}>
                             <span style={{ color: file.status === "done" ? "#4ade80" : file.status === "error" ? theme.errorText : theme.textMuted, display: "inline-flex" }}>

@@ -18,6 +18,12 @@ No CGo, no ONNX, no Python dependency.
 ```
 tensor.go     — Multi-dimensional float32 tensor with basic ops
 conv.go       — Conv2d + BatchNorm + SiLU (fused), im2col optimization
+gemm.go       — Conv GEMM driver: N-panel cache blocking, parallel panels,
+                ragged-M tail via scratch padding
+gemm_amd64.s  — AVX2+FMA 6x16 register-blocked GEMM micro-kernel with fused
+                bias/SiLU epilogue (no im2col transpose needed); vectorized
+                silu/axpy kernels
+simd_ops.go   — siluSlice/axpySlice wrappers (AVX2 kernels + scalar fallback)
 blocks.go     — C2f, SPPF, Bottleneck, Upsample, Concat
 model.go      — YOLOv8 network graph: backbone + neck + detect head
 detect.go     — Anchor-free detection head: DFL decode + NMS

@@ -336,7 +336,7 @@ export function ParticipantSelector({
     }, [open]);
 
     return (
-        <div style={{ position: "relative", display: "inline-block" }} ref={popoverRef}>
+        <div className="vegc-popover-anchor" ref={popoverRef}>
             {/* "+" Button */}
             <button
                 data-testid="group-add-participant-btn"
@@ -457,16 +457,10 @@ export function ParticipantSelector({
                                 }}
                             >
                                 {avatarDataURL ? (
-                                    <img src={avatarDataURL} alt="" style={{ width: 22, height: 22, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }} />
+                                    <img src={avatarDataURL} alt="" className="vegc-avatar" />
                                 ) : (
                                     <span
-                                        style={{
-                                            width: 6,
-                                            height: 6,
-                                            borderRadius: "50%",
-                                            background: "#4f7f6f",
-                                            flexShrink: 0,
-                                        }}
+                                        className="vegc-presence-dot"
                                     />
                                 )}
                                 <span>{addingId === ve.id ? (isZh ? "???..." : "Adding...") : virtualEmployeeDisplayName(ve, index, lang)}</span>
@@ -560,8 +554,8 @@ export function GroupMessageBubble({ message, participantIndex, theme, isUser, o
                                 minWidth: 0,
                             }}
                         >
-                            <span style={{ flexShrink: 0 }}>{displayType === "image" ? "IMG" : displayType === "text" ? "TXT" : "FILE"}</span>
-                            {att.fileUrl || att.localPath ? <button type="button" onClick={() => onDownloadAttachment?.(att, message)} title={att.localPath || att.fileUrl} style={{ border: 0, padding: 0, minWidth: 0, maxWidth: "100%", flex: "1 1 auto", display: "inline-flex", alignItems: "center", gap: 5, background: "transparent", color: theme.text, cursor: "pointer", font: "inherit" }}><span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textDecoration: "underline" }}>{att.filename}</span><span style={{ color: theme.textMuted, fontSize: 10, flexShrink: 0 }}>{att.localPath ? "OPEN" : "GET"}</span></button> : <span style={{ minWidth: 0, flex: "1 1 auto", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{att.filename}</span>}
+                            <span className="vegc-att-type">{displayType === "image" ? "IMG" : displayType === "text" ? "TXT" : "FILE"}</span>
+                            {att.fileUrl || att.localPath ? <button type="button" onClick={() => onDownloadAttachment?.(att, message)} title={att.localPath || att.fileUrl} style={{ border: 0, padding: 0, minWidth: 0, maxWidth: "100%", flex: "1 1 auto", display: "inline-flex", alignItems: "center", gap: 5, background: "transparent", color: theme.text, cursor: "pointer", font: "inherit" }}><span className="vegc-att-name-btn">{att.filename}</span><span style={{ color: theme.textMuted, fontSize: 10, flexShrink: 0 }}>{att.localPath ? "OPEN" : "GET"}</span></button> : <span className="vegc-att-name">{att.filename}</span>}
                         </div>
                         );
                     })}
@@ -719,7 +713,7 @@ export function VEGroupChatView({
             {/* Message list */}
             <div
                 data-testid="group-message-list"
-                style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "12px 16px" }}
+                className="vegc-msg-list"
             >
                 {messages.map((msg) => {
                     const normalizedFromId = normalizeParticipantLookupId(msg.fromId);

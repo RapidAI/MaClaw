@@ -109,14 +109,15 @@ function loadTaskItemsSnapshot(): Array<{ project_path: string; [key: string]: u
         if (!raw) return [];
         const parsed = JSON.parse(raw);
         if (!Array.isArray(parsed)) return [];
-        return parsed.filter(item => item && typeof item.project_path === 'string' && item.project_path.trim() !== '');
+        return parsed.filter(item => item && typeof item.project_path === 'string' && item.project_path.trim() !== '' && !isAutoACPAssistantTabTaskItem(item));
     } catch {
         return [];
     }
 }
 function saveTaskItemsSnapshot(items: ReadonlyArray<unknown>): void {
     try {
-        localStorage.setItem(TASK_ITEMS_SNAPSHOT_KEY, JSON.stringify(items.slice(0, TASK_ITEMS_SNAPSHOT_CAP)));
+        const kept = items.filter(item => !isAutoACPAssistantTabTaskItem(item as { project_path?: unknown; tags?: unknown }));
+        localStorage.setItem(TASK_ITEMS_SNAPSHOT_KEY, JSON.stringify(kept.slice(0, TASK_ITEMS_SNAPSHOT_CAP)));
     } catch {
         // Quota or serialization issues must never break the task list.
     }
@@ -163,7 +164,7 @@ import { OPEN_EXPERT_CONVERSATION_EVENT } from './utils/expertConversationNaviga
 import { SettingsPage } from './components/settings/SettingsPage';
 import { AppSidebarShell } from './components/layout/AppSidebarShell';
 import { isProjectTabOpen } from './components/layout/SidebarTaskManagement';
-import { coerceActiveAssistantTask, expertIDFromTaskTags, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sameActiveAssistantTask, type ActiveAssistantTaskIdentity } from './components/ai/aiAssistantPanelSessionUtils';
+import { coerceActiveAssistantTask, expertIDFromTaskTags, isAutoACPAssistantTabTaskItem, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sameActiveAssistantTask, type ActiveAssistantTaskIdentity } from './components/ai/aiAssistantPanelSessionUtils';
 import { FavoriteEmployeeReplacePicker } from './components/layout/FavoriteEmployeeReplacePicker';
 import { countActiveBackgroundLoops, countLiveAISessions, countPassthroughCommands, countVisibleScheduledTasks } from './components/layout/backgroundTaskCount';
 import { MAX_USER_FAVORITES, normalizeFavoriteEmployeeIds } from './components/settings/favoriteEmployees';
@@ -644,6 +645,27 @@ function App() {
     }, []);
     /** Live "executing" signal for the visible assistant tab (mirrors the header badge). */
     const [activeAssistantTaskRunning, setActiveAssistantTaskRunning] = useState(false);
+    /**
+     * Live "running" signal for every assistant tab with an in-flight run
+     * (normalized project paths plus expert IDs). Unlike the single
+     * visible-tab boolean above, this set also covers runs detached from the
+     * visible tab so the sidebar can show every concurrently running task
+     * under 进行中.
+     */
+    const [busyTaskRuns, setBusyTaskRuns] = useState<{ projectPaths: string[]; expertIds: string[] }>({ projectPaths: [], expertIds: [] });
+    const handleBusyTaskRunsChange = useCallback((runs: { projectPaths: string[]; expertIds: string[] }) => {
+        setBusyTaskRuns(prev => {
+            const next = {
+                projectPaths: Array.isArray(runs?.projectPaths) ? runs.projectPaths.filter(p => !!p) : [],
+                expertIds: Array.isArray(runs?.expertIds) ? runs.expertIds.filter(id => !!id) : [],
+            };
+            const same = prev.projectPaths.length === next.projectPaths.length
+                && prev.expertIds.length === next.expertIds.length
+                && prev.projectPaths.every((p, i) => p === next.projectPaths[i])
+                && prev.expertIds.every((id, i) => id === next.expertIds[i]);
+            return same ? prev : next;
+        });
+    }, []);
     const hideTaskGuarded = useCallback(async (projectPath: string, tags?: string[], force?: boolean): Promise<boolean> => {
         // Guard against silent deletion of an open task. The sidebar's remove
         // flow passes force after the user confirms in the dialog; DeleteTask
@@ -3127,10 +3149,13 @@ function App() {
     // panel. Re-pull the task list at that boundary so the backend coding
     // runtime merge (running/pending snapshot on the durable row) is applied
     // when the run starts and cleared when it finishes, even if the run was
-    // launched from another tab. The first render is skipped: the mount
+    // launched from another tab. The busy-task-runs set extends the same
+    // boundary to runs detached from the visible tab: when a background run
+    // finishes, its durable row re-buckets off the live signal and the fresh
+    // snapshot must be in place. The first render is skipped: the mount
     // effect above already pulls the list. The trailing debounce coalesces
-    // tone flapping (e.g. "Stopping" while cancelling flips running→pending→
-    // running) into one ListTasks per burst.
+    // signal flapping (e.g. "Stopping" while cancelling flips
+    // running→pending→running) into one ListTasks per burst.
     const activeAssistantTaskRunningMountedRef = useRef(false);
     const activeAssistantTaskRunningRefreshTimerRef = useRef(0);
     useEffect(() => {
@@ -3147,13 +3172,14 @@ function App() {
             window.clearTimeout(activeAssistantTaskRunningRefreshTimerRef.current);
             activeAssistantTaskRunningRefreshTimerRef.current = 0;
         };
-    }, [activeAssistantTaskRunning, refreshTasks]);
+    }, [activeAssistantTaskRunning, busyTaskRuns, refreshTasks]);
     // Insert a newly-created row immediately and invalidate any ListTasks
     // request that was started before creation. Without the generation bump,
     // a slower stale response can replace the optimistic row and make a new
     // task disappear from the sidebar until the next manual refresh.
     const upsertTaskItem = useCallback((created: any, limit = 1000) => {
         if (!created?.project_path) return;
+        if (isAutoACPAssistantTabTaskItem(created)) return;
         taskRefreshGenerationRef.current += 1;
         setTaskItems(prev => [created, ...prev.filter(item => item.project_path !== created.project_path)].slice(0, limit));
     }, []);
@@ -3221,6 +3247,7 @@ function App() {
                 remoteNeedsReconnect: detail?.remoteNeedsReconnect === true,
                 warning: String(detail?.warning || '').trim() || undefined,
                 noWorkflowInterception: detail?.noWorkflowInterception === true,
+                deliverInitialMessage: detail?.deliverInitialMessage === true,
             });
         };
         window.addEventListener(EVENT_OPEN_TASK_LAUNCH, openTaskLaunch);
@@ -5375,6 +5402,7 @@ ${instruction}`;
                 openExpertTabIDs={openExpertTabIDs}
                 activeAssistantTask={activeAssistantTask}
                 activeAssistantTaskRunning={activeAssistantTaskRunning}
+                busyTaskRuns={busyTaskRuns}
                 sidebarCurrentProviderTokenUsage={sidebarCurrentProviderTokenUsage}
                 sidebarHubCredits={sidebarHubCredits}
                 formatSidebarTokens={formatSidebarTokens}
@@ -5473,6 +5501,7 @@ ${instruction}`;
                             onOpenExpertTabsChange={handleOpenExpertTabsChange}
                             onActiveAssistantTaskChange={handleActiveAssistantTaskChange}
                             onActiveTaskRunningChange={setActiveAssistantTaskRunning}
+                            onBusyTaskRunsChange={handleBusyTaskRunsChange}
                             activeAssistantTask={activeAssistantTask}
                             appUpdateAvailable={appUpdateAvailable}
                             onOpenAppReleaseNotes={handleOpenAppReleaseNotes}

@@ -180,6 +180,7 @@ type conversationSession struct {
 	inFlightSequence    uint64
 	inFlightLastTool    string
 	inFlightSideEffect  string
+	semanticResidue     *SemanticSessionResidue
 }
 
 type persistedSession struct {
@@ -193,8 +194,9 @@ type persistedSession struct {
 	InFlightSetAt       time.Time           `json:"in_flight_set_at,omitempty"`
 	InFlightRunID       string              `json:"in_flight_run_id,omitempty"`
 	InFlightSequence    uint64              `json:"in_flight_sequence,omitempty"`
-	InFlightLastTool    string              `json:"in_flight_last_tool,omitempty"`
-	InFlightSideEffect  string              `json:"in_flight_side_effect,omitempty"`
+	InFlightLastTool        string                  `json:"in_flight_last_tool,omitempty"`
+	InFlightSideEffect      string                  `json:"in_flight_side_effect,omitempty"`
+	SemanticSessionResidue  *SemanticSessionResidue `json:"semantic_session_residue,omitempty"`
 }
 
 // InFlightCheckpoint is evidence for a durable conversation checkpoint. It
@@ -1632,8 +1634,9 @@ func (cm *ConversationMemory) saveToDisk() error {
 				InFlightSetAt:       session.inFlightSetAt,
 				InFlightRunID:       session.inFlightRunID,
 				InFlightSequence:    session.inFlightSequence,
-				InFlightLastTool:    session.inFlightLastTool,
-				InFlightSideEffect:  session.inFlightSideEffect,
+				InFlightLastTool:       session.inFlightLastTool,
+				InFlightSideEffect:     session.inFlightSideEffect,
+				SemanticSessionResidue: clonePersistedSemanticResidue(session.semanticResidue),
 			}
 		}
 		sh.mu.RUnlock()
@@ -1734,6 +1737,7 @@ func (cm *ConversationMemory) loadFromDisk() error {
 			inFlightSequence:    session.InFlightSequence,
 			inFlightLastTool:    session.InFlightLastTool,
 			inFlightSideEffect:  session.InFlightSideEffect,
+			semanticResidue:     clonePersistedSemanticResidue(session.SemanticSessionResidue),
 		}
 		sh.mu.Unlock()
 	}

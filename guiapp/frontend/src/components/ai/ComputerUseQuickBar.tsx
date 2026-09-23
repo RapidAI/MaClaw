@@ -144,7 +144,7 @@ export function ComputerUseQuickBar({ lang, theme: t }: Props) {
                 {st.steps > 0 ? ` · ${st.steps}` : ""}
                 {st.elements > 0 ? ` · e${st.elements}` : ""}
             </span>
-            <span style={{ flex: 1 }} />
+            <span className="cuqb-spacer" />
             <button
                 type="button"
                 disabled={busy || st.paused}

@@ -92,8 +92,8 @@ export const MainTopHeader = ({
     const showToolSwitcher = isToolTab(navTab);
     return (
     <div className="top-header" {...windowDragHandleProps(true, { userSelect: 'none' })} onDoubleClick={() => handleWindowMaximizeToggle()}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
-            <h2 style={{ margin: 0, fontSize: '1.05rem', color: 'var(--theme-text-primary)', fontWeight: 'bold', marginLeft: '20px', '--wails-draggable': 'drag', flex: 1, display: 'flex', alignItems: 'center' } as any}>
+        <div className="mth-row">
+            <h2 className="mth-title">
                 <span className="mc-header-brand" aria-label="MaClaw">
                     <span>MaClaw</span>
                 </span>
@@ -129,7 +129,7 @@ export const MainTopHeader = ({
                     setShowInstallSkillModal={setShowInstallSkillModal}
                 />
             </h2>
-            <div className="top-header-window-controls" style={{ display: 'flex', gap: '4px', '--wails-draggable': 'no-drag', marginRight: '5px', pointerEvents: 'auto', position: 'relative', zIndex: 10000 } as any}>
+            <div className="top-header-window-controls mth-window-controls">
                 <span className="mc-header-search-wrap">
                     <svg className="mc-header-search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4.5 4.5" /></svg>
                     <input className="mc-header-search" value={searchText} onChange={(event) => setSearchText(event.target.value)} onCompositionStart={searchComposition.onCompositionStart} onCompositionEnd={searchComposition.onCompositionEnd} onKeyDown={handleSearchKeyDown} placeholder={lang === 'en' ? 'Search tasks, files, knowledge, experts...' : '搜索任务、文件、知识、专家…'} aria-label={lang === 'en' ? 'Search' : '搜索'} />

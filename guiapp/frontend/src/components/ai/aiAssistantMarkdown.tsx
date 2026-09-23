@@ -458,7 +458,7 @@ function renderMath(latex: string, displayMode: boolean, key: React.Key): React.
         // Keep malformed streaming content legible rather than losing the reply.
         return displayMode
             ? <div key={key} data-testid="assistant-display-math" style={{ margin: "6px 0", ...blockWrapStyle }}>{`$$${latex}$$`}</div>
-            : <span key={key} data-testid="assistant-inline-math" style={{ verticalAlign: "middle" }}>{`$${latex}$`}</span>;
+            : <span key={key} data-testid="assistant-inline-math" className="aamd-math-inline">{`$${latex}$`}</span>;
     }
 
     const style: React.CSSProperties = displayMode
@@ -555,7 +555,7 @@ function KBImageThumbnail({ assetId, dataUrl, theme: t }: { assetId: string; dat
     const [failed, setFailed] = React.useState(false);
     if (failed) return null;
     return (
-        <div style={{ margin: "6px 0", maxWidth: "100%", minWidth: 0, boxSizing: "border-box", overflow: "hidden" }}>
+        <div className="aamd-kb-thumb-wrap">
             <img
                 src={dataUrl}
                 alt={assetId}
@@ -709,7 +709,7 @@ function renderTable(tableLines: string[], key: string, t: Theme): React.ReactNo
     const cellStyle: React.CSSProperties = { boxSizing: "border-box", overflowWrap: "break-word", padding: "6px 10px", textAlign: "left", verticalAlign: "top", fontSize: "0.9em", lineHeight: 1.5 };
     const rowHoverBg = `color-mix(in srgb, ${t.btnColor} 7%, transparent)`;
     return (
-        <div key={key} style={{ width: "100%", maxWidth: "100%", minWidth: 0, boxSizing: "border-box", margin: "6px 0", whiteSpace: "normal" }}>
+        <div key={key} className="aamd-table-wrap">
             {prefix && <div data-testid="markdown-table-prefix" style={{ marginBottom: 6, ...blockWrapStyle }}>{renderInlineMarkdown(prefix, t)}</div>}
             {/* Rounded, bordered shell; the scrollport clips the table corners. */}
             <div data-testid="markdown-table-block" style={{ width: "100%", maxWidth: "100%", minWidth: 0, boxSizing: "border-box", overflowX: "auto", overscrollBehaviorX: "contain", border: `1px solid ${t.fieldBorder}`, borderRadius: "10px" }}>
@@ -919,7 +919,7 @@ export function renderContentWithCodeBlocks(content: string, t: Theme): React.Re
 
 function renderFields(fields: Array<{ label: string; value: string }>, t: Theme): React.ReactNode {
     return (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", margin: "4px 0" }}>
+        <div className="aamd-chip-row">
             {fields.map((f, i) => {
                 const isRecovery = f.label === "Recovery";
                 const isTurn = f.label === "Turn";
@@ -979,7 +979,7 @@ function ActionButtons({ actions, executeAction, theme, lang = "en" }: {
     const [firedIndex, setFiredIndex] = React.useState<number | null>(null);
     const t = theme;
     return (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", margin: "4px 0" }}>
+        <div className="aamd-chip-row">
             {actions.map((a, i) => {
                 const isPrimary = a.style === "primary";
                 const fired = firedIndex !== null;
@@ -1563,7 +1563,7 @@ export function renderMessage(
         case "user":
             const isGuideInjection = msg.kind === "guideInjection";
             return (
-                <div key={msg.id} role="group" data-testid={`assistant-chat-user-${msg.id}`} aria-label={isGuideInjection ? (lang === "en" ? "Your injected guidance" : "我已注入的引导") : (lang === "en" ? "Your message" : "我的消息")} style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", margin: "10px 0" }}>
+                <div key={msg.id} role="group" data-testid={`assistant-chat-user-${msg.id}`} aria-label={isGuideInjection ? (lang === "en" ? "Your injected guidance" : "我已注入的引导") : (lang === "en" ? "Your message" : "我的消息")} className="aamd-msg-user">
                     <span style={{ display: "inline-flex", alignItems: "center", gap: 6, margin: `0 4px ${CHAT_SPEAKER_LABEL_GAP}px`, color: t.textMuted, fontSize: 11, lineHeight: 1.2 }}>
                         <span className="mc-message-avatar mc-message-avatar--user" aria-hidden="true">{lang === "en" ? "U" : "我"}</span>
                         <span>{lang === "en" ? "You" : "我"}</span>
@@ -1635,13 +1635,7 @@ export function renderMessage(
                 ? separateReasoningFromBody(msg.content || "", cleanedReasoning)
                 : resolveVisibleAssistantReply(msg.content || "", cleanedReasoning, { live: liveForReasoning });
             return (
-                <div key={msg.id} role="group" data-testid={`assistant-chat-ai-${msg.id}`} aria-label={localizeText(lang, "AI assistant message", "AI 助手消息")} style={{
-                    display: "flex",
-                    flexDirection: "column",
-                    alignItems: "flex-start",
-                    justifyContent: "flex-start",
-                    margin: "10px 0",
-                }}>
+                <div key={msg.id} role="group" data-testid={`assistant-chat-ai-${msg.id}`} aria-label={localizeText(lang, "AI assistant message", "AI 助手消息")} className="aamd-msg-ai">
                     <span style={{ display: "inline-flex", alignItems: "center", gap: 6, margin: `0 4px ${CHAT_SPEAKER_LABEL_GAP}px`, color: t.textMuted, fontSize: 11, lineHeight: 1.2 }}><span className="mc-message-avatar mc-message-avatar--assistant" aria-hidden="true">M</span><span>{localAssistantTabTitle(lang)}</span></span>
                     {(() => {
                         const copyPayload = buildAssistantReplyCopyText(visibleReply.content, msg.unfinishedSlot, lang);
@@ -1749,11 +1743,11 @@ export function renderMessage(
                                 const plainFirstLine = firstLine.replace(/\*\*/g, '').replace(/[*_`#]/g, '');
                                 const preview = plainFirstLine.length > 60 ? plainFirstLine.slice(0, 60) + '…' : plainFirstLine;
                                 return (
-                                    <details open style={{ margin: "2px 0 4px 0" }}>
+                                    <details open className="aamd-btw-details">
                                         <summary style={{ cursor: "pointer", color: t.textMuted, fontSize: "12px", userSelect: "none", display: "inline-flex", alignItems: "center", gap: 6 }}>
                                             <IconSearch size={12} color="currentColor" /> <strong>/btw</strong>{preview ? ` — ${preview}` : ""}
                                         </summary>
-                                        <div style={{ padding: "4px 0 0 0" }}>
+                                        <div className="aamd-btw-body">
                                             {renderContentWithCodeBlocks(btwBody, t)}
                                         </div>
                                     </details>
@@ -1818,7 +1812,7 @@ export function renderMessage(
                 if (codingAgentProgress) return codingAgentProgress;
             }
             return (
-                <div key={msg.id} role="status" aria-live="polite" data-testid={`assistant-chat-progress-${msg.id}`} style={{ display: "flex", justifyContent: "flex-start", margin: "4px 0" }}>
+                <div key={msg.id} role="status" aria-live="polite" data-testid={`assistant-chat-progress-${msg.id}`} className="aamd-progress-row">
                     <span className="assistant-chat-progress-line" style={{
                         maxWidth: "84%",
                         minWidth: 0,
@@ -1831,7 +1825,7 @@ export function renderMessage(
                         overflow: "hidden",
                     }}>
                         <span aria-hidden="true" style={{ width: 5, height: 5, flex: "0 0 auto", borderRadius: "50%", background: t.headingColor, opacity: 0.72 }} />
-                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={msg.content}>
+                        <span className="aamd-ellipsis" title={msg.content}>
                             {prepareChatBodyForDisplay(msg.content)}
                         </span>
                     </span>
@@ -1840,7 +1834,7 @@ export function renderMessage(
         case "system":
             if (msg.kind === "taskContext") {
                 return (
-                    <div key={msg.id} role="status" data-testid={`assistant-task-context-${msg.id}`} style={{ display: "flex", justifyContent: "flex-start", margin: "10px 0" }}>
+                    <div key={msg.id} role="status" data-testid={`assistant-task-context-${msg.id}`} className="aamd-msg-row">
                         <div style={{ maxWidth: "84%", boxSizing: "border-box", padding: "9px 12px", borderRadius: "8px", background: `color-mix(in srgb, ${t.sendBtnBg} 8%, ${t.fieldBg})`, border: `1px solid color-mix(in srgb, ${t.sendBtnBorder} 44%, ${t.fieldBorder})`, color: t.text, fontSize: "12px", lineHeight: "1.6", overflowWrap: "break-word" }}>
                             <div style={{ marginBottom: 3, color: t.textMuted, fontSize: 11, fontWeight: 700 }}>{lang === "en" ? "CURRENT TASK" : lang === "zh-Hant" ? "目前任務資訊" : "当前任务信息"}</div>
                             {renderContentWithCodeBlocks(msg.content, t)}
@@ -1849,7 +1843,7 @@ export function renderMessage(
                 );
             }
             return (
-                <div key={msg.id} role="status" data-testid={`assistant-chat-system-${msg.id}`} style={{ display: "flex", justifyContent: "flex-start", margin: "10px 0" }}>
+                <div key={msg.id} role="status" data-testid={`assistant-chat-system-${msg.id}`} className="aamd-msg-row">
                     <div style={{ maxWidth: "84%", boxSizing: "border-box", padding: "8px 12px", borderRadius: "8px", background: t.fieldBg, border: `1px solid ${t.fieldBorder}`, color: t.text, fontSize: "12px", lineHeight: "1.6", overflowWrap: "break-word" }}>
                         {msg.kind === 'trace' && msg.fields && msg.fields.length > 0 && renderFields(msg.fields, t)}
                         {renderContentWithCodeBlocks(msg.content, t)}
@@ -1864,7 +1858,7 @@ export function renderMessage(
                     // role="alert" lives on the content bubble, not this full-width flex
                     // wrapper: App.css gives every [role='alert'] a background+border, which
                     // would paint a full-width pink strip behind the compact bubble.
-                    <div key={msg.id} data-testid={`assistant-chat-error-${msg.id}`} style={{ display: "flex", justifyContent: "flex-start", margin: "10px 0" }}>
+                    <div key={msg.id} data-testid={`assistant-chat-error-${msg.id}`} className="aamd-msg-row">
                         <div role="alert" data-testid={`assistant-error-bubble-${msg.id}`} style={{
                             maxWidth: "84%",
                             width: "fit-content",
@@ -1881,12 +1875,12 @@ export function renderMessage(
                             lineHeight: 1.55,
                             overflowWrap: "break-word",
                         }}>
-                            <span aria-hidden="true" style={{ flex: "0 0 auto", display: "inline-flex", marginTop: 2 }}>
+                            <span aria-hidden="true" className="aamd-err-icon">
                                 <StatusGlyph kind="error" size={13} color={t.errorText} />
                             </span>
                             {/* Inner testids must not start with "assistant-chat-error-": App.css scopes
                                 margin rules to that prefix and would override the compact inner layout. */}
-                            <span style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 2 }}>
+                            <span className="aamd-err-body">
                                 <span data-testid={`assistant-error-title-${msg.id}`} style={{ fontWeight: 600, color: t.errorText }}>
                                     {prepareChatBodyForDisplay(description.title)}
                                 </span>

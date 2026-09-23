@@ -331,7 +331,7 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
     const canMoveContextDown = !!contextMenu && contextMenu.index < slots.length - 1 && !contextMenu.slot.resident && !slots[contextMenu.index + 1]?.resident;
 
     return (
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px', width: '100%' }}>
+        <div className="feb-root">
             {slots.map((slot, index) => {
                 const avatarDataURL = safeAvatarDataURL(slot.avatarDataURL);
                 return (
@@ -366,14 +366,14 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                     }}
                 >
                     {/* Avatar circle with online indicator */}
-                    <div style={{ position: 'relative', width: '28px', height: '28px' }}>
+                    <div className="feb-avatar-wrap">
                         {avatarDataURL ? (
                             <img
                                 key={avatarDataURL}
                                 src={avatarDataURL}
                                 alt=""
                                 data-testid={`fav-ve-avatar-${slot.veId}`}
-                                style={{ width: '28px', height: '28px', borderRadius: '50%', objectFit: 'cover', display: 'block' }}
+                                className="feb-avatar-img"
                             />
                         ) : (
                             <div style={{
@@ -404,17 +404,7 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                         }} />
                     </div>
                     {/* Name (truncated by CSS) */}
-                    <span style={{
-                        fontSize: '0.6rem',
-                        lineHeight: 1,
-                        fontWeight: 600,
-                        color: 'var(--theme-text-primary)',
-                        maxWidth: '52px',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                        textAlign: 'center',
-                    }}>
+                    <span className="feb-name">
                         {slot.name}
                     </span>
                 </button>
@@ -443,18 +433,7 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                     }}
                 >
                     {/* Header: employee name */}
-                    <div style={{
-                        padding: '6px 10px 4px',
-                        fontSize: 11,
-                        fontWeight: 600,
-                        color: 'var(--theme-text-muted)',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                        maxWidth: 200,
-                        borderBottom: '1px solid var(--theme-border)',
-                        marginBottom: 4,
-                    }}>
+                    <div className="feb-menu-header">
                         {contextMenu.slot.name}
                     </div>
 
@@ -472,7 +451,7 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                     </button>
 
                     {/* Divider */}
-                    <div style={menuDividerStyle} />
+                    <div className="feb-menu-divider" />
 
                     {/* Rename */}
                     {onRename && (
@@ -484,7 +463,7 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                         onMouseEnter={menuItemHover}
                         onMouseLeave={menuItemUnhover}
                     >
-                        <span aria-hidden="true" style={menuIconStyle}>EDIT</span>
+                        <span aria-hidden="true" className="feb-menu-icon">EDIT</span>
                         {text.rename}
                     </button>
                     )}
@@ -498,13 +477,13 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                         onMouseEnter={menuItemHover}
                         onMouseLeave={menuItemUnhover}
                     >
-                        <span aria-hidden="true" style={menuIconStyle}>INFO</span>
+                        <span aria-hidden="true" className="feb-menu-icon">INFO</span>
                         {text.viewInfo}
                     </button>
 
                     {/* Divider + Move controls (only when >1 slot) */}
                     {slots.length > 1 && (<>
-                    <div style={menuDividerStyle} />
+                    <div className="feb-menu-divider" />
 
                     {/* Move up */}
                     <button
@@ -516,7 +495,7 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                         onMouseEnter={canMoveContextUp ? menuItemHover : undefined}
                         onMouseLeave={menuItemUnhover}
                     >
-                        <span aria-hidden="true" style={menuIconStyle}>↑</span>
+                        <span aria-hidden="true" className="feb-menu-icon">↑</span>
                         {text.moveUp}
                     </button>
 
@@ -530,14 +509,14 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                         onMouseEnter={canMoveContextDown ? menuItemHover : undefined}
                         onMouseLeave={menuItemUnhover}
                     >
-                        <span aria-hidden="true" style={menuIconStyle}>↓</span>
+                        <span aria-hidden="true" className="feb-menu-icon">↓</span>
                         {text.moveDown}
                     </button>
                     </>)}
 
                     {/* Divider + Remove */}
                     {onRemove && (<>
-                    <div style={menuDividerStyle} />
+                    <div className="feb-menu-divider" />
 
                     <button
                         type="button"
@@ -552,7 +531,7 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                         onMouseEnter={contextMenu.slot.resident ? undefined : menuItemHover}
                         onMouseLeave={menuItemUnhover}
                     >
-                        <span aria-hidden="true" style={menuIconStyle}>DEL</span>
+                        <span aria-hidden="true" className="feb-menu-icon">DEL</span>
                         {text.remove}
                     </button>
                     </>)}
@@ -564,32 +543,17 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                     aria-modal="true"
                     aria-labelledby="favorite-employee-rename-title"
                     onPointerDown={() => { if (!renameSaving) setRenamingSlot(null); }}
-                    style={{
-                        position: 'fixed',
-                        inset: 0,
-                        zIndex: 4100,
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        background: 'rgba(15, 23, 42, 0.32)',
-                    }}
+                    className="feb-overlay"
                 >
                     <form
                         onPointerDown={(e) => e.stopPropagation()}
                         onSubmit={(e) => { e.preventDefault(); void saveRename(); }}
-                        style={{
-                            width: 'min(360px, calc(100vw - 32px))',
-                            padding: '18px',
-                            borderRadius: 8,
-                            border: '1px solid var(--theme-border)',
-                            background: 'var(--theme-page-bg)',
-                            boxShadow: '0 18px 44px rgba(15, 23, 42, 0.24)',
-                        }}
+                        className="feb-dialog-form"
                     >
-                        <h2 id="favorite-employee-rename-title" style={{ margin: '0 0 14px', fontSize: 16, lineHeight: 1.3, color: 'var(--theme-text-primary)' }}>
+                        <h2 id="favorite-employee-rename-title" className="feb-dialog-title">
                             {text.renameTitle}
                         </h2>
-                        <label style={{ display: 'grid', gap: 8, fontSize: 13, fontWeight: 600, color: 'var(--theme-text-primary)' }}>
+                        <label className="feb-field">
                             {text.nameLabel}
                             <input
                                 ref={inputRef}
@@ -599,23 +563,15 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                                 aria-describedby={renameError ? 'favorite-employee-rename-error' : undefined}
                                 onChange={(e) => setRenameValue(e.target.value)}
                                 maxLength={32}
-                                style={{
-                                    height: 44,
-                                    borderRadius: 8,
-                                    border: '1px solid var(--theme-border)',
-                                    padding: '0 10px',
-                                    background: 'var(--theme-surface, #fff)',
-                                    color: 'var(--theme-text-primary)',
-                                    font: 'inherit',
-                                }}
+                                className="feb-input"
                             />
                             {renameError && (
-                                <span id="favorite-employee-rename-error" role="alert" style={{ color: 'var(--theme-danger, #c43d34)', fontSize: 12, lineHeight: 1.4 }}>
+                                <span id="favorite-employee-rename-error" role="alert" className="feb-error">
                                     {renameError}
                                 </span>
                             )}
                         </label>
-                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 18 }}>
+                        <div className="feb-dialog-actions">
                             <button type="button" onClick={() => setRenamingSlot(null)} disabled={renameSaving} style={{ ...dialogButtonStyle, opacity: renameSaving ? 0.55 : 1 }}>
                                 {text.cancel}
                             </button>
@@ -626,7 +582,7 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                                     ...dialogButtonStyle,
                                     borderColor: 'var(--theme-primary)',
                                     background: 'var(--theme-primary)',
-                                    color: '#fff',
+                                    color: 'var(--theme-on-primary)',
                                     opacity: renameValue.trim() && !renameSaving ? 1 : 0.55,
                                 }}
                             >
@@ -643,40 +599,22 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                     aria-modal="true"
                     aria-labelledby="favorite-employee-info-title"
                     onPointerDown={() => setViewInfoSlot(null)}
-                    style={{
-                        position: 'fixed',
-                        inset: 0,
-                        zIndex: 4100,
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        background: 'rgba(15, 23, 42, 0.32)',
-                    }}
+                    className="feb-overlay"
                 >
                     <div
                         onPointerDown={(e) => e.stopPropagation()}
                         onKeyDown={(e) => { if (e.key === 'Escape') setViewInfoSlot(null); }}
                         tabIndex={-1}
-                        style={{
-                            width: 'min(400px, calc(100vw - 32px))',
-                            maxHeight: 'calc(100vh - 64px)',
-                            overflow: 'auto',
-                            padding: '24px',
-                            borderRadius: 12,
-                            border: '1px solid var(--theme-border)',
-                            background: 'var(--theme-page-bg)',
-                            boxShadow: '0 18px 44px rgba(15, 23, 42, 0.24)',
-                            outline: 'none',
-                        }}
+                        className="feb-info-card"
                     >
                         {/* Large avatar + name header */}
-                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, marginBottom: 20 }}>
-                            <div style={{ position: 'relative' }}>
+                        <div className="feb-info-header">
+                            <div className="feb-info-avatar-wrap">
                                 {safeAvatarDataURL(viewInfoSlot.avatarDataURL) ? (
                                     <img
                                         src={safeAvatarDataURL(viewInfoSlot.avatarDataURL)!}
                                         alt={viewInfoSlot.name}
-                                        style={{ width: 72, height: 72, borderRadius: '50%', objectFit: 'cover', display: 'block', border: '3px solid var(--theme-border)' }}
+                                        className="feb-info-avatar-img"
                                     />
                                 ) : (
                                     <div style={{
@@ -697,23 +635,23 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                                     border: '2.5px solid var(--theme-page-bg)',
                                 }} />
                             </div>
-                            <h2 id="favorite-employee-info-title" style={{ margin: 0, fontSize: 18, fontWeight: 700, color: 'var(--theme-text-primary)', textAlign: 'center' }}>
+                            <h2 id="favorite-employee-info-title" className="feb-info-title">
                                 {viewInfoSlot.name}
                             </h2>
                             {viewInfoSlot.resident && (
-                                <span style={{ fontSize: 11, color: 'var(--theme-primary)', background: 'var(--theme-hover, rgba(47,95,152,0.08))', padding: '2px 8px', borderRadius: 4, fontWeight: 600 }}>
+                                <span className="feb-info-badge">
                                     {text.infoResident}
                                 </span>
                             )}
                         </div>
 
                         {/* Info rows */}
-                        <div style={{ display: 'grid', gap: 12 }}>
+                        <div className="feb-info-grid">
                             {/* Status */}
-                            <div style={infoRowStyle}>
-                                <span style={infoLabelStyle}>{text.infoStatus}</span>
+                            <div className="feb-info-row">
+                                <span className="feb-info-label">{text.infoStatus}</span>
                                 <span style={{ ...infoValueStyle, color: viewInfoSlot.online ? 'var(--theme-success, #4f7f6f)' : 'var(--theme-text-muted, #64748b)', fontWeight: 600 }}>
-                                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                                    <span className="feb-info-status">
                                         <span
                                             aria-hidden="true"
                                             style={{
@@ -732,27 +670,27 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                             </div>
 
                             {/* Source */}
-                            <div style={infoRowStyle}>
-                                <span style={infoLabelStyle}>{text.infoSource}</span>
-                                <span style={infoValueStyle}>
+                            <div className="feb-info-row">
+                                <span className="feb-info-label">{text.infoSource}</span>
+                                <span className="feb-info-value">
                                     {viewInfoSlot.machineId ? text.infoSourceVirtual : text.infoSourceLocal}
                                 </span>
                             </div>
 
                             {/* Access policy */}
                             {viewInfoSlot.accessPolicy && (
-                            <div style={infoRowStyle}>
-                                <span style={infoLabelStyle}>{text.infoPolicy}</span>
-                                <span style={infoValueStyle}>
+                            <div className="feb-info-row">
+                                <span className="feb-info-label">{text.infoPolicy}</span>
+                                <span className="feb-info-value">
                                     {formatPolicy(viewInfoSlot.accessPolicy, text)}
                                 </span>
                             </div>
                             )}
 
                             {/* Accessible departments */}
-                            <div style={infoRowStyle}>
-                                <span style={infoLabelStyle}>{text.infoDepartments}</span>
-                                <span style={infoValueStyle}>
+                            <div className="feb-info-row">
+                                <span className="feb-info-label">{text.infoDepartments}</span>
+                                <span className="feb-info-value">
                                     {viewInfoSlot.allowedDepartments && viewInfoSlot.allowedDepartments.length > 0
                                         ? viewInfoSlot.allowedDepartments.join('\uff1b')
                                         : text.infoDepartmentsUnrestricted}
@@ -761,17 +699,17 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
 
                             {/* Registration time */}
                             {viewInfoSlot.registeredAt && (
-                            <div style={infoRowStyle}>
-                                <span style={infoLabelStyle}>{text.infoRegistered}</span>
-                                <span style={infoValueStyle}>
+                            <div className="feb-info-row">
+                                <span className="feb-info-label">{text.infoRegistered}</span>
+                                <span className="feb-info-value">
                                     {formatRegisteredAt(viewInfoSlot.registeredAt)}
                                 </span>
                             </div>
                             )}
 
                             {/* ID */}
-                            <div style={infoRowStyle}>
-                                <span style={infoLabelStyle}>ID</span>
+                            <div className="feb-info-row">
+                                <span className="feb-info-label">ID</span>
                                 <span style={{ ...infoValueStyle, fontSize: 11, fontFamily: 'monospace', opacity: 0.7 }}>
                                     {viewInfoSlot.veId}
                                 </span>
@@ -779,21 +717,15 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
                         </div>
 
                         {/* Skill description */}
-                        <div style={{ marginTop: 16 }}>
-                            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--theme-text-muted)', marginBottom: 6 }}>{text.infoSkill}</div>
-                            <div style={{
-                                fontSize: 13, lineHeight: 1.6, color: 'var(--theme-text-primary)',
-                                padding: '10px 12px', borderRadius: 8,
-                                background: 'var(--theme-hover, rgba(255,255,255,0.03))',
-                                border: '1px solid var(--theme-border)',
-                                whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-                            }}>
+                        <div className="feb-info-skill">
+                            <div className="feb-info-skill-title">{text.infoSkill}</div>
+                            <div className="feb-info-skill-body">
                                 {viewInfoSlot.skillDescription || text.infoNoDescription}
                             </div>
                         </div>
 
                         {/* Close button */}
-                        <div style={{ display: 'flex', justifyContent: 'center', marginTop: 20 }}>
+                        <div className="feb-info-close-row">
                             <button
                                 type="button"
                                 onClick={() => setViewInfoSlot(null)}
@@ -807,14 +739,7 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, lang, onStartConv
             )}
             {/* Separator when the rail is full. */}
             {isFull && (
-                <div style={{
-                    width: '24px',
-                    height: '1px',
-                    margin: '6px 0 2px',
-                    background: 'linear-gradient(90deg, transparent, var(--theme-border) 20%, var(--theme-text-muted) 50%, var(--theme-border) 80%, transparent)',
-                    opacity: 0.6,
-                    borderRadius: '1px',
-                }} />
+                <div className="feb-full-separator" />
             )}
         </div>
     );
@@ -854,13 +779,6 @@ const menuIconStyle: CSSProperties = {
     flexShrink: 0,
 };
 
-const menuDividerStyle: CSSProperties = {
-    height: '1px',
-    margin: '3px 8px',
-    background: 'var(--theme-border)',
-    opacity: 0.6,
-};
-
 const dialogButtonStyle: CSSProperties = {
     minWidth: 72,
     minHeight: 44,
@@ -871,20 +789,6 @@ const dialogButtonStyle: CSSProperties = {
     font: 'inherit',
     fontWeight: 700,
     cursor: 'pointer',
-};
-
-const infoRowStyle: CSSProperties = {
-    display: 'flex',
-    alignItems: 'baseline',
-    gap: 12,
-};
-
-const infoLabelStyle: CSSProperties = {
-    fontSize: 12,
-    fontWeight: 600,
-    color: 'var(--theme-text-muted)',
-    minWidth: 72,
-    flexShrink: 0,
 };
 
 const infoValueStyle: CSSProperties = {

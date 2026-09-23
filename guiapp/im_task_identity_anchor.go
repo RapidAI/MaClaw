@@ -440,12 +440,39 @@ func isSubstantiveTaskRequest(text string) bool {
 	return false
 }
 
-func isTaskAnchorGreetingText(text string) bool {
+func compactSocialUtterance(text string) string {
 	compact := strings.ToLower(strings.TrimSpace(text))
-	compact = strings.NewReplacer("！", "", "!", "", "。", "", ".", "", "？", "", "?", "", " ", "", "　", "").Replace(compact)
+	return strings.NewReplacer(
+		"！", "", "!", "",
+		"。", "", ".", "",
+		"？", "", "?", "",
+		"，", "", ",", "",
+		"、", "",
+		"～", "", "~", "",
+		"…", "",
+		" ", "", "　", "",
+	).Replace(compact)
+}
+
+func isTaskAnchorGreetingText(text string) bool {
+	compact := compactSocialUtterance(text)
 	switch compact {
-	case "你好", "您好", "哈喽", "嗨", "在吗", "hello", "hi", "hey", "hola":
+	case "你好", "您好", "哈喽", "嗨", "在吗", "在么", "在不在",
+		"早上好", "下午好", "晚上好", "早安", "晚安", "早",
+		"hello", "hi", "hey", "hola",
+		"goodmorning", "goodafternoon", "goodevening":
 		return true
+	}
+	// "你好啊" / "hi there" is still a greeting. "你好，帮我改周报" is not:
+	// the remainder has to be only a social particle.
+	for _, base := range []string{"你好", "您好", "哈喽", "嗨", "早上好", "下午好", "晚上好", "hello", "hi", "hey"} {
+		if !strings.HasPrefix(compact, base) || len(compact) == len(base) {
+			continue
+		}
+		switch compact[len(base):] {
+		case "啊", "呀", "哦", "哟", "哈", "呢", "哇", "啦", "there", "ya":
+			return true
+		}
 	}
 	return false
 }

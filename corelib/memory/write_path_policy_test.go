@@ -50,7 +50,7 @@ func TestProductionMemoryWritesUseCorelibHelpers(t *testing.T) {
 		name := d.Name()
 		if d.IsDir() {
 			switch name {
-			case ".git", "node_modules", "vendor", "build", "dist", ".claude", "iWorkerCenter":
+			case ".git", "node_modules", "vendor", "build", "dist", ".claude":
 				return filepath.SkipDir
 			}
 			return nil

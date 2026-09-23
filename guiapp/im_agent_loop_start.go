@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"errors"
 	"log"
 	"net/http"
 	"strings"
@@ -130,7 +131,16 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 	var semanticSurface *semanticCallSurface
 	var hostReject *IMAgentResponse
 	semanticHandled := false
-	if loopContextHasClassificationProtocolFailure(ctx) {
+	if loopContextTurnAnswerOnly(ctx) {
+		semanticHandled = true
+		tools = nil
+		baseTools = nil
+		requestID := ""
+		if ctx != nil {
+			requestID = ctx.Runtime.RequestID
+		}
+		log.Printf("[semantic-routing] social turn while desktop task open; answer without tools request_id=%q user=%q", requestID, opts.UserID)
+	} else if loopContextHasClassificationProtocolFailure(ctx) {
 		semanticHandled = true
 		log.Printf("[semantic-routing] classifier structured-output protocol violation request_id=%q user=%q", ctx.Runtime.RequestID, opts.UserID)
 		hostReject = semanticHostRejectResponseForClassifierProtocolFailure()
@@ -141,7 +151,13 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 		// would re-expose legacy tools precisely when the governed surface is
 		// incomplete.
 		semanticHandled = true
-		if semanticPlanErrorBlocksSession(semanticErr) {
+		if errors.Is(semanticErr, errSemanticSessionCeilingSpent) {
+			if ctx != nil {
+				ctx.semanticSessionCeilingSpent = true
+			}
+			tools = nil
+			baseTools = nil
+		} else if semanticPlanErrorBlocksSession(semanticErr) {
 			log.Printf("[semantic-routing] managed plan rejected user=%q reason=%v", opts.UserID, semanticErr)
 			hostReject = semanticHostRejectResponseForManagedSurfaceFailure(semanticErr)
 		} else if surface == nil || len(semanticTools) == 0 {
@@ -185,9 +201,11 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 			log.Printf("[semantic-routing] shadow plan=%q user=%q outcome=%s", diagnostic.PlanID, opts.UserID, diagnostic.Reason)
 		}
 	}
-	if attached := h.attachVisionFallthroughExecutionTools(ctx, tools, hostReject, opts.UserID, userText, opts.History); len(attached) > 0 && len(tools) == 0 {
-		tools = attached
-		baseTools = attached
+	if !loopContextTurnAnswerOnly(ctx) {
+		if attached := h.attachVisionFallthroughExecutionTools(ctx, tools, hostReject, opts.UserID, userText, opts.History); len(attached) > 0 && len(tools) == 0 {
+			tools = attached
+			baseTools = attached
+		}
 	}
 	toolsTokenBudget := toolSet.ToolsTokenBudget
 	if semanticSurface != nil || (loopContextIsVisionFallthrough(ctx) && len(tools) > 0) {

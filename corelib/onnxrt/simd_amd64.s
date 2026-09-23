@@ -220,6 +220,145 @@ geludone:
 	VZEROUPPER
 	RET
 
+// func geluErfAVX512(dst, src *float32, n int)
+// 16-wide AVX-512 port of geluErfAVX2: same per-lane op sequence, same
+// constants, same NaN/Inf fixups — bit-exact with the vek32 pipeline by
+// construction (cross-validated in simd_crossval_test.go). n multiple of 16,
+// n == 0 no-op. In-place safe.
+//
+// Register use: Z0=x, Z1=z, Z2=ax, Z3=t, Z4=poly/v, Z5=e/exp, Z6-Z15 temps;
+// K1-K6 comparison masks for the fixup blends.
+TEXT ·geluErfAVX512(SB), NOSPLIT, $0-24
+	MOVQ dst+0(FP), DI
+	MOVQ src+8(FP), SI
+	MOVQ n+16(FP), CX
+	XORL AX, AX
+	TESTQ CX, CX
+	JZ    geluzDone
+
+geluz:
+	VMOVUPS (SI)(AX*4), Z0                     // x
+	VBROADCASTSS geluConsts<>+0(SB), Z6        // invSqrt2
+	VMULPS Z6, Z0, Z1                          // z = x*invSqrt2
+	VBROADCASTSS geluConsts<>+4(SB), Z6        // abs mask
+	VANDPS Z6, Z1, Z2                          // ax = |z|
+	VBROADCASTSS geluConsts<>+8(SB), Z6        // erfP
+	VMULPS Z2, Z6, Z3                          // erfP*ax
+	VBROADCASTSS geluConsts<>+12(SB), Z6       // 1.0
+	VADDPS Z6, Z3, Z3                          // 1 + erfP*ax
+	// t = 1/(1+erfP*ax) via VRCPPS+Newton on two 256-bit halves: VRCPPS has
+	// no 512-bit form and VRCP14PS differs from vek32's rcp, so each half
+	// runs the exact vek32 Inv sequence and VINSERTF64X4 recombines.
+	VEXTRACTF32X8 $1, Z3, Y8                   // Y8 = t.hi
+	VRCPPS Y3, Y9                              // Y9 = rcp(t.lo)  (Y3 = low half of Z3)
+	VRCPPS Y8, Y10                             // Y10 = rcp(t.hi)
+	VMOVAPS Y3, Y11
+	VBROADCASTSS geluConsts<>+12(SB), Y12      // 1.0
+	VFMSUB213PS Y12, Y9, Y11                   // Y11 = t.lo*r - 1
+	VFNMADD132PS Y9, Y9, Y11                   // Y11 = r - Y11*r
+	VMOVAPS Y8, Y13
+	VFMSUB213PS Y12, Y10, Y13                  // Y13 = t.hi*r - 1
+	VFNMADD132PS Y10, Y10, Y13                 // Y13 = r - Y13*r
+	VINSERTF64X4 $1, Y13, Z11, Z3              // Z3 = t (16 lanes)
+	// erf poly: ((((a4*t+a3)*t+a2)*t+a1)*t+a0)*t
+	VBROADCASTSS geluConsts<>+24(SB), Z4
+	VMULPS Z3, Z4, Z4
+	VBROADCASTSS geluConsts<>+28(SB), Z6
+	VADDPS Z6, Z4, Z4
+	VMULPS Z3, Z4, Z4
+	VBROADCASTSS geluConsts<>+32(SB), Z6
+	VADDPS Z6, Z4, Z4
+	VMULPS Z3, Z4, Z4
+	VBROADCASTSS geluConsts<>+36(SB), Z6
+	VADDPS Z6, Z4, Z4
+	VMULPS Z3, Z4, Z4
+	VBROADCASTSS geluConsts<>+40(SB), Z6
+	VADDPS Z6, Z4, Z4
+	VMULPS Z3, Z4, Z4
+	// e = exp(max(-(ax*ax), -80))
+	VMULPS Z2, Z2, Z5                          // ax*ax
+	VBROADCASTSS geluConsts<>+16(SB), Z6       // sign mask
+	VXORPS Z6, Z5, Z5                          // -(ax*ax)
+	VBROADCASTSS geluConsts<>+20(SB), Z6       // -80
+	VMAXPS Z6, Z5, Z5                          // max(-80, e)
+	// exp core (vek32 Exp sequence; identical to ctcRowExpAVX512)
+	VBROADCASTSS geluConsts<>+56(SB), Z10      // log2e
+	VBROADCASTSS geluConsts<>+52(SB), Z1       // 0.5
+	VFMADD213PS Z1, Z5, Z10                    // Z10 = e*log2e + 0.5
+	VRNDSCALEPS $0x01, Z10, Z10                // n = floor
+	VBROADCASTSS geluConsts<>+60(SB), Z11      // ln2hi
+	VFMADD213PS Z5, Z10, Z11                   // Z11 = n*ln2hi + e
+	VBROADCASTSS geluConsts<>+64(SB), Z1       // ln2lo
+	VFMADD231PS Z1, Z10, Z11                   // += n*ln2lo
+	VMULPS Z11, Z11, Z12                       // g²
+	VBROADCASTSS geluConsts<>+72(SB), Z13      // exp poly c0
+	VBROADCASTSS geluConsts<>+68(SB), Z1
+	VFMADD213PS Z1, Z11, Z13
+	VBROADCASTSS geluConsts<>+76(SB), Z1
+	VFMADD213PS Z1, Z11, Z13
+	VBROADCASTSS geluConsts<>+80(SB), Z1
+	VFMADD213PS Z1, Z11, Z13
+	VBROADCASTSS geluConsts<>+84(SB), Z1
+	VFMADD213PS Z1, Z11, Z13
+	VBROADCASTSS geluConsts<>+52(SB), Z1
+	VFMADD213PS Z1, Z11, Z13
+	VFMADD213PS Z11, Z12, Z13                  // g²*poly + g
+	VCVTTPS2DQ Z10, Z14
+	VPSLLD $0x17, Z14, Z14
+	VPBROADCASTD geluConsts<>+12(SB), Z15
+	VPADDD Z15, Z14, Z14                       // 2^n bits
+	VFMADD213PS Z14, Z14, Z13                  // poly*2^n + 2^n
+	// fixups: overflow -> max finite; underflow -> 0
+	VBROADCASTSS geluConsts<>+44(SB), Z6       // expMax
+	VCMPPS $0x01, Z5, Z6, K1                   // K1 = expMax < e
+	VBROADCASTSS geluConsts<>+88(SB), Z7       // max finite
+	VBLENDMPS Z7, Z13, K1, Z8                  // Z8 = K1 ? maxfinite : expcore
+	VBROADCASTSS geluConsts<>+48(SB), Z6       // expMin
+	VCMPPS $0x02, Z5, Z6, K2                   // K2 = expMin <= e (keep mask)
+	VXORPS Z9, Z9, Z9
+	VBLENDMPS Z8, Z9, K2, Z8                   // underflow lanes -> 0
+	// v = 1 - poly*e
+	VMULPS Z8, Z4, Z4
+	VBROADCASTSS geluConsts<>+16(SB), Z6       // sign mask
+	VXORPS Z6, Z4, Z4                          // -(poly*e)
+	VBROADCASTSS geluConsts<>+12(SB), Z6
+	VADDPS Z6, Z4, Z4                          // 1 - poly*e
+	// sign restore: v = (z < 0) ? -v : v
+	// NOTE: Z6 currently holds 1.0 (broadcast for the v = 1 - poly*e add
+	// above), NOT the sign mask — reload it before the negation. (Using the
+	// stale 1.0 here computes 1.0^v, which is ~0 whenever v ~ 1 and silently
+	// zeroed every negative lane.)
+	VBROADCASTSS geluConsts<>+16(SB), Z6       // sign mask
+	VXORPS Z6, Z4, Z7                          // -v
+	VXORPS Z9, Z9, Z9
+	VCMPPS $0x11, Z9, Z0, K3                   // K3 = z < 0 (Z0=x: sign(z)==sign(x), Z1 is exp-scratch)
+	VBLENDMPS Z7, Z4, K3, Z4
+	// NaN fixup: erf(+Inf)=1, erf(-Inf)=-1
+	VCMPPS $0x04, Z4, Z4, K4                   // v != v (NaN)
+	VBROADCASTSS geluConsts<>+92(SB), Z6       // +Inf
+	VCMPPS $0x00, Z6, Z0, K5                   // z == +Inf
+	VBROADCASTSS geluConsts<>+12(SB), Z6       // 1.0
+	VBLENDMPS Z6, Z4, K5, Z8                   // Z8 = +Inf ? 1 : v
+	VBROADCASTSS geluConsts<>+96(SB), Z6       // -Inf
+	VCMPPS $0x00, Z6, Z0, K6                   // z == -Inf
+	VBROADCASTSS geluConsts<>+100(SB), Z6      // -1.0
+	VBLENDMPS Z6, Z8, K6, Z8                   // Z8 = -Inf ? -1 : Z8
+	VBLENDMPS Z8, Z4, K4, Z4                   // NaN lanes only
+	// gelu tail: v = (v+1)*x*0.5
+	VBROADCASTSS geluConsts<>+12(SB), Z6
+	VADDPS Z6, Z4, Z4
+	VMULPS Z0, Z4, Z4
+	VBROADCASTSS geluConsts<>+52(SB), Z6       // 0.5
+	VMULPS Z6, Z4, Z4
+	VMOVUPS Z4, (DI)(AX*4)
+	ADDQ $0x10, AX
+	CMPQ AX, CX
+	JB    geluz
+
+geluzDone:
+	VZEROUPPER
+	RET
+
 // func transpose8x8F32(dst *float32, ldDst int, src *float32, ldSrc int)
 // Transposes an 8x8 float32 block: dst[j*ldDst+i] = src[i*ldSrc+j].
 // Pure data movement (no arithmetic): bit-exact by construction.
@@ -324,4 +463,258 @@ fm3:
 
 fm3done:
 	VZEROUPPER
+	RET
+
+// func ctcRowExpAVX512(row *float32, n int, m float32)
+// row[i] = exp(max(row[i]-m, -80)) for n elements (n multiple of 16; n == 0
+// is a no-op). In-place safe (row is read then stored per block).
+//
+// Fuses the vek32 SubNumber/MaximumNumber/Exp_Inplace triple pass of the CTC
+// epilogue into one ZMM pass. The exp core replicates vek32's
+// Exp_Len8x_AVX2_F32 instruction-for-instruction (same as geluErfAVX2's exp
+// block). The overflow/underflow fixup branches are omitted: every exp
+// argument here lies in [-80, 0] after the clamp, where the polynomial result
+// already equals the vek32 pipeline bit-for-bit (exp(-80) ~ 1.8e-35 is a
+// normal float and below no fixup threshold).
+TEXT ·ctcRowExpAVX512(SB), NOSPLIT, $0-20
+	MOVQ row+0(FP), DI
+	MOVQ n+8(FP), CX
+	VMOVSS m+16(FP), X16
+	VBROADCASTSS X16, Z16                       // m (loop-invariant: Z15/Z17 would
+	                                            //  collide with ln2hi / -80 scratch)
+	VBROADCASTSS geluConsts<>+20(SB), Z17       // -80
+	XORL AX, AX
+	TESTQ CX, CX
+	JZ    ctcExDone
+
+ctcEx:
+	VMOVUPS (DI)(AX*4), Z0                      // row
+	// Go asm binary ops are AT&T order: Go(a, b, c) => c = b - a, so the
+	// minuend (row) is the SECOND operand. e = row - m.
+	VSUBPS Z16, Z0, Z0                          // e = row - m
+	VMAXPS Z17, Z0, Z0                          // e = max(-80, e)
+	VBROADCASTSS geluConsts<>+56(SB), Z14       // log2e (consumed by FMA)
+	VBROADCASTSS geluConsts<>+52(SB), Z1        // 0.5
+	VFMADD213PS Z1, Z0, Z14                     // Z14 = e*log2e + 0.5
+	VRNDSCALEPS $0x01, Z14, Z14                 // n = floor(Z14)
+	VBROADCASTSS geluConsts<>+60(SB), Z15      // ln2hi
+	VFMADD213PS Z0, Z14, Z15                   // Z15 = n*ln2hi + e
+	VBROADCASTSS geluConsts<>+64(SB), Z1        // ln2lo
+	VFMADD231PS Z1, Z14, Z15                   // += n*ln2lo
+	VMULPS Z15, Z15, Z0                       // g = g*g
+	VBROADCASTSS geluConsts<>+72(SB), Z2        // exp poly c0 (leading)
+	VBROADCASTSS geluConsts<>+68(SB), Z1        // c1
+	VFMADD213PS Z1, Z15, Z2                    // g*c0 + c1
+	VBROADCASTSS geluConsts<>+76(SB), Z1
+	VFMADD213PS Z1, Z15, Z2
+	VBROADCASTSS geluConsts<>+80(SB), Z1
+	VFMADD213PS Z1, Z15, Z2
+	VBROADCASTSS geluConsts<>+84(SB), Z1
+	VFMADD213PS Z1, Z15, Z2
+	VBROADCASTSS geluConsts<>+52(SB), Z1        // 0.5
+	VFMADD213PS Z1, Z15, Z2                    // *g + 0.5
+	VFMADD213PS Z15, Z0, Z2                    // g²*poly + g
+	VCVTTPS2DQ Z14, Z3
+	VPSLLD $0x17, Z3, Z3
+	VPBROADCASTD geluConsts<>+12(SB), Z4
+	VPADDD Z4, Z3, Z3                           // 2^n bits
+	VFMADD213PS Z3, Z3, Z2                      // poly*2^n + 2^n
+	VMOVUPS Z2, (DI)(AX*4)
+	ADDQ $0x10, AX
+	CMPQ AX, CX
+	JB    ctcEx
+
+ctcExDone:
+	VZEROUPPER
+	RET
+
+// func im2row3x3AVX512(dst, x *float32, rowOff *int, groups, K, HW, Cg, srcOff int)
+//
+// Vectorized interior of im2rowFast for the 3x3 sW=1 detector path.
+// For each channel c and kernel row kh it copies 3 consecutive floats
+// x[base+g..g+2] (base = c*HW + rowOff[kh] + srcOff) into B rows of 4
+// consecutive output pixels at column 9c+3kh. Pixels are processed 4 at a
+// time via one 3x4 -> 4x3 register transpose.
+//
+// Spill discipline: the 16-byte stores write a 4th lane at column+3, which
+// is always owned by a LATER write within the same call (kh1 fixes kh0's
+// spill, kh2 fixes kh1's, channel c+1's kh0 fixes channel c's kh2). The one
+// exception is (c=Cg-1, kh=2), whose spill would land on the next row's
+// column 0 with no later writer — that block uses exact 8+4-byte stores.
+//
+// Requirements (checked by the caller):
+//   - dst = &B[(pi+s0-ow)*K], x = &x[xG], rowOff[0..2] = image-row offsets
+//     (-1 for padded), srcOff = s0 - pL
+//   - groups*4 + 2 <= number of interior pixels (bounds the +2 over-read)
+//   - every vector row's spill target row is written by the caller's scalar
+//     tail or a later vector row within this call
+TEXT ·im2row3x3AVX512(SB), NOSPLIT, $0-64
+	MOVQ dst+0(FP), R13                        // channel dst base (col 0)
+	MOVQ x+8(FP), SI                           // x base (c=0 plane)
+	MOVQ rowOff+16(FP), R10
+	MOVQ groups+24(FP), R11
+	MOVQ K+32(FP), AX
+	SHLQ $2, AX
+	MOVQ AX, R8                                // dst row stride bytes
+	MOVQ AX, BX
+	SHLQ $2, BX                                // 4-row group stride bytes
+	MOVQ HW+40(FP), AX
+	SHLQ $2, AX
+	MOVQ AX, R9                                // channel plane stride bytes
+	MOVQ Cg+48(FP), R12
+	MOVQ srcOff+56(FP), AX
+	SHLQ $2, AX
+	MOVQ AX, R15                               // srcOff bytes
+	VXORPS X11, X11, X11
+
+channel:
+	// kh = 0, column 9c+0
+	MOVQ (R10), DX
+	TESTQ DX, DX
+	JS    kh0z
+	LEAQ (SI)(DX*4), DX
+	ADDQ R15, DX
+	MOVQ  R13, DI
+	MOVQ  R11, CX
+kh0g:
+	VMOVUPS (DX), X0
+	VMOVUPS 4(DX), X1
+	VMOVUPS 8(DX), X2
+	VUNPCKLPS X1, X0, X3                       // [a0,b0,a1,b1]
+	VUNPCKHPS X1, X0, X4                       // [a2,b2,a3,b3]
+	VUNPCKLPS X2, X2, X5                       // [c0,c0,c1,c1]
+	VUNPCKHPS X2, X2, X6                       // [c2,c2,c3,c3]
+	VSHUFPS $0x44, X5, X3, X7                  // [a0,b0,c0,c0]
+	VSHUFPS $0xEE, X5, X3, X8                  // [a1,b1,c1,c1]
+	VSHUFPS $0x44, X6, X4, X9                  // [a2,b2,c2,c2]
+	VSHUFPS $0xEE, X6, X4, X10                 // [a3,b3,c3,c3]
+	VMOVUPS X7, (DI)
+	VMOVUPS X8, (DI)(R8*1)
+	VMOVUPS X9, (DI)(R8*2)
+	LEAQ (DI)(R8*2), AX
+	VMOVUPS X10, (AX)(R8*1)
+	ADDQ BX, DI
+	ADDQ $16, DX
+	DECQ CX
+	JNZ   kh0g
+	JMP   kh1
+kh0z:
+	MOVQ R13, DI
+	MOVQ R11, CX
+kh0zg:
+	VMOVUPS X11, (DI)
+	VMOVUPS X11, (DI)(R8*1)
+	VMOVUPS X11, (DI)(R8*2)
+	LEAQ (DI)(R8*2), AX
+	VMOVUPS X11, (AX)(R8*1)
+	ADDQ BX, DI
+	DECQ CX
+	JNZ   kh0zg
+
+kh1:
+	// kh = 1, column 9c+3
+	MOVQ 8(R10), DX
+	TESTQ DX, DX
+	JS    kh1z
+	LEAQ (SI)(DX*4), DX
+	ADDQ R15, DX
+	LEAQ 12(R13), DI
+	MOVQ  R11, CX
+kh1g:
+	VMOVUPS (DX), X0
+	VMOVUPS 4(DX), X1
+	VMOVUPS 8(DX), X2
+	VUNPCKLPS X1, X0, X3
+	VUNPCKHPS X1, X0, X4
+	VUNPCKLPS X2, X2, X5
+	VUNPCKHPS X2, X2, X6
+	VSHUFPS $0x44, X5, X3, X7
+	VSHUFPS $0xEE, X5, X3, X8
+	VSHUFPS $0x44, X6, X4, X9
+	VSHUFPS $0xEE, X6, X4, X10
+	VMOVUPS X7, (DI)
+	VMOVUPS X8, (DI)(R8*1)
+	VMOVUPS X9, (DI)(R8*2)
+	LEAQ (DI)(R8*2), AX
+	VMOVUPS X10, (AX)(R8*1)
+	ADDQ BX, DI
+	ADDQ $16, DX
+	DECQ CX
+	JNZ   kh1g
+	JMP   kh2
+kh1z:
+	LEAQ 12(R13), DI
+	MOVQ  R11, CX
+kh1zg:
+	VMOVUPS X11, (DI)
+	VMOVUPS X11, (DI)(R8*1)
+	VMOVUPS X11, (DI)(R8*2)
+	LEAQ (DI)(R8*2), AX
+	VMOVUPS X11, (AX)(R8*1)
+	ADDQ BX, DI
+	DECQ CX
+	JNZ   kh1zg
+
+kh2:
+	// kh = 2, column 9c+6. Last write into the channel block: use exact
+	// 8+4-byte stores so no spill reaches the next channel/row.
+	MOVQ 16(R10), DX
+	LEAQ 24(R13), DI
+	MOVQ  R11, CX
+	TESTQ DX, DX
+	JS    kh2z
+	LEAQ (SI)(DX*4), DX
+	ADDQ R15, DX
+kh2g:
+	VMOVUPS (DX), X0
+	VMOVUPS 4(DX), X1
+	VMOVUPS 8(DX), X2
+	VUNPCKLPS X1, X0, X3
+	VUNPCKHPS X1, X0, X4
+	VUNPCKLPS X2, X2, X5
+	VUNPCKHPS X2, X2, X6
+	VSHUFPS $0x44, X5, X3, X7
+	VSHUFPS $0xEE, X5, X3, X8
+	VSHUFPS $0x44, X6, X4, X9
+	VSHUFPS $0xEE, X6, X4, X10
+	VMOVQ X7, (DI)
+	VPSRLDQ $8, X7, X12
+	VMOVD X12, 8(DI)
+	VMOVQ X8, (DI)(R8*1)
+	VPSRLDQ $8, X8, X12
+	VMOVD X12, 8(DI)(R8*1)
+	VMOVQ X9, (DI)(R8*2)
+	VPSRLDQ $8, X9, X12
+	VMOVD X12, 8(DI)(R8*2)
+	LEAQ (DI)(R8*2), AX
+	VMOVQ X10, (AX)(R8*1)
+	VPSRLDQ $8, X10, X12
+	VMOVD X12, 8(AX)(R8*1)
+	ADDQ BX, DI
+	ADDQ $16, DX
+	DECQ CX
+	JNZ   kh2g
+	JMP   chNext
+kh2z:
+	LEAQ 24(R13), DI
+	MOVQ  R11, CX
+kh2zg:
+	VMOVQ X11, (DI)
+	VMOVD X11, 8(DI)
+	VMOVQ X11, (DI)(R8*1)
+	VMOVD X11, 8(DI)(R8*1)
+	VMOVQ X11, (DI)(R8*2)
+	VMOVD X11, 8(DI)(R8*2)
+	LEAQ (DI)(R8*2), AX
+	VMOVQ X11, (AX)(R8*1)
+	VMOVD X11, 8(AX)(R8*1)
+	ADDQ BX, DI
+	DECQ CX
+	JNZ   kh2zg
+
+chNext:
+	ADDQ $36, R13                              // next channel: col += 9
+	ADDQ R9, SI                                // next channel plane
+	DECQ R12
+	JNZ   channel
 	RET

@@ -557,7 +557,7 @@ func BootstrapWithOptions(cfg *config.Config, configPath string, opts BootstrapO
 
 	// Inject SecurityProvider into ws.Gateway for heartbeat policy delivery.
 	gateway.SecurityProvider = securitySvc
-	gateway.ConfigProvider = heartbeatConfigProvider{settings: st.System}
+	gateway.ConfigProvider = heartbeatConfigProvider{settings: st.System, cache: newHeartbeatSettingsCache()}
 
 	// Wire OutboundInterceptor into im.Adapter for file/image outbound checks.
 	outboundInterceptor := im.NewOutboundInterceptor(securitySvc, nil)
@@ -890,13 +890,75 @@ func (a *smartRouteSecurityPolicyAdapter) IsSmartRouteAllowedBySecurityPolicy(ct
 
 type heartbeatConfigProvider struct {
 	settings store.SystemSettingsRepository
+	cache    *heartbeatSettingsCache
+}
+
+// heartbeatSettingsCacheTTL bounds how long per-tenant system settings reads
+// are reused on the heartbeat path (capability market policy and center
+// registration). Heartbeats fire every 5–30s per machine and these settings
+// change rarely, so a short TTL trades at most 30s of staleness for skipping
+// repeated DB reads.
+const heartbeatSettingsCacheTTL = 30 * time.Second
+
+type heartbeatSettingsCacheItem struct {
+	value   string
+	expires time.Time
+}
+
+type heartbeatSettingsCache struct {
+	mu    sync.Mutex
+	items map[string]heartbeatSettingsCacheItem // tenantID + "\x00" + key
+	ttl   time.Duration
+}
+
+func newHeartbeatSettingsCache() *heartbeatSettingsCache {
+	return &heartbeatSettingsCache{items: map[string]heartbeatSettingsCacheItem{}, ttl: heartbeatSettingsCacheTTL}
+}
+
+func (c *heartbeatSettingsCache) get(ctx context.Context, settings store.SystemSettingsRepository, tenantID, key string) (string, error) {
+	if c == nil {
+		return settings.Get(ctx, key)
+	}
+	mapKey := tenantID + "\x00" + key
+	now := time.Now()
+	c.mu.Lock()
+	if item, ok := c.items[mapKey]; ok && now.Before(item.expires) {
+		c.mu.Unlock()
+		return item.value, nil
+	}
+	c.mu.Unlock()
+	value, err := settings.Get(ctx, key)
+	if err != nil {
+		return "", err
+	}
+	c.mu.Lock()
+	c.items[mapKey] = heartbeatSettingsCacheItem{value: value, expires: now.Add(c.ttl)}
+	c.mu.Unlock()
+	return value, nil
+}
+
+// heartbeatCachedSystemSettings presents a cached SystemSettingsRepository
+// view so downstream loaders (e.g. LoadDigitalEmployeeAuthorizationForTenant)
+// skip repeated DB reads while still evaluating time-dependent fields fresh.
+type heartbeatCachedSystemSettings struct {
+	cache    *heartbeatSettingsCache
+	tenantID string
+	base     store.SystemSettingsRepository
+}
+
+func (s heartbeatCachedSystemSettings) Set(ctx context.Context, key, valueJSON string) error {
+	return s.base.Set(ctx, key, valueJSON)
+}
+
+func (s heartbeatCachedSystemSettings) Get(ctx context.Context, key string) (string, error) {
+	return s.cache.get(ctx, s.base, s.tenantID, key)
 }
 
 func (p heartbeatConfigProvider) GetHeartbeatConfig(ctx context.Context, userID string, tenantID string) (*ws.HeartbeatConfigPayload, error) {
 	settings := scopedSystemSettingsForTenant(tenantID, p.settings)
 	policy := corelib.DefaultCapabilityMarketPolicy()
 	if settings != nil {
-		raw, err := settings.Get(ctx, "capability_market_policy")
+		raw, err := p.cache.get(ctx, settings, tenantID, "capability_market_policy")
 		if err != nil {
 			log.Printf("[hub-config] failed to read capability_market_policy: %v", err)
 			// Don't return error — capability_market_policy failure should not
@@ -909,7 +971,11 @@ func (p heartbeatConfigProvider) GetHeartbeatConfig(ctx context.Context, userID 
 			}
 		}
 	}
-	return &ws.HeartbeatConfigPayload{CapabilityMarketPolicy: policy, DigitalEmployeeAuthorization: center.LoadDigitalEmployeeAuthorizationForTenant(ctx, p.settings, tenantID)}, nil
+	var authSettings store.SystemSettingsRepository = settings
+	if settings != nil {
+		authSettings = heartbeatCachedSystemSettings{cache: p.cache, tenantID: tenantID, base: settings}
+	}
+	return &ws.HeartbeatConfigPayload{CapabilityMarketPolicy: policy, DigitalEmployeeAuthorization: center.LoadDigitalEmployeeAuthorizationForTenant(ctx, authSettings, tenantID)}, nil
 }
 
 type tenantScopedSystemSettings struct {

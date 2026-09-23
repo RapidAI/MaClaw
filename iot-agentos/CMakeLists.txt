@@ -22,6 +22,19 @@ endif()
 # ESP-IDF discovers these before it can read Kconfig, so the selected build
 # entry point must pass their directory through EXTRA_COMPONENT_DIRS.
 project(maclaw_esp32s3_client)
+# The sdkconfig.defaults in this project carries ESP-IDF 6.0.2-specific S3
+# stability workarounds (CONFIG_ESP_COEX_ENABLED=n, the two
+# CONFIG_MBEDTLS_*_USE_INTERRUPT=n options, CONFIG_ESP_TLS_USE_DS_PERIPHERAL=n
+# and the Wi-Fi AMPDU disable).  They have only been validated on IDF 6.0.x;
+# warn on any other version so the settings get re-verified before they are
+# trusted there.  IDF_VERSION_* only exists once project() has run.
+if((NOT IDF_VERSION_MAJOR EQUAL 6) OR (NOT IDF_VERSION_MINOR EQUAL 0))
+    message(WARNING "iot-agentos: ESP-IDF ${IDF_VERSION_MAJOR}.${IDF_VERSION_MINOR}.${IDF_VERSION_PATCH} is not 6.0.x; "
+                    "the sdkconfig.defaults workarounds (CONFIG_ESP_COEX_ENABLED=n, "
+                    "CONFIG_MBEDTLS_MPI_USE_INTERRUPT=n, CONFIG_MBEDTLS_AES_USE_INTERRUPT=n, "
+                    "CONFIG_ESP_TLS_USE_DS_PERIPHERAL=n, Wi-Fi AMPDU disabled) "
+                    "have not been verified on this version.")
+endif()
 # The storage partition is reserved for future pet assets. Keep normal builds
 # independent of an optional source directory; when assets are present they
 # are packed and included in `idf.py flash` automatically.

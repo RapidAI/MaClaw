@@ -53,6 +53,16 @@ const (
 	// for a secondary assistant tab (VE, group discussion, ACP, etc.). The
 	// suffix is a stable hash of the tab identity, never user-provided text.
 	taskSourceAssistantTabPrefix = taskSourceTagPrefix + "assistant_tab:"
+	// assistantTabACPType is the tabType used for VS Code Mode B connections.
+	assistantTabACPType = "acp"
+	// assistantTabACPIdentity is the stable ACP tab identity. Session ids change
+	// on every VS Code reconnect; hashing those created a new vs-code-acp-*
+	// sidebar row each time the GUI restarted.
+	assistantTabACPIdentity = "acp"
+	// assistantTabACPDismissSentinel is a durable ProjectIndex hidden pref. A
+	// user who deleted the VS Code / ACP sidebar row must not see it come back
+	// from EnsureAssistantTabTask or leftover-directory recovery.
+	assistantTabACPDismissSentinel = "assistant-tab:acp"
 	// taskCodingDevTag marks tasks created with the "programming / coding" option.
 	// Used by the GUI to open the task in coding-agent mode.
 	taskCodingDevTag = "coding_dev"
@@ -201,10 +211,10 @@ func projectPathFromSessionOwnerID(ownerID string) string {
 // ProjectSearchResult is the frontend-facing search result type.
 // Exported as a Wails binding return type.
 type ProjectSearchResult struct {
-	ID              string                  `json:"id"`           // ProjectPath as stable ID
-	Name            string                  `json:"name"`         // Human-readable project name
-	ProjectPath     string                  `json:"project_path"` // Canonical absolute path
-	WorkingDir      string                  `json:"working_dir,omitempty"`
+	ID          string `json:"id"`           // ProjectPath as stable ID
+	Name        string `json:"name"`         // Human-readable project name
+	ProjectPath string `json:"project_path"` // Canonical absolute path
+	WorkingDir  string `json:"working_dir,omitempty"`
 	// ExecutionDir is the directory tools actually run in for a managed task
 	// (the working_dir tag, else the workspace/ sandbox). Empty when execution
 	// happens in the project path itself, and for cloud workspace rows.
@@ -466,6 +476,9 @@ func (a *App) SearchTasks(query string, limit int) []ProjectSearchResult {
 		if pi.IsHidden(rec.ProjectPath) || pi.IsArchived(rec.ProjectPath) {
 			continue
 		}
+		if isAutoACPAssistantTabRecord(rec) {
+			continue
+		}
 		result := a.projectRecordToSearchResult(pi, rec)
 		if localCloudWorkspaceID(rec) != "" || cloudWorkspaceIDFromPathString(result.WorkingDir) != "" {
 			result.Tags = scrubCloudWorkspaceIdentityTags(result.Tags)
@@ -497,6 +510,9 @@ func visibleProjectRecords(pi *memory.ProjectIndex, records []memory.ProjectReco
 	out := make([]memory.ProjectRecord, 0, len(records))
 	for _, rec := range records {
 		if pi.IsHidden(rec.ProjectPath) || pi.IsArchived(rec.ProjectPath) {
+			continue
+		}
+		if isAutoACPAssistantTabRecord(rec) {
 			continue
 		}
 		out = append(out, rec)
@@ -976,7 +992,13 @@ func (a *App) CreateTask(name, workingDir string) ProjectSearchResult {
 // optional execution mode. mode="coding_dev" / "remote_coding_dev" (or aliases)
 // tags the task for coding-agent routing when the GUI reopens it.
 func (a *App) CreateTaskWithMode(name, workingDir, mode string) ProjectSearchResult {
-	taskName := normalizeRecentTaskName(name)
+	return a.createTaskWithMode(name, workingDir, mode, false)
+}
+
+// createTaskWithMode keeps a non-empty explicit title when keepExplicit is set.
+// Automatic callers still drop generic phrases such as "继续" or "ok".
+func (a *App) createTaskWithMode(name, workingDir, mode string, keepExplicit bool) ProjectSearchResult {
+	taskName := taskNameForCreate(name, keepExplicit)
 	if taskName == "" {
 		return ProjectSearchResult{}
 	}
@@ -1056,12 +1078,14 @@ func (a *App) CreateExpertTask(expertID, expertName string) ProjectSearchResult 
 // non-main AI assistant tab. It is deliberately the backend authority for this
 // invariant so every UI entry point can use the same idempotent registration.
 //
-// If projectPath already identifies a visible task, that task is reused. This
-// keeps ordinary project/coding tabs one-to-one with their existing task while
-// VE, group, and ACP tabs receive their own durable sidebar entry.
+// If projectPath already identifies a visible task, that task is reused for
+// ordinary project/coding tabs. VE and group tabs keep their own durable
+// sidebar entry. ACP connections are not a task-list identity: the editor cwd
+// is not reused, and after the user deletes the VS Code / ACP row this method
+// returns empty so a reconnect cannot resurrect it.
 func (a *App) EnsureAssistantTabTask(tabType, tabIdentity, title, projectPath string) ProjectSearchResult {
 	tabType = strings.ToLower(strings.TrimSpace(tabType))
-	tabIdentity = strings.TrimSpace(tabIdentity)
+	tabIdentity = canonicalAssistantTabIdentity(tabType, tabIdentity)
 	if tabType == "" || tabIdentity == "" {
 		return ProjectSearchResult{}
 	}
@@ -1080,7 +1104,10 @@ func (a *App) EnsureAssistantTabTask(tabType, tabIdentity, title, projectPath st
 	if pi == nil {
 		return ProjectSearchResult{}
 	}
-	if projectPath != "" {
+	if assistantTabTypeDismissed(pi, tabType) {
+		return ProjectSearchResult{}
+	}
+	if tabType != assistantTabACPType && projectPath != "" {
 		if rec := pi.Get(projectPath); rec != nil && isTaskManagementRecord(*rec) && !pi.IsHidden(projectPath) && !pi.IsArchived(projectPath) {
 			return a.projectRecordToSearchResult(pi, *rec)
 		}
@@ -1090,10 +1117,12 @@ func (a *App) EnsureAssistantTabTask(tabType, tabIdentity, title, projectPath st
 	// simultaneous UI events ask to open the same secondary assistant tab.
 	assistantTabTaskMu.Lock()
 	defer assistantTabTaskMu.Unlock()
-	digest := sha256.Sum256([]byte(tabType + "\x00" + tabIdentity))
-	sourceTag := fmt.Sprintf("%s%s:%x", taskSourceAssistantTabPrefix, tabType, digest[:12])
+	if assistantTabTypeDismissed(pi, tabType) {
+		return ProjectSearchResult{}
+	}
+	sourceTag := assistantTabSourceTag(tabType, tabIdentity)
 	for _, rec := range pi.ListAllMatching(func(candidate memory.ProjectRecord) bool {
-		return projectRecordHasTag(candidate, taskManagementTag) && projectRecordHasTag(candidate, sourceTag)
+		return projectRecordHasTag(candidate, taskManagementTag) && isAssistantTabSourceTagMatch(candidate.Tags, tabType, sourceTag)
 	}) {
 		if pi.IsHidden(rec.ProjectPath) || pi.IsArchived(rec.ProjectPath) {
 			continue
@@ -1114,6 +1143,122 @@ func (a *App) EnsureAssistantTabTask(tabType, tabIdentity, title, projectPath st
 		taskUserCreatedTag,
 		sourceTag,
 	}, "", false)
+}
+
+func canonicalAssistantTabIdentity(tabType, tabIdentity string) string {
+	tabIdentity = strings.TrimSpace(tabIdentity)
+	if tabType == assistantTabACPType {
+		return assistantTabACPIdentity
+	}
+	return tabIdentity
+}
+
+func assistantTabSourceTag(tabType, tabIdentity string) string {
+	tabIdentity = canonicalAssistantTabIdentity(tabType, tabIdentity)
+	digest := sha256.Sum256([]byte(tabType + "\x00" + tabIdentity))
+	return fmt.Sprintf("%s%s:%x", taskSourceAssistantTabPrefix, tabType, digest[:12])
+}
+
+func assistantTabTypeFromTags(tags []string) string {
+	prefix := taskSourceAssistantTabPrefix
+	for _, tag := range tags {
+		tag = strings.TrimSpace(tag)
+		if !strings.HasPrefix(tag, prefix) {
+			continue
+		}
+		rest := strings.TrimPrefix(tag, prefix)
+		if i := strings.IndexByte(rest, ':'); i > 0 {
+			return strings.ToLower(strings.TrimSpace(rest[:i]))
+		}
+	}
+	return ""
+}
+
+func isAssistantTabSourceTagMatch(tags []string, tabType, sourceTag string) bool {
+	if projectRecordHasTag(memory.ProjectRecord{Tags: tags}, sourceTag) {
+		return true
+	}
+	// Pre-stable ACP rows hashed a per-session id. Treat any assistant_tab:acp:*
+	// tag as the same sidebar identity so a reconnect reuses (or honors delete
+	// of) the existing VS Code / ACP row instead of minting another clone.
+	if tabType == assistantTabACPType {
+		return assistantTabTypeFromTags(tags) == assistantTabACPType
+	}
+	return false
+}
+
+func assistantTabDismissSentinel(tabType string) string {
+	if tabType == assistantTabACPType {
+		return assistantTabACPDismissSentinel
+	}
+	return ""
+}
+
+func assistantTabTypeDismissed(pi *memory.ProjectIndex, tabType string) bool {
+	if pi == nil {
+		return false
+	}
+	sentinel := assistantTabDismissSentinel(tabType)
+	return sentinel != "" && pi.IsHidden(sentinel)
+}
+
+func (a *App) dismissAssistantTabType(tabType string) {
+	sentinel := assistantTabDismissSentinel(tabType)
+	if sentinel == "" {
+		return
+	}
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return
+	}
+	pi.SetHidden(sentinel, true)
+}
+
+func isAutoACPAssistantTabDirName(projectPath string) bool {
+	return strings.EqualFold(stripTaskDirTimestampSuffix(lastPathComponent(projectPath)), "vs-code-acp")
+}
+
+func isAutoACPAssistantTabContent(content string) bool {
+	lower := strings.ToLower(content)
+	if !strings.Contains(lower, "secondary ai assistant tab.") {
+		return false
+	}
+	for _, line := range strings.Split(lower, "\n") {
+		if strings.TrimSpace(line) == "type: acp" {
+			return true
+		}
+	}
+	return false
+}
+
+func isAutoACPAssistantTabTask(projectPath, content string) bool {
+	if strings.TrimSpace(content) != "" {
+		return isAutoACPAssistantTabContent(content)
+	}
+	return isAutoACPAssistantTabDirName(projectPath)
+}
+
+func isAutoACPAssistantTabRecord(rec memory.ProjectRecord) bool {
+	if assistantTabTypeFromTags(rec.Tags) == assistantTabACPType {
+		return true
+	}
+	if !isAutoACPAssistantTabDirName(rec.ProjectPath) {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(rec.Name), "VS Code / ACP")
+}
+
+// reconcileDismissedACPAssistantTabTasks drops leftover VS Code / ACP rows so a
+// later GUI start cannot list a clone that was never dismissed by DeleteTask.
+func (a *App) reconcileDismissedACPAssistantTabTasks() {
+	if a == nil || a.memoryStore == nil {
+		return
+	}
+	a.purgeAutoACPAssistantTabTasks("")
 }
 
 // sanitizeTaskMetadataTagValue strips characters that break multi-line or
@@ -1686,7 +1831,14 @@ func (a *App) CreateRemoteOpsDiagnosisTask(name, sshHost, sshUser, workDir strin
 // was reused, which keeps protocol clients from doing an unlocked preflight
 // lookup just to produce UI feedback.
 func (a *App) findOrCreateRemoteCodingTask(name, sshHost, sshUser, workDir string, sshPort int, extraTags ...string) (ProjectSearchResult, bool) {
-	taskName := normalizeRecentTaskName(name)
+	return a.findOrCreateRemoteCodingTaskKeepingName(name, sshHost, sshUser, workDir, sshPort, false, extraTags...)
+}
+
+// findOrCreateRemoteCodingTaskKeepingName is findOrCreateRemoteCodingTask.
+// keepExplicit retains a short user-typed title such as "继续". The caller
+// must hold remoteCodingTaskMu.
+func (a *App) findOrCreateRemoteCodingTaskKeepingName(name, sshHost, sshUser, workDir string, sshPort int, keepExplicit bool, extraTags ...string) (ProjectSearchResult, bool) {
+	taskName := taskNameForCreate(name, keepExplicit)
 	if taskName == "" {
 		return ProjectSearchResult{}, false
 	}
@@ -1758,12 +1910,16 @@ func (a *App) reconcileRemoteCodingTask(preferredProjectPath, name, sshHost, ssh
 // createRemoteCodingTaskWithTags is the internal variadic form; extraTags may
 // include origin markers such as source:coding_workflow.
 func (a *App) createRemoteCodingTaskWithTags(name, sshHost, sshUser, workDir string, sshPort int, extraTags ...string) ProjectSearchResult {
+	return a.createRemoteCodingTaskWithTagsKeepingName(name, sshHost, sshUser, workDir, sshPort, false, extraTags...)
+}
+
+func (a *App) createRemoteCodingTaskWithTagsKeepingName(name, sshHost, sshUser, workDir string, sshPort int, keepExplicit bool, extraTags ...string) ProjectSearchResult {
 	// Keep lookup + metadata refresh/create as one critical section. This helper
 	// is shared by desktop, workflow, Hub, and virtual-repository entry points,
 	// so guarding only the public Wails method would still leave duplicate paths.
 	remoteCodingTaskMu.Lock()
 	defer remoteCodingTaskMu.Unlock()
-	task, _ := a.findOrCreateRemoteCodingTask(name, sshHost, sshUser, workDir, sshPort, extraTags...)
+	task, _ := a.findOrCreateRemoteCodingTaskKeepingName(name, sshHost, sshUser, workDir, sshPort, keepExplicit, extraTags...)
 	return task
 }
 
@@ -3648,6 +3804,11 @@ func (a *App) recoverOneManagedTaskFromDisk(pi *memory.ProjectIndex, taskDir str
 	if strings.TrimSpace(content) == "" || isRecoveredForkedTaskContent(content) {
 		return false
 	}
+	// VS Code / ACP rows are session-cloned leftovers. Recovering them after
+	// DeleteTask is what made the sidebar task reappear on every GUI restart.
+	if isAutoACPAssistantTabTask(taskDir, content) {
+		return false
+	}
 	title, extraTags := inferRecoveredTaskMetadata(taskDir, content)
 	if title == "" {
 		title = stripTaskDirTimestampSuffix(lastPathComponent(taskDir))
@@ -4598,15 +4759,21 @@ func (a *App) ForkConversationToProject(projectPath string) {
 }
 
 func normalizeRecentTaskName(name string) string {
+	return taskNameForCreate(name, false)
+}
+
+// taskNameForCreate collapses whitespace and caps length. keepExplicit retains
+// a short user-typed title ("继续", "ok") that automatic naming would discard.
+func taskNameForCreate(name string, keepExplicit bool) string {
 	normalized := strings.Join(strings.Fields(name), " ")
-	if isGenericSedimentRequest(normalized) {
+	if isGenericSedimentRequest(normalized) && !keepExplicit {
 		return ""
 	}
 	runes := []rune(normalized)
 	if len(runes) > 120 {
 		normalized = string(runes[:120])
 	}
-	return normalized
+	return strings.TrimSpace(normalized)
 }
 
 // recentTaskDisplayTitle extracts a short display title from a multi-line task command.
@@ -4940,6 +5107,12 @@ func (a *App) DeleteTask(projectPath string) error {
 	// rather than the task's project path. Resolve the expert id BEFORE the
 	// record is deleted below, so the expert session can be purged too.
 	expertID := a.expertIDForTaskPath(projectPath)
+	assistantTabType := a.assistantTabTypeForTaskPath(projectPath)
+	// Dismiss before dropping the record so a concurrent EnsureAssistantTabTask
+	// cannot mint a replacement VS Code / ACP row in the gap.
+	if assistantTabType == assistantTabACPType {
+		a.dismissAssistantTabType(assistantTabACPType)
+	}
 	var errs []error
 	handler := a.imHandler
 	if handler == nil {
@@ -5052,6 +5225,9 @@ func (a *App) DeleteTask(projectPath string) error {
 			}
 		}
 	}
+	if assistantTabType == assistantTabACPType {
+		a.purgeAutoACPAssistantTabTasks(projectPath)
+	}
 	a.emitProjectIndexChanged(projectPath)
 	// Match HideTask's ordering: the deleted signal must precede the close
 	// signal so AI panel listeners discard the project's tabs and local caches
@@ -5061,6 +5237,104 @@ func (a *App) DeleteTask(projectPath string) error {
 	a.emitExpertTaskDeleted(expertID)
 	a.emitProjectTaskClosed(projectPath)
 	return errors.Join(errs...)
+}
+
+// assistantTabTypeForTaskPath returns the secondary-tab type (e.g. "acp") when
+// the task was created by EnsureAssistantTabTask, else "".
+func (a *App) assistantTabTypeForTaskPath(projectPath string) string {
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return ""
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return ""
+	}
+	rec := pi.Get(projectPath)
+	if rec != nil {
+		if tabType := assistantTabTypeFromTags(rec.Tags); tabType != "" {
+			return tabType
+		}
+		if isAutoACPAssistantTabRecord(*rec) {
+			return assistantTabACPType
+		}
+	}
+	taskFile := filepath.Join(projectPath, "task.md")
+	content, err := os.ReadFile(taskFile)
+	if err == nil && isAutoACPAssistantTabContent(string(content)) {
+		return assistantTabACPType
+	}
+	if (err != nil || strings.TrimSpace(string(content)) == "") && isAutoACPAssistantTabDirName(projectPath) {
+		return assistantTabACPType
+	}
+	return ""
+}
+
+// purgeAutoACPAssistantTabTasks removes leftover VS Code / ACP clones so a
+// later GUI restart cannot recover a deleted sidebar row from disk or from a
+// compressor-merged identity entry that still carries another vs-code-acp dir.
+func (a *App) purgeAutoACPAssistantTabTasks(alreadyDeleted string) {
+	if a == nil {
+		return
+	}
+	alreadyDeleted = normalizeProjectSessionPath(alreadyDeleted)
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return
+	}
+	pi := a.memoryStore.ProjectIndex()
+	seen := map[string]bool{}
+	if alreadyDeleted != "" {
+		seen[alreadyDeleted] = true
+	}
+	var purged []string
+	purgePath := func(path string) {
+		path = normalizeProjectSessionPath(path)
+		if path == "" || seen[path] {
+			return
+		}
+		seen[path] = true
+		_, _ = a.memoryStore.DeleteProjectEntries(path)
+		if pi != nil {
+			pi.ClearTaskPrefs(path)
+		}
+		if a.isManagedRecentTaskWorkspacePath(path) {
+			_ = os.RemoveAll(path)
+		}
+		_, _ = a.ensureProjectTabSessionPersist().DeleteProjectSessions(path)
+		purged = append(purged, path)
+	}
+	if pi != nil {
+		for _, rec := range pi.ListAllMatching(func(candidate memory.ProjectRecord) bool {
+			return isAutoACPAssistantTabRecord(candidate)
+		}) {
+			purgePath(rec.ProjectPath)
+		}
+	}
+	tasksRoot := filepath.Join(a.GetDataDir(), "tasks")
+	if entries, err := os.ReadDir(tasksRoot); err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			taskDir := normalizeProjectSessionPath(filepath.Join(tasksRoot, entry.Name()))
+			if seen[taskDir] || !isAutoACPAssistantTabDirName(taskDir) {
+				continue
+			}
+			content, readErr := os.ReadFile(filepath.Join(taskDir, "task.md"))
+			if readErr != nil && !os.IsNotExist(readErr) {
+				continue
+			}
+			if len(content) > 0 && !isAutoACPAssistantTabTask(taskDir, string(content)) {
+				continue
+			}
+			purgePath(taskDir)
+		}
+	}
+	for _, path := range purged {
+		a.emitProjectTaskDeleted(path)
+		a.emitProjectTaskClosed(path)
+	}
 }
 
 // expertIDForTaskPath returns the expert id when the task record at
@@ -6336,6 +6610,13 @@ func (a *App) LoadProjectTabIndex() []TabIndexEntry {
 		if projectIndex != nil && entry.ProjectPath != "" {
 			if projectIndex.IsHidden(entry.ProjectPath) || projectIndex.IsArchived(entry.ProjectPath) {
 				log.Printf("[LoadProjectTabIndex] skip closed task tab=%q project=%q", entry.ID, entry.ProjectPath)
+				continue
+			}
+			if rec := projectIndex.Get(entry.ProjectPath); rec != nil && isAutoACPAssistantTabRecord(*rec) {
+				log.Printf("[LoadProjectTabIndex] skip ACP assistant tab=%q project=%q", entry.ID, entry.ProjectPath)
+				continue
+			} else if rec == nil && isAutoACPAssistantTabDirName(entry.ProjectPath) {
+				log.Printf("[LoadProjectTabIndex] skip leftover ACP tab=%q project=%q", entry.ID, entry.ProjectPath)
 				continue
 			}
 		}

@@ -248,6 +248,26 @@ func executionProfileFromSemanticIntent(result *intent.ClassificationResult, con
 		// profile only budgets the agent loop; semanticPlanForTurn replaces its
 		// tool list before the model sees it, so this does not reopen the legacy
 		// name-router or direct execution path.
+		// A weather card searches, renders, and hands the image back. The
+		// deliver step is that card, not an open-ended mutation. Treating it
+		// as one made 「崇州天气」 an unbounded full agent (tool_budget=0,
+		// iteration cap 300) that wandered into tools_search and screenshot.
+		if semanticLiveVisualFamily(*result) {
+			return ExecutionProfile{
+				Layer:                string(executionLayerLight),
+				TaskType:             string(intent.LabelLiveDataVisual),
+				PromptProfile:        "light",
+				Confidence:           result.Confidence,
+				Reason:               "semantic capability-managed live visual",
+				RequiredCapabilities: []string{"information.search.web", "visual.render.live_data"},
+				// ToolBudget is also the planner selection cap. 1 keeps only
+				// the search wave and marks render and deliver budget_exceeded,
+				// which rejects the whole turn. 0 leaves the closed pipeline
+				// intact; IterationBudget caps the model loop.
+				ToolBudget:      0,
+				IterationBudget: 4,
+			}
+		}
 		if semanticIntentRequiresFullProfile(*result) {
 			return fullExecutionProfile("semantic capability-managed mutating intent")
 		}
@@ -293,6 +313,23 @@ func executionProfileFromSemanticIntent(result *intent.ClassificationResult, con
 	default:
 		return fullExecutionProfile("semantic intent requires full agent")
 	}
+}
+
+func semanticLiveVisualFamily(result intent.ClassificationResult) bool {
+	sawVisual := false
+	for _, label := range result.Labels() {
+		if label.IsNonCapabilityLabel() {
+			continue
+		}
+		switch label {
+		case intent.LabelSearch, intent.LabelLiveData, intent.LabelWebFetch:
+		case intent.LabelLiveDataVisual:
+			sawVisual = true
+		default:
+			return false
+		}
+	}
+	return sawVisual
 }
 
 func semanticIntentRequiresFullProfile(result intent.ClassificationResult) bool {

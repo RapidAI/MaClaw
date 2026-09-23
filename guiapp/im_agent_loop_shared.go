@@ -1547,7 +1547,37 @@ func (c *sharedAgentLoopCallbacks) CurrentPromptProfile() agent.PromptProfile {
 // immutable planned selections. The model-visible name is a transport lookup
 // only: light-profile admission is made from the capability plan's effect and
 // confirmation contract, so a name's spelling cannot create a policy hole.
+func sessionCeilingSpentMessage() string {
+	return "[system] Planned invocations for this session are complete. Answer from the results you already have. Do not call tools."
+}
+
+func sessionTurnAnswerOnlyMessage() string {
+	return "[system] This turn does not use tools. Answer the user directly. The open task is unchanged."
+}
+
+func (c *sharedAgentLoopCallbacks) sessionCeilingSpent() bool {
+	return c != nil && c.loopCtx != nil && c.loopCtx.semanticSessionCeilingSpent
+}
+
+func (c *sharedAgentLoopCallbacks) sessionTurnAnswerOnly() bool {
+	return c != nil && c.loopCtx != nil && c.loopCtx.semanticTurnAnswerOnly
+}
+
+func (c *sharedAgentLoopCallbacks) sessionTurnDeniesTools() bool {
+	return c.sessionCeilingSpent() || c.sessionTurnAnswerOnly()
+}
+
+func (c *sharedAgentLoopCallbacks) sessionToolClosedMessage() string {
+	if c.sessionCeilingSpent() {
+		return sessionCeilingSpentMessage()
+	}
+	return sessionTurnAnswerOnlyMessage()
+}
+
 func (c *sharedAgentLoopCallbacks) IsToolAllowedForPromptProfile(name string, profile agent.PromptProfile) bool {
+	if c.sessionTurnDeniesTools() {
+		return false
+	}
 	if c != nil && c.semanticSurface != nil {
 		resolved := c.semanticSurface.resolveFunctionName(name)
 		if resolved == semanticToolsSearchName {
@@ -1588,6 +1618,9 @@ func (c *sharedAgentLoopCallbacks) semanticLightLookup() bool {
 // this authorizer and then hit the core light deny ("set PROFILE=full"), which
 // is the text that made the model ask the user to re-authorize tools.
 func (c *sharedAgentLoopCallbacks) IsToolAllowed(name string) bool {
+	if c.sessionTurnDeniesTools() {
+		return false
+	}
 	if c == nil || c.semanticSurface == nil {
 		return true
 	}
@@ -1611,6 +1644,9 @@ func (c *sharedAgentLoopCallbacks) IsToolAllowed(name string) bool {
 // invoke_* names are rejected by IsToolAllowed; no payload shape can translate
 // one into a grant from this request.
 func (c *sharedAgentLoopCallbacks) IsToolCallAllowed(name, argsJSON string) (bool, string) {
+	if c.sessionTurnDeniesTools() {
+		return false, c.sessionToolClosedMessage()
+	}
 	if c == nil || c.semanticSurface == nil {
 		return true, ""
 	}
@@ -1900,8 +1936,16 @@ func (c *sharedAgentLoopCallbacks) PetitionToolCall(name string) (bool, string) 
 	if c == nil || c.handler == nil {
 		return false, ""
 	}
+	if c.sessionTurnDeniesTools() {
+		return false, c.sessionToolClosedMessage()
+	}
 	name = strings.TrimSpace(name)
 	if name == "" {
+		return false, ""
+	}
+	// A closed gate already decided this turn is not desktop control. Granting
+	// computer_use here would reopen it from a model petition.
+	if computerUseGateClosed(c.loopCtx) && isRefComputerUseToolName(name) {
 		return false, ""
 	}
 	if c.semanticSurface == nil {
@@ -2415,6 +2459,9 @@ func (c *sharedAgentLoopCallbacks) ExecuteTool(name, argsJSON string) string {
 	if c == nil || c.handler == nil {
 		return "handler unavailable"
 	}
+	if c.sessionTurnDeniesTools() {
+		return c.sessionToolClosedMessage()
+	}
 	if c.legacyPetitionAllows(name) {
 		if denied := c.continuationOverlayDenial(name, argsJSON); denied != "" {
 			return denied
@@ -2468,7 +2515,9 @@ func (c *sharedAgentLoopCallbacks) executeToolCallWithExecutionContext(name, arg
 		setComputerUseOwner(computerUseOwnerFromLoop(c.loopCtx, c.userID))
 	}
 	var result agent.ToolExecutionResult
-	if c != nil && c.legacyPetitionAllows(name) {
+	if c != nil && c.sessionTurnDeniesTools() {
+		result = agent.ToolExecutionResult{Result: c.sessionToolClosedMessage(), Outcome: agent.ToolExecutionOutcomeError}
+	} else if c != nil && c.legacyPetitionAllows(name) {
 		result = c.ExecuteToolStructured(name, argsJSON)
 	} else if c != nil && c.semanticSurface != nil {
 		result = semanticAgentToolExecutionResult(c.executeSemanticToolCallWithEpoch(name, argsJSON, callID, execution.SurfaceEpoch))
@@ -2594,8 +2643,8 @@ func (c *sharedAgentLoopCallbacks) executeToolWithoutSemanticSurface(name, argsJ
 	if c == nil || c.handler == nil {
 		return "handler unavailable"
 	}
-	if localFileWorkBlocksComputerUseExecution(c.loopCtx, c.userText, name) {
-		return "[system rejected] Computer Use is unavailable while handling the current local attachment. Use the local file/document tools instead."
+	if rejection := computerUseExecutionRejection(c.loopCtx, c.userText, name); rejection != "" {
+		return rejection
 	}
 	// Defense-in-depth: never execute oversized payloads even if a caller bypasses RunLoop.
 	if argSize := len(argsJSON); argSize > guiMaxToolArgumentsBytes {
@@ -3176,6 +3225,13 @@ func (c *sharedAgentLoopCallbacks) retireSemanticToolSurface(functionName, selec
 	}
 	// Hide immediately even if the durable write fails. The grant has already
 	// been consumed, so re-exposure would create a stale retry authority.
+	// A retired attempt spends one session invocation, including failures and
+	// awaiting-receipt calls. Success is counted on advance instead.
+	if c.loopCtx != nil {
+		if selection, ok := semanticSelectionByID(c.semanticSurface.plan, selectionID); ok {
+			c.loopCtx.noteSemanticResidueUse(selection.FitProof.MatchedCapability)
+		}
+	}
 	c.tools = removeToolDefinitionByName(c.tools, functionName)
 	if _, err := retireSemanticCallSurfaceSelection(c.semanticSurface, selectionID); err != nil {
 		log.Printf("[semantic-routing] retire selection %q failed: %v", selectionID, err)
@@ -3215,6 +3271,9 @@ func (c *sharedAgentLoopCallbacks) advanceSemanticToolSurface(selectionID string
 	if err := c.syncSemanticToolSurface(); err != nil {
 		log.Printf("[semantic] plan surface sync failed selection=%q err=%v", selectionID, err)
 		return "", err
+	}
+	if selection, ok := semanticSelectionByID(c.semanticSurface.plan, selectionID); ok && c.loopCtx != nil {
+		c.loopCtx.noteSemanticResidueUse(selection.FitProof.MatchedCapability)
 	}
 	return semanticSpentBudgetNote(c.semanticSurface, selectionID), nil
 }
@@ -4723,6 +4782,15 @@ func (c *sharedAgentLoopCallbacks) executeTrustedBrowser(_ tool.PlannedSelection
 func (c *sharedAgentLoopCallbacks) executeTrustedComputerUse(_ tool.PlannedSelection, canonicalArgs tool.CanonicalRequest) string {
 	if reason := c.rejectGroupLocalAdmin(); reason != "" {
 		return reason
+	}
+	userText := ""
+	var loopCtx *LoopContext
+	if c != nil {
+		userText = c.userText
+		loopCtx = c.loopCtx
+	}
+	if rejection := computerUseExecutionRejection(loopCtx, userText, semanticTrustedComputerUseAdapter); rejection != "" {
+		return rejection
 	}
 	if c == nil || c.handler == nil {
 		return "[system rejected] semantic tool surface is unavailable"

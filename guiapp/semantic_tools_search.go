@@ -223,14 +223,26 @@ func semanticToolsSearchRun(cb *sharedAgentLoopCallbacks, argsJSON string) strin
 	}
 	semanticToolsSearchMaybeExpandScope(cb, query)
 	entries := semanticToolsSearchCatalog(cb)
+	filterNote := ""
 	if len(needs) > 0 {
+		// Models pass tool names ("web_search") in needs. Those are not
+		// capability ids. A filter that matches nothing must not erase the
+		// directory: production 2026-09-22 崇州天气 heard "no capability in
+		// this task scope" and could not find web_search.
+		resolved := resolveSearchNeedTokens(needs, entries)
 		filtered := make([]semanticToolsSearchEntry, 0, len(entries))
 		for _, entry := range entries {
-			if needs[entry.capability] {
+			if resolved[entry.capability] {
 				filtered = append(filtered, entry)
 			}
 		}
-		entries = filtered
+		if len(filtered) == 0 {
+			filterNote = "needs filter matched nothing; showing the task directory\n"
+			needs = map[tool.CapabilityID]bool{}
+		} else {
+			entries = filtered
+			needs = resolved
+		}
 	}
 	collectionDigest := semanticToolsSearchCollectionDigest(entries)
 	// A continuation token is bound to the immutable scope, catalog and exact
@@ -264,6 +276,9 @@ func semanticToolsSearchRun(cb *sharedAgentLoopCallbacks, argsJSON string) strin
 	var out strings.Builder
 	fmt.Fprintf(&out, "tools_search results for %q:\n", query)
 	fmt.Fprintf(&out, "scope_id=%s catalog_digest=%s decision_id=%s\n", scopeID, catalogDigest, decisionID)
+	if filterNote != "" {
+		out.WriteString(filterNote)
+	}
 	if len(entries) == 0 {
 		out.WriteString("(no capability in this task scope)\n")
 	}
@@ -405,6 +420,39 @@ func exactSearchNeeds(raw interface{}) map[tool.CapabilityID]bool {
 // representation and []string values used by in-process callers, while
 // rejecting every other shape and every non-string element.  The query is a
 // display hint only; capability IDs are the sole filter authority.
+func resolveSearchNeedTokens(needs map[tool.CapabilityID]bool, entries []semanticToolsSearchEntry) map[tool.CapabilityID]bool {
+	known := make(map[tool.CapabilityID]bool, len(entries))
+	byName := make(map[string]tool.CapabilityID, len(entries)+len(semanticPetitionableCapabilities))
+	for _, entry := range entries {
+		if entry.capability != "" {
+			known[entry.capability] = true
+		}
+		if entry.name != "" && entry.capability != "" {
+			byName[entry.name] = entry.capability
+		}
+	}
+	for name, capability := range semanticPetitionableCapabilities {
+		if capability == "" {
+			continue
+		}
+		known[capability] = true
+		byName[name] = capability
+	}
+	resolved := make(map[tool.CapabilityID]bool, len(needs))
+	for token := range needs {
+		if known[token] {
+			resolved[token] = true
+			continue
+		}
+		if capability, ok := byName[string(token)]; ok {
+			resolved[capability] = true
+			continue
+		}
+		resolved[token] = true
+	}
+	return resolved
+}
+
 func parseExactSearchNeeds(raw interface{}) (map[tool.CapabilityID]bool, error) {
 	needs := make(map[tool.CapabilityID]bool)
 	if raw == nil {

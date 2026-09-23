@@ -2,10 +2,6 @@ build/bin
 /dist/
 node_modules
 guiapp/frontend/dist
-iWorker/frontend/dist
-iWorker/dist/
-iWorkerCenter/frontend/dist/
-iWorkerCloud/web/admin/dist/
 hub/web/dist/
 build/windows/installer/tmp
 .kode/
@@ -118,7 +114,7 @@ hub/cmd/hub/hub.exe
 # YOLO model weights (large binary files)
 corelib/yolo/weights/
 
-# npm cache in all frontend dirs — covers guiapp/frontend, iWorker/frontend, DiWorker/frontend, etc.
+# npm cache in all frontend dirs — covers guiapp/frontend, etc.
 **/frontend/.npm_cache/
 
 # Build temp files
@@ -189,12 +185,7 @@ __pycache__/
 .claude/worktrees/
 .tmp_echoear_reference/
 tts_eval/
-build/iworker_services_deploy/
 hub/internal/httpapi/data/ve-files/
-
-# Generated iWorkerCenter admin bundles
-iWorkerCenter/cmd/iworkercenter/web/admin/assets/index-*.js
-iWorkerCenter/cmd/iworkercenter/web/admin/assets/index-*.css
 
 # Spec screenshot attachments (binary images)
 .kiro/specs/**/*.png

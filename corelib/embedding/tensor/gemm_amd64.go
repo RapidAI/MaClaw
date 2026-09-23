@@ -109,6 +109,13 @@ func multiDot4DualB(out *[8]float32, a, b0, b1 []float32, K int) {
 				multiDot4DualBAVX512K768(out, &a[0], &b0[0], &b1[0])
 				return
 			}
+			if K >= 32 && K%8 == 0 { // PP-OCR pointwise widths (48/96/192/384...).
+				// K<32 stays on the AVX2 dual kernel: measured 7.7-9.4ns
+				// (AVX2) vs 9.4-11.5ns (ZMM generic16) for K=8/16/24 — the
+				// ZMM kernel's 8×ZMM zeroing + long epilogue loses at tiny K.
+				multiDot4DualBAVX512Generic16(out, &a[0], &b0[0], &b1[0], K)
+				return
+			}
 		}
 		if hasAVX2andFMA {
 			switch K {
@@ -212,10 +219,13 @@ func multiDot2DualB(out *[4]float32, a, b0, b1 []float32, K int) {
 func multiDot4TripleB(out *[12]float32, a, b0, b1, b2 []float32, K int) {
 	if len(a) >= 4*K && len(b0) >= K && len(b1) >= K && len(b2) >= K {
 		if hasAVX512 {
-			switch K {
-			case 96, 192, 384: // PP-OCR feature widths; all are 16-wide aligned.
+			if K >= 32 && K%8 == 0 && K != 128 && K != 512 {
+				// PP-OCR pointwise widths (48/96/120/192/384/768): the
+				// generic-16 kernel handles any K%8==0 via its tails.
 				multiDot4TripleBAVX512Generic16(out, &a[0], &b0[0], &b1[0], &b2[0], K)
 				return
+			}
+			switch K {
 			case 128:
 				multiDot4TripleBAVX512K128(out, &a[0], &b0[0], &b1[0], &b2[0])
 				return
@@ -264,14 +274,16 @@ func MultiDot4TripleB(out *[12]float32, a, b0, b1, b2 []float32, K int) {
 func multiDot8TripleB(out0, out1 *[12]float32, a, b0, b1, b2 []float32, K int) {
 	if len(a) >= 8*K && len(b0) >= K && len(b1) >= K && len(b2) >= K {
 		if hasAVX512 {
-			switch K {
-			case 96, 192, 384:
+			if K >= 32 && K%8 == 0 && K != 128 && K != 512 {
 				// PP-OCR's 8-row tile is two independent 4-row projections.
-				// Use the 16-wide ZMM kernel for both halves instead of falling
-				// through to the generic dispatch on every invocation.
+				// The generic-16 kernel handles any K%8==0 via its tails
+				// (48/96/120/192/384/768); K=128/512 keep their fused
+				// one-pass-over-B kernels below.
 				multiDot4TripleBAVX512Generic16(out0, &a[0], &b0[0], &b1[0], &b2[0], K)
 				multiDot4TripleBAVX512Generic16(out1, &a[4*K], &b0[0], &b1[0], &b2[0], K)
 				return
+			}
+			switch K {
 			case 128:
 				multiDot8TripleBAVX512K128(out0, out1, &a[0], &b0[0], &b1[0], &b2[0])
 				return

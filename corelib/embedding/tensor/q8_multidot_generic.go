@@ -58,15 +58,15 @@ func dualOutGemmDual8(gate, up, a []float32, wG, wU *Q8Tensor, M, N, K, ns, ne, 
 	return 0
 }
 
-func packedQKVGemmaShort(q, k, v, a []float32, wq, wk, wv *Q8Tensor, seq int) bool {
+func packedQKVGemmaShort(q, k, v, a []float32, wq, wk, wv *Q8Tensor, seq, maxWorkers int) bool {
 	return false
 }
 
-func packedDualOutGemmaShort(gate, up, a []float32, wG, wU *Q8Tensor, seq int) bool {
+func packedDualOutGemmaShort(gate, up, a []float32, wG, wU *Q8Tensor, seq, maxWorkers int) bool {
 	return false
 }
 
-func rmsResidualGemmaShort(x, a, y []float32, b *Q8Tensor, wRMS []float32, seq, N, K int, eps float32) bool {
+func rmsResidualGemmaShort(x, a, y []float32, b *Q8Tensor, wRMS []float32, seq, N, K int, eps float32, maxWorkers int) bool {
 	return false
 }
 

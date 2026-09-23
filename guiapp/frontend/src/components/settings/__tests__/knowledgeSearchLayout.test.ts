@@ -25,5 +25,9 @@ describe('knowledge search layout', () => {
         expect(css).toMatch(/\.knowledge-chip\s*\{[^}]*overflow-wrap:\s*anywhere/);
         expect(css).toMatch(/button\.knowledge-chip\s*\{[^}]*cursor:\s*pointer/);
         expect(css).toMatch(/\.knowledge-row-delete\s*\{[^}]*white-space:\s*nowrap/);
+        expect(css).toMatch(/\.knowledge-search-facets \.knowledge-block-body\s*\{[^}]*overflow:\s*auto/);
+        expect(css).toMatch(/\.knowledge-facet-chip\s*\{[^}]*flex:\s*0 0 auto/);
+        expect(css).toMatch(/\.knowledge-facet-chip-name\s*\{[^}]*text-overflow:\s*ellipsis/);
+        expect(css).toMatch(/\.knowledge-facet-chip-count\s*\{[^}]*flex:\s*0 0 auto/);
     });
 });

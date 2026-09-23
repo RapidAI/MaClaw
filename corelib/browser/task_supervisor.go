@@ -74,7 +74,11 @@ func NewBrowserTaskSupervisor(
 
 // Execute runs a browser task. It blocks until the task completes, fails, or is cancelled.
 func (s *BrowserTaskSupervisor) Execute(spec TaskSpec) (*TaskState, error) {
-	if spec.MaxRetries <= 0 {
+	if spec.FastBatch {
+		if spec.MaxRetries < 0 {
+			spec.MaxRetries = 0
+		}
+	} else if spec.MaxRetries <= 0 {
 		spec.MaxRetries = 3
 	}
 	if spec.StepTimeout <= 0 {
@@ -104,6 +108,30 @@ func (s *BrowserTaskSupervisor) Execute(spec TaskSpec) (*TaskState, error) {
 
 	s.log("browser task %s started: %s (%d steps)", spec.ID, spec.Description, len(spec.Steps))
 	s.emitProgress(spec.ID, "started", 0, len(spec.Steps))
+
+	var batchSession *BrowserAgentSession
+	if spec.FastBatch && s.agentSessionFn != nil {
+		agentSession, err := s.agentSessionFn()
+		if err != nil {
+			state.Status = TaskStatusFailed
+			state.LastError = err.Error()
+			return state, fmt.Errorf("browser session: %w", err)
+		}
+		if agentSession == nil {
+			state.Status = TaskStatusFailed
+			state.LastError = "browser session not connected"
+			return state, fmt.Errorf("browser session not connected")
+		}
+		agentSession.bindLatestSnapshotRefs(spec.Steps)
+		if err := agentSession.preflightBatchRefs(spec.Steps); err != nil {
+			state.Status = TaskStatusFailed
+			state.LastError = err.Error()
+			return state, err
+		}
+		agentSession.beginFastBatch()
+		defer agentSession.endFastBatch()
+		batchSession = agentSession
+	}
 
 	// Execute steps
 	for i, step := range spec.Steps {
@@ -145,6 +173,7 @@ func (s *BrowserTaskSupervisor) Execute(spec TaskSpec) (*TaskState, error) {
 			err := outcome.err
 			state.Status = TaskStatusFailed
 			state.LastError = err.Error()
+			rememberBatchObservation(state, outcome.result)
 			if len(state.StepTraces) > 0 {
 				state.StepTraces[len(state.StepTraces)-1].Summary = err.Error()
 				state.StepTraces[len(state.StepTraces)-1].EndedAt = time.Now()
@@ -157,9 +186,25 @@ func (s *BrowserTaskSupervisor) Execute(spec TaskSpec) (*TaskState, error) {
 			state.StepTraces[len(state.StepTraces)-1].Summary = "ok"
 			state.StepTraces[len(state.StepTraces)-1].EndedAt = time.Now()
 		}
+		if outcome.result != nil && outcome.result.batchStop {
+			state.Status = TaskStatusStopped
+			state.StoppedReason = outcome.result.batchStopReason
+			if outcome.result.Status == "unchanged" {
+				state.StoppedReason = "unchanged"
+			}
+			rememberBatchObservation(state, outcome.result)
+			if outcome.result.batchObserveErr != "" {
+				state.ObservationError = outcome.result.batchObserveErr
+			}
+			s.log("browser task %s stopped at step %d: %s", spec.ID, i+1, state.StoppedReason)
+			s.emitProgress(spec.ID, fmt.Sprintf("stopped at step %d: %s", i+1, state.StoppedReason), i+1, len(spec.Steps))
+			return state, nil
+		}
 
-		// Take checkpoint after each step
-		s.takeCheckpoint(state, i)
+		// Take checkpoint after each step. Fast batches observe once at the end.
+		if !spec.FastBatch {
+			s.takeCheckpoint(state, i)
+		}
 
 		// Check for pause signal after step completion
 		s.mu.RLock()
@@ -185,6 +230,23 @@ func (s *BrowserTaskSupervisor) Execute(spec TaskSpec) (*TaskState, error) {
 			default:
 				// not paused, continue
 			}
+		}
+	}
+
+	if batchSession != nil {
+		obs, obsErr := batchSession.finishFastBatch()
+		if obsErr != nil {
+			state.Status = TaskStatusStopped
+			state.StoppedReason = "observe_failed"
+			state.ObservationError = obsErr.Error()
+			s.log("browser task %s stopped: final observation failed: %v", spec.ID, obsErr)
+			s.emitProgress(spec.ID, "final observation failed", len(spec.Steps), len(spec.Steps))
+			return state, nil
+		}
+		if obs != nil {
+			state.Observation = obs.Display
+			state.SnapshotID = obs.Snapshot.SnapshotID
+			state.ObservationData = obs.Data
 		}
 	}
 
@@ -318,6 +380,11 @@ func stepOutcomeFailure(o stepOutcome) error {
 		return o.err
 	}
 	if o.result != nil && o.result.GoalClass && o.result.Status == "unchanged" {
+		// The click already ran. In a fast batch, failing the step clears the
+		// submit guard and the model clicks again. Stop instead and keep the guard.
+		if o.result.batchStop {
+			return nil
+		}
 		return fmt.Errorf("submit click did not change the page")
 	}
 	return nil
@@ -335,10 +402,7 @@ func (s *BrowserTaskSupervisor) forgetStepSubmit(outcome stepOutcome) {
 }
 
 func (s *BrowserTaskSupervisor) executeStepWithRetry(ctx context.Context, spec TaskSpec, step StepSpec, stepIdx int, state *TaskState) stepOutcome {
-	timeout := step.Timeout
-	if timeout <= 0 {
-		timeout = spec.StepTimeout
-	}
+	timeout := stepBudget(step, spec.StepTimeout)
 
 	currentStep := step
 	for retry := 0; ; retry++ {
@@ -376,6 +440,9 @@ func (s *BrowserTaskSupervisor) executeStepWithRetry(ctx context.Context, spec T
 
 		s.forgetStepSubmit(outcome)
 
+		if spec.FastBatch && retry >= spec.MaxRetries {
+			return stepOutcome{err: fmt.Errorf("step %d failed: %v", stepIdx+1, err)}
+		}
 		if s.retrier == nil {
 			return stepOutcome{err: err}
 		}
@@ -404,6 +471,39 @@ func (s *BrowserTaskSupervisor) executeStepWithRetry(ctx context.Context, spec T
 			currentStep = *decision.AdjustedStep
 		}
 	}
+}
+
+// stepBudget keeps a wait step from being cancelled at the same moment its
+// sleep ends. A timeout of 10s plus a 10s wait used to fail the batch.
+func stepBudget(step StepSpec, fallback time.Duration) time.Duration {
+	timeout := step.Timeout
+	if timeout <= 0 {
+		timeout = fallback
+	}
+	if !strings.EqualFold(strings.TrimSpace(step.Action), "wait") {
+		return timeout
+	}
+	wait := waitStepDuration(step.Params)
+	if timeout < wait+2*time.Second {
+		return wait + 2*time.Second
+	}
+	return timeout
+}
+
+func waitStepDuration(params map[string]string) time.Duration {
+	if v := firstStepParam(params, "duration_ms", "ms"); v != "" {
+		var ms int
+		if _, err := fmt.Sscanf(v, "%d", &ms); err == nil && ms > 0 {
+			return time.Duration(ms) * time.Millisecond
+		}
+	}
+	sec := 10
+	if v := firstStepParam(params, "timeout"); v != "" {
+		if _, err := fmt.Sscanf(v, "%d", &sec); err == nil && sec > 0 {
+			return time.Duration(sec) * time.Second
+		}
+	}
+	return 10 * time.Second
 }
 
 func (s *BrowserTaskSupervisor) executeOneStep(ctx context.Context, step StepSpec, timeout time.Duration) stepOutcome {
@@ -453,6 +553,7 @@ func (s *BrowserTaskSupervisor) doAgentStep(agentSession *BrowserAgentSession, s
 	if agentSession == nil {
 		return nil, fmt.Errorf("browser session not connected")
 	}
+	step.Action = strings.ToLower(strings.TrimSpace(step.Action))
 	snapshotID := step.Params["snapshot_id"]
 	ref := step.Params["ref"]
 	selector := step.Params["selector"]
@@ -484,13 +585,13 @@ func (s *BrowserTaskSupervisor) doAgentStep(agentSession *BrowserAgentSession, s
 		return nil, fmt.Errorf("click_at step is disabled in stable browser tasks; use click with ref/selector/text")
 
 	case "type":
-		text := step.Params["text"]
+		text := firstStepParam(step.Params, "text", "value")
 		contentFormat := step.Params["content_format"]
 		return agentSession.TypeContent(snapshotID, ref, selector, text, contentFormat)
 
 	case "wait":
 		timeoutMS := 0
-		if v, ok := step.Params["duration_ms"]; ok {
+		if v := firstStepParam(step.Params, "duration_ms", "ms"); v != "" {
 			fmt.Sscanf(v, "%d", &timeoutMS)
 		}
 		if timeoutMS <= 0 {
@@ -506,23 +607,17 @@ func (s *BrowserTaskSupervisor) doAgentStep(agentSession *BrowserAgentSession, s
 		return nil, fmt.Errorf("eval step is disabled in stable browser tasks; use observe/extract plus page-level actions")
 
 	case "scroll":
-		dx, dy := 0, 500
-		if v, ok := step.Params["delta_x"]; ok {
-			fmt.Sscanf(v, "%d", &dx)
-		}
-		if v, ok := step.Params["delta_y"]; ok {
-			fmt.Sscanf(v, "%d", &dy)
-		}
+		dx, dy := stepScrollDelta(step.Params)
 		return agentSession.ScrollBy(snapshotID, ref, selector, dx, dy)
 
 	case "select":
-		return agentSession.SelectOption(snapshotID, ref, selector, step.Params["value"])
+		return agentSession.SelectOption(snapshotID, ref, selector, firstStepParam(step.Params, "value", "label", "text"))
 
 	case "hover":
 		return agentSession.Hover(snapshotID, ref, selector)
 
 	case "press":
-		return agentSession.Press(step.Params["key"])
+		return agentSession.Press(firstStepParam(step.Params, "key", "text"))
 
 	case "dialog":
 		accept := true
@@ -532,23 +627,40 @@ func (s *BrowserTaskSupervisor) doAgentStep(agentSession *BrowserAgentSession, s
 		return agentSession.HandleDialog(accept, step.Params["text"])
 
 	case "set_files":
-		files := []string{}
-		if v := strings.TrimSpace(step.Params["files"]); v != "" {
-			for _, part := range strings.Split(v, ",") {
-				part = strings.TrimSpace(part)
-				if part != "" {
-					files = append(files, part)
-				}
-			}
-		}
-		return agentSession.SetFilesOn(snapshotID, ref, selector, files)
+		return agentSession.SetFilesOn(snapshotID, ref, selector, splitStepList(firstStepParam(step.Params, "files", "file", "path", "paths")))
 
 	default:
 		return nil, fmt.Errorf("unknown action: %s", step.Action)
 	}
 }
 
+// firstStepParam returns the first non-empty step field. Models often send
+// type text as value, press keys as text, and scroll distance as dy.
+func firstStepParam(params map[string]string, keys ...string) string {
+	if params == nil {
+		return ""
+	}
+	for _, key := range keys {
+		if v := strings.TrimSpace(params[key]); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func stepScrollDelta(params map[string]string) (dx, dy int) {
+	dx, dy = 0, 500
+	if v := firstStepParam(params, "delta_x", "dx"); v != "" {
+		fmt.Sscanf(v, "%d", &dx)
+	}
+	if v := firstStepParam(params, "delta_y", "dy"); v != "" {
+		fmt.Sscanf(v, "%d", &dy)
+	}
+	return dx, dy
+}
+
 func (s *BrowserTaskSupervisor) doStep(sess *Session, step StepSpec) error {
+	step.Action = strings.ToLower(strings.TrimSpace(step.Action))
 	switch step.Action {
 	case "navigate":
 		url := step.Params["url"]
@@ -577,7 +689,7 @@ func (s *BrowserTaskSupervisor) doStep(sess *Session, step StepSpec) error {
 
 	case "type":
 		sel := step.Params["selector"]
-		text := step.Params["text"]
+		text := firstStepParam(step.Params, "text", "value")
 		contentFormat := step.Params["content_format"]
 		if sel == "" {
 			return fmt.Errorf("type: missing selector param")
@@ -599,25 +711,19 @@ func (s *BrowserTaskSupervisor) doStep(sess *Session, step StepSpec) error {
 		return fmt.Errorf("eval step is disabled in stable browser tasks; use observe/extract plus page-level actions")
 
 	case "scroll":
-		dx, dy := 0, 500
-		if v, ok := step.Params["delta_x"]; ok {
-			fmt.Sscanf(v, "%d", &dx)
-		}
-		if v, ok := step.Params["delta_y"]; ok {
-			fmt.Sscanf(v, "%d", &dy)
-		}
+		dx, dy := stepScrollDelta(step.Params)
 		return sess.Scroll(dx, dy)
 
 	case "select":
 		sel := step.Params["selector"]
-		val := step.Params["value"]
+		val := firstStepParam(step.Params, "value", "label", "text")
 		if sel == "" {
 			return fmt.Errorf("select: missing selector param")
 		}
 		return sess.Select(sel, val)
 
 	case "press":
-		key := step.Params["key"]
+		key := firstStepParam(step.Params, "key", "text")
 		if key == "" {
 			return fmt.Errorf("press: missing key param")
 		}
@@ -708,6 +814,21 @@ func (s *BrowserTaskSupervisor) emitProgress(taskID, message string, current, to
 		Message: message,
 	}:
 	default:
+	}
+}
+
+func rememberBatchObservation(state *TaskState, result *BrowserActionResult) {
+	if state == nil || result == nil {
+		return
+	}
+	if result.Display != "" {
+		state.Observation = result.Display
+	}
+	if result.SnapshotID != "" {
+		state.SnapshotID = result.SnapshotID
+	}
+	if result.Data != nil {
+		state.ObservationData = result.Data
 	}
 }
 

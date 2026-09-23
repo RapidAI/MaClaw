@@ -77,12 +77,7 @@ export const NotificationDetail: React.FC<NotificationDetailProps> = ({
   return (
     <div
       data-testid="notification-detail"
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        height: "100%",
-        overflow: "hidden",
-      }}
+      className="ndet-root"
     >
       {/* Header with back button */}
       <div
@@ -115,7 +110,7 @@ export const NotificationDetail: React.FC<NotificationDetailProps> = ({
           }}
           aria-label={localizeText(lang, "Back to list", "返回列表", "返回列表")}
         >
-          <span style={{ fontSize: "14px" }}>←</span>
+          <span className="ndet-back-arrow">←</span>
           <span>{localizeText(lang, "Back", "返回", "返回")}</span>
         </button>
         {onClose && (
@@ -141,11 +136,7 @@ export const NotificationDetail: React.FC<NotificationDetailProps> = ({
 
       {/* Content area */}
       <div
-        style={{
-          flex: 1,
-          overflowY: "auto",
-          padding: "12px 14px 16px",
-        }}
+        className="ndet-content"
       >
         {/* Title */}
         <h3
@@ -163,13 +154,7 @@ export const NotificationDetail: React.FC<NotificationDetailProps> = ({
 
         {/* Meta row: category + date + priority */}
         <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "8px",
-            marginBottom: "12px",
-            flexWrap: "wrap",
-          }}
+          className="ndet-meta"
         >
           {/* Category pill */}
           <span
@@ -370,36 +355,32 @@ function buildMarkdownComponents(t: Theme) {
     ),
     // Paragraphs
     p: ({ children, ...props }: any) => (
-      <p {...props} style={{ margin: "6px 0", lineHeight: 1.7 }}>
+      <p {...props} className="ndet-p">
         {children}
       </p>
     ),
     // Lists
     ul: ({ children, ...props }: any) => (
-      <ul {...props} style={{ margin: "6px 0", paddingLeft: "20px" }}>
+      <ul {...props} className="ndet-list">
         {children}
       </ul>
     ),
     ol: ({ children, ...props }: any) => (
-      <ol {...props} style={{ margin: "6px 0", paddingLeft: "20px" }}>
+      <ol {...props} className="ndet-list">
         {children}
       </ol>
     ),
     li: ({ children, ...props }: any) => (
-      <li {...props} style={{ margin: "3px 0", lineHeight: 1.6 }}>
+      <li {...props} className="ndet-li">
         {children}
       </li>
     ),
     // Tables (GFM)
     table: ({ children, ...props }: any) => (
-      <div style={{ overflowX: "auto", margin: "8px 0" }}>
+      <div className="ndet-table-scroll">
         <table
           {...props}
-          style={{
-            borderCollapse: "collapse",
-            width: "100%",
-            fontSize: "12px",
-          }}
+          className="ndet-table"
         >
           {children}
         </table>

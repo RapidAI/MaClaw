@@ -21,8 +21,8 @@ function renderMatchLabel(item: string, prefix: string): ReactNode {
     }
     return (
         <>
-            <span style={{ opacity: 0.55 }}>{prefix}</span>
-            <span style={{ fontWeight: 600 }}>{item.slice(prefix.length)}</span>
+            <span className="iha-prefix">{prefix}</span>
+            <span className="iha-rest">{item.slice(prefix.length)}</span>
         </>
     );
 }

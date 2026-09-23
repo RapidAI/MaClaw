@@ -152,14 +152,14 @@ export function InlineChatCard({ card, onResolve, theme, lang = "zh" }: InlineCh
             {/* Security warnings */}
             {card.metadata?.security_warnings && Array.isArray(card.metadata.security_warnings) && card.metadata.security_warnings.length > 0 && (
                 <div style={{ ...metadataStyle, background: "rgba(220, 38, 38, 0.08)", border: "1px solid rgba(220, 38, 38, 0.2)", color: theme.dangerColor }}>
-                    <div style={{ fontWeight: 600, marginBottom: "4px", display: "flex", alignItems: "center", gap: 6 }}>
+                    <div className="icc-warn-title">
                         <IconAlert size={14} color="currentColor" />
                         {lang === "en" ? "Security Notice" : "安全提示"}
                     </div>
                     {(card.metadata.security_warnings as string[]).map((w, i) => (
-                        <div key={i} style={{ fontSize: "10px" }}>{w}</div>
+                        <div key={i} className="icc-warn-item">{w}</div>
                     ))}
-                    <div style={{ marginTop: "4px", fontSize: "10px", opacity: 0.8 }}>
+                    <div className="icc-warn-hint">
                         {lang === "en"
                             ? "Review the recorded steps before saving. Credentials in commands/files will be saved to disk."
                             : "保存前请检查录制步骤。命令/文件中的凭据将被保存到磁盘。"}
@@ -169,7 +169,7 @@ export function InlineChatCard({ card, onResolve, theme, lang = "zh" }: InlineCh
 
             {/* Fields */}
             {(card.fields || []).map(field => (
-                <div key={field.key} style={{ marginBottom: "10px" }}>
+                <div key={field.key} className="icc-field">
                     <div style={fieldLabelStyle}>{field.label}</div>
                     {field.type === "textarea" ? (
                         <textarea

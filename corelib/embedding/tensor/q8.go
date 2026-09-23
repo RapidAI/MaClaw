@@ -277,7 +277,9 @@ func MatMulQ8Argmax(outIDs []int, a []float32, b *Q8Tensor, bias []float32, M, N
 	p := getArgmaxPartials(nw, M)
 	ensureMatmulPool()
 	var tasks [12]*q8ArgmaxTask
+	// Even chunk keeps worker ranges dual-B pair-aligned.
 	chunk := (N + nw - 1) / nw
+	chunk = (chunk + 1) &^ 1
 	for w := 0; w < nw; w++ {
 		ns := w * chunk
 		ne := ns + chunk
@@ -328,7 +330,9 @@ func matMulQ8ArgmaxSmall(outIDs []int, a []float32, b *Q8Tensor, bias []float32,
 	}
 	ensureMatmulPool()
 	var tasks [12]*q8ArgmaxTask
+	// Even chunk keeps worker ranges dual-B pair-aligned.
 	chunk := (N + nw - 1) / nw
+	chunk = (chunk + 1) &^ 1
 	for w := 0; w < nw; w++ {
 		ns, ne := w*chunk, (w+1)*chunk
 		if ne > N {
@@ -366,6 +370,11 @@ func matMulQ8ArgmaxNRange(bestV []float32, bestI []int, a []float32, b *Q8Tensor
 	hasScales := len(b.Scales) >= b.Rows*nBlocks && nBlocks > 0
 	hasBias := bias != nil
 	useDeq := useQ8DequantOnce(M, ne-ns, K, hasScales)
+
+	// CTC head via int8 VNNI with fused argmax (K=512, scales+bias present).
+	if hasScales && hasBias && K == 512 && tryArgmaxK512VNNI(bestV, bestI, a, b, bias, M, ns, ne) {
+		return
+	}
 
 	if useDeq {
 		// N-tile outer: dequant each B panel ONCE, then multiDot all M (was M-outer
@@ -1341,17 +1350,37 @@ func mTileForK(K int) int {
 // hasScales + residual accum, no ReLU — no per-column scale/relu branches.
 // Bias is specialized: SenseVoice FFN always has bias (hot); nil-bias is rare.
 func matMulQ8RangeFusedAccumScaled(out, a []float32, b *Q8Tensor, bias []float32, M, N, K, ns, ne, nBlocks int) {
+	matMulQ8RangeFusedAccumScaledPre(out, a, b, bias, M, N, K, ns, ne, nBlocks, nil)
+}
+
+func matMulQ8RangeFusedAccumScaledPre(out, a []float32, b *Q8Tensor, bias []float32, M, N, K, ns, ne, nBlocks int, pre *q8PrebuiltA) {
 	if bias != nil {
-		matMulQ8RangeFusedAccumScaledBias(out, a, b, bias, M, N, K, ns, ne, nBlocks)
+		matMulQ8RangeFusedAccumScaledBiasPre(out, a, b, bias, M, N, K, ns, ne, nBlocks, pre)
 		return
 	}
 	matMulQ8RangeFusedAccumScaledNoBias(out, a, b, M, N, K, ns, ne, nBlocks)
 }
 
+// enableQ8ZK2048VNNI gates the ZMM per-block K=2048 FFN-down path.
+var enableQ8ZK2048VNNI = false // precision: 3e-5/layer rounding vs YMM flips the snapshot comma
+
+
 func matMulQ8RangeFusedAccumScaledBias(out, a []float32, b *Q8Tensor, bias []float32, M, N, K, ns, ne, nBlocks int) {
+	matMulQ8RangeFusedAccumScaledBiasPre(out, a, b, bias, M, N, K, ns, ne, nBlocks, nil)
+}
+
+func matMulQ8RangeFusedAccumScaledBiasPre(out, a []float32, b *Q8Tensor, bias []float32, M, N, K, ns, ne, nBlocks int, pre *q8PrebuiltA) {
 	// VNNI path: prequant A once per 8-row panel, int8×int8 for all N (FFN down N=512).
-	if N == 512 && K == 2048 && nBlocks == 64 && tryFusedAccumVNNI(out, a, b, bias, M, ns, ne, nBlocks) {
-		return
+	if N == 512 && K == 2048 && nBlocks == 64 {
+		if enableQ8ZK2048VNNI && tryFusedK2048ZmmVNNI(out, a, b, bias, M, ns, ne) {
+			return
+		}
+		if pre != nil && len(pre.k2048) > 0 && fusedAccumVNNI(out, a, b, bias, M, ns, ne, nBlocks, pre.k2048) {
+			return
+		}
+		if tryFusedAccumVNNI(out, a, b, bias, M, ns, ne, nBlocks) {
+			return
+		}
 	}
 	mt := mTileForK(K)
 	var dDual0, dDual1 [8]float32
@@ -1674,6 +1703,67 @@ func matMulQ8RangeFusedGeneric(out, a []float32, b *Q8Tensor, bias []float32, M,
 // matMulQ8Range computes columns [ns,ne) for all M rows.
 // accum: out += result (residual); otherwise out = result.
 func matMulQ8Range(out, a []float32, b *Q8Tensor, bias []float32, M, N, K, ns, ne int, relu, accum bool) {
+	matMulQ8RangePre(out, a, b, bias, M, N, K, ns, ne, relu, accum, nil)
+}
+
+// q8PrebuiltA carries A panels quantized once per GEMM (see
+// matMulQ8ParallelN_MTileAct) so the per-worker VNNI paths skip re-quantizing
+// the full A for every N range.
+type q8PrebuiltA struct {
+	k512   []*q8APanel8K512Z
+	k2048  []*q8APanel8
+	k512x4 []*q8APanel4K512Z
+}
+
+// q8PrebuiltAPool reuses the panel-slice containers (the panels themselves
+// return to their own pools via q8PrebuiltAPut).
+var q8PrebuiltAPool = sync.Pool{New: func() any { return &q8PrebuiltA{} }}
+
+// q8PrebuiltAGet returns a pooled container sized for the panel counts.
+func q8PrebuiltAGet(n512, n2048, n512x4 int) *q8PrebuiltA {
+	p := q8PrebuiltAPool.Get().(*q8PrebuiltA)
+	if cap(p.k512) < n512 {
+		p.k512 = make([]*q8APanel8K512Z, n512)
+	} else {
+		p.k512 = p.k512[:n512]
+	}
+	if cap(p.k2048) < n2048 {
+		p.k2048 = make([]*q8APanel8, n2048)
+	} else {
+		p.k2048 = p.k2048[:n2048]
+	}
+	if cap(p.k512x4) < n512x4 {
+		p.k512x4 = make([]*q8APanel4K512Z, n512x4)
+	} else {
+		p.k512x4 = p.k512x4[:n512x4]
+	}
+	return p
+}
+
+// q8PrebuiltAPut returns panels to their pools and the container to its pool.
+func q8PrebuiltAPut(p *q8PrebuiltA) {
+	for _, ap := range p.k512 {
+		if ap != nil {
+			q8APanel8K512ZPool.Put(ap)
+		}
+	}
+	for _, ap := range p.k2048 {
+		if ap != nil {
+			q8APanelPool.Put(ap)
+		}
+	}
+	for _, ap := range p.k512x4 {
+		if ap != nil {
+			q8APanel4K512ZPool.Put(ap)
+		}
+	}
+	p.k512 = p.k512[:0]
+	p.k2048 = p.k2048[:0]
+	p.k512x4 = p.k512x4[:0]
+	q8PrebuiltAPool.Put(p)
+}
+
+func matMulQ8RangePre(out, a []float32, b *Q8Tensor, bias []float32, M, N, K, ns, ne int, relu, accum bool, pre *q8PrebuiltA) {
 	nBlocks := K / q8BlockSize
 	var d4 [4]float32
 	var d8 [8]float32
@@ -1683,11 +1773,28 @@ func matMulQ8Range(out, a []float32, b *Q8Tensor, bias []float32, M, N, K, ns, n
 		return
 	}
 
+	// K=512 SenseVoice hot layers via int8 VNNI; falls through to the F32 paths
+	// for any other shape or when VNNI is unavailable. Q8Z (ZMM per-block) is
+	// preferred; Q8R and the per-block YMM kernel are fallbacks.
+	if bias != nil && hasScales && K == 512 && pre != nil && len(pre.k512) > 0 &&
+		fusedK512ZmmVNNI(out, a, b, bias, M, N, K, ns, ne, relu, accum, pre.k512) {
+		return
+	}
+	if bias != nil && hasScales && K == 512 && tryFusedK512ZmmVNNI(out, a, b, bias, M, N, K, ns, ne, relu, accum, pre) {
+		return
+	}
+	if bias != nil && hasScales && K == 512 && tryFusedK512RowVNNI(out, a, b, bias, M, N, K, ns, ne, relu, accum) {
+		return
+	}
+	if bias != nil && hasScales && K == 512 && tryFusedK512VNNI(out, a, b, bias, M, N, K, ns, ne, relu, accum) {
+		return
+	}
+
 	if !useQ8DequantOnce(M, N, K, hasScales) {
 		// Fused path: dual-B q8 multiDot; uses f32 Scales when available (K=2048 FFN).
 		// FFN down-proj hot case: hasScales + accum residual — fully specialized.
 		if hasScales && accum && !relu {
-			matMulQ8RangeFusedAccumScaled(out, a, b, bias, M, N, K, ns, ne, nBlocks)
+			matMulQ8RangeFusedAccumScaledPre(out, a, b, bias, M, N, K, ns, ne, nBlocks, pre)
 			return
 		}
 		matMulQ8RangeFusedGeneric(out, a, b, bias, M, N, K, ns, ne, nBlocks, hasScales, relu, accum, &d4, &d8)
@@ -2924,14 +3031,22 @@ type q8RangeTask struct {
 	b            *Q8Tensor
 	M, N, K      int
 	relu, accum  bool
+	pre          *q8PrebuiltA
 	wg           sync.WaitGroup
 }
 
 func (t *q8RangeTask) runRange(ns, ne int) {
-	matMulQ8Range(t.out, t.a, t.b, t.bias, t.M, t.N, t.K, ns, ne, t.relu, t.accum)
+	matMulQ8RangePre(t.out, t.a, t.b, t.bias, t.M, t.N, t.K, ns, ne, t.relu, t.accum, t.pre)
 }
 
 var q8RangeTaskPool = sync.Pool{New: func() any { return new(q8RangeTask) }}
+
+// q8EvenChunk rounds worker N-ranges to even width so dual-B pair kernels never
+// leave an odd trailing column per worker (slow multiDot remainder path).
+var q8EvenChunk = true
+
+// SetQ8EvenChunkForTest toggles even worker-range chunking (benchmarks only).
+func SetQ8EvenChunkForTest(enabled bool) { q8EvenChunk = enabled }
 
 func matMulQ8ParallelN_MTileAct(out, a []float32, b *Q8Tensor, bias []float32, M, N, K int, relu, accum bool) {
 	nw := rangeWorkers(N, matMulWorkersFor(M, N, K))
@@ -2942,8 +3057,18 @@ func matMulQ8ParallelN_MTileAct(out, a []float32, b *Q8Tensor, bias []float32, M
 	t := q8RangeTaskPool.Get().(*q8RangeTask)
 	t.out, t.a, t.bias, t.b = out, a, bias, b
 	t.M, t.N, t.K, t.relu, t.accum = M, N, K, relu, accum
+	// Prequantize A panels ONCE for the whole dispatch: each worker's VNNI
+	// path would otherwise re-quantize the full A per N range (~16× redundant
+	// quantize work per GEMM).
+	t.pre = prebuiltAFor(a, b, M, N, K, relu, accum)
 	t.wg.Add(nw)
+	// Even chunk keeps every worker range dual-B pair-aligned (the K=512/2048
+	// VNNI kernels process n in pairs; an odd-width range would push a trailing
+	// odd column onto the slow multiDot remainder path per worker).
 	chunk := (N + nw - 1) / nw
+	if q8EvenChunk {
+		chunk = (chunk + 1) &^ 1
+	}
 	ensureMatmulPool()
 	for w := 0; w < nw; w++ {
 		s := w * chunk
@@ -2958,8 +3083,59 @@ func matMulQ8ParallelN_MTileAct(out, a []float32, b *Q8Tensor, bias []float32, M
 		jobQueue <- matmulRangeJob{start: s, end: e, task: t, wg: &t.wg}
 	}
 	t.wg.Wait()
+	if t.pre != nil {
+		q8PrebuiltAPut(t.pre)
+		t.pre = nil
+	}
 	t.out, t.a, t.bias, t.b = nil, nil, nil, nil
 	q8RangeTaskPool.Put(t)
+}
+
+// q8PrebuiltAPanels enables one-shot A panel quantization per parallel GEMM
+// dispatch (false = each worker quantizes the full A itself). Default OFF:
+// interleaved A/B (TestRound2AB) shows the prebuild serializes ~40µs/GEMM onto
+// the dispatch critical path while the redundant per-worker quantize overlaps
+// for free on idle workers — wall-neutral to slightly negative (it remains a
+// CPU-efficiency option for power-constrained deployments).
+var q8PrebuiltAPanels = false
+
+// SetQ8PrebuiltAPanelsForTest toggles one-shot A panel quantization (benchmarks).
+func SetQ8PrebuiltAPanelsForTest(enabled bool) { q8PrebuiltAPanels = enabled }
+
+// prebuiltAFor decides whether the VNNI paths will consume this GEMM and, if
+// so, quantizes the A panels once. Returns nil when the shape won't take a
+// prebuilt-panel path (callers then fall back to per-worker quantize).
+func prebuiltAFor(a []float32, b *Q8Tensor, M, N, K int, relu, accum bool) *q8PrebuiltA {
+	if !q8PrebuiltAPanels || !hasAVX512VNNI || M < 8 || b == nil {
+		return nil
+	}
+	nBlocks := K / q8BlockSize
+	if nBlocks == 0 || len(b.Scales) < b.Rows*nBlocks {
+		return nil
+	}
+	n := (M + 7) / 8
+	switch {
+	case K == 512 && !accum && len(a) >= M*512 &&
+		((relu && N == 2048 && enableQ8ZK512FFNUp) || (!relu && ((N == 1536 && enableQ8ZK512QKV) || (N == 512 && enableQ8ZK512Out)))):
+		// Mirrors the q8z kernel selection inside fusedK512ZmmVNNI. The 4×4
+		// path takes 4-row panels; dual8 takes 8-row panels.
+		if enableQ8ZK5124x4 {
+			n4 := (M + 3) / 4
+			pre := q8PrebuiltAGet(0, 0, n4)
+			copy(pre.k512x4, q8K512ZPanels4For(a, M))
+			return pre
+		}
+		pre := q8PrebuiltAGet(n, 0, 0)
+		panels := q8K512ZPanelsFor(a, M)
+		copy(pre.k512, panels)
+		return pre
+	case K == 2048 && accum && !relu && N == 512 && nBlocks == 64 && len(a) >= M*2048 && enableFusedAccumVNNI:
+		pre := q8PrebuiltAGet(0, n, 0)
+		panels := q8K2048PanelsFor(a, M)
+		copy(pre.k2048, panels)
+		return pre
+	}
+	return nil
 }
 
 var q8DequantPool = sync.Pool{

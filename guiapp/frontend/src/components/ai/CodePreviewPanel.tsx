@@ -247,7 +247,7 @@ function isPreviewHeaderInteractiveTarget(target: EventTarget | null, currentTar
 
 function CloudGlyph({ color }: { color: string }) {
     return (
-        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true" style={{ flexShrink: 0 }}>
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true" className="cpp-glyph">
             <path
                 d="M5 12.3h6a2.75 2.75 0 0 0 .9-5.4 3.55 3.55 0 0 0-6.6-.95 2.5 2.5 0 0 0-1.7 3.65A1.55 1.55 0 0 0 5 12.3Z"
                 stroke={color}
@@ -498,7 +498,7 @@ function CodePreviewFindBar({
                 flexShrink: 0,
             }}
         >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div className="cpp-find-row">
                 <input
                     ref={inputRef as React.RefObject<HTMLInputElement>}
                     data-testid="code-preview-find-input"
@@ -797,13 +797,7 @@ function CodePreviewViewToolbar({
     return (
         <div
             data-testid="code-preview-view-toolbar"
-            style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 4,
-                flexShrink: 0,
-                fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', 'Roboto', 'Helvetica Neue', sans-serif",
-            }}
+            className="cpp-view-toolbar"
         >
             <button
                 type="button"
@@ -1569,12 +1563,7 @@ export function CodePreviewPanel({
     if (files.size === 0) {
         if (shouldDismissEmptyPreviewWithoutWorkspace(files.size, projectPath)) return null;
         return (
-            <div className="mc-code-preview-panel" style={{
-                display: 'flex',
-                flexDirection: 'row',
-                height: '100%',
-                minWidth: 0,
-            }}>
+            <div className="mc-code-preview-panel cpp-panel-root">
                 <div style={{
                     display: 'flex',
                     flexDirection: 'column',
@@ -1603,7 +1592,7 @@ export function CodePreviewPanel({
                             '--wails-draggable': 'no-drag',
                         } as any}
                     >
-                        <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flex: 1, marginRight: 8 }}>
+                        <span className="cpp-header-title-row">
                             {cloudMode ? <CloudGlyph color={theme.tabActiveText} /> : null}
                             <span style={{ color: theme.tabActiveText, fontSize: 12, fontWeight: 600, letterSpacing: '0.01em', flexShrink: 0 }}>
                                 {cloudMode ? (lang.startsWith('zh') ? '云端工作区' : 'Cloud workspace') : (lang.startsWith('zh') ? '工作目录' : 'Working directory')}
@@ -1675,17 +1664,10 @@ export function CodePreviewPanel({
 
     return (
         <div
-            className="mc-code-preview-panel"
+            className="mc-code-preview-panel cpp-focus-root"
             data-testid="code-preview-panel"
             tabIndex={0}
             onKeyDown={handlePanelKeyDown}
-            style={{
-                display: 'flex',
-                flexDirection: 'row',
-                height: '100%',
-                minWidth: 0,
-                outline: 'none',
-            }}
         >
             <div style={{
                 display: 'flex',
@@ -1779,7 +1761,7 @@ export function CodePreviewPanel({
                         {cloudMode ? (lang.startsWith('zh') ? '云端文件' : 'Cloud files') : (lang.startsWith('zh') ? '工作目录' : 'Working directory')}
                         {cloudMode ? <CloudWorkspaceNameLabel name={resolvedCloudName} theme={theme} compact /> : null}
                     </button>
-                    <div style={{ flex: 1, minWidth: 0, display: 'flex' }}>
+                    <div className="cpp-tabbar-slot">
                         <FileTabBar
                             files={files}
                             activeFilePath={activeFilePath}
@@ -1890,13 +1872,7 @@ export function CodePreviewPanel({
                         fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
                     }}
                 >
-                    <span style={{
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                        minWidth: 0,
-                        flex: 1,
-                    }}>
+                    <span className="cpp-path-ellipsis">
                         {cloudMode ? activeFile.filePath : (activeFile.absPath || activeFile.filePath)}
                     </span>
                     {/* View toolbar lives on the path row, not the tab row, so narrow
@@ -1922,7 +1898,7 @@ export function CodePreviewPanel({
                     {activeFile.opType === 'read' && (
                         <span
                             data-testid="code-preview-readonly-badge"
-                            style={{ flexShrink: 0, opacity: 0.9 }}
+                            className="cpp-badge-faint"
                         >
                             {lang.startsWith('zh') ? '只读' : 'read-only'}
                         </span>
@@ -1935,18 +1911,18 @@ export function CodePreviewPanel({
                                 testId="code-preview-diff-stat"
                             />
                         ) : (
-                            <span style={{ flexShrink: 0, opacity: 0.8 }}>
+                            <span className="cpp-badge-dim">
                                 {activeFile.opType === 'create' ? 'NEW' : 'MOD'}
                             </span>
                         )
                     ) : null}
                     {totalLines > 0 && (
-                        <span data-testid="code-preview-line-count" style={{ flexShrink: 0, opacity: 0.8 }}>
+                        <span data-testid="code-preview-line-count" className="cpp-badge-dim">
                             {totalLines} {lang.startsWith('zh') ? '行' : 'lines'}
                         </span>
                     )}
                     {isCodeFileDirty(activeFile) && !codeFileLineDeltaHasChange(computeCodeFileLineDelta(activeFile)) ? (
-                        <span data-testid="code-preview-dirty-badge" style={{ flexShrink: 0, opacity: 0.9 }}>
+                        <span data-testid="code-preview-dirty-badge" className="cpp-badge-faint">
                             {lang.startsWith('zh') ? '已修改' : 'changed'}
                         </span>
                     ) : null}
@@ -2016,13 +1992,7 @@ export function CodePreviewPanel({
                 </div>
             )}
             <div
-                style={{
-                    flex: 1,
-                    display: 'flex',
-                    flexDirection: 'row',
-                    minHeight: 0,
-                    minWidth: 0,
-                }}
+                className="cpp-body-row"
             >
                 <div
                     ref={scrollRef}

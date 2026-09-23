@@ -171,7 +171,7 @@ export function AssistantMermaidDiagram({ code, theme }: { code: string; theme: 
 
     return (
         <>
-            <div ref={workspaceRef} aria-hidden="true" style={{ position: "fixed", inset: 0, width: 0, height: 0, overflow: "hidden", pointerEvents: "none" }} />
+            <div ref={workspaceRef} aria-hidden="true" className="amd-measure-host" />
             {svg ? (
                 <div
                     data-testid="assistant-mermaid-diagram"

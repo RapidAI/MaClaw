@@ -9,7 +9,7 @@ export function TitleBarToolIcon({ name }: { name: TitleBarToolIconName }) {
         strokeLinejoin: "round" as const,
     };
     return (
-        <svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true" focusable="false" style={{ display: "block" }}>
+        <svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true" focusable="false" className="atbi-icon">
             {name === "cart" && (
                 <>
                     <circle {...common} cx="9" cy="20" r="1.4" />

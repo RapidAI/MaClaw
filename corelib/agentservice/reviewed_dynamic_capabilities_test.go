@@ -597,14 +597,16 @@ func TestReviewedDynamicIntentRulesResolveBrowserWithoutLookup(t *testing.T) {
 		Registry: registry, Rules: ReviewedDynamicIntentCapabilityNeedRules(),
 	}
 	resolution, err := resolver.ResolveDynamicCapabilityNeeds(context.Background(), DynamicCapabilityNeedRequest{UserText: "打开网页登录账号然后发布内容"})
-	if err != nil || !resolution.Managed || len(resolution.Needs) != 1 {
+	if err != nil || !resolution.Managed || len(resolution.Needs) != coretool.RepeatSiblingBudget(8) {
 		t.Fatalf("resolution=%#v err=%v", resolution, err)
 	}
-	if resolution.Needs[0].Capability != CapabilityBrowserControl {
+	if resolution.Needs[0].Capability != CapabilityBrowserControl || !resolution.Needs[0].Required {
 		t.Fatalf("need=%#v", resolution.Needs[0])
 	}
-	if resolution.Needs[0].Capability == CapabilityInformationLookup || resolution.Needs[0].Capability == CapabilityWebFetch {
-		t.Fatal("browser must not resolve to information.lookup or information.fetch.web")
+	for _, need := range resolution.Needs {
+		if need.Capability != CapabilityBrowserControl {
+			t.Fatalf("browser sibling resolved to %q", need.Capability)
+		}
 	}
 }
 
@@ -621,14 +623,16 @@ func TestReviewedDynamicIntentRulesResolveComputerUseWithoutBrowser(t *testing.T
 		Registry: registry, Rules: ReviewedDynamicIntentCapabilityNeedRules(),
 	}
 	resolution, err := resolver.ResolveDynamicCapabilityNeeds(context.Background(), DynamicCapabilityNeedRequest{UserText: "看一下桌面"})
-	if err != nil || !resolution.Managed || len(resolution.Needs) != 1 {
+	if err != nil || !resolution.Managed || len(resolution.Needs) != coretool.RepeatSiblingBudget(8) {
 		t.Fatalf("resolution=%#v err=%v", resolution, err)
 	}
-	if resolution.Needs[0].Capability != CapabilityComputerUse {
+	if resolution.Needs[0].Capability != CapabilityComputerUse || !resolution.Needs[0].Required {
 		t.Fatalf("need=%#v", resolution.Needs[0])
 	}
-	if resolution.Needs[0].Capability == CapabilityBrowserControl {
-		t.Fatal("computer_use must not resolve to browser.control.web")
+	for _, need := range resolution.Needs {
+		if need.Capability == CapabilityBrowserControl || need.Capability != CapabilityComputerUse {
+			t.Fatalf("computer_use sibling resolved to %q", need.Capability)
+		}
 	}
 }
 

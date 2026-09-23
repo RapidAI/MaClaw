@@ -206,7 +206,7 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
                     {toolbarAddon ? (
                         // The left group wraps internally so an expanded config
                         // bar never squeezes the hint/send group off the card.
-                        <div data-testid="ai-input-toolbar-addon" style={{ display: "flex", alignItems: "center", minWidth: 0 }}>
+                        <div data-testid="ai-input-toolbar-addon" className="aic-toolbar-addon">
                             {toolbarAddon}
                         </div>
                     ) : null}

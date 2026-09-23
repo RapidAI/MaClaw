@@ -599,7 +599,7 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
         : textForLang(lang, "Continue discussion...", "\u7ee7\u7eed\u8ba8\u8bba...", "\u7e7c\u7e8c\u8a0e\u8ad6...");
 
     const composer = <div data-testid="history-group-composer-row" style={{ display: "flex", alignItems: "flex-end", gap: 8, padding: "8px 12px", borderTop: `1px solid ${theme.divider}`, background: theme.inputBarBg, opacity: effectiveReadOnly ? 0.72 : 1 }}>
-        <div style={{ position: "relative", flex: "1 1 auto", minWidth: 0, display: "flex" }}>
+        <div className="hgdt-composer-input">
             {mentionOpen && (
                 <MentionPopover
                     filtered={mentionFiltered}
@@ -647,8 +647,8 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
 
     return <div data-testid={`ai-history-group-tab-${discussionId}`} style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, background: theme.bg }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "7px 12px", borderBottom: `1px solid ${theme.divider}`, background: theme.inputBarBg }}>
-            <div style={{ minWidth: 0, flex: 1 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+            <div className="hgdt-head-text">
+                <div className="hgdt-title-row">
                     <div style={{ color: theme.text, fontSize: 13, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{title}</div>
                     {effectiveReadOnly && <span style={{ flexShrink: 0, border: `1px solid ${theme.fieldBorder}`, borderRadius: 4, padding: "1px 5px", color: theme.textMuted, fontSize: 11 }}>{textForLang(lang, "Read-only", "\u53ea\u8bfb", "\u552f\u8b80")}</span>}
                 </div>
@@ -660,8 +660,8 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
         {error && <div role="alert" style={{ padding: "7px 12px", color: theme.errorText, background: theme.errorBg, borderBottom: `1px solid ${theme.errorBorder}`, fontSize: 12 }}>{error}</div>}
         {loading && !detail
             ? <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: theme.textMuted }}>{textForLang(lang, "Loading...", "\u52a0\u8f7d\u4e2d...", "\u8f09\u5165\u4e2d...")}</div>
-            : <div style={{ flex: 1, minHeight: 0, overflow: "hidden", display: "flex", flexDirection: "row" }}>
-                <div data-testid="history-group-main-column" style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+            : <div className="hgdt-body">
+                <div data-testid="history-group-main-column" className="hgdt-main-col">
                     <VEGroupChatView sessionId={discussionId} participants={participants} messages={messages} theme={theme} lang={lang} onDownloadAttachment={downloadAttachment} allowParticipantAdd={false} showHeader={false} localUserIds={localHistoryUserIds} containerStyle={{ flex: 1, minHeight: 0 }} />
                     {composer}
                 </div>

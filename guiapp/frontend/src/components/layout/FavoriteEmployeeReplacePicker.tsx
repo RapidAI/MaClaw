@@ -31,32 +31,16 @@ export function FavoriteEmployeeReplacePicker({ currentSlots, newVeName, onRepla
     }, [onCancel]);
 
     return (
-        <div style={{
-            position: 'fixed',
-            inset: 0,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            background: 'var(--theme-overlay, rgba(15, 23, 42, 0.30))',
-            zIndex: 99999,
-        }}>
+        <div className="ferp-overlay">
             <div
                 ref={ref}
                 data-testid="fav-replace-picker"
-                style={{
-                    background: 'var(--theme-surface)',
-                    border: '1px solid var(--theme-border)',
-                    borderRadius: 'var(--radius-lg, 12px)',
-                    boxShadow: 'var(--shadow-lg, 0 8px 32px rgba(30,58,95,0.18))',
-                    padding: '16px',
-                    minWidth: '240px',
-                    maxWidth: '320px',
-                }}
+                className="ferp-dialog"
             >
-                <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '12px', color: 'var(--theme-text-primary)' }}>
+                <div className="ferp-title">
                     {isZh ? '常用已满，选择要替换的位置' : 'Favorites full — pick a slot to replace'}
                 </div>
-                <div style={{ fontSize: '11px', color: 'var(--theme-text-muted)', marginBottom: '10px' }}>
+                <div className="ferp-hint">
                     {isZh ? `将「${newVeName}」替换到：` : `Replace with "${newVeName}":`}
                 </div>
                 {currentSlots.map((slot, index) => (
@@ -66,49 +50,26 @@ export function FavoriteEmployeeReplacePicker({ currentSlots, newVeName, onRepla
                         data-testid={`replace-slot-${index}`}
                         aria-label={isZh ? `替换第 ${index + 1} 个常用数字员工：${slot.name}` : `Replace favorite slot ${index + 1}: ${slot.name}`}
                         onClick={() => onReplace(index)}
-                        style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '8px',
-                            width: '100%',
-                            padding: '8px 12px',
-                            borderRadius: 'var(--radius-md, 8px)',
-                            border: 0,
-                            background: 'transparent',
-                            font: 'inherit',
-                            cursor: 'pointer',
-                            transition: 'background 0.12s',
-                            marginBottom: '4px',
-                            textAlign: 'left',
-                        }}
+                        className="ferp-slot-btn"
                         onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'var(--theme-hover, rgba(0,0,0,0.05))'; }}
                         onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = ''; }}
                     >
-                        <span style={{
-                            width: '20px', height: '20px', borderRadius: '50%',
-                            background: 'var(--theme-primary)', color: '#fff',
-                            display: 'flex', alignItems: 'center', justifyContent: 'center',
-                            fontSize: '10px', fontWeight: 700, flexShrink: 0,
-                        }}>
+                        <span className="ferp-slot-index">
                             {index + 1}
                         </span>
-                        <span style={{ fontSize: '12px', color: 'var(--theme-text-primary)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        <span className="ferp-slot-name">
                             {slot.name}
                         </span>
-                        <span style={{ fontSize: '10px', color: 'var(--theme-text-muted)' }}>
+                        <span className="ferp-slot-action">
                             {isZh ? '点击替换' : 'click to replace'}
                         </span>
                     </button>
                 ))}
-                <div style={{ marginTop: '10px', textAlign: 'right' }}>
+                <div className="ferp-footer">
                     <button
                         type="button"
                         onClick={onCancel}
-                        style={{
-                            fontSize: '11px', padding: '4px 12px', borderRadius: 'var(--radius-sm, 6px)',
-                            border: '1px solid var(--theme-border)', background: 'transparent',
-                            color: 'var(--theme-text-muted)', cursor: 'pointer',
-                        }}
+                        className="ferp-cancel-btn"
                     >
                         {isZh ? '取消' : 'Cancel'}
                     </button>

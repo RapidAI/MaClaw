@@ -83,6 +83,28 @@ func TestClassifyIMExecutionProfileDoesNotPromoteLookupFromWording(t *testing.T)
 	}
 }
 
+func TestClassifyIMExecutionProfileLiveVisualIsBounded(t *testing.T) {
+	semantic := &intent.ClassificationResult{
+		Primary:    intent.LabelLiveDataVisual,
+		Confidence: 0.93,
+		Layer:      3,
+		Reason:     "tree-after-embedding+synthesized composite: live_data(0.930)+live_data_visual(0.723)",
+	}
+	profile := classifyIMExecutionProfileWithSemantic(IMUserMessage{Text: "崇州天气"}, false, false, semantic)
+	if !profile.IsLight() || profile.Reason != "semantic capability-managed live visual" || profile.IterationBudget != 4 || profile.ToolBudget != 0 {
+		t.Fatalf("weather card profile = %+v, want a bounded live-visual turn", profile)
+	}
+	composite := &intent.ClassificationResult{
+		Primary:    intent.LabelLiveData,
+		Secondary:  []intent.IntentLabel{intent.LabelLiveDataVisual},
+		Confidence: 0.92,
+	}
+	compositeProfile := classifyIMExecutionProfileWithSemantic(IMUserMessage{Text: "北京天气"}, false, false, composite)
+	if !compositeProfile.IsLight() || compositeProfile.IterationBudget != 4 {
+		t.Fatalf("lookup+visual profile = %+v, want the same bound", compositeProfile)
+	}
+}
+
 func TestClassifyIMExecutionProfileSemanticWeatherPDFUsesFullPlannedChain(t *testing.T) {
 	semantic := &intent.ClassificationResult{
 		Primary:    intent.LabelLiveData,

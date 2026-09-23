@@ -63,14 +63,14 @@ export function SidebarTaskEvidencePanel({ detail, loading, lang, onContinueWork
     const activeWorkflow = detail?.active_workflow;
     const workflowProjectPath = activeWorkflow?.project_path || detail?.project_path || '';
     const workflowState = activeWorkflow ? workflowEvidenceState(activeWorkflow, lang) : null;
-    return <div style={{ margin: '3px 0 5px 22px', padding: '6px 7px', border: '1px solid var(--theme-border)', borderRadius: '6px', background: 'color-mix(in srgb, var(--theme-surface) 88%, var(--theme-text-primary) 4%)', minWidth: 0 }}>
+    return <div className="step-root">
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: artifacts.length > 0 || loading ? '4px' : 0 }}>
-            <span style={{ fontSize: '0.64rem', fontWeight: 700, color: 'var(--theme-text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            <span className="step-title">
                 {loading ? textForLang(lang, 'Loading evidence...', '正在加载证据...', '正在載入證據...') : textForLang(lang, 'Recent artifact sources', '最近产物来源', '最近產物來源')}
             </span>
-            {detail?.entry_count !== undefined && <span style={{ fontSize: '0.6rem', color: 'var(--theme-text-muted)', opacity: 0.75, flexShrink: 0 }}>{detail.entry_count}</span>}
+            {detail?.entry_count !== undefined && <span className="step-count">{detail.entry_count}</span>}
         </div>
-        {!loading && activeWorkflow && <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '5px', minWidth: 0 }}>
+        {!loading && activeWorkflow && <div className="step-workflow-row">
             <span data-testid="task-evidence-workflow-state" title={`${activeWorkflow.type || 'workflow'} ${activeWorkflow.phase || ''}`.trim()} style={{ flex: 1, minWidth: 0, fontSize: '0.62rem', color: workflowState?.color, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{workflowState?.label}</span>
             {workflowState?.canContinue && onContinueWorkflow && workflowProjectPath && <button type="button" disabled={continuingWorkflow} onClick={event => {
                 event.stopPropagation();
@@ -81,16 +81,16 @@ export function SidebarTaskEvidencePanel({ detail, loading, lang, onContinueWork
                     .finally(() => { setContinuingWorkflow(false); });
             }} style={{ border: '1px solid color-mix(in srgb, var(--theme-primary) 42%, transparent)', background: 'color-mix(in srgb, var(--theme-primary) 8%, transparent)', color: 'var(--theme-primary)', borderRadius: '999px', cursor: continuingWorkflow ? 'default' : 'pointer', padding: '2px 7px', fontSize: '0.6rem', fontWeight: 700, flexShrink: 0, opacity: continuingWorkflow ? 0.6 : 1 }}>{continuingWorkflow ? textForLang(lang, 'Opening workflow...', '正在打开流程...', '正在開啟流程...') : textForLang(lang, 'Continue workflow', '\u7ee7\u7eed\u539f\u6d41\u7a0b', '\u7e7c\u7e8c\u539f\u6d41\u7a0b')}</button>}
         </div>}
-        {!loading && !error && artifacts.length === 0 && <div style={{ fontSize: '0.64rem', color: 'var(--theme-text-muted)', opacity: 0.75 }}>{textForLang(lang, 'No source-backed artifacts yet', '暂无可回查产物', '暫無可回查產物')}</div>}
-        {!loading && error && <div role="status" style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.64rem', color: 'var(--theme-text-secondary)', lineHeight: 1.35 }}>
-            <span style={{ minWidth: 0, flex: 1 }}>{error}</span>
+        {!loading && !error && artifacts.length === 0 && <div className="step-empty">{textForLang(lang, 'No source-backed artifacts yet', '暂无可回查产物', '暫無可回查產物')}</div>}
+        {!loading && error && <div role="status" className="step-error-row">
+            <span className="step-error-text">{error}</span>
             {onRetry && <button type="button" onClick={event => { event.stopPropagation(); onRetry(); }} style={{ border: 'none', background: 'transparent', color: 'var(--theme-primary)', cursor: 'pointer', padding: '1px 0', fontSize: '0.62rem', fontWeight: 700, flexShrink: 0 }}>{textForLang(lang, 'Retry', '重试', '重試')}</button>}
         </div>}
         {artifacts.slice(0, 3).map((artifact, index) => {
             const label = artifact.title || artifact.preview || artifact.source_url || textForLang(lang, 'Artifact', '产物', '產物');
             const source = artifact.source_url ? artifact.source_url + (artifact.source_hint ? '; ' + artifact.source_hint : '') : '';
             return <div key={artifact.source_url || label + index} style={{ display: 'flex', alignItems: 'center', gap: '5px', minWidth: 0, marginTop: index === 0 ? 0 : '3px' }}>
-                <span title={source || label} style={{ flex: 1, minWidth: 0, fontSize: '0.64rem', color: 'var(--theme-text-primary)', opacity: 0.82, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
+                <span title={source || label} className="step-artifact-label">{label}</span>
                 {artifact.source_url && <button type="button" aria-label={textForLang(lang, 'Open artifact source', '打开产物来源', '打開產物來源')} title={source} onClick={event => { event.stopPropagation(); void OpenFileOrShowInFolder(artifact.source_url || ''); }} style={{ border: 'none', background: 'transparent', color: 'var(--theme-primary)', cursor: 'pointer', width: '18px', height: '18px', padding: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><ProjectSearchIcon name="externalLink" size={12} /></button>}
             </div>;
         })}

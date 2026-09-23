@@ -2,17 +2,18 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import { createPortal } from 'react-dom';
 import { AbortCloudWorkspaceTaskProvision, CloudWorkspaceCacheDir, CloudWorkspaceEntitlement, CompleteCloudWorkspaceTaskProvision, CreateCloudWorkspace, DeleteCloudWorkspace, ForceDeleteCloudWorkspace, GetProjectScene, GetRemoteCodingTaskMeta, ListExperts, ListManagedIndustryExperts, OpenProjectDirectory, PrepareCloudWorkspace, ProvisionCloudWorkspaceTask, RenameCloudWorkspace, RestoreCloudWorkspace, SelectWorkingDir, TestRemoteSSHConnection, UpdateRemoteCodingTaskMeta } from '../../../wailsjs/go/main/App';
 import { EventsEmit } from '../../../wailsjs/runtime';
-import { EVENT_OPEN_CREATE_CODING_TASK, EVENT_NEW_TASK_WIZARD_BLOCKED, EVENT_OPEN_NEW_TASK_WIZARD, EVENT_PROJECT_TASK_ACTIVATE, EVENT_PROJECT_TASK_CLOSED, type OpenCreateCodingTaskDetail } from '../../constants/events';
+import { EVENT_OPEN_CREATE_CODING_TASK, EVENT_NEW_TASK_WIZARD_BLOCKED, EVENT_OPEN_NEW_TASK_WIZARD, EVENT_PROJECT_TASK_CLOSED, type OpenCreateCodingTaskDetail } from '../../constants/events';
 import { localizeText } from '../../i18n';
 import { restoreCloudWorkspaceTasksShared, invalidateCloudWorkspaceTaskRestore } from '../../utils/cloudWorkspaceTaskRestore';
 import { ProjectSearchIcon } from '../ai/ProjectSearchIcon';
 import type { ProjectSceneDetail } from '../ai/ProjectSceneDetailPanel';
 import { agentModeFromTaskTags, cloudSafePathLabel, cloudWorkspaceIdFromPath, isCloudWorkspacePath, cloudWorkspaceIdFromTags, cloudWorkspaceIdFromTaskFields, cloudWorkspaceSharePermissionFromTags, cloudWorkspaceSharedFromFromTags, CODING_TASK_COMMAND_MAX_LEN, isCloudWorkspaceTask, isOwnedCloudWorkspaceTask, isPureCodingTaskTags, isRemoteMaintenanceTaskTags, isTaskManagementTaskRow, lookupCloudWorkspaceDisplayName, rememberCloudWorkspaceDisplayNames, REVEAL_CLOUD_WORKSPACE_FILES_EVENT, remoteCodingMetaFromTaskTags, remoteHostFromTaskTags, scrubCloudWorkspaceError, visibleTaskRows, type PureCodingAgentMode } from '../ai/codingTaskMode';
 import { CloudWorkspaceShareDialog } from './CloudWorkspaceShareDialog';
+import './cloudOverview.css';
 import { coerceActiveAssistantTask, expertIDFromTaskTags, normalizeProjectSessionPath, type ActiveAssistantTaskIdentity } from '../ai/aiAssistantPanelSessionUtils';
 import { truncatePathMiddle } from '../ai/SessionWorkingDirChip';
 import { extractErrorMessage } from '../ai/participantAddError';
-import { localAssistantTabTitle } from '../ai/aiAssistantI18n';
+
 import { DEFAULT_EXPERT_ICON, parseExpertListJSON, parseInstalledManagedIndustryExpertsJSON, type ExpertDefinition } from '../ai/expertTypes';
 import { normalizeWorkflowStatus, WorkflowStatus } from '../ai/workflowStatus';
 import { useDialog } from '../CustomDialog';
@@ -58,7 +59,7 @@ export type TaskContextMenu = {
 /** Re-export for task sidebar consumers that already import from this module. */
 export { expertIDFromTaskTags };
 
-type TaskIconKind = 'default' | 'pin' | 'reference' | 'coding' | 'remote_coding' | 'cloud_workspace' | 'task';
+type TaskIconKind = 'pin' | 'reference' | 'coding' | 'remote_coding' | 'cloud_workspace' | 'task';
 
 type TaskWorkflowStatusTone = 'info' | 'warning' | 'danger' | 'success' | 'neutral';
 
@@ -158,7 +159,6 @@ const workspaceSectionLabel = (lang: string) =>
     textForLang(lang, 'Workspace', '工作空间', '工作空間');
 
 const taskIconLabel = (kind: TaskIconKind, lang: string, maintenance = false) => {
-    if (kind === 'default') return textForLang(lang, 'Default task', '默认任务', '預設任務');
     if (kind === 'pin') return textForLang(lang, 'Pinned task', '\u7f6e\u9876\u4efb\u52a1', '\u7f6e\u9802\u4efb\u52d9');
     if (kind === 'reference') return textForLang(lang, 'Referenced task', '\u5f15\u7528\u4efb\u52a1', '\u5f15\u7528\u4efb\u52d9');
     if (kind === 'remote_coding') return maintenance
@@ -270,9 +270,7 @@ function taskRecentTimeLabel(value: string | undefined, lang: string): string {
 
 const TaskTypeIcon = ({ kind, lang, maintenance = false }: { kind: TaskIconKind; lang: string; maintenance?: boolean }) => {
     const label = taskIconLabel(kind, lang, maintenance);
-    const iconColor = kind === 'default'
-        ? 'var(--theme-primary)'
-        : kind === 'cloud_workspace'
+    const iconColor = kind === 'cloud_workspace'
         ? 'color-mix(in srgb, var(--theme-primary-strong) 78%, var(--theme-text-primary))'
         : 'var(--theme-text-muted)';
 
@@ -280,16 +278,10 @@ const TaskTypeIcon = ({ kind, lang, maintenance = false }: { kind: TaskIconKind;
         <span
             aria-label={label}
             title={label}
-            data-testid={kind === 'default' ? 'task-default-icon' : kind === 'cloud_workspace' ? 'task-cloud-workspace-icon' : undefined}
-            style={{ flexShrink: 0, width: '24px', height: '18px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: iconColor, opacity: 0.92 }}
+            data-testid={kind === 'cloud_workspace' ? 'task-cloud-workspace-icon' : undefined}
+            style={{ flexShrink: 0, width: '16px', height: '16px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: iconColor, opacity: 0.92 }}
         >
-            <svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true" focusable="false" style={{ display: 'block' }}>
-                {kind === 'default' && (
-                    <>
-                        <path {...TASK_ICON_PROPS} d="M12 3l2 5.4L19.5 10l-5.5 1.6L12 17l-2-5.4L4.5 10l5.5-1.6L12 3z" />
-                        <path {...TASK_ICON_PROPS} d="M18.5 14.5l.9 2.4 2.4.9-2.4.9-.9 2.4-.9-2.4-2.4-.9 2.4-.9.9-2.4z" />
-                    </>
-                )}
+            <svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true" focusable="false" className="stsm-svg-block">
                 {kind === 'pin' && (
                     <>
                         <path {...TASK_ICON_PROPS} d="M15 4 20 9" />
@@ -378,7 +370,7 @@ function requestSaveCurrentChatAsTask() {
     window.dispatchEvent(new CustomEvent('ai-save-current-chat-as-task'));
 }
 
-type SidebarTaskManagementProps = {
+export type SidebarTaskManagementProps = {
     lang: string;
     themeMode?: 'light' | 'dark';
     tasks: TaskManagementItem[];
@@ -433,6 +425,14 @@ type SidebarTaskManagementProps = {
      * keep the in-progress task out of the completed bucket.
      */
     activeAssistantTaskRunning?: boolean;
+    /**
+     * Live busy identities across ALL assistant tabs: normalized project
+     * paths plus expert IDs with an in-flight run. Concurrent runs keep
+     * executing as detached rounds after the user switches away, and each
+     * busy identity marks its durable row as live-running so every
+     * in-progress task lands in the 进行中 bucket.
+     */
+    busyTaskRuns?: { projectPaths: string[]; expertIds: string[] };
     /** False while the sidebar is showing employees/history so scroll waits until the list is shown. */
     taskListVisible?: boolean;
     /** Keep cloud workspace/project controls available for external coding surfaces. */
@@ -500,27 +500,54 @@ export function isSharedTaskRow(task: Pick<TaskManagementItem, 'tags'>): boolean
     return (task.tags || []).some(tag => /(shared|share|invite|共享|分享)/i.test(String(tag)));
 }
 
+/**
+ * Precomputed match context for the currently visible AI assistant tab.
+ * Building it once per identity change avoids re-coercing and re-deriving
+ * the cloud workspace id for every task row on every classification pass.
+ */
+type ActiveTaskRowMatchContext = {
+    expertId: string;
+    activePath: string;
+    activeWorkspaceId: string;
+};
+
+function activeTaskRowMatchContext(active?: ActiveAssistantTaskIdentity | null): ActiveTaskRowMatchContext | null {
+    const canonical = coerceActiveAssistantTask(active);
+    if (!canonical) return null;
+    const activePath = canonical.projectPath || '';
+    return {
+        expertId: canonical.expertId || '',
+        activePath,
+        activeWorkspaceId: canonical.cloudWorkspaceId || cloudWorkspaceIdFromPath(activePath),
+    };
+}
+
+function matchesActiveTaskRowContext(
+    proj: Pick<TaskManagementItem, 'project_path' | 'tags' | 'working_dir' | 'preview' | 'name'>,
+    ctx: ActiveTaskRowMatchContext,
+): boolean {
+    const expertID = expertIDFromTaskTags(proj.tags);
+    if (ctx.expertId) return expertID === ctx.expertId;
+    // Expert rows stay bound to expert tabs even if a project tab shares a path.
+    if (expertID) return false;
+    const target = normalizeProjectSessionPath(proj.project_path);
+    if (target && target === ctx.activePath) return true;
+    const workDir = normalizeProjectSessionPath(proj.working_dir);
+    if (workDir && workDir === ctx.activePath) return true;
+    // Cloud resume rebinds the tab onto a cache path that may differ from the
+    // durable list row; match by workspace id so the highlight still lands.
+    const rowWorkspaceId = cloudWorkspaceIdFromTaskFields(proj);
+    return !!rowWorkspaceId && !!ctx.activeWorkspaceId && rowWorkspaceId === ctx.activeWorkspaceId;
+}
+
 /** True when this durable task row is the currently visible AI assistant tab. */
 export function isActiveTaskRow(
     proj: Pick<TaskManagementItem, 'project_path' | 'tags' | 'working_dir' | 'preview' | 'name'>,
     active?: ActiveAssistantTaskIdentity | null,
 ): boolean {
-    const canonical = coerceActiveAssistantTask(active);
-    if (!canonical) return false;
-    const expertID = expertIDFromTaskTags(proj.tags);
-    if (canonical.expertId) return expertID === canonical.expertId;
-    // Expert rows stay bound to expert tabs even if a project tab shares a path.
-    if (expertID) return false;
-    const activePath = canonical.projectPath || '';
-    const target = normalizeProjectSessionPath(proj.project_path);
-    if (target && target === activePath) return true;
-    const workDir = normalizeProjectSessionPath(proj.working_dir);
-    if (workDir && workDir === activePath) return true;
-    // Cloud resume rebinds the tab onto a cache path that may differ from the
-    // durable list row; match by workspace id so the highlight still lands.
-    const rowWorkspaceId = cloudWorkspaceIdFromTaskFields(proj);
-    const activeWorkspaceId = canonical.cloudWorkspaceId || cloudWorkspaceIdFromPath(activePath);
-    return !!rowWorkspaceId && rowWorkspaceId === activeWorkspaceId;
+    const ctx = activeTaskRowMatchContext(active);
+    if (!ctx) return false;
+    return matchesActiveTaskRowContext(proj, ctx);
 }
 
 const textForLang = localizeText;
@@ -900,10 +927,10 @@ const CloudDeletedWorkspaceRow = ({
     const restoreDisabled = !id || busy || quotaReached;
     const forceDeleteDisabled = !id || busy;
     return (
-        <div data-workspace-id={id || undefined} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', padding: '6px 8px', borderRadius: '7px', border: '1px dashed var(--theme-border)' }}>
-            <span style={{ minWidth: 0 }}>
-                <span style={{ display: 'block', fontSize: '0.72rem', color: 'var(--theme-text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.name || row.id}</span>
-                <span style={{ display: 'block', fontSize: '0.62rem', color: 'var(--theme-text-muted)' }}>
+        <div data-workspace-id={id || undefined} className="mc-cloud-overview__deleted-row">
+            <span className="mc-cloud-overview__deleted-copy">
+                <span className="mc-cloud-overview__deleted-name">{row.name || row.id}</span>
+                <span className="mc-cloud-overview__deleted-hint">
                     {textForLang(lang, 'Restorable for 7 days', '7 天内可恢复', '7 天內可恢復')}
                 </span>
                 {forceDeleting && (
@@ -911,13 +938,13 @@ const CloudDeletedWorkspaceRow = ({
                         data-testid={`${testIdPrefix}-force-delete-progress`}
                         role="status"
                         aria-label={textForLang(lang, 'Permanently deleting workspace and remote files', '正在永久删除工作区及远程文件', '正在永久刪除工作區及遠端檔案')}
-                        style={{ display: 'block', marginTop: '4px', width: '130px', height: '3px', overflow: 'hidden', borderRadius: '999px', background: 'color-mix(in srgb, var(--theme-danger, #dc2626) 18%, transparent)' }}
+                        className="mc-cloud-overview__deleted-progress"
                     >
-                        <span style={{ display: 'block', width: '45%', height: '100%', borderRadius: 'inherit', background: 'var(--theme-danger, #dc2626)', animation: 'sidebar-task-restore-progress 0.9s ease-in-out infinite alternate' }} />
+                        <span />
                     </span>
                 )}
             </span>
-            <span style={{ display: 'inline-flex', gap: '5px', flexShrink: 0 }}>
+            <span className="mc-cloud-overview__deleted-actions">
                 <button
                     type="button"
                     data-testid={`${testIdPrefix}-restore`}
@@ -926,7 +953,7 @@ const CloudDeletedWorkspaceRow = ({
                         ? textForLang(lang, 'Cloud workspace quota reached', '已达云端工作区配额', '已達雲端工作區配額')
                         : textForLang(lang, 'Restore', '恢复', '恢復')}
                     onClick={() => { if (id) onRestore(id); }}
-                    style={{ flexShrink: 0, border: '1px solid var(--theme-border)', borderRadius: '6px', background: 'var(--theme-surface)', color: 'var(--theme-primary)', cursor: restoreDisabled ? 'default' : 'pointer', padding: '3px 8px', fontSize: '0.66rem', opacity: restoreDisabled ? 0.5 : 1 }}
+                    className="mc-cloud-overview__action mc-cloud-overview__action--primary"
                 >
                     {textForLang(lang, 'Restore', '恢复', '恢復')}
                 </button>
@@ -938,7 +965,7 @@ const CloudDeletedWorkspaceRow = ({
                         : textForLang(lang, 'Delete permanently', '强制删除', '強制刪除')}
                     disabled={forceDeleteDisabled}
                     onClick={() => { if (id) onForceDelete(id); }}
-                    style={{ flexShrink: 0, border: '1px solid color-mix(in srgb, var(--theme-danger, #dc2626) 48%, var(--theme-border))', borderRadius: '6px', background: 'color-mix(in srgb, var(--theme-danger, #dc2626) 8%, transparent)', color: 'color-mix(in srgb, var(--theme-danger, #dc2626) 82%, var(--theme-text-primary))', cursor: forceDeleteDisabled ? 'default' : 'pointer', padding: '3px 6px', fontSize: '0.62rem', opacity: forceDeleteDisabled ? 0.5 : 1 }}
+                    className="mc-cloud-overview__action mc-cloud-overview__action--danger"
                 >
                     {textForLang(lang, 'Delete permanently', '强制删除', '強制刪除')}
                 </button>
@@ -952,14 +979,14 @@ const CloudWorkspaceLeaseNote = ({ row, lang }: { row: CloudWorkspaceRow; lang: 
     return (
         <>
             {row.lease_in_use && (
-                <span data-testid="task-cloud-workspace-lease" style={{ display: 'block', marginTop: '2px', fontSize: '0.64rem', color: 'color-mix(in srgb, var(--theme-warning, #d97706) 82%, var(--theme-text-primary))' }}>
+                <span data-testid="task-cloud-workspace-lease" className="stsm-lease-note">
                     {row.lease_holder
                         ? textForLang(lang, `In use on another device (${row.lease_holder})`, `占用中（其他设备：${row.lease_holder}）`, `佔用中（其他裝置：${row.lease_holder}）`)
                         : textForLang(lang, 'In use on another device', '占用中（其他设备）', '佔用中（其他裝置）')}
                 </span>
             )}
             {row.reconcile_required && (
-                <span data-testid="task-cloud-workspace-reconcile" role="status" style={{ display: 'block', marginTop: '2px', fontSize: '0.64rem', color: 'color-mix(in srgb, var(--theme-warning, #d97706) 82%, var(--theme-text-primary))' }} title={row.reconcile_reason || undefined}>
+                <span data-testid="task-cloud-workspace-reconcile" role="status" className="stsm-lease-note" title={row.reconcile_reason || undefined}>
                     {textForLang(lang, 'Full scan required', '需要完整扫描', '需要完整掃描')}
                     {row.reconcile_reason ? ` · ${row.reconcile_reason}` : ''}
                 </span>
@@ -1292,6 +1319,7 @@ export const SidebarTaskManagement = ({
     openExpertTabIDs,
     activeAssistantTask,
     activeAssistantTaskRunning = false,
+    busyTaskRuns,
     taskListVisible = true,
     showCloudWorkspaceManagement = true,
     showCloudWorkspaceCreation = showCloudWorkspaceManagement,
@@ -1340,12 +1368,17 @@ export const SidebarTaskManagement = ({
     const cloudOverviewBackdropMouseDownRef = useRef(false);
     const overviewFetchGenRef = useRef(0);
     const cloudOverviewDialogRef = useRef<HTMLDivElement | null>(null);
+    const cloudOverviewEditorRef = useRef({ renaming: '', confirming: '' });
+    cloudOverviewEditorRef.current.renaming = renamingCloudWorkspaceId;
+    cloudOverviewEditorRef.current.confirming = deleteConfirmCloudWorkspaceId;
     const forceDeleteConfirmOpenRef = useRef(false);
     const cloudWorkspaceBusyRef = useRef(false);
     const cloudEntitlementRef = useRef(cloudEntitlement);
     cloudEntitlementRef.current = cloudEntitlement;
     const closeCloudOverview = () => {
         overviewFetchGenRef.current += 1;
+        setRenamingCloudWorkspaceId('');
+        setRenameCloudWorkspaceValue('');
         setDeleteConfirmCloudWorkspaceId('');
         setCreateError('');
         setCloudOverviewOpen(false);
@@ -1458,9 +1491,8 @@ export const SidebarTaskManagement = ({
         const timer = window.setTimeout(() => setTaskListNotice(''), 8000);
         return () => window.clearTimeout(timer);
     }, [taskListNotice]);
-    // The header "新建任务" wizard opens on the welcome page, which stays hidden
-    // while a task runs; the wiring reports that blockage so the click shows an
-    // explanation instead of doing nothing.
+    // A running turn no longer blocks "新建任务" (the welcome page covers it).
+    // This notice is only for an explicit hard block from the wizard wiring.
     useEffect(() => {
         const handler = () => setTaskListNotice(textForLang(
             lang,
@@ -1565,10 +1597,60 @@ export const SidebarTaskManagement = ({
     // A pure agent loop run leaves no running snapshot on the durable row
     // (has_output stays true from earlier runs), so while the assistant panel
     // reports the matching task as actively executing, the live signal wins
-    // over the stale snapshot in the status stats below.
-    const isLiveRunningRow = useCallback((task: TaskManagementItem): boolean =>
-        activeAssistantTaskRunning && !!activeAssistantTask && isActiveTaskRow(task, activeAssistantTask),
-        [activeAssistantTaskRunning, activeAssistantTask]);
+    // over the stale snapshot in the status stats below. Concurrent runs keep
+    // executing after the user switches away (detached rounds), so the busy
+    // identity set — not just the visible tab's boolean — marks every live
+    // row. Cloud resume can rebind a tab onto a cache path that differs from
+    // the durable row, so busy paths also match by cloud workspace id, and
+    // expert rows match by expert id (mirrors isActiveTaskRow).
+    const busyPathSet = useMemo(() => new Set(busyTaskRuns?.projectPaths || []), [busyTaskRuns]);
+    const busyExpertSet = useMemo(() => new Set(busyTaskRuns?.expertIds || []), [busyTaskRuns]);
+    const busyWorkspaceIdSet = useMemo(() => {
+        const ids = new Set<string>();
+        for (const path of busyTaskRuns?.projectPaths || []) {
+            const id = cloudWorkspaceIdFromPath(path);
+            if (id) ids.add(id);
+        }
+        return ids;
+    }, [busyTaskRuns]);
+    // Built once per identity change; the hot loops below match rows against
+    // this context instead of re-coercing the identity per row per pass.
+    const activeRowContext = useMemo(() => activeTaskRowMatchContext(activeAssistantTask), [activeAssistantTask]);
+    const matchesLiveRunningRow = useCallback((task: TaskManagementItem): boolean => {
+        if (activeAssistantTaskRunning && activeRowContext && matchesActiveTaskRowContext(task, activeRowContext)) return true;
+        if (!busyTaskRuns) return false;
+        if (busyExpertSet.size > 0) {
+            const expertID = expertIDFromTaskTags(task.tags);
+            if (expertID && busyExpertSet.has(expertID)) return true;
+        }
+        if (busyPathSet.size > 0) {
+            const target = normalizeProjectSessionPath(task.project_path);
+            if (target && busyPathSet.has(target)) return true;
+            const workDir = normalizeProjectSessionPath(task.working_dir);
+            if (workDir && busyPathSet.has(workDir)) return true;
+        }
+        if (busyWorkspaceIdSet.size > 0) {
+            const rowWorkspaceId = cloudWorkspaceIdFromTaskFields(task);
+            if (rowWorkspaceId && busyWorkspaceIdSet.has(rowWorkspaceId)) return true;
+        }
+        return false;
+    }, [activeAssistantTaskRunning, activeRowContext, busyTaskRuns, busyPathSet, busyExpertSet, busyWorkspaceIdSet]);
+    // One classification pass over the visible rows: chip counts, filters,
+    // the row pill and the current-task card all consult this key set
+    // instead of re-running the matcher for every row on each render.
+    const liveRunningRowKeys = useMemo(() => {
+        const keys = new Set<string>();
+        for (const task of visibleTasks) {
+            const key = String(task.id || task.project_path || task.working_dir || '');
+            if (key && matchesLiveRunningRow(task)) keys.add(key);
+        }
+        return keys;
+    }, [visibleTasks, matchesLiveRunningRow]);
+    const isLiveRunningRow = useCallback((task: TaskManagementItem): boolean => {
+        const key = String(task.id || task.project_path || task.working_dir || '');
+        if (!key) return matchesLiveRunningRow(task);
+        return liveRunningRowKeys.has(key);
+    }, [liveRunningRowKeys, matchesLiveRunningRow]);
     // Two restore trigger paths feed this hint: the mount effect above sets
     // cloudRestorePending, App's assistant-ready path passes cloudTasksLoading.
     // Both go through restoreCloudWorkspaceTasksShared, so a single Hub restore
@@ -1621,15 +1703,20 @@ export const SidebarTaskManagement = ({
         if (taskFilter === 'shared' && taskFilterCounts.shared === 0) setTaskFilter('all');
     }, [taskFilter, taskFilterCounts]);
     const activeTaskForSidebar = useMemo(
-        () => activeAssistantTask
-            ? visibleTasks.find(task => isActiveTaskRow(task, activeAssistantTask)) || null
+        () => activeRowContext
+            ? visibleTasks.find(task => matchesActiveTaskRowContext(task, activeRowContext)) || null
             : null,
-        [visibleTasks, activeAssistantTask],
+        [visibleTasks, activeRowContext],
     );
-    const executionTaskStatus = workflowStatusForTaskRow(activeTaskForSidebar, lang) || {
-        label: textForLang(lang, 'In progress', '进行中', '進行中'),
-        tone: 'info' as const,
-    };
+    // The card mirrors the execution header badge: a live-running row wins
+    // over the durable snapshot (a pure agent loop run leaves has_output
+    // stale-true, which the snapshot alone would render as 已完成).
+    const executionTaskStatus = (activeTaskForSidebar && isLiveRunningRow(activeTaskForSidebar))
+        ? { label: textForLang(lang, 'In progress', '进行中', '進行中'), tone: 'info' as const }
+        : workflowStatusForTaskRow(activeTaskForSidebar, lang) || {
+            label: textForLang(lang, 'In progress', '进行中', '進行中'),
+            tone: 'info' as const,
+        };
     const executionTaskTitle = activeTaskForSidebar?.name?.trim()
         || (activeAssistantTask?.expertId
             ? activeAssistantTask.expertId
@@ -1663,7 +1750,12 @@ export const SidebarTaskManagement = ({
         return chips;
     }, [lang, visibleTasks.length, workspaceFilterCounts]);
     const taskListRef = useRef<HTMLDivElement | null>(null);
-    const activeRowPresent = visibleTasks.some(proj => isActiveTaskRow(proj, activeAssistantTask));
+    const activeRowPresent = useMemo(
+        () => activeRowContext
+            ? visibleTasks.some(proj => matchesActiveTaskRowContext(proj, activeRowContext))
+            : false,
+        [visibleTasks, activeRowContext],
+    );
     useEffect(() => {
         if (!taskListVisible || !activeRowPresent) return;
         const el = taskListRef.current?.querySelector('[data-active="true"]') as HTMLElement | null;
@@ -2316,6 +2408,11 @@ export const SidebarTaskManagement = ({
         boundCloudWorkspaces.length,
         blankCloudWorkspaces.length,
     );
+    // A deleted or refreshed workspace must not leave the detail pane blank
+    // while other workspaces are still listed.
+    const overviewSelectionId = cloudWorkspaces.some(row => (row.id || '').trim() === manageWorkspaceId.trim())
+        ? manageWorkspaceId.trim()
+        : (cloudWorkspaces[0]?.id || '').trim();
 
     const reloadCloudEntitlement = async () => {
         if (typeof CloudWorkspaceEntitlement !== 'function') return;
@@ -2380,9 +2477,19 @@ export const SidebarTaskManagement = ({
         if (!cloudOverviewOpen) return;
         const onKeyDown = (event: KeyboardEvent) => {
             if (event.key !== 'Escape') return;
+            // Escape while an IME candidate list is open belongs to the input method.
+            if (event.isComposing || event.keyCode === 229) return;
             // This capture listener is registered before CustomDialog's, so skip while a confirm owns Escape.
             if (forceDeleteConfirmOpenRef.current || document.querySelector('.custom-dialog')) return;
             event.preventDefault();
+            // Leave the dialog up while a rename or delete prompt is open; the next Escape closes it.
+            if (cloudOverviewEditorRef.current.renaming || cloudOverviewEditorRef.current.confirming) {
+                event.stopPropagation();
+                setRenamingCloudWorkspaceId('');
+                setRenameCloudWorkspaceValue('');
+                setDeleteConfirmCloudWorkspaceId('');
+                return;
+            }
             closeCloudOverview();
         };
         window.addEventListener('keydown', onKeyDown, true);
@@ -2878,19 +2985,6 @@ export const SidebarTaskManagement = ({
         activateTask?.(task.project_path, task);
     };
 
-    /** The pinned "Default Task" row focuses the always-open local assistant tab. */
-    const handleDefaultTaskRowClick = () => {
-        try {
-            EventsEmit(EVENT_PROJECT_TASK_ACTIVATE, { local: true });
-        } catch (error) {
-            console.warn('[SidebarTaskManagement] default task activate event emit failed:', error);
-        }
-    };
-
-    // The local assistant tab publishes no task-list identity, so a null
-    // activeAssistantTask means the default task is the focused surface.
-    const defaultTaskActive = !activeAssistantTask;
-
     const handleTaskDoubleClick = async (task: TaskManagementItem) => {
         const projectPath = task.project_path;
         if (renamingTaskPath || removingTaskPaths.has(projectPath)) return;
@@ -3018,14 +3112,14 @@ export const SidebarTaskManagement = ({
     };
 
     return (
-    <div className="mc-task-pane" data-execution-sidebar={activeAssistantTask ? 'true' : 'false'} data-sidebar-mode={activeAssistantTask ? 'execution' : 'home'} style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden', padding: '10px 8px 8px' }}>
+    <div className="mc-task-pane stsm-pane" data-execution-sidebar={activeAssistantTask ? 'true' : 'false'} data-sidebar-mode={activeAssistantTask ? 'execution' : 'home'}>
         {!activeAssistantTask && (
             <div className="mc-task-pane__title" data-testid="task-pane-title" role="heading" aria-level={2}>
                 {textForLang(lang, 'My tasks', '我的任务', '我的任務')}
             </div>
         )}
-        <div className="mc-task-pane__header" style={{ padding: '2px 8px 9px', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.68rem', color: 'var(--theme-text-muted)', fontWeight: 700, letterSpacing: '0.02em' }}>
-            <span className="mc-task-pane__create-group" style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', minWidth: 0 }}>
+        <div className="mc-task-pane__header stsm-pane-header">
+            <span className="mc-task-pane__create-group stsm-header-group">
                 <span>{textForLang(lang, activeAssistantTask ? 'My tasks' : 'New Task', activeAssistantTask ? '\u6211\u7684\u4efb\u52a1' : '\u65b0\u5efa\u4efb\u52a1', activeAssistantTask ? '\u6211\u7684\u4efb\u52d9' : '\u65b0\u5efa\u4efb\u52d9')}</span>
                 <button
                     type="button"
@@ -3076,7 +3170,7 @@ export const SidebarTaskManagement = ({
                     )}
                 </button>
             </span>
-            <span className="mc-task-pane__save-group" style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: '6px', minWidth: 0 }}>
+            <span className="mc-task-pane__save-group stsm-header-group stsm-header-group--save">
                 <span>{textForLang(lang, 'Save as Task', '保存为任务', '保存為任務')}</span>
                 <button
                     type="button"
@@ -3095,13 +3189,15 @@ export const SidebarTaskManagement = ({
                 <div className="mc-execution-task-sidebar__heading">
                     <strong>{textForLang(lang, 'My tasks', '我的任务', '我的任務')}</strong>
                     <span className="mc-execution-task-sidebar__heading-actions">
+                        {/* Header wizard button is hidden while a task is open; this + is the visible entry. */}
                         <button
                             type="button"
                             className="mc-execution-task-sidebar__add"
-                            onClick={() => openCreateDialog()}
+                            data-testid="execution-task-new-task-wizard"
+                            onClick={() => window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD))}
                             disabled={creatingTask}
-                            aria-label={textForLang(lang, 'Create task', '创建任务', '建立任務')}
-                            title={textForLang(lang, 'Create task', '创建任务', '建立任務')}
+                            aria-label={textForLang(lang, 'New task', '新建任务', '新建任務')}
+                            title={textForLang(lang, 'New task (configure on the welcome page)', '新建任务（在引导页配置后发送创建）', '新建任務（在引導頁配置後傳送建立）')}
                         >+</button>
                         {showCloudWorkspaceCreation && (!showCloudWorkspaceManagement || cloudGranted) && (
                             <button
@@ -3168,7 +3264,7 @@ export const SidebarTaskManagement = ({
                 titleFor={chip => `${workspaceSectionLabel(lang)} · ${chip.label}`}
             />
         </div>
-        <div ref={taskListRef} className="mc-task-list" data-testid="sidebar-task-list" style={{ flex: '1 1 0%', minHeight: 0, overflowX: 'hidden', overflowY: 'auto' }}>
+        <div ref={taskListRef} className="mc-task-list stsm-task-list" data-testid="sidebar-task-list">
         {showTaskListProgress ? (
             <SidebarTaskStatusBanner
                 testId={localTasksLoading ? 'task-list-loading' : 'task-cloud-sync-progress'}
@@ -3176,7 +3272,7 @@ export const SidebarTaskManagement = ({
             />
         ) : null}
         {taskListNotice ? (
-            <div role="status" data-testid="task-list-notice" style={{ margin: '0 8px 8px', padding: '7px 10px', borderRadius: '6px', border: '1px solid color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border))', background: 'color-mix(in srgb, var(--theme-primary) 9%, transparent)', color: 'var(--theme-text-primary)', fontSize: '0.72rem', lineHeight: 1.4, fontWeight: 500 }}>
+            <div role="status" data-testid="task-list-notice" className="stsm-list-notice">
                 {taskListNotice}
             </div>
         ) : null}
@@ -3186,38 +3282,8 @@ export const SidebarTaskManagement = ({
                 label={textForLang(lang, 'Opening local cache folder…', '正在打开本地缓存文件夹…', '正在開啟本機快取資料夾…')}
             />
         ) : null}
-        <div data-testid="sidebar-default-task-row" data-task-kind="default" data-active={defaultTaskActive ? 'true' : 'false'}>
-            <div
-                className={`sidebar-task-row sidebar-default-task-row${defaultTaskActive ? ' is-active' : ''}`}
-                role="button"
-                tabIndex={0}
-                onClick={handleDefaultTaskRowClick}
-                onKeyDown={e => { if (e.key !== 'Enter' && e.key !== ' ') return; e.preventDefault(); handleDefaultTaskRowClick(); }}
-                style={{
-                    display: 'flex',
-                    flexDirection: 'row',
-                    alignItems: 'flex-start',
-                    gap: '6px',
-                    padding: '7px 8px',
-                    borderRadius: '8px',
-                    cursor: 'pointer',
-                    ...(defaultTaskActive ? {
-                        background: 'var(--theme-surface)',
-                        boxShadow: 'inset 3px 0 0 var(--theme-primary), inset 0 0 0 1px color-mix(in srgb, var(--theme-primary) 28%, var(--theme-border))',
-                    } : {}),
-                }}
-                title={textForLang(lang, 'Click to focus the default task', '单击聚焦默认任务', '單擊聚焦預設任務')}
-                aria-current={defaultTaskActive ? 'true' : undefined}
-            >
-                <TaskTypeIcon kind="default" lang={lang} />
-                <span style={{ minWidth: 0, flex: 1, textAlign: 'left' }}>
-                    <span className="mc-sidebar-task-title-row"><span style={{ display: 'block', minWidth: 0, flex: 1, fontWeight: 700, fontSize: '0.74rem', color: 'var(--theme-text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>{localAssistantTabTitle(lang)}</span></span>
-                    <span data-testid="default-task-subtitle" style={{ display: 'block', marginTop: '3px', color: 'var(--theme-text-muted)', fontSize: '0.66rem', lineHeight: 1.3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>{textForLang(lang, 'Built-in local assistant, always available', '内置本地助手，始终可用', '內建本地助理，始終可用')}</span>
-                </span>
-            </div>
-        </div>
         {filteredTasks.length === 0 && !suppressEmptyState ? (
-            <div style={{ padding: '24px 8px', textAlign: 'center', fontSize: '0.78rem', color: 'var(--theme-text-muted)', opacity: 0.65 }}>
+            <div className="stsm-empty">
                 {taskFilter === 'all' && workspaceFilter === 'all'
                     ? textForLang(lang, 'No tasks', '\u6682\u65e0\u4efb\u52a1', '\u66ab\u7121\u4efb\u52d9')
                     : textForLang(lang, 'No tasks in this group', '\u8be5\u5206\u7ec4\u6682\u65e0\u4efb\u52a1', '\u8a72\u5206\u7d44\u66ab\u7121\u4efb\u52d9')}
@@ -3252,7 +3318,7 @@ export const SidebarTaskManagement = ({
             const recentTimeLabel = taskRecentTimeLabel(proj.last_activity || proj.created_at, lang);
             const isRemoving = removingTaskPaths.has(proj.project_path);
             const removalError = removeErrors.get(proj.project_path) || '';
-            const isActive = isActiveTaskRow(proj, activeAssistantTask);
+            const isActive = activeRowContext ? matchesActiveTaskRowContext(proj, activeRowContext) : false;
             const isOpen = isTaskInstanceOpen(proj);
             const isBusy = openingTaskPath === proj.project_path || isRemoving;
             const secondaryStatusLabel = isRemoving
@@ -3300,7 +3366,7 @@ export const SidebarTaskManagement = ({
                 flexDirection: 'row',
                 alignItems: 'flex-start',
                 gap: '6px',
-                padding: '7px 8px',
+                padding: '4px 6px 4px 8px',
                 borderRadius: '8px',
                 cursor: isBusy ? 'progress' : 'pointer',
                 opacity: isBusy ? 0.78 : 1,
@@ -3314,18 +3380,18 @@ export const SidebarTaskManagement = ({
             return <div key={proj.id || proj.project_path} data-task-kind={taskIconKind} data-pure-coding={pureCoding ? 'true' : 'false'} data-status={workflowStatus?.tone === 'success' ? 'completed' : workflowStatus?.tone === 'warning' ? 'pending' : workflowStatus?.tone === 'danger' ? 'failed' : workflowStatus?.tone === 'info' ? 'running' : undefined} data-testid="sidebar-task-row" data-active={isActive ? 'true' : 'false'} data-open={isOpen ? 'true' : 'false'} data-task-path={proj.project_path}>
                 <div className={`sidebar-task-row${isActive ? ' is-active' : ''}${isOpen ? ' is-open' : ''}${isBusy ? ' is-busy' : ''}`} role="button" tabIndex={isBusy ? -1 : 0} onClick={() => handleTaskRowClick(proj)} onDoubleClick={() => { void handleTaskDoubleClick(proj); }} onKeyDown={e => { if (isBusy || (e.key !== 'Enter' && e.key !== ' ')) return; e.preventDefault(); if (isTaskInstanceOpen(proj)) { activateTask?.(proj.project_path, proj); return; } void handleTaskDoubleClick(proj); }} onContextMenu={e => { e.preventDefault(); if (isRemoving) return; setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: taskTitleText, pinned: !!proj.pinned, isRemoteCoding: isRemoteCodingTask(proj), tags: proj.tags, workingDir: proj.working_dir }); }} style={rowStyle} title={joinHoverLines(taskTitleText, rowPathHint, workflowStatus && [workflowStatus.label, workflowStatus.detail].filter(Boolean).join(' · '), codingBadge, createdAtLabel, identitySubtitle, isOpen ? textForLang(lang, 'Click to focus the open instance; double-click to restore', '单击激活已打开的实例，双击恢复任务', '單擊啟動已開啟的實例，雙擊恢復任務') : textForLang(lang, 'Double-click to restore the task', '双击恢复任务', '雙擊恢復任務'))} aria-current={isActive ? 'true' : undefined}>
                     <TaskTypeIcon kind={taskIconKind} lang={lang} maintenance={remoteMaintenance} />
-                    <span style={{ minWidth: 0, flex: 1, textAlign: 'left' }}>
+                    <span className="stsm-row-body">
                         {(workflowStatus || codingBadge || proj.pinned || shareFromLabel) && (
-                            <span style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '3px' }}>
+                            <span className="stsm-badge-row">
                                 {shareFromLabel ? (
                                     <span
                                         data-testid="task-cloud-shared-from"
                                         title={shareFromLabel}
-                                        style={{ display: 'inline-flex', maxWidth: '100%', padding: '1px 5px', borderRadius: '999px', border: '1px solid color-mix(in srgb, var(--theme-primary) 36%, transparent)', color: 'var(--theme-primary-strong)', background: 'color-mix(in srgb, var(--theme-primary) 10%, transparent)', fontSize: '0.58rem', fontWeight: 700, lineHeight: 1.35, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+                                        className="stsm-badge-share"
                                     >{shareFromLabel}</span>
                                 ) : null}
                                 {proj.pinned && !pureCoding && (
-                                    <span data-testid="task-pinned-badge" style={{ display: 'inline-flex', maxWidth: '100%', padding: '1px 5px', borderRadius: '999px', border: '1px solid color-mix(in srgb, var(--theme-text-muted) 36%, transparent)', color: 'var(--theme-text-muted)', background: 'color-mix(in srgb, var(--theme-text-muted) 8%, transparent)', fontSize: '0.58rem', fontWeight: 700, lineHeight: 1.35 }}>{textForLang(lang, 'Pinned', '\u7f6e\u9876', '\u7f6e\u9802')}</span>
+                                    <span data-testid="task-pinned-badge" className="stsm-badge-pinned">{textForLang(lang, 'Pinned', '\u7f6e\u9876', '\u7f6e\u9802')}</span>
                                 )}
                                 {codingBadge && (
                                     <span
@@ -3355,8 +3421,8 @@ export const SidebarTaskManagement = ({
                                 {workflowStatus && <span data-testid="task-workflow-status" aria-label={`${textForLang(lang, 'Task status', '任务状态', '任務狀態')}: ${workflowStatus.label}${workflowStatus.detail ? ` · ${workflowStatus.detail}` : ''}`} title={`${proj.active_workflow?.type || 'workflow'}${workflowStatus.detail ? ` · ${workflowStatus.detail}` : ''}`} style={{ display: 'inline-flex', maxWidth: '100%', padding: '1px 5px', borderRadius: '999px', border: `1px solid ${TASK_WORKFLOW_STATUS_COLORS[workflowStatus.tone].border}`, color: TASK_WORKFLOW_STATUS_COLORS[workflowStatus.tone].color, background: TASK_WORKFLOW_STATUS_COLORS[workflowStatus.tone].background, fontSize: '0.58rem', fontWeight: 700, lineHeight: 1.35, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{workflowStatus.label}{workflowStatus.detail ? ` · ${workflowStatus.detail}` : ''}</span>}
                             </span>
                         )}
-                        {renamingTaskPath === proj.project_path ? <input autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onBlur={async () => { const trimmed = renameValue.trim(); if (trimmed && trimmed !== proj.name) { await renameTask(proj.project_path, trimmed); refreshTasks(); } setRenamingTaskPath(null); }} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setRenamingTaskPath(null); }} onClick={e => e.stopPropagation()} style={{ width: '100%', fontSize: '0.74rem', fontWeight: 700, color: 'var(--theme-text-primary)', background: 'var(--theme-surface)', border: '1px solid var(--theme-primary)', borderRadius: '4px', padding: '2px 4px', outline: 'none' }} /> : <span className="mc-sidebar-task-title-row"><span style={{ display: 'block', minWidth: 0, flex: 1, fontWeight: 700, fontSize: '0.74rem', color: 'var(--theme-text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>{taskTitleText}</span>{recentTimeLabel && <time className="mc-sidebar-task-time" dateTime={proj.last_activity || proj.created_at}>{recentTimeLabel}</time>}</span>}
-                        {secondaryText ? <span data-testid="task-secondary-label" style={{ display: 'block', marginTop: '3px', color: 'var(--theme-text-muted)', fontSize: '0.66rem', lineHeight: 1.3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>{secondaryText}</span> : null}
+                        {renamingTaskPath === proj.project_path ? <input autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onBlur={async () => { const trimmed = renameValue.trim(); if (trimmed && trimmed !== proj.name) { await renameTask(proj.project_path, trimmed); refreshTasks(); } setRenamingTaskPath(null); }} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setRenamingTaskPath(null); }} onClick={e => e.stopPropagation()} style={{ width: '100%', fontSize: '0.74rem', fontWeight: 700, color: 'var(--theme-text-primary)', background: 'var(--theme-surface)', border: '1px solid var(--theme-primary)', borderRadius: '4px', padding: '2px 4px', outline: 'none' }} /> : <span className="mc-sidebar-task-title-row"><span className="stsm-row-title">{taskTitleText}</span>{recentTimeLabel && <time className="mc-sidebar-task-time" dateTime={proj.last_activity || proj.created_at}>{recentTimeLabel}</time>}</span>}
+                        {secondaryText ? <span data-testid="task-secondary-label" className="stsm-row-secondary">{secondaryText}</span> : null}
                         {showWorkspaceLine ? (
                             <span
                                 data-testid="task-working-dir"
@@ -3364,19 +3430,19 @@ export const SidebarTaskManagement = ({
                                 title={workspaceLineTitle}
                                 onClick={workspaceKind === 'local' ? e => { e.stopPropagation(); OpenProjectDirectory(workspaceValue).catch(() => {}); } : undefined}
                                 onDoubleClick={e => e.stopPropagation()}
-                                style={{ display: 'flex', alignItems: 'center', gap: '4px', marginTop: '2px', color: 'var(--theme-text-secondary)', fontSize: '0.66rem', lineHeight: 1.3, whiteSpace: 'nowrap', overflow: 'hidden', textAlign: 'left', cursor: workspaceKind === 'local' ? 'pointer' : 'default' }}
+                                style={{ display: 'flex', alignItems: 'center', gap: '4px', marginTop: '1px', color: 'var(--theme-text-secondary)', fontSize: '0.66rem', lineHeight: 1.3, whiteSpace: 'nowrap', overflow: 'hidden', textAlign: 'left', cursor: workspaceKind === 'local' ? 'pointer' : 'default' }}
                             >
                                 <WorkspaceTypeBadge kind={workspaceKind} label={workspaceKindLabel(workspaceKind, lang)} style={{ flexShrink: 0 }} />
                                 {workspaceValueText ? (
-                                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{workspaceValueText}</span>
+                                    <span className="stsm-workspace-value">{workspaceValueText}</span>
                                 ) : null}
                             </span>
                         ) : null}
-                        {!isRemoving && openingTaskPath !== proj.project_path && createdAtLabel && <span data-testid="task-created-at" style={{ display: 'block', marginTop: '2px', color: 'var(--theme-text-muted)', fontSize: '0.6rem', lineHeight: 1.25, opacity: 0.82, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>{createdAtLabel}</span>}
-                        {(openingTaskPath === proj.project_path || isRemoving) && <span data-testid={isRemoving ? 'task-remove-progress' : undefined} role={isRemoving ? 'status' : undefined} aria-label={isRemoving ? textForLang(lang, 'Removing task', '正在删除任务', '正在刪除任務') : textForLang(lang, pureCoding ? 'Restoring pure coding environment' : 'Restoring task', pureCoding ? '正在恢复纯编程环境' : '正在恢复任务', pureCoding ? '正在恢復純程式環境' : '正在恢復任務')} className="sidebar-task-progress__track" style={{ marginTop: '6px' }}><span className="sidebar-task-progress__bar" /></span>}
-                        {removalError && <span data-testid="task-remove-error" role="alert" style={{ display: 'block', marginTop: '4px', color: 'var(--theme-danger, #b91c1c)', fontSize: '0.62rem', lineHeight: 1.3, textAlign: 'left' }}>{removalError}</span>}
+                        {!isRemoving && openingTaskPath !== proj.project_path && createdAtLabel && <span data-testid="task-created-at" className="stsm-row-created">{createdAtLabel}</span>}
+                        {(openingTaskPath === proj.project_path || isRemoving) && <span data-testid={isRemoving ? 'task-remove-progress' : undefined} role={isRemoving ? 'status' : undefined} aria-label={isRemoving ? textForLang(lang, 'Removing task', '正在删除任务', '正在刪除任務') : textForLang(lang, pureCoding ? 'Restoring pure coding environment' : 'Restoring task', pureCoding ? '正在恢复纯编程环境' : '正在恢复任务', pureCoding ? '正在恢復純程式環境' : '正在恢復任務')} className="sidebar-task-progress__track stsm-row-progress"><span className="sidebar-task-progress__bar" /></span>}
+                        {removalError && <span data-testid="task-remove-error" role="alert" className="stsm-row-error">{removalError}</span>}
                     </span>
-                    <span style={{ display: 'inline-flex', flexShrink: 0, alignItems: 'center', gap: '2px', marginTop: '1px' }}>
+                    <span className="stsm-row-actions">
                     {isOwnedCloudWorkspaceTask(proj) && (
                         <button
                             type="button"
@@ -3429,7 +3495,7 @@ export const SidebarTaskManagement = ({
                 <div
                     ref={cloudOverviewDialogRef}
                     id="task-cloud-overview-panel"
-                    className="modal-content"
+                    className="modal-content mc-cloud-overview stsm-cloud-overview-dialog"
                     role="dialog"
                     aria-modal="true"
                     aria-labelledby="task-cloud-overview-title"
@@ -3437,10 +3503,9 @@ export const SidebarTaskManagement = ({
                     tabIndex={-1}
                     onMouseDown={e => e.stopPropagation()}
                     onClick={e => e.stopPropagation()}
-                    style={{ width: '720px', maxWidth: '94vw', textAlign: 'left', outline: 'none' }}
                 >
                     <div className="modal-header">
-                        <h3 id="task-cloud-overview-title" style={{ fontSize: '0.88rem', margin: 0 }}>
+                        <h3 id="task-cloud-overview-title">
                             {textForLang(lang, 'Cloud workspaces', '云端工作区', '雲端工作區')}
                         </h3>
                         <button
@@ -3452,77 +3517,96 @@ export const SidebarTaskManagement = ({
                             onClick={closeCloudOverview}
                         >X</button>
                     </div>
-                    <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    <div className="modal-body mc-cloud-overview__body">
                         {cloudEntitlement?.hub_unavailable ? (
                             <div
                                 role="status"
                                 data-testid="task-cloud-overview-hub-banner"
-                                style={{ padding: '8px 10px', borderRadius: '8px', border: '1px solid color-mix(in srgb, var(--theme-warning, #d97706) 48%, var(--theme-border))', background: 'color-mix(in srgb, var(--theme-warning, #d97706) 12%, transparent)', color: 'color-mix(in srgb, var(--theme-warning, #d97706) 82%, var(--theme-text-primary))', fontSize: '0.72rem', lineHeight: 1.45 }}
+                                className="mc-cloud-overview__banner"
                             >
                                 {cloudEntitlement.banner?.trim()
                                     || textForLang(lang, 'Hub is unavailable; showing the last known workspaces.', 'Hub 不可用，正在显示上次已知的工作区。', 'Hub 不可用，正在顯示上次已知的工作區。')}
                             </div>
                         ) : null}
                         {cloudRestorePending ? (
-                            <div role="status" data-testid="task-cloud-overview-syncing" style={{ fontSize: '0.7rem', color: 'var(--theme-text-secondary)', lineHeight: 1.45 }}>
+                            <div role="status" data-testid="task-cloud-overview-syncing" className="mc-cloud-overview__status">
                                 {textForLang(lang, 'Syncing cloud tasks…', '正在同步云端任务…', '正在同步雲端任務…')}
                             </div>
                         ) : null}
                         {createError ? (
-                            <div role="alert" data-testid="task-cloud-overview-error" style={{ padding: '7px 10px', borderRadius: '6px', border: '1px solid color-mix(in srgb, var(--theme-danger, #ef4444) 35%, var(--theme-border))', background: 'color-mix(in srgb, var(--theme-danger, #ef4444) 10%, transparent)', color: 'var(--theme-danger, #ef4444)', fontSize: '0.72rem', lineHeight: 1.4 }}>
+                            <div role="alert" data-testid="task-cloud-overview-error" className="mc-cloud-overview__error">
                                 {createError}
                             </div>
                         ) : null}
                         <div
                             data-testid="task-cloud-overview-summary"
                             title={overviewSummary.hint || undefined}
-                            style={{ fontSize: '0.72rem', color: 'var(--theme-text-secondary)', lineHeight: 1.45 }}
+                            className="mc-cloud-overview__summary"
                         >
-                            {overviewSummary.text}
+                            {overviewSummary.text.split(' · ').map((part, index) => (
+                                <span key={`cloud-overview-stat-${index}`} className="mc-cloud-overview__stat">
+                                    {index > 0 ? <span className="mc-cloud-overview__stat-sep" aria-hidden="true"> · </span> : null}
+                                    {part}
+                                </span>
+                            ))}
+                            {cloudQuota > 0 ? (
+                                <span className="mc-cloud-overview__quota" aria-hidden="true">
+                                    <span style={{ width: `${cloudUsed > 0 ? Math.max(8, Math.min(100, Math.round((cloudUsed / cloudQuota) * 100))) : 0}%` }} />
+                                </span>
+                            ) : null}
                         </div>
-                        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(220px, 0.9fr) minmax(280px, 1.1fr)', gap: '12px', alignItems: 'start' }}>
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', minWidth: 0 }}>
+                        <div className="mc-cloud-overview__split">
+                            <div className="mc-cloud-overview__list">
                                 <button
                                     type="button"
                                     data-testid="task-cloud-overview-new"
                                     disabled={creatingTask || cloudWorkspaceBusy || cloudRestorePending || cloudQuotaReached}
+                                    title={cloudQuotaReached ? textForLang(lang, 'Cloud workspace quota reached', '已达云端工作区配额', '已達雲端工作區配額') : undefined}
                                     onClick={() => { void createNewCloudWorkspace(); }}
-                                    style={{ border: '1px solid color-mix(in srgb, var(--theme-primary) 28%, var(--theme-border))', borderRadius: '8px', background: 'color-mix(in srgb, var(--theme-primary) 9%, transparent)', color: 'var(--theme-primary)', cursor: creatingTask || cloudWorkspaceBusy || cloudRestorePending || cloudQuotaReached ? 'default' : 'pointer', padding: '8px 10px', fontSize: '0.74rem', fontWeight: 700, textAlign: 'left', opacity: creatingTask || cloudWorkspaceBusy || cloudRestorePending || cloudQuotaReached ? 0.5 : 1 }}
+                                    className="mc-cloud-overview__new"
                                 >
+                                    {cloudWorkspaceBusy ? null : <span className="mc-cloud-overview__new-mark" aria-hidden="true">+</span>}
                                     {newCloudWorkspaceActionLabel(lang, cloudWorkspaceBusy)}
                                 </button>
+                                <div className="mc-cloud-overview__list-scroll">
                                 {cloudWorkspaces.length === 0 ? (
-                                    <div style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)', lineHeight: 1.4 }}>
+                                    <div className="mc-cloud-overview__empty-list">
                                         {textForLang(lang, 'No cloud workspace yet.', '暂无云端工作区。', '暫無雲端工作區。')}
                                     </div>
-                                ) : cloudWorkspaces.map(row => {
-                                    const id = (row.id || '').trim();
-                                    const linked = tasksForCloudWorkspace(visibleTasks, id);
-                                    const selected = manageWorkspaceId === id || (!manageWorkspaceId && id === (cloudWorkspaces[0]?.id || ''));
-                                    const bound = linked.length > 0;
-                                    return (
-                                        <button
-                                            key={`manage-${id}`}
-                                            type="button"
-                                            data-testid={bound ? 'task-cloud-overview-bound' : 'task-cloud-overview-blank'}
-                                            data-workspace-id={id}
-                                            disabled={creatingTask || cloudWorkspaceBusy}
-                                            onClick={() => { setManageWorkspaceId(id); resetCloudWorkspaceEditors(); }}
-                                            style={{ width: '100%', border: selected ? '1px solid var(--theme-primary)' : '1px solid var(--theme-border)', borderRadius: '8px', background: selected ? 'color-mix(in srgb, var(--theme-primary) 10%, var(--theme-surface))' : 'var(--theme-surface)', color: 'inherit', textAlign: 'left', cursor: creatingTask || cloudWorkspaceBusy ? 'default' : 'pointer', padding: '8px 10px' }}
-                                        >
-                                            <span style={{ display: 'block', fontSize: '0.76rem', fontWeight: 700, color: 'var(--theme-text-primary)' }}>{row.name || id}</span>
-                                            <span style={{ display: 'block', marginTop: '2px', fontSize: '0.64rem', color: bound ? 'var(--theme-primary)' : 'var(--theme-text-muted)', lineHeight: 1.35 }}>
-                                                {bound
-                                                    ? textForLang(lang, `${linked.length} linked task${linked.length === 1 ? '' : 's'}`, `${linked.length} 个关联任务`, `${linked.length} 個關聯任務`)
-                                                    : textForLang(lang, 'No linked tasks', '无关联任务', '無關聯任務')}
-                                            </span>
-                                            <CloudWorkspaceLeaseNote row={row} lang={lang} />
-                                        </button>
-                                    );
-                                })}
+                                ) : (
+                                    <div className="mc-cloud-overview__rows">
+                                        {cloudWorkspaces.map(row => {
+                                            const id = (row.id || '').trim();
+                                            const linked = tasksForCloudWorkspace(visibleTasks, id);
+                                            const selected = id === overviewSelectionId;
+                                            const bound = linked.length > 0;
+                                            return (
+                                                <button
+                                                    key={`manage-${id}`}
+                                                    type="button"
+                                                    data-testid={bound ? 'task-cloud-overview-bound' : 'task-cloud-overview-blank'}
+                                                    data-workspace-id={id}
+                                                    aria-pressed={selected}
+                                                    title={row.name || id}
+                                                    disabled={creatingTask || cloudWorkspaceBusy}
+                                                    onClick={() => { setManageWorkspaceId(id); resetCloudWorkspaceEditors(); }}
+                                                    className="mc-cloud-overview__row"
+                                                >
+                                                    <span className="mc-cloud-overview__row-name">{row.name || id}</span>
+                                                    <span className="mc-cloud-overview__row-meta">
+                                                        {bound
+                                                            ? textForLang(lang, `${linked.length} linked task${linked.length === 1 ? '' : 's'}`, `${linked.length} 个关联任务`, `${linked.length} 個關聯任務`)
+                                                            : textForLang(lang, 'No linked tasks', '无关联任务', '無關聯任務')}
+                                                    </span>
+                                                    <CloudWorkspaceLeaseNote row={row} lang={lang} />
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                )}
                                 {cloudDeleted.length > 0 && (
-                                    <div data-testid="task-cloud-overview-deleted" style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '4px' }}>
-                                        <div style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--theme-text-secondary)' }}>
+                                    <div data-testid="task-cloud-overview-deleted" className="mc-cloud-overview__deleted">
+                                        <div className="mc-cloud-overview__section-label">
                                             {textForLang(lang, 'Recently deleted', '最近删除', '最近刪除')}
                                         </div>
                                         {cloudDeleted.map(row => (
@@ -3540,13 +3624,13 @@ export const SidebarTaskManagement = ({
                                         ))}
                                     </div>
                                 )}
+                                </div>
                             </div>
-                            <div data-testid="task-cloud-overview-selected" style={{ minWidth: 0, border: '1px solid var(--theme-border)', borderRadius: '10px', background: 'var(--theme-surface-muted)', padding: '10px' }}>
+                            <div data-testid="task-cloud-overview-selected" className="mc-cloud-overview__detail">
                                 {(() => {
-                                    const selectedId = manageWorkspaceId || (cloudWorkspaces[0]?.id || '');
-                                    const selected = cloudWorkspaces.find(row => (row.id || '') === selectedId);
+                                    const selected = cloudWorkspaces.find(row => (row.id || '').trim() === overviewSelectionId);
                                     if (!selected) {
-                                        return <div style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)', lineHeight: 1.45 }}>{textForLang(lang, 'Select a workspace to manage it.', '选择一个工作区进行管理。', '選擇一個工作區進行管理。')}</div>;
+                                        return <div className="mc-cloud-overview__placeholder">{textForLang(lang, 'Select a workspace to manage it.', '选择一个工作区进行管理。', '選擇一個工作區進行管理。')}</div>;
                                     }
                                     const id = (selected.id || '').trim();
                                     const linked = tasksForCloudWorkspace(visibleTasks, id);
@@ -3556,73 +3640,75 @@ export const SidebarTaskManagement = ({
                                     const lastUsed = formatCloudWorkspaceLastUsed(selected.updated_at, lang);
                                     const sizeText = formatCloudWorkspaceBytes(Number(selected.retained_bytes) || Number(selected.used_bytes) || 0, lang);
                                     return (
-                                        <div>
-                                            <div style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--theme-text-primary)' }}>{selected.name || id}</div>
-                                            <div style={{ marginTop: '3px', fontSize: '0.64rem', color: 'var(--theme-text-muted)' }}>{[lastUsed, sizeText].filter(Boolean).join(' · ')}</div>
-                                            <CloudWorkspaceLeaseNote row={selected} lang={lang} />
-                                            {renaming ? (
-                                                <div style={{ display: 'flex', gap: '6px', alignItems: 'center', marginTop: '8px' }}>
-                                                    <input value={renameCloudWorkspaceValue} onChange={e => setRenameCloudWorkspaceValue(e.target.value)} disabled={cloudWorkspaceBusy} aria-label={textForLang(lang, 'Workspace name', '工作区名称', '工作區名稱')} style={{ flex: 1, minWidth: 0, fontSize: '0.74rem', color: 'var(--theme-text-primary)', background: 'var(--theme-surface)', border: '1px solid var(--theme-border)', borderRadius: '6px', padding: '4px 6px' }} />
-                                                    <button type="button" className="btn-primary" style={{ fontSize: '0.66rem', padding: '3px 8px' }} disabled={cloudWorkspaceBusy || !renameCloudWorkspaceValue.trim()} onClick={() => { void renameSelectedCloudWorkspace(id); }}>{textForLang(lang, 'Save', '保存', '儲存')}</button>
-                                                    <button type="button" className="btn-secondary" style={{ fontSize: '0.66rem', padding: '3px 8px' }} disabled={cloudWorkspaceBusy} onClick={resetCloudWorkspaceEditors}>{textForLang(lang, 'Cancel', '取消', '取消')}</button>
-                                                </div>
-                                            ) : (
-                                                <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
-                                                    <button type="button" data-testid="task-cloud-overview-rename" disabled={busy} onClick={() => { setRenamingCloudWorkspaceId(id); setRenameCloudWorkspaceValue(selected.name || ''); setDeleteConfirmCloudWorkspaceId(''); }} style={{ border: 'none', background: 'transparent', color: 'var(--theme-primary)', cursor: busy ? 'default' : 'pointer', fontSize: '0.66rem', padding: 0 }}>{textForLang(lang, 'Rename', '重命名', '重命名')}</button>
-                                                    <button type="button" data-testid={linked.length ? 'task-cloud-overview-delete-blocked' : 'task-cloud-overview-blank-delete'} disabled={busy} onClick={() => { setDeleteConfirmCloudWorkspaceId(id); setRenamingCloudWorkspaceId(''); }} style={{ border: 'none', background: 'transparent', color: 'var(--theme-text-muted)', cursor: busy ? 'default' : 'pointer', fontSize: '0.66rem', padding: 0 }}>{textForLang(lang, 'Delete', '删除', '刪除')}</button>
-                                                </div>
-                                            )}
-                                            {confirmingDelete ? (
-                                                <div data-testid="task-cloud-overview-blank-delete-confirm" style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '8px' }}>
-                                                    {linked.length > 0 ? (
-                                                        <span style={{ fontSize: '0.66rem', color: 'var(--theme-text-secondary)', lineHeight: 1.4 }}>
-                                                            {textForLang(lang, `This workspace still has ${linked.length} linked task(s). Delete those tasks first.`, `该工作区仍关联 ${linked.length} 个任务，请先删除这些任务后再删除工作区。`, `該工作區仍關聯 ${linked.length} 個任務，請先刪除這些任務後再刪除工作區。`)}
-                                                        </span>
-                                                    ) : (
-                                                        <>
-                                                            <span style={{ fontSize: '0.66rem', color: 'var(--theme-text-secondary)', lineHeight: 1.4 }}>
-                                                                {textForLang(lang, 'Deleted workspaces can be restored from Recently deleted within 7 days.', '删除后 7 天内可从「最近删除」恢复。', '刪除後 7 天內可從「最近刪除」恢復。')}
+                                        <>
+                                            <div className="mc-cloud-overview__detail-head">
+                                                <div className="mc-cloud-overview__detail-title">{selected.name || id}</div>
+                                                <div className="mc-cloud-overview__detail-meta">{[lastUsed, sizeText].filter(Boolean).join(' · ')}</div>
+                                                <CloudWorkspaceLeaseNote row={selected} lang={lang} />
+                                                {renaming ? (
+                                                    <div className="mc-cloud-overview__rename">
+                                                        <input autoFocus className="mc-cloud-overview__rename-input" value={renameCloudWorkspaceValue} onChange={e => setRenameCloudWorkspaceValue(e.target.value)} disabled={cloudWorkspaceBusy} aria-label={textForLang(lang, 'Workspace name', '工作区名称', '工作區名稱')} onKeyDown={e => { if (e.key !== 'Enter' || e.nativeEvent.isComposing || e.keyCode === 229) return; e.preventDefault(); if (!cloudWorkspaceBusy && renameCloudWorkspaceValue.trim()) void renameSelectedCloudWorkspace(id); }} />
+                                                        <button type="button" className="btn-primary" disabled={cloudWorkspaceBusy || !renameCloudWorkspaceValue.trim()} onClick={() => { void renameSelectedCloudWorkspace(id); }}>{textForLang(lang, 'Save', '保存', '儲存')}</button>
+                                                        <button type="button" className="btn-secondary" disabled={cloudWorkspaceBusy} onClick={resetCloudWorkspaceEditors}>{textForLang(lang, 'Cancel', '取消', '取消')}</button>
+                                                    </div>
+                                                ) : (
+                                                    <div className="mc-cloud-overview__actions">
+                                                        <button type="button" className="mc-cloud-overview__action" data-testid="task-cloud-overview-rename" disabled={busy} onClick={() => { setRenamingCloudWorkspaceId(id); setRenameCloudWorkspaceValue(selected.name || ''); setDeleteConfirmCloudWorkspaceId(''); }}>{textForLang(lang, 'Rename', '重命名', '重命名')}</button>
+                                                        <button type="button" className="mc-cloud-overview__action mc-cloud-overview__action--danger" data-testid={linked.length ? 'task-cloud-overview-delete-blocked' : 'task-cloud-overview-blank-delete'} disabled={busy} onClick={() => { setRenamingCloudWorkspaceId(''); setDeleteConfirmCloudWorkspaceId(prev => prev === id ? '' : id); }}>{textForLang(lang, 'Delete', '删除', '刪除')}</button>
+                                                    </div>
+                                                )}
+                                                {confirmingDelete ? (
+                                                    <div data-testid="task-cloud-overview-blank-delete-confirm" className={linked.length > 0 ? 'mc-cloud-overview__confirm mc-cloud-overview__confirm--note' : 'mc-cloud-overview__confirm'}>
+                                                        {linked.length > 0 ? (
+                                                            <span>
+                                                                {textForLang(lang, `This workspace still has ${linked.length} linked task(s). Delete those tasks first.`, `该工作区仍关联 ${linked.length} 个任务，请先删除这些任务后再删除工作区。`, `該工作區仍關聯 ${linked.length} 個任務，請先刪除這些任務後再刪除工作區。`)}
                                                             </span>
-                                                            <div style={{ display: 'flex', gap: '6px' }}>
-                                                                <button type="button" className="btn-primary" style={{ fontSize: '0.66rem', padding: '3px 8px' }} disabled={busy} onClick={() => { void deleteSelectedCloudWorkspace(id); }}>{textForLang(lang, 'Delete', '确认删除', '確認刪除')}</button>
-                                                                <button type="button" className="btn-secondary" style={{ fontSize: '0.66rem', padding: '3px 8px' }} disabled={busy} onClick={resetCloudWorkspaceEditors}>{textForLang(lang, 'Cancel', '取消', '取消')}</button>
-                                                            </div>
-                                                        </>
-                                                    )}
-                                                </div>
-                                            ) : null}
-                                            <div style={{ marginTop: '12px', fontSize: '0.72rem', fontWeight: 700, color: 'var(--theme-text-secondary)' }}>
-                                                {textForLang(lang, `Linked tasks (${linked.length})`, `关联任务 (${linked.length})`, `關聯任務 (${linked.length})`)}
+                                                        ) : (
+                                                            <>
+                                                                <span>
+                                                                    {textForLang(lang, 'Deleted workspaces can be restored from Recently deleted within 7 days.', '删除后 7 天内可从「最近删除」恢复。', '刪除後 7 天內可從「最近刪除」恢復。')}
+                                                                </span>
+                                                                <div className="mc-cloud-overview__confirm-actions">
+                                                                    <button type="button" className="btn-primary" disabled={busy} onClick={() => { void deleteSelectedCloudWorkspace(id); }}>{textForLang(lang, 'Delete', '确认删除', '確認刪除')}</button>
+                                                                    <button type="button" className="btn-secondary" disabled={busy} onClick={resetCloudWorkspaceEditors}>{textForLang(lang, 'Cancel', '取消', '取消')}</button>
+                                                                </div>
+                                                            </>
+                                                        )}
+                                                    </div>
+                                                ) : null}
                                             </div>
-                                            {linked.length === 0 ? (
-                                                <div style={{ marginTop: '6px', fontSize: '0.7rem', color: 'var(--theme-text-muted)', lineHeight: 1.4 }}>
-                                                    {textForLang(lang, 'No linked tasks. Use New Task and choose this workspace.', '暂无关联任务。可用「新建任务」选择此工作区。', '暫無關聯任務。可用「新建任務」選擇此工作區。')}
+                                            <div className="mc-cloud-overview__tasks">
+                                                <div className="mc-cloud-overview__section-label">
+                                                    {textForLang(lang, `Linked tasks (${linked.length})`, `关联任务 (${linked.length})`, `關聯任務 (${linked.length})`)}
                                                 </div>
-                                            ) : linked.map(task => (
-                                                <div key={task.project_path} data-testid="task-cloud-overview-task" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', marginTop: '6px', padding: '7px 8px', borderRadius: '8px', border: '1px solid var(--theme-border)', background: 'var(--theme-surface)' }}>
-                                                    <span style={{ minWidth: 0 }}>
-                                                        <span style={{ display: 'block', fontSize: '0.74rem', fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{task.name || task.project_path}</span>
-                                                    </span>
-                                                    <button
-                                                        type="button"
-                                                        data-testid="task-cloud-overview-task-delete"
-                                                        disabled={busy}
-                                                        onClick={() => {
-                                                            void confirmRemoveTask({
-                                                                x: 0,
-                                                                y: 0,
-                                                                projectPath: task.project_path,
-                                                                name: String(task.name || '').trim(),
-                                                                pinned: !!task.pinned,
-                                                                tags: task.tags,
-                                                                workingDir: task.working_dir,
-                                                            });
-                                                        }}
-                                                        style={{ border: 'none', background: 'transparent', color: 'var(--theme-danger, #b91c1c)', cursor: busy ? 'default' : 'pointer', fontSize: '0.66rem', flexShrink: 0 }}
-                                                    >{textForLang(lang, 'Delete', '删除', '刪除')}</button>
-                                                </div>
-                                            ))}
-                                        </div>
+                                                {linked.length === 0 ? (
+                                                    <div className="mc-cloud-overview__tasks-empty">
+                                                        {textForLang(lang, 'No linked tasks. Use New Task and choose this workspace.', '暂无关联任务。可用「新建任务」选择此工作区。', '暫無關聯任務。可用「新建任務」選擇此工作區。')}
+                                                    </div>
+                                                ) : linked.map(task => (
+                                                    <div key={task.project_path} data-testid="task-cloud-overview-task" className="mc-cloud-overview__task">
+                                                        <span className="mc-cloud-overview__task-name" title={task.name || task.project_path}>{task.name || task.project_path}</span>
+                                                        <button
+                                                            type="button"
+                                                            className="mc-cloud-overview__task-delete"
+                                                            data-testid="task-cloud-overview-task-delete"
+                                                            disabled={busy}
+                                                            onClick={() => {
+                                                                void confirmRemoveTask({
+                                                                    x: 0,
+                                                                    y: 0,
+                                                                    projectPath: task.project_path,
+                                                                    name: String(task.name || '').trim(),
+                                                                    pinned: !!task.pinned,
+                                                                    tags: task.tags,
+                                                                    workingDir: task.working_dir,
+                                                                });
+                                                            }}
+                                                        >{textForLang(lang, 'Delete', '删除', '刪除')}</button>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </>
                                     );
                                 })()}
                             </div>
@@ -3644,7 +3730,7 @@ export const SidebarTaskManagement = ({
                 onClick={e => { if (e.target === e.currentTarget && createBackdropMouseDownRef.current) closeCreateDialog(); createBackdropMouseDownRef.current = false; }}
             >
                 <form
-                    className="modal-content"
+                    className="modal-content stsm-dialog stsm-dialog--create"
                     role="dialog"
                     aria-modal="true"
                     aria-labelledby="task-management-dialog-title"
@@ -3652,10 +3738,9 @@ export const SidebarTaskManagement = ({
                     onClick={e => e.stopPropagation()}
                     onKeyDown={e => { if (e.key === 'Escape') closeCreateDialog(); }}
                     onSubmit={e => { e.preventDefault(); void submitCreateTask(); }}
-                    style={{ width: '420px', maxWidth: '92vw', textAlign: 'left' }}
                 >
                     <div className="modal-header">
-                        <h3 id="task-management-dialog-title" style={{ fontSize: '0.88rem', margin: 0 }}>
+                        <h3 id="task-management-dialog-title" className="stsm-dialog-title">
                             {cloudCreateSelected
                                 ? textForLang(lang, 'Create cloud workspace task', '创建云端工作区任务', '建立雲端工作區任務')
                                 : newTaskMode === 'coding_dev'
@@ -3666,8 +3751,8 @@ export const SidebarTaskManagement = ({
                         </h3>
                         <button type="button" className="btn-close" onClick={closeCreateDialog} disabled={creatingTask}>X</button>
                     </div>
-                    <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                        <div data-testid="task-create-guidance" style={{ padding: '9px 10px', borderRadius: '8px', border: '1px solid color-mix(in srgb, var(--theme-primary) 24%, var(--theme-border))', background: 'color-mix(in srgb, var(--theme-primary) 6%, transparent)', color: 'var(--theme-text-secondary)', fontSize: '0.72rem', lineHeight: 1.5 }}>
+                    <div className="modal-body stsm-form-body">
+                        <div data-testid="task-create-guidance" className="stsm-guidance">
                             {showCloudWorkspaceCreation
                                 ? textForLang(lang, 'Choose a task type, including Cloud workspace. After it opens, enter your request in the AI assistant.', '先选择任务类型（含云端工作区）；创建后请直接在 AI 助手中输入任务命令。', '先選擇任務類型（含雲端工作區）；建立後請直接在 AI 助手中輸入任務命令。')
                                 : textForLang(lang, 'Choose a task type, then enter your request in the AI assistant.', '选择任务类型后，直接在 AI 助手中输入任务命令。', '選擇任務類型後，直接在 AI 助手中輸入任務命令。')}
@@ -3676,15 +3761,15 @@ export const SidebarTaskManagement = ({
                             <div
                                 role="status"
                                 data-testid="task-cloud-workspace-hub-banner"
-                                style={{ padding: '8px 10px', borderRadius: '8px', border: '1px solid color-mix(in srgb, var(--theme-warning, #d97706) 48%, var(--theme-border))', background: 'color-mix(in srgb, var(--theme-warning, #d97706) 12%, transparent)', color: 'color-mix(in srgb, var(--theme-warning, #d97706) 82%, var(--theme-text-primary))', fontSize: '0.72rem', lineHeight: 1.45 }}
+                                className="stsm-hub-banner"
                             >
                                 {cloudEntitlement.banner?.trim()
                                     || textForLang(lang, 'Hub is unavailable; cloud workspaces are temporarily unavailable.', 'Hub 不可用，云端工作区暂不可用', 'Hub 不可用，雲端工作區暫不可用')}
                             </div>
                         )}
                         <div>
-                            <div style={{ marginBottom: '6px', fontSize: '0.74rem', fontWeight: 700, color: 'var(--theme-text-secondary)' }}>{textForLang(lang, 'Task type', '任务类型', '任務類型')}</div>
-                            <div role="group" data-testid="task-workspace-kind" aria-label={textForLang(lang, 'Task type', '任务类型', '任務類型')} style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '6px' }}>
+                            <div className="stsm-field-label">{textForLang(lang, 'Task type', '任务类型', '任務類型')}</div>
+                            <div role="group" data-testid="task-workspace-kind" aria-label={textForLang(lang, 'Task type', '任务类型', '任務類型')} className="stsm-kind-grid">
                                 {([
                                     { id: 'chat' as const, testId: 'task-workspace-kind-local', label: textForLang(lang, 'Chat', '对话', '對話'), detail: textForLang(lang, 'General assistant', '通用助手', '通用助手') },
                                     { id: 'coding_dev' as const, label: textForLang(lang, 'Coding', '本地编程', '本機程式'), detail: textForLang(lang, 'Local workspace', '本地工作目录', '本機工作目錄') },
@@ -3722,10 +3807,10 @@ export const SidebarTaskManagement = ({
                                             onClick={() => selectCreateTaskType(opt.id)}
                                             style={{ minWidth: 0, minHeight: '58px', border: active ? '1px solid var(--theme-primary)' : '1px solid var(--theme-border)', boxShadow: active ? '0 0 0 1px var(--theme-primary)' : 'none', borderRadius: '8px', padding: '7px 8px', textAlign: 'left', cursor: disabled ? 'default' : 'pointer', color: active ? 'var(--theme-primary)' : 'var(--theme-text-primary)', background: active ? 'color-mix(in srgb, var(--theme-primary) 16%, var(--theme-surface))' : 'var(--theme-surface-muted)', opacity: disabled ? 0.55 : 1 }}
                                         >
-                                            <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '4px', fontSize: '0.74rem', fontWeight: 700 }}>
-                                                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{opt.label}</span>
+                                            <span className="stsm-kind-label-row">
+                                                <span className="stsm-ellipsis">{opt.label}</span>
                                                 {active && (
-                                                    <span aria-hidden="true" style={{ flexShrink: 0, width: '14px', height: '14px', borderRadius: '50%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: 'var(--theme-primary)', color: 'var(--theme-on-primary, #fff)', fontSize: '0.6rem', lineHeight: 1 }}>✓</span>
+                                                    <span aria-hidden="true" className="stsm-kind-check">✓</span>
                                                 )}
                                             </span>
                                             <span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: '3px', color: active ? 'var(--theme-primary)' : 'var(--theme-text-muted)', fontSize: '0.64rem', opacity: active ? 0.88 : 1 }}>{opt.detail}</span>
@@ -3734,15 +3819,15 @@ export const SidebarTaskManagement = ({
                                 })}
                             </div>
                             {showCloudWorkspaceCreation && !cloudGranted && !cloudEntitlement?.hub_unavailable && (
-                                <div data-testid="task-cloud-workspace-denied" style={{ marginTop: '6px', fontSize: '0.68rem', color: 'var(--theme-text-muted)', lineHeight: 1.45 }}>
+                                <div data-testid="task-cloud-workspace-denied" className="stsm-denied">
                                     {cloudDeniedReason}
                                 </div>
                             )}
                         </div>
                         {newTaskMode === '' && !cloudCreateSelected && (
-                            <div data-testid="task-expert-type" style={{ display: 'flex', flexDirection: 'column', gap: '7px', padding: '9px 10px', borderRadius: '8px', border: '1px solid var(--theme-border)', background: 'var(--theme-surface-muted)' }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '7px', minWidth: 0 }}>
-                                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', color: 'var(--theme-text-secondary)', fontSize: '0.72rem', whiteSpace: 'nowrap' }}>
+                            <div data-testid="task-expert-type" className="stsm-field-box">
+                                <div className="stsm-field-row">
+                                    <span className="stsm-field-caption">
                                         <ProjectSearchIcon name="book" size={14} />
                                         {textForLang(lang, 'Expert type', '专家类型', '專家類型')}
                                     </span>
@@ -3757,16 +3842,16 @@ export const SidebarTaskManagement = ({
                                         style={{ maxWidth: '250px', minWidth: 0, display: 'inline-flex', alignItems: 'center', gap: '5px', border: '1px solid color-mix(in srgb, var(--theme-primary) 22%, transparent)', borderRadius: '6px', background: 'color-mix(in srgb, var(--theme-primary) 9%, transparent)', color: 'var(--theme-primary)', cursor: creatingTask ? 'default' : 'pointer', padding: '5px 8px', fontSize: '0.72rem', lineHeight: 1.2, opacity: creatingTask ? 0.58 : 1 }}
                                     >
                                         <span aria-hidden="true">{createSelectedExpert ? (createSelectedExpert.icon || DEFAULT_EXPERT_ICON) : DEFAULT_EXPERT_ICON}</span>
-                                        <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                        <span className="stsm-ellipsis">
                                             {createSelectedExpert ? createSelectedExpert.name : textForLang(lang, 'General expert', '通用专家', '通用專家')}
                                         </span>
-                                        <span aria-hidden="true" style={{ flexShrink: 0 }}>▾</span>
+                                        <span aria-hidden="true" className="stsm-no-shrink">▾</span>
                                     </button>
                                 </div>
                                 {expertPickerOpen && (
                                     <div
                                         data-testid="task-expert-picker"
-                                        style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}
+                                        className="stsm-picker"
                                         onKeyDown={e => {
                                             // Collapse the picker first; the form-level Escape
                                             // handler would otherwise close the whole dialog.
@@ -3785,9 +3870,9 @@ export const SidebarTaskManagement = ({
                                             autoComplete="off"
                                             // Focus moves straight into filtering when the picker opens.
                                             autoFocus
-                                            style={{ width: '100%', boxSizing: 'border-box', fontSize: '0.74rem', color: 'var(--theme-text-primary)', background: 'var(--theme-surface-muted)', border: '1px solid var(--theme-border)', borderRadius: '6px', padding: '5px 8px', outline: 'none' }}
+                                            className="stsm-input"
                                         />
-                                        <div style={{ maxHeight: '180px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                        <div className="stsm-picker-list">
                                             <button
                                                 type="button"
                                                 data-testid="task-expert-option"
@@ -3795,9 +3880,9 @@ export const SidebarTaskManagement = ({
                                                 onClick={() => { setCreateExpertId(''); setExpertPickerOpen(false); }}
                                                 style={{ textAlign: 'left', border: createExpertId ? '1px solid var(--theme-border)' : '1px solid color-mix(in srgb, var(--theme-primary) 45%, var(--theme-border))', borderRadius: '7px', background: createExpertId ? 'var(--theme-surface)' : 'color-mix(in srgb, var(--theme-primary) 7%, var(--theme-surface))', color: 'var(--theme-text-primary)', cursor: 'pointer', padding: '6px 8px' }}
                                             >
-                                                <span aria-hidden="true" style={{ marginRight: '5px' }}>{DEFAULT_EXPERT_ICON}</span>
-                                                <span style={{ fontSize: '0.72rem', fontWeight: 700 }}>{textForLang(lang, 'General expert', '通用专家', '通用專家')}</span>
-                                                <span style={{ display: 'block', marginTop: '2px', fontSize: '0.64rem', color: 'var(--theme-text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                <span aria-hidden="true" className="stsm-option-icon">{DEFAULT_EXPERT_ICON}</span>
+                                                <span className="stsm-option-name">{textForLang(lang, 'General expert', '通用专家', '通用專家')}</span>
+                                                <span className="stsm-option-desc">
                                                     {textForLang(lang, 'No expert; use the general assistant', '不指定专家，使用通用助手', '不指定專家，使用通用助手')}
                                                 </span>
                                             </button>
@@ -3812,9 +3897,9 @@ export const SidebarTaskManagement = ({
                                                         onClick={() => { setCreateExpertId(expert.id); setNewTaskWorkingDir(''); setExpertPickerOpen(false); }}
                                                         style={{ textAlign: 'left', border: selected ? '1px solid color-mix(in srgb, var(--theme-primary) 45%, var(--theme-border))' : '1px solid var(--theme-border)', borderRadius: '7px', background: selected ? 'color-mix(in srgb, var(--theme-primary) 7%, var(--theme-surface))' : 'var(--theme-surface)', color: 'var(--theme-text-primary)', cursor: 'pointer', padding: '6px 8px' }}
                                                     >
-                                                        <span aria-hidden="true" style={{ marginRight: '5px' }}>{expert.icon || DEFAULT_EXPERT_ICON}</span>
-                                                        <span style={{ fontSize: '0.72rem', fontWeight: 700 }}>{expert.name}</span>
-                                                        <span style={{ display: 'block', marginTop: '2px', fontSize: '0.64rem', color: 'var(--theme-text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                        <span aria-hidden="true" className="stsm-option-icon">{expert.icon || DEFAULT_EXPERT_ICON}</span>
+                                                        <span className="stsm-option-name">{expert.name}</span>
+                                                        <span className="stsm-option-desc">
                                                             {expert.description}
                                                         </span>
                                                     </button>
@@ -3826,9 +3911,9 @@ export const SidebarTaskManagement = ({
                             </div>
                         )}
                         {newTaskMode !== 'remote_coding_dev' && !cloudCreateSelected && !(newTaskMode === '' && !!createSelectedExpert) && (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '7px', padding: '9px 10px', borderRadius: '8px', border: '1px solid var(--theme-border)', background: 'var(--theme-surface-muted)' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '7px', minWidth: 0 }}>
-                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', color: 'var(--theme-text-secondary)', fontSize: '0.72rem', whiteSpace: 'nowrap' }}>
+                        <div className="stsm-field-box">
+                            <div className="stsm-field-row">
+                                <span className="stsm-field-caption">
                                     <ProjectSearchIcon name="desktop" size={14} />
                                     {textForLang(lang, 'Working directory', '\u5de5\u4f5c\u76ee\u5f55', '\u5de5\u4f5c\u76ee\u9304')}
                                 </span>
@@ -3842,7 +3927,7 @@ export const SidebarTaskManagement = ({
                                     style={{ maxWidth: '250px', minWidth: 0, display: 'inline-flex', alignItems: 'center', gap: '5px', border: '1px solid color-mix(in srgb, var(--theme-primary) 22%, transparent)', borderRadius: '6px', background: 'color-mix(in srgb, var(--theme-primary) 9%, transparent)', color: 'var(--theme-primary)', cursor: creatingTask || selectingWorkingDir ? 'default' : 'pointer', padding: '5px 8px', fontSize: '0.72rem', lineHeight: 1.2, opacity: creatingTask || selectingWorkingDir ? 0.58 : 1 }}
                                 >
                                     <ProjectSearchIcon name="folder" size={14} />
-                                    <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                    <span className="stsm-ellipsis">
                                         {newTaskWorkingDir || (selectingWorkingDir ? textForLang(lang, 'Choosing...', '\u9009\u62e9\u4e2d...', '\u9078\u64c7\u4e2d...') : textForLang(lang, 'Choose folder', '\u9009\u62e9\u6587\u4ef6\u5939', '\u9078\u64c7\u8cc7\u6599\u593e'))}
                                     </span>
                                 </button>
@@ -3852,16 +3937,16 @@ export const SidebarTaskManagement = ({
                                         onClick={() => setNewTaskWorkingDir('')}
                                         aria-label={textForLang(lang, 'Clear directory', '\u6e05\u9664\u76ee\u5f55', '\u6e05\u9664\u76ee\u9304')}
                                         title={textForLang(lang, 'Clear directory', '\u6e05\u9664\u76ee\u5f55', '\u6e05\u9664\u76ee\u9304')}
-                                        style={{ flexShrink: 0, width: '18px', height: '18px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: 'none', borderRadius: '50%', background: 'color-mix(in srgb, var(--theme-text-muted) 15%, transparent)', color: 'var(--theme-text-muted)', cursor: 'pointer', padding: 0, fontSize: '11px', lineHeight: 1 }}
+                                        className="stsm-clear-dir-btn"
                                     >×</button>
                                 )}
                             </div>
                         </div>
                         )}
                         {cloudCreateSelected && (
-                            <div data-testid="task-cloud-workspace-list" style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '9px 10px', borderRadius: '8px', border: '1px solid var(--theme-border)', background: 'var(--theme-surface-muted)' }}>
-                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
-                                    <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--theme-text-secondary)' }}>
+                            <div data-testid="task-cloud-workspace-list" className="stsm-field-box stsm-field-box--gap8">
+                                <div className="stsm-cloud-box-head">
+                                    <span className="stsm-cloud-box-label">
                                         {textForLang(lang, 'Cloud workspaces', '云端工作区', '雲端工作區')}
                                         {cloudQuota > 0 ? ` (${cloudWorkspaces.length}/${cloudQuota})` : ''}
                                     </span>
@@ -3879,7 +3964,7 @@ export const SidebarTaskManagement = ({
                                     </button>
                                 </div>
                                 {cloudWorkspaces.length === 0 && (
-                                    <div style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)', lineHeight: 1.4 }}>
+                                    <div className="stsm-cloud-empty">
                                         {textForLang(lang, 'No cloud workspace yet. Create one to continue.', '暂无云端工作区，请先新建。', '暫無雲端工作區，請先新建。')}
                                     </div>
                                 )}
@@ -3897,12 +3982,12 @@ export const SidebarTaskManagement = ({
                                             onClick={() => { setSelectedCloudWorkspaceId(row.id || ''); setCreateError(''); }}
                                             style={{ display: 'flex', flexDirection: 'column', gap: '4px', padding: '7px 8px', borderRadius: '7px', border: selected ? '1px solid color-mix(in srgb, var(--theme-primary) 58%, var(--theme-border))' : '1px solid var(--theme-border)', background: selected ? 'color-mix(in srgb, var(--theme-primary) 8%, var(--theme-surface))' : 'var(--theme-surface)', textAlign: 'left', cursor: creatingTask || cloudWorkspaceBusy ? 'default' : 'pointer', color: 'inherit' }}
                                         >
-                                            <span style={{ display: 'block', fontSize: '0.76rem', fontWeight: 700, color: 'var(--theme-text-primary)' }}>{row.name || row.id}</span>
-                                            <span style={{ display: 'block', marginTop: '2px', fontSize: '0.64rem', color: 'var(--theme-text-muted)', lineHeight: 1.35 }}>
+                                            <span className="stsm-cloud-row-name">{row.name || row.id}</span>
+                                            <span className="stsm-cloud-row-meta">
                                                 {[lastUsed, sizeText].filter(Boolean).join(' · ')}
                                             </span>
                                             {boundCloudWorkspaceIds.has(row.id || '') && (
-                                                <span data-testid="task-cloud-workspace-bound" style={{ display: 'block', marginTop: '2px', fontSize: '0.64rem', color: 'var(--theme-primary)', lineHeight: 1.35 }}>
+                                                <span data-testid="task-cloud-workspace-bound" className="stsm-cloud-row-bound">
                                                     {textForLang(lang, 'Already has a task. Create & open makes a new workspace and a new panel.', '已有任务。「创建并打开」会再建一个工作区并打开新面板。', '已有任務。「建立並開啟」會再建一個工作區並開啟新面板。')}
                                                 </span>
                                             )}
@@ -3913,56 +3998,55 @@ export const SidebarTaskManagement = ({
                             </div>
                         )}
                         {newTaskMode === 'remote_coding_dev' && (
-                            <div data-testid="remote-coding-fields" style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '8px 10px', borderRadius: '8px', border: '1px solid color-mix(in srgb, var(--theme-primary) 28%, var(--theme-border))', background: 'color-mix(in srgb, var(--theme-primary) 7%, transparent)' }}>
-                                <div style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--theme-primary)' }}>
+                            <div data-testid="remote-coding-fields" className="stsm-field-box stsm-field-box--remote">
+                                <div className="stsm-remote-title">
                                     {textForLang(lang, 'Remote SSH connection', '远程 SSH 连接', '遠端 SSH 連線')}
                                 </div>
-                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 88px', gap: '8px' }}>
+                                <div className="stsm-grid-host">
                                     <div>
-                                        <label htmlFor="task-remote-host" style={{ display: 'block', fontSize: '0.68rem', color: 'var(--theme-text-secondary)', marginBottom: 4 }}>{textForLang(lang, 'Host / domain', '主机 IP / 域名', '主機 IP / 網域')}</label>
-                                        <input id="task-remote-host" value={remoteHost} onChange={e => setRemoteHost(e.target.value)} disabled={creatingTask} placeholder="192.168.1.10" autoComplete="off" style={{ width: '100%', boxSizing: 'border-box', fontSize: '0.78rem', color: 'var(--theme-text-primary)', background: 'var(--theme-surface-muted)', border: '1px solid var(--theme-border)', borderRadius: '6px', padding: '6px 8px', outline: 'none' }} />
+                                        <label htmlFor="task-remote-host" className="stsm-label">{textForLang(lang, 'Host / domain', '主机 IP / 域名', '主機 IP / 網域')}</label>
+                                        <input id="task-remote-host" value={remoteHost} onChange={e => setRemoteHost(e.target.value)} disabled={creatingTask} placeholder="192.168.1.10" autoComplete="off" className="stsm-remote-input" />
                                     </div>
                                     <div>
-                                        <label htmlFor="task-remote-port" style={{ display: 'block', fontSize: '0.68rem', color: 'var(--theme-text-secondary)', marginBottom: 4 }}>{textForLang(lang, 'Port', '端口', '連接埠')}</label>
-                                        <input id="task-remote-port" value={remotePort} onChange={e => setRemotePort(e.target.value)} disabled={creatingTask} inputMode="numeric" placeholder="22" style={{ width: '100%', boxSizing: 'border-box', fontSize: '0.78rem', color: 'var(--theme-text-primary)', background: 'var(--theme-surface-muted)', border: '1px solid var(--theme-border)', borderRadius: '6px', padding: '6px 8px', outline: 'none' }} />
+                                        <label htmlFor="task-remote-port" className="stsm-label">{textForLang(lang, 'Port', '端口', '連接埠')}</label>
+                                        <input id="task-remote-port" value={remotePort} onChange={e => setRemotePort(e.target.value)} disabled={creatingTask} inputMode="numeric" placeholder="22" className="stsm-remote-input" />
                                     </div>
                                 </div>
-                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                                <div className="stsm-grid-2">
                                     <div>
-                                        <label htmlFor="task-remote-user" style={{ display: 'block', fontSize: '0.68rem', color: 'var(--theme-text-secondary)', marginBottom: 4 }}>{textForLang(lang, 'Username', '用户名', '使用者名稱')}</label>
-                                        <input id="task-remote-user" value={remoteUser} onChange={e => setRemoteUser(e.target.value)} disabled={creatingTask} placeholder="root" autoComplete="username" style={{ width: '100%', boxSizing: 'border-box', fontSize: '0.78rem', color: 'var(--theme-text-primary)', background: 'var(--theme-surface-muted)', border: '1px solid var(--theme-border)', borderRadius: '6px', padding: '6px 8px', outline: 'none' }} />
+                                        <label htmlFor="task-remote-user" className="stsm-label">{textForLang(lang, 'Username', '用户名', '使用者名稱')}</label>
+                                        <input id="task-remote-user" value={remoteUser} onChange={e => setRemoteUser(e.target.value)} disabled={creatingTask} placeholder="root" autoComplete="username" className="stsm-remote-input" />
                                     </div>
                                     <div>
-                                        <label htmlFor="task-remote-password" style={{ display: 'block', fontSize: '0.68rem', color: 'var(--theme-text-secondary)', marginBottom: 4 }}>{textForLang(lang, 'Password', '密码', '密碼')}</label>
-                                        <input id="task-remote-password" type="password" value={remotePassword} onChange={e => setRemotePassword(e.target.value)} disabled={creatingTask} autoComplete="current-password" style={{ width: '100%', boxSizing: 'border-box', fontSize: '0.78rem', color: 'var(--theme-text-primary)', background: 'var(--theme-surface-muted)', border: '1px solid var(--theme-border)', borderRadius: '6px', padding: '6px 8px', outline: 'none' }} />
+                                        <label htmlFor="task-remote-password" className="stsm-label">{textForLang(lang, 'Password', '密码', '密碼')}</label>
+                                        <input id="task-remote-password" type="password" value={remotePassword} onChange={e => setRemotePassword(e.target.value)} disabled={creatingTask} autoComplete="current-password" className="stsm-remote-input" />
                                     </div>
                                 </div>
                                 <div>
-                                    <label htmlFor="task-remote-workdir" style={{ display: 'block', fontSize: '0.68rem', color: 'var(--theme-text-secondary)', marginBottom: 4 }}>{textForLang(lang, 'Remote work directory', '远程工作目录', '遠端工作目錄')}</label>
-                                    <input id="task-remote-workdir" value={remoteWorkDir} onChange={e => setRemoteWorkDir(e.target.value)} disabled={creatingTask} placeholder="/home/user/project" style={{ width: '100%', boxSizing: 'border-box', fontSize: '0.78rem', color: 'var(--theme-text-primary)', background: 'var(--theme-surface-muted)', border: '1px solid var(--theme-border)', borderRadius: '6px', padding: '6px 8px', outline: 'none' }} />
+                                    <label htmlFor="task-remote-workdir" className="stsm-label">{textForLang(lang, 'Remote work directory', '远程工作目录', '遠端工作目錄')}</label>
+                                    <input id="task-remote-workdir" value={remoteWorkDir} onChange={e => setRemoteWorkDir(e.target.value)} disabled={creatingTask} placeholder="/home/user/project" className="stsm-remote-input" />
                                 </div>
-                                <div style={{ fontSize: '0.66rem', color: 'var(--theme-text-muted)', lineHeight: 1.4 }}>
+                                <div className="stsm-hint">
                                     {textForLang(lang, 'Password is remembered only on this device for reconnect; it is never saved to the task or uploaded. Source preview opens on the right like local coding.', '密码仅保存在本机用于断线重连，不会写入任务或上传。执行时右侧会像本地编程一样显示源码预览。', '密碼僅儲存在本機用於斷線重連，不會寫入任務或上傳。執行時右側會像本機程式開發一樣顯示原始碼預覽。')}
                                 </div>
                             </div>
                         )}
                     </div>
                     {createError && (
-                        <div role="alert" data-testid="create-task-error" style={{ marginTop: '8px', padding: '7px 10px', borderRadius: '6px', border: '1px solid color-mix(in srgb, var(--theme-danger, #ef4444) 35%, var(--theme-border))', background: 'color-mix(in srgb, var(--theme-danger, #ef4444) 10%, transparent)', color: 'var(--theme-danger, #ef4444)', fontSize: '0.72rem', lineHeight: 1.4 }}>
+                        <div role="alert" data-testid="create-task-error" className="stsm-alert stsm-alert--error stsm-alert--spaced">
                             {createError}
                         </div>
                     )}
-                    <div className="modal-footer" style={{ justifyContent: 'flex-end', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
-                        <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
-                            <button type="button" className="btn-secondary" style={{ fontSize: '0.78rem', padding: '4px 14px' }} onClick={closeCreateDialog} disabled={creatingTask}>
+                    <div className="modal-footer stsm-footer">
+                        <div className="stsm-footer-actions">
+                            <button type="button" className="btn-secondary stsm-footer-btn" onClick={closeCreateDialog} disabled={creatingTask}>
                                 {textForLang(lang, 'Cancel', '取消', '取消')}
                             </button>
                             {cloudCreateSelected && boundCloudWorkspaceIds.has(selectedCloudWorkspaceId.trim()) ? (
                                 <button
                                     type="button"
-                                    className="btn-secondary"
+                                    className="btn-secondary stsm-footer-btn"
                                     data-testid="task-cloud-open-existing"
-                                    style={{ fontSize: '0.78rem', padding: '4px 14px' }}
                                     disabled={creatingTask || cloudWorkspaceBusy}
                                     onClick={() => { void submitCreateTask({ resumeExisting: true }); }}
                                 >
@@ -3971,8 +4055,7 @@ export const SidebarTaskManagement = ({
                             ) : null}
                             <button
                                 type="submit"
-                                className="btn-primary"
-                                style={{ fontSize: '0.78rem', padding: '4px 14px' }}
+                                className="btn-primary stsm-footer-btn"
                                 disabled={
                                     creatingTask
                                     || cloudWorkspaceBusy
@@ -3991,7 +4074,7 @@ export const SidebarTaskManagement = ({
         )}
 
         {taskContextMenu && (<>
-            <div style={{ position: 'fixed', inset: 0, zIndex: 9998 }} onClick={() => setTaskContextMenu(null)} />
+            <div className="stsm-menu-scrim" onClick={() => setTaskContextMenu(null)} />
             <div data-testid="task-context-menu" style={{ position: 'fixed', ...contextMenuPosition(taskContextMenu.x, taskContextMenu.y), zIndex: 9999, background: 'var(--theme-page-bg)', border: '1px solid var(--theme-border)', borderRadius: '6px', boxShadow: '0 4px 12px rgba(0,0,0,0.18)', padding: '4px 0', minWidth: '168px' }}>
                 {buildTaskContextMenuItems({
                     lang,
@@ -4036,7 +4119,7 @@ export const SidebarTaskManagement = ({
                         }}
                         onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
                     >
-                        <span style={{ width: 28, flexShrink: 0, opacity: 0.75, fontSize: '0.68rem' }}>{item.icon}</span>
+                        <span className="stsm-menu-icon">{item.icon}</span>
                         <span>{item.label}</span>
                     </div>
                 ))}
@@ -4055,71 +4138,69 @@ export const SidebarTaskManagement = ({
                 onClick={e => { if (e.target === e.currentTarget && editBackdropMouseDownRef.current) closeEditRemoteDialog(); editBackdropMouseDownRef.current = false; }}
             >
                 <form
-                    className="modal-content"
+                    className="modal-content stsm-dialog stsm-dialog--edit"
                     role="dialog"
                     aria-modal="true"
                     aria-labelledby="edit-remote-ssh-title"
                     onClick={e => e.stopPropagation()}
                     onKeyDown={e => { if (e.key === 'Escape') closeEditRemoteDialog(); }}
                     onSubmit={e => { e.preventDefault(); void submitEditRemote(); }}
-                    style={{ width: '440px', maxWidth: '92vw', textAlign: 'left' }}
                 >
                     <div className="modal-header">
-                        <h3 id="edit-remote-ssh-title" style={{ fontSize: '0.88rem', margin: 0 }}>
+                        <h3 id="edit-remote-ssh-title" className="stsm-dialog-title">
                             {textForLang(lang, 'Edit remote SSH', '编辑远程 SSH', '編輯遠端 SSH')}
                         </h3>
                         <button type="button" className="btn-close" onClick={closeEditRemoteDialog} disabled={editSaving || editTesting}>×</button>
                     </div>
-                    <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                        <div style={{ fontSize: '0.72rem', color: 'var(--theme-text-muted)', lineHeight: 1.4 }}>
+                    <div className="modal-body stsm-form-body stsm-form-body--edit">
+                        <div className="stsm-dialog-subtext">
                             {editRemoteName || editRemotePath}
                         </div>
-                        <div data-testid="edit-remote-coding-fields" style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '8px 10px', borderRadius: '8px', border: '1px solid color-mix(in srgb, var(--theme-primary) 28%, var(--theme-border))', background: 'color-mix(in srgb, var(--theme-primary) 7%, transparent)' }}>
-                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 88px', gap: '8px' }}>
+                        <div data-testid="edit-remote-coding-fields" className="stsm-field-box stsm-field-box--remote">
+                            <div className="stsm-grid-host">
                                 <div>
-                                    <label htmlFor="edit-remote-host" style={{ display: 'block', fontSize: '0.68rem', color: 'var(--theme-text-secondary)', marginBottom: 4 }}>{textForLang(lang, 'Host / domain', '主机 IP / 域名', '主機 IP / 網域')}</label>
-                                    <input id="edit-remote-host" data-testid="edit-remote-host" value={editHost} onChange={e => setEditHost(e.target.value)} disabled={editSaving || editTesting} placeholder="192.168.1.10" autoComplete="off" autoFocus style={{ width: '100%', boxSizing: 'border-box', fontSize: '0.78rem', color: 'var(--theme-text-primary)', background: 'var(--theme-surface-muted)', border: '1px solid var(--theme-border)', borderRadius: '6px', padding: '6px 8px', outline: 'none' }} />
+                                    <label htmlFor="edit-remote-host" className="stsm-label">{textForLang(lang, 'Host / domain', '主机 IP / 域名', '主機 IP / 網域')}</label>
+                                    <input id="edit-remote-host" data-testid="edit-remote-host" value={editHost} onChange={e => setEditHost(e.target.value)} disabled={editSaving || editTesting} placeholder="192.168.1.10" autoComplete="off" autoFocus className="stsm-remote-input" />
                                 </div>
                                 <div>
-                                    <label htmlFor="edit-remote-port" style={{ display: 'block', fontSize: '0.68rem', color: 'var(--theme-text-secondary)', marginBottom: 4 }}>{textForLang(lang, 'Port', '端口', '連接埠')}</label>
-                                    <input id="edit-remote-port" data-testid="edit-remote-port" value={editPort} onChange={e => setEditPort(e.target.value)} disabled={editSaving || editTesting} inputMode="numeric" placeholder="22" style={{ width: '100%', boxSizing: 'border-box', fontSize: '0.78rem', color: 'var(--theme-text-primary)', background: 'var(--theme-surface-muted)', border: '1px solid var(--theme-border)', borderRadius: '6px', padding: '6px 8px', outline: 'none' }} />
+                                    <label htmlFor="edit-remote-port" className="stsm-label">{textForLang(lang, 'Port', '端口', '連接埠')}</label>
+                                    <input id="edit-remote-port" data-testid="edit-remote-port" value={editPort} onChange={e => setEditPort(e.target.value)} disabled={editSaving || editTesting} inputMode="numeric" placeholder="22" className="stsm-remote-input" />
                                 </div>
                             </div>
-                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                            <div className="stsm-grid-2">
                                 <div>
-                                    <label htmlFor="edit-remote-user" style={{ display: 'block', fontSize: '0.68rem', color: 'var(--theme-text-secondary)', marginBottom: 4 }}>{textForLang(lang, 'Username', '用户名', '使用者名稱')}</label>
-                                    <input id="edit-remote-user" data-testid="edit-remote-user" value={editUser} onChange={e => setEditUser(e.target.value)} disabled={editSaving || editTesting} placeholder="root" autoComplete="username" style={{ width: '100%', boxSizing: 'border-box', fontSize: '0.78rem', color: 'var(--theme-text-primary)', background: 'var(--theme-surface-muted)', border: '1px solid var(--theme-border)', borderRadius: '6px', padding: '6px 8px', outline: 'none' }} />
+                                    <label htmlFor="edit-remote-user" className="stsm-label">{textForLang(lang, 'Username', '用户名', '使用者名稱')}</label>
+                                    <input id="edit-remote-user" data-testid="edit-remote-user" value={editUser} onChange={e => setEditUser(e.target.value)} disabled={editSaving || editTesting} placeholder="root" autoComplete="username" className="stsm-remote-input" />
                                 </div>
                                 <div>
-                                    <label htmlFor="edit-remote-password" style={{ display: 'block', fontSize: '0.68rem', color: 'var(--theme-text-secondary)', marginBottom: 4 }}>{textForLang(lang, 'Password', '密码', '密碼')}</label>
-                                    <input id="edit-remote-password" data-testid="edit-remote-password" type="password" value={editPassword} onChange={e => setEditPassword(e.target.value)} disabled={editSaving || editTesting} autoComplete="off" placeholder={textForLang(lang, 'Not saved', '不落盘', '不落盤')} style={{ width: '100%', boxSizing: 'border-box', fontSize: '0.78rem', color: 'var(--theme-text-primary)', background: 'var(--theme-surface-muted)', border: '1px solid var(--theme-border)', borderRadius: '6px', padding: '6px 8px', outline: 'none' }} />
+                                    <label htmlFor="edit-remote-password" className="stsm-label">{textForLang(lang, 'Password', '密码', '密碼')}</label>
+                                    <input id="edit-remote-password" data-testid="edit-remote-password" type="password" value={editPassword} onChange={e => setEditPassword(e.target.value)} disabled={editSaving || editTesting} autoComplete="off" placeholder={textForLang(lang, 'Not saved', '不落盘', '不落盤')} className="stsm-remote-input" />
                                 </div>
                             </div>
                             <div>
-                                <label htmlFor="edit-remote-workdir" style={{ display: 'block', fontSize: '0.68rem', color: 'var(--theme-text-secondary)', marginBottom: 4 }}>{textForLang(lang, 'Remote work directory', '远程工作目录', '遠端工作目錄')}</label>
-                                <input id="edit-remote-workdir" data-testid="edit-remote-workdir" value={editWorkDir} onChange={e => setEditWorkDir(e.target.value)} disabled={editSaving || editTesting} placeholder="/home/user/project" style={{ width: '100%', boxSizing: 'border-box', fontSize: '0.78rem', color: 'var(--theme-text-primary)', background: 'var(--theme-surface-muted)', border: '1px solid var(--theme-border)', borderRadius: '6px', padding: '6px 8px', outline: 'none' }} />
+                                <label htmlFor="edit-remote-workdir" className="stsm-label">{textForLang(lang, 'Remote work directory', '远程工作目录', '遠端工作目錄')}</label>
+                                <input id="edit-remote-workdir" data-testid="edit-remote-workdir" value={editWorkDir} onChange={e => setEditWorkDir(e.target.value)} disabled={editSaving || editTesting} placeholder="/home/user/project" className="stsm-remote-input" />
                             </div>
-                            <div style={{ fontSize: '0.66rem', color: 'var(--theme-text-muted)', lineHeight: 1.4 }}>
+                            <div className="stsm-hint">
                                 {textForLang(lang, 'Host / user / port / workdir are saved on the task. Password is only used for Test / reconnect and is never stored.', '主机、用户、端口、工作目录会保存到任务；密码仅用于测试/重连，永不落盘。', '主機、使用者、連接埠、工作目錄會儲存到任務；密碼僅用於測試/重連，永不落盤。')}
                             </div>
                         </div>
                         {editError && (
-                            <div role="alert" data-testid="edit-remote-error" style={{ padding: '7px 10px', borderRadius: '6px', border: '1px solid color-mix(in srgb, var(--theme-danger, #ef4444) 35%, var(--theme-border))', background: 'color-mix(in srgb, var(--theme-danger, #ef4444) 10%, transparent)', color: 'var(--theme-danger, #ef4444)', fontSize: '0.72rem', lineHeight: 1.4 }}>
+                            <div role="alert" data-testid="edit-remote-error" className="stsm-alert stsm-alert--error">
                                 {editError}
                             </div>
                         )}
                         {editInfo && !editError && (
-                            <div role="status" data-testid="edit-remote-info" style={{ padding: '7px 10px', borderRadius: '6px', border: '1px solid color-mix(in srgb, var(--theme-success, #16a34a) 35%, var(--theme-border))', background: 'color-mix(in srgb, var(--theme-success, #16a34a) 10%, transparent)', color: 'color-mix(in srgb, var(--theme-success, #16a34a) 82%, var(--theme-text-primary))', fontSize: '0.72rem', lineHeight: 1.4 }}>
+                            <div role="status" data-testid="edit-remote-info" className="stsm-alert stsm-alert--success">
                                 {editInfo}
                             </div>
                         )}
                     </div>
-                    <div className="modal-footer" style={{ justifyContent: 'flex-end', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                    <div className="modal-footer stsm-footer">
                         <button
                             type="button"
                             data-testid="edit-remote-test-ssh"
-                            className="btn-secondary"
-                            style={{ fontSize: '0.78rem', padding: '4px 14px' }}
+                            className="btn-secondary stsm-footer-btn"
                             disabled={editSaving || editTesting || !editHost.trim() || !editUser.trim() || !editPassword || !editWorkDir.trim()}
                             onClick={() => { void testEditRemoteSSH(); }}
                         >
@@ -4127,15 +4208,14 @@ export const SidebarTaskManagement = ({
                                 ? textForLang(lang, 'Testing…', '测试中…', '測試中…')
                                 : textForLang(lang, 'Test SSH', '测试连接', '測試連線')}
                         </button>
-                        <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
-                            <button type="button" className="btn-secondary" style={{ fontSize: '0.78rem', padding: '4px 14px' }} onClick={closeEditRemoteDialog} disabled={editSaving || editTesting}>
+                        <div className="stsm-footer-actions">
+                            <button type="button" className="btn-secondary stsm-footer-btn" onClick={closeEditRemoteDialog} disabled={editSaving || editTesting}>
                                 {textForLang(lang, 'Close', '关闭', '關閉')}
                             </button>
                             <button
                                 type="submit"
                                 data-testid="edit-remote-save"
-                                className="btn-primary"
-                                style={{ fontSize: '0.78rem', padding: '4px 14px' }}
+                                className="btn-primary stsm-footer-btn"
                                 disabled={editSaving || editTesting || !editHost.trim() || !editUser.trim() || !editWorkDir.trim()}
                             >
                                 {editSaving

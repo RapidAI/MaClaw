@@ -511,13 +511,19 @@ func (a *App) stampCloudWorkspaceDeleted(out CloudWorkspaceDeletedWorkspace) Clo
 // Does not bump the restore generation: that would abort in-flight RestoreCloudWorkspaceTasks
 // for other workspaces. The local dismiss tombstone already skips the deleted id.
 func (a *App) deleteCloudWorkspaceOnHub(id string) (CloudWorkspaceDeletedWorkspace, error) {
+	return a.deleteCloudWorkspaceOnHubKeyed(id, nil)
+}
+
+// deleteCloudWorkspaceOnHubKeyed soft-deletes the Hub row. extra salts the
+// idempotency key so a retry after FENCED cannot replay the conflict response.
+func (a *App) deleteCloudWorkspaceOnHubKeyed(id string, extra []byte) (CloudWorkspaceDeletedWorkspace, error) {
 	id = strings.TrimSpace(id)
 	if !validCloudWorkspaceCacheID(id) {
 		return CloudWorkspaceDeletedWorkspace{}, fmt.Errorf("workspace id is required")
 	}
 	ctx, cancel := a.cloudWorkspaceRequestContext()
 	defer cancel()
-	data, status, err := a.cloudWorkspaceHubDo(ctx, http.MethodDelete, cloudWorkspaceItemPath(id), cloudWorkspaceHTTPOptions{accept: "application/json", headers: map[string]string{"Idempotency-Key": cloudWorkspaceIdempotencyKey("workspace-delete", []byte(id))}})
+	data, status, err := a.cloudWorkspaceHubDo(ctx, http.MethodDelete, cloudWorkspaceItemPath(id), cloudWorkspaceHTTPOptions{accept: "application/json", headers: map[string]string{"Idempotency-Key": cloudWorkspaceIdempotencyKey("workspace-delete", append([]byte(id), extra...))}})
 	if err != nil {
 		return CloudWorkspaceDeletedWorkspace{}, err
 	}
@@ -534,6 +540,18 @@ func (a *App) deleteCloudWorkspaceOnHub(id string) (CloudWorkspaceDeletedWorkspa
 	}
 	resetCloudWorkspaceEntitlementCache()
 	return a.stampCloudWorkspaceDeleted(row.toDeleted()), nil
+}
+
+// takeoverCloudWorkspaceLeaseForDelete steals a same-machine writer lease after
+// the user confirmed deletion. A leftover local mount is detached first so the
+// acquire and the following delete do not present the fenced epoch.
+func (a *App) takeoverCloudWorkspaceLeaseForDelete(workspaceID string) (*cloudWorkspaceAcquireOutcome, error) {
+	if mount := takeCloudWorkspaceMount(workspaceID); mount != nil {
+		stopCloudWorkspaceMount(mount)
+	}
+	ctx, cancel := a.cloudWorkspaceRequestContext()
+	defer cancel()
+	return a.acquireCloudWorkspaceLease(ctx, workspaceID, true)
 }
 
 // DeleteCloudWorkspace DELETE /api/v1/cloud-workspaces/{id} (7-day restore window).
@@ -564,6 +582,25 @@ func (a *App) DeleteCloudWorkspace(id string) (CloudWorkspaceDeletedWorkspace, e
 		}
 	}
 	out, err := a.deleteCloudWorkspaceOnHub(id)
+	if errors.Is(err, errCloudWorkspaceFenced) {
+		// FENCED here means another session on this same machine holds the
+		// writer. The user already confirmed deletion, so take that lease and
+		// retry once. A different device returns CLOUD_WORKSPACE_IN_USE and is
+		// left untouched.
+		lease, takeErr := a.takeoverCloudWorkspaceLeaseForDelete(id)
+		if takeErr != nil {
+			a.recordCloudWorkspaceAudit(cloudWorkspaceAuditEvent{WorkspaceID: id, Operation: "remote_delete", Outcome: "failed", Detail: takeErr.Error()})
+			return CloudWorkspaceDeletedWorkspace{}, takeErr
+		}
+		out, err = a.deleteCloudWorkspaceOnHubKeyed(id, cloudWorkspaceUniqueKeyMaterial([]byte(id)))
+		if err != nil && lease != nil && strings.TrimSpace(lease.LeaseID) != "" {
+			releaseCtx, releaseCancel := a.cloudWorkspaceRequestContext()
+			if relErr := a.deleteCloudWorkspaceLease(releaseCtx, id, lease.LeaseID); relErr != nil {
+				log.Printf("[cloud_workspace] release takeover lease after failed delete workspace=%s err=%v", id, relErr)
+			}
+			releaseCancel()
+		}
+	}
 	if err != nil {
 		a.recordCloudWorkspaceAudit(cloudWorkspaceAuditEvent{WorkspaceID: id, Operation: "remote_delete", Outcome: "failed", Detail: err.Error()})
 		return CloudWorkspaceDeletedWorkspace{}, err
@@ -903,6 +940,10 @@ func (a *App) sanitizeCloudWorkspaceTaskIdentity(result ProjectSearchResult) Pro
 // CreateTaskWithCloudWorkspace prepares the cache mount then creates a task tagged cloud_workspace:{id}.
 // workingDir is ignored: PrepareCloudWorkspace returns LocalPath as the working directory.
 func (a *App) CreateTaskWithCloudWorkspace(name, workingDir, mode, workspaceID string) (ProjectSearchResult, error) {
+	return a.createTaskWithCloudWorkspace(name, workingDir, mode, workspaceID, false)
+}
+
+func (a *App) createTaskWithCloudWorkspace(name, workingDir, mode, workspaceID string, keepExplicit bool) (ProjectSearchResult, error) {
 	workspaceID = strings.TrimSpace(workspaceID)
 	if !validCloudWorkspaceCacheID(workspaceID) {
 		return ProjectSearchResult{}, fmt.Errorf("workspace id is required")
@@ -922,7 +963,7 @@ func (a *App) CreateTaskWithCloudWorkspace(name, workingDir, mode, workspaceID s
 		return bound, nil
 	}
 	name, mode = a.cloudWorkspaceTaskIdentity(workspaceID, name, mode)
-	taskName := normalizeRecentTaskName(name)
+	taskName := taskNameForCreate(name, keepExplicit)
 	if taskName == "" {
 		return ProjectSearchResult{}, fmt.Errorf("task name is required")
 	}

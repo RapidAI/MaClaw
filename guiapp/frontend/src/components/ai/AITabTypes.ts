@@ -111,10 +111,9 @@ export interface AITabState {
         text: string;
     };
     /**
-     * New-task wizard marker (local tab only): set by the task-pane "新建任务"
-     * button; the first send from this tab always creates a task via
-     * CreateTaskUnified (even with an all-default draft). Cleared after the
-     * task is created. In-memory only — never persisted.
+     * New-task page marker (local tab only). The startup guide and the
+     * task-pane "新建任务" button are this same page: the first send creates
+     * a task via CreateTaskUnified. In-memory only — never persisted.
      */
     newTaskWizard?: boolean;
 }
@@ -130,7 +129,7 @@ export interface AIAssistantPanelTabState {
 /** Default max digital employee tabs */
 export const DEFAULT_MAX_VE_TABS = 8;
 /**
- * Fixed local AI assistant tab (main session surface).
+ * Fixed local page for creating a task. It is not itself a task.
  * `title` is a persistence/default fallback only — UI must render via
  * `localAssistantTabTitle(lang)` / `getAITabDisplayTitle` so English never sticks on Chinese
  * unless the user explicitly supplied `customTitle`.
@@ -138,7 +137,7 @@ export const DEFAULT_MAX_VE_TABS = 8;
 export const LOCAL_TAB: AITab = {
     id: "local",
     type: "local",
-    title: "默认任务",
+    title: "新建任务",
     executionProfile: "assistant",
     closable: false,
 };

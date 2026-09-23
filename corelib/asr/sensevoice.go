@@ -289,7 +289,9 @@ func (m *SenseVoiceModel) loadWeights(mf *gguf.MmapFile) error {
 				if cols%32 != 0 {
 					return linearWeight{f32: d, rows: rows}
 				}
-				return linearWeight{q8: tensor.QuantizeToQ8(d, rows, cols), rows: rows}
+				q := tensor.QuantizeToQ8(d, rows, cols)
+				tensor.PrewarmQ8Stripped(q) // first frame skips the VNNI sidecar copy
+				return linearWeight{q8: q, rows: rows}
 			}
 			return linearWeight{}
 		}
@@ -301,6 +303,7 @@ func (m *SenseVoiceModel) loadWeights(mf *gguf.MmapFile) error {
 		if ti.Type == gguf.TypeQ8_0 {
 			q := &tensor.Q8Tensor{Data: raw, Rows: rows, Cols: cols}
 			q.PrepareScales() // f16→f32 once at load; hot dequant skips conversion
+			tensor.PrewarmQ8Stripped(q)
 			return linearWeight{q8: q, rows: rows}
 		}
 		d, _ := getF32(name)
@@ -312,7 +315,9 @@ func (m *SenseVoiceModel) loadWeights(mf *gguf.MmapFile) error {
 			if cols%32 != 0 {
 				return linearWeight{f32: d, rows: rows}
 			}
-			return linearWeight{q8: tensor.QuantizeToQ8(d, rows, cols), rows: rows}
+			q := tensor.QuantizeToQ8(d, rows, cols)
+			tensor.PrewarmQ8Stripped(q)
+			return linearWeight{q8: q, rows: rows}
 		}
 		return linearWeight{}
 	}
@@ -347,7 +352,8 @@ func (m *SenseVoiceModel) loadWeights(mf *gguf.MmapFile) error {
 		l.ff2W = getLinear(prefix+".feed_forward.w_2.weight", hidden, ffDim)
 		// FFN down is the only Q4 experimental target: [512, 2048] receives
 		// nonnegative ReLU activations and has a dedicated 8×2 VNNI panel path.
-		if l.ff2W.q8 != nil && l.ff2W.q8.Rows == hidden && l.ff2W.q8.Cols == ffDim && ffDim == 2048 {
+		// The Q4 conversion is pure load-time cost while the panel path is off.
+		if enableSenseVoiceQ4FFN && l.ff2W.q8 != nil && l.ff2W.q8.Rows == hidden && l.ff2W.q8.Cols == ffDim && ffDim == 2048 {
 			l.ff2W.q4 = tensor.QuantizeQ8ToQ4(l.ff2W.q8)
 		}
 		l.ff2B = linearWeight{f32: tryF32(prefix + ".feed_forward.w_2.bias"), rows: 1}
@@ -701,7 +707,7 @@ func (m *SenseVoiceModel) svDetokenize(tokens []int) string {
 			hi := hexVal(tok[3])
 			lo := hexVal(tok[4])
 			if hi >= 0 && lo >= 0 {
-				w.WriteByte(byte(hi<<4 | lo))
+				w.writeByte(byte(hi<<4 | lo))
 				continue
 			}
 		}
@@ -738,16 +744,18 @@ type svDetokenizeWriter struct {
 func (w *svDetokenizeWriter) WriteSentencePieceToken(tok string) {
 	for i := 0; i < len(tok); {
 		if i+2 < len(tok) && tok[i] == 0xe2 && tok[i+1] == 0x96 && tok[i+2] == 0x81 {
-			w.WriteByte(' ')
+			w.writeByte(' ')
 			i += 3
 			continue
 		}
-		w.WriteByte(tok[i])
+		w.writeByte(tok[i])
 		i++
 	}
 }
 
-func (w *svDetokenizeWriter) WriteByte(b byte) {
+// writeByte is unexported on purpose: an exported WriteByte makes go vet's
+// stdmethods check demand the io.ByteWriter signature (…, error).
+func (w *svDetokenizeWriter) writeByte(b byte) {
 	w.utf8Buf[w.utf8N] = b
 	w.utf8N++
 	for w.utf8N > 0 {

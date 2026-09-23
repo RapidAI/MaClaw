@@ -132,7 +132,7 @@ function AttachmentVisual({ filePath, fileName, isImage, lang, theme }: {
         return <AttachmentImageThumbnail src={preview} filePath={filePath} fileName={fileName || "attached image"} lang={lang} theme={theme} title={filePath} frameStyle={{ width: "30px", height: "30px", borderRadius: "4px", flexShrink: 0, border: "none", background: "transparent" }} />;
     }
     if (isImage && !previewFailed) {
-        return <span aria-label={fileName} style={{ width: "30px", height: "30px", flexShrink: 0 }} />;
+        return <span aria-label={fileName} className="aas-thumb-slot" />;
     }
     return <AttachmentTypeBadge label={isImage ? "IMG" : attachmentKindLabel(fileName, "")} theme={theme} />;
 }

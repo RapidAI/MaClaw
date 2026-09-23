@@ -105,6 +105,7 @@ type CompactElementRef struct {
 	Enabled bool   `json:"enabled"`
 	Checked *bool  `json:"checked,omitempty"`
 	FrameID string `json:"frame_id,omitempty"`
+	Value   string `json:"value,omitempty"`
 }
 
 // BrowserPageFlags captures observe-time page conditions that should stop
@@ -145,6 +146,7 @@ type BrowserSnapshot struct {
 	PageFlags       BrowserPageFlags       `json:"page_flags,omitempty"`
 	RefsTruncated   bool                   `json:"refs_truncated,omitempty"`
 	VisionExcerpt   string                 `json:"vision_excerpt,omitempty"`
+	Probe           bool                   `json:"probe,omitempty"`
 }
 
 // BrowserObservation is the structured result of browser_observe.
@@ -167,6 +169,11 @@ type BrowserActionResult struct {
 	AskUser           *agent.AskUserRequest  `json:"-"`
 	GoalClass         bool                   `json:"-"`
 	submitRememberKey string
+	// batchStop tells a fast task_run to return this step's observation and
+	// not run later steps. Set only while a fast batch is active.
+	batchStop       bool
+	batchStopReason string
+	batchObserveErr string
 }
 
 // BrowserTraceEvent is a browser-specific trace projection.
@@ -253,4 +260,11 @@ type BrowserAgentSession struct {
 	lastExpect      ExpectSpec
 	lastMissingKey  string
 	missingExpectN  int
+
+	// fastBatch skips per-step settle and full observe for task_run.
+	fastBatch        bool
+	fastBatchURL     string
+	fastBatchTitle   string
+	fastBatchMark    string
+	fastBatchLoading bool
 }

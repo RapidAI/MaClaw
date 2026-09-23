@@ -632,7 +632,7 @@ export function WelcomePromptParamDialog({
                     borderBottom: `1px solid ${t.divider || t.fieldBorder}`,
                     flexShrink: 0,
                 }}>
-                    <div style={{ minWidth: 0 }}>
+                    <div className="wppd-head-title">
                         <h2
                             id="welcome-prompt-param-title"
                             style={{
@@ -684,21 +684,9 @@ export function WelcomePromptParamDialog({
 
                 <form
                     onSubmit={handleFormSubmit}
-                    style={{
-                        display: "flex",
-                        flexDirection: "column",
-                        minHeight: 0,
-                        flex: 1,
-                    }}
+                    className="wppd-form"
                 >
-                    <div style={{
-                        flex: 1,
-                        overflowY: "auto",
-                        padding: "12px 16px 8px",
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: "12px",
-                    }}>
+                    <div className="wppd-body">
                         {fields.length === 0 ? (
                             <p style={{ margin: 0, fontSize: 13, color: t.textMuted }}>
                                 {isZh ? "该任务无需额外参数，可直接确认。" : "No extra parameters — confirm to continue."}
@@ -734,12 +722,7 @@ export function WelcomePromptParamDialog({
                                 <label
                                     key={field.id}
                                     htmlFor={controlId}
-                                    style={{
-                                        display: "flex",
-                                        flexDirection: "column",
-                                        gap: 5,
-                                        margin: 0,
-                                    }}
+                                    className="wppd-field"
                                 >
                                     <span style={{
                                         fontSize: 12,
@@ -775,7 +758,7 @@ export function WelcomePromptParamDialog({
                                         <div
                                             role="group"
                                             aria-label={isZh ? `${field.label} 快捷选项` : `${field.label} suggestions`}
-                                            style={{ display: "flex", flexWrap: "wrap", gap: 6 }}
+                                            className="wppd-chips"
                                         >
                                             {field.chips.map((chip) => {
                                                 const active = (values[field.id] || "").trim() === chip;
@@ -839,7 +822,7 @@ export function WelcomePromptParamDialog({
                                 </div>
                                 {isRemote ? (
                                     <>
-                                        <label style={{ display: "flex", flexDirection: "column", gap: 4, margin: 0 }}>
+                                        <label className="wppd-subfield">
                                             <span style={{ fontSize: 11, color: t.textMuted }}>{isZh ? "主机" : "Host"}</span>
                                             <input
                                                 data-testid="welcome-remote-host"
@@ -856,8 +839,8 @@ export function WelcomePromptParamDialog({
                                                 style={fieldInputStyle(false)}
                                             />
                                         </label>
-                                        <div style={{ display: "grid", gridTemplateColumns: "88px 1fr", gap: 8 }}>
-                                            <label style={{ display: "flex", flexDirection: "column", gap: 4, margin: 0 }}>
+                                        <div className="wppd-port-grid">
+                                            <label className="wppd-subfield">
                                                 <span style={{ fontSize: 11, color: t.textMuted }}>{isZh ? "端口" : "Port"}</span>
                                                 <input
                                                     data-testid="welcome-remote-port"
@@ -868,7 +851,7 @@ export function WelcomePromptParamDialog({
                                                     style={fieldInputStyle(false)}
                                                 />
                                             </label>
-                                            <label style={{ display: "flex", flexDirection: "column", gap: 4, margin: 0 }}>
+                                            <label className="wppd-subfield">
                                                 <span style={{ fontSize: 11, color: t.textMuted }}>{isZh ? "用户名" : "Username"}</span>
                                                 <input
                                                     data-testid="welcome-remote-user"
@@ -880,7 +863,7 @@ export function WelcomePromptParamDialog({
                                                 />
                                             </label>
                                         </div>
-                                        <label style={{ display: "flex", flexDirection: "column", gap: 4, margin: 0 }}>
+                                        <label className="wppd-subfield">
                                             <span style={{ fontSize: 11, color: t.textMuted }}>{isZh ? "密码" : "Password"}</span>
                                             <input
                                                 data-testid="welcome-remote-password"
@@ -899,7 +882,7 @@ export function WelcomePromptParamDialog({
                                                 style={fieldInputStyle(false)}
                                             />
                                         </label>
-                                        <label style={{ display: "flex", flexDirection: "column", gap: 4, margin: 0 }}>
+                                        <label className="wppd-subfield">
                                             <span style={{ fontSize: 11, color: t.textMuted }}>{isZh ? "远程工作目录" : "Remote work directory"}</span>
                                             <input
                                                 data-testid="welcome-remote-workdir"
@@ -912,7 +895,7 @@ export function WelcomePromptParamDialog({
                                         </label>
                                     </>
                                 ) : (
-                                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                                    <div className="wppd-local-row">
                                         <input
                                             data-testid="welcome-local-workdir"
                                             value={workingDir}
@@ -1027,13 +1010,7 @@ export function WelcomePromptParamDialog({
                         borderTop: `1px solid ${t.divider || t.fieldBorder}`,
                         flexShrink: 0,
                     }}>
-                        <div style={{
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "space-between",
-                            gap: 8,
-                            flexWrap: "wrap",
-                        }}>
+                        <div className="wppd-foot-row">
                             <span style={{ fontSize: 11, color: t.textMuted }}>
                                 {fields.length > 0
                                     ? (isZh ? `已填 ${filledCount}/${fields.length}` : `${filledCount}/${fields.length} filled`)
@@ -1050,12 +1027,7 @@ export function WelcomePromptParamDialog({
                                 </span>
                             )}
                         </div>
-                        <div style={{
-                            display: "flex",
-                            flexWrap: "wrap",
-                            justifyContent: "flex-end",
-                            gap: 8,
-                        }}>
+                        <div className="wppd-footer">
                             {onSaveTemplate && (
                                 <button
                                     type="button"

@@ -521,7 +521,7 @@ export function RemoteSessionList(props: Props) {
                                             )}
                                             {isPaused && (
                                                 <button
-                                                    style={{ ...iconBtnStyle, color: "#16a34a", fontWeight: 600, fontSize: "0.72rem" }}
+                                                    style={{ ...iconBtnStyle, color: "var(--theme-success)", fontWeight: 600, fontSize: "0.72rem" }}
                                                     title={localizeText("Extend by +20 rounds", "续命 +20 轮", "續命 +20 輪")}
                                                     onClick={() => handleContinueLoop(loop.id)}
                                                 >

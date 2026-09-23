@@ -9,11 +9,17 @@ import (
 )
 
 const browserObserveScript = `(function () {
+  const __maclawProbe = false;
   function shortText(input, limit) {
     const s = String(input || '').replace(/\s+/g, ' ').trim();
     return s.length > limit ? s.slice(0, limit) : s;
   }
   function pageText() {
+    if (__maclawProbe) {
+      try {
+        return String((document.body && (document.body.innerText || document.body.textContent)) || '').replace(/\s+/g, ' ').trim().slice(0, 2000);
+      } catch (e) { return ''; }
+    }
     const parts = [];
     function collect(root) {
       if (!root) return;
@@ -299,6 +305,10 @@ const browserObserveScript = `(function () {
   });
 })()`
 
+// browserProbeScript is the observe script with page-text walking reduced to a
+// short main-document sample. Interactive refs and page flags still come back.
+var browserProbeScript = strings.Replace(browserObserveScript, "const __maclawProbe = false;", "const __maclawProbe = true;", 1)
+
 var (
 	observeOCRMu sync.Mutex
 	observeOCR   OCRProvider
@@ -335,8 +345,24 @@ func (s *BrowserAgentSession) Observe(_ bool) (*BrowserObservation, error) {
 	return s.ObserveFiltered("")
 }
 
+// Probe captures interactive refs for planning a task_run, including child
+// frames. It skips vision, the accessibility tree, and the page-text excerpt.
+func (s *BrowserAgentSession) Probe(query string) (*BrowserObservation, error) {
+	return s.observeFiltered(query, true, false)
+}
+
+// finishFastBatch is the snapshot returned after a same-page task_run.
+// It uses the probe script and keeps the short main-document text sample.
+func (s *BrowserAgentSession) finishFastBatch() (*BrowserObservation, error) {
+	return s.observeFiltered("", true, true)
+}
+
 // ObserveFiltered captures a snapshot, optionally keeping refs whose name/text/role match query.
 func (s *BrowserAgentSession) ObserveFiltered(query string) (*BrowserObservation, error) {
+	return s.observeFiltered(query, false, false)
+}
+
+func (s *BrowserAgentSession) observeFiltered(query string, probe, keepProbeText bool) (*BrowserObservation, error) {
 	if s == nil {
 		return nil, fmt.Errorf("browser session is nil")
 	}
@@ -350,7 +376,11 @@ func (s *BrowserAgentSession) ObserveFiltered(query string) (*BrowserObservation
 		return nil, fmt.Errorf("browser session not connected")
 	}
 
-	result, err := sess.Eval(browserObserveScript)
+	script := browserObserveScript
+	if probe {
+		script = browserProbeScript
+	}
+	result, err := sess.Eval(script)
 	if err != nil {
 		return nil, err
 	}
@@ -359,15 +389,27 @@ func (s *BrowserAgentSession) ObserveFiltered(query string) (*BrowserObservation
 		return nil, fmt.Errorf("parse browser observation: %w", err)
 	}
 
+	if probe && !keepProbeText {
+		payload.PageTextExcerpt = ""
+		payload.PageTextTotal = 0
+		payload.PageTextOffset = 0
+		payload.PageTextHasMore = false
+	}
 	jsFrames := payload.FrameTree
 	cdpFrames := sess.frameTree()
 	if len(cdpFrames) > 0 {
 		remapRefFrameIDs(payload.Refs, cdpFrames, jsFrames)
 		payload.FrameTree = cdpFrames
 	}
-	axRefs := sess.axInteractiveRefs()
-	payload.Refs = mergeAXRefs(payload.Refs, axRefs)
-	crossRefs := sess.observeAttachedFrames(len(payload.Refs) + 1)
+	if !probe {
+		axRefs := sess.axInteractiveRefs()
+		payload.Refs = mergeAXRefs(payload.Refs, axRefs)
+	}
+	frameScript := browserObserveScript
+	if probe {
+		frameScript = browserProbeScript
+	}
+	crossRefs := sess.observeAttachedFramesWith(len(payload.Refs)+1, frameScript)
 	payload.Refs = append(payload.Refs, crossRefs...)
 
 	query = strings.TrimSpace(query)
@@ -394,7 +436,7 @@ func (s *BrowserAgentSession) ObserveFiltered(query string) (*BrowserObservation
 	}
 
 	visionExcerpt := ""
-	if shouldUseVision(payload.PageFlags, payload.Refs) {
+	if !probe && shouldUseVision(payload.PageFlags, payload.Refs) {
 		if excerpt := sess.visionExcerptOnce(); excerpt != "" {
 			visionExcerpt = excerpt
 			payload.PageFlags.VisionUsed = true
@@ -407,8 +449,12 @@ func (s *BrowserAgentSession) ObserveFiltered(query string) (*BrowserObservation
 		return nil, fmt.Errorf("browser session not connected")
 	}
 
-	consoleSummary := strings.Join(s.recentConsole, "\n")
-	networkSummary := strings.Join(s.recentNetwork, "\n")
+	consoleSummary := ""
+	networkSummary := ""
+	if !probe {
+		consoleSummary = strings.Join(s.recentConsole, "\n")
+		networkSummary = strings.Join(s.recentNetwork, "\n")
+	}
 	snapshot := BrowserSnapshot{
 		SnapshotID:      snapshotID,
 		SessionID:       s.ID,
@@ -429,6 +475,7 @@ func (s *BrowserAgentSession) ObserveFiltered(query string) (*BrowserObservation
 		PageFlags:       payload.PageFlags,
 		RefsTruncated:   truncated,
 		VisionExcerpt:   visionExcerpt,
+		Probe:           probe,
 	}
 	s.addSnapshot(snapshot)
 	display := formatObserveDisplay(snapshot)
@@ -452,7 +499,11 @@ func (s *BrowserAgentSession) ObserveFiltered(query string) (*BrowserObservation
 }
 
 func formatObserveDisplay(snapshot BrowserSnapshot) string {
-	display := fmt.Sprintf("observed page %s (%s), interactive elements: %d", firstNonEmpty(snapshot.Title, snapshot.URL), snapshot.URL, len(snapshot.Refs))
+	verb := "observed"
+	if snapshot.Probe {
+		verb = "probed"
+	}
+	display := fmt.Sprintf("%s page %s (%s), interactive elements: %d", verb, firstNonEmpty(snapshot.Title, snapshot.URL), snapshot.URL, len(snapshot.Refs))
 	if snapshot.RefsTruncated {
 		display += fmt.Sprintf(" (showing %d)", compactRefLimit)
 	}
@@ -473,7 +524,7 @@ func formatObserveDisplay(snapshot BrowserSnapshot) string {
 		flags = append(flags, "canvas")
 	}
 	if snapshot.PageFlags.CaptchaWidget {
-		display += "; page flags: " + strings.Join(flags, ",") + " — solve the captcha in the browser, then observe before clicking"
+		display += "; page flags: " + strings.Join(flags, ",") + " — solve the captcha in the browser, then probe before clicking"
 	} else if len(flags) > 0 {
 		display += "; page flags: " + strings.Join(flags, ",")
 	}

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties, type Keyb
 import { createPortal } from "react-dom";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { GetTabWorkingDir, SetTabWorkingDir, OpenProjectDirectory, SelectWorkingDir } from "../../../wailsjs/go/main/App";
-import { isCloudWorkspacePath } from "./codingTaskMode";
+import { isCloudWorkspacePath, remoteWorkspaceLocationLabel } from "./codingTaskMode";
 import { IconFolder, IconFolderOpen } from "./WorkbenchIcons";
 
 export interface SessionWorkingDirChipProps {
@@ -18,6 +18,9 @@ export interface SessionWorkingDirChipProps {
     onWorkingDirResolved?: (path: string, tabId: string) => void;
     /** Cloud workspace: reopen the in-app file browser instead of Explorer. */
     onOpenCloudFiles?: () => void;
+    /** Remote coding: show SSH host + remote directory instead of the local sandbox path. */
+    remoteHost?: string;
+    remoteWorkDir?: string;
 }
 
 interface DirState {
@@ -48,11 +51,18 @@ export function truncatePathMiddle(path: string, maxLen: number): string {
     return result;
 }
 
-/** Display label for a working directory: cloud paths collapse to a friendly name. */
-export function workingDirDisplayLabel(path: string, lang?: string): string {
-    return isCloudWorkspacePath(path)
-        ? (lang === "en" ? "Cloud workspace" : "云端工作区")
-        : truncatePathMiddle(path, 42);
+/** Display label for a working directory: cloud / remote / truncated local path. */
+export function workingDirDisplayLabel(
+    path: string,
+    lang?: string,
+    remote?: { host?: string; workDir?: string } | null,
+): string {
+    if (isCloudWorkspacePath(path)) {
+        return lang === "en" ? "Cloud workspace" : "云端工作区";
+    }
+    const remoteLabel = remoteWorkspaceLocationLabel(remote?.host, remote?.workDir);
+    if (remoteLabel) return truncatePathMiddle(remoteLabel, 42);
+    return truncatePathMiddle(path, 42);
 }
 
 /**
@@ -61,7 +71,7 @@ export function workingDirDisplayLabel(path: string, lang?: string): string {
  * Click the chip to open a menu: open the directory, switch it, or copy the path.
  * Cloud workspaces show a "云端" badge and hide directory switching.
  */
-export function SessionWorkingDirChip({ tabId, sessionReadyRevision = 0, theme: t, lang, onWorkingDirChange, onWorkingDirResolved, onOpenCloudFiles }: SessionWorkingDirChipProps) {
+export function SessionWorkingDirChip({ tabId, sessionReadyRevision = 0, theme: t, lang, onWorkingDirChange, onWorkingDirResolved, onOpenCloudFiles, remoteHost, remoteWorkDir }: SessionWorkingDirChipProps) {
     const [dirState, setDirState] = useState<DirState | null>(null);
     const [menuOpen, setMenuOpenState] = useState(false);
     const [menuPosition, setMenuPosition] = useState<{ left: number; top: number; openUp: boolean; maxHeight: number } | null>(null);
@@ -221,32 +231,33 @@ export function SessionWorkingDirChip({ tabId, sessionReadyRevision = 0, theme: 
 
     const handleCopyPath = useCallback(() => {
         setMenuOpen(false);
-        const path = dirState?.path;
+        const remoteLabel = remoteWorkspaceLocationLabel(remoteHost, remoteWorkDir);
+        const path = remoteLabel || dirState?.path;
         if (path && typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
             navigator.clipboard.writeText(path).catch(() => {});
         }
-    }, [dirState?.path]);
+    }, [dirState?.path, remoteHost, remoteWorkDir]);
 
     if (!dirState) {
         // Show a fixed-height placeholder to prevent layout shift during tab switch.
         return (
-            <div data-testid="session-context-bar" style={{
-                display: "inline-flex", alignItems: "center",
-                minHeight: 24, boxSizing: "border-box", flexShrink: 0,
-            }}>
-                <span style={{ opacity: 0.35, display: "inline-flex", color: "var(--theme-text-muted)" }}><IconFolder size={13} color="currentColor" /></span>
+            <div data-testid="session-context-bar" className="swdc-placeholder">
+                <span className="swdc-placeholder-icon"><IconFolder size={13} color="currentColor" /></span>
             </div>
         );
     }
 
     const isDefault = dirState.isDefault;
     const isCloud = isCloudWorkspacePath(dirState.path);
-    const displayPath = workingDirDisplayLabel(dirState.path, lang);
+    const isRemote = !isCloud && !!(String(remoteHost || "").trim() || String(remoteWorkDir || "").trim());
+    const displayPath = workingDirDisplayLabel(dirState.path, lang, isRemote ? { host: remoteHost, workDir: remoteWorkDir } : null);
     const badgeText = isCloud
         ? (lang === "en" ? "remote" : "云端")
-        : isDefault
-            ? (lang === "en" ? "default" : "默认")
-            : "";
+        : isRemote
+            ? ""
+            : isDefault
+                ? (lang === "en" ? "default" : "默认")
+                : "";
 
     const menuItemStyle: CSSProperties = {
         display: "flex", alignItems: "center", gap: 6, width: "100%",
@@ -261,13 +272,9 @@ export function SessionWorkingDirChip({ tabId, sessionReadyRevision = 0, theme: 
     return (
         <div
             data-testid="session-context-bar"
-            style={{
-                display: "inline-flex", alignItems: "center",
-                minWidth: 0, maxWidth: "100%", boxSizing: "border-box",
-                flexShrink: 1, overflow: "visible",
-            }}
+            className="swdc-bar"
         >
-            <div ref={rootRef} style={{ minWidth: 0, maxWidth: "100%" }}>
+            <div ref={rootRef} className="swdc-root">
                 <button
                     type="button"
                     ref={chipRef}
@@ -276,7 +283,7 @@ export function SessionWorkingDirChip({ tabId, sessionReadyRevision = 0, theme: 
                     aria-haspopup="menu"
                     aria-expanded={menuOpen}
                     aria-label={(lang === "en" ? "Session working directory: " : "会话工作目录：") + displayPath}
-                    title={isCloud ? displayPath : dirState.path}
+                    title={isCloud ? displayPath : (isRemote ? remoteWorkspaceLocationLabel(remoteHost, remoteWorkDir) : dirState.path)}
                     onClick={() => setMenuOpen(!menuOpen)}
                     onKeyDown={(event) => { if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setMenuOpen(true); } }}
                     style={{
@@ -290,10 +297,10 @@ export function SessionWorkingDirChip({ tabId, sessionReadyRevision = 0, theme: 
                         boxSizing: "border-box",
                     }}
                 >
-                    <span style={{ display: "inline-flex", flexShrink: 0, opacity: 0.8 }}>
+                    <span className="swdc-chip-icon">
                         {isDefault ? <IconFolder size={12} /> : <IconFolderOpen size={12} />}
                     </span>
-                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
+                    <span className="swdc-chip-path">
                         {displayPath}
                     </span>
                     {badgeText && (
@@ -301,7 +308,7 @@ export function SessionWorkingDirChip({ tabId, sessionReadyRevision = 0, theme: 
                             {badgeText}
                         </span>
                     )}
-                    <span aria-hidden="true" style={{ fontSize: 9, opacity: 0.6, flexShrink: 0 }}>▾</span>
+                    <span aria-hidden="true" className="swdc-chip-caret">▾</span>
                 </button>
                 {menuOpen && menuPosition && typeof document !== "undefined" && createPortal(
                     <div
@@ -329,7 +336,7 @@ export function SessionWorkingDirChip({ tabId, sessionReadyRevision = 0, theme: 
                         >
                             {openDirLabel}
                         </button>
-                        {!isCloud && (
+                        {!isCloud && !isRemote && (
                             <button
                                 type="button"
                                 role="menuitem"

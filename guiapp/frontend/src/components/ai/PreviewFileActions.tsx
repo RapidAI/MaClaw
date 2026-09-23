@@ -140,7 +140,7 @@ export function PreviewFileActions({ absPath, lang, color, buttonStyle }: Previe
     const revealLabel = isZh ? "打开文件夹" : "Show in folder";
 
     return (
-        <span data-testid="preview-file-actions" style={{ display: "inline-flex", alignItems: "center", gap: 2, flexShrink: 0 }}>
+        <span data-testid="preview-file-actions" className="pfa-root">
             <button
                 type="button"
                 data-testid="preview-file-action-upload"

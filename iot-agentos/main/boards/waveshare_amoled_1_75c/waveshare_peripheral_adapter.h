@@ -24,6 +24,7 @@
 #include "provisioning_failure_injection.h"
 
 #define WAVESHARE_PERIPHERAL_PMIC_ADDRESS      0x34
+#define WAVESHARE_PERIPHERAL_TOUCH_ADDRESS     ESP_LCD_TOUCH_IO_I2C_CST9217_ADDRESS
 #define WAVESHARE_PERIPHERAL_TOUCH_RESET_GPIO  GPIO_NUM_2
 #define WAVESHARE_PERIPHERAL_TOUCH_IRQ_GPIO    GPIO_NUM_11
 #define WAVESHARE_PERIPHERAL_TOUCH_WIDTH       466
@@ -46,6 +47,15 @@ static esp_err_t waveshare_axp2101_read(uint8_t reg, uint8_t *value) {
 }
 
 static esp_err_t waveshare_axp2101_init(i2c_master_bus_handle_t bus) {
+    /* The PMU powers the whole board, so a missing device stays a hard
+     * failure; probing first keeps that failure clearly distinct from a
+     * later register programming error. */
+    const esp_err_t probe_err = i2c_master_probe(bus, WAVESHARE_PERIPHERAL_PMIC_ADDRESS, 100);
+    if (probe_err != ESP_OK) {
+        ESP_LOGE("waveshare_peripheral", "PMU not responding (probe address 0x%02x): %s",
+                 WAVESHARE_PERIPHERAL_PMIC_ADDRESS, esp_err_to_name(probe_err));
+        return probe_err;
+    }
     const i2c_device_config_t cfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
         .device_address = WAVESHARE_PERIPHERAL_PMIC_ADDRESS,
@@ -66,6 +76,31 @@ static esp_err_t waveshare_axp2101_init(i2c_master_bus_handle_t bus) {
 }
 
 static esp_err_t waveshare_cst9217_init(i2c_master_bus_handle_t bus) {
+    /* The chip only answers I2C after its reset line is released, a
+     * precondition the driver itself establishes before its first
+     * transaction.  Probe first; on no-ACK apply one driver-identical reset
+     * pulse and probe again so a held-in-reset panel is not misreported as
+     * missing.  A responding panel keeps the exact historical init path. */
+    if (i2c_master_probe(bus, WAVESHARE_PERIPHERAL_TOUCH_ADDRESS, 100) != ESP_OK) {
+        const gpio_config_t rst_cfg = {
+            .pin_bit_mask = BIT64(WAVESHARE_PERIPHERAL_TOUCH_RESET_GPIO),
+            .mode = GPIO_MODE_OUTPUT,
+        };
+        (void)gpio_config(&rst_cfg);
+        (void)gpio_set_level(WAVESHARE_PERIPHERAL_TOUCH_RESET_GPIO, 0);
+        vTaskDelay(pdMS_TO_TICKS(10));
+        (void)gpio_set_level(WAVESHARE_PERIPHERAL_TOUCH_RESET_GPIO, 1);
+        vTaskDelay(pdMS_TO_TICKS(50));
+        const esp_err_t retry_err =
+            i2c_master_probe(bus, WAVESHARE_PERIPHERAL_TOUCH_ADDRESS, 100);
+        if (retry_err != ESP_OK) {
+            ESP_LOGW("waveshare_peripheral",
+                     "touch controller not responding (probe address 0x%02x): %s; "
+                     "touch input disabled",
+                     WAVESHARE_PERIPHERAL_TOUCH_ADDRESS, esp_err_to_name(retry_err));
+            return ESP_ERR_NOT_FOUND;
+        }
+    }
     const esp_lcd_touch_config_t touch_cfg = {
         .x_max = WAVESHARE_PERIPHERAL_TOUCH_WIDTH - 1,
         .y_max = WAVESHARE_PERIPHERAL_TOUCH_HEIGHT - 1,
@@ -105,6 +140,16 @@ static esp_err_t waveshare_qmi8658_init(i2c_master_bus_handle_t bus) {
     if (provisioning_failure_injection_waveshare_qmi8658_init_fails()) {
         ESP_LOGW("waveshare_peripheral",
                  "test injection: forcing optional QMI8658 initialization failure");
+        return ESP_ERR_NOT_FOUND;
+    }
+    /* Probe the shared bus before claiming the device so an absent or
+     * substituted IMU degrades to "no device at 0x6b" instead of a register
+     * transaction error; the caller-side policy below keeps Motion optional. */
+    const esp_err_t probe_err = i2c_master_probe(bus, WAVESHARE_PERIPHERAL_QMI8658_ADDRESS, 100);
+    if (probe_err != ESP_OK) {
+        ESP_LOGW("waveshare_peripheral",
+                 "IMU not responding (probe address 0x%02x): %s; Motion HAL disabled",
+                 WAVESHARE_PERIPHERAL_QMI8658_ADDRESS, esp_err_to_name(probe_err));
         return ESP_ERR_NOT_FOUND;
     }
     const i2c_device_config_t cfg = {

@@ -1,17 +1,19 @@
 import type { CSSProperties } from "react";
 import { TaskConfigIcon } from "./taskConfigIcons";
 import type { WorkspaceKind } from "./taskDraft";
+import "./WorkspaceTypeBadge.css";
 
 /**
- * 工作空间类型徽标（📁 本地 / ☁️ 云端 / 🖧 远程，三色小徽标）。
- * 引导页配置条与左侧任务列表共用（设计 §5）。
- * 三色为点缀色（设计定稿），不随主题 token 变化。
+ * 工作空间类型徽标（本地 / 云端 / 远程）。
+ * 引导页配置条与左侧任务列表共用。
+ * 浅色保持设计定稿的三色；暗色改用低饱和底，避免近白底在深色表面上发亮。
+ * 颜色放在 CSS 里，不能写进 inline style，否则盖过 [data-ai-theme='dark']。
  * 文案一律由调用方按语言传入（label 必填），组件内不写死语言。
  */
-const KIND_STYLE: Record<WorkspaceKind, { bg: string; color: string }> = {
-    local: { bg: "#eef4fd", color: "#2f78d0" },
-    cloud: { bg: "#ecfdf3", color: "#16a34a" },
-    remote: { bg: "#f3eefe", color: "#7c3aed" },
+const KIND_ICON: Record<WorkspaceKind, "folder" | "cloud" | "server"> = {
+    local: "folder",
+    cloud: "cloud",
+    remote: "server",
 };
 
 export interface WorkspaceTypeBadgeProps {
@@ -22,26 +24,13 @@ export interface WorkspaceTypeBadgeProps {
 }
 
 export function WorkspaceTypeBadge({ kind, label, style }: WorkspaceTypeBadgeProps) {
-    const meta = KIND_STYLE[kind];
-    const icon = kind === "local" ? "folder" : kind === "cloud" ? "cloud" : "server";
-    const badgeStyle: CSSProperties = {
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 3,
-        fontSize: 11,
-        lineHeight: 1.4,
-        borderRadius: 6,
-        padding: "1px 6px",
-        whiteSpace: "nowrap",
-        flexShrink: 0,
-        background: meta.bg,
-        color: meta.color,
-        fontFamily: "system-ui, -apple-system, sans-serif",
-        ...style,
-    };
     return (
-        <span style={badgeStyle} data-testid={`workspace-badge-${kind}`}>
-            <TaskConfigIcon name={icon} size={11} />
+        <span
+            className={`mc-workspace-kind mc-workspace-kind--${kind}`}
+            style={style}
+            data-testid={`workspace-badge-${kind}`}
+        >
+            <TaskConfigIcon name={KIND_ICON[kind]} size={11} />
             {label}
         </span>
     );

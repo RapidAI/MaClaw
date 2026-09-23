@@ -93,7 +93,7 @@ export function TabParticipantInviteDialog({ tab, lang, theme, onClose, onAddPar
                 {...dialogProps}
             >
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 8px", borderBottom: `1px solid ${theme.divider}`, marginBottom: 4 }}>
-                    <span style={{ fontSize: 13, fontWeight: 600 }}>{isZh ? "\u9080\u8bf7\u6570\u5b57\u5458\u5de5" : "Invite digital employee"}</span>
+                    <span className="tpid-title">{isZh ? "" : "Invite digital employee"}</span>
                     <button data-testid="tab-participant-invite-close" type="button" disabled={!!addingId} onClick={onClose} style={{ border: "none", background: "transparent", color: theme.textMuted, cursor: addingId ? "default" : "pointer", fontSize: 16, lineHeight: 1, opacity: addingId ? 0.45 : 1 }}>x</button>
                 </div>
                 {loading && <div style={{ padding: "10px 8px", fontSize: 12, color: theme.textMuted }}>{isZh ? "\u52a0\u8f7d\u4e2d..." : "Loading..."}</div>}
@@ -116,8 +116,8 @@ export function TabParticipantInviteDialog({ tab, lang, theme, onClose, onAddPar
                             setAddingId("");
                         }
                     }} style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "7px 8px", border: "none", background: "transparent", color: theme.text, cursor: addingId ? "default" : "pointer", textAlign: "left", borderRadius: "var(--radius-sm, 6px)", opacity: addingId && addingId !== participantId ? 0.55 : 1 }}>
-                        <span style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--theme-success, #4f7f6f)", flexShrink: 0 }} />
-                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{addingId === participantId ? (isZh ? "\u6dfb\u52a0\u4e2d..." : "Adding...") : displayName}</span>
+                        <span className="tpid-presence" />
+                        <span className="tpid-name">{addingId === participantId ? (isZh ? "" : "Adding...") : displayName}</span>
                     </button>;
                 })}
             </div>

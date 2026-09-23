@@ -66,6 +66,8 @@ export interface AIAssistantPanelStateProps extends Partial<AIAssistantPanelHook
 export interface AIAssistantPanelHookActions {
     browseFile: () => Promise<void>;
     clearSelectedFile: () => void;
+    /** Replace the active session's picker files. Used to restore a covered composer. */
+    setSelectedFilePaths?: (paths: string[]) => void;
     removeSelectedFile: (filePath: string) => void;
     sendMessage: (text: string, options?: Record<string, unknown>) => Promise<boolean>;
     sendBtwMessage: (query: string) => Promise<void>;
@@ -173,6 +175,15 @@ export interface AIAssistantPanelProps {
      * durable task snapshot so in-progress runs are not misfiled as completed.
      */
     onActiveTaskRunningChange?: (running: boolean) => void;
+    /**
+     * Live "running" signal for EVERY assistant tab with an in-flight run, not
+     * just the visible one: concurrent runs (a previous task still executing
+     * after the user opens/switches to another) keep streaming as detached
+     * rounds, and the sidebar needs each busy identity so all in-progress
+     * tasks land in the 进行中 bucket instead of only the active tab's row.
+     * Project paths and expert IDs are normalized, deduped and sorted.
+     */
+    onBusyTaskRunsChange?: (runs: { projectPaths: string[]; expertIds: string[] }) => void;
     /** Sidebar-visible task list mirrored by the header task switcher. */
     tasks?: TaskManagementItem[];
     /**

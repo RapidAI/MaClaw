@@ -7,33 +7,11 @@
     <title>MaClaw</title>
     <link rel="preload" as="image" href="./src/assets/images/maclaw-gui-mark.svg" type="image/svg+xml"/>
     <!-- Paint an opaque themed canvas before the WebView's native #0b1220
-         chrome can show through. Keep these values in sync with App.css
-         --theme-page-bg. Runs in <head> so the first frame is never black. -->
-    <script>
-      try {
-        var d = localStorage.getItem('ai_assistant_theme_mode') === 'dark';
-        var c;
-        if (d) {
-          var s = localStorage.getItem('maclaw.ai.darkScheme');
-          c = s === 'aurora' ? '#071018'
-            : s === 'classic' ? '#0b1220'
-            : s === 'ember' ? '#140e0a'
-            : s === 'violet' ? '#0e0a18'
-            : '#0f141b';
-        } else {
-          var l = localStorage.getItem('maclaw.ai.lightScheme');
-          c = l === 'default' ? '#f4f7fb'
-            : l === 'notion' || l === 'stripe' || l === 'vercel' ? '#ffffff'
-            : l === 'linear' ? '#fbfbfd'
-            : l === 'github' ? '#f6f8fa'
-            : '#ffffff'; /* fluent (default) */
-        }
-        document.documentElement.style.backgroundColor = c;
-        document.documentElement.style.colorScheme = d ? 'dark' : 'light';
-        document.documentElement.style.setProperty('--theme-page-bg', c);
-        document.documentElement.setAttribute('data-boot-theme', d ? 'dark' : 'light');
-      } catch(e) {}
-    </script>
+         chrome can show through, so the first frame is never black. The
+         inline script below is generated at build time from the assistant
+         scheme modules (single source of truth) by the bootThemePlugin in
+         vite.config.ts; see src/components/ai/themeBootPalette.ts. -->
+    <!-- @maclaw-boot-theme -->
     <style>
       html, body, #root { margin: 0; width: 100%; height: 100%; min-height: 100%; background-color: var(--theme-page-bg, #ffffff); }
       #maclaw-boot-splash {

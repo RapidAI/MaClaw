@@ -2062,7 +2062,7 @@ func TestEnsureAssistantTabTaskIsListedAndDeduplicated(t *testing.T) {
 func TestEnsureAssistantTabTaskReusesVisibleProjectTask(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 	projectTask := app.CreateTask("Existing project task", "")
-	got := app.EnsureAssistantTabTask("acp", "desktop-user:acp:session-1", "VS Code / ACP", projectTask.ProjectPath)
+	got := app.EnsureAssistantTabTask("project", projectTask.ProjectPath, "Existing project task", projectTask.ProjectPath)
 	if got.ProjectPath != projectTask.ProjectPath {
 		t.Fatalf("EnsureAssistantTabTask project path = %q, want existing %q", got.ProjectPath, projectTask.ProjectPath)
 	}
@@ -2074,6 +2074,21 @@ func TestEnsureAssistantTabTaskReusesVisibleProjectTask(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatal("EnsureAssistantTabTask created a duplicate task for an existing project task")
+	}
+}
+
+func TestEnsureAssistantTabTaskACPDoesNotReuseForeignProject(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	projectTask := app.CreateTask("Existing project task", "")
+	got := app.EnsureAssistantTabTask("acp", "desktop-user:acp:session-1", "VS Code / ACP", projectTask.ProjectPath)
+	if got.ProjectPath == "" {
+		t.Fatal("ACP task has an empty project path")
+	}
+	if got.ProjectPath == projectTask.ProjectPath {
+		t.Fatal("ACP registration reused the editor workspace task")
+	}
+	if !isAutoACPAssistantTabDirName(got.ProjectPath) {
+		t.Fatalf("ACP task path = %q, want vs-code-acp workspace", got.ProjectPath)
 	}
 }
 
@@ -2096,6 +2111,205 @@ func TestEnsureAssistantTabTaskCreatesFreshTaskAfterHiddenEntry(t *testing.T) {
 		if item.ProjectPath == first.ProjectPath {
 			t.Fatalf("ListTasks resurrected hidden assistant task %q", first.ProjectPath)
 		}
+	}
+}
+
+func TestListTasksOmitsAutoACPAssistantTab(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	created := app.EnsureAssistantTabTask("acp", "desktop-user:acp:session-1", "VS Code / ACP", "")
+	if created.ProjectPath == "" {
+		t.Fatal("ACP task has an empty project path")
+	}
+	for _, item := range app.ListTasks(50) {
+		if isAutoACPAssistantTabDirName(item.ProjectPath) {
+			t.Fatalf("ListTasks included ACP task %q", item.ProjectPath)
+		}
+	}
+}
+
+func TestEnsureAssistantTabTaskACPUsesStableIdentity(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	first := app.EnsureAssistantTabTask("acp", "desktop-user:acp:session-1", "VS Code / ACP", "")
+	if first.ProjectPath == "" {
+		t.Fatal("first ACP task has an empty project path")
+	}
+	second := app.EnsureAssistantTabTask("acp", "desktop-user:acp:session-2", "VS Code / ACP", "")
+	if second.ProjectPath != first.ProjectPath {
+		t.Fatalf("ACP identity was per-session: first=%q second=%q", first.ProjectPath, second.ProjectPath)
+	}
+}
+
+func TestEnsureAssistantTabTaskACPDoesNotRecreateAfterDelete(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	first := app.EnsureAssistantTabTask("acp", "desktop-user:acp:session-1", "VS Code / ACP", "")
+	if first.ProjectPath == "" {
+		t.Fatal("first ACP task has an empty project path")
+	}
+	if err := app.DeleteTask(first.ProjectPath); err != nil {
+		t.Fatalf("DeleteTask: %v", err)
+	}
+	second := app.EnsureAssistantTabTask("acp", "desktop-user:acp:session-2", "VS Code / ACP", "")
+	if second.ProjectPath != "" {
+		t.Fatalf("EnsureAssistantTabTask recreated ACP task at %q after delete", second.ProjectPath)
+	}
+	for _, item := range app.ListTasks(50) {
+		if isAutoACPAssistantTabDirName(item.ProjectPath) {
+			t.Fatalf("ListTasks still has ACP task %q", item.ProjectPath)
+		}
+	}
+}
+
+func TestDismissedACPLeftoverIsPurgedOnStoreReload(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	first := app.EnsureAssistantTabTask("acp", "desktop-user:acp:session-1", "VS Code / ACP", "")
+	if first.ProjectPath == "" {
+		t.Fatal("ACP task has an empty project path")
+	}
+	app.dismissAssistantTabType(assistantTabACPType)
+	found := false
+	for _, item := range app.ListTasks(50) {
+		if item.ProjectPath == first.ProjectPath {
+			found = true
+			break
+		}
+	}
+	if found {
+		t.Fatal("ListTasks still showed the ACP row after dismiss")
+	}
+	if app.memoryStore != nil {
+		app.memoryStore.Stop()
+	}
+	app.memoryStore = nil
+	for _, item := range app.ListTasks(50) {
+		if isAutoACPAssistantTabDirName(item.ProjectPath) {
+			t.Fatalf("ListTasks after reload still has ACP task %q", item.ProjectPath)
+		}
+	}
+	if _, err := os.Stat(first.ProjectPath); !os.IsNotExist(err) {
+		t.Fatalf("dismissed ACP dir still on disk: %v", err)
+	}
+}
+
+func TestEnsureAssistantTabTaskACPStaysDeletedAfterStoreReload(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	first := app.EnsureAssistantTabTask("acp", "desktop-user:acp:session-1", "VS Code / ACP", "")
+	if first.ProjectPath == "" {
+		t.Fatal("first ACP task has an empty project path")
+	}
+	if err := app.DeleteTask(first.ProjectPath); err != nil {
+		t.Fatalf("DeleteTask: %v", err)
+	}
+	if app.memoryStore != nil {
+		app.memoryStore.Stop()
+	}
+	app.memoryStore = nil
+	reopened := app.EnsureAssistantTabTask("acp", "desktop-user:acp:session-2", "VS Code / ACP", "")
+	if reopened.ProjectPath != "" {
+		t.Fatalf("ACP task resurrected after store reload at %q", reopened.ProjectPath)
+	}
+	for _, item := range app.ListTasks(50) {
+		if isAutoACPAssistantTabDirName(item.ProjectPath) {
+			t.Fatalf("ListTasks after reload still has ACP task %q", item.ProjectPath)
+		}
+	}
+}
+
+func TestRecoverManagedTaskRecordsFromDiskSkipsAutoACPAssistantTab(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.ensureMemoryStore()
+	taskDir := filepath.Join(app.GetDataDir(), "tasks", "vs-code-acp-1787000000001")
+	if err := os.MkdirAll(taskDir, 0o755); err != nil {
+		t.Fatalf("mkdir ACP leftover: %v", err)
+	}
+	content := "# VS Code / ACP\n\nSecondary AI assistant tab.\nType: acp\n"
+	if err := os.WriteFile(filepath.Join(taskDir, "task.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write ACP leftover: %v", err)
+	}
+	if n := app.recoverManagedTaskRecordsFromDisk(); n != 0 {
+		t.Fatalf("recoverManagedTaskRecordsFromDisk = %d, want 0", n)
+	}
+	wantPath := normalizeProjectSessionPath(taskDir)
+	for _, item := range app.ListTasks(50) {
+		if normalizeProjectSessionPath(item.ProjectPath) == wantPath {
+			t.Fatalf("recovered ACP leftover %q", item.ProjectPath)
+		}
+	}
+}
+
+func TestDeleteACPTaskPurgesLeftoverClones(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	first := app.EnsureAssistantTabTask("acp", "desktop-user:acp:old", "VS Code / ACP", "")
+	if first.ProjectPath == "" {
+		t.Fatal("ACP task has an empty project path")
+	}
+	leftover := filepath.Join(app.GetDataDir(), "tasks", "vs-code-acp-1787000000002")
+	if err := os.MkdirAll(leftover, 0o755); err != nil {
+		t.Fatalf("mkdir leftover: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(leftover, "task.md"), []byte("# VS Code / ACP\n\nSecondary AI assistant tab.\nType: acp\n"), 0o644); err != nil {
+		t.Fatalf("write leftover: %v", err)
+	}
+	if err := app.DeleteTask(first.ProjectPath); err != nil {
+		t.Fatalf("DeleteTask: %v", err)
+	}
+	if _, err := os.Stat(leftover); !os.IsNotExist(err) {
+		t.Fatalf("leftover ACP dir still exists: %v", err)
+	}
+	if n := app.recoverManagedTaskRecordsFromDisk(); n != 0 {
+		t.Fatalf("recover after delete = %d, want 0", n)
+	}
+}
+
+func TestPurgeAutoACPAssistantTabTasksDropsTabIndex(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	created := app.EnsureAssistantTabTask("acp", "desktop-user:acp:session-1", "VS Code / ACP", "")
+	if created.ProjectPath == "" {
+		t.Fatal("ACP task has an empty project path")
+	}
+	if id := app.CreateProjectTabSession("acp-mirror", created.ProjectPath); id == "" {
+		t.Fatal("CreateProjectTabSession returned empty id")
+	}
+	app.purgeAutoACPAssistantTabTasks("")
+	for _, entry := range app.LoadProjectTabIndex() {
+		if normalizeProjectSessionPath(entry.ProjectPath) == normalizeProjectSessionPath(created.ProjectPath) {
+			t.Fatalf("LoadProjectTabIndex still has ACP tab %q", entry.ProjectPath)
+		}
+	}
+}
+
+func TestAutoACPAssistantTabDetectors(t *testing.T) {
+	t.Parallel()
+	if !isAutoACPAssistantTabDirName(`C:\Users\me\.maclaw\data\tasks\vs-code-acp-1787000000001`) {
+		t.Fatal("expected vs-code-acp dir")
+	}
+	if isAutoACPAssistantTabDirName(`C:\Users\me\.maclaw\data\tasks\vendor-review-1787000000001`) {
+		t.Fatal("discussion dir must not look like ACP")
+	}
+	if !isAutoACPAssistantTabContent("# VS Code / ACP\n\nSecondary AI assistant tab.\nType: acp\n") {
+		t.Fatal("expected ACP content")
+	}
+	if isAutoACPAssistantTabContent("# Vendor review\n\nSecondary AI assistant tab.\nType: discussion\n") {
+		t.Fatal("discussion content must not look like ACP")
+	}
+	if isAutoACPAssistantTabContent("# VS Code / ACP\n\nNotes about an assistant tab.\n") {
+		t.Fatal("heading alone must not look like ACP")
+	}
+	codingDir := `C:\Users\me\.maclaw\data\tasks\vs-code-acp-1787000000001`
+	if isAutoACPAssistantTabTask(codingDir, "# 贪吃蛇\n\nCreated from task management.\n") {
+		t.Fatal("non-ACP content in a vs-code-acp dir must be kept")
+	}
+	if !isAutoACPAssistantTabTask(codingDir, "") {
+		t.Fatal("empty leftover vs-code-acp dir should still be treated as auto ACP")
+	}
+	if !isAutoACPAssistantTabTask(codingDir, "# VS Code / ACP\n\nSecondary AI assistant tab.\nType: acp\n") {
+		t.Fatal("auto ACP content should still be detected")
+	}
+	if isAutoACPAssistantTabRecord(memory.ProjectRecord{
+		ProjectPath: codingDir,
+		Name:        "贪吃蛇",
+		Tags:        []string{taskManagementTag},
+	}) {
+		t.Fatal("user task in a vs-code-acp dir must stay listed")
 	}
 }
 

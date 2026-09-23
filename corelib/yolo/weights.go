@@ -171,6 +171,10 @@ func convBN(w map[string]*Tensor, prefix string, stride, padding int, silu bool,
 		Groups: groups, UseSiLU: silu,
 	}
 	c.InitWinograd()
+	// Winograd F(2,3) is CORRECT (TestWinograd2x3_* pass) but measurably
+	// SLOWER than the im2col+GEMM path on Zen4 (375ms vs 327ms at 640,
+	// 1.34s vs 1.17s at 1280) — the 16 internal transposes dominate.
+	// Keep disabled in production; the unit tests exercise it directly.
 	return c
 }
 
@@ -178,12 +182,14 @@ func convBN(w map[string]*Tensor, prefix string, stride, padding int, silu bool,
 func convNoBN(w map[string]*Tensor, prefix string) *Conv2dBNSiLU {
 	convW := w[prefix+".weight"]
 	convB := w[prefix+".bias"]
-	return &Conv2dBNSiLU{
+	c := &Conv2dBNSiLU{
 		Weight: convW, Bias: convB.Data,
 		OutC: convW.Shape[0], InC: convW.Shape[1],
 		KH: convW.Shape[2], KW: convW.Shape[3],
 		Stride: 1, Padding: 0, Groups: 1, UseSiLU: false,
 	}
+	// See convBN: Winograd F(2,3) stays disabled (correct but slower).
+	return c
 }
 
 // ── C3k2 builder ──

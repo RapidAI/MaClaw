@@ -837,14 +837,16 @@ func ReviewedDynamicIntentCapabilityNeedRules() map[intent.IntentLabel][]IntentC
 			MaxInvocations: 8,
 		}},
 		intent.LabelBrowser: {{
-			Capability: CapabilityBrowserControl,
-			Polarity:   coretool.NeedRequire,
-			Required:   true,
+			Capability:     CapabilityBrowserControl,
+			Polarity:       coretool.NeedRequire,
+			Required:       true,
+			MaxInvocations: 8,
 		}},
 		intent.LabelComputerUse: {{
-			Capability: CapabilityComputerUse,
-			Polarity:   coretool.NeedRequire,
-			Required:   true,
+			Capability:     CapabilityComputerUse,
+			Polarity:       coretool.NeedRequire,
+			Required:       true,
+			MaxInvocations: 8,
 		}},
 		intent.LabelKnowledgeWrite: {{
 			Capability: CapabilityKnowledgeWrite,

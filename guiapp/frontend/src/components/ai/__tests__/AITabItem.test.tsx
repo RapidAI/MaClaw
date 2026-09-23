@@ -15,14 +15,14 @@ const theme = {
 describe("AITabItem", () => {
     it("localizes the main AI assistant tab title by language", () => {
         const tab = { id: "local", type: "local" as const, title: "工作台", closable: false };
-        expect(localAssistantTabTitle("en")).toBe("Default Task");
-        expect(localAssistantTabTitle("en-US")).toBe("Default Task");
-        expect(localAssistantTabTitle("zh-Hans")).toBe("默认任务");
-        expect(localAssistantTabTitle("zh-Hant")).toBe("默认任务");
+        expect(localAssistantTabTitle("en")).toBe("New task");
+        expect(localAssistantTabTitle("en-US")).toBe("New task");
+        expect(localAssistantTabTitle("zh-Hans")).toBe("新建任务");
+        expect(localAssistantTabTitle("zh-Hant")).toBe("新建任务");
         // Display ignores stored legacy title and follows language.
-        expect(getAITabDisplayTitle(tab, "en")).toBe("Default Task");
-        expect(getAITabDisplayTitle(tab, "zh-CN")).toBe("默认任务");
-        expect(getAITabDisplayTitle(tab, "zh-Hant")).toBe("默认任务");
+        expect(getAITabDisplayTitle(tab, "en")).toBe("New task");
+        expect(getAITabDisplayTitle(tab, "zh-CN")).toBe("新建任务");
+        expect(getAITabDisplayTitle(tab, "zh-Hant")).toBe("新建任务");
     });
 
     it("lets the main AI assistant tab be renamed by double-click", () => {

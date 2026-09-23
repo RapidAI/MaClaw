@@ -37,6 +37,7 @@ func (h *IMMessageHandler) finalizeIMAgentLoopResponse(msg IMUserMessage, loopCt
 
 	h.maybeAttachVoiceSummary(resp, msg.Platform, isVoiceInputMessage(msg))
 	h.settleSessionGovernedTaskAfterLoop(msg, loopCtx, resp)
+	h.settleSemanticSessionResidue(msg, loopCtx, resp)
 	return resp
 }
 

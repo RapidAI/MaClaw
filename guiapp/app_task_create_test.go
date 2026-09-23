@@ -56,6 +56,46 @@ func TestCreateTaskUnifiedZeroValueMatchesCreateTask(t *testing.T) {
 	}
 }
 
+func TestCreateTaskUnifiedKeepsShortExplicitName(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+
+	got, err := app.CreateTaskUnified(TaskCreateOptions{Name: "继续"})
+	if err != nil {
+		t.Fatalf("CreateTaskUnified: %v", err)
+	}
+	if got.ProjectPath == "" {
+		t.Fatal("short explicit name returned empty path")
+	}
+	rec := app.memoryStore.ProjectIndex().Get(got.ProjectPath)
+	if rec == nil || rec.Name != "继续" {
+		t.Fatalf("record = %#v, want name 继续", rec)
+	}
+	if _, err := app.CreateTaskUnified(TaskCreateOptions{Name: "   "}); err == nil {
+		t.Fatal("blank name should fail")
+	}
+
+	remote, err := app.CreateTaskUnified(TaskCreateOptions{
+		Name: "ok",
+		Mode: "remote_coding_dev",
+		Remote: &RemoteTarget{
+			Host:    "10.0.0.8",
+			User:    "ubuntu",
+			WorkDir: "/srv/app",
+			Port:    22,
+		},
+	})
+	if err != nil {
+		t.Fatalf("remote CreateTaskUnified: %v", err)
+	}
+	if remote.ProjectPath == "" {
+		t.Fatal("remote short name returned empty path")
+	}
+	remoteRec := app.memoryStore.ProjectIndex().Get(remote.ProjectPath)
+	if remoteRec == nil || remoteRec.Name != "ok" {
+		t.Fatalf("remote record = %#v, want name ok", remoteRec)
+	}
+}
+
 func TestCreateTaskUnifiedValidation(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 

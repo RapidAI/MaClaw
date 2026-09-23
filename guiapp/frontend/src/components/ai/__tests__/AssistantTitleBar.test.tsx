@@ -109,8 +109,7 @@ describe('AssistantTitleBar', () => {
         const title = screen.getByTestId('ai-titlebar-title');
         const actions = screen.getByTestId('ai-titlebar-primary-actions');
         expect(title.style.flex).toBe('0 1 auto');
-        expect(actions.style.display).toBe('flex');
-        expect(actions.style.gap).toBe('4px');
+        expect(actions.className).toContain('atb-primary-actions');
         expect(actions.previousElementSibling).toBe(title);
     });
 

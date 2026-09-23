@@ -63,7 +63,7 @@ func TestSelectorCandidatesFromResolvedRefErrorIsReadable(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected missing selector error")
 	}
-	if got := err.Error(); got != "ref @e9 has no selector candidates; run observe again" {
+	if got := err.Error(); got != "ref @e9 has no selector candidates; run probe again" {
 		t.Fatalf("error = %q", got)
 	}
 }

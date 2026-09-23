@@ -78,76 +78,53 @@ func TestSemanticArchetypeBundleExpansionIsDeterministic(t *testing.T) {
 	}
 }
 
-// The document archetype face: an office turn offers the lookup/acquire/read
-// legs every time, all optional, with the template budgets materialized as
-// repeat siblings (search 5, fetch 5, download 3, read 1).
+// A cold office turn keeps the workspace read leg and leaves search, fetch,
+// and download latent until the turn declares them or the session ceiling
+// is spent.
 func TestSemanticArchetypeBundleOfficeOffersDocumentLegs(t *testing.T) {
 	registry := newIMSemanticCapabilityRegistry()
 	needs, managed, err := semanticIntentNeedsFromClassification(registry, intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: .98})
 	if err != nil || !managed {
 		t.Fatalf("needs=%#v managed=%v err=%v", needs, managed, err)
 	}
-	wantSiblings := map[tool.CapabilityID]int{
-		"information.search.web":             5,
-		tool.CapabilityInformationFetchWeb:   5,
-		tool.CapabilityArtifactAcquireRemote: 3,
-		tool.CapabilityFSReadLocal:           1,
-	}
-	got := make(map[tool.CapabilityID]int, len(wantSiblings))
+	got := map[tool.CapabilityID]int{}
 	for _, need := range needs {
-		if _, watched := wantSiblings[need.Capability]; !watched {
-			continue
-		}
-		if need.Required {
-			t.Fatalf("bundle offer must stay optional: %#v", need)
-		}
-		if len(need.EvidenceIDs) != 1 || need.EvidenceIDs[0] != "intent:archetype_bundle" {
-			t.Fatalf("bundle offer evidence=%#v, want intent:archetype_bundle", need.EvidenceIDs)
-		}
-		if need.Confidence != .98 {
-			t.Fatalf("bundle offer confidence=%v, want the classification confidence", need.Confidence)
-		}
 		got[need.Capability]++
-	}
-	for capability, want := range wantSiblings {
-		if got[capability] != want {
-			t.Fatalf("capability %s siblings=%d, want %d; needs=%#v", capability, got[capability], want, needs)
+		if need.Capability == tool.CapabilityFSReadLocal {
+			if need.Required {
+				t.Fatalf("bundle offer must stay optional: %#v", need)
+			}
+			if len(need.EvidenceIDs) != 1 || need.EvidenceIDs[0] != "intent:archetype_bundle" {
+				t.Fatalf("bundle offer evidence=%#v", need.EvidenceIDs)
+			}
 		}
 	}
-
-	// The offers must reach the rendered face, not just the need list.
-	cb := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: .98})
-	if name := semanticGrantNameForAdapter(cb.semanticSurface, semanticTrustedWebSearchAdapter); name != "web_search" {
-		t.Fatalf("office face search grant=%q, want web_search", name)
+	if got[tool.CapabilityFSReadLocal] != 1 || got[tool.CapabilityArtifactAcquireRemote] != 3 {
+		t.Fatalf("office companions=%v, want read 1 and download 3; needs=%#v", got, needs)
 	}
-	if name := semanticGrantNameForAdapter(cb.semanticSurface, semanticTrustedWebFetchAdapter); name != "web_fetch" {
-		t.Fatalf("office face fetch grant=%q, want web_fetch", name)
-	}
-	if !planHasCapabilities(cb.semanticSurface.plan, tool.CapabilityArtifactAcquireRemote, tool.CapabilityFSReadLocal) {
-		t.Fatalf("office face plan=%#v, want download+read offers", cb.semanticSurface.plan.Selections)
+	for _, latent := range []tool.CapabilityID{"information.search.web", tool.CapabilityInformationFetchWeb} {
+		if got[latent] != 0 {
+			t.Fatalf("cold office turn materialized latent %s %d times", latent, got[latent])
+		}
 	}
 }
 
-// A retrieval turn offers the other half of the research pair: search carries
-// fetch, fetch carries search.
+// A pure retrieval turn does not pull the other half of the pair onto the
+// cold surface. Search and fetch are latent companions.
 func TestSemanticArchetypeBundleSearchOffersWebFetch(t *testing.T) {
 	cb := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{Primary: intent.LabelSearch, Confidence: .98})
-	if name := semanticGrantNameForAdapter(cb.semanticSurface, semanticTrustedWebFetchAdapter); name != "web_fetch" {
-		t.Fatalf("search face fetch grant=%q, want web_fetch", name)
+	if name := semanticGrantNameForAdapter(cb.semanticSurface, semanticTrustedWebFetchAdapter); name != "" {
+		t.Fatalf("search face listed latent fetch as %q", name)
 	}
 	registry := newIMSemanticCapabilityRegistry()
 	needs, _, err := semanticIntentNeedsFromClassification(registry, intent.ClassificationResult{Primary: intent.LabelWebFetch, Confidence: .98})
 	if err != nil {
 		t.Fatal(err)
 	}
-	searchOffers := 0
 	for _, need := range needs {
-		if need.Capability == "information.search.web" && !need.Required {
-			searchOffers++
+		if need.Capability == "information.search.web" {
+			t.Fatalf("web_fetch turn materialized latent search: %#v", need)
 		}
-	}
-	if searchOffers != 5 {
-		t.Fatalf("web_fetch turn search offers=%d, want 5 optional siblings; needs=%#v", searchOffers, needs)
 	}
 }
 
@@ -295,6 +272,69 @@ func TestSemanticArchetypeBundleLiveDataSearchBudgetIsSingleFamilyArchetypeMax(t
 	}
 }
 
+// Production 2026-09-22 "所以，多的脂肪去哪了？": the tree returned live_data
+// plus search. Those templates both require information.search.web, with
+// freshness current and reference. Two required families do not fit a light
+// lookup's one selection, so the first wave was planning_budget_exceeded and
+// the turn never started. They bind one adapter and must stay one family.
+func TestLiveDataPlusSearchStaysOneSearchFamily(t *testing.T) {
+	registry := newIMSemanticCapabilityRegistry()
+	needs, managed, err := semanticIntentNeedsFromClassification(registry, intent.ClassificationResult{
+		Primary: intent.LabelLiveData, Secondary: []intent.IntentLabel{intent.LabelSearch}, Confidence: .85,
+	})
+	if err != nil || !managed {
+		t.Fatalf("needs=%#v managed=%v err=%v", needs, managed, err)
+	}
+	var searchNeeds []tool.CapabilityNeed
+	for _, need := range needs {
+		if need.Capability == "information.search.web" {
+			searchNeeds = append(searchNeeds, need)
+		}
+	}
+	if len(searchNeeds) != 5 {
+		t.Fatalf("search siblings=%d, want one family raised to the search ceiling 5; needs=%#v", len(searchNeeds), needs)
+	}
+	family := tool.RepeatFamilyID(searchNeeds[0].ID)
+	required := 0
+	for _, need := range searchNeeds {
+		if tool.RepeatFamilyID(need.ID) != family {
+			t.Fatalf("live_data+search spawned a second search family: %#v", searchNeeds)
+		}
+		if need.Qualifiers["freshness"] != "current" {
+			t.Fatalf("primary live_data qualifier lost: %#v", need)
+		}
+		if need.Required {
+			required++
+		}
+	}
+	if required != 1 {
+		t.Fatalf("required search invocations=%d, want 1; needs=%#v", required, searchNeeds)
+	}
+}
+
+// Image delivery and file delivery share artifact.deliver.current_channel
+// but name different contracts. Collapsing them the way search freshness
+// collapses would drop the PDF hand-off from a weather-card-plus-report turn.
+func TestDeliverFormatsStaySeparateFamilies(t *testing.T) {
+	registry := newIMSemanticCapabilityRegistry()
+	needs, managed, err := semanticIntentNeedsFromClassification(registry, intent.ClassificationResult{
+		Primary: intent.LabelLiveDataVisual, Secondary: []intent.IntentLabel{intent.LabelDocumentGenerate}, Confidence: .9,
+	})
+	if err != nil || !managed {
+		t.Fatalf("needs=%#v managed=%v err=%v", needs, managed, err)
+	}
+	formats := map[string]bool{}
+	for _, need := range needs {
+		if need.Capability != "artifact.deliver.current_channel" || tool.IsRepeatCeilingID(need.ID) {
+			continue
+		}
+		formats[need.Qualifiers["format"]] = need.Required
+	}
+	if !formats["image"] || !formats["file"] {
+		t.Fatalf("deliver formats=%v, want required image and file; needs=%#v", formats, needs)
+	}
+}
+
 // The max rule never shrinks a declared budget: when the declared label
 // already budgets the capability at or above the bundle template, the family
 // is left untouched.
@@ -361,7 +401,7 @@ func TestSemanticArchetypeBundleDocumentCompositeCarriesDocumentLegs(t *testing.
 			}
 		}
 		if bundled[tool.CapabilityArtifactAcquireRemote] != 3 || bundled[tool.CapabilityFSReadLocal] != 1 {
-			t.Fatalf("document composite must carry the acquire/read legs: bundled=%v needs=%#v", bundled, needs)
+			t.Fatalf("document composite keeps download and read, not the lookup flood: bundled=%v needs=%#v", bundled, needs)
 		}
 	}
 }

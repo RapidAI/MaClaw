@@ -62,6 +62,14 @@ export function shouldCreateUnifiedTask(draft: TaskDraft): boolean {
  * 工作流维度：null（无）→ 空模板 id + 首条消息跳过语义拦截；
  * WORKFLOW_AUTO（自动判断）→ 空模板 id（现状语义拦截）；模板 id → 直传。
  */
+/** Match the sidebar title: one line, 80 characters, ellipsis when longer. */
+export function shortTaskLaunchTitle(text: string): string {
+    const collapsed = (text || "").replace(/\s+/g, " ").trim();
+    const chars = [...collapsed];
+    if (chars.length <= 80) return collapsed;
+    return `${chars.slice(0, 80).join("")}…`;
+}
+
 export function draftToTaskCreateOptions(text: string, draft: TaskDraft): UnifiedTaskCreateOptions {
     const name = (text || "").trim();
     const workspace = draft.workspace;
@@ -145,10 +153,13 @@ export async function runTaskConfigSend(args: {
     bindings: TaskConfigSendBindings;
     isZh?: boolean;
     force?: boolean;
+    /** First message on the new task. Defaults to `text`. Attachments stay out of the task title. */
+    initialMessage?: string;
 }): Promise<TaskConfigSendResult> {
     const { text, draft, bindings } = args;
     const isZh = args.isZh !== false;
     const trimmed = (text || "").trim();
+    const initialMessage = (args.initialMessage || "").trim() || trimmed;
     if (!trimmed) return { ok: false, error: isZh ? "请先输入任务内容" : "Enter a task first" };
     if (!shouldCreateUnifiedTask(draft) && args.force !== true) return { ok: true };
     const opts = draftToTaskCreateOptions(trimmed, draft);
@@ -176,13 +187,13 @@ export async function runTaskConfigSend(args: {
         bindings.openExpert({
             id: opts.expertId,
             name: opts.expertName || opts.expertId,
-            initialMessage: trimmed,
+            initialMessage,
         });
     } else {
         bindings.openTaskLaunch({
             projectPath,
-            taskTitle: trimmed,
-            initialMessage: trimmed,
+            taskTitle: shortTaskLaunchTitle(trimmed),
+            initialMessage,
             ...(opts.mode === "coding_dev" || opts.mode === "remote_coding_dev"
                 ? { agentMode: opts.mode as TaskLaunchNavigation["agentMode"] }
                 : {}),

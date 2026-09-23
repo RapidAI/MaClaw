@@ -92,6 +92,8 @@ describe("isHistoryResetCommandText", () => {
         expect(isHistoryResetCommandText("  /CLEAR  ")).toBe(true);
         expect(isHistoryResetCommandText("/new")).toBe(true);
         expect(isHistoryResetCommandText("/reset")).toBe(true);
+        expect(isHistoryResetCommandText("／clear")).toBe(true);
+        expect(isHistoryResetCommandText("／new")).toBe(true);
         expect(isHistoryResetCommandText("/clear now")).toBe(false);
         expect(isHistoryResetCommandText("/help")).toBe(false);
         expect(isHistoryResetCommandText("/compress")).toBe(false);

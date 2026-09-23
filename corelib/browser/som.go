@@ -45,6 +45,21 @@ func compactChecked(role, tag, inputType string, checked bool) *bool {
 	return nil
 }
 
+func compactProbeElementRefs(refs []BrowserElementRef) []CompactElementRef {
+	out := make([]CompactElementRef, 0, len(refs))
+	for _, ref := range refs {
+		item := compactElementRef(ref)
+		if strings.TrimSpace(item.Ref) == "" {
+			continue
+		}
+		if ref.Value != "" && !strings.EqualFold(ref.InputType, "password") {
+			item.Value = ref.Value
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
 func compactElementRefs(refs []BrowserElementRef) []CompactElementRef {
 	out := make([]CompactElementRef, 0, len(refs))
 	for _, ref := range refs {
@@ -100,20 +115,33 @@ func truncateRefs(refs []BrowserElementRef, limit int) ([]BrowserElementRef, boo
 func observeDataFromSnapshot(snapshot BrowserSnapshot) map[string]interface{} {
 	compact, truncated := truncateRefs(snapshot.Refs, compactRefLimit)
 	truncated = truncated || snapshot.RefsTruncated
+	refs := interface{}(compactElementRefs(compact))
+	if snapshot.Probe {
+		refs = compactProbeElementRefs(compact)
+	}
 	data := map[string]interface{}{
-		"snapshot_id":        snapshot.SnapshotID,
-		"url":                snapshot.URL,
-		"title":              snapshot.Title,
-		"refs":               compactElementRefs(compact),
-		"refs_truncated":     truncated || snapshot.RefsTruncated,
-		"console_summary":    snapshot.ConsoleSummary,
-		"network_summary":    snapshot.NetworkSummary,
-		"page_state":         map[string]interface{}{"ready_state": snapshot.ReadyState, "url": snapshot.URL, "title": snapshot.Title},
-		"page_text_excerpt":  snapshot.PageTextExcerpt,
-		"page_text_total":    snapshot.PageTextTotal,
-		"page_text_offset":   snapshot.PageTextOffset,
-		"page_text_has_more": snapshot.PageTextHasMore,
-		"page_flags":         snapshot.PageFlags,
+		"snapshot_id":    snapshot.SnapshotID,
+		"url":            snapshot.URL,
+		"title":          snapshot.Title,
+		"refs":           refs,
+		"refs_truncated": truncated || snapshot.RefsTruncated,
+		"page_state":     map[string]interface{}{"ready_state": snapshot.ReadyState, "url": snapshot.URL, "title": snapshot.Title},
+		"page_flags":     snapshot.PageFlags,
+	}
+	if snapshot.Probe {
+		data["probe"] = true
+		if snapshot.PageTextExcerpt != "" {
+			data["page_text_excerpt"] = snapshot.PageTextExcerpt
+			data["page_text_total"] = snapshot.PageTextTotal
+			data["page_text_has_more"] = snapshot.PageTextHasMore
+		}
+	} else {
+		data["console_summary"] = snapshot.ConsoleSummary
+		data["network_summary"] = snapshot.NetworkSummary
+		data["page_text_excerpt"] = snapshot.PageTextExcerpt
+		data["page_text_total"] = snapshot.PageTextTotal
+		data["page_text_offset"] = snapshot.PageTextOffset
+		data["page_text_has_more"] = snapshot.PageTextHasMore
 	}
 	if snapshot.VisionExcerpt != "" {
 		data["vision_excerpt"] = snapshot.VisionExcerpt

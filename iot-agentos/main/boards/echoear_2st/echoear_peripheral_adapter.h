@@ -9,6 +9,7 @@
 #include "device_api.h"
 #include "driver/i2c_master.h"
 #include "esp_err.h"
+#include "esp_log.h"
 
 #define ECHOEAR_TOUCH_CST8XX_ADDRESS 0x15
 
@@ -17,6 +18,19 @@ static i2c_master_dev_handle_t s_echoear_touch;
 static esp_err_t round_peripheral_adapter_initialize(i2c_master_bus_handle_t bus) {
     if (!bus) return ESP_ERR_INVALID_ARG;
     if (s_echoear_touch) return ESP_OK;
+    /* Probe before claiming the device: a missing or substituted touch
+     * controller must surface as "no device at 0x15", not as a confusing
+     * register transaction error on the first touch read.  The caller applies
+     * the profile policy: an optional touch degrades to touch_ready == false,
+     * a required touch fails the attach with this probe error. */
+    const esp_err_t probe_err = i2c_master_probe(bus, ECHOEAR_TOUCH_CST8XX_ADDRESS, 100);
+    if (probe_err != ESP_OK) {
+        ESP_LOGW("echoear_peripheral",
+                 "touch controller not responding (probe address 0x%02x): %s; "
+                 "touch input disabled",
+                 ECHOEAR_TOUCH_CST8XX_ADDRESS, esp_err_to_name(probe_err));
+        return probe_err;
+    }
     const i2c_device_config_t config = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
         .device_address = ECHOEAR_TOUCH_CST8XX_ADDRESS,

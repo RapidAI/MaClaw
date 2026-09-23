@@ -174,6 +174,12 @@ config MACLAW_FANGTANG_BATTERY_ADC_UNIT
     int "Battery ADC unit"
     range 1 2
     default 2
+    help
+        ADC unit hosting the battery divider channel.  ADC2 channels are
+        unavailable while the Wi-Fi radio is active (ESP32-series hardware
+        constraint), so the battery divider should use an ADC1 channel
+        whenever possible.  Select ADC2 only after confirming the firmware
+        never uses Wi-Fi.
 
 config MACLAW_FANGTANG_BATTERY_ADC_CHANNEL
     int "Battery ADC channel"
@@ -182,7 +188,10 @@ config MACLAW_FANGTANG_BATTERY_ADC_CHANNEL
     help
         Matches the original Fangtang board's ADC2 channel 6 battery divider.
         Keep this separate from MACLAW_BATTERY_ADC_GPIO, whose generic ADC1
-        assumptions do not apply to this PCB.
+        assumptions do not apply to this PCB.  ADC2 channels are unavailable
+        while the Wi-Fi radio is active (ESP32-series hardware constraint),
+        so an ADC1 channel is preferable for the battery divider; an ADC2
+        channel requires confirming that the firmware never uses Wi-Fi.
 
 config MACLAW_FANGTANG_BATTERY_DIVIDER_NUMERATOR
     int "Battery divider scale numerator"

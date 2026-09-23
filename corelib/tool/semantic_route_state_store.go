@@ -656,7 +656,17 @@ func routeArtifactProducerCompatible(ref RouteArtifactRef, plan ToolPlan) bool {
 }
 
 func routeArtifactUsableInPlan(ref RouteArtifactRef, plan ToolPlan) bool {
-	return validateRouteArtifactRef(ref) == nil && validateToolPlanArtifactDependencies(plan) == nil && routeArtifactProducerCompatible(ref, plan) && routeArtifactHasCurrentConsumer(ref, plan)
+	if validateRouteArtifactRef(ref) != nil || validateToolPlanArtifactDependencies(plan) != nil || !routeArtifactProducerCompatible(ref, plan) {
+		return false
+	}
+	// A screenshot that is the last step publishes an image and has no
+	// deliver selection. That artifact is the output. Requiring a consumer
+	// made RetireMaterialization report route_state_corrupt after a
+	// successful capture (2026-09-22 崇州天气).
+	if routeArtifactMatchesPlan(ref, plan) {
+		return true
+	}
+	return routeArtifactHasCurrentConsumer(ref, plan)
 }
 
 func mergeRouteArtifactRefs(parent, child ToolPlan, completed []RouteCompletedSelection, refs []RouteArtifactRef) []RouteArtifactRef {

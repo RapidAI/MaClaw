@@ -441,7 +441,20 @@ func im2rowFast(B, x []float32, xG, pix0, rows, oW, H, W, Cg int, p *convParams)
 		// three kernel rows for a channel in one straight-line block so the
 		// compiler can eliminate repeated slice-bound setup in the pixel loop.
 		if kH == 3 && kW == 3 {
-			for oc := s0; oc < s1; oc++ {
+			// Vectorized interior (sW=1 only: source windows of consecutive
+			// pixels are contiguous). The asm path handles 4·groups pixels
+			// with a 2-pixel safety margin (bounds the transpose's over-read
+			// and keeps the last spill row inside the scalar tail); the rest
+			// falls through to the scalar loop below.
+			sStart := s0
+			if sW == 1 && hasAVX512ZMM && s1-s0 > 6 {
+				if vCount := ((s1 - s0 - 2) >> 2) << 2; vCount >= 4 {
+					im2row3x3AVX512(&B[(pi+s0-ow)*K], &x[xG], &rowOff[0],
+						vCount/4, K, H*W, Cg, s0-pL)
+					sStart = s0 + vCount
+				}
+			}
+			for oc := sStart; oc < s1; oc++ {
 				dst := B[(pi+oc-ow)*K:]
 				iw0 := oc*sW - pL
 				i := 0

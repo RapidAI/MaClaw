@@ -1,15 +1,113 @@
 package guiapp
 
 import (
+	"context"
 	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 func liveDataVisualClassification() *intent.ClassificationResult {
 	return &intent.ClassificationResult{Primary: intent.LabelLiveData, Secondary: []intent.IntentLabel{intent.LabelLiveDataVisual}, Confidence: .98}
+}
+
+func TestRebuiltWeatherCardDoesNotGrantScreenshot(t *testing.T) {
+	rebuilt := classificationFromGrantedNeeds([]tool.CapabilityNeed{
+		{Capability: "information.search.web", Qualifiers: map[string]string{"freshness": "current"}},
+		{Capability: "visual.render.live_data"},
+		{Capability: "artifact.deliver.current_channel", Qualifiers: map[string]string{"format": "image"}},
+	})
+	if rebuilt.HasLabel(intent.LabelScreenshot) || !rebuilt.HasLabel(intent.LabelLiveDataVisual) {
+		t.Fatalf("weather card rebuilt as %+v", rebuilt)
+	}
+	h := &IMMessageHandler{registry: NewToolRegistry()}
+	h.semanticTrustedWebSearch = func(_, _ string) (string, error) { return "Chongzhou weather: cloudy", nil }
+	registerBuiltinTools(h.registry, h)
+	_, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
+		"user-1", "崇州天气", "desktop", "root-chongzhou", "turn-chongzhou", &rebuilt,
+	)
+	if err != nil || !handled || surface == nil {
+		t.Fatalf("handled=%v surface=%#v err=%v", handled, surface, err)
+	}
+	if semanticGrantNameForAdapter(surface, "screenshot") != "" {
+		t.Fatalf("weather card granted screenshot: %#v", surface.grants)
+	}
+	if semanticGrantNameForAdapter(surface, semanticTrustedWebSearchAdapter) != "web_search" {
+		t.Fatalf("weather card missing web_search: %#v", surface.grants)
+	}
+}
+
+func TestLookupBudgetKeepsOneSearchWhenLiveDataAlsoCarriesSearch(t *testing.T) {
+	h := &IMMessageHandler{registry: NewToolRegistry()}
+	h.semanticTrustedWebSearch = func(_, _ string) (string, error) { return "tofu fat stays in the curd", nil }
+	registerBuiltinTools(h.registry, h)
+	classification := &intent.ClassificationResult{
+		Primary:    intent.LabelLiveData,
+		Secondary:  []intent.IntentLabel{intent.LabelSearch},
+		Confidence: 0.85,
+	}
+	ctx := withSemanticPlanningBudget(context.Background(), 1)
+	_, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithContextAndIdentityAndClassificationAndAttachments(
+		ctx, "user-1", "所以，多的脂肪去哪了？", "desktop", "root-fat", "turn-fat", classification, nil,
+	)
+	if err != nil || !handled || surface == nil || len(surface.plan.Selections) == 0 {
+		t.Fatalf("handled=%v selections=%d unmet=%v err=%v", handled, selectionCount(surface), plannedUnmet(surface), err)
+	}
+	families := map[string]struct{}{}
+	for _, selection := range surface.plan.Selections {
+		if !strings.Contains(selection.NeedID, "information.search.web") {
+			continue
+		}
+		families[tool.RepeatFamilyID(selection.NeedID)] = struct{}{}
+	}
+	if len(families) != 1 {
+		t.Fatalf("search families=%d, want 1; selections=%#v", len(families), surface.plan.Selections)
+	}
+	for _, item := range surface.plan.Unmet {
+		if item.ReasonCode == "planning_budget_exceeded" {
+			t.Fatalf("first wave still rejected: %#v", surface.plan.Unmet)
+		}
+	}
+}
+
+func selectionCount(surface *semanticCallSurface) int {
+	if surface == nil {
+		return 0
+	}
+	return len(surface.plan.Selections)
+}
+
+func TestLiveVisualPlannerBudgetOfOneRejectsTheCard(t *testing.T) {
+	h := &IMMessageHandler{registry: NewToolRegistry()}
+	h.semanticTrustedWebSearch = func(_, _ string) (string, error) { return "Beijing weather: clear", nil }
+	ctx := withSemanticPlanningBudget(context.Background(), 1)
+	_, surface, _, err := h.semanticCallSurfaceForSharedTurnWithContextAndIdentityAndClassificationAndAttachments(
+		ctx, "user-1", "北京天气", "desktop", "root-budget-1", "turn-budget-1", liveDataVisualClassification(), nil,
+	)
+	if err == nil && surface != nil && len(surface.plan.Unmet) == 0 && planHasCapabilities(surface.plan, "visual.render.live_data", "artifact.deliver.current_channel") {
+		t.Fatal("planning budget 1 must not look like a complete weather card")
+	}
+	profile := classifyIMExecutionProfileWithSemantic(IMUserMessage{Text: "北京天气"}, false, false, liveDataVisualClassification())
+	open := withSemanticPlanningBudget(context.Background(), profile.ToolBudget)
+	_, planned, plannedHandled, plannedErr := h.semanticCallSurfaceForSharedTurnWithContextAndIdentityAndClassificationAndAttachments(
+		open, "user-1", "北京天气", "desktop", "root-budget-open", "turn-budget-open", liveDataVisualClassification(), nil,
+	)
+	if plannedErr != nil || !plannedHandled || planned == nil || len(planned.plan.Unmet) != 0 {
+		t.Fatalf("profile budget must keep the card handled=%v unmet=%v err=%v", plannedHandled, plannedUnmet(planned), plannedErr)
+	}
+	if !planHasCapabilities(planned.plan, "information.search.web", "visual.render.live_data", "artifact.deliver.current_channel") {
+		t.Fatalf("plan=%#v", planned.plan.Selections)
+	}
+}
+
+func plannedUnmet(surface *semanticCallSurface) []tool.UnmetNeed {
+	if surface == nil {
+		return nil
+	}
+	return surface.plan.Unmet
 }
 
 func TestLiveDataVisualPlansClosedArtifactPipeline(t *testing.T) {
@@ -18,9 +116,9 @@ func TestLiveDataVisualPlansClosedArtifactPipeline(t *testing.T) {
 	defs, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassificationAndAttachments(
 		"user-1", "生成一张北京天气实况图", "desktop", "root-live-visual", "turn-live-visual", liveDataVisualClassification(), nil,
 	)
-	// The face is the declared search plus the retrieval bundle's web_fetch
-	// offer. baseline 工作区工具（read_file/write_file/bash 等）是规划器对
-	// 每个受管回合的固有注入，不计入这张脸。
+	// The first face is web_search. web_fetch stays latent, and the renderer
+	// stays in the plan until search completes. Baseline workspace tools are
+	// not part of this face.
 	baseline := semanticBaselineGrantNames(surface)
 	face := 0
 	for _, def := range defs {
@@ -28,8 +126,11 @@ func TestLiveDataVisualPlansClosedArtifactPipeline(t *testing.T) {
 			face++
 		}
 	}
-	if err != nil || !handled || surface == nil || face != 2 {
+	if err != nil || !handled || surface == nil || face != 1 {
 		t.Fatalf("defs=%#v handled=%v surface=%#v err=%v", defs, handled, surface, err)
+	}
+	if semanticGrantNameForAdapter(surface, "screenshot") != "" {
+		t.Fatalf("weather card listed screenshot: %#v", surface.grants)
 	}
 	if !planHasCapabilities(surface.plan, "information.search.web", "visual.render.live_data", "artifact.deliver.current_channel") {
 		t.Fatalf("plan=%#v", surface.plan.Selections)
@@ -74,7 +175,7 @@ func TestLiveDataVisualHostClosesModelStopGap(t *testing.T) {
 			face++
 		}
 	}
-	if err != nil || !handled || surface == nil || face != 2 {
+	if err != nil || !handled || surface == nil || face != 1 {
 		t.Fatalf("defs=%#v handled=%v surface=%#v err=%v", defs, handled, surface, err)
 	}
 	searchName := semanticGrantNameForAdapter(surface, semanticTrustedWebSearchAdapter)

@@ -141,12 +141,12 @@ export function AITabItem({ tab, active, theme, onActivate, onClose, onContextMe
         : (active ? theme.btnColor : theme.textMuted);
 
     const tabIconElement = avatarDataURL ? (
-        <span style={{ position: "relative", width: 14, height: 14, flexShrink: 0, display: "inline-flex" }}>
+        <span className="aiti-avatar-wrap">
             <img
+                className="aiti-avatar-img"
                 data-testid={`ai-tab-avatar-${tab.id}`}
                 src={avatarDataURL}
                 alt=""
-                style={{ width: 14, height: 14, borderRadius: "50%", objectFit: "cover", display: "block" }}
             />
             {(isVE || isGroup) && (
                 <span
@@ -168,26 +168,26 @@ export function AITabItem({ tab, active, theme, onActivate, onClose, onContextMe
         </span>
     ) : isLocal ? (
         // Sparkle/star — AI assistant main session
-        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+        <svg className="aiti-icon" width="12" height="12" viewBox="0 0 16 16" fill="none">
             <path d="M8 1l1.5 4.5L14 7l-4.5 1.5L8 13l-1.5-4.5L2 7l4.5-1.5L8 1z" fill={iconColor} />
         </svg>
     ) : isProject && tab.agentMode === "remote_coding_dev" ? (
         // Terminal / remote host — pure remote coding environment
-        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }} data-testid={`ai-tab-remote-coding-icon-${tab.id}`}>
+        <svg className="aiti-icon" width="12" height="12" viewBox="0 0 16 16" fill="none" data-testid={`ai-tab-remote-coding-icon-${tab.id}`}>
             <rect x="2.5" y="3.5" width="11" height="9" rx="1.5" stroke={iconColor} strokeWidth="1.3" />
             <path d="M5 7h3M5 9.5h5" stroke={iconColor} strokeWidth="1.2" strokeLinecap="round" />
             <path d="m10.5 6.5 1.5 1.2-1.5 1.2" stroke={iconColor} strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
     ) : isProject && tab.agentMode === "coding_dev" ? (
         // Code brackets — pure coding environment
-        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }} data-testid={`ai-tab-coding-icon-${tab.id}`}>
+        <svg className="aiti-icon" width="12" height="12" viewBox="0 0 16 16" fill="none" data-testid={`ai-tab-coding-icon-${tab.id}`}>
             <path d="M5.5 4.5 2.5 8l3 3.5" stroke={iconColor} strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
             <path d="m10.5 4.5 3 3.5-3 3.5" stroke={iconColor} strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
             <path d="m9 3.5-2 9" stroke={iconColor} strokeWidth="1.3" strokeLinecap="round" />
         </svg>
     ) : isProject ? (
         // Document with lines — task/project session
-        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+        <svg className="aiti-icon" width="12" height="12" viewBox="0 0 16 16" fill="none">
             <rect x="3" y="2" width="10" height="12" rx="1.5" stroke={iconColor} strokeWidth="1.3" />
             <line x1="5.5" y1="5.5" x2="10.5" y2="5.5" stroke={iconColor} strokeWidth="1.2" strokeLinecap="round" />
             <line x1="5.5" y1="8" x2="10.5" y2="8" stroke={iconColor} strokeWidth="1.2" strokeLinecap="round" />
@@ -195,13 +195,13 @@ export function AITabItem({ tab, active, theme, onActivate, onClose, onContextMe
         </svg>
     ) : isVE ? (
         // Person silhouette — digital employee (VE)
-        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+        <svg className="aiti-icon" width="12" height="12" viewBox="0 0 16 16" fill="none">
             <circle cx="8" cy="5" r="2.5" stroke={iconColor} strokeWidth="1.3" />
             <path d="M3.5 14c0-2.5 2-4.5 4.5-4.5s4.5 2 4.5 4.5" stroke={iconColor} strokeWidth="1.3" strokeLinecap="round" />
         </svg>
     ) : isGroup ? (
         // Two people — group chat
-        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+        <svg className="aiti-icon" width="12" height="12" viewBox="0 0 16 16" fill="none">
             <circle cx="6" cy="5" r="2" stroke={iconColor} strokeWidth="1.2" />
             <path d="M2.5 13c0-2 1.5-3.5 3.5-3.5s3.5 1.5 3.5 3.5" stroke={iconColor} strokeWidth="1.2" strokeLinecap="round" />
             <circle cx="11" cy="4.5" r="1.7" stroke={iconColor} strokeWidth="1.1" />
@@ -242,7 +242,7 @@ export function AITabItem({ tab, active, theme, onActivate, onClose, onContextMe
             title={accessibleTitle}
         >
             {tabIconElement}
-            {recording && <span data-testid={`ai-tab-recording-${tab.id}`} aria-label="Recording" style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: "#dc2626", flexShrink: 0, animation: "pulse-recording 1.5s ease-in-out infinite" }} />}
+            {recording && <span className="aiti-recording-dot" data-testid={`ai-tab-recording-${tab.id}`} aria-label="Recording" />}
             {isRenaming ? (
                 <input
                     data-testid={`ai-tab-rename-input-${tab.id}`}
@@ -270,7 +270,7 @@ export function AITabItem({ tab, active, theme, onActivate, onClose, onContextMe
                     style={{ width: 104, minWidth: 0, boxSizing: "border-box", padding: "1px 4px", border: `1px solid ${theme.btnColor}`, borderRadius: 4, outline: `2px solid color-mix(in srgb, ${theme.btnColor} 28%, transparent)`, outlineOffset: 1, background: theme.fieldBg || theme.bg, color: theme.text, font: "inherit" }}
                 />
             ) : (
-                <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+                <span className="aiti-title">
                     {displayTitle}
                 </span>
             )}

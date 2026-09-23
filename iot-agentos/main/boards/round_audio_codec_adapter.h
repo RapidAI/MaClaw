@@ -28,6 +28,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "round_audio_lifecycle.h"
+#include "boards/board_gpio_check.h"
 
 static esp_err_t round_audio_codec_write(i2c_master_dev_handle_t device,
                                          uint8_t reg, uint8_t value) {
@@ -116,6 +117,21 @@ static esp_err_t round_audio_adapter_initialize_input_codec(
 static esp_err_t round_audio_adapter_initialize_output_codec(
     i2c_master_dev_handle_t output, uint8_t mute_reg, uint8_t volume_reg,
     unsigned output_volume) {
+    const round_audio_profile_t *profile = round_audio_profile_adapter();
+    if (!profile) return ESP_ERR_INVALID_STATE;
+    /* The register table below is verified only for an external 4.096 MHz
+     * MCLK at 16 kHz.  Refuse any other request before the first write;
+     * silently programming untested clock coefficients would leave the
+     * ES8311 running on a wrong clock domain. */
+    if (profile->sample_rate != 16000) {
+        ESP_LOGE("round_audio",
+                 "%s: output codec ES8311 clock table supports 16 kHz "
+                 "(external 4.096 MHz MCLK) only; requested "
+                 "sample_rate=%" PRIu32 " mclk_multiple=%" PRIu32,
+                 profile->name ? profile->name : "round",
+                 profile->sample_rate, profile->mclk_multiple);
+        return ESP_ERR_NOT_SUPPORTED;
+    }
     /* ES8311 slave-mode 16 kHz coefficients for an external 4.096 MHz MCLK
      * and 16-bit Philips stereo wire format (32 BCLK/LRCK).  The DAC-side ADC
      * serial port remains disabled; capture is supplied by ES7210. */
@@ -156,6 +172,10 @@ static esp_err_t round_audio_adapter_restore_input_gain_with_device(
 static esp_err_t round_audio_adapter_initialize_power_amplifier(void) {
     const round_audio_profile_t *profile = round_audio_profile_adapter();
     if (!profile) return ESP_ERR_INVALID_STATE;
+    esp_err_t err = board_check_output_gpio(profile->power_amplifier_enable,
+                                            profile->name,
+                                            "power-amplifier enable");
+    if (err != ESP_OK) return err;
     const gpio_config_t config = {
         .pin_bit_mask = 1ULL << profile->power_amplifier_enable,
         .mode = GPIO_MODE_OUTPUT,
@@ -163,7 +183,7 @@ static esp_err_t round_audio_adapter_initialize_power_amplifier(void) {
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type = GPIO_INTR_DISABLE,
     };
-    esp_err_t err = gpio_config(&config);
+    err = gpio_config(&config);
     if (err != ESP_OK) return err;
     return gpio_set_level(profile->power_amplifier_enable, 0);
 }
@@ -260,6 +280,35 @@ fail:
         s_round_audio_input_codec = NULL;
     }
     return err;
+}
+
+/* Device handles attach without touching the wire.  Probe both codec
+ * addresses before the first register write so a missing or address-moved
+ * part reports "no acknowledge" here instead of surfacing later as an
+ * opaque ES7210/ES8311 register-write failure. */
+static esp_err_t round_audio_adapter_probe_codecs(const round_audio_profile_t *profile) {
+    if (!profile || !s_round_audio_i2c_bus) return ESP_ERR_INVALID_STATE;
+    esp_err_t err = i2c_master_probe(s_round_audio_i2c_bus,
+                                     profile->input_codec_address, 100);
+    if (err != ESP_OK) {
+        ESP_LOGE("round_audio",
+                 "%s: input codec ES7210 not online at 7-bit address 0x%02x "
+                 "(i2c_master_probe: %s)",
+                 profile->name ? profile->name : "round",
+                 (unsigned)profile->input_codec_address, esp_err_to_name(err));
+        return ESP_ERR_NOT_FOUND;
+    }
+    err = i2c_master_probe(s_round_audio_i2c_bus,
+                           profile->output_codec_address, 100);
+    if (err != ESP_OK) {
+        ESP_LOGE("round_audio",
+                 "%s: output codec ES8311 not online at 7-bit address 0x%02x "
+                 "(i2c_master_probe: %s)",
+                 profile->name ? profile->name : "round",
+                 (unsigned)profile->output_codec_address, esp_err_to_name(err));
+        return ESP_ERR_NOT_FOUND;
+    }
+    return ESP_OK;
 }
 
 /* Full-duplex I2S is an electrical/profile contract: the two codecs share one
@@ -498,6 +547,8 @@ static esp_err_t round_audio_adapter_initialize(unsigned output_volume) {
     err = round_audio_lifecycle_shared_bus_begin_self_test();
     if (err != ESP_OK) goto fail;
     err = round_audio_adapter_attach_codecs();
+    if (err != ESP_OK) goto fail;
+    err = round_audio_adapter_probe_codecs(profile);
     if (err != ESP_OK) goto fail;
     err = round_audio_adapter_initialize_input_codec(s_round_audio_input_codec);
     if (err != ESP_OK) goto fail;

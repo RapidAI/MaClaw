@@ -32,7 +32,7 @@ func rejectDisabledRef(resolved *BrowserElementRef) error {
 	if label == "" {
 		label = firstNonEmpty(resolved.Name, resolved.Text)
 	}
-	return fmt.Errorf("ref %s is disabled; observe again and pick an enabled control", label)
+	return fmt.Errorf("ref %s is disabled; probe again and pick an enabled control", label)
 }
 
 func (s *BrowserAgentSession) selectorCandidatesForText(snapshotID, text string) ([]string, *BrowserElementRef, error) {
@@ -113,7 +113,7 @@ func (s *BrowserAgentSession) locatorCandidates(snapshotID, ref, selector string
 		}
 		candidates := uniqueSelectorCandidates(append([]string{resolved.Selector}, resolved.SelectorCandidates...))
 		if len(candidates) == 0 && resolved.BackendNodeID == 0 {
-			return nil, resolved, fmt.Errorf("ref %s has no selector candidates; run observe again", resolved.Ref)
+			return nil, resolved, fmt.Errorf("ref %s has no selector candidates; run probe again", resolved.Ref)
 		}
 		return candidates, resolved, nil
 	}

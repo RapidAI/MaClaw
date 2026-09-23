@@ -214,7 +214,7 @@ describe("ProjectSearchPanel", () => {
         expect(["0", "0px"]).toContain(panel.style.inset);
         const results = screen.getByTestId("project-search-results");
         expect(results.style.maxHeight).toBe("");
-        expect(results.style.flex).toMatch(/^1\b/);
+        expect(results.className).toContain("psp-results");
     });
 
     it("does not dismiss when clicking title-bar chrome", () => {

@@ -417,7 +417,7 @@ function MeetingRecordingPlayer({ item }: { item: MobileLibraryItem }) {
   if (!item.audio?.available) return <div>Original audio is no longer available. Generated documents remain accessible.</div>;
   if (error) return <div className="mobile-documents-inline-error">Unable to load embedded playback. You can still open or save the original audio.</div>;
   if (!src) return <div>Loading audio…</div>;
-  return <audio controls preload="metadata" src={src} style={{ width: '100%' }} aria-label="Meeting recording playback" />;
+  return <audio controls preload="metadata" src={src} className="mdoc-audio" aria-label="Meeting recording playback" />;
 }
 
 function libraryPreviewTheme() {
@@ -488,7 +488,7 @@ function MobileDraftFilePreview({ item, lang }: { item: MobileLibraryItem; lang:
 
   if (loading) {
     return (
-      <div data-testid="mobile-documents-preview-loading" style={{ padding: 24, opacity: 0.7 }}>
+      <div data-testid="mobile-documents-preview-loading" className="mdoc-preview-loading">
         {isZh ? '正在加载预览…' : 'Loading preview…'}
       </div>
     );
@@ -1292,17 +1292,7 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
       >
         <div style={styles.header} className="mobile-documents-header">
           <div
-            className="mobile-documents-icon"
-            style={{
-              width: 62,
-              height: 62,
-              borderRadius: 16,
-              display: 'grid',
-              placeItems: 'center',
-              background: 'color-mix(in srgb, var(--theme-primary, #2f6fbc) 12%, transparent)',
-              border: '1px solid color-mix(in srgb, var(--theme-primary, #2f6fbc) 30%, transparent)',
-              flexShrink: 0,
-            }}
+            className="mobile-documents-icon mdoc-icon-tile"
             aria-hidden
           >
             <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
@@ -1310,18 +1300,18 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
               <path d="M10 5.5h4M10 9h4M10 12h4M10 15h2.5M9.5 18.5h5" strokeLinecap="round" />
             </svg>
           </div>
-          <div style={{ flex: 1, minWidth: 0 }} className="mobile-documents-heading">
-            <div className="mobile-documents-title" style={{ fontWeight: 750, fontSize: '1.55rem', letterSpacing: '-0.02em' }}>
+          <div className="mobile-documents-heading mdoc-flex-fill">
+            <div className="mobile-documents-title mdoc-title">
               {t('Mobile document library', '移动文稿库')}
             </div>
-            <div className="mobile-documents-subtitle" style={{ fontSize: '1rem', opacity: 0.72, marginTop: 6, lineHeight: 1.45 }}>
+            <div className="mobile-documents-subtitle mdoc-subtitle">
               {t(
                 'Shared Hub library with the phone app. Drop files of any type here.',
                 '与手机端共用 Hub 文库。可将任意格式文件拖入此处。',
               )}
             </div>
           </div>
-          <div style={{ display: 'flex', gap: 8, flexShrink: 0 }} className="mobile-documents-header-actions">
+          <div className="mobile-documents-header-actions mdoc-header-actions">
             <button type="button" className="mobile-documents-btn" style={styles.btn} onClick={() => void refresh()} disabled={loading || uploading}>
               {loading ? t('Loading…', '加载中…') : t('Refresh', '刷新')}
             </button>
@@ -1359,26 +1349,26 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
             transition: 'background 120ms ease, border-color 120ms ease',
           }}
         >
-          <div className="mobile-documents-dropzone-copy" style={{ flex: 1, minWidth: 0 }}>
-            <div className="mobile-documents-dropzone-title" style={{ fontWeight: 700, fontSize: '1.3rem' }}>
+          <div className="mobile-documents-dropzone-copy mdoc-flex-fill">
+            <div className="mobile-documents-dropzone-title mdoc-dropzone-title">
               {dragOver
                 ? t('Release to share with Mobile', '松开以上传并分享到手机')
                 : t('Drag & drop files to share', '拖放文件到此处分享')}
             </div>
-            <div className="mobile-documents-dropzone-help" style={{ fontSize: '1rem', opacity: 0.72, marginTop: 8 }}>
+            <div className="mobile-documents-dropzone-help mdoc-dropzone-help">
               {t(
                 'Any file type. Max 100MB after automatic compression; existing archives and DOCX/XLSX/PPTX are not recompressed.',
                 '支持任意格式；自动压缩后单文件 ≤100MB。压缩包及 DOCX/XLSX/PPTX 不重复压缩。',
               )}
             </div>
             {quota ? (
-              <div className="mobile-documents-quota" style={{ marginTop: 14, maxWidth: 720 }} aria-label={t('Document storage usage', '文稿库存储空间')}>
-                <div className="mobile-documents-quota-copy" style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 18px', fontSize: '0.95rem', opacity: 0.82 }}>
+              <div className="mobile-documents-quota mdoc-quota" aria-label={t('Document storage usage', '文稿库存储空间')}>
+                <div className="mobile-documents-quota-copy mdoc-quota-copy">
                   <span>{t('Used', '已用')} {formatLibraryFileSize(quota.document_quota_used_bytes)}</span>
                   <span>{t('Remaining', '剩余')} {formatLibraryFileSize(quota.document_quota_remaining)}</span>
                   <span>{t('Total', '总限额')} {formatLibraryFileSize(quota.document_quota_bytes)}</span>
                 </div>
-                <div className="mobile-documents-quota-track" style={{ height: 6, marginTop: 9, borderRadius: 3, overflow: 'hidden', background: 'var(--theme-border, #d9e1ec)' }}>
+                <div className="mobile-documents-quota-track mdoc-quota-track">
                   <div style={{ height: '100%', width: `${Math.min(100, Math.max(0, 100 * Number(quota.document_quota_used_bytes || 0) / Math.max(1, Number(quota.document_quota_bytes || 1))))}%`, background: 'var(--theme-primary, #2f6fbc)' }} />
                 </div>
               </div>
@@ -1388,7 +1378,7 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
             ref={fileInputRef}
             type="file"
             multiple
-            style={{ display: 'none' }}
+            className="mdoc-hidden-input"
             onChange={(e) => {
               if (e.target.files?.length) void publishFiles(e.target.files);
               e.target.value = '';
@@ -1407,41 +1397,23 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
 
         {banner ? (
           <div
-            className="mobile-documents-banner"
+            className="mobile-documents-banner mdoc-banner"
             role="status"
             aria-live="polite"
-            style={{
-               margin: '14px 26px 0',
-               padding: '12px 16px',
-               borderRadius: 12,
-               background: 'color-mix(in srgb, var(--theme-primary, #2f6fbc) 10%, var(--theme-surface, #ffffff))',
-               border: '1px solid color-mix(in srgb, var(--theme-primary, #2f6fbc) 28%, var(--theme-border, #d9e1ec))',
-               fontSize: '0.9rem',
-               color: 'var(--theme-primary-strong, #235a9e)',
-            }}
           >
             {banner}
           </div>
         ) : null}
         {error ? (
           <div
-            className="mobile-documents-error"
+            className="mobile-documents-error mdoc-error"
             role="alert"
-            style={{
-               margin: '14px 26px 0',
-               padding: '12px 16px',
-               borderRadius: 12,
-              background: 'rgba(220,80,80,0.12)',
-              border: '1px solid rgba(220,80,80,0.28)',
-              color: 'var(--theme-danger, #c43d34)',
-               fontSize: '0.9rem',
-            }}
           >
             {error}
           </div>
         ) : null}
         {jobs.length > 0 ? (
-          <div className="mobile-documents-jobs" aria-live="polite" aria-label={t('Upload progress', '上传进度')} style={{ margin: '10px 26px 0', display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          <div className="mobile-documents-jobs mdoc-jobs" aria-live="polite" aria-label={t('Upload progress', '上传进度')}>
             {jobs.map((j, i) => (
               <span
                 key={`${j.name}-${i}`}
@@ -1455,7 +1427,7 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
                 }}
                 title={j.message}
               >
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                <span className="mdoc-job-chip">
                   <StatusGlyph
                     kind={j.status === 'done' ? 'ok' : j.status === 'error' ? 'error' : 'pending'}
                     size={12}
@@ -1467,46 +1439,27 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
           </div>
         ) : null}
 
-        <div className="mobile-documents-body" data-testid="mobile-documents-body" style={{ display: 'flex', flex: 1, minHeight: 0, marginTop: 18, borderTop: '1px solid var(--theme-border-subtle, #e8eef5)' }}>
+        <div className="mobile-documents-body mdoc-body" data-testid="mobile-documents-body">
           {/* List */}
           <div
-            className="mobile-documents-list-pane"
-            style={{
-               width: '38%',
-               minWidth: 280,
-               borderRight: '1px solid var(--theme-border, #d9e1ec)',
-              display: 'flex',
-              flexDirection: 'column',
-              minHeight: 0,
-            }}
+            className="mobile-documents-list-pane mdoc-list-pane"
           >
-            <div className="mobile-documents-list-tools" style={{ padding: '18px 22px', borderBottom: '1px solid var(--theme-border-subtle, #e8eef5)' }}>
+            <div className="mobile-documents-list-tools mdoc-list-tools">
               <input
-                className="mobile-documents-search"
+                className="mobile-documents-search mdoc-search"
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}
                 placeholder={t('Search drafts…', '搜索文稿…')}
-                style={{
-                  width: '100%',
-                  boxSizing: 'border-box',
-                  borderRadius: 12,
-                  border: '1px solid var(--theme-border, #d9e1ec)',
-                  background: 'var(--theme-surface-muted, #f0f4f9)',
-                  color: 'var(--theme-text-primary, #1c2733)',
-                  padding: '12px 14px',
-                  fontSize: '1rem',
-                  outline: 'none',
-                }}
               />
-              <div className="mobile-documents-count" style={{ fontSize: '0.85rem', opacity: 0.65, marginTop: 8 }}>
+              <div className="mobile-documents-count mdoc-count">
                 {t(`${filtered.length} draft(s)`, `${filtered.length} 篇文稿`)}
               </div>
             </div>
-            <div className="mobile-documents-list" data-testid="mobile-documents-list" style={{ flex: 1, overflow: 'auto' }}>
+            <div className="mobile-documents-list mdoc-list" data-testid="mobile-documents-list">
               {loading ? (
-                <div style={{ padding: 16, opacity: 0.7 }}>{t('Loading…', '加载中…')}</div>
+                <div className="mdoc-list-loading">{t('Loading…', '加载中…')}</div>
               ) : filtered.length === 0 ? (
-                <div className="mobile-documents-empty" style={{ padding: 24, opacity: 0.7, fontSize: '1rem', lineHeight: 1.6 }}>
+                <div className="mobile-documents-empty mdoc-empty">
                   {t(
                     'No drafts yet. Drop a file above or create one on the phone.',
                     '暂无文稿。可拖入文件，或在手机端创建。',
@@ -1533,24 +1486,14 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
                       }}
                     >
                       <button
-                        className="mobile-documents-list-item"
+                        className="mobile-documents-list-item mdoc-list-item"
                         type="button"
                         onClick={() => void selectDraft(d)}
-                        style={{
-                          flex: 1,
-                          minWidth: 0,
-                          textAlign: 'left',
-                           padding: '18px 16px 18px 20px',
-                          border: 'none',
-                          background: 'transparent',
-                           color: 'var(--theme-text-primary, #1c2733)',
-                          cursor: 'pointer',
-                        }}
                       >
-                        <div className="mobile-documents-list-item-title" style={{ fontWeight: 700, fontSize: '1rem', lineHeight: 1.35 }}>
+                        <div className="mobile-documents-list-item-title mdoc-item-title">
                           {d.title || d.id}
                         </div>
-                        <div className="mobile-documents-list-item-meta" style={{ fontSize: '0.82rem', opacity: 0.62, marginTop: 6 }}>
+                        <div className="mobile-documents-list-item-meta mdoc-item-meta">
                           {isAudioItem(d)
                             ? `${d.audio?.available ? t('Recording', '录音') : audioUnavailableLabel(d, t)}${d.audio?.duration_sec ? ` · ${formatAudioDuration(d.audio.duration_sec)}` : ''}${d.audio?.size_bytes ? ` · ${formatLibraryFileSize(d.audio.size_bytes)}` : ''}`
                             : d.has_original
@@ -1567,15 +1510,7 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
                         </div>
                         {d.preview ? (
                           <div
-                            className="mobile-documents-list-item-preview"
-                            style={{
-                               fontSize: '0.86rem',
-                              opacity: 0.72,
-                               marginTop: 7,
-                              whiteSpace: 'nowrap',
-                              overflow: 'hidden',
-                              textOverflow: 'ellipsis',
-                            }}
+                            className="mobile-documents-list-item-preview mdoc-item-preview"
                           >
                             {d.preview}
                           </div>
@@ -1612,18 +1547,11 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
           </div>
 
           {/* Preview */}
-          <div className="mobile-documents-preview-pane" data-testid="mobile-documents-preview" style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0 }}>
+          <div className="mobile-documents-preview-pane mdoc-preview-pane" data-testid="mobile-documents-preview">
             <div
-              className="mobile-documents-preview-header"
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                 padding: '18px 24px',
-                 borderBottom: '1px solid var(--theme-border-subtle, #e8eef5)',
-              }}
+              className="mobile-documents-preview-header mdoc-preview-header"
             >
-              <div className="mobile-documents-preview-title" style={{ flex: 1, minWidth: 0, fontWeight: 750, fontSize: '1.25rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              <div className="mobile-documents-preview-title mdoc-preview-title">
                 {selected ? selected.title || selected.id : t('Preview', '预览')}
               </div>
               {selected ? (
@@ -1715,11 +1643,11 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
             >
               {selected ? (
                 isAudioItem(selected) ? (
-                  <div aria-live="polite" style={{ display: 'grid', gap: 14, fontFamily: 'inherit' }}>
+                  <div aria-live="polite" className="mdoc-audio-grid">
                     <MeetingRecordingPlayer item={selected} />
-                    <div><strong>{isProcessingAudio(selected) ? t('Processing recording', '正在处理录音') : selected.processing?.status === 'failed' ? t('Processing failed', '处理失败') : selected.derived_documents?.minutes_draft_id ? t('Meeting minutes ready', '会议纪要已生成') : t('Ready for meeting minutes', '可生成会议纪要')}</strong>{selected.processing?.message ? <div style={{ opacity: 0.7, marginTop: 4 }}>{selected.processing.message}</div> : null}{isProcessingAudio(selected) ? <div style={{ height: 6, marginTop: 10, background: 'var(--theme-border, #d9e1ec)', borderRadius: 3 }}><div style={{ width: `${Math.max(4, Math.min(100, Number(selected.processing?.progress || 0)))}%`, height: '100%', background: 'var(--theme-primary, #2f6fbc)', borderRadius: 3 }} /></div> : null}</div>
-                    {(selected.derived_documents?.transcript_draft_id || selected.derived_documents?.minutes_draft_id) ? <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>{selected.derived_documents?.transcript_draft_id ? <button type="button" style={styles.btn} onClick={() => void openDocumentFromAudio(selected.derived_documents?.transcript_draft_id)}>{t('Open transcript', '打开逐字稿')}</button> : null}{selected.derived_documents?.minutes_draft_id ? <button type="button" style={styles.btnPrimary} onClick={() => void openDocumentFromAudio(selected.derived_documents?.minutes_draft_id)}>{t('Open meeting minutes', '打开会议纪要')}</button> : null}</div> : null}
-                    {selected.retention_until ? <div style={{ opacity: 0.58, fontSize: '0.78rem' }}>{t('Original audio retention until', '原始音频保留至')} {formatUpdatedAt(selected.retention_until, isZh)}</div> : null}
+                    <div><strong>{isProcessingAudio(selected) ? t('Processing recording', '正在处理录音') : selected.processing?.status === 'failed' ? t('Processing failed', '处理失败') : selected.derived_documents?.minutes_draft_id ? t('Meeting minutes ready', '会议纪要已生成') : t('Ready for meeting minutes', '可生成会议纪要')}</strong>{selected.processing?.message ? <div className="mdoc-audio-message">{selected.processing.message}</div> : null}{isProcessingAudio(selected) ? <div className="mdoc-audio-track"><div style={{ width: `${Math.max(4, Math.min(100, Number(selected.processing?.progress || 0)))}%`, height: '100%', background: 'var(--theme-primary, #2f6fbc)', borderRadius: 3 }} /></div> : null}</div>
+                    {(selected.derived_documents?.transcript_draft_id || selected.derived_documents?.minutes_draft_id) ? <div className="mdoc-audio-docs">{selected.derived_documents?.transcript_draft_id ? <button type="button" style={styles.btn} onClick={() => void openDocumentFromAudio(selected.derived_documents?.transcript_draft_id)}>{t('Open transcript', '打开逐字稿')}</button> : null}{selected.derived_documents?.minutes_draft_id ? <button type="button" style={styles.btnPrimary} onClick={() => void openDocumentFromAudio(selected.derived_documents?.minutes_draft_id)}>{t('Open meeting minutes', '打开会议纪要')}</button> : null}</div> : null}
+                    {selected.retention_until ? <div className="mdoc-retention">{t('Original audio retention until', '原始音频保留至')} {formatUpdatedAt(selected.retention_until, isZh)}</div> : null}
                   </div>
                 ) : <MobileDraftFilePreview key={selected.id} item={selected} lang={lang} />
               ) : (
@@ -1728,14 +1656,7 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
             </div>
             {selected?.id ? (
               <div
-                className="mobile-documents-preview-footer"
-                style={{
-                  padding: '8px 14px',
-                   borderTop: '1px solid var(--theme-border-subtle, #e8eef5)',
-                   fontSize: '0.78rem',
-                  opacity: 0.5,
-                  fontFamily: 'ui-monospace, monospace',
-                }}
+                className="mobile-documents-preview-footer mdoc-preview-footer"
               >
                 ID: {selected.id}
                 {selected.has_original && selected.source_filename
@@ -1754,11 +1675,10 @@ export function MobileDocumentsPanel({ lang, open, onClose, inline = false }: Mo
         role="region"
         aria-label={t('Mobile documents', '移动文稿库')}
         data-testid="mobile-documents-inline"
-        className="mobile-documents-inline"
+        className="mobile-documents-inline mdoc-inline-root"
         data-ai-theme={appTheme}
         data-ai-dark-scheme={appDarkScheme}
         data-ai-light-scheme={appLightScheme}
-        style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, width: '100%', height: '100%' }}
       >
         {shell}
       </div>

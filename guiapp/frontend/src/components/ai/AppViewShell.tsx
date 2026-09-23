@@ -165,7 +165,7 @@ export function AppViewShell({
                 onMouseDown={(event) => {
                     if (typeof window.PointerEvent === "undefined") onResizeStart?.(event.nativeEvent);
                 }}
-                style={{ width: 10, cursor: "col-resize", position: "absolute", left: 0, top: 0, bottom: 0, zIndex: 2, touchAction: "none", userSelect: "none" }}
+                className="avs-resize-handle"
             />
             <header
                 data-testid="app-view-header"
@@ -183,7 +183,7 @@ export function AppViewShell({
                     background: theme.titleBarBg,
                 }}
             >
-                <div style={{ minWidth: 0 }}>
+                <div className="avs-header-text">
                     <div style={{ color: theme.titleText, fontWeight: 700, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                         {view.title}
                     </div>
@@ -239,10 +239,10 @@ export function AppViewShell({
                 </nav>
             )}
 
-            <div style={{ flex: 1, minHeight: 0, display: "flex", overflow: "hidden" }}>
+            <div className="avs-body">
                 <div style={{ flex: sideView ? 1.4 : 1, minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column" }}>
                     {mainView ? (
-                        <div style={{ flex: 1, minHeight: 0 }} data-testid="app-view-main">
+                        <div className="avs-main" data-testid="app-view-main">
                             <AgentTaskPanel
                                 view={mainView}
                                 theme={theme}

@@ -14,6 +14,8 @@ import (
 )
 
 // Allowed config-agent tools for LLM / rule planners.
+var llmPlanJSONObjectRe = regexp.MustCompile(`(?s)\{.*\}`)
+
 var configAgentAllowedTools = map[string]struct{}{
 	"system_free.get":                  {},
 	"system_free.test":                 {},
@@ -261,8 +263,7 @@ func parseLLMPlanDraft(content string) (*llmPlanDraft, error) {
 	}
 	// Extract first JSON object.
 	if !strings.HasPrefix(content, "{") {
-		re := regexp.MustCompile(`(?s)\{.*\}`)
-		m := re.FindString(content)
+		m := llmPlanJSONObjectRe.FindString(content)
 		if m == "" {
 			return nil, fmt.Errorf("no JSON object in LLM response")
 		}

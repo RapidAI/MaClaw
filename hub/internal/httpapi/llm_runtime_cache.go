@@ -13,6 +13,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/im"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
+	"golang.org/x/sync/singleflight"
 )
 
 // llmRuntimeCacheTTL bounds how long a cached registry survives without a
@@ -54,6 +55,24 @@ var globalLLMRuntimeCache = &llmRuntimeCacheState{
 	promptConfig: map[string]cachedPromptCacheConfig{},
 }
 
+// llmRegistryLoadFlights merges concurrent cache misses so a burst of
+// requests for the same tenant loads and unmarshals the multi-MB registry
+// once instead of once per request.
+var (
+	llmProviderRegistryLoadFlight singleflight.Group
+	llmServiceRegistryLoadFlight  singleflight.Group
+)
+
+type loadedLLMProviderRegistryResult struct {
+	reg *im.LLMProviderRegistry
+	err error
+}
+
+type loadedLLMServiceRegistryResult struct {
+	reg *llmservice.Registry
+	err error
+}
+
 func loadCachedLLMProviderRegistry(ctx context.Context, system store.SystemSettingsRepository) (*im.LLMProviderRegistry, error) {
 	if system == nil {
 		return im.LoadLLMProviderRegistry(ctx, system)
@@ -66,11 +85,18 @@ func loadCachedLLMProviderRegistry(ctx context.Context, system store.SystemSetti
 	if ok && now.Sub(entry.loadedAt) < llmRuntimeCacheTTL {
 		return cloneLLMProviderRegistry(entry.value), entry.err
 	}
-	reg, err := im.LoadLLMProviderRegistry(ctx, system)
-	globalLLMRuntimeCache.mu.Lock()
-	globalLLMRuntimeCache.providers[key] = cachedLLMProviderRegistry{loadedAt: now, value: cloneLLMProviderRegistry(reg), err: err}
-	globalLLMRuntimeCache.mu.Unlock()
-	return cloneLLMProviderRegistry(reg), err
+	result, _, _ := llmProviderRegistryLoadFlight.Do(key, func() (any, error) {
+		// Detach from the requesting context so one caller's cancellation
+		// cannot fail the shared load for every waiter; context values
+		// (e.g. tenant identity) are preserved.
+		reg, err := im.LoadLLMProviderRegistry(context.WithoutCancel(ctx), system)
+		globalLLMRuntimeCache.mu.Lock()
+		globalLLMRuntimeCache.providers[key] = cachedLLMProviderRegistry{loadedAt: time.Now(), value: cloneLLMProviderRegistry(reg), err: err}
+		globalLLMRuntimeCache.mu.Unlock()
+		return loadedLLMProviderRegistryResult{reg: reg, err: err}, nil
+	})
+	loaded := result.(loadedLLMProviderRegistryResult)
+	return cloneLLMProviderRegistry(loaded.reg), loaded.err
 }
 
 func loadCachedLLMServiceRegistryForViewer(ctx context.Context, system store.SystemSettingsRepository, userID, email string) (*llmservice.Registry, error) {
@@ -106,14 +132,25 @@ func loadCachedLLMServiceRegistry(ctx context.Context, system store.SystemSettin
 	if ok && now.Sub(entry.loadedAt) < llmRuntimeCacheTTL {
 		return cloneLLMServiceRegistry(entry.value), entry.err
 	}
-	reg, err := llmservice.LoadRegistry(ctx, system)
+	// Merge concurrent misses so the shared multi-MB load runs once; the load
+	// detaches from the requesting context so one caller's cancellation cannot
+	// fail it for every waiter.
+	result, _, _ := llmServiceRegistryLoadFlight.Do(key, func() (any, error) {
+		return loadLLMServiceRegistryOnce(ctx, system, key)
+	})
+	loaded := result.(loadedLLMServiceRegistryResult)
+	return cloneLLMServiceRegistry(loaded.reg), loaded.err
+}
+
+func loadLLMServiceRegistryOnce(ctx context.Context, system store.SystemSettingsRepository, key string) (loadedLLMServiceRegistryResult, error) {
+	reg, err := llmservice.LoadRegistry(context.WithoutCancel(ctx), system)
 	if err == nil && reg != nil {
 		ledgerBefore := len(reg.BillingLedger)
 		llmservice.TrimBillingLedgerForRegistry(reg)
 		// Persist the shrink so the multi-MB registry row converges instead of
 		// re-parsing the full append-only ledger on every reload.
 		if len(reg.BillingLedger) != ledgerBefore {
-			if saveErr := llmservice.SaveRegistry(ctx, system, reg); saveErr != nil {
+			if saveErr := llmservice.SaveRegistry(context.WithoutCancel(ctx), system, reg); saveErr != nil {
 				log.Printf("[llm-runtime-cache] trim billing ledger persist failed: %v", saveErr)
 			}
 		}
@@ -121,16 +158,16 @@ func loadCachedLLMServiceRegistry(ctx context.Context, system store.SystemSettin
 		// an active grant under the old redeem policy. After promote+save, later
 		// loads see StartsAt <= now and skip this path.
 		if n := llmservice.PromoteQueuedMeteredGrants(reg, time.Now().UTC()); n > 0 {
-			if saveErr := llmservice.SaveRegistry(ctx, system, reg); saveErr != nil {
+			if saveErr := llmservice.SaveRegistry(context.WithoutCancel(ctx), system, reg); saveErr != nil {
 				// Keep the in-memory promotion for this response even if persist fails.
 				_ = saveErr
 			}
 		}
 	}
 	globalLLMRuntimeCache.mu.Lock()
-	globalLLMRuntimeCache.services[key] = cachedLLMServiceRegistry{loadedAt: now, value: cloneLLMServiceRegistry(reg), err: err}
+	globalLLMRuntimeCache.services[key] = cachedLLMServiceRegistry{loadedAt: time.Now(), value: cloneLLMServiceRegistry(reg), err: err}
 	globalLLMRuntimeCache.mu.Unlock()
-	return cloneLLMServiceRegistry(reg), err
+	return loadedLLMServiceRegistryResult{reg: reg, err: err}, nil
 }
 
 func loadCachedHubLLMPromptCacheConfig(ctx context.Context, system store.SystemSettingsRepository) HubLLMPromptCacheConfig {

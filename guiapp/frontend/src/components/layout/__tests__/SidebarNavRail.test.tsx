@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type React from 'react';
@@ -668,5 +670,36 @@ describe('SidebarNavRail library menu', () => {
         fireEvent.click(screen.getByTestId('system-menu-trigger'));
         expect(screen.queryByTestId('library-popup-menu')).toBeNull();
         expect(screen.getByTestId('system-popup-menu')).toBeTruthy();
+    });
+});
+
+describe('SidebarNavRail TigerClaw brand', () => {
+    it('shows the TigerClaw name under the product icon', () => {
+        renderRail({
+            brandInfo: { id: 'qianxin' },
+            brandSidebarName: 'TigerClaw',
+            currentIcon: 'qianxin.png',
+        });
+
+        const header = document.querySelector('.sidebar-header--tiger');
+        expect(header).toBeTruthy();
+        const logo = header?.querySelector('img.sidebar-logo');
+        expect(logo?.getAttribute('src')).toBe('qianxin.png');
+        expect(header?.textContent).toContain('TigerClaw');
+        expect(header?.querySelector('.mc-sidebar-brand-mark')).toBeNull();
+    });
+
+    it('does not paint a blue plate around the TigerClaw icon', () => {
+        const css = readFileSync(join(process.cwd(), 'src/App.css'), 'utf8');
+        const header = css.match(/\.sidebar-header--tiger \{[^}]+\}/);
+        const rule = css.match(/\.sidebar-header--tiger \.sidebar-logo \{[^}]+\}/);
+        expect(header).toBeTruthy();
+        expect(header?.[0]).toContain('background: transparent');
+        expect(header?.[0]).not.toContain('primary-soft');
+        expect(rule).toBeTruthy();
+        expect(rule?.[0]).toContain('background: transparent');
+        expect(rule?.[0]).toContain('padding: 0');
+        expect(rule?.[0]).toMatch(/margin-bottom:\s*0\s*!important/);
+        expect(rule?.[0]).not.toContain('--mc-accent');
     });
 });

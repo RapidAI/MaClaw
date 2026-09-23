@@ -84,7 +84,7 @@ export function AssistantTitleBarNotifications({
 
     return (
         <>
-            <div data-notification-anchor="true" style={{ position: "relative" }}>
+            <div data-notification-anchor="true" className="atbn-anchor">
                 <NotificationBell
                     unreadCount={unreadCount}
                     onClick={handleTogglePanel}
@@ -131,8 +131,8 @@ export function AssistantTitleBarNotifications({
                         gap: "6px",
                     }}
                 >
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                        <span style={{ fontSize: "12px", fontWeight: 600, color: "var(--theme-danger, #c43d34)", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                    <div className="atbn-urgent-head">
+                        <span className="atbn-urgent-label">
                             <IconRecord size={12} color="var(--theme-danger, #c43d34)" />
                             {localizeText(lang, "Urgent Notification", "\u7d27\u6025\u901a\u77e5", "\u7dca\u6025\u901a\u77e5")}
                         </span>
@@ -147,16 +147,7 @@ export function AssistantTitleBarNotifications({
                     <button
                         data-testid="notification-urgent-toast-open"
                         onClick={handleOpenFromToast}
-                        style={{
-                            background: "none",
-                            border: "none",
-                            padding: 0,
-                            textAlign: "left",
-                            cursor: "pointer",
-                            display: "flex",
-                            flexDirection: "column",
-                            gap: "6px",
-                        }}
+                        className="atbn-urgent-open"
                     >
                         <span style={{ fontSize: "13px", fontWeight: 500, color: t.text, lineHeight: 1.45, wordBreak: "break-word" }}>{urgentToast.title}</span>
                         <span style={{ fontSize: "12px", color: t.promptColor, lineHeight: 1.5, display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden", wordBreak: "break-word" }}>

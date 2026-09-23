@@ -105,12 +105,8 @@ export function AssistantReasoningPanel({
             }}
         >
             <span
-                className={live ? "assistant-reasoning-live-label" : undefined}
+                className={live ? "assistant-reasoning-live-label arp-label" : "arp-label"}
                 data-testid="assistant-reasoning-label"
-                style={{
-                    flex: "0 0 auto",
-                    whiteSpace: "nowrap",
-                }}
             >
                 {label}
             </span>
@@ -118,15 +114,7 @@ export function AssistantReasoningPanel({
                 <span
                     data-testid="assistant-reasoning-object"
                     title={objectText}
-                    style={{
-                        flex: "1 1 auto",
-                        minWidth: 0,
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                        fontWeight: 450,
-                        opacity: 0.78,
-                    }}
+                    className="arp-object"
                 >
                     {objectText}
                 </span>
@@ -134,16 +122,16 @@ export function AssistantReasoningPanel({
         </span>
     );
     const stepMark = typeof step === "number" ? (
-        <span style={{ fontSize: 10, fontWeight: 600, opacity: .72, flex: "0 0 auto", whiteSpace: "nowrap" }}>#{step}</span>
+        <span className="arp-step">#{step}</span>
     ) : null;
     const summaryChildren = (showToggle: boolean) => (
         <>
             {liveDot}
             {liveLabel}
             {stepMark}
-            {preview && !isOpen && !live && <span style={{ flex: "1 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 450, opacity: .72 }}>{preview}</span>}
+            {preview && !isOpen && !live && <span className="arp-preview">{preview}</span>}
             {showToggle ? (
-                <span aria-live="polite" data-testid="assistant-reasoning-toggle-state" style={{ marginLeft: "auto", fontSize: 10, fontWeight: 500, opacity: .65 }}>
+                <span aria-live="polite" data-testid="assistant-reasoning-toggle-state" className="arp-toggle-state">
                     {isOpen
                         ? (lang === "en" ? "Collapse" : lang === "zh-Hant" ? "收起" : "收起")
                         : (lang === "en" ? "Expand" : lang === "zh-Hant" ? "展開" : "展开")}

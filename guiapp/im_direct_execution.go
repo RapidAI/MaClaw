@@ -10,7 +10,7 @@ import (
 )
 
 func (h *IMMessageHandler) tryDirectExecutionProfile(msg IMUserMessage, loopCtx *LoopContext, history []agent.ConversationEntry) (*IMAgentResponse, bool) {
-	if loopCtx == nil || !loopCtx.Runtime.Execution.IsDirect() {
+	if loopCtx == nil || !loopCtx.Runtime.Execution.IsDirect() || loopCtx.semanticTurnAnswerOnly {
 		return nil, false
 	}
 	// Group turns with authorised knowledge must reach the normal agent loop so

@@ -1,0 +1,326 @@
+/* ── Onboarding Wizard dark theme ──
+ * The OnboardingWizard uses createPortal(... , document.body) and renders
+ * outside #App, so it cannot inherit dark-theme CSS variables from
+ * #App[data-ai-theme='dark']. Duplicate the variables on its own
+ * data-ai-theme attribute. Keep in sync with the #App dark theme block.
+ */
+[data-ai-theme='dark'] {
+    --theme-primary: #7ea8e0;
+    --theme-primary-strong: #a5c4ee;
+    --theme-primary-soft: rgba(126, 168, 224, 0.14);
+    --theme-page-bg: #0f141b;
+    --theme-surface: #161c26;
+    --theme-surface-muted: #1b2230;
+    --theme-text-primary: #e3e9f1;
+    --theme-text-secondary: #b4c0cf;
+    --theme-text-muted: #7f8ea1;
+    --theme-border: #2b3444;
+    --theme-border-subtle: #232b39;
+    --theme-success: #3fb950;
+    --theme-success-bg: rgba(63, 185, 80, 0.13);
+    --theme-warning: #d0b36a;
+    --theme-warning-bg: rgba(208, 179, 106, 0.12);
+    --theme-danger: #f47067;
+    --theme-danger-bg: rgba(244, 112, 103, 0.12);
+    --theme-link-color: #7ea8e0;
+    --theme-info-bg: rgba(126, 168, 224, 0.10);
+    --theme-on-primary: #0f141b;
+    /* UI polish: dark-mode shadow scale (black-based, mirrors :root polish tokens). */
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+    --shadow-md: 0 1px 2px rgba(0, 0, 0, 0.30), 0 4px 12px -2px rgba(0, 0, 0, 0.40);
+    --shadow-lg: 0 8px 28px -6px rgba(0, 0, 0, 0.55);
+    --shadow-xl: 0 12px 40px -8px rgba(0, 0, 0, 0.60);
+}
+
+[data-ai-theme='dark'][data-ai-dark-scheme='graphite'] {
+    --theme-primary: #7ea8e0;
+    --theme-primary-strong: #a5c4ee;
+    --theme-primary-soft: rgba(126, 168, 224, 0.14);
+    --theme-page-bg: #0f141b;
+    --theme-surface: #161c26;
+    --theme-surface-muted: #1b2230;
+    --theme-text-primary: #e3e9f1;
+    --theme-text-secondary: #b4c0cf;
+    --theme-text-muted: #7f8ea1;
+    --theme-border: #2b3444;
+    --theme-border-subtle: #232b39;
+    --theme-success: #3fb950;
+    --theme-success-bg: rgba(63, 185, 80, 0.13);
+    --theme-warning: #d0b36a;
+    --theme-warning-bg: rgba(208, 179, 106, 0.12);
+    --theme-danger: #f47067;
+    --theme-danger-bg: rgba(244, 112, 103, 0.12);
+    --theme-link-color: #7ea8e0;
+    --theme-info-bg: rgba(126, 168, 224, 0.10);
+    --theme-on-primary: #0f141b;
+}
+
+/* Classic Slate keeps the pre-2026-08 dark palette. The base dark blocks above
+   now hold the default (graphite) navy palette, so classic needs its own
+   override block to stay pixel-identical for users who selected it. */
+[data-ai-theme='dark'][data-ai-dark-scheme='classic'] {
+    --theme-primary: #8fb4dc;
+    --theme-primary-strong: #5f89b8;
+    --theme-primary-soft: rgba(96, 140, 184, 0.18);
+    --theme-page-bg: #0b1220;
+    --theme-surface: #111827;
+    --theme-surface-muted: #0f172a;
+    --theme-text-primary: #e5e7eb;
+    --theme-text-secondary: #cbd5e1;
+    --theme-text-muted: #a8b8c8;
+    --theme-border: #334155;
+    --theme-border-subtle: #1e293b;
+    --theme-success: #7aa89a;
+    --theme-success-bg: rgba(122, 168, 154, 0.12);
+    --theme-warning: #c7d7e8;
+    --theme-warning-bg: rgba(148, 163, 184, 0.12);
+    --theme-danger: #e07a72;
+    --theme-danger-bg: rgba(196, 61, 52, 0.12);
+    --theme-link-color: #9bc2ea;
+    --theme-info-bg: rgba(96, 140, 184, 0.14);
+    --theme-on-primary: #0b1220;
+}
+
+[data-ai-theme='dark'][data-ai-dark-scheme='aurora'] {
+    --theme-primary: #7dd3fc;
+    --theme-primary-strong: #38bdf8;
+    --theme-primary-soft: rgba(56, 189, 248, 0.16);
+    --theme-page-bg: #071018;
+    --theme-surface: #0d1721;
+    --theme-surface-muted: #111f2b;
+    --theme-text-primary: #e6f1f8;
+    --theme-text-secondary: #b8cad6;
+    --theme-text-muted: #8297a6;
+    --theme-border: #223646;
+    --theme-border-subtle: #182936;
+    --theme-success: #86d9b5;
+    --theme-success-bg: rgba(134, 217, 181, 0.13);
+    --theme-warning: #d5c786;
+    --theme-warning-bg: rgba(213, 199, 134, 0.12);
+    --theme-danger: #f08a84;
+    --theme-danger-bg: rgba(240, 138, 132, 0.12);
+    --theme-link-color: #93ddff;
+    --theme-info-bg: rgba(56, 189, 248, 0.13);
+    --theme-on-primary: #041018;
+}
+
+[data-ai-theme='dark'][data-ai-dark-scheme='ember'] {
+    --theme-primary: #8fb0d4;
+    --theme-primary-strong: #a9c2e2;
+    --theme-primary-soft: rgba(143, 176, 212, 0.14);
+    --theme-page-bg: #140e0a;
+    --theme-surface: #1e1612;
+    --theme-surface-muted: #251c16;
+    --theme-text-primary: #f2e6d8;
+    --theme-text-secondary: #cbb8a4;
+    --theme-text-muted: #9a8570;
+    --theme-border: #3a2e24;
+    --theme-border-subtle: #2d2118;
+    --theme-success: #6db88a;
+    --theme-success-bg: rgba(109, 184, 138, 0.13);
+    --theme-warning: #e0c06c;
+    --theme-warning-bg: rgba(224, 192, 108, 0.12);
+    --theme-danger: #e06b5e;
+    --theme-danger-bg: rgba(224, 107, 94, 0.12);
+    --theme-link-color: #8fb0d4;
+    --theme-info-bg: rgba(143, 176, 212, 0.10);
+    --theme-on-primary: #140e0a;
+}
+
+[data-ai-theme='dark'][data-ai-dark-scheme='violet'] {
+    --theme-primary: #9db9e8;
+    --theme-primary-strong: #b7cef2;
+    --theme-primary-soft: rgba(157, 185, 232, 0.14);
+    --theme-page-bg: #0e0a18;
+    --theme-surface: #150f24;
+    --theme-surface-muted: #1b1330;
+    --theme-text-primary: #ebe4f5;
+    --theme-text-secondary: #c8b8dc;
+    --theme-text-muted: #8d7da8;
+    --theme-border: #33284a;
+    --theme-border-subtle: #261d3a;
+    --theme-success: #7cdba8;
+    --theme-success-bg: rgba(124, 219, 168, 0.13);
+    --theme-warning: #d4c27a;
+    --theme-warning-bg: rgba(212, 194, 122, 0.12);
+    --theme-danger: #ef8078;
+    --theme-danger-bg: rgba(239, 128, 120, 0.12);
+    --theme-link-color: #9db9e8;
+    --theme-info-bg: rgba(157, 185, 232, 0.10);
+    --theme-on-primary: #0e0a18;
+}
+
+/* ── Light Mode Palette Schemes ── */
+
+/* Keep the assistant's TypeScript palette and the shared application chrome
+ * on the same source of truth.  Fluent is the default workbench look; the
+ * explicit classic scheme remains available for users who prefer the older
+ * blue-gray surfaces. */
+
+/* WCAG AA contrast fixes (lightness-only): primary #2f78d0→#2e75cb (was 4.45:1 on white), success #16a34a→#11813a, warning #d97706→#aa5d05, danger #e5484d→#dc1f25. */
+[data-ai-light-scheme='fluent'] {
+    --theme-primary: #2e75cb;
+    --theme-primary-strong: #1e6bc5;
+    --theme-primary-soft: rgba(47, 120, 208, 0.10);
+    --theme-page-bg: #ffffff;
+    --theme-surface: #ffffff;
+    --theme-surface-muted: #eef5ff;
+    --theme-text-primary: #17263c;
+    --theme-text-secondary: #46586f;
+    --theme-text-muted: #56677c;
+    --theme-border: #c9ddf6;
+    --theme-border-subtle: #dde9fa;
+    --theme-success: #11813a;
+    --theme-success-bg: rgba(22, 163, 74, 0.07);
+    --theme-warning: #aa5d05;
+    --theme-warning-bg: rgba(217, 119, 6, 0.07);
+    --theme-danger: #dc1f25;
+    --theme-danger-bg: rgba(229, 72, 77, 0.06);
+    --theme-link-color: #2e75cb;
+    --theme-info-bg: rgba(47, 120, 208, 0.06);
+    --theme-on-primary: #ffffff;
+}
+
+/* WCAG AA contrast fix (lightness-only): warning #9a6700→#976500 (was 4.45:1 on warning-bg). */
+[data-ai-light-scheme='github'] {
+    --theme-primary: #0969da;
+    --theme-primary-strong: #0550ae;
+    --theme-primary-soft: rgba(9, 105, 218, 0.08);
+    --theme-page-bg: #f6f8fa;
+    --theme-surface: #ffffff;
+    --theme-surface-muted: #f6f8fa;
+    --theme-text-primary: #1f2328;
+    --theme-text-secondary: #424a53;
+    --theme-text-muted: #656d76;
+    --theme-border: #d0d7de;
+    --theme-border-subtle: #e1e7ed;
+    --theme-success: #1a7f37;
+    --theme-success-bg: rgba(26, 127, 55, 0.07);
+    --theme-warning: #976500;
+    --theme-warning-bg: rgba(154, 103, 0, 0.07);
+    --theme-danger: #cf222e;
+    --theme-danger-bg: rgba(207, 34, 46, 0.06);
+    --theme-link-color: #0969da;
+    --theme-info-bg: rgba(9, 105, 218, 0.06);
+    --theme-on-primary: #ffffff;
+}
+
+/* WCAG AA contrast fix (lightness-only): success #4f7f6f→#4b796a (was 4.23:1 on success-bg). */
+[data-ai-light-scheme='default'] {
+    --theme-primary: #2f6fbc;
+    --theme-primary-strong: #235a9e;
+    --theme-primary-soft: rgba(47, 111, 188, 0.10);
+    --theme-page-bg: #f4f7fb;
+    --theme-surface: #ffffff;
+    --theme-surface-muted: #f0f4f9;
+    --theme-text-primary: #1c2733;
+    --theme-text-secondary: #44546a;
+    --theme-text-muted: #657384;
+    --theme-border: #d9e1ec;
+    --theme-border-subtle: #e8eef5;
+    --theme-success: #4b796a;
+    --theme-success-bg: #f3f7f5;
+    --theme-warning: #64748b;
+    --theme-warning-bg: #f8fafc;
+    --theme-danger: #c43d34;
+    --theme-danger-bg: #fbf1f0;
+    --theme-link-color: #2f6fbc;
+    --theme-info-bg: #f3f7fb;
+    --theme-on-primary: #ffffff;
+}
+
+/* WCAG AA contrast fixes (lightness-only): warning #d9730d→#ad5c0a, danger #e03e3e→#da2323. */
+[data-ai-light-scheme='notion'] {
+    --theme-primary: #2f3437;
+    --theme-primary-strong: #1a1d1f;
+    --theme-primary-soft: rgba(47, 52, 55, 0.06);
+    --theme-page-bg: #ffffff;
+    --theme-surface: #ffffff;
+    --theme-surface-muted: #fbfbfa;
+    --theme-text-primary: #37352f;
+    --theme-text-secondary: #55534e;
+    --theme-text-muted: #73716e;
+    --theme-border: #e9e9e7;
+    --theme-border-subtle: #f1f1ef;
+    --theme-success: #0f7b6c;
+    --theme-success-bg: rgba(15, 123, 108, 0.06);
+    --theme-warning: #ad5c0a;
+    --theme-warning-bg: rgba(217, 115, 13, 0.06);
+    --theme-danger: #da2323;
+    --theme-danger-bg: rgba(224, 62, 62, 0.06);
+    --theme-link-color: #2f3437;
+    --theme-info-bg: rgba(47, 52, 55, 0.04);
+    --theme-on-primary: #ffffff;
+}
+
+/* WCAG AA contrast fixes (lightness-only): success #26b583→#1b805d, warning #f2994a→#b25a0d, danger #eb5757→#de1a1a. */
+[data-ai-light-scheme='linear'] {
+    --theme-primary: #5e6ad2;
+    --theme-primary-strong: #4850b8;
+    --theme-primary-soft: rgba(94, 106, 210, 0.08);
+    --theme-page-bg: #fbfbfd;
+    --theme-surface: #ffffff;
+    --theme-surface-muted: #f5f5f8;
+    --theme-text-primary: #1b1c20;
+    --theme-text-secondary: #3c3e44;
+    --theme-text-muted: #6b7078;
+    --theme-border: #e4e5ea;
+    --theme-border-subtle: #eeeff2;
+    --theme-success: #1b805d;
+    --theme-success-bg: rgba(38, 181, 131, 0.07);
+    --theme-warning: #b25a0d;
+    --theme-warning-bg: rgba(242, 153, 74, 0.07);
+    --theme-danger: #de1a1a;
+    --theme-danger-bg: rgba(235, 87, 87, 0.06);
+    --theme-link-color: #5e6ad2;
+    --theme-info-bg: rgba(94, 106, 210, 0.05);
+    --theme-on-primary: #ffffff;
+}
+
+/* WCAG AA contrast fixes (lightness-only): success #0d9f6e→#0b8159, warning #cb7e1a→#a06314. */
+[data-ai-light-scheme='stripe'] {
+    --theme-primary: #635bff;
+    --theme-primary-strong: #4b45c7;
+    --theme-primary-soft: rgba(99, 91, 255, 0.06);
+    --theme-page-bg: #ffffff;
+    --theme-surface: #ffffff;
+    --theme-surface-muted: #f8f9fa;
+    --theme-text-primary: #1a1f36;
+    --theme-text-secondary: #3c4257;
+    --theme-text-muted: #697386;
+    --theme-border: #e3e8ee;
+    --theme-border-subtle: #f0f2f5;
+    --theme-success: #0b8159;
+    --theme-success-bg: rgba(13, 159, 110, 0.06);
+    --theme-warning: #a06314;
+    --theme-warning-bg: rgba(203, 126, 26, 0.06);
+    --theme-danger: #cd3d45;
+    --theme-danger-bg: rgba(205, 61, 69, 0.05);
+    --theme-link-color: #635bff;
+    --theme-info-bg: rgba(99, 91, 255, 0.04);
+    --theme-on-primary: #ffffff;
+}
+
+/* WCAG AA contrast fixes (lightness-only): success #17b169→#11824d, warning #f5a623→#a06607, danger #e5484d→#dd1f25. */
+[data-ai-light-scheme='vercel'] {
+    --theme-primary: #000000;
+    --theme-primary-strong: #000000;
+    --theme-primary-soft: rgba(0, 0, 0, 0.05);
+    --theme-page-bg: #ffffff;
+    --theme-surface: #ffffff;
+    --theme-surface-muted: #fafafa;
+    --theme-text-primary: #171717;
+    --theme-text-secondary: #404040;
+    --theme-text-muted: #737373;
+    --theme-border: #e5e5e5;
+    --theme-border-subtle: #f0f0f0;
+    --theme-success: #11824d;
+    --theme-success-bg: rgba(23, 177, 105, 0.06);
+    --theme-warning: #a06607;
+    --theme-warning-bg: rgba(245, 166, 35, 0.06);
+    --theme-danger: #dd1f25;
+    --theme-danger-bg: rgba(229, 72, 77, 0.05);
+    --theme-link-color: #000000;
+    --theme-info-bg: rgba(0, 0, 0, 0.03);
+    --theme-on-primary: #ffffff;
+}

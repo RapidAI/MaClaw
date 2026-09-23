@@ -226,20 +226,52 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 				copied := replayed
 				semanticIntent = &copied
 				executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
-			} else if semanticClassificationNeedsTaskContext(semanticIntent) || pendingAnswerPrefersTaskMerge(semanticIntent, isPendingAnswerTurn) {
-				// The bare message classified nowhere actionable, or this turn
-				// answers a pending question with a weak standalone verdict.
-				// An answer takes its meaning from the question — a 16-rune
-				// reply ("1. 布娃 2。可爱风 3。没有") has no reliable intent of
-				// its own (production 2026-08-27: bare tree verdict coding@0.80
-				// routed the PPT continuation onto the coding surface and the
-				// task died there). Retry once with the recent user task intent
-				// merged in; only a confident bare verdict overrides.
-				if merged, ok := h.classifyWithTaskContextMerge(turnCtx, msg, history, recentHistoryTexts(history, 6)); ok {
-					semanticIntent = &merged
-					executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
+			} else {
+				residue, residueOpen, factsOnly := h.loadDesktopTurnResidue(msg, opts.WorkflowAgentLoop, msg.Attachments)
+				// "你好" / "你好啊" while a task is open is not a new plan and
+				// not a continuation. Merging the task summary would relabel
+				// it and pull the open surface back in.
+				if !markOpenTaskAnswerOnly(loopCtx, residueOpen, msg.Text) {
+					followUp := (residueOpen || factsOnly) && semanticUtteranceIsTaskFollowUp(msg.Text)
+					if semanticClassificationNeedsTaskContext(semanticIntent) || pendingAnswerPrefersTaskMerge(semanticIntent, isPendingAnswerTurn) || (followUp && semanticFollowUpAllowsTaskMerge(semanticIntent, msg.Text)) {
+						// The bare message classified nowhere actionable, this turn
+						// answers a pending question with a weak standalone verdict,
+						// or a short follow-up still belongs to the open desktop task.
+						// An answer takes its meaning from the question — a 16-rune
+						// reply ("1. 布娃 2。可爱风 3。没有") has no reliable intent of
+						// its own (production 2026-08-27: bare tree verdict coding@0.80
+						// routed the PPT continuation onto the coding surface and the
+						// task died there). Retry once with the recent user task intent
+						// merged in; only a confident bare verdict overrides.
+						taskSummary := ""
+						if residueOpen || factsOnly {
+							taskSummary = residue.Summary
+						}
+						if merged, ok := h.classifyWithTaskContextMerge(turnCtx, msg, history, recentHistoryTexts(history, 6), taskSummary); ok {
+							copied := merged
+							semanticIntent = &copied
+							executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
+						}
+					}
+					if residueOpen {
+						relation := decideSemanticResidueRelation(*semanticIntent, msg.Text, residue)
+						if relation == semanticResidueContinue || relation == semanticResidueUnclear {
+							loopCtx.semanticResidueRemaining = residue.Remaining
+							loopCtx.semanticResidueLookupFacts = residue.LookupFacts
+						}
+						if rewritten, applied := semanticClassificationWithOpenResidue(*semanticIntent, residue.Needs, relation); applied {
+							semanticIntent = &rewritten
+							executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
+							log.Printf("[semantic-routing] session residue %s user=%q primary=%s", relation, msg.UserID, rewritten.Primary)
+						}
+					} else if factsOnly && semanticReuseStoredLookupFacts(msg.Text, *semanticIntent) {
+						loopCtx.semanticResidueLookupFacts = true
+					}
 				}
 			}
+		} else {
+			_, residueOpen, _ := h.loadDesktopTurnResidue(msg, opts.WorkflowAgentLoop, msg.Attachments)
+			markOpenTaskAnswerOnly(loopCtx, residueOpen, msg.Text)
 		}
 		loopCtx.Runtime.Execution = executionProfile
 		loopCtx.Runtime.ClassificationMessage = classifyMsg

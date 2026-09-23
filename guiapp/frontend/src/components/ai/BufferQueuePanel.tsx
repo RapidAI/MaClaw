@@ -122,7 +122,7 @@ const fileTypeLabelStyle: React.CSSProperties = {
     padding: "0 3px",
     borderRadius: "3px",
     background: "color-mix(in srgb, var(--theme-primary) 8%, transparent)",
-    color: "#334155",
+    color: "var(--theme-text-secondary)",
     fontSize: "9px",
     fontWeight: 700,
     lineHeight: 1,
@@ -585,12 +585,7 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
                 {/* Attachment management area */}
                 {editAttachments.length > 0 && (
                     <div
-                        style={{
-                            display: "flex",
-                            flexWrap: "wrap",
-                            gap: "4px",
-                            marginTop: "4px",
-                        }}
+                        className="bqp-attach-row"
                     >
                         {editAttachments.map((att, idx) => (
                             <div
@@ -614,12 +609,7 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
                                     <span style={fileTypeLabelStyle}>{getFileTypeIcon(att.extension)}</span>
                                 )}
                                 <span
-                                    style={{
-                                        maxWidth: "80px",
-                                        overflow: "hidden",
-                                        textOverflow: "ellipsis",
-                                        whiteSpace: "nowrap",
-                                    }}
+                                    className="bqp-att-name"
                                 >
                                     {att.fileName}
                                 </span>
@@ -657,12 +647,7 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
 
                 {/* Confirm / Cancel buttons */}
                 <div
-                    style={{
-                        display: "flex",
-                        gap: "6px",
-                        marginTop: "4px",
-                        justifyContent: "flex-end",
-                    }}
+                    className="bqp-actions"
                 >
                     <button
                         type="button"
@@ -735,25 +720,10 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
 
             {/* Middle: text preview + attachment indicators */}
             <div
-                style={{
-                    flex: 1,
-                    minWidth: 0,
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "4px",
-                    lineHeight: 1.25,
-                }}
+                className="bqp-entry-mid"
             >
                 <span
-                    style={{
-                        overflow: "hidden",
-                        display: "-webkit-box",
-                        WebkitLineClamp: 2,
-                        WebkitBoxOrient: "vertical",
-                        whiteSpace: "normal",
-                        flexShrink: 1,
-                        minWidth: 0,
-                    }}
+                    className="bqp-entry-preview"
                 >
                     {getTextPreview(entry.text)}
                 </span>
@@ -772,11 +742,7 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
                     <span
                         key={`${att.filePath}-${idx}`}
                         title={att.filePath}
-                        style={{
-                            flexShrink: 0,
-                            display: "inline-flex",
-                            alignItems: "center",
-                        }}
+                        className="bqp-att-chip"
                     >
                         {att.isImage ? (
                             <QueueAttachmentImage attachment={att} size={18} />
@@ -790,12 +756,7 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
             </div>
 
             <div
-                style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: "4px",
-                    flexShrink: 0,
-                }}
+                className="bqp-entry-side"
             >
                 {onFireEntry && (
                     <button

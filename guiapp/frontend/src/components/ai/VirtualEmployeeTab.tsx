@@ -87,28 +87,16 @@ function EmployeeAvatar({ ve, displayName }: { ve: VirtualEmployeeEntry; display
     if (avatarDataURL) {
         return (
             <img
+                className="vet-avatar-img"
                 src={avatarDataURL}
                 alt=""
-                style={{ width: 28, height: 28, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }}
             />
         );
     }
     return (
         <span
+            className="vet-avatar-fallback"
             aria-hidden="true"
-            style={{
-                width: 28,
-                height: 28,
-                borderRadius: "50%",
-                display: "inline-flex",
-                alignItems: "center",
-                justifyContent: "center",
-                flexShrink: 0,
-                background: "color-mix(in srgb, var(--theme-primary) 10%, var(--theme-surface))",
-                color: "var(--theme-primary)",
-                fontSize: 11,
-                fontWeight: 700,
-            }}
         >
             {displayName.trim().slice(0, 1).toUpperCase() || "D"}
         </span>
@@ -413,7 +401,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
         : (isZh ? "\u6682\u65e0\u53ef\u7528\u7684\u6570\u5b57\u5458\u5de5" : "No digital employees available");
 
     const renderShell = (children: ReactNode, options?: { testId?: string; center?: boolean }) => (
-        <div style={{ position: "relative", overflow: "auto", height: "100%", minWidth: 0, width: "100%" }} data-testid={options?.testId || "ve-list-container"}>
+        <div className="vet-list-shell" data-testid={options?.testId || "ve-list-container"}>
             <div
                 style={{
                     position: "sticky",
@@ -551,7 +539,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                     onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = theme.fieldBg; }}
                     onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
                 >
-                    <span style={{ position: "relative", width: 28, height: 28, flexShrink: 0 }}>
+                    <span className="vet-avatar-wrap">
                         <EmployeeAvatar ve={ve} displayName={displayName} />
                         <span
                             data-testid={`ve-status-${ve.id}`}
@@ -570,12 +558,12 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                     </span>
 
                     {/* Name + skill description */}
-                    <div style={{ flex: 1, minWidth: 0, textAlign: "left" }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 4, minWidth: 0 }}>
+                    <div className="vet-row-text">
+                        <div className="vet-row-name-line">
                             <span style={{ color: theme.text, fontSize: 13, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>
                                 {truncateText(displayName, 20)}
                             </span>
-                            <span style={{ fontSize: 12, flexShrink: 0 }} title={policyLabel(ve.access_policy, lang)}>{policyIcon(ve.access_policy)}</span>
+                            <span className="vet-policy-icon" title={policyLabel(ve.access_policy, lang)}>{policyIcon(ve.access_policy)}</span>
                             {ve.access_policy === "per_request" && (
                                 <span
                                     data-testid={`ve-badge-${ve.id}`}
@@ -667,7 +655,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                             onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = theme.fieldBg; }}
                             onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
                         >
-                            <span style={{ width: 28, textAlign: "center", fontSize: 9, fontWeight: 700, flexShrink: 0 }}>EDIT</span>
+                            <span className="vet-menu-key">EDIT</span>
                             <span>{isZh ? "\u6539\u540d" : "Rename"}</span>
                         </div>
                     )}
@@ -680,7 +668,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                         onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = theme.fieldBg; }}
                         onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
                     >
-                        <span style={{ width: 28, textAlign: "center", fontSize: 9, fontWeight: 700, flexShrink: 0 }}>INFO</span>
+                        <span className="vet-menu-key">INFO</span>
                         <span>{isZh ? "\u67e5\u770b\u4fe1\u606f" : "View Info"}</span>
                     </div>
                 </div>
@@ -688,20 +676,12 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
             })()}
             {renamingEmployee && (
                 <div
+                    className="vet-dialog-overlay"
                     role="dialog"
                     aria-modal="true"
                     aria-labelledby="ve-rename-title"
                     data-testid="ve-rename-dialog"
                     onPointerDown={() => { if (!renameSaving) setRenamingEmployee(null); }}
-                    style={{
-                        position: "fixed",
-                        inset: 0,
-                        zIndex: 10000,
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        background: "rgba(15, 23, 42, 0.32)",
-                    }}
                 >
                     <form
                         onPointerDown={(e) => e.stopPropagation()}
@@ -740,7 +720,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                             />
                             {renameError && <span role="alert" style={{ color: theme.errorText || "#c43d34", fontSize: 12, lineHeight: 1.4 }}>{renameError}</span>}
                         </label>
-                        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
+                        <div className="vet-dialog-actions">
                             <button type="button" onClick={() => setRenamingEmployee(null)} disabled={renameSaving} style={{ minWidth: 72, minHeight: 40, borderRadius: 8, border: `1px solid ${theme.divider}`, background: theme.bg, color: theme.text, font: "inherit", fontWeight: 700 }}>
                                 {isZh ? "\u53d6\u6d88" : "Cancel"}
                             </button>
@@ -754,20 +734,12 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
             {/* Info dialog */}
             {viewInfoVE && (
                 <div
+                    className="vet-dialog-overlay"
                     role="dialog"
                     aria-modal="true"
                     aria-labelledby="ve-info-title"
                     data-testid="ve-info-dialog"
                     onPointerDown={() => setViewInfoVE(null)}
-                    style={{
-                        position: "fixed",
-                        inset: 0,
-                        zIndex: 10000,
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        background: "rgba(15, 23, 42, 0.32)",
-                    }}
                 >
                     <div
                         onPointerDown={(e) => e.stopPropagation()}
@@ -786,8 +758,8 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                         }}
                     >
                         {/* Large avatar + name */}
-                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12, marginBottom: 20 }}>
-                            <div style={{ position: "relative" }}>
+                        <div className="vet-info-avatar-block">
+                            <div className="vet-info-avatar-wrap">
                                 {safeAvatarDataURL(viewInfoVE.ve.avatar_data_url) ? (
                                     <img
                                         src={safeAvatarDataURL(viewInfoVE.ve.avatar_data_url)!}
@@ -823,9 +795,9 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                         </div>
 
                         {/* Info rows */}
-                        <div style={{ display: "grid", gap: 12 }}>
+                        <div className="vet-info-rows">
                             {/* Status */}
-                            <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
+                            <div className="vet-info-row">
                                 <span style={{ fontSize: 12, fontWeight: 600, color: theme.textMuted, minWidth: 72, flexShrink: 0 }}>{isZh ? "\u72b6\u6001" : "Status"}</span>
                                 <span style={{ fontSize: 13, color: isVirtualEmployeeOnline(viewInfoVE.ve) ? (theme.isDark ? "#7aa89a" : "#4f7f6f") : (theme.isDark ? "#a8b8c8" : "#9ca3af"), fontWeight: 600 }}>
                                     {isVirtualEmployeeOnline(viewInfoVE.ve) ? (isZh ? "\u5728\u7ebf" : "Online") : (isZh ? "\u79bb\u7ebf" : "Offline")}
@@ -833,7 +805,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                             </div>
 
                             {/* Source */}
-                            <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
+                            <div className="vet-info-row">
                                 <span style={{ fontSize: 12, fontWeight: 600, color: theme.textMuted, minWidth: 72, flexShrink: 0 }}>{isZh ? "\u6765\u6e90" : "Source"}</span>
                                 <span style={{ fontSize: 13, color: theme.text }}>
                                     {viewInfoVE.ve.machine_id
@@ -843,7 +815,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                             </div>
 
                             {/* Access policy */}
-                            <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
+                            <div className="vet-info-row">
                                 <span style={{ fontSize: 12, fontWeight: 600, color: theme.textMuted, minWidth: 72, flexShrink: 0 }}>{isZh ? "\u8bbf\u95ee\u7b56\u7565" : "Access Policy"}</span>
                                 <span style={{ fontSize: 13, color: theme.text }}>
                                     {policyLabel(viewInfoVE.ve.access_policy, lang)}
@@ -851,7 +823,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                             </div>
 
                             {/* Accessible departments */}
-                            <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
+                            <div className="vet-info-row">
                                 <span style={{ fontSize: 12, fontWeight: 600, color: theme.textMuted, minWidth: 72, flexShrink: 0 }}>{isZh ? "\u53ef\u8bbf\u95ee\u90e8\u95e8" : "Departments"}</span>
                                 <span style={{ fontSize: 13, color: theme.text }}>
                                     {viewInfoVE.ve.whitelist && viewInfoVE.ve.whitelist.length > 0
@@ -862,7 +834,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
 
                             {/* Registration time */}
                             {viewInfoVE.ve.registered_at && (
-                            <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
+                            <div className="vet-info-row">
                                 <span style={{ fontSize: 12, fontWeight: 600, color: theme.textMuted, minWidth: 72, flexShrink: 0 }}>{isZh ? "\u6ce8\u518c\u65f6\u95f4" : "Registered"}</span>
                                 <span style={{ fontSize: 13, color: theme.text }}>
                                     {(() => { try { const d = new Date(viewInfoVE.ve.registered_at!); return isNaN(d.getTime()) ? viewInfoVE.ve.registered_at : d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }); } catch { return viewInfoVE.ve.registered_at; } })()}
@@ -871,7 +843,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                             )}
 
                             {/* ID */}
-                            <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
+                            <div className="vet-info-row">
                                 <span style={{ fontSize: 12, fontWeight: 600, color: theme.textMuted, minWidth: 72, flexShrink: 0 }}>ID</span>
                                 <span style={{ fontSize: 11, color: theme.text, fontFamily: "monospace", opacity: 0.7, wordBreak: "break-all" }}>
                                     {viewInfoVE.ve.machine_id || viewInfoVE.ve.id}
@@ -880,7 +852,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                         </div>
 
                         {/* Skill description */}
-                        <div style={{ marginTop: 16 }}>
+                        <div className="vet-info-skill">
                             <div style={{ fontSize: 12, fontWeight: 600, color: theme.textMuted, marginBottom: 6 }}>{isZh ? "\u6280\u80fd\u4ecb\u7ecd" : "Skill"}</div>
                             <div style={{
                                 fontSize: 13, lineHeight: 1.6, color: theme.text,
@@ -894,7 +866,7 @@ export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtu
                         </div>
 
                         {/* Close button */}
-                        <div style={{ display: "flex", justifyContent: "center", marginTop: 20 }}>
+                        <div className="vet-info-close">
                             <button
                                 type="button"
                                 onClick={() => setViewInfoVE(null)}

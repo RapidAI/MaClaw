@@ -57,7 +57,7 @@ export function CodePreviewFileListButton({ files, pinnedPaths, activeFilePath, 
     const pinLabel = isZh ? (pinned ? "取消固定面板" : "固定面板") : (pinned ? "Unpin panel" : "Pin panel");
 
     return (
-        <span style={{ position: "relative", flexShrink: 0, display: "inline-flex", alignItems: "center" }} data-preview-no-maximize="true">
+        <span className="cpfl-anchor" data-preview-no-maximize="true">
             <button
                 type="button"
                 data-testid="code-preview-file-list-toggle"
@@ -91,7 +91,7 @@ export function CodePreviewFileListButton({ files, pinnedPaths, activeFilePath, 
                     {!pinned && (
                         <div
                             data-testid="code-preview-file-list-backdrop"
-                            style={{ position: "fixed", inset: 0, zIndex: 9998 }}
+                            className="cpfl-backdrop"
                             onClick={close}
                         />
                     )}
@@ -117,7 +117,7 @@ export function CodePreviewFileListButton({ files, pinnedPaths, activeFilePath, 
                             fontFamily: "inherit",
                         }}
                     >
-                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 8px 6px 14px" }}>
+                        <div className="cpfl-head">
                             <span style={{ fontSize: 13, fontWeight: 700, color: theme.text }}>{isZh ? "概览" : "Overview"}</span>
                             <button
                                 type="button"
@@ -148,7 +148,7 @@ export function CodePreviewFileListButton({ files, pinnedPaths, activeFilePath, 
                         <div style={{ padding: "2px 14px 6px", fontSize: 11, fontWeight: 600, color: theme.textMuted }}>
                             {isZh ? `产物 (${paths.length})` : `Artifacts (${paths.length})`}
                         </div>
-                        <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "0 6px 6px" }}>
+                        <div className="cpfl-list">
                             {visiblePaths.map(filePath => {
                                 const file = files.get(filePath);
                                 const active = filePath === activeFilePath;
@@ -192,7 +192,7 @@ export function CodePreviewFileListButton({ files, pinnedPaths, activeFilePath, 
                                         }}>
                                             {formatCodeLanguageLabel(file?.language) || "FILE"}
                                         </span>
-                                        <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                        <span className="cpfl-name">
                                             {extractFileName(filePath)}
                                         </span>
                                     </button>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { activeAssistantTaskIdentity, buildProjectTabRecentMessages, chatHistoriesEquivalent, coerceActiveAssistantTask, expertIDFromTaskTags, isACPAssistantSessionKey, messageBelongsToSession, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sameActiveAssistantTask } from "../aiAssistantPanelSessionUtils";
+import { ACP_ASSISTANT_TAB_IDENTITY, activeAssistantTaskIdentity, buildProjectTabRecentMessages, chatHistoriesEquivalent, coerceActiveAssistantTask, expertIDFromTaskTags, isACPAssistantSessionKey, isAutoACPAssistantTabTaskItem, messageBelongsToSession, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sameActiveAssistantTask, shouldBlockAssistantTabOpenOnTaskRegistration } from "../aiAssistantPanelSessionUtils";
 import type { ChatMessage } from "../useAIAssistant";
 
 describe("aiAssistantPanelSessionUtils", () => {
@@ -44,6 +44,34 @@ describe("aiAssistantPanelSessionUtils", () => {
         expect(isACPAssistantSessionKey(owner)).toBe(true);
         expect(normalizeAssistantSessionKey(owner)).toBe(owner);
         expect(projectPathFromSessionKey(owner)).toBe("");
+    });
+
+    it("does not block the ACP mirror tab when sidebar registration fails", () => {
+        expect(ACP_ASSISTANT_TAB_IDENTITY).toBe("acp");
+        expect(shouldBlockAssistantTabOpenOnTaskRegistration("acp")).toBe(false);
+        expect(shouldBlockAssistantTabOpenOnTaskRegistration("ve")).toBe(true);
+        expect(shouldBlockAssistantTabOpenOnTaskRegistration("discussion")).toBe(true);
+        expect(shouldBlockAssistantTabOpenOnTaskRegistration("project")).toBe(true);
+    });
+
+    it("detects VS Code / ACP sidebar snapshot rows", () => {
+        expect(isAutoACPAssistantTabTaskItem({
+            project_path: "C:/Users/me/.maclaw/data/tasks/vs-code-acp-1787000000001",
+            tags: ["task_management"],
+        })).toBe(true);
+        expect(isAutoACPAssistantTabTaskItem({
+            project_path: "C:/Users/me/.maclaw/data/tasks/vendor-review-1",
+            tags: ["source:assistant_tab:acp:deadbeef"],
+        })).toBe(true);
+        expect(isAutoACPAssistantTabTaskItem({
+            project_path: "C:/Users/me/.maclaw/data/tasks/vendor-review-1787000000001",
+            tags: ["task_management"],
+        })).toBe(false);
+        expect(isAutoACPAssistantTabTaskItem({
+            project_path: "C:/Users/me/.maclaw/data/tasks/vs-code-acp-1787000000001",
+            name: "贪吃蛇",
+            tags: ["task_management", "coding_dev"],
+        })).toBe(false);
     });
 
     it("reads expert ids from durable task-management source tags", () => {

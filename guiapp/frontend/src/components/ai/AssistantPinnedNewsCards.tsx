@@ -23,7 +23,7 @@ export function AssistantPinnedNewsCards({ messages, theme: t }: AssistantPinned
                         padding: "6px 8px", borderRadius: "6px", background: t.fieldBg, border: `1px solid ${t.fieldBorder}`,
                         color: t.text, fontSize: "11px", lineHeight: "1.4", overflow: "hidden",
                     }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: "6px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 600 }}>
+                        <div className="apnc-title-row">
                             <span aria-hidden="true" style={{
                                 display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 3, minWidth: "28px",
                                 height: "16px", padding: "0 5px", borderRadius: "3px", background: t.codeBg, color: t.pathColor,
@@ -32,7 +32,7 @@ export function AssistantPinnedNewsCards({ messages, theme: t }: AssistantPinned
                                 {badge.glyph ? <StatusGlyph kind={badge.glyph} size={10} color="currentColor" /> : null}
                                 {badge.label}
                             </span>
-                            <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{renderInlineMarkdown(news.title, t)}</span>
+                            <span className="apnc-title-text">{renderInlineMarkdown(news.title, t)}</span>
                         </div>
                         {news.body && (
                             <div style={{

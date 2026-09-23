@@ -9,6 +9,32 @@ import (
 	"time"
 )
 
+func TestTerminalProducerArtifactDoesNotNeedAConsumer(t *testing.T) {
+	selection := PlannedSelection{
+		ID:       "selection:need:visual.capture.desktop:a87a5d3a62b1",
+		Produces: []ArtifactContract{{Kind: "image", MIMEType: "image/png", Required: true}},
+	}
+	plan := ToolPlan{Selections: []PlannedSelection{selection}}
+	ref := RouteArtifactRef{
+		ArtifactID:            "artifact-screenshot",
+		Kind:                  "image",
+		MIMEType:              "image/png",
+		IntegrityDigest:       "digest",
+		ProducerSelection:     selection.ID,
+		ProducerPurposeDigest: selectionPurposeDigest(selection),
+		SourceScope:           InvocationScope{RootTaskID: "root", PlanID: "plan", SessionID: "session", TurnID: "turn", PrincipalID: "user"},
+		CreatedAt:             time.Now().UTC(),
+	}
+	if !routeArtifactUsableInPlan(ref, plan) {
+		t.Fatal("a screenshot with no deliver step was treated as corrupt route state")
+	}
+	orphan := ref
+	orphan.ProducerSelection = "selection:missing"
+	if routeArtifactUsableInPlan(orphan, plan) {
+		t.Fatal("an artifact from a selection outside the plan was accepted")
+	}
+}
+
 func TestSQLiteRouteStateStorePersistsTenantPartition(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "route-state.db")
 	store, err := NewSQLiteRouteStateStore(path)

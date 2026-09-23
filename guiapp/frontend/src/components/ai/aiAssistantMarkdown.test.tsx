@@ -432,9 +432,7 @@ describe("renderContentWithCodeBlocks", () => {
 
         const wrapper = container.querySelector("img")?.parentElement as HTMLElement;
         const image = container.querySelector("img") as HTMLImageElement;
-        expect(wrapper.style.maxWidth).toBe("100%");
-        expect(wrapper.style.minWidth).toBe("0px");
-        expect(wrapper.style.overflow).toBe("hidden");
+        expect(wrapper.className).toContain("aamd-kb-thumb-wrap");
         expect(image.style.width).toBe("120px");
         expect(image.style.maxWidth).toBe("100%");
         expect(image.style.boxSizing).toBe("border-box");
@@ -552,9 +550,7 @@ describe("renderContentWithCodeBlocks", () => {
         const wrapper = screen.getByTestId("screenshot-preview-block") as HTMLElement;
         const thumbnail = screen.getByTestId("attachment-image-thumbnail") as HTMLButtonElement;
         const image = container.querySelector("img") as HTMLImageElement;
-        expect(wrapper.style.maxWidth).toBe("100%");
-        expect(wrapper.style.minWidth).toBe("0px");
-        expect(wrapper.style.overflow).toBe("hidden");
+        expect(wrapper.className).toContain("aamm-shot-wrap");
         expect(thumbnail.style.width).toBe("180px");
         expect(thumbnail.style.maxWidth).toBe("100%");
         expect(thumbnail.style.boxSizing).toBe("border-box");
@@ -1937,7 +1933,7 @@ describe("renderMessage assistant display guard", () => {
         const userGroup = screen.getByTestId("assistant-chat-user-user-bubble");
         expect(userGroup.getAttribute("role")).toBe("group");
         expect(userGroup.getAttribute("aria-label")).toBe("Your message");
-        expect(userGroup.style.alignItems).toBe("flex-end");
+        expect(userGroup.className).toContain("aamd-msg-user");
         expect(screen.getByText("You")).toBeTruthy();
         const userBubble = screen.getByTestId("assistant-chat-user-bubble-user-bubble") as HTMLElement;
         expect(userBubble.style.background).toContain("color-mix(in srgb");
@@ -1964,8 +1960,8 @@ describe("renderMessage assistant display guard", () => {
         const assistantGroup = screen.getByTestId("assistant-chat-ai-ai-bubble");
         expect(assistantGroup.getAttribute("role")).toBe("group");
         expect(assistantGroup.getAttribute("aria-label")).toBe("AI assistant message");
-        expect(assistantGroup.style.alignItems).toBe("flex-start");
-        expect(screen.getByText("Default Task")).toBeTruthy();
+        expect(assistantGroup.className).toContain("aamd-msg-ai");
+        expect(screen.getByText("New task")).toBeTruthy();
         const assistantBubble = screen.getByTestId("assistant-chat-ai-bubble-ai-bubble") as HTMLElement;
         expect(assistantBubble.style.borderRadius).toBe("16px");
         const assistantTail = screen.getByTestId("assistant-chat-tail-ai-ai-bubble");
@@ -2016,9 +2012,7 @@ describe("renderMessage assistant display guard", () => {
         const corner = screen.getByTestId("assistant-chat-ai-bubble-copy-ai-bubble-top-right") as HTMLElement;
         expect(corner).toBeTruthy();
         expect(corner.className).toContain("mc-chat-bubble-top-right");
-        expect(corner.style.top).toBe("4px");
-        expect(corner.style.right).toBe("8px");
-        expect(corner.style.position).toBe("absolute");
+        expect(corner.className).toContain("cbf-top-right");
         await fireEvent.click(btn);
         await waitFor(() => expect(writeText).toHaveBeenCalledWith("Full reply body to copy"));
         // Allow post-copy state tick (busy → ok) to settle without act warnings.
@@ -2078,7 +2072,7 @@ describe("renderMessage assistant display guard", () => {
         }, vi.fn(), lightTheme, false, "Saved file", "en", false)}</div>);
 
         const row = screen.getByTestId("assistant-chat-error-request-failed");
-        expect(row.style.justifyContent).toBe("flex-start");
+        expect(row.className).toContain("aamd-msg-row");
         // The full-width row must not carry role="alert": App.css paints a
         // background+border on every [role='alert'], which would show as a
         // wide pink strip behind the compact bubble.
@@ -2164,7 +2158,7 @@ describe("renderMessage assistant display guard", () => {
         const progress = screen.getByTestId("assistant-chat-progress-plain-progress");
         expect(progress.getAttribute("role")).toBe("status");
         expect(progress.getAttribute("aria-live")).toBe("polite");
-        expect(progress.style.justifyContent).toBe("flex-start");
+        expect(progress.className).toContain("aamd-progress-row");
         expect(progress.querySelector(".assistant-chat-progress-line")).toBeTruthy();
         expect(screen.getByText("Fetching details")).toBeTruthy();
     });
@@ -2179,7 +2173,7 @@ describe("renderMessage assistant display guard", () => {
 
         const notice = screen.getByTestId("assistant-chat-system-system-notice");
         expect(notice.getAttribute("role")).toBe("status");
-        expect(notice.style.justifyContent).toBe("flex-start");
+        expect(notice.className).toContain("aamd-msg-row");
         expect(screen.getByText("Task moved to the background")).toBeTruthy();
     });
 

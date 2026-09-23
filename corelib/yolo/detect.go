@@ -1,7 +1,6 @@
 package yolo
 
 import (
-	"math"
 	"sort"
 )
 
@@ -132,32 +131,38 @@ func (d *DetectHead) Forward(features []*Tensor) *Tensor {
 // Input: [N, numAnchors, regMax*4] → Output: [N, numAnchors, 4]
 // For each of the 4 box coordinates, applies softmax over regMax bins
 // and computes weighted sum: sum(softmax(x) * [0, 1, ..., regMax-1]).
+// exp goes through the vectorized expSlice; the rest is 16-element scalar
+// work per coordinate.
 func dflDecode(input *Tensor, regMax, numAnchors, N int) *Tensor {
 	out := NewTensor(N, numAnchors, 4)
+	vals := make([]float32, regMax*4)
 	for n := 0; n < N; n++ {
 		for a := 0; a < numAnchors; a++ {
+			src := input.Data[n*numAnchors*regMax*4+a*regMax*4 : n*numAnchors*regMax*4+a*regMax*4+regMax*4]
+			// Per-coordinate max, then one vectorized exp for all 4*regMax.
 			for d := 0; d < 4; d++ {
-				// Extract regMax values for this coordinate
-				srcOff := n*numAnchors*regMax*4 + a*regMax*4 + d*regMax
-				// Softmax
-				maxVal := float32(-math.MaxFloat32)
-				for r := 0; r < regMax; r++ {
-					if input.Data[srcOff+r] > maxVal {
-						maxVal = input.Data[srcOff+r]
+				maxVal := src[d*regMax]
+				for r := 1; r < regMax; r++ {
+					if src[d*regMax+r] > maxVal {
+						maxVal = src[d*regMax+r]
 					}
 				}
-				sum := float32(0)
-				vals := make([]float32, regMax)
 				for r := 0; r < regMax; r++ {
-					vals[r] = float32(math.Exp(float64(input.Data[srcOff+r] - maxVal)))
-					sum += vals[r]
+					vals[d*regMax+r] = src[d*regMax+r] - maxVal
 				}
-				// Weighted sum
+			}
+			expSlice(vals, vals)
+			dst := out.Data[n*numAnchors*4+a*4:]
+			for d := 0; d < 4; d++ {
+				sum := float32(0)
+				for r := 0; r < regMax; r++ {
+					sum += vals[d*regMax+r]
+				}
 				wsum := float32(0)
 				for r := 0; r < regMax; r++ {
-					wsum += (vals[r] / sum) * float32(r)
+					wsum += (vals[d*regMax+r] / sum) * float32(r)
 				}
-				out.Data[n*numAnchors*4+a*4+d] = wsum
+				dst[d] = wsum
 			}
 		}
 	}

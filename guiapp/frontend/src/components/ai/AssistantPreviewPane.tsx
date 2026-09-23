@@ -207,7 +207,7 @@ function PreviewTabRail({
                 aria-orientation="vertical"
                 aria-label={lang === "en" ? "Preview mode" : "\u9884\u89c8\u6a21\u5f0f"}
                 onKeyDown={handleKeyDown}
-                style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "4px" }}
+                className="appn-mode-tabs"
             >
             {availableModes.map((mode) => {
                 const active = activeMode === mode;
@@ -558,11 +558,10 @@ export function AssistantPreviewPane({
                 Conflict panel stays mounted (hidden) when switching to SRC so scroll / draft state
                 and Esc-focus scoping survive tab switches. */}
             <div
-                className="mc-assistant-preview-content"
+                className="mc-assistant-preview-content appn-content"
                 id={`assistant-preview-panel-${effectiveMode}`}
                 role="tabpanel"
                 aria-labelledby={`assistant-preview-tab-${effectiveMode}`}
-                style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: "hidden", marginLeft: "6px", position: "relative" }}
             >
                 {showConflict && conflictContent ? (
                     <div

@@ -246,7 +246,8 @@ func (g *GemmaEmbedder) ensurePackedQS() {
 }
 
 func (g *GemmaEmbedder) layerLoop(sc *gemmaScratch, seq, maxWorkers int) {
-	if seq > 0 && seq <= 4 && !g.skipPack {
+	fuse := g.useFusion()
+	if seq > 0 && !g.skipPack && (seq <= 4 || (fuse && tensor.HasAVX512VNNI())) {
 		g.ensurePackedQS()
 	}
 	hp := g.hp
@@ -271,7 +272,6 @@ func (g *GemmaEmbedder) layerLoop(sc *gemmaScratch, seq, maxWorkers int) {
 	if ee := int(atomic.LoadInt32(&g.earlyExit)); ee > 0 && ee < nLayers {
 		nLayers = ee
 	}
-	fuse := g.useFusion()
 
 	for l := 0; l < nLayers; l++ {
 		layer := &g.weights.layers[l]
@@ -287,7 +287,7 @@ func (g *GemmaEmbedder) layerLoop(sc *gemmaScratch, seq, maxWorkers int) {
 			tensor.RMSNormRoPESeq(q, layer.attnQNormW, sc.ropeCos, sc.ropeSin, seq, nHeads, headDim, hp.RMSNormEps)
 			tensor.RMSNormRoPESeq(k, layer.attnKNormW, sc.ropeCos, sc.ropeSin, seq, nKVHeads, headDim, hp.RMSNormEps)
 		}
-		g.gqaAttention(attnOut, q, k, v, seq, nHeads, nKVHeads, headDim, dim, kvDim, sc.scores[:seq])
+		g.gqaAttention(attnOut, q, k, v, seq, nHeads, nKVHeads, headDim, dim, kvDim)
 		if fuse {
 			tensor.MatMulQ8RMSResidual(x, attnOut, sc.yTile, &layer.attnOutWeight, layer.postAttnNormW, seq, dim, dim, 8, maxWorkers, hp.RMSNormEps)
 			tensor.RMSNormRows(normed, x, layer.ffNormW, seq, dim, hp.RMSNormEps)
@@ -310,41 +310,126 @@ func (g *GemmaEmbedder) layerLoop(sc *gemmaScratch, seq, maxWorkers int) {
 }
 
 // gqaAttention computes grouped-query attention using SIMD-accelerated dot products.
+//
+// For seq>=64 the per-head loops run in parallel goroutines (heads write
+// disjoint out column ranges, each goroutine owns its score tile). For any
+// seq the batched nQ=4 tile path is used — the old seq<=512 cutoff would
+// otherwise dump every query of a long text into the single-query strided
+// path, which is ~two orders of magnitude slower per token (measured: ~29%
+// of a ~900-token Embed in weightedSumContigN alone).
 func (g *GemmaEmbedder) gqaAttention(out, q, k, v []float32,
-	seq, nHeads, nKVHeads, headDim, qStride, kvStride int, scores []float32) {
+	seq, nHeads, nKVHeads, headDim, qStride, kvStride int) {
 
 	scale := 1.0 / float32(math.Sqrt(float64(headDim)))
 	headsPerGroup := nHeads / nKVHeads
-	nQ := 4
+	nQ := 8
 	if seq > 0 && seq < nQ {
 		nQ = seq // seq=3 short Embed: one batched nQ=3 tile, not 3 leftover passes
 	}
-	var scoreTile [4 * 512]float32
-
-	for h := 0; h < nHeads; h++ {
-		kvH := h / headsPerGroup
-		vBase := v[kvH*headDim:]
-		hOff := h * headDim
-
-		sq := 0
-		if seq <= 512 {
-			for ; sq+nQ <= seq; sq += nQ {
-				for t := 0; t < nQ; t++ {
-					qVec := q[(sq+t)*qStride+hOff : (sq+t)*qStride+hOff+headDim]
-					row := scoreTile[t*seq : (t+1)*seq]
-					for sk := 0; sk < seq; sk++ {
-						row[sk] = tensor.Dot(qVec, k[sk*kvStride+kvH*headDim:(sk*kvStride+kvH*headDim)+headDim]) * scale
-					}
+	if nHeads > 1 && seq >= 64 {
+		var wg sync.WaitGroup
+		for h := 0; h < nHeads; h++ {
+			wg.Add(1)
+			go func(h int) {
+				defer wg.Done()
+				tilep := gqaTilePool.Get().(*[]float32)
+				tile := *tilep
+				if cap(tile) < 8*seq {
+					tile = make([]float32, 8*seq)
+					*tilep = tile
+				} else {
+					tile = tile[:8*seq]
 				}
-				tensor.SoftmaxWeightedSumBatched(out, scoreTile[:nQ*seq], vBase, nQ, seq, kvStride, headDim, qStride, hOff, sq)
+				defer gqaTilePool.Put(tilep)
+				g.gqaHead(tile, out, q, k, v, h, headsPerGroup, seq, nQ, scale, headDim, qStride, kvStride)
+			}(h)
+		}
+		wg.Wait()
+		return
+	}
+	tilep := gqaTilePool.Get().(*[]float32)
+	tile := *tilep
+	if cap(tile) < 8*seq {
+		tile = make([]float32, 8*seq)
+		*tilep = tile
+	} else {
+		tile = tile[:8*seq]
+	}
+	defer gqaTilePool.Put(tilep)
+	for h := 0; h < nHeads; h++ {
+		g.gqaHead(tile, out, q, k, v, h, headsPerGroup, seq, nQ, scale, headDim, qStride, kvStride)
+	}
+}
+
+var gqaTilePool = sync.Pool{New: func() any { p := make([]float32, 8*512); return &p }}
+
+// gqaHead computes attention for one head over all query positions. tile is
+// scratch of at least 8*seq (batched score rows); the leftover single-query
+// path reuses tile[:seq]. Bulk tiles run at nQ=8 (K/V loaded once per 8
+// queries); a leftover 4..7 queries run as one nQ=4 tile before falling back
+// to the single-query strided path.
+func (g *GemmaEmbedder) gqaHead(tile, out, q, k, v []float32, h, headsPerGroup, seq, nQ int, scale float32, headDim, qStride, kvStride int) {
+	kvH := h / headsPerGroup
+	vBase := v[kvH*headDim:]
+	hOff := h * headDim
+
+	sq := 0
+	for ; sq+nQ <= seq; sq += nQ {
+		g.gqaTile(tile, out, q, k, vBase, sq, nQ, scale, headDim, hOff, seq, qStride, kvStride, kvH*headDim)
+	}
+	if rem := seq - sq; rem >= 4 {
+		g.gqaTile(tile, out, q, k, vBase, sq, 4, scale, headDim, hOff, seq, qStride, kvStride, kvH*headDim)
+		sq += 4
+	}
+	for ; sq < seq; sq++ {
+		qVec := q[sq*qStride+hOff : sq*qStride+hOff+headDim]
+		for sk := 0; sk < seq; sk++ {
+			tile[sk] = tensor.Dot(qVec, k[sk*kvStride+kvH*headDim:(sk*kvStride+kvH*headDim)+headDim]) * scale
+		}
+		tensor.SoftmaxWeightedSumStrided(out[sq*qStride+hOff:sq*qStride+hOff+headDim], tile[:seq], vBase, seq, kvStride, headDim)
+	}
+}
+
+// gqaTile computes Q·K scores and the softmax-weighted V sum for one tile of
+// nQ queries (nQ∈{4,8}) starting at query row sq. kOff is the head's column
+// offset within each K/V row (kvH*headDim).
+func (g *GemmaEmbedder) gqaTile(tile, out, q, k, vBase []float32, sq, nQ int, scale float32, headDim, hOff, seq, qStride, kvStride, kOff int) {
+	if (nQ == 8 || nQ == 4) && headDim <= 256 {
+		// Q·K with K rows loaded once per nQ-query tile: q rows are strided
+		// in q, so stage them contiguously, then multiDot4/8 streams each
+		// K row a single time (was: nQ separate dots, nQ× K traffic).
+		var qTile [8 * 256]float32
+		for t := 0; t < nQ; t++ {
+			copy(qTile[t*headDim:(t+1)*headDim], q[(sq+t)*qStride+hOff:(sq+t)*qStride+hOff+headDim])
+		}
+		aPanel := qTile[:nQ*headDim]
+		rows := tile[:nQ*seq]
+		if nQ == 8 {
+			var d8 [8]float32
+			for sk := 0; sk < seq; sk++ {
+				kRow := k[sk*kvStride+kOff : sk*kvStride+kOff+headDim]
+				tensor.MultiDot8(&d8, aPanel, kRow, headDim)
+				for t := 0; t < 8; t++ {
+					rows[t*seq+sk] = d8[t] * scale
+				}
+			}
+		} else {
+			var d4 [4]float32
+			for sk := 0; sk < seq; sk++ {
+				kRow := k[sk*kvStride+kOff : sk*kvStride+kOff+headDim]
+				tensor.MultiDot4(&d4, aPanel, kRow, headDim)
+				rows[sk], rows[seq+sk], rows[2*seq+sk], rows[3*seq+sk] =
+					d4[0]*scale, d4[1]*scale, d4[2]*scale, d4[3]*scale
 			}
 		}
-		for ; sq < seq; sq++ {
-			qVec := q[sq*qStride+hOff : sq*qStride+hOff+headDim]
+	} else {
+		for t := 0; t < nQ; t++ {
+			qVec := q[(sq+t)*qStride+hOff : (sq+t)*qStride+hOff+headDim]
+			row := tile[t*seq : (t+1)*seq]
 			for sk := 0; sk < seq; sk++ {
-				scores[sk] = tensor.Dot(qVec, k[sk*kvStride+kvH*headDim:(sk*kvStride+kvH*headDim)+headDim]) * scale
+				row[sk] = tensor.Dot(qVec, k[sk*kvStride+kOff:sk*kvStride+kOff+headDim]) * scale
 			}
-			tensor.SoftmaxWeightedSumStrided(out[sq*qStride+hOff:sq*qStride+hOff+headDim], scores[:seq], vBase, seq, kvStride, headDim)
 		}
 	}
+	tensor.SoftmaxWeightedSumBatched(out, tile[:nQ*seq], vBase, nQ, seq, kvStride, headDim, qStride, hOff, sq)
 }

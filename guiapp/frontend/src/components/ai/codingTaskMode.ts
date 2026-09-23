@@ -564,6 +564,54 @@ export function remoteCodingMetaFromTaskTags(tags?: string[] | null): RemoteCodi
     return meta;
 }
 
+/** Sidebar-compatible remote location: `host:workDir`, or whichever part exists. */
+export function remoteWorkspaceLocationLabel(host?: string | null, workDir?: string | null): string {
+    const h = String(host || "").trim();
+    const d = String(workDir || "").trim();
+    if (h && d) return `${h}:${d}`;
+    return h || d;
+}
+
+/** Prefer live SSH status, then the tab host, then durable task tags. */
+export function pickRemoteWorkspaceLocation(opts: {
+    liveHost?: string | null;
+    liveWorkDir?: string | null;
+    tabHost?: string | null;
+    tags?: string[] | null;
+}): { host: string; workDir: string } {
+    const fromTags = remoteCodingMetaFromTaskTags(opts.tags);
+    return {
+        host: String(opts.liveHost || "").trim() || String(opts.tabHost || "").trim() || fromTags.host,
+        workDir: String(opts.liveWorkDir || "").trim() || fromTags.workDir,
+    };
+}
+
+/**
+ * Remote workspace chip for the task-execution heading: the picked location
+ * plus its display label. `isLive` means the reconnect-status event targets
+ * the active project, so its host/workDir are preferred over the tab's.
+ *
+ * Extracted from AIAssistantPanel (main-UI guard line cap); keeps the "empty
+ * when not a remote coding tab" fallback in one place.
+ */
+export function resolveRemoteWorkspaceDisplay(args: {
+    isRemoteCodingDev: boolean;
+    isLive: boolean;
+    liveHost?: string | null;
+    liveWorkDir?: string | null;
+    tabHost?: string | null;
+    tags?: string[] | null;
+}): { workspace: { host: string; workDir: string }; label: string } {
+    if (!args.isRemoteCodingDev) return { workspace: { host: "", workDir: "" }, label: "" };
+    const workspace = pickRemoteWorkspaceLocation({
+        liveHost: args.isLive ? args.liveHost : "",
+        liveWorkDir: args.isLive ? args.liveWorkDir : "",
+        tabHost: args.tabHost,
+        tags: args.tags,
+    });
+    return { workspace, label: remoteWorkspaceLocationLabel(workspace.host, workspace.workDir) };
+}
+
 export function isPureCodingTaskTags(tags?: string[] | null): boolean {
     return agentModeFromTaskTags(tags) != null;
 }

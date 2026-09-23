@@ -7,7 +7,6 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
-	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -92,11 +91,84 @@ func semanticNeedsForReusableConversationLookup(needs []tool.CapabilityNeed, ctx
 // whether the conversation-evidence drop fired. A petition expansion re-plans
 // without the turn's user text, so it cannot re-derive this decision; the
 // parent surface records it in its replan input instead.
+type semanticReusableLookupFactsKey struct{}
+type semanticPetitionExpansionKey struct{}
+
+func withSemanticPetitionExpansion(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, semanticPetitionExpansionKey{}, true)
+}
+
+func semanticPetitionExpansion(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	flag, _ := ctx.Value(semanticPetitionExpansionKey{}).(bool)
+	return flag
+}
+
+type semanticPetitionBaselineKey struct{}
+
+func withSemanticPetitionBaseline(ctx context.Context, enabled bool) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, semanticPetitionBaselineKey{}, enabled)
+}
+
+func semanticPetitionBaseline(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	flag, _ := ctx.Value(semanticPetitionBaselineKey{}).(bool)
+	return flag
+}
+
+func withSemanticReusableLookupFacts(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, semanticReusableLookupFactsKey{}, true)
+}
+
+// semanticReuseStoredLookupFacts reports whether this sentence may consume a
+// web lookup the session already recorded. A new high-confidence lookup, or
+// an explicit refresh, still searches. A later generate or short follow-up
+// does not.
+func semanticReuseStoredLookupFacts(text string, current intent.ClassificationResult) bool {
+	if lexicalFreshLookupRequest(text) || lexicalWebSearchRequest(text) {
+		return false
+	}
+	if semanticUtteranceIsTaskFollowUp(text) {
+		return true
+	}
+	switch current.Primary {
+	case intent.LabelSearch, intent.LabelLiveData, intent.LabelLiveDataVisual, intent.LabelWebFetch:
+		if current.Confidence >= 0.85 {
+			return false
+		}
+	}
+	return true
+}
+
+func semanticReusableLookupFacts(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	flag, _ := ctx.Value(semanticReusableLookupFactsKey{}).(bool)
+	return flag
+}
+
 func semanticNeedsForReusableConversationLookupReport(needs []tool.CapabilityNeed, ctx context.Context, userText string) ([]tool.CapabilityNeed, bool) {
 	if !semanticNeedsHaveWebLookup(needs) || !semanticNeedsHaveGenerate(needs) || semanticNeedsHaveLiveDataVisual(needs) {
 		return needs, false
 	}
-	if !conversationHasReusableLookupFacts(semanticConversationHistory(ctx), userText) {
+	// Topic-string alignment is not a fact. Only a host residue that recorded
+	// a successful web lookup for this task, and only when the user did not
+	// ask for a fresh one.
+	if lexicalWebSearchRequest(userText) || lexicalFreshLookupRequest(userText) || !semanticReusableLookupFacts(ctx) {
 		return needs, false
 	}
 	kept := make([]tool.CapabilityNeed, 0, len(needs))
@@ -109,7 +181,7 @@ func semanticNeedsForReusableConversationLookupReport(needs []tool.CapabilityNee
 	if len(kept) == len(needs) || len(kept) == 0 {
 		return needs, false
 	}
-	log.Printf("[semantic] omit this-turn lookup; conversation already has same-topic facts")
+	log.Printf("[semantic] omit this-turn lookup; session residue already has web facts")
 	return kept, true
 }
 
@@ -177,35 +249,11 @@ func semanticNeedsForPetitionExpansionLookup(needs []tool.CapabilityNeed, ctx co
 }
 
 func conversationHasReusableLookupFacts(history []agent.ConversationEntry, userText string) bool {
-	if lexicalWebSearchRequest(userText) || lexicalFreshLookupRequest(userText) {
-		return false
-	}
-	topic := lookupTopicKey(userText)
-	if topic == "" {
-		return false
-	}
-	lastUserTopic := ""
-	for _, entry := range history {
-		switch strings.ToLower(strings.TrimSpace(entry.Role)) {
-		case "user":
-			lastUserTopic = lookupTopicKey(entryContentToString(entry.Content))
-		case "tool":
-			if !lookupTopicsAlign(topic, lastUserTopic) || !conversationEntryIsLookupResult(entry) {
-				continue
-			}
-			if trustedHostLookupEvidence(entryContentToString(entry.Content)) != "" {
-				return true
-			}
-		case "assistant":
-			if !lookupTopicsAlign(topic, lastUserTopic) {
-				continue
-			}
-			cleaned := strings.TrimSpace(llm.StripXMLToolCalls(stripDeferredPDFPromise(entryContentToString(entry.Content))))
-			if substantialHostPDFReportText(cleaned) {
-				return true
-			}
-		}
-	}
+	// Conversation prose and topic-key overlap are not lookup facts. A later
+	// generate turn drops web lookup only when the host residue recorded a
+	// successful web lookup for this task.
+	_ = history
+	_ = userText
 	return false
 }
 

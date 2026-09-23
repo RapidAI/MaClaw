@@ -66,7 +66,8 @@ import { AITabBar } from "./AITabBar";
 import { localAssistantTabTitle } from "./aiAssistantI18n";
 import { getAITabDisplayTitle } from "./AITabItem";
 import { useAITabManager } from "./useAITabManager";
-import { SessionWorkingDirChip, workingDirDisplayLabel } from "./SessionWorkingDirChip";
+import { SessionWorkingDirChip } from "./SessionWorkingDirChip";
+import { TaskExecutionHeading } from "./TaskExecutionHeading";
 import { looksLikeRawParticipantId } from "./localAIIdentity";
 import { useAddGroupParticipantToTab } from "./useAddGroupParticipantToTab";
 import { useAddLocalMaclawToTab } from "./useAddLocalMaclawToTab";
@@ -83,7 +84,7 @@ import { CodingAgentPreviewFocusContext, CodingAgentTimelineProgressItem } from 
 import { TabParticipantInviteDialog } from "./TabParticipantInviteDialog";
 import { AIAssistantRenameGroupDialog } from "./AIAssistantRenameGroupDialog";
 import { WorkflowFormInlinePrompt, WorkflowReviewInlinePrompt } from "./WorkflowInlinePrompts";
-import { activeAssistantTaskIdentity, buildProjectTabRecentMessages, chatHistoriesEquivalent, expertIdFromSessionKey, expertSessionKey, isACPAssistantSessionKey, logAIPanelDiagnostic, messageBelongsToSession, messageBelongsToSessionOrLegacy, messageIsLocalSession, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, type ActiveAssistantTaskIdentity } from "./aiAssistantPanelSessionUtils";
+import { activeAssistantTaskIdentity, buildProjectTabRecentMessages, chatHistoriesEquivalent, expertIdFromSessionKey, expertSessionKey, isACPAssistantSessionKey, logAIPanelDiagnostic, messageBelongsToSession, messageBelongsToSessionOrLegacy, messageIsLocalSession, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, shouldBlockAssistantTabOpenOnTaskRegistration, useBusyTaskRunsSignal, type ActiveAssistantTaskIdentity } from "./aiAssistantPanelSessionUtils";
 import { DEFAULT_EXPERT_ICON, expertWelcomeMessageText } from "./expertTypes";
 import { ExpertOptimizeEditorDialog } from "./ExpertOptimizeEditorDialog";
 import { useExpertOptimize } from "./useExpertOptimize";
@@ -93,7 +94,8 @@ import { CodingAgentPlanChecklist } from "./CodingAgentPlanChecklist";
 import { buildCodingBannerChrome, codingStepGlyph, codingStepStatusColor, codingStepStatusLabel, CodingWorkbenchControlPanel, CodingControlSection } from "./CodingWorkbenchControlPanel";
 import { CodingConflictSidePanel } from "./CodingConflictSidePanel";
 import { AssistantPureCodingEmptyState } from "./AssistantPureCodingEmptyState";
-import { agentModeFromTaskTags, CLOUD_WORKSPACE_FILES_CHANGED_EVENT, cloudWorkingDirForActiveTab, cloudWorkspaceIdFromPath, cloudWorkspaceIdFromTab, cloudWorkspaceRevealMatchesTab, ensureCloudWorkspaceLeaseBeforeSend, FOCUS_CLOUD_WORKSPACE_TREE_EVENT, isActiveCloudWorkspacePreview, isCloudWorkspacePath, nextTabWorkingDir, parseWailsEventObject, remoteHostFromTaskTags, REVEAL_CLOUD_WORKSPACE_FILES_EVENT, type CloudWorkspaceReveal, type TabWorkingDir } from "./codingTaskMode";
+import { NewTaskWizardRunningBanner } from "./NewTaskWizardRunningBanner";
+import { agentModeFromTaskTags, CLOUD_WORKSPACE_FILES_CHANGED_EVENT, cloudWorkingDirForActiveTab, cloudWorkspaceIdFromPath, cloudWorkspaceIdFromTab, cloudWorkspaceRevealMatchesTab, ensureCloudWorkspaceLeaseBeforeSend, FOCUS_CLOUD_WORKSPACE_TREE_EVENT, isActiveCloudWorkspacePreview, isCloudWorkspacePath, nextTabWorkingDir, parseWailsEventObject, remoteHostFromTaskTags, resolveRemoteWorkspaceDisplay, REVEAL_CLOUD_WORKSPACE_FILES_EVENT, type CloudWorkspaceReveal, type TabWorkingDir } from "./codingTaskMode";
 import { canDispatchCodingIntent, resolveCodingTaskPhase } from "./codingTaskRuntime";
 import { EventsOff, EventsOn } from "../../../wailsjs/runtime";
 import { EVENT_EXPERT_TASK_DELETED, EVENT_PROJECT_TASK_CLOSED, EVENT_PROJECT_TASK_DELETED } from "../../constants/events";
@@ -121,7 +123,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const actions = props.actions || props;
     const panelWindow = props.window || props;
     const { messages, progressMessages = [], sending, sendingSessionKey: rawSendingSessionKey, busySessionKeys: rawBusySessionKeys, streaming, streamingSessionKey: rawStreamingSessionKey, streamingSessionKeys: rawStreamingSessionKeys, visualBusy, ready, initStatus, selectedFilePath: selectedFilePathFromState = "", submittedPrompts = [], draftInputValue = "", trialReflectEnabled = false, scrollToTopSeq, onboardingIncomplete, showTraceEntry = false, active: panelActive = true, agentView = null } = state;
-    const { browseFile, clearSelectedFile, removeSelectedFile, sendMessage, sendBtwMessage, injectSupplementary, guideLaunchReference, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews, onOpenOnboarding, cancelSession, onOpenTutorial, onTaskPrefsChanged, submitAgentView, dismissAgentView, deactivateRecordingSession } = actions;
+    const { browseFile, clearSelectedFile, setSelectedFilePaths, removeSelectedFile, sendMessage, sendBtwMessage, injectSupplementary, guideLaunchReference, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews, onOpenOnboarding, cancelSession, onOpenTutorial, onTaskPrefsChanged, submitAgentView, dismissAgentView, deactivateRecordingSession } = actions;
     const selectedFilePaths = Array.isArray(state.selectedFilePaths) ? state.selectedFilePaths : (selectedFilePathFromState ? [selectedFilePathFromState] : []);
     const selectedFilePath = selectedFilePaths[0] || "";
     const { inline, maximized = false, onToggleMaximize, onHideWindow } = panelWindow || {};
@@ -2752,17 +2754,20 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             }));
         }
     }, [getTabState, saveTabState, setProjectTabPreparing]);
-    // Keep the App-level registration gateway in the loop when it is available:
-    // besides persisting the record, it immediately upserts the task sidebar.
-    // The direct binding is retained for isolated panel hosts that do not provide
-    // the App callback (for example, focused component integrations).
+    // App callback upserts the sidebar; the direct binding is for isolated hosts.
     const registerAssistantTabTask = useCallback(async (tabType: string, tabIdentity: string, title: string, projectPath?: string) => {
-        if (props.onEnsureAssistantTabTask) {
-            await props.onEnsureAssistantTabTask(tabType, tabIdentity, title, projectPath);
-            return true;
+        try {
+            if (props.onEnsureAssistantTabTask) {
+                await props.onEnsureAssistantTabTask(tabType, tabIdentity, title, projectPath);
+                return true;
+            }
+            const created = await EnsureAssistantTabTask(tabType, tabIdentity, title, projectPath || "");
+            return !!created?.project_path;
+        } catch (error) {
+            if (shouldBlockAssistantTabOpenOnTaskRegistration(tabType)) throw error;
+            console.warn("[task_management] assistant tab task not registered:", error);
+            return false;
         }
-        const created = await EnsureAssistantTabTask(tabType, tabIdentity, title, projectPath || "");
-        return !!created?.project_path;
     }, [props.onEnsureAssistantTabTask]);
 
     const createProjectTabWithContext = useCallback((projectPath: string, taskTitle: string, options?: { prepareMode?: PendingProjectTabOpen["prepareMode"]; openIntent?: "activate" | "restore"; cloudWorkspaceId?: string; agentMode?: PendingProjectTabOpen["agentMode"]; remoteHost?: string; remoteSafety?: "diagnosis"; remoteNeedsReconnect?: boolean; sessionKey?: string } | boolean) => {
@@ -2918,10 +2923,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             if (!sessionKey) return;
             void (async () => {
                 try {
-                    // ACP is a secondary assistant tab with an external session,
-                    // so it cannot rely on a project task having been created by
-                    // the desktop task-management UI.
-                    if (!await registerAssistantTabTask("acp", sessionKey, "VS Code / ACP", projectPath)) return;
+                    // VS Code reconnects on every GUI start and must not mint a sidebar row.
                     const tab = createProjectTabWithContext(projectPath, "VS Code / ACP", {
                         prepareMode: "restore-context",
                         agentMode: "coding_dev",
@@ -2937,7 +2939,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         tabId: tab?.id || "",
                     });
                 } catch (error) {
-                    console.error("[task_management] create ACP assistant task failed:", error);
+                    console.error("[task_management] open ACP assistant tab failed:", error);
                 }
             })();
         });
@@ -2945,7 +2947,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             if (typeof off === "function") off();
             else EventsOff("acp-mode-b-message");
         };
-    }, [activateTab, createProjectTabWithContext, registerAssistantTabTask]);
+    }, [activateTab, createProjectTabWithContext]);
 
     const messagesLengthRef = useRef(messages.length);
     messagesLengthRef.current = messages.length;
@@ -3893,8 +3895,6 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         resetWorkflowState();
         if (agentView) dismissAgentView(agentView.id, undefined, { force: true });
     };
-    // Panel chrome title (not per-tab); same i18n source as the local main tab label.
-    const title = localAssistantTabTitle(lang);
     const idlePlaceholderText = getComposeActionPlaceholder(composeAction, !lang?.startsWith("en"))
         || (isRemoteMaintenanceEnvironment
             ? localizeText(lang, "Describe the maintenance task on the remote host...", "描述远程主机上的维护任务…", "描述遠端主機上的維護任務…")
@@ -3977,6 +3977,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         });
         return { task: activeTask, raw };
     }, [activeTab?.projectPath, codingStepStatuses, taskListProp, workflowAwaitingReview, workflowCurrentPhaseStatus, workflowState.active]);
+    const { workspace: remoteWorkspace, label: remoteWorkspaceLabel } = resolveRemoteWorkspaceDisplay({ isRemoteCodingDev: isRemoteCodingDevEnvironment, isLive: remoteReconnectStatusPath === activeRemoteProjectPath, liveHost: remoteReconnect.host, liveWorkDir: remoteReconnect.workDir, tabHost: activeTab.remoteHost, tags: activeTaskExecutionSnapshot.task?.tags });
     const activeTaskSnapshotRunning = useMemo(() => executionSnapshotRawIsRunning(activeTaskExecutionSnapshot.raw), [activeTaskExecutionSnapshot]);
     const hasExplicitStreamingSessionList = Array.isArray(rawStreamingSessionKeys);
     const panelSessionIsSending = panelSendInFlightSessionKeys.has(activeSessionKey);
@@ -4210,7 +4211,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         setSaveTaskDialogOpen(true);
     }, [deriveTaskNameFromMessages, isLocalTabActive]);
     const shareCurrentTask = useCallback(async () => {
-        const taskTitle = String(activeTab?.title || deriveTaskNameFromMessages()).trim();
+        const taskTitle = String((activeTab ? getAITabDisplayTitle(activeTab, lang) : "") || deriveTaskNameFromMessages()).trim();
         if (!taskTitle) return;
         const shareDetail = { title: taskTitle, tabId: activeTab?.id };
         if (typeof navigator !== "undefined" && typeof navigator.share === "function") {
@@ -4231,7 +4232,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         if (typeof window !== "undefined") {
             window.dispatchEvent(new CustomEvent("maclaw:share-task", { detail: shareDetail }));
         }
-    }, [activeTab?.id, activeTab?.title, deriveTaskNameFromMessages]);
+    }, [activeTab, deriveTaskNameFromMessages, lang]);
     useEffect(() => {
         const handler = () => { void openSaveTaskDialog(); };
         window.addEventListener('ai-save-current-chat-as-task', handler);
@@ -4519,7 +4520,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     // Keep active workflow and preview surfaces out of the welcome landing.
     const workflowExecutionActive = workflowState.active || workflowCurrentPhaseRunning || workflowState.splitMode || codePreviewState.active || showAgentView || codingConflictOpen;
     const landing = canShowWorkbenchLanding({ enabled: startOnWorkbenchHome, requested: workbenchHomeRequested, local: isLocalTabActive, coding: isPureCodingEnvironment, activeTask: !!activeAssistantTaskProp, progress: displayProgressMessages.length, thinking: showThinkingState, processing: showProcessingState, preparing: activeProjectPreparing, form: workflowAwaitingForm, generating: workflowFormGeneratingDocument, review: workflowAwaitingReview, starting: !!workflowStartingLabel, queue: queue.length, editing: queueEditDraftActive, interacted: queueInteractionStarted, workflowActive: workflowExecutionActive });
-    const showWelcomeView = canShowWelcomeBeforeReady && !onboardingIncomplete && !activeAssistantTaskProp && !workflowExecutionActive && (landing || (otherMessages.length === 0 && displayProgressMessages.length === 0 && !showThinkingState && !showProcessingState && !activeProjectPreparing && !workflowAwaitingForm && !workflowFormGeneratingDocument && !workflowAwaitingReview && !workflowStartingLabel && queue.length === 0 && !queueEditDraftActive && !queueInteractionStarted && (isLocalTabActive || (isProjectTabActive && !isPureCodingEnvironment))));
+    const showWelcomeViewBase = canShowWelcomeBeforeReady && !onboardingIncomplete && !activeAssistantTaskProp && !workflowExecutionActive && (landing || (otherMessages.length === 0 && displayProgressMessages.length === 0 && !showThinkingState && !showProcessingState && !activeProjectPreparing && !workflowAwaitingForm && !workflowFormGeneratingDocument && !workflowAwaitingReview && !workflowStartingLabel && queue.length === 0 && !queueEditDraftActive && !queueInteractionStarted && (isLocalTabActive || (isProjectTabActive && !isPureCodingEnvironment))));
     const taskCreatedTimestamp = displayMessages.find((message: ChatMessage) => message.role === "user")?.timestamp ?? displayMessages[0]?.timestamp;
     const taskCreatedLabel = formatTaskCreatedAt(taskCreatedTimestamp, lang);
     const taskExecutionStatus = useMemo(() => {
@@ -4555,6 +4556,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         if (typeof onChange !== "function") return;
         onChange(taskExecutionStatus.tone === "running");
     }, [taskExecutionStatus.tone, props.onActiveTaskRunningChange]);
+    // Publish every busy task identity (project paths + expert IDs) so the
+    // sidebar can mark all concurrently running rows — including detached
+    // runs — as 进行中 (see useBusyTaskRunsSignal).
+    useBusyTaskRunsSignal(busySessionKeys, props.onBusyTaskRunsChange);
     const pureCodingEmptyTitle = isRemoteMaintenanceEnvironment
         ? (remoteCodingNeedsReconnect
             ? localizeText(lang, "Remote maintenance needs SSH reconnect", "远程维护需要重新连接 SSH", "遠端維護需要重新連線 SSH")
@@ -4589,8 +4594,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     ) : undefined;
     // Returning to an empty welcome state should clear any leftover save offer.
     useEffect(() => {
-        if (showWelcomeView) setWelcomeTemplateOffer(null);
-    }, [showWelcomeView]);
+        if (showWelcomeViewBase) setWelcomeTemplateOffer(null);
+    }, [showWelcomeViewBase]);
     const hasConversation = otherMessages.length + displayProgressMessages.length > 0;
 
     // Clear the workflow-starting indicator only when a definitive workflow UI takes over.
@@ -5045,10 +5050,20 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     // task-config/useTaskConfigWiring.ts; the panel only forwards its own scope.
     const taskConfigWiring = useTaskConfigWiring({
         activeTab, isLocalTabActive, lang, taskListProp, inputRef, inputValue,
-        composeAction, inputLocked, assistantBusy: isBusy || cancelPending, messages, handleSend, handleWelcomePromptSend,
-        clearComposerDraft, clearActiveHistory, getTabs, getTabState, saveTabState,
+        composeAction, inputLocked, assistantBusy: isBusy || cancelPending, keepExecutionSurface: recordingActive || isACPMirrorTabActive, localGuideVisible: showWelcomeViewBase && isLocalTabActive,
+        pendingAttachments, selectedFilePaths, showComposerText: updateInputValue, replacePendingAttachments: (items) => setPendingAttachments(items as typeof pendingAttachments), replaceSelectedFilePaths: (paths) => setSelectedFilePaths?.(paths),
+        activeChatVisible: otherMessages.some((message: ChatMessage) => message.role === "user" || message.role === "assistant"),
+        handleSend, handleWelcomePromptSend,
+        clearComposerDraft, getTabs, getTabState, saveTabState,
         activateTab, setQueueInteractionStarted, setQueueEditDraftActive, setEditingEntryId,
     });
+    // A running turn keeps the normal welcome gates closed. The wizard cover
+    // forces the welcome page on the local tab without clearing that turn.
+    const wizardOverlayActive = taskConfigWiring.wizardOverlay && isLocalTabActive;
+    const showWelcomeView = showWelcomeViewBase || wizardOverlayActive;
+    const title = showWelcomeView && isLocalTabActive
+        ? localizeText(lang, "New task", "新建任务", "新建任務")
+        : (activeTab ? getAITabDisplayTitle(activeTab, lang) : localAssistantTabTitle(lang));
 
     useEffect(() => {
         if (queue.length === 0) {
@@ -5616,7 +5631,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         ? `从此处分支 (#${branchIdx}，${branchCount} 条路径)`
                         : `从此处分支 (#${branchIdx})`;
                 const wrappedNode = (
-                    <div key={`branch-wrap-${msg.id}`} style={{ position: 'relative' }} className="branch-hover-container">
+                    <div key={`branch-wrap-${msg.id}`} className="branch-hover-container aap-branch-wrap">
                         {node}
                         <button
                             type="button"
@@ -5691,18 +5706,18 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             </div>
             {/* Column shell: chat|preview row on top, full-bleed bottom chrome under both
                 (so the quick-settings / status strip spans into the code-preview column). */}
-            <div data-testid="ai-panel-main" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, minWidth: 0, overflow: "hidden" }}>
-            <div data-testid="ai-panel-content-row" style={{ display: "flex", flexDirection: "row", flex: 1, minHeight: 0, minWidth: 0, overflow: "hidden", position: "relative" }}>
-            <div data-testid="ai-panel-body" style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0, minHeight: 0, height: "100%", boxSizing: "border-box", overflow: "hidden", position: "relative" }} onDragOver={handleDragOver} onDrop={handleDrop}>
+            <div className="aap-panel-main" data-testid="ai-panel-main">
+            <div className="aap-panel-row" data-testid="ai-panel-content-row">
+            <div className="aap-panel-body" data-testid="ai-panel-body" onDragOver={handleDragOver} onDrop={handleDrop}>
             <KnowledgeDialog open={panelActive && knowledgeDialogOpen} onClose={() => setKnowledgeDialogOpen(false)} lang={lang} theme={t} />
             {panelActive && scopeApprovalPending && (
-                <div data-testid="scope-approval-backdrop" style={{ position: "fixed", inset: 0, zIndex: 50001, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(15, 23, 42, 0.35)", padding: 16 }}>
+                <div className="aap-scope-backdrop" data-testid="scope-approval-backdrop">
                     <div role="alertdialog" aria-modal="true" aria-labelledby="scope-approval-title" style={{ width: 440, maxWidth: "calc(100vw - 32px)", background: t.titleBarBg, border: `1px solid ${t.titleBarBorder}`, borderRadius: 14, boxShadow: (t.bg.startsWith("#0") || t.bg.startsWith("#1") || t.bg.startsWith("#2")) ? "0 1px 2px rgba(0, 0, 0, 0.30), 0 4px 12px -2px rgba(0, 0, 0, 0.40)" : "0 1px 2px rgba(30, 58, 95, 0.05), 0 4px 12px -2px rgba(30, 58, 95, 0.10)", color: t.text, overflow: "hidden" }} onMouseDown={e => e.stopPropagation()}>
                         <div style={{ padding: "12px 14px", borderBottom: `1px solid ${t.titleBarBorder}` }}>
-                            <h3 id="scope-approval-title" style={{ margin: 0, fontSize: 14, fontWeight: 700, color: "var(--theme-warning, #d97706)" }}>{scopeApprovalIsHighRisk ? (scopeApprovalIsRemoteHighRisk ? localizeText(lang, "Remote Command Approval", "远程命令确认", "遠程命令確認") : localizeText(lang, "Command Approval", "命令确认", "命令確認")) : scopeApprovalIsRemoteMaintenance ? localizeText(lang, "Remote Maintenance Approval", "远程维护确认", "遠端維護確認") : localizeText(lang, "Scope Approval", "目录越权确认", "目錄越權確認")}</h3>
+                            <h3 className="aap-scope-title" id="scope-approval-title">{scopeApprovalIsHighRisk ? (scopeApprovalIsRemoteHighRisk ? localizeText(lang, "Remote Command Approval", "远程命令确认", "遠程命令確認") : localizeText(lang, "Command Approval", "命令确认", "命令確認")) : scopeApprovalIsRemoteMaintenance ? localizeText(lang, "Remote Maintenance Approval", "远程维护确认", "遠端維護確認") : localizeText(lang, "Scope Approval", "目录越权确认", "目錄越權確認")}</h3>
                         </div>
-                        <div style={{ padding: "12px 14px", fontSize: 13, lineHeight: 1.6 }}>
-                            <div style={{ marginBottom: 8 }}>{scopeApprovalIsHighRisk ? (scopeApprovalIsRemoteMaintenance ? localizeText(lang, "Remote maintenance is requesting a high-risk command:", "远程维护请求执行高风险命令：", "遠端維護請求執行高風險命令：") : scopeApprovalIsRemoteHighRisk ? localizeText(lang, "Remote CodingSubAgent is trying to run a blocked high-risk command:", "远程编码 SubAgent 尝试执行被拦截的高风险命令：", "遠程編碼 SubAgent 嘗試執行被攔截的高風險命令：") : localizeText(lang, "CodingSubAgent is trying to run a blocked high-risk command:", "编码 SubAgent 尝试执行被拦截的高风险命令：", "編碼 SubAgent 嘗試執行被攔截的高風險命令：")) : scopeApprovalIsRemoteMaintenance ? localizeText(lang, "Remote maintenance is requesting access outside the project scope:", "远程维护请求访问项目范围外的路径：", "遠端維護請求存取專案範圍外的路徑：") : localizeText(lang, "CodingSubAgent is trying to access a path outside the project:", "编码 SubAgent 尝试访问项目目录外的路径：", "編碼 SubAgent 嘗試訪問項目目錄外的路徑：")}</div>
+                        <div className="aap-scope-body">
+                            <div className="aap-scope-gap">{scopeApprovalIsHighRisk ? (scopeApprovalIsRemoteMaintenance ? localizeText(lang, "Remote maintenance is requesting a high-risk command:", "远程维护请求执行高风险命令：", "遠端維護請求執行高風險命令：") : scopeApprovalIsRemoteHighRisk ? localizeText(lang, "Remote CodingSubAgent is trying to run a blocked high-risk command:", "远程编码 SubAgent 尝试执行被拦截的高风险命令：", "遠程編碼 SubAgent 嘗試執行被攔截的高風險命令：") : localizeText(lang, "CodingSubAgent is trying to run a blocked high-risk command:", "编码 SubAgent 尝试执行被拦截的高风险命令：", "編碼 SubAgent 嘗試執行被攔截的高風險命令：")) : scopeApprovalIsRemoteMaintenance ? localizeText(lang, "Remote maintenance is requesting access outside the project scope:", "远程维护请求访问项目范围外的路径：", "遠端維護請求存取專案範圍外的路徑：") : localizeText(lang, "CodingSubAgent is trying to access a path outside the project:", "编码 SubAgent 尝试访问项目目录外的路径：", "編碼 SubAgent 嘗試訪問項目目錄外的路徑：")}</div>
                             <div style={{ background: t.fieldBg, borderRadius: 4, padding: "6px 8px", fontSize: 12, fontFamily: "monospace", wordBreak: "break-all", marginBottom: 6 }}>
                                 <div><strong>{localizeText(lang, "Tool", "工具", "工具")}:</strong> {scopeApprovalPending.tool}</div>
                                 <div><strong>{scopeApprovalIsHighRisk ? localizeText(lang, "Command", "命令", "命令") : localizeText(lang, "Path", "路径", "路徑")}:</strong> {scopeApprovalPending.path}</div>
@@ -5713,19 +5728,19 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, padding: "10px 14px", borderTop: `1px solid ${t.titleBarBorder}` }}>
                             <button type="button" onClick={() => void handleScopeApprovalResolve("deny")} style={{ padding: "5px 14px", borderRadius: 4, border: `1px solid ${t.fieldBorder}`, background: "transparent", color: t.text, fontSize: 12, cursor: "pointer" }}>{localizeText(lang, "Deny", "拒绝", "拒絕")}</button>
                             <button type="button" onClick={() => void handleScopeApprovalResolve("full_access")} style={{ padding: "5px 14px", borderRadius: 4, border: `1px solid ${t.fieldBorder}`, background: "transparent", color: "var(--theme-success, #4f7f6f)", fontSize: 12, cursor: "pointer" }}>{scopeApprovalIsHighRisk ? localizeText(lang, "Allow Later", "以后放行", "以後放行") : localizeText(lang, "Full Access", "完全访问", "完全訪問")}</button>
-                            <button type="button" onClick={() => void handleScopeApprovalResolve(scopeApprovalIsHighRisk ? "allow_once" : "allow_dir")} style={{ padding: "5px 14px", borderRadius: 4, border: "none", background: "var(--theme-warning, #d97706)", color: "var(--theme-on-primary, #fff)", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>{scopeApprovalIsHighRisk ? localizeText(lang, `Allow Once (${scopeApprovalCountdown}s)`, `本次放行 (${scopeApprovalCountdown}s)`, `本次放行 (${scopeApprovalCountdown}s)`) : localizeText(lang, `Allow Directory (${scopeApprovalCountdown}s)`, `允许该目录 (${scopeApprovalCountdown}s)`, `允許該目錄 (${scopeApprovalCountdown}s)`)}</button>
+                            <button type="button" onClick={() => void handleScopeApprovalResolve(scopeApprovalIsHighRisk ? "allow_once" : "allow_dir")} className="aap-scope-approve">{scopeApprovalIsHighRisk ? localizeText(lang, `Allow Once (${scopeApprovalCountdown}s)`, `本次放行 (${scopeApprovalCountdown}s)`, `本次放行 (${scopeApprovalCountdown}s)`) : localizeText(lang, `Allow Directory (${scopeApprovalCountdown}s)`, `允许该目录 (${scopeApprovalCountdown}s)`, `允許該目錄 (${scopeApprovalCountdown}s)`)}</button>
                         </div>
                     </div>
                 </div>
             )}
             {panelActive && saveTaskDialogOpen && (
-                <div data-testid="save-task-dialog-backdrop" style={{ position: "fixed", inset: 0, zIndex: 50000, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(15, 23, 42, 0.28)", padding: 16 }} onMouseDown={event => { if (event.target === event.currentTarget && !savingTask) setSaveTaskDialogOpen(false); }}>
+                <div className="aap-save-backdrop" data-testid="save-task-dialog-backdrop" onMouseDown={event => { if (event.target === event.currentTarget && !savingTask) setSaveTaskDialogOpen(false); }}>
                     <form role="dialog" aria-modal="true" aria-labelledby="save-task-dialog-title" onSubmit={event => { event.preventDefault(); void submitSaveTask(); }} style={{ width: 390, maxWidth: "calc(100vw - 32px)", background: t.titleBarBg, border: `1px solid ${t.titleBarBorder}`, borderRadius: 14, boxShadow: (t.bg.startsWith("#0") || t.bg.startsWith("#1") || t.bg.startsWith("#2")) ? "0 1px 2px rgba(0, 0, 0, 0.30), 0 4px 12px -2px rgba(0, 0, 0, 0.40)" : "0 1px 2px rgba(30, 58, 95, 0.05), 0 4px 12px -2px rgba(30, 58, 95, 0.10)", color: t.text, overflow: "hidden" }} onMouseDown={event => event.stopPropagation()}>
                         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "12px 14px", borderBottom: `1px solid ${t.titleBarBorder}` }}>
                             <h3 id="save-task-dialog-title" style={{ margin: 0, fontSize: 14, fontWeight: 700, color: t.text }}>{localizeText(lang, "Save as Task", "\u4fdd\u5b58\u4e3a\u4efb\u52a1", "\u4fdd\u5b58\u70ba\u4efb\u52d9")}</h3>
                             <button type="button" disabled={savingTask} onClick={() => setSaveTaskDialogOpen(false)} style={{ border: "none", background: "transparent", color: t.text, opacity: 0.62, cursor: savingTask ? "default" : "pointer", fontSize: 14, lineHeight: 1 }}>x</button>
                         </div>
-                        <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "14px" }}>
+                        <div className="aap-save-body">
                             <label htmlFor="save-task-name" style={{ fontSize: 12, fontWeight: 700, color: formFieldLabelColor(t) }}>{localizeText(lang, "Task name", "\u4efb\u52a1\u540d\u79f0", "\u4efb\u52d9\u540d\u7a31")}</label>
                             <input id="save-task-name" autoFocus value={saveTaskName} disabled={savingTask} onChange={event => setSaveTaskName(event.target.value)} onKeyDown={event => { if (event.key === "Escape" && !savingTask) setSaveTaskDialogOpen(false); }} style={{ width: "100%", boxSizing: "border-box", borderRadius: 6, fontSize: 13, padding: "7px 9px", fontFamily: "inherit", ...formFieldInputStyle(t) }} />
                             <p style={{ margin: "4px 0 0", fontSize: 12, lineHeight: 1.45, color: formFieldLabelColor(t) }}>{localizeText(lang, "The current main conversation history and task context will be saved. Double-click it in Task Management to continue in a separate tab.", "\u5c06\u4fdd\u5b58\u5f53\u524d\u4e3b\u5bf9\u8bdd\u5386\u53f2\u548c\u4efb\u52a1\u4e0a\u4e0b\u6587\u3002\u4e4b\u540e\u53ef\u5728\u4efb\u52a1\u7ba1\u7406\u4e2d\u53cc\u51fb\uff0c\u4ee5\u72ec\u7acb Tab \u7ee7\u7eed\u3002", "\u5c07\u4fdd\u5b58\u76ee\u524d\u4e3b\u5c0d\u8a71\u6b77\u53f2\u548c\u4efb\u52d9\u4e0a\u4e0b\u6587\u3002\u4e4b\u5f8c\u53ef\u5728\u4efb\u52d9\u7ba1\u7406\u4e2d\u96d9\u64ca\uff0c\u4ee5\u7368\u7acb Tab \u7e7c\u7e8c\u3002")}</p>
@@ -5770,7 +5785,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             </div>
             {tabLimitError && <div data-testid="ai-tab-limit-error" style={{ padding: "6px 12px", fontSize: 12, color: t.errorText, background: t.errorBg, borderBottom: `1px solid ${t.errorBorder}`, textAlign: "center" }}>{tabLimitError}</div>}
             {showChatUI && (
-            <div data-testid="ai-chat-column" data-search-open={projectSearch.open ? "true" : undefined} style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", position: "relative", overflow: "hidden" }}>
+            <div className="aap-chat-column" data-testid="ai-chat-column" data-search-open={projectSearch.open ? "true" : undefined}>
                 {isPureCodingEnvironment && (
                     <CodingWorkbenchControlPanel
                         lang={lang}
@@ -5793,11 +5808,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     >
                         {/* Defer heavy control tree until expanded — parent would otherwise rebuild it every chat render. */}
                         {!codingControlExpanded ? null : remoteCodingNeedsReconnect ? (
-                            <div data-testid="remote-coding-reconnect-form" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                            <div className="aap-reconnect-form" data-testid="remote-coding-reconnect-form">
                                 <div style={{ fontSize: 12, fontWeight: 600, color: t.headingColor || t.text }}>
                                     {localizeText(lang, "Reconnect remote SSH", "重新连接远程 SSH", "重新連線遠端 SSH")}
                                 </div>
-                                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                                <div className="aap-reconnect-grid">
                                     <label style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 11, fontWeight: 600, color: formFieldLabelColor(t) }}>
                                         {localizeText(lang, "Host", "主机", "主機")}
                                         <input
@@ -5876,7 +5891,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                         {remoteReconnect.success}
                                     </div>
                                 )}
-                                <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                                <div className="aap-actions-end">
                                     <button
                                         type="button"
                                         data-testid="remote-reconnect-submit"
@@ -5901,8 +5916,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         ) : (
                             <>
                                 <CodingControlSection title={localizeText(lang, "Status & controls", "状态与控制", "狀態與控制")} chrome={codingBannerChrome}>
-                                <div data-testid="coding-session-plan" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                                <div className="aap-plan" data-testid="coding-session-plan">
+                                <div className="aap-plan-head">
                                     <span style={{ fontSize: 11, fontWeight: 600, color: codingBannerChrome.muted }}>
                                         {localizeText(lang, "Session plan", "会话目标", "工作階段目標")}
                                     </span>
@@ -5934,7 +5949,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                     )}
                                 </div>
                                 {codingSessionPlanEditing ? (
-                                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                                    <div className="aap-plan-col">
                                         <textarea
                                             data-testid="coding-session-plan-input"
                                             value={codingSessionPlanDraft}
@@ -5943,7 +5958,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                             placeholder={localizeText(lang, "Overall coding goal for this multi-turn session…", "本多轮编程会话的总体目标…", "本多輪程式工作階段的總體目標…")}
                                             style={{ width: "100%", resize: "vertical", minHeight: 44, padding: "6px 8px", borderRadius: 4, border: `1px solid ${t.fieldBorder}`, background: t.fieldBg, color: t.text, fontSize: 12, lineHeight: 1.4, boxSizing: "border-box" }}
                                         />
-                                        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                                        <div className="aap-plan-actions">
                                             <button type="button" data-testid="coding-session-plan-cancel" onClick={() => { setCodingSessionPlanEditing(false); setCodingSessionPlanDraft(codingSessionPlan); }} style={{ height: 24, padding: "0 10px", borderRadius: 4, border: `1px solid ${codingBannerChrome.chipIdleBorder}`, background: codingBannerChrome.chipIdleBg, color: codingBannerChrome.muted, fontSize: 11, cursor: "pointer" }}>
                                                 {localizeText(lang, "Cancel", "取消", "取消")}
                                             </button>
@@ -5962,7 +5977,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                                 ? (codingSessionPlan.length > 160 ? `${codingSessionPlan.slice(0, 160)}…` : codingSessionPlan)
                                                 : localizeText(lang, "No session plan yet — set one to keep multi-turn focus.", "尚未设置会话目标 — 设置后多轮续写会始终对齐目标。", "尚未設定工作階段目標 — 設定後多輪續寫會始終對齊目標。")}
                                         </div>
-                                        <div data-testid="coding-plan-mode" style={{ marginTop: 4, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", fontSize: 11 }}>
+                                        <div data-testid="coding-plan-mode" className="aap-chip-row">
                                             <span style={{ fontWeight: 600, color: codingBannerChrome.muted }}>
                                                 {localizeText(lang, "Task handling", "任务处理", "任務處理")}
                                             </span>
@@ -6025,7 +6040,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                                 </button>
                                             ))}
                                             {codingPendingApproval && (
-                                                <span data-testid="coding-pending-approval" style={{ display: "inline-flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                                                <span className="aap-pending-approval" data-testid="coding-pending-approval">
                                                     <span style={{ color: codingBannerChrome.accentStrong, fontWeight: 600 }}>
                                                         {localizeText(lang, "Plan awaiting approval", "计划待批准", "計畫待批准")}
                                                     </span>
@@ -6069,7 +6084,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                                         onClick={() => { void handleCodingPlanGate("reject"); }}
                                                         disabled={!codingTaskReadyForIntents}
                                                         title={localizeText(lang, "Reject and clear pending plan", "拒绝并清除待批计划", "拒絕並清除待批計畫")}
-                                                        style={{ height: 22, padding: "0 8px", borderRadius: 4, border: `1px solid #dc262655`, background: codingBannerChrome.chipIdleBg, color: "#dc2626", fontSize: 11, cursor: codingTaskReadyForIntents ? "pointer" : "not-allowed", opacity: codingTaskReadyForIntents ? 1 : 0.55 }}
+                                                        style={{ height: 22, padding: "0 8px", borderRadius: 4, border: `1px solid color-mix(in srgb, var(--theme-danger) 33%, transparent)`, background: codingBannerChrome.chipIdleBg, color: "var(--theme-danger)", fontSize: 11, cursor: codingTaskReadyForIntents ? "pointer" : "not-allowed", opacity: codingTaskReadyForIntents ? 1 : 0.55 }}
                                                     >
                                                         {localizeText(lang, "Reject", "拒绝", "拒絕")}
                                                     </button>
@@ -6087,13 +6102,13 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                                     const statusLabel = codingStepStatusLabel(lang, st.status);
                                                     return (
                                                         <div key={st.index} data-testid={`coding-step-${st.index}`} data-status={st.status} className="mc-execution-step" style={{ display: "flex", gap: 6, alignItems: "baseline", marginBottom: 2, color }}>
-                                                            <span style={{ width: 14, flexShrink: 0 }}>{icon}</span>
-                                                            <span style={{ fontWeight: 600 }}>T{st.index}</span>
-                                                            <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "normal" }} title={st.summary || undefined}>
+                                                            <span className="aap-step-icon">{icon}</span>
+                                                            <span className="aap-strong">T{st.index}</span>
+                                                            <span className="aap-step-summary" title={st.summary || undefined}>
                                                                 <span className="mc-execution-step-title">{st.title || statusLabel}</span>
                                                                 {st.summary ? <small className="mc-execution-step-summary">{st.summary}</small> : null}
                                                             </span>
-                                                            <span style={{ opacity: 0.8, flexShrink: 0 }} aria-label={statusLabel}>{statusLabel}</span>
+                                                            <span className="aap-step-status" aria-label={statusLabel}>{statusLabel}</span>
                                                         </div>
                                                     );
                                                 })}
@@ -6120,7 +6135,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                                     </span>
                                                 ) : null}
                                                 {codingBackgroundVerify ? (
-                                                    <span data-testid="coding-bg-verify" title={codingBackgroundVerify} style={{ maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                                    <span className="aap-bg-verify" data-testid="coding-bg-verify" title={codingBackgroundVerify}>
                                                         {localizeText(lang, "BG verify", "后台验证", "背景驗證")}: {codingBackgroundVerify.length > 48 ? `${codingBackgroundVerify.slice(0, 48)}…` : codingBackgroundVerify}
                                                     </span>
                                                 ) : null}
@@ -6135,7 +6150,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                                                 void openCodingConflict(codingConflicts[0].id);
                                                             }
                                                         }}
-                                                        style={{ border: "none", background: "transparent", color: "#dc2626", fontWeight: 600, fontSize: 11, cursor: "pointer", padding: 0 }}
+                                                        className="aap-conflicts-btn"
                                                         title={localizeText(lang, "Open conflict side panel", "打开冲突侧栏", "開啟衝突側欄")}
                                                     >
                                                         {codingConflictOpen
@@ -6145,7 +6160,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                                 ) : null}
                                             </div>
                                         ) : null}
-                                        <div data-testid="coding-checkpoint-bg" style={{ marginTop: 4, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", fontSize: 11 }}>
+                                        <div data-testid="coding-checkpoint-bg" className="aap-chip-row">
                                             <button
                                                 type="button"
                                                 data-testid="coding-checkpoint-save"
@@ -6288,7 +6303,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                                 </span>
                                             ) : null}
                                         </div>
-                                        <div data-testid="coding-route-pref" style={{ marginTop: 4, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", fontSize: 11 }}>
+                                        <div data-testid="coding-route-pref" className="aap-chip-row">
                                             <span style={{ fontWeight: 600, color: codingBannerChrome.muted }}>
                                                 {localizeText(lang, "Model", "选模", "選模")}
                                             </span>
@@ -6331,9 +6346,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                         {/* Full conflict log + three-way live in the side panel; keep a mini strip only when side is closed. */}
                                         {codingConflictLog.length > 0 && !showCodingConflictPanel ? (
                                             <div data-testid="coding-conflict-log" style={{ marginTop: 4, fontSize: 10, color: t.textMuted || t.promptColor, maxHeight: 56, overflow: "auto", opacity: 0.9 }}>
-                                                <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 2, alignItems: "center" }}>
-                                                    <span style={{ fontWeight: 600 }}>{localizeText(lang, "Conflict log", "冲突日志", "衝突日誌")}</span>
-                                                    <span style={{ display: "flex", gap: 8 }}>
+                                                <div className="aap-log-head">
+                                                    <span className="aap-strong">{localizeText(lang, "Conflict log", "冲突日志", "衝突日誌")}</span>
+                                                    <span className="aap-log-actions">
                                                         <button
                                                             type="button"
                                                             data-testid="coding-conflict-log-export"
@@ -6358,13 +6373,13 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                                     </span>
                                                 </div>
                                                 {codingConflictLog.slice().reverse().slice(0, 4).map((line, i) => (
-                                                    <div key={`${i}-${line.slice(0, 24)}`} style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{line}</div>
+                                                    <div className="aap-log-line" key={`${i}-${line.slice(0, 24)}`}>{line}</div>
                                                 ))}
                                             </div>
                                         ) : null}
                                         {codingExecutionPlan || (codingPendingApproval && codingPendingPlanEditing) ? (
                                             <div data-testid="coding-execution-plan" style={{ marginTop: 4, padding: "6px 8px", borderRadius: 6, border: `1px solid ${codingPendingApproval ? "#dc262655" : (t.fieldBorder || "rgba(127,127,127,0.25)")}`, background: t.fieldBg || "transparent", fontSize: 11, color: t.textMuted || t.promptColor, lineHeight: 1.35 }}>
-                                                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 4 }}>
+                                                <div className="aap-plan-title-row">
                                                     <div style={{ fontWeight: 600, color: t.headingColor || t.btnColor || t.text }}>
                                                         {localizeText(lang, "Execution plan", "执行计划", "執行計畫")}
                                                         {codingPendingApproval ? ` · ${localizeText(lang, "pending", "待批准", "待批准")}` : ""}
@@ -6409,7 +6424,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                                         }}
                                                     />
                                                 ) : (
-                                                    <div style={{ whiteSpace: "pre-wrap", maxHeight: 120, overflow: "auto" }}>{codingExecutionPlan}</div>
+                                                    <div className="aap-plan-text">{codingExecutionPlan}</div>
                                                 )}
                                             </div>
                                         ) : null}
@@ -6464,17 +6479,18 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 <ProjectSearchPanel search={projectSearch} lang={lang} theme={t} inline={!!inline} active={panelActive} onProjectSwitch={handleProjectSearchSwitch} onCreateProjectTab={createProjectTabFromSearch} onCloseProjectTab={closeProjectTabByPath} onForkCurrentChat={handleForkCurrentChat} onTaskPrefsChanged={onTaskPrefsChanged} />
                 {workflowStartingLabel && !hasConversation && !showThinkingState && !showProcessingState && (
                     <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '12px', background: t.bg, color: t.textMuted }}>
-                        <div style={{ opacity: 0.7, display: 'inline-flex' }}><IconRocket size={28} color="currentColor" /></div>
-                        <div style={{ fontSize: '0.88rem', fontWeight: 600 }}>
+                        <div className="aap-wf-icon"><IconRocket size={28} color="currentColor" /></div>
+                        <div className="aap-wf-title">
                             {lang?.startsWith('en') ? `Starting workflow: ${workflowStartingLabel}` : `正在启动工作流：${workflowStartingLabel}`}
                         </div>
-                        <div style={{ fontSize: '0.75rem', opacity: 0.7 }}>
+                        <div className="aap-wf-sub">
                             {lang?.startsWith('en') ? 'Please wait...' : '请稍候...'}
                         </div>
                     </div>
                 )}
                 {showWelcomeView ? (
                     <div data-testid="ai-welcome-container" hidden={projectSearch.open} style={{ flex: 1, minHeight: 0, overflow: "auto", background: t.bg, boxSizing: "border-box" }}>
+                        {wizardOverlayActive && !showWelcomeViewBase && <NewTaskWizardRunningBanner lang={lang} theme={t} onBack={taskConfigWiring.dismissWizardOverlay} />}
                         <AssistantWelcomeView
                             lang={lang}
                             theme={t}
@@ -6487,7 +6503,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                             composer={{
                                 browseFile,
                                 canSend,
-                                cancelPending,
+                                cancelPending: wizardOverlayActive ? false : cancelPending,
                                 cancelSession,
                                 clearSelectedFile,
                                 composeAction,
@@ -6502,15 +6518,20 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                 handleVoiceClick,
                                 handleVoicePointerDown,
                                 handleVoicePointerLeave,
-                                inputLocked,
+                                inputLocked: wizardOverlayActive ? false : inputLocked,
                                 inputRef,
                                 inputValue,
-                                isBusy: inputVisualBusy,
+                                isBusy: wizardOverlayActive ? false : inputVisualBusy,
                                 isSelectionCollapsedAtBoundary,
                                 onComposeActionChange: handleComposeActionChange,
                                 onFireSlashCommand: handleFireSlashCommand,
                                 onInsertTemplate: handleInsertTemplate,
-                                onPlusMenuAction: handlePlusMenuAction,
+                                onPlusMenuAction: (actionId) => {
+                                    // The cover already is the new-task page. "New conversation"
+                                    // would clear the turn running underneath.
+                                    if (wizardOverlayActive && actionId === "newConversation") return;
+                                    handlePlusMenuAction(actionId);
+                                },
                                 onPermissionModeChange: handlePermissionModeChange,
                                 pendingAttachments,
                                 permissionMode,
@@ -6522,7 +6543,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                 resizeInput,
                                 selectedFilePaths,
                                 setPendingAttachments,
-                                showBusySpinner,
+                                showBusySpinner: wizardOverlayActive ? false : showBusySpinner,
                                 submittedPrompts,
                                 updateInputValue,
                                 voiceInput,
@@ -6536,23 +6557,12 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     {...windowDragHandleProps(!!inline, { minHeight: 72 })}
                     onDoubleClick={(event) => handleTaskExecutionHeaderDoubleClick(event, inline ? onToggleMaximize : undefined)}
                 >
-                    <div className="mc-task-execution-heading">
-                        <div className="mc-task-execution-title-row">
-                            {(() => {
-                                const executionTitle = activeTab?.title || localizeText(lang, "Current task", "当前任务", "目前任務");
-                                return <strong className="mc-task-execution-title" data-task-title={executionTitle} role="heading" aria-level={2} aria-label={executionTitle}>{executionTitle}</strong>;
-                            })()}
-                            <span className={`mc-task-execution-status mc-task-execution-status--${taskExecutionStatus.tone}`} data-status={taskExecutionStatus.tone} role="status"><i aria-hidden="true" />{taskExecutionStatus.label}</span>
-                        </div>
-                        <div className="mc-task-execution-meta" title={activeTabWorkingDirPath && !isCloudWorkspacePath(activeTabWorkingDirPath) ? activeTabWorkingDirPath : undefined}>
-                            {localizeText(lang, "Created by you", "由你创建", "由你建立")}{taskCreatedLabel ? ` · ${taskCreatedLabel}` : ""}{activeTabWorkingDirPath ? ` · ${workingDirDisplayLabel(activeTabWorkingDirPath, lang)}` : ""}
-                        </div>
-                    </div>
+                    <TaskExecutionHeading activeTab={activeTab} lang={lang} status={taskExecutionStatus} taskCreatedLabel={taskCreatedLabel} workingDirPath={activeTabWorkingDirPath} remoteWorkspace={remoteWorkspace} remoteWorkspaceLabel={remoteWorkspaceLabel} />
                     <div className="mc-task-execution-actions" data-testid="task-execution-actions" {...windowNoDragRegionProps()}>
                         <TaskTabSwitcher tabs={tabState.tabs} activeTabId={tabState.activeTabId} lang={lang} onActivate={activateTab} onClose={closeTabWithProjectCleanup} tasks={taskListProp} onOpenTask={onOpenTaskProp} />
                         <button className="task-pause-btn" data-action="cancel" type="button" onClick={handleCancel} disabled={!inputVisualBusy || cancelPending} aria-busy={cancelPending} aria-label={localizeText(lang, "Pause task", "暂停任务", "暫停任務")} title={localizeText(lang, "Pause task", "暂停任务", "暫停任務")}>{localizeText(lang, "Pause task", "暂停任务", "暫停任務")}</button>
                         <button className="task-share-btn" data-testid="task-share-btn" type="button" onClick={() => { void shareCurrentTask(); }} aria-label={localizeText(lang, "Share task", "分享任务", "分享任務")}>{localizeText(lang, "Share", "分享", "分享")}</button>
-                        <TaskMoreActions lang={lang} onSave={openSaveTaskDialog} onClear={clearActiveHistory} onCopyTitle={() => { const titleText = String(activeTab?.title || deriveTaskNameFromMessages()).trim(); if (titleText && typeof navigator !== "undefined" && navigator.clipboard?.writeText) return navigator.clipboard.writeText(titleText); }} onPreview={codingPreviewAllowed ? handleOpenPreviewPanel : undefined} />
+                        <TaskMoreActions lang={lang} onSave={openSaveTaskDialog} onClear={clearActiveHistory} onCopyTitle={() => { const titleText = String((activeTab ? getAITabDisplayTitle(activeTab, lang) : "") || deriveTaskNameFromMessages()).trim(); if (titleText && typeof navigator !== "undefined" && navigator.clipboard?.writeText) return navigator.clipboard.writeText(titleText); }} onPreview={codingPreviewAllowed ? handleOpenPreviewPanel : undefined} />
                         {inline && (onHideWindow || onToggleMaximize) ? (
                             <div className="mc-task-execution-window-controls" data-testid="task-window-controls" role="group" aria-label={localizeText(lang, "Window controls", "窗口控制", "窗口控制")}>
                                 {onHideWindow ? <TaskHideWindowButton lang={lang} onHideWindow={onHideWindow} /> : null}
@@ -6567,12 +6577,12 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         // Expert tab empty state (e.g. after a conversation clear):
                         // expert name + intro instead of the generic welcome view.
                         <div data-testid="ai-expert-empty" style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, padding: "40px 20px", textAlign: "center", color: t.textMuted }}>
-                            <div aria-hidden="true" style={{ fontSize: 36, lineHeight: 1 }}>{activeTab.expertIcon || DEFAULT_EXPERT_ICON}</div>
+                            <div className="aap-expert-icon" aria-hidden="true">{activeTab.expertIcon || DEFAULT_EXPERT_ICON}</div>
                             <div style={{ fontSize: "0.95rem", fontWeight: 600, color: t.text }}>{activeTab.title}</div>
                             {activeTab.expertDescription ? (
-                                <div style={{ fontSize: "0.8rem", maxWidth: 420, lineHeight: 1.5 }}>{activeTab.expertDescription}</div>
+                                <div className="aap-expert-desc">{activeTab.expertDescription}</div>
                             ) : null}
-                            <div style={{ fontSize: "0.78rem", opacity: 0.8, maxWidth: 420, lineHeight: 1.5 }}>
+                            <div className="aap-expert-msg">
                                 {expertWelcomeMessageText({ name: activeTab.title, description: activeTab.expertDescription || "" }, lang)}
                             </div>
                         </div>
@@ -6584,7 +6594,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     <div ref={outputEndRef} />
                 </div></>)}
                 {activeProjectPreparing && <div data-testid="project-tab-restore-progress" style={{ flexShrink: 0, padding: "7px 10px 8px", borderTop: `1px solid ${t.inputBarBorder}`, background: t.inputBarBg, color: t.textMuted, fontSize: 12 }}>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 6 }}>
+                    <div className="aap-restore-head">
                         <span>{activeProjectPrepareMode === "new-agent"
                             ? (isRemoteCodingDevEnvironment
                                 ? (isRemoteMaintenanceEnvironment
@@ -6594,7 +6604,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                 ? localizeText(lang, "Creating coding environment", "正在创建编程环境", "正在建立程式開發環境")
                                 : (lang === "en" ? "Creating project session" : "正在创建项目会话"))
                             : (lang === "en" ? "Restoring task context" : "正在恢复任务上下文")}</span>
-                        <span style={{ opacity: 0.82 }}>{lang === "en" ? "Input will wait" : "输入会先等待"}</span>
+                        <span className="aap-restore-note">{lang === "en" ? "Input will wait" : "输入会先等待"}</span>
                     </div>
                     <div style={{ height: 3, overflow: "hidden", borderRadius: 999, background: `color-mix(in srgb, ${t.headingColor} 16%, transparent)` }}>
                         <div style={{ width: "38%", height: "100%", borderRadius: "inherit", background: t.headingColor, animation: "sidebar-task-restore-progress 0.9s ease-in-out infinite alternate" }} />
@@ -6660,6 +6670,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         lang={lang}
                         onWorkingDirChange={bumpLocalWorkspaceRefresh}
                         onWorkingDirResolved={handleWorkingDirResolved}
+                        remoteHost={remoteWorkspace.host}
+                        remoteWorkDir={remoteWorkspace.workDir}
                         onOpenCloudFiles={() => {
                             reopenCodePreview();
                             window.dispatchEvent(new CustomEvent(FOCUS_CLOUD_WORKSPACE_TREE_EVENT));

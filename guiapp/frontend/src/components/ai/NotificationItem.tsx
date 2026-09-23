@@ -101,7 +101,7 @@ export function NotificationItem({ notification, onClick, theme, lang }: Notific
     borderRadius: "6px",
     transition: "background 150ms ease",
     background: is_read ? "transparent" : (theme.isDark ? "rgba(59, 130, 246, 0.06)" : "rgba(59, 130, 246, 0.04)"),
-    borderLeft: is_read ? "3px solid transparent" : `3px solid ${theme.linkColor || "#2f78d0"}`,
+    borderLeft: is_read ? "3px solid transparent" : `3px solid ${theme.linkColor || "#2e75cb"}`,
   };
 
   // Title style — unread is bold
@@ -134,9 +134,9 @@ export function NotificationItem({ notification, onClick, theme, lang }: Notific
   // Priority indicator style
   const priorityStyle: CSSProperties | null =
     priority === "urgent"
-      ? { display: "inline-block", width: "6px", height: "6px", borderRadius: "50%", background: "#dc2626", flexShrink: 0 }
+      ? { display: "inline-block", width: "6px", height: "6px", borderRadius: "50%", background: "var(--theme-danger)", flexShrink: 0 }
       : priority === "important"
-        ? { display: "inline-block", width: "6px", height: "6px", borderRadius: "50%", background: "#f59e0b", flexShrink: 0 }
+        ? { display: "inline-block", width: "6px", height: "6px", borderRadius: "50%", background: "var(--theme-warning)", flexShrink: 0 }
         : null;
 
   // Time style
@@ -159,7 +159,7 @@ export function NotificationItem({ notification, onClick, theme, lang }: Notific
       style={containerStyle}
     >
       {/* Top row: category pill + priority + time */}
-      <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+      <div className="ni-top-row">
         <span style={pillStyle}>{isZh ? catLabel.zh : catLabel.en}</span>
         {priorityStyle && (
           <span
@@ -168,7 +168,7 @@ export function NotificationItem({ notification, onClick, theme, lang }: Notific
             aria-label={priority === "urgent" ? (isZh ? "紧急" : "Urgent") : (isZh ? "重要" : "Important")}
           />
         )}
-        <span style={{ flex: 1 }} />
+        <span className="ni-spacer" />
         <span style={timeStyle}>{formatRelativeTime(created_at, lang)}</span>
       </div>
 

@@ -102,7 +102,7 @@ export function MemoryUsageRing({ theme: t, themeMode, lang, size = 22 }: Memory
                 position: "relative",
             }}
         >
-            <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{ transform: "rotate(-90deg)" }}>
+            <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="mur-ring">
                 {/* Background track */}
                 <circle
                     cx={size / 2}

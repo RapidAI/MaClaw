@@ -30,6 +30,11 @@ import (
 
 var problemReportScreenshotNamePattern = regexp.MustCompile(`^screenshot-[0-9]{2}\.(png|jpg|webp)$`)
 
+var (
+	problemReportOriginHTTPClient30s = &http.Client{Timeout: 30 * time.Second}
+	problemReportOriginHTTPClient15s = &http.Client{Timeout: 15 * time.Second}
+)
+
 const (
 	problemReportMaxUploadBytes      = 120 << 20
 	problemReportMaxDiagnosticsBytes = 100 << 20
@@ -776,7 +781,7 @@ func (h *ProblemReportHandlers) deleteFromOrigin(ctx context.Context, report *sk
 			req.Header.Set("Authorization", "Bearer "+secret)
 		}
 	}
-	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	resp, err := problemReportOriginHTTPClient30s.Do(req)
 	if err != nil {
 		return err
 	}
@@ -807,7 +812,7 @@ func (h *ProblemReportHandlers) attachmentManifestFromOrigin(ctx context.Context
 			req.Header.Set("Authorization", "Bearer "+secret)
 		}
 	}
-	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	resp, err := problemReportOriginHTTPClient15s.Do(req)
 	if err != nil {
 		return nil, err
 	}

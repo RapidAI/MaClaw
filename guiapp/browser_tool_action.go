@@ -9,6 +9,7 @@ const (
 	browserToolActionSessionStart browserToolAction = "session_start"
 	browserToolActionSessionStop  browserToolAction = "session_stop"
 	browserToolActionObserve      browserToolAction = "observe"
+	browserToolActionProbe        browserToolAction = "probe"
 	browserToolActionNavigate     browserToolAction = "navigate"
 	browserToolActionClick        browserToolAction = "click"
 	browserToolActionType         browserToolAction = "type"
@@ -52,6 +53,8 @@ func normalizeBrowserToolAction(action string) browserToolAction {
 		return browserToolActionSessionStop
 	case browserToolActionObserve:
 		return browserToolActionObserve
+	case browserToolActionProbe:
+		return browserToolActionProbe
 	case browserToolActionNavigate:
 		return browserToolActionNavigate
 	case browserToolActionClick:
@@ -139,6 +142,7 @@ var mergedBrowserSupportedActions = []browserToolAction{
 	browserToolActionSessionStart,
 	browserToolActionSessionStop,
 	browserToolActionObserve,
+	browserToolActionProbe,
 	browserToolActionNavigate,
 	browserToolActionClick,
 	browserToolActionType,

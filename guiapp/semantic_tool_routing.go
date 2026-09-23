@@ -288,6 +288,12 @@ type semanticReplanInput struct {
 	// would swap archetype bundles and gain legs the expansion/replan
 	// validators must reject.
 	BundleKey intent.IntentLabel
+	// SlimOffice records that this turn kept only the document surface.
+	// Replan and petition call the planner with an empty utterance, so they
+	// cannot see "然后结论是什么" and would otherwise grow the office writer
+	// back from the stored classification.
+	SlimOffice        bool
+	ShortDocumentEdit bool
 }
 
 type semanticRouteDiagnostic struct {
@@ -844,7 +850,14 @@ func leftoverKeepsRemoteHostClassification(result intent.ClassificationResult) b
 	return classificationHasSSHSignal(result)
 }
 
+func loopContextTurnAnswerOnly(ctx *LoopContext) bool {
+	return ctx != nil && ctx.semanticTurnAnswerOnly
+}
+
 func loopContextBlocksLegacyToolRouter(ctx *LoopContext) bool {
+	if loopContextTurnAnswerOnly(ctx) {
+		return true
+	}
 	if loopContextHasRoutingMissFallback(ctx) {
 		// Leftover still carries the turn's UIC result. LabelSSH is a managed
 		// family, so treating leftover as "managed, skip the name-router"
@@ -1210,14 +1223,20 @@ func semanticNeedsFromClassification(registry *tool.CapabilityRegistry, result i
 }
 
 func semanticBaselineWorkspaceApplies(result intent.ClassificationResult) bool {
+	// "继续查一下天气" keeps the open document as a secondary label. Bash and
+	// write_file belong to an office or shell turn, not to that lookup.
 	switch result.Primary {
-	case intent.LabelSearch, intent.LabelLiveData, intent.LabelLiveDataVisual, intent.LabelWebFetch,
-		intent.LabelOffice, intent.LabelCurrentTime, intent.LabelKnowledgeRead,
-		intent.LabelFileRead, intent.LabelFileWrite, intent.LabelShellCommand:
-		return true
-	default:
+	case intent.LabelSearch, intent.LabelLiveData, intent.LabelLiveDataVisual, intent.LabelWebFetch, intent.LabelCurrentTime:
 		return false
 	}
+	for _, label := range result.Labels() {
+		switch label {
+		case intent.LabelOffice, intent.LabelFileRead, intent.LabelFileWrite,
+			intent.LabelShellCommand, intent.LabelDelegateTask, intent.LabelDocumentRead:
+			return true
+		}
+	}
+	return false
 }
 
 // semanticNeedsFromClassificationContext is the request-bound counterpart of
@@ -1250,11 +1269,155 @@ func semanticNeedsFromClassificationContext(ctx context.Context, registry *tool.
 var semanticArchetypeBundles = agentservice.SemanticArchetypeBundles()
 
 func semanticArchetypeBundleKey(result intent.ClassificationResult) intent.IntentLabel {
+	// A lookup that only inherited an open document must not grow the document
+	// bundle. "继续查一下天气" keeps the office tool and the search, not
+	// download_file and read_file. A user-declared office composite still does.
+	if semanticResidueInheritedLookup(result) {
+		return result.Primary
+	}
 	return agentservice.ArchetypeBundleKey(result)
+}
+
+const semanticNoCompanionBundle intent.IntentLabel = "no_companion_bundle"
+
+func semanticArchetypeBundleKeyForTurn(result intent.ClassificationResult, userText string) intent.IntentLabel {
+	if semanticResidueSlimOfficeTurn(result, userText) {
+		return semanticNoCompanionBundle
+	}
+	return semanticArchetypeBundleKey(result)
+}
+
+func withoutDocumentMutationNeeds(needs []tool.CapabilityNeed, keep map[tool.CapabilityID]bool) []tool.CapabilityNeed {
+	out := make([]tool.CapabilityNeed, 0, len(needs))
+	for _, need := range needs {
+		if keep[need.Capability] {
+			out = append(out, need)
+			continue
+		}
+		switch need.Capability {
+		case tool.CapabilityDocumentWriteOffice, tool.CapabilityFSWriteLocal, agentservice.CapabilityDocumentGenerate, agentservice.CapabilityArtifactDeliverCurrent:
+			continue
+		default:
+			out = append(out, need)
+		}
+	}
+	return out
+}
+
+func withSlimDocumentRead(registry *tool.CapabilityRegistry, needs []tool.CapabilityNeed) []tool.CapabilityNeed {
+	for _, need := range needs {
+		if need.Capability == tool.CapabilityFSReadLocal {
+			return needs
+		}
+	}
+	if registry == nil {
+		return needs
+	}
+	if _, exists := registry.Lookup(tool.CapabilityFSReadLocal); !exists {
+		return needs
+	}
+	out := append([]tool.CapabilityNeed(nil), needs...)
+	return append(out, tool.CapabilityNeed{
+		ID:          "need:~slim-document-read",
+		Capability:  tool.CapabilityFSReadLocal,
+		Polarity:    tool.NeedRequire,
+		Required:    false,
+		Confidence:  1,
+		EvidenceIDs: []string{"residue:document-read"},
+	})
+}
+
+func withoutAmbientRetrievalNeeds(needs []tool.CapabilityNeed) []tool.CapabilityNeed {
+	if len(needs) == 0 {
+		return needs
+	}
+	out := make([]tool.CapabilityNeed, 0, len(needs))
+	for _, need := range needs {
+		ambient := false
+		for _, evidence := range need.EvidenceIDs {
+			if evidence == "ambient:retrieval" {
+				ambient = true
+				break
+			}
+		}
+		if !ambient {
+			out = append(out, need)
+		}
+	}
+	return out
+}
+
+func semanticResidueInheritedLookup(result intent.ClassificationResult) bool {
+	switch result.Primary {
+	case intent.LabelSearch, intent.LabelLiveData, intent.LabelLiveDataVisual, intent.LabelWebFetch, intent.LabelCurrentTime:
+	default:
+		return false
+	}
+	return strings.Contains(result.Reason, "session residue")
 }
 
 func withSemanticArchetypeBundleKeyOverride(ctx context.Context, key intent.IntentLabel) context.Context {
 	return agentservice.WithArchetypeBundleKeyOverride(ctx, key)
+}
+
+type semanticSlimOfficeContextKey struct{}
+
+type semanticSlimOfficeContext struct {
+	slim      bool
+	shortEdit bool
+}
+
+type semanticPetitionedLabelKey struct{}
+
+func withSemanticPetitionedLabel(ctx context.Context, label intent.IntentLabel) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, semanticPetitionedLabelKey{}, label)
+}
+
+func semanticPetitionedKeep(ctx context.Context) map[tool.CapabilityID]bool {
+	if ctx == nil {
+		return nil
+	}
+	label, ok := ctx.Value(semanticPetitionedLabelKey{}).(intent.IntentLabel)
+	if !ok || label == "" {
+		return nil
+	}
+	templates := imSemanticIntentRuleSet[label]
+	if len(templates) == 0 {
+		return nil
+	}
+	keep := make(map[tool.CapabilityID]bool, len(templates))
+	for _, template := range templates {
+		keep[template.Capability] = true
+	}
+	return keep
+}
+
+func semanticDocumentMutationLabel(label intent.IntentLabel) bool {
+	switch label {
+	case intent.LabelOffice, intent.LabelFileWrite, intent.LabelDocumentGenerate:
+		return true
+	default:
+		return false
+	}
+}
+
+func withSemanticSlimOffice(ctx context.Context, slim, shortEdit bool) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, semanticSlimOfficeContextKey{}, semanticSlimOfficeContext{slim: slim, shortEdit: shortEdit})
+}
+
+func semanticOfficeTurnSlim(ctx context.Context, planning intent.ClassificationResult, userText string) (bool, bool) {
+	if ctx != nil {
+		if mode, ok := ctx.Value(semanticSlimOfficeContextKey{}).(semanticSlimOfficeContext); ok {
+			return mode.slim, mode.shortEdit
+		}
+	}
+	return semanticResidueSlimOfficeTurn(planning, userText), semanticResidueShortDocumentEdit(planning, userText)
 }
 
 func semanticArchetypeBundleKeyFor(ctx context.Context, result intent.ClassificationResult) intent.IntentLabel {
@@ -1385,6 +1548,9 @@ func (h *IMMessageHandler) semanticCallSurfaceForSharedTurnWithContextAndAttachm
 	planningText := markdownFileWritePlanningText(userText, loopHistory(ctx))
 	defs, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithContextAndIdentityAndClassificationAndAttachmentsWithSession(requestCtx, userID, planningText, channel, rootTaskID, turnID, sessionID, semanticIntentFromLoopContext(ctx), attachments)
 	if handled && err == nil && surface != nil && ctx != nil {
+		h.noteSemanticSessionResidueCandidate(ctx, userID, channel, userText, surface.plan)
+	}
+	if handled && err == nil && surface != nil && ctx != nil {
 		removeFence, current := ctx.RegisterSemanticTurnFence(turnGeneration, func() {
 			cancelSemanticCallSurface(surface)
 		})
@@ -1507,7 +1673,7 @@ func (h *IMMessageHandler) semanticCallSurfaceForSharedTurnWithContextAndIdentit
 		hostConnectionID: "agent-loop-surface:" + newSemanticEphemeralIdentity(),
 		completed:        make(map[string]bool), materialized: make(map[string]bool), schemas: prepared.definitions, parameterSchemas: prepared.schemas,
 		grants: make(map[string]tool.InvocationGrant), retiredGrants: make(map[string]tool.InvocationGrant), rendered: make(map[string]bool), artifacts: newSemanticArtifactBroker(scope, artifactStore, routeState, coordinator), pendingArtifacts: make(map[string][]tool.ArtifactPayload),
-		replan: &semanticReplanInput{UserID: userID, Channel: channel, RootTaskID: prepared.rootTaskID, Classification: classVal, Attachments: cloneSemanticMessageAttachments(attachments), ConversationLookupReused: prepared.conversationLookupReused, BundleKey: semanticArchetypeBundleKey(classVal)},
+		replan: &semanticReplanInput{UserID: userID, Channel: channel, RootTaskID: prepared.rootTaskID, Classification: classVal, Attachments: cloneSemanticMessageAttachments(attachments), ConversationLookupReused: prepared.conversationLookupReused, BundleKey: semanticArchetypeBundleKeyForTurn(classVal, userText), SlimOffice: semanticResidueSlimOfficeTurn(classVal, userText), ShortDocumentEdit: semanticResidueShortDocumentEdit(classVal, userText)},
 	}
 	for _, input := range prepared.documentInputs {
 		if err := semanticRoutingRequestErr(requestCtx); err != nil {
@@ -1959,9 +2125,20 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 		return nil, true, fmt.Errorf("semantic capability registry unavailable")
 	}
 	registry := newIMSemanticCapabilityRegistry()
+	if agentservice.ArchetypeBundleKeyFor(requestCtx, planning) == agentservice.ArchetypeBundleKey(planning) {
+		requestCtx = withSemanticArchetypeBundleKeyOverride(requestCtx, semanticArchetypeBundleKeyForTurn(planning, userText))
+	}
 	needs, managed, err := semanticNeedsFromClassificationContext(requestCtx, registry, planning)
 	if err != nil {
 		return nil, true, fmt.Errorf("resolve IM semantic capability needs: %w", err)
+	}
+	slimOffice, shortDocumentEdit := semanticOfficeTurnSlim(requestCtx, planning, userText)
+	if slimOffice {
+		needs = withoutAmbientRetrievalNeeds(needs)
+		needs = withSlimDocumentRead(registry, needs)
+		if !shortDocumentEdit {
+			needs = withoutDocumentMutationNeeds(needs, semanticPetitionedKeep(requestCtx))
+		}
 	}
 	if classificationHasLabel(planning, intent.LabelSSH) && semanticTrustedSSHAnyPublished(h) && sshAvailabilityCountEligible(turnID) {
 		// Denominator for the ssh rescue-rate observability stream (§D1).
@@ -2011,13 +2188,30 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	// Lookup->generate Requires means "facts needed", not "search again".
 	// Same-topic conversation evidence drops the this-turn lookup need so
 	// generate_pdf is issued on the first model request.
-	needs, conversationLookupReused := semanticNeedsForReusableConversationLookupReport(needs, requestCtx, userText)
+	var conversationLookupReused bool
+	if _, petition := semanticPetitionKeptLookup(requestCtx); !petition {
+		needs, conversationLookupReused = semanticNeedsForReusableConversationLookupReport(needs, requestCtx, userText)
+	}
 	// A petition expansion re-plan has no user text, so the drop above cannot
 	// re-fire; when the parent surface recorded it, mirror it here for every
 	// lookup leg except the petitioned label's own templates.
 	needs = semanticNeedsForPetitionExpansionLookup(needs, requestCtx)
-	if semanticBaselineWorkspaceApplies(planning) {
+	applyBaseline := semanticBaselineWorkspaceApplies(planning) && !slimOffice
+	if semanticPetitionExpansion(requestCtx) {
+		applyBaseline = semanticPetitionBaseline(requestCtx)
+	}
+	if applyBaseline {
 		needs = agentservice.ExpandBaselineWorkspaceNeeds(registry, imSemanticIntentRuleSet, planning, true, needs)
+	}
+	remaining := semanticResidueRemaining(requestCtx)
+	if !semanticPetitionExpansion(requestCtx) {
+		needs = dropUnusedSessionCompanions(needs, remaining)
+	}
+	needs = clampNeedsToResidueRemaining(needs, remaining)
+	if len(needs) == 0 {
+		// The session ceiling is spent and no declared need remains. Stay on
+		// the closed semantic turn so the legacy catalog is not reopened.
+		return nil, true, errSemanticSessionCeilingSpent
 	}
 	catalog := tool.NewToolCatalog(registry)
 	// A semantic provider's registered schema is the trusted source for its
@@ -2615,7 +2809,11 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	}
 	// A managed family never falls through to old name routing: the caller sees
 	// a planner result only. Missing capability providers are explicit errors.
-	if len(plan.Unmet) > 0 {
+	// A selection budget that keeps an earlier required wave and only cuts
+	// later ones is not a catalog miss. Refusing the whole turn made 「北京天气」
+	// show "当前能力目录未覆盖这项请求" when render and deliver merely exceeded
+	// the selection cap.
+	if len(plan.Unmet) > 0 && !(len(plan.Selections) > 0 && semanticUnmetOnlyBudget(plan.Unmet)) {
 		return preparation, true, semanticUnmetNeedsError{Unmet: plan.Unmet}
 	}
 	if err := semanticScopeSurfaceError(scopePlan, scopeResult); err != nil {
@@ -2835,6 +3033,9 @@ func semanticHostRejectResponseForManagedSurfaceFailure(err error) *IMAgentRespo
 			ResponseSource: "semantic_host_reject",
 		}
 	}
+	if errors.Is(err, errSemanticSessionCeilingSpent) {
+		return &IMAgentResponse{ResponseSource: "semantic_session_ceiling"}
+	}
 	if errors.Is(err, errSemanticAwaitingConfirmation) || errors.Is(err, errSemanticGenerateDeliveryConflict) ||
 		semanticTrustedDocumentInputError(err) || semanticUnmetHasReason(err, "policy_denied") {
 		return semanticHostRejectResponseForPlanError(err)
@@ -2845,6 +3046,13 @@ func semanticHostRejectResponseForManagedSurfaceFailure(err error) *IMAgentRespo
 	}
 	var unmet semanticUnmetNeedsError
 	if errors.As(err, &unmet) {
+		if semanticUnmetOnlyBudget(unmet.Unmet) {
+			return &IMAgentResponse{
+				Text:           "这次请求的步骤超出了本轮计划额度，没有开始执行。",
+				Error:          "semantic_plan_budget_exceeded",
+				ResponseSource: "semantic_host_reject",
+			}
+		}
 		return semanticHostRejectResponseForPlanError(err)
 	}
 	return &IMAgentResponse{
@@ -3475,13 +3683,22 @@ func semanticRoutingContext(loop *LoopContext) (context.Context, context.CancelF
 		if expertDefForUserID(loop.UserID) != nil {
 			ctx = withSemanticExpertSession(ctx, true)
 		}
-		if strings.TrimSpace(loop.ComputerUseRoutingText) != "" && !loop.ComputerUseBlockedForLocalFileWork {
+		// Routing text is the gate's input, not permission. Only a settled open
+		// (explicit trigger, a real app operation, or an in-progress session)
+		// may publish the computer-use fact. A plain chat turn always has text.
+		if loop.ComputerUseActive && !loop.ComputerUseBlockedForLocalFileWork {
 			ctx = withSemanticComputerUseActive(ctx, true)
 		}
 		if loop.LansengerGroupPermissions != nil {
 			ctx = withSemanticGroupPermissions(ctx, loop.LansengerGroupPermissions)
 		}
 		ctx = withSemanticConversationHistory(ctx, loop.History)
+		if loop.semanticResidueLookupFacts {
+			ctx = withSemanticReusableLookupFacts(ctx)
+		}
+		if len(loop.semanticResidueRemaining) > 0 {
+			ctx = withSemanticResidueRemaining(ctx, loop.semanticResidueRemaining)
+		}
 		return ctx, cancel
 	}
 	return context.WithCancel(context.Background())
@@ -3554,7 +3771,7 @@ func (h *IMMessageHandler) replanSemanticCallSurfaceWithContext(requestCtx conte
 	if strings.TrimSpace(string(bundleKey)) == "" {
 		bundleKey = semanticArchetypeBundleKey(input.Classification)
 	}
-	planCtx := withSemanticArchetypeBundleKeyOverride(requestCtx, bundleKey)
+	planCtx := withSemanticSlimOffice(withSemanticArchetypeBundleKeyOverride(requestCtx, bundleKey), input.SlimOffice, input.ShortDocumentEdit)
 	prepared, handled, err := h.semanticPlanForTurnWithContextAndClassificationAndAttachmentsWithSession(
 		planCtx, input.UserID, "", input.Channel, input.RootTaskID,
 		semanticReplanTurnID(surface.scope.TurnID, input.Attempts+1), surface.scope.SessionID, &input.Classification, cloneSemanticMessageAttachments(input.Attachments),
@@ -3576,7 +3793,7 @@ func (h *IMMessageHandler) replanSemanticCallSurfaceWithContext(requestCtx conte
 		}
 	}
 	return h.publishSemanticChildRevision(requestCtx, surface, prepared,
-		&semanticReplanInput{UserID: input.UserID, Channel: input.Channel, RootTaskID: input.RootTaskID, Classification: input.Classification, Attachments: cloneSemanticMessageAttachments(input.Attachments), Attempts: input.Attempts + 1, ConversationLookupReused: input.ConversationLookupReused, BundleKey: bundleKey},
+		&semanticReplanInput{UserID: input.UserID, Channel: input.Channel, RootTaskID: input.RootTaskID, Classification: input.Classification, Attachments: cloneSemanticMessageAttachments(input.Attachments), Attempts: input.Attempts + 1, ConversationLookupReused: input.ConversationLookupReused, BundleKey: bundleKey, SlimOffice: input.SlimOffice, ShortDocumentEdit: input.ShortDocumentEdit},
 		"replan", strings.TrimSpace(reasonCode))
 }
 
@@ -3824,7 +4041,7 @@ func (h *IMMessageHandler) petitionExpandSemanticCallSurface(requestCtx context.
 	if strings.TrimSpace(string(bundleKey)) == "" {
 		bundleKey = semanticArchetypeBundleKey(input.Classification)
 	}
-	planCtx := withSemanticArchetypeBundleKeyOverride(requestCtx, bundleKey)
+	planCtx := withSemanticPetitionedLabel(withSemanticSlimOffice(withSemanticPetitionBaseline(withSemanticPetitionExpansion(withSemanticArchetypeBundleKeyOverride(requestCtx, bundleKey)), semanticPlanHasBaseline(surface.plan)), input.SlimOffice, input.ShortDocumentEdit), label)
 	if input.ConversationLookupReused {
 		// The parent dropped its lookup legs on same-topic conversation
 		// evidence; this re-plan has no user text to re-derive that, so mirror
@@ -3849,8 +4066,12 @@ func (h *IMMessageHandler) petitionExpandSemanticCallSurface(requestCtx context.
 	// later legitimate replan. The child's lookup legs — including the just
 	// petitioned one — are published parent authority now, so the reuse-drop
 	// record must not follow: a later expansion may not drop them again.
+	childShortEdit := input.ShortDocumentEdit
+	if input.SlimOffice && semanticDocumentMutationLabel(label) {
+		childShortEdit = true
+	}
 	return h.publishSemanticChildRevision(requestCtx, surface, prepared,
-		&semanticReplanInput{UserID: input.UserID, Channel: input.Channel, RootTaskID: input.RootTaskID, Classification: expanded, Attachments: cloneSemanticMessageAttachments(input.Attachments), Attempts: input.Attempts, BundleKey: bundleKey},
+		&semanticReplanInput{UserID: input.UserID, Channel: input.Channel, RootTaskID: input.RootTaskID, Classification: expanded, Attachments: cloneSemanticMessageAttachments(input.Attachments), Attempts: input.Attempts, BundleKey: bundleKey, SlimOffice: input.SlimOffice, ShortDocumentEdit: childShortEdit},
 		"petition", "petition_expand:"+strings.TrimSpace(string(label)))
 }
 

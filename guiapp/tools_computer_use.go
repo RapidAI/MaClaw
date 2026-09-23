@@ -749,6 +749,10 @@ func computerUseObserveCaption(screenIdx int, windowHint string, withOCR, cropFo
 		hint := strings.TrimSpace(windowHint)
 		if hint == "" {
 			hint = accessibility.ForegroundWindowTitle()
+		} else if best, ok := computeruse.BestWindowTitle(hint, windows); ok {
+			// Resolve 记事本/微信/chrome to the real top-level title before UIA
+			// walks the tree, so a shorter lookalike window is not enumerated.
+			hint = best
 		}
 		if hint != "" {
 			if tree, err := bridge.EnumElements(hint); err == nil {
@@ -1004,26 +1008,22 @@ func flattenA11y(dst *[]taskengine.UIElement, nodes []accessibility.Element, dep
 }
 
 func a11yRoleInteractable(role string) bool {
-	r := strings.ToLower(role)
-	switch {
-	case strings.Contains(r, "button"),
-		strings.Contains(r, "edit"),
-		strings.Contains(r, "menu"),
-		strings.Contains(r, "link"),
-		strings.Contains(r, "check"),
-		strings.Contains(r, "tab"),
-		strings.Contains(r, "listitem"),
-		strings.Contains(r, "treeitem"),
-		strings.Contains(r, "combo"),
-		strings.Contains(r, "radio"),
-		strings.Contains(r, "hyperlink"),
-		strings.Contains(r, "slider"),
-		strings.Contains(r, "spinner"),
-		strings.Contains(r, "document"),
-		r == "textfield",
-		r == "edit":
+	r := strings.ToLower(strings.TrimSpace(role))
+	r = strings.TrimPrefix(r, "controltype.")
+	switch r {
+	case "button", "splitbutton", "edit", "textfield", "textarea",
+		"menu", "menuitem", "menubar",
+		"link", "hyperlink",
+		"checkbox", "tab", "tabitem",
+		"listitem", "treeitem", "dataitem",
+		"combobox", "combo",
+		"radio", "radiobutton",
+		"slider", "spinner",
+		"document":
 		return true
 	default:
+		// Exact roles only. Substring checks treated Table as a tab and let
+		// static text or panes become click targets.
 		return false
 	}
 }

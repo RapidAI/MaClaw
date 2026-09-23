@@ -1,0 +1,45 @@
+/* Workspace kind marks. Light fills are the design accents.
+   Dark mode must not keep those near-white chips — they glare on navy surfaces. */
+
+.mc-workspace-kind {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    font-size: 11px;
+    line-height: 1.4;
+    border-radius: 6px;
+    padding: 1px 6px;
+    white-space: nowrap;
+    flex-shrink: 0;
+    font-family: system-ui, -apple-system, sans-serif;
+}
+
+.mc-workspace-kind--local {
+    background: var(--theme-primary-soft);
+    color: var(--theme-primary);
+}
+
+.mc-workspace-kind--cloud {
+    background: var(--theme-success-bg);
+    color: var(--theme-success);
+}
+
+.mc-workspace-kind--remote {
+    background: #f3eefe;
+    color: #7c3aed;
+}
+
+[data-ai-theme='dark'] .mc-workspace-kind--local {
+    background: color-mix(in srgb, var(--theme-primary) 16%, transparent);
+    color: color-mix(in srgb, var(--theme-primary) 78%, var(--theme-text-secondary));
+}
+
+[data-ai-theme='dark'] .mc-workspace-kind--cloud {
+    background: color-mix(in srgb, var(--theme-success) 16%, transparent);
+    color: color-mix(in srgb, var(--theme-success) 72%, var(--theme-text-secondary));
+}
+
+[data-ai-theme='dark'] .mc-workspace-kind--remote {
+    background: rgba(124, 58, 237, 0.18);
+    color: #c4b5fd;
+}

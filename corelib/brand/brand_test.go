@@ -13,8 +13,11 @@ func TestCurrentBrandConfig(t *testing.T) {
 			t.Fatalf("default window title = %q, want 码卡龙 8 MaClaw（企缘）", b.WindowTitle)
 		}
 	case "qianxin":
-		if b.DisplayName != "QAgent" || b.DisplayNameCN != "虎爪" {
-			t.Fatalf("qianxin brand = (%q, %q), want QAgent/虎爪", b.DisplayName, b.DisplayNameCN)
+		if b.DisplayName != "TigerClaw" || b.DisplayNameCN != "虎爪" {
+			t.Fatalf("qianxin brand = (%q, %q), want TigerClaw/虎爪", b.DisplayName, b.DisplayNameCN)
+		}
+		if b.WindowTitle != "TigerClaw" || b.MobileAppName != "TigerClaw" {
+			t.Fatalf("qianxin titles = (%q, %q), want TigerClaw", b.WindowTitle, b.MobileAppName)
 		}
 		if len(b.ExtraTools) != 1 || b.ExtraTools[0].Name != "QAgent" || b.ExtraTools[0].ConfigKey != "QAgent" {
 			t.Fatalf("qianxin extra tool = %+v, want Name/ConfigKey QAgent", b.ExtraTools)

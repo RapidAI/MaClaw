@@ -75,6 +75,7 @@ type Service struct {
 	invitationCodeRoutes store.InvitationCodeRouteRepository
 	settings             store.SystemSettingsRepository
 	snapshot             atomic.Pointer[routeSnapshot]
+	adminSnapshot        atomic.Pointer[routeSnapshot]
 }
 
 func NewService(hubs store.HubRepository, links store.HubUserLinkRepository, routes store.HubDomainRouteRepository, blockedEmails store.BlockedEmailRepository, blockedIPs store.BlockedIPRepository, settingsOpt ...store.SystemSettingsRepository) *Service {
@@ -151,30 +152,80 @@ func (s *Service) EmailHasHubTenantAdministratorLink(ctx context.Context, email,
 }
 
 func (s *Service) Rebuild(ctx context.Context) error {
-	snap, err := buildRouteSnapshot(ctx, s.hubs, s.links, s.routes, s.blockedEmails, s.blockedIPs, s.settings, false)
+	hubItems, err := listSnapshotHubs(ctx, s.hubs)
 	if err != nil {
 		return err
 	}
-	// Load invitation code → (hub_id, tenant_id) routes into the snapshot for code-based routing.
-	if s.invitationCodeRoutes != nil {
-		codeRoutes, err := s.invitationCodeRoutes.ListAll(ctx)
-		if err != nil {
-			return err
-		}
-		snap.invitationCodeRoutes = make(map[string]invitationCodeTarget, len(codeRoutes))
-		for _, route := range codeRoutes {
-			if route == nil {
-				continue
-			}
-			snap.invitationCodeRoutes[strings.ToUpper(strings.TrimSpace(route.Code))] = invitationCodeTarget{
-				HubID:       route.HubID,
-				TenantID:    route.TenantID,
-				UsedByEmail: route.UsedByEmail,
-			}
-		}
+	linkItems, err := listSnapshotUserLinks(ctx, s.links)
+	if err != nil {
+		return err
+	}
+	routeItems, err := listSnapshotDomainRoutes(ctx, s.routes)
+	if err != nil {
+		return err
+	}
+	blockedEmailItems, err := listSnapshotBlockedEmails(ctx, s.blockedEmails)
+	if err != nil {
+		return err
+	}
+	blockedIPItems, err := listSnapshotBlockedIPs(ctx, s.blockedIPs)
+	if err != nil {
+		return err
+	}
+	policies := loadSnapshotRegistrationPolicies(ctx, s.settings)
+	snap := buildRouteSnapshotFromItems(hubItems, linkItems, routeItems, blockedEmailItems, blockedIPItems, policies, false)
+	adminSnap := buildRouteSnapshotFromItems(hubItems, linkItems, routeItems, blockedEmailItems, blockedIPItems, policies, true)
+	if err := s.loadInvitationCodeRoutes(ctx, snap); err != nil {
+		return err
+	}
+	if err := s.loadInvitationCodeRoutes(ctx, adminSnap); err != nil {
+		return err
 	}
 	s.snapshot.Store(snap)
+	s.adminSnapshot.Store(adminSnap)
 	return nil
+}
+
+func (s *Service) loadInvitationCodeRoutes(ctx context.Context, snap *routeSnapshot) error {
+	if s.invitationCodeRoutes == nil {
+		return nil
+	}
+	codeRoutes, err := s.invitationCodeRoutes.ListAll(ctx)
+	if err != nil {
+		return err
+	}
+	snap.invitationCodeRoutes = make(map[string]invitationCodeTarget, len(codeRoutes))
+	for _, route := range codeRoutes {
+		if route == nil {
+			continue
+		}
+		snap.invitationCodeRoutes[strings.ToUpper(strings.TrimSpace(route.Code))] = invitationCodeTarget{
+			HubID:       route.HubID,
+			TenantID:    route.TenantID,
+			UsedByEmail: route.UsedByEmail,
+		}
+	}
+	return nil
+}
+
+// adminRouteSnapshot returns the cached owner-link (admin) route snapshot,
+// building it on first use, e.g. right after startup before the first Rebuild.
+func (s *Service) adminRouteSnapshot(ctx context.Context) (*routeSnapshot, error) {
+	if snap := s.adminSnapshot.Load(); snap != nil {
+		return snap, nil
+	}
+	snap, err := buildRouteSnapshot(ctx, s.hubs, s.links, s.routes, s.blockedEmails, s.blockedIPs, s.settings, true)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.loadInvitationCodeRoutes(ctx, snap); err != nil {
+		return nil, err
+	}
+	s.adminSnapshot.CompareAndSwap(nil, snap)
+	if cached := s.adminSnapshot.Load(); cached != nil {
+		return cached, nil
+	}
+	return snap, nil
 }
 
 func (s *Service) SnapshotStats() RouteSnapshotStats {
@@ -384,7 +435,7 @@ func (s *Service) ResolveAdminByEmail(ctx context.Context, email string) (*Resol
 	if isEmailPattern(email) {
 		return s.ResolveAdminByEmailPattern(ctx, email)
 	}
-	snap, err := buildRouteSnapshot(ctx, s.hubs, s.links, s.routes, s.blockedEmails, s.blockedIPs, s.settings, true)
+	snap, err := s.adminRouteSnapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -399,7 +450,7 @@ func (s *Service) ResolveAdminByEmailPattern(ctx context.Context, pattern string
 	if pattern == "" {
 		return &ResolveResult{Email: pattern, Mode: "none", Message: "Email pattern is required"}, nil
 	}
-	snap, err := buildRouteSnapshot(ctx, s.hubs, s.links, s.routes, s.blockedEmails, s.blockedIPs, s.settings, true)
+	snap, err := s.adminRouteSnapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -414,7 +465,7 @@ func (s *Service) ResolveAdminByDomain(ctx context.Context, domain string) (*Res
 	if domain == "" {
 		return &ResolveResult{Email: domain, Mode: "none", Message: "Domain is required"}, nil
 	}
-	snap, err := buildRouteSnapshot(ctx, s.hubs, s.links, s.routes, s.blockedEmails, s.blockedIPs, s.settings, true)
+	snap, err := s.adminRouteSnapshot(ctx)
 	if err != nil {
 		return nil, err
 	}

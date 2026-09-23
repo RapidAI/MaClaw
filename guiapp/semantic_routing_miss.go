@@ -41,7 +41,11 @@ var routingMissPrivilegeTools = map[string]bool{
 var (
 	errSemanticAwaitingConfirmation     = errors.New("semantic route awaiting confirmation")
 	errSemanticGenerateDeliveryConflict = errors.New("semantic route has conflicting attachment_delivery and document_generate")
-	routingMissHostAdapterTool          = "generate_pdf"
+	// errSemanticSessionCeilingSpent means this session already used every
+	// planned invocation. The turn stays closed: the model answers from the
+	// conversation, and the legacy tool catalog is not reopened.
+	errSemanticSessionCeilingSpent = errors.New("semantic session ceiling spent")
+	routingMissHostAdapterTool     = "generate_pdf"
 )
 
 func stampRoutingMissReason(result *intent.ClassificationResult, hostAdapter bool) {
@@ -271,6 +275,18 @@ func formatSemanticUnmetNeeds(unmet []tool.UnmetNeed) string {
 		parts = append(parts, item.NeedID+"="+item.ReasonCode)
 	}
 	return "[" + strings.Join(parts, " ") + "]"
+}
+
+func semanticUnmetOnlyBudget(unmet []tool.UnmetNeed) bool {
+	if len(unmet) == 0 {
+		return false
+	}
+	for _, item := range unmet {
+		if item.ReasonCode != "budget_exceeded" && item.ReasonCode != "planning_budget_exceeded" {
+			return false
+		}
+	}
+	return true
 }
 
 func semanticUnmetHasReason(err error, reason string) bool {

@@ -422,7 +422,7 @@ func TestMergedBrowserSupportedActionsHideDisabledPaths(t *testing.T) {
 	if _, ok := mergedBrowserInputSchema["full_page"]; ok {
 		t.Fatal("merged browser schema should not expose full_page after screenshot was disabled")
 	}
-	for _, want := range []string{"hover", "press", "dialog"} {
+	for _, want := range []string{"hover", "press", "dialog", "probe"} {
 		if !strings.Contains(supported, want) {
 			t.Fatalf("supported browser actions missing %q: %s", want, supported)
 		}

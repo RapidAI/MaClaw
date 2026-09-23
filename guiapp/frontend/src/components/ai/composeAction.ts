@@ -167,14 +167,21 @@ const COMPOSE_ITEM_BY_ACTION = new Map(
         .map((item) => [item.composeAction, item]),
 );
 
+/** ASCII slash form so a fullwidth ／ from a Chinese IME matches command checks. */
+function commandSlashText(text: string): string {
+    const trimmed = text.trim().replace(/^\uFEFF/, "").trim();
+    if (trimmed.startsWith("／")) return `/${trimmed.slice(1)}`;
+    return trimmed;
+}
+
 /** True when text is a `/btw` slash command (case-insensitive). */
 export function isBtwCommandText(text: string): boolean {
-    return /^\/btw(?:\s|$)/i.test(text.trim());
+    return /^\/btw(?:\s|$)/i.test(commandSlashText(text));
 }
 
 /** True when text is an explicit conversation-reset slash command. */
 export function isHistoryResetCommandText(text: string): boolean {
-    const trimmed = text.trim().toLowerCase();
+    const trimmed = commandSlashText(text).toLowerCase();
     return trimmed === "/new" || trimmed === "/reset" || trimmed === "/clear";
 }
 

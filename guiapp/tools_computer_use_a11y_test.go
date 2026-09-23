@@ -40,6 +40,12 @@ func TestFlattenA11yKeepsListAndTreeItems(t *testing.T) {
 	if !a11yRoleInteractable("ListItem") || !a11yRoleInteractable("TreeItem") || !a11yRoleInteractable("TabItem") {
 		t.Fatal("expected list/tree/tab to be interactable")
 	}
+	if a11yRoleInteractable("Table") || a11yRoleInteractable("Pane") || a11yRoleInteractable("Text") {
+		t.Fatal("structural roles must not become click targets")
+	}
+	if !a11yRoleInteractable("DataItem") || !a11yRoleInteractable("ControlType.Button") {
+		t.Fatal("data items and control-type prefixes should stay clickable")
+	}
 }
 
 func TestScreenshotMatchesDisplay(t *testing.T) {

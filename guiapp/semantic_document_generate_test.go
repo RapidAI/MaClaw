@@ -42,27 +42,24 @@ func TestIMSemanticDocumentGenerateIsManagedAndNotDelivery(t *testing.T) {
 	}
 	registry := newIMSemanticCapabilityRegistry()
 	needs, resolved, err := semanticIntentNeedsFromClassification(registry, *documentGenerateClassification())
-	// generate + deliver + the document archetype bundle's optional offers
-	// (search 5 + fetch 5 + download 3 + read 1 siblings).
-	if err != nil || !resolved || len(needs) != 16 {
+	if err != nil || !resolved || len(needs) == 0 {
 		t.Fatalf("needs=%#v managed=%v err=%v", needs, resolved, err)
 	}
-	foundGenerate, foundDeliver, foundCompanion := false, false, false
+	foundGenerate, foundDeliver, foundRead := false, false, false
 	for _, need := range needs {
 		switch need.Capability {
 		case "document.generate.file":
 			foundGenerate = need.Qualifiers["format"] == "pdf" && need.Required
 		case "artifact.deliver.current_channel":
 			foundDeliver = need.Qualifiers["format"] == "file" && need.Required
-		case "information.search.web":
-			// The archetype bundle lookup offer: always planned for a
-			// document-producing turn, always optional so it can never gate
-			// generation.
-			foundCompanion = !need.Required
+		case tool.CapabilityFSReadLocal:
+			foundRead = !need.Required
+		case "information.search.web", tool.CapabilityInformationFetchWeb:
+			t.Fatalf("cold document turn materialized latent %s", need.Capability)
 		}
 	}
-	if !foundGenerate || !foundDeliver || !foundCompanion {
-		t.Fatalf("needs=%#v, want generate.file(pdf), deliver.file and the optional bundle lookup offers", needs)
+	if !foundGenerate || !foundDeliver || !foundRead {
+		t.Fatalf("needs=%#v, want generate.file(pdf), deliver.file and an optional read leg", needs)
 	}
 }
 
@@ -73,8 +70,17 @@ func TestIMSemanticDocumentGenerateFileDeliverSkipsAttachmentLookup(t *testing.T
 		t.Fatal(err)
 	}
 	resolved, err := semanticNeedsForTrustedDocumentInputs(needs, nil)
-	if err != nil || len(resolved) != 16 {
+	if err != nil || len(resolved) == 0 {
 		t.Fatalf("generate file deliver must not require an attachment: resolved=%#v err=%v", resolved, err)
+	}
+	foundGenerate := false
+	for _, need := range resolved {
+		if need.Capability == "document.generate.file" && need.Required {
+			foundGenerate = true
+		}
+	}
+	if !foundGenerate {
+		t.Fatalf("generate need dropped: %#v", resolved)
 	}
 }
 
@@ -384,14 +390,18 @@ func TestIMSemanticHostToolBudgetOneKeepsSearchWaveReportsBudgetExceeded(t *test
 	prepared, handled, err := h.semanticPlanForTurnWithContextAndClassificationAndAttachments(
 		ctx, "user", "查询南京天气，并生成pdf报告", "desktop", "root-budget-1", "turn", liveDataGenerateClassification(), nil,
 	)
-	if !handled || prepared == nil {
-		t.Fatalf("budgeted plan must remain inspectable, handled=%v prepared=%#v err=%v", handled, prepared, err)
+	if err != nil || !handled || prepared == nil {
+		t.Fatalf("a budget cut that keeps search must still run, handled=%v err=%v", handled, err)
 	}
-	if err == nil || !strings.Contains(err.Error(), "unmet") {
-		t.Fatalf("budget cut must not be silent, err=%v", err)
+	searchSiblings := 0
+	for _, selection := range prepared.plan.Selections {
+		if selection.FitProof.MatchedCapability != "information.search.web" {
+			t.Fatalf("MaxSelections=1 must keep only the search family: %#v", prepared.plan.Selections)
+		}
+		searchSiblings++
 	}
-	if len(prepared.plan.Selections) != 1 || prepared.plan.Selections[0].FitProof.MatchedCapability != "information.search.web" {
-		t.Fatalf("MaxSelections=1 must keep the search-only wave: %#v", prepared.plan.Selections)
+	if searchSiblings == 0 {
+		t.Fatal("search family missing")
 	}
 	if len(prepared.plan.Unmet) != 2 {
 		t.Fatalf("generate and deliver must remain as unmet, unmet=%#v", prepared.plan.Unmet)

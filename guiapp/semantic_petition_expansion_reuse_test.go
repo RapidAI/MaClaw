@@ -29,6 +29,7 @@ func TestSemanticPetitionWebSearchOnReuseDroppedComposite(t *testing.T) {
 		UserID: "user-1", Platform: "desktop", Text: pengzhouWeatherPDFText(),
 	}, nil, false, false)
 	loopCtx.History = sameTopicPengzhouHistory()
+	loopCtx.semanticResidueLookupFacts = true
 	requestCtx, cancel := semanticRoutingContext(loopCtx)
 	t.Cleanup(cancel)
 	defs, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithContextAndIdentityAndClassificationAndAttachments(

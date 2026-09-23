@@ -89,7 +89,7 @@ func ExpandArchetypeBundleNeeds(registry *coretool.CapabilityRegistry, rules map
 	if !ok || len(companions) == 0 {
 		return needs
 	}
-	return expandCompanionLabelNeeds(registry, rules, result, managed, needs, companions, archetypeBundleEvidence)
+	return expandCompanionLabelNeeds(registry, rules, result, managed, needs, companions, archetypeBundleEvidence, bundleKey)
 }
 
 // ExpandBaselineWorkspaceNeeds keeps file-read, file-write, and local shell
@@ -126,10 +126,10 @@ func ExpandBaselineWorkspaceNeeds(registry *coretool.CapabilityRegistry, rules m
 	synthetic := map[intent.IntentLabel][]IntentCapabilityNeedTemplate{
 		intent.LabelFileRead: templates,
 	}
-	return expandCompanionLabelNeeds(registry, synthetic, result, managed, needs, []intent.IntentLabel{intent.LabelFileRead}, baselineWorkspaceEvidence)
+	return expandCompanionLabelNeeds(registry, synthetic, result, managed, needs, []intent.IntentLabel{intent.LabelFileRead}, baselineWorkspaceEvidence, "")
 }
 
-func expandCompanionLabelNeeds(registry *coretool.CapabilityRegistry, rules map[intent.IntentLabel][]IntentCapabilityNeedTemplate, result intent.ClassificationResult, managed bool, needs []coretool.CapabilityNeed, companions []intent.IntentLabel, evidence string) []coretool.CapabilityNeed {
+func expandCompanionLabelNeeds(registry *coretool.CapabilityRegistry, rules map[intent.IntentLabel][]IntentCapabilityNeedTemplate, result intent.ClassificationResult, managed bool, needs []coretool.CapabilityNeed, companions []intent.IntentLabel, evidence string, bundleKey intent.IntentLabel) []coretool.CapabilityNeed {
 	if !managed || len(companions) == 0 {
 		return needs
 	}
@@ -152,6 +152,7 @@ func expandCompanionLabelNeeds(registry *coretool.CapabilityRegistry, rules map[
 		offered[need.Capability] = entry
 	}
 	out := needs
+	addedArchetypeFamilies := 0
 	for _, label := range companions {
 		for _, template := range rules[label] {
 			if strings.HasPrefix(string(template.Capability), "artifact.deliver.") {
@@ -176,6 +177,15 @@ func expandCompanionLabelNeeds(registry *coretool.CapabilityRegistry, rules map[
 			if _, exists := registry.Lookup(template.Capability); !exists {
 				continue
 			}
+			// Search, fetch, download, and screenshot stay off the first
+			// surface unless the turn already declared that capability. A
+			// budget upgrade of a declared family still happens above.
+			if evidence == archetypeBundleEvidence && latentArchetypeCapability(template.Capability, bundleKey) {
+				continue
+			}
+			if evidence == archetypeBundleEvidence && addedArchetypeFamilies >= maxArchetypeCompanionFamilies {
+				continue
+			}
 					idPrefix := "need:"
 			if evidence == baselineWorkspaceEvidence {
 				idPrefix = "need:zz-baseline:"
@@ -188,7 +198,25 @@ func expandCompanionLabelNeeds(registry *coretool.CapabilityRegistry, rules map[
 			})
 			offered[template.Capability] = familyRange{start: len(out), count: len(siblings)}
 			out = append(out, siblings...)
+			if evidence == archetypeBundleEvidence {
+				addedArchetypeFamilies++
+			}
 		}
 	}
 	return out
+}
+
+const maxArchetypeCompanionFamilies = 2
+
+// latentArchetypeCapability is a companion the bundle may raise a ceiling for
+// when the turn already declared it, but must not add to a cold surface.
+func latentArchetypeCapability(id coretool.CapabilityID, bundleKey intent.IntentLabel) bool {
+	switch id {
+	case CapabilityInformationSearchWeb, coretool.CapabilityInformationFetchWeb, CapabilityVisualCapture:
+		return true
+	case coretool.CapabilityArtifactAcquireRemote:
+		return bundleKey != intent.LabelOffice && bundleKey != intent.LabelDocumentGenerate
+	default:
+		return false
+	}
 }

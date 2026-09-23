@@ -19,6 +19,12 @@ import (
 // Config agent is a human-in-the-loop admin assistant that proposes
 // configuration changes (plan → simulate → confirm → execute).
 
+var (
+	extractPositiveIntRe = regexp.MustCompile(`(?i)(\d+)\s*(?:个|份|codes?|个码)?`)
+	emailAddressRe       = regexp.MustCompile(`(?i)[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}`)
+	slugTokenRe          = regexp.MustCompile(`^[A-Za-z0-9._\-]+$`)
+)
+
 type configAgentPlan struct {
 	PlanID        string            `json:"plan_id"`
 	TenantID      string            `json:"tenant_id,omitempty"`
@@ -1611,8 +1617,7 @@ func extractMigrationMaxSize(msg string) (maxBytes int64, maxMB int64, ok bool) 
 }
 
 func extractPositiveInt(msg string, def int) int {
-	re := regexp.MustCompile(`(?i)(\d+)\s*(?:个|份|codes?|个码)?`)
-	m := re.FindStringSubmatch(msg)
+	m := extractPositiveIntRe.FindStringSubmatch(msg)
 	if len(m) < 2 {
 		return def
 	}
@@ -1679,13 +1684,13 @@ func extractServiceGroupIDs(msg string, serviceReg *llmservice.Registry) []strin
 	// "to system-free, coding-basic" / "到 system-free 和 coding-basic"
 	if raw := firstMatchGroup(msg, `(?i)(?:to|到|至)\s+(.+)$`); raw != "" {
 		// Drop email if present in the tail.
-		raw = regexp.MustCompile(`(?i)[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}`).ReplaceAllString(raw, " ")
+		raw = emailAddressRe.ReplaceAllString(raw, " ")
 		raw = strings.ReplaceAll(raw, " and ", ",")
 		raw = strings.ReplaceAll(raw, " 和 ", ",")
 		raw = strings.ReplaceAll(raw, "与", ",")
 		for _, p := range splitKeywords(raw) {
 			// Keep slug-like tokens only.
-			if re := regexp.MustCompile(`^[A-Za-z0-9._\-]+$`); re.MatchString(p) {
+			if slugTokenRe.MatchString(p) {
 				add(p)
 			}
 		}
@@ -2100,8 +2105,24 @@ func extractMentionedProviderID(msg string, providerReg *im.LLMProviderRegistry)
 	return ""
 }
 
-func firstMatchGroup(s, pattern string) string {
+// firstMatchGroupPatternCache memoizes compiled patterns; every current call
+// site passes a constant pattern, and the map stays bounded by those constants.
+var firstMatchGroupPatternCache sync.Map // pattern -> *regexp.Regexp
+
+func compiledFirstMatchPattern(pattern string) (*regexp.Regexp, error) {
+	if re, ok := firstMatchGroupPatternCache.Load(pattern); ok {
+		return re.(*regexp.Regexp), nil
+	}
 	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, err
+	}
+	actual, _ := firstMatchGroupPatternCache.LoadOrStore(pattern, re)
+	return actual.(*regexp.Regexp), nil
+}
+
+func firstMatchGroup(s, pattern string) string {
+	re, err := compiledFirstMatchPattern(pattern)
 	if err != nil {
 		return ""
 	}

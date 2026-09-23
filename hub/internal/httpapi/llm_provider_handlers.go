@@ -5568,14 +5568,30 @@ func withHubOpenCodeSession(r *http.Request, body map[string]any) context.Contex
 	return corelib.WithOpenCodeSessionID(ctx, session)
 }
 
+var (
+	llmProviderUpstreamHTTPClientCache       sync.Map
+	llmProviderUpstreamStreamHTTPClientCache sync.Map
+)
+
 func llmProviderUpstreamHTTPClient(cfg corelib.MaclawLLMConfig) *http.Client {
-	return corelib.NewLLMEndpointHTTPClient(cfg)
+	timeoutSec := corelib.NormalizeAgentTimeoutSec(cfg.EffectiveTimeoutSec())
+	if client, ok := llmProviderUpstreamHTTPClientCache.Load(timeoutSec); ok {
+		return client.(*http.Client)
+	}
+	client := corelib.NewLLMEndpointHTTPClientWithTimeout(timeoutSec)
+	actual, _ := llmProviderUpstreamHTTPClientCache.LoadOrStore(timeoutSec, client)
+	return actual.(*http.Client)
 }
 
 func llmProviderUpstreamStreamHTTPClient(cfg corelib.MaclawLLMConfig) *http.Client {
-	client := corelib.NewLLMEndpointHTTPClient(cfg)
+	timeoutSec := corelib.NormalizeAgentTimeoutSec(cfg.EffectiveTimeoutSec())
+	if client, ok := llmProviderUpstreamStreamHTTPClientCache.Load(timeoutSec); ok {
+		return client.(*http.Client)
+	}
+	client := corelib.NewLLMEndpointHTTPClientWithTimeout(timeoutSec)
 	client.Timeout = 0
-	return client
+	actual, _ := llmProviderUpstreamStreamHTTPClientCache.LoadOrStore(timeoutSec, client)
+	return actual.(*http.Client)
 }
 
 func toCoreLLMEndpointProvider(p *im.LLMProvider) corelib.LLMEndpointProvider {

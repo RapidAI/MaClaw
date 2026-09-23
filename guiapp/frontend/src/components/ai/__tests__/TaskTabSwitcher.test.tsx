@@ -32,12 +32,12 @@ describe('TaskTabSwitcher', () => {
     it('shows the open task count without leaking tab titles until opened', () => {
         renderSwitcher();
 
-        expect(screen.getByTestId('task-tab-switcher-btn').textContent).toContain('(3)');
+        expect(screen.getByTestId('task-tab-switcher-btn').textContent).toContain('(2)');
         expect(screen.queryByText('Build dashboard')).toBeNull();
 
         openSwitcher();
 
-        expect(screen.getByTestId('task-tab-switcher-item-local')).toBeTruthy();
+        expect(screen.queryByTestId('task-tab-switcher-item-local')).toBeNull();
         expect(screen.getByTestId('task-tab-switcher-item-proj-1')).toBeTruthy();
         expect(screen.getByTestId('task-tab-switcher-item-proj-2')).toBeTruthy();
         expect(screen.getByText('Build dashboard')).toBeTruthy();
@@ -50,7 +50,7 @@ describe('TaskTabSwitcher', () => {
 
         expect(screen.getByTestId('task-tab-switcher-item-proj-1').getAttribute('data-active')).toBe('true');
         expect(screen.getByTestId('task-tab-switcher-item-proj-2').getAttribute('data-active')).toBeNull();
-        expect(screen.queryByTestId('task-tab-switcher-close-local')).toBeNull();
+        expect(screen.queryByTestId('task-tab-switcher-item-local')).toBeNull();
         expect(screen.getByTestId('task-tab-switcher-close-proj-1')).toBeTruthy();
     });
 
@@ -132,15 +132,15 @@ describe('TaskTabSwitcher with task list', () => {
         return props;
     }
 
-    it('lists local tab, every visible task row, and orphan open tabs', () => {
+    it('lists every visible task row and orphan open tabs, without a default task', () => {
         renderTaskSwitcher();
 
-        // 1 local + 3 tasks + 1 orphan VE tab
-        expect(screen.getByTestId('task-tab-switcher-btn').textContent).toContain('(5)');
+        // 3 tasks + 1 orphan VE tab. The local guide is not a task.
+        expect(screen.getByTestId('task-tab-switcher-btn').textContent).toContain('(4)');
 
         openSwitcher();
 
-        expect(screen.getByTestId('task-tab-switcher-item-local')).toBeTruthy();
+        expect(screen.queryByTestId('task-tab-switcher-item-local')).toBeNull();
         expect(screen.getByTestId('task-tab-switcher-item-proj-1')).toBeTruthy();
         expect(screen.getByTestId('task-tab-switcher-task-t2')).toBeTruthy();
         expect(screen.getByTestId('task-tab-switcher-task-t3')).toBeTruthy();

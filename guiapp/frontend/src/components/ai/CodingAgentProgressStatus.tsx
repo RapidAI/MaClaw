@@ -1131,7 +1131,7 @@ function CodingAgentFileChangeTable({
                     color: t.text,
                 }}
             >
-                <span style={{ fontWeight: 650, flex: 1, minWidth: 0 }}>{header}</span>
+                <span className="caps-file-head">{header}</span>
                 <CodingAgentFileChangeStat
                     added={added}
                     removed={removed}
@@ -1143,21 +1143,13 @@ function CodingAgentFileChangeTable({
                         type="button"
                         data-testid="coding-agent-file-changes-expand"
                         onClick={() => setExpanded(true)}
-                        style={{
-                            padding: 0,
-                            border: "none",
-                            background: "none",
-                            color: "var(--theme-primary, #3b82f6)",
-                            fontSize: 11,
-                            fontWeight: 600,
-                            cursor: "pointer",
-                        }}
+                        className="caps-expand-btn"
                     >
                         {showAll}
                     </button>
                 )}
             </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+            <div className="caps-file-rows">
                 {visible.map((row) => (
                     <div
                         key={row.path}
@@ -1190,13 +1182,7 @@ function CodingAgentFileChangeTable({
                             {codingAgentFileExtBadge(row.path)}
                         </span>
                         <span
-                            style={{
-                                minWidth: 0,
-                                overflow: "hidden",
-                                textOverflow: "ellipsis",
-                                whiteSpace: "nowrap",
-                                fontWeight: 500,
-                            }}
+                            className="caps-file-path"
                         >
                             {compactCodingTrailPath(row.path) || row.path}
                         </span>
@@ -1508,7 +1494,7 @@ function CodingAgentActivityFeedShell({
                         {headerTitle}
                     </span>
                 )}
-                {(!headerTitle || hasToolTrail) && <span style={{ flex: 1 }} />}
+                {(!headerTitle || hasToolTrail) && <span className="caps-head-spacer" />}
                 <span style={{ color: tone.accent, fontWeight: 600, flexShrink: 0, fontSize: 10 }}>
                     {hasToolTrail ? (showFailureChip ? (lang.startsWith("zh") ? `${criticalCount} \u9879\u5931\u8d25` : `${criticalCount} failed`) : "") : headerStatus}
                 </span>
@@ -1516,14 +1502,7 @@ function CodingAgentActivityFeedShell({
             )}
             <div
                 data-testid="coding-agent-feed-lines"
-                style={{
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: 0,
-                    paddingLeft: 2,
-                    maxHeight: 280,
-                    overflowY: "auto",
-                }}
+                className="caps-feed-lines"
             >
                 {hiddenCount > 0 && !expanded && (
                     <button

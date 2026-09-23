@@ -12,6 +12,7 @@ import {
 import {
     draftToTaskCreateOptions,
     runTaskConfigSend,
+    shortTaskLaunchTitle,
     shouldCreateUnifiedTask,
     type ExpertNavigation,
     type TaskConfigSendBindings,
@@ -160,10 +161,26 @@ describe('runTaskConfigSend interception', () => {
         expect(bindings.ensureCodingArmed).toHaveBeenCalledWith('D:/tasks/unified-task');
         expect(bindings.openTaskLaunch).toHaveBeenCalledWith(expect.objectContaining({
             projectPath: 'D:/tasks/unified-task',
+            taskTitle: '修复登录 bug',
             initialMessage: '修复登录 bug',
             agentMode: 'coding_dev',
         }));
         expect(bindings.openExpert).not.toHaveBeenCalled();
+    });
+
+    it('keeps the full first message and shortens only the task tab title', async () => {
+        const bindings = makeBindings();
+        const body = `第一行很长${"字".repeat(90)}\n第二行也要留下`;
+        const draft = withTaskType(defaultTaskDraft(), 'chat');
+        const result = await runTaskConfigSend({ text: body, draft, bindings, force: true });
+        expect(result.ok).toBe(true);
+        expect(bindings.createTaskUnified).toHaveBeenCalledWith(expect.objectContaining({ name: body }));
+        const launch = bindings.openTaskLaunch.mock.calls[0][0] as TaskLaunchNavigation;
+        expect(launch.initialMessage).toBe(body);
+        expect(launch.taskTitle).toBe(shortTaskLaunchTitle(body));
+        expect([...launch.taskTitle].length).toBe(81);
+        expect(launch.taskTitle.endsWith("…")).toBe(true);
+        expect(launch.taskTitle).not.toContain("第二行");
     });
 
     it('expert draft routes to the expert open chain, not the task launch', async () => {

@@ -39,6 +39,8 @@ export interface TaskConfigPopoverShellProps {
     anchor: HTMLElement | null;
     theme: Theme;
     onClose: () => void;
+    /** Return true to keep the popover open (for example, dismiss an inline editor first). */
+    onEscape?: () => boolean;
     width?: number;
     "data-testid"?: string;
     children: ReactNode;
@@ -52,6 +54,7 @@ export function TaskConfigPopoverShell({
     anchor,
     theme: t,
     onClose,
+    onEscape,
     width = 448,
     "data-testid": testId,
     children,
@@ -90,15 +93,17 @@ export function TaskConfigPopoverShell({
 
     useEffect(() => {
         const onKey = (event: KeyboardEvent) => {
-            if (event.key === "Escape") {
-                event.preventDefault();
-                event.stopPropagation();
-                onClose();
-            }
+            if (event.key !== "Escape") return;
+            // Confirming an IME candidate must not close the popover.
+            if (event.isComposing || event.keyCode === 229) return;
+            event.preventDefault();
+            event.stopPropagation();
+            if (onEscape?.()) return;
+            onClose();
         };
         document.addEventListener("keydown", onKey, true);
         return () => document.removeEventListener("keydown", onKey, true);
-    }, [onClose]);
+    }, [onClose, onEscape]);
 
     useEffect(() => {
         panelRef.current?.focus();

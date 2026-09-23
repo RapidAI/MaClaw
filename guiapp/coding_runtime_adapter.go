@@ -352,17 +352,17 @@ func openGUICodingRuntimeStore(handler *IMMessageHandler) (codingruntime.Store, 
 }
 
 func runGUIRemoteCodingTaskWithLedger(ctx context.Context, store codingruntime.Store, ownerID, workflowID, phaseID, remoteTarget, projectPath, requestedWork string, workspaceProber codingruntime.WorkspaceProber, run func() *RemoteCodingSubAgentResult) (*RemoteCodingSubAgentResult, *codingruntime.Attempt, error) {
-	return runGUIRemoteCodingTaskWithStartAndContinuation(ctx, store, ownerID, workflowID, phaseID, remoteTarget, projectPath, requestedWork, workspaceProber, "", "", nil, run)
+	return runGUIRemoteCodingTaskWithStartAndContinuation(ctx, store, ownerID, workflowID, phaseID, remoteTarget, projectPath, requestedWork, false, workspaceProber, "", "", nil, run)
 }
 
 func runGUIRemoteCodingTaskWithLedgerWithStart(ctx context.Context, store codingruntime.Store, ownerID, workflowID, phaseID, remoteTarget, projectPath, requestedWork string, workspaceProber codingruntime.WorkspaceProber, onStart func(codingruntime.ExecutionRequest), run func() *RemoteCodingSubAgentResult) (*RemoteCodingSubAgentResult, *codingruntime.Attempt, error) {
-	return runGUIRemoteCodingTaskWithStartAndContinuation(ctx, store, ownerID, workflowID, phaseID, remoteTarget, projectPath, requestedWork, workspaceProber, "", "", onStart, run)
+	return runGUIRemoteCodingTaskWithStartAndContinuation(ctx, store, ownerID, workflowID, phaseID, remoteTarget, projectPath, requestedWork, false, workspaceProber, "", "", onStart, run)
 }
 
 // runGUIRemoteCodingTaskWithLedgerWithStartAndTaskID starts a new attempt of
 // an existing task only when the caller has already performed the Runtime's
 // explicit recovery/continuation admission.
-func runGUIRemoteCodingTaskWithStartAndContinuation(ctx context.Context, store codingruntime.Store, ownerID, workflowID, phaseID, remoteTarget, projectPath, requestedWork string, workspaceProber codingruntime.WorkspaceProber, existingTaskID, parentContinuationAttemptID string, onStart func(codingruntime.ExecutionRequest), run func() *RemoteCodingSubAgentResult) (*RemoteCodingSubAgentResult, *codingruntime.Attempt, error) {
+func runGUIRemoteCodingTaskWithStartAndContinuation(ctx context.Context, store codingruntime.Store, ownerID, workflowID, phaseID, remoteTarget, projectPath, requestedWork string, readOnly bool, workspaceProber codingruntime.WorkspaceProber, existingTaskID, parentContinuationAttemptID string, onStart func(codingruntime.ExecutionRequest), run func() *RemoteCodingSubAgentResult) (*RemoteCodingSubAgentResult, *codingruntime.Attempt, error) {
 	if store == nil {
 		return nil, nil, fmt.Errorf("coding runtime store is unavailable")
 	}
@@ -372,7 +372,10 @@ func runGUIRemoteCodingTaskWithStartAndContinuation(ctx context.Context, store c
 	adapter := &guiRemoteCodingRuntimeAdapter{run: run, onStart: onStart}
 	remoteTarget = strings.TrimSpace(remoteTarget)
 	runner := codingruntime.Runner{Store: store, LeaseOwner: ownerID, LeaseDuration: 15 * time.Minute, WorkspaceProber: workspaceProber}
-	policy := codingruntime.PolicySnapshot{ProjectRoot: projectPath, RemoteTarget: remoteTarget, Mode: "remote", FinalWorkspaceGateRequired: workspaceProber != nil}
+	// Inquiry matches the local workbench: it is read-only and does not need a
+	// Git baseline. A new remote directory can have no files and no HEAD yet;
+	// that must not block a status check. Writers keep the baseline gate.
+	policy := codingruntime.PolicySnapshot{ProjectRoot: projectPath, RemoteTarget: remoteTarget, Mode: "remote", ReadOnly: readOnly, FinalWorkspaceGateRequired: workspaceProber != nil && !readOnly}
 	policyDigest, digestErr := codingruntime.PolicyDigest(policy)
 	if digestErr != nil {
 		return nil, nil, fmt.Errorf("freeze GUI remote coding policy: %w", digestErr)

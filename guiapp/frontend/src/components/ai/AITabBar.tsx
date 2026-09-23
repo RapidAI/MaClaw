@@ -38,8 +38,10 @@ const OVERFLOW_BUTTON_WIDTH = 50;
  * accessible via a more-tabs dropdown.
  */
 export function AITabBar({ tabs, activeTabId, theme, onActivate, onClose, onInviteToTab, onAddLocalMaclawToTab, onRenameGroupTab, onRenameLocalTab, onRenameProjectTab, lang, recordingTabId }: AITabBarProps) {
+    // The local page is the new-task guide, not a task tab.
+    const taskTabs = tabs.filter(tab => tab.type !== "local");
     const containerRef = useRef<HTMLDivElement>(null);
-    const [visibleCount, setVisibleCount] = useState(tabs.length);
+    const [visibleCount, setVisibleCount] = useState(taskTabs.length);
     const [dropdownOpen, setDropdownOpen] = useState(false);
     const [tabContextMenu, setTabContextMenu] = useState<{ x: number; y: number; tab: AITab } | null>(null);
 
@@ -50,7 +52,7 @@ export function AITabBar({ tabs, activeTabId, theme, onActivate, onClose, onInvi
 
         const applyWidth = (width: number) => {
             const maxTabs = Math.max(1, Math.floor((width - OVERFLOW_BUTTON_WIDTH) / MIN_TAB_WIDTH));
-            setVisibleCount(maxTabs >= tabs.length ? tabs.length : maxTabs);
+            setVisibleCount(maxTabs >= taskTabs.length ? taskTabs.length : maxTabs);
         };
 
         if (typeof ResizeObserver === "undefined") {
@@ -67,7 +69,7 @@ export function AITabBar({ tabs, activeTabId, theme, onActivate, onClose, onInvi
         });
         observer.observe(el);
         return () => observer.disconnect();
-    }, [tabs.length]);
+    }, [taskTabs.length]);
     // Close dropdown on outside click.
     useEffect(() => {
         if (!dropdownOpen && !tabContextMenu) return;
@@ -99,17 +101,15 @@ export function AITabBar({ tabs, activeTabId, theme, onActivate, onClose, onInvi
 
     const isZh = !lang || lang?.startsWith("zh");
 
-    // Keep the bar available when the local tab can be renamed. Without this,
-    // a fresh assistant session has no visible way to use the feature.
-    if (tabs.length <= 1 && !onRenameLocalTab) {
+    if (taskTabs.length === 0) {
         return null;
     }
 
-    const hasOverflow = visibleCount < tabs.length;
-    const visibleTabs = computeVisibleTabs(tabs, activeTabId, visibleCount);
+    const hasOverflow = visibleCount < taskTabs.length;
+    const visibleTabs = computeVisibleTabs(taskTabs, activeTabId, visibleCount);
     // Preserve the tab list's creation order in the overflow menu too.
     // Selecting a tab should never make its perceived position change.
-    const overflowTabs = tabs.filter(t => !visibleTabs.includes(t));
+    const overflowTabs = taskTabs.filter(t => !visibleTabs.includes(t));
 
     return (
         <div
@@ -208,10 +208,10 @@ export function AITabBar({ tabs, activeTabId, theme, onActivate, onClose, onInvi
                             onMouseEnter={e => (e.currentTarget.style.background = theme.codeBlockBg)}
                             onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
                         >
-                            <span style={{ fontSize: 13, flexShrink: 0 }}>
+                            <span className="aitb-type-badge">
                                 {tab.type === "project" ? (tab.archived ? "P" : "D") : tab.type === "ve" ? "VE" : tab.type === "expert" ? (tab.expertIcon || DEFAULT_EXPERT_ICON) : "AI"}
                             </span>
-                            <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            <span className="aitb-tab-title">
                                 {getAITabDisplayTitle(tab, lang)}
                             </span>
                             {tab.readOnly && (
@@ -306,7 +306,7 @@ export function AITabBar({ tabs, activeTabId, theme, onActivate, onClose, onInvi
 /**
  * Compute which tabs should be visible in the tab bar.
  * Rules:
- * - Local tab (index 0) is always visible.
+ * - The new-task guide is always visible when the list still carries it.
  * - Active tab is always visible.
  * - Remaining slots filled in order.
  */
@@ -316,10 +316,12 @@ function computeVisibleTabs(tabs: AITab[], activeTabId: string, maxVisible: numb
     const result: AITab[] = [];
     const used = new Set<string>();
 
-    // Always include local tab (first).
-    if (tabs.length > 0) {
-        result.push(tabs[0]);
-        used.add(tabs[0].id);
+    // The guide is no longer pinned by index: callers pass task tabs only, so
+    // the active task tab simply takes the first slot on a narrow bar.
+    const guideTab = tabs.find(t => t.type === "local");
+    if (guideTab) {
+        result.push(guideTab);
+        used.add(guideTab.id);
     }
 
     // Always include active tab.

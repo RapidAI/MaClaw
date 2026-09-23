@@ -138,24 +138,17 @@ export function SystemPopupMenu({ items, onSelect, onClose, returnFocus, ariaLab
                     onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'var(--theme-hover)'; }}
                     onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = ''; }}
                 >
-                    <span style={{ fontSize: '1.1rem', lineHeight: 1, position: 'relative' }}>
-                        <span style={{ display: 'inline-flex', color: 'var(--theme-text-secondary)', opacity: 0.85 }}>
+                    <span className="spm-icon-wrap">
+                        <span className="spm-icon">
                             {item.icon}
                         </span>
                         {item.badge != null && item.badge > 0 && (
-                            <span style={{
-                                position: 'absolute', top: '-4px', right: '-8px',
-                                minWidth: '16px', height: '16px', lineHeight: '16px',
-                                fontSize: '9px', fontWeight: 700, textAlign: 'center',
-                                padding: '0 3px', borderRadius: 'var(--radius-pill, 999px)',
-                                background: 'var(--theme-danger)', color: '#fff',
-                                boxShadow: 'var(--shadow-sm, 0 1px 2px rgba(30,58,95,0.06))',
-                            }}>
+                            <span className="spm-badge">
                                 {item.badge > 99 ? '99+' : item.badge}
                             </span>
                         )}
                     </span>
-                    <span style={{ fontSize: '0.65rem', fontWeight: 600, color: 'var(--theme-text-primary)' }}>
+                    <span className="spm-label">
                         {item.label}
                     </span>
                 </button>

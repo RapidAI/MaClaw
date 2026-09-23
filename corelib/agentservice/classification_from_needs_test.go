@@ -52,6 +52,14 @@ func TestClassificationFromGrantedNeedsPinsCompositeFamilies(t *testing.T) {
 	if !has(image, intent.LabelScreenshot) {
 		t.Fatalf("image deliver=%+v", image)
 	}
+	weather := ClassificationFromGrantedNeeds([]coretool.CapabilityNeed{
+		{Capability: CapabilityInformationSearchWeb, Qualifiers: map[string]string{QualifierSearchFreshness: SearchFreshnessCurrent}},
+		{Capability: CapabilityLiveDataVisual},
+		{Capability: CapabilityArtifactDeliverCurrent, Qualifiers: map[string]string{QualifierArtifactFormat: ArtifactFormatImage}},
+	}, rules)
+	if weather.Primary == intent.LabelScreenshot || has(weather, intent.LabelScreenshot) || !has(weather, intent.LabelLiveDataVisual) {
+		t.Fatalf("weather card must not replay as a screenshot: %+v", weather)
+	}
 
 	launch := ClassificationFromGrantedNeeds([]coretool.CapabilityNeed{
 		{Capability: coretool.CapabilitySystemLaunchLocal},

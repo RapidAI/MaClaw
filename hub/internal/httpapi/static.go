@@ -6,9 +6,65 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/RapidAI/CodeClaw/corelib/brand"
 )
+
+// staticContentCache memoizes brand-processed admin static responses
+// (index.html and JS bundles) so repeat requests skip disk reads and string
+// replacement. Failed reads are not cached.
+type staticContentCache struct {
+	mu          sync.Mutex
+	index       []byte
+	indexLoaded bool
+	files       map[string][]byte
+}
+
+func newStaticContentCache() *staticContentCache {
+	return &staticContentCache{files: map[string][]byte{}}
+}
+
+func (c *staticContentCache) adminIndex(indexPath, brandName string) ([]byte, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.indexLoaded {
+		return c.index, true
+	}
+	data, err := os.ReadFile(indexPath)
+	if err != nil {
+		return nil, false
+	}
+	html := string(data)
+	// Inject brand name as a runtime JS variable instead of string-replacing
+	// inside admin.js. This avoids the fragile escapeInlineScript path that
+	// causes "Unexpected end of input" when the 107KB admin.js is inlined.
+	if brandName != "" && brandName != "MaClaw" {
+		html = strings.ReplaceAll(html, "MaClaw", brandName)
+		brandInjection := `<script>window.__MACLAW_BRAND__=` + strconv.Quote(brandName) + `;</script>`
+		if idx := strings.Index(html, "<script"); idx >= 0 {
+			html = html[:idx] + brandInjection + "\n" + html[idx:]
+		}
+	}
+	c.index = []byte(html)
+	c.indexLoaded = true
+	return c.index, true
+}
+
+func (c *staticContentCache) brandedJS(path, brandName string) ([]byte, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if data, ok := c.files[path]; ok {
+		return data, true
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	replaced := []byte(strings.ReplaceAll(string(data), "MaClaw", brandName))
+	c.files[path] = replaced
+	return replaced, true
+}
 
 func registerAdminStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix string) {
 	staticDir = resolveStaticDir(staticDir)
@@ -25,6 +81,7 @@ func registerAdminStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix
 	routePrefix = strings.TrimRight(routePrefix, "/")
 
 	brandName := brand.Current().DisplayName
+	cache := newStaticContentCache()
 
 	serve := func(w http.ResponseWriter, r *http.Request) {
 		// The admin console's role-based navigation is client-side. Never allow a
@@ -47,14 +104,13 @@ func registerAdminStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix
 					w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 				}
 				if ext == ".js" && brandName != "" && brandName != "MaClaw" {
-					data, err := os.ReadFile(candidate)
-					if err != nil {
+					data, ok := cache.brandedJS(candidate, brandName)
+					if !ok {
 						http.NotFound(w, r)
 						return
 					}
-					replaced := strings.ReplaceAll(string(data), "MaClaw", brandName)
 					w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
-					_, _ = w.Write([]byte(replaced))
+					_, _ = w.Write(data)
 					return
 				}
 				http.ServeFile(w, r, candidate)
@@ -68,27 +124,15 @@ func registerAdminStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix
 		}
 
 		indexPath := filepath.Join(staticDir, "index.html")
-		htmlData, err := os.ReadFile(indexPath)
-		if err != nil {
+		htmlData, ok := cache.adminIndex(indexPath, brandName)
+		if !ok {
 			http.NotFound(w, r)
 			return
-		}
-		html := string(htmlData)
-
-		// Inject brand name as a runtime JS variable instead of string-replacing
-		// inside admin.js. This avoids the fragile escapeInlineScript path that
-		// causes "Unexpected end of input" when the 107KB admin.js is inlined.
-		if brandName != "" && brandName != "MaClaw" {
-			html = strings.ReplaceAll(html, "MaClaw", brandName)
-			brandInjection := `<script>window.__MACLAW_BRAND__=` + strconv.Quote(brandName) + `;</script>`
-			if idx := strings.Index(html, "<script"); idx >= 0 {
-				html = html[:idx] + brandInjection + "\n" + html[idx:]
-			}
 		}
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-		_, _ = w.Write([]byte(html))
+		_, _ = w.Write(htmlData)
 	}
 
 	for _, method := range []string{http.MethodGet, http.MethodHead} {

@@ -695,6 +695,105 @@ func TestResumeCloudWorkspaceTaskDoesNotPullWhenAlreadyHeld(t *testing.T) {
 	}
 }
 
+func TestDeleteCloudWorkspaceTakeoverAfterSameMachineFence(t *testing.T) {
+	resetCloudWorkspaceDialogMocks()
+	t.Cleanup(resetCloudWorkspaceDialogMocks)
+	resetCloudWorkspaceMounts()
+	t.Cleanup(resetCloudWorkspaceMounts)
+
+	const workspaceID = "cws_fenced"
+	var deleteCalls, takeoverCalls, leaseReleases int
+	var deleteKeys []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == cloudWorkspaceLeasesPath(workspaceID):
+			takeoverCalls++
+			var body struct {
+				Force bool `json:"force"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode takeover: %v", err)
+			}
+			if !body.Force {
+				t.Errorf("takeover force=%v", body.Force)
+			}
+			if got := r.Header.Get("X-Cloud-Workspace-Fencing"); got != "" {
+				t.Errorf("takeover presented fenced token %q", got)
+			}
+			_, _ = w.Write([]byte(`{"lease_id":"lease-takeover","expires_at":"2099-01-01T00:00:00Z","acquired":"granted","fencing_token":9}`))
+		case r.Method == http.MethodDelete && r.URL.Path == cloudWorkspaceLeasePath(workspaceID, "lease-takeover"):
+			leaseReleases++
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodDelete && r.URL.Path == cloudWorkspaceItemPath(workspaceID):
+			deleteCalls++
+			deleteKeys = append(deleteKeys, r.Header.Get("Idempotency-Key"))
+			if deleteCalls == 1 {
+				w.WriteHeader(http.StatusConflict)
+				_, _ = w.Write([]byte(`{"code":"FENCED","message":"cloud workspace writer session is no longer current"}`))
+				return
+			}
+			if got := r.Header.Get("X-Cloud-Workspace-Fencing"); got != "" {
+				t.Errorf("retry presented fenced token %q", got)
+			}
+			_, _ = w.Write([]byte(`{"id":"cws_fenced","name":"工作区 1","status":"deleted","used_bytes":0,"deleted_at":"2026-09-22T08:00:00Z"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := configureCloudWorkspaceEntitlementTestApp(t, server.URL)
+	deleted, err := app.DeleteCloudWorkspace(workspaceID)
+	if err != nil {
+		t.Fatalf("DeleteCloudWorkspace: %v", err)
+	}
+	if deleted.ID != workspaceID || deleted.DeletedAt == "" {
+		t.Fatalf("deleted=%+v", deleted)
+	}
+	if deleteCalls != 2 || takeoverCalls != 1 {
+		t.Fatalf("deleteCalls=%d takeoverCalls=%d", deleteCalls, takeoverCalls)
+	}
+	if leaseReleases != 0 {
+		t.Fatalf("successful delete released the takeover lease itself, extra releases=%d", leaseReleases)
+	}
+	if len(deleteKeys) != 2 || deleteKeys[0] == "" || deleteKeys[0] == deleteKeys[1] {
+		t.Fatalf("idempotency keys=%q", deleteKeys)
+	}
+}
+
+func TestDeleteCloudWorkspaceDoesNotTakeoverOnOtherErrors(t *testing.T) {
+	resetCloudWorkspaceDialogMocks()
+	t.Cleanup(resetCloudWorkspaceDialogMocks)
+	const workspaceID = "cws_busy"
+	var takeoverCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost && r.URL.Path == cloudWorkspaceLeasesPath(workspaceID) {
+			takeoverCalls++
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"code":"CLOUD_WORKSPACE_IN_USE","message":"in use"}`))
+			return
+		}
+		if r.Method == http.MethodDelete && r.URL.Path == cloudWorkspaceItemPath(workspaceID) {
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"code":"CLOUD_WORKSPACE_IN_USE","message":"cloud workspace is in use"}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	app := configureCloudWorkspaceEntitlementTestApp(t, server.URL)
+	_, err := app.DeleteCloudWorkspace(workspaceID)
+	if err == nil || !strings.Contains(err.Error(), "占用") {
+		t.Fatalf("err=%v", err)
+	}
+	if takeoverCalls != 0 {
+		t.Fatalf("takeoverCalls=%d, other-device conflict must not steal the lease", takeoverCalls)
+	}
+}
+
 func TestDeleteCloudWorkspaceTreats404AsGone(t *testing.T) {
 	resetCloudWorkspaceDialogMocks()
 	t.Cleanup(resetCloudWorkspaceDialogMocks)

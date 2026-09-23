@@ -196,10 +196,11 @@ func matMulRangeDual(out, a, b, bias []float32, M, N, K, ns, ne int) {
 	var dDual0, dDual1 [8]float32
 	var dTri0, dTri1 [12]float32
 	// PP-OCR pointwise projections repeatedly use these feature widths. The
-	// AVX2 triple-B kernel amortizes each A-panel load over three output
+	// triple-B kernel amortizes each A-panel load over three output
 	// channels; for the 8-row main tile this avoids the extra A pass that a
-	// dual-B pair plus singleton column requires.
-	useTriple := K == 96 || K == 120 || K == 192 || K == 384
+	// dual-B pair plus singleton column requires. 48 and 768 are the det
+	// model's SE/entry widths; 120 is the rec model's SVTR width.
+	useTriple := K == 48 || K == 96 || K == 120 || K == 192 || K == 384 || K == 768
 	m := 0
 	for ; m+7 < M; m += 8 {
 		aPanel := a[m*K : (m+8)*K]
@@ -982,6 +983,12 @@ func SoftmaxWeightedSumBatched(out, scores, values []float32, nQ, rows, vStride,
 		weightedSumBatchedContig256n4(out, scores, values, nQ, rows, outStride, hOff, qf, invs)
 		return
 	}
+	// headDim=256, nQ=8: 8-query 128 kernels on V halves — each V row is
+	// loaded once per 8 queries (two n4 passes would load it twice).
+	if dim == 256 && vStride == 256 && nQ == 8 {
+		weightedSumBatchedContig256n8(out, scores, values, rows, outStride, hOff, qf, invs)
+		return
+	}
 	// Generic fallback: fold inv per query via scaled weighted sum.
 	for t := 0; t < nQ; t++ {
 		oOff := (qf+t)*outStride + hOff
@@ -1164,6 +1171,84 @@ func weightedSumBatchedContig256n4(out, scores, values []float32, nQ, rows, outS
 			o0[half:], o1[half:], o2[half:], o3[half:], vrow[half:],
 			scores[0*rows+r]*inv0, scores[1*rows+r]*inv1, scores[2*rows+r]*inv2, scores[3*rows+r]*inv3,
 		)
+	}
+}
+
+// weightedSumBatchedContig256n8: nQ=8 queries × contiguous V [rows][256].
+// Splits each V row into 128-wide halves and reuses the 8-query AVX kernels,
+// so each V element feeds all 8 queries with a single load per half pass.
+func weightedSumBatchedContig256n8(out, scores, values []float32, rows, outStride, hOff, qf int, invs [8]float32) {
+	const dim, half = 256, 128
+	if rows <= 0 {
+		return
+	}
+	o := [8][]float32{
+		out[(qf+0)*outStride+hOff : (qf+0)*outStride+hOff+dim],
+		out[(qf+1)*outStride+hOff : (qf+1)*outStride+hOff+dim],
+		out[(qf+2)*outStride+hOff : (qf+2)*outStride+hOff+dim],
+		out[(qf+3)*outStride+hOff : (qf+3)*outStride+hOff+dim],
+		out[(qf+4)*outStride+hOff : (qf+4)*outStride+hOff+dim],
+		out[(qf+5)*outStride+hOff : (qf+5)*outStride+hOff+dim],
+		out[(qf+6)*outStride+hOff : (qf+6)*outStride+hOff+dim],
+		out[(qf+7)*outStride+hOff : (qf+7)*outStride+hOff+dim],
+	}
+	inv := [8]float32{invs[0], invs[1], invs[2], invs[3], invs[4], invs[5], invs[6], invs[7]}
+	r := 0
+	if rows >= 2 {
+		va, vb := values[:dim], values[dim:2*dim]
+		var wa, wb [8]float32
+		for t := 0; t < 8; t++ {
+			wa[t] = scores[t*rows] * inv[t]
+			wb[t] = scores[t*rows+1] * inv[t]
+		}
+		wsumBatched8SetAdd128Dual(
+			o[0][:half], o[1][:half], o[2][:half], o[3][:half], o[4][:half], o[5][:half], o[6][:half], o[7][:half],
+			va[:half], vb[:half], &wa, &wb)
+		wsumBatched8SetAdd128Dual(
+			o[0][half:], o[1][half:], o[2][half:], o[3][half:], o[4][half:], o[5][half:], o[6][half:], o[7][half:],
+			va[half:], vb[half:], &wa, &wb)
+		r = 2
+	} else if rows == 1 {
+		v := values[:dim]
+		wsumBatched8Set128(
+			o[0][:half], o[1][:half], o[2][:half], o[3][:half], o[4][:half], o[5][:half], o[6][:half], o[7][:half],
+			v[:half],
+			scores[0]*inv[0], scores[rows]*inv[1], scores[2*rows]*inv[2], scores[3*rows]*inv[3],
+			scores[4*rows]*inv[4], scores[5*rows]*inv[5], scores[6*rows]*inv[6], scores[7*rows]*inv[7])
+		wsumBatched8Set128(
+			o[0][half:], o[1][half:], o[2][half:], o[3][half:], o[4][half:], o[5][half:], o[6][half:], o[7][half:],
+			v[half:],
+			scores[0]*inv[0], scores[rows]*inv[1], scores[2*rows]*inv[2], scores[3*rows]*inv[3],
+			scores[4*rows]*inv[4], scores[5*rows]*inv[5], scores[6*rows]*inv[6], scores[7*rows]*inv[7])
+		return
+	}
+	for ; r+1 < rows; r += 2 {
+		va := values[r*dim : (r+1)*dim]
+		vb := values[(r+1)*dim : (r+2)*dim]
+		var wa, wb [8]float32
+		for t := 0; t < 8; t++ {
+			wa[t] = scores[t*rows+r] * inv[t]
+			wb[t] = scores[t*rows+r+1] * inv[t]
+		}
+		wsumBatched8Add128Dual(
+			o[0][:half], o[1][:half], o[2][:half], o[3][:half], o[4][:half], o[5][:half], o[6][:half], o[7][:half],
+			va[:half], vb[:half], &wa, &wb)
+		wsumBatched8Add128Dual(
+			o[0][half:], o[1][half:], o[2][half:], o[3][half:], o[4][half:], o[5][half:], o[6][half:], o[7][half:],
+			va[half:], vb[half:], &wa, &wb)
+	}
+	for ; r < rows; r++ {
+		vrow := values[r*dim : (r+1)*dim]
+		wsumBatched8Add128(
+			o[0][:half], o[1][:half], o[2][:half], o[3][:half], o[4][:half], o[5][:half], o[6][:half], o[7][:half],
+			vrow[:half],
+			scores[0*rows+r]*inv[0], scores[1*rows+r]*inv[1], scores[2*rows+r]*inv[2], scores[3*rows+r]*inv[3],
+			scores[4*rows+r]*inv[4], scores[5*rows+r]*inv[5], scores[6*rows+r]*inv[6], scores[7*rows+r]*inv[7])
+		wsumBatched8Add128(
+			o[0][half:], o[1][half:], o[2][half:], o[3][half:], o[4][half:], o[5][half:], o[6][half:], o[7][half:],
+			vrow[half:],
+			scores[0*rows+r]*inv[0], scores[1*rows+r]*inv[1], scores[2*rows+r]*inv[2], scores[3*rows+r]*inv[3],
+			scores[4*rows+r]*inv[4], scores[5*rows+r]*inv[5], scores[6*rows+r]*inv[6], scores[7*rows+r]*inv[7])
 	}
 }
 

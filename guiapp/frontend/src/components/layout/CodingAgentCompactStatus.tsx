@@ -85,7 +85,7 @@ export const CodingAgentCompactStatus = ({ progress, lang, testId, variant, isDa
             >
                 {agentLabel}
             </span>
-            <span style={{ minWidth: 0, display: 'flex', gap: '5px', alignItems: 'center', overflow: 'hidden' }}>
+            <span className="cacs-main-row">
                 <span style={{ color: tone.accent, fontWeight: 600, flexShrink: 0 }}>{statusLabel}</span>
                 {normalized.taskID && (
                     <span style={{ color: isSidebar ? 'var(--theme-text-muted)' : tone.accent, flexShrink: 0, opacity: 0.92 }}>
@@ -124,21 +124,10 @@ export const CodingAgentCompactStatus = ({ progress, lang, testId, variant, isDa
             </span>
             {filePreview && (
                 <span
-                    style={{
-                        gridColumn: '1 / -1',
-                        minWidth: 0,
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '5px',
-                        color: 'var(--theme-text-muted)',
-                        overflow: 'hidden',
-                        fontSize: '0.64rem',
-                    }}
+                    className="cacs-files-row"
                 >
-                    <span style={{ flexShrink: 0 }}>{filesLabel}</span>
-                    <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--theme-text)' }}>
-                        {filePreview}
-                    </span>
+                    <span className="cacs-shrink">{filesLabel}</span>
+                    <span className="cacs-ellipsis-text">{filePreview}</span>
                 </span>
             )}
         </span>

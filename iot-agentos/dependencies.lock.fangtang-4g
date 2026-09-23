@@ -36,7 +36,7 @@ dependencies:
       type: service
     version: 1.0.1
   78/uart-uhci:
-    component_hash: efc6cbf8e6bc7724bfd4fcc58c4aec64636093b857526cc8d4dc17321f4b17cf
+    component_hash: 0e391c695621ac725506166b908146a02e9cff26e6d36f8e43e7e63b5b1d200f
     dependencies:
     - name: idf
       require: private
@@ -44,7 +44,7 @@ dependencies:
     source:
       registry_url: https://components.espressif.com/
       type: service
-    version: 0.3.2
+    version: 0.3.3
   espressif/cjson:
     component_hash: e788323270d90738662d66fffa910bfe1fba019bba087f01557e70c40485b469
     dependencies:
@@ -66,7 +66,7 @@ dependencies:
       type: service
     version: 0.5.3
   espressif/dl_fft:
-    component_hash: a955ca29581de2177ddf25759273bd83f082b3c805e735fe6ee105858643989b
+    component_hash: 3e8f7d34e04bfa6333f289a6d126745bebe0cee9311b81a6a5d106047f63ef65
     dependencies:
     - name: idf
       require: private
@@ -74,7 +74,7 @@ dependencies:
     source:
       registry_url: https://components.espressif.com
       type: service
-    version: 0.6.0
+    version: 0.7.0
   espressif/esp-dsp:
     component_hash: 12e44db246517a627bc0fe2b255b8335410c0215c98bfba2df5a8e3edea839ef
     dependencies:
@@ -147,6 +147,6 @@ direct_dependencies:
 - espressif/esp_audio_codec
 - espressif/qrcode
 - idf
-manifest_hash: a439f55f147de1c30e812ee1779a6b9feee0b73b9dc0fd6cee4dfc779526c66b
+manifest_hash: 70ba064dc8599eecd1e7fada3418c1aa1878016e94e8496cad43ddde474188fb
 target: esp32s3
 version: 3.0.0

@@ -123,6 +123,7 @@ type Service struct {
 	notifications               notification.Store
 	heartbeatSync               store.HAHeartbeatSyncStateRepository
 	heartbeatSyncMinInterval    time.Duration
+	heartbeatLastSynced         sync.Map
 
 	mu             sync.RWMutex
 	opMu           sync.Mutex
@@ -3117,25 +3118,38 @@ func (s *Service) rememberSnapshotHash(entityType, entityID string, payload any)
 	s.snapshotMu.Unlock()
 }
 
-func (s *Service) SyncHubHeartbeat(ctx context.Context, hubID string) {
-	if s == nil || s.hubs == nil || s.heartbeatSync == nil || strings.TrimSpace(hubID) == "" {
+// SyncHubHeartbeat replicates a hub heartbeat to peers when the hub's
+// last_seen_at advanced past the sync interval since the last synced value.
+// The last-synced watermark is cached in memory; the durable store is read
+// only on cache miss (process start) and written on every actual sync.
+func (s *Service) SyncHubHeartbeat(ctx context.Context, hub *store.HubInstance) {
+	if s == nil || s.hubs == nil || s.heartbeatSync == nil || hub == nil || strings.TrimSpace(hub.ID) == "" {
 		return
 	}
-	hub, err := s.hubs.GetByID(ctx, hubID)
-	if err != nil || hub == nil || hub.LastSeenAt == nil {
+	hubID := strings.TrimSpace(hub.ID)
+	if hub.LastSeenAt == nil {
 		return
 	}
-	state, err := s.heartbeatSync.Get(ctx, hubID)
-	if err != nil {
-		return
-	}
-	if state != nil && state.LastSyncedSeenAt != nil {
-		if !hub.LastSeenAt.After(state.LastSyncedSeenAt.Add(s.heartbeatSyncMinInterval)) {
+	if last, ok := s.heartbeatLastSynced.Load(hubID); ok {
+		if !hub.LastSeenAt.After(last.(time.Time).Add(s.heartbeatSyncMinInterval)) {
 			return
+		}
+	} else {
+		state, err := s.heartbeatSync.Get(ctx, hubID)
+		if err != nil {
+			return
+		}
+		if state != nil && state.LastSyncedSeenAt != nil {
+			s.heartbeatLastSynced.Store(hubID, *state.LastSyncedSeenAt)
+			if !hub.LastSeenAt.After(state.LastSyncedSeenAt.Add(s.heartbeatSyncMinInterval)) {
+				return
+			}
 		}
 	}
 	s.AppendHubInstance(ctx, hub)
-	_ = s.heartbeatSync.Upsert(ctx, &store.HAHeartbeatSyncState{HubID: hubID, LastSyncedSeenAt: hub.LastSeenAt})
+	if err := s.heartbeatSync.Upsert(ctx, &store.HAHeartbeatSyncState{HubID: hubID, LastSyncedSeenAt: hub.LastSeenAt}); err == nil {
+		s.heartbeatLastSynced.Store(hubID, *hub.LastSeenAt)
+	}
 }
 func computeQuality(totalNodes int, reachablePeers int, maxLagSeconds int64, maxBacklog int64, recentSyncError bool) (int, string, bool) {
 	score := 100

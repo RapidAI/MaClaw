@@ -242,6 +242,12 @@ func NewGemmaEmbedder(modelPath string, dim int) (*GemmaEmbedder, error) {
 		})
 		g.skipPack = false
 	}
+	// Pack weights at load (not on first inference) when the VNNI M8 path will
+	// use them: keeps the one-time ~300MB copy + scale prep out of the first
+	// Embed. Non-VNNI machines keep the lazy short-sequence trigger in layerLoop.
+	if g.useFusion() && tensor.HasAVX512VNNI() {
+		g.ensurePackedQS()
+	}
 	return g, nil
 }
 

@@ -69,7 +69,7 @@ export function MessageContentRenderer({ content, theme, isUser, isStreaming, me
     }, [displayContent, theme, isUser, isStreaming, messageId]);
 
     if (isUser) {
-        return <span style={{ whiteSpace: "pre-wrap" }}>{displayContent}</span>;
+        return <span className="mcr-user-text">{displayContent}</span>;
     }
 
     return <>{rendered}</>;

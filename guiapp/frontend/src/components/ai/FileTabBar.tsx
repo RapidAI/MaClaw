@@ -102,16 +102,7 @@ export function CodeFileDiffStat({
     return (
         <span
             data-testid={testId || 'code-file-diff-stat'}
-            style={{
-                display: 'inline-flex',
-                gap: 4,
-                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
-                fontSize: 10,
-                fontWeight: 600,
-                fontVariantNumeric: 'tabular-nums',
-                lineHeight: '16px',
-                flexShrink: 0,
-            }}
+            className="ftb-diff-stat"
         >
             <span style={{ color: theme.diffAddText }}>+{delta.added}</span>
             <span style={{ color: theme.diffDeleteText }}>-{delta.removed}</span>
@@ -893,12 +884,7 @@ const FileTabButton = React.memo(function FileTabButton({
                 </span>
             )}
             <FileOpOrDiffBadge file={file} theme={theme} testId="file-tab-diff-stat" />
-            <span style={{
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-                minWidth: 0,
-            }}>{fileName}</span>
+            <span className="ftb-tab-name">{fileName}</span>
             {dirty && (
                 <span
                     data-testid="file-tab-dirty"
@@ -1351,13 +1337,7 @@ export function FileTabBar({
                 <div
                     ref={stripRef}
                     data-testid="file-tab-strip"
-                    style={{
-                        display: 'flex',
-                        flex: 1,
-                        minWidth: 0,
-                        overflow: 'hidden',
-                        alignItems: 'stretch',
-                    }}
+                    className="ftb-strip"
                 >
                     {visiblePaths.map((filePath) => {
                         const file = files.get(filePath);
@@ -1510,7 +1490,7 @@ export function FileTabBar({
                                         : `${filteredEditors.length} / ${mruCycleOrder.length} 个已打开`}
                             </div>
                         </div>
-                        <div style={{ overflowY: 'auto', maxHeight: 280, padding: '4px 0' }}>
+                        <div className="ftb-overflow-list">
                             {filteredEditors.length === 0 ? (
                                 <div
                                     data-testid="file-tab-open-editors-empty"
@@ -1555,21 +1535,11 @@ export function FileTabBar({
                                             onMouseEnter={() => setHighlightIndex(index)}
                                         >
                                             {isPinned && (
-                                                <span style={{ fontSize: 10, flexShrink: 0, opacity: 0.9 }} aria-hidden>{'\u25B2'}</span>
+                                                <span className="ftb-pin-marker" aria-hidden>{'▲'}</span>
                                             )}
                                             <FileOpOrDiffBadge file={file} theme={theme} testId="file-tab-overflow-diff-stat" />
-                                            <span style={{
-                                                flex: 1,
-                                                minWidth: 0,
-                                                display: 'flex',
-                                                flexDirection: 'column',
-                                                gap: 1,
-                                            }}>
-                                                <span style={{
-                                                    overflow: 'hidden',
-                                                    textOverflow: 'ellipsis',
-                                                    whiteSpace: 'nowrap',
-                                                }}>{fileName}{dirty ? ' \u2022' : ''}</span>
+                                            <span className="ftb-ovr-textcol">
+                                                <span className="ftb-ovr-name">{fileName}{dirty ? ' •' : ''}</span>
                                                 <span style={{
                                                     overflow: 'hidden',
                                                     textOverflow: 'ellipsis',

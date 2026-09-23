@@ -1,10 +1,40 @@
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { Theme } from "../aiAssistantPanelTheme";
+import { extractErrorMessage } from "../participantAddError";
 import { TaskConfigIcon } from "./taskConfigIcons";
 import { TaskConfigPopoverShell, popoverItemKeyDown, popoverSearchInputStyle } from "./TaskConfigPopoverShell";
 import { popoverHeadStyle, popoverItemStyle, popoverListStyle, popoverSepStyle } from "./taskConfigPopoverStyles";
 import { RemoteServerForm } from "./RemoteServerPopover";
 import type { RemoteTarget, TaskType, WorkspaceTarget } from "./taskDraft";
+
+/** Enter while an IME candidate is open must not create or rename. */
+function imeComposing(event: ReactKeyboardEvent): boolean {
+    return event.nativeEvent.isComposing || event.keyCode === 229;
+}
+
+/**
+ * Hub stores the series as "工作区 1". Also treat "工作区1" as that number so
+ * the suggestion does not sit next to a near-duplicate.
+ */
+const defaultCloudWorkspaceName = /^工作区\s*([1-9][0-9]*)$/;
+
+export function nextDefaultCloudWorkspaceName(names: string[]): string {
+    const used = new Set<number>();
+    for (const name of names) {
+        const match = defaultCloudWorkspaceName.exec(name.trim());
+        if (!match) continue;
+        const n = Number(match[1]);
+        if (Number.isInteger(n) && n >= 1) used.add(n);
+    }
+    let i = 1;
+    while (used.has(i)) i += 1;
+    return `工作区 ${i}`;
+}
+
+function cloudWorkspaceNameTaken(err: unknown): boolean {
+    const text = extractErrorMessage(err);
+    return text.includes("名称已存在") || /name taken/i.test(text);
+}
 
 export interface CloudWorkspaceOption {
     id: string;
@@ -27,8 +57,10 @@ export interface WorkspacePickerPopoverProps {
     onSelectRemote: (remote: RemoteTarget) => void;
     /** 「浏览目录…」；回调可返回所选路径（则直接选中），无回调则渲染为禁用项。 */
     onBrowseLocal?: () => void | Promise<string | null | undefined>;
-    /** 「新建云端工作区…」入口。 */
-    onCreateCloud?: () => void;
+    /** 「新建云端工作区…」确认名称后创建。名称为空时不调用。 */
+    onCreateCloud?: (name: string) => void | Promise<void>;
+    /** 云端工作区行右侧「改名」。 */
+    onRenameCloud?: (id: string, name: string) => void | Promise<void>;
     /** 已指定专家 → 云端/远程位置置灰（专家任务不携带工作空间，§7）。 */
     expertWorkspaceLocked?: boolean;
     onClose: () => void;
@@ -53,6 +85,7 @@ export function WorkspacePickerPopover({
     onSelectRemote,
     onBrowseLocal,
     onCreateCloud,
+    onRenameCloud,
     expertWorkspaceLocked = false,
     onClose,
 }: WorkspacePickerPopoverProps) {
@@ -60,6 +93,19 @@ export function WorkspacePickerPopover({
     const [pane, setPane] = useState<Pane>('main');
     const [browsing, setBrowsing] = useState(false);
     const [manualPath, setManualPath] = useState("");
+    /** null = the create row is the button; a string is the unnamed draft being edited. */
+    const [creatingName, setCreatingName] = useState<string | null>(null);
+    const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
+    const [cloudBusy, setCloudBusy] = useState(false);
+    const [cloudError, setCloudError] = useState("");
+    const cloudBusyRef = useRef(false);
+    const createNameRef = useRef<HTMLInputElement | null>(null);
+    /** Default names already rejected in this editor, so a stale list cannot offer them again. */
+    const rejectedDefaultNamesRef = useRef<string[]>([]);
+    const selectCreateNameRef = useRef(false);
+    const editorRef = useRef({ creating: false, renaming: false });
+    editorRef.current.creating = creatingName !== null;
+    editorRef.current.renaming = renaming !== null;
 
     const cloudDisabled = taskType === 'coding';
     const cloudHint = isZh ? "编程任务不支持云端工作区" : "Coding tasks cannot use cloud workspaces";
@@ -83,6 +129,151 @@ export function WorkspacePickerPopover({
         } finally {
             setBrowsing(false);
         }
+    };
+
+    const nameInputStyle: CSSProperties = {
+        width: "100%",
+        boxSizing: "border-box",
+        height: 28,
+        borderRadius: 7,
+        border: `1px solid ${t.btnColor}`,
+        background: t.fieldBg,
+        color: t.inputText || t.text,
+        minWidth: 0,
+        padding: "0 8px",
+        fontSize: 13.5,
+        fontWeight: 500,
+        outline: "none",
+        fontFamily: "system-ui, -apple-system, sans-serif",
+        lineHeight: "26px",
+        userSelect: "text",
+    };
+    const renameButtonStyle: CSSProperties = {
+        flexShrink: 0,
+        height: 24,
+        padding: "0 8px",
+        boxSizing: "border-box",
+        borderRadius: 6,
+        border: `1px solid ${t.fieldBorder}`,
+        background: t.fieldBg,
+        color: t.textMuted,
+        fontSize: 12,
+        fontWeight: 400,
+        lineHeight: "22px",
+        cursor: cloudBusy ? "default" : "pointer",
+        fontFamily: "system-ui, -apple-system, sans-serif",
+    };
+    const namePlaceholder = isZh ? "工作区名称" : "Workspace name";
+    const cloudMetaStyle: CSSProperties = { flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 1 };
+    const cloudNameStyle: CSSProperties = { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
+    /** Input and 改名 share one row so the button is not centered against the hint below. */
+    const nameLineStyle: CSSProperties = { display: "flex", alignItems: "center", gap: 10, minWidth: 0, width: "100%", height: 28 };
+    const nameInputFlexStyle: CSSProperties = { ...nameInputStyle, flex: "1 1 0", width: "auto" };
+    const renameBesideInputStyle: CSSProperties = { ...renameButtonStyle, height: 28, lineHeight: "26px" };
+    const draftVisual = popoverItemStyle(t);
+
+    const beginCreate = () => {
+        if (cloudBusyRef.current || !onCreateCloud) return;
+        setCloudError("");
+        setRenaming(null);
+        rejectedDefaultNamesRef.current = [];
+        selectCreateNameRef.current = true;
+        setCreatingName(nextDefaultCloudWorkspaceName(cloudWorkspaces.map((cw) => cw.name)));
+    };
+
+    useEffect(() => {
+        if (!selectCreateNameRef.current) return;
+        selectCreateNameRef.current = false;
+        if (creatingName === null) return;
+        const input = createNameRef.current;
+        if (!input) return;
+        // Disabling the field blurs it. Put the caret back on the suggested name.
+        input.focus();
+        input.select();
+    }, [creatingName]);
+
+    const submitCreate = async () => {
+        const name = (creatingName ?? "").trim();
+        if (!name || !onCreateCloud || cloudBusyRef.current) return;
+        cloudBusyRef.current = true;
+        setCloudBusy(true);
+        setCloudError("");
+        try {
+            await onCreateCloud(name);
+            setCreatingName(null);
+        } catch (err) {
+            // Keep the editor so the typed name can be retried. The page-level
+            // error sits under the popover, so repeat it inside the pane.
+            setCloudError(extractErrorMessage(err) || (isZh ? "新建云端工作区失败" : "Failed to create cloud workspace"));
+            const taken = name.trim();
+            if (cloudWorkspaceNameTaken(err) && defaultCloudWorkspaceName.test(taken)) {
+                rejectedDefaultNamesRef.current = [...rejectedDefaultNamesRef.current, taken];
+                const next = nextDefaultCloudWorkspaceName([
+                    ...cloudWorkspaces.map((cw) => cw.name),
+                    ...rejectedDefaultNamesRef.current,
+                ]);
+                if (next !== taken) {
+                    selectCreateNameRef.current = true;
+                    setCreatingName(next);
+                }
+            }
+        } finally {
+            cloudBusyRef.current = false;
+            setCloudBusy(false);
+        }
+    };
+
+    const beginRename = (cw: CloudWorkspaceOption) => {
+        if (cloudBusyRef.current || !onRenameCloud) return;
+        setCloudError("");
+        setCreatingName(null);
+        setRenaming({ id: cw.id, value: cw.name });
+    };
+
+    const submitRename = async () => {
+        if (!renaming || !onRenameCloud || cloudBusyRef.current) return;
+        const name = renaming.value.trim();
+        if (!name) {
+            setRenaming(null);
+            setCloudError("");
+            return;
+        }
+        const current = cloudWorkspaces.find((cw) => cw.id === renaming.id);
+        if (current && current.name === name) {
+            setRenaming(null);
+            setCloudError("");
+            return;
+        }
+        cloudBusyRef.current = true;
+        setCloudBusy(true);
+        setCloudError("");
+        try {
+            await onRenameCloud(renaming.id, name);
+            setRenaming(null);
+        } catch (err) {
+            setCloudError(extractErrorMessage(err) || (isZh ? "云端工作区改名失败" : "Failed to rename cloud workspace"));
+        } finally {
+            cloudBusyRef.current = false;
+            setCloudBusy(false);
+        }
+    };
+
+    // First Escape leaves the name editor; the next one closes the popover.
+    const consumeEscape = useCallback(() => {
+        if (!editorRef.current.creating && !editorRef.current.renaming) return false;
+        editorRef.current.creating = false;
+        editorRef.current.renaming = false;
+        setCreatingName(null);
+        setRenaming(null);
+        setCloudError("");
+        return true;
+    }, []);
+
+    const onNameKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>, submit: () => void) => {
+        event.stopPropagation();
+        if (imeComposing(event) || event.key !== "Enter") return;
+        event.preventDefault();
+        submit();
     };
 
     const renderRow = (
@@ -147,6 +338,7 @@ export function WorkspacePickerPopover({
             anchor={anchor}
             theme={t}
             onClose={onClose}
+            onEscape={consumeEscape}
             data-testid="task-config-popover-workspace"
         >
             <div
@@ -240,20 +432,131 @@ export function WorkspacePickerPopover({
                     <>
                         {head(isZh ? "搜索云端工作区" : "Search cloud workspaces", "workspace-cloud-search")}
                         <div style={popoverListStyle()}>
-                            {cloudWorkspaces.map((cw) => renderRow(`cloud-${cw.id}`, "cloud", cw.name, `${cw.spec} · ${cw.state}`, {
-                                selected: workspace.kind === 'cloud' && workspace.cloudWorkspaceId === cw.id,
-                                onPick: () => onSelectCloud(cw.id, cw.name),
-                                testId: `workspace-cloud-${cw.id}`,
-                            }))}
-                            {cloudWorkspaces.length === 0 && (
+                            {cloudWorkspaces.map((cw) => {
+                                const selected = workspace.kind === 'cloud' && workspace.cloudWorkspaceId === cw.id;
+                                const editing = renaming?.id === cw.id;
+                                const v = popoverItemStyle(t, { selected });
+                                const subtitle = `${cw.spec} · ${cw.state}`;
+                                return (
+                                    <div
+                                        key={cw.id}
+                                        data-testid={`workspace-cloud-${cw.id}`}
+                                        className="mc-taskcfg-item"
+                                        style={{ ...v.item, minWidth: 0, alignItems: "flex-start", cursor: editing || cloudBusy ? "default" : "pointer", userSelect: editing ? "text" : "none" }}
+                                        onClick={editing ? undefined : (event) => {
+                                            if (cloudBusyRef.current) return;
+                                            const target = event.target as HTMLElement;
+                                            if (target.closest("button, input")) return;
+                                            onSelectCloud(cw.id, cw.name);
+                                        }}
+                                        onKeyDown={editing ? undefined : popoverItemKeyDown(() => {
+                                            if (cloudBusyRef.current) return;
+                                            onSelectCloud(cw.id, cw.name);
+                                        })}
+                                        tabIndex={editing ? undefined : 0}
+                                    >
+                                        <span style={v.icon}><TaskConfigIcon name="cloud" size={15} /></span>
+                                        <span style={cloudMetaStyle}>
+                                            <span style={nameLineStyle}>
+                                                {editing ? (
+                                                    <input
+                                                        autoFocus
+                                                        className="mc-taskcfg-name-input"
+                                                        data-testid={`workspace-cloud-rename-input-${cw.id}`}
+                                                        aria-label={namePlaceholder}
+                                                        placeholder={namePlaceholder}
+                                                        value={renaming.value}
+                                                        disabled={cloudBusy}
+                                                        onChange={(event) => setRenaming({ id: cw.id, value: event.target.value })}
+                                                        onClick={(event) => event.stopPropagation()}
+                                                        onKeyDown={(event) => onNameKeyDown(event, () => { void submitRename(); })}
+                                                        onFocus={(event) => event.currentTarget.select()}
+                                                        style={nameInputFlexStyle}
+                                                    />
+                                                ) : (
+                                                    <span style={{ ...cloudNameStyle, flex: "1 1 0" }}>{cw.name}</span>
+                                                )}
+                                                {selected && !editing && <TaskConfigIcon name="check" size={14} />}
+                                                {onRenameCloud && (
+                                                    <button
+                                                        type="button"
+                                                        data-testid={`workspace-cloud-rename-${cw.id}`}
+                                                        aria-label={isZh ? `改名 ${cw.name}` : `Rename ${cw.name}`}
+                                                        disabled={cloudBusy}
+                                                        onClick={(event) => {
+                                                            event.stopPropagation();
+                                                            if (editing) void submitRename();
+                                                            else beginRename(cw);
+                                                        }}
+                                                        onKeyDown={(event) => event.stopPropagation()}
+                                                        style={renameBesideInputStyle}
+                                                    >
+                                                        {isZh ? "改名" : "Rename"}
+                                                    </button>
+                                                )}
+                                            </span>
+                                            <span style={{ ...v.desc, display: "block", marginTop: 0 }}>{subtitle}</span>
+                                            {editing && cloudError && (
+                                                <span data-testid="workspace-cloud-error" role="alert" style={{ fontSize: 12, lineHeight: 1.4, color: t.errorText }}>{cloudError}</span>
+                                            )}
+                                        </span>
+                                    </div>
+                                );
+                            })}
+                            {cloudWorkspaces.length === 0 && creatingName === null && (
                                 <div style={{ padding: "10px", fontSize: 12.5, color: t.textMuted }}>
                                     {isZh ? "暂无云端工作区" : "No cloud workspaces"}
                                 </div>
                             )}
                             <div style={sep} />
-                            {onCreateCloud ? (
+                            {creatingName !== null ? (
+                                <div
+                                    data-testid="workspace-cloud-create-editor"
+                                    className="mc-taskcfg-item"
+                                    style={{ ...draftVisual.item, minWidth: 0, alignItems: "flex-start", cursor: "default", userSelect: "text" }}
+                                >
+                                    <span style={draftVisual.icon}><TaskConfigIcon name="cloud" size={15} /></span>
+                                    <span style={cloudMetaStyle}>
+                                        <span style={nameLineStyle}>
+                                            <input
+                                                ref={createNameRef}
+                                                autoFocus
+                                                className="mc-taskcfg-name-input"
+                                                data-testid="workspace-cloud-create-name"
+                                                aria-label={namePlaceholder}
+                                                placeholder={namePlaceholder}
+                                                value={creatingName}
+                                                readOnly={cloudBusy}
+                                                onChange={(event) => setCreatingName(event.target.value)}
+                                                onFocus={(event) => event.currentTarget.select()}
+                                                onKeyDown={(event) => onNameKeyDown(event, () => { void submitCreate(); })}
+                                                style={nameInputFlexStyle}
+                                            />
+                                            <button
+                                                type="button"
+                                                data-testid="workspace-cloud-create-rename"
+                                                aria-label={isZh ? "改名" : "Rename"}
+                                                disabled={cloudBusy}
+                                                onClick={() => {
+                                                    if ((creatingName ?? "").trim()) void submitCreate();
+                                                    else createNameRef.current?.focus();
+                                                }}
+                                                style={renameBesideInputStyle}
+                                            >
+                                                {isZh ? "改名" : "Rename"}
+                                            </button>
+                                        </span>
+                                        <span style={{ ...draftVisual.desc, display: "block", marginTop: 0 }}>
+                                            {isZh ? "输入名称，Enter 或点改名创建" : "Type a name, then press Enter or Rename"}
+                                        </span>
+                                        {cloudError && (
+                                            <span data-testid="workspace-cloud-error" role="alert" style={{ fontSize: 12, lineHeight: 1.4, color: t.errorText }}>{cloudError}</span>
+                                        )}
+                                    </span>
+                                </div>
+                            ) : onCreateCloud ? (
                                 renderRow("create", "plus", isZh ? "新建云端工作区…" : "New cloud workspace…", "", {
-                                    onPick: onCreateCloud,
+                                    onPick: beginCreate,
                                     testId: "workspace-cloud-create",
                                 })
                             ) : (

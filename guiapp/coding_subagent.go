@@ -7792,7 +7792,18 @@ func projectWorkspaceWasEmpty(projectPath string) bool {
 		return false
 	}
 	entries, err := os.ReadDir(projectPath)
-	return err == nil && len(entries) == 0
+	if err != nil {
+		return false
+	}
+	// A host baseline commit may already have created .git. That directory is
+	// not a project file, so a new directory with no source stays greenfield.
+	for _, entry := range entries {
+		if entry.Name() == ".git" {
+			continue
+		}
+		return false
+	}
+	return true
 }
 func countSuccessfulSubAgentInspectionDynamicTools(tools []CodingSubAgentDynamicToolResult) int {
 	count := 0

@@ -119,8 +119,8 @@
 }
 
 .apps-studio-button {
-    --apps-studio-accent: var(--theme-primary, #2f5f98);
-    --apps-studio-bg: color-mix(in srgb, var(--theme-primary-soft, #dce7f4) 58%, var(--theme-surface, #fff));
+    --apps-studio-accent: var(--theme-primary, #2f6fbc);
+    --apps-studio-bg: color-mix(in srgb, var(--theme-primary-soft, rgba(47, 111, 188, 0.10)) 58%, var(--theme-surface, #ffffff));
     position: relative;
     z-index: 1;
     width: 82px;
@@ -182,7 +182,7 @@
 
 .apps-studio-button:hover,
 .apps-studio-button:focus-visible {
-    color: var(--theme-on-primary, #fff);
+    color: var(--theme-on-primary, #ffffff);
     border-color: var(--apps-studio-accent);
     background: var(--apps-studio-accent);
     outline: none;
@@ -441,8 +441,8 @@
     height: 12px;
     padding: 0 2px;
     border-radius: var(--radius-pill, 999px);
-    background: color-mix(in srgb, var(--theme-danger, #e11d48) 92%, var(--theme-surface, #fff));
-    color: var(--theme-on-primary, #fff);
+    background: color-mix(in srgb, var(--theme-danger, #c43d34) 92%, var(--theme-surface, #ffffff));
+    color: var(--theme-on-primary, #ffffff);
     font-size: 9px;
     font-weight: 700;
     line-height: 12px;
@@ -459,8 +459,8 @@
     height: 12px;
     padding: 0 2px;
     border-radius: var(--radius-pill, 999px);
-    background: var(--theme-primary, #2f5f98);
-    color: var(--theme-on-primary, #fff);
+    background: var(--theme-primary, #2f6fbc);
+    color: var(--theme-on-primary, #ffffff);
     font-size: 10px;
     font-weight: 800;
     line-height: 12px;
@@ -498,12 +498,12 @@
 }
 
 .apps-app-tile.has-workspace-issue {
-    border-color: color-mix(in srgb, var(--theme-danger, #e11d48) 35%, var(--theme-border-subtle));
+    border-color: color-mix(in srgb, var(--theme-danger, #c43d34) 35%, var(--theme-border-subtle));
 }
 
 .apps-app-tile.has-workspace-issue:hover,
 .apps-app-tile.has-workspace-issue:focus-visible {
-    border-color: color-mix(in srgb, var(--theme-danger, #e11d48) 48%, var(--theme-border));
+    border-color: color-mix(in srgb, var(--theme-danger, #c43d34) 48%, var(--theme-border));
 }
 
 .apps-app-icon svg {
@@ -1711,14 +1711,14 @@
 }
 
 .apps-approval-row[data-urgency='overdue'] {
-    border-color: color-mix(in srgb, var(--theme-danger, #dc2626) 42%, var(--theme-border));
-    background: color-mix(in srgb, var(--theme-danger, #dc2626) 10%, var(--theme-surface));
+    border-color: color-mix(in srgb, var(--theme-danger, #c43d34) 42%, var(--theme-border));
+    background: color-mix(in srgb, var(--theme-danger, #c43d34) 10%, var(--theme-surface));
 }
 
 .apps-approval-row[data-urgency='critical'] {
-    border-color: color-mix(in srgb, var(--theme-danger, #b91c1c) 55%, var(--theme-border));
-    background: color-mix(in srgb, var(--theme-danger, #b91c1c) 14%, var(--theme-surface));
-    box-shadow: inset 3px 0 0 var(--theme-danger, #b91c1c);
+    border-color: color-mix(in srgb, var(--theme-danger, #c43d34) 55%, var(--theme-border));
+    background: color-mix(in srgb, var(--theme-danger, #c43d34) 14%, var(--theme-surface));
+    box-shadow: inset 3px 0 0 var(--theme-danger, #c43d34);
 }
 
 .apps-approval-row__urgency {
@@ -5158,8 +5158,8 @@
 }
 
 .apps-publish-preflight[data-tone='blocked'] {
-    border-color: color-mix(in srgb, var(--theme-danger, #c0392b) 45%, var(--theme-border));
-    background: color-mix(in srgb, var(--theme-danger-bg, #fdecea) 40%, var(--theme-surface));
+    border-color: color-mix(in srgb, var(--theme-danger, #c43d34) 45%, var(--theme-border));
+    background: color-mix(in srgb, var(--theme-danger-bg, #fbf1f0) 40%, var(--theme-surface));
 }
 
 .apps-publish-preflight[data-tone='loading'],
@@ -5202,7 +5202,7 @@
 }
 
 .apps-publish-preflight[data-tone='blocked'] .apps-publish-preflight__head em {
-    color: color-mix(in srgb, var(--theme-danger, #c0392b) 78%, var(--theme-text-primary));
+    color: color-mix(in srgb, var(--theme-danger, #c43d34) 78%, var(--theme-text-primary));
 }
 
 .apps-publish-preflight__detail {
@@ -5276,7 +5276,7 @@
     border-radius: 50%;
     color: var(--theme-surface);
     background: var(--theme-warning);
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 700;
 }
 
@@ -5285,7 +5285,7 @@
 }
 
 .apps-publish-preflight__lines li[data-severity='error'] > span {
-    background: var(--theme-danger, #c0392b);
+    background: var(--theme-danger, #c43d34);
 }
 
 .apps-publish-preflight__lines small {
@@ -5321,9 +5321,9 @@
 }
 
 .apps-publish-partial-hint--blocked {
-    border-color: color-mix(in srgb, var(--theme-danger, #c0392b) 50%, var(--theme-border));
-    background: color-mix(in srgb, var(--theme-danger-bg, #fdecea) 42%, var(--theme-surface));
-    color: color-mix(in srgb, var(--theme-danger, #c0392b) 78%, var(--theme-text-primary));
+    border-color: color-mix(in srgb, var(--theme-danger, #c43d34) 50%, var(--theme-border));
+    background: color-mix(in srgb, var(--theme-danger-bg, #fbf1f0) 42%, var(--theme-surface));
+    color: color-mix(in srgb, var(--theme-danger, #c43d34) 78%, var(--theme-text-primary));
 }
 
 .apps-publish-queue__body .apps-publish-preflight {
@@ -5345,9 +5345,9 @@
     display: grid;
     gap: 5px;
     padding: 8px 10px;
-    border: 1px solid color-mix(in srgb, var(--theme-danger, #c0392b) 42%, var(--theme-border));
+    border: 1px solid color-mix(in srgb, var(--theme-danger, #c43d34) 42%, var(--theme-border));
     border-radius: var(--radius-sm);
-    background: color-mix(in srgb, var(--theme-danger-bg, #fdecea) 34%, var(--theme-surface));
+    background: color-mix(in srgb, var(--theme-danger-bg, #fbf1f0) 34%, var(--theme-surface));
     text-align: left;
 }
 
@@ -5359,7 +5359,7 @@
 }
 
 .apps-one-click-errors__item strong {
-    color: color-mix(in srgb, var(--theme-danger, #c0392b) 78%, var(--theme-text-primary));
+    color: color-mix(in srgb, var(--theme-danger, #c43d34) 78%, var(--theme-text-primary));
     font-size: var(--apps-font-xs);
 }
 
@@ -5367,8 +5367,8 @@
     padding: 1px 5px;
     border-radius: var(--radius-xs, 4px);
     color: var(--theme-text-primary);
-    background: color-mix(in srgb, var(--theme-danger-bg, #fdecea) 65%, var(--theme-surface));
-    font-size: 0.66rem;
+    background: color-mix(in srgb, var(--theme-danger-bg, #fbf1f0) 65%, var(--theme-surface));
+    font-size: 0.68rem;
     overflow-wrap: anywhere;
 }
 
