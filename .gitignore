@@ -290,3 +290,47 @@ guiapp/LegacyTask*
 guiapp/*.csv
 guiapp/Microsoft/
 guiapp/_*
+
+# --- Recurring non-source artifacts (2026-09-24) ---
+# Compiled object files must never be tracked (gemm_arm64.o incident)
+*.o
+
+# Linux build outputs
+/build/linux/
+/build/maclawsrv_linux_amd64
+
+# Workflow GUI test fixtures (dozens of dated dirs per week)
+/guiapp/docs/workflow/
+
+# Third-party reference clones (contain their own .git)
+/esp-wifi-connect-reference/
+/xiaozhi-esp32-server-ref/
+
+# Local tool/workspace data and temp dirs
+/.maclaw-tmp*
+/.workbuddy*/
+/.workbuddy-ai/
+/.audit-mobile/
+/build-host-tests/
+/tmp-tail-check/
+
+# Root-level probe / scratch outputs
+/plink_*.txt
+/*_probe*.txt
+/proc_*.txt
+/pw_direct*
+/ssh_probe*
+/env_probe*
+/build_exit.txt
+/deploy_exit.txt
+/*.log.err
+/tmp_*.png
+/about-*.png
+/about-*.html
+/about-*.css
+
+# More build artifacts
+/build/windows/icon-resource-test/
+/iot-agentos/logs/
+/iot-agentos/*.png
+/iot-agentos/.maclaw-idf-tools/
