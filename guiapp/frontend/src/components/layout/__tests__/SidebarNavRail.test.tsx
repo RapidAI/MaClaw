@@ -203,6 +203,18 @@ describe('SidebarNavRail system popup', () => {
         expect(screen.getByTestId('sidebar-task-monitor-nav-badge').textContent).toBe('99+');
     });
 
+    it('paints the running-task badge as a soft primary chip outside the glyph grayscale', () => {
+        const css = readFileSync(join(process.cwd(), 'src/App.css'), 'utf8');
+        const badge = css.match(/\.left-nav-item__badge \{[^}]+\}/);
+        expect(badge?.[0]).toContain('var(--theme-primary)');
+        expect(badge?.[0]).toContain('color: var(--theme-text-primary)');
+        const darkBadge = css.match(/\.sidebar\[data-ai-theme='dark'\] \.left-nav-item \.left-nav-item__badge \{[^}]+\}/);
+        expect(darkBadge?.[0]).toContain('color: var(--theme-text-primary)');
+        expect(badge?.[0]).not.toContain('--theme-danger');
+        expect(css).toContain('.sidebar-icon > :not(.left-nav-item__badge)');
+        expect(css).not.toMatch(/\.left-nav-item:not\(\.left-nav-item--ai\) \.sidebar-icon,/);
+    });
+
     it('ignores a non-numeric running-task count instead of rendering NaN', () => {
         renderRail({ runningTaskCount: Number.NaN });
 

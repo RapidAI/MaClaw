@@ -1,6 +1,7 @@
 import { ImportCodexAuth } from '../../../wailsjs/go/main/App';
 import { colors } from './styles';
 import { labelStyle, type LLMProvider } from './LLMConfigPanelShared';
+import { isWorkBuddyProvider } from './providerLogos';
 
 type Translate = (en: string, zhHans: string, zhHant?: string) => string;
 
@@ -8,6 +9,7 @@ function oauthSignInLabel(name: string, t: Translate): string {
     if (name === 'GitHub Copilot') return t('Sign in with GitHub', '\u4f7f\u7528 GitHub \u8d26\u53f7\u767b\u5f55');
     if (name === 'Anthropic') return t('Sign in with Claude.ai', '\u4f7f\u7528 Claude.ai \u8d26\u53f7\u767b\u5f55');
     if (name === 'xAI-Grok') return t('Sign in with xAI', '\u4f7f\u7528 xAI \u8d26\u53f7\u767b\u5f55');
+    if (isWorkBuddyProvider(name)) return t('Sign in with WorkBuddy', '\u4f7f\u7528 WorkBuddy \u8d26\u53f7\u767b\u5f55');
     return t('Sign in with OpenAI', '\u4f7f\u7528 OpenAI \u8d26\u53f7\u767b\u5f55');
 }
 

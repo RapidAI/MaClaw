@@ -23,6 +23,7 @@ import type { AssistantUpdatePayload } from './components/ai/AssistantUpdateNoti
 import type { VirtualEmployeeEntry } from './components/ai/VirtualEmployeeTab';
 import type { AIExecutionProfile } from './components/ai/AITabTypes';
 import { createWindowMaximizeRestoreSession } from './utils/windowRestoreGeometry';
+import { SuggestCombobox } from './components/ui/SuggestCombobox';
 
 function clipboardImageExtension(mimeType: string): string {
     switch (mimeType.toLowerCase()) {
@@ -150,6 +151,7 @@ import { inferProviderModelFetchProtocol } from './utils/providerModelFetchProto
 import { normalizeSidebarHubCredits } from './utils/sidebarHubCredits';
 import { getSidebarUsageForProvider, selectSidebarCurrentProvider } from './utils/sidebarProviderSelection';
 import { buildSidebarModelOptions } from './utils/sidebarModelOptions';
+import { contactedProfileForExecution, contactedProfileModel, contactedProfileProviderID, contactedProfileProviderName } from './utils/contactedModelRoute';
 import { applySavedUIZoomFactor, recommendUIScale, subscribeDisplayScaleChanges, uiScaleEquals } from './utils/uiScale';
 import { getWailsAppModule } from './utils/wailsAppModule';
 import { translations } from './i18n/appTranslations';
@@ -175,6 +177,7 @@ import { AboutPanel } from './components/AboutPanel';
 import { ToolRepairProgressDialog } from './components/modals/ToolRepairProgressDialog';
 import { UpdateModal, rollbackUpdateResult, type RollbackRelease } from './components/modals/UpdateModal';
 import { checkAppUpdate } from './utils/checkAppUpdate';
+import { buildPendingUpdateDialog } from './utils/pendingUpdateNotice';
 import { InstallLogModal } from './components/modals/InstallLogModal';
 import { ProjectProxySettingsDialog } from './components/modals/ProjectProxySettingsDialog';
 
@@ -1791,6 +1794,8 @@ function App() {
         message: string;
         onConfirm: () => void;
         onCancel?: () => void;
+        confirmText?: string;
+        cancelText?: string;
     }>({
         show: false,
         title: "",
@@ -1961,6 +1966,10 @@ function App() {
         setAppUpdateAvailable(null);
     }, []);
 
+    // Name of the installer currently being downloaded. Cancel must target the
+    // same key the backend registered; rebuilding it from the brand can miss.
+    const activeDownloadFileNameRef = useRef("");
+
     const handleDownload = async () => {
         if (!updateResult) return;
         // Use download_url if available (added in backend update), fallback to release_url
@@ -1980,6 +1989,10 @@ function App() {
         // Prefer the asset name carried by the signed update URL. This keeps
         // OEM installers correct even if brand metadata is still loading.
         const fileName = installerFileNameFromURL(downloadUrl) || fallbackFileName;
+        // Remember the exact name: cancel has to target the same key the
+        // backend registered, and the fallback name can differ from the one
+        // the release URL actually carries.
+        activeDownloadFileNameRef.current = fileName;
         const expectedSHA256 = updateResult.sha256 || "";
 
         try {
@@ -2007,14 +2020,19 @@ function App() {
     };
     const handleCancelDownload = () => {
         const installerBrand = String(brandInfo?.displayName || "MaClaw").trim() || "MaClaw";
-        const fileName = `${installerBrand}-${isWindows ? "Setup.exe" : "Universal.pkg"}`;
+        const fileName = activeDownloadFileNameRef.current ||
+            `${installerBrand}-${isWindows ? "Setup.exe" : "Universal.pkg"}`;
         CancelDownload(fileName);
+        activeDownloadFileNameRef.current = "";
     };
 
     const handleInstall = async () => {
         if (installerPath) {
             try {
-                await LaunchInstallerAndExit(installerPath);
+                // The target version lets the app detect on the next start
+                // whether this silent install actually landed.
+                const targetVersion = String(updateResult?.latest_version || "").trim();
+                await LaunchInstallerAndExit(installerPath, targetVersion);
             } catch (err) {
                 console.error("Install launch error:", err);
                 showToastMessage(t("installLaunchError").replace("{error}", err as string));
@@ -2356,6 +2374,23 @@ function App() {
         });
 
         void callBackend(() => CheckEnvironment(false)); // Start checks
+
+        // A silent install cannot report failure: the app quit before the
+        // installer ran and the installer shows nothing. Surface a launch that
+        // never landed so a failed update is not mistaken for a good one.
+        void buildPendingUpdateDialog({
+            translate: key => translations[initialLang][key] || translations["en"][key] || key,
+            callBackend,
+            closeDialog: () => setConfirmDialog(prev => ({ ...prev, show: false })),
+        }).then(dialog => {
+            if (!dialog) return;
+            setConfirmDialog(prev => {
+                // Another startup dialog (for example the environment check)
+                // may already be up; do not silently replace it.
+                if (prev.show) return prev;
+                return { ...prev, ...dialog };
+            });
+        }).catch(() => {});
 
         // Load environment check interval and check if due
         callBackend(() => GetEnvCheckInterval()).then(val => setEnvCheckInterval(val)).catch(() => {});
@@ -3413,7 +3448,7 @@ function App() {
         };
     }, [aiAssistant.ready, refreshTasks]);
 
-    const resumeTask = useCallback(async (projectPath: string, task?: { project_path?: string; name?: string; tags?: string[]; working_dir?: string }) => {
+    const resumeTask = useCallback(async (projectPath: string, task?: { project_path?: string; name?: string; tags?: string[]; working_dir?: string }): Promise<boolean> => {
         const startedAt = performance.now();
         try {
             // Normalize separators so Windows path variants still match list tags.
@@ -3433,12 +3468,12 @@ function App() {
                         : lang === 'zh-Hant'
                             ? '此 AI 專家已不可用。請從 AI 專家頁面選擇其他專家，或移除此任務項。'
                             : 'This AI expert is no longer available. Choose another expert from AI Experts or remove this task.');
-                    return;
+                    return false;
                 }
                 setPendingExpertOpen({ expert });
                 switchTool('ai');
                 refreshTasks();
-                return;
+                return true;
             }
             const cloudWorkspaceId = cloudWorkspaceIdFromTaskFields({
                 tags: proj?.tags,
@@ -3495,7 +3530,7 @@ function App() {
                 if (agentMode === 'remote_coding_dev') remoteNeedsReconnect = true;
             }
             console.info("[task_management] task ready", { taskPath: projectPath, title, autoSend: false, agentMode, elapsedMs: Math.round(performance.now() - startedAt) });
-            openCodingTask({
+            return openCodingTask({
                 projectPath,
                 taskTitle: title,
                 autoSend: false,
@@ -3510,6 +3545,7 @@ function App() {
             if (message && !message.includes('已取消')) {
                 showAlert(message);
             }
+            return false;
         }
     }, [lang, openCodingTask, refreshTasks, showAlert, switchTool]);
 
@@ -4232,6 +4268,18 @@ function App() {
     const quickModel = selectedQuickProviderID === effectiveProfileProviderID
         ? String(activeProfileSummary?.model ?? '').trim()
         : '';
+    const contactedProfileSummary = contactedProfileForExecution(
+        activeExecutionProfile,
+        llmProfilePanelState ? { assistant: llmProfilePanelState.assistant, coding: llmProfilePanelState.coding } : null,
+    );
+    const contactedProviderID = contactedProfileProviderID(contactedProfileSummary);
+    const contactedProviderName = contactedProfileProviderName(contactedProfileSummary);
+    const contactedModelId = contactedProfileModel(contactedProfileSummary);
+    const contactedProviderRecord = (llmProfilePanelState?.providers || []).find((provider: any) => {
+        const id = String(provider?.id ?? provider?.ID ?? '').trim();
+        return !!contactedProviderID && id === contactedProviderID;
+    });
+    const contactedIsHubService = !!(contactedProviderRecord?.is_hub_service ?? contactedProviderRecord?.isHubService);
     const quickModelOptions = useMemo(() => buildSidebarModelOptions({
         configuredModel: quickModel,
         cachedModels: quickProfileProvider?.models,
@@ -5510,6 +5558,9 @@ ${instruction}`;
                             availableProviders={quickProfileProviders}
                             onSwitchProvider={handleProfileQuickSwitchProvider}
                             currentModel={quickModel}
+                            contactProviderName={contactedProviderName}
+                            contactModelId={contactedModelId}
+                            contactIsHubService={contactedIsHubService}
                             modelOptions={quickModelOptions}
                             modelsLoading={quickModelsLoadingForProviderID === selectedQuickProviderID}
                             onSwitchModel={handleProfileQuickSwitchModel}
@@ -6242,105 +6293,36 @@ ${instruction}`;
                                                     ? fetchedModelList
                                                     : getKnownModelOptions(activeTool, currentModel.model_name);
                                                 const currentModelId = currentModel.model_id || '';
-                                                const normalizedQuery = currentModelId.trim().toLowerCase();
-                                                const matchingModelOptions = normalizedQuery
-                                                    ? modelOptions.filter((m) => {
-                                                        const id = String(m.id || '').toLowerCase();
-                                                        const name = String(m.name || '').toLowerCase();
-                                                        return id.includes(normalizedQuery) || name.includes(normalizedQuery);
-                                                    })
-                                                    : modelOptions;
-                                                const visibleModelOptions = matchingModelOptions.length > 0 ? matchingModelOptions : modelOptions;
                                                 const optionsId = `provider-config-model-options-${activeTool}-${activeTab}`;
                                                 return (
-                                                    <div
-                                                        className="provider-config-model-combobox"
-                                                        onBlur={(e) => {
-                                                            const nextFocus = e.relatedTarget as Node | null;
-                                                            if (!nextFocus || !e.currentTarget.contains(nextFocus)) {
-                                                                setModelListOpen(false);
-                                                            }
-                                                        }}
-                                                    >
-                                                        <input
-                                                            type="text"
-                                                            className="form-input provider-config-model-select"
-                                                            data-field="model-id"
-                                                            role="combobox"
-                                                            aria-autocomplete="list"
-                                                            aria-haspopup="listbox"
-                                                            aria-expanded={modelListOpen && modelOptions.length > 0}
-                                                            aria-controls={optionsId}
-                                                            value={currentModelId}
-                                                            onChange={(e) => {
-                                                                handleModelIdChange(e.target.value);
-                                                                if (modelOptions.length > 0) setModelListOpen(true);
-                                                            }}
-                                                            onFocus={() => {
-                                                                if (modelOptions.length > 0) setModelListOpen(true);
-                                                            }}
-                                                            onKeyDown={(e) => {
-                                                                if (e.key === 'Escape') setModelListOpen(false);
-                                                                if (e.key === 'ArrowDown' && modelOptions.length > 0) {
-                                                                    setModelListOpen(true);
-                                                                    window.setTimeout(() => {
-                                                                        document.getElementById(optionsId)?.querySelector<HTMLButtonElement>('.provider-config-model-option')?.focus();
-                                                                    }, 0);
-                                                                }
-                                                                if (e.key === 'Enter' && modelOptions.length > 0) {
-                                                                    setModelListOpen(true);
-                                                                }
-                                                            }}
-                                                            placeholder={fetchingModelList
-                                                                ? localizeText("Loading...", "加载中...", "載入中...")
-                                                                : modelOptions.length > 0
-                                                                    ? localizeText("Select or type model name", "选择或输入模型名称", "選擇或輸入模型名稱")
-                                                                    : localizeText("Type model name or click Models", "输入模型名称或点击《模型》获取", "輸入模型名稱或點擊《模型》獲取")}
-                                                            disabled={fetchingModelList}
-                                                            autoCapitalize="off"
-                                                            autoCorrect="off"
-                                                            spellCheck={false}
-                                                            autoComplete="off"
-                                                        />
-                                                        <button
-                                                            type="button"
-                                                            className="provider-config-model-toggle"
-                                                            aria-label={localizeText("Show model list", "显示模型列表", "顯示模型列表")}
-                                                            aria-haspopup="listbox"
-                                                            aria-expanded={modelListOpen && modelOptions.length > 0}
-                                                            disabled={fetchingModelList || modelOptions.length === 0}
-                                                            onClick={() => setModelListOpen((open) => modelOptions.length > 0 ? !open : false)}
-                                                        >
-                                                            v
-                                                        </button>
-                                                        {modelListOpen && modelOptions.length > 0 && (
-                                                            <div
-                                                                id={optionsId}
-                                                                className="provider-config-model-options"
-                                                                role="listbox"
-                                                            >
-                                                                {visibleModelOptions.map((m, i) => (
-                                                                    <button
-                                                                        key={`${m.id}-${i}`}
-                                                                        type="button"
-                                                                        className="provider-config-model-option"
-                                                                        role="option"
-                                                                        aria-selected={m.id === currentModelId}
-                                                                        onMouseDown={(e) => e.preventDefault()}
-                                                                        onClick={() => {
-                                                                            handleModelIdChange(m.id);
-                                                                            setModelListOpen(false);
-                                                                        }}
-                                                                    >
-                                                                        <span className="provider-config-model-option-id">{m.id}</span>
-                                                                        {m.name && m.name !== m.id && (
-                                                                            <span className="provider-config-model-option-name">{m.name}</span>
-                                                                        )}
-                                                                    </button>
-                                                                ))}
-                                                            </div>
-                                                        )}
-                                                    </div>
+                                                    <SuggestCombobox
+                                                        shellClassName="provider-config-model-combobox"
+                                                        inputClassName="form-input provider-config-model-select"
+                                                        toggleClassName="provider-config-model-toggle"
+                                                        listClassName="provider-config-model-options"
+                                                        optionClassName="provider-config-model-option"
+                                                        optionValueClassName="provider-config-model-option-id"
+                                                        optionDescriptionClassName="provider-config-model-option-name"
+                                                        listboxId={optionsId}
+                                                        inputProps={{ "data-field": "model-id" }}
+                                                        value={currentModelId}
+                                                        options={modelOptions.map((model) => ({
+                                                            value: model.id || '',
+                                                            description: model.name && model.name !== model.id ? model.name : undefined,
+                                                        }))}
+                                                        open={modelListOpen}
+                                                        onOpenChange={setModelListOpen}
+                                                        onChange={handleModelIdChange}
+                                                        disabled={fetchingModelList}
+                                                        openOnEnter
+                                                        toggleLabel={localizeText("Show model list", "显示模型列表", "顯示模型列表")}
+                                                        emptyText={localizeText("No matching models", "没有匹配的模型", "沒有匹配的模型")}
+                                                        placeholder={fetchingModelList
+                                                            ? localizeText("Loading...", "加载中...", "載入中...")
+                                                            : modelOptions.length > 0
+                                                                ? localizeText("Select or type model name", "选择或输入模型名称", "選擇或輸入模型名稱")
+                                                                : localizeText("Type model name or click Models", "输入模型名称或点击《模型》获取", "輸入模型名稱或點擊《模型》獲取")}
+                                                    />
                                                 );
                                                 })()}
                                             <button
@@ -6671,8 +6653,13 @@ ${instruction}`;
                     title={confirmDialog.title}
                     message={confirmDialog.message}
                     t={t}
-                    onCancel={() => setConfirmDialog({ ...confirmDialog, show: false })}
+                    onCancel={() => {
+                        setConfirmDialog({ ...confirmDialog, show: false });
+                        confirmDialog.onCancel?.();
+                    }}
                     onConfirm={confirmDialog.onConfirm}
+                    confirmText={confirmDialog.confirmText}
+                    cancelText={confirmDialog.cancelText}
                 />
             )}
 

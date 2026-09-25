@@ -2,9 +2,13 @@ package guiapp
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
+	"github.com/RapidAI/CodeClaw/corelib/workbuddy"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -170,6 +174,86 @@ func (a *App) WaitGitHubCopilotOAuth() (string, error) {
 		}
 	}
 	return "", fmt.Errorf("未找到 GitHub Copilot provider")
+}
+
+// StartWorkBuddyOAuth opens the official WorkBuddy or CodeBuddy login page and
+// waits until that edition's account is saved.
+func (a *App) StartWorkBuddyOAuth(providerName string) (string, error) {
+	providerName = strings.TrimSpace(providerName)
+	profile, ok := workbuddy.ProfileByName(providerName)
+	if !ok {
+		return "", fmt.Errorf("未知的 WorkBuddy 服务商 %q", providerName)
+	}
+	ctx, finish, claimResult := a.beginOAuthFlow(5 * time.Minute)
+	cred, err := workbuddy.RunLogin(ctx, profile, llmOrEnvProxy)
+	if err != nil {
+		finish()
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return "", fmt.Errorf("%s 登录已取消或超时", profile.Name)
+		}
+		return "", fmt.Errorf("%s 登录失败: %w", profile.Name, err)
+	}
+	defer finish()
+	if err := claimResult(func() error {
+		return a.saveWorkBuddyLogin(profile, cred)
+	}); err != nil {
+		return "", err
+	}
+	return a.oauthLoginSuccessMessage(profile.Name, profile.Name+" 登录成功")
+}
+
+// CancelWorkBuddyOAuth cancels an in-progress WorkBuddy or CodeBuddy login.
+func (a *App) CancelWorkBuddyOAuth() {
+	a.cancelOAuthFlow()
+}
+
+func (a *App) saveWorkBuddyLogin(profile workbuddy.Profile, cred *workbuddy.AccountCredential) error {
+	if cred == nil || strings.TrimSpace(cred.AccessToken) == "" {
+		return fmt.Errorf("%s 登录未返回访问令牌", profile.Name)
+	}
+	data := a.GetMaclawLLMProviders()
+	for i, p := range data.Providers {
+		if p.Name != profile.Name || !normalizeMaclawLLMAuthTypeKind(p.AuthType).IsOAuth() {
+			continue
+		}
+		data.Providers[i].URL = profile.ChatURL
+		data.Providers[i].Protocol = "openai"
+		data.Providers[i].AuthType = "oauth"
+		if strings.TrimSpace(data.Providers[i].Model) == "" {
+			data.Providers[i].Model = profile.DefaultModel
+		}
+		if data.Providers[i].ContextLength <= 0 {
+			data.Providers[i].ContextLength = profile.DefaultContext()
+		}
+		data.Providers[i].Key = cred.AccessToken
+		data.Providers[i].OAuthAccessToken = cred.AccessToken
+		data.Providers[i].RefreshToken = cred.RefreshToken
+		data.Providers[i].TokenExpiresAt = cred.ExpiresAt
+		data.Providers[i].ConnectionTestPassed = false
+		if err := a.SaveMaclawLLMProviders(data.Providers, profile.Name); err != nil {
+			return fmt.Errorf("保存 %s 登录配置失败: %w", profile.Name, err)
+		}
+		if a.credentialStore != nil {
+			stored := &oauth.StoredCredential{
+				Type:           "oauth",
+				AccessToken:    cred.AccessToken,
+				RawAccessToken: cred.AccessToken,
+				RefreshToken:   cred.RefreshToken,
+				ExpiresAt:      cred.ExpiresAt,
+				UserID:         cred.UserID,
+				EnterpriseID:   cred.EnterpriseID,
+				Domain:         cred.Domain,
+				Email:          cred.Nickname,
+			}
+			if err := a.credentialStore.Modify(profile.StoreID, func(_ *oauth.StoredCredential) (*oauth.StoredCredential, error) {
+				return stored, nil
+			}); err != nil {
+				return fmt.Errorf("保存 %s 登录凭据失败: %w", profile.Name, err)
+			}
+		}
+		return nil
+	}
+	return fmt.Errorf("未找到 %s provider", profile.Name)
 }
 
 // CancelGitHubCopilotOAuth cancels an in-progress device code flow.

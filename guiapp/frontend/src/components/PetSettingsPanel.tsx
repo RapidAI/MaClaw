@@ -1139,7 +1139,7 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                             <span className="pet-preview-motion-mark pet-preview-motion-mark--b" aria-hidden="true" />
                         </div>
                     </div>
-                    <div className="pet-preview-state-row" aria-label={text(lang, '宠物动画预览状态', '寵物動畫預覽狀態', 'Pet animation preview state')}>
+                    <div className="pet-preview-state-row" role="group" aria-label={text(lang, '宠物动画预览状态', '寵物動畫預覽狀態', 'Pet animation preview state')}>
                         {previewStateOptionIds.map((state) => (
                             <button
                                 key={state}
@@ -1320,7 +1320,11 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                             </p>
                         )}
                     </div>
+                </section>
+            </div>
 
+            <div className="pet-settings-controls">
+                    <div className="pet-form-pair">
                     <div className="pet-form-section">
                         <div className="pet-section-heading pet-section-heading--inline">
                             <label className="form-label" htmlFor="pet-size-range">{text(lang, '\u5c3a\u5bf8', '\u5c3a\u5bf8', 'Size')}</label>
@@ -1344,10 +1348,10 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                     {isWindowsHost ? (
                     <div className="pet-form-section">
                         <div className="pet-section-heading pet-section-heading--inline">
-                            <label className="form-label">{text(lang, '\u4ea4\u4e92\u98ce\u683c', '\u4e92\u52d5\u98a8\u683c', 'Interaction Style')}</label>
+                            <label className="form-label" id="pet-interaction-style-label">{text(lang, '\u4ea4\u4e92\u98ce\u683c', '\u4e92\u52d5\u98a8\u683c', 'Interaction Style')}</label>
                             <span>{text(lang, '控制动作频率与提示积极性。', '控制動作頻率與提示積極性。', 'Controls motion pace and promptiveness.')}</span>
                         </div>
-                        <div className="pet-segmented-control">
+                        <div className="pet-segmented-control" role="group" aria-labelledby="pet-interaction-style-label">
                             {modeOptionIds.map((mode) => (
                                 <button
                                     key={mode}
@@ -1362,6 +1366,7 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                         </div>
                     </div>
                     ) : null}
+                    </div>
 
                     {isWindowsHost ? (
                     <div className="pet-form-section">
@@ -1415,8 +1420,8 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                         </div>
 
                         <div className="pet-form-section">
-                            <label className="form-label">{text(lang, '\u5bf9\u8bdd\u6a21\u5f0f', '\u5c0d\u8a71\u6a21\u5f0f', 'Conversation Mode')}</label>
-                            <div className="pet-segmented-control pet-segmented-control--voice">
+                            <label className="form-label" id="pet-conversation-mode-label">{text(lang, '\u5bf9\u8bdd\u6a21\u5f0f', '\u5c0d\u8a71\u6a21\u5f0f', 'Conversation Mode')}</label>
+                            <div className="pet-segmented-control" role="group" aria-labelledby="pet-conversation-mode-label">
                                 {conversationModeOptionIds.map((mode) => (
                                     <button
                                         key={mode}
@@ -1432,8 +1437,8 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                         </div>
 
                         <div className="pet-form-section">
-                            <label className="form-label">{text(lang, '\u64ad\u62a5\u7b56\u7565', '\u64ad\u5831\u7b56\u7565', 'Readback')}</label>
-                            <div className="pet-segmented-control pet-segmented-control--readback">
+                            <label className="form-label" id="pet-readback-mode-label">{text(lang, '\u64ad\u62a5\u7b56\u7565', '\u64ad\u5831\u7b56\u7565', 'Readback')}</label>
+                            <div className="pet-segmented-control pet-segmented-control--readback" role="group" aria-labelledby="pet-readback-mode-label">
                                 {readbackModeOptionIds.map((mode) => (
                                     <button
                                         key={mode}
@@ -1482,7 +1487,6 @@ export function PetSettingsPanel({ config, lang, setConfig, patchConfig }: PetSe
                         ))}
                     </div>
                     </details>
-                </section>
             </div>
         </div>
     );

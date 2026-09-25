@@ -1103,18 +1103,26 @@ button.knowledge-chip:disabled {
 .pet-settings-panel {
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    gap: 12px;
 }
 
 .pet-settings-header {
-    gap: 18px;
-    align-items: flex-start;
+    gap: 16px;
+    align-items: center;
+}
+
+/* Beat the later settings-shell header margin so the title sits with the actions. */
+#App[data-nav-tab='settings'] .settings-panel .pet-settings-header {
+    margin-bottom: 0;
+    align-items: center;
 }
 
 .pet-header-actions {
     display: flex;
-    flex-direction: column;
-    align-items: flex-end;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
     gap: 8px;
 }
 
@@ -1153,22 +1161,21 @@ button.knowledge-chip:disabled {
     min-height: 36px;
 }
 
-/* Three actions on one row: Install Zip | Browse | Guide */
+/* Install / browse / guide stay content-sized so the install action is not a banner. */
 .pet-pack-install-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1.5fr) minmax(3.25rem, 0.55fr) minmax(4.5rem, 0.9fr);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
     gap: 8px;
-    align-items: stretch;
 }
 
 .pet-pack-install-row > button {
     box-sizing: border-box;
-    width: 100%;
+    width: auto;
+    flex: 0 0 auto;
     min-height: 36px;
-    padding-inline: 10px;
+    padding-inline: 12px;
     white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
 }
 
 .pet-ambient-city-row {
@@ -1539,16 +1546,23 @@ button.knowledge-chip:disabled {
 .pet-pack-context-menu .pet-pack-context-menu__danger { color: var(--theme-danger); }
 
 .pet-packs-dir-hint {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
     margin: 8px 0 0;
     font-size: 0.72rem;
     color: var(--theme-text-secondary);
-    word-break: break-all;
     line-height: 1.4;
 }
 
 .pet-packs-dir-hint code {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     font-size: 0.7rem;
-    padding: 1px 4px;
+    padding: 1px 6px;
     border-radius: 4px;
     background: var(--theme-surface);
     border: 1px solid var(--theme-border);
@@ -1662,18 +1676,26 @@ button.knowledge-chip:disabled {
 .pet-status-strip {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 10px;
+    gap: 0;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: 12px;
+    background: var(--theme-surface-muted);
+    overflow: hidden;
 }
 
 .pet-status-chip {
     min-width: 0;
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     gap: 10px;
-    padding: 12px;
-    border: 1px solid var(--theme-border-subtle);
-    border-radius: var(--radius-md);
-    background: var(--theme-surface);
+    padding: 10px 14px;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+}
+
+.pet-status-chip + .pet-status-chip {
+    border-left: 1px solid var(--theme-border-subtle);
 }
 
 .pet-status-chip strong,
@@ -1698,12 +1720,12 @@ button.knowledge-chip:disabled {
 
 .pet-status-dot {
     flex: 0 0 auto;
-    width: 10px;
-    height: 10px;
-    margin-top: 4px;
+    width: 8px;
+    height: 8px;
+    margin-top: 0;
     border-radius: 999px;
     background: var(--theme-text-muted);
-    box-shadow: 0 0 0 4px var(--theme-surface-muted);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-text-muted) 16%, transparent);
 }
 
 .pet-status-chip[data-tone="ready"] .pet-status-dot {
@@ -1751,8 +1773,8 @@ button.knowledge-chip:disabled {
 
 .pet-settings-grid {
     display: grid;
-    grid-template-columns: minmax(0, 0.82fr) minmax(0, 1.18fr);
-    gap: 16px;
+    grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+    gap: 14px;
     align-items: stretch;
 }
 
@@ -1761,29 +1783,49 @@ button.knowledge-chip:disabled {
     min-width: 0;
     border: 1px solid var(--theme-border-subtle);
     background: var(--theme-surface-muted);
-    border-radius: 12px;
-    padding: 16px;
+    border-radius: 14px;
+    padding: 14px;
 }
 
 .pet-preview-card {
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    gap: 12px;
 }
 
 .pet-preview-stage {
-    min-height: 190px;
+    flex: 0 0 auto;
+    min-height: 168px;
     display: flex;
     align-items: center;
     justify-content: center;
     position: relative;
-    border: 1px solid var(--theme-border);
-    background: var(--theme-surface);
-    border-radius: var(--radius-md);
+    overflow: hidden;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: 12px;
+    background:
+        radial-gradient(ellipse 72% 62% at 50% 42%, color-mix(in srgb, var(--theme-primary) 16%, transparent), transparent 72%),
+        var(--theme-surface);
+}
+
+.pet-preview-stage::after {
+    content: "";
+    position: absolute;
+    z-index: 0;
+    left: 50%;
+    bottom: 28px;
+    width: 46%;
+    height: 12px;
+    transform: translateX(-50%);
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--theme-text-primary) 14%, transparent);
+    filter: blur(6px);
+    pointer-events: none;
 }
 
 .pet-preview-avatar {
     position: relative;
+    z-index: 1;
     display: grid;
     place-items: center;
     max-width: 174px;
@@ -1986,26 +2028,4 @@ button.knowledge-chip:disabled {
     56% { opacity: 0; transform: translate(7px, -8px) rotate(70deg) scale(0.8); }
 }
 
-.pet-preview-state-row {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 6px;
-}
 
-.pet-preview-state-row button {
-    min-height: 44px;
-    border: 1px solid var(--theme-border);
-    border-radius: var(--radius-sm);
-    background: var(--theme-surface);
-    color: var(--theme-text-secondary);
-    cursor: pointer;
-    font-size: 0.68rem;
-    font-weight: 600;
-    transition: border-color var(--transition-fast), background var(--transition-fast), color var(--transition-fast), transform var(--transition-fast);
-}
-
-.pet-preview-state-row button:hover,
-.pet-preview-state-row button:focus-visible {
-    border-color: var(--theme-primary);
-    transform: translateY(-1px);
-}

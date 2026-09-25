@@ -123,15 +123,19 @@
 .mc-task-tab-switcher__title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mc-task-execution-actions .mc-task-tab-switcher__close { flex-shrink: 0; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--theme-text-muted); font-size: 13px; line-height: 1; cursor: pointer; }
 .mc-task-execution-actions .mc-task-tab-switcher__close:hover { background: var(--theme-danger-bg); color: var(--theme-danger); }
-.mc-task-execution-heading { min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; gap: 4px; }
-.mc-task-execution-title-row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; min-width: 0; }
-.mc-task-execution-title-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mc-task-execution-title-row .mc-task-execution-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mc-task-execution-heading { min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; justify-content: center; gap: 6px; }
+/* Title keeps the first line. Status and created-at share the second, so a
+   long name cannot push the meta onto a third line under the 72px header.
+   Clip each line itself; clipping the whole heading cuts the status dot halo. */
+.mc-task-execution-heading > .mc-task-execution-title { display: block; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1.25; }
+.mc-task-execution-subline { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.mc-task-execution-subline .mc-task-execution-status { flex: 0 0 auto; }
+.mc-task-execution-subline .mc-task-execution-meta { flex: 1 1 auto; min-width: 0; }
 .ai-panel-root[data-ai-view='execution'] > .mc-ai-titlebar,
 [data-testid='ai-panel-root'][data-ai-view='execution'] > .mc-ai-titlebar { display: none !important; }
 [data-testid='ai-panel-root'][data-ai-view='execution'] [data-testid='ai-tab-bar'] { display: none !important; }
-.mc-task-execution-status { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border)); border-radius: 999px; background: var(--theme-primary-soft); color: var(--mc-accent, #2f6fbc) !important; font-size: 12px !important; font-weight: 600; white-space: nowrap; }
-.mc-task-execution-status i { width: 7px; height: 7px; border-radius: 50%; background: var(--mc-accent, #2f6fbc); box-shadow: 0 0 0 3px rgba(47,128,237,.12); }
+.mc-task-execution-status { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border)); border-radius: 999px; background: var(--theme-primary-soft); color: var(--mc-accent, #2f6fbc) !important; font-size: 12px !important; font-weight: 600; line-height: 1; white-space: nowrap; }
+.mc-task-execution-status i { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--mc-accent, #2f6fbc); box-shadow: 0 0 0 3px rgba(47,128,237,.12); }
 .mc-task-execution-status--completed { border-color: color-mix(in srgb, var(--theme-success) 32%, var(--theme-border)); background: var(--theme-success-bg); color: var(--theme-success) !important; }
 .mc-task-execution-status--completed i { background: var(--theme-success); box-shadow: 0 0 0 3px rgba(27,182,106,.12); }
 .mc-task-execution-status--pending { border-color: color-mix(in srgb, var(--theme-warning) 32%, var(--theme-border)); background: var(--theme-warning-bg); color: var(--theme-warning) !important; }
@@ -172,6 +176,9 @@
     border-bottom: 0 !important;
 }
 .mc-task-pane[data-execution-sidebar='false'] .mc-task-pane__create-group {
+    flex: 0 1 auto;
+    width: fit-content;
+    max-width: 100%;
     min-height: 48px;
     padding-inline: 14px !important;
     gap: 7px;
@@ -240,6 +247,10 @@
     box-shadow: none;
 }
 .mc-task-pane__create-group > span:first-child {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
     color: var(--theme-primary-strong) !important;
     font-size: 14px !important;
     letter-spacing: 0 !important;
@@ -248,6 +259,7 @@
 /* Keep the lighter dock treatment above the legacy solid-blue header-button
    rule (.mc-task-pane > .mc-task-pane__header button) via higher specificity. */
 .mc-task-pane > .mc-task-pane__header .mc-task-pane__create-group > button {
+    flex-shrink: 0;
     width: 32px !important;
     height: 32px !important;
     border-color: rgba(23, 105, 232, .30) !important;
@@ -529,11 +541,17 @@
   cursor: pointer;
   transition: background-color .15s ease, border-color .15s ease, color .15s ease;
 }
-.mc-task-pane .mc-task-filter-btn b {
+.mc-task-pane .mc-task-filter-btn b,
+.mc-task-pane .mc-task-filter-btn:hover b,
+.mc-task-pane .mc-task-filter-btn[aria-pressed='true'] b {
   line-height: 1;
   font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: var(--theme-text-primary);
 }
-.mc-task-pane .mc-task-filter-btn[data-count='0']:not([aria-pressed='true']) { opacity: 0.55; }
+.mc-task-pane .mc-task-filter-btn[data-count='0']:not([aria-pressed='true']) {
+  color: var(--theme-text-muted);
+}
 .mc-task-pane .mc-task-filter-btn[aria-pressed='true'] {
   border-color: var(--theme-primary);
   background: color-mix(in srgb, var(--theme-primary) 14%, transparent);
@@ -1138,7 +1156,8 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
    remains a broad reading column instead of falling back to the old centered
    card width when a preview is open. */
 [data-testid='ai-panel-root'][data-ai-view='execution'] .mc-task-execution-header {
-  flex: 0 0 72px;
+  flex: 0 0 auto;
+  min-height: 72px;
   box-sizing: border-box;
   padding-inline: clamp(18px, 2.4vw, 32px);
 }
@@ -1158,7 +1177,6 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 }
 @media (max-width: 720px) {
   [data-testid='ai-panel-root'][data-ai-view='execution'] .mc-task-execution-header {
-    flex-basis: 68px;
     padding-inline: 14px;
   }
   [data-testid='ai-panel-root'][data-ai-view='execution'] .mc-task-execution .mc-conversation-body {
@@ -1357,6 +1375,31 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   font-weight: 500;
   line-height: 1.2;
   white-space: nowrap;
+}
+.mc-task-pane .stsm-drag-handle-wrap {
+  display: flex;
+  flex: 0 0 auto;
+  align-self: center;
+}
+.mc-task-pane .stsm-drag-handle {
+  appearance: none;
+  flex: 0 0 auto;
+  align-self: center;
+  width: 14px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--theme-text-muted);
+  cursor: grab;
+  user-select: none;
+  font-size: 10px;
+  line-height: 1;
+  letter-spacing: -1px;
+}
+.mc-task-pane .stsm-drag-handle:active { cursor: grabbing; }
+.mc-task-pane .sidebar-task-row[data-task-drop-target='true'] {
+  box-shadow: inset 0 2px 0 var(--theme-primary);
 }
 .mc-task-pane .sidebar-task-row::before {
   width: 7px !important;

@@ -103,6 +103,10 @@ export function WorkspacePickerPopover({
     /** Default names already rejected in this editor, so a stale list cannot offer them again. */
     const rejectedDefaultNamesRef = useRef<string[]>([]);
     const selectCreateNameRef = useRef(false);
+    /** The suggested name while the user has not typed over it. Null once they edit. */
+    const untouchedSuggestionRef = useRef<string | null>(null);
+    const cloudNamesRef = useRef<string[]>([]);
+    cloudNamesRef.current = cloudWorkspaces.map((cw) => cw.name);
     const editorRef = useRef({ creating: false, renaming: false });
     editorRef.current.creating = creatingName !== null;
     editorRef.current.renaming = renaming !== null;
@@ -172,25 +176,45 @@ export function WorkspacePickerPopover({
     const renameBesideInputStyle: CSSProperties = { ...renameButtonStyle, height: 28, lineHeight: "26px" };
     const draftVisual = popoverItemStyle(t);
 
+    const suggestDefaultName = (extra: string[] = []) => nextDefaultCloudWorkspaceName([
+        ...cloudNamesRef.current,
+        ...rejectedDefaultNamesRef.current,
+        ...extra,
+    ]);
+
     const beginCreate = () => {
         if (cloudBusyRef.current || !onCreateCloud) return;
         setCloudError("");
         setRenaming(null);
         rejectedDefaultNamesRef.current = [];
+        const next = suggestDefaultName();
+        untouchedSuggestionRef.current = next;
         selectCreateNameRef.current = true;
-        setCreatingName(nextDefaultCloudWorkspaceName(cloudWorkspaces.map((cw) => cw.name)));
+        setCreatingName(next);
     };
 
+    // Select first. The list-sync effect below may set the flag and a new name
+    // in this same flush; consuming the flag here would select the old value.
     useEffect(() => {
         if (!selectCreateNameRef.current) return;
         selectCreateNameRef.current = false;
         if (creatingName === null) return;
         const input = createNameRef.current;
         if (!input) return;
-        // Disabling the field blurs it. Put the caret back on the suggested name.
+        // readOnly during the request must not leave the field blurred.
         input.focus();
         input.select();
     }, [creatingName]);
+
+    useEffect(() => {
+        if (creatingName === null || untouchedSuggestionRef.current === null) return;
+        if (creatingName !== untouchedSuggestionRef.current) return;
+        const next = suggestDefaultName();
+        if (next === creatingName) return;
+        untouchedSuggestionRef.current = next;
+        selectCreateNameRef.current = true;
+        setCreatingName(next);
+    }, [cloudWorkspaces, creatingName]);
 
     const submitCreate = async () => {
         const name = (creatingName ?? "").trim();
@@ -208,11 +232,9 @@ export function WorkspacePickerPopover({
             const taken = name.trim();
             if (cloudWorkspaceNameTaken(err) && defaultCloudWorkspaceName.test(taken)) {
                 rejectedDefaultNamesRef.current = [...rejectedDefaultNamesRef.current, taken];
-                const next = nextDefaultCloudWorkspaceName([
-                    ...cloudWorkspaces.map((cw) => cw.name),
-                    ...rejectedDefaultNamesRef.current,
-                ]);
+                const next = suggestDefaultName();
                 if (next !== taken) {
+                    untouchedSuggestionRef.current = next;
                     selectCreateNameRef.current = true;
                     setCreatingName(next);
                 }
@@ -527,7 +549,11 @@ export function WorkspacePickerPopover({
                                                 placeholder={namePlaceholder}
                                                 value={creatingName}
                                                 readOnly={cloudBusy}
-                                                onChange={(event) => setCreatingName(event.target.value)}
+                                                onChange={(event) => {
+                                                    const value = event.target.value;
+                                                    if (value !== untouchedSuggestionRef.current) untouchedSuggestionRef.current = null;
+                                                    setCreatingName(value);
+                                                }}
                                                 onFocus={(event) => event.currentTarget.select()}
                                                 onKeyDown={(event) => onNameKeyDown(event, () => { void submitCreate(); })}
                                                 style={nameInputFlexStyle}

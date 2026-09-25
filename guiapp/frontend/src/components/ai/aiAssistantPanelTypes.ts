@@ -140,6 +140,10 @@ export interface AIAssistantPanelProps {
     /** Bottom quick-settings bar: provider/model quick-switch data and language change handler. */
     availableProviders?: SidebarLLMProviderSummary[];
     currentModel?: string;
+    /** Provider and model the in-flight turn will actually call. */
+    contactProviderName?: string;
+    contactModelId?: string;
+    contactIsHubService?: boolean;
     modelOptions?: string[];
     modelsLoading?: boolean;
     onSwitchProvider?: (providerName: string) => void;

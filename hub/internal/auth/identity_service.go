@@ -1200,6 +1200,13 @@ func (s *IdentityService) currentLoginHubPayload() *EmailLoginHub {
 	}
 }
 
+// CurrentLoginHubPayload reports the Hub that served the request so clients can
+// pin later traffic (gateway, session, media) to the same node. It is the
+// exported form of currentLoginHubPayload for callers outside this package.
+func (s *IdentityService) CurrentLoginHubPayload() *EmailLoginHub {
+	return s.currentLoginHubPayload()
+}
+
 func (s *IdentityService) currentHubID() string {
 	if s == nil || s.settings == nil {
 		return ""

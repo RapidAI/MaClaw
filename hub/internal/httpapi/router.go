@@ -911,6 +911,14 @@ func NewRouter(
 	mux.HandleFunc("POST /api/auth/email-confirm", EmailConfirmLoginHandler(identity))
 	mux.HandleFunc("GET /api/auth/verify-email", VerifyEmailHandler(identity))
 	mux.HandleFunc("POST /api/auth/email-poll", EmailPollLoginHandler(identity))
+
+	// WeChat mini program sign-in. These endpoints issue viewer tokens for
+	// existing users only; they must never enroll machines or create accounts.
+	mux.HandleFunc("POST /api/miniprogram/auth/email/send-code", MiniprogramEmailSendCodeHandler(identity, mailer, system))
+	mux.HandleFunc("POST /api/miniprogram/auth/email/verify", MiniprogramEmailVerifyHandler(identity, system))
+	mux.HandleFunc("POST /api/miniprogram/auth/phone/send-code", MiniprogramPhoneSendCodeHandler(identity, system, nil))
+	mux.HandleFunc("POST /api/miniprogram/auth/phone/verify", MiniprogramPhoneVerifyHandler(identity, system, nil))
+	mux.HandleFunc("GET /api/miniprogram/session", MiniprogramSessionHandler(identity))
 	mux.HandleFunc("POST /api/entry/probe", EntryProbeHandler(entrySvc))
 	mux.HandleFunc("GET /api/machines", ListMachinesHandler(identity, deviceSvc))
 	mux.HandleFunc("POST /api/machines/clear-offline", ClearOfflineMachinesForViewerHandler(identity, deviceSvc))

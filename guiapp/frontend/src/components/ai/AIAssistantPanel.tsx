@@ -33,7 +33,7 @@ import { useAssistantPreviewResize } from "./useAssistantPreviewResize";
 import { getAssistantInitLabel } from "./aiAssistantStatusLabels";
 import { AssistantConversationBody } from "./AssistantConversationBody";
 import { AssistantTitleBar } from "./AssistantTitleBar";
-import { executionSecondaryChromeStyle, formatTaskCreatedAt, handleTaskExecutionHeaderDoubleClick } from "./assistantTaskExecutionChrome";
+import { executionSecondaryChromeStyle, formatTaskCreatedAt, handleTaskExecutionHeaderDoubleClick, resolveTaskExecutionStatus } from "./assistantTaskExecutionChrome";
 import { windowDragHandleProps, windowNoDragRegionProps } from "../../utils/windowDrag";
 import { TaskMoreActions } from "./TaskMoreActions";
 import { TaskTabSwitcher } from "./TaskTabSwitcher";
@@ -60,12 +60,14 @@ import { AssistantWorkflowMaximizeSuggestion } from "./AssistantWorkflowMaximize
 import { useAssistantThemeMode } from "./useAssistantThemeMode";
 import { activeCodingAgentProgress, codingAgentComposerStatusText, codingAgentMessagesHavePlainTrail, isCodingAgentProgressContent, latestCodingAgentTurnSnapshot, renderCodingAgentWorkingTrail } from "./CodingAgentProgressStatus";
 import { isToolProgressMessage } from "./aiAssistantProgressUtils";
-import { assistantLiveActivityLabel, assistantLiveActivityObject, assistantLiveReasoningSource, assistantMessageOwnsLiveActivity, codingTimelineLiveThoughtIndex, extractInFlightToolName, reasoningHasModelThought, resolveAssistantLiveActivity, resolveStandaloneLiveActivityLabel } from "./assistantLiveActivity";
+import { assistantLiveActivityLabel, assistantLiveActivityObject, assistantLiveReasoningSource, assistantMessageOwnsLiveActivity, codingTimelineLiveThoughtIndex, extractInFlightToolName, reasoningHasModelThought, resolveAssistantLiveActivity, resolveLiveModelTarget, resolveStandaloneLiveActivityLabel } from "./assistantLiveActivity";
 import { IconBranch, IconRocket } from "./WorkbenchIcons";
 import { AITabBar } from "./AITabBar";
 import { localAssistantTabTitle } from "./aiAssistantI18n";
 import { getAITabDisplayTitle } from "./AITabItem";
 import { useAITabManager } from "./useAITabManager";
+import { closeAssistantProjectTab } from "./assistantProjectTabClose";
+import { releaseIdleTaskTabs, type IdleTaskSwitchContext } from "./idleTaskTabClose";
 import { SessionWorkingDirChip } from "./SessionWorkingDirChip";
 import { TaskExecutionHeading } from "./TaskExecutionHeading";
 import { looksLikeRawParticipantId } from "./localAIIdentity";
@@ -77,7 +79,7 @@ import { AssistantDragHandle } from "./AssistantDragHandle";
 import { usePendingAssistantTabOpen } from "./usePendingAssistantTabOpen";
 import type { PendingProjectTabOpen } from "./usePendingAssistantTabOpen";
 import type { AIAssistantPanelProps } from "./aiAssistantPanelTypes";
-import { loadProjectTabMsgIds, mergeChatMessages, PROJECT_TAB_MSG_IDS_KEY, withoutProjectContextMessages } from "./aiAssistantProjectTabState";
+import { collapseDuplicatePendingUnfinishedSlots, latestPendingUnfinishedStatus, loadProjectTabMsgIds, mergeChatMessages, PROJECT_TAB_MSG_IDS_KEY, withoutProjectContextMessages } from "./aiAssistantProjectTabState";
 import { compactCodingAgentProgressMessages } from "./compactCodingAgentProgressMessages";
 import { CodingAgentPreviewFocusContext, CodingAgentTimelineProgressItem } from "./CodingAgentProgressStatus";
 
@@ -86,6 +88,8 @@ import { AIAssistantRenameGroupDialog } from "./AIAssistantRenameGroupDialog";
 import { WorkflowFormInlinePrompt, WorkflowReviewInlinePrompt } from "./WorkflowInlinePrompts";
 import { activeAssistantTaskIdentity, buildProjectTabRecentMessages, chatHistoriesEquivalent, expertIdFromSessionKey, expertSessionKey, isACPAssistantSessionKey, logAIPanelDiagnostic, messageBelongsToSession, messageBelongsToSessionOrLegacy, messageIsLocalSession, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, shouldBlockAssistantTabOpenOnTaskRegistration, useBusyTaskRunsSignal, type ActiveAssistantTaskIdentity } from "./aiAssistantPanelSessionUtils";
 import { DEFAULT_EXPERT_ICON, expertWelcomeMessageText } from "./expertTypes";
+import { PPTStyleChooser } from "./PPTStyleChooser";
+import { withConfirmedPPTStyle, type PPTStyleChoice } from "./pptStyleChoice";
 import { ExpertOptimizeEditorDialog } from "./ExpertOptimizeEditorDialog";
 import { useExpertOptimize } from "./useExpertOptimize";
 import { AdoptBaseCodingWorkbenchConflict, AdoptCodingWorkbenchConflict, ApplyCodingWorkbenchConflictPreviewSide, CancelAIAssistantSessionForSession, ClearAIAssistantHistoryForSession, ClearCodingWorkbenchConflictLog, ComputerUseStop, CreateTaskUnified, DiscardAllCodingWorkbenchConflicts, DiscardCodingWorkbenchConflict, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, ExportCodingWorkbenchConflictLog, GetCodingWorkbenchCheckpointSidecarStats, GetCodingWorkbenchConflictDiffs, GetCodingWorkbenchConflictFilePreview, GetCodingWorkbenchConflictFileTriple, GetCodingWorkbenchPermission, GetCodingWorkbenchPlanMode, GetCodingWorkbenchRoutePref, GetCodingWorkbenchStatus, GetCodingWorkbenchWorktreeMode, GetComputerUseStatus, GetConversationBranchPoints, GroupDiscussionRenameConsultation, KeepMainCodingWorkbenchConflict, ListCodingWorkbenchCheckpoints, ListCodingWorkbenchConflicts, ListWorkflowTemplateSummaries, LoadConfig, OpenCodingWorkbenchConflictFile, PatchConfigFields, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, PruneCodingWorkbenchCheckpoints, RefreshWorkflowV2StateForTab, RenameTask, ResolveCodingWorkbenchConflict, RestoreCodingWorkbenchCheckpointByLabel, RestoreCodingWorkbenchCheckpointEx, ResumeCloudWorkspaceTask, RunCodingWorkbenchBackgroundVerify, SaveCodingWorkbenchCheckpoint, SelectProjectDir, SetCodingWorkbenchConflictUIState, SetCodingWorkbenchPermission, SetCodingWorkbenchPlanMode, SetCodingWorkbenchRoutePref, SetCodingWorkbenchSessionPlan, SetCodingWorkbenchWorktreeMode, UpdateCodingWorkbenchPendingPlan, WriteCodingWorkbenchConflictFileContent } from "../../../wailsjs/go/main/App";
@@ -118,7 +122,7 @@ const REMOTE_DIRECTORY_WRITE_APPROVAL_KIND = "remote_shell_directory_write";
 const REMOTE_PATH_ACCESS_APPROVAL_KIND = "remote_path_access";
 const AssistantPreviewPane = lazy(() => import("./AssistantPreviewPane").then((module) => ({ default: module.AssistantPreviewPane })));
 export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
-    const { onClose, lang, startOnWorkbenchHome = false, activeAssistantTask: activeAssistantTaskProp = null, chatFontSize = 14, themeMode: controlledThemeMode, darkSchemeId, lightSchemeId = DEFAULT_ASSISTANT_LIGHT_SCHEME_ID, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId, petVoiceStartSeq = 0, petFocusInputSeq = 0, pendingVEOpen, onPendingVEOpenHandled, pendingHistoryDiscussionOpen, onPendingHistoryDiscussionOpenHandled, appUpdateAvailable, onOpenAppReleaseNotes, onOpenAppUpdate, onDismissAppUpdate, availableProviders, currentModel, modelOptions, modelsLoading, onSwitchProvider, onSwitchModel, onOpenModelMenu, onDismissModelMenu, activeExecutionProfile, codingInheritsAssistant, providerSelectionPending, profileSavePending, onOpenLLMSettings, onLanguageChange, onActiveExecutionProfileChange, statusSlot, tasks: taskListProp, tasksLoaded: tasksLoadedProp, onOpenTask: onOpenTaskProp, brandId, brandDisplayNameCN } = props;
+    const { onClose, lang, startOnWorkbenchHome = false, activeAssistantTask: activeAssistantTaskProp = null, chatFontSize = 14, themeMode: controlledThemeMode, darkSchemeId, lightSchemeId = DEFAULT_ASSISTANT_LIGHT_SCHEME_ID, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId, petVoiceStartSeq = 0, petFocusInputSeq = 0, pendingVEOpen, onPendingVEOpenHandled, pendingHistoryDiscussionOpen, onPendingHistoryDiscussionOpenHandled, appUpdateAvailable, onOpenAppReleaseNotes, onOpenAppUpdate, onDismissAppUpdate, availableProviders, currentModel, contactProviderName, contactModelId, contactIsHubService, modelOptions, modelsLoading, onSwitchProvider, onSwitchModel, onOpenModelMenu, onDismissModelMenu, activeExecutionProfile, codingInheritsAssistant, providerSelectionPending, profileSavePending, onOpenLLMSettings, onLanguageChange, onActiveExecutionProfileChange, statusSlot, tasks: taskListProp, tasksLoaded: tasksLoadedProp, onOpenTask: onOpenTaskProp, brandId, brandDisplayNameCN } = props;
     const state = props.state || props;
     const actions = props.actions || props;
     const panelWindow = props.window || props;
@@ -2571,7 +2575,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             if (!existingHistory || existingHistory.length === 0) {
                 if (tab.type === "project" || clearedProjectTabIdsRef.current.has(tab.id)) continue;
             }
-            const nextHistory = mergeChatMessages(existingHistory, liveMessages);
+            const nextHistory = collapseDuplicatePendingUnfinishedSlots(mergeChatMessages(existingHistory, liveMessages));
             if (chatHistoriesEquivalent(existingHistory as ChatMessage[] | undefined, nextHistory)) continue;
             saveTabState(tab.id, {
                 ...existingState,
@@ -2586,7 +2590,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             persistProjectTabMsgIds();
         }
     }, [getTabState, getTabs, messages, persistProjectTabMsgIds, saveTabState]);
-    const displayMessages = useMemo(() => {
+    const rawDisplayMessages = useMemo(() => {
         if (!isProjectTabActive && !isExpertTabActive) {
             if (projectTabRoundsRef.current.size > 0) {
                 const earliestProjectBaseline = Math.min(...Array.from(projectTabRoundsRef.current.values()).map(round => round.baseline));
@@ -2630,6 +2634,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         if (roundMessages.length === 0) return mergedProjectMessages;
         return mergeChatMessages(mergedProjectMessages, roundMessages);
     }, [activeSessionKey, activeTab.id, activeTab.projectPath, findProjectRoundForTab, isProjectTabActive, isExpertTabActive, messages, projectTabMessages, projectTabRouteVersion, sending]);
+    const displayMessages = useMemo(
+        () => collapseDuplicatePendingUnfinishedSlots(rawDisplayMessages),
+        [rawDisplayMessages],
+    );
     latestDisplayMessagesRef.current = displayMessages;
     displayMessagesForPlanRef.current = displayMessages as Array<{ role?: string; content?: string }>;
     const prevSendingRef = useRef(sending);
@@ -2667,7 +2675,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     // response text, leaving a ghost "思考中..." placeholder
                     // alongside the actual response).
                     if (isProjectTabActive && activeTab.id === round.tabId) {
-                        setProjectTabMessages(prev => mergeChatMessages(prev, newMessages));
+                        setProjectTabMessages(prev => collapseDuplicatePendingUnfinishedSlots(mergeChatMessages(prev, newMessages)));
                     }
                     const existingState = getTabState(round.tabId);
                     // For the active tab, existingState?.history is the persisted
@@ -2681,7 +2689,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         : existingState?.history;
                     saveTabState(round.tabId, {
                         ...existingState,
-                        history: mergeChatMessages(baseHistory, newMessages),
+                        history: collapseDuplicatePendingUnfinishedSlots(mergeChatMessages(baseHistory, newMessages)),
                     });
                     for (const m of newMessages) {
                         projectTabMsgIdsRef.current.add(m.id);
@@ -3277,92 +3285,20 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         return sendMessageForTab(text, options);
     }, [sendMessageForTab]);
-    const clearProjectRoundTrackingForTab = useCallback((tabId: string) => {
-        let changed = false;
-        const tab = getTabs().find(t => t.id === tabId);
-        if (tab?.type === "project" && tab.projectPath) {
-            forgetAIAssistantSessionRounds(tab.sessionKey || `desktop-user:${tab.projectPath}`);
-            const prepareTimer = projectPrepareTimersRef.current.get(tabId);
-            if (prepareTimer !== undefined) {
-                window.clearTimeout(prepareTimer);
-                projectPrepareTimersRef.current.delete(tabId);
-            }
-            setProjectTabPreparing(tabId, false);
-            deferredProjectInitialSendsRef.current.delete(tabId);
-            pendingRemoteInitialSendRef.current.delete(tabId);
-        }
-        for (const [roundKey, round] of projectTabRoundsRef.current) {
-            if (round.tabId !== tabId) continue;
-            const sessionKey = tab?.type === "project" ? (tab.sessionKey || projectSessionKey(tab.projectPath)) : projectSessionKey(round.projectPath);
-            const messagesToMark = sessionKey
-                ? messages.slice(round.baseline).filter((message: ChatMessage) => messageBelongsToSessionOrLegacy(message, sessionKey))
-                : [];
-            for (const message of messagesToMark) {
-                projectTabMsgIdsRef.current.add(message.id);
-            }
-            projectTabRoundsRef.current.delete(roundKey);
-            changed = true;
-        }
-        for (const [key, detached] of detachedProjectRoundsRef.current) {
-            if (detached.tabId !== tabId) continue;
-            for (const messageId of detached.messageIds) {
-                projectTabMsgIdsRef.current.add(messageId);
-            }
-            detachedProjectRoundsRef.current.delete(key);
-            changed = true;
-        }
-        if (changed) {
-            persistProjectTabMsgIds();
-            setProjectTabRouteVersion(version => version + 1);
-            setDetachedProjectRoundVersion(version => version + 1);
-        }
-    }, [getTabs, messages, persistProjectTabMsgIds, setProjectTabPreparing]);
-    const closeTabWithProjectCleanup = useCallback((tabId: string) => {
-        const tab = getTabs().find(t => t.id === tabId);
-        if (tab?.type === "project") {
-            projectConversationHydrationGenerationByTabIdRef.current.set(
-                tabId,
-                (projectConversationHydrationGenerationByTabIdRef.current.get(tabId) || 0) + 1,
-            );
-            projectConversationHydrationByTabIdRef.current.delete(tabId);
-            const snapshot = latestProjectCloseSnapshotRef.current;
-            const existingState = getTabState(tabId);
-            if (snapshot?.tabId === tabId) {
-                const wasCleared = clearedProjectTabIdsRef.current.has(tabId);
-                const snapshotMessages = !wasCleared && activeTabIdRef.current === tabId ? latestDisplayMessagesRef.current : snapshot.messages;
-                const nextHistory = wasCleared
-                    ? withoutProjectContextMessages(snapshotMessages)
-                    : mergeChatMessages(
-                        withoutProjectContextMessages(existingState?.history),
-                        withoutProjectContextMessages(snapshotMessages),
-                    );
-                saveTabState(tabId, {
-                    ...existingState,
-                    history: nextHistory,
-                    scrollTop: snapshot.scrollTop,
-                    inputText: snapshot.inputText,
-                    projectPath: snapshot.projectPath || tab.projectPath,
-                    lastActiveAt: Date.now(),
-                });
-            }
-        }
-        // Closing an expert removes its UI owner. Revoke all hook-owned work
-        // before the tab disappears, so a late file-picker result or stream
-        // cannot restore data into a subsequently reopened expert session.
-        if (tab?.type === "expert") {
-            const sessionKey = expertSessionKey(tab.expertId);
-            if (sessionKey) forgetAIAssistantSessionRounds(sessionKey);
-        }
-        clearProjectRoundTrackingForTab(tabId);
-        previewStateMapRef.current.delete(tabId);
-        if (previewOwnerTabRef.current === tabId) { previewOwnerTabRef.current = "local"; previewOwnerResetPendingRef.current = true; }
-        // If the closed tab is currently recording, auto-stop recording
-        if (skillRecordingTabId === tabId) {
-            setSkillRecordingTabId(null);
-            (window as any).go?.main?.App?.StopSkillRecording?.().catch(() => {});
-        }
-        closeTab(tabId);
-    }, [clearProjectRoundTrackingForTab, closeTab, getTabState, getTabs, saveTabState, skillRecordingTabId]);
+    const closeTabWithProjectCleanup = useCallback((tabId: string) => closeAssistantProjectTab(tabId, {
+        getTabs, getTabState, saveTabState, closeTab, messages,
+        activeTabIdRef, latestDisplayMessagesRef, latestProjectCloseSnapshotRef, clearedProjectTabIdsRef,
+        projectConversationHydrationGenerationByTabIdRef, projectConversationHydrationByTabIdRef,
+        projectTabRoundsRef, detachedProjectRoundsRef, projectTabMsgIdsRef, projectPrepareTimersRef,
+        deferredProjectInitialSendsRef, pendingRemoteInitialSendRef, previewStateMapRef, previewOwnerTabRef,
+        previewOwnerResetPendingRef, skillRecordingTabId, setSkillRecordingTabId, setProjectTabPreparing,
+        setProjectTabRouteVersion, setDetachedProjectRoundVersion, persistProjectTabMsgIds,
+    }), [closeTab, getTabState, getTabs, messages, persistProjectTabMsgIds, saveTabState, setDetachedProjectRoundVersion, setProjectTabPreparing, setProjectTabRouteVersion, setSkillRecordingTabId, skillRecordingTabId]);
+    const idleTaskSwitchRef = useRef<IdleTaskSwitchContext | null>(null);
+    const activateSwitchingTab = useCallback((tabId: string) => {
+        releaseIdleTaskTabs(idleTaskSwitchRef.current, { nextTabId: tabId });
+        activateTab(tabId);
+    }, [activateTab]);
     const createProjectTabFromSearch = useCallback((
         projectPath: string,
         taskTitle: string,
@@ -3414,6 +3350,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     return;
                 }
             }
+            releaseIdleTaskTabs(idleTaskSwitchRef.current, { projectPath });
             const tab = createProjectTabWithContext(projectPath, taskTitle, {
                 prepareMode: "restore-context",
                 agentMode: resolvedMode,
@@ -3449,7 +3386,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             else EventsOff(EVENT_PROJECT_TASK_CLOSED);
         };
     }, [closeProjectTabByPath]);
-    useProjectTaskActivateEvent({ activateTab, getTabs });
+    useProjectTaskActivateEvent({ activateTab: activateSwitchingTab, getTabs });
     useEffect(() => {
         const offDeleted = EventsOn(EVENT_PROJECT_TASK_DELETED, (projectPath: string) => {
             if (typeof projectPath === "string" && projectPath.trim()) {
@@ -3503,7 +3440,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         createGroupTab,
         createProjectTab: createProjectTabWithContext,
         createExpertTab,
-        activateTab,
+        activateTab: activateSwitchingTab,
+        beforeUserProjectOpen: (projectPath, cloudWorkspaceId) => releaseIdleTaskTabs(idleTaskSwitchRef.current, { projectPath, cloudWorkspaceId }),
+        beforeUserExpertOpen: (expertId) => releaseIdleTaskTabs(idleTaskSwitchRef.current, { expertId }),
         getTabState,
         saveTabState,
         getTabList: getTabs,
@@ -4010,6 +3949,25 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         && !workflowFormActive
         && !workflowAwaitingReview
         && (isBusy || workflowCurrentPhaseRunning);
+    idleTaskSwitchRef.current = {
+        tabs: getTabs(),
+        activeTabId: activeTab.id,
+        tasks: taskListProp || [],
+        maxTabs: tabState.maxVETabs,
+        draftText: localDraftInputValue,
+        unsentAttachmentCount: pendingAttachments.length + selectedFilePaths.length,
+        preparingTabIds: preparingProjectTabIdsRef.current,
+        recordingTabId: skillRecordingTabId,
+        busySessionKeys,
+        streamingSessionKeys,
+        sendingSessionKey,
+        inFlightSessionKeys: panelSendInFlightSessionKeys,
+        activeExecutionBusy: isBusy || activeSessionIsStreaming || activeTaskSnapshotRunning,
+        activeAwaitingUser: workflowAwaitingForm || workflowAwaitingReview || workflowFormGeneratingDocument || !!scopeApprovalPending,
+        scopeApprovalProjectPath: scopeApprovalPending?.projectPath || "",
+        getTabState,
+        closeTab: closeTabWithProjectCleanup,
+    };
     const activeSessionHasWork = isBusy || activeSessionIsStreaming;
     const displayProgressMessages = activeSessionHasWork ? progressMessages : [];
     useEffect(() => {
@@ -4141,17 +4099,18 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const liveReasoningLabel = liveReasoningKind ? assistantLiveActivityLabel(liveReasoningKind, lang) : undefined;
     const liveReasoningObject = useMemo(() => {
         if (!liveReasoningKind) return undefined;
-        const modelId = String(currentModel || "").trim();
-        // availableProviders is untyped on props; narrow it so the lookup below is checked.
         const providers = (availableProviders || []) as SidebarLLMProviderSummary[];
-        const currentProvider = (modelId
-            ? providers.find((provider) => provider.model === modelId || (provider.models || []).includes(modelId))
-            : undefined)
-            || providers[0];
+        const liveModel = resolveLiveModelTarget({
+            contactProviderName,
+            contactModelId,
+            contactIsHubService,
+            currentModel,
+            providers,
+        });
         const object = assistantLiveActivityObject(liveReasoningKind, lang, {
-            providerName: currentProvider?.name,
-            modelId: modelId || String(currentProvider?.model || "").trim(),
-            isHubService: !!currentProvider?.isHubService,
+            providerName: liveModel.providerName,
+            modelId: liveModel.modelId,
+            isHubService: liveModel.isHubService,
             toolName: extractInFlightToolName({
                 codingProgress: liveCodingProgress,
                 progressMessages: displayProgressMessages,
@@ -4159,7 +4118,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             }),
         });
         return object || undefined;
-    }, [availableProviders, currentModel, displayProgressMessages, lang, lastAssistantReasoningText, liveCodingProgress, liveReasoningKind]);
+    }, [availableProviders, contactIsHubService, contactModelId, contactProviderName, currentModel, displayProgressMessages, lang, lastAssistantReasoningText, liveCodingProgress, liveReasoningKind]);
     const projectSearch = useProjectSearch(lang);
     useEffect(() => {
         if (!panelActive) projectSearch.close();
@@ -4523,32 +4482,19 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const showWelcomeViewBase = canShowWelcomeBeforeReady && !onboardingIncomplete && !activeAssistantTaskProp && !workflowExecutionActive && (landing || (otherMessages.length === 0 && displayProgressMessages.length === 0 && !showThinkingState && !showProcessingState && !activeProjectPreparing && !workflowAwaitingForm && !workflowFormGeneratingDocument && !workflowAwaitingReview && !workflowStartingLabel && queue.length === 0 && !queueEditDraftActive && !queueInteractionStarted && (isLocalTabActive || (isProjectTabActive && !isPureCodingEnvironment))));
     const taskCreatedTimestamp = displayMessages.find((message: ChatMessage) => message.role === "user")?.timestamp ?? displayMessages[0]?.timestamp;
     const taskCreatedLabel = formatTaskCreatedAt(taskCreatedTimestamp, lang);
-    const taskExecutionStatus = useMemo(() => {
-        const activeTask = activeTaskExecutionSnapshot.task;
-        const raw = activeTaskExecutionSnapshot.raw;
-        if (/(fail|error|blocked|verify_failed|失败|错误|阻塞)/.test(raw)) {
-            return { label: localizeText(lang, "Failed", "失败", "失敗"), tone: "failed" as const };
-        }
-        if (/(^|[\\s_])(paused|pause|已暂停|暂停)(?=$|[\\s_])/.test(raw)) {
-            return { label: localizeText(lang, "Paused", "已暂停", "已暫停"), tone: "pending" as const };
-        }
-        if (activeTask?.active_workflow?.pending_review || workflowAwaitingReview || /(waiting[_ ]?confirm|review|approval|pending|待确认|待处理|审核|审批)/.test(raw)) {
-            return { label: localizeText(lang, "Pending", "待处理", "待處理"), tone: "pending" as const };
-        }
-        if (cancelPending) {
-            return { label: localizeText(lang, "Stopping", "正在停止", "正在停止"), tone: "pending" as const };
-        }
-        if (/(cancel|canceled|cancelled|stopped|已取消|已停止)/.test(raw)) {
-            return { label: localizeText(lang, "Cancelled", "已取消", "已取消"), tone: "cancelled" as const };
-        }
-        if (isBusy || activeProjectPreparing || workflowCurrentPhaseRunning || /\b(running|execut|processing|in_progress|started|进行|执行|运行)\b/.test(raw)) {
-            return { label: localizeText(lang, "In progress", "进行中", "進行中"), tone: "running" as const };
-        }
-        if (/(complete|completed|finish|success|succeed|done|passed|已完成|完成|成功)/.test(raw) || activeTask?.has_output === true || (displayMessages.length > 0 && !workflowState.active && codingStepStatuses.length === 0)) {
-            return { label: localizeText(lang, "Completed", "已完成", "已完成"), tone: "completed" as const };
-        }
-        return { label: localizeText(lang, "Pending", "待处理", "待處理"), tone: "pending" as const };
-    }, [activeProjectPreparing, activeTaskExecutionSnapshot, cancelPending, codingStepStatuses, displayMessages.length, isBusy, lang, workflowAwaitingReview, workflowCurrentPhaseRunning, workflowState.active]);
+    const pendingUnfinishedStatus = latestPendingUnfinishedStatus(displayMessages);
+    const taskExecutionStatus = useMemo(() => resolveTaskExecutionStatus({
+        lang,
+        raw: activeTaskExecutionSnapshot.raw,
+        pendingReview: !!activeTaskExecutionSnapshot.task?.active_workflow?.pending_review || workflowAwaitingReview,
+        cancelPending,
+        busy: isBusy || activeProjectPreparing || workflowCurrentPhaseRunning,
+        hasOutput: activeTaskExecutionSnapshot.task?.has_output === true,
+        hasMessages: displayMessages.length > 0,
+        workflowActive: workflowState.active,
+        codingStepCount: codingStepStatuses.length,
+        pendingUnfinishedStatus,
+    }), [activeProjectPreparing, activeTaskExecutionSnapshot, cancelPending, codingStepStatuses.length, displayMessages.length, pendingUnfinishedStatus, isBusy, lang, workflowAwaitingReview, workflowCurrentPhaseRunning, workflowState.active]);
     // Report the live running signal so the sidebar task stats can merge it with
     // the durable snapshot (a pure agent loop run leaves no running snapshot).
     useEffect(() => {
@@ -4878,12 +4824,21 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         ready,
         voiceInput,
     });
+    const pptStyleChoiceRef = useRef<PPTStyleChoice | null>(null);
+    const handlePPTStyleChoice = useCallback((choice: PPTStyleChoice | null) => {
+        pptStyleChoiceRef.current = choice;
+    }, []);
     const handleSend = useCallback(async () => {
         if (startOnWorkbenchHome && workbenchHomeRequested) dismissWorkbenchHome();
         // Live mic session: do not send or queue — user must stop via the card.
         if (recordingActive) return;
         const rawInputValue = inputRef.current?.value ?? inputValue;
         const text = applyComposeActionToText(rawInputValue, composeAction);
+        const asPPTModelText = (value: string) => (
+            activeTab.type === "expert" && activeTab.expertId === "builtin-pptx-maker"
+                ? withConfirmedPPTStyle(value, pptStyleChoiceRef.current)
+                : value
+        );
         if (isHistoryResetCommandText(text) && pendingAttachments.length === 0 && selectedFilePaths.length === 0) {
             if (newConversationInFlightRef.current) return;
             newConversationInFlightRef.current = true;
@@ -4912,7 +4867,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 attachments.push({ filePath: fp, isImage: isImageFilePath(fp), fileName, extension: ext });
             }
             setQueueInteractionStarted(true);
-            addEntry(text || rawInputValue, attachments, { autoDrain: true, steerWhenBusy: false });
+            addEntry(asPPTModelText(text || rawInputValue), attachments, { autoDrain: true, steerWhenBusy: false });
             queueAutoDrainArmedSessionKeysRef.current.add(activeSessionKey);
             setComposeAction(null);
             clearComposerDraft({ clearAttachments: true });
@@ -4998,7 +4953,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             }
             setQueueInteractionStarted(true);
             // Queue stores the composed command text so /goal (and similar) survive drain.
-            addEntry(text || rawInputValue, attachments, {
+            addEntry(asPPTModelText(text || rawInputValue), attachments, {
                 autoDrain: submitLocked,
                 // Enter creates a normal durable next-turn queue item. The
                 // user explicitly chooses same-turn steering with this entry's
@@ -5030,7 +4985,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         clearComposerDraft({ clearAttachments: true });
         userScrolledUpRef.current = false;
         try {
-            const outgoing = allFilePaths.length > 0 ? buildOutgoingMessageMulti(text, allFilePaths) : text;
+            const outgoing = allFilePaths.length > 0 ? buildOutgoingMessageMulti(asPPTModelText(text), allFilePaths) : asPPTModelText(text);
             const sent = await sendMessageForTab(outgoing, {
                 displayText: buildAttachmentDisplayText(text, displayAttachments),
                 displayAttachments,
@@ -5043,7 +4998,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         } finally {
             sendInFlightRef.current = false;
         }
-    }, [activeSessionIsSending, activeSessionIsStreaming, activeSessionKey, activeTab.id, activeTab.projectPath, activeTab.type, addEntry, busySessionKeys, cancelPending, clearComposerDraft, codingTaskReadyForIntents, composeAction, dismissWorkbenchHome, dispatchBtwText, inputValue, pendingAttachments, queueEditDraftActive, recordSubmittedPrompt, recordingActive, refreshQueueInFlight, remoteReconnect.success, selectedFilePaths, sendBtwMessage, sendMessageForTab, sending, sendingSessionKey, startOnWorkbenchHome, streaming, streamingSessionKey, streamingSessionKeys, submitLocked, updateInputValue, workbenchHomeRequested]);
+    }, [activeSessionIsSending, activeSessionIsStreaming, activeSessionKey, activeTab.expertId, activeTab.id, activeTab.projectPath, activeTab.type, addEntry, busySessionKeys, cancelPending, clearComposerDraft, codingTaskReadyForIntents, composeAction, dismissWorkbenchHome, dispatchBtwText, inputValue, pendingAttachments, queueEditDraftActive, recordSubmittedPrompt, recordingActive, refreshQueueInFlight, remoteReconnect.success, selectedFilePaths, sendBtwMessage, sendMessageForTab, sending, sendingSessionKey, startOnWorkbenchHome, streaming, streamingSessionKey, streamingSessionKeys, submitLocked, updateInputValue, workbenchHomeRequested]);
 
     // --- New-task wizard (TaskConfigBar) wiring ---
     // Draft state, expert/workflow loading and the send orchestration live in
@@ -5758,7 +5713,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 hidden={showWelcomeView || projectSearch.open}
                 style={executionSecondaryChromeStyle}
             >
-            <AITabBar tabs={tabState.tabs} activeTabId={tabState.activeTabId} theme={t} onActivate={activateTab} onClose={closeTabWithProjectCleanup} onInviteToTab={(tab) => {
+            <AITabBar tabs={tabState.tabs} activeTabId={tabState.activeTabId} theme={t} onActivate={activateSwitchingTab} onClose={closeTabWithProjectCleanup} onInviteToTab={(tab) => {
                 if (tab.type === "ve") {
                     const tabSt = getTabState(tab.id);
                     const sessionId = tabSt?.sessionId || tab.discussionId;
@@ -5770,7 +5725,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     upgradeVETabToGroup(tab.id, currentParticipants, sessionId, participantNames);
                 }
                 setParticipantInviteTargetTabId(tab.id);
-                activateTab(tab.id);
+                activateSwitchingTab(tab.id);
             }} onAddLocalMaclawToTab={addLocalMaclawToTab} onRenameGroupTab={openRenameGroupDialog} onRenameLocalTab={renameLocalTab} onRenameProjectTab={(tab, title) => {
                 if (!tab.projectPath) return;
                 const projectPath = tab.projectPath;
@@ -6559,7 +6514,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 >
                     <TaskExecutionHeading activeTab={activeTab} lang={lang} status={taskExecutionStatus} taskCreatedLabel={taskCreatedLabel} workingDirPath={activeTabWorkingDirPath} remoteWorkspace={remoteWorkspace} remoteWorkspaceLabel={remoteWorkspaceLabel} />
                     <div className="mc-task-execution-actions" data-testid="task-execution-actions" {...windowNoDragRegionProps()}>
-                        <TaskTabSwitcher tabs={tabState.tabs} activeTabId={tabState.activeTabId} lang={lang} onActivate={activateTab} onClose={closeTabWithProjectCleanup} tasks={taskListProp} onOpenTask={onOpenTaskProp} />
+                        <TaskTabSwitcher tabs={tabState.tabs} activeTabId={tabState.activeTabId} lang={lang} onActivate={activateSwitchingTab} onClose={closeTabWithProjectCleanup} tasks={taskListProp} onOpenTask={onOpenTaskProp} />
                         <button className="task-pause-btn" data-action="cancel" type="button" onClick={handleCancel} disabled={!inputVisualBusy || cancelPending} aria-busy={cancelPending} aria-label={localizeText(lang, "Pause task", "暂停任务", "暫停任務")} title={localizeText(lang, "Pause task", "暂停任务", "暫停任務")}>{localizeText(lang, "Pause task", "暂停任务", "暫停任務")}</button>
                         <button className="task-share-btn" data-testid="task-share-btn" type="button" onClick={() => { void shareCurrentTask(); }} aria-label={localizeText(lang, "Share task", "分享任务", "分享任務")}>{localizeText(lang, "Share", "分享", "分享")}</button>
                         <TaskMoreActions lang={lang} onSave={openSaveTaskDialog} onClear={clearActiveHistory} onCopyTitle={() => { const titleText = String((activeTab ? getAITabDisplayTitle(activeTab, lang) : "") || deriveTaskNameFromMessages()).trim(); if (titleText && typeof navigator !== "undefined" && navigator.clipboard?.writeText) return navigator.clipboard.writeText(titleText); }} onPreview={codingPreviewAllowed ? handleOpenPreviewPanel : undefined} />
@@ -6653,6 +6608,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         onSkip={() => { void handleCodingPlanGate("skip"); }}
                         onReject={() => { void handleCodingPlanGate("reject"); }}
                     />
+                )}
+                {!showWelcomeView && activeTab.type === "expert" && activeTab.expertId === "builtin-pptx-maker" && (
+                    <PPTStyleChooser lang={lang} inputValue={inputValue} onChoice={handlePPTStyleChoice} />
                 )}
                 {!showWelcomeView && <ComputerUseReadinessBanner lang={lang} theme={t} />}
                 {!showWelcomeView && <ComputerUseQuickBar lang={lang} theme={t} themeMode={themeMode} />}

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -233,5 +234,50 @@ func TestHAOpsApplyRejectsInvalidRemoteOpAsBadRequest(t *testing.T) {
 	}
 	if !bytes.Contains(rr.Body.Bytes(), []byte("INVALID_HA_OP")) {
 		t.Fatalf("body = %s, want INVALID_HA_OP", rr.Body.String())
+	}
+}
+
+func TestTrimOpsToByteBudget(t *testing.T) {
+	mk := func(seq int64) *store.HASyncOp {
+		return &store.HASyncOp{Seq: seq, EntityType: "llm_official_class_head", EntityID: "head_v1", PayloadJSON: strings.Repeat("x", 1000)}
+	}
+	ops := []*store.HASyncOp{mk(1), mk(2), mk(3), mk(4)}
+
+	// Single op over budget: keep exactly one so the batch still progresses.
+	if got := trimOpsToByteBudget(ops, 1); len(got) != 1 || got[0].Seq != 1 {
+		t.Fatalf("single-op-over-budget trim = %d ops, want 1 (seq 1)", len(got))
+	}
+	// Budget fits a few ops: trimmed batch stays contiguous, under budget,
+	// and strictly shorter than the input.
+	got := trimOpsToByteBudget(ops, 3000)
+	if len(got) == 0 || len(got) >= len(ops) {
+		t.Fatalf("trimmed batch = %d ops, want between 1 and %d", len(got), len(ops)-1)
+	}
+	var encoded int64
+	for _, op := range got {
+		raw, err := json.Marshal(op)
+		if err != nil {
+			t.Fatalf("marshal op: %v", err)
+		}
+		encoded += int64(len(raw)) + 1
+	}
+	if encoded > 3000 {
+		t.Fatalf("trimmed batch encodes to %d bytes, want <= 3000", encoded)
+	}
+	for i, op := range got {
+		if op.Seq != int64(i+1) {
+			t.Fatalf("trimmed batch not contiguous at %d: seq=%d", i, op.Seq)
+		}
+	}
+	// Generous budget: no trim.
+	if got := trimOpsToByteBudget(ops, 1<<20); len(got) != 4 {
+		t.Fatalf("no-trim case = %d ops, want 4", len(got))
+	}
+	// Empty input and zero budget are safe no-ops / guarded.
+	if got := trimOpsToByteBudget(nil, 1000); len(got) != 0 {
+		t.Fatalf("empty input = %d ops, want 0", len(got))
+	}
+	if got := trimOpsToByteBudget(ops, 0); len(got) != 4 {
+		t.Fatalf("zero budget = %d ops, want untrimmed 4", len(got))
 	}
 }

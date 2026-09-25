@@ -7,6 +7,7 @@ import { DeepCrawlConfig, DeepCrawlPanel, DeepCrawlPreviewResult, DeepCrawlRunRe
 import { buildHubCardStoreURL } from '../../utils/hubCredits';
 import { EnterpriseKnowledgeListLibraries, EnterpriseKnowledgeSetLibraryUserSync, EnterprisePurgeRevokedLibrary, EnterpriseSetSyncPaused, EnterpriseSyncNow, EnterpriseSyncStatus, GetHubLLMServiceStatus, KnowledgeBackfillSourceAutoLabels, KnowledgeCapabilities, KnowledgeClearAll, KnowledgeContextPack, KnowledgeDeepCrawl, KnowledgeDeepCrawlPreview, KnowledgeDeleteHubShare, KnowledgeDeleteFragment, KnowledgeDeleteSource, KnowledgeDisableSensitiveSources, KnowledgeDisableSource, KnowledgeDisableSources, KnowledgeDisableSourcesByFilter, KnowledgeDiscoverURLs, KnowledgeDoctor, KnowledgeEnableSource, KnowledgeEnableSourcesByFilter, KnowledgeEntityProfile, KnowledgeExecuteSourceQualityMaintenancePlan, KnowledgeExplain, KnowledgeExportSnapshotWithOptions, KnowledgeFactGraph, KnowledgeFactIndex, KnowledgeGetImageAssetPaths, KnowledgeHealth, KnowledgeImportDirectory, KnowledgeImportFiles, KnowledgeImportHubShare, KnowledgeImportJobStatus, KnowledgeImportSnapshot, KnowledgeLinkSources, KnowledgeListCardsBySource, KnowledgeListDuplicateCards, KnowledgeListFactsBySource, KnowledgeListImportBatches, KnowledgeListImportItems, KnowledgeListMyHubShares, KnowledgeListSourceLabels, KnowledgeListSourceLinkEvents, KnowledgeListSourceLinks, KnowledgeListSourceVersions, KnowledgeListSources, KnowledgeListSuppressedCards, KnowledgeListURLDomainPolicies, KnowledgeMaintain, KnowledgeOpenImageAsset, KnowledgePreviewNodesBySource, KnowledgePreviewSourceRefresh, KnowledgePreviewSourceTopicLinks, KnowledgePreviewSourcesRefreshByFilter, KnowledgeQualityMaintenancePolicies, KnowledgeRebuildSourceDerived, KnowledgeRebuildSourcesDerived, KnowledgeRebuildSourcesDerivedByFilter, KnowledgeRefreshChangedSources, KnowledgeRefreshChangedSourcesByFilter, KnowledgeRefreshSource, KnowledgeRefreshSourceTopicLinks, KnowledgeRefreshSourceTopicLinksByFilter, KnowledgeRefreshSources, KnowledgeRefreshSourcesByFilter, KnowledgeRestoreSuppressedCards, KnowledgeRetryImportBatch, KnowledgeSaveText, KnowledgeSaveURL, KnowledgeSaveURLs, KnowledgeScanDirectory, KnowledgeScanFiles, KnowledgeScanSensitiveContent, KnowledgeSearch, KnowledgeSearchFacets, KnowledgeSearchStructured, DigitalAssetListContributableLibraries, DigitalAssetListMySubmissions, DigitalAssetWithdrawSubmission, KnowledgeContributeToOrg, KnowledgeShareToHub, KnowledgeSourceDigest, KnowledgeSourceGraph, KnowledgeSourceNeighborhood, KnowledgeSourcePath, KnowledgeSourceQualityMaintenancePlan, KnowledgeSourceQualityReport, KnowledgeSourceTimeline, KnowledgeStartImportDirectory, KnowledgeStructuredCatalog, KnowledgeSuggest, KnowledgeSuppressDuplicateCards, KnowledgeSyncDelete, KnowledgeSyncDownload, KnowledgeSyncStatus, KnowledgeSyncUpload, KnowledgeSyncVerifyPassword, KnowledgeTopicRelevance, KnowledgeUnlinkSources, KnowledgeUpdateHubShare, KnowledgeUpdateSourceLabels, KnowledgeUpdateSourceMetadata, KnowledgeUpdateURLDomainPolicies, LoadConfig, OpenFileOrShowInFolder, OpenSystemUrl, SelectKnowledgeDirectory, SelectKnowledgeFiles, SelectKnowledgeSnapshotExportPath, SelectKnowledgeSnapshotFile } from '../../../wailsjs/go/main/App';
 import { knowledge } from '../../../wailsjs/go/models';
+import { SuggestCombobox } from '../ui/SuggestCombobox';
 
 type Props = {
     lang?: string;
@@ -3920,10 +3921,20 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                             {searchMode === 'structured' && (
                                 <div className="knowledge-structured-filter-panel" aria-label={t('Structured table filters', '结构化表格筛选')}>
                                     <div className="knowledge-structured-filter-grid">
-                                        <input className="knowledge-input" list="knowledge-structured-column-options" value={structuredSearchForm.columnName} onChange={event => commitStructuredForm({ columnName: event.target.value })} onKeyDown={onSearchEnter} placeholder={t('Column name, e.g. Department', '列名，例如：部门')} />
-                                        <datalist id="knowledge-structured-column-options">
-                                            {structuredColumnSuggestions.map(column => <option key={`${column.column_name}-${column.value_type || ''}`} value={column.column_name || ''}>{column.value_type || ''}</option>)}
-                                        </datalist>
+                                        <SuggestCombobox
+                                            listboxId="knowledge-structured-column-options"
+                                            inputClassName="knowledge-input"
+                                            value={structuredSearchForm.columnName}
+                                            options={structuredColumnSuggestions.flatMap(column => {
+                                                const name = String(column.column_name || '').trim();
+                                                return name ? [{ value: name, description: column.value_type || '' }] : [];
+                                            })}
+                                            onChange={columnName => commitStructuredForm({ columnName })}
+                                            onKeyDown={onSearchEnter}
+                                            placeholder={t('Column name, e.g. Department', '列名，例如：部门')}
+                                            toggleLabel={t('Show column list', '显示列名列表')}
+                                            emptyText={t('No matching columns', '没有匹配的列')}
+                                        />
                                         <select className="knowledge-input" value={structuredSearchForm.matchMode} onChange={event => {
                                             commitStructuredForm({ matchMode: event.target.value });
                                             if (isSearchBlockingBusy(busyRef.current)) return;
@@ -3934,10 +3945,17 @@ export function KnowledgeSettingsPanel({ lang, showToastMessage }: Props) {
                                             <option value="contains">{t('Contains', '包含')}</option>
                                         </select>
                                         <input className="knowledge-input" value={structuredSearchForm.columnValue} onChange={event => commitStructuredForm({ columnValue: event.target.value })} onKeyDown={onSearchEnter} placeholder={t('Text value', '文本值')} />
-                                        <input className="knowledge-input" list="knowledge-structured-sheet-options" value={structuredSearchForm.sheetName} onChange={event => commitStructuredForm({ sheetName: event.target.value })} onKeyDown={onSearchEnter} placeholder={t('Sheet name (optional)', 'Sheet 名（可选）')} />
-                                        <datalist id="knowledge-structured-sheet-options">
-                                            {structuredSheetSuggestions.map(sheet => <option key={sheet} value={sheet} />)}
-                                        </datalist>
+                                        <SuggestCombobox
+                                            listboxId="knowledge-structured-sheet-options"
+                                            inputClassName="knowledge-input"
+                                            value={structuredSearchForm.sheetName}
+                                            options={structuredSheetSuggestions}
+                                            onChange={sheetName => commitStructuredForm({ sheetName })}
+                                            onKeyDown={onSearchEnter}
+                                            placeholder={t('Sheet name (optional)', 'Sheet 名（可选）')}
+                                            toggleLabel={t('Show sheet list', '显示 Sheet 列表')}
+                                            emptyText={t('No matching sheets', '没有匹配的 Sheet')}
+                                        />
                                     </div>
                                     <div className="knowledge-structured-filter-grid knowledge-structured-filter-grid--ranges">
                                         <input className="knowledge-input" type="number" value={structuredSearchForm.numberMin} onChange={event => commitStructuredForm({ numberMin: event.target.value })} onKeyDown={onSearchEnter} placeholder={t('Number min', '数字下限')} />

@@ -12,7 +12,7 @@ import { isHistoryResetCommandText } from "./composeAction";
 import { isCodingAgentChatHiddenEvent, isCodingAgentProgressContent, parseCodingAgentProgress } from "./CodingAgentProgressStatus";
 import { reasoningHasCodingStatusMilestone, stripCodingWorkbenchStatusReasoning } from "./codingAgentUserFinish";
 import { clearAssistantRoundProse } from "./assistantRoundProse";
-import { cleanReasoningTrailForBody } from "./assistantReasoningBody";
+import { cleanReasoningTrailForBody, parkReplacedStreamInReasoning } from "./assistantReasoningBody";
 
 export interface CancelAIAssistantResult {
     canceledText: string;
@@ -2555,7 +2555,11 @@ function appendFinalReasoningToCodingTimeline(message: ChatMessage, response: an
 function finalizeRoundMessage(messages: ChatMessage[], assistantMessageId: string | null, requestId: string | null, response: any, preferences: AIAssistantPreferences): ChatMessage[] {
     const finalizeMessage = (message: ChatMessage): ChatMessage | null => {
         const nextContent = resolveFinalRoundContent(message, response);
-        const nextReasoning = resolveFinalRoundReasoning(message, response);
+        const nextReasoning = parkReplacedStreamInReasoning(
+            message.content || "",
+            nextContent,
+            resolveFinalRoundReasoning(message, response) || "",
+        ) || undefined;
         const nextFields = mergeResponseFields(response.fields, normalizeTraceFields(response, preferences.showTraceEntry));
         const responseActions = normalizeActions(response.actions) || [];
         const traceActions = buildTraceDetailAction(response, preferences.showTraceEntry) || [];
@@ -2619,18 +2623,50 @@ function removeActionCommandFromMessages(messages: ChatMessage[], command: strin
     return messages.map(message => removeActionCommandFromMessage(message, command));
 }
 
+function isRecoveryChoiceNotice(content: string): boolean {
+    const trimmed = content.trim();
+    if (!trimmed || trimmed.length > 180) return false;
+    return /^(检测到未完成任务|偵測到未完成任務|Detected an unfinished task:)/.test(trimmed);
+}
+
+function settleUnfinishedSlotMessage(message: ChatMessage, status: 'resumed' | 'dismissed'): ChatMessage {
+    const slot = message.unfinishedSlot;
+    if (!slot) return message;
+    return {
+        ...message,
+        content: isRecoveryChoiceNotice(message.content || '') ? '' : message.content,
+        unfinishedSlot: {
+            ...slot,
+            status,
+            actions: [],
+        },
+    };
+}
+
 function markUnfinishedSlotResumed(messages: ChatMessage[], slotID: string): ChatMessage[] {
     return messages.map(message => {
         if (message.unfinishedSlot?.slotID !== slotID) return message;
-        return {
-            ...message,
-            unfinishedSlot: {
-                ...message.unfinishedSlot,
-                status: 'resumed',
-                actions: [],
-            },
-        };
+        return settleUnfinishedSlotMessage(message, 'resumed');
     });
+}
+
+function markUnfinishedSlotDismissed(messages: ChatMessage[], slotID: string): ChatMessage[] {
+    const target = slotID.trim();
+    let changed = false;
+    const next = messages.map(message => {
+        const slot = message.unfinishedSlot;
+        if (!slot) return message;
+        if (target) {
+            if (slot.slotID !== target) return message;
+        } else {
+            const status = String(slot.status || '').trim().toLowerCase();
+            if (status === 'resumed' || status === 'completed' || status === 'dismissed') return message;
+            if (!(slot.actions?.length)) return message;
+        }
+        changed = true;
+        return settleUnfinishedSlotMessage(message, 'dismissed');
+    });
+    return changed ? next : messages;
 }
 
 /**
@@ -5499,7 +5535,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         // backend (merged into __dismiss_unfinished__), but keep the handler
         // in case older backend versions are still in use.
         if (command === '__start_new_task__') {
-            setMessages(prev => removeActionCommandFromMessages(prev, command));
+            setMessages(prev => markUnfinishedSlotDismissed(prev, ''));
             const startNewText = localizeText(uiLang, "Start a new task", "\u5f00\u59cb\u4e00\u4e2a\u65b0\u4efb\u52a1", "\u958b\u59cb\u4e00\u500b\u65b0\u4efb\u52d9");
             return sendActionMessage(startNewText, {
                 startNewTask: true,
@@ -5509,7 +5545,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         }
         const dismissMatch = command.match(/^__dismiss_unfinished__\s+(\S+)$/);
         if (dismissMatch) {
-            setMessages(prev => removeActionCommandFromMessages(prev, command));
+            setMessages(prev => markUnfinishedSlotDismissed(prev, dismissMatch[1]?.trim() || ''));
             const dismissText = localizeText(uiLang, "Dismiss previous unfinished task", "\u5ffd\u7565\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52a1", "\u5ffd\u7565\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52d9");
             return sendActionMessage(dismissText, {
                 dismissSlotID: dismissMatch[1]?.trim() || '',

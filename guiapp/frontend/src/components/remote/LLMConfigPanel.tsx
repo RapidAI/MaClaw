@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { CancelGitHubCopilotOAuth, CancelOpenAIOAuth, CancelXAIOAuth, CompleteAnthropicOAuth, FetchCodeGenModels, FetchProviderModels, GetHubLLMServiceStatus, GetMaclawAgentMaxIterations, GetMaclawLLMProviders, GetMaclawLLMThinkingMode, GetSubAgentConcurrency, ImportExternalAgents, SaveCodeGenModelChoice, SaveMaclawLLMProviders, SetMaclawAgentMaxIterations, SetMaclawLLMThinkingMode, SetSubAgentConcurrency, StartAnthropicOAuth, StartGitHubCopilotOAuth, StartOpenAIOAuth, StartOpenCodeZenLogin, StartXAIOAuth, TestAndSaveMaclawLLMProviders, WaitGitHubCopilotOAuth } from '../../../wailsjs/go/main/App';
+import { CancelGitHubCopilotOAuth, CancelOpenAIOAuth, CancelWorkBuddyOAuth, CancelXAIOAuth, CompleteAnthropicOAuth, FetchCodeGenModels, FetchProviderModels, GetHubLLMServiceStatus, GetMaclawAgentMaxIterations, GetMaclawLLMProviders, GetMaclawLLMThinkingMode, GetSubAgentConcurrency, ImportExternalAgents, SaveCodeGenModelChoice, SaveMaclawLLMProviders, SetMaclawAgentMaxIterations, SetMaclawLLMThinkingMode, SetSubAgentConcurrency, StartAnthropicOAuth, StartGitHubCopilotOAuth, StartOpenAIOAuth, StartOpenCodeZenLogin, StartWorkBuddyOAuth, StartXAIOAuth, TestAndSaveMaclawLLMProviders, WaitGitHubCopilotOAuth } from '../../../wailsjs/go/main/App';
 import { corelib } from '../../../wailsjs/go/models';
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { colors } from "./styles";
 import { HUB_SERVICE_PROVIDER_NAME, KNOWN_OPENAI_ENDPOINTS, LLM_CONFIG_LOAD_TIMEOUT_MS, NONE_PROVIDER, canQueryOpenAIOrganizationCosts, formatProviderTestError, formatProviderTestErrorOrFallback, hubCreditGrants, hubOfficialStatus, inputStyle, isOpenCodeProvider, isProviderTestCancelMessage, labelStyle, readonlyStyle, withTimeout, type HubLLMServiceStatus, type LLMProvider } from "./LLMConfigPanelShared";
 import { UsageDisplay } from "./UsageDisplay";
 import { TokenUsagePanel } from "./TokenUsagePanel";
-import { PROVIDER_LOGOS } from "./providerLogos";
+import { isWorkBuddyProvider, PROVIDER_LOGOS } from "./providerLogos";
 import { useDialog } from "../CustomDialog";
 import { KNOWN_USER_AGENTS, commitCustomAgentValue, customAgentSeedForProvider, editableCustomAgentValue, effectiveAgentType, isKnownUserAgent, selectableAgentType } from "./userAgent";
 import { ProviderModelCombobox } from "./ProviderModelCombobox";
@@ -99,6 +99,8 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
             CancelGitHubCopilotOAuth();
         } else if (providerName === "xAI-Grok") {
             void CancelXAIOAuth();
+        } else if (isWorkBuddyProvider(providerName)) {
+            void CancelWorkBuddyOAuth();
         } else {
             CancelOpenAIOAuth();
         }
@@ -191,6 +193,9 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
                 // prevents the WebView bridge from trying to relaunch a long
                 // xAI OIDC URL.
                 loginMessage = await StartXAIOAuth();
+                if (oauthAttempt !== oauthAttemptRef.current) return;
+            } else if (isWorkBuddyProvider(providerName)) {
+                loginMessage = await StartWorkBuddyOAuth(providerName);
                 if (oauthAttempt !== oauthAttemptRef.current) return;
             } else {
                 loginMessage = await StartOpenAIOAuth();

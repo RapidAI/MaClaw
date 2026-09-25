@@ -630,14 +630,38 @@ func createNpmInstallCmd(npmPath string, args []string) *exec.Cmd {
 	return exec.Command(npmPath, args...)
 }
 
-func (a *App) LaunchInstallerAndExit(installerPath string) error {
-	cmd := exec.Command("xdg-open", installerPath)
+func (a *App) LaunchInstallerAndExit(installerPath string, targetVersion string) error {
+	// Only launch the installer this process downloaded and verified.
+	verifiedPath, err := a.authorizeInstallerLaunch(installerPath)
+	if err != nil {
+		a.log(fmt.Sprintf("[update-install] refusing silent install: %v", err))
+		return err
+	}
+	a.recordPendingUpdate(targetVersion, verifiedPath)
+
+	// Linux has no single unattended install path (deb/rpm/AppImage each need
+	// their own handling and usually root), so hand the package to the desktop
+	// handler rather than guessing a silent command that could half-apply.
+	cmd := exec.Command("xdg-open", verifiedPath)
 	if err := cmd.Start(); err != nil {
 		return err
 	}
 	wails_runtime.Quit(a.ctx)
 	return nil
 }
+
+// installerExtensionAllowed restricts launches to real Linux package formats.
+func installerExtensionAllowed(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".appimage", ".deb", ".rpm", ".run":
+		return true
+	default:
+		return false
+	}
+}
+
+// pathCaseInsensitive reports whether installer paths compare case-insensitively.
+func pathCaseInsensitive() bool { return false }
 
 func createCondaEnvListCmd(condaPath string) *exec.Cmd {
 	return exec.Command(condaPath, "env", "list")

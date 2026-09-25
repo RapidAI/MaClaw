@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/workbuddy"
 )
 
 // ApplyProviderAuthHeaders adds provider-specific authorization headers after
@@ -12,7 +13,11 @@ import (
 // first-party user OAuth tokens with this explicit client marker; ordinary xAI
 // API keys must not receive it.
 func ApplyProviderAuthHeaders(req *http.Request, cfg corelib.MaclawLLMConfig) {
-	if req == nil || !strings.EqualFold(strings.TrimSpace(cfg.ProviderName), "xAI-Grok") ||
+	if req == nil {
+		return
+	}
+	workbuddy.ApplyHeaders(req.Header, cfg)
+	if !strings.EqualFold(strings.TrimSpace(cfg.ProviderName), "xAI-Grok") ||
 		!strings.EqualFold(strings.TrimSpace(cfg.AuthType), "oauth") {
 		return
 	}

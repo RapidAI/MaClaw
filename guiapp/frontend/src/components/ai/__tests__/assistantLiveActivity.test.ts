@@ -11,6 +11,7 @@ import {
     parseLiveActivityFromProgressText,
     reasoningHasModelThought,
     resolveAssistantLiveActivity,
+    resolveLiveModelTarget,
     resolveStandaloneLiveActivityLabel,
 } from '../assistantLiveActivity';
 
@@ -256,6 +257,34 @@ describe('assistantLiveActivity', () => {
         expect(assistantLiveActivityObject('listing_dir', 'zh-Hans', { toolName: 'list_dir' })).toBe('');
         expect(assistantLiveActivityObject('fetching_page', 'zh-Hans', { toolName: 'download_file' })).toBe('download_file 工具');
         expect(assistantLiveActivityObject('thinking', 'zh-Hans', { modelId: 'auto', toolName: 'ssh' })).toBe('');
+    });
+
+    it('names the contacted profile instead of the first provider default', () => {
+        const providers = [
+            { name: '智谱编程', model: 'glm-5.3-flash', isHubService: false },
+            { name: 'Custom1', model: 'deepseek-v4.1-flash', isHubService: false },
+        ];
+        expect(resolveLiveModelTarget({
+            contactProviderName: 'Custom1',
+            contactModelId: 'deepseek-v4.1-flash',
+            providers,
+        })).toEqual({ providerName: 'Custom1', modelId: 'deepseek-v4.1-flash', isHubService: false });
+        expect(resolveLiveModelTarget({ currentModel: '', providers })).toEqual({
+            providerName: '',
+            modelId: '',
+            isHubService: false,
+        });
+        expect(resolveLiveModelTarget({
+            currentModel: 'auto',
+            providers: [{ name: 'hub-official', model: 'auto', isHubService: true }],
+        })).toEqual({ providerName: 'hub-official', modelId: 'auto', isHubService: true });
+        expect(resolveLiveModelTarget({
+            currentModel: 'deepseek-v4.1-flash',
+            providers: [
+                { name: '智谱编程', model: 'glm-5.3-flash' },
+                { name: 'Custom1', model: 'deepseek-v4.1-flash' },
+            ],
+        }).providerName).toBe('Custom1');
     });
 
     it('reads the in-flight tool name from coding events and progress lines', () => {

@@ -576,14 +576,55 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 func (a *App) syncToSystemEnv(config corelib.AppConfig) {
 }
 
-func (a *App) LaunchInstallerAndExit(installerPath string) error {
-	cmd := exec.Command("open", installerPath)
+func (a *App) LaunchInstallerAndExit(installerPath string, targetVersion string) error {
+	// Only launch the installer this process downloaded and verified: the
+	// launch is unattended and (on other platforms) may be elevated.
+	verifiedPath, err := a.authorizeInstallerLaunch(installerPath)
+	if err != nil {
+		a.log(fmt.Sprintf("[update-install] refusing silent install: %v", err))
+		return err
+	}
+	a.recordPendingUpdate(targetVersion, verifiedPath)
+
+	// A .pkg can be installed without any UI by the system installer, but it
+	// requires root. Only take that path when this process already has it —
+	// macOS has no supported way to grant it silently. Wait for the result:
+	// Start() only proves the process launched, and quitting on a failed
+	// silent install would leave the user with no app and no error.
+	if strings.EqualFold(filepath.Ext(verifiedPath), ".pkg") && os.Geteuid() == 0 {
+		out, err := exec.Command("/usr/sbin/installer", "-pkg", verifiedPath, "-target", "/").CombinedOutput()
+		if err != nil {
+			// Fall through to the interactive Installer.app so the update is
+			// never lost to a silent failure.
+			a.log(fmt.Sprintf("[update-install] silent pkg install failed: %v output=%s", err, strings.TrimSpace(string(out))))
+		} else {
+			a.log(fmt.Sprintf("[update-install] silent pkg install finished: %s", verifiedPath))
+			wails_runtime.Quit(a.ctx)
+			return nil
+		}
+	}
+
+	cmd := exec.Command("open", verifiedPath)
 	if err := cmd.Start(); err != nil {
 		return err
 	}
 	wails_runtime.Quit(a.ctx)
 	return nil
 }
+
+// installerExtensionAllowed restricts unattended launches to real macOS
+// installer packages/disk images.
+func installerExtensionAllowed(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".pkg", ".mpkg", ".dmg":
+		return true
+	default:
+		return false
+	}
+}
+
+// pathCaseInsensitive reports whether installer paths compare case-insensitively.
+func pathCaseInsensitive() bool { return true }
 
 func contains(slice []string, item string) bool {
 	for _, s := range slice {

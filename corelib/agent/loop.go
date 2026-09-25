@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -1010,8 +1011,24 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 	freeReplans := 0
 	malformedReprompts := 0
 	var toolBatchSequence uint64
+	// Visible tokens already sent to the chat bubble for the current model
+	// call. A later nameless tool call can clear the stored message content
+	// (details blocks, trailing tool markup) while the bubble still holds the
+	// forecast. That streamed text is the reply; the search digest must not
+	// replace it.
+	var iterationStreamed strings.Builder
+	streamOnToken := func(delta string) {
+		if delta == "" {
+			return
+		}
+		if !strings.HasPrefix(delta, "\x01") {
+			iterationStreamed.WriteString(delta)
+		}
+		cb.OnToken(delta)
+	}
 
 	for iteration := 0; iteration < maxIter; iteration++ {
+		iterationStreamed.Reset()
 		if cb.ShouldStop() {
 			return finish(LoopResult{Error: "cancelled", Iterations: iteration, ToolCalls: totalToolCalls})
 		}
@@ -1556,7 +1573,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					disposeSurface(ToolSurfaceIntegrityFailure)
 					requestChannel.Close(err)
 				} else {
-					dispatch, dispatchErr := verifiedChannel.DoVerified(requestCtx, reqConversation, channelTools, cb.OnToken, true)
+					dispatch, dispatchErr := verifiedChannel.DoVerified(requestCtx, reqConversation, channelTools, streamOnToken, true)
 					// DoVerified is the only qualified correlation-bound dispatch
 					// seam, so even a broken channel must leave one explicit receipt
 					// record.  Reporting a zero value here would make a reserved,
@@ -1605,7 +1622,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				}
 			}
 		} else {
-			resp, err = doLLMRequestWithToolsStreamWithBeforeFallback(requestCtx, aggCFG, reqConversation, tools, invocationPolicy, receiptClient, cb.OnToken, func() (toolSurfaceFallbackPreparation, error) {
+			resp, err = doLLMRequestWithToolsStreamWithBeforeFallback(requestCtx, aggCFG, reqConversation, tools, invocationPolicy, receiptClient, streamOnToken, func() (toolSurfaceFallbackPreparation, error) {
 				// The streaming attempt has begun but did not produce a consumable
 				// response. A compatibility host must quarantine its static belt before
 				// a fallback could render a same-named successor surface.
@@ -1927,11 +1944,41 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		choice := resp.Choices[0]
 		reasoningContent := StripRolePrefixHallucinationLeading(choice.Message.ReasoningContent)
 		appendLoopDisplayReasoning(&displayReasoning, reasoningContent)
-		content := choice.Message.Content
+		visibleContent := choice.Message.Content
+		content := visibleContent
 		if strings.TrimSpace(content) == "" && reasoningContent != "" {
 			content = reasoningContent
 		}
 		content = StripRolePrefixHallucination(content)
+		// A compatible provider can finish with tool_calls while the function
+		// object is empty. Executing that name burns the no-progress breaker
+		// and leaves a crash-recovery checkpoint even though nothing ran.
+		// Drop those calls so a text answer is returned as text, and a blank
+		// turn uses the empty-response recovery instead of a fake tool batch.
+		// Reasoning copied in above is not that answer: a thinking-only payload
+		// plus a nameless call must still take the empty-response path.
+		blankBecauseNameless := false
+		if kept, dropped := dropUnnamedToolCalls(choice.Message.ToolCalls); dropped > 0 {
+			if len(kept) == 0 && !queryToolAlreadySucceeded(historyDelta, tools) {
+				if call, ok := recoverSoleQueryToolCall(tools, choice.Message.ToolCalls, userText); ok {
+					kept = []llm.ToolCall{call}
+					// Visible text was empty. Do not send the thinking trace as
+					// the tool-call message body; reasoning_content still carries it.
+					if strings.TrimSpace(visibleContent) == "" {
+						content = ""
+					}
+					log.Printf("[agent-loop] recovered nameless tool call as %s", call.Function.Name)
+				}
+			}
+			if len(kept) != len(choice.Message.ToolCalls) {
+				log.Printf("[agent-loop] dropped %d tool call(s) with an empty function name; remaining=%d", dropped, len(kept))
+			}
+			choice.Message.ToolCalls = kept
+			if len(kept) == 0 && strings.TrimSpace(visibleContent) == "" {
+				content = ""
+				blankBecauseNameless = true
+			}
+		}
 
 		if len(choice.TruncatedToolNames) > 0 {
 			disposeSurface(ToolSurfaceResponseAbandoned)
@@ -2042,49 +2089,123 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			// assistant turn. Retire this exact surface before any backoff, steering
 			// check, or recovery prompt can create the next request surface.
 			disposeSurface(ToolSurfaceResponseAbandoned)
+			// The bubble already showed this call's text. A nameless tool call
+			// must not swap that text for the search listing. A streamed
+			// "no lookup tool" sentence after web_search succeeded is not that
+			// text: another round usually repeats it, so finish from the result.
+			answer := streamedVisibleAnswer(iterationStreamed.String())
+			denial := blankBecauseNameless && streamedDenialAfterSearch(answer, historyDelta)
+			if blankBecauseNameless && answer != "" && answer != strings.TrimSpace(reasoningContent) && !denial {
+				log.Printf("[agent-loop] keeping streamed answer after nameless tool call (%d runes)", len([]rune(answer)))
+				historyDelta = append(historyDelta, ConversationEntry{
+					Role:             "assistant",
+					Content:          answer,
+					ReasoningContent: reasoningContent,
+					FinishReason:     "stop",
+				})
+				return finish(LoopResult{
+					Text:       answer,
+					Iterations: iteration + 1,
+					ToolCalls:  totalToolCalls,
+				})
+			}
 			consecutiveEmpty++
+			if denial {
+				consecutiveEmpty = maxConsecutiveEmpty
+			}
+			// A nameless call after a successful search cannot be executed, but
+			// the model can still write the answer in plain text. Do not replace
+			// that reply with the search listing on the first miss. The spent
+			// grant is usually gone by then; the second miss still uses the
+			// result already stored in this turn.
 			snippetLen := len([]rune(lastToolOutcome.snippet))
 			log.Printf("[agent-loop] empty response #%d (iteration=%d, lastTool=%s, outcome=%d, snippet_len=%d)",
 				consecutiveEmpty, iteration, lastToolName, lastToolOutcome.kind, snippetLen)
-			if consecutiveEmpty >= maxConsecutiveEmpty {
-				log.Printf("[agent-loop] hard exit: %d consecutive empty responses", consecutiveEmpty)
-				// Return the last non-empty content as a fallback.
+			if consecutiveEmpty >= maxConsecutiveEmpty || (blankBecauseNameless && consecutiveEmpty >= 2) {
+				log.Printf("[agent-loop] hard exit: %d consecutive empty responses nameless=%t", consecutiveEmpty, blankBecauseNameless)
+				// Return the last non-empty content as a fallback. A repeated
+				// nameless tool call is not an empty generation: one plain-text
+				// retry is enough, and a blank bubble would hide the stop.
+				text := lastNonEmptyContent
+				hardExit := true
+				if blankBecauseNameless {
+					text = strings.TrimSpace(StripThinkingTags(text))
+					if denial {
+						text = ""
+					}
+					if text == "" {
+						// The model never wrote a reply. A short tool body can
+						// stand as the answer. A search listing is a tool
+						// transcript: keep the full listing in the thinking
+						// panel and show only a compact digest outside it.
+						raw := lastSuccessfulToolBody(historyDelta)
+						text = userFacingToolAnswer(raw)
+						if text != "" {
+							hardExit = false
+							if text != raw && len([]rune(text)) >= 80 {
+								appendLoopDisplayReasoning(&displayReasoning, raw)
+							}
+						}
+					}
+					if text == "" {
+						text = "多次尝试均未取得进展，已停止执行。请换一种方式描述任务，或稍后再试。"
+					}
+				}
 				return finish(LoopResult{
-					Text:       lastNonEmptyContent,
+					Text:       text,
 					Iterations: iteration + 1,
 					ToolCalls:  totalToolCalls,
-					HardExit:   true,
+					HardExit:   hardExit,
 				})
 			}
 
-			// Brief pause before retry to avoid rapid-fire empty requests. Keep it
-			// steer-aware so a user correction is not stuck behind a 1-5s sleep.
-			emptyBackoff := time.NewTimer(time.Duration(consecutiveEmpty) * time.Second)
-			emptyTicker := time.NewTicker(50 * time.Millisecond)
-			emptyReplan := false
-		emptyWait:
-			for {
-				select {
-				case <-emptyBackoff.C:
-					break emptyWait
-				case <-emptyTicker.C:
-					if replanner, ok := cb.(LLMReplanAware); ok && replanner.LLMReplanRequested() {
-						emptyReplan = true
+			// A nameless tool call already came back from the provider. Waiting
+			// does not make the next call well-formed, and the 1-5s empty
+			// backoff would stall a turn that already has tool evidence.
+			// Genuine empty generations still wait, so a user correction is
+			// not stuck behind that sleep.
+			if !blankBecauseNameless {
+				emptyBackoff := time.NewTimer(time.Duration(consecutiveEmpty) * time.Second)
+				emptyTicker := time.NewTicker(50 * time.Millisecond)
+				emptyReplan := false
+			emptyWait:
+				for {
+					select {
+					case <-emptyBackoff.C:
 						break emptyWait
-					}
-					if cb.ShouldStop() {
-						break emptyWait
+					case <-emptyTicker.C:
+						if replanner, ok := cb.(LLMReplanAware); ok && replanner.LLMReplanRequested() {
+							emptyReplan = true
+							break emptyWait
+						}
+						if cb.ShouldStop() {
+							break emptyWait
+						}
 					}
 				}
-			}
-			if !emptyBackoff.Stop() {
-				select {
-				case <-emptyBackoff.C:
-				default:
+				if !emptyBackoff.Stop() {
+					select {
+					case <-emptyBackoff.C:
+					default:
+					}
 				}
-			}
-			emptyTicker.Stop()
-			if emptyReplan {
+				emptyTicker.Stop()
+				if emptyReplan {
+					disposeSurface(ToolSurfaceSteered)
+					freeReplans++
+					if freeReplans <= maxFreeReplansPerLoop {
+						iteration--
+					}
+					continue
+				}
+				if cb.ShouldStop() {
+					disposeSurface(ToolSurfaceRuntimeTerminal)
+					return finish(LoopResult{Error: "cancelled", Iterations: iteration, ToolCalls: totalToolCalls})
+				}
+			} else if cb.ShouldStop() {
+				disposeSurface(ToolSurfaceRuntimeTerminal)
+				return finish(LoopResult{Error: "cancelled", Iterations: iteration, ToolCalls: totalToolCalls})
+			} else if replanner, ok := cb.(LLMReplanAware); ok && replanner.LLMReplanRequested() {
 				disposeSurface(ToolSurfaceSteered)
 				freeReplans++
 				if freeReplans <= maxFreeReplansPerLoop {
@@ -2092,18 +2213,18 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				}
 				continue
 			}
-			if cb.ShouldStop() {
-				disposeSurface(ToolSurfaceRuntimeTerminal)
-				return finish(LoopResult{Error: "cancelled", Iterations: iteration, ToolCalls: totalToolCalls})
-			}
 
-			// Build a context-aware recovery prompt.
-			recoverPrompt := buildEmptyResponseRecovery(consecutiveEmpty, lastToolName, lastToolOutcome, userText)
-			workingState, _ = applyWorkingStateEmpty(workingState, userText, lastToolName, consecutiveEmpty, executedTools, loopProjectedGoal(cb))
+			// Build a context-aware recovery prompt. A nameless call must not
+			// pick up the empty-round "call the tool again" hint.
+			recoverPrompt := namelessToolCallRecoveryPrompt(lastToolName)
+			if !blankBecauseNameless {
+				recoverPrompt = buildEmptyResponseRecovery(consecutiveEmpty, lastToolName, lastToolOutcome, userText)
+				workingState, _ = applyWorkingStateEmpty(workingState, userText, lastToolName, consecutiveEmpty, executedTools, loopProjectedGoal(cb))
+				recoverPrompt = AppendNextHint(recoverPrompt, workingState)
+			}
 			if iteration+1 >= maxIter {
 				continue
 			}
-			recoverPrompt = AppendNextHint(recoverPrompt, workingState)
 
 			// Inject a recover prompt to nudge the LLM.
 			conversation = append(conversation, map[string]interface{}{
@@ -2124,8 +2245,10 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			continue
 		}
 		consecutiveEmpty = 0
-		if strings.TrimSpace(content) != "" {
-			lastNonEmptyContent = content
+		// A tool turn often copies its thinking into content. That monologue is
+		// not a reply to keep when a later nameless call ends the turn.
+		if answer := visibleAnswerBesideReasoning(visibleContent, reasoningContent); answer != "" {
+			lastNonEmptyContent = answer
 		}
 
 		// Before committing a final text response, atomically close live-steer
@@ -2543,27 +2666,18 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		// No-forward-progress circuit breaker. A batch with zero successful
 		// calls (all failed, denied, or fence-rejected) moves the turn no
 		// closer to its goal; enough of those in a row means the model is
-		// dithering, not recovering.
+		// dithering, not recovering. The stop is decided here but applied
+		// only after the paired batch is committed: every result is already
+		// in HistoryDelta, so abandoning would keep the pre-tool checkpoint
+		// and the next user message would look like a crash recovery.
+		noProgressHardStop := false
 		if batchHadSuccess {
 			consecutiveNoProgressIterations = 0
 		} else {
 			consecutiveNoProgressIterations++
 			if consecutiveNoProgressIterations >= hardStopNoProgressIterations {
+				noProgressHardStop = true
 				log.Printf("[agent-loop] hard stop: no successful tool call in %d consecutive iterations, force-exiting loop", consecutiveNoProgressIterations)
-				if abandoner, ok := h.(ToolBatchAbandoner); ok {
-					abandoner.OnToolBatchAbandoned(batchMeta)
-				}
-				disposeSurface(ToolSurfaceResponseAbandoned)
-				text := strings.TrimSpace(StripThinkingTags(lastNonEmptyContent))
-				if text == "" {
-					text = "多次尝试均未取得进展，已停止执行。请换一种方式描述任务，或稍后再试。"
-				}
-				return finish(LoopResult{
-					Text:       text,
-					Iterations: iteration + 1,
-					ToolCalls:  totalToolCalls,
-					HardExit:   true,
-				})
 			}
 		}
 
@@ -2587,6 +2701,19 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					HardExit:   true,
 				})
 			}
+		}
+		if noProgressHardStop {
+			disposeSurface(ToolSurfaceResponseAbandoned)
+			text := strings.TrimSpace(StripThinkingTags(lastNonEmptyContent))
+			if text == "" {
+				text = "多次尝试均未取得进展，已停止执行。请换一种方式描述任务，或稍后再试。"
+			}
+			return finish(LoopResult{
+				Text:       text,
+				Iterations: iteration + 1,
+				ToolCalls:  totalToolCalls,
+				HardExit:   true,
+			})
 		}
 		// The batch committer can publish dependant grants only after every tool
 		// result is paired. Refreshing earlier snapshots the pre-commit surface
@@ -2709,6 +2836,175 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 
 	log.Printf("[agent-loop] max iterations (%d) reached", maxIter)
 	return finish(LoopResult{Error: "max iterations reached", Iterations: maxIter, ToolCalls: totalToolCalls})
+}
+
+// recoverSoleQueryToolCall binds one nameless tool call to the only rendered
+// tool whose required input is a query. DeepSeek sometimes finishes with
+// tool_calls and an empty function object. A lookup turn also lists
+// tools_search. That discovery companion must not make the search look
+// ambiguous, or the call is dropped and the user only sees a stop message.
+// Any other companion still blocks the guess.
+func recoverSoleQueryToolCall(tools []map[string]interface{}, calls []llm.ToolCall, userText string) (llm.ToolCall, bool) {
+	if len(calls) != 1 {
+		return llm.ToolCall{}, false
+	}
+	name, ok := soleRequiredQueryTool(tools)
+	if !ok {
+		return llm.ToolCall{}, false
+	}
+	args, ok := queryToolArguments(calls[0].Function.Arguments, userText)
+	if !ok {
+		return llm.ToolCall{}, false
+	}
+	id := strings.TrimSpace(calls[0].ID)
+	if id == "" {
+		id = nextRecoveredQueryCallID()
+	}
+	return llm.ToolCall{
+		ID:   id,
+		Type: "function",
+		Function: llm.ToolCallFunction{
+			Name:      name,
+			Arguments: args,
+		},
+	}, true
+}
+
+var recoveredQueryCallSeq atomic.Uint64
+
+func nextRecoveredQueryCallID() string {
+	return fmt.Sprintf("call_recovered_%d", recoveredQueryCallSeq.Add(1))
+}
+
+// queryToolAlreadySucceeded reports that this turn already ran the sole query
+// tool successfully. A later nameless call must not search again.
+func queryToolAlreadySucceeded(history []ConversationEntry, tools []map[string]interface{}) bool {
+	name, ok := soleRequiredQueryTool(tools)
+	if !ok || name == "" {
+		return false
+	}
+	return historyHasSuccessfulTool(history, name)
+}
+
+func historyHasSuccessfulTool(history []ConversationEntry, name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, entry := range history {
+		if entry.Role == "tool" && entry.ToolName == name && entry.ToolOutcome == string(ToolExecutionOutcomeOK) {
+			return true
+		}
+	}
+	return false
+}
+
+// soleRequiredQueryTool is the one rendered tool that cannot be called
+// without a query. tools_search is a discovery companion with no required
+// field and does not compete. Any other tool, including one whose schema
+// lists no required fields, blocks the guess.
+func soleRequiredQueryTool(tools []map[string]interface{}) (string, bool) {
+	var name string
+	for _, def := range tools {
+		if tooldef.Name(def) == "tools_search" {
+			continue
+		}
+		required := requiredFieldNames(def)
+		if name != "" || len(required) != 1 || required[0] != "query" || !toolHasProperty(def, "query") {
+			return "", false
+		}
+		name = tooldef.Name(def)
+	}
+	return name, name != ""
+}
+
+func toolRequiresQuery(def map[string]interface{}) bool {
+	required := requiredFieldNames(def)
+	return len(required) == 1 && required[0] == "query" && toolHasProperty(def, "query")
+}
+
+func toolHasProperty(def map[string]interface{}, property string) bool {
+	params := toolParameterSchema(def)
+	props, _ := params["properties"].(map[string]interface{})
+	_, ok := props[property]
+	return ok
+}
+
+func requiredFieldNames(def map[string]interface{}) []string {
+	params := toolParameterSchema(def)
+	if params == nil {
+		return nil
+	}
+	switch required := params["required"].(type) {
+	case []string:
+		return append([]string(nil), required...)
+	case []interface{}:
+		names := make([]string, 0, len(required))
+		for _, name := range required {
+			if text, ok := name.(string); ok {
+				names = append(names, text)
+			}
+		}
+		return names
+	default:
+		return nil
+	}
+}
+
+func toolParameterSchema(def map[string]interface{}) map[string]interface{} {
+	fn, _ := def["function"].(map[string]interface{})
+	if fn == nil {
+		fn = def
+	}
+	params, _ := fn["parameters"].(map[string]interface{})
+	return params
+}
+
+func queryToolArguments(rawArgs, userText string) (string, bool) {
+	query := ""
+	rawArgs = strings.TrimSpace(rawArgs)
+	if rawArgs != "" && rawArgs != "{}" && rawArgs != "null" {
+		var obj map[string]interface{}
+		if json.Unmarshal([]byte(rawArgs), &obj) == nil {
+			if text, _ := obj["query"].(string); strings.TrimSpace(text) != "" {
+				query = strings.TrimSpace(text)
+			}
+		}
+	}
+	if query == "" {
+		query = strings.TrimSpace(userText)
+	}
+	query = clipRunes(query, 200)
+	if query == "" {
+		return "", false
+	}
+	encoded, err := json.Marshal(map[string]string{"query": query})
+	if err != nil {
+		return "", false
+	}
+	return string(encoded), true
+}
+
+// dropUnnamedToolCalls removes provider tool calls that have no function name.
+// The kept slice is the original when nothing was dropped.
+func dropUnnamedToolCalls(calls []llm.ToolCall) (kept []llm.ToolCall, dropped int) {
+	if len(calls) == 0 {
+		return calls, 0
+	}
+	for _, tc := range calls {
+		if strings.TrimSpace(tc.Function.Name) == "" {
+			dropped++
+		}
+	}
+	if dropped == 0 {
+		return calls, 0
+	}
+	kept = make([]llm.ToolCall, 0, len(calls)-dropped)
+	for _, tc := range calls {
+		if strings.TrimSpace(tc.Function.Name) != "" {
+			kept = append(kept, tc)
+		}
+	}
+	return kept, dropped
 }
 
 // toolCallNameWasRendered is the final generic request-surface admission check.
@@ -3278,6 +3574,365 @@ func doResponsesRequestWithTools(ctx context.Context, cfg corelib.MaclawLLMConfi
 		return nil, err
 	}
 	return parsed, nil
+}
+
+// lastSuccessfulToolBody is the newest successful tool body in this turn.
+func lastSuccessfulToolBody(history []ConversationEntry) string {
+	for i := len(history) - 1; i >= 0; i-- {
+		entry := history[i]
+		if entry.Role != "tool" || entry.ToolOutcome != string(ToolExecutionOutcomeOK) {
+			continue
+		}
+		text, ok := entry.Content.(string)
+		text = strings.TrimSpace(text)
+		if !ok || text == "" {
+			continue
+		}
+		return text
+	}
+	return ""
+}
+
+// userFacingToolAnswer turns a tool body into chat text. A short plain result
+// can be the reply. A "Public web results" listing is the tool transcript:
+// the bubble gets a few titles and snippets, without the header or URLs.
+// Any other long transcript stays out of the bubble.
+func userFacingToolAnswer(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if strings.HasPrefix(raw, "Public web results for ") {
+		digest, ok := compactPublicWebResults(raw)
+		if !ok {
+			return ""
+		}
+		return digest
+	}
+	if len([]rune(raw)) <= 240 {
+		return raw
+	}
+	return ""
+}
+
+func compactPublicWebResults(raw string) (string, bool) {
+	if !strings.HasPrefix(raw, "Public web results for ") {
+		return "", false
+	}
+	var parsed []webResultSnippet
+	var current webResultSnippet
+	flush := func() {
+		if current.title == "" {
+			current = webResultSnippet{}
+			return
+		}
+		current.snippet = clipRunes(strings.TrimSpace(current.snippet), 80)
+		parsed = append(parsed, current)
+		current = webResultSnippet{}
+	}
+	for _, line := range strings.Split(raw, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "Public web results for ") || strings.HasPrefix(trimmed, "Some search engines were unavailable") {
+			continue
+		}
+		if num, rest, ok := splitNumberedResultLine(trimmed); ok {
+			flush()
+			current.n = num
+			current.title = rest
+			continue
+		}
+		if current.title == "" || strings.Contains(trimmed, "://") || current.snippet != "" {
+			continue
+		}
+		current.snippet = trimmed
+	}
+	flush()
+	parsed = preferForecastSnippets(parsed)
+	if len(parsed) == 0 {
+		return "", false
+	}
+	if len(parsed) > 3 {
+		parsed = parsed[:3]
+	}
+	lines := make([]string, 0, len(parsed))
+	for i, item := range parsed {
+		line := fmt.Sprintf("%d. %s", i+1, item.title)
+		if item.snippet != "" {
+			line += "\n" + item.snippet
+		}
+		lines = append(lines, line)
+	}
+	return "根据公开检索，相关信息如下：\n\n" + strings.Join(lines, "\n\n"), true
+}
+
+type webResultSnippet struct {
+	n       int
+	title   string
+	snippet string
+}
+
+func preferForecastSnippets(items []webResultSnippet) []webResultSnippet {
+	if len(items) <= 1 {
+		return items
+	}
+	var forecast, rest []webResultSnippet
+	for _, item := range items {
+		if snippetLooksLikeForecast(item.snippet) {
+			forecast = append(forecast, item)
+			continue
+		}
+		rest = append(rest, item)
+	}
+	if len(forecast) == 0 {
+		return items
+	}
+	return append(forecast, rest...)
+}
+
+func snippetLooksLikeForecast(snippet string) bool {
+	return strings.Contains(snippet, "℃") || strings.Contains(snippet, "°C") || strings.Contains(snippet, "°F")
+}
+
+func splitNumberedResultLine(line string) (int, string, bool) {
+	i := 0
+	for i < len(line) && line[i] >= '0' && line[i] <= '9' {
+		i++
+	}
+	if i == 0 || i+1 >= len(line) || line[i] != '.' || line[i+1] != ' ' {
+		return 0, "", false
+	}
+	n := 0
+	for _, c := range line[:i] {
+		n = n*10 + int(c-'0')
+	}
+	rest := strings.TrimSpace(line[i+1:])
+	if n <= 0 || rest == "" {
+		return 0, "", false
+	}
+	return n, rest, true
+}
+
+// visibleAnswerBesideReasoning keeps model content that is not a copy of the
+// thinking trace. Tool turns often repeat reasoning_content in content; using
+// that text as the fallback answer replaces the reply the user was waiting for.
+func visibleAnswerBesideReasoning(visible, reasoning string) string {
+	visible = strings.TrimSpace(visible)
+	reasoning = strings.TrimSpace(reasoning)
+	if visible == "" {
+		return ""
+	}
+	if reasoning != "" && visible == reasoning {
+		return ""
+	}
+	return visible
+}
+
+// streamedVisibleAnswer is the text already shown in the chat bubble for this
+// model call. Short fragments are not an answer. A details shell is removed
+// without discarding the forecast that came before it. A raw search listing
+// is not an answer either.
+func streamedVisibleAnswer(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	raw = strings.TrimSpace(llm.StripDetailsBlocks(raw))
+	raw = strings.TrimSpace(StripThinkingTags(StripRolePrefixHallucination(raw)))
+	if raw == "" || strings.HasPrefix(raw, "Public web results for ") || strings.HasPrefix(raw, "根据公开检索") {
+		return ""
+	}
+	// A forecast may sit above or below the hits. Drop the hit lines and keep
+	// the forecast. A reply that is only the hit list is not an answer.
+	raw = dropSearchListings(raw)
+	if raw == "" {
+		return ""
+	}
+	// A cited forecast may name one page. Drop that URL and keep the sentence.
+	// A numbered result list is already rejected above.
+	raw = strings.TrimSpace(stripStreamedURLs(raw))
+	if raw == "" {
+		return ""
+	}
+	// A one-line forecast is often shorter than 40 runes. It is already on
+	// screen; a later nameless call must not replace it with the search listing.
+	// A bare temperature or a two-character fragment is not that forecast.
+	if snippetLooksLikeForecast(raw) && len([]rune(raw)) >= 8 {
+		return raw
+	}
+	if len([]rune(raw)) < 40 {
+		return ""
+	}
+	return raw
+}
+
+// dropSearchListings removes search hits. A hit is a numbered page title with
+// the URL on that line or the next one, through the snippet. Later hits may be
+// separated by a blank line. The block ends at a forecast sentence. Forecast
+// text before or after the hits stays.
+func dropSearchListings(raw string) string {
+	lines := strings.Split(raw, "\n")
+	drop := make([]bool, len(lines))
+	for i := 0; i < len(lines); i++ {
+		n, hit := searchHitNumber(lines[i])
+		if drop[i] || !hit {
+			continue
+		}
+		end, ok := searchHitBlockEnd(lines, i, n)
+		if !ok {
+			continue
+		}
+		for j := i; j <= end; j++ {
+			drop[j] = true
+		}
+		i = end
+	}
+	kept := make([]string, 0, len(lines))
+	for i, line := range lines {
+		if !drop[i] {
+			kept = append(kept, line)
+		}
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n"))
+}
+
+func isSearchHitTitle(line string, n int) bool {
+	got, ok := searchHitNumber(line)
+	return ok && got == n
+}
+
+func searchHitNumber(line string) (int, bool) {
+	got, rest, ok := splitNumberedResultLine(strings.TrimSpace(line))
+	if !ok || snippetLooksLikeForecast(rest) {
+		return 0, false
+	}
+	return got, true
+}
+
+// searchHitBlockEnd is the last line of hit n and any following hits. A
+// forecast sentence after the URL ends the block and is not included.
+func searchHitBlockEnd(lines []string, start, n int) (int, bool) {
+	urlAt := searchHitURLLine(lines, start)
+	if urlAt < 0 {
+		return 0, false
+	}
+	end := urlAt
+	for j := urlAt + 1; j < len(lines); j++ {
+		t := strings.TrimSpace(lines[j])
+		if t == "" {
+			if k, ok := nextSearchHit(lines, j, n+1); ok {
+				j = k - 1
+				n++
+				continue
+			}
+			break
+		}
+		if snippetLooksLikeForecast(t) && strings.ContainsAny(t, "。！？") && !isSearchHitTitle(lines[j], n+1) {
+			break
+		}
+		if isSearchHitTitle(lines[j], n+1) {
+			if nextURL := searchHitURLLine(lines, j); nextURL >= 0 {
+				n++
+				j = nextURL
+				end = nextURL
+				continue
+			}
+		}
+		end = j
+	}
+	return end, true
+}
+
+func nextSearchHit(lines []string, blank, n int) (int, bool) {
+	for j := blank + 1; j < len(lines); j++ {
+		t := strings.TrimSpace(lines[j])
+		if t == "" {
+			continue
+		}
+		if isSearchHitTitle(lines[j], n) && searchHitURLLine(lines, j) >= 0 {
+			return j, true
+		}
+		return 0, false
+	}
+	return 0, false
+}
+
+func searchHitURLLine(lines []string, title int) int {
+	// The title line may be "1. 标题 https://…". A later line counts only when
+	// it is the URL itself. "详见 https://…" is a citation, not the next hit.
+	if strings.Contains(strings.TrimSpace(lines[title]), "://") {
+		return title
+	}
+	for j := title + 1; j < len(lines); j++ {
+		next := strings.TrimSpace(lines[j])
+		if next == "" {
+			continue
+		}
+		if isBareURLLine(lines[j]) {
+			return j
+		}
+		return -1
+	}
+	return -1
+}
+
+func isBareURLLine(line string) bool {
+	t := strings.TrimSpace(line)
+	if !strings.Contains(t, "://") {
+		return false
+	}
+	return strings.TrimSpace(stripStreamedURLs(t)) == ""
+}
+
+func stripStreamedURLs(s string) string {
+	for _, scheme := range []string{"https://", "http://"} {
+		for {
+			start := strings.Index(s, scheme)
+			if start < 0 {
+				break
+			}
+			end := start + len(scheme)
+			for end < len(s) {
+				// URLs are ASCII. A following Chinese sentence must stay;
+				// otherwise https://…。气温19℃ swallows the forecast.
+				if s[end] <= ' ' || s[end] == ')' || s[end] >= 0x80 {
+					break
+				}
+				end++
+			}
+			s = s[:start] + s[end:]
+		}
+	}
+	return s
+}
+
+// streamedDenialAfterSearch is the model telling the user this turn has no
+// lookup tool after web_search already succeeded. That sentence was streamed
+// before the empty function object arrived. Keeping it hides the result.
+// A sentence that already states a temperature is a forecast, not a denial.
+func streamedDenialAfterSearch(answer string, history []ConversationEntry) bool {
+	if snippetLooksLikeForecast(answer) {
+		return false
+	}
+	if !historyHasSuccessfulTool(history, "web_search") && !strings.HasPrefix(lastSuccessfulToolBody(history), "Public web results for ") {
+		return false
+	}
+	for _, cue := range []string{"没有可用", "没有实时", "拿不到准确", "不能凭空", "没有查询工具"} {
+		if strings.Contains(answer, cue) {
+			return true
+		}
+	}
+	return false
+}
+
+// namelessToolCallRecoveryPrompt asks for a plain-text answer after a provider
+// finished with tool_calls but no function name. Another tool call is what
+// produced the empty turn, so the retry must not invite one.
+func namelessToolCallRecoveryPrompt(lastToolName string) string {
+	prompt := "[系统] 上一条工具调用没有函数名，已被丢弃。不要再输出工具调用。请直接用纯文本回答用户。"
+	if name := strings.TrimSpace(lastToolName); name != "" {
+		prompt += "已有工具 " + name + " 的结果，请据此作答，不要重试该工具。"
+	}
+	return prompt
 }
 
 // buildEmptyResponseRecovery constructs a context-aware recovery prompt when

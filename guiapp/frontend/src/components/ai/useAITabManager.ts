@@ -3,7 +3,7 @@ import type { AIExecutionProfile, AITab, AITabType, AITabState, AIAssistantPanel
 import { createInitialTabState, DEFAULT_MAX_VE_TABS } from "./AITabTypes";
 import { LoadProjectTabIndex, CloseAssistantTabSession, CreateProjectTabSession, SaveProjectTabConversation, LoadProjectTabConversation, ClearAIAssistantHistoryForSession } from "../../../wailsjs/go/main/App";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
-import { EVENT_PROJECT_TASK_RENAMED } from "../../constants/events";
+import { EVENT_OPEN_NEW_TASK_WIZARD, EVENT_PROJECT_TASK_RENAMED } from "../../constants/events";
 import { isLocalHumanParticipantId, normalizeParticipantId } from "./localAIIdentity";
 import { addParticipantIdentityKeys, participantIdentityMatches } from "./participantIdentity";
 import { veStatusEventInfo } from "./veStatusEvent";
@@ -1393,44 +1393,64 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         }
     }, []);
 
+    const isSidebarTaskTab = (tab: AITab): boolean => (
+        (tab.type === "project" && !!tab.projectPath && !isACPMirrorTab(tab))
+        || (tab.type === "expert" && !!tab.expertId)
+    );
+    const mostRecentOpenTaskTabId = (tabs: AITab[], exclude: Set<string>): string | null => {
+        const candidates = tabs.filter(tab => !exclude.has(tab.id) && tab.closable && isSidebarTaskTab(tab));
+        if (candidates.length === 0) return null;
+        return candidates.slice().sort((a, b) => {
+            const delta = (tabStatesRef.current.get(b.id)?.lastActiveAt || 0) - (tabStatesRef.current.get(a.id)?.lastActiveAt || 0);
+            if (delta !== 0) return delta;
+            return tabs.indexOf(b) - tabs.indexOf(a);
+        })[0].id;
+    };
+    const openNewTaskGuide = () => {
+        window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
+    };
     const closeTab = useCallback((tabId: string) => {
-        updateTabState(prev => {
-            const tab = prev.tabs.find(t => t.id === tabId);
-            if (!tab || !tab.closable) return prev;
+        const prev = tabStateRef.current;
+        const tab = prev.tabs.find(t => t.id === tabId);
+        if (!tab || !tab.closable) return;
 
-            flushDirtyTabConversationNow(tabId);
+        flushDirtyTabConversationNow(tabId);
 
-            // Release a closed tab's runtime workdir. Project tabs also archive
-            // their backend index entry; expert tabs only need the private
-            // runtime binding cleared (their session file remains resumable).
-            if ((tab.type === "project" && !tab.sessionKey) || tab.type === "expert") {
-                registeredProjectTabSessionIdsRef.current.delete(tabId);
-                projectTabSessionReadyByIDRef.current.delete(tabId);
-                const closePromise = Promise.resolve()
-                    .then(() => CloseAssistantTabSession(tabId))
-                    .catch(() => {})
-                    .then(() => undefined);
-                pendingProjectTabCloseByIDRef.current.set(tabId, closePromise);
-                closePromise.finally(() => {
-                    if (pendingProjectTabCloseByIDRef.current.get(tabId) === closePromise) {
-                        pendingProjectTabCloseByIDRef.current.delete(tabId);
-                    }
-                });
-            }
+        // Release a closed tab's runtime workdir. Project tabs also archive
+        // their backend index entry; expert tabs only need the private
+        // runtime binding cleared (their session file remains resumable).
+        if ((tab.type === "project" && !tab.sessionKey) || tab.type === "expert") {
+            registeredProjectTabSessionIdsRef.current.delete(tabId);
+            projectTabSessionReadyByIDRef.current.delete(tabId);
+            const closePromise = Promise.resolve()
+                .then(() => CloseAssistantTabSession(tabId))
+                .catch(() => {})
+                .then(() => undefined);
+            pendingProjectTabCloseByIDRef.current.set(tabId, closePromise);
+            closePromise.finally(() => {
+                if (pendingProjectTabCloseByIDRef.current.get(tabId) === closePromise) {
+                    pendingProjectTabCloseByIDRef.current.delete(tabId);
+                }
+            });
+        }
 
-            const newTabs = prev.tabs.filter(t => t.id !== tabId);
-            const newActiveId = prev.activeTabId === tabId
-                ? "local" // Fall back to local tab
-                : prev.activeTabId;
-
-            return {
-                ...prev,
-                tabs: newTabs,
-                activeTabId: newActiveId,
-            };
-        });
+        const closedWasActive = prev.activeTabId === tabId;
+        const nextActiveId = closedWasActive
+            ? (mostRecentOpenTaskTabId(prev.tabs, new Set([tabId])) || "local")
+            : prev.activeTabId;
+        const next = {
+            ...prev,
+            tabs: prev.tabs.filter(t => t.id !== tabId),
+            activeTabId: nextActiveId,
+        };
+        // Commit before the React update so a create in this same turn sees the freed slot.
+        tabStateRef.current = next;
+        updateTabState(() => next);
+        // Only leaving a sidebar task with nothing else open should cover the
+        // local page. Closing a chat tab still returns to whatever was there.
+        if (closedWasActive && nextActiveId === "local" && isSidebarTaskTab(tab)) openNewTaskGuide();
         // LRU eviction: prevent unbounded memory growth from cached closed tab states.
-        const openTabIds = new Set(tabStateRef.current.tabs.map(t => t.id));
+        const openTabIds = new Set(next.tabs.map(t => t.id));
         evictClosedTabStates(tabStatesRef.current, openTabIds, "proj-", 32);
         evictClosedTabStates(tabStatesRef.current, openTabIds, "ve-", 32);
         evictClosedTabStates(tabStatesRef.current, openTabIds, "history-", 32);
@@ -1448,12 +1468,18 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             registeredProjectTabSessionIdsRef.current.delete(tabID);
             projectTabSessionReadyByIDRef.current.delete(tabID);
         }
+        const activeDeleted = deletedIDs.has(current.activeTabId);
+        const nextActiveId = activeDeleted
+            ? (mostRecentOpenTaskTabId(current.tabs, deletedIDs) || "local")
+            : current.activeTabId;
         const next = {
             ...current,
             tabs: current.tabs.filter(tab => !deletedIDs.has(tab.id)),
-            activeTabId: deletedIDs.has(current.activeTabId) ? "local" : current.activeTabId,
+            activeTabId: nextActiveId,
         };
+        tabStateRef.current = next;
         updateTabState(() => next);
+        if (activeDeleted && nextActiveId === "local") openNewTaskGuide();
         // Closed tabs normally retain a local history cache; deletion must not.
         persistProjectTabHistories(tabStatesRef.current, next.tabs);
     }, [updateTabState]);
@@ -1568,10 +1594,16 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             ? {
                 ...current,
                 tabs: current.tabs.filter(tab => !deletedIDs.has(tab.id)),
-                activeTabId: deletedIDs.has(current.activeTabId) ? "local" : current.activeTabId,
+                activeTabId: deletedIDs.has(current.activeTabId)
+                    ? (mostRecentOpenTaskTabId(current.tabs, deletedIDs) || "local")
+                    : current.activeTabId,
             }
             : current;
-        if (openTabIDs.length > 0) updateTabState(() => next);
+        if (openTabIDs.length > 0) {
+            tabStateRef.current = next;
+            updateTabState(() => next);
+            if (deletedIDs.has(current.activeTabId) && next.activeTabId === "local") openNewTaskGuide();
+        }
         // Self-contained localStorage purge (callers may also purge; idempotent).
         purgeDeletedExpertTabLocalCache(id);
         // Always rewrite history storage so a closed-tab orphan cannot resurrect.

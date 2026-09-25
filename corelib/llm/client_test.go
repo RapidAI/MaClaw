@@ -5156,6 +5156,26 @@ func TestBuildOpenAIChatRequestData_TextualizesDeepSeekFlashContentBlocks(t *tes
 	}
 }
 
+func TestBuildOpenAIChatRequestData_KeepsImagesForDeepSeekV41Flash(t *testing.T) {
+	_, body, err := BuildOpenAIChatRequestData(
+		corelib.MaclawLLMConfig{URL: "https://www.workbuddy.ai/v2", Model: "deepseek-v4.1-flash", ProviderName: "WorkBuddy 国际版"},
+		[]interface{}{map[string]interface{}{
+			"role": "user",
+			"content": []interface{}{
+				map[string]interface{}{"type": "text", "text": "What color is this image?"},
+				map[string]interface{}{"type": "image_url", "image_url": map[string]interface{}{"url": "data:image/png;base64,iVBORw0KGgo="}},
+			},
+		}},
+		OpenAIChatRequestOptions{},
+	)
+	if err != nil {
+		t.Fatalf("BuildOpenAIChatRequestData returned error: %v", err)
+	}
+	if !strings.Contains(string(body), "image_url") || !strings.Contains(string(body), "iVBORw0KGgo=") {
+		t.Fatalf("v4.1 flash request dropped the image: %s", body)
+	}
+}
+
 func TestBuildOpenAIChatRequestData_TextualizesTypedContentBlocks(t *testing.T) {
 	type contentBlock struct {
 		Type string `json:"type"`
@@ -5929,7 +5949,31 @@ func TestBuildOpenAIChatRequestBody_ThinkingModeUsesProviderNativeControl(t *tes
 		t.Fatalf("DeepSeek thinking = %#v, want disabled", deepseek["thinking"])
 	}
 	if _, hasEffort := deepseek["reasoning_effort"]; hasEffort {
-		t.Fatalf("DeepSeek must not receive OpenAI reasoning_effort: %#v", deepseek)
+		t.Fatalf("disabled DeepSeek must not receive reasoning_effort: %#v", deepseek)
+	}
+
+	workbuddy := buildOpenAIChatRequestBody(
+		corelib.MaclawLLMConfig{URL: "https://www.workbuddy.ai/v2", Model: "deepseek-v4.1-flash", ProviderName: "WorkBuddy 国际版", ThinkingMode: "enabled"},
+		messages,
+		OpenAIChatRequestOptions{Tools: []map[string]interface{}{{"type": "function", "function": map[string]interface{}{"name": "web_search"}}}},
+	)
+	thinking, _ := workbuddy["thinking"].(map[string]interface{})
+	if thinking["type"] != "enabled" {
+		t.Fatalf("WorkBuddy DeepSeek thinking = %#v, want enabled", workbuddy["thinking"])
+	}
+	if _, hasBudget := thinking["budget_tokens"]; hasBudget {
+		t.Fatalf("WorkBuddy DeepSeek thinking must not include Anthropic budget_tokens: %#v", thinking)
+	}
+	if got := workbuddy["reasoning_effort"]; got != "high" {
+		t.Fatalf("WorkBuddy DeepSeek reasoning_effort = %#v, want high", got)
+	}
+	low := buildOpenAIChatRequestBody(
+		corelib.MaclawLLMConfig{URL: "https://www.workbuddy.ai/v2", Model: "deepseek-v4.1-flash", ThinkingMode: "enabled", ReasoningEffort: "low"},
+		messages,
+		OpenAIChatRequestOptions{},
+	)
+	if got := low["reasoning_effort"]; got != "low" {
+		t.Fatalf("low effort = %#v, want low", got)
 	}
 
 	grok := buildOpenAIChatRequestBody(

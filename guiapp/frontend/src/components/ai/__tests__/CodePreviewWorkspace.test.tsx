@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { __resetWorkspaceDirectoryCacheForTests, CodePreviewWorkspace, isLikelyBinaryName, workspaceErrorMessage, workspaceFileIconKind } from '../CodePreviewWorkspace';
+import { __resetWorkspaceDirectoryCacheForTests, CodePreviewWorkspace, isLikelyBinaryName, isLocalDiskPath, workspaceErrorMessage, workspaceFileIconKind, workspaceVisualAbsPath } from '../CodePreviewWorkspace';
 
 const getDirectory = vi.fn();
 const getFilePreview = vi.fn();
@@ -376,6 +376,112 @@ describe('CodePreviewWorkspace context menu', () => {
             language: 'pptx',
         })));
         expect(getFilePreview).not.toHaveBeenCalled();
+    });
+
+    it('opens a local PDF in the preview pane instead of requesting a text preview', async () => {
+        const onOpenFile = vi.fn();
+        getDirectory.mockResolvedValue({
+            root: 'C:/Users/me/Desktop/LLM中的数学',
+            entries: [{ name: '大语言模型中的流形原理与应用-v2.5.0.pdf', path: '大语言模型中的流形原理与应用-v2.5.0.pdf', is_dir: false }],
+        });
+        render(<CodePreviewWorkspace projectPath="C:/Users/me/.maclaw/data/tasks/task-1" lang="zh-Hans" theme={theme} onOpenFile={onOpenFile} />);
+        fireEvent.click(await screen.findByText('大语言模型中的流形原理与应用-v2.5.0.pdf'));
+        await waitFor(() => expect(onOpenFile).toHaveBeenCalledWith(expect.objectContaining({
+            filePath: '大语言模型中的流形原理与应用-v2.5.0.pdf',
+            fileName: '大语言模型中的流形原理与应用-v2.5.0.pdf',
+            absPath: 'C:/Users/me/Desktop/LLM中的数学/大语言模型中的流形原理与应用-v2.5.0.pdf',
+            language: 'pdf',
+            content: '',
+        })));
+        expect(getFilePreview).not.toHaveBeenCalled();
+    });
+
+    it('keeps an absolute PDF entry path when the listing already resolved it', async () => {
+        const onOpenFile = vi.fn();
+        getDirectory.mockResolvedValue({
+            root: 'D:/proj',
+            entries: [{ name: 'notes.PDF', path: 'D:/papers/notes.PDF', is_dir: false }],
+        });
+        render(<CodePreviewWorkspace projectPath="D:/proj" lang="en" theme={theme} onOpenFile={onOpenFile} />);
+        fireEvent.click(await screen.findByText('notes.PDF'));
+        await waitFor(() => expect(onOpenFile).toHaveBeenCalledWith(expect.objectContaining({
+            absPath: 'D:/papers/notes.PDF',
+            language: 'pdf',
+        })));
+        expect(getFilePreview).not.toHaveBeenCalled();
+    });
+
+    it('builds a visual preview path from the listed work root', () => {
+        expect(workspaceVisualAbsPath(
+            'C:/Users/me/.maclaw/data/tasks/task-1',
+            'C:\\Users\\me\\Desktop\\LLM中的数学',
+            'docs/report.pdf',
+        )).toBe('C:\\Users\\me\\Desktop\\LLM中的数学/docs/report.pdf');
+        expect(workspaceVisualAbsPath('D:/proj', '', 'docs/demo.pptx')).toBe('D:/proj/docs/demo.pptx');
+        expect(workspaceVisualAbsPath('D:/proj', 'D:/other', 'D:/papers/notes.pdf')).toBe('D:/papers/notes.pdf');
+        expect(isLocalDiskPath('C:/Users/me/Desktop/a.pdf', 'Win32')).toBe(true);
+        expect(isLocalDiskPath('\\\\server\\share\\a.pdf', 'Win32')).toBe(true);
+        expect(isLocalDiskPath('/remote/app/a.pdf', 'Win32')).toBe(false);
+        expect(isLocalDiskPath('/home/me/a.pdf', 'Linux')).toBe(true);
+        expect(isLocalDiskPath('remote-task/a.pdf', 'Linux')).toBe(false);
+    });
+
+    it('ignores an in-flight text preview after a PDF is opened', async () => {
+        let resolvePreview: ((value: unknown) => void) | undefined;
+        getFilePreview.mockImplementationOnce(() => new Promise((resolve) => { resolvePreview = resolve; }));
+        const onOpenFile = vi.fn();
+        getDirectory.mockResolvedValue({
+            root: 'D:/proj',
+            entries: [
+                { name: 'main.go', path: 'main.go', is_dir: false },
+                { name: 'notes.pdf', path: 'notes.pdf', is_dir: false },
+            ],
+        });
+        render(<CodePreviewWorkspace projectPath="D:/proj" lang="zh-Hans" theme={theme} onOpenFile={onOpenFile} />);
+        fireEvent.click(await screen.findByText('main.go'));
+        fireEvent.click(screen.getByText('notes.pdf'));
+        resolvePreview?.({ path: 'main.go', content: 'package main', language: 'go' });
+        await act(async () => { await Promise.resolve(); });
+        expect(onOpenFile).toHaveBeenCalledTimes(1);
+        expect(onOpenFile).toHaveBeenCalledWith(expect.objectContaining({ fileName: 'notes.pdf', language: 'pdf' }));
+    });
+
+    it('keeps a remote PDF on the text preview path instead of a POSIX path', async () => {
+        const onOpenFile = vi.fn();
+        const platform = navigator.platform;
+        Object.defineProperty(navigator, 'platform', { value: 'Win32', configurable: true });
+        getDirectory.mockResolvedValue({
+            root: '/remote/app',
+            entries: [{ name: 'notes.pdf', path: 'notes.pdf', is_dir: false }],
+        });
+        getFilePreview.mockRejectedValue(new Error('binary files cannot be previewed'));
+        try {
+            render(<CodePreviewWorkspace projectPath="remote-task" lang="zh-Hans" theme={theme} onOpenFile={onOpenFile} />);
+            fireEvent.click(await screen.findByText('notes.pdf'));
+            expect((await screen.findByTestId('code-preview-workspace-notice')).textContent || '').toContain('无法预览二进制文件');
+            expect(getFilePreview).toHaveBeenCalledWith('remote-task', 'notes.pdf');
+            expect(onOpenFile).not.toHaveBeenCalled();
+        } finally {
+            Object.defineProperty(navigator, 'platform', { value: platform, configurable: true });
+        }
+    });
+
+    it('clears a binary preview notice when a local PDF opens', async () => {
+        const onOpenFile = vi.fn();
+        getDirectory.mockResolvedValue({
+            root: 'D:/proj',
+            entries: [
+                { name: 'payload.dat', path: 'payload.dat', is_dir: false },
+                { name: 'notes.pdf', path: 'notes.pdf', is_dir: false },
+            ],
+        });
+        getFilePreview.mockRejectedValue(new Error('binary files cannot be previewed'));
+        render(<CodePreviewWorkspace projectPath="D:/proj" lang="zh-Hans" theme={theme} onOpenFile={onOpenFile} />);
+        fireEvent.click(await screen.findByText('payload.dat'));
+        expect((await screen.findByTestId('code-preview-workspace-notice')).textContent || '').toContain('无法预览二进制文件');
+        fireEvent.click(screen.getByText('notes.pdf'));
+        await waitFor(() => expect(onOpenFile).toHaveBeenCalledWith(expect.objectContaining({ language: 'pdf' })));
+        expect(screen.queryByTestId('code-preview-workspace-notice')).toBeNull();
     });
 
     it('localizes binary preview notices for Chinese and English', async () => {

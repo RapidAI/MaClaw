@@ -22,6 +22,7 @@ const TestAndSaveMaclawLLMProvidersMock = vi.fn();
 const ProbeRemoteHubMock = vi.fn();
 const StartOpenAIOAuthMock = vi.fn();
 const StartXAIOAuthMock = vi.fn();
+const StartWorkBuddyOAuthMock = vi.fn();
 const CancelXAIOAuthMock = vi.fn();
 const StartCodeGenSSOMock = vi.fn();
 const StartCodeGenSSOEmbeddedMock = vi.fn();
@@ -59,8 +60,10 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     ProbeRemoteHub: (...args: unknown[]) => ProbeRemoteHubMock(...args),
     StartOpenAIOAuth: (...args: unknown[]) => StartOpenAIOAuthMock(...args),
     StartXAIOAuth: (...args: unknown[]) => StartXAIOAuthMock(...args),
+    StartWorkBuddyOAuth: (...args: unknown[]) => StartWorkBuddyOAuthMock(...args),
     CancelOpenAIOAuth: vi.fn(),
     CancelXAIOAuth: (...args: unknown[]) => CancelXAIOAuthMock(...args),
+    CancelWorkBuddyOAuth: vi.fn(),
     StartCodeGenSSO: (...args: unknown[]) => StartCodeGenSSOMock(...args),
     StartCodeGenSSOEmbedded: (...args: unknown[]) => StartCodeGenSSOEmbeddedMock(...args),
     WaitCodeGenSSOResult: (...args: unknown[]) => WaitCodeGenSSOResultMock(...args),

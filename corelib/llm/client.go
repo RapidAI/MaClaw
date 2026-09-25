@@ -127,7 +127,7 @@ func buildOpenAIChatRequestBody(
 	if corelib.IsDeepSeekFlashOpenAICompat(cfg) {
 		messages = normalizeOpenAICompatDeveloperMessages(messages)
 	}
-	if corelib.IsDeepSeekFlashOpenAICompat(cfg) || corelib.IsGLMCodingPlanOpenAICompat(cfg) {
+	if corelib.IsGLMCodingPlanOpenAICompat(cfg) || (corelib.IsDeepSeekFlashOpenAICompat(cfg) && !corelib.DeepSeekFlashAcceptsImages(cfg.Model)) {
 		messages = normalizeOpenAICompatTextOnlyMessageContent(messages)
 	}
 	messages = normalizeOpenAIChatToolCallLinkage(messages)
@@ -223,7 +223,9 @@ func buildOpenAIChatRequestBody(
 		}
 	}
 	// Cap reasoning budget when tools present (room for tool-call JSON).
-	if thinking, _ := reqBody["thinking"].(map[string]interface{}); thinking != nil {
+	// DeepSeek uses reasoning_effort, not Anthropic budget_tokens. WorkBuddy
+	// returns an empty reasoning_content when only thinking.type is set.
+	if thinking, _ := reqBody["thinking"].(map[string]interface{}); thinking != nil && !corelib.IsDeepSeekThinkingModeModel(cfg) {
 		if typ, _ := thinking["type"].(string); strings.EqualFold(typ, "enabled") && len(opts.Tools) > 0 {
 			if _, hasBudget := thinking["budget_tokens"]; !hasBudget {
 				budget := 4096
@@ -236,8 +238,9 @@ func buildOpenAIChatRequestBody(
 			}
 		}
 	}
-	if re := strings.TrimSpace(cfg.ReasoningEffort); re != "" && corelib.IsAutoThinkingMode(cfg.ThinkingMode) {
-		// Map "none"/"off" to a low-cost provider value when pass-through.
+	if re := strings.TrimSpace(cfg.ReasoningEffort); re != "" && corelib.IsAutoThinkingMode(cfg.ThinkingMode) && !corelib.IsDeepSeekThinkingModeModel(cfg) {
+		// DeepSeek effort is stamped below. This branch must not write
+		// "minimal" or "medium", which that API rejects.
 		switch strings.ToLower(re) {
 		case "none", "off", "0", "false":
 			reqBody["reasoning_effort"] = "minimal"
@@ -250,6 +253,7 @@ func buildOpenAIChatRequestBody(
 		normalizeDeepSeekFlashUnsupportedOptions(reqBody)
 		ensureDeepSeekFlashJSONResponseInstruction(reqBody)
 	}
+	corelib.StampDeepSeekReasoningEffort(cfg, reqBody)
 	return reqBody
 }
 

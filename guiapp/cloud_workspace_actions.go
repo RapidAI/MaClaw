@@ -19,6 +19,33 @@ import (
 
 var errCloudWorkspaceFenced = errors.New("cloud workspace writer fenced")
 
+// cloudWorkspaceMachineAuthError is the Hub rejecting this PC's machine token.
+// The raw English "machine authorization required" is not actionable in the UI.
+type cloudWorkspaceMachineAuthError struct{}
+
+func (e *cloudWorkspaceMachineAuthError) Error() string {
+	return cloudWorkspaceTr(
+		"This PC is no longer authorized on the Hub. Register again in Settings, then open the cloud workspace.",
+		"本机 Hub 授权已失效。请在设置中重新注册后再打开云端工作区。",
+		"本機 Hub 授權已失效。請在設定中重新註冊後再開啟雲端工作區。",
+	)
+}
+
+func isCloudWorkspaceMachineAuthError(err error) bool {
+	var target *cloudWorkspaceMachineAuthError
+	return errors.As(err, &target)
+}
+
+func cloudWorkspaceUnauthorizedBody(data []byte) bool {
+	var payload struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return false
+	}
+	return payload.Code == "MACHINE_UNAUTHORIZED"
+}
+
 // errCloudWorkspaceBandwidthLimited matches the hourly transfer-quota 429 so
 // the background sync loop can schedule one window-reset retry instead of a
 // hot error loop.
@@ -181,6 +208,8 @@ func cloudWorkspaceAPIError(status int, data []byte) error {
 		return fmt.Errorf("云端工作区名称已存在")
 	case "CLOUD_WORKSPACE_FORBIDDEN":
 		return fmt.Errorf("未开通云端工作区")
+	case "MACHINE_UNAUTHORIZED":
+		return &cloudWorkspaceMachineAuthError{}
 	case "CLOUD_WORKSPACE_LEASE_REQUIRED":
 		return fmt.Errorf("云端工作区租约无效，请重新打开")
 	case "CLOUD_WORKSPACE_SESSION_REQUIRED", "CLOUD_WORKSPACE_SESSION_INVALID":

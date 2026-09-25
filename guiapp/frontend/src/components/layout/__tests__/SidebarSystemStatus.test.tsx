@@ -170,6 +170,23 @@ describe('SidebarSystemStatus Hub credits', () => {
         expect(codingProfile.getAttribute('title')).toContain('Follows assistant · Assistant Provider · assistant-model');
     });
 
+    it('shows the assistant route on a profile-less task instead of a leftover provider name', () => {
+        render(
+            <SidebarSystemStatus
+                lang="zh-Hans" maclawLLMOnline remoteActivationStatus={{}} qqBotStatus="" telegramStatus="" weixinStatus="" lansengerStatus=""
+                sidebarCurrentProviderTokenUsage={{ provider: 'Legacy Provider', isHubService: false, input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0 }} sidebarHubCredits={null}
+                formatSidebarTokens={String} formatSidebarHubExpiry={() => ''} formatSidebarHubTotalCredits={() => ''} formatSidebarHubUsedCredits={() => ''} formatSidebarCredit={String}
+                unlimitedHubCreditText="无限" noHubAuthorizationText="无" showHubCreditAction={false} openHubCreditsPage={vi.fn()} openLLMSettingsPage={vi.fn()}
+                activeProfile="none"
+                profileSummaries={{
+                    assistant: { profile: 'assistant', provider_name: 'Custom1', model: 'deepseek-v4.1-flash', health: 'configured' },
+                    coding: { profile: 'coding', provider_name: '智谱编程', model: 'glm-5.3-flash', health: 'configured' },
+                }}
+            />,
+        );
+        expect(screen.getByRole('button', { name: '打开大模型设置' }).textContent).toContain('Custom1：deepseek-v4.1-flash');
+    });
+
     it('derives the LLM headline from the active profile instead of assistant-only online state', () => {
         render(
             <SidebarSystemStatus

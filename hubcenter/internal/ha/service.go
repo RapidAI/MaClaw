@@ -70,7 +70,7 @@ const (
 
 var (
 	opIDCounter          uint64
-	fallbackHAHTTPClient = &http.Client{Timeout: 8 * time.Second}
+	fallbackHAHTTPClient = newHAHTTPClient(8 * time.Second)
 )
 
 type InvalidRemoteOpError struct {
@@ -226,7 +226,7 @@ func NewService(nodeID, nodeName, advertiseURL, clusterSecret string, peers []St
 		clusterSecret:            strings.TrimSpace(clusterSecret),
 		peers:                    peerMap,
 		peerPublicKeys:           peerKeys,
-		client:                   &http.Client{Timeout: 8 * time.Second},
+		client:                   newHAHTTPClient(8 * time.Second),
 		pushSem:                  make(chan struct{}, 16),
 		pushPending:              make(map[string][]*store.HASyncOp),
 		pushRunning:              make(map[string]bool),

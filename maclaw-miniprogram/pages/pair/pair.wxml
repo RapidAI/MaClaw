@@ -1,0 +1,82 @@
+<view class="page pair-page">
+  <view class="card steps-card">
+    <view class="section-title">绑定你的码卡龙桌面端</view>
+    <view class="hint">小程序通过第三方接入协议连接你的 GUI，和你自己的 ESP32 设备走同一套协议。</view>
+
+    <view class="step">
+      <view class="step-index">1</view>
+      <view class="step-body">
+        <view class="step-title">在桌面端生成配对码</view>
+        <view class="hint">码卡龙桌面端 → 设置 → 消息接入 → 第三方接入 → 硬件配置 → 生成配对码</view>
+      </view>
+    </view>
+
+    <view class="step">
+      <view class="step-index">2</view>
+      <view class="step-body">
+        <view class="step-title">在此输入 6 位数字</view>
+        <view class="hint">配对码 30 分钟内有效，且只能使用一次。</view>
+      </view>
+    </view>
+
+    <view class="step">
+      <view class="step-index">3</view>
+      <view class="step-body">
+        <view class="step-title">开始对话</view>
+        <view class="hint">绑定成功后即可远程收发消息。</view>
+      </view>
+    </view>
+  </view>
+
+  <view class="card code-card">
+    <block wx:if="{{binding}}">
+      <view class="bound-row">
+        <view>
+          <view class="bound-title">已绑定</view>
+          <view class="hint">{{binding.clientId}}</view>
+        </view>
+        <text class="text-link" bindtap="unbind">解绑</text>
+      </view>
+      <view class="hint bound-hint">重新绑定会覆盖当前令牌，旧令牌立即失效。</view>
+    </block>
+
+    <view class="code-input-wrap">
+      <input
+        class="code-input"
+        type="number"
+        maxlength="6"
+        placeholder="000000"
+        placeholder-class="code-placeholder"
+        value="{{pairCode}}"
+        bindinput="onPairCodeInput"
+        adjust-position="{{true}}"
+      />
+    </view>
+
+    <button class="btn-primary" disabled="{{bindingInProgress || pairCode.length !== 6}}" bindtap="bind">
+      {{bindingInProgress ? '绑定中…' : '立即绑定'}}
+    </button>
+
+    <block wx:if="{{error}}">
+      <view class="error-bar">{{error}}</view>
+    </block>
+  </view>
+
+  <view class="card hub-card">
+    <view class="kv">
+      <view class="kv-label">当前 Hub</view>
+      <view class="kv-value">{{hubUrl}}</view>
+    </view>
+    <view class="kv">
+      <view class="kv-label">本设备 ID</view>
+      <view class="kv-value">{{clientId}}</view>
+    </view>
+    <view class="kv">
+      <view class="kv-label">账号</view>
+      <view class="kv-value">{{accountLabel}}</view>
+    </view>
+    <view class="hint requirement">
+      注意：桌面端必须已连接 Hub（多机模式），配对码由 Hub 下发并通过 Hub 中继消息；仅监听 127.0.0.1 的本机网关无法被手机访问。
+    </view>
+  </view>
+</view>

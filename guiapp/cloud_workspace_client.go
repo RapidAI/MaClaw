@@ -9,12 +9,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 )
 
 var (
@@ -394,6 +398,10 @@ func (a *App) cloudWorkspaceHubDoWithShare(ctx context.Context, sess cloudWorksp
 }
 
 func (a *App) cloudWorkspaceHubDo(ctx context.Context, method, path string, opt cloudWorkspaceHTTPOptions) ([]byte, int, error) {
+	return a.cloudWorkspaceHubDoRecover(ctx, method, path, opt, true)
+}
+
+func (a *App) cloudWorkspaceHubDoRecover(ctx context.Context, method, path string, opt cloudWorkspaceHTTPOptions, allowAuthRecovery bool) ([]byte, int, error) {
 	workspaceID := cloudWorkspaceWorkspaceIDFromPath(path)
 	if workspaceID != "" {
 		if sess, ok := a.lookupForeignShareAccessSession(workspaceID); ok {
@@ -414,6 +422,11 @@ func (a *App) cloudWorkspaceHubDo(ctx context.Context, method, path string, opt 
 	if requiresInstanceSession {
 		instanceSession, err = ensureCloudWorkspaceInstanceSession(ctx, hubURL, token, machineID)
 		if err != nil {
+			if allowAuthRecovery && isCloudWorkspaceMachineAuthError(err) && a.recoverCloudWorkspaceMachineAuthorization(token) {
+				retryCtx, cancel := cloudWorkspaceAuthRetryContext(ctx)
+				defer cancel()
+				return a.cloudWorkspaceHubDoRecover(retryCtx, method, path, opt, false)
+			}
 			return nil, 0, err
 		}
 	}
@@ -519,7 +532,140 @@ func (a *App) cloudWorkspaceHubDo(ctx context.Context, method, path string, opt 
 			return a.cloudWorkspaceHubDoWithShare(ctx, sess, method, path, opt)
 		}
 	}
+	if allowAuthRecovery && resp.StatusCode == http.StatusUnauthorized && cloudWorkspaceUnauthorizedBody(data) && a.recoverCloudWorkspaceMachineAuthorization(token) {
+		retryCtx, cancel := cloudWorkspaceAuthRetryContext(ctx)
+		defer cancel()
+		return a.cloudWorkspaceHubDoRecover(retryCtx, method, path, opt, false)
+	}
 	return data, resp.StatusCode, nil
+}
+
+// The open that discovered the stale token often has only a few seconds of
+// deadline left. Re-enroll must not spend that budget, and the retry needs
+// its own window.
+func cloudWorkspaceAuthRetryContext(parent context.Context) (context.Context, context.CancelFunc) {
+	base := context.Background()
+	if parent != nil {
+		base = context.WithoutCancel(parent)
+	}
+	return context.WithTimeout(base, cloudWorkspaceRequestTimeout)
+}
+
+var (
+	cloudWorkspaceAuthRecoverMu    sync.Mutex
+	cloudWorkspaceAuthRecoverLast  time.Time
+	cloudWorkspaceAuthRecoverToken string
+)
+
+func resetCloudWorkspaceAuthRecovery() {
+	cloudWorkspaceAuthRecoverMu.Lock()
+	cloudWorkspaceAuthRecoverLast = time.Time{}
+	cloudWorkspaceAuthRecoverToken = ""
+	cloudWorkspaceAuthRecoverMu.Unlock()
+}
+
+// recoverCloudWorkspaceMachineAuthorization re-enrolls this PC against the
+// configured Hub and stores the new machine token. A stale token makes every
+// cloud-workspace open fail with "machine authorization required".
+// rejectedToken is the bearer that Hub just refused. The token issued by the
+// last successful re-enroll is not rotated again while that refusal stands.
+func (a *App) recoverCloudWorkspaceMachineAuthorization(rejectedToken string) bool {
+	if a == nil {
+		return false
+	}
+	rejectedToken = strings.TrimSpace(rejectedToken)
+	cloudWorkspaceAuthRecoverMu.Lock()
+	defer cloudWorkspaceAuthRecoverMu.Unlock()
+	if !cloudWorkspaceAuthRecoverLast.IsZero() && time.Since(cloudWorkspaceAuthRecoverLast) < 30*time.Second {
+		if cloudWorkspaceAuthRecoverToken != "" && rejectedToken != cloudWorkspaceAuthRecoverToken {
+			return true
+		}
+		return false
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		cloudWorkspaceAuthRecoverLast = time.Now()
+		return false
+	}
+	email := strings.TrimSpace(cfg.RemoteEmail)
+	hubURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
+	if email == "" || hubURL == "" {
+		log.Printf("[cloud_workspace] machine re-enroll skipped: email or hub missing")
+		cloudWorkspaceAuthRecoverLast = time.Now()
+		return false
+	}
+	profile := a.currentRemoteMachineProfile(cfg.RemoteHeartbeatSec, 0)
+	log.Printf("[cloud_workspace] machine authorization rejected, re-enrolling hub=%s", hubURL)
+	enrollClient := &remote.EnrollmentClient{HTTPClient: hubHTTPClient, EnrollTimeout: remoteEnrollTimeout}
+	result, err := enrollClient.Enroll(context.Background(), remote.EnrollConfig{
+		Email:        email,
+		ClientID:     strings.TrimSpace(cfg.RemoteClientID),
+		HubURL:       hubURL,
+		MachineName:  profile.Name,
+		Platform:     profile.Platform,
+		Hostname:     profile.Hostname,
+		Arch:         profile.Arch,
+		AppVersion:   profile.AppVersion,
+		HeartbeatSec: profile.HeartbeatSec,
+		TenantID:     strings.TrimSpace(cfg.RemoteTenantID),
+	})
+	if err != nil {
+		log.Printf("[cloud_workspace] machine re-enroll failed: %v", err)
+		cloudWorkspaceAuthRecoverLast = time.Now()
+		return false
+	}
+	if err := a.PatchConfig(func(next *corelib.AppConfig) {
+		if strings.TrimSpace(result.Email) != "" {
+			next.RemoteEmail = result.Email
+		}
+		if strings.TrimSpace(result.UserID) != "" {
+			next.RemoteUserID = result.UserID
+		}
+		if strings.TrimSpace(result.TenantID) != "" {
+			next.RemoteTenantID = result.TenantID
+		}
+		if strings.TrimSpace(result.TenantName) != "" {
+			next.RemoteTenantName = result.TenantName
+		}
+		if strings.TrimSpace(result.SN) != "" {
+			next.RemoteSN = result.SN
+		}
+		next.RemoteMachineID = result.MachineID
+		next.RemoteMachineToken = result.MachineToken
+		if strings.TrimSpace(result.ViewerToken) != "" {
+			next.RemoteViewerToken = result.ViewerToken
+		}
+		if strings.TrimSpace(result.ClientID) != "" {
+			next.RemoteClientID = result.ClientID
+		}
+		next.RemoteEnabled = true
+	}); err != nil {
+		log.Printf("[cloud_workspace] machine re-enroll persist failed: %v", err)
+		cloudWorkspaceAuthRecoverLast = time.Now()
+		return false
+	}
+	resetCloudWorkspaceInstanceSessions()
+	cloudWorkspaceAuthRecoverLast = time.Now()
+	cloudWorkspaceAuthRecoverToken = result.MachineToken
+	log.Printf("[cloud_workspace] machine authorization recovered machine_id=%s", result.MachineID)
+	go a.reconnectHubAfterCloudWorkspaceAuthRecovery()
+	return true
+}
+
+func (a *App) reconnectHubAfterCloudWorkspaceAuthRecovery() {
+	if a == nil || a.remoteSessions == nil || a.remoteSessions.hubClient == nil {
+		return
+	}
+	client := a.remoteSessions.hubClient
+	// A live socket was authenticated with the previous token. Dropping it
+	// here also stops hardware and in-flight Hub calls. Leave it up; the next
+	// reconnect reloads the token saved above. Connect only when already down.
+	if client.IsConnected() {
+		return
+	}
+	if err := client.Connect(); err != nil {
+		log.Printf("[cloud_workspace] hub reconnect after re-enroll failed: %v", err)
+	}
 }
 
 func (a *App) revokeCloudWorkspaceInstanceSession(ctx context.Context) error {

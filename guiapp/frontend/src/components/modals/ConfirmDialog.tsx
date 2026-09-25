@@ -7,11 +7,15 @@ type ConfirmDialogProps = {
     onCancel: () => void;
     onConfirm: () => void;
     confirmPending?: boolean;
+    // Optional button labels. Defaults keep the generic confirm/cancel pair so
+    // callers that only need "are you sure" stay unchanged.
+    confirmText?: string;
+    cancelText?: string;
 };
 
 // Icon/theme styling keeps stroke="#ef4444", var(--theme-surface), and var(--theme-text-primary) in App.css.
 
-export const ConfirmDialog = ({ title, message, t, onCancel, onConfirm, confirmPending = false }: ConfirmDialogProps) => {
+export const ConfirmDialog = ({ title, message, t, onCancel, onConfirm, confirmPending = false, confirmText, cancelText }: ConfirmDialogProps) => {
     const titleId = useId();
     const messageId = useId();
     const dialogRef = useRef<HTMLDivElement | null>(null);
@@ -109,10 +113,10 @@ export const ConfirmDialog = ({ title, message, t, onCancel, onConfirm, confirmP
 
             <div className="confirm-dialog__actions">
                 <button ref={cancelButtonRef} type="button" className="confirm-dialog__button confirm-dialog__button--secondary" onClick={onCancel} disabled={confirmPending}>
-                    {t("cancel")}
+                    {cancelText ?? t("cancel")}
                 </button>
                 <button type="button" className="confirm-dialog__button confirm-dialog__button--danger" onClick={onConfirm} disabled={confirmPending} aria-busy={confirmPending}>
-                    {t("confirm")}
+                    {confirmText ?? t("confirm")}
                 </button>
             </div>
         </div>

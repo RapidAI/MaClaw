@@ -229,6 +229,46 @@ function isImpliedToolName(kind: AssistantLiveActivityKind, toolName: string): b
     return (IMPLIED_TOOL_NAMES[kind] || []).includes(toolName.toLowerCase());
 }
 
+export type LiveModelProviderRef = {
+    name?: string;
+    model?: string;
+    isHubService?: boolean;
+};
+
+/**
+ * Model named beside "正在访问模型".
+ * Prefer the profile that will actually serve the turn. Do not guess from
+ * another provider's catalog, and do not fall back to the first provider's
+ * default model when the turn has no explicit model id — that list is sorted
+ * by name, so an unrelated provider (for example 智谱编程) would be shown
+ * while the request uses the assistant profile.
+ */
+export function resolveLiveModelTarget(input: {
+    contactProviderName?: string;
+    contactModelId?: string;
+    contactIsHubService?: boolean;
+    currentModel?: string;
+    providers?: LiveModelProviderRef[];
+}): { providerName: string; modelId: string; isHubService: boolean } {
+    const contactModel = String(input.contactModelId || "").trim();
+    const contactProvider = String(input.contactProviderName || "").trim();
+    if (contactModel || contactProvider) {
+        return {
+            providerName: contactProvider,
+            modelId: contactModel,
+            isHubService: !!input.contactIsHubService,
+        };
+    }
+    const modelId = String(input.currentModel || "").trim();
+    if (!modelId) return { providerName: "", modelId: "", isHubService: false };
+    const match = (input.providers || []).find((provider) => String(provider.model || "").trim() === modelId);
+    return {
+        providerName: String(match?.name || "").trim(),
+        modelId,
+        isHubService: !!match?.isHubService,
+    };
+}
+
 export function formatLiveModelObject(lang: string, providerName?: string, modelId?: string, isHubService?: boolean): string {
     const provider = isHubService
         ? localizeText(lang, "MaClaw official", "MaClaw官方", "MaClaw官方")

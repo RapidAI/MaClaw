@@ -1,7 +1,9 @@
 package guiapp
 
 import (
+	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -9,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
@@ -297,6 +300,226 @@ func TestCloudWorkspaceEntitlementLeaseFallsBackToMachineID(t *testing.T) {
 	}
 	if !ws.LeaseInUse || ws.LeaseHolder != "mid" {
 		t.Fatalf("empty machine_name should fall back to machine_id: %+v", ws)
+	}
+}
+
+func TestCloudWorkspaceOpenReenrollsWhenMachineAuthorizationIsRejected(t *testing.T) {
+	resetCloudWorkspaceAuthRecovery()
+	t.Cleanup(resetCloudWorkspaceAuthRecovery)
+	var mu sync.Mutex
+	var sessionAuth []string
+	var enrolls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/enroll/start":
+			mu.Lock()
+			enrolls++
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"approved","email":"user@example.com","user_id":"u1","machine_id":"m_new","machine_token":"token-new","viewer_token":"view-new","tenant_id":"tenant"}`))
+		case cloudWorkspaceInstanceSessionsPath:
+			auth := r.Header.Get("Authorization")
+			mu.Lock()
+			sessionAuth = append(sessionAuth, auth)
+			mu.Unlock()
+			if auth != "Bearer token-new" {
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"code":"MACHINE_UNAUTHORIZED","message":"machine authorization required"}`))
+				return
+			}
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"session_id":"s1","session_token":"cwst","client_instance_id":"cwi_new","protocol":"v1-sequential","expires_at":"2099-01-01T00:00:00Z"}`))
+		default:
+			if !strings.Contains(r.URL.Path, "/leases") {
+				http.NotFound(w, r)
+				return
+			}
+			if r.Header.Get("Authorization") != "Bearer token-new" || r.Header.Get("X-Machine-ID") != "m_new" {
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"code":"MACHINE_UNAUTHORIZED","message":"machine authorization required"}`))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"lease_id":"lease-1","fencing_token":1}`)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineToken: "machine-token",
+		RemoteMachineID:    "machine-test",
+		RemoteEmail:        "user@example.com",
+		RemoteClientID:     "client-1",
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), cloudWorkspaceRequestTimeout)
+	defer cancel()
+	data, status, err := app.cloudWorkspaceHubDo(ctx, http.MethodPost, "/api/v1/cloud-workspaces/cws_demo/leases", cloudWorkspaceHTTPOptions{
+		jsonBody: map[string]any{"force": false},
+		accept:   "application/json",
+	})
+	if err != nil {
+		t.Fatalf("hub do: %v", err)
+	}
+	if status != http.StatusOK || !strings.Contains(string(data), "lease-1") {
+		t.Fatalf("status=%d body=%s", status, data)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if enrolls != 1 {
+		t.Fatalf("enrolls=%d", enrolls)
+	}
+	if len(sessionAuth) != 2 || sessionAuth[0] != "Bearer machine-token" || sessionAuth[1] != "Bearer token-new" {
+		t.Fatalf("session auth=%v", sessionAuth)
+	}
+}
+
+func TestCloudWorkspaceOpenDoesNotRotateATokenHubStillRejects(t *testing.T) {
+	resetCloudWorkspaceAuthRecovery()
+	t.Cleanup(resetCloudWorkspaceAuthRecovery)
+	var mu sync.Mutex
+	var enrolls int
+	var newTokenSessions int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/enroll/start":
+			mu.Lock()
+			enrolls++
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"approved","email":"user@example.com","user_id":"u1","machine_id":"m_new","machine_token":"token-new","viewer_token":"view-new"}`))
+		case cloudWorkspaceInstanceSessionsPath:
+			if r.Header.Get("Authorization") == "Bearer token-new" {
+				mu.Lock()
+				newTokenSessions++
+				mu.Unlock()
+			}
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"code":"MACHINE_UNAUTHORIZED","message":"machine authorization required"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineToken: "machine-token",
+		RemoteMachineID:    "machine-test",
+		RemoteEmail:        "user@example.com",
+		RemoteClientID:     "client-1",
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	open := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), cloudWorkspaceRequestTimeout)
+		defer cancel()
+		_, _, _ = app.cloudWorkspaceHubDo(ctx, http.MethodPost, "/api/v1/cloud-workspaces/cws_demo/leases", cloudWorkspaceHTTPOptions{
+			jsonBody: map[string]any{"force": false},
+			accept:   "application/json",
+		})
+	}
+	open()
+	open()
+	mu.Lock()
+	defer mu.Unlock()
+	if enrolls != 1 {
+		t.Fatalf("enrolls=%d, want 1", enrolls)
+	}
+	// First open retries once with the new token. The second open must not
+	// rotate again or send a second retry for that same rejected token.
+	if newTokenSessions != 2 {
+		t.Fatalf("new token session attempts=%d, want 2", newTokenSessions)
+	}
+}
+
+func TestCloudWorkspaceOpenReenrollSurvivesExpiredRequestContext(t *testing.T) {
+	resetCloudWorkspaceAuthRecovery()
+	t.Cleanup(resetCloudWorkspaceAuthRecovery)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/enroll/start":
+			time.Sleep(150 * time.Millisecond)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"approved","email":"user@example.com","user_id":"u1","machine_id":"m_new","machine_token":"token-new","viewer_token":"view-new"}`))
+		case cloudWorkspaceInstanceSessionsPath:
+			if r.Header.Get("Authorization") != "Bearer token-new" {
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"code":"MACHINE_UNAUTHORIZED","message":"machine authorization required"}`))
+				return
+			}
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"session_id":"s1","session_token":"cwst","client_instance_id":"cwi_new","protocol":"v1-sequential","expires_at":"2099-01-01T00:00:00Z"}`))
+		default:
+			if r.Header.Get("Authorization") != "Bearer token-new" {
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"code":"MACHINE_UNAUTHORIZED","message":"machine authorization required"}`))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"lease_id":"lease-1","fencing_token":1}`)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineToken: "machine-token",
+		RemoteMachineID:    "machine-test",
+		RemoteEmail:        "user@example.com",
+		RemoteClientID:     "client-1",
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+	data, status, err := app.cloudWorkspaceHubDo(ctx, http.MethodPost, "/api/v1/cloud-workspaces/cws_demo/leases", cloudWorkspaceHTTPOptions{
+		jsonBody: map[string]any{"force": false},
+		accept:   "application/json",
+	})
+	if err != nil {
+		t.Fatalf("hub do: %v", err)
+	}
+	if status != http.StatusOK || !strings.Contains(string(data), "lease-1") {
+		t.Fatalf("status=%d body=%s", status, data)
+	}
+}
+
+func TestCloudWorkspaceOpenKeepsChineseMessageWhenReenrollFails(t *testing.T) {
+	resetCloudWorkspaceAuthRecovery()
+	t.Cleanup(resetCloudWorkspaceAuthRecovery)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"code":"MACHINE_UNAUTHORIZED","message":"machine authorization required"}`))
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineToken: "machine-token",
+		RemoteMachineID:    "machine-test",
+		RemoteEmail:        "user@example.com",
+		RemoteClientID:     "client-1",
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), cloudWorkspaceRequestTimeout)
+	defer cancel()
+	_, _, err := app.cloudWorkspaceHubDo(ctx, http.MethodPost, "/api/v1/cloud-workspaces/cws_demo/leases", cloudWorkspaceHTTPOptions{
+		jsonBody: map[string]any{"force": false},
+		accept:   "application/json",
+	})
+	if err == nil || !strings.Contains(err.Error(), "授权已失效") {
+		t.Fatalf("err=%v", err)
+	}
+	if strings.Contains(err.Error(), "machine authorization required") {
+		t.Fatalf("raw hub message leaked: %v", err)
 	}
 }
 

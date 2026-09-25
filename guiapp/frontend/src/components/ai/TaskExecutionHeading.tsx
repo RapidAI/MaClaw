@@ -29,14 +29,18 @@ export function TaskExecutionHeading({ activeTab, lang, status, taskCreatedLabel
         taskCreatedLabel,
         (remoteWorkspaceLabel || workingDir) ? workingDirDisplayLabel(workingDir, lang, remoteWorkspaceLabel ? remoteWorkspace : null) : "",
     ].filter(Boolean).join(" · ");
+    const pathTitle = remoteWorkspaceLabel || (workingDir && !isCloudWorkspacePath(workingDir) ? workingDir : "");
+    // Hover shows the whole second line. When the visible path was shortened,
+    // also include the full directory so an ellipsis does not hide it.
+    const metaTitle = metaText
+        ? (pathTitle && !metaText.includes(pathTitle) ? `${metaText} · ${pathTitle}` : metaText)
+        : "";
     return (
         <div className="mc-task-execution-heading">
-            <div className="mc-task-execution-title-row">
-                <strong className="mc-task-execution-title" data-task-title={executionTitle} role="heading" aria-level={2} aria-label={executionTitle}>{executionTitle}</strong>
+            <strong className="mc-task-execution-title" data-task-title={executionTitle} role="heading" aria-level={2} aria-label={executionTitle} title={executionTitle}>{executionTitle}</strong>
+            <div className="mc-task-execution-subline">
                 <span className={`mc-task-execution-status mc-task-execution-status--${status.tone}`} data-status={status.tone} role="status"><i aria-hidden="true" />{status.label}</span>
-            </div>
-            <div className="mc-task-execution-meta" data-testid="task-execution-meta" title={remoteWorkspaceLabel || (workingDir && !isCloudWorkspacePath(workingDir) ? workingDir : undefined)}>
-                {metaText}
+                {metaText ? <div className="mc-task-execution-meta" data-testid="task-execution-meta" title={metaTitle}>{metaText}</div> : null}
             </div>
         </div>
     );

@@ -1636,7 +1636,9 @@ body {
     color: var(--theme-text-primary);
 }
 
-.left-nav-item:not(.left-nav-item--ai) .sidebar-icon,
+/* Grayscale the glyph only. The running-task count is a sibling inside
+   .sidebar-icon; filtering the wrapper turns that chip gray. */
+.left-nav-item:not(.left-nav-item--ai) .sidebar-icon > :not(.left-nav-item__badge),
 .left-nav-item:not(.left-nav-item--ai) img {
     filter: grayscale(1) saturate(0) brightness(0.68);
     opacity: 0.96;
@@ -1730,25 +1732,41 @@ body {
     color: var(--theme-text-primary);
 }
 
-/* Running-task counter on the Tasks rail entry. Mirrors the workbench status
-   card total, so it must read as an alert without competing with the icon. */
+/* Running-task counter on the Tasks rail entry. Same soft primary chip as the
+   selected task-filter pill: a count of work in progress, not an error. */
 .left-nav-item__badge {
     position: absolute;
+    z-index: 1;
     top: -4px;
     right: -8px;
-    min-width: 15px;
-    height: 15px;
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: max-content;
+    min-width: 16px;
+    height: 16px;
     padding: 0 4px;
     border-radius: 8px;
-    background: var(--theme-danger, #c43d34);
-    color: var(--theme-on-primary);
-    font-size: 0.62rem;
+    border: 1px solid color-mix(in srgb, var(--theme-primary) 36%, var(--theme-border));
+    background: color-mix(in srgb, var(--theme-primary) 16%, var(--theme-surface));
+    color: var(--theme-text-primary);
+    font-size: 0.68rem;
     font-weight: 700;
-    line-height: 15px;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
     text-align: center;
     letter-spacing: 0;
+    white-space: nowrap;
     box-shadow: 0 0 0 1.5px var(--theme-page-bg);
     pointer-events: none;
+}
+
+/* Beat `.sidebar[data-ai-theme='dark'] .left-nav-item span { color: inherit }`. */
+.sidebar[data-ai-theme='dark'] .left-nav-item .left-nav-item__badge {
+    border-color: color-mix(in srgb, var(--theme-primary) 46%, var(--theme-border));
+    background: color-mix(in srgb, var(--theme-primary) 18%, var(--theme-surface));
+    color: var(--theme-text-primary);
 }
 
 .left-nav-item.left-nav-item--ai.active .ai-nav-label,
@@ -1768,6 +1786,13 @@ body {
         color: var(--theme-on-primary);
         background: var(--theme-primary);
         box-shadow: inset 0 0 0 1px var(--theme-primary-strong);
+    }
+
+    .left-nav-item__badge,
+    .sidebar[data-ai-theme='dark'] .left-nav-item .left-nav-item__badge {
+        background: var(--theme-primary);
+        color: var(--theme-page-bg);
+        border-color: var(--theme-primary-strong);
     }
 }
 
@@ -7921,18 +7946,26 @@ button.knowledge-chip:disabled {
 .pet-settings-panel {
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    gap: 12px;
 }
 
 .pet-settings-header {
-    gap: 18px;
-    align-items: flex-start;
+    gap: 16px;
+    align-items: center;
+}
+
+/* Beat the later settings-shell header margin so the title sits with the actions. */
+#App[data-nav-tab='settings'] .settings-panel .pet-settings-header {
+    margin-bottom: 0;
+    align-items: center;
 }
 
 .pet-header-actions {
     display: flex;
-    flex-direction: column;
-    align-items: flex-end;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
     gap: 8px;
 }
 
@@ -7971,22 +8004,21 @@ button.knowledge-chip:disabled {
     min-height: 36px;
 }
 
-/* Three actions on one row: Install Zip | Browse | Guide */
+/* Install / browse / guide stay content-sized so the install action is not a banner. */
 .pet-pack-install-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1.5fr) minmax(3.25rem, 0.55fr) minmax(4.5rem, 0.9fr);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
     gap: 8px;
-    align-items: stretch;
 }
 
 .pet-pack-install-row > button {
     box-sizing: border-box;
-    width: 100%;
+    width: auto;
+    flex: 0 0 auto;
     min-height: 36px;
-    padding-inline: 10px;
+    padding-inline: 12px;
     white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
 }
 
 .pet-ambient-city-row {
@@ -8357,16 +8389,23 @@ button.knowledge-chip:disabled {
 .pet-pack-context-menu .pet-pack-context-menu__danger { color: var(--theme-danger); }
 
 .pet-packs-dir-hint {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
     margin: 8px 0 0;
     font-size: 0.72rem;
     color: var(--theme-text-secondary);
-    word-break: break-all;
     line-height: 1.4;
 }
 
 .pet-packs-dir-hint code {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     font-size: 0.7rem;
-    padding: 1px 4px;
+    padding: 1px 6px;
     border-radius: 4px;
     background: var(--theme-surface);
     border: 1px solid var(--theme-border);
@@ -8480,18 +8519,26 @@ button.knowledge-chip:disabled {
 .pet-status-strip {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 10px;
+    gap: 0;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: 12px;
+    background: var(--theme-surface-muted);
+    overflow: hidden;
 }
 
 .pet-status-chip {
     min-width: 0;
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     gap: 10px;
-    padding: 12px;
-    border: 1px solid var(--theme-border-subtle);
-    border-radius: var(--radius-md);
-    background: var(--theme-surface);
+    padding: 10px 14px;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+}
+
+.pet-status-chip + .pet-status-chip {
+    border-left: 1px solid var(--theme-border-subtle);
 }
 
 .pet-status-chip strong,
@@ -8516,12 +8563,12 @@ button.knowledge-chip:disabled {
 
 .pet-status-dot {
     flex: 0 0 auto;
-    width: 10px;
-    height: 10px;
-    margin-top: 4px;
+    width: 8px;
+    height: 8px;
+    margin-top: 0;
     border-radius: 999px;
     background: var(--theme-text-muted);
-    box-shadow: 0 0 0 4px var(--theme-surface-muted);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-text-muted) 16%, transparent);
 }
 
 .pet-status-chip[data-tone="ready"] .pet-status-dot {
@@ -8569,8 +8616,8 @@ button.knowledge-chip:disabled {
 
 .pet-settings-grid {
     display: grid;
-    grid-template-columns: minmax(0, 0.82fr) minmax(0, 1.18fr);
-    gap: 16px;
+    grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+    gap: 14px;
     align-items: stretch;
 }
 
@@ -8579,29 +8626,49 @@ button.knowledge-chip:disabled {
     min-width: 0;
     border: 1px solid var(--theme-border-subtle);
     background: var(--theme-surface-muted);
-    border-radius: 12px;
-    padding: 16px;
+    border-radius: 14px;
+    padding: 14px;
 }
 
 .pet-preview-card {
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    gap: 12px;
 }
 
 .pet-preview-stage {
-    min-height: 190px;
+    flex: 0 0 auto;
+    min-height: 168px;
     display: flex;
     align-items: center;
     justify-content: center;
     position: relative;
-    border: 1px solid var(--theme-border);
-    background: var(--theme-surface);
-    border-radius: var(--radius-md);
+    overflow: hidden;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: 12px;
+    background:
+        radial-gradient(ellipse 72% 62% at 50% 42%, color-mix(in srgb, var(--theme-primary) 16%, transparent), transparent 72%),
+        var(--theme-surface);
+}
+
+.pet-preview-stage::after {
+    content: "";
+    position: absolute;
+    z-index: 0;
+    left: 50%;
+    bottom: 28px;
+    width: 46%;
+    height: 12px;
+    transform: translateX(-50%);
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--theme-text-primary) 14%, transparent);
+    filter: blur(6px);
+    pointer-events: none;
 }
 
 .pet-preview-avatar {
     position: relative;
+    z-index: 1;
     display: grid;
     place-items: center;
     max-width: 174px;
@@ -8804,75 +8871,110 @@ button.knowledge-chip:disabled {
     56% { opacity: 0; transform: translate(7px, -8px) rotate(70deg) scale(0.8); }
 }
 
-.pet-preview-state-row {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 6px;
-}
-
-.pet-preview-state-row button {
-    min-height: 44px;
-    border: 1px solid var(--theme-border);
-    border-radius: var(--radius-sm);
-    background: var(--theme-surface);
-    color: var(--theme-text-secondary);
-    cursor: pointer;
-    font-size: 0.68rem;
-    font-weight: 600;
-    transition: border-color var(--transition-fast), background var(--transition-fast), color var(--transition-fast), transform var(--transition-fast);
-}
-
-.pet-preview-state-row button:hover,
-.pet-preview-state-row button:focus-visible {
-    border-color: var(--theme-primary);
-    transform: translateY(-1px);
-}
-
-.pet-preview-state-row button.active {
-    border-color: var(--theme-primary);
-    background: var(--theme-info-bg);
-    color: var(--theme-primary);
-}
-
 .pet-preview-meta {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 3px;
     color: var(--theme-text-secondary);
-    font-size: 0.78rem;
+    font-size: 0.74rem;
+    line-height: 1.45;
 }
 
 .pet-preview-meta strong {
     color: var(--theme-text-primary);
-    font-size: 0.92rem;
+    font-size: 0.9rem;
+    line-height: 1.3;
 }
 
 .pet-preview-runtime {
+    align-self: flex-start;
+    margin-top: 4px;
+    padding: 2px 8px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: 999px;
+    background: var(--theme-surface);
     color: var(--theme-text-tertiary, var(--theme-text-secondary));
-    font-size: 0.74rem;
+    font-size: 0.68rem;
+    line-height: 1.4;
 }
 
 .pet-config-card {
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    gap: 0;
+}
+
+.pet-config-card > .pet-form-section {
+    flex: 1;
+    padding: 0;
+    border-top: 0;
+}
+
+.pet-config-card .pet-section-spacer {
+    margin-top: auto;
+    padding-top: 16px;
+}
+
+.pet-settings-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    padding: 14px 16px 16px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: 14px;
+    background: var(--theme-surface-muted);
+}
+
+.pet-settings-controls > .pet-form-pair,
+.pet-settings-controls > .pet-form-section {
+    padding: 0;
+    border-top: 0;
+}
+
+.pet-settings-controls > .pet-form-section {
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid var(--theme-border-subtle);
+}
+
+.pet-settings-controls > .pet-advanced-card {
+    margin-top: 16px;
 }
 
 .pet-form-section {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 10px;
+}
+
+.pet-form-pair {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 16px 28px;
+    align-items: start;
+}
+
+.pet-form-pair > .pet-form-section {
+    padding: 0;
+    border-top: 0;
+}
+
+.pet-form-pair .pet-section-heading--inline {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
 }
 
 .pet-skin-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(152px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
     gap: 8px;
 }
 
 .pet-sound-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(116px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(172px, 1fr));
     gap: 8px;
 }
 
@@ -8881,30 +8983,30 @@ button.knowledge-chip:disabled {
 }
 
 .pet-sound-option {
-    min-height: 88px;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
     border: 1px solid var(--theme-border);
-    border-radius: 8px;
+    border-radius: 10px;
     background: var(--theme-surface);
     color: var(--theme-text-primary);
-    padding: 10px;
+    padding: 10px 12px;
     text-align: left;
     cursor: pointer;
-    transition: border-color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast);
+    transition: border-color var(--transition-fast), background var(--transition-fast), box-shadow var(--transition-fast);
 }
 
 .pet-sound-option:hover {
     border-color: var(--theme-primary);
-    transform: translateY(-1px);
 }
 
 .pet-sound-option:focus-visible {
     border-color: var(--theme-primary);
     outline: 2px solid var(--theme-primary);
     outline-offset: 2px;
-}
-
-.pet-sound-grid--muted .pet-sound-option:hover {
-    transform: none;
 }
 
 .pet-sound-option.active {
@@ -8916,55 +9018,65 @@ button.knowledge-chip:disabled {
 .pet-sound-option strong {
     display: block;
     font-size: 0.82rem;
-    margin-bottom: 5px;
+    line-height: 1.3;
 }
 
 .pet-sound-option span {
-    display: block;
+    display: -webkit-box;
+    overflow: hidden;
     color: var(--theme-text-secondary);
     font-size: 0.72rem;
-    line-height: 1.35;
+    line-height: 1.4;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
 }
 
 .pet-skin-option {
     display: grid;
-    grid-template-columns: 52px minmax(0, 1fr);
-    gap: 8px 10px;
-    min-height: 104px;
-    padding: 10px;
-    border: 1px solid var(--theme-border);
-    border-radius: var(--radius-md);
+    grid-template-columns: 46px minmax(0, 1fr);
+    grid-template-areas:
+        "thumb title"
+        "thumb badges"
+        "thumb desc";
+    gap: 2px 10px;
+    align-items: center;
+    min-height: 0;
+    padding: 10px 12px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: 12px;
     background: var(--theme-surface);
     color: var(--theme-text-primary);
     cursor: pointer;
     text-align: left;
-    transition: border-color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast), background var(--transition-fast);
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast), background var(--transition-fast);
 }
 
 .pet-skin-option:hover,
 .pet-skin-option:focus-visible {
     border-color: var(--theme-primary);
-    transform: translateY(-1px);
 }
 
 .pet-skin-thumb {
-    grid-row: 1 / span 2;
-    width: 52px;
-    height: 52px;
+    grid-area: thumb;
+    width: 46px;
+    height: 46px;
     object-fit: contain;
-    align-self: start;
+    align-self: center;
     margin-bottom: 0;
     border-radius: 10px;
     filter: drop-shadow(0 3px 6px rgba(15, 23, 42, 0.12));
 }
 
 .pet-skin-title-row {
-    width: 100%;
+    grid-area: title;
+    width: auto;
+    min-width: 0;
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    font-weight: 600;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+    gap: 6px;
+    font-weight: 650;
 }
 
 .pet-skin-title-row em {
@@ -8984,11 +9096,20 @@ button.knowledge-chip:disabled {
     color: var(--theme-primary);
 }
 
+.pet-skin-option .pet-skin-badges {
+    grid-area: badges;
+    margin: 0;
+}
+
 .pet-skin-option small {
-    grid-column: 2;
+    grid-area: desc;
+    display: -webkit-box;
+    overflow: hidden;
     color: var(--theme-text-secondary);
     font-size: 0.68rem;
-    line-height: 1.35;
+    line-height: 1.4;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
 }
 
 .pet-skin-option.active {
@@ -8999,59 +9120,105 @@ button.knowledge-chip:disabled {
 
 .pet-range-row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 56px;
+    grid-template-columns: minmax(0, 1fr) auto;
     gap: 10px;
     align-items: center;
     color: var(--theme-text-secondary);
     font-size: 0.78rem;
 }
 
+.pet-range-row > span {
+    min-width: 52px;
+    padding: 2px 8px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: 999px;
+    background: var(--theme-surface);
+    color: var(--theme-text-primary);
+    font-size: 0.74rem;
+    font-variant-numeric: tabular-nums;
+    font-weight: 650;
+    line-height: 1.4;
+    text-align: center;
+}
+
 .pet-range-row input[type="range"] {
     min-height: 44px;
 }
 
+.pet-preview-state-row,
 .pet-segmented-control {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    border: 1px solid var(--theme-border);
-    border-radius: var(--radius-md);
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 1px;
+    padding: 1px;
     overflow: hidden;
-    background: var(--theme-surface);
-}
-
-.pet-segmented-control button {
-    min-height: 44px;
-    border: 0;
-    border-right: 1px solid var(--theme-border-subtle);
-    background: transparent;
-    color: var(--theme-text-secondary);
-    cursor: pointer;
-    font-size: 0.76rem;
-    font-weight: 600;
-    transition: background var(--transition-fast), color var(--transition-fast);
-}
-
-.pet-segmented-control button:last-child {
-    border-right: 0;
-}
-
-.pet-segmented-control button:hover,
-.pet-segmented-control button:focus-visible {
-    background: var(--theme-surface-muted);
-    color: var(--theme-text-primary);
-}
-
-.pet-segmented-control button.active {
-    background: var(--theme-primary);
-    color: var(--theme-on-primary);
-}
-
-.pet-segmented-control--voice {
-    grid-template-columns: repeat(3, 1fr);
+    border-radius: 10px;
+    background: var(--theme-border-subtle);
 }
 
 .pet-segmented-control--readback {
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.pet-preview-state-row button,
+.pet-segmented-control button {
+    min-width: 0;
+    min-height: 36px;
+    padding: 6px 8px;
+    border: 0;
+    border-radius: 0;
+    appearance: none;
+    background: var(--theme-surface);
+    color: var(--theme-text-secondary);
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.75rem;
+    font-weight: 600;
+    line-height: 1.2;
+    text-align: center;
+    overflow-wrap: anywhere;
+    transition: background var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+/* Paint wins over .settings-panel button, which forces office ink and a border.
+   Selected fill is an opaque mix so the hairline track cannot show through the cell. */
+.settings-content.settings-panel .pet-settings-panel :is(.pet-preview-state-row, .pet-segmented-control) button {
+    border: 0;
+    background: var(--theme-surface);
+    color: var(--theme-text-secondary);
+    box-shadow: none;
+}
+
+.settings-content.settings-panel .pet-settings-panel :is(.pet-preview-state-row, .pet-segmented-control) button:hover:not(.active) {
+    background: color-mix(in srgb, var(--theme-primary) 7%, var(--theme-surface));
+    color: var(--theme-text-primary);
+}
+
+.settings-content.settings-panel .pet-settings-panel :is(.pet-preview-state-row, .pet-segmented-control) button.active {
+    background: color-mix(in srgb, var(--theme-primary) 12%, var(--theme-surface));
+    color: var(--theme-primary-strong);
+}
+
+.settings-content.settings-panel .pet-settings-panel :is(.pet-preview-state-row, .pet-segmented-control) button.active:hover {
+    background: color-mix(in srgb, var(--theme-primary) 18%, var(--theme-surface));
+}
+
+.settings-content.settings-panel .pet-settings-panel :is(.pet-preview-state-row, .pet-segmented-control) button:focus-visible {
+    outline: none;
+    box-shadow: inset 0 0 0 2px var(--theme-primary);
+}
+
+@media (forced-colors: active) {
+    .settings-content.settings-panel .pet-settings-panel :is(.pet-preview-state-row, .pet-segmented-control) button.active,
+    .settings-content.settings-panel .pet-settings-panel :is(.pet-preview-state-row, .pet-segmented-control) button.active:hover {
+        background: Highlight;
+        color: HighlightText;
+    }
+
+    .settings-content.settings-panel .pet-settings-panel :is(.pet-preview-state-row, .pet-segmented-control) button:focus-visible {
+        outline: 2px solid Highlight;
+        outline-offset: -2px;
+    }
 }
 
 .pet-voice-card {
@@ -9231,6 +9398,11 @@ button.knowledge-chip:disabled {
         grid-template-columns: 1fr;
     }
 
+    .pet-status-chip + .pet-status-chip {
+        border-left: 0;
+        border-top: 1px solid var(--theme-border-subtle);
+    }
+
     .pet-section-heading--inline {
         grid-template-columns: 1fr;
     }
@@ -9239,6 +9411,12 @@ button.knowledge-chip:disabled {
 @media (max-width: 1100px) {
     .settings-content .pet-settings-grid {
         grid-template-columns: 1fr;
+    }
+
+    /* Stacked preview should stay a stage, not a full-width banner. */
+    .pet-preview-stage {
+        width: min(100%, 420px);
+        margin-inline: auto;
     }
 }
 
@@ -9251,6 +9429,7 @@ button.knowledge-chip:disabled {
 
     .pet-header-actions {
         align-items: stretch;
+        flex-direction: column;
     }
 
     .pet-header-control-row {
@@ -9262,9 +9441,7 @@ button.knowledge-chip:disabled {
         justify-content: flex-start;
     }
 
-    /* Keep install actions on one row; shrink type slightly */
     .pet-pack-install-row {
-        grid-template-columns: minmax(0, 1.4fr) minmax(2.75rem, 0.5fr) minmax(3.5rem, 0.8fr);
         gap: 6px;
     }
 
@@ -9278,24 +9455,12 @@ button.knowledge-chip:disabled {
     }
 
     .pet-skin-grid,
-    .pet-toggle-grid,
-    .pet-preview-state-row {
+    .pet-toggle-grid {
         grid-template-columns: 1fr;
     }
 
-    .pet-segmented-control,
-    .pet-segmented-control--voice,
     .pet-segmented-control--readback {
-        grid-template-columns: 1fr;
-    }
-
-    .pet-segmented-control button {
-        border-right: 0;
-        border-bottom: 1px solid var(--theme-border-subtle);
-    }
-
-    .pet-segmented-control button:last-child {
-        border-bottom: 0;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 }
 
@@ -21146,8 +21311,8 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .mc-task-pane { background: var(--theme-surface); border-right: 0; }
 .mc-task-pane > .mc-task-pane__header { min-height: 44px; padding: 0 8px 10px !important; color: var(--theme-text-primary) !important; font-size: 15px !important; }
 .mc-task-pane > .mc-task-pane__header button { width: 32px !important; height: 32px !important; border-radius: 9px !important; background: var(--mc-accent, #2f6fbc) !important; border-color: var(--mc-accent, #2f6fbc) !important; color: var(--theme-on-primary) !important; }
-.mc-task-pane .sidebar-task-row { margin: 3px 2px; padding: 10px 12px !important; border-radius: 10px; }
-.mc-task-pane [data-task-kind] { margin-bottom: 2px; }
+.mc-task-pane .sidebar-task-row { margin: 2px; padding: 4px 6px 4px 8px !important; border-radius: 8px; }
+.mc-task-pane [data-task-kind] { margin-bottom: 0; }
 
 /* Reference conversation tabs */
 .mc-tab-bar { min-height: 42px !important; padding: 0 14px !important; align-items: stretch !important; background: var(--theme-surface) !important; border-bottom: 1px solid var(--theme-border-subtle) !important; }
@@ -21157,6 +21322,22 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 /* Reference brand rail */
 .sidebar-header { height: 88px !important; width: 100% !important; border-bottom: 1px solid var(--theme-border-subtle); background: var(--theme-primary-soft) !important; }
 .sidebar-logo { width: 48px !important; height: 48px !important; padding: 8px; border-radius: 14px; background: var(--mc-accent, #2f6fbc); box-sizing: border-box; }
+/* TigerClaw uses the product icon itself. The shared header plate and logo chip are a blue surround. */
+.sidebar-header--tiger {
+  height: auto !important;
+  border-bottom: 0 !important;
+  background: transparent !important;
+}
+.sidebar-header--tiger .sidebar-logo {
+  width: 48px !important;
+  height: 48px !important;
+  margin-bottom: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0;
+  background: transparent !important;
+  box-shadow: none !important;
+}
 .mc-sidebar-brand-mark {
   width: 52px;
   height: 52px;
@@ -21443,9 +21624,9 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .mc-task-pane .sidebar-task-row::before {
   content: '';
   flex: 0 0 auto;
-  width: 8px;
-  height: 8px;
-  margin-top: 7px;
+  width: 7px;
+  height: 7px;
+  margin-top: 5px;
   border-radius: 50%;
   background: var(--mc-accent, #2f6fbc);
 }
@@ -21886,15 +22067,19 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 .mc-task-tab-switcher__title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mc-task-execution-actions .mc-task-tab-switcher__close { flex-shrink: 0; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--theme-text-muted); font-size: 13px; line-height: 1; cursor: pointer; }
 .mc-task-execution-actions .mc-task-tab-switcher__close:hover { background: var(--theme-danger-bg); color: var(--theme-danger); }
-.mc-task-execution-heading { min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; gap: 4px; }
-.mc-task-execution-title-row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; min-width: 0; }
-.mc-task-execution-title-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mc-task-execution-title-row .mc-task-execution-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mc-task-execution-heading { min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; justify-content: center; gap: 6px; }
+/* Title keeps the first line. Status and created-at share the second, so a
+   long name cannot push the meta onto a third line under the 72px header.
+   Clip each line itself; clipping the whole heading cuts the status dot halo. */
+.mc-task-execution-heading > .mc-task-execution-title { display: block; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1.25; }
+.mc-task-execution-subline { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.mc-task-execution-subline .mc-task-execution-status { flex: 0 0 auto; }
+.mc-task-execution-subline .mc-task-execution-meta { flex: 1 1 auto; min-width: 0; }
 .ai-panel-root[data-ai-view='execution'] > .mc-ai-titlebar,
 [data-testid='ai-panel-root'][data-ai-view='execution'] > .mc-ai-titlebar { display: none !important; }
 [data-testid='ai-panel-root'][data-ai-view='execution'] [data-testid='ai-tab-bar'] { display: none !important; }
-.mc-task-execution-status { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border)); border-radius: 999px; background: var(--theme-primary-soft); color: var(--mc-accent, #2f6fbc) !important; font-size: 12px !important; font-weight: 600; white-space: nowrap; }
-.mc-task-execution-status i { width: 7px; height: 7px; border-radius: 50%; background: var(--mc-accent, #2f6fbc); box-shadow: 0 0 0 3px rgba(47,128,237,.12); }
+.mc-task-execution-status { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border)); border-radius: 999px; background: var(--theme-primary-soft); color: var(--mc-accent, #2f6fbc) !important; font-size: 12px !important; font-weight: 600; line-height: 1; white-space: nowrap; }
+.mc-task-execution-status i { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--mc-accent, #2f6fbc); box-shadow: 0 0 0 3px rgba(47,128,237,.12); }
 .mc-task-execution-status--completed { border-color: color-mix(in srgb, var(--theme-success) 32%, var(--theme-border)); background: var(--theme-success-bg); color: var(--theme-success) !important; }
 .mc-task-execution-status--completed i { background: var(--theme-success); box-shadow: 0 0 0 3px rgba(27,182,106,.12); }
 .mc-task-execution-status--pending { border-color: color-mix(in srgb, var(--theme-warning) 32%, var(--theme-border)); background: var(--theme-warning-bg); color: var(--theme-warning) !important; }
@@ -21935,6 +22120,9 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
     border-bottom: 0 !important;
 }
 .mc-task-pane[data-execution-sidebar='false'] .mc-task-pane__create-group {
+    flex: 0 1 auto;
+    width: fit-content;
+    max-width: 100%;
     min-height: 48px;
     padding-inline: 14px !important;
     gap: 7px;
@@ -22003,6 +22191,10 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
     box-shadow: none;
 }
 .mc-task-pane__create-group > span:first-child {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
     color: var(--theme-primary-strong) !important;
     font-size: 14px !important;
     letter-spacing: 0 !important;
@@ -22011,6 +22203,7 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
 /* Keep the lighter dock treatment above the legacy solid-blue header-button
    rule (.mc-task-pane > .mc-task-pane__header button) via higher specificity. */
 .mc-task-pane > .mc-task-pane__header .mc-task-pane__create-group > button {
+    flex-shrink: 0;
     width: 32px !important;
     height: 32px !important;
     border-color: rgba(23, 105, 232, .30) !important;
@@ -22292,11 +22485,17 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   cursor: pointer;
   transition: background-color .15s ease, border-color .15s ease, color .15s ease;
 }
-.mc-task-pane .mc-task-filter-btn b {
+.mc-task-pane .mc-task-filter-btn b,
+.mc-task-pane .mc-task-filter-btn:hover b,
+.mc-task-pane .mc-task-filter-btn[aria-pressed='true'] b {
   line-height: 1;
   font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  color: var(--theme-text-primary);
 }
-.mc-task-pane .mc-task-filter-btn[data-count='0']:not([aria-pressed='true']) { opacity: 0.55; }
+.mc-task-pane .mc-task-filter-btn[data-count='0']:not([aria-pressed='true']) {
+  color: var(--theme-text-muted);
+}
 .mc-task-pane .mc-task-filter-btn[aria-pressed='true'] {
   border-color: var(--theme-primary);
   background: color-mix(in srgb, var(--theme-primary) 14%, transparent);
@@ -22901,7 +23100,8 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
    remains a broad reading column instead of falling back to the old centered
    card width when a preview is open. */
 [data-testid='ai-panel-root'][data-ai-view='execution'] .mc-task-execution-header {
-  flex: 0 0 72px;
+  flex: 0 0 auto;
+  min-height: 72px;
   box-sizing: border-box;
   padding-inline: clamp(18px, 2.4vw, 32px);
 }
@@ -22921,7 +23121,6 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 }
 @media (max-width: 720px) {
   [data-testid='ai-panel-root'][data-ai-view='execution'] .mc-task-execution-header {
-    flex-basis: 68px;
     padding-inline: 14px;
   }
   [data-testid='ai-panel-root'][data-ai-view='execution'] .mc-task-execution .mc-conversation-body {
@@ -23069,10 +23268,12 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 }
 .mc-task-pane .sidebar-task-row [data-testid='task-created-at'] { display: none !important; }
 .mc-task-pane .sidebar-task-row {
-  min-height: 56px !important;
+  min-height: 0;
   align-items: flex-start !important;
-  gap: 8px !important;
-  padding: 8px 8px 8px 12px !important;
+  gap: 6px !important;
+  margin: 2px;
+  padding: 4px 6px 4px 8px !important;
+  border-radius: 8px;
 }
 .mc-task-pane .sidebar-task-row > span { align-self: flex-start; }
 .mc-task-pane .sidebar-task-row strong,
@@ -23080,10 +23281,33 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   font-size: 13px !important;
   line-height: 1.35 !important;
 }
+/* overflow:hidden ellipsis clips bold CJK when the line box is 1.2. */
+.mc-task-pane .sidebar-task-row .stsm-row-title {
+  line-height: 1.35;
+}
+/* Hidden workflow/coding chips must not keep the badge row's margin. */
+.mc-task-pane .sidebar-task-row .stsm-badge-row:not(:has(
+  [data-testid='task-cloud-shared-from'],
+  [data-testid='task-pinned-badge']
+)) {
+  display: none;
+}
+.mc-task-pane .sidebar-task-row .stsm-badge-row:has(
+  [data-testid='task-cloud-shared-from'],
+  [data-testid='task-pinned-badge']
+) {
+  margin-bottom: 2px;
+}
+.mc-task-pane .sidebar-task-row .mc-workspace-kind {
+  gap: 2px;
+  padding: 0 5px;
+  border-radius: 4px;
+  line-height: 1.35;
+}
 .mc-sidebar-task-title-row {
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: 6px;
   min-width: 0;
   width: 100%;
 }
@@ -23096,11 +23320,35 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   line-height: 1.2;
   white-space: nowrap;
 }
+.mc-task-pane .stsm-drag-handle-wrap {
+  display: flex;
+  flex: 0 0 auto;
+  align-self: center;
+}
+.mc-task-pane .stsm-drag-handle {
+  appearance: none;
+  flex: 0 0 auto;
+  align-self: center;
+  width: 14px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--theme-text-muted);
+  cursor: grab;
+  user-select: none;
+  font-size: 10px;
+  line-height: 1;
+  letter-spacing: -1px;
+}
+.mc-task-pane .stsm-drag-handle:active { cursor: grabbing; }
+.mc-task-pane .sidebar-task-row[data-task-drop-target='true'] {
+  box-shadow: inset 0 2px 0 var(--theme-primary);
+}
 .mc-task-pane .sidebar-task-row::before {
-  width: 8px !important;
-  height: 8px !important;
-  left: 1px !important;
-  top: 14px !important;
+  width: 7px !important;
+  height: 7px !important;
+  margin-top: 5px;
 }
 .mc-task-pane [data-status='running'] .sidebar-task-row::before { background: var(--mc-accent, #2f6fbc) !important; }
 .mc-task-pane [data-status='completed'] .sidebar-task-row::before { background: var(--theme-success) !important; }
@@ -23863,6 +24111,7 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   flex: 1;
   font-weight: 700;
   font-size: 0.74rem;
+  line-height: 1.35;
   color: var(--theme-text-primary);
   white-space: nowrap;
   overflow: hidden;
@@ -23871,7 +24120,7 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 }
 .stsm-row-secondary {
   display: block;
-  margin-top: 3px;
+  margin-top: 1px;
   color: var(--theme-text-muted);
   font-size: 0.66rem;
   line-height: 1.3;
@@ -23914,7 +24163,7 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   flex-shrink: 0;
   align-items: center;
   gap: 2px;
-  margin-top: 1px;
+  margin-top: 0;
 }
 .stsm-svg-block {
   display: block;
@@ -26408,6 +26657,9 @@ input.cwshare-url {
 #App .mc-task-pane [data-status='completed'] .sidebar-task-row::before { background: var(--theme-success) !important; }
 #App .mc-task-pane [data-status='pending'] .sidebar-task-row::before { background: var(--theme-warning) !important; }
 #App .mc-task-pane [data-status='failed'] .sidebar-task-row::before { background: var(--theme-danger) !important; }
+@media (pointer: coarse) {
+  .mc-task-pane .sidebar-task-row { min-height: 44px; }
+}
 
 #App .mc-task-execution-status[data-status='running'],
 #App .mc-execution-step[data-status='running'] {

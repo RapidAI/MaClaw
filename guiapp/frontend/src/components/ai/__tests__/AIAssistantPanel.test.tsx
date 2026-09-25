@@ -1993,7 +1993,10 @@ describe('AIAssistantPanel property tests', () => {
         };
         const { container, rerender } = render(<AIAssistantPanel {...initialProps} />, { wrapper: DialogProvider });
 
-        expect(container.querySelector('[data-testid="assistant-reasoning-panel"]')).toHaveProperty('open', true);
+        const streamingPanel = container.querySelector('[data-testid="assistant-reasoning-panel"]');
+        expect(streamingPanel).toHaveProperty('open', true);
+        expect(streamingPanel?.textContent).toContain('Checking the forecast.');
+        expect(streamingPanel?.getAttribute('data-live')).toBe('true');
 
         rerender(
             <AIAssistantPanel
@@ -2003,6 +2006,7 @@ describe('AIAssistantPanel property tests', () => {
         );
 
         expect(container.querySelector('[data-testid="assistant-reasoning-panel"]')).toHaveProperty('open', false);
+        expect(container.querySelector('[data-testid="assistant-reasoning-panel"]')?.textContent).toContain('Checking the forecast.');
         expect(container.querySelector('[data-testid="assistant-reasoning-panel"]')?.getAttribute('data-live')).toBe('false');
         expect(container.querySelector('[data-testid="assistant-reasoning-label"]')?.textContent).toBe('Thinking process...');
         expect(container.querySelectorAll('[data-testid="assistant-reasoning-label"]')).toHaveLength(1);
@@ -2047,6 +2051,29 @@ describe('AIAssistantPanel property tests', () => {
         expect(live?.querySelector('[data-testid="assistant-reasoning-label"]')?.className).toContain('assistant-reasoning-live-label');
         expect(live?.querySelector('[data-testid="assistant-reasoning-object"]')?.textContent).toBe('MaClaw官方 auto 模型');
         expect(live?.querySelector('[data-testid="assistant-reasoning-object"]')?.className).not.toContain('assistant-reasoning-live-label');
+    });
+
+    it('shows the assistant route while contacting the model, not the first provider default', () => {
+        const user = makeMsg({ role: 'user', content: '你好' });
+        const props = defaultPanelProps();
+        const { container } = render(
+            <AIAssistantPanel
+                {...props}
+                lang="zh-Hans"
+                currentModel=""
+                contactProviderName="Custom1"
+                contactModelId="deepseek-v4.1-flash"
+                availableProviders={[
+                    { name: '智谱编程', url: '', isHubService: false, configured: true, model: 'glm-5.3-flash', models: ['glm-5.3-flash', 'deepseek-v4.1-flash'] },
+                    { name: 'Custom1', url: '', isHubService: false, configured: true, model: 'deepseek-v4.1-flash', models: ['deepseek-v4.1-flash', 'glm-5.3-flash'] },
+                ]}
+                state={{ ...props.state, messages: [user], sending: true, streaming: false, ready: true }}
+            />,
+            { wrapper: DialogProvider },
+        );
+        const live = container.querySelector('[data-live="true"]');
+        expect(live?.querySelector('[data-testid="assistant-reasoning-label"]')?.textContent).toBe('正在访问模型');
+        expect(live?.querySelector('[data-testid="assistant-reasoning-object"]')?.textContent).toBe('Custom1 deepseek-v4.1-flash 模型');
     });
 
     it('puts the in-flight tool next to the live tool action as plain text', () => {
@@ -2183,6 +2210,7 @@ describe('AIAssistantPanel property tests', () => {
 
         expect(container.querySelector('[data-testid="assistant-chat-ai-a-completed-reasoning"] details')).toHaveProperty('open', false);
         expect(container.querySelector('[data-testid="assistant-chat-ai-a-next-reasoning"] details')).toHaveProperty('open', true);
+        expect(container.querySelector('[data-testid="assistant-chat-ai-a-next-reasoning"] details')?.textContent).toContain('Checking the second request.');
     });
 
     it('does not keep incremental rendering active after the stream ends', () => {
@@ -2201,6 +2229,7 @@ describe('AIAssistantPanel property tests', () => {
         const { container, rerender } = render(<AIAssistantPanel {...initialProps} />, { wrapper: DialogProvider });
 
         expect(container.querySelector('[data-testid="assistant-reasoning-panel"]')).toHaveProperty('open', true);
+        expect(container.querySelector('[data-testid="assistant-reasoning-panel"]')?.textContent).toContain('Reviewing the report.');
 
         rerender(
             <AIAssistantPanel
@@ -5541,13 +5570,14 @@ describe('AIAssistantPanel property tests', () => {
             }),
         ];
 
-        const { getByTestId } = renderPanel({
+        const { getByText, queryByTestId } = renderPanel({
             lang: 'zh-Hans',
             state: { messages, sending: false, streaming: false, ready: true },
             actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {} },
         });
 
-        expect(getByTestId('unfinished-slot-status').textContent || '').toContain('已恢复');
+        expect(getByText('任务已继续')).toBeTruthy();
+        expect(queryByTestId('unfinished-slot-status')).toBeNull();
     });
 
     it('localizes interrupted unfinished slot details in Chinese', () => {
@@ -5803,13 +5833,41 @@ describe('AIAssistantPanel property tests', () => {
             }),
         ];
 
-        const { getByText, getByTestId } = renderPanel({
+        const { getByText, queryByTestId } = renderPanel({
             state: { messages, sending: false, streaming: false, ready: true },
             actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {} },
         });
 
         expect(getByText(/Task resumed|\u4efb\u52a1\u5df2\u7ee7\u7eed/)).toBeTruthy();
-        expect(getByTestId('unfinished-slot-status').textContent || '').toMatch(/Status: resumed|\u5df2\u6062\u590d/);
+        expect(queryByTestId('unfinished-slot-status')).toBeNull();
+        expect(queryByTestId('unfinished-slot-review-required')).toBeNull();
+    });
+
+    it('does not keep telling the user to resume after the recovery card is dismissed', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: '检测到未完成任务：查看驱网服务器状态。选择“继续上次任务”可继续。',
+                unfinishedSlot: {
+                    slotID: 'slot-dismissed-copy',
+                    title: '查看驱网服务器状态',
+                    summary: 'Previous task was interrupted after a durable tool-progress checkpoint.',
+                    status: 'dismissed',
+                    recoveryMode: 'requires_review',
+                    actions: [],
+                },
+            }),
+        ];
+
+        const { getByText, queryByText, queryByTestId } = renderPanel({
+            lang: 'zh-Hans',
+            state: { messages, sending: false, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {} },
+        });
+
+        expect(getByText('任务已忽略')).toBeTruthy();
+        expect(queryByText(/选择“继续上次任务”可继续/)).toBeNull();
+        expect(queryByTestId('unfinished-slot-review-required')).toBeNull();
     });
 
     it('unfinished slot action buttons size to text without overflowing the card', () => {
@@ -7962,7 +8020,7 @@ describe('thinking panel auto-expands with real hook state shape', () => {
     const reasoningDetails = (root: HTMLElement) =>
         root.querySelector<HTMLDetailsElement>('details[data-testid="assistant-reasoning-panel"]');
 
-    it('auto-expands when streamingSessionKeys lists the active session', () => {
+    it('opens the trail while streamingSessionKeys lists the active session', () => {
         const user = makeMsg({ role: 'user', content: 'Nanjing weather' });
         const assistant = makeMsg({ id: 'a-repro-expand', role: 'assistant', content: '', reasoning: 'Checking the forecast for Nanjing.\nRain is likely in the afternoon.' });
         const props = defaultPanelProps();
@@ -7994,6 +8052,8 @@ describe('thinking panel auto-expands with real hook state shape', () => {
         );
 
         expect(reasoningDetails(container)?.open).toBe(true);
+        expect(reasoningDetails(container)?.textContent).toContain('Checking the forecast for Nanjing.');
+        expect(reasoningDetails(container)?.getAttribute('data-live')).toBe('true');
     });
 });
 

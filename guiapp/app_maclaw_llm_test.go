@@ -22,6 +22,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/configfile"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
+	"github.com/RapidAI/CodeClaw/corelib/workbuddy"
 	"pgregory.net/rapid"
 )
 
@@ -3147,8 +3148,8 @@ func TestMaclawLLMProfileProbesUntestedAssignedModelVision(t *testing.T) {
 	if err != nil {
 		t.Fatalf("retest: %v", err)
 	}
-	if posts.Load() != 0 {
-		t.Fatalf("already-tested model was probed again: %d", posts.Load())
+	if posts.Load() != 2 {
+		t.Fatalf("explicit retest posts = %d, want 2", posts.Load())
 	}
 	if result.VisionProbeStatus != "supported" || !result.SupportsVision {
 		t.Fatalf("stored vision = %#v", result)
@@ -3159,8 +3160,8 @@ func TestMaclawLLMProfileProbesUntestedAssignedModelVision(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tested default: %v", err)
 	}
-	if posts.Load() != 0 {
-		t.Fatalf("already-tested default model was probed again: %d", posts.Load())
+	if posts.Load() != 2 {
+		t.Fatalf("explicit retest of default posts = %d, want 2", posts.Load())
 	}
 	if result.VisionProbeStatus != "supported" {
 		t.Fatalf("default vision = %q", result.VisionProbeStatus)
@@ -4957,7 +4958,7 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 		t.Errorf("火山引擎 Agent Plan WireAPI = %q, want %q", tokenPlan.WireAPI, "responses")
 	}
 
-	expectedNames := []string{"OpenAI", "Anthropic", "GitHub Copilot", "DeepSeek", "Qwen", "xAI-Grok", "OpenCode", "智谱编程", "MiniMax", "Kimi", volcengineAgentPlanProviderName, "讯飞星辰", "Custom1", "Custom2"}
+	expectedNames := []string{"OpenAI", "Anthropic", "GitHub Copilot", "DeepSeek", "Qwen", "xAI-Grok", "OpenCode", "智谱编程", "MiniMax", "Kimi", volcengineAgentPlanProviderName, "讯飞星辰", workbuddy.NameChina, workbuddy.NameGlobal, "Custom1", "Custom2"}
 	if len(providers) < len(expectedNames) {
 		t.Fatalf("provider count = %d, want >= %d", len(providers), len(expectedNames))
 	}
@@ -4975,6 +4976,16 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 		t.Errorf("Kimi AgentType = %q, want %q", got, "claude code 2.0")
 	}
 
+	for _, profile := range []workbuddy.Profile{workbuddy.ChinaProfile(), workbuddy.GlobalProfile()} {
+		provider, ok := findProviderByName(providers, profile.Name)
+		if !ok {
+			t.Fatalf("providers missing %s", profile.Name)
+		}
+		if provider.URL != profile.ChatURL || provider.Model != profile.DefaultModel || provider.AuthType != "oauth" || provider.Protocol != "openai" {
+			t.Errorf("%s = %#v, want chat %s model %s oauth", profile.Name, provider, profile.ChatURL, profile.DefaultModel)
+		}
+	}
+
 	n := len(providers)
 	if !providers[n-2].IsCustom {
 		t.Errorf("providers[%d] (%s) IsCustom = false, want true", n-2, providers[n-2].Name)
@@ -4982,6 +4993,54 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 	if !providers[n-1].IsCustom {
 		t.Errorf("providers[%d] (%s) IsCustom = false, want true", n-1, providers[n-1].Name)
 	}
+}
+
+func TestNormalizeWorkBuddyProviderRestoresOAuthWithoutClobberingModel(t *testing.T) {
+	defaults := workbuddyProvider(workbuddy.ChinaProfile())
+	got := normalizeWorkBuddyProvider(corelib.MaclawLLMProvider{
+		Name:          workbuddy.NameChina,
+		Model:         "glm-5.3-flash",
+		WireAPI:       "responses",
+		Protocol:      "anthropic",
+		ContextLength: 128000,
+	}, defaults)
+	if got.AuthType != "oauth" || got.Protocol != "openai" || got.WireAPI != "" || got.URL != defaults.URL {
+		t.Fatalf("normalized = %#v", got)
+	}
+	if got.Model != "glm-5.3-flash" || got.ContextLength != 128000 {
+		t.Fatalf("explicit model/context changed: %#v", got)
+	}
+	empty := normalizeWorkBuddyProvider(corelib.MaclawLLMProvider{Name: workbuddy.NameGlobal}, workbuddyProvider(workbuddy.GlobalProfile()))
+	if empty.Model != "gpt-5.4" || empty.ContextLength != 272000 {
+		t.Fatalf("empty provider = %#v", empty)
+	}
+}
+
+func TestFetchWorkBuddyModelsUsesBuiltinCatalog(t *testing.T) {
+	app := &App{}
+	china, err := app.FetchProviderModels(workbuddy.ChinaProfile().ChatURL, "", "openai", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	global, err := app.FetchProviderModels(workbuddy.GlobalProfile().ChatURL, "", "openai", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsModelID(china, "glm-5.3") || containsModelID(china, "gpt-5.4") {
+		t.Fatalf("china catalog = %#v", china)
+	}
+	if !containsModelID(global, "gpt-5.4") || containsModelID(global, "hunyuan-chat") {
+		t.Fatalf("global catalog = %#v", global)
+	}
+}
+
+func containsModelID(items []ProviderModelItem, id string) bool {
+	for _, item := range items {
+		if item.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 func TestGetMaclawLLMProviders_BackfillsLegacyTimeoutIntoCurrentProvider(t *testing.T) {

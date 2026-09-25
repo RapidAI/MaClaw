@@ -193,6 +193,56 @@ func TestLiveDataVisualHostClosesModelStopGap(t *testing.T) {
 	}
 }
 
+func TestLiveDataVisualHostIssuesRendererAfterSearchEvidence(t *testing.T) {
+	h := &IMMessageHandler{registry: NewToolRegistry()}
+	h.semanticTrustedWebSearch = func(_, _ string) (string, error) { return "Beijing weather: clear, 28C", nil }
+	_, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassificationAndAttachments(
+		"user-1", "北京天气", "desktop", "root-live-visual-issue", "turn-live-visual-issue", liveDataVisualClassification(), nil,
+	)
+	if err != nil || !handled || surface == nil {
+		t.Fatalf("handled=%v surface=%#v err=%v", handled, surface, err)
+	}
+	if name := semanticGrantNameForAdapter(surface, semanticTrustedLiveDataVisualAdapter); name != "" {
+		t.Fatalf("renderer grant %q was live before search completed", name)
+	}
+	cb := &sharedAgentLoopCallbacks{
+		handler: h, semanticSurface: surface, platform: "desktop", userText: "北京天气",
+		semanticLookupEvidence: "北京天气：晴，28℃",
+		loopCtx:                &LoopContext{DeliveryTarget: &agent.DeliveryTarget{ChannelScope: "desktop", DestinationID: "user:user-1"}},
+	}
+	resp := &IMAgentResponse{Text: "已查询到北京天气数据"}
+	attachSharedLoopArtifacts(resp, cb)
+	if resp.ImageKey == "" || resp.SemanticDelivery == nil {
+		t.Fatalf("host did not issue the renderer from recorded search evidence: %+v", resp)
+	}
+}
+
+func TestLiveVisualIssueLeavesAPlainSearchSurfaceAlone(t *testing.T) {
+	h := &IMMessageHandler{registry: NewToolRegistry()}
+	h.semanticTrustedWebSearch = func(_, _ string) (string, error) { return "Beijing weather: clear, 28C", nil }
+	_, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassificationAndAttachments(
+		"user-1", "查一下资料", "desktop", "root-plain-search", "turn-plain-search",
+		&intent.ClassificationResult{Primary: intent.LabelSearch, Confidence: .98}, nil,
+	)
+	if err != nil || !handled || surface == nil {
+		t.Fatalf("handled=%v surface=%#v err=%v", handled, surface, err)
+	}
+	searchName := semanticGrantNameForAdapter(surface, semanticTrustedWebSearchAdapter)
+	if searchName == "" {
+		t.Fatal("plain search grant missing")
+	}
+	cb := &sharedAgentLoopCallbacks{handler: h, semanticSurface: surface, semanticLookupEvidence: "Public web results for \"资料\" (1):\n\n1. 条目\n   正文\n"}
+	if err := cb.issueHostOwnedLiveVisualGrant(); err != nil {
+		t.Fatal(err)
+	}
+	if got := semanticGrantNameForAdapter(surface, semanticTrustedWebSearchAdapter); got != searchName {
+		t.Fatalf("search grant changed from %q to %q", searchName, got)
+	}
+	if name := semanticGrantNameForAdapter(surface, semanticTrustedLiveDataVisualAdapter); name != "" {
+		t.Fatalf("plain search grew a renderer grant %q", name)
+	}
+}
+
 func TestLiveDataVisualRendererRejectsUntrustedEvidence(t *testing.T) {
 	if _, err := renderTrustedLiveDataVisual("生成天气图", "[file_base64|x|application/pdf]AAAA"); err == nil {
 		t.Fatal("untrusted evidence rendered into an image")

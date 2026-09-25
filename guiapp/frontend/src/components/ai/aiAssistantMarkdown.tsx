@@ -1096,11 +1096,14 @@ function formatUnfinishedSlotSummary(summary: string, lang: string): string {
 
 function formatUnfinishedSlotNotice(content: string, slot: ChatUnfinishedSlot | undefined, lang: string): string {
     if (!slot) return content;
+    const status = slot.status?.trim().toLowerCase();
+    const settled = status === "resumed" || status === "completed" || status === "dismissed";
     const normalized = content.trim();
     const isUnfinishedNotice = /^Detected an unfinished task:/i.test(normalized)
         || /^\u68c0\u6d4b\u5230\u672a\u5b8c\u6210\u4efb\u52a1/.test(normalized)
         || /^\u5075\u6e2c\u5230\u672a\u5b8c\u6210\u4efb\u52d9/.test(normalized);
     if (!isUnfinishedNotice) return content;
+    if (settled) return "";
     const rawTitle = (slot.title || slot.summary || slot.projectPath || localizeText(lang, "Previous unfinished task", "\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52a1", "\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52d9")).trim();
     const title = (slot.title ? rawTitle : formatUnfinishedSlotSummary(rawTitle, lang)).replace(/[.\u3002]+$/u, "");
     return localizeText(
@@ -1119,11 +1122,14 @@ function renderUnfinishedSlotCard(
 ): React.ReactNode {
     const actions = slot.actions || [];
     const status = slot.status?.trim().toLowerCase();
+    const settled = status === 'resumed' || status === 'completed' || status === 'dismissed';
     const cardTitle = status === 'resumed'
         ? localizeText(lang, "Task resumed", "\u4efb\u52a1\u5df2\u7ee7\u7eed", "\u4efb\u52d9\u5df2\u7e7c\u7e8c")
         : status === 'completed'
             ? localizeText(lang, "Task completed", "\u4efb\u52a1\u5df2\u5b8c\u6210", "\u4efb\u52d9\u5df2\u5b8c\u6210")
-            : localizeText(lang, "Unfinished item", "\u672a\u5b8c\u6210\u9879", "\u672a\u5b8c\u6210\u9805");
+            : status === 'dismissed'
+                ? localizeText(lang, "Task dismissed", "\u4efb\u52a1\u5df2\u5ffd\u7565", "\u4efb\u52d9\u5df2\u5ffd\u7565")
+                : localizeText(lang, "Unfinished item", "\u672a\u5b8c\u6210\u9879", "\u672a\u5b8c\u6210\u9805");
     return (
         <div
             data-testid="unfinished-slot-card"
@@ -1138,7 +1144,7 @@ function renderUnfinishedSlotCard(
             <div style={{ color: t.headingColor, fontWeight: 700, marginBottom: "6px" }}>
                 {cardTitle}
             </div>
-            {slot.status && (
+            {slot.status && !settled && (
                 <div data-testid="unfinished-slot-status" style={{ color: t.fieldLabel, fontSize: "11px", marginBottom: "6px" }}>
                     {formatUnfinishedSlotStatus(slot.status, lang)}
                 </div>
@@ -1148,17 +1154,17 @@ function renderUnfinishedSlotCard(
                     {slot.title}
                 </div>
             )}
-            {slot.summary && (
+            {slot.summary && !settled && (
                 <div data-testid="unfinished-slot-summary" style={{ color: t.text, whiteSpace: "pre-wrap", overflowWrap: "break-word" }}>
                     {renderContentWithCodeBlocks(formatUnfinishedSlotSummary(slot.summary, lang), t)}
                 </div>
             )}
-            {slot.recoveryMode === 'requires_review' && (
+            {!settled && slot.recoveryMode === 'requires_review' && (
                 <div data-testid="unfinished-slot-review-required" style={{ color: t.fieldLabel, marginTop: "6px", whiteSpace: "pre-wrap" }}>
                     {localizeText(lang, "Review required: the previous task may have changed the workspace or caused an external side effect. Continuing restores context only; it does not retry that action.", "需要审阅：上次任务可能已修改工作区或产生外部副作用。继续只恢复上下文，不会重试该操作。", "需要審閱：上次任務可能已修改工作區或產生外部副作用。繼續只恢復上下文，不會重試該操作。")}
                 </div>
             )}
-            {slot.recoveryMode === 'requires_review' && slot.sideEffectState === 'local_committed' && (
+            {!settled && slot.recoveryMode === 'requires_review' && slot.sideEffectState === 'local_committed' && (
                 <div data-testid="unfinished-slot-workspace-review" style={{ color: t.fieldLabel, marginTop: "6px", whiteSpace: "pre-wrap" }}>
                     {localizeText(lang, "Local changes may already exist; review the workspace before continuing.", "本地修改可能已存在；继续前请检查工作区。", "本機修改可能已存在；繼續前請檢查工作區。")}
                 </div>
@@ -1695,7 +1701,10 @@ export function renderMessage(
                             const reasoningLabel = live
                                 ? (liveReasoningLabel || assistantLiveActivityLabel("thinking", lang))
                                 : (lang === "en" ? "Thinking process..." : "思考过程...");
-                            const shouldOpen = isLastAssistant && isStreaming && !collapseReasoningByDefault;
+                            // Open while reasoning tokens are still arriving. Fold when that
+                            // stream ends. The text stays in the panel; a live tool label
+                            // with no stream, and the coding workbench, stay folded.
+                            const shouldOpen = isStreaming && isLastAssistant && !collapseReasoningByDefault;
                             const displayReasoning = visibleReply.reasoning;
                             if (!displayReasoning.trim() && !live) return null;
                             return (

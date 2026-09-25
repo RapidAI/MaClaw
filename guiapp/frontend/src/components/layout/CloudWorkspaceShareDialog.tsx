@@ -6,6 +6,7 @@ import { EVENT_PROJECT_INDEX_CHANGED } from '../../constants/events';
 import { useToast } from '../Toast';
 import { extractErrorMessage } from '../ai/participantAddError';
 import { useDialog } from '../CustomDialog';
+import { useSafeBackdropDismiss } from '../../hooks/useSafeBackdropDismiss';
 
 const getPortalThemeMode = (themeMode?: string) => (
     themeMode || document.getElementById('App')?.getAttribute('data-ai-theme') || undefined
@@ -18,6 +19,50 @@ const textForLang = (lang: string, en: string, zh: string, zhHant = zh) => {
     if (lang.startsWith('zh')) return zh;
     return en;
 };
+
+type ShareFieldKeyEvent = {
+    isComposing?: boolean;
+    keyCode?: number;
+    ctrlKey: boolean;
+    metaKey: boolean;
+    altKey: boolean;
+    shiftKey: boolean;
+    key: string;
+    target: EventTarget | null;
+    preventDefault(): void;
+    stopPropagation(): void;
+};
+
+/** Keep Ctrl/Cmd+A inside the share field. A page-level select-all lands on the backdrop and closes the dialog. */
+function selectAllInShareField(event: ShareFieldKeyEvent) {
+    if (event.isComposing || event.keyCode === 229) return;
+    if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return;
+    if (event.key.toLowerCase() !== 'a') return;
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement) || target.disabled) return;
+    if (!target.closest('.cwshare-dialog')) return;
+    const textual = target.type === '' || target.type === 'text' || target.type === 'password' || target.type === 'search' || target.type === 'url' || target.type === 'email' || target.type === 'tel';
+    if (!textual) {
+        // A checkbox or button cannot hold the selection. Swallow the shortcut
+        // so it does not select the page and dismiss the dialog.
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+    }
+    const end = target.value.length;
+    try {
+        target.setSelectionRange(0, end);
+    } catch {
+        // Leave the browser's own select-all when this field rejects a scripted range.
+        return;
+    }
+    // Some engines accept the call but leave the caret unmoved. Cancelling the
+    // default action then selects nothing and the page selection can still land
+    // on the backdrop.
+    if (target.selectionStart !== 0 || target.selectionEnd !== end) return;
+    event.preventDefault();
+    event.stopPropagation();
+}
 
 export type CloudWorkspaceShareTask = {
     name: string;
@@ -122,6 +167,7 @@ export function CloudWorkspaceShareDialog({
     const [clearPassword, setClearPassword] = useState(false);
     const [view, setView] = useState<ShareView | null>(null);
     const [busy, setBusy] = useState(false);
+    const { backdropProps, dialogProps } = useSafeBackdropDismiss(onClose, { enabled: !busy });
     const busyRef = useRef(false);
     const [error, setError] = useState('');
     const [copied, setCopied] = useState(false);
@@ -174,6 +220,8 @@ export function CloudWorkspaceShareDialog({
     useEffect(() => {
         if (!open) return;
         const onKeyDown = (event: KeyboardEvent) => {
+            selectAllInShareField(event);
+            if (event.defaultPrevented) return;
             if (event.key !== 'Escape' || event.isComposing || event.keyCode === 229) return;
             if (busy || document.querySelector('.custom-dialog')) return;
             event.preventDefault();
@@ -282,7 +330,7 @@ export function CloudWorkspaceShareDialog({
             data-ai-theme={getPortalThemeMode(themeMode)}
             data-ai-dark-scheme={getPortalDarkScheme()}
             data-ai-light-scheme={getPortalLightScheme()}
-            onClick={e => { if (e.target === e.currentTarget && !busy) onClose(); }}
+            {...backdropProps}
         >
             <div
                 ref={dialogRef}
@@ -290,7 +338,7 @@ export function CloudWorkspaceShareDialog({
                 role="dialog"
                 aria-modal="true"
                 aria-labelledby="task-cloud-share-title"
-                onClick={e => e.stopPropagation()}
+                {...dialogProps}
             >
                 <div className="modal-header">
                     <h3 id="task-cloud-share-title" className="cwshare-title">
@@ -352,6 +400,7 @@ export function CloudWorkspaceShareDialog({
                             disabled={busy || clearPassword}
                             value={password}
                             onChange={e => { setPassword(e.target.value); setClearPassword(false); }}
+                            onKeyDown={selectAllInShareField}
                             placeholder={passwordSet
                                 ? textForLang(lang, 'Leave blank to keep the current password', '留空则保持现有密码', '留空則保持現有密碼')
                                 : textForLang(lang, 'Optional. Recipients enter this to join.', '可选。打开链接时需要输入。', '可選。打開連結時需要輸入。')}
@@ -444,6 +493,7 @@ export function CloudWorkspaceShareJoinDialog({
     const [password, setPassword] = useState('');
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState('');
+    const { backdropProps, dialogProps } = useSafeBackdropDismiss(onClose, { enabled: !busy });
 
     useEffect(() => {
         if (!open) {
@@ -499,14 +549,14 @@ export function CloudWorkspaceShareJoinDialog({
             data-ai-theme={getPortalThemeMode(themeMode)}
             data-ai-dark-scheme={getPortalDarkScheme()}
             data-ai-light-scheme={getPortalLightScheme()}
-            onClick={e => { if (e.target === e.currentTarget && !busy) onClose(); }}
+            {...backdropProps}
         >
             <div
                 className="modal-content cwshare-dialog cwshare-dialog--join"
                 role="dialog"
                 aria-modal="true"
                 aria-labelledby="task-cloud-share-join-title"
-                onClick={e => e.stopPropagation()}
+                {...dialogProps}
             >
                 <div className="modal-header">
                     <h3 id="task-cloud-share-join-title" className="cwshare-title">
@@ -526,7 +576,7 @@ export function CloudWorkspaceShareJoinDialog({
                         disabled={busy}
                         value={password}
                         onChange={e => setPassword(e.target.value)}
-                        onKeyDown={e => { if (e.key === 'Enter') void submit(); }}
+                        onKeyDown={e => { selectAllInShareField(e); if (!e.defaultPrevented && e.key === 'Enter') void submit(); }}
                         className="cwshare-input"
                     />
                     {error ? <div role="alert" data-testid="task-cloud-share-join-error" className="cwshare-alert cwshare-alert--error">{error}</div> : null}

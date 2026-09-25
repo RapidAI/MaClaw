@@ -18,6 +18,7 @@ const EventsOnMock = vi.fn();
 const StartOpenAIOAuthMock = vi.fn();
 const StartOpenCodeZenLoginMock = vi.fn();
 const StartXAIOAuthMock = vi.fn();
+const StartWorkBuddyOAuthMock = vi.fn();
 const CancelXAIOAuthMock = vi.fn();
 const FetchCodeGenModelsMock = vi.fn();
 const ImportExternalAgentsMock = vi.fn();
@@ -42,7 +43,9 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     StartOpenAIOAuth: (...args: unknown[]) => StartOpenAIOAuthMock(...args),
     StartOpenCodeZenLogin: (...args: unknown[]) => StartOpenCodeZenLoginMock(...args),
     StartXAIOAuth: (...args: unknown[]) => StartXAIOAuthMock(...args),
+    StartWorkBuddyOAuth: (...args: unknown[]) => StartWorkBuddyOAuthMock(...args),
     CancelXAIOAuth: (...args: unknown[]) => CancelXAIOAuthMock(...args),
+    CancelWorkBuddyOAuth: vi.fn(),
     CancelOpenAIOAuth: vi.fn(),
     ImportCodexAuth: vi.fn(),
     ImportExternalAgents: (...args: unknown[]) => ImportExternalAgentsMock(...args),
@@ -610,6 +613,27 @@ describe('LLMConfigPanel test-and-save flow', () => {
             expect(StartXAIOAuthMock).toHaveBeenCalledTimes(1);
         });
         expect(TestMaclawLLMMock).not.toHaveBeenCalled();
+    });
+
+    it('signs in to WorkBuddy China through the WorkBuddy OAuth flow', async () => {
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                { name: 'WorkBuddy 国内版', url: 'https://copilot.tencent.com/v2', key: '', model: 'glm-5.3', protocol: 'openai', auth_type: 'oauth', supports_vision: false },
+            ],
+            current: 'WorkBuddy 国内版',
+        });
+        StartWorkBuddyOAuthMock.mockResolvedValue('WorkBuddy 国内版 登录成功');
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Sign in with WorkBuddy' }));
+
+        await waitFor(() => {
+            expect(StartWorkBuddyOAuthMock).toHaveBeenCalledWith('WorkBuddy 国内版');
+        });
+        expect(StartOpenAIOAuthMock).not.toHaveBeenCalled();
+        expect(StartXAIOAuthMock).not.toHaveBeenCalled();
     });
 
     it('keeps MaClaw Official visible when official grants are period-limited', async () => {

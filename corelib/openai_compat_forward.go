@@ -460,18 +460,10 @@ func sanitizeOpenAICompatForwardBodyWithOptions(cfg MaclawLLMConfig, body map[st
 		if _, hasThinking := body["thinking"]; !hasThinking {
 			body["thinking"] = map[string]interface{}{"type": "enabled"}
 		}
-		// Cap reasoning budget when tools are present to prevent reasoning from
-		// consuming the entire output budget and truncating tool call JSON.
-		// Conservative budget (4096) — see corelib/llm/client.go comment.
-		if hasToolsInBody(body) {
-			thinking, _ := body["thinking"].(map[string]interface{})
-			if thinking != nil {
-				if _, hasBudget := thinking["budget_tokens"]; !hasBudget {
-					thinking["budget_tokens"] = 4096
-				}
-			}
-		}
 	}
+	// WorkBuddy returns empty reasoning_content unless reasoning_effort is set.
+	// Also drops Anthropic budget_tokens from the DeepSeek thinking object.
+	StampDeepSeekReasoningEffort(cfg, body)
 	if isDeepSeekFlash {
 		normalizeDeepSeekFlashForwardBody(body)
 	}
@@ -2090,20 +2082,4 @@ func OverrideOpenAIResponseModel(body []byte, model string) []byte {
 		return body
 	}
 	return data
-}
-
-// hasToolsInBody checks if the request body contains a non-empty tools array.
-func hasToolsInBody(body map[string]interface{}) bool {
-	tools, ok := body["tools"]
-	if !ok || tools == nil {
-		return false
-	}
-	switch t := tools.(type) {
-	case []interface{}:
-		return len(t) > 0
-	case []map[string]interface{}:
-		return len(t) > 0
-	default:
-		return false
-	}
 }

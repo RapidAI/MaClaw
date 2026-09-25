@@ -185,7 +185,9 @@
     color: var(--theme-text-primary);
 }
 
-.left-nav-item:not(.left-nav-item--ai) .sidebar-icon,
+/* Grayscale the glyph only. The running-task count is a sibling inside
+   .sidebar-icon; filtering the wrapper turns that chip gray. */
+.left-nav-item:not(.left-nav-item--ai) .sidebar-icon > :not(.left-nav-item__badge),
 .left-nav-item:not(.left-nav-item--ai) img {
     filter: grayscale(1) saturate(0) brightness(0.68);
     opacity: 0.96;
@@ -279,25 +281,41 @@
     color: var(--theme-text-primary);
 }
 
-/* Running-task counter on the Tasks rail entry. Mirrors the workbench status
-   card total, so it must read as an alert without competing with the icon. */
+/* Running-task counter on the Tasks rail entry. Same soft primary chip as the
+   selected task-filter pill: a count of work in progress, not an error. */
 .left-nav-item__badge {
     position: absolute;
+    z-index: 1;
     top: -4px;
     right: -8px;
-    min-width: 15px;
-    height: 15px;
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: max-content;
+    min-width: 16px;
+    height: 16px;
     padding: 0 4px;
     border-radius: 8px;
-    background: var(--theme-danger, #c43d34);
-    color: var(--theme-on-primary);
-    font-size: 0.62rem;
+    border: 1px solid color-mix(in srgb, var(--theme-primary) 36%, var(--theme-border));
+    background: color-mix(in srgb, var(--theme-primary) 16%, var(--theme-surface));
+    color: var(--theme-text-primary);
+    font-size: 0.68rem;
     font-weight: 700;
-    line-height: 15px;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
     text-align: center;
     letter-spacing: 0;
+    white-space: nowrap;
     box-shadow: 0 0 0 1.5px var(--theme-page-bg);
     pointer-events: none;
+}
+
+/* Beat `.sidebar[data-ai-theme='dark'] .left-nav-item span { color: inherit }`. */
+.sidebar[data-ai-theme='dark'] .left-nav-item .left-nav-item__badge {
+    border-color: color-mix(in srgb, var(--theme-primary) 46%, var(--theme-border));
+    background: color-mix(in srgb, var(--theme-primary) 18%, var(--theme-surface));
+    color: var(--theme-text-primary);
 }
 
 .left-nav-item.left-nav-item--ai.active .ai-nav-label,
@@ -317,6 +335,13 @@
         color: var(--theme-on-primary);
         background: var(--theme-primary);
         box-shadow: inset 0 0 0 1px var(--theme-primary-strong);
+    }
+
+    .left-nav-item__badge,
+    .sidebar[data-ai-theme='dark'] .left-nav-item .left-nav-item__badge {
+        background: var(--theme-primary);
+        color: var(--theme-page-bg);
+        border-color: var(--theme-primary-strong);
     }
 }
 

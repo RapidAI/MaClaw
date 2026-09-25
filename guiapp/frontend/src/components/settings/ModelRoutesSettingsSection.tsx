@@ -2,6 +2,7 @@ import { GetCodingWorkbenchCheckpointSidecarStats, GetCodingWorkbenchRouteMap, P
 import { type Dispatch, type SetStateAction, useEffect, useMemo, useState } from 'react';
 import { corelib, main } from '../../../wailsjs/go/models';
 import { localizeText } from '../../i18n';
+import { SuggestCombobox } from '../ui/SuggestCombobox';
 
 type RouteRow = {
     task: string;
@@ -218,12 +219,15 @@ export const ModelRoutesSettingsSection = ({
                     >
                         <label className="proxy-settings-field" style={{ margin: 0 }}>
                             <span className="form-label">{textForLang(lang, 'Task', '任务类型', '任務類型')}</span>
-                            <input
-                                className="form-input"
-                                list="maclaw-model-route-tasks"
+                            <SuggestCombobox
+                                listboxId={`maclaw-model-route-tasks-${index}`}
+                                inputClassName="form-input"
                                 value={row.task}
                                 placeholder="reasoning"
-                                onChange={(e) => updateRow(index, { task: e.target.value })}
+                                options={KNOWN_TASKS.map((task) => ({ value: task }))}
+                                onChange={(task) => updateRow(index, { task })}
+                                toggleLabel={textForLang(lang, 'Show task list', '显示任务列表', '顯示任務列表')}
+                                emptyText={textForLang(lang, 'No matching tasks', '没有匹配的任务', '沒有匹配的任務')}
                             />
                         </label>
                         <label className="proxy-settings-field" style={{ margin: 0 }}>
@@ -268,12 +272,6 @@ export const ModelRoutesSettingsSection = ({
                     </div>
                 ))}
             </div>
-            <datalist id="maclaw-model-route-tasks">
-                {KNOWN_TASKS.map((t) => (
-                    <option key={t} value={t} />
-                ))}
-            </datalist>
-
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 <button
                     type="button"

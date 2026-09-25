@@ -308,6 +308,7 @@ guiapp/_*
 
 # Local tool/workspace data and temp dirs
 /.maclaw-tmp*
+/.wbapp_*
 /.workbuddy*/
 /.workbuddy-ai/
 /.audit-mobile/

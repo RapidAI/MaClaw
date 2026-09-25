@@ -953,11 +953,21 @@ func (c *sharedAgentLoopCallbacks) flushHostOwnedLiveDataVisual(resp *IMAgentRes
 	if resp != nil && keepVisibleErrorAfterHostFileAttach(resp.Error) {
 		return
 	}
-	if strings.TrimSpace(trustedHostLookupEvidence(c.semanticLookupEvidence)) == "" {
+	if strings.TrimSpace(trustedHostLookupEvidence(c.semanticLookupEvidence)) == "" || !planHasOpenLiveVisual(c.semanticSurface) {
 		return
+	}
+	// Search can finish and record evidence while the renderer grant is still
+	// unissued: the lookup edge is held until the batch refreshes, and a light
+	// turn never shows this local-mutation tool to the model. Issue it from
+	// the evidence the way host-owned PDF generation does, instead of leaving
+	// the turn as a raw search listing. A plain search plan has no renderer,
+	// so this must not refresh that surface.
+	if err := c.issueHostOwnedLiveVisualGrant(); err != nil {
+		log.Printf("[semantic] host live-data grant issue failed: %v", err)
 	}
 	name, grant := soleLiveSemanticGrantByAdapter(c.semanticSurface, semanticTrustedLiveDataVisualAdapter)
 	if name == "" || grant.Token == "" {
+		log.Printf("[semantic] host live-data render grant not live")
 		return
 	}
 	if got := c.ExecuteToolCall(name, `{}`, "host-auto-render-live-data").Result; strings.Contains(got, "[system rejected]") {
@@ -966,6 +976,7 @@ func (c *sharedAgentLoopCallbacks) flushHostOwnedLiveDataVisual(resp *IMAgentRes
 	}
 	deliverName, deliverGrant := soleLiveSemanticGrantByAdapter(c.semanticSurface, "semantic_deliver_current_image")
 	if deliverName == "" || !currentChannelImageDeliveryReady(c.semanticSurface, deliverGrant) {
+		log.Printf("[semantic] host live-data image deliver not ready")
 		return
 	}
 	if got := c.ExecuteToolCall(deliverName, `{}`, "host-auto-deliver-live-data-image").Result; strings.Contains(got, "[system rejected]") {
@@ -1059,6 +1070,61 @@ func (c *sharedAgentLoopCallbacks) issueHostOwnedGenerateFromAvailableEvidence(r
 	}
 	if err := c.syncSemanticToolSurface(); err != nil {
 		log.Printf("[semantic] host generate evidence sync failed: %v", err)
+	}
+	return nil
+}
+
+func planHasOpenLiveVisual(surface *semanticCallSurface) bool {
+	if surface == nil {
+		return false
+	}
+	for _, selection := range surface.plan.Selections {
+		if selection.FitProof.MatchedCapability == "visual.render.live_data" && !surface.completed[selection.ID] {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *sharedAgentLoopCallbacks) issueHostOwnedLiveVisualGrant() error {
+	if c == nil || c.semanticSurface == nil || !planHasOpenLiveVisual(c.semanticSurface) {
+		return nil
+	}
+	if name, grant := soleLiveSemanticGrantByAdapter(c.semanticSurface, semanticTrustedLiveDataVisualAdapter); name != "" && grant.Token != "" {
+		return nil
+	}
+	if err := completeHostSatisfiedLookupForLiveVisual(c.semanticSurface); err != nil {
+		return err
+	}
+	if _, err := refreshSemanticCallSurface(c.semanticSurface); err != nil {
+		return err
+	}
+	if err := c.syncSemanticToolSurface(); err != nil {
+		log.Printf("[semantic] host live-data evidence sync failed: %v", err)
+	}
+	return nil
+}
+
+func completeHostSatisfiedLookupForLiveVisual(surface *semanticCallSurface) error {
+	if surface == nil {
+		return nil
+	}
+	for _, selection := range surface.plan.Selections {
+		if selection.FitProof.MatchedCapability != "visual.render.live_data" || surface.completed[selection.ID] {
+			continue
+		}
+		for _, requirement := range selection.Requires {
+			if surface.completed[requirement] || strings.HasPrefix(requirement, "confirmation:") {
+				continue
+			}
+			lookup, ok := tool.PlanSelectionByID(surface.plan, requirement)
+			if !ok || !tool.IsLookupSelection(lookup) {
+				continue
+			}
+			if err := completeSemanticCallSurfaceSelection(surface, requirement); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }

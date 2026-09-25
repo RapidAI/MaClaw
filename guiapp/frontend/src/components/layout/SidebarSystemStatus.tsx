@@ -17,6 +17,7 @@ import {
     type ProviderDropdownPos,
 } from './sidebarProviderDropdownPos';
 import { formatWorkbenchTaskCountLine, type WorkbenchTaskCounts } from './backgroundTaskCount';
+import { contactedProfileForExecution, contactedProfileModel, contactedProfileProviderName } from '../../utils/contactedModelRoute';
 
 export type LLMProfileStatusSummary = {
     profile: 'assistant' | 'coding';
@@ -666,9 +667,15 @@ export const SidebarSystemStatus = ({
         : textForLang(lang, 'Credits unavailable', '\u989d\u5ea6\u4fe1\u606f\u6682\u4e0d\u53ef\u7528', '\u984d\u5ea6\u8cc7\u8a0a\u66ab\u4e0d\u53ef\u7528');
     // Primary number is lifetime account remaining. Period available/state are sub-lines.
     const remainingCredit = accountRemainingText;
-    const configuredModel = String(currentModel || activeProfileSummary?.model || assistantSummary?.model || '').trim();
+    // Profile-less tasks still call the assistant route. Name that route here
+    // so the card matches the model the turn is contacting, not a leftover
+    // legacy provider label.
+    const routedSummary = contactedProfileForExecution(activeProfile, profileSummaries);
+    const routedProviderName = contactedProfileProviderName(routedSummary);
+    const configuredModel = String(currentModel || contactedProfileModel(routedSummary) || '').trim();
+    const workbenchProviderLabel = routedProviderName || baseProviderLabel;
     const workbenchModelLabel = configuredModel
-        ? `${baseProviderLabel}：${configuredModel}`
+        ? `${workbenchProviderLabel}：${configuredModel}`
         : textForLang(lang, 'Not configured', '未配置', '未設定');
     const workbenchTokenLabel = formatSidebarTokens(Number(sidebarCurrentProviderTokenUsage.total || 0));
     const workbenchOnline = profileSummaries ? activeProfileOnline : maclawLLMOnline;

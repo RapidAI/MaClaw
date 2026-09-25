@@ -72,7 +72,7 @@ type SidebarAiPaneProps = SidebarCreditDisplayFormatters & {
     setRenamingTaskPath: (path: string | null) => void;
     renameValue: string;
     setRenameValue: (value: string) => void;
-    resumeTask: (projectPath: string, task?: TaskManagementItem) => Promise<void> | void;
+    resumeTask: (projectPath: string, task?: TaskManagementItem) => Promise<boolean | void> | boolean | void;
     continueWorkflowProject?: (projectPath: string) => Promise<void> | void;
     assistantReady?: boolean;
     onTaskSwitchBlocked?: () => void;

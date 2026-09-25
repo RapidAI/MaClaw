@@ -36,6 +36,43 @@ describe('useSafeBackdropDismiss', () => {
         expect(onDismiss).not.toHaveBeenCalled();
     });
 
+    it('does not dismiss when the press starts on the backdrop and ends inside the field', () => {
+        const onDismiss = vi.fn();
+        render(<TestDialog onDismiss={onDismiss} />);
+
+        const backdrop = screen.getByTestId('backdrop');
+        fireEvent.mouseDown(backdrop);
+        fireEvent.mouseUp(screen.getByLabelText('Field'));
+        fireEvent.click(backdrop);
+
+        expect(onDismiss).not.toHaveBeenCalled();
+    });
+
+    it('does not dismiss when the press crosses the dialog and ends on the backdrop', () => {
+        const onDismiss = vi.fn();
+        render(<TestDialog onDismiss={onDismiss} />);
+
+        const backdrop = screen.getByTestId('backdrop');
+        fireEvent.mouseDown(backdrop);
+        fireEvent.mouseEnter(screen.getByTestId('dialog'));
+        fireEvent.mouseUp(backdrop);
+        fireEvent.click(backdrop);
+
+        expect(onDismiss).not.toHaveBeenCalled();
+    });
+
+    it('still dismisses a later backdrop click after the pointer has entered the dialog', () => {
+        const onDismiss = vi.fn();
+        render(<TestDialog onDismiss={onDismiss} />);
+
+        const backdrop = screen.getByTestId('backdrop');
+        fireEvent.mouseEnter(screen.getByTestId('dialog'));
+        fireEvent.mouseDown(backdrop);
+        fireEvent.click(backdrop);
+
+        expect(onDismiss).toHaveBeenCalledTimes(1);
+    });
+
     it('does not dismiss while disabled', () => {
         const onDismiss = vi.fn();
         render(<TestDialog enabled={false} onDismiss={onDismiss} />);

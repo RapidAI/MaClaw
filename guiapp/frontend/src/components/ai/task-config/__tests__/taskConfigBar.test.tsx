@@ -412,6 +412,49 @@ describe('TaskConfigBar', () => {
         expect((screen.getByTestId('workspace-cloud-create-name') as HTMLInputElement).value).toBe('标书项目');
     });
 
+    it('moves an untouched default name when the workspace list arrives', () => {
+        const view = renderBar(defaultTaskDraft(), vi.fn(), { onCreateCloud: vi.fn(), cloudWorkspaces: [] });
+        fireEvent.click(screen.getByTestId('task-config-collapsed'));
+        fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
+        fireEvent.click(screen.getByTestId('workspace-row-cloud'));
+        fireEvent.click(screen.getByTestId('workspace-cloud-create'));
+        expect((screen.getByTestId('workspace-cloud-create-name') as HTMLInputElement).value).toBe('工作区 1');
+        view.rerender(
+            <TaskConfigBar
+                draft={defaultTaskDraft()}
+                onChange={vi.fn()}
+                experts={experts}
+                workflows={workflows}
+                theme={theme}
+                lang="zh"
+                onCreateCloud={vi.fn()}
+                cloudWorkspaces={[{ id: 'cws-1', name: '工作区 1', spec: '0 B', state: '可用' }]}
+            />,
+        );
+        const advanced = screen.getByTestId('workspace-cloud-create-name') as HTMLInputElement;
+        expect(advanced.value).toBe('工作区 2');
+        expect(document.activeElement).toBe(advanced);
+        expect(advanced.selectionStart).toBe(0);
+        expect(advanced.selectionEnd).toBe(advanced.value.length);
+        fireEvent.change(advanced, { target: { value: '标书项目' } });
+        view.rerender(
+            <TaskConfigBar
+                draft={defaultTaskDraft()}
+                onChange={vi.fn()}
+                experts={experts}
+                workflows={workflows}
+                theme={theme}
+                lang="zh"
+                onCreateCloud={vi.fn()}
+                cloudWorkspaces={[
+                    { id: 'cws-1', name: '工作区 1', spec: '0 B', state: '可用' },
+                    { id: 'cws-2', name: '工作区 2', spec: '0 B', state: '可用' },
+                ]}
+            />,
+        );
+        expect((screen.getByTestId('workspace-cloud-create-name') as HTMLInputElement).value).toBe('标书项目');
+    });
+
     it('fills the next 工作区 N and creates that default name on Enter', async () => {
         const onCreateCloud = vi.fn().mockResolvedValue(undefined);
         renderBar(defaultTaskDraft(), vi.fn(), {

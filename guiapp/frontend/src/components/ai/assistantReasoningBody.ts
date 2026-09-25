@@ -122,8 +122,23 @@ export function resolveVisibleAssistantReply(
     const body = content || "";
     const think = (reasoning || "").trim();
     if (opts?.live) {
+        const visibleBody = stripLeadingCodingWorkbenchStatus(body);
+        // A thinking-model often streams its plan as ordinary content. Keep that
+        // plan inside 思考过程 while the round is live. A deliverable that
+        // already follows the plan stays in the bubble, so the result is not
+        // hidden until the stream ends.
+        const split = splitLiveMonologue(visibleBody);
+        if (split) {
+            return {
+                content: split.content,
+                reasoning: mergeParkedThought(think, split.reasoning),
+            };
+        }
+        if (looksLikeInternalMonologue(visibleBody) && visibleBody.trim().length >= REASONING_FOLLOWUP_MAX_CHARS) {
+            return { content: "", reasoning: mergeParkedThought(think, visibleBody.trim()) };
+        }
         return {
-            content: stripLeadingCodingWorkbenchStatus(body),
+            content: visibleBody,
             reasoning: think,
         };
     }
@@ -133,6 +148,59 @@ export function resolveVisibleAssistantReply(
         return { content: liftReasoningIntoBody(separated.content, separated.reasoning), reasoning: "" };
     }
     return separated;
+}
+
+/**
+ * When the finished reply replaces text that was streaming in the bubble,
+ * keep that displaced text in 思考过程. It was the thinking the user already
+ * saw, and dropping it makes the thought vanish as the result appears.
+ */
+export function parkReplacedStreamInReasoning(streamed: string, finalBody: string, reasoning: string): string {
+    const prior = (reasoning || "").trim();
+    const stream = stripLeadingCodingWorkbenchStatus(streamed || "").trim();
+    const final = (finalBody || "").trim();
+    if (!stream || stream === final) return prior;
+    let displaced = "";
+    if (final && stream.endsWith(final) && stream.length > final.length + 20) {
+        displaced = stream.slice(0, stream.length - final.length).trim();
+    } else if (
+        final
+        && stream.length >= REASONING_FOLLOWUP_MAX_CHARS
+        && !final.startsWith(stream)
+        && !stream.startsWith(final)
+        && looksLikeInternalMonologue(stream)
+        && !stream.startsWith("根据公开检索")
+        && !stream.startsWith("Public web results for ")
+    ) {
+        displaced = stream;
+    }
+    if (displaced.length < 40) return prior;
+    if (prior.includes(displaced)) return prior;
+    if (!prior) return displaced;
+    return `${prior}\n\n${displaced}`;
+}
+
+function splitLiveMonologue(body: string): { content: string; reasoning: string } | null {
+    const strict = splitMonologueFromDeliverable(body);
+    if (strict) return strict;
+    if (!looksLikeInternalMonologue(body)) return null;
+    const source = body.trim();
+    const gap = source.search(/\n\n(?=[\u4e00-\u9fff])/);
+    if (gap < 40) return null;
+    const think = source.slice(0, gap).trim();
+    const answer = source.slice(gap).trim();
+    if (answer.length < 24 || cjkRatio(answer) < CJK_SUFFIX_MIN) return null;
+    if (!looksLikeInternalMonologue(think)) return null;
+    return { content: answer, reasoning: think };
+}
+
+function mergeParkedThought(existing: string, parked: string): string {
+    const prior = (existing || "").trim();
+    const next = (parked || "").trim();
+    if (!next) return prior;
+    if (!prior) return next;
+    if (prior.includes(next)) return prior;
+    return `${prior}\n\n${next}`;
 }
 
 function peelTrailPrefix(body: string, think: string): string | null {

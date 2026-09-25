@@ -42,6 +42,10 @@ type StoredCredential struct {
 	BaseURL string `json:"base_url,omitempty"`
 	Email   string `json:"email,omitempty"`
 	ModelID string `json:"model_id,omitempty"`
+	// WorkBuddy / CodeBuddy account context required by the upstream chat API.
+	UserID       string `json:"user_id,omitempty"`
+	EnterpriseID string `json:"enterprise_id,omitempty"`
+	Domain       string `json:"domain,omitempty"`
 }
 
 // IsExpired 检查 credential 是否已过期或即将过期（含 5 分钟 margin）。

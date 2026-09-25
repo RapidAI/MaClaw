@@ -172,6 +172,10 @@ interface PendingAssistantTabOpenOptions {
     onEnsureExpertTask?: (expert: ExpertDefinition) => Promise<void> | void;
     /** Persist a non-main assistant tab before it is opened. */
     onEnsureAssistantTabTask?: (tabType: string, tabIdentity: string, title: string, projectPath?: string) => Promise<void> | void;
+    /** User is about to open or focus a project task. Caller may close the idle tab being left. */
+    beforeUserProjectOpen?: (projectPath: string, cloudWorkspaceId?: string) => void;
+    /** User is about to open or focus an expert task. */
+    beforeUserExpertOpen?: (expertId: string) => void;
 }
 
 export function usePendingAssistantTabOpen({
@@ -197,6 +201,8 @@ export function usePendingAssistantTabOpen({
     sendExpertMessage,
     onEnsureExpertTask,
     onEnsureAssistantTabTask,
+    beforeUserProjectOpen,
+    beforeUserExpertOpen,
 }: PendingAssistantTabOpenOptions) {
     const openHistoryDiscussion = useCallback(async (discussion: PendingHistoryDiscussionOpen) => {
         const discussionId = String(discussion?.id || "").trim();
@@ -357,6 +363,8 @@ export function usePendingAssistantTabOpen({
     // always uses the latest values without causing effect re-runs.
     const createProjectTabRef = useRef(createProjectTab);
     createProjectTabRef.current = createProjectTab;
+    const beforeUserProjectOpenRef = useRef(beforeUserProjectOpen);
+    beforeUserProjectOpenRef.current = beforeUserProjectOpen;
     const sendMessageRef = useRef(sendMessage);
     sendMessageRef.current = sendMessage;
     const onProjectTabHandledRef = useRef(onPendingProjectTabOpenHandled);
@@ -381,6 +389,7 @@ export function usePendingAssistantTabOpen({
         // Combined with the post-creation history check, this provides two-layer
         // protection against duplicate autoSend.
         const tabExistedInList = hasProjectTabRef.current?.(projectPath, cloudWorkspaceId) ?? false;
+        beforeUserProjectOpenRef.current?.(projectPath, cloudWorkspaceId);
 
         const tab = createProjectTabRef.current(projectPath, taskTitle, { prepareMode, openIntent, cloudWorkspaceId, agentMode, remoteHost, remoteSafety, remoteNeedsReconnect });
         if (!tab) {
@@ -537,6 +546,8 @@ export function usePendingAssistantTabOpen({
     onExpertHandledRef.current = onPendingExpertOpenHandled;
     const ensureExpertTaskRef = useRef(onEnsureExpertTask);
     ensureExpertTaskRef.current = onEnsureExpertTask;
+    const beforeUserExpertOpenRef = useRef(beforeUserExpertOpen);
+    beforeUserExpertOpenRef.current = beforeUserExpertOpen;
     const sendExpertMessageRef = useRef(sendExpertMessage);
     sendExpertMessageRef.current = sendExpertMessage;
     /** Reject a stale async registration when a newer expert launch wins. */
@@ -574,6 +585,7 @@ export function usePendingAssistantTabOpen({
             const tabId = expertTabId(expertId);
             const existedBefore = (getTabListForExpertRef.current?.() || [])
                 .some(t => t.id === tabId || (t.type === "expert" && t.expertId === expertId));
+            beforeUserExpertOpenRef.current?.(expertId);
 
             const tab = create(expert);
             if (!tab) return;

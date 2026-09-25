@@ -161,6 +161,8 @@ export function CancelSwarmRun(arg1:string):Promise<void>;
 
 export function CancelVirtualRepositoryOperation(arg1:string):Promise<void>;
 
+export function CancelWorkBuddyOAuth():Promise<void>;
+
 export function CancelXAIOAuth():Promise<void>;
 
 export function CaptureRemoteScreenshot(arg1:string):Promise<void>;
@@ -472,6 +474,8 @@ export function DiscardAllCodingWorkbenchConflicts(arg1:string):Promise<string>;
 export function DiscardCodingWorkbenchConflict(arg1:string,arg2:string):Promise<string>;
 
 export function DismissAgentView(arg1:main.AgentViewDismissPayload):Promise<main.IMAgentResponse>;
+
+export function DismissPendingUpdate():Promise<void>;
 
 export function DismissRemoteSession(arg1:string):Promise<void>;
 
@@ -821,6 +825,8 @@ export function GetOrchestrator():Promise<main.Orchestrator>;
 export function GetPassthroughCommand(arg1:string):Promise<main.PassthroughCommand>;
 
 export function GetPassthroughSettings():Promise<main.PassthroughSettings>;
+
+export function GetPendingUpdateNotice():Promise<main.PendingUpdateNotice>;
 
 export function GetPetPackPreviewDataURL(arg1:string):Promise<string>;
 
@@ -1478,7 +1484,7 @@ export function KnowledgeUpdateSourceMetadata(arg1:knowledge.SourceUpdateRequest
 
 export function KnowledgeUpdateURLDomainPolicies(arg1:knowledge.URLDomainPolicyUpdateRequest):Promise<knowledge.URLDomainPolicyUpdateResult>;
 
-export function LaunchInstallerAndExit(arg1:string):Promise<void>;
+export function LaunchInstallerAndExit(arg1:string,arg2:string):Promise<void>;
 
 export function LaunchTool(arg1:string,arg2:boolean,arg3:boolean,arg4:boolean,arg5:string,arg6:string,arg7:boolean):Promise<void>;
 
@@ -2375,6 +2381,8 @@ export function StartWorkflowDirect(arg1:string,arg2:string):Promise<string>;
 export function StartWorkflowTemplate(arg1:string,arg2:string):Promise<string>;
 
 export function StartWorkflowTemplateInTab(arg1:string,arg2:string,arg3:string):Promise<string>;
+
+export function StartWorkBuddyOAuth(arg1:string):Promise<string>;
 
 export function StartXAIOAuth():Promise<string>;
 

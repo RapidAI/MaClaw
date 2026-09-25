@@ -382,7 +382,7 @@ export type SidebarTaskManagementProps = {
     setRenamingTaskPath: (path: string | null) => void;
     renameValue: string;
     setRenameValue: (value: string) => void;
-    resumeTask: (projectPath: string, task?: TaskManagementItem) => Promise<void> | void;
+    resumeTask: (projectPath: string, task?: TaskManagementItem) => Promise<boolean | void> | boolean | void;
     continueWorkflowProject?: (projectPath: string) => Promise<void> | void;
     assistantReady?: boolean;
     onTaskSwitchBlocked?: () => void;
@@ -476,6 +476,96 @@ export function sortTaskManagementItems(items: TaskManagementItem[]): TaskManage
         if (Number.isFinite(aTime) !== Number.isFinite(bTime)) return Number.isFinite(aTime) ? -1 : 1;
         return String(a.id || a.project_path || a.name || '').localeCompare(String(b.id || b.project_path || b.name || ''));
     });
+}
+
+export const TASK_LIST_ORDER_STORAGE_KEY = 'maclaw.sidebar-task-order.v1';
+
+/** Identity that stays put when opening a task rewrites its path or activity time. */
+export function taskOrderKey(task: Pick<TaskManagementItem, 'id' | 'name' | 'project_path' | 'tags' | 'working_dir' | 'preview'>): string {
+    const cloud = cloudWorkspaceIdFromTaskFields(task);
+    if (cloud) return `cloud:${cloud}`;
+    const expert = expertIDFromTaskTags(task.tags);
+    if (expert) return `expert:${expert}`;
+    const path = normalizeProjectSessionPath(task.project_path || '');
+    if (path) return `path:${path}`;
+    return `id:${task.id || task.name || ''}`;
+}
+
+export function readTaskListOrder(): string[] {
+    if (typeof localStorage === 'undefined') return [];
+    try {
+        const parsed = JSON.parse(localStorage.getItem(TASK_LIST_ORDER_STORAGE_KEY) || '[]');
+        return Array.isArray(parsed) ? parsed.filter((key): key is string => typeof key === 'string' && key.length > 0) : [];
+    } catch {
+        return [];
+    }
+}
+
+export function writeTaskListOrder(keys: string[]) {
+    try {
+        localStorage.setItem(TASK_LIST_ORDER_STORAGE_KEY, JSON.stringify(keys));
+    } catch {
+        // Private mode or a full quota should not block the in-memory order.
+    }
+}
+
+/** User drag order wins. Tasks the user has not placed yet keep the default sort. */
+export function applyTaskListOrder<T extends TaskManagementItem>(items: T[], order: string[]): T[] {
+    if (!order.length) return items;
+    const byKey = new Map<string, T>();
+    for (const item of items) {
+        const key = taskOrderKey(item);
+        if (!byKey.has(key)) byKey.set(key, item);
+    }
+    const used = new Set<string>();
+    const placed: T[] = [];
+    for (const key of order) {
+        const item = byKey.get(key);
+        if (!item || used.has(key)) continue;
+        used.add(key);
+        placed.push(item);
+    }
+    // A task created after the user arranged the list has no saved slot.
+    // Keep it at the top, in the default sort, instead of shoving it into
+    // the middle of the arrangement.
+    const fresh = items.filter(item => !used.has(taskOrderKey(item)));
+    // Pin stays a "keep at top" action after the user has dragged. Relative
+    // order inside each group is the saved drag order.
+    const ordered = [...fresh, ...placed];
+    const pins = ordered.filter(item => item.pinned);
+    const rest = ordered.filter(item => !item.pinned);
+    return [...pins, ...rest];
+}
+
+/** Move a pinned row to the front of a saved order, or an unpinned row to just after the pins. */
+export function placeTaskOrderKey(order: string[], key: string, pinned: boolean, pinnedKeys: ReadonlySet<string>): string[] {
+    const without = order.filter(item => item !== key);
+    if (pinned) return [key, ...without];
+    let insertAt = 0;
+    while (insertAt < without.length && pinnedKeys.has(without[insertAt])) insertAt += 1;
+    return [...without.slice(0, insertAt), key, ...without.slice(insertAt)];
+}
+
+/** Move fromKey to toKey inside the visible sequence, leaving hidden rows where they are. */
+export function reorderTaskList(order: string[], visibleKeys: string[], fromKey: string, toKey: string): string[] {
+    const base = order.length ? [...order] : [];
+    const known = new Set(base);
+    for (const key of visibleKeys) {
+        if (!known.has(key)) {
+            known.add(key);
+            base.push(key);
+        }
+    }
+    const visibleSet = new Set(visibleKeys);
+    const currentVisible = base.filter(key => visibleSet.has(key));
+    const fromVis = currentVisible.indexOf(fromKey);
+    const toVis = currentVisible.indexOf(toKey);
+    if (fromVis < 0 || toVis < 0 || fromVis === toVis) return base;
+    const nextVisible = currentVisible.slice();
+    const [moved] = nextVisible.splice(fromVis, 1);
+    nextVisible.splice(toVis, 0, moved);
+    const queue = [...nextVisible];
+    return base.map(key => (visibleSet.has(key) ? queue.shift() || key : key));
 }
 
 /** Status filters offered above the task list. 'shared' is tag-driven, the
@@ -1391,6 +1481,10 @@ export const SidebarTaskManagement = ({
     /** Invalidates an older evidence request when a row is closed or another row opens. */
     const sceneDetailRequestGenRef = useRef(0);
     const [openingTaskPath, setOpeningTaskPath] = useState<string | null>(null);
+    // State updates too late to collapse the click+click+dblclick of one gesture.
+    // The timestamp also covers a resume that finishes before the second click.
+    const openingTaskPathRef = useRef<string | null>(null);
+    const recentTaskOpenRef = useRef<{ path: string; at: number } | null>(null);
     /** Cloud Browse may need to hydrate a missing local cache before opening it. */
     const [cloudBrowseProgress, setCloudBrowseProgress] = useState<string | null>(null);
     const cloudBrowseGenerationRef = useRef(0);
@@ -1590,9 +1684,13 @@ export const SidebarTaskManagement = ({
     // cloud-workspace task rows remain part of the shared task list. The cloud
     // marker and task identity must stay visible even when project-management
     // actions are disabled for this surface.
+    const [taskListOrder, setTaskListOrder] = useState<string[]>(readTaskListOrder);
     const visibleTasks = useMemo(
-        () => visibleTaskRows(tasks),
-        [tasks],
+        // The backend list is recency-ordered. Opening a task rewrites
+        // last_activity and would otherwise move that row. Default order is
+        // pin, then creation time. A drag order, once saved, replaces that.
+        () => applyTaskListOrder(sortTaskManagementItems(visibleTaskRows(tasks)), taskListOrder),
+        [tasks, taskListOrder],
     );
     // A pure agent loop run leaves no running snapshot on the durable row
     // (has_output stays true from earlier runs), so while the assistant panel
@@ -1686,6 +1784,46 @@ export const SidebarTaskManagement = ({
         }
         return base.filter(task => !isLiveRunningRow(task) && taskStatusBucketFor(task) === taskFilter);
     }, [visibleTasks, taskFilter, workspaceFilter, isLiveRunningRow]);
+    const taskDragKeyRef = useRef<string | null>(null);
+    // Set only after a handle drag starts, so a normal click still opens the row.
+    // Cleared after dragend so the click that follows a drop does not open a task.
+    const taskRowDidDragRef = useRef(false);
+    const clearTaskDropMarks = () => {
+        if (typeof document === 'undefined') return;
+        document.querySelectorAll('.sidebar-task-row[data-task-drop-target="true"]').forEach(el => {
+            el.removeAttribute('data-task-drop-target');
+        });
+    };
+    const commitTaskDrag = (fromKey: string, toKey: string) => {
+        if (!fromKey || fromKey === toKey) return;
+        const fromTask = filteredTasks.find(task => taskOrderKey(task) === fromKey);
+        const toTask = filteredTasks.find(task => taskOrderKey(task) === toKey);
+        // Pinned rows stay above the rest, so a drop across that boundary
+        // would snap back. Ignore it instead of saving an order that cannot stick.
+        if (!fromTask || !toTask || !!fromTask.pinned !== !!toTask.pinned) return;
+        const visibleKeys = filteredTasks.map(taskOrderKey);
+        // Start from the list the user is looking at. A task created after the
+        // last drag is shown at the top but is not in the saved keys yet;
+        // appending it here would throw it to the bottom on this drop.
+        const visualKeys = visibleTasks.map(taskOrderKey);
+        setTaskListOrder(prev => {
+            const seen = new Set(visualKeys);
+            const seeded = [...visualKeys, ...prev.filter(key => !seen.has(key))];
+            const next = reorderTaskList(seeded, visibleKeys, fromKey, toKey);
+            writeTaskListOrder(next);
+            return next;
+        });
+    };
+    const placePinnedTaskOrder = (key: string, pinned: boolean) => {
+        if (!key) return;
+        setTaskListOrder(prev => {
+            if (!prev.length) return prev;
+            const pinnedKeys = new Set(tasks.filter(item => item.pinned && taskOrderKey(item) !== key).map(taskOrderKey));
+            const next = placeTaskOrderKey(prev, key, pinned, pinnedKeys);
+            writeTaskListOrder(next);
+            return next;
+        });
+    };
     // One bar for first ListTasks and Hub restore. Unfiltered emptiness so an
     // empty status chip is not a full-list load, and "No tasks" cannot flash
     // while cloud restore can still add rows.
@@ -2434,7 +2572,7 @@ export const SidebarTaskManagement = ({
     };
 
     const openCloudOverview = () => {
-        if (!cloudGranted || creatingTaskRef.current) return;
+        if (creatingTaskRef.current) return;
         if (taskContextMenu) setTaskContextMenu(null);
         if (createDialogOpen) closeCreateDialog();
         if (editRemoteOpen) closeEditRemoteDialog();
@@ -2466,12 +2604,6 @@ export const SidebarTaskManagement = ({
         if (cloudRestorePending) return;
         openCreateDialog({ cloud: true, cloudWorkspaceId: workspaceId });
     };
-
-    useEffect(() => {
-        if (!cloudOverviewOpen || cloudGranted) return;
-        if (forceDeleteConfirmOpenRef.current) return;
-        closeCloudOverview();
-    }, [cloudGranted, cloudOverviewOpen]);
 
     useEffect(() => {
         if (!cloudOverviewOpen) return;
@@ -2587,7 +2719,7 @@ export const SidebarTaskManagement = ({
     };
 
     const createNewCloudWorkspace = async () => {
-        if (cloudQuotaReached || !beginCloudWorkspaceBusy()) return;
+        if (!cloudGranted || cloudQuotaReached || !beginCloudWorkspaceBusy()) return;
         setCreateError('');
         try {
             await provisionNewCloudWorkspace();
@@ -2978,17 +3110,27 @@ export const SidebarTaskManagement = ({
         );
     };
 
-    /** Single-click on a row with a running instance focuses its tab. */
+    /**
+     * A closed row opens on a single click. At startup no assistant tab exists,
+     * so returning early here left the first click (and a double-click whose
+     * first press was swallowed) doing nothing. An already-open instance only
+     * focuses; double-click still re-restores it.
+     */
     const handleTaskRowClick = (task: TaskManagementItem) => {
         if (renamingTaskPath || removingTaskPaths.has(task.project_path)) return;
-        if (!isTaskInstanceOpen(task)) return;
-        activateTask?.(task.project_path, task);
+        if (isTaskInstanceOpen(task)) {
+            activateTask?.(task.project_path, task);
+            return;
+        }
+        void handleTaskDoubleClick(task);
     };
 
     const handleTaskDoubleClick = async (task: TaskManagementItem) => {
         const projectPath = task.project_path;
         if (renamingTaskPath || removingTaskPaths.has(projectPath)) return;
-        if (openingTaskPath === projectPath) return;
+        if (openingTaskPathRef.current === projectPath) return;
+        const recentOpen = recentTaskOpenRef.current;
+        if (recentOpen?.path === projectPath && Date.now() - recentOpen.at < 500) return;
         // A deliberate double-click supersedes an in-flight Browse hydration;
         // the row open should be the single resume operation.
         if (cloudBrowseTaskPathRef.current === projectPath) {
@@ -3000,18 +3142,28 @@ export const SidebarTaskManagement = ({
             onTaskSwitchBlocked?.();
             return;
         }
+        openingTaskPathRef.current = projectPath;
+        recentTaskOpenRef.current = { path: projectPath, at: Date.now() };
         setOpeningTaskPath(projectPath);
+        let opened: boolean | void = false;
         try {
             // Pass the rendered row too. It is the authoritative identity at the
             // moment of interaction, avoiding a stale parent list cache from
             // misrouting an expert row as a generic project task.
-            await resumeTask(projectPath, task);
-            if (isCloudWorkspaceTask(task)) {
+            opened = await resumeTask(projectPath, task);
+            if (opened !== false && isCloudWorkspaceTask(task)) {
                 window.dispatchEvent(new CustomEvent(REVEAL_CLOUD_WORKSPACE_FILES_EVENT, {
                     detail: { projectPath, workingDir: task.working_dir || '' },
                 }));
             }
         } finally {
+            // A failed open must accept another click immediately. A successful
+            // one keeps the short stamp so the rest of a double-click does not
+            // resume again.
+            if (opened === false && recentTaskOpenRef.current?.path === projectPath) {
+                recentTaskOpenRef.current = null;
+            }
+            if (openingTaskPathRef.current === projectPath) openingTaskPathRef.current = null;
             setOpeningTaskPath(current => current === projectPath ? null : current);
         }
     };
@@ -3133,28 +3285,6 @@ export const SidebarTaskManagement = ({
                 >
                     <CreateTaskIcon />
                 </button>
-                {showCloudWorkspaceCreation && (!showCloudWorkspaceManagement || cloudGranted) && (
-                    <button
-                        type="button"
-                        data-testid={showCloudWorkspaceManagement ? 'task-cloud-overview' : 'task-cloud-create'}
-                        onClick={showCloudWorkspaceManagement ? openCloudOverview : () => openCreateDialog({ cloud: true })}
-                        disabled={creatingTask}
-                        {...(showCloudWorkspaceManagement ? {
-                            'aria-expanded': cloudOverviewOpen,
-                            'aria-haspopup': 'dialog',
-                            'aria-controls': 'task-cloud-overview-panel',
-                        } : {})}
-                        aria-label={showCloudWorkspaceManagement
-                            ? textForLang(lang, 'Cloud workspaces', '云端工作区', '雲端工作區')
-                            : textForLang(lang, 'Create cloud workspace task', '创建云端工作区任务', '建立雲端工作區任務')}
-                        title={showCloudWorkspaceManagement
-                            ? textForLang(lang, 'Cloud workspaces — continue on another PC', '云端工作区，换电脑也能继续', '雲端工作區，換電腦繼續')
-                            : textForLang(lang, 'Create cloud workspace task', '创建云端工作区任务', '建立雲端工作區任務')}
-                        style={taskHeaderActionButtonStyle(creatingTask)}
-                    >
-                        <CloudComputingIcon />
-                    </button>
-                )}
                 <button
                     type="button"
                     data-testid="sidebar-theme-toggle"
@@ -3169,6 +3299,28 @@ export const SidebarTaskManagement = ({
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" /></svg>
                     )}
                 </button>
+                {(showCloudWorkspaceManagement || showCloudWorkspaceCreation) && (
+                    <button
+                        type="button"
+                        data-testid={showCloudWorkspaceManagement ? 'task-cloud-overview' : 'task-cloud-create'}
+                        onClick={showCloudWorkspaceManagement ? openCloudOverview : () => openCreateDialog({ cloud: true })}
+                        disabled={creatingTask}
+                        {...(showCloudWorkspaceManagement ? {
+                            'aria-expanded': cloudOverviewOpen,
+                            'aria-haspopup': 'dialog' as const,
+                            'aria-controls': 'task-cloud-overview-panel',
+                        } : {})}
+                        aria-label={showCloudWorkspaceManagement
+                            ? textForLang(lang, 'Cloud workspaces', '云端工作区', '雲端工作區')
+                            : textForLang(lang, 'Create cloud workspace task', '创建云端工作区任务', '建立雲端工作區任務')}
+                        title={showCloudWorkspaceManagement
+                            ? textForLang(lang, 'Cloud workspaces — continue on another PC', '云端工作区，换电脑也能继续', '雲端工作區，換電腦繼續')
+                            : textForLang(lang, 'Create cloud workspace task', '创建云端工作区任务', '建立雲端工作區任務')}
+                        style={taskHeaderActionButtonStyle(creatingTask)}
+                    >
+                        <CloudComputingIcon />
+                    </button>
+                )}
             </span>
             <span className="mc-task-pane__save-group stsm-header-group stsm-header-group--save">
                 <span>{textForLang(lang, 'Save as Task', '保存为任务', '保存為任務')}</span>
@@ -3199,7 +3351,7 @@ export const SidebarTaskManagement = ({
                             aria-label={textForLang(lang, 'New task', '新建任务', '新建任務')}
                             title={textForLang(lang, 'New task (configure on the welcome page)', '新建任务（在引导页配置后发送创建）', '新建任務（在引導頁配置後傳送建立）')}
                         >+</button>
-                        {showCloudWorkspaceCreation && (!showCloudWorkspaceManagement || cloudGranted) && (
+                        {(showCloudWorkspaceManagement || showCloudWorkspaceCreation) && (
                             <button
                                 type="button"
                                 className="mc-execution-task-sidebar__add mc-execution-task-sidebar__cloud"
@@ -3225,8 +3377,8 @@ export const SidebarTaskManagement = ({
                     type="button"
                     className="mc-current-task-card"
                     data-testid="current-task-card"
-                    onDoubleClick={() => { if (activeTaskForSidebar) void handleTaskDoubleClick(activeTaskForSidebar); }}
-                    title={`${textForLang(lang, 'Double-click to open the current task', '双击打开当前任务', '雙擊開啟目前任務')}${executionTaskStatus.detail ? ` · ${executionTaskStatus.detail}` : ''}`}
+                    onClick={() => { if (activeTaskForSidebar) handleTaskRowClick(activeTaskForSidebar); }}
+                    title={`${textForLang(lang, 'Click to open the current task', '单击打开当前任务', '單擊開啟目前任務')}${executionTaskStatus.detail ? ` · ${executionTaskStatus.detail}` : ''}`}
                 >
                     <span className={`mc-current-task-card__dot mc-current-task-card__dot--${executionTaskStatus.tone}`} aria-hidden="true" />
                     <strong className="mc-current-task-card__title">{executionTaskTitle}</strong>
@@ -3353,9 +3505,6 @@ export const SidebarTaskManagement = ({
                 : workspaceValue;
             // Cloud rows always keep the type badge, even before Hub names load.
             const showWorkspaceLine = workspaceKind === 'cloud' || !!workspaceValue;
-            const workspaceLineTitle = workspaceValue
-                ? `${workspaceSectionLabel(lang)} · ${workspaceKindLabel(workspaceKind, lang)}: ${workspaceValue}`
-                : `${workspaceSectionLabel(lang)} · ${workspaceKindLabel(workspaceKind, lang)}`;
             // When the workspace line already carries the identity text (cloud
             // workspace name), keep the muted subtitle from repeating it.
             const secondaryText = secondaryStatusLabel
@@ -3378,7 +3527,8 @@ export const SidebarTaskManagement = ({
                 } : {}),
             };
             return <div key={proj.id || proj.project_path} data-task-kind={taskIconKind} data-pure-coding={pureCoding ? 'true' : 'false'} data-status={workflowStatus?.tone === 'success' ? 'completed' : workflowStatus?.tone === 'warning' ? 'pending' : workflowStatus?.tone === 'danger' ? 'failed' : workflowStatus?.tone === 'info' ? 'running' : undefined} data-testid="sidebar-task-row" data-active={isActive ? 'true' : 'false'} data-open={isOpen ? 'true' : 'false'} data-task-path={proj.project_path}>
-                <div className={`sidebar-task-row${isActive ? ' is-active' : ''}${isOpen ? ' is-open' : ''}${isBusy ? ' is-busy' : ''}`} role="button" tabIndex={isBusy ? -1 : 0} onClick={() => handleTaskRowClick(proj)} onDoubleClick={() => { void handleTaskDoubleClick(proj); }} onKeyDown={e => { if (isBusy || (e.key !== 'Enter' && e.key !== ' ')) return; e.preventDefault(); if (isTaskInstanceOpen(proj)) { activateTask?.(proj.project_path, proj); return; } void handleTaskDoubleClick(proj); }} onContextMenu={e => { e.preventDefault(); if (isRemoving) return; setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: taskTitleText, pinned: !!proj.pinned, isRemoteCoding: isRemoteCodingTask(proj), tags: proj.tags, workingDir: proj.working_dir }); }} style={rowStyle} title={joinHoverLines(taskTitleText, rowPathHint, workflowStatus && [workflowStatus.label, workflowStatus.detail].filter(Boolean).join(' · '), codingBadge, createdAtLabel, identitySubtitle, isOpen ? textForLang(lang, 'Click to focus the open instance; double-click to restore', '单击激活已打开的实例，双击恢复任务', '單擊啟動已開啟的實例，雙擊恢復任務') : textForLang(lang, 'Double-click to restore the task', '双击恢复任务', '雙擊恢復任務'))} aria-current={isActive ? 'true' : undefined}>
+                <div className={`sidebar-task-row${isActive ? ' is-active' : ''}${isOpen ? ' is-open' : ''}${isBusy ? ' is-busy' : ''}`} role="button" tabIndex={isBusy ? -1 : 0} onDragOver={e => { if (!taskDragKeyRef.current) return; e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'; const row = e.currentTarget; document.querySelectorAll('.sidebar-task-row[data-task-drop-target="true"]').forEach(el => { if (el !== row) el.removeAttribute('data-task-drop-target'); }); row.setAttribute('data-task-drop-target', 'true'); }} onDrop={e => { e.preventDefault(); e.currentTarget.removeAttribute('data-task-drop-target'); const fromKey = taskDragKeyRef.current; taskDragKeyRef.current = null; if (fromKey) commitTaskDrag(fromKey, taskOrderKey(proj)); }} onDragLeave={e => { if (e.currentTarget.contains(e.relatedTarget as Node | null)) return; e.currentTarget.removeAttribute('data-task-drop-target'); }} onClick={(e) => { if (e.detail > 1 || taskRowDidDragRef.current) return; handleTaskRowClick(proj); }} onDoubleClick={() => { void handleTaskDoubleClick(proj); }} onKeyDown={e => { if (isBusy || (e.key !== 'Enter' && e.key !== ' ')) return; e.preventDefault(); if (isTaskInstanceOpen(proj)) { activateTask?.(proj.project_path, proj); return; } void handleTaskDoubleClick(proj); }} onContextMenu={e => { e.preventDefault(); if (isRemoving) return; setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: taskTitleText, pinned: !!proj.pinned, isRemoteCoding: isRemoteCodingTask(proj), tags: proj.tags, workingDir: proj.working_dir }); }} style={rowStyle} title={joinHoverLines(taskTitleText, rowPathHint, workflowStatus && [workflowStatus.label, workflowStatus.detail].filter(Boolean).join(' · '), codingBadge, createdAtLabel, identitySubtitle, textForLang(lang, 'Click to open the task', '单击打开任务', '單擊開啟任務'))} aria-current={isActive ? 'true' : undefined}>
+                    <span className="stsm-drag-handle-wrap"><span role="button" className="stsm-drag-handle" data-testid="task-drag-handle" draggable={!isBusy} aria-label={textForLang(lang, 'Drag to reorder', '拖动调整顺序', '拖動調整順序')} title={textForLang(lang, 'Drag to reorder', '拖动调整顺序', '拖動調整順序')} onClick={e => e.stopPropagation()} onDoubleClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} onDragStart={e => { e.stopPropagation(); taskRowDidDragRef.current = true; const key = taskOrderKey(proj); taskDragKeyRef.current = key; if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key); } }} onDragEnd={() => { taskDragKeyRef.current = null; clearTaskDropMarks(); window.setTimeout(() => { taskRowDidDragRef.current = false; }, 0); }}>⋮⋮</span></span>
                     <TaskTypeIcon kind={taskIconKind} lang={lang} maintenance={remoteMaintenance} />
                     <span className="stsm-row-body">
                         {(workflowStatus || codingBadge || proj.pinned || shareFromLabel) && (
@@ -3427,10 +3577,7 @@ export const SidebarTaskManagement = ({
                             <span
                                 data-testid="task-working-dir"
                                 className="mc-task-working-dir"
-                                title={workspaceLineTitle}
-                                onClick={workspaceKind === 'local' ? e => { e.stopPropagation(); OpenProjectDirectory(workspaceValue).catch(() => {}); } : undefined}
-                                onDoubleClick={e => e.stopPropagation()}
-                                style={{ display: 'flex', alignItems: 'center', gap: '4px', marginTop: '1px', color: 'var(--theme-text-secondary)', fontSize: '0.66rem', lineHeight: 1.3, whiteSpace: 'nowrap', overflow: 'hidden', textAlign: 'left', cursor: workspaceKind === 'local' ? 'pointer' : 'default' }}
+                                style={{ display: 'flex', alignItems: 'center', gap: '4px', marginTop: '1px', color: 'var(--theme-text-secondary)', fontSize: '0.66rem', lineHeight: 1.3, whiteSpace: 'nowrap', overflow: 'hidden', textAlign: 'left', cursor: 'inherit' }}
                             >
                                 <WorkspaceTypeBadge kind={workspaceKind} label={workspaceKindLabel(workspaceKind, lang)} style={{ flexShrink: 0 }} />
                                 {workspaceValueText ? (
@@ -3527,6 +3674,14 @@ export const SidebarTaskManagement = ({
                                 {cloudEntitlement.banner?.trim()
                                     || textForLang(lang, 'Hub is unavailable; showing the last known workspaces.', 'Hub 不可用，正在显示上次已知的工作区。', 'Hub 不可用，正在顯示上次已知的工作區。')}
                             </div>
+                        ) : !cloudGranted && cloudEntitlement ? (
+                            <div
+                                role="status"
+                                data-testid="task-cloud-overview-denied"
+                                className="mc-cloud-overview__banner"
+                            >
+                                {cloudDeniedReason}
+                            </div>
                         ) : null}
                         {cloudRestorePending ? (
                             <div role="status" data-testid="task-cloud-overview-syncing" className="mc-cloud-overview__status">
@@ -3538,7 +3693,7 @@ export const SidebarTaskManagement = ({
                                 {createError}
                             </div>
                         ) : null}
-                        <div
+                        {cloudEntitlement == null ? null : <div
                             data-testid="task-cloud-overview-summary"
                             title={overviewSummary.hint || undefined}
                             className="mc-cloud-overview__summary"
@@ -3554,14 +3709,18 @@ export const SidebarTaskManagement = ({
                                     <span style={{ width: `${cloudUsed > 0 ? Math.max(8, Math.min(100, Math.round((cloudUsed / cloudQuota) * 100))) : 0}%` }} />
                                 </span>
                             ) : null}
-                        </div>
+                        </div>}
                         <div className="mc-cloud-overview__split">
                             <div className="mc-cloud-overview__list">
                                 <button
                                     type="button"
                                     data-testid="task-cloud-overview-new"
-                                    disabled={creatingTask || cloudWorkspaceBusy || cloudRestorePending || cloudQuotaReached}
-                                    title={cloudQuotaReached ? textForLang(lang, 'Cloud workspace quota reached', '已达云端工作区配额', '已達雲端工作區配額') : undefined}
+                                    disabled={creatingTask || cloudWorkspaceBusy || cloudRestorePending || cloudQuotaReached || !cloudGranted}
+                                    title={!cloudGranted
+                                        ? cloudDeniedReason
+                                        : cloudQuotaReached
+                                            ? textForLang(lang, 'Cloud workspace quota reached', '已达云端工作区配额', '已達雲端工作區配額')
+                                            : undefined}
                                     onClick={() => { void createNewCloudWorkspace(); }}
                                     className="mc-cloud-overview__new"
                                 >
@@ -3570,8 +3729,10 @@ export const SidebarTaskManagement = ({
                                 </button>
                                 <div className="mc-cloud-overview__list-scroll">
                                 {cloudWorkspaces.length === 0 ? (
-                                    <div className="mc-cloud-overview__empty-list">
-                                        {textForLang(lang, 'No cloud workspace yet.', '暂无云端工作区。', '暫無雲端工作區。')}
+                                    <div className="mc-cloud-overview__empty-list" data-testid={cloudEntitlement == null ? 'task-cloud-overview-checking' : undefined}>
+                                        {cloudEntitlement == null
+                                            ? cloudDeniedReason
+                                            : textForLang(lang, 'No cloud workspace yet.', '暂无云端工作区。', '暫無雲端工作區。')}
                                     </div>
                                 ) : (
                                     <div className="mc-cloud-overview__rows">
@@ -3630,7 +3791,9 @@ export const SidebarTaskManagement = ({
                                 {(() => {
                                     const selected = cloudWorkspaces.find(row => (row.id || '').trim() === overviewSelectionId);
                                     if (!selected) {
-                                        return <div className="mc-cloud-overview__placeholder">{textForLang(lang, 'Select a workspace to manage it.', '选择一个工作区进行管理。', '選擇一個工作區進行管理。')}</div>;
+                                        return <div className="mc-cloud-overview__placeholder">{cloudEntitlement == null
+                                            ? cloudDeniedReason
+                                            : textForLang(lang, 'Select a workspace to manage it.', '选择一个工作区进行管理。', '選擇一個工作區進行管理。')}</div>;
                                     }
                                     const id = (selected.id || '').trim();
                                     const linked = tasksForCloudWorkspace(visibleTasks, id);
@@ -4082,7 +4245,16 @@ export const SidebarTaskManagement = ({
                     setRenamingTaskPath,
                     setRenameValue,
                     setTaskContextMenu,
-                    pinTask,
+                    pinTask: async (projectPath, pinned) => {
+                        await pinTask(projectPath, pinned);
+                        const menu = taskContextMenu;
+                        placePinnedTaskOrder(menu ? taskOrderKey({
+                            project_path: menu.projectPath,
+                            name: menu.name,
+                            tags: menu.tags,
+                            working_dir: menu.workingDir,
+                        }) : '', pinned);
+                    },
                     confirmRemoveTask,
                     refreshTasks,
                     openEditRemoteDialog,

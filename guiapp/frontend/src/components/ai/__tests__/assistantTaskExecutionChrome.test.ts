@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { executionSecondaryChromeStyle, handleTaskExecutionHeaderDoubleClick, isTaskExecutionHeaderInteractiveTarget } from "../assistantTaskExecutionChrome";
+import { executionSecondaryChromeStyle, handleTaskExecutionHeaderDoubleClick, isTaskExecutionHeaderInteractiveTarget, resolveTaskExecutionStatus } from "../assistantTaskExecutionChrome";
 
 describe("executionSecondaryChromeStyle", () => {
     it("clips leftover title-bar chrome out of hit-testing", () => {
@@ -25,6 +25,54 @@ describe("isTaskExecutionHeaderInteractiveTarget", () => {
         expect(isTaskExecutionHeaderInteractiveTarget(button, header)).toBe(true);
         expect(isTaskExecutionHeaderInteractiveTarget(summary, header)).toBe(true);
         expect(isTaskExecutionHeaderInteractiveTarget(svg, header)).toBe(true);
+    });
+
+    it("labels an idle chat with a pending recovery card as interrupted", () => {
+        const status = resolveTaskExecutionStatus({
+            lang: "zh-Hans",
+            raw: "",
+            pendingReview: false,
+            cancelPending: false,
+            busy: false,
+            hasOutput: false,
+            hasMessages: true,
+            workflowActive: false,
+            codingStepCount: 0,
+            pendingUnfinishedStatus: "interrupted",
+        });
+        expect(status).toEqual({ label: "已中断", tone: "pending" });
+    });
+
+    it("labels a max-round recovery card as unfinished rather than interrupted", () => {
+        const status = resolveTaskExecutionStatus({
+            lang: "zh-Hans",
+            raw: "",
+            pendingReview: false,
+            cancelPending: false,
+            busy: false,
+            hasOutput: false,
+            hasMessages: true,
+            workflowActive: false,
+            codingStepCount: 0,
+            pendingUnfinishedStatus: "max_rounds_reached",
+        });
+        expect(status).toEqual({ label: "未完成", tone: "pending" });
+    });
+
+    it("still labels an idle chat without a recovery card as completed", () => {
+        const status = resolveTaskExecutionStatus({
+            lang: "zh-Hans",
+            raw: "",
+            pendingReview: false,
+            cancelPending: false,
+            busy: false,
+            hasOutput: false,
+            hasMessages: true,
+            workflowActive: false,
+            codingStepCount: 0,
+            pendingUnfinishedStatus: "",
+        });
+        expect(status).toEqual({ label: "已完成", tone: "completed" });
     });
 
     it("treats data-window-no-drag action chrome, including padding, as a control", () => {

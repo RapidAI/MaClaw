@@ -51,7 +51,7 @@ func semanticTrustedOfficeWriteDefinition() map[string]interface{} {
 		"type": "function",
 		"function": map[string]interface{}{
 			"name":        semanticTrustedOfficeWriteAdapter,
-			"description": "Write a spreadsheet or a presentation deck into a workspace path. Spreadsheet: path + sheets. Presentation (.pptx): path + title + slides; each slide takes title, bullets, notes, optional images, and optional native editable charts (bar/column/bar_h/line/radar/pie/area — PowerPoint chart objects, not pictures). Content and destination are bound by the host. Pass either sheets or slides, never both; omit the unused key entirely.",
+			"description": "Write a spreadsheet or a presentation deck into a workspace path. Spreadsheet: path + sheets. Presentation (.pptx): path + title + optional subtitle/theme + slides. theme is business (default professional), academic, or warm. Each slide takes title, optional kicker, optional layout (auto/bullets/cards/section/agenda/kpi/quote/closing), bullets, notes, optional images, and optional native editable charts (bar/column/bar_h/line/radar/pie/area — PowerPoint chart objects, not pictures). The deck is rendered with a cover, accent rail, cards, and page footer; do not expect a plain white title-and-bullets template. Content and destination are bound by the host. Pass either sheets or slides, never both; omit the unused key entirely.",
 			"parameters":  semanticTrustedOfficeWriteInvocationSchema(),
 		},
 	}
@@ -83,6 +83,14 @@ func semanticTrustedOfficeWriteInvocationSchema() map[string]interface{} {
 			},
 			"title":    map[string]interface{}{"type": "string"},
 			"subtitle": map[string]interface{}{"type": "string"},
+			"theme": map[string]interface{}{
+				"type":        "string",
+				"description": "Style id: business, academic, warm, launch, tech, education, ceremony, minimal, or auto. An explicit id wins. auto (or omitted) selects from purpose, title, and subtitle. Aliases: 商务, 学术, 温馨, 发布, 技术, 教学, 典礼, 极简.",
+			},
+			"purpose": map[string]interface{}{
+				"type":        "string",
+				"description": "What the deck is for, in the user's words (答辩, 生日, 季度汇报, 产品发布, 课件, 年会, 个人介绍). Required for a good automatic style choice when theme is auto.",
+			},
 			"slides": map[string]interface{}{
 				"type":        "array",
 				"description": "Presentation form (.pptx). Pass ONLY when writing a presentation; omit this key entirely for a spreadsheet. Never pass both sheets and slides.",
@@ -90,6 +98,14 @@ func semanticTrustedOfficeWriteInvocationSchema() map[string]interface{} {
 					"type": "object",
 					"properties": map[string]interface{}{
 						"title": map[string]interface{}{"type": "string"},
+						"kicker": map[string]interface{}{
+							"type":        "string",
+							"description": "Small eyebrow above the slide title.",
+						},
+						"layout": map[string]interface{}{
+							"type":        "string",
+							"description": "auto (default), bullets, cards (2-6 short points), section, agenda, kpi (bullets as \"value | label\"), quote, or closing. Photos and charts stay on the bullet layout.",
+						},
 						"bullets": map[string]interface{}{
 							"type":  "array",
 							"items": map[string]interface{}{"type": "string"},
@@ -172,6 +188,8 @@ func semanticTrustedOfficeWriteInvocationSchema() map[string]interface{} {
 // two empty forms (ambiguous) are still rejected.
 func semanticTrustedOfficeWriteArgsAllowed(args map[string]interface{}) (path string, data map[string]interface{}, err error) {
 	var sheets, slides, title, subtitle interface{}
+	var theme, purpose string
+	hasTheme, hasPurpose := false, false
 	hasPath, hasSheets, hasSlides := false, false, false
 	for key, raw := range args {
 		switch key {
@@ -189,6 +207,18 @@ func semanticTrustedOfficeWriteArgsAllowed(args map[string]interface{}) (path st
 			title = raw
 		case "subtitle":
 			subtitle = raw
+		case "theme":
+			value, ok := raw.(string)
+			if !ok {
+				return "", nil, fmt.Errorf("trusted_office_write_arguments_rejected: theme must be a string")
+			}
+			theme, hasTheme = value, true
+		case "purpose":
+			value, ok := raw.(string)
+			if !ok {
+				return "", nil, fmt.Errorf("trusted_office_write_arguments_rejected: purpose must be a string")
+			}
+			purpose, hasPurpose = value, true
 		default:
 			return "", nil, fmt.Errorf("trusted_office_write_arguments_rejected: unexpected key %q; pass path plus either sheets (spreadsheet) or slides (presentation)", key)
 		}
@@ -225,6 +255,12 @@ func semanticTrustedOfficeWriteArgsAllowed(args map[string]interface{}) (path st
 	}
 	if subtitle != nil {
 		data["subtitle"] = subtitle
+	}
+	if hasTheme && strings.TrimSpace(theme) != "" {
+		data["theme"] = strings.TrimSpace(theme)
+	}
+	if hasPurpose && strings.TrimSpace(purpose) != "" {
+		data["purpose"] = strings.TrimSpace(purpose)
 	}
 	return path, data, nil
 }

@@ -101,6 +101,7 @@ var settingsTabFieldKeys = map[string][]string{
 	"migration":        {},
 	"llm":              {"codex"}, // models list for optional codexModels prop
 	"llmCache":         {"llm_prompt_cache"},
+	"pptStyles":        {},
 	"virtualEmployee":  {"remote_machine_id", "favorite_employees", "favorite_employee_names"},
 	"im": {
 		"qqbot_enabled",

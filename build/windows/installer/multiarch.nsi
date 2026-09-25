@@ -72,6 +72,8 @@ ManifestDPIAware true
 !include "MUI2.nsh"
 !include "x64.nsh"
 !include "WinMessages.nsh"
+; ${GetOptions} reads the /NORUN switch in .onInstSuccess.
+!include "FileFunc.nsh"
 
 !ifndef MUI_ICON_PATH
 !define MUI_ICON_PATH "..\icon.ico"
@@ -213,6 +215,23 @@ Function TrimTrailingBackslash
     Exch $2
 FunctionEnd
 
+Function .onInstSuccess
+    IfSilent onInstSuccessRunCheck onInstSuccessDone
+    onInstSuccessRunCheck:
+    # Fleet deployment (SCCM/Intune/scripts) can pass /NORUN to install
+    # silently without starting the app on every machine. The in-app updater
+    # does not pass it: it quit the app before launching the installer, so a
+    # silent update that ends with nothing running looks like a crash.
+    ${GetOptions} $CMDLINE "/NORUN" $R0
+    IfErrors onInstSuccessRelaunch onInstSuccessDone
+    onInstSuccessRelaunch:
+    # Relaunch through explorer: it runs as the logged-on user, so the app does
+    # not inherit the installer's elevation. A failure here only costs the
+    # auto-relaunch — the update itself is already installed.
+    Exec '"$WINDIR\explorer.exe" "$INSTDIR\${PRODUCT_EXECUTABLE}"'
+    onInstSuccessDone:
+FunctionEnd
+
 Function .onInit
     # Auto-detect system language (no dialog)
     System::Call 'kernel32::GetUserDefaultUILanguage() i .r0'
@@ -262,7 +281,10 @@ Function .onInit
     StrCmp $R1 "0" appRunning appNotRunning
 
     appRunning:
-    MessageBox MB_YESNO|MB_ICONEXCLAMATION "$(AppIsRunning)" IDYES stopApp
+    # /SD answers "yes" when the installer runs silently (in-app online
+    # update): the updater has already quit the app, and any old process still
+    # around must be stopped or the upgrade cannot replace its files.
+    MessageBox MB_YESNO|MB_ICONEXCLAMATION "$(AppIsRunning)" /SD IDYES IDYES stopApp
     Abort
 
     stopApp:
@@ -273,7 +295,7 @@ Function .onInit
     StrCmp $R1 "0" appStillRunning appNotRunning
 
     appStillRunning:
-    MessageBox MB_OK|MB_ICONSTOP "$(AppStillRunning)"
+    MessageBox MB_OK|MB_ICONSTOP "$(AppStillRunning)" /SD IDOK
     Abort
 
     appNotRunning:
@@ -302,7 +324,10 @@ Function .onInit
     # resolving its actual install directory. This avoids changing a PATH that
     # merely happens to equal the default directory on a clean machine.
     Call RestoreCorruptedMachinePath
-    MessageBox MB_YESNO|MB_ICONEXCLAMATION "$(AlreadyInstalled)" IDYES uninstall
+    # /SD answers "yes" silently: an online update always replaces the
+    # installed build. Without it a silent upgrade over an existing install
+    # would Abort here instead of upgrading.
+    MessageBox MB_YESNO|MB_ICONEXCLAMATION "$(AlreadyInstalled)" /SD IDYES IDYES uninstall
     Abort
     
     uninstall:
@@ -335,7 +360,7 @@ Section
         # NSIS quietly produce a broken installer when this build artifact is absent.
         File "/oname=${ACP_BRIDGE_EXECUTABLE}" "${ARG_ACPBRIDGE_AMD64_BINARY}"
     ${Else}
-        MessageBox MB_OK|MB_ICONSTOP "Unsupported architecture."
+        MessageBox MB_OK|MB_ICONSTOP "Unsupported architecture." /SD IDOK
         Abort
     ${EndIf}
 
@@ -417,7 +442,9 @@ Section "uninstall"
     # In silent mode (/S), skip user data deletion — silent uninstall is typically
     # triggered by the installer during upgrade, where we must preserve user data.
     IfSilent skipUserData
-    MessageBox MB_YESNO|MB_ICONQUESTION "$(DeleteUserData)" IDYES deleteUserData IDNO skipUserData
+    # /SD IDNO is the second belt for the silent uninstall the upgrade runs:
+    # a silent uninstall must never delete user data.
+    MessageBox MB_YESNO|MB_ICONQUESTION "$(DeleteUserData)" /SD IDNO IDYES deleteUserData IDNO skipUserData
     
     deleteUserData:
     # Delete user data directories

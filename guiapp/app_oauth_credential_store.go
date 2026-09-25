@@ -9,6 +9,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
+	"github.com/RapidAI/CodeClaw/corelib/workbuddy"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -29,6 +30,10 @@ func credentialStoreProviderID(provider corelib.MaclawLLMProvider) string {
 		return "github-copilot"
 	case provider.Name == "xAI-Grok" && kind.IsOAuth():
 		return "xai-grok"
+	case provider.Name == workbuddy.NameChina && kind.IsOAuth():
+		return workbuddy.StoreChina
+	case provider.Name == workbuddy.NameGlobal && kind.IsOAuth():
+		return workbuddy.StoreGlobal
 	case provider.Name == codegenProviderName && provider.AuthType == "sso":
 		return "codegen"
 	default:
@@ -148,6 +153,42 @@ func (a *App) ensureOAuthTokenViaStoreMaybeSyncForce(ctx context.Context, provid
 			return updated, nil
 		case "xai-grok":
 			result, refreshErr = oauth.RefreshXAIToken(ctx, old.RefreshToken)
+		case workbuddy.StoreChina, workbuddy.StoreGlobal:
+			profile, found := workbuddy.ProfileByStoreID(storeID)
+			if !found {
+				return old, fmt.Errorf("unknown WorkBuddy provider %s", storeID)
+			}
+			refreshed, refreshErr := workbuddy.Refresh(ctx, profile, workbuddy.AccountCredential{
+				AccessToken:  old.AccessToken,
+				RefreshToken: old.RefreshToken,
+				ExpiresAt:    old.ExpiresAt,
+				Domain:       old.Domain,
+				UserID:       old.UserID,
+				EnterpriseID: old.EnterpriseID,
+			}, llmOrEnvProxy)
+			if refreshErr != nil {
+				return old, fmt.Errorf("token refresh failed: %w", refreshErr)
+			}
+			updated := &oauth.StoredCredential{
+				Type:           old.Type,
+				AccessToken:    refreshed.AccessToken,
+				RawAccessToken: refreshed.AccessToken,
+				RefreshToken:   refreshed.RefreshToken,
+				ExpiresAt:      refreshed.ExpiresAt,
+				UserID:         old.UserID,
+				EnterpriseID:   old.EnterpriseID,
+				Domain:         old.Domain,
+				Email:          old.Email,
+			}
+			if refreshed.Domain != "" {
+				updated.Domain = refreshed.Domain
+			}
+			if refreshed.RefreshToken == "" {
+				updated.RefreshToken = old.RefreshToken
+			}
+			syncCred = updated
+			log.Printf("[credential-store] refreshed %s token", storeID)
+			return updated, nil
 		default:
 			return old, fmt.Errorf("unknown OAuth provider for refresh: %s", storeID)
 		}

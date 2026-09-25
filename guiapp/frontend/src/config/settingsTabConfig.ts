@@ -24,6 +24,7 @@ export const SETTINGS_TABS_NEEDING_CONFIG = [
 /** Tabs that load their own data; GetSettingsTabConfig is a no-op. */
 export const SETTINGS_TABS_SELF_LOADING = [
     'searchEngine',
+    'pptStyles',
     'redeem',
     'memory',
     'knowledge',

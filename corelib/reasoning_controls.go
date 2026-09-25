@@ -96,6 +96,53 @@ func ApplyReasoningControls(cfg MaclawLLMConfig, body map[string]interface{}, ap
 	// reasoning gateways use this object. In particular, this preserves an
 	// explicit disabled state for DeepSeek instead of later re-enabling it.
 	body["thinking"] = map[string]interface{}{"type": mode}
+	// DeepSeek keeps thinking.type as the switch and also needs
+	// reasoning_effort. Doing it here covers retarget, which would otherwise
+	// delete a caller-supplied low/max and leave a later stamp to invent high.
+	StampDeepSeekReasoningEffort(cfg, body)
+}
+
+// DeepSeekReasoningEffort maps a configured effort onto the values DeepSeek
+// V4 accepts while thinking is enabled: low, high, or max. Empty and the
+// OpenAI medium/xhigh aliases become high, which is DeepSeek's default.
+// WorkBuddy ignores thinking.type by itself and returns an empty
+// reasoning_content unless this field is present.
+func DeepSeekReasoningEffort(configured string) string {
+	switch strings.ToLower(strings.TrimSpace(configured)) {
+	case "minimal", "low", "none", "off", "false", "0":
+		return "low"
+	case "max", "ultra":
+		return "max"
+	default:
+		return "high"
+	}
+}
+
+// StampDeepSeekReasoningEffort finishes a DeepSeek chat body so gateways that
+// only honor reasoning_effort still return reasoning_content. thinking.type
+// stays the on/off switch. budget_tokens is Anthropic-only and is removed.
+// A disabled thinking block must not also carry reasoning_effort.
+func StampDeepSeekReasoningEffort(cfg MaclawLLMConfig, body map[string]interface{}) {
+	if body == nil || !IsDeepSeekThinkingModeModel(cfg) {
+		return
+	}
+	thinking, _ := body["thinking"].(map[string]interface{})
+	if thinking == nil {
+		return
+	}
+	delete(thinking, "budget_tokens")
+	typ, _ := thinking["type"].(string)
+	if !strings.EqualFold(strings.TrimSpace(typ), "enabled") {
+		delete(body, "reasoning_effort")
+		return
+	}
+	configured := cfg.ReasoningEffort
+	if strings.TrimSpace(configured) == "" {
+		if existing, _ := body["reasoning_effort"].(string); strings.TrimSpace(existing) != "" {
+			configured = existing
+		}
+	}
+	body["reasoning_effort"] = DeepSeekReasoningEffort(configured)
 }
 
 func thinkingTypeDisabled(body map[string]interface{}) bool {

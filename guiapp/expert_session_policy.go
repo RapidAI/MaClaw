@@ -11,6 +11,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/permission"
+	"github.com/RapidAI/CodeClaw/corelib/pptx"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -200,11 +201,38 @@ func loadExpertDefByID(id string) *ExpertDefinition {
 	}
 	if def, ok, err := defaultExpertStore.Get(id); err == nil && ok {
 		cp := def
-		return &cp
+		return attachLivePPTStyles(&cp)
 	} else if err != nil {
 		log.Printf("[expert] read store for %q failed: %v", id, err)
 	}
-	return builtinExpertByID(id)
+	return attachLivePPTStyles(builtinExpertByID(id))
+}
+
+// attachLivePPTStyles appends the current built-in and custom style list so a
+// stored expert prompt still sees styles created in Settings.
+func attachLivePPTStyles(def *ExpertDefinition) *ExpertDefinition {
+	if def == nil || !expertUsesPPTStyles(def) {
+		return def
+	}
+	cp := *def
+	const marker = "\n\n# 当前可用风格（实时）\n"
+	if i := strings.Index(cp.SystemPrompt, marker); i >= 0 {
+		cp.SystemPrompt = cp.SystemPrompt[:i]
+	}
+	cp.SystemPrompt += marker + pptx.FormatDeckStyleCatalog() + "\ntheme 填上面的 id 或名称。自定义风格与内置风格一样可用，并且要走 office 的 write_pptx。\n"
+	return &cp
+}
+
+func expertUsesPPTStyles(def *ExpertDefinition) bool {
+	if def.ID == "builtin-pptx-maker" {
+		return true
+	}
+	for _, skill := range def.Skills {
+		if strings.TrimSpace(skill) == "pptx-gen" {
+			return true
+		}
+	}
+	return false
 }
 
 // expertAlwaysKeptTools are never filtered out of an expert session: without

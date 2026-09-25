@@ -26,6 +26,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/configfile"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
+	"github.com/RapidAI/CodeClaw/corelib/workbuddy"
 )
 
 // MaclawLLMProvider and MaclawLLMConfig are defined in corelib.
@@ -241,6 +242,9 @@ func normalizeMaclawLLMProviders(providers []corelib.MaclawLLMProvider) []coreli
 			seenVolcengineAgentPlan = true
 		}
 		provider = normalizeZhipuCodingProvider(provider)
+		if profile, ok := workbuddy.ProfileByName(provider.Name); ok {
+			provider = normalizeWorkBuddyProvider(provider, workbuddyProvider(profile))
+		}
 		if corelib.MaclawLLMProviderNameEqual(provider.Name, configfile.ExternalAgentProviderOpenCode) {
 			provider = normalizeOpenCodeProvider(provider, openCodeDefaults)
 		}
@@ -687,6 +691,34 @@ func defaultOpenCodeProvider() corelib.MaclawLLMProvider {
 	}
 }
 
+// normalizeWorkBuddyProvider keeps the two editions on the OAuth chat path.
+// An explicit model and context window are preserved.
+func normalizeWorkBuddyProvider(provider, defaults corelib.MaclawLLMProvider) corelib.MaclawLLMProvider {
+	provider.URL = defaults.URL
+	provider.AuthType = defaults.AuthType
+	provider.Protocol = defaults.Protocol
+	provider.WireAPI = ""
+	if strings.TrimSpace(provider.Model) == "" {
+		provider.Model = defaults.Model
+	}
+	if provider.ContextLength <= 0 {
+		provider.ContextLength = defaults.ContextLength
+	}
+	return provider
+}
+
+func workbuddyProvider(profile workbuddy.Profile) corelib.MaclawLLMProvider {
+	return corelib.MaclawLLMProvider{
+		Name:          profile.Name,
+		URL:           profile.ChatURL,
+		Model:         profile.DefaultModel,
+		Protocol:      "openai",
+		AuthType:      "oauth",
+		ContextLength: profile.DefaultContext(),
+		TimeoutSec:    corelib.DefaultLLMTimeoutSec,
+	}
+}
+
 // defaultMaclawLLMProviders returns the built-in provider list.
 func defaultMaclawLLMProviders() []corelib.MaclawLLMProvider {
 	return []corelib.MaclawLLMProvider{
@@ -705,6 +737,8 @@ func defaultMaclawLLMProviders() []corelib.MaclawLLMProvider {
 		{Name: "Kimi", URL: "https://api.kimi.com/coding/v1", Model: "kimi-for-coding", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AgentType: "claude code 2.0"},
 		{Name: volcengineAgentPlanProviderName, URL: "https://ark.cn-beijing.volces.com/api/plan/v3", Model: "glm-5.2", Protocol: "openai", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, WireAPI: "responses"},
 		{Name: "讯飞星辰", URL: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", Model: "astron-code-latest", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
+		workbuddyProvider(workbuddy.ChinaProfile()),
+		workbuddyProvider(workbuddy.GlobalProfile()),
 		{Name: "Custom1", URL: "", Model: "", IsCustom: true, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "Custom2", URL: "", Model: "", IsCustom: true, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 	}
@@ -1274,7 +1308,7 @@ func (a *App) materializeMaclawLLMProvider(p corelib.MaclawLLMProvider) corelib.
 		log.Printf("[LLM] materialize provider oauth: wire_api=%s credential_present=%t raw_oauth_present=%t auth=%s",
 			wireAPI, p.Key != "", p.OAuthAccessToken != "", p.AuthType)
 	}
-	return a.withGlobalThinkingMode(corelib.MaclawLLMConfig{
+	cfg := a.withGlobalThinkingMode(corelib.MaclawLLMConfig{
 		URL:             p.URL,
 		Key:             key,
 		Model:           corelib.MigrateZhipuCodingModel(p.Name, p.Model),
@@ -1289,6 +1323,39 @@ func (a *App) materializeMaclawLLMProvider(p corelib.MaclawLLMProvider) corelib.
 		ProviderID:      maclawLLMProviderIDForRead(p),
 		AuthType:        p.AuthType,
 	})
+	return a.attachWorkBuddyAccount(cfg, p)
+}
+
+func (a *App) attachWorkBuddyAccount(cfg corelib.MaclawLLMConfig, p corelib.MaclawLLMProvider) corelib.MaclawLLMConfig {
+	profile, ok := workbuddy.ProfileByName(p.Name)
+	if !ok {
+		profile, ok = workbuddy.ProfileByURL(p.URL)
+	}
+	if !ok {
+		return cfg
+	}
+	cfg.Protocol = "openai"
+	cfg.WireAPI = ""
+	cfg.WorkBuddyOrigin = profile.Origin
+	cfg.WorkBuddyRefreshToken = strings.TrimSpace(p.RefreshToken)
+	if a == nil || a.credentialStore == nil {
+		return cfg
+	}
+	storeID := credentialStoreProviderID(p)
+	if storeID == "" {
+		storeID = profile.StoreID
+	}
+	stored, err := a.credentialStore.Read(storeID)
+	if err != nil || stored == nil {
+		return cfg
+	}
+	cfg.WorkBuddyUserID = strings.TrimSpace(stored.UserID)
+	cfg.WorkBuddyEnterpriseID = strings.TrimSpace(stored.EnterpriseID)
+	cfg.WorkBuddyDomain = strings.TrimSpace(stored.Domain)
+	if strings.TrimSpace(stored.RefreshToken) != "" {
+		cfg.WorkBuddyRefreshToken = strings.TrimSpace(stored.RefreshToken)
+	}
+	return cfg
 }
 
 func effectiveMaclawLLMProfiles(cfg corelib.AppConfig, providers []corelib.MaclawLLMProvider, current string) (*corelib.MaclawLLMProfiles, error) {
@@ -2239,9 +2306,9 @@ func (a *App) QuickSaveMaclawLLMProfile(profile, providerID, model, revision str
 }
 
 // TestMaclawLLMProfile tests an effective profile selection without persisting
-// the assignment. Catalog models that have not been vision-tested run the same
-// text-plus-image probe as assignment save; already-tested models only ping
-// connectivity. A conclusive image result is recorded on the provider.
+// the assignment. The explicit test always repeats the text call and the image
+// probe, so a corrected model capability replaces an earlier result. A
+// conclusive image result is recorded on the provider.
 func (a *App) TestMaclawLLMProfile(profile, providerID, model string) (MaclawLLMProfileProbeResult, error) {
 	profile = strings.ToLower(strings.TrimSpace(profile))
 	providerID = strings.TrimSpace(providerID)
@@ -2300,7 +2367,7 @@ func (a *App) probeAssignedProfileSelection(result *MaclawLLMProfileProbeResult,
 		return MaclawLLMStatus{Configured: true, Error: "invalid_configuration"}
 	}
 	visionStatus := providerVisionTestStatus(provider, result.Model)
-	if provider.IsHubService || visionStatus != "untested" {
+	if provider.IsHubService {
 		result.VisionProbeStatus = visionStatus
 		result.SupportsVision = visionStatus == "supported"
 		return a.pingResolvedMaclawLLMConfigWithAuthStatus(resolved, true)
@@ -3779,6 +3846,10 @@ func (a *App) pingResolvedMaclawLLMConfigWithAuthStatus(llmCfg corelib.MaclawLLM
 		return MaclawLLMStatus{Online: false, Configured: true, Error: err.Error()}
 	}
 
+	if workbuddy.Matches(llmCfg) {
+		return pingWorkBuddy(llmCfg, authenticationFailuresAreOffline)
+	}
+
 	probeBaseURL := normalizeOpenAIProbeBaseURL(baseURL, ua)
 	probeCfg := llmCfg
 	probeCfg.URL = probeBaseURL
@@ -3806,6 +3877,46 @@ func (a *App) pingResolvedMaclawLLMConfigWithAuthStatus(llmCfg corelib.MaclawLLM
 	}
 
 	return MaclawLLMStatus{Online: false, Configured: true, Error: err2.Error()}
+}
+
+func pingWorkBuddy(cfg corelib.MaclawLLMConfig, authenticationFailuresAreOffline bool) MaclawLLMStatus {
+	profile, ok := workbuddy.ProfileByName(cfg.ProviderName)
+	if !ok {
+		profile, ok = workbuddy.ProfileByURL(cfg.URL)
+	}
+	if !ok {
+		return MaclawLLMStatus{Online: false, Configured: true, Error: "unknown WorkBuddy provider"}
+	}
+	if strings.TrimSpace(cfg.Key) == "" {
+		if authenticationFailuresAreOffline {
+			return MaclawLLMStatus{Online: false, Configured: true, Error: "authentication failed"}
+		}
+		return MaclawLLMStatus{Online: false, Configured: true, Error: "missing access token"}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	_, err := workbuddy.FetchModels(ctx, profile, workbuddy.AccountCredential{
+		AccessToken:  cfg.Key,
+		RefreshToken: cfg.WorkBuddyRefreshToken,
+		UserID:       cfg.WorkBuddyUserID,
+		EnterpriseID: cfg.WorkBuddyEnterpriseID,
+		Domain:       cfg.WorkBuddyDomain,
+	}, llmOrEnvProxy)
+	if err == nil {
+		return MaclawLLMStatus{Online: true, Configured: true}
+	}
+	if isWorkBuddyAuthError(err) {
+		if authenticationFailuresAreOffline {
+			return MaclawLLMStatus{Online: false, Configured: true, Error: "authentication failed"}
+		}
+		return MaclawLLMStatus{Online: true, Configured: true}
+	}
+	return MaclawLLMStatus{Online: false, Configured: true, Error: err.Error()}
+}
+
+func isWorkBuddyAuthError(err error) bool {
+	message := strings.ToLower(fmt.Sprint(err))
+	return strings.Contains(message, "http 401") || strings.Contains(message, "http 403") || strings.Contains(message, "missing access token")
 }
 
 func isMaclawLLMAuthenticationError(err error) bool {
@@ -5773,6 +5884,58 @@ var (
 	fetchProviderModelsHTTPClientForTest *http.Client
 )
 
+const workBuddyCatalogTTL = 10 * time.Minute
+
+type workBuddyCatalogHit struct {
+	at    time.Time
+	specs []workbuddy.ModelSpec
+}
+
+var workBuddyCatalogCache = struct {
+	sync.Mutex
+	items map[string]workBuddyCatalogHit
+}{items: map[string]workBuddyCatalogHit{}}
+
+func (a *App) workBuddyModelCatalog(profile workbuddy.Profile, apiKey string) []workbuddy.ModelSpec {
+	specs := workbuddy.Allowlist(profile.ID)
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return specs
+	}
+	cred := workbuddy.AccountCredential{AccessToken: apiKey}
+	if a != nil && a.credentialStore != nil {
+		if stored, err := a.credentialStore.Read(profile.StoreID); err == nil && stored != nil {
+			cred.UserID = strings.TrimSpace(stored.UserID)
+			cred.EnterpriseID = strings.TrimSpace(stored.EnterpriseID)
+			cred.Domain = strings.TrimSpace(stored.Domain)
+			cred.RefreshToken = strings.TrimSpace(stored.RefreshToken)
+			if token := strings.TrimSpace(stored.AccessToken); token != "" {
+				cred.AccessToken = token
+			}
+		}
+	}
+	cacheKey := profile.ID + "\n" + cred.AccessToken
+	workBuddyCatalogCache.Lock()
+	if hit, ok := workBuddyCatalogCache.items[cacheKey]; ok && time.Since(hit.at) < workBuddyCatalogTTL {
+		workBuddyCatalogCache.Unlock()
+		return hit.specs
+	}
+	workBuddyCatalogCache.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	upstream, err := workbuddy.FetchModels(ctx, profile, cred, llmOrEnvProxy)
+	if err != nil {
+		log.Printf("[FetchProviderModels] workbuddy live catalog failed provider=%s: %v", profile.Name, err)
+		return specs
+	}
+	merged := workbuddy.MergeCatalog(profile.ID, upstream)
+	workBuddyCatalogCache.Lock()
+	workBuddyCatalogCache.items[cacheKey] = workBuddyCatalogHit{at: time.Now(), specs: merged}
+	workBuddyCatalogCache.Unlock()
+	return merged
+}
+
 func fetchProviderModelsHTTPClient() *http.Client {
 	fetchProviderModelsHTTPClientMu.Lock()
 	defer fetchProviderModelsHTTPClientMu.Unlock()
@@ -5806,6 +5969,22 @@ func (a *App) fetchProviderModels(baseURL, apiKey, protocol, userAgent string, s
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	apiKey = strings.TrimSpace(apiKey)
 	protocol = strings.TrimSpace(protocol)
+
+	if profile, ok := workbuddy.ProfileByURL(baseURL); ok {
+		if apiKey == "" {
+			apiKey = a.resolveAPIKeyForModelFetch(baseURL)
+		}
+		specs := a.workBuddyModelCatalog(profile, apiKey)
+		items := make([]ProviderModelItem, 0, len(specs))
+		for _, spec := range specs {
+			name := spec.Name
+			if name == "" {
+				name = spec.ID
+			}
+			items = append(items, ProviderModelItem{ID: spec.ID, Name: name})
+		}
+		return items, nil
+	}
 
 	// ChatGPT / Codex subscription (chatgpt.com/backend-api) does not expose a
 	// standard OpenAI-compatible /models endpoint. Using GET /models returns

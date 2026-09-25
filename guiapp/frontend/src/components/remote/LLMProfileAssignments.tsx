@@ -3,6 +3,7 @@ import { FetchMaclawLLMProfileModels, GetMaclawLLMProfilePanelState, SaveMaclawL
 import { EventsOff, EventsOn } from "../../../wailsjs/runtime";
 import { colors } from "./styles";
 import { inputStyle, labelStyle } from "./LLMConfigPanelShared";
+import { SuggestCombobox } from "../ui/SuggestCombobox";
 
 type Profile = { provider_id?: string; model?: string; inherit_assistant?: boolean };
 type Provider = { id: string; name: string; model?: string; models?: string[]; connection_test_passed?: boolean; is_hub_service?: boolean; supports_vision?: boolean; vision_models?: string[]; vision_tested_models?: string[] };
@@ -341,7 +342,7 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
     }, [assistant?.provider_id, caption?.provider_id, coding?.provider_id, codingFollows, refreshProviderCatalog]);
 
     const providerModels = (providerID?: string) => {
-        const id = String(providerID || "");
+        const id = String(providerID || "").trim();
         const provider = providerByID.get(providerLookupKey(id));
         if (!provider) return [];
         const options = [
@@ -353,9 +354,17 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
     };
     const setProvider = (profile: "assistant" | "coding" | "caption", providerID: string) => {
         const models = providerModels(providerID);
+        const provider = providerByID.get(providerLookupKey(providerID));
+        const preferred = String(provider?.model || "").trim();
+        const preferredMatch = preferred
+            ? models.find(model => model.toLowerCase() === preferred.toLowerCase())
+            : "";
+        // The live catalog is prepended and starts with aliases such as
+        // default-model. Keep the provider's saved model instead of that alias.
+        const nextModel = providerID ? (preferredMatch || models[0] || "") : "";
         setDraft(prev => prev ? ({
             ...prev,
-            [profile]: { ...prev[profile], provider_id: providerID, model: providerID ? (models[0] || "") : "" },
+            [profile]: { ...prev[profile], provider_id: providerID, model: nextModel },
         }) : prev);
         invalidateProbeResults(profile, ...(profile === "assistant" && codingFollows ? ["coding" as const] : []));
     };
@@ -475,12 +484,19 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
             </div>
             <div>
                 <label style={labelStyle}>{t("Model", "模型")}</label>
-                <input list={`${profile}-profile-models`} value={value.model || ""} onChange={e => setModel(profile, e.target.value)}
-                    aria-label={selectorAria(profile, "model")}
+                <SuggestCombobox
+                    listboxId={`${profile}-profile-models`}
+                    ariaLabel={selectorAria(profile, "model")}
+                    value={value.model || ""}
+                    options={providerModels(value.provider_id)}
+                    onChange={model => setModel(profile, model)}
                     placeholder={t("Select or enter model ID", "选择或输入模型 ID")}
                     disabled={profile === "caption" && !value.provider_id}
-                    style={{ ...inputStyle, opacity: profile === "caption" && !value.provider_id ? 0.6 : 1 }} />
-                <datalist id={`${profile}-profile-models`}>{providerModels(value.provider_id).map(model => <option key={model} value={model} />)}</datalist>
+                    openOnEnter
+                    toggleLabel={t("Show model list", "显示模型列表", "顯示模型列表")}
+                    emptyText={t("No matching models", "没有匹配的模型", "沒有匹配的模型")}
+                    inputStyle={{ ...inputStyle, opacity: profile === "caption" && !value.provider_id ? 0.6 : 1 }}
+                />
             </div>
         </div>
     );

@@ -23,10 +23,31 @@ export function useSafeBackdropDismiss<T extends HTMLElement = HTMLDivElement>(
         }) as MouseEventHandler<T>,
     };
 
+    const markPressInside = () => {
+        mouseDownStartedOnBackdropRef.current = false;
+    };
     const dialogProps = {
         onMouseDown: ((event) => {
             event.stopPropagation();
-            mouseDownStartedOnBackdropRef.current = false;
+            markPressInside();
+        }) as MouseEventHandler<T>,
+        // Selecting the password can start on the dimmed backdrop, cross the
+        // field, and end on the backdrop again. Both ends are the backdrop, so
+        // the click would close the dialog. Entering the dialog cancels that.
+        onMouseEnter: (() => {
+            markPressInside();
+        }) as MouseEventHandler<T>,
+        onPointerEnter: (() => {
+            markPressInside();
+        }) as MouseEventHandler<T>,
+        // Selecting text can start on the dimmed backdrop and end inside the
+        // field. The click is still dispatched on the backdrop; clearing the
+        // press here keeps that selection from closing the dialog.
+        onMouseUp: (() => {
+            markPressInside();
+        }) as MouseEventHandler<T>,
+        onPointerUp: (() => {
+            markPressInside();
         }) as MouseEventHandler<T>,
         onClick: ((event) => {
             event.stopPropagation();

@@ -17672,10 +17672,26 @@ export namespace main {
 	        this.download_url = source["download_url"];
 	        this.download_unavailable = source["download_unavailable"];
 	        this.sha256 = source["sha256"];
-	        this.channel = source["channel"];
-	    }
-	}
-	export class VEApprovalCapabilityStatus {
+        this.channel = source["channel"];
+    }
+}
+export class PendingUpdateNotice {
+    target_version: string;
+    installer_path: string;
+    installer_still_present: boolean;
+
+    static createFrom(source: any = {}) {
+        return new PendingUpdateNotice(source);
+    }
+
+    constructor(source: any = {}) {
+        if ('string' === typeof source) source = JSON.parse(source);
+        this.target_version = source["target_version"];
+        this.installer_path = source["installer_path"];
+        this.installer_still_present = source["installer_still_present"];
+    }
+}
+export class VEApprovalCapabilityStatus {
 	    ve_id: string;
 	    has_capability: boolean;
 	    enabled: boolean;

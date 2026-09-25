@@ -2,6 +2,7 @@ package ha
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,6 +25,17 @@ const (
 	peerPullTimeout          = 120 * time.Second
 )
 
+// errPullResponseBodyTooLarge reports that the pull response body reached the
+// client's read limit, so the JSON payload is truncated and undecodable. The
+// caller treats it like a timeout: shrink the batch limit and retry. This is
+// what used to deadlock hc-1 for ~25h (2026-09-25): a backlog of ~1MB
+// llm_official_class_head ops pushed the response past the limit, the
+// LimitReader cut it mid-JSON, the decoder returned "unexpected EOF", and the
+// retry loop — which only downgraded on timeout errors — kept requesting the
+// same oversized batch forever while the peer's prune window deleted the ops
+// behind the stuck cursor.
+var errPullResponseBodyTooLarge = errors.New("pull ops response body exceeded limit")
+
 type PullOpsResponse struct {
 	NodeID       string            `json:"node_id"`
 	Ops          []*store.HASyncOp `json:"ops"`
@@ -39,13 +51,53 @@ type PullOpsResponse struct {
 }
 
 type Syncer struct {
-	svc      *Service
-	client   *http.Client
-	interval time.Duration
-	limit    int
-	slots    chan struct{}
-	mu       sync.Mutex
-	running  map[string]bool
+	svc       *Service
+	client    *http.Client
+	interval  time.Duration
+	limit     int
+	bodyLimit int64
+	slots     chan struct{}
+	mu        sync.Mutex
+	running   map[string]bool
+}
+
+// newHAHTTPClient builds an HTTP client that cannot wedge on a half-dead
+// HTTP/2 connection. Over https the default Transport negotiates h2 via ALPN;
+// when the underlying connection dies silently (peer reboot, NAT timeout,
+// cross-border path blackholed) h2 streams block forever — the request's
+// Client.Timeout cancel does not reliably interrupt a wedged h2 roundTrip or
+// body Read. Verified live 2026-09-25 (run18): two hubcenter syncer goroutines
+// stuck >8min on one h2 connection with 45KB un-ACKed in the socket Send-Q,
+// zero packets on the wire, no error surfaced anywhere.
+// HTTP/1.1 uses one connection per request, so ResponseHeaderTimeout and
+// Client.Timeout both fire deterministically and a dead connection fails
+// fast instead of hanging the syncer goroutine (beginPeerSync then blocks
+// that peer silently until the goroutine returns).
+func newHAHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout:   30 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			MaxIdleConns:          8,
+			MaxIdleConnsPerHost:   2,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   15 * time.Second,
+			ExpectContinueTimeout: time.Second,
+			// Independent cap on waiting for response headers: covers the
+			// "request sent, peer never answers" half-open case.
+			ResponseHeaderTimeout: 60 * time.Second,
+			// Pin ALPN to http/1.1: with a custom TLSClientConfig and
+			// ForceAttemptHTTP2 unset, Go would otherwise still offer h2.
+			TLSClientConfig: &tls.Config{
+				NextProtos: []string{"http/1.1"},
+			},
+			ForceAttemptHTTP2: false,
+		},
+	}
 }
 
 func NewSyncer(svc *Service, interval time.Duration, limit int) *Syncer {
@@ -59,12 +111,13 @@ func NewSyncer(svc *Service, interval time.Duration, limit int) *Syncer {
 		limit = maxPullBatchSize
 	}
 	return &Syncer{
-		svc:      svc,
-		client:   &http.Client{Timeout: peerPullTimeout},
-		interval: interval,
-		limit:    limit,
-		slots:    make(chan struct{}, maxConcurrentPeerSyncs),
-		running:  make(map[string]bool),
+		svc:       svc,
+		client:    newHAHTTPClient(peerPullTimeout),
+		interval:  interval,
+		limit:     limit,
+		bodyLimit: pullOpsResponseBodyLimit,
+		slots:     make(chan struct{}, maxConcurrentPeerSyncs),
+		running:   make(map[string]bool),
 	}
 }
 
@@ -272,12 +325,15 @@ func (s *Syncer) pullOps(ctx context.Context, peer *PeerRuntimeState, afterSeq i
 		if err == nil {
 			return out, nil
 		}
-		if ctx.Err() != nil || !isHAPullTimeout(err) || limit <= 1 {
+		if ctx.Err() != nil || !isHAPullShrinkable(err) || limit <= 1 {
 			return nil, err
 		}
 		next := limit / 4
 		if next < 1 {
 			next = 1
+		}
+		if errors.Is(err, errPullResponseBodyTooLarge) {
+			log.Printf("[hubcenter][ha] pull from %s response body too large (batch limit=%d), shrinking to %d", peer.NodeID, limit, next)
 		}
 		limit = next
 	}
@@ -307,11 +363,72 @@ func (s *Syncer) pullOpsWithLimit(ctx context.Context, peer *PeerRuntimeState, a
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("pull ops failed: %s", resp.Status)
 	}
+	// Fast path: a declared Content-Length over the limit proves truncation
+	// without reading anything. Our own server and nginx both set the header
+	// for buffered responses, so the oversized-pull case (138MB observed via
+	// nginx, 2026-09-25) fails here instead of after downloading 128MiB.
+	// Chunked responses (-1) fall through to readBodyWithLimit below.
+	if resp.ContentLength > s.pullBodyLimit() {
+		return nil, fmt.Errorf("%w: content-length=%d limit=%d batch=%d", errPullResponseBodyTooLarge, resp.ContentLength, s.pullBodyLimit(), limit)
+	}
+	// Read the body with explicit truncation detection: if the response
+	// reaches the byte limit there is more data behind it, so the JSON is
+	// incomplete. Instead of letting the decoder fail with a bare
+	// "unexpected EOF" (which the retry loop cannot distinguish from a
+	// genuine protocol error), surface a typed error the loop can act on.
+	body, truncated, err := readBodyWithLimit(resp.Body, s.pullBodyLimit())
+	if err != nil {
+		return nil, err
+	}
+	if truncated {
+		return nil, fmt.Errorf("%w: limit=%d batch=%d", errPullResponseBodyTooLarge, s.pullBodyLimit(), limit)
+	}
 	var out PullOpsResponse
-	if err := json.NewDecoder(io.LimitReader(resp.Body, pullOpsResponseBodyLimit)).Decode(&out); err != nil {
+	if err := json.Unmarshal(body, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
+}
+
+// readBodyWithLimit reads r fully but reports whether the limit cut the
+// stream short. It reads up to limit+1 bytes so a body exactly at the limit
+// is not misclassified as truncated.
+func readBodyWithLimit(r io.Reader, limit int64) ([]byte, bool, error) {
+	if limit <= 0 {
+		limit = pullOpsResponseBodyLimit
+	}
+	data, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return nil, false, err
+	}
+	if int64(len(data)) > limit {
+		return data[:limit], true, nil
+	}
+	return data, false, nil
+}
+
+func (s *Syncer) pullBodyLimit() int64 {
+	if s == nil || s.bodyLimit <= 0 {
+		return pullOpsResponseBodyLimit
+	}
+	return s.bodyLimit
+}
+
+// isHAPullShrinkable reports whether retrying the pull with a smaller batch
+// could succeed. Timeouts and oversized responses both qualify: a smaller
+// batch produces a smaller payload and a shorter transfer. Plain HTTP errors
+// (401, 404) and refused connections do not — shrinking cannot fix those.
+// "unexpected EOF" is kept as a belt-and-braces match for intermediaries
+// (nginx, proxies) cutting the stream before our own limit triggers.
+func isHAPullShrinkable(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, errPullResponseBodyTooLarge) || isHAPullTimeout(err) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "unexpected eof")
 }
 
 func isHAPullTimeout(err error) bool {

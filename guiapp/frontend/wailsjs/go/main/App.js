@@ -298,6 +298,10 @@ export function CancelVirtualRepositoryOperation(arg1) {
   return window['go']['main']['App']['CancelVirtualRepositoryOperation'](arg1);
 }
 
+export function CancelWorkBuddyOAuth() {
+  return window['go']['main']['App']['CancelWorkBuddyOAuth']();
+}
+
 export function CancelXAIOAuth() {
   return window['go']['main']['App']['CancelXAIOAuth']();
 }
@@ -925,6 +929,10 @@ export function DiscardCodingWorkbenchConflict(arg1, arg2) {
 
 export function DismissAgentView(arg1) {
   return window['go']['main']['App']['DismissAgentView'](arg1);
+}
+
+export function DismissPendingUpdate() {
+  return window['go']['main']['App']['DismissPendingUpdate']();
 }
 
 export function DismissRemoteSession(arg1) {
@@ -1621,6 +1629,10 @@ export function GetPassthroughCommand(arg1) {
 
 export function GetPassthroughSettings() {
   return window['go']['main']['App']['GetPassthroughSettings']();
+}
+
+export function GetPendingUpdateNotice() {
+  return window['go']['main']['App']['GetPendingUpdateNotice']();
 }
 
 export function GetPetPackPreviewDataURL(arg1) {
@@ -2931,8 +2943,8 @@ export function KnowledgeUpdateURLDomainPolicies(arg1) {
   return window['go']['main']['App']['KnowledgeUpdateURLDomainPolicies'](arg1);
 }
 
-export function LaunchInstallerAndExit(arg1) {
-  return window['go']['main']['App']['LaunchInstallerAndExit'](arg1);
+export function LaunchInstallerAndExit(arg1, arg2) {
+  return window['go']['main']['App']['LaunchInstallerAndExit'](arg1, arg2);
 }
 
 export function LaunchTool(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
@@ -4741,6 +4753,10 @@ export function StartWorkflowTemplate(arg1, arg2) {
 
 export function StartWorkflowTemplateInTab(arg1, arg2, arg3) {
   return window['go']['main']['App']['StartWorkflowTemplateInTab'](arg1, arg2, arg3);
+}
+
+export function StartWorkBuddyOAuth(arg1) {
+  return window['go']['main']['App']['StartWorkBuddyOAuth'](arg1);
 }
 
 export function StartXAIOAuth() {

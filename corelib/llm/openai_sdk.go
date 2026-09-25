@@ -15,12 +15,16 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/workbuddy"
 	openai "github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 )
 
 func openAISDKChatRaw(ctx context.Context, cfg corelib.MaclawLLMConfig, body []byte, client *http.Client) ([]byte, int, error) {
 	client = HTTPClientForRequestContext(ctx, client)
+	if workbuddy.Matches(cfg) {
+		client = workbuddy.WrapClient(client)
+	}
 	if !json.Valid(body) {
 		return nil, 0, fmt.Errorf("parse openai request body: invalid JSON")
 	}
@@ -71,6 +75,9 @@ func openAISDKChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body 
 
 func openAIHTTPChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body []byte, client *http.Client, onToken TokenCallback, onReasoning TokenCallback) (*Response, int, []byte, error) {
 	client = HTTPClientForRequestContext(ctx, client)
+	if workbuddy.Matches(cfg) {
+		client = workbuddy.WrapClient(client)
+	}
 	cfg = bindOpenCodeSessionFromJSONBody(ctx, cfg, body)
 	endpoint := BuildOpenAIChatCompletionsEndpoint(corelib.NormalizeGLMCodingPlanOpenAIBaseURL(cfg.URL, cfg.UserAgent()))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
@@ -435,6 +442,15 @@ func openAISDKOptions(cfg corelib.MaclawLLMConfig, client *http.Client) []option
 	if strings.EqualFold(strings.TrimSpace(cfg.ProviderName), "xAI-Grok") &&
 		strings.EqualFold(strings.TrimSpace(cfg.AuthType), "oauth") {
 		opts = append(opts, option.WithHeader("X-XAI-Token-Auth", "xai-grok-cli"))
+	}
+	if workbuddy.Matches(cfg) {
+		hdr := make(http.Header)
+		workbuddy.ApplyHeaders(hdr, cfg)
+		for key, values := range hdr {
+			for _, value := range values {
+				opts = append(opts, option.WithHeader(key, value))
+			}
+		}
 	}
 	if timeout := cfg.EffectiveTimeoutSec(); timeout > 0 {
 		opts = append(opts, option.WithRequestTimeout(time.Duration(timeout)*time.Second))

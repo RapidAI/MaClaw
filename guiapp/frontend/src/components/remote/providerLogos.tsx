@@ -1,5 +1,21 @@
 import React from "react";
 
+export const WORKBUDDY_CHINA_PROVIDER = "WorkBuddy 国内版";
+export const WORKBUDDY_GLOBAL_PROVIDER = "WorkBuddy 国际版";
+
+export function isWorkBuddyProvider(name: string | null | undefined) {
+    return name === WORKBUDDY_CHINA_PROVIDER || name === WORKBUDDY_GLOBAL_PROVIDER;
+}
+
+function WorkBuddyLogo() {
+    return (
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M3.2 7.2 8.1 17.2h2.1L12 9.4l1.8 7.8h2.1l4.9-10" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+            <circle cx="18.6" cy="5.4" r="1.35" fill="currentColor"/>
+        </svg>
+    );
+}
+
 /** Inline SVG logos for known LLM providers, keyed by provider name. */
 export const PROVIDER_LOGOS: Record<string, React.ReactNode> = {
     OpenAI: (
@@ -81,4 +97,6 @@ export const PROVIDER_LOGOS: Record<string, React.ReactNode> = {
             <path d="M12 5v3M12 16v3M5.5 8.5l2.6 1.5M15.9 14l2.6 1.5M5.5 15.5l2.6-1.5M15.9 10l2.6-1.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
         </svg>
     ),
+    [WORKBUDDY_CHINA_PROVIDER]: <WorkBuddyLogo />,
+    [WORKBUDDY_GLOBAL_PROVIDER]: <WorkBuddyLogo />,
 };

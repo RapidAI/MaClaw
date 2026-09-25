@@ -100,8 +100,15 @@ func TestWriteFileSkipsEmptyLeadingBullets(t *testing.T) {
 			}
 		}
 	}
-	if len(runs) != 2 || runs[0] != "要点" || runs[1] != "实点" {
-		t.Fatalf("runs=%q, want [要点 实点]", runs)
+	seen := map[string]bool{}
+	for _, run := range runs {
+		seen[run] = true
+		if run != "要点" && run != "实点" && !strings.Contains(run, "/") {
+			t.Fatalf("unexpected run %q in %q", run, runs)
+		}
+	}
+	if !seen["要点"] || !seen["实点"] {
+		t.Fatalf("runs=%q, want title and the non-empty bullet", runs)
 	}
 }
 

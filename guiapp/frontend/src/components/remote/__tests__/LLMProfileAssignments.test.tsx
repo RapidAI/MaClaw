@@ -105,10 +105,85 @@ describe("LLMProfileAssignments", () => {
 
         await screen.findByRole("heading", { name: "Model assignments" });
         await waitFor(() => expect(fetchProfileModels).toHaveBeenCalledWith("assistant"));
-        const assistantOptions = Array.from(document.getElementById("assistant-profile-models")?.querySelectorAll("option") || []).map(option => option.value);
-        expect(assistantOptions).toEqual(expect.arrayContaining(["gpt-5", "gpt-5-mini", "gpt-5-nano"]));
-        const codingOptions = Array.from(document.getElementById("coding-profile-models")?.querySelectorAll("option") || []).map(option => option.value);
-        expect(codingOptions).toEqual(expect.arrayContaining(["deepseek-coder", "deepseek-chat"]));
+        const optionValues = (id: string) => Array.from(document.getElementById(id)?.querySelectorAll("[data-value]") || []).map((node) => node.getAttribute("data-value"));
+        const openList = (id: string) => {
+            const toggle = document.querySelector<HTMLButtonElement>(`button[aria-controls="${id}"]`);
+            expect(toggle).toBeTruthy();
+            if (toggle?.getAttribute("aria-expanded") !== "true") fireEvent.click(toggle!);
+        };
+        openList("assistant-profile-models");
+        await waitFor(() => expect(optionValues("assistant-profile-models")).toEqual(expect.arrayContaining(["gpt-5", "gpt-5-mini", "gpt-5-nano"])));
+        openList("coding-profile-models");
+        await waitFor(() => expect(optionValues("coding-profile-models")).toEqual(expect.arrayContaining(["deepseek-coder", "deepseek-chat"])));
+    });
+
+    it("keeps the provider's saved model when its live catalog starts with default-model", async () => {
+        fetchProfileModels.mockImplementation(async (providerID: string) => {
+            if (providerID === "workbuddy") {
+                return [{ id: "default-model" }, { id: "deepseek-v4.1-flash" }, { id: "gpt-5.4" }];
+            }
+            return [];
+        });
+        getState.mockResolvedValue({
+            ...state,
+            providers: [
+                ...state.providers,
+                {
+                    id: "workbuddy",
+                    name: "WorkBuddy",
+                    model: "deepseek-v4.1-flash",
+                    models: ["deepseek-v4.1-flash", "gpt-5.4"],
+                    connection_test_passed: true,
+                },
+            ],
+            profiles: {
+                ...state.profiles,
+                assistant: { provider_id: "workbuddy", model: "deepseek-v4.1-flash" },
+            },
+        });
+        render(<LLMProfileAssignments lang="en" />);
+        const provider = await screen.findByLabelText("Assistant provider") as HTMLSelectElement;
+        await waitFor(() => expect(fetchProfileModels).toHaveBeenCalledWith("workbuddy"));
+        fireEvent.change(provider, { target: { value: "assistant" } });
+        fireEvent.change(provider, { target: { value: "workbuddy" } });
+        expect((screen.getByLabelText("Assistant model") as HTMLInputElement).value).toBe("deepseek-v4.1-flash");
+    });
+
+    it("lists every model from the dropdown button and filters only after typing", async () => {
+        getState.mockResolvedValue({
+            ...state,
+            providers: [{
+                id: "assistant",
+                name: "WorkBuddy",
+                model: "default-model",
+                models: ["default-model", "gpt-5.4", "glm-5.3"],
+                supports_vision: true,
+                connection_test_passed: true,
+            }],
+            profiles: {
+                ...state.profiles,
+                assistant: { provider_id: "assistant", model: "default-model" },
+            },
+        });
+        render(<LLMProfileAssignments lang="en" />);
+
+        const input = await screen.findByLabelText("Assistant model") as HTMLInputElement;
+        expect(input.value).toBe("default-model");
+        const optionValues = () => Array.from(document.getElementById("assistant-profile-models")?.querySelectorAll("[data-value]") || []).map((node) => node.getAttribute("data-value"));
+        const toggle = () => document.querySelector<HTMLButtonElement>('button[aria-controls="assistant-profile-models"]')!;
+        fireEvent.click(toggle());
+        fireEvent.change(input, { target: { value: "default-model" } });
+        expect(optionValues()).toEqual(["default-model", "gpt-5.4", "glm-5.3"]);
+
+        fireEvent.change(input, { target: { value: "glm" } });
+        expect(optionValues()).toEqual(["glm-5.3"]);
+
+        fireEvent.click(screen.getByRole("option", { name: "glm-5.3" }));
+        expect(input.value).toBe("glm-5.3");
+        expect(document.getElementById("assistant-profile-models")).toBeNull();
+
+        fireEvent.click(toggle());
+        expect(optionValues()).toEqual(["default-model", "gpt-5.4", "glm-5.3"]);
     });
 
     it("renders only the connection-tested providers returned by the assignment API", async () => {

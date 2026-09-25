@@ -18,9 +18,15 @@ import (
 // builtin pptx-gen skill's build_pptx.py input so either backend accepts the
 // same outline document.
 type Outline struct {
-	Title    string         `json:"title"`
-	Subtitle string         `json:"subtitle,omitempty"`
-	Slides   []OutlineSlide `json:"slides"`
+	Title    string `json:"title"`
+	Subtitle string `json:"subtitle,omitempty"`
+	// Theme is a catalog id (business, academic, warm, launch, tech,
+	// education, ceremony, minimal) or auto. Empty and auto select from
+	// Purpose, title, and subtitle. An explicit id wins over that text.
+	Theme string `json:"theme,omitempty"`
+	// Purpose is the deck's job in the user's words, used when Theme is auto.
+	Purpose string         `json:"purpose,omitempty"`
+	Slides  []OutlineSlide `json:"slides"`
 }
 
 // OutlineSlide is one content slide: a title, bullet lines, optional speaker
@@ -31,6 +37,13 @@ type OutlineSlide struct {
 	Notes   string         `json:"notes,omitempty"`
 	Images  []OutlineImage `json:"images,omitempty"`
 	Charts  []OutlineChart `json:"charts,omitempty"`
+	// Kicker is the small eyebrow above the title.
+	Kicker string `json:"kicker,omitempty"`
+	// Layout is auto, bullets, cards, section, agenda, kpi, quote, or closing.
+	// Empty means auto: a title-only page becomes a section divider, and two
+	// to four short points become cards. Photos and charts keep the split
+	// bullet layout so their geometry stays readable.
+	Layout string `json:"layout,omitempty"`
 }
 
 // OutlineImage embeds one image file on a slide. Path is a local file (the
@@ -79,23 +92,30 @@ func WriteFile(path string, outline Outline) error {
 
 	p := ppt.New()
 	p.GetLayout().SetLayout(ppt.LayoutScreen16x9)
+	theme := chooseOutlineTheme(outline)
 	// ppt.New() starts with one blank slide: the title slide claims it, and an
 	// outline without a title reuses it for the first content slide instead of
 	// shipping a blank first page.
 	first := p.GetActiveSlide()
 	firstUsed := false
-	if title := sanitizeXMLText(strings.TrimSpace(outline.Title)); title != "" {
-		p.GetDocumentProperties().Title = title
-		buildTitleSlide(first, outline)
+	total := len(outline.Slides)
+	page := 1
+	deckTitle := sanitizeXMLText(strings.TrimSpace(outline.Title))
+	if deckTitle != "" {
+		p.GetDocumentProperties().Title = deckTitle
+		total++
+		buildTitleSlide(first, outline, theme, total)
 		firstUsed = true
+		page = 2
 	}
-	for _, spec := range outline.Slides {
+	footer := deckFooterLabel(deckTitle)
+	for i, spec := range outline.Slides {
 		slide := first
 		if firstUsed {
 			slide = p.CreateSlide()
 		}
 		firstUsed = true
-		if err := buildContentSlide(slide, spec); err != nil {
+		if err := buildContentSlide(slide, spec, theme, page+i, total, footer); err != nil {
 			return err
 		}
 	}
@@ -127,75 +147,39 @@ const (
 	deckGutter      = 91440  // 0.1"
 )
 
-func buildTitleSlide(slide *ppt.Slide, outline Outline) {
-	if slide == nil {
-		return
-	}
-	if title := sanitizeXMLText(strings.TrimSpace(outline.Title)); title != "" {
-		box := slide.CreateRichTextShape()
-		box.SetOffsetX(deckMarginX).SetOffsetY(2400000).SetWidth(deckSlideWidth - 2*deckMarginX).SetHeight(1200000)
-		box.SetWordWrap(true)
-		para := box.GetActiveParagraph()
-		para.GetAlignment().SetHorizontal(ppt.HorizontalCenter)
-		run := para.CreateTextRun(title)
-		font := run.GetFont().SetBold(true).SetSize(40).SetName(defaultDeckFont)
-		font.NameEA = defaultDeckFont
-	}
-	if subtitle := sanitizeXMLText(strings.TrimSpace(outline.Subtitle)); subtitle != "" {
-		box := slide.CreateRichTextShape()
-		box.SetOffsetX(deckMarginX).SetOffsetY(3700000).SetWidth(deckSlideWidth - 2*deckMarginX).SetHeight(800000)
-		box.SetWordWrap(true)
-		para := box.GetActiveParagraph()
-		para.GetAlignment().SetHorizontal(ppt.HorizontalCenter)
-		run := para.CreateTextRun(subtitle)
-		font := run.GetFont().SetSize(22).SetName(defaultDeckFont)
-		font.NameEA = defaultDeckFont
-	}
-}
-
-func buildContentSlide(slide *ppt.Slide, spec OutlineSlide) error {
+func buildContentSlide(slide *ppt.Slide, spec OutlineSlide, theme deckTheme, page, total int, footer string) error {
 	if slide == nil {
 		return nil
 	}
 	if err := ValidateSlideCharts(spec.Charts); err != nil {
 		return err
 	}
-	if title := sanitizeXMLText(strings.TrimSpace(spec.Title)); title != "" {
-		box := slide.CreateRichTextShape()
-		box.SetOffsetX(deckMarginX).SetOffsetY(274320).SetWidth(deckSlideWidth - 2*deckMarginX).SetHeight(914400)
-		box.SetWordWrap(true)
-		run := box.GetActiveParagraph().CreateTextRun(title)
-		font := run.GetFont().SetBold(true).SetSize(28).SetName(defaultDeckFont)
-		font.NameEA = defaultDeckFont
-	}
-	layout := computeSlideContentLayout(spec)
-	if slideHasTextBullets(spec) {
-		body := slide.CreateRichTextShape()
-		body.SetOffsetX(layout.bulletX).SetOffsetY(layout.bulletY).SetWidth(layout.bulletW).SetHeight(layout.bulletH)
-		body.SetWordWrap(true)
-		written := 0
-		for _, bullet := range spec.Bullets {
-			text := sanitizeXMLText(strings.TrimSpace(bullet))
-			if text == "" {
-				continue
-			}
-			para := body.GetActiveParagraph()
-			if written > 0 {
-				para = body.CreateParagraph()
-			}
-			written++
-			para.SetBullet(ppt.NewBullet().SetCharBullet("•", defaultDeckFont))
-			para.SetSpaceAfter(120)
-			run := para.CreateTextRun(text)
-			font := run.GetFont().SetSize(20).SetName(defaultDeckFont)
-			font.NameEA = defaultDeckFont
+	switch effectiveLayout(spec) {
+	case "section":
+		buildSectionSlide(slide, spec, theme, page, total)
+	case "closing":
+		buildClosingSlide(slide, spec, theme, page, total)
+	case "quote":
+		buildQuoteSlide(slide, spec, theme, footer, page, total)
+	case "agenda":
+		box := paintLightChrome(slide, theme, spec.Kicker, spec.Title, footer, page, total)
+		buildAgenda(slide, spec, theme, box)
+	case "kpi":
+		box := paintLightChrome(slide, theme, spec.Kicker, spec.Title, footer, page, total)
+		buildKPI(slide, spec, theme, box)
+	case "cards":
+		box := paintLightChrome(slide, theme, spec.Kicker, spec.Title, footer, page, total)
+		buildCards(slide, spec, theme, box)
+	default:
+		box := paintLightChrome(slide, theme, spec.Kicker, spec.Title, footer, page, total)
+		region := computeSlideContentLayout(spec, box)
+		buildBulletBody(slide, contentBox{x: region.bulletX, y: region.bulletY, w: region.bulletW, h: region.bulletH}, spec.Bullets, theme)
+		if err := buildSlideImages(slide, spec.Images, region.imageX, region.imageY, region.imageW, region.imageH); err != nil {
+			return err
 		}
-	}
-	if err := buildSlideImages(slide, spec.Images, layout.imageY, layout.imageH); err != nil {
-		return err
-	}
-	if err := buildSlideCharts(slide, spec.Charts, layout.chartX, layout.chartY, layout.chartW, layout.chartH); err != nil {
-		return err
+		if err := buildSlideCharts(slide, spec.Charts, region.chartX, region.chartY, region.chartW, region.chartH); err != nil {
+			return err
+		}
 	}
 	if notes := sanitizeXMLText(strings.TrimSpace(spec.Notes)); notes != "" {
 		slide.SetNotes(notes)
@@ -208,18 +192,18 @@ func buildContentSlide(slide *ppt.Slide, spec OutlineSlide) error {
 // slide stays readable instead of stacking three full-width bands.
 type slideContentLayout struct {
 	bulletX, bulletY, bulletW, bulletH int64
-	imageY, imageH                     int64
+	imageX, imageY, imageW, imageH     int64
 	chartX, chartY, chartW, chartH     int64
 }
 
-func computeSlideContentLayout(spec OutlineSlide) slideContentLayout {
-	contentY := int64(1371600)
-	contentHeight := int64(deckSlideHeight) - contentY - deckMarginX
-	contentWidth := int64(deckSlideWidth) - 2*deckMarginX
+func computeSlideContentLayout(spec OutlineSlide, box contentBox) slideContentLayout {
+	contentY := box.y
+	contentHeight := box.h
+	contentWidth := box.w
 	layout := slideContentLayout{
-		bulletX: deckMarginX, bulletY: contentY, bulletW: contentWidth, bulletH: contentHeight,
-		imageY: contentY, imageH: contentHeight,
-		chartX: deckMarginX, chartY: contentY, chartW: contentWidth, chartH: contentHeight,
+		bulletX: box.x, bulletY: contentY, bulletW: contentWidth, bulletH: contentHeight,
+		imageX: box.x, imageY: contentY, imageW: contentWidth, imageH: contentHeight,
+		chartX: box.x, chartY: contentY, chartW: contentWidth, chartH: contentHeight,
 	}
 	hasBullets := slideHasTextBullets(spec)
 	hasImages := len(spec.Images) > 0
@@ -227,7 +211,7 @@ func computeSlideContentLayout(spec OutlineSlide) slideContentLayout {
 	switch {
 	case hasCharts && hasBullets:
 		layout.bulletW = contentWidth * 38 / 100
-		layout.chartX = deckMarginX + layout.bulletW + deckGutter
+		layout.chartX = box.x + layout.bulletW + deckGutter
 		layout.chartW = contentWidth - layout.bulletW - deckGutter
 		if hasImages {
 			layout.imageH = contentHeight * 32 / 100
@@ -241,9 +225,13 @@ func computeSlideContentLayout(spec OutlineSlide) slideContentLayout {
 		layout.chartY = layout.imageY + layout.imageH + deckGutter
 		layout.chartH = contentHeight - layout.imageH - deckGutter
 	case hasImages && hasBullets:
-		layout.imageH = contentHeight * 45 / 100
-		layout.imageY = contentY + contentHeight - layout.imageH
-		layout.bulletH = layout.imageY - contentY - deckGutter
+		// Side by side: a photo under a text block shrinks to a thumbnail.
+		layout.imageW = contentWidth * 46 / 100
+		layout.imageX = box.x + contentWidth - layout.imageW
+		layout.imageY = contentY
+		layout.imageH = contentHeight
+		layout.bulletW = contentWidth - layout.imageW - deckGutter
+		layout.bulletH = contentHeight
 	}
 	return layout
 }
@@ -465,17 +453,16 @@ const deckInchEMU = 914400
 // ratio unless the outline pins an explicit inch size. A missing or unreadable
 // image file fails the whole write: the model must see the failure and fix
 // the path instead of shipping a deck with silent gaps.
-func buildSlideImages(slide *ppt.Slide, images []OutlineImage, y, height int64) error {
+func buildSlideImages(slide *ppt.Slide, images []OutlineImage, x, y, contentWidth, height int64) error {
 	if len(images) == 0 {
 		return nil
 	}
 	if len(images) > MaxSlideImages {
 		return fmt.Errorf("pptx_slide_images_too_many: %d > %d", len(images), MaxSlideImages)
 	}
-	if height <= 0 {
+	if height <= 0 || contentWidth <= 0 {
 		return fmt.Errorf("pptx_slide_images_no_room")
 	}
-	contentWidth := int64(deckSlideWidth) - 2*deckMarginX
 	slot := contentWidth / int64(len(images))
 	for i, spec := range images {
 		path := strings.TrimSpace(spec.Path)
@@ -488,7 +475,7 @@ func buildSlideImages(slide *ppt.Slide, images []OutlineImage, y, height int64) 
 		}
 		width, h := imageBoxEMU(path, spec, slot-2*deckGutter, height)
 		shape.SetWidth(width).SetHeight(h)
-		shape.SetOffsetX(deckMarginX + int64(i)*slot + (slot-width)/2)
+		shape.SetOffsetX(x + int64(i)*slot + (slot-width)/2)
 		shape.SetOffsetY(y + (height-h)/2)
 	}
 	return nil

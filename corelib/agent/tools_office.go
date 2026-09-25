@@ -260,7 +260,7 @@ func WritePPTXDetailed(args map[string]interface{}) (string, error) {
 
 	rawData, ok := args["data"]
 	if !ok || rawData == nil {
-		return "缺少 data 参数（格式: {\"title\": \"...\", \"slides\": [{\"title\": \"...\", \"bullets\": [\"...\"], \"notes\": \"...\", \"images\": [...], \"charts\": [...]}]}）", fmt.Errorf("office_write_data_required")
+		return "缺少 data 参数（格式: {\"title\": \"...\", \"subtitle\": \"...\", \"purpose\": \"用途原文\", \"theme\": \"auto|business|academic|warm|launch|tech|education|ceremony|minimal\", \"slides\": [{\"title\": \"...\", \"kicker\": \"...\", \"layout\": \"auto|bullets|cards|section|agenda|kpi|quote|closing\", \"bullets\": [\"...\"], \"notes\": \"...\", \"images\": [...], \"charts\": [...]}]}）", fmt.Errorf("office_write_data_required")
 	}
 
 	var jsonBytes []byte

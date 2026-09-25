@@ -38,6 +38,7 @@ import type { AssistantDarkSchemeId } from '../ai/assistantDarkSchemes';
 import type { AssistantLightSchemeId } from '../ai/assistantLightSchemes';
 import type { VirtualEmployeeEntry } from '../ai/VirtualEmployeeTab';
 import { FavoriteEmployeeSettingsPanel } from './FavoriteEmployeeSettingsPanel';
+import { PPTStylesSettingsPanel } from './PPTStylesSettingsPanel';
 import { GeneralAdvancedSettingsPanel } from './GeneralAdvancedSettingsPanel';
 import { GeneralSettingsPanel } from './GeneralSettingsPanel';
 import { IMSettingsPanel } from './IMSettingsPanel';
@@ -408,6 +409,9 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
             body = wrapPanel('settings-content settings-panel', (
                 <LLMCacheSettingsPanel config={config} setConfig={setConfig} lang={lang} showToastMessage={showToastMessage} />
             ));
+            break;
+        case 'pptStyles':
+            body = wrapPanel('settings-content settings-panel', <PPTStylesSettingsPanel lang={lang} />);
             break;
         case 'redeem':
             body = wrapPanel('settings-content settings-panel', <HubServiceRedeemPanel lang={lang} />);

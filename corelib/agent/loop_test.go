@@ -5718,7 +5718,7 @@ func TestRunLoop_NoProgressCircuitBreakerStopsDithering(t *testing.T) {
 	// Render no tools: every call is fence-denied, alternating names defeat the
 	// same-tool failure counter.
 	cb := &mockCallbacks{
-		config: corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		config:  corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
 		maxIter: 20, sysPrompt: "sys",
 	}
 	result := RunLoop(cb, "find images and build a deck", nil, nil)
@@ -5730,5 +5730,853 @@ func TestRunLoop_NoProgressCircuitBreakerStopsDithering(t *testing.T) {
 	}
 	if !strings.Contains(result.Text, "still trying to find the images") {
 		t.Fatalf("breaker must surface the last assistant text: %q", result.Text)
+	}
+}
+
+// TestRunLoop_NoProgressHardStopCommitsPairedBatch locks the recovery
+// contract: the breaker fires only after each denied call is already paired
+// in history. Committing that batch clears the pre-tool checkpoint so the
+// next user message is not offered as an interrupted-task recovery.
+func TestRunLoop_NoProgressHardStopCommitsPairedBatch(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"choices":[{"message":{"role":"assistant","content":"still looking","tool_calls":[{"id":"call_%d","type":"function","function":{"name":"web_search","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`, callCount)
+	}))
+	defer server.Close()
+
+	cb := &mockCallbacks{
+		config:  corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter: 20, sysPrompt: "sys",
+	}
+	hooks := &toolBatchCommitCallbacks{}
+	result := RunLoop(cb, "查询北京天气", nil, server.Client(), hooks)
+	if callCount != 5 || !result.HardExit {
+		t.Fatalf("calls=%d hard_exit=%v result=%#v", callCount, result.HardExit, result)
+	}
+	if len(hooks.starts) != 5 || len(hooks.batches) != 5 || len(hooks.abandons) != 0 {
+		t.Fatalf("starts=%d commits=%d abandons=%d", len(hooks.starts), len(hooks.batches), len(hooks.abandons))
+	}
+	last := hooks.batches[len(hooks.batches)-1]
+	if len(last) != 2 || last[0].Role != "assistant" || last[1].Role != "tool" || last[1].ToolName != "web_search" {
+		t.Fatalf("last committed batch was not a paired denial: %#v", last)
+	}
+	if !strings.Contains(result.Text, "still looking") {
+		t.Fatalf("hard stop must return the assistant text, got %q", result.Text)
+	}
+}
+
+func TestRunLoop_EmptyNameToolCallWithTextIsAnAnswer(t *testing.T) {
+	serverCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverCalls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"北京今天小雨，23/18°C。","tool_calls":[{"id":"","type":"function","function":{"name":"","arguments":""}}]},"finish_reason":"tool_calls"}]}`)
+	}))
+	defer server.Close()
+
+	cb := &mockCallbacks{
+		config:  corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter: 3, sysPrompt: "sys",
+		tools: []map[string]interface{}{
+			tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{"type": "object"}),
+		},
+	}
+	hooks := &toolBatchCommitCallbacks{}
+	result := RunLoop(cb, "查询北京天气", nil, server.Client(), hooks)
+	if serverCalls != 1 || result.HardExit || result.Error != "" {
+		t.Fatalf("calls=%d result=%#v", serverCalls, result)
+	}
+	if result.Text != "北京今天小雨，23/18°C。" {
+		t.Fatalf("Text = %q", result.Text)
+	}
+	if len(cb.toolCalls) != 0 || len(hooks.starts) != 0 || len(hooks.batches) != 0 || len(hooks.abandons) != 0 {
+		t.Fatalf("empty-name call was executed or checkpointed: tools=%#v starts=%d batches=%d abandons=%d", cb.toolCalls, len(hooks.starts), len(hooks.batches), len(hooks.abandons))
+	}
+}
+
+func TestDropUnnamedToolCallsKeepsOriginalSliceWhenNamed(t *testing.T) {
+	calls := []llm.ToolCall{{ID: "real", Function: llm.ToolCallFunction{Name: "web_search", Arguments: `{"query":"北京"}`}}}
+	kept, dropped := dropUnnamedToolCalls(calls)
+	if dropped != 0 || len(kept) != 1 || &kept[0] != &calls[0] {
+		t.Fatalf("named calls must keep the original slice: dropped=%d kept=%#v", dropped, kept)
+	}
+	kept, dropped = dropUnnamedToolCalls([]llm.ToolCall{
+		{ID: "blank", Function: llm.ToolCallFunction{Name: "  "}},
+		{ID: "real", Function: llm.ToolCallFunction{Name: "web_search"}},
+	})
+	if dropped != 1 || len(kept) != 1 || kept[0].ID != "real" {
+		t.Fatalf("dropped=%d kept=%#v", dropped, kept)
+	}
+}
+
+func TestRunLoop_EmptyNameToolCallDoesNotPublishReasoningAsAnswer(t *testing.T) {
+	serverCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverCalls++
+		w.Header().Set("Content-Type", "application/json")
+		if serverCalls == 1 {
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","reasoning_content":"思维链不应展示给用户","tool_calls":[{"id":"","type":"function","function":{"name":"","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"北京今天小雨，23/18°C。"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+
+	cb := &mockCallbacks{
+		config:  corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter: 4, sysPrompt: "sys",
+		tools: []map[string]interface{}{
+			tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{"type": "object"}),
+		},
+	}
+	hooks := &toolBatchCommitCallbacks{}
+	result := RunLoop(cb, "查询北京天气", nil, server.Client(), hooks)
+	if serverCalls != 2 || result.HardExit || result.Error != "" {
+		t.Fatalf("calls=%d result=%#v", serverCalls, result)
+	}
+	if result.Text != "北京今天小雨，23/18°C。" || strings.Contains(result.Text, "思维链") {
+		t.Fatalf("Text = %q", result.Text)
+	}
+	if len(cb.toolCalls) != 0 || len(hooks.starts) != 0 || len(hooks.batches) != 0 {
+		t.Fatalf("reasoning-only nameless call was executed: tools=%#v starts=%d batches=%d", cb.toolCalls, len(hooks.starts), len(hooks.batches))
+	}
+}
+
+func TestRunLoop_EmptyNameToolCallWithoutTextUsesEmptyRecovery(t *testing.T) {
+	serverCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverCalls++
+		w.Header().Set("Content-Type", "application/json")
+		if serverCalls == 1 {
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"","type":"function","function":{"name":"","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"北京今天小雨，23/18°C。"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+
+	cb := &mockCallbacks{
+		config:  corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter: 4, sysPrompt: "sys",
+		tools: []map[string]interface{}{
+			tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{"type": "object"}),
+		},
+	}
+	hooks := &toolBatchCommitCallbacks{}
+	result := RunLoop(cb, "查询北京天气", nil, server.Client(), hooks)
+	if serverCalls != 2 || result.HardExit || result.Error != "" {
+		t.Fatalf("calls=%d result=%#v", serverCalls, result)
+	}
+	if result.Text != "北京今天小雨，23/18°C。" {
+		t.Fatalf("Text = %q", result.Text)
+	}
+	if result.ToolCalls != 0 || len(cb.toolCalls) != 0 || len(hooks.starts) != 0 || len(hooks.batches) != 0 || len(hooks.abandons) != 0 {
+		t.Fatalf("blank tool call entered the tool batch: result_tools=%d executed=%#v starts=%d batches=%d abandons=%d", result.ToolCalls, cb.toolCalls, len(hooks.starts), len(hooks.batches), len(hooks.abandons))
+	}
+}
+
+func TestRunLoop_RepeatedNamelessToolCallStopsWithoutEmptyBackoff(t *testing.T) {
+	serverCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverCalls++
+		w.Header().Set("Content-Type", "application/json")
+		if serverCalls == 1 {
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"search","type":"function","function":{"name":"web_search","arguments":"{\"query\":\"北京天气\"}"}}]},"finish_reason":"tool_calls"}]}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"","type":"function","function":{"name":"","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
+	}))
+	defer server.Close()
+
+	cb := &mockCallbacks{
+		config:  corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter: 8, sysPrompt: "sys", toolResult: "北京今天小雨，23/18°C",
+		tools: []map[string]interface{}{
+			tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{"type": "object"}),
+		},
+	}
+	hooks := &toolBatchCommitCallbacks{}
+	started := time.Now()
+	result := RunLoop(cb, "查询北京天气", nil, server.Client(), hooks)
+	if serverCalls != 3 || result.HardExit || result.Error != "" {
+		t.Fatalf("calls=%d result=%#v", serverCalls, result)
+	}
+	if time.Since(started) > 2*time.Second {
+		t.Fatalf("nameless retries slept %s", time.Since(started))
+	}
+	if result.Text != "北京今天小雨，23/18°C" {
+		t.Fatalf("Text = %q", result.Text)
+	}
+	if len(cb.toolCalls) != 1 || cb.toolCalls[0] != "web_search" || len(hooks.batches) != 1 || len(hooks.abandons) != 0 {
+		t.Fatalf("tools=%#v batches=%d abandons=%d", cb.toolCalls, len(hooks.batches), len(hooks.abandons))
+	}
+}
+
+func TestCompactPublicWebResultsStaysOutOfTheToolTranscript(t *testing.T) {
+	raw := "Public web results for \"北京今天天气 实时\" (2):\n\n1. 北京市天气预报\n   https://www.msn.com/zh-cn/weather\n   今天小雨，23/18°C，夜间有弱降水，空气质量一般。\n\n2. 北京雷达图\n   https://www.weather.com.cn/weather/101010100.shtml\n   24日（今天）小雨 23/18°C，明天多云 26/14°C。\n"
+	got, ok := compactPublicWebResults(raw)
+	if !ok {
+		t.Fatal("expected a digest")
+	}
+	if strings.Contains(got, "Public web results") || strings.Contains(got, "https://") {
+		t.Fatalf("digest still looks like the tool transcript: %q", got)
+	}
+	if !strings.Contains(got, "今天小雨，23/18°C，夜间有弱降水") || !strings.Contains(got, "1. 北京市天气预报") {
+		t.Fatalf("digest = %q", got)
+	}
+	if len([]rune(got)) < 80 {
+		t.Fatalf("digest is short enough for the thinking panel to be promoted into the bubble: %q", got)
+	}
+	if userFacingToolAnswer(raw) != got {
+		t.Fatal("user-facing answer diverged from the digest")
+	}
+	reordered, ok := compactPublicWebResults("Public web results for \"北京天气\" (3):\n\n1. 城市介绍\n   https://example.com/about\n   北京市是中国的首都，介绍页面没有具体预报。\n\n2. 北京雷达图\n   https://www.weather.com.cn/weather/101010100.shtml\n   24日（今天）小雨 23/18°C，明天多云。\n\n3. 另一篇简介\n   https://example.com/more\n   更多城市资料。\n")
+	if !ok || !strings.HasPrefix(reordered, "根据公开检索，相关信息如下：\n\n1. 北京雷达图\n") {
+		t.Fatalf("forecast snippet was not preferred: %q", reordered)
+	}
+	if strings.Contains(reordered, "https://") || strings.Contains(reordered, "Public web results") {
+		t.Fatalf("reordered digest leaked the transcript: %q", reordered)
+	}
+	if got := userFacingToolAnswer(strings.Repeat("log line\n", 80)); got != "" {
+		t.Fatalf("long non-search transcript leaked: %q", got)
+	}
+}
+
+func TestRunLoop_NamelessCallUsesSoleWebSearch(t *testing.T) {
+	serverCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverCalls++
+		w.Header().Set("Content-Type", "application/json")
+		if serverCalls == 1 {
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"","type":"function","function":{"name":"","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"北京今天小雨，23/18°C。"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+
+	cb := &mockCallbacks{
+		config:  corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter: 4, sysPrompt: "sys", toolResult: "北京今天小雨，23/18°C",
+		tools: []map[string]interface{}{
+			tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"query": map[string]interface{}{"type": "string"},
+				},
+				"required": []string{"query"},
+			}),
+		},
+	}
+	result := RunLoop(cb, "北京天气", nil, server.Client())
+	if serverCalls != 2 || result.HardExit || result.Error != "" {
+		t.Fatalf("calls=%d result=%#v", serverCalls, result)
+	}
+	if result.Text != "北京今天小雨，23/18°C。" {
+		t.Fatalf("Text = %q", result.Text)
+	}
+	if len(cb.toolCalls) != 1 || cb.toolCalls[0] != "web_search" || !strings.Contains(cb.toolArgs[0], "北京天气") {
+		t.Fatalf("tools=%#v args=%#v", cb.toolCalls, cb.toolArgs)
+	}
+}
+
+func TestRecoveredQueryCallIDsAreUnique(t *testing.T) {
+	tools := []map[string]interface{}{
+		tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"query": map[string]interface{}{"type": "string"},
+			},
+			"required": []string{"query"},
+		}),
+	}
+	first, ok := recoverSoleQueryToolCall(tools, []llm.ToolCall{{Function: llm.ToolCallFunction{Arguments: "{}"}}}, "北京天气")
+	second, ok2 := recoverSoleQueryToolCall(tools, []llm.ToolCall{{Function: llm.ToolCallFunction{Arguments: "{}"}}}, "北京天气")
+	if !ok || !ok2 || first.ID == "" || first.ID == second.ID {
+		t.Fatalf("ids = %q %q", first.ID, second.ID)
+	}
+}
+
+func TestQueryToolAlreadySucceededSkipsAnotherSearch(t *testing.T) {
+	tools := []map[string]interface{}{
+		tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"query": map[string]interface{}{"type": "string"},
+			},
+			"required": []string{"query"},
+		}),
+	}
+	history := []ConversationEntry{{
+		Role:        "tool",
+		ToolName:    "web_search",
+		ToolOutcome: string(ToolExecutionOutcomeOK),
+		Content:     "Public web results for \"北京天气\" (1):\n\n1. 预报\n   今天小雨 23/18°C。",
+	}}
+	if !queryToolAlreadySucceeded(history, tools) {
+		t.Fatal("expected an existing successful search")
+	}
+	if queryToolAlreadySucceeded(nil, tools) {
+		t.Fatal("empty history must still allow the first search")
+	}
+}
+
+func TestRecoverSoleQueryToolCallKeepsModelQueryOnly(t *testing.T) {
+	tools := []map[string]interface{}{
+		tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"query": map[string]interface{}{"type": "string"},
+			},
+			"required": []string{"query"},
+		}),
+	}
+	call, ok := recoverSoleQueryToolCall(tools, []llm.ToolCall{{
+		Function: llm.ToolCallFunction{Arguments: `{"query":"北京今天天气","count":3}`},
+	}}, "北京天气")
+	if !ok || call.Function.Name != "web_search" || call.Function.Arguments != `{"query":"北京今天天气"}` {
+		t.Fatalf("recovered = %#v ok=%v", call, ok)
+	}
+	bothRequired := []map[string]interface{}{
+		tooldef.BuildToolDef("lookup", "Lookup", map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"query": map[string]interface{}{"type": "string"},
+				"city":  map[string]interface{}{"type": "string"},
+			},
+			"required": []interface{}{"query", "city"},
+		}),
+	}
+	if _, ok := recoverSoleQueryToolCall(bothRequired, []llm.ToolCall{{Function: llm.ToolCallFunction{Arguments: "{}"}}}, "北京天气"); ok {
+		t.Fatal("a tool that requires more than query must not be recovered")
+	}
+}
+
+func TestRecoverSoleQueryToolCallBesideToolsSearch(t *testing.T) {
+	tools := []map[string]interface{}{
+		tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"query": map[string]interface{}{"type": "string"},
+			},
+			"required": []string{"query"},
+		}),
+		tooldef.BuildToolDef("tools_search", "Discover", map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"query": map[string]interface{}{"type": "string"},
+				"needs": map[string]interface{}{"type": "array"},
+			},
+			"required": []string{},
+		}),
+	}
+	call, ok := recoverSoleQueryToolCall(tools, []llm.ToolCall{{
+		Function: llm.ToolCallFunction{Arguments: "{}"},
+	}}, "成都天气")
+	if !ok || call.Function.Name != "web_search" || !strings.Contains(call.Function.Arguments, "成都天气") {
+		t.Fatalf("recovered = %#v ok=%v", call, ok)
+	}
+}
+
+func TestRunLoop_NamelessCallUsesWebSearchBesideToolsSearch(t *testing.T) {
+	serverCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverCalls++
+		w.Header().Set("Content-Type", "application/json")
+		if serverCalls == 1 {
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"","type":"function","function":{"name":"","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"成都今天多云，26/18°C。"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+
+	cb := &mockCallbacks{
+		config:  corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter: 4, sysPrompt: "sys", toolResult: "成都今天多云，26/18°C",
+		tools: []map[string]interface{}{
+			tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"query": map[string]interface{}{"type": "string"},
+				},
+				"required": []string{"query"},
+			}),
+			tooldef.BuildToolDef("tools_search", "Discover", map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"query": map[string]interface{}{"type": "string"},
+				},
+				"required": []string{},
+			}),
+		},
+	}
+	result := RunLoop(cb, "成都天气", nil, server.Client())
+	if serverCalls != 2 || result.HardExit || result.Error != "" {
+		t.Fatalf("calls=%d result=%#v", serverCalls, result)
+	}
+	if result.Text != "成都今天多云，26/18°C。" {
+		t.Fatalf("Text = %q", result.Text)
+	}
+	if len(cb.toolCalls) != 1 || cb.toolCalls[0] != "web_search" || !strings.Contains(cb.toolArgs[0], "成都天气") {
+		t.Fatalf("tools=%#v args=%#v", cb.toolCalls, cb.toolArgs)
+	}
+}
+
+func TestRunLoop_NamelessAfterSearchFinishesFromToolBody(t *testing.T) {
+	serverCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverCalls++
+		w.Header().Set("Content-Type", "application/json")
+		if serverCalls == 1 {
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call-search","type":"function","function":{"name":"web_search","arguments":"{\"query\":\"成都天气\"}"}}]},"finish_reason":"tool_calls"}]}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"","type":"function","function":{"name":"","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
+	}))
+	defer server.Close()
+
+	cb := &mockCallbacks{
+		config:  corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter: 4, sysPrompt: "sys", toolResult: "成都今天多云，26/18°C",
+		tools: []map[string]interface{}{
+			tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"query": map[string]interface{}{"type": "string"},
+				},
+				"required": []string{"query"},
+			}),
+			tooldef.BuildToolDef("tools_search", "Discover", map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{"query": map[string]interface{}{"type": "string"}},
+				"required":   []string{},
+			}),
+		},
+	}
+	result := RunLoop(cb, "成都天气", nil, server.Client())
+	if serverCalls != 3 || result.HardExit || result.Error != "" {
+		t.Fatalf("calls=%d result=%#v", serverCalls, result)
+	}
+	if result.Text != "成都今天多云，26/18°C" || strings.Contains(result.Text, "多次尝试均未取得进展") {
+		t.Fatalf("Text = %q", result.Text)
+	}
+	if len(cb.toolCalls) != 1 || cb.toolCalls[0] != "web_search" {
+		t.Fatalf("tools=%#v", cb.toolCalls)
+	}
+}
+
+type retireSearchAfterCallCallbacks struct {
+	mockCallbacks
+	search []map[string]interface{}
+	later  []map[string]interface{}
+}
+
+func (m *retireSearchAfterCallCallbacks) BuildToolsForModelRequest(string, int) []map[string]interface{} {
+	if len(m.toolCalls) > 0 {
+		return m.later
+	}
+	return m.search
+}
+
+func TestRunLoop_NamelessAfterRetiredSearchFinishesFromResults(t *testing.T) {
+	serverCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverCalls++
+		w.Header().Set("Content-Type", "application/json")
+		if serverCalls == 1 {
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call-search","type":"function","function":{"name":"web_search","arguments":"{\"query\":\"成都天气\"}"}}]},"finish_reason":"tool_calls"}]}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"","type":"function","function":{"name":"","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
+	}))
+	defer server.Close()
+
+	search := []map[string]interface{}{
+		tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"query": map[string]interface{}{"type": "string"},
+			},
+			"required": []string{"query"},
+		}),
+		tooldef.BuildToolDef("tools_search", "Discover", map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{"query": map[string]interface{}{"type": "string"}},
+			"required":   []string{},
+		}),
+	}
+	cb := &retireSearchAfterCallCallbacks{
+		mockCallbacks: mockCallbacks{
+			config:     corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+			maxIter:    4,
+			sysPrompt:  "sys",
+			toolResult: "Public web results for \"成都天气\" (1):\n\n1. 成都天气预报\n   https://example.com/cd\n   今天多云 26/18°C。\n",
+		},
+		search: search,
+		later: []map[string]interface{}{
+			tooldef.BuildToolDef("tools_search", "Discover", map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{"query": map[string]interface{}{"type": "string"}},
+				"required":   []string{},
+			}),
+		},
+	}
+	result := RunLoop(cb, "成都天气", nil, server.Client())
+	if serverCalls != 3 || result.HardExit || result.Error != "" {
+		t.Fatalf("calls=%d result=%#v", serverCalls, result)
+	}
+	if !strings.Contains(result.Text, "成都天气预报") || strings.Contains(result.Text, "多次尝试均未取得进展") || strings.Contains(result.Text, "https://") {
+		t.Fatalf("Text = %q", result.Text)
+	}
+}
+
+func TestRunLoop_NamelessAfterSearchKeepsTheLaterAnswer(t *testing.T) {
+	serverCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverCalls++
+		w.Header().Set("Content-Type", "application/json")
+		switch serverCalls {
+		case 1:
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call-search","type":"function","function":{"name":"web_search","arguments":"{\"query\":\"成都天气\"}"}}]},"finish_reason":"tool_calls"}]}`)
+		case 2:
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","reasoning_content":"先核对检索摘录，不要把摘录本身交给用户。","tool_calls":[{"id":"","type":"function","function":{"name":"","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
+		default:
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"成都今天多云，26/18°C，建议带伞。"},"finish_reason":"stop"}]}`)
+		}
+	}))
+	defer server.Close()
+
+	search := []map[string]interface{}{
+		tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"query": map[string]interface{}{"type": "string"},
+			},
+			"required": []string{"query"},
+		}),
+	}
+	cb := &retireSearchAfterCallCallbacks{
+		mockCallbacks: mockCallbacks{
+			config:     corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+			maxIter:    4,
+			sysPrompt:  "sys",
+			toolResult: "Public web results for \"成都天气\" (1):\n\n1. 成都天气预报\n   https://example.com/cd\n   今天多云 26/18°C。\n",
+		},
+		search: search,
+		later:  search,
+	}
+	result := RunLoop(cb, "成都天气", nil, server.Client())
+	if serverCalls != 3 || result.HardExit || result.Error != "" {
+		t.Fatalf("calls=%d result=%#v", serverCalls, result)
+	}
+	if result.Text != "成都今天多云，26/18°C，建议带伞。" || strings.Contains(result.Text, "根据公开检索") || strings.Contains(result.Text, "先核对检索摘录") {
+		t.Fatalf("Text = %q", result.Text)
+	}
+}
+
+func TestRunLoop_ToolCallMonologueDoesNotReplaceTheLaterAnswer(t *testing.T) {
+	monologue := "User asks for the forecast. Check the snippets, then answer. Do not show this planning text."
+	serverCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverCalls++
+		w.Header().Set("Content-Type", "application/json")
+		switch serverCalls {
+		case 1:
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"`+monologue+`","reasoning_content":"`+monologue+`","tool_calls":[{"id":"call-search","type":"function","function":{"name":"web_search","arguments":"{\"query\":\"成都天气\"}"}}]},"finish_reason":"tool_calls"}]}`)
+		case 2:
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","reasoning_content":"`+monologue+`","tool_calls":[{"id":"","type":"function","function":{"name":"","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
+		default:
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"成都今天多云，26/18°C，建议带伞。"},"finish_reason":"stop"}]}`)
+		}
+	}))
+	defer server.Close()
+
+	search := []map[string]interface{}{
+		tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"query": map[string]interface{}{"type": "string"},
+			},
+			"required": []string{"query"},
+		}),
+	}
+	cb := &retireSearchAfterCallCallbacks{
+		mockCallbacks: mockCallbacks{
+			config:     corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+			maxIter:    4,
+			sysPrompt:  "sys",
+			toolResult: "Public web results for \"成都天气\" (1):\n\n1. 成都天气预报\n   https://example.com/cd\n   今天多云 26/18°C。\n",
+		},
+		search: search,
+		later:  search,
+	}
+	result := RunLoop(cb, "成都天气", nil, server.Client())
+	if serverCalls != 3 || result.HardExit || result.Error != "" {
+		t.Fatalf("calls=%d result=%#v", serverCalls, result)
+	}
+	if result.Text != "成都今天多云，26/18°C，建议带伞。" || strings.Contains(result.Text, monologue) || strings.Contains(result.Text, "根据公开检索") {
+		t.Fatalf("Text = %q", result.Text)
+	}
+}
+
+func TestRunLoop_ToolCallMonologueDoesNotBecomeTheSearchFallback(t *testing.T) {
+	monologue := "User asks for the forecast. Check the snippets, then answer. Do not show this planning text."
+	serverCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverCalls++
+		w.Header().Set("Content-Type", "application/json")
+		if serverCalls == 1 {
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"`+monologue+`","reasoning_content":"`+monologue+`","tool_calls":[{"id":"call-search","type":"function","function":{"name":"web_search","arguments":"{\"query\":\"成都天气\"}"}}]},"finish_reason":"tool_calls"}]}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","reasoning_content":"`+monologue+`","tool_calls":[{"id":"","type":"function","function":{"name":"","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
+	}))
+	defer server.Close()
+
+	search := []map[string]interface{}{
+		tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"query": map[string]interface{}{"type": "string"},
+			},
+			"required": []string{"query"},
+		}),
+	}
+	cb := &retireSearchAfterCallCallbacks{
+		mockCallbacks: mockCallbacks{
+			config:     corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+			maxIter:    4,
+			sysPrompt:  "sys",
+			toolResult: "Public web results for \"成都天气\" (1):\n\n1. 成都天气预报\n   https://example.com/cd\n   今天多云 26/18°C。\n",
+		},
+		search: search,
+		later:  search,
+	}
+	result := RunLoop(cb, "成都天气", nil, server.Client())
+	if serverCalls != 3 || result.HardExit || result.Error != "" {
+		t.Fatalf("calls=%d result=%#v", serverCalls, result)
+	}
+	if !strings.Contains(result.Text, "根据公开检索") || !strings.Contains(result.Text, "成都天气预报") || strings.Contains(result.Text, monologue) {
+		t.Fatalf("Text = %q", result.Text)
+	}
+}
+
+func TestStreamedVisibleAnswerKeepsForecastOutsideDetails(t *testing.T) {
+	forecast := "北京今天小雨，18~23℃，东风微风。明天周五多云，19~25℃。周六有小雨，建议带伞，早晚偏凉。"
+	got := streamedVisibleAnswer(forecast + "\n<details><summary>思考过程</summary>internal</details>")
+	if !strings.Contains(got, "北京今天小雨") || strings.Contains(got, "internal") || strings.Contains(got, "details") || strings.Contains(got, "思考过程") {
+		t.Fatalf("got %q", got)
+	}
+	if streamedVisibleAnswer("太短") != "" || streamedVisibleAnswer("18°C") != "" {
+		t.Fatal("short fragment must not replace a later reply")
+	}
+	if got := streamedVisibleAnswer("成都今天多云，26/18°C，建议带伞。"); !strings.Contains(got, "建议带伞") {
+		t.Fatalf("short forecast dropped: %q", got)
+	}
+	denial := "我理解你想查北京天气，但这一轮我这边没有可用的实时天气查询工具，拿不到准确数据，不能凭空报给你。"
+	history := []ConversationEntry{{Role: "tool", ToolName: "web_search", ToolOutcome: string(ToolExecutionOutcomeOK), Content: "Public web results for \"北京天气\" (1):\n\n1. 预报\n   今天小雨。\n"}}
+	if !streamedDenialAfterSearch(denial, history) {
+		t.Fatal("denial after a successful search was kept")
+	}
+	if streamedDenialAfterSearch("成都今天多云，26/18°C，建议带伞。", history) {
+		t.Fatal("forecast treated as a tool denial")
+	}
+	if streamedDenialAfterSearch("逐小时数据拿不到准确值，当前气温 19.7℃，东北风。", history) {
+		t.Fatal("forecast that mentions a missing hourly series was discarded")
+	}
+	if streamedDenialAfterSearch(denial, nil) {
+		t.Fatal("denial without a search was discarded")
+	}
+	if streamedVisibleAnswer("根据公开检索，相关信息如下：\n\n1. 北京-天气预报\n今天小雨 18/23°C。") != "" {
+		t.Fatal("search digest must not be treated as the streamed answer")
+	}
+	if streamedVisibleAnswer("1. 北京-天气预报\nhttps://www.nmc.cn/publish/forecast\n周四小雨 23°C 18°C") != "" {
+		t.Fatal("search snippet with a result URL must not be treated as the streamed answer")
+	}
+	cited := streamedVisibleAnswer("北京今天小雨，18~23℃，东风微风。详见 https://weather.com.cn/beijing")
+	if !strings.Contains(cited, "北京今天小雨") || strings.Contains(cited, "://") {
+		t.Fatalf("cited forecast dropped: %q", cited)
+	}
+	glued := streamedVisibleAnswer("详见https://weather.com.cn/beijing。北京今天小雨，18~23℃，东风微风。")
+	if !strings.Contains(glued, "北京今天小雨") || strings.Contains(glued, "://") {
+		t.Fatalf("forecast after a URL was swallowed: %q", glued)
+	}
+	numbered := streamedVisibleAnswer("1. 气温约 19.7℃\n2. 东北风约 3 m/s\n详见 https://weather.cma.cn/beijing")
+	if !strings.Contains(numbered, "19.7") || strings.Contains(numbered, "://") {
+		t.Fatalf("numbered forecast dropped: %q", numbered)
+	}
+	lead := streamedVisibleAnswer("1. 北京今天\n小雨，18~23℃，东风微风。\n详见 https://weather.com.cn/beijing")
+	if !strings.Contains(lead, "小雨") || strings.Contains(lead, "://") {
+		t.Fatalf("forecast under a numbered lead-in was dropped: %q", lead)
+	}
+	above := streamedVisibleAnswer("北京今天小雨，18~23℃，东风微风。\n1. 北京-天气预报\nhttps://www.nmc.cn/publish/forecast\n周四小雨 23°C")
+	if !strings.Contains(above, "北京今天小雨") || strings.Contains(above, "nmc.cn") || strings.Contains(above, "周四小雨") {
+		t.Fatalf("forecast above a search hit was dropped: %q", above)
+	}
+	if streamedVisibleAnswer("1. 北京-天气预报 https://www.nmc.cn/publish/forecast\n周四小雨 23°C") != "" {
+		t.Fatal("title and URL on one line were kept")
+	}
+	sameLine := streamedVisibleAnswer("北京今天小雨，18~23℃。\n1. 北京-天气预报 https://www.nmc.cn/a")
+	if !strings.Contains(sameLine, "北京今天小雨") || strings.Contains(sameLine, "nmc.cn") {
+		t.Fatalf("forecast above a same-line hit was dropped: %q", sameLine)
+	}
+	below := streamedVisibleAnswer("1. 北京-天气预报\nhttps://www.nmc.cn/publish/forecast\n周四小雨 23°C\n\n北京今天小雨，18~23℃，东风微风。")
+	if !strings.Contains(below, "北京今天小雨") || strings.Contains(below, "nmc.cn") || strings.Contains(below, "周四小雨") {
+		t.Fatalf("forecast under a search hit was dropped: %q", below)
+	}
+	tight := streamedVisibleAnswer("1. 北京-天气预报\nhttps://www.nmc.cn/publish/forecast\n周四小雨 23°C\n北京今天小雨，18~23℃，东风微风。")
+	if !strings.Contains(tight, "北京今天小雨") || strings.Contains(tight, "nmc.cn") || strings.Contains(tight, "周四小雨") {
+		t.Fatalf("forecast tight under a search hit was dropped: %q", tight)
+	}
+	two := streamedVisibleAnswer("1. 北京-天气预报\nhttps://www.nmc.cn/a\n周四小雨 23°C\n\n2. 雷达图\nhttps://www.nmc.cn/b\n回波\n\n北京今天小雨，18~23℃，东风微风。")
+	if !strings.Contains(two, "北京今天小雨") || strings.Contains(two, "雷达图") || strings.Contains(two, "nmc.cn") {
+		t.Fatalf("later search hit was kept: %q", two)
+	}
+	after := streamedVisibleAnswer("北京今天小雨，18~23℃，东风微风。\n2. 雷达图\nhttps://www.nmc.cn/b\n回波")
+	if !strings.Contains(after, "北京今天小雨") || strings.Contains(after, "雷达图") || strings.Contains(after, "nmc.cn") {
+		t.Fatalf("hit after the forecast was kept: %q", after)
+	}
+}
+
+func TestRunLoop_NamelessAfterSearchKeepsStreamedAnswer(t *testing.T) {
+	forecast := "北京今天小雨，18~23℃，东风微风。明天周五多云，19~25℃。周六有小雨，建议带伞，早晚偏凉。"
+	serverCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverCalls++
+		if serverCalls == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call-search","type":"function","function":{"name":"web_search","arguments":"{\"query\":\"北京天气\"}"}}]},"finish_reason":"tool_calls"}]}`)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		// The forecast is inside a details block, which the stored message
+		// drops, and is followed by a nameless tool call. The bubble already
+		// received the forecast text.
+		body := forecast + "\n<details><summary>思考过程</summary>internal</details>"
+		wrapped, _ := json.Marshal(body)
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":"+string(wrapped)+"}}]}\n\n")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"\",\"type\":\"function\",\"function\":{\"name\":\"\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	cb := &mockCallbacks{
+		config:  corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter: 4, sysPrompt: "sys",
+		toolResult: "Public web results for \"北京天气\" (1):\n\n1. 北京-天气预报\n   https://example.com/bj\n   今天小雨 18/23°C。\n",
+		tools: []map[string]interface{}{
+			tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"query": map[string]interface{}{"type": "string"},
+				},
+				"required": []string{"query"},
+			}),
+		},
+	}
+	result := RunLoop(cb, "北京天气", nil, server.Client())
+	if serverCalls != 2 || result.HardExit || result.Error != "" {
+		t.Fatalf("calls=%d tokens=%q result=%#v", serverCalls, cb.tokens, result)
+	}
+	if !strings.Contains(result.Text, "北京今天小雨") || strings.Contains(result.Text, "根据公开检索") || strings.Contains(result.Text, "<details") {
+		t.Fatalf("Text = %q", result.Text)
+	}
+	if n := len(result.HistoryDelta); n == 0 || result.HistoryDelta[n-1].Role != "assistant" || !strings.Contains(fmt.Sprint(result.HistoryDelta[n-1].Content), "北京今天小雨") {
+		t.Fatalf("history lost the forecast: %#v", result.HistoryDelta)
+	}
+}
+
+func TestRecoverSoleQueryToolCallIgnoresAmbiguousSurface(t *testing.T) {
+	tools := []map[string]interface{}{
+		tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"query": map[string]interface{}{"type": "string"},
+			},
+			"required": []string{"query"},
+		}),
+		tooldef.BuildToolDef("write_file", "Write", map[string]interface{}{"type": "object"}),
+	}
+	if _, ok := recoverSoleQueryToolCall(tools, []llm.ToolCall{{Function: llm.ToolCallFunction{Arguments: "{}"}}}, "北京天气"); ok {
+		t.Fatal("two tools must not guess a nameless call")
+	}
+	writeOnly := []map[string]interface{}{
+		tooldef.BuildToolDef("write_file", "Write", map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{"path": map[string]interface{}{"type": "string"}},
+			"required":   []string{"path"},
+		}),
+	}
+	if _, ok := recoverSoleQueryToolCall(writeOnly, []llm.ToolCall{{Function: llm.ToolCallFunction{Arguments: "{}"}}}, "北京天气"); ok {
+		t.Fatal("write_file must not inherit a nameless call")
+	}
+}
+
+func TestRunLoop_NamelessToolCallWithoutSuccessUsesStopText(t *testing.T) {
+	serverCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverCalls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"","type":"function","function":{"name":"","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
+	}))
+	defer server.Close()
+
+	cb := &mockCallbacks{
+		config:  corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter: 6, sysPrompt: "sys",
+	}
+	result := RunLoop(cb, "你好", nil, server.Client())
+	if serverCalls != 2 || !result.HardExit {
+		t.Fatalf("calls=%d result=%#v", serverCalls, result)
+	}
+	if !strings.Contains(result.Text, "多次尝试均未取得进展") {
+		t.Fatalf("Text = %q", result.Text)
+	}
+	if len(cb.toolCalls) != 0 {
+		t.Fatalf("executed %#v", cb.toolCalls)
+	}
+}
+
+func TestRunLoop_DropsEmptyNameButExecutesNamedSibling(t *testing.T) {
+	serverCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverCalls++
+		w.Header().Set("Content-Type", "application/json")
+		if serverCalls == 1 {
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"blank","type":"function","function":{"name":"","arguments":"{}"}},{"id":"real","type":"function","function":{"name":"web_search","arguments":"{\"query\":\"北京天气\"}"}}]},"finish_reason":"tool_calls"}]}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"北京今天小雨。"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+
+	cb := &mockCallbacks{
+		config:  corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter: 3, sysPrompt: "sys", toolResult: "北京今天小雨",
+		tools: []map[string]interface{}{
+			tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{"type": "object"}),
+		},
+	}
+	hooks := &toolBatchCommitCallbacks{}
+	result := RunLoop(cb, "查询北京天气", nil, server.Client(), hooks)
+	if result.Error != "" || result.HardExit || result.Text != "北京今天小雨。" {
+		t.Fatalf("result=%#v", result)
+	}
+	if len(cb.toolCalls) != 1 || cb.toolCalls[0] != "web_search" {
+		t.Fatalf("executed %#v, want only web_search", cb.toolCalls)
+	}
+	if len(hooks.starts) != 1 || len(hooks.batches) != 1 || len(hooks.abandons) != 0 {
+		t.Fatalf("starts=%d batches=%d abandons=%d", len(hooks.starts), len(hooks.batches), len(hooks.abandons))
+	}
+	batch := hooks.batches[0]
+	if len(batch) != 2 || batch[1].ToolName != "web_search" {
+		t.Fatalf("committed batch = %#v", batch)
+	}
+	calls, ok := batch[0].ToolCalls.([]llm.ToolCall)
+	if !ok || len(calls) != 1 || calls[0].Function.Name != "web_search" {
+		t.Fatalf("assistant declaration still contains the empty call: %#v", batch[0].ToolCalls)
 	}
 }

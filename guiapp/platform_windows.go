@@ -21,6 +21,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/pyenv"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 )
 
@@ -2326,64 +2327,89 @@ func (a *App) ensureLocalNodeBinary() {
 	a.log("Successfully copied node.exe to local directory.")
 }
 
-func (a *App) LaunchInstallerAndExit(installerPath string) error {
-	a.log(fmt.Sprintf("Launching installer: %s", installerPath))
-
-	// Pre-check: verify installer file exists before attempting to launch.
-	if _, err := os.Stat(installerPath); err != nil {
-		return fmt.Errorf("installer file not accessible: %w", err)
+// LaunchInstallerAndExit hands control to the installer and quits.
+//
+// targetVersion is the release the installer will install. It is recorded
+// before quitting so the next start can tell whether the update actually
+// landed; without it a silent install failure would be invisible.
+func (a *App) LaunchInstallerAndExit(installerPath string, targetVersion string) error {
+	// Online update runs the installer unattended, so only ever launch the
+	// installer this process downloaded and verified (hash re-checked here to
+	// close the download-to-launch window).
+	verifiedPath, err := a.authorizeInstallerLaunch(installerPath)
+	if err != nil {
+		a.log(fmt.Sprintf("[update-install] refusing silent install: %v", err))
+		return err
 	}
+	a.recordPendingUpdate(targetVersion, verifiedPath)
 
-	// Use ShellExecuteW to launch the installer — this is the Windows-native way
-	// to run executables. It does not depend on PATH (unlike exec.Command("cmd")),
-	// and the launched process is fully independent of the parent (survives parent exit).
+	// The installer targets Program Files and HKLM, so it declares
+	// RequestExecutionLevel admin. When this process is already elevated,
+	// "open" inherits the elevation and the whole update is invisible. When it
+	// is not, "runas" is the only supported way to launch it: Windows shows a
+	// single UAC prompt. That prompt is owned by the OS, not by the installer —
+	// it is the one confirmation no application can answer on the user's
+	// behalf, and everything behind it stays silent.
+	elevated := currentProcessIsElevated()
+	verbs := []string{"open"}
+	if !elevated {
+		verbs = []string{"runas", "open"}
+	}
+	a.log(fmt.Sprintf("Launching installer silently: %s (elevated=%v verbs=%v)", verifiedPath, elevated, verbs))
+
 	shell32 := syscall.NewLazyDLL("shell32.dll")
 	shellExecute := shell32.NewProc("ShellExecuteW")
 
-	verb := syscall.StringToUTF16Ptr("open")
-	file, err := syscall.UTF16PtrFromString(installerPath)
+	file, err := syscall.UTF16PtrFromString(verifiedPath)
 	if err != nil {
 		return fmt.Errorf("invalid installer path: %w", err)
 	}
-	params := syscall.StringToUTF16Ptr("")
+	params, err := syscall.UTF16PtrFromString(windowsInstallerSilentArgs)
+	if err != nil {
+		return fmt.Errorf("invalid installer arguments: %w", err)
+	}
 	dir := syscall.StringToUTF16Ptr("")
 
-	ret, _, _ := shellExecute.Call(
-		0,
-		uintptr(unsafe.Pointer(verb)),
-		uintptr(unsafe.Pointer(file)),
-		uintptr(unsafe.Pointer(params)),
-		uintptr(unsafe.Pointer(dir)),
-		uintptr(syscall.SW_SHOW),
-	)
-
-	launched := ret > 32
-
-	if !launched && ret == 5 {
-		// SE_ERR_ACCESSDENIED: try elevation before falling back to cmd
-		a.log("ShellExecuteW access denied, retrying with runas elevation")
-		verbRunas := syscall.StringToUTF16Ptr("runas")
-		retRunas, _, _ := shellExecute.Call(
+	launched := false
+	cancelled := false
+	var lastCode uintptr
+	for _, verb := range verbs {
+		ret, _, _ := shellExecute.Call(
 			0,
-			uintptr(unsafe.Pointer(verbRunas)),
+			uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr(verb))),
 			uintptr(unsafe.Pointer(file)),
 			uintptr(unsafe.Pointer(params)),
 			uintptr(unsafe.Pointer(dir)),
-			uintptr(syscall.SW_SHOW),
+			uintptr(syscall.SW_HIDE),
 		)
-		launched = retRunas > 32
-		if !launched {
-			a.log(fmt.Sprintf("ShellExecuteW runas also failed: %d", retRunas))
+		lastCode = ret
+		// ret > 32 means success. 1223 (ERROR_CANCELLED) is reported by some
+		// Windows versions when the UAC prompt is dismissed: treat it as a
+		// cancelled launch, not a success, so the app does not quit for
+		// nothing and the user sees why nothing was installed.
+		if ret > 32 && ret != 1223 {
+			launched = true
+			break
 		}
+		if ret == 1223 {
+			a.log(fmt.Sprintf("ShellExecuteW %s cancelled at the elevation prompt", verb))
+			cancelled = true
+			break
+		}
+		a.log(fmt.Sprintf("ShellExecuteW %s failed: %d", verb, ret))
+	}
+
+	if cancelled {
+		return fmt.Errorf("installer elevation was declined; the update was not installed (%s)", filepath.Base(verifiedPath))
 	}
 
 	if !launched {
-		// Fallback: try cmd /c start (last resort)
-		a.log(fmt.Sprintf("ShellExecuteW returned %d, falling back to cmd /c start", ret))
-		cmd := exec.Command(resolveCmdExe(), "/c", "start", "", installerPath)
-		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+		// Last resort: start the installer directly with the same silent
+		// switches. It only succeeds when this process is already elevated,
+		// but it is the closest equivalent to the ShellExecute path.
+		cmd := exec.Command(verifiedPath, windowsInstallerSilentArgList...)
 		if err := cmd.Start(); err != nil {
-			return fmt.Errorf("failed to launch installer: ShellExecute error code %d, cmd fallback: %w", ret, err)
+			return fmt.Errorf("failed to launch installer: ShellExecute error code %d, direct launch: %w", lastCode, err)
 		}
 	}
 
@@ -2394,6 +2420,24 @@ func (a *App) LaunchInstallerAndExit(installerPath string) error {
 
 	return nil
 }
+
+// currentProcessIsElevated reports whether this process already runs with an
+// elevated token. Only an elevated parent can start the installer without a
+// UAC prompt.
+func currentProcessIsElevated() bool {
+	return windows.GetCurrentProcessToken().IsElevated()
+}
+
+// installerExtensionAllowed restricts silent launches to NSIS executables.
+// The silent switches are NSIS-only, so an .msi is refused rather than
+// launched with switches msiexec would not understand (which would silently
+// degrade to an interactive install).
+func installerExtensionAllowed(path string) bool {
+	return strings.EqualFold(filepath.Ext(path), ".exe")
+}
+
+// pathCaseInsensitive reports whether installer paths compare case-insensitively.
+func pathCaseInsensitive() bool { return true }
 
 func getWindowsVersionHidden() string {
 	cmd := exec.Command(resolveCmdExe())

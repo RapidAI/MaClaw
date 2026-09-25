@@ -14,6 +14,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/corelib/workbuddy"
 )
 
 const (
@@ -181,6 +182,9 @@ func DoSimpleLLMRequestContextWithOptions(parent context.Context, cfg corelib.Ma
 }
 
 func doSimpleOpenAIRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client, options SimpleLLMRequestOptions) (*LLMSimpleResponse, error) {
+	if workbuddy.Matches(cfg) {
+		client = workbuddy.WrapClient(client)
+	}
 	req, data, endpoint, err := llm.NewOpenAIChatRequest(ctx, cfg, messages, llm.OpenAIChatRequestOptions{
 		Stream:                 true,
 		ResponseFormat:         options.ResponseFormat,

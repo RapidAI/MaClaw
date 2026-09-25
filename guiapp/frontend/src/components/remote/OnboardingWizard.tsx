@@ -2,9 +2,9 @@ import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState } fr
 import { createPortal } from 'react-dom';
 import { colors, radius } from './styles';
 import { QRCodeSVG } from 'qrcode.react';
-import { ActivateReferralRemoteEmail, ActivateReferralRemotePhone, ActivateRemote, ActivateRemoteEmail, ActivateRemoteSMS, CancelCodeGenSSOPolling, CancelOpenAIOAuth, CancelXAIOAuth, ClaimReferralHandoff, FetchCodeGenModels, GetHubLLMServiceStatus, GetMaclawLLMProviders, GetReferralRegistrationStatus, GetRemoteConnectionStatus, GetRemoteRegistrationAuth, GetUserDataMigrationJob, GetWeixinStatus, PollWeixinQRStatus, ProbeRemoteHub, RedeemHubLLMService, RegisterReferralEmail, RegisterReferralPhone, ResolveRemoteRegistrationTarget, ResolveRemoteRegistrationTargetWithInvitation, SaveCodeGenModelChoice, SaveMaclawLLMProviders, SendReferralRegistrationEmail, SendReferralRegistrationSMS, SendRemoteRegistrationEmail, SendRemoteRegistrationSMS, StartCodeGenSSO, StartCodeGenSSOEmbedded, StartOpenAIOAuth, StartUserDataMigrationImport, StartWeixinQRLogin, StartXAIOAuth, TestAndSaveMaclawLLMProviders, UserDataMigrationInstances, UserDataMigrationStatus, WaitCodeGenSSOResult } from '../../../wailsjs/go/main/App';
+import { ActivateReferralRemoteEmail, ActivateReferralRemotePhone, ActivateRemote, ActivateRemoteEmail, ActivateRemoteSMS, CancelCodeGenSSOPolling, CancelOpenAIOAuth, CancelWorkBuddyOAuth, CancelXAIOAuth, ClaimReferralHandoff, FetchCodeGenModels, GetHubLLMServiceStatus, GetMaclawLLMProviders, GetReferralRegistrationStatus, GetRemoteConnectionStatus, GetRemoteRegistrationAuth, GetUserDataMigrationJob, GetWeixinStatus, PollWeixinQRStatus, ProbeRemoteHub, RedeemHubLLMService, RegisterReferralEmail, RegisterReferralPhone, ResolveRemoteRegistrationTarget, ResolveRemoteRegistrationTargetWithInvitation, SaveCodeGenModelChoice, SaveMaclawLLMProviders, SendReferralRegistrationEmail, SendReferralRegistrationSMS, SendRemoteRegistrationEmail, SendRemoteRegistrationSMS, StartCodeGenSSO, StartCodeGenSSOEmbedded, StartOpenAIOAuth, StartUserDataMigrationImport, StartWeixinQRLogin, StartWorkBuddyOAuth, StartXAIOAuth, TestAndSaveMaclawLLMProviders, UserDataMigrationInstances, UserDataMigrationStatus, WaitCodeGenSSOResult } from '../../../wailsjs/go/main/App';
 import { corelib } from '../../../wailsjs/go/models';
-import { PROVIDER_LOGOS } from "./providerLogos";
+import { isWorkBuddyProvider, PROVIDER_LOGOS } from "./providerLogos";
 import { localizeHubServiceReason, localizeHubServiceRedeemError } from "../../utils/hubServiceI18n";
 import { HubRegisterButtonContent } from "./HubConnectionStatus";
 import { OnboardingOfflineModeOption } from "./OnboardingOfflineModeOption";
@@ -533,6 +533,8 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
         oauthAttemptRef.current += 1;
         if (providerName === "xAI-Grok") {
             void CancelXAIOAuth();
+        } else if (isWorkBuddyProvider(providerName)) {
+            void CancelWorkBuddyOAuth();
         } else if (providerName) {
             CancelOpenAIOAuth();
         } else {
@@ -541,6 +543,7 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
             // loopback listener waiting for its timeout.
             CancelOpenAIOAuth();
             void CancelXAIOAuth();
+            void CancelWorkBuddyOAuth();
         }
         setOauthBusy(false);
     }, []);
@@ -819,7 +822,9 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
         try {
             const msg = selectedProvider.name === "xAI-Grok"
                 ? await StartXAIOAuth()
-                : await StartOpenAIOAuth();
+                : isWorkBuddyProvider(selectedProvider.name)
+                    ? await StartWorkBuddyOAuth(selectedProvider.name)
+                    : await StartOpenAIOAuth();
             if (oauthAttempt !== oauthAttemptRef.current) return;
 
             setLlmResult({
@@ -2159,8 +2164,11 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
                                                 {selectedProvider.name === "xAI-Grok"
                                                     ? t("点击下方按钮，将在浏览器中完成 xAI 账号授权。",
                                                         "Click below to authorize with your xAI account in the browser.")
-                                                    : t("点击下方按钮，将在浏览器中完成 OpenAI 账号授权。",
-                                                        "Click below to authorize with your OpenAI account in the browser.")}
+                                                    : isWorkBuddyProvider(selectedProvider.name)
+                                                        ? t("点击下方按钮，将在浏览器中完成 WorkBuddy 账号授权。",
+                                                            "Click below to authorize with your WorkBuddy account in the browser.")
+                                                        : t("点击下方按钮，将在浏览器中完成 OpenAI 账号授权。",
+                                                            "Click below to authorize with your OpenAI account in the browser.")}
                                             </p>
                                             <button onClick={handleOAuthLogin} disabled={oauthBusy} style={{
                                                 ...wizardPrimaryButtonStyle, cursor: oauthBusy ? "default" : "pointer",
@@ -2169,7 +2177,9 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
                                                     ? t("等待浏览器授权...", "Waiting for browser auth...")
                                                     : selectedProvider.name === "xAI-Grok"
                                                         ? t("使用 xAI 账号登录", "Sign in with xAI")
-                                                        : t("使用 OpenAI 账号登录", "Sign in with OpenAI")}
+                                                        : isWorkBuddyProvider(selectedProvider.name)
+                                                            ? t("使用 WorkBuddy 账号登录", "Sign in with WorkBuddy")
+                                                            : t("使用 OpenAI 账号登录", "Sign in with OpenAI")}
                                             </button>
                                             {oauthBusy && (
                                                 <button onClick={() => {

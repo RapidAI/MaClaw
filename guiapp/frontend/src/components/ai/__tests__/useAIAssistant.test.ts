@@ -3391,6 +3391,65 @@ describe('useAIAssistant property tests', () => {
         expect(slot?.actions).toEqual([]);
     });
 
+    it('clears both recovery buttons when the unfinished slot is dismissed', async () => {
+        mockSendResponse = {
+            text: 'unfinished task',
+            error: '',
+            unfinished_slot: {
+                slot_id: 'slot-dismiss-ui',
+                status: 'interrupted',
+                actions: [
+                    { label: 'Resume', command: '__resume_unfinished__ slot-dismiss-ui', style: 'default' },
+                    { label: 'Start new task', command: '__dismiss_unfinished__ slot-dismiss-ui', style: 'default' },
+                ],
+            },
+        };
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('check task');
+        });
+        mockSendResponse = { text: 'started', error: '' };
+
+        await act(async () => {
+            await result.current.executeAction('__dismiss_unfinished__ slot-dismiss-ui');
+        });
+
+        const message = result.current.messages.find(message => message.unfinishedSlot?.slotID === 'slot-dismiss-ui');
+        expect(message?.unfinishedSlot?.status).toBe('dismissed');
+        expect(message?.unfinishedSlot?.actions).toEqual([]);
+        expect(message?.content).toBe('unfinished task');
+    });
+
+    it('drops the continue-choice notice after the unfinished slot is dismissed', async () => {
+        mockSendResponse = {
+            text: '检测到未完成任务：查看驱网服务器状态。选择“继续上次任务”可继续。',
+            error: '',
+            unfinished_slot: {
+                slot_id: 'slot-notice',
+                status: 'interrupted',
+                actions: [
+                    { label: 'Resume', command: '__resume_unfinished__ slot-notice', style: 'default' },
+                    { label: 'Start new task', command: '__dismiss_unfinished__ slot-notice', style: 'default' },
+                ],
+            },
+        };
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('check task');
+        });
+        mockSendResponse = { text: 'started', error: '' };
+
+        await act(async () => {
+            await result.current.executeAction('__dismiss_unfinished__ slot-notice');
+        });
+
+        const message = result.current.messages.find(item => item.unfinishedSlot?.slotID === 'slot-notice');
+        expect(message?.content).toBe('');
+        expect(message?.unfinishedSlot?.status).toBe('dismissed');
+    });
+
     it('normalizes structured recoverable session payloads into assistant messages', async () => {
         mockSendResponse = {
             text: '',

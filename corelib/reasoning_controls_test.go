@@ -95,6 +95,37 @@ func TestApplyReasoningControlsUsesProviderNativeShape(t *testing.T) {
 	}
 }
 
+func TestStampDeepSeekReasoningEffortRequiresEffortAndDropsBudget(t *testing.T) {
+	body := map[string]interface{}{
+		"thinking": map[string]interface{}{"type": "enabled", "budget_tokens": 4096},
+	}
+	StampDeepSeekReasoningEffort(MaclawLLMConfig{Model: "deepseek-v4.1-flash", ThinkingMode: "enabled"}, body)
+	thinking := body["thinking"].(map[string]interface{})
+	if thinking["type"] != "enabled" {
+		t.Fatalf("thinking = %#v", thinking)
+	}
+	if _, ok := thinking["budget_tokens"]; ok {
+		t.Fatalf("budget_tokens remained: %#v", thinking)
+	}
+	if body["reasoning_effort"] != "high" {
+		t.Fatalf("reasoning_effort = %#v, want high", body["reasoning_effort"])
+	}
+	offEffort := map[string]interface{}{"thinking": map[string]interface{}{"type": "enabled"}}
+	StampDeepSeekReasoningEffort(MaclawLLMConfig{Model: "deepseek-v4.1-flash", ThinkingMode: "enabled", ReasoningEffort: "none"}, offEffort)
+	if offEffort["reasoning_effort"] != "low" {
+		t.Fatalf("none effort = %#v, want low", offEffort["reasoning_effort"])
+	}
+
+	off := map[string]interface{}{
+		"thinking":         map[string]interface{}{"type": "disabled", "budget_tokens": 1024},
+		"reasoning_effort": "high",
+	}
+	StampDeepSeekReasoningEffort(MaclawLLMConfig{Model: "deepseek-v4.1-flash", ThinkingMode: "disabled"}, off)
+	if _, ok := off["reasoning_effort"]; ok {
+		t.Fatalf("disabled request kept reasoning_effort: %#v", off)
+	}
+}
+
 func TestApplyReasoningControlsAutoPreservesCallerBody(t *testing.T) {
 	body := map[string]interface{}{"thinking": map[string]interface{}{"type": "enabled"}}
 	ApplyReasoningControls(MaclawLLMConfig{Model: "deepseek-reasoner"}, body, ReasoningAPIChat)
@@ -359,9 +390,10 @@ func TestRetargetReasoningControlsForUpstream(t *testing.T) {
 		t.Fatalf("retargeted body must not keep the thinking object: %#v", body)
 	}
 
-	// The reverse direction: an OpenAI-style effort forwarded to DeepSeek must
-	// become the thinking object, preserving the requested mode.
-	body = map[string]interface{}{"reasoning_effort": "high"}
+	// An OpenAI-style effort forwarded to DeepSeek becomes thinking.type and
+	// keeps a DeepSeek effort. WorkBuddy returns an empty reasoning_content
+	// when the effort field is missing. low must not be upgraded to high.
+	body = map[string]interface{}{"reasoning_effort": "low"}
 	RetargetReasoningControlsForUpstream(
 		MaclawLLMConfig{URL: "https://api.deepseek.com/v1", Model: "deepseek-reasoner"},
 		body,
@@ -371,8 +403,8 @@ func TestRetargetReasoningControlsForUpstream(t *testing.T) {
 	if thinking["type"] != "enabled" {
 		t.Fatalf("retargeted deepseek thinking = %#v, want type=enabled", body["thinking"])
 	}
-	if _, exists := body["reasoning_effort"]; exists {
-		t.Fatalf("retargeted body must not keep reasoning_effort: %#v", body)
+	if got := body["reasoning_effort"]; got != "low" {
+		t.Fatalf("retargeted deepseek reasoning_effort = %#v, want low", got)
 	}
 
 	// enable_thinking=false is an explicit off and must survive the retarget.
@@ -385,6 +417,9 @@ func TestRetargetReasoningControlsForUpstream(t *testing.T) {
 	thinking, _ = body["thinking"].(map[string]interface{})
 	if thinking["type"] != "disabled" {
 		t.Fatalf("retargeted disabled thinking = %#v, want type=disabled", body["thinking"])
+	}
+	if _, exists := body["reasoning_effort"]; exists {
+		t.Fatalf("disabled retarget kept reasoning_effort: %#v", body)
 	}
 }
 

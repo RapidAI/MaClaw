@@ -7,6 +7,7 @@ import {
     liftReasoningIntoBody,
     looksLikeInternalMonologue,
     mergeReasoningIntoBody,
+    parkReplacedStreamInReasoning,
     resolveVisibleAssistantReply,
     separateReasoningFromBody,
     shouldPromoteReasoningToBody,
@@ -326,6 +327,60 @@ describe("resolveVisibleAssistantReply", () => {
         expect(visible.content).toContain("两者同属川菜");
         expect(visible.reasoning).toContain("Let me think about river schools");
         expect(visible.reasoning).not.toContain("两者同属川菜");
+    });
+
+    it("keeps a live thinking draft inside the panel instead of the answer body", () => {
+        const draft = "The user is asking for today's forecast. Let me think through the snippets before answering. The dates disagree, so I should not paste the raw listing.";
+        const visible = resolveVisibleAssistantReply(draft, "Checking the forecast.", { live: true });
+        expect(visible.content).toBe("");
+        expect(visible.reasoning).toContain("The user is asking");
+        expect(visible.reasoning).toContain("Checking the forecast.");
+    });
+
+    it("keeps a live answer in the bubble when it already follows the plan", () => {
+        const plan = "The user is asking for the forecast. Let me think through the snippets before I answer. Several dates in the listing do not match today, so the raw page text cannot be the reply.\n\n";
+        const answer = "重庆今天小雨，约 24~30℃，北风，风力不大。明天多云，约 24~31℃，北风。今起三天降雨集中在华西，外出建议带伞，并注意路面积水。空气湿度较高，体感偏闷热。";
+        const visible = resolveVisibleAssistantReply(plan + answer, "", { live: true });
+        expect(visible.content).toContain("重庆今天小雨");
+        expect(visible.reasoning).toContain("The user is asking");
+        expect(visible.reasoning).not.toContain("重庆今天小雨");
+    });
+});
+
+describe("parkReplacedStreamInReasoning", () => {
+    it("keeps thinking that the final answer replaces", () => {
+        const thinking = "The user is asking for Chongqing weather. Let me think through the search snippets and then write a short forecast.";
+        const answer = "重庆今天小雨，约 24~30℃，北风。明天多云，约 24~31℃。";
+        const kept = parkReplacedStreamInReasoning(thinking, answer, "• 已接收任务");
+        expect(kept).toContain("The user is asking");
+        expect(kept).toContain("• 已接收任务");
+        expect(kept).not.toContain("24~30℃");
+    });
+
+    it("does not copy the answer into the thinking panel when nothing was replaced", () => {
+        const answer = "重庆今天小雨，约 24~30℃，北风。明天多云，约 24~31℃。外出建议带伞。";
+        expect(parkReplacedStreamInReasoning(answer, answer, "Checking the forecast.")).toBe("Checking the forecast.");
+    });
+
+    it("does not file a rewritten forecast under thinking", () => {
+        const draft = "重庆今天小雨，约 24~30℃，北风。明天多云，约 24~31℃。外出记得带伞，湿度偏高。";
+        const answer = "重庆今天小雨，24~30℃。明天多云，24~31℃。建议带伞。";
+        expect(parkReplacedStreamInReasoning(draft, answer, "")).toBe("");
+    });
+
+    it("keeps a short live forecast in the bubble after the plan", () => {
+        const plan = "The user is asking for the forecast. Let me think through the snippets before answering.\n\n";
+        const answer = "重庆今天小雨，约 24~30℃，北风不大，建议带伞。";
+        const visible = resolveVisibleAssistantReply(plan + answer, "", { live: true });
+        expect(visible.content).toContain("重庆今天小雨");
+        expect(visible.reasoning).toContain("The user is asking");
+        expect(visible.reasoning).not.toContain("建议带伞");
+    });
+
+    it("does not keep a search digest that the forecast replaces", () => {
+        const digest = "根据公开检索，相关信息如下：\n\n1. 重庆-天气预报\n09/25 周五小雨 北风 30℃ 24℃。09/26 周六多云 北风 31℃ 24℃。今起三天华西有明显降雨，外出注意带伞。";
+        const answer = "重庆今天小雨，约 24~30℃，北风。明天多云，约 24~31℃。";
+        expect(parkReplacedStreamInReasoning(digest, answer, "")).toBe("");
     });
 });
 

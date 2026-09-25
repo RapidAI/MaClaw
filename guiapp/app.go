@@ -99,6 +99,13 @@ type App struct {
 	// fsnotify watcher uses this to suppress redundant config-updated events
 	// triggered by our own writes (debounce window: 500ms).
 	configLastInternalWrite atomic.Int64
+	// verifiedInstaller is the installer produced by the most recent
+	// successful DownloadUpdate*. LaunchInstallerAndExit runs it silently (and
+	// on Windows with elevation), so it only ever accepts that exact file,
+	// re-verified at launch time. Kept in memory only: it is a launch
+	// authorization, not application state.
+	verifiedInstallerMu sync.Mutex
+	verifiedInstaller   *verifiedInstaller
 	// pendingBugReportUpload keeps the most recent locally-created diagnostics
 	// archive available after an upload failure. It is deliberately kept outside
 	// config: the archive contains sensitive diagnostics and should not become a
@@ -157,7 +164,7 @@ type App struct {
 	semanticEffectReceiptWorker *agentservice.DynamicEffectReceiptWorker
 	semanticInvocationKey       []byte
 	testHomeDir                 string // For testing purposes
-	downloadCancelers           map[string]context.CancelFunc
+	downloadCancelers           map[string]*downloadCanceler
 	downloadMutex               sync.Mutex
 	skillInstallConfirm         sync.Map
 	IsInitMode                  bool
@@ -585,7 +592,7 @@ func NewApp() *App {
 	bgCtx := context.Background()
 	app := &App{
 		ctx:               nil,
-		downloadCancelers: make(map[string]context.CancelFunc),
+		downloadCancelers: make(map[string]*downloadCanceler),
 		nodeInstallDone:   make(chan bool, 1), // Buffered channel to signal Node.js installation completion
 		toolInstallLocks:  make(map[string]bool),
 		floatingAssistant: nil,
@@ -705,6 +712,9 @@ func (a *App) initCoreInfra() {
 		_, _ = a.LoadConfig()
 		if primaryDir, err := a.primarySkillsDir(); err == nil {
 			deployBuiltinSkillsToDir(primaryDir)
+		}
+		if err := a.reloadPPTStyles(); err != nil {
+			log.Printf("[ppt-style] load: %v", err)
 		}
 	}
 
@@ -10097,11 +10107,32 @@ type DownloadProgress struct {
 	Error         string                 `json:"error,omitempty"`
 }
 
+// downloadCancelDrainTimeout bounds how long a new download waits for a
+// cancelled one to release the shared destination file.
+const downloadCancelDrainTimeout = 5 * time.Second
+
+// downloadCanceler tracks one in-flight download. done is closed when the
+// attempt has returned, which is the point at which the destination file is
+// closed again.
+type downloadCanceler struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
 func (a *App) DownloadUpdate(url string, fileName string) (string, error) {
 	return a.DownloadUpdateWithSHA256(url, fileName, "")
 }
 
 func (a *App) DownloadUpdateWithSHA256(url string, fileName string, expectedSHA256 string) (string, error) {
+	// The name is joined with the Downloads folder and that path is what
+	// LaunchInstallerAndExit later runs silently and elevated: keep it a bare
+	// file name so a crafted manifest cannot aim the launch elsewhere.
+	safeName, err := sanitizeInstallerFileName(fileName)
+	if err != nil {
+		a.log(fmt.Sprintf("DownloadUpdate: rejected file name %q: %v", fileName, err))
+		return "", err
+	}
+	fileName = safeName
 	urls := splitDownloadURLs(url)
 	if len(urls) == 0 {
 		return "", fmt.Errorf("download url is empty")
@@ -10114,14 +10145,34 @@ func (a *App) DownloadUpdateWithSHA256(url string, fileName string, expectedSHA2
 	destPath := filepath.Join(downloadsDir, fileName)
 	ctx, cancel := context.WithCancel(context.Background())
 	downloadID := fileName
+	canceler := &downloadCanceler{cancel: cancel, done: make(chan struct{})}
+	// A cancelled download keeps the destination open until its next read
+	// returns, and on Windows an open file can neither be deleted nor
+	// recreated. Drain the previous attempt before touching the same name,
+	// otherwise "download again" fails with a sharing violation.
 	a.downloadMutex.Lock()
-	a.downloadCancelers[downloadID] = cancel
+	previous, hadPrevious := a.downloadCancelers[downloadID]
+	a.downloadMutex.Unlock()
+	if hadPrevious {
+		previous.cancel()
+		select {
+		case <-previous.done:
+		case <-time.After(downloadCancelDrainTimeout):
+			a.log("DownloadUpdate: previous download did not release the destination in time; continuing")
+		}
+	}
+	a.downloadMutex.Lock()
+	a.downloadCancelers[downloadID] = canceler
 	a.downloadMutex.Unlock()
 	defer func() {
 		a.downloadMutex.Lock()
-		delete(a.downloadCancelers, downloadID)
+		// Only clear our own entry: a newer download may already own the key.
+		if current, ok := a.downloadCancelers[downloadID]; ok && current == canceler {
+			delete(a.downloadCancelers, downloadID)
+		}
 		a.downloadMutex.Unlock()
 		cancel()
+		close(canceler.done)
 	}()
 
 	var lastErr error
@@ -10146,6 +10197,8 @@ func (a *App) DownloadUpdateWithSHA256(url string, fileName string, expectedSHA2
 				if expectedSHA256 != "" {
 					a.log("DownloadUpdate: SHA256 verification passed")
 				}
+				// Authorize this exact file for the later silent launch.
+				a.rememberVerifiedInstaller(path, expectedSHA256)
 				a.emitEvent("download-progress", DownloadProgress{Percentage: 100, Status: downloadProgressStatusCompleted})
 				return path, nil
 			}
@@ -10273,7 +10326,9 @@ func (a *App) downloadUpdateFromURL(ctx context.Context, url string, fileName st
 	if err != nil {
 		return "", err
 	}
-	defer out.Close()
+	// Close before hashing below; the deferred close only covers the error
+	// paths and ignores its (now redundant) error.
+	defer func() { _ = out.Close() }()
 	var downloaded int64
 	buffer := make([]byte, 256*1024)
 	lastReport := time.Now()
@@ -10307,15 +10362,22 @@ func (a *App) downloadUpdateFromURL(ctx context.Context, url string, fileName st
 			return "", err
 		}
 	}
+	// Flush and close before returning: the caller hashes this file, and a
+	// close error on Windows can mean the final writes never reached disk.
+	if err := out.Close(); err != nil {
+		return "", fmt.Errorf("closing installer file: %w", err)
+	}
 	a.emitEvent("download-progress", DownloadProgress{Percentage: 100, Downloaded: downloaded, Total: size, Status: downloadProgressStatusDownloading})
 	return destPath, nil
 }
 func (a *App) CancelDownload(downloadID string) {
 	a.downloadMutex.Lock()
 	defer a.downloadMutex.Unlock()
-	if cancel, ok := a.downloadCancelers[downloadID]; ok {
-		cancel()
-		delete(a.downloadCancelers, downloadID)
+	if canceler, ok := a.downloadCancelers[downloadID]; ok {
+		// Keep the entry: the cancelled download still holds the destination
+		// open, and the next download of the same installer waits on done to
+		// let it go. The download's own cleanup removes the entry on return.
+		canceler.cancel()
 	}
 }
 func (a *App) RecoverCC() error {

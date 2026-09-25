@@ -1225,6 +1225,25 @@ describe('useAITabManager', () => {
             expect(result.current.activeTab.id).toBe("local");
         });
 
+        it('does not open the new-task guide when a chat tab is closed', () => {
+            const guide = vi.fn();
+            window.addEventListener('maclaw:open-new-task-wizard', guide);
+            try {
+                const { result } = renderHook(() => useAITabManager());
+                let tab: AITab | null = null;
+                act(() => {
+                    tab = result.current.createVETab("ve-1", "助手");
+                });
+                act(() => {
+                    result.current.closeTab(tab!.id);
+                });
+                expect(result.current.activeTab.id).toBe("local");
+                expect(guide).not.toHaveBeenCalled();
+            } finally {
+                window.removeEventListener('maclaw:open-new-task-wizard', guide);
+            }
+        });
+
         it('cannot close the local tab', () => {
             const { result } = renderHook(() => useAITabManager());
 
@@ -1290,6 +1309,50 @@ describe('useAITabManager', () => {
             expect(onCloseVESession).not.toHaveBeenCalled();
         });
 
+        it('shows the most recently opened remaining task after the active task is closed', () => {
+            const guide = vi.fn();
+            window.addEventListener('maclaw:open-new-task-wizard', guide);
+            const { result } = renderHook(() => useAITabManager());
+            let older: AITab | null = null;
+            let newer: AITab | null = null;
+            act(() => {
+                older = result.current.createProjectTab('D:/tasks/older', 'Older');
+            });
+            act(() => {
+                newer = result.current.createProjectTab('D:/tasks/newer', 'Newer');
+            });
+            expect(result.current.activeTab.id).toBe(newer!.id);
+
+            act(() => {
+                result.current.closeTab(newer!.id);
+            });
+
+            expect(result.current.activeTab.id).toBe(older!.id);
+            expect(guide).not.toHaveBeenCalled();
+            window.removeEventListener('maclaw:open-new-task-wizard', guide);
+        });
+
+        it('opens the new-task guide when the last task tab is closed', () => {
+            const guide = vi.fn();
+            window.addEventListener('maclaw:open-new-task-wizard', guide);
+            try {
+                const { result } = renderHook(() => useAITabManager());
+                let tab: AITab | null = null;
+                act(() => {
+                    tab = result.current.createProjectTab('D:/tasks/only', 'Only');
+                });
+
+                act(() => {
+                    result.current.closeTab(tab!.id);
+                });
+
+                expect(result.current.activeTab.id).toBe('local');
+                expect(guide).toHaveBeenCalled();
+            } finally {
+                window.removeEventListener('maclaw:open-new-task-wizard', guide);
+            }
+        });
+
         it('does not affect other tabs when closing one', () => {
             const { result } = renderHook(() => useAITabManager());
 
@@ -1349,6 +1412,20 @@ describe('useAITabManager', () => {
             expect(tab2).toBeNull();
             expect(result.current.tabState.tabs).toHaveLength(2);
             expect(result.current.tabLimitError).not.toBeNull();
+        });
+
+        it('closeTab frees a project slot for a create in the same turn', () => {
+            const { result } = renderHook(() => useAITabManager({ maxVETabs: 1 }));
+            let second: AITab | null = null;
+            act(() => {
+                const first = result.current.createProjectTab('D:/tasks/a', 'A');
+                expect(first).not.toBeNull();
+                result.current.closeTab(first!.id);
+                second = result.current.createProjectTab('D:/tasks/b', 'B');
+            });
+            expect(second).not.toBeNull();
+            expect(result.current.tabState.tabs.filter(tab => tab.type === 'project').map(tab => tab.projectPath)).toEqual(['D:/tasks/b']);
+            expect(result.current.tabState.activeTabId).toBe(second!.id);
         });
 
         it('allows creating after closing a tab', () => {

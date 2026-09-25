@@ -163,7 +163,11 @@ ha:
   cluster_secret: $ClusterSecret
   sync_interval_seconds: 5
   push_debounce_seconds: 5
-  pull_batch_size: 1000
+  # 2026-09-25: 1000 ops can exceed the 128MiB pullOpsResponseBodyLimit
+  # (syncer.go) once the backlog piles up; the LimitReader then truncates the
+  # JSON mid-stream and every retry fails with "unexpected EOF" — a permanent
+  # replication lock. 100 ops (~15-25MB worst case) stays far below the cap.
+  pull_batch_size: 100
   heartbeat_sync_min_interval_seconds: 600
   history_retention_days: 0.5
   history_max_retained_ops: 50000

@@ -1370,23 +1370,17 @@ func streamProviderToWriter(ctx context.Context, client *http.Client, provider *
 		URL:   provider.APIURL,
 		Model: upstreamModel,
 	}, reqBody, corelib.ReasoningAPIChat)
-	// DeepSeek V4+ thinking mode: ensure thinking is enabled and budget is capped
-	// when tools are present. The maclaw client normally sets these, but older
-	// clients or third-party integrations may omit them. This is the authoritative
-	// "last chance" enforcement on the stream path (mirrors the non-stream path
-	// in corelib/openai_compat_forward.go sanitizeOpenAICompatForwardBody).
+	// DeepSeek V4+ thinking mode: older clients may omit the switch. thinking.type
+	// alone is not enough for WorkBuddy, so the stamp also sets reasoning_effort
+	// and drops Anthropic budget_tokens. A caller-supplied low/max survives.
 	if corelib.IsDeepSeekThinkingModeModel(corelib.MaclawLLMConfig{Model: upstreamModel}) {
 		if _, hasThinking := reqBody["thinking"]; !hasThinking {
 			reqBody["thinking"] = map[string]any{"type": "enabled"}
 		}
-		if hasToolsInStreamBody(reqBody) {
-			if thinking, ok := reqBody["thinking"].(map[string]any); ok {
-				if _, hasBudget := thinking["budget_tokens"]; !hasBudget {
-					// Conservative budget (4096) — see corelib/llm/client.go comment.
-					thinking["budget_tokens"] = 4096
-				}
-			}
-		}
+		// thinking.type alone is not enough for WorkBuddy: it returns an empty
+		// reasoning_content until reasoning_effort is present. budget_tokens
+		// is not a DeepSeek field and is removed here.
+		corelib.StampDeepSeekReasoningEffort(corelib.MaclawLLMConfig{Model: upstreamModel}, reqBody)
 	}
 
 	data, err := json.Marshal(reqBody)
@@ -1499,23 +1493,6 @@ func sanitizeProxyStreamOptions(body map[string]any) {
 		}
 	}
 	body["stream_options"] = map[string]any{"include_usage": true}
-}
-
-// hasToolsInStreamBody checks if the request body contains a non-empty tools array.
-// Same logic as corelib's hasToolsInBody but local to avoid export dependency.
-func hasToolsInStreamBody(body map[string]any) bool {
-	tools, ok := body["tools"]
-	if !ok || tools == nil {
-		return false
-	}
-	switch t := tools.(type) {
-	case []any:
-		return len(t) > 0
-	case []map[string]any:
-		return len(t) > 0
-	default:
-		return false
-	}
 }
 
 func proxyProviderSSE(src io.Reader, dst ProxyStreamWriter, responseModel string, result *providerStreamResult, reqBody map[string]any) error {

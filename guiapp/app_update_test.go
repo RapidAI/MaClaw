@@ -2,7 +2,6 @@ package guiapp
 
 import (
 	"bytes"
-	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -596,7 +595,7 @@ func TestDownloadUpdateRemovesPartialInstallerAndReportsAllFailedSources(t *test
 	if err := os.MkdirAll(filepath.Join(home, "Downloads"), 0o755); err != nil {
 		t.Fatalf("create Downloads directory: %v", err)
 	}
-	app := &App{testHomeDir: home, downloadCancelers: make(map[string]context.CancelFunc)}
+	app := &App{testHomeDir: home, downloadCancelers: make(map[string]*downloadCanceler)}
 	_, err := app.DownloadUpdate(first.URL+"\n"+second.URL, "MaClaw-Setup.exe")
 	if err == nil || !strings.Contains(err.Error(), "all download sources failed") || !strings.Contains(err.Error(), "403 Forbidden") {
 		t.Fatalf("DownloadUpdate() error = %v, want aggregated source failures", err)
@@ -624,7 +623,7 @@ func TestDownloadUpdateReportsChecksumFailureBeforeTryingFallback(t *testing.T) 
 	if err := os.MkdirAll(filepath.Join(home, "Downloads"), 0o755); err != nil {
 		t.Fatalf("create Downloads directory: %v", err)
 	}
-	app := &App{testHomeDir: home, downloadCancelers: make(map[string]context.CancelFunc)}
+	app := &App{testHomeDir: home, downloadCancelers: make(map[string]*downloadCanceler)}
 	_, err := app.DownloadUpdateWithSHA256(first.URL+"\n"+second.URL, "MaClaw-Setup.exe", strings.Repeat("0", 64))
 	if err == nil || !strings.Contains(err.Error(), "integrity verification failed") || !strings.Contains(err.Error(), "403 Forbidden") {
 		t.Fatalf("DownloadUpdateWithSHA256() error = %v, want checksum and fallback failures", err)

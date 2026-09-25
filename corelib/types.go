@@ -385,18 +385,18 @@ type NLSkillEntry struct {
 	// Plugin namespace
 	Publisher string `json:"publisher,omitempty"` // e.g. "lovstudio"
 
-	SkillDir           string              `json:"skill_dir,omitempty"`       // 自包含 skill 目录的绝对路径（运行时填充）
-	Mode               string              `json:"mode,omitempty"`            // "sequential" (default) | "interactive" | "api_workflow"
-	ExecMode           string              `json:"exec_mode,omitempty"`       // "all" (default) | "first" | "named"
-	GlobalTimeout      int                 `json:"global_timeout,omitempty"`  // per-skill global timeout in seconds (0 = use configured Skill Runner default)
-	ProducesArtifact   bool                `json:"produces_artifact"`         // true = expects file output (default); false = diagnostic/instruction only
-	Operations         []NLSkillOperation  `json:"operations,omitempty"`      // named operations for api_workflow mode
-	RequiredArgs       []string            `json:"required_args,omitempty"`   // required template variables (e.g. "input", "output")
-	RequiredEnv        []string            `json:"required_env,omitempty"`    // required environment variables (e.g. "API_KEY")
+	SkillDir         string             `json:"skill_dir,omitempty"`      // 自包含 skill 目录的绝对路径（运行时填充）
+	Mode             string             `json:"mode,omitempty"`           // "sequential" (default) | "interactive" | "api_workflow"
+	ExecMode         string             `json:"exec_mode,omitempty"`      // "all" (default) | "first" | "named"
+	GlobalTimeout    int                `json:"global_timeout,omitempty"` // per-skill global timeout in seconds (0 = use configured Skill Runner default)
+	ProducesArtifact bool               `json:"produces_artifact"`        // true = expects file output (default); false = diagnostic/instruction only
+	Operations       []NLSkillOperation `json:"operations,omitempty"`     // named operations for api_workflow mode
+	RequiredArgs     []string           `json:"required_args,omitempty"`  // required template variables (e.g. "input", "output")
+	RequiredEnv      []string           `json:"required_env,omitempty"`   // required environment variables (e.g. "API_KEY")
 	// NoLLMAPI declares the skill does not call any OpenAI-compatible LLM API,
 	// so the runner skips starting the local OpenAI proxy (default-on otherwise).
-	NoLLMAPI       bool   `json:"no_llm_api,omitempty"`
-	PreferredShell string `json:"preferred_shell,omitempty"` // "bash" or "cmd"; empty = auto-detect
+	NoLLMAPI           bool                `json:"no_llm_api,omitempty"`
+	PreferredShell     string              `json:"preferred_shell,omitempty"` // "bash" or "cmd"; empty = auto-detect
 	UsageCount         int                 `json:"usage_count"`
 	SuccessCount       int                 `json:"success_count"`
 	FailureCount       int                 `json:"failure_count"`
@@ -980,7 +980,7 @@ type MaclawLLMProvider struct {
 	// whether the result was supported or unsupported. Catalog names missing
 	// from this list are untested.
 	VisionTestedModels []string `json:"vision_tested_models,omitempty"`
-	AgentType      string   `json:"agent_type,omitempty"` // "openclaw" (default) or "claude" → controls User-Agent header
+	AgentType          string   `json:"agent_type,omitempty"` // "openclaw" (default) or "claude" → controls User-Agent header
 	// ── 新增 OAuth 字段 ──
 	AuthType                     string  `json:"auth_type,omitempty"`
 	RefreshToken                 string  `json:"refresh_token,omitempty"`
@@ -1042,6 +1042,14 @@ type MaclawLLMConfig struct {
 	RouteSource              string `json:"route_source,omitempty"`
 	AuthType                 string `json:"auth_type,omitempty"`
 	MaclawAgentMaxIterations int    `json:"maclaw_agent_max_iterations,omitempty"`
+
+	// WorkBuddy account context is attached at request time from the credential
+	// store. It is not written into the saved provider config.
+	WorkBuddyOrigin       string `json:"-"`
+	WorkBuddyUserID       string `json:"-"`
+	WorkBuddyEnterpriseID string `json:"-"`
+	WorkBuddyDomain       string `json:"-"`
+	WorkBuddyRefreshToken string `json:"-"`
 
 	// EnablePromptCache hints to the LLM client that the system prompt is
 	// stable across iterations and should be marked for provider-side caching.
@@ -1530,6 +1538,27 @@ func IsDeepSeekFlashOpenAICompat(cfg MaclawLLMConfig) bool {
 		cfg.URL,
 	}, " "))
 	return strings.Contains(text, "deepseek") && strings.Contains(text, "flash")
+}
+
+// DeepSeekFlashAcceptsImages reports whether this Flash checkpoint reads image
+// parts. Older deepseek-v4-flash builds are text-only and reject image blocks,
+// so those requests are flattened. V4.1 Flash and the current deepseek-flash
+// alias understand images natively; flattening them makes a vision probe
+// answer "no image".
+func DeepSeekFlashAcceptsImages(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	if i := strings.LastIndex(model, "/"); i >= 0 {
+		model = model[i+1:]
+	}
+	if i := strings.IndexByte(model, '['); i > 0 {
+		model = strings.TrimSpace(model[:i])
+	}
+	switch model {
+	case "deepseek-v4.1-flash", "deepseek-flash", "deepseek-v4-flash-vision-exp":
+		return true
+	default:
+		return false
+	}
 }
 
 func IsGLMCodingPlanUserAgent(agent string) bool {

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -333,4 +335,133 @@ func TestSyncAllCapsConcurrentPeerSyncs(t *testing.T) {
 		t.Fatalf("max active syncs = %d, want <= 2", gotMaxActive)
 	}
 	close(release)
+}
+
+func TestPullOpsRetriesSmallerBatchOnTruncatedResponse(t *testing.T) {
+	var mu sync.Mutex
+	var limits []int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		limit := 0
+		fmt.Sscanf(r.URL.Query().Get("limit"), "%d", &limit)
+		mu.Lock()
+		limits = append(limits, limit)
+		mu.Unlock()
+		if limit > 10 {
+			// Larger than the shrunken client body limit set below, so the
+			// client must detect truncation and retry with a smaller batch
+			// instead of failing with "unexpected EOF" forever. Declaring
+			// Content-Length covers the header pre-check path (what our
+			// server and nginx both do for buffered responses).
+			big := &PullOpsResponse{
+				NodeID: "hc-1",
+				Ops:    []*store.HASyncOp{{Seq: 1, EntityType: EntitySystemSetting, EntityID: strings.Repeat("x", 4096)}},
+			}
+			raw, _ := json.Marshal(big)
+			w.Header().Set("Content-Length", strconv.Itoa(len(raw)))
+			_, _ = w.Write(raw)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(&PullOpsResponse{
+			NodeID: "hc-1",
+			Ops:    []*store.HASyncOp{{Seq: 9, EntityType: EntitySystemSetting, EntityID: "llm_service_registry"}},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	syncer := NewSyncer(&Service{}, time.Second, 40)
+	syncer.bodyLimit = 1024
+	got, err := syncer.pullOps(context.Background(), &PeerRuntimeState{NodeID: "hc-1", BaseURL: server.URL}, 0)
+	if err != nil {
+		t.Fatalf("pullOps: %v limits=%v", err, limits)
+	}
+	if got == nil || len(got.Ops) != 1 || got.Ops[0].Seq != 9 {
+		t.Fatalf("got %#v", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(limits) != 2 || limits[0] != 40 || limits[1] != 10 {
+		t.Fatalf("limits = %v, want [40 10]", limits)
+	}
+}
+
+// Same scenario without a declared Content-Length (chunked transfer): the
+// client must detect truncation while reading and still shrink the batch.
+func TestPullOpsRetriesSmallerBatchOnChunkedTruncatedResponse(t *testing.T) {
+	var mu sync.Mutex
+	var limits []int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		limit := 0
+		fmt.Sscanf(r.URL.Query().Get("limit"), "%d", &limit)
+		mu.Lock()
+		limits = append(limits, limit)
+		mu.Unlock()
+		if limit > 10 {
+			big := &PullOpsResponse{
+				NodeID: "hc-1",
+				Ops:    []*store.HASyncOp{{Seq: 1, EntityType: EntitySystemSetting, EntityID: strings.Repeat("x", 4096)}},
+			}
+			_ = json.NewEncoder(w).Encode(big)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(&PullOpsResponse{
+			NodeID: "hc-1",
+			Ops:    []*store.HASyncOp{{Seq: 9, EntityType: EntitySystemSetting, EntityID: "llm_service_registry"}},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	syncer := NewSyncer(&Service{}, time.Second, 40)
+	syncer.bodyLimit = 1024
+	got, err := syncer.pullOps(context.Background(), &PeerRuntimeState{NodeID: "hc-1", BaseURL: server.URL}, 0)
+	if err != nil {
+		t.Fatalf("pullOps: %v limits=%v", err, limits)
+	}
+	if got == nil || len(got.Ops) != 1 || got.Ops[0].Seq != 9 {
+		t.Fatalf("got %#v", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(limits) != 2 || limits[0] != 40 || limits[1] != 10 {
+		t.Fatalf("limits = %v, want [40 10]", limits)
+	}
+}
+
+func TestReadBodyWithLimitDetectsTruncation(t *testing.T) {
+	data, truncated, err := readBodyWithLimit(strings.NewReader("hello"), 10)
+	if err != nil || truncated || string(data) != "hello" {
+		t.Fatalf("short body: data=%q truncated=%v err=%v", data, truncated, err)
+	}
+	_, truncated, err = readBodyWithLimit(strings.NewReader(strings.Repeat("x", 11)), 10)
+	if err != nil || !truncated {
+		t.Fatalf("over-limit body: truncated=%v err=%v", truncated, err)
+	}
+	// Body exactly at the limit is complete, not truncated.
+	data, truncated, err = readBodyWithLimit(strings.NewReader(strings.Repeat("x", 10)), 10)
+	if err != nil || truncated || len(data) != 10 {
+		t.Fatalf("exact-limit body: len=%d truncated=%v err=%v", len(data), truncated, err)
+	}
+}
+
+// Regression guard for the run18 finding (2026-09-25): over https the default
+// Transport upgrades to HTTP/2, and a half-dead h2 connection wedges syncer
+// goroutines forever. The HA client must pin ALPN to http/1.1 and set an
+// independent response-header timeout so dead peers fail fast.
+func TestNewHAHTTPClientForcesHTTP1(t *testing.T) {
+	client := newHAHTTPClient(peerPullTimeout)
+	tr, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("Transport = %T, want *http.Transport", client.Transport)
+	}
+	protos := tr.TLSClientConfig.NextProtos
+	for _, p := range protos {
+		if p == "h2" {
+			t.Fatalf("NextProtos = %v, must not offer h2", protos)
+		}
+	}
+	if tr.ResponseHeaderTimeout <= 0 {
+		t.Fatalf("ResponseHeaderTimeout = %v, want > 0", tr.ResponseHeaderTimeout)
+	}
+	if client.Timeout != peerPullTimeout {
+		t.Fatalf("client.Timeout = %v, want %v", client.Timeout, peerPullTimeout)
+	}
 }

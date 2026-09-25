@@ -1,0 +1,77 @@
+<view class="page login-page">
+  <view class="brand">
+    <view class="brand-title">码卡龙</view>
+    <view class="brand-sub">用手机连接你自己的 AI 工作台</view>
+  </view>
+
+  <view class="card">
+    <view class="tabs">
+      <view class="tab {{mode === 'email' ? 'tab-active' : ''}}" data-mode="email" bindtap="switchMode">邮箱登录</view>
+      <view class="tab {{mode === 'phone' ? 'tab-active' : ''}}" data-mode="phone" bindtap="switchMode">手机号登录</view>
+    </view>
+
+    <view class="field">
+      <input
+        class="field-input"
+        type="{{mode === 'email' ? 'text' : 'number'}}"
+        placeholder="{{mode === 'email' ? '邮箱地址' : '手机号'}}"
+        placeholder-class="field-placeholder"
+        value="{{account}}"
+        bindinput="onAccountInput"
+        adjust-position="{{true}}"
+      />
+    </view>
+
+    <view class="field field-inline">
+      <input
+        class="field-input"
+        type="number"
+        maxlength="6"
+        placeholder="6 位验证码"
+        placeholder-class="field-placeholder"
+        value="{{code}}"
+        bindinput="onCodeInput"
+        adjust-position="{{true}}"
+      />
+      <view class="code-btn {{countdown > 0 || sending || !account ? 'code-btn-disabled' : ''}}" bindtap="sendCode">
+        {{countdown > 0 ? countdown + ' 秒后重发' : (sending ? '发送中…' : '获取验证码')}}
+      </view>
+    </view>
+
+    <view class="login-note hint">
+      验证码发送至{{mode === 'email' ? '邮箱' : '手机'}}，{{codeMinutes}} 分钟内有效。该账号需已注册过 MaClaw。
+    </view>
+
+    <button class="btn-primary login-btn" disabled="{{submitting || !account || !code}}" bindtap="submit">
+      {{submitting ? '登录中…' : '登录并连接'}}
+    </button>
+
+    <block wx:if="{{error}}">
+      <view class="error-bar">{{error}}</view>
+    </block>
+
+    <view class="server-row">
+      <text class="text-link" bindtap="toggleServerPanel">{{showServer ? '收起服务器设置' : '服务器设置'}}</text>
+      <text class="server-current">{{hubUrl}}</text>
+    </view>
+
+    <block wx:if="{{showServer}}">
+      <view class="field server-field">
+        <input
+          class="field-input"
+          type="text"
+          placeholder="https://hub.example.com"
+          placeholder-class="field-placeholder"
+          value="{{serverInput}}"
+          bindinput="onServerInput"
+        />
+      </view>
+      <view class="hint server-hint">登录后会返回账号所属的 Hub 地址，之后的会话都直连那台 Hub。</view>
+      <button class="btn-ghost" bindtap="saveServer">保存服务器</button>
+    </block>
+  </view>
+
+  <view class="footer hint">
+    连接协议：MaClaw 第三方接入协议（Device Gateway v1 + IM Gateway v1.1）
+  </view>
+</view>

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { cloudWorkspaceNameMapFromEntitlement, isActiveTaskRow, isProjectTabOpen, SidebarTaskManagement, sortTaskManagementItems, taskCreationLabel, taskSecondaryLabelFor, workflowStatusForTask, workflowStatusForTaskRow } from '../SidebarTaskManagement';
+import { cloudWorkspaceNameMapFromEntitlement, isActiveTaskRow, isProjectTabOpen, SidebarTaskManagement, sortTaskManagementItems, TASK_LIST_ORDER_STORAGE_KEY, taskCreationLabel, taskSecondaryLabelFor, workflowStatusForTask, workflowStatusForTaskRow } from '../SidebarTaskManagement';
 import type { ComponentProps, ReactElement } from 'react';
 import { GetProjectScene, OpenFileOrShowInFolder, OpenProjectDirectory, SelectWorkingDir } from '../../../../wailsjs/go/main/App';
 import { EventsEmit } from '../../../../wailsjs/runtime';
@@ -612,8 +612,8 @@ describe('SidebarTaskManagement', () => {
         fireEvent.click(screen.getByTestId('task-filter-running'));
         const rows = screen.getAllByTestId('sidebar-task-row');
         expect(rows).toHaveLength(2);
-        expect(within(rows[0]).getByText('Expert task')).toBeTruthy();
-        expect(within(rows[1]).getByText('Cloud task')).toBeTruthy();
+        expect(screen.getByText('Expert task')).toBeTruthy();
+        expect(screen.getByText('Cloud task')).toBeTruthy();
     });
 
     it('shows an explanation notice when the new-task wizard is blocked by a running task', () => {
@@ -758,6 +758,97 @@ describe('SidebarTaskManagement', () => {
         expect(screen.queryByText('Running task')).toBeNull();
     });
 
+    it('keeps rendered row order when opening a task updates activity', () => {
+        const older = { ...baseProject, id: 'older', name: 'Older task', project_path: 'D:/work/tasks/older', created_at: '2026-01-01T00:00:00Z', last_activity: '2026-09-01T00:00:00Z' };
+        const newer = { ...baseProject, id: 'newer', name: 'Newer task', project_path: 'D:/work/tasks/newer', created_at: '2026-08-01T00:00:00Z', last_activity: '2026-01-01T00:00:00Z' };
+        const view = renderTaskManagement({ tasks: [older, newer] });
+        const names = () => screen.getAllByTestId('sidebar-task-row').map(row => row.textContent || '');
+
+        expect(names()[0]).toContain('Newer task');
+        expect(names()[1]).toContain('Older task');
+
+        view.rerenderWith({ tasks: [{ ...older, last_activity: '2026-09-02T00:00:00Z' }, newer] });
+
+        expect(names()[0]).toContain('Newer task');
+        expect(names()[1]).toContain('Older task');
+    });
+
+    it('reorders tasks by dragging a row and keeps that order when activity changes', () => {
+        localStorage.removeItem(TASK_LIST_ORDER_STORAGE_KEY);
+        try {
+            const older = { ...baseProject, id: 'older', name: 'Older task', project_path: 'D:/work/tasks/older', created_at: '2026-01-01T00:00:00Z', last_activity: '2026-09-01T00:00:00Z' };
+            const newer = { ...baseProject, id: 'newer', name: 'Newer task', project_path: 'D:/work/tasks/newer', created_at: '2026-08-01T00:00:00Z', last_activity: '2026-01-01T00:00:00Z' };
+            const view = renderTaskManagement({ tasks: [older, newer] });
+            const rowOf = (name: string) => screen.getAllByTestId('sidebar-task-row').find(item => (item.textContent || '').includes(name)) as HTMLElement;
+            const handleOf = (name: string) => rowOf(name).querySelector('[data-testid="task-drag-handle"]') as HTMLElement;
+
+            fireEvent.dragStart(handleOf('Newer task'));
+            fireEvent.dragOver(rowOf('Older task').querySelector('.sidebar-task-row') as HTMLElement);
+            fireEvent.drop(rowOf('Older task').querySelector('.sidebar-task-row') as HTMLElement);
+
+            const names = () => screen.getAllByTestId('sidebar-task-row').map(row => row.textContent || '');
+            expect(names()[0]).toContain('Older task');
+            expect(names()[1]).toContain('Newer task');
+
+            view.rerenderWith({
+                tasks: [{ ...newer, last_activity: '2026-09-03T00:00:00Z' }, { ...older, last_activity: '2026-09-03T00:00:00Z' }],
+            });
+            expect(names()[0]).toContain('Older task');
+            expect(names()[1]).toContain('Newer task');
+
+            fireEvent.click(rowOf('Older task').querySelector('.sidebar-task-row') as HTMLElement);
+            expect(names()[0]).toContain('Older task');
+        } finally {
+            localStorage.removeItem(TASK_LIST_ORDER_STORAGE_KEY);
+        }
+    });
+
+    it('keeps a newly created task at the top when a later drag is saved', () => {
+        localStorage.removeItem(TASK_LIST_ORDER_STORAGE_KEY);
+        try {
+            const older = { ...baseProject, id: 'older', name: 'Older task', project_path: 'D:/work/tasks/older', created_at: '2026-01-01T00:00:00Z' };
+            const newer = { ...baseProject, id: 'newer', name: 'Newer task', project_path: 'D:/work/tasks/newer', created_at: '2026-08-01T00:00:00Z' };
+            const view = renderTaskManagement({ tasks: [older, newer] });
+            const rowOf = (name: string) => screen.getAllByTestId('sidebar-task-row').find(item => (item.textContent || '').includes(name)) as HTMLElement;
+            const names = () => screen.getAllByTestId('sidebar-task-row').map(row => row.textContent || '');
+
+            fireEvent.dragStart(rowOf('Newer task').querySelector('[data-testid="task-drag-handle"]') as HTMLElement);
+            fireEvent.drop(rowOf('Older task').querySelector('.sidebar-task-row') as HTMLElement);
+            expect(names()[0]).toContain('Older task');
+
+            const created = { ...baseProject, id: 'created', name: 'Created task', project_path: 'D:/work/tasks/created', created_at: '2026-09-01T00:00:00Z' };
+            view.rerenderWith({ tasks: [older, newer, created] });
+            expect(names()[0]).toContain('Created task');
+
+            fireEvent.dragStart(rowOf('Older task').querySelector('[data-testid="task-drag-handle"]') as HTMLElement);
+            fireEvent.drop(rowOf('Newer task').querySelector('.sidebar-task-row') as HTMLElement);
+            expect(names()[0]).toContain('Created task');
+            expect(names().map(text => text.includes('Older task') ? 'older' : text.includes('Newer task') ? 'newer' : 'created')).toEqual(['created', 'newer', 'older']);
+        } finally {
+            localStorage.removeItem(TASK_LIST_ORDER_STORAGE_KEY);
+        }
+    });
+
+    it('does not move a task across the pinned group when it is dropped there', () => {
+        localStorage.removeItem(TASK_LIST_ORDER_STORAGE_KEY);
+        try {
+            const pinned = { ...baseProject, id: 'pinned', name: 'Pinned task', project_path: 'D:/work/tasks/pinned', pinned: true, created_at: '2025-01-01T00:00:00Z' };
+            const plain = { ...baseProject, id: 'plain', name: 'Plain task', project_path: 'D:/work/tasks/plain', created_at: '2026-08-01T00:00:00Z' };
+            renderTaskManagement({ tasks: [plain, pinned] });
+            const rowOf = (name: string) => screen.getAllByTestId('sidebar-task-row').find(item => (item.textContent || '').includes(name)) as HTMLElement;
+            const names = () => screen.getAllByTestId('sidebar-task-row').map(row => row.textContent || '');
+            expect(names()[0]).toContain('Pinned task');
+
+            fireEvent.dragStart(rowOf('Plain task').querySelector('[data-testid="task-drag-handle"]') as HTMLElement);
+            fireEvent.drop(rowOf('Pinned task').querySelector('.sidebar-task-row') as HTMLElement);
+
+            expect(names()[0]).toContain('Pinned task');
+            expect(names()[1]).toContain('Plain task');
+        } finally {
+            localStorage.removeItem(TASK_LIST_ORDER_STORAGE_KEY);
+        }
+    });
+
     it('sorts by pinned state and creation time instead of mutable activity', () => {
         const older = { ...baseProject, id: 'older', project_path: 'D:/work/tasks/older', created_at: '2026-01-01T00:00:00Z', last_activity: '2026-09-01T00:00:00Z' };
         const newer = { ...baseProject, id: 'newer', project_path: 'D:/work/tasks/newer', created_at: '2026-08-01T00:00:00Z', last_activity: '2026-01-01T00:00:00Z' };
@@ -894,15 +985,46 @@ describe('SidebarTaskManagement', () => {
         });
     });
 
-    it('switches tasks only on double click', () => {
+    it('opens the current task card on a single click', () => {
         const resumeTask = vi.fn();
+        const activateTask = vi.fn();
+        renderTaskManagement({
+            resumeTask,
+            activateTask,
+            activeAssistantTask: { projectPath: baseProject.project_path },
+            openProjectTabPaths: [baseProject.project_path],
+        });
+
+        fireEvent.click(screen.getByTestId('current-task-card'));
+
+        expect(activateTask).toHaveBeenCalledWith(baseProject.project_path, expect.objectContaining({ project_path: baseProject.project_path }));
+        expect(resumeTask).not.toHaveBeenCalled();
+    });
+
+    it('opens a closed task on a single click', async () => {
+        let releaseResume: () => void = () => {};
+        const resumeTask = vi.fn(() => new Promise<void>((resolve) => { releaseResume = resolve; }));
         renderTaskManagement({ resumeTask });
 
         fireEvent.click(screen.getByText('Build dashboard'));
-        expect(resumeTask).not.toHaveBeenCalled();
-
-        fireEvent.doubleClick(screen.getByText('Build dashboard'));
         expect(resumeTask).toHaveBeenCalledWith(baseProject.project_path, expect.objectContaining({ project_path: baseProject.project_path }));
+
+        // The rest of the same double-click gesture must not resume again.
+        fireEvent.click(screen.getByText('Build dashboard'));
+        fireEvent.doubleClick(screen.getByText('Build dashboard'));
+        expect(resumeTask).toHaveBeenCalledTimes(1);
+        await act(async () => { releaseResume(); });
+    });
+
+    it('opens again immediately when the previous open failed', async () => {
+        const resumeTask = vi.fn().mockResolvedValue(false);
+        renderTaskManagement({ resumeTask });
+
+        fireEvent.click(screen.getByText('Build dashboard'));
+        await waitFor(() => expect(resumeTask).toHaveBeenCalledTimes(1));
+
+        fireEvent.click(screen.getByText('Build dashboard'));
+        await waitFor(() => expect(resumeTask).toHaveBeenCalledTimes(2));
     });
 
     it('reveals the in-app cloud file panel when a cloud workspace task is restored by double-click', async () => {
@@ -1051,7 +1173,7 @@ describe('SidebarTaskManagement', () => {
         const onTaskSwitchBlocked = vi.fn();
         renderTaskManagement({ assistantReady: false, resumeTask, onTaskSwitchBlocked });
 
-        fireEvent.doubleClick(screen.getByText('Build dashboard'));
+        fireEvent.click(screen.getByText('Build dashboard'));
 
         expect(resumeTask).not.toHaveBeenCalled();
         expect(onTaskSwitchBlocked).toHaveBeenCalledTimes(1);
@@ -1432,15 +1554,16 @@ describe('SidebarTaskManagement', () => {
         expect(resumeTask).not.toHaveBeenCalled();
     });
 
-    it('ignores a single click on a task whose instance is not open', () => {
+    it('opens a closed task from the workspace path line without opening the folder', () => {
         const resumeTask = vi.fn();
         const activateTask = vi.fn();
         renderTaskManagement({ resumeTask, activateTask });
 
-        fireEvent.click(screen.getByText('Build dashboard'));
+        fireEvent.click(screen.getByTestId('task-working-dir'));
 
         expect(activateTask).not.toHaveBeenCalled();
-        expect(resumeTask).not.toHaveBeenCalled();
+        expect(OpenProjectDirectory).not.toHaveBeenCalled();
+        expect(resumeTask).toHaveBeenCalledWith(baseProject.project_path, expect.objectContaining({ project_path: baseProject.project_path }));
     });
 
     it('still restores on double-click even when the task instance is open', async () => {
@@ -3213,6 +3336,36 @@ describe('SidebarTaskManagement', () => {
         await waitFor(() => expect(createCloudWorkspaceShareMock).toHaveBeenCalledWith('cws_a', 'write', '', '7d', false));
     });
 
+    it('keeps the share dialog open when selecting the password ends on the backdrop', async () => {
+        cloudWorkspaceEntitlementMock.mockResolvedValue({ enabled: true, quota: 5, used: 1, workspaces: [{ id: 'cws_a', name: '标书项目' }] });
+        renderTaskManagement({
+            lang: 'zh',
+            tasks: [{
+                ...baseProject,
+                name: '跨设备任务',
+                tags: ['task_management', 'cloud_workspace:cws_a'],
+            }],
+        });
+
+        fireEvent.click(screen.getByTestId('task-cloud-share'));
+        const password = await screen.findByTestId('task-cloud-share-password');
+        const backdrop = password.closest('.modal-backdrop') as HTMLElement;
+
+        fireEvent.mouseDown(password);
+        fireEvent.click(backdrop);
+        expect(screen.getByTestId('task-cloud-share-dialog')).toBeTruthy();
+
+        fireEvent.change(password, { target: { value: 'secret' } });
+        fireEvent.keyDown(password, { key: 'a', ctrlKey: true });
+        expect(screen.getByTestId('task-cloud-share-dialog')).toBeTruthy();
+        expect((password as HTMLInputElement).selectionStart).toBe(0);
+        expect((password as HTMLInputElement).selectionEnd).toBe('secret'.length);
+
+        fireEvent.mouseDown(backdrop);
+        fireEvent.click(backdrop);
+        expect(screen.queryByTestId('task-cloud-share-dialog')).toBeNull();
+    });
+
     it('marks a received shared cloud task with the owner and hides the share button', async () => {
         cloudWorkspaceEntitlementMock.mockResolvedValue({ enabled: true, quota: 5, used: 0, workspaces: [] });
         renderTaskManagement({
@@ -4031,7 +4184,44 @@ describe('SidebarTaskManagement', () => {
         expect((screen.getByTestId('task-cloud-overview-blank') as HTMLButtonElement).disabled).toBe(false);
     });
 
-    it('closes the overview if Hub entitlement is revoked while it is open', async () => {
+    it('keeps the home header cloud button after the theme toggle when the grant is off', async () => {
+        cloudWorkspaceEntitlementMock.mockResolvedValue({ enabled: false, reason: 'not_granted' });
+        renderTaskManagement({ lang: 'zh' });
+
+        const cloudButton = await screen.findByTestId('task-cloud-overview');
+        const themeButton = screen.getByTestId('sidebar-theme-toggle');
+        expect(themeButton.compareDocumentPosition(cloudButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        fireEvent.click(cloudButton);
+        expect(await screen.findByTestId('task-cloud-overview-dialog')).toBeTruthy();
+        expect((await screen.findByTestId('task-cloud-overview-denied')).textContent).toContain('尚未向你开放云端工作区');
+        const createNew = screen.getByTestId('task-cloud-overview-new') as HTMLButtonElement;
+        expect(createNew.disabled).toBe(true);
+        expect(createNew.getAttribute('title')).toContain('尚未向你开放云端工作区');
+    });
+
+    it('does not say the workspace list is empty while access is still loading', async () => {
+        let resolveEntitlement: (value: unknown) => void = () => {};
+        cloudWorkspaceEntitlementMock.mockImplementation(() => new Promise(resolve => {
+            resolveEntitlement = resolve;
+        }));
+        renderTaskManagement({ lang: 'zh' });
+
+        fireEvent.click(screen.getByTestId('task-cloud-overview'));
+        expect(await screen.findByTestId('task-cloud-overview-checking')).toBeTruthy();
+        expect(screen.queryByText('暂无云端工作区。')).toBeNull();
+        expect(screen.queryByText('选择一个工作区进行管理。')).toBeNull();
+        expect(screen.getByTestId('task-cloud-overview-selected').textContent).toContain('正在检查云端工作区权限');
+        expect(screen.queryByTestId('task-cloud-overview-summary')).toBeNull();
+        expect((screen.getByTestId('task-cloud-overview-new') as HTMLButtonElement).disabled).toBe(true);
+
+        resolveEntitlement({ enabled: true, quota: 5, used: 0, workspaces: [], deleted: [] });
+        expect(await screen.findByText('暂无云端工作区。')).toBeTruthy();
+        expect(screen.queryByTestId('task-cloud-overview-checking')).toBeNull();
+        expect(screen.getByTestId('task-cloud-overview-selected').textContent).toContain('选择一个工作区进行管理。');
+        await waitFor(() => expect((screen.getByTestId('task-cloud-overview-new') as HTMLButtonElement).disabled).toBe(false));
+    });
+
+    it('keeps the overview open and explains a revoked grant', async () => {
         cloudWorkspaceEntitlementMock
             .mockResolvedValueOnce({
                 enabled: true,
@@ -4040,14 +4230,13 @@ describe('SidebarTaskManagement', () => {
                 workspaces: [{ id: 'cws_a', name: '标书项目' }],
                 deleted: [],
             })
-            .mockResolvedValueOnce({ enabled: false });
+            .mockResolvedValueOnce({ enabled: false, reason: 'not_granted' });
         renderTaskManagement({ lang: 'zh' });
 
         fireEvent.click(await screen.findByTestId('task-cloud-overview'));
-        await waitFor(() => {
-            expect(screen.queryByTestId('task-cloud-overview-dialog')).toBeNull();
-            expect(screen.queryByTestId('task-cloud-overview')).toBeNull();
-        });
+        expect(await screen.findByTestId('task-cloud-overview-dialog')).toBeTruthy();
+        expect((await screen.findByTestId('task-cloud-overview-denied')).textContent).toContain('尚未向你开放云端工作区');
+        expect(screen.getByTestId('task-cloud-overview')).toBeTruthy();
     });
 
     it('explains an unbound machine instead of a generic grant denial', async () => {

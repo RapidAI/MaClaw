@@ -5,6 +5,7 @@ import { localizeText, normalizeLang } from "../../i18n/langSelect";
 import type { CodePreviewTheme } from "./FileTabBar";
 import type { CodeFile } from "./useCodePreviewState";
 import { isPptxFileName } from "./PptxPreviewPanel";
+import { isPdfFileName } from "./taskResultPreview";
 import { scrubCloudWorkspaceError } from "./codingTaskMode";
 
 type DirectoryEntry = { name: string; path: string; is_dir: boolean };
@@ -219,6 +220,24 @@ export function isLikelyBinaryName(name: string) {
 /** Windows drive / UNC / POSIX absolute path check for workspace entries. */
 function isAbsoluteEntryPath(path: string) {
     return /^([a-zA-Z]:[\\/]|\\\\|\/)/.test(path);
+}
+/**
+ * Absolute path of a file in the directory the explorer actually listed.
+ * A coding tab's projectPath is the task identity; the listed root is the
+ * desktop or project folder the user is browsing.
+ */
+export function workspaceVisualAbsPath(projectPath: string, listedRoot: string, entryPath: string): string {
+    if (isAbsoluteEntryPath(entryPath)) return entryPath;
+    const base = (isAbsoluteEntryPath(listedRoot) ? listedRoot : projectPath).replace(/[\\/]+$/, "");
+    return `${base}/${entryPath.replace(/^[\\/]+/, "")}`;
+}
+/**
+ * True when this desktop process can open the path. A remote SSH listing on
+ * Windows is a POSIX path; filepath.Abs would pin it to the current drive.
+ */
+export function isLocalDiskPath(path: string, platform = typeof navigator !== "undefined" ? navigator.platform : ""): boolean {
+    if (/^[a-zA-Z]:[\\/]/.test(path) || path.startsWith("\\\\")) return true;
+    return path.startsWith("/") && !/win/i.test(platform);
 }
 function isBinaryPreviewError(error: unknown) {
     const text = normalizeWorkbenchNoticeKey(workbenchErrorText(error)).toLowerCase();
@@ -462,14 +481,28 @@ export function CodePreviewWorkspace({ projectPath, refreshToken = 0, resetOnRef
             void openLocally(entry);
             return;
         }
-        // Local decks open in the in-app slide preview instead of failing the
-        // text preview with "binary files cannot be previewed".
-        if (!cloudMode && isPptxFileName(entry.name)) {
-            const absPath = isAbsoluteEntryPath(entry.path)
-                ? entry.path
-                : `${projectPath.replace(/[\\/]+$/, "")}/${entry.path}`;
-            onOpenFile({ filePath: entry.path, fileName: entry.name, absPath, content: "", language: "pptx", opType: "read", updatedAt: Date.now() });
-            return;
+        // Local decks and PDFs open in the in-app viewer. The text preview
+        // rejects them with "binary files cannot be previewed". A remote POSIX
+        // root is not a local PDF; leave that click on the text-preview path.
+        if (!cloudMode) {
+            const visualLanguage = isPdfFileName(entry.name) ? "pdf" : isPptxFileName(entry.name) ? "pptx" : "";
+            const listedPath = workspaceVisualAbsPath(projectPath, rootRef.current, entry.path);
+            const listedIsLocal = isLocalDiskPath(listedPath);
+            if (visualLanguage === "pptx" || (visualLanguage === "pdf" && listedIsLocal)) {
+                previewRef.current++;
+                setNotice("");
+                setNoticeIsError(false);
+                onOpenFile({
+                    filePath: entry.path,
+                    fileName: entry.name,
+                    absPath: listedIsLocal ? listedPath : workspaceVisualAbsPath(projectPath, "", entry.path),
+                    content: "",
+                    language: visualLanguage,
+                    opType: "read",
+                    updatedAt: Date.now(),
+                });
+                return;
+            }
         }
         const version = versionRef.current;
         const request = ++previewRef.current;

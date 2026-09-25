@@ -74,6 +74,15 @@ func TestTrustedOfficeWriteArgsAllowedAdmitsExactlyOneDocumentForm(t *testing.T)
 	if err != nil || path != "deck.pptx" || data["slides"] == nil || data["title"] != "生日会" {
 		t.Fatalf("presentation form: path=%q data=%#v err=%v", path, data, err)
 	}
+	if _, data, err = semanticTrustedOfficeWriteArgsAllowed(map[string]interface{}{
+		"path": "deck.pptx", "theme": " warm ", "purpose": " 生日 ", "title": "生日会",
+		"slides": []interface{}{map[string]interface{}{
+			"title": "目录", "layout": "agenda", "kicker": "01",
+			"bullets": []interface{}{"成长"},
+		}},
+	}); err != nil || data["theme"] != "warm" || data["purpose"] != "生日" {
+		t.Fatalf("theme and purpose must pass through: data=%#v err=%v", data, err)
+	}
 	// Spreadsheet form still admitted.
 	if _, data, err = semanticTrustedOfficeWriteArgsAllowed(map[string]interface{}{
 		"path": "book.xlsx", "sheets": []interface{}{},

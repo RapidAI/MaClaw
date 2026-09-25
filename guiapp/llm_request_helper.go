@@ -14,6 +14,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/corelib/workbuddy"
 )
 
 // llmSimpleHTTPError carries the HTTP status of a failed simple (non-stream)
@@ -432,6 +433,9 @@ func beginDetachedSimpleLLMRead(ctx context.Context, cfg corelib.MaclawLLMConfig
 }
 
 func doSimpleOpenAIRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, messages []interface{}, client *http.Client, timeout time.Duration, requestOpts ...simpleLLMRequestOptions) (*llmSimpleResponse, error) {
+	if workbuddy.Matches(cfg) {
+		client = workbuddy.WrapClient(client)
+	}
 	if timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)
