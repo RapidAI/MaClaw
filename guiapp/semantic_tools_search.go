@@ -62,6 +62,7 @@ var semanticToolsSearchInventory = []semanticToolsSearchEntry{
 	{"send_file", "Deliver the produced file to the current channel.", "artifact.deliver.current_channel"},
 	{"read_file", "Read a local file.", tool.CapabilityFSReadLocal},
 	{"write_file", "Create or modify a local file.", tool.CapabilityFSWriteLocal},
+	{"delete_file", "Remove one file inside the bound workspace.", tool.CapabilityFSDeleteLocal},
 	{"edit_file", "Edit a local file.", tool.CapabilityFSWriteLocal},
 	{"list_directory", "List a local directory.", tool.CapabilityFSReadLocal},
 	{"search_files", "Search local files.", tool.CapabilityFSReadLocal},

@@ -1117,30 +1117,31 @@ func (h *IMMessageHandler) doOpenAILLMRequestStreamSDK(
 	repf := newRepetitionFilter(rpf.Write)
 	tcf := newToolCallFilter(repf.Write)
 	fcf := newFuncCallFilter(tcf.Callback())
-	thinkReasoningCbSDK := func(delta string) {
-		if onToken != nil && delta != "" {
-			onToken("\x01" + delta)
-		}
-	}
-	reasoningRoleFilter := newRolePrefixStreamFilter(thinkReasoningCbSDK)
-	tf := newThinkFilterWithReasoning(fcf.Callback(), thinkReasoningCbSDK)
+	streamCtx, cancelStream := context.WithCancel(reqCtx)
+	defer cancelStream()
+	reasoningDisplay := newReasoningDisplayStream(onToken, cancelStream)
+	tf := newThinkFilterWithReasoning(fcf.Callback(), reasoningDisplay.ThinkCallback())
 
 	httpDoStartedAt := time.Now()
-	resp, err := llm.DoOpenAIRequestStreamWithReasoning(reqCtx, cfg, messages, tools, httpClient, func(delta string) {
+	resp, err := llm.DoOpenAIRequestStreamWithReasoning(streamCtx, cfg, messages, tools, httpClient, func(delta string) {
 		tf.Write(delta)
 	}, func(delta string) {
-		reasoningRoleFilter.Write(delta)
+		reasoningDisplay.Write(delta)
 	})
 	if metrics != nil {
 		metrics.HTTPDoNanos += time.Since(httpDoStartedAt).Nanoseconds()
 	}
 
 	tf.Flush()
-	reasoningRoleFilter.Flush()
+	reasoningDisplay.Flush()
 	fcf.Flush()
 	tcf.Flush()
 	repf.Flush()
 	rpf.Flush()
+	if recovered, ok := recoverReasoningStutter(resp, reqCtx.Err(), reasoningDisplay.Halted()); ok {
+		resp, err = recovered, nil
+		log.Printf("[LLM Stream] reasoning stutter halted the completion")
+	}
 	if repf.Halted() {
 		log.Printf("[LLM Stream] repetition filter halted: suppressed %d runes", repf.SuppressedRunes())
 	}
@@ -1255,15 +1256,12 @@ func (h *IMMessageHandler) doAnthropicLLMRequestStream(
 	}
 	rpf := newRolePrefixStreamFilter(filteredOnToken)
 	repf := newRepetitionFilter(rpf.Write)
-	thinkReasoningCb := func(delta string) {
-		if onToken != nil && delta != "" {
-			onToken("\x01" + delta)
-		}
-	}
-	reasoningRoleFilter := newRolePrefixStreamFilter(thinkReasoningCb)
+	streamCtx, cancelStream := context.WithCancel(reqCtx)
+	defer cancelStream()
+	reasoningDisplay := newReasoningDisplayStream(onToken, cancelStream)
 
 	httpDoStartedAt := time.Now()
-	resp, err := llm.DoAnthropicRequestStreamWithReasoning(reqCtx, cfg, messages, tools, httpClient, repf.Write, reasoningRoleFilter.Write)
+	resp, err := llm.DoAnthropicRequestStreamWithReasoning(streamCtx, cfg, messages, tools, httpClient, repf.Write, reasoningDisplay.Write)
 	if metrics != nil {
 		metrics.HTTPDoNanos += time.Since(httpDoStartedAt).Nanoseconds()
 		if metrics.FirstSSEWaitNanos == 0 {
@@ -1271,9 +1269,13 @@ func (h *IMMessageHandler) doAnthropicLLMRequestStream(
 		}
 	}
 
-	reasoningRoleFilter.Flush()
+	reasoningDisplay.Flush()
 	repf.Flush()
 	rpf.Flush()
+	if recovered, ok := recoverReasoningStutter(resp, reqCtx.Err(), reasoningDisplay.Halted()); ok {
+		resp, err = recovered, nil
+		log.Printf("[LLM Stream] anthropic reasoning stutter halted the completion")
+	}
 	if repf.Halted() {
 		log.Printf("[LLM Stream] anthropic repetition filter halted: suppressed %d runes", repf.SuppressedRunes())
 	}

@@ -360,13 +360,8 @@ func (h *IMMessageHandler) streamResponsesWSRequestChannelVerified(
 	repfWS := newRepetitionFilter(rpfWS.Write)
 	tcf := newToolCallFilter(repfWS.Write)
 	fcf := newFuncCallFilter(tcf.Callback())
-	thinkReasoningCbWS := func(delta string) {
-		if onToken != nil && delta != "" {
-			onToken("\x01" + delta)
-		}
-	}
-	reasoningRoleFilterWS := newRolePrefixStreamFilter(thinkReasoningCbWS)
-	tf := newThinkFilterWithReasoning(fcf.Callback(), thinkReasoningCbWS)
+	reasoningDisplayWS := newReasoningDisplayStream(onToken, nil)
+	tf := newThinkFilterWithReasoning(fcf.Callback(), reasoningDisplayWS.ThinkCallback())
 
 	// -------------------------------------------------------------------
 	// 7. Accumulators
@@ -553,7 +548,7 @@ func (h *IMMessageHandler) streamResponsesWSRequestChannelVerified(
 			}
 			if rd.Delta != "" {
 				reasoningBuf.WriteString(rd.Delta)
-				reasoningRoleFilterWS.Write(rd.Delta)
+				reasoningDisplayWS.Write(rd.Delta)
 			}
 
 		case responsesEventReasoningSummaryPartAdded:
@@ -568,7 +563,7 @@ func (h *IMMessageHandler) streamResponsesWSRequestChannelVerified(
 			}
 			if json.Unmarshal(msgData, &sp) == nil {
 				if emitted := appendResponsesReasoningSummary(&reasoningBuf, sp.Part.Text); emitted != "" {
-					reasoningRoleFilterWS.Write(emitted)
+					reasoningDisplayWS.Write(emitted)
 				}
 			}
 
@@ -661,7 +656,7 @@ func (h *IMMessageHandler) streamResponsesWSRequestChannelVerified(
 			}
 			if json.Unmarshal(msgData, &reasoningDone) == nil {
 				if emitted := appendResponsesReasoningSummary(&reasoningBuf, reasoningDone.Item.DisplaySummary()); emitted != "" {
-					reasoningRoleFilterWS.Write(emitted)
+					reasoningDisplayWS.Write(emitted)
 				}
 			}
 
@@ -671,7 +666,7 @@ func (h *IMMessageHandler) streamResponsesWSRequestChannelVerified(
 			}
 			for _, summary := range responsesCompletedReasoningSummaries(msgData) {
 				if emitted := appendResponsesReasoningSummary(&reasoningBuf, summary); emitted != "" {
-					reasoningRoleFilterWS.Write(emitted)
+					reasoningDisplayWS.Write(emitted)
 				}
 			}
 			goto postLoop
@@ -751,7 +746,7 @@ postLoop:
 	// Flush filters and build final response
 	// -------------------------------------------------------------------
 	tf.Flush()
-	reasoningRoleFilterWS.Flush()
+	reasoningDisplayWS.Flush()
 	fcf.Flush()
 	tcf.Flush()
 	repfWS.Flush()

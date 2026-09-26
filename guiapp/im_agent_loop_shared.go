@@ -542,6 +542,7 @@ func (h *IMMessageHandler) executeSharedTurn(
 	if ctx != nil {
 		cb.llmReplanRevision.Store(ctx.ReplanRevision())
 	}
+	cb.noteWorkspaceDocumentBaseline()
 
 	// cb also implements ToolBatchCommitter. The durable checkpoint hook runs
 	// only after all results in a tool batch have been paired in HistoryDelta.
@@ -835,6 +836,7 @@ func attachSharedLoopArtifacts(resp *IMAgentResponse, cb *sharedAgentLoopCallbac
 	// model often writes "PDF delivered" after generate_pdf and never calls the
 	// follow-up grant, which left desktop chat with text and no attachment.
 	cb.flushHostOwnedCurrentChannelFileDelivery(resp)
+	cb.attachProducedWorkspaceDocuments()
 	// Attach files materialized during send_file/send_to_im so the desktop UI
 	// can show the local path and diagnostics report file_materialize > 0.
 	if len(cb.deliveredPaths) > 0 {
@@ -1353,6 +1355,11 @@ type sharedAgentLoopCallbacks struct {
 	deliveredPaths       []string
 	fileMaterializeNanos int64
 	filesForwarded       int
+	// workspaceDocBaseline is the bound workspace's documents at turn start.
+	// A file a later tool writes (PowerPoint export, slide render) is not the
+	// generate_pdf registry artifact, so delivery never saw it.
+	workspaceDocRoot     string
+	workspaceDocBaseline map[string]workspaceDocumentStamp
 	// screenshotImageKey holds the latest screenshot produced by the shared
 	// loop. Unlike the legacy loop, the shared loop has no post-tool artifact
 	// branch, so it must explicitly carry the image into the final IM response.
@@ -1842,6 +1849,9 @@ func (c *sharedAgentLoopCallbacks) semanticIntakeRejectReason(name, argsJSON str
 	if reason := c.invalidHostOwnedGenerateArgsReason(name, argsJSON); reason != "" {
 		return reason
 	}
+	if reason := c.fileDeleteIntakeReason(name, argsJSON); reason != "" {
+		return reason
+	}
 	grant, ok := c.semanticSurface.grants[name]
 	if !ok {
 		return ""
@@ -1881,6 +1891,39 @@ func (c *sharedAgentLoopCallbacks) invalidHostOwnedGenerateArgsReason(name, args
 }
 
 const hostOwnedGeneratePDFInvalidArgsReason = "generate_pdf arguments are invalid. Call generate_pdf once with Markdown content and optional title only; do not pass query/path/output and do not ask the user to re-authorize tools."
+
+// fileDeleteIntakeReason is Intake, not Admission. A missing path, a directory,
+// or a path that leaves the workspace must not reach the executor and retire
+// the one-shot delete_file grant. The model can correct the path and call again.
+func (c *sharedAgentLoopCallbacks) fileDeleteIntakeReason(name, argsJSON string) string {
+	if c == nil || c.handler == nil || c.semanticSurface == nil {
+		return ""
+	}
+	grant, ok := c.semanticSurface.grants[name]
+	if !ok {
+		return ""
+	}
+	selection, ok := semanticSelectionByID(c.semanticSurface.plan, grant.SelectionID)
+	if !ok || selection.FitProof.MatchedCapability != tool.CapabilityFSDeleteLocal {
+		return ""
+	}
+	canonical, err := c.semanticCanonicalArguments(selection, argsJSON)
+	if err != nil {
+		return err.Error()
+	}
+	var args map[string]interface{}
+	if json.Unmarshal(canonical.CanonicalJSON, &args) != nil {
+		return "trusted_file_delete_arguments_rejected"
+	}
+	path, err := semanticTrustedFileDeleteArgsAllowed(args)
+	if err != nil {
+		return err.Error()
+	}
+	if _, err := fileDeleteTargetReady(trustedPrincipalBoundWorkspace(c.handler, c.semanticPrincipalID()), path); err != nil {
+		return err.Error()
+	}
+	return ""
+}
 
 func semanticUnissuedGeneratePDFDenial(surface *semanticCallSurface, name string) string {
 	if surface == nil || strings.TrimSpace(name) != "generate_pdf" {
@@ -2876,6 +2919,7 @@ func (c *sharedAgentLoopCallbacks) executeToolWithoutSemanticSurface(name, argsJ
 	if c.LLMReplanRequested() {
 		return sharedToolInterruptedText(execCtx)
 	}
+	c.noteWorkspaceDocumentBaseline()
 	toolCallID := newACPToolCallID(name)
 	if isACPProgrammingRequestID(requestID) {
 		allowed, reason := globalACPPermission.check(execCtx, requestID, name, argsJSON)
@@ -3037,6 +3081,14 @@ func (c *sharedAgentLoopCallbacks) executeSemanticTool(functionName, argsJSON st
 	}
 	if reason := c.semanticIntakeRejectReason(functionName, argsJSON); reason != "" {
 		return "[system rejected] " + reason
+	}
+	// Knowledge ingest's source check used to run inside the adapter, after
+	// the one-shot grant was admitted, so a correctable text+path call closed
+	// the tool. Refuse it here, before admission, matching the coordinated path.
+	if selection, ok := semanticSelectionByID(c.semanticSurface.plan, grant.SelectionID); ok && selection.FitProof.MatchedCapability == tool.CapabilityKnowledgeIngestLocal {
+		if _, err := c.semanticCanonicalArguments(selection, argsJSON); err != nil {
+			return semanticModelParameterRejection(semanticCanonicalRejectionText(err))
+		}
 	}
 	// The executor admits the signed grant, loads durable predecessor facts,
 	// acquires a conditional selection run record, then invokes the immutable
@@ -3861,6 +3913,9 @@ func (c *sharedAgentLoopCallbacks) executeBoundSemanticAdapterCanonical(selectio
 	if selection.Provider.Kind == "builtin" && selection.AdapterName == semanticTrustedFileWriteAdapter {
 		return c.executeTrustedFileWrite(selection, canonicalArgs)
 	}
+	if selection.Provider.Kind == "builtin" && selection.AdapterName == semanticTrustedFileDeleteAdapter {
+		return c.executeTrustedFileDelete(selection, canonicalArgs)
+	}
 	if selection.Provider.Kind == "builtin" && selection.AdapterName == semanticTrustedFileReadAdapter {
 		return c.executeTrustedFileRead(selection, canonicalArgs)
 	}
@@ -4346,6 +4401,28 @@ func (c *sharedAgentLoopCallbacks) executeTrustedFileWrite(_ tool.PlannedSelecti
 		return "[system rejected] " + err.Error()
 	}
 	return out
+}
+
+func (c *sharedAgentLoopCallbacks) executeTrustedFileDelete(_ tool.PlannedSelection, canonicalArgs tool.CanonicalRequest) string {
+	if reason := c.rejectGroupLocalAdmin(); reason != "" {
+		return reason
+	}
+	if c == nil || c.handler == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal(canonicalArgs.CanonicalJSON, &args); err != nil {
+		return "[system rejected] canonical_file_delete_arguments_invalid"
+	}
+	path, err := semanticTrustedFileDeleteArgsAllowed(args)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	result, err := c.handler.deleteTrustedFile(c.semanticPrincipalID(), path)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	return result
 }
 
 func (c *sharedAgentLoopCallbacks) executeTrustedFileRead(_ tool.PlannedSelection, canonicalArgs tool.CanonicalRequest) string {
@@ -5104,12 +5181,19 @@ func (c *sharedAgentLoopCallbacks) semanticCanonicalArguments(selection tool.Pla
 		}
 	case tool.CapabilityFSWriteLocal:
 		argsJSON = semanticFileWriteInvocationArgs(argsJSON)
+	case tool.CapabilityFSDeleteLocal:
+		argsJSON = semanticFileDeleteInvocationArgs(argsJSON)
 	case tool.CapabilityArtifactAcquireRemote:
 		argsJSON = semanticAcquireRemoteInvocationArgs(argsJSON)
 	}
 	canonical, err := tool.CanonicalizeAuthorizedInvocationArguments(argsJSON, schema, selection.ParameterAuthorization)
 	if err != nil {
 		return tool.CanonicalRequest{}, err
+	}
+	if selection.FitProof.MatchedCapability == tool.CapabilityKnowledgeIngestLocal {
+		if err := semanticKnowledgeIngestExclusiveCanonical(canonical.CanonicalJSON); err != nil {
+			return tool.CanonicalRequest{}, err
+		}
 	}
 	// Pre-execution argument checks that must not burn the one-shot grant.
 	// The office slide-image paths are the model's own workspace-relative

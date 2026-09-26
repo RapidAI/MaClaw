@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from "react";
 import { localAssistantTabTitle } from "./aiAssistantI18n";
 import type { AITab } from "./AITabTypes";
+import { describeTaskTitle } from "./describeTaskTitle";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { DEFAULT_EXPERT_ICON } from "./expertTypes";
 import { isLocalParticipant, localAINameForLang, looksLikeRawParticipantId } from "./localAIIdentity";
@@ -35,6 +36,10 @@ export function getAITabDisplayTitle(tab: AITab, lang?: string): string {
     if (tab.type === "local") return String(tab.customTitle || "").trim() || localAssistantTabTitle(lang);
     if (tab.type === "ve") return directVETitleName(tab, lang);
     if (tab.type === "group" && String(tab.groupTitle || "").trim()) return String(tab.groupTitle || "").trim();
+    if (tab.type === "project") {
+        const title = String(tab.title || "").trim();
+        return describeTaskTitle(title) || title;
+    }
     if (tab.type !== "group" || !tab.veId || !tab.participants?.length) return tab.title;
     const names = tab.participants.map((id, index) => participantTitleName(tab, id, index, lang));
     return names.join(", ");

@@ -104,7 +104,7 @@ func TestCodingStaticShadowPlanPostureNeverAddsWriteBuildOrShell(t *testing.T) {
 			}
 			for _, selection := range prepared.Plan.Selections {
 				switch selection.FitProof.MatchedCapability {
-				case tool.CapabilityFSWriteLocal, tool.CapabilityBuildVerifyLocal, tool.CapabilityShellExecuteLocal:
+				case tool.CapabilityFSWriteLocal, tool.CapabilityFSDeleteLocal, tool.CapabilityBuildVerifyLocal, tool.CapabilityShellExecuteLocal:
 					t.Fatalf("%s posture selected out-of-scope capability %s", posture, selection.FitProof.MatchedCapability)
 				}
 			}

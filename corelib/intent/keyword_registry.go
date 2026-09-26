@@ -82,6 +82,8 @@ func newKeywordRegistryFromEntries(keywords []KeywordEntry) *KeywordRegistry {
 		LabelGitMutate: 37,
 		// SQL data-source inspect ranks after VCS so "查看…仓库" stays git_inspect.
 		LabelDatabase: 38,
+		// file_delete ranks after file_write so "写入文件" stays a write.
+		LabelFileDelete: 39,
 	}
 
 	type entryKey struct {
@@ -222,6 +224,10 @@ var defaultKeywords = []KeywordEntry{
 	{Keyword: "列出目录", Label: LabelFileRead, Strength: Weak},
 	{Keyword: "read file", Label: LabelFileRead, Strength: Weak},
 	{Keyword: "list directory", Label: LabelFileRead, Strength: Weak},
+
+	{Keyword: "删除文件", Label: LabelFileDelete, Strength: Strong},
+	{Keyword: "删掉文件", Label: LabelFileDelete, Strength: Strong},
+	{Keyword: "delete file", Label: LabelFileDelete, Strength: Weak},
 
 	{Keyword: "写入文件", Label: LabelFileWrite, Strength: Strong},
 	{Keyword: "保存到文件", Label: LabelFileWrite, Strength: Strong},

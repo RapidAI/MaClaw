@@ -66,6 +66,8 @@ const (
 	//   - file_read/file_write are bounded local file outcomes, not coding
 	//     (building or modifying software) and not document_read (a trusted
 	//     channel attachment rather than a local path).
+	//   - file_delete removes one existing workspace file. It is not a write
+	//     (no content is authored) and not shell_command (no command is chosen).
 	//   - shell_command is a local host command; ssh remains the remote label.
 	//   - git_inspect is read-only VCS inspection; git_mutate commits or
 	//     publishes the bound repository and is the only label that reaches
@@ -79,6 +81,7 @@ const (
 	//     knowledge_write remains the ingestion label.
 	LabelFileRead        IntentLabel = "file_read"
 	LabelFileWrite       IntentLabel = "file_write"
+	LabelFileDelete      IntentLabel = "file_delete"
 	LabelShellCommand    IntentLabel = "shell_command"
 	LabelGitInspect      IntentLabel = "git_inspect"
 	LabelGitMutate       IntentLabel = "git_mutate"
@@ -164,6 +167,7 @@ func AllLabels() []IntentLabel {
 		LabelWorkflowTask,
 		LabelFileRead,
 		LabelFileWrite,
+		LabelFileDelete,
 		LabelShellCommand,
 		LabelGitInspect,
 		LabelGitMutate,

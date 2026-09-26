@@ -39,6 +39,7 @@ describe("isTaskResultPdfPreviewURL", () => {
 describe("taskResultPreviewKindFromPath", () => {
     it("classifies visual files from the basename", () => {
         expect(taskResultPreviewKindFromPath("F:\\\\decks\\\\demo.PPTX")).toBe("pptx");
+        expect(taskResultPreviewKindFromPath("D:\\\\docs\\\\brief.docx")).toBe("docx");
         expect(taskResultPreviewKindFromPath("/tmp/doc.pdf")).toBe("pdf");
         expect(taskResultPreviewKindFromPath("/tmp/photo.png")).toBe("image");
         expect(taskResultPreviewKindFromPath("/tmp/clip.mp4")).toBe("video");

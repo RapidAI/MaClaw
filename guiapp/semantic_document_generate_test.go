@@ -94,6 +94,23 @@ func TestIMSemanticAttachmentPlusGenerateFailClosed(t *testing.T) {
 	}
 }
 
+func TestPetitionDeliveryBesideDocumentGenerateIsNotOpeningConflict(t *testing.T) {
+	h := &IMMessageHandler{registry: NewToolRegistry()}
+	_, _, err := h.semanticPlanForTurnWithContextAndClassificationAndAttachments(
+		withSemanticPetitionExpansion(context.Background()),
+		"user", "", "desktop", "root-petition-deliver", "turn-petition-deliver",
+		&intent.ClassificationResult{
+			Primary:    intent.LabelDocumentGenerate,
+			Secondary:  []intent.IntentLabel{intent.LabelAttachmentDelivery},
+			Confidence: .98,
+		},
+		nil,
+	)
+	if err != nil && strings.Contains(err.Error(), "conflicting attachment_delivery and document_generate") {
+		t.Fatalf("petition to deliver after generate was rejected as an opening conflict: %v", err)
+	}
+}
+
 func TestIMSemanticDocumentGenerateWorkflowGateSharedByDispatcherAndPlanner(t *testing.T) {
 	result := *liveDataGenerateClassification()
 	if !imSemanticIntentIsManaged(result) {

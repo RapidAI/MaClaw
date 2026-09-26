@@ -25,6 +25,11 @@ export function localAssistantTabTitle(lang?: string | null): string {
     return localizeText(lang, LOCAL_ASSISTANT_TITLE_EN, LOCAL_ASSISTANT_TITLE_ZH, LOCAL_ASSISTANT_TITLE_ZH);
 }
 
+/** Name above an assistant reply. The new-task page title is a different surface. */
+export function assistantSpeakerLabel(lang?: string | null): string {
+    return localizeText(lang, "AI assistant", "AI 助手", "AI 助手");
+}
+
 /**
  * Localize backend errors shown in the assistant conversation.
  *

@@ -288,6 +288,47 @@ func sliceContainsName(names []string, want string) bool {
 	return false
 }
 
+func TestQueryWantsLocalFileDelete(t *testing.T) {
+	for _, msg := range []string{
+		"删除刚才的markdown文件",
+		"删掉这个本地文件",
+		"特别删掉这个文件",
+		"删除空内容的文件",
+		"删除 notes.md",
+		"删掉项目里的 notes.md",
+		"delete the markdown file I just created",
+		"remove notes.txt",
+		"rm the file",
+	} {
+		if !QueryWantsLocalFileDelete(msg) {
+			t.Fatalf("want local file delete: %q", msg)
+		}
+	}
+	for _, msg := range []string{
+		"生成markdown",
+		"把这段内容保存到 notes.txt",
+		"删掉那条关于我地址的记忆",
+		"删除知识库里的这个来源",
+		"删除定时任务",
+		"删除服务器上的日志文件",
+		"不要删除这个markdown文件",
+		"给这个文件加删除线",
+		"已删除的文件还在吗",
+		"要不要删除这个文件",
+		"把内容保存到 notes.txt，写错了就删掉这个文件",
+		"移除文件夹里的日志",
+		"把文件里的一行删掉",
+		"删除 markdown 里的表格",
+		"今天天气怎么样",
+		"remove the stripe artifacts",
+		"remove the heading from the file",
+	} {
+		if QueryWantsLocalFileDelete(msg) {
+			t.Fatalf("must not treat as local file delete: %q", msg)
+		}
+	}
+}
+
 func TestQueryWantsMarkdownFileEnglishWriterIsNotAWrite(t *testing.T) {
 	if queryWantsMarkdownFile("markdown writer") {
 		t.Fatal("writer must not count as the write verb")

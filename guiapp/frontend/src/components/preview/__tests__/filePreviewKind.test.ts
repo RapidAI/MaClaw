@@ -18,7 +18,7 @@ describe('filePreviewKindFromName', () => {
         expect(filePreviewKindFromName('note.m4a')).toBe('audio');
         expect(filePreviewKindFromName('page.html')).toBe('html');
         expect(filePreviewKindFromName('notes.md')).toBe('markdown');
-        expect(filePreviewKindFromName('brief.docx')).toBe('office');
+        expect(filePreviewKindFromName('brief.docx')).toBe('docx');
         expect(filePreviewKindFromName('sheet.xlsx')).toBe('office');
         expect(filePreviewKindFromName('old.ppt')).toBe('office');
         expect(filePreviewKindFromName('main.go')).toBe('code');
@@ -28,7 +28,7 @@ describe('filePreviewKindFromName', () => {
     it('lets language override unknown extensions, but not Office/visual suffixes', () => {
         expect(filePreviewKindFromName('notes.txt', 'markdown')).toBe('markdown');
         expect(filePreviewKindFromName('x.bin', 'pdf')).toBe('pdf');
-        expect(filePreviewKindFromName('brief.docx', 'markdown')).toBe('office');
+        expect(filePreviewKindFromName('brief.docx', 'markdown')).toBe('docx');
         expect(filePreviewKindFromName('deck.pptx', 'markdown')).toBe('pptx');
     });
 });
@@ -36,6 +36,7 @@ describe('filePreviewKindFromName', () => {
 describe('isChromeLessPreviewKind', () => {
     it('hides code chrome for visual media', () => {
         expect(isChromeLessPreviewKind('pptx')).toBe(true);
+        expect(isChromeLessPreviewKind('docx')).toBe(true);
         expect(isChromeLessPreviewKind('pdf')).toBe(true);
         expect(isChromeLessPreviewKind('image')).toBe(true);
         expect(isChromeLessPreviewKind('html')).toBe(true);
@@ -43,6 +44,7 @@ describe('isChromeLessPreviewKind', () => {
         expect(isChromeLessPreviewKind('office')).toBe(false);
         expect(isChromeLessPreviewKind('code')).toBe(false);
         expect(previewNeedsLocalFile('pptx')).toBe(true);
+        expect(previewNeedsLocalFile('docx')).toBe(true);
         expect(previewNeedsLocalFile('office')).toBe(false);
         expect(previewNeedsLocalFile('html')).toBe(false);
         expect(previewShouldMaterialize('pptx', true)).toBe(true);
@@ -64,7 +66,7 @@ describe('previewSourceName', () => {
 
 describe('languageFromFileName', () => {
     it('maps office extracts to markdown and source to syntax ids', () => {
-        expect(languageFromFileName('a.docx')).toBe('markdown');
+        expect(languageFromFileName('a.docx')).toBe('docx');
         expect(languageFromFileName('a.pptx')).toBe('pptx');
         expect(languageFromFileName('a.ts')).toBe('typescript');
         expect(languageFromFileName('a.go')).toBe('go');

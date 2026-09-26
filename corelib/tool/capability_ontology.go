@@ -16,6 +16,7 @@ const (
 	CapabilityShellExecuteRemoteHost  CapabilityID = "shell.execute.remote_host"
 	CapabilityBuildVerifyLocal        CapabilityID = "build.verify.local"
 	CapabilityFSReadLocal             CapabilityID = "fs.read.local"
+	CapabilityFSDeleteLocal           CapabilityID = "fs.delete.local"
 	CapabilityFSReadRemote            CapabilityID = "fs.read.remote"
 	CapabilityFSWriteLocal            CapabilityID = "fs.write.local"
 	CapabilitySystemLaunchLocal       CapabilityID = "system.launch.local"
@@ -124,6 +125,13 @@ func BuiltinCapabilityOntology() []CapabilityDescriptor {
 		{
 			ID: CapabilityFSWriteLocal, Version: "v1", Owner: builtinCapabilityOntologyOwner,
 			Summary: "Create or modify local filesystem content.",
+			Effects: []EffectClass{EffectSensitive},
+		},
+		{
+			// Removing a path is not a write (nothing is authored) and not a
+			// shell (no command is chosen). The host deletes one workspace file.
+			ID: CapabilityFSDeleteLocal, Version: "v1", Owner: builtinCapabilityOntologyOwner,
+			Summary: "Remove one file inside the bound local workspace.",
 			Effects: []EffectClass{EffectSensitive},
 		},
 		{

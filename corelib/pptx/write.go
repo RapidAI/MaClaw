@@ -20,9 +20,10 @@ import (
 type Outline struct {
 	Title    string `json:"title"`
 	Subtitle string `json:"subtitle,omitempty"`
-	// Theme is a catalog id (business, academic, warm, launch, tech,
-	// education, ceremony, minimal) or auto. Empty and auto select from
-	// Purpose, title, and subtitle. An explicit id wins over that text.
+	// Theme is a catalog id (business, consulting, executive, academic, warm,
+	// launch, tech, education, ceremony, minimal) or auto. Empty and auto
+	// select from Purpose, title, and subtitle. An explicit id wins over that
+	// text.
 	Theme string `json:"theme,omitempty"`
 	// Purpose is the deck's job in the user's words, used when Theme is auto.
 	Purpose string         `json:"purpose,omitempty"`
@@ -109,13 +110,19 @@ func WriteFile(path string, outline Outline) error {
 		page = 2
 	}
 	footer := deckFooterLabel(deckTitle)
+	// section counts real divider pages so the consulting divider's giant
+	// index reads as a section number (01, 02, …) instead of a page number.
+	section := 0
 	for i, spec := range outline.Slides {
 		slide := first
 		if firstUsed {
 			slide = p.CreateSlide()
 		}
 		firstUsed = true
-		if err := buildContentSlide(slide, spec, theme, page+i, total, footer); err != nil {
+		if effectiveLayout(spec) == "section" {
+			section++
+		}
+		if err := buildContentSlide(slide, spec, theme, page+i, total, footer, section); err != nil {
 			return err
 		}
 	}
@@ -147,7 +154,7 @@ const (
 	deckGutter      = 91440  // 0.1"
 )
 
-func buildContentSlide(slide *ppt.Slide, spec OutlineSlide, theme deckTheme, page, total int, footer string) error {
+func buildContentSlide(slide *ppt.Slide, spec OutlineSlide, theme deckTheme, page, total int, footer string, section int) error {
 	if slide == nil {
 		return nil
 	}
@@ -156,7 +163,7 @@ func buildContentSlide(slide *ppt.Slide, spec OutlineSlide, theme deckTheme, pag
 	}
 	switch effectiveLayout(spec) {
 	case "section":
-		buildSectionSlide(slide, spec, theme, page, total)
+		buildSectionSlide(slide, spec, theme, page, total, section)
 	case "closing":
 		buildClosingSlide(slide, spec, theme, page, total)
 	case "quote":
@@ -177,7 +184,7 @@ func buildContentSlide(slide *ppt.Slide, spec OutlineSlide, theme deckTheme, pag
 		if err := buildSlideImages(slide, spec.Images, region.imageX, region.imageY, region.imageW, region.imageH); err != nil {
 			return err
 		}
-		if err := buildSlideCharts(slide, spec.Charts, region.chartX, region.chartY, region.chartW, region.chartH); err != nil {
+		if err := buildSlideCharts(slide, spec.Charts, region.chartX, region.chartY, region.chartW, region.chartH, theme); err != nil {
 			return err
 		}
 	}
@@ -351,7 +358,7 @@ func normalizeChartType(raw string) string {
 	}
 }
 
-func buildSlideCharts(slide *ppt.Slide, charts []OutlineChart, x, y, width, height int64) error {
+func buildSlideCharts(slide *ppt.Slide, charts []OutlineChart, x, y, width, height int64, theme deckTheme) error {
 	if len(charts) == 0 {
 		return nil
 	}
@@ -380,7 +387,7 @@ func buildSlideCharts(slide *ppt.Slide, charts []OutlineChart, x, y, width, heig
 		for c, cat := range spec.Categories {
 			categories[c] = sanitizeXMLText(strings.TrimSpace(cat))
 		}
-		chartType, err := newPlotChart(spec, categories)
+		chartType, err := newPlotChart(spec, categories, theme)
 		if err != nil {
 			return err
 		}
@@ -389,20 +396,36 @@ func buildSlideCharts(slide *ppt.Slide, charts []OutlineChart, x, y, width, heig
 	return nil
 }
 
-func outlineChartSeries(spec OutlineChart, categories []string) []*ppt.ChartSeries {
+func outlineChartSeries(spec OutlineChart, categories []string, theme deckTheme) []*ppt.ChartSeries {
 	out := make([]*ppt.ChartSeries, 0, len(spec.Series))
-	for _, series := range spec.Series {
-		out = append(out, ppt.NewChartSeriesOrdered(
+	kind := normalizeChartType(spec.ChartType)
+	mono := kind == "pie"
+	for i, series := range spec.Series {
+		cs := ppt.NewChartSeriesOrdered(
 			sanitizeXMLText(strings.TrimSpace(series.Name)),
 			categories,
 			series.Values,
-		))
+		)
+		if !mono {
+			// Native charts ship with Office's default blue; recolor each
+			// series from the deck palette so charts read as part of the
+			// style. Pie stays multi-color or every slice collapses to one.
+			color := chartSeriesColors(theme, i)
+			cs.SetFillColor(color)
+			if kind == "radar" {
+				// PowerPoint strokes a radar series from <c:spPr><a:ln>;
+				// the fill only colours its markers. Without the outline
+				// the radar web keeps Office's default blue.
+				cs.Outline = &ppt.SeriesOutline{Width: 2, Color: color}
+			}
+		}
+		out = append(out, cs)
 	}
 	return out
 }
 
-func newPlotChart(spec OutlineChart, categories []string) (ppt.ChartType, error) {
-	series := outlineChartSeries(spec, categories)
+func newPlotChart(spec OutlineChart, categories []string, theme deckTheme) (ppt.ChartType, error) {
+	series := outlineChartSeries(spec, categories, theme)
 	kind := normalizeChartType(spec.ChartType)
 	switch kind {
 	case "column", "bar_h":

@@ -82,6 +82,7 @@ var semanticModelFunctionNames = map[string]string{
 	"semantic_read_trusted_clock":           "current_datetime",
 	"semantic_read_trusted_file":            "read_file",
 	"semantic_write_trusted_file":           "write_file",
+	"semantic_delete_trusted_file":          "delete_file",
 	"semantic_inspect_trusted_repo":         "git_status",
 	"semantic_mutate_trusted_repo":          "git_commit",
 	"semantic_execute_trusted_shell":        "bash",

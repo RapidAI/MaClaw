@@ -9,6 +9,7 @@
  * - 其余分支打开新任务页签并 autoSend 首条消息；工作流 = 「无」时首条消息
  *   带 no_workflow_interception 跳过语义拦截，「自动判断」保持现状语义拦截。
  */
+import { describeTaskTitle } from "../describeTaskTitle";
 import { isDraftDefault, WORKFLOW_AUTO, type RemoteTarget, type TaskDraft } from "./taskDraft";
 
 /** 与 wailsjs main.TaskCreateOptions 字段对齐（普通对象，直接可序列化）。 */
@@ -62,16 +63,13 @@ export function shouldCreateUnifiedTask(draft: TaskDraft): boolean {
  * 工作流维度：null（无）→ 空模板 id + 首条消息跳过语义拦截；
  * WORKFLOW_AUTO（自动判断）→ 空模板 id（现状语义拦截）；模板 id → 直传。
  */
-/** Match the sidebar title: one line, 80 characters, ellipsis when longer. */
+/** Short rewritten description of the first instruction, not the raw command. */
 export function shortTaskLaunchTitle(text: string): string {
-    const collapsed = (text || "").replace(/\s+/g, " ").trim();
-    const chars = [...collapsed];
-    if (chars.length <= 80) return collapsed;
-    return `${chars.slice(0, 80).join("")}…`;
+    return describeTaskTitle(text);
 }
 
 export function draftToTaskCreateOptions(text: string, draft: TaskDraft): UnifiedTaskCreateOptions {
-    const name = (text || "").trim();
+    const name = describeTaskTitle(text) || (text || "").trim();
     const workspace = draft.workspace;
     const workflowId = (draft.workflowTemplateId || "").trim();
     const base: UnifiedTaskCreateOptions = {

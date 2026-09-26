@@ -347,7 +347,7 @@ func parseGeneratedPPTStyle(raw string) (pptx.CustomStyle, error) {
 
 const pptStyleSystemPrompt = `你是演示文稿配色设计师。根据用户需求设计一套可复用的 PPT 风格。只输出一个 JSON 对象，不要解释。
 字段：
-id：英文小写和短横线，2-32 字符，不要用 business、academic、warm、launch、tech、education、ceremony、minimal
+id：英文小写和短横线，2-32 字符，不要用 business、consulting、executive、academic、warm、launch、tech、education、ceremony、minimal
 label：不超过 8 个汉字
 summary：不超过 28 个字，说明适合什么场合、主色是什么
 keywords：2 到 6 个中文词，用户以后做这类 PPT 时用来自动选中这套风格

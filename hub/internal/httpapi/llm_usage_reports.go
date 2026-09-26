@@ -1125,6 +1125,14 @@ func loadLLMUsageReports(ctx context.Context, system store.SystemSettingsReposit
 	if err != nil || strings.TrimSpace(raw) == "" {
 		return &llmUsageReportsStore{Version: llmUsageReportsVersion, Days: map[string]*llmUsageReportDay{}}, nil
 	}
+	return parseLLMUsageReportsRaw(raw)
+}
+
+// parseLLMUsageReportsRaw unmarshals and normalizes a persisted reports
+// document. This is the expensive half of the flush cycle on the multi-MB
+// production blob, so it is shared between the fresh loader and the flush
+// base-reuse path below.
+func parseLLMUsageReportsRaw(raw string) (*llmUsageReportsStore, error) {
 	var rep llmUsageReportsStore
 	if err := json.Unmarshal([]byte(raw), &rep); err != nil {
 		return nil, err
@@ -1201,16 +1209,93 @@ func saveLLMUsageReports(ctx context.Context, system store.SystemSettingsReposit
 	return nil
 }
 
+// llmUsageFlushBase reuses the parsed usage-reports document across
+// consecutive flush cycles. flushLLMUsageReports is a read-modify-write of the
+// multi-MB settings row on every accumulator interval; re-parsing the full
+// blob each cycle dominated hub CPU. The base is reused only while the row
+// still holds exactly the bytes this process last wrote — any external write
+// (import, direct DB edit, another instance) changes the raw blob and forces
+// a full re-parse. A failed persist drops the base so the requeued pending
+// batch can never be merged twice.
+type llmUsageFlushBase struct {
+	raw string
+	rep *llmUsageReportsStore
+}
+
+var (
+	globalLLMUsageFlushBaseMu sync.Mutex
+	globalLLMUsageFlushBase   = map[string]*llmUsageFlushBase{}
+	globalLLMUsageFlushLocks  sync.Map // key -> *sync.Mutex (per-scope flush serialization)
+)
+
+func lookupLLMUsageFlushBase(key, raw string) (*llmUsageReportsStore, bool) {
+	globalLLMUsageFlushBaseMu.Lock()
+	defer globalLLMUsageFlushBaseMu.Unlock()
+	base, ok := globalLLMUsageFlushBase[key]
+	if !ok || base.raw != raw {
+		return nil, false
+	}
+	return base.rep, true
+}
+
+func storeLLMUsageFlushBase(key, raw string, rep *llmUsageReportsStore) {
+	globalLLMUsageFlushBaseMu.Lock()
+	defer globalLLMUsageFlushBaseMu.Unlock()
+	globalLLMUsageFlushBase[key] = &llmUsageFlushBase{raw: raw, rep: rep}
+}
+
+func dropLLMUsageFlushBase(key string) {
+	globalLLMUsageFlushBaseMu.Lock()
+	defer globalLLMUsageFlushBaseMu.Unlock()
+	delete(globalLLMUsageFlushBase, key)
+}
+
 func flushLLMUsageReports(ctx context.Context, system store.SystemSettingsRepository, pending *llmUsageReportsStore) error {
 	if pending == nil || len(pending.Days) == 0 {
 		return nil
 	}
-	rep, err := loadLLMUsageReports(ctx, system)
+	if system == nil {
+		return nil
+	}
+	key := llmRuntimeCacheKey(system)
+	lockRaw, _ := globalLLMUsageFlushLocks.LoadOrStore(key, &sync.Mutex{})
+	flushMu := lockRaw.(*sync.Mutex)
+	flushMu.Lock()
+	defer flushMu.Unlock()
+	raw, err := system.Get(ctx, llmUsageReportsKey)
 	if err != nil {
+		// Fail the flush instead of merging onto an empty base: persisting
+		// that merge would overwrite the whole retained history with only the
+		// pending batch. The caller requeues the pending batch untouched.
 		return err
 	}
+	var rep *llmUsageReportsStore
+	if base, ok := lookupLLMUsageFlushBase(key, raw); ok {
+		rep = base
+	} else if strings.TrimSpace(raw) == "" {
+		rep = &llmUsageReportsStore{Version: llmUsageReportsVersion, Days: map[string]*llmUsageReportDay{}}
+	} else {
+		parsed, parseErr := parseLLMUsageReportsRaw(raw)
+		if parseErr != nil {
+			return parseErr
+		}
+		rep = parsed
+	}
 	mergeLLMUsageReports(rep, pending)
-	return saveLLMUsageReports(ctx, system, rep)
+	data, err := json.Marshal(rep)
+	if err != nil {
+		// rep was mutated by the merge; drop the base so a retried flush
+		// re-parses from the persisted row instead of double-counting.
+		dropLLMUsageFlushBase(key)
+		return err
+	}
+	if err := system.Set(ctx, llmUsageReportsKey, string(data)); err != nil {
+		dropLLMUsageFlushBase(key)
+		return err
+	}
+	storeLLMUsageFlushBase(key, string(data), rep)
+	invalidateLLMUsageReportsCache(system)
+	return nil
 }
 
 func flattenSecurityGroups(node *security.GroupTreeNode, path string, out *[]llmUsageReportEntityOption) {

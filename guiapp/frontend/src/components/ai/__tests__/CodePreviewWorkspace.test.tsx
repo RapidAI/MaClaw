@@ -363,6 +363,21 @@ describe('CodePreviewWorkspace context menu', () => {
         await waitFor(() => expect(onOpenFile).toHaveBeenCalledWith(expect.objectContaining({ filePath: 'main.go', content: 'package main' })));
     });
 
+    it('opens a local .docx in the Word preview instead of requesting a text extract', async () => {
+        const onOpenFile = vi.fn();
+        getDirectory.mockResolvedValue({ root: 'D:/proj', entries: [{ name: 'brief.docx', path: 'docs/brief.docx', is_dir: false }] });
+        render(<CodePreviewWorkspace projectPath="D:/proj" lang="zh-Hans" theme={theme} onOpenFile={onOpenFile} />);
+        fireEvent.click(await screen.findByText('brief.docx'));
+        await waitFor(() => expect(onOpenFile).toHaveBeenCalledWith(expect.objectContaining({
+            filePath: 'docs/brief.docx',
+            fileName: 'brief.docx',
+            absPath: 'D:/proj/docs/brief.docx',
+            language: 'docx',
+            content: '',
+        })));
+        expect(getFilePreview).not.toHaveBeenCalled();
+    });
+
     it('opens a local .pptx in the slide preview instead of requesting a text preview', async () => {
         const onOpenFile = vi.fn();
         getDirectory.mockResolvedValue({ root: 'D:/proj', entries: [{ name: 'demo.pptx', path: 'docs/demo.pptx', is_dir: false }] });

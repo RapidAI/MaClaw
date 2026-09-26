@@ -103,7 +103,7 @@ func TestCoverTitlePointSizeFitsTheBox(t *testing.T) {
 		t.Fatalf("narrow column size %d should be below wide size %d", narrow, wide)
 	}
 	long := coverTitlePointSize(strings.Repeat("题", 40), 48, 7.7, 1.8)
-	if long >= 48 || long < 28 || !coverTitleFits(40, long, 7.7, 1.8) {
+	if long >= 48 || long < 28 || !coverTitleFits(strings.Repeat("题", 40), long, 7.7, 1.8) {
 		t.Fatalf("long narrow title size %d does not fit", long)
 	}
 }

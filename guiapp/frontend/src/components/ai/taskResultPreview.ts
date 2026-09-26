@@ -6,7 +6,7 @@ export const PREVIEW_TASK_RESULT_EVENT = "maclaw:preview-task-result";
 /** Custom event so the assistant panel can focus the composer for a follow-up edit. */
 export const CONTINUE_EDIT_TASK_RESULT_EVENT = "maclaw:continue-edit-task-result";
 
-export type TaskResultPreviewKind = "pptx" | "pdf" | "image" | "video" | "audio" | "text";
+export type TaskResultPreviewKind = "pptx" | "docx" | "pdf" | "image" | "video" | "audio" | "text";
 
 export type TaskResultPreviewPayload = {
     path: string;
@@ -54,7 +54,7 @@ export function pdfInlineDataURLFromBase64(payload: string): string {
 // so an unknown extension falls through to "".
 export function taskResultPreviewKindFromPath(path: string): Exclude<TaskResultPreviewKind, "text"> | "" {
     const kind = filePreviewKindFromName(path);
-    if (kind === "pptx" || kind === "pdf" || kind === "image" || kind === "video" || kind === "audio") return kind;
+    if (kind === "pptx" || kind === "docx" || kind === "pdf" || kind === "image" || kind === "video" || kind === "audio") return kind;
     return "";
 }
 
@@ -176,7 +176,7 @@ function taskResultCodeFile(
 /** Immediate visual tab so the pane opens without waiting on the backend. */
 export function codeFileForImmediateTaskResultPreview(
     path: string,
-    kind: "pptx" | "pdf" | "image" | "video" | "audio",
+    kind: "pptx" | "docx" | "pdf" | "image" | "video" | "audio",
 ): CodeFile {
     return taskResultCodeFile(path, fileNameFromPath(path), kind, "");
 }
@@ -185,7 +185,7 @@ export function codeFileFromTaskResultPreview(preview: TaskResultPreviewPayload,
     const path = String(preview?.path || fallbackPath || "").trim();
     const fileName = fileNameFromPath(path, preview?.file_name);
     const kind = String(preview?.kind || "").trim().toLowerCase();
-    if (kind === "pptx" || kind === "pdf" || kind === "image" || kind === "video" || kind === "audio") {
+    if (kind === "pptx" || kind === "docx" || kind === "pdf" || kind === "image" || kind === "video" || kind === "audio") {
         return taskResultCodeFile(path, fileName, kind, "");
     }
     return taskResultCodeFile(

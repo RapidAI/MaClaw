@@ -260,6 +260,59 @@ func TestClassifyEscalatesAmbiguousEmbeddingToLLM(t *testing.T) {
 	}
 }
 
+func TestMatchingAnchorIdentitySkipsShortCues(t *testing.T) {
+	anchors := []intentAnchor{{Label: LabelContinuation, Texts: []string{"继续", "开工", "continue"}}}
+	if _, ok := matchingAnchorIdentity(anchors, "继续"); ok {
+		t.Fatal("short continuation cue was locked to its exemplar")
+	}
+	if _, ok := matchingAnchorIdentity(anchors, "continue"); ok {
+		t.Fatal("eight-letter continuation cue was locked to its exemplar")
+	}
+	if _, ok := matchingAnchorIdentity(anchors, "截图"); ok {
+		t.Fatal("short screenshot cue was locked to its exemplar")
+	}
+}
+
+func TestClassifyByEmbeddingAnchorIdentityBeatsRemoteCosine(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	result, confident := classifyByEmbedding(emb, []intentAnchor{
+		{Label: LabelSSH, Texts: []string{"登录服务器查看日志"}, Vecs: [][]float32{{0.95, 0.3122}}},
+		{Label: LabelFileDelete, Texts: []string{"删除刚才的markdown文件"}, Vecs: [][]float32{{0.20, 0.9798}}},
+	}, "删除刚才的 markdown 文件")
+	if !confident || result.Primary != LabelFileDelete {
+		t.Fatalf("spaced result=%+v confident=%v, want the file_delete exemplar", result, confident)
+	}
+	result, confident = classifyByEmbedding(emb, []intentAnchor{
+		{Label: LabelSSH, Texts: []string{"登录服务器查看日志"}, Vecs: [][]float32{{0.95, 0.3122}}},
+		{Label: LabelFileDelete, Texts: []string{"删除刚才的markdown文件"}, Vecs: [][]float32{{0.20, 0.9798}}},
+	}, "删除刚才的markdown文件。")
+	if !confident || result.Primary != LabelFileDelete {
+		t.Fatalf("punctuated result=%+v confident=%v, want the file_delete exemplar", result, confident)
+	}
+}
+
+func TestClassifyByEmbeddingRemoteHostEscalatesBesideLocalDelete(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	result, confident := classifyByEmbedding(emb, []intentAnchor{
+		{Label: LabelSSH, Vecs: [][]float32{{0.85, 0.526782}}},
+		{Label: LabelFileDelete, Vecs: [][]float32{{0.74, 0.672606}}},
+	}, "把刚才生成的说明删掉")
+	if confident || result.Primary != LabelSSH || len(result.Secondary) != 1 || result.Secondary[0] != LabelFileDelete {
+		t.Fatalf("result=%+v confident=%v, want tree escalation with file_delete", result, confident)
+	}
+}
+
+func TestClassifyByEmbeddingRemoteHostStaysWithoutLocalNeighbor(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	result, confident := classifyByEmbedding(emb, []intentAnchor{
+		{Label: LabelSSH, Vecs: [][]float32{{0.90, 0.435890}}},
+		{Label: LabelCoding, Vecs: [][]float32{{0.40, 0.916515}}},
+	}, "登录服务器查看日志")
+	if !confident || result.Primary != LabelSSH {
+		t.Fatalf("result=%+v confident=%v, want confident ssh", result, confident)
+	}
+}
+
 func TestClassifyByEmbeddingLiveDataLookupSkipsLayer3(t *testing.T) {
 	emb := &staticEmbedder{vec: []float32{1, 0}}
 	result, confident := classifyByEmbedding(emb, []intentAnchor{

@@ -109,7 +109,7 @@ func TestIMSemanticKnowledgeIngestRejectsFieldPresenceAndDeliveryTokens(t *testi
 	}
 	name := extractToolName(defs[0])
 	cb := &sharedAgentLoopCallbacks{handler: h, semanticSurface: surface}
-	if got := cb.ExecuteTool(name, `{"text":"a","url":"https://example.com"}`); !strings.Contains(got, "trusted_knowledge_ingest_text_xor_url_xor_path_required") {
+	if got := cb.ExecuteTool(name, `{"text":"a","url":"https://example.com"}`); !strings.Contains(got, "trusted_knowledge_ingest_text_xor_url_xor_path_required") || !strings.Contains(got, "remains available") {
 		t.Fatalf("text+url=%q", got)
 	}
 
@@ -129,6 +129,35 @@ func TestIMSemanticKnowledgeIngestRejectsFieldPresenceAndDeliveryTokens(t *testi
 	}
 	if _, err := h.ingestTrustedKnowledge("user-1", "", "", ""); err == nil || !strings.Contains(err.Error(), "trusted_knowledge_ingest_text_xor_url_xor_path_required") {
 		t.Fatalf("empty object err=%v", err)
+	}
+}
+
+func TestKnowledgeIngestExclusiveSourceRejectionKeepsGrant(t *testing.T) {
+	h := &IMMessageHandler{registry: NewToolRegistry(), unifiedClassifier: semanticClassifierForLabel(t, intent.LabelKnowledgeWrite)}
+	var calls int
+	h.semanticTrustedKnowledgeIngest = func(userID, text, url, path string) (string, error) {
+		calls++
+		if userID != "user-1" || text != "api2 notes" || url != "" || path != "" {
+			t.Fatalf("principal=%q text=%q url=%q path=%q", userID, text, url, path)
+		}
+		return "Text saved to knowledge base. Source ID: s1", nil
+	}
+	registerKnowledgeTools(h.registry, &App{testHomeDir: t.TempDir()})
+	defs, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
+		"user-1", "把这段话存进知识库", "lansenger", "root-kingest-retry", "turn-kingest-retry", knowledgeWriteClassification(),
+	)
+	if err != nil || !handled || surface == nil || len(defs) < 1 {
+		t.Fatalf("defs=%#v handled=%v err=%v", defs, handled, err)
+	}
+	name := extractToolName(defs[0])
+	cb := &sharedAgentLoopCallbacks{handler: h, semanticSurface: surface}
+	rejected := cb.ExecuteTool(name, `{"text":"api2 notes","path":"知识库/api2.md"}`)
+	if !strings.Contains(rejected, "trusted_knowledge_ingest_text_xor_url_xor_path_required") || !strings.Contains(rejected, "remains available") || !strings.Contains(rejected, "not a title") || calls != 0 {
+		t.Fatalf("rejection=%q calls=%d", rejected, calls)
+	}
+	saved := cb.ExecuteTool(name, `{"text":"api2 notes"}`)
+	if !strings.Contains(saved, "Text saved to knowledge base") || calls != 1 {
+		t.Fatalf("retry=%q calls=%d", saved, calls)
 	}
 }
 

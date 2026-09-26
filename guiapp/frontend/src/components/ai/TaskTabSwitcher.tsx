@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { AITab } from "./AITabTypes";
 import { getAITabDisplayTitle } from "./AITabItem";
+import { describeTaskTitle } from "./describeTaskTitle";
 import { normalizeProjectSessionPath } from "./aiAssistantPanelSessionUtils";
 import { cloudWorkspaceIdFromPath, cloudWorkspaceIdFromTaskFields, visibleTaskRows } from "./codingTaskMode";
 import { sanitizeProjectTabTitle } from "./useAITabManager";
@@ -126,7 +127,8 @@ export function TaskTabSwitcher({ tabs, activeTabId, lang, onActivate, onClose, 
                 || (!!taskPath && normalizeProjectSessionPath(candidate.projectPath || "") === taskPath)
             )) || null;
             if (tab) matchedTabIds.add(tab.id);
-            const title = sanitizeProjectTabTitle(String(task.name || "").trim(), task.project_path);
+            const storedTitle = sanitizeProjectTabTitle(String(task.name || "").trim(), task.project_path);
+            const title = describeTaskTitle(storedTitle) || storedTitle;
             const key = String(task.id || task.project_path || index);
             if (tab) {
                 rows.push({ ...tabRow(tab), title });

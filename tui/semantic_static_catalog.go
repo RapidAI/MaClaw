@@ -91,6 +91,7 @@ func tuiStaticReadOnlyCapabilityNeeds() []coretool.CapabilityNeed {
 func tuiStaticPostureConstraints() []coretool.RoutingConstraint {
 	denied := []coretool.CapabilityID{
 		coretool.CapabilityFSWriteLocal,
+		coretool.CapabilityFSDeleteLocal,
 		coretool.CapabilityShellExecuteLocal,
 		coretool.CapabilityBuildVerifyLocal,
 		coretool.CapabilityShellExecuteRemoteHost,

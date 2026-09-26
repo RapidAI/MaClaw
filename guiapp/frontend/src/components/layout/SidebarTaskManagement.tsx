@@ -7,6 +7,7 @@ import { localizeText } from '../../i18n';
 import { restoreCloudWorkspaceTasksShared, invalidateCloudWorkspaceTaskRestore } from '../../utils/cloudWorkspaceTaskRestore';
 import { ProjectSearchIcon } from '../ai/ProjectSearchIcon';
 import type { ProjectSceneDetail } from '../ai/ProjectSceneDetailPanel';
+import { describeTaskTitle } from '../ai/describeTaskTitle';
 import { agentModeFromTaskTags, cloudSafePathLabel, cloudWorkspaceIdFromPath, isCloudWorkspacePath, cloudWorkspaceIdFromTags, cloudWorkspaceIdFromTaskFields, cloudWorkspaceSharePermissionFromTags, cloudWorkspaceSharedFromFromTags, CODING_TASK_COMMAND_MAX_LEN, isCloudWorkspaceTask, isOwnedCloudWorkspaceTask, isPureCodingTaskTags, isRemoteMaintenanceTaskTags, isTaskManagementTaskRow, lookupCloudWorkspaceDisplayName, rememberCloudWorkspaceDisplayNames, REVEAL_CLOUD_WORKSPACE_FILES_EVENT, remoteCodingMetaFromTaskTags, remoteHostFromTaskTags, scrubCloudWorkspaceError, visibleTaskRows, type PureCodingAgentMode } from '../ai/codingTaskMode';
 import { CloudWorkspaceShareDialog } from './CloudWorkspaceShareDialog';
 import './cloudOverview.css';
@@ -956,7 +957,7 @@ function TaskFilterBtn({
             title={title}
             onClick={onClick}
         >
-            {label}<b>{count}</b>
+            <span className="mc-task-filter-btn__label">{label}</span><b>{count}</b>
         </button>
     );
 }
@@ -968,6 +969,7 @@ function TaskFilterRow<K extends string>({
     onChange,
     testIdPrefix,
     titleFor,
+    layout = 'flow',
 }: {
     ariaLabel: string;
     chips: readonly TaskFilterChip<K>[];
@@ -975,9 +977,11 @@ function TaskFilterRow<K extends string>({
     onChange: (key: K) => void;
     testIdPrefix: string;
     titleFor?: (chip: TaskFilterChip<K>) => string | undefined;
+    /** `grid` keeps status chips in two equal columns. */
+    layout?: 'flow' | 'grid';
 }) {
     return (
-        <div className="mc-task-filter-row" role="group" aria-label={ariaLabel}>
+        <div className={layout === 'grid' ? 'mc-task-filter-row mc-task-filter-row--grid' : 'mc-task-filter-row'} role="group" aria-label={ariaLabel}>
             {chips.map(chip => (
                 <TaskFilterBtn
                     key={chip.key}
@@ -1855,7 +1859,7 @@ export const SidebarTaskManagement = ({
             label: textForLang(lang, 'In progress', '进行中', '進行中'),
             tone: 'info' as const,
         };
-    const executionTaskTitle = activeTaskForSidebar?.name?.trim()
+    const executionTaskTitle = describeTaskTitle(activeTaskForSidebar?.name || '')
         || (activeAssistantTask?.expertId
             ? activeAssistantTask.expertId
             : activeAssistantTask?.projectPath || textForLang(lang, 'Current task', '当前任务', '目前任務'));
@@ -3406,6 +3410,7 @@ export const SidebarTaskManagement = ({
                 value={taskFilter}
                 onChange={setTaskFilter}
                 testIdPrefix="task-filter-"
+                layout="grid"
             />
             <TaskFilterRow
                 ariaLabel={textForLang(lang, 'Filter tasks by workspace', '按工作空间筛选任务', '按工作空間篩選任務')}
@@ -3481,9 +3486,10 @@ export const SidebarTaskManagement = ({
             const rowPathHint = cloudWorkspace
                 ? cloudSafePathLabel(proj.working_dir || proj.project_path, taskSecondaryLabel || 'cloud')
                 : (proj.working_dir || proj.execution_dir || proj.project_path);
-            const taskTitleText = String(proj.name || '').trim()
+            const taskTitleText = describeTaskTitle(String(proj.name || '').trim())
                 || (cloudWorkspace ? (taskSecondaryLabel || cloudFallback || rowPathHint) : proj.project_path);
-            const identitySubtitle = taskSecondaryLabel && taskSecondaryLabel !== taskTitleText ? taskSecondaryLabel : '';
+            const storedTaskName = String(proj.name || '').trim();
+            const identitySubtitle = taskSecondaryLabel && taskSecondaryLabel !== taskTitleText && taskSecondaryLabel !== storedTaskName ? taskSecondaryLabel : '';
             // Workspace row line (设计 §5): badge (📁 local / ☁ cloud / 🖧 remote)
             // plus the matching value — local working dir, cloud workspace name,
             // or remote host:workDir. Remote host/workDir come from the durable
@@ -3571,7 +3577,7 @@ export const SidebarTaskManagement = ({
                                 {workflowStatus && <span data-testid="task-workflow-status" aria-label={`${textForLang(lang, 'Task status', '任务状态', '任務狀態')}: ${workflowStatus.label}${workflowStatus.detail ? ` · ${workflowStatus.detail}` : ''}`} title={`${proj.active_workflow?.type || 'workflow'}${workflowStatus.detail ? ` · ${workflowStatus.detail}` : ''}`} style={{ display: 'inline-flex', maxWidth: '100%', padding: '1px 5px', borderRadius: '999px', border: `1px solid ${TASK_WORKFLOW_STATUS_COLORS[workflowStatus.tone].border}`, color: TASK_WORKFLOW_STATUS_COLORS[workflowStatus.tone].color, background: TASK_WORKFLOW_STATUS_COLORS[workflowStatus.tone].background, fontSize: '0.58rem', fontWeight: 700, lineHeight: 1.35, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{workflowStatus.label}{workflowStatus.detail ? ` · ${workflowStatus.detail}` : ''}</span>}
                             </span>
                         )}
-                        {renamingTaskPath === proj.project_path ? <input autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onBlur={async () => { const trimmed = renameValue.trim(); if (trimmed && trimmed !== proj.name) { await renameTask(proj.project_path, trimmed); refreshTasks(); } setRenamingTaskPath(null); }} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setRenamingTaskPath(null); }} onClick={e => e.stopPropagation()} style={{ width: '100%', fontSize: '0.74rem', fontWeight: 700, color: 'var(--theme-text-primary)', background: 'var(--theme-surface)', border: '1px solid var(--theme-primary)', borderRadius: '4px', padding: '2px 4px', outline: 'none' }} /> : <span className="mc-sidebar-task-title-row"><span className="stsm-row-title">{taskTitleText}</span>{recentTimeLabel && <time className="mc-sidebar-task-time" dateTime={proj.last_activity || proj.created_at}>{recentTimeLabel}</time>}</span>}
+                        {renamingTaskPath === proj.project_path ? <input autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onBlur={async () => { const trimmed = renameValue.trim(); if (trimmed && trimmed !== proj.name && trimmed !== taskTitleText) { await renameTask(proj.project_path, trimmed); refreshTasks(); } setRenamingTaskPath(null); }} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setRenamingTaskPath(null); }} onClick={e => e.stopPropagation()} style={{ width: '100%', fontSize: '0.74rem', fontWeight: 700, color: 'var(--theme-text-primary)', background: 'var(--theme-surface)', border: '1px solid var(--theme-primary)', borderRadius: '4px', padding: '2px 4px', outline: 'none' }} /> : <span className="mc-sidebar-task-title-row"><span className="stsm-row-title">{taskTitleText}</span>{recentTimeLabel && <time className="mc-sidebar-task-time" dateTime={proj.last_activity || proj.created_at}>{recentTimeLabel}</time>}</span>}
                         {secondaryText ? <span data-testid="task-secondary-label" className="stsm-row-secondary">{secondaryText}</span> : null}
                         {showWorkspaceLine ? (
                             <span
@@ -3848,9 +3854,11 @@ export const SidebarTaskManagement = ({
                                                     <div className="mc-cloud-overview__tasks-empty">
                                                         {textForLang(lang, 'No linked tasks. Use New Task and choose this workspace.', '暂无关联任务。可用「新建任务」选择此工作区。', '暫無關聯任務。可用「新建任務」選擇此工作區。')}
                                                     </div>
-                                                ) : linked.map(task => (
+                                                ) : linked.map(task => {
+                                                    const linkedTitle = describeTaskTitle(task.name || '') || task.name || task.project_path;
+                                                    return (
                                                     <div key={task.project_path} data-testid="task-cloud-overview-task" className="mc-cloud-overview__task">
-                                                        <span className="mc-cloud-overview__task-name" title={task.name || task.project_path}>{task.name || task.project_path}</span>
+                                                        <span className="mc-cloud-overview__task-name" title={linkedTitle}>{linkedTitle}</span>
                                                         <button
                                                             type="button"
                                                             className="mc-cloud-overview__task-delete"
@@ -3861,7 +3869,7 @@ export const SidebarTaskManagement = ({
                                                                     x: 0,
                                                                     y: 0,
                                                                     projectPath: task.project_path,
-                                                                    name: String(task.name || '').trim(),
+                                                                    name: linkedTitle,
                                                                     pinned: !!task.pinned,
                                                                     tags: task.tags,
                                                                     workingDir: task.working_dir,
@@ -3869,7 +3877,8 @@ export const SidebarTaskManagement = ({
                                                             }}
                                                         >{textForLang(lang, 'Delete', '删除', '刪除')}</button>
                                                     </div>
-                                                ))}
+                                                    );
+                                                })}
                                             </div>
                                         </>
                                     );

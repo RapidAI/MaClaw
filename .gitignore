@@ -335,3 +335,5 @@ guiapp/_*
 /iot-agentos/logs/
 /iot-agentos/*.png
 /iot-agentos/.maclaw-idf-tools/
+/build/ppt_*probe*/
+/tmp_pprof/

@@ -155,6 +155,8 @@ func semanticRenderedReuseCue(id CapabilityID) string {
 		return " This step is optional when listed with other tools. Call only with a real HTTP(S) URL; never placeholder or reserved hosts such as example.invalid. Skipping it does not block the other listed tools."
 	case CapabilityID("information.search.web"):
 		return " This step is optional when listed with other tools. Call only with a real search query. Skipping it does not block the other listed tools."
+	case CapabilityFSDeleteLocal:
+		return semanticListedCallCue + " Pass the workspace path of the one file to remove. Do not rewrite it with write_file and do not look for bash or shell."
 	case CapabilityFSWriteLocal:
 		// 2026-09-18 production: a turn tried to persist a server password
 		// into a local file via write_file. Credentials are use-once and must

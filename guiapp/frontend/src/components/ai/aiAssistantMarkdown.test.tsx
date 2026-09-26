@@ -1961,7 +1961,8 @@ describe("renderMessage assistant display guard", () => {
         expect(assistantGroup.getAttribute("role")).toBe("group");
         expect(assistantGroup.getAttribute("aria-label")).toBe("AI assistant message");
         expect(assistantGroup.className).toContain("aamd-msg-ai");
-        expect(screen.getByText("New task")).toBeTruthy();
+        expect(screen.getByText("AI assistant")).toBeTruthy();
+        expect(screen.queryByText("New task")).toBeNull();
         const assistantBubble = screen.getByTestId("assistant-chat-ai-bubble-ai-bubble") as HTMLElement;
         expect(assistantBubble.style.borderRadius).toBe("16px");
         const assistantTail = screen.getByTestId("assistant-chat-tail-ai-ai-bubble");
@@ -1975,6 +1976,15 @@ describe("renderMessage assistant display guard", () => {
         aiStrokeProbe.style.color = lightTheme.fieldBorder;
         expect(assistantTail.style.background).toBe(aiStrokeProbe.style.color);
         expect((screen.getByTestId("assistant-chat-tail-ai-ai-bubble-fill") as HTMLElement).style.background).toBe(assistantBubble.style.background);
+
+        rerender(<div>{renderMessage({
+            id: "ai-bubble-zh",
+            role: "assistant",
+            content: "已看过。",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, true, "Saved file", "zh", false)}</div>);
+        expect(screen.getByText("AI 助手")).toBeTruthy();
+        expect(screen.queryByText("新建任务")).toBeNull();
     });
 
     it("marks a fired guide bubble as injected without turning it into a new turn", () => {

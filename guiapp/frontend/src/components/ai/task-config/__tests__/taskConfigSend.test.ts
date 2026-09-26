@@ -168,17 +168,19 @@ describe('runTaskConfigSend interception', () => {
         expect(bindings.openExpert).not.toHaveBeenCalled();
     });
 
-    it('keeps the full first message and shortens only the task tab title', async () => {
+    it('keeps the full first message and stores a short description as the task name', async () => {
         const bindings = makeBindings();
         const body = `第一行很长${"字".repeat(90)}\n第二行也要留下`;
         const draft = withTaskType(defaultTaskDraft(), 'chat');
         const result = await runTaskConfigSend({ text: body, draft, bindings, force: true });
         expect(result.ok).toBe(true);
-        expect(bindings.createTaskUnified).toHaveBeenCalledWith(expect.objectContaining({ name: body }));
+        const described = shortTaskLaunchTitle(body);
+        expect(bindings.createTaskUnified).toHaveBeenCalledWith(expect.objectContaining({ name: described }));
         const launch = bindings.openTaskLaunch.mock.calls[0][0] as TaskLaunchNavigation;
         expect(launch.initialMessage).toBe(body);
-        expect(launch.taskTitle).toBe(shortTaskLaunchTitle(body));
-        expect([...launch.taskTitle].length).toBe(81);
+        expect(launch.taskTitle).toBe(described);
+        expect([...launch.taskTitle].length).toBeLessThanOrEqual(25);
+        expect(launch.taskTitle.startsWith("第一行很长")).toBe(true);
         expect(launch.taskTitle.endsWith("…")).toBe(true);
         expect(launch.taskTitle).not.toContain("第二行");
     });

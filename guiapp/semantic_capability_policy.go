@@ -99,6 +99,7 @@ func imSemanticCapabilityPolicyAdapter() agentservice.StaticCapabilityPolicyAdap
 		tool.CapabilityBusinessDataMIS,
 		tool.CapabilityKnowledgeIngestLocal,
 		tool.CapabilityFSWriteLocal,
+		tool.CapabilityFSDeleteLocal,
 		tool.CapabilityShellExecuteLocal,
 		tool.CapabilityAudioCaptureMicrophone,
 		// S2b2 managed administration families.
@@ -134,7 +135,7 @@ func imSemanticCapabilityPolicyAdapter() agentservice.StaticCapabilityPolicyAdap
 		// mis_query are EffectReadOnly projections that survive mutation-deny
 		// states, matching the MIS family split.
 		deny(string(v2.ToolPolicyDocOnly), tool.CapabilityBusinessDataMIS, tool.CapabilityKnowledgeIngestLocal,
-			tool.CapabilityFSWriteLocal, tool.CapabilityAudioCaptureMicrophone,
+			tool.CapabilityFSWriteLocal, tool.CapabilityFSDeleteLocal, tool.CapabilityAudioCaptureMicrophone,
 			tool.CapabilityArtifactAcquireRemote, tool.CapabilityConfigManageSelf,
 			tool.CapabilityTaskTrackLocal, tool.CapabilityGoalManageLongRunning,
 			tool.CapabilityTemplateManageSession, tool.CapabilitySessionManageCoding,

@@ -653,7 +653,8 @@ func DefaultDefinitions() []IntentDefinition {
 			TreeText: "用户要把指定内容写入、保存到本机文件，或直接修改某个已有的本地文件。" +
 				"语义判据：用户目标是创建/覆盖/追加/编辑一个具体的本地文件，产出物就是该文件本身，包括 markdown/.md 文本。" +
 				"边界：「从零开发软件/功能」→ coding；「生成 Word/Excel/PPT 办公文档」→ office；" +
-				"「生成 PDF」→ document_generate；「把内容录入知识库」→ knowledge_write。",
+				"「生成 PDF」→ document_generate；「把内容录入知识库」→ knowledge_write；" +
+				"「删除已有的本地文件」→ file_delete，不是把文件改写为空。",
 			EmbedTexts: []string{
 				"把这段内容保存到 notes.txt",
 				"帮我在桌面创建一个文本文件",
@@ -673,12 +674,31 @@ func DefaultDefinitions() []IntentDefinition {
 			ToolNames: []string{},
 		},
 		{
+			Label:  LabelFileDelete,
+			Domain: "本地文件 (Local Files)",
+			TreeText: "用户要删掉本机工作区里已经存在的一个文件，结果是这个文件不再存在。" +
+				"语义判据：用户目标是移除一个具体的本地文件，包括刚才生成的 markdown/.md，而不是改写它的内容，也不是让用户指定一条命令。" +
+				"边界：「创建、覆盖、追加、编辑文件」→ file_write；「删除记忆条目」→ memory_manage；" +
+				"「删除知识库来源」→ knowledge_write；「删除定时任务」→ schedule_manage；" +
+				"「删除远程服务器上的文件」→ ssh；「用户给出要执行的命令」→ shell_command。",
+			EmbedTexts: []string{
+				"删除刚才的markdown文件",
+				"删掉这个本地文件",
+				"把刚才保存的 md 文件删掉",
+				"删除 notes.md",
+				"delete the markdown file I just created",
+				"remove this local file",
+				"delete notes.txt",
+			},
+			ToolNames: []string{},
+		},
+		{
 			Label:  LabelShellCommand,
 			Domain: "本地命令 (Local Shell)",
 			TreeText: "用户要在本机直接执行 shell/命令行命令、运行脚本或管理直通任务。" +
 				"语义判据：用户目标是在 MaClaw 所在设备上执行一条具体命令或脚本。" +
 				"边界：「登录/操作远程服务器」→ ssh；「命令是手段、开发软件是目的」→ coding；" +
-				"「查看 git 状态/差异」优先 → git_inspect。",
+				"「查看 git 状态/差异」优先 → git_inspect；「删除一个本地文件」→ file_delete。",
 			EmbedTexts: []string{
 				"在本机执行一下这个命令",
 				"帮我运行这个脚本",
@@ -957,7 +977,7 @@ func DefaultDefinitions() []IntentDefinition {
 			TreeText: "用户要让 agent 记住、更新、查看或删除关于用户/项目的长期记忆条目。" +
 				"语义判据：用户目标是维护 agent 记忆库中的条目（偏好、事实、决定）。" +
 				"边界：「把材料录入知识库供检索」→ knowledge_write；「检索知识库」→ knowledge_read；" +
-				"「维护定时提醒」→ schedule_manage。",
+				"「维护定时提醒」→ schedule_manage；「删除本机上的文件」→ file_delete。",
 			EmbedTexts: []string{
 				"记住我偏好用中文交流",
 				"把刚才这个决定记到长期记忆里",

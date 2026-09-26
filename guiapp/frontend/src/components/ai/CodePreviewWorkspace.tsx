@@ -4,6 +4,7 @@ import { useDialog } from "../CustomDialog";
 import { localizeText, normalizeLang } from "../../i18n/langSelect";
 import type { CodePreviewTheme } from "./FileTabBar";
 import type { CodeFile } from "./useCodePreviewState";
+import { isDocxFileName } from "./DocxPreviewPanel";
 import { isPptxFileName } from "./PptxPreviewPanel";
 import { isPdfFileName } from "./taskResultPreview";
 import { scrubCloudWorkspaceError } from "./codingTaskMode";
@@ -485,10 +486,10 @@ export function CodePreviewWorkspace({ projectPath, refreshToken = 0, resetOnRef
         // rejects them with "binary files cannot be previewed". A remote POSIX
         // root is not a local PDF; leave that click on the text-preview path.
         if (!cloudMode) {
-            const visualLanguage = isPdfFileName(entry.name) ? "pdf" : isPptxFileName(entry.name) ? "pptx" : "";
+            const visualLanguage = isPdfFileName(entry.name) ? "pdf" : isDocxFileName(entry.name) ? "docx" : isPptxFileName(entry.name) ? "pptx" : "";
             const listedPath = workspaceVisualAbsPath(projectPath, rootRef.current, entry.path);
             const listedIsLocal = isLocalDiskPath(listedPath);
-            if (visualLanguage === "pptx" || (visualLanguage === "pdf" && listedIsLocal)) {
+            if (visualLanguage === "pptx" || visualLanguage === "docx" || (visualLanguage === "pdf" && listedIsLocal)) {
                 previewRef.current++;
                 setNotice("");
                 setNoticeIsError(false);

@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { cloudWorkspaceNameMapFromEntitlement, isActiveTaskRow, isProjectTabOpen, SidebarTaskManagement, sortTaskManagementItems, TASK_LIST_ORDER_STORAGE_KEY, taskCreationLabel, taskSecondaryLabelFor, workflowStatusForTask, workflowStatusForTaskRow } from '../SidebarTaskManagement';
@@ -455,10 +457,14 @@ describe('SidebarTaskManagement', () => {
         expect(statusGroup).toBeTruthy();
         expect(workspaceGroup).toBeTruthy();
         expect(statusGroup?.parentElement?.classList.contains('mc-task-filter-stack')).toBe(true);
+        expect(statusGroup?.classList.contains('mc-task-filter-row--grid')).toBe(true);
+        expect(workspaceGroup?.classList.contains('mc-task-filter-row--grid')).toBe(false);
+        expect(readFileSync(join(process.cwd(), 'src/styles/partials/110-mc-app-shell.css'), 'utf8')).toContain('@container task-filters (max-width: 261px)');
         expect(statusGroup).not.toBe(workspaceGroup);
         expect((statusGroup as HTMLElement).getAttribute('style')).toBeNull();
         expect((workspaceGroup as HTMLElement).getAttribute('style')).toBeNull();
         expect(screen.getByTestId('task-filter-all').className).toContain('mc-task-filter-btn');
+        expect(screen.getByTestId('task-filter-all').querySelector('.mc-task-filter-btn__label')?.textContent).toBe('All');
         expect(screen.getByTestId('task-filter-all').getAttribute('data-count')).toBe('2');
         expect(screen.getByTestId('task-filter-all').getAttribute('aria-label')).toBe('All 2');
         expect(screen.getByTestId('task-filter-pending').getAttribute('data-count')).toBe('0');
@@ -629,6 +635,7 @@ describe('SidebarTaskManagement', () => {
         renderTaskManagement({ tasks: [pausedTask] });
 
         const pausedChip = screen.getByTestId('task-filter-paused');
+        expect(pausedChip.closest('.mc-task-filter-row')?.classList.contains('mc-task-filter-row--grid')).toBe(true);
         expect(screen.queryByTestId('task-filter-shared')).toBeNull();
         fireEvent.click(pausedChip);
         expect(pausedChip.getAttribute('aria-pressed')).toBe('true');

@@ -183,13 +183,8 @@ func (h *IMMessageHandler) doResponsesAPILLMRequestStream(
 	repfResp := newRepetitionFilter(rpfResp.Write)
 	tcf := newToolCallFilter(repfResp.Write)
 	fcf := newFuncCallFilter(tcf.Callback())
-	thinkReasoningCbResp := func(delta string) {
-		if onToken != nil && delta != "" {
-			onToken("\x01" + delta)
-		}
-	}
-	reasoningRoleFilterResp := newRolePrefixStreamFilter(thinkReasoningCbResp)
-	tf := newThinkFilterWithReasoning(fcf.Callback(), thinkReasoningCbResp)
+	reasoningDisplayResp := newReasoningDisplayStream(onToken, nil)
+	tf := newThinkFilterWithReasoning(fcf.Callback(), reasoningDisplayResp.ThinkCallback())
 
 	// -----------------------------------------------------------------------
 	// Accumulators
@@ -300,7 +295,7 @@ func (h *IMMessageHandler) doResponsesAPILLMRequestStream(
 			}
 			if rd.Delta != "" {
 				reasoningBuf.WriteString(rd.Delta)
-				reasoningRoleFilterResp.Write(rd.Delta)
+				reasoningDisplayResp.Write(rd.Delta)
 			}
 
 		case responsesEventReasoningSummaryPartAdded:
@@ -315,7 +310,7 @@ func (h *IMMessageHandler) doResponsesAPILLMRequestStream(
 			}
 			if json.Unmarshal([]byte(payload), &sp) == nil {
 				if emitted := appendResponsesReasoningSummary(&reasoningBuf, sp.Part.Text); emitted != "" {
-					reasoningRoleFilterResp.Write(emitted)
+					reasoningDisplayResp.Write(emitted)
 				}
 			}
 
@@ -369,7 +364,7 @@ func (h *IMMessageHandler) doResponsesAPILLMRequestStream(
 			}
 			if json.Unmarshal([]byte(payload), &done) == nil {
 				if emitted := appendResponsesReasoningSummary(&reasoningBuf, done.Item.DisplaySummary()); emitted != "" {
-					reasoningRoleFilterResp.Write(emitted)
+					reasoningDisplayResp.Write(emitted)
 				}
 			}
 
@@ -379,7 +374,7 @@ func (h *IMMessageHandler) doResponsesAPILLMRequestStream(
 			}
 			for _, summary := range responsesCompletedReasoningSummaries([]byte(payload)) {
 				if emitted := appendResponsesReasoningSummary(&reasoningBuf, summary); emitted != "" {
-					reasoningRoleFilterResp.Write(emitted)
+					reasoningDisplayResp.Write(emitted)
 				}
 			}
 			log.Printf("[LLM Stream Responses] response.completed received; closing SSE stream without waiting for trailing DONE")
@@ -434,7 +429,7 @@ postLoop:
 	// Flush filters and build final response
 	// -----------------------------------------------------------------------
 	tf.Flush()
-	reasoningRoleFilterResp.Flush()
+	reasoningDisplayResp.Flush()
 	fcf.Flush()
 	tcf.Flush()
 	repfResp.Flush()

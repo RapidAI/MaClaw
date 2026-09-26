@@ -677,6 +677,7 @@ export const SidebarSystemStatus = ({
     const workbenchModelLabel = configuredModel
         ? `${workbenchProviderLabel}：${configuredModel}`
         : textForLang(lang, 'Not configured', '未配置', '未設定');
+    const openModelSettingsLabel = textForLang(lang, 'Open model settings', '打开大模型设置', '開啟大模型設定');
     const workbenchTokenLabel = formatSidebarTokens(Number(sidebarCurrentProviderTokenUsage.total || 0));
     const workbenchOnline = profileSummaries ? activeProfileOnline : maclawLLMOnline;
     // Keep the redesigned card and the retained legacy status panel mounted for
@@ -703,9 +704,28 @@ export const SidebarSystemStatus = ({
                         )}
                     </div>
                 </div>
-                <button type="button" aria-label={textForLang(lang, 'Open model settings', '打开大模型设置', '開啟大模型設定')} title={textForLang(lang, 'Open model settings', '打开大模型设置', '開啟大模型設定')} className="mc-workbench-status-card__row mc-workbench-status-card__model" onClick={openLLMSettingsPage} disabled={!openLLMSettingsPage}>
+                <button
+                    type="button"
+                    aria-label={openModelSettingsLabel}
+                    title={configuredModel ? `${workbenchModelLabel}${CREDIT_SEPARATOR}${openModelSettingsLabel}` : openModelSettingsLabel}
+                    className="mc-workbench-status-card__row mc-workbench-status-card__model"
+                    onClick={openLLMSettingsPage}
+                    disabled={!openLLMSettingsPage}
+                >
                     <span>{textForLang(lang, 'Model', '当前模型', '目前模型')}</span>
-                    <strong><span aria-hidden="true">✦</span> {workbenchModelLabel}</strong>
+                    <strong className="mc-workbench-status-card__model-value">
+                        <span className="mc-workbench-status-card__model-mark" aria-hidden="true">✦</span>
+                        <span className="mc-workbench-status-card__model-copy">
+                            {configuredModel ? (
+                                <>
+                                    <span className="mc-workbench-status-card__model-provider">{workbenchProviderLabel}<span className="mc-workbench-status-card__model-sep">：</span></span>
+                                    <span className="mc-workbench-status-card__model-id">{configuredModel}</span>
+                                </>
+                            ) : (
+                                <span className="mc-workbench-status-card__model-provider">{workbenchModelLabel}</span>
+                            )}
+                        </span>
+                    </strong>
                 </button>
                 <div className="mc-workbench-status-card__row" title={workbenchTokenLabel}>
                     <span>{textForLang(lang, 'Cumulative tokens', '累计 Token', '累計 Token')}</span>

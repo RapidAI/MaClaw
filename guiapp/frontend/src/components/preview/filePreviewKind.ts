@@ -5,6 +5,7 @@
 
 export type FilePreviewKind =
     | 'pptx'
+    | 'docx'
     | 'pdf'
     | 'image'
     | 'video'
@@ -20,9 +21,9 @@ const IMAGE_EXT = new Set([
 ]);
 const VIDEO_EXT = new Set(['.mp4', '.webm', '.mov', '.avi', '.mkv', '.m4v']);
 const AUDIO_EXT = new Set(['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac', '.oga']);
-/** Legacy Office containers that are not the PPTX slide renderer. */
+/** Legacy Office containers that stay a text extract. .docx has its own page renderer. */
 const OFFICE_EXT = new Set([
-    '.doc', '.docx', '.xls', '.xlsx', '.xlsm', '.ppt', '.odt', '.ods', '.odp', '.rtf',
+    '.doc', '.xls', '.xlsx', '.xlsm', '.ppt', '.odt', '.ods', '.odp', '.rtf',
 ]);
 
 /** First path/name that has an extension; used so a title without a suffix cannot hide a .pptx original. */
@@ -49,6 +50,7 @@ export function filePreviewKindFromName(name: string, language?: string): FilePr
     // Filename wins for visual / Office types so a .docx extract labelled
     // "markdown" still uses the document preview, not a generic md view.
     if (ext === '.pptx') return 'pptx';
+    if (ext === '.docx') return 'docx';
     if (ext === '.pdf') return 'pdf';
     if (IMAGE_EXT.has(ext)) return 'image';
     if (VIDEO_EXT.has(ext)) return 'video';
@@ -56,6 +58,7 @@ export function filePreviewKindFromName(name: string, language?: string): FilePr
     if (ext === '.html' || ext === '.htm') return 'html';
     if (OFFICE_EXT.has(ext)) return 'office';
     if (lang === 'pptx') return 'pptx';
+    if (lang === 'docx') return 'docx';
     if (lang === 'pdf') return 'pdf';
     if (lang === 'image') return 'image';
     if (lang === 'video') return 'video';
@@ -70,12 +73,12 @@ export function filePreviewKindFromName(name: string, language?: string): FilePr
 
 /** Previewers that own scrolling / paging and should hide the code minimap. */
 export function isChromeLessPreviewKind(kind: FilePreviewKind): boolean {
-    return kind === 'pptx' || kind === 'pdf' || kind === 'image' || kind === 'video' || kind === 'audio' || kind === 'html';
+    return kind === 'pptx' || kind === 'docx' || kind === 'pdf' || kind === 'image' || kind === 'video' || kind === 'audio' || kind === 'html';
 }
 
 /** Native binary/page viewers that need a local original path. */
 export function previewNeedsLocalFile(kind: FilePreviewKind): boolean {
-    return kind === 'pptx' || kind === 'pdf' || kind === 'image' || kind === 'video' || kind === 'audio';
+    return kind === 'pptx' || kind === 'docx' || kind === 'pdf' || kind === 'image' || kind === 'video' || kind === 'audio';
 }
 
 /** Whether the mobile library should download the Hub original before previewing. */
@@ -126,7 +129,7 @@ const LANGUAGE_BY_EXT: Record<string, string> = {
 export function languageFromFileName(name: string, fallbackLanguage?: string): string {
     const kind = filePreviewKindFromName(name, fallbackLanguage);
     if (kind === 'office' || kind === 'markdown') return 'markdown';
-    if (kind === 'pptx' || kind === 'pdf' || kind === 'image' || kind === 'video' || kind === 'audio' || kind === 'html') {
+    if (kind === 'pptx' || kind === 'docx' || kind === 'pdf' || kind === 'image' || kind === 'video' || kind === 'audio' || kind === 'html') {
         return kind;
     }
     const ext = fileExtFromName(name);

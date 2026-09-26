@@ -1,7 +1,16 @@
 import { render, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { lightCodePreviewTheme } from '../../ai/CodePreviewPanel';
+import { fitDocxToPane } from '../../ai/DocxPreviewPanel';
 import { FilePreviewView, filePreviewUsesSpecialRenderer, isAssistantSourcePreview } from '../FilePreviewView';
+
+vi.mock('docx-preview', () => ({
+    renderAsync: vi.fn(async (_data: ArrayBuffer, el: HTMLElement) => {
+        const page = document.createElement('section');
+        page.textContent = 'rendered-docx';
+        el.appendChild(page);
+    }),
+}));
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
     PreviewTaskResultFile: vi.fn(async (path: string) => {
@@ -12,7 +21,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
             return { kind: 'image', preview_url: '/maclaw-preview/v1/file?t=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' };
         }
         if (String(path).endsWith('.docx')) {
-            return { kind: 'text', language: 'markdown', content: '# Heading\n\nBody' };
+            return { kind: 'docx', preview_url: '/maclaw-preview/v1/file?t=cccccccccccccccccccccccccccccccc' };
         }
         if (String(path).includes('missing.html')) {
             throw new Error('文件不存在');
@@ -33,7 +42,8 @@ describe('filePreviewUsesSpecialRenderer', () => {
     it('covers visual and formatted documents, not source', () => {
         expect(filePreviewUsesSpecialRenderer({ fileName: 'a.pptx', absPath: 'D:/a.pptx' })).toBe(true);
         expect(filePreviewUsesSpecialRenderer({ fileName: 'a.pptx' })).toBe(false);
-        expect(filePreviewUsesSpecialRenderer({ fileName: 'a.docx' })).toBe(true);
+        expect(filePreviewUsesSpecialRenderer({ fileName: 'a.docx', absPath: 'D:/a.docx' })).toBe(true);
+        expect(filePreviewUsesSpecialRenderer({ fileName: 'a.docx' })).toBe(false);
         expect(filePreviewUsesSpecialRenderer({ fileName: 'a.md' })).toBe(true);
         expect(filePreviewUsesSpecialRenderer({ fileName: 'a.html' })).toBe(false);
         expect(filePreviewUsesSpecialRenderer({ fileName: 'icon.svg' })).toBe(false);
@@ -44,17 +54,40 @@ describe('filePreviewUsesSpecialRenderer', () => {
 });
 
 describe('FilePreviewView', () => {
-    it('renders formatted markdown for Word instead of a plain dump', async () => {
-        const { getByTestId } = render(
+    it('renders a Word document in its own layout instead of a text extract', async () => {
+        const fetchMock = vi.fn(async () => ({
+            ok: true,
+            arrayBuffer: async () => new ArrayBuffer(8),
+        }));
+        vi.stubGlobal('fetch', fetchMock);
+        const { getByTestId, queryByTestId } = render(
             <FilePreviewView
                 file={{ fileName: 'brief.docx', absPath: 'D:/docs/brief.docx' }}
                 theme={lightCodePreviewTheme}
                 lang="zh"
             />,
         );
-        await waitFor(() => expect(getByTestId('office-preview-panel')).toBeTruthy());
-        expect(getByTestId('code-preview-markdown-view')).toBeTruthy();
-        expect(getByTestId('code-preview-markdown-view').textContent).toContain('Heading');
+        await waitFor(() => expect(getByTestId('docx-preview-panel').textContent).toContain('rendered-docx'));
+        expect(queryByTestId('office-preview-panel')).toBeNull();
+        expect(fetchMock).toHaveBeenCalled();
+        vi.unstubAllGlobals();
+    });
+
+    it('scales a wide Word page down to the preview pane and keeps the left edge', () => {
+        const scroll = document.createElement('div');
+        const body = document.createElement('div');
+        const wrapper = document.createElement('div');
+        wrapper.className = 'maclaw-docx-wrapper';
+        wrapper.style.alignItems = 'center';
+        const page = document.createElement('section');
+        wrapper.appendChild(page);
+        body.appendChild(wrapper);
+        Object.defineProperty(wrapper, 'scrollWidth', { configurable: true, value: 800 });
+        Object.defineProperty(scroll, 'clientWidth', { configurable: true, value: 408 });
+        fitDocxToPane(scroll, body);
+        expect(wrapper.style.alignItems).toBe('flex-start');
+        expect(body.style.getPropertyValue('zoom')).toBe('0.5');
+        expect(scroll.scrollLeft).toBe(0);
     });
 
     it('renders a PDF reader', async () => {

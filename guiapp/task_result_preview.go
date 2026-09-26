@@ -84,6 +84,8 @@ func (a *App) PreviewTaskResultFile(filePath string) (*TaskResultPreview, error)
 		out.Kind = "pptx"
 		out.Language = "pptx"
 		return out, nil
+	case ".docx":
+		return previewTaskResultBinary(cleaned, "docx", out)
 	}
 
 	if kind, _ := previewHTTPContentType(ext); kind != "" {
@@ -210,6 +212,8 @@ func previewHTTPContentType(ext string) (kind, contentType string) {
 	switch strings.ToLower(ext) {
 	case ".pdf":
 		return "pdf", "application/pdf"
+	case ".docx":
+		return "docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 	case ".png":
 		return "image", "image/png"
 	case ".jpg", ".jpeg":

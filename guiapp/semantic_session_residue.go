@@ -473,12 +473,65 @@ func semanticKeepsOpenWorkSurface(current intent.ClassificationResult, needs []t
 	if semanticKeepsOpenShell(current, needs, userText) {
 		return true
 	}
-	// A short edit of the file already open ("改短一点") is often labeled
-	// file_write or document_generate. A longer request still switches.
+	// A short edit of the file already open ("改短一点") stays on that file.
+	// A short new deliverable ("将ppt生成pdf文档", "把幻灯片导成可打印文档")
+	// does not: the label may still be office, but the sentence is not a
+	// revision, so the previous grant must not replace it.
 	if utf8.RuneCountInString(strings.TrimSpace(userText)) > 24 {
 		return false
 	}
-	return semanticPureDocumentEditClassification(current) && semanticResidueHasDocumentEdit(needs)
+	if !semanticPureDocumentEditClassification(current) || !semanticResidueHasDocumentEdit(needs) {
+		return false
+	}
+	compact := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(userText), " ", ""))
+	// "写" is also how a new file is requested ("写一份新的ppt"). Revision
+	// cues are the edits and the hand-off; creation stays a new delivery.
+	return semanticOpenFileRevision(compact) || semanticUtteranceIsTaskFollowUp(userText) || semanticFollowUpIsBareCue(userText)
+}
+
+func semanticOpenFileRevision(compact string) bool {
+	// In-place edits of the open file. "把标题改成红色" stays.
+	// "把ppt改成pdf" does not: 改成 replaces the file with a new one,
+	// and a bare 改 must not swallow that.
+	for _, cue := range []string{
+		"删", "标题", "封面", "页边",
+		"加上", "加一段", "加一节", "长一点", "短一点", "这一版", "再版",
+	} {
+		if strings.Contains(compact, cue) {
+			return true
+		}
+	}
+	if semanticHandsOffOpenFile(compact) {
+		return true
+	}
+	if strings.Contains(compact, "改成") || strings.Contains(compact, "改为") {
+		return false
+	}
+	return strings.Contains(compact, "改")
+}
+
+// semanticHandsOffOpenFile reports handing the open file to someone.
+// "把ppt发给老板" stays. "做一份发给客户的ppt" is a new file.
+// "发我" inside "研发我" does not.
+func semanticHandsOffOpenFile(compact string) bool {
+	if strings.Contains(compact, "发给") {
+		if strings.Contains(compact, "一份") || strings.Contains(compact, "一个") || strings.Contains(compact, "新的") || strings.Contains(compact, "新做") {
+			return false
+		}
+		return true
+	}
+	for from := 0; from < len(compact); {
+		at := strings.Index(compact[from:], "发我")
+		if at < 0 {
+			return false
+		}
+		at += from
+		if !strings.HasSuffix(compact[:at], "研") {
+			return true
+		}
+		from = at + len("发我")
+	}
+	return false
 }
 
 func semanticTaskContextMerged(result intent.ClassificationResult) bool {
@@ -886,6 +939,7 @@ func residueRemainingAfterUse(needs []tool.CapabilityNeed, used map[string]int) 
 // semanticFollowUpRenewsDownloads reports a continuation that asks for
 // another wave of files. "继续补图" must not inherit a spent download
 // ceiling, or the extra photos the user just asked for never start.
+
 func semanticFollowUpRenewsDownloads(text string) bool {
 	compact := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(text), " ", ""))
 	for _, cue := range []string{"不要下载", "别下载", "不用下载", "不要补图"} {

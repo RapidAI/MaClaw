@@ -24,6 +24,7 @@ func TestBuiltinCapabilityOntologyCoversExpectedFamilies(t *testing.T) {
 		CapabilityFSReadLocal:               EffectReadOnly,
 		CapabilityFSReadRemote:              EffectReadOnly,
 		CapabilityFSWriteLocal:              EffectSensitive,
+		CapabilityFSDeleteLocal:             EffectSensitive,
 		CapabilitySystemLaunchLocal:         EffectSensitive,
 		CapabilityRepoInspectVCS:            EffectReadOnly,
 		CapabilityRepoInspectRemote:         EffectReadOnly,

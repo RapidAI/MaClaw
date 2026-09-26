@@ -1120,6 +1120,25 @@ func markdownHistoryUserText(content any) string {
 	}
 }
 
+// semanticLocalFileDeletePlanningClassification projects removal of one
+// workspace file onto file_delete. Query evidence outranks a weak file_write
+// or memory_manage verdict. The granted tool is delete_file, not a shell and
+// not a rewrite.
+func semanticLocalFileDeletePlanningClassification(result intent.ClassificationResult) intent.ClassificationResult {
+	out := semanticLookupClassificationForPlanning(result)
+	out.Primary = intent.LabelFileDelete
+	kept := make([]intent.IntentLabel, 0, len(out.Secondary))
+	for _, label := range out.Secondary {
+		switch label {
+		case intent.LabelFileWrite, intent.LabelDocumentGenerate, intent.LabelMemoryManage, intent.LabelShellCommand:
+			continue
+		}
+		kept = append(kept, label)
+	}
+	out.Secondary = kept
+	return out
+}
+
 // semanticMarkdownFileWritePlanningClassification projects a markdown-file
 // write onto LabelFileWrite. Query evidence is stronger than a weak tree
 // score or an L2 document_generate collision. Strip generate, office, and
@@ -2064,10 +2083,22 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	// Rewrite before coverage gates: a bare "继续" arrives as
 	// continuation/unknown (not managed), and L2 document_generate+delivery
 	// would HostReject before write_file could replace it.
-	if planningQuery := acpInnerUserRequest(userText); tool.QueryWantsMarkdownFile(planningQuery) {
+	// A local file delete is the same kind of query evidence. Tree file_write
+	// at 0.60 (2026-09-26 「删除刚才的markdown文件」) misses the resolver floor.
+	// Leftover then ranks write_file and the petition contract invites a
+	// search for a delete name. The outcome is file_delete, so the plan
+	// grants delete_file before that search starts.
+	if planningQuery := acpInnerUserRequest(userText); tool.QueryWantsLocalFileDelete(planningQuery) {
+		classification = semanticLocalFileDeletePlanningClassification(classification)
+	} else if tool.QueryWantsMarkdownFile(planningQuery) {
 		classification = semanticMarkdownFileWritePlanningClassification(classification, planningQuery)
 	}
-	if classificationHasLabel(classification, intent.LabelAttachmentDelivery) && classificationHasLabel(classification, intent.LabelDocumentGenerate) {
+	// The opening utterance cannot mean both "send the attachment I was given"
+	// and "generate a new document". A petition is not that utterance: the
+	// document is already planned, and delivering the file is the next step.
+	// Applying the opening conflict there rejected send_file after generate_pdf
+	// (production 2026-09-26: COM-exported PDF, petition send_file).
+	if !semanticPetitionExpansion(requestCtx) && classificationHasLabel(classification, intent.LabelAttachmentDelivery) && classificationHasLabel(classification, intent.LabelDocumentGenerate) {
 		return nil, true, errSemanticGenerateDeliveryConflict
 	}
 	if !imSemanticIntentIsManagedForLoop(semanticWorkflowAgentLoop(requestCtx), classification) {
@@ -2422,6 +2453,22 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 		},
 		ParameterAuthorization: fileWriteAuthorization,
 		Provides:               []tool.CapabilityProvision{{Capability: tool.CapabilityFSWriteLocal, Quality: 2}},
+		Effects:                []tool.EffectClass{tool.EffectSensitive}, Ready: true, ChannelScopes: semanticChannelScopes(channel),
+	})
+	defsByName[semanticTrustedFileDeleteAdapter] = semanticTrustedFileDeleteDefinition()
+	semanticSchemas[semanticTrustedFileDeleteAdapter] = semanticTrustedFileDeleteInvocationSchema()
+	fileDeleteAuthorization, err := tool.NewParameterAuthorization(semanticSchemas[semanticTrustedFileDeleteAdapter])
+	if err != nil {
+		return nil, true, fmt.Errorf("authorize trusted file delete invocation schema: %w", err)
+	}
+	providers = append(providers, tool.ProviderSpec{
+		AdapterName: semanticTrustedFileDeleteAdapter,
+		Binding: tool.ProviderBinding{
+			Kind: "builtin", ProviderID: "im", ImplementationID: semanticTrustedFileDeleteImplementation,
+			SchemaDigest: tool.SchemaDigest([]byte(semanticTrustedFileDeleteImplementation)),
+		},
+		ParameterAuthorization: fileDeleteAuthorization,
+		Provides:               []tool.CapabilityProvision{{Capability: tool.CapabilityFSDeleteLocal, Quality: 2}},
 		Effects:                []tool.EffectClass{tool.EffectSensitive}, Ready: true, ChannelScopes: semanticChannelScopes(channel),
 	})
 	defsByName[semanticTrustedFileReadAdapter] = semanticTrustedFileReadDefinition()
@@ -3173,6 +3220,7 @@ func semanticHostContextConstraints(host semanticHostContext) []tool.RoutingCons
 			capability tool.CapabilityID
 		}{
 			{"group:deny-fs.write.local", tool.CapabilityFSWriteLocal},
+			{"group:deny-fs.delete.local", tool.CapabilityFSDeleteLocal},
 			{"group:deny-repo.inspect.vcs", tool.CapabilityRepoInspectVCS},
 			{"group:deny-knowledge.ingest.local", tool.CapabilityKnowledgeIngestLocal},
 			{"group:deny-knowledge.admin.maintenance", tool.CapabilityKnowledgeAdminMaintenance},
@@ -3928,6 +3976,7 @@ var semanticPetitionableCapabilities = map[string]tool.CapabilityID{
 	"browser":             tool.CapabilityBrowserControlWeb,
 	"computer_use":        tool.CapabilityComputerControlDesktop,
 	"write_file":          tool.CapabilityFSWriteLocal,
+	"delete_file":         tool.CapabilityFSDeleteLocal,
 	"git_commit":          tool.CapabilityRepoMutateVCS,
 	"record_audio":        tool.CapabilityAudioCaptureMicrophone,
 	"knowledge_save_text": tool.CapabilityKnowledgeIngestLocal,

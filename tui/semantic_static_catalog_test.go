@@ -115,6 +115,7 @@ func TestTUIStaticPostureConstraintsDenyMutation(t *testing.T) {
 	}
 	for _, capability := range []coretool.CapabilityID{
 		coretool.CapabilityFSWriteLocal,
+		coretool.CapabilityFSDeleteLocal,
 		coretool.CapabilityShellExecuteLocal,
 		coretool.CapabilityBuildVerifyLocal,
 		coretool.CapabilityShellExecuteRemoteHost,

@@ -102,7 +102,8 @@ type IMMessageHandler struct {
 	semanticTrustedKnowledgeRead func(userID, query string) (string, error)
 	// semanticTrustedFileWrite is a host-owned test/runtime hook for managed
 	// workspace file writes. It never reads phase_id/doc_type/file_path soup.
-	semanticTrustedFileWrite func(userID, path, content, mode string) (string, error)
+	semanticTrustedFileWrite  func(userID, path, content, mode string) (string, error)
+	semanticTrustedFileDelete func(userID, path string) (string, error)
 	// semanticTrustedFileEdit is a host-owned test/runtime hook for managed
 	// single-passage replacement. It never reads replace_all/line-number soup.
 	semanticTrustedFileEdit func(userID, path, oldString, newString string) (string, error)

@@ -10,7 +10,7 @@ import type { ChatAction, ChatConfirmation, ChatMessage, ChatRecoverableSession,
 import { renderCodingAgentProgressStatus } from "./CodingAgentProgressStatus";
 import { attachBareHeadingMarkers, normalizeInlineListMarkers } from "./aiAssistantMarkdownNormalize";
 import { buildMarkdownTableModel, isMarkdownTableRow, isMarkdownTableSeparatorRow, normalizeMarkdownTableLine, parseMarkdownTableCells, repairMixedNarrativeTable } from "./aiAssistantMarkdownTable";
-import { localAssistantTabTitle, localizeAIAssistantError, describeAIAssistantError, localizeText } from "./aiAssistantI18n";
+import { assistantSpeakerLabel, localizeAIAssistantError, describeAIAssistantError, localizeText } from "./aiAssistantI18n";
 import { renderConfirmationCard, type ConfirmationCardDeps } from "./confirmationCard";
 import { cloudSafePathLabel, cloudWorkspaceRootFromPath, isCloudWorkspaceFilePath, isCloudWorkspacePath, REVEAL_CLOUD_WORKSPACE_FILES_EVENT } from "./codingTaskMode";
 import { baseInputBtnStyle, type Theme } from "./aiAssistantPanelTheme";
@@ -1642,7 +1642,7 @@ export function renderMessage(
                 : resolveVisibleAssistantReply(msg.content || "", cleanedReasoning, { live: liveForReasoning });
             return (
                 <div key={msg.id} role="group" data-testid={`assistant-chat-ai-${msg.id}`} aria-label={localizeText(lang, "AI assistant message", "AI 助手消息")} className="aamd-msg-ai">
-                    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, margin: `0 4px ${CHAT_SPEAKER_LABEL_GAP}px`, color: t.textMuted, fontSize: 11, lineHeight: 1.2 }}><span className="mc-message-avatar mc-message-avatar--assistant" aria-hidden="true">M</span><span>{localAssistantTabTitle(lang)}</span></span>
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, margin: `0 4px ${CHAT_SPEAKER_LABEL_GAP}px`, color: t.textMuted, fontSize: 11, lineHeight: 1.2 }}><span className="mc-message-avatar mc-message-avatar--assistant" aria-hidden="true">M</span><span>{assistantSpeakerLabel(lang)}</span></span>
                     {(() => {
                         const copyPayload = buildAssistantReplyCopyText(visibleReply.content, msg.unfinishedSlot, lang);
                         const showCopy = copyPayload.trim().length > 0;

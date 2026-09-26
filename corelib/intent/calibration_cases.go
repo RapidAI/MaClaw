@@ -159,6 +159,10 @@ func ProductionCases() []CalibrationCase {
 		{Message: "列出当前目录下的文件", ExpectedLabel: LabelFileRead},
 		{Message: "show me what is in the README file", ExpectedLabel: LabelFileRead},
 
+		{Message: "删除刚才的markdown文件", ExpectedLabel: LabelFileDelete},
+		{Message: "删掉这个本地文件", ExpectedLabel: LabelFileDelete},
+		{Message: "delete the markdown file I just created", ExpectedLabel: LabelFileDelete},
+
 		{Message: "把这段内容保存到 notes.txt", ExpectedLabel: LabelFileWrite},
 		{Message: "在这个文件末尾追加一行", ExpectedLabel: LabelFileWrite},
 		{Message: "save this text to a local file", ExpectedLabel: LabelFileWrite},

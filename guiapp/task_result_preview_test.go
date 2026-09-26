@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"net/http"
@@ -27,6 +28,35 @@ func TestPreviewTaskResultFilePPTX(t *testing.T) {
 	}
 	if got.Path == "" || !strings.Contains(got.Path, "deck.pptx") {
 		t.Fatalf("path = %q", got.Path)
+	}
+}
+
+func TestPreviewTaskResultFileDocxServesOriginal(t *testing.T) {
+	resetTaskResultPreviewLeasesForTest()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "brief.docx")
+	body := []byte("PK\x03\x04docx")
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := (*App)(nil).PreviewTaskResultFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Kind != "docx" || got.Language != "docx" || got.Content != "" || got.PreviewURL == "" {
+		t.Fatalf("docx preview = %+v", got)
+	}
+	req := httptest.NewRequest(http.MethodGet, got.PreviewURL, nil)
+	rec := httptest.NewRecorder()
+	handleTaskResultPreviewHTTP(nil, rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if gotType := rec.Header().Get("Content-Type"); !strings.Contains(gotType, "wordprocessingml.document") {
+		t.Fatalf("content type = %q", gotType)
+	}
+	if !bytes.Equal(rec.Body.Bytes(), body) {
+		t.Fatalf("body = %q", rec.Body.Bytes())
 	}
 }
 

@@ -202,6 +202,7 @@ func codingStaticPostureConstraints(posture codingRequestKind) []tool.RoutingCon
 	case codingRequestInquiry, codingRequestOperational:
 		return []tool.RoutingConstraint{
 			{ID: "coding-static:deny-write", Capability: tool.CapabilityFSWriteLocal, Effect: "deny", Authority: tool.AuthorityPolicy},
+			{ID: "coding-static:deny-delete", Capability: tool.CapabilityFSDeleteLocal, Effect: "deny", Authority: tool.AuthorityPolicy},
 			{ID: "coding-static:deny-build", Capability: tool.CapabilityBuildVerifyLocal, Effect: "deny", Authority: tool.AuthorityPolicy},
 			{ID: "coding-static:deny-shell", Capability: tool.CapabilityShellExecuteLocal, Effect: "deny", Authority: tool.AuthorityPolicy},
 		}

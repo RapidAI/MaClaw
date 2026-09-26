@@ -2,6 +2,7 @@ package guiapp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -35,7 +36,7 @@ func semanticTrustedKnowledgeIngestDefinition() map[string]interface{} {
 		"type": "function",
 		"function": map[string]interface{}{
 			"name":        semanticTrustedKnowledgeIngestAdapter,
-			"description": "Ingest text, a URL, or a workspace path into the current principal's knowledge store. Field presence decides SaveText, SaveURL, or workspace import.",
+			"description": "Save exactly one source into the current principal's knowledge store. Pass text to save the note itself, url to save a public page, or path to import an existing file or directory in the bound workspace. Do not combine those fields.",
 			"parameters":  semanticTrustedKnowledgeIngestInvocationSchema(),
 		},
 	}
@@ -45,9 +46,9 @@ func semanticTrustedKnowledgeIngestInvocationSchema() map[string]interface{} {
 	return map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{
-			"text": map[string]interface{}{"type": "string"},
-			"url":  map[string]interface{}{"type": "string"},
-			"path": map[string]interface{}{"type": "string"},
+			"text": map[string]interface{}{"type": "string", "description": "Note body to save. Mutually exclusive with url and path."},
+			"url":  map[string]interface{}{"type": "string", "description": "Public page to save. Mutually exclusive with text and path."},
+			"path": map[string]interface{}{"type": "string", "description": "Existing workspace file or directory to import. Mutually exclusive with text and url."},
 		},
 		"required":             []string{},
 		"additionalProperties": false,
@@ -78,6 +79,35 @@ func semanticTrustedKnowledgeIngestArgsAllowed(args map[string]interface{}) (tex
 		return "", "", "", fmt.Errorf("trusted_knowledge_ingest_text_xor_url_xor_path_required")
 	}
 	return text, url, path, nil
+}
+
+// semanticKnowledgeIngestExclusiveCanonical rejects a combined source before
+// the one-shot grant is admitted. text plus path is the natural "save this
+// note under this name" call, but path means import an existing file, so
+// both sources together are ambiguous. Production 2026-09-26: that rejection
+// ran inside the adapter, retired knowledge_save_text, and the corrected
+// text-only retry was told the tool was gone.
+func semanticKnowledgeIngestExclusiveCanonical(canonicalJSON []byte) error {
+	var args map[string]interface{}
+	if err := json.Unmarshal(canonicalJSON, &args); err != nil || args == nil {
+		return semanticKnowledgeIngestExclusiveParameterError()
+	}
+	if _, _, _, err := semanticTrustedKnowledgeIngestArgsAllowed(args); err != nil {
+		if err.Error() != "trusted_knowledge_ingest_text_xor_url_xor_path_required" {
+			return err
+		}
+		return semanticKnowledgeIngestExclusiveParameterError()
+	}
+	return nil
+}
+
+func semanticKnowledgeIngestExclusiveParameterError() error {
+	// Not parameter_schema_invalid: that guidance tells the model to match the
+	// rendered schema, and the schema still lists text, url, and path together.
+	// The exclusive rule is enforced here, before the grant is spent.
+	return &semanticCanonicalDetailedRejection{
+		text: "[system rejected] trusted_knowledge_ingest_text_xor_url_xor_path_required: pass exactly one of text, url, or path. path imports an existing workspace file and is not a title. The call was refused before execution, so the tool remains available; call it again with only one of those fields.",
+	}
 }
 
 func semanticTrustedKnowledgeIngestExclusive(text, url, path string) bool {

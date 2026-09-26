@@ -128,6 +128,167 @@ func hasDottedExt(q, ext string) bool {
 	}
 }
 
+// QueryWantsLocalFileDelete reports a request to remove one existing workspace
+// file. An edit inside a file, a directory tree, and memory, knowledge,
+// schedule, or remote deletes stay on their own labels. Production 2026-09-26:
+// 「删除刚才的markdown文件」was tree file_write 0.60, so leftover ranked
+// write_file and the model spent the turn searching for a delete name.
+func QueryWantsLocalFileDelete(userMessage string) bool {
+	q := strings.ToLower(strings.TrimSpace(userMessage))
+	if q == "" || queryNegatesFileDelete(q) || queryIsNonLocalDelete(q) || queryEditsInsideFile(q) || queryAsksOrReportsDelete(q) || queryAlsoAsksToWriteFile(q) {
+		return false
+	}
+	return queryMentionsFileDelete(stripDeleteNonVerbs(q)) && queryMentionsDeletableLocalFile(q)
+}
+
+// stripDeleteNonVerbs removes compounds that contain a delete verb but name
+// something else. 删除线 is strikethrough, not removal of a file.
+func stripDeleteNonVerbs(q string) string {
+	for _, marker := range []string{"删除线", "刪除線"} {
+		q = strings.ReplaceAll(q, marker, " ")
+	}
+	return q
+}
+
+// queryAsksOrReportsDelete is a question or a report that a delete already
+// happened. Those must not mint a delete plan.
+func queryAsksOrReportsDelete(q string) bool {
+	for _, marker := range []string{
+		"吗", "嗎", "是否", "要不要", "已删除", "已刪除", "已经删", "已經刪",
+		"被删", "被刪", "删过", "刪過", "有没有删", "有沒有刪",
+	} {
+		if strings.Contains(q, marker) {
+			return true
+		}
+	}
+	for _, phrase := range []string{"was deleted", "been deleted", "did you delete", "have you deleted"} {
+		if strings.Contains(q, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+// queryAlsoAsksToWriteFile reports a create or save in the same utterance.
+// "the file I just created" is only identifying the file, so past inflections
+// such as created/saved do not count. A mixed "save this, and delete the file"
+// stays on the classifier instead of being rewritten into a delete.
+func queryAlsoAsksToWriteFile(q string) bool {
+	for _, marker := range []string{"生成", "保存", "写成", "写出", "导出", "儲存", "寫成"} {
+		if strings.Contains(q, marker) {
+			return true
+		}
+	}
+	for _, word := range []string{"create", "write", "save", "export"} {
+		if containsASCIIToken(q, word) {
+			return true
+		}
+	}
+	return false
+}
+
+// queryEditsInsideFile reports a change to content inside a file. Those
+// requests stay on file_write; treating them as file_delete would remove the
+// file the user asked to edit.
+func queryEditsInsideFile(q string) bool {
+	for _, marker := range []string{
+		"文件里", "文件中", "文件内", "文件内容", "文件內容",
+		"檔案裡", "檔案中", "檔案內", "檔案內容",
+	} {
+		if strings.Contains(q, marker) {
+			return true
+		}
+	}
+	for _, phrase := range []string{"in the file", "from the file", "inside the file"} {
+		if strings.Contains(q, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func queryNegatesFileDelete(q string) bool {
+	for _, n := range []string{
+		"不要删除", "不要删", "无需删除", "不用删除", "不要刪除",
+		"don't delete", "do not delete", "dont delete", "not delete",
+		"don't remove", "do not remove",
+	} {
+		if strings.Contains(q, n) {
+			return true
+		}
+	}
+	// 别删 is a real refusal, but 特别删掉 contains the same two characters.
+	return containsBoundedNegation(q, "别删", "特") || containsBoundedNegation(q, "別刪", "特")
+}
+
+func containsBoundedNegation(q, phrase, blockedPrev string) bool {
+	for start := 0; ; {
+		idx := strings.Index(q[start:], phrase)
+		if idx < 0 {
+			return false
+		}
+		pos := start + idx
+		if pos < len(blockedPrev) || q[pos-len(blockedPrev):pos] != blockedPrev {
+			return true
+		}
+		start = pos + len(phrase)
+	}
+}
+
+func queryIsNonLocalDelete(q string) bool {
+	for _, marker := range []string{
+		"记忆", "記憶", "定时任务", "定時任務", "定时提醒", "日程", "待办", "待辦",
+		"知识库来源", "知识库里", "知识库中", "知识库条目",
+		"知識庫來源", "知識庫裡",
+		"服务器上", "伺服器上", "远程服务器", "远程主机", "远程文件",
+		"遠端伺服器", "遠端檔案",
+	} {
+		if strings.Contains(q, marker) {
+			return true
+		}
+	}
+	for _, word := range []string{"ssh", "memory", "schedule"} {
+		if containsASCIIToken(q, word) {
+			return true
+		}
+	}
+	return false
+}
+
+func queryMentionsFileDelete(q string) bool {
+	for _, marker := range []string{"删除", "刪除", "删掉", "刪掉", "删了", "刪了", "移除"} {
+		if strings.Contains(q, marker) {
+			return true
+		}
+	}
+	for _, word := range []string{"delete", "deleted", "deleting", "remove", "removed", "removing", "rm"} {
+		if containsASCIIToken(q, word) {
+			return true
+		}
+	}
+	return false
+}
+
+func queryMentionsDeletableLocalFile(q string) bool {
+	// 文件夹 contains 文件. Strip the compound first so a directory is not a file.
+	fileText := strings.ReplaceAll(q, "文件夹", " ")
+	fileText = strings.ReplaceAll(fileText, "檔案夾", " ")
+	for _, marker := range []string{"文件", "檔案"} {
+		if strings.Contains(fileText, marker) {
+			return true
+		}
+	}
+	for _, ext := range []string{".md", ".txt", ".json", ".log", ".csv", ".yaml", ".yml"} {
+		if hasDottedExt(q, ext) {
+			return true
+		}
+	}
+	if containsASCIIToken(q, "file") {
+		return true
+	}
+	return false
+}
+
 func queryMentionsFileWrite(q string) bool {
 	for _, marker := range []string{
 		"生成", "保存", "写成", "写出", "导出", "输出", "转成", "转为",

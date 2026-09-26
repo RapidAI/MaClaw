@@ -5,6 +5,7 @@ import (
 	"log"
 	"math"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 )
@@ -505,6 +506,86 @@ func namedPDFHalves(scores []labelScore) (pdf, live, search labelScore) {
 	return pdf, live, search
 }
 
+// embeddingAnchorIdentityMinRunes keeps short control cues ("继续", "截图",
+// "continue") on the cosine and tree path. Identity is for a whole exemplar
+// sentence, such as the file_delete line that production spaced out.
+const embeddingAnchorIdentityMinRunes = 9
+
+func matchingAnchorIdentity(anchors []intentAnchor, text string) (IntentLabel, bool) {
+	folded := foldEmbeddingIdentity(text)
+	if utf8.RuneCountInString(folded) < embeddingAnchorIdentityMinRunes {
+		return "", false
+	}
+	var found IntentLabel
+	for _, anchor := range anchors {
+		for _, sample := range anchor.Texts {
+			if foldEmbeddingIdentity(sample) != folded {
+				continue
+			}
+			if found != "" && found != anchor.Label {
+				return "", false
+			}
+			found = anchor.Label
+		}
+	}
+	return found, found != ""
+}
+
+func foldEmbeddingIdentity(s string) string {
+	s = strings.TrimSpace(s)
+	for len(s) > 0 {
+		r, size := utf8.DecodeLastRuneInString(s)
+		if !trailingIdentityPunct(r) {
+			break
+		}
+		s = s[:len(s)-size]
+		s = strings.TrimSpace(s)
+	}
+	var b strings.Builder
+	for _, r := range s {
+		switch r {
+		case ' ', '\t', '\n', '\r', '\u3000', '\u00a0':
+			continue
+		}
+		if r >= 'A' && r <= 'Z' {
+			r += 'a' - 'A'
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+func trailingIdentityPunct(r rune) bool {
+	switch r {
+	case '。', '！', '？', '!', '?', '；', ';', '，', ',', '、', '…':
+		return true
+	default:
+		return false
+	}
+}
+
+func competingLocalHostLabel(scores []labelScore, floor float64) (labelScore, bool) {
+	var best labelScore
+	for _, s := range scores {
+		if !localHostMutationLabel(s.label) || s.score < floor {
+			continue
+		}
+		if s.score > best.score {
+			best = s
+		}
+	}
+	return best, best.label != ""
+}
+
+func localHostMutationLabel(label IntentLabel) bool {
+	switch label {
+	case LabelFileDelete, LabelFileWrite, LabelShellCommand:
+		return true
+	default:
+		return false
+	}
+}
+
 func clearArtifactRunnerUp(result *ClassificationResult) {
 	if result.RunnerUp == LabelLiveDataVisual || result.RunnerUp == LabelDocumentGenerate {
 		result.RunnerUp = ""
@@ -524,6 +605,19 @@ func clearArtifactRunnerUp(result *ClassificationResult) {
 // Caching is handled one level up: UnifiedIntentClassifier memoizes results
 // per message (full Classify cache and the ClassifyEmbeddingOnly cache).
 func classifyByEmbedding(embedder embedding.Embedder, anchors []intentAnchor, text string) (ClassificationResult, bool) {
+	// An utterance that is one of a label's own exemplars is that label.
+	// Cosine can still crown a different host: "删除刚才的 markdown 文件"
+	// differs from the file_delete exemplar only by spaces, and production
+	// 2026-09-26 crowned ssh 0.839 (gap 0.107) so the local delete never loaded.
+	if label, ok := matchingAnchorIdentity(anchors, text); ok {
+		return ClassificationResult{
+			Primary:    label,
+			Confidence: 1,
+			Layer:      2,
+			Reason:     "embedding anchor identity: " + string(label),
+		}, true
+	}
+
 	// 1. Get query embedding.
 	queryVec, err := embedder.Embed(text)
 	if err != nil || queryVec == nil {
@@ -671,6 +765,16 @@ func classifyByEmbedding(embedder embedding.Embedder, anchors []intentAnchor, te
 	}
 
 	if top1.score >= EmbeddingConfidentMinScore && gap >= EmbeddingConfidentMinGap {
+		// Remote shell and a local file action are different hosts. The cosine
+		// margin does not choose the machine. Production 2026-09-26: a local
+		// markdown delete crowned ssh and the turn had no fs.delete.local.
+		if top1.label == LabelSSH {
+			if local, ok := competingLocalHostLabel(scores, EmbeddingCompositeSecondaryMinScore); ok {
+				result.Secondary = []IntentLabel{local.label}
+				result.Reason = fmt.Sprintf("embedding remote host requires tree: top=%s (%.3f), local=%s (%.3f), gap=%.3f", top1.label, top1.score, local.label, local.score, gap)
+				return result, false
+			}
+		}
 		// A confident lookup with a material declared artifact half is a
 		// composite request, not a plain lookup: shipping it as confident
 		// lookup-only silently drops the generate capability without ever

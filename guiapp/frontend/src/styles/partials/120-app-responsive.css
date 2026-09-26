@@ -1985,7 +1985,7 @@
 #App .mc-workbench-status-card__row strong {
   color: var(--mc-ink) !important;
 }
-#App .mc-workbench-status-card__model strong span {
+#App .mc-workbench-status-card__model-mark {
   color: var(--mc-accent) !important;
 }
 #App .mc-workbench-status-card__meter {

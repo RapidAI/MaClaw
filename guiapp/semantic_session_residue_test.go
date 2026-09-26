@@ -310,6 +310,53 @@ func TestContinueMoreImagesDropsSpentDownloadCeiling(t *testing.T) {
 	}
 }
 
+func TestPPTToPDFDoesNotReloadOpenDownloadGrant(t *testing.T) {
+	residue := semanticSessionResidue{
+		Status: semanticResidueOpen,
+		Needs: []tool.CapabilityNeed{
+			{ID: "need:dl", Capability: "artifact.acquire.remote", Required: true},
+			{ID: "need:office", Capability: "document.write.office", Required: true},
+		},
+	}
+	current := intent.ClassificationResult{
+		Primary:    intent.LabelOffice,
+		Secondary:  []intent.IntentLabel{intent.LabelWebFetch},
+		Confidence: 0.88,
+		Reason:     "tree-after-embedding+synthesized composite: office(0.880)+web_fetch(0.600)",
+	}
+	if decideSemanticResidueRelation(current, "将ppt生成pdf文档", residue) != semanticResidueNone {
+		t.Fatal("将ppt生成pdf文档 was replaced by the open download grant")
+	}
+	officeOnly := intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: 0.88}
+	if decideSemanticResidueRelation(officeOnly, "将ppt生成pdf文档", residue) != semanticResidueNone {
+		t.Fatal("a short ppt-to-pdf request was treated as an edit of the open deck")
+	}
+	if decideSemanticResidueRelation(officeOnly, "把幻灯片导成可打印文档", residue) != semanticResidueNone {
+		t.Fatal("a paraphrased conversion was treated as an edit of the open deck")
+	}
+	if decideSemanticResidueRelation(officeOnly, "写一份新的ppt", residue) != semanticResidueNone {
+		t.Fatal("写一份新的ppt stayed on the open grant because it contains 写")
+	}
+	if decideSemanticResidueRelation(officeOnly, "把ppt改成pdf", residue) != semanticResidueNone {
+		t.Fatal("把ppt改成pdf stayed on the open grant because it contains 改")
+	}
+	if decideSemanticResidueRelation(officeOnly, "把标题改成红色", residue) != semanticResidueUnclear {
+		t.Fatal("把标题改成红色 left the open deck")
+	}
+	if decideSemanticResidueRelation(officeOnly, "做研发我司的ppt", residue) != semanticResidueNone {
+		t.Fatal("做研发我司的ppt stayed on the open grant because 研发我 contains 发我")
+	}
+	if decideSemanticResidueRelation(officeOnly, "发给我", residue) != semanticResidueUnclear {
+		t.Fatal("发给我 left the open deck")
+	}
+	if decideSemanticResidueRelation(officeOnly, "把ppt发给老板", residue) != semanticResidueUnclear {
+		t.Fatal("把ppt发给老板 left the open deck")
+	}
+	if decideSemanticResidueRelation(officeOnly, "做一份发给客户的ppt", residue) != semanticResidueNone {
+		t.Fatal("做一份发给客户的ppt stayed on the open grant")
+	}
+}
+
 func TestNextCityWeatherPDFDoesNotContinueSpentGenerate(t *testing.T) {
 	residue := semanticSessionResidue{
 		Status: semanticResidueOpen,

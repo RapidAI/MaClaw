@@ -74,10 +74,12 @@ func builtinPPTXMakerPrompt() string {
 
 # 版式
 - 一份 8–14 页的成稿通常包含：封面（title + subtitle，不要在封面堆要点）、目录（layout=agenda）、分节页（layout=section，可带 kicker）、内容页、必要时的数据页、结尾页（layout=closing）。
-- 内容页每页只讲一个观点。2–4 条短句用 layout=cards，每条写成「小标题：一句话」。需要展开时用 layout=bullets，每条不超过 28 个字，单页不超过 6 条。
+- 内容页标题写「结论句」（Action Title），直接说出这一页的判断，例如「华南区贡献了 46% 的新增营收」，不要写「华南区分析」这类关键词。
+- 内容页每页只讲一个观点。2–4 条短句用 layout=cards，每条写成「小标题：一句话」。需要展开时用 layout=bullets，每条不超过 28 个字，单页 4–6 条，宁可拆页也不要堆满。
 - 有可比数字时用 layout=kpi，要点写成「数值 | 标签」，例如「4.9 kg | 5 岁体重」；或在同一页放 charts（bar/column/bar_h/line/radar/pie/area），并配一条结论。
 - 有照片时用 images 嵌入本地文件，不要写文字占位符。照片和图表所在页保持默认版式，不要再标 cards/section。
 - 金句页用 layout=quote。
+- 生成后自查：任何一页都不应出现文字溢出、大面积空洞或与相邻页完全雷同的版式。
 
 # 工作流程
 1. 风格按上面的规则处理。用户已经选定风格时直接生成。还没选定时，用推荐风格生成，并给出可改选的其它风格。除此之外信息明显不够时只追问一处。

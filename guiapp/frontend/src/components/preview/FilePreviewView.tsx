@@ -9,6 +9,7 @@ import { AIAssistantAttachmentFullDataURL, PreviewTaskResultFile } from '../../.
 import { MarkdownPreview } from '../ai/CodePreviewMarkdown';
 import type { CodePreviewTheme } from '../ai/FileTabBar';
 import { PdfPreviewPanel } from '../ai/PdfPreviewPanel';
+import { DocxPreviewPanel } from '../ai/DocxPreviewPanel';
 import { PptxPreviewPanel } from '../ai/PptxPreviewPanel';
 import {
     isTaskResultPdfPreviewURL,
@@ -431,7 +432,7 @@ export function filePreviewKindOf(file?: FilePreviewSource | null): FilePreviewK
 export function isVisualFilePreview(file?: FilePreviewSource | null): boolean {
     if (!file) return false;
     const kind = filePreviewKindOf(file);
-    if (kind === 'pptx') return Boolean(file.absPath);
+    if (kind === 'pptx' || kind === 'docx') return Boolean(file.absPath);
     return isChromeLessPreviewKind(kind);
 }
 
@@ -449,7 +450,7 @@ export function isAssistantSourcePreview(file?: FilePreviewSource | null): boole
 export function filePreviewUsesSpecialRenderer(file?: FilePreviewSource | null): boolean {
     if (!file || isAssistantSourcePreview(file)) return false;
     const kind = filePreviewKindOf(file);
-    if (kind === 'pptx') return Boolean(file.absPath);
+    if (kind === 'pptx' || kind === 'docx') return Boolean(file.absPath);
     return kind === 'pdf' || kind === 'image' || kind === 'video' || kind === 'audio'
         || kind === 'office' || kind === 'markdown';
 }
@@ -466,7 +467,7 @@ export function FilePreviewView({
     const name = previewName(file);
     const kind = filePreviewKindOf(file);
     const diskPath = String(file.absPath || '').trim() || String(file.filePath || '').trim();
-    const absPath = kind === 'pptx' ? String(file.absPath || '').trim() : diskPath;
+    const absPath = kind === 'pptx' || kind === 'docx' ? String(file.absPath || '').trim() : diskPath;
     const fileKey = `${name}:${absPath}:${file.language || ''}`;
     // Assistant source/diff wins for HTML, SVG, Markdown, and Office extracts.
     // Raster images, PDF, PPTX, and media keep their visual viewers.
@@ -478,6 +479,9 @@ export function FilePreviewView({
 
     if (kind === 'pptx' && file.absPath) {
         return <PptxPreviewPanel key={fileKey} absPath={file.absPath} theme={theme} lang={lang} />;
+    }
+    if (kind === 'docx' && file.absPath) {
+        return <DocxPreviewPanel key={fileKey} absPath={file.absPath} theme={theme} lang={lang} />;
     }
     if (kind === 'pdf') {
         return (

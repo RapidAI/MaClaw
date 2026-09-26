@@ -184,7 +184,11 @@ describe('SidebarSystemStatus Hub credits', () => {
                 }}
             />,
         );
-        expect(screen.getByRole('button', { name: '打开大模型设置' }).textContent).toContain('Custom1：deepseek-v4.1-flash');
+        const modelButton = screen.getByRole('button', { name: '打开大模型设置' });
+        expect(modelButton.textContent).toContain('Custom1：deepseek-v4.1-flash');
+        expect(modelButton.querySelector('.mc-workbench-status-card__model-provider')?.textContent).toContain('Custom1');
+        expect(modelButton.querySelector('.mc-workbench-status-card__model-id')?.textContent).toBe('deepseek-v4.1-flash');
+        expect(modelButton.getAttribute('title')).toContain('Custom1：deepseek-v4.1-flash');
     });
 
     it('derives the LLM headline from the active profile instead of assistant-only online state', () => {

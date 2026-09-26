@@ -289,6 +289,53 @@ func TestSemanticContinueAfterWeatherDoesNotPlanFileWrite(t *testing.T) {
 	}
 }
 
+func TestSemanticLocalFileDeletePlansDeleteFile(t *testing.T) {
+	// Production 2026-09-26 18:30: 「删除刚才的markdown文件」was tree file_write
+	// 0.60. Leftover ranked write_file; the model called it three times, then
+	// discover_tool, then petitioned "shell". Deletion is its own outcome.
+	h := &IMMessageHandler{registry: NewToolRegistry()}
+	registerBuiltinTools(h.registry, h)
+	defs, surface, handled, err := h.semanticCallSurfaceForSharedTurnWithIdentityAndClassification(
+		"user-1", "删除刚才的markdown文件", "desktop", "root-delete-md", "turn-delete-md",
+		&intent.ClassificationResult{
+			Primary: intent.LabelFileWrite, Confidence: 0.60, Layer: 3,
+			Reason: "tree-after-embedding: file_write (0.600)",
+		},
+	)
+	if err != nil || !handled || surface == nil {
+		t.Fatalf("local file delete must plan delete_file at tree file_write 0.60: handled=%v err=%v", handled, err)
+	}
+	if semanticGrantNameForAdapter(surface, semanticTrustedFileDeleteAdapter) != "delete_file" {
+		t.Fatalf("model name=%q, want delete_file", semanticGrantNameForAdapter(surface, semanticTrustedFileDeleteAdapter))
+	}
+	if !planHasCapabilities(surface.plan, tool.CapabilityFSDeleteLocal) {
+		t.Fatalf("selections=%#v, want fs.delete.local", surface.plan.Selections)
+	}
+	if semanticGrantNameForAdapter(surface, semanticTrustedFileWriteAdapter) != "" {
+		t.Fatalf("write_file must stay off a delete plan, got %q", semanticGrantNameForAdapter(surface, semanticTrustedFileWriteAdapter))
+	}
+	if semanticGrantNameForAdapter(surface, semanticTrustedShellAdapter) != "" {
+		t.Fatalf("bash must stay off a delete plan, got %q", semanticGrantNameForAdapter(surface, semanticTrustedShellAdapter))
+	}
+	seenDelete := false
+	for _, def := range defs {
+		switch name := extractToolName(def); name {
+		case "delete_file":
+			seenDelete = true
+			function, _ := def["function"].(map[string]interface{})
+			desc, _ := function["description"].(string)
+			if !strings.Contains(desc, "Do not rewrite it with write_file") {
+				t.Fatalf("delete_file description=%q", desc)
+			}
+		case "write_file", "bash", "discover_tool", "generate_pdf":
+			t.Fatalf("%s must not be listed for a local file delete", name)
+		}
+	}
+	if !seenDelete {
+		t.Fatal("delete_file was not rendered")
+	}
+}
+
 func TestSemanticWeakTreeFileWriteWithoutMarkdownStillMisses(t *testing.T) {
 	h := &IMMessageHandler{registry: NewToolRegistry()}
 	registerBuiltinTools(h.registry, h)

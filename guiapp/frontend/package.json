@@ -11,6 +11,7 @@
     "test": "vitest --run"
   },
   "dependencies": {
+    "docx-preview": "^0.4.1",
     "json5": "^2.2.3",
     "katex": "^0.16.25",
     "mermaid": "^11.14.0",
