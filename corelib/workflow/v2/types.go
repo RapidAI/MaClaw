@@ -232,6 +232,15 @@ func IsToolAllowedByPolicy(policy ToolFilterPolicy, name string) bool {
 }
 
 // FilterToolDefinitions filters a list of tool definitions by policy.
+//
+// None and Full pass through unchanged at this name layer: None is a sentinel
+// (never assigned by a phase; it means "no workflow filter applies" or "the
+// phase gate is closed elsewhere"), and Full is the execution phase whose
+// ceiling is now enforced at the capability layer instead
+// (guiapp/semantic_capability_policy.go, state "execution" denies the three
+// takeover families). This name-level pass-through is the legacy behavior the
+// capability layer is progressively replacing; do not add new consumers that
+// rely on it for restriction.
 func FilterToolDefinitions(policy ToolFilterPolicy, tools []map[string]interface{}) []map[string]interface{} {
 	if policy == ToolPolicyNone || policy == ToolPolicyFull || len(tools) == 0 {
 		return tools

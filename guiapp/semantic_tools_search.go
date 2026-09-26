@@ -292,7 +292,7 @@ func semanticToolsSearchRun(cb *sharedAgentLoopCallbacks, argsJSON string) strin
 		}
 		fmt.Fprintf(&out, "next_page_token=%s\n", nextToken)
 	}
-	out.WriteString("只有标记「可请愿」的未列出名字才可以直接调用一次请愿（每轮每类限一次）；bash、read_file、write_file 是保底工具，已列出即可反复调用。用户已声明的能力（如 ssh）会扩进当前范围；查询文字本身不会挑选工具。")
+	out.WriteString("只有标记「可请愿」的未列出名字才可以直接调用一次请愿（每轮每类限一次）。「此名请愿未通过」只拒绝这一个名字，不关掉同类其它可请愿名字。bash、read_file、write_file 是保底工具，已列出即可反复调用。用户已声明的能力（如 ssh）会扩进当前范围；查询文字本身不会挑选工具。")
 	return out.String()
 }
 
@@ -722,6 +722,9 @@ func semanticToolsSearchStatus(cb *sharedAgentLoopCallbacks, name string) string
 		return "[已列入本轮计划：前置步骤完成后自动出现在列表，不要直接调用]"
 	}
 	if _, ok := semanticPetitionableCapabilities[name]; ok {
+		if _, denied := cb.semanticPetitionDenied[name]; denied {
+			return "[此名请愿未通过，不要重试；同类其它「可请愿」名字仍可调用]"
+		}
 		consumed := cb.semanticPetitionConsumed
 		if semanticPetitionIsEffectful(name) {
 			consumed = cb.semanticEffectfulPetitionConsumed

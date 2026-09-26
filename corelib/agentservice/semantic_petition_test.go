@@ -48,6 +48,43 @@ func TestValidatePetitionExpansionAcceptsTemplateNeed(t *testing.T) {
 	}
 }
 
+// TestValidatePetitionExpansionRejectsUnmetChild guards the availability
+// condition the planner records instead of silently dropping: a petition whose
+// child revision still carries Unmet must never be published. This is the split
+// that makes full semantic routing safe to attempt -- a missing capability has
+// to stay an observable, recoverable Unmet rather than becoming a silently
+// absent tool when the legacy wide-surface fallback is removed.
+func TestValidatePetitionExpansionRejectsUnmetChild(t *testing.T) {
+	templates := IMSemanticIntentCapabilityNeedRules()[intent.LabelSearch]
+	parent := coretool.ToolPlan{
+		RootTaskID: "root-unmet",
+		Selections: []coretool.PlannedSelection{testPetitionSelection("need:document.generate.file:x", "document.generate.file", nil)},
+	}
+	child := coretool.ToolPlan{
+		RootTaskID: "root-unmet",
+		Selections: append(append([]coretool.PlannedSelection(nil), parent.Selections...), testPetitionSelection(
+			"need:information.search.web:y", CapabilityInformationSearchWeb, map[string]string{QualifierSearchFreshness: SearchFreshnessReference},
+		)),
+	}
+	if err := ValidatePetitionExpansion(parent, child, templates); err != nil {
+		t.Fatalf("baseline: template-only expansion must be admitted, err=%v", err)
+	}
+
+	child.Unmet = []coretool.UnmetNeed{{NeedID: "need:information.search.web:y", ReasonCode: "no_feasible_provider"}}
+	err := ValidatePetitionExpansion(parent, child, templates)
+	if err == nil || !strings.Contains(err.Error(), "unmet needs") {
+		t.Fatalf("a child with unmet needs must stay rejected, err=%v", err)
+	}
+
+	// Omitted is a policy-driven drop rather than an availability condition, so
+	// it must not trip the Unmet gate.
+	child.Unmet = nil
+	child.Omitted = []coretool.UnmetNeed{{NeedID: "need:information.search.web:y", ReasonCode: "policy_denied"}}
+	if err := ValidatePetitionExpansion(parent, child, templates); err != nil {
+		t.Fatalf("omitted needs must not block petition expansion, err=%v", err)
+	}
+}
+
 func TestValidatePetitionExpansionRejectsRootMismatchAndNoAdd(t *testing.T) {
 	parent := coretool.ToolPlan{
 		RootTaskID: "root-a",

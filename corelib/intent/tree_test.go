@@ -205,6 +205,8 @@ func TestBuildTreePromptKeepsCompositeAndWebFetchBoundariesConsistent(t *testing
 	for _, want := range []string{
 		"web_fetch requires a concrete URL",
 		"Current externally acquired facts rendered as a PDF → live_data + document_generate",
+		"live_data_visual, never document_generate",
+		"office primary with search as the next candidate",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing semantic boundary %q", want)

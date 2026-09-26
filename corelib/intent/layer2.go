@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 )
@@ -326,6 +327,191 @@ func retainEmbeddingOverWeakTree(l2 ClassificationResult, treeScore float64) boo
 	return l2.Confidence > treeScore
 }
 
+// competingVisualHalf reports a live_data_visual score that clears the
+// companion floor beside a verified lookup+PDF pair. The lookup stays the
+// dependency root. A below-floor resemblance is not a second artifact.
+// Clearing the floor does not choose the artifact: cosine margins are not
+// on one scale, and a chart word list cannot see paraphrases.
+func competingVisualHalf(scores []labelScore, top1, companion labelScore) (visual, lookup labelScore, ok bool) {
+	lookup, artifact := top1, companion
+	if isLookupIntentLabel(artifact.label) {
+		lookup, artifact = artifact, lookup
+	}
+	if artifact.label != LabelDocumentGenerate || !isLookupIntentLabel(lookup.label) {
+		return labelScore{}, labelScore{}, false
+	}
+	for _, s := range scores {
+		if s.label != LabelLiveDataVisual {
+			continue
+		}
+		if s.score < EmbeddingCompositeSecondaryMinScore {
+			continue
+		}
+		return s, lookup, true
+	}
+	return labelScore{}, labelScore{}, false
+}
+
+// utteranceNamesPDF reports a request for a PDF file. The letters must be
+// their own token, so "pdfium" does not count, and a dotted extension
+// ("report.pdf", "报告．pdf") does not count: that names an existing file,
+// not a deliverable to generate. The ideographic full stop "。" is a
+// sentence break, so "查完了。pdf" still counts. Fullwidth letters fold
+// first, so "ＰＤＦ" is the same token. Chart wording is not scanned.
+func utteranceNamesPDF(text string) bool {
+	folded := foldPDFScan(stripPDFNegations(text))
+	for i := 0; i+3 <= len(folded); {
+		if folded[i:i+3] != "pdf" {
+			i++
+			continue
+		}
+		extension := i > 0 && folded[i-1] == '.'
+		bounded := (i == 0 || !isASCIIAlphaNum(folded[i-1])) &&
+			(i+3 == len(folded) || !isASCIIAlphaNum(folded[i+3]))
+		if bounded && !extension {
+			return true
+		}
+		i += 3
+	}
+	return false
+}
+
+// foldPDFScan maps the characters the PDF token cares about onto ASCII and
+// turns everything else into a boundary. Fullwidth letters and the
+// fullwidth filename dot survive. The ideographic full stop stays a boundary.
+func foldPDFScan(text string) string {
+	var b strings.Builder
+	b.Grow(len(text))
+	for _, r := range text {
+		switch {
+		case r >= 'A' && r <= 'Z':
+			b.WriteByte(byte(r - 'A' + 'a'))
+		case r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '.':
+			b.WriteByte(byte(r))
+		case r >= 'Ａ' && r <= 'Ｚ':
+			b.WriteByte(byte(r - 'Ａ' + 'a'))
+		case r >= 'ａ' && r <= 'ｚ':
+			b.WriteByte(byte(r - 'ａ' + 'a'))
+		case r >= '０' && r <= '９':
+			b.WriteByte(byte(r - '０' + '0'))
+		case r == '．':
+			b.WriteByte('.')
+		default:
+			b.WriteByte(' ')
+		}
+	}
+	return b.String()
+}
+
+func isASCIIAlphaNum(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9')
+}
+
+// stripPDFNegations removes a rejected PDF mention before the token scan.
+// Fullwidth letters are folded first so "不要ＰＤＦ" is the same phrase as
+// "不要pdf", and ideographic spaces collapse so "不要　pdf" matches too.
+// A later positive token ("不要pdf，还是生成pdf") still counts.
+// The phrase list matches corelib/tool.stripMarkdownPDFNegations, plus
+// "不要生成pdf", which that helper does not yet strip.
+func stripPDFNegations(text string) string {
+	q := collapsePDFSpaces(foldPDFLetters(text))
+	for _, phrase := range []string{
+		"不要 生成 pdf", "不要 生成pdf",
+		"不要生成 pdf", "不要生成pdf",
+		"不要 pdf", "不要pdf",
+		"别生成 pdf", "别生成pdf",
+		"不是 pdf", "不是pdf",
+		"非 pdf", "非pdf",
+		"not pdf", "no pdf",
+	} {
+		q = strings.ReplaceAll(q, phrase, " ")
+	}
+	return q
+}
+
+func collapsePDFSpaces(text string) string {
+	var b strings.Builder
+	b.Grow(len(text))
+	prevSpace := false
+	for _, r := range text {
+		if isPDFNegationSpace(r) {
+			if !prevSpace {
+				b.WriteByte(' ')
+			}
+			prevSpace = true
+			continue
+		}
+		prevSpace = false
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+func isPDFNegationSpace(r rune) bool {
+	switch r {
+	case ' ', '\t', '\n', '\r', '\v', '\f', '\u00a0', '\u3000':
+		return true
+	default:
+		return false
+	}
+}
+
+// foldPDFLetters lowercases ASCII and fullwidth letters and maps the
+// fullwidth filename dot, leaving every other character in place so a
+// Chinese negation phrase can still be matched.
+func foldPDFLetters(text string) string {
+	var b strings.Builder
+	b.Grow(len(text))
+	for _, r := range text {
+		switch {
+		case r >= 'A' && r <= 'Z':
+			b.WriteByte(byte(r - 'A' + 'a'))
+		case r >= 'Ａ' && r <= 'Ｚ':
+			b.WriteByte(byte(r - 'Ａ' + 'a'))
+		case r >= 'ａ' && r <= 'ｚ':
+			b.WriteByte(byte(r - 'ａ' + 'a'))
+		case r >= '０' && r <= '９':
+			b.WriteByte(byte(r - '０' + '0'))
+		case r == '．':
+			b.WriteByte('.')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// namedPDFHalves returns the PDF score, the live_data score, and the search
+// score. Only live_data may anchor a local PDF grant. Search is only a
+// timeout hint: web_fetch is not, because a tree timeout collapses every
+// primary except search, live_data, and office.
+func namedPDFHalves(scores []labelScore) (pdf, live, search labelScore) {
+	for _, s := range scores {
+		switch s.label {
+		case LabelDocumentGenerate:
+			if s.score > pdf.score {
+				pdf = s
+			}
+		case LabelLiveData:
+			if s.score > live.score {
+				live = s
+			}
+		case LabelSearch:
+			if s.score > search.score {
+				search = s
+			}
+		}
+	}
+	return pdf, live, search
+}
+
+func clearArtifactRunnerUp(result *ClassificationResult) {
+	if result.RunnerUp == LabelLiveDataVisual || result.RunnerUp == LabelDocumentGenerate {
+		result.RunnerUp = ""
+		result.RunnerUpScore = 0
+	}
+}
+
 // classifyByEmbedding performs Layer 2 embedding-based classification using
 // cosine similarity between the user message embedding and pre-computed anchor
 // vectors for each intent label category.
@@ -345,10 +531,6 @@ func classifyByEmbedding(embedder embedding.Embedder, anchors []intentAnchor, te
 	}
 
 	// 2. Compute max cosine similarity for each anchor set.
-	type labelScore struct {
-		label IntentLabel
-		score float64
-	}
 	scores := make([]labelScore, 0, len(anchors))
 
 	for _, anchor := range anchors {
@@ -424,6 +606,23 @@ func classifyByEmbedding(embedder embedding.Embedder, anchors []intentAnchor, te
 		companionFloor = EmbeddingCompositeLiveDataMinScore
 	}
 	if composite.label != "" && composite.score >= companionFloor {
+		// The verified pair is lookup + PDF. A visual score that also clears
+		// the floor is a second artifact reading ("画出近一月股价趋势图"
+		// scored document_generate 0.739 beside a stronger chart, and
+		// "崇州天气，生成格式化pdf" scored the chart 0.759 beside PDF 0.735).
+		// The margin does not decide. The letters "pdf" keep the verified
+		// pair locally, so a tree timeout cannot drop a named file. Every
+		// other wording goes to the tree, which reads the sentence. The
+		// artifact halves are removed from runner-up evidence so synthesis
+		// cannot crown the cosine winner after the tree returns a plain lookup.
+		if visual, lookup, ok := competingVisualHalf(scores, top1, composite); ok && lookup.score >= EmbeddingCompositePrimaryMinScore && !utteranceNamesPDF(text) {
+			result.Primary = lookup.label
+			result.Confidence = lookup.score
+			result.Secondary = nil
+			clearArtifactRunnerUp(&result)
+			result.Reason = fmt.Sprintf("embedding ambiguous composite: top=%s (%.3f), companion=%s (%.3f), visual=%s (%.3f), gap=%.3f", lookup.label, lookup.score, composite.label, composite.score, visual.label, visual.score, gap)
+			return result, false
+		}
 		result.Secondary = []IntentLabel{composite.label}
 		if top1.score >= EmbeddingCompositePrimaryMinScore {
 			result.Reason = fmt.Sprintf("embedding declared composite: top=%s (%.3f), companion=%s (%.3f), gap=%.3f", top1.label, top1.score, composite.label, composite.score, gap)
@@ -439,6 +638,35 @@ func classifyByEmbedding(embedder embedding.Embedder, anchors []intentAnchor, te
 	// be acquired.
 	if top1.label == LabelDocumentGenerate {
 		result.Reason = fmt.Sprintf("embedding document generation requires tree: top=%s (%.3f), gap=%.3f", top1.label, top1.score, gap)
+		return result, false
+	}
+
+	// A chart can lead by a wide or a narrow margin while the user still
+	// named a PDF file. This runs before the gap check: a close search score
+	// must not skip the named file and fall through as an ordinary ambiguous
+	// chart. live_data must clear its companion floor. A weaker pair escalates
+	// from a lookup hint, so a timeout does not become a chart grant or an
+	// unreviewed search+PDF pair.
+	if top1.label == LabelLiveDataVisual && utteranceNamesPDF(text) {
+		pdf, live, search := namedPDFHalves(scores)
+		if pdf.label == LabelDocumentGenerate && pdf.score >= EmbeddingCompositeSecondaryMinScore && live.score >= EmbeddingCompositeLiveDataMinScore {
+			result.Primary = live.label
+			result.Confidence = live.score
+			result.Secondary = []IntentLabel{LabelDocumentGenerate}
+			result.Reason = fmt.Sprintf("embedding declared composite: top=%s (%.3f), companion=%s (%.3f), gap=%.3f", live.label, live.score, pdf.label, pdf.score, gap)
+			return result, true
+		}
+		fallback := live
+		if fallback.score < EmbeddingLookupMinScore {
+			fallback = search
+		}
+		if fallback.score >= EmbeddingLookupMinScore && fallback.label != "" {
+			result.Primary = fallback.label
+			result.Confidence = fallback.score
+			result.Secondary = nil
+			clearArtifactRunnerUp(&result)
+		}
+		result.Reason = fmt.Sprintf("embedding ambiguous composite: top=%s (%.3f), companion=%s (%.3f), gap=%.3f", result.Primary, result.Confidence, LabelDocumentGenerate, pdf.score, gap)
 		return result, false
 	}
 

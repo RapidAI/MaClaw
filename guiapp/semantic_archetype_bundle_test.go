@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
@@ -78,9 +79,10 @@ func TestSemanticArchetypeBundleExpansionIsDeterministic(t *testing.T) {
 	}
 }
 
-// A cold office turn keeps the workspace read leg and leaves search, fetch,
-// and download latent until the turn declares them or the session ceiling
-// is spent.
+// A cold office turn keeps the workspace read leg and leaves search and
+// fetch latent. Download is offered so a later photo batch can finish in
+// this turn, and every download sibling stays optional: the deck must be
+// allowed to complete when the user did not ask for a file.
 func TestSemanticArchetypeBundleOfficeOffersDocumentLegs(t *testing.T) {
 	registry := newIMSemanticCapabilityRegistry()
 	needs, managed, err := semanticIntentNeedsFromClassification(registry, intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: .98})
@@ -90,7 +92,7 @@ func TestSemanticArchetypeBundleOfficeOffersDocumentLegs(t *testing.T) {
 	got := map[tool.CapabilityID]int{}
 	for _, need := range needs {
 		got[need.Capability]++
-		if need.Capability == tool.CapabilityFSReadLocal {
+		if need.Capability == tool.CapabilityFSReadLocal || need.Capability == tool.CapabilityArtifactAcquireRemote {
 			if need.Required {
 				t.Fatalf("bundle offer must stay optional: %#v", need)
 			}
@@ -99,8 +101,8 @@ func TestSemanticArchetypeBundleOfficeOffersDocumentLegs(t *testing.T) {
 			}
 		}
 	}
-	if got[tool.CapabilityFSReadLocal] != 1 || got[tool.CapabilityArtifactAcquireRemote] != 3 {
-		t.Fatalf("office companions=%v, want read 1 and download 3; needs=%#v", got, needs)
+	if got[tool.CapabilityFSReadLocal] != 1 || got[tool.CapabilityArtifactAcquireRemote] != agentservice.DownloadRepeatBudget {
+		t.Fatalf("office companions=%v, want read 1 and download %d; needs=%#v", got, agentservice.DownloadRepeatBudget, needs)
 	}
 	for _, latent := range []tool.CapabilityID{"information.search.web", tool.CapabilityInformationFetchWeb} {
 		if got[latent] != 0 {
@@ -400,7 +402,7 @@ func TestSemanticArchetypeBundleDocumentCompositeCarriesDocumentLegs(t *testing.
 				bundled[need.Capability]++
 			}
 		}
-		if bundled[tool.CapabilityArtifactAcquireRemote] != 3 || bundled[tool.CapabilityFSReadLocal] != 1 {
+		if bundled[tool.CapabilityArtifactAcquireRemote] != agentservice.DownloadRepeatBudget || bundled[tool.CapabilityFSReadLocal] != 1 {
 			t.Fatalf("document composite keeps download and read, not the lookup flood: bundled=%v needs=%#v", bundled, needs)
 		}
 	}

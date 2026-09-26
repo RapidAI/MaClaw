@@ -206,6 +206,51 @@ func TestRunnerBlocksGatedWriterBeforeExecutorWhenBaselineProbeFails(t *testing.
 	}
 }
 
+func TestRunnerCancelledContextNeverBlocksGatedWriterOnBaselineProbe(t *testing.T) {
+	// The pre-execution workspace gate exists to stop mutating execution
+	// without a baseline. A cancelled context never executes anything, so the
+	// gate must not turn the attempt into blocked-before-probe: the ordinary
+	// cancelled-context mapping (interrupted/uncertain) owns the terminal
+	// state, and the probe failure remains bounded audit evidence only.
+	store := NewMemoryStore()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	calls := 0
+	runner := Runner{
+		Store: store, LeaseOwner: "gated-writer",
+		WorkspaceProber: WorkspaceProberFunc(func(context.Context, Task, Attempt) (*WorkspaceProbe, error) {
+			return nil, errors.New("probe fails instantly under a cancelled context")
+		}),
+	}
+	task, attempt, err := runner.Run(ctx, Task{ProjectRef: "repo", Mode: "local"}, PolicySnapshot{
+		ProjectRoot: "repo", Mode: "local", FinalWorkspaceGateRequired: true,
+	}, executorFunc(func(context.Context, ExecutionRequest) ExecutionResult {
+		calls++
+		return ExecutionResult{Status: TaskCompleted, SideEffectState: SideEffectConfirmed}
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task == nil || task.Status != TaskInterrupted || attempt == nil || attempt.Status != TaskInterrupted || attempt.SideEffectState != SideEffectUncertain {
+		t.Fatalf("cancelled attempt must stay interrupted/uncertain: task=%+v attempt=%+v", task, attempt)
+	}
+	if calls != 1 {
+		t.Fatalf("executor calls=%d; a cancelled context still reaches the executor and its result is overridden", calls)
+	}
+	events, err := store.ListEvents(attempt.AttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seenFailure, seenBlock := false, false
+	for _, event := range events {
+		seenFailure = seenFailure || event.Type == "workspace_before_probe_failed"
+		seenBlock = seenBlock || event.Type == "workspace_gate_blocked"
+	}
+	if !seenFailure || seenBlock {
+		t.Fatalf("events=%+v; cancelled context must keep the probe audit but never the block", events)
+	}
+}
+
 func TestRunnerBlocksGatedWriterBeforeExecutorWithoutWorkspaceProber(t *testing.T) {
 	store := NewMemoryStore()
 	calls := 0

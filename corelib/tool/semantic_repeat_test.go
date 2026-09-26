@@ -215,6 +215,61 @@ func TestLiveGrantNameForCapability(t *testing.T) {
 	}
 }
 
+func TestAppendRepeatSiblingContinuesPastPublishedWave(t *testing.T) {
+	base := "need:artifact.acquire.remote:abc"
+	plan := ToolPlan{}
+	for index := 0; index < RepeatSiblingBudgetLimit; index++ {
+		needID := RepeatSiblingNeedID(base, index)
+		plan.Selections = append(plan.Selections, PlannedSelection{
+			ID:          "selection:" + needID,
+			NeedID:      needID,
+			AdapterName: "download_file",
+			FitProof:    FitProof{Digest: "proof", MatchedCapability: CapabilityArtifactAcquireRemote},
+		})
+	}
+	updated, id, ok := AppendRepeatSibling(plan, plan.Selections[0].ID)
+	if !ok {
+		t.Fatal("the 33rd download must extend the published wave")
+	}
+	if RepeatFamilyID(id) != base && RepeatFamilyID(strings.TrimPrefix(id, "selection:")) != base {
+		t.Fatalf("new sibling %q left the download family", id)
+	}
+	if len(updated.Selections) != RepeatSiblingBudgetLimit+1 {
+		t.Fatalf("selections=%d", len(updated.Selections))
+	}
+	gapped := ToolPlan{Selections: []PlannedSelection{
+		{ID: "selection:" + base, NeedID: base, AdapterName: "download_file"},
+		{ID: "selection:" + RepeatSiblingNeedID(base, 5), NeedID: RepeatSiblingNeedID(base, 5), AdapterName: "download_file"},
+	}}
+	gappedPlan, gappedID, openedGap := AppendRepeatSibling(gapped, gapped.Selections[0].ID)
+	if !openedGap {
+		t.Fatal("a gap in sibling suffixes refused the next download")
+	}
+	if gappedID == "selection:"+RepeatSiblingNeedID(base, 2) {
+		t.Fatalf("next id %q collided with a count-based suffix", gappedID)
+	}
+	if RepeatFamilyID(strings.TrimPrefix(gappedID, "selection:")) != base {
+		t.Fatalf("gapped sibling %q left the family", gappedID)
+	}
+	_ = gappedPlan
+	oneShot := ToolPlan{Selections: []PlannedSelection{{ID: "selection:once", NeedID: "need:once"}}}
+	if _, _, opened := AppendRepeatSibling(oneShot, "selection:once"); opened {
+		t.Fatal("a one-shot tool opened another invocation")
+	}
+	file := ArtifactContract{Kind: "file", MIMEType: "application/octet-stream", Required: true}
+	withEdge := ToolPlan{Selections: []PlannedSelection{
+		{ID: "selection:" + base, NeedID: base, AdapterName: "download_file", Produces: []ArtifactContract{file}},
+		{ID: "selection:" + RepeatSiblingNeedID(base, 1), NeedID: RepeatSiblingNeedID(base, 1), AdapterName: "download_file", Requires: []string{"selection:" + base}, Consumes: []ArtifactContract{file}, ArtifactDependencies: []ArtifactDependency{{ProducerSelection: "selection:" + base, Contract: file}}},
+	}}
+	extended, _, opened := AppendRepeatSibling(withEdge, withEdge.Selections[1].ID)
+	if !opened {
+		t.Fatal("a download with a producer edge did not extend")
+	}
+	if err := validateToolPlanArtifactDependencies(extended); err != nil {
+		t.Fatalf("extended plan is not publishable: %v", err)
+	}
+}
+
 func TestRepeatSiblingBudgetTreatsSilenceAsSingleInvocation(t *testing.T) {
 	for _, declared := range []int{-5, 0, 1} {
 		if got := RepeatSiblingBudget(declared); got != 1 {

@@ -776,7 +776,7 @@ func ReviewedDynamicIntentCapabilityNeedRules() map[intent.IntentLabel][]IntentC
 			Capability:     CapabilityFileDownload,
 			Polarity:       coretool.NeedRequire,
 			Required:       true,
-			MaxInvocations: 3,
+			MaxInvocations: DownloadRepeatBudget,
 		}},
 		intent.LabelFileRead: {{
 			Capability: CapabilityFileRead,

@@ -1785,6 +1785,48 @@ func coordinatedHostCallFingerprint(tx *sql.Tx, key string, grant InvocationGran
 	return current, nil
 }
 
+// AppendRepeatSibling persists one more invocation of a repeat family onto
+// the published plan. The plan ID stays the same. The next ready-surface
+// materialization can issue the new node. One-shot tools and a family that
+// is already at the turn cap return an error.
+func (c *SQLiteSemanticExecutionCoordinator) AppendRepeatSibling(scope InvocationScope, prototypeSelectionID string, now time.Time) (ToolPlan, error) {
+	if c == nil || c.db == nil {
+		return ToolPlan{}, fmt.Errorf("semantic execution coordinator is unavailable")
+	}
+	now = now.UTC()
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	tx, err := c.db.Begin()
+	if err != nil {
+		return ToolPlan{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	plan, err := coordinatedPublishedPlan(tx, scope)
+	if err != nil {
+		return ToolPlan{}, err
+	}
+	updated, _, ok := AppendRepeatSibling(plan, prototypeSelectionID)
+	if !ok {
+		return ToolPlan{}, fmt.Errorf("repeat sibling unavailable")
+	}
+	encoded, digest, err := canonicalRoutePlan(updated)
+	if err != nil {
+		return ToolPlan{}, err
+	}
+	result, err := tx.Exec(`UPDATE semantic_route_states SET plan_json = ?, plan_digest = ?, updated_at = ? WHERE route_key = ?`, encoded, digest, routeStateTime(now), routeStateKey(scope))
+	if err != nil {
+		return ToolPlan{}, err
+	}
+	if n, _ := result.RowsAffected(); n != 1 {
+		return ToolPlan{}, fmt.Errorf("repeat sibling was not stored")
+	}
+	if err := tx.Commit(); err != nil {
+		return ToolPlan{}, err
+	}
+	return updated, nil
+}
+
 // coordinatedPublishedPlan reads the published route through the transaction
 // that is settling a delivery. Calling Routes.PublishedPlan here would acquire
 // the coordinator's sole SQLite connection while this transaction already owns

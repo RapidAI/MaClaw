@@ -1,6 +1,8 @@
 package guiapp
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -85,6 +87,61 @@ func TestSemanticPetitionWebSearchOnReuseDroppedComposite(t *testing.T) {
 // The validator's safety invariant is unchanged: a child that adds a need
 // outside the petitioned label's templates is still rejected. This pins the
 // rejection itself, independent of the reuse-mirroring fix above.
+func TestPetitionExpansionAlignsLookupQualifierWithoutInventingNeeds(t *testing.T) {
+	ctx := withSemanticPetitionKeptLookup(context.Background(), intent.LabelSearch)
+	got := semanticNeedsForPetitionExpansionLookup([]tool.CapabilityNeed{
+		{ID: "need:search:1", Capability: "information.search.web", Qualifiers: map[string]string{"freshness": "current"}, Required: true},
+		{ID: "need:fetch:1", Capability: tool.CapabilityInformationFetchWeb, Required: true},
+		{ID: "need:office", Capability: tool.CapabilityDocumentWriteOffice, Required: true},
+	}, ctx)
+	if len(got) != 2 {
+		t.Fatalf("needs=%#v, want the search leg aligned and the foreign fetch dropped", got)
+	}
+	if got[0].ID != "need:search:1" || got[0].Qualifiers["freshness"] != "reference" {
+		t.Fatalf("search leg=%#v, want the original id with the petitioned qualifier", got[0])
+	}
+	if got[1].ID != "need:office" {
+		t.Fatalf("office leg=%#v", got[1])
+	}
+	fetchOnly := semanticNeedsForPetitionExpansionLookup([]tool.CapabilityNeed{
+		{ID: "need:office", Capability: tool.CapabilityDocumentWriteOffice, Required: true},
+	}, withSemanticPetitionKeptLookup(context.Background(), intent.LabelWebFetch))
+	for _, need := range fetchOnly {
+		if strings.TrimSpace(need.ID) == "" {
+			t.Fatalf("invented a need the planner would reject: %#v", fetchOnly)
+		}
+	}
+	if len(fetchOnly) != 1 || fetchOnly[0].ID != "need:office" {
+		t.Fatalf("office-only plan=%#v", fetchOnly)
+	}
+}
+
+func TestAuthorityMissRefundsClassButBlocksTheSameName(t *testing.T) {
+	cb := &sharedAgentLoopCallbacks{}
+	cb.notePetitionAuthorityMiss("download_file", true)
+	if cb.semanticEffectfulPetitionConsumed {
+		t.Fatal("class budget must stay available for a different tool")
+	}
+	if semanticToolsSearchStatus(cb, "download_file") != "[此名请愿未通过，不要重试；同类其它「可请愿」名字仍可调用]" {
+		t.Fatalf("download status=%q", semanticToolsSearchStatus(cb, "download_file"))
+	}
+	if semanticToolsSearchStatus(cb, "send_file") != "[可请愿：直接调用一次]" {
+		t.Fatalf("send_file status=%q", semanticToolsSearchStatus(cb, "send_file"))
+	}
+}
+
+func TestPetitionAuthorityMismatchDoesNotConsumeBudget(t *testing.T) {
+	if semanticPetitionFailureConsumesBudget(nil) {
+		t.Fatal("nil error is not a decision")
+	}
+	if semanticPetitionFailureConsumesBudget(errors.New("semantic petition expansion alters parent authority")) {
+		t.Fatal("an authority mismatch must leave the petition slot available")
+	}
+	if !semanticPetitionFailureConsumesBudget(errors.New("semantic petition expansion adds a need outside the petitioned label")) {
+		t.Fatal("a coverage rejection is a decision and consumes the slot")
+	}
+}
+
 func TestSemanticPetitionExpansionStillRejectsOutsideLabel(t *testing.T) {
 	parent := tool.ToolPlan{
 		RootTaskID: "root-validator",

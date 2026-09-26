@@ -108,6 +108,9 @@ func (h *IMMessageHandler) classifyIMExecutionProfileAndSemanticContext(ctx cont
 	}
 	normalizeSemanticClassificationForTurn(semantic)
 	if structurallyForced {
+		if isAskUserResponse && askUserResponseKeepsSemanticBudget(msg, workflowAgentLoop, semantic) {
+			return askUserSemanticExecutionProfile(semantic, h.executionContractForRegisteredToolName), semantic
+		}
 		return structuralProfile, semantic
 	}
 	if semantic != nil && imSemanticIntentIsManaged(*semantic) {
@@ -145,6 +148,9 @@ func classifyIMExecutionProfileWithSemantic(msg IMUserMessage, workflowAgentLoop
 
 func classifyIMExecutionProfileWithSemanticAndContracts(msg IMUserMessage, workflowAgentLoop, isAskUserResponse bool, semantic *intent.ClassificationResult, contractForTool func(string) ToolExecutionContract) ExecutionProfile {
 	if profile, forced := hardStructuralFullExecutionProfile(msg, workflowAgentLoop, isAskUserResponse); forced {
+		if isAskUserResponse && askUserResponseKeepsSemanticBudget(msg, workflowAgentLoop, semantic) {
+			return askUserSemanticExecutionProfile(semantic, contractForTool)
+		}
 		return profile
 	}
 	normalizeSemanticClassificationForTurn(semantic)
@@ -168,6 +174,37 @@ func structuralFullExecutionProfile(msg IMUserMessage, workflowAgentLoop, isAskU
 		return profile, true
 	}
 	return lengthFullExecutionProfile(msg)
+}
+
+// askUserResponseKeepsSemanticBudget is the continuation of a pending
+// question whose own utterance already names a governed capability.
+// The pending-reply binding is context, not an execution budget: a
+// confident "画出近一月股价趋势图" stays on the visual pipeline instead of
+// becoming an unbounded general agent. A weak or non-capability answer
+// still uses the full continuation profile.
+func askUserResponseKeepsSemanticBudget(msg IMUserMessage, workflowAgentLoop bool, semantic *intent.ClassificationResult) bool {
+	if semantic == nil || semantic.Degraded || strings.TrimSpace(semantic.WorkflowType) != "" {
+		return false
+	}
+	if semantic.Confidence < 0.85 || !imSemanticIntentIsManaged(*semantic) {
+		return false
+	}
+	if strings.TrimSpace(msg.Text) == "" || workflowAgentLoop || msg.IsBackground || len(msg.Attachments) > 0 {
+		return false
+	}
+	if expertDefForUserID(msg.UserID) != nil || hasStructuralFullExecutionSignal(msg.Text) {
+		return false
+	}
+	return true
+}
+
+func askUserSemanticExecutionProfile(semantic *intent.ClassificationResult, contractForTool func(string) ToolExecutionContract) ExecutionProfile {
+	profile := executionProfileFromSemanticIntent(semantic, contractForTool)
+	if profile.Reason != "" {
+		profile.Reason += "; "
+	}
+	profile.Reason += "ask_user continuation"
+	return profile
 }
 
 func hardStructuralFullExecutionProfile(msg IMUserMessage, workflowAgentLoop, isAskUserResponse bool) (ExecutionProfile, bool) {

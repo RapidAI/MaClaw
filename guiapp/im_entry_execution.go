@@ -256,7 +256,7 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 					if residueOpen {
 						relation := decideSemanticResidueRelation(*semanticIntent, msg.Text, residue)
 						if relation == semanticResidueContinue || relation == semanticResidueUnclear {
-							loopCtx.semanticResidueRemaining = residue.Remaining
+							loopCtx.semanticResidueRemaining = semanticResidueRemainingForFollowUp(residue.Remaining, msg.Text)
 							loopCtx.semanticResidueLookupFacts = residue.LookupFacts
 						}
 						if rewritten, applied := semanticClassificationWithOpenResidue(*semanticIntent, residue.Needs, relation); applied {

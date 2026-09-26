@@ -81,6 +81,9 @@ func TestTheManagedSurfaceBlockNamesEveryBannedGateway(t *testing.T) {
 	if !strings.Contains(block, "请稍候") || !strings.Contains(block, "立刻调用") {
 		t.Error("the block does not forbid stopping with a please-wait promise after search")
 	}
+	if !strings.Contains(block, "此名请愿未通过") || !strings.Contains(block, "同类其它") {
+		t.Error("the block treats one failed petition name as closing the whole class")
+	}
 	if !strings.Contains(block, "previous_turn_tool") {
 		t.Error("the block does not ban the invented previous_turn_tool alias")
 	}

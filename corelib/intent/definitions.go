@@ -294,14 +294,20 @@ func DefaultDefinitions() []IntentDefinition {
 		{
 			Label:  LabelLiveDataVisual,
 			Domain: "实时数据可视化 (Live data visualization)",
-			TreeText: "用户要求将当前实时外部事实渲染为一张图片或信息图。" +
-				"语义判据：先取得天气、汇率、行情等当前数据，再依据这些可信事实生成 PNG 并交付当前会话。" +
-				"排除：截取本机桌面 → screenshot；寻找或下载现成图片 → search/web_fetch；自由创作或文生图不是本能力。",
+			TreeText: "用户要求将当前实时外部事实渲染为一张图片、信息图或走势图。" +
+				"语义判据：先取得天气、汇率、行情等当前数据，再依据这些可信事实生成图片并交付当前会话。" +
+				"股价趋势图、走势图、折线图、K线或柱状行情图属于本标签，不是 PDF。" +
+				"排除：把已有事实排版成 PDF → document_generate；截取本机桌面 → screenshot；寻找或下载现成图片 → search/web_fetch；自由创作或文生图不是本能力。",
 			EmbedTexts: []string{
 				"生成一张实时天气实况图",
 				"把当前汇率制作成信息图",
+				"画出近一月股价趋势图",
+				"把近期股价画成走势图",
+				"画一张股价折线图",
 				"render a live weather graphic",
 				"create an infographic from the current stock price",
+				"plot the last month of closing prices",
+				"draw a stock price trend chart",
 			},
 			ToolNames: []string{},
 		},

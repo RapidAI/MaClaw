@@ -134,21 +134,22 @@ func withSemanticReusableLookupFacts(ctx context.Context) context.Context {
 }
 
 // semanticReuseStoredLookupFacts reports whether this sentence may consume a
-// web lookup the session already recorded. A new high-confidence lookup, or
-// an explicit refresh, still searches. A later generate or short follow-up
-// does not.
+// web lookup the session already recorded. A classified lookup or a new deck
+// searches again. A later generate, or a short follow-up, may reuse.
 func semanticReuseStoredLookupFacts(text string, current intent.ClassificationResult) bool {
-	if lexicalFreshLookupRequest(text) || lexicalWebSearchRequest(text) {
+	if current.Degraded || lexicalFreshLookupRequest(text) || lexicalWebSearchRequest(text) {
 		return false
 	}
 	if semanticUtteranceIsTaskFollowUp(text) {
 		return true
 	}
 	switch current.Primary {
-	case intent.LabelSearch, intent.LabelLiveData, intent.LabelLiveDataVisual, intent.LabelWebFetch:
-		if current.Confidence >= 0.85 {
-			return false
-		}
+	case intent.LabelSearch, intent.LabelLiveData, intent.LabelLiveDataVisual, intent.LabelWebFetch, intent.LabelOffice:
+		// A classified lookup or a new deck is a new subject. The old 0.85
+		// cliff reused 崇州's page for "重庆天气，生成格式化pdf" at 0.839.
+		// Generating from the open facts stays on a document label and still
+		// falls through below.
+		return false
 	}
 	return true
 }
@@ -229,23 +230,49 @@ func semanticNeedsForPetitionExpansionLookup(needs []tool.CapabilityNeed, ctx co
 			kept = append(kept, need)
 			continue
 		}
-		matched := false
+		var qualifiers map[string]string
+		found := false
 		for _, template := range templates {
-			if need.Capability == template.Capability && sameSemanticQualifiers(need.Qualifiers, template.Qualifiers) {
-				matched = true
+			if need.Capability == template.Capability {
+				qualifiers = template.Qualifiers
+				found = true
 				break
 			}
 		}
-		if matched {
-			kept = append(kept, need)
+		if !found {
+			// A lookup leg from another label (live_data's freshness=current
+			// search, when the petition is web_fetch) stays dropped. The
+			// parent already omitted it on conversation reuse.
+			dropped = true
 			continue
 		}
-		dropped = true
+		// The composite resolver emits this capability under whichever label
+		// it saw first. live_data's freshness=current does not match a search
+		// petition's reference template, so the old qualifier check dropped
+		// the leg the model just asked for and the expansion added nothing.
+		// Align the qualifier to the petitioned template; the foreign leg is
+		// not kept as its own authority.
+		if !sameSemanticQualifiers(need.Qualifiers, qualifiers) {
+			need.Qualifiers = cloneQualifierMap(qualifiers)
+			dropped = true
+		}
+		kept = append(kept, need)
 	}
 	if !dropped {
 		return needs
 	}
 	return kept
+}
+
+func cloneQualifierMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 func conversationHasReusableLookupFacts(history []agent.ConversationEntry, userText string) bool {

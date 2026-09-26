@@ -788,7 +788,7 @@ func toolPolicyFromMetadata(messageMetadata, sessionMetadata map[string]string) 
 			return policy
 		}
 	}
-	return v2.ToolFilterNone
+	return v2.ToolFilterFull
 }
 
 func mutationScopeFromMetadata(messageMetadata, sessionMetadata map[string]string) v2.MutationScope {

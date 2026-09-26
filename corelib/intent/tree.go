@@ -143,6 +143,8 @@ Rules:
 - web_fetch requires a concrete URL in the user message. Never use web_fetch for a city, weather, price, or other open-ended request without a URL; those current facts are live_data.
 - A composite request may keep a lookup label (search / live_data) together with document_generate when the user wants current facts rendered as a PDF. Same-domain exclusivity still applies (document_generate vs opening an existing file; document_generate vs workflow_task).
 - Current externally acquired facts rendered as a PDF → live_data + document_generate, workflow_type=""
+- Drawing current facts as a trend chart, line chart, candlestick, or infographic (股价趋势图、走势图、折线图) → live_data_visual, never document_generate. document_generate is a PDF file only.
+- Searching the web for a photo and placing it in a new deck (网上搜索一张照片做成PPT) → office primary with search as the next candidate, workflow_type="presentation_design". Do not drop the search half.
 - "帮我写一份研究报告" → workflow_task (multi-phase research), not document_generate
 - When a message is genuinely ambiguous without context, give the top candidate a lower score (0.50-0.65) rather than forcing high confidence`
 

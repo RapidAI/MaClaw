@@ -107,6 +107,9 @@ func TestSemanticSessionResidueFollowUpKeepsOffice(t *testing.T) {
 	if lookup != semanticResidueContinue {
 		t.Fatalf("继续查一下天气 relation=%s", lookup)
 	}
+	if decideSemanticResidueRelation(intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: 0.9}, "把重庆天气发给我", openOfficeResidue()) != semanticResidueNone {
+		t.Fatal("把重庆天气发给我 pulled the open report into the weather delivery")
+	}
 	rewritten, ok = semanticClassificationWithOpenResidue(weather, officeResidueNeeds(), lookup)
 	if !ok || !rewritten.HasLabel(intent.LabelOffice) || !rewritten.HasLabel(intent.LabelSearch) {
 		t.Fatalf("继续查一下天气 rewritten=%#v ok=%v", rewritten, ok)
@@ -278,6 +281,99 @@ func TestNextCityWeatherDoesNotContinueAsScreenshot(t *testing.T) {
 	}
 	if decideSemanticResidueRelation(current, "然后写成周报", residue) == semanticResidueNone {
 		t.Fatal("然后写成周报 was treated as another city lookup")
+	}
+}
+
+func TestContinueMoreImagesDropsSpentDownloadCeiling(t *testing.T) {
+	in := map[string]int{
+		string(tool.CapabilityArtifactAcquireRemote): 0,
+		"document.generate.file":                     0,
+	}
+	got := semanticResidueRemainingForFollowUp(in, "继续补图")
+	if _, ok := got[string(tool.CapabilityArtifactAcquireRemote)]; ok {
+		t.Fatal("继续补图 kept the spent download ceiling")
+	}
+	if got["document.generate.file"] != 0 {
+		t.Fatal("继续补图 cleared the generate ceiling")
+	}
+	for _, text := range []string{"继续下载剩下的", "再下几张"} {
+		renewed := semanticResidueRemainingForFollowUp(in, text)
+		if _, ok := renewed[string(tool.CapabilityArtifactAcquireRemote)]; ok {
+			t.Fatalf("%s kept the spent download ceiling", text)
+		}
+	}
+	for _, text := range []string{"改短一点", "继续下周的报告", "再下结论", "不要下载了"} {
+		kept := semanticResidueRemainingForFollowUp(in, text)
+		if kept[string(tool.CapabilityArtifactAcquireRemote)] != 0 {
+			t.Fatalf("%s renewed the download ceiling", text)
+		}
+	}
+}
+
+func TestNextCityWeatherPDFDoesNotContinueSpentGenerate(t *testing.T) {
+	residue := semanticSessionResidue{
+		Status: semanticResidueOpen,
+		Needs: []tool.CapabilityNeed{
+			{ID: "need:search", Capability: "information.search.web", Required: true},
+			{ID: "need:gen", Capability: "document.generate.file", Required: true},
+			{ID: "need:deliver", Capability: "artifact.deliver.current_channel", Required: true},
+		},
+		Remaining:   map[string]int{"information.search.web": 0, "document.generate.file": 0},
+		LookupFacts: true,
+	}
+	current := intent.ClassificationResult{
+		Primary:    intent.LabelLiveData,
+		Secondary:  []intent.IntentLabel{intent.LabelDocumentGenerate},
+		Confidence: 0.839,
+		Reason:     "embedding declared composite: top=live_data (0.839), companion=document_generate (0.765)",
+	}
+	if decideSemanticResidueRelation(current, "重庆天气，生成格式化pdf", residue) != semanticResidueNone {
+		t.Fatal("重庆天气，生成格式化pdf continued the spent Chongzhou PDF grant")
+	}
+	if decideSemanticResidueRelation(current, "然后重庆天气，生成格式化pdf", residue) != semanticResidueNone {
+		t.Fatal("然后重庆天气，生成格式化pdf spent the previous city's PDF grant")
+	}
+	if decideSemanticResidueRelation(current, "然后把重庆天气发给我", residue) != semanticResidueNone {
+		t.Fatal("然后把重庆天气发给我 was treated as an edit of the previous PDF")
+	}
+	lookupOnly := intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: 0.90}
+	if decideSemanticResidueRelation(lookupOnly, "然后把重庆天气发给我", residue) != semanticResidueNone {
+		t.Fatal("a lookup-only resend of Chongqing weather kept the spent grant")
+	}
+	modest := intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: 0.70}
+	if decideSemanticResidueRelation(modest, "然后把重庆天气发给我", residue) != semanticResidueNone {
+		t.Fatal("a modest lookup resend kept the spent weather grant")
+	}
+	asPDF := intent.ClassificationResult{Primary: intent.LabelDocumentGenerate, Secondary: []intent.IntentLabel{intent.LabelLiveData}, Confidence: 0.9}
+	if decideSemanticResidueRelation(asPDF, "把重庆天气发给我", residue) != semanticResidueNone {
+		t.Fatal("a PDF-labeled resend of Chongqing weather kept the spent grant")
+	}
+	if decideSemanticResidueRelation(intent.ClassificationResult{Primary: intent.LabelDocumentGenerate, Confidence: 0.92}, "生成pdf报告", residue) == semanticResidueNone {
+		t.Fatal("生成pdf报告 was treated as a new city lookup")
+	}
+}
+
+func TestStandaloneRequestDoesNotSpendOpenGrant(t *testing.T) {
+	residue := semanticSessionResidue{
+		Status: semanticResidueOpen,
+		Needs: []tool.CapabilityNeed{
+			{ID: "need:search", Capability: "information.search.web", Required: true},
+			{ID: "need:gen", Capability: "document.generate.file", Required: true},
+		},
+		Remaining:   map[string]int{"information.search.web": 0, "document.generate.file": 0},
+		LookupFacts: true,
+	}
+	current := intent.ClassificationResult{
+		Primary:    intent.LabelLiveData,
+		Secondary:  []intent.IntentLabel{intent.LabelDocumentGenerate},
+		Confidence: 0.70,
+	}
+	if decideSemanticResidueRelation(current, "整理杭州今天的情况，做成pdf", residue) != semanticResidueNone {
+		t.Fatal("a new managed request spent the open PDF grant")
+	}
+	edit := intent.ClassificationResult{Primary: intent.LabelFileWrite, Confidence: 0.80}
+	if decideSemanticResidueRelation(edit, "改短一点", residue) != semanticResidueUnclear {
+		t.Fatal("a short edit of the open delivery opened a new grant")
 	}
 }
 
@@ -502,8 +598,37 @@ func TestStoredLookupFactsServeGenerateButNotNewLookup(t *testing.T) {
 	if semanticReuseStoredLookupFacts("上海天气", fresh) {
 		t.Fatal("a new high-confidence lookup must search again")
 	}
+	chongqing := intent.ClassificationResult{
+		Primary:    intent.LabelLiveData,
+		Secondary:  []intent.IntentLabel{intent.LabelDocumentGenerate},
+		Confidence: 0.839,
+	}
+	if semanticReuseStoredLookupFacts("重庆天气，生成格式化pdf", chongqing) {
+		t.Fatal("a new city PDF reused the previous city's lookup facts")
+	}
 	if semanticReuseStoredLookupFacts("再查一下最新天气", generate) {
 		t.Fatal("explicit refresh must search again")
+	}
+	deck := intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: 0.90}
+	if semanticReuseStoredLookupFacts("生成纪念小布生日PPT，网上搜索一张布偶照片", deck) {
+		t.Fatal("a new deck must not reuse another topic's lookup facts")
+	}
+}
+
+func TestOfficeDeckDoesNotContinueGenerateResidue(t *testing.T) {
+	residue := semanticSessionResidue{
+		Status: semanticResidueOpen,
+		Needs: []tool.CapabilityNeed{
+			{ID: "need:gen", Capability: "document.generate.file", Required: true},
+			{ID: "need:search", Capability: "information.search.web", Required: true},
+		},
+		LookupFacts: true,
+		Summary:     "画出近一月股价趋势图",
+	}
+	current := intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: 0.90, Layer: 3}
+	text := "生成纪念小布（布偶 猫）５岁生日的ｐｐｔ，网上搜索一张漂亮 布偶 照片作为它的照片。"
+	if relation := decideSemanticResidueRelation(current, text, residue); relation != semanticResidueSwitch {
+		t.Fatalf("relation=%s, want switch off the previous generate residue", relation)
 	}
 }
 

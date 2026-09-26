@@ -95,7 +95,7 @@ func appendManagedSemanticSurfaceRules(b *strings.Builder) {
 	b.WriteString(`
 ## 本回合的工具面
 - 本回合的工具是按你要做的事预先授权的。**工具列表就是全部可用工具**（仅限此刻列表里出现的名字），名称就是普通工具名（如 web_search、generate_pdf、send_file）。
-- 工具列表之外还有**可请愿能力**（如 web_search、web_fetch、download_file、bash、office 等）：它们此刻不在列表里，但都是真实工具。需要时先用 tools_search 查确切名字和状态——标记「可请愿」的名字，把它当普通工具**单独**调用一次（download_file 用 url+save_path，bash 用 command），这表示向主机请求授权：获批后名字会加入列表，按提示重新发起即真正执行；标记「已列入本轮计划/已用尽/不可用」的名字调用必被拒绝。工具结果里点名建议的工具（如反爬提示里的 download_file）按此办理：那是主机指的路，不是缺工具。请愿每轮每类限一次，留给真正需要的能力。
+- 工具列表之外还有**可请愿能力**（如 web_search、web_fetch、download_file、bash、office 等）：它们此刻不在列表里，但都是真实工具。需要时先用 tools_search 查确切名字和状态——标记「可请愿」的名字，把它当普通工具**单独**调用一次（download_file 用 url+save_path，bash 用 command），这表示向主机请求授权：获批后名字会加入列表，按提示重新发起即真正执行；标记「已列入本轮计划/已用尽/不可用/此名请愿未通过」的名字不要重试。此名请愿未通过只关掉这一个名字，同类其它「可请愿」名字仍可调用。工具结果里点名建议的工具（如反爬提示里的 download_file）按此办理：那是主机指的路，不是缺工具。请愿每轮每类限一次，留给真正需要的能力。
 - 不要凭记忆调用 manage_skill、call_mcp_tool、discover_tool、craft_tool、search_and_install_skill、previous_turn_tool，也不要复用历史里的 invoke_* 名称：它们在本回合不存在，调用只会被拒绝，并且浪费一轮。
 - 多步任务会按顺序解锁：当前列表可能只有查询；查询成功后，文档生成或投递会出现在**同一次回复**的下一次请求列表里。那不是「没有 PDF 工具」，不要向用户宣布缺工具，也不要用 python、bash、write_file 绕过。工具一旦出现在当前列表（例如 generate_pdf、database），必须立刻调用；禁止说「请稍候」然后结束，也不要等用户再发一条消息。
 - 数据库必须走 database / database_query：禁止把 mysql/psql/sqlcmd 写进回复或交给 bash，禁止在命令里带密码。多个数据源先 list_connections，按主机/库名选 profile_id；没有匹配时 propose_profile（只传 host/username/database）。

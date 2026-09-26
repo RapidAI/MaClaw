@@ -105,6 +105,24 @@ func TestClassifyIMExecutionProfileLiveVisualIsBounded(t *testing.T) {
 	}
 }
 
+func TestAskUserContinuationKeepsConfidentVisualBudget(t *testing.T) {
+	semantic := &intent.ClassificationResult{
+		Primary:    intent.LabelLiveData,
+		Secondary:  []intent.IntentLabel{intent.LabelLiveDataVisual},
+		Confidence: 0.89,
+		Layer:      2,
+	}
+	profile := classifyIMExecutionProfileWithSemantic(IMUserMessage{Text: "画出近一月股价趋势图"}, false, true, semantic)
+	if !profile.IsLight() || profile.IterationBudget != 4 || !strings.Contains(profile.Reason, "ask_user continuation") {
+		t.Fatalf("profile=%+v, want the visual budget kept on an ask_user continuation", profile)
+	}
+	weak := &intent.ClassificationResult{Primary: intent.LabelContinuation, Confidence: 0.9}
+	full := classifyIMExecutionProfileWithSemantic(IMUserMessage{Text: "好的"}, false, true, weak)
+	if full.IsLight() || full.Reason != "ask_user continuation" {
+		t.Fatalf("weak answer profile=%+v, want the unbounded continuation", full)
+	}
+}
+
 func TestClassifyIMExecutionProfileSemanticWeatherPDFUsesFullPlannedChain(t *testing.T) {
 	semantic := &intent.ClassificationResult{
 		Primary:    intent.LabelLiveData,

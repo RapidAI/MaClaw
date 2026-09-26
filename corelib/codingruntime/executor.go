@@ -231,7 +231,15 @@ func (r Runner) RunWithContinuation(ctx context.Context, task Task, policy Polic
 	// was allowed to run.  Keep the attempt in the ledger as blocked so callers
 	// receive a durable, reviewable decision and no executor is started.
 	requiresWorkspaceGate := attempt.Policy.FinalWorkspaceGateRequired && !attempt.Policy.ReadOnly
-	if requiresWorkspaceGate && r.WorkspaceProber == nil {
+	// A cancelled context cannot reach the model or any mutating tool, so the
+	// pre-execution workspace gate has nothing to authorize: its probe is
+	// guaranteed to fail under a dead context, and blocking here would
+	// misreport a cancelled attempt as blocked-before-probe instead of the
+	// ordinary interrupted/uncertain terminal state produced by the
+	// cancellation mapping after Execute. Keep the probe's audit events;
+	// skip only the block decisions.
+	ctxLive := ctx == nil || ctx.Err() == nil
+	if requiresWorkspaceGate && ctxLive && r.WorkspaceProber == nil {
 		return r.blockBeforeExecution(created, attempt, "workspace_probe_unavailable", "writer completion requires a read-only workspace probe before execution")
 	}
 	if r.WorkspaceProber != nil {
@@ -246,7 +254,7 @@ func (r Runner) RunWithContinuation(ctx context.Context, task Task, policy Polic
 				digest = codingRuntimeErrorDigest(probeErr.Error())
 			}
 			_, _ = r.Store.AppendEvent(attempt.AttemptID, r.LeaseOwner, "workspace_before_probe_failed", digest, r.now())
-			if requiresWorkspaceGate {
+			if requiresWorkspaceGate && ctxLive {
 				return r.blockBeforeExecution(created, attempt, "workspace_before_probe_failed", "writer execution requires a successful read-only workspace baseline")
 			}
 		} else if updatedAttempt, recordErr := r.Store.RecordWorkspaceBefore(attempt.AttemptID, r.LeaseOwner, probe, r.now()); recordErr == nil {
@@ -257,7 +265,7 @@ func (r Runner) RunWithContinuation(ctx context.Context, task Task, policy Polic
 			// write failure turn into an untracked mutation.
 		} else {
 			_, _ = r.Store.AppendEvent(attempt.AttemptID, r.LeaseOwner, "workspace_before_probe_record_failed", codingRuntimeErrorDigest(recordErr.Error()), r.now())
-			if requiresWorkspaceGate {
+			if requiresWorkspaceGate && ctxLive {
 				return r.blockBeforeExecution(created, attempt, "workspace_before_probe_record_failed", "writer execution requires a durably recorded workspace baseline")
 			}
 		}

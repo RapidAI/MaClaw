@@ -296,7 +296,7 @@ func TestIMSemanticWorkflowPolicyStateMapping(t *testing.T) {
 		want   string
 	}{
 		{v2.ToolFilterNone, false, ""},
-		{v2.ToolFilterFull, true, ""},
+		{v2.ToolFilterFull, true, imSemanticPolicyStateExecution},
 		{v2.ToolFilterNone, true, imSemanticPolicyStateBlocked},
 		{v2.ToolFilterDocOnly, true, "doc_only"},
 		{v2.ToolFilterPlanning, true, "planning"},
@@ -306,6 +306,40 @@ func TestIMSemanticWorkflowPolicyStateMapping(t *testing.T) {
 		if got := imSemanticWorkflowPolicyState(tc.policy, tc.apply); got != tc.want {
 			t.Fatalf("state(%q, %v)=%q, want %q", tc.policy, tc.apply, got, tc.want)
 		}
+	}
+}
+
+// TestIMSemanticPolicyStateExecutionCeiling pins why a "full" phase gets its
+// own state instead of projecting to "" (no constraint). The ceiling is derived
+// from v2.RequiredToolNamesForPolicy(ToolPolicyFull): local shell and local
+// filesystem only, so the takeover families are denied while the effects an
+// execution phase actually performs stay available.
+func TestIMSemanticPolicyStateExecutionCeiling(t *testing.T) {
+	denied := semanticPolicyDenySet(t, imSemanticPolicyStateExecution)
+	for _, capability := range []tool.CapabilityID{
+		tool.CapabilityShellExecuteRemoteHost,
+		tool.CapabilityBrowserControlWeb,
+		tool.CapabilityComputerControlDesktop,
+	} {
+		if !denied[capability] {
+			t.Fatalf("execution must deny the takeover family %s", capability)
+		}
+	}
+	for _, capability := range []tool.CapabilityID{
+		tool.CapabilityFSWriteLocal,
+		tool.CapabilityShellExecuteLocal,
+		tool.CapabilityDocumentWriteOffice,
+	} {
+		if denied[capability] {
+			t.Fatalf("execution must keep %s available, it is part of a full phase's work", capability)
+		}
+	}
+	if len(denied) != 3 {
+		// This count is a deliberate gate, not a convenience snapshot: adding a
+		// fourth deny to the execution state must be a conscious, reviewed
+		// decision (and requires updating this test in the same change), so the
+		// ceiling cannot silently tighten beneath running workflows.
+		t.Fatalf("execution denies %d families, want exactly the three takeover families", len(denied))
 	}
 }
 

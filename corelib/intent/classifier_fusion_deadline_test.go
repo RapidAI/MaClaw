@@ -336,6 +336,275 @@ func TestClassifyByEmbeddingSearchPdfCompositeDoesNotCollapseToPlainLookup(t *te
 	}
 }
 
+func TestClassifyByEmbeddingCompetingVisualEscalatesWithoutPDFToken(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	anchors := []intentAnchor{
+		{Label: LabelLiveData, Vecs: [][]float32{{0.90, 0.4358898943540673}}},
+		{Label: LabelDocumentGenerate, Vecs: [][]float32{{0.74, 0.6726065725724457}}},
+		{Label: LabelLiveDataVisual, Vecs: [][]float32{{0.86, 0.5102938362773704}}},
+	}
+	// Same competing scores. Chart words, paraphrases, and unrelated wording
+	// all escalate; none of them is a local chart grant.
+	for _, text := range []string{
+		"画出近一月股价趋势图",
+		"画一张股价柱状图",
+		"画个天气图",
+		"看看这个柱状物",
+		"最近情况如何",
+	} {
+		result, confident := classifyByEmbedding(emb, anchors, text)
+		if confident || result.Primary != LabelLiveData || len(result.Secondary) != 0 {
+			t.Fatalf("%q result=%+v confident=%v, want escalation without a local artifact", text, result, confident)
+		}
+		if result.RunnerUp == LabelLiveDataVisual || result.RunnerUp == LabelDocumentGenerate {
+			t.Fatalf("%q runner-up %s must not reattach the cosine winner", text, result.RunnerUp)
+		}
+		if !strings.Contains(result.Reason, "ambiguous composite") {
+			t.Fatalf("%q reason=%q, want ambiguous composite escalation", text, result.Reason)
+		}
+	}
+}
+
+func TestClassifyByEmbeddingNamedPDFSurvivesStrongerVisualScore(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	// Same scores as the chart replacement above. The utterance names a PDF
+	// and does not name a chart, so the visual margin must not drop generate.
+	result, confident := classifyByEmbedding(emb, []intentAnchor{
+		{Label: LabelLiveData, Vecs: [][]float32{{0.90, 0.4358898943540673}}},
+		{Label: LabelDocumentGenerate, Vecs: [][]float32{{0.74, 0.6726065725724457}}},
+		{Label: LabelLiveDataVisual, Vecs: [][]float32{{0.86, 0.5102938362773704}}},
+	}, "崇州天气，生成格式化pdf")
+	if !confident || result.Layer != 2 || result.Primary != LabelLiveData || len(result.Secondary) != 1 || result.Secondary[0] != LabelDocumentGenerate {
+		t.Fatalf("result=%+v confident=%v, want the verified PDF composite", result, confident)
+	}
+}
+
+func TestClassifyByEmbeddingChartAndPDFKeepsPDFComposite(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	// Both artifacts are named. The visual score still outranks PDF, but a
+	// tree round-trip is not required to keep the file the user named, and a
+	// timeout must not be able to drop it.
+	result, confident := classifyByEmbedding(emb, []intentAnchor{
+		{Label: LabelLiveData, Vecs: [][]float32{{0.90, 0.4358898943540673}}},
+		{Label: LabelDocumentGenerate, Vecs: [][]float32{{0.74, 0.6726065725724457}}},
+		{Label: LabelLiveDataVisual, Vecs: [][]float32{{0.86, 0.5102938362773704}}},
+	}, "画出股价趋势图并生成pdf")
+	if !confident || result.Primary != LabelLiveData || len(result.Secondary) != 1 || result.Secondary[0] != LabelDocumentGenerate {
+		t.Fatalf("result=%+v confident=%v, want the verified PDF composite", result, confident)
+	}
+}
+
+func TestClassifyByEmbeddingVisualAboveFloorButBelowPDFEscalates(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	// Visual clears 0.73 but loses the cosine comparison. That margin used
+	// to keep the PDF pair and miss a chart the user did not spell with the
+	// chart word list.
+	result, confident := classifyByEmbedding(emb, []intentAnchor{
+		{Label: LabelLiveData, Vecs: [][]float32{{0.90, 0.4358898943540673}}},
+		{Label: LabelDocumentGenerate, Vecs: [][]float32{{0.85, 0.5267826876426364}}},
+		{Label: LabelLiveDataVisual, Vecs: [][]float32{{0.74, 0.6726065725724457}}},
+	}, "画个天气图")
+	if confident || result.Primary != LabelLiveData || len(result.Secondary) != 0 {
+		t.Fatalf("result=%+v confident=%v, want escalation", result, confident)
+	}
+}
+
+func TestClassifyByEmbeddingVisualLeaderStaysVisual(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	result, confident := classifyByEmbedding(emb, []intentAnchor{
+		{Label: LabelLiveDataVisual, Vecs: [][]float32{{0.92, 0.39191835884530846}}},
+		{Label: LabelLiveData, Vecs: [][]float32{{0.80, 0.6}}},
+		{Label: LabelDocumentGenerate, Vecs: [][]float32{{0.75, 0.6614378277661477}}},
+	}, "画出近一月股价趋势图")
+	if !confident || result.Primary != LabelLiveDataVisual || len(result.Secondary) != 0 {
+		t.Fatalf("result=%+v confident=%v, want a plain live_data_visual grant", result, confident)
+	}
+}
+
+func TestClassifyByEmbeddingVisualLeaderYieldsToNamedPDF(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	result, confident := classifyByEmbedding(emb, []intentAnchor{
+		{Label: LabelLiveDataVisual, Vecs: [][]float32{{0.92, 0.39191835884530846}}},
+		{Label: LabelLiveData, Vecs: [][]float32{{0.85, 0.5267826876426364}}},
+		{Label: LabelSearch, Vecs: [][]float32{{0.90, 0.4358898943540673}}},
+		{Label: LabelDocumentGenerate, Vecs: [][]float32{{0.75, 0.6614378277661477}}},
+	}, "画出趋势并生成pdf")
+	if !confident || result.Primary != LabelLiveData || len(result.Secondary) != 1 || result.Secondary[0] != LabelDocumentGenerate {
+		t.Fatalf("result=%+v confident=%v, want live_data + PDF, not the higher search or chart score", result, confident)
+	}
+}
+
+func TestClassifyByEmbeddingVisualLeaderNamedPDFFallsBackToSearchNotWebFetch(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	// live_data is below the hint floor. web_fetch scores higher than search,
+	// but a tree timeout keeps search and collapses web_fetch to unknown.
+	result, confident := classifyByEmbedding(emb, []intentAnchor{
+		{Label: LabelLiveDataVisual, Vecs: [][]float32{{0.92, 0.39191835884530846}}},
+		{Label: LabelLiveData, Vecs: [][]float32{{0.50, 0.8660254}}},
+		{Label: LabelWebFetch, Vecs: [][]float32{{0.90, 0.4358898943540673}}},
+		{Label: LabelSearch, Vecs: [][]float32{{0.75, 0.6614378277661477}}},
+		{Label: LabelDocumentGenerate, Vecs: [][]float32{{0.50, 0.8660254}}},
+	}, "画出趋势并生成pdf")
+	if confident || result.Primary != LabelSearch || len(result.Secondary) != 0 {
+		t.Fatalf("result=%+v confident=%v, want a search hint, not web_fetch", result, confident)
+	}
+}
+
+func TestClassifyByEmbeddingVisualLeaderNamedPDFBelowLiveDataFloorEscalates(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	// live_data 0.80 sits under the 0.82 companion floor. A chart leader must
+	// not mint the PDF pair from that score.
+	result, confident := classifyByEmbedding(emb, []intentAnchor{
+		{Label: LabelLiveDataVisual, Vecs: [][]float32{{0.92, 0.39191835884530846}}},
+		{Label: LabelLiveData, Vecs: [][]float32{{0.80, 0.6}}},
+		{Label: LabelDocumentGenerate, Vecs: [][]float32{{0.75, 0.6614378277661477}}},
+	}, "画出趋势并生成pdf")
+	if confident || result.Primary != LabelLiveData || len(result.Secondary) != 0 {
+		t.Fatalf("result=%+v confident=%v, want a lookup escalation", result, confident)
+	}
+}
+
+func TestClassifyByEmbeddingVisualLeaderNamedPDFWithoutSupportEscalates(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	result, confident := classifyByEmbedding(emb, []intentAnchor{
+		{Label: LabelLiveDataVisual, Vecs: [][]float32{{0.92, 0.39191835884530846}}},
+		{Label: LabelLiveData, Vecs: [][]float32{{0.80, 0.6}}},
+		{Label: LabelDocumentGenerate, Vecs: [][]float32{{0.50, 0.8660254}}},
+	}, "画出趋势并生成pdf")
+	if confident || result.Primary != LabelLiveData || len(result.Secondary) != 0 {
+		t.Fatalf("result=%+v confident=%v, want a lookup escalation, not a chart grant", result, confident)
+	}
+}
+
+func TestUtteranceNamesPDFRequiresTokenBoundary(t *testing.T) {
+	if !utteranceNamesPDF("崇州天气，生成格式化pdf") || !utteranceNamesPDF("生成PDF报告") || !utteranceNamesPDF("生成pdf，图在 a.pdf") || !utteranceNamesPDF("生成ＰＤＦ报告") || !utteranceNamesPDF("查完了。pdf") || !utteranceNamesPDF("不要pdf，还是生成pdf") {
+		t.Fatal("pdf format token must match")
+	}
+	if utteranceNamesPDF("用 pdfium 渲染") || utteranceNamesPDF("画出近一月股价趋势图") || utteranceNamesPDF("画出趋势图，参见 a.pdf") || utteranceNamesPDF(`C:\data\report.PDF`) || utteranceNamesPDF("参见报告．pdf") || utteranceNamesPDF("不要pdf，画出股价趋势图") || utteranceNamesPDF("不要　pdf") || utteranceNamesPDF("不要生成pdf") || utteranceNamesPDF("不要  生成  pdf") || utteranceNamesPDF("不要ＰＤＦ") || utteranceNamesPDF("no pdf, draw a chart") {
+		t.Fatal("pdf inside another word, a file extension, or a negation is not a generate request")
+	}
+}
+
+func TestClassifyByEmbeddingNegatedPDFDoesNotOverrideVisualLeader(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	result, confident := classifyByEmbedding(emb, []intentAnchor{
+		{Label: LabelLiveDataVisual, Vecs: [][]float32{{0.92, 0.39191835884530846}}},
+		{Label: LabelLiveData, Vecs: [][]float32{{0.80, 0.6}}},
+		{Label: LabelDocumentGenerate, Vecs: [][]float32{{0.75, 0.6614378277661477}}},
+	}, "不要pdf，画出近一月股价趋势图")
+	if !confident || result.Primary != LabelLiveDataVisual || result.HasLabel(LabelDocumentGenerate) {
+		t.Fatalf("result=%+v confident=%v, want the chart leader; a negated pdf is not a generate request", result, confident)
+	}
+}
+
+func TestClassifyByEmbeddingFileExtensionDoesNotOverrideVisualLeader(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	result, confident := classifyByEmbedding(emb, []intentAnchor{
+		{Label: LabelLiveDataVisual, Vecs: [][]float32{{0.92, 0.39191835884530846}}},
+		{Label: LabelLiveData, Vecs: [][]float32{{0.80, 0.6}}},
+		{Label: LabelDocumentGenerate, Vecs: [][]float32{{0.75, 0.6614378277661477}}},
+	}, "画出近一月股价趋势图，参见 a.pdf")
+	if !confident || result.Primary != LabelLiveDataVisual || len(result.Secondary) != 0 {
+		t.Fatalf("result=%+v confident=%v, want the chart leader; a .pdf path is not a generate request", result, confident)
+	}
+}
+
+func TestClassifyByEmbeddingWeakerVisualDoesNotDisturbPDFComposite(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	result, confident := classifyByEmbedding(emb, []intentAnchor{
+		{Label: LabelLiveData, Vecs: [][]float32{{0.90, 0.4358898943540673}}},
+		{Label: LabelDocumentGenerate, Vecs: [][]float32{{0.85, 0.5267826876426364}}},
+		{Label: LabelLiveDataVisual, Vecs: [][]float32{{0.60, 0.8}}},
+	}, "北京天气，输出格式化pdf报告")
+	if !confident || result.Primary != LabelLiveData || len(result.Secondary) != 1 || result.Secondary[0] != LabelDocumentGenerate {
+		t.Fatalf("result=%+v confident=%v, want the verified PDF composite", result, confident)
+	}
+}
+
+func competingVisualAnchors() []intentAnchor {
+	return []intentAnchor{
+		{Label: LabelLiveData, Vecs: [][]float32{{0.90, 0.4358898943540673}}},
+		{Label: LabelDocumentGenerate, Vecs: [][]float32{{0.74, 0.6726065725724457}}},
+		{Label: LabelLiveDataVisual, Vecs: [][]float32{{0.86, 0.5102938362773704}}},
+	}
+}
+
+func TestClassifyTreeReadsCompetingVisualParaphrase(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	uic := New(Config{
+		Embedder: emb,
+		LLMFunc: func(_, _ string) (string, error) {
+			return `{"top":[{"skill":"live_data_visual","score":0.91}]}`, nil
+		},
+	})
+	uic.mu.Lock()
+	uic.ready = true
+	uic.anchors = competingVisualAnchors()
+	uic.mu.Unlock()
+
+	result := uic.Classify(MessageContext{Text: "画个天气图"})
+	if result.Layer != 3 || result.Primary != LabelLiveDataVisual || len(result.Secondary) != 1 || result.Secondary[0] != LabelLiveData {
+		t.Fatalf("result=%+v, want the tree's chart reading with the lookup half", result)
+	}
+}
+
+func TestClassifyTreeReadsCompetingPDFParaphrase(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	uic := New(Config{
+		Embedder: emb,
+		LLMFunc: func(_, _ string) (string, error) {
+			return `{"top":[{"skill":"document_generate","score":0.91}]}`, nil
+		},
+	})
+	uic.mu.Lock()
+	uic.ready = true
+	uic.anchors = competingVisualAnchors()
+	uic.mu.Unlock()
+
+	result := uic.Classify(MessageContext{Text: "把天气整理成一份报告文件"})
+	if result.Layer != 3 || result.Primary != LabelLiveData || len(result.Secondary) != 1 || result.Secondary[0] != LabelDocumentGenerate {
+		t.Fatalf("result=%+v, want the tree's PDF reading", result)
+	}
+}
+
+func TestClassifyTreePlainLookupDoesNotReattachCompetingArtifact(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	uic := New(Config{
+		Embedder: emb,
+		LLMFunc: func(_, _ string) (string, error) {
+			return `{"top":[{"skill":"live_data","score":0.91}]}`, nil
+		},
+	})
+	uic.mu.Lock()
+	uic.ready = true
+	uic.anchors = competingVisualAnchors()
+	uic.mu.Unlock()
+
+	result := uic.Classify(MessageContext{Text: "画个天气图"})
+	if result.Primary != LabelLiveData || len(result.Secondary) != 0 || result.HasLabel(LabelLiveDataVisual) || result.HasLabel(LabelDocumentGenerate) {
+		t.Fatalf("result=%+v, cosine winner must not survive a plain lookup verdict", result)
+	}
+}
+
+func TestClassifyCompetingVisualTimeoutStaysLookup(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	uic := New(Config{
+		Embedder:           emb,
+		LLMFunc:            hangLLM,
+		LLMTimeout:         30 * time.Second,
+		FusionTreeDeadline: 30 * time.Millisecond,
+	})
+	uic.mu.Lock()
+	uic.ready = true
+	uic.anchors = competingVisualAnchors()
+	uic.mu.Unlock()
+
+	result := uic.Classify(MessageContext{Text: "画个天气图"})
+	if !result.Degraded || result.Primary != LabelLiveData || len(result.Secondary) != 0 {
+		t.Fatalf("result=%+v, timeout must stay a lookup hint and must not pick an artifact", result)
+	}
+}
+
 func TestClassifyVerifiedEmbeddingCompositeDoesNotDependOnTree(t *testing.T) {
 	emb := &staticEmbedder{vec: []float32{1, 0}}
 	llmCalls := 0

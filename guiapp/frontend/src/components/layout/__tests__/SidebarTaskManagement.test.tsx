@@ -3538,7 +3538,9 @@ describe('SidebarTaskManagement', () => {
         fireEvent.click(forceDelete);
 
         const dialog = await screen.findByRole('dialog', { name: '强制删除' });
-        expect(within(dialog).getByText('永久删除「人工智能数学基础书编写」及全部远程文件？此操作不可撤销。')).toBeTruthy();
+        expect(within(dialog).getByText('永久删除此项及全部远程文件？')).toBeTruthy();
+        expect(within(dialog).getByText('人工智能数学基础书编写')).toBeTruthy();
+        expect(within(dialog).getByText('此操作不可撤销')).toBeTruthy();
         expect(confirmSpy).not.toHaveBeenCalled();
         expect(forceDeleteCloudWorkspaceMock).not.toHaveBeenCalled();
 
@@ -3561,7 +3563,9 @@ describe('SidebarTaskManagement', () => {
 
         fireEvent.click(await screen.findByTestId('task-cloud-overview'));
         fireEvent.click(await screen.findByTestId('task-cloud-overview-force-delete'));
-        expect(within(await screen.findByRole('dialog', { name: '强制删除' })).getByText('永久删除此工作区及全部远程文件？此操作不可撤销。')).toBeTruthy();
+        const unnamed = await screen.findByRole('dialog', { name: '强制删除' });
+        expect(within(unnamed).getByText('永久删除此工作区及全部远程文件？')).toBeTruthy();
+        expect(within(unnamed).getByText('此操作不可撤销')).toBeTruthy();
     });
 
     it('permanently deletes a recently deleted workspace after custom dialog confirmation', async () => {

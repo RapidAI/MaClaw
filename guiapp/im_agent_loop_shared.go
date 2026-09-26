@@ -1335,6 +1335,10 @@ type sharedAgentLoopCallbacks struct {
 	// photo lookup and a script runner, and one must not starve the other.
 	semanticPetitionConsumed          bool
 	semanticEffectfulPetitionConsumed bool
+	// semanticPetitionDenied names that already failed expansion this turn.
+	// An authority mismatch refunds the class budget so a different tool can
+	// still petition, but the same name must not re-enter the planner.
+	semanticPetitionDenied map[string]struct{}
 	// semanticToolsSearchCalls counts discovery meta-tool invocations this
 	// turn. Discovery is unbudgeted by design only up to the point where it
 	// demonstrably cannot change the surface: a burned-grant spiral on
@@ -1698,10 +1702,105 @@ func (c *sharedAgentLoopCallbacks) IsToolAllowed(name string) bool {
 		return true
 	}
 	if _, ok := c.semanticSurface.grants[name]; !ok {
-		return false
+		// A light turn cannot run the download, so do not publish a sibling
+		// that this check would then reject. authorizeLoopTool hits this
+		// before IsToolCallAllowed; opening the next sibling here is what
+		// lets the call the model just made run past the published wave.
+		if c.loopCtx != nil && c.loopCtx.Runtime.Execution.PromptIsLight() {
+			return false
+		}
+		if !c.openNextRepeatSibling(name) {
+			return false
+		}
+		if _, ok := c.semanticSurface.grants[name]; !ok {
+			return false
+		}
 	}
 	if c.loopCtx != nil && c.loopCtx.Runtime.Execution.PromptIsLight() {
 		return c.IsToolAllowedForPromptProfile(name, agent.PromptProfileLight)
+	}
+	return true
+}
+
+// openNextRepeatSibling publishes one more invocation when a repeatable
+// tool's current wave is spent and the model asks for another call. The
+// user does not have to send a new message. One-shot tools and a family
+// that is already at the turn cap stay denied.
+func (c *sharedAgentLoopCallbacks) openNextRepeatSibling(name string) bool {
+	if c == nil || c.semanticSurface == nil {
+		return false
+	}
+	retired, ok := c.semanticSurface.retiredGrants[name]
+	if !ok || !c.semanticSurface.completed[retired.SelectionID] {
+		return false
+	}
+	selection, found := semanticSelectionByID(c.semanticSurface.plan, retired.SelectionID)
+	if !found || (selection.FitProof.MatchedCapability != tool.CapabilityArtifactAcquireRemote && selection.AdapterName != "download_file") {
+		return false
+	}
+	// A previous attempt may already have stored the next sibling and then
+	// failed to issue it. Appending again would pile unused nodes up to the
+	// turn cap while the call still fails.
+	if _, pending := pendingDownloadSibling(c.semanticSurface, selection); !pending {
+		var updated tool.ToolPlan
+		var err error
+		if c.semanticSurface.coordinator != nil {
+			updated, err = c.semanticSurface.coordinator.AppendRepeatSibling(c.semanticSurface.scope, retired.SelectionID, time.Now().UTC())
+		} else {
+			var opened bool
+			updated, _, opened = tool.AppendRepeatSibling(c.semanticSurface.plan, retired.SelectionID)
+			if !opened {
+				err = fmt.Errorf("repeat sibling unavailable")
+			}
+		}
+		if err != nil {
+			return false
+		}
+		c.semanticSurface.plan = updated
+	}
+	if _, err := refreshSemanticCallSurface(c.semanticSurface); err != nil {
+		log.Printf("[semantic] repeat wave issue failed: %v", err)
+		return false
+	}
+	_, live := c.semanticSurface.grants[name]
+	return live
+}
+
+func pendingDownloadSibling(surface *semanticCallSurface, prototype tool.PlannedSelection) (string, bool) {
+	if surface == nil {
+		return "", false
+	}
+	family := tool.RepeatFamilyID(prototype.NeedID)
+	if family == "" {
+		family = tool.RepeatFamilyID(prototype.ID)
+	}
+	if family == "" {
+		return "", false
+	}
+	for _, selection := range surface.plan.Selections {
+		id := selection.NeedID
+		if id == "" {
+			id = selection.ID
+		}
+		if tool.RepeatFamilyID(id) != family && tool.RepeatFamilyID(selection.ID) != family {
+			continue
+		}
+		if surface.completed[selection.ID] || surface.materialized[selection.ID] {
+			continue
+		}
+		if !pendingRepeatSelectionReady(surface, selection) {
+			continue
+		}
+		return selection.ID, true
+	}
+	return "", false
+}
+
+func pendingRepeatSelectionReady(surface *semanticCallSurface, selection tool.PlannedSelection) bool {
+	for _, requirement := range selection.Requires {
+		if !surface.completed[requirement] {
+			return false
+		}
 	}
 	return true
 }
@@ -2073,6 +2172,9 @@ func (c *sharedAgentLoopCallbacks) PetitionToolCall(name string) (bool, string) 
 		return false, ""
 	}
 	effectful := semanticPetitionIsEffectful(name)
+	if _, denied := c.semanticPetitionDenied[name]; denied {
+		return false, ""
+	}
 	if effectful {
 		if c.semanticEffectfulPetitionConsumed {
 			return false, ""
@@ -2100,6 +2202,11 @@ func (c *sharedAgentLoopCallbacks) PetitionToolCall(name string) (bool, string) 
 		if granted, message := c.grantLegacySQLDatabasePetition(name); granted {
 			return true, message
 		}
+		if !semanticPetitionFailureConsumesBudget(err) {
+			// Authority mismatch closes this name only. The class budget stays
+			// open so send_file can still be petitioned after download_file.
+			c.notePetitionAuthorityMiss(name, effectful)
+		}
 		log.Printf("[semantic-routing] tool petition %q (%s) expansion failed: %v", name, label, err)
 		return false, ""
 	}
@@ -2125,6 +2232,32 @@ func semanticPlanHasCapability(plan tool.ToolPlan, capability tool.CapabilityID)
 
 func semanticPetitionGrantedMessage(name string) string {
 	return agentruntime.PetitionGrantedMessage(name)
+}
+
+// semanticPetitionFailureConsumesBudget reports whether a failed expansion
+// spends the class budget. A policy or coverage rejection does. An authority
+// mismatch does not: the class stays open for a different name, and the
+// failed name is recorded so it cannot re-enter the planner.
+func semanticPetitionFailureConsumesBudget(err error) bool {
+	if err == nil {
+		return false
+	}
+	return !strings.Contains(err.Error(), "alters parent authority")
+}
+
+func (c *sharedAgentLoopCallbacks) notePetitionAuthorityMiss(name string, effectful bool) {
+	if c == nil {
+		return
+	}
+	if c.semanticPetitionDenied == nil {
+		c.semanticPetitionDenied = map[string]struct{}{}
+	}
+	c.semanticPetitionDenied[name] = struct{}{}
+	if effectful {
+		c.semanticEffectfulPetitionConsumed = false
+	} else {
+		c.semanticPetitionConsumed = false
+	}
 }
 
 func legacySQLDatabaseToolName(name string) bool {

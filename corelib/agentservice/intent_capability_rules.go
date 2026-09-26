@@ -5,6 +5,12 @@ import (
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
+// DownloadRepeatBudget is how many remote downloads one document turn may
+// finish without another user message. Three stopped an eight-file catalog
+// and the model asked the user to say "继续补图". The published count is the
+// repeat cap so that wave completes in the turn that asked for the files.
+const DownloadRepeatBudget = coretool.RepeatSiblingBudgetLimit
+
 // ReviewedIntentMinimumConfidence is the write-grant floor shared by GUI IM
 // routing and headless dynamic routing. Hosts must not pick a second number.
 const ReviewedIntentMinimumConfidence = 0.78
@@ -139,7 +145,11 @@ func IMSemanticIntentCapabilityNeedRules() map[intent.IntentLabel][]IntentCapabi
 			{Capability: coretool.CapabilitySystemLaunchLocal, Required: true},
 		},
 		intent.LabelFileDownload: {
-			{Capability: coretool.CapabilityArtifactAcquireRemote, Required: true, MaxInvocations: 3},
+			// A catalog turn downloads many files in one batch. The published
+			// count is the repeat cap so the turn that asked for the files
+			// can finish them. A smaller count stops the batch and the model
+			// asks the user to continue.
+			{Capability: coretool.CapabilityArtifactAcquireRemote, Required: true, MaxInvocations: DownloadRepeatBudget},
 		},
 		intent.LabelConfigManage: {
 			{Capability: coretool.CapabilityConfigManageSelf, Required: true},

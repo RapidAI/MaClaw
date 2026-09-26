@@ -20,6 +20,28 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/toolresult"
 )
 
+func TestPendingDownloadSiblingSkipsUnreadyNodes(t *testing.T) {
+	base := "need:artifact.acquire.remote:abc"
+	readyID := "selection:" + base
+	blockedID := "selection:" + tool.RepeatSiblingNeedID(base, 1)
+	surface := &semanticCallSurface{
+		plan: tool.ToolPlan{Selections: []tool.PlannedSelection{
+			{ID: readyID, NeedID: base, AdapterName: "download_file"},
+			{ID: blockedID, NeedID: tool.RepeatSiblingNeedID(base, 1), AdapterName: "download_file", Requires: []string{"missing-producer"}},
+		}},
+		completed:    map[string]bool{},
+		materialized: map[string]bool{},
+	}
+	id, ok := pendingDownloadSibling(surface, surface.plan.Selections[1])
+	if !ok || id != readyID {
+		t.Fatalf("pending=%q ok=%v, want the ready sibling", id, ok)
+	}
+	surface.materialized[readyID] = true
+	if _, ok := pendingDownloadSibling(surface, surface.plan.Selections[1]); ok {
+		t.Fatal("an unready sibling was treated as waiting to be issued")
+	}
+}
+
 // shouldUseSharedAgentLoopLive mirrors shouldUseSharedAgentLoop but uses the
 // production mode resolver so unit tests are not blocked by the testing.Testing()
 // gate (which keeps package RunAgentLoop tests on the legacy path).

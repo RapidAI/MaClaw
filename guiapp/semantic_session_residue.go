@@ -413,9 +413,9 @@ func decideSemanticResidueRelation(current intent.ClassificationResult, userText
 		}
 		return semanticResidueUnclear
 	}
-	// "崇州天气" after "北京天气" is a new lookup. Continuing would clamp the
-	// spent search grant and could keep a screenshot reconstructed from the
-	// previous image delivery.
+	// "崇州天气" after "北京天气", and "重庆天气，生成格式化pdf" after a
+	// spent weather PDF, are new lookups. Continuing would clamp the spent
+	// search and generate grants and reuse the previous city's facts.
 	if semanticFreshLookupAgainstLookupResidue(current, userText, residue) {
 		return semanticResidueNone
 	}
@@ -456,7 +456,14 @@ func decideSemanticResidueRelation(current intent.ClassificationResult, userText
 	if current.Confidence >= 0.85 && !semanticClassificationHasMutatingFamily(current) {
 		return semanticResidueNone
 	}
-	return semanticResidueContinue
+	// A short edit of the open delivery stays on that grant. Everything else
+	// that already classified as its own managed request is a new delivery:
+	// the previous PDF or lookup being spent is not a reason to refuse the
+	// next one. Follow-ups returned above.
+	if semanticKeepsOpenWorkSurface(current, residue.Needs, userText) {
+		return semanticResidueUnclear
+	}
+	return semanticResidueNone
 }
 
 func semanticKeepsOpenWorkSurface(current intent.ClassificationResult, needs []tool.CapabilityNeed, userText string) bool {
@@ -478,22 +485,91 @@ func semanticTaskContextMerged(result intent.ClassificationResult) bool {
 	return strings.Contains(result.Reason, "task-context merge")
 }
 
+// semanticFreshLookupSubjectMinConfidence admits a verified lookup that sits
+// just under the 0.85 relation gate. "重庆天气，生成格式化pdf" scored
+// live_data 0.839 and otherwise continued the previous city's spent PDF grant.
+const semanticFreshLookupSubjectMinConfidence = 0.82
+
+func semanticDeliveryOfFreshLookup(compact string) bool {
+	if !semanticUtteranceNamesFreshLookupSubject(compact) {
+		return false
+	}
+	stripped := compact
+	for _, cue := range []string{"发给我", "发给", "发我"} {
+		stripped = strings.ReplaceAll(stripped, cue, "")
+	}
+	return !semanticAsideRestIsDocumentWork(stripped)
+}
+
+// semanticFollowUpStaysOnOpenTask is a continuation of the open delivery.
+// "发给我" and "然后" can introduce a new subject, so they do not.
+func semanticFollowUpStaysOnOpenTask(text string) bool {
+	compact := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(text), " ", ""))
+	for _, cue := range []string{"继续", "再改", "再出一版", "再来一版", "continue"} {
+		if strings.Contains(compact, cue) {
+			return true
+		}
+	}
+	return false
+}
+
+func semanticUtteranceNamesFreshLookupSubject(userText string) bool {
+	compact := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(userText), " ", ""))
+	for _, cue := range []string{"天气", "气温", "预报", "新闻", "股价", "汇率"} {
+		if strings.Contains(compact, cue) {
+			return true
+		}
+	}
+	return false
+}
+
 func semanticFreshLookupAgainstLookupResidue(current intent.ClassificationResult, userText string, residue semanticSessionResidue) bool {
-	if current.Degraded || current.Confidence < 0.85 || semanticFollowUpIsBareCue(userText) {
+	if current.Degraded || semanticFollowUpIsBareCue(userText) {
 		return false
 	}
 	switch current.Primary {
 	case intent.LabelSearch, intent.LabelLiveData, intent.LabelLiveDataVisual, intent.LabelWebFetch:
+	case intent.LabelDocumentGenerate:
+		// "把重庆天气发给我" can be labeled as the PDF itself. A new
+		// lookup subject still needs a fresh grant. "生成pdf报告" with
+		// no new subject stays on the open facts.
+		if !semanticUtteranceNamesFreshLookupSubject(userText) {
+			return false
+		}
 	default:
 		return false
 	}
+	compact := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(userText), " ", ""))
 	// "然后写成周报" can share a live-data label with the previous weather
-	// card. That is a document request, not another city lookup.
-	if semanticLeadingThenDocumentEdit(userText) {
+	// card. That is a document request, not another city lookup. "发给我"
+	// only delivers, so "然后把重庆天气发给我" stays a new lookup.
+	if (semanticLeadingThenDocumentEdit(userText) || semanticAsideRestIsDocumentWork(compact)) && !semanticDeliveryOfFreshLookup(compact) {
 		return false
 	}
-	compact := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(userText), " ", ""))
-	if semanticAsideRestIsDocumentWork(compact) {
+	// "继续查一下天气" while a report is open keeps that report. "然后重庆天气，
+	// 生成格式化pdf" after a weather PDF is a new delivery; 然后 alone must
+	// not spend the previous city's grant.
+	namedSubject := semanticUtteranceNamesFreshLookupSubject(userText)
+	if namedSubject && semanticUtteranceIsTaskFollowUp(userText) {
+		if semanticKeepsOpenWorkSurface(current, residue.Needs, userText) {
+			return false
+		}
+		// A previous weather card is spent by "然后把重庆天气发给我" even
+		// when this sentence is only a lookup. "把重庆天气发给我" while a
+		// report is open is a delivery of that lookup, not a revision.
+		// "继续查一下天气" stays with the report.
+		if semanticResidueIsLookupVisual(residue.Needs) || (semanticDeliveryOfFreshLookup(compact) && !semanticFollowUpStaysOnOpenTask(userText)) {
+			return true
+		}
+		if semanticClassificationHasMutatingFamily(current) && semanticResidueHasDocumentWork(residue.Needs) {
+			return current.Confidence >= semanticFreshLookupSubjectMinConfidence
+		}
+		return false
+	}
+	if namedSubject {
+		return current.Confidence >= semanticFreshLookupSubjectMinConfidence
+	}
+	if current.Confidence < 0.85 {
 		return false
 	}
 	return semanticResidueIsLookupVisual(residue.Needs) && !semanticResidueHasDocumentWork(residue.Needs)
@@ -805,6 +881,38 @@ func residueRemainingAfterUse(needs []tool.CapabilityNeed, used map[string]int) 
 		remaining[capability] = left
 	}
 	return remaining
+}
+
+// semanticFollowUpRenewsDownloads reports a continuation that asks for
+// another wave of files. "继续补图" must not inherit a spent download
+// ceiling, or the extra photos the user just asked for never start.
+func semanticFollowUpRenewsDownloads(text string) bool {
+	compact := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(text), " ", ""))
+	for _, cue := range []string{"不要下载", "别下载", "不用下载", "不要补图"} {
+		if strings.Contains(compact, cue) {
+			return false
+		}
+	}
+	// "继续下" also matches "继续下周的报告", and "再下" matches "再下结论".
+	// Only phrases that ask for more files renew the ceiling.
+	for _, cue := range []string{"补图", "补几张", "补照片", "继续下载", "再下载", "再下几", "再下一张", "下几张", "下载图片", "下载照片", "下载剩下", "接着下载"} {
+		if strings.Contains(compact, cue) {
+			return true
+		}
+	}
+	return false
+}
+
+// semanticResidueRemainingForFollowUp copies the open ceiling. A download
+// continuation drops only the acquire count, so a new wave is published at
+// DownloadRepeatBudget while the rest of the open grant stays spent.
+func semanticResidueRemainingForFollowUp(remaining map[string]int, text string) map[string]int {
+	out := cloneResidueRemaining(remaining)
+	if len(out) == 0 || !semanticFollowUpRenewsDownloads(text) {
+		return out
+	}
+	delete(out, string(tool.CapabilityArtifactAcquireRemote))
+	return out
 }
 
 func cloneResidueRemaining(in map[string]int) map[string]int {

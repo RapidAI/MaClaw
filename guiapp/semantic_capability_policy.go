@@ -11,6 +11,21 @@ import (
 // blocked. It is a policy state, not a tool name.
 const imSemanticPolicyStateBlocked = "blocked"
 
+// imSemanticPolicyStateExecution is the GUI workflow state for phases whose
+// legacy tool filter is "full". At name level those phases see every tool
+// unchanged (see v2.FilterToolDefinitions), so this state used to project to
+// "" — no constraint at all. That conflated two different meanings of "":
+// "no workflow applies" and "everything is allowed". Full phases now carry
+// their own state and an explicit wide ceiling instead.
+//
+// The ceiling is derived from v2.RequiredToolNamesForPolicy(ToolPolicyFull),
+// which states what a full phase expects: bash, read_file, list_directory,
+// write_file and edit_file. Nothing in that set reaches another host, another
+// session or another device, so the takeover families are denied here. Every
+// other family stays open: this encodes what an execution phase needs, and
+// tightening it further is a per-family review, not a routing decision.
+const imSemanticPolicyStateExecution = "execution"
+
 // imSemanticCapabilityPolicyAdapter is the GUI equivalent of the reviewed
 // Core Agent capability-policy adapter. It projects only the trusted workflow
 // tool-filter state into capability-level constraints for the families
@@ -42,6 +57,14 @@ const imSemanticPolicyStateBlocked = "blocked"
 //     the conservative projection in both states.
 //   - a blocked phase (waiting on confirmation) denies all sensitive and
 //     external families.
+//   - full phases are execution phases and carry a wide ceiling rather than
+//     no constraint at all, see imSemanticPolicyStateExecution. They deny the
+//     takeover families only (remote shell, browser control, desktop
+//     control), because the minimum tool set a full phase declares — bash,
+//     read_file, list_directory, write_file, edit_file — never leaves the
+//     local shell and the local filesystem. Leaving them unconstrained would
+//     have kept every full phase outside this layer while still reporting no
+//     workflow restriction.
 //
 // The read-only families migrated in S2b1 (fs.read.local, repo.inspect.vcs,
 // information.fetch.web, audio.transcribe.speech, security.audit.read,
@@ -122,6 +145,18 @@ func imSemanticCapabilityPolicyAdapter() agentservice.StaticCapabilityPolicyAdap
 		deny(string(v2.ToolPolicyPlanning), all...),
 		deny(string(v2.ToolPolicyOpsControlled), all...),
 		deny(imSemanticPolicyStateBlocked, all...),
+		// A "full" phase is the execution phase: local shell and local
+		// filesystem work. Its ceiling comes from
+		// v2.RequiredToolNamesForPolicy(ToolPolicyFull) — bash, read_file,
+		// list_directory, write_file, edit_file — none of which reach another
+		// host, session or device. The takeover families are therefore denied.
+		// Every other family stays available, matching what an execution phase
+		// actually does; narrowing further is a per-family review. Before this
+		// rule existed the state projected to "", which was indistinguishable
+		// from "no workflow applies" and left full phases outside the
+		// capability layer entirely.
+		deny(imSemanticPolicyStateExecution, tool.CapabilityShellExecuteRemoteHost,
+			tool.CapabilityBrowserControlWeb, tool.CapabilityComputerControlDesktop),
 	}}
 }
 
@@ -129,7 +164,10 @@ func imSemanticCapabilityPolicyAdapter() agentservice.StaticCapabilityPolicyAdap
 // decision onto the policy-state vocabulary consumed by
 // imSemanticCapabilityPolicyAdapter. An applied ToolFilterNone decision means
 // the active phase is blocked on confirmation, which is a restriction, not an
-// unrestricted state. An empty result means no workflow restriction applies.
+// unrestricted state. An applied ToolFilterFull decision projects onto
+// imSemanticPolicyStateExecution, whose wide ceiling deliberately excludes the
+// takeover families while keeping every local effect an execution phase needs.
+// An empty result means no workflow restriction applies.
 func imSemanticWorkflowPolicyState(policy v2.ToolFilterPolicy, apply bool) string {
 	if !apply {
 		return ""
@@ -138,7 +176,7 @@ func imSemanticWorkflowPolicyState(policy v2.ToolFilterPolicy, apply bool) strin
 	case v2.ToolFilterNone:
 		return imSemanticPolicyStateBlocked
 	case v2.ToolFilterFull:
-		return ""
+		return imSemanticPolicyStateExecution
 	default:
 		return string(policy)
 	}

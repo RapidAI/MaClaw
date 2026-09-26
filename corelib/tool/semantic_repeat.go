@@ -22,11 +22,17 @@ import (
 // review and to audit.
 const repeatSiblingSeparator = "#"
 
-// RepeatSiblingBudgetLimit caps how many invocations one need may claim. The
-// bound exists because the budget materializes as real plan nodes: a rule with
-// a runaway count would inflate every plan, revision, and audit record built
-// from it.
+// RepeatSiblingBudgetLimit caps how many invocations one need publishes up
+// front. The bound exists because the budget materializes as real plan nodes:
+// a rule with a runaway count would inflate every plan, revision, and audit
+// record built from it.
 const RepeatSiblingBudgetLimit = 32
+
+// MaxRepeatFamilyInvocations is how many times one repeatable tool may still
+// run in the same turn after the published wave is spent. Extra siblings are
+// added one at a time, only when a call arrives, so a catalog larger than
+// the published wave finishes without another user message.
+const MaxRepeatFamilyInvocations = 256
 
 // RepeatSiblingNeedID names the index-th invocation of a repeatable need.
 // Index 0 returns the base identity unchanged, so a single-invocation need
@@ -59,11 +65,112 @@ func RepeatFamilyID(id string) string {
 // A capability, adapter, or qualifier value is free to contain "#", so the
 // suffix only splits a family when it is exactly the generated shape.
 func repeatSiblingIndex(suffix string) bool {
-	if len(suffix) != 2 {
+	if len(suffix) < 2 || len(suffix) > 4 {
 		return false
+	}
+	for _, r := range suffix {
+		if r < '0' || r > '9' {
+			return false
+		}
 	}
 	value, err := strconv.Atoi(suffix)
 	return err == nil && value >= 2
+}
+
+// AppendRepeatSibling adds one more optional invocation of a repeat family
+// that has already published at least two siblings. One-shot tools stay
+// unchanged. The new node is ready on its own; the host issues it only when
+// the model asks for another call. False when the family is missing, is not
+// repeatable, or the turn cap is already reached.
+func AppendRepeatSibling(plan ToolPlan, prototypeSelectionID string) (ToolPlan, string, bool) {
+	prototypeSelectionID = strings.TrimSpace(prototypeSelectionID)
+	var prototype PlannedSelection
+	found := false
+	for _, selection := range plan.Selections {
+		if selection.ID == prototypeSelectionID {
+			prototype = clonePlannedSelection(selection)
+			found = true
+			break
+		}
+	}
+	if !found {
+		return plan, "", false
+	}
+	family := RepeatFamilyID(prototype.NeedID)
+	if family == "" {
+		family = RepeatFamilyID(prototype.ID)
+	}
+	if family == "" {
+		return plan, "", false
+	}
+	count, nextIndex := repeatFamilyNextIndex(plan, family)
+	if count < 2 || count >= MaxRepeatFamilyInvocations || nextIndex < 1 {
+		return plan, "", false
+	}
+	needID := RepeatSiblingNeedID(family, nextIndex)
+	sibling := prototype
+	sibling.ID = "selection:" + needID
+	sibling.NeedID = needID
+	// The extra invocation is ready on its own. Keeping the prototype's
+	// producer edges while clearing Requires makes the published plan fail
+	// validation, so the 33rd download would never be stored.
+	sibling.Requires = nil
+	sibling.RequiresConfirm = false
+	sibling.ConfirmationID = ""
+	sibling.ArtifactDependencies = nil
+	sibling.Consumes = nil
+	for _, selection := range plan.Selections {
+		if selection.ID == sibling.ID || selection.NeedID == sibling.NeedID {
+			return plan, "", false
+		}
+	}
+	plan.Selections = append(plan.Selections, sibling)
+	return plan, sibling.ID, true
+}
+
+// repeatFamilyNextIndex reports how many selections belong to family and the
+// next free sibling index. Counting alone collides when a suffix is missing
+// or a selection is only recognizable by its selection ID, and AppendRepeatSibling
+// then refuses the extra download.
+func repeatFamilyNextIndex(plan ToolPlan, family string) (count, nextIndex int) {
+	maxSuffix := 0
+	seen := map[string]bool{}
+	for _, selection := range plan.Selections {
+		matched := false
+		for _, id := range []string{selection.NeedID, selection.ID} {
+			if id == "" || seen[id] {
+				continue
+			}
+			if RepeatFamilyID(id) != family && RepeatFamilyID(id) != "selection:"+family {
+				continue
+			}
+			seen[id] = true
+			matched = true
+			suffix := repeatSiblingSuffixNumber(id)
+			if suffix > maxSuffix {
+				maxSuffix = suffix
+			}
+		}
+		if matched {
+			count++
+		}
+	}
+	if maxSuffix < 1 && count > 0 {
+		maxSuffix = 1
+	}
+	return count, maxSuffix
+}
+
+func repeatSiblingSuffixNumber(id string) int {
+	cut := strings.LastIndex(id, repeatSiblingSeparator)
+	if cut <= 0 || !repeatSiblingIndex(id[cut+len(repeatSiblingSeparator):]) {
+		return 1
+	}
+	value, _ := strconv.Atoi(id[cut+len(repeatSiblingSeparator):])
+	if value < 2 {
+		return 1
+	}
+	return value
 }
 
 // RepeatSiblingBudget normalizes a declared budget. Zero and one both mean the
