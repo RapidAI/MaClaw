@@ -345,6 +345,14 @@ func isCasualChatMessage(lower string) bool {
 	return false
 }
 
+// TextHasWorkflowProjectSignal reports whether the workflow catalog, on its
+// own, recognizes text as one of its panel projects. It does not use a phrase
+// list. Software the coding router may offer ("写代码", "做游戏") is not a
+// panel project, so a workflow_task label on that text does not close chat.
+func TextHasWorkflowProjectSignal(text string) bool {
+	return CatalogCorroboratesWorkflowProject(text, "")
+}
+
 func hasWorkflowStartSignal(text string) bool {
 	lower := strings.ToLower(strings.TrimSpace(text))
 	if lower == "" {

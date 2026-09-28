@@ -68,3 +68,8 @@ export function stripRolePrefixForDisplay(text: string): string {
 export function truncateRolePrefixForDisplay(text: string): string {
     return stripRolePrefixForDisplayMode(text, "truncate");
 }
+
+// Response chips used this label to repeat the answer. It is not a tool result.
+export function isBrowserEchoFieldLabel(label: string): boolean {
+    return label.trim().toLowerCase() === "browser";
+}

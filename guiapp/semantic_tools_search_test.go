@@ -70,12 +70,14 @@ func TestSemanticToolsSearchFindsExactNames(t *testing.T) {
 }
 
 // The execution entries must answer tools_search directly, without a grant
-// and without burning one.
+// and without burning one. Each entry is a fresh turn: a second identical
+// directory on the same callback is a repeated lookup and closes discovery.
 func TestSemanticToolsSearchExecutesThroughBothEntries(t *testing.T) {
 	cb := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: .98})
 	if got := cb.executeSemanticTool(semanticToolsSearchName, `{"query":"pdf"}`); !strings.Contains(got, "generate_pdf") {
 		t.Fatalf("executeSemanticTool: %s", got)
 	}
+	cb = petitionTestOfficeCallbacks(t, &intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: .98})
 	if got := cb.executeSemanticToolCallWithEpoch(semanticToolsSearchName, `{"query":"pdf"}`, "call-ts", ""); !strings.Contains(got, "generate_pdf") {
 		t.Fatalf("executeSemanticToolCallWithEpoch: %s", got)
 	}
@@ -83,28 +85,118 @@ func TestSemanticToolsSearchExecutesThroughBothEntries(t *testing.T) {
 
 // Discovery is a helper, not a way of life: after the turn budget the host
 // answers with a deterministic redirect instead of more results, ending the
-// burned-grant spiral observed in production. The counter is shared across
-// both execution entries and never touches grants.
+// burned-grant spiral observed in production. Distinct needs still answer,
+// because each one reveals a row the turn has not seen. The counter is shared
+// across both execution entries and never touches grants.
 func TestSemanticToolsSearchTurnBudgetEndsSpiral(t *testing.T) {
 	cb := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: .98})
-	for i := 0; i < semanticToolsSearchMaxPerTurn; i++ {
-		entry := i % 2
+	needs := []string{"web_fetch", "bash", "office", "download_file"}
+	if len(needs) != semanticToolsSearchMaxPerTurn {
+		t.Fatalf("fixture must cover the budget, got %d cap %d", len(needs), semanticToolsSearchMaxPerTurn)
+	}
+	for i, name := range needs {
+		args := fmt.Sprintf(`{"query":"need %s","needs":[%q]}`, name, name)
 		var got string
-		if entry == 0 {
-			got = cb.executeSemanticTool(semanticToolsSearchName, `{"query":"pdf"}`)
+		if i%2 == 0 {
+			got = cb.executeSemanticTool(semanticToolsSearchName, args)
 		} else {
-			got = cb.executeSemanticToolCallWithEpoch(semanticToolsSearchName, `{"query":"pdf"}`, "call-ts", "")
+			got = cb.executeSemanticToolCallWithEpoch(semanticToolsSearchName, args, "call-ts", "")
 		}
-		if !strings.Contains(got, "generate_pdf") {
-			t.Fatalf("call %d within budget must answer: %s", i+1, got)
+		if !strings.Contains(got, "- "+name+" — ") {
+			t.Fatalf("call %d within budget must answer %s: %s", i+1, name, got)
 		}
 	}
-	got := cb.executeSemanticTool(semanticToolsSearchName, `{"query":"pdf"}`)
+	got := cb.executeSemanticTool(semanticToolsSearchName, `{"query":"pdf","needs":["generate_pdf"]}`)
 	if !strings.Contains(got, "no longer available") || strings.Contains(got, "generate_pdf") {
 		t.Fatalf("over-budget call must redirect without results: %s", got)
 	}
+	again := cb.executeSemanticTool(semanticToolsSearchName, `{"query":"ssh","needs":["ssh"]}`)
+	if !strings.Contains(again, "reached its limit") || strings.Contains(again, "already returned") {
+		t.Fatalf("a later call must stay on the budget message: %s", again)
+	}
 	if len(cb.semanticSurface.grants) == 0 {
 		t.Fatal("discovery budget must not consume grants")
+	}
+}
+
+// A lookup that only repeats rows already returned closes discovery at once.
+// Waiting for the numeric cap let the 2026-09-27 save turn spend five model
+// rounds re-reading the same petitionable line.
+func TestSemanticToolsSearchRepeatedDirectoryCloses(t *testing.T) {
+	cb := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: .98})
+	cb.semanticSurface.grants["knowledge_save_text"] = tool.InvocationGrant{AdapterName: "knowledge_save_text"}
+	first := cb.executeSemanticTool(semanticToolsSearchName, `{"query":"save the endpoint","needs":["web_fetch","http_request","knowledge_save_text"]}`)
+	if !strings.Contains(first, "- knowledge_save_text — ") || !strings.Contains(first, "[已在当前工具面]") {
+		t.Fatalf("listed save tool dropped beside web_fetch: %s", first)
+	}
+	if !strings.Contains(first, "- web_fetch — ") || !strings.Contains(first, "[可请愿：直接调用一次]") {
+		t.Fatalf("petitionable fetch missing: %s", first)
+	}
+	if !strings.Contains(first, "立即调用已在当前工具面的名字：knowledge_save_text") {
+		t.Fatalf("listed-name directive missing: %s", first)
+	}
+	if strings.LastIndex(first, "立即调用已在当前工具面的名字：knowledge_save_text") < strings.Index(first, "- knowledge_save_text — ") {
+		t.Fatalf("directive must be the last action, after the rows: %s", first)
+	}
+	if strings.Contains(first, "查询文字本身不会挑选工具") {
+		t.Fatalf("petition footer must not follow a listed-name directive: %s", first)
+	}
+	if strings.Contains(first, "- office — ") || strings.Contains(first, "- ssh — ") {
+		t.Fatalf("unrequested tools leaked into the filtered directory: %s", first)
+	}
+	second := cb.executeSemanticTool(semanticToolsSearchName, `{"query":"fetch models","needs":["web_fetch"]}`)
+	if !strings.Contains(second, "already returned") || strings.Contains(second, "web_fetch —") {
+		t.Fatalf("repeated directory must close without another catalog: %s", second)
+	}
+	third := cb.executeSemanticToolCallWithEpoch(semanticToolsSearchName, `{"query":"bash curl","needs":["bash"]}`, "call-ts", "")
+	if !strings.Contains(third, "- bash — ") {
+		t.Fatalf("a new name must still answer after one repeated lookup: %s", third)
+	}
+}
+
+// An unmatched needs token falls back to the whole directory. That dump must
+// not count as "already returned" in a way that swallows a later exact lookup
+// whose only new information is the call-this-name line.
+func TestSemanticToolsSearchUnmatchedNeedsDoesNotSwallowListedDirective(t *testing.T) {
+	cb := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: .98})
+	cb.semanticSurface.grants["knowledge_save_text"] = tool.InvocationGrant{AdapterName: "knowledge_save_text"}
+	first := cb.executeSemanticTool(semanticToolsSearchName, `{"query":"http request","needs":["http_request"]}`)
+	if !strings.Contains(first, "needs filter matched nothing") {
+		t.Fatalf("unknown need must fall back to the directory: %s", first)
+	}
+	second := cb.executeSemanticTool(semanticToolsSearchName, `{"query":"save it","needs":["knowledge_save_text"]}`)
+	if !strings.Contains(second, semanticToolsSearchListedDirectivePrefix+"knowledge_save_text") {
+		t.Fatalf("exact lookup after a fallback dump must still direct the listed tool: %s", second)
+	}
+	other := cb.executeSemanticTool(semanticToolsSearchName, `{"query":"office","needs":["office"]}`)
+	if !strings.Contains(other, semanticToolsSearchListedDirectivePrefix+"office") {
+		t.Fatalf("a different listed name must still be directed: %s", other)
+	}
+	third := cb.executeSemanticTool(semanticToolsSearchName, `{"query":"save it again","needs":["knowledge_save_text"]}`)
+	if !strings.Contains(third, "already returned") || strings.Contains(third, "knowledge_save_text —") {
+		t.Fatalf("repeating the directed lookup must close: %s", third)
+	}
+}
+
+// ssh's inventory capability id and its petition capability id differ. A needs
+// filter that only compares capability ids drops the row whenever another
+// requested name matches, which is how knowledge_save_text disappeared.
+func TestSemanticToolsSearchNeedsKeepsNameWhenCapabilityIDDrifted(t *testing.T) {
+	cb := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: .98})
+	got := semanticToolsSearchRun(cb, `{"query":"ssh to the host","needs":["ssh","web_fetch"]}`)
+	if !strings.Contains(got, "- ssh — ") || !strings.Contains(got, "- web_fetch — ") {
+		t.Fatalf("drifted name was dropped from a mixed needs filter: %s", got)
+	}
+	if strings.Contains(got, "- office — ") {
+		t.Fatalf("name match must stay narrow: %s", got)
+	}
+	got = semanticToolsSearchRun(cb, `{"query":"read a file","needs":["read_file"]}`)
+	if !strings.Contains(got, "- read_file — ") || strings.Contains(got, "- list_directory — ") || strings.Contains(got, "- search_files — ") {
+		t.Fatalf("a tool name must not expand to capability aliases: %s", got)
+	}
+	got = semanticToolsSearchRun(cb, `{"query":"read","needs":["fs.read.local"]}`)
+	if !strings.Contains(got, "- read_file — ") || !strings.Contains(got, "- list_directory — ") {
+		t.Fatalf("a capability id must still select every row of that capability: %s", got)
 	}
 }
 
@@ -112,7 +204,6 @@ func TestSemanticToolsSearchTurnBudgetEndsSpiral(t *testing.T) {
 // asked "weather nanjing forecast" and got "(no matching capability)",
 // blocking the petition self-rescue that the result would have suggested.
 func TestSemanticToolsSearchMatchesEnglishQueries(t *testing.T) {
-	cb := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: .98})
 	cases := map[string]string{
 		"weather nanjing forecast": "web_search",
 		"find cat photos online":   "web_search",
@@ -120,6 +211,7 @@ func TestSemanticToolsSearchMatchesEnglishQueries(t *testing.T) {
 		"download cat picture":     "download_file",
 	}
 	for query, want := range cases {
+		cb := petitionTestOfficeCallbacks(t, &intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: .98})
 		got := cb.executeSemanticTool(semanticToolsSearchName, `{"query":`+strconv.Quote(query)+`}`)
 		if !strings.Contains(got, want) {
 			t.Fatalf("query %q must find %s: %s", query, want, got)

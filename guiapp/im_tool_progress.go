@@ -41,7 +41,20 @@ func userFacingToolProgressTextWithArgs(lang, toolName, argsJSON string) string 
 
 	args := parseToolProgressArgs(argsJSON)
 	actionKey, detail := toolProgressActionKeyDetail(toolName, args)
-	return formatIMToolStatus(lang, i18n.T(actionKey, lang), detail)
+	if strings.EqualFold(strings.TrimSpace(detail), toolName) {
+		detail = ""
+	}
+	action := strings.TrimSpace(i18n.T(actionKey, lang))
+	header := action
+	if header == "" {
+		header = toolName
+	} else if toolName != "" && !strings.EqualFold(header, toolName) {
+		// Keep the localized action first so existing "工具 · 执行命令" checks
+		// still match, and put the raw tool name where the desktop transcript
+		// can show it next to the arguments.
+		header = header + " (" + toolName + ")"
+	}
+	return formatIMToolStatus(lang, header, detail)
 }
 
 // formatIMToolStatus builds a two-line (or one-line) activity item for IM channels.

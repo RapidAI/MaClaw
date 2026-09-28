@@ -2,9 +2,10 @@ import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState } fr
 import { createPortal } from 'react-dom';
 import { colors, radius } from './styles';
 import { QRCodeSVG } from 'qrcode.react';
-import { ActivateReferralRemoteEmail, ActivateReferralRemotePhone, ActivateRemote, ActivateRemoteEmail, ActivateRemoteSMS, CancelCodeGenSSOPolling, CancelOpenAIOAuth, CancelWorkBuddyOAuth, CancelXAIOAuth, ClaimReferralHandoff, FetchCodeGenModels, GetHubLLMServiceStatus, GetMaclawLLMProviders, GetReferralRegistrationStatus, GetRemoteConnectionStatus, GetRemoteRegistrationAuth, GetUserDataMigrationJob, GetWeixinStatus, PollWeixinQRStatus, ProbeRemoteHub, RedeemHubLLMService, RegisterReferralEmail, RegisterReferralPhone, ResolveRemoteRegistrationTarget, ResolveRemoteRegistrationTargetWithInvitation, SaveCodeGenModelChoice, SaveMaclawLLMProviders, SendReferralRegistrationEmail, SendReferralRegistrationSMS, SendRemoteRegistrationEmail, SendRemoteRegistrationSMS, StartCodeGenSSO, StartCodeGenSSOEmbedded, StartOpenAIOAuth, StartUserDataMigrationImport, StartWeixinQRLogin, StartWorkBuddyOAuth, StartXAIOAuth, TestAndSaveMaclawLLMProviders, UserDataMigrationInstances, UserDataMigrationStatus, WaitCodeGenSSOResult } from '../../../wailsjs/go/main/App';
+import { ActivateReferralRemoteEmail, ActivateReferralRemotePhone, ActivateRemote, ActivateRemoteEmail, ActivateRemoteSMS, CancelCodeGenSSOPolling, CancelKimiCodeOAuth, CancelOpenAIOAuth, CancelXAIOAuth, ClaimReferralHandoff, FetchCodeGenModels, GetHubLLMServiceStatus, GetMaclawLLMProviders, GetReferralRegistrationStatus, GetRemoteConnectionStatus, GetRemoteRegistrationAuth, GetUserDataMigrationJob, GetWeixinStatus, PollWeixinQRStatus, ProbeRemoteHub, RedeemHubLLMService, RegisterReferralEmail, RegisterReferralPhone, ResolveRemoteRegistrationTarget, ResolveRemoteRegistrationTargetWithInvitation, SaveCodeGenModelChoice, SaveMaclawLLMProviders, SendReferralRegistrationEmail, SendReferralRegistrationSMS, SendRemoteRegistrationEmail, SendRemoteRegistrationSMS, StartCodeGenSSO, StartCodeGenSSOEmbedded, StartOpenAIOAuth, StartUserDataMigrationImport, StartWeixinQRLogin, StartWorkBuddyOAuth, StartXAIOAuth, TestAndSaveMaclawLLMProviders, UserDataMigrationInstances, UserDataMigrationStatus, WaitCodeGenSSOResult } from '../../../wailsjs/go/main/App';
 import { corelib } from '../../../wailsjs/go/models';
-import { isWorkBuddyProvider, PROVIDER_LOGOS } from "./providerLogos";
+import { cancelAllNativeOAuth, cancelNamedProviderOAuth, oauthBrowserHelp, oauthSignInLabel, promptKimiCodeDeviceLogin } from "./providerOAuth";
+import { isKimiCodeProvider, isWorkBuddyProvider, PROVIDER_LOGOS } from "./providerLogos";
 import { localizeHubServiceReason, localizeHubServiceRedeemError } from "../../utils/hubServiceI18n";
 import { HubRegisterButtonContent } from "./HubConnectionStatus";
 import { OnboardingOfflineModeOption } from "./OnboardingOfflineModeOption";
@@ -276,10 +277,11 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
     const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
     const selectedProvider = selectedIdx !== null ? providers[selectedIdx] : null;
     const [llmSaving, setLlmSaving] = useState(false);
-    const [llmResult, setLlmResult] = useState<{ ok: boolean; msg: string } | null>(null);
+    const [llmResult, setLlmResult] = useState<{ ok: boolean; msg: string; pending?: boolean } | null>(null);
     const [llmDone, setLlmDone] = useState(false);
     const [oauthBusy, setOauthBusy] = useState(false);
     const oauthAttemptRef = useRef(0);
+    const oauthPendingAttemptRef = useRef(0);
     const [codegenModels, setCodegenModels] = useState<{ id: string; name: string }[]>([]);
     const [codegenModelsFetching, setCodegenModelsFetching] = useState(false);
     const [maclawModel, setMaclawModel] = useState("");        // MaClaw Agent 使用的模型
@@ -531,20 +533,8 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
 
     const cancelActiveOAuth = useCallback((providerName?: string) => {
         oauthAttemptRef.current += 1;
-        if (providerName === "xAI-Grok") {
-            void CancelXAIOAuth();
-        } else if (isWorkBuddyProvider(providerName)) {
-            void CancelWorkBuddyOAuth();
-        } else if (providerName) {
-            CancelOpenAIOAuth();
-        } else {
-            // A close/unmount can happen after the provider list changes. In
-            // that case, cancel both native flows rather than leaving a
-            // loopback listener waiting for its timeout.
-            CancelOpenAIOAuth();
-            void CancelXAIOAuth();
-            void CancelWorkBuddyOAuth();
-        }
+        if (providerName) cancelNamedProviderOAuth(providerName);
+        else cancelAllNativeOAuth();
         setOauthBusy(false);
     }, []);
 
@@ -552,6 +542,7 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
         oauthAttemptRef.current += 1;
         CancelOpenAIOAuth();
         void CancelXAIOAuth();
+        void CancelKimiCodeOAuth();
     }, []);
 
     const persistOnboardingCompletion = useCallback((useMigrationCompletionHandler = false): Promise<void> => {
@@ -820,13 +811,23 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
         setOauthBusy(true);
         setLlmResult(null);
         try {
-            const msg = selectedProvider.name === "xAI-Grok"
-                ? await StartXAIOAuth()
-                : isWorkBuddyProvider(selectedProvider.name)
-                    ? await StartWorkBuddyOAuth(selectedProvider.name)
-                    : await StartOpenAIOAuth();
+            let msg = "";
+            if (selectedProvider.name === "xAI-Grok") {
+                msg = await StartXAIOAuth();
+            } else if (isWorkBuddyProvider(selectedProvider.name)) {
+                msg = await StartWorkBuddyOAuth(selectedProvider.name);
+            } else if (isKimiCodeProvider(selectedProvider.name)) {
+                const pending = await promptKimiCodeDeviceLogin((en, zh) => t(zh, en));
+                if (oauthAttempt !== oauthAttemptRef.current) return;
+                oauthPendingAttemptRef.current = oauthAttempt;
+                setLlmResult({ ok: true, pending: true, msg: pending.hint });
+                msg = pending.message;
+            } else {
+                msg = await StartOpenAIOAuth();
+            }
             if (oauthAttempt !== oauthAttemptRef.current) return;
 
+            oauthPendingAttemptRef.current = 0;
             setLlmResult({
                 ok: true,
                 msg: msg || (selectedProvider.name === "xAI-Grok" ? "xAI-Grok OAuth 登录成功" : "OAuth 登录成功"),
@@ -837,7 +838,12 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
             if (oauthAttempt !== oauthAttemptRef.current) return;
             setLlmResult({ ok: false, msg: formatProviderTestErrorOrFallback(String(e), hubT) });
         } finally {
-            setOauthBusy(false);
+            if (oauthAttempt === oauthAttemptRef.current) {
+                setOauthBusy(false);
+            }
+            if (oauthPendingAttemptRef.current === oauthAttempt) {
+                setLlmResult(prev => (prev?.pending ? null : prev));
+            }
         }
     };
 
@@ -2161,25 +2167,14 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
                                     {selectedProvider.auth_type === "oauth" ? (
                                         <>
                                             <p style={{ fontSize: "0.76rem", color: colors.textSecondary, margin: "0 0 12px 0", lineHeight: 1.4 }}>
-                                                {selectedProvider.name === "xAI-Grok"
-                                                    ? t("点击下方按钮，将在浏览器中完成 xAI 账号授权。",
-                                                        "Click below to authorize with your xAI account in the browser.")
-                                                    : isWorkBuddyProvider(selectedProvider.name)
-                                                        ? t("点击下方按钮，将在浏览器中完成 WorkBuddy 账号授权。",
-                                                            "Click below to authorize with your WorkBuddy account in the browser.")
-                                                        : t("点击下方按钮，将在浏览器中完成 OpenAI 账号授权。",
-                                                            "Click below to authorize with your OpenAI account in the browser.")}
+                                                {oauthBrowserHelp(selectedProvider.name, (en, zh) => t(zh, en))}
                                             </p>
                                             <button onClick={handleOAuthLogin} disabled={oauthBusy} style={{
                                                 ...wizardPrimaryButtonStyle, cursor: oauthBusy ? "default" : "pointer",
                                             }}>
                                                 {oauthBusy
                                                     ? t("等待浏览器授权...", "Waiting for browser auth...")
-                                                    : selectedProvider.name === "xAI-Grok"
-                                                        ? t("使用 xAI 账号登录", "Sign in with xAI")
-                                                        : isWorkBuddyProvider(selectedProvider.name)
-                                                            ? t("使用 WorkBuddy 账号登录", "Sign in with WorkBuddy")
-                                                            : t("使用 OpenAI 账号登录", "Sign in with OpenAI")}
+                                                    : oauthSignInLabel(selectedProvider.name, (en, zh) => t(zh, en))}
                                             </button>
                                             {oauthBusy && (
                                                 <button onClick={() => {
@@ -2282,8 +2277,8 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
                                         </>
                                     )}
                                     {llmResult && (
-                                        <div style={wizardBannerStyle(llmResult.ok ? "success" : "error")}>
-                                            {llmResult.ok ? `${t("连接成功，已保存", "Connected & saved")}\n${llmResult.msg}` : llmResult.msg}
+                                        <div style={wizardBannerStyle(llmResult.pending ? "warning" : llmResult.ok ? "success" : "error")}>
+                                            {llmResult.pending || !llmResult.ok ? llmResult.msg : `${t("连接成功，已保存", "Connected & saved")}\n${llmResult.msg}`}
                                         </div>
                                     )}
                                 </div>

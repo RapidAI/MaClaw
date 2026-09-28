@@ -174,6 +174,39 @@ func TestStickyCodingEffectiveFullAccessAndRemoteApply(t *testing.T) {
 	}
 }
 
+func TestStampFullControlFollowsStickySessionTier(t *testing.T) {
+	h := &IMMessageHandler{}
+	fullUser := stickyTestUserID(t)
+	fullCtx := &SecurityCallContext{UserID: fullUser}
+	h.stampFullControl(fullCtx)
+	if fullCtx.FullControl {
+		t.Fatal("a session with no grant must not skip confirmation")
+	}
+	h.setStickyCodingSessionPermissionMode(fullUser, "full", "local", "D:/repo")
+	h.stampFullControl(fullCtx)
+	if !fullCtx.FullControl {
+		t.Fatal("sticky full mode must skip confirmation without the global flag")
+	}
+
+	requestUser := stickyTestUserID(t)
+	requestCtx := &SecurityCallContext{UserID: requestUser}
+	h.setStickyCodingSessionPermissionMode(requestUser, "request", "local", "D:/repo")
+	h.stampFullControl(requestCtx)
+	if requestCtx.FullControl {
+		t.Fatal("explicit request mode on a coding session must keep confirmation prompts")
+	}
+
+	// A non-coding owner can carry a stale "request" record. That must not
+	// invent a full-control grant, and it is not a coding session either.
+	plainUser := stickyTestUserID(t)
+	h.setStickyCodingSessionPermissionMode(plainUser, "request", "", "")
+	plainCtx := &SecurityCallContext{UserID: plainUser}
+	h.stampFullControl(plainCtx)
+	if plainCtx.FullControl {
+		t.Fatal("a non-coding session without the global switch must still confirm")
+	}
+}
+
 func TestSetStickyCodingSessionPermissionMode(t *testing.T) {
 	h := &IMMessageHandler{}
 	userID := stickyTestUserID(t)

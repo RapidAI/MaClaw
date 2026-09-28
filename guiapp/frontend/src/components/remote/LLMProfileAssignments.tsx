@@ -137,6 +137,11 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
     const catalogFetchSeqRef = useRef<Record<string, number>>({});
     const dirtyRef = useRef(false);
     const loadGenerationRef = useRef(0);
+    // Eligibility refresh shares loadGenerationRef so a late snapshot cannot
+    // overwrite a newer read. It must not also cancel the spinner: the panel
+    // read itself emits a provider refresh, and that used to leave
+    // "正在加载模型分配…" up after the data had already arrived.
+    const loadingGenerationRef = useRef(0);
     const eligibilityRefreshQueuedRef = useRef(false);
     const eligibilityRefreshRunningRef = useRef(false);
     const eligibilityRefreshRerunRef = useRef(false);
@@ -156,6 +161,7 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
 
     const load = useCallback(async () => {
         const generation = ++loadGenerationRef.current;
+        const loadingGeneration = ++loadingGenerationRef.current;
         setLoading(true);
         setError("");
         try {
@@ -169,7 +175,7 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
             if (generation !== loadGenerationRef.current) return;
             setError(String(err));
         } finally {
-            if (generation === loadGenerationRef.current) setLoading(false);
+            if (loadingGeneration === loadingGenerationRef.current) setLoading(false);
         }
     }, []);
 

@@ -580,13 +580,35 @@ func PruneHAHistory(ctx context.Context, db *sql.DB, cutoff time.Time, maxRetain
 	return repo.PruneHistory(ctx, cutoff, maxRetainedOps, batchSize)
 }
 
+// Vacuum rebuilds the SQLite file to reclaim the free pages that repeated
+// delete/insert churn leaves behind (ha_sync_ops pruning can bloat the main
+// database file to several times its live data). It also persists
+// auto_vacuum=INCREMENTAL in the rebuilt database header, so afterwards the
+// runtime checkpointer can release newly freed pages with
+// PRAGMA incremental_vacuum instead of the file re-bloating between manual
+// VACUUMs. VACUUM needs an exclusive lock briefly — run it only while
+// Hub Center is stopped (offline `maintenance vacuum` / ha-prune --vacuum),
+// with free disk space for the rebuilt copy.
 func Vacuum(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return errors.New("nil sqlite database")
 	}
+	// Merge and truncate the WAL first so the rebuild starts from a canonical
+	// main-database image and no stale WAL lingers beside it.
+	if _, err := db.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+		return err
+	}
+	// Switch the mode before the rebuild: per SQLite semantics, a VACUUM that
+	// follows this pragma persists auto_vacuum=INCREMENTAL in the new file
+	// header (setting it on a non-empty database is otherwise a no-op).
+	if _, err := db.ExecContext(ctx, `PRAGMA auto_vacuum = INCREMENTAL`); err != nil {
+		return err
+	}
 	if _, err := db.ExecContext(ctx, `VACUUM`); err != nil {
 		return err
 	}
+	// In WAL mode VACUUM writes the rebuilt pages into a fresh WAL; truncate
+	// it so the disk space is actually handed back to the OS.
 	_, err := db.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`)
 	return err
 }

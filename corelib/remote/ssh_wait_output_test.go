@@ -128,6 +128,116 @@ func TestWaitForOutput_TimeoutInterruptsWithoutSignal(t *testing.T) {
 // the runtime-child path. A cancelled reader must stop waiting quickly, but
 // must not turn its local cancellation into the timeout/Ctrl+C behavior that
 // could interrupt another caller sharing the same SSH session.
+func TestShellPromptReturnedSinceAcceptsASinglePromptLine(t *testing.T) {
+	s := &SSHManagedSession{
+		PreviewLines: []string{"root@host:~#"},
+	}
+	if !s.shellPromptReturnedSince(0) {
+		t.Fatal("a single prompt line is the shell coming back")
+	}
+	s.PreviewLines = []string{"still running"}
+	if s.shellPromptReturnedSince(0) {
+		t.Fatal("command output was treated as a prompt")
+	}
+	s.PreviewLines = []string{"still running"}
+	s.pendingLine = "root@host:~#"
+	if !s.shellPromptReturnedSince(1) {
+		t.Fatal("pending prompt after the command was ignored")
+	}
+	s.pendingLine = ""
+	s.PreviewLines = []string{"user@host:~# leaked-from-command", "still running"}
+	if s.shellPromptReturnedSince(0) {
+		t.Fatal("an earlier prompt-shaped line counted after later output")
+	}
+	s.PreviewLines = []string{"still running", "root@host:~#"}
+	if !s.shellPromptReturnedSince(1) {
+		t.Fatal("prompt after the mark was ignored")
+	}
+	if s.shellPromptReturnedSince(2) {
+		t.Fatal("prompt before the mark counted as the shell coming back")
+	}
+}
+
+func TestPromptAppearedAfterIgnoresTheSamePendingLine(t *testing.T) {
+	s := &SSHManagedSession{pendingLine: "root@host:~#"}
+	if s.promptAppearedAfter(0, "root@host:~#") {
+		t.Fatal("the prompt already on screen counted as coming back")
+	}
+	s.pendingLine = "root@host:~# "
+	if s.promptAppearedAfter(0, "root@host:~#") {
+		t.Fatal("a cursor space on the same prompt counted as coming back")
+	}
+	s.pendingLine = "\x1b[32mroot@host:~#\x1b[0m"
+	if s.promptAppearedAfter(0, "root@host:~#") {
+		t.Fatal("the same prompt with color codes counted as coming back")
+	}
+	s.pendingLine = "root@other:~#"
+	if !s.promptAppearedAfter(0, "root@host:~#") {
+		t.Fatal("a different pending prompt was ignored")
+	}
+	s.pendingLine = ""
+	s.PreviewLines = []string{"root@host:~#"}
+	if s.promptAppearedAfter(0, "root@host:~#") {
+		t.Fatal("committing the pending prompt counted as coming back")
+	}
+	s.PreviewLines = []string{"^C", "root@host:~#"}
+	if !s.promptAppearedAfter(0, "root@host:~#") {
+		t.Fatal("prompt printed after interrupt output was ignored")
+	}
+	s.PreviewLines = []string{"user@host:~# leaked"}
+	if s.promptAppearedAfter(0, "") {
+		t.Fatal("command output was treated as a new prompt")
+	}
+}
+
+func TestWaitForOutputContextDeadlineKeepsFinishedPrompt(t *testing.T) {
+	mgr := NewSSHSessionManager(nil)
+	s := &SSHManagedSession{
+		ID:           "sess-deadline-done",
+		Status:       SessionRunning,
+		PreviewLines: []string{"ok", "root@host:~#"},
+		CreatedAt:    time.Now(),
+	}
+	mgr.mu.Lock()
+	mgr.sessions[s.ID] = s
+	mgr.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	lines, _ := mgr.WaitForOutputContext(ctx, s.ID, 0, 10*time.Second)
+	joined := strings.Join(lines, "\n")
+	if strings.Contains(joined, "命令执行超时") || strings.Contains(joined, SSHWaitTimeoutShellBusyNotice) {
+		t.Fatalf("finished command was reported as a timeout: %q", joined)
+	}
+	if !strings.Contains(joined, "ok") || !strings.Contains(joined, "root@host:~#") {
+		t.Fatalf("finished output was dropped: %q", joined)
+	}
+}
+
+func TestWaitForOutputContextDeadlineReportsTimeout(t *testing.T) {
+	mgr := NewSSHSessionManager(nil)
+	s := &SSHManagedSession{
+		ID:           "sess-deadline",
+		Status:       SessionRunning,
+		PreviewLines: []string{"still running"},
+		CreatedAt:    time.Now(),
+	}
+	mgr.mu.Lock()
+	mgr.sessions[s.ID] = s
+	mgr.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	lines, _ := mgr.WaitForOutputContext(ctx, s.ID, 0, 10*time.Second)
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("deadline did not stop the wait promptly: %v", elapsed)
+	}
+	if joined := strings.Join(lines, "\n"); !strings.Contains(joined, SSHWaitTimeoutShellBusyNotice) {
+		t.Fatalf("deadline without a recovered prompt = %q, want the shell-busy notice", joined)
+	}
+}
+
 func TestWaitForOutputContextCancellationReturnsWithoutTimeoutSideEffect(t *testing.T) {
 	mgr := NewSSHSessionManager(nil)
 	s := &SSHManagedSession{

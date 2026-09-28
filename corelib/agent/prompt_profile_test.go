@@ -221,6 +221,12 @@ func TestPromptCorePrinciplesLookupDoesNotMandateWarehouseFirst(t *testing.T) {
 	if !strings.Contains(PromptCorePrinciples, "查找类问题") || !strings.Contains(PromptCorePrinciples, "不要先搜知识库") {
 		t.Fatal("full principles should keep lookup evidence order")
 	}
+	if !strings.Contains(PromptCorePrinciples, "先查记忆再查知识库") || !strings.Contains(PromptCorePrinciples, "两边冲突才向用户确认") {
+		t.Fatal("full principles should resolve connection facts from memory then knowledge")
+	}
+	if !strings.Contains(PromptSSHRules, "先 memory 再 knowledge_search") {
+		t.Fatal("SSH rules should look up connection facts before asking the user")
+	}
 }
 
 func TestPromptCorePrinciplesTreatsMissingToolsAsRoutingSubset(t *testing.T) {

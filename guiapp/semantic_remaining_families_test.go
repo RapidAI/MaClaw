@@ -532,7 +532,7 @@ func TestTrustedRuntimeDefaultsStayUnpublishedWithoutHost(t *testing.T) {
 	if semanticTrustedSSHPublished(h) || semanticTrustedBrowserPublished(h) || semanticTrustedComputerUsePublished(h) || semanticTrustedDelegatePublished(h) {
 		t.Fatal("bare handler must not publish ssh/browser/CU/delegate")
 	}
-	if _, err := h.executeTrustedSSH("user-1", "uname"); err == nil || !strings.Contains(err.Error(), "unavailable") {
+	if _, err := h.executeTrustedSSH("user-1", "uname", 0); err == nil || !strings.Contains(err.Error(), "unavailable") {
 		t.Fatalf("ssh without session: %v", err)
 	}
 	if _, err := h.controlTrustedBrowser("user-1", "snapshot", ""); err == nil || !strings.Contains(err.Error(), "unavailable") {

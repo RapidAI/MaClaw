@@ -152,10 +152,11 @@ func (h *IMMessageHandler) ingestTrustedKnowledge(principalID, text, url, path s
 	if path != "" {
 		return h.ingestTrustedKnowledgePath(ctx, store, principalID, path)
 	}
+	storeOwner, _, _ := knowledgeOwnerScope(principalID)
 	if url != "" {
 		source, err := store.SaveURL(ctx, knowledge.URLSaveRequest{
 			URL:     url,
-			OwnerID: principalID,
+			OwnerID: storeOwner,
 		})
 		if err != nil {
 			return "", err
@@ -167,7 +168,7 @@ func (h *IMMessageHandler) ingestTrustedKnowledge(principalID, text, url, path s
 	}
 	source, err := store.SaveText(ctx, knowledge.TextSaveRequest{
 		Text:    text,
-		OwnerID: principalID,
+		OwnerID: storeOwner,
 	})
 	if err != nil {
 		return "", err
@@ -185,8 +186,9 @@ func (h *IMMessageHandler) ingestTrustedKnowledgePath(ctx context.Context, store
 	if err != nil {
 		return "", err
 	}
+	storeOwner, _, _ := knowledgeOwnerScope(principalID)
 	req := knowledge.DirectoryImportRequest{
-		OwnerID:   principalID,
+		OwnerID:   storeOwner,
 		Recursive: true,
 	}
 	display := trustedKnowledgeIngestDisplayPath(workspace, absPath, path)

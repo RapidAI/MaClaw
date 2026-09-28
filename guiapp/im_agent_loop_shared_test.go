@@ -20,6 +20,89 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/toolresult"
 )
 
+func TestOpenNextRepeatWaveExtendsRemoteShell(t *testing.T) {
+	base := "need:shell.execute.remote_host:abc123def456"
+	sibling := tool.RepeatSiblingNeedID(base, 1)
+	spent := "selection:" + sibling
+	cb := &sharedAgentLoopCallbacks{semanticSurface: &semanticCallSurface{
+		plan: tool.ToolPlan{Selections: []tool.PlannedSelection{
+			{ID: "selection:" + base, NeedID: base, AdapterName: "ssh", FitProof: tool.FitProof{MatchedCapability: tool.CapabilityShellExecuteRemoteHost}},
+			{ID: spent, NeedID: sibling, AdapterName: "ssh", FitProof: tool.FitProof{MatchedCapability: tool.CapabilityShellExecuteRemoteHost}},
+		}},
+		completed:     map[string]bool{"selection:" + base: true, spent: true},
+		materialized:  map[string]bool{},
+		grants:        map[string]tool.InvocationGrant{},
+		retiredGrants: map[string]tool.InvocationGrant{"ssh": {SelectionID: spent, Token: "spent"}},
+	}}
+	if cb.OpenNextRepeatWave("ssh") {
+		t.Fatal("refresh cannot issue a grant without a surface issuer")
+	}
+	if len(cb.semanticSurface.plan.Selections) != 3 {
+		t.Fatalf("remote shell wave was not extended, selections=%d", len(cb.semanticSurface.plan.Selections))
+	}
+	if cb.OpenNextRepeatWave("ssh") || len(cb.semanticSurface.plan.Selections) != 3 {
+		t.Fatal("a second open appended another sibling before the first was issued")
+	}
+	one := &sharedAgentLoopCallbacks{semanticSurface: &semanticCallSurface{
+		plan: tool.ToolPlan{Selections: []tool.PlannedSelection{
+			{ID: "selection:once", NeedID: "need:once", AdapterName: "send_file", FitProof: tool.FitProof{MatchedCapability: "artifact.deliver.current_channel"}},
+		}},
+		completed:     map[string]bool{"selection:once": true},
+		retiredGrants: map[string]tool.InvocationGrant{"send_file": {SelectionID: "selection:once", Token: "once"}},
+	}}
+	if one.OpenNextRepeatWave("send_file") || len(one.semanticSurface.plan.Selections) != 1 {
+		t.Fatal("one-shot delivery must stay closed")
+	}
+}
+
+func TestNoteSpentRemoteCommandAppendsOnlySettledExhaustedSSH(t *testing.T) {
+	base := "need:shell.execute.remote_host:abc123def456"
+	sibling := tool.RepeatSiblingNeedID(base, 1)
+	spent := "selection:" + sibling
+	surface := &semanticCallSurface{
+		plan: tool.ToolPlan{Selections: []tool.PlannedSelection{
+			{ID: "selection:" + base, NeedID: base, FitProof: tool.FitProof{MatchedCapability: tool.CapabilityShellExecuteRemoteHost}},
+			{ID: spent, NeedID: sibling, FitProof: tool.FitProof{MatchedCapability: tool.CapabilityShellExecuteRemoteHost}},
+		}},
+		completed:    map[string]bool{"selection:" + base: true, spent: true},
+		materialized: map[string]bool{"selection:" + base: true, spent: true},
+		grants:       map[string]tool.InvocationGrant{},
+	}
+	cb := &sharedAgentLoopCallbacks{semanticSurface: surface}
+	got := cb.noteSpentRemoteCommand(spent, "trusted_ssh_timeout")
+	if !strings.Contains(got, tool.RepeatWaveListedMarker) || !strings.Contains(got, "shell.execute.remote_host") {
+		t.Fatalf("settled exhausted ssh = %q", got)
+	}
+	surface.completed = map[string]bool{"selection:" + base: true}
+	if got := cb.noteSpentRemoteCommand(spent, "trusted_ssh_timeout"); got != "trusted_ssh_timeout" {
+		t.Fatalf("unsettled attempt = %q", got)
+	}
+	surface.completed[spent] = true
+	other := "selection:need:information.search.web:abc"
+	surface.plan.Selections[1].FitProof.MatchedCapability = "information.search.web"
+	surface.plan.Selections[1].ID = other
+	if got := cb.noteSpentRemoteCommand(other, "search failed"); strings.Contains(got, tool.RepeatWaveListedMarker) {
+		t.Fatalf("search failure must not grow the remote wave, got %q", got)
+	}
+}
+
+func TestOpenNextRepeatWaveSkipsUnsettledAttempt(t *testing.T) {
+	base := "need:shell.execute.remote_host:abc123def456"
+	sibling := tool.RepeatSiblingNeedID(base, 1)
+	spent := "selection:" + sibling
+	cb := &sharedAgentLoopCallbacks{semanticSurface: &semanticCallSurface{
+		plan: tool.ToolPlan{Selections: []tool.PlannedSelection{
+			{ID: "selection:" + base, NeedID: base, AdapterName: "ssh", FitProof: tool.FitProof{MatchedCapability: tool.CapabilityShellExecuteRemoteHost}},
+			{ID: spent, NeedID: sibling, AdapterName: "ssh", FitProof: tool.FitProof{MatchedCapability: tool.CapabilityShellExecuteRemoteHost}},
+		}},
+		completed:     map[string]bool{"selection:" + base: true},
+		retiredGrants: map[string]tool.InvocationGrant{"ssh": {SelectionID: spent, Token: "spent"}},
+	}}
+	if cb.OpenNextRepeatWave("ssh") || len(cb.semanticSurface.plan.Selections) != 2 {
+		t.Fatal("an attempt with no settled failure must not open another command")
+	}
+}
+
 func TestPendingDownloadSiblingSkipsUnreadyNodes(t *testing.T) {
 	base := "need:artifact.acquire.remote:abc"
 	readyID := "selection:" + base
@@ -578,8 +661,8 @@ func TestGUIAndCoreToolResultProjectionStayEquivalent(t *testing.T) {
 		if !strings.Contains(projection, "[tool_result_handle]") || !strings.Contains(projection, "read_tool_result") {
 			t.Fatalf("%s projection lost read-back metadata: %q", label, projection[max(0, len(projection)-300):])
 		}
-		if len(projection) > agent.MaxToolResultLen {
-			t.Fatalf("%s projection exceeded budget: %d", label, len(projection))
+		if len(projection) > agent.TerminalMaxToolResult {
+			t.Fatalf("%s projection exceeded terminal budget: %d", label, len(projection))
 		}
 	}
 }
@@ -1861,6 +1944,123 @@ func TestSharedInteractivePauseCommitReleasesSemanticDependant(t *testing.T) {
 	callback.releaseSemanticDependantIssue()
 	if callback.semanticHoldDependantIssue {
 		t.Fatal("durably paired interactive pause did not release dependant hold")
+	}
+}
+
+func TestRetireCheckpointOnlyAfterExplicitUserCancel(t *testing.T) {
+	parentCancel := NewLoopContext("run-parent", 1, nil)
+	parentCancel.Cancel()
+	if shouldRetireUserCancelCheckpoint(parentCancel) {
+		t.Fatal("shutdown or parent cancel must keep the recovery checkpoint")
+	}
+	userCancel := NewLoopContext("run-user", 1, nil)
+	userCancel.MarkUserCancel()
+	userCancel.Cancel()
+	if !shouldRetireUserCancelCheckpoint(userCancel) {
+		t.Fatal("explicit user cancel must retire the recovery checkpoint")
+	}
+}
+
+func TestUserCancelRetiresInFlightCheckpoint(t *testing.T) {
+	memory := agent.NewConversationMemory()
+	defer memory.Stop()
+	h := &IMMessageHandler{memory: memory}
+	const userID, runID = "desktop-user:cancel-checkpoint", "run-1"
+	if err := memory.PersistInFlightCheckpoint(userID, []agent.ConversationEntry{{Role: "user", Content: "make the video"}}, "make the video", "/project", runID, agent.InFlightCheckpoint{
+		Sequence: 2, LastToolName: "bash", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatalf("PersistInFlightCheckpoint() error = %v", err)
+	}
+	h.retireUserCancelCheckpoint(userID, runID)
+	if promoted := memory.PromoteRecoverableCheckpoints(time.Now()); promoted != 0 {
+		t.Fatalf("user cancel promoted %d unfinished slots", promoted)
+	}
+	if task, _ := memory.ConsumeInFlightTask(userID); task != "" {
+		t.Fatalf("user cancel left recovery marker %q", task)
+	}
+
+	memory.UpsertUnfinishedSlot(userID, &agent.UnfinishedTaskSlot{
+		SlotID:           "lease-same-run",
+		Status:           agent.UnfinishedTaskSlotStatusInterrupted,
+		Source:           agent.UnfinishedTaskSlotSourceInFlightLeaseExpired,
+		EvidenceScopeKey: "in_flight_run:" + runID,
+		LastTask:         "make the video",
+	})
+	h.retireUserCancelCheckpoint(userID, runID)
+	if slot := memory.GetUnfinishedSlot(userID); slot != nil {
+		t.Fatalf("same-run lease slot survived user cancel: %#v", slot)
+	}
+
+	memory.UpsertUnfinishedSlot(userID, &agent.UnfinishedTaskSlot{
+		SlotID:           "lease-other-run",
+		Status:           agent.UnfinishedTaskSlotStatusInterrupted,
+		Source:           agent.UnfinishedTaskSlotSourceInFlightLeaseExpired,
+		EvidenceScopeKey: "in_flight_run:run-other",
+		LastTask:         "other task",
+	})
+	h.retireUserCancelCheckpoint(userID, runID)
+	if slot := memory.GetUnfinishedSlot(userID); slot == nil || slot.SlotID != "lease-other-run" {
+		t.Fatalf("other run slot = %#v", slot)
+	}
+
+	memory.UpsertUnfinishedSlot(userID, &agent.UnfinishedTaskSlot{
+		SlotID:           "max-rounds",
+		Status:           agent.UnfinishedTaskSlotStatusInterrupted,
+		Source:           agent.UnfinishedTaskSlotSourceMaxRounds,
+		EvidenceScopeKey: "in_flight_run:" + runID,
+		LastTask:         "hit the round cap",
+	})
+	h.retireUserCancelCheckpoint(userID, runID)
+	if slot := memory.GetUnfinishedSlot(userID); slot == nil || slot.SlotID != "max-rounds" {
+		t.Fatalf("max-rounds slot = %#v", slot)
+	}
+}
+
+func TestSharedLoopCancelResponseSplitsUserStopFromOtherCancels(t *testing.T) {
+	memory := agent.NewConversationMemory()
+	defer memory.Stop()
+	h := &IMMessageHandler{memory: memory}
+	const userID, runID = "desktop-user:cancel-exit", "run-1"
+	durable := []agent.ConversationEntry{{Role: "user", Content: "make the video"}}
+	persist := func() {
+		t.Helper()
+		if err := memory.PersistInFlightCheckpoint(userID, durable, "make the video", "/project", runID, agent.InFlightCheckpoint{
+			Sequence: 1, LastToolName: "bash", SideEffectState: "external_uncertain",
+		}); err != nil {
+			t.Fatalf("PersistInFlightCheckpoint() error = %v", err)
+		}
+	}
+	partial := append(append([]agent.ConversationEntry(nil), durable...), agent.ConversationEntry{
+		Role: "assistant", ToolCalls: []map[string]string{{"id": "call-1", "name": "bash"}},
+	})
+
+	persist()
+	userCtx := NewLoopContext(runID, 1, nil)
+	userCtx.MarkUserCancel()
+	userCtx.Cancel()
+	resp := h.sharedLoopCancelResponse(userCtx, userID, runID, partial, "make the video", true)
+	if resp == nil || !strings.Contains(resp.Text, "Task cancelled") {
+		t.Fatalf("user stop response = %#v", resp)
+	}
+	if got := memory.Load(userID); len(got) != 1 || got[0].Content != "make the video" {
+		t.Fatalf("user stop saved unpaired tool history: %#v", got)
+	}
+	if promoted := memory.PromoteRecoverableCheckpoints(time.Now()); promoted != 0 {
+		t.Fatalf("user stop promoted %d unfinished slots", promoted)
+	}
+
+	persist()
+	parent := NewLoopContext(runID, 1, nil)
+	parent.Cancel()
+	resp = h.sharedLoopCancelResponse(parent, userID, runID, partial, "make the video", true)
+	if resp == nil || !strings.Contains(resp.Text, "interrupted") {
+		t.Fatalf("non-user pending-batch response = %#v", resp)
+	}
+	if got := memory.Load(userID); len(got) != 1 || got[0].Content != "make the video" {
+		t.Fatalf("non-user pending batch overwrote the provider-valid prefix: %#v", got)
+	}
+	if promoted := memory.PromoteRecoverableCheckpoints(time.Now()); promoted != 1 {
+		t.Fatalf("non-user cancel promoted %d slots, want the recovery marker kept", promoted)
 	}
 }
 

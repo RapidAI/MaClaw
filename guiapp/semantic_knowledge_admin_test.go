@@ -160,21 +160,31 @@ func TestIMSemanticKnowledgeAdminScopesStoreToPrincipal(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.SaveSource(ctx, knowledge.Source{
+		ID: "s-task", Kind: knowledge.SourceKindText, URI: "memory://task", Title: "api2 notes",
+		OwnerID: desktopUserID + `:` + `C:\tasks\api2`, Status: knowledge.StatusParsed,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
 
 	h := &IMMessageHandler{app: app}
 	listed, err := h.administerTrustedKnowledge("user-1", "", "", false, false)
-	if err != nil || !strings.Contains(listed, "s-own") || strings.Contains(listed, "foreign") || strings.Contains(listed, "s-other") || strings.Contains(listed, "s-local") {
+	if err != nil || !strings.Contains(listed, "s-own") || strings.Contains(listed, "foreign") || strings.Contains(listed, "s-other") || strings.Contains(listed, "s-local") || strings.Contains(listed, "s-task") {
 		t.Fatalf("im list=%q err=%v", listed, err)
 	}
 	if strings.Contains(listed, "knowledge_stats") || strings.Contains(listed, "doctor") {
 		t.Fatalf("list leaked admin soup: %q", listed)
 	}
 	desktopListed, err := h.administerTrustedKnowledge(desktopUserID, "", "", false, false)
-	if err != nil || !strings.Contains(desktopListed, "s-local") || strings.Contains(desktopListed, "s-own") || strings.Contains(desktopListed, "foreign") {
+	if err != nil || !strings.Contains(desktopListed, "s-local") || !strings.Contains(desktopListed, "s-task") || strings.Contains(desktopListed, "s-own") || strings.Contains(desktopListed, "foreign") {
 		t.Fatalf("desktop list=%q err=%v", desktopListed, err)
+	}
+	taskListed, err := h.administerTrustedKnowledge(desktopUserID+`:`+`C:\tasks\beijing`, "", "", false, false)
+	if err != nil || !strings.Contains(taskListed, "s-local") || !strings.Contains(taskListed, "s-task") || strings.Contains(taskListed, "s-own") {
+		t.Fatalf("other desktop task list=%q err=%v", taskListed, err)
 	}
 	got, err := h.administerTrustedKnowledge("user-1", "s-own", "", false, false)
 	if err != nil || !strings.Contains(got, "s-own") {
@@ -185,6 +195,9 @@ func TestIMSemanticKnowledgeAdminScopesStoreToPrincipal(t *testing.T) {
 	}
 	if _, err := h.administerTrustedKnowledge("user-1", "s-local", "disabled", false, false); err == nil || !strings.Contains(err.Error(), "trusted_knowledge_admin_not_found") {
 		t.Fatalf("im must not mutate host-local source err=%v", err)
+	}
+	if _, err := h.administerTrustedKnowledge("user-1", "s-task", "disabled", false, false); err == nil || !strings.Contains(err.Error(), "trusted_knowledge_admin_not_found") {
+		t.Fatalf("im must not mutate desktop task source err=%v", err)
 	}
 	updated, err := h.administerTrustedKnowledge("user-1", "s-own", "disabled", false, false)
 	if err != nil || !strings.Contains(updated, "知识来源已更新") {

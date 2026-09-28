@@ -42,7 +42,9 @@ type ReadResult struct {
 }
 
 // DefaultReadLimit is the model-facing default slice size for read_tool_result.
-const DefaultReadLimit = 6000
+// One page matches a spilled terminal capture that did not fit the 16KB inline
+// preview, so a status dump can be read back without several 6KB slices.
+const DefaultReadLimit = 16 * 1024
 
 // MaxReadLimit caps a single read_tool_result call.
 const MaxReadLimit = 32768

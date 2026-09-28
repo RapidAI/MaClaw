@@ -1,12 +1,14 @@
 package guiapp
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/intent"
+	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -153,5 +155,68 @@ func TestIMSemanticKnowledgeReadScopesStoreToPrincipal(t *testing.T) {
 	foreign, err := h.readTrustedKnowledge("user-2", "owned notes for isolation search")
 	if err != nil || strings.Contains(foreign, "owned notes") {
 		t.Fatalf("user-2 search=%q err=%v", foreign, err)
+	}
+}
+
+func TestIMSemanticKnowledgeReadSharesDesktopTaskScope(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	if err := os.MkdirAll(filepath.Dir(app.knowledgeDBPath()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	store, err := app.openKnowledgeStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveText(context.Background(), knowledge.TextSaveRequest{
+		Text:    "api2hostrecord from the task that saved it",
+		OwnerID: desktopUserID + `:` + `C:\tasks\api2`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	h := &IMMessageHandler{app: app}
+	taskB := desktopUserID + `:` + `C:\tasks\beijing`
+	if _, err := h.ingestTrustedKnowledge("user-2", "foreign notes must stay hidden from desktop", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.ingestTrustedKnowledge(taskB, "freshdesktopnote saved from another task", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	recalled, err := h.readTrustedKnowledge(taskB, "api2hostrecord")
+	if err != nil || !strings.Contains(recalled, "api2hostrecord") || strings.Contains(recalled, "foreign notes") {
+		t.Fatalf("cross-task desktop search=%q err=%v", recalled, err)
+	}
+	fresh, err := h.readTrustedKnowledge(desktopUserID+`:`+`C:\tasks\other`, "freshdesktopnote")
+	if err != nil || !strings.Contains(fresh, "freshdesktopnote") {
+		t.Fatalf("fresh desktop note=%q err=%v", fresh, err)
+	}
+	hidden, err := h.readTrustedKnowledge("user-2", "api2hostrecord")
+	if err != nil || strings.Contains(hidden, "api2hostrecord") || strings.Contains(hidden, "freshdesktopnote") {
+		t.Fatalf("foreign principal search=%q err=%v", hidden, err)
+	}
+
+	check, err := app.openKnowledgeStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer check.Close()
+	sources, err := check.ListSources(context.Background(), knowledge.ListSourcesOptions{OwnerID: desktopUserID, IncludeDisabled: true, Limit: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stamped bool
+	for _, source := range sources {
+		if strings.Contains(source.Title, "freshdesktopnote") || source.OwnerID == desktopUserID {
+			stamped = source.OwnerID == desktopUserID
+			if stamped {
+				break
+			}
+		}
+	}
+	if !stamped {
+		t.Fatalf("new desktop note was not stamped %s: %#v", desktopUserID, sources)
 	}
 }

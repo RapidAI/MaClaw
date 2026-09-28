@@ -83,6 +83,99 @@ func TestReasoningStutterKeepsRepeatedWords(t *testing.T) {
 	}
 }
 
+func TestReasoningStutterHaltsRotatingShortChant(t *testing.T) {
+	var got strings.Builder
+	f := newReasoningStutterFilter(func(delta string) { got.WriteString(delta) })
+	stopped := 0
+	f.stop = func() { stopped++ }
+	cycle := []string{"Go.", "Final.", "OK.", "Writing.", "Done.", "Output.", "Alright.", "Let me write."}
+	for i := 0; i < 80; i++ {
+		f.Write(cycle[i%len(cycle)] + "\n\n")
+	}
+	f.Flush()
+	if !f.Halted() || stopped != 1 {
+		t.Fatalf("halted=%v stop=%d", f.Halted(), stopped)
+	}
+	if strings.Count(got.String(), "Let me write.") >= 8 {
+		t.Fatalf("chant kept streaming: %d copies", strings.Count(got.String(), "Let me write."))
+	}
+}
+
+func TestReasoningStutterChantSurvivesInterleavedDots(t *testing.T) {
+	var got strings.Builder
+	f := newReasoningStutterFilter(func(delta string) { got.WriteString(delta) })
+	cycle := []string{"Go.", "Final.", "OK.", "Writing.", "Done.", "Output.", "Alright.", "Let me write."}
+	for i := 0; i < 80; i++ {
+		f.Write(cycle[i%len(cycle)] + "\n.\n")
+	}
+	f.Flush()
+	if !f.Halted() {
+		t.Fatal("dots between chant lines cleared the window")
+	}
+	if strings.Count(got.String(), "Let me write.") >= 8 {
+		t.Fatalf("chant kept streaming: %d copies", strings.Count(got.String(), "Let me write."))
+	}
+}
+
+func TestReasoningStutterHaltsChantBrokenByLongerLines(t *testing.T) {
+	var got strings.Builder
+	f := newReasoningStutterFilter(func(delta string) { got.WriteString(delta) })
+	cycle := []string{"Go.", "Final.", "OK.", "Writing.", "Done.", "Output.", "Alright.", "Let me write."}
+	var text strings.Builder
+	for i := 0; i < 80; i++ {
+		if i > 0 && i%5 == 0 {
+			text.WriteString("Hmm, I'm stuck in a loop. Let me just write the reply.\n")
+		}
+		text.WriteString(cycle[i%len(cycle)] + "\n")
+	}
+	f.Write(text.String())
+	f.Flush()
+	if !f.Halted() {
+		t.Fatal("longer lines between the same short words kept the chant going")
+	}
+	if strings.Count(got.String(), "Let me write.") >= 8 {
+		t.Fatalf("chant kept streaming: %d copies", strings.Count(got.String(), "Let me write."))
+	}
+}
+
+func TestReasoningStutterKeepsDistinctShortThoughts(t *testing.T) {
+	var got strings.Builder
+	f := newReasoningStutterFilter(func(delta string) { got.WriteString(delta) })
+	var text strings.Builder
+	for i := 0; i < reasoningChantWindow; i++ {
+		text.WriteString(strings.Repeat(string(rune('a'+i%26)), 3) + " step " + strings.Repeat("x", i%9) + "\n")
+	}
+	f.Write(text.String())
+	f.Flush()
+	if f.Halted() {
+		t.Fatal("different short thoughts halted")
+	}
+	if got.String() != text.String() {
+		t.Fatalf("got %q", got.String())
+	}
+}
+
+func TestReasoningStutterLongLineResetsChant(t *testing.T) {
+	var got strings.Builder
+	f := newReasoningStutterFilter(func(delta string) { got.WriteString(delta) })
+	var text strings.Builder
+	for i := 0; i < 20; i++ {
+		text.WriteString("check backup " + strings.Repeat("n", i+1) + "\n")
+	}
+	text.WriteString("The user asked to delete redundant database backups and keep the newest binary backup.\n")
+	for i := 0; i < 20; i++ {
+		text.WriteString("read stat " + strings.Repeat("m", i+1) + "\n")
+	}
+	f.Write(text.String())
+	f.Flush()
+	if f.Halted() {
+		t.Fatal("a real sentence between short lines still halted")
+	}
+	if got.String() != text.String() {
+		t.Fatalf("got %q", got.String())
+	}
+}
+
 func TestReasoningStutterBlankLinesDoNotResetDotRun(t *testing.T) {
 	var got strings.Builder
 	f := newReasoningStutterFilter(func(delta string) { got.WriteString(delta) })

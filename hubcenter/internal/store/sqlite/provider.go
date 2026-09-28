@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -24,6 +25,13 @@ type Config struct {
 	CacheSizeKB           int
 	MmapSizeBytes         int64
 	CheckpointIntervalSec int
+	// AutoVacuum selects the database-level auto_vacuum mode: "", "none",
+	// "full", or "incremental". Empty leaves the persistent setting untouched
+	// (backward compatible for callers that do not set it). "incremental" is
+	// the recommended mode: DELETEs move pages to a freelist that the
+	// background checkpointer releases with PRAGMA incremental_vacuum instead
+	// of the file growing without bound between manual VACUUMs.
+	AutoVacuum string
 }
 
 type Provider struct {
@@ -32,6 +40,9 @@ type Provider struct {
 	batch    *writeBatcher
 	stopCkpt chan struct{}
 	doneCkpt chan struct{}
+	// incrementalVacuum mirrors cfg.AutoVacuum == "incremental" so the
+	// checkpointer knows whether PRAGMA incremental_vacuum is meaningful.
+	incrementalVacuum bool
 }
 
 func NewProvider(cfg Config) (*Provider, error) {
@@ -70,9 +81,10 @@ func NewProvider(cfg Config) (*Provider, error) {
 	}
 
 	p := &Provider{
-		Write: writeDB,
-		Read:  readDB,
-		batch: newWriteBatcher(writeDB, cfg),
+		Write:             writeDB,
+		Read:              readDB,
+		batch:             newWriteBatcher(writeDB, cfg),
+		incrementalVacuum: strings.EqualFold(strings.TrimSpace(cfg.AutoVacuum), "incremental"),
 	}
 
 	// Start background WAL checkpointer if WAL mode is enabled.
@@ -123,12 +135,28 @@ func (p *Provider) startCheckpointer(interval time.Duration) {
 			select {
 			case <-p.stopCkpt:
 				return
-			case <-ticker.C:
-				// PASSIVE checkpoint: moves committed WAL pages to DB
-				// without blocking concurrent readers or writers.
-				// Execute on the Read pool to avoid contending with the
-				// single Write connection used by the batcher.
-				_, _ = p.Read.Exec("PRAGMA wal_checkpoint(PASSIVE);")
+		case <-ticker.C:
+			// PASSIVE checkpoint: moves committed WAL pages to DB
+			// without blocking concurrent readers or writers.
+			// Execute on the Read pool to avoid contending with the
+			// single Write connection used by the batcher.
+			_, _ = p.Read.Exec("PRAGMA wal_checkpoint(PASSIVE);")
+			if p.incrementalVacuum {
+				// Release freed pages (from DELETE churn) back to the OS in
+				// bounded batches. With auto_vacuum=INCREMENTAL this is cheap
+				// periodic housekeeping: an instant no-op while the freelist
+				// is empty, and it never takes an exclusive lock.
+				//
+				// The pragma emits one row per moved page, and the driver
+				// only performs the work while the row set is being drained —
+				// db.Exec/QueryRow leave it unfinished, so Query + full
+				// iteration is required.
+				if rows, err := p.Read.Query("PRAGMA incremental_vacuum(1024);"); err == nil {
+					for rows.Next() {
+					}
+					_ = rows.Close()
+				}
+			}
 			}
 		}
 	}()
@@ -140,6 +168,23 @@ func applyPragmas(db *sql.DB, cfg Config, isWriter bool) error {
 		fmt.Sprintf("PRAGMA busy_timeout = %d;", cfg.BusyTimeoutMS),
 		"PRAGMA synchronous = NORMAL;",
 		"PRAGMA temp_store = MEMORY;",
+	}
+	// auto_vacuum is a persistent database-level setting. It takes effect
+	// immediately on an empty database; on an existing one it becomes active
+	// after the next VACUUM rebuild (sqlite.Vacuum / `maintenance vacuum`
+	// persists it). Writer-only: single owner for a database-wide setting.
+	//
+	// ORDER MATTERS: this must run before "PRAGMA journal_mode = WAL" below —
+	// once the WAL mode change has touched the database header, SQLite treats
+	// the database as non-empty and silently rejects an auto_vacuum change
+	// (verified empirically against modernc.org/sqlite v1.46.1).
+	if isWriter {
+		switch mode := strings.ToLower(strings.TrimSpace(cfg.AutoVacuum)); mode {
+		case "incremental", "full", "none":
+			stmts = append(stmts, fmt.Sprintf("PRAGMA auto_vacuum = %s;", mode))
+		case "", "off":
+			// Leave the persistent auto_vacuum setting untouched.
+		}
 	}
 	// journal_mode and wal_autocheckpoint are database-level settings.
 	// Only apply on the write connection to avoid redundant work and potential

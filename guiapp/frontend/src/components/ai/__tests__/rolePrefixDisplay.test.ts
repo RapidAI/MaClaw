@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { findRolePrefixForDisplay, stripRolePrefixForDisplay, truncateRolePrefixForDisplay } from "../rolePrefixDisplay";
+import { findRolePrefixForDisplay, isBrowserEchoFieldLabel, stripRolePrefixForDisplay, truncateRolePrefixForDisplay } from "../rolePrefixDisplay";
 
 describe("rolePrefixDisplay", () => {
+    it("matches only the Browser echo chip label", () => {
+        expect(isBrowserEchoFieldLabel("Browser")).toBe(true);
+        expect(isBrowserEchoFieldLabel(" browser ")).toBe(true);
+        expect(isBrowserEchoFieldLabel("Browser session")).toBe(false);
+        expect(isBrowserEchoFieldLabel("浏览器")).toBe(false);
+    });
+
     it("truncates a streamed Browser tail after valid assistant content", () => {
         const content = "有效回答。\n\nBrowser: 重复回答。";
 

@@ -1,5 +1,6 @@
 import { localizeText } from "../../i18n";
 import { stripLeadingEmojiCluster } from "./aiAssistantProgressUtils";
+import { stripAssistantToolCallMarkers } from "./assistantToolCall";
 
 /** Live activity shown on the reasoning-panel summary while a round is in flight. */
 export type AssistantLiveActivityKind =
@@ -289,6 +290,7 @@ export function extractInFlightToolName(opts: {
     codingProgress?: { event?: string; detail?: string } | null;
     progressMessages?: Array<{ content?: string }>;
     reasoningText?: string;
+    latestToolCall?: { name?: string; action?: string } | null;
 }): string {
     const codingEvent = (opts.codingProgress?.event || "").trim().toLowerCase();
     if (codingEvent === "tool_started") {
@@ -300,7 +302,35 @@ export function extractInFlightToolName(opts: {
     const latest = latestProgressText(opts.progressMessages);
     const fromProgress = extractToolNameFromProgressText(latest);
     if (fromProgress) return fromProgress;
+    if (isUnguidedWaitProgress(latest)) {
+        const embedded = normalizeLiveToolName(opts.latestToolCall?.name);
+        if (embedded) return embedded;
+    }
     return extractToolNameFromProgressText(opts.reasoningText || "");
+}
+
+function assistantBodyBesidesToolCalls(content?: string): string {
+    return stripAssistantToolCallMarkers(content || "").trim();
+}
+
+/** True when the tray has nothing newer than a generic "still working" line. */
+function isUnguidedWaitProgress(text: string): boolean {
+    const trimmed = (text || "").trim();
+    if (!trimmed || trimmed === "__heartbeat__") return true;
+    if (/^(?:\[|〔|【)\s*(?:进度|progress)\s*(?:\]|〕|】)/i.test(trimmed)) return true;
+    return /仍在执行|正在处理中|已耗时/.test(trimmed);
+}
+
+function liveActivityFromEmbeddedToolCall(call?: { name?: string; action?: string } | null): AssistantLiveActivityKind | null {
+    if (!call) return null;
+    const name = (call.name || "").trim().toLowerCase();
+    const bare = name.startsWith("ssh_") ? name.slice(4) : name;
+    if (name && (TOOL_KIND_BY_NAME[name] || TOOL_KIND_BY_NAME[bare])) {
+        return assistantLiveActivityFromToolName(name);
+    }
+    if (call.action) return liveActivityFromActionPhrase(call.action);
+    if (name) return assistantLiveActivityFromToolName(name);
+    return null;
 }
 
 function normalizeLiveToolName(name?: string): string {
@@ -318,6 +348,24 @@ function extractToolNameFromProgressText(text: string): string {
         return normalizeLiveToolName(coding?.detail || "");
     }
     const lines = trimmed.split(/\r?\n/);
+    const header = stripLeadingEmojiCluster(lines[0] || "").trim()
+        .replace(/^\[Status\]\s*/i, "")
+        .replace(/^\u2022\s*/, "");
+    // A tool card's arguments are the following lines. Read the name from the
+    // header so "ls -la" does not hide "bash".
+    if (IM_TOOL_STATUS_PREFIX.test(header)) {
+        const parenthetical = header.match(/\(([A-Za-z][A-Za-z0-9_-]*)\)\s*$/);
+        if (parenthetical?.[1]) {
+            const token = normalizeLiveToolName(parenthetical[1]);
+            if (token) return token;
+        }
+        const prefixed = header.match(IM_TOOL_STATUS_PREFIX);
+        if (prefixed?.[1]) {
+            const token = normalizeLiveToolName(prefixed[1].trim());
+            if (token) return token;
+        }
+        return "";
+    }
     for (let i = lines.length - 1; i >= 0; i--) {
         const firstLine = stripLeadingEmojiCluster(lines[i] || "").trim()
             .replace(/^\[Status\]\s*/i, "")
@@ -330,6 +378,11 @@ function extractToolNameFromProgressText(text: string): string {
         const named = firstLine.match(/[:\uff1a]\s*([a-zA-Z][a-zA-Z0-9_-]*)/);
         if (named?.[1]) {
             const token = normalizeLiveToolName(named[1]);
+            if (token) return token;
+        }
+        const parenthetical = firstLine.match(/\(([A-Za-z][A-Za-z0-9_-]*)\)\s*$/);
+        if (parenthetical?.[1]) {
+            const token = normalizeLiveToolName(parenthetical[1]);
             if (token) return token;
         }
         const prefixed = firstLine.match(IM_TOOL_STATUS_PREFIX);
@@ -353,6 +406,8 @@ export function resolveAssistantLiveActivity(opts: {
     reasoningText?: string;
     progressMessages?: Array<{ content?: string }>;
     codingProgress?: { event?: string; detail?: string } | null;
+    /** Latest call already written into the assistant transcript. */
+    latestToolCall?: { name?: string; action?: string } | null;
 }): AssistantLiveActivityKind | null {
     if (!opts.busy && !opts.streaming) return null;
     const codingEvent = (opts.codingProgress?.event || "").trim().toLowerCase();
@@ -363,6 +418,12 @@ export function resolveAssistantLiveActivity(opts: {
     const latestText = latestProgressText(opts.progressMessages);
     if (isInFlightToolProgressText(latestText)) {
         return parseLiveActivityFromProgressText(latestText) || "calling_tool";
+    }
+    // The transcript owns the call, so the tray may only have a generic wait.
+    // Keep the specific action on the header until the next real progress line.
+    if (!opts.streaming && isUnguidedWaitProgress(latestText)) {
+        const embedded = liveActivityFromEmbeddedToolCall(opts.latestToolCall);
+        if (embedded) return embedded;
     }
     if (codingEvent === "tool_finished" && opts.streaming) return "thinking";
     const fromStatus = liveActivityFromReasoningStatus(opts.reasoningText)
@@ -388,7 +449,7 @@ export function assistantLiveReasoningSource(msg: {
     reasoning?: string;
     codingTimeline?: Array<{ kind?: string; content?: string }>;
 } | undefined): string {
-    if (!msg || msg.role !== "assistant" || (msg.content || "").trim()) return "";
+    if (!msg || msg.role !== "assistant" || assistantBodyBesidesToolCalls(msg.content)) return "";
     const timelineThoughts = (msg.codingTimeline || [])
         .filter((item) => item.kind === "thinking")
         .map((item) => String(item.content || "").trim())
@@ -443,7 +504,7 @@ export function assistantMessageOwnsLiveActivity(
 ): boolean {
     if (!msg || msg.role !== "assistant" || !isNewestMessage) return false;
     if (streaming) return true;
-    return !(msg.content || "").trim();
+    return !assistantBodyBesidesToolCalls(msg.content);
 }
 
 /**

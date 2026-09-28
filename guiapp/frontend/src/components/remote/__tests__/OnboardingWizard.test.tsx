@@ -23,6 +23,8 @@ const ProbeRemoteHubMock = vi.fn();
 const StartOpenAIOAuthMock = vi.fn();
 const StartXAIOAuthMock = vi.fn();
 const StartWorkBuddyOAuthMock = vi.fn();
+const StartKimiCodeOAuthMock = vi.fn();
+const WaitKimiCodeOAuthMock = vi.fn();
 const CancelXAIOAuthMock = vi.fn();
 const StartCodeGenSSOMock = vi.fn();
 const StartCodeGenSSOEmbeddedMock = vi.fn();
@@ -61,6 +63,9 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     StartOpenAIOAuth: (...args: unknown[]) => StartOpenAIOAuthMock(...args),
     StartXAIOAuth: (...args: unknown[]) => StartXAIOAuthMock(...args),
     StartWorkBuddyOAuth: (...args: unknown[]) => StartWorkBuddyOAuthMock(...args),
+    StartKimiCodeOAuth: (...args: unknown[]) => StartKimiCodeOAuthMock(...args),
+    WaitKimiCodeOAuth: (...args: unknown[]) => WaitKimiCodeOAuthMock(...args),
+    CancelKimiCodeOAuth: vi.fn(),
     CancelOpenAIOAuth: vi.fn(),
     CancelXAIOAuth: (...args: unknown[]) => CancelXAIOAuthMock(...args),
     CancelWorkBuddyOAuth: vi.fn(),

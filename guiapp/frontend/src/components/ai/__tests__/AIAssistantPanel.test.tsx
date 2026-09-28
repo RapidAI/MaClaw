@@ -357,6 +357,7 @@ function mockURLObjectURLs(value: string) {
 
 describe('AIAssistantPanel property tests', () => {
     afterEach(() => {
+        vi.mocked(PreviewTaskResultFile).mockClear();
         cleanup();
         vi.useRealTimers();
         window.localStorage.clear();
@@ -2142,8 +2143,12 @@ describe('AIAssistantPanel property tests', () => {
                 lang="zh-Hans"
                 state={{
                     ...props.state,
-                    messages: [user, assistant],
-                    progressMessages: [makeMsg({ role: 'progress', content: '工具 · 访问网页\nhttps://weather' })],
+                    messages: [user, {
+                        ...assistant,
+                        content: '\n\n<!--maclaw-tool:call-weather-->\n\n',
+                        toolCalls: [{ id: 'call-weather', name: 'web_fetch', action: '访问网页', detail: 'https://weather' }],
+                    }],
+                    progressMessages: [makeMsg({ role: 'progress', content: '工具 · 访问网页 (web_fetch)\nhttps://weather' })],
                     sending: true,
                     streaming: false,
                     ready: true,
@@ -2153,7 +2158,10 @@ describe('AIAssistantPanel property tests', () => {
         expect(container.querySelector('[data-testid="assistant-reasoning-label"]')?.textContent).toBe('正在提取网页');
         expect(container.querySelector('[data-testid="assistant-reasoning-panel"]')?.getAttribute('data-live')).toBe('true');
         expect(container.querySelector('[data-testid="assistant-reasoning-panel"] .assistant-reasoning-live-label')).toBeTruthy();
-        expect(container.textContent).toMatch(/工具 · 访问网页/);
+        const toolCall = container.querySelector('[data-testid="assistant-tool-call"]');
+        expect(toolCall?.getAttribute('data-tool-name')).toBe('web_fetch');
+        expect(toolCall?.textContent).toContain('https://weather');
+        expect(container.textContent).not.toContain('maclaw-tool:');
         expect(container.textContent).not.toContain('正在执行工具');
         expect(container.textContent).not.toContain('可继续输入');
         expect((container.querySelector('[data-testid="ai-input"]') as HTMLTextAreaElement).placeholder).not.toMatch(/正在执行|可继续输入|处理中/);
@@ -3795,6 +3803,33 @@ describe('AIAssistantPanel property tests', () => {
         });
         const workspace = await findByTestId('code-preview-workspace', {}, { timeout: 8000 });
         expect(workspace.getAttribute('data-cloud-mode')).toBe('true');
+    });
+
+    it('opens the document preview when a cloud workspace result is previewed', async () => {
+        getTabWorkingDirMock.mockResolvedValue({
+            path: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant/cws_a',
+            is_default: false,
+        });
+        const { findByTestId } = renderPanel({
+            lang: 'zh-Hans',
+            pendingProjectTabOpen: {
+                projectPath: 'C:/Users/me/.maclaw/data/tasks/yun-duan-gong-zuo-qu-ren-wu-1',
+                taskTitle: '云端工作区任务1',
+                autoSend: false,
+                prepareMode: 'restore-context',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+        expect(await findByTestId('code-preview-workspace', {}, { timeout: 8000 })).toBeTruthy();
+        const path = 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant/cws_a/papers/北京天气报告.pdf';
+        act(() => {
+            window.dispatchEvent(new CustomEvent('maclaw:preview-task-result', { detail: { path } }));
+        });
+        await waitFor(() => {
+            expect(document.querySelector('[data-testid="pdf-preview-panel"], [data-testid="pdf-preview-loading"]')).toBeTruthy();
+        });
+        expect(document.querySelector('[data-testid="code-preview-workspace"]')).toBeNull();
     });
 
     it('auto-opens the cloud file preview when a coding_dev tab resolves its cache path later', async () => {
@@ -5604,6 +5639,37 @@ describe('AIAssistantPanel property tests', () => {
         expect(getByTestId('unfinished-slot-summary').textContent || '').toContain('上次任务停止推进');
         expect(getByText(/检测到未完成任务/)).toBeTruthy();
         expect(queryByText(/Previous task stopped making progress/)).toBeNull();
+    });
+
+    it('localizes a durable tool-progress interruption without a review warning for read-only recovery', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: '检测到未完成任务：查看进度。选择“继续上次任务”可继续。',
+                unfinishedSlot: {
+                    slotID: 'slot-readonly',
+                    title: '查看进度',
+                    summary: 'Previous task was interrupted after a durable tool-progress checkpoint.',
+                    status: 'interrupted',
+                    recoveryMode: 'resume_context',
+                    sideEffectState: 'none',
+                    lastToolName: 'tools_search',
+                },
+            }),
+        ];
+
+        const { getByTestId, queryByTestId, queryByText } = renderPanel({
+            lang: 'zh-Hans',
+            state: { messages, sending: false, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {} },
+        });
+
+        expect(getByTestId('unfinished-slot-summary').textContent || '').toContain('上次任务在保存工具进度后中断');
+        expect(getByTestId('unfinished-slot-read-only').textContent || '').toContain('没有修改工作区');
+        expect(getByTestId('unfinished-slot-read-only').textContent || '').toContain('从这次检查接着做');
+        expect(getByTestId('unfinished-slot-read-only').textContent || '').not.toContain('完成原任务');
+        expect(queryByText(/Previous task was interrupted after a durable/)).toBeNull();
+        expect(queryByTestId('unfinished-slot-review-required')).toBeNull();
     });
 
     it('localizes unfinished slot notice fallback title in Chinese', () => {
@@ -7683,6 +7749,89 @@ describe('AIAssistantPanel property tests', () => {
         const leftoverTitleBar = getByTestId('ai-execution-secondary-titlebar');
         expect(leftoverTitleBar.style.pointerEvents).toBe('none');
         expect(leftoverTitleBar.getAttribute('aria-hidden')).toBe('true');
+    });
+
+    it('starts skill recording from the more menu and puts pause left of tasks', async () => {
+        const start = vi.fn().mockResolvedValue('ok');
+        const stop = vi.fn().mockResolvedValue({ error: 'no operations recorded' });
+        const previousGo = (window as any).go;
+        (window as any).go = {
+            main: {
+                App: {
+                    IsSkillRecording: vi.fn().mockResolvedValue(false),
+                    StartSkillRecording: start,
+                    StopSkillRecording: stop,
+                },
+            },
+        };
+        try {
+            const { getByTestId, queryByTestId } = renderPanel({
+                lang: 'zh-Hans',
+                state: { messages: [{ id: 'msg-1', role: 'user', content: 'hello' }], sending: false, streaming: false, ready: true },
+            });
+
+            expect(queryByTestId('skill-recording-btn')).toBeNull();
+            expect(queryByTestId('skill-recording-pause-btn')).toBeNull();
+            fireEvent.click(getByTestId('task-more-record-skill-btn'));
+            await waitFor(() => expect(start).toHaveBeenCalled());
+            const pause = await waitFor(() => getByTestId('skill-recording-pause-btn'));
+            expect(pause.textContent).toContain('暂停');
+            const switcher = getByTestId('task-tab-switcher-btn').closest('details');
+            expect(switcher?.previousElementSibling).toBe(pause);
+            expect(queryByTestId('task-more-record-skill-btn')).toBeNull();
+
+            fireEvent.click(pause);
+            await waitFor(() => expect(stop).toHaveBeenCalled());
+            await waitFor(() => expect(queryByTestId('skill-recording-pause-btn')).toBeNull());
+            expect(getByTestId('task-more-record-skill-btn').textContent).toBe('录制 Skill');
+        } finally {
+            (window as any).go = previousGo;
+        }
+    });
+
+    it('keeps the pause control until skill recording stop finishes, then holds a new recording', async () => {
+        let resolveStop: (value: unknown) => void = () => {};
+        const start = vi.fn().mockResolvedValue('ok');
+        const stop = vi.fn().mockImplementation(() => new Promise((resolve) => { resolveStop = resolve; }));
+        const previousGo = (window as any).go;
+        (window as any).go = {
+            main: {
+                App: {
+                    IsSkillRecording: vi.fn().mockResolvedValue(false),
+                    StartSkillRecording: start,
+                    StopSkillRecording: stop,
+                },
+            },
+        };
+        try {
+            const { getByTestId, queryByTestId } = renderPanel({
+                lang: 'zh-Hans',
+                state: { messages: [{ id: 'msg-1', role: 'user', content: 'hello' }], sending: false, streaming: false, ready: true },
+            });
+
+            fireEvent.click(getByTestId('task-more-record-skill-btn'));
+            const pause = await waitFor(() => getByTestId('skill-recording-pause-btn') as HTMLButtonElement);
+            fireEvent.click(pause);
+            await waitFor(() => expect((getByTestId('skill-recording-pause-btn') as HTMLButtonElement).disabled).toBe(true));
+            expect(queryByTestId('task-more-record-skill-btn')).toBeNull();
+            expect(start).toHaveBeenCalledTimes(1);
+
+            await act(async () => {
+                resolveStop({ count: 2, suggested_name: 'demo', suggested_description: 'saved steps', summary: [] });
+            });
+            await waitFor(() => expect(queryByTestId('skill-recording-pause-btn')).toBeNull());
+            const again = getByTestId('task-more-record-skill-btn') as HTMLButtonElement;
+            expect(again.disabled).toBe(true);
+            expect(again.textContent).toBe('请稍候');
+            fireEvent.click(again);
+            expect(start).toHaveBeenCalledTimes(1);
+
+            const live = runtimeEventsOnMock.mock.calls.filter(([eventName]) => eventName === 'skill-recording-state-changed').at(-1)?.[1] as ((state: unknown) => void) | undefined;
+            act(() => { live?.({ recording: true, count: 4, tabId: start.mock.calls[0]?.[0] || 'local' }); });
+            expect(queryByTestId('skill-recording-pause-btn')).toBeNull();
+        } finally {
+            (window as any).go = previousGo;
+        }
     });
 
     it('does not mark the overlay execution title bar as a window drag region', () => {

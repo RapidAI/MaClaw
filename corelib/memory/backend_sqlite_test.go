@@ -769,6 +769,38 @@ func TestSQLiteBackend_FilteredFTSSearch(t *testing.T) {
 	}
 }
 
+func TestSQLiteFTSDoesNotBindNameFragments(t *testing.T) {
+	b := newTestSQLiteBackend(t)
+	now := time.Now().UTC()
+	entries := []*Entry{
+		{ID: "frag-bio", Content: "马勇是中国人，就职于奇安信。", Category: CategoryTaskArtifact, CreatedAt: now, UpdatedAt: now},
+		{ID: "frag-note", Content: "中国人奇强只是一个测试称呼。", Category: CategoryTaskArtifact, CreatedAt: now, UpdatedAt: now},
+	}
+	for _, entry := range entries {
+		if err := b.SaveEntry(entry); err != nil {
+			t.Fatalf("SaveEntry %s: %v", entry.ID, err)
+		}
+	}
+	ids, err := b.SearchTextIDs("中国人奇强", 10)
+	if err != nil {
+		t.Fatalf("SearchTextIDs: %v", err)
+	}
+	for _, id := range ids {
+		if id == "frag-bio" {
+			t.Fatalf("fragment memory matched the other person: %v", ids)
+		}
+	}
+	found := false
+	for _, id := range ids {
+		if id == "frag-note" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected the memory that contains the queried name, got %v", ids)
+	}
+}
+
 func TestSQLiteFTSQueryQuotesTokens(t *testing.T) {
 	query := sqliteFTSQuery(`alpha "quoted" evidence navigation`)
 	if !strings.Contains(query, `"alpha ""quoted"" evidence navigation"`) || !strings.Contains(query, `"navigation"`) {

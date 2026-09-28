@@ -270,6 +270,10 @@ export function CancelGitHubCopilotOAuth() {
   return window['go']['main']['App']['CancelGitHubCopilotOAuth']();
 }
 
+export function CancelKimiCodeOAuth() {
+  return window['go']['main']['App']['CancelKimiCodeOAuth']();
+}
+
 export function CancelNLSkillRun(arg1) {
   return window['go']['main']['App']['CancelNLSkillRun'](arg1);
 }
@@ -4675,6 +4679,10 @@ export function StartCodeGenSSOEmbedded() {
   return window['go']['main']['App']['StartCodeGenSSOEmbedded']();
 }
 
+export function StartKimiCodeOAuth() {
+  return window['go']['main']['App']['StartKimiCodeOAuth']();
+}
+
 export function StartGitHubCopilotOAuth() {
   return window['go']['main']['App']['StartGitHubCopilotOAuth']();
 }
@@ -5076,6 +5084,10 @@ export function VerifyRemoteRegistrationContactCode(arg1, arg2, arg3) {
 
 export function WaitCodeGenSSOResult() {
   return window['go']['main']['App']['WaitCodeGenSSOResult']();
+}
+
+export function WaitKimiCodeOAuth() {
+  return window['go']['main']['App']['WaitKimiCodeOAuth']();
 }
 
 export function WaitGitHubCopilotOAuth() {

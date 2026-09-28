@@ -41,19 +41,24 @@ func (s *SQLiteStore) SearchImages(ctx context.Context, opts ImageSearchOptions)
 	// Image nodes already receive text embeddings from the normal node-indexing
 	// lifecycle. Reuse them only for text-to-image caption/OCR paraphrase recall;
 	// this is deliberately not an image-to-image embedding implementation.
-	if emb, generation := s.currentEmbedderSnapshot(); emb != nil && !embedding.IsNoop(emb) {
-		queryVec, embedErr := emb.Embed(searchOpts.Query)
-		if embedErr == nil && validEmbeddingVector(queryVec, emb.Dim()) && s.isEmbedderGenerationCurrent(generation) {
-			embResults, vectorErr := s.searchNodesByEmbedding(ctx, queryVec, embeddingModelIdentifier(emb), generation, searchOpts, NodeTypeImage)
-			if vectorErr != nil {
-				return nil, vectorErr
-			}
-			if len(embResults) > 0 {
-				results = rrfFuse(results, embResults, searchOpts.Limit)
+	// A composite name stays lexical: fusion would keep Limit neighbors and
+	// drop the real caption before the evidence filter runs.
+	if _, strict := bm25.QueryAnchors(normalizeKnowledgeLexicalText(searchOpts.Query)); !strict {
+		if emb, generation := s.currentEmbedderSnapshot(); emb != nil && !embedding.IsNoop(emb) {
+			queryVec, embedErr := emb.Embed(searchOpts.Query)
+			if embedErr == nil && validEmbeddingVector(queryVec, emb.Dim()) && s.isEmbedderGenerationCurrent(generation) {
+				embResults, vectorErr := s.searchNodesByEmbedding(ctx, queryVec, embeddingModelIdentifier(emb), generation, searchOpts, NodeTypeImage)
+				if vectorErr != nil {
+					return nil, vectorErr
+				}
+				if len(embResults) > 0 {
+					results = rrfFuse(results, embResults, searchOpts.Limit)
+				}
 			}
 		}
 	}
 
+	results = retainEntityMentionEvidence(searchOpts.Query, results)
 	sortSearchResults(results)
 	if len(results) > searchOpts.Limit {
 		results = results[:searchOpts.Limit]
@@ -95,18 +100,26 @@ func (s *SQLiteStore) searchImageNodesFTS(ctx context.Context, opts SearchOption
 }
 
 func (s *SQLiteStore) searchImageNodesLike(ctx context.Context, opts SearchOptions) ([]SearchResult, error) {
-	terms := imageSearchTerms(opts.Query)
-	if len(terms) == 0 {
-		return nil, nil
+	whereSQL := ""
+	patternArgs := []interface{}{}
+	if anchors, strict := bm25.QueryAnchors(normalizeKnowledgeLexicalText(opts.Query)); strict && len(anchors) > 0 {
+		whereSQL, patternArgs = likeAllAnchorsWhere([]string{"n.text", "n.title"}, anchors)
 	}
-	conditions := make([]string, 0, len(terms)*2)
-	patternArgs := make([]interface{}, 0, len(terms)*2)
-	for _, term := range terms {
-		pattern := "%" + escapeLikePattern(term) + "%"
-		conditions = append(conditions, "n.text LIKE ? ESCAPE '\\'", "n.title LIKE ? ESCAPE '\\'")
-		patternArgs = append(patternArgs, pattern, pattern)
+	if whereSQL == "" {
+		terms := imageSearchTerms(opts.Query)
+		if len(terms) == 0 {
+			return nil, nil
+		}
+		conditions := make([]string, 0, len(terms)*2)
+		patternArgs = make([]interface{}, 0, len(terms)*2)
+		for _, term := range terms {
+			pattern := "%" + escapeLikePattern(term) + "%"
+			conditions = append(conditions, "n.text LIKE ? ESCAPE '\\'", "n.title LIKE ? ESCAPE '\\'")
+			patternArgs = append(patternArgs, pattern, pattern)
+		}
+		whereSQL = "(" + strings.Join(conditions, " OR ") + ")"
 	}
-	where := []string{"n.type = ?", "(" + strings.Join(conditions, " OR ") + ")"}
+	where := []string{"n.type = ?", whereSQL}
 	args := append([]interface{}{NodeTypeImage}, patternArgs...)
 	where, args = appendSearchFilters(where, args, "s", opts)
 	args = append(args, opts.Limit*4)

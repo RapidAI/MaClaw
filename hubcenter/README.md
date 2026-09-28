@@ -29,8 +29,16 @@ HA sync history is pruned automatically by default. For emergency disk cleanup, 
 
 ```powershell
 go run .\cmd\hubcenter backup create --config .\configs\config.yaml --out .\data\backups\pre-ha-prune.tar.gz --json
-go run .\cmd\hubcenter maintenance ha-prune --config .\configs\config.yaml --retention-days 0.5 --max-retained-ops 50000 --batch-size 20000 --vacuum --json
+go run .\cmd\hubcenter maintenance ha-prune --config .\configs\config.yaml --retention-days 0.5 --max-retained-ops 20000 --batch-size 20000 --vacuum --json
 ```
+
+If little is left to prune but the SQLite main file is still bloated by historical churn (free pages), reclaim the space with the standalone vacuum command (also stop Hub Center first — VACUUM briefly needs an exclusive lock):
+
+```powershell
+go run .\cmd\hubcenter maintenance vacuum --config .\configs\config.yaml --json
+```
+
+Both vacuum paths persist `auto_vacuum=INCREMENTAL` in the rebuilt database, so afterwards the runtime WAL checkpointer releases freed pages automatically (`database.auto_vacuum` in config, default `incremental`) and the file no longer re-bloats between manual VACUUMs.
 
 
 ## Disaster backup and restore

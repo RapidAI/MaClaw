@@ -1,8 +1,10 @@
 package guiapp
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
@@ -12,6 +14,74 @@ import (
 // publish exactly when there is no runtime binding and no live session, so a
 // turn that needs to open a connection always has a provider to plan or
 // petition against.
+func TestCompactSSHPtyOutputDropsPaddingAndANSI(t *testing.T) {
+	raw := "\x1b[?2004l\r=== UPTIME ===\n 03:35:30 up 18 min\n" +
+		"tcp   LISTEN 0      511          0.0.0.0:80         0.0.0.0:*    users:((\"nginx\",pid=969,fd=21))                                                                                             \n" +
+		"\x1b]0;root@racknerd: ~\x07root@racknerd:~#"
+	got := compactSSHPtyOutput(raw)
+	if strings.Contains(got, "\x1b") {
+		t.Fatalf("ANSI left in output: %q", got)
+	}
+	var listen string
+	for _, line := range strings.Split(got, "\n") {
+		if strings.Contains(line, "nginx") {
+			listen = line
+		}
+	}
+	if listen == "" || strings.HasSuffix(listen, " ") {
+		t.Fatalf("trailing PTY padding left in place: %q", got)
+	}
+	if !strings.Contains(listen, "tcp   LISTEN") {
+		t.Fatalf("column spacing inside the line was collapsed: %q", listen)
+	}
+	if !strings.Contains(got, "UPTIME") || !strings.Contains(got, "root@racknerd:~#") {
+		t.Fatalf("metrics were removed: %q", got)
+	}
+}
+
+func TestStripLeadingCommandEchoKeepsCommandOutput(t *testing.T) {
+	command := `echo "=== UPTIME ==="; uptime; echo "=== DISK ==="; df -h /`
+	echo := command
+	if len(echo) > 40 {
+		echo = command[:40] + "\n" + command[40:]
+	}
+	output := echo + "\n=== UPTIME ===\n 18 min\n=== DISK ===\n/dev/vda2 52%\nroot@host:~#"
+	got := stripLeadingCommandEcho(output, command)
+	if strings.Contains(got, `echo "=== UPTIME ==="`) {
+		t.Fatalf("command echo still present: %q", got)
+	}
+	if !strings.Contains(got, "=== UPTIME ===") || !strings.Contains(got, "52%") || !strings.Contains(got, "root@host:~#") {
+		t.Fatalf("command output was removed: %q", got)
+	}
+
+	prompted := "root@racknerd:~# " + command + "\nup 18 min\nroot@racknerd:~#"
+	got = stripLeadingCommandEcho(prompted, command)
+	if strings.Contains(got, "echo ") || !strings.Contains(got, "up 18 min") {
+		t.Fatalf("prompted echo strip = %q", got)
+	}
+
+	plain := "up 18 min\nroot@host:~#"
+	if stripLeadingCommandEcho(plain, command) != plain {
+		t.Fatal("output that is not an echo must stay unchanged")
+	}
+}
+
+func TestSSHConnectResultForFollowUpCommandDropsLoginPreview(t *testing.T) {
+	raw := "SSH 连接成功\n会话 ID: ssh_1\n主机: root@api2.maclaw.top:22\n状态: running\n\n--- 初始输出 ---\n" +
+		strings.Repeat("MOTD line\n", 40) + "root@host:~# for f in /tmp/maclaw_bg_*.pid; do echo MACLAW_ORPHAN; done\n"
+	got := sshConnectResultForFollowUpCommand(raw)
+	if strings.Contains(got, "初始输出") || strings.Contains(got, "MOTD") || strings.Contains(got, "MACLAW_ORPHAN") {
+		t.Fatalf("login preview still attached: %q", got)
+	}
+	if !strings.Contains(got, "SSH 连接成功") || !strings.Contains(got, "ssh_1") {
+		t.Fatalf("session header was removed: %q", got)
+	}
+	reused := "复用已有 SSH 会话\n会话 ID: ssh_1\n主机: root@api2:22\n状态: running\n\n最近输出: root@host:~# "
+	if got := sshConnectResultForFollowUpCommand(reused); strings.Contains(got, "最近输出") || !strings.Contains(got, "ssh_1") {
+		t.Fatalf("reused session preview = %q", got)
+	}
+}
+
 func TestSemanticTrustedSSHConnectPublishedGate(t *testing.T) {
 	if semanticTrustedSSHConnectPublished(nil) {
 		t.Fatal("nil handler must not publish connect mode")
@@ -41,6 +111,79 @@ func TestSemanticSSHSchemaModeDetection(t *testing.T) {
 	}
 	if semanticSSHSchemaIsConnectMode(nil) {
 		t.Fatal("nil schema must report exec mode (wash stays conservative)")
+	}
+}
+
+func TestSemanticTrustedSSHTimeoutBudget(t *testing.T) {
+	command, timeout, err := semanticTrustedSSHArgsAllowed(map[string]interface{}{
+		"command": "apt-get upgrade -y",
+	})
+	if err != nil || command != "apt-get upgrade -y" || timeout != semanticTrustedSSHCommandTimeout {
+		t.Fatalf("default wait = %s err=%v command=%q", timeout, err, command)
+	}
+	if semanticTrustedSSHCommandTimeout != semanticTrustedShellMaxTimeout || semanticTrustedSSHCommandTimeout == semanticTrustedShellDefaultTimeout {
+		t.Fatalf("remote command lifetime %s must be the safety cap, not the %s stuck-session probe", semanticTrustedSSHCommandTimeout, semanticTrustedShellDefaultTimeout)
+	}
+	_, timeout, err = semanticTrustedSSHArgsAllowed(map[string]interface{}{
+		"command":         "sleep 45",
+		"timeout_seconds": float64(90),
+	})
+	if err != nil || timeout != 90*time.Second {
+		t.Fatalf("explicit wait = %s err=%v", timeout, err)
+	}
+	_, timeout, err = semanticTrustedSSHArgsAllowed(map[string]interface{}{
+		"command":         "apt-get upgrade -y",
+		"timeout_seconds": float64(9999),
+	})
+	if err != nil || timeout != semanticTrustedShellMaxTimeout {
+		t.Fatalf("over-max wait = %s err=%v, want %s", timeout, err, semanticTrustedShellMaxTimeout)
+	}
+	if _, _, err = semanticTrustedSSHArgsAllowed(map[string]interface{}{
+		"command":         "true",
+		"timeout_seconds": float64(0),
+	}); err == nil {
+		t.Fatal("zero timeout must be rejected")
+	}
+	if _, _, err = semanticTrustedSSHArgsAllowed(map[string]interface{}{
+		"command":      "true",
+		"wait_seconds": float64(120),
+	}); err == nil {
+		t.Fatal("wait_seconds must stay rejected")
+	}
+
+	authorization, err := tool.NewParameterAuthorization(semanticTrustedSSHInvocationSchema())
+	if err != nil {
+		t.Fatalf("authorize schema: %v", err)
+	}
+	selection := tool.PlannedSelection{
+		ID:                     "sel-ssh",
+		AdapterName:            semanticTrustedSSHAdapter,
+		FitProof:               tool.FitProof{MatchedCapability: tool.CapabilityShellExecuteRemoteHost},
+		ParameterAuthorization: authorization,
+	}
+	cb := &sharedAgentLoopCallbacks{semanticSurface: &semanticCallSurface{
+		plan:             tool.ToolPlan{ID: "plan-ssh", Selections: []tool.PlannedSelection{selection}},
+		parameterSchemas: map[string]map[string]interface{}{semanticTrustedSSHAdapter: semanticTrustedSSHInvocationSchema()},
+	}}
+	canonical, err := cb.semanticCanonicalArguments(selection, `{"command":"sleep 45","timeout":"90"}`)
+	if err != nil {
+		t.Fatalf("timeout alias must be admitted: %v", err)
+	}
+	admitted := map[string]interface{}{}
+	if err := json.Unmarshal(canonical.CanonicalJSON, &admitted); err != nil {
+		t.Fatalf("canonical json: %v", err)
+	}
+	if admitted["timeout_seconds"] != float64(90) {
+		t.Fatalf("admitted timeout = %#v", admitted)
+	}
+	if _, err := cb.semanticCanonicalArguments(selection, `{"command":"sleep 45","wait_seconds":120}`); err == nil {
+		t.Fatal("wait_seconds must still fail canonicalization")
+	}
+	if !strings.Contains(remoteSSHTimeoutHint(30*time.Second), "timeout_seconds") {
+		t.Fatal("a short wait must tell the model it can raise timeout_seconds")
+	}
+	if hint := remoteSSHTimeoutHint(0); !strings.Contains(hint, "600") || strings.Contains(hint, "timeout_seconds") {
+		t.Fatalf("safety-cap hint = %q", hint)
 	}
 }
 
@@ -163,7 +306,7 @@ func TestSSHAvailabilityIndependentOfClassifierAndSession(t *testing.T) {
 			"user-1", "连接驱网服务器", "desktop", "root-inv-s2", "turn-inv-s2",
 			&intent.ClassificationResult{
 				Primary: intent.LabelUnknown, Confidence: 0.30, Degraded: true,
-				Reason: "tree classification unavailable (l2=ssh conf=0.79)",
+				Reason:    "tree classification unavailable (l2=ssh conf=0.79)",
 				Secondary: []intent.IntentLabel{intent.LabelSSH},
 			})
 		if err != nil || !handled || surface == nil {

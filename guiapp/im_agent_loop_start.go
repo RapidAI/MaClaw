@@ -173,6 +173,17 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 			}
 		}
 	}
+	if semanticHandled && !loopContextTurnAnswerOnly(ctx) {
+		// prepareAgentLoopTools does not run on this path, so it cannot update
+		// the legacy carry. A light managed turn must drop it; a full one
+		// replaces it with the tools this turn actually rendered. A greeting
+		// leaves the carry untouched.
+		profile := ExecutionProfile{}
+		if ctx != nil {
+			profile = ctx.Runtime.Execution
+		}
+		h.recordSemanticExecutionSurface(opts.UserID, profile, tools)
+	}
 	if !semanticHandled {
 		markClassifierTimeoutLookup(ctx)
 		applySemanticChatProjection(ctx)
@@ -227,6 +238,9 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 	}
 	if semanticSurface != nil {
 		systemPrompt = ensureSemanticGrantPromptFence(systemPrompt)
+	}
+	if ctx != nil && ctx.semanticSessionCeilingSpent {
+		systemPrompt += "\n\n" + sessionCeilingTurnPrompt()
 	}
 
 	loopID := ""

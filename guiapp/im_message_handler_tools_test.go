@@ -3905,7 +3905,7 @@ func TestToolBashRejectsShellBrowserAutomationCommand(t *testing.T) {
 func TestToolBashRejectsAuthenticatedBrowserSideEffectHTTPCommand(t *testing.T) {
 	handler := &IMMessageHandler{}
 	result := handler.toolBash(context.Background(), map[string]interface{}{"command": `curl -X POST https://www.zhihu.com/api/v4/pins -H "x-csrftoken: token" --data-raw "{}"`}, nil)
-	if !strings.Contains(result, "Direct authenticated browser-side HTTP side effects") || !strings.Contains(result, "Use the browser tool") {
+	if !strings.Contains(result, "Direct browser-session HTTP side effects") || !strings.Contains(result, "Use the browser tool") {
 		t.Fatalf("expected browser side-effect HTTP rejection, got: %s", result)
 	}
 }

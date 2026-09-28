@@ -76,6 +76,28 @@ func TestSemanticSSHInvocationArgsWashesLegacyShapes(t *testing.T) {
 	if washed, err = semanticSSHInvocationArgs(bare, false); err != nil || washed != bare {
 		t.Fatalf("bare command must pass through: washed=%q err=%v", washed, err)
 	}
+	// The same timeout shapes the local shell accepts must wash here too.
+	// Otherwise apt-get upgrade and "sleep 45" stay capped at 30s and the
+	// host sends Ctrl+C (production 2026-09-27 api2 upgrade).
+	washed, err = semanticSSHInvocationArgs(`{"command":"apt-get upgrade -y","timeout_seconds":"600"}`, false)
+	if err != nil {
+		t.Fatalf("timeout wash: %v", err)
+	}
+	got = parseWashedArgs(t, washed)
+	if got["timeout_seconds"] != float64(600) {
+		t.Fatalf("string timeout_seconds not normalized: %#v", got)
+	}
+	washed, err = semanticSSHInvocationArgs(`{"command":"sleep 45","timeout":90,"session_id":"ssh_1"}`, false)
+	if err != nil {
+		t.Fatalf("timeout alias wash: %v", err)
+	}
+	got = parseWashedArgs(t, washed)
+	if got["timeout_seconds"] != float64(90) {
+		t.Fatalf("timeout alias not folded: %#v", got)
+	}
+	if _, ok := got["timeout"]; ok || got["session_id"] != nil {
+		t.Fatalf("alias and session_id must be gone: %#v", got)
+	}
 	// Execution-affecting keys are not decoration: they survive the wash so
 	// canonicalization rejects them instead of silently ignoring them.
 	mixed := `{"command":"df -h","wait_seconds":120}`

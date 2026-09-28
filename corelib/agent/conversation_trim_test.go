@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib/toolresult"
 )
 
 func TestPreviewToolResultForToolComputerObserveKeepsRefs(t *testing.T) {
@@ -23,6 +25,24 @@ func TestPreviewToolResultForToolComputerObserveKeepsRefs(t *testing.T) {
 	}
 	if !strings.Contains(got, "ocr_excerpt: Document saved successfully") {
 		t.Fatal("OCR excerpt missing from observe preview")
+	}
+}
+
+func TestProjectToolResultKeepsSSHStatusInline(t *testing.T) {
+	// 2026-09-27: a 6406-byte ssh status was cut at 4096, and uptime/memory/disk
+	// sat in the discarded middle.
+	raw := "SSH 连接成功\n" + strings.Repeat("m", 2000) + "\n=== UPTIME ===\nup 18 min\n=== MEMORY ===\n5.8Gi\n" + strings.Repeat("t", 4200)
+	if len(raw) <= MaxToolResultLen || len(raw) > TerminalMaxToolResult {
+		t.Fatalf("fixture len=%d, want between %d and %d", len(raw), MaxToolResultLen, TerminalMaxToolResult)
+	}
+	for _, toolName := range []string{"ssh", "bash"} {
+		projection, err := ProjectToolResult(toolName, "owner", raw)
+		if err != nil {
+			t.Fatalf("%s: %v", toolName, err)
+		}
+		if projection.Spilled || projection.Preview != raw {
+			t.Fatalf("%s status was truncated: spilled=%v preview=%d raw=%d", toolName, projection.Spilled, len(projection.Preview), len(raw))
+		}
 	}
 }
 
@@ -64,17 +84,46 @@ func TestProjectToolResultStillSpillsLargeOfficeDocument(t *testing.T) {
 	}
 }
 
-func TestToolResultReadBackUsesGeneralPreviewBudget(t *testing.T) {
-	page := strings.Repeat("文", 9_000) // 27 KiB exceeds the general 4 KiB preview budget.
-	projection, err := ProjectToolResult("read_tool_result", "", page)
+func TestToolResultReadBackKeepsOnePageInline(t *testing.T) {
+	page := toolresult.FormatReadResult(toolresult.ReadResult{
+		ID: "20260927T033427_ssh_abc", Offset: 0, ReturnedBytes: 6000, TotalBytes: 20000,
+		Truncated: true, NextOffset: 6000, Content: strings.Repeat("x", 6000),
+	})
+	if len(page) <= MaxToolResultLen {
+		t.Fatalf("fixture len=%d, want above the generic 4KiB cap", len(page))
+	}
+	projection, err := ProjectToolResult("read_tool_result", "owner", page)
 	if err != nil {
-		t.Fatalf("ProjectToolResult() error = %v", err)
+		t.Fatal(err)
+	}
+	if projection.Spilled || projection.Preview != page {
+		t.Fatalf("read page was cut: spilled=%v preview=%d page=%d", projection.Spilled, len(projection.Preview), len(page))
+	}
+	if !strings.Contains(projection.Preview, "next_offset: 6000") {
+		t.Fatal("continuation fields missing")
+	}
+}
+
+func TestToolResultReadBackStillSpillsPastMaxPage(t *testing.T) {
+	page := strings.Repeat("x", toolresult.MaxReadLimit+8192)
+	projection, err := toolresult.Project(toolresult.ProjectOptions{
+		ToolName:   "read_tool_result",
+		SessionKey: "owner",
+		Content:    page,
+		Limit:      ToolResultReadMaxToolResult,
+		Root:       t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 	if !projection.Spilled || projection.Handle == nil {
-		t.Fatalf("read-back page must preserve the general preview budget: projection=%+v", projection)
+		t.Fatalf("oversized read-back must still spill: %+v", projection)
 	}
-	if len(projection.Preview) > MaxToolResultLen+1024 { // Footer metadata may slightly exceed the preview body limit.
-		t.Fatalf("read-back preview exceeds general budget: %d bytes", len(projection.Preview))
+	if len(projection.Preview) > ToolResultReadMaxToolResult {
+		t.Fatalf("preview %d exceeds read budget %d", len(projection.Preview), ToolResultReadMaxToolResult)
+	}
+	if strings.Count(projection.Preview, "已截断") != 1 {
+		t.Fatalf("read-back was truncated more than once: %s", projection.Preview[max(0, len(projection.Preview)-180):])
 	}
 }
 

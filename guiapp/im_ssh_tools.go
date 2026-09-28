@@ -96,10 +96,11 @@ func (h *IMMessageHandler) sshExecRuntimeBoundContext(ctx context.Context, sessi
 	if ctx != nil && ctx.Err() != nil {
 		return "", ctx.Err()
 	}
-	output := strings.Join(lines, "\n")
-	if len(output) > 8000 {
-		output = output[:4000] + "\n... (truncated) ...\n" + output[len(output)-4000:]
-	}
+	// Keep the capture intact. A head/tail byte cut here destroyed the middle
+	// before the tool-result projector could preview or spill it, and it could
+	// split a UTF-8 rune. Terminal noise is removed so the preview budget is
+	// spent on the command output.
+	output := remote.StripLeadingCommandEcho(remote.CompactPtyOutput(strings.Join(lines, "\n")), command)
 	if strings.TrimSpace(output) == "" {
 		return "", fmt.Errorf("remote coding command returned no output")
 	}
@@ -145,9 +146,9 @@ func (h *IMMessageHandler) sshExecChannelContext(ctx context.Context, sessionID,
 	if trimmed := strings.TrimSpace(result.Stderr); trimmed != "" {
 		output = strings.TrimRight(output, "\n") + "\n[stderr] " + trimmed
 	}
-	if len(output) > 8000 {
-		output = output[:4000] + "\n... (truncated) ...\n" + output[len(output)-4000:]
-	}
+	// Exec-channel stdout is not a PTY echo. Compact controls only; the
+	// caller projects or spills the full capture.
+	output = remote.CompactPtyOutput(output)
 	if strings.TrimSpace(output) == "" {
 		return "", fmt.Errorf("remote coding command returned no output (exit %d)", result.ExitCode)
 	}
@@ -544,9 +545,14 @@ func (h *IMMessageHandler) sshExec(args map[string]interface{}) string {
 
 	if output == "" {
 		output = "(无新输出)"
-	}
-	if len([]rune(output)) > 8000 {
-		output = truncateRunesMiddle(output, 4000, 4000)
+	} else {
+		// Keep the captured text intact. The tool-result projector spills
+		// anything past the terminal budget and can page it back; cutting
+		// head/tail here dropped the middle (uptime, disk, memory) for good.
+		output = stripLeadingCommandEcho(compactSSHPtyOutput(output), actualCommand)
+		if output == "" {
+			output = "(无新输出)"
+		}
 	}
 
 	// Update background loop iteration count.
@@ -818,8 +824,9 @@ func sshBackgroundTaskMirrorSnapshot(mirrorFile string) string {
 	if err != nil || len(data) == 0 {
 		return fmt.Sprintf("\nlocal_mirror: %s", mirrorFile)
 	}
-	content := truncateRunesMiddle(string(data), 2000, 4000)
-	return fmt.Sprintf("\nlocal_mirror: %s\n\n--- last local mirror ---\n%s", mirrorFile, content)
+	// Keep the mirrored log intact. The tool-result projector spills anything
+	// past the terminal budget; cutting head/tail here dropped the middle.
+	return fmt.Sprintf("\nlocal_mirror: %s\n\n--- last local mirror ---\n%s", mirrorFile, string(data))
 }
 
 func authorizeSSHBackgroundTaskOwner(bgTaskMgr *remote.SSHBackgroundTaskManager, taskID, ownerID string) error {
@@ -877,9 +884,6 @@ func formatSSHBackgroundTaskStatus(result *remote.BackgroundTaskStatus) string {
 	logTail := result.LogTail
 	if logTail == "" {
 		logTail = "(no log output)"
-	}
-	if len([]rune(logTail)) > 6000 {
-		logTail = truncateRunesMiddle(logTail, 3000, 3000)
 	}
 
 	exitCode := "unknown"

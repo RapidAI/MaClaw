@@ -471,6 +471,11 @@ func repeatFamilyIsUnsettled(exposure RepeatExposure, siblings []string) bool {
 	return false
 }
 
+// RepeatWaveListedMarker is the promise that a spent repeat family can run
+// once more on the next model request in the same turn. Hosts that see it on
+// a remote-command result open that call instead of ending the turn.
+const RepeatWaveListedMarker = "another call will be listed"
+
 // RepeatFamilySpentBudgetNote reports that the call which just succeeded spent
 // the last invocation its family was budgeted for.
 //
@@ -504,5 +509,5 @@ func RepeatFamilySpentBudgetNote(plan ToolPlan, selectionID string, materialized
 			return ""
 		}
 	}
-	return fmt.Sprintf("\n\n[system] Planned invocations for %s in this turn (%d) are complete. Continue with the next listed tool, or answer from the results you already have. Do not narrate tool limits.", capability, budget)
+	return fmt.Sprintf("\n\n[system] Planned invocations for %s in this turn (%d) are complete. If this task is unfinished, call this tool again on the next request in this same turn; %s. Do not ask the user to send another message. Do not narrate tool limits.", capability, budget, RepeatWaveListedMarker)
 }

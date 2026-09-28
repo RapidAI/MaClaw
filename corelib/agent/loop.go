@@ -506,11 +506,19 @@ type ToolExecutionSurfaceRefresher interface {
 type ToolCallPetitioner interface {
 	// PetitionToolCall is consulted exactly once per name when the model calls
 	// a function that was not rendered in the current request surface and has
-	// not already succeeded in this loop. Granted means the host expanded the
-	// governed surface through its trusted planner; message then replaces the
-	// denial and tells the model to re-issue the call. The execution outcome
-	// remains an error either way, preserving retry/drift semantics; the
-	// widened surface is observed by the next iteration's request rebuild.
+	// not already succeeded in this loop. The execution outcome remains an
+	// error either way, preserving retry/drift semantics.
+	//
+	// granted means the host expanded the governed surface through its trusted
+	// planner. message then replaces the denial and tells the model to re-issue
+	// the call; the widened surface is observed by the next iteration's request
+	// rebuild.
+	//
+	// A non-empty message with granted false also replaces the denial. That is
+	// how a host explains a real tool that stays off this request: a planned
+	// successor whose predecessor has not finished, or a turn that does not use
+	// tools. An empty message keeps the generic absence denial. Granted false
+	// must not be read as "the capability is gone for the turn."
 	PetitionToolCall(name string) (granted bool, message string)
 }
 
@@ -1010,6 +1018,13 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 	llmRequestAttempts := 0
 	freeReplans := 0
 	malformedReprompts := 0
+	storedFactNudges := 0
+	// repeatWaveName is set when a spent repeat family was given another
+	// invocation. A following answer that stops without calling it is not
+	// the end of the user task; the loop continues once the tool is listed.
+	repeatWaveName := ""
+	repeatAutoContinues := 0
+	repeatAutoTotal := 0
 	var toolBatchSequence uint64
 	// Visible tokens already sent to the chat bubble for the current model
 	// call. A later nameless tool call can clear the stored message content
@@ -2320,6 +2335,46 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			attached := ShouldAttachWorkingState(loopPromptProfile(cb), WorkingStateDisabled(), workingState)
 			// Do not spend the last iteration on a nudge — that turns a
 			// deliverable answer into "max iterations reached".
+			// The model stopped after a spent command wave was reopened, or
+			// it answered by asking the user to continue while a command
+			// result says another call will be listed. Discovery calls such
+			// as tools_search do not hide that result. Keep the same user
+			// turn going.
+			if repeatWaveName == "" && answerHandsWorkBackToUser(content) && repeatAutoContinues < 2 && repeatAutoTotal < 8 && iteration+1 < maxIter {
+				if name := spentRepeatToolName(historyDelta); name != "" {
+					if opener, ok := cb.(RepeatWaveOpener); ok && opener.OpenNextRepeatWave(name) {
+						repeatWaveName = name
+						repeatAutoTotal++
+					}
+				}
+			}
+			// The publish above already counted. This reminder must still run
+			// after the last allowed publish, and must not spend a second slot.
+			if repeatWaveName != "" && answerHandsWorkBackToUser(content) && repeatAutoContinues < 2 && iteration+1 < maxIter {
+				repeatAutoContinues++
+				disposeSurface(ToolSurfaceResponseSettled)
+				nudge := fmt.Sprintf("[系统] %s 已再次列入本轮工具列表。当前任务还要继续用它，请直接调用，不要要求用户再发消息。", repeatWaveName)
+				conversation = append(conversation, map[string]interface{}{
+					"role":    "user",
+					"content": nudge,
+				})
+				historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: nudge})
+				continue
+			}
+			// A full turn that stops before any tool call still has memory or
+			// knowledge_search unused. One nudge, then the model's next
+			// answer stands. Light lookups are not forced to search storage.
+			if iteration+1 < maxIter && shouldNudgeStoredRetrieval(loopPromptProfile(cb).IsLight(), tools, historyDelta, storedFactNudges) {
+				storedFactNudges++
+				disposeSurface(ToolSurfaceResponseSettled)
+				nudge := StoredOperationalFactNudge()
+				conversation = append(conversation, map[string]interface{}{
+					"role":    "user",
+					"content": nudge,
+				})
+				historyDelta = append(historyDelta, ConversationEntry{Role: "user", Content: nudge})
+				continue
+			}
 			if ShouldBlockFinish(workingState, userText, attached) && iteration+1 < maxIter {
 				disposeSurface(ToolSurfaceResponseSettled)
 				workingState.FinishNudges++
@@ -2343,15 +2398,16 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			return finish(LoopResult{Text: finalText, Iterations: iteration + 1, ToolCalls: totalToolCalls})
 		}
 
-		// Persist a valid conversation prefix before any tool begins. The result
-		// of the imminent call is not yet known, so every such checkpoint is
-		// deliberately classified as externally uncertain. Hosts must resume by
-		// asking the model for a new forward decision, never by replaying it.
+		// Persist a valid conversation prefix before any tool begins. A batch of
+		// known read-only tools cannot have changed state, so a crash during it
+		// resumes context only. Every other batch stays externally uncertain
+		// until commit: the call may already have mutated state, and hosts must
+		// ask for a new forward decision rather than replay it.
 		toolBatchSequence++
 		batchMeta := ToolBatchMetadata{
 			Sequence:        toolBatchSequence,
 			LastToolName:    strings.TrimSpace(choice.Message.ToolCalls[0].Function.Name),
-			SideEffectState: "external_uncertain",
+			SideEffectState: preToolSideEffectState(choice.Message.ToolCalls),
 		}
 		if starter, ok := h.(ToolBatchStarter); ok {
 			batch := append([]ConversationEntry(nil), historyDelta[batchDeltaStart:]...)
@@ -2404,18 +2460,31 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				tool.RecordUnrenderedToolCallDenial()
 				denial := unrenderedToolCallDeniedMessage(tc.Function.Name)
 				if _, ok := succeededToolNames[strings.TrimSpace(tc.Function.Name)]; ok {
-					// An already-consumed grant keeps its dedicated denial text; the
-					// earlier success still stands and must not be reinterpreted.
-					tool.RecordConsumedGrantDenial()
-					denial = consumedGrantToolCallDeniedMessage(tc.Function.Name)
+					// A budgeted repeat family can publish one more invocation
+					// when the model asks again. One-shot tools stay on the
+					// consumed-grant denial. The grant opened here is on the
+					// next request; this call still does not execute.
+					if opener, ok := cb.(RepeatWaveOpener); ok && opener.OpenNextRepeatWave(tc.Function.Name) {
+						denial = repeatWaveContinuedMessage(tc.Function.Name)
+						repeatWaveName = strings.TrimSpace(tc.Function.Name)
+					} else {
+						tool.RecordConsumedGrantDenial()
+						denial = consumedGrantToolCallDeniedMessage(tc.Function.Name)
+					}
 				} else if petitioner, ok := cb.(ToolCallPetitioner); ok {
 					// A governed host may rescue a call that names a real cataloged
-					// tool the planner failed to render. The outcome stays an error;
-					// the granted message replaces the denial so the model re-issues
-					// the call against the widened surface of the next iteration.
-					if granted, message := petitioner.PetitionToolCall(tc.Function.Name); granted && strings.TrimSpace(message) != "" {
-						tool.RecordPetitionGrant()
-						denial = message
+					// tool the planner failed to render, or explain why a planned
+					// name stays off this request. The outcome stays an error.
+					// granted widens the surface for the next iteration. A non-empty
+					// message replaces the generic absence denial either way, so a
+					// successor that is waiting on a predecessor is not described as
+					// a tool that does not exist.
+					granted, message := petitioner.PetitionToolCall(tc.Function.Name)
+					if text := strings.TrimSpace(message); text != "" {
+						if granted {
+							tool.RecordPetitionGrant()
+						}
+						denial = text
 					}
 				}
 				execResult := ToolExecutionResult{
@@ -2499,8 +2568,20 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					toolExecuted = true
 				}
 			}
+			executedName := strings.TrimSpace(tc.Function.Name)
 			if toolExecuted && execResult.Outcome == ToolExecutionOutcomeOK {
-				succeededToolNames[strings.TrimSpace(tc.Function.Name)] = struct{}{}
+				succeededToolNames[executedName] = struct{}{}
+			}
+			if toolExecuted && executedName == repeatWaveName {
+				// This call used the invocation published for it. Drop the
+				// listing before inspecting the result, so a failed or
+				// unsettled command cannot later be described as still waiting
+				// on the tool list. A success also clears the consecutive
+				// deferral count. The turn-wide nudge cap is unchanged.
+				repeatWaveName = ""
+				if execResult.Outcome == ToolExecutionOutcomeOK {
+					repeatAutoContinues = 0
+				}
 			}
 			result := execResult.Result
 
@@ -2557,11 +2638,15 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			// finish-nudge even after the goal was completed through the tools
 			// this turn allows. The denial text itself already tells the model
 			// to reroute, and the unrendered-name fence above likewise skips
-			// the ledger.
-			if !WorkingStateDisabled() && !replanSkip && !policyRejected && workingState != nil {
+			// the ledger. An in-tool guard rejection ([system rejected]) is the
+			// same class: the 2026-09-27 video turn treated it as a bash
+			// failure, injected "诊断并改范围", and the model petitioned a
+			// browser provider this route does not have.
+			guardRejected := execResult.Outcome != ToolExecutionOutcomeOK && hostGuardRejection(result)
+			if !WorkingStateDisabled() && !replanSkip && !policyRejected && !guardRejected && workingState != nil {
 				wsBatch.note(workingState, tc.Function.Name, argsJSON, execResult.Outcome)
 			}
-			if toolExecuted && !replanSkip && !policyRejected {
+			if toolExecuted && !replanSkip && !policyRejected && !guardRejected {
 				var admitted SessionFact
 				var factOK bool
 				sessionFacts, admitted, factOK = noteSessionFactFromTool(sessionFacts, tc.Function.Name, argsJSON, result, execResult.Outcome)
@@ -2582,7 +2667,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				// earns a usage record. Policy denials, invalid-argument rejects,
 				// and replan skips above never reach this block, so they cannot
 				// poison the tracker's outcome stats.
-				if trackerProvider, ok := cb.(UsageTrackerProvider); ok {
+				if trackerProvider, ok := cb.(UsageTrackerProvider); ok && !guardRejected {
 					recordLoopToolUsage(trackerProvider.UsageTracker(), tc.Function.Name, userText, toolSuccess)
 				}
 				// Escalation changes the execution budget used when projecting this
@@ -2832,6 +2917,18 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				consecutiveSame = 0
 			}
 		}
+		// A remote-command result promised that another call will be listed on
+		// the next request. Publish it after this batch is committed, so the
+		// next model request in the same turn sees it. Other families stay on
+		// the explicit handoff path. Publishing is not a deferral and does not
+		// spend repeatAutoTotal; the family cap and identical-poll drift do.
+		if repeatWaveName == "" && iteration+1 < maxIter {
+			if name := spentRemoteCommandName(historyDelta); name != "" {
+				if opener, ok := cb.(RepeatWaveOpener); ok && opener.OpenNextRepeatWave(name) {
+					repeatWaveName = name
+				}
+			}
+		}
 	}
 
 	log.Printf("[agent-loop] max iterations (%d) reached", maxIter)
@@ -3032,6 +3129,86 @@ func unrenderedToolCallDeniedMessage(name string) string {
 	return fmt.Sprintf("Error: tool %q was not available in this request's rendered tool surface. Do not retry %q and do not ask the user to re-authorize tools; continue with the tools rendered in this request or answer from what you already have.", name, name)
 }
 
+// RepeatWaveOpener publishes one more invocation of a budgeted repeat family
+// after its planned wave is spent. The published count is a plan-size guard,
+// not a signal that the user task is finished.
+type RepeatWaveOpener interface {
+	OpenNextRepeatWave(name string) bool
+}
+
+func answerHandsWorkBackToUser(content string) bool {
+	text := strings.TrimSpace(content)
+	if text == "" {
+		return false
+	}
+	// These are handoffs ("send 继续", "I'll do it next turn"), not a finished
+	// report that happens to say the work can continue later.
+	for _, phrase := range []string{
+		"请再发",
+		"再发一次",
+		"下轮我",
+		"下轮再",
+		"下轮读取",
+		"下一轮继续",
+		"下一轮再",
+		"额度已用尽",
+		"额度用尽",
+		"额度已用完",
+		"额度用完",
+		"请发一条消息",
+		"你回一句",
+	} {
+		if strings.Contains(text, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func remoteCommandWaveSpent(result string) bool {
+	// Both fragments are produced together by RepeatFamilySpentBudgetNote.
+	// Either one alone can show up in command output (a log line, a source
+	// listing) and must not publish another remote command.
+	return strings.Contains(result, "Planned invocations for "+string(tool.CapabilityShellExecuteRemoteHost)) &&
+		strings.Contains(result, tool.RepeatWaveListedMarker)
+}
+
+func spentRepeatToolName(history []ConversationEntry) string {
+	return spentRepeatTool(history, func(content string) bool {
+		return strings.Contains(content, tool.RepeatWaveListedMarker)
+	})
+}
+
+// spentRemoteCommandName is the automatic-relist form of spentRepeatToolName.
+// Only a remote-command wave is republished without the model asking; a
+// search or repo result that carries the same marker stays put.
+func spentRemoteCommandName(history []ConversationEntry) string {
+	return spentRepeatTool(history, remoteCommandWaveSpent)
+}
+
+func spentRepeatTool(history []ConversationEntry, match func(string) bool) string {
+	for i := len(history) - 1; i >= 0; i-- {
+		entry := history[i]
+		name := strings.TrimSpace(entry.ToolName)
+		if name == "" || name == "tools_search" {
+			continue
+		}
+		if match(fmt.Sprint(entry.Content)) {
+			return name
+		}
+		return ""
+	}
+	return ""
+}
+
+func repeatWaveContinuedMessage(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = "(unknown)"
+	}
+	return fmt.Sprintf("Error: tool %q is listed on the next request in this same reply. Call it then. This turn is not finished, so do not ask the user to continue and do not ask them to re-authorize tools.", name)
+}
+
 // consumedGrantToolCallDeniedMessage is the denial for a name that already
 // completed successfully earlier in this loop but is absent from the current
 // request surface (for example a one-shot grant whose sibling budget was
@@ -3080,14 +3257,20 @@ func loopLLMConfigChanged(a, b corelib.MaclawLLMConfig) bool {
 
 func sideEffectStateForToolBatch(calls []llm.ToolCall) string {
 	state := "none"
+	unknown := false
 	for _, call := range calls {
 		name := strings.ToLower(strings.TrimSpace(call.Function.Name))
 		switch name {
 		// These built-in tools only inspect local, already-available state.
 		// Keep this allow-list explicit: tool names are not a reliable security
 		// boundary, especially for per-client and MCP-provided tools.
-		case "read_file", "read_files", "list_directory", "list_dir",
-			"ripgrep", "grep", "glob", "search_files", "session_search":
+		// tools_search reads the local catalog. It may widen the in-memory tool
+		// grant for this process, and that grant disappears on exit. It does
+		// not change the workspace or an external system.
+		// read_document opens a file for text extraction and does not modify it.
+		case "read_file", "read_files", "read_document", "list_directory", "list_dir",
+			"ripgrep", "grep", "glob", "search_files", "session_search",
+			"tools_search":
 			continue
 		// These built-in tools change local state. A recovery may resume the
 		// conversation, but must first tell the user to inspect the workspace.
@@ -3097,12 +3280,30 @@ func sideEffectStateForToolBatch(calls []llm.ToolCall) string {
 			state = "local_committed"
 		default:
 			// Unknown names include dynamically declared client and MCP tools.
-			// We cannot infer whether they made an external change from a string
-			// name, so recovery must require explicit review rather than replay.
-			return "external_uncertain"
+			// Keep scanning: an earlier local edit must not disappear just
+			// because a later name is unrecognized.
+			unknown = true
 		}
 	}
+	if unknown && state != "local_committed" {
+		// An unrecognized tool may have reached another system. Recovery must
+		// require explicit review rather than replay. A known local edit in
+		// the same batch stays local_committed so the workspace warning remains;
+		// that mode already requires review.
+		return "external_uncertain"
+	}
 	return state
+}
+
+// preToolSideEffectState classifies a batch before any call runs. Known
+// read-only batches stay "none" so a process restart does not present them as
+// an uncertain external mutation. Anything else stays externally uncertain
+// until the commit records the outcome.
+func preToolSideEffectState(calls []llm.ToolCall) string {
+	if sideEffectStateForToolBatch(calls) == "none" {
+		return "none"
+	}
+	return "external_uncertain"
 }
 
 func projectLoopToolResult(cb LoopCallbacks, name string, result ToolExecutionResult) string {
@@ -3157,6 +3358,13 @@ func invalidLoopToolArgumentNames(calls []llm.ToolCall) []string {
 		}
 	}
 	return invalid
+}
+
+// hostGuardRejection reports an in-tool fail-closed guard. The result is the
+// whole instruction to the model; opening a diagnose item on top of it asks
+// for a retry the guard will reject again.
+func hostGuardRejection(result string) bool {
+	return strings.HasPrefix(strings.TrimSpace(result), "[system rejected]")
 }
 
 func authorizeLoopTool(cb LoopCallbacks, name, argsJSON string) (ToolExecutionResult, bool) {

@@ -2,6 +2,7 @@ package intent
 
 import (
 	"context"
+	"math"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -617,6 +618,241 @@ func TestClassifyTreeReadsCompetingPDFParaphrase(t *testing.T) {
 	result := uic.Classify(MessageContext{Text: "把天气整理成一份报告文件"})
 	if result.Layer != 3 || result.Primary != LabelLiveData || len(result.Secondary) != 1 || result.Secondary[0] != LabelDocumentGenerate {
 		t.Fatalf("result=%+v, want the tree's PDF reading", result)
+	}
+}
+
+func anchorVec(cos float64) []float32 {
+	return []float32{float32(cos), float32(math.Sqrt(1 - cos*cos))}
+}
+
+// 2026-09-28 WeChat 「北京天气」: live_data 0.73 beside live_data_visual 0.646
+// left the lookup shortcut, the tree said live_data 0.95, and synthesis
+// crowned the chart. The reply then attached a placeholder bar image.
+func TestClassifyPlainWeatherDoesNotBecomeVisualCard(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	anchors := []intentAnchor{
+		{Label: LabelLiveData, Vecs: [][]float32{anchorVec(0.73)}},
+		{Label: LabelLiveDataVisual, Vecs: [][]float32{anchorVec(0.646)}},
+	}
+	l2, confident := classifyByEmbedding(emb, anchors, "北京天气")
+	if !confident || l2.Primary != LabelLiveData || l2.HasLabel(LabelLiveDataVisual) || l2.RunnerUp == LabelLiveDataVisual {
+		t.Fatalf("l2=%+v confident=%v, a sub-floor chart resemblance must stay a plain lookup", l2, confident)
+	}
+
+	llmCalls := 0
+	uic := New(Config{
+		Embedder: emb,
+		LLMFunc: func(_, _ string) (string, error) {
+			llmCalls++
+			return `{"top":[{"skill":"live_data_visual","score":0.95}]}`, nil
+		},
+	})
+	uic.mu.Lock()
+	uic.ready = true
+	uic.anchors = anchors
+	uic.mu.Unlock()
+
+	result := uic.Classify(MessageContext{Text: "北京天气"})
+	if llmCalls != 0 {
+		t.Fatalf("llmCalls=%d, plain weather must not escalate", llmCalls)
+	}
+	if result.Primary != LabelLiveData || result.HasLabel(LabelLiveDataVisual) {
+		t.Fatalf("result=%+v, want live_data without a visual card", result)
+	}
+}
+
+func TestClassifyTreeLookupDoesNotCrownStrongVisualResemblance(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	anchors := []intentAnchor{
+		{Label: LabelLiveData, Vecs: [][]float32{anchorVec(0.92)}},
+		{Label: LabelLiveDataVisual, Vecs: [][]float32{anchorVec(0.80)}},
+	}
+	l2, confident := classifyByEmbedding(emb, anchors, "北京天气")
+	if confident || l2.Primary != LabelLiveData || len(l2.Secondary) != 1 || l2.Secondary[0] != LabelLiveDataVisual {
+		t.Fatalf("l2=%+v confident=%v, a reviewed chart companion must escalate", l2, confident)
+	}
+
+	uic := New(Config{
+		Embedder: emb,
+		LLMFunc: func(_, _ string) (string, error) {
+			return `{"top":[{"skill":"live_data","score":0.95}]}`, nil
+		},
+	})
+	uic.mu.Lock()
+	uic.ready = true
+	uic.anchors = anchors
+	uic.mu.Unlock()
+
+	result := uic.Classify(MessageContext{Text: "北京天气"})
+	if result.Primary != LabelLiveData || result.HasLabel(LabelLiveDataVisual) {
+		t.Fatalf("result=%+v, tree lookup must not be rewritten into a visual card", result)
+	}
+}
+
+func TestSecondaryTreeLabelsUsesChartFloor(t *testing.T) {
+	weak := secondaryTreeLabels([]TreeCandidate{
+		{Label: LabelLiveData, Score: 0.95},
+		{Label: LabelLiveDataVisual, Score: 0.60},
+	})
+	if len(weak) != 0 {
+		t.Fatalf("secondary=%v, a sub-floor chart guess must not ride on a lookup", weak)
+	}
+	kept := secondaryTreeLabels([]TreeCandidate{
+		{Label: LabelLiveData, Score: 0.95},
+		{Label: LabelLiveDataVisual, Score: 0.80},
+	})
+	if len(kept) != 1 || kept[0] != LabelLiveDataVisual {
+		t.Fatalf("secondary=%v, a reviewed chart half must stay", kept)
+	}
+	lookup := secondaryTreeLabels([]TreeCandidate{
+		{Label: LabelLiveDataVisual, Score: 0.91},
+		{Label: LabelLiveData, Score: 0.60},
+	})
+	if len(lookup) != 1 || lookup[0] != LabelLiveData {
+		t.Fatalf("secondary=%v, the lookup half of a chart verdict must stay", lookup)
+	}
+	pdf := secondaryTreeLabels([]TreeCandidate{
+		{Label: LabelLiveData, Score: 0.95},
+		{Label: LabelDocumentGenerate, Score: 0.55},
+	})
+	if len(pdf) != 1 || pdf[0] != LabelDocumentGenerate {
+		t.Fatalf("secondary=%v, lookup+PDF must keep the 0.50 composite floor", pdf)
+	}
+}
+
+func TestClassifyWeakTreeVisualDoesNotAttachWeatherCard(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	uic := New(Config{
+		Embedder: emb,
+		LLMFunc: func(_, _ string) (string, error) {
+			return `{"top":[{"skill":"live_data","score":0.95},{"skill":"live_data_visual","score":0.60}]}`, nil
+		},
+	})
+	uic.mu.Lock()
+	uic.ready = true
+	// Gap under the lookup shortcut, chart under the companion floor, so
+	// this turn still asks the tree. The weak visual candidate must not
+	// come back as a card.
+	uic.anchors = []intentAnchor{
+		{Label: LabelLiveData, Vecs: [][]float32{anchorVec(0.72)}},
+		{Label: LabelLiveDataVisual, Vecs: [][]float32{anchorVec(0.70)}},
+	}
+	uic.mu.Unlock()
+
+	result := uic.Classify(MessageContext{Text: "北京天气"})
+	if result.Primary != LabelLiveData || result.HasLabel(LabelLiveDataVisual) {
+		t.Fatalf("result=%+v, weak tree visual must not attach a card", result)
+	}
+}
+
+func TestClassifyWeakTreeRetainsLookupWithoutChart(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	uic := New(Config{
+		Embedder: emb,
+		LLMFunc: func(_, _ string) (string, error) {
+			return `{"top":[{"skill":"live_data_visual","score":0.40}]}`, nil
+		},
+	})
+	uic.mu.Lock()
+	uic.ready = true
+	uic.anchors = []intentAnchor{
+		{Label: LabelLiveData, Vecs: [][]float32{anchorVec(0.92)}},
+		{Label: LabelLiveDataVisual, Vecs: [][]float32{anchorVec(0.80)}},
+	}
+	uic.mu.Unlock()
+
+	result := uic.Classify(MessageContext{Text: "北京天气"})
+	if result.Primary != LabelLiveData || result.HasLabel(LabelLiveDataVisual) {
+		t.Fatalf("result=%+v, a weak tree must not keep the chart half that only escalated the lookup", result)
+	}
+}
+
+func TestClassifyChartCompanionTimeoutStaysWeatherLookup(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	uic := New(Config{
+		Embedder:           emb,
+		LLMFunc:            hangLLM,
+		LLMTimeout:         30 * time.Second,
+		FusionTreeDeadline: 30 * time.Millisecond,
+	})
+	uic.mu.Lock()
+	uic.ready = true
+	uic.anchors = []intentAnchor{
+		{Label: LabelLiveData, Vecs: [][]float32{anchorVec(0.92)}},
+		{Label: LabelLiveDataVisual, Vecs: [][]float32{anchorVec(0.80)}},
+	}
+	uic.mu.Unlock()
+
+	result := uic.Classify(MessageContext{Text: "北京天气"})
+	if !result.Degraded || result.Primary != LabelLiveData || result.HasLabel(LabelLiveDataVisual) {
+		t.Fatalf("result=%+v, a chart companion must not fail the lookup or grant a card when the tree times out", result)
+	}
+}
+
+func TestClassifySubFloorVisualDoesNotReplaceWeakerLookup(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	uic := New(Config{
+		Embedder: emb,
+		LLMFunc: func(_, _ string) (string, error) {
+			return `{"top":[{"skill":"live_data_visual","score":0.60}]}`, nil
+		},
+	})
+	uic.mu.Lock()
+	uic.ready = true
+	uic.anchors = []intentAnchor{
+		{Label: LabelLiveData, Vecs: [][]float32{anchorVec(0.66)}},
+		{Label: LabelLiveDataVisual, Vecs: [][]float32{anchorVec(0.64)}},
+	}
+	uic.mu.Unlock()
+
+	result := uic.Classify(MessageContext{Text: "今天北京天气怎么样"})
+	if result.Primary != LabelLiveData || result.HasLabel(LabelLiveDataVisual) {
+		t.Fatalf("result=%+v, a sub-floor chart verdict must not replace a weaker lookup", result)
+	}
+}
+
+func TestClassifyWeakTreeVisualPrimaryStaysLookup(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	uic := New(Config{
+		Embedder: emb,
+		LLMFunc: func(_, _ string) (string, error) {
+			return `{"top":[{"skill":"live_data_visual","score":0.60}]}`, nil
+		},
+	})
+	uic.mu.Lock()
+	uic.ready = true
+	uic.anchors = []intentAnchor{
+		{Label: LabelLiveData, Vecs: [][]float32{anchorVec(0.72)}},
+		{Label: LabelLiveDataVisual, Vecs: [][]float32{anchorVec(0.70)}},
+	}
+	uic.mu.Unlock()
+
+	result := uic.Classify(MessageContext{Text: "北京天气"})
+	if result.Primary != LabelLiveData || result.HasLabel(LabelLiveDataVisual) {
+		t.Fatalf("result=%+v, an uncertain chart verdict must not replace a lookup", result)
+	}
+}
+
+func TestClassifyTreeConfirmedVisualKeepsTheChart(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	anchors := []intentAnchor{
+		{Label: LabelLiveData, Vecs: [][]float32{anchorVec(0.92)}},
+		{Label: LabelLiveDataVisual, Vecs: [][]float32{anchorVec(0.80)}},
+	}
+	uic := New(Config{
+		Embedder: emb,
+		LLMFunc: func(_, _ string) (string, error) {
+			return `{"top":[{"skill":"live_data_visual","score":0.91}]}`, nil
+		},
+	})
+	uic.mu.Lock()
+	uic.ready = true
+	uic.anchors = anchors
+	uic.mu.Unlock()
+
+	result := uic.Classify(MessageContext{Text: "画一张北京天气实况图"})
+	if result.Primary != LabelLiveDataVisual || len(result.Secondary) != 1 || result.Secondary[0] != LabelLiveData {
+		t.Fatalf("result=%+v, a tree-confirmed chart must keep the lookup half", result)
 	}
 }
 

@@ -4958,7 +4958,7 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 		t.Errorf("火山引擎 Agent Plan WireAPI = %q, want %q", tokenPlan.WireAPI, "responses")
 	}
 
-	expectedNames := []string{"OpenAI", "Anthropic", "GitHub Copilot", "DeepSeek", "Qwen", "xAI-Grok", "OpenCode", "智谱编程", "MiniMax", "Kimi", volcengineAgentPlanProviderName, "讯飞星辰", workbuddy.NameChina, workbuddy.NameGlobal, "Custom1", "Custom2"}
+	expectedNames := []string{"OpenAI", "Anthropic", "GitHub Copilot", "DeepSeek", "Qwen", "xAI-Grok", "OpenCode", "智谱编程", "MiniMax", "Kimi", "Kimi Code", volcengineAgentPlanProviderName, "讯飞星辰", workbuddy.NameChina, workbuddy.NameGlobal, "Custom1", "Custom2"}
 	if len(providers) < len(expectedNames) {
 		t.Fatalf("provider count = %d, want >= %d", len(providers), len(expectedNames))
 	}
@@ -4974,6 +4974,13 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 	}
 	if got := kimi.AgentType; got != "claude code 2.0" {
 		t.Errorf("Kimi AgentType = %q, want %q", got, "claude code 2.0")
+	}
+	kimiCode, ok := findProviderByName(providers, "Kimi Code")
+	if !ok {
+		t.Fatalf("providers missing Kimi Code: %+v", providers)
+	}
+	if kimiCode.AuthType != "oauth" || kimiCode.URL != "https://api.kimi.com/coding/v1" || kimiCode.Model != "kimi-for-coding" || kimiCode.Protocol != "openai" {
+		t.Errorf("Kimi Code = %#v", kimiCode)
 	}
 
 	for _, profile := range []workbuddy.Profile{workbuddy.ChinaProfile(), workbuddy.GlobalProfile()} {
@@ -4992,6 +4999,35 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 	}
 	if !providers[n-1].IsCustom {
 		t.Errorf("providers[%d] (%s) IsCustom = false, want true", n-1, providers[n-1].Name)
+	}
+}
+
+func TestNormalizeKimiCodeProviderRestoresOAuthWithoutClobberingModel(t *testing.T) {
+	defaults := kimiCodeProvider()
+	got := normalizeKimiCodeProvider(corelib.MaclawLLMProvider{
+		Name:          "Kimi Code",
+		Model:         "kimi-k2.6",
+		WireAPI:       "responses",
+		Protocol:      "anthropic",
+		AgentType:     "claude code 2.0",
+		ContextLength: 128000,
+	}, defaults)
+	if got.AuthType != "oauth" || got.Protocol != "openai" || got.WireAPI != "" || got.AgentType != "" || got.URL != defaults.URL {
+		t.Fatalf("normalized = %#v", got)
+	}
+	if got.Model != "kimi-k2.6" || got.ContextLength != 128000 {
+		t.Fatalf("explicit model/context changed: %#v", got)
+	}
+	global := normalizeKimiCodeProvider(corelib.MaclawLLMProvider{
+		Name: "Kimi Code",
+		URL:  "https://api.kimi.ai/coding/v1",
+	}, defaults)
+	if global.URL != "https://api.kimi.ai/coding/v1" || global.AuthType != "oauth" {
+		t.Fatalf("global endpoint = %#v", global)
+	}
+	empty := normalizeKimiCodeProvider(corelib.MaclawLLMProvider{Name: "Kimi Code"}, defaults)
+	if empty.Model != "kimi-for-coding" || empty.ContextLength != 110000 || empty.AuthType != "oauth" {
+		t.Fatalf("empty provider = %#v", empty)
 	}
 }
 

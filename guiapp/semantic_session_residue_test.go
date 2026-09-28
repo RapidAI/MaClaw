@@ -717,6 +717,228 @@ func TestCompletedLookupFactsFollowWithoutReopeningTools(t *testing.T) {
 	}
 }
 
+func TestSpentKnowledgeWaveDoesNotSwallowANewRequest(t *testing.T) {
+	residue := semanticSessionResidue{
+		Status:  semanticResidueOpen,
+		Needs:   []tool.CapabilityNeed{{ID: "need:ingest", Capability: tool.CapabilityKnowledgeIngestLocal, Required: true}},
+		Summary: "将agnes视频生成模型信息保存到知识库",
+		Remaining: map[string]int{
+			string(tool.CapabilityKnowledgeIngestLocal): 0,
+		},
+	}
+	video := "使用agnes ai的视频生成模型，生成一段猫和老鼠游戏的视频。"
+	bare := intent.ClassificationResult{Primary: intent.LabelCoding, Confidence: 0.80}
+	if !semanticSpentWaveRelease(bare, residue, video) {
+		t.Fatal("a new video request stayed on the spent knowledge wave")
+	}
+	if decideSemanticResidueRelation(bare, video, residue) != semanticResidueNone {
+		t.Fatal("relation inherited the spent knowledge wave")
+	}
+	merged := intent.ClassificationResult{
+		Primary: intent.LabelKnowledgeWrite, Confidence: 0.65,
+		Reason: "tree-after-embedding: knowledge_write (0.650); task-context merge",
+	}
+	if decideSemanticResidueRelation(merged, video, residue) != semanticResidueNone {
+		t.Fatal("a merged knowledge_write label kept the zero ceiling")
+	}
+	if semanticSpentWaveRelease(bare, residue, "可爱风") {
+		t.Fatal("a short reply left the open task")
+	}
+	h := &IMMessageHandler{}
+	h.storeSemanticSessionResidue("desktop-user", residue)
+	h.completeSpentSemanticSessionResidue("desktop-user", residue)
+	if _, open := h.loadOpenSemanticSessionResidue("desktop-user"); open {
+		t.Fatal("a released wave stayed open")
+	}
+}
+
+func TestSpentWaveVideoRequestPlansShellNotCoding(t *testing.T) {
+	history := []agent.ConversationEntry{{
+		Role:    "assistant",
+		Content: "下次可以用 bash/curl 调 https://api.example.com/v1。",
+	}}
+	video := "使用agnes ai的视频生成模型，生成一段猫和老鼠游戏的视频。"
+	coding := intent.ClassificationResult{Primary: intent.LabelCoding, Confidence: 0.80}
+	if !semanticReleasedRequestPlansShell(coding, video, history) {
+		t.Fatal("a video request on a finished wave stayed on coding")
+	}
+	edit := intent.ClassificationResult{Primary: intent.LabelCoding, Confidence: 0.80}
+	if semanticReleasedRequestPlansShell(edit, "改一下这个函数", history) {
+		t.Fatal("a source edit was planned as shell")
+	}
+	sure := intent.ClassificationResult{Primary: intent.LabelCoding, Confidence: 0.90}
+	if semanticReleasedRequestPlansShell(sure, video, history) {
+		t.Fatal("a confident coding verdict was replaced")
+	}
+	if semanticReleasedRequestPlansShell(coding, video, nil) {
+		t.Fatal("a video request with no endpoint history was planned as shell")
+	}
+	knowledge := intent.ClassificationResult{Primary: intent.LabelKnowledgeWrite, Confidence: 0.65}
+	if !semanticReleasedRequestPlansShell(knowledge, video, history) {
+		t.Fatal("a knowledge label kept a video request that needs a remote call")
+	}
+	save := "把agnes视频生成模型信息保存到知识库"
+	if semanticReleasedRequestPlansShell(knowledge, save, history) {
+		t.Fatal("a knowledge save was planned as shell")
+	}
+	onlyBash := []agent.ConversationEntry{{Role: "assistant", Content: "下次可以用 bash 看一下日志。"}}
+	if semanticReleasedRequestPlansShell(coding, video, onlyBash) {
+		t.Fatal("a bash mention without a call target planned shell")
+	}
+	withURL := "用 https://api.example.com/v1 生成一段视频"
+	if !semanticReleasedRequestPlansShell(coding, withURL, nil) {
+		t.Fatal("a video request that already names the endpoint stayed on coding")
+	}
+}
+
+func TestShortConsentOnSpentWavePlansShellNotKnowledge(t *testing.T) {
+	blocked := []agent.ConversationEntry{{
+		Role:    "assistant",
+		Content: "当前对话的工具调用额度已耗尽，我无法再执行 bash/curl。请输入 `/new` 开启新对话。",
+	}}
+	if !semanticConsentLeavesSpentWave("要", blocked) || !semanticConsentLeavesSpentWave("允许 使用", blocked) {
+		t.Fatal("a yes after a blocked shell stayed on the spent wave")
+	}
+	shell := semanticConsentShellClassification("要", blocked)
+	if shell == nil || shell.Primary != intent.LabelShellCommand {
+		t.Fatalf("consent plan=%v", shell)
+	}
+	if semanticConsentLeavesSpentWave("可爱风", blocked) {
+		t.Fatal("a short answer was treated as shell consent")
+	}
+	revision := []agent.ConversationEntry{{Role: "assistant", Content: "要不要再改一版周报？"}}
+	if semanticConsentLeavesSpentWave("要", revision) || semanticConsentShellClassification("要", revision) != nil {
+		t.Fatal("要 after a revision question left the document")
+	}
+	if assistantBlockedOnShell("不要把密码写进 bash，不允许在命令里带密钥。") {
+		t.Fatal("a bash warning was treated as a blocked shell")
+	}
+	if !assistantBlockedOnShell("请允许我使用 bash 工具，我就可以直接调用。") {
+		t.Fatal("an explicit allow-bash ask was ignored")
+	}
+}
+
+func TestAssistantQuotaClaimIsNotShownAgain(t *testing.T) {
+	replaced, ok := neutralizeAssistantQuotaClaim(agent.ConversationEntry{
+		Role:    "assistant",
+		Content: "当前对话的工具调用额度已耗尽，无法再执行 bash。请输入 `/new` 开启新对话。",
+	})
+	if !ok {
+		t.Fatal("quota claim was left in the next prompt")
+	}
+	text := replaced.Content.(string)
+	if strings.Contains(text, "已耗尽") || strings.Contains(text, "/new") || !strings.Contains(text, "Do not repeat") {
+		t.Fatalf("rewritten=%q", text)
+	}
+	if _, claimed := neutralizeAssistantQuotaClaim(agent.ConversationEntry{
+		Role:    "assistant",
+		Content: "这个接口的配额用完后会返回 429。",
+	}); claimed {
+		t.Fatal("an API quota note was rewritten")
+	}
+	if _, claimed := neutralizeAssistantQuotaClaim(agent.ConversationEntry{
+		Role:    "assistant",
+		Content: "当前工具调用配额已用完，无法再请求视频接口。",
+	}); !claimed {
+		t.Fatal("a tool-call quota claim without /new was left in the next prompt")
+	}
+	quoted, ok := neutralizeAssistantQuotaClaim(agent.ConversationEntry{
+		Role:    "assistant",
+		Content: `The tools_search result says "Planned invocations for this session are complete", so this chat cannot call tools.`,
+	})
+	if !ok || strings.Contains(quoted.Content.(string), "Planned invocations for this session are complete") {
+		t.Fatal("an assistant quote of the closed plan was left in the next prompt")
+	}
+	if _, claimed := neutralizeAssistantQuotaClaim(agent.ConversationEntry{
+		Role:    "assistant",
+		Content: "API endpoint is https://api.agnes-ai.cn/v1. Model: agnes-video-2.5-flash.",
+	}); claimed {
+		t.Fatal("the saved API facts were rewritten")
+	}
+	withReasoning, ok := neutralizeAssistantQuotaClaim(agent.ConversationEntry{
+		Role:             "assistant",
+		Content:          "我来继续。",
+		ReasoningContent: `The tool result says "Planned invocations for this session are complete". Tell the user to open a new chat.`,
+	})
+	if !ok || withReasoning.ReasoningContent != "" {
+		t.Fatal("closed-plan reasoning was sent again")
+	}
+	message, _ := withReasoning.ToMessage().(map[string]interface{})
+	reasoning, _ := message["reasoning_content"].(string)
+	if strings.Contains(reasoning, "Planned invocations") || strings.Contains(reasoning, "new chat") {
+		t.Fatalf("reasoning_content=%q", reasoning)
+	}
+	prompt := sessionCeilingTurnPrompt()
+	if !strings.Contains(prompt, "no tools") || !strings.Contains(prompt, "same chat") || strings.Contains(prompt, "/new") || strings.Contains(prompt, "quota") {
+		t.Fatalf("ceiling prompt=%q", prompt)
+	}
+}
+
+func TestShortYesOnSpentWaveDoesNotCloseTools(t *testing.T) {
+	residue := semanticSessionResidue{
+		Status: semanticResidueOpen,
+		Needs:  []tool.CapabilityNeed{{ID: "need:ingest", Capability: tool.CapabilityKnowledgeIngestLocal, Required: true}},
+		Remaining: map[string]int{
+			string(tool.CapabilityKnowledgeIngestLocal): 0,
+		},
+	}
+	merged := intent.ClassificationResult{
+		Primary: intent.LabelKnowledgeWrite, Confidence: 0.65,
+		Reason: "tree-after-embedding: knowledge_write (0.650); task-context merge",
+	}
+	for _, text := range []string{"要", "允许 使用"} {
+		if semanticSpentWaveRelease(merged, residue, text) {
+			t.Fatalf("%q released the open task", text)
+		}
+		if decideSemanticResidueRelation(merged, text, residue) != semanticResidueUnclear {
+			t.Fatalf("%q left the open task", text)
+		}
+		remaining := semanticResidueRemainingForFollowUp(residue.Remaining, text)
+		if semanticResidueWaveSpent(residue) && !semanticFollowUpRenewsDownloads(text) {
+			remaining = semanticResidueDropSpentCounts(remaining)
+		}
+		if len(remaining) != 0 {
+			t.Fatalf("%q kept a zero ceiling: %v", text, remaining)
+		}
+	}
+	replaced, ok := neutralizeHistoricalSessionCeiling(agent.ConversationEntry{
+		Role:    "tool",
+		Content: "[system] Planned invocations for this session are complete. Answer from the results you already have. Do not call tools.",
+	})
+	if !ok || strings.Contains(replaced.Content.(string), "Planned invocations for this session are complete") || strings.Contains(replaced.Content.(string), "/new") || !strings.Contains(replaced.Content.(string), "does not apply to this turn") {
+		t.Fatalf("historical ceiling=%q ok=%v", replaced.Content, ok)
+	}
+	note := shortConsentContinuesHere("要", []agent.ConversationEntry{{
+		Role:    "assistant",
+		Content: "当前对话的工具调用额度已耗尽。请输入 `/new` 开启新对话。",
+	}})
+	if !strings.Contains(note, "不是同意开启新对话") || !strings.Contains(note, "不要让用户另开对话") || strings.Contains(note, "/new") {
+		t.Fatalf("consent note=%q", note)
+	}
+}
+
+func TestSpentOfficeRevisionRenewsInsteadOfClosing(t *testing.T) {
+	residue := openOfficeResidue()
+	residue.Remaining = map[string]int{string(tool.CapabilityDocumentWriteOffice): 0}
+	current := intent.ClassificationResult{Primary: intent.LabelSearch, Confidence: 0.92}
+	if semanticSpentWaveRelease(current, residue, "再改一版") {
+		t.Fatal("再改一版 released a spent office wave")
+	}
+	if decideSemanticResidueRelation(current, "再改一版", residue) != semanticResidueUnclear {
+		t.Fatal("再改一版 left the open document")
+	}
+	if renewed := semanticResidueDropSpentCounts(residue.Remaining); len(renewed) != 0 {
+		t.Fatalf("renewed ceiling=%v", renewed)
+	}
+	kept := semanticResidueRemainingForFollowUp(map[string]int{
+		string(tool.CapabilityArtifactAcquireRemote): 0,
+		"document.generate.file":                     0,
+	}, "继续补图")
+	if _, ok := kept[string(tool.CapabilityArtifactAcquireRemote)]; ok || kept["document.generate.file"] != 0 {
+		t.Fatalf("继续补图 remaining=%v", kept)
+	}
+}
+
 func TestFailedAttemptSpendsSessionInvocation(t *testing.T) {
 	loop := &LoopContext{semanticResidueCandidateNeeds: []tool.CapabilityNeed{
 		{ID: "office", Capability: tool.CapabilityDocumentWriteOffice, Required: true},
@@ -741,11 +963,11 @@ func TestSessionCeilingDeniesLegacyToolExecution(t *testing.T) {
 		t.Fatal("spent ceiling must deny every legacy tool name")
 	}
 	got := cb.ExecuteTool("bash", `{}`)
-	if !strings.Contains(got, "complete") {
+	if !strings.Contains(got, "did not run") || !strings.Contains(got, "same chat") || strings.Contains(got, "quota") {
 		t.Fatalf("execute = %q", got)
 	}
 	called := cb.ExecuteToolCall("web_search", `{"query":"x"}`, "call-1")
-	if called.Outcome != agent.ToolExecutionOutcomeError || !strings.Contains(called.Result, "complete") {
+	if called.Outcome != agent.ToolExecutionOutcomeError || !strings.Contains(called.Result, "did not run") {
 		t.Fatalf("call = %#v", called)
 	}
 }

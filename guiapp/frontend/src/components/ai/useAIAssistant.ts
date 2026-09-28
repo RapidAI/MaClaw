@@ -7,11 +7,12 @@ import type { AIAssistantPanelHookState, AIAssistantPanelHookActions } from "./a
 import { localizeText } from "./aiAssistantI18n";
 import { normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey as normalizedProjectPathFromSessionKey, projectSessionKey, expertIdFromSessionKey, expertSessionKey } from "./aiAssistantPanelSessionUtils";
 import { noteAIScrollStreamFlush, noteAIScrollStreamRoundEnd, noteAIScrollStreamToken } from "./assistantScrollDiag";
-import { findRolePrefixForDisplay, stripRolePrefixForDisplay, truncateRolePrefixForDisplay } from "./rolePrefixDisplay";
+import { findRolePrefixForDisplay, isBrowserEchoFieldLabel, stripRolePrefixForDisplay, truncateRolePrefixForDisplay } from "./rolePrefixDisplay";
 import { isHistoryResetCommandText } from "./composeAction";
 import { isCodingAgentChatHiddenEvent, isCodingAgentProgressContent, parseCodingAgentProgress } from "./CodingAgentProgressStatus";
 import { reasoningHasCodingStatusMilestone, stripCodingWorkbenchStatusReasoning } from "./codingAgentUserFinish";
 import { clearAssistantRoundProse } from "./assistantRoundProse";
+import { appendToolCallMarker, contentHasAssistantToolCall, isProgressOnlyToolAction, isTranscriptToolCallText, parseAssistantToolStatus, stripAssistantToolCallMarkers, type AssistantToolCall } from "./assistantToolCall";
 import { cleanReasoningTrailForBody, parkReplacedStreamInReasoning } from "./assistantReasoningBody";
 
 export interface CancelAIAssistantResult {
@@ -500,6 +501,12 @@ export interface ChatMessage {
     reasoning?: string;
     /** Ordered reasoning/tool trail for a coding-agent turn (transient UI state). */
     codingTimeline?: CodingAgentTimelineItem[];
+    /** Tool calls kept in this reply so name and arguments stay visible after the live tray moves on. */
+    toolCalls?: AssistantToolCall[];
+    /** Terminal assistant text for a tool-using turn. The live transcript stays in content. */
+    resultText?: string;
+    /** Set when a tool-using turn ends. Failed, timed out, or cancelled turns are incomplete. */
+    resultStatus?: 'completed' | 'incomplete';
     /**
      * Individual streamed reasoning deltas, retained only until we know whether
      * this turn is a coding-agent turn.  A tool event can be delivered after a
@@ -666,6 +673,30 @@ function capLiveProgressMessages(messages: ChatMessage[]): ChatMessage[] {
 
 function isThinkingStatusProgress(progressText: string): boolean {
     return progressText.trim().startsWith('[Status]');
+}
+
+const MAX_ASSISTANT_TOOL_CALLS = 40;
+
+function appendAssistantToolCall(message: ChatMessage, progressText: string): ChatMessage {
+    if (message.role !== 'assistant' || message.codingTimeline?.length) return message;
+    const parsed = parseAssistantToolStatus(progressText);
+    if (!parsed || isProgressOnlyToolAction(parsed.action)) return message;
+    const calls = message.toolCalls || [];
+    const last = calls[calls.length - 1];
+    if (last && last.name === parsed.name && last.action === parsed.action && last.detail === parsed.detail) {
+        return message;
+    }
+    const id = nextId().replace(/[^A-Za-z0-9_-]/g, '');
+    const nextCalls = [...calls, { id, ...parsed }].slice(-MAX_ASSISTANT_TOOL_CALLS);
+    const dropped = new Set(
+        (calls.length >= MAX_ASSISTANT_TOOL_CALLS ? calls.slice(0, calls.length - MAX_ASSISTANT_TOOL_CALLS + 1) : [])
+            .map((call) => call.id),
+    );
+    let content = message.content || '';
+    if (dropped.size > 0) {
+        content = content.replace(new RegExp(`<!--maclaw-tool:(?:${[...dropped].join('|')})-->`, 'g'), '');
+    }
+    return { ...message, content: appendToolCallMarker(content, id), toolCalls: nextCalls };
 }
 
 function appendProgressToReasoning(message: ChatMessage, progressText: string): ChatMessage {
@@ -874,14 +905,23 @@ function sanitizeChatMessageForDisplay(message: ChatMessage): ChatMessage {
     const nextPending = message.pendingCodingThoughts?.map(sanitizeCodingThoughtItem);
     const timelineChanged = !!nextTimeline?.some((item, index) => item !== message.codingTimeline?.[index]);
     const pendingChanged = !!nextPending?.some((item, index) => item !== message.pendingCodingThoughts?.[index]);
-    if (nextContent === message.content && nextReasoning === message.reasoning && !timelineChanged && !pendingChanged) return message;
+    const nextFields = withoutSuppressedEchoFields(message.fields);
+    if (nextContent === message.content && nextReasoning === message.reasoning && nextFields === message.fields && !timelineChanged && !pendingChanged) return message;
     return {
         ...message,
         content: nextContent,
         reasoning: nextReasoning || undefined,
         codingTimeline: nextTimeline,
         pendingCodingThoughts: nextPending,
+        fields: nextFields,
     };
+}
+
+function withoutSuppressedEchoFields(fields: ChatMessage["fields"]): ChatMessage["fields"] {
+    if (!fields?.length) return fields;
+    const next = fields.filter(field => !isBrowserEchoFieldLabel(field.label));
+    if (next.length === fields.length) return fields;
+    return next.length > 0 ? next : undefined;
 }
 
 function sanitizeCodingThoughtItem(item: CodingAgentTimelineItem): CodingAgentTimelineItem {
@@ -1049,7 +1089,7 @@ function buildClientContextMessages(messages: ChatMessage[], startIndex = 0): AI
 
 function buildClientContextContent(message: ChatMessage): string {
     const parts: string[] = [];
-    const text = message.content.trim();
+    const text = stripAssistantToolCallMarkers(message.resultText || message.content || "").trim();
     if (text) parts.push(text);
     if (message.role === 'user' && message.attachments?.length) {
         const attachmentPaths = message.attachments.map(attachment => attachment.filePath).filter(Boolean);
@@ -1822,6 +1862,7 @@ function normalizeResponseFields(fields: any, showDetailEntry = false): Array<{ 
             value: typeof field.value === 'string' ? field.value : (typeof field.Value === 'string' ? field.Value : ''),
         }))
         .filter(field => field.label && field.value)
+        .filter(field => !isBrowserEchoFieldLabel(field.label))
         // Default chat: keep compact Turn chip; hide verbose token/route breakdown
         // and internal cost fields.
         .filter(field => showDetailEntry
@@ -2396,7 +2437,47 @@ function stripRolePrefixFrontend(text: string): string {
     return stripRolePrefixForDisplay(text);
 }
 
+/** Keep tool-call markers when the completed answer replaces the running transcript. */
+function preserveEmbeddedToolCalls(chosen: string, streamed: string): string {
+    if (!contentHasAssistantToolCall(streamed)) return chosen;
+    if (contentHasAssistantToolCall(chosen)) return chosen;
+    const answer = chosen.trim();
+    if (!answer) return streamed;
+    const plain = stripAssistantToolCallMarkers(streamed).trim();
+    if (plain.includes(answer)) return streamed;
+    const gap = streamed.endsWith("\n\n") ? "" : streamed.endsWith("\n") ? "\n" : "\n\n";
+    return `${streamed}${gap}${answer}`;
+}
+
 export function resolveFinalRoundContent(message: ChatMessage, response: any): string {
+    return preserveEmbeddedToolCalls(selectFinalRoundContent(message, response), message.content || "");
+}
+
+/** The model's final message. Independent of the live tool transcript in content. */
+export function terminalAssistantResult(message: ChatMessage, response: any): string | undefined {
+    if (!message.toolCalls?.length) return undefined;
+    const raw = typeof response?.text === "string" ? response.text : "";
+    let text = stripAssistantToolCallMarkers(stripRolePrefixFrontend(raw)).trim();
+    const err = typeof response?.error === "string" ? response.error.trim() : "";
+    if (err && !text.includes(err)) text = text ? `${text}\n\n${err}` : err;
+    if (!text) return undefined;
+    if ((message.content || "").includes(CANCELED_BY_USER_LINE) && !text.includes(CANCELED_BY_USER_LINE)) {
+        return `${text}\n\n${CANCELED_BY_USER_LINE}`;
+    }
+    return text;
+}
+
+export function terminalAssistantResultStatus(message: ChatMessage, response: any): 'completed' | 'incomplete' | undefined {
+    if (!message.toolCalls?.length) return undefined;
+    if ((message.content || "").includes(CANCELED_BY_USER_LINE) || (message.resultText || "").includes(CANCELED_BY_USER_LINE)) {
+        return "incomplete";
+    }
+    if (typeof response?.error === "string" && response.error.trim()) return "incomplete";
+    if (isFailedTerminalTraceStatus(response?.trace_status)) return "incomplete";
+    return "completed";
+}
+
+function selectFinalRoundContent(message: ChatMessage, response: any): string {
     const rawFinalText = typeof response?.text === 'string' ? response.text : '';
     const rawStreamedContent = message.content || '';
     const finalText = stripRolePrefixFrontend(rawFinalText);
@@ -2555,8 +2636,15 @@ function appendFinalReasoningToCodingTimeline(message: ChatMessage, response: an
 function finalizeRoundMessage(messages: ChatMessage[], assistantMessageId: string | null, requestId: string | null, response: any, preferences: AIAssistantPreferences): ChatMessage[] {
     const finalizeMessage = (message: ChatMessage): ChatMessage | null => {
         const nextContent = resolveFinalRoundContent(message, response);
+        const resultText = terminalAssistantResult(message, response);
+        const resultStatus = terminalAssistantResultStatus(message, response);
+        // The transcript still shows each call. Don't also file that same
+        // text under 思考过程 when the official answer arrives.
+        const streamedForPark = contentHasAssistantToolCall(message.content) && contentHasAssistantToolCall(nextContent)
+            ? nextContent
+            : (message.content || "");
         const nextReasoning = parkReplacedStreamInReasoning(
-            message.content || "",
+            streamedForPark,
             nextContent,
             resolveFinalRoundReasoning(message, response) || "",
         ) || undefined;
@@ -2573,12 +2661,14 @@ function finalizeRoundMessage(messages: ChatMessage[], assistantMessageId: strin
         const nextUnfinishedSlot = (response as any).unfinished_slot;
         const nextRecoverableSession = (response as any).recoverable_session;
         const nextRecordingSession = extractRecordingSessionFromResponse(response);
-        if (!nextContent && !nextReasoning && !nextFields?.length && !nextActions?.length && !nextUnfinishedSlot && !nextRecoverableSession && !nextRecordingSession && !nextThumbnailBase64 && !nextImageKey && !nextLocalFilePaths?.length) {
+        if (!nextContent && !resultText && !nextReasoning && !nextFields?.length && !nextActions?.length && !nextUnfinishedSlot && !nextRecoverableSession && !nextRecordingSession && !nextThumbnailBase64 && !nextImageKey && !nextLocalFilePaths?.length) {
             return null;
         }
         return {
             ...message,
             content: nextContent,
+            resultText,
+            resultStatus,
             reasoning: nextReasoning,
             codingTimeline: appendFinalReasoningToCodingTimeline(message, response),
             pendingCodingThoughts: undefined,
@@ -2738,12 +2828,29 @@ export const CANCELED_BY_USER_LINE = "任务已经应用户要求取消";
 export function markRoundCancelled(messages: ChatMessage[], assistantMessageId: string | null, requestId: string | null): ChatMessage[] {
     const markCancelled = (message: ChatMessage): ChatMessage => {
         const content = message.content || "";
-        if (content.includes(CANCELED_BY_USER_LINE)) return message;
+        if (content.includes(CANCELED_BY_USER_LINE)) {
+            if (!message.toolCalls?.length || message.resultStatus === "incomplete") return message;
+            const answer = (message.resultText || "").trim();
+            return {
+                ...message,
+                resultText: answer && !answer.includes(CANCELED_BY_USER_LINE)
+                    ? `${answer}\n\n${CANCELED_BY_USER_LINE}`
+                    : message.resultText,
+                resultStatus: "incomplete",
+            };
+        }
+        const nextContent = content.trimEnd()
+            ? `${content.trimEnd()}\n${CANCELED_BY_USER_LINE}`
+            : CANCELED_BY_USER_LINE;
+        const answer = (message.resultText || "").trim();
+        const resultText = message.toolCalls?.length && answer
+            ? (answer.includes(CANCELED_BY_USER_LINE) ? answer : `${answer}\n\n${CANCELED_BY_USER_LINE}`)
+            : message.resultText;
         return {
             ...message,
-            content: content.trimEnd()
-                ? `${content.trimEnd()}\n${CANCELED_BY_USER_LINE}`
-                : CANCELED_BY_USER_LINE,
+            content: nextContent,
+            resultText,
+            resultStatus: message.toolCalls?.length ? "incomplete" : message.resultStatus,
             pendingCodingThoughts: undefined,
             reasoningStartSequence: undefined,
             timestamp: Date.now(),
@@ -3300,6 +3407,8 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     const showConfirm = options?.showConfirm || nativeShowConfirm;
     const activeSessionKeyForEvents = useCallback(() => options?.activeSessionKey || getActiveSessionKey(), [options?.activeSessionKey]);
     const [messages, setMessages] = useState<ChatMessage[]>(loadPersistedMessages);
+    const messagesRef = useRef(messages);
+    messagesRef.current = messages;
     const [submittedPrompts, setSubmittedPrompts] = useState<string[]>(loadPersistedPrompts);
     const [draftInputValue, setDraftInputValue] = useState("");
     const [progressMessages, setProgressMessages] = useState<ChatMessage[]>([]);
@@ -5704,14 +5813,31 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             // their existing activity-feed behaviour.
             const isStatusProgress = isThinkingStatusProgress(progressText);
             const isCodingProgress = isCodingAgentProgressContent(progressText);
-            if (!isStatusProgress) {
-                appendProgressForSession(progressSessionKey, progressText);
-            }
             const progressRound = matchesDetachedRound ? detachedRound : (matchesSessionRound ? sessionRound || undefined : currentRound);
             const sessionHasCodingTrail = isCodingProgress
                 || (progressMessagesBySessionRef.current.get(progressSessionKey) || [])
                     .some((message) => isCodingAgentProgressContent(message.content || ''));
             const assistantId = progressRound?.assistantMessageId || '';
+            const knownAssistant = assistantId
+                ? messagesRef.current.find((message) => message.id === assistantId)
+                : undefined;
+            const tryEmbedToolCall = !isStatusProgress && !isCodingProgress && !sessionHasCodingTrail
+                && !!assistantId && isTranscriptToolCallText(progressText);
+            // Once the call is on the assistant message, keeping a tray copy
+            // spends one of the three live slots on a row the transcript already shows.
+            const embedWillLand = tryEmbedToolCall
+                && !!knownAssistant
+                && knownAssistant.role === 'assistant'
+                && !knownAssistant.codingTimeline?.length;
+            if (!isStatusProgress && !embedWillLand) {
+                appendProgressForSession(progressSessionKey, progressText);
+            }
+            if (tryEmbedToolCall) {
+                // Flush text that already arrived so the call sits after that sentence,
+                // not in the middle of a token batch that has not been painted yet.
+                if (progressRound?.requestId) flushStreamTokenBuffer(progressRound.requestId);
+                setMessages(prev => updateMessageById(prev, assistantId, message => appendAssistantToolCall(message, progressText)));
+            }
             if (isCodingProgress && assistantId && !strippedCodingStatusReasoningRef.current.has(assistantId)) {
                 setMessages(prev => updateMessageById(prev, assistantId, message => {
                     strippedCodingStatusReasoningRef.current.add(assistantId);
@@ -5732,7 +5858,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         return () => {
             offProgress();
         };
-    }, [activeSessionKeyForEvents, appendCodingProgressToRound, appendProgressForSession, appendProgressToRoundReasoning, findInFlightRoundBySession, findPendingTaskBySession, recoverGoalContinuationRound, resetResponseTimeoutForActiveRound, resetResponseTimeoutForRound]);
+    }, [activeSessionKeyForEvents, appendCodingProgressToRound, appendProgressForSession, appendProgressToRoundReasoning, findInFlightRoundBySession, findPendingTaskBySession, flushStreamTokenBuffer, recoverGoalContinuationRound, resetResponseTimeoutForActiveRound, resetResponseTimeoutForRound]);
 
     useEffect(() => {
         const handler = (payload: unknown) => {

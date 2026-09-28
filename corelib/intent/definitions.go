@@ -527,9 +527,9 @@ func DefaultDefinitions() []IntentDefinition {
 				"compliance_audit", "patent_analysis", "patent_application",
 				"us_patent_application",
 			},
-			TreeText: "用户要启动一个需要多阶段设计决策的复杂项目，并且是从工作流面板或 /workflow 发起的那种项目。" +
-				"核心判据：产出物是否需要多阶段设计决策？同一输入能否产出截然不同的结果？" +
-				"是 → workflow_task。否 → non_coding。" +
+			TreeText: "用户要启动工作流面板或 /workflow 里的一类项目。产出物必须落在下面列出的 workflow_type 里（产品设计、商业计划、研究报告、论文、标书、专利、活动策划等）。" +
+				"判据：对象是不是这些项目类型之一？是 → workflow_task，并填写对应 workflow_type。否 → 改用该对象真正对应的标签，不要用本标签。" +
+				"在当前对话里直接做出来的视频、动画、图片、音频或故事不是本标签：哪怕要求风格、情节、分镜或多段拼接，也是 non_coding，workflow_type 留空。" +
 				"在当前对话里点名使用某个 skill（使用 book-pdf skill、use X skill）不是本标签：那是当前 agent 执行该 skill。" +
 				"不是待办清单（task_track），也不是单阶段导出 PDF（document_generate）。" +
 				"workflow_type 选择指引：" +

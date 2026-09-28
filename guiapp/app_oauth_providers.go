@@ -4,11 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/kimicode"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
 	"github.com/RapidAI/CodeClaw/corelib/workbuddy"
+
+	"github.com/pkg/browser"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -254,6 +258,258 @@ func (a *App) saveWorkBuddyLogin(profile workbuddy.Profile, cred *workbuddy.Acco
 		return nil
 	}
 	return fmt.Errorf("未找到 %s provider", profile.Name)
+}
+
+// KimiCodeDeviceInfo is returned to the frontend for the Kimi Code device login.
+type KimiCodeDeviceInfo struct {
+	UserCode                string `json:"user_code"`
+	VerificationURI         string `json:"verification_uri"`
+	VerificationURIComplete string `json:"verification_uri_complete"`
+	BrowserOpened           bool   `json:"browser_opened"`
+}
+
+// kimiCodeLogin is one in-flight device approval. claim persists the token
+// only when this login is still the active OAuth flow.
+type kimiCodeLogin struct {
+	ctx        context.Context
+	deviceCode string
+	interval   int
+	baseURL    string
+	oauthHost  string
+	generation uint64
+	finish     func()
+	claim      func(func() error) error
+}
+
+// StartKimiCodeOAuth begins Kimi Code's browser device login and opens the
+// approval page. The frontend shows the user code, then calls WaitKimiCodeOAuth.
+func (a *App) StartKimiCodeOAuth() (KimiCodeDeviceInfo, error) {
+	if cfg, err := a.LoadConfig(); err == nil {
+		oauth.ApplyProxyFromAppConfig(cfg)
+	}
+	// Own the single-flight slot before the device request so Cancel can abort
+	// it, and so a caller that never reaches Wait does not leave a later login blocked.
+	parent, finish, claim := a.beginOAuthFlow(kimicode.MaxLoginLifetime())
+	a.oauthMu.Lock()
+	ownedGen := a.oauthGeneration
+	a.kimiOwnedGen = ownedGen
+	a.oauthMu.Unlock()
+	oauthHost := kimicode.OAuthHost()
+	device, err := kimicode.RequestDeviceAuthorizationAt(parent, oauthHost)
+	if err != nil {
+		finish()
+		a.clearKimiOwnedGen(ownedGen)
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return KimiCodeDeviceInfo{}, fmt.Errorf("Kimi Code 登录已取消或超时")
+		}
+		return KimiCodeDeviceInfo{}, fmt.Errorf("Kimi Code 设备码请求失败: %w", err)
+	}
+	approvalURL := device.VerificationURIComplete
+	if approvalURL == "" {
+		approvalURL = device.VerificationURI
+	}
+	if !kimicode.IsApprovalURL(approvalURL) {
+		finish()
+		a.clearKimiOwnedGen(ownedGen)
+		return KimiCodeDeviceInfo{}, fmt.Errorf("Kimi Code 授权地址无效")
+	}
+	if err := parent.Err(); err != nil {
+		finish()
+		a.clearKimiOwnedGen(ownedGen)
+		return KimiCodeDeviceInfo{}, fmt.Errorf("Kimi Code 登录已取消或超时")
+	}
+	waitCtx, waitCancel := context.WithTimeout(parent, kimicode.LoginLifetime(device.ExpiresIn))
+	flow := &kimiCodeLogin{
+		ctx:        waitCtx,
+		deviceCode: device.DeviceCode,
+		interval:   device.Interval,
+		baseURL:    kimicode.BaseURLForOAuthHost(oauthHost),
+		oauthHost:  oauthHost,
+		generation: ownedGen,
+		finish: func() {
+			waitCancel()
+			finish()
+		},
+		claim: claim,
+	}
+	a.oauthMu.Lock()
+	previous := a.kimiLogin
+	a.kimiLogin = flow
+	a.oauthMu.Unlock()
+	if previous != nil && previous.finish != nil {
+		previous.finish()
+	}
+
+	info := KimiCodeDeviceInfo{
+		UserCode:                device.UserCode,
+		VerificationURI:         device.VerificationURI,
+		VerificationURIComplete: device.VerificationURIComplete,
+	}
+	if parent.Err() != nil {
+		a.oauthMu.Lock()
+		if a.kimiLogin == flow {
+			a.kimiLogin = nil
+		}
+		a.oauthMu.Unlock()
+		flow.finish()
+		a.clearKimiOwnedGen(ownedGen)
+		return KimiCodeDeviceInfo{}, fmt.Errorf("Kimi Code 登录已取消或超时")
+	}
+	if err := browser.OpenURL(approvalURL); err != nil {
+		logKimiBrowserOpen(err)
+	} else if parent.Err() == nil {
+		info.BrowserOpened = true
+	}
+	if parent.Err() != nil {
+		// Cancel may already have dropped this flow. Do not cancel whatever
+		// login replaced it.
+		a.oauthMu.Lock()
+		if a.kimiLogin == flow {
+			a.kimiLogin = nil
+		}
+		a.oauthMu.Unlock()
+		flow.finish()
+		a.clearKimiOwnedGen(ownedGen)
+		return KimiCodeDeviceInfo{}, fmt.Errorf("Kimi Code 登录已取消或超时")
+	}
+	return info, nil
+}
+
+func (a *App) clearKimiOwnedGen(gen uint64) {
+	a.oauthMu.Lock()
+	if a.kimiOwnedGen == gen {
+		a.kimiOwnedGen = 0
+	}
+	a.oauthMu.Unlock()
+}
+
+func logKimiBrowserOpen(err error) {
+	if err == nil {
+		return
+	}
+	// The approval URL contains the user code. Keep the failure reason only.
+	log.Printf("[kimi-code] browser open failed: %s", browserOpenReason(err))
+}
+
+func browserOpenReason(err error) string {
+	text := err.Error()
+	if idx := strings.Index(text, "http"); idx >= 0 {
+		return strings.TrimSpace(text[:idx])
+	}
+	return text
+}
+
+// WaitKimiCodeOAuth blocks until the browser approval finishes or is cancelled.
+func (a *App) WaitKimiCodeOAuth() (string, error) {
+	a.oauthMu.Lock()
+	flow := a.kimiLogin
+	a.kimiLogin = nil
+	a.oauthMu.Unlock()
+	if flow == nil || flow.ctx == nil || flow.deviceCode == "" || flow.finish == nil || flow.claim == nil {
+		return "", fmt.Errorf("没有正在进行的 Kimi Code 登录")
+	}
+	defer func() {
+		flow.finish()
+		a.clearKimiOwnedGen(flow.generation)
+	}()
+
+	token, err := kimicode.PollUntilAuthorizedAt(flow.ctx, flow.deviceCode, flow.interval, flow.oauthHost)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return "", fmt.Errorf("Kimi Code 登录已取消或超时")
+		}
+		return "", fmt.Errorf("Kimi Code 登录失败: %w", err)
+	}
+	if err := flow.claim(func() error {
+		return a.saveKimiCodeLogin(token, flow.baseURL)
+	}); err != nil {
+		return "", err
+	}
+	return a.oauthLoginSuccessMessage(kimicode.Name, kimicode.Name+" 登录成功")
+}
+
+// CancelKimiCodeOAuth cancels an in-progress Kimi Code device login.
+// A login that has not reached Wait is dropped here so it cannot be polled later.
+func (a *App) CancelKimiCodeOAuth() {
+	a.oauthMu.Lock()
+	flow := a.kimiLogin
+	owns := a.kimiOwnedGen != 0 && a.kimiOwnedGen == a.oauthGeneration
+	// A stored flow from an older attempt must not hide the device request
+	// that currently owns the single-flight slot.
+	if flow != nil && flow.generation != a.oauthGeneration {
+		flow = nil
+	} else if flow != nil {
+		a.kimiLogin = nil
+	}
+	var cancel context.CancelFunc
+	if owns && flow == nil && a.oauthCancel != nil {
+		// Wait owns the flow, or the device request has not stored one yet.
+		// Cancel that context before releasing the lock so a newer login
+		// cannot be the one that gets cancelled.
+		a.oauthGeneration++
+		cancel = a.oauthCancel
+		a.oauthCancel = nil
+		a.kimiOwnedGen = 0
+	} else if owns && flow != nil {
+		a.kimiOwnedGen = 0
+	}
+	a.oauthMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if flow != nil && flow.finish != nil {
+		// This flow's own finish cancels its context. It does not bump the
+		// global generation, so a login that already replaced it stays up.
+		flow.finish()
+	}
+}
+
+func (a *App) saveKimiCodeLogin(token kimicode.Token, baseURL string) error {
+	if strings.TrimSpace(token.AccessToken) == "" {
+		return fmt.Errorf("Kimi Code 登录未返回访问令牌")
+	}
+	data := a.GetMaclawLLMProviders()
+	for i, p := range data.Providers {
+		if !kimicode.IsProviderName(p.Name) || !normalizeMaclawLLMAuthTypeKind(p.AuthType).IsOAuth() {
+			continue
+		}
+		data.Providers[i] = oauth.ApplyTokenResult(p, kimiCodeTokenResult(token))
+		data.Providers[i].URL = kimicode.CanonicalBaseURL(baseURL)
+		data.Providers[i].Protocol = "openai"
+		data.Providers[i].AuthType = "oauth"
+		data.Providers[i].ConnectionTestPassed = false
+		if err := a.SaveMaclawLLMProviders(data.Providers, kimicode.Name); err != nil {
+			return fmt.Errorf("保存 Kimi Code 登录配置失败: %w", err)
+		}
+		if a.credentialStore != nil {
+			result := kimiCodeTokenResult(token)
+			stored := &oauth.StoredCredential{
+				Type:           "oauth",
+				AccessToken:    result.AccessToken,
+				RawAccessToken: result.RawAccessToken,
+				RefreshToken:   result.RefreshToken,
+				ExpiresAt:      data.Providers[i].TokenExpiresAt,
+			}
+			if err := a.credentialStore.Modify(kimicode.StoreID, func(_ *oauth.StoredCredential) (*oauth.StoredCredential, error) {
+				return stored, nil
+			}); err != nil {
+				// The provider record already has the token. A later request
+				// can copy it into the store, so a store glitch is not a failed login.
+				log.Printf("[kimi-code] credential store save failed: %v", err)
+			}
+		}
+		return nil
+	}
+	return fmt.Errorf("未找到 Kimi Code provider")
+}
+
+func kimiCodeTokenResult(token kimicode.Token) *oauth.TokenResult {
+	return &oauth.TokenResult{
+		AccessToken:    token.AccessToken,
+		RawAccessToken: token.AccessToken,
+		RefreshToken:   token.RefreshToken,
+		ExpiresIn:      token.ExpiresIn,
+	}
 }
 
 // CancelGitHubCopilotOAuth cancels an in-progress device code flow.

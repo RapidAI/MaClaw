@@ -189,54 +189,7 @@ func (idx *Index) Update(d Doc) {
 func (idx *Index) Score(query string) map[string]float64 {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
-
-	if len(idx.docs) == 0 {
-		return nil
-	}
-
-	queryTokens := Tokenize(query)
-	if len(queryTokens) == 0 {
-		return nil
-	}
-
-	// Deduplicate query tokens.
-	seen := make(map[string]struct{}, len(queryTokens))
-	unique := make([]string, 0, len(queryTokens))
-	for _, qt := range queryTokens {
-		if _, ok := seen[qt]; !ok {
-			seen[qt] = struct{}{}
-			unique = append(unique, qt)
-		}
-	}
-
-	n := float64(len(idx.docs))
-	idf := make(map[string]float64, len(unique))
-	for _, term := range unique {
-		freq := idx.df[term]
-		if freq == 0 {
-			continue
-		}
-		idf[term] = math.Log((n-float64(freq)+0.5)/(float64(freq)+0.5) + 1.0)
-	}
-
-	scores := make(map[string]float64, len(idx.docs))
-	for _, doc := range idx.docs {
-		var s float64
-		dl := float64(doc.length)
-		for _, qt := range unique {
-			tfVal := float64(doc.tf[qt])
-			if tfVal == 0 {
-				continue
-			}
-			num := tfVal * (idx.k1 + 1)
-			denom := tfVal + idx.k1*(1-idx.b+idx.b*dl/idx.avgDL)
-			s += idf[qt] * num / denom
-		}
-		if s > 0 {
-			scores[doc.id] = s
-		}
-	}
-	return scores
+	return idx.scoreQueryLocked(query, nil)
 }
 
 // ScoreWithTokens is like Score but accepts pre-tokenized query tokens.
@@ -296,33 +249,67 @@ func (idx *Index) ScoreWithTokens(queryTokens []string) map[string]float64 {
 func (idx *Index) ScoreSubset(query string, allowed map[string]struct{}) map[string]float64 {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
-
-	if len(idx.docs) == 0 || len(allowed) == 0 {
+	if len(allowed) == 0 {
 		return nil
 	}
+	return idx.scoreQueryLocked(query, allowed)
+}
 
-	queryTokens := Tokenize(query)
-	if len(queryTokens) == 0 {
+// scoreQueryLocked scores query against the index. allowed nil scores every
+// document. A strict name is a conjunction of its real spans, so overlapping
+// n-grams cannot rank a different person who only shares 中国人 or 奇安信.
+func (idx *Index) scoreQueryLocked(query string, allowed map[string]struct{}) map[string]float64 {
+	if len(idx.docs) == 0 {
 		return nil
 	}
-
-	seen := make(map[string]struct{}, len(queryTokens))
-	unique := make([]string, 0, len(queryTokens))
-	for _, qt := range queryTokens {
-		if _, ok := seen[qt]; !ok {
-			seen[qt] = struct{}{}
-			unique = append(unique, qt)
-		}
+	terms, requireAll := scoreQueryTerms(query)
+	if len(terms) == 0 {
+		return nil
 	}
 
 	n := float64(len(idx.docs))
-	idf := make(map[string]float64, len(unique))
-	for _, term := range unique {
+	idf := make(map[string]float64, len(terms))
+	for _, term := range terms {
 		freq := idx.df[term]
 		if freq == 0 {
+			if requireAll {
+				return map[string]float64{}
+			}
 			continue
 		}
 		idf[term] = math.Log((n-float64(freq)+0.5)/(float64(freq)+0.5) + 1.0)
+	}
+
+	scoreDoc := func(doc indexedDoc) float64 {
+		if requireAll {
+			for _, term := range terms {
+				if doc.tf[term] == 0 {
+					return 0
+				}
+			}
+		}
+		var s float64
+		dl := float64(doc.length)
+		for _, term := range terms {
+			tfVal := float64(doc.tf[term])
+			if tfVal == 0 {
+				continue
+			}
+			num := tfVal * (idx.k1 + 1)
+			denom := tfVal + idx.k1*(1-idx.b+idx.b*dl/idx.avgDL)
+			s += idf[term] * num / denom
+		}
+		return s
+	}
+
+	if allowed == nil {
+		scores := make(map[string]float64)
+		for _, doc := range idx.docs {
+			if s := scoreDoc(doc); s > 0 {
+				scores[doc.id] = s
+			}
+		}
+		return scores
 	}
 
 	scores := make(map[string]float64, len(allowed))
@@ -338,23 +325,38 @@ func (idx *Index) ScoreSubset(query string, allowed map[string]struct{}) map[str
 		if !ok || docPos < 0 || docPos >= len(idx.docs) {
 			continue
 		}
-		doc := idx.docs[docPos]
-		var s float64
-		dl := float64(doc.length)
-		for _, qt := range unique {
-			tfVal := float64(doc.tf[qt])
-			if tfVal == 0 {
-				continue
-			}
-			num := tfVal * (idx.k1 + 1)
-			denom := tfVal + idx.k1*(1-idx.b+idx.b*dl/idx.avgDL)
-			s += idf[qt] * num / denom
-		}
-		if s > 0 {
-			scores[doc.id] = s
+		if s := scoreDoc(idx.docs[docPos]); s > 0 {
+			scores[id] = s
 		}
 	}
 	return scores
+}
+
+// scoreQueryTerms returns the terms to score. Strict names contribute only
+// their content anchors and every anchor must hit. Other queries keep the
+// overlapping n-gram recall used for ordinary words.
+func scoreQueryTerms(query string) (terms []string, requireAll bool) {
+	if anchors, strict := QueryAnchors(query); strict && len(anchors) > 0 {
+		return uniqueTerms(anchors), true
+	}
+	return uniqueTerms(Tokenize(query)), false
+}
+
+func uniqueTerms(tokens []string) []string {
+	seen := make(map[string]struct{}, len(tokens))
+	unique := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		token = strings.ToLower(strings.TrimSpace(token))
+		if token == "" {
+			continue
+		}
+		if _, ok := seen[token]; ok {
+			continue
+		}
+		seen[token] = struct{}{}
+		unique = append(unique, token)
+	}
+	return unique
 }
 
 func (idx *Index) rebuildDocIndexLocked() {
@@ -391,8 +393,21 @@ func (idx *Index) recalcAvgDL() {
 
 // Tokenize splits text into lowercase tokens using gse for CJK and simple
 // splitting for Latin scripts. Punctuation-only tokens are discarded.
+// CJK runs also receive overlapping character n-grams so an index can recall
+// words the dictionary missed. Those n-grams are not identity evidence; use
+// ContentAnchors for that.
 func Tokenize(text string) []string {
-	if text == "" {
+	tokens := Segment(text)
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+	return addCJKFallbackNgrams(tokens, strings.ToLower(text))
+}
+
+// Segment returns dictionary and HMM cuts only. It does not add overlapping
+// character n-grams.
+func Segment(text string) []string {
+	if strings.TrimSpace(text) == "" {
 		return nil
 	}
 	waitSeg()
@@ -410,7 +425,254 @@ func Tokenize(text string) []string {
 		}
 		tokens = append(tokens, s)
 	}
-	return addCJKFallbackNgrams(tokens, lower)
+	return tokens
+}
+
+// ShortEntityMention reports whether text is a short Han name or title rather
+// than a question or a mixed sentence. Fragment overlap is not enough to
+// identify this kind of query with a stored person.
+func ShortEntityMention(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" || strings.ContainsAny(text, "?？") {
+		return false
+	}
+	han := 0
+	other := 0
+	for _, r := range text {
+		switch {
+		case isCJKUnified(r):
+			han++
+		case unicode.IsSpace(r) || unicode.IsPunct(r) || unicode.IsSymbol(r):
+		default:
+			other++
+		}
+	}
+	// Shape check first so English and long text never pay for segmentation.
+	if han < 2 || han > 16 || other != 0 {
+		return false
+	}
+	return !hasQuestionCue(text)
+}
+
+// hasQuestionCue reports interrogative wording. Single-character cues count
+// only as their own word or a final particle, so 几何 stays a noun while
+// 马勇是谁 and 马勇有几本书 stay questions.
+func hasQuestionCue(text string) bool {
+	for _, cue := range []string{"什么", "怎么", "如何", "哪些", "为什么", "为何", "是否", "有没有"} {
+		if strings.Contains(text, cue) {
+			return true
+		}
+	}
+	runes := []rune(strings.TrimSpace(text))
+	if len(runes) > 0 {
+		switch runes[len(runes)-1] {
+		case '吗', '呢', '吧', '啊':
+			return true
+		}
+	}
+	for _, seg := range Segment(text) {
+		switch seg {
+		case "吗", "呢", "谁", "哪", "几", "啥", "咋":
+			return true
+		}
+		if countSegment(seg) {
+			return true
+		}
+	}
+	return false
+}
+
+// countSegment reports a how-many phrase such as 几本 or 几本书. 几何 is a
+// noun and must not match.
+func countSegment(seg string) bool {
+	runes := []rune(seg)
+	if len(runes) < 2 || runes[0] != '几' {
+		return false
+	}
+	switch runes[1] {
+	case '个', '本', '种', '次', '条', '项', '位', '名', '岁', '点', '号', '张', '件':
+		return true
+	}
+	return false
+}
+
+// ContentAnchors returns the non-overlapping spans a short entity query must
+// actually contain. Dictionary words stay whole. Consecutive unknown Han
+// characters are joined, so 奇强 remains one span instead of the separate
+// characters 奇 and 强. Overlapping n-grams are intentionally absent: a
+// document that contains 中国人 and 奇安信 does not contain 中国人奇强.
+func ContentAnchors(text string) []string {
+	anchors, _ := contentAnchors(text)
+	return anchors
+}
+
+// QueryAnchors classifies a short Han query. strict is set when the query is a
+// composite name or an out-of-vocabulary span. A single dictionary word such
+// as 学历 is not strict: semantic recall may still relate it to a synonym.
+// Callers must not fall back to overlapping character OR when strict is true.
+func QueryAnchors(text string) (anchors []string, strict bool) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil, false
+	}
+	if cached, ok := loadQueryAnchorCache(text); ok {
+		return cached.anchors, cached.strict
+	}
+	anchors, strict = classifyQueryAnchors(text)
+	storeQueryAnchorCache(text, queryAnchorEntry{anchors: anchors, strict: strict})
+	return anchors, strict
+}
+
+func classifyQueryAnchors(text string) (anchors []string, strict bool) {
+	if !ShortEntityMention(text) {
+		return nil, false
+	}
+	anchors, mergedOOV := contentAnchors(text)
+	if len(anchors) == 0 {
+		for _, run := range cjkRuns(text) {
+			if len([]rune(run)) >= 2 {
+				anchors = append(anchors, run)
+			}
+		}
+		return anchors, len(anchors) > 0
+	}
+	if len(anchors) > 1 || mergedOOV {
+		return anchors, true
+	}
+	// A single span of four or more characters is a name or title, not a
+	// common word. Require that span itself instead of its character pieces.
+	return anchors, len([]rune(anchors[0])) >= 4
+}
+
+type queryAnchorEntry struct {
+	anchors []string
+	strict  bool
+}
+
+var queryAnchorCache = struct {
+	sync.Mutex
+	items map[string]queryAnchorEntry
+}{items: map[string]queryAnchorEntry{}}
+
+func loadQueryAnchorCache(text string) (queryAnchorEntry, bool) {
+	queryAnchorCache.Lock()
+	defer queryAnchorCache.Unlock()
+	entry, ok := queryAnchorCache.items[text]
+	if !ok {
+		return queryAnchorEntry{}, false
+	}
+	entry.anchors = append([]string(nil), entry.anchors...)
+	return entry, true
+}
+
+func storeQueryAnchorCache(text string, entry queryAnchorEntry) {
+	entry.anchors = append([]string(nil), entry.anchors...)
+	queryAnchorCache.Lock()
+	defer queryAnchorCache.Unlock()
+	if len(queryAnchorCache.items) >= 128 {
+		queryAnchorCache.items = map[string]queryAnchorEntry{}
+	}
+	queryAnchorCache.items[text] = entry
+}
+
+func contentAnchors(text string) ([]string, bool) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil, false
+	}
+	var anchors []string
+	mergedOOV := false
+	seen := make(map[string]struct{})
+	add := func(span string, merged bool) {
+		span = strings.TrimSpace(span)
+		if len([]rune(span)) < 2 || hanSpanIsStop(span) {
+			return
+		}
+		if _, ok := seen[span]; ok {
+			return
+		}
+		seen[span] = struct{}{}
+		anchors = append(anchors, span)
+		if merged {
+			mergedOOV = true
+		}
+	}
+	for _, run := range cjkRuns(text) {
+		segments := Segment(run)
+		if len(segments) == 0 {
+			add(run, true)
+			continue
+		}
+		rest := run
+		var pending []rune
+		flush := func() {
+			if len(pending) >= 2 {
+				add(string(pending), true)
+			}
+			pending = nil
+		}
+		for _, seg := range segments {
+			idx := strings.Index(rest, seg)
+			if idx < 0 {
+				flush()
+				continue
+			}
+			for _, r := range rest[:idx] {
+				if isCJKUnified(r) && !hanStop(r) {
+					pending = append(pending, r)
+					continue
+				}
+				flush()
+			}
+			rest = rest[idx+len(seg):]
+			if len([]rune(seg)) >= 2 {
+				flush()
+				add(seg, false)
+				continue
+			}
+			for _, r := range seg {
+				if !isCJKUnified(r) || hanStop(r) {
+					flush()
+					continue
+				}
+				pending = append(pending, r)
+			}
+		}
+		for _, r := range rest {
+			if isCJKUnified(r) && !hanStop(r) {
+				pending = append(pending, r)
+				continue
+			}
+			flush()
+		}
+		flush()
+	}
+	return anchors, mergedOOV
+}
+
+func hanStop(r rune) bool {
+	switch r {
+	case '的', '了', '是', '在', '有', '和', '与', '或', '不', '也',
+		'都', '就', '而', '及', '等', '这', '那', '你', '我', '他',
+		'她', '它', '们', '个', '为', '到', '把', '被', '让', '从',
+		'对', '吗', '呢', '吧', '啊', '哦':
+		return true
+	}
+	return false
+}
+
+func hanSpanIsStop(span string) bool {
+	saw := false
+	for _, r := range span {
+		if !isCJKUnified(r) {
+			return false
+		}
+		if !hanStop(r) {
+			return false
+		}
+		saw = true
+	}
+	return saw
 }
 
 func addCJKFallbackNgrams(tokens []string, text string) []string {

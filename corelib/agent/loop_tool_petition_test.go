@@ -104,6 +104,64 @@ func TestRunLoop_ToolCallPetitionGrantsAndRendersNextIteration(t *testing.T) {
 	}
 }
 
+// A planned successor that the host cannot issue yet must not be described as
+// a missing tool. The host's explanation replaces the generic absence denial,
+// and the call is not executed.
+func TestRunLoop_UnrenderedPlannedSuccessorUsesHostMessage(t *testing.T) {
+	callCount := 0
+	var bodies [][]byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		body, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, body)
+		var resp map[string]interface{}
+		if callCount == 1 {
+			resp = toolCallResponse("generate_pdf", `{"content":"# report","title":"weather"}`)
+		} else {
+			resp = textResponse("searched first")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+	const successor = "Error: tool \"generate_pdf\" is planned for this turn but is not listed yet. Call a tool that is listed now. After that step succeeds, \"generate_pdf\" appears on the next request in this same reply; call it then."
+	cb := &successorDenialCallbacks{mockCallbacks: mockCallbacks{
+		config:      corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter:     4,
+		sysPrompt:   "sys",
+		tools:       []map[string]interface{}{tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{"type": "object"})},
+		toolResult:  "ok",
+		toolOutcome: ToolExecutionOutcomeOK,
+	}, message: successor}
+	result := RunLoop(cb, "成都天气，生成pdf", nil, nil)
+	if result.Error != "" {
+		t.Fatal(result.Error)
+	}
+	if cb.petitions != 1 {
+		t.Fatalf("petitions=%d, want one consultation", cb.petitions)
+	}
+	if len(cb.toolCalls) != 0 {
+		t.Fatalf("ungranted successor must not execute: %v", cb.toolCalls)
+	}
+	if len(bodies) < 2 || !strings.Contains(string(bodies[1]), "not listed yet") || !strings.Contains(string(bodies[1]), "next request") {
+		t.Fatalf("successor explanation missing from the next request: %q", bodies[1])
+	}
+	if strings.Contains(string(bodies[1]), "was not available in this request's rendered tool surface") {
+		t.Fatalf("generic absence denial must not replace a planned successor: %q", bodies[1])
+	}
+}
+
+type successorDenialCallbacks struct {
+	mockCallbacks
+	petitions int
+	message   string
+}
+
+func (m *successorDenialCallbacks) PetitionToolCall(string) (bool, string) {
+	m.petitions++
+	return false, m.message
+}
+
 // A host that does not grant the petition keeps the historical hard denial.
 func TestRunLoop_ToolCallPetitionDeniedKeepsHardDenial(t *testing.T) {
 	callCount := 0

@@ -7,7 +7,7 @@ import { cloneWorkflowUIState, useWorkflowState, type WorkflowUIState } from "./
 import { cloneCodePreviewState, initialState as initialCodePreviewState, useCodePreviewState, willDismissPreviewAfterClosingAll, willDismissPreviewAfterClosingFile, type CodePreviewUIState } from "./useCodePreviewState";
 import { useBufferQueue } from "./useBufferQueue";
 import type { AttachmentInfo } from "./useBufferQueue";
-import { CodingAgentThinkingTimelineItem, renderMessage } from "./aiAssistantMarkdown";
+import { CodingAgentThinkingTimelineItem, reasoningTrailMarkdownOptions, renderMessage } from "./aiAssistantMarkdown";
 import {
     formatRecordingCompletionDisplay,
     formatRecordingCompletionMessage,
@@ -60,6 +60,7 @@ import { AssistantWorkflowMaximizeSuggestion } from "./AssistantWorkflowMaximize
 import { useAssistantThemeMode } from "./useAssistantThemeMode";
 import { activeCodingAgentProgress, codingAgentComposerStatusText, codingAgentMessagesHavePlainTrail, isCodingAgentProgressContent, latestCodingAgentTurnSnapshot, renderCodingAgentWorkingTrail } from "./CodingAgentProgressStatus";
 import { isToolProgressMessage } from "./aiAssistantProgressUtils";
+import { isTranscriptToolCallText, transcriptAlreadyShowsToolCall } from "./assistantToolCall";
 import { assistantLiveActivityLabel, assistantLiveActivityObject, assistantLiveReasoningSource, assistantMessageOwnsLiveActivity, codingTimelineLiveThoughtIndex, extractInFlightToolName, reasoningHasModelThought, resolveAssistantLiveActivity, resolveLiveModelTarget, resolveStandaloneLiveActivityLabel } from "./assistantLiveActivity";
 import { IconBranch, IconRocket } from "./WorkbenchIcons";
 import { AITabBar } from "./AITabBar";
@@ -70,6 +71,7 @@ import { closeAssistantProjectTab } from "./assistantProjectTabClose";
 import { releaseIdleTaskTabs, type IdleTaskSwitchContext } from "./idleTaskTabClose";
 import { SessionWorkingDirChip } from "./SessionWorkingDirChip";
 import { TaskExecutionHeading } from "./TaskExecutionHeading";
+import { assistantTaskTitle } from "./taskListTitle";
 import { looksLikeRawParticipantId } from "./localAIIdentity";
 import { useAddGroupParticipantToTab } from "./useAddGroupParticipantToTab";
 import { useAddLocalMaclawToTab } from "./useAddLocalMaclawToTab";
@@ -116,10 +118,8 @@ import { agentViewHiddenFieldValue, canShowAssistantCodingPreviewForTab, codePre
 import type { SidebarLLMProviderSummary } from "../../types/appShell";
 import { PREVIEW_TASK_RESULT_EVENT, codeFileForImmediateTaskResultPreview, codeFileFromTaskResultPreview, localizeTaskResultPreviewError, previewTaskResultPathFromEvent, taskResultPreviewKindFromPath, type TaskResultPreviewPayload } from "./taskResultPreview";
 export { canShowAssistantCodingPreviewForTab, codePreviewModeFromState, shouldApplyRestoredAssistantPreview, shouldShowSourcePreviewForAgentMode, shouldShowSourcePreviewForWorkflow, withCodePreviewVisibleIfContent } from "./assistantPreviewState";
-const LOCAL_HIGH_RISK_APPROVAL_KIND = "local_high_risk_bash";
-const REMOTE_HIGH_RISK_APPROVAL_KIND = "remote_high_risk_bash";
-const REMOTE_DIRECTORY_WRITE_APPROVAL_KIND = "remote_shell_directory_write";
-const REMOTE_PATH_ACCESS_APPROVAL_KIND = "remote_path_access";
+import { LOCAL_HIGH_RISK_APPROVAL_KIND, REMOTE_DIRECTORY_WRITE_APPROVAL_KIND, REMOTE_HIGH_RISK_APPROVAL_KIND, REMOTE_PATH_ACCESS_APPROVAL_KIND } from "./assistantApprovalKinds";
+import { RemoteReconnectForm, RemoteReconnectSuccessToast } from "./RemoteReconnectForm";
 const AssistantPreviewPane = lazy(() => import("./AssistantPreviewPane").then((module) => ({ default: module.AssistantPreviewPane })));
 export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const { onClose, lang, startOnWorkbenchHome = false, activeAssistantTask: activeAssistantTaskProp = null, chatFontSize = 14, themeMode: controlledThemeMode, darkSchemeId, lightSchemeId = DEFAULT_ASSISTANT_LIGHT_SCHEME_ID, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId, petVoiceStartSeq = 0, petFocusInputSeq = 0, pendingVEOpen, onPendingVEOpenHandled, pendingHistoryDiscussionOpen, onPendingHistoryDiscussionOpenHandled, appUpdateAvailable, onOpenAppReleaseNotes, onOpenAppUpdate, onDismissAppUpdate, availableProviders, currentModel, contactProviderName, contactModelId, contactIsHubService, modelOptions, modelsLoading, onSwitchProvider, onSwitchModel, onOpenModelMenu, onDismissModelMenu, activeExecutionProfile, codingInheritsAssistant, providerSelectionPending, profileSavePending, onOpenLLMSettings, onLanguageChange, onActiveExecutionProfileChange, statusSlot, tasks: taskListProp, tasksLoaded: tasksLoadedProp, onOpenTask: onOpenTaskProp, brandId, brandDisplayNameCN } = props;
@@ -256,6 +256,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const [skillRecordingTabId, setSkillRecordingTabId] = useState<string | null>(null);
     const [skillRecordingCount, setSkillRecordingCount] = useState(0);
     const [skillRecordingCard, setSkillRecordingCard] = useState<any>(null);
+    const [skillRecordingBusy, setSkillRecordingBusy] = useState(false);
     const { showConfirm, showAlert } = useDialog();
     // Bumped on /clear so in-flight workbench status fetches cannot restore
     // the previous turn's checklist. Ignore-project stays set until the next
@@ -285,6 +286,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const closeAllPreviewPanelsRef = useRef<(() => void) | null>(null);
     const pendingSkillRecDataRef = useRef<any>(null);
     const skillRecResolvedRef = useRef(false);
+    const skillRecBusyRef = useRef(false);
+    const skillRecEpochRef = useRef(0);
+    // After a stop or abandon, ignore late "still recording" events until the next start.
+    const skillRecSuppressLiveRef = useRef(false);
     const { themeMode, setThemeMode } = useAssistantThemeMode(controlledThemeMode, onThemeModeChange);
     const { ttsEnabled, setTtsEnabled, ttsPlaying } = useTTSReadback(audioOutputDeviceId);
     const t = useMemo(() => {
@@ -326,6 +331,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     // Skill recording: sync state from backend events (per-tab)
     useEffect(() => {
         const off = EventsOn("skill-recording-state-changed", (state: any) => {
+            if (skillRecSuppressLiveRef.current || skillRecBusyRef.current) return;
             if (state && typeof state.recording === "boolean") {
                 if (state.recording) {
                     setSkillRecordingTabId(state.tabId || null);
@@ -401,12 +407,20 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             await ResolveScopeApproval(pending.id, decision);
         } catch { /* expired or already resolved */ }
     }, [scopeApprovalPending]);
+    const finishSkillRecordingRequest = useCallback(() => {
+        skillRecBusyRef.current = false;
+        setSkillRecordingBusy(false);
+    }, []);
     const handleToggleSkillRecording = useCallback(() => {
+        if (skillRecBusyRef.current) return;
         const currentTabId = activeTabIdForRecRef.current;
         const isRecordingCurrentTab = skillRecordingTabId === currentTabId;
         if (isRecordingCurrentTab) {
-            // Immediately update UI state (don't wait for backend event)
-            setSkillRecordingTabId(null);
+            // Keep the recording tab id until stop finishes. Clearing it early
+            // puts "Record Skill" back while the recorder still holds entries.
+            const epoch = skillRecEpochRef.current;
+            skillRecBusyRef.current = true;
+            setSkillRecordingBusy(true);
             // The backend may spend a few seconds asking the LLM for a
             // professional name/summary — show a transient preparing card.
             setSkillRecordingCard({
@@ -421,10 +435,34 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 metadata: {},
             });
             // Stop recording → show result card
-            (window as any).go?.main?.App?.StopSkillRecording?.().then((data: any) => {
-                if (data && !data.error) {
+            const stop = (window as any).go?.main?.App?.StopSkillRecording;
+            if (!stop) {
+                finishSkillRecordingRequest();
+                setSkillRecordingCard(null);
+                return;
+            }
+            stop().then((data: any) => {
+                if (skillRecEpochRef.current !== epoch) return;
+                const stopError = data && data.error ? String(data.error) : "";
+                if (stopError && !/no operations/i.test(stopError) && !/not recording/i.test(stopError)) {
+                    skillRecSuppressLiveRef.current = false;
+                    setSkillRecordingCard({
+                        id: `skill-rec-stop-failed-${Date.now()}`,
+                        type: "skill_recording_empty",
+                        title: lang === "en" ? "Couldn't stop recording" : "停止录制失败",
+                        description: stopError,
+                        fields: [],
+                        actions: [{ key: "cancel", label: lang === "en" ? "OK" : "知道了", style: "default" }],
+                        metadata: {},
+                    });
+                    return;
+                }
+                skillRecSuppressLiveRef.current = true;
+                setSkillRecordingTabId(null);
+                if (!stopError) {
                     // Has recorded operations → show save card
                     pendingSkillRecDataRef.current = data;
+                    skillRecResolvedRef.current = false;
                     setSkillRecordingCard({
                         id: `skill-rec-card-${Date.now()}`,
                         type: "skill_recording_done",
@@ -444,8 +482,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         ],
                         metadata: { summary: data.summary || [], security_warnings: data.security_warnings || [] },
                     });
-                } else {
+                } else if (/no operations/i.test(stopError)) {
                     // No operations recorded → show info card (no fields, just dismiss button)
+                    pendingSkillRecDataRef.current = null;
                     setSkillRecordingCard({
                         id: `skill-rec-empty-${Date.now()}`,
                         type: "skill_recording_empty",
@@ -461,23 +500,42 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         ],
                         metadata: {},
                     });
+                } else {
+                    pendingSkillRecDataRef.current = null;
+                    setSkillRecordingCard({
+                        id: `skill-rec-idle-${Date.now()}`,
+                        type: "skill_recording_empty",
+                        title: lang === "en" ? "Recording already stopped" : "录制已经结束",
+                        description: lang === "en" ? "Nothing is waiting to be saved." : "没有等待保存的录制内容。",
+                        fields: [],
+                        actions: [{ key: "cancel", label: lang === "en" ? "OK" : "知道了", style: "default" }],
+                        metadata: {},
+                    });
                 }
             }).catch(() => {
-                // On failure, revert UI state
-                setSkillRecordingTabId(currentTabId);
+                if (skillRecEpochRef.current !== epoch) return;
+                skillRecSuppressLiveRef.current = false;
                 setSkillRecordingCard(null);
+            }).finally(() => {
+                if (skillRecEpochRef.current !== epoch) return;
+                finishSkillRecordingRequest();
             });
         } else if (skillRecordingTabId) {
             // Another tab is recording — cannot start a new one
             return;
         } else {
-            // Start recording for the current active tab
             const tabId = currentTabId;
-            (window as any).go?.main?.App?.StartSkillRecording?.(tabId).then((result: string) => {
+            const start = (window as any).go?.main?.App?.StartSkillRecording;
+            if (!start) return;
+            const epoch = skillRecEpochRef.current;
+            skillRecBusyRef.current = true;
+            setSkillRecordingBusy(true);
+            start(tabId).then((result: string) => {
+                if (skillRecEpochRef.current !== epoch) return;
                 if (result === "ok") {
+                    skillRecSuppressLiveRef.current = false;
                     setSkillRecordingTabId(tabId);
                     setSkillRecordingCount(0);
-                    setSkillRecordingCard(null);
                     skillRecResolvedRef.current = false;
                     // Show recording started as a non-interactive info card
                     setSkillRecordingCard({
@@ -485,23 +543,56 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         type: "skill_recording_started",
                         title: lang === "en" ? "Skill recording started" : "Skill 录制已开始",
                         description: lang === "en"
-                            ? "All commands, file writes, and edits will be recorded. Click REC again to stop.\n\nWork as usual — recording continues in the background."
-                            : "所有命令执行、文件写入、文件编辑将被记录。再次点击录制按钮停止。\n\n正常使用即可，录制在后台静默进行。",
+                            ? "All commands, file writes, and edits will be recorded. Click Pause to the left of Tasks to stop.\n\nWork as usual — recording continues in the background."
+                            : "所有命令执行、文件写入、文件编辑将被记录。点击「任务」左侧的「暂停」即可停止。\n\n正常使用即可，录制在后台静默进行。",
                         fields: [],
                         actions: [{ key: "cancel", label: lang === "en" ? "OK" : "知道了", style: "default" }],
                         metadata: {},
                     });
+                    return;
                 }
-            }).catch(() => { /* ignore */ });
+                const unsaved = /unsaved/i.test(result || "");
+                setSkillRecordingCard({
+                    id: `skill-rec-start-failed-${Date.now()}`,
+                    type: "skill_recording_empty",
+                    title: lang === "en" ? "Couldn't start recording" : "录制未能开始",
+                    description: unsaved
+                        ? (lang === "en" ? "A previous recording is still waiting to be saved. Discard it before starting another." : "上一段录制还没保存或放弃，需要先放弃才能重新开始。")
+                        : (result || (lang === "en" ? "Try again in a moment." : "请稍后再试。")),
+                    fields: [],
+                    actions: unsaved
+                        ? [{ key: "discard", label: lang === "en" ? "Discard unsaved recording" : "放弃未保存的录制", style: "primary" }]
+                        : [{ key: "cancel", label: lang === "en" ? "OK" : "知道了", style: "default" }],
+                    metadata: {},
+                });
+            }).catch(() => {
+                if (skillRecEpochRef.current !== epoch) return;
+                setSkillRecordingCard({
+                    id: `skill-rec-start-failed-${Date.now()}`,
+                    type: "skill_recording_empty",
+                    title: lang === "en" ? "Couldn't start recording" : "录制未能开始",
+                    description: lang === "en" ? "Try again in a moment." : "请稍后再试。",
+                    fields: [],
+                    actions: [{ key: "cancel", label: lang === "en" ? "OK" : "知道了", style: "default" }],
+                    metadata: {},
+                });
+            }).finally(() => {
+                if (skillRecEpochRef.current !== epoch) return;
+                finishSkillRecordingRequest();
+            });
         }
-    }, [skillRecordingTabId, lang]);
+    }, [finishSkillRecordingRequest, skillRecordingTabId, lang]);
     // Handle inline card resolve for skill recording
     const handleResolveSkillRecordingCard = useCallback((action: string, values: Record<string, string>) => {
         // For empty/info cards (no pending data), just dismiss
         const data = pendingSkillRecDataRef.current;
         if (!data) {
-            // No pending recording data — this is the "empty recording" info card
-            // Just mark it resolved, no backend call needed
+            // Empty and failure cards have no payload. Discard is the explicit
+            // release for a recorder still holding an unsaved session.
+            if (action === "discard") {
+                const pending = (window as any).go?.main?.App?.ResolveSkillRecording?.("cancel", "", "");
+                if (pending && typeof pending.catch === "function") pending.catch(() => {});
+            }
             return;
         }
         // Prevent double-submit
@@ -509,13 +600,29 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         skillRecResolvedRef.current = true;
         pendingSkillRecDataRef.current = null;
 
+        const epoch = skillRecEpochRef.current;
+        skillRecBusyRef.current = true;
+        setSkillRecordingBusy(true);
+        const settle = () => {
+            if (skillRecEpochRef.current !== epoch) return;
+            skillRecBusyRef.current = false;
+            setSkillRecordingBusy(false);
+        };
         if (action === "cancel") {
-            (window as any).go?.main?.App?.ResolveSkillRecording?.("cancel", "", "");
+            const pending = (window as any).go?.main?.App?.ResolveSkillRecording?.("cancel", "", "");
+            if (pending && typeof pending.finally === "function") pending.catch(() => {}).finally(settle);
+            else settle();
         } else {
             // action === "save"
             const name = (values.name || "").trim() || data.suggested_name || "my-skill";
             const desc = (values.description || "").trim() || data.suggested_description || "";
-            (window as any).go?.main?.App?.ResolveSkillRecording?.("save", name, desc).then((result: any) => {
+            const pending = (window as any).go?.main?.App?.ResolveSkillRecording?.("save", name, desc);
+            if (!pending?.then) {
+                settle();
+                return;
+            }
+            pending.then((result: any) => {
+                if (skillRecEpochRef.current !== epoch) return;
                 // Surface portability warnings (e.g. machine-specific paths that
                 // could not be parameterized automatically) after a successful save.
                 const warnings: string[] = (result && Array.isArray(result.portability_warnings)) ? result.portability_warnings : [];
@@ -535,9 +642,21 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         metadata: {},
                     });
                 }
-            }).catch(() => { /* ignore */ });
+            }).catch(() => { /* ignore */ }).finally(settle);
         }
     }, [lang]);
+    const abandonSkillRecording = useCallback(() => {
+        skillRecEpochRef.current += 1;
+        skillRecSuppressLiveRef.current = true;
+        skillRecBusyRef.current = false;
+        setSkillRecordingBusy(false);
+        setSkillRecordingTabId(null);
+        setSkillRecordingCard(null);
+        pendingSkillRecDataRef.current = null;
+        skillRecResolvedRef.current = true;
+        const pending = (window as any).go?.main?.App?.ResolveSkillRecording?.("cancel", "", "");
+        if (pending && typeof pending.catch === "function") pending.catch(() => {});
+    }, []);
     const { tabState, activeTab, activateTab, createVETab, createGroupTab, createProjectTab, createExpertTab, closeTab, discardDeletedProjectTabs, discardDeletedExpertTabs, discardOrphanProjectTabs, clearTabConversation, saveTabState, getTabState, getTabs, hasProjectTab, upgradeVETabToGroup, renameGroupTab, renameLocalTab, renameProjectTabs, tabLimitError, clearTabLimitError } = useAITabManager();
     const { requested: workbenchHomeRequested, dismiss: dismissWorkbenchHome } = useWorkbenchLandingMode(startOnWorkbenchHome, activeTab.id, activeTab.type);
     cloudTreeRefreshTabIdRef.current = activeTab.id;
@@ -3291,9 +3410,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         projectConversationHydrationGenerationByTabIdRef, projectConversationHydrationByTabIdRef,
         projectTabRoundsRef, detachedProjectRoundsRef, projectTabMsgIdsRef, projectPrepareTimersRef,
         deferredProjectInitialSendsRef, pendingRemoteInitialSendRef, previewStateMapRef, previewOwnerTabRef,
-        previewOwnerResetPendingRef, skillRecordingTabId, setSkillRecordingTabId, setProjectTabPreparing,
+        previewOwnerResetPendingRef, skillRecordingTabId, setSkillRecordingTabId, abandonSkillRecording, setProjectTabPreparing,
         setProjectTabRouteVersion, setDetachedProjectRoundVersion, persistProjectTabMsgIds,
-    }), [closeTab, getTabState, getTabs, messages, persistProjectTabMsgIds, saveTabState, setDetachedProjectRoundVersion, setProjectTabPreparing, setProjectTabRouteVersion, setSkillRecordingTabId, skillRecordingTabId]);
+    }), [abandonSkillRecording, closeTab, getTabState, getTabs, messages, persistProjectTabMsgIds, saveTabState, setDetachedProjectRoundVersion, setProjectTabPreparing, setProjectTabRouteVersion, setSkillRecordingTabId, skillRecordingTabId]);
     const idleTaskSwitchRef = useRef<IdleTaskSwitchContext | null>(null);
     const activateSwitchingTab = useCallback((tabId: string) => {
         releaseIdleTaskTabs(idleTaskSwitchRef.current, { nextTabId: tabId });
@@ -3780,23 +3899,46 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             activateCodePreviewPassive();
         }
     }, [codingPreviewAllowed, isCloudWorkspaceEnvironment, isPureCodingEnvironment, sourcePreviewAllowed, workflowState.splitMode, codingConflictOpen, openDocPreview, activateCodePreviewPassive, reopenCodePreview]);
+    const [fileFocusNonce, setFileFocusNonce] = useState(0);
+    const [treeFocusNonce, setTreeFocusNonce] = useState(0);
+    const fileFocusNonceRef = useRef(0);
+    const treeFocusNonceRef = useRef(0);
+    fileFocusNonceRef.current = fileFocusNonce;
+    treeFocusNonceRef.current = treeFocusNonce;
     const taskResultPreviewTabIdRef = useRef(activeTab.id);
-    useEffect(() => {
-        if (taskResultPreviewTabIdRef.current === activeTab.id) return;
+    if (taskResultPreviewTabIdRef.current !== activeTab.id) {
         taskResultPreviewTabIdRef.current = activeTab.id;
         taskResultPreviewGenRef.current += 1;
+        const nextTree = Math.max(treeFocusNonce, fileFocusNonce) + 1;
+        treeFocusNonceRef.current = nextTree;
+        setTreeFocusNonce(nextTree);
         setTaskResultPreviewOpen(false);
-    }, [activeTab.id]);
+    }
     const taskResultPreviewAllowed = canShowAssistantCodingPreviewForTab(activeTab);
+    useEffect(() => {
+        const onTree = () => {
+            const next = Math.max(treeFocusNonceRef.current, fileFocusNonceRef.current) + 1;
+            treeFocusNonceRef.current = next;
+            setTreeFocusNonce(next);
+        };
+        window.addEventListener(FOCUS_CLOUD_WORKSPACE_TREE_EVENT, onTree);
+        return () => window.removeEventListener(FOCUS_CLOUD_WORKSPACE_TREE_EVENT, onTree);
+    }, []);
     useEffect(() => {
         const onPreview = (event: Event) => {
             const path = previewTaskResultPathFromEvent(event);
             if (!path || !taskResultPreviewAllowed) return;
             const generation = ++taskResultPreviewGenRef.current;
             setTaskResultPreviewOpen(true);
+            const showPreviewFile = (file: Parameters<typeof openWorkspaceFile>[0]) => {
+                openWorkspaceFile(file);
+                const next = Math.max(treeFocusNonceRef.current, fileFocusNonceRef.current) + 1;
+                fileFocusNonceRef.current = next;
+                setFileFocusNonce(next);
+            };
             const immediateKind = taskResultPreviewKindFromPath(path);
             if (immediateKind) {
-                openWorkspaceFile(codeFileForImmediateTaskResultPreview(path, immediateKind));
+                showPreviewFile(codeFileForImmediateTaskResultPreview(path, immediateKind));
                 return;
             }
             void (async () => {
@@ -3807,11 +3949,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     }
                     const preview = await PreviewTaskResultFile(path) as TaskResultPreviewPayload;
                     if (generation !== taskResultPreviewGenRef.current) return;
-                    openWorkspaceFile(codeFileFromTaskResultPreview(preview || { path }, path));
+                    showPreviewFile(codeFileFromTaskResultPreview(preview || { path }, path));
                 } catch (err) {
                     if (generation !== taskResultPreviewGenRef.current) return;
                     const message = err instanceof Error ? err.message : String(err || "");
-                    openWorkspaceFile({
+                    showPreviewFile({
                         filePath: path,
                         fileName: path.split(/[/\\]/).pop() || path,
                         absPath: path,
@@ -4088,6 +4230,16 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         return "";
     }, [displayMessages]);
+    const liveEmbeddedToolCall = useMemo(() => {
+        if (!isBusy && !activeSessionIsStreaming) return null;
+        for (let i = displayMessages.length - 1; i >= 0; i--) {
+            const msg = displayMessages[i];
+            if (msg?.role !== "assistant") continue;
+            const call = msg.toolCalls?.[msg.toolCalls.length - 1];
+            return call || null;
+        }
+        return null;
+    }, [activeSessionIsStreaming, displayMessages, isBusy]);
     const liveReasoningKind = useMemo(() => resolveAssistantLiveActivity({
         streaming: activeSessionIsStreaming,
         busy: isBusy,
@@ -4095,7 +4247,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         reasoningText: lastAssistantReasoningText,
         progressMessages: displayProgressMessages,
         codingProgress: liveCodingProgress,
-    }), [activeSessionIsStreaming, displayProgressMessages, isBusy, lastAssistantReasoningText, liveCodingProgress]);
+        latestToolCall: liveEmbeddedToolCall,
+    }), [activeSessionIsStreaming, displayProgressMessages, isBusy, lastAssistantReasoningText, liveCodingProgress, liveEmbeddedToolCall]);
     const liveReasoningLabel = liveReasoningKind ? assistantLiveActivityLabel(liveReasoningKind, lang) : undefined;
     const liveReasoningObject = useMemo(() => {
         if (!liveReasoningKind) return undefined;
@@ -4115,10 +4268,11 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 codingProgress: liveCodingProgress,
                 progressMessages: displayProgressMessages,
                 reasoningText: lastAssistantReasoningText,
+                latestToolCall: liveEmbeddedToolCall,
             }),
         });
         return object || undefined;
-    }, [availableProviders, contactIsHubService, contactModelId, contactProviderName, currentModel, displayProgressMessages, lang, lastAssistantReasoningText, liveCodingProgress, liveReasoningKind]);
+    }, [availableProviders, contactIsHubService, contactModelId, contactProviderName, currentModel, displayProgressMessages, lang, lastAssistantReasoningText, liveCodingProgress, liveEmbeddedToolCall, liveReasoningKind]);
     const projectSearch = useProjectSearch(lang);
     useEffect(() => {
         if (!panelActive) projectSearch.close();
@@ -4170,7 +4324,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         setSaveTaskDialogOpen(true);
     }, [deriveTaskNameFromMessages, isLocalTabActive]);
     const shareCurrentTask = useCallback(async () => {
-        const taskTitle = String((activeTab ? getAITabDisplayTitle(activeTab, lang) : "") || deriveTaskNameFromMessages()).trim();
+        const taskTitle = String(assistantTaskTitle(activeTab, lang, taskListProp) || deriveTaskNameFromMessages()).trim();
         if (!taskTitle) return;
         const shareDetail = { title: taskTitle, tabId: activeTab?.id };
         if (typeof navigator !== "undefined" && typeof navigator.share === "function") {
@@ -4191,7 +4345,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         if (typeof window !== "undefined") {
             window.dispatchEvent(new CustomEvent("maclaw:share-task", { detail: shareDetail }));
         }
-    }, [activeTab, deriveTaskNameFromMessages, lang]);
+    }, [activeTab, deriveTaskNameFromMessages, lang, taskListProp]);
     useEffect(() => {
         const handler = () => { void openSaveTaskDialog(); };
         window.addEventListener('ai-save-current-chat-as-task', handler);
@@ -5018,7 +5172,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const showWelcomeView = showWelcomeViewBase || wizardOverlayActive;
     const title = showWelcomeView && isLocalTabActive
         ? localizeText(lang, "New task", "新建任务", "新建任務")
-        : (activeTab ? getAITabDisplayTitle(activeTab, lang) : localAssistantTabTitle(lang));
+        : (activeTab ? assistantTaskTitle(activeTab, lang, taskListProp) : localAssistantTabTitle(lang));
 
     useEffect(() => {
         if (queue.length === 0) {
@@ -5483,6 +5637,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     undefined,
                     handleRecordingComplete,
                     true,
+                    undefined,
+                    undefined,
+                    undefined,
+                    isLast && activeSessionHasWork,
                 );
                 let thoughtStep = 0;
                 return (
@@ -5526,7 +5684,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             // corrections can replace content in place without changing the length.
             const liveLabelForMessage = assistantMessageOwnsLiveActivity(msg, activeSessionIsStreaming, idx === otherMessages.length - 1) ? liveReasoningLabel : undefined;
             const liveObjectForMessage = liveLabelForMessage ? liveReasoningObject : undefined;
-            const contentKey = `${msg.content ?? '__undefined__'}|${msg.kind ?? ''}|${msg.reasoning ?? ''}|${msg.actions?.length ?? 0}|${isLast ? 1 : 0}|${isLast && isBusy ? 1 : 0}|${isLast && activeSessionHasWork ? 1 : 0}|${isLast && activeSessionIsStreaming ? 1 : 0}|${liveLabelForMessage ?? ''}|${liveObjectForMessage ?? ''}|${msg.confirmation ? 1 : 0}|${msg.unfinishedSlot ? 1 : 0}|${msg.localFilePath ?? ''}|${msg.localFilePaths?.length ?? 0}|${msg.attachments?.length ?? 0}|${msg.thumbnailBase64 ? 1 : 0}|${msg.imageKey ? 1 : 0}|${msg.recordingSession ? `${msg.recordingSession.active ? 1 : 0}:${msg.recordingSession.title}` : ''}|${isPureCodingEnvironment ? 1 : 0}`;
+            const contentKey = `${msg.content ?? '__undefined__'}|${msg.kind ?? ''}|${msg.reasoning ?? ''}|${msg.toolCalls?.map((call) => call.id).join(',') ?? ''}|${msg.resultText ?? ''}|${msg.resultStatus ?? ''}|${msg.actions?.length ?? 0}|${isLast ? 1 : 0}|${isLast && isBusy ? 1 : 0}|${isLast && activeSessionHasWork ? 1 : 0}|${isLast && activeSessionIsStreaming ? 1 : 0}|${liveLabelForMessage ?? ''}|${liveObjectForMessage ?? ''}|${msg.confirmation ? 1 : 0}|${msg.unfinishedSlot ? 1 : 0}|${msg.localFilePath ?? ''}|${msg.localFilePaths?.join('\n') ?? ''}|${msg.attachments?.length ?? 0}|${msg.thumbnailBase64 ? 1 : 0}|${msg.imageKey ? 1 : 0}|${msg.recordingSession ? `${msg.recordingSession.active ? 1 : 0}:${msg.recordingSession.title}` : ''}|${isPureCodingEnvironment ? 1 : 0}`;
             const cached = cache.get(msg.id);
             if (cached && cached.contentKey === contentKey) {
                 return cached.node;
@@ -5558,8 +5716,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         incRef.messageId = msg.id;
                         incRef.state = createIncrementalRenderState();
                     }
-                    return renderContentIncremental(formattedReasoning, t, incRef.state);
-                }, liveLabelForMessage, liveObjectForMessage);
+                    return renderContentIncremental(formattedReasoning, t, incRef.state, reasoningTrailMarkdownOptions);
+                }, liveLabelForMessage, liveObjectForMessage, true);
             } else {
                 // Reset incremental state when streaming ends
                 // so the final render is a clean full parse (100% correct).
@@ -5571,7 +5729,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         reasoningIncrementalStateRef.current = { messageId: '', state: createIncrementalRenderState() };
                     }
                 }
-                node = renderMessage(suppressWorkflowReviewActions(msg), panelExecuteAction, t, isLast, savedFileLabel, lang, isLast && activeSessionIsStreaming, undefined, handleRecordingComplete, isPureCodingEnvironment, undefined, liveLabelForMessage, liveObjectForMessage);
+                node = renderMessage(suppressWorkflowReviewActions(msg), panelExecuteAction, t, isLast, savedFileLabel, lang, isLast && activeSessionIsStreaming, undefined, handleRecordingComplete, isPureCodingEnvironment, undefined, liveLabelForMessage, liveObjectForMessage, isLast && activeSessionHasWork);
             }
             cache.set(msg.id, { contentKey, node });
             const branchPoint = msg.role === 'user' ? branchPointByDisplayIndex.get(idx) : undefined;
@@ -5616,9 +5774,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     // Retain the legacy progress feed for non-coding and older in-flight turns.
     const renderedProgressMessages = useMemo(() => {
         const hasTimeline = isPureCodingEnvironment && otherMessages.some((message) => message.role === "assistant" && message.codingTimeline?.length);
-        const visibleProgress = hasTimeline
+        const visibleProgress = (hasTimeline
             ? compactProgressMessages.filter((message) => !isCodingAgentProgressContent(message.content || ""))
-            : compactProgressMessages;
+            : compactProgressMessages
+        ).filter((message) => {
+            const text = message.content || "";
+            if (hasTimeline && isTranscriptToolCallText(text)) return false;
+            return !transcriptAlreadyShowsToolCall(otherMessages, text);
+        });
         return visibleProgress.map((message) => (
             <Fragment key={message.id}>
                 {renderMessage(suppressWorkflowReviewActions(message), panelExecuteAction, t, false, savedFileLabel, lang, false, undefined, undefined, isPureCodingEnvironment)}
@@ -5648,6 +5811,9 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const scopeApprovalIsRemoteHighRisk = scopeApprovalPending?.kind === REMOTE_HIGH_RISK_APPROVAL_KIND;
     const scopeApprovalIsRemoteScope = scopeApprovalPending?.kind === REMOTE_DIRECTORY_WRITE_APPROVAL_KIND || scopeApprovalPending?.kind === REMOTE_PATH_ACCESS_APPROVAL_KIND;
     const scopeApprovalIsRemoteMaintenance = (scopeApprovalIsRemoteHighRisk || scopeApprovalIsRemoteScope) && scopeApprovalPending?.maintenance === true;
+    const skillRecordingHere = !!activeTab?.id && skillRecordingTabId === activeTab.id;
+    const skillRecordingElsewhere = !!skillRecordingTabId && !skillRecordingHere;
+    const skillRecordingAwaitingDecision = !!skillRecordingCard && (skillRecordingCard.type === "skill_recording_preparing" || skillRecordingCard.type === "skill_recording_done");
     return (
         <div data-testid="ai-panel-root" data-ai-view={showWelcomeView ? "welcome" : "execution"} style={containerStyle}>
             <style>{`.branch-hover-container:hover .branch-btn { opacity: 0.7 !important; } .branch-hover-container .branch-btn:hover { opacity: 1 !important; background: ${t.fieldBg} !important; }`}</style>
@@ -5657,7 +5823,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 aria-hidden={!showWelcomeView ? true : undefined}
                 style={!showWelcomeView ? executionSecondaryChromeStyle : undefined}
             >
-                <AssistantTitleBar active={panelActive} clearHistory={clearActiveHistory} clearHistoryDisabled={inputLocked} inline={!!inline} lang={lang} maximized={!!maximized} onClose={onClose} onDismissAppUpdate={onDismissAppUpdate} onHideWindow={onHideWindow} onOpenAppReleaseNotes={onOpenAppReleaseNotes} onOpenAppUpdate={onOpenAppUpdate} onOpenKnowledge={() => setKnowledgeDialogOpen(true)} onOpenTutorial={onOpenTutorial} onOptimizeExpert={isExpertTabActive && activeTab.expertId && !showWelcomeView ? handleOptimizeExpert : undefined} onSaveCurrentTask={isLocalTabActive && !showWelcomeView ? openSaveTaskDialog : undefined} onToggleMaximize={onToggleMaximize} onTogglePreviewPanel={handleTogglePreviewPanel} onToggleSkillRecording={!showWelcomeView ? handleToggleSkillRecording : undefined} optimizeExpertBusy={expertOptimizeBusy} previewPanelOpen={showWorkflowPreview || showCodePreview || showCodingConflictPanel} previewAvailable={isPureCodingEnvironment || isCloudWorkspaceEnvironment} projectSearchOpen={projectSearch.open} refreshNews={refreshNews} showMaximizeToggle={showMaximizeToggle} skillRecording={skillRecordingTabId === activeTab?.id} skillRecordingCount={skillRecordingCount} skillRecordingAnyTab={!!skillRecordingTabId} theme={t} themeMode={themeMode} title={title} trialReflectEnabled={trialReflectEnabled} toggleProjectSearch={projectSearch.open ? projectSearch.close : projectSearch.toggle} updateAvailable={appUpdateAvailable} workflowActive={workflowState.active} />
+                <AssistantTitleBar active={panelActive} clearHistory={clearActiveHistory} clearHistoryDisabled={inputLocked} inline={!!inline} lang={lang} maximized={!!maximized} onClose={onClose} onDismissAppUpdate={onDismissAppUpdate} onHideWindow={onHideWindow} onOpenAppReleaseNotes={onOpenAppReleaseNotes} onOpenAppUpdate={onOpenAppUpdate} onOpenKnowledge={() => setKnowledgeDialogOpen(true)} onOpenTutorial={onOpenTutorial} onOptimizeExpert={isExpertTabActive && activeTab.expertId && !showWelcomeView ? handleOptimizeExpert : undefined} onSaveCurrentTask={isLocalTabActive && !showWelcomeView ? openSaveTaskDialog : undefined} onToggleMaximize={onToggleMaximize} onTogglePreviewPanel={handleTogglePreviewPanel} optimizeExpertBusy={expertOptimizeBusy} previewPanelOpen={showWorkflowPreview || showCodePreview || showCodingConflictPanel} previewAvailable={isPureCodingEnvironment || isCloudWorkspaceEnvironment} projectSearchOpen={projectSearch.open} refreshNews={refreshNews} showMaximizeToggle={showMaximizeToggle} theme={t} themeMode={themeMode} title={title} trialReflectEnabled={trialReflectEnabled} toggleProjectSearch={projectSearch.open ? projectSearch.close : projectSearch.toggle} updateAvailable={appUpdateAvailable} workflowActive={workflowState.active} />
             </div>
             {/* Column shell: chat|preview row on top, full-bleed bottom chrome under both
                 (so the quick-settings / status strip spans into the code-preview column). */}
@@ -5763,111 +5929,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     >
                         {/* Defer heavy control tree until expanded — parent would otherwise rebuild it every chat render. */}
                         {!codingControlExpanded ? null : remoteCodingNeedsReconnect ? (
-                            <div className="aap-reconnect-form" data-testid="remote-coding-reconnect-form">
-                                <div style={{ fontSize: 12, fontWeight: 600, color: t.headingColor || t.text }}>
-                                    {localizeText(lang, "Reconnect remote SSH", "重新连接远程 SSH", "重新連線遠端 SSH")}
-                                </div>
-                                <div className="aap-reconnect-grid">
-                                    <label style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 11, fontWeight: 600, color: formFieldLabelColor(t) }}>
-                                        {localizeText(lang, "Host", "主机", "主機")}
-                                        <input
-                                            data-testid="remote-reconnect-host"
-                                            disabled={remoteReconnect.connecting}
-                                            value={remoteReconnect.host}
-                                            onChange={(e) => setRemoteReconnect(prev => ({ ...prev, host: e.target.value, error: "" }))}
-                                            onBlur={hydrateRemoteReconnectIdentity}
-                                            style={{ height: 28, padding: "0 8px", borderRadius: 4, fontSize: 12, ...formFieldInputStyle(t) }}
-                                        />
-                                    </label>
-                                    <label style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 11, fontWeight: 600, color: formFieldLabelColor(t) }}>
-                                        {localizeText(lang, "User", "用户名", "使用者")}
-                                        <input
-                                            data-testid="remote-reconnect-user"
-                                            disabled={remoteReconnect.connecting}
-                                            value={remoteReconnect.user}
-                                            onChange={(e) => setRemoteReconnect(prev => ({ ...prev, user: e.target.value, error: "" }))}
-                                            onBlur={hydrateRemoteReconnectIdentity}
-                                            style={{ height: 28, padding: "0 8px", borderRadius: 4, fontSize: 12, ...formFieldInputStyle(t) }}
-                                        />
-                                    </label>
-                                    <label style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 11, fontWeight: 600, color: formFieldLabelColor(t) }}>
-                                        {localizeText(lang, "Port", "端口", "連接埠")}
-                                        <input
-                                            data-testid="remote-reconnect-port"
-                                            type="number"
-                                            disabled={remoteReconnect.connecting}
-                                            value={remoteReconnect.port || 22}
-                                            onChange={(e) => setRemoteReconnect(prev => ({ ...prev, port: Number(e.target.value) || 22, error: "" }))}
-                                            onBlur={hydrateRemoteReconnectIdentity}
-                                            style={{ height: 28, padding: "0 8px", borderRadius: 4, fontSize: 12, ...formFieldInputStyle(t) }}
-                                        />
-                                    </label>
-                                    <label style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 11, fontWeight: 600, color: formFieldLabelColor(t) }}>
-                                        {localizeText(lang, "Password", "密码", "密碼")}
-                                        <input
-                                            data-testid="remote-reconnect-password"
-                                            type="password"
-                                            disabled={remoteReconnect.connecting}
-                                            autoComplete="current-password"
-                                            value={remoteReconnect.password}
-                                            onChange={(e) => setRemoteReconnect(prev => ({ ...prev, password: e.target.value }))}
-                                            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void handleRemoteCodingReconnect({}); } }}
-                                            placeholder={localizeText(lang, "Remembered on this device", "本机记忆，下次自动填充", "本機記憶，下次自動填入")}
-                                            style={{ height: 28, padding: "0 8px", borderRadius: 4, fontSize: 12, ...formFieldInputStyle(t) }}
-                                        />
-                                    </label>
-                                </div>
-                                <label style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 11, fontWeight: 600, color: formFieldLabelColor(t) }}>
-                                    {localizeText(lang, "Remote work directory", "远程工作目录", "遠端工作目錄")}
-                                    <input
-                                        data-testid="remote-reconnect-workdir"
-                                        disabled={remoteReconnect.connecting}
-                                        value={remoteReconnect.workDir}
-                                        onChange={(e) => setRemoteReconnect(prev => ({ ...prev, workDir: e.target.value }))}
-                                        style={{ height: 28, padding: "0 8px", borderRadius: 4, fontSize: 12, ...formFieldInputStyle(t) }}
-                                    />
-                                </label>
-                                {remoteReconnect.sessionPlan && (
-                                    <div style={{ fontSize: 11, color: formFieldLabelColor(t), lineHeight: 1.45 }}>
-                                        {localizeText(lang, "Continuing session plan: ", "将延续会话目标：", "將延續工作階段目標：")}
-                                        {remoteReconnect.sessionPlan.length > 160 ? `${remoteReconnect.sessionPlan.slice(0, 160)}…` : remoteReconnect.sessionPlan}
-                                    </div>
-                                )}
-                                {remoteReconnect.error && (
-                                    <div data-testid="remote-reconnect-error" style={{ fontSize: 11, color: t.errorText || "#c43d34" }}>{remoteReconnect.error}</div>
-                                )}
-                                {remoteReconnect.connecting && remoteReconnect.success && (
-                                    <div
-                                        data-testid="remote-reconnect-progress"
-                                        role="status"
-                                        aria-live="polite"
-                                        style={{ fontSize: 11, color: formFieldLabelColor(t) }}
-                                    >
-                                        {remoteReconnect.success}
-                                    </div>
-                                )}
-                                <div className="aap-actions-end">
-                                    <button
-                                        type="button"
-                                        data-testid="remote-reconnect-submit"
-                                        disabled={remoteReconnect.connecting}
-                                        onClick={() => { void handleRemoteCodingReconnect({}); }}
-                                        style={primaryFilledButtonStyle(t, {
-                                            height: 28,
-                                            padding: "0 14px",
-                                            borderRadius: 4,
-                                            fontSize: 12,
-                                            fontWeight: 600,
-                                            cursor: remoteReconnect.connecting ? "wait" : "pointer",
-                                            opacity: remoteReconnect.connecting ? 0.75 : 1,
-                                        })}
-                                    >
-                                        {remoteReconnect.connecting
-                                            ? localizeText(lang, "Connecting…", "连接中…", "連線中…")
-                                            : localizeText(lang, "Reconnect", "重新连接", "重新連線")}
-                                    </button>
-                                </div>
-                            </div>
+                            <RemoteReconnectForm
+                                lang={lang}
+                                theme={t}
+                                reconnect={remoteReconnect}
+                                onFieldChange={setRemoteReconnect}
+                                onBlurIdentity={hydrateRemoteReconnectIdentity}
+                                onSubmit={() => { void handleRemoteCodingReconnect({}); }}
+                            />
                         ) : (
                             <>
                                 <CodingControlSection title={localizeText(lang, "Status & controls", "状态与控制", "狀態與控制")} chrome={codingBannerChrome}>
@@ -6392,42 +6461,12 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     </CodingWorkbenchControlPanel>
                 )}
                 {isRemoteCodingDevEnvironment && remoteReconnect.success && !remoteCodingNeedsReconnect && (
-                    <div
-                        data-testid="remote-coding-reconnect-success"
-                        data-coding-float-ignore-outside=""
-                        role="status"
-                        style={{
-                            position: "absolute",
-                            // Below the coding chip's rest position (defaultTop 80 + chip height).
-                            top: 124,
-                            right: 10,
-                            // Above coding float root (zIndex 40) so dismiss stays clickable.
-                            zIndex: 45,
-                            maxWidth: "min(320px, calc(100% - 20px))",
-                            padding: "8px 12px",
-                            borderRadius: 8,
-                            border: `1px solid ${t.titleBarBorder}`,
-                            background: `color-mix(in srgb, var(--theme-success, #4f7f6f) 12%, ${t.bg || "var(--theme-surface, #fff)"})`,
-                            color: t.text,
-                            fontSize: 12,
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "space-between",
-                            gap: 8,
-                            boxShadow: "0 8px 20px rgba(15,23,42,0.12)",
-                            pointerEvents: "auto",
-                        }}
-                    >
-                        <span>{remoteReconnect.success}</span>
-                        <button
-                            type="button"
-                            data-testid="remote-coding-reconnect-success-dismiss"
-                            onClick={() => setRemoteReconnect(prev => ({ ...prev, success: "" }))}
-                            style={{ border: "none", background: "transparent", color: t.textMuted, cursor: "pointer", fontSize: 11 }}
-                        >
-                            {localizeText(lang, "Dismiss", "关闭", "關閉")}
-                        </button>
-                    </div>
+                    <RemoteReconnectSuccessToast
+                        lang={lang}
+                        theme={t}
+                        message={remoteReconnect.success}
+                        onDismiss={() => setRemoteReconnect(prev => ({ ...prev, success: "" }))}
+                    />
                 )}
 
                 <AssistantWorkflowMaximizeSuggestion inline={!!inline} lang={lang} maximized={!!maximized} onDismiss={dismissMaximizeSuggestion} onToggleMaximize={onToggleMaximize} suggestMaximize={workflowState.suggestMaximize} theme={t} themeMode={themeMode} />
@@ -6512,12 +6551,13 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     {...windowDragHandleProps(!!inline, { minHeight: 72 })}
                     onDoubleClick={(event) => handleTaskExecutionHeaderDoubleClick(event, inline ? onToggleMaximize : undefined)}
                 >
-                    <TaskExecutionHeading activeTab={activeTab} lang={lang} status={taskExecutionStatus} taskCreatedLabel={taskCreatedLabel} workingDirPath={activeTabWorkingDirPath} remoteWorkspace={remoteWorkspace} remoteWorkspaceLabel={remoteWorkspaceLabel} />
+                    <TaskExecutionHeading activeTab={activeTab} lang={lang} status={taskExecutionStatus} taskCreatedLabel={taskCreatedLabel} workingDirPath={activeTabWorkingDirPath} remoteWorkspace={remoteWorkspace} remoteWorkspaceLabel={remoteWorkspaceLabel} title={title} />
                     <div className="mc-task-execution-actions" data-testid="task-execution-actions" {...windowNoDragRegionProps()}>
+                        {skillRecordingHere ? <button className="task-skill-pause-btn" data-testid="skill-recording-pause-btn" type="button" onClick={handleToggleSkillRecording} disabled={skillRecordingBusy} aria-busy={skillRecordingBusy} aria-label={localizeText(lang, "Pause skill recording", "暂停 Skill 录制", "暫停 Skill 錄製")} title={localizeText(lang, `Pause skill recording (${skillRecordingCount} steps)`, `暂停 Skill 录制（已记录 ${skillRecordingCount} 步）`, `暫停 Skill 錄製（已記錄 ${skillRecordingCount} 步）`)}><span className="aiti-recording-dot" aria-hidden="true" /><span className="task-skill-pause-label">{localizeText(lang, "Pause", "暂停", "暫停")}</span></button> : null}
                         <TaskTabSwitcher tabs={tabState.tabs} activeTabId={tabState.activeTabId} lang={lang} onActivate={activateSwitchingTab} onClose={closeTabWithProjectCleanup} tasks={taskListProp} onOpenTask={onOpenTaskProp} />
                         <button className="task-pause-btn" data-action="cancel" type="button" onClick={handleCancel} disabled={!inputVisualBusy || cancelPending} aria-busy={cancelPending} aria-label={localizeText(lang, "Pause task", "暂停任务", "暫停任務")} title={localizeText(lang, "Pause task", "暂停任务", "暫停任務")}>{localizeText(lang, "Pause task", "暂停任务", "暫停任務")}</button>
                         <button className="task-share-btn" data-testid="task-share-btn" type="button" onClick={() => { void shareCurrentTask(); }} aria-label={localizeText(lang, "Share task", "分享任务", "分享任務")}>{localizeText(lang, "Share", "分享", "分享")}</button>
-                        <TaskMoreActions lang={lang} onSave={openSaveTaskDialog} onClear={clearActiveHistory} onCopyTitle={() => { const titleText = String((activeTab ? getAITabDisplayTitle(activeTab, lang) : "") || deriveTaskNameFromMessages()).trim(); if (titleText && typeof navigator !== "undefined" && navigator.clipboard?.writeText) return navigator.clipboard.writeText(titleText); }} onPreview={codingPreviewAllowed ? handleOpenPreviewPanel : undefined} />
+                        <TaskMoreActions lang={lang} onSave={openSaveTaskDialog} onClear={clearActiveHistory} onCopyTitle={() => { const titleText = String(assistantTaskTitle(activeTab, lang, taskListProp) || deriveTaskNameFromMessages()).trim(); if (titleText && typeof navigator !== "undefined" && navigator.clipboard?.writeText) return navigator.clipboard.writeText(titleText); }} onPreview={codingPreviewAllowed ? handleOpenPreviewPanel : undefined} onRecordSkill={skillRecordingHere ? undefined : handleToggleSkillRecording} recordSkillDisabled={skillRecordingElsewhere} recordSkillPending={!skillRecordingHere && (skillRecordingBusy || skillRecordingAwaitingDecision)} />
                         {inline && (onHideWindow || onToggleMaximize) ? (
                             <div className="mc-task-execution-window-controls" data-testid="task-window-controls" role="group" aria-label={localizeText(lang, "Window controls", "窗口控制", "窗口控制")}>
                                 {onHideWindow ? <TaskHideWindowButton lang={lang} onHideWindow={onHideWindow} /> : null}
@@ -6674,6 +6714,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         workspaceRefreshToken={isRemoteCodingDevEnvironment ? remoteWorkspaceRefreshToken : localWorkspaceRefreshToken}
                         workspaceResetOnRefresh={!isRemoteCodingDevEnvironment && !isCloudWorkspaceEnvironment}
                         cloudMode={isCloudWorkspaceEnvironment}
+                        fileFocusNonce={fileFocusNonce}
+                        treeFocusNonce={treeFocusNonce}
                         openWorkspaceFile={openWorkspaceFile}
                         submitAgentView={panelSubmitAgentView}
                         showCodePreview={showCodePreview}

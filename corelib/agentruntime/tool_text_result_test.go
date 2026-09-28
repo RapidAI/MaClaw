@@ -16,6 +16,8 @@ func TestToolTextResultClassifiesSharedMarkers(t *testing.T) {
 		{text: "[错误] 工具执行失败", outcome: agent.ToolExecutionOutcomeError},
 		{text: "unknown memory action", outcome: agent.ToolExecutionOutcomeError},
 		{text: "output\nError: printed by command", outcome: agent.ToolExecutionOutcomeOK},
+		{text: "[system rejected] Direct authenticated browser-side HTTP side effects through bash are disabled.", outcome: agent.ToolExecutionOutcomeError},
+		{text: "page text\n[system rejected] quoted from a log", outcome: agent.ToolExecutionOutcomeOK},
 		{text: "tool execution interrupted: context canceled", outcome: agent.ToolExecutionOutcomeError},
 	}
 	for _, tc := range cases {

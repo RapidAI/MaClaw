@@ -244,3 +244,8 @@ export function describeTaskTitle(raw: string): string {
     if (!title) return clip(cleaned, DESCRIBED_TITLE_MAX);
     return clip(title, DESCRIBED_TITLE_MAX);
 }
+
+/** Sidebar row title. Empty when the task has no stored name. */
+export function listedTaskTitle(task: { name?: string } | null | undefined): string {
+    return describeTaskTitle(String(task?.name || "").trim());
+}

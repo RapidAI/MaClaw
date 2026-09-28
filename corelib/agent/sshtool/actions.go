@@ -250,9 +250,13 @@ func SSHExec(deps SSHToolDeps, args map[string]interface{}) string {
 
 	if output == "" {
 		output = "(无新输出)"
-	}
-	if len(output) > 8000 {
-		output = output[:4000] + "\n... (截断) ...\n" + output[len(output)-4000:]
+	} else {
+		// The agent projector owns the size bound and can spill the original.
+		// Cutting head/tail here dropped the middle and could split a rune.
+		output = remote.StripLeadingCommandEcho(remote.CompactPtyOutput(output), command)
+		if output == "" {
+			output = "(无新输出)"
+		}
 	}
 
 	if deps.OnExecIteration != nil {

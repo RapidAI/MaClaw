@@ -2251,10 +2251,16 @@ func (s *Store) recallDynamicCoreWithOptions(query string, category Category, pr
 	}
 
 	bm25Scores := s.multiQueryBM25(query, aliasExpanded)
-	vecScores := s.vecIndex.score(s.queryEmbeddingCached(query))
+	// A composite name must be written in the memory. Vector and graph
+	// neighbors of a shared fragment are a different person.
+	nameAnchors := strictRecallAnchors(query)
+	vecScores := map[string]float64{}
+	if len(nameAnchors) == 0 {
+		vecScores = s.vecIndex.score(s.queryEmbeddingCached(query))
+	}
 	semanticScores := map[string]float64{}
 	semanticHitDebug := map[string]SemanticSearchHit{}
-	if s.semanticGraph != nil {
+	if s.semanticGraph != nil && len(nameAnchors) == 0 {
 		temporalMode, asOf := semanticTemporalOptionsFromQuery(query)
 		for _, hit := range s.semanticGraph.SearchWithOptions(expanded.Entities, SemanticSearchOptions{
 			Now:             now,
@@ -2276,7 +2282,7 @@ func (s *Store) recallDynamicCoreWithOptions(query string, category Category, pr
 	// above. Pointer read is safe on 64-bit (atomic at hardware level). Worst case
 	// is reading a stale engine (gives slightly outdated results) or nil (no results).
 	var derivedFacts []DerivedFact
-	if s.inferenceEngine != nil && len(expanded.Entities) > 0 {
+	if s.inferenceEngine != nil && len(expanded.Entities) > 0 && len(nameAnchors) == 0 {
 		derivedFacts = s.inferenceEngine.Infer(expanded.Entities, InferenceOptions{
 			Now:             now,
 			OwnerID:         firstOwnerID(ownerID...),
@@ -2338,6 +2344,9 @@ func (s *Store) recallDynamicCoreWithOptions(query string, category Category, pr
 			if !recallDynamicEntryAllowedWithExclusions(e, category, projectLower, filterOwner, opts.excludeWhenNoCategory) {
 				continue
 			}
+		}
+		if len(nameAnchors) > 0 && !entryMentionsAnchors(e, nameAnchors) {
+			continue
 		}
 		b := bm25Scores[e.ID]
 		v := 0.0
@@ -2444,6 +2453,7 @@ func (s *Store) recallDynamicCoreWithOptions(query string, category Category, pr
 	} else {
 		candidates = filterRecallDynamicCandidatesWithExclusions(candidates, category, projectLower, filterOwner, opts.excludeWhenNoCategory)
 	}
+	candidates = filterRecallByAnchors(candidates, nameAnchors)
 	if ClassifyComplexity(query, expanded.Entities, nil) != ComplexitySimple && s.themeManager != nil {
 		candidates = themeAwareDiversityRerank(candidates, s.themeManager.Themes(), graphExpandSeeds)
 	}
@@ -2511,9 +2521,13 @@ func (s *Store) recallScoredForPagination(query string, category Category, proje
 	}
 
 	bm25Scores := s.multiQueryBM25(query, aliasExpanded)
-	vecScores := s.vecIndex.score(s.queryEmbeddingCached(query))
+	nameAnchors := strictRecallAnchors(query)
+	vecScores := map[string]float64{}
+	if len(nameAnchors) == 0 {
+		vecScores = s.vecIndex.score(s.queryEmbeddingCached(query))
+	}
 	semanticScores := map[string]float64{}
-	if s.semanticGraph != nil {
+	if s.semanticGraph != nil && len(nameAnchors) == 0 {
 		temporalMode, asOf := semanticTemporalOptionsFromQuery(query)
 		for _, hit := range s.semanticGraph.SearchWithOptions(expanded.Entities, SemanticSearchOptions{
 			Now:             now,
@@ -2531,7 +2545,7 @@ func (s *Store) recallScoredForPagination(query string, category Category, proje
 	}
 
 	// Multi-hop inference: derive implicit facts.
-	if s.inferenceEngine != nil && len(expanded.Entities) > 0 {
+	if s.inferenceEngine != nil && len(expanded.Entities) > 0 && len(nameAnchors) == 0 {
 		derivedFacts := s.inferenceEngine.Infer(expanded.Entities, InferenceOptions{
 			Now:             now,
 			OwnerID:         ownerID,
@@ -2567,6 +2581,9 @@ func (s *Store) recallScoredForPagination(query string, category Category, proje
 			continue
 		}
 		if !recallDynamicEntryAllowedWithExclusions(e, category, projectLower, ownerID, proactiveRecallExcludeCategories) {
+			continue
+		}
+		if len(nameAnchors) > 0 && !entryMentionsAnchors(e, nameAnchors) {
 			continue
 		}
 		b := bm25Scores[e.ID]
@@ -2658,6 +2675,7 @@ func (s *Store) recallScoredForPagination(query string, category Category, proje
 
 	// Re-apply visibility filters after graph expansion.
 	candidates = filterRecallDynamicCandidatesWithExclusions(candidates, category, projectLower, ownerID, proactiveRecallExcludeCategories)
+	candidates = filterRecallByAnchors(candidates, nameAnchors)
 
 	// Temporal demotion: stale/invalidated entries rank lower.
 	applyTemporalDemotion(candidates, now)

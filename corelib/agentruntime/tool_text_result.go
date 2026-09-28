@@ -35,6 +35,7 @@ func ToolTextFailure(text string) bool {
 	firstLine, _, _ := strings.Cut(trimmed, "\n")
 	lower := strings.ToLower(firstLine)
 	if strings.HasPrefix(lower, "error:") || strings.HasPrefix(firstLine, "错误:") || strings.HasPrefix(firstLine, "[错误]") ||
+		strings.HasPrefix(firstLine, "[system rejected]") ||
 		strings.HasPrefix(firstLine, "目标管理器未初始化") || strings.HasPrefix(firstLine, "任务管理器未初始化") ||
 		strings.HasPrefix(firstLine, "long-term memory is not initialized") || strings.HasPrefix(firstLine, "未知 task action") ||
 		strings.HasPrefix(firstLine, "未知 goal action") || strings.HasPrefix(firstLine, "创建目标失败") ||

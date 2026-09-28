@@ -7,6 +7,7 @@ import {
     codingTimelineThoughtStep,
     copyTextToClipboard,
     renderCodingAgentThinkingTimelineItem,
+    reasoningTrailMarkdownOptions,
     renderContentWithCodeBlocks,
     renderMessage,
 } from "./aiAssistantMarkdown";
@@ -72,6 +73,112 @@ describe("renderContentWithCodeBlocks", () => {
         expect(screen.getByText("第二段")).toBeTruthy();
     });
 
+    it("omits paragraph spacers when painting a thinking trail and keeps code blanks", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("第一段\n\n```\nline1\n\nline2\n```\n\n第二段", lightTheme, { omitBlankSpacers: true })}</div>,
+        );
+
+        const spacers = Array.from(container.querySelectorAll("div")).filter((node) => node.textContent === "\u00A0");
+        expect(spacers.length).toBe(0);
+        expect(container.querySelector("code")?.textContent).toBe("line1\n\nline2");
+        expect(screen.getByText("第一段")).toBeTruthy();
+        expect(screen.getByText("第二段")).toBeTruthy();
+    });
+
+    it("paints thinking-panel code in dark monospace on a solid well", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("```python\ntry:\n    rows = cur.execute(\"SELECT 1\")\n```", lightTheme, reasoningTrailMarkdownOptions)}</div>,
+        );
+
+        const pre = container.querySelector("[data-reasoning-code]") as HTMLElement;
+        const code = pre.querySelector("code") as HTMLElement;
+        expect(pre.style.fontFamily).toContain("ui-monospace");
+        expect(pre.style.color).toBe("rgb(23, 38, 60)");
+        expect(pre.style.backgroundColor).toBe("rgb(255, 255, 255)");
+        expect(pre.style.whiteSpace).toBe("pre");
+        expect(pre.style.fontSize).toBe("12px");
+        expect(code.style.background).toBe("transparent");
+        expect(code.style.borderStyle).not.toBe("solid");
+        expect(container.textContent).toContain("rows = cur.execute");
+    });
+
+    it("paints assistant result fences in body ink on a neutral well", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("```bash\ncurl -s https://api.example/v1/models\n```", lightTheme)}</div>,
+        );
+
+        const well = container.querySelector("[data-assistant-code]") as HTMLElement;
+        const pre = well.querySelector("pre") as HTMLElement;
+        const code = pre.querySelector("code") as HTMLElement;
+        const lang = well.querySelector(":scope > div") as HTMLElement;
+        expect(pre.contains(lang)).toBe(false);
+        expect(well.style.color).toBe("rgb(23, 38, 60)");
+        expect(well.style.color).not.toBe("rgb(46, 117, 203)");
+        expect(well.style.background).toMatch(/color-mix/i);
+        expect(well.style.background).toMatch(/#17263c|rgb\(23,\s*38,\s*60\)/i);
+        expect(well.style.fontFamily).toContain("ui-monospace");
+        expect(well.style.fontSize).toBe("13px");
+        expect(well.style.overflow).toBe("hidden");
+        expect(well.style.padding).toBe("");
+        expect(pre.style.background).toBe("transparent");
+        expect(pre.style.color).toBe("inherit");
+        expect(pre.style.overflowX).toBe("auto");
+        expect(pre.style.whiteSpace).toBe("pre");
+        expect(pre.style.overflowWrap).toBe("normal");
+        expect(pre.style.wordBreak).toBe("normal");
+        expect(pre.style.padding).toBe("4px 12px 8px");
+        expect(pre.style.width).toBe("100%");
+        expect(code.style.background).toBe("transparent");
+        expect(code.style.borderStyle).not.toBe("solid");
+        expect(code.style.color).toBe("inherit");
+        expect(code.style.display).toBe("block");
+        expect(code.style.minWidth).toBe("max-content");
+        expect(code.style.wordBreak).toBe("normal");
+        expect(lang.style.position).not.toBe("sticky");
+        expect(lang.style.color).toBe("rgb(23, 38, 60)");
+        expect(lang.style.wordBreak).toBe("normal");
+        expect(lang.style.whiteSpace).toBe("nowrap");
+        expect(lang.style.borderBottomStyle).not.toBe("solid");
+        expect(container.textContent).toContain("bash");
+        expect(container.textContent).toContain("curl -s");
+    });
+
+    it("paints dark-theme result fences in light ink on a lifted well", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("```bash\necho ok\n```", darkTheme)}</div>,
+        );
+
+        const well = container.querySelector("[data-assistant-code]") as HTMLElement;
+        const pre = well.querySelector("pre") as HTMLElement;
+        expect(well.style.color).toBe("rgb(227, 233, 241)");
+        expect(well.style.background).toMatch(/color-mix/i);
+        expect(well.style.background).toMatch(/#e3e9f1|rgb\(227,\s*233,\s*241\)/i);
+        expect(pre.style.background).toBe("transparent");
+    });
+
+    it("paints thinking-panel commands in a quiet ink wash", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("1. `apt update` - update package lists", lightTheme, reasoningTrailMarkdownOptions)}</div>,
+        );
+        const code = container.querySelector("code") as HTMLElement;
+        expect(code.textContent).toBe("apt update");
+        expect(code.style.color).toBe("rgb(23, 38, 60)");
+        expect(code.style.background).toContain("color-mix");
+        expect(code.style.borderStyle).not.toBe("solid");
+    });
+
+    it("omits blank spacers inside an unfinished display formula on a thinking trail", () => {
+        const { container } = render(
+            <div>{renderContentWithCodeBlocks("先想一下\n\n$$\nx\n\ny", lightTheme, { omitBlankSpacers: true })}</div>,
+        );
+
+        const spacers = Array.from(container.querySelectorAll("div")).filter((node) => node.textContent === "\u00A0");
+        expect(spacers.length).toBe(0);
+        expect(screen.getByText("先想一下")).toBeTruthy();
+        expect(container.textContent).toContain("x");
+        expect(container.textContent).toContain("y");
+    });
+
     it("keeps blank lines inside fenced code blocks verbatim", () => {
         const { container } = render(
             <div>{renderContentWithCodeBlocks("```\nline1\n\n\n\nline2\n```", lightTheme)}</div>,
@@ -101,10 +208,11 @@ describe("renderContentWithCodeBlocks", () => {
     it("renders empty fenced code blocks instead of dropping them", () => {
         const { container } = render(<div>{renderContentWithCodeBlocks("```ts\n```", lightTheme)}</div>);
 
-        const pre = container.querySelector("pre") as HTMLPreElement;
-        const code = container.querySelector("code");
+        const well = container.querySelector("[data-assistant-code]") as HTMLElement;
+        const pre = well.querySelector("pre") as HTMLPreElement;
+        const code = well.querySelector("code");
         expect(pre).toBeTruthy();
-        expect(pre.textContent).toContain("ts");
+        expect(well.textContent).toContain("ts");
         expect(code?.textContent).toBe("\u00A0");
     });
 
@@ -1175,6 +1283,34 @@ describe("renderContentWithCodeBlocks", () => {
         }
     });
 
+    it("previews the document when a log is listed ahead of it", () => {
+        const logPath = "C:\\Users\\me\\ha-full-run19.log";
+        const notesPath = "C:\\Users\\me\\notes.txt";
+        const docPath = "C:\\Users\\me\\report.docx";
+        const seen: string[] = [];
+        const onPreview = (event: Event) => {
+            seen.push(String((event as CustomEvent<{ path?: string }>).detail?.path || ""));
+        };
+        window.addEventListener("maclaw:preview-task-result", onPreview);
+        try {
+            render(<div>{renderMessage({
+                id: "saved-log-then-doc",
+                role: "assistant",
+                content: "部署已完成。",
+                localFilePaths: [logPath, notesPath, docPath],
+                timestamp: Date.now(),
+            }, vi.fn(), lightTheme, false, "文件已保存", "zh", false)}</div>);
+
+            expect(screen.getByText("report.docx")).toBeTruthy();
+            expect(screen.queryByText("notes.txt")).toBeNull();
+            fireEvent.click(screen.getByTestId("task-result-preview-btn"));
+            expect(seen).toEqual([docPath]);
+            expect(screen.getByTestId("task-result-preview-btn").getAttribute("title")).toBe("report.docx");
+        } finally {
+            window.removeEventListener("maclaw:preview-task-result", onPreview);
+        }
+    });
+
     it("uploads a saved task-result file to the mobile library from the card icon", async () => {
         importMobileDocumentFromPathMock.mockClear();
         const path = "C:\\Users\\me\\report.pptx";
@@ -2173,6 +2309,88 @@ describe("renderMessage assistant display guard", () => {
         expect(screen.getByText("Fetching details")).toBeTruthy();
     });
 
+    it("renders a tool call on its own line while the task is still running", () => {
+        render(<div>{renderMessage({
+            id: "assistant-tool",
+            role: "assistant",
+            content: "让我改用 browser。\n\n<!--maclaw-tool:call-1-->\n\n请求已发出。",
+            toolCalls: [{ id: "call-1", name: "bash", action: "执行命令", detail: "curl -X POST https://api.example/v1" }],
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, true, "Saved file", "zh", true, undefined, undefined, false, undefined, undefined, undefined, true)}</div>);
+
+        const call = screen.getByTestId("assistant-tool-call");
+        expect(call.getAttribute("data-tool-name")).toBe("bash");
+        expect(call.textContent).toContain("执行命令");
+        expect(screen.getByTestId("assistant-tool-call-detail").textContent).toContain("curl -X POST");
+        expect(screen.getByText("让我改用 browser。")).toBeTruthy();
+        expect(screen.getByText("请求已发出。")).toBeTruthy();
+        expect(screen.queryByText(/maclaw-tool/)).toBeNull();
+        expect(screen.queryByTestId("assistant-task-summary-status")).toBeNull();
+        expect(buildAssistantReplyCopyText("让我改用 browser。\n\n<!--maclaw-tool:call-1-->\n\n请求已发出。", undefined, "zh")).not.toContain("maclaw-tool");
+    });
+
+    it("replaces tool calls with the result summary and artifact chips after the task finishes", () => {
+        const answer = "部署已完成。三台机器都已就绪，日志和校验文件在下面。";
+        render(<div>{renderMessage({
+            id: "assistant-done",
+            role: "assistant",
+            content: `先执行命令。\n\n<!--maclaw-tool:call-1-->\n\n再试一次。`,
+            resultText: answer,
+            toolCalls: [{ id: "call-1", name: "bash", action: "执行命令", detail: "curl -X POST https://api.example/v1" }],
+            localFilePaths: [
+                "C:\\Users\\me\\ha-full-run19.log",
+                "C:\\Users\\me\\ha-full-run19-verification.txt",
+                "C:\\Users\\me\\notes.md",
+            ],
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, false, "Saved file", "zh", false)}</div>);
+
+        expect(screen.getByTestId("assistant-task-summary-status").textContent).toBe("已完成");
+        expect(screen.getByText(answer)).toBeTruthy();
+        expect(screen.queryByTestId("assistant-tool-call")).toBeNull();
+        expect(screen.queryByText(/curl -X POST/)).toBeNull();
+        expect(screen.queryByText("先执行命令。")).toBeNull();
+        expect(screen.queryByText("再试一次。")).toBeNull();
+        expect(screen.queryByTestId("assistant-processing-label")).toBeNull();
+        expect(screen.getByText("产出物")).toBeTruthy();
+        expect(screen.getByText("ha-full-run19.log")).toBeTruthy();
+        expect(screen.getByText("ha-full-run19-verification.txt")).toBeTruthy();
+        expect(screen.queryByText("notes.md")).toBeNull();
+        fireEvent.click(screen.getByTestId("task-artifacts-more"));
+        expect(screen.getByText("notes.md")).toBeTruthy();
+        expect(screen.getByTestId("task-artifacts-more").textContent).toContain("收起产出物");
+    });
+
+    it("marks a failed tool turn as not completed", () => {
+        render(<div>{renderMessage({
+            id: "assistant-failed",
+            role: "assistant",
+            content: "先执行命令。\n\n<!--maclaw-tool:call-1-->\n\n",
+            resultText: "日志还没写完。",
+            resultStatus: "incomplete",
+            toolCalls: [{ id: "call-1", name: "bash", action: "执行命令", detail: "curl" }],
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, false, "Saved file", "zh", false)}</div>);
+
+        expect(screen.getByTestId("assistant-task-summary-status").textContent).toBe("未完成");
+        expect(screen.getByText("日志还没写完。")).toBeTruthy();
+        expect(screen.queryByTestId("assistant-tool-call")).toBeNull();
+    });
+
+    it("does not show a working label once the terminal answer is saved", () => {
+        render(<div>{renderMessage({
+            id: "assistant-result-only",
+            role: "assistant",
+            content: "",
+            resultText: "部署已完成。",
+            toolCalls: [{ id: "call-1", name: "bash", action: "执行命令", detail: "ls" }],
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, true, "Saved file", "zh", false)}</div>);
+
+        expect(screen.getByText("部署已完成。")).toBeTruthy();
+        expect(screen.queryByTestId("assistant-processing-label")).toBeNull();
+    });
+
     it("keeps ordinary system notices contained in the chat flow", () => {
         render(<div>{renderMessage({
             id: "system-notice",
@@ -2285,6 +2503,24 @@ describe("renderMessage assistant display guard", () => {
 
         const body = screen.getByTestId("assistant-reasoning-body");
         expect(body.textContent).toContain("歌曲（1996）列表");
+    });
+
+    it("does not turn reasoning paragraph breaks into tall blank spacers", () => {
+        const { container } = render(<div>{renderMessage({
+            id: "assistant-reasoning-compact-breaks",
+            role: "assistant",
+            content: "已完成。",
+            reasoning: "Same flow: web_search first.\n\nLet me search Lanzhou weather.\n\n\nNote: order matters.",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, true, "Saved file", "zh", true)}</div>);
+
+        const body = screen.getByTestId("assistant-reasoning-body");
+        const spacers = Array.from(body.querySelectorAll("div")).filter((node) => node.textContent === "\u00A0");
+        expect(spacers.length).toBe(0);
+        expect(body.textContent).toContain("Same flow: web_search first.");
+        expect(body.textContent).toContain("Let me search Lanzhou weather.");
+        expect(body.textContent).toContain("Note: order matters.");
+        expect(container.querySelector("[data-testid='assistant-chat-ai-bubble-assistant-reasoning-compact-breaks']")?.textContent).toContain("已完成。");
     });
 
     it("repairs hyphenated line-range wraps inside thinking parentheses", () => {
@@ -2403,6 +2639,31 @@ describe("renderMessage assistant display guard", () => {
         }, vi.fn(), lightTheme, true, "Saved file", "en", true, undefined, undefined, true)}</div>);
 
         expect(screen.getByTestId("assistant-chat-ai-assistant-coding-recover")).toBeTruthy();
+    });
+
+    it("does not paint a Browser echo chip or keep a bubble alive for that field alone", () => {
+        expect(assistantMessageHasVisibleBody({
+            id: "browser-only",
+            role: "assistant",
+            content: "",
+            fields: [{ label: " Browser ", value: "**诊断结果：**" }],
+            timestamp: Date.now(),
+        })).toBe(false);
+
+        render(<div>{renderMessage({
+            id: "browser-echo",
+            role: "assistant",
+            content: "确认后我会用 browser 工具重试。",
+            fields: [
+                { label: "Browser", value: "**诊断结果：** | 问题 | 原因 |" },
+                { label: "Turn", value: "fast · primary · auto" },
+            ],
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, true, "Saved file", "zh", false)}</div>);
+
+        expect(screen.getByTestId("turn-meta-chip")).toBeTruthy();
+        expect(screen.queryByText(/诊断结果/)).toBeNull();
+        expect(screen.getByText(/browser 工具/)).toBeTruthy();
     });
 
     it("treats chat status-only reasoning as an empty coding placeholder", () => {

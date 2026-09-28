@@ -307,21 +307,34 @@ func TestAsyncWaitListCountsFilteredOwnerTasks(t *testing.T) {
 	}
 }
 
-func TestFormatSSHBackgroundTaskStatusTruncatesUTF8Safely(t *testing.T) {
+func TestFormatSSHBackgroundTaskStatusKeepsLogForProjection(t *testing.T) {
 	status := &remote.BackgroundTaskStatus{
 		TaskID:  "bg_utf8",
 		Command: "echo utf8",
 		Status:  remote.SSHBackgroundTaskStatusCompleted,
 		Elapsed: "1s",
-		LogTail: strings.Repeat("\u754c", 7000),
+		LogTail: strings.Repeat("head\n", 2000) + "SENTINEL_LOG_MIDDLE\n" + strings.Repeat("\u754c", 2000),
 	}
 
 	formatted := formatSSHBackgroundTaskStatus(status)
-	if !strings.Contains(formatted, "... (truncated) ...") {
-		t.Fatalf("formatted output should be truncated: len=%d", len([]rune(formatted)))
+	if !strings.Contains(formatted, "SENTINEL_LOG_MIDDLE") {
+		t.Fatal("background log middle was dropped before projection")
 	}
 	if strings.ContainsRune(formatted, '\uFFFD') {
-		t.Fatalf("formatted output contains replacement rune after UTF-8 truncation")
+		t.Fatal("formatted output contains a replacement rune")
+	}
+}
+
+func TestSSHBackgroundTaskMirrorSnapshotKeepsMiddle(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mirror.log")
+	body := strings.Repeat("h\n", 3000) + "SENTINEL_MIRROR_MIDDLE\n" + strings.Repeat("t\n", 5000)
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := sshBackgroundTaskMirrorSnapshot(path)
+	if !strings.Contains(got, "SENTINEL_MIRROR_MIDDLE") {
+		t.Fatal("mirror middle was dropped before projection")
 	}
 }
 

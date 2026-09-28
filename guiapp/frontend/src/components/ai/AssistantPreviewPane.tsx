@@ -45,6 +45,10 @@ interface AssistantPreviewPaneProps {
     theme: Theme;
     workflowState: WorkflowUIState;
     cloudMode?: boolean;
+    /** Bumped when the user previews a task result, so the file replaces the tree. */
+    fileFocusNonce?: number;
+    /** Bumped when the user asks for the directory tree. A newer value wins. */
+    treeFocusNonce?: number;
     cloudWorkspaceName?: string;
 }
 
@@ -319,6 +323,8 @@ export function AssistantPreviewPane({
     theme,
     workflowState,
     cloudMode = false,
+    fileFocusNonce = 0,
+    treeFocusNonce = 0,
     cloudWorkspaceName,
 }: AssistantPreviewPaneProps) {
     const [activeMode, setActiveMode] = useState<PreviewPaneMode>("workflow");
@@ -621,6 +627,8 @@ export function AssistantPreviewPane({
                         onToggleMaximize={onToggleMaximize}
                         cloudMode={cloudMode}
                         cloudWorkspaceName={cloudWorkspaceName}
+                        fileFocusNonce={fileFocusNonce}
+                        treeFocusNonce={treeFocusNonce}
                         hideHeaderClose
                         previewExpanded={previewExpanded}
                         onTogglePreviewExpand={() => setPreviewExpanded(v => !v)}

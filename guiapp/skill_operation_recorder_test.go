@@ -421,6 +421,23 @@ func TestConsolidateRecordedOps_DoesNotMutateSharedArgs(t *testing.T) {
 	}
 }
 
+func TestStartWithTab_RejectsUnsavedEntries(t *testing.T) {
+	r := NewSkillOperationRecorder()
+	workDir := t.TempDir()
+	if err := r.StartWithTab(workDir, "owner", "tab"); err != nil {
+		t.Fatal(err)
+	}
+	r.Record("bash", map[string]interface{}{"command": "echo hi"}, "ok", true)
+	r.Pause()
+	if err := r.StartWithTab(workDir, "owner", "tab-2"); err == nil {
+		t.Fatal("expected start to fail while unsaved entries remain")
+	}
+	r.Cancel()
+	if err := r.StartWithTab(workDir, "owner", "tab-2"); err != nil {
+		t.Fatalf("start after cancel: %v", err)
+	}
+}
+
 func TestStop_GeneratesPortableSkill(t *testing.T) {
 	// Redirect the skills dir into a temp location.
 	base := t.TempDir()

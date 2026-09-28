@@ -466,6 +466,10 @@ func (u *UnifiedIntentClassifier) ClassifyContext(ctx context.Context, msg Messa
 				// task-tracking surface.
 				// The 0.50 tree floor still preserves mid-band synthesis (0.59).
 				if l2Ran && retainEmbeddingOverWeakTree(l2Result, top.Score) {
+					// The visual secondary is why a lookup escalated. A tree
+					// score under 0.50 did not confirm the chart, so returning
+					// that half would still deliver the weather card.
+					dropChartEscalationEvidence(&l2Result)
 					l2Result.Reason = fmt.Sprintf("embedding retained over weak tree verdict: l2=%s (%.3f), tree=%s (%.3f)", l2Result.Primary, l2Result.Confidence, top.Label, top.Score)
 					NormalizeDeclaredComposite(&l2Result)
 					applyExecutionAffordances(msg.Text, &l2Result)
@@ -509,6 +513,16 @@ func (u *UnifiedIntentClassifier) ClassifyContext(ctx context.Context, msg Messa
 				// candidates (e.g. web_fetch 0.95 + search 0.60) must not suppress
 				// it, which previously cost the artifact capability on the
 				// "全网搜索…生成pdf清单" turn.
+				// A chart verdict below the companion floor is not that grant.
+				// The tree's uncertain band runs through 0.64; 0.50 used to
+				// replace a lookup and still deliver the weather card.
+				if l2Ran && bestResult.Primary == LabelLiveDataVisual && bestResult.Confidence < EmbeddingCompositeSecondaryMinScore && isLookupIntentLabel(l2Result.Primary) {
+					kept := l2Result
+					dropChartEscalationEvidence(&kept)
+					kept.Layer = 3
+					kept.Reason = fmt.Sprintf("tree visual %.3f below companion floor; keeping %s (%.3f)", bestResult.Confidence, l2Result.Primary, l2Result.Confidence)
+					bestResult = kept
+				}
 				treeAlreadyComposite := false
 				for _, sec := range bestResult.Secondary {
 					if declaredCompositeIntentPair(sec, bestResult.Primary) {
@@ -542,10 +556,17 @@ func (u *UnifiedIntentClassifier) ClassifyContext(ctx context.Context, msg Messa
 					}
 					var half l2Half
 					for _, candidate := range halves {
-						if candidate.label != bestResult.Primary && declaredCompositeIntentPair(candidate.label, bestResult.Primary) {
-							half = candidate
-							break
+						if candidate.label == bestResult.Primary || !declaredCompositeIntentPair(candidate.label, bestResult.Primary) {
+							continue
 						}
+						// A chart grant has to come from the tree. Promoting an
+						// L2 live_data_visual half onto a lookup verdict is how
+						// 「北京天气」 sent a placeholder image after the text.
+						if candidate.label == LabelLiveDataVisual && isLookupIntentLabel(bestResult.Primary) {
+							continue
+						}
+						half = candidate
+						break
 					}
 					if half.label != "" {
 						// The composite's confidence is the STRONGER half's evidence:
@@ -753,14 +774,12 @@ func lookupHintOrUnknownFromL2(l2 ClassificationResult, skipTree bool) Classific
 	if !keepHint {
 		return collapse()
 	}
-	// A guess carrying a declared artifact half (document_generate /
-	// live_data_visual evidence) must stay explicitly unconfirmed when the
-	// tree cannot rule: degrading it to a bare hint would silently
-	// reduce a composite request to lookup/office-only, and the loop later reports
-	// the generate tool as unavailable.  Plain lookup guesses keep the hint
-	// so routing can still chat without HostReject.
+	// A PDF half must stay unconfirmed when the tree cannot rule: shipping
+	// the lookup alone makes the loop report the generate tool as
+	// unavailable. A chart half is only escalation evidence. Dropping it
+	// keeps the weather answer and does not deliver the card.
 	for _, sec := range l2.Secondary {
-		if sec == LabelDocumentGenerate || sec == LabelLiveDataVisual {
+		if sec == LabelDocumentGenerate {
 			return collapse()
 		}
 	}
@@ -816,6 +835,33 @@ func cancelledClassificationResult(err error) ClassificationResult {
 	}
 }
 
+func dropIntentLabel(labels []IntentLabel, drop IntentLabel) []IntentLabel {
+	if len(labels) == 0 {
+		return labels
+	}
+	filtered := make([]IntentLabel, 0, len(labels))
+	for _, label := range labels {
+		if label == drop {
+			continue
+		}
+		filtered = append(filtered, label)
+	}
+	return filtered
+}
+
+// dropChartEscalationEvidence removes a chart half that was attached so the
+// tree could confirm it. On a lookup leader that half is not a grant.
+func dropChartEscalationEvidence(result *ClassificationResult) {
+	if result == nil || !isLookupIntentLabel(result.Primary) {
+		return
+	}
+	result.Secondary = dropIntentLabel(result.Secondary, LabelLiveDataVisual)
+	if result.RunnerUp == LabelLiveDataVisual {
+		result.RunnerUp = ""
+		result.RunnerUpScore = 0
+	}
+}
+
 func secondaryTreeLabels(candidates []TreeCandidate) []IntentLabel {
 	if len(candidates) < 2 {
 		return nil
@@ -831,6 +877,13 @@ func secondaryTreeLabels(candidates []TreeCandidate) []IntentLabel {
 		threshold := 0.70
 		if isComposite {
 			threshold = 0.50
+		}
+		// Lookup+PDF keeps the 0.50 composite floor. A chart half does not:
+		// the tree's uncertain band is 0.40–0.64, and a 0.50 visual beside
+		// live_data still planned a weather card. Match the reviewed 0.73
+		// companion floor. The lookup half of a chart verdict stays at 0.50.
+		if candidate.Label == LabelLiveDataVisual {
+			threshold = EmbeddingCompositeSecondaryMinScore
 		}
 		if candidate.Score < threshold {
 			continue
@@ -1606,14 +1659,13 @@ func (u *UnifiedIntentClassifier) fusionToClassification(fr FusionResult) Classi
 	}
 
 	// --- Degraded-mode WorkflowType inference ---
-	// When the L3 tree channel fails (timeout/error), WorkflowType is empty
-	// because it's only populated by tree reasoning. But the IntentDefinition
-	// data already declares which labels map to which workflow types. If the
-	// winning label has exactly one known workflow type, we can infer it from
-	// the definition — no LLM needed.
+	// When the L3 tree channel fails, WorkflowType is empty because only the
+	// tree fills it. BuildWorkflowTypeMap supplies a default for labels that
+	// have one type, or a primary/fallback pair (coding, then maintenance).
+	// A catalog of many projects, such as workflow_task, is not given a
+	// default: the first listed type would be the wrong project.
 	//
-	// This is the key mechanism that prevents workflow bypass when LLMs are
-	// unavailable: embedding-only mode can still produce WorkflowType="coding"
+	// This keeps embedding-only mode able to produce WorkflowType="coding"
 	// for a confident LabelCoding classification.
 	//
 	// Only applied when:
@@ -1623,7 +1675,7 @@ func (u *UnifiedIntentClassifier) fusionToClassification(fr FusionResult) Classi
 	//      that's a deliberate decision (e.g., "修改函数返回值" is coding but
 	//      not creation-oriented). We must not override the tree's judgment.
 	//   3. Verdict is not LOW (we trust the label enough)
-	//   4. The label has exactly one known workflow type (unambiguous mapping)
+	//   4. The label has a degraded default in WorkflowTypeMap
 	if result.WorkflowType == "" && fr.Verdict != VerdictLow && !fr.Top.InTree {
 		if wfType, ok := u.fusionCfg.WorkflowTypeMap[result.Primary]; ok {
 			result.WorkflowType = wfType

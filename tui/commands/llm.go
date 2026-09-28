@@ -16,6 +16,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/brand"
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
+	"github.com/RapidAI/CodeClaw/corelib/kimicode"
 	llmclient "github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
 )
@@ -628,6 +629,32 @@ func ensureTUIoAuthToken() error {
 	oauth.ApplyProxyFromAppConfig(cfg)
 	for i, p := range cfg.MaclawLLMProviders {
 		if corelib.MaclawLLMProviderNameEqual(p.Name, cfg.MaclawLLMCurrentProvider) && p.AuthType == "oauth" {
+			if kimicode.IsProviderName(p.Name) {
+				if !oauth.NeedsRefresh(p) {
+					break
+				}
+				token, err := kimicode.Refresh(context.Background(), p.RefreshToken, p.URL)
+				if err != nil {
+					return err
+				}
+				updated := oauth.ApplyTokenResult(p, &oauth.TokenResult{
+					AccessToken:    token.AccessToken,
+					RawAccessToken: token.AccessToken,
+					RefreshToken:   token.RefreshToken,
+					ExpiresIn:      token.ExpiresIn,
+				})
+				cfg.MaclawLLMProviders[i] = updated
+				cfg.MaclawLLMUrl = updated.URL
+				cfg.MaclawLLMKey = updated.Key
+				cfg.MaclawLLMModel = updated.Model
+				cfg.MaclawLLMProtocol = updated.Protocol
+				cfg.MaclawLLMContextLength = updated.ContextLength
+				cfg.MaclawLLMTimeoutSec = updated.TimeoutSec
+				if err := store.SaveConfig(cfg); err != nil {
+					return err
+				}
+				break
+			}
 			oauthCfg := oauth.DefaultConfig()
 			updated, err := oauth.EnsureValidToken(p, oauthCfg, func(up corelib.MaclawLLMProvider) error {
 				cfg.MaclawLLMProviders[i] = up

@@ -226,6 +226,225 @@ describe('CodePreviewPanel workspace vs file tabs', () => {
         expect(screen.queryByTestId('code-preview-wrap-toggle')).toBeNull();
     });
 
+    it('shows a cloud result preview instead of leaving the file tree selected', async () => {
+        const file: CodeFile = {
+            filePath: 'C:/Users/me/.maclaw/data/cloud-workspaces/t/cws/papers/report.pdf',
+            fileName: 'report.pdf',
+            absPath: 'C:/Users/me/.maclaw/data/cloud-workspaces/t/cws/papers/report.pdf',
+            content: '',
+            language: 'pdf',
+            opType: 'read',
+            updatedAt: 1,
+        };
+        const view = render(
+            <CodePreviewPanel
+                files={new Map([[file.filePath, file]])}
+                activeFilePath={file.filePath}
+                projectPath="C:/Users/me/.maclaw/data/cloud-workspaces/t/cws"
+                cloudMode
+                onSelectFile={vi.fn()}
+                onClose={vi.fn()}
+                theme={lightCodePreviewTheme}
+                lang="zh-Hans"
+                hideHeaderClose
+            />,
+        );
+        expect(await screen.findByTestId('code-preview-workspace')).toBeTruthy();
+        view.rerender(
+            <CodePreviewPanel
+                files={new Map([[file.filePath, file]])}
+                activeFilePath={file.filePath}
+                projectPath="C:/Users/me/.maclaw/data/cloud-workspaces/t/cws"
+                cloudMode
+                fileFocusNonce={1}
+                onSelectFile={vi.fn()}
+                onClose={vi.fn()}
+                theme={lightCodePreviewTheme}
+                lang="zh-Hans"
+                hideHeaderClose
+            />,
+        );
+        expect(await screen.findByTestId('pdf-preview-panel')).toBeTruthy();
+        expect(screen.queryByTestId('code-preview-workspace')).toBeNull();
+        fireEvent.click(screen.getByTestId('code-preview-workspace-tab'));
+        expect(await screen.findByTestId('code-preview-workspace')).toBeTruthy();
+        expect(screen.queryByTestId('pdf-preview-panel')).toBeNull();
+    });
+
+    it('returns to the cloud file tree when the previewed file is closed', async () => {
+        const file: CodeFile = {
+            filePath: 'C:/Users/me/.maclaw/data/cloud-workspaces/t/cws/papers/report.pdf',
+            fileName: 'report.pdf',
+            absPath: 'C:/Users/me/.maclaw/data/cloud-workspaces/t/cws/papers/report.pdf',
+            content: '',
+            language: 'pdf',
+            opType: 'read',
+            updatedAt: 1,
+        };
+        const props = {
+            projectPath: 'C:/Users/me/.maclaw/data/cloud-workspaces/t/cws',
+            cloudMode: true,
+            onSelectFile: vi.fn(),
+            onClose: vi.fn(),
+            theme: lightCodePreviewTheme,
+            lang: 'zh-Hans',
+            hideHeaderClose: true,
+        };
+        const view = render(
+            <CodePreviewPanel
+                files={new Map([[file.filePath, file]])}
+                activeFilePath={file.filePath}
+                {...props}
+            />,
+        );
+        expect(await screen.findByTestId('code-preview-workspace')).toBeTruthy();
+        view.rerender(
+            <CodePreviewPanel
+                files={new Map([[file.filePath, file]])}
+                activeFilePath={file.filePath}
+                fileFocusNonce={1}
+                {...props}
+            />,
+        );
+        expect(await screen.findByTestId('pdf-preview-panel')).toBeTruthy();
+        view.rerender(
+            <CodePreviewPanel
+                files={new Map()}
+                activeFilePath=""
+                {...props}
+            />,
+        );
+        expect(await screen.findByTestId('code-preview-workspace')).toBeTruthy();
+        expect(screen.queryByTestId('pdf-preview-panel')).toBeNull();
+        view.rerender(
+            <CodePreviewPanel
+                files={new Map([[file.filePath, file]])}
+                activeFilePath={file.filePath}
+                {...props}
+            />,
+        );
+        expect(screen.getByTestId('code-preview-workspace')).toBeTruthy();
+        expect(screen.queryByTestId('pdf-preview-panel')).toBeNull();
+    });
+
+    it('keeps the directory tree when the open file list refreshes', async () => {
+        const file: CodeFile = {
+            filePath: 'C:/Users/me/.maclaw/data/cloud-workspaces/t/cws/papers/report.pdf',
+            fileName: 'report.pdf',
+            absPath: 'C:/Users/me/.maclaw/data/cloud-workspaces/t/cws/papers/report.pdf',
+            content: '',
+            language: 'pdf',
+            opType: 'read',
+            updatedAt: 1,
+        };
+        const props = {
+            projectPath: 'C:/Users/me/.maclaw/data/cloud-workspaces/t/cws',
+            cloudMode: true,
+            onSelectFile: vi.fn(),
+            onClose: vi.fn(),
+            theme: lightCodePreviewTheme,
+            lang: 'zh-Hans' as const,
+            hideHeaderClose: true,
+        };
+        const view = render(
+            <CodePreviewPanel
+                files={new Map([[file.filePath, file]])}
+                activeFilePath={file.filePath}
+                fileFocusNonce={1}
+                {...props}
+            />,
+        );
+        expect(await screen.findByTestId('pdf-preview-panel')).toBeTruthy();
+        fireEvent.click(screen.getByTestId('code-preview-workspace-tab'));
+        expect(await screen.findByTestId('code-preview-workspace')).toBeTruthy();
+        view.rerender(
+            <CodePreviewPanel
+                files={new Map([[file.filePath, { ...file, updatedAt: 2 }]])}
+                activeFilePath={file.filePath}
+                fileFocusNonce={1}
+                {...props}
+            />,
+        );
+        expect(screen.getByTestId('code-preview-workspace')).toBeTruthy();
+        expect(screen.queryByTestId('pdf-preview-panel')).toBeNull();
+    });
+
+    it('opens the directory tree when a file focus outlives the closed file', async () => {
+        render(
+            <CodePreviewPanel
+                files={new Map()}
+                activeFilePath=""
+                projectPath="C:/Users/me/.maclaw/data/cloud-workspaces/t/cws"
+                cloudMode
+                fileFocusNonce={1}
+                onSelectFile={vi.fn()}
+                onClose={vi.fn()}
+                theme={lightCodePreviewTheme}
+                lang="zh-Hans"
+                hideHeaderClose
+            />,
+        );
+        expect(await screen.findByTestId('code-preview-workspace')).toBeTruthy();
+        expect(screen.queryByTestId('pdf-preview-panel')).toBeNull();
+    });
+
+    it('follows the newer focus when the tree and the file trade places', async () => {
+        const file: CodeFile = {
+            filePath: 'C:/Users/me/.maclaw/data/cloud-workspaces/t/cws/papers/report.pdf',
+            fileName: 'report.pdf',
+            absPath: 'C:/Users/me/.maclaw/data/cloud-workspaces/t/cws/papers/report.pdf',
+            content: '',
+            language: 'pdf',
+            opType: 'read',
+            updatedAt: 1,
+        };
+        const props = {
+            files: new Map([[file.filePath, file]]),
+            activeFilePath: file.filePath,
+            projectPath: 'C:/Users/me/.maclaw/data/cloud-workspaces/t/cws',
+            cloudMode: true,
+            onSelectFile: vi.fn(),
+            onClose: vi.fn(),
+            theme: lightCodePreviewTheme,
+            lang: 'zh-Hans' as const,
+            hideHeaderClose: true,
+        };
+        const view = render(
+            <CodePreviewPanel fileFocusNonce={1} treeFocusNonce={4} {...props} />,
+        );
+        expect(await screen.findByTestId('code-preview-workspace')).toBeTruthy();
+        expect(screen.queryByTestId('pdf-preview-panel')).toBeNull();
+        view.rerender(<CodePreviewPanel fileFocusNonce={5} treeFocusNonce={4} {...props} />);
+        expect(await screen.findByTestId('pdf-preview-panel')).toBeTruthy();
+        expect(screen.queryByTestId('code-preview-workspace')).toBeNull();
+    });
+
+    it('shows the directory after a tree focus before the project path exists', async () => {
+        const file: CodeFile = {
+            filePath: 'C:/Users/me/.maclaw/data/cloud-workspaces/t/cws/papers/report.pdf',
+            fileName: 'report.pdf',
+            absPath: 'C:/Users/me/.maclaw/data/cloud-workspaces/t/cws/papers/report.pdf',
+            content: '',
+            language: 'pdf',
+            opType: 'read',
+            updatedAt: 1,
+        };
+        const props = {
+            files: new Map([[file.filePath, file]]),
+            activeFilePath: file.filePath,
+            onSelectFile: vi.fn(),
+            onClose: vi.fn(),
+            theme: lightCodePreviewTheme,
+            lang: 'zh-Hans' as const,
+            hideHeaderClose: true,
+        };
+        const view = render(<CodePreviewPanel fileFocusNonce={1} {...props} />);
+        expect(await screen.findByTestId('pdf-preview-panel')).toBeTruthy();
+        view.rerender(<CodePreviewPanel fileFocusNonce={1} treeFocusNonce={2} {...props} />);
+        expect(await screen.findByTestId('code-preview-workspace-status')).toBeTruthy();
+        expect(screen.queryByTestId('pdf-preview-panel')).toBeNull();
+    });
+
     it('closes the preview when the last file is gone and there is no working directory', () => {
         const onClose = vi.fn();
         const file = snakeFile();

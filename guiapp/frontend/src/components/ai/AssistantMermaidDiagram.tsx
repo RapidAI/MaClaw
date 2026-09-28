@@ -1,5 +1,6 @@
 import React from "react";
 import type { Theme } from "./aiAssistantPanelTheme";
+import { chatCodeWellStyle, codeFenceInnerStyle, codeFenceScrollUnderLangStyle } from "./assistantCodeFence";
 
 let mermaidModule: any = null;
 let mermaidModulePromise: Promise<any> | null = null;
@@ -181,10 +182,12 @@ export function AssistantMermaidDiagram({ code, theme }: { code: string; theme: 
                     dangerouslySetInnerHTML={{ __html: svg }}
                 />
             ) : error ? (
-                <pre data-testid="assistant-mermaid-fallback" style={{ background: theme.codeBlockBg, border: `1px solid ${theme.codeBlockBorder}`, borderRadius: "10px", padding: "10px 12px", margin: "6px 0", overflowX: "auto", color: theme.codeText, lineHeight: 1.6 }}>
-                    <div role="status" style={{ marginBottom: 6, color: theme.textMuted, fontFamily: "inherit", fontSize: "0.9em" }}>{getMermaidFallbackMessage(error)}</div>
-                    <code>{code}</code>
-                </pre>
+                <div data-testid="assistant-mermaid-fallback" style={chatCodeWellStyle(theme)}>
+                    <div role="status" style={{ margin: 0, padding: "8px 12px 0", color: theme.text, fontSize: "12px", lineHeight: 1.4, whiteSpace: "normal", overflowWrap: "anywhere" }}>{getMermaidFallbackMessage(error)}</div>
+                    <pre style={codeFenceScrollUnderLangStyle}>
+                        <code style={codeFenceInnerStyle}>{code}</code>
+                    </pre>
+                </div>
             ) : (
                 <div data-testid="assistant-mermaid-loading" style={{ margin: "8px 0", padding: "10px 12px", color: theme.textMuted, fontSize: "0.9em" }}>Rendering diagram…</div>
             )}

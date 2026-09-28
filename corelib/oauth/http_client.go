@@ -79,6 +79,40 @@ func httpClient() *http.Client {
 	return sharedHTTPClient
 }
 
+// Do sends req with the proxy-aware OAuth client. TLS and network failures use
+// the same annotated errors as token refresh.
+func Do(req *http.Request) (*http.Response, error) {
+	return do(req, true)
+}
+
+// DoNoFollow sends req without following redirects. Token requests use it so a
+// 307 cannot replay a refresh token or device code onto another host.
+func DoNoFollow(req *http.Request) (*http.Response, error) {
+	return do(req, false)
+}
+
+func do(req *http.Request, followRedirects bool) (*http.Response, error) {
+	if req == nil {
+		return nil, fmt.Errorf("oauth request is nil")
+	}
+	client := httpClient()
+	if !followRedirects {
+		base := client
+		client = &http.Client{
+			Timeout:   base.Timeout,
+			Transport: base.Transport,
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		}
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, annotateOAuthNetworkError("连接授权服务失败", err)
+	}
+	return resp, nil
+}
+
 func newOAuthHTTPClient(cfg proxyutil.Config) *http.Client {
 	t := &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,

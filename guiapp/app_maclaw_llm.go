@@ -24,6 +24,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/brand"
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/configfile"
+	"github.com/RapidAI/CodeClaw/corelib/kimicode"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
 	"github.com/RapidAI/CodeClaw/corelib/workbuddy"
@@ -244,6 +245,9 @@ func normalizeMaclawLLMProviders(providers []corelib.MaclawLLMProvider) []coreli
 		provider = normalizeZhipuCodingProvider(provider)
 		if profile, ok := workbuddy.ProfileByName(provider.Name); ok {
 			provider = normalizeWorkBuddyProvider(provider, workbuddyProvider(profile))
+		}
+		if kimicode.IsProviderName(provider.Name) {
+			provider = normalizeKimiCodeProvider(provider, kimiCodeProvider())
 		}
 		if corelib.MaclawLLMProviderNameEqual(provider.Name, configfile.ExternalAgentProviderOpenCode) {
 			provider = normalizeOpenCodeProvider(provider, openCodeDefaults)
@@ -707,6 +711,35 @@ func normalizeWorkBuddyProvider(provider, defaults corelib.MaclawLLMProvider) co
 	return provider
 }
 
+// normalizeKimiCodeProvider keeps Kimi Code on the device-login chat path.
+// An explicit model and context window are preserved.
+func normalizeKimiCodeProvider(provider, defaults corelib.MaclawLLMProvider) corelib.MaclawLLMProvider {
+	provider.URL = kimicode.CanonicalBaseURL(provider.URL)
+	provider.AuthType = defaults.AuthType
+	provider.Protocol = defaults.Protocol
+	provider.WireAPI = ""
+	provider.AgentType = ""
+	if strings.TrimSpace(provider.Model) == "" {
+		provider.Model = defaults.Model
+	}
+	if provider.ContextLength <= 0 {
+		provider.ContextLength = defaults.ContextLength
+	}
+	return provider
+}
+
+func kimiCodeProvider() corelib.MaclawLLMProvider {
+	return corelib.MaclawLLMProvider{
+		Name:          kimicode.Name,
+		URL:           kimicode.DefaultBaseURL,
+		Model:         kimicode.DefaultModel,
+		Protocol:      "openai",
+		AuthType:      "oauth",
+		ContextLength: 110000,
+		TimeoutSec:    corelib.DefaultLLMTimeoutSec,
+	}
+}
+
 func workbuddyProvider(profile workbuddy.Profile) corelib.MaclawLLMProvider {
 	return corelib.MaclawLLMProvider{
 		Name:          profile.Name,
@@ -735,6 +768,7 @@ func defaultMaclawLLMProviders() []corelib.MaclawLLMProvider {
 		{Name: zhipuCodingProviderName, URL: "https://open.bigmodel.cn/api/anthropic", Model: zhipuCodingDefaultModel, Protocol: "anthropic", AgentType: "claude code 2.0", ContextLength: 400000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "MiniMax", URL: "https://api.minimaxi.com/v1", Model: "MiniMax-M2.7", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "Kimi", URL: "https://api.kimi.com/coding/v1", Model: "kimi-for-coding", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AgentType: "claude code 2.0"},
+		kimiCodeProvider(),
 		{Name: volcengineAgentPlanProviderName, URL: "https://ark.cn-beijing.volces.com/api/plan/v3", Model: "glm-5.2", Protocol: "openai", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, WireAPI: "responses"},
 		{Name: "讯飞星辰", URL: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", Model: "astron-code-latest", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		workbuddyProvider(workbuddy.ChinaProfile()),
@@ -2662,6 +2696,10 @@ func (a *App) oauthLoginSuccessMessage(providerName, successMessage string) (str
 	result, err := a.testAndSaveOAuthProviderCapability(providerName)
 	if err != nil {
 		log.Printf("[OAuth] provider=%s post-login model/vision check failed: %v", providerName, err)
+		// A failed probe must not keep an older verified flag. Save treats
+		// matching OAuth endpoints as the same connection and would otherwise
+		// restore that flag.
+		a.markOAuthProviderConnectionUnverified(providerName)
 		return successMessage + "；模型连通性和图片能力检测失败，请在设置中重试", nil
 	}
 
@@ -2672,6 +2710,29 @@ func (a *App) oauthLoginSuccessMessage(providerName, successMessage string) (str
 		return successMessage + "；模型测试通过，图片能力未确认，请在设置中重试", nil
 	}
 	return successMessage + "；模型测试通过，图片理解：不支持", nil
+}
+
+func (a *App) markOAuthProviderConnectionUnverified(providerName string) {
+	providerName = strings.TrimSpace(providerName)
+	if a == nil || providerName == "" {
+		return
+	}
+	if _, err := a.PatchConfigIfChanged(func(cfg *corelib.AppConfig) bool {
+		changed := false
+		for i := range cfg.MaclawLLMProviders {
+			if !strings.EqualFold(strings.TrimSpace(cfg.MaclawLLMProviders[i].Name), providerName) {
+				continue
+			}
+			if !cfg.MaclawLLMProviders[i].ConnectionTestPassed {
+				continue
+			}
+			cfg.MaclawLLMProviders[i].ConnectionTestPassed = false
+			changed = true
+		}
+		return changed
+	}); err != nil {
+		log.Printf("[OAuth] provider=%s clear connection test failed: %v", providerName, err)
+	}
 }
 
 // testAndSaveOAuthProviderCapability runs the normal text and image probe with
@@ -3066,6 +3127,20 @@ func (a *App) ensureOAuthTokenForProviderMaybeForce(ctx context.Context, provide
 				return a.ensureOAuthTokenViaStore(p, i)
 			}
 			// Fallback path: legacy config.json-based refresh
+			if kimicode.IsProviderName(p.Name) && (force || oauth.NeedsRefresh(p)) {
+				if strings.TrimSpace(p.RefreshToken) == "" {
+					if force && !oauth.NeedsRefresh(p) {
+						return nil
+					}
+					return fmt.Errorf("refresh_token is empty, please re-login (Kimi Code OAuth)")
+				}
+				token, err := kimicode.Refresh(ctx, p.RefreshToken, p.URL)
+				if err != nil {
+					return fmt.Errorf("token refresh failed: %w", err)
+				}
+				data.Providers[i] = oauth.ApplyTokenResult(p, kimiCodeTokenResult(token))
+				return a.SaveMaclawLLMProviders(data.Providers, data.Current)
+			}
 			if isXAIGrokOAuthProvider(p) && (force || oauth.NeedsRefresh(p)) {
 				if p.RefreshToken == "" {
 					if force && !oauth.NeedsRefresh(p) {
@@ -6372,9 +6447,28 @@ func (a *App) doFetchModelsRequest(client *http.Client, endpoint, apiKey, protoc
 	if a.isXAIOAuthModelFetch(endpoint, apiKey) {
 		req.Header.Set("X-XAI-Token-Auth", "xai-grok-cli")
 	}
+	if a.isKimiCodeOAuthModelFetch(endpoint, apiKey) {
+		kimicode.ApplyHTTPHeaders(req.Header)
+	}
 	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, ua)
 	corelib.SetOpenCodeSessionHeaderIfNeeded(req, "")
 	return client.Do(req)
+}
+
+func (a *App) isKimiCodeOAuthModelFetch(endpoint, apiKey string) bool {
+	if a == nil || apiKey == "" || !kimicode.IsCodingEndpoint(endpoint) {
+		return false
+	}
+	for _, provider := range a.GetMaclawLLMProviders().Providers {
+		if !kimicode.IsProviderName(provider.Name) || !normalizeMaclawLLMAuthTypeKind(provider.AuthType).IsOAuth() ||
+			!urlsMatchForModelFetch(provider.URL, endpoint) {
+			continue
+		}
+		if resolved := a.resolveProviderKeyFromStore(provider); resolved == apiKey || provider.Key == apiKey {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *App) isXAIOAuthModelFetch(endpoint, apiKey string) bool {

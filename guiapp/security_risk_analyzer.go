@@ -15,6 +15,9 @@ type SecurityCallContext struct {
 	SessionID       string
 	UserID          string
 	RecentApprovals []string
+	// FullControl is the input-box 「完全控制」 grant. It skips interactive
+	// PolicyAsk prompts. Hard PolicyDeny is unchanged.
+	FullControl bool
 }
 
 // SecurityRiskAnalyzer performs regex-based risk analysis on tool calls.
@@ -29,8 +32,11 @@ type SecurityRiskAnalyzer struct {
 
 // NewSecurityRiskAnalyzer creates a risk analyzer with default builtin patterns.
 func NewSecurityRiskAnalyzer() *SecurityRiskAnalyzer {
+	// Copy the shared table so a later custom-pattern edit cannot mutate corelib.
+	builtin := make([]security.RiskPattern, len(security.DefaultRiskPatterns))
+	copy(builtin, security.DefaultRiskPatterns)
 	ra := &SecurityRiskAnalyzer{
-		builtinPatterns: defaultSecurityRiskPatterns,
+		builtinPatterns: builtin,
 		compiledTool:    make(map[string]*regexp.Regexp),
 		compiledParam:   make(map[string]*regexp.Regexp),
 	}
@@ -183,64 +189,3 @@ func (a *SecurityRiskAnalyzer) LoadCustomPatterns(path string) error {
 	return nil
 }
 
-// defaultSecurityRiskPatterns defines the built-in risk detection rules.
-var defaultSecurityRiskPatterns = []security.RiskPattern{
-	// File deletion
-	{Name: "recursive_delete", Category: "file_delete", ToolMatch: "(?i)bash|shell",
-		ParamKey: "command", ParamMatch: `rm\s+-rf|rmdir\s+/s|del\s+/[fq]`, Level: security.RiskCritical,
-		Description: "递归删除文件或目录"},
-	{Name: "shutil_rmtree", Category: "file_delete", ToolMatch: "(?i)bash|shell",
-		ParamKey: "command", ParamMatch: `shutil\.rmtree|os\.removedirs`, Level: security.RiskCritical,
-		Description: "Python 递归删除"},
-	// Network exfiltration
-	{Name: "data_exfil_curl", Category: "network", ToolMatch: "(?i)bash|shell",
-		ParamKey: "command", ParamMatch: `curl\s+.*-X\s+POST|curl\s+.*--data|curl\s+.*-d\s`, Level: security.RiskHigh,
-		Description: "通过 curl POST 发送数据"},
-	{Name: "data_exfil_wget", Category: "network", ToolMatch: "(?i)bash|shell",
-		ParamKey: "command", ParamMatch: `wget\s+--post`, Level: security.RiskHigh,
-		Description: "通过 wget POST 发送数据"},
-	{Name: "netcat", Category: "network", ToolMatch: "(?i)bash|shell",
-		ParamKey: "command", ParamMatch: `\bnc\s+-|ncat\s+`, Level: security.RiskHigh,
-		Description: "使用 netcat 进行网络通信"},
-	// Permission changes
-	{Name: "chmod_777", Category: "permission", ToolMatch: "(?i)bash|shell",
-		ParamKey: "command", ParamMatch: `chmod\s+777`, Level: security.RiskHigh,
-		Description: "设置文件权限为 777"},
-	{Name: "chown", Category: "permission", ToolMatch: "(?i)bash|shell",
-		ParamKey: "command", ParamMatch: `chown\s+`, Level: security.RiskMedium,
-		Description: "修改文件所有者"},
-	// System commands
-	{Name: "shutdown", Category: "system", ToolMatch: "(?i)bash|shell",
-		ParamKey: "command", ParamMatch: `\bshutdown\b|\breboot\b`, Level: security.RiskCritical,
-		Description: "关机或重启系统"},
-	{Name: "systemctl_stop", Category: "system", ToolMatch: "(?i)bash|shell",
-		ParamKey: "command", ParamMatch: `systemctl\s+stop|service\s+\w+\s+stop`, Level: security.RiskHigh,
-		Description: "停止系统服务"},
-	{Name: "kill_9", Category: "system", ToolMatch: "(?i)bash|shell",
-		ParamKey: "command", ParamMatch: `kill\s+-9`, Level: security.RiskMedium,
-		Description: "强制终止进程"},
-	// Environment variables
-	{Name: "env_secret", Category: "system", ToolMatch: "(?i)bash|shell",
-		ParamKey: "command", ParamMatch: `(?i)export\s+\w*(KEY|SECRET|TOKEN|PASSWORD)\w*=`, Level: security.RiskMedium,
-		Description: "修改敏感环境变量"},
-	// Package management
-	{Name: "pip_install_global", Category: "package", ToolMatch: "(?i)bash|shell",
-		ParamKey: "command", ParamMatch: `pip\s+install\s+\w`, Level: security.RiskMedium,
-		Description: "全局 pip install（非 requirements.txt）"},
-	{Name: "npm_install_global", Category: "package", ToolMatch: "(?i)bash|shell",
-		ParamKey: "command", ParamMatch: `npm\s+install\s+-g`, Level: security.RiskMedium,
-		Description: "全局 npm install"},
-	// Database
-	{Name: "drop_table", Category: "database", ToolMatch: ".*",
-		ParamKey: "command", ParamMatch: `(?i)DROP\s+TABLE|DROP\s+DATABASE`, Level: security.RiskCritical,
-		Description: "删除数据库表"},
-	{Name: "delete_no_where", Category: "database", ToolMatch: ".*",
-		ParamKey: "command", ParamMatch: `(?i)DELETE\s+FROM\s+\w+\s*$|TRUNCATE\s+`, Level: security.RiskHigh,
-		Description: "无条件删除或截断数据"},
-	{Name: "database_execute", Category: "database", ToolMatch: "^database$",
-		ParamKey: "action", ParamMatch: `^(execute|batch_execute)$`, Level: security.RiskHigh,
-		Description: "数据库写入或批处理"},
-	{Name: "database_export", Category: "database", ToolMatch: "^database$",
-		ParamKey: "action", ParamMatch: `^(write_table|export_excel)$`, Level: security.RiskMedium,
-		Description: "数据库导出或表格写入"},
-}

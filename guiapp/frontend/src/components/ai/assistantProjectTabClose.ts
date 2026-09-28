@@ -38,6 +38,8 @@ export type AssistantProjectTabCloseDeps = {
     previewOwnerResetPendingRef: { current: boolean };
     skillRecordingTabId: string | null;
     setSkillRecordingTabId: (id: string | null) => void;
+    /** Drop an in-progress recording instead of leaving its entries saved-but-unshown. */
+    abandonSkillRecording: () => void;
     setProjectTabPreparing: (tabId: string, preparing: boolean) => void;
     setProjectTabRouteVersion: (update: (version: number) => number) => void;
     setDetachedProjectRoundVersion: (update: (version: number) => number) => void;
@@ -128,8 +130,7 @@ export function closeAssistantProjectTab(tabId: string, deps: AssistantProjectTa
         deps.previewOwnerResetPendingRef.current = true;
     }
     if (deps.skillRecordingTabId === tabId) {
-        deps.setSkillRecordingTabId(null);
-        (window as any).go?.main?.App?.StopSkillRecording?.().catch(() => {});
+        deps.abandonSkillRecording();
     }
     deps.closeTab(tabId);
 }

@@ -55,6 +55,16 @@ func TestTrustedShellAppliesEveryLocalShellGuard(t *testing.T) {
 // TestTrustedShellStillRunsAnOrdinaryCommand is the positive control for the
 // case above. Without it, a change that rejected every command would satisfy
 // all four rejection assertions.
+func TestWithSystemRejectedPrefixOnce(t *testing.T) {
+	const guard = "[system rejected] Direct authenticated browser-side HTTP side effects through bash are disabled."
+	if got := withSystemRejectedPrefix(guard); got != guard {
+		t.Fatalf("wrapped twice: %q", got)
+	}
+	if got := withSystemRejectedPrefix("trusted_shell_unavailable"); got != "[system rejected] trusted_shell_unavailable" {
+		t.Fatalf("missing prefix: %q", got)
+	}
+}
+
 func TestTrustedShellStillRunsAnOrdinaryCommand(t *testing.T) {
 	var got string
 	h := &IMMessageHandler{}

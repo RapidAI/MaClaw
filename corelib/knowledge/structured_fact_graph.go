@@ -33,7 +33,7 @@ func (s *SQLiteStore) kbFactGraphEdges(ctx context.Context, opts SearchOptions) 
 		where = append(where, "LOWER(f.predicate) = ?")
 		args = append(args, strings.ToLower(predicate))
 	}
-	where, args = appendKBSourceFilters(where, args, "s", opts.OwnerID, opts.TenantID, opts.ProjectPath, opts.SearchScope, opts.SourceKinds, append(append([]string{}, opts.SourceIDs...), opts.SourceID), opts.IncludeDisabled)
+	where, args = appendKBSourceFilters(where, args, "s", ownerScopeFromSearch(opts), opts.TenantID, opts.ProjectPath, opts.SearchScope, opts.SourceKinds, append(append([]string{}, opts.SourceIDs...), opts.SourceID), opts.IncludeDisabled)
 	args = append(args, limit)
 	rows, err := s.db.QueryContext(ctx, `SELECT f.id, f.card_id, f.source_id, f.subject, f.predicate, f.object, f.confidence,
 		c.title, c.claim,

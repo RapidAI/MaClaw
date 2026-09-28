@@ -59,6 +59,10 @@
 .mc-task-execution-header span { color:var(--mc-accent, #2f6fbc); font-size:13px; }
 .mc-task-execution-actions { display:flex; align-items:center; gap:10px; flex-shrink:0; --wails-draggable: no-drag; }
 .mc-task-execution-actions button { border:1px solid var(--theme-border); background:var(--theme-surface); border-radius:9px; padding:8px 14px; color:var(--theme-text-secondary); cursor:pointer; white-space:nowrap; }
+.mc-task-execution-actions .task-skill-pause-btn { display:inline-flex; align-items:center; gap:6px; }
+.mc-task-execution-header .task-skill-pause-label { color: var(--theme-danger); }
+.mc-task-execution-actions .task-skill-pause-btn:disabled { cursor: progress; opacity: 0.72; }
+.mc-task-execution-actions .task-skill-pause-btn:disabled .aiti-recording-dot { animation: none; }
 .mc-task-execution-window-controls {
   display: inline-flex;
   align-items: center;
@@ -108,6 +112,8 @@
 .mc-task-more-menu__popover { position: absolute; z-index: 20; top: calc(100% + 6px); right: 0; min-width: 150px; padding: 5px; border: 1px solid var(--theme-border); border-radius: 10px; background: var(--theme-surface); box-shadow: 0 12px 30px rgba(27, 56, 93, .14); }
 .mc-task-more-menu__popover button { display: block; width: 100%; padding: 8px 9px; border: 0; border-radius: 7px; background: transparent; color: var(--theme-text-secondary); text-align: left; font-size: 12px; cursor: pointer; }
 .mc-task-more-menu__popover button:hover { background: var(--theme-primary-soft); color: var(--mc-accent, #2f6fbc); }
+.mc-task-more-menu__popover button:disabled,
+.mc-task-more-menu__popover button:disabled:hover { background: transparent; color: var(--theme-text-muted); cursor: not-allowed; opacity: 0.55; }
 .mc-task-tab-switcher { position: relative; }
 .mc-task-tab-switcher > summary { list-style: none; border: 1px solid var(--theme-border); background: var(--theme-surface); border-radius: 9px; padding: 8px 12px; color: var(--theme-text-secondary); cursor: pointer; font-size: 12px; white-space: nowrap; user-select: none; }
 .mc-task-tab-switcher > summary::-webkit-details-marker { display: none; }
@@ -147,15 +153,8 @@
 .mc-task-execution-meta { color: var(--theme-text-muted); font-size: 12px; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @media(max-width:700px){.mc-task-execution-header{padding:0 14px}.mc-task-execution-actions button{padding:7px 9px}.mc-task-execution-header strong,.mc-task-execution-heading > .mc-task-execution-title{font-size:16px}}
 
-/* Workbench task pane: turn the legacy compact toolbar into the reference
-   design's prominent new-task action while keeping cloud/save actions usable. */
-.mc-task-pane__header {
-    display: flex !important;
-    align-items: center !important;
-    gap: 8px !important;
-    padding: 2px 0 14px !important;
-    border-bottom: 1px solid var(--theme-border-subtle);
-}
+/* Workbench task pane: New Task is its own action. Theme and cloud sit in
+   a later cluster with a real gap, so they do not read as part of creating. */
 .mc-task-pane__title {
     margin: 0 8px 8px;
     min-height: 0;
@@ -166,27 +165,15 @@
     line-height: 1.25;
     letter-spacing: -.015em;
 }
-/* The home reference starts with the prominent New Task action. Keep the
-   semantic heading mounted for tests, but let execution mode own its heading. */
-.mc-task-pane[data-execution-sidebar='false'] > .mc-task-pane__title {
+.mc-task-pane > .mc-task-pane__title {
     display: none !important;
 }
-.mc-task-pane[data-execution-sidebar='false'] > .mc-task-pane__header {
-    padding-top: 0 !important;
+.mc-task-pane > .mc-task-pane__header {
+    display: flex !important;
+    align-items: center !important;
+    gap: 12px !important;
+    padding: 0 0 12px !important;
     border-bottom: 0 !important;
-}
-.mc-task-pane[data-execution-sidebar='false'] .mc-task-pane__create-group {
-    flex: 0 1 auto;
-    width: fit-content;
-    max-width: 100%;
-    min-height: 48px;
-    padding-inline: 14px !important;
-    gap: 7px;
-}
-.mc-task-pane[data-execution-sidebar='false'] .mc-task-pane__create-group > button {
-    width: 29px !important;
-    height: 29px !important;
-    border-radius: 8px !important;
 }
 
 /* Brand treatment for the live Wails header */
@@ -236,82 +223,120 @@
   .mc-header-brand-mark svg { width: 23px; height: 23px; }
   #App[data-nav-tab='remote'] .top-header h2 { transform: none; }
 }
-.mc-task-pane__create-group {
-    flex: 1 1 auto;
-    min-height: 48px;
-    padding: 0 12px !important;
-    border-radius: 11px;
-    background: var(--theme-primary-soft);
-    border: 1px solid color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border));
-    color: var(--mc-accent, #2f6fbc) !important;
-    box-shadow: none;
+/* The create control is itself a button. These declarations beat the legacy
+   solid-blue header rule (.mc-task-pane > .mc-task-pane__header button). */
+.mc-task-pane > .mc-task-pane__header > button.mc-task-pane__create-group {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 1 auto;
+    gap: 8px;
+    width: auto !important;
+    max-width: max-content;
+    min-width: 0;
+    height: auto !important;
+    min-height: 40px;
+    padding: 0 8px 0 14px !important;
+    border: 1px solid color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border)) !important;
+    border-radius: 12px !important;
+    background: var(--theme-primary-soft) !important;
+    box-shadow: none !important;
+    color: var(--theme-primary-strong) !important;
+    font: inherit;
+    font-size: 14px;
+    font-weight: 650;
+    letter-spacing: 0;
+    line-height: 1;
+    text-align: left;
+    cursor: pointer;
 }
 .mc-task-pane__create-group > span:first-child {
     flex: 0 1 auto;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
-    color: var(--theme-primary-strong) !important;
+    color: inherit !important;
     font-size: 14px !important;
+    font-weight: 650;
     letter-spacing: 0 !important;
     white-space: nowrap;
 }
-/* Keep the lighter dock treatment above the legacy solid-blue header-button
-   rule (.mc-task-pane > .mc-task-pane__header button) via higher specificity. */
-.mc-task-pane > .mc-task-pane__header .mc-task-pane__create-group > button {
+.mc-task-pane > .mc-task-pane__header > button.mc-task-pane__create-group:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--theme-primary) 16%, var(--theme-surface)) !important;
+    border-color: color-mix(in srgb, var(--theme-primary) 55%, var(--theme-border)) !important;
+}
+.mc-task-pane > .mc-task-pane__header > button.mc-task-pane__create-group:disabled {
+    cursor: default;
+    opacity: 0.55;
+}
+.mc-task-pane__create-mark {
+    display: inline-grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    flex: 0 0 28px;
+    border-radius: 8px;
+    background: linear-gradient(145deg, #2b7cf4 0%, var(--mc-accent, #2f6fbc) 60%, #1059c9 100%);
+    color: #fff;
+    box-shadow: 0 3px 8px rgba(23, 105, 232, .28);
+}
+/* Theme and cloud stay outside the New Task pill. Spacing comes from the
+   header gap; a shared divider would make them look like one split control. */
+.mc-task-pane__tool-group {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+    gap: 6px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+}
+.mc-task-pane > .mc-task-pane__header .mc-task-pane__tool-group > button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     flex-shrink: 0;
     width: 32px !important;
     height: 32px !important;
-    border-color: rgba(23, 105, 232, .30) !important;
-    border-radius: 8px !important;
+    padding: 0;
+    border: 1px solid var(--theme-border) !important;
+    border-radius: 9px !important;
     background: var(--theme-surface) !important;
-    color: var(--mc-accent, #2f6fbc) !important;
     box-shadow: none !important;
+    color: var(--theme-text-secondary) !important;
+    cursor: pointer;
 }
-.mc-task-pane > .mc-task-pane__header .mc-task-pane__create-group > button:hover:not(:disabled) {
+.mc-task-pane > .mc-task-pane__header .mc-task-pane__tool-group > button:hover:not(:disabled) {
     background: var(--theme-primary-soft) !important;
-    border-color: rgba(23, 105, 232, .55) !important;
-}
-/* Primary action: the create-task button stays filled so it reads as the one
-   main call-to-action while sibling dock buttons keep the quiet ghost style. */
-.mc-task-pane > .mc-task-pane__header .mc-task-pane__create-group > button.mc-task-pane__create-primary {
-    background: linear-gradient(145deg, #2b7cf4 0%, var(--mc-accent, #2f6fbc) 60%, #1059c9 100%) !important;
-    border-color: rgba(23, 105, 232, .55) !important;
-    color: #fff !important;
-    box-shadow: 0 3px 8px rgba(23, 105, 232, .28) !important;
-}
-.mc-task-pane > .mc-task-pane__header .mc-task-pane__create-group > button.mc-task-pane__create-primary:hover:not(:disabled) {
-    background: linear-gradient(145deg, #3d8bf6 0%, #1d6ce4 60%, #1261d4 100%) !important;
-    border-color: rgba(23, 105, 232, .75) !important;
-    box-shadow: 0 4px 10px rgba(23, 105, 232, .34) !important;
-}
-/* Dark mode: the light blue tint would glow against the dark shell, so the
-   dock falls back to the muted surface with the soft primary accent. */
-[data-ai-theme='dark'] .mc-task-pane__create-group {
-    background: var(--theme-primary-soft, rgba(126, 168, 224, .14));
-    border-color: var(--theme-border);
+    border-color: color-mix(in srgb, var(--theme-primary) 45%, var(--theme-border)) !important;
     color: var(--theme-primary) !important;
 }
-[data-ai-theme='dark'] .mc-task-pane__create-group > span:first-child { color: var(--theme-primary) !important; }
-[data-ai-theme='dark'] .mc-task-pane > .mc-task-pane__header .mc-task-pane__create-group > button {
-    background: var(--theme-surface-muted) !important;
+.mc-task-pane > .mc-task-pane__header .mc-task-pane__tool-group > button:disabled {
+    cursor: default;
+    opacity: 0.55;
+}
+[data-ai-theme='dark'] .mc-task-pane > .mc-task-pane__header > button.mc-task-pane__create-group {
+    background: var(--theme-primary-soft, rgba(126, 168, 224, .14)) !important;
     border-color: var(--theme-border) !important;
     color: var(--theme-primary) !important;
-    box-shadow: none !important;
 }
-[data-ai-theme='dark'] .mc-task-pane > .mc-task-pane__header .mc-task-pane__create-group > button:hover:not(:disabled) {
-    background: var(--theme-surface) !important;
+[data-ai-theme='dark'] .mc-task-pane > .mc-task-pane__header > button.mc-task-pane__create-group:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--theme-primary) 22%, var(--theme-surface)) !important;
     border-color: var(--theme-primary) !important;
 }
-[data-ai-theme='dark'] .mc-task-pane > .mc-task-pane__header .mc-task-pane__create-group > button.mc-task-pane__create-primary {
-    background: linear-gradient(145deg, #3d8bf6 0%, #1d6ce4 60%, #1261d4 100%) !important;
-    border-color: rgba(126, 168, 224, .45) !important;
-    color: #fff !important;
-    box-shadow: 0 3px 8px rgba(0, 0, 0, .35) !important;
+[data-ai-theme='dark'] .mc-task-pane__create-mark {
+    background: linear-gradient(145deg, #3d8bf6 0%, #1d6ce4 60%, #1261d4 100%);
+    box-shadow: 0 3px 8px rgba(0, 0, 0, .35);
 }
-[data-ai-theme='dark'] .mc-task-pane > .mc-task-pane__header .mc-task-pane__create-group > button.mc-task-pane__create-primary:hover:not(:disabled) {
-    background: linear-gradient(145deg, #4f97f7 0%, #2579e6 60%, #1a6ad8 100%) !important;
-    border-color: rgba(126, 168, 224, .65) !important;
+[data-ai-theme='dark'] .mc-task-pane > .mc-task-pane__header .mc-task-pane__tool-group > button {
+    background: var(--theme-surface-muted) !important;
+    border-color: var(--theme-border) !important;
+    color: var(--theme-text-secondary) !important;
+}
+[data-ai-theme='dark'] .mc-task-pane > .mc-task-pane__header .mc-task-pane__tool-group > button:hover:not(:disabled) {
+    background: var(--theme-surface) !important;
+    border-color: var(--theme-primary) !important;
+    color: var(--theme-primary) !important;
 }
 /* Save-as-task button keeps the quiet ghost treatment instead of the legacy
    solid blue that the generic header-button rule would force on it. */
@@ -1424,22 +1449,34 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 }
 .mc-task-pane .sidebar-task-row [data-testid='task-created-at'] { display: none !important; }
 .mc-task-pane .sidebar-task-row {
+  position: relative;
   min-height: 0;
-  align-items: flex-start !important;
-  gap: 6px !important;
-  margin: 2px;
-  padding: 4px 6px 4px 8px !important;
-  border-radius: 8px;
+  align-items: center !important;
+  gap: 4px !important;
+  margin: 1px 4px;
+  padding: 7px 8px 7px 8px !important;
+  border-radius: 10px;
+  /* Selecting the title fights the row drag and the gesture never starts. */
+  user-select: none;
 }
-.mc-task-pane .sidebar-task-row > span { align-self: flex-start; }
+.mc-task-pane .sidebar-task-row > span { align-self: center; }
+.mc-task-pane .sidebar-task-row > .stsm-row-body { align-self: stretch; }
 .mc-task-pane .sidebar-task-row strong,
 .mc-task-pane .sidebar-task-row [data-task-title] {
   font-size: 13px !important;
   line-height: 1.35 !important;
 }
-/* overflow:hidden ellipsis clips bold CJK when the line box is 1.2. */
+/* overflow:hidden ellipsis clips bold CJK when the line box is 1.2.
+   Beats `.sidebar-task-row [class*='title']` (weight 650). Idle titles match
+   the left rail labels; only the selected row uses primary ink. */
 .mc-task-pane .sidebar-task-row .stsm-row-title {
   line-height: 1.35;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--office-muted, var(--theme-text-muted));
+}
+.mc-task-pane .sidebar-task-row.is-active .stsm-row-title {
+  color: var(--theme-text-primary);
 }
 /* Hidden workflow/coding chips must not keep the badge row's margin. */
 .mc-task-pane .sidebar-task-row .stsm-badge-row:not(:has(
@@ -1452,7 +1489,8 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   [data-testid='task-cloud-shared-from'],
   [data-testid='task-pinned-badge']
 ) {
-  margin-bottom: 2px;
+  order: 3;
+  margin: 2px 0 0;
 }
 .mc-task-pane .sidebar-task-row .mc-workspace-kind {
   gap: 2px;
@@ -1477,15 +1515,30 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   white-space: nowrap;
 }
 .mc-task-pane .stsm-drag-handle-wrap {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 12px;
   display: flex;
   flex: 0 0 auto;
-  align-self: center;
+  align-items: center;
+  justify-content: center;
+  align-self: stretch;
+  z-index: 1;
+  /* Invisible until hover. Leave clicks on the row until the handle is shown,
+     otherwise the empty left edge swallows the open gesture. */
+  pointer-events: none;
+}
+.mc-task-pane .sidebar-task-row:hover .stsm-drag-handle-wrap,
+.mc-task-pane .sidebar-task-row:focus-within .stsm-drag-handle-wrap {
+  pointer-events: auto;
 }
 .mc-task-pane .stsm-drag-handle {
   appearance: none;
   flex: 0 0 auto;
   align-self: center;
-  width: 14px;
+  width: 12px;
   margin: 0;
   padding: 0;
   border: 0;
@@ -1496,20 +1549,71 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   font-size: 10px;
   line-height: 1;
   letter-spacing: -1px;
+  opacity: 0;
+}
+.mc-task-pane .sidebar-task-row:hover .stsm-drag-handle,
+.mc-task-pane .sidebar-task-row:focus-within .stsm-drag-handle,
+.mc-task-pane .stsm-drag-handle:focus-visible {
+  opacity: 0.72;
 }
 .mc-task-pane .stsm-drag-handle:active { cursor: grabbing; }
-.mc-task-pane .sidebar-task-row[data-task-drop-target='true'] {
-  box-shadow: inset 0 2px 0 var(--theme-primary);
+.mc-task-pane .sidebar-task-row[data-task-drop-target='true'],
+.mc-task-pane:has(.sidebar-task-row[data-task-drop-target='true']) .sidebar-task-row:hover {
+  transform: none;
 }
+/* Status is a real glyph now. The old colored dot stays out of the row. */
 .mc-task-pane .sidebar-task-row::before {
-  width: 7px !important;
-  height: 7px !important;
-  margin-top: 5px;
+  content: none;
 }
-.mc-task-pane [data-status='running'] .sidebar-task-row::before { background: var(--mc-accent, #2f6fbc) !important; }
-.mc-task-pane [data-status='completed'] .sidebar-task-row::before { background: var(--theme-success) !important; }
-.mc-task-pane [data-status='pending'] .sidebar-task-row::before { background: var(--theme-warning) !important; }
-.mc-task-pane [data-status='failed'] .sidebar-task-row::before { background: var(--theme-danger) !important; }
+.mc-task-pane .sidebar-task-row > .mc-task-status {
+  flex: 0 0 14px;
+  width: 14px;
+  min-width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  /* The drag grip sits on the left 12px and only appears on hover.
+     Color stays on the [data-status] rules below; this selector is
+     more specific and would otherwise paint every glyph muted. */
+  margin-left: 4px;
+}
+.mc-task-status svg {
+  display: block;
+  width: 14px;
+  height: 14px;
+}
+.mc-task-status[data-status='running'] { color: var(--mc-accent, #2f6fbc); }
+.mc-task-status[data-status='completed'] { color: var(--theme-success, #16a34a); }
+.mc-task-status[data-status='pending'] { color: var(--theme-warning, #d97706); }
+.mc-task-status[data-status='paused'] { color: var(--theme-text-secondary, #64748b); }
+.mc-task-status[data-status='failed'] { color: var(--theme-danger, #dc2626); }
+.mc-task-status[data-status='cancelled'],
+.mc-task-status[data-status='idle'] { color: var(--theme-text-muted); }
+.mc-task-status__idle {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1.5px currentColor;
+  opacity: 0.72;
+}
+.mc-task-status__spin {
+  box-sizing: border-box;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 1.75px solid color-mix(in srgb, currentColor 32%, transparent);
+  border-top-color: currentColor;
+  border-right-color: currentColor;
+  animation: mc-task-status-spin 0.9s linear infinite;
+}
+@keyframes mc-task-status-spin {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mc-task-status__spin { animation: none; }
+}
 .mc-task-section-label {
   margin: 4px 4px 8px !important;
   color: var(--theme-text-primary) !important;
@@ -1537,6 +1641,9 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 .mc-task-pane .sidebar-task-row.is-active {
   background: var(--theme-surface-muted) !important;
   box-shadow: inset 3px 0 0 var(--mc-accent, #2f6fbc) !important;
+}
+.mc-task-pane .sidebar-task-row[data-task-drop-target='true'] {
+  box-shadow: inset 0 2px 0 var(--theme-primary) !important;
 }
 .mc-task-pane .sidebar-task-row.is-active strong { color: var(--mc-accent, #2f6fbc) !important; }
 
@@ -1776,6 +1883,29 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 .mc-task-result-card__upload--uploading { opacity: .5; cursor: default; }
 .mc-task-result-card__upload--done { color: var(--theme-success); cursor: default; }
 .mc-task-result-card__upload--error { color: var(--theme-danger); }
+.mc-task-summary-status { margin: 0 0 6px; color: var(--theme-text-muted); font-size: 12px; }
+.mc-task-summary-status[data-status='incomplete'] { color: var(--theme-danger, #a33b32); }
+.mc-task-artifacts { margin-top: 10px; }
+.mc-task-artifacts__label { margin-bottom: 8px; color: var(--theme-text-muted); font-size: 12px; }
+.mc-task-artifacts__row { display: flex; flex-wrap: wrap; gap: 8px; }
+.mc-task-artifact-item { display: inline-flex; align-items: center; gap: 2px; max-width: 100%; min-width: 0; }
+.mc-task-artifact {
+  display: inline-flex; align-items: center; gap: 8px; max-width: 240px; min-width: 0;
+  padding: 8px 10px; border: 1px solid var(--theme-border); border-radius: 12px;
+  background: var(--theme-surface); color: var(--theme-text-primary); text-decoration: none;
+}
+.mc-task-artifact:hover { border-color: color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border)); }
+.mc-task-artifact__icon {
+  display: inline-grid; place-items: center; width: 28px; height: 28px; flex: none;
+  border-radius: 8px; background: var(--theme-primary-soft); color: var(--mc-accent, #2f6fbc); font-size: 14px;
+}
+.mc-task-artifact__name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.mc-task-artifact__open { flex: none; color: var(--theme-text-muted); font-size: 12px; }
+.mc-task-artifacts__more {
+  margin-top: 8px; padding: 0; border: none; background: transparent; color: var(--theme-text-secondary);
+  font-size: 12px; cursor: pointer;
+}
+.mc-task-artifacts__more:hover { color: var(--mc-accent, #2f6fbc); }
 .mc-task-result-card__actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
 .mc-task-result-card__actions button { min-height: 28px; padding: 0 10px; border: 1px solid var(--theme-border); border-radius: 8px; background: var(--theme-surface); color: var(--theme-text-secondary); font-size: 11px; cursor: pointer; }
 .mc-task-result-card__actions button:hover { border-color: color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border)); color: var(--mc-accent, #2f6fbc); background: var(--theme-primary-soft); }
@@ -1888,75 +2018,6 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 @media (max-width: 760px) { .mc-reference-suggestion-grid { grid-template-columns: 1fr; } }
 
 
-/* Execution sidebar groups: mirror the task detail reference while keeping the
-   existing durable task rows and double-click switching behavior intact. */
-.mc-task-pane[data-execution-sidebar='true'] .mc-task-pane__header {
-  padding: 0 0 8px !important;
-  border-bottom: 0;
-}
-.mc-task-pane[data-execution-sidebar='true'] .mc-task-pane__title { display: none; }
-.mc-task-pane[data-execution-sidebar='true'] .mc-task-pane__create-group {
-  min-height: 32px;
-  padding: 0 2px !important;
-  background: transparent;
-  box-shadow: none;
-  color: var(--theme-text-primary) !important;
-}
-.mc-task-pane[data-execution-sidebar='true'] .mc-task-pane__create-group > span:first-child {
-  color: var(--theme-text-primary) !important;
-  font-size: 16px !important;
-  font-weight: 750;
-}
-.mc-task-pane[data-execution-sidebar='true'] .mc-task-pane__create-group > button {
-  width: 28px !important;
-  height: 28px !important;
-  border-color: color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border)) !important;
-  border-radius: 8px !important;
-  background: var(--theme-surface) !important;
-  color: var(--theme-primary) !important;
-}
-.mc-execution-task-sidebar {
-  margin: 0 0 12px;
-  padding: 0 2px 10px;
-  border-bottom: 1px solid var(--theme-border-subtle);
-}
-.mc-execution-task-sidebar__heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  min-height: 27px;
-  margin-bottom: 6px;
-  color: var(--theme-text-primary);
-}
-.mc-execution-task-sidebar__heading strong {
-  font-size: 14px;
-  font-weight: 750;
-}
-.mc-execution-task-sidebar__heading-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-}
-.mc-execution-task-sidebar__add {
-  display: inline-grid;
-  place-items: center;
-  width: 25px;
-  height: 25px;
-  padding: 0;
-  border: 1px solid color-mix(in srgb, var(--theme-primary) 32%, var(--theme-border));
-  border-radius: 7px;
-  background: var(--theme-surface);
-  color: var(--theme-primary);
-  font-size: 18px;
-  line-height: 1;
-  cursor: pointer;
-}
-.mc-execution-task-sidebar__add:hover:not(:disabled),
-.mc-execution-task-sidebar__add:focus-visible {
-  border-color: var(--theme-primary);
-  background: var(--theme-primary-soft);
-}
 .mc-current-task-card {
   display: flex;
   align-items: center;
@@ -2036,22 +2097,9 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   color: var(--theme-text-muted);
   font-size: 11px;
 }
-[data-ai-theme='dark'] .mc-task-pane[data-execution-sidebar='true'] .mc-task-pane__create-group > button,
-[data-ai-theme='dark'] .mc-execution-task-sidebar__add { border-color: var(--theme-border) !important; background: var(--theme-surface-muted) !important; }
 [data-ai-theme='dark'] .mc-task-pane__title { color: var(--theme-text-primary); }
-[data-ai-theme='dark'] .mc-execution-task-sidebar { border-color: var(--theme-border-subtle); }
 [data-ai-theme='dark'] .mc-current-task-card { border-color: var(--theme-border); background: var(--theme-surface-muted); box-shadow: none; }
-[data-ai-theme='dark'] .mc-current-task-card__title,
-[data-ai-theme='dark'] .mc-execution-task-sidebar__heading { color: var(--theme-text-primary); }
-@media (max-width: 700px) {
-  .mc-execution-task-sidebar { margin-bottom: 8px; padding-bottom: 7px; }
-}
-/* Execution mode uses the dedicated task-group heading (with its + action).
-   The legacy header remains mounted for event compatibility but must not
-   duplicate that heading in the reference sidebar. */
-.mc-task-pane[data-execution-sidebar='true'] > .mc-task-pane__header { display: none !important; }
-.mc-task-pane[data-execution-sidebar='true'] .mc-execution-task-sidebar__heading { display: flex !important; }
-
+[data-ai-theme='dark'] .mc-current-task-card__title { color: var(--theme-text-primary); }
 /* Final reference parity for the inline Wails title bar.  The title bar is a
    sibling surface inside the assistant root, so keep the home view limited to
    the brand/search/ready status and the notification bell.  Task-only actions
@@ -2224,6 +2272,8 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   color: color-mix(in srgb, var(--theme-warning, #d97706) 82%, var(--theme-text-primary));
 }
 .stsm-row-body {
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   flex: 1;
   text-align: left;
@@ -2235,15 +2285,15 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   margin-bottom: 3px;
 }
 .stsm-badge-share {
-  display: inline-flex;
+  display: block;
   max-width: 100%;
-  padding: 1px 5px;
-  border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--theme-primary) 36%, transparent);
-  color: var(--theme-primary-strong);
-  background: color-mix(in srgb, var(--theme-primary) 10%, transparent);
-  font-size: 0.58rem;
-  font-weight: 700;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--theme-text-muted);
+  font-size: 11px;
+  font-weight: 500;
   line-height: 1.35;
   white-space: nowrap;
   overflow: hidden;
@@ -2251,24 +2301,26 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 }
 .stsm-badge-pinned {
   display: inline-flex;
-  max-width: 100%;
-  padding: 1px 5px;
-  border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--theme-text-muted) 36%, transparent);
+  flex: 0 0 auto;
+  max-width: 4.5em;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   color: var(--theme-text-muted);
-  background: color-mix(in srgb, var(--theme-text-muted) 8%, transparent);
-  font-size: 0.58rem;
-  font-weight: 700;
+  font-size: 11px;
+  font-weight: 600;
   line-height: 1.35;
 }
 .stsm-row-title {
   display: block;
   min-width: 0;
   flex: 1;
-  font-weight: 700;
-  font-size: 0.74rem;
+  font-weight: 600;
+  font-size: 13px;
   line-height: 1.35;
-  color: var(--theme-text-primary);
+  letter-spacing: 0;
+  color: var(--office-muted, var(--theme-text-muted));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

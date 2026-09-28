@@ -933,6 +933,28 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.messages.find(m => m.id === 'a-fn')?.content).toBe('');
     });
 
+    it('drops a persisted Browser echo field when restoring history', () => {
+        localStorage.setItem(AI_ASSISTANT_HISTORY_STORAGE_KEY, JSON.stringify([
+            {
+                id: 'a-browser-field',
+                role: 'assistant',
+                content: '确认后我会用 browser 工具重试。',
+                timestamp: 2,
+                fields: [
+                    { label: 'Browser', value: '**诊断结果：**' },
+                    { label: 'Turn', value: 'fast · primary · auto' },
+                ],
+            },
+        ]));
+
+        const { result } = renderAssistantHook();
+        const restored = result.current.messages.find(m => m.id === 'a-browser-field');
+        expect(restored?.content).toContain('browser 工具');
+        expect(restored?.fields).toEqual([
+            { label: 'Turn', value: 'fast · primary · auto' },
+        ]);
+    });
+
     it('keeps legacy localStorage history when backend UI-state migration fails', async () => {
         const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
         const persistedMessages = [
@@ -4082,6 +4104,30 @@ describe('useAIAssistant property tests', () => {
         ]);
     });
 
+    it('hides a Browser echo chip without hiding the answer', async () => {
+        mockSendResponse = {
+            text: '确认后我会用 browser 工具重试。',
+            error: '',
+            fields: [
+                { Label: 'Browser', Value: '**诊断结果：**\n| 问题 | 原因 | 状态 |' },
+                { label: 'Turn', value: 'fast · primary · auto' },
+            ],
+            actions: null,
+        };
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('retry after key check');
+        });
+
+        const assistantMsg = result.current.messages.find(m => m.role === 'assistant');
+        expect(assistantMsg?.fields).toEqual([
+            { label: 'Turn', value: 'fast · primary · auto' },
+        ]);
+        expect(assistantMsg?.content).toContain('browser 工具');
+    });
+
     it('keeps token usage fields from normalized assistant response when detail entry is enabled', async () => {
         (LoadConfig as any).mockResolvedValueOnce({ show_ai_trace_entry: true });
         mockSendResponse = {
@@ -4520,6 +4566,39 @@ describe('useAIAssistant property tests', () => {
         });
 
         expect(result.current.progressMessages).toHaveLength(0);
+    });
+
+    it('puts a tool call on the assistant message and leaves the live tray for progress ticks', async () => {
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('run ls');
+        });
+
+        const req = requestEvent();
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: '工具 · 执行命令 (bash)\nls -la' });
+        });
+
+        const assistant = [...result.current.messages].reverse().find((message) => message.role === 'assistant');
+        expect(assistant?.toolCalls?.[0]).toMatchObject({ name: 'bash', action: '执行命令', detail: 'ls -la' });
+        expect(assistant?.content || '').toContain('maclaw-tool:');
+        expect(result.current.progressMessages.some((message) => (message.content || '').includes('ls -la'))).toBe(false);
+
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: '工具 · 命令进度\n仍在运行' });
+        });
+
+        expect(result.current.progressMessages.some((message) => (message.content || '').includes('命令进度'))).toBe(true);
+        expect(result.current.progressMessages.some((message) => (message.content || '').includes('ls -la'))).toBe(false);
+
+        await act(async () => {
+            pending.resolve({ text: 'done', error: '', fields: null, actions: null, request_id: req.request_id });
+            await pending.promise;
+        });
     });
 
     it('hides the generic task acknowledgement', async () => {

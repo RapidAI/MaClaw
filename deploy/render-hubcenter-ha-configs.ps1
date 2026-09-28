@@ -170,7 +170,9 @@ ha:
   pull_batch_size: 100
   heartbeat_sync_min_interval_seconds: 600
   history_retention_days: 0.5
-  history_max_retained_ops: 50000
+  # 2026-09-27: 50000 -> 20000; lower retained-op cap cuts per-prune CPU/IO and
+  # keeps ha_sync_ops churn from bloating the main SQLite file.
+  history_max_retained_ops: 20000
   history_prune_interval_minutes: 10
   history_prune_batch_size: 20000
   nodes:
@@ -180,6 +182,7 @@ database:
   driver: sqlite
   dsn: $(Quote-YamlString $Center.DatabaseDSN)
   wal: true
+  auto_vacuum: incremental
   busy_timeout_ms: 10000
   max_read_open_conns: 4
   max_read_idle_conns: 4

@@ -284,6 +284,42 @@ func (h *IMMessageHandler) cancelledExitResponse(userID string, history []agent.
 	return &IMAgentResponse{Text: cancelledTaskReplyText(userText)}
 }
 
+func shouldRetireUserCancelCheckpoint(ctx *LoopContext) bool {
+	return ctx != nil && ctx.UserCancelled()
+}
+
+// sharedLoopCancelResponse is the shared-loop cancel exit. An explicit user
+// stop drops this run's recovery marker. A pending tool batch must not be
+// written as conversation history: the durable checkpoint already holds the
+// last provider-valid prefix, and the in-memory delta ends in an unpaired
+// tool call. Shutdown, parent timeout, and turn replacement keep that
+// checkpoint and, while a batch is pending, tell the user how to recover.
+func (h *IMMessageHandler) sharedLoopCancelResponse(ctx *LoopContext, userID, runID string, history []agent.ConversationEntry, userText string, pendingToolBatch bool) *IMAgentResponse {
+	if shouldRetireUserCancelCheckpoint(ctx) {
+		h.retireUserCancelCheckpoint(userID, runID)
+		if pendingToolBatch {
+			return &IMAgentResponse{Text: cancelledTaskReplyText(userText)}
+		}
+		return h.cancelledExitResponse(userID, history, userText)
+	}
+	if pendingToolBatch {
+		return h.interruptedSharedLoopExitResponse(userText)
+	}
+	return h.cancelledExitResponse(userID, history, userText)
+}
+
+// retireUserCancelCheckpoint drops the run's durable recovery marker after an
+// explicit user stop. Crash recovery still promotes a marker that never
+// reached this call.
+func (h *IMMessageHandler) retireUserCancelCheckpoint(userID, runID string) {
+	if h == nil || h.memory == nil {
+		return
+	}
+	if err := h.memory.RetireUserCancelCheckpoint(userID, runID); err != nil {
+		log.Printf("[InFlightTask] user-cancel checkpoint clear failed user=%q run=%q err=%v", userID, runID, err)
+	}
+}
+
 func cancelledTaskReplyText(userText string) string {
 	if taskPreview := truncateRunes(userText, 30); taskPreview != "" {
 		return fmt.Sprintf("Task cancelled: %s", taskPreview)

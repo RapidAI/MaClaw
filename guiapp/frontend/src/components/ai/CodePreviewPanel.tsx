@@ -224,6 +224,10 @@ export interface CodePreviewPanelProps {
     lang?: string;
     /** Cloud workspace: file tree is remote content, not a local folder. */
     cloudMode?: boolean;
+    /** Bumped when the user previews a task result, so the file replaces the tree. */
+    fileFocusNonce?: number;
+    /** Bumped when the user asks for the directory tree. A newer value wins over fileFocusNonce. */
+    treeFocusNonce?: number;
     /** Known Hub workspace name. Entitlement lookup overrides this when it matches the mount. */
     cloudWorkspaceName?: string;
     /** Preview pane already has a close control; hide the inner header X. */
@@ -1003,6 +1007,8 @@ export function CodePreviewPanel({
     embedded = false,
     previewExpanded = false,
     onTogglePreviewExpand,
+    fileFocusNonce = 0,
+    treeFocusNonce = 0,
 }: CodePreviewPanelProps) {
     const cloudWorkspaceId = cloudMode ? cloudWorkspaceIdFromPath(projectPath) : '';
     const [resolvedCloudName, setResolvedCloudName] = useState(() => (
@@ -1026,9 +1032,15 @@ export function CodePreviewPanel({
         return () => { cancelled = true; };
     }, [cloudMode, cloudWorkspaceId, cloudWorkspaceName]);
     // Every source-preview opening starts with the project tree. Source files
-    // remain open beside it, but never replace the confirmation that a local
-    // or remote working directory is available.
-    const [workspaceActive, setWorkspaceActive] = useState(() => !embedded && Boolean(projectPath));
+    // remain open beside it. The newer focus nonce wins, and a file focus only
+    // shows that file while it is still open.
+    const [workspaceActive, setWorkspaceActive] = useState(() => {
+        if (embedded) return false;
+        const fileOpen = Boolean(activeFilePath && files.has(activeFilePath));
+        if (fileOpen && fileFocusNonce > treeFocusNonce) return false;
+        if (fileFocusNonce !== 0 || treeFocusNonce !== 0) return true;
+        return Boolean(projectPath);
+    });
     const handleHeaderDoubleClick = (event: React.MouseEvent<HTMLElement>) => {
         if (isPreviewHeaderInteractiveTarget(event.target, event.currentTarget)) return;
         onToggleMaximize?.();
@@ -1092,6 +1104,19 @@ export function CodePreviewPanel({
         window.addEventListener(FOCUS_CLOUD_WORKSPACE_TREE_EVENT, focusTree);
         return () => window.removeEventListener(FOCUS_CLOUD_WORKSPACE_TREE_EVENT, focusTree);
     }, [cloudMode]);
+
+    const focusFilesRef = useRef(files);
+    const focusPathRef = useRef(activeFilePath);
+    focusFilesRef.current = files;
+    focusPathRef.current = activeFilePath;
+    useEffect(() => {
+        if (embedded || (fileFocusNonce === 0 && treeFocusNonce === 0)) return;
+        const path = focusPathRef.current;
+        const fileOpen = Boolean(path && focusFilesRef.current.has(path));
+        // Directory refresh must not rerun this. A file opened from the tree
+        // stays up until the next explicit file or tree choice.
+        setWorkspaceActive(!(fileFocusNonce > treeFocusNonce && fileOpen));
+    }, [embedded, fileFocusNonce, treeFocusNonce]);
 
     useEffect(() => {
         if (embedded) {
@@ -1169,6 +1194,7 @@ export function CodePreviewPanel({
     const activateWorkspaceTab = useCallback(() => {
         if (embedded) return;
         setWorkspaceActive(true);
+        window.dispatchEvent(new CustomEvent(FOCUS_CLOUD_WORKSPACE_TREE_EVENT));
         workspaceTabRef.current?.focus();
     }, [embedded]);
 

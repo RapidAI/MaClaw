@@ -18,10 +18,10 @@ import (
 // results. Image presentation is intentionally handled only by the dedicated
 // knowledge_image_search tool, so normal evidence recall never encourages a
 // model to construct or replay an image marker.
-const SearchResultsHeader = "Use these results as evidence. Cite Source/Citation when answering. If the results do not fully cover the user's question, search again with refined terms or use knowledge_context_pack for comprehensive coverage. Use knowledge_image_search when the user explicitly asks to find, view, show, select, or compare saved images.\n\n"
+const SearchResultsHeader = "Use these results as evidence. Cite Source/Citation when answering. A retrieved person or record is the queried name only when that name or phrase appears in the result; overlapping fragments such as a nationality, one character, or part of an organization name are not an identity match. If the results do not fully cover the user's question, search again with refined terms or use knowledge_context_pack for comprehensive coverage. Use knowledge_image_search when the user explicitly asks to find, view, show, select, or compare saved images.\n\n"
 
 // EmptySearchResultMessage is returned when knowledge_search finds no matches.
-const EmptySearchResultMessage = "No results found for this query. Try different search terms, broader keywords, or use knowledge_context_pack for topic-based retrieval."
+const EmptySearchResultMessage = "No results found for this query. Try different search terms, broader keywords, or use knowledge_context_pack for topic-based retrieval. Do not substitute a different person or entity from partial character overlap."
 
 // EmptyContextPackMessage is returned when knowledge_context_pack finds no matches.
 const EmptyContextPackMessage = "No relevant knowledge found for this context pack query. Try different search terms or broader topic hints."

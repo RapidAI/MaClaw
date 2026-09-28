@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/kimicode"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
 	"github.com/RapidAI/CodeClaw/corelib/workbuddy"
 )
@@ -30,6 +31,8 @@ func credentialStoreProviderID(provider corelib.MaclawLLMProvider) string {
 		return "github-copilot"
 	case provider.Name == "xAI-Grok" && kind.IsOAuth():
 		return "xai-grok"
+	case kimicode.IsProviderName(provider.Name) && kind.IsOAuth():
+		return kimicode.StoreID
 	case provider.Name == workbuddy.NameChina && kind.IsOAuth():
 		return workbuddy.StoreChina
 	case provider.Name == workbuddy.NameGlobal && kind.IsOAuth():
@@ -153,6 +156,12 @@ func (a *App) ensureOAuthTokenViaStoreMaybeSyncForce(ctx context.Context, provid
 			return updated, nil
 		case "xai-grok":
 			result, refreshErr = oauth.RefreshXAIToken(ctx, old.RefreshToken)
+		case kimicode.StoreID:
+			refreshed, refreshErr := kimicode.Refresh(ctx, old.RefreshToken, provider.URL)
+			if refreshErr != nil {
+				return old, fmt.Errorf("token refresh failed: %w", refreshErr)
+			}
+			result = kimiCodeTokenResult(refreshed)
 		case workbuddy.StoreChina, workbuddy.StoreGlobal:
 			profile, found := workbuddy.ProfileByStoreID(storeID)
 			if !found {
@@ -379,6 +388,8 @@ func (a *App) saveOAuthResultToStore(providerName string, result *oauth.TokenRes
 		storeID = "github-copilot"
 	case "xAI-Grok":
 		storeID = "xai-grok"
+	case kimicode.Name:
+		storeID = kimicode.StoreID
 	case codegenProviderName:
 		storeID = "codegen"
 	default:

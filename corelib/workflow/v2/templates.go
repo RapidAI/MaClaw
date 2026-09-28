@@ -380,6 +380,85 @@ func hasStableTopTemplateScore(ranked []TemplateScore) bool {
 	return ranked[0].Score >= minAbsoluteTemplateScore
 }
 
+// decisiveCatalogScore is how sure the catalog must be when the classifier
+// did not name a template. Incidental n-gram overlap with a long template
+// (a cartoon, an audit log) lands near the noise floor, around 2–4. A request
+// that actually names a panel project lands much higher. The gap between
+// those two is where this cutoff sits.
+const decisiveCatalogScore = 8
+
+// softwareExecutionTemplates are workflows whose ordinary wording is code,
+// games, and server ops. They stay on the agent path. A new panel template
+// registered with the builtins is included automatically; it does not need a
+// phrase added anywhere else.
+func softwareExecutionTemplate(workflowType string) bool {
+	switch WorkflowType(workflowType) {
+	case WorkflowCoding, WorkflowMaintenance, WorkflowOpsMaintenance:
+		return true
+	default:
+		return false
+	}
+}
+
+var (
+	builtinRegistryOnce sync.Once
+	builtinRegistry     *TemplateRegistry
+)
+
+func builtinTemplateRegistry() *TemplateRegistry {
+	builtinRegistryOnce.Do(func() {
+		builtinRegistry = NewTemplateRegistry()
+		RegisterBuiltinTemplates(builtinRegistry)
+	})
+	return builtinRegistry
+}
+
+func catalogProjectScores(text string) []TemplateScore {
+	ranked := builtinTemplateRegistry().RankedByText(text)
+	out := make([]TemplateScore, 0, len(ranked))
+	for _, item := range ranked {
+		if softwareExecutionTemplate(item.Type) {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+// CatalogCorroboratesWorkflowProject reports whether the workflow catalog
+// agrees that text is a panel project.
+//
+// The agreement is the catalog's own template score — the same name,
+// description, and phase document MatchByText uses — not a phrase list. A
+// template added to the registry takes part with no further table.
+//
+// When workflowType is set, that template must clear the catalog noise floor.
+// An invented type on a cartoon does not. A type that misses does not veto a
+// decisive hit on a different template: the model can name a project the text
+// is not. When no named type clears the floor, only a decisive catalog hit
+// counts, so a weak overlap cannot close ordinary chat by itself.
+func CatalogCorroboratesWorkflowProject(text, workflowType string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	// A software type describes code, a game, or server ops. It never confirms
+	// a panel project, but it must not hide one either: the text can still be
+	// a decisive match on a panel template.
+	if softwareExecutionTemplate(workflowType) {
+		workflowType = ""
+	}
+	ranked := catalogProjectScores(text)
+	if workflowType != "" {
+		for _, item := range ranked {
+			if item.Type == workflowType && item.Score >= minAbsoluteTemplateScore {
+				return true
+			}
+		}
+	}
+	return len(ranked) > 0 && ranked[0].Score >= decisiveCatalogScore
+}
+
 // --- Built-in Templates ---
 
 func CodingTemplate() *WorkflowTemplate {

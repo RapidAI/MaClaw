@@ -36,7 +36,19 @@ func (h *IMMessageHandler) snapshotInterruptedSessionsForShutdown() {
 		ctx := state.loopCtx
 		userText := state.userText
 		state.stateMu.RUnlock()
-		if ctx == nil || ctx.IsCancelled() {
+		if ctx == nil {
+			return true
+		}
+		// The stop button can close CancelC while a tool call is still blocked.
+		// This snapshot used to skip that session and leave the pre-tool marker,
+		// so the next launch promoted a task the user had already stopped.
+		// Shutdown, parent timeout, and turn replacement do not set the flag,
+		// and those markers stay recoverable.
+		if ctx.UserCancelled() {
+			h.retireUserCancelCheckpoint(userID, ctx.ID)
+			return true
+		}
+		if ctx.IsCancelled() {
 			return true
 		}
 
@@ -75,6 +87,10 @@ func (h *IMMessageHandler) snapshotInterruptedSessionsForShutdown() {
 		state.stateMu.RUnlock()
 		if !stillActive {
 			log.Printf("[ShutdownSnapshot] skip user=%q reason=state_changed_during_snapshot", userID)
+			if ctx.UserCancelled() {
+				h.retireUserCancelCheckpoint(userID, ctx.ID)
+				return true
+			}
 			ctx.Cancel()
 			return true
 		}

@@ -90,6 +90,11 @@ func (h *IMMessageHandler) emitRegisteredToolApprovalAgentViewIfNeeded(name stri
 	if h.firewall.policy != nil && h.firewall.policy.IsDeveloperMode() {
 		return false
 	}
+	// 完全控制 already authorized this session to run without a confirmation
+	// panel. Database mutations are handled above and stay explicit.
+	if securityCallHasFullControl(ctx) {
+		return false
+	}
 	sessionID := ""
 	if ctx != nil {
 		sessionID = strings.TrimSpace(ctx.SessionID)
@@ -364,10 +369,12 @@ func (h *IMMessageHandler) handleRegisteredToolAgentViewSubmit(toolName string, 
 	if policyOwnerID != "" && h.registeredToolAcceptsRuntimePolicyOwnerArg(toolName) {
 		args[registeredToolPolicyOwnerIDField] = policyOwnerID
 	}
-	if h.emitArchiveExternalApprovalIfNeeded(args, &SecurityCallContext{SessionID: localSessionIDFromToolArgs(args)}, policyOwnerID) {
+	approvalSessionID := securityApprovalSessionID(localSessionIDFromToolArgs(args), policyOwnerID)
+	if h.emitArchiveExternalApprovalIfNeeded(args, &SecurityCallContext{SessionID: approvalSessionID, UserID: policyOwnerID}, policyOwnerID) {
 		return &IMAgentResponse{Text: "External archive extraction needs approval. An approval panel has been opened on the right.", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
-	securityCtx := &SecurityCallContext{SessionID: localSessionIDFromToolArgs(args), UserID: policyOwnerID}
+	securityCtx := &SecurityCallContext{SessionID: approvalSessionID, UserID: policyOwnerID}
+	h.stampFullControl(securityCtx)
 	execCtx := withTrustedAuditPrincipal(context.Background(), policyOwnerID)
 	if toolName == "database" || toolName == "database_query" {
 		sessionID := "gui"

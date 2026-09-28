@@ -225,9 +225,6 @@ func (h *IMMessageHandler) finalizeTraceResult(ctx *LoopContext, resp *IMAgentRe
 		}
 		ensureTraceAction(resp)
 	}
-	if browserRootCause := extractBrowserRootCause(firstNonEmptyTraceText(resp.Error, resp.Text)); browserRootCause != "" {
-		resp.Fields = append(resp.Fields, IMResponseField{Label: "Browser", Value: browserRootCause})
-	}
 	return resp
 }
 
@@ -241,28 +238,4 @@ func attachRuntimeResponseFields(ctx *LoopContext, resp *IMAgentResponse) {
 	if resp.SessionKey == "" {
 		resp.SessionKey = ctx.Runtime.Conversation.SessionKey
 	}
-}
-
-func extractBrowserRootCause(text string) string {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return ""
-	}
-	lower := strings.ToLower(text)
-	if !strings.Contains(lower, "browser") && !strings.Contains(lower, "cdp") && !strings.Contains(lower, "debug") {
-		return ""
-	}
-	lines := strings.Split(text, "\n")
-	filtered := make([]string, 0, len(lines))
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		filtered = append(filtered, line)
-		if len(filtered) >= 4 {
-			break
-		}
-	}
-	return strings.Join(filtered, "\n")
 }

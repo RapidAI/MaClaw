@@ -38,6 +38,7 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 		CacheSizeKB:           cfg.Database.CacheSizeKB,
 		MmapSizeBytes:         cfg.Database.MmapSizeBytes,
 		CheckpointIntervalSec: cfg.Database.CheckpointIntervalSec,
+		AutoVacuum:            cfg.Database.AutoVacuum,
 	})
 	if err != nil {
 		return nil, err
@@ -379,7 +380,7 @@ func runHAHistoryPruner(ctx context.Context, haSvc *ha.Service, retentionDays fl
 		retentionDays = 0.5
 	}
 	if maxRetainedOps <= 0 {
-		maxRetainedOps = 50000
+		maxRetainedOps = 20000
 	}
 	if intervalMinutes <= 0 {
 		intervalMinutes = 10

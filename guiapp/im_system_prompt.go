@@ -261,6 +261,14 @@ func (h *IMMessageHandler) buildSystemPromptBaseWithExperienceContext(includeMem
 		promptABSample = agent.IsQualityABReason(classified.Reason)
 		promptSoftFull = agent.IsSoftFullUpgradeReason(classified.Reason)
 	}
+	// A short continuation of a full turn keeps that turn's tool surface.
+	// Adaptive short-text classification must not flip the prompt back to
+	// light. An explicit env override below still wins.
+	if loopCtx != nil && operationalExecutionProfile(loopCtx.Runtime.Execution) {
+		promptProfile = agent.PromptProfileFull
+		promptABSample = false
+		promptSoftFull = false
+	}
 	// Env override always wins for operator debugging (light|full), except
 	// when the semantic plan already declared a mutating or external effect.
 	if p, ok := agent.EnvPromptProfileOverride(); ok {

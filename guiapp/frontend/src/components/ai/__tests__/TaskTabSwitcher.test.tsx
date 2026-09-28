@@ -152,6 +152,36 @@ describe('TaskTabSwitcher with task list', () => {
         expect(screen.getByText('unopened-task')).toBeTruthy();
     });
 
+    it('treats slash and drive-case differences as the same task', () => {
+        const named = 'Agnes model notes';
+        renderTaskSwitcher({
+            tasks: [{ id: 'case', name: named, project_path: 'c:/users/me/tasks/agnes-model/' }],
+            tabs: [
+                { id: 'local', type: 'local', title: 'Local', closable: false },
+                { id: 'proj-case', type: 'project', title: 'v1', projectPath: 'C:\\Users\\me\\tasks\\agnes-model', closable: true },
+            ],
+            activeTabId: 'proj-case',
+        });
+        openSwitcher();
+        expect(screen.getByText(named)).toBeTruthy();
+        expect(screen.queryByText('v1')).toBeNull();
+    });
+
+    it('shows the task-list name when that name cites a URL', () => {
+        const named = 'agnes 视频 生成模型信息保存到知识库：https://api.agnes.ai.cn/v1';
+        renderTaskSwitcher({
+            tasks: [{ id: 'url', name: named, project_path: 'D:/work/tasks/agnes-model' }],
+            tabs: [
+                { id: 'local', type: 'local', title: 'Local', closable: false },
+                { id: 'proj-url', type: 'project', title: 'v1', projectPath: 'D:/work/tasks/agnes-model', closable: true },
+            ],
+            activeTabId: 'proj-url',
+        });
+        openSwitcher();
+        expect(screen.getByText(named)).toBeTruthy();
+        expect(screen.queryByText('v1')).toBeNull();
+    });
+
     it('activates the open tab when clicking an opened task row', () => {
         const { onActivate, onOpenTask } = renderTaskSwitcher();
         openSwitcher();

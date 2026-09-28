@@ -303,6 +303,27 @@ describe("LLMProfileAssignments", () => {
         expect(screen.queryByText("Connected")).toBeNull();
     });
 
+    it("leaves the loading state when the panel read itself refreshes providers", async () => {
+        let resolveInitial: ((value: typeof state) => void) | undefined;
+        let onProfilesChanged: ((payload?: { changed?: string }) => void) | undefined;
+        eventsOn.mockImplementation((name: string, handler: (payload?: { changed?: string }) => void) => {
+            if (name === "llm-profiles-changed") onProfilesChanged = handler;
+            return vi.fn();
+        });
+        getState
+            .mockImplementationOnce(() => new Promise(resolve => { resolveInitial = resolve; }))
+            .mockResolvedValueOnce(state);
+        render(<LLMProfileAssignments lang="en" />);
+
+        expect(screen.getByText("Loading model assignments…")).toBeTruthy();
+        act(() => { onProfilesChanged?.({ changed: "hub-provider" }); });
+        await act(async () => { await Promise.resolve(); });
+        await act(async () => { resolveInitial?.(state); });
+
+        expect(await screen.findByRole("heading", { name: "Model assignments" })).toBeTruthy();
+        expect(screen.queryByText("Loading model assignments…")).toBeNull();
+    });
+
     it("keeps the newest profile snapshot when overlapping reloads finish out of order", async () => {
         let resolveInitial: ((value: typeof state) => void) | undefined;
         let resolveRefresh: ((value: typeof state) => void) | undefined;

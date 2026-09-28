@@ -316,10 +316,10 @@ func serviceRemoteSSHExecBound(ctx context.Context, resources *coreAgentSSHResou
 		waitSeconds = 600
 	}
 	lines, status := resources.mgr.WaitForOutputContext(ctx, binding.SessionID, before, time.Duration(waitSeconds)*time.Second)
-	output := strings.Join(lines, "\n")
-	if len(output) > 8000 {
-		output = output[:4000] + "\n... (truncated) ...\n" + output[len(output)-4000:]
-	}
+	// Git baseline markers and model-facing exec output share this capture.
+	// A head/tail cut dropped the middle (and could split UTF-8) before the
+	// executor projector could spill the original.
+	output := remote.StripLeadingCommandEcho(remote.CompactPtyOutput(strings.Join(lines, "\n")), command)
 	if ctx != nil && ctx.Err() != nil && strings.TrimSpace(output) == "" {
 		return "", ctx.Err()
 	}

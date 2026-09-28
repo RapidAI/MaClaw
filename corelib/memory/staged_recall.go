@@ -91,7 +91,12 @@ func (p *StagedRecallPipeline) Recall(ctx context.Context, store *Store, query s
 	}
 
 	// === Stage 2: +Vector (target within 500ms) ===
-	vecScores := store.vecIndex.score(store.queryEmbeddingCached(query))
+	// Composite names stay lexical. An embedding neighbor is not the queried person.
+	nameAnchors := strictRecallAnchors(query)
+	vecScores := map[string]float64{}
+	if len(nameAnchors) == 0 {
+		vecScores = store.vecIndex.score(store.queryEmbeddingCached(query))
+	}
 	stage2Entries := p.rankBM25Vec(store, bm25Scores, vecScores, ownerID, opts.StrictOwner, projectPath, expanded.QueryTokens, maxEntries)
 
 	if deadlineExceeded(ctx, deadline, stageFullBudget) {
@@ -250,7 +255,7 @@ func (p *StagedRecallPipeline) rankFull(store *Store, bm25Scores, vecScores map[
 
 	// Semantic graph expansion scores.
 	semanticScores := map[string]float64{}
-	if store.semanticGraph != nil {
+	if store.semanticGraph != nil && len(strictRecallAnchors(query)) == 0 {
 		temporalMode, asOf := semanticTemporalOptionsFromQuery(query)
 		for _, hit := range store.semanticGraph.SearchWithOptions(expanded.Entities, SemanticSearchOptions{
 			Now:          now,
@@ -270,12 +275,16 @@ func (p *StagedRecallPipeline) rankFull(store *Store, bm25Scores, vecScores map[
 		vec      float64
 		semantic float64
 	}
+	nameAnchors := strictRecallAnchors(query)
 	var candidates []candidate
 	for _, e := range store.entries {
 		if !e.IsActive() {
 			continue
 		}
 		if !stagedRecallEntryAllowed(e, ownerID, strictOwner, projectLower) {
+			continue
+		}
+		if len(nameAnchors) > 0 && !entryMentionsAnchors(e, nameAnchors) {
 			continue
 		}
 		b := bm25Scores[e.ID]
@@ -345,6 +354,7 @@ func (p *StagedRecallPipeline) rankFull(store *Store, bm25Scores, vecScores map[
 	}
 
 	scored = filterRecallProjectOthers(scored, projectLower)
+	scored = filterRecallByAnchors(scored, nameAnchors)
 
 	// Temporal demotion: stale/invalidated entries rank lower.
 	applyTemporalDemotion(scored, now)

@@ -2043,8 +2043,12 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 		classification = replayed
 	}
 	// A phase turn that still sounds like the workflow it belongs to is not
-	// asking for an unserved capability.
+	// asking for an unserved capability. An ordinary turn the catalog does
+	// not recognize as a workflow project is not one either: the tree's
+	// design-latitude test is wider than the catalog, and refusing it here
+	// would close the agent path the workflow entry already declined to take.
 	classification = semanticClassificationForWorkflowLoop(semanticWorkflowAgentLoop(requestCtx), classification)
+	classification = semanticReleaseUncataloguedWorkflowTask(userText, classification)
 	// Named skill runs belong to the current agent (skill-doc inject + loop),
 	// the same path the main assistant uses. workflow_task is only a
 	// workflow_v2 panel start and must not HostReject that turn. Agent-guided

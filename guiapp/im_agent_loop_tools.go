@@ -35,6 +35,12 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 			requestID = ctx.Runtime.RequestID
 			ctx.setExposedToolNames(nil)
 		}
+		// The semantic planner owns this surface. A later short reply must not
+		// restore a stale legacy list. An answer-only greeting does not end
+		// the task, so its carry stays.
+		if !loopContextTurnAnswerOnly(ctx) {
+			h.noteParentExecution(userID, false, nil)
+		}
 		log.Printf("[semantic-routing] skip name-router prepareAgentLoopTools on managed turn request_id=%q", requestID)
 		return agentLoopToolSet{PreparationTime: time.Since(startedAt)}
 	}
@@ -219,7 +225,38 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 	lookupCatalog := h.filterPolicyRejectedSurfaceTools(allTools)
 	tools = h.pinClassifierTimeoutWebLookup(userID, ctx, tools, lookupCatalog)
 	baseTools = h.pinClassifierTimeoutWebLookup(userID, ctx, baseTools, lookupCatalog)
-	if loopContextHasClassifierTimeoutLookup(ctx) {
+	// The previous full turn's execution tools are restored from that turn's
+	// rendered list. This message's wording is not consulted. Retrieval
+	// tools stay protected from the budget eviction, and the restored names
+	// are ranked ahead of the router's tail so the closed plan drops those
+	// first instead of failing closed on too many required tools.
+	if !phase.ForceSkillPreference && strings.TrimSpace(profile.Reason) == shortContinuationReason {
+		carried := h.parentExecutionTools(userID)
+		before := namedToolPresence(tools, carried)
+		tools = ensureNamedToolsPresent(tools, lookupCatalog, protectPresentRetrieval(tools, carried))
+		baseTools = ensureNamedToolsPresent(baseTools, lookupCatalog, protectPresentRetrieval(baseTools, carried))
+		after := namedToolPresence(tools, carried)
+		added := false
+		for _, name := range carried {
+			if after[name] && !before[name] {
+				added = true
+				break
+			}
+		}
+		if added {
+			tools = h.filterToolsForExpertUser(userID, tools)
+			baseTools = h.filterToolsForExpertUser(userID, baseTools)
+			if ctx != nil && ctx.LansengerGroupPermissions != nil {
+				tools = filterToolsForLansengerGroupPermissions(tools, *ctx.LansengerGroupPermissions)
+				baseTools = filterToolsForLansengerGroupPermissions(baseTools, *ctx.LansengerGroupPermissions)
+			}
+		}
+		routerRankedNames = rankContinuationTools(routerRankedNames, carried, tools)
+	}
+	// A classifier-timeout leftover is a narrow web lookup. A short
+	// continuation already decided to keep the parent execution tools;
+	// narrowing afterwards is what removes them again.
+	if loopContextHasClassifierTimeoutLookup(ctx) && !operationalExecutionProfile(profile) {
 		tools = keepClassifierTimeoutLookupTools(tools)
 		baseTools = keepClassifierTimeoutLookupTools(baseTools)
 	}
@@ -248,6 +285,11 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 	if ctx != nil {
 		ctx.setExposedToolNames(agentLoopToolNamesForLog(plannedTools))
 	}
+	// A continuation whose plan only kept lookups must not erase the
+	// execution tools it failed to place on this request.
+	if !operationalExecutionProfile(profile) || len(nonLightToolNames(plannedTools)) > 0 {
+		h.noteParentExecution(userID, executionSurfaceIsFull(profile), plannedTools)
+	}
 	return agentLoopToolSet{
 		Tools:            plannedTools,
 		BaseTools:        baseToolsForLLM,
@@ -258,6 +300,63 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 		WorkflowDecision: workflowFilterPolicy,
 		BrowserBeforeWF:  browserBeforeWF,
 	}
+}
+
+// protectPresentRetrieval keeps memory and knowledge_search from being the
+// tail that budget eviction drops when execution tools are restored. Names
+// that are not already on the surface are not added.
+func protectPresentRetrieval(tools []map[string]interface{}, carried []string) []string {
+	protected := append([]string{}, carried...)
+	present := namedToolPresence(tools, []string{"memory", "memory_recall", "knowledge_search"})
+	for _, name := range []string{"memory", "memory_recall", "knowledge_search"} {
+		if present[name] {
+			protected = append(protected, name)
+		}
+	}
+	return protected
+}
+
+// rankContinuationTools keeps memory and knowledge_search ahead of restored
+// execution tools, and those ahead of the router's tail. The count guard
+// drops the lowest score first, so a large restore cannot shed the lookup.
+func rankContinuationTools(ranked, carried []string, tools []map[string]interface{}) []string {
+	ranked = preferRankedNames(ranked, carried)
+	present := namedToolPresence(tools, []string{"memory", "memory_recall", "knowledge_search"})
+	var retrieval []string
+	for _, name := range []string{"memory", "knowledge_search", "memory_recall"} {
+		if present[name] {
+			retrieval = append(retrieval, name)
+		}
+	}
+	return preferRankedNames(ranked, retrieval)
+}
+
+// preferRankedNames puts restored execution tools ahead of the router's own
+// order so a later count guard sheds the router's tail first.
+func preferRankedNames(ranked, prefer []string) []string {
+	if len(prefer) == 0 {
+		return ranked
+	}
+	seen := make(map[string]struct{}, len(prefer))
+	out := make([]string, 0, len(ranked)+len(prefer))
+	for _, name := range prefer {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	for _, name := range ranked {
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out
 }
 
 // filterPolicyRejectedSurfaceTools drops tools that the effective Hub security

@@ -4033,7 +4033,11 @@ func TestSideEffectStateForToolBatchFailsClosedForUnknownTools(t *testing.T) {
 		want  string
 	}{
 		{name: "local reads", tools: []string{"read_file", "ripgrep"}, want: "none"},
+		{name: "document read", tools: []string{"read_document"}, want: "none"},
+		{name: "catalog search", tools: []string{"tools_search"}, want: "none"},
+		{name: "catalog search before mutation", tools: []string{"tools_search", "write_file"}, want: "local_committed"},
 		{name: "local mutation", tools: []string{"read_file", "apply_patch"}, want: "local_committed"},
+		{name: "local mutation with unknown sibling", tools: []string{"write_file", "alarm_set"}, want: "local_committed"},
 		{name: "known external", tools: []string{"web_search"}, want: "external_uncertain"},
 		{name: "dynamic client tool", tools: []string{"alarm_set"}, want: "external_uncertain"},
 		{name: "empty name", tools: []string{""}, want: "external_uncertain"},
@@ -4046,6 +4050,13 @@ func TestSideEffectStateForToolBatchFailsClosedForUnknownTools(t *testing.T) {
 			}
 			if got := sideEffectStateForToolBatch(calls); got != tt.want {
 				t.Fatalf("sideEffectStateForToolBatch(%v) = %q, want %q", tt.tools, got, tt.want)
+			}
+			pre := "external_uncertain"
+			if tt.want == "none" {
+				pre = "none"
+			}
+			if got := preToolSideEffectState(calls); got != pre {
+				t.Fatalf("preToolSideEffectState(%v) = %q, want %q", tt.tools, got, pre)
 			}
 		})
 	}

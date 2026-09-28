@@ -593,6 +593,21 @@ func clearArtifactRunnerUp(result *ClassificationResult) {
 	}
 }
 
+// lookupArtifactCompanionRequiresTree reports an artifact half that must not
+// ship as a plain lookup. Document and office halves keep the 0.60 floor.
+// A chart resemblance has to clear the 0.73 companion floor: below that,
+// a weather question sits close to "生成天气实况图" and used to leave the
+// lookup shortcut.
+func lookupArtifactCompanionRequiresTree(companion labelScore) bool {
+	if companion.label == "" || companion.score < EmbeddingLookupCompositeFloor {
+		return false
+	}
+	if companion.label == LabelLiveDataVisual && companion.score < EmbeddingCompositeSecondaryMinScore {
+		return false
+	}
+	return true
+}
+
 // classifyByEmbedding performs Layer 2 embedding-based classification using
 // cosine similarity between the user message embedding and pre-computed anchor
 // vectors for each intent label category.
@@ -779,7 +794,7 @@ func classifyByEmbedding(embedder embedding.Embedder, anchors []intentAnchor, te
 		// composite request, not a plain lookup: shipping it as confident
 		// lookup-only silently drops the generate capability without ever
 		// consulting the tree.  Escalate with the half as evidence.
-		if isLookupIntentLabel(top1.label) && declaredCompanion.label != "" && declaredCompanion.score >= EmbeddingLookupCompositeFloor {
+		if isLookupIntentLabel(top1.label) && lookupArtifactCompanionRequiresTree(declaredCompanion) {
 			result.Secondary = []IntentLabel{declaredCompanion.label}
 			result.Reason = fmt.Sprintf("embedding ambiguous composite: top=%s (%.3f), companion=%s (%.3f), gap=%.3f", top1.label, top1.score, declaredCompanion.label, declaredCompanion.score, gap)
 			return result, false
@@ -797,6 +812,9 @@ func classifyByEmbedding(embedder embedding.Embedder, anchors []intentAnchor, te
 			result.Secondary = []IntentLabel{declaredCompanion.label}
 			result.Reason = fmt.Sprintf("embedding ambiguous composite: top=%s (%.3f), companion=%s (%.3f), gap=%.3f", top1.label, top1.score, declaredCompanion.label, declaredCompanion.score, gap)
 			return result, false
+		}
+		if isLookupIntentLabel(top1.label) {
+			clearArtifactRunnerUp(&result)
 		}
 		result.Reason = fmt.Sprintf("embedding: top=%s (%.3f), gap=%.3f", top1.label, top1.score, gap)
 		return result, true
@@ -821,11 +839,12 @@ func classifyByEmbedding(embedder embedding.Embedder, anchors []intentAnchor, te
 		// capability is never routed, and the loop later reports the
 		// generate tool as unavailable ("本轮未授权").  Escalation lets the
 		// tree verdict plus the L2 runner-up synthesize the composite.
-		if declaredCompanion.label != "" && declaredCompanion.score >= EmbeddingLookupCompositeFloor {
+		if lookupArtifactCompanionRequiresTree(declaredCompanion) {
 			result.Secondary = []IntentLabel{declaredCompanion.label}
 			result.Reason = fmt.Sprintf("embedding ambiguous composite: top=%s (%.3f), companion=%s (%.3f), gap=%.3f", top1.label, top1.score, declaredCompanion.label, declaredCompanion.score, gap)
 			return result, false
 		}
+		clearArtifactRunnerUp(&result)
 		result.Reason = fmt.Sprintf("embedding lookup: top=%s (%.3f), gap=%.3f", top1.label, top1.score, gap)
 		return result, true
 	}
@@ -837,6 +856,12 @@ func classifyByEmbedding(embedder embedding.Embedder, anchors []intentAnchor, te
 	// find-images-online part of the request at all.
 	if top1.label == LabelOffice && isLookupIntentLabel(declaredCompanion.label) && declaredCompanion.score >= EmbeddingLookupCompositeFloor {
 		result.Secondary = []IntentLabel{declaredCompanion.label}
+	}
+	// A below-floor chart resemblance is not synthesis evidence. Leaving it
+	// in RunnerUp let a later merge crown the weather card.
+	if result.RunnerUp == LabelLiveDataVisual && result.RunnerUpScore < EmbeddingCompositeSecondaryMinScore {
+		result.RunnerUp = ""
+		result.RunnerUpScore = 0
 	}
 	result.Reason = fmt.Sprintf("embedding ambiguous: top=%s (%.3f), gap=%.3f", top1.label, top1.score, gap)
 	return result, false

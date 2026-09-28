@@ -27,6 +27,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime/debug"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -42,6 +43,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/llm/moa"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
+	"github.com/RapidAI/CodeClaw/corelib/toolresult"
 )
 
 // sharedAgentLoopMode is the effective strangler mode.
@@ -585,15 +587,9 @@ func (h *IMMessageHandler) executeSharedTurn(
 			startState.Recorder.SetKind("shared")
 			startState.Recorder.RecordLoopResult(loopResult)
 		}
-		// A pre-tool checkpoint deliberately contains only the prior valid
-		// history prefix. If cancellation lands after the assistant announced a
-		// batch but before every result was paired, saving outHistory here would
-		// overwrite that checkpoint with a provider-invalid partial group.
-		// Leave the durable prefix + uncertain marker intact instead.
-		if cb.hasPendingToolBatch {
-			return h.interruptedSharedLoopExitResponse(userText)
-		}
-		return h.cancelledExitResponse(userID, outHistory, userText)
+		// A crash never reaches this branch. User stop drops the marker here;
+		// every other cancel keeps it.
+		return h.sharedLoopCancelResponse(ctx, userID, loopID, outHistory, userText, cb.hasPendingToolBatch)
 	}
 	// ask_user intentionally pauses before the core loop can append its tool
 	// result. Reuse the legacy pause finalizer to atomically persist the paired
@@ -685,8 +681,9 @@ func (h *IMMessageHandler) executeSharedTurn(
 		return h.interruptedSharedLoopResultResponse(userText, loopResult, requestID, telemetry, onStreamDone, cb)
 	}
 	// A marker represents incomplete work only. Clear it after a normal shared
-	// loop completion, and only when this exact run owns it. Errors/cancellation
-	// deliberately retain the latest successful checkpoint for recovery.
+	// loop completion, and only when this exact run owns it. Errors keep the
+	// latest successful checkpoint for crash recovery. User cancel already
+	// retired its marker above.
 	if cb.checkpointCommitted && loopResult.Error == "" && loopResult.AskUser == nil && loopResult.RecordAudio == nil {
 		if err := h.memory.CompleteInFlightCheckpointForRun(userID, loopID); err != nil {
 			log.Printf("[InFlightTask] shared normal cleanup flush failed user=%q run=%q err=%v", userID, loopID, err)
@@ -1347,7 +1344,20 @@ type sharedAgentLoopCallbacks struct {
 	// 2026-08-26 ran 8+ tools_search calls without recovering, so the turn
 	// budget caps it and the exhaustion text tells the model to move on.
 	semanticToolsSearchCalls int
-	toolCalls                int
+	// semanticToolsSearchShown records directory rows already returned this
+	// turn. A later lookup whose rows are all in this set cannot change the
+	// surface, so discovery closes instead of spending another model round.
+	semanticToolsSearchShown map[string]struct{}
+	// semanticToolsSearchClosed is set when the turn budget is spent. A
+	// repeated directory does not set it: that call returns a short redirect,
+	// and a later lookup that names a new row still answers.
+	semanticToolsSearchClosed bool
+	// semanticToolsSearchDirectives records each "call this listed name"
+	// sentence already returned. A repeat of the same sentence closes
+	// discovery. A different listed name is still delivered once, even when
+	// its row was already inside an earlier unmatched-needs dump.
+	semanticToolsSearchDirectives map[string]struct{}
+	toolCalls                     int
 	// moaPreset is set for the duration of one agent loop after /moa or auto arming.
 	moaPreset *moa.ResolvedPreset
 	moaAuto   bool
@@ -1358,8 +1368,9 @@ type sharedAgentLoopCallbacks struct {
 	// workspaceDocBaseline is the bound workspace's documents at turn start.
 	// A file a later tool writes (PowerPoint export, slide render) is not the
 	// generate_pdf registry artifact, so delivery never saw it.
-	workspaceDocRoot     string
-	workspaceDocBaseline map[string]workspaceDocumentStamp
+	workspaceDocRoot       string
+	workspaceDocBaseline   map[string]workspaceDocumentStamp
+	workspaceDocBaselineAt time.Time
 	// screenshotImageKey holds the latest screenshot produced by the shared
 	// loop. Unlike the legacy loop, the shared loop has no post-tool artifact
 	// branch, so it must explicitly carry the image into the final IM response.
@@ -1625,7 +1636,14 @@ func (c *sharedAgentLoopCallbacks) CurrentPromptProfile() agent.PromptProfile {
 // only: light-profile admission is made from the capability plan's effect and
 // confirmation contract, so a name's spelling cannot create a policy hole.
 func sessionCeilingSpentMessage() string {
-	return "[system] Planned invocations for this session are complete. Answer from the results you already have. Do not call tools."
+	return "[system] This call did not run. The previous task's planned steps are already finished, and this turn did not open a new tool plan. Answer from results already in the conversation. Ask what to do next in this same chat. Do not hand the user a command. Do not claim this call succeeded."
+}
+
+// sessionCeilingTurnPrompt is the instruction for a turn that closed before
+// any tool was listed. It must not name the refusal the model otherwise copies
+// back to the user.
+func sessionCeilingTurnPrompt() string {
+	return "[system] This turn has no tools. The previous plan's steps are already finished, and this message did not open a new plan. Answer from results already in the conversation. Ask what to do next in this same chat. Do not hand the user a command."
 }
 
 func sessionTurnAnswerOnlyMessage() string {
@@ -1738,16 +1756,21 @@ func (c *sharedAgentLoopCallbacks) openNextRepeatSibling(name string) bool {
 		return false
 	}
 	retired, ok := c.semanticSurface.retiredGrants[name]
-	if !ok || !c.semanticSurface.completed[retired.SelectionID] {
+	// A successful call marks the selection completed. A settled failure, such
+	// as the host stopping its wait, spends the attempt without that mark.
+	// Either way the command is finished and the task may still need another.
+	// An unknown outcome does not: the command may still be running.
+	if !ok || !repeatSelectionSpent(c.semanticSurface, retired.SelectionID) {
 		return false
 	}
 	selection, found := semanticSelectionByID(c.semanticSurface.plan, retired.SelectionID)
-	if !found || (selection.FitProof.MatchedCapability != tool.CapabilityArtifactAcquireRemote && selection.AdapterName != "download_file") {
+	if !found {
 		return false
 	}
 	// A previous attempt may already have stored the next sibling and then
 	// failed to issue it. Appending again would pile unused nodes up to the
-	// turn cap while the call still fails.
+	// turn cap while the call still fails. AppendRepeatSibling itself rejects
+	// one-shot families and a family already at the turn cap.
 	if _, pending := pendingDownloadSibling(c.semanticSurface, selection); !pending {
 		var updated tool.ToolPlan
 		var err error
@@ -1771,6 +1794,30 @@ func (c *sharedAgentLoopCallbacks) openNextRepeatSibling(name string) bool {
 	}
 	_, live := c.semanticSurface.grants[name]
 	return live
+}
+
+// OpenNextRepeatWave implements agent.RepeatWaveOpener. A remote command
+// whose published wave is spent is still the same user task; the next call
+// is listed instead of ending the turn.
+func (c *sharedAgentLoopCallbacks) OpenNextRepeatWave(name string) bool {
+	return c.openNextRepeatSibling(name)
+}
+
+func repeatSelectionSpent(surface *semanticCallSurface, selectionID string) bool {
+	if surface == nil || strings.TrimSpace(selectionID) == "" {
+		return false
+	}
+	if surface.completed[selectionID] {
+		return true
+	}
+	if surface.executor == nil {
+		return false
+	}
+	record, err := surface.executor.Execution(surface.scope, selectionID)
+	if err != nil {
+		return false
+	}
+	return record.State == tool.PlanExecutionFailed
 }
 
 func pendingDownloadSibling(surface *semanticCallSurface, prototype tool.PlannedSelection) (string, bool) {
@@ -1925,30 +1972,332 @@ func (c *sharedAgentLoopCallbacks) fileDeleteIntakeReason(name, argsJSON string)
 	return ""
 }
 
-func semanticUnissuedGeneratePDFDenial(surface *semanticCallSurface, name string) string {
-	if surface == nil || strings.TrimSpace(name) != "generate_pdf" {
+func semanticUnissuedGeneratePDFDenial(c *sharedAgentLoopCallbacks, name string) string {
+	if c == nil || c.semanticSurface == nil || strings.TrimSpace(name) != "generate_pdf" {
 		return ""
 	}
+	surface := c.semanticSurface
 	if _, grant := soleLiveSemanticGrantByAdapter(surface, "generate_pdf"); grant.Token != "" {
 		return ""
 	}
 	if semanticRetiredGeneratePDF(surface) {
 		return "Error: generate_pdf was already used this turn. Answer from the published artifact; do not retry generate_pdf and do not ask the user to re-authorize tools."
 	}
+	return c.plannedSuccessorDenial("generate_pdf", tool.CapabilityID("document.generate.file"))
+}
+
+// plannedToolNotYetListedMessage is for a successor whose unfinished
+// requirements are selections that are ready now. predecessors are the
+// model-facing names of those listed steps. Without one, the sentence stays
+// generic: several tools can be listed, and only the predecessor unlocks this
+// name.
+func plannedToolNotYetListedMessage(name string, predecessors []string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = "(unknown)"
+	}
+	step := "Call a tool that is listed now."
+	if joined := joinListedNames(predecessors); joined != "" {
+		step = "Call " + joined + " now."
+	}
+	return fmt.Sprintf("Error: tool %q is planned for this turn but is not listed yet. %s After that succeeds, %q appears on the next request in this same reply; call it then. Do not tell the user the tool is missing and do not ask the user to re-authorize tools.", name, step, name)
+}
+
+// plannedToolHeldForNextRequestMessage is for a document generate grant whose
+// predecessor already finished, withheld only until this tool batch commits.
+// Telling the model to call another listed tool here starts a second lookup.
+func plannedToolHeldForNextRequestMessage(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = "(unknown)"
+	}
+	return fmt.Sprintf("Error: tool %q is planned for this turn but is held until this response's other tool calls finish. It appears on the next request in this same reply; call it then. Do not call it again before it is listed, do not tell the user the tool is missing, and do not ask the user to re-authorize tools.", name)
+}
+
+// plannedToolListedAfterEarlierStepsMessage is for a successor still behind a
+// selection that is itself not ready. Promising it on the next request would
+// name the wrong step: delivery waits on generate, and generate is still
+// waiting on lookup.
+func plannedToolListedAfterEarlierStepsMessage(name string, callNow, nextRequest []string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = "(unknown)"
+	}
+	quoted := fmt.Sprintf("%q", name)
+	// Name the successor explicitly. "After that name is listed" is read as the
+	// predecessor, and web_search is already listed, so the model calls send_file
+	// immediately.
+	var step string
+	switch {
+	case len(callNow) > 0 && len(nextRequest) > 0:
+		step = "Call " + joinListedNames(callNow) + " now. After that succeeds, " + joinListedNames(nextRequest) + " appears on the next request. Call " + quoted + " only after " + quoted + " is listed."
+	case len(callNow) > 0:
+		step = "Call " + joinListedNames(callNow) + " now. Call " + quoted + " only after " + quoted + " is listed."
+	case len(nextRequest) > 0:
+		step = joinListedNames(nextRequest) + " appears on the next request; call it then. Call " + quoted + " only after " + quoted + " is listed."
+	default:
+		step = "Call a tool that is listed now. Call " + quoted + " only after " + quoted + " is listed."
+	}
+	return fmt.Sprintf("Error: tool %q is planned for this turn but is not listed yet. Earlier planned steps are still unfinished. %s Do not tell the user the tool is missing and do not ask the user to re-authorize tools.", name, step)
+}
+
+func joinListedNames(names []string) string {
+	switch len(names) {
+	case 0:
+		return ""
+	case 1:
+		return fmt.Sprintf("%q", names[0])
+	default:
+		quoted := make([]string, len(names))
+		for i, name := range names {
+			quoted[i] = fmt.Sprintf("%q", name)
+		}
+		return strings.Join(quoted[:len(quoted)-1], ", ") + " and " + quoted[len(quoted)-1]
+	}
+}
+
+type predecessorNames struct {
+	callNow     []string
+	nextRequest []string
+}
+
+// predecessorNamesFor splits blockers into tools the model can call on this
+// request and tools that are ready in the plan but not listed yet. A held
+// generate_pdf is the second kind: delivery must not be told that send_file
+// itself appears on the next request.
+func (c *sharedAgentLoopCallbacks) predecessorNamesFor(capability tool.CapabilityID) predecessorNames {
+	var out predecessorNames
+	if c == nil || c.semanticSurface == nil || capability == "" {
+		return out
+	}
+	surface := c.semanticSurface
+	ready := map[string]struct{}{}
+	for _, selection := range surface.plan.ReadySelections(surface.completed) {
+		ready[selection.ID] = struct{}{}
+	}
+	byID := map[string]tool.PlannedSelection{}
 	for _, selection := range surface.plan.Selections {
-		if !tool.DocumentGenerateSelection(selection) {
+		if selection.ID != "" {
+			byID[selection.ID] = selection
+		}
+	}
+	seenNow := map[string]struct{}{}
+	seenNext := map[string]struct{}{}
+	self := stablePetitionName(capability)
+	noteNext := func(name string) {
+		if name == "" || name == self {
+			return
+		}
+		if _, dup := seenNext[name]; dup {
+			return
+		}
+		seenNext[name] = struct{}{}
+		out.nextRequest = append(out.nextRequest, name)
+	}
+	var walk func(selection tool.PlannedSelection, depth int)
+	walk = func(selection tool.PlannedSelection, depth int) {
+		if depth > 8 {
+			return
+		}
+		for _, requirement := range selection.Requires {
+			requirement = strings.TrimSpace(requirement)
+			if requirement == "" || surface.completed[requirement] {
+				continue
+			}
+			if _, ok := ready[requirement]; ok && c.selectionIsListed(requirement) {
+				if name := grantNameForSelection(surface, requirement); name != "" {
+					if _, dup := seenNow[name]; !dup {
+						seenNow[name] = struct{}{}
+						out.callNow = append(out.callNow, name)
+					}
+				}
+				continue
+			}
+			next, ok := byID[requirement]
+			if !ok {
+				continue
+			}
+			if _, isReady := ready[requirement]; isReady && c.semanticHoldDependantIssue && tool.DocumentGenerateSelection(next) {
+				noteNext(stablePetitionName(next.FitProof.MatchedCapability))
+			}
+			if c.selectionUnlocksAfterListed(next, ready) {
+				noteNext(stablePetitionName(next.FitProof.MatchedCapability))
+			}
+			walk(next, depth+1)
+		}
+	}
+	for _, selection := range surface.plan.Selections {
+		if selection.FitProof.MatchedCapability != capability || surface.completed[selection.ID] {
 			continue
 		}
-		return "Error: generate_pdf is not listed yet. Continue from lookup evidence; do not retry generate_pdf and do not ask the user to re-authorize tools."
+		walk(selection, 0)
+	}
+	sort.Strings(out.callNow)
+	sort.Strings(out.nextRequest)
+	return out
+}
+
+// selectionUnlocksAfterListed reports a selection whose unfinished
+// requirements are all tools already on this request. That selection is what
+// the next request can list; the caller's own name stays out of that set.
+func (c *sharedAgentLoopCallbacks) selectionUnlocksAfterListed(selection tool.PlannedSelection, ready map[string]struct{}) bool {
+	if c == nil || c.semanticSurface == nil {
+		return false
+	}
+	completed := c.semanticSurface.completed
+	sawListed := false
+	for _, requirement := range selection.Requires {
+		requirement = strings.TrimSpace(requirement)
+		if requirement == "" || completed[requirement] {
+			continue
+		}
+		if _, ok := ready[requirement]; ok && c.selectionIsListed(requirement) {
+			sawListed = true
+			continue
+		}
+		return false
+	}
+	return sawListed
+}
+
+func (c *sharedAgentLoopCallbacks) selectionIsListed(selectionID string) bool {
+	if c == nil || c.semanticSurface == nil {
+		return false
+	}
+	name := grantNameForSelection(c.semanticSurface, selectionID)
+	if name == "" {
+		return false
+	}
+	if rendered := c.semanticSurface.rendered; rendered != nil && !rendered[name] {
+		return false
+	}
+	return true
+}
+
+func stablePetitionName(capability tool.CapabilityID) string {
+	found := ""
+	for name, id := range semanticPetitionableCapabilities {
+		if id != capability {
+			continue
+		}
+		if found == "" || len(name) < len(found) || (len(name) == len(found) && name < found) {
+			found = name
+		}
+	}
+	return found
+}
+
+func grantNameForSelection(surface *semanticCallSurface, selectionID string) string {
+	if surface == nil {
+		return ""
+	}
+	for name, grant := range surface.grants {
+		if grant.SelectionID == selectionID && strings.TrimSpace(grant.Token) != "" && strings.TrimSpace(name) != "" {
+			return name
+		}
 	}
 	return ""
+}
+
+type successorWait int
+
+const (
+	successorWaitNone successorWait = iota
+	successorWaitLater
+	successorWaitImmediate
+	successorWaitHeld
+)
+
+func (c *sharedAgentLoopCallbacks) plannedSuccessorDenial(name string, capability tool.CapabilityID) string {
+	switch c.plannedSuccessorWait(capability) {
+	case successorWaitHeld:
+		return plannedToolHeldForNextRequestMessage(name)
+	case successorWaitImmediate:
+		return plannedToolNotYetListedMessage(name, c.predecessorNamesFor(capability).callNow)
+	case successorWaitLater:
+		names := c.predecessorNamesFor(capability)
+		return plannedToolListedAfterEarlierStepsMessage(name, names.callNow, names.nextRequest)
+	default:
+		return ""
+	}
+}
+
+// plannedSuccessorWait distinguishes a successor the next request can list
+// from one still behind another unfinished selection. Confirmation and any
+// other non-selection requirement keep the generic absence denial.
+func (c *sharedAgentLoopCallbacks) plannedSuccessorWait(capability tool.CapabilityID) successorWait {
+	if c == nil || c.semanticSurface == nil || capability == "" {
+		return successorWaitNone
+	}
+	surface := c.semanticSurface
+	ready := map[string]struct{}{}
+	for _, selection := range surface.plan.ReadySelections(surface.completed) {
+		ready[selection.ID] = struct{}{}
+	}
+	known := map[string]struct{}{}
+	for _, selection := range surface.plan.Selections {
+		if selection.ID != "" {
+			known[selection.ID] = struct{}{}
+		}
+	}
+	wait := successorWaitNone
+	for _, selection := range surface.plan.Selections {
+		if selection.FitProof.MatchedCapability != capability || surface.completed[selection.ID] {
+			continue
+		}
+		next := successorWaitNone
+		if _, isReady := ready[selection.ID]; isReady {
+			if c.semanticHoldDependantIssue && tool.DocumentGenerateSelection(selection) {
+				next = successorWaitHeld
+			}
+		} else {
+			next = c.selectionWait(known, ready, selection.Requires)
+		}
+		if next > wait {
+			wait = next
+		}
+	}
+	return wait
+}
+
+func (c *sharedAgentLoopCallbacks) selectionWait(known, ready map[string]struct{}, requires []string) successorWait {
+	completed := map[string]bool(nil)
+	if c != nil && c.semanticSurface != nil {
+		completed = c.semanticSurface.completed
+	}
+	sawReady := false
+	sawUnready := false
+	for _, requirement := range requires {
+		requirement = strings.TrimSpace(requirement)
+		if requirement == "" || completed[requirement] {
+			continue
+		}
+		if _, ok := known[requirement]; !ok {
+			return successorWaitNone
+		}
+		// Ready in the plan is not enough. A held generate_pdf is ready and
+		// still absent from this request, so delivery must not treat it as the
+		// step the model can finish right now.
+		if _, ok := ready[requirement]; ok && c.selectionIsListed(requirement) {
+			sawReady = true
+			continue
+		}
+		sawUnready = true
+	}
+	if sawUnready {
+		return successorWaitLater
+	}
+	if sawReady {
+		return successorWaitImmediate
+	}
+	return successorWaitNone
 }
 
 // ToolDenialMessage implements agent.ToolDenialPresenter. Only a light
 // governed lookup should tell the model to stop and answer from evidence;
 // coding/workflow policy denials keep the generic execution-policy text.
 func (c *sharedAgentLoopCallbacks) ToolDenialMessage(name string) string {
-	if msg := semanticUnissuedGeneratePDFDenial(c.semanticSurface, name); msg != "" {
+	if msg := semanticUnissuedGeneratePDFDenial(c, name); msg != "" {
 		return msg
 	}
 	if c.semanticSurface != nil {
@@ -2100,6 +2449,7 @@ func (c *sharedAgentLoopCallbacks) BuildToolsForModelRequest(userText string, it
 	if c.semanticSurface != nil {
 		c.maybeOverlaySQLDatabaseForTurn(userText)
 		c.maybeOverlayDocumentContinuationForTurn(userText)
+		c.maybeOverlaySpilledToolResultReader()
 		definitions, err := visibleSemanticCallSurfaceDefinitions(c.semanticSurface)
 		if err != nil {
 			log.Printf("[semantic-routing] request-bound surface render failed: %v", err)
@@ -2150,6 +2500,13 @@ func (c *sharedAgentLoopCallbacks) PetitionToolCall(name string) (bool, string) 
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return false, ""
+	}
+	// A spilled tool result names this reader in its footer. It is a host
+	// builtin, not a semantic grant. Returning here also stops the generic
+	// "do not retry" denial from burning the turn when the overlay missed
+	// the previous request.
+	if strings.EqualFold(name, "read_tool_result") {
+		return c.grantSpilledToolResultReader()
 	}
 	// A closed gate already decided this turn is not desktop control. Granting
 	// computer_use here would reopen it from a model petition.
@@ -2212,6 +2569,9 @@ func (c *sharedAgentLoopCallbacks) PetitionToolCall(name string) (bool, string) 
 			return true, message
 		}
 		log.Printf("[semantic-routing] tool petition %q already planned, not yet exposable", name)
+		if msg := c.plannedSuccessorDenial(name, capability); msg != "" {
+			return false, msg
+		}
 		return false, ""
 	}
 	effectful := semanticPetitionIsEffectful(name)
@@ -2375,6 +2735,72 @@ func (c *sharedAgentLoopCallbacks) maybeOverlayDocumentContinuationForTurn(userT
 	if len(added) > 0 {
 		log.Printf("[doc-extract] continuation overlay truncated=true tools=%v", added)
 	}
+}
+
+// maybeOverlaySpilledToolResultReader lists read_tool_result on the next
+// request after a tool preview was spilled. The handle footer tells the model
+// to page the full payload with that tool; a closed semantic surface otherwise
+// rejects the call as unrendered, so the spill cannot be read back.
+func (c *sharedAgentLoopCallbacks) maybeOverlaySpilledToolResultReader() {
+	if c == nil || c.semanticSurface == nil {
+		return
+	}
+	const name = "read_tool_result"
+	if c.semanticGrantNamed(name) || c.legacyPetitionAllows(name) {
+		return
+	}
+	if !c.activateSpilledToolResultReader() {
+		return
+	}
+	log.Printf("[tool-result] overlay %s because a spilled handle is in this turn", name)
+}
+
+// grantSpilledToolResultReader admits read_tool_result when the model calls
+// it after a spill but the name was not on the frozen request surface.
+// The call itself does not run; the next request lists the reader.
+func (c *sharedAgentLoopCallbacks) grantSpilledToolResultReader() (bool, string) {
+	if !c.activateSpilledToolResultReader() {
+		return false, ""
+	}
+	log.Printf("[tool-result] petition granted read_tool_result for spilled handle")
+	return true, agentruntime.PetitionGrantedMessage("read_tool_result")
+}
+
+func (c *sharedAgentLoopCallbacks) activateSpilledToolResultReader() bool {
+	if c == nil || c.handler == nil || !historyHasToolResultHandle(c.checkpointHistory) {
+		return false
+	}
+	const name = "read_tool_result"
+	if c.loopCtx != nil && c.loopCtx.LansengerGroupPermissions != nil && !c.loopCtx.LansengerGroupPermissions.allowsTool(name) {
+		return false
+	}
+	policyOwner := c.handler.workflowPolicyOwnerID(c.userID, c.loopCtx)
+	if !c.handler.isWorkflowToolAllowedForOwner(policyOwner, name) {
+		return false
+	}
+	if c.liveLegacyPetitionDefinitionByName(name) == nil {
+		return false
+	}
+	if c.legacyPetitionTools == nil {
+		c.legacyPetitionTools = map[string]bool{}
+	}
+	c.legacyPetitionTools[name] = true
+	// Do not rewrite c.tools here. BuildToolsForModelRequest appends this name
+	// when it renders the next request. Attaching it to the previous snapshot
+	// would publish a reader the current receipt did not list.
+	return true
+}
+
+func historyHasToolResultHandle(entries []agent.ConversationEntry) bool {
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].Role != "tool" {
+			continue
+		}
+		if strings.Contains(conversationEntryText(entries[i].Content), toolresult.HandleFooterMarker) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *sharedAgentLoopCallbacks) autoExtractContinuationText(userText string) string {
@@ -2555,6 +2981,11 @@ func (c *sharedAgentLoopCallbacks) liveLegacyPetitionDefinitionByName(name strin
 		if strings.EqualFold(continuation, name) {
 			return c.handler.continuationHostDefinitionByName(name)
 		}
+	}
+	// The spill footer names this reader. It is a host builtin, not a semantic
+	// grant, and the managed catalog does not publish it on an ssh-only turn.
+	if strings.EqualFold(strings.TrimSpace(name), "read_tool_result") {
+		return c.handler.continuationHostDefinitionByName(name)
 	}
 	if strings.TrimSpace(name) != "ssh" || c.handler.registry == nil {
 		return nil
@@ -3050,15 +3481,121 @@ func (c *sharedAgentLoopCallbacks) executeToolWithoutSemanticSurface(name, argsJ
 // with text that redirects to the tools already listed.
 const semanticToolsSearchMaxPerTurn = 4
 
+// semanticToolsSearchRepeatExhausted is the redirect for a lookup that adds
+// no directory row. It deliberately does not repeat tool names: the model
+// already has them, and echoing the catalog invites another search.
+const semanticToolsSearchRepeatExhausted = "[system] tools_search already returned this directory. Call a listed tool now, or call a petitionable name once. Do not repeat this lookup."
+
+// semanticToolsSearchDirectedExhausted is the same close after the result
+// already named a listed tool. Offering a petition again is what sent the
+// save turn back to web_fetch.
+const semanticToolsSearchDirectedExhausted = "[system] tools_search already returned this directory. Call the listed tool named in the previous result. Do not repeat this lookup."
+
 // runSemanticToolsSearch executes the discovery meta-tool under its turn
 // budget. The budget is a callback counter, not a grant: tools_search carries
 // no authority, so overspending it must never consume or alter the surface.
+// A result whose rows were all returned earlier is refused for that call.
+// The turn stays open for a different name. The 2026-09-27 knowledge-save
+// turn spent five searches re-reading the same "可请愿" line.
 func (c *sharedAgentLoopCallbacks) runSemanticToolsSearch(argsJSON string) string {
+	if c.semanticToolsSearchClosed {
+		return semanticToolsSearchBudgetExhausted()
+	}
 	c.semanticToolsSearchCalls++
 	if c.semanticToolsSearchCalls > semanticToolsSearchMaxPerTurn {
-		return fmt.Sprintf("[system] %s reached its limit of %d calls for this turn and is no longer available. Discovery cannot change this turn's tool surface; finish with the tools already listed, and state plainly what remains unfinished.", semanticToolsSearchName, semanticToolsSearchMaxPerTurn)
+		c.semanticToolsSearchClosed = true
+		return semanticToolsSearchBudgetExhausted()
 	}
-	return semanticToolsSearchRun(c, argsJSON)
+	result := semanticToolsSearchRun(c, argsJSON)
+	lines := semanticToolsSearchDirectoryLines(result)
+	if len(lines) == 0 {
+		return result
+	}
+	directive, hasDirective := semanticToolsSearchDirectiveKey(result)
+	_, directiveSeen := c.semanticToolsSearchDirectives[directive]
+	// Refuse this duplicate only. Closing the rest of the turn here blocked a
+	// later lookup for a different tool after one repeated search.
+	if semanticToolsSearchLinesSeen(c.semanticToolsSearchShown, lines) && (!hasDirective || directiveSeen) {
+		return c.semanticToolsSearchClosedMessage()
+	}
+	if hasDirective {
+		if c.semanticToolsSearchDirectives == nil {
+			c.semanticToolsSearchDirectives = map[string]struct{}{}
+		}
+		c.semanticToolsSearchDirectives[directive] = struct{}{}
+	}
+	if c.semanticToolsSearchShown == nil {
+		c.semanticToolsSearchShown = make(map[string]struct{}, len(lines))
+	}
+	for _, line := range lines {
+		c.semanticToolsSearchShown[line] = struct{}{}
+	}
+	return result
+}
+
+func semanticToolsSearchBudgetExhausted() string {
+	return fmt.Sprintf("[system] %s reached its limit of %d calls for this turn and is no longer available. Discovery cannot change this turn's tool surface; finish with the tools already listed, and state plainly what remains unfinished.", semanticToolsSearchName, semanticToolsSearchMaxPerTurn)
+}
+
+func (c *sharedAgentLoopCallbacks) semanticToolsSearchClosedMessage() string {
+	if c != nil && len(c.semanticToolsSearchDirectives) > 0 {
+		return semanticToolsSearchDirectedExhausted
+	}
+	return semanticToolsSearchRepeatExhausted
+}
+
+func semanticToolsSearchDirectiveKey(result string) (string, bool) {
+	idx := strings.Index(result, semanticToolsSearchListedDirectivePrefix)
+	if idx < 0 {
+		return "", false
+	}
+	line := result[idx:]
+	if end := strings.IndexByte(line, '\n'); end >= 0 {
+		line = line[:end]
+	}
+	return line, true
+}
+
+func semanticToolsSearchDirectoryLines(result string) []string {
+	var lines []string
+	for _, line := range strings.Split(result, "\n") {
+		if key, ok := semanticToolsSearchRowKey(line); ok {
+			lines = append(lines, key)
+		}
+	}
+	return lines
+}
+
+// semanticToolsSearchRowKey identifies a directory row by name and status.
+// Summary text is not part of the key: a wording change is not new
+// information, and a status change (可请愿 to 已在当前工具面) is.
+func semanticToolsSearchRowKey(line string) (string, bool) {
+	if !strings.HasPrefix(line, "- ") {
+		return "", false
+	}
+	body := strings.TrimPrefix(line, "- ")
+	name, rest, ok := strings.Cut(body, " — ")
+	name = strings.TrimSpace(name)
+	if !ok || name == "" {
+		return line, true
+	}
+	status := ""
+	if i := strings.LastIndex(rest, "["); i >= 0 {
+		status = rest[i:]
+	}
+	return name + "\x00" + status, true
+}
+
+func semanticToolsSearchLinesSeen(shown map[string]struct{}, lines []string) bool {
+	if len(shown) == 0 || len(lines) == 0 {
+		return false
+	}
+	for _, line := range lines {
+		if _, ok := shown[line]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // executeSemanticTool resolves the opaque function name only through this
@@ -3462,7 +3999,28 @@ func (c *sharedAgentLoopCallbacks) retireRejectedSemanticTool(functionName, sele
 	if err := c.retireSemanticToolSurface(functionName, selectionID); err != nil {
 		return "[system rejected] semantic_plan_retire_failed"
 	}
-	return result
+	return c.noteSpentRemoteCommand(selectionID, result)
+}
+
+// noteSpentRemoteCommand tells the loop that a settled remote-command failure
+// spent the published wave. The loop then lists the next call in this same
+// turn. An unsettled attempt stays silent so the same command is not run twice.
+func (c *sharedAgentLoopCallbacks) noteSpentRemoteCommand(selectionID, result string) string {
+	if c == nil || c.semanticSurface == nil || strings.Contains(result, tool.RepeatWaveListedMarker) {
+		return result
+	}
+	selection, ok := semanticSelectionByID(c.semanticSurface.plan, selectionID)
+	if !ok || selection.FitProof.MatchedCapability != tool.CapabilityShellExecuteRemoteHost {
+		return result
+	}
+	if !repeatSelectionSpent(c.semanticSurface, selectionID) {
+		return result
+	}
+	note := semanticSpentBudgetNote(c.semanticSurface, selectionID)
+	if note == "" {
+		return result
+	}
+	return result + note
 }
 
 // retireSemanticToolSurface removes one consumed adapter from the transient
@@ -3608,9 +4166,11 @@ func semanticSelectionFailed(result string) bool {
 }
 
 // semanticSelectionOutcomeUnknown recognises the marker a trusted host adapter
-// emits when its effect may or may not have landed: an SSH session that timed
-// out mid-command, a browser or desktop host that vanished, a delegate whose
-// child receipt never arrived, a push whose remote could not be read back.
+// emits when its effect may or may not have landed: an SSH session that
+// vanished after the command was written, a browser or desktop host that
+// vanished, a delegate whose child receipt never arrived, a push whose remote
+// could not be read back. A wait timeout is not in this set: the session is
+// still bound, and the next command in the same turn must stay available.
 //
 // This is deliberately not a failure. A failure says the effect did not happen
 // and may be retried; an unknown says nobody can tell, so the plan must record
@@ -4900,13 +5460,24 @@ func (c *sharedAgentLoopCallbacks) executeTrustedShell(_ tool.PlannedSelection, 
 	}
 	text, err := c.handler.executeTrustedShell(c.semanticPrincipalID(), command, timeout)
 	if err != nil {
-		return "[system rejected] " + err.Error()
+		return withSystemRejectedPrefix(err.Error())
 	}
 	out, err := semanticTrustedShellResultProjection(text)
 	if err != nil {
 		return "[system rejected] " + err.Error()
 	}
 	return out
+}
+
+// withSystemRejectedPrefix adds the host-guard marker once. Shell guards
+// already return it; wrapping again produced "[system rejected] [system rejected]"
+// and the model treated one policy as two nested bans.
+func withSystemRejectedPrefix(msg string) string {
+	msg = strings.TrimSpace(msg)
+	if strings.HasPrefix(msg, "[system rejected]") {
+		return msg
+	}
+	return "[system rejected] " + msg
 }
 
 func (c *sharedAgentLoopCallbacks) executeTrustedBuildVerify(_ tool.PlannedSelection, canonicalArgs tool.CanonicalRequest) string {
@@ -4990,27 +5561,41 @@ func (c *sharedAgentLoopCallbacks) executeTrustedSSH(_ tool.PlannedSelection, ca
 		result := c.handler.sshConnect(connectArgs)
 		if strings.HasPrefix(result, "SSH 连接成功") || strings.HasPrefix(result, "复用已有 SSH 会话") {
 			if command, _ := args["command"].(string); strings.TrimSpace(command) != "" {
-				out, err := c.handler.executeTrustedSSH(c.semanticPrincipalID(), command)
+				out, err := c.handler.executeTrustedSSH(c.semanticPrincipalID(), command, semanticTrustedSSHCommandTimeout)
 				if err != nil {
-					return result + "\n\n[命令执行失败] " + err.Error()
+					msg := err.Error()
+					if strings.Contains(msg, "trusted_ssh_timeout") {
+						msg += remoteSSHTimeoutHint(semanticTrustedSSHCommandTimeout)
+					}
+					// A failed follow-up still should not spend the reply on
+					// the login banner or the orphan-scan echo.
+					return sshConnectResultForFollowUpCommand(result) + "\n\n[命令执行失败] " + msg
 				}
-				return result + "\n\n--- 命令输出 ---\n" + out
+				// The login banner and orphan-scan echo are not the command
+				// result. Leaving them in front of a status dump pushed a 6KB
+				// reply over the preview cap and hid uptime, memory, and disk.
+				return sshConnectResultForFollowUpCommand(result) + "\n\n" + toolresult.CommandOutputMarker + "\n" + out
 			}
 			return result
 		}
 		return "[system rejected] " + result
 	}
-	command, err := semanticTrustedSSHArgsAllowed(args)
+	command, timeout, err := semanticTrustedSSHArgsAllowed(args)
 	if err != nil {
 		return "[system rejected] " + err.Error()
 	}
-	text, err := c.handler.executeTrustedSSH(c.semanticPrincipalID(), command)
+	text, err := c.handler.executeTrustedSSH(c.semanticPrincipalID(), command, timeout)
 	if err != nil {
-		// The list stays deliberately wide: it still reports a session that
-		// never carried the command as unknown, which is over-cautious rather
-		// than unsafe. Dropping the unobserved name from it, however, would be
-		// unsafe, since that is the one case where the command may have run.
-		if strings.Contains(err.Error(), "unavailable") || strings.Contains(err.Error(), "timeout") || strings.Contains(err.Error(), "disconnect") || strings.Contains(err.Error(), "outcome_unobserved") {
+		// A timeout means the host stopped waiting and interrupted the
+		// command. The session is still there, so the attempt is a settled
+		// failure and the next remote command in this turn stays available.
+		// A dropped session or an unobserved outcome stays unknown: the
+		// command may already have run, and another call would not be a
+		// continuation of the same task.
+		if strings.Contains(err.Error(), "trusted_ssh_timeout") {
+			return "[system rejected] " + err.Error() + remoteSSHTimeoutHint(timeout)
+		}
+		if strings.Contains(err.Error(), "unavailable") || strings.Contains(err.Error(), "disconnect") || strings.Contains(err.Error(), "outcome_unobserved") {
 			return "[system unknown] " + err.Error()
 		}
 		return "[system rejected] " + err.Error()
@@ -5888,8 +6473,9 @@ func (c *sharedAgentLoopCallbacks) OnToolExecuted(name, argsJSON, result string,
 // the last provider-valid history prefix before a tool begins. The supplied
 // delta intentionally contains an unpaired assistant declaration, so it is
 // evidence only and must not be persisted as conversation history. The core
-// loop labels this checkpoint external_uncertain because a process crash may
-// occur after the tool has changed state but before a result can be paired.
+// loop labels a mutating or unknown batch external_uncertain because a process
+// crash may occur after the tool has changed state but before a result can be
+// paired. A batch of known read-only tools is labeled none.
 func (c *sharedAgentLoopCallbacks) OnToolBatchStarting(delta []agent.ConversationEntry, meta agent.ToolBatchMetadata) error {
 	if c != nil && len(delta) > 0 {
 		c.semanticHoldDependantIssue = true

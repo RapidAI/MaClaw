@@ -386,11 +386,93 @@ func semanticAsideRestIsDocumentWork(rest string) bool {
 	return false
 }
 
+// semanticResidueWaveSpent reports that every tracked capability of this
+// open task has already been used. The task stays open so an explicit
+// revision can renew a wave. A later sentence that names different work
+// must not inherit the zero counts: clamp would drop every need and close
+// the whole turn (production 2026-09-27: a finished knowledge_write ceiling
+// answered "生成一段猫和老鼠游戏的视频" with no tools).
+func semanticResidueWaveSpent(residue semanticSessionResidue) bool {
+	if residue.Status != semanticResidueOpen || len(residue.Remaining) == 0 {
+		return false
+	}
+	for _, left := range residue.Remaining {
+		if left > 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// semanticSpentWaveStays reports an utterance that is still the open task:
+// "继续", "再改一版", a short edit of the open file, or the same shell.
+func semanticSpentWaveStays(current intent.ClassificationResult, needs []tool.CapabilityNeed, userText string) bool {
+	if semanticUtteranceIsTaskFollowUp(userText) || semanticFollowUpIsBareCue(userText) {
+		return true
+	}
+	if semanticKeepsOpenWorkSurface(current, needs, userText) || semanticLeadingThenDocumentEdit(userText) {
+		return true
+	}
+	if semanticResidueHasDocumentEdit(needs) {
+		compact := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(userText), " ", ""))
+		if semanticOpenFileRevision(compact) || semanticAsideRestIsDocumentWork(compact) {
+			return true
+		}
+	}
+	return false
+}
+
+// semanticSpentWaveRelease reports a new request sitting on a finished wave.
+// Short replies ("可爱风") stay: they are answers, not new tasks. A sentence
+// long enough to name different work, or a confident disjoint mutation, leaves.
+func semanticSpentWaveRelease(current intent.ClassificationResult, residue semanticSessionResidue, userText string) bool {
+	if !semanticResidueWaveSpent(residue) || semanticSpentWaveStays(current, residue.Needs, userText) {
+		return false
+	}
+	if utf8.RuneCountInString(strings.TrimSpace(userText)) > 24 {
+		return true
+	}
+	return current.Confidence >= 0.85 && semanticClassificationHasMutatingFamily(current) && semanticResidueMutatingDisjoint(current, residue.Needs)
+}
+
+// semanticResidueDropSpentCounts removes zero ceilings so a renewed wave is
+// planned at its normal size. Download follow-ups must not use this: they
+// drop only the acquire count and keep the rest of the grant spent.
+func semanticResidueDropSpentCounts(remaining map[string]int) map[string]int {
+	if len(remaining) == 0 {
+		return nil
+	}
+	out := cloneResidueRemaining(remaining)
+	for key, left := range out {
+		if left <= 0 {
+			delete(out, key)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func (h *IMMessageHandler) completeSpentSemanticSessionResidue(key string, residue semanticSessionResidue) {
+	if h == nil || strings.TrimSpace(key) == "" || residue.Status != semanticResidueOpen {
+		return
+	}
+	residue.Status = semanticResidueCompleted
+	h.storeSemanticSessionResidue(key, residue)
+}
+
 func decideSemanticResidueRelation(current intent.ClassificationResult, userText string, residue semanticSessionResidue) semanticResidueRelation {
 	if residue.Status != semanticResidueOpen || len(residue.Needs) == 0 {
 		return semanticResidueNone
 	}
 	if semanticSocialNoToolText(userText) {
+		return semanticResidueNone
+	}
+	// A finished wave does not swallow the next sentence. "再改一版" stays
+	// above, via semanticSpentWaveStays, and renews. A new request plans
+	// from its own classification, without the zero ceiling.
+	if semanticSpentWaveRelease(current, residue, userText) {
 		return semanticResidueNone
 	}
 	// "然后改到本机执行" is a follow-up phrase and an explicit machine change.

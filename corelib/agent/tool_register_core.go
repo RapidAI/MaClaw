@@ -9,6 +9,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/task"
+	"github.com/RapidAI/CodeClaw/corelib/toolresult"
 )
 
 const coreInlineToolPayloadMaxLength = 1800
@@ -173,7 +175,7 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 		Properties: map[string]interface{}{
 			"id":     map[string]string{"type": "string", "description": "Handle id from [tool_result_handle]"},
 			"offset": map[string]string{"type": "integer", "description": "0-based byte offset into the full result (default 0)"},
-			"limit":  map[string]string{"type": "integer", "description": "Max bytes to return (default 6000, max 32768)"},
+			"limit": map[string]string{"type": "integer", "description": fmt.Sprintf("Max bytes to return (default %d, max %d)", toolresult.DefaultReadLimit, toolresult.MaxReadLimit)},
 		},
 		// id is enforced in the handler; legacy internal callers may still pass path.
 		Handler: func(args map[string]interface{}) string { return ToolReadToolResult(args) },

@@ -29,6 +29,7 @@ type LoopContext struct {
 	maxIterations          int // current max iterations for this loop
 	iteration              int // current iteration count
 	status                 LoopState
+	userCancelled          bool  // set only for an explicit user stop, before CancelC is closed
 	replanRevision         int64 // increments when live user guidance should interrupt/re-plan
 	replansSealed          bool  // final response won the accept/commit race; reject later steering
 	currentOperationCancel context.CancelFunc
@@ -561,6 +562,27 @@ func (c *LoopContext) SetLoopState(s LoopState) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.status = normalizeLoopState(s.String())
+}
+
+// MarkUserCancel records an explicit user stop. Call it before Cancel so the
+// loop can tell a stop button from shutdown, timeout, or turn replacement.
+func (c *LoopContext) MarkUserCancel() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.userCancelled = true
+	c.mu.Unlock()
+}
+
+// UserCancelled reports whether this loop was stopped by the user.
+func (c *LoopContext) UserCancelled() bool {
+	if c == nil {
+		return false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.userCancelled
 }
 
 // Cancel signals the loop to stop.

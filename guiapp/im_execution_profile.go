@@ -239,6 +239,134 @@ func lengthFullExecutionProfile(msg IMUserMessage) (ExecutionProfile, bool) {
 	return ExecutionProfile{}, false
 }
 
+const shortContinuationReason = "short continuation keeps parent execution tools"
+
+// continuationKeepsParentExecution stops a short reply from being reclassified
+// as a light lookup. What stays available is the previous full turn's tool
+// list, not a guess from the wording of this message. A confident new lookup
+// (weather, web, clock) still starts clean.
+func (h *IMMessageHandler) continuationKeepsParentExecution(profile ExecutionProfile, userID, text string, semantic *intent.ClassificationResult) ExecutionProfile {
+	if h == nil || (!profile.IsLight() && !isLightPromptProfile(profile.PromptProfile)) {
+		return profile
+	}
+	if !h.parentExecutionIsFull(userID) || !shortContinuationText(text) || confidentNewReadOnlyTask(semantic) {
+		return profile
+	}
+	return fullExecutionProfile(shortContinuationReason)
+}
+
+func shortContinuationText(text string) bool {
+	text = strings.TrimSpace(text)
+	n := utf8.RuneCountInString(text)
+	if n == 0 || n > 40 {
+		return false
+	}
+	return !semanticSocialNoToolText(text)
+}
+
+func confidentNewReadOnlyTask(semantic *intent.ClassificationResult) bool {
+	if semantic == nil || semantic.Degraded || semantic.Confidence < 0.85 || !imSemanticIntentIsManaged(*semantic) {
+		return false
+	}
+	if semanticClassificationHasMutatingFamily(*semantic) {
+		return false
+	}
+	switch semantic.Primary {
+	case intent.LabelSearch, intent.LabelLiveData, intent.LabelLiveDataVisual, intent.LabelWebFetch, intent.LabelCurrentTime:
+		return true
+	default:
+		return false
+	}
+}
+
+func operationalExecutionProfile(profile ExecutionProfile) bool {
+	return strings.TrimSpace(profile.Reason) == shortContinuationReason
+}
+
+func executionSurfaceIsFull(profile ExecutionProfile) bool {
+	return !profile.IsLight() && !isLightPromptProfile(profile.PromptProfile)
+}
+
+// recordSemanticExecutionSurface updates the legacy carry for a turn that
+// never enters prepareAgentLoopTools. An empty full surface is left alone so
+// a planner failure does not erase a still-valid previous list.
+func (h *IMMessageHandler) recordSemanticExecutionSurface(userID string, profile ExecutionProfile, tools []map[string]interface{}) {
+	if executionSurfaceIsFull(profile) && len(tools) > 0 {
+		// A short continuation that the planner rendered as a lookup still
+		// belongs to the parent task. Dropping the carry here is how the
+		// next reply loses ssh after "it's in the knowledge base".
+		if operationalExecutionProfile(profile) && len(nonLightToolNames(tools)) == 0 {
+			return
+		}
+		h.noteParentExecution(userID, true, tools)
+		return
+	}
+	if !executionSurfaceIsFull(profile) {
+		h.noteParentExecution(userID, false, nil)
+	}
+}
+
+func nonLightToolNames(tools []map[string]interface{}) []string {
+	seen := map[string]struct{}{}
+	var names []string
+	for _, def := range tools {
+		name := extractToolName(def)
+		if name == "" || agent.IsLightTurnToolAllowed(name) {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	return names
+}
+
+func (h *IMMessageHandler) parentExecutionIsFull(userID string) bool {
+	if h == nil {
+		return false
+	}
+	_, ok := h.parentExecution.Load(strings.TrimSpace(userID))
+	return ok
+}
+
+func (h *IMMessageHandler) parentExecutionTools(userID string) []string {
+	if h == nil {
+		return nil
+	}
+	v, ok := h.parentExecution.Load(strings.TrimSpace(userID))
+	if !ok {
+		return nil
+	}
+	names, _ := v.([]string)
+	return append([]string(nil), names...)
+}
+
+func (h *IMMessageHandler) noteParentExecution(userID string, full bool, tools []map[string]interface{}) {
+	if h == nil {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return
+	}
+	if !full {
+		h.parentExecution.Delete(userID)
+		return
+	}
+	names := nonLightToolNames(tools)
+	if len(names) == 0 {
+		// A rendered lookup surface must not stick. An empty render is a
+		// plan failure and must not erase the list the previous turn stored.
+		if len(tools) > 0 {
+			h.parentExecution.Delete(userID)
+		}
+		return
+	}
+	h.parentExecution.Store(userID, names)
+}
+
 func executionProfileFromSemanticIntent(result *intent.ClassificationResult, contractForTool func(string) ToolExecutionContract) ExecutionProfile {
 	if result == nil {
 		return fullExecutionProfile("semantic classifier unavailable")

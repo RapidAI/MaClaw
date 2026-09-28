@@ -2030,6 +2030,10 @@ type remoteCodingCallbacks struct {
 	// share this host-owned watermark so steering retires predecessor surfaces.
 	llmReplanRevision atomic.Int64
 
+	// spilledToolResultReader is set when a tool result was spilled. The next
+	// request renders read_tool_result so the model can page the original.
+	spilledToolResultReader atomic.Bool
+
 	// Remote maintains a separate S0 compatibility belt: SSH/workdir names
 	// must never be admitted from local request-surface state or vice versa.
 	staticCompatibilitySurfaceMu sync.RWMutex
@@ -2557,6 +2561,7 @@ func (c *remoteCodingCallbacks) BuildToolsForModelRequest(userText string, itera
 	if c.usesUncorrelatedStaticCompatibilityModelSurface() {
 		tools = filterUncorrelatedCodingStaticCompatibilityEffects(codingStaticCompatibilityHostRemote, tools)
 	}
+	tools = appendSpilledToolResultReader(tools, c.spilledToolResultReader.Load())
 	revision := c.setStaticCompatibilitySurface(tools)
 	tools = annotateCodingTodoDefinitionForControlPlane(tools, revision, c.todos.controlPlaneSnapshot().Version)
 	c.recordStaticCompatibilitySurface(tools, revision)
@@ -2565,6 +2570,31 @@ func (c *remoteCodingCallbacks) BuildToolsForModelRequest(userText string, itera
 
 func (c *remoteCodingCallbacks) ContainToolSurfaceAmbiguousDelivery() bool {
 	return true
+}
+
+// ProjectToolResult implements agent.ToolResultProjector. Remote coding
+// previously returned the raw capture, so anything past the preview budget
+// was discarded with no handle. Spilling here lets the next request page it.
+func (c *remoteCodingCallbacks) ProjectToolResult(name string, result agent.ToolExecutionResult) string {
+	if result.Outcome != agent.ToolExecutionOutcomeOK {
+		return result.Result
+	}
+	sessionKey := ""
+	contextTokens := 0
+	if c != nil && c.agent != nil {
+		contextTokens = c.agent.cfg.EffectiveContextTokens()
+		if c.agent.handler != nil {
+			sessionKey = c.agent.handler.currentRuntimeOrLegacyPolicyOwnerID()
+		}
+	}
+	proj, err := agent.ProjectToolResultWithContext(name, sessionKey, result.Result, contextTokens)
+	if err != nil && proj.Preview == "" {
+		return result.Result
+	}
+	if c != nil {
+		noteSpilledCodingToolResult(&c.spilledToolResultReader, proj.Preview)
+	}
+	return proj.Preview
 }
 
 func (c *remoteCodingCallbacks) OnToolSurfaceAttemptStarted(agent.ToolCallExecutionContext) {}
@@ -2644,6 +2674,13 @@ func (c *remoteCodingCallbacks) ExecuteToolStructured(name, argsJSON string) age
 // fail-open. A stale or unavailable local knowledge index must not be
 // interpreted as a failed remote coding operation by the shared agent loop.
 func (c *remoteCodingCallbacks) executeRemoteToolStructuredCanonical(name, argsJSON string) agent.ToolExecutionResult {
+	if strings.EqualFold(strings.TrimSpace(name), "read_tool_result") {
+		var handler *IMMessageHandler
+		if c != nil && c.agent != nil {
+			handler = c.agent.handler
+		}
+		return codingReadToolResultExecution(handler, argsJSON)
+	}
 	result := c.executeRemoteTool(name, argsJSON)
 	if remoteCodingExecutionOutcome(name, result) != "success" {
 		return agent.ToolExecutionResult{Result: result, Outcome: agent.ToolExecutionOutcomeError}

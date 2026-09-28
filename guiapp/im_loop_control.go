@@ -24,6 +24,7 @@ func (h *IMMessageHandler) CancelCurrentSession() (string, error) {
 	if ctx == nil {
 		return "", fmt.Errorf("no active session to cancel")
 	}
+	ctx.MarkUserCancel()
 	ctx.Cancel()
 	if uid := strings.TrimSpace(ctx.UserID); uid != "" {
 		h.markTaskCancelledByUser(uid)
@@ -60,6 +61,7 @@ func (h *IMMessageHandler) CancelSessionForUser(userID string) (string, error) {
 		}
 		return "", fmt.Errorf("no active session to cancel")
 	}
+	ctx.MarkUserCancel()
 	ctx.Cancel()
 	// Close steer acceptance before clearing pending bags. Otherwise a guide can
 	// slip in after the clear and be acknowledged against a loop that is already
@@ -110,6 +112,7 @@ func (h *IMMessageHandler) RequestCancelSessionForUser(userID string) (string, e
 		}
 		return "", fmt.Errorf("no active session to cancel")
 	}
+	ctx.MarkUserCancel()
 	ctx.Cancel()
 	// Close steering acceptance before clearing pending bags. Otherwise a guide
 	// can be acknowledged after the stop command but before the loop observes it.

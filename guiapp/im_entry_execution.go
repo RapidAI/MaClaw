@@ -232,8 +232,30 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 				// not a continuation. Merging the task summary would relabel
 				// it and pull the open surface back in.
 				if !markOpenTaskAnswerOnly(loopCtx, residueOpen, msg.Text) {
+					// A spent mutating wave stays open so "再改一版" can renew.
+					// A different sentence must not be merged back onto it:
+					// the merge rewrites the label, then the zero ceiling
+					// closes every tool (production 2026-09-27).
+					releasedSpentWave := false
+					shellConsent := semanticConsentShellClassification(msg.Text, history)
+					consentLeaves := shellConsent != nil && semanticResidueWaveSpent(residue)
+					if key, desktop := semanticResidueSessionKey(msg); desktop && residueOpen && semanticIntent != nil && (semanticSpentWaveRelease(*semanticIntent, residue, msg.Text) || consentLeaves) {
+						h.completeSpentSemanticSessionResidue(key, residue)
+						residueOpen = false
+						releasedSpentWave = true
+						log.Printf("[semantic-routing] spent session wave released user=%q", msg.UserID)
+					}
+					if consentLeaves {
+						semanticIntent = shellConsent
+						executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
+						log.Printf("[semantic-routing] spent-wave consent plans shell user=%q", msg.UserID)
+					} else if releasedSpentWave && semanticReleasedRequestPlansShell(*semanticIntent, msg.Text, history) {
+						semanticIntent = semanticShellClassification("spent-wave release plans shell")
+						executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
+						log.Printf("[semantic-routing] spent-wave release plans shell user=%q", msg.UserID)
+					}
 					followUp := (residueOpen || factsOnly) && semanticUtteranceIsTaskFollowUp(msg.Text)
-					if semanticClassificationNeedsTaskContext(semanticIntent) || pendingAnswerPrefersTaskMerge(semanticIntent, isPendingAnswerTurn) || (followUp && semanticFollowUpAllowsTaskMerge(semanticIntent, msg.Text)) {
+					if !releasedSpentWave && (semanticClassificationNeedsTaskContext(semanticIntent) || pendingAnswerPrefersTaskMerge(semanticIntent, isPendingAnswerTurn) || (followUp && semanticFollowUpAllowsTaskMerge(semanticIntent, msg.Text))) {
 						// The bare message classified nowhere actionable, this turn
 						// answers a pending question with a weak standalone verdict,
 						// or a short follow-up still belongs to the open desktop task.
@@ -256,7 +278,14 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 					if residueOpen {
 						relation := decideSemanticResidueRelation(*semanticIntent, msg.Text, residue)
 						if relation == semanticResidueContinue || relation == semanticResidueUnclear {
-							loopCtx.semanticResidueRemaining = semanticResidueRemainingForFollowUp(residue.Remaining, msg.Text)
+							remaining := semanticResidueRemainingForFollowUp(residue.Remaining, msg.Text)
+							// "继续补图" drops only the download count. Any
+							// other continuation of a finished wave needs a
+							// fresh plan, not the zeros that close the turn.
+							if semanticResidueWaveSpent(residue) && !semanticFollowUpRenewsDownloads(msg.Text) {
+								remaining = semanticResidueDropSpentCounts(remaining)
+							}
+							loopCtx.semanticResidueRemaining = remaining
 							loopCtx.semanticResidueLookupFacts = residue.LookupFacts
 						}
 						if rewritten, applied := semanticClassificationWithOpenResidue(*semanticIntent, residue.Needs, relation); applied {
@@ -273,7 +302,7 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 			_, residueOpen, _ := h.loadDesktopTurnResidue(msg, opts.WorkflowAgentLoop, msg.Attachments)
 			markOpenTaskAnswerOnly(loopCtx, residueOpen, msg.Text)
 		}
-		loopCtx.Runtime.Execution = executionProfile
+		loopCtx.Runtime.Execution = h.continuationKeepsParentExecution(executionProfile, msg.UserID, msg.Text, semanticIntent)
 		loopCtx.Runtime.ClassificationMessage = classifyMsg
 		bindLoopSemanticIntent(loopCtx, semanticIntent)
 	}

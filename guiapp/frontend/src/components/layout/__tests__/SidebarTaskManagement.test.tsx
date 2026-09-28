@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { cloudWorkspaceNameMapFromEntitlement, isActiveTaskRow, isProjectTabOpen, SidebarTaskManagement, sortTaskManagementItems, TASK_LIST_ORDER_STORAGE_KEY, taskCreationLabel, taskSecondaryLabelFor, workflowStatusForTask, workflowStatusForTaskRow } from '../SidebarTaskManagement';
+import { cloudWorkspaceNameMapFromEntitlement, isActiveTaskRow, isProjectTabOpen, localWorkspaceFolderName, SidebarTaskManagement, sortTaskManagementItems, TASK_LIST_ORDER_STORAGE_KEY, taskCreationLabel, taskListStatusKind, taskSecondaryLabelFor, workflowStatusForTask, workflowStatusForTaskRow } from '../SidebarTaskManagement';
 import type { ComponentProps, ReactElement } from 'react';
 import { GetProjectScene, OpenFileOrShowInFolder, OpenProjectDirectory, SelectWorkingDir } from '../../../../wailsjs/go/main/App';
 import { EventsEmit } from '../../../../wailsjs/runtime';
@@ -395,7 +395,7 @@ describe('SidebarTaskManagement', () => {
         expect(screen.queryByTestId('task-cloud-overview')).toBeNull();
         expect(screen.queryByTestId('task-cloud-workspace-list')).toBeNull();
     });
-    it('keeps the cloud task entry beside the execution-page add button', async () => {
+    it('keeps the cloud task entry beside New Task while a task is open', async () => {
         cloudWorkspaceEntitlementMock.mockResolvedValue({ enabled: true, quota: 5, used: 0, workspaces: [] });
         renderTaskManagement({
             lang: 'zh',
@@ -404,12 +404,16 @@ describe('SidebarTaskManagement', () => {
             activeAssistantTask: { projectPath: baseProject.project_path },
         });
 
-        const cloudButton = await screen.findByTestId('execution-task-cloud-create');
+        const cloudButton = await screen.findByTestId('task-cloud-create');
+        const createButton = screen.getByTestId('task-pane-new-task-wizard');
         expect(cloudButton.getAttribute('aria-label')).toBe('创建云端工作区任务');
+        expect(createButton.textContent).toContain('新建任务');
+        expect(createButton.contains(cloudButton)).toBe(false);
+        expect(cloudButton.closest('.mc-task-pane__tool-group')).toBeTruthy();
         fireEvent.click(cloudButton);
         expect(await screen.findByRole('dialog', { name: '创建云端工作区任务' })).toBeTruthy();
     });
-    it('execution-page add button opens the assistant wizard page instead of the create dialog', () => {
+    it('execution-page new-task button opens the assistant wizard page instead of the create dialog', () => {
         renderTaskManagement({
             lang: 'zh',
             activeAssistantTask: { projectPath: baseProject.project_path },
@@ -419,13 +423,14 @@ describe('SidebarTaskManagement', () => {
         window.addEventListener('maclaw:open-new-task-wizard', listener);
         try {
             act(() => {
-                fireEvent.click(screen.getByTestId('execution-task-new-task-wizard'));
+                fireEvent.click(screen.getByTestId('task-pane-new-task-wizard'));
             });
             expect(listener).toHaveBeenCalledTimes(1);
         } finally {
             window.removeEventListener('maclaw:open-new-task-wizard', listener);
         }
         expect(screen.queryByTestId('task-create-guidance')).toBeNull();
+        expect(screen.queryByTestId('execution-task-new-task-wizard')).toBeNull();
     });
     it('toggles the theme from the sidebar dock', () => {
         const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
@@ -500,8 +505,7 @@ describe('SidebarTaskManagement', () => {
         expect(list.contains(screen.getByText('Task 11'))).toBe(true);
         expect(list.contains(screen.getByTestId('task-filter-all'))).toBe(false);
         expect(pane.contains(screen.getByTestId('task-filter-all'))).toBe(true);
-        expect(pane.contains(screen.getByTestId('current-task-card'))).toBe(true);
-        expect(list.contains(screen.getByTestId('current-task-card'))).toBe(false);
+        expect(screen.queryByTestId('current-task-card')).toBeNull();
         expect(list.parentElement?.classList.contains('mc-task-pane')).toBe(true);
     });
 
@@ -546,9 +550,8 @@ describe('SidebarTaskManagement', () => {
 
         expect(screen.getByTestId('task-filter-running').textContent).toContain('1');
         expect(screen.getByTestId('task-filter-completed').textContent).toContain('0');
-        // The current-task card mirrors the live signal, not the stale
-        // has_output snapshot.
-        expect(within(screen.getByTestId('current-task-card')).getByText('In progress')).toBeTruthy();
+        // The open row mirrors the live signal, not the stale has_output snapshot.
+        expect(screen.getByTestId('sidebar-task-row').getAttribute('data-status')).toBe('running');
 
         fireEvent.click(screen.getByTestId('task-filter-running'));
         expect(within(screen.getByTestId('sidebar-task-row')).getByText('Done task')).toBeTruthy();
@@ -557,6 +560,69 @@ describe('SidebarTaskManagement', () => {
         // filtered list follows the same bucket override as the chip counts.
         fireEvent.click(screen.getByTestId('task-filter-completed'));
         expect(screen.queryByTestId('sidebar-task-row')).toBeNull();
+    });
+
+    it('marks in-progress rows with a spinner and other statuses with distinct glyphs', () => {
+        expect(taskListStatusKind({ liveRunning: true, bucket: 'completed', tone: 'success' })).toBe('running');
+        expect(taskListStatusKind({ bucket: 'paused', tone: 'warning' })).toBe('paused');
+        expect(taskListStatusKind({ bucket: 'paused', tone: 'info' })).toBe('paused');
+        expect(taskListStatusKind({ bucket: 'pending', tone: 'info' })).toBe('pending');
+        expect(taskListStatusKind({ bucket: 'other', tone: 'danger' })).toBe('failed');
+        expect(taskListStatusKind({ bucket: 'completed', tone: 'success' })).toBe('completed');
+        expect(taskListStatusKind({ bucket: 'other', tone: 'neutral' })).toBe('cancelled');
+        expect(taskListStatusKind({ bucket: 'other' })).toBe('idle');
+
+        renderTaskManagement({
+            tasks: [
+                { ...baseProject, id: 'task-running', name: 'Running task', project_path: 'D:/work/tasks/running-task', active_workflow: { status: 'running' } },
+                { ...baseProject, id: 'task-done', name: 'Done task', project_path: 'D:/work/tasks/done-task', has_output: true },
+                { ...baseProject, id: 'task-review', name: 'Review task', project_path: 'D:/work/tasks/review-task', active_workflow: { status: 'pending_review', pending_review: true, phase: 'quality_review' } },
+                { ...baseProject, id: 'task-failed', name: 'Failed task', project_path: 'D:/work/tasks/failed-task', active_workflow: { status: 'blocked', phase: 'implementation' } },
+                { ...baseProject, id: 'task-paused', name: 'Paused task', project_path: 'D:/work/tasks/paused-task', active_workflow: { status: 'paused', phase: 'implement' } },
+                { ...baseProject, id: 'task-idle', name: 'Idle task', project_path: 'D:/work/tasks/idle-task' },
+            ],
+        });
+
+        const markFor = (name: string) => {
+            const title = screen.getByText(name);
+            const row = title.closest('[data-testid="sidebar-task-row"]') as HTMLElement;
+            return within(row).getByTestId('task-status-mark');
+        };
+
+        const runningMark = markFor('Running task');
+        expect(runningMark.getAttribute('data-status')).toBe('running');
+        expect(runningMark.getAttribute('aria-label')).toBe('In progress');
+        expect(runningMark.querySelector('.mc-task-status__spin')).toBeTruthy();
+        expect(runningMark.closest('[data-testid="sidebar-task-row"]')?.getAttribute('data-status')).toBe('running');
+
+        const doneMark = markFor('Done task');
+        expect(doneMark.getAttribute('data-status')).toBe('completed');
+        expect(doneMark.querySelector('.mc-task-status__spin')).toBeNull();
+        expect(doneMark.querySelector('svg')).toBeTruthy();
+
+        expect(markFor('Review task').getAttribute('data-status')).toBe('pending');
+        expect(markFor('Review task').getAttribute('aria-label')).toBe('Review needed');
+        expect(markFor('Failed task').getAttribute('data-status')).toBe('failed');
+        expect(markFor('Failed task').getAttribute('aria-label')).toBe('Needs attention');
+        const pausedMark = markFor('Paused task');
+        expect(pausedMark.getAttribute('data-status')).toBe('paused');
+        expect(pausedMark.getAttribute('aria-label')).toBe('Paused');
+        expect(pausedMark.querySelector('.mc-task-status__spin')).toBeNull();
+        expect(pausedMark.closest('.sidebar-task-row')?.getAttribute('title')).toContain('Paused · Implement');
+
+        const idleMark = markFor('Idle task');
+        expect(idleMark.getAttribute('data-status')).toBe('idle');
+        expect(idleMark.querySelector('.mc-task-status__idle')).toBeTruthy();
+        expect(idleMark.closest('[data-testid="sidebar-task-row"]')?.getAttribute('data-status')).toBeNull();
+    });
+
+    it('does not let the status-mark layout rule override paused, cancelled, and idle colors', () => {
+        const css = readFileSync(join(process.cwd(), 'src/styles/partials/110-mc-app-shell.css'), 'utf8');
+        const layout = css.match(/\.mc-task-pane \.sidebar-task-row > \.mc-task-status \{[^}]+\}/)?.[0] ?? '';
+        expect(layout).not.toMatch(/\bcolor\s*:/);
+        expect(css).toMatch(/\.mc-task-status\[data-status='paused'\] \{ color: var\(--theme-text-secondary/);
+        expect(css).toMatch(/\.mc-task-status\[data-status='pending'\] \{ color: var\(--theme-warning/);
+        expect(css).toMatch(/\.mc-task-status\[data-status='cancelled'\],\s*\.mc-task-status\[data-status='idle'\] \{ color: var\(--theme-text-muted/);
     });
 
     it('counts every concurrently running task as in progress, not just the active tab', () => {
@@ -668,7 +734,12 @@ describe('SidebarTaskManagement', () => {
 
         const localRow = rowByName('Local task');
         expect(localRow.querySelector('[data-testid="workspace-badge-local"]')).toBeTruthy();
-        expect(workspaceLine(localRow).textContent).toContain('D:/work/tasks/local-task');
+        expect(workspaceLine(localRow).textContent).toContain('local-task');
+        expect(workspaceLine(localRow).textContent).not.toContain('D:/work');
+        expect(localWorkspaceFolderName('C:\\Users\\me\\.maclaw\\data\\tasks\\北京天气-1\\workspace')).toBe('北京天气-1');
+        expect(localWorkspaceFolderName('D:\\work\\coding-project\\')).toBe('coding-project');
+        expect(localWorkspaceFolderName('D:\\projects\\workspace')).toBe('workspace');
+        expect(localWorkspaceFolderName('D:\\work\\tasks\\client\\site\\workspace')).toBe('workspace');
 
         const cloudRow = rowByName('Cloud task');
         expect(cloudRow.querySelector('[data-testid="workspace-badge-cloud"]')).toBeTruthy();
@@ -789,7 +860,7 @@ describe('SidebarTaskManagement', () => {
             const rowOf = (name: string) => screen.getAllByTestId('sidebar-task-row').find(item => (item.textContent || '').includes(name)) as HTMLElement;
             const handleOf = (name: string) => rowOf(name).querySelector('[data-testid="task-drag-handle"]') as HTMLElement;
 
-            fireEvent.dragStart(handleOf('Newer task'));
+            fireEvent.dragStart(rowOf('Newer task').querySelector('.sidebar-task-row') as HTMLElement);
             fireEvent.dragOver(rowOf('Older task').querySelector('.sidebar-task-row') as HTMLElement);
             fireEvent.drop(rowOf('Older task').querySelector('.sidebar-task-row') as HTMLElement);
 
@@ -836,6 +907,27 @@ describe('SidebarTaskManagement', () => {
         }
     });
 
+    it('does not reorder when a drag starts on a row action button', () => {
+        localStorage.removeItem(TASK_LIST_ORDER_STORAGE_KEY);
+        try {
+            const older = { ...baseProject, id: 'older', name: 'Older task', project_path: 'D:/work/tasks/older', created_at: '2026-01-01T00:00:00Z' };
+            const newer = { ...baseProject, id: 'newer', name: 'Newer task', project_path: 'D:/work/tasks/newer', created_at: '2026-08-01T00:00:00Z' };
+            renderTaskManagement({ tasks: [older, newer] });
+            const rowOf = (name: string) => screen.getAllByTestId('sidebar-task-row').find(item => (item.textContent || '').includes(name)) as HTMLElement;
+            const names = () => screen.getAllByTestId('sidebar-task-row').map(row => row.textContent || '');
+            const detail = rowOf('Newer task').querySelector('[aria-label="Scene details"]') as HTMLElement;
+
+            fireEvent.mouseDown(detail);
+            fireEvent.dragStart(rowOf('Newer task').querySelector('.sidebar-task-row') as HTMLElement);
+            fireEvent.drop(rowOf('Older task').querySelector('.sidebar-task-row') as HTMLElement);
+
+            expect(names()[0]).toContain('Newer task');
+            expect(names()[1]).toContain('Older task');
+        } finally {
+            localStorage.removeItem(TASK_LIST_ORDER_STORAGE_KEY);
+        }
+    });
+
     it('does not move a task across the pinned group when it is dropped there', () => {
         localStorage.removeItem(TASK_LIST_ORDER_STORAGE_KEY);
         try {
@@ -846,7 +938,7 @@ describe('SidebarTaskManagement', () => {
             const names = () => screen.getAllByTestId('sidebar-task-row').map(row => row.textContent || '');
             expect(names()[0]).toContain('Pinned task');
 
-            fireEvent.dragStart(rowOf('Plain task').querySelector('[data-testid="task-drag-handle"]') as HTMLElement);
+            fireEvent.dragStart(rowOf('Plain task').querySelector('.sidebar-task-row') as HTMLElement);
             fireEvent.drop(rowOf('Pinned task').querySelector('.sidebar-task-row') as HTMLElement);
 
             expect(names()[0]).toContain('Pinned task');
@@ -948,6 +1040,9 @@ describe('SidebarTaskManagement', () => {
         expect(workflowStatusForTask({ status: 'blocked', phase: 'implement' }, 'en')).toEqual({
             label: 'Needs attention', detail: 'Implement', tone: 'danger',
         });
+        expect(workflowStatusForTask({ status: 'paused', phase: 'implement' }, 'en')).toEqual({
+            label: 'Paused', detail: 'Implement', tone: 'warning',
+        });
         expect(workflowStatusForTask(undefined, 'en')).toBeNull();
         expect(taskCreationLabel('2026-01-01T00:00:00.000Z', 'en')).toMatch(/^Created 2026-01-01 /);
         expect(taskCreationLabel('not-a-date', 'en')).toBe('');
@@ -992,7 +1087,7 @@ describe('SidebarTaskManagement', () => {
         });
     });
 
-    it('opens the current task card on a single click', () => {
+    it('opens the current task row on a single click', () => {
         const resumeTask = vi.fn();
         const activateTask = vi.fn();
         renderTaskManagement({
@@ -1002,7 +1097,7 @@ describe('SidebarTaskManagement', () => {
             openProjectTabPaths: [baseProject.project_path],
         });
 
-        fireEvent.click(screen.getByTestId('current-task-card'));
+        fireEvent.click(screen.getByTestId('sidebar-task-row').querySelector('.sidebar-task-row') as HTMLElement);
 
         expect(activateTask).toHaveBeenCalledWith(baseProject.project_path, expect.objectContaining({ project_path: baseProject.project_path }));
         expect(resumeTask).not.toHaveBeenCalled();
@@ -1320,6 +1415,10 @@ describe('SidebarTaskManagement', () => {
 
         expect((await screen.findByTestId('task-remove-progress')).getAttribute('aria-label')).toBe('Removing task');
         expect(screen.getByText('Removing task...')).toBeTruthy();
+        const removingMark = screen.getByTestId('task-status-mark');
+        expect(removingMark.getAttribute('data-status')).toBe('running');
+        expect(removingMark.getAttribute('aria-label')).toBe('Removing task...');
+        expect(removingMark.querySelector('.mc-task-status__spin')).toBeTruthy();
         expect(hideTask).toHaveBeenCalledWith(baseProject.project_path, undefined, true);
 
         finishRemove?.();
@@ -3293,15 +3392,17 @@ describe('SidebarTaskManagement', () => {
 
         const cloudButton = await screen.findByTestId('task-cloud-overview');
         const createButton = screen.getByTestId('task-pane-new-task-wizard');
+        const themeButton = screen.getByTestId('sidebar-theme-toggle');
         const cloudSvg = cloudButton.querySelector('svg');
         const cloudPath = cloudSvg?.querySelector('path');
         expect(cloudSvg).toBeTruthy();
         expect(cloudSvg?.getAttribute('width')).toBe('16');
         expect(cloudPath?.getAttribute('fill')).toBe('none');
         expect(cloudPath?.getAttribute('stroke')).toBe('currentColor');
-        expect(cloudButton.style.borderRadius).toBe(createButton.style.borderRadius);
-        expect(cloudButton.style.background).toBe(createButton.style.background);
-        expect(cloudButton.style.color).toBe(createButton.style.color);
+        expect(createButton.classList.contains('mc-task-pane__create-group')).toBe(true);
+        expect(createButton.contains(cloudButton)).toBe(false);
+        expect(createButton.contains(themeButton)).toBe(false);
+        expect(cloudButton.closest('.mc-task-pane__tool-group')).toBe(themeButton.closest('.mc-task-pane__tool-group'));
         fireEvent.click(cloudButton);
         expect(await screen.findByTestId('task-cloud-overview-dialog')).toBeTruthy();
         expect(screen.getByTestId('task-cloud-overview-summary').textContent).toBe('现有 2 个工作区 / 最多 5 个 · 1 个已关联任务 · 1 个未关联');

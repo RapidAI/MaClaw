@@ -345,6 +345,7 @@ func (c *codingSubAgentCallbacks) BuildToolsForModelRequest(userText string, ite
 	if c.usesUncorrelatedStaticCompatibilityModelSurface() {
 		base = filterUncorrelatedCodingStaticCompatibilityEffects(codingStaticCompatibilityHostLocal, base)
 	}
+	base = appendSpilledToolResultReader(base, c.spilledToolResultReader.Load())
 	revision := c.setStaticCompatibilitySurface(base)
 	base = annotateCodingTodoDefinitionForControlPlane(base, revision, c.todos.controlPlaneSnapshot().Version)
 	c.recordStaticCompatibilitySurface(base, revision)

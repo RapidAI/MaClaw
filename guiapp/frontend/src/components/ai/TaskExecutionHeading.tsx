@@ -1,5 +1,4 @@
 import type { AITab } from "./AITabTypes";
-import { getAITabDisplayTitle } from "./AITabItem";
 import { isCloudWorkspacePath } from "./codingTaskMode";
 import { workingDirDisplayLabel } from "./SessionWorkingDirChip";
 import { localizeText } from "./aiAssistantI18n";
@@ -19,11 +18,13 @@ type Props = {
     workingDirPath?: string;
     remoteWorkspace?: { host?: string; workDir?: string } | null;
     remoteWorkspaceLabel?: string;
+    /** Already resolved against the sidebar task list by the panel. */
+    title?: string;
 };
 
-export function TaskExecutionHeading({ activeTab, lang, status, taskCreatedLabel, workingDirPath, remoteWorkspace, remoteWorkspaceLabel }: Props) {
+export function TaskExecutionHeading({ activeTab, lang, status, taskCreatedLabel, workingDirPath, remoteWorkspace, remoteWorkspaceLabel, title }: Props) {
     const workingDir = workingDirPath || "";
-    const executionTitle = (activeTab ? getAITabDisplayTitle(activeTab, lang) : "") || localizeText(lang, "Current task", "当前任务", "目前任務");
+    const executionTitle = String(title || "").trim() || localizeText(lang, "Current task", "当前任务", "目前任務");
     const metaText = [
         activeTab?.type === "local" ? "" : localizeText(lang, "Created by you", "由你创建", "由你建立"),
         taskCreatedLabel,

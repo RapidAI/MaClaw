@@ -71,9 +71,65 @@ func runMaintenance(args []string) error {
 	switch args[0] {
 	case "ha-prune":
 		return runMaintenanceHAPrune(args[1:])
+	case "vacuum":
+		return runMaintenanceVacuum(args[1:])
 	default:
 		return fmt.Errorf("unknown maintenance command %q", args[0])
 	}
+}
+
+type vacuumCLIResult struct {
+	DatabasePath    string `json:"database_path"`
+	SizeBeforeBytes int64  `json:"size_before_bytes"`
+	SizeAfterBytes  int64  `json:"size_after_bytes"`
+}
+
+// runMaintenanceVacuum reclaims the disk space of a bloated SQLite main file
+// offline. It is the standalone version of ha-prune --vacuum for the case
+// where nothing (or very little) is left to prune but the file still carries
+// gigabytes of free pages from historical churn. Also persists
+// auto_vacuum=INCREMENTAL so the runtime checkpointer keeps the file compact.
+func runMaintenanceVacuum(args []string) error {
+	if hasHelpArg(args) {
+		printMaintenanceVacuumUsage()
+		return nil
+	}
+	fs := flag.NewFlagSet("maintenance vacuum", flag.ContinueOnError)
+	fs.SetOutput(os.Stdout)
+	configPath := fs.String("config", "", "Path to MaClaw Hub Center config file")
+	jsonOut := fs.Bool("json", false, "Print machine-readable JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		return err
+	}
+	sizeBefore := fileSize(cfg.Database.DSN)
+	provider, err := sqlite.NewProvider(sqlite.Config{
+		DSN:               cfg.Database.DSN,
+		WAL:               cfg.Database.WAL,
+		BusyTimeoutMS:     cfg.Database.BusyTimeoutMS,
+		AutoVacuum:        cfg.Database.AutoVacuum,
+		MaxReadOpenConns:  1,
+		MaxReadIdleConns:  1,
+		MaxWriteOpenConns: 1,
+		MaxWriteIdleConns: 1,
+	})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = provider.Close() }()
+	if err := sqlite.Vacuum(context.Background(), provider.Write); err != nil {
+		return err
+	}
+	out := vacuumCLIResult{DatabasePath: cfg.Database.DSN, SizeBeforeBytes: sizeBefore, SizeAfterBytes: fileSize(cfg.Database.DSN)}
+	if *jsonOut {
+		return printJSON(out)
+	}
+	fmt.Fprintf(os.Stdout, "database vacuumed: %s\nsize: %d -> %d bytes\n", out.DatabasePath, out.SizeBeforeBytes, out.SizeAfterBytes)
+	fmt.Fprintln(os.Stdout, "auto_vacuum=INCREMENTAL is now persisted; the runtime checkpointer releases freed pages automatically.")
+	return nil
 }
 
 func runMaintenanceHAPrune(args []string) error {
@@ -85,7 +141,7 @@ func runMaintenanceHAPrune(args []string) error {
 	fs.SetOutput(os.Stdout)
 	configPath := fs.String("config", "", "Path to MaClaw Hub Center config file")
 	retentionDays := fs.Float64("retention-days", 0.5, "Delete HA history older than this many days while keeping latest op per entity")
-	maxRetainedOps := fs.Int64("max-retained-ops", 50000, "Also cap HA history to approximately this many recent ops")
+	maxRetainedOps := fs.Int64("max-retained-ops", 20000, "Also cap HA history to approximately this many recent ops")
 	batchSize := fs.Int64("batch-size", 20000, "Rows to delete per SQLite batch")
 	vacuum := fs.Bool("vacuum", false, "Run VACUUM and truncate WAL after pruning to reclaim disk space; stop Hub Center first")
 	jsonOut := fs.Bool("json", false, "Print machine-readable JSON")
@@ -101,6 +157,7 @@ func runMaintenanceHAPrune(args []string) error {
 		DSN:               cfg.Database.DSN,
 		WAL:               cfg.Database.WAL,
 		BusyTimeoutMS:     cfg.Database.BusyTimeoutMS,
+		AutoVacuum:        cfg.Database.AutoVacuum,
 		MaxReadOpenConns:  1,
 		MaxReadIdleConns:  1,
 		MaxWriteOpenConns: 1,
@@ -431,6 +488,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stdout, "  hubcenter backup create --help")
 	fmt.Fprintln(os.Stdout, "  hubcenter backup inspect --help")
 	fmt.Fprintln(os.Stdout, "  hubcenter maintenance ha-prune --help")
+	fmt.Fprintln(os.Stdout, "  hubcenter maintenance vacuum --help")
 	fmt.Fprintln(os.Stdout, "  hubcenter restore --help")
 }
 
@@ -438,21 +496,28 @@ func printMaintenanceUsage() {
 	fmt.Fprintln(os.Stdout, "MaClaw Hub Center maintenance tools")
 	fmt.Fprintln(os.Stdout, "")
 	fmt.Fprintln(os.Stdout, "Commands:")
-	fmt.Fprintln(os.Stdout, "  hubcenter maintenance ha-prune --config <config.yaml> [--retention-days 0.5] [--max-retained-ops 50000] [--batch-size 20000] [--vacuum] [--json]")
+	fmt.Fprintln(os.Stdout, "  hubcenter maintenance ha-prune --config <config.yaml> [--retention-days 0.5] [--max-retained-ops 20000] [--batch-size 20000] [--vacuum] [--json]")
+	fmt.Fprintln(os.Stdout, "  hubcenter maintenance vacuum --config <config.yaml> [--json]")
 	fmt.Fprintln(os.Stdout, "")
 	fmt.Fprintln(os.Stdout, "Safe emergency flow:")
 	fmt.Fprintln(os.Stdout, "  stop Hub Center")
 	fmt.Fprintln(os.Stdout, "  hubcenter backup create --config ./configs/config.yaml --out ./data/backups/pre-ha-prune.tar.gz --json")
-	fmt.Fprintln(os.Stdout, "  hubcenter maintenance ha-prune --config ./configs/config.yaml --retention-days 0.5 --max-retained-ops 50000 --batch-size 20000 --vacuum --json")
+	fmt.Fprintln(os.Stdout, "  hubcenter maintenance ha-prune --config ./configs/config.yaml --retention-days 0.5 --max-retained-ops 20000 --batch-size 20000 --vacuum --json")
+	fmt.Fprintln(os.Stdout, "  start Hub Center")
+	fmt.Fprintln(os.Stdout, "")
+	fmt.Fprintln(os.Stdout, "Disk-space-only cleanup (nothing left to prune, file still bloated):")
+	fmt.Fprintln(os.Stdout, "  stop Hub Center")
+	fmt.Fprintln(os.Stdout, "  hubcenter maintenance vacuum --config ./configs/config.yaml --json")
 	fmt.Fprintln(os.Stdout, "  start Hub Center")
 }
 
 func printMaintenanceHAPruneUsage() {
 	fmt.Fprintln(os.Stdout, "Usage:")
-	fmt.Fprintln(os.Stdout, "  hubcenter maintenance ha-prune --config <config.yaml> [--retention-days 0.5] [--max-retained-ops 50000] [--batch-size 20000] [--vacuum] [--json]")
+	fmt.Fprintln(os.Stdout, "  hubcenter maintenance ha-prune --config <config.yaml> [--retention-days 0.5] [--max-retained-ops 20000] [--batch-size 20000] [--vacuum] [--json]")
 	fmt.Fprintln(os.Stdout, "")
 	fmt.Fprintln(os.Stdout, "Prunes old ha_sync_ops and ha_applied_ops rows while keeping the newest op per entity.")
-	fmt.Fprintln(os.Stdout, "Run with --vacuum only while Hub Center is stopped; VACUUM plus WAL checkpoint reclaims SQLite disk space.")
+	fmt.Fprintln(os.Stdout, "Run with --vacuum only while Hub Center is stopped; VACUUM plus WAL checkpoint reclaims SQLite disk space")
+	fmt.Fprintln(os.Stdout, "and persists auto_vacuum=INCREMENTAL so the runtime checkpointer keeps the file compact.")
 	fmt.Fprintln(os.Stdout, "")
 	fmt.Fprintln(os.Stdout, "Options:")
 	fmt.Fprintln(os.Stdout, "  --config <path>             Hub Center config file.")
@@ -460,6 +525,25 @@ func printMaintenanceHAPruneUsage() {
 	fmt.Fprintln(os.Stdout, "  --max-retained-ops <n>      Also cap retained ops by recent seq count. 0 disables count-based pruning.")
 	fmt.Fprintln(os.Stdout, "  --batch-size <n>            Delete rows in bounded chunks to avoid long SQLite write locks.")
 	fmt.Fprintln(os.Stdout, "  --vacuum                    Rebuild SQLite file and truncate WAL after pruning to reclaim disk space.")
+	fmt.Fprintln(os.Stdout, "  --json                      Print machine-readable JSON.")
+}
+
+func printMaintenanceVacuumUsage() {
+	fmt.Fprintln(os.Stdout, "Usage:")
+	fmt.Fprintln(os.Stdout, "  hubcenter maintenance vacuum --config <config.yaml> [--json]")
+	fmt.Fprintln(os.Stdout, "")
+	fmt.Fprintln(os.Stdout, "Rebuilds the SQLite main database file to reclaim free pages left by")
+	fmt.Fprintln(os.Stdout, "historical ha_sync_ops churn. Standalone complement to ha-prune --vacuum")
+	fmt.Fprintln(os.Stdout, "for when little is left to prune but the file is still bloated.")
+	fmt.Fprintln(os.Stdout, "Stop Hub Center first: VACUUM briefly needs an exclusive lock and the")
+	fmt.Fprintln(os.Stdout, "rebuilt copy needs free disk space comparable to the live data size.")
+	fmt.Fprintln(os.Stdout, "")
+	fmt.Fprintln(os.Stdout, "Also persists auto_vacuum=INCREMENTAL in the rebuilt database, so the")
+	fmt.Fprintln(os.Stdout, "runtime WAL checkpointer releases freed pages automatically afterwards")
+	fmt.Fprintln(os.Stdout, "and the file no longer re-bloats between manual VACUUMs.")
+	fmt.Fprintln(os.Stdout, "")
+	fmt.Fprintln(os.Stdout, "Options:")
+	fmt.Fprintln(os.Stdout, "  --config <path>             Hub Center config file.")
 	fmt.Fprintln(os.Stdout, "  --json                      Print machine-readable JSON.")
 }
 

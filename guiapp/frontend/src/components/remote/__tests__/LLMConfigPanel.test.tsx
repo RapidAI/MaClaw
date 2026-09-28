@@ -19,6 +19,8 @@ const StartOpenAIOAuthMock = vi.fn();
 const StartOpenCodeZenLoginMock = vi.fn();
 const StartXAIOAuthMock = vi.fn();
 const StartWorkBuddyOAuthMock = vi.fn();
+const StartKimiCodeOAuthMock = vi.fn();
+const WaitKimiCodeOAuthMock = vi.fn();
 const CancelXAIOAuthMock = vi.fn();
 const FetchCodeGenModelsMock = vi.fn();
 const ImportExternalAgentsMock = vi.fn();
@@ -44,6 +46,9 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     StartOpenCodeZenLogin: (...args: unknown[]) => StartOpenCodeZenLoginMock(...args),
     StartXAIOAuth: (...args: unknown[]) => StartXAIOAuthMock(...args),
     StartWorkBuddyOAuth: (...args: unknown[]) => StartWorkBuddyOAuthMock(...args),
+    StartKimiCodeOAuth: (...args: unknown[]) => StartKimiCodeOAuthMock(...args),
+    WaitKimiCodeOAuth: (...args: unknown[]) => WaitKimiCodeOAuthMock(...args),
+    CancelKimiCodeOAuth: vi.fn(),
     CancelXAIOAuth: (...args: unknown[]) => CancelXAIOAuthMock(...args),
     CancelWorkBuddyOAuth: vi.fn(),
     CancelOpenAIOAuth: vi.fn(),
@@ -634,6 +639,39 @@ describe('LLMConfigPanel test-and-save flow', () => {
         });
         expect(StartOpenAIOAuthMock).not.toHaveBeenCalled();
         expect(StartXAIOAuthMock).not.toHaveBeenCalled();
+    });
+
+    it('signs in to Kimi Code through the device-code browser flow', async () => {
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                { name: 'Kimi Code', url: 'https://api.kimi.com/coding/v1', key: '', model: 'kimi-for-coding', protocol: 'openai', auth_type: 'oauth', supports_vision: false },
+            ],
+            current: 'Kimi Code',
+        });
+        StartKimiCodeOAuthMock.mockResolvedValue({
+            user_code: 'ABCD-EFGH',
+            verification_uri: 'https://www.kimi.com/code/authorize_device',
+            verification_uri_complete: 'https://www.kimi.com/code/authorize_device?user_code=ABCD-EFGH',
+            browser_opened: true,
+        });
+        let finishLogin: (message: string) => void = () => {};
+        WaitKimiCodeOAuthMock.mockImplementation(() => new Promise<string>(resolve => {
+            finishLogin = resolve;
+        }));
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Sign in with Kimi Code' }));
+
+        expect(await screen.findByText(/ABCD-EFGH/)).toBeTruthy();
+        expect(screen.getByRole('button', { name: 'Waiting for browser authorization...' })).toBeTruthy();
+        expect(screen.queryByText(/^RUN /)).toBeNull();
+        expect(StartKimiCodeOAuthMock).toHaveBeenCalledTimes(1);
+        expect(WaitKimiCodeOAuthMock).toHaveBeenCalledTimes(1);
+        expect(StartOpenAIOAuthMock).not.toHaveBeenCalled();
+        expect(StartWorkBuddyOAuthMock).not.toHaveBeenCalled();
+        await act(async () => finishLogin('Kimi Code 登录成功'));
     });
 
     it('keeps MaClaw Official visible when official grants are period-limited', async () => {

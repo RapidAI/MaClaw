@@ -556,9 +556,53 @@ function stripTaskDirTimestampSuffix(name: string): string {
     return name;
 }
 
+function projectDirDisplayName(projectPath: string): string {
+    return stripTaskDirTimestampSuffix((projectPath || "").replace(/\\/g, "/").split("/").filter(Boolean).pop() || "");
+}
+
+/** A filesystem path used as a title. A sentence that merely cites a URL is not one. */
+function looksLikeBareFilesystemPath(title: string): boolean {
+    const text = title.trim();
+    if (/^[A-Za-z]:[\\/]/.test(text) || text.startsWith("\\\\")) return true;
+    if (/\s/.test(text)) return false;
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) return false;
+    if (text.startsWith("/")) return true;
+    return text.includes("/") || text.includes("\\");
+}
+
+function pathTail(value: string): string {
+    const parts = value.trim().replace(/\\/g, "/").split("/").filter(Boolean);
+    return parts[parts.length - 1] || "";
+}
+
+/** A sentence or a long name. A lone path segment such as "v1" is not one. */
+function isRicherTaskTitle(title: string): boolean {
+    const text = title.trim();
+    if (!text || text === "Task") return false;
+    if (/\s/.test(text) || /[^\u0000-\u007f]/.test(text)) return true;
+    return [...text].length > 16;
+}
+
+/**
+ * Replace a peeled URL tail ("v1") or a raw directory slug when the task is
+ * opened again with its real name. A short chosen name such as "notes" stays.
+ */
+function shouldReplaceCollapsedProjectTabTitle(current: string, incoming: string, projectPath: string): boolean {
+    const next = incoming.trim();
+    const prev = current.trim();
+    if (!next || next === prev || !isRicherTaskTitle(next)) return false;
+    if (looksLikeBareFilesystemPath(next) && next.length > 30) return false;
+    if (!prev || prev === "Task") return true;
+    const dir = projectDirDisplayName(projectPath);
+    if (dir && prev === dir) return true;
+    return (next.includes("/") || next.includes("\\")) && pathTail(next) === prev;
+}
+
 /**
  * Sanitize a project tab title for display. If the title looks like a raw
  * file path or a long internal task ID, extract a friendlier short name.
+ * Prose that contains a URL stays intact — peeling `https://host/v1` down to
+ * `v1` is not a task name.
  */
 export function sanitizeProjectTabTitle(title: string, projectPath?: string): string {
     if (!title) return projectPath ? sanitizeProjectTabTitle(projectPath) : "Task";
@@ -566,8 +610,8 @@ export function sanitizeProjectTabTitle(title: string, projectPath?: string): st
     if (/^task-\d{10,}$/.test(title)) {
         return "Task " + title.slice(5, 13) + "\u2026";
     }
-    // If title looks like a file path (contains \ or / with multiple segments), extract last segment
-    if ((title.includes("\\") || title.includes("/")) && title.length > 30) {
+    // Only a bare filesystem path loses everything but its last segment.
+    if (looksLikeBareFilesystemPath(title) && title.length > 30) {
         const segments = title.replace(/\\/g, "/").split("/").filter(Boolean);
         const last = segments[segments.length - 1] || title;
         return stripTaskDirTimestampSuffix(last.replace(/\/$/, ""));
@@ -583,7 +627,7 @@ function resolvedBackendTabTitle(title: string | undefined, normalizedPath: stri
     const rawTitle = String(title || "").trim();
     if (!rawTitle) return "";
     const sanitized = sanitizeProjectTabTitle(rawTitle, normalizedPath);
-    const dirName = stripTaskDirTimestampSuffix(normalizedPath.replace(/\\/g, "/").split("/").filter(Boolean).pop() || "");
+    const dirName = projectDirDisplayName(normalizedPath);
     return dirName && sanitized === dirName ? "" : sanitized;
 }
 
@@ -1208,8 +1252,10 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             const reconnectChanged = nextNeedsReconnect !== existing.remoteNeedsReconnect;
             const cloudIdentityChanged = nextCloudWorkspaceId !== existing.cloudWorkspaceId;
             const pathChanged = existing.projectPath !== effectiveProjectPath;
-            if (modeChanged || hostChanged || safetyChanged || reconnectChanged || cloudIdentityChanged || pathChanged) {
-                const patched = { ...existing, projectPath: effectiveProjectPath, cloudWorkspaceId: nextCloudWorkspaceId, agentMode: nextAgentMode, remoteHost: nextRemoteHost, remoteSafety: nextRemoteSafety, remoteNeedsReconnect: nextNeedsReconnect, executionProfile: executionProfileForProjectMode(nextAgentMode) };
+            const incomingTitle = String(taskTitle || "").trim() ? sanitizeProjectTabTitle(taskTitle, effectiveProjectPath) : "";
+            const titleChanged = shouldReplaceCollapsedProjectTabTitle(existing.title, incomingTitle, effectiveProjectPath);
+            if (modeChanged || hostChanged || safetyChanged || reconnectChanged || cloudIdentityChanged || pathChanged || titleChanged) {
+                const patched = { ...existing, projectPath: effectiveProjectPath, title: titleChanged ? incomingTitle : existing.title, cloudWorkspaceId: nextCloudWorkspaceId, agentMode: nextAgentMode, remoteHost: nextRemoteHost, remoteSafety: nextRemoteSafety, remoteNeedsReconnect: nextNeedsReconnect, executionProfile: executionProfileForProjectMode(nextAgentMode) };
                 const existingState = tabStatesRef.current.get(existing.id);
                 if (existingState) existingState.projectPath = effectiveProjectPath;
                 updateTabState(() => ({

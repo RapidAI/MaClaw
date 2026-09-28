@@ -94,10 +94,24 @@ func Project(opts ProjectOptions) (Projection, error) {
 		minSpill = limit
 	}
 
+	includeFooter := opts.IncludeHandleFooter == nil || *opts.IncludeHandleFooter
+	// Reserve the handle footer before the first cut. Building a preview at the
+	// full limit and then shrinking it again inserts a second "已截断" marker
+	// that cites the first preview ("共 4096 字节") and drops the middle of
+	// that preview. Content that already fits in limit is returned whole, with
+	// no footer and no spill.
+	previewLimit := limit
+	if includeFooter && len(content) > limit {
+		if reserve := handleFooterReserve(opts.ToolName, len(content), limit); reserve > 0 && reserve < limit {
+			previewLimit = limit - reserve
+		}
+	}
 	preview := opts.Preview
-	if preview == "" {
-		// Tool-aware structured projection (Phase 4); falls back to DefaultPreview.
-		preview = StructuredPreview(opts.ToolName, content, limit)
+	// An empty preview is built here. A caller preview that is the untouched
+	// content, or that is already larger than the budget, must be cut once
+	// as well. Leaving it unchanged ignored Limit and skipped the spill.
+	if preview == "" || len(preview) > previewLimit || (preview == content && len(content) > previewLimit) {
+		preview = StructuredPreview(opts.ToolName, content, previewLimit)
 	}
 
 	shouldSpill := opts.ForceSpill ||
@@ -122,7 +136,6 @@ func Project(opts ProjectOptions) (Projection, error) {
 		return Projection{Preview: preview}, err
 	}
 	handle.PreviewBytes = len(preview)
-	includeFooter := opts.IncludeHandleFooter == nil || *opts.IncludeHandleFooter
 	modelPreview := preview
 	if includeFooter {
 		preview = fitPreviewWithHandleFooter(preview, handle, limit)
@@ -295,6 +308,96 @@ func modelVisibleToolName(toolName string) string {
 	return name
 }
 
+// handleFooterReserve is the byte width of the model-facing footer for a
+// payload of originalBytes, using the widest preview_bytes value this limit
+// can print. The random handle id has a fixed width, so the reserve matches
+// the footer Project will append.
+func handleFooterReserve(toolName string, originalBytes, limit int) int {
+	if limit < 0 {
+		limit = 0
+	}
+	if originalBytes < 0 {
+		originalBytes = 0
+	}
+	tool := sanitizePathSegment(toolName)
+	if tool == "" {
+		tool = "tool"
+	}
+	if len(tool) > 24 {
+		tool = utf8Prefix(tool, 24)
+	}
+	id := "20060102T150405_" + tool + "_" + strings.Repeat("a", 16)
+	return len(appendHandleFooter("", &Handle{
+		ID:            id,
+		ToolName:      toolName,
+		OriginalBytes: originalBytes,
+		PreviewBytes:  limit,
+	}))
+}
+
+const (
+	truncationMarkerPrefix = "\n\n... (已截断，共 "
+	truncationMarkerSuffix = " 字节) ...\n\n"
+)
+
+// splitFirstTruncationMarker splits on the first size marker. A later marker
+// cites an intermediate preview, not the payload, and must not be treated as
+// the original length.
+func splitFirstTruncationMarker(s string) (head, marker, tail string, ok bool) {
+	start := strings.Index(s, truncationMarkerPrefix)
+	if start < 0 {
+		return "", "", "", false
+	}
+	rest := s[start+len(truncationMarkerPrefix):]
+	rel := strings.Index(rest, truncationMarkerSuffix)
+	if rel < 0 {
+		return "", "", "", false
+	}
+	digits := rest[:rel]
+	if digits == "" || strings.Trim(digits, "0123456789") != "" {
+		return "", "", "", false
+	}
+	end := start + len(truncationMarkerPrefix) + rel + len(truncationMarkerSuffix)
+	return s[:start], s[start:end], s[end:], true
+}
+
+// compactPreviewToBudget shrinks s to budget bytes. An existing truncation
+// marker is kept so a second cut does not cite the intermediate preview
+// length. Unmarked text uses the normal head/tail preview.
+func compactPreviewToBudget(s string, budget int) string {
+	if budget <= 0 {
+		return ""
+	}
+	if len(s) <= budget {
+		return s
+	}
+	head, marker, tail, ok := splitFirstTruncationMarker(s)
+	if !ok || len(marker) >= budget {
+		return DefaultPreview(s, budget)
+	}
+	room := budget - len(marker)
+	total := len(head) + len(tail)
+	if total <= room {
+		return head + marker + tail
+	}
+	headKeep := 0
+	if total > 0 {
+		headKeep = room * len(head) / total
+	}
+	if headKeep > len(head) {
+		headKeep = len(head)
+	}
+	tailKeep := room - headKeep
+	if tailKeep > len(tail) {
+		tailKeep = len(tail)
+		headKeep = room - tailKeep
+	}
+	if headKeep < 0 {
+		headKeep = 0
+	}
+	return utf8Prefix(head, headKeep) + marker + utf8Suffix(tail, tailKeep)
+}
+
 // fitPreviewWithHandleFooter keeps the complete model projection within the
 // caller's preview budget. Historically callers applied a second blind byte
 // truncation after Project, which could cut the handle footer itself. Reserve
@@ -319,7 +422,7 @@ func fitPreviewWithHandleFooter(preview string, h *Handle, limit int) string {
 			preview = ""
 			continue
 		}
-		preview = DefaultPreview(preview, budget)
+		preview = compactPreviewToBudget(preview, budget)
 	}
 	return preview
 }

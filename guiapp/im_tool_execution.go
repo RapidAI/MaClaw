@@ -1093,7 +1093,9 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeContextAndContextTokens
 					return *errResult
 				}
 			}
-			securityCtx := &SecurityCallContext{SessionID: localSessionIDFromToolArgs(args), UserID: trustedAuditPrincipalFromContext(execCtx, policyUserID)}
+			auditPrincipal := trustedAuditPrincipalFromContext(execCtx, policyUserID)
+			securityCtx := &SecurityCallContext{SessionID: securityApprovalSessionID(localSessionIDFromToolArgs(args), auditPrincipal), UserID: auditPrincipal}
+			h.stampFullControl(securityCtx)
 			if h.emitArchiveExternalApprovalIfNeeded(args, securityCtx, policyUserID) {
 				return toolExecutionResult{Text: "External archive extraction needs approval. An approval panel has been opened on the right.", Outcome: toolOutcomeUncertain, FailureKind: toolFailureApprovalRequired}
 			}

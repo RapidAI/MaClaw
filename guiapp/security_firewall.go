@@ -62,23 +62,28 @@ func (f *SecurityFirewall) Check(toolName string, args map[string]interface{}, c
 		return true, ""
 	}
 
-	// 2. Check session-level approvals.
+	// 2. Policy decision, before the session shortcut. A previous "allow bash"
+	// click must not waive a later hard deny (shutdown, rm -rf, DROP TABLE).
 	sessionID := sessionIDFromSecurityContext(ctx)
 	userID := userIDFromSecurityContext(ctx)
-	if sessionID != "" && f.isSessionApproved(sessionID, toolName) {
-		// Already approved for this session - allow but audit.
-		f.recordAudit(toolName, args, risk, security.PolicyAudit, "session_approved", sessionID, userID)
-		return true, ""
-	}
-
-	// 3. Policy decision.
 	action := security.PolicyAllow
 	if f.policy != nil {
 		action = f.policy.Evaluate(toolName, args, risk.Level)
 	}
+	if sessionID != "" && f.isSessionApproved(sessionID, toolName) && !securityActionIsHardDeny(action, mode) {
+		f.recordAudit(toolName, args, risk, security.PolicyAudit, "session_approved", sessionID, userID)
+		return true, ""
+	}
+	// 完全控制 skips the confirmation, not the deny. Record the allow as an
+	// audit so a later reader can see the grant that waived the prompt.
+	resultNote := ""
+	if action == security.PolicyAsk && securityCallHasFullControl(ctx) {
+		action = security.PolicyAudit
+		resultNote = "full_control_auto_allow"
+	}
 
 	// 4. Record audit.
-	f.recordAudit(toolName, args, risk, action, "", sessionID, userID)
+	f.recordAudit(toolName, args, risk, action, resultNote, sessionID, userID)
 
 	// 5. Execute decision.
 	switch action {
@@ -133,7 +138,7 @@ func (f *SecurityFirewall) confirmOrAllowWithoutChannel(toolName string, risk se
 	if f.onAsk != nil {
 		approved, err := f.onAsk(toolName, risk)
 		if err != nil {
-			return false, fmt.Sprintf("閻劍鍩涚涵顔款吇婢惰精瑙? %v", err)
+			return false, fmt.Sprintf("user confirmation failed: %v", err)
 		}
 		if approved {
 			if sessionID != "" {
@@ -141,9 +146,60 @@ func (f *SecurityFirewall) confirmOrAllowWithoutChannel(toolName string, risk se
 			}
 			return true, ""
 		}
-		return false, fmt.Sprintf("閻劍鍩涢幏鎺旂卜閹笛嗩攽: %s", toolName)
+		return false, fmt.Sprintf("user denied execution: %s", toolName)
 	}
 	return true, ""
+}
+
+func securityCallHasFullControl(ctx *SecurityCallContext) bool {
+	return ctx != nil && ctx.FullControl
+}
+
+// securityApprovalSessionID keeps a "remember this tool" grant inside one task.
+// Bash and most host tools omit session_id, so the raw id collapses to "local"
+// and one approval would unlock the same tool in every other chat.
+func securityApprovalSessionID(rawSessionID, ownerID string) string {
+	rawSessionID = strings.TrimSpace(rawSessionID)
+	ownerID = strings.TrimSpace(ownerID)
+	if ownerID == "" {
+		return rawSessionID
+	}
+	if rawSessionID == "" || rawSessionID == "local" {
+		return "owner:" + ownerID
+	}
+	return "owner:" + ownerID + "|session:" + rawSessionID
+}
+
+// securityActionIsHardDeny is a block, not a confirmation. Standard mode turns
+// PolicyDeny into an ask; strict mode keeps it as a deny.
+func securityActionIsHardDeny(action security.PolicyAction, mode string) bool {
+	if action != security.PolicyDeny {
+		return false
+	}
+	switch mode {
+	case "developer", "relaxed", "standard":
+		return false
+	default:
+		return true
+	}
+}
+
+// stampFullControl copies the tier the permission button is actually showing.
+// A pure-coding tab uses the sticky session tier, so "请求授权" still prompts
+// and a sticky full grant skips prompts even before the global flag is set.
+// Every other chat follows the global 「完全控制」 switch alone; a leftover
+// coding "request" record must not hide that switch. Hard denies stay.
+func (h *IMMessageHandler) stampFullControl(ctx *SecurityCallContext) {
+	if h == nil || ctx == nil {
+		return
+	}
+	global := h.app != nil && h.app.isSubAgentFullAccessGranted()
+	userID := strings.TrimSpace(ctx.UserID)
+	if userID != "" && h.isPureCodingWorkbenchSession(userID) {
+		ctx.FullControl = h.stickyCodingEffectiveFullAccess(userID, global)
+		return
+	}
+	ctx.FullControl = global
 }
 
 func sessionIDFromSecurityContext(ctx *SecurityCallContext) string {
@@ -186,17 +242,9 @@ func (f *SecurityFirewall) isSessionApproved(sessionID, toolName string) bool {
 	if !ok {
 		return false
 	}
-	// Check exact match or wildcard.
-	if approvals[toolName] || approvals["*"] {
-		return true
-	}
-	// Check prefix match - skip empty patterns to avoid matching everything.
-	for pattern := range approvals {
-		if pattern != "" && pattern != toolName && strings.Contains(toolName, pattern) {
-			return true
-		}
-	}
-	return false
+	// Exact tool name, or an explicit "*" grant. A shorter name must not
+	// unlock a longer one: "sh" is not bash, and "database" is not database_query.
+	return approvals[toolName] || approvals["*"]
 }
 
 func (f *SecurityFirewall) approveForSession(sessionID, toolName string) {

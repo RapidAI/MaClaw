@@ -2253,6 +2253,38 @@ func TestFinalizeTraceResult_PersistsRecoveredTrialReflectSummary(t *testing.T) 
 	}
 }
 
+func TestFinalizeTraceResult_DoesNotSurfaceBrowserField(t *testing.T) {
+	diagnosis := "**诊断结果：**\n| 问题 | 原因 | 状态 |\n| --- | --- | --- |\n| API Key 无效 | 调用返回无效的令牌 | 需确认 |"
+	cases := []struct {
+		name string
+		text string
+		err  string
+	}{
+		{name: "answer mentions browser", text: diagnosis + "\n\n确认后我会用 browser 工具重试。"},
+		{name: "error mentions cdp and debug", text: diagnosis, err: "cdp debug endpoint refused"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &IMMessageHandler{traceService: NewAITraceService()}
+			_, run := h.traceService.StartJobRun(TraceJobKindAIAssistant, "no browser chip", "desktop", "u1", "/project")
+			ctx := NewLoopContext("chat-no-browser-chip", 2, nil)
+			ctx.RunID = run.RunID
+			ctx.JobID = run.JobID
+			ctx.SetState("completed")
+
+			resp := h.finalizeTraceResult(ctx, &IMAgentResponse{Text: tc.text, Error: tc.err}, tc.text, tc.err)
+			if resp.Text != tc.text {
+				t.Fatalf("resp.Text = %q, want original answer", resp.Text)
+			}
+			for _, field := range resp.Fields {
+				if strings.EqualFold(field.Label, "Browser") || strings.Contains(field.Value, "诊断结果") {
+					t.Fatalf("answer text leaked into a response field: %+v", field)
+				}
+			}
+		})
+	}
+}
+
 func TestFinalizeTraceResult_DoesNotPersistBenignTrialReflectSummary(t *testing.T) {
 	h := &IMMessageHandler{traceService: NewAITraceService()}
 	_, run := h.traceService.StartJobRun(TraceJobKindAIAssistant, "finalize benign summary", "desktop", "u1", "/project")

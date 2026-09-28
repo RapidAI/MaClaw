@@ -79,7 +79,7 @@ var semanticToolsSearchInventory = []semanticToolsSearchEntry{
 	{"memory_recall", "Recall agent memory.", tool.CapabilityMemoryRecallAgent},
 	{"memory", "Read or update agent memory.", tool.CapabilityMemoryManageAgent},
 	{"knowledge_search", "Search the local knowledge base.", tool.CapabilityKnowledgeReadLocal},
-	{"knowledge_save_text", "Save text into the knowledge base.", "knowledge.write.local"},
+	{"knowledge_save_text", "Save text into the knowledge base.", tool.CapabilityKnowledgeIngestLocal},
 	{"knowledge_maintain", "Administer knowledge-base sources and maintenance.", "knowledge.maintain"},
 	{"manage_schedule", "Administer local schedules and reminders.", "schedule.manage"},
 	{"task", "Track local tasks.", "task.manage"},
@@ -129,6 +129,11 @@ func semanticToolsSearchNameCapability(name string) (tool.CapabilityID, bool) {
 	capability, ok := semanticToolsSearchPlanCapabilities[name]
 	return capability, ok
 }
+
+// semanticToolsSearchListedDirectivePrefix is the last line of a result that
+// already contains a callable name. runSemanticToolsSearch uses it to tell a
+// focused answer apart from a repeat.
+const semanticToolsSearchListedDirectivePrefix = "立即调用已在当前工具面的名字："
 
 // semanticToolsSearchRun executes one deterministic discovery query against
 // the host inventory. Status is derived from the live surface and the turn's
@@ -225,21 +230,29 @@ func semanticToolsSearchRun(cb *sharedAgentLoopCallbacks, argsJSON string) strin
 	semanticToolsSearchMaybeExpandScope(cb, query)
 	entries := semanticToolsSearchCatalog(cb)
 	filterNote := ""
+	var requestedNames map[string]bool
 	if len(needs) > 0 {
 		// Models pass tool names ("web_search") in needs. Those are not
 		// capability ids. A filter that matches nothing must not erase the
 		// directory: production 2026-09-22 崇州天气 heard "no capability in
 		// this task scope" and could not find web_search.
 		resolved := resolveSearchNeedTokens(needs, entries)
+		// Tool names select that row only. Capability ids select every row of
+		// that capability. Name matching keeps a row when its display id and
+		// the petition id differ (production 2026-09-27 dropped
+		// knowledge_save_text beside web_fetch).
+		requestedNames = searchNeedNames(needs, entries)
+		capabilityOnly := capabilityNeedsExcludingNames(needs, requestedNames, entries)
 		filtered := make([]semanticToolsSearchEntry, 0, len(entries))
 		for _, entry := range entries {
-			if resolved[entry.capability] {
+			if requestedNames[entry.name] || capabilityOnly[entry.capability] {
 				filtered = append(filtered, entry)
 			}
 		}
 		if len(filtered) == 0 {
 			filterNote = "needs filter matched nothing; showing the task directory\n"
 			needs = map[tool.CapabilityID]bool{}
+			requestedNames = nil
 		} else {
 			entries = filtered
 			needs = resolved
@@ -293,7 +306,14 @@ func semanticToolsSearchRun(cb *sharedAgentLoopCallbacks, argsJSON string) strin
 		}
 		fmt.Fprintf(&out, "next_page_token=%s\n", nextToken)
 	}
-	out.WriteString("只有标记「可请愿」的未列出名字才可以直接调用一次请愿（每轮每类限一次）。「此名请愿未通过」只拒绝这一个名字，不关掉同类其它可请愿名字。bash、read_file、write_file 是保底工具，已列出即可反复调用。用户已声明的能力（如 ssh）会扩进当前范围；查询文字本身不会挑选工具。")
+	// The action line is last, and it names only the listed tool. Repeating
+	// the petition rule here sends the model after web_fetch instead of the
+	// save that is already authorized (production 2026-09-27).
+	if listed := semanticToolsSearchListedNeeds(cb, entries[pageStart:pageEnd], requestedNames); len(listed) > 0 {
+		fmt.Fprintf(&out, "%s%s。不要再查询这些名字。\n", semanticToolsSearchListedDirectivePrefix, strings.Join(listed, ", "))
+	} else {
+		out.WriteString("只有标记「可请愿」的未列出名字才可以直接调用一次请愿（每轮每类限一次）。「此名请愿未通过」只拒绝这一个名字，不关掉同类其它可请愿名字。bash、read_file、write_file 是保底工具，已列出即可反复调用。用户已声明的能力（如 ssh）会扩进当前范围；查询文字本身不会挑选工具。")
+	}
 	return out.String()
 }
 
@@ -416,11 +436,87 @@ func exactSearchNeeds(raw interface{}) map[tool.CapabilityID]bool {
 	return needs
 }
 
-// parseExactSearchNeeds parses the exact capability filter accepted by the
-// discovery contract.  It deliberately accepts both JSON's []interface{}
-// representation and []string values used by in-process callers, while
-// rejecting every other shape and every non-string element.  The query is a
-// display hint only; capability IDs are the sole filter authority.
+// capabilityNeedsExcludingNames returns need tokens that are capability
+// ids. Tokens that are tool names are omitted so they cannot drag in every
+// alias of that capability.
+func capabilityNeedsExcludingNames(needs map[tool.CapabilityID]bool, names map[string]bool, entries []semanticToolsSearchEntry) map[tool.CapabilityID]bool {
+	if len(needs) == 0 {
+		return nil
+	}
+	known := make(map[tool.CapabilityID]bool, len(entries)+len(semanticPetitionableCapabilities))
+	for _, entry := range entries {
+		if entry.capability != "" {
+			known[entry.capability] = true
+		}
+	}
+	for _, capability := range semanticPetitionableCapabilities {
+		if capability != "" {
+			known[capability] = true
+		}
+	}
+	out := make(map[tool.CapabilityID]bool)
+	for token := range needs {
+		if names[string(token)] {
+			continue
+		}
+		if known[token] {
+			out[token] = true
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// searchNeedNames returns need tokens that are exact tool names. Capability
+// id drift must not hide a name the caller asked for by spelling.
+func searchNeedNames(needs map[tool.CapabilityID]bool, entries []semanticToolsSearchEntry) map[string]bool {
+	if len(needs) == 0 {
+		return nil
+	}
+	known := make(map[string]bool, len(entries)+len(semanticPetitionableCapabilities))
+	for _, entry := range entries {
+		if entry.name != "" {
+			known[entry.name] = true
+		}
+	}
+	for name := range semanticPetitionableCapabilities {
+		known[name] = true
+	}
+	out := make(map[string]bool)
+	for token := range needs {
+		if known[string(token)] {
+			out[string(token)] = true
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// semanticToolsSearchListedNeeds names requested tools that are already on
+// this turn's surface. The directive is part of the tool result, so a model
+// that asked for a listed name is told to call it instead of searching again.
+func semanticToolsSearchListedNeeds(cb *sharedAgentLoopCallbacks, page []semanticToolsSearchEntry, requested map[string]bool) []string {
+	if len(requested) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(requested))
+	for _, entry := range page {
+		if !requested[entry.name] {
+			continue
+		}
+		if semanticToolsSearchStatus(cb, entry.name) != "[已在当前工具面]" {
+			continue
+		}
+		names = append(names, entry.name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 func resolveSearchNeedTokens(needs map[tool.CapabilityID]bool, entries []semanticToolsSearchEntry) map[tool.CapabilityID]bool {
 	known := make(map[tool.CapabilityID]bool, len(entries))
 	byName := make(map[string]tool.CapabilityID, len(entries)+len(semanticPetitionableCapabilities))
@@ -454,6 +550,11 @@ func resolveSearchNeedTokens(needs map[tool.CapabilityID]bool, entries []semanti
 	return resolved
 }
 
+// parseExactSearchNeeds parses the exact capability filter accepted by the
+// discovery contract.  It deliberately accepts both JSON's []interface{}
+// representation and []string values used by in-process callers, while
+// rejecting every other shape and every non-string element.  The query is a
+// display hint only. needs filters by capability id or exact tool name.
 func parseExactSearchNeeds(raw interface{}) (map[tool.CapabilityID]bool, error) {
 	needs := make(map[tool.CapabilityID]bool)
 	if raw == nil {
@@ -560,9 +661,17 @@ func searchPageStartForScope(raw interface{}, scopeID, catalogDigest string, nee
 func semanticToolsSearchCatalog(cb *sharedAgentLoopCallbacks) []semanticToolsSearchEntry {
 	byName := make(map[string]semanticToolsSearchEntry, len(semanticToolsSearchInventory))
 	for _, entry := range semanticToolsSearchInventory {
-		if strings.TrimSpace(entry.name) != "" {
-			byName[entry.name] = entry
+		name := strings.TrimSpace(entry.name)
+		if name == "" {
+			continue
 		}
+		// Display ids in the static table drifted from the petition map
+		// (remote.ssh versus shell.execute.remote_host). The row the filter
+		// sees uses the id a needs token actually resolves to.
+		if capability, ok := semanticToolsSearchNameCapability(name); ok && capability != "" {
+			entry.capability = capability
+		}
+		byName[name] = entry
 	}
 	if cb != nil && cb.semanticSurface != nil {
 		surface := cb.semanticSurface

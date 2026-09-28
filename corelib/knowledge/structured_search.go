@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib/bm25"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 )
 
@@ -29,7 +30,7 @@ func (s *SQLiteStore) searchTableRowsByEmbedding(ctx context.Context, opts Struc
 		`EXISTS (SELECT 1 FROM knowledge_embedding_metadata em WHERE em.entity_type = 'table_row' AND em.entity_id = r.id AND em.model_id = ? AND em.dimension = ?)`,
 	}
 	args := []interface{}{embeddingModelIdentifier(emb), len(queryVector)}
-	where, args = appendKBSourceFilters(where, args, "s", opts.OwnerID, opts.TenantID, opts.ProjectPath, opts.SearchScope, nil, append(append([]string{}, opts.SourceIDs...), opts.SourceID), opts.IncludeDisabled)
+	where, args = appendKBSourceFilters(where, args, "s", ownerScope{ID: opts.OwnerID}, opts.TenantID, opts.ProjectPath, opts.SearchScope, nil, append(append([]string{}, opts.SourceIDs...), opts.SourceID), opts.IncludeDisabled)
 	rows, err := s.db.QueryContext(ctx, `SELECT r.id, r.table_id, r.row_index, COALESCE(r.primary_key_text, ''), COALESCE(r.row_text, ''), r.embedding,
 		t.sheet_name,
 		s.id, s.kind, s.uri, s.canonical_uri, s.title, s.author, s.site_name, s.published_at, s.fetched_at, s.content_hash,
@@ -157,14 +158,19 @@ func (s *SQLiteStore) SearchStructured(ctx context.Context, opts StructuredSearc
 			ftsResults = mergeTableRowResults(ftsResults, likeResults, limit)
 		}
 		results = mergeTableRowResults(results, ftsResults, limit)
-		if emb, _ := s.currentEmbedderSnapshot(); emb != nil && !embedding.IsNoop(emb) {
-			semantic, err := s.searchTableRowsByEmbedding(ctx, opts, limit)
-			if err != nil {
-				return nil, err
+		// Semantic neighbors of a composite name are a different record, and
+		// fusion keeps only Limit rows before the evidence filter can drop them.
+		if _, strict := bm25.QueryAnchors(normalizeKnowledgeLexicalText(opts.Query)); !strict {
+			if emb, _ := s.currentEmbedderSnapshot(); emb != nil && !embedding.IsNoop(emb) {
+				semantic, err := s.searchTableRowsByEmbedding(ctx, opts, limit)
+				if err != nil {
+					return nil, err
+				}
+				results = rrfFuse(results, semantic, limit)
 			}
-			results = rrfFuse(results, semantic, limit)
 		}
 	}
+	results = retainEntityMentionEvidence(opts.Query, results)
 	sortSearchResults(results)
 	if len(results) > limit {
 		results = results[:limit]
@@ -192,7 +198,7 @@ func (s *SQLiteStore) searchTableRowsLikeFallback(ctx context.Context, opts Stru
 	}
 	where := []string{likeWhere}
 	args := append([]interface{}{}, likeArgs...)
-	where, args = appendKBSourceFilters(where, args, "s", opts.OwnerID, opts.TenantID, opts.ProjectPath, opts.SearchScope, nil, append(append([]string{}, opts.SourceIDs...), opts.SourceID), opts.IncludeDisabled)
+	where, args = appendKBSourceFilters(where, args, "s", ownerScope{ID: opts.OwnerID}, opts.TenantID, opts.ProjectPath, opts.SearchScope, nil, append(append([]string{}, opts.SourceIDs...), opts.SourceID), opts.IncludeDisabled)
 	// Rank in SQLite before applying LIMIT. A one-character CJK match is useful
 	// for recall but much weaker than a row matching several query characters;
 	// ordering by row index first could otherwise discard the precise row before
@@ -252,7 +258,20 @@ func structuredRowLikeWhere(terms []string) (string, []interface{}) {
 	if len(conditions) == 0 {
 		return "", nil
 	}
-	return "(" + strings.Join(conditions, " OR ") + ")", args
+	join := " OR "
+	if len(terms) > 1 {
+		allMulti := true
+		for _, term := range terms {
+			if len([]rune(strings.TrimSpace(term))) < 2 {
+				allMulti = false
+				break
+			}
+		}
+		if allMulti {
+			join = " AND "
+		}
+	}
+	return "(" + strings.Join(conditions, join) + ")", args
 }
 
 func structuredRowLikeMatchScore(terms []string) (string, []interface{}) {
@@ -274,6 +293,9 @@ func structuredRowLikeMatchScore(terms []string) (string, []interface{}) {
 }
 
 func structuredLikeTerms(query string) []string {
+	if anchors, strict := bm25.QueryAnchors(normalizeKnowledgeLexicalText(query)); strict && len(anchors) > 0 {
+		return anchors
+	}
 	seen := make(map[string]struct{})
 	terms := make([]string, 0, 12)
 	for _, r := range normalizeKnowledgeLexicalText(query) {
@@ -307,7 +329,7 @@ func (s *SQLiteStore) searchTableRowsFTS(ctx context.Context, opts SearchOptions
 	}
 	where := []string{"kb_rows_fts MATCH ?"}
 	args := []interface{}{query}
-	where, args = appendKBSourceFilters(where, args, "s", opts.OwnerID, opts.TenantID, opts.ProjectPath, opts.SearchScope, opts.SourceKinds, append(append([]string{}, opts.SourceIDs...), opts.SourceID), opts.IncludeDisabled)
+	where, args = appendKBSourceFilters(where, args, "s", ownerScopeFromSearch(opts), opts.TenantID, opts.ProjectPath, opts.SearchScope, opts.SourceKinds, append(append([]string{}, opts.SourceIDs...), opts.SourceID), opts.IncludeDisabled)
 	args = append(args, limit)
 	rows, err := s.db.QueryContext(ctx, `SELECT r.id, r.table_id, r.row_index, COALESCE(r.primary_key_text, ''), COALESCE(r.row_text, ''),
 		t.sheet_name,
@@ -352,7 +374,7 @@ func (s *SQLiteStore) searchKBTableCardsFTS(ctx context.Context, opts SearchOpti
 	}
 	where := []string{"kb_cards_fts MATCH ?", "c.row_id IS NOT NULL", "c.origin_type = 'table_row'"}
 	args := []interface{}{query}
-	where, args = appendKBSourceFilters(where, args, "s", opts.OwnerID, opts.TenantID, opts.ProjectPath, opts.SearchScope, opts.SourceKinds, append(append([]string{}, opts.SourceIDs...), opts.SourceID), opts.IncludeDisabled)
+	where, args = appendKBSourceFilters(where, args, "s", ownerScopeFromSearch(opts), opts.TenantID, opts.ProjectPath, opts.SearchScope, opts.SourceKinds, append(append([]string{}, opts.SourceIDs...), opts.SourceID), opts.IncludeDisabled)
 	args = append(args, limit)
 	rows, err := s.db.QueryContext(ctx, `SELECT c.id, c.row_id, c.title, c.claim, c.summary,
 		COALESCE(r.table_id, ''), COALESCE(r.row_index, 0), COALESCE(t.sheet_name, ''),
@@ -418,7 +440,7 @@ func (s *SQLiteStore) searchKBTableFactsFTS(ctx context.Context, opts SearchOpti
 	}
 	where := []string{"kb_facts_fts MATCH ?", "f.row_id IS NOT NULL", "c.origin_type = 'table_row'"}
 	args := []interface{}{query}
-	where, args = appendKBSourceFilters(where, args, "s", opts.OwnerID, opts.TenantID, opts.ProjectPath, opts.SearchScope, opts.SourceKinds, append(append([]string{}, opts.SourceIDs...), opts.SourceID), opts.IncludeDisabled)
+	where, args = appendKBSourceFilters(where, args, "s", ownerScopeFromSearch(opts), opts.TenantID, opts.ProjectPath, opts.SearchScope, opts.SourceKinds, append(append([]string{}, opts.SourceIDs...), opts.SourceID), opts.IncludeDisabled)
 	args = append(args, limit)
 	rows, err := s.db.QueryContext(ctx, `SELECT f.id, f.card_id, f.row_id, f.subject, f.predicate, f.object, c.title, c.claim, c.summary,
 		COALESCE(r.table_id, ''), COALESCE(r.row_index, 0), COALESCE(t.sheet_name, ''),
@@ -477,7 +499,7 @@ func (s *SQLiteStore) searchTableRowsByCells(ctx context.Context, opts Structure
 	}
 	where := []string{"1=1"}
 	args := make([]interface{}, 0)
-	where, args = appendKBSourceFilters(where, args, "s", opts.OwnerID, opts.TenantID, opts.ProjectPath, opts.SearchScope, nil, append(append([]string{}, opts.SourceIDs...), opts.SourceID), opts.IncludeDisabled)
+	where, args = appendKBSourceFilters(where, args, "s", ownerScope{ID: opts.OwnerID}, opts.TenantID, opts.ProjectPath, opts.SearchScope, nil, append(append([]string{}, opts.SourceIDs...), opts.SourceID), opts.IncludeDisabled)
 	if len(opts.SheetNames) > 0 {
 		names := normalizeSearchStrings(opts.SheetNames)
 		if len(names) == 1 {
@@ -727,7 +749,7 @@ func scanTableRowSearchResult(rows *sql.Rows, ranked bool) (SearchResult, error)
 	return result, nil
 }
 
-func appendKBSourceFilters(where []string, args []interface{}, alias, ownerID, tenantID, projectPath, searchScope string, sourceKinds []string, sourceIDs []string, includeDisabled bool) ([]string, []interface{}) {
+func appendKBSourceFilters(where []string, args []interface{}, alias string, scope ownerScope, tenantID, projectPath, searchScope string, sourceKinds []string, sourceIDs []string, includeDisabled bool) ([]string, []interface{}) {
 	prefix := ""
 	if strings.TrimSpace(alias) != "" {
 		prefix = alias + "."
@@ -736,10 +758,7 @@ func appendKBSourceFilters(where []string, args []interface{}, alias, ownerID, t
 		where = append(where, prefix+"tenant_id = ?")
 		args = append(args, tenantID)
 	}
-	if ownerID = strings.TrimSpace(ownerID); ownerID != "" {
-		where = append(where, prefix+"owner_id = ?")
-		args = append(args, ownerID)
-	}
+	where, args = appendOwnerPredicate(where, args, prefix+"owner_id", scope)
 	switch strings.ToLower(strings.TrimSpace(searchScope)) {
 	case SaveScopePersonal, SaveScopeLocalOnly, "local":
 		where = append(where, "COALESCE("+prefix+"project_path, '') = ''")

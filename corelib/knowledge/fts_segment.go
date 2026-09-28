@@ -47,6 +47,20 @@ func buildFTSQuerySegmented(query string) string {
 	if !containsNoSpaceScriptRunes(query) {
 		return buildFTSQuery(query)
 	}
+	// A composite or unknown name must be present as its own spans. ORing every
+	// bigram makes "中国人奇强" match a biography that only contains "中国人"
+	// and "奇安信". A single dictionary word stays one term so synonym recall
+	// is still possible, without searching each of its characters.
+	if anchors, strict := bm25.QueryAnchors(query); len(anchors) > 0 && (strict || len(anchors) == 1) {
+		parts := make([]string, 0, len(anchors))
+		for _, anchor := range anchors {
+			parts = append(parts, quoteFTSTerm(anchor))
+		}
+		if !strict || len(parts) == 1 {
+			return parts[0]
+		}
+		return strings.Join(parts, " AND ")
+	}
 	// Use gse tokens plus n-grams for CJK/Japanese/Korean/Thai queries.
 	tokens := bm25.Tokenize(query)
 	tokens = append(tokens, scriptNGrams(query, 2)...)
@@ -77,6 +91,100 @@ func buildFTSQuerySegmented(query string) string {
 		return parts[0]
 	}
 	return strings.Join(parts, " OR ")
+}
+
+// retainEntityMentionEvidence drops hits that do not contain every content
+// anchor of a composite or unknown name. A single dictionary word is left
+// unchanged so semantic neighbors of that word can still be used. Fragment
+// overlaps stay out of the evidence the model is told to trust.
+func retainEntityMentionEvidence(query string, results []SearchResult) []SearchResult {
+	anchors, strict := bm25.QueryAnchors(normalizeKnowledgeLexicalText(query))
+	if !strict || len(anchors) == 0 || len(results) == 0 {
+		return results
+	}
+	kept := make([]SearchResult, 0, len(results))
+	for _, result := range results {
+		if evidenceHasAnchors(result, anchors) {
+			kept = append(kept, result)
+		}
+	}
+	return kept
+}
+
+// strictAnchorsAlreadyCovered reports that a composite-name query already has
+// a lexical hit containing every span, so the full-table LIKE scan can be skipped.
+func strictAnchorsAlreadyCovered(query string, results []SearchResult) bool {
+	anchors, strict := bm25.QueryAnchors(normalizeKnowledgeLexicalText(query))
+	if !strict || len(anchors) == 0 || len(results) == 0 {
+		return false
+	}
+	for _, result := range results {
+		// A card can name the entity and still omit the original passage.
+		// Only a node hit is enough to skip the full-text LIKE scan.
+		if result.ResultType == "node" && evidenceHasAnchors(result, anchors) {
+			return true
+		}
+	}
+	return false
+}
+
+func evidenceHasAnchors(result SearchResult, anchors []string) bool {
+	fields := []string{
+		result.CardTitle,
+		result.Claim,
+		result.Summary,
+		result.Snippet,
+		result.NodeTitle,
+		result.Subject,
+		result.Predicate,
+		result.Object,
+		result.ColumnName,
+		result.SheetName,
+		result.Source.Title,
+	}
+	for _, anchor := range anchors {
+		if !fieldContainsAnchor(fields, strings.ToLower(anchor)) {
+			return false
+		}
+	}
+	return true
+}
+
+func fieldContainsAnchor(fields []string, anchor string) bool {
+	for _, field := range fields {
+		field = strings.ToLower(field)
+		if field == "" {
+			continue
+		}
+		if strings.Contains(field, anchor) {
+			return true
+		}
+		// Only FTS token spaces need joining. A line break in the original
+		// text must not turn the end of one line and the start of the next
+		// into a name.
+		if strings.Contains(field, " ") && strings.Contains(compactHanTokenGaps(field), anchor) {
+			return true
+		}
+	}
+	return false
+}
+
+// compactHanTokenGaps joins Han characters that FTS segmentation separated
+// with spaces. "中国人 奇强" matches the name again. "奇 安信" stays 奇安信 and
+// does not become 奇强.
+func compactHanTokenGaps(text string) string {
+	runes := []rune(text)
+	if len(runes) < 3 {
+		return text
+	}
+	out := make([]rune, 0, len(runes))
+	for i, r := range runes {
+		if r == ' ' && i > 0 && i+1 < len(runes) && isCJK(runes[i-1]) && isCJK(runes[i+1]) {
+			continue
+		}
+		out = append(out, r)
+	}
+	return string(out)
 }
 
 // normalizeKnowledgeLexicalText applies search-only folding. Source text stays

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveFinalRoundContent, type ChatMessage } from '../useAIAssistant';
+import { resolveFinalRoundContent, terminalAssistantResult, terminalAssistantResultStatus, type ChatMessage } from '../useAIAssistant';
 
 /**
  * Reasoning-trail collapse: when a turn carries a reasoning trail (the
@@ -15,6 +15,41 @@ describe('resolveFinalRoundContent — reasoning-trail collapse', () => {
         content,
         reasoning,
         timestamp: Date.now(),
+    });
+
+    it('keeps tool-call markers when the official answer replaces the running transcript', () => {
+        const finalText = '接口需要登录，这一步已经改走浏览器。后面补上完整说明，避免被当成短片段而整段保留中间过程。';
+        const streamed = '先用命令试一次。\n\n<!--maclaw-tool:call-1-->\n\n命令被拦住了。';
+        const result = resolveFinalRoundContent(
+            makeMessage(streamed, 'The user wants a video download. Let me try bash first.'),
+            { text: finalText, response_source: 'agent_loop' },
+        );
+        expect(result).toContain('<!--maclaw-tool:call-1-->');
+        expect(result).toContain('先用命令试一次。');
+        expect(result).toContain(finalText);
+        expect(terminalAssistantResult({
+            ...makeMessage(streamed, 'The user wants a video download. Let me try bash first.'),
+            toolCalls: [{ id: 'call-1', name: 'bash', action: '执行命令', detail: 'curl' }],
+        }, { text: finalText, response_source: 'agent_loop' })).toBe(finalText);
+        const withCall = {
+            ...makeMessage(streamed),
+            toolCalls: [{ id: 'call-1', name: 'bash', action: '执行命令', detail: 'curl' }],
+        };
+        expect(terminalAssistantResultStatus(withCall, { text: finalText, trace_status: 'failed' })).toBe('incomplete');
+        expect(terminalAssistantResultStatus(withCall, { text: finalText, trace_status: 'ok' })).toBe('completed');
+        expect(terminalAssistantResult(withCall, { text: '', error: '写入日志失败' })).toBe('写入日志失败');
+        expect(terminalAssistantResultStatus(withCall, { text: '日志已保存一半。', error: '写入日志失败' })).toBe('incomplete');
+        expect(terminalAssistantResult(withCall, { text: '日志已保存一半。', error: '写入日志失败' })).toBe('日志已保存一半。\n\n写入日志失败');
+    });
+
+    it('does not repeat the official answer when it is already in the tool transcript', () => {
+        const finalText = '接口需要登录，这一步已经改走浏览器。';
+        const streamed = `先用命令试一次。\n\n<!--maclaw-tool:call-1-->\n\n${finalText}`;
+        const result = resolveFinalRoundContent(
+            makeMessage(streamed, 'The user wants a video download.'),
+            { text: finalText, response_source: 'agent_loop' },
+        );
+        expect(result).toBe(streamed);
     });
 
     it('collapses to finalText when the turn streamed a reasoning trail', () => {

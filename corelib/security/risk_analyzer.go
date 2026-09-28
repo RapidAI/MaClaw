@@ -173,7 +173,7 @@ var DefaultRiskPatterns = []RiskPattern{
 		ParamKey: "command", ParamMatch: `wget\s+--post`, Level: RiskHigh,
 		Description: "通过 wget POST 发送数据"},
 	{Name: "netcat", Category: "network", ToolMatch: "(?i)bash|shell",
-		ParamKey: "command", ParamMatch: `\bnc\s+-|ncat\s+`, Level: RiskHigh,
+		ParamKey: "command", ParamMatch: `\bnc(?:\.exe)?\s+-|\bncat\b`, Level: RiskHigh,
 		Description: "使用 netcat 进行网络通信"},
 	{Name: "chmod_777", Category: "permission", ToolMatch: "(?i)bash|shell",
 		ParamKey: "command", ParamMatch: `chmod\s+777`, Level: RiskHigh,

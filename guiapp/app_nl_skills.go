@@ -25,6 +25,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
+	"github.com/RapidAI/CodeClaw/corelib/toolresult"
 	"gopkg.in/yaml.v3"
 )
 
@@ -3359,11 +3360,36 @@ func (e *SkillExecutor) sshExec(args map[string]interface{}) string {
 	output := strings.Join(newLines, "\n")
 	if output == "" {
 		output = "(no output)"
+	} else {
+		output = remote.StripLeadingCommandEcho(remote.CompactPtyOutput(output), command)
+		if output == "" {
+			output = "(no output)"
+		}
 	}
-	if len(output) > 8000 {
-		output = output[:4000] + "\n... (truncated) ...\n" + output[len(output)-4000:]
+	return projectSkillSSHResult(fmt.Sprintf("%s[%s] status: %s\n$ %s\n%s", reconnectNote, sessionID, string(status), command, output), skillRunOwnerIDFromArgs(args), "")
+}
+
+// projectSkillSSHResult keeps a short terminal preview inside the skill
+// summary budget and spills the original when that budget is exceeded. The
+// handle is stored under the skill owner so read_tool_result can page it.
+func projectSkillSSHResult(formatted, owner, root string) string {
+	if len(formatted) <= skillStepModelOutputRunes {
+		return formatted
 	}
-	return fmt.Sprintf("%s[%s] status: %s\n$ %s\n%s", reconnectNote, sessionID, string(status), command, output)
+	if strings.TrimSpace(owner) == "" {
+		return toolresult.StructuredPreview("ssh", formatted, skillStepModelOutputRunes)
+	}
+	proj, err := toolresult.Project(toolresult.ProjectOptions{
+		ToolName:   "ssh",
+		SessionKey: owner,
+		Content:    formatted,
+		Limit:      skillStepModelOutputRunes,
+		Root:       root,
+	})
+	if proj.Preview == "" || (err != nil && !proj.Spilled) {
+		return toolresult.StructuredPreview("ssh", formatted, skillStepModelOutputRunes)
+	}
+	return proj.Preview
 }
 
 func (e *SkillExecutor) sshExecBackground(args map[string]interface{}) string {

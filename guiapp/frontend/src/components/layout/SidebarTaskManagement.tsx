@@ -7,12 +7,12 @@ import { localizeText } from '../../i18n';
 import { restoreCloudWorkspaceTasksShared, invalidateCloudWorkspaceTaskRestore } from '../../utils/cloudWorkspaceTaskRestore';
 import { ProjectSearchIcon } from '../ai/ProjectSearchIcon';
 import type { ProjectSceneDetail } from '../ai/ProjectSceneDetailPanel';
-import { describeTaskTitle } from '../ai/describeTaskTitle';
+import { listedTaskTitle } from '../ai/describeTaskTitle';
 import { agentModeFromTaskTags, cloudSafePathLabel, cloudWorkspaceIdFromPath, isCloudWorkspacePath, cloudWorkspaceIdFromTags, cloudWorkspaceIdFromTaskFields, cloudWorkspaceSharePermissionFromTags, cloudWorkspaceSharedFromFromTags, CODING_TASK_COMMAND_MAX_LEN, isCloudWorkspaceTask, isOwnedCloudWorkspaceTask, isPureCodingTaskTags, isRemoteMaintenanceTaskTags, isTaskManagementTaskRow, lookupCloudWorkspaceDisplayName, rememberCloudWorkspaceDisplayNames, REVEAL_CLOUD_WORKSPACE_FILES_EVENT, remoteCodingMetaFromTaskTags, remoteHostFromTaskTags, scrubCloudWorkspaceError, visibleTaskRows, type PureCodingAgentMode } from '../ai/codingTaskMode';
 import { CloudWorkspaceShareDialog } from './CloudWorkspaceShareDialog';
 import './cloudOverview.css';
 import { coerceActiveAssistantTask, expertIDFromTaskTags, normalizeProjectSessionPath, type ActiveAssistantTaskIdentity } from '../ai/aiAssistantPanelSessionUtils';
-import { truncatePathMiddle } from '../ai/SessionWorkingDirChip';
+
 import { extractErrorMessage } from '../ai/participantAddError';
 
 import { DEFAULT_EXPERT_ICON, parseExpertListJSON, parseInstalledManagedIndustryExpertsJSON, type ExpertDefinition } from '../ai/expertTypes';
@@ -188,6 +188,12 @@ const pureCodingBadgeLabel = (proj: TaskManagementItem, lang: string) => {
 const cloudWorkspaceFallbackLabel = (lang: string) =>
     textForLang(lang, 'Cloud workspace', '\u4e91\u7aef\u5de5\u4f5c\u533a', '\u96f2\u7aef\u5de5\u4f5c\u5340');
 
+/** Same paused signal for the filter bucket and the row glyph. */
+function workflowLooksPaused(workflow: { status?: string; phase?: string } | null | undefined): boolean {
+    if (!workflow) return false;
+    return /(paused|pause|已暂停|暂停)/.test(`${workflow.status || ''} ${workflow.phase || ''}`.toLowerCase());
+}
+
 function readableWorkflowPhase(phase?: string): string {
     const value = (phase || '').trim();
     if (!value) return '';
@@ -214,6 +220,10 @@ export function workflowStatusForTask(
     if (status === WorkflowStatus.Completed) {
         return { label: textForLang(lang, 'Completed', '已完成', '已完成'), detail, tone: 'success' };
     }
+    // Paused must not fall through to "in progress" and start the spinner.
+    if (workflowLooksPaused(workflow)) {
+        return { label: textForLang(lang, 'Paused', '已暂停', '已暫停'), detail, tone: 'warning' };
+    }
     if (workflow.pending_review) {
         return { label: textForLang(lang, 'Review needed', '待审核', '待審核'), detail, tone: 'warning' };
     }
@@ -229,13 +239,32 @@ export function workflowStatusForTask(
 export function workflowStatusForTaskRow(
     task: Pick<TaskManagementItem, 'active_workflow' | 'has_output'> | null | undefined,
     lang: string,
+    bucket?: ReturnType<typeof taskStatusBucketFor>,
 ): TaskWorkflowStatus | null {
     if (!task) return null;
     const snapshot = workflowStatusForTask(task.active_workflow, lang);
-    if ((!snapshot || snapshot.tone === 'info') && taskStatusBucketFor(task) === 'completed') {
+    const statusBucket = bucket ?? taskStatusBucketFor(task);
+    if ((!snapshot || snapshot.tone === 'info') && statusBucket === 'completed') {
         return { label: textForLang(lang, 'Completed', '已完成', '已完成'), tone: 'success' };
     }
     return snapshot;
+}
+
+/** Task-list local paths show only the last folder. The row hover still
+ * carries the full path. A MaClaw task sandbox is exactly `tasks/<slug>/workspace`,
+ * so that leaf is the same word on every row; show the slug. Any other folder
+ * named `workspace` stays as itself. */
+export function localWorkspaceFolderName(path: string): string {
+    const trimmed = path.trim().replace(/[\\/]+$/, '');
+    if (!trimmed) return '';
+    const parts = trimmed.split(/[\\/]/).filter(part => part && part !== '.');
+    let last = parts[parts.length - 1] || '';
+    const taskSandbox = last.toLowerCase() === 'workspace'
+        && parts.length >= 3
+        && parts[parts.length - 3].toLowerCase() === 'tasks';
+    if (taskSandbox) last = parts[parts.length - 2];
+    if (!last || /^[A-Za-z]:$/.test(last)) return trimmed;
+    return last;
 }
 
 /** Stable, explicit creation timestamp for a user-managed task. */
@@ -268,6 +297,64 @@ function taskRecentTimeLabel(value: string | undefined, lang: string): string {
     }
     return `${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
+
+const STATUS_MARK_STROKE = {
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: 1.7,
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const,
+};
+
+/** Row status glyph. In progress is a spinning ring; the other states keep
+ * the same outer size but a different mark, so they stay distinct from the
+ * task-type icon beside them. No title here: the row tooltip already carries
+ * the status plus the path. */
+const TaskStatusMark = ({ kind, label }: { kind: TaskListStatusKind; label: string }) => (
+    <span
+        className="mc-task-status"
+        data-status={kind}
+        data-testid="task-status-mark"
+        role="img"
+        aria-label={label}
+    >
+        {kind === 'running' ? <span className="mc-task-status__spin" /> : kind === 'idle' ? <span className="mc-task-status__idle" /> : (
+            <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                {kind === 'completed' && (
+                    <>
+                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.15" />
+                        <path {...STATUS_MARK_STROKE} strokeWidth={1.9} d="M4.85 8.2 7.05 10.35 11.2 5.75" />
+                    </>
+                )}
+                {kind === 'pending' && (
+                    <>
+                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.15" />
+                        <path {...STATUS_MARK_STROKE} strokeWidth={1.9} d="M8 4.35V8.15l2.45 1.5" />
+                    </>
+                )}
+                {kind === 'failed' && (
+                    <>
+                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.15" />
+                        <path {...STATUS_MARK_STROKE} strokeWidth={1.9} d="M8 4.55v3.85" />
+                        <circle cx="8" cy="11.15" r="0.85" fill="currentColor" stroke="none" />
+                    </>
+                )}
+                {kind === 'paused' && (
+                    <>
+                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.15" />
+                        <path {...STATUS_MARK_STROKE} strokeWidth={1.9} d="M6.45 5.35v5.3M9.55 5.35v5.3" />
+                    </>
+                )}
+                {kind === 'cancelled' && (
+                    <>
+                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.15" />
+                        <path {...STATUS_MARK_STROKE} strokeWidth={1.9} d="m4.15 11.85 7.7-7.7" />
+                    </>
+                )}
+            </svg>
+        )}
+    </span>
+);
 
 const TaskTypeIcon = ({ kind, lang, maintenance = false }: { kind: TaskIconKind; lang: string; maintenance?: boolean }) => {
     const label = taskIconLabel(kind, lang, maintenance);
@@ -579,11 +666,55 @@ type TaskStatusBucket = Exclude<TaskStatusFilter, 'all' | 'shared'> | 'other';
  * so a paused run never counts as in progress. */
 export function taskStatusBucketFor(task: Pick<TaskManagementItem, 'active_workflow' | 'has_output'>): TaskStatusBucket {
     const raw = `${task.active_workflow?.status || ''} ${task.active_workflow?.phase || ''}`.toLowerCase();
-    if (/(paused|pause|已暂停|暂停)/.test(raw)) return 'paused';
+    if (workflowLooksPaused(task.active_workflow)) return 'paused';
     if (/(running|execut|active|processing)/.test(raw)) return 'running';
     if (task.active_workflow?.pending_review || /(review|confirm|approval|pending|待)/.test(raw)) return 'pending';
     if (/(complete|finish|success|done)/.test(raw) || task.has_output === true) return 'completed';
     return 'other';
+}
+
+/** Glyph shown beside a task-list row. Live execution wins over a stale
+ * snapshot; a paused or pending bucket wins over a generic "in progress" tone. */
+export type TaskListStatusKind = 'running' | 'completed' | 'pending' | 'failed' | 'paused' | 'cancelled' | 'idle';
+
+export function taskListStatusKind(input: {
+    liveRunning?: boolean;
+    bucket: TaskStatusBucket;
+    tone?: TaskWorkflowStatusTone | null;
+}): TaskListStatusKind {
+    if (input.liveRunning) return 'running';
+    if (input.bucket === 'paused') return 'paused';
+    if (input.bucket === 'pending' || input.tone === 'warning') return 'pending';
+    if (input.tone === 'danger') return 'failed';
+    if (input.tone === 'neutral') return 'cancelled';
+    if (input.tone === 'success' || input.bucket === 'completed') return 'completed';
+    if (input.tone === 'info' || input.bucket === 'running') return 'running';
+    return 'idle';
+}
+
+function taskListStatusLabel(kind: TaskListStatusKind, lang: string): string {
+    switch (kind) {
+        case 'running': return localizeText(lang, 'In progress', '进行中', '進行中');
+        case 'completed': return localizeText(lang, 'Completed', '已完成', '已完成');
+        case 'pending': return localizeText(lang, 'Needs action', '待处理', '待處理');
+        case 'failed': return localizeText(lang, 'Needs attention', '需要处理', '需要處理');
+        case 'paused': return localizeText(lang, 'Paused', '已暂停', '已暫停');
+        case 'cancelled': return localizeText(lang, 'Cancelled', '已取消', '已取消');
+        default: return localizeText(lang, 'Not started', '未开始', '未開始');
+    }
+}
+
+/** Words that match the glyph. A paused row must not keep the generic
+ * "in progress" snapshot label, and a pending bucket without a review
+ * snapshot should say "needs action" rather than "in progress". */
+function taskListStatusMarkLabel(
+    kind: TaskListStatusKind,
+    workflow: Pick<TaskWorkflowStatus, 'label' | 'tone'> | null | undefined,
+    lang: string,
+): string {
+    if (kind === 'paused') return taskListStatusLabel('paused', lang);
+    if (kind === 'pending' && workflow?.tone !== 'warning') return taskListStatusLabel('pending', lang);
+    return workflow?.label || taskListStatusLabel(kind, lang);
 }
 
 /** Shared-with-me rows carry a share tag from the hub. */
@@ -1789,9 +1920,9 @@ export const SidebarTaskManagement = ({
         return base.filter(task => !isLiveRunningRow(task) && taskStatusBucketFor(task) === taskFilter);
     }, [visibleTasks, taskFilter, workspaceFilter, isLiveRunningRow]);
     const taskDragKeyRef = useRef<string | null>(null);
-    // Set only after a handle drag starts, so a normal click still opens the row.
-    // Cleared after dragend so the click that follows a drop does not open a task.
+    // Set once a row drag starts, so the click that follows a drop does not open a task.
     const taskRowDidDragRef = useRef(false);
+    const taskDragFromControlRef = useRef(false);
     const clearTaskDropMarks = () => {
         if (typeof document === 'undefined') return;
         document.querySelectorAll('.sidebar-task-row[data-task-drop-target="true"]').forEach(el => {
@@ -1844,25 +1975,6 @@ export const SidebarTaskManagement = ({
         if (taskFilter === 'paused' && taskFilterCounts.paused === 0) setTaskFilter('all');
         if (taskFilter === 'shared' && taskFilterCounts.shared === 0) setTaskFilter('all');
     }, [taskFilter, taskFilterCounts]);
-    const activeTaskForSidebar = useMemo(
-        () => activeRowContext
-            ? visibleTasks.find(task => matchesActiveTaskRowContext(task, activeRowContext)) || null
-            : null,
-        [visibleTasks, activeRowContext],
-    );
-    // The card mirrors the execution header badge: a live-running row wins
-    // over the durable snapshot (a pure agent loop run leaves has_output
-    // stale-true, which the snapshot alone would render as 已完成).
-    const executionTaskStatus = (activeTaskForSidebar && isLiveRunningRow(activeTaskForSidebar))
-        ? { label: textForLang(lang, 'In progress', '进行中', '進行中'), tone: 'info' as const }
-        : workflowStatusForTaskRow(activeTaskForSidebar, lang) || {
-            label: textForLang(lang, 'In progress', '进行中', '進行中'),
-            tone: 'info' as const,
-        };
-    const executionTaskTitle = describeTaskTitle(activeTaskForSidebar?.name || '')
-        || (activeAssistantTask?.expertId
-            ? activeAssistantTask.expertId
-            : activeAssistantTask?.projectPath || textForLang(lang, 'Current task', '当前任务', '目前任務'));
     // Dock theme toggle mirrors the quick-settings theme chip; fall back to the
     // App root attribute when the caller does not pass themeMode explicitly.
     const headerThemeMode: 'light' | 'dark' = getPortalThemeMode(themeMode) === 'dark' ? 'dark' : 'light';
@@ -3275,27 +3387,26 @@ export const SidebarTaskManagement = ({
             </div>
         )}
         <div className="mc-task-pane__header stsm-pane-header">
-            <span className="mc-task-pane__create-group stsm-header-group">
-                <span>{textForLang(lang, activeAssistantTask ? 'My tasks' : 'New Task', activeAssistantTask ? '\u6211\u7684\u4efb\u52a1' : '\u65b0\u5efa\u4efb\u52a1', activeAssistantTask ? '\u6211\u7684\u4efb\u52d9' : '\u65b0\u5efa\u4efb\u52d9')}</span>
-                <button
-                    type="button"
-                    className="mc-task-pane__create-primary"
-                    data-testid="task-pane-new-task-wizard"
-                    onClick={() => window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD))}
-                    disabled={creatingTask}
-                    aria-label={textForLang(lang, 'New task', '新建任务', '新建任務')}
-                    title={textForLang(lang, 'New task (configure on the welcome page)', '新建任务（在引导页配置后发送创建）', '新建任務（在引導頁配置後傳送建立）')}
-                    style={taskHeaderActionButtonStyle(creatingTask)}
-                >
+            <button
+                type="button"
+                className="mc-task-pane__create-group"
+                data-testid="task-pane-new-task-wizard"
+                onClick={() => window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD))}
+                disabled={creatingTask}
+                title={textForLang(lang, 'New task (configure on the welcome page)', '新建任务（在引导页配置后发送创建）', '新建任務（在引導頁配置後傳送建立）')}
+            >
+                <span>{textForLang(lang, 'New task', '新建任务', '新建任務')}</span>
+                <span className="mc-task-pane__create-mark" aria-hidden="true">
                     <CreateTaskIcon />
-                </button>
+                </span>
+            </button>
+            <span className="mc-task-pane__tool-group">
                 <button
                     type="button"
                     data-testid="sidebar-theme-toggle"
                     onClick={() => window.dispatchEvent(new CustomEvent('maclaw:toggle-ai-theme'))}
                     aria-label={themeToggleLabel}
                     title={themeToggleLabel}
-                    style={taskHeaderActionButtonStyle()}
                 >
                     {headerThemeMode === 'dark' ? (
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></svg>
@@ -3320,7 +3431,6 @@ export const SidebarTaskManagement = ({
                         title={showCloudWorkspaceManagement
                             ? textForLang(lang, 'Cloud workspaces — continue on another PC', '云端工作区，换电脑也能继续', '雲端工作區，換電腦繼續')
                             : textForLang(lang, 'Create cloud workspace task', '创建云端工作区任务', '建立雲端工作區任務')}
-                        style={taskHeaderActionButtonStyle(creatingTask)}
                     >
                         <CloudComputingIcon />
                     </button>
@@ -3340,58 +3450,6 @@ export const SidebarTaskManagement = ({
             </span>
         </div>
 
-        {activeAssistantTask && (
-            <section className="mc-execution-task-sidebar" data-testid="execution-task-sidebar" aria-label={textForLang(lang, 'My tasks', '我的任务', '我的任務')}>
-                <div className="mc-execution-task-sidebar__heading">
-                    <strong>{textForLang(lang, 'My tasks', '我的任务', '我的任務')}</strong>
-                    <span className="mc-execution-task-sidebar__heading-actions">
-                        {/* Header wizard button is hidden while a task is open; this + is the visible entry. */}
-                        <button
-                            type="button"
-                            className="mc-execution-task-sidebar__add"
-                            data-testid="execution-task-new-task-wizard"
-                            onClick={() => window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD))}
-                            disabled={creatingTask}
-                            aria-label={textForLang(lang, 'New task', '新建任务', '新建任務')}
-                            title={textForLang(lang, 'New task (configure on the welcome page)', '新建任务（在引导页配置后发送创建）', '新建任務（在引導頁配置後傳送建立）')}
-                        >+</button>
-                        {(showCloudWorkspaceManagement || showCloudWorkspaceCreation) && (
-                            <button
-                                type="button"
-                                className="mc-execution-task-sidebar__add mc-execution-task-sidebar__cloud"
-                                data-testid="execution-task-cloud-create"
-                                onClick={showCloudWorkspaceManagement ? openCloudOverview : () => openCreateDialog({ cloud: true })}
-                                disabled={creatingTask}
-                                {...(showCloudWorkspaceManagement ? {
-                                    'aria-expanded': cloudOverviewOpen,
-                                    'aria-haspopup': 'dialog',
-                                    'aria-controls': 'task-cloud-overview-panel',
-                                } : {})}
-                                aria-label={showCloudWorkspaceManagement
-                                    ? textForLang(lang, 'Cloud workspaces', '云端工作区', '雲端工作區')
-                                    : textForLang(lang, 'Create cloud workspace task', '创建云端工作区任务', '建立雲端工作區任務')}
-                                title={showCloudWorkspaceManagement
-                                    ? textForLang(lang, 'Cloud workspaces — continue on another PC', '云端工作区，换电脑也能继续', '雲端工作區，換電腦繼續')
-                                    : textForLang(lang, 'Create cloud workspace task', '创建云端工作区任务', '建立雲端工作區任務')}
-                            ><CloudComputingIcon /></button>
-                        )}
-                    </span>
-                </div>
-                <button
-                    type="button"
-                    className="mc-current-task-card"
-                    data-testid="current-task-card"
-                    onClick={() => { if (activeTaskForSidebar) handleTaskRowClick(activeTaskForSidebar); }}
-                    title={`${textForLang(lang, 'Click to open the current task', '单击打开当前任务', '單擊開啟目前任務')}${executionTaskStatus.detail ? ` · ${executionTaskStatus.detail}` : ''}`}
-                >
-                    <span className={`mc-current-task-card__dot mc-current-task-card__dot--${executionTaskStatus.tone}`} aria-hidden="true" />
-                    <strong className="mc-current-task-card__title">{executionTaskTitle}</strong>
-                    <span className={`mc-current-task-card__status mc-current-task-card__status--${executionTaskStatus.tone}`}>
-                        {executionTaskStatus.label}
-                    </span>
-                </button>
-            </section>
-        )}
         {creatingTask && !createDialogOpen && (
             <SidebarTaskStatusBanner
                 testId="task-autocreate-progress"
@@ -3468,25 +3526,39 @@ export const SidebarTaskManagement = ({
             // server, but they are not pure-coding tasks in this sidebar.
             // Keep the row metadata aligned with the visible task type.
             const pureCoding = !cloudWorkspace && isPureCodingTask(proj);
-            const workflowStatus = isLiveRunningRow(proj)
-                ? { label: textForLang(lang, 'In progress', '进行中', '進行中'), tone: 'info' as const }
-                : workflowStatusForTaskRow(proj, lang);
-            const createdAtLabel = taskCreationLabel(proj.created_at, lang);
-            const recentTimeLabel = taskRecentTimeLabel(proj.last_activity || proj.created_at, lang);
             const isRemoving = removingTaskPaths.has(proj.project_path);
             const removalError = removeErrors.get(proj.project_path) || '';
             const isActive = activeRowContext ? matchesActiveTaskRowContext(proj, activeRowContext) : false;
             const isOpen = isTaskInstanceOpen(proj);
             const isBusy = openingTaskPath === proj.project_path || isRemoving;
+            const liveRunning = isLiveRunningRow(proj);
+            const statusBucket = taskStatusBucketFor(proj);
+            const workflowStatus = liveRunning
+                ? { label: textForLang(lang, 'In progress', '进行中', '進行中'), tone: 'info' as const }
+                : workflowStatusForTaskRow(proj, lang, statusBucket);
+            const durableKind = taskListStatusKind({
+                liveRunning,
+                bucket: statusBucket,
+                tone: workflowStatus?.tone,
+            });
+            // Opening or removing is its own in-progress moment. The row's
+            // durable status stays put so the list color does not flicker.
+            const statusKind: TaskListStatusKind = isBusy ? 'running' : durableKind;
+            const createdAtLabel = taskCreationLabel(proj.created_at, lang);
+            const recentTimeLabel = taskRecentTimeLabel(proj.last_activity || proj.created_at, lang);
             const secondaryStatusLabel = isRemoving
                 ? textForLang(lang, 'Removing task...', '正在删除任务...', '正在刪除任務...')
                 : openingTaskPath === proj.project_path
                     ? textForLang(lang, pureCoding ? 'Restoring pure coding environment...' : 'Restoring...', pureCoding ? '正在恢复纯编程环境...' : '恢复中...', pureCoding ? '正在恢復純程式環境...' : '恢復中...')
                     : '';
+            const statusMarkLabel = secondaryStatusLabel || taskListStatusMarkLabel(durableKind, workflowStatus, lang);
+            const statusHover = secondaryStatusLabel
+                ? secondaryStatusLabel
+                : [statusMarkLabel, workflowStatus?.detail].filter(Boolean).join(' · ');
             const rowPathHint = cloudWorkspace
                 ? cloudSafePathLabel(proj.working_dir || proj.project_path, taskSecondaryLabel || 'cloud')
                 : (proj.working_dir || proj.execution_dir || proj.project_path);
-            const taskTitleText = describeTaskTitle(String(proj.name || '').trim())
+            const taskTitleText = listedTaskTitle(proj)
                 || (cloudWorkspace ? (taskSecondaryLabel || cloudFallback || rowPathHint) : proj.project_path);
             const storedTaskName = String(proj.name || '').trim();
             const identitySubtitle = taskSecondaryLabel && taskSecondaryLabel !== taskTitleText && taskSecondaryLabel !== storedTaskName ? taskSecondaryLabel : '';
@@ -3507,15 +3579,15 @@ export const SidebarTaskManagement = ({
                         : textForLang(lang, 'Remote server', '远程服务器', '遠端伺服器'))
                     : localWorkingDir;
             const workspaceValueText = workspaceKind === 'local'
-                ? truncatePathMiddle(workspaceValue, 42)
+                ? localWorkspaceFolderName(workspaceValue)
                 : workspaceValue;
             // Cloud rows always keep the type badge, even before Hub names load.
             const showWorkspaceLine = workspaceKind === 'cloud' || !!workspaceValue;
             // When the workspace line already carries the identity text (cloud
             // workspace name), keep the muted subtitle from repeating it.
-            const secondaryText = secondaryStatusLabel
-                || (identitySubtitle && identitySubtitle !== workspaceValue ? identitySubtitle : '')
-                || (taskSidebarSummary !== taskTitleText && taskSidebarSummary !== workspaceValue ? taskSidebarSummary : '');
+            // A third summary line repeats the title or the workspace path.
+            // Keep it only while a row is restoring or being removed.
+            const secondaryText = secondaryStatusLabel;
             const rowStyle: CSSProperties = {
                 display: 'flex',
                 flexDirection: 'row',
@@ -3523,7 +3595,7 @@ export const SidebarTaskManagement = ({
                 gap: '6px',
                 padding: '4px 6px 4px 8px',
                 borderRadius: '8px',
-                cursor: isBusy ? 'progress' : 'pointer',
+                cursor: isBusy ? 'progress' : 'grab',
                 opacity: isBusy ? 0.78 : 1,
                 // Only the active row keeps a selection highlight; open-but-inactive
                 // and plain rows stay transparent (hover comes from CSS).
@@ -3532,9 +3604,10 @@ export const SidebarTaskManagement = ({
                     boxShadow: 'inset 3px 0 0 var(--theme-primary), inset 0 0 0 1px color-mix(in srgb, var(--theme-primary) 28%, var(--theme-border))',
                 } : {}),
             };
-            return <div key={proj.id || proj.project_path} data-task-kind={taskIconKind} data-pure-coding={pureCoding ? 'true' : 'false'} data-status={workflowStatus?.tone === 'success' ? 'completed' : workflowStatus?.tone === 'warning' ? 'pending' : workflowStatus?.tone === 'danger' ? 'failed' : workflowStatus?.tone === 'info' ? 'running' : undefined} data-testid="sidebar-task-row" data-active={isActive ? 'true' : 'false'} data-open={isOpen ? 'true' : 'false'} data-task-path={proj.project_path}>
-                <div className={`sidebar-task-row${isActive ? ' is-active' : ''}${isOpen ? ' is-open' : ''}${isBusy ? ' is-busy' : ''}`} role="button" tabIndex={isBusy ? -1 : 0} onDragOver={e => { if (!taskDragKeyRef.current) return; e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'; const row = e.currentTarget; document.querySelectorAll('.sidebar-task-row[data-task-drop-target="true"]').forEach(el => { if (el !== row) el.removeAttribute('data-task-drop-target'); }); row.setAttribute('data-task-drop-target', 'true'); }} onDrop={e => { e.preventDefault(); e.currentTarget.removeAttribute('data-task-drop-target'); const fromKey = taskDragKeyRef.current; taskDragKeyRef.current = null; if (fromKey) commitTaskDrag(fromKey, taskOrderKey(proj)); }} onDragLeave={e => { if (e.currentTarget.contains(e.relatedTarget as Node | null)) return; e.currentTarget.removeAttribute('data-task-drop-target'); }} onClick={(e) => { if (e.detail > 1 || taskRowDidDragRef.current) return; handleTaskRowClick(proj); }} onDoubleClick={() => { void handleTaskDoubleClick(proj); }} onKeyDown={e => { if (isBusy || (e.key !== 'Enter' && e.key !== ' ')) return; e.preventDefault(); if (isTaskInstanceOpen(proj)) { activateTask?.(proj.project_path, proj); return; } void handleTaskDoubleClick(proj); }} onContextMenu={e => { e.preventDefault(); if (isRemoving) return; setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: taskTitleText, pinned: !!proj.pinned, isRemoteCoding: isRemoteCodingTask(proj), tags: proj.tags, workingDir: proj.working_dir }); }} style={rowStyle} title={joinHoverLines(taskTitleText, rowPathHint, workflowStatus && [workflowStatus.label, workflowStatus.detail].filter(Boolean).join(' · '), codingBadge, createdAtLabel, identitySubtitle, textForLang(lang, 'Click to open the task', '单击打开任务', '單擊開啟任務'))} aria-current={isActive ? 'true' : undefined}>
-                    <span className="stsm-drag-handle-wrap"><span role="button" className="stsm-drag-handle" data-testid="task-drag-handle" draggable={!isBusy} aria-label={textForLang(lang, 'Drag to reorder', '拖动调整顺序', '拖動調整順序')} title={textForLang(lang, 'Drag to reorder', '拖动调整顺序', '拖動調整順序')} onClick={e => e.stopPropagation()} onDoubleClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} onDragStart={e => { e.stopPropagation(); taskRowDidDragRef.current = true; const key = taskOrderKey(proj); taskDragKeyRef.current = key; if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key); } }} onDragEnd={() => { taskDragKeyRef.current = null; clearTaskDropMarks(); window.setTimeout(() => { taskRowDidDragRef.current = false; }, 0); }}>⋮⋮</span></span>
+            return <div key={proj.id || proj.project_path} data-task-kind={taskIconKind} data-pure-coding={pureCoding ? 'true' : 'false'} data-status={durableKind === 'idle' ? undefined : durableKind} data-testid="sidebar-task-row" data-active={isActive ? 'true' : 'false'} data-open={isOpen ? 'true' : 'false'} data-task-path={proj.project_path}>
+                <div className={`sidebar-task-row${isActive ? ' is-active' : ''}${isOpen ? ' is-open' : ''}${isBusy ? ' is-busy' : ''}`} role="button" tabIndex={isBusy ? -1 : 0} draggable={!isBusy} onMouseDown={e => { taskDragFromControlRef.current = !!(e.target as HTMLElement | null)?.closest('button, a, input, textarea'); }} onDragStart={e => { if (isBusy || taskDragFromControlRef.current) { e.preventDefault(); return; } taskRowDidDragRef.current = true; const key = taskOrderKey(proj); taskDragKeyRef.current = key; if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key); } }} onDragEnd={() => { taskDragKeyRef.current = null; taskDragFromControlRef.current = false; clearTaskDropMarks(); window.setTimeout(() => { taskRowDidDragRef.current = false; }, 0); }} onDragOver={e => { if (!taskDragKeyRef.current) return; e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'; const row = e.currentTarget; document.querySelectorAll('.sidebar-task-row[data-task-drop-target="true"]').forEach(el => { if (el !== row) el.removeAttribute('data-task-drop-target'); }); row.setAttribute('data-task-drop-target', 'true'); }} onDrop={e => { e.preventDefault(); e.currentTarget.removeAttribute('data-task-drop-target'); const fromKey = taskDragKeyRef.current; taskDragKeyRef.current = null; if (fromKey) commitTaskDrag(fromKey, taskOrderKey(proj)); }} onDragLeave={e => { if (e.currentTarget.contains(e.relatedTarget as Node | null)) return; e.currentTarget.removeAttribute('data-task-drop-target'); }} onClick={(e) => { if (e.detail > 1 || taskRowDidDragRef.current) return; handleTaskRowClick(proj); }} onDoubleClick={() => { void handleTaskDoubleClick(proj); }} onKeyDown={e => { if (isBusy || (e.key !== 'Enter' && e.key !== ' ')) return; e.preventDefault(); if (isTaskInstanceOpen(proj)) { activateTask?.(proj.project_path, proj); return; } void handleTaskDoubleClick(proj); }} onContextMenu={e => { e.preventDefault(); if (isRemoving) return; setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: taskTitleText, pinned: !!proj.pinned, isRemoteCoding: isRemoteCodingTask(proj), tags: proj.tags, workingDir: proj.working_dir }); }} style={rowStyle} title={joinHoverLines(taskTitleText, rowPathHint, statusHover, codingBadge, createdAtLabel, identitySubtitle, textForLang(lang, 'Click to open. Drag to reorder.', '单击打开，拖动排序', '單擊開啟，拖動排序'))} aria-current={isActive ? 'true' : undefined}>
+                    <TaskStatusMark kind={statusKind} label={statusMarkLabel} />
+                    <span className="stsm-drag-handle-wrap"><span role="button" className="stsm-drag-handle" data-testid="task-drag-handle" aria-label={textForLang(lang, 'Drag to reorder', '拖动调整顺序', '拖動調整順序')} title={textForLang(lang, 'Drag to reorder', '拖动调整顺序', '拖動調整順序')} onClick={e => e.stopPropagation()} onDoubleClick={e => e.stopPropagation()} onMouseDown={e => { taskDragFromControlRef.current = false; e.stopPropagation(); }} onDragStart={e => { e.stopPropagation(); taskRowDidDragRef.current = true; const key = taskOrderKey(proj); taskDragKeyRef.current = key; if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key); } }} onDragEnd={() => { taskDragKeyRef.current = null; clearTaskDropMarks(); window.setTimeout(() => { taskRowDidDragRef.current = false; }, 0); }}>⋮⋮</span></span>
                     <TaskTypeIcon kind={taskIconKind} lang={lang} maintenance={remoteMaintenance} />
                     <span className="stsm-row-body">
                         {(workflowStatus || codingBadge || proj.pinned || shareFromLabel) && (
@@ -3546,9 +3619,7 @@ export const SidebarTaskManagement = ({
                                         className="stsm-badge-share"
                                     >{shareFromLabel}</span>
                                 ) : null}
-                                {proj.pinned && !pureCoding && (
-                                    <span data-testid="task-pinned-badge" className="stsm-badge-pinned">{textForLang(lang, 'Pinned', '\u7f6e\u9876', '\u7f6e\u9802')}</span>
-                                )}
+
                                 {codingBadge && (
                                     <span
                                         data-testid={isRemoteCodingTask(proj) ? 'task-remote-coding-badge' : 'task-coding-badge'}
@@ -3577,13 +3648,13 @@ export const SidebarTaskManagement = ({
                                 {workflowStatus && <span data-testid="task-workflow-status" aria-label={`${textForLang(lang, 'Task status', '任务状态', '任務狀態')}: ${workflowStatus.label}${workflowStatus.detail ? ` · ${workflowStatus.detail}` : ''}`} title={`${proj.active_workflow?.type || 'workflow'}${workflowStatus.detail ? ` · ${workflowStatus.detail}` : ''}`} style={{ display: 'inline-flex', maxWidth: '100%', padding: '1px 5px', borderRadius: '999px', border: `1px solid ${TASK_WORKFLOW_STATUS_COLORS[workflowStatus.tone].border}`, color: TASK_WORKFLOW_STATUS_COLORS[workflowStatus.tone].color, background: TASK_WORKFLOW_STATUS_COLORS[workflowStatus.tone].background, fontSize: '0.58rem', fontWeight: 700, lineHeight: 1.35, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{workflowStatus.label}{workflowStatus.detail ? ` · ${workflowStatus.detail}` : ''}</span>}
                             </span>
                         )}
-                        {renamingTaskPath === proj.project_path ? <input autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onBlur={async () => { const trimmed = renameValue.trim(); if (trimmed && trimmed !== proj.name && trimmed !== taskTitleText) { await renameTask(proj.project_path, trimmed); refreshTasks(); } setRenamingTaskPath(null); }} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setRenamingTaskPath(null); }} onClick={e => e.stopPropagation()} style={{ width: '100%', fontSize: '0.74rem', fontWeight: 700, color: 'var(--theme-text-primary)', background: 'var(--theme-surface)', border: '1px solid var(--theme-primary)', borderRadius: '4px', padding: '2px 4px', outline: 'none' }} /> : <span className="mc-sidebar-task-title-row"><span className="stsm-row-title">{taskTitleText}</span>{recentTimeLabel && <time className="mc-sidebar-task-time" dateTime={proj.last_activity || proj.created_at}>{recentTimeLabel}</time>}</span>}
+                        {renamingTaskPath === proj.project_path ? <input autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onBlur={async () => { const trimmed = renameValue.trim(); if (trimmed && trimmed !== proj.name && trimmed !== taskTitleText) { await renameTask(proj.project_path, trimmed); refreshTasks(); } setRenamingTaskPath(null); }} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setRenamingTaskPath(null); }} onClick={e => e.stopPropagation()} style={{ width: '100%', fontSize: '0.74rem', fontWeight: 700, color: 'var(--theme-text-primary)', background: 'var(--theme-surface)', border: '1px solid var(--theme-primary)', borderRadius: '4px', padding: '2px 4px', outline: 'none' }} /> : <span className="mc-sidebar-task-title-row"><span className="stsm-row-title">{taskTitleText}</span>{proj.pinned && !pureCoding && <span data-testid="task-pinned-badge" className="stsm-badge-pinned" title={textForLang(lang, 'Pinned', '置顶', '置頂')}>{textForLang(lang, 'Pinned', '置顶', '置頂')}</span>}{recentTimeLabel && <time className="mc-sidebar-task-time" dateTime={proj.last_activity || proj.created_at}>{recentTimeLabel}</time>}</span>}
                         {secondaryText ? <span data-testid="task-secondary-label" className="stsm-row-secondary">{secondaryText}</span> : null}
                         {showWorkspaceLine ? (
                             <span
                                 data-testid="task-working-dir"
                                 className="mc-task-working-dir"
-                                style={{ display: 'flex', alignItems: 'center', gap: '4px', marginTop: '1px', color: 'var(--theme-text-secondary)', fontSize: '0.66rem', lineHeight: 1.3, whiteSpace: 'nowrap', overflow: 'hidden', textAlign: 'left', cursor: 'inherit' }}
+                                style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '2px', color: 'var(--theme-text-secondary)', fontSize: '12px', lineHeight: 1.35, whiteSpace: 'nowrap', overflow: 'hidden', textAlign: 'left', cursor: 'inherit' }}
                             >
                                 <WorkspaceTypeBadge kind={workspaceKind} label={workspaceKindLabel(workspaceKind, lang)} style={{ flexShrink: 0 }} />
                                 {workspaceValueText ? (
@@ -3855,7 +3926,7 @@ export const SidebarTaskManagement = ({
                                                         {textForLang(lang, 'No linked tasks. Use New Task and choose this workspace.', '暂无关联任务。可用「新建任务」选择此工作区。', '暫無關聯任務。可用「新建任務」選擇此工作區。')}
                                                     </div>
                                                 ) : linked.map(task => {
-                                                    const linkedTitle = describeTaskTitle(task.name || '') || task.name || task.project_path;
+                                                    const linkedTitle = listedTaskTitle(task) || task.name || task.project_path;
                                                     return (
                                                     <div key={task.project_path} data-testid="task-cloud-overview-task" className="mc-cloud-overview__task">
                                                         <span className="mc-cloud-overview__task-name" title={linkedTitle}>{linkedTitle}</span>

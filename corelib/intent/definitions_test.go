@@ -206,6 +206,12 @@ func TestWorkflowDefinitionCoversCNIPAPatentApplicationTypes(t *testing.T) {
 				t.Fatalf("workflow definition missing %q", want)
 			}
 		}
+		if containsSubstring(def.TreeText, "同一输入能否产出截然不同的结果") {
+			t.Fatal("divergent output must not be sufficient for workflow_task")
+		}
+		if !containsSubstring(def.TreeText, "视频、动画、图片、音频或故事不是本标签") {
+			t.Fatal("workflow_task definition must exclude in-chat media production")
+		}
 		return
 	}
 	t.Fatal("workflow_task definition not found")

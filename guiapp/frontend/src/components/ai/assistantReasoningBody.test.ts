@@ -345,6 +345,18 @@ describe("resolveVisibleAssistantReply", () => {
         expect(visible.reasoning).toContain("The user is asking");
         expect(visible.reasoning).not.toContain("重庆今天小雨");
     });
+
+    it("keeps a tool-call marker in the live answer", () => {
+        const plan = "The user is asking for the forecast. Let me think through the snippets before I answer. Several dates in the listing do not match today, so the raw page text cannot be the reply.\n\n";
+        const answer = "重庆今天小雨，约 24~30℃，北风，风力不大。明天多云，约 24~31℃，北风。今起三天降雨集中在华西，外出建议带伞，并注意路面积水。空气湿度较高，体感偏闷热。";
+        const marked = `${plan}<!--maclaw-tool:call-1-->\n\n${answer}`;
+        const visible = resolveVisibleAssistantReply(marked, "", { live: true });
+        expect(visible.content).toContain("<!--maclaw-tool:call-1-->");
+        expect(visible.content).toContain("重庆今天小雨");
+        expect(visible.reasoning).toContain("The user is asking");
+        expect(visible.reasoning).not.toContain("maclaw-tool");
+        expect(visible.reasoning).not.toContain("重庆今天小雨");
+    });
 });
 
 describe("parkReplacedStreamInReasoning", () => {

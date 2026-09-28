@@ -1,15 +1,27 @@
 import { ImportCodexAuth } from '../../../wailsjs/go/main/App';
+import { ClipboardSetText } from '../../../wailsjs/runtime';
 import { colors } from './styles';
 import { labelStyle, type LLMProvider } from './LLMConfigPanelShared';
-import { isWorkBuddyProvider } from './providerLogos';
+import { isKimiCodeProvider, isWorkBuddyProvider } from './providerLogos';
 
 type Translate = (en: string, zhHans: string, zhHant?: string) => string;
+
+export async function copyKimiCodeUserCode(code: string): Promise<boolean> {
+    const value = code.trim();
+    if (!value) return false;
+    try {
+        return await ClipboardSetText(value) !== false;
+    } catch {
+        return false;
+    }
+}
 
 function oauthSignInLabel(name: string, t: Translate): string {
     if (name === 'GitHub Copilot') return t('Sign in with GitHub', '\u4f7f\u7528 GitHub \u8d26\u53f7\u767b\u5f55');
     if (name === 'Anthropic') return t('Sign in with Claude.ai', '\u4f7f\u7528 Claude.ai \u8d26\u53f7\u767b\u5f55');
     if (name === 'xAI-Grok') return t('Sign in with xAI', '\u4f7f\u7528 xAI \u8d26\u53f7\u767b\u5f55');
     if (isWorkBuddyProvider(name)) return t('Sign in with WorkBuddy', '\u4f7f\u7528 WorkBuddy \u8d26\u53f7\u767b\u5f55');
+    if (isKimiCodeProvider(name)) return t('Sign in with Kimi Code', '\u4f7f\u7528 Kimi Code \u8d26\u53f7\u767b\u5f55');
     return t('Sign in with OpenAI', '\u4f7f\u7528 OpenAI \u8d26\u53f7\u767b\u5f55');
 }
 
@@ -17,6 +29,7 @@ export function LLMConfigOAuthFields({
     provider,
     oauthBusy,
     testFailed,
+    hint,
     t,
     onLogin,
     onCancel,
@@ -26,6 +39,7 @@ export function LLMConfigOAuthFields({
     provider: LLMProvider;
     oauthBusy: boolean;
     testFailed: boolean;
+    hint?: string;
     t: Translate;
     onLogin: () => void;
     onCancel: () => void;
@@ -63,19 +77,9 @@ export function LLMConfigOAuthFields({
                         opacity: oauthBusy ? 0.6 : 1,
                     }}>
                         {oauthBusy
-                            ? `RUN ${t('Waiting for browser authorization...', '\u7b49\u5f85\u6d4f\u89c8\u5668\u6388\u6743...')}`
+                            ? t('Waiting for browser authorization...', '\u7b49\u5f85\u6d4f\u89c8\u5668\u6388\u6743...')
                             : oauthSignInLabel(provider.name, t)}
                     </button>
-                    {oauthBusy && (
-                        <button aria-label={t('Cancel OAuth login', '\u53d6\u6d88 OAuth \u767b\u5f55')} onClick={onCancel} style={{
-                            width: '100%', padding: '8px 0', fontSize: '0.76rem',
-                            cursor: 'pointer', marginTop: 6,
-                            background: 'transparent', color: colors.textMuted,
-                            border: `1px solid ${colors.border}`, borderRadius: 4,
-                        }}>
-                            {t('Cancel', '\u53d6\u6d88')}
-                        </button>
-                    )}
                     {provider.name === 'OpenAI' && testFailed && !oauthBusy && (
                         <button onClick={async () => {
                             try {
@@ -94,6 +98,21 @@ export function LLMConfigOAuthFields({
                         </button>
                     )}
                 </>
+            )}
+            {oauthBusy && hint ? (
+                <p style={{ fontSize: '0.76rem', color: colors.textSecondary, margin: '8px 0 0', lineHeight: 1.45, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                    {hint}
+                </p>
+            ) : null}
+            {oauthBusy && (
+                <button aria-label={t('Cancel OAuth login', '\u53d6\u6d88 OAuth \u767b\u5f55')} onClick={onCancel} style={{
+                    width: '100%', padding: '8px 0', fontSize: '0.76rem',
+                    cursor: 'pointer', marginTop: 6,
+                    background: 'transparent', color: colors.textMuted,
+                    border: `1px solid ${colors.border}`, borderRadius: 4,
+                }}>
+                    {t('Cancel', '\u53d6\u6d88')}
+                </button>
             )}
         </div>
     );

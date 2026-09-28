@@ -285,6 +285,8 @@ type App struct {
 	copilotDeviceCode        string                      // in-progress GitHub Copilot device code
 	copilotPollInterval      int                         // Copilot device code poll interval
 	copilotPollCtx           context.Context             // Copilot device code polling context
+	kimiLogin                *kimiCodeLogin              // in-progress Kimi Code device login
+	kimiOwnedGen             uint64                      // oauth generation owned by the Kimi login above
 	// Smart session components
 	memoryStore                       *memory.Store
 	memoryStoreMu                     sync.Mutex

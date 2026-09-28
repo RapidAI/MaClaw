@@ -434,10 +434,9 @@ func (h *codingE3LoopHostBase) BuildToolsForModelRequest(userText string, iterat
 	return h.LoopCallbacks.(agent.ModelRequestToolSurfaceRenderer).BuildToolsForModelRequest(userText, iteration)
 }
 
-// The hermetic host is split per family because the real compositions differ:
-// the local callback also implements agent.ToolResultProjector. Each host
-// exposes exactly the optional interfaces of its own composition — no more,
-// no less.
+// The hermetic host is split per family because the real compositions differ.
+// Both local and remote callbacks implement agent.ToolResultProjector. Each
+// host exposes exactly the optional interfaces of its own composition.
 type codingE3LocalLoopHost struct {
 	*codingE3LoopHostBase
 }
@@ -450,13 +449,17 @@ type codingE3RemoteLoopHost struct {
 	*codingE3LoopHostBase
 }
 
+func (h *codingE3RemoteLoopHost) ProjectToolResult(name string, result agent.ToolExecutionResult) string {
+	return h.LoopCallbacks.(agent.ToolResultProjector).ProjectToolResult(name, result)
+}
+
 // codingE3AssertHostCompositionParity fails unless the wrapper still exposes
 // every optional interface the real composition implements. It guards against
 // a future callback extension silently disappearing from this suite.
 func codingE3AssertHostCompositionParity(t *testing.T, family string, host agent.LoopCallbacks) {
 	t.Helper()
 	want := map[string]bool{
-		"ToolResultProjector": family == "local",
+		"ToolResultProjector": family == "local" || family == "remote",
 	}
 	for name, ok := range map[string]bool{
 		"ToolSurfaceRequestChannelProvider":             implementsInterface[agent.ToolSurfaceRequestChannelProvider](host),

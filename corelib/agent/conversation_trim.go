@@ -564,6 +564,19 @@ func TrimHistory(entries []ConversationEntry) []ConversationEntry {
 // stdout, large file read) from dominating the context window.
 const MaxToolResultLen = 4096
 
+// TerminalMaxToolResult is the inline budget for shell and SSH output.
+// A remote status command (login banner, uptime, disk, listeners) is often
+// past 4KB; cutting it there dropped the metrics in the middle, and the
+// spilled handle could not be paged when read_tool_result was off the
+// rendered tool list. 16KB still spills real log dumps.
+const TerminalMaxToolResult = 16 * 1024
+
+// ToolResultReadMaxToolResult keeps one read_tool_result page inline, including
+// the [tool_result_read] header and its next_offset line. The reader never
+// returns more than toolresult.MaxReadLimit bytes of payload; a 4KB preview
+// cut that page again and hid the continuation fields.
+const ToolResultReadMaxToolResult = toolresult.MaxReadLimit + 1024
+
 // TruncateToolResult caps a tool result string to MaxToolResultLen bytes.
 // If truncated, it keeps the first and last portions so the LLM sees both
 // the beginning (often headers/status) and the end (often the conclusion).
@@ -694,7 +707,8 @@ func toolResultPreviewLimit(toolName string) int {
 }
 
 func toolResultPreviewLimitForContext(toolName string, contextTokens int) int {
-	switch strings.ToLower(strings.TrimSpace(toolName)) {
+	name := strings.ToLower(strings.TrimSpace(toolName))
+	switch name {
 	case "office", "read_document", "read_doc", "read_docx", "read_pdf", "read_excel", "read_pptx",
 		"read_file", "file_read", "fileread", "read_files":
 		if contextTokens > 0 {
@@ -705,8 +719,15 @@ func toolResultPreviewLimitForContext(toolName string, contextTokens int) int {
 		return WebFetchMaxToolResult
 	case "computer_observe":
 		return ComputerObserveMaxToolResult
+	case "bash", "get_session_output", "run_terminal_command":
+		return TerminalMaxToolResult
+	case "read_tool_result":
+		return ToolResultReadMaxToolResult
 	default:
-		if strings.HasPrefix(toolName, "browser") {
+		if strings.HasPrefix(name, "ssh") {
+			return TerminalMaxToolResult
+		}
+		if strings.HasPrefix(name, "browser") {
 			return max(MaxToolResultLen, 4096)
 		}
 		return MaxToolResultLen

@@ -184,19 +184,19 @@ type conversationSession struct {
 }
 
 type persistedSession struct {
-	Entries             []ConversationEntry `json:"entries"`
-	ActiveBranchTipID   string              `json:"active_branch_tip_id,omitempty"`
-	LastAccess          time.Time           `json:"last_access"`
-	UnfinishedSlot      *UnfinishedTaskSlot `json:"unfinished_slot,omitempty"`
-	ActiveSlotID        string              `json:"active_slot_id,omitempty"`
-	InFlightTask        string              `json:"in_flight_task,omitempty"`
-	InFlightProjectPath string              `json:"in_flight_project_path,omitempty"`
-	InFlightSetAt       time.Time           `json:"in_flight_set_at,omitempty"`
-	InFlightRunID       string              `json:"in_flight_run_id,omitempty"`
-	InFlightSequence    uint64              `json:"in_flight_sequence,omitempty"`
-	InFlightLastTool        string                  `json:"in_flight_last_tool,omitempty"`
-	InFlightSideEffect      string                  `json:"in_flight_side_effect,omitempty"`
-	SemanticSessionResidue  *SemanticSessionResidue `json:"semantic_session_residue,omitempty"`
+	Entries                []ConversationEntry     `json:"entries"`
+	ActiveBranchTipID      string                  `json:"active_branch_tip_id,omitempty"`
+	LastAccess             time.Time               `json:"last_access"`
+	UnfinishedSlot         *UnfinishedTaskSlot     `json:"unfinished_slot,omitempty"`
+	ActiveSlotID           string                  `json:"active_slot_id,omitempty"`
+	InFlightTask           string                  `json:"in_flight_task,omitempty"`
+	InFlightProjectPath    string                  `json:"in_flight_project_path,omitempty"`
+	InFlightSetAt          time.Time               `json:"in_flight_set_at,omitempty"`
+	InFlightRunID          string                  `json:"in_flight_run_id,omitempty"`
+	InFlightSequence       uint64                  `json:"in_flight_sequence,omitempty"`
+	InFlightLastTool       string                  `json:"in_flight_last_tool,omitempty"`
+	InFlightSideEffect     string                  `json:"in_flight_side_effect,omitempty"`
+	SemanticSessionResidue *SemanticSessionResidue `json:"semantic_session_residue,omitempty"`
 }
 
 // InFlightCheckpoint is evidence for a durable conversation checkpoint. It
@@ -1094,6 +1094,61 @@ func (cm *ConversationMemory) persistInFlightCheckpointLocked(userID string, ent
 	return nil
 }
 
+// RetireUserCancelCheckpoint drops this run's in-flight marker and any pending
+// recovery slot promoted from that same run. An empty run ID is refused so a
+// missing identifier cannot clear another run. A crash that never reaches
+// this call still promotes on the next launch.
+func (cm *ConversationMemory) RetireUserCancelCheckpoint(userID, runID string) error {
+	if cm == nil {
+		return nil
+	}
+	cm.checkpointMu.Lock()
+	defer cm.checkpointMu.Unlock()
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return nil
+	}
+	scope := inFlightRunScopeKey(runID)
+	sh := cm.shard(userID)
+	sh.mu.Lock()
+	s := sh.sessions[userID]
+	if s == nil {
+		sh.mu.Unlock()
+		return nil
+	}
+	clearMarker := s.inFlightRunID == runID
+	clearSlot := pendingSameRunRecoverySlot(s.unfinishedSlot, scope)
+	if !clearMarker && !clearSlot {
+		sh.mu.Unlock()
+		return nil
+	}
+	before := cloneConversationSession(s)
+	if clearMarker {
+		clearInFlightFields(s)
+	}
+	if clearSlot {
+		if s.activeSlotID == "" || s.activeSlotID == s.unfinishedSlot.SlotID {
+			s.activeSlotID = ""
+		}
+		s.unfinishedSlot = nil
+	}
+	candidate := cloneConversationSession(s)
+	sh.mu.Unlock()
+	cm.markDirtyAndScheduleFlush()
+	if err := cm.FlushNow(); err != nil {
+		cm.restoreCheckpointMutation(userID, before, candidate, false)
+		return err
+	}
+	return nil
+}
+
+func pendingSameRunRecoverySlot(slot *UnfinishedTaskSlot, scope string) bool {
+	if slot == nil || scope == "" || slot.EvidenceScopeKey != scope || !unfinishedSlotIsPendingDecision(slot) {
+		return false
+	}
+	return slot.Source == UnfinishedTaskSlotSourceInFlightLeaseExpired || slot.Source == UnfinishedTaskSlotSourceInFlightRecovery
+}
+
 // CompleteInFlightCheckpointForRun clears the marker only when the same run
 // still owns it, then durably flushes the transition. It closes the window
 // where a normal completion could otherwise leave a stale marker on disk.
@@ -1113,13 +1168,7 @@ func (cm *ConversationMemory) CompleteInFlightCheckpointForRun(userID, runID str
 		return cm.FlushNow()
 	}
 	before := cloneConversationSession(s)
-	s.inFlightTask = ""
-	s.inFlightProjectPath = ""
-	s.inFlightSetAt = time.Time{}
-	s.inFlightRunID = ""
-	s.inFlightSequence = 0
-	s.inFlightLastTool = ""
-	s.inFlightSideEffect = ""
+	clearInFlightFields(s)
 	candidate := cloneConversationSession(s)
 	sh.mu.Unlock()
 	cm.markDirtyAndScheduleFlush()
@@ -1128,6 +1177,19 @@ func (cm *ConversationMemory) CompleteInFlightCheckpointForRun(userID, runID str
 		return err
 	}
 	return nil
+}
+
+func clearInFlightFields(s *conversationSession) {
+	if s == nil {
+		return
+	}
+	s.inFlightTask = ""
+	s.inFlightProjectPath = ""
+	s.inFlightSetAt = time.Time{}
+	s.inFlightRunID = ""
+	s.inFlightSequence = 0
+	s.inFlightLastTool = ""
+	s.inFlightSideEffect = ""
 }
 
 // SaveAndCompleteInFlightCheckpointForRun atomically replaces a run's
@@ -1456,7 +1518,7 @@ func (cm *ConversationMemory) convertExpiredInFlightLocked(userID string, s *con
 			Status:           UnfinishedTaskSlotStatusInterrupted,
 			Summary:          "Previous task stopped making progress and was moved to recovery.",
 			LastTask:         task,
-			ResumePrompt:     "The previous task stopped making progress. Continue from the saved conversation history and avoid repeating completed work.\n",
+			ResumePrompt:     expiredInFlightResumePrompt(s.inFlightSideEffect),
 			Source:           UnfinishedTaskSlotSourceInFlightLeaseExpired,
 			EvidenceScopeKey: inFlightRunScopeKey(runID),
 			LastCheckpointAt: s.inFlightSetAt,
@@ -1487,6 +1549,20 @@ func recoveryModeForSideEffect(sideEffect string) string {
 		// safe for blind continuation; the UI must require an explicit review.
 		return "requires_review"
 	}
+}
+
+func recoveryResumePrompt(sideEffect string) string {
+	if recoveryModeForSideEffect(sideEffect) == "resume_context" {
+		return "Resume from saved context. The last checkpoint only inspected state and did not change the workspace or an external system. Continue the original task."
+	}
+	return "Resume from saved context. Do not repeat a previously executed tool call; review its side effects first."
+}
+
+func expiredInFlightResumePrompt(sideEffect string) string {
+	if recoveryModeForSideEffect(sideEffect) == "resume_context" {
+		return recoveryResumePrompt(sideEffect)
+	}
+	return "The previous task stopped making progress. Continue from the saved conversation history and avoid repeating completed work.\n"
 }
 
 // newRecoverySlotID keeps independently interrupted sessions distinguishable
@@ -1528,7 +1604,7 @@ func (cm *ConversationMemory) PromoteRecoverableCheckpoints(now time.Time) int {
 						Status:           UnfinishedTaskSlotStatusInterrupted,
 						Summary:          "Previous task was interrupted after a durable tool-progress checkpoint.",
 						LastTask:         s.inFlightTask,
-						ResumePrompt:     "Resume from saved context. Do not repeat a previously executed tool call; review its side effects first.",
+						ResumePrompt:     recoveryResumePrompt(s.inFlightSideEffect),
 						Source:           UnfinishedTaskSlotSourceInFlightRecovery,
 						EvidenceScopeKey: inFlightRunScopeKey(s.inFlightRunID),
 						LastCheckpointAt: s.inFlightSetAt,
@@ -1624,16 +1700,16 @@ func (cm *ConversationMemory) saveToDisk() error {
 			}
 			entries := sanitizeConversationEntriesForPersistence(session.entries)
 			snapshot.Sessions[userID] = persistedSession{
-				Entries:             entries,
-				ActiveBranchTipID:   session.activeBranchTipID,
-				LastAccess:          session.lastAccess,
-				UnfinishedSlot:      CloneUnfinishedTaskSlot(session.unfinishedSlot),
-				ActiveSlotID:        session.activeSlotID,
-				InFlightTask:        session.inFlightTask,
-				InFlightProjectPath: session.inFlightProjectPath,
-				InFlightSetAt:       session.inFlightSetAt,
-				InFlightRunID:       session.inFlightRunID,
-				InFlightSequence:    session.inFlightSequence,
+				Entries:                entries,
+				ActiveBranchTipID:      session.activeBranchTipID,
+				LastAccess:             session.lastAccess,
+				UnfinishedSlot:         CloneUnfinishedTaskSlot(session.unfinishedSlot),
+				ActiveSlotID:           session.activeSlotID,
+				InFlightTask:           session.inFlightTask,
+				InFlightProjectPath:    session.inFlightProjectPath,
+				InFlightSetAt:          session.inFlightSetAt,
+				InFlightRunID:          session.inFlightRunID,
+				InFlightSequence:       session.inFlightSequence,
 				InFlightLastTool:       session.inFlightLastTool,
 				InFlightSideEffect:     session.inFlightSideEffect,
 				SemanticSessionResidue: clonePersistedSemanticResidue(session.semanticResidue),

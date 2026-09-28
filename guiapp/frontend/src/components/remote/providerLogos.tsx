@@ -2,9 +2,22 @@ import React from "react";
 
 export const WORKBUDDY_CHINA_PROVIDER = "WorkBuddy 国内版";
 export const WORKBUDDY_GLOBAL_PROVIDER = "WorkBuddy 国际版";
+export const KIMI_CODE_PROVIDER = "Kimi Code";
 
 export function isWorkBuddyProvider(name: string | null | undefined) {
     return name === WORKBUDDY_CHINA_PROVIDER || name === WORKBUDDY_GLOBAL_PROVIDER;
+}
+
+export function isKimiCodeProvider(name: string | null | undefined) {
+    return name === KIMI_CODE_PROVIDER;
+}
+
+function KimiCodeLogo() {
+    return (
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M14.2 3.1a8.4 8.4 0 1 0 6.6 13.4A6.7 6.7 0 0 1 14.2 3.1Z" fill="currentColor"/>
+        </svg>
+    );
 }
 
 function WorkBuddyLogo() {
@@ -90,6 +103,7 @@ export const PROVIDER_LOGOS: Record<string, React.ReactNode> = {
             <path d="M6 20c0-3.314 2.686-6 6-6s6 2.686 6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" fill="none"/>
         </svg>
     ),
+    [KIMI_CODE_PROVIDER]: <KimiCodeLogo />,
     "讯飞星辰": (
         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none">
             <path d="M12 2L3 7v10l9 5 9-5V7l-9-5z" stroke="currentColor" strokeWidth="1.8" fill="none"/>

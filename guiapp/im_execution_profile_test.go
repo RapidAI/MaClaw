@@ -1277,3 +1277,146 @@ func TestPrepareAgentLoopToolsLightKeepsToolResultReader(t *testing.T) {
 		t.Fatalf("light tools must retain the handle reader: %#v", names)
 	}
 }
+
+func TestShortContinuationKeepsParentExecutionTools(t *testing.T) {
+	h := &IMMessageHandler{}
+	light := ExecutionProfile{Layer: string(executionLayerLight), PromptProfile: "light", TaskType: "general"}
+	const userID = "desktop-user"
+	if got := h.continuationKeepsParentExecution(light, userID, "用这个", nil); got.IsLight() != true {
+		t.Fatalf("a short reply with no previous full turn must stay light, got %+v", got)
+	}
+	h.noteParentExecution(userID, true, []map[string]interface{}{
+		{"function": map[string]interface{}{"name": "memory"}},
+		{"function": map[string]interface{}{"name": "knowledge_search"}},
+	})
+	if h.parentExecutionIsFull(userID) {
+		t.Fatal("a full turn that showed only lookup tools must not stick")
+	}
+	h.noteParentExecution(userID, true, []map[string]interface{}{
+		{"function": map[string]interface{}{"name": "bash"}},
+		{"function": map[string]interface{}{"name": "memory"}},
+		{"function": map[string]interface{}{"name": "knowledge_search"}},
+	})
+	if got := h.parentExecutionTools(userID); len(got) != 1 || got[0] != "bash" {
+		t.Fatalf("only tools a light filter would drop are carried, got %v", got)
+	}
+	follow := h.continuationKeepsParentExecution(light, userID, "用这个", nil)
+	if follow.IsLight() || follow.Reason != shortContinuationReason {
+		t.Fatalf("a short continuation of a full turn must stay full, got %+v", follow)
+	}
+	live := &intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: 0.98}
+	if got := h.continuationKeepsParentExecution(light, userID, "用这个", live); !got.IsLight() {
+		t.Fatalf("a confident live-data turn must start clean, got %+v", got)
+	}
+	unsure := &intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: 0.4}
+	if got := h.continuationKeepsParentExecution(light, userID, "用这个", unsure); got.Reason != shortContinuationReason {
+		t.Fatalf("a low-confidence label must keep the parent surface, got %+v", got)
+	}
+	knowledge := &intent.ClassificationResult{Primary: intent.LabelKnowledgeRead, Confidence: 0.98}
+	if got := h.continuationKeepsParentExecution(light, userID, "用这个", knowledge); got.Reason != shortContinuationReason {
+		t.Fatalf("a knowledge read continues the parent task, got %+v", got)
+	}
+	if got := h.continuationKeepsParentExecution(light, userID, "谢谢", nil); !got.IsLight() {
+		t.Fatalf("a greeting must stay light, got %+v", got)
+	}
+	long := strings.Repeat("续", 41)
+	if got := h.continuationKeepsParentExecution(light, userID, long, nil); !got.IsLight() {
+		t.Fatalf("a long message is not a short continuation, got %+v", got)
+	}
+	full := fullExecutionProfile("already full")
+	if got := h.continuationKeepsParentExecution(full, userID, "用这个", nil); got.Reason != full.Reason {
+		t.Fatalf("a full profile must not be rewritten, got %+v", got)
+	}
+	h.noteParentExecution(userID, true, nil)
+	if got := h.parentExecutionTools(userID); len(got) != 1 || got[0] != "bash" {
+		t.Fatalf("a failed plan must not clear the carried surface, got %v", got)
+	}
+	h.noteParentExecution(userID, false, nil)
+	if h.parentExecutionIsFull(userID) {
+		t.Fatal("a light turn must clear the carried surface")
+	}
+	if got := h.continuationKeepsParentExecution(light, userID, "用这个", nil); !got.IsLight() {
+		t.Fatalf("after a light turn the next short reply starts clean, got %+v", got)
+	}
+}
+
+func TestPreferRankedNamesKeepsRestoredToolsAhead(t *testing.T) {
+	got := preferRankedNames([]string{"knowledge_search", "bash", "web_search"}, []string{"bash", "ssh"})
+	want := []string{"bash", "ssh", "knowledge_search", "web_search"}
+	if len(got) != len(want) {
+		t.Fatalf("ranked names = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("ranked names = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestRankContinuationToolsKeepsRetrievalAheadOfRestore(t *testing.T) {
+	tools := []map[string]interface{}{
+		{"function": map[string]interface{}{"name": "knowledge_search"}},
+		{"function": map[string]interface{}{"name": "memory"}},
+		{"function": map[string]interface{}{"name": "web_search"}},
+	}
+	got := rankContinuationTools([]string{"web_search", "bash"}, []string{"bash", "ssh"}, tools)
+	want := []string{"memory", "knowledge_search", "bash", "ssh", "web_search"}
+	if len(got) != len(want) {
+		t.Fatalf("ranked names = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("ranked names = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestRecordSemanticExecutionSurface(t *testing.T) {
+	h := &IMMessageHandler{}
+	const userID = "desktop-user"
+	h.noteParentExecution(userID, true, []map[string]interface{}{
+		{"function": map[string]interface{}{"name": "bash"}},
+	})
+	light := ExecutionProfile{Layer: string(executionLayerLight), PromptProfile: "light"}
+	h.recordSemanticExecutionSurface(userID, light, nil)
+	if h.parentExecutionIsFull(userID) {
+		t.Fatal("a light managed turn must drop the previous execution tools")
+	}
+	h.noteParentExecution(userID, true, []map[string]interface{}{
+		{"function": map[string]interface{}{"name": "bash"}},
+	})
+	full := fullExecutionProfile("semantic capability-managed mutating intent")
+	h.recordSemanticExecutionSurface(userID, full, nil)
+	if got := h.parentExecutionTools(userID); len(got) != 1 || got[0] != "bash" {
+		t.Fatalf("a failed full surface must keep the previous list, got %v", got)
+	}
+	h.recordSemanticExecutionSurface(userID, full, []map[string]interface{}{
+		{"function": map[string]interface{}{"name": "ssh"}},
+		{"function": map[string]interface{}{"name": "memory"}},
+	})
+	if got := h.parentExecutionTools(userID); len(got) != 1 || got[0] != "ssh" {
+		t.Fatalf("a full managed turn must replace the carry with its own execution tools, got %v", got)
+	}
+	continued := fullExecutionProfile(shortContinuationReason)
+	h.recordSemanticExecutionSurface(userID, continued, []map[string]interface{}{
+		{"function": map[string]interface{}{"name": "knowledge_search"}},
+		{"function": map[string]interface{}{"name": "memory"}},
+	})
+	if got := h.parentExecutionTools(userID); len(got) != 1 || got[0] != "ssh" {
+		t.Fatalf("a lookup continuation must keep the parent execution tools, got %v", got)
+	}
+}
+
+func TestAnswerOnlyTurnKeepsCarriedExecutionTools(t *testing.T) {
+	h := &IMMessageHandler{}
+	h.noteParentExecution("desktop-user", true, []map[string]interface{}{
+		{"function": map[string]interface{}{"name": "bash"}},
+	})
+	ctx := NewLoopContext("chat", 3, nil)
+	ctx.semanticTurnAnswerOnly = true
+	ctx.Runtime.Execution = fullExecutionProfile("managed")
+	h.prepareAgentLoopTools("desktop-user", "用这个", ctx, agentLoopPhase{})
+	if got := h.parentExecutionTools("desktop-user"); len(got) != 1 || got[0] != "bash" {
+		t.Fatalf("an answer-only turn must keep the parent execution tools, got %v", got)
+	}
+}

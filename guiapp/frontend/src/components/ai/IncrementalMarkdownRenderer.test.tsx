@@ -83,6 +83,21 @@ describe("renderContentIncremental", () => {
         expect(container.textContent).not.toContain("$$");
     });
 
+    it("still freezes on paragraph breaks when thinking spacers are omitted", () => {
+        const state = createIncrementalRenderState();
+        const content = `${"Thought line about the search order.\n\n".repeat(80)}Active tail`;
+
+        const { container } = render(
+            <div>{renderContentIncremental(content, lightTheme, state, { omitBlankSpacers: true })}</div>,
+        );
+
+        expect(state.frozen?.contentUpTo).toBeGreaterThan(0);
+        const spacers = Array.from(container.querySelectorAll("div")).filter((node) => node.textContent === "\u00A0");
+        expect(spacers.length).toBe(0);
+        expect(container.textContent).toContain("Thought line about the search order.");
+        expect(container.textContent).toContain("Active tail");
+    });
+
     it("rebuilds frozen nodes when the theme changes during streaming", () => {
         const state = createIncrementalRenderState();
         const content = `${"Completed paragraph.\n\n".repeat(120)}Active tail`;

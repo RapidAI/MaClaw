@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -48,6 +49,32 @@ func TestExpireStaleInFlightTaskCreatesRecoverySlot(t *testing.T) {
 	}
 	if active := cm.ActiveUnfinishedSlot(userID); active != nil {
 		t.Fatalf("expected expired in-flight slot to require explicit resume, got active=%#v", active)
+	}
+}
+
+func TestExpireReadOnlyInFlightDoesNotAskToSkipTheLookup(t *testing.T) {
+	cm := NewConversationMemory()
+	defer cm.Stop()
+
+	userID := "desktop-user"
+	now := time.Now()
+	cm.SetInFlightTaskForRun(userID, "查看进度", "/project", "run-search")
+	sh := cm.shard(userID)
+	sh.mu.Lock()
+	sh.sessions[userID].inFlightSetAt = now.Add(-InFlightTaskLease - time.Second)
+	sh.sessions[userID].inFlightLastTool = "tools_search"
+	sh.sessions[userID].inFlightSideEffect = "none"
+	sh.mu.Unlock()
+
+	if expired := cm.ExpireStaleInFlightTasks(now, InFlightTaskLease); expired != 1 {
+		t.Fatalf("expired = %d, want 1", expired)
+	}
+	slot := cm.GetUnfinishedSlot(userID)
+	if slot == nil || slot.RecoveryMode != "resume_context" {
+		t.Fatalf("read-only lease expiry required review: %#v", slot)
+	}
+	if strings.Contains(slot.ResumePrompt, "avoid repeating") || !strings.Contains(slot.ResumePrompt, "did not change the workspace") {
+		t.Fatalf("lease resume prompt treats a read-only lookup as completed work: %q", slot.ResumePrompt)
 	}
 }
 
@@ -420,6 +447,37 @@ func TestPromoteCheckpointPreservesExistingPendingSlot(t *testing.T) {
 	}
 	if task, _ := cm.ConsumeInFlightTask("user"); task != "" {
 		t.Fatalf("marker not cleared after duplicate suppression: %q", task)
+	}
+}
+
+func TestPromoteReadOnlyCheckpointResumesContextWithoutSideEffectReview(t *testing.T) {
+	dir := t.TempDir()
+	storePath := filepath.Join(dir, "conversation.json")
+	cm := NewPersistentConversationMemory(storePath)
+	if err := cm.PersistInFlightCheckpoint(
+		"desktop-user",
+		[]ConversationEntry{
+			{Role: "user", Content: "查看进度"},
+			{Role: "tool", Content: "catalog", ToolCallID: "call-1", ToolName: "tools_search"},
+		},
+		"查看进度", "/project", "run-search",
+		InFlightCheckpoint{Sequence: 1, LastToolName: "tools_search", SideEffectState: "none"},
+	); err != nil {
+		t.Fatalf("PersistInFlightCheckpoint() error = %v", err)
+	}
+	cm.Stop()
+
+	reloaded := NewPersistentConversationMemory(storePath)
+	defer reloaded.Stop()
+	slot := reloaded.GetUnfinishedSlot("desktop-user")
+	if slot == nil {
+		t.Fatal("expected read-only checkpoint to become a recovery slot")
+	}
+	if slot.LastToolName != "tools_search" || slot.SideEffectState != "none" || slot.RecoveryMode != "resume_context" {
+		t.Fatalf("read-only checkpoint required review: %#v", slot)
+	}
+	if !strings.Contains(slot.ResumePrompt, "did not change the workspace") {
+		t.Fatalf("resume prompt still treats a read-only checkpoint as a side effect: %q", slot.ResumePrompt)
 	}
 }
 

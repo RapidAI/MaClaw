@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/kimicode"
 	"github.com/RapidAI/CodeClaw/corelib/workbuddy"
 )
 
@@ -17,6 +18,7 @@ func ApplyProviderAuthHeaders(req *http.Request, cfg corelib.MaclawLLMConfig) {
 		return
 	}
 	workbuddy.ApplyHeaders(req.Header, cfg)
+	kimicode.ApplyHeaders(req.Header, cfg)
 	if !strings.EqualFold(strings.TrimSpace(cfg.ProviderName), "xAI-Grok") ||
 		!strings.EqualFold(strings.TrimSpace(cfg.AuthType), "oauth") {
 		return

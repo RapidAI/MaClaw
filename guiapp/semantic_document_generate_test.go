@@ -16,6 +16,124 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
+func TestPlannedSuccessorDenialRequiresAnOutstandingPredecessor(t *testing.T) {
+	pdf := tool.CapabilityID("document.generate.file")
+	search := tool.CapabilityID("information.search.web")
+	bash := tool.CapabilityShellExecuteLocal
+	waiting := &sharedAgentLoopCallbacks{semanticSurface: &semanticCallSurface{
+		completed: map[string]bool{},
+		grants:    map[string]tool.InvocationGrant{"web_search": {SelectionID: "search", Token: "live"}},
+		plan: tool.ToolPlan{Selections: []tool.PlannedSelection{
+			{ID: "search", FitProof: tool.FitProof{MatchedCapability: search}},
+			{ID: "pdf", FitProof: tool.FitProof{MatchedCapability: pdf}, Requires: []string{"search"}},
+			{ID: "bash", FitProof: tool.FitProof{MatchedCapability: bash}},
+		}},
+	}}
+	if msg := waiting.plannedSuccessorDenial("generate_pdf", pdf); !successorNotYetListedDenial(msg, "generate_pdf") {
+		t.Fatalf("lookup-gated pdf must explain the next request: %q", msg)
+	}
+	if msg := waiting.plannedSuccessorDenial("bash", bash); msg != "" {
+		t.Fatalf("a ready baseline must keep the generic denial: %q", msg)
+	}
+	confirmed := &sharedAgentLoopCallbacks{semanticSurface: &semanticCallSurface{
+		completed: map[string]bool{},
+		plan: tool.ToolPlan{Selections: []tool.PlannedSelection{
+			{ID: "pdf", FitProof: tool.FitProof{MatchedCapability: pdf}, Requires: []string{"confirmation:need"}},
+		}},
+	}}
+	if msg := confirmed.plannedSuccessorDenial("generate_pdf", pdf); msg != "" {
+		t.Fatalf("confirmation must not be described as a listed step: %q", msg)
+	}
+	held := &sharedAgentLoopCallbacks{
+		semanticHoldDependantIssue: true,
+		semanticSurface: &semanticCallSurface{
+			completed: map[string]bool{"search": true},
+			plan: tool.ToolPlan{Selections: []tool.PlannedSelection{
+				{ID: "search", FitProof: tool.FitProof{MatchedCapability: search}},
+				{ID: "pdf", FitProof: tool.FitProof{MatchedCapability: pdf}, Requires: []string{"search"}},
+			}},
+		},
+	}
+	if msg := held.plannedSuccessorDenial("generate_pdf", pdf); !successorHeldForNextRequest(msg, "generate_pdf") {
+		t.Fatalf("held ready generate must wait for the next request without another lookup: %q", msg)
+	}
+	released := &sharedAgentLoopCallbacks{semanticSurface: held.semanticSurface}
+	if msg := released.plannedSuccessorDenial("generate_pdf", pdf); msg != "" {
+		t.Fatalf("a ready generate outside the hold must not promise another request: %q", msg)
+	}
+	deliver := tool.CapabilityID("artifact.deliver.current_channel")
+	chain := &sharedAgentLoopCallbacks{semanticSurface: &semanticCallSurface{
+		completed: map[string]bool{},
+		plan: tool.ToolPlan{Selections: []tool.PlannedSelection{
+			{ID: "search", FitProof: tool.FitProof{MatchedCapability: search}},
+			{ID: "pdf", FitProof: tool.FitProof{MatchedCapability: pdf}, Requires: []string{"search"}},
+			{ID: "deliver", FitProof: tool.FitProof{MatchedCapability: deliver}, Requires: []string{"pdf"}},
+		}},
+	}}
+	if msg := chain.plannedSuccessorDenial("send_file", deliver); !successorListedAfterEarlierSteps(msg, "send_file") {
+		t.Fatalf("delivery behind an unready generate must not promise the next request: %q", msg)
+	}
+	named := &sharedAgentLoopCallbacks{semanticSurface: &semanticCallSurface{
+		completed: map[string]bool{},
+		grants: map[string]tool.InvocationGrant{
+			"web_search": {SelectionID: "search", Token: "live"},
+		},
+		plan: tool.ToolPlan{Selections: []tool.PlannedSelection{
+			{ID: "search", FitProof: tool.FitProof{MatchedCapability: search}},
+			{ID: "pdf", FitProof: tool.FitProof{MatchedCapability: pdf}, Requires: []string{"search"}},
+			{ID: "deliver", FitProof: tool.FitProof{MatchedCapability: deliver}, Requires: []string{"pdf"}},
+		}},
+	}}
+	if msg := named.plannedSuccessorDenial("generate_pdf", pdf); !strings.Contains(msg, `"web_search"`) || strings.Contains(msg, "a tool that is listed now") {
+		t.Fatalf("pdf denial must name the listed lookup: %q", msg)
+	}
+	if msg := named.plannedSuccessorDenial("send_file", deliver); !strings.Contains(msg, `Call "web_search" now`) || !strings.Contains(msg, `"generate_pdf" appears on the next request`) || !strings.Contains(msg, `Call "send_file" only after "send_file" is listed`) || strings.Contains(msg, `"send_file" appears`) {
+		t.Fatalf("delivery denial must name the lookup and the generate step, not promise send_file next: %q", msg)
+	}
+	afterSearch := &sharedAgentLoopCallbacks{
+		semanticHoldDependantIssue: true,
+		semanticSurface: &semanticCallSurface{
+			completed: map[string]bool{"search": true},
+			grants:    map[string]tool.InvocationGrant{"web_search": {SelectionID: "search", Token: "spent-looking-live"}},
+			plan: tool.ToolPlan{Selections: []tool.PlannedSelection{
+				{ID: "search", FitProof: tool.FitProof{MatchedCapability: search}},
+				{ID: "pdf", FitProof: tool.FitProof{MatchedCapability: pdf}, Requires: []string{"search"}},
+				{ID: "deliver", FitProof: tool.FitProof{MatchedCapability: deliver}, Requires: []string{"pdf"}},
+			}},
+		},
+	}
+	if msg := afterSearch.plannedSuccessorDenial("send_file", deliver); !strings.Contains(msg, `"generate_pdf" appears on the next request`) || strings.Contains(msg, `"send_file" appears`) || strings.Contains(msg, "Call a tool that is listed now") {
+		t.Fatalf("delivery behind a held generate must not promise send_file on the next request: %q", msg)
+	}
+}
+
+func successorHeldForNextRequest(message, name string) bool {
+	return strings.Contains(message, "next request") &&
+		strings.Contains(message, "held until") &&
+		strings.Contains(message, name) &&
+		strings.Contains(message, "do not ask the user to re-authorize") &&
+		!strings.Contains(message, "Call a tool that is listed now") &&
+		!strings.Contains(message, "Do not retry")
+}
+
+func successorListedAfterEarlierSteps(message, name string) bool {
+	return strings.Contains(message, "not listed yet") &&
+		strings.Contains(message, "still unfinished") &&
+		strings.Contains(message, name) &&
+		strings.Contains(message, "do not ask the user to re-authorize") &&
+		!strings.Contains(message, "next request") &&
+		!strings.Contains(message, "Do not retry")
+}
+
+func successorNotYetListedDenial(message, name string) bool {
+	return strings.Contains(message, "not listed yet") &&
+		strings.Contains(message, name) &&
+		strings.Contains(message, "next request") &&
+		strings.Contains(message, "do not ask the user to re-authorize") &&
+		!strings.Contains(message, "Do not retry") &&
+		!strings.Contains(message, "was not available in this request's rendered tool surface")
+}
+
 func documentGenerateClassification() *intent.ClassificationResult {
 	return &intent.ClassificationResult{Primary: intent.LabelDocumentGenerate, Confidence: .98}
 }
@@ -962,11 +1080,19 @@ func TestSearchDocumentGenerateUnlocksPDFAfterOneCommittedSearch(t *testing.T) {
 	}
 }
 
+func TestSearchPDFEarlySendFileNamesLookupThenGenerate(t *testing.T) {
+	cb, _ := searchPDFDesktopBeforeSearch(t)
+	granted, message := cb.PetitionToolCall("send_file")
+	if granted || !strings.Contains(message, `Call "web_search" now`) || !strings.Contains(message, `"generate_pdf" appears on the next request`) || !strings.Contains(message, `Call "send_file" only after "send_file" is listed`) || strings.Contains(message, `"send_file" appears`) {
+		t.Fatalf("real-plan send_file denial granted=%v message=%q", granted, message)
+	}
+}
+
 func TestSearchDocumentGeneratePetitionBeforeLookupDoesNotSpendBudget(t *testing.T) {
 	cb, _ := searchPDFDesktopBeforeSearch(t)
 	granted, message := cb.PetitionToolCall("generate_pdf")
-	if granted || message != "" {
-		t.Fatalf("generate must stay gated until lookup: granted=%v message=%q", granted, message)
+	if granted || !successorNotYetListedDenial(message, "generate_pdf") || !strings.Contains(message, `"web_search"`) {
+		t.Fatalf("generate must stay gated until lookup and name web_search: granted=%v message=%q", granted, message)
 	}
 	if cb.semanticEffectfulPetitionConsumed {
 		t.Fatal("already-planned generate must not spend the effectful petition budget")
@@ -987,8 +1113,8 @@ func TestSearchDocumentGeneratePetitionExposesAlreadyPlannedPDF(t *testing.T) {
 	if search := cb.ExecuteToolCall(searchName, `{"query":"张惠妹歌曲列表"}`, "call-search").Result; strings.Contains(search, "[system rejected]") {
 		t.Fatalf("search result=%q", search)
 	}
-	if granted, message := cb.PetitionToolCall("generate_pdf"); granted || message != "" {
-		t.Fatalf("hold must keep generate unissued: granted=%v message=%q", granted, message)
+	if granted, message := cb.PetitionToolCall("generate_pdf"); granted || !successorHeldForNextRequest(message, "generate_pdf") {
+		t.Fatalf("hold after search must keep generate unissued until the next request: granted=%v message=%q", granted, message)
 	}
 	if cb.semanticEffectfulPetitionConsumed {
 		t.Fatal("held already-planned generate must not spend the effectful petition budget")

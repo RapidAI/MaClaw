@@ -6,11 +6,57 @@ import (
 	"log"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
+	"github.com/RapidAI/CodeClaw/corelib/toolresult"
 )
+
+// skillStepModelOutputRunes is the per-step cap in the model-facing skill
+// summary. SSH steps that exceed it spill the original and keep a handle
+// inside this budget.
+const skillStepModelOutputRunes = 2048
+
+// skillStepOutputForModel keeps a spilled tool-result handle when a step
+// output is longer than the summary budget. The tail-only cut used to drop
+// that footer, so the omitted middle could not be read back.
+func skillStepOutputForModel(stepOut string, limit int) string {
+	idx := strings.LastIndex(stepOut, toolresult.HandleFooterMarker)
+	if idx >= 0 {
+		footer := stepOut[idx:]
+		// The id is the first line of the footer. Keeping only the tail drops
+		// it, and the spilled output can no longer be read.
+		if utf8.RuneCountInString(footer) > limit {
+			return footer
+		}
+	}
+	if limit <= 0 || utf8.RuneCountInString(stepOut) <= limit {
+		return stepOut
+	}
+	if idx < 0 {
+		runes := []rune(stepOut)
+		return "... (truncated, showing last " + fmt.Sprintf("%d", limit) + " chars)\n" + string(runes[len(runes)-limit:])
+	}
+	footer := stepOut[idx:]
+	footerRunes := utf8.RuneCountInString(footer)
+	if footerRunes >= limit {
+		return footer
+	}
+	const note = "... (truncated)\n"
+	noteRunes := utf8.RuneCountInString(note)
+	remain := limit - footerRunes
+	if remain <= noteRunes {
+		return footer
+	}
+	headRunes := []rune(strings.TrimRight(stepOut[:idx], "\n"))
+	keep := remain - noteRunes
+	if len(headRunes) > keep {
+		headRunes = headRunes[len(headRunes)-keep:]
+	}
+	return note + string(headRunes) + footer
+}
 
 func appendSkillRunSummary(b *strings.Builder, status *SkillRunStatus, runID string) {
 	if b == nil {
@@ -93,7 +139,9 @@ func appendSkillRunSummary(b *strings.Builder, status *SkillRunStatus, runID str
 	//
 	// Budget: cap total step output to ~4096 chars to avoid bloating LLM context
 	// when a skill has many steps. Individual steps are capped at 2048 chars.
-	const maxStepOutputLen = 2048
+	// A spilled [tool_result_handle] footer must survive that cap so the model
+	// can page the omitted middle instead of seeing only the tail.
+	const maxStepOutputLen = skillStepModelOutputRunes
 	const maxTotalOutputLen = 4096
 	totalOutputLen := 0
 	if len(status.Steps) > 0 {
@@ -120,26 +168,24 @@ func appendSkillRunSummary(b *strings.Builder, status *SkillRunStatus, runID str
 			// weather data, API responses) instead of just "success".
 			// Truncation takes from the TAIL: error messages, file paths,
 			// and final status lines typically appear at the end of output.
-			if stepOut := strings.TrimSpace(step.Output); stepOut != "" && totalOutputLen < maxTotalOutputLen {
+			stepOut := strings.TrimSpace(step.Output)
+			hasHandle := strings.Contains(stepOut, toolresult.HandleFooterMarker)
+			// A later step can still carry the only read-back handle after
+			// earlier steps have used the shared summary budget.
+			if stepOut != "" && (totalOutputLen < maxTotalOutputLen || hasHandle) {
 				remaining := maxTotalOutputLen - totalOutputLen
+				if remaining < 0 {
+					remaining = 0
+				}
 				limit := maxStepOutputLen
 				if remaining < limit {
 					limit = remaining
 				}
-				runes := []rune(stepOut)
+				shown := skillStepOutputForModel(stepOut, limit)
 				b.WriteString("```\n")
-				if len(runes) > limit {
-					b.WriteString("... (truncated, showing last ")
-					b.WriteString(fmt.Sprintf("%d", limit))
-					b.WriteString(" chars)\n")
-					b.WriteString(string(runes[len(runes)-limit:]))
-					b.WriteString("\n")
-					totalOutputLen += limit
-				} else {
-					b.WriteString(stepOut)
-					b.WriteString("\n")
-					totalOutputLen += len(runes)
-				}
+				b.WriteString(shown)
+				b.WriteString("\n")
+				totalOutputLen += utf8.RuneCountInString(shown)
 				b.WriteString("```\n")
 			}
 			// For failed steps: surface dedicated stderr lines if available.

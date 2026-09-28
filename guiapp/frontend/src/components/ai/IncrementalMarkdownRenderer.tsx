@@ -22,7 +22,7 @@
 
 import React from "react";
 import type { Theme } from "./aiAssistantPanelTheme";
-import { renderContentWithCodeBlocks } from "./aiAssistantMarkdown";
+import { renderContentWithCodeBlocks, type ChatMarkdownRenderOptions } from "./aiAssistantMarkdown";
 
 // ─── 分割点检测 ─────────────────────────────────────────────────
 
@@ -116,6 +116,8 @@ export interface IncrementalRenderState {
     lastContent: string;
     /** Theme used to create frozen React nodes. */
     lastTheme: Theme | null;
+    /** Blank-spacer policy used to create frozen React nodes. */
+    lastOmitBlankSpacers: boolean;
     /** 上一次冻结检查的 content 长度 */
     lastFreezeCheckLen: number;
     /** 上一帧的尾部 content（用于判断是否需要重新渲染尾部） */
@@ -130,6 +132,7 @@ export function createIncrementalRenderState(): IncrementalRenderState {
         lastContentLen: 0,
         lastContent: '',
         lastTheme: null,
+        lastOmitBlankSpacers: false,
         lastFreezeCheckLen: 0,
         lastTailContent: '',
         lastOutput: null,
@@ -155,12 +158,15 @@ export function renderContentIncremental(
     content: string,
     t: Theme,
     state: IncrementalRenderState,
+    options?: ChatMarkdownRenderOptions,
 ): React.ReactNode[] {
     if (!content) return [];
+    const omitBlankSpacers = options?.omitBlankSpacers === true;
 
     // ── 缓存失效检测 ──
     if (
         state.lastTheme !== t ||
+        state.lastOmitBlankSpacers !== omitBlankSpacers ||
         content.length < state.lastContentLen ||
         (content.length === state.lastContentLen && content !== state.lastContent)
     ) {
@@ -170,6 +176,7 @@ export function renderContentIncremental(
     state.lastContentLen = content.length;
     state.lastContent = content;
     state.lastTheme = t;
+    state.lastOmitBlankSpacers = omitBlankSpacers;
 
     // 验证冻结段有效性
     if (state.frozen && state.frozen.contentUpTo > content.length) {
@@ -178,7 +185,7 @@ export function renderContentIncremental(
 
     // 短内容直接全量渲染
     if (content.length < MIN_CONTENT_FOR_INCREMENTAL) {
-        return renderContentWithCodeBlocks(content, t);
+        return renderContentWithCodeBlocks(content, t, options);
     }
 
     // ── 冻结扩展（每 500 字符检查一次） ──
@@ -196,7 +203,7 @@ export function renderContentIncremental(
             if (splitPos > currentFrozenEnd) {
                 // 增量冻结：只解析新增的稳定部分
                 const newStableContent = content.slice(currentFrozenEnd, splitPos);
-                const newNodes = renderContentWithCodeBlocks(newStableContent, t);
+                const newNodes = renderContentWithCodeBlocks(newStableContent, t, options);
                 const prevNodes = state.frozen?.nodes ?? [];
 
                 state.frozen = {
@@ -222,7 +229,7 @@ export function renderContentIncremental(
             return state.lastOutput;
         }
 
-        const tailNodes = renderContentWithCodeBlocks(tailContent, t);
+        const tailNodes = renderContentWithCodeBlocks(tailContent, t, options);
         // Wrap frozen and tail in display:contents divs to create independent
         // React reconciliation subtrees. This prevents key collisions between
         // the two independently-rendered segments (both start internal keys from 0).
@@ -230,8 +237,8 @@ export function renderContentIncremental(
         // Pass children as array (3rd arg) instead of spreading, to avoid
         // V8 argument-list performance degradation with 500+ nodes.
         const output: React.ReactNode[] = [
-            React.createElement('div', { key: '__inc_frozen', style: contentsStyle }, state.frozen.nodes),
-            React.createElement('div', { key: '__inc_tail', style: contentsStyle }, tailNodes),
+            React.createElement('div', { key: '__inc_frozen', className: 'assistant-reasoning-segment', style: contentsStyle }, state.frozen.nodes),
+            React.createElement('div', { key: '__inc_tail', className: 'assistant-reasoning-segment', style: contentsStyle }, tailNodes),
         ];
         state.lastOutput = output;
         state.lastTailContent = tailContent;
@@ -239,7 +246,7 @@ export function renderContentIncremental(
     }
 
     // 没有冻结段：全量渲染
-    return renderContentWithCodeBlocks(content, t);
+    return renderContentWithCodeBlocks(content, t, options);
 }
 
 function resetState(state: IncrementalRenderState): void {

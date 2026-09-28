@@ -292,7 +292,7 @@ Firewall 的实际接线点：
 |------|------|----------|
 | `RejectRawSSHCommand` | `tool/ssh_command_guard.go` | ssh/scp/sftp/远程 rsync |
 | `RejectBroadBrowserKillCommand` | 同上 | 广谱杀浏览器进程 |
-| `RejectBrowserSideEffectHTTPCommand` | 同上 | curl/wget/iwr + 非幂等方法 + cookie/authorization/csrf |
+| `RejectBrowserSideEffectHTTPCommand` | 同上 | curl/wget/iwr + 非幂等方法 + 浏览器会话（cookie/csrf/xsrf）；不含 API Authorization/Bearer |
 | `RejectShellBrowserAutomationCommand` | 同上 | playwright/puppeteer/selenium/CDP |
 | `RejectShellDatabaseCLI` | `tool/sql_command_guard.go` | mysql/psql/sqlcmd 等 |
 | `isHighRiskOpsCommand` | `workflow/v2/types.go` | `rm -rf /`、`mkfs`、`dd if=`、`format c:`、`> /dev/sd` 硬拒绝 |

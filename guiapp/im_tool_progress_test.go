@@ -121,6 +121,12 @@ func TestUserFacingToolProgressText_ChineseUILanguage(t *testing.T) {
 	if !strings.Contains(got, "读取文件") {
 		t.Fatalf("got %q, want Chinese action", got)
 	}
+	if !strings.Contains(got, "(read_file)") {
+		t.Fatalf("got %q, want tool name", got)
+	}
+	if !strings.Contains(got, "main.go") {
+		t.Fatalf("got %q, want path argument", got)
+	}
 	if strings.Contains(got, "[Tool]") || strings.Contains(got, "Read file") {
 		t.Fatalf("Chinese UI should not contain English tool labels, got %q", got)
 	}

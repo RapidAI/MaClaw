@@ -19,7 +19,7 @@ func (s *SQLiteStore) StructuredCatalog(ctx context.Context, opts StructuredCata
 	}
 	where := []string{"1=1"}
 	args := make([]interface{}, 0)
-	where, args = appendKBSourceFilters(where, args, "s", opts.OwnerID, opts.TenantID, opts.ProjectPath, opts.SearchScope, nil, append(append([]string{}, opts.SourceIDs...), opts.SourceID), opts.IncludeDisabled)
+	where, args = appendKBSourceFilters(where, args, "s", ownerScope{ID: opts.OwnerID}, opts.TenantID, opts.ProjectPath, opts.SearchScope, nil, append(append([]string{}, opts.SourceIDs...), opts.SourceID), opts.IncludeDisabled)
 	if len(opts.SheetNames) > 0 {
 		names := normalizeSearchStrings(opts.SheetNames)
 		if len(names) == 1 {

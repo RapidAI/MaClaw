@@ -1795,10 +1795,6 @@
 #App .mc-task-pane [data-tone='warning'] { color: var(--theme-warning) !important; }
 #App .mc-task-pane [data-status='failed'],
 #App .mc-task-pane [data-tone='danger'] { color: var(--theme-danger) !important; }
-#App .mc-task-pane [data-status='running'] .sidebar-task-row::before { background: var(--mc-accent) !important; }
-#App .mc-task-pane [data-status='completed'] .sidebar-task-row::before { background: var(--theme-success) !important; }
-#App .mc-task-pane [data-status='pending'] .sidebar-task-row::before { background: var(--theme-warning) !important; }
-#App .mc-task-pane [data-status='failed'] .sidebar-task-row::before { background: var(--theme-danger) !important; }
 @media (pointer: coarse) {
   .mc-task-pane .sidebar-task-row { min-height: 44px; }
 }

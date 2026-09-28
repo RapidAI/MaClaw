@@ -166,6 +166,7 @@ export function AssistantReasoningPanel({
             </summary>
             <div
                 ref={bodyRef}
+                className="assistant-reasoning-body"
                 data-testid="assistant-reasoning-body"
                 data-nested-scroll=""
                 onWheel={(event) => {
@@ -184,7 +185,7 @@ export function AssistantReasoningPanel({
                 // wrapping. Keep `word-break: normal` so long Chinese thought
                 // streams remain readable instead of overflowing the panel.
                 // `overflow-wrap` is an emergency fallback for unbroken tokens.
-                style={{ padding: "5px 10px 8px 25px", color: t.text, opacity: 0.88, maxHeight: "400px", overflow: "auto", lineBreak: "strict", wordBreak: "normal", overflowWrap: "break-word", lineHeight: 1.6 }}
+                style={{ padding: "5px 10px 8px 25px", color: t.text, maxHeight: "400px", overflow: "auto", lineBreak: "strict", wordBreak: "normal", overflowWrap: "break-word", lineHeight: 1.6 }}
             >
                 <div ref={contentRef}>{children}</div>
             </div>

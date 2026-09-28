@@ -134,7 +134,7 @@ export function resolveVisibleAssistantReply(
                 reasoning: mergeParkedThought(think, split.reasoning),
             };
         }
-        if (looksLikeInternalMonologue(visibleBody) && visibleBody.trim().length >= REASONING_FOLLOWUP_MAX_CHARS) {
+        if (!visibleBody.includes("<!--maclaw-tool:") && looksLikeInternalMonologue(visibleBody) && visibleBody.trim().length >= REASONING_FOLLOWUP_MAX_CHARS) {
             return { content: "", reasoning: mergeParkedThought(think, visibleBody.trim()) };
         }
         return {
@@ -180,7 +180,38 @@ export function parkReplacedStreamInReasoning(streamed: string, finalBody: strin
     return `${prior}\n\n${displaced}`;
 }
 
+const TOOL_CALL_MARKER_AT = /<!--maclaw-tool:/;
+
+/** A tool-call marker stays with the answer. Monologue peeling must not carry it into 思考过程. */
+function preserveToolCallSuffix(body: string): { head: string; tail: string } {
+    const at = body.search(TOOL_CALL_MARKER_AT);
+    if (at < 0) return { head: body, tail: "" };
+    return { head: body.slice(0, at), tail: body.slice(at) };
+}
+
+function reattachToolCallSuffix(content: string, tail: string): string {
+    const suffix = tail.trim();
+    if (!suffix) return content;
+    const body = (content || "").trim();
+    if (!body) return suffix;
+    return `${body}\n\n${suffix}`;
+}
+
 function splitLiveMonologue(body: string): { content: string; reasoning: string } | null {
+    const { head, tail } = preserveToolCallSuffix(body);
+    const split = splitLiveMonologueUnchecked(head);
+    if (split) {
+        return { content: reattachToolCallSuffix(split.content, tail), reasoning: split.reasoning };
+    }
+    // The call arrived before the Chinese answer. Keep the marker in the bubble
+    // and park only the English plan that came before it.
+    if (tail && looksLikeInternalMonologue(head) && head.trim().length >= REASONING_FOLLOWUP_MAX_CHARS) {
+        return { content: tail.trim(), reasoning: head.trim() };
+    }
+    return null;
+}
+
+function splitLiveMonologueUnchecked(body: string): { content: string; reasoning: string } | null {
     const strict = splitMonologueFromDeliverable(body);
     if (strict) return strict;
     if (!looksLikeInternalMonologue(body)) return null;
@@ -218,6 +249,18 @@ function peelTrailPrefix(body: string, think: string): string | null {
 }
 
 function splitMonologueFromDeliverable(text: string): { content: string; reasoning: string } | null {
+    const { head, tail } = preserveToolCallSuffix(text);
+    const split = splitMonologueFromDeliverableUnchecked(head);
+    if (split) {
+        return { content: reattachToolCallSuffix(split.content, tail), reasoning: split.reasoning };
+    }
+    if (!tail || !looksLikeInternalMonologue(head) || head.trim().length < REASONING_FOLLOWUP_MAX_CHARS) return null;
+    const answer = tail.replace(/<!--maclaw-tool:[A-Za-z0-9_-]+-->/g, "").trim();
+    if (answer.length < REASONING_FOLLOWUP_MAX_CHARS && cjkRatio(answer) < CJK_SUFFIX_MIN) return null;
+    return { content: tail.trim(), reasoning: head.trim() };
+}
+
+function splitMonologueFromDeliverableUnchecked(text: string): { content: string; reasoning: string } | null {
     const source = (text || "").trim();
     if (!looksLikeInternalMonologue(source)) return null;
     let cut = lastCommitCut(source);

@@ -107,6 +107,16 @@ describe('assistantLiveActivity', () => {
                 { content: 'preflight checks done' },
             ],
         })).toBe('accessing_model');
+        expect(resolveAssistantLiveActivity({
+            streaming: false,
+            busy: true,
+            progressMessages: [{ content: '〔进度〕仍在执行中，正在处理中（已耗时 2 分 10 秒）' }],
+            latestToolCall: { name: 'bash', action: '执行命令' },
+        })).toBe('running_command');
+        expect(extractInFlightToolName({
+            progressMessages: [{ content: '〔进度〕仍在执行中，正在处理中（已耗时 2 分 10 秒）' }],
+            latestToolCall: { name: 'bash', action: '执行命令' },
+        })).toBe('bash');
     });
 
     it('promotes chat [Status] milestones onto the live header', () => {
@@ -139,10 +149,17 @@ describe('assistantLiveActivity', () => {
             codingTimeline: [{ kind: 'thinking', content: 'Let me explore.' }],
         })).toBe('• 正在同步会话上下文\nLet me explore.');
         expect(assistantLiveReasoningSource({ role: 'assistant', content: 'Done.', reasoning: 'Checked.' })).toBe('');
+        expect(assistantLiveReasoningSource({
+            role: 'assistant',
+            content: '\n\n<!--maclaw-tool:call-1-->\n\n',
+            reasoning: '先查天气源。',
+        })).toBe('先查天气源。');
     });
 
     it('only lets an in-flight assistant own the live header', () => {
         expect(assistantMessageOwnsLiveActivity({ role: 'assistant', content: '' }, false)).toBe(true);
+        expect(assistantMessageOwnsLiveActivity({ role: 'assistant', content: '\n\n<!--maclaw-tool:call-1-->\n\n' }, false)).toBe(true);
+        expect(assistantMessageOwnsLiveActivity({ role: 'assistant', content: '先看天气。\n\n<!--maclaw-tool:call-1-->' }, false)).toBe(false);
         expect(assistantMessageOwnsLiveActivity({ role: 'assistant', content: 'It is sunny.' }, false)).toBe(false);
         expect(assistantMessageOwnsLiveActivity({ role: 'assistant', content: 'It is sunny.' }, true)).toBe(true);
         expect(assistantMessageOwnsLiveActivity({ role: 'assistant', content: '' }, true, false)).toBe(false);
@@ -296,6 +313,9 @@ describe('assistantLiveActivity', () => {
         })).toBe('web_fetch');
         expect(extractInFlightToolName({
             progressMessages: [{ content: '工具 · bash' }],
+        })).toBe('bash');
+        expect(extractInFlightToolName({
+            progressMessages: [{ content: '工具 · 执行命令 (bash)\nls -la' }],
         })).toBe('bash');
         expect(extractInFlightToolName({
             progressMessages: [{ content: '工具 · 写入文件' }],

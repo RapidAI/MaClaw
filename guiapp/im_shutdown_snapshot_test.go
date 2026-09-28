@@ -2,6 +2,7 @@ package guiapp
 
 import (
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
@@ -89,6 +90,56 @@ func TestShutdownSnapshotIgnoresIdleAndEmptySessions(t *testing.T) {
 	}
 	if !loop.IsCancelled() {
 		t.Fatal("expected textless active loop to be cancelled")
+	}
+}
+
+func TestShutdownSnapshotDropsMarkerAfterUserStop(t *testing.T) {
+	h := newShutdownSnapshotHandler(t)
+	userID := desktopUserID
+	if err := h.memory.PersistInFlightCheckpoint(userID, []agent.ConversationEntry{{Role: "user", Content: "make the video"}}, "make the video", "/project", "chat", agent.InFlightCheckpoint{
+		Sequence: 1, LastToolName: "bash", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatalf("PersistInFlightCheckpoint() error = %v", err)
+	}
+	loop := NewLoopContext("chat", 3, nil)
+	h.setSessionLoopCtx(userID, loop)
+	h.getSessionLoop(userID).userText = "make the video"
+	loop.MarkUserCancel()
+	loop.Cancel()
+
+	h.snapshotInterruptedSessionsForShutdown()
+
+	if slot := h.memory.GetUnfinishedSlot(userID); slot != nil {
+		t.Fatalf("user stop must not become a shutdown recovery slot: %#v", slot)
+	}
+	if promoted := h.memory.PromoteRecoverableCheckpoints(time.Now()); promoted != 0 {
+		t.Fatalf("user stop promoted %d unfinished slots on next launch", promoted)
+	}
+	if task, _ := h.memory.ConsumeInFlightTask(userID); task != "" {
+		t.Fatalf("user stop left recovery marker %q", task)
+	}
+}
+
+func TestShutdownSnapshotKeepsMarkerWhenCancelIsNotFromUser(t *testing.T) {
+	h := newShutdownSnapshotHandler(t)
+	userID := "desktop-user:parent-cancel"
+	if err := h.memory.PersistInFlightCheckpoint(userID, []agent.ConversationEntry{{Role: "user", Content: "make the video"}}, "make the video", "/project", "chat", agent.InFlightCheckpoint{
+		Sequence: 1, LastToolName: "bash", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatalf("PersistInFlightCheckpoint() error = %v", err)
+	}
+	loop := NewLoopContext("chat", 3, nil)
+	h.setSessionLoopCtx(userID, loop)
+	h.getSessionLoop(userID).userText = "make the video"
+	loop.Cancel()
+
+	h.snapshotInterruptedSessionsForShutdown()
+
+	if slot := h.memory.GetUnfinishedSlot(userID); slot != nil {
+		t.Fatalf("non-user cancel must not gain an app-exit slot: %#v", slot)
+	}
+	if promoted := h.memory.PromoteRecoverableCheckpoints(time.Now()); promoted != 1 {
+		t.Fatalf("promoted = %d, want the non-user marker kept for recovery", promoted)
 	}
 }
 

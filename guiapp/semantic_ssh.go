@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +20,13 @@ const (
 	// same adapter: the schema admits host/credentials so the model can open a
 	// session (or reuse the live one) instead of executing a command.
 	semanticTrustedSSHConnectImplementation = "trusted-ssh-connect-v1"
+	// semanticTrustedSSHCommandTimeout is how long one dispatched remote
+	// command may run. The shell prompt ends the wait early, so a short
+	// command still returns immediately. This is the safety cap, not the
+	// 30s local-shell default: that shorter timer is a stuck-session probe,
+	// and using it here sent Ctrl+C into apt and into a sleep that was
+	// only waiting to read a log.
+	semanticTrustedSSHCommandTimeout = semanticTrustedShellMaxTimeout
 )
 
 // semanticTrustedSSHAnyPublished reports whether either mode is published for
@@ -129,8 +137,18 @@ func semanticTrustedSSHInvocationSchema() map[string]interface{} {
 		"type": "object",
 		"properties": map[string]interface{}{
 			"command": map[string]interface{}{
-				"type":        "string",
-				"description": "Command to run on the already-connected remote session.",
+				"type": "string",
+				"description": fmt.Sprintf(
+					"Command to run on the already-connected remote session. The host waits for the shell prompt, then sends Ctrl+C. Default and maximum are %d seconds; the prompt ends the wait early. Pass timeout_seconds only to give the session back sooner. A sleep longer than the wait is interrupted.",
+					semanticTrustedSSHTimeoutSeconds(),
+				),
+			},
+			"timeout_seconds": map[string]interface{}{
+				"type": "integer",
+				"description": fmt.Sprintf(
+					"Seconds to wait for the remote shell prompt before the host sends Ctrl+C. Default %d. Maximum %d.",
+					semanticTrustedSSHTimeoutSeconds(), semanticTrustedSSHTimeoutSeconds(),
+				),
 			},
 		},
 		"required":             []string{"command"},
@@ -235,9 +253,10 @@ func semanticTrustedSSHConnectArgsAllowed(args map[string]interface{}) (map[stri
 //     dial). host/user/password/port/label stay untouched; missing or
 //     unknown fields fail closed in canonicalization so nothing the model
 //     asked for is silently dropped.
-//   - keys that would change execution semantics the schema has no field for
-//     (wait_seconds, initial_command, …) pass through untouched in both
-//     modes for the same fail-closed reason.
+//   - exec mode folds the local-shell aliases "timeout" and a decimal-string
+//     timeout_seconds into timeout_seconds before validation. wait_seconds
+//     and any other key that would change execution without a schema field
+//     still pass through untouched so canonicalization rejects them.
 func semanticSSHInvocationArgs(argsJSON string, connectMode bool) (string, error) {
 	var parsed map[string]interface{}
 	if json.Unmarshal([]byte(argsJSON), &parsed) != nil || parsed == nil {
@@ -270,8 +289,25 @@ func semanticSSHInvocationArgs(argsJSON string, connectMode bool) (string, error
 		return argsJSON, nil
 	}
 	changed := false
+	// Same correctable shapes as the local shell: "timeout" and "60" must not
+	// burn the grant. A real timeout_seconds wins over the alias.
+	if _, ok := parsed["timeout_seconds"]; !ok {
+		if alias, ok := parsed["timeout"]; ok {
+			delete(parsed, "timeout")
+			parsed["timeout_seconds"] = alias
+			changed = true
+		}
+	}
+	if raw, ok := parsed["timeout_seconds"]; ok {
+		if text, isString := raw.(string); isString {
+			if seconds, convErr := strconv.Atoi(strings.TrimSpace(text)); convErr == nil {
+				parsed["timeout_seconds"] = seconds
+				changed = true
+			}
+		}
+	}
 	for key := range parsed {
-		if key == "command" {
+		if key == "command" || key == "timeout_seconds" {
 			continue
 		}
 		if hostBoundSSHDecoration[key] {
@@ -292,31 +328,63 @@ func semanticSSHInvocationArgs(argsJSON string, connectMode bool) (string, error
 	return string(body), nil
 }
 
-func semanticTrustedSSHArgsAllowed(args map[string]interface{}) (command string, err error) {
-	if len(args) > 1 {
-		return "", fmt.Errorf("trusted_ssh_arguments_rejected")
+func semanticTrustedSSHArgsAllowed(args map[string]interface{}) (command string, timeout time.Duration, err error) {
+	if len(args) > 2 {
+		return "", 0, fmt.Errorf("trusted_ssh_arguments_rejected")
 	}
+	timeout = semanticTrustedSSHCommandTimeout
 	hasCommand := false
 	for key, raw := range args {
-		value, ok := raw.(string)
-		if !ok {
-			return "", fmt.Errorf("trusted_ssh_arguments_rejected")
-		}
 		switch key {
 		case "command":
+			value, ok := raw.(string)
+			if !ok {
+				return "", 0, fmt.Errorf("trusted_ssh_arguments_rejected")
+			}
 			command, hasCommand = value, true
+		case "timeout_seconds":
+			seconds, ok := semanticIntArg(raw)
+			if !ok || seconds < 1 {
+				return "", 0, fmt.Errorf("trusted_ssh_arguments_rejected")
+			}
+			timeout = time.Duration(seconds) * time.Second
+			if timeout > semanticTrustedShellMaxTimeout {
+				timeout = semanticTrustedShellMaxTimeout
+			}
 		default:
-			return "", fmt.Errorf("trusted_ssh_arguments_rejected")
+			return "", 0, fmt.Errorf("trusted_ssh_arguments_rejected")
 		}
 	}
 	command = strings.TrimSpace(command)
 	if !hasCommand || command == "" {
-		return "", fmt.Errorf("trusted_ssh_command_required")
+		return "", 0, fmt.Errorf("trusted_ssh_command_required")
 	}
-	return command, nil
+	return command, timeout, nil
 }
 
-func (h *IMMessageHandler) executeTrustedSSH(principalID, command string) (string, error) {
+func semanticTrustedSSHTimeoutSeconds() int {
+	seconds := int(semanticTrustedSSHCommandTimeout / time.Second)
+	if seconds < 1 {
+		return 1
+	}
+	return seconds
+}
+
+// remoteSSHTimeoutHint tells the model why the host interrupted the command.
+// A wait below the safety cap can be raised. The cap itself cannot.
+func remoteSSHTimeoutHint(waited time.Duration) string {
+	if waited <= 0 {
+		waited = semanticTrustedSSHCommandTimeout
+	}
+	waitedSeconds := int(waited / time.Second)
+	maxSeconds := semanticTrustedSSHTimeoutSeconds()
+	if waited >= semanticTrustedShellMaxTimeout {
+		return fmt.Sprintf("\n[system] Host waited %d seconds for the shell prompt, then sent Ctrl+C. That is the safety cap. Start a longer job in the background and poll it with a short command; do not sleep inside the remote command.", waitedSeconds)
+	}
+	return fmt.Sprintf("\n[system] Host waited %d seconds for the shell prompt, then sent Ctrl+C. Pass a larger timeout_seconds (maximum %d) to wait longer. sleep longer than that wait is interrupted the same way.", waitedSeconds, maxSeconds)
+}
+
+func (h *IMMessageHandler) executeTrustedSSH(principalID, command string, timeout time.Duration) (string, error) {
 	if h == nil {
 		return "", fmt.Errorf("trusted_ssh_session_unavailable")
 	}
@@ -334,7 +402,7 @@ func (h *IMMessageHandler) executeTrustedSSH(principalID, command string) (strin
 	if session == nil {
 		return "", fmt.Errorf("trusted_ssh_session_unavailable")
 	}
-	return executeTrustedBoundSSH(h.sshMgr, session, command, semanticTrustedShellDefaultTimeout)
+	return executeTrustedBoundSSH(h.sshMgr, session, command, timeout)
 }
 
 func executeTrustedBoundSSH(mgr *remote.SSHSessionManager, session *remote.SSHManagedSession, command string, timeout time.Duration) (string, error) {
@@ -345,7 +413,7 @@ func executeTrustedBoundSSH(mgr *remote.SSHSessionManager, session *remote.SSHMa
 		return "", fmt.Errorf("trusted_ssh_session_disconnected")
 	}
 	if timeout <= 0 {
-		timeout = semanticTrustedShellDefaultTimeout
+		timeout = semanticTrustedSSHCommandTimeout
 	}
 	before := session.LineCount()
 	if err := mgr.WriteInput(session.ID, command); err != nil {
@@ -357,23 +425,79 @@ func executeTrustedBoundSSH(mgr *remote.SSHSessionManager, session *remote.SSHMa
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	lines, status := mgr.WaitForOutputContext(ctx, session.ID, before, timeout)
-	if ctx.Err() == context.DeadlineExceeded {
-		return "", fmt.Errorf("trusted_ssh_timeout")
+	output, err := trustedSSHWaitResult(lines, status, ctx.Err(), command)
+	if err != nil {
+		return "", err
 	}
+	// The PTY echoes the command before its output. A long echo sits in front
+	// of uptime/disk/memory and is what the preview keeps when the capture
+	// exceeds the terminal budget.
+	return stripLeadingCommandEcho(output, command), nil
+}
+
+// trustedSSHWaitResult classifies a finished wait. A deadline alone is not a
+// failure: the command may have printed its prompt as the context expired.
+// Only an explicit timeout notice means the wait gave up. A still-busy shell
+// stays unobserved so another command is not written into it.
+func trustedSSHWaitResult(lines []string, status remote.SessionStatus, waitErr error, command string) (string, error) {
+	output := strings.TrimSpace(strings.Join(lines, "\n"))
 	// The command was already written when the session ended, so whether it ran
-	// is no longer observable. The two checks above use the disconnected name
-	// for the opposite fact -- a session that never carried the command -- and
-	// keeping one name for both would leave the classification below correct
-	// only by coincidence, since it happens to treat every one of them as
-	// unknown. Anyone tightening that list needs the distinction to exist.
+	// is no longer observable. A deadline with empty output must not win: that
+	// would look like a settled timeout and the next command would be sent to
+	// a session that is gone.
 	if status == remote.SessionExited || status == remote.SessionError {
 		return "", fmt.Errorf("trusted_ssh_outcome_unobserved")
 	}
-	output := strings.TrimSpace(strings.Join(lines, "\n"))
+	if strings.Contains(output, remote.SSHWaitTimeoutShellBusyNotice) {
+		return "", fmt.Errorf("trusted_ssh_outcome_unobserved")
+	}
+	if strings.Contains(output, "[maclaw] 命令执行超时") || (waitErr == context.DeadlineExceeded && output == "") {
+		if output == "" {
+			return "", fmt.Errorf("trusted_ssh_timeout")
+		}
+		output = stripLeadingCommandEcho(compactSSHPtyOutput(output), command)
+		if output == "" {
+			return "", fmt.Errorf("trusted_ssh_timeout")
+		}
+		return "", fmt.Errorf("trusted_ssh_timeout: %s", output)
+	}
+	if output == "" {
+		return "", fmt.Errorf("trusted_ssh_empty")
+	}
+	// PTY capture pads each line out to the terminal width and leaves bracketed
+	// paste / title sequences in the text. That padding, not the metrics, is
+	// what pushed a status command over the preview budget.
+	output = compactSSHPtyOutput(output)
 	if output == "" {
 		return "", fmt.Errorf("trusted_ssh_empty")
 	}
 	return output, nil
+}
+
+// stripLeadingCommandEcho removes the PTY echo of command from the front of
+// output. Wrapped echoes span lines at the terminal width. A line that mixes
+// the tail of the echo with real output is left in place.
+func stripLeadingCommandEcho(output, command string) string {
+	return remote.StripLeadingCommandEcho(output, command)
+}
+
+// compactSSHPtyOutput strips terminal controls and trailing padding from one
+// captured command. Internal spacing is kept so df/free columns stay readable.
+func compactSSHPtyOutput(s string) string {
+	return remote.CompactPtyOutput(s)
+}
+
+// sshConnectResultForFollowUpCommand drops the login preview that sshConnect
+// appends. A command issued in the same turn already returns its own output;
+// the MOTD and the orphan-task scan echo only compete with that output for
+// the model-facing preview budget.
+func sshConnectResultForFollowUpCommand(result string) string {
+	for _, marker := range []string{"\n\n--- 初始输出 ---\n", "\n\n最近输出: "} {
+		if i := strings.Index(result, marker); i >= 0 {
+			result = result[:i]
+		}
+	}
+	return result
 }
 
 func semanticTrustedSSHResultProjection(text string) (string, error) {

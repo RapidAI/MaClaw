@@ -48,6 +48,16 @@ describe("clearAssistantRoundProse", () => {
         expect(next.reasoning).toBe("Need the MySQL profile first.\n");
     });
 
+    it("keeps a short draft that already recorded a tool call", () => {
+        const content = "让我试试\n\n<!--maclaw-tool:msg-1-->\n\n";
+        const next = clearAssistantRoundProse({
+            content,
+            reasoning: "Need the host.",
+        });
+        expect(next.content).toBe(content);
+        expect(next.reasoning).toBe("Need the host.\n");
+    });
+
     it("does not add a third newline when preserved prose already ends with a blank line", () => {
         const prose = "这是一个长度超过四十字符的实质正文段落，用来验证已以空行结尾的保留正文不会得到第三个换行符。\n\n";
         const next = clearAssistantRoundProse({

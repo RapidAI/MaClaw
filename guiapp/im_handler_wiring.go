@@ -76,6 +76,10 @@ type IMMessageHandler struct {
 	// legacyCatalogAudit logs host tools that are registered but have no
 	// reviewed legacy provision. Once per handler: first unmanaged turn.
 	legacyCatalogAudit sync.Once
+	// parentExecution remembers that the previous turn for this user was a
+	// full tool surface, and which of those tools a light filter would drop.
+	// A short continuation restores them. A light turn clears the record.
+	parentExecution sync.Map // map[string][]string
 	// clientToolDispatcher delegates a per-message dynamic tool call to the
 	// originating third-party client. The dispatcher must return quickly; the
 	// authoritative result arrives asynchronously through tool-result.

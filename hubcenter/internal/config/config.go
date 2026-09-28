@@ -31,6 +31,7 @@ type Config struct {
 		CacheSizeKB           int    `yaml:"cache_size_kb"`
 		MmapSizeBytes         int64  `yaml:"mmap_size_bytes"`
 		CheckpointIntervalSec int    `yaml:"checkpoint_interval_sec"`
+		AutoVacuum            string `yaml:"auto_vacuum"`
 	} `yaml:"database"`
 
 	Mail struct {
@@ -109,7 +110,11 @@ func Default() *Config {
 	cfg.HA.PullBatchSize = 200
 	cfg.HA.HeartbeatSyncMinIntervalSeconds = 600
 	cfg.HA.HistoryRetentionDays = 0.5
-	cfg.HA.HistoryMaxRetainedOps = 50000
+	// 2026-09-27: lowered from 50000 — ha_sync_ops churn (heartbeat/batch ops)
+	// was the main driver of main-database file bloat; 20000 ops is plenty of
+	// pull window for the 5s pollers (100 ops/batch) and reduces per-cycle
+	// prune CPU/IO. Lagging peers still converge via newest-op-per-entity.
+	cfg.HA.HistoryMaxRetainedOps = 20000
 	cfg.HA.HistoryPruneIntervalMinutes = 10
 	cfg.HA.HistoryPruneBatchSize = 20000
 	cfg.Database.Driver = "sqlite"
@@ -126,6 +131,13 @@ func Default() *Config {
 	cfg.Database.CacheSizeKB = 16384
 	cfg.Database.MmapSizeBytes = 134217728
 	cfg.Database.CheckpointIntervalSec = 60
+	// Incremental auto-vacuum lets the background checkpointer hand freed pages
+	// back to the OS without ever taking an exclusive lock (the alternative to
+	// the main database file re-bloating after churny delete/insert cycles).
+	// Takes effect immediately on an empty database; on an existing one it
+	// persists after the next VACUUM rebuild (`maintenance vacuum` / ha-prune
+	// --vacuum). See provider.applyPragmas and sqlite.Vacuum.
+	cfg.Database.AutoVacuum = "incremental"
 	cfg.Mail.Provider = "smtp"
 	cfg.Mail.FromName = "MaClaw Hub Center"
 	cfg.Logging.Level = "info"
@@ -136,6 +148,11 @@ func Default() *Config {
 func (c *Config) Validate() error {
 	if c == nil {
 		return fmt.Errorf("config is required")
+	}
+	switch mode := strings.ToLower(strings.TrimSpace(c.Database.AutoVacuum)); mode {
+	case "", "none", "off", "full", "incremental":
+	default:
+		return fmt.Errorf("database.auto_vacuum must be one of: none, full, incremental")
 	}
 	if !c.HA.Enabled {
 		return nil

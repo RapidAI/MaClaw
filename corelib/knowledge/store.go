@@ -995,16 +995,11 @@ func (s *SQLiteStore) ListSources(ctx context.Context, opts ListSourcesOptions) 
 		where = append(where, "tenant_id = ?")
 		args = append(args, opts.TenantID)
 	}
-	if opts.OwnerID != "" {
-		if opts.IncludeEmptyOwner {
-			where = append(where, "(owner_id = ? OR COALESCE(owner_id, '') = '')")
-		} else {
-			where = append(where, "owner_id = ?")
-		}
-		args = append(args, opts.OwnerID)
-	} else if opts.IncludeEmptyOwner {
-		where = append(where, "COALESCE(owner_id, '') = ''")
-	}
+	where, args = appendOwnerPredicate(where, args, "owner_id", ownerScope{
+		ID:           opts.OwnerID,
+		Lineage:      opts.OwnerLineage,
+		IncludeEmpty: opts.IncludeEmptyOwner,
+	})
 	if opts.BatchID != "" {
 		where = append(where, "batch_id = ?")
 		args = append(args, opts.BatchID)
@@ -2912,9 +2907,10 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 	// 2. FTS tokenization mismatch (new words not in gse dictionary)
 	// 3. FTS found card/fact results but missed relevant document_nodes content
 	//    (distillation loss: cards/facts may not cover all original document text)
-	if containsNoSpaceScriptRunes(opts.Query) {
-		// For no-space scripts, always run LIKE fallback to search document_nodes original
-		// text. FTS tokenization mismatch means FTS may find some nodes (via "马勇"
+	if containsNoSpaceScriptRunes(opts.Query) && !strictAnchorsAlreadyCovered(opts.Query, results) {
+		// For no-space scripts, run LIKE fallback to search document_nodes original
+		// text when lexical FTS has not already covered a composite name. FTS
+		// tokenization mismatch means FTS may find some nodes (via "马勇"
 		// matching page 1) but miss others (page 2 has "书籍" which doesn't match
 		// query token "书"). LIKE handles arbitrary substrings correctly.
 		// Performance: O(nodes × terms) string matching. For typical knowledge bases
@@ -2963,6 +2959,11 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 			// FTS found nothing high-confidence — embedding may find semantic matches
 			needsEmbedding = true
 		}
+		// A composite or unknown name is identified by its own spans. Semantic
+		// neighbors are a different person or record, so they are not retrieved.
+		if _, strict := bm25.QueryAnchors(normalizeKnowledgeLexicalText(opts.Query)); strict {
+			needsEmbedding = false
+		}
 		if needsEmbedding {
 			embResults, embErr := s.searchByEmbedding(ctx, opts)
 			if embErr == nil && len(embResults) > 0 {
@@ -2970,6 +2971,9 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 			}
 		}
 	}
+
+	// Composite and unknown names keep only hits that contain each content span.
+	results = retainEntityMentionEvidence(opts.Query, results)
 
 	sortSearchResults(results)
 	if len(results) > opts.Limit {
@@ -3682,7 +3686,7 @@ func (s *SQLiteStore) FactIndex(ctx context.Context, opts FactIndexOptions) (Fac
 	}
 	kbWhere := []string{"f.row_id IS NOT NULL", "c.origin_type = 'table_row'"}
 	kbArgs := make([]interface{}, 0)
-	kbWhere, kbArgs = appendKBSourceFilters(kbWhere, kbArgs, "s", opts.OwnerID, opts.TenantID, opts.ProjectPath, opts.SearchScope, opts.SourceKinds, append(append([]string{}, opts.SourceIDs...), opts.SourceID), opts.IncludeDisabled)
+	kbWhere, kbArgs = appendKBSourceFilters(kbWhere, kbArgs, "s", ownerScopeFromSearch(opts.SearchOptions), opts.TenantID, opts.ProjectPath, opts.SearchScope, opts.SourceKinds, append(append([]string{}, opts.SourceIDs...), opts.SourceID), opts.IncludeDisabled)
 	kbValueWhere := []string{"label <> ''"}
 	kbValueArgs := make([]interface{}, 0)
 	if query != "" {
@@ -4398,16 +4402,12 @@ func appendSearchFilters(where []string, args []interface{}, sourceAlias string,
 		prefix = sourceAlias + "."
 	}
 	tenantID := strings.TrimSpace(opts.TenantID)
-	ownerID := strings.TrimSpace(opts.OwnerID)
 	projectPath := strings.TrimSpace(opts.ProjectPath)
 	if tenantID != "" {
 		where = append(where, prefix+"tenant_id = ?")
 		args = append(args, tenantID)
 	}
-	if ownerID != "" {
-		where = append(where, prefix+"owner_id = ?")
-		args = append(args, ownerID)
-	}
+	where, args = appendOwnerPredicate(where, args, prefix+"owner_id", ownerScopeFromSearch(opts))
 	scope := strings.ToLower(strings.TrimSpace(opts.SearchScope))
 	switch scope {
 	case SaveScopePersonal, SaveScopeLocalOnly, "local":
@@ -6370,6 +6370,11 @@ func (s *SQLiteStore) searchCJKLikeFallback(ctx context.Context, opts SearchOpti
 		return nil, nil
 	}
 
+	entityAnchors, entityStrict := bm25.QueryAnchors(normalizeKnowledgeLexicalText(query))
+	if !entityStrict {
+		entityAnchors = nil
+	}
+
 	// Extract meaningful search terms from the query using gse tokenization.
 	// For LIKE search, we use two sources of terms:
 	// 1. gse tokenization (multi-char words: "马勇", "博士", "著译")
@@ -6383,7 +6388,11 @@ func (s *SQLiteStore) searchCJKLikeFallback(ctx context.Context, opts SearchOpti
 	// cap doesn't cut high-value single chars like "书" which may be the only
 	// term that matches the target text.
 	var terms []string
-	if containsNoSpaceScriptRunes(query) {
+	if len(entityAnchors) > 0 {
+		// Name-like queries search the anchors themselves. Single-character OR
+		// would treat 奇 from 奇安信 as evidence for 奇强.
+		terms = append(terms, entityAnchors...)
+	} else if containsNoSpaceScriptRunes(query) {
 		seen := make(map[string]struct{})
 
 		// Source 1 (high priority): individual CJK characters from the raw query.
@@ -6457,8 +6466,13 @@ func (s *SQLiteStore) searchCJKLikeFallback(ctx context.Context, opts SearchOpti
 
 	results := make([]SearchResult, 0, limit)
 
-	// Build OR-based LIKE conditions for given terms and columns
+	// Build OR-based LIKE conditions for given terms and columns.
+	// Entity anchors are ANDed: every span must occur, while each span may
+	// sit in any of the searched columns.
 	buildLikeWhereWith := func(columns []string, termsToUse []string) (string, []interface{}) {
+		if len(entityAnchors) > 0 {
+			return likeAllAnchorsWhere(columns, entityAnchors)
+		}
 		var conditions []string
 		var args []interface{}
 		for _, col := range columns {
@@ -6641,6 +6655,24 @@ func (s *SQLiteStore) searchCJKLikeFallback(ctx context.Context, opts SearchOpti
 // expression whose escape character is backslash. It is intentionally kept
 // separate from SQL parameter binding: binding prevents injection, but LIKE
 // still assigns wildcard meaning to '%' and '_'.
+func likeAllAnchorsWhere(columns, anchors []string) (string, []interface{}) {
+	groups := make([]string, 0, len(anchors))
+	args := make([]interface{}, 0, len(anchors)*len(columns))
+	for _, anchor := range anchors {
+		conds := make([]string, 0, len(columns))
+		pattern := "%" + escapeLikePattern(anchor) + "%"
+		for _, col := range columns {
+			conds = append(conds, col+" LIKE ? ESCAPE '\\'")
+			args = append(args, pattern)
+		}
+		groups = append(groups, "("+strings.Join(conds, " OR ")+")")
+	}
+	if len(groups) == 0 {
+		return "", nil
+	}
+	return strings.Join(groups, " AND "), args
+}
+
 func escapeLikePattern(term string) string {
 	return strings.NewReplacer("\\", "\\\\", "%", "\\%", "_", "\\_").Replace(term)
 }

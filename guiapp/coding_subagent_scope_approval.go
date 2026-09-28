@@ -671,6 +671,11 @@ func (a *App) isSubAgentFullAccessGranted() bool {
 	if a == nil {
 		return false
 	}
+	// Tool execution checks this on every call. The published snap is enough;
+	// LoadConfig also copies skills and drains deferred writes.
+	if p := a.PeekConfig(); p != nil {
+		return p.SubAgentFullAccess
+	}
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		return false

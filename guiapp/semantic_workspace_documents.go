@@ -4,8 +4,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
+	"time"
 )
 
 // workspaceDocumentExts are the files the current-channel delivery already
@@ -25,11 +27,10 @@ var workspaceDocumentExts = map[string]bool{
 // without that suffix, is the one the channel missed.
 var hostDeliveryCopyName = regexp.MustCompile(`_\d{6}_\d{3}$`)
 
-const deliveredWorkspaceDocsFile = "delivered-workspace-docs.txt"
-
 type workspaceDocumentStamp struct {
 	size int64
 	mod  int64
+	path string
 }
 
 func isWorkspaceDocumentName(name string) bool {
@@ -37,35 +38,57 @@ func isWorkspaceDocumentName(name string) bool {
 }
 
 func isHostDeliveryCopyName(name string) bool {
-	ext := filepath.Ext(name)
+	_, _, ok := hostDeliveryCopyStem(name)
+	return ok
+}
+
+func hostDeliveryCopyStem(name string) (stem, ext string, ok bool) {
+	ext = filepath.Ext(name)
 	base := strings.TrimSuffix(name, ext)
-	return hostDeliveryCopyName.MatchString(base)
+	loc := hostDeliveryCopyName.FindStringIndex(base)
+	if loc == nil {
+		return "", "", false
+	}
+	return base[:loc[0]], ext, true
 }
 
 func snapshotWorkspaceDocuments(root string) map[string]workspaceDocumentStamp {
+	snap, ok := snapshotWorkspaceDocumentsIfReadable(root)
+	if !ok || snap == nil {
+		return map[string]workspaceDocumentStamp{}
+	}
+	return snap
+}
+
+// snapshotWorkspaceDocumentsIfReadable reports ok only when the directory
+// could be listed. A failed read must not look like an empty baseline, or the
+// next successful list treats every existing document as created this turn.
+func snapshotWorkspaceDocumentsIfReadable(root string) (map[string]workspaceDocumentStamp, bool) {
 	out := map[string]workspaceDocumentStamp{}
 	root = strings.TrimSpace(root)
 	if root == "" {
-		return out
+		return nil, false
 	}
 	entries, err := os.ReadDir(root)
 	if err != nil {
-		return out
+		return nil, false
 	}
 	for _, entry := range entries {
 		if entry.IsDir() || !isWorkspaceDocumentName(entry.Name()) {
 			continue
 		}
 		info, err := entry.Info()
-		if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > semanticOfficeArtifactMaxBytes {
+		if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 {
 			continue
 		}
-		out[filepath.Join(root, entry.Name())] = workspaceDocumentStamp{
+		full := filepath.Join(root, entry.Name())
+		out[deliveredWorkspaceDocKey(full)] = workspaceDocumentStamp{
 			size: info.Size(),
 			mod:  info.ModTime().UnixNano(),
+			path: full,
 		}
 	}
-	return out
+	return out, true
 }
 
 // changedWorkspaceDocuments returns documents created or rewritten since the
@@ -73,81 +96,33 @@ func snapshotWorkspaceDocuments(root string) map[string]workspaceDocumentStamp {
 // name a path.
 func changedWorkspaceDocuments(before, after map[string]workspaceDocumentStamp) []string {
 	var paths []string
-	for path, stamp := range after {
-		prev, ok := before[path]
-		if ok && prev == stamp {
+	for key, stamp := range after {
+		prev, ok := before[key]
+		if ok && prev.size == stamp.size && prev.mod == stamp.mod {
 			continue
 		}
-		paths = append(paths, path)
+		if stamp.path == "" {
+			continue
+		}
+		paths = append(paths, stamp.path)
 	}
 	sort.Slice(paths, func(i, j int) bool {
-		return after[paths[i]].mod > after[paths[j]].mod
+		return after[deliveredWorkspaceDocKey(paths[i])].mod > after[deliveredWorkspaceDocKey(paths[j])].mod
 	})
 	return paths
 }
 
-func deliveredWorkspaceDocsPath(root string) string {
-	return filepath.Join(root, ".maclaw-tmp", deliveredWorkspaceDocsFile)
-}
-
-func loadDeliveredWorkspaceDocs(root string) map[string]bool {
-	out := map[string]bool{}
-	body, err := os.ReadFile(deliveredWorkspaceDocsPath(root))
-	if err != nil {
-		return out
+// deliveredWorkspaceDocKey is the snapshot identity. Windows paths differ by
+// drive-letter case; two turns must still see the same file as unchanged.
+func deliveredWorkspaceDocKey(path string) string {
+	path = normalizeProjectSessionPath(path)
+	if path == "" || path == "." {
+		return ""
 	}
-	for _, line := range strings.Split(string(body), "\n") {
-		line = filepath.Clean(strings.TrimSpace(line))
-		if line != "" && line != "." {
-			out[line] = true
-		}
+	if runtime.GOOS == "windows" {
+		return strings.ToLower(path)
 	}
-	return out
-}
-
-func rememberDeliveredWorkspaceDocs(root string, paths []string) error {
-	if strings.TrimSpace(root) == "" || len(paths) == 0 {
-		return nil
-	}
-	known := loadDeliveredWorkspaceDocs(root)
-	for _, path := range paths {
-		if strings.TrimSpace(path) != "" {
-			known[filepath.Clean(path)] = true
-		}
-	}
-	list := make([]string, 0, len(known))
-	for path := range known {
-		list = append(list, path)
-	}
-	sort.Strings(list)
-	dir := filepath.Join(root, ".maclaw-tmp")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(deliveredWorkspaceDocsPath(root), []byte(strings.Join(list, "\n")+"\n"), 0o644)
-}
-
-// undeliveredWorkspaceDocuments lists root documents this workspace has never
-// handed to the current channel. Host delivery copies are skipped: they are
-// the channel's own materialization of a renderer payload, not a second product.
-func undeliveredWorkspaceDocuments(root string) []string {
-	after := snapshotWorkspaceDocuments(root)
-	known := loadDeliveredWorkspaceDocs(root)
-	var paths []string
-	for path := range after {
-		if !strings.EqualFold(filepath.Ext(path), ".pdf") {
-			continue
-		}
-		clean := filepath.Clean(path)
-		if known[clean] || hostAlreadyMaterialized(path, after) {
-			continue
-		}
-		paths = append(paths, path)
-	}
-	sort.Slice(paths, func(i, j int) bool {
-		return after[paths[i]].mod > after[paths[j]].mod
-	})
-	return paths
+	return path
 }
 
 func (c *sharedAgentLoopCallbacks) boundWorkspaceRoot() string {
@@ -168,44 +143,41 @@ func (c *sharedAgentLoopCallbacks) noteWorkspaceDocumentBaseline() {
 	if root == "" {
 		return
 	}
+	snap, ok := snapshotWorkspaceDocumentsIfReadable(root)
+	if !ok {
+		return
+	}
+	if snap == nil {
+		snap = map[string]workspaceDocumentStamp{}
+	}
 	c.workspaceDocRoot = root
-	c.workspaceDocBaseline = snapshotWorkspaceDocuments(root)
+	c.workspaceDocBaseline = snap
+	c.workspaceDocBaselineAt = time.Now()
 }
 
-// attachProducedWorkspaceDocuments puts workspace documents the turn produced,
-// and documents never handed to this channel, onto deliveredPaths. Delivery
-// stays host-bound: the model still cannot pass a path to send_file. A shell
-// export becomes visible the same way an office write already does.
+// attachProducedWorkspaceDocuments puts documents created or rewritten since
+// the turn baseline onto deliveredPaths. A file already in the workspace when
+// the turn started stays on the earlier round. Delivery stays host-bound.
 func (c *sharedAgentLoopCallbacks) attachProducedWorkspaceDocuments() {
 	if c == nil {
 		return
 	}
-	root := resolveWorkspaceDocumentRoot(c.workspaceDocRoot)
-	if root == "" {
-		root = resolveWorkspaceDocumentRoot(c.boundWorkspaceRoot())
-	}
+	baselineRoot := c.workspaceDocRoot
+	root := c.resolvedWorkspaceDocumentRoot()
 	if root == "" {
 		return
 	}
 	c.workspaceDocRoot = root
-	after := snapshotWorkspaceDocuments(root)
-	var produced []string
-	if c.workspaceDocBaseline != nil {
-		produced = changedWorkspaceDocuments(c.workspaceDocBaseline, after)
+	if c.workspaceDocBaseline == nil {
+		return
 	}
-	delivering := len(produced) > 0 || len(c.deliveredPaths) > 0 || strings.TrimSpace(c.semanticDeliveryFileData) != ""
-	if delivering && workspaceIsDesktopTask(root) {
-		seen := map[string]bool{}
-		for _, path := range produced {
-			seen[filepath.Clean(path)] = true
-		}
-		for _, path := range undeliveredWorkspaceDocuments(root) {
-			clean := filepath.Clean(path)
-			if !seen[clean] {
-				produced = append(produced, path)
-				seen[clean] = true
-			}
-		}
+	after := snapshotWorkspaceDocuments(root)
+	produced := changedWorkspaceDocuments(c.workspaceDocBaseline, after)
+	// The baseline listed a different directory (task identity before its
+	// workspace child existed, or that child could not be stated yet).
+	// Files already sitting in the child are an earlier round.
+	if baselineRoot != "" && deliveredWorkspaceDocKey(baselineRoot) != deliveredWorkspaceDocKey(root) {
+		produced = documentsModifiedSince(produced, after, c.workspaceDocBaselineAt)
 	}
 	if len(produced) == 0 {
 		return
@@ -213,38 +185,30 @@ func (c *sharedAgentLoopCallbacks) attachProducedWorkspaceDocuments() {
 	produced = preferToolWrittenDocuments(produced)
 	sortDeliveryDocuments(produced, after)
 	c.deliveredPaths = mergeDeliveredPaths(produced, c.deliveredPaths)
-	if err := rememberDeliveredWorkspaceDocs(root, produced); err != nil {
-		return
-	}
 }
 
-func hostCopyStem(name string) (string, bool) {
-	ext := filepath.Ext(name)
-	base := strings.TrimSuffix(name, ext)
-	loc := hostDeliveryCopyName.FindStringIndex(base)
-	if loc == nil {
-		return "", false
+func documentsModifiedSince(paths []string, after map[string]workspaceDocumentStamp, since time.Time) []string {
+	if since.IsZero() {
+		return paths
 	}
-	return base[:loc[0]], true
+	cutoff := since.UnixNano()
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if after[deliveredWorkspaceDocKey(path)].mod >= cutoff {
+			out = append(out, path)
+		}
+	}
+	return out
 }
 
-func hostAlreadyMaterialized(path string, present map[string]workspaceDocumentStamp) bool {
-	name := filepath.Base(path)
-	if _, copy := hostCopyStem(name); copy {
-		return true
+func (c *sharedAgentLoopCallbacks) resolvedWorkspaceDocumentRoot() string {
+	if c == nil {
+		return ""
 	}
-	ext := filepath.Ext(name)
-	stem := strings.TrimSuffix(name, ext)
-	for other := range present {
-		otherName := filepath.Base(other)
-		if !strings.EqualFold(filepath.Ext(otherName), ext) {
-			continue
-		}
-		if otherStem, ok := hostCopyStem(otherName); ok && otherStem == stem {
-			return true
-		}
+	if root := resolveWorkspaceDocumentRoot(c.workspaceDocRoot); root != "" {
+		return root
 	}
-	return false
+	return resolveWorkspaceDocumentRoot(c.boundWorkspaceRoot())
 }
 
 func sortDeliveryDocuments(paths []string, stamps map[string]workspaceDocumentStamp) {
@@ -254,7 +218,7 @@ func sortDeliveryDocuments(paths []string, stamps map[string]workspaceDocumentSt
 		if iCopy != jCopy {
 			return !iCopy
 		}
-		return stamps[paths[i]].mod > stamps[paths[j]].mod
+		return stamps[deliveredWorkspaceDocKey(paths[i])].mod > stamps[deliveredWorkspaceDocKey(paths[j])].mod
 	})
 }
 
@@ -263,17 +227,14 @@ func mergeDeliveredPaths(front, existing []string) []string {
 	out := make([]string, 0, len(front)+len(existing))
 	for _, path := range append(append([]string{}, front...), existing...) {
 		path = filepath.Clean(strings.TrimSpace(path))
-		if path == "" || path == "." || seen[path] {
+		key := deliveredWorkspaceDocKey(path)
+		if key == "" || seen[key] {
 			continue
 		}
-		seen[path] = true
+		seen[key] = true
 		out = append(out, path)
 	}
 	return out
-}
-
-func workspaceIsDesktopTask(root string) bool {
-	return looksLikeManagedTaskIdentity(root)
 }
 
 // resolveWorkspaceDocumentRoot returns the directory tools actually write.
@@ -296,15 +257,38 @@ func resolveWorkspaceDocumentRoot(root string) string {
 	return child
 }
 
+// preferToolWrittenDocuments drops a host delivery copy only when this same
+// delivery already contains the unsuffixed file. A timed name for a different
+// document stays.
 func preferToolWrittenDocuments(paths []string) []string {
-	real := make([]string, 0, len(paths))
+	stems := map[string]struct{}{}
 	for _, path := range paths {
-		if !isHostDeliveryCopyName(filepath.Base(path)) {
-			real = append(real, path)
+		name := filepath.Base(path)
+		if _, _, ok := hostDeliveryCopyStem(name); ok {
+			continue
 		}
+		ext := filepath.Ext(name)
+		stems[documentStemKey(strings.TrimSuffix(name, ext), ext)] = struct{}{}
 	}
-	if len(real) == 0 {
+	if len(stems) == 0 {
 		return paths
 	}
-	return real
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		name := filepath.Base(path)
+		if stem, ext, ok := hostDeliveryCopyStem(name); ok {
+			if _, dup := stems[documentStemKey(stem, ext)]; dup {
+				continue
+			}
+		}
+		out = append(out, path)
+	}
+	if len(out) == 0 {
+		return paths
+	}
+	return out
+}
+
+func documentStemKey(stem, ext string) string {
+	return strings.ToLower(stem + ext)
 }

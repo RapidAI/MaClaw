@@ -94,7 +94,6 @@ describe('AssistantTitleBar', () => {
                 maximized={false}
                 onClose={vi.fn()}
                 onSaveCurrentTask={vi.fn()}
-                onToggleSkillRecording={vi.fn()}
                 projectSearchOpen={false}
                 refreshNews={vi.fn()}
                 showMaximizeToggle={false}

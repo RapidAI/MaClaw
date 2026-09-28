@@ -1654,6 +1654,11 @@
 }
 
 /* AI assistant panel — wider, more visible scrollbar for easy grab */
+/* Prose stays slightly recessed. Incremental rendering wraps a finished
+   chunk and the live tail in display:contents divs; fading that wrapper
+   would fade the code fence inside it too. */
+.assistant-reasoning-body > div > :not(pre):not(.assistant-reasoning-segment) { opacity: 0.88; }
+.assistant-reasoning-body .assistant-reasoning-segment > :not(pre) { opacity: 0.88; }
 .assistant-reasoning-summary::-webkit-details-marker { display: none; }
 .assistant-reasoning-summary::before {
     content: "›";

@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { AITab } from "./AITabTypes";
 import { getAITabDisplayTitle } from "./AITabItem";
-import { describeTaskTitle } from "./describeTaskTitle";
-import { normalizeProjectSessionPath } from "./aiAssistantPanelSessionUtils";
+import { listedTaskTitle } from "./describeTaskTitle";
+import { projectPathsMatch } from "./taskListTitle";
 import { cloudWorkspaceIdFromPath, cloudWorkspaceIdFromTaskFields, visibleTaskRows } from "./codingTaskMode";
 import { sanitizeProjectTabTitle } from "./useAITabManager";
 import type { TaskManagementItem } from "../layout/SidebarTaskManagement";
@@ -120,15 +120,14 @@ export function TaskTabSwitcher({ tabs, activeTabId, lang, onActivate, onClose, 
         rows = [];
         const matchedTabIds = new Set<string>();
         visibleTaskRows(tasks).forEach((task, index) => {
-            const taskPath = normalizeProjectSessionPath(task.project_path || "");
             const wsId = cloudWorkspaceIdFromTaskFields(task);
             const tab = tabs.find(candidate => candidate.type !== "local" && !matchedTabIds.has(candidate.id) && (
                 (!!wsId && (String(candidate.cloudWorkspaceId || "").trim() || cloudWorkspaceIdFromPath(candidate.projectPath)) === wsId)
-                || (!!taskPath && normalizeProjectSessionPath(candidate.projectPath || "") === taskPath)
+                || projectPathsMatch(candidate.projectPath || "", task.project_path || "")
+                || projectPathsMatch(candidate.projectPath || "", task.working_dir || "")
             )) || null;
             if (tab) matchedTabIds.add(tab.id);
-            const storedTitle = sanitizeProjectTabTitle(String(task.name || "").trim(), task.project_path);
-            const title = describeTaskTitle(storedTitle) || storedTitle;
+            const title = listedTaskTitle(task) || sanitizeProjectTabTitle(String(task.project_path || "").trim(), task.project_path);
             const key = String(task.id || task.project_path || index);
             if (tab) {
                 rows.push({ ...tabRow(tab), title });

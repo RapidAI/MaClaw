@@ -217,9 +217,11 @@ func trustedKnowledgeAdminContext(parent context.Context, op string) (context.Co
 }
 
 func listTrustedKnowledgeSources(ctx context.Context, store *knowledge.SQLiteStore, principalID string) ([]knowledge.Source, error) {
+	owner, lineage, includeEmpty := knowledgeOwnerScope(principalID)
 	opts := knowledge.ListSourcesOptions{
-		OwnerID:           principalID,
-		IncludeEmptyOwner: trustedKnowledgePrincipalMaySeeHostLocal(principalID),
+		OwnerID:           owner,
+		OwnerLineage:      lineage,
+		IncludeEmptyOwner: includeEmpty,
 		IncludeDisabled:   true,
 		Limit:             semanticTrustedKnowledgeAdminListLimit,
 	}
@@ -237,17 +239,13 @@ func listTrustedKnowledgeSources(ctx context.Context, store *knowledge.SQLiteSto
 	return owned, nil
 }
 
-func trustedKnowledgePrincipalMaySeeHostLocal(principalID string) bool {
-	return trustedDesktopPrincipal(principalID)
-}
-
 func trustedKnowledgeSourceOwned(source knowledge.Source, principalID string) bool {
 	owner := strings.TrimSpace(source.OwnerID)
 	principalID = strings.TrimSpace(principalID)
-	if owner == principalID {
-		return true
+	if trustedDesktopPrincipal(principalID) {
+		return owner == "" || owner == desktopUserID || strings.HasPrefix(owner, desktopUserID+":")
 	}
-	return owner == "" && trustedKnowledgePrincipalMaySeeHostLocal(principalID)
+	return owner == principalID
 }
 
 func trustedKnowledgeSourceForWrite(ctx context.Context, store *knowledge.SQLiteStore, principalID, id string) (knowledge.Source, error) {

@@ -61,8 +61,8 @@ func (r *SkillOperationRecorder) Start(workDir string, ownerID string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if r.recording {
-		return fmt.Errorf("already recording")
+	if err := r.rejectStartLocked(); err != nil {
+		return err
 	}
 
 	r.recording = true
@@ -80,8 +80,8 @@ func (r *SkillOperationRecorder) StartWithTab(workDir, ownerID, tabID string) er
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if r.recording {
-		return fmt.Errorf("already recording")
+	if err := r.rejectStartLocked(); err != nil {
+		return err
 	}
 
 	r.recording = true
@@ -92,6 +92,18 @@ func (r *SkillOperationRecorder) StartWithTab(workDir, ownerID, tabID string) er
 	r.ownerID = ownerID
 	r.tabID = tabID
 	r.stepTitles = nil
+	return nil
+}
+
+// rejectStartLocked refuses a new recording while one is active or while a
+// stopped recording still holds entries for save/discard. Caller holds r.mu.
+func (r *SkillOperationRecorder) rejectStartLocked() error {
+	if r.recording {
+		return fmt.Errorf("already recording")
+	}
+	if len(r.entries) > 0 {
+		return fmt.Errorf("unsaved recording is still open")
+	}
 	return nil
 }
 

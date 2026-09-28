@@ -976,6 +976,10 @@ type codingSubAgentCallbacks struct {
 	// already present.
 	workspaceWasEmptyAtStart bool
 
+	// spilledToolResultReader is set when a tool result was spilled. The next
+	// request renders read_tool_result so the model can page the original.
+	spilledToolResultReader atomic.Bool
+
 	// cachedSystemPrompt is built once per task to avoid repeated knowledge and
 	// dynamic-tool prompt assembly on every LLM turn.
 	cachedSystemPrompt string
@@ -2138,6 +2142,13 @@ func (c *codingSubAgentCallbacks) executeToolStructuredCanonical(name, argsJSON 
 	if name == "" {
 		return rejectedCodingStaticCompatibilityTool(name)
 	}
+	if strings.EqualFold(strings.TrimSpace(name), "read_tool_result") {
+		var handler *IMMessageHandler
+		if c != nil && c.subagent != nil {
+			handler = c.subagent.handler
+		}
+		return codingReadToolResultExecution(handler, argsJSON)
+	}
 	horizon := c != nil && c.subagent != nil && c.subagent.horizonPosture
 	if !horizon && c != nil && codingTaskLooksInquiry(c.task) && !isCodingInquiryTool(name) {
 		return agent.ToolExecutionResult{Result: fmt.Sprintf("tool %s is unavailable for a read-only repository inquiry", name), Outcome: agent.ToolExecutionOutcomeError}
@@ -2180,6 +2191,9 @@ func (c *codingSubAgentCallbacks) ProjectToolResult(name string, result agent.To
 		}
 		proj, err := agent.ProjectToolResultWithContext(toolName, sessionKey, result.Result, contextTokens)
 		if err == nil || proj.Preview != "" {
+			if c != nil {
+				noteSpilledCodingToolResult(&c.spilledToolResultReader, proj.Preview)
+			}
 			return proj.Preview
 		}
 	}
@@ -2193,7 +2207,11 @@ func (c *codingSubAgentCallbacks) ProjectToolResult(name string, result agent.To
 	if c != nil && c.subagent != nil && c.subagent.handler != nil {
 		sessionKey = c.subagent.handler.currentRuntimeOrLegacyPolicyOwnerID()
 	}
-	return projectToolResultHandle(toolName, sessionKey, result.Result, preview, maxToolResultLen)
+	projected := projectToolResultHandle(toolName, sessionKey, result.Result, preview, maxToolResultLen)
+	if c != nil {
+		noteSpilledCodingToolResult(&c.spilledToolResultReader, projected)
+	}
+	return projected
 }
 
 func (c *codingSubAgentCallbacks) executeHorizonHostTool(name, argsJSON string) codingToolExecutionResult {

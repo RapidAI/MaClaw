@@ -162,8 +162,9 @@ func (h *IMMessageHandler) executeTrustedShell(principalID, command string, time
 	}
 	// These guards keep one capability from carrying another: a local shell
 	// grant must not reach a remote host, the user's whole browser process
-	// tree, an authenticated non-idempotent HTTP call, or a second browser
-	// control plane. Managed turns have distinct trusted adapters for remote
+	// tree, a logged-in browser session replayed as a non-idempotent HTTP
+	// call, or a second browser control plane. API Authorization headers are
+	// not that replay. Managed turns have distinct trusted adapters for remote
 	// execution and browser control, so a shell selection that could do those
 	// things would hand the model more than the plan granted.
 	//

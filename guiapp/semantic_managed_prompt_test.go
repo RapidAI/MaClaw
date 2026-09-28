@@ -72,8 +72,11 @@ func TestTheManagedSurfaceBlockNamesEveryBannedGateway(t *testing.T) {
 	if !strings.Contains(block, "工具列表就是全部可用工具") {
 		t.Error("the block does not state that the tool list is exhaustive")
 	}
-	if !strings.Contains(block, "预算用尽") {
+	if !strings.Contains(block, "计划步骤用完") || !strings.Contains(block, "不要把命令交给用户") {
 		t.Error("the block does not explain why a tool disappears mid-turn")
+	}
+	if strings.Contains(block, "配额已用完") || strings.Contains(block, "/new") {
+		t.Error("the block quotes the refusal the model then repeats to the user")
 	}
 	if !strings.Contains(block, "按顺序解锁") || !strings.Contains(block, "没有 PDF 工具") {
 		t.Error("the block does not warn that later grants unlock after the current step")
