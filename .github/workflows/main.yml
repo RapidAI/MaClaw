@@ -2494,10 +2494,28 @@ jobs:
           find release-assets -type f -printf '%f (%s bytes)\n' | sort
 
       - name: Prepare release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          git tag -l --format='%(contents)' "${{ github.ref_name }}" > release_notes.md
+          set -euo pipefail
+          # Fallback notes: the annotated tag message, else a one-line title.
+          git tag -l --format='%(contents)' "$RELEASE_TAG" > release_notes.md
           if [ ! -s release_notes.md ]; then
-            echo "Release ${{ github.ref_name }}" > release_notes.md
+            echo "Release $RELEASE_TAG" > release_notes.md
+          fi
+          # softprops/action-gh-release overwrites the release body with
+          # body_path whenever that file is non-empty ("body = workflowBody
+          # || existingReleaseBody"). To keep notes a human already published
+          # on this tag, re-fetch the existing body and reuse it verbatim.
+          existing_body="$(gh release view "$RELEASE_TAG" --json body --jq '.body' 2>/dev/null || true)"
+          # "--jq '.body'" prints the literal "null" for an API-created
+          # release that has no body; treat that as empty too.
+          if [ "$existing_body" != "null" ] && [ -n "$(printf '%s' "$existing_body" | tr -d '[:space:]')" ]; then
+            printf '%s\n' "$existing_body" > release_notes.md
+            echo "Preserving existing GitHub Release body for $RELEASE_TAG"
+          else
+            echo "No existing GitHub Release body for $RELEASE_TAG; using tag annotation notes"
           fi
 
       - name: Detect release channel from tag
