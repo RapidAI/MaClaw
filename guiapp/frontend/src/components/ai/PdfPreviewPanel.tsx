@@ -16,6 +16,8 @@ export interface PdfPreviewPanelProps {
     absPath: string;
     /** When the host already fetched a PDF data URL, skip a second backend call. */
     dataUrl?: string;
+    /** Short-lived preview token URL. Skips a second backend call. */
+    previewUrl?: string;
     theme: CodePreviewTheme;
     lang: string;
 }
@@ -25,7 +27,7 @@ export interface PdfPreviewPanelProps {
  * URL. Tests and fallbacks may still pass a data URL, which is converted to a
  * blob URL for the iframe.
  */
-export function PdfPreviewPanel({ absPath, dataUrl, theme, lang }: PdfPreviewPanelProps) {
+export function PdfPreviewPanel({ absPath, dataUrl, previewUrl, theme, lang }: PdfPreviewPanelProps) {
     const isZh = lang.startsWith("zh");
     const langRef = useRef(lang);
     useEffect(() => {
@@ -62,6 +64,15 @@ export function PdfPreviewPanel({ absPath, dataUrl, theme, lang }: PdfPreviewPan
             if (next.startsWith("blob:")) objectUrl = next;
             return showSrc(next);
         };
+
+        const tokenURL = String(previewUrl || "").trim();
+        if (tokenURL && isTaskResultPdfPreviewURL(tokenURL)) {
+            showSrc(tokenURL);
+            return () => {
+                cancelled = true;
+                if (objectUrl) URL.revokeObjectURL(objectUrl);
+            };
+        }
 
         if (dataUrl && isPdfInlineDataURL(dataUrl)) {
             applyDataURL(dataUrl);
@@ -101,7 +112,7 @@ export function PdfPreviewPanel({ absPath, dataUrl, theme, lang }: PdfPreviewPan
             cancelled = true;
             if (objectUrl) URL.revokeObjectURL(objectUrl);
         };
-    }, [absPath, dataUrl]);
+    }, [absPath, dataUrl, previewUrl]);
 
     const fill: React.CSSProperties = { display: "flex", flexDirection: "column", height: "100%", minHeight: 0, background: theme.bg };
     if (error) {
@@ -122,6 +133,7 @@ export function PdfPreviewPanel({ absPath, dataUrl, theme, lang }: PdfPreviewPan
         return (
             <div style={fill}>
                 <iframe
+                    key={src}
                     data-testid="pdf-preview-panel"
                     title={isZh ? "PDF 预览" : "PDF preview"}
                     src={src}

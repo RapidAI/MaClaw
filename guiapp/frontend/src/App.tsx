@@ -199,9 +199,20 @@ import { ConfirmDialog } from './components/modals/ConfirmDialog';
 import { DataMigrationOverlay } from './components/DataMigrationOverlay';
 import { EnvCheckSplash } from './components/startup/EnvCheckSplash';
 import type { RemoteCenterHubOption, SidebarCurrentProviderTokenUsage, SidebarHubCredits, SidebarLLMProviderSummary, SidebarTokenUsageStat } from './types/appShell';
-import { AIAssistantPanel, TutorialPage, ApiStorePage, ProjectManagerPage, RemoteSessionsPage, AppsPage, SkillsPage, MCPPage, GossipPage, WorkflowsPage, UtilitiesPage, MobileDocumentsPanel } from './appLazyComponents';
+import { AIAssistantPanel, TutorialPage, ApiStorePage, ProjectManagerPage, RemoteSessionsPage, AppsPage, SkillsPage, MCPPage, GossipPage, WorkflowsPage, UtilitiesPage, MobileDocumentsPanel, LatexTemplateLibraryPage } from './appLazyComponents';
 import { meetingRecordCommand, meetingRecordFailMessage, meetingRecordTaskTitle } from './components/pages/utilitiesMeetingRecord';
 import { parseExpertListJSON, type ExpertDefinition } from './components/ai/expertTypes';
+import {
+    LATEX_BLANK_TEMPLATE_ID,
+    LATEX_TEMPLATES_NAV_TAB,
+    createLatexDocumentForTask,
+    isLatexExpertId,
+    latexBlankTemplateName,
+    type LatexExpertTaskOptions,
+    type LatexTemplate,
+} from './utils/latexTemplates';
+import { useLatexPaperLauncher } from './components/ai/useLatexPaperLauncher';
+import type { PendingExpertOpen } from './components/ai/usePendingAssistantTabOpen';
 
 const APP_VERSION = appVersion
 const MACLAW_CODE_REPOSITORY_URL = "https://github.com/rapidai/maclaw";
@@ -775,7 +786,7 @@ function App() {
     // Project-tab opens are a one-slot handoff to the assistant panel. Queue all
     // producers so a skill run cannot be overwritten by an unrelated task event.
     const [projectTabOpenQueue, setProjectTabOpenQueue] = useState<CodingTaskLaunch[]>([]);
-    const [pendingExpertOpen, setPendingExpertOpen] = useState<{ expert: ExpertDefinition } | null>(null);
+    const [pendingExpertOpen, setPendingExpertOpen] = useState<PendingExpertOpen | null>(null);
     const [skillRunQueue, setSkillRunQueue] = useState<string[]>([]);
     const [skillRunLaunchInFlight, setSkillRunLaunchInFlight] = useState(false);
     const skillRunPendingRef = useRef<{ launchId: string; skillName: string; projectPath: string } | null>(null);
@@ -3219,13 +3230,37 @@ function App() {
         setTaskItems(prev => [created, ...prev.filter(item => item.project_path !== created.project_path)].slice(0, limit));
     }, []);
     /** Single registration gateway for every route that opens an AI expert. */
-    const ensureExpertTask = useCallback(async (expert: ExpertDefinition) => {
+    const ensureExpertTask = useCallback(async (expert: ExpertDefinition, existing?: { relativePath?: string }) => {
         try {
             const created = await CreateExpertTask(expert.id, expert.name);
             if (!created?.project_path) {
                 throw new Error('task record was not created');
             }
             upsertTaskItem(created);
+            if (!isLatexExpertId(expert.id)) {
+                return { projectPath: created.project_path };
+            }
+            const existingRelativePath = String(existing?.relativePath || '').trim();
+            if (existingRelativePath) {
+                return { projectPath: created.project_path, relativePath: existingRelativePath };
+            }
+            const document = await createLatexDocumentForTask(
+                created.project_path,
+                LATEX_BLANK_TEMPLATE_ID,
+                '',
+                lang,
+                (message) => {
+                    showAlert(lang === 'zh-Hans'
+                        ? `无法创建 LaTeX 文档：${message}`
+                        : lang === 'zh-Hant'
+                            ? `無法建立 LaTeX 文件：${message}`
+                            : `The LaTeX document could not be created: ${message}`);
+                },
+            );
+            return {
+                projectPath: created.project_path,
+                relativePath: document?.relative_path || '',
+            };
         } catch (error) {
             console.error('[task_management] create expert task failed:', error);
             showAlert(lang === 'zh-Hans'
@@ -3238,11 +3273,36 @@ function App() {
         }
     }, [lang, refreshTasks, showAlert, upsertTaskItem]);
     /** Create-dialog entry point: register the expert task, then open/focus its assistant tab. */
-    const createExpertTask = useCallback(async (expert: ExpertDefinition) => {
+    /**
+     * LaTeX template -> paper expert hand-off. See useLatexPaperLauncher for why
+     * the task, the document, the expert and the editor have to be opened in
+     * that order.
+     */
+    const startLatexPaper = useLatexPaperLauncher({
+        lang,
+        showAlert,
+        switchTool,
+        registerTaskItem: upsertTaskItem,
+        openExpert: setPendingExpertOpen,
+        createExpertTask: CreateExpertTask,
+    });
+
+    const createExpertTask = useCallback(async (expert: ExpertDefinition, options?: LatexExpertTaskOptions) => {
+        // The LaTeX paper expert owns a real document, so its task has to exist
+        // before the editor can be opened against it. Reuse the same hand-off as
+        // the library so both entry points behave identically.
+        if (isLatexExpertId(expert?.id)) {
+            const templateId = options?.latexTemplateId || LATEX_BLANK_TEMPLATE_ID;
+            await startLatexPaper({
+                id: templateId,
+                name: options?.latexTemplateName || latexBlankTemplateName(lang),
+            }, expert);
+            return;
+        }
         await ensureExpertTask(expert);
         setPendingExpertOpen({ expert });
         switchTool('ai');
-    }, [ensureExpertTask, switchTool]);
+    }, [ensureExpertTask, lang, startLatexPaper, switchTool]);
     /** Durable registration gateway for every secondary assistant tab. */
     const ensureAssistantTabTask = useCallback(async (tabType: string, tabIdentity: string, title: string, projectPath?: string) => {
         const created = await EnsureAssistantTabTask(tabType, tabIdentity, title, projectPath || '');
@@ -5800,6 +5860,14 @@ ${instruction}`;
 
                     {navTab === 'files' && (
                         <MobileDocumentsPanel lang={lang} open inline onClose={() => switchTool('ai')} />
+                    )}
+
+                    {navTab === LATEX_TEMPLATES_NAV_TAB && (
+                        <LatexTemplateLibraryPage
+                            lang={lang}
+                            onUseTemplate={(template: LatexTemplate) => { void startLatexPaper(template); }}
+                            onClose={() => switchTool('ai')}
+                        />
                     )}
 
                     {navTab === 'mcp' && (

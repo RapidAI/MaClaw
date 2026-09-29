@@ -3,10 +3,15 @@
  * A selected "READ snake.cpp" tab over a directory listing is the split this covers.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { CodePreviewPanel, lightCodePreviewTheme } from '../CodePreviewPanel';
 import { __resetWorkspaceDirectoryCacheForTests } from '../CodePreviewWorkspace';
 import type { CodeFile } from '../useCodePreviewState';
+
+const exportZip = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => 'D:/paper-submission.zip'));
+const latexProgress = vi.hoisted(() => ({
+    handler: null as null | ((data: { phase?: string }) => void),
+}));
 
 const getDirectory = vi.fn(async () => ({
     root: 'F:/test-prog',
@@ -17,6 +22,13 @@ const getDirectory = vi.fn(async () => ({
     ],
 }));
 
+vi.mock('../../../../wailsjs/runtime', () => ({
+    EventsOn: (_name: string, cb: (data: { phase?: string }) => void) => {
+        latexProgress.handler = cb;
+        return () => { latexProgress.handler = null; };
+    },
+}));
+
 vi.mock('../../../../wailsjs/go/main/App', () => ({
     GetCodingWorkbenchDirectory: () => getDirectory(),
     GetCodingWorkbenchFilePreview: vi.fn(async () => ({ path: 'snake.cpp', content: 'int main() {}', language: 'cpp' })),
@@ -25,6 +37,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     OpenCodingWorkbenchFileInVSCode: vi.fn(async () => false),
     OpenCodingWorkbenchFileLocally: vi.fn(async () => undefined),
     DownloadCodingWorkbenchEntry: vi.fn(async () => ''),
+    ExportLatexSubmissionZip: (...args: unknown[]) => exportZip(...args),
     DeleteCodingWorkbenchEntry: vi.fn(async () => undefined),
     CloudWorkspaceEntitlement: vi.fn(async () => ({ workspaces: [] })),
     PreviewTaskResultFile: vi.fn(async () => ({ kind: 'pdf', data_url: "data:" + "application/" + "pdf" + ";base64," + "JVBE" + "Ri0=" })),
@@ -102,6 +115,32 @@ describe('CodePreviewPanel workspace vs file tabs', () => {
         // Path bar keeps the directory, but the "工作目录" title lives only on the selected tab.
         expect(screen.getByTestId('code-preview-workspace-root-label').textContent).toBe('F:/test-prog');
         expect(screen.getAllByText('工作目录', { exact: true })).toHaveLength(1);
+        expect(screen.queryByTestId('code-preview-workspace-export-zip')).toBeNull();
+    });
+
+    it('exports a submission zip from the paper workspace', async () => {
+        exportZip.mockClear();
+        const file = snakeFile();
+        renderLocalPreview(new Map([[file.filePath, file]]), file.filePath, { paperWorkspace: true });
+        expect(await screen.findAllByTestId('code-preview-workspace-file')).not.toHaveLength(0);
+        fireEvent.click(screen.getByTestId('code-preview-workspace-export-zip'));
+        await waitFor(() => expect(exportZip).toHaveBeenCalledWith('F:/test-prog'));
+        expect(await screen.findByText('投稿包已保存到 D:/paper-submission.zip')).toBeTruthy();
+    });
+
+    it('reloads the working directory when latex compile finishes', async () => {
+        const file = snakeFile();
+        renderLocalPreview(new Map([[file.filePath, file]]), file.filePath, { paperWorkspace: true });
+        await screen.findAllByTestId('code-preview-workspace-file');
+        const calls = getDirectory.mock.calls.length;
+        await act(async () => {
+            latexProgress.handler?.({ phase: 'compiling' });
+        });
+        expect(getDirectory.mock.calls.length).toBe(calls);
+        await act(async () => {
+            latexProgress.handler?.({ phase: 'ready' });
+        });
+        await waitFor(() => expect(getDirectory.mock.calls.length).toBeGreaterThan(calls));
     });
 
     it('shows the file body after clicking its tab and does not bounce back to the tree', async () => {

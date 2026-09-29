@@ -1,8 +1,9 @@
-import { render, waitFor } from '@testing-library/react';
+import { fireEvent, render, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { lightCodePreviewTheme } from '../../ai/CodePreviewPanel';
 import { fitDocxToPane } from '../../ai/DocxPreviewPanel';
 import { FilePreviewView, filePreviewUsesSpecialRenderer, isAssistantSourcePreview } from '../FilePreviewView';
+import { SaveCodingWorkbenchTextFile } from '../../../../wailsjs/go/main/App';
 
 vi.mock('docx-preview', () => ({
     renderAsync: vi.fn(async (_data: ArrayBuffer, el: HTMLElement) => {
@@ -10,6 +11,11 @@ vi.mock('docx-preview', () => ({
         page.textContent = 'rendered-docx';
         el.appendChild(page);
     }),
+}));
+
+vi.mock('../../../../wailsjs/runtime', () => ({
+    EventsOn: vi.fn(),
+    EventsOff: vi.fn(),
 }));
 
 vi.mock('../../../../wailsjs/go/main/App', () => ({
@@ -36,6 +42,9 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
         images: ['D:/decks/slide_001.png'],
     })),
     PptxSlideThumbnailDataURL: vi.fn(async () => 'data:image/png;base64,thumb'),
+    SaveCodingWorkbenchTextFile: vi.fn(async () => undefined),
+    CompileLatexWorkbenchFile: vi.fn(async () => ({})),
+    GetCodingWorkbenchFilePreview: vi.fn(async () => ({ content: '' })),
 }));
 
 describe('filePreviewUsesSpecialRenderer', () => {
@@ -48,6 +57,9 @@ describe('filePreviewUsesSpecialRenderer', () => {
         expect(filePreviewUsesSpecialRenderer({ fileName: 'a.html' })).toBe(false);
         expect(filePreviewUsesSpecialRenderer({ fileName: 'icon.svg' })).toBe(false);
         expect(filePreviewUsesSpecialRenderer({ fileName: 'a.go' })).toBe(false);
+        expect(filePreviewUsesSpecialRenderer({ fileName: 'main.tex', absPath: 'D:/paper/main.tex' })).toBe(true);
+        expect(filePreviewUsesSpecialRenderer({ fileName: 'main.tex', latexWorkbench: true })).toBe(true);
+        expect(filePreviewUsesSpecialRenderer({ fileName: 'main.tex' })).toBe(false);
         expect(isAssistantSourcePreview({ fileName: 'icon.svg' })).toBe(true);
         expect(isAssistantSourcePreview({ fileName: 'photo.png' })).toBe(false);
     });
@@ -159,6 +171,111 @@ describe('FilePreviewView', () => {
         );
         expect(getByText('diff-child')).toBeTruthy();
         expect(queryByTestId('code-preview-markdown-view')).toBeNull();
+    });
+
+    it('opens a cloud tex file in the editor instead of compiling a cache path', () => {
+        const { getByTestId, queryByTestId } = render(
+            <FilePreviewView
+                file={{
+                    fileName: 'main.tex',
+                    filePath: 'paper/main.tex',
+                    content: '\\documentclass{article}',
+                    language: 'latex',
+                    latexWorkbench: true,
+                }}
+                projectPath="cloud-task"
+                theme={lightCodePreviewTheme}
+                lang="zh"
+            >
+                <div>source-child</div>
+            </FilePreviewView>,
+        );
+        expect(getByTestId('latex-workbench-editor')).toBeTruthy();
+        expect((getByTestId('latex-workbench-source') as HTMLTextAreaElement).value).toBe('\\documentclass{article}');
+        expect(queryByTestId('latex-preview-status')).toBeNull();
+    });
+
+    it('saves a LaTeX document into its own workspace', async () => {
+        const { getByTestId } = render(
+            <FilePreviewView
+                file={{
+                    fileName: 'main.tex',
+                    filePath: 'main.tex',
+                    projectPath: 'latex-task',
+                    content: '\\documentclass{article}',
+                    language: 'latex',
+                    latexWorkbench: true,
+                }}
+                projectPath="other-task"
+                theme={lightCodePreviewTheme}
+                lang="zh"
+            />,
+        );
+        fireEvent.change(getByTestId('latex-workbench-source'), { target: { value: '\\documentclass{article}\n% edited' } });
+        fireEvent.click(getByTestId('latex-workbench-save'));
+        await waitFor(() => expect(SaveCodingWorkbenchTextFile).toHaveBeenCalledWith(
+            'latex-task',
+            'main.tex',
+            '\\documentclass{article}\n% edited',
+        ));
+    });
+
+    it('keeps an unsaved draft when the open paper gains an absolute path', () => {
+        vi.mocked(SaveCodingWorkbenchTextFile).mockClear();
+        const file = {
+            fileName: 'main.tex',
+            filePath: 'main.tex',
+            projectPath: 'latex-task',
+            content: 'old-source',
+            language: 'latex',
+            latexWorkbench: true,
+            updatedAt: 1,
+        };
+        const view = render(
+            <FilePreviewView file={file} projectPath="latex-task" theme={lightCodePreviewTheme} lang="zh" />,
+        );
+        fireEvent.change(view.getByTestId('latex-workbench-source'), { target: { value: 'draft' } });
+        view.rerender(
+            <FilePreviewView
+                file={{ ...file, absPath: 'D:/tasks/latex/workspace/main.tex', content: 'from-disk', updatedAt: 2 }}
+                projectPath="latex-task"
+                theme={lightCodePreviewTheme}
+                lang="zh"
+            />,
+        );
+        expect((view.getByTestId('latex-workbench-source') as HTMLTextAreaElement).value).toBe('draft');
+        expect(SaveCodingWorkbenchTextFile).not.toHaveBeenCalled();
+    });
+
+    it('opens the next paper instead of keeping the previous main.tex', async () => {
+        const file = {
+            fileName: 'main.tex',
+            filePath: 'main.tex',
+            content: 'alpha',
+            language: 'latex',
+            latexWorkbench: true,
+            updatedAt: 1,
+        };
+        const view = render(
+            <FilePreviewView
+                file={{ ...file, projectPath: 'task-a' }}
+                projectPath="task-a"
+                theme={lightCodePreviewTheme}
+                lang="zh"
+            />,
+        );
+        fireEvent.change(view.getByTestId('latex-workbench-source'), { target: { value: 'alpha-edited' } });
+        view.rerender(
+            <FilePreviewView
+                file={{ ...file, projectPath: 'task-b', content: 'beta' }}
+                projectPath="task-b"
+                theme={lightCodePreviewTheme}
+                lang="zh"
+            />,
+        );
+        expect((view.getByTestId('latex-workbench-source') as HTMLTextAreaElement).value).toBe('beta');
+        await waitFor(() => expect(SaveCodingWorkbenchTextFile).toHaveBeenCalledWith('task-a', 'main.tex', 'alpha-edited'));
+        expect(SaveCodingWorkbenchTextFile).not.toHaveBeenCalledWith('task-b', 'main.tex', 'alpha-edited');
     });
 
     it('falls through to children for source files', () => {

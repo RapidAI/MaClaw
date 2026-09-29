@@ -17,7 +17,7 @@ func (s *SQLiteStore) searchTableRowsByEmbedding(ctx context.Context, opts Struc
 	if emb == nil || embedding.IsNoop(emb) || strings.TrimSpace(opts.Query) == "" {
 		return nil, nil
 	}
-	queryVector, err := emb.Embed(opts.Query)
+	queryVector, err := embedding.EmbedAs(emb, opts.Query, embedding.RoleQuery)
 	if err != nil || !validEmbeddingVector(queryVector, emb.Dim()) {
 		return nil, nil
 	}

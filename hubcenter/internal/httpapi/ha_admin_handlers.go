@@ -91,6 +91,32 @@ func AdminHABroadcastSkillMarketHandler(svc adminHASkillBroadcastProvider) http.
 	}
 }
 
+type adminHALatexBroadcastProvider interface {
+	ForceBroadcastLatexTemplateSnapshot(ctx context.Context) (int, error)
+}
+
+// AdminHABroadcastLatexTemplateHandler force-reappends the LaTeX catalogue,
+// including package bytes, so a peer can catch up after history was pruned.
+func AdminHABroadcastLatexTemplateHandler(svc adminHALatexBroadcastProvider) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if svc == nil {
+			writeError(w, http.StatusNotImplemented, "HA_NOT_ENABLED", "HA sync is not enabled")
+			return
+		}
+		count, err := svc.ForceBroadcastLatexTemplateSnapshot(r.Context())
+		if err != nil {
+			status, code := haBroadcastErrorStatus(err, "HA_LATEX_TEMPLATE_BROADCAST_FAILED")
+			writeError(w, status, code, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":             true,
+			"entity":         "latex_template_snapshot",
+			"template_count": count,
+		})
+	}
+}
+
 func haBroadcastErrorStatus(err error, defaultCode string) (int, string) {
 	if err == nil {
 		return http.StatusOK, defaultCode

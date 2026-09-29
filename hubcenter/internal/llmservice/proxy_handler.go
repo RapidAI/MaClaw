@@ -154,29 +154,18 @@ func ProxyQuoteHandler(cfg *ProxyConfig) http.HandlerFunc {
 		// must therefore be selected from the stream-capable routes now, rather
 		// than discovering after Hub has reserved Credits that the quoted route
 		// only supports a non-stream wire protocol.
-		var dispatch *proxyDispatch
-		if proxyRequestWantsStream(body) {
-			dispatches, err := prepareProxyStreamDispatches(r.Context(), cfg, req)
-			if err != nil {
-				writeProxyRequestError(w, err)
-				return
-			}
-			if len(dispatches) > 0 {
-				dispatch = dispatches[0]
-			}
-		} else {
-			dispatch, err = prepareProxyDispatch(r.Context(), cfg, req)
-			if err != nil {
-				writeProxyRequestError(w, err)
-				return
-			}
+		dispatch, err := prepareProxyQuoteDispatch(r.Context(), cfg, req, proxyRequestWantsStream(body))
+		if err != nil {
+			writeProxyRequestError(w, err)
+			return
 		}
 		if dispatch == nil || dispatch.provider == nil || dispatch.matchedGroup == nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "no provider available for pricing quote")
 			return
 		}
+		logicalID := proxyDispatchLogicalID(dispatch)
 		upstreamModel := proxyUpstreamModelForRoute(dispatch.route, dispatch.provider, dispatch.model)
-		pricing := proxyTokenPricingSnapshot(dispatch.matchedGroup, dispatch.provider, dispatch.provider.ID, upstreamModel, 0, 0, proxyRequestStartedAt(req))
+		pricing := proxyTokenPricingSnapshot(dispatch.matchedGroup, dispatch.provider, logicalID, upstreamModel, 0, 0, proxyRequestStartedAt(req))
 		if pricing == nil {
 			writeJSONError(w, http.StatusUnprocessableEntity, "quoted provider route has no directional Credits price")
 			return
@@ -188,7 +177,7 @@ func ProxyQuoteHandler(cfg *ProxyConfig) http.HandlerFunc {
 			RequestID:          requestID,
 			ServiceGroupID:     dispatch.matchedGroup.ID,
 			LogicalModel:       dispatch.model,
-			ProviderID:         dispatch.provider.ID,
+			ProviderID:         logicalID,
 			UpstreamModel:      upstreamModel,
 			Pricing:            pricing.Pricing,
 			PricingSource:      pricing.PricingSource,
@@ -337,8 +326,10 @@ func streamProxyRequest(w http.ResponseWriter, r *http.Request, cfg *ProxyConfig
 	if multiplier, ok := proxySharedCreditMultiplier(proxyReq, dispatches, proxyRequestStartedAt(proxyReq)); ok {
 		w.Header().Set(llmpool.CreditMultiplierHeader, llmpool.FormatCreditMultiplierHeader(multiplier))
 	}
-	if len(dispatches) == 1 && dispatches[0] != nil && dispatches[0].provider != nil {
-		w.Header().Set(llmpool.ProviderIDHeader, dispatches[0].provider.ID)
+	if len(dispatches) == 1 && dispatches[0] != nil {
+		if logicalID := proxyDispatchLogicalID(dispatches[0]); logicalID != "" {
+			w.Header().Set(llmpool.ProviderIDHeader, logicalID)
+		}
 	}
 	w.WriteHeader(http.StatusOK)
 	if flusher != nil {
@@ -399,7 +390,7 @@ func writeProxyStreamBillingTrailers(w http.ResponseWriter, req *ProxyRequest, d
 	// carries the provider factor separately so it is applied exactly once.
 	multiplier := proxyDispatchCreditMultiplier(req, dispatch, proxyRequestStartedAt(req))
 	w.Header().Set(llmpool.CreditMultiplierHeader, llmpool.FormatCreditMultiplierHeader(multiplier))
-	w.Header().Set(llmpool.ProviderIDHeader, dispatch.provider.ID)
+	w.Header().Set(llmpool.ProviderIDHeader, proxyDispatchLogicalID(dispatch))
 	upstreamModel := proxyUpstreamModelForRoute(dispatch.route, dispatch.provider, dispatch.model)
 	if snapshot := proxyDispatchTokenPricingSnapshot(req, dispatch, upstreamModel); snapshot != nil {
 		if encoded, ok := llmpool.EncodeTokenPricingSnapshot(*snapshot); ok {
@@ -414,13 +405,14 @@ func proxyDispatchTokenPricingSnapshot(req *ProxyRequest, dispatch *proxyDispatc
 	if dispatch == nil || dispatch.provider == nil {
 		return nil
 	}
+	logicalID := proxyDispatchLogicalID(dispatch)
 	if dispatch.pricing != nil {
-		providerMultiplier := proxyProviderMultiplierForRequest(req, dispatch.provider, dispatch.provider.ID, proxyRequestStartedAt(req))
+		providerMultiplier := proxyProviderMultiplierForRequest(req, dispatch.provider, logicalID, proxyRequestStartedAt(req))
 		return &llmpool.TokenPricingSnapshot{
-			ProviderID:         dispatch.provider.ID,
+			ProviderID:         logicalID,
 			UpstreamModel:      strings.TrimSpace(upstreamModel),
 			Pricing:            *dispatch.pricing,
-			PricingSource:      proxyTokenPricingSource(dispatch.matchedGroup, dispatch.provider, dispatch.provider.ID, upstreamModel),
+			PricingSource:      proxyTokenPricingSource(dispatch.matchedGroup, dispatch.provider, logicalID, upstreamModel),
 			ProviderMultiplier: providerMultiplier,
 			InputTokens:        dispatch.billingInputTokens,
 			OutputTokens:       dispatch.billingOutputTokens,
@@ -428,7 +420,7 @@ func proxyDispatchTokenPricingSnapshot(req *ProxyRequest, dispatch *proxyDispatc
 			CacheWriteTokens:   dispatch.billingCacheWriteTokens,
 		}
 	}
-	snapshot := proxyRequestTokenPricingSnapshot(req, dispatch.matchedGroup, dispatch.provider, dispatch.provider.ID, upstreamModel, dispatch.billingInputTokens, dispatch.billingOutputTokens, proxyRequestStartedAt(req))
+	snapshot := proxyRequestTokenPricingSnapshot(req, dispatch.matchedGroup, dispatch.provider, logicalID, upstreamModel, dispatch.billingInputTokens, dispatch.billingOutputTokens, proxyRequestStartedAt(req))
 	if snapshot != nil {
 		snapshot.CachedInputTokens = dispatch.billingCachedInputTokens
 		snapshot.CacheWriteTokens = dispatch.billingCacheWriteTokens

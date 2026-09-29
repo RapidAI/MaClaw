@@ -1,6 +1,6 @@
 import { localizeText } from '../i18n';
 
-export type SettingsTabId = 'general' | 'proxy' | 'ui' | 'pet' | 'programmingTools' | 'searchEngine' | 'redeem' | 'skills' | 'mcp' | 'llm' | 'llmCache' | 'pptStyles' | 'embedding' | 'memory' | 'knowledge' | 'misData' | 'virtualEmployee' | 'im' | 'security' | 'migration' | 'system' | 'hardware' | 'assetManagement';
+export type SettingsTabId = 'general' | 'proxy' | 'ui' | 'pet' | 'programmingTools' | 'latex' | 'searchEngine' | 'redeem' | 'skills' | 'mcp' | 'llm' | 'llmCache' | 'pptStyles' | 'embedding' | 'memory' | 'knowledge' | 'misData' | 'virtualEmployee' | 'im' | 'security' | 'migration' | 'system' | 'hardware' | 'assetManagement';
 
 /**
  * Tabs that actually render a settings body panel (rail + SettingsActiveContent).
@@ -12,6 +12,7 @@ export const SETTINGS_CONTENT_TAB_IDS = [
     'ui',
     'pet',
     'programmingTools',
+    'latex',
     'pptStyles',
     'searchEngine',
     'redeem',
@@ -74,6 +75,7 @@ const settingsTabGroupById: Partial<Record<SettingsTabId, SettingsTabGroupId>> =
     ui: 'essentials',
     pet: 'essentials',
     programmingTools: 'essentials',
+    latex: 'essentials',
     pptStyles: 'essentials',
     searchEngine: 'ai',
     llm: 'ai',
@@ -109,6 +111,7 @@ const settingsTabIcons: Record<SettingsTabId, string> = {
     ui: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M2 6h12"/><circle cx="4" cy="4.5" r="0.7" fill="currentColor" stroke="none"/><circle cx="6" cy="4.5" r="0.7" fill="currentColor" stroke="none"/></svg>',
     pet: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="5" cy="4" rx="1.4" ry="2"/><ellipse cx="11" cy="4" rx="1.4" ry="2"/><ellipse cx="3" cy="8.5" rx="1.4" ry="1.8"/><ellipse cx="13" cy="8.5" rx="1.4" ry="1.8"/><ellipse cx="8" cy="11.5" rx="2.8" ry="2.2"/></svg>',
     programmingTools: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h10v10H3z"/><path d="M5 6l2 2-2 2M8.5 10H11"/></svg>',
+    latex: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M3 2.5h7l3 3V13.5H3z"/><path d="M10 2.5V5.5h3"/><path d="M5.5 8.5h5M5.5 11h3.5"/></svg>',
     searchEngine: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="7" r="4.5"/><path d="M10.2 10.2l3.3 3.3"/></svg>',
     redeem: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="12" height="9" rx="1.5"/><path d="M2 7.5h12"/><path d="M5.5 10.5h2"/></svg>',
     skills: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="2" width="10" height="12" rx="1.5"/><path d="M6 5h4M6 7.5h4M6 10h2"/></svg>',
@@ -162,6 +165,12 @@ export const getSettingsTabOptions = (lang: string, options: { hideVirtualEmploy
             label: textForLang(lang, 'Coding Tools', '编程工具', '編程工具'),
             desc: textForLang(lang, 'Built-in coding agent, ACP, and coding knowledge base', '内置编程子 Agent、ACP 与编程知识库', '內置編程子 Agent、ACP 與編程知識庫'),
             icon: settingsTabIcons.programmingTools,
+        },
+        {
+            id: 'latex' as const,
+            label: textForLang(lang, 'LaTeX', 'LaTeX', 'LaTeX'),
+            desc: textForLang(lang, 'TinyTeX and TeX Live scheme-small', 'TinyTeX 与 TeX Live scheme-small', 'TinyTeX 與 TeX Live scheme-small'),
+            icon: settingsTabIcons.latex,
         },
         {
             id: 'pptStyles' as const,

@@ -337,3 +337,5 @@ guiapp/_*
 /iot-agentos/.maclaw-idf-tools/
 /build/ppt_*probe*/
 /tmp_pprof/
+
+deploy/run_deploy_run*.ps1

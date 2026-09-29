@@ -440,6 +440,9 @@ type AppConfig struct {
 	// OCRModelTier selects the PP-OCRv6 model size: "tiny", "small" or
 	// "medium". Empty means the default tier (see NormalizeOCRModelTier).
 	OCRModelTier string `json:"ocr_model_tier,omitempty"`
+	// LatexTinyTeXEnabled installs the official TinyTeX-0 bootstrap and then
+	// TeX Live scheme-small in the background. Absent values stay enabled.
+	LatexTinyTeXEnabled bool `json:"latex_tinytex_enabled"`
 	// Diarization toggle. When enabled, the CAM++ speaker embedding model is
 	// downloaded in the background and made available for meeting transcription.
 	DiarizationEnabled bool `json:"diarization_enabled"`
@@ -1518,6 +1521,7 @@ func AppConfigDefaults() AppConfig {
 		ASREnabled:                 true,
 		OCREnabled:                 true,
 		OCRModelTier:               DefaultOCRModelTier,
+		LatexTinyTeXEnabled:        true,
 		DiarizationEnabled:         true,
 		ASRVoiceCorrectionEnabled:  true,
 		TTSEnabled:                 true,

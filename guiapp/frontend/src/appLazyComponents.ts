@@ -13,6 +13,7 @@ export const TTSConfigPanel = lazy(() => import('./components/remote/TTSConfigPa
 export const MemoryManagementPanel = lazy(() => import('./components/remote/MemoryManagementPanel').then((module) => ({ default: module.MemoryManagementPanel })));
 export const KnowledgeSettingsPanel = lazy(() => import('./components/settings/KnowledgeSettingsPanel').then((module) => ({ default: module.KnowledgeSettingsPanel })));
 export const ProgrammingToolsSettingsPanel = lazy(() => import('./components/settings/ProgrammingToolsSettingsPanel').then((module) => ({ default: module.ProgrammingToolsSettingsPanel })));
+export const LatexSettingsPanel = lazy(() => import('./components/settings/LatexSettingsPanel').then((module) => ({ default: module.LatexSettingsPanel })));
 export const MISDataSettingsPanel = lazy(() => import('./components/settings/MISDataSettingsPanel').then((module) => ({ default: module.MISDataSettingsPanel })));
 export const UISettingsPanel = lazy(() => import('./components/settings/UISettingsPanel').then((module) => ({ default: module.UISettingsPanel })));
 // GeneralSettingsPanel / GeneralAdvancedSettingsPanel are eager in SettingsActiveContent
@@ -34,3 +35,4 @@ export const GossipPage = lazy(() => import('./components/pages/GossipPage').the
 export const WorkflowsPage = lazy(() => import('./components/pages/WorkflowsPage').then((module) => ({ default: module.WorkflowsPage })));
 export const UtilitiesPage = lazy(() => import('./components/pages/UtilitiesPage').then((module) => ({ default: module.UtilitiesPage })));
 export const MobileDocumentsPanel = lazy(() => import('./components/layout/MobileDocumentsPanel').then((module) => ({ default: module.MobileDocumentsPanel })));
+export const LatexTemplateLibraryPage = lazy(() => import('./components/pages/LatexTemplateLibraryPage').then((module) => ({ default: module.LatexTemplateLibraryPage })));

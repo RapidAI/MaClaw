@@ -99,6 +99,11 @@ type cloudWorkspaceHeldMount struct {
 	syncRunning bool
 	syncPending bool
 	syncDone    chan struct{}
+	// latexPushHold pauses uploads while xelatex is still writing logs that
+	// contain the cache path. latexPushDeferred records that a watcher event
+	// arrived and must upload after those logs are scrubbed.
+	latexPushHold     int
+	latexPushDeferred bool
 	// stopped prevents a callback that is just finishing while the mount is
 	// being detached from scheduling a new debounce timer after its process
 	// lock has been released.
@@ -1022,6 +1027,11 @@ func (a *App) scheduleCloudWorkspacePush(mount *cloudWorkspaceHeldMount) {
 	}
 	mount.mu.Lock()
 	if mount.ReadOnly || mount.releasing || mount.stopped {
+		mount.mu.Unlock()
+		return
+	}
+	if mount.latexPushHold > 0 {
+		mount.latexPushDeferred = true
 		mount.mu.Unlock()
 		return
 	}

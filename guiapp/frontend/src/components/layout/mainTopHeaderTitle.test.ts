@@ -17,6 +17,12 @@ describe('getHeaderTitle', () => {
         expect(getHeaderTitle('settings', 'en', t, false, 'knowledge')).toBe('Knowledge base');
     });
 
+    it('names the LaTeX template library instead of falling through to About', () => {
+        expect(getHeaderTitle('latex-templates', 'zh-Hans', t)).toBe('LaTeX 模板');
+        expect(getHeaderTitle('latex-templates', 'zh-Hant', t)).toBe('LaTeX 模板');
+        expect(getHeaderTitle('latex-templates', 'en', t)).toBe('LaTeX Templates');
+    });
+
     it('keeps the global settings title for other settings tabs', () => {
         expect(getHeaderTitle('settings', 'zh-Hans', t, false, 'general')).toBe('globalSettings');
         expect(getHeaderTitle('settings', 'zh-Hans', t)).toBe('globalSettings');

@@ -44,6 +44,7 @@ describe("taskResultPreviewKindFromPath", () => {
         expect(taskResultPreviewKindFromPath("/tmp/photo.png")).toBe("image");
         expect(taskResultPreviewKindFromPath("/tmp/clip.mp4")).toBe("video");
         expect(taskResultPreviewKindFromPath("/tmp/notes.md")).toBe("");
+        expect(taskResultPreviewKindFromPath("D:/paper/main.tex")).toBe("latex");
     });
 });
 

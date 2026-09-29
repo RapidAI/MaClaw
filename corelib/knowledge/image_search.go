@@ -45,7 +45,7 @@ func (s *SQLiteStore) SearchImages(ctx context.Context, opts ImageSearchOptions)
 	// drop the real caption before the evidence filter runs.
 	if _, strict := bm25.QueryAnchors(normalizeKnowledgeLexicalText(searchOpts.Query)); !strict {
 		if emb, generation := s.currentEmbedderSnapshot(); emb != nil && !embedding.IsNoop(emb) {
-			queryVec, embedErr := emb.Embed(searchOpts.Query)
+			queryVec, embedErr := embedding.EmbedAs(emb, searchOpts.Query, embedding.RoleQuery)
 			if embedErr == nil && validEmbeddingVector(queryVec, emb.Dim()) && s.isEmbedderGenerationCurrent(generation) {
 				embResults, vectorErr := s.searchNodesByEmbedding(ctx, queryVec, embeddingModelIdentifier(emb), generation, searchOpts, NodeTypeImage)
 				if vectorErr != nil {

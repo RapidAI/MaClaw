@@ -8687,6 +8687,26 @@ export namespace main {
 	        this.workspace_id = source["workspace_id"] ?? source["WorkspaceID"];
 	    }
 	}
+	export class TaskFileTransferResult {
+	    source_dir: string;
+	    target_dir: string;
+	    workspace_id?: string;
+	    files: number;
+	    bytes: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new TaskFileTransferResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.source_dir = source["source_dir"] ?? source["SourceDir"];
+	        this.target_dir = source["target_dir"] ?? source["TargetDir"];
+	        this.workspace_id = source["workspace_id"] ?? source["WorkspaceID"];
+	        this.files = source["files"] ?? source["Files"];
+	        this.bytes = source["bytes"] ?? source["Bytes"];
+	    }
+	}
 	export class CodeGenModelItem {
 	    id: string;
 	    name: string;

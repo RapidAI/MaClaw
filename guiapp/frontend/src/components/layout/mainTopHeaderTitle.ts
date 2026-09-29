@@ -1,6 +1,7 @@
 import { getToolLabel, isToolTab } from '../../config/toolCatalog';
 import { miniAppShortLabel } from '../../i18n/maclawMiniAppLabels';
 import { expertsPageTitle, toolsPageTitle, utilitiesPageTitle } from '../../i18n/utilitiesLabels';
+import { LATEX_TEMPLATES_NAV_TAB } from '../../utils/latexTemplates';
 
 const zhHans = {
     taskManagement: '\u4efb\u52a1\u76d1\u63a7',
@@ -27,5 +28,6 @@ export const getHeaderTitle = (navTab: string, lang: string, t: (key: string) =>
                                 navTab === 'api-store' ? t('apiStore') :
                                     navTab === 'mcp' ? 'MCP' :
                                         navTab === 'settings' ? (settingsTab === 'knowledge' ? (lang === 'zh-Hans' ? '知识库' : lang === 'zh-Hant' ? '知識庫' : 'Knowledge base') : t('globalSettings')) :
+                                            navTab === LATEX_TEMPLATES_NAV_TAB ? (lang === 'zh-Hant' ? 'LaTeX 模板' : lang === 'en' ? 'LaTeX Templates' : 'LaTeX 模板') :
                                             t('about')
 );

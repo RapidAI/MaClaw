@@ -646,8 +646,16 @@ export function ContinueBackgroundLoop(arg1, arg2) {
   return window['go']['main']['App']['ContinueBackgroundLoop'](arg1, arg2);
 }
 
+export function CopyCloudWorkspaceTaskFilesToLocal(arg1, arg2) {
+  return window['go']['main']['App']['CopyCloudWorkspaceTaskFilesToLocal'](arg1, arg2);
+}
+
 export function CopyComputerUsePath(arg1) {
   return window['go']['main']['App']['CopyComputerUsePath'](arg1);
+}
+
+export function CopyTaskFilesToCloudWorkspace(arg1, arg2) {
+  return window['go']['main']['App']['CopyTaskFilesToCloudWorkspace'](arg1, arg2);
 }
 
 export function CorrectASRText(arg1) {
@@ -959,6 +967,18 @@ export function DownloadEmbeddingModel() {
   return window['go']['main']['App']['DownloadEmbeddingModel']();
 }
 
+export function DownloadLatexTinyTeX() {
+  return window['go']['main']['App']['DownloadLatexTinyTeX']();
+}
+
+export function CompileLatexPreview(arg1) {
+  return window['go']['main']['App']['CompileLatexPreview'](arg1);
+}
+
+export function CompileLatexWorkbenchFile(arg1, arg2) {
+  return window['go']['main']['App']['CompileLatexWorkbenchFile'](arg1, arg2);
+}
+
 export function DownloadMaclawAppPackageFromHub(arg1) {
   return window['go']['main']['App']['DownloadMaclawAppPackageFromHub'](arg1);
 }
@@ -1053,6 +1073,14 @@ export function ExportIMAuditCSV(arg1, arg2, arg3) {
 
 export function ExportIMAuditCSVForBot(arg1, arg2, arg3) {
   return window['go']['main']['App']['ExportIMAuditCSVForBot'](arg1, arg2, arg3);
+}
+
+export function ExportLatexSourceBundle(arg1) {
+  return window['go']['main']['App']['ExportLatexSourceBundle'](arg1);
+}
+
+export function ExportLatexSubmissionZip(arg1) {
+  return window['go']['main']['App']['ExportLatexSubmissionZip'](arg1);
 }
 
 export function ExportLearnedSkillsZip(arg1) {
@@ -1469,6 +1497,10 @@ export function GetIMAuditUsersForBot(arg1) {
 
 export function GetInferenceDiagnostics() {
   return window['go']['main']['App']['GetInferenceDiagnostics']();
+}
+
+export function GetLatexTinyTeXStatus() {
+  return window['go']['main']['App']['GetLatexTinyTeXStatus']();
 }
 
 export function GetLLMSecurityReview() {
@@ -4103,6 +4135,10 @@ export function SaveCodingWorkbenchCheckpoint(arg1, arg2) {
   return window['go']['main']['App']['SaveCodingWorkbenchCheckpoint'](arg1, arg2);
 }
 
+export function SaveCodingWorkbenchTextFile(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SaveCodingWorkbenchTextFile'](arg1, arg2, arg3);
+}
+
 export function SaveConfig(arg1) {
   return window['go']['main']['App']['SaveConfig'](arg1);
 }
@@ -4461,6 +4497,10 @@ export function SetLLMTrajectoryLogging(arg1) {
 
 export function SetLanguage(arg1) {
   return window['go']['main']['App']['SetLanguage'](arg1);
+}
+
+export function SetLatexTinyTeXEnabled(arg1) {
+  return window['go']['main']['App']['SetLatexTinyTeXEnabled'](arg1);
 }
 
 export function SetLansengerGroupAllowed(arg1, arg2) {
@@ -5132,4 +5172,37 @@ export function WithdrawPetStorePack(arg1) {
 
 export function WriteCodingWorkbenchConflictFileContent(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['WriteCodingWorkbenchConflictFileContent'](arg1, arg2, arg3, arg4);
+}
+
+// LaTeX paper template library (hand-added: guiapp/latex_templates.go).
+export function ListLatexTemplates() {
+  return window['go']['main']['App']['ListLatexTemplates']();
+}
+
+export function ImportLatexTemplate() {
+  return window['go']['main']['App']['ImportLatexTemplate']();
+}
+
+export function ImportLatexTemplateFromPath(arg1) {
+  return window['go']['main']['App']['ImportLatexTemplateFromPath'](arg1);
+}
+
+export function DeleteLatexTemplate(arg1) {
+  return window['go']['main']['App']['DeleteLatexTemplate'](arg1);
+}
+
+export function SyncLatexTemplatesFromHub() {
+  return window['go']['main']['App']['SyncLatexTemplatesFromHub']();
+}
+
+export function ShareLatexTemplate(arg1) {
+  return window['go']['main']['App']['ShareLatexTemplate'](arg1);
+}
+
+export function CreateLatexDocument(arg1, arg2, arg3) {
+  return window['go']['main']['App']['CreateLatexDocument'](arg1, arg2, arg3);
+}
+
+export function SyncLatexTemplateShares() {
+  return window['go']['main']['App']['SyncLatexTemplateShares']();
 }

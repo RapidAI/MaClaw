@@ -854,6 +854,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("POST /api/admin/ha/config", RequireAdmin(adminService, UpdateHAConfigHandler(haConfigSvc, haSvc)))
 	mux.HandleFunc("POST /api/admin/ha/skillhub/broadcast", RequireAdmin(adminService, AdminHABroadcastSkillHubHandler(haSvc)))
 	mux.HandleFunc("POST /api/admin/ha/skillmarket/broadcast", RequireAdmin(adminService, AdminHABroadcastSkillMarketHandler(haSvc)))
+	mux.HandleFunc("POST /api/admin/ha/latex-templates/broadcast", RequireAdmin(adminService, AdminHABroadcastLatexTemplateHandler(haSvc)))
 	mux.HandleFunc("GET /api/admin/ha/public-key", RequireAdmin(adminService, HAKeyMaterialHandler(haConfigSvc, haSvc)))
 	mux.HandleFunc("GET /api/admin/ha/public-keys", RequireAdmin(adminService, HACollectedPublicKeysHandler(haConfigSvc, haSvc, haSvc)))
 	mux.HandleFunc("GET /api/admin/mail/config", RequireAdmin(adminService, GetMailConfigHandler(mailer)))
@@ -1204,6 +1205,32 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 		mux.HandleFunc("PUT /api/admin/hubs/{hubId}/tenants/{tenantId}/industries", RequireAdmin(adminService, industryHandlers.replaceTenantIndustries))
 		mux.HandleFunc("GET /api/admin/hubs/{hubId}/tenants/{tenantId}/industry-expert-status", RequireAdmin(adminService, industryHandlers.tenantIndustryStatus))
 		mux.HandleFunc("GET /api/hubs/{hubId}/tenants/{tenantId}/industry-expert-catalog", industryHandlers.getHubCatalogue)
+		// LaTeX paper templates live next to the Capability Market but are not
+		// a purchasable product: users share a packaged template, an
+		// administrator reviews it, and only approved packages reach the
+		// catalogue the desktop app browses.
+		latexTemplateHandlers := NewLatexTemplateHandlers(smHandlers)
+		if haSvc != nil {
+			latexTemplateHandlers.SetSyncRecorder(haSvc)
+			haSvc.SetLatexTemplateSnapshotApplier(latexTemplateHandlers.ApplySnapshot)
+			haSvc.SetLatexTemplateSnapshotDumper(latexTemplateHandlers.DumpHASnapshot)
+			haSvc.SetLatexTemplateRecordCounter(latexTemplateHandlers.CountSnapshotRecords)
+			go latexTemplateHandlers.seedHASnapshot(context.Background(), haSvc)
+		}
+		mux.HandleFunc("GET /api/v1/latex-templates", latexTemplateHandlers.listApprovedTemplates)
+		mux.HandleFunc("POST /api/v1/latex-templates", latexTemplateHandlers.shareTemplate)
+		mux.HandleFunc("GET /api/v1/latex-templates/categories", latexTemplateHandlers.listCategories)
+		mux.HandleFunc("GET /api/v1/latex-templates/submissions", latexTemplateHandlers.listMySubmissions)
+		mux.HandleFunc("GET /api/v1/latex-templates/{id}/download", latexTemplateHandlers.downloadTemplate)
+		mux.HandleFunc("GET /api/admin/latex-templates", RequireAdmin(adminService, latexTemplateHandlers.adminListTemplates))
+		mux.HandleFunc("POST /api/admin/latex-templates", RequireAdmin(adminService, latexTemplateHandlers.adminUploadTemplate))
+		mux.HandleFunc("PATCH /api/admin/latex-templates/{id}", RequireAdmin(adminService, latexTemplateHandlers.adminPatchTemplate))
+		mux.HandleFunc("DELETE /api/admin/latex-templates/{id}", RequireAdmin(adminService, latexTemplateHandlers.adminDeleteTemplate))
+		mux.HandleFunc("POST /api/admin/latex-templates/{id}/review", RequireAdmin(adminService, latexTemplateHandlers.adminReviewTemplate))
+		mux.HandleFunc("GET /api/admin/latex-template-events", RequireAdmin(adminService, latexTemplateHandlers.adminListEvents))
+		mux.HandleFunc("POST /api/admin/latex-template-categories", RequireAdmin(adminService, latexTemplateHandlers.createCategory))
+		mux.HandleFunc("PATCH /api/admin/latex-template-categories/{id}", RequireAdmin(adminService, latexTemplateHandlers.patchCategory))
+		mux.HandleFunc("DELETE /api/admin/latex-template-categories/{id}", RequireAdmin(adminService, latexTemplateHandlers.deleteCategory))
 		mux.HandleFunc("GET /api/v1/account/{email}/tier", smHandlers.GetAccountTier)
 		// Admin refund & purchases
 		mux.HandleFunc("POST /api/v1/admin/refund", RequireAdmin(adminService, smHandlers.AdminRefund))

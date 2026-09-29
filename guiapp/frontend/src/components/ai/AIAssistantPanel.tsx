@@ -114,12 +114,16 @@ import { AssistantQuickSettingsBar } from "./AssistantQuickSettingsBar";
 import { ComputerUseReadinessBanner } from "./ComputerUseReadinessBanner";
 import { canShowWorkbenchLanding, useWorkbenchLandingMode } from "./useWorkbenchLandingMode";
 export { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
-import { agentViewHiddenFieldValue, canShowAssistantCodingPreviewForTab, codePreviewModeFromState, commitRestoredCodePreview, hasRestorableProjectConversation, isWorkflowPhaseRunningStatus, isWorkflowPhaseTerminalStatus, loadRestoredProjectConversationHistory, normalizeRestoredProjectHistoryContent, normalizeWorkflowPhaseStatus, readStoredAssistantPreviewState, shouldApplyRestoredAssistantPreview, shouldShowSourcePreviewForAgentMode, shouldShowSourcePreviewForWorkflow, suppressWorkflowReviewActions, withCodePreviewVisibleIfContent, writeStoredAssistantPreviewState, type ConversationBranchPointLike, type StoredAssistantPreviewState } from "./assistantPreviewState";
+import { agentViewHiddenFieldValue, canShowAssistantCodingPreviewForTab, codePreviewEventsEnabled, codePreviewModeFromState, commitRestoredCodePreview, hasRestorableProjectConversation, isWorkflowPhaseRunningStatus, isWorkflowPhaseTerminalStatus, loadRestoredProjectConversationHistory, normalizeRestoredProjectHistoryContent, normalizeWorkflowPhaseStatus, readStoredAssistantPreviewState, shouldApplyRestoredAssistantPreview, shouldShowSourcePreviewForAgentMode, shouldShowSourcePreviewForWorkflow, suppressWorkflowReviewActions, withCodePreviewVisibleIfContent, writeStoredAssistantPreviewState, type ConversationBranchPointLike, type StoredAssistantPreviewState } from "./assistantPreviewState";
 import type { SidebarLLMProviderSummary } from "../../types/appShell";
-import { PREVIEW_TASK_RESULT_EVENT, codeFileForImmediateTaskResultPreview, codeFileFromTaskResultPreview, localizeTaskResultPreviewError, previewTaskResultPathFromEvent, taskResultPreviewKindFromPath, type TaskResultPreviewPayload } from "./taskResultPreview";
-export { canShowAssistantCodingPreviewForTab, codePreviewModeFromState, shouldApplyRestoredAssistantPreview, shouldShowSourcePreviewForAgentMode, shouldShowSourcePreviewForWorkflow, withCodePreviewVisibleIfContent } from "./assistantPreviewState";
+import { useAssistantPreviewOpenEvents } from "./useAssistantPreviewOpenEvents";
+import { dispatchOpenLatexDocument, latexRelativePathForProject } from "./latexDocumentOpen";
+import { isLatexExpertId } from "../../utils/latexTemplates";
+export { canShowAssistantCodingPreviewForTab, codePreviewEventsEnabled, codePreviewModeFromState, shouldApplyRestoredAssistantPreview, shouldShowSourcePreviewForAgentMode, shouldShowSourcePreviewForWorkflow, withCodePreviewVisibleIfContent } from "./assistantPreviewState";
 import { LOCAL_HIGH_RISK_APPROVAL_KIND, REMOTE_DIRECTORY_WRITE_APPROVAL_KIND, REMOTE_HIGH_RISK_APPROVAL_KIND, REMOTE_PATH_ACCESS_APPROVAL_KIND } from "./assistantApprovalKinds";
 import { RemoteReconnectForm, RemoteReconnectSuccessToast } from "./RemoteReconnectForm";
+import { ScopeApprovalDialog, type ScopeApprovalDecision } from "./ScopeApprovalDialog";
+import { SaveTaskDialog } from "./SaveTaskDialog";
 const AssistantPreviewPane = lazy(() => import("./AssistantPreviewPane").then((module) => ({ default: module.AssistantPreviewPane })));
 export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const { onClose, lang, startOnWorkbenchHome = false, activeAssistantTask: activeAssistantTaskProp = null, chatFontSize = 14, themeMode: controlledThemeMode, darkSchemeId, lightSchemeId = DEFAULT_ASSISTANT_LIGHT_SCHEME_ID, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId, petVoiceStartSeq = 0, petFocusInputSeq = 0, pendingVEOpen, onPendingVEOpenHandled, pendingHistoryDiscussionOpen, onPendingHistoryDiscussionOpenHandled, appUpdateAvailable, onOpenAppReleaseNotes, onOpenAppUpdate, onDismissAppUpdate, availableProviders, currentModel, contactProviderName, contactModelId, contactIsHubService, modelOptions, modelsLoading, onSwitchProvider, onSwitchModel, onOpenModelMenu, onDismissModelMenu, activeExecutionProfile, codingInheritsAssistant, providerSelectionPending, profileSavePending, onOpenLLMSettings, onLanguageChange, onActiveExecutionProfileChange, statusSlot, tasks: taskListProp, tasksLoaded: tasksLoadedProp, onOpenTask: onOpenTaskProp, brandId, brandDisplayNameCN } = props;
@@ -3342,6 +3346,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 tabId: expertTabId,
                 expert_id: resolvedExpertId,
             };
+            const expertProjectPath = String(expertTab?.projectPath || (liveActiveTab.type === "expert" ? liveActiveTab.projectPath : "") || "").trim();
+            if (expertProjectPath) mergedOptions.project_path = expertProjectPath;
             const expertHistory = expertTabId === liveActiveTab.id
                 ? projectTabMessages
                 : ((expertTabId ? getTabState(expertTabId)?.history : []) || []);
@@ -3596,14 +3602,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const codePreviewPathScope = (canShowAssistantCodingPreviewForTab(activeTab) ? activeTab.projectPath : codingPreviewOwnerTab?.projectPath) || undefined;
     const previewWorkspacePath = (isPureCodingEnvironment || isCloudWorkspaceEnvironment)
         ? ((isCloudWorkspaceEnvironment && cloudPreviewRoot) || activeTab.projectPath || undefined)
-        : undefined;
+        : (isLatexExpertId(activeTab.expertId) ? (activeTab.projectPath || undefined) : undefined);
     const { state: workflowState, openDocPreview, closeDocPreview, setSplitRatio: setWorkflowSplitRatio, dismissMaximizeSuggestion, getSnapshot: getWorkflowSnapshot, restoreState: restoreWorkflowState, resetState: resetWorkflowState } = useWorkflowState(codingPreviewEventScope, codePreviewPathScope);
     const sourcePreviewAllowed = shouldShowSourcePreviewForWorkflow(workflowState.workflowType)
         || shouldShowSourcePreviewForAgentMode(activeTab.agentMode)
         || isCloudWorkspaceEnvironment;
     const [taskResultPreviewOpen, setTaskResultPreviewOpen] = useState(false);
     const taskResultPreviewGenRef = useRef(0);
-    const { state: codePreviewState, closePanel: closeCodePreviewRaw, reopenPanel: reopenCodePreview, activatePassive: activateCodePreviewPassive, selectFile: selectCodeFile, focusFile: focusCodeFile, openWorkspaceFile, closeFile: closeCodeFileRaw, closeOtherFiles: closeOtherCodeFiles, closeFilesToTheRight: closeCodeFilesToTheRight, closeAllFiles: closeAllCodeFilesRaw, moveFile: moveCodeFile, toggleFilePinned: toggleCodeFilePinned, restoreState: restoreCodePreviewState, resetSession: resetCodePreviewState } = useCodePreviewState(codePreviewPathScope, sourcePreviewAllowed, { previewWorkspacePath });
+    const { state: codePreviewState, closePanel: closeCodePreviewRaw, reopenPanel: reopenCodePreview, activatePassive: activateCodePreviewPassive, selectFile: selectCodeFile, focusFile: focusCodeFile, openWorkspaceFile, replaceWorkspaceFileContent, closeFile: closeCodeFileRaw, closeOtherFiles: closeOtherCodeFiles, closeFilesToTheRight: closeCodeFilesToTheRight, closeAllFiles: closeAllCodeFilesRaw, moveFile: moveCodeFile, toggleFilePinned: toggleCodeFilePinned, restoreState: restoreCodePreviewState, resetSession: resetCodePreviewState } = useCodePreviewState(codePreviewPathScope, codePreviewEventsEnabled(sourcePreviewAllowed, activeTab.expertId), { previewWorkspacePath });
     const cancelTaskResultPreview = useCallback(() => {
         taskResultPreviewGenRef.current += 1;
         setTaskResultPreviewOpen(false);
@@ -3745,7 +3751,12 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const workflowFormActive = showAgentView && (agentView?.id?.startsWith("workflow:form:") ?? false);
     const [workflowFormGeneratingPhaseID, setWorkflowFormGeneratingPhaseID] = useState<string | null>(null);
     const workflowAwaitingForm = workflowState.active && workflowState.awaitingForm;
-    const showWorkflowPreview = codingPreviewAllowed && workflowState.splitMode && !workflowFormActive;
+    const latexPaperTab = isLatexExpertId(activeTab.expertId);
+    const latexSourcePath = String(activeTab.latexRelativePath || "").trim() || latexRelativePathForProject(activeTab.projectPath || "");
+    // An empty workflow card is what the paper expert showed when no phase document
+    // existed. A workflow that actually collected a document still stays available.
+    const showWorkflowPreview = codingPreviewAllowed && workflowState.splitMode && !workflowFormActive
+        && !(latexPaperTab && workflowState.phaseDocuments.size === 0);
     // Source files are neither rendered nor retained outside an active programming
     // workflow, avoiding unnecessary updates and persisted source content.
     // An explicit task-result Preview click is the exception: it reuses this pane.
@@ -3756,6 +3767,16 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             codePreviewStateRef.current = initialCodePreviewState();
         }
     }, [sourcePreviewAllowed, isCloudWorkspaceEnvironment, taskResultPreviewOpen, codePreviewState.active, codePreviewState.files.size, resetCodePreviewState]);
+    const latexPreviewOpenedKeyRef = useRef("");
+    useEffect(() => {
+        if (!latexPaperTab) return;
+        const projectPath = String(activeTab.projectPath || "").trim();
+        if (!projectPath || !latexSourcePath) return;
+        const key = `${activeTab.id}\0${projectPath}\0${latexSourcePath}`;
+        if (latexPreviewOpenedKeyRef.current === key) return;
+        latexPreviewOpenedKeyRef.current = key;
+        dispatchOpenLatexDocument({ projectPath, relativePath: latexSourcePath });
+    }, [activeTab.id, activeTab.projectPath, latexPaperTab, latexSourcePath]);
     // Local/remote coding stays closed until the user opens preview. Cloud
     // workspaces auto-open once per tab. Later visits recover leftover files
     // without clearing userClosed.
@@ -3863,6 +3884,17 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     // Toggle the entire right-side area (workflow / code / conflict) open/closed
     const handleTogglePreviewPanel = useCallback(() => {
         if (!codingPreviewAllowed) return;
+        if (isLatexExpertId(activeTab.expertId) && activeTab.projectPath) {
+            if (showCodePreview) {
+                closeCodePreview();
+            } else {
+                dispatchOpenLatexDocument({
+                    projectPath: activeTab.projectPath,
+                    relativePath: latexSourcePath,
+                });
+            }
+            return;
+        }
         if (isCloudWorkspaceEnvironment || isPureCodingEnvironment) {
             if (codePreviewStateRef.current.active || codingConflictOpen) {
                 closeCodePreview();
@@ -3883,11 +3915,20 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 activateCodePreviewPassive();
             }
         }
-    }, [codingPreviewAllowed, isCloudWorkspaceEnvironment, isPureCodingEnvironment, sourcePreviewAllowed, workflowState.splitMode, codingConflictOpen, closeDocPreview, closeCodePreview, closeCodingConflictSidePanel, openDocPreview, activateCodePreviewPassive, reopenCodePreview]);
+    }, [activeTab.expertId, activeTab.projectPath, latexSourcePath, codingPreviewAllowed, isCloudWorkspaceEnvironment, isPureCodingEnvironment, showCodePreview, sourcePreviewAllowed, workflowState.splitMode, codingConflictOpen, closeDocPreview, closeCodePreview, closeCodingConflictSidePanel, openDocPreview, activateCodePreviewPassive, reopenCodePreview]);
     // Force-open the right-side preview area from the task "more actions" menu
     // (unlike the title-bar toggle, this never closes an already-open area).
     const handleOpenPreviewPanel = useCallback(() => {
         if (!codingPreviewAllowed) return;
+        if (isLatexExpertId(activeTab.expertId) && activeTab.projectPath) {
+            if (!showCodePreview) {
+                dispatchOpenLatexDocument({
+                    projectPath: activeTab.projectPath,
+                    relativePath: latexSourcePath,
+                });
+            }
+            return;
+        }
         if (isCloudWorkspaceEnvironment || isPureCodingEnvironment) {
             reopenCodePreview();
             return;
@@ -3898,7 +3939,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         if (sourcePreviewAllowed && cp.files.size > 0 && !cp.active) {
             activateCodePreviewPassive();
         }
-    }, [codingPreviewAllowed, isCloudWorkspaceEnvironment, isPureCodingEnvironment, sourcePreviewAllowed, workflowState.splitMode, codingConflictOpen, openDocPreview, activateCodePreviewPassive, reopenCodePreview]);
+    }, [activeTab.expertId, activeTab.projectPath, latexSourcePath, codingPreviewAllowed, isCloudWorkspaceEnvironment, isPureCodingEnvironment, showCodePreview, sourcePreviewAllowed, workflowState.splitMode, codingConflictOpen, openDocPreview, activateCodePreviewPassive, reopenCodePreview]);
     const [fileFocusNonce, setFileFocusNonce] = useState(0);
     const [treeFocusNonce, setTreeFocusNonce] = useState(0);
     const fileFocusNonceRef = useRef(0);
@@ -3924,50 +3965,21 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         window.addEventListener(FOCUS_CLOUD_WORKSPACE_TREE_EVENT, onTree);
         return () => window.removeEventListener(FOCUS_CLOUD_WORKSPACE_TREE_EVENT, onTree);
     }, []);
-    useEffect(() => {
-        const onPreview = (event: Event) => {
-            const path = previewTaskResultPathFromEvent(event);
-            if (!path || !taskResultPreviewAllowed) return;
-            const generation = ++taskResultPreviewGenRef.current;
-            setTaskResultPreviewOpen(true);
-            const showPreviewFile = (file: Parameters<typeof openWorkspaceFile>[0]) => {
-                openWorkspaceFile(file);
-                const next = Math.max(treeFocusNonceRef.current, fileFocusNonceRef.current) + 1;
-                fileFocusNonceRef.current = next;
-                setFileFocusNonce(next);
-            };
-            const immediateKind = taskResultPreviewKindFromPath(path);
-            if (immediateKind) {
-                showPreviewFile(codeFileForImmediateTaskResultPreview(path, immediateKind));
-                return;
-            }
-            void (async () => {
-                try {
-                    const { PreviewTaskResultFile } = await getWailsAppModule();
-                    if (typeof PreviewTaskResultFile !== "function") {
-                        throw new Error("PreviewTaskResultFile unavailable");
-                    }
-                    const preview = await PreviewTaskResultFile(path) as TaskResultPreviewPayload;
-                    if (generation !== taskResultPreviewGenRef.current) return;
-                    showPreviewFile(codeFileFromTaskResultPreview(preview || { path }, path));
-                } catch (err) {
-                    if (generation !== taskResultPreviewGenRef.current) return;
-                    const message = err instanceof Error ? err.message : String(err || "");
-                    showPreviewFile({
-                        filePath: path,
-                        fileName: path.split(/[/\\]/).pop() || path,
-                        absPath: path,
-                        content: localizeTaskResultPreviewError(message, lang),
-                        language: "plaintext",
-                        opType: "read",
-                        updatedAt: Date.now(),
-                    });
-                }
-            })();
-        };
-        window.addEventListener(PREVIEW_TASK_RESULT_EVENT, onPreview);
-        return () => window.removeEventListener(PREVIEW_TASK_RESULT_EVENT, onPreview);
-    }, [lang, taskResultPreviewAllowed, openWorkspaceFile]);
+    // Task-result previews and LaTeX documents both open in the code-preview
+    // pane; see useAssistantPreviewOpenEvents for the request contract.
+    useAssistantPreviewOpenEvents({
+        allowed: taskResultPreviewAllowed,
+        sessionKey: activeTab.id,
+        lang,
+        openWorkspaceFile,
+        generationRef: taskResultPreviewGenRef,
+        openPreviewPane: setTaskResultPreviewOpen,
+        focusOpenedFile: () => {
+            const next = Math.max(treeFocusNonceRef.current, fileFocusNonceRef.current) + 1;
+            fileFocusNonceRef.current = next;
+            setFileFocusNonce(next);
+        },
+    });
     // Keep ref updated so clearActiveHistory (defined earlier) can close all preview panels
     closeAllPreviewPanelsRef.current = () => {
         closeDocPreview();
@@ -5506,6 +5518,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 ? {
                     expert_id: activeTab.expertId,
                     tabId: activeTab.id,
+                    ...(activeTab.projectPath ? { project_path: activeTab.projectPath } : {}),
                     recentMessages: buildProjectTabRecentMessages(projectTabMessages),
                 }
                 : undefined;
@@ -5641,6 +5654,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     undefined,
                     undefined,
                     isLast && activeSessionHasWork,
+                    isLatexExpertId(activeTab.expertId),
                 );
                 let thoughtStep = 0;
                 return (
@@ -5684,7 +5698,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             // corrections can replace content in place without changing the length.
             const liveLabelForMessage = assistantMessageOwnsLiveActivity(msg, activeSessionIsStreaming, idx === otherMessages.length - 1) ? liveReasoningLabel : undefined;
             const liveObjectForMessage = liveLabelForMessage ? liveReasoningObject : undefined;
-            const contentKey = `${msg.content ?? '__undefined__'}|${msg.kind ?? ''}|${msg.reasoning ?? ''}|${msg.toolCalls?.map((call) => call.id).join(',') ?? ''}|${msg.resultText ?? ''}|${msg.resultStatus ?? ''}|${msg.actions?.length ?? 0}|${isLast ? 1 : 0}|${isLast && isBusy ? 1 : 0}|${isLast && activeSessionHasWork ? 1 : 0}|${isLast && activeSessionIsStreaming ? 1 : 0}|${liveLabelForMessage ?? ''}|${liveObjectForMessage ?? ''}|${msg.confirmation ? 1 : 0}|${msg.unfinishedSlot ? 1 : 0}|${msg.localFilePath ?? ''}|${msg.localFilePaths?.join('\n') ?? ''}|${msg.attachments?.length ?? 0}|${msg.thumbnailBase64 ? 1 : 0}|${msg.imageKey ? 1 : 0}|${msg.recordingSession ? `${msg.recordingSession.active ? 1 : 0}:${msg.recordingSession.title}` : ''}|${isPureCodingEnvironment ? 1 : 0}`;
+            const contentKey = `${msg.content ?? '__undefined__'}|${msg.kind ?? ''}|${msg.reasoning ?? ''}|${msg.toolCalls?.map((call) => call.id).join(',') ?? ''}|${msg.resultText ?? ''}|${msg.resultStatus ?? ''}|${msg.actions?.length ?? 0}|${isLast ? 1 : 0}|${isLast && isBusy ? 1 : 0}|${isLast && activeSessionHasWork ? 1 : 0}|${isLast && activeSessionIsStreaming ? 1 : 0}|${liveLabelForMessage ?? ''}|${liveObjectForMessage ?? ''}|${msg.confirmation ? 1 : 0}|${msg.unfinishedSlot ? 1 : 0}|${msg.localFilePath ?? ''}|${msg.localFilePaths?.join('\n') ?? ''}|${msg.attachments?.length ?? 0}|${msg.thumbnailBase64 ? 1 : 0}|${msg.imageKey ? 1 : 0}|${msg.recordingSession ? `${msg.recordingSession.active ? 1 : 0}:${msg.recordingSession.title}` : ''}|${isPureCodingEnvironment ? 1 : 0}|${isLatexExpertId(activeTab.expertId) ? 1 : 0}`;
             const cached = cache.get(msg.id);
             if (cached && cached.contentKey === contentKey) {
                 return cached.node;
@@ -5717,7 +5731,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         incRef.state = createIncrementalRenderState();
                     }
                     return renderContentIncremental(formattedReasoning, t, incRef.state, reasoningTrailMarkdownOptions);
-                }, liveLabelForMessage, liveObjectForMessage, true);
+                }, liveLabelForMessage, liveObjectForMessage, true, isLatexExpertId(activeTab.expertId));
             } else {
                 // Reset incremental state when streaming ends
                 // so the final render is a clean full parse (100% correct).
@@ -5729,7 +5743,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         reasoningIncrementalStateRef.current = { messageId: '', state: createIncrementalRenderState() };
                     }
                 }
-                node = renderMessage(suppressWorkflowReviewActions(msg), panelExecuteAction, t, isLast, savedFileLabel, lang, isLast && activeSessionIsStreaming, undefined, handleRecordingComplete, isPureCodingEnvironment, undefined, liveLabelForMessage, liveObjectForMessage, isLast && activeSessionHasWork);
+                node = renderMessage(suppressWorkflowReviewActions(msg), panelExecuteAction, t, isLast, savedFileLabel, lang, isLast && activeSessionIsStreaming, undefined, handleRecordingComplete, isPureCodingEnvironment, undefined, liveLabelForMessage, liveObjectForMessage, isLast && activeSessionHasWork, isLatexExpertId(activeTab.expertId));
             }
             cache.set(msg.id, { contentKey, node });
             const branchPoint = msg.role === 'user' ? branchPointByDisplayIndex.get(idx) : undefined;
@@ -5823,7 +5837,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 aria-hidden={!showWelcomeView ? true : undefined}
                 style={!showWelcomeView ? executionSecondaryChromeStyle : undefined}
             >
-                <AssistantTitleBar active={panelActive} clearHistory={clearActiveHistory} clearHistoryDisabled={inputLocked} inline={!!inline} lang={lang} maximized={!!maximized} onClose={onClose} onDismissAppUpdate={onDismissAppUpdate} onHideWindow={onHideWindow} onOpenAppReleaseNotes={onOpenAppReleaseNotes} onOpenAppUpdate={onOpenAppUpdate} onOpenKnowledge={() => setKnowledgeDialogOpen(true)} onOpenTutorial={onOpenTutorial} onOptimizeExpert={isExpertTabActive && activeTab.expertId && !showWelcomeView ? handleOptimizeExpert : undefined} onSaveCurrentTask={isLocalTabActive && !showWelcomeView ? openSaveTaskDialog : undefined} onToggleMaximize={onToggleMaximize} onTogglePreviewPanel={handleTogglePreviewPanel} optimizeExpertBusy={expertOptimizeBusy} previewPanelOpen={showWorkflowPreview || showCodePreview || showCodingConflictPanel} previewAvailable={isPureCodingEnvironment || isCloudWorkspaceEnvironment} projectSearchOpen={projectSearch.open} refreshNews={refreshNews} showMaximizeToggle={showMaximizeToggle} theme={t} themeMode={themeMode} title={title} trialReflectEnabled={trialReflectEnabled} toggleProjectSearch={projectSearch.open ? projectSearch.close : projectSearch.toggle} updateAvailable={appUpdateAvailable} workflowActive={workflowState.active} />
+                <AssistantTitleBar active={panelActive} clearHistory={clearActiveHistory} clearHistoryDisabled={inputLocked} inline={!!inline} lang={lang} maximized={!!maximized} onClose={onClose} onDismissAppUpdate={onDismissAppUpdate} onHideWindow={onHideWindow} onOpenAppReleaseNotes={onOpenAppReleaseNotes} onOpenAppUpdate={onOpenAppUpdate} onOpenKnowledge={() => setKnowledgeDialogOpen(true)} onOpenTutorial={onOpenTutorial} onOptimizeExpert={isExpertTabActive && activeTab.expertId && !showWelcomeView ? handleOptimizeExpert : undefined} onSaveCurrentTask={isLocalTabActive && !showWelcomeView ? openSaveTaskDialog : undefined} onToggleMaximize={onToggleMaximize} onTogglePreviewPanel={handleTogglePreviewPanel} optimizeExpertBusy={expertOptimizeBusy} previewPanelOpen={showWorkflowPreview || showCodePreview || showCodingConflictPanel} previewAvailable={isPureCodingEnvironment || isCloudWorkspaceEnvironment || latexPaperTab} projectSearchOpen={projectSearch.open} refreshNews={refreshNews} showMaximizeToggle={showMaximizeToggle} theme={t} themeMode={themeMode} title={title} trialReflectEnabled={trialReflectEnabled} toggleProjectSearch={projectSearch.open ? projectSearch.close : projectSearch.toggle} updateAvailable={appUpdateAvailable} workflowActive={workflowState.active} />
             </div>
             {/* Column shell: chat|preview row on top, full-bleed bottom chrome under both
                 (so the quick-settings / status strip spans into the code-preview column). */}
@@ -5832,46 +5846,27 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             <div className="aap-panel-body" data-testid="ai-panel-body" onDragOver={handleDragOver} onDrop={handleDrop}>
             <KnowledgeDialog open={panelActive && knowledgeDialogOpen} onClose={() => setKnowledgeDialogOpen(false)} lang={lang} theme={t} />
             {panelActive && scopeApprovalPending && (
-                <div className="aap-scope-backdrop" data-testid="scope-approval-backdrop">
-                    <div role="alertdialog" aria-modal="true" aria-labelledby="scope-approval-title" style={{ width: 440, maxWidth: "calc(100vw - 32px)", background: t.titleBarBg, border: `1px solid ${t.titleBarBorder}`, borderRadius: 14, boxShadow: (t.bg.startsWith("#0") || t.bg.startsWith("#1") || t.bg.startsWith("#2")) ? "0 1px 2px rgba(0, 0, 0, 0.30), 0 4px 12px -2px rgba(0, 0, 0, 0.40)" : "0 1px 2px rgba(30, 58, 95, 0.05), 0 4px 12px -2px rgba(30, 58, 95, 0.10)", color: t.text, overflow: "hidden" }} onMouseDown={e => e.stopPropagation()}>
-                        <div style={{ padding: "12px 14px", borderBottom: `1px solid ${t.titleBarBorder}` }}>
-                            <h3 className="aap-scope-title" id="scope-approval-title">{scopeApprovalIsHighRisk ? (scopeApprovalIsRemoteHighRisk ? localizeText(lang, "Remote Command Approval", "远程命令确认", "遠程命令確認") : localizeText(lang, "Command Approval", "命令确认", "命令確認")) : scopeApprovalIsRemoteMaintenance ? localizeText(lang, "Remote Maintenance Approval", "远程维护确认", "遠端維護確認") : localizeText(lang, "Scope Approval", "目录越权确认", "目錄越權確認")}</h3>
-                        </div>
-                        <div className="aap-scope-body">
-                            <div className="aap-scope-gap">{scopeApprovalIsHighRisk ? (scopeApprovalIsRemoteMaintenance ? localizeText(lang, "Remote maintenance is requesting a high-risk command:", "远程维护请求执行高风险命令：", "遠端維護請求執行高風險命令：") : scopeApprovalIsRemoteHighRisk ? localizeText(lang, "Remote CodingSubAgent is trying to run a blocked high-risk command:", "远程编码 SubAgent 尝试执行被拦截的高风险命令：", "遠程編碼 SubAgent 嘗試執行被攔截的高風險命令：") : localizeText(lang, "CodingSubAgent is trying to run a blocked high-risk command:", "编码 SubAgent 尝试执行被拦截的高风险命令：", "編碼 SubAgent 嘗試執行被攔截的高風險命令：")) : scopeApprovalIsRemoteMaintenance ? localizeText(lang, "Remote maintenance is requesting access outside the project scope:", "远程维护请求访问项目范围外的路径：", "遠端維護請求存取專案範圍外的路徑：") : localizeText(lang, "CodingSubAgent is trying to access a path outside the project:", "编码 SubAgent 尝试访问项目目录外的路径：", "編碼 SubAgent 嘗試訪問項目目錄外的路徑：")}</div>
-                            <div style={{ background: t.fieldBg, borderRadius: 4, padding: "6px 8px", fontSize: 12, fontFamily: "monospace", wordBreak: "break-all", marginBottom: 6 }}>
-                                <div><strong>{localizeText(lang, "Tool", "工具", "工具")}:</strong> {scopeApprovalPending.tool}</div>
-                                <div><strong>{scopeApprovalIsHighRisk ? localizeText(lang, "Command", "命令", "命令") : localizeText(lang, "Path", "路径", "路徑")}:</strong> {scopeApprovalPending.path}</div>
-                                <div><strong>{scopeApprovalIsHighRisk ? localizeText(lang, "Working dir", "工作目录", "工作目錄") : localizeText(lang, "Project", "项目范围", "項目範圍")}:</strong> {scopeApprovalPending.projectPath}</div>
-                            </div>
-                            <div style={{ fontSize: 12, color: t.textMuted }}>{scopeApprovalIsHighRisk ? localizeText(lang, "Only approve this if you understand the command and trust its effect. If you do nothing, it will be rejected.", "仅在你理解该命令并信任其影响时放行。不操作将自动拒绝。", "僅在你理解該命令並信任其影響時放行。不操作將自動拒絕。") : localizeText(lang, `Allow directory "${scopeApprovalPending.directory}" for the remainder of this task?`, `允许目录「${scopeApprovalPending.directory}」在本任务中后续操作？`, `允許目錄「${scopeApprovalPending.directory}」在本任務中後續操作？`)}</div>
-                        </div>
-                        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, padding: "10px 14px", borderTop: `1px solid ${t.titleBarBorder}` }}>
-                            <button type="button" onClick={() => void handleScopeApprovalResolve("deny")} style={{ padding: "5px 14px", borderRadius: 4, border: `1px solid ${t.fieldBorder}`, background: "transparent", color: t.text, fontSize: 12, cursor: "pointer" }}>{localizeText(lang, "Deny", "拒绝", "拒絕")}</button>
-                            <button type="button" onClick={() => void handleScopeApprovalResolve("full_access")} style={{ padding: "5px 14px", borderRadius: 4, border: `1px solid ${t.fieldBorder}`, background: "transparent", color: "var(--theme-success, #4f7f6f)", fontSize: 12, cursor: "pointer" }}>{scopeApprovalIsHighRisk ? localizeText(lang, "Allow Later", "以后放行", "以後放行") : localizeText(lang, "Full Access", "完全访问", "完全訪問")}</button>
-                            <button type="button" onClick={() => void handleScopeApprovalResolve(scopeApprovalIsHighRisk ? "allow_once" : "allow_dir")} className="aap-scope-approve">{scopeApprovalIsHighRisk ? localizeText(lang, `Allow Once (${scopeApprovalCountdown}s)`, `本次放行 (${scopeApprovalCountdown}s)`, `本次放行 (${scopeApprovalCountdown}s)`) : localizeText(lang, `Allow Directory (${scopeApprovalCountdown}s)`, `允许该目录 (${scopeApprovalCountdown}s)`, `允許該目錄 (${scopeApprovalCountdown}s)`)}</button>
-                        </div>
-                    </div>
-                </div>
+                <ScopeApprovalDialog
+                    lang={lang}
+                    theme={t}
+                    approval={scopeApprovalPending}
+                    isHighRisk={scopeApprovalIsHighRisk}
+                    isRemoteHighRisk={scopeApprovalIsRemoteHighRisk}
+                    isRemoteMaintenance={scopeApprovalIsRemoteMaintenance}
+                    countdown={scopeApprovalCountdown}
+                    onResolve={handleScopeApprovalResolve}
+                />
             )}
             {panelActive && saveTaskDialogOpen && (
-                <div className="aap-save-backdrop" data-testid="save-task-dialog-backdrop" onMouseDown={event => { if (event.target === event.currentTarget && !savingTask) setSaveTaskDialogOpen(false); }}>
-                    <form role="dialog" aria-modal="true" aria-labelledby="save-task-dialog-title" onSubmit={event => { event.preventDefault(); void submitSaveTask(); }} style={{ width: 390, maxWidth: "calc(100vw - 32px)", background: t.titleBarBg, border: `1px solid ${t.titleBarBorder}`, borderRadius: 14, boxShadow: (t.bg.startsWith("#0") || t.bg.startsWith("#1") || t.bg.startsWith("#2")) ? "0 1px 2px rgba(0, 0, 0, 0.30), 0 4px 12px -2px rgba(0, 0, 0, 0.40)" : "0 1px 2px rgba(30, 58, 95, 0.05), 0 4px 12px -2px rgba(30, 58, 95, 0.10)", color: t.text, overflow: "hidden" }} onMouseDown={event => event.stopPropagation()}>
-                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "12px 14px", borderBottom: `1px solid ${t.titleBarBorder}` }}>
-                            <h3 id="save-task-dialog-title" style={{ margin: 0, fontSize: 14, fontWeight: 700, color: t.text }}>{localizeText(lang, "Save as Task", "\u4fdd\u5b58\u4e3a\u4efb\u52a1", "\u4fdd\u5b58\u70ba\u4efb\u52d9")}</h3>
-                            <button type="button" disabled={savingTask} onClick={() => setSaveTaskDialogOpen(false)} style={{ border: "none", background: "transparent", color: t.text, opacity: 0.62, cursor: savingTask ? "default" : "pointer", fontSize: 14, lineHeight: 1 }}>x</button>
-                        </div>
-                        <div className="aap-save-body">
-                            <label htmlFor="save-task-name" style={{ fontSize: 12, fontWeight: 700, color: formFieldLabelColor(t) }}>{localizeText(lang, "Task name", "\u4efb\u52a1\u540d\u79f0", "\u4efb\u52d9\u540d\u7a31")}</label>
-                            <input id="save-task-name" autoFocus value={saveTaskName} disabled={savingTask} onChange={event => setSaveTaskName(event.target.value)} onKeyDown={event => { if (event.key === "Escape" && !savingTask) setSaveTaskDialogOpen(false); }} style={{ width: "100%", boxSizing: "border-box", borderRadius: 6, fontSize: 13, padding: "7px 9px", fontFamily: "inherit", ...formFieldInputStyle(t) }} />
-                            <p style={{ margin: "4px 0 0", fontSize: 12, lineHeight: 1.45, color: formFieldLabelColor(t) }}>{localizeText(lang, "The current main conversation history and task context will be saved. Double-click it in Task Management to continue in a separate tab.", "\u5c06\u4fdd\u5b58\u5f53\u524d\u4e3b\u5bf9\u8bdd\u5386\u53f2\u548c\u4efb\u52a1\u4e0a\u4e0b\u6587\u3002\u4e4b\u540e\u53ef\u5728\u4efb\u52a1\u7ba1\u7406\u4e2d\u53cc\u51fb\uff0c\u4ee5\u72ec\u7acb Tab \u7ee7\u7eed\u3002", "\u5c07\u4fdd\u5b58\u76ee\u524d\u4e3b\u5c0d\u8a71\u6b77\u53f2\u548c\u4efb\u52d9\u4e0a\u4e0b\u6587\u3002\u4e4b\u5f8c\u53ef\u5728\u4efb\u52d9\u7ba1\u7406\u4e2d\u96d9\u64ca\uff0c\u4ee5\u7368\u7acb Tab \u7e7c\u7e8c\u3002")}</p>
-                        </div>
-                        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, padding: "10px 14px 12px", borderTop: `1px solid ${t.titleBarBorder}` }}>
-                            <button type="button" disabled={savingTask} onClick={() => setSaveTaskDialogOpen(false)} style={{ border: `1px solid ${t.titleBarBorder}`, borderRadius: 6, background: t.fieldBg, color: t.text, cursor: savingTask ? "default" : "pointer", fontSize: 12, padding: "5px 12px" }}>{localizeText(lang, "Cancel", "\u53d6\u6d88", "\u53d6\u6d88")}</button>
-                            <button type="submit" disabled={savingTask || !saveTaskName.trim()} style={primaryFilledButtonStyle(t, { borderRadius: 6, cursor: savingTask || !saveTaskName.trim() ? "default" : "pointer", opacity: savingTask || !saveTaskName.trim() ? 0.62 : 1, fontSize: 12, padding: "5px 12px" })}>{savingTask ? localizeText(lang, "Saving...", "\u4fdd\u5b58\u4e2d...", "\u4fdd\u5b58\u4e2d...") : localizeText(lang, "Save", "\u4fdd\u5b58", "\u4fdd\u5b58")}</button>
-                        </div>
-                    </form>
-                </div>
+                <SaveTaskDialog
+                    lang={lang}
+                    theme={t}
+                    taskName={saveTaskName}
+                    onTaskNameChange={setSaveTaskName}
+                    saving={savingTask}
+                    onClose={() => setSaveTaskDialogOpen(false)}
+                    onSubmit={submitSaveTask}
+                />
             )}
             <div
                 data-testid="ai-execution-secondary-tabs"
@@ -6711,12 +6706,14 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         lang={lang}
                         selectCodeFile={selectCodeFile}
                         projectPath={previewWorkspacePath}
+                        paperWorkspace={isLatexExpertId(activeTab.expertId)}
                         workspaceRefreshToken={isRemoteCodingDevEnvironment ? remoteWorkspaceRefreshToken : localWorkspaceRefreshToken}
                         workspaceResetOnRefresh={!isRemoteCodingDevEnvironment && !isCloudWorkspaceEnvironment}
                         cloudMode={isCloudWorkspaceEnvironment}
                         fileFocusNonce={fileFocusNonce}
                         treeFocusNonce={treeFocusNonce}
                         openWorkspaceFile={openWorkspaceFile}
+                        replaceWorkspaceFileContent={replaceWorkspaceFileContent}
                         submitAgentView={panelSubmitAgentView}
                         showCodePreview={showCodePreview}
                         showAgentView={showAgentView}

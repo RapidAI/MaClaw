@@ -49,6 +49,7 @@ type ComputeAgent struct {
 // Registry holds all LLM providers and service groups configured on HubCenter.
 type Registry struct {
 	Providers             []llmpool.ProviderConfig `json:"providers"`
+	ProviderArrays        []llmpool.ProviderArray  `json:"provider_arrays,omitempty"`
 	ServiceGroups         []llmpool.ServiceGroup   `json:"service_groups"`
 	Agents                []ComputeAgent           `json:"agents,omitempty"`
 	DefaultServiceGroupID string                   `json:"default_service_group_id,omitempty"`
@@ -60,10 +61,11 @@ type Service struct {
 	system    store.SystemSettingsRepository
 	mu        sync.RWMutex
 	writeMu   sync.Mutex
-	cached    *Registry
-	cachedAt  time.Time
-	headLocal string
-	headPeers []string
+	cached     *Registry
+	cachedAt   time.Time
+	headLocal  string
+	headPeers  []string
+	adminKeyMu sync.Mutex
 }
 
 const registryCacheTTL = 30 * time.Second
@@ -180,6 +182,7 @@ func cloneRegistry(reg *Registry) *Registry {
 	}
 	next := *reg
 	next.Providers = cloneProviderConfigs(reg.Providers)
+	next.ProviderArrays = cloneProviderArrays(reg.ProviderArrays)
 	next.ServiceGroups = cloneServiceGroups(reg.ServiceGroups)
 	next.Agents = append([]ComputeAgent(nil), reg.Agents...)
 	return &next
@@ -290,6 +293,7 @@ func normalizeRegistry(reg *Registry) {
 		}
 	}
 	sanitizeDefaultServiceGroupID(reg)
+	normalizeProviderArrays(reg)
 }
 
 func catalogServiceGroupID(reg *Registry, id string) string {
@@ -701,6 +705,12 @@ func (s *Service) AddProvider(ctx context.Context, provider llmpool.ProviderConf
 	if providerIndex(reg, provider.ID) >= 0 {
 		return fmt.Errorf("provider %s already exists", provider.ID)
 	}
+	joinedArrayID, joinErr := canonicalJoinArrayID(reg, provider.ArrayID, provider.ID)
+	if joinErr != nil {
+		return joinErr
+	}
+	provider.ArrayID = joinedArrayID
+	provider.ArrayIndependent = false
 	provider.NormalizeBilling()
 	if provider.Sequence <= 0 {
 		provider.Sequence = nextProviderSequence(reg)
@@ -743,6 +753,9 @@ func mergeUnspecifiedProviderFields(existing, incoming llmpool.ProviderConfig) l
 	if incoming.AllowedNodeIDs == nil {
 		incoming.AllowedNodeIDs = append([]string(nil), existing.AllowedNodeIDs...)
 	}
+	if strings.TrimSpace(incoming.ArrayID) == "" {
+		incoming.ArrayID = existing.ArrayID
+	}
 	return incoming
 }
 
@@ -760,10 +773,19 @@ func (s *Service) UpdateProvider(ctx context.Context, provider llmpool.ProviderC
 	if idx < 0 {
 		return fmt.Errorf("%w: %s", ErrProviderNotFound, provider.ID)
 	}
-	provider = mergeUnspecifiedProviderFields(reg.Providers[idx], provider)
+	existing := reg.Providers[idx]
+	independent := provider.ArrayIndependent
+	provider = mergeUnspecifiedProviderFields(existing, provider)
 	provider.NormalizeBilling()
+	provider.ArrayIndependent = false
+	if independent {
+		provider.ArrayID = independentProviderArrayID(reg, existing)
+	}
 	next := cloneRegistry(reg)
 	next.Providers[idx] = provider
+	if sameProviderArray(existing, provider) {
+		publishProviderBillingToArray(next, provider.ID)
+	}
 	return s.persistRegistry(ctx, next)
 }
 
@@ -857,10 +879,24 @@ func (s *Service) DeleteProvider(ctx context.Context, id string, prune bool) ([]
 		return nil, fmt.Errorf("%w: %s", ErrProviderNotFound, strings.TrimSpace(id))
 	}
 	id = strings.TrimSpace(reg.Providers[idx].ID)
+	if providerArraySiblingCount(reg, id) > 0 {
+		arrayID := canonicalProviderArrayID(reg.Providers[idx])
+		filtered := make([]llmpool.ProviderConfig, 0, len(reg.Providers)-1)
+		filtered = append(filtered, reg.Providers[:idx]...)
+		filtered = append(filtered, reg.Providers[idx+1:]...)
+		next := cloneRegistry(reg)
+		next.Providers = filtered
+		retargetProviderRoutes(next, id, arrayID)
+		if err := s.persistRegistry(ctx, next); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
 
+	routeIDs := providerDeleteRouteIDs(reg, reg.Providers[idx])
 	var referenced []llmpool.ServiceGroup
 	for _, g := range reg.ServiceGroups {
-		if groupReferencesProvider(g, id) {
+		if groupReferencesRouteIDs(g, routeIDs) {
 			referenced = append(referenced, g)
 		}
 	}
@@ -875,7 +911,7 @@ func (s *Service) DeleteProvider(ctx context.Context, id string, prune bool) ([]
 	next.Providers = filtered
 	var pruned []string
 	if prune {
-		pruned = pruneProviderFromGroups(next, id)
+		pruned = pruneProviderRouteIDs(next, routeIDs)
 	}
 	if err := s.persistRegistry(ctx, next); err != nil {
 		return nil, err
@@ -891,13 +927,42 @@ func (s *Service) ProviderReferences(ctx context.Context, id string) ([]llmpool.
 	if err != nil {
 		return nil, err
 	}
+	id = strings.TrimSpace(id)
+	routeIDs := []string{id}
+	if idx := providerIndex(reg, id); idx >= 0 && providerArraySiblingCount(reg, id) == 0 {
+		routeIDs = providerDeleteRouteIDs(reg, reg.Providers[idx])
+	}
 	var matched []llmpool.ServiceGroup
 	for _, g := range reg.ServiceGroups {
-		if groupReferencesProvider(g, strings.TrimSpace(id)) {
+		if groupReferencesRouteIDs(g, routeIDs) {
 			matched = append(matched, g)
 		}
 	}
 	return cloneServiceGroups(matched), nil
+}
+
+func groupReferencesRouteIDs(g llmpool.ServiceGroup, ids []string) bool {
+	for _, id := range ids {
+		if groupReferencesProvider(g, strings.TrimSpace(id)) {
+			return true
+		}
+	}
+	return false
+}
+
+func pruneProviderRouteIDs(reg *Registry, ids []string) []string {
+	var pruned []string
+	seen := map[string]struct{}{}
+	for _, id := range ids {
+		for _, name := range pruneProviderFromGroups(reg, strings.TrimSpace(id)) {
+			if _, ok := seen[name]; ok {
+				continue
+			}
+			seen[name] = struct{}{}
+			pruned = append(pruned, name)
+		}
+	}
+	return pruned
 }
 
 // groupReferencesProvider reports whether the provider id appears in any of

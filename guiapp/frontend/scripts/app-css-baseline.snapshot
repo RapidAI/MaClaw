@@ -23769,6 +23769,11 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   font-weight: 600;
   letter-spacing: 0;
   color: var(--office-muted, var(--theme-text-muted));
+  /* The task-type glyph trails the title. The generic `.stsm-row-title`
+     `flex: 1` would absorb all free space and push the glyph against the
+     timestamp, so the title shrinks to its content instead; it still ellipsizes
+     via `min-width: 0`, and the timestamp keeps `margin-left: auto`. */
+  flex: 0 1 auto;
 }
 .mc-task-pane .sidebar-task-row.is-active .stsm-row-title {
   color: var(--theme-text-primary);
@@ -23856,15 +23861,59 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
 .mc-task-pane:has(.sidebar-task-row[data-task-drop-target='true']) .sidebar-task-row:hover {
   transform: none;
 }
+/* Status is a real glyph now. The old colored dot stays out of the row. */
 .mc-task-pane .sidebar-task-row::before {
-  width: 7px !important;
-  height: 7px !important;
-  margin-top: 0;
+  content: none;
 }
-.mc-task-pane [data-status='running'] .sidebar-task-row::before { background: var(--mc-accent, #2f6fbc) !important; }
-.mc-task-pane [data-status='completed'] .sidebar-task-row::before { background: var(--theme-success) !important; }
-.mc-task-pane [data-status='pending'] .sidebar-task-row::before { background: var(--theme-warning) !important; }
-.mc-task-pane [data-status='failed'] .sidebar-task-row::before { background: var(--theme-danger) !important; }
+.mc-task-pane .sidebar-task-row > .mc-task-status {
+  flex: 0 0 14px;
+  width: 14px;
+  min-width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  /* The drag grip sits on the left 12px and only appears on hover.
+     Color stays on the [data-status] rules below; this selector is
+     more specific and would otherwise paint every glyph muted. */
+  margin-left: 4px;
+}
+.mc-task-status svg {
+  display: block;
+  width: 14px;
+  height: 14px;
+}
+.mc-task-status[data-status='running'] { color: var(--mc-accent, #2f6fbc); }
+.mc-task-status[data-status='completed'] { color: var(--theme-success, #16a34a); }
+.mc-task-status[data-status='pending'] { color: var(--theme-warning, #d97706); }
+.mc-task-status[data-status='paused'] { color: var(--theme-text-secondary, #64748b); }
+.mc-task-status[data-status='failed'] { color: var(--theme-danger, #dc2626); }
+.mc-task-status[data-status='cancelled'],
+.mc-task-status[data-status='idle'] { color: var(--theme-text-muted); }
+.mc-task-status__idle {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1.5px currentColor;
+  opacity: 0.72;
+}
+.mc-task-status__spin {
+  box-sizing: border-box;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 1.75px solid color-mix(in srgb, currentColor 32%, transparent);
+  border-top-color: currentColor;
+  border-right-color: currentColor;
+  animation: mc-task-status-spin 0.9s linear infinite;
+}
+@keyframes mc-task-status-spin {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mc-task-status__spin { animation: none; }
+}
 .mc-task-section-label {
   margin: 4px 4px 8px !important;
   color: var(--theme-text-primary) !important;
@@ -24744,6 +24793,11 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   color: var(--theme-text-secondary);
   font-size: 0.72rem;
   white-space: nowrap;
+}
+.stsm-field-hint {
+  color: var(--theme-text-muted);
+  font-size: 0.7rem;
+  line-height: 1.5;
 }
 .stsm-picker {
   display: flex;
@@ -27112,10 +27166,6 @@ input.cwshare-url {
 #App .mc-task-pane [data-tone='warning'] { color: var(--theme-warning) !important; }
 #App .mc-task-pane [data-status='failed'],
 #App .mc-task-pane [data-tone='danger'] { color: var(--theme-danger) !important; }
-#App .mc-task-pane [data-status='running'] .sidebar-task-row::before { background: var(--mc-accent) !important; }
-#App .mc-task-pane [data-status='completed'] .sidebar-task-row::before { background: var(--theme-success) !important; }
-#App .mc-task-pane [data-status='pending'] .sidebar-task-row::before { background: var(--theme-warning) !important; }
-#App .mc-task-pane [data-status='failed'] .sidebar-task-row::before { background: var(--theme-danger) !important; }
 @media (pointer: coarse) {
   .mc-task-pane .sidebar-task-row { min-height: 44px; }
 }

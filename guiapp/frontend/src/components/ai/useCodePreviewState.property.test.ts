@@ -20,6 +20,7 @@ import {
     applyActivatePassive,
     applySelectFile,
     applyCloseFile,
+    applyReplaceOpenFileContent,
     applyDismissEmptyPreviewWithoutWorkspace,
     shouldDismissEmptyPreviewWithoutWorkspace,
     willDismissPreviewAfterClosingAll,
@@ -315,6 +316,35 @@ describe('useCodePreviewState — Property Tests', () => {
     });
 
     // ── Additional unit tests for session lifecycle ──
+
+    it('applyReplaceOpenFileContent keeps the current tab selected', () => {
+        let state = initialState();
+        state = applyFileUpdate(state, {
+            filePath: '/src/main.tex',
+            fileName: 'main.tex',
+            content: 'old',
+            opType: 'read',
+            language: 'latex',
+            updatedAt: 1,
+            forceOpen: true,
+            latexWorkbench: true,
+        });
+        state = applyFileUpdate(state, {
+            filePath: '/src/other.tex',
+            fileName: 'other.tex',
+            content: 'other',
+            opType: 'read',
+            language: 'latex',
+            updatedAt: 1,
+            forceOpen: true,
+        });
+        state = applySelectFile(state, '/src/other.tex');
+        state = applyReplaceOpenFileContent(state, '/src/main.tex', 'saved');
+        expect(state.activeFilePath).toBe('/src/other.tex');
+        expect(state.files.get('/src/main.tex')?.content).toBe('saved');
+        const closed = applyCloseFile(state, '/src/main.tex');
+        expect(applyReplaceOpenFileContent(closed, '/src/main.tex', 'again').files.has('/src/main.tex')).toBe(false);
+    });
 
     it('applyCloseFile removes a tab and selects a neighbor when active', () => {
         let state = initialState();

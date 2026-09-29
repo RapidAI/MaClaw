@@ -44,6 +44,10 @@ type upstreamHopRequest struct {
 	ResponseModel string         `json:"response_model,omitempty"`
 	Model         string         `json:"model,omitempty"`
 	Body          map[string]any `json:"body,omitempty"`
+	// SingleAttempt tells the peer not to repeat a failed upstream call.
+	// Array members already fail over to a sibling, so the extra attempts
+	// only add latency. Older peers ignore the field and keep their retries.
+	SingleAttempt bool `json:"single_attempt,omitempty"`
 }
 
 type upstreamHopForwardResponse struct {
@@ -64,13 +68,23 @@ type upstreamHopTestResponse struct {
 }
 
 func egressProvider(ctx context.Context, cfg *ProxyConfig, provider *llmpool.ProviderConfig, body map[string]any, upstreamModel, responseModel string) (*providerForwardResponse, error) {
+	return egressProviderAttempts(ctx, cfg, provider, body, upstreamModel, responseModel, true)
+}
+
+// egressArrayMember tries a provider-array member once. A sibling can take the
+// request, so the usual three immediate upstream retries would only add latency.
+func egressArrayMember(ctx context.Context, cfg *ProxyConfig, provider *llmpool.ProviderConfig, body map[string]any, upstreamModel, responseModel string) (*providerForwardResponse, error) {
+	return egressProviderAttempts(ctx, cfg, provider, body, upstreamModel, responseModel, false)
+}
+
+func egressProviderAttempts(ctx context.Context, cfg *ProxyConfig, provider *llmpool.ProviderConfig, body map[string]any, upstreamModel, responseModel string, retry bool) (*providerForwardResponse, error) {
 	if provider == nil {
 		return nil, fmt.Errorf("provider is required")
 	}
 	if cfg == nil || llmpool.ProviderAllowedOnNode(*provider, cfg.NodeID) {
-		return forwardToProvider(ctx, cfgHTTPClient(cfg), provider, body, upstreamModel, responseModel)
+		return forwardToProviderAttempts(ctx, cfgHTTPClient(cfg), provider, body, upstreamModel, responseModel, retry)
 	}
-	return hopProviderForward(ctx, cfg, provider, body, upstreamModel, responseModel)
+	return hopProviderForwardAttempts(ctx, cfg, provider, body, upstreamModel, responseModel, !retry)
 }
 
 func egressProviderStream(ctx context.Context, cfg *ProxyConfig, provider *llmpool.ProviderConfig, body map[string]any, upstreamModel, responseModel string, dst ProxyStreamWriter) (*providerStreamResult, error) {
@@ -123,12 +137,17 @@ func hopPeerBaseURL(raw string) string {
 }
 
 func hopProviderForward(ctx context.Context, cfg *ProxyConfig, provider *llmpool.ProviderConfig, body map[string]any, upstreamModel, responseModel string) (*providerForwardResponse, error) {
+	return hopProviderForwardAttempts(ctx, cfg, provider, body, upstreamModel, responseModel, false)
+}
+
+func hopProviderForwardAttempts(ctx context.Context, cfg *ProxyConfig, provider *llmpool.ProviderConfig, body map[string]any, upstreamModel, responseModel string, singleAttempt bool) (*providerForwardResponse, error) {
 	payload, err := json.Marshal(upstreamHopRequest{
 		Kind:          upstreamHopKindFwd,
 		ProviderID:    provider.ID,
 		UpstreamModel: upstreamModel,
 		ResponseModel: responseModel,
 		Body:          body,
+		SingleAttempt: singleAttempt,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal upstream hop: %w", err)
@@ -421,7 +440,7 @@ func UpstreamHopHandler(cfg *ProxyConfig, authenticate func(*http.Request) error
 		}
 		switch kind {
 		case upstreamHopKindFwd:
-			resp, err := forwardToProvider(r.Context(), cfgHTTPClient(cfg), provider, req.Body, req.UpstreamModel, req.ResponseModel)
+			resp, err := forwardToProviderAttempts(r.Context(), cfgHTTPClient(cfg), provider, req.Body, req.UpstreamModel, req.ResponseModel, !req.SingleAttempt)
 			if err != nil {
 				code := hopRetryableTestStatus(err.Error())
 				if code <= 0 {

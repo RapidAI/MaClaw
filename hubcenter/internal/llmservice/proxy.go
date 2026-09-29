@@ -576,73 +576,125 @@ func HandleProxyRequest(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest
 	// instead of one wait period per provider in the failover chain.
 	gateCtx, cancelGateWait := context.WithTimeout(ctx, defaultProxyCircuitProbeWait)
 	defer cancelGateWait()
+	triedArrays := map[string]struct{}{}
 	for i := 0; i < len(orderedRoutes); i++ {
 		route := orderedRoutes[i]
-		providerID := route.ProviderID
-		provider := findProvider(reg, providerID)
-		if provider == nil {
-			lastErr = fmt.Errorf("provider %s referenced in model but not found in registry", providerID)
+		if logicalProviderSeen(triedArrays, reg, route.ProviderID) {
 			continue
 		}
-		if provider.Paused {
-			lastErr = fmt.Errorf("provider %s is paused", providerID)
-			continue
-		}
-
-		// Runtime health: cooldown after consecutive failures, then one probe
-		// covering every remaining route for this provider in the request.
-		fresh, err := gate.before(gateCtx, cfg, provider)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-
-		// Concurrency control: 0 = unlimited. A busy provider is skipped so
-		// the next sequenced backend can serve the request.
-		release, acqErr := acquireProxyConcurrency(cfg, provider)
-		if acqErr != nil {
-			if shouldAbortResilienceProbe(fresh, hasLaterRouteForProvider(orderedRoutes, i, providerID)) {
-				proxyAbortResilienceProbe(cfg, providerID)
-			}
-			lastErr = fmt.Errorf("provider %s is at concurrency limit %d", providerID, provider.MaxConcurrency)
-			continue
-		}
-
-		// Forward request
-		logicalModel, routeDispatch := proxyRouteDispatch(reg, matchedGroup, route, model, dispatchModel)
-		upstreamModel := proxyUpstreamModelForRoute(route, provider, logicalModel)
-		resp, fwdErr := func() (*providerForwardResponse, error) {
-			defer release()
-			return egressProvider(ctx, cfg, provider, req.Body, upstreamModel, requestedModel)
-		}()
-		if proxyCanceledWithoutUpstreamSuccess(ctx, fwdErr, resp) {
-			proxyAbortResilienceProbe(cfg, providerID)
-			return nil, ctx.Err()
-		}
-
-		if fwdErr != nil || resp == nil || shouldRetryProxyProviderStatus(resp.StatusCode) {
-			if fwdErr != nil {
-				log.Printf("[llm-proxy] provider %s transport failure: %v (logical=%s upstream=%s request=%s)", providerID, fwdErr, logicalModel, upstreamModel, req.RequestID)
-				lastErr = fmt.Errorf("provider %s failed for logical model %s upstream model %s: %w", providerID, logicalModel, upstreamModel, fwdErr)
-			} else if resp == nil {
-				lastErr = fmt.Errorf("provider %s failed for logical model %s upstream model %s: empty response", providerID, logicalModel, upstreamModel)
+		noteLogicalProvider(triedArrays, reg, route.ProviderID)
+		logicalID, profile, members := arrayEgressCandidates(reg, route.ProviderID, acceptLiveProvider)
+		if len(members) == 0 {
+			if profile != nil && profile.Paused {
+				lastErr = fmt.Errorf("provider %s is paused", route.ProviderID)
+			} else if arrayRouteCooling(reg, route.ProviderID, acceptLiveProvider) {
+				if lastErr == nil {
+					lastErr = fmt.Errorf("provider %s is cooling down after upstream failures", route.ProviderID)
+				}
 			} else {
-				log.Printf("[llm-proxy] provider %s attempt failed: HTTP %d%s (logical=%s upstream=%s request=%s)", providerID, resp.StatusCode, proxyProviderErrorSnippet(resp.Body), logicalModel, upstreamModel, req.RequestID)
-				lastErr = fmt.Errorf("provider %s failed for logical model %s upstream model %s: HTTP %d%s", providerID, logicalModel, upstreamModel, resp.StatusCode, proxyProviderErrorSnippet(resp.Body))
+				lastErr = fmt.Errorf("provider %s referenced in model but not found in registry", route.ProviderID)
 			}
-			if resp != nil && isProxyRateLimitStatus(resp.StatusCode) {
-				proxyOnProviderRateLimited(cfg, gate, provider, lastErr)
+			continue
+		}
+		if profile == nil {
+			copied := *members[0]
+			profile = &copied
+		}
+		// The array is one logical provider. Billing and the response id stay on
+		// the array; each member is only an upstream credential.
+		provider := profile
+		providerID := logicalID
+		logicalModel, routeDispatch := proxyRouteDispatch(reg, matchedGroup, route, model, dispatchModel)
+		upstreamModel := proxyUpstreamModelForRoute(route, profile, logicalModel)
+		var resp *providerForwardResponse
+		var fwdErr error
+		var served *llmpool.ProviderConfig
+		arrayRateLimited := false
+		arrayMemberCount := len(providerArrayMemberIDs(reg, logicalID))
+		egress := egressProvider
+		if arrayMemberCount > 1 {
+			egress = egressArrayMember
+		}
+		for mi, member := range members {
+			skip, claimed := false, false
+			if member != nil {
+				skip, claimed = arrayMemberDialGate(member.ID)
+			}
+			if skip {
+				if lastErr == nil {
+					lastErr = fmt.Errorf("provider %s is cooling down after upstream failures", member.ID)
+				}
+				continue
+			}
+			fresh, err := gate.before(gateCtx, cfg, member)
+			if err != nil {
+				if claimed {
+					releaseArrayMemberProbe(member.ID)
+				}
+				lastErr = err
+				continue
+			}
+			release, acqErr := acquireProxyConcurrency(cfg, member)
+			if acqErr != nil {
+				if claimed {
+					releaseArrayMemberProbe(member.ID)
+				}
+				if shouldAbortResilienceProbe(fresh, mi < len(members)-1 || hasLaterRouteForProvider(orderedRoutes, i, member.ID)) {
+					proxyAbortResilienceProbe(cfg, member.ID)
+				}
+				lastErr = fmt.Errorf("provider %s is at concurrency limit %d", member.ID, member.MaxConcurrency)
+				continue
+			}
+			resp, fwdErr = func() (*providerForwardResponse, error) {
+				defer release()
+				return egress(ctx, cfg, member, req.Body, upstreamModel, requestedModel)
+			}()
+			if proxyCanceledWithoutUpstreamSuccess(ctx, fwdErr, resp) {
+				if claimed {
+					releaseArrayMemberProbe(member.ID)
+				}
+				proxyAbortResilienceProbe(cfg, member.ID)
+				return nil, ctx.Err()
+			}
+			if fwdErr != nil || resp == nil || shouldRetryProxyProviderStatus(resp.StatusCode) {
+				statusCode := 0
+				if resp != nil {
+					statusCode = resp.StatusCode
+				}
+				pauseFailedArrayMember(arrayMemberCount, member, statusCode)
+				if fwdErr != nil {
+					log.Printf("[llm-proxy] provider array %s member %s transport failure: %v (logical=%s upstream=%s request=%s)", logicalID, member.ID, fwdErr, logicalModel, upstreamModel, req.RequestID)
+					lastErr = fmt.Errorf("provider %s failed for logical model %s upstream model %s: %w", member.ID, logicalModel, upstreamModel, fwdErr)
+				} else if resp == nil {
+					lastErr = fmt.Errorf("provider %s failed for logical model %s upstream model %s: empty response", member.ID, logicalModel, upstreamModel)
+				} else {
+					log.Printf("[llm-proxy] provider array %s member %s attempt failed: HTTP %d%s (logical=%s upstream=%s request=%s)", logicalID, member.ID, resp.StatusCode, proxyProviderErrorSnippet(resp.Body), logicalModel, upstreamModel, req.RequestID)
+					lastErr = fmt.Errorf("provider %s failed for logical model %s upstream model %s: HTTP %d%s", member.ID, logicalModel, upstreamModel, resp.StatusCode, proxyProviderErrorSnippet(resp.Body))
+				}
+				if resp != nil && isProxyRateLimitStatus(resp.StatusCode) {
+					proxyOnProviderRateLimited(cfg, gate, member, lastErr)
+					arrayRateLimited = true
+				} else if !hasLaterRouteForProvider(orderedRoutes, i, member.ID) {
+					proxyRecordResilienceFailure(cfg, member)
+				}
+				continue
+			}
+			served = member
+			break
+		}
+		if served == nil {
+			if arrayRateLimited {
 				orderedRoutes = proxyAppendSameGroupRateLimitRoutes(orderedRoutes, reg, matchedGroup, logicalModel, reqWorkloadClass(req), acceptLiveProvider)
-			} else if !hasLaterRouteForProvider(orderedRoutes, i, providerID) {
-				proxyRecordResilienceFailure(cfg, provider)
 			}
 			continue
 		}
 
-		// Success
+		// Success. Circuit state follows the member that answered; callers still
+		// see the logical array id.
 		if cfg.Resilience != nil {
-			cfg.Resilience.RecordSuccess(providerID)
+			cfg.Resilience.RecordSuccess(served.ID)
 		}
+		clearArrayMemberPause(served.ID)
 
 		if resp.StatusCode >= http.StatusBadRequest {
 			return &ProxyResponse{
@@ -966,9 +1018,9 @@ func proxyOrderedRoutesForRequest(cfg *ProxyConfig, reg *Registry, req *ProxyReq
 		return nil, fmt.Errorf("pricing quote does not match this request")
 	}
 	for _, route := range llmpool.OrderScoredProviderRoutes(req.Body, model) {
-		if strings.EqualFold(route.Route.ProviderID, quote.ProviderID) && strings.EqualFold(proxyUpstreamModelForRoute(route.Route, findProvider(reg, route.Route.ProviderID), logicalModel), quote.UpstreamModel) {
-			provider := findProvider(reg, route.Route.ProviderID)
-			if provider == nil || provider.Paused || (accept != nil && !accept(provider)) {
+		logicalID, profile, members := lookupProviderArray(reg, route.Route.ProviderID, accept)
+		if strings.EqualFold(route.Route.ProviderID, quote.ProviderID) && strings.EqualFold(proxyUpstreamModelForRoute(route.Route, profile, logicalModel), quote.UpstreamModel) {
+			if logicalID == "" || len(members) == 0 {
 				return nil, fmt.Errorf("quoted provider %s is not available", quote.ProviderID)
 			}
 			return []llmpool.DispatchProviderRoute{route.Route}, nil
@@ -1003,81 +1055,115 @@ func handleProxyStreamDispatches(ctx context.Context, cfg *ProxyConfig, req *Pro
 		if dispatch == nil || dispatch.provider == nil {
 			continue
 		}
-		providerID := dispatch.provider.ID
-		fresh, err := gate.before(gateCtx, cfg, dispatch.provider)
-		if err != nil {
-			lastErr = err
-			continue
+		members := dispatch.arrayMembers
+		if len(members) == 0 {
+			members = []*llmpool.ProviderConfig{dispatch.provider}
 		}
-
-		release, acqErr := acquireProxyConcurrency(cfg, dispatch.provider)
-		if acqErr != nil {
-			if shouldAbortResilienceProbe(fresh, hasLaterDispatchForProvider(dispatches, i, providerID)) {
-				proxyAbortResilienceProbe(cfg, providerID)
-			}
-			lastErr = fmt.Errorf("provider %s is at concurrency limit %d", providerID, dispatch.provider.MaxConcurrency)
-			continue
+		logicalID := strings.TrimSpace(dispatch.logicalProviderID)
+		if logicalID == "" {
+			logicalID = dispatch.provider.ID
 		}
-
 		upstreamModel := proxyUpstreamModelForRoute(dispatch.route, dispatch.provider, dispatch.model)
 		responseModel := strings.TrimSpace(dispatch.responseModel)
 		if responseModel == "" {
 			responseModel = dispatch.model
 		}
-		result, err := func() (*providerStreamResult, error) {
-			defer release()
-			return egressProviderStream(ctx, cfg, dispatch.provider, req.Body, upstreamModel, responseModel, dst)
-		}()
-		if err != nil {
-			if proxyCanceledWithoutStreamSuccess(ctx, result) {
-				proxyAbortResilienceProbe(cfg, providerID)
-				return nil, ctx.Err()
+		arrayRateLimited := false
+		for mi, member := range members {
+			skip, claimed := false, false
+			if member != nil {
+				skip, claimed = arrayMemberDialGate(member.ID)
 			}
-			log.Printf("[llm-proxy] stream provider %s transport failure: %v (logical=%s upstream=%s request=%s)", providerID, err, dispatch.model, upstreamModel, req.RequestID)
-			if !hasLaterDispatchForProvider(dispatches, i, providerID) {
-				proxyRecordResilienceFailure(cfg, dispatch.provider)
-			}
-			lastErr = fmt.Errorf("stream provider %s failed for logical model %s upstream model %s: %w", providerID, dispatch.model, upstreamModel, err)
-			if result != nil && result.wroteBusinessStream {
-				recordProxyStreamUsage(ctx, cfg, req, dispatch, providerID, result)
-				return dispatch, lastErr
-			}
-			continue
-		}
-		if result == nil {
-			lastErr = fmt.Errorf("stream provider %s failed for logical model %s upstream model %s: empty response", providerID, dispatch.model, upstreamModel)
-			if !hasLaterDispatchForProvider(dispatches, i, providerID) {
-				proxyRecordResilienceFailure(cfg, dispatch.provider)
-			}
-			continue
-		}
-		if result.statusCode >= http.StatusBadRequest {
-			lastErr = fmt.Errorf("stream provider %s failed for logical model %s upstream model %s: HTTP %d%s", providerID, dispatch.model, upstreamModel, result.statusCode, proxyProviderErrorSnippet(result.errorBody))
-			if shouldRetryProxyProviderStatus(result.statusCode) {
-				log.Printf("[llm-proxy] stream provider %s attempt failed: HTTP %d%s (logical=%s upstream=%s request=%s)", providerID, result.statusCode, proxyProviderErrorSnippet(result.errorBody), dispatch.model, upstreamModel, req.RequestID)
-				if proxyCanceledWithoutStreamSuccess(ctx, result) {
-					proxyAbortResilienceProbe(cfg, providerID)
-					return nil, ctx.Err()
-				}
-				if isProxyRateLimitStatus(result.statusCode) {
-					proxyOnProviderRateLimited(cfg, gate, dispatch.provider, lastErr)
-					dispatches = proxyAppendSameGroupRateLimitDispatches(ctx, cfg, req, dispatches, dispatch, true)
-				} else if !hasLaterDispatchForProvider(dispatches, i, providerID) {
-					proxyRecordResilienceFailure(cfg, dispatch.provider)
+			if skip {
+				if lastErr == nil {
+					lastErr = fmt.Errorf("provider %s is cooling down after upstream failures", member.ID)
 				}
 				continue
 			}
-			if cfg.Resilience != nil {
-				cfg.Resilience.RecordSuccess(providerID)
+			fresh, err := gate.before(gateCtx, cfg, member)
+			if err != nil {
+				if claimed {
+					releaseArrayMemberProbe(member.ID)
+				}
+				lastErr = err
+				continue
 			}
-			return nil, lastErr
+			release, acqErr := acquireProxyConcurrency(cfg, member)
+			if acqErr != nil {
+				if claimed {
+					releaseArrayMemberProbe(member.ID)
+				}
+				if shouldAbortResilienceProbe(fresh, mi < len(members)-1 || hasLaterDispatchForProvider(dispatches, i, member.ID)) {
+					proxyAbortResilienceProbe(cfg, member.ID)
+				}
+				lastErr = fmt.Errorf("provider %s is at concurrency limit %d", member.ID, member.MaxConcurrency)
+				continue
+			}
+			result, err := func() (*providerStreamResult, error) {
+				defer release()
+				return egressProviderStream(ctx, cfg, member, req.Body, upstreamModel, responseModel, dst)
+			}()
+			if err != nil {
+				if proxyCanceledWithoutStreamSuccess(ctx, result) {
+					if claimed {
+						releaseArrayMemberProbe(member.ID)
+					}
+					proxyAbortResilienceProbe(cfg, member.ID)
+					return nil, ctx.Err()
+				}
+				pauseFailedArrayMember(dispatch.arrayMemberCount, member, 0)
+				log.Printf("[llm-proxy] stream provider array %s member %s transport failure: %v (logical=%s upstream=%s request=%s)", logicalID, member.ID, err, dispatch.model, upstreamModel, req.RequestID)
+				if !hasLaterDispatchForProvider(dispatches, i, member.ID) {
+					proxyRecordResilienceFailure(cfg, member)
+				}
+				lastErr = fmt.Errorf("stream provider %s failed for logical model %s upstream model %s: %w", member.ID, dispatch.model, upstreamModel, err)
+				if result != nil && result.wroteBusinessStream {
+					recordProxyStreamUsage(ctx, cfg, req, dispatch, logicalID, result)
+					return dispatch, lastErr
+				}
+				continue
+			}
+			if result == nil {
+				pauseFailedArrayMember(dispatch.arrayMemberCount, member, 0)
+				lastErr = fmt.Errorf("stream provider %s failed for logical model %s upstream model %s: empty response", member.ID, dispatch.model, upstreamModel)
+				if !hasLaterDispatchForProvider(dispatches, i, member.ID) {
+					proxyRecordResilienceFailure(cfg, member)
+				}
+				continue
+			}
+			if result.statusCode >= http.StatusBadRequest {
+				lastErr = fmt.Errorf("stream provider %s failed for logical model %s upstream model %s: HTTP %d%s", member.ID, dispatch.model, upstreamModel, result.statusCode, proxyProviderErrorSnippet(result.errorBody))
+				if shouldRetryProxyProviderStatus(result.statusCode) {
+					pauseFailedArrayMember(dispatch.arrayMemberCount, member, result.statusCode)
+					log.Printf("[llm-proxy] stream provider array %s member %s attempt failed: HTTP %d%s (logical=%s upstream=%s request=%s)", logicalID, member.ID, result.statusCode, proxyProviderErrorSnippet(result.errorBody), dispatch.model, upstreamModel, req.RequestID)
+					if proxyCanceledWithoutStreamSuccess(ctx, result) {
+						proxyAbortResilienceProbe(cfg, member.ID)
+						return nil, ctx.Err()
+					}
+					if isProxyRateLimitStatus(result.statusCode) {
+						proxyOnProviderRateLimited(cfg, gate, member, lastErr)
+						arrayRateLimited = true
+					} else if !hasLaterDispatchForProvider(dispatches, i, member.ID) {
+						proxyRecordResilienceFailure(cfg, member)
+					}
+					continue
+				}
+				if cfg.Resilience != nil {
+					cfg.Resilience.RecordSuccess(member.ID)
+				}
+				clearArrayMemberPause(member.ID)
+				return nil, lastErr
+			}
+			if cfg.Resilience != nil {
+				cfg.Resilience.RecordSuccess(member.ID)
+			}
+			clearArrayMemberPause(member.ID)
+			recordProxyStreamUsage(ctx, cfg, req, dispatch, logicalID, result)
+			return dispatch, nil
 		}
-		if cfg.Resilience != nil {
-			cfg.Resilience.RecordSuccess(providerID)
+		if arrayRateLimited {
+			dispatches = proxyAppendSameGroupRateLimitDispatches(ctx, cfg, req, dispatches, dispatch, true)
 		}
-
-		recordProxyStreamUsage(ctx, cfg, req, dispatch, providerID, result)
-		return dispatch, nil
 	}
 	if lastErr != nil {
 		log.Printf("[llm-proxy] all stream providers failed for model=%s hub=%s tenant=%s request=%s lastErr=%v", req.Model, req.HubID, req.TenantID, req.RequestID, lastErr)
@@ -1165,7 +1251,7 @@ func recordProxyStreamUsage(ctx context.Context, cfg *ProxyConfig, req *ProxyReq
 }
 
 func prepareProxyStreamDispatches(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest) ([]*proxyDispatch, error) {
-	dispatches, err := prepareProxyDispatches(ctx, cfg, req, acceptLiveStreamProvider, true)
+	dispatches, err := prepareProxyDispatches(ctx, cfg, req, acceptLiveStreamProvider, true, true)
 	if err != nil {
 		if strings.Contains(err.Error(), "no available providers") && !strings.Contains(err.Error(), "paused") {
 			return nil, fmt.Errorf("no stream-capable providers available")
@@ -1182,6 +1268,9 @@ type proxyDispatch struct {
 	dispatchModel            *llmpool.DispatchModel
 	route                    llmpool.DispatchProviderRoute
 	provider                 *llmpool.ProviderConfig
+	logicalProviderID        string
+	arrayMembers             []*llmpool.ProviderConfig
+	arrayMemberCount         int
 	auth                     *TenantAuthorization
 	requiresGrant            bool
 	billingInputTokens       int64
@@ -1191,8 +1280,29 @@ type proxyDispatch struct {
 	pricing                  *llmpool.ResolvedTokenPricing
 }
 
+func proxyDispatchLogicalID(dispatch *proxyDispatch) string {
+	if dispatch == nil {
+		return ""
+	}
+	if id := strings.TrimSpace(dispatch.logicalProviderID); id != "" {
+		return id
+	}
+	if dispatch.provider != nil {
+		return strings.TrimSpace(dispatch.provider.ID)
+	}
+	return ""
+}
+
 func prepareProxyDispatch(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest) (*proxyDispatch, error) {
-	dispatches, err := prepareProxyDispatches(ctx, cfg, req, acceptLiveProvider, false)
+	return prepareProxyQuoteDispatch(ctx, cfg, req, false)
+}
+
+func prepareProxyQuoteDispatch(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest, stream bool) (*proxyDispatch, error) {
+	accept := acceptLiveProvider
+	if stream {
+		accept = acceptLiveStreamProvider
+	}
+	dispatches, err := prepareProxyDispatches(ctx, cfg, req, accept, stream, false)
 	if err != nil {
 		return nil, err
 	}
@@ -1202,7 +1312,7 @@ func prepareProxyDispatch(ctx context.Context, cfg *ProxyConfig, req *ProxyReque
 	return dispatches[0], nil
 }
 
-func prepareProxyDispatches(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest, accept func(*llmpool.ProviderConfig) bool, stream bool) ([]*proxyDispatch, error) {
+func prepareProxyDispatches(ctx context.Context, cfg *ProxyConfig, req *ProxyRequest, accept func(*llmpool.ProviderConfig) bool, stream, rotate bool) ([]*proxyDispatch, error) {
 	if cfg == nil || cfg.Service == nil || cfg.AuthChecker == nil {
 		return nil, fmt.Errorf("proxy not configured")
 	}
@@ -1269,40 +1379,61 @@ func prepareProxyDispatches(ctx context.Context, cfg *ProxyConfig, req *ProxyReq
 	}
 	dispatches := make([]*proxyDispatch, 0, len(orderedRoutes))
 	sawPaused := false
+	sawCooling := false
+	triedArrays := map[string]struct{}{}
 	for _, route := range orderedRoutes {
-		provider := findProvider(reg, route.ProviderID)
-		if provider == nil {
+		if logicalProviderSeen(triedArrays, reg, route.ProviderID) {
 			continue
 		}
-		if provider.Paused {
-			sawPaused = true
+		noteLogicalProvider(triedArrays, reg, route.ProviderID)
+		var logicalID string
+		var profile *llmpool.ProviderConfig
+		var members []*llmpool.ProviderConfig
+		if rotate {
+			logicalID, profile, members = arrayEgressCandidates(reg, route.ProviderID, accept)
+		} else {
+			logicalID, profile, members = lookupProviderArray(reg, route.ProviderID, accept)
+		}
+		if len(members) == 0 {
+			if profile != nil && profile.Paused {
+				sawPaused = true
+			} else if arrayRouteCooling(reg, route.ProviderID, accept) {
+				sawCooling = true
+			}
 			continue
 		}
-		if !accept(provider) {
-			continue
+		if profile == nil {
+			copied := *members[0]
+			profile = &copied
 		}
 		responseModel := requestedModel
 		if responseModel == "" {
 			responseModel = model
 		}
 		logicalModel, routeDispatch := proxyRouteDispatch(reg, matchedGroup, route, model, dispatchModel)
-		upstreamModel := proxyUpstreamModelForRoute(route, provider, logicalModel)
-		pricing := proxyResolvedRequestTokenPricing(req, matchedGroup, provider, provider.ID, upstreamModel, proxyRequestStartedAt(req))
+		upstreamModel := proxyUpstreamModelForRoute(route, profile, logicalModel)
+		pricing := proxyResolvedRequestTokenPricing(req, matchedGroup, profile, logicalID, upstreamModel, proxyRequestStartedAt(req))
 		dispatches = append(dispatches, &proxyDispatch{
-			model:         logicalModel,
-			responseModel: responseModel,
-			matchedGroup:  matchedGroup,
-			dispatchModel: routeDispatch,
-			route:         route,
-			provider:      provider,
-			auth:          auth,
-			requiresGrant: requiresGrant,
-			pricing:       pricing,
+			model:             logicalModel,
+			responseModel:     responseModel,
+			matchedGroup:      matchedGroup,
+			dispatchModel:     routeDispatch,
+			route:             route,
+			provider:          profile,
+			logicalProviderID: logicalID,
+			arrayMembers:      members,
+			arrayMemberCount:  len(providerArrayMemberIDs(reg, logicalID)),
+			auth:              auth,
+			requiresGrant:     requiresGrant,
+			pricing:           pricing,
 		})
 	}
 	if len(dispatches) == 0 {
 		if sawPaused {
 			return nil, fmt.Errorf("no available providers for model %q: paused", model)
+		}
+		if sawCooling {
+			return nil, fmt.Errorf("no available providers for model %q: cooling down", model)
 		}
 		return nil, fmt.Errorf("no available providers for model %q", model)
 	}
@@ -2004,6 +2135,23 @@ func proxyBeforeAttempt(ctx context.Context, cfg *ProxyConfig, provider *llmpool
 	return cfg.Resilience.BeforeAttemptWithProbeWait(ctx, provider.ID, proxyCircuitThreshold(provider), proxyCircuitBaseMS(provider), defaultProxyCircuitProbeWait)
 }
 
+func pauseFailedArrayMember(memberCount int, member *llmpool.ProviderConfig, statusCode int) {
+	if memberCount <= 1 || member == nil {
+		return
+	}
+	pause := arrayMemberFailurePause
+	if member.CircuitBreakerCooldownMS > 0 {
+		pause = time.Duration(member.CircuitBreakerCooldownMS) * time.Millisecond
+	}
+	if isProxyRateLimitStatus(statusCode) {
+		rateLimit := time.Duration(proxyRateLimitCooldownMS) * time.Millisecond
+		if rateLimit > pause {
+			pause = rateLimit
+		}
+	}
+	pauseArrayMember(member.ID, pause)
+}
+
 func proxyRecordResilienceFailure(cfg *ProxyConfig, provider *llmpool.ProviderConfig) {
 	if cfg == nil || cfg.Resilience == nil || provider == nil {
 		return
@@ -2119,7 +2267,7 @@ func balanceProxyScoredRoutes(cfg *ProxyConfig, reg *Registry, scored []llmpool.
 	}
 	candidates := make([]llmpool.BalanceCandidate, 0, len(scored))
 	for _, item := range scored {
-		meta, provider := proxyDispatchMeta(reg, item.Route.ProviderID)
+		meta, _ := proxyDispatchMeta(reg, item.Route.ProviderID)
 		candidates = append(candidates, llmpool.BalanceCandidate{
 			Route:               item.Route,
 			Score:               item.Score,
@@ -2127,7 +2275,7 @@ func balanceProxyScoredRoutes(cfg *ProxyConfig, reg *Registry, scored []llmpool.
 			EffectiveMultiplier: llmpool.EffectiveRouteMultiplier(meta, item.Route, startedAt),
 			Sequence:            meta.Sequence,
 			MaxConcurrency:      meta.MaxConcurrency,
-			SkipWRR:             proxyRouteSkipWRR(cfg, provider, accept),
+			SkipWRR:             proxyLogicalRouteSkipWRR(cfg, reg, item.Route.ProviderID, accept),
 		})
 	}
 	return balancedRoutes(proxyDispatchWRR, pool, candidates)
@@ -2139,24 +2287,49 @@ func balanceProxyExtraRoutes(cfg *ProxyConfig, reg *Registry, extras []llmpool.D
 	}
 	candidates := make([]llmpool.BalanceCandidate, 0, len(extras))
 	for _, route := range extras {
-		meta, provider := proxyDispatchMeta(reg, route.ProviderID)
+		meta, _ := proxyDispatchMeta(reg, route.ProviderID)
 		candidates = append(candidates, llmpool.BalanceCandidate{
 			Route:               route,
 			EffectiveMultiplier: llmpool.ResolveCreditMultiplier(meta.Billing, startedAt),
 			Sequence:            meta.Sequence,
 			MaxConcurrency:      meta.MaxConcurrency,
-			SkipWRR:             proxyRouteSkipWRR(cfg, provider, accept),
+			SkipWRR:             proxyLogicalRouteSkipWRR(cfg, reg, route.ProviderID, accept),
 		})
 	}
 	return balancedRoutes(proxyDispatchWRR, pool, candidates)
 }
 
 func proxyDispatchMeta(reg *Registry, providerID string) (llmpool.ProviderDispatchMeta, *llmpool.ProviderConfig) {
-	provider := findProvider(reg, providerID)
+	// Route ids name arrays. The provider record with that id may have left,
+	// or the array id may not be a provider id at all.
+	_, profile, members := lookupProviderArray(reg, providerID, func(*llmpool.ProviderConfig) bool { return true })
+	provider := profile
+	if len(members) > 0 {
+		provider = members[0]
+	}
+	if provider == nil {
+		provider = findProvider(reg, providerID)
+	}
 	if provider == nil {
 		return llmpool.ProviderDispatchMeta{}, nil
 	}
 	return llmpool.MetaFromProvider(*provider), provider
+}
+
+func proxyLogicalRouteSkipWRR(cfg *ProxyConfig, reg *Registry, providerID string, accept func(*llmpool.ProviderConfig) bool) bool {
+	_, _, members := lookupProviderArray(reg, providerID, accept)
+	if len(members) == 0 {
+		return true
+	}
+	for _, member := range members {
+		if member == nil || arrayMemberCooling(member.ID) {
+			continue
+		}
+		if !proxyRouteSkipWRR(cfg, member, accept) {
+			return false
+		}
+	}
+	return true
 }
 
 func proxyRouteSkipWRR(cfg *ProxyConfig, provider *llmpool.ProviderConfig, accept func(*llmpool.ProviderConfig) bool) bool {
@@ -2212,15 +2385,47 @@ func providerCircuitOpen(cfg *ProxyConfig, provider *llmpool.ProviderConfig) boo
 	return cfg.Resilience.Snapshot(provider.ID, proxyCircuitThreshold(provider)).State == "open"
 }
 
+func logicalProviderKeys(reg *Registry, providerID string) []string {
+	var keys []string
+	if key := providerIDKey(providerID); key != "" {
+		keys = append(keys, key)
+	}
+	if reg != nil {
+		if key := providerIDKey(resolveProviderArrayID(reg, providerID)); key != "" && (len(keys) == 0 || keys[0] != key) {
+			keys = append(keys, key)
+		}
+	}
+	return keys
+}
+
+func logicalProviderSeen(seen map[string]struct{}, reg *Registry, providerID string) bool {
+	if seen == nil {
+		return false
+	}
+	for _, key := range logicalProviderKeys(reg, providerID) {
+		if _, ok := seen[key]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func noteLogicalProvider(seen map[string]struct{}, reg *Registry, providerID string) {
+	if seen == nil {
+		return
+	}
+	for _, key := range logicalProviderKeys(reg, providerID) {
+		seen[key] = struct{}{}
+	}
+}
+
 func extraLiveServiceGroupFailoverRoutes(reg *Registry, group *llmpool.ServiceGroup, logicalModel string, routes []llmpool.DispatchProviderRoute, accept func(*llmpool.ProviderConfig) bool) []llmpool.DispatchProviderRoute {
 	if accept == nil {
 		accept = acceptLiveProvider
 	}
 	seen := map[string]struct{}{}
 	for _, route := range routes {
-		if key := providerIDKey(route.ProviderID); key != "" {
-			seen[key] = struct{}{}
-		}
+		noteLogicalProvider(seen, reg, route.ProviderID)
 	}
 	var extras []llmpool.DispatchProviderRoute
 	inGroupOnly := officialQualityScopedLogicalModel(group, logicalModel)
@@ -2237,14 +2442,14 @@ func extraLiveServiceGroupFailoverRoutes(reg *Registry, group *llmpool.ServiceGr
 		if key == "" {
 			continue
 		}
-		if _, ok := seen[key]; ok {
+		if logicalProviderSeen(seen, reg, providerID) {
 			continue
 		}
 		provider := findProvider(reg, providerID)
 		if !accept(provider) {
 			continue
 		}
-		seen[key] = struct{}{}
+		noteLogicalProvider(seen, reg, providerID)
 		failoverRoutes := buildServiceGroupFailoverRoutes(routeReg, group, provider, logicalModel)
 		if len(failoverRoutes) == 0 {
 			continue
@@ -2983,10 +3188,15 @@ func proxyAppendSameGroupRateLimitDispatches(ctx context.Context, cfg *ProxyConf
 	}
 	seen := map[string]struct{}{}
 	for _, dispatch := range dispatches {
-		if dispatch != nil && dispatch.provider != nil {
-			if key := providerIDKey(dispatch.provider.ID); key != "" {
-				seen[key] = struct{}{}
-			}
+		if dispatch == nil {
+			continue
+		}
+		id := strings.TrimSpace(dispatch.logicalProviderID)
+		if id == "" && dispatch.provider != nil {
+			id = dispatch.provider.ID
+		}
+		if key := providerIDKey(id); key != "" {
+			seen[key] = struct{}{}
 		}
 	}
 	accept := acceptLiveProvider
@@ -3007,22 +3217,25 @@ func proxyAppendSameGroupRateLimitDispatches(ctx context.Context, cfg *ProxyConf
 	}
 	startedAt := proxyRequestStartedAt(req)
 	for _, route := range combined[len(ordered):] {
-		provider := findProvider(reg, route.ProviderID)
-		if !accept(provider) {
+		logicalID, profile, members := arrayEgressCandidates(reg, route.ProviderID, accept)
+		if len(members) == 0 || profile == nil {
 			continue
 		}
 		logicalModel, routeDispatch := proxyRouteDispatch(reg, seed.matchedGroup, route, seed.model, seed.dispatchModel)
-		upstreamModel := proxyUpstreamModelForRoute(route, provider, logicalModel)
+		upstreamModel := proxyUpstreamModelForRoute(route, profile, logicalModel)
 		dispatches = append(dispatches, &proxyDispatch{
-			model:         logicalModel,
-			responseModel: seed.responseModel,
-			matchedGroup:  seed.matchedGroup,
-			dispatchModel: routeDispatch,
-			route:         route,
-			provider:      provider,
-			auth:          seed.auth,
-			requiresGrant: seed.requiresGrant,
-			pricing:       proxyResolvedRequestTokenPricing(req, seed.matchedGroup, provider, provider.ID, upstreamModel, startedAt),
+			model:             logicalModel,
+			responseModel:     seed.responseModel,
+			matchedGroup:      seed.matchedGroup,
+			dispatchModel:     routeDispatch,
+			route:             route,
+			provider:          profile,
+			logicalProviderID: logicalID,
+			arrayMembers:      members,
+			arrayMemberCount:  len(providerArrayMemberIDs(reg, logicalID)),
+			auth:              seed.auth,
+			requiresGrant:     seed.requiresGrant,
+			pricing:           proxyResolvedRequestTokenPricing(req, seed.matchedGroup, profile, logicalID, upstreamModel, startedAt),
 		})
 	}
 	groupID := strings.TrimSpace(seed.matchedGroup.ID)
@@ -3133,6 +3346,10 @@ func proxyUpstreamModelForRoute(route llmpool.DispatchProviderRoute, provider *l
 }
 
 func forwardToProvider(ctx context.Context, client *http.Client, provider *llmpool.ProviderConfig, body map[string]any, upstreamModel, responseModel string) (*providerForwardResponse, error) {
+	return forwardToProviderAttempts(ctx, client, provider, body, upstreamModel, responseModel, true)
+}
+
+func forwardToProviderAttempts(ctx context.Context, client *http.Client, provider *llmpool.ProviderConfig, body map[string]any, upstreamModel, responseModel string, retry bool) (*providerForwardResponse, error) {
 	if provider == nil {
 		return nil, fmt.Errorf("provider is required")
 	}
@@ -3153,7 +3370,19 @@ func forwardToProvider(ctx context.Context, client *http.Client, provider *llmpo
 		FailureBackoffBaseMS:     provider.FailureBackoffBaseMS,
 		FailureBackoffMaxMS:      provider.FailureBackoffMaxMS,
 	}
-	respBody, statusCode, err := corelib.ForwardLLMEndpointProviderRequest(ctx, endpointProvider, body, client, responseModel)
+	var respBody []byte
+	var statusCode int
+	var err error
+	if retry {
+		respBody, statusCode, err = corelib.ForwardLLMEndpointProviderRequest(ctx, endpointProvider, body, client, responseModel)
+	} else {
+		fwd := make(map[string]any, len(body))
+		for k, v := range body {
+			fwd[k] = v
+		}
+		llmCfg := corelib.BindOpenCodeSessionID(ctx, endpointProvider.MaclawLLMConfig())
+		respBody, statusCode, err = corelib.ForwardOpenAICompatRequest(ctx, llmCfg, fwd, client, responseModel)
+	}
 	if err != nil {
 		if statusCode >= 400 && statusCode <= 599 {
 			if len(respBody) == 0 {
@@ -3511,10 +3740,7 @@ func proxyDispatchCreditMultiplier(req *ProxyRequest, dispatch *proxyDispatch, s
 	if dispatch == nil {
 		return 0
 	}
-	providerID := ""
-	if dispatch.provider != nil {
-		providerID = dispatch.provider.ID
-	}
+	providerID := proxyDispatchLogicalID(dispatch)
 	if dispatch.matchedGroup != nil && proxyRouteBillingMode(dispatch.matchedGroup, providerID, proxyUpstreamModelForRoute(dispatch.route, dispatch.provider, dispatch.model)) == llmpool.BillingModeFree {
 		return 1
 	}

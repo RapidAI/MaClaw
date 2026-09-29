@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { useState } from 'react';
 import { render, cleanup, fireEvent, waitFor, act, within, screen } from '@testing-library/react';
 import * as fc from 'fast-check';
-import { AIAssistantPanel, canShowAssistantCodingPreviewForTab, codePreviewModeFromState, shouldApplyRestoredAssistantPreview, shouldShowSourcePreviewForAgentMode, shouldShowSourcePreviewForWorkflow, withCodePreviewVisibleIfContent } from '../AIAssistantPanel';
+import { AIAssistantPanel, canShowAssistantCodingPreviewForTab, codePreviewEventsEnabled, codePreviewModeFromState, shouldApplyRestoredAssistantPreview, shouldShowSourcePreviewForAgentMode, shouldShowSourcePreviewForWorkflow, withCodePreviewVisibleIfContent } from '../AIAssistantPanel';
 import { initialState as initialCodePreviewState } from '../useCodePreviewState';
 import { openCurrentTenantCardStore } from '../AssistantTitleBar';
 import { forgetAIAssistantSessionRounds, type ChatMessage, type CancelAIAssistantResult, type NewsCardData, type ChatAction } from '../useAIAssistant';
@@ -70,6 +70,14 @@ function activateLocalTab() {
     expect(handler, 'project-task:activate handler should be registered').toBeTruthy();
     act(() => { handler?.({ local: true }); });
 }
+
+describe('codePreviewEventsEnabled', () => {
+    it('keeps file updates flowing for the LaTeX paper expert', () => {
+        expect(codePreviewEventsEnabled(false, 'builtin-latex-paper')).toBe(true);
+        expect(codePreviewEventsEnabled(false, 'builtin-paper-polish')).toBe(false);
+        expect(codePreviewEventsEnabled(true, 'builtin-paper-polish')).toBe(true);
+    });
+});
 
 describe('shouldShowSourcePreviewForWorkflow', () => {
     it('keeps source previews closed while a non-programming workflow is active', () => {
@@ -8109,7 +8117,7 @@ describe('expert tabs', () => {
         window.removeEventListener('ai-assistant:forget-session-rounds', onForget);
     });
 
-    it('does not resurrect cleared history after tab switches, then persists a fresh re-chat', async () => {
+    it('does not resurrect cleared history after the idle tab is released, then persists a fresh re-chat', async () => {
         const sendMessage = vi.fn().mockResolvedValue(true);
         const base = defaultPanelProps();
         const props: React.ComponentProps<typeof AIAssistantPanel> = {
@@ -8122,21 +8130,35 @@ describe('expert tabs', () => {
         await screen.findByTestId('ai-tab-expert-exp-1');
         await waitFor(() => expect(screen.getByTestId('ai-output-container').textContent || '').toContain("Hi, I'm Polisher"));
 
-        // Clear, then switch local → expert: the cleared conversation must not come back.
+        // A real exchange first, so "history" is not just the welcome seed and
+        // the no-resurrection assertion below has something to catch.
+        const oldInput = screen.getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(oldInput, { target: { value: 'old question' } });
+        fireEvent.click(within(screen.getByTestId('ai-input-bar')).getByLabelText('Send'));
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith(expect.stringContaining('old question'), expect.anything()));
+
+        // Clear, then leave the tab: the cleared conversation must not come back.
         fireEvent.click(screen.getByTitle('New conversation'));
         await waitFor(() => expect(clearAIAssistantHistoryForSessionMock).toHaveBeenCalledWith('desktop-user:expert:exp-1'));
         activateLocalTab();
-        // The guide takes no tab slot, so the expert tab stays in the bar itself.
-        fireEvent.click(screen.getByTestId('ai-tab-expert-exp-1'));
-        // ai-expert-empty only renders when displayMessages is empty — its presence
-        // after the local → expert roundtrip proves the cleared history did not resurrect.
-        await screen.findByTestId('ai-expert-empty');
+        // Switching to the guide releases the now-idle expert tab (idleTaskTabClose):
+        // the cleared conversation holds no draft, busy session, or workflow, so
+        // nothing keeps the tab open. Documented product behaviour — the expert
+        // row stays in the task list and its transcript stays resumable from there.
+        await waitFor(() => expect(screen.queryByTestId('ai-tab-expert-exp-1')).toBeNull());
 
-        // Re-chat: user sends a new message (clears the "explicitly cleared" mark).
+        // The user re-opens the expert from the expert centre. The fresh tab is
+        // seeded anew; the pre-clear exchange must NOT be back.
+        rerender(<AIAssistantPanel {...{ ...props, pendingExpertOpen: { expert } as any }} />);
+        await screen.findByTestId('ai-tab-expert-exp-1');
+        await waitFor(() => expect(screen.getByTestId('ai-output-container').textContent || '').toContain("Hi, I'm Polisher"));
+        expect(screen.getByTestId('ai-output-container').textContent || '').not.toContain('old question');
+
+        // Re-chat: user sends a new message.
         const input = screen.getByTestId('ai-input') as HTMLTextAreaElement;
         fireEvent.change(input, { target: { value: 'fresh question' } });
         fireEvent.click(within(screen.getByTestId('ai-input-bar')).getByLabelText('Send'));
-        await waitFor(() => expect(sendMessage).toHaveBeenCalled());
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith(expect.stringContaining('fresh question'), expect.anything()));
 
         // Backend streams a reply in the expert session; live-sync must backfill it
         // into the tab state and persist it to localStorage.

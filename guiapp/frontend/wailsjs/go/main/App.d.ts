@@ -334,7 +334,11 @@ export function ConfirmPreviewedSkillDraftReview(arg1:string):Promise<Record<str
 
 export function ContinueBackgroundLoop(arg1:string,arg2:number):Promise<void>;
 
+export function CopyCloudWorkspaceTaskFilesToLocal(arg1:string,arg2:string):Promise<main.TaskFileTransferResult>;
+
 export function CopyComputerUsePath(arg1:string):Promise<Record<string, any>>;
+
+export function CopyTaskFilesToCloudWorkspace(arg1:string,arg2:string):Promise<main.TaskFileTransferResult>;
 
 export function CorrectASRText(arg1:string):Promise<string>;
 
@@ -489,6 +493,12 @@ export function DownloadDiarizationModel():Promise<void>;
 
 export function DownloadEmbeddingModel():Promise<void>;
 
+export function DownloadLatexTinyTeX():Promise<void>;
+
+export function CompileLatexPreview(arg1:string):Promise<Record<string, any>>;
+
+export function CompileLatexWorkbenchFile(arg1:string,arg2:string):Promise<Record<string, any>>;
+
 export function DownloadMaclawAppPackageFromHub(arg1:string):Promise<Record<string, any>>;
 
 export function DownloadOCRModel():Promise<void>;
@@ -536,6 +546,10 @@ export function ExportExpertPackageToFile(arg1:string,arg2:string):Promise<void>
 export function ExportIMAuditCSV(arg1:string,arg2:string,arg3:string):Promise<string>;
 
 export function ExportIMAuditCSVForBot(arg1:string,arg2:string,arg3:string):Promise<string>;
+
+export function ExportLatexSourceBundle(arg1:string):Promise<string>;
+
+export function ExportLatexSubmissionZip(arg1:string):Promise<string>;
 
 export function ExportLearnedSkillsZip(arg1:Array<string>):Promise<void>;
 
@@ -745,6 +759,8 @@ export function GetIMAuditUsers(arg1:string):Promise<Array<string>>;
 export function GetIMAuditUsersForBot(arg1:string):Promise<Array<string>>;
 
 export function GetInferenceDiagnostics():Promise<memory.InferenceDiagnosticsData>;
+
+export function GetLatexTinyTeXStatus():Promise<Record<string, any>>;
 
 export function GetLLMSecurityReview():Promise<main.LLMSecurityReview>;
 
@@ -2057,6 +2073,8 @@ export function SaveCodeGenModelChoice(arg1:string,arg2:string):Promise<void>;
 
 export function SaveCodingWorkbenchCheckpoint(arg1:string,arg2:string):Promise<string>;
 
+export function SaveCodingWorkbenchTextFile(arg1:string,arg2:string,arg3:string):Promise<void>;
+
 export function SaveConfig(arg1:corelib.AppConfig):Promise<void>;
 
 export function SaveCurrentChatAsTask(arg1:string):Promise<main.ProjectSearchResult>;
@@ -2236,6 +2254,8 @@ export function SetFullscreen(arg1:boolean):Promise<void>;
 export function SetLLMTrajectoryLogging(arg1:boolean):Promise<void>;
 
 export function SetLanguage(arg1:string):Promise<void>;
+
+export function SetLatexTinyTeXEnabled(arg1:boolean):Promise<void>;
 
 export function SetLansengerGroupAllowed(arg1:string,arg2:boolean):Promise<void>;
 
@@ -2572,3 +2592,13 @@ export function WriteCodingWorkbenchConflictFileContent(arg1:string,arg2:string,
 export function AIAssistantAttachmentPreviewDataURL(arg1:string):Promise<string>;
 
 export function AIAssistantAttachmentFullDataURL(arg1:string):Promise<string>;
+
+// LaTeX paper template library (hand-added: guiapp/latex_templates.go).
+export function ListLatexTemplates():Promise<string>;
+export function ImportLatexTemplate():Promise<string>;
+export function ImportLatexTemplateFromPath(arg1:string):Promise<string>;
+export function DeleteLatexTemplate(arg1:string):Promise<void>;
+export function SyncLatexTemplatesFromHub():Promise<string>;
+export function ShareLatexTemplate(arg1:string):Promise<string>;
+export function CreateLatexDocument(arg1:string,arg2:string,arg3:string):Promise<string>;
+export function SyncLatexTemplateShares():Promise<void>;

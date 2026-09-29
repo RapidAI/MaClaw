@@ -36,6 +36,22 @@ const (
 	// Total reply length is no longer hard-truncated — semantic chunks are concatenated.
 	srvTTSMaxRunes                = tts.DefaultSpeechChunkRunes
 	srvASRAudioBodyMaxBytes int64 = 32 << 20
+
+	// srvAIEmbeddingDim is the width of the vectors the server stores. The
+	// server uses the same width as the desktop app: the embedding model is
+	// MRL-trained, and the 256-dim truncation was measured to collapse CJK
+	// discrimination (see embedding.DefaultEmbeddingDim for that measurement —
+	// a weather query ranked git_status above web_search). Keeping both
+	// surfaces on one width also means one ModelID per model file instead of
+	// two spaces that only differ by how much of the vector was kept.
+	//
+	// Tied to embedding.DefaultEmbeddingDim instead of written as a literal so
+	// the server cannot drift from the production width. It must also stay in
+	// sync with the dim handed to NewGemmaEmbedder below: it is part of the
+	// vector space identity reported by ModelID, so a mismatch would let the
+	// knowledge store believe it is reading one space while the manager writes
+	// another. TestSrvAIEmbeddingDimMatchesProductionWidth pins both.
+	srvAIEmbeddingDim = embedding.DefaultEmbeddingDim
 )
 
 var errSrvAIModelUnknown = errors.New("unknown ai model")
@@ -684,7 +700,7 @@ func (m *srvAIModelManager) embedBatch(ctx context.Context, cfg corelib.AppConfi
 		m.mu.Lock()
 	}
 	if m.embeddingMgr == nil {
-		mgr, err := embedding.NewGemmaEmbedder(modelPath, 256)
+		mgr, err := embedding.NewGemmaEmbedder(modelPath, srvAIEmbeddingDim)
 		if err != nil {
 			m.mu.Unlock()
 			return nil, err
@@ -826,8 +842,55 @@ func (a srvAIModelEmbedderAdapter) EmbedBatch(texts []string) ([][]float32, erro
 	return vectors, err
 }
 
-func (srvAIModelEmbedderAdapter) Dim() int { return 256 }
+func (srvAIModelEmbedderAdapter) Dim() int { return srvAIEmbeddingDim }
 func (srvAIModelEmbedderAdapter) Close()   {}
+
+// EmbedWithRole and EmbedBatchWithRole make the adapter satisfy
+// embedding.RoleEmbedder. The adapter is the only embedder the server-side
+// knowledge store ever sees, so without them EmbedAs would fall back to the
+// un-prompted space and the server would index and query a different vector
+// space than the desktop app — the prompt feature would be silently
+// half-applied.
+func (a srvAIModelEmbedderAdapter) EmbedWithRole(text string, role embedding.Role) ([]float32, error) {
+	return a.Embed(embedding.ApplyPrompt(text, role))
+}
+
+func (a srvAIModelEmbedderAdapter) EmbedBatchWithRole(texts []string, role embedding.Role) ([][]float32, error) {
+	if len(texts) == 0 {
+		return nil, nil
+	}
+	if !embedding.NeedsPrompt(role) {
+		return a.EmbedBatch(texts)
+	}
+	prompted := make([]string, len(texts))
+	for i, text := range texts {
+		prompted[i] = embedding.ApplyPrompt(text, role)
+	}
+	return a.EmbedBatch(prompted)
+}
+
+// ModelID identifies the vector space this adapter serves. Without it the
+// knowledge store falls back to "%T:%d", which does not encode the prompt
+// regime — enabling prompts would then leave every stored vector in place and
+// the index would hold two incompatible spaces.
+//
+// The model name comes from the path the manager actually resolves, not from a
+// hardcoded constant, so MACLAW_EMBEDDING_MODEL_PATH pointing at a different
+// file yields a different identity instead of silently reusing the old index.
+//
+// It deliberately does not depend on whether the weights have finished
+// loading: a value that changed at load time would trigger a second full
+// re-embed. modelPath is a pure lookup, and SpaceRecipe covers the prompt
+// regime.
+func (a srvAIModelEmbedderAdapter) ModelID() string {
+	name := embedding.DefaultModelFilename
+	if a.manager != nil {
+		if base := filepath.Base(a.manager.modelPath(embedding.DefaultModelFilename)); base != "" && base != "." && base != string(filepath.Separator) {
+			name = base
+		}
+	}
+	return fmt.Sprintf("%s:%d:%s", name, a.Dim(), embedding.SpaceRecipe())
+}
 
 func (m *srvAIModelManager) ttsVoiceDir() string {
 	return filepath.Join(m.dataRoot, "models", "kokoro_voices")

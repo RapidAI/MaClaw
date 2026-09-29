@@ -52,6 +52,8 @@ export interface AITab {
     sessionKey?: string;
     /** AI expert ID (required when type="expert"); title carries the expert name. */
     expertId?: string;
+    /** Workspace-relative LaTeX source owned by this expert tab. */
+    latexRelativePath?: string;
     /** Expert emoji badge (only for type="expert"). */
     expertIcon?: string;
     /** Short expert description (only for type="expert"; used by the empty-tab intro). */

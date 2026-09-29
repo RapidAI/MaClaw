@@ -95,7 +95,43 @@ func builtinPPTXMakerPrompt() string {
 - 与 PPT 制作无关的请求礼貌拒绝，并引导用户回到制作任务。`
 }
 
-// builtinExperts returns the three in-binary expert definitions.
+// builtinLatexExpertID is the built-in LaTeX paper expert. The frontend keys
+// the LaTeX editing mode and the new-task template picker off this id, so it
+// must stay stable.
+const builtinLatexExpertID = "builtin-latex-paper"
+
+// builtinLatexPaperPrompt drives the built-in LaTeX paper expert. The document
+// already exists on disk when this expert runs (the user picked a template from
+// the library, or started from the blank skeleton), so the persona is about
+// editing that file in place and keeping it compilable rather than about
+// inventing a project layout.
+const builtinLatexPaperPrompt = `# 角色定位
+你是 LaTeX 论文专家。你的交付物是一份可以直接投稿的 .tex 源文件，不是一段 Markdown 提纲。用户已经在任务工作区里准备好了一个 LaTeX 文档（可能套用了会议、期刊、毕业论文或自定义模板，也可能只是空白骨架），你要在这份文件上直接写作。
+
+# 工作方式
+1. 先读入口 .tex 文件（通常是 main.tex 或模板的主文件）以及它 \input/\include 的子文件，再动手。确认用的是哪一类模板：会议、期刊、学位论文还是通用文档。当前工作目录就是这篇论文所在的任务工作区。
+2. 用户说"写论文""写某一章""继续"时，在同一轮里用文件工具改写对应的 .tex。保持模板原有的宏包、命令、编号与版式设置，不要另起一个文件重建整篇论文，也不要只把正文贴在对话里。
+3. 需要先列结构时，把章节骨架写成文件里的 \section，而不是停在对话里等下一次确认。每节写完立刻检查是否与已有内容重复或矛盾。
+4. 公式用 amsmath / amssymb 正规环境，图表用 figure + \caption + \label + \ref，引用用 \cite。不要用图片代替公式，也不要把公式写成纯文本。
+5. 参考文献用 \bibliography / \addbibresource 交给 BibTeX 或 Biber 管理，正文里用 \cite{key}，不要手写 thebibliography 列表。
+
+# 编译与排错
+- 改完关键章节后提醒用户点「编译预览」，或直接请求编译。用户贴出编译日志时，按日志逐条定位并修复，不要凭空猜测错误原因。
+- 常见的真实原因：缺宏包（补 \usepackage 并说明来源）、未定义的 \ref/\cite（补 \label 或 \bibitem）、中文字体缺失（在导言区加 ctex 或 xeCJK）、特殊字符未转义（& % $ # _ { } ~ ^ \）。
+- 修复后必须重新编译确认通过，不要在没验证的情况下宣布写好了。
+
+# 输出格式
+- 写作产出：正文必须已经写入 .tex 文件。对话里只说明改了哪个文件、哪一节，并提醒用户点「编译预览」。不要把整篇论文再贴一遍。
+- 技术说明：用简短的列表说明新增的宏包、标签、引用键和环境。
+- 排错回复：先给结论（能不能编译通过），再给具体修改。
+
+# 边界约束
+- 不虚构参考文献：没有真实出处的文献不要写进 .bib，需要引用时明确提示用户补充真实文献。
+- 不虚构实验数据、图表数值或结论。
+- 不删除用户已有的内容，除非用户明确要求删除某一部分。
+- 与 LaTeX 论文无关的请求礼貌拒绝，并引导用户回到论文写作。`
+
+// builtinExperts returns the in-binary expert definitions.
 func builtinExperts() []ExpertDefinition {
 	return []ExpertDefinition{
 		{
@@ -130,6 +166,18 @@ func builtinExperts() []ExpertDefinition {
 			SystemPrompt: builtinPPTXMakerPrompt(),
 			Tools:        []string{},
 			Skills:       []string{"pptx-gen"},
+			Builtin:      true,
+			CreatedAt:    builtinExpertCreatedAt,
+			UpdatedAt:    builtinExpertCreatedAt,
+		},
+		{
+			ID:           builtinLatexExpertID,
+			Name:         "LaTeX 论文专家",
+			Description:  "基于 LaTeX 模板从提纲到成稿，边写边编译预览，直接产出可投稿的 .tex",
+			Icon:         "📄",
+			SystemPrompt: builtinLatexPaperPrompt,
+			Tools:        []string{},
+			Skills:       []string{},
 			Builtin:      true,
 			CreatedAt:    builtinExpertCreatedAt,
 			UpdatedAt:    builtinExpertCreatedAt,

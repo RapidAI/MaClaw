@@ -5,6 +5,8 @@ import type { VirtualEmployeeEntry } from "./VirtualEmployeeTab";
 import type { ExpertDefinition } from "./expertTypes";
 import { expertTabId, expertWelcomeMessageText } from "./expertTypes";
 import { expertSessionKey } from "./aiAssistantPanelSessionUtils";
+import { dispatchOpenLatexDocument } from "./latexDocumentOpen";
+import { isLatexExpertId } from "../../utils/latexTemplates";
 import { StartWorkflowTemplateInTab } from "../../../wailsjs/go/main/App";
 import { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
 import { isLocalHumanParticipantId } from "./localAIIdentity";
@@ -19,6 +21,17 @@ export interface PendingExpertOpen {
     expert: ExpertDefinition;
     /** Wizard first message: sent through the expert tab once it opens. */
     initialMessage?: string;
+    /**
+     * Set when the launcher already wrote the paper. The task registration must
+     * reopen that file instead of creating a second blank main.tex beside it.
+     */
+    latexDocument?: { relativePath?: string };
+}
+
+/** Task directory created for an expert. LaTeX experts also name the source file. */
+export interface EnsuredExpertTask {
+    projectPath?: string;
+    relativePath?: string;
 }
 
 /** Receipt returned after a queued project-tab request has been handled. */
@@ -151,7 +164,7 @@ interface PendingAssistantTabOpenOptions {
     createVETab: (veId: string, veName: string, sessionId?: string, onlineStatus?: "online" | "offline", avatarDataURL?: string, veSkillDescription?: string, options?: CreateVETabOptions) => AITab | null;
     createGroupTab: (id: string, title: string, participants: string[], options?: CreateGroupTabOptions) => AITab | null;
     createProjectTab: (projectPath: string, taskTitle: string, options?: CreateProjectTabOptions) => AITab | null;
-    createExpertTab?: (expert: ExpertDefinition) => AITab | null;
+    createExpertTab?: (expert: ExpertDefinition, task?: { projectPath?: string; relativePath?: string }) => AITab | null;
     activateTab?: (tabId: string) => void;
     getTabState?: (tabId: string) => AITabState | undefined;
     saveTabState?: (tabId: string, state: Partial<AITabState>) => void;
@@ -169,7 +182,7 @@ interface PendingAssistantTabOpenOptions {
     /** Send the wizard's first message through the freshly opened expert tab. */
     sendExpertMessage?: (text: string, expertId: string) => void | Promise<unknown>;
     /** Persist the expert in task management before its tab is opened. */
-    onEnsureExpertTask?: (expert: ExpertDefinition) => Promise<void> | void;
+    onEnsureExpertTask?: (expert: ExpertDefinition, existing?: { relativePath?: string }) => Promise<EnsuredExpertTask | void> | EnsuredExpertTask | void;
     /** Persist a non-main assistant tab before it is opened. */
     onEnsureAssistantTabTask?: (tabType: string, tabIdentity: string, title: string, projectPath?: string) => Promise<void> | void;
     /** User is about to open or focus a project task. Caller may close the idle tab being left. */
@@ -554,6 +567,61 @@ export function usePendingAssistantTabOpen({
     const expertOpenRequestRef = useRef(0);
     const expertLangRef = useRef(lang);
     expertLangRef.current = lang;
+    /** One in-flight recovery per expert, so a restored tab is not registered twice. */
+    const latexTaskAttachRef = useRef<Set<string>>(new Set());
+    const latexTabsMissingPath = (getTabList?.() || [])
+        .filter(tab => tab.type === "expert" && isLatexExpertId(tab.expertId) && !String(tab.projectPath || "").trim())
+        .map(tab => `${tab.id}\0${tab.latexRelativePath || ""}`)
+        .join("\n");
+    // A tab restored from before the task path was persisted still has an expert
+    // id and no projectPath. Sends then omit project_path, so tools write on the
+    // desktop while the editor reads the task workspace. Reattach the durable task.
+    useEffect(() => {
+        if (!latexTabsMissingPath) return;
+        const ensure = ensureExpertTaskRef.current;
+        const create = createExpertTabRef.current;
+        const list = getTabListForExpertRef.current?.() || [];
+        if (!ensure || !create) return;
+        for (const tab of list) {
+            if (tab.type !== "expert" || !isLatexExpertId(tab.expertId)) continue;
+            if (String(tab.projectPath || "").trim()) continue;
+            const expertId = String(tab.expertId || "").trim();
+            if (!expertId || latexTaskAttachRef.current.has(expertId)) continue;
+            latexTaskAttachRef.current.add(expertId);
+            const relativePath = String(tab.latexRelativePath || "").trim();
+            const expert: ExpertDefinition = {
+                id: expertId,
+                name: String(tab.title || expertId),
+                description: String(tab.expertDescription || ""),
+                icon: String(tab.expertIcon || ""),
+                system_prompt: "",
+                tools: [],
+                skills: [],
+                builtin: true,
+                // Timestamps are unknown for a tab restored from storage;
+                // empty strings match the managed-industry rebuild pattern.
+                created_at: "",
+                updated_at: "",
+            };
+            void Promise.resolve(relativePath ? ensure(expert, { relativePath }) : ensure(expert)).then((prepared) => {
+                const projectPath = String(prepared?.projectPath || "").trim();
+                if (!projectPath) {
+                    latexTaskAttachRef.current.delete(expertId);
+                    return;
+                }
+                const stillMissing = (getTabListForExpertRef.current?.() || []).some(item =>
+                    item.type === "expert" && item.expertId === expertId && !String(item.projectPath || "").trim());
+                if (!stillMissing) return;
+                create(expert, {
+                    projectPath,
+                    relativePath: String(prepared?.relativePath || relativePath).trim(),
+                });
+            }).catch((error) => {
+                latexTaskAttachRef.current.delete(expertId);
+                console.error("[task_management] latex expert task path recover failed:", error);
+            });
+        }
+    }, [latexTabsMissingPath]);
 
     useEffect(() => {
         if (!pendingExpertOpen) return;
@@ -564,7 +632,7 @@ export function usePendingAssistantTabOpen({
         const initialMessage = String(pendingExpertOpen.initialMessage || "").trim();
         const requestID = ++expertOpenRequestRef.current;
 
-        const openExpertTab = () => {
+        const openExpertTab = (prepared?: EnsuredExpertTask | void) => {
             if (requestID !== expertOpenRequestRef.current) return;
             const create = createExpertTabRef.current;
             if (!create) return;
@@ -587,8 +655,17 @@ export function usePendingAssistantTabOpen({
                 .some(t => t.id === tabId || (t.type === "expert" && t.expertId === expertId));
             beforeUserExpertOpenRef.current?.(expertId);
 
-            const tab = create(expert);
+            const projectPath = String(prepared?.projectPath || "").trim();
+            const relativePath = String(prepared?.relativePath || "").trim();
+            const expertTask = (projectPath || relativePath) ? { projectPath, relativePath } : undefined;
+            // Call with a single argument when no task path exists: callers
+            // (and tests) treat create(expert) and create(expert, undefined)
+            // as the same invocation, so the arity must stay honest.
+            const tab = expertTask ? create(expert, expertTask) : create(expert);
             if (!tab) return;
+            if (projectPath && relativePath) {
+                dispatchOpenLatexDocument({ projectPath, relativePath });
+            }
             if (existedBefore) {
                 sendInitialMessage();
                 return;
@@ -622,7 +699,10 @@ export function usePendingAssistantTabOpen({
             openExpertTab();
             return;
         }
-        void Promise.resolve(ensureTask(expert)).then(openExpertTab).catch((error) => {
+        const existingDocument = pendingExpertOpen.latexDocument;
+        // Same arity discipline as create: omit the second argument when there
+        // is no LaTeX document so single-argument observers stay consistent.
+        void Promise.resolve(existingDocument ? ensureTask(expert, existingDocument) : ensureTask(expert)).then((prepared) => openExpertTab(prepared)).catch((error) => {
             // Task management is the durable entry point for experts. Do not
             // open a tab that cannot be reached again from the sidebar.
             console.error("[task_management] create expert task failed:", error);

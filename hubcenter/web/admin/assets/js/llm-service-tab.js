@@ -33,6 +33,12 @@ if (typeof I18N_ZH !== 'undefined') {
       accessScopeHint: 'Default: every HubCenter node may call this provider. Restricting the list makes upstream calls leave only from allowed nodes, to avoid regional model limits.',
       accessScopeNeedNode: 'Select at least one HubCenter node.', accessScopeOffline: 'offline', accessScopeSelf: 'this node', accessScopeUnreachable: 'unreachable',
       lbGroup: 'LB group', pauseProvider: 'Pause', resumeProvider: 'Resume',
+      providerArray: 'Provider array', providerArrayOwn: 'Independent array', providerArrayJoin: 'Array',
+      providerArrayName: 'Array name', providerArrayHint: 'One array is one logical provider. Members share the multiplier and token price, rotate on each request, and a 429 or 5xx tries the next member.',
+      providerArrayUseShared: 'This provider will use the array multiplier and token price.',
+      providerArrayAdd: 'Add provider', providerArrayDelete: 'Delete array', providerArrayShared: 'Shared rate',
+      providerArrayRemove: 'Remove this provider from the array? The array stays on its service groups.',
+      providerArrayDeleteConfirm: 'Delete this provider array and every provider in it?',
       trafficDay: 'Day', trafficWeek: 'Week', trafficMonth: 'Month', trafficLoading: 'Loading',
       trafficIn: 'In', trafficOut: 'Out', trafficTotal: 'Total',
       providerProbeModels: 'Probe', providerProbing: 'Probing models...', providerProbeEmpty: 'No models returned.',
@@ -71,7 +77,7 @@ if (typeof I18N_ZH !== 'undefined') {
       billingInvalid: 'Fix invalid pricing numbers before saving.',
       billingPaidNeedsCredits: 'Paid billing requires at least one positive Credits price (input, output, or minimum).',
       sgIDNameRequired: 'ID and Name are required.', sgRouteNeedsProvider: 'Each route needs at least one provider.',
-      chooseProvider: 'Choose Provider',
+      chooseProvider: 'Choose provider array',
       fieldHubID: 'Hub ID', fieldTenantID: 'Tenant ID',
       fieldHubRequired: 'Select a Hub', fieldTenantRequired: 'Select a tenant', noHubs: 'No registered Hubs.', defaultTenant: 'Default tenant',
       save: 'Save', cancel: 'Cancel', confirm: 'Confirm', delete: 'Delete',
@@ -184,6 +190,12 @@ if (typeof I18N_ZH !== 'undefined') {
       accessScopeHint: '\u9ed8\u8ba4\u5168\u90e8 HubCenter \u8282\u70b9\u53ef\u8c03\u7528\u8be5\u670d\u52a1\u5546\u3002\u6307\u5b9a\u8282\u70b9\u540e\uff0c\u4e0a\u6e38\u8bf7\u6c42\u4ece\u5141\u8bb8\u7684\u8282\u70b9\u53d1\u51fa\uff0c\u4ee5\u907f\u5f00\u6a21\u578b\u533a\u57df\u9650\u5236\u3002',
       accessScopeNeedNode: '\u8bf7\u81f3\u5c11\u9009\u62e9\u4e00\u4e2a\u8282\u70b9\u3002', accessScopeOffline: '\u5df2\u4e0b\u7ebf', accessScopeSelf: '\u672c\u8282\u70b9', accessScopeUnreachable: '\u4e0d\u53ef\u8fbe',
       lbGroup: 'LB \u7ec4', pauseProvider: '\u6682\u505c', resumeProvider: '\u6062\u590d',
+      providerArray: '\u670d\u52a1\u5546\u9635\u5217', providerArrayOwn: '\u72ec\u7acb\u9635\u5217', providerArrayJoin: '\u6240\u5c5e\u9635\u5217',
+      providerArrayName: '\u9635\u5217\u540d\u79f0', providerArrayHint: '\u4e00\u4e2a\u9635\u5217\u5c31\u662f\u4e00\u4e2a\u903b\u8f91\u670d\u52a1\u5546\u3002\u6210\u5458\u5171\u4eab\u500d\u7387\u4e0e\u8d39\u7528\uff0c\u8bf7\u6c42\u8f6e\u8be2\u8bbf\u95ee\uff1b\u67d0\u4e2a\u6210\u5458\u8fd4\u56de 429 \u6216 5xx \u65f6\u81ea\u52a8\u8bbf\u95ee\u4e0b\u4e00\u4e2a\u3002',
+      providerArrayUseShared: '\u5c06\u4f7f\u7528\u8be5\u9635\u5217\u5df2\u6709\u7684\u500d\u7387\u4e0e\u8d39\u7528\u3002',
+      providerArrayAdd: '\u6dfb\u52a0\u670d\u52a1\u5546', providerArrayDelete: '\u5220\u9664\u9635\u5217', providerArrayShared: '\u5171\u4eab\u500d\u7387\u4e0e\u8d39\u7528',
+      providerArrayRemove: '\u4ece\u9635\u5217\u4e2d\u79fb\u9664\u8be5\u670d\u52a1\u5546\uff1f\u670d\u52a1\u7ec4\u4ecd\u4f1a\u4f7f\u7528\u8fd9\u4e2a\u9635\u5217\u3002',
+      providerArrayDeleteConfirm: '\u5220\u9664\u8be5\u670d\u52a1\u5546\u9635\u5217\u53ca\u5176\u4e2d\u7684\u5168\u90e8\u670d\u52a1\u5546\uff1f',
       trafficDay: '\u4eca\u65e5', trafficWeek: '\u672c\u5468', trafficMonth: '\u672c\u6708', trafficLoading: '\u52a0\u8f7d\u4e2d',
       trafficIn: '\u5165', trafficOut: '\u51fa', trafficTotal: '\u603b',
       providerProbeModels: '\u63a2\u6d4b', providerProbing: '\u6b63\u5728\u63a2\u6d4b\u6a21\u578b...', providerProbeEmpty: '\u672a\u8fd4\u56de\u6a21\u578b\u5217\u8868\u3002',
@@ -222,7 +234,7 @@ if (typeof I18N_ZH !== 'undefined') {
       billingInvalid: '\u8bf7\u4fee\u6b63\u65e0\u6548\u7684\u8ba1\u8d39\u6570\u503c\u540e\u518d\u4fdd\u5b58\u3002',
       billingPaidNeedsCredits: '\u6536\u8d39\u6a21\u5f0f\u9700\u81f3\u5c11\u4e00\u9879 Credits \u6b63\u6570\uff08\u8f93\u5165/\u8f93\u51fa/\u6700\u4f4e\u6d88\u8d39\uff09\u3002',
       sgIDNameRequired: 'ID \u548c\u540d\u79f0\u4e0d\u80fd\u4e3a\u7a7a\u3002', sgRouteNeedsProvider: '\u6bcf\u4e2a\u8def\u7531\u81f3\u5c11\u9700\u8981\u4e00\u4e2a\u670d\u52a1\u5546\u3002',
-      chooseProvider: '\u9009\u62e9\u670d\u52a1\u5546',
+      chooseProvider: '\u9009\u62e9\u670d\u52a1\u5546\u9635\u5217',
       fieldHubID: 'Hub ID', fieldTenantID: '\u79df\u6237 ID',
       fieldHubRequired: '\u8bf7\u9009\u62e9 Hub', fieldTenantRequired: '\u8bf7\u9009\u62e9\u79df\u6237', noHubs: '\u6682\u65e0\u5df2\u6ce8\u518c Hub\u3002', defaultTenant: '\u9ed8\u8ba4\u79df\u6237',
       save: '\u4fdd\u5b58', cancel: '\u53d6\u6d88', confirm: '\u786e\u8ba4', delete: '\u5220\u9664',
@@ -342,7 +354,7 @@ if (typeof I18N_ZH !== 'undefined') {
     return resp.json();
   }
 
-  var providers = [], agents = [], serviceGroups = [];
+  var providers = [], providerArrays = [], providerArraysByID = null, agents = [], serviceGroups = [];
   var defaultServiceGroupId = '';
   var providerTestStates = {};
   var providerDialogID = '';
@@ -416,6 +428,8 @@ if (typeof I18N_ZH !== 'undefined') {
       var data = await api('/api/admin/llm/providers');
       if (seq !== providersLoadSeq) return;
       providers = data.providers || [];
+      providerArrays = data.provider_arrays || [];
+      providerArraysByID = null;
       applyProviderSequenceTargets();
     } catch (e) {
       if (seq !== providersLoadSeq) return;
@@ -701,41 +715,93 @@ if (typeof I18N_ZH !== 'undefined') {
       if (seq === providerTrafficLoadSeq) patchProviderTraffic();
     }
   }
+  function providerArrayByID(id) {
+    id = String(id || '');
+    if (!providerArraysByID) providerArrayRecords();
+    return (providerArraysByID && providerArraysByID[id]) || null;
+  }
+  function providerArrayRecords() {
+    var meta = {};
+    (providerArrays || []).forEach(function(array) {
+      if (array && array.id) meta[array.id] = array;
+    });
+    var groups = [];
+    var seen = {};
+    sortedProviders().forEach(function(provider) {
+      var id = provider.array_id || provider.id;
+      if (!id || seen[id]) return;
+      seen[id] = true;
+      var record = meta[id] || { id: id, name: provider.name || id };
+      var members = [];
+      var included = {};
+      (record.member_ids || []).forEach(function(memberID) {
+        var item = providers.find(function(providerItem) { return providerItem.id === memberID; });
+        if (!item || included[item.id]) return;
+        included[item.id] = true;
+        members.push(item);
+      });
+      providers.forEach(function(item) {
+        if ((item.array_id || item.id) !== id || included[item.id]) return;
+        included[item.id] = true;
+        members.push(item);
+      });
+      if (!members.length) members = [provider];
+      groups.push({ id: id, name: record.name || (members[0] && (members[0].name || members[0].id)) || id, members: members });
+    });
+    providerArraysByID = {};
+    groups.forEach(function(array) { providerArraysByID[array.id] = array; });
+    return groups;
+  }
+  function renderProviderRow(p, opts) {
+    var testState = providerTestStates[p.id];
+    var testHTML = renderProviderTestState(testState);
+    var testDisabled = testState && testState.status === 'testing' ? ' disabled' : '';
+    var providerArg = jsArg(p.id);
+    var seq = Number(p.sequence || 0);
+    var paused = !!p.paused;
+    return '<div class="data-row' + (paused ? ' is-paused' : '') + '">'
+      + '<div class="provider-seq' + (seq > 0 ? '' : ' is-unset') + '">' + esc(seq > 0 ? String(seq) : '-') + '</div>'
+      + '<div class="data-row-main"><div class="data-row-title"><strong>' + esc(p.name||p.id) + '</strong>'
+      + (paused ? '<span class="badge warn">' + esc(t('pauseProvider')) + '</span>' : '')
+      + (p.lb_group && Number(p.lb_group_size||0) >= 2 ? '<span class="badge info">' + esc(t('lbGroup')) + ' ' + esc(p.lb_group) + '</span>' : '')
+      + providerBillingBadge(p)
+      + providerAccessBadge(p)
+      + '</div>'
+      + '<span class="data-row-meta">' + esc(p.api_url) + ' \u00b7 ' + esc(p.protocol||'openai')
+      + (p.has_api_key ? ' \u00b7 key' : '') + (p.lb_group ? ' \u00b7 ' + esc(p.lb_group) : '')
+      + (providerPriceSummary(p) ? ' \u00b7 ' + esc(providerPriceSummary(p)) : '')
+      + (providerPriceScheduleCount(p) ? ' \u00b7 ' + esc(t('pricingSchedule')) + ': ' + providerPriceScheduleCount(p) : '') + '</span>'
+      + testHTML + '</div>'
+      + ((opts && opts.hideTraffic) ? '' : '<div class="provider-traffic' + (providerTrafficReady ? '' : ' is-pending') + '" data-provider-id="' + esc(p.id) + '"></div>')
+      + '<div class="data-row-actions">'
+      + '<button class="btn-ghost" onclick="moveLLMProvider(' + providerArg + ',-1)">\u2191</button>'
+      + '<button class="btn-ghost" onclick="moveLLMProvider(' + providerArg + ',1)">\u2193</button>'
+      + '<button class="btn-ghost" onclick="toggleLLMProviderPaused(' + providerArg + ')">' + esc(paused ? t('resumeProvider') : t('pauseProvider')) + '</button>'
+      + '<button class="btn-ghost provider-test-btn" onclick="testLLMProvider(' + providerArg + ')"' + testDisabled + '>' + esc(testState && testState.status === 'testing' ? t('providerTesting') : t('testProvider')) + '</button>'
+      + '<button class="btn-ghost" onclick="editLLMProvider(' + providerArg + ')">' + esc(t('editProvider')) + '</button>'
+      + '<button class="btn-danger-ghost" onclick="deleteLLMProvider(' + providerArg + ')">' + esc(t('deleteProvider')) + '</button>'
+      + '</div></div>';
+  }
+  function renderProviderArray(array) {
+    var shared = array.members[0];
+    var multi = array.members.length > 1;
+    var headTraffic = multi ? '<div class="provider-traffic' + (providerTrafficReady ? '' : ' is-pending') + '" data-provider-id="' + esc(array.id) + '"></div>' : '';
+    var head = '<div class="provider-array-head"><div><strong>' + esc(array.name || array.id) + '</strong>'
+      + ' <span class="badge">' + esc(t('providerArray')) + (multi ? ' \u00b7 ' + array.members.length : '') + '</span>'
+      + (multi ? '<span class="badge info">' + esc(t('providerArrayShared')) + '</span>' : '')
+      + (shared && providerPriceSummary(shared) ? '<span class="data-row-meta"> ' + esc(providerPriceSummary(shared)) + '</span>' : '')
+      + '</div>' + headTraffic + '<div class="data-row-actions">'
+      + '<button class="btn-ghost" onclick="showProviderDialog(\'create\', \'\', {arrayID:' + jsArg(array.id) + '})">' + esc(t('providerArrayAdd')) + '</button>'
+      + (multi ? '<button class="btn-danger-ghost" onclick="deleteProviderArray(' + jsArg(array.id) + ')">' + esc(t('providerArrayDelete')) + '</button>' : '')
+      + '</div></div>';
+    return '<div class="provider-array' + (multi ? ' is-multi' : '') + '">' + head + array.members.map(function(member) { return renderProviderRow(member, { hideTraffic: multi }); }).join('') + '</div>';
+  }
   function renderProviders() {
     var el = document.getElementById('llmProvidersList');
     if (!el) return;
     syncProviderTrafficSwitch();
     if (!providers.length) { el.innerHTML = '<div class="hint">' + esc(t('noProviders')) + '</div>'; return; }
-    el.innerHTML = sortedProviders().map(function(p) {
-      var testState = providerTestStates[p.id];
-      var testHTML = renderProviderTestState(testState);
-      var testDisabled = testState && testState.status === 'testing' ? ' disabled' : '';
-      var providerArg = jsArg(p.id);
-      var seq = Number(p.sequence || 0);
-      var paused = !!p.paused;
-      return '<div class="data-row' + (paused ? ' is-paused' : '') + '">'
-        + '<div class="provider-seq' + (seq > 0 ? '' : ' is-unset') + '">' + esc(seq > 0 ? String(seq) : '-') + '</div>'
-        + '<div class="data-row-main"><div class="data-row-title"><strong>' + esc(p.name||p.id) + '</strong>'
-        + (paused ? '<span class="badge warn">' + esc(t('pauseProvider')) + '</span>' : '')
-        + (p.lb_group && Number(p.lb_group_size||0) >= 2 ? '<span class="badge info">' + esc(t('lbGroup')) + ' ' + esc(p.lb_group) + '</span>' : '')
-        + providerBillingBadge(p)
-        + providerAccessBadge(p)
-        + '</div>'
-        + '<span class="data-row-meta">' + esc(p.api_url) + ' \u00b7 ' + esc(p.protocol||'openai')
-        + (p.has_api_key ? ' \u00b7 key' : '') + (p.lb_group ? ' \u00b7 ' + esc(p.lb_group) : '')
-        + (providerPriceSummary(p) ? ' \u00b7 ' + esc(providerPriceSummary(p)) : '')
-        + (providerPriceScheduleCount(p) ? ' \u00b7 ' + esc(t('pricingSchedule')) + ': ' + providerPriceScheduleCount(p) : '') + '</span>'
-        + testHTML + '</div>'
-        + '<div class="provider-traffic' + (providerTrafficReady ? '' : ' is-pending') + '" data-provider-id="' + esc(p.id) + '"></div>'
-        + '<div class="data-row-actions">'
-        + '<button class="btn-ghost" onclick="moveLLMProvider(' + providerArg + ',-1)">\u2191</button>'
-        + '<button class="btn-ghost" onclick="moveLLMProvider(' + providerArg + ',1)">\u2193</button>'
-        + '<button class="btn-ghost" onclick="toggleLLMProviderPaused(' + providerArg + ')">' + esc(paused ? t('resumeProvider') : t('pauseProvider')) + '</button>'
-        + '<button class="btn-ghost provider-test-btn" onclick="testLLMProvider(' + providerArg + ')"' + testDisabled + '>' + esc(testState && testState.status === 'testing' ? t('providerTesting') : t('testProvider')) + '</button>'
-        + '<button class="btn-ghost" onclick="editLLMProvider(' + providerArg + ')">' + esc(t('editProvider')) + '</button>'
-        + '<button class="btn-danger-ghost" onclick="deleteLLMProvider(' + providerArg + ')">' + esc(t('deleteProvider')) + '</button>'
-        + '</div></div>';
-    }).join('');
+    el.innerHTML = providerArrayRecords().map(renderProviderArray).join('');
     patchProviderTraffic();
   }
   function renderProviderTestState(state) {
@@ -1385,6 +1451,12 @@ if (typeof I18N_ZH !== 'undefined') {
     await loadProviderAccessNodes();
     if (seq !== providerDialogSeq) return false;
     var title = mode === 'edit' ? t('providerDialogTitleEdit') : t('providerDialogTitleNew');
+    providerDialogHomeArray = p ? (p.array_id || p.id) : '';
+    var selectedArrayID = (opts && opts.arrayID) || '';
+    if (!selectedArrayID && p) {
+      var home = providerArrayByID(p.array_id || p.id);
+      if (home && home.members.length > 1) selectedArrayID = home.id;
+    }
     var html = sgDialogChrome(title,
       '<div class="sg-form-grid">'
       + field('llmPrvID', t('fieldID'), p ? p.id : '', mode==='edit')
@@ -1399,15 +1471,52 @@ if (typeof I18N_ZH !== 'undefined') {
       + field('llmPrvConc', t('fieldConcurrency'), p ? String(p.max_concurrency||10) : '10', false, 'number')
       + field('llmPrvTimeout', t('fieldTimeout'), p ? String(p.upstream_timeout_sec||900) : '900', false, 'number')
       + '</div><div class="hint">' + esc(t('sequenceHint')) + '</div>'
+      + providerArraySection(p, selectedArrayID)
       + providerAccessScopeSection()
+      + '<div id="llmPrvSharedBilling">'
       + providerTokenPricingSection(p)
-      + providerBillingSection(p, opts),
+      + providerBillingSection(p, opts)
+      + '</div>',
       '<button class="btn-primary" onclick="saveProvider(' + jsArg(mode==='edit'?id:'') + ')">' + esc(t('save')) + '</button>'
       + '<button class="btn-ghost" onclick="sgCloseCurrentDialog()">' + esc(t('cancel')) + '</button>');
     openDialog(html, 'sg-form-dialog');
     window.renderProviderCapabilityChips();
     startProviderBillingNowClock();
+    window.setProviderDialogArray(selectedArrayID);
     return true;
+  };
+  var providerDialogHomeArray = '';
+  function providerArraySection(provider, selectedID) {
+    var current = providerArrayByID(selectedID);
+    var own = provider ? providerArrayByID(provider.array_id || provider.id) : null;
+    var name = current ? (current.name || current.id) : (own && own.members.length < 2 ? (own.name || own.id) : (provider ? (provider.name || '') : ''));
+    var options = '<option value="">' + esc(t('providerArrayOwn')) + '</option>';
+    providerArrayRecords().forEach(function(array) {
+      if (own && array.members.length < 2 && array.id === own.id) return;
+      var label = array.name || array.id;
+      if (array.members.length > 1) label += ' (' + array.members.length + ')';
+      options += '<option value="' + esc(array.id) + '"' + (selectedID === array.id ? ' selected' : '') + '>' + esc(label) + '</option>';
+    });
+    return '<div class="provider-array-field"><label for="llmPrvArray">' + esc(t('providerArrayJoin')) + '</label><select id="llmPrvArray" onchange="setProviderDialogArray(this.value)">' + options + '</select>'
+      + field('llmPrvArrayName', t('providerArrayName'), name)
+      + '<div class="hint">' + esc(t('providerArrayHint')) + '</div>'
+      + '<div id="llmPrvArraySharedNote" class="hint" hidden>' + esc(t('providerArrayUseShared')) + '</div></div>';
+  }
+  window.setProviderDialogArray = function(id) {
+    var joining = !!id && id !== providerDialogHomeArray;
+    var note = document.getElementById('llmPrvArraySharedNote');
+    var billing = document.getElementById('llmPrvSharedBilling');
+    if (note) note.hidden = !joining;
+    if (billing) billing.hidden = joining;
+    var current = providerArrayByID(id);
+    var nameEl = document.getElementById('llmPrvArrayName');
+    if (!nameEl || document.activeElement === nameEl) return;
+    if (current) {
+      nameEl.value = current.name || current.id;
+      return;
+    }
+    var own = providerDialogHomeArray ? providerArrayByID(providerDialogHomeArray) : null;
+    nameEl.value = (own && own.members.length < 2) ? (own.name || own.id) : val('llmPrvName');
   };
   window.editLLMProvider = function(id) { window.showProviderDialog('edit', id); };
   function providerModelsField(value) {
@@ -1471,8 +1580,10 @@ if (typeof I18N_ZH !== 'undefined') {
   };
   window.saveProvider = async function(editID) {
     var existing = editID ? providers.find(function(x){ return x.id === editID; }) : null;
+    var arrayID = val('llmPrvArray');
+    var joiningShared = !!(arrayID && arrayID !== providerDialogHomeArray);
     var billing = readProviderBilling();
-    if ((providerBillingSchedule || []).length !== billing.credit_multiplier_schedule.length) {
+    if (!joiningShared && (providerBillingSchedule || []).length !== billing.credit_multiplier_schedule.length) {
       toast(t('billingDroppedWindows'), 'error');
       return;
     }
@@ -1491,8 +1602,8 @@ if (typeof I18N_ZH !== 'undefined') {
     payload.credit_multiplier = billing.credit_multiplier;
     payload.credit_multiplier_schedule = billing.credit_multiplier_schedule;
     var tokenPricing = readProviderTokenPricing();
-    if (tokenPricing === null) { toast(t('billingInvalid'), 'error'); return; }
-    payload.token_pricing = tokenPricing;
+    if (!joiningShared && tokenPricing === null) { toast(t('billingInvalid'), 'error'); return; }
+    if (!joiningShared) payload.token_pricing = tokenPricing;
     if (providerAccessMode === 'nodes') {
       var nodeIDs = providerAccessSelectedIDs();
       if (!nodeIDs.length) { toast(t('accessScopeNeedNode'), 'error'); return; }
@@ -1502,6 +1613,10 @@ if (typeof I18N_ZH !== 'undefined') {
     }
     var key = val('llmPrvKey');
     if (key) payload.api_key = key;
+    if (arrayID) payload.array_id = arrayID;
+    else payload.array_independent = true;
+    var arrayName = val('llmPrvArrayName');
+    if (arrayName) payload.array_name = arrayName;
     try {
       if (editID) await api('/api/admin/llm/providers/' + encodeURIComponent(editID), { method: 'PUT', body: JSON.stringify(payload) });
       else await api('/api/admin/llm/providers', { method: 'POST', body: JSON.stringify(payload) });
@@ -1509,6 +1624,18 @@ if (typeof I18N_ZH !== 'undefined') {
     } catch(e) { toast(e.message, 'error'); }
   };
   window.deleteLLMProvider = async function(id) {
+    var provider = providers.find(function(item) { return item.id === id; });
+    var array = providerArrayByID(provider && (provider.array_id || provider.id));
+    if (array && array.members.length > 1) {
+      if (!sgConfirm(t('providerArrayRemove'))) return;
+      try {
+        await api('/api/admin/llm/providers/' + encodeURIComponent(id) + '?prune=1', { method: 'DELETE' });
+        toast(t('deleted'), 'success');
+        loadProviders({ traffic: false });
+        loadServiceGroups();
+      } catch (e) { toast(e.message, 'error'); }
+      return;
+    }
     try {
       var refData = await api('/api/admin/llm/providers/' + encodeURIComponent(id) + '/references');
       var groups = (refData && refData.groups) || [];
@@ -1536,6 +1663,17 @@ if (typeof I18N_ZH !== 'undefined') {
       }
       toast(e.message, 'error');
     }
+  };
+  window.deleteProviderArray = async function(id) {
+    var array = providerArrayByID(id);
+    var label = (array && (array.name || array.id)) || id;
+    if (!sgConfirm(t('providerArrayDeleteConfirm') + '\n' + label)) return;
+    try {
+      await api('/api/admin/llm/provider-arrays/' + encodeURIComponent(id) + '?prune=1', { method: 'DELETE' });
+      toast(t('deleted'), 'success');
+      loadProviders({ traffic: false });
+      loadServiceGroups();
+    } catch (e) { toast(e.message, 'error'); }
   };
   window.moveLLMProvider = async function(id, delta) {
     providersLoadSeq += 1;
@@ -1734,7 +1872,25 @@ if (typeof I18N_ZH !== 'undefined') {
     return ids;
   }
   function sgProviderByID(id){return providers.find(function(x){return x.id===id;})||null;}
-  function sgProviderModels(id){var p=sgProviderByID(id);return (p&&p.models||[]).map(function(x){return String(x||'').trim();}).filter(Boolean);}
+  function sgProviderModels(id) {
+    var array = providerArrayByID(id);
+    var source = array && array.members.length ? array.members : [];
+    if (!source.length) {
+      var single = sgProviderByID(id);
+      source = single ? [single] : [];
+    }
+    var seen = {};
+    var out = [];
+    source.forEach(function(provider) {
+      (provider.models || []).forEach(function(model) {
+        model = String(model || '').trim();
+        if (!model || seen[model]) return;
+        seen[model] = true;
+        out.push(model);
+      });
+    });
+    return out;
+  }
   function sgEffectiveRouteModel(c){var m=(c&&c.model||'').trim();if(m)return m;var models=sgProviderModels(c&&c.provider_id||'');return models.length===1?models[0]:'';}
   function sgRouteKey(c){return (c&&c.provider_id||'').trim()+'\u0000'+sgEffectiveRouteModel(c);}
   function sgNormalizeTokenPricing(src){
@@ -1785,7 +1941,16 @@ if (typeof I18N_ZH !== 'undefined') {
       models:(g&&g.models||[]).map(function(m){return{name:m.name||'auto',provider_ids:sgProviderIDsFromModel(m),provider_configs:sgProviderConfigsFromModel(m),capability_tags:(m.capability_tags||[]).slice(),priority:m.priority||50,resolution_tier:m.resolution_tier||0,credit_multiplier:m.credit_multiplier||1};})};
   }
   function sgEmptyGroup(){return{id:'',name:'',description:'',agent_id:'maclaw_official',agent_name:agentNameByID('maclaw_official')||'MaClaw official',access_policy:'free',kind:'dynamic',quality_floor:'',exposed_models:[],routes:sgDefaultDynamicRoutes(),models:[{name:'auto',provider_ids:[],provider_configs:[],capability_tags:[],priority:50,resolution_tier:0,credit_multiplier:1}]};}
-  function sgProviderName(id){var p=providers.find(function(x){return x.id===id;});return p?(p.name||p.id):id;}
+  function sgProviderName(id){
+    var array = providerArrayByID(id);
+    if (array) {
+      var name = array.name || array.id;
+      if (array.members.length > 1) return name + ' \u00b7 ' + array.members.length;
+      return name;
+    }
+    var p=providers.find(function(x){return x.id===id;});
+    return p?(p.name||p.id):id;
+  }
   function sgGetProviderConfig(model,routeIndex){if(!model)return null;model.provider_configs=model.provider_configs||[];return model.provider_configs[routeIndex]||null;}
   function sgOfficialBandNames(){return ['official-high','official-mid','official-low'];}
   function sgNormName(n){return String(n||'').trim().toLowerCase();}
@@ -1888,19 +2053,25 @@ if (typeof I18N_ZH !== 'undefined') {
     var billingLabel = cfg.billing_mode ? cfg.billing_mode : 'legacy';
     var pricingBrief = sgFormatPricingBrief(cfg.token_pricing);
     var pricingMeta = pricingBrief ? ' \u00b7 '+esc(billingLabel)+' \u00b7 '+esc(pricingBrief) : ' \u00b7 '+esc(billingLabel);
+    var array = providerArrayByID(cfg.provider_id);
+    var memberMeta = array && array.members.length > 1 ? ' \u00b7 '+esc(array.members.map(function(member){ return member.name || member.id; }).join(', ')) : '';
     return '<div class="sg-provider-card"><div class="sg-row-head"><strong>'+esc(sgProviderName(cfg.provider_id))+' #'+(routeIndex+1)+'</strong>'
       +'<div class="sg-actions"><button class="btn-ghost sg-tiny-btn" onclick="sgEditProviderConfig('+rowIndex+','+routeIndex+')">'+esc(t('editGroup'))+'</button>'
       +(routeIndex>0?'<button class="btn-ghost sg-icon-btn" onclick="sgMoveProvider('+rowIndex+','+routeIndex+',-1)">\u2191</button>':'')
       +(routeIndex<total-1?'<button class="btn-ghost sg-icon-btn" onclick="sgMoveProvider('+rowIndex+','+routeIndex+',1)">\u2193</button>':'')
       +'<button class="btn-danger-ghost sg-tiny-btn" onclick="sgRemoveProvider('+rowIndex+','+routeIndex+')">\u2715</button></div></div>'
-      +'<div class="sg-provider-meta">Upstream: '+esc((cfg&&cfg.model)||'-')+' \u00b7 '+esc(t('fieldCapabilities'))+': '+esc(features)+' \u00b7 P:'+(cfg&&cfg.priority||0)+pricingMeta+'</div></div>';
+      +'<div class="sg-provider-meta">Upstream: '+esc((cfg&&cfg.model)||'-')+' \u00b7 '+esc(t('fieldCapabilities'))+': '+esc(features)+' \u00b7 P:'+(cfg&&cfg.priority||0)+pricingMeta+memberMeta+'</div></div>';
   }
   function sgRenderRouteRow(model,rowIndex){
     model.provider_configs=sgProviderConfigsFromModel(model);
     var locked=sgDraft&&sgDraft.kind==='dynamic'&&sgIsLockedModelName(model.name);
     var cards=(model.provider_configs||[]).map(function(cfg,pi){return sgRenderProviderCard(rowIndex,pi,(model.provider_configs||[]).length);}).join('');
-    var providerOptions=!providers.length?'<option value="">('+esc(t('noProviders'))+')</option>'
-      :'<option value="">-- '+esc(t('chooseProvider'))+' --</option>'+providers.map(function(p){return'<option value="'+esc(p.id)+'">'+esc(p.name||p.id)+'</option>';}).join('');
+    var providerOptions=!providerArrayRecords().length?'<option value="">('+esc(t('noProviders'))+')</option>'
+      :'<option value="">-- '+esc(t('chooseProvider'))+' --</option>'+providerArrayRecords().map(function(array){
+        var label = array.name || array.id;
+        if (array.members.length > 1) label += ' (' + array.members.length + ')';
+        return '<option value="'+esc(array.id)+'">'+esc(label)+'</option>';
+      }).join('');
     return '<div class="sg-route-card"><div class="sg-row-head"><div><strong>'+esc(sgModelLabel(model.name||'auto'))+'</strong><span class="sg-route-hint">'+esc(t('sgRouteHint'))+'</span></div>'
       +(locked?'':'<button class="btn-danger-ghost sg-remove-route" onclick="sgRemoveRoute('+rowIndex+')">'+esc(t('sgRemoveRoute'))+'</button>')
       +'</div><div class="sg-route-grid"><div><label class="sg-label-sm">'+esc(t('sgExposedModel'))+'</label>'

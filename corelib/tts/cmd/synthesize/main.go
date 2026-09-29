@@ -46,7 +46,7 @@ func main() {
 	gemmaPath := embedding.DefaultModelPath()
 	var embedder embedding.Embedder
 	if _, err := os.Stat(gemmaPath); err == nil {
-		embedder, err = embedding.NewGemmaEmbedder(gemmaPath, 768)
+		embedder, err = embedding.NewGemmaEmbedder(gemmaPath, embedding.DefaultEmbeddingDim)
 		if err != nil {
 			fmt.Printf("Gemma load warning: %v (continuing without BERT)\n", err)
 		} else {

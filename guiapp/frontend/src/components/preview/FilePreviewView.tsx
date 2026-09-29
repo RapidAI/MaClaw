@@ -8,6 +8,7 @@ import React, { useEffect, useState } from 'react';
 import { AIAssistantAttachmentFullDataURL, PreviewTaskResultFile } from '../../../wailsjs/go/main/App';
 import { MarkdownPreview } from '../ai/CodePreviewMarkdown';
 import type { CodePreviewTheme } from '../ai/FileTabBar';
+import { LatexPreviewPanel } from '../ai/LatexPreviewPanel';
 import { PdfPreviewPanel } from '../ai/PdfPreviewPanel';
 import { DocxPreviewPanel } from '../ai/DocxPreviewPanel';
 import { PptxPreviewPanel } from '../ai/PptxPreviewPanel';
@@ -31,12 +32,20 @@ export type FilePreviewSource = {
     content?: string;
     language?: string;
     dataUrl?: string;
+    latexWorkbench?: boolean;
+    latexReadError?: string;
+    /** Workspace that owns this LaTeX file. Saving uses this, not the pane's task. */
+    projectPath?: string;
+    previewTruncated?: boolean;
+    updatedAt?: number;
 };
 
 export type FilePreviewViewProps = {
     file?: FilePreviewSource | null;
     theme: CodePreviewTheme;
     lang?: string;
+    projectPath?: string;
+    onLatexSourceChange?: (content: string) => void;
     matchLineIndexes?: number[];
     activeMatchLine?: number;
     children?: React.ReactNode;
@@ -433,6 +442,7 @@ export function isVisualFilePreview(file?: FilePreviewSource | null): boolean {
     if (!file) return false;
     const kind = filePreviewKindOf(file);
     if (kind === 'pptx' || kind === 'docx') return Boolean(file.absPath);
+    if (kind === 'latex') return Boolean(file.absPath) || Boolean(file.latexWorkbench);
     return isChromeLessPreviewKind(kind);
 }
 
@@ -451,6 +461,7 @@ export function filePreviewUsesSpecialRenderer(file?: FilePreviewSource | null):
     if (!file || isAssistantSourcePreview(file)) return false;
     const kind = filePreviewKindOf(file);
     if (kind === 'pptx' || kind === 'docx') return Boolean(file.absPath);
+    if (kind === 'latex') return Boolean(file.absPath) || Boolean(file.latexWorkbench);
     return kind === 'pdf' || kind === 'image' || kind === 'video' || kind === 'audio'
         || kind === 'office' || kind === 'markdown';
 }
@@ -459,6 +470,8 @@ export function FilePreviewView({
     file,
     theme,
     lang = 'en',
+    projectPath = '',
+    onLatexSourceChange,
     matchLineIndexes = EMPTY_MATCHES,
     activeMatchLine = -1,
     children,
@@ -482,6 +495,27 @@ export function FilePreviewView({
     }
     if (kind === 'docx' && file.absPath) {
         return <DocxPreviewPanel key={fileKey} absPath={file.absPath} theme={theme} lang={lang} />;
+    }
+    const latexProject = String(file.projectPath || projectPath || '').trim();
+    if (kind === 'latex' && file.latexWorkbench && latexProject && file.filePath) {
+        return (
+            <LatexPreviewPanel
+                key={`${latexProject}:${file.filePath}`}
+                projectPath={latexProject}
+                relativePath={file.filePath}
+                initialContent={file.content || ''}
+                truncated={file.previewTruncated === true}
+                readError={file.latexReadError || ''}
+                theme={theme}
+                lang={lang}
+                onSourceChange={onLatexSourceChange}
+                updatedAt={file.updatedAt || 0}
+            />
+        );
+    }
+    const latexAbs = String(file.absPath || '').trim();
+    if (kind === 'latex' && latexAbs) {
+        return <LatexPreviewPanel key={fileKey} absPath={latexAbs} theme={theme} lang={lang} />;
     }
     if (kind === 'pdf') {
         return (

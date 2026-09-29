@@ -45,7 +45,10 @@ func (s *SQLiteStore) searchByEmbedding(ctx context.Context, opts SearchOptions)
 	if emb == nil || embedding.IsNoop(emb) {
 		return nil, nil
 	}
-	queryVec, err := emb.Embed(opts.Query)
+	// The query side of asymmetric retrieval carries its own EmbeddingGemma task
+	// prompt; documents were indexed with RoleDocument, so the two spaces are a
+	// matched pair. Embedders without prompt support fall back to a plain Embed.
+	queryVec, err := embedding.EmbedAs(emb, opts.Query, embedding.RoleQuery)
 	if err != nil || !validEmbeddingVector(queryVec, emb.Dim()) {
 		return nil, nil
 	}
@@ -459,7 +462,7 @@ func (s *SQLiteStore) backfillCardEmbeddingsForGeneration(ctx context.Context, e
 	for i, c := range cards {
 		texts[i] = cardEmbeddingText(Card{Title: c.title, Claim: c.claim, Summary: c.summary})
 	}
-	vectors, err := emb.EmbedBatch(texts)
+	vectors, err := embedding.EmbedBatchAs(emb, texts, embedding.RoleDocument)
 	if err != nil {
 		return err
 	}
@@ -545,7 +548,7 @@ func (s *SQLiteStore) embedAndStoreTableRowEmbeddings(ctx context.Context, pendi
 		for i, row := range pending[start:end] {
 			texts[i] = tableRowEmbeddingText(row.primaryKey, row.text)
 		}
-		vectors, err := emb.EmbedBatch(texts)
+		vectors, err := embedding.EmbedBatchAs(emb, texts, embedding.RoleDocument)
 		if err != nil {
 			return err
 		}
@@ -871,7 +874,7 @@ func (s *SQLiteStore) embedAndStoreNodeEmbeddingsForGeneration(ctx context.Conte
 		if batchEnd > totalNodes {
 			batchEnd = totalNodes
 		}
-		vectors, embErr := emb.EmbedBatch(texts[batchStart:batchEnd])
+		vectors, embErr := embedding.EmbedBatchAs(emb, texts[batchStart:batchEnd], embedding.RoleDocument)
 		if embErr != nil {
 			return embErr
 		}

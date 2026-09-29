@@ -106,7 +106,10 @@ func adminListLLMProviders(svc *llmservice.Service) http.HandlerFunc {
 			}
 			return strings.ToLower(strings.TrimSpace(safe[i].ID)) < strings.ToLower(strings.TrimSpace(safe[j].ID))
 		})
-		writeJSONResp(w, http.StatusOK, map[string]any{"providers": safe})
+		writeJSONResp(w, http.StatusOK, map[string]any{
+			"providers":       safe,
+			"provider_arrays": reg.ProviderArrays,
+		})
 	}
 }
 
@@ -733,6 +736,31 @@ func llmProviderTestErrorMessage(raw json.RawMessage) string {
 		return "unknown error"
 	}
 	return message
+}
+
+func adminDeleteLLMProviderArray(svc *llmservice.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if id == "" {
+			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": "provider array id required"})
+			return
+		}
+		prune := r.URL.Query().Get("prune") == "1" || strings.EqualFold(r.URL.Query().Get("prune"), "true")
+		pruned, err := svc.DeleteProviderArray(r.Context(), id, prune)
+		if err != nil {
+			if errors.Is(err, llmservice.ErrProviderInUse) {
+				writeJSONResp(w, http.StatusConflict, map[string]any{"error": "provider_in_use", "groups": pruned})
+				return
+			}
+			writeLLMProviderError(w, err)
+			return
+		}
+		resp := map[string]any{"status": "ok"}
+		if len(pruned) > 0 {
+			resp["pruned_groups"] = pruned
+		}
+		writeJSONResp(w, http.StatusOK, resp)
+	}
 }
 
 func adminDeleteLLMProvider(svc *llmservice.Service) http.HandlerFunc {

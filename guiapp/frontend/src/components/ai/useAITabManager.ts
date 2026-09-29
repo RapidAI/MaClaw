@@ -225,7 +225,7 @@ export interface UseAITabManagerResult {
     /** Resolves after CreateProjectTabSession for this tab (or immediately if none is in flight). */
     waitForProjectTabSession: (tabId: string) => Promise<void>;
     /** Create (or activate) an expert conversation tab. Returns the tab or null if limit reached. */
-    createExpertTab: (expert: ExpertDefinition) => AITab | null;
+    createExpertTab: (expert: ExpertDefinition, task?: { projectPath?: string; relativePath?: string }) => AITab | null;
     /** Close a tab by ID */
     closeTab: (tabId: string) => void;
     /** Remove a deleted project's tabs without persisting an archived session. */
@@ -379,6 +379,8 @@ function persistProjectTabs(tabs: AITab[]) {
                 expertIcon: t.expertIcon,
                 expertDescription: t.expertDescription,
                 executionProfile: t.executionProfile,
+                projectPath: t.projectPath || undefined,
+                latexRelativePath: t.latexRelativePath || undefined,
             }
             : {
                 id: t.id,
@@ -410,7 +412,7 @@ function loadPersistedProjectTabs(): AITab[] {
     try {
         const raw = localStorage.getItem(PROJECT_TABS_STORAGE_KEY);
         if (!raw) return [];
-        const parsed = JSON.parse(raw) as Array<{ id: string; type?: string; title: string; projectPath: string; cloudWorkspaceId?: string; agentMode?: string; remoteHost?: string; remoteSafety?: string; expertId?: string; expertIcon?: string; expertDescription?: string; executionProfile?: string }>;
+        const parsed = JSON.parse(raw) as Array<{ id: string; type?: string; title: string; projectPath: string; latexRelativePath?: string; cloudWorkspaceId?: string; agentMode?: string; remoteHost?: string; remoteSafety?: string; expertId?: string; expertIcon?: string; expertDescription?: string; executionProfile?: string }>;
         if (!Array.isArray(parsed)) return [];
         const tabs = parsed
             .filter(t => t.id && !String(t.id).startsWith("acp-") && (t.projectPath || (t.type === "expert" && t.expertId)))
@@ -424,6 +426,8 @@ function loadPersistedProjectTabs(): AITab[] {
                         expertId,
                         expertIcon: String(t.expertIcon || "").trim() || undefined,
                         expertDescription: String(t.expertDescription || "").trim() || undefined,
+                        projectPath: normalizeProjectSessionPath(t.projectPath) || undefined,
+                        latexRelativePath: String(t.latexRelativePath || "").trim() || undefined,
                         executionProfile: t.executionProfile === "assistant" ? "assistant" as const : "none" as const,
                         closable: true,
                     };
@@ -1353,9 +1357,11 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         return projectTabSessionReadyByIDRef.current.get(tabId) ?? Promise.resolve();
     }, []);
 
-    const createExpertTab = useCallback((expert: ExpertDefinition): AITab | null => {
+    const createExpertTab = useCallback((expert: ExpertDefinition, task?: { projectPath?: string; relativePath?: string }): AITab | null => {
         const expertId = String(expert?.id || "").trim();
         if (!expertId) return null;
+        const projectPath = String(task?.projectPath || "").trim() || undefined;
+        const latexRelativePath = String(task?.relativePath || "").trim() || undefined;
         const prev = tabStateRef.current;
         const tabId = expertTabId(expertId);
         const title = String(expert?.name || "").trim() || expertId;
@@ -1366,7 +1372,15 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         const existing = prev.tabs.find(t => t.id === tabId)
             || prev.tabs.find(t => t.type === "expert" && t.expertId === expertId);
         if (existing) {
-            const updated: AITab = { ...existing, title, expertId, expertIcon: icon || existing.expertIcon, expertDescription: description || existing.expertDescription };
+            const updated: AITab = {
+                ...existing,
+                title,
+                expertId,
+                expertIcon: icon || existing.expertIcon,
+                expertDescription: description || existing.expertDescription,
+                projectPath: projectPath || existing.projectPath,
+                latexRelativePath: latexRelativePath || existing.latexRelativePath,
+            };
             const saved = tabStatesRef.current.get(existing.id);
             if (saved) {
                 saved.lastActiveAt = Date.now();
@@ -1395,6 +1409,8 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             expertId,
             expertIcon: icon,
             expertDescription: description,
+            projectPath,
+            latexRelativePath,
             executionProfile: "assistant",
             closable: true,
         };

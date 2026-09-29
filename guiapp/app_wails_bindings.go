@@ -2502,6 +2502,16 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 		// Expert tab: session is keyed by expert id, not by project path, so the
 		// persona/history stay isolated per expert regardless of any projectPath.
 		userID = expertSessionUserID(expertID)
+		// A restored LaTeX expert tab can send before its task directory is on
+		// the tab. Tools would inherit the desktop while the editor reads the
+		// task workspace. Recover the durable task and bind that directory.
+		if projectPath == "" {
+			if resolved := a.resolveLatexExpertProjectPath(expertID); resolved != "" {
+				projectPath = resolved
+				req.ProjectPath = resolved
+				log.Printf("[AI assistant] latex expert recovered task path request_id=%s project_path=%q", requestID, projectPath)
+			}
+		}
 	}
 	// event_scope_id is the concrete UI tab. Restore its optional private
 	// directory before any downstream tool/prompt/workflow resolution.
@@ -2529,6 +2539,12 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 				log.Printf("[AI assistant] reject tab working directory request_id=%s task_path=%q working_dir=%q err=%v", requestID, projectPath, executionProjectPath, err)
 				return nil, err
 			}
+		}
+		// Expert sessions are keyed by expert id, so the block above only
+		// creates the workspace. Tools still inherit the desktop directory
+		// unless this session is pointed at the same directory the preview reads.
+		if strings.TrimSpace(req.ExpertID) != "" {
+			a.bindExpertTaskWorkspace(userID, strings.TrimSpace(req.EventScopeID), projectPath)
 		}
 	}
 	if projectPath != "" && a.isProjectTaskClosed(projectPath) {

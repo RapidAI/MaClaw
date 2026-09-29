@@ -602,6 +602,33 @@ describe('CodePreviewWorkspace context menu', () => {
         })));
     });
 
+    it('opens a cloud tex file for editing without the cache path', async () => {
+        const onOpenFile = vi.fn();
+        getDirectory.mockResolvedValue({
+            root: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_abc',
+            entries: [{ name: 'main.tex', path: 'paper/main.tex', is_dir: false }],
+        });
+        getFilePreview.mockResolvedValue({
+            path: 'paper/main.tex',
+            abs_path: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_abc/paper/main.tex',
+            content: '\\documentclass{article}',
+            language: 'plaintext',
+        });
+        render(<CodePreviewWorkspace projectPath="cloud-task" cloudMode lang="zh-Hans" theme={theme} onOpenFile={onOpenFile} />);
+        fireEvent.contextMenu(await screen.findByText('main.tex'), { clientX: 30, clientY: 30 });
+        expect(screen.getByTestId('code-preview-workspace-context-preview').textContent).toBe('编辑 LaTeX');
+        fireEvent.click(screen.getByTestId('code-preview-workspace-context-preview'));
+        await waitFor(() => expect(onOpenFile).toHaveBeenCalledWith(expect.objectContaining({
+            filePath: 'paper/main.tex',
+            fileName: 'main.tex',
+            absPath: undefined,
+            language: 'latex',
+            latexWorkbench: true,
+            content: '\\documentclass{article}',
+        })));
+        expect(JSON.stringify(onOpenFile.mock.calls)).not.toMatch(/cloud-workspaces/i);
+    });
+
     it('shows and invokes Open with VS Code only when VS Code is available', async () => {
         isVSCodeAvailable.mockResolvedValue(true);
         getDirectory.mockResolvedValue({ root: '/remote/app', entries: [{ name: 'main.go', path: 'main.go', is_dir: false }] });

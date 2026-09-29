@@ -60,6 +60,7 @@ func RegisterLLMRoutes(
 	mux.HandleFunc("PUT /api/admin/llm/providers/{id}/sequence", RequireAdmin(adminService, adminSetLLMProviderSequence(llmSvc)))
 	mux.HandleFunc("DELETE /api/admin/llm/providers/{id}", RequireAdmin(adminService, adminDeleteLLMProvider(llmSvc)))
 	mux.HandleFunc("GET /api/admin/llm/providers/{id}/references", RequireAdmin(adminService, adminListLLMProviderReferences(llmSvc)))
+	mux.HandleFunc("DELETE /api/admin/llm/provider-arrays/{id}", RequireAdmin(adminService, adminDeleteLLMProviderArray(llmSvc)))
 
 	// --- Admin: Provider Monitor ---
 	mux.HandleFunc("GET /api/admin/llm/provider-monitor/config", RequireAdmin(adminService, adminGetLLMProviderMonitorConfig(llmSvc)))

@@ -2,6 +2,7 @@ package guiapp
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"context"
 	"crypto/sha256"
 	"fmt"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 func TestCleanCodingWorkbenchBrowserPath(t *testing.T) {
@@ -71,6 +74,9 @@ func TestRemotePathWithinDirAllowsChildrenOfFilesystemRoot(t *testing.T) {
 func TestOmitCloudWorkspaceAbsPath(t *testing.T) {
 	if got := omitCloudWorkspaceAbsPath(`C:\Users\me\.maclaw\data\cloud-workspaces\t\cws\a.md`); got != "" {
 		t.Fatalf("cloud cache path leaked: %q", got)
+	}
+	if got := omitCloudWorkspaceAbsPath(`C:\Users\me\.maclaw\data\cloud-workspaces-readonly\t\cws\a.md`); got != "" {
+		t.Fatalf("readonly cache path leaked: %q", got)
 	}
 	if got := omitCloudWorkspaceAbsPath("/workspace/src/main.go"); got != "/workspace/src/main.go" {
 		t.Fatalf("local path omitted unexpectedly: %q", got)
@@ -305,6 +311,353 @@ func TestTarCodingWorkbenchDownloadIncludesFilesAndSkipsMaclawCloud(t *testing.T
 	for name := range names {
 		if strings.Contains(name, ".maclaw-cloud") {
 			t.Fatalf("internal cache leaked into tar: %q", name)
+		}
+	}
+}
+
+func TestZipLatexSubmissionDirKeepsSourcesAndDropsBuildFiles(t *testing.T) {
+	src := t.TempDir()
+	write := func(name, body string) {
+		t.Helper()
+		path := filepath.Join(src, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("main.tex", "tex")
+	write("main.pdf", "pdf")
+	write("refs.bib", "bib")
+	write("main.bbl", "bbl")
+	write("fig/plot.png", "png")
+	write("main.aux", "aux")
+	write("main.log", "log")
+	write("main.synctex.gz", "sync")
+	write("main.tex.maclaw-bak", "bak")
+	write(".maclaw-cloud/state.json", "{}")
+	dest := filepath.Join(t.TempDir(), "paper.zip")
+	if err := zipLatexSubmissionDir(src, dest, "paper"); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	zr, err := zip.NewReader(f, mustZipSize(t, dest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]string{}
+	for _, item := range zr.File {
+		rc, err := item.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := io.ReadAll(rc)
+		_ = rc.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		names[item.Name] = string(body)
+	}
+	for _, name := range []string{"paper/main.tex", "paper/main.pdf", "paper/refs.bib", "paper/main.bbl", "paper/fig/plot.png"} {
+		if _, ok := names[name]; !ok {
+			t.Fatalf("missing %s in %#v", name, names)
+		}
+	}
+	if names["paper/main.tex"] != "tex" || names["paper/fig/plot.png"] != "png" {
+		t.Fatalf("contents = %#v", names)
+	}
+	for name := range names {
+		lower := strings.ToLower(name)
+		if strings.HasSuffix(lower, ".aux") || strings.HasSuffix(lower, ".log") || strings.Contains(lower, "synctex") || strings.Contains(lower, "maclaw") {
+			t.Fatalf("build file leaked into zip: %q", name)
+		}
+	}
+}
+
+func mustZipSize(t *testing.T, path string) int64 {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info.Size()
+}
+
+func TestExportLatexSubmissionZipUsesTaskWorkspace(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	created := app.CreateExpertTask("builtin-latex-paper", "LaTeX")
+	if created.ProjectPath == "" {
+		t.Fatal("expert task was not created")
+	}
+	root := app.recentTaskExecutionProjectPath(created.ProjectPath)
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "main.tex"), []byte("tex"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "main.aux"), []byte("aux"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(t.TempDir(), "out.zip")
+	prev := codingWorkbenchSaveDialog
+	codingWorkbenchSaveDialog = func(_ *App, title, defaultName string, _ []runtime.FileFilter) (string, error) {
+		if title != "导出投稿包" || !strings.HasSuffix(defaultName, "-submission.zip") {
+			t.Fatalf("dialog title=%q name=%q", title, defaultName)
+		}
+		return dest, nil
+	}
+	t.Cleanup(func() { codingWorkbenchSaveDialog = prev })
+	got, err := app.ExportLatexSubmissionZip(created.ProjectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != dest {
+		t.Fatalf("saved path = %q, want %q", got, dest)
+	}
+	f, err := os.Open(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	zr, err := zip.NewReader(f, mustZipSize(t, dest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundTex, foundAux := false, false
+	for _, item := range zr.File {
+		if strings.HasSuffix(item.Name, "/main.tex") {
+			foundTex = true
+		}
+		if strings.HasSuffix(strings.ToLower(item.Name), ".aux") {
+			foundAux = true
+		}
+	}
+	if !foundTex || foundAux {
+		t.Fatalf("tex=%v aux=%v", foundTex, foundAux)
+	}
+	codingWorkbenchSaveDialog = func(_ *App, _, _ string, _ []runtime.FileFilter) (string, error) {
+		return "", nil
+	}
+	cancelled, err := app.ExportLatexSubmissionZip(created.ProjectPath)
+	if err != nil || cancelled != "" {
+		t.Fatalf("cancel = %q, %v", cancelled, err)
+	}
+}
+
+func TestExportLatexSourceBundlePacksThePaperDirectory(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "fig"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(name)), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("main.tex", "tex")
+	write("refs.bib", "bib")
+	write("main.pdf", "pdf")
+	write("main.aux", "aux")
+	write("fig/plot.png", "png")
+	pdf := filepath.Join(dir, "main.pdf")
+	dest := filepath.Join(t.TempDir(), "out.zip")
+	prev := codingWorkbenchSaveDialog
+	codingWorkbenchSaveDialog = func(_ *App, title, defaultName string, _ []runtime.FileFilter) (string, error) {
+		if title != "导出 LaTeX 源码包" || !strings.HasSuffix(defaultName, "-source.zip") {
+			t.Fatalf("dialog title=%q name=%q", title, defaultName)
+		}
+		return dest, nil
+	}
+	t.Cleanup(func() { codingWorkbenchSaveDialog = prev })
+	got, err := app.ExportLatexSourceBundle(pdf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != dest {
+		t.Fatalf("saved = %q", got)
+	}
+	f, err := os.Open(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	zr, err := zip.NewReader(f, mustZipSize(t, dest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]bool{}
+	for _, item := range zr.File {
+		names[item.Name] = true
+	}
+	for _, suffix := range []string{"/main.tex", "/refs.bib", "/main.pdf", "/fig/plot.png"} {
+		found := false
+		for name := range names {
+			if strings.HasSuffix(name, suffix) {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("missing %s in %#v", suffix, names)
+		}
+	}
+	for name := range names {
+		if strings.HasSuffix(strings.ToLower(name), ".aux") {
+			t.Fatalf("build file leaked: %q", name)
+		}
+	}
+	onlyPDF := t.TempDir()
+	if err := os.WriteFile(filepath.Join(onlyPDF, "report.pdf"), []byte("pdf"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	codingWorkbenchSaveDialog = func(_ *App, _, _ string, _ []runtime.FileFilter) (string, error) {
+		called = true
+		return dest, nil
+	}
+	if _, err := app.ExportLatexSourceBundle(filepath.Join(onlyPDF, "report.pdf")); err == nil || !strings.Contains(err.Error(), "folder has no latex source") {
+		t.Fatalf("pdf without sources: %v", err)
+	}
+	if called {
+		t.Fatal("save dialog opened without a latex source")
+	}
+}
+
+func TestExportLatexSourceBundleLiftsChapterFileToPaperRoot(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	parent := t.TempDir()
+	paper := filepath.Join(parent, "paper")
+	other := filepath.Join(parent, "other")
+	if err := os.MkdirAll(filepath.Join(paper, "chapters"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(paper, "fig"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(path, body string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(paper, "main.tex"), "main")
+	write(filepath.Join(paper, "main.pdf"), "pdf")
+	write(filepath.Join(paper, "fig", "plot.png"), "png")
+	write(filepath.Join(paper, "chapters", "intro.tex"), "intro")
+	write(filepath.Join(other, "notes.tex"), "notes")
+	write(filepath.Join(other, "notes.pdf"), "pdf")
+	dest := filepath.Join(t.TempDir(), "out.zip")
+	prev := codingWorkbenchSaveDialog
+	codingWorkbenchSaveDialog = func(_ *App, _, _ string, _ []runtime.FileFilter) (string, error) {
+		return dest, nil
+	}
+	t.Cleanup(func() { codingWorkbenchSaveDialog = prev })
+	if _, err := app.ExportLatexSourceBundle(filepath.Join(paper, "chapters", "intro.tex")); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	zr, err := zip.NewReader(f, mustZipSize(t, dest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]bool{}
+	for _, item := range zr.File {
+		names[item.Name] = true
+	}
+	for _, suffix := range []string{"/main.tex", "/fig/plot.png", "/chapters/intro.tex"} {
+		found := false
+		for name := range names {
+			if strings.HasSuffix(name, suffix) {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("missing %s in %#v", suffix, names)
+		}
+	}
+	for name := range names {
+		if strings.Contains(name, "notes") {
+			t.Fatalf("neighboring project leaked: %q", name)
+		}
+	}
+}
+
+func TestExportLatexSourceBundleIgnoresChapterFigurePDF(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	parent := t.TempDir()
+	paper := filepath.Join(parent, "paper")
+	other := filepath.Join(parent, "other")
+	if err := os.MkdirAll(filepath.Join(paper, "chapters"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(paper, "fig"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(path, body string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(paper, "main.tex"), "\\documentclass{article}\n\\begin{document}\n\\input{chapters/intro}\n\\end{document}\n")
+	write(filepath.Join(paper, "fig", "plot.png"), "png")
+	write(filepath.Join(paper, "chapters", "intro.tex"), "% \\documentclass{article}\n本章说明导言区的 \\documentclass{article} 命令。\n")
+	write(filepath.Join(paper, "chapters", "diagram.pdf"), "figure")
+	write(filepath.Join(other, "notes.tex"), "\\documentclass{article}\n")
+	write(filepath.Join(other, "notes.pdf"), "pdf")
+	dest := filepath.Join(t.TempDir(), "out.zip")
+	prev := codingWorkbenchSaveDialog
+	codingWorkbenchSaveDialog = func(_ *App, _, _ string, _ []runtime.FileFilter) (string, error) {
+		return dest, nil
+	}
+	t.Cleanup(func() { codingWorkbenchSaveDialog = prev })
+	if _, err := app.ExportLatexSourceBundle(filepath.Join(paper, "chapters", "diagram.pdf")); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	zr, err := zip.NewReader(f, mustZipSize(t, dest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]bool{}
+	for _, item := range zr.File {
+		names[item.Name] = true
+	}
+	for _, suffix := range []string{"/main.tex", "/fig/plot.png", "/chapters/intro.tex", "/chapters/diagram.pdf"} {
+		found := false
+		for name := range names {
+			if strings.HasSuffix(name, suffix) {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("missing %s in %#v", suffix, names)
+		}
+	}
+	for name := range names {
+		if strings.Contains(name, "notes") {
+			t.Fatalf("neighboring project leaked: %q", name)
 		}
 	}
 }

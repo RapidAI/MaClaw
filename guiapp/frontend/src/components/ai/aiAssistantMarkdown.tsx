@@ -1585,6 +1585,8 @@ export function renderMessage(
     liveReasoningObject?: string,
     /** Last assistant while the task is still running. Settled replies hide call rows. */
     taskRunning = false,
+    /** Paper expert: export the sources beside the PDF as one zip. */
+    latexSourceBundle = false,
 ): React.ReactNode {
     // The confirmation card lives in its own module to keep this file under the
     // 2000-line UI guard cap; it receives its renderers by injection so that
@@ -1843,7 +1845,7 @@ export function renderMessage(
                             />
                         )}
                         {savedPaths.length > 0 && (
-                            <TaskResultArtifacts paths={savedPaths} messageId={msg.id} lang={lang} onOpen={openFileInFolder} />
+                            <TaskResultArtifacts paths={savedPaths} messageId={msg.id} lang={lang} onOpen={openFileInFolder} latexSourceBundle={latexSourceBundle} />
                         )}
                         {(() => {
                             const visibleFields = visibleChatFields(msg.fields);

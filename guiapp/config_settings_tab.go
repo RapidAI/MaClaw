@@ -91,6 +91,7 @@ var settingsTabFieldKeys = map[string][]string{
 		"coding_knowledge_max_reviewed_tokens_per_project",
 	},
 	// Self-loading panels — empty DTO (dedicated APIs).
+	"latex":            {},
 	"searchEngine":     {},
 	"redeem":           {},
 	"memory":           {},

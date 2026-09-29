@@ -6228,6 +6228,58 @@ func (a *App) persistAssistantTabWorkingDir(tabID, projectPath, dir string) erro
 	return nil
 }
 
+// resolveLatexExpertProjectPath returns the durable task directory for the
+// built-in LaTeX paper expert. A restored tab can send with an empty project
+// path; other experts are left unchanged so they do not gain a task folder
+// just because a message omitted the path.
+func (a *App) resolveLatexExpertProjectPath(expertID string) string {
+	if a == nil || strings.TrimSpace(expertID) != builtinLatexExpertID {
+		return ""
+	}
+	created := a.CreateExpertTask(expertID, "")
+	return normalizeProjectSessionPath(created.ProjectPath)
+}
+
+// bindExpertTaskWorkspace points an expert session at the task workspace that
+// holds its files. Expert owners do not encode a project path, so without this
+// their tools inherit the desktop directory while the preview reads the task
+// workspace. A directory the user already chose for this expert is left alone.
+func (a *App) bindExpertTaskWorkspace(userID, tabID, projectPath string) {
+	if a == nil {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if userID == "" || projectPath == "" || expertIDFromUserID(userID) == "" {
+		return
+	}
+	if a.BoundWorkingDirForOwner(userID) != "" {
+		return
+	}
+	dir := normalizeProjectSessionPath(a.recentTaskExecutionProjectPath(projectPath))
+	if dir == "" {
+		return
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		log.Printf("[expert] task workspace mkdir owner=%s dir=%q err=%v", userID, dir, err)
+		return
+	}
+	tabID = strings.TrimSpace(tabID)
+	a.tabWorkingDirMu.Lock()
+	defer a.tabWorkingDirMu.Unlock()
+	if a.BoundWorkingDirForOwner(userID) != "" {
+		return
+	}
+	if tabID != "" {
+		if err := a.persistAssistantTabWorkingDir(tabID, projectPath, dir); err != nil {
+			log.Printf("[expert] task workspace persist tab=%s dir=%q err=%v", tabID, dir, err)
+		} else {
+			a.tabWorkingDirOverrides.Store(tabID, dir)
+		}
+	}
+	a.assistantSessionWorkingDirs.Store(userID, dir)
+}
+
 // bindAssistantTabWorkingDir restores the tab override before a turn starts.
 // It is idempotent and may safely run before every dispatch.
 func (a *App) bindAssistantTabWorkingDir(tabID, ownerID string) {

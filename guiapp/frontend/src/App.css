@@ -23769,6 +23769,11 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   font-weight: 600;
   letter-spacing: 0;
   color: var(--office-muted, var(--theme-text-muted));
+  /* The task-type glyph trails the title. The generic `.stsm-row-title`
+     `flex: 1` would absorb all free space and push the glyph against the
+     timestamp, so the title shrinks to its content instead; it still ellipsizes
+     via `min-width: 0`, and the timestamp keeps `margin-left: auto`. */
+  flex: 0 1 auto;
 }
 .mc-task-pane .sidebar-task-row.is-active .stsm-row-title {
   color: var(--theme-text-primary);
@@ -24788,6 +24793,11 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   color: var(--theme-text-secondary);
   font-size: 0.72rem;
   white-space: nowrap;
+}
+.stsm-field-hint {
+  color: var(--theme-text-muted);
+  font-size: 0.7rem;
+  line-height: 1.5;
 }
 .stsm-picker {
   display: flex;

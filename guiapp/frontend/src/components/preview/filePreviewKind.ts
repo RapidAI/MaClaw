@@ -7,6 +7,7 @@ export type FilePreviewKind =
     | 'pptx'
     | 'docx'
     | 'pdf'
+    | 'latex'
     | 'image'
     | 'video'
     | 'audio'
@@ -52,6 +53,7 @@ export function filePreviewKindFromName(name: string, language?: string): FilePr
     if (ext === '.pptx') return 'pptx';
     if (ext === '.docx') return 'docx';
     if (ext === '.pdf') return 'pdf';
+    if (ext === '.tex' || ext === '.latex' || ext === '.ltx') return 'latex';
     if (IMAGE_EXT.has(ext)) return 'image';
     if (VIDEO_EXT.has(ext)) return 'video';
     if (AUDIO_EXT.has(ext)) return 'audio';
@@ -60,6 +62,7 @@ export function filePreviewKindFromName(name: string, language?: string): FilePr
     if (lang === 'pptx') return 'pptx';
     if (lang === 'docx') return 'docx';
     if (lang === 'pdf') return 'pdf';
+    if (lang === 'latex' || lang === 'tex') return 'latex';
     if (lang === 'image') return 'image';
     if (lang === 'video') return 'video';
     if (lang === 'audio') return 'audio';
@@ -73,12 +76,12 @@ export function filePreviewKindFromName(name: string, language?: string): FilePr
 
 /** Previewers that own scrolling / paging and should hide the code minimap. */
 export function isChromeLessPreviewKind(kind: FilePreviewKind): boolean {
-    return kind === 'pptx' || kind === 'docx' || kind === 'pdf' || kind === 'image' || kind === 'video' || kind === 'audio' || kind === 'html';
+    return kind === 'pptx' || kind === 'docx' || kind === 'pdf' || kind === 'latex' || kind === 'image' || kind === 'video' || kind === 'audio' || kind === 'html';
 }
 
 /** Native binary/page viewers that need a local original path. */
 export function previewNeedsLocalFile(kind: FilePreviewKind): boolean {
-    return kind === 'pptx' || kind === 'docx' || kind === 'pdf' || kind === 'image' || kind === 'video' || kind === 'audio';
+    return kind === 'pptx' || kind === 'docx' || kind === 'pdf' || kind === 'latex' || kind === 'image' || kind === 'video' || kind === 'audio';
 }
 
 /** Whether the mobile library should download the Hub original before previewing. */
@@ -129,7 +132,7 @@ const LANGUAGE_BY_EXT: Record<string, string> = {
 export function languageFromFileName(name: string, fallbackLanguage?: string): string {
     const kind = filePreviewKindFromName(name, fallbackLanguage);
     if (kind === 'office' || kind === 'markdown') return 'markdown';
-    if (kind === 'pptx' || kind === 'docx' || kind === 'pdf' || kind === 'image' || kind === 'video' || kind === 'audio' || kind === 'html') {
+    if (kind === 'pptx' || kind === 'docx' || kind === 'pdf' || kind === 'latex' || kind === 'image' || kind === 'video' || kind === 'audio' || kind === 'html') {
         return kind;
     }
     const ext = fileExtFromName(name);

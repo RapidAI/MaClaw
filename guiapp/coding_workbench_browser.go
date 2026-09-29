@@ -2,6 +2,7 @@ package guiapp
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -927,7 +928,7 @@ func cleanupCodingWorkbenchVSCodeRemoteSnapshots(cacheRoot string, now time.Time
 
 func omitCloudWorkspaceAbsPath(absPath string) string {
 	normalized := strings.ToLower(strings.ReplaceAll(absPath, "\\", "/"))
-	if strings.Contains(normalized, "/cloud-workspaces/") {
+	if cloudCacheText(normalized) {
 		return ""
 	}
 	return absPath
@@ -1064,6 +1065,381 @@ func sanitizeCodingWorkbenchDownloadName(name string) string {
 func skipCodingWorkbenchDownloadName(name string) bool {
 	n := strings.TrimSpace(name)
 	return n == cloudWorkspaceCacheStateDir || n == ".maclaw-cloud"
+}
+
+// latexSubmissionSkipName drops TeX build products and editor backups from a
+// submission archive. Sources, figures, bibliographies and the compiled PDF stay.
+func latexSubmissionSkipName(name string) bool {
+	n := strings.TrimSpace(name)
+	if n == "" || n == "." || n == ".." {
+		return true
+	}
+	lower := strings.ToLower(n)
+	if strings.HasPrefix(lower, ".") || skipCodingWorkbenchDownloadName(n) {
+		return true
+	}
+	if strings.HasSuffix(lower, ".maclaw-bak") ||
+		strings.HasSuffix(lower, ".synctex.gz") ||
+		strings.HasSuffix(lower, ".synctex(busy)") ||
+		strings.HasSuffix(lower, ".fdb_latexmk") ||
+		strings.HasSuffix(lower, ".run.xml") {
+		return true
+	}
+	switch strings.ToLower(filepath.Ext(n)) {
+	case ".aux", ".log", ".out", ".toc", ".lof", ".lot", ".fls", ".nav", ".snm", ".vrb", ".xdv", ".dvi", ".blg", ".bcf":
+		return true
+	default:
+		return false
+	}
+}
+
+func latexSubmissionArchiveBase(taskPath, root string) string {
+	base := filepath.Base(strings.TrimRight(taskPath, `\/`))
+	if strings.EqualFold(filepath.Base(root), "workspace") {
+		parent := filepath.Base(filepath.Dir(root))
+		if parent != "" && parent != "." && parent != string(filepath.Separator) {
+			base = parent
+		}
+	}
+	name := sanitizeCodingWorkbenchDownloadName(base)
+	if name == "" || name == "download" {
+		return "paper-submission"
+	}
+	return name
+}
+
+// ExportLatexSubmissionZip writes the paper workspace to a zip the user can
+// upload. The save dialog's empty result means the user cancelled.
+func (a *App) ExportLatexSubmissionZip(projectPath string) (string, error) {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if a == nil || projectPath == "" {
+		return "", fmt.Errorf("project path is required")
+	}
+	if a.GetCodingWorkbenchStatus(projectPath).Kind == "remote" {
+		return "", fmt.Errorf("download is not available for remote workspaces")
+	}
+	root, err := codingWorkbenchBrowserLocalRoot(a, projectPath)
+	if err != nil {
+		return "", err
+	}
+	base := latexSubmissionArchiveBase(projectPath, root)
+	dest, err := codingWorkbenchSaveDialog(a, "导出投稿包", base+"-submission.zip", []runtime.FileFilter{
+		{DisplayName: "Zip (*.zip)", Pattern: "*.zip"},
+	})
+	if err != nil {
+		return "", err
+	}
+	dest = strings.TrimSpace(dest)
+	if dest == "" {
+		return "", nil
+	}
+	if !strings.HasSuffix(strings.ToLower(dest), ".zip") {
+		dest += ".zip"
+	}
+	if isPathInsideRoot(root, dest) {
+		return "", fmt.Errorf("cannot save the archive inside the folder being downloaded")
+	}
+	return writeLatexSubmissionZip(root, dest, base)
+}
+
+// ExportLatexSourceBundle zips the directory that holds a paper artifact.
+// The anchor is the compiled PDF or a source file. The archive contains the
+// main file, figures and the other sources a compiler needs, and omits TeX
+// build products. An empty save path means the user cancelled.
+func (a *App) ExportLatexSourceBundle(anchorPath string) (string, error) {
+	anchorPath = strings.TrimSpace(anchorPath)
+	if a == nil || anchorPath == "" {
+		return "", fmt.Errorf("file path is required")
+	}
+	info, err := os.Stat(anchorPath)
+	if err != nil {
+		return "", err
+	}
+	root := anchorPath
+	if !info.IsDir() {
+		root = filepath.Dir(anchorPath)
+	}
+	root, err = filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	root = latexPaperRoot(root)
+	if parent := filepath.Dir(root); parent == root || !dirHasLatexSource(root) {
+		return "", fmt.Errorf("folder has no latex source")
+	}
+	base := latexSubmissionArchiveBase(root, root)
+	dest, err := codingWorkbenchSaveDialog(a, "导出 LaTeX 源码包", base+"-source.zip", []runtime.FileFilter{
+		{DisplayName: "Zip (*.zip)", Pattern: "*.zip"},
+	})
+	if err != nil {
+		return "", err
+	}
+	dest = strings.TrimSpace(dest)
+	if dest == "" {
+		return "", nil
+	}
+	if !strings.HasSuffix(strings.ToLower(dest), ".zip") {
+		dest += ".zip"
+	}
+	if isPathInsideRoot(root, dest) {
+		return "", fmt.Errorf("cannot save the archive inside the folder being downloaded")
+	}
+	return writeLatexSubmissionZip(root, dest, base)
+}
+
+func writeLatexSubmissionZip(root, dest, base string) (string, error) {
+	if err := zipLatexSubmissionDir(root, dest, base); err != nil {
+		_ = os.Remove(dest)
+		return "", err
+	}
+	return dest, nil
+}
+
+func dirHasLatexSource(root string) bool {
+	found := false
+	stop := fmt.Errorf("latex source found")
+	_ = filepath.Walk(root, func(p string, info os.FileInfo, walkErr error) error {
+		if found || walkErr != nil || info == nil {
+			return walkErr
+		}
+		if p != root && latexSubmissionSkipName(info.Name()) {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if info.IsDir() || !info.Mode().IsRegular() {
+			return nil
+		}
+		switch strings.ToLower(filepath.Ext(info.Name())) {
+		case ".tex", ".ltx", ".latex":
+			found = true
+			return stop
+		default:
+			return nil
+		}
+	})
+	return found
+}
+
+// latexPaperRoot is the directory that holds the main file, figures and the
+// other sources. A chapter path is lifted to the nearest parent whose top-level
+// .tex declares \documentclass. A figure PDF sitting next to a chapter does not
+// count as the paper. Without a document class, the nearest directory that has
+// both a top-level .tex and a .pdf is used. A filesystem root is never used.
+func latexPaperRoot(start string) string {
+	start = filepath.Clean(strings.TrimSpace(start))
+	if start == "" || filepath.Dir(start) == start {
+		return start
+	}
+	bestPair := ""
+	bestTex := ""
+	current := start
+	for i := 0; i < 4; i++ {
+		if filepath.Dir(current) == current {
+			break
+		}
+		if dirHasDocumentClass(current) {
+			return current
+		}
+		hasTex := dirHasTopLevelExt(current, ".tex", ".ltx", ".latex")
+		hasPDF := dirHasTopLevelExt(current, ".pdf")
+		if hasTex && hasPDF && bestPair == "" {
+			bestPair = current
+		}
+		if hasTex && bestTex == "" {
+			bestTex = current
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			break
+		}
+		current = parent
+	}
+	if bestPair != "" {
+		return bestPair
+	}
+	if bestTex != "" {
+		return bestTex
+	}
+	return start
+}
+
+func dirHasDocumentClass(root string) bool {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		switch strings.ToLower(filepath.Ext(name)) {
+		case ".tex", ".ltx", ".latex":
+		default:
+			continue
+		}
+		if latexSubmissionSkipName(name) {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		f, err := os.Open(filepath.Join(root, name))
+		if err != nil {
+			continue
+		}
+		buf := make([]byte, 16<<10)
+		n, _ := f.Read(buf)
+		_ = f.Close()
+		if latexSourceDeclaresDocument(buf[:n]) {
+			return true
+		}
+	}
+	return false
+}
+
+func texCodePrefix(line string) string {
+	var b strings.Builder
+	backslashes := 0
+	for _, r := range line {
+		if r == '%' && backslashes%2 == 0 {
+			break
+		}
+		b.WriteRune(r)
+		if r == '\\' {
+			backslashes++
+		} else {
+			backslashes = 0
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func lineStartsDocument(code string) bool {
+	return strings.HasPrefix(code, `\documentclass`) || strings.HasPrefix(code, `\documentstyle`)
+}
+
+func latexSourceDeclaresDocument(raw []byte) bool {
+	line := make([]byte, 0, 256)
+	flush := func() bool {
+		text := string(line)
+		line = line[:0]
+		return lineStartsDocument(texCodePrefix(text))
+	}
+	for _, b := range raw {
+		if b == '\n' || b == '\r' {
+			if flush() {
+				return true
+			}
+			continue
+		}
+		if len(line) < 4096 {
+			line = append(line, b)
+		}
+	}
+	return flush()
+}
+
+func dirHasTopLevelExt(root string, exts ...string) bool {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return false
+	}
+	want := map[string]bool{}
+	for _, ext := range exts {
+		want[strings.ToLower(ext)] = true
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		if want[strings.ToLower(filepath.Ext(entry.Name()))] {
+			return true
+		}
+	}
+	return false
+}
+
+func zipLatexSubmissionDir(srcDir, dest, archiveRoot string) error {
+	archiveRoot = strings.Trim(strings.ReplaceAll(archiveRoot, "\\", "/"), "/")
+	if archiveRoot == "" || archiveRoot == "." || strings.Contains(archiveRoot, "..") {
+		archiveRoot = "paper-submission"
+	}
+	out, err := os.Create(dest)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	zw := zip.NewWriter(out)
+	var written int64
+	var files int
+	err = filepath.Walk(srcDir, func(p string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if p != srcDir && latexSubmissionSkipName(info.Name()) {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if p == srcDir || info.IsDir() {
+			return nil
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		files++
+		if files > codingWorkbenchDownloadMaxFiles {
+			return fmt.Errorf("archive exceeds file count limit")
+		}
+		if written+info.Size() > codingWorkbenchDownloadMaxArchiveBytes {
+			return fmt.Errorf("archive exceeds download size limit")
+		}
+		rel, err := filepath.Rel(srcDir, p)
+		if err != nil {
+			return err
+		}
+		hdr, err := zip.FileInfoHeader(info)
+		if err != nil {
+			return err
+		}
+		hdr.Name = path.Join(archiveRoot, filepath.ToSlash(rel))
+		hdr.Method = zip.Deflate
+		w, err := zw.CreateHeader(hdr)
+		if err != nil {
+			return err
+		}
+		f, err := os.Open(p)
+		if err != nil {
+			return err
+		}
+		n, copyErr := io.Copy(w, f)
+		_ = f.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		written += n
+		return nil
+	})
+	closeErr := zw.Close()
+	if err != nil {
+		return err
+	}
+	if files == 0 {
+		return fmt.Errorf("the working directory has no files to export")
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	return nil
 }
 
 // DownloadCodingWorkbenchEntry copies a workbench file, or tars a directory, to a

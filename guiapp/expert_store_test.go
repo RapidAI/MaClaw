@@ -575,15 +575,37 @@ func TestExpertStoreUninstalledMarketExpertCannotReviveFromHub(t *testing.T) {
 
 func TestBuiltinExpertListMerge(t *testing.T) {
 	builtins := builtinExperts()
-	if len(builtins) != 3 {
-		t.Fatalf("expected 3 builtin experts, got %d", len(builtins))
+	if len(builtins) == 0 {
+		t.Fatal("expected at least one builtin expert")
 	}
+	// Asserted as required ids rather than a count: adding a builtin expert must
+	// not silently pass a stale expectation, and removing one must not slip
+	// through just because the number went up elsewhere.
+	required := []string{
+		"builtin-paper-polish",
+		"builtin-paper-translate",
+		"builtin-pptx-maker",
+		builtinLatexExpertID,
+	}
+	seen := make(map[string]bool, len(builtins))
 	for _, b := range builtins {
+		if seen[b.ID] {
+			t.Fatalf("duplicate builtin expert id %q", b.ID)
+		}
+		seen[b.ID] = true
 		if !b.Builtin {
 			t.Fatalf("builtin expert %s must have Builtin=true", b.ID)
 		}
 		if b.ID == "" || b.Name == "" || b.SystemPrompt == "" || b.Icon == "" {
 			t.Fatalf("builtin expert %+v has empty required field", b)
+		}
+		if b.CreatedAt == "" || b.UpdatedAt == "" {
+			t.Fatalf("builtin expert %s must carry a stable timestamp so last-writer-wins is stable", b.ID)
+		}
+	}
+	for _, id := range required {
+		if !seen[id] {
+			t.Fatalf("builtin expert %q is missing", id)
 		}
 	}
 	if builtinExpertByID("builtin-pptx-maker") == nil {
@@ -598,8 +620,10 @@ func TestBuiltinExpertListMerge(t *testing.T) {
 	override.Builtin = false // on-disk form
 	user := testExpert("expert-user-1", "2026-03-02T10:00:00Z")
 	list := mergeBuiltinExpertList([]ExpertDefinition{override, user})
-	if len(list) != 4 {
-		t.Fatalf("expected 3 builtin + 1 user, got %d", len(list))
+	// Builtins first, then the user's own experts; the count is derived from the
+	// registry so adding a builtin expert does not need a test edit here.
+	if len(list) != len(builtins)+1 {
+		t.Fatalf("expected %d builtin + 1 user, got %d", len(builtins), len(list))
 	}
 	if list[0].ID != "builtin-paper-polish" || !list[0].Builtin {
 		t.Fatalf("override copy should lead with builtin flag, got %+v", list[0])
@@ -607,8 +631,8 @@ func TestBuiltinExpertListMerge(t *testing.T) {
 	if list[0].Description != "desc" { // testExpert's description
 		t.Fatalf("override content should win over in-binary, got %q", list[0].Description)
 	}
-	if list[3].ID != "expert-user-1" || list[3].Builtin {
-		t.Fatalf("user expert should be last with Builtin=false, got %+v", list[3])
+	if last := list[len(list)-1]; last.ID != "expert-user-1" || last.Builtin {
+		t.Fatalf("user expert should be last with Builtin=false, got %+v", last)
 	}
 }
 

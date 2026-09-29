@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -120,6 +121,185 @@ func TestSrvAIModelEmbedderAdapterUsesSharedBatchRuntime(t *testing.T) {
 	}
 	if want := filepath.Join(dataRoot, "models", embedding.DefaultModelFilename); manager.embeddingPath != want {
 		t.Fatalf("embeddingPath = %q, want %q", manager.embeddingPath, want)
+	}
+}
+
+// srvAIModelEmbedderAdapter is the only embedder the server-side knowledge
+// store ever sees. If it stopped satisfying RoleEmbedder, embedding.EmbedAs
+// would silently fall back to the un-prompted space, so the server would index
+// and query a different vector space than the desktop app — the prompt feature
+// would be half-applied with no error anywhere. Pin the contract at compile
+// time.
+var _ embedding.RoleEmbedder = srvAIModelEmbedderAdapter{}
+
+// newRoleTestAdapter wires the shared counting fake into a manager so the
+// adapter's role methods can be driven without loading real weights.
+func newRoleTestAdapter(t *testing.T) (srvAIModelEmbedderAdapter, *countingSrvEmbedder) {
+	t.Helper()
+	dataRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dataRoot, "models"), 0o755); err != nil {
+		t.Fatalf("create models dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dataRoot, "models", embedding.DefaultModelFilename), []byte("fake-embedding-model"), 0o644); err != nil {
+		t.Fatalf("write embedding model marker: %v", err)
+	}
+	emb := &countingSrvEmbedder{}
+	manager := newSrvAIModelManager(dataRoot)
+	manager.embeddingMgr = emb
+	return srvAIModelEmbedderAdapter{manager: manager}, emb
+}
+
+// withSrvPrompts pins the process-wide prompt switch for the duration of a test.
+func withSrvPrompts(t *testing.T, on bool) {
+	t.Helper()
+	previous := embedding.PromptsEnabled()
+	embedding.SetPromptsEnabled(on)
+	t.Cleanup(func() { embedding.SetPromptsEnabled(previous) })
+}
+
+func TestSrvAIModelEmbedderAdapterAppliesRolePrompts(t *testing.T) {
+	adapter, _ := newRoleTestAdapter(t)
+	withSrvPrompts(t, true)
+
+	plain, err := adapter.Embed("hello")
+	if err != nil {
+		t.Fatalf("plain Embed failed: %v", err)
+	}
+	if len(plain) != 2 {
+		t.Fatalf("plain vector = %v, want 2 components", plain)
+	}
+
+	// countingSrvEmbedder reports len([]rune(text))+1 in the second component,
+	// so the delta between a prompted and a plain vector is exactly the number
+	// of runes the template prepends.
+	for _, role := range []embedding.Role{embedding.RoleQuery, embedding.RoleDocument} {
+		prompted, err := adapter.EmbedWithRole("hello", role)
+		if err != nil {
+			t.Fatalf("EmbedWithRole(%v) failed: %v", role, err)
+		}
+		want := plain[1] + float32(len([]rune(embedding.PromptPrefix(role))))
+		if prompted[1] != want {
+			t.Fatalf("EmbedWithRole(%v) second component = %v, want %v (prefix %q not applied)",
+				role, prompted[1], want, embedding.PromptPrefix(role))
+		}
+	}
+
+	// RoleNone must stay identical to the plain path even with prompts on.
+	none, err := adapter.EmbedWithRole("hello", embedding.RoleNone)
+	if err != nil {
+		t.Fatalf("EmbedWithRole(RoleNone) failed: %v", err)
+	}
+	if none[1] != plain[1] {
+		t.Fatalf("RoleNone second component = %v, want %v", none[1], plain[1])
+	}
+}
+
+func TestSrvAIModelEmbedderAdapterBatchRoleAppliesPrompts(t *testing.T) {
+	adapter, emb := newRoleTestAdapter(t)
+	withSrvPrompts(t, true)
+
+	texts := []string{"a", "bb", "ccc"}
+	vectors, err := adapter.EmbedBatchWithRole(texts, embedding.RoleDocument)
+	if err != nil {
+		t.Fatalf("EmbedBatchWithRole failed: %v", err)
+	}
+	if len(vectors) != len(texts) {
+		t.Fatalf("got %d vectors, want %d", len(vectors), len(texts))
+	}
+	if emb.batchCalls.Load() != 1 {
+		t.Fatalf("expected one shared batch inference, got %d", emb.batchCalls.Load())
+	}
+	delta := float32(len([]rune(embedding.PromptPrefix(embedding.RoleDocument))))
+	for i, text := range texts {
+		want := float32(len([]rune(text))) + 1 + delta
+		if vectors[i][1] != want {
+			t.Fatalf("vector %d second component = %v, want %v", i, vectors[i][1], want)
+		}
+	}
+}
+
+func TestSrvAIModelEmbedderAdapterBatchRoleShortCircuitsWhenDisabled(t *testing.T) {
+	adapter, emb := newRoleTestAdapter(t)
+	withSrvPrompts(t, false)
+
+	texts := []string{"alpha", "beta"}
+	plain, err := adapter.EmbedBatch(texts)
+	if err != nil {
+		t.Fatalf("EmbedBatch failed: %v", err)
+	}
+	afterPlain := emb.batchCalls.Load()
+
+	withRole, err := adapter.EmbedBatchWithRole(texts, embedding.RoleQuery)
+	if err != nil {
+		t.Fatalf("EmbedBatchWithRole failed: %v", err)
+	}
+	if got := emb.batchCalls.Load(); got != afterPlain+1 {
+		t.Fatalf("disabled prompt path should reuse EmbedBatch; batchCalls = %d, want %d", got, afterPlain+1)
+	}
+	for i := range plain {
+		if withRole[i][1] != plain[i][1] {
+			t.Fatalf("disabled RoleQuery changed vector %d: %v vs %v", i, withRole[i][1], plain[i][1])
+		}
+	}
+}
+
+func TestSrvAIModelEmbedderAdapterModelIDTracksPromptRegime(t *testing.T) {
+	adapter, _ := newRoleTestAdapter(t)
+
+	withSrvPrompts(t, true)
+	enabled := adapter.ModelID()
+	if !strings.HasPrefix(enabled, embedding.DefaultModelFilename+":") {
+		t.Fatalf("ModelID %q does not carry the model filename %q", enabled, embedding.DefaultModelFilename)
+	}
+	if !strings.HasSuffix(enabled, ":"+embedding.SpaceRecipe()) {
+		t.Fatalf("ModelID %q does not end with the prompt recipe %q", enabled, embedding.SpaceRecipe())
+	}
+
+	withSrvPrompts(t, false)
+	disabled := adapter.ModelID()
+	if disabled == enabled {
+		t.Fatalf("ModelID did not change with the prompt regime: %q", disabled)
+	}
+	if !strings.HasSuffix(disabled, ":raw") {
+		t.Fatalf("ModelID with prompts disabled = %q, want a :raw suffix", disabled)
+	}
+}
+
+// MACLAW_EMBEDDING_MODEL_PATH can point the manager at a different weights file.
+// The identity must follow it, otherwise a swapped model would keep reusing the
+// index built from the old one — the exact failure ModelID exists to prevent.
+func TestSrvAIModelEmbedderAdapterModelIDFollowsModelPathOverride(t *testing.T) {
+	customPath := filepath.Join(t.TempDir(), "custom-embed-model.gguf")
+	t.Setenv("MACLAW_EMBEDDING_MODEL_PATH", customPath)
+
+	adapter, _ := newRoleTestAdapter(t)
+	withSrvPrompts(t, true)
+
+	if id := adapter.ModelID(); !strings.HasPrefix(id, "custom-embed-model.gguf:") {
+		t.Fatalf("ModelID %q does not follow MACLAW_EMBEDDING_MODEL_PATH", id)
+	}
+}
+
+// The server must store vectors at the same width the desktop app does.
+//
+// srvAIEmbeddingDim was once a literal 256 while the rest of the product had
+// settled on embedding.DefaultEmbeddingDim (768), because the 256-dim MRL
+// truncation measurably collapses CJK discrimination. Two widths would mean two
+// vector spaces that differ only in how much of the vector was kept — invisible
+// as a bug, because every cosine still returns and the dimension metadata
+// silently filters the two apart forever.
+//
+// Pinning the adapter against the const as well catches the second way this can
+// rot: the manager is constructed with srvAIEmbeddingDim, so if Dim() ever
+// reported something else the store would validate vectors against the wrong
+// width.
+func TestSrvAIEmbeddingDimMatchesProductionWidth(t *testing.T) {
+	if srvAIEmbeddingDim != embedding.DefaultEmbeddingDim {
+		t.Fatalf("srvAIEmbeddingDim = %d, want embedding.DefaultEmbeddingDim = %d: the server and desktop app must store the same vector width",
+			srvAIEmbeddingDim, embedding.DefaultEmbeddingDim)
+	}
+	if got := (srvAIModelEmbedderAdapter{}).Dim(); got != srvAIEmbeddingDim {
+		t.Fatalf("srvAIModelEmbedderAdapter.Dim() = %d, want srvAIEmbeddingDim = %d", got, srvAIEmbeddingDim)
 	}
 }
 

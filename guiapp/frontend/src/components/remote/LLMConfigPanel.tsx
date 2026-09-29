@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { CompleteAnthropicOAuth, FetchCodeGenModels, FetchProviderModels, GetHubLLMServiceStatus, GetMaclawAgentMaxIterations, GetMaclawLLMProviders, GetMaclawLLMThinkingMode, GetSubAgentConcurrency, ImportExternalAgents, SaveCodeGenModelChoice, SaveMaclawLLMProviders, SetMaclawAgentMaxIterations, SetMaclawLLMThinkingMode, SetSubAgentConcurrency, StartAnthropicOAuth, StartGitHubCopilotOAuth, StartOpenAIOAuth, StartOpenCodeZenLogin, StartWorkBuddyOAuth, StartXAIOAuth, TestAndSaveMaclawLLMProviders, WaitGitHubCopilotOAuth } from '../../../wailsjs/go/main/App';
+import { FetchCodeGenModels, FetchProviderModels, GetHubLLMServiceStatus, GetMaclawAgentMaxIterations, GetMaclawLLMProviders, GetMaclawLLMThinkingMode, GetSubAgentConcurrency, ImportExternalAgents, SaveCodeGenModelChoice, SaveMaclawLLMProviders, SetMaclawAgentMaxIterations, SetMaclawLLMThinkingMode, SetSubAgentConcurrency, StartOpenCodeZenLogin, TestAndSaveMaclawLLMProviders } from '../../../wailsjs/go/main/App';
 import { corelib } from '../../../wailsjs/go/models';
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { colors } from "./styles";
 import { HUB_SERVICE_PROVIDER_NAME, KNOWN_OPENAI_ENDPOINTS, LLM_CONFIG_LOAD_TIMEOUT_MS, NONE_PROVIDER, canQueryOpenAIOrganizationCosts, formatProviderTestError, formatProviderTestErrorOrFallback, hubCreditGrants, hubOfficialStatus, inputStyle, isOpenCodeProvider, isProviderTestCancelMessage, labelStyle, readonlyStyle, withTimeout, type HubLLMServiceStatus, type LLMProvider } from "./LLMConfigPanelShared";
 import { UsageDisplay } from "./UsageDisplay";
 import { TokenUsagePanel } from "./TokenUsagePanel";
-import { cancelNamedProviderOAuth, promptKimiCodeDeviceLogin } from "./providerOAuth";
+import { cancelNamedProviderOAuth, promptKimiCodeDeviceLogin, runProviderOAuthLogin } from "./providerOAuth";
 import { isKimiCodeProvider, isWorkBuddyProvider, PROVIDER_LOGOS } from "./providerLogos";
 import { useDialog } from "../CustomDialog";
 import { KNOWN_USER_AGENTS, commitCustomAgentValue, customAgentSeedForProvider, editableCustomAgentValue, effectiveAgentType, isKnownUserAgent, selectableAgentType } from "./userAgent";
@@ -155,54 +155,24 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged }: Prop
         setOauthBusy(true);
         setDlgTestResult(null);
         try {
-            let loginMessage = "";
-
-            if (providerName === "Anthropic") {
-                const info = await StartAnthropicOAuth();
-                window.open(info.auth_url, "_blank");
-                const code = await showPrompt(
-                    t(
-                        "Please paste the Authorization Code shown in the browser page:",
-                        "请粘贴浏览器页面中显示的授权码 (Authorization Code):",
-                    ),
-                    t("Authorization Code", "授权码"),
-                    {
-                        placeholder: t("Paste authorization code here", "在此粘贴授权码"),
-                    },
-                );
-                if (!code?.trim()) {
-                    setDlgTestResult({ ok: false, msg: t("Cancelled", "已取消") });
-                    return;
-                }
-                loginMessage = await CompleteAnthropicOAuth(code.trim());
-            } else if (providerName === "GitHub Copilot") {
-                const deviceInfo = await StartGitHubCopilotOAuth();
-                setDlgTestResult({
-                    ok: true,
-                    msg: `请打开 ${deviceInfo.verification_uri} 并输入代码: ${deviceInfo.user_code}`,
-                });
-                loginMessage = await WaitGitHubCopilotOAuth();
-            } else if (providerName === "xAI-Grok") {
-                // StartXAIOAuth launches the system browser itself, matching
-                // the known-working OpenAI OAuth flow. Waiting here also
-                // prevents the WebView bridge from trying to relaunch a long
-                // xAI OIDC URL.
-                loginMessage = await StartXAIOAuth();
-                if (oauthAttempt !== oauthAttemptRef.current) return;
-            } else if (isWorkBuddyProvider(providerName)) {
-                loginMessage = await StartWorkBuddyOAuth(providerName);
-                if (oauthAttempt !== oauthAttemptRef.current) return;
-            } else if (isKimiCodeProvider(providerName)) {
-                const pending = await promptKimiCodeDeviceLogin(t);
-                if (oauthAttempt !== oauthAttemptRef.current) return;
-                oauthHintAttemptRef.current = oauthAttempt;
-                setOauthHint(pending.hint);
-                loginMessage = pending.message;
-            } else {
-                loginMessage = await StartOpenAIOAuth();
-            }
-
-            if (oauthAttempt !== oauthAttemptRef.current) return;
+            const loginMessage = await runProviderOAuthLogin({
+                providerName,
+                t,
+                showPrompt,
+                onDeviceHint: hint => {
+                    // The device code must be on screen while the wait runs,
+                    // or the user cannot finish the browser login at all. A
+                    // cancelled or superseded attempt must never paint its
+                    // dead code over the live attempt's hint.
+                    if (oauthAttempt !== oauthAttemptRef.current) return;
+                    oauthHintAttemptRef.current = oauthAttempt;
+                    setOauthHint(hint);
+                },
+                setTestResult: setDlgTestResult,
+            });
+            // `null` = the user cancelled mid-flow; a superseded attempt must
+            // never touch the live attempt's state either.
+            if (loginMessage === null || oauthAttempt !== oauthAttemptRef.current) return;
 
             const fresh = await refreshProviderList();
             if (fresh) {

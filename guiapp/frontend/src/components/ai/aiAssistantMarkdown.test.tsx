@@ -19,7 +19,7 @@ import { darkTheme, lightTheme } from "./aiAssistantPanelTheme";
 // outside jsdom's scope.
 const safeKBImageJPEG = "/9j/2wCEAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDIBCQkJDAsMGA0NGDIhHCEyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMv/AABEIAAEAAQMBIgACEQEDEQH/xAGiAAABBQEBAQEBAQAAAAAAAAAAAQIDBAUGBwgJCgsQAAIBAwMCBAMFBQQEAAABfQECAwAEEQUSITFBBhNRYQcicRQygZGhCCNCscEVUtHwJDNicoIJChYXGBkaJSYnKCkqNDU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+gEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoLEQACAQIEBAMEBwUEBAABAncAAQIDEQQFITEGEkFRB2FxEyIygQgUQpGhscEJIzNS8BVictEKFiQ04SXxFxgZGiYnKCkqNTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqCg4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2dri4+Tl5ufo6ery8/T19vf4+fr/2gAMAwEAAhEDEQA/AOLooor5k/cT/9k=";
 
-const { openFileOrShowInFolderMock, showItemInFolderMock, knowledgeOpenImageAssetMock, attachmentPreviewDataURLMock, attachmentFullDataURLMock, importMobileDocumentFromPathMock, exportTaskResultFileMock } = vi.hoisted(() => ({
+const { openFileOrShowInFolderMock, showItemInFolderMock, knowledgeOpenImageAssetMock, attachmentPreviewDataURLMock, attachmentFullDataURLMock, importMobileDocumentFromPathMock, exportTaskResultFileMock, exportLatexSourceBundleMock } = vi.hoisted(() => ({
     openFileOrShowInFolderMock: vi.fn(async () => undefined),
     showItemInFolderMock: vi.fn(async () => undefined),
     knowledgeOpenImageAssetMock: vi.fn(async () => undefined),
@@ -27,6 +27,7 @@ const { openFileOrShowInFolderMock, showItemInFolderMock, knowledgeOpenImageAsse
     attachmentFullDataURLMock: vi.fn(async () => "data:image/png;base64,HOSTFULL"),
     importMobileDocumentFromPathMock: vi.fn(async (_path: string) => ({ id: "draft-1" })),
     exportTaskResultFileMock: vi.fn(async () => "D:\\export\\copy.docx"),
+    exportLatexSourceBundleMock: vi.fn(async () => "D:\\export\\paper-source.zip"),
 }));
 
 vi.mock("../../../wailsjs/go/main/App", () => ({
@@ -37,6 +38,7 @@ vi.mock("../../../wailsjs/go/main/App", () => ({
     AIAssistantAttachmentFullDataURL: attachmentFullDataURLMock,
     ImportMobileDocumentFromPath: importMobileDocumentFromPathMock,
     ExportTaskResultFile: exportTaskResultFileMock,
+    ExportLatexSourceBundle: exportLatexSourceBundleMock,
 }));
 
 vi.mock("../../../wailsjs/runtime", () => ({
@@ -2359,6 +2361,28 @@ describe("renderMessage assistant display guard", () => {
         fireEvent.click(screen.getByTestId("task-artifacts-more"));
         expect(screen.getByText("notes.md")).toBeTruthy();
         expect(screen.getByTestId("task-artifacts-more").textContent).toContain("收起产出物");
+    });
+
+    it("exports a latex paper as one source zip and does not list each source file", async () => {
+        exportLatexSourceBundleMock.mockClear();
+        render(<div>{renderMessage({
+            id: "assistant-paper",
+            role: "assistant",
+            content: "论文已写好。",
+            localFilePaths: [
+                "F:\\latex-test\\main.pdf",
+                "F:\\latex-test\\main.tex",
+                "F:\\latex-test\\refs.bib",
+            ],
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, false, "Saved file", "zh", false, undefined, undefined, false, undefined, undefined, undefined, false, true)}</div>);
+
+        expect(screen.getByText("main.pdf")).toBeTruthy();
+        expect(screen.queryByText("main.tex")).toBeNull();
+        expect(screen.queryByText("refs.bib")).toBeNull();
+        fireEvent.click(screen.getByTestId("task-result-latex-bundle-btn"));
+        await waitFor(() => expect(exportLatexSourceBundleMock).toHaveBeenCalledWith("F:\\latex-test\\main.pdf"));
+        expect(await screen.findByText("源码包已导出")).toBeTruthy();
     });
 
     it("marks a failed tool turn as not completed", () => {

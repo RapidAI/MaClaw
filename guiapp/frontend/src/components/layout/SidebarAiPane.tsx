@@ -7,6 +7,7 @@ import type { TaskManagementItem, TaskContextMenu } from './SidebarTaskManagemen
 import { SidebarTasksPane, middleContentSlotStyle } from './SidebarTasksPane';
 import type { ActiveAssistantTaskIdentity } from '../ai/aiAssistantPanelSessionUtils';
 import type { ExpertDefinition } from '../ai/expertTypes';
+import type { LatexExpertTaskOptions } from '../../utils/latexTemplates';
 import { SidebarSystemStatus } from './SidebarSystemStatus';
 import { VirtualEmployeeTab, type VirtualEmployeeEntry } from '../ai/VirtualEmployeeTab';
 import { getAssistantDarkScheme, type AssistantDarkSchemeId } from '../ai/assistantDarkSchemes';
@@ -84,7 +85,7 @@ type SidebarAiPaneProps = SidebarCreditDisplayFormatters & {
         workspaceId?: string,
     ) => Promise<void> | void;
     /** Expert-task creation path used by the chat task type in the create dialog. */
-    onCreateExpertTask?: (expert: ExpertDefinition) => Promise<void> | void;
+    onCreateExpertTask?: (expert: ExpertDefinition, options?: LatexExpertTaskOptions) => Promise<void> | void;
     refreshTasks: () => void;
     taskContextMenu: TaskContextMenu;
     setTaskContextMenu: (menu: TaskContextMenu) => void;

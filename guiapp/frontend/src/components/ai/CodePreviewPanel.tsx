@@ -205,11 +205,15 @@ export interface CodePreviewPanelProps {
     onSelectFile: (filePath: string) => void;
     /** The coding task whose local/remote workdir powers the default explorer tab. */
     projectPath?: string;
+    /** Paper task: the explorer lists that workspace and can export a submission zip. */
+    paperWorkspace?: boolean;
     /** Bumped after remote SSH reconnect so the workspace tree reloads in place. */
     workspaceRefreshToken?: number;
     /** Local working-directory changes drop the previous tree immediately. */
     workspaceResetOnRefresh?: boolean;
     onOpenWorkspaceFile?: (file: CodeFile) => void;
+    /** Write a saved LaTeX buffer back into an open tab without selecting it. */
+    onReplaceWorkspaceFileContent?: (filePath: string, content: string) => void;
     /** Close a single file tab (VS Code-style). */
     onCloseFile?: (filePath: string) => void;
     onCloseOtherFiles?: (keepPath: string) => void;
@@ -294,7 +298,7 @@ function CloudWorkspaceNameLabel({ name, theme, compact = false }: { name: strin
     );
 }
 
-function isVisualDocumentPreview(file: Pick<CodeFile, 'fileName' | 'filePath' | 'absPath' | 'language'> | undefined): boolean {
+function isVisualDocumentPreview(file: Pick<CodeFile, 'fileName' | 'filePath' | 'absPath' | 'language' | 'latexWorkbench'> | undefined): boolean {
     if (!file || isAssistantSourcePreview(file)) return false;
     return isVisualFilePreview(file);
 }
@@ -988,9 +992,11 @@ export function CodePreviewPanel({
     mruOrder,
     onSelectFile,
     projectPath,
+    paperWorkspace = false,
     workspaceRefreshToken,
     workspaceResetOnRefresh = false,
     onOpenWorkspaceFile,
+    onReplaceWorkspaceFileContent,
     onCloseFile,
     onCloseOtherFiles,
     onCloseFilesToTheRight,
@@ -1682,7 +1688,7 @@ export function CodePreviewPanel({
                         ) : null}
                     </div>
                     ) : null}
-                    <CodePreviewWorkspace projectPath={projectPath} refreshToken={workspaceRefreshToken} resetOnRefresh={workspaceResetOnRefresh} cloudMode={cloudMode} hideHeader={cloudMode || !hideHeaderClose} onRefreshReady={handleWorkspaceRefreshReady} lang={lang} theme={theme} onOpenFile={openWorkspaceFile} onFileDeleted={handleWorkspaceFileDeleted} />
+                    <CodePreviewWorkspace projectPath={projectPath} refreshToken={workspaceRefreshToken} resetOnRefresh={workspaceResetOnRefresh} cloudMode={cloudMode} paperWorkspace={paperWorkspace} hideHeader={cloudMode || !hideHeaderClose} onRefreshReady={handleWorkspaceRefreshReady} lang={lang} theme={theme} onOpenFile={openWorkspaceFile} onFileDeleted={handleWorkspaceFileDeleted} />
                 </div>
             </div>
         );
@@ -2033,12 +2039,18 @@ export function CodePreviewPanel({
                     }}
                 >
                     {workspaceActive ? (
-                        <CodePreviewWorkspace projectPath={projectPath} refreshToken={workspaceRefreshToken} resetOnRefresh={workspaceResetOnRefresh} cloudMode={cloudMode} hideTitle lang={lang} theme={theme} onOpenFile={openWorkspaceFile} onFileDeleted={handleWorkspaceFileDeleted} />
+                        <CodePreviewWorkspace projectPath={projectPath} refreshToken={workspaceRefreshToken} resetOnRefresh={workspaceResetOnRefresh} cloudMode={cloudMode} paperWorkspace={paperWorkspace} hideTitle lang={lang} theme={theme} onOpenFile={openWorkspaceFile} onFileDeleted={handleWorkspaceFileDeleted} />
                     ) : (
                         <FilePreviewView
                             file={activeFile}
                             theme={theme}
                             lang={lang}
+                            projectPath={projectPath}
+                            onLatexSourceChange={(content) => {
+                                const path = activeFile?.filePath;
+                                if (!path || !activeFile.latexWorkbench) return;
+                                onReplaceWorkspaceFileContent?.(path, content);
+                            }}
                             matchLineIndexes={matchLineIndexes}
                             activeMatchLine={activeMatchLine}
                         >

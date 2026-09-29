@@ -117,3 +117,14 @@ export const KnowledgeIcon = () => (
         <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
     </svg>
 );
+
+/** Latex 模板 - 带公式排版的文稿 */
+export const LatexTemplateIcon = () => (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M5 3.5h9l5 5V20.5H5z" />
+        <path d="M14 3.5v5h5" />
+        <path d="M8.5 16.5 11 12l2.5 4.5" />
+        <path d="M9.4 14.6h3.2" />
+        <path d="M16 12.5h2.5M16 15.5h2.5" />
+    </svg>
+);

@@ -403,6 +403,7 @@ func TestAdminPageSplitScriptOrder(t *testing.T) {
 		"assets/js/user-rankings-tab.js",
 		"assets/js/notification-admin.js",
 		"assets/js/problem-reports-tab.js",
+		"assets/js/latex-template-admin.js",
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("admin split script order = %v, want %v", got, want)

@@ -2,7 +2,7 @@ import type { AIAssistantInitStatus, CancelAIAssistantResult, ChatMessage, AIAss
 import type { AgentView } from "./agentViewTypes";
 export type { GroupDiscussionPanelControl, GroupDiscussionPanelStatus } from "./groupDiscussionTypes";
 import type { GroupDiscussionPanelControl } from "./groupDiscussionTypes";
-import type { PendingHistoryDiscussionOpen, PendingProjectTabOpen, PendingProjectTabOpenResult, PendingExpertOpen } from "./usePendingAssistantTabOpen";
+import type { PendingHistoryDiscussionOpen, PendingProjectTabOpen, PendingProjectTabOpenResult, PendingExpertOpen, EnsuredExpertTask } from "./usePendingAssistantTabOpen";
 import type { VirtualEmployeeEntry } from "./VirtualEmployeeTab";
 import type { ExpertDefinition } from "./expertTypes";
 import type { AssistantUpdatePayload } from "./AssistantUpdateNotice";
@@ -130,7 +130,7 @@ export interface AIAssistantPanelProps {
     onPendingProjectTabOpenHandled?: (result: PendingProjectTabOpenResult) => void;
     pendingExpertOpen?: PendingExpertOpen | null;
     onPendingExpertOpenHandled?: () => void;
-    onEnsureExpertTask?: (expert: ExpertDefinition) => Promise<void> | void;
+    onEnsureExpertTask?: (expert: ExpertDefinition, existing?: { relativePath?: string }) => Promise<EnsuredExpertTask | void> | EnsuredExpertTask | void;
     /** Persist every non-main assistant tab before it is opened. */
     onEnsureAssistantTabTask?: (tabType: string, tabIdentity: string, title: string, projectPath?: string) => Promise<void> | void;
     appUpdateAvailable?: AssistantUpdatePayload | null;

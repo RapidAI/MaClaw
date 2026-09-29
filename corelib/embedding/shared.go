@@ -23,7 +23,14 @@ func SharedGemmaReady() bool {
 	return sharedGemmaReady.Load()
 }
 
-// SharedGemma256 returns the process-wide frozen Gemma embedder (256-dim).
+// SharedGemma256 returns the process-wide frozen Gemma embedder.
+//
+// The "256" in the name is historical. It named the intended consumer — the
+// 256-dim llmpool class head, which truncates incoming vectors to its own
+// HeadDim, a valid MRL slice — not the output width. The embedder returns
+// DefaultEmbeddingDim components today, so do not read the name as a dimension
+// guarantee; call Dim() instead.
+//
 // Missing model files fall back to NoopEmbedder. If the file later appears
 // (admin download / copy into ~/.maclaw/models), the next call retries load.
 // Tests should not rely on Gemma.

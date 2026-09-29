@@ -33,6 +33,9 @@ func TestDetectLanguageFromExt_KnownExtensions(t *testing.T) {
 		{"config.yaml", "yaml"},
 		{"config.yml", "yaml"},
 		{"README.md", "markdown"},
+		{"main.tex", "latex"},
+		{"notes.latex", "latex"},
+		{"chap.ltx", "latex"},
 		{"deploy.sh", "shell"},
 		{"init.bash", "shell"},
 	}
@@ -68,6 +71,7 @@ func TestDetectLanguageFromExt_CaseInsensitive(t *testing.T) {
 		{"Index.JS", "javascript"},
 		{"Script.PY", "python"},
 		{"Config.YAML", "yaml"},
+		{"Paper.TEX", "latex"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.fileName, func(t *testing.T) {

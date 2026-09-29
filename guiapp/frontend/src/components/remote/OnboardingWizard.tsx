@@ -817,11 +817,17 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
             } else if (isWorkBuddyProvider(selectedProvider.name)) {
                 msg = await StartWorkBuddyOAuth(selectedProvider.name);
             } else if (isKimiCodeProvider(selectedProvider.name)) {
-                const pending = await promptKimiCodeDeviceLogin((en, zh) => t(zh, en));
+                const pending = await promptKimiCodeDeviceLogin((en, zh) => t(zh, en), hint => {
+                    // The device code must be visible while the wait runs, or
+                    // the user cannot finish the browser login at all. A
+                    // superseded attempt must never paint its dead code over
+                    // the live attempt's hint.
+                    if (oauthAttempt !== oauthAttemptRef.current) return;
+                    oauthPendingAttemptRef.current = oauthAttempt;
+                    setLlmResult({ ok: true, pending: true, msg: hint });
+                });
                 if (oauthAttempt !== oauthAttemptRef.current) return;
-                oauthPendingAttemptRef.current = oauthAttempt;
-                setLlmResult({ ok: true, pending: true, msg: pending.hint });
-                msg = pending.message;
+                msg = pending;
             } else {
                 msg = await StartOpenAIOAuth();
             }

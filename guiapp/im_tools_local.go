@@ -878,11 +878,29 @@ func (h *IMMessageHandler) toolEditLines(args map[string]interface{}) string {
 		res.Path, opStr, res.LinesChanged, res.TotalLines, res.Size, contextPreview)
 }
 
+// localToolCodePreviewProjectPath is the directory a file-write event is routed
+// with. Project tabs already have one. An expert tab does not: its owner id
+// carries an expert id, so executionProjectPathForOwner returns empty and the
+// preview pane drops the event. The expert's bound workspace is the directory
+// the frontend accepts as belonging to that task.
+func localToolCodePreviewProjectPath(h *IMMessageHandler, ownerID string) string {
+	if h == nil {
+		return ""
+	}
+	if projectPath := h.executionProjectPathForOwner(ownerID); projectPath != "" {
+		return projectPath
+	}
+	if expertIDFromUserID(ownerID) == "" || h.app == nil {
+		return ""
+	}
+	return strings.TrimSpace(h.app.EffectiveWorkingDirForOwner(ownerID))
+}
+
 func (h *IMMessageHandler) emitLocalToolCodeFilePreview(ownerID, absPath string, created bool, original string, hasOriginal bool) {
 	if h == nil || h.app == nil || h.app.codeEventEmitter == nil || strings.TrimSpace(absPath) == "" {
 		return
 	}
-	projectPath := h.executionProjectPathForOwner(ownerID)
+	projectPath := localToolCodePreviewProjectPath(h, ownerID)
 	sessionID := localToolCodePreviewSessionID(ownerID)
 	// Route with the tab/session project path when owner is a project session.
 	routePath := codePreviewRouteProjectPath(ownerID, projectPath)

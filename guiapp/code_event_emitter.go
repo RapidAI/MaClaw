@@ -151,6 +151,8 @@ func detectLanguageFromExt(fileName string) string {
 		return "yaml"
 	case ".md":
 		return "markdown"
+	case ".tex", ".latex", ".ltx":
+		return "latex"
 	case ".sh", ".bash":
 		return "shell"
 	case ".bat", ".cmd":

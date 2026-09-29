@@ -2399,6 +2399,116 @@ func TestAssistantTabWorkingDirectoriesAreIsolatedAndRestore(t *testing.T) {
 	}
 }
 
+func TestExpertFileWritePreviewCarriesTaskWorkspace(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	created := app.CreateExpertTask("builtin-latex-paper", "LaTeX")
+	if created.ProjectPath == "" {
+		t.Fatal("expert task was not created")
+	}
+	owner := expertSessionUserID("builtin-latex-paper")
+	app.bindExpertTaskWorkspace(owner, "expert-builtin-latex-paper", created.ProjectPath)
+	handler := &IMMessageHandler{app: app}
+	workspace := app.recentTaskExecutionProjectPath(created.ProjectPath)
+	if got := localToolCodePreviewProjectPath(handler, owner); filepath.Clean(got) != filepath.Clean(workspace) {
+		t.Fatalf("preview route = %q, want task workspace %q", got, workspace)
+	}
+	if got := localToolCodePreviewProjectPath(handler, desktopUserID); got != "" {
+		t.Fatalf("desktop preview route = %q, want empty", got)
+	}
+	texPath := filepath.Join(workspace, "main.tex")
+	if err := os.WriteFile(texPath, []byte("\\documentclass{article}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	events := buildCodingSubAgentCodeFileEventsForPaths("local-tools:"+owner, workspace, []subAgentCodeEventInput{{
+		path: texPath, forceOpen: true,
+	}})
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1", len(events))
+	}
+	if events[0].ProjectPath != workspace {
+		t.Fatalf("event project = %q, want %q", events[0].ProjectPath, workspace)
+	}
+	if events[0].FilePath != "main.tex" {
+		t.Fatalf("event file = %q, want main.tex", events[0].FilePath)
+	}
+}
+
+func TestLatexExpertEmptyProjectPathResolvesExistingTask(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	created := app.CreateExpertTask("builtin-latex-paper", "LaTeX")
+	if created.ProjectPath == "" {
+		t.Fatal("expert task was not created")
+	}
+	got := app.resolveLatexExpertProjectPath("builtin-latex-paper")
+	if filepath.Clean(got) != filepath.Clean(created.ProjectPath) {
+		t.Fatalf("resolved path = %q, want existing task %q", got, created.ProjectPath)
+	}
+	if again := app.CreateExpertTask("builtin-latex-paper", "LaTeX"); filepath.Clean(again.ProjectPath) != filepath.Clean(created.ProjectPath) {
+		t.Fatalf("recovery created a second task %q, want %q", again.ProjectPath, created.ProjectPath)
+	}
+	if got := app.resolveLatexExpertProjectPath("expert-other"); got != "" {
+		t.Fatalf("non-latex expert path = %q, want empty", got)
+	}
+	mainDir := filepath.Join(t.TempDir(), "desktop")
+	if err := os.MkdirAll(mainDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll desktop: %v", err)
+	}
+	if err := app.SetTabWorkingDir("", mainDir); err != nil {
+		t.Fatalf("SetTabWorkingDir main: %v", err)
+	}
+	owner := expertSessionUserID("builtin-latex-paper")
+	app.bindExpertTaskWorkspace(owner, "expert-builtin-latex-paper", got)
+	want := app.recentTaskExecutionProjectPath(created.ProjectPath)
+	if cwd := app.EffectiveWorkingDirForOwner(owner); filepath.Clean(cwd) != filepath.Clean(want) {
+		t.Fatalf("expert cwd = %q, want task workspace %q", cwd, want)
+	}
+	if cwd := app.EffectiveDesktopWorkingDir(); filepath.Clean(cwd) != filepath.Clean(mainDir) {
+		t.Fatalf("desktop cwd = %q, want %q", cwd, mainDir)
+	}
+}
+
+func TestExpertTaskWorkspaceIsWhereToolsWrite(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	created := app.CreateExpertTask("builtin-latex-paper", "LaTeX")
+	if created.ProjectPath == "" {
+		t.Fatal("expert task was not created")
+	}
+	mainDir := filepath.Join(t.TempDir(), "desktop")
+	if err := os.MkdirAll(mainDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll desktop: %v", err)
+	}
+	if err := app.SetTabWorkingDir("", mainDir); err != nil {
+		t.Fatalf("SetTabWorkingDir main: %v", err)
+	}
+	owner := expertSessionUserID("builtin-latex-paper")
+	tabID := "expert-builtin-latex-paper"
+	app.bindExpertTaskWorkspace(owner, tabID, created.ProjectPath)
+	want := app.recentTaskExecutionProjectPath(created.ProjectPath)
+	if got := app.EffectiveWorkingDirForOwner(owner); filepath.Clean(got) != filepath.Clean(want) {
+		t.Fatalf("expert cwd = %q, want task workspace %q", got, want)
+	}
+	if got := app.EffectiveDesktopWorkingDir(); filepath.Clean(got) != filepath.Clean(mainDir) {
+		t.Fatalf("desktop cwd = %q, want %q", got, mainDir)
+	}
+	// The next turn reloads the tab override. It must still be the paper
+	// workspace, not the desktop directory the expert used to inherit.
+	app.bindAssistantTabWorkingDir(tabID, owner)
+	if got := app.EffectiveWorkingDirForOwner(owner); filepath.Clean(got) != filepath.Clean(want) {
+		t.Fatalf("restored expert cwd = %q, want %q", got, want)
+	}
+	custom := filepath.Join(t.TempDir(), "custom")
+	if err := os.MkdirAll(custom, 0o755); err != nil {
+		t.Fatalf("MkdirAll custom: %v", err)
+	}
+	if err := app.SetTabWorkingDir(tabID, custom); err != nil {
+		t.Fatalf("SetTabWorkingDir expert: %v", err)
+	}
+	app.bindExpertTaskWorkspace(owner, tabID, created.ProjectPath)
+	if got := app.EffectiveWorkingDirForOwner(owner); filepath.Clean(got) != filepath.Clean(custom) {
+		t.Fatalf("chosen expert cwd overwritten: got %q, want %q", got, custom)
+	}
+}
+
 func TestExpertTabWorkingDirectoryIsPrivateAndFallsBackToMain(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 	mainDir := filepath.Join(t.TempDir(), "main")

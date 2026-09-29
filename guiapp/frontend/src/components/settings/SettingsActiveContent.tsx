@@ -26,6 +26,7 @@ import {
     OCRConfigPanel,
     ProxySettingsPanel,
     ProgrammingToolsSettingsPanel,
+    LatexSettingsPanel,
     SecurityPolicyPanel,
     SystemSettingsPanel,
     TTSConfigPanel,
@@ -394,6 +395,9 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
             break;
         case 'programmingTools':
             body = <ProgrammingToolsSettingsPanel config={config} setConfig={setConfig} lang={lang} />;
+            break;
+        case 'latex':
+            body = <LatexSettingsPanel lang={lang} />;
             break;
         case 'llm':
             body = wrapPanel('settings-content settings-panel', (

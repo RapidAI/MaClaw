@@ -18,6 +18,10 @@ export interface CodeFile {
     forceOpen?: boolean;
     autoOpenPreview?: boolean;
     previewTruncated?: boolean;
+    /** Cloud workspace LaTeX source: edit and compile without a cache path. */
+    latexWorkbench?: boolean;
+    /** Set when the source could not be read. The editor stays locked. */
+    latexReadError?: string;
     /** Tab identity that produced this file (not the remote SSH display path). */
     projectPath?: string;
 }
@@ -336,6 +340,38 @@ export function initialState(): CodePreviewUIState {
  * Workflow and source preview coexist behind tabs, so workflow state does not
  * suppress regular source preview updates.
  */
+/**
+ * An agent write is often reported as an absolute path under the task workspace.
+ * The open paper is keyed by its workspace-relative path (`main.tex`). Treating
+ * those as different files leaves the editor on the old buffer and opens a
+ * second, non-editable tab for the same source.
+ */
+export function retargetLatexWorkbenchUpdate(state: CodePreviewUIState, file: CodeFile): CodeFile {
+    if (!file.filePath || state.files.has(file.filePath)) return file;
+    const incoming = file.filePath.replace(/\\/g, '/');
+    for (const [path, existing] of state.files) {
+        if (!existing.latexWorkbench) continue;
+        const open = path.replace(/\\/g, '/');
+        if (incoming === open || incoming.endsWith('/' + open)) {
+            return { ...file, filePath: path, fileName: existing.fileName || file.fileName };
+        }
+    }
+    return file;
+}
+
+/** Agent file events omit the editor flag and carry the workspace absolute path.
+ * Adopting that path used to remount the editor, and the unmount save wrote the
+ * user's draft over the file the agent had just saved. */
+function keepOpenLatexWorkbench(existing: CodeFile | undefined, file: CodeFile): CodeFile {
+    if (!existing?.latexWorkbench || file.latexWorkbench !== undefined) return file;
+    return {
+        ...file,
+        latexWorkbench: true,
+        projectPath: existing.projectPath || file.projectPath,
+        absPath: existing.absPath,
+    };
+}
+
 export function applyFileUpdate(
     state: CodePreviewUIState,
     file: CodeFile,
@@ -344,6 +380,7 @@ export function applyFileUpdate(
     if (!file.filePath || file.content === undefined || file.content === null) {
         return state;
     }
+    file = retargetLatexWorkbenchUpdate(state, file);
     if (state.sessionID && file.sessionID !== state.sessionID) {
         // Session mismatch detected.
         // If the current session is NOT active (i.e., it ended or was restored
@@ -356,8 +393,13 @@ export function applyFileUpdate(
         // Callers that must not wipe (arm restore, turn-start sticky seed) should
         // emit forceOpen=false so an active session blocks them instead.
         if (file.sessionID && (!state.sessionActive || file.forceOpen)) {
+            const previous = state.files.get(file.filePath);
+            // Local file tools always force a new session. The takeover used to
+            // store the raw event, which dropped the open paper's editor and
+            // replaced its task directory with the workspace folder.
+            const kept = keepOpenLatexWorkbench(previous, file);
             const nextFiles = new Map<string, CodeFile>();
-            nextFiles.set(file.filePath, file);
+            nextFiles.set(file.filePath, kept);
             return {
                 ...state,
                 ...withOpenFileLists(state, nextFiles, file.filePath),
@@ -384,19 +426,39 @@ export function applyFileUpdate(
     const nextActiveFlag = shouldAutoOpen ? true : state.active;
     const nextUserClosed = file.forceOpen ? false : state.userClosed;
 
-    // Skip no-op updates (identical payload / redelivery) to avoid Map churn during streaming.
     const existing = state.files.get(file.filePath);
+    // Opening the paper starts a disk read. If the expert writes the file before
+    // that read returns, applying the late read puts the blank skeleton back on
+    // screen and hides the text that was just generated.
+    if (
+        existing?.latexWorkbench
+        && file.opType === 'read'
+        && (existing.opType === 'modify' || existing.opType === 'create')
+        && existing.updatedAt > (file.updatedAt || 0)
+    ) {
+        return state;
+    }
+    // A content event carries no presentation state. When an already-open LaTeX
+    // document is edited by an agent, the incoming file omits latexWorkbench and
+    // its projectPath is the tool directory (the task's workspace/ folder).
+    // Replacing the stored entry verbatim would drop the editor, and adopting
+    // that workspace path would make the next save or compile look in
+    // workspace/workspace. The task path stays; content and read outcome come
+    // from the event, so a successful write clears a previous read error.
+    const effective = keepOpenLatexWorkbench(existing, file);
+    // Skip no-op updates (identical payload / redelivery) to avoid Map churn during streaming.
     if (
         existing
-        && existing.content === file.content
-        && existing.original === file.original
-        && existing.opType === file.opType
-        && existing.language === file.language
-        && existing.fileName === file.fileName
-        && existing.absPath === file.absPath
-        && existing.previewTruncated === file.previewTruncated
-        && existing.sessionID === file.sessionID
-        && existing.projectPath === file.projectPath
+        && existing.content === effective.content
+        && existing.original === effective.original
+        && existing.opType === effective.opType
+        && existing.language === effective.language
+        && existing.fileName === effective.fileName
+        && existing.absPath === effective.absPath
+        && existing.previewTruncated === effective.previewTruncated
+        && existing.latexReadError === effective.latexReadError
+        && existing.sessionID === effective.sessionID
+        && existing.projectPath === effective.projectPath
         && state.activeFilePath === nextActive
         && state.active === nextActiveFlag
         && state.userClosed === nextUserClosed
@@ -408,7 +470,7 @@ export function applyFileUpdate(
     }
 
     const nextFiles = new Map(state.files);
-    nextFiles.set(file.filePath, file);
+    nextFiles.set(file.filePath, effective);
 
     return {
         ...state,
@@ -651,6 +713,34 @@ export function applyOpenWorkspaceFile(
     file: CodeFile,
 ): CodePreviewUIState {
     if (!file.filePath || file.content === undefined || file.content === null) return state;
+    const existing = state.files.get(file.filePath);
+    // Opening the paper starts a disk read before the file is shown. The expert
+    // can finish writing while that read is in flight. The read's updatedAt is
+    // the start time, so a later blank result must not replace the write.
+    if (
+        existing
+        && file.opType === 'read'
+        && (existing.opType === 'modify' || existing.opType === 'create')
+        && existing.updatedAt > (file.updatedAt || 0)
+    ) {
+        const files = new Map(state.files);
+        const kept = file.latexWorkbench && !existing.latexWorkbench
+            ? {
+                ...existing,
+                latexWorkbench: true as const,
+                projectPath: file.projectPath || existing.projectPath,
+                absPath: undefined,
+                latexReadError: undefined,
+            }
+            : existing;
+        if (kept !== existing) files.set(file.filePath, kept);
+        return {
+            ...state,
+            ...withOpenFileLists(state, kept === existing ? state.files : files, file.filePath),
+            active: true,
+            userClosed: false,
+        };
+    }
     const files = new Map(state.files);
     files.set(file.filePath, file);
     return {
@@ -659,6 +749,19 @@ export function applyOpenWorkspaceFile(
         active: true,
         userClosed: false,
     };
+}
+
+/** Replace an open tab's text without selecting it. A closed tab stays closed. */
+export function applyReplaceOpenFileContent(
+    state: CodePreviewUIState,
+    filePath: string,
+    content: string,
+): CodePreviewUIState {
+    const existing = state.files.get(filePath);
+    if (!existing || existing.content === content) return state;
+    const files = new Map(state.files);
+    files.set(filePath, { ...existing, content, previewTruncated: false });
+    return { ...state, files };
 }
 
 /**
@@ -1042,6 +1145,10 @@ export function useCodePreviewState(
         setState(prev => applyOpenWorkspaceFile(prev, stamped));
     }, [activeTabProjectPath]);
 
+    const replaceWorkspaceFileContent = useCallback((filePath: string, content: string) => {
+        setState(prev => applyReplaceOpenFileContent(prev, filePath, content));
+    }, []);
+
     const closeFile = useCallback((filePath: string) => {
         setState(prev => applyDismissEmptyPreviewWithoutWorkspace(
             applyCloseFile(prev, filePath),
@@ -1099,6 +1206,7 @@ export function useCodePreviewState(
         selectFile,
         focusFile,
         openWorkspaceFile,
+        replaceWorkspaceFileContent,
         closeFile,
         closeOtherFiles,
         closeFilesToTheRight,

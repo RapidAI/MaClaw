@@ -68,7 +68,7 @@ func main() {
 	gemmaPath := embedding.DefaultModelPath()
 	var embedder embedding.Embedder
 	if _, err3 := os.Stat(gemmaPath); err3 == nil {
-		embedder, _ = embedding.NewGemmaEmbedder(gemmaPath, 768)
+		embedder, _ = embedding.NewGemmaEmbedder(gemmaPath, embedding.DefaultEmbeddingDim)
 		if embedder != nil {
 			defer embedder.Close()
 			fmt.Printf("Gemma loaded: dim=%d\n", embedder.Dim())

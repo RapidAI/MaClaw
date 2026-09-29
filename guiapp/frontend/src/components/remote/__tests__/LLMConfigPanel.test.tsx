@@ -674,6 +674,61 @@ describe('LLMConfigPanel test-and-save flow', () => {
         await act(async () => finishLogin('Kimi Code 登录成功'));
     });
 
+    it('never shows a stale device code after the login is cancelled and restarted', async () => {
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                { name: 'Kimi Code', url: 'https://api.kimi.com/coding/v1', key: '', model: 'kimi-for-coding', protocol: 'openai', auth_type: 'oauth', supports_vision: false },
+            ],
+            current: 'Kimi Code',
+        });
+        // Attempt 1's Start stays pending until the test releases it — after
+        // the user has already cancelled and restarted the login.
+        let resolveStart1: (value: {
+            user_code: string;
+            verification_uri: string;
+            verification_uri_complete?: string;
+            browser_opened: boolean;
+        }) => void = () => {};
+        StartKimiCodeOAuthMock.mockImplementationOnce(() => new Promise(resolve => {
+            resolveStart1 = resolve;
+        }));
+        StartKimiCodeOAuthMock.mockImplementationOnce(() => Promise.resolve({
+            user_code: 'FFFF-2222',
+            verification_uri: 'https://www.kimi.com/code/authorize_device',
+            browser_opened: true,
+        }));
+        let finishLogin: (message: string) => void = () => {};
+        WaitKimiCodeOAuthMock.mockImplementation(() => new Promise<string>(resolve => {
+            finishLogin = resolve;
+        }));
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Sign in with Kimi Code' }));
+        await waitFor(() => expect(StartKimiCodeOAuthMock).toHaveBeenCalledTimes(1));
+
+        // Cancel attempt 1 while its Start call is still pending, then start
+        // attempt 2 right away (the button unlocks as soon as busy clears).
+        fireEvent.click(screen.getByRole('button', { name: 'Cancel OAuth login' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Sign in with Kimi Code' }));
+
+        // Attempt 1's Start resolves late: its dead device code must never
+        // reach the screen, even though the onHint callback fires.
+        await act(async () => {
+            resolveStart1({
+                user_code: 'DEAD-BEEF',
+                verification_uri: 'https://www.kimi.com/code/authorize_device',
+                browser_opened: true,
+            });
+        });
+        expect(screen.queryByText(/DEAD-BEEF/)).toBeNull();
+
+        // The live attempt's code is the one displayed.
+        expect(await screen.findByText(/FFFF-2222/)).toBeTruthy();
+        await act(async () => finishLogin('Kimi Code 登录成功'));
+    });
+
     it('keeps MaClaw Official visible when official grants are period-limited', async () => {
         GetHubLLMServiceStatusMock.mockResolvedValue({
             active: false,

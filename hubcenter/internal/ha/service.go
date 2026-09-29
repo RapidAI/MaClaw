@@ -29,24 +29,25 @@ import (
 )
 
 const (
-	EntityBlockedEmail        = "blocked_email"
-	EntityBlockedIP           = "blocked_ip"
-	EntityNewsArticle         = "news_article"
-	EntityHubInstance         = "hub_instance"
-	EntityHubDomainRoute      = "hub_domain_route"
-	EntityHubUserLink         = "hub_user_link"
-	EntitySystemSetting       = "system_setting"
-	EntityGossipSnapshot      = "gossip_snapshot"
-	EntitySkillHubSnapshot    = "skillhub_snapshot"
-	EntitySkillMarketSnapshot = "skillmarket_snapshot"
-	EntityPetStoreSnapshot    = "pet_store_snapshot"
-	EntityPetStoreMetrics     = "pet_store_metrics"
-	EntityLLMCardType         = "llm_card_type"
-	EntityLLMTenantAuth       = "llm_tenant_authorization"
-	EntityLLMCardOrder        = "llm_card_order"
-	EntityLLMNodeBinding      = "llm_node_binding"
-	EntityLLMUsageBatch       = "llm_usage_batch"
-	EntityNotification        = "notification"
+	EntityBlockedEmail          = "blocked_email"
+	EntityBlockedIP             = "blocked_ip"
+	EntityNewsArticle           = "news_article"
+	EntityHubInstance           = "hub_instance"
+	EntityHubDomainRoute        = "hub_domain_route"
+	EntityHubUserLink           = "hub_user_link"
+	EntitySystemSetting         = "system_setting"
+	EntityGossipSnapshot        = "gossip_snapshot"
+	EntitySkillHubSnapshot      = "skillhub_snapshot"
+	EntityLatexTemplateSnapshot = "latex_template_snapshot"
+	EntitySkillMarketSnapshot   = "skillmarket_snapshot"
+	EntityPetStoreSnapshot      = "pet_store_snapshot"
+	EntityPetStoreMetrics       = "pet_store_metrics"
+	EntityLLMCardType           = "llm_card_type"
+	EntityLLMTenantAuth         = "llm_tenant_authorization"
+	EntityLLMCardOrder          = "llm_card_order"
+	EntityLLMNodeBinding        = "llm_node_binding"
+	EntityLLMUsageBatch         = "llm_usage_batch"
+	EntityNotification          = "notification"
 
 	OpUpsert = "upsert"
 	OpDelete = "delete"
@@ -98,32 +99,35 @@ type Service struct {
 	// enable after every peer has been confirmed to send V2.
 	requireSignatureV2 atomic.Bool
 
-	ops                         store.HASyncOpRepository
-	cursors                     store.HAPeerCursorRepository
-	versions                    store.HAEntityVersionRepository
-	blockedEmails               store.BlockedEmailRepository
-	blockedIPs                  store.BlockedIPRepository
-	news                        store.NewsRepository
-	hubs                        store.HubRepository
-	routes                      store.HubDomainRouteRepository
-	links                       store.HubUserLinkRepository
-	settings                    store.SystemSettingsRepository
-	gossip                      store.GossipRepository
-	skillStore                  *skill.SkillStore
-	skillMarket                 *skillmarket.Store
-	petStoreSnapshotApplier     func(context.Context, json.RawMessage) error
-	petStoreMetricsApplier      func(context.Context, json.RawMessage) error
-	llmRegistryCacheInvalidator func()
-	officialClassHeadAck        func(string)
-	cardTypes                   cardstore.CardTypeRepository
-	cardOrders                  cardstore.PurchaseOrderRepository
-	llmAuthorizations           llmservice.TenantAuthorizationRepository
-	llmBindings                 store.LLMNodeBindingRepository
-	llmUsage                    llmservice.UsageBatchRepository
-	notifications               notification.Store
-	heartbeatSync               store.HAHeartbeatSyncStateRepository
-	heartbeatSyncMinInterval    time.Duration
-	heartbeatLastSynced         sync.Map
+	ops                          store.HASyncOpRepository
+	cursors                      store.HAPeerCursorRepository
+	versions                     store.HAEntityVersionRepository
+	blockedEmails                store.BlockedEmailRepository
+	blockedIPs                   store.BlockedIPRepository
+	news                         store.NewsRepository
+	hubs                         store.HubRepository
+	routes                       store.HubDomainRouteRepository
+	links                        store.HubUserLinkRepository
+	settings                     store.SystemSettingsRepository
+	gossip                       store.GossipRepository
+	skillStore                   *skill.SkillStore
+	skillMarket                  *skillmarket.Store
+	latexTemplateSnapshotApplier func(context.Context, json.RawMessage) error
+	latexTemplateSnapshotDumper  func(context.Context) (any, int, error)
+	latexTemplateRecordCounter   func(context.Context) (int64, error)
+	petStoreSnapshotApplier      func(context.Context, json.RawMessage) error
+	petStoreMetricsApplier       func(context.Context, json.RawMessage) error
+	llmRegistryCacheInvalidator  func()
+	officialClassHeadAck         func(string)
+	cardTypes                    cardstore.CardTypeRepository
+	cardOrders                   cardstore.PurchaseOrderRepository
+	llmAuthorizations            llmservice.TenantAuthorizationRepository
+	llmBindings                  store.LLMNodeBindingRepository
+	llmUsage                     llmservice.UsageBatchRepository
+	notifications                notification.Store
+	heartbeatSync                store.HAHeartbeatSyncStateRepository
+	heartbeatSyncMinInterval     time.Duration
+	heartbeatLastSynced          sync.Map
 
 	mu             sync.RWMutex
 	opMu           sync.Mutex
@@ -343,6 +347,31 @@ func (s *Service) AttachSkillMarket(sm *skillmarket.Store) {
 
 // SetPetStoreSnapshotApplier connects the HTTP-owned Pet Store storage to HA
 // without coupling the HA package to the HTTP API package.
+// SetLatexTemplateSnapshotApplier connects the HTTP-owned LaTeX catalogue to
+// HA without coupling the HA package to the HTTP API package. Application
+// replaces the peer catalogue, including package bytes, the same way a skill
+// snapshot replaces the peer skill library.
+func (s *Service) SetLatexTemplateSnapshotApplier(fn func(context.Context, json.RawMessage) error) {
+	if s == nil {
+		return
+	}
+	s.latexTemplateSnapshotApplier = fn
+}
+
+func (s *Service) SetLatexTemplateSnapshotDumper(fn func(context.Context) (any, int, error)) {
+	if s == nil {
+		return
+	}
+	s.latexTemplateSnapshotDumper = fn
+}
+
+func (s *Service) SetLatexTemplateRecordCounter(fn func(context.Context) (int64, error)) {
+	if s == nil {
+		return
+	}
+	s.latexTemplateRecordCounter = fn
+}
+
 func (s *Service) SetPetStoreSnapshotApplier(fn func(context.Context, json.RawMessage) error) {
 	if s == nil {
 		return
@@ -930,6 +959,7 @@ func adminSyncCategorySpecs() []adminSyncCategorySpec {
 		{Key: "system", Label: "System Settings", EntityTypes: map[string]struct{}{EntitySystemSetting: {}, EntityBlockedEmail: {}, EntityBlockedIP: {}}},
 		{Key: "gossip", Label: "Gossip Wall", EntityTypes: map[string]struct{}{EntityGossipSnapshot: {}}},
 		{Key: "skillhub", Label: "Skill Library", EntityTypes: map[string]struct{}{EntitySkillHubSnapshot: {}}},
+		{Key: "latex_templates", Label: "LaTeX Templates", EntityTypes: map[string]struct{}{EntityLatexTemplateSnapshot: {}}},
 		{Key: "skillmarket", Label: "Skill Market", EntityTypes: map[string]struct{}{EntitySkillMarketSnapshot: {}, EntityPetStoreSnapshot: {}, EntityPetStoreMetrics: {}}},
 		{Key: "compute_market", Label: "Compute Market", EntityTypes: map[string]struct{}{EntityLLMCardType: {}, EntityLLMTenantAuth: {}, EntityLLMCardOrder: {}, EntityLLMNodeBinding: {}}},
 		{Key: "news", Label: "News", EntityTypes: map[string]struct{}{EntityNewsArticle: {}}},
@@ -1021,6 +1051,11 @@ func (s *Service) localSyncRecordCounts(ctx context.Context) map[string]int64 {
 			counts["skillhub"] += counter.CountSnapshotRecords()
 		} else if snap, err := s.skillStore.DumpSnapshot(); err == nil {
 			counts["skillhub"] += int64(len(snap.Skills))
+		}
+	}
+	if s.latexTemplateRecordCounter != nil {
+		if count, err := s.latexTemplateRecordCounter(ctx); err == nil {
+			counts["latex_templates"] += count
 		}
 	}
 	if s.skillMarket != nil {
@@ -1981,7 +2016,7 @@ func validateRemoteOp(op *store.HASyncOp) error {
 
 func isSupportedEntityType(entityType string) bool {
 	switch entityType {
-	case EntityBlockedEmail, EntityBlockedIP, EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntitySystemSetting, EntityGossipSnapshot, EntitySkillHubSnapshot, EntitySkillMarketSnapshot, EntityPetStoreSnapshot, EntityPetStoreMetrics, EntityLLMCardType, EntityLLMTenantAuth, EntityLLMCardOrder, EntityLLMNodeBinding, EntityLLMUsageBatch, EntityNotification:
+	case EntityBlockedEmail, EntityBlockedIP, EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntitySystemSetting, EntityGossipSnapshot, EntitySkillHubSnapshot, EntityLatexTemplateSnapshot, EntitySkillMarketSnapshot, EntityPetStoreSnapshot, EntityPetStoreMetrics, EntityLLMCardType, EntityLLMTenantAuth, EntityLLMCardOrder, EntityLLMNodeBinding, EntityLLMUsageBatch, EntityNotification:
 		return true
 	default:
 		return false
@@ -2224,6 +2259,8 @@ func (s *Service) applyEntityOp(ctx context.Context, op *store.HASyncOp) error {
 		return s.applyGossipSnapshotOp(ctx, op)
 	case EntitySkillHubSnapshot:
 		return s.applySkillHubSnapshotOp(ctx, op)
+	case EntityLatexTemplateSnapshot:
+		return s.applyLatexTemplateSnapshotOp(ctx, op)
 	case EntitySkillMarketSnapshot:
 		return s.applySkillMarketSnapshotOp(ctx, op)
 	case EntityPetStoreSnapshot:
@@ -2535,6 +2572,13 @@ func (s *Service) applySkillHubSnapshotOp(ctx context.Context, op *store.HASyncO
 		return err
 	}
 	return s.skillStore.LoadSnapshot(&snap)
+}
+
+func (s *Service) applyLatexTemplateSnapshotOp(ctx context.Context, op *store.HASyncOp) error {
+	if s == nil || s.latexTemplateSnapshotApplier == nil || op.OpType != OpUpsert {
+		return nil
+	}
+	return s.latexTemplateSnapshotApplier(ctx, json.RawMessage(op.PayloadJSON))
 }
 
 func (s *Service) applySkillMarketSnapshotOp(ctx context.Context, op *store.HASyncOp) error {
@@ -3015,6 +3059,40 @@ func (s *Service) ForceBroadcastSkillHubSnapshot(ctx context.Context) (skillCoun
 	// Re-arm normal-path hash so subsequent unchanged emitSync stays quiet.
 	s.rememberSnapshotHash(EntitySkillHubSnapshot, "skillhub", snap)
 	return len(snap.Skills), nil
+}
+
+func (s *Service) AppendLatexTemplateSnapshot(ctx context.Context, snap any) {
+	if s == nil || snap == nil {
+		return
+	}
+	if err := s.appendSnapshotUpsertIfChanged(ctx, EntityLatexTemplateSnapshot, "latex_templates", snap); err != nil {
+		log.Printf("[hubcenter][ha] append latex template snapshot: %v", err)
+	}
+}
+
+// ForceBroadcastLatexTemplateSnapshot re-appends the current catalogue even when
+// the payload hash is unchanged, so a peer that pruned history can catch up.
+// A catalogue with no packages, deletes, or customised categories is refused.
+func (s *Service) ForceBroadcastLatexTemplateSnapshot(ctx context.Context) (int, error) {
+	if s == nil || s.latexTemplateSnapshotDumper == nil {
+		return 0, fmt.Errorf("latex template catalog not attached")
+	}
+	if s.ops == nil || s.versions == nil {
+		return 0, fmt.Errorf("ha sync store not configured")
+	}
+	snap, count, err := s.latexTemplateSnapshotDumper(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if count == 0 {
+		return 0, fmt.Errorf("refusing empty latex template force broadcast")
+	}
+	s.clearSnapshotHash(EntityLatexTemplateSnapshot, "latex_templates")
+	if err := s.AppendUpsertForced(ctx, EntityLatexTemplateSnapshot, "latex_templates", snap, time.Now().UTC()); err != nil {
+		return 0, err
+	}
+	s.rememberSnapshotHash(EntityLatexTemplateSnapshot, "latex_templates", snap)
+	return count, nil
 }
 
 func (s *Service) AppendSkillMarketSnapshot(ctx context.Context, snap *skillmarket.Snapshot) {

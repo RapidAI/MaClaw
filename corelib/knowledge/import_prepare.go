@@ -257,7 +257,7 @@ func (s *SQLiteStore) distillAndSaveCardsFast(ctx context.Context, tx *sql.Tx, s
 		for i, card := range cards {
 			texts[i] = cardEmbeddingText(card)
 		}
-		if vectors, err := emb.EmbedBatch(texts); err == nil && len(vectors) == len(cards) {
+		if vectors, err := embedding.EmbedBatchAs(emb, texts, embedding.RoleDocument); err == nil && len(vectors) == len(cards) {
 			for i := range cards {
 				cards[i].Embedding = vectors[i]
 			}

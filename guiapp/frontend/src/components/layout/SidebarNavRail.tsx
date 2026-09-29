@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { SIDEBAR_NAV_RAIL_WIDTH } from './sidebarLayout';
 import { SystemPopupMenu, type SystemMenuItem } from './SystemPopupMenu';
 import { FavoriteEmployeeButtons, type FavoriteEmployeeSlot } from './FavoriteEmployeeButtons';
-import { SystemIcon, AboutIcon, SkillsIcon, MCPIcon, GossipIcon, RankingIcon, MobileDocsIcon, KnowledgeIcon } from './SidebarNavIcons';
+import { SystemIcon, AboutIcon, SkillsIcon, MCPIcon, GossipIcon, RankingIcon, MobileDocsIcon, KnowledgeIcon, LatexTemplateIcon } from './SidebarNavIcons';
 import { SidebarBrandHeader, SidebarPrimaryNav } from './SidebarNavRailPieces';
 import { openSettingsTab } from '../../utils/settingsNavigation';
 import { GetHubUserInvitationStatus } from '../../../wailsjs/go/main/App';
@@ -11,6 +11,7 @@ import { systemRankingLabel, useSidebarHubRanking } from './sidebarHubRanking';
 import { miniAppShortLabel } from '../../i18n/maclawMiniAppLabels';
 import { expertsNavLabel, expertsPageTitle, toolsNavLabel, toolsPageTitle, utilitiesNavLabel, utilitiesPageTitle } from '../../i18n/utilitiesLabels';
 import { HubInvitationDialog } from '../HubInvitationDialog';
+import { LATEX_TEMPLATES_NAV_TAB } from '../../utils/latexTemplates';
 
 type SidebarNavRailProps = {
     navTab: string;
@@ -170,7 +171,11 @@ export const SidebarNavRail = ({
     const libraryLabel = lang === 'zh-Hans' ? '资料库' : lang === 'zh-Hant' ? '資料庫' : 'Library';
     const mobileDocsLabel = lang === 'zh-Hans' ? '移动文稿库' : lang === 'zh-Hant' ? '行動文稿庫' : 'Mobile documents';
     const knowledgeLabel = lang === 'zh-Hans' ? '知识库' : lang === 'zh-Hant' ? '知識庫' : 'Knowledge base';
+    const latexTemplatesLabel = lang === 'zh-Hans' ? 'Latex模板' : lang === 'zh-Hant' ? 'Latex 模板' : 'LaTeX templates';
     const knowledgeActive = navTab === 'settings' && settingsTab === 'knowledge';
+    // The LaTeX template library is one of the library entries, so the rail item
+    // stays highlighted while the page is open.
+    const latexTemplatesActive = navTab === LATEX_TEMPLATES_NAV_TAB;
     const systemPageActive = navTab === 'about' || (navTab === 'gossip' && gossipAllowed);
     const systemMenuItems: SystemMenuItem[] = [
         { id: 'about', icon: <AboutIcon />, label: t('about'), visible: true },
@@ -191,6 +196,7 @@ export const SidebarNavRail = ({
     const libraryMenuItems: SystemMenuItem[] = [
         { id: 'documents', icon: <MobileDocsIcon />, label: mobileDocsLabel, visible: true },
         { id: 'knowledge', icon: <KnowledgeIcon />, label: knowledgeLabel, visible: true },
+        { id: LATEX_TEMPLATES_NAV_TAB, icon: <LatexTemplateIcon />, label: latexTemplatesLabel, visible: true },
     ];
     const toggleSystemMenu = (target: HTMLElement) => {
         if (!systemMenuOpen) {
@@ -223,6 +229,10 @@ export const SidebarNavRail = ({
             openSettingsTab('knowledge');
             return;
         }
+        if (id === LATEX_TEMPLATES_NAV_TAB) {
+            switchTool(LATEX_TEMPLATES_NAV_TAB);
+            return;
+        }
         switchTool('files');
     };
     return (
@@ -238,7 +248,7 @@ export const SidebarNavRail = ({
             position: 'relative',
         }}>
             <SidebarBrandHeader brandId={brandInfo?.id} currentIcon={currentIcon} brandSidebarName={brandSidebarName} />
-            <SidebarPrimaryNav navTab={navTab} aiAssistantLabel={aiAssistantLabel} appsLabel={appsLabel} showAppEntry={showAppEntry} showUtilitiesEntry={showUtilitiesEntry} showToolsEntry={showToolsEntry} switchTool={switchTool} extensionsLabel={extensionsLabel} extensionsMenuOpen={extensionsMenuOpen} onToggleExtensionsMenu={toggleExtensionsMenu} libraryMenuOpen={libraryMenuOpen} onToggleLibraryMenu={toggleLibraryMenu} knowledgeActive={knowledgeActive} workflowLabel={workflowLabel} utilitiesLabel={resolvedUtilitiesLabel} utilitiesTitle={resolvedUtilitiesTitle} toolsLabel={resolvedToolsLabel} toolsTitle={resolvedToolsTitle} runningTaskCount={runningTaskTotal} onOpenBackgroundTasks={onOpenBackgroundTasks} />
+            <SidebarPrimaryNav navTab={navTab} aiAssistantLabel={aiAssistantLabel} appsLabel={appsLabel} showAppEntry={showAppEntry} showUtilitiesEntry={showUtilitiesEntry} showToolsEntry={showToolsEntry} switchTool={switchTool} extensionsLabel={extensionsLabel} extensionsMenuOpen={extensionsMenuOpen} onToggleExtensionsMenu={toggleExtensionsMenu} libraryMenuOpen={libraryMenuOpen} onToggleLibraryMenu={toggleLibraryMenu} knowledgeActive={knowledgeActive} latexTemplatesActive={latexTemplatesActive} workflowLabel={workflowLabel} utilitiesLabel={resolvedUtilitiesLabel} utilitiesTitle={resolvedUtilitiesTitle} toolsLabel={resolvedToolsLabel} toolsTitle={resolvedToolsTitle} runningTaskCount={runningTaskTotal} onOpenBackgroundTasks={onOpenBackgroundTasks} />
             {showAppEntry && veAuthorized && favoriteEmployees.length > 0 && (
                 <div
                     aria-hidden="true"

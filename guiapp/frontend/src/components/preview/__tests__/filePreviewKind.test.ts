@@ -22,6 +22,8 @@ describe('filePreviewKindFromName', () => {
         expect(filePreviewKindFromName('sheet.xlsx')).toBe('office');
         expect(filePreviewKindFromName('old.ppt')).toBe('office');
         expect(filePreviewKindFromName('main.go')).toBe('code');
+        expect(filePreviewKindFromName('paper.tex')).toBe('latex');
+        expect(filePreviewKindFromName('paper.latex')).toBe('latex');
         expect(filePreviewKindFromName('readme.txt')).toBe('text');
     });
 
@@ -38,6 +40,7 @@ describe('isChromeLessPreviewKind', () => {
         expect(isChromeLessPreviewKind('pptx')).toBe(true);
         expect(isChromeLessPreviewKind('docx')).toBe(true);
         expect(isChromeLessPreviewKind('pdf')).toBe(true);
+        expect(isChromeLessPreviewKind('latex')).toBe(true);
         expect(isChromeLessPreviewKind('image')).toBe(true);
         expect(isChromeLessPreviewKind('html')).toBe(true);
         expect(isChromeLessPreviewKind('markdown')).toBe(false);
@@ -70,6 +73,7 @@ describe('languageFromFileName', () => {
         expect(languageFromFileName('a.pptx')).toBe('pptx');
         expect(languageFromFileName('a.ts')).toBe('typescript');
         expect(languageFromFileName('a.go')).toBe('go');
+        expect(languageFromFileName('paper.tex')).toBe('latex');
     });
 });
 

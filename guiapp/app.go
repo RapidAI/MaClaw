@@ -2675,6 +2675,9 @@ func (a *App) startup(ctx context.Context) {
 		// Ensure local AI models are ready for features the user has not
 		// explicitly disabled. Missing assets are downloaded and then enabled.
 		go a.ensureConfiguredAIModels()
+		// TinyTeX scheme-small is enabled by default. Missing installs are
+		// downloaded from the official TinyTeX release and verified in the background.
+		go a.ensureLatexTinyTeX()
 		// Computer Use: pre-start UIA sidecar / seed csharp exe in background.
 		go a.backgroundWarmupComputerUse()
 
@@ -8646,6 +8649,12 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.VectorSearchEnabled = v
+		case "latex_tinytex_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.LatexTinyTeXEnabled = v
 		case "office_read_engine":
 			v, err := stringField(key, value)
 			if err != nil {

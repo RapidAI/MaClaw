@@ -39,6 +39,8 @@ const {
     stopCloudWorkspaceShareMock,
     updateCloudWorkspaceShareRecipientMock,
     removeCloudWorkspaceShareRecipientMock,
+    copyTaskFilesToCloudWorkspaceMock,
+    copyCloudWorkspaceTaskFilesToLocalMock,
 } = vi.hoisted(() => {
     return {
         getProjectSceneMock: vi.fn(),
@@ -72,6 +74,8 @@ const {
         stopCloudWorkspaceShareMock: vi.fn().mockResolvedValue(undefined),
         updateCloudWorkspaceShareRecipientMock: vi.fn().mockResolvedValue(undefined),
         removeCloudWorkspaceShareRecipientMock: vi.fn().mockResolvedValue(undefined),
+        copyTaskFilesToCloudWorkspaceMock: vi.fn().mockResolvedValue({ files: 0, bytes: 0 }),
+        copyCloudWorkspaceTaskFilesToLocalMock: vi.fn().mockResolvedValue({ files: 0, bytes: 0 }),
     };
 });
 
@@ -104,6 +108,8 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     StopCloudWorkspaceShare: stopCloudWorkspaceShareMock,
     UpdateCloudWorkspaceShareRecipient: updateCloudWorkspaceShareRecipientMock,
     RemoveCloudWorkspaceShareRecipient: removeCloudWorkspaceShareRecipientMock,
+    CopyTaskFilesToCloudWorkspace: copyTaskFilesToCloudWorkspaceMock,
+    CopyCloudWorkspaceTaskFilesToLocal: copyCloudWorkspaceTaskFilesToLocalMock,
 }));
 
 vi.mock('../../../../wailsjs/runtime', () => ({
@@ -395,6 +401,33 @@ describe('SidebarTaskManagement', () => {
         expect(screen.queryByTestId('task-cloud-overview')).toBeNull();
         expect(screen.queryByTestId('task-cloud-workspace-list')).toBeNull();
     });
+    it('renders the task type glyph after the title, still labelled for screen readers', async () => {
+        const cloudTask = {
+            ...baseProject,
+            id: 'cloud-task-order',
+            name: 'Ordered cloud task',
+            project_path: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant/cws_a',
+            working_dir: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant/cws_a',
+            tags: ['task_management', 'cloud_workspace:cws_a'],
+        };
+        let view!: ReturnType<typeof renderTaskManagement>;
+        // Mounting kicks off async state updates; act keeps them flushed.
+        await act(async () => { view = renderTaskManagement({ tasks: [cloudTask] }); });
+        const container = view.container;
+
+        const titleRow = container.querySelector('.mc-sidebar-task-title-row');
+        expect(titleRow).toBeTruthy();
+        const children = Array.from(titleRow!.children);
+        const titleIndex = children.findIndex(el => el.classList.contains('stsm-row-title'));
+        const iconIndex = children.findIndex(el => el.getAttribute('role') === 'img');
+        expect(titleIndex).toBeGreaterThanOrEqual(0);
+        // The glyph used to lead the row; it must stay behind the title so the
+        // name reads first. Without this a refactor can silently revert it.
+        expect(iconIndex).toBeGreaterThan(titleIndex);
+        // role="img" is what makes the aria-label announce at all.
+        expect(children[iconIndex].getAttribute('aria-label')).toBeTruthy();
+    });
+
     it('keeps the cloud task entry beside New Task while a task is open', async () => {
         cloudWorkspaceEntitlementMock.mockResolvedValue({ enabled: true, quota: 5, used: 0, workspaces: [] });
         renderTaskManagement({
@@ -5146,5 +5179,179 @@ describe('create dialog expert type picker', () => {
 
         expect(screen.getByTestId('task-expert-picker-toggle').textContent).toContain('General expert');
         expect(document.getElementById('task-working-directory')).toBeTruthy();
+    });
+});
+
+describe('task workspace transfer', () => {
+    const cloudTask = {
+        ...baseProject,
+        id: 'task-cloud',
+        name: 'Cloud research task',
+        project_path: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_a',
+        tags: ['task_management', 'cloud_workspace:cws_a'],
+    };
+
+    const grantedEntitlement = (workspaces: Array<{ id: string; name: string }>) => ({
+        enabled: true,
+        quota: 5,
+        used: workspaces.length,
+        workspaces,
+        deleted: [],
+    });
+
+    beforeEach(() => {
+        selectWorkingDirMock.mockReset();
+        selectWorkingDirMock.mockResolvedValue('');
+        copyTaskFilesToCloudWorkspaceMock.mockReset();
+        copyTaskFilesToCloudWorkspaceMock.mockResolvedValue({ files: 0, bytes: 0 });
+        copyCloudWorkspaceTaskFilesToLocalMock.mockReset();
+        copyCloudWorkspaceTaskFilesToLocalMock.mockResolvedValue({ files: 0, bytes: 0 });
+    });
+
+    it('offers Move to this computer for a cloud workspace task and Move to cloud for a local one', async () => {
+        await act(async () => {
+            renderTaskManagement({
+                tasks: [cloudTask],
+                taskContextMenu: { x: 10, y: 20, projectPath: cloudTask.project_path, name: cloudTask.name, pinned: false, tags: cloudTask.tags },
+            });
+        });
+        expect(screen.getByTestId('task-context-move-to-local')).toBeTruthy();
+        expect(screen.queryByTestId('task-context-move-to-cloud')).toBeNull();
+    });
+
+    it('cancels the move and tells the user when the folder picker is dismissed', async () => {
+        const refreshTasks = vi.fn();
+        const createTask = vi.fn().mockResolvedValue(undefined);
+        // The native dialog reports a dismissed picker as an empty string.
+        selectWorkingDirMock.mockResolvedValueOnce('');
+        renderTaskManagement({
+            tasks: [cloudTask],
+            createTask,
+            refreshTasks,
+            taskContextMenu: { x: 10, y: 20, projectPath: cloudTask.project_path, name: cloudTask.name, pinned: false, tags: cloudTask.tags },
+        });
+
+        fireEvent.click(screen.getByTestId('task-context-move-to-local'));
+        const dialog = await screen.findByTestId('task-transfer-dialog');
+        fireEvent.click(within(dialog).getByTestId('task-transfer-pick-dir'));
+
+        await waitFor(() => expect(screen.queryByTestId('task-transfer-dialog')).toBeNull());
+        expect(selectWorkingDirMock).toHaveBeenCalledTimes(1);
+        expect(createTask).not.toHaveBeenCalled();
+        expect(refreshTasks).not.toHaveBeenCalled();
+        await waitFor(() => expect(screen.getByTestId('task-list-notice').textContent).toContain('cancelled'));
+    });
+
+    it('copies a local task into the chosen cloud workspace, then asks about the source', async () => {
+        cloudWorkspaceEntitlementMock.mockResolvedValue(grantedEntitlement([{ id: 'cws_a', name: 'Research' }]));
+        copyTaskFilesToCloudWorkspaceMock.mockResolvedValue({ files: 7, bytes: 2048 });
+        const createTask = vi.fn().mockResolvedValue(undefined);
+        const hideTask = vi.fn().mockResolvedValue(undefined);
+        const refreshTasks = vi.fn();
+        await act(async () => {
+            renderTaskManagement({
+                createTask,
+                hideTask,
+                refreshTasks,
+                taskContextMenu: { x: 10, y: 20, projectPath: baseProject.project_path, name: baseProject.name, pinned: false },
+            });
+        });
+
+        fireEvent.click(screen.getByTestId('task-context-move-to-cloud'));
+        const dialog = await screen.findByTestId('task-transfer-dialog');
+        fireEvent.click(within(dialog).getByTestId('task-transfer-workspace-cws_a'));
+        fireEvent.click(within(dialog).getByTestId('task-transfer-confirm'));
+
+        // The cloud task is created first so the workspace is mounted before
+        // the files land in it.
+        await waitFor(() => expect(createTask).toHaveBeenCalledWith('Build dashboard', undefined, undefined, undefined, 'cws_a'));
+        await waitFor(() => expect(copyTaskFilesToCloudWorkspaceMock).toHaveBeenCalledWith(baseProject.project_path, 'cws_a'));
+        await waitFor(() => expect(screen.queryByTestId('task-transfer-dialog')).toBeNull());
+        expect(refreshTasks).toHaveBeenCalled();
+        expect(screen.getByTestId('task-list-notice').textContent).toContain('7 files');
+
+        // Nothing is removed until the user answers the follow-up prompt.
+        const confirmDialog = await screen.findByRole('dialog');
+        // Counterpart of the cloud-source case below: a local source really
+        // does leave its files on this disk.
+        expect(confirmDialog.textContent).toContain('on disk');
+        expect(confirmDialog.textContent).not.toContain('cloud workspace');
+        fireEvent.click(within(confirmDialog).getByRole('button', { name: 'Keep it' }));
+        await act(async () => { await Promise.resolve(); });
+        expect(hideTask).not.toHaveBeenCalled();
+    });
+
+    it('copies cloud files down before creating the local task', async () => {
+        cloudWorkspaceEntitlementMock.mockResolvedValue(grantedEntitlement([{ id: 'cws_a', name: 'Research' }]));
+        selectWorkingDirMock.mockResolvedValue('D:/work/target');
+        copyCloudWorkspaceTaskFilesToLocalMock.mockResolvedValue({ files: 3, bytes: 512 });
+        const createTask = vi.fn().mockResolvedValue(undefined);
+        const hideTask = vi.fn().mockResolvedValue(undefined);
+        await act(async () => {
+            renderTaskManagement({
+                tasks: [cloudTask],
+                createTask,
+                hideTask,
+                taskContextMenu: { x: 10, y: 20, projectPath: cloudTask.project_path, name: cloudTask.name, pinned: false, tags: cloudTask.tags },
+            });
+        });
+
+        fireEvent.click(screen.getByTestId('task-context-move-to-local'));
+        const dialog = await screen.findByTestId('task-transfer-dialog');
+        fireEvent.click(within(dialog).getByTestId('task-transfer-pick-dir'));
+        await waitFor(() => expect(screen.getByTestId('task-transfer-local-dir').textContent).toContain('D:/work/target'));
+        fireEvent.click(within(dialog).getByTestId('task-transfer-confirm'));
+
+        await waitFor(() => expect(copyCloudWorkspaceTaskFilesToLocalMock).toHaveBeenCalledWith(cloudTask.project_path, 'D:/work/target'));
+        await waitFor(() => expect(createTask).toHaveBeenCalledWith('Cloud research task', 'D:/work/target', undefined));
+        expect(screen.getByTestId('task-list-notice').textContent).toContain('3 files');
+
+        const confirmDialog = await screen.findByRole('dialog');
+        // A cloud source keeps its files in the workspace, not on this disk:
+        // promising "on disk" here would misdescribe where they survive.
+        expect(confirmDialog.textContent).toContain('cloud workspace');
+        expect(confirmDialog.textContent).not.toContain('on disk');
+        fireEvent.click(within(confirmDialog).getByRole('button', { name: 'Keep it' }));
+        await act(async () => { await Promise.resolve(); });
+        expect(hideTask).not.toHaveBeenCalled();
+    });
+
+    it('explains why the move cannot start when every workspace already hosts a task', async () => {
+        cloudWorkspaceEntitlementMock.mockResolvedValue(grantedEntitlement([{ id: 'cws_a', name: 'Research' }]));
+        await act(async () => {
+            renderTaskManagement({
+                tasks: [baseProject, cloudTask],
+                taskContextMenu: { x: 10, y: 20, projectPath: baseProject.project_path, name: baseProject.name, pinned: false },
+            });
+        });
+
+        fireEvent.click(screen.getByTestId('task-context-move-to-cloud'));
+        const dialog = await screen.findByTestId('task-transfer-dialog');
+        // cws_a holds cloudTask, so the move has no legal destination.
+        expect(within(dialog).getByTestId('task-transfer-workspace-empty').textContent).toContain('already hosts a task');
+        expect((within(dialog).getByTestId('task-transfer-confirm') as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    it('keeps an already chosen folder when a later picker visit is dismissed', async () => {
+        selectWorkingDirMock.mockResolvedValueOnce('D:/work/target');
+        selectWorkingDirMock.mockResolvedValueOnce('');
+        renderTaskManagement({
+            tasks: [cloudTask],
+            taskContextMenu: { x: 10, y: 20, projectPath: cloudTask.project_path, name: cloudTask.name, pinned: false, tags: cloudTask.tags },
+        });
+
+        fireEvent.click(screen.getByTestId('task-context-move-to-local'));
+        const dialog = await screen.findByTestId('task-transfer-dialog');
+        fireEvent.click(within(dialog).getByTestId('task-transfer-pick-dir'));
+        await waitFor(() => expect(screen.getByTestId('task-transfer-local-dir').textContent).toContain('D:/work/target'));
+
+        fireEvent.click(within(dialog).getByTestId('task-transfer-pick-dir'));
+        await act(async () => { await Promise.resolve(); });
+
+        // The user already has a destination, so a dismissed re-pick must not
+        // throw away the move.
+        expect(screen.getByTestId('task-transfer-dialog')).toBeTruthy();
+        expect(screen.getByTestId('task-transfer-local-dir').textContent).toContain('D:/work/target');
+        expect(screen.queryByTestId('task-list-notice')).toBeNull();
     });
 });

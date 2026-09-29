@@ -38,6 +38,29 @@ type ProviderConfig struct {
 	// AllowedNodeIDs is the HubCenter node allowlist that may egress this
 	// provider. Empty means every cluster node may call upstream (default).
 	AllowedNodeIDs []string `json:"allowed_node_ids,omitempty"`
+	// ArrayID is the logical provider array this upstream belongs to.
+	// Empty is normalized to this provider's own ID, so each existing
+	// provider starts as an independent one-member array.
+	ArrayID string `json:"array_id,omitempty"`
+	// ArrayName renames that array when set on create or update. It is applied
+	// to the array record and then cleared; it is not provider configuration.
+	ArrayName string `json:"array_name,omitempty"`
+	// ArrayIndependent detaches this provider into its own array. Empty array_id
+	// on update otherwise keeps the current array.
+	ArrayIndependent bool `json:"array_independent,omitempty"`
+}
+
+// ProviderArray is one logical provider. A model service group routes to the
+// array, not to each member. Members share the array's multiplier and token
+// price, are tried round-robin, and fail over to the next member on 429 or 5xx.
+type ProviderArray struct {
+	ID                       string                   `json:"id"`
+	Name                     string                   `json:"name"`
+	MemberIDs                []string                 `json:"member_ids"`
+	Timezone                 string                   `json:"timezone,omitempty"`
+	CreditMultiplier         float64                  `json:"credit_multiplier,omitempty"`
+	CreditMultiplierSchedule []CreditMultiplierWindow `json:"credit_multiplier_schedule,omitempty"`
+	TokenPricing             TokenPricing             `json:"token_pricing,omitempty"`
 }
 
 // ServiceGroup defines a set of models with associated provider routing.

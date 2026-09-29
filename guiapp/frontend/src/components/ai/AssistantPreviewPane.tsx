@@ -26,9 +26,12 @@ interface AssistantPreviewPaneProps {
     lang: string;
     selectCodeFile: (filePath: string) => void;
     projectPath?: string;
+    /** LaTeX paper workspace: list the task directory and offer a submission zip. */
+    paperWorkspace?: boolean;
     workspaceRefreshToken?: number;
     workspaceResetOnRefresh?: boolean;
     openWorkspaceFile?: (file: CodeFile) => void;
+    replaceWorkspaceFileContent?: (filePath: string, content: string) => void;
     submitAgentView?: (viewId: string | undefined, data: Record<string, unknown>) => void | Promise<void>;
     showCodePreview: boolean;
     showAgentView: boolean;
@@ -306,9 +309,11 @@ export function AssistantPreviewPane({
     lang,
     selectCodeFile,
     projectPath,
+    paperWorkspace = false,
     workspaceRefreshToken,
     workspaceResetOnRefresh = false,
     openWorkspaceFile,
+    replaceWorkspaceFileContent,
     submitAgentView,
     showCodePreview,
     showAgentView,
@@ -614,9 +619,11 @@ export function AssistantPreviewPane({
                         mruOrder={codePreviewState.mruOrder}
                         onSelectFile={selectCodeFile}
                         projectPath={projectPath}
+                        paperWorkspace={paperWorkspace}
                         workspaceRefreshToken={workspaceRefreshToken}
                         workspaceResetOnRefresh={workspaceResetOnRefresh}
                         onOpenWorkspaceFile={openWorkspaceFile}
+                        onReplaceWorkspaceFileContent={replaceWorkspaceFileContent}
                         onCloseFile={closeCodeFile}
                         onCloseOtherFiles={closeOtherCodeFiles}
                         onCloseFilesToTheRight={closeCodeFilesToTheRight}

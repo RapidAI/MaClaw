@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -73,16 +74,17 @@ type gemmaWeights struct {
 
 // GemmaEmbedder is a pure Go Gemma2 text embedding model.
 type GemmaEmbedder struct {
-	hp          GemmaHParams
-	weights     gemmaWeights
-	tokenizer   *Tokenizer
-	dim         int // output dim (MRL truncation)
-	mu          sync.Mutex
-	mmap        *gguf.MmapFile // kept alive for the mmap backing
-	scratch     *gemmaScratch  // reusable inference buffers (lazily initialized)
-	tokenCache  *tokenEmbCache // cached float32 embeddings for hot tokens
-	earlyExit   int32          // 0 = disabled; >0 = exit after this many layers (atomic)
-	fusionOff    bool // MACLAW_EMBED_FUSION=0
+	hp           GemmaHParams
+	weights      gemmaWeights
+	tokenizer    *Tokenizer
+	dim          int    // output dim (MRL truncation)
+	modelName    string // identity from GGUF metadata; feeds ModelID
+	mu           sync.Mutex
+	mmap         *gguf.MmapFile // kept alive for the mmap backing
+	scratch      *gemmaScratch  // reusable inference buffers (lazily initialized)
+	tokenCache   *tokenEmbCache // cached float32 embeddings for hot tokens
+	earlyExit    int32          // 0 = disabled; >0 = exit after this many layers (atomic)
+	fusionOff    bool           // MACLAW_EMBED_FUSION=0
 	accelInfo    AccelInfo
 	scratchPools [4]sync.Pool
 	packOnce     sync.Once
@@ -168,6 +170,17 @@ func NewGemmaEmbedder(modelPath string, dim int) (*GemmaEmbedder, error) {
 	}
 	prefix := arch + "."
 
+	// Model identity read straight from the GGUF header. ModelID folds it into
+	// the stored vector identity, so replacing the file with a different
+	// checkpoint invalidates the index even when the output dim is unchanged.
+	modelName := strings.TrimSpace(gguf.GetMetaStr(mf.Meta, "general.name"))
+	if modelName == "" {
+		modelName = strings.TrimSpace(gguf.GetMetaStr(mf.Meta, "general.basename"))
+	}
+	if modelName == "" {
+		modelName = arch
+	}
+
 	embDim := gguf.GetMetaI32(mf.Meta, prefix+"embedding_length", 768)
 	// Clamp the requested output dim to what the forward pass can produce.
 	// truncateAndNormalize() already clamps per call, but Dim() returned the
@@ -214,6 +227,7 @@ func NewGemmaEmbedder(modelPath string, dim int) (*GemmaEmbedder, error) {
 	tok := LoadTokenizerFromGGUF(tokens, scores)
 
 	g := &GemmaEmbedder{hp: hp, weights: *w, tokenizer: tok, dim: dim, mmap: mf,
+		modelName:  modelName,
 		tokenCache: newTokenEmbCache(&w.tokenEmb, hp.Dim),
 		fusionOff:  fusionDisabledFromEnv(),
 		accelInfo:  AccelInfo{Backend: BackendCPUSIMD, Reason: "cpu simd"},

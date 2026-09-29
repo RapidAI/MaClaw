@@ -4,6 +4,7 @@ import type { WorkflowUIState } from "./useWorkflowState";
 import type { AITab } from "./AITabTypes";
 import { normalizeProjectSessionPath, projectSessionKey } from "./aiAssistantPanelSessionUtils";
 import { isCloudWorkspacePath } from "./codingTaskMode";
+import { isLatexExpertId } from "../../utils/latexTemplates";
 import { getWailsAppModule } from "../../utils/wailsAppModule";
 
 export type ConversationBranchPointLike = {
@@ -26,6 +27,15 @@ export function shouldShowSourcePreviewForWorkflow(workflowType: string): boolea
 /** Pure coding environments (local/remote agentMode) always allow the right-hand source panel. */
 export function shouldShowSourcePreviewForAgentMode(agentMode?: string | null): boolean {
     return agentMode === "coding_dev" || agentMode === "remote_coding_dev";
+}
+
+/**
+ * The LaTeX paper expert is not a programming workflow, so sourcePreviewAllowed
+ * stays false. File-write events still have to reach the open paper; otherwise
+ * the editor keeps the blank skeleton after the expert saves the .tex.
+ */
+export function codePreviewEventsEnabled(sourcePreviewAllowed: boolean, expertId?: string | null): boolean {
+    return sourcePreviewAllowed || isLatexExpertId(expertId);
 }
 
 /**

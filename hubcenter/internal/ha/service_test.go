@@ -1933,3 +1933,21 @@ func TestBuildAdminSyncDetailsMarksNeedsSeedWhenLocalDataExistsWithoutOps(t *tes
 		}
 	}
 }
+
+func TestApplyLatexTemplateSnapshotOpDispatchesPayload(t *testing.T) {
+	if !isSupportedEntityType(EntityLatexTemplateSnapshot) {
+		t.Fatal("latex template snapshots are not a supported HA entity")
+	}
+	var got string
+	svc := &Service{latexTemplateSnapshotApplier: func(_ context.Context, raw json.RawMessage) error {
+		got = string(raw)
+		return nil
+	}}
+	payload := `{"templates":[{"id":"tpl"}]}`
+	if err := svc.applyLatexTemplateSnapshotOp(context.Background(), &store.HASyncOp{OpType: OpUpsert, PayloadJSON: payload}); err != nil {
+		t.Fatal(err)
+	}
+	if got != payload {
+		t.Fatalf("applied payload = %s", got)
+	}
+}
