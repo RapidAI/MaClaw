@@ -169,6 +169,14 @@ func NewGemmaEmbedder(modelPath string, dim int) (*GemmaEmbedder, error) {
 	prefix := arch + "."
 
 	embDim := gguf.GetMetaI32(mf.Meta, prefix+"embedding_length", 768)
+	// Clamp the requested output dim to what the forward pass can produce.
+	// truncateAndNormalize() already clamps per call, but Dim() returned the
+	// unclamped request, so Dim() disagreed with the length of the vector Embed()
+	// returns -- and the golden writer declared a header dim that did not match
+	// its payload (a file no reader can parse).  The C++ port had the same bug.
+	if dim > embDim {
+		dim = embDim
+	}
 	nHeads := gguf.GetMetaI32(mf.Meta, prefix+"attention.head_count", 3)
 	nKVHeads := gguf.GetMetaI32(mf.Meta, prefix+"attention.head_count_kv", 1)
 	headDim := embDim / nHeads
