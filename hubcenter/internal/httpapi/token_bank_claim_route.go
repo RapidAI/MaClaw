@@ -174,6 +174,8 @@ func (h *SkillMarketHandlers) settleGiftForWithdraw(ctx context.Context, userID,
 	}
 	switch link.Status {
 	case sqlite.TokenBankGiftStatusClaimed, sqlite.TokenBankGiftStatusSettled:
+	case sqlite.TokenBankGiftStatusRevoked:
+		return sqlite.ErrGiftLinkRevoked
 	default:
 		return sqlite.ErrGiftLinkNotClaimed
 	}
@@ -195,6 +197,8 @@ func writeTokenBankGiftSettleError(w http.ResponseWriter, err error) bool {
 		tbError(w, http.StatusForbidden, "gift_not_claimed_by_user", "this share link was not claimed by this account")
 	case errors.Is(err, sqlite.ErrGiftLinkNotFound):
 		tbError(w, http.StatusNotFound, "not_found", "share link not found")
+	case errors.Is(err, sqlite.ErrGiftLinkRevoked):
+		tbError(w, http.StatusConflict, "gift_revoked", "the sender revoked this gift")
 	case errors.Is(err, sqlite.ErrGiftLinkNotClaimed):
 		tbError(w, http.StatusConflict, "gift_not_claimed", "share link is not claimed")
 	default:

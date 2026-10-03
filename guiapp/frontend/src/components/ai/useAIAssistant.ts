@@ -2867,10 +2867,23 @@ function resolveSendResult(messages: ChatMessage[], assistantMessageId: string |
     const { localFilePaths, thumbnailBase64, imageKey } = responseArtifactPayload(response);
     const hasArtifact = !!thumbnailBase64 || !!imageKey || !!localFilePaths?.length;
     if (responseError && !hasArtifact) {
+        // An external-delivery review is a host decision with a dismiss control.
+        // Replacing the round with an error bubble drops that action, so the
+        // same continuation has no way out.
+        if (semanticHostRejectKeepsDismiss(response)) {
+            return finalizeRoundMessage(messages, assistantMessageId, requestId, response, preferences);
+        }
         const display = semanticHostRejectDisplayText(response) || responseError;
         return replaceRoundWithError(messages, assistantMessageId, requestId, display, isTimeoutErrorText(display));
     }
     return finalizeRoundMessage(messages, assistantMessageId, requestId, response, preferences);
+}
+
+function semanticHostRejectKeepsDismiss(response: any): boolean {
+    const source = String(response?.response_source || response?.ResponseSource || '').trim().toLowerCase();
+    if (source !== 'semantic_host_reject') return false;
+    const actions = normalizeActions(response?.actions ?? response?.Actions);
+    return !!actions?.some(action => /^__dismiss_unfinished__\s+\S+$/.test(action.command));
 }
 
 function semanticHostRejectDisplayText(response: any): string {
@@ -5654,7 +5667,10 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         }
         const dismissMatch = command.match(/^__dismiss_unfinished__\s+(\S+)$/);
         if (dismissMatch) {
-            setMessages(prev => markUnfinishedSlotDismissed(prev, dismissMatch[1]?.trim() || ''));
+            // The external-delivery review puts this command on the assistant
+            // bubble, not on a slot card. Leave it in place and a later click
+            // starts another new task and clears the conversation that followed.
+            setMessages(prev => markUnfinishedSlotDismissed(removeActionCommandFromMessages(prev, command), dismissMatch[1]?.trim() || ''));
             const dismissText = localizeText(uiLang, "Dismiss previous unfinished task", "\u5ffd\u7565\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52a1", "\u5ffd\u7565\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52d9");
             return sendActionMessage(dismissText, {
                 dismissSlotID: dismissMatch[1]?.trim() || '',

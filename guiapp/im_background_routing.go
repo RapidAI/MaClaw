@@ -44,6 +44,10 @@ func (h *IMMessageHandler) handleBackgroundIMRoute(msg IMUserMessage, providedLo
 	// strangler was off.  Reuse the normal inbound envelope setup, then classify
 	// below before any prompt/tool surface is built.
 	loopCtx = h.prepareIMLoopContext(loopCtx, msg, httpClient, true, false)
+	// Same per-message copy as the foreground entry. projectStoredTurnIntent
+	// cleans the classification about to be stored; the planner reads the
+	// loop field after a session continuation may have put the label back.
+	loopCtx.NoWorkflowInterception = msg.NoWorkflowInterception
 	if h.traceService != nil && loopCtx.RunID == "" {
 		job, run := h.traceService.StartJobRun(TraceJobKindAIAssistant, msg.Text, msg.Platform, msg.UserID, h.traceProjectPath())
 		loopCtx.JobID = job.JobID
@@ -74,7 +78,7 @@ func (h *IMMessageHandler) handleBackgroundIMRoute(msg IMUserMessage, providedLo
 		return &IMAgentResponse{Error: "semantic_turn_replaced", ResponseSource: "ingress_replacement"}, true
 	}
 	cancelClassification()
-	semanticIntent = projectStoredTurnIntent(msg.UserID, msg.Text, semanticIntent)
+	semanticIntent = projectStoredTurnIntent(msg.UserID, msg.Text, msg.NoWorkflowInterception, semanticIntent)
 	loopCtx.Runtime.Execution = h.continuationKeepsParentExecution(executionProfile, msg.UserID, msg.Text, semanticIntent)
 	loopCtx.Runtime.ClassificationMessage = classificationMessage(msg.UserID, msg.Text, history)
 	bindLoopSemanticIntent(loopCtx, semanticIntent)

@@ -524,6 +524,62 @@ func TestTokenBankGiftRevokeReturnsFrozenCredits(t *testing.T) {
 	}
 }
 
+func TestTokenBankGiftRevokeClaimedBeforeWithdraw(t *testing.T) {
+	env := newTokenBankTestEnv(t)
+	sender, senderToken := env.createUser(t, "sender@example.test")
+	claimer, claimerToken := env.createUser(t, "claimer@example.test")
+	env.seedCredits(t, sender.ID, 10)
+
+	rec := env.do(t, http.MethodPost, "/api/v1/credits/share-links", senderToken, map[string]any{"credits": 5})
+	created := decodeMap(t, rec)
+	id := created["id"].(string)
+	code := created["code"].(string)
+
+	rec = env.do(t, http.MethodPost, "/api/v1/credits/share-links/"+code+"/claim", claimerToken, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("claim status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	rec = env.do(t, http.MethodPost, "/api/v1/credits/share-links/"+id+"/revoke", senderToken, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("revoke claimed status = %d, body %s", rec.Code, rec.Body.String())
+	}
+
+	balance, err := env.repo.Balance(context.Background(), sender.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if balance.FrozenMicro != 0 || balance.AvailableMicro() != 10_000_000 {
+		t.Fatalf("sender after claimed revoke = frozen %d available %d, want 0 and 1e7", balance.FrozenMicro, balance.AvailableMicro())
+	}
+	rec = env.do(t, http.MethodGet, "/api/v1/credits/share-links", senderToken, nil)
+	row := decodeMap(t, rec)["share_links"].([]any)[0].(map[string]any)
+	if got, _ := row["status"].(string); got != "revoked" {
+		t.Fatalf("sender list status = %q, want revoked", got)
+	}
+	rec = env.do(t, http.MethodGet, "/api/v1/credits/share-links", claimerToken, nil)
+	claimed, _ := decodeMap(t, rec)["claimed_links"].([]any)
+	if len(claimed) != 0 {
+		t.Fatalf("claimed_links = %d, want 0 after the sender revokes", len(claimed))
+	}
+	rec = env.do(t, http.MethodPost, "/api/v1/credits/share-links/"+code+"/claim", claimerToken, nil)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "gift_revoked") {
+		t.Fatalf("claim after revoke = %d, body %s", rec.Code, rec.Body.String())
+	}
+	rec = env.do(t, http.MethodPost, "/api/v1/token-bank/credits/withdraw", claimerToken, map[string]any{
+		"request_id": "withdraw:gift:revoked", "kind": "gift", "link_id": id, "amount_micro": 5_000_000,
+	})
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "gift_revoked") {
+		t.Fatalf("withdraw after revoke = %d, body %s", rec.Code, rec.Body.String())
+	}
+	claimerBalance, err := env.repo.Balance(context.Background(), claimer.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimerBalance.AvailableMicro() != 0 {
+		t.Fatalf("claimer available = %d, want 0", claimerBalance.AvailableMicro())
+	}
+}
+
 func TestTokenBankGiftRevokeRejectsAnotherUsersLink(t *testing.T) {
 	env := newTokenBankTestEnv(t)
 	sender, senderToken := env.createUser(t, "real-owner@example.test")

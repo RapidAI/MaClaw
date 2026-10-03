@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 )
 
 // pendingSlotText stores the user's original task text that was intercepted
@@ -136,25 +137,31 @@ func (h *IMMessageHandler) recoverInterruptedTaskSlot(userID string, entries []a
 	if h == nil || h.memory == nil {
 		return nil
 	}
-	interruptedTask, interruptedProjectPath := h.memory.ConsumeInFlightTask(userID)
-	if interruptedTask == "" {
+	recovered := h.memory.ConsumeInFlightRecovery(userID)
+	if strings.TrimSpace(recovered.Task) == "" {
 		return nil
 	}
-	slotID := fmt.Sprintf("interrupted-%d", time.Now().UnixMilli())
+	now := time.Now()
+	slotID := fmt.Sprintf("interrupted-%d", now.UnixMilli())
 	slot := &agent.UnfinishedTaskSlot{
-		SlotID:       slotID,
-		UserID:       userID,
-		ProjectPath:  interruptedProjectPath,
-		Status:       agent.UnfinishedTaskSlotStatusInterrupted,
-		LastTask:     interruptedTask,
-		Summary:      extractProgressSummary(entries),
-		ResumePrompt: "A previous task was interrupted after tool-level progress. Resume from the saved context and continue the original task instead of starting over.",
-		Source:       agent.UnfinishedTaskSlotSourceInFlightRecovery,
-		CreatedAt:    time.Now(),
-		UpdatedAt:    time.Now(),
+		SlotID:           slotID,
+		UserID:           userID,
+		ProjectPath:      recovered.ProjectPath,
+		Status:           agent.UnfinishedTaskSlotStatusInterrupted,
+		LastTask:         recovered.Task,
+		Summary:          extractProgressSummary(entries),
+		ResumePrompt:     "A previous task was interrupted after tool-level progress. Resume from the saved context and continue the original task instead of starting over.",
+		Source:           agent.UnfinishedTaskSlotSourceInFlightRecovery,
+		EvidenceScopeKey: recovered.EvidenceScopeKey,
+		LastCheckpointAt: recovered.SetAt,
+		LastToolName:     recovered.LastToolName,
+		SideEffectState:  recovered.SideEffectState,
+		RecoveryMode:     recovered.RecoveryMode,
+		CreatedAt:        now,
+		UpdatedAt:        now,
 	}
 	h.memory.UpsertUnfinishedSlot(userID, slot)
-	log.Printf("[InFlightRecovery] recovered interrupted task for user %s: %q (project=%q)", userID, truncateRunes(interruptedTask, 80), interruptedProjectPath)
+	log.Printf("[InFlightRecovery] recovered interrupted task for user %s: %q (project=%q)", userID, truncateRunes(recovered.Task, 80), recovered.ProjectPath)
 	return slot
 }
 
@@ -249,7 +256,11 @@ func (h *IMMessageHandler) applyExplicitTaskSlotAction(msg *IMUserMessage, trimm
 		// Runtime-backed recovery may have uncertain side effects. Probe before
 		// binding the slot so no generic continuation machinery can treat the old
 		// conversation as permission to replay it.
-		if current := h.memory.GetUnfinishedSlot(msg.UserID); current != nil && current.SlotID == decision.ResumeSlotID && strings.TrimSpace(current.RuntimeTaskID) != "" {
+		current := (*agent.UnfinishedTaskSlot)(nil)
+		if h.memory != nil {
+			current = h.memory.GetUnfinishedSlot(msg.UserID)
+		}
+		if current != nil && current.SlotID == decision.ResumeSlotID && strings.TrimSpace(current.RuntimeTaskID) != "" {
 			review, err := h.prepareCodingRuntimeRecoveryForSlot(current.RuntimeTaskID)
 			if err != nil {
 				return true, &IMAgentResponse{Error: "coding recovery probe failed: " + err.Error()}, true
@@ -259,7 +270,13 @@ func (h *IMMessageHandler) applyExplicitTaskSlotAction(msg *IMUserMessage, trimm
 				CodingRuntimeRecovery: review,
 			}, true
 		}
-		if h.memory.BindUnfinishedSlot(msg.UserID, decision.ResumeSlotID) {
+		// An unreviewed external send is evidence, not a grant to plan
+		// another delivery. Binding would mark the slot resumed and hide
+		// the decision, so this turn stops here.
+		if current != nil && current.SlotID == decision.ResumeSlotID && unreviewedExternalDeliverySlot(current) {
+			return true, h.returnExternalDeliveryReview(*msg, current), true
+		}
+		if h.memory != nil && h.memory.BindUnfinishedSlot(msg.UserID, decision.ResumeSlotID) {
 			*unfinishedSlot = h.memory.ActiveUnfinishedSlot(msg.UserID)
 		}
 	}
@@ -280,6 +297,12 @@ func localizedPreviousTaskDismissedMessage(lang string) string {
 func (h *IMMessageHandler) maybeReturnUnfinishedSlotHint(msg IMUserMessage, trimmed string, freshTask bool, decision explicitTaskSlotDecision, unfinishedSlot *agent.UnfinishedTaskSlot) (*IMAgentResponse, bool) {
 	if unfinishedSlot == nil || !unfinishedSlotNeedsDecision(unfinishedSlot) || unfinishedSlot.Source.IsSessionExit() || unfinishedSlot.Source.IsAppExit() || msg.IsBackground || freshTask || isSlotActionCommand(trimmed) || decision.StartNewTask || decision.ResumeSlotID != "" {
 		return nil, false
+	}
+
+	// An uncertain external send is not workspace-local. A different working
+	// directory must not drop this block and let the turn plan another send.
+	if unreviewedExternalDeliverySlot(unfinishedSlot) {
+		return h.returnExternalDeliveryReview(msg, unfinishedSlot), true
 	}
 
 	// Match against the same working directory used when creating slots
@@ -477,4 +500,71 @@ func unfinishedSlotText(lang, en, zhHans, zhHant string) string {
 func isSlotActionCommand(text string) bool {
 	trimmed := strings.TrimSpace(text)
 	return strings.HasPrefix(trimmed, "__resume_unfinished__ ") || trimmed == "__start_new_task__" || strings.HasPrefix(trimmed, "__dismiss_unfinished__ ")
+}
+
+// unreviewedExternalDeliverySlot is an external send whose result is still
+// uncertain. Recovery metadata blocks a second send. It does not replay the
+// tool, and it does not cover local writes, search, or document generation.
+func unreviewedExternalDeliverySlot(slot *agent.UnfinishedTaskSlot) bool {
+	if slot == nil || slot.Status == agent.UnfinishedTaskSlotStatusCompleted {
+		return false
+	}
+	if strings.TrimSpace(slot.RecoveryMode) != "requires_review" || strings.TrimSpace(slot.RuntimeTaskID) != "" {
+		return false
+	}
+	return agent.ExternalSendCheckpointEvidence(slot.LastToolName, slot.SideEffectState)
+}
+
+// returnExternalDeliveryReview stops the turn. It also drops any utterance the
+// unfinished-slot hint saved, so the dismiss button cannot replay that send.
+func (h *IMMessageHandler) returnExternalDeliveryReview(msg IMUserMessage, slot *agent.UnfinishedTaskSlot) *IMAgentResponse {
+	if h != nil {
+		h.pendingSlotUserText.Delete(msg.UserID)
+	}
+	return externalDeliveryReviewResponse(msg, slot)
+}
+
+func externalDeliveryReviewResponse(msg IMUserMessage, slot *agent.UnfinishedTaskSlot) *IMAgentResponse {
+	scope := ""
+	if slot != nil {
+		if dest, ok := agentruntime.ResolveHostFileDestination(slot.LastTask); ok &&
+			!agentruntime.SemanticCrossChannelFileDeliveryPublished(string(normalizeIMMessagePlatformKind(msg.Platform)), dest.String()) {
+			scope = dest.ChannelScope()
+		}
+	}
+	text := unfinishedSlotText(msg.Lang,
+		"The previous external send has an uncertain result. This turn will not deliver again and will not replay that send.",
+		"上一次外部发送的结果还不能确定。这一轮不会再次投递，也不会重放那次发送。",
+		"上一次外部發送的結果還不能確定。這一輪不會再次投遞，也不會重放那次發送。",
+	)
+	if scope != "" {
+		text = unfinishedSlotText(msg.Lang,
+			fmt.Sprintf("The previous send to %s has an uncertain result, and this channel cannot deliver a file there. This turn will not deliver again, will not generate a new document, and will not hand a path to im_message.", scope),
+			fmt.Sprintf("上一次发到 %s 的结果还不能确定，而且当前通道不能把文件投递到 %s。这一轮不会再次投递，不会生成新文档，也不会把文件路径交给 im_message。", scope, scope),
+			fmt.Sprintf("上一次發到 %s 的結果還不能確定，而且目前通道不能把檔案投遞到 %s。這一輪不會再次投遞，不會生成新文件，也不會把路徑交給 im_message。", scope, scope),
+		)
+	}
+	return &IMAgentResponse{
+		Text:           text,
+		Error:          "semantic_external_delivery_review_required",
+		ResponseSource: "semantic_host_reject",
+		// Dismiss starts a new task. There is no resume command and no slot
+		// card: a resumed slot would render as already continued.
+		Actions: externalDeliveryDismissAction(msg, slot),
+	}
+}
+
+func externalDeliveryDismissAction(msg IMUserMessage, slot *agent.UnfinishedTaskSlot) []IMResponseAction {
+	if slot == nil {
+		return nil
+	}
+	slotID := strings.TrimSpace(slot.SlotID)
+	if slotID == "" {
+		return nil
+	}
+	return []IMResponseAction{{
+		Label:   unfinishedSlotText(msg.Lang, "Start new task", "开始新任务", "開始新任務"),
+		Command: "__dismiss_unfinished__ " + slotID,
+		Style:   "primary",
+	}}
 }

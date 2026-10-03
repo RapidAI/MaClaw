@@ -730,6 +730,14 @@ func semanticTrustedDocumentInputMissingOrAmbiguous(err error) bool {
 	return tool.IsTrustedInputMissingOrAmbiguous(err)
 }
 
+func semanticProducedDocumentError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "produced_document_stale") || strings.Contains(message, "produced_document_invalid")
+}
+
 func semanticTrustedDocumentContextError(err error) bool {
 	if err == nil {
 		return false
@@ -2080,6 +2088,11 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	// inject (Book-PDF) is the same act even when the user omitted "skill".
 	h.releaseNamedSkillIntercept(&classification, userID, userText)
 	classification = applyHostDatabaseReadGrant(classification, h.databaseHostReadGrant(userText))
+	// Host opt-out is applied after the catalog and skill releases. Those
+	// answer "is this a panel project?"; the flag answers "did the host
+	// already keep this message in chat?". A corroborated competitive
+	// analysis still must not HostReject when the wizard sent「无」.
+	classification = semanticReleaseOptedOutWorkflowTask(semanticNoWorkflowInterception(requestCtx), userText, classification)
 	// Unmapped capability labels (coding, bug_fix, …) must HostReject before
 	// the managed-for-loop gate. Checking managed first reopened the legacy
 	// name router for those families.
@@ -3135,6 +3148,20 @@ func semanticHostRejectResponseForPlanError(err error) *IMAgentResponse {
 			ResponseSource: "semantic_host_reject",
 		}
 	}
+	if semanticProducedDocumentError(err) {
+		return &IMAgentResponse{
+			Text:           "本任务已生成的文档已变更或不可用。这一轮不会另找文件，也不会重新投递。",
+			Error:          "semantic_produced_document_stale",
+			ResponseSource: "semantic_host_reject",
+		}
+	}
+	if semanticUnmetHasReason(err, "artifact_dependency_missing") {
+		return &IMAgentResponse{
+			Text:           "这次投递没有绑定到本任务已经生成的那份文档。这一轮不会另选文件，也不会生成新文档。",
+			Error:          "semantic_artifact_dependency_missing",
+			ResponseSource: "semantic_host_reject",
+		}
+	}
 	return semanticHostRejectResponse()
 }
 
@@ -3154,7 +3181,7 @@ func semanticHostRejectResponseForManagedSurfaceFailure(err error) *IMAgentRespo
 		return &IMAgentResponse{ResponseSource: "semantic_session_ceiling"}
 	}
 	if errors.Is(err, errSemanticAwaitingConfirmation) || errors.Is(err, errSemanticGenerateDeliveryConflict) ||
-		semanticTrustedDocumentInputError(err) || semanticUnmetHasReason(err, "policy_denied") {
+		semanticTrustedDocumentInputError(err) || semanticProducedDocumentError(err) || semanticUnmetHasReason(err, "policy_denied") {
 		return semanticHostRejectResponseForPlanError(err)
 	}
 	var unmapped semanticUnmappedCapabilityError
@@ -3659,6 +3686,26 @@ func semanticIntentFromLoopContext(ctx *LoopContext) *intent.ClassificationResul
 // returned cancel function must always be called because LoopContext.Context
 // installs a watcher for the loop cancellation signal.
 type semanticWorkflowLoopKey struct{}
+type semanticNoWorkflowInterceptionKey struct{}
+
+func withSemanticNoWorkflowInterception(ctx context.Context, optOut bool) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if !optOut {
+		return ctx
+	}
+	return context.WithValue(ctx, semanticNoWorkflowInterceptionKey{}, true)
+}
+
+func semanticNoWorkflowInterception(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	value, _ := ctx.Value(semanticNoWorkflowInterceptionKey{}).(bool)
+	return value
+}
+
 type semanticPlanningBudgetKey struct{}
 type semanticDestinationKey struct{}
 type semanticParentContinuationKey struct{}
@@ -3956,6 +4003,7 @@ func semanticRoutingContext(loop *LoopContext) (context.Context, context.CancelF
 	if loop != nil {
 		ctx, cancel := loop.Context()
 		ctx = withSemanticWorkflowLoop(ctx, loop.WorkflowAgentLoop)
+		ctx = withSemanticNoWorkflowInterception(ctx, loop.NoWorkflowInterception)
 		ctx = withSemanticDestination(ctx, sessionGovernedDestination(loop))
 		ctx = withSemanticPlanningBudget(ctx, loop.Runtime.Execution.ToolBudget)
 		ctx = withSemanticSchemaTokenBudget(ctx, loop.Runtime.Execution.SchemaTokenBudget)

@@ -67,11 +67,69 @@ func NormalizeIMMessagePlatformKind(value string) IMMessagePlatformKind {
 }
 
 // SemanticFileDeliveryPublished reports whether the channel may receive file
-// artifacts produced during a managed semantic turn.
+// artifacts produced during a managed semantic turn on that same channel.
+// A true result for weixin means a weixin turn may receive a file it produced.
+// It does not authorize a desktop turn to push a file to WeChat.
 func SemanticFileDeliveryPublished(channel string) bool {
 	switch NormalizeIMMessagePlatformKind(channel) {
 	case IMMessagePlatformDesktop, IMMessagePlatformTUI, IMMessagePlatformLansenger, IMMessagePlatformLansengerLocal, IMMessagePlatformWeixin, IMMessagePlatformWeixinLocal:
 		return true
+	default:
+		return false
+	}
+}
+
+// ResolveHostFileDestination resolves one whole utterance onto a file-delivery
+// platform. The utterance must be only a closed frame plus an exact channel
+// alias. Extra words, partial sentences, and earlier history are not scanned.
+func ResolveHostFileDestination(utterance string) (IMMessagePlatformKind, bool) {
+	text := strings.TrimSpace(utterance)
+	text = strings.TrimRight(text, "。．.！!？?")
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return IMMessagePlatformUnknown, false
+	}
+	lower := strings.ToLower(text)
+	frames := []string{"发送到", "转发到", "发到", "发给", "send to ", "deliver to "}
+	rest := ""
+	matched := false
+	for _, frame := range frames {
+		if strings.HasPrefix(lower, strings.ToLower(frame)) {
+			rest = strings.TrimSpace(text[len(frame):])
+			matched = true
+			break
+		}
+	}
+	if !matched || rest == "" {
+		return IMMessagePlatformUnknown, false
+	}
+	switch strings.ToLower(rest) {
+	case "微信", "weixin", "wechat":
+		return IMMessagePlatformWeixin, true
+	case "蓝信", "lansenger":
+		return IMMessagePlatformLansenger, true
+	default:
+		return IMMessagePlatformUnknown, false
+	}
+}
+
+// SemanticCrossChannelFileDeliveryPublished reports whether origin may push a
+// file to dest. The same channel scope uses SemanticFileDeliveryPublished.
+// A desktop, TUI, or unknown origin may push a file only to lansenger, which
+// is the transport DeliverIMFile implements. Desktop to weixin is false.
+// ve_group_executor shares the desktop scope but is not a file-delivery origin.
+func SemanticCrossChannelFileDeliveryPublished(origin, dest string) bool {
+	originKind := NormalizeIMMessagePlatformKind(origin)
+	destKind := NormalizeIMMessagePlatformKind(dest)
+	if destKind == IMMessagePlatformUnknown {
+		return false
+	}
+	if originKind.ChannelScope() != "" && originKind.ChannelScope() == destKind.ChannelScope() {
+		return SemanticFileDeliveryPublished(origin)
+	}
+	switch originKind {
+	case IMMessagePlatformDesktop, IMMessagePlatformTUI, IMMessagePlatformUnknown:
+		return destKind.ChannelScope() == "lansenger"
 	default:
 		return false
 	}

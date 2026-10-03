@@ -2490,7 +2490,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		toolBatchSequence++
 		batchMeta := ToolBatchMetadata{
 			Sequence:        toolBatchSequence,
-			LastToolName:    strings.TrimSpace(choice.Message.ToolCalls[0].Function.Name),
+			LastToolName:    preToolCheckpointToolName(choice.Message.ToolCalls),
 			SideEffectState: preToolSideEffectState(choice.Message.ToolCalls),
 		}
 		if starter, ok := h.(ToolBatchStarter); ok {
@@ -3396,6 +3396,23 @@ func sideEffectStateForToolBatch(calls []llm.ToolCall) string {
 // read-only batches stay "none" so a process restart does not present them as
 // an uncertain external mutation. Anything else stays externally uncertain
 // until the commit records the outcome.
+// preToolCheckpointToolName records an external send even when it is not the
+// first call. A crash during the batch then keeps that send visible. A batch
+// with no such call still records the first tool.
+func preToolCheckpointToolName(calls []llm.ToolCall) string {
+	name := ""
+	if len(calls) > 0 {
+		name = strings.TrimSpace(calls[0].Function.Name)
+	}
+	for _, call := range calls {
+		candidate := strings.TrimSpace(call.Function.Name)
+		if ExternalSendCheckpointEvidence(candidate, "") {
+			return candidate
+		}
+	}
+	return name
+}
+
 func preToolSideEffectState(calls []llm.ToolCall) string {
 	if sideEffectStateForToolBatch(calls) == "none" {
 		return "none"

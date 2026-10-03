@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/tinytex"
-	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 const latexProgressEvent = "latex-tinytex-progress"
@@ -387,32 +386,14 @@ func (a *App) setLatexPhase(phase string, pct int, downloaded, total int64, errM
 }
 
 func runLatexTool(ctx context.Context, bin string, args ...string) ([]byte, error) {
-	var cmdName string
-	var cmdArgs []string
-	if runtime.GOOS == "windows" && strings.EqualFold(filepath.Ext(bin), ".bat") {
-		parts := make([]string, 0, len(args)+1)
-		parts = append(parts, quoteCmdArg(bin))
-		for _, arg := range args {
-			parts = append(parts, quoteCmdArg(arg))
-		}
-		cmdName = tool.ResolveCmdExe()
-		cmdArgs = []string{"/d", "/s", "/c", strings.Join(parts, " ")}
-	} else {
-		cmdName = bin
-		cmdArgs = args
+	out, code, err := tinytex.RunCommand(ctx, bin, "", args...)
+	if err != nil {
+		return []byte(out), err
 	}
-	cmd := tool.CommandContext(ctx, cmdName, cmdArgs...)
-	cmd.Dir = filepath.Dir(bin)
-	binDir := filepath.Dir(bin)
-	cmd.Env = append(os.Environ(), "PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	return cmd.CombinedOutput()
-}
-
-func quoteCmdArg(s string) string {
-	if s == "" || strings.ContainsAny(s, " \t\"") {
-		return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
+	if code != 0 {
+		return []byte(out), fmt.Errorf("exit status %d", code)
 	}
-	return s
+	return []byte(out), nil
 }
 
 func firstLatexLine(s string) string {

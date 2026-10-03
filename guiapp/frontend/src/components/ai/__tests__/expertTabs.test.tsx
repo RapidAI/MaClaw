@@ -20,8 +20,16 @@ import {
     projectPathFromSessionKey,
 } from "../aiAssistantPanelSessionUtils";
 import { AbandonUnopenedFreshLatexTask, ClearAIAssistantHistoryForSession, CloseAssistantTabSession, CreateProjectTabSession, LoadProjectTabConversation, LoadProjectTabIndex, SaveProjectTabConversation } from "../../../../wailsjs/go/main/App";
-import { resetLatexDocumentRequestForTests, takePendingLatexDocument } from "../latexDocumentOpen";
-import { LATEX_EXPERT_ID } from "../../../utils/latexTemplates";
+import { dispatchOpenLatexDocument, resetLatexDocumentRequestForTests, takePendingLatexDocument } from "../latexDocumentOpen";
+import { createLatexDocumentForTask, LATEX_EXPERT_ID } from "../../../utils/latexTemplates";
+
+vi.mock("../../../utils/latexTemplates", async () => {
+    const actual = await vi.importActual<typeof import("../../../utils/latexTemplates")>("../../../utils/latexTemplates");
+    return {
+        ...actual,
+        createLatexDocumentForTask: vi.fn(async () => null),
+    };
+});
 
 vi.mock("../../../../wailsjs/runtime", () => ({
     EventsOn: vi.fn(() => vi.fn()),
@@ -210,6 +218,8 @@ describe("usePendingAssistantTabOpen expert welcome seed", () => {
     beforeEach(() => {
         localStorage.clear();
         vi.clearAllMocks();
+        vi.mocked(createLatexDocumentForTask).mockReset();
+        vi.mocked(createLatexDocumentForTask).mockResolvedValue(null);
         vi.mocked(LoadProjectTabIndex).mockResolvedValue([]);
         vi.mocked(CreateProjectTabSession).mockResolvedValue("" as any);
         vi.mocked(LoadProjectTabConversation).mockResolvedValue([]);
@@ -353,6 +363,7 @@ describe("usePendingAssistantTabOpen expert welcome seed", () => {
             { relativePath: "thesis.tex" },
         );
         expect(result.current.manager.tabState.tabs.find(item => item.expertId === expertA.id)?.projectPath).toBeUndefined();
+        expect(createLatexDocumentForTask).not.toHaveBeenCalled();
     });
 
     it("reopens the template source instead of a blank main.tex", async () => {
@@ -390,6 +401,214 @@ describe("usePendingAssistantTabOpen expert welcome seed", () => {
             projectPath: "D:/tasks/paper",
             relativePath: "thesis.tex",
         });
+    });
+
+    it("rebinds a restored main.tex cache to the workspace entry without focusing the tab", async () => {
+        resetLatexDocumentRequestForTests();
+        vi.mocked(createLatexDocumentForTask).mockResolvedValue({
+            project_path: "D:/tasks/paper",
+            relative_path: "elsarticle/elsarticle-template-num.tex",
+            main_file: "elsarticle/elsarticle-template-num.tex",
+            template_id: "blank",
+            template_name: "空白模板",
+            created: false,
+        });
+        const latexExpert: ExpertDefinition = {
+            ...expertA,
+            id: LATEX_EXPERT_ID,
+            name: "LaTeX",
+        };
+        const { result } = renderHook(() => {
+            const manager = useAITabManager();
+            usePendingAssistantTabOpen({
+                lang: "zh-Hans",
+                createVETab: manager.createVETab,
+                createGroupTab: manager.createGroupTab,
+                createProjectTab: manager.createProjectTab,
+                createExpertTab: manager.createExpertTab,
+                activateTab: manager.activateTab,
+                getTabState: manager.getTabState,
+                saveTabState: manager.saveTabState,
+                getTabList: manager.getTabs,
+                setLatexRelativePath: manager.setLatexRelativePath,
+            });
+            return { manager };
+        });
+        act(() => {
+            result.current.manager.createExpertTab(latexExpert, {
+                projectPath: "D:/tasks/paper",
+                relativePath: "main.tex",
+            });
+            result.current.manager.createExpertTab(expertA);
+        });
+        const latexTabId = expertTabId(LATEX_EXPERT_ID);
+        await waitFor(() => {
+            expect(result.current.manager.tabState.tabs.find(item => item.id === latexTabId)?.latexRelativePath)
+                .toBe("elsarticle/elsarticle-template-num.tex");
+        });
+        expect(result.current.manager.tabState.activeTabId).toBe(expertTabId(expertA.id));
+        expect(createLatexDocumentForTask).toHaveBeenCalledWith(
+            "D:/tasks/paper",
+            "blank",
+            "",
+            "zh-Hans",
+        );
+    });
+
+    it("does not ask again when this session already opened that source", async () => {
+        resetLatexDocumentRequestForTests();
+        dispatchOpenLatexDocument({
+            projectPath: "D:/tasks/paper",
+            relativePath: "elsarticle/elsarticle-template-num.tex",
+        });
+        takePendingLatexDocument();
+        const latexExpert: ExpertDefinition = {
+            ...expertA,
+            id: LATEX_EXPERT_ID,
+            name: "LaTeX",
+        };
+        const { result } = renderHook(() => {
+            const manager = useAITabManager();
+            usePendingAssistantTabOpen({
+                lang: "zh-Hans",
+                createVETab: manager.createVETab,
+                createGroupTab: manager.createGroupTab,
+                createProjectTab: manager.createProjectTab,
+                createExpertTab: manager.createExpertTab,
+                activateTab: manager.activateTab,
+                getTabState: manager.getTabState,
+                saveTabState: manager.saveTabState,
+                getTabList: manager.getTabs,
+                setLatexRelativePath: manager.setLatexRelativePath,
+            });
+            return { manager };
+        });
+        act(() => {
+            result.current.manager.createExpertTab(latexExpert, {
+                projectPath: "D:/tasks/paper",
+                relativePath: "elsarticle/elsarticle-template-num.tex",
+            });
+        });
+        await act(async () => {
+            await Promise.resolve();
+        });
+        expect(createLatexDocumentForTask).not.toHaveBeenCalled();
+        expect(result.current.manager.tabState.tabs.find(item => item.expertId === LATEX_EXPERT_ID)?.latexRelativePath)
+            .toBe("elsarticle/elsarticle-template-num.tex");
+    });
+
+    it("holds the restored cache until the workspace entry answers", async () => {
+        resetLatexDocumentRequestForTests();
+        let resolveDocument: (value: Awaited<ReturnType<typeof createLatexDocumentForTask>>) => void = () => {};
+        vi.mocked(createLatexDocumentForTask).mockImplementation(() => new Promise(resolve => {
+            resolveDocument = resolve;
+        }));
+        const latexExpert: ExpertDefinition = {
+            ...expertA,
+            id: LATEX_EXPERT_ID,
+            name: "LaTeX",
+        };
+        const { result } = renderHook(() => {
+            const manager = useAITabManager();
+            const watch = usePendingAssistantTabOpen({
+                lang: "zh-Hans",
+                createVETab: manager.createVETab,
+                createGroupTab: manager.createGroupTab,
+                createProjectTab: manager.createProjectTab,
+                createExpertTab: manager.createExpertTab,
+                activateTab: manager.activateTab,
+                getTabState: manager.getTabState,
+                saveTabState: manager.saveTabState,
+                getTabList: manager.getTabs,
+                setLatexRelativePath: manager.setLatexRelativePath,
+            });
+            return { manager, watch };
+        });
+        act(() => {
+            result.current.manager.createExpertTab(latexExpert, {
+                projectPath: "D:/tasks/paper",
+                relativePath: "main.tex",
+            });
+            result.current.manager.createExpertTab(expertA);
+        });
+        await waitFor(() => {
+            expect(result.current.watch.pending("D:/tasks/paper")).toBe(true);
+        });
+        expect(result.current.manager.tabState.tabs.find(item => item.expertId === LATEX_EXPERT_ID)?.latexRelativePath)
+            .toBe("main.tex");
+        expect(result.current.manager.tabState.activeTabId).toBe(expertTabId(expertA.id));
+        await act(async () => {
+            resolveDocument({
+                project_path: "D:/tasks/paper",
+                relative_path: "elsarticle/elsarticle-template-num.tex",
+                main_file: "elsarticle/elsarticle-template-num.tex",
+                template_id: "blank",
+                template_name: "空白模板",
+                created: false,
+            });
+        });
+        expect(result.current.watch.pending("D:/tasks/paper")).toBe(false);
+        expect(result.current.manager.tabState.tabs.find(item => item.expertId === LATEX_EXPERT_ID)?.latexRelativePath)
+            .toBe("elsarticle/elsarticle-template-num.tex");
+        expect(result.current.manager.tabState.activeTabId).toBe(expertTabId(expertA.id));
+    });
+
+    it("does not let a late blank answer replace a path chosen while it was waiting", async () => {
+        resetLatexDocumentRequestForTests();
+        let resolveDocument: (value: Awaited<ReturnType<typeof createLatexDocumentForTask>>) => void = () => {};
+        vi.mocked(createLatexDocumentForTask).mockImplementation(() => new Promise(resolve => {
+            resolveDocument = resolve;
+        }));
+        const latexExpert: ExpertDefinition = {
+            ...expertA,
+            id: LATEX_EXPERT_ID,
+            name: "LaTeX",
+        };
+        const { result } = renderHook(() => {
+            const manager = useAITabManager();
+            const watch = usePendingAssistantTabOpen({
+                lang: "zh-Hans",
+                createVETab: manager.createVETab,
+                createGroupTab: manager.createGroupTab,
+                createProjectTab: manager.createProjectTab,
+                createExpertTab: manager.createExpertTab,
+                activateTab: manager.activateTab,
+                getTabState: manager.getTabState,
+                saveTabState: manager.saveTabState,
+                getTabList: manager.getTabs,
+                setLatexRelativePath: manager.setLatexRelativePath,
+            });
+            return { manager, watch };
+        });
+        act(() => {
+            result.current.manager.createExpertTab(latexExpert, {
+                projectPath: "D:/tasks/paper",
+                relativePath: "main.tex",
+            });
+            result.current.manager.createExpertTab(expertA);
+        });
+        const latexTabId = expertTabId(LATEX_EXPERT_ID);
+        await waitFor(() => {
+            expect(result.current.watch.pending("D:/tasks/paper")).toBe(true);
+        });
+        act(() => {
+            result.current.manager.setLatexRelativePath(latexTabId, "elsarticle/elsarticle-template-num.tex");
+        });
+        await act(async () => {
+            resolveDocument({
+                project_path: "D:/tasks/paper",
+                relative_path: "main.tex",
+                main_file: "main.tex",
+                template_id: "blank",
+                template_name: "空白模板",
+                created: false,
+            });
+        });
+        expect(result.current.watch.pending("D:/tasks/paper")).toBe(false);
+        expect(result.current.manager.tabState.tabs.find(item => item.id === latexTabId)?.latexRelativePath)
+            .toBe("elsarticle/elsarticle-template-num.tex");
+        expect(result.current.manager.tabState.activeTabId).toBe(expertTabId(expertA.id));
+        expect(createLatexDocumentForTask).toHaveBeenCalledTimes(1);
     });
 
     it("seeds welcome for a restored tab whose history is empty", () => {

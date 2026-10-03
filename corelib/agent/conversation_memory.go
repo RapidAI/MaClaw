@@ -189,24 +189,26 @@ type conversationSession struct {
 	inFlightLastTool     string
 	inFlightSideEffect   string
 	semanticResidue      *SemanticSessionResidue
+	producedDocument     *PersistedProducedDocument
 	parentExecutionTools []string
 	parentExecutionKnown bool
 }
 
 type persistedSession struct {
-	Entries                []ConversationEntry     `json:"entries"`
-	ActiveBranchTipID      string                  `json:"active_branch_tip_id,omitempty"`
-	LastAccess             time.Time               `json:"last_access"`
-	UnfinishedSlot         *UnfinishedTaskSlot     `json:"unfinished_slot,omitempty"`
-	ActiveSlotID           string                  `json:"active_slot_id,omitempty"`
-	InFlightTask           string                  `json:"in_flight_task,omitempty"`
-	InFlightProjectPath    string                  `json:"in_flight_project_path,omitempty"`
-	InFlightSetAt          time.Time               `json:"in_flight_set_at,omitempty"`
-	InFlightRunID          string                  `json:"in_flight_run_id,omitempty"`
-	InFlightSequence       uint64                  `json:"in_flight_sequence,omitempty"`
-	InFlightLastTool       string                  `json:"in_flight_last_tool,omitempty"`
-	InFlightSideEffect     string                  `json:"in_flight_side_effect,omitempty"`
-	SemanticSessionResidue *SemanticSessionResidue `json:"semantic_session_residue,omitempty"`
+	Entries                []ConversationEntry        `json:"entries"`
+	ActiveBranchTipID      string                     `json:"active_branch_tip_id,omitempty"`
+	LastAccess             time.Time                  `json:"last_access"`
+	UnfinishedSlot         *UnfinishedTaskSlot        `json:"unfinished_slot,omitempty"`
+	ActiveSlotID           string                     `json:"active_slot_id,omitempty"`
+	InFlightTask           string                     `json:"in_flight_task,omitempty"`
+	InFlightProjectPath    string                     `json:"in_flight_project_path,omitempty"`
+	InFlightSetAt          time.Time                  `json:"in_flight_set_at,omitempty"`
+	InFlightRunID          string                     `json:"in_flight_run_id,omitempty"`
+	InFlightSequence       uint64                     `json:"in_flight_sequence,omitempty"`
+	InFlightLastTool       string                     `json:"in_flight_last_tool,omitempty"`
+	InFlightSideEffect     string                     `json:"in_flight_side_effect,omitempty"`
+	SemanticSessionResidue *SemanticSessionResidue    `json:"semantic_session_residue,omitempty"`
+	ProducedDocument       *PersistedProducedDocument `json:"produced_document,omitempty"`
 	// ParentExecutionTools are non-light tool names from the previous full
 	// turn. They are not grants and carry no arguments.
 	// ParentExecutionKnown distinguishes "cleared" from "never recorded"
@@ -1170,13 +1172,21 @@ func (cm *ConversationMemory) persistInFlightCheckpointLocked(userID string, ent
 	before := cloneConversationSession(s)
 	now := time.Now()
 	cm.saveEntriesLocked(s, entries, now)
+	// A later tool in this run must not erase an uncertain external send.
+	// History and the sequence still advance; only that evidence stays.
+	lastTool := strings.TrimSpace(checkpoint.LastToolName)
+	sideEffect := strings.TrimSpace(checkpoint.SideEffectState)
+	if s.inFlightRunID == runID && ExternalSendCheckpointEvidence(s.inFlightLastTool, s.inFlightSideEffect) {
+		lastTool = s.inFlightLastTool
+		sideEffect = s.inFlightSideEffect
+	}
 	s.inFlightTask = task
 	s.inFlightProjectPath = projectPath
 	s.inFlightSetAt = now
 	s.inFlightRunID = runID
 	s.inFlightSequence = checkpoint.Sequence
-	s.inFlightLastTool = strings.TrimSpace(checkpoint.LastToolName)
-	s.inFlightSideEffect = strings.TrimSpace(checkpoint.SideEffectState)
+	s.inFlightLastTool = lastTool
+	s.inFlightSideEffect = sideEffect
 	candidate := cloneConversationSession(s)
 	sh.mu.Unlock()
 	cm.markDirtyAndScheduleFlush()
@@ -1632,6 +1642,22 @@ func (cm *ConversationMemory) convertExpiredInFlightLocked(userID string, s *con
 	s.lastAccess = now
 }
 
+// ExternalSendCheckpointEvidence reports an im or file send whose result is
+// still uncertain. Callers use it to keep that evidence, not to replay the tool.
+func ExternalSendCheckpointEvidence(toolName, sideEffect string) bool {
+	switch strings.ToLower(strings.TrimSpace(toolName)) {
+	case "im_message", "send_file", "send_to_im":
+	default:
+		return false
+	}
+	switch strings.TrimSpace(sideEffect) {
+	case "external_uncertain", "unknown", "":
+		return true
+	default:
+		return false
+	}
+}
+
 func recoveryModeForSideEffect(sideEffect string) string {
 	switch strings.TrimSpace(sideEffect) {
 	case "none":
@@ -1745,6 +1771,19 @@ func inFlightRunScopeKey(runID string) string {
 	return "in_flight_run:" + runID
 }
 
+// InFlightRecovery is the checkpoint evidence cleared together with the
+// in-flight marker. It carries no tool arguments or result payload.
+type InFlightRecovery struct {
+	Task             string
+	ProjectPath      string
+	RunID            string
+	EvidenceScopeKey string
+	LastToolName     string
+	SideEffectState  string
+	RecoveryMode     string
+	SetAt            time.Time
+}
+
 // ConsumeInFlightTask atomically reads and clears the in-flight marker.
 // Returns the task description and project path if the marker was set
 // (meaning the previous agent loop was interrupted), or empty strings
@@ -1752,17 +1791,39 @@ func inFlightRunScopeKey(runID string) string {
 // This is a one-shot operation — calling it twice returns empty on the
 // second call.
 func (cm *ConversationMemory) ConsumeInFlightTask(userID string) (string, string) {
-	var task, projectPath string
+	recovered := cm.ConsumeInFlightRecovery(userID)
+	return recovered.Task, recovered.ProjectPath
+}
+
+// ConsumeInFlightRecovery clears the in-flight marker and returns the
+// checkpoint evidence that restart promotion would have copied onto a slot.
+// A marker with no tool checkpoint leaves LastToolName, SideEffectState, and
+// RecoveryMode empty.
+func (cm *ConversationMemory) ConsumeInFlightRecovery(userID string) InFlightRecovery {
+	var recovered InFlightRecovery
+	if cm == nil {
+		return recovered
+	}
 	cm.checkpointLockedMutation(func() {
 		sh := cm.shard(userID)
 		sh.mu.Lock()
 		s := sh.sessions[userID]
-		if s == nil || s.inFlightTask == "" {
+		if s == nil || strings.TrimSpace(s.inFlightTask) == "" {
 			sh.mu.Unlock()
 			return
 		}
-		task = s.inFlightTask
-		projectPath = s.inFlightProjectPath
+		recovered = InFlightRecovery{
+			Task:             s.inFlightTask,
+			ProjectPath:      s.inFlightProjectPath,
+			RunID:            s.inFlightRunID,
+			EvidenceScopeKey: inFlightRunScopeKey(s.inFlightRunID),
+			LastToolName:     s.inFlightLastTool,
+			SideEffectState:  s.inFlightSideEffect,
+			SetAt:            s.inFlightSetAt,
+		}
+		if strings.TrimSpace(s.inFlightLastTool) != "" || strings.TrimSpace(s.inFlightSideEffect) != "" {
+			recovered.RecoveryMode = recoveryModeForSideEffect(s.inFlightSideEffect)
+		}
 		s.inFlightTask = ""
 		s.inFlightProjectPath = ""
 		s.inFlightSetAt = time.Time{}
@@ -1773,7 +1834,7 @@ func (cm *ConversationMemory) ConsumeInFlightTask(userID string) (string, string
 		sh.mu.Unlock()
 		cm.markDirtyAndScheduleFlush()
 	})
-	return task, projectPath
+	return recovered
 }
 
 // --- Disk persistence ---
@@ -1806,6 +1867,7 @@ func (cm *ConversationMemory) saveToDisk() error {
 				InFlightLastTool:       session.inFlightLastTool,
 				InFlightSideEffect:     session.inFlightSideEffect,
 				SemanticSessionResidue: clonePersistedSemanticResidue(session.semanticResidue),
+				ProducedDocument:       clonePersistedProducedDocument(session.producedDocument),
 				ParentExecutionTools:   cloneParentExecutionTools(session.parentExecutionTools),
 				ParentExecutionKnown:   session.parentExecutionKnown,
 			}
@@ -1909,6 +1971,7 @@ func (cm *ConversationMemory) loadFromDisk() error {
 			inFlightLastTool:     session.InFlightLastTool,
 			inFlightSideEffect:   session.InFlightSideEffect,
 			semanticResidue:      clonePersistedSemanticResidue(session.SemanticSessionResidue),
+			producedDocument:     clonePersistedProducedDocument(session.ProducedDocument),
 			parentExecutionTools: cloneParentExecutionTools(session.ParentExecutionTools),
 			parentExecutionKnown: session.ParentExecutionKnown,
 		}

@@ -1066,11 +1066,10 @@ func TestDeleteCodingWorkbenchEntryKeepsAcceptedRemoteDeletesAfterLaterFailure(t
 		t.Fatalf("seed push: %v", err)
 	}
 	hub.mu.Lock()
-	hub.failAfterOperations = 1
-	hub.operationCount = 0
+	hub.failPush = true
 	hub.mu.Unlock()
 	if err := app.DeleteCodingWorkbenchEntry(prepared.LocalPath, "docs"); err == nil {
-		t.Fatal("expected later remote delete to fail")
+		t.Fatal("expected manifest replace to fail")
 	}
 	st, err := readCloudWorkspaceLocalState(prepared.LocalPath)
 	if err != nil {
@@ -1085,11 +1084,25 @@ func TestDeleteCodingWorkbenchEntryKeepsAcceptedRemoteDeletesAfterLaterFailure(t
 			hasB = true
 		}
 	}
-	if hasA {
-		t.Fatalf("accepted remote delete still in LastEntries: %+v", st.LastEntries)
+	if !hasA || !hasB {
+		t.Fatalf("failed manifest replace must leave both baseline entries: %+v", st.LastEntries)
 	}
-	if !hasB {
-		t.Fatalf("failed remote delete was dropped from LastEntries: %+v", st.LastEntries)
+	if _, err := os.Stat(filepath.Join(prepared.LocalPath, "docs", "a.md")); err != nil {
+		t.Fatalf("local docs/a.md must stay: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(prepared.LocalPath, "docs", "b.md")); err != nil {
+		t.Fatalf("local docs/b.md must stay: %v", err)
+	}
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	remoteA := false
+	for _, entry := range hub.entries {
+		if entry.Path == "docs/a.md" {
+			remoteA = true
+		}
+	}
+	if !remoteA {
+		t.Fatalf("failed manifest replace must leave the remote tree: %+v", hub.entries)
 	}
 }
 
@@ -1257,6 +1270,58 @@ func TestExplicitCloudWorkspaceListingDirKeepsReadOnlyRoot(t *testing.T) {
 	}
 }
 
+func TestCorruptCloudWorkspaceListingFallsBackToDisk(t *testing.T) {
+	app := newCloudWorkspaceMountTestApp(t, &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted})
+	cache := normalizeProjectSessionPath(app.cloudWorkspaceCachePath("tenant_acme", "cws_bad_listing"))
+	if err := os.MkdirAll(filepath.Join(cache, cloudWorkspaceCacheStateDir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cache, "notes.md"), []byte("on disk"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cache, cloudWorkspaceCacheStateDir, cloudWorkspaceListingFile), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := app.GetCodingWorkbenchDirectory(cache, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !codingWorkbenchEntriesContain(listed.Entries, "notes.md") {
+		t.Fatalf("damaged browse index hid the disk file: %+v", listed.Entries)
+	}
+}
+
+func TestCloudWorkspaceDirectoryMergesCaseVariantOnce(t *testing.T) {
+	app := newCloudWorkspaceMountTestApp(t, &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted})
+	cache := normalizeProjectSessionPath(app.cloudWorkspaceCachePath("tenant_acme", "cws_case_listing"))
+	if err := os.MkdirAll(cache, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cache, "notes.md"), []byte("on disk"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sum := strings.Repeat("ab", 32)
+	if err := writeCloudWorkspaceListing(cache, &cloudWorkspaceManifest{
+		Revision: "rev-case",
+		Entries:  []cloudWorkspaceManifestEntry{{Path: "Notes.md", SHA256: sum, Size: 7}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := app.GetCodingWorkbenchDirectory(cache, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, entry := range listed.Entries {
+		if cloudWorkspacePortablePathKey(entry.Name) == cloudWorkspacePortablePathKey("notes.md") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("case variants of one file shown %d times: %+v", count, listed.Entries)
+	}
+}
+
 func TestGetCodingWorkbenchDirectoryListsExplicitReadOnlyCache(t *testing.T) {
 	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted}
 	app := newCloudWorkspaceMountTestApp(t, hub)
@@ -1357,20 +1422,32 @@ func TestCloudWorkspaceDeleteCacheRootRejectsForeignWorkspace(t *testing.T) {
 }
 
 func TestDeleteCodingWorkbenchEntryLeavesLocalFileWhenRemoteFails(t *testing.T) {
-	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted, failPush: true}
+	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted}
 	app := newCloudWorkspaceMountTestApp(t, hub)
 	prepared, err := app.PrepareCloudWorkspace("cws_delete_remote_fail")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(prepared.LocalPath, "gone.md"), []byte("drop"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	seedCloudWorkspaceFileForDelete(t, app, hub, "cws_delete_remote_fail", prepared.LocalPath, "gone.md", "drop")
+	hub.mu.Lock()
+	hub.failPush = true
+	hub.mu.Unlock()
 	if err := app.DeleteCodingWorkbenchEntry(prepared.LocalPath, "gone.md"); err == nil {
 		t.Fatal("expected remote delete to fail")
 	}
 	if _, err := os.Stat(filepath.Join(prepared.LocalPath, "gone.md")); err != nil {
 		t.Fatalf("local cache must stay until remote delete succeeds: %v", err)
+	}
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	found := false
+	for _, entry := range hub.entries {
+		if entry.Path == "gone.md" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("failed delete must leave the remote file: %+v", hub.entries)
 	}
 }
 

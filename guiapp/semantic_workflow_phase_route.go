@@ -49,6 +49,22 @@ func semanticClassificationForWorkflowLoop(workflowAgentLoop bool, result intent
 	return classificationWithoutWorkflowTask(result)
 }
 
+// semanticReleaseOptedOutWorkflowTask drops workflow_task when the host
+// already decided this message must not be intercepted as a workflow.
+//
+// That decision is NoWorkflowInterception, set by the new-task wizard when
+// the draft is「无」. It is authoritative for this handoff message: a
+// catalog template matching the text does not reopen the panel route, and
+// the label must not reach the unmapped-capability rejection. The chat
+// agent is the executor the opt-out left in place. A pure workflow_task
+// therefore falls through the same way an uncatalogued one does.
+func semanticReleaseOptedOutWorkflowTask(optOut bool, userText string, result intent.ClassificationResult) intent.ClassificationResult {
+	if !optOut || !classificationHasLabel(result, intent.LabelWorkflowTask) {
+		return result
+	}
+	return discardWorkflowTask(result, "workflow_task released: host opted out of workflow interception", semanticUserIntentText(userText))
+}
+
 // semanticReleaseUncataloguedWorkflowTask drops workflow_task when the
 // catalog does not corroborate a panel project.
 //
@@ -142,17 +158,22 @@ func soleDocumentGenerate(result intent.ClassificationResult) bool {
 // projectStoredTurnIntent applies the releases the planner will apply, to the
 // classification stored on the loop. The planner reads that stored value.
 // Leaving workflow_task there makes the legacy router keep generate_pdf.
-func projectStoredTurnIntent(userID, userText string, result *intent.ClassificationResult) *intent.ClassificationResult {
+func projectStoredTurnIntent(userID, userText string, noWorkflowInterception bool, result *intent.ClassificationResult) *intent.ClassificationResult {
 	if result == nil {
 		return nil
 	}
 	projected := semanticReleaseLatexExpertWorkflowTask(userID, userText, *result)
 	projected = semanticReleaseUncataloguedWorkflowTask(userText, projected)
+	projected = semanticReleaseOptedOutWorkflowTask(noWorkflowInterception, userText, projected)
 	return &projected
 }
 
 // discardWorkflowTask removes the workflow_task label and the template that
 // belonged to it. A surviving office or coding primary keeps its own type.
+// The definition's tool list (generate_pdf) belongs to that label when it
+// was primary. Leaving the list on the stored intent is what makes the
+// legacy router keep the renderer after the label is gone. A secondary
+// workflow_task does not own the primary's tool list, so that list stays.
 func discardWorkflowTask(result intent.ClassificationResult, note, loggedText string) intent.ClassificationResult {
 	if !classificationHasLabel(result, intent.LabelWorkflowTask) {
 		return result
@@ -161,6 +182,7 @@ func discardWorkflowTask(result intent.ClassificationResult, note, loggedText st
 	released := classificationWithoutWorkflowTask(result)
 	if wasPrimary || released.Primary == "" {
 		released.WorkflowType = ""
+		released.ToolNames = nil
 	}
 	if released.RunnerUp == intent.LabelWorkflowTask {
 		released.RunnerUp = ""

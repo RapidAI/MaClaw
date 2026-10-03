@@ -7,6 +7,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
+	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
 
 func workflowPhaseClassification(labels ...intent.IntentLabel) intent.ClassificationResult {
@@ -200,6 +201,91 @@ func TestMediaProductionIsNotRefusedAsAWorkflow(t *testing.T) {
 	}
 	if handled {
 		t.Fatal("media production must fall through to the ordinary agent, not a managed workflow surface")
+	}
+}
+
+// The new-task wizard's「无」sets NoWorkflowInterception. That flag used to
+// be read only by the workflow router, and a cold message never enters it,
+// so a catalog project such as 竞品分析 was still refused here. The opt-out
+// is the host decision that chat is the executor; the catalog match does
+// not get to close that path.
+func TestHostOptOutDoesNotRefuseACatalogWorkflowProject(t *testing.T) {
+	h := semanticCodingHandler(t, intent.LabelCoding)
+	text := "做一份可汇报的竞品分析，给出结论、对比表、机会和下一步。"
+	if !v2.CatalogCorroboratesWorkflowProject(text, "competitive_analysis") {
+		t.Fatal("the incident utterance is no longer a catalog project; this test no longer guards the opt-out")
+	}
+	classified := workflowPhaseClassification(intent.LabelWorkflowTask)
+	classified.WorkflowType = "competitive_analysis"
+	classified.Confidence = 0.88
+	classified.Layer = 2
+	ctx := withSemanticNoWorkflowInterception(context.Background(), true)
+	_, handled, err := h.semanticPlanForTurnWithContextAndClassificationAndAttachments(
+		ctx, "user-1", text, "desktop", "root-opt-out", "turn-opt-out",
+		ptrClassification(classified), nil,
+	)
+	if err != nil {
+		t.Fatalf("host opt-out was still refused as a workflow start: %v", err)
+	}
+	if handled {
+		t.Fatal("host opt-out must fall through to the chat agent, not a managed workflow surface")
+	}
+}
+
+func TestHostOptOutDropsWorkflowTaskFromTheStoredIntent(t *testing.T) {
+	text := "做一份可汇报的竞品分析，给出结论、对比表、机会和下一步。"
+	in := workflowPhaseClassification(intent.LabelWorkflowTask)
+	in.WorkflowType = "competitive_analysis"
+	in.ToolNames = []string{"generate_pdf"}
+	in.Confidence = 0.88
+	in.Layer = 2
+	out := projectStoredTurnIntent("user-1", text, true, &in)
+	if out == nil || out.HasLabel(intent.LabelWorkflowTask) || out.WorkflowType != "" || out.Primary != "" || len(out.ToolNames) != 0 {
+		t.Fatalf("stored intent kept the panel label under host opt-out: %+v", out)
+	}
+	kept := projectStoredTurnIntent("user-1", text, false, &in)
+	if kept == nil || !kept.HasLabel(intent.LabelWorkflowTask) || kept.WorkflowType != "competitive_analysis" || len(kept.ToolNames) != 1 {
+		t.Fatalf("without the host opt-out the catalog project must stay a workflow: %+v", kept)
+	}
+}
+
+func TestHostOptOutKeepsASurvivingCapability(t *testing.T) {
+	in := workflowPhaseClassification(intent.LabelWorkflowTask, intent.LabelCoding)
+	in.WorkflowType = "competitive_analysis"
+	in.ToolNames = []string{"generate_pdf"}
+	out := semanticReleaseOptedOutWorkflowTask(true, "做一份可汇报的竞品分析，给出结论、对比表、机会和下一步。", in)
+	if out.Primary != intent.LabelCoding || out.HasLabel(intent.LabelWorkflowTask) || out.WorkflowType != "" || len(out.ToolNames) != 0 {
+		t.Fatalf("opt-out dropped the surviving capability or kept the panel tool list: %+v", out)
+	}
+}
+
+func TestReleaseKeepsTheSurvivingPrimaryToolList(t *testing.T) {
+	in := intent.ClassificationResult{
+		Primary:      intent.LabelOffice,
+		Secondary:    []intent.IntentLabel{intent.LabelWorkflowTask},
+		WorkflowType: "presentation_design",
+		ToolNames:    []string{"office"},
+	}
+	out := semanticReleaseUncataloguedWorkflowTask("生成一段动画", in)
+	if len(out.ToolNames) != 1 || out.ToolNames[0] != "office" || out.WorkflowType != "presentation_design" {
+		t.Fatalf("a secondary workflow_task wiped the surviving primary: %+v", out)
+	}
+}
+
+func TestSemanticRoutingContextCarriesWorkflowOptOut(t *testing.T) {
+	loop := NewLoopContext("chat", 8, nil)
+	loop.NoWorkflowInterception = true
+	ctx, cancel := semanticRoutingContext(loop)
+	if !semanticNoWorkflowInterception(ctx) {
+		cancel()
+		t.Fatal("semantic routing context dropped the host opt-out")
+	}
+	cancel()
+	loop.NoWorkflowInterception = false
+	ctx, cancel = semanticRoutingContext(loop)
+	defer cancel()
+	if semanticNoWorkflowInterception(ctx) {
+		t.Fatal("a later message kept the previous opt-out")
 	}
 }
 

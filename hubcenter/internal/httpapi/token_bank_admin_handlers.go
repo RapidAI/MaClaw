@@ -835,7 +835,7 @@ func (h *SkillMarketHandlers) TokenBankAdminListCreditShares(w http.ResponseWrit
 			ExpiresAt:        formatOptionalTime(link.ExpiresAt),
 			ClaimedAt:        formatOptionalTime(link.ClaimedAt),
 			RevokedAt:        formatOptionalTime(link.RevokedAt),
-			Revocable:        link.Status == sqlite.TokenBankGiftStatusActive,
+			Revocable:        link.Status == sqlite.TokenBankGiftStatusActive || link.Status == sqlite.TokenBankGiftStatusClaimed,
 			RemainingSeconds: remainingSeconds(link.ExpiresAt, now),
 		})
 	}
@@ -866,7 +866,7 @@ func (h *SkillMarketHandlers) TokenBankAdminRevokeCreditShare(w http.ResponseWri
 		case errors.Is(err, sqlite.ErrGiftLinkNotFound):
 			tbError(w, http.StatusNotFound, "link_not_found", "credit share link not found")
 		case errors.Is(err, sqlite.ErrGiftLinkNotActive):
-			tbError(w, http.StatusConflict, "link_not_active", "link is no longer active; a claimed link belongs to the receiver")
+			tbError(w, http.StatusConflict, "link_not_active", "link can no longer be revoked")
 		default:
 			tbError(w, http.StatusInternalServerError, "token_bank_unavailable", err.Error())
 		}

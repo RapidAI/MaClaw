@@ -124,7 +124,27 @@ func (h *IMMessageHandler) captureProducedDocument(msg IMUserMessage, needs []to
 		return
 	}
 	h.producedDocuments.Store(key, context)
+	if h.memory != nil {
+		h.memory.SetProducedDocument(key, agent.PersistedProducedDocument{
+			CanonicalPath: context.CanonicalPath,
+			Format:        context.Format,
+			MIMEType:      context.MIMEType,
+			Size:          context.Size,
+			ModTimeNS:     context.ModTimeNS,
+			Digest:        context.Digest,
+		})
+	}
 	log.Printf("[semantic-routing] produced document captured user=%q name=%q", msg.UserID, filepath.Base(context.CanonicalPath))
+}
+
+func (h *IMMessageHandler) forgetProducedDocument(key string) {
+	if h == nil || strings.TrimSpace(key) == "" {
+		return
+	}
+	h.producedDocuments.Delete(key)
+	if h.memory != nil {
+		h.memory.ClearProducedDocument(key)
+	}
 }
 
 // semanticProducedDocumentInputsForTurn admits the captured file as this
@@ -140,12 +160,27 @@ func (h *IMMessageHandler) semanticProducedDocumentInputsForTurn(rootTaskID, tur
 		return nil, false, nil
 	}
 	value, ok := h.producedDocuments.Load(key)
+	if !ok && h.memory != nil {
+		if persisted, found := h.memory.ProducedDocument(key); found {
+			loaded := producedDocumentContext{
+				CanonicalPath: persisted.CanonicalPath,
+				Format:        persisted.Format,
+				MIMEType:      persisted.MIMEType,
+				Size:          persisted.Size,
+				ModTimeNS:     persisted.ModTimeNS,
+				Digest:        persisted.Digest,
+			}
+			h.producedDocuments.Store(key, loaded)
+			value = loaded
+			ok = true
+		}
+	}
 	if !ok {
 		return nil, false, nil
 	}
 	context, ok := value.(producedDocumentContext)
 	if !ok || strings.TrimSpace(context.CanonicalPath) == "" || len(context.Digest) < 24 {
-		h.producedDocuments.Delete(key)
+		h.forgetProducedDocument(key)
 		return nil, true, fmt.Errorf("produced_document_invalid")
 	}
 	if strings.TrimSpace(sessionID) == "" || strings.TrimSpace(userID) == "" {
@@ -153,12 +188,12 @@ func (h *IMMessageHandler) semanticProducedDocumentInputsForTurn(rootTaskID, tur
 	}
 	data, info, err := readStableActiveLocalDocument(context.CanonicalPath)
 	if err != nil {
-		h.producedDocuments.Delete(key)
+		h.forgetProducedDocument(key)
 		return nil, true, fmt.Errorf("produced_document_stale")
 	}
 	digest := sha256.Sum256(data)
 	if info.Size() != context.Size || info.ModTime().UnixNano() != context.ModTimeNS || !strings.EqualFold(fmt.Sprintf("%x", digest[:]), context.Digest) {
-		h.producedDocuments.Delete(key)
+		h.forgetProducedDocument(key)
 		return nil, true, fmt.Errorf("produced_document_stale")
 	}
 	scope := tool.InvocationScope{

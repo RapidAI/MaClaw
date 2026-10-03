@@ -109,6 +109,46 @@ func TestDeliveryTurnDoesNotReplaceProducedDocument(t *testing.T) {
 	}
 }
 
+func TestProducedDocumentSurvivesProcessRestartAndFailCloses(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "崇州天气与风土人情.pdf")
+	body := []byte("%PDF-1.4\nrestart")
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store := filepath.Join(t.TempDir(), "conversation.json")
+	memory := agent.NewPersistentConversationMemory(store)
+	userID := "desktop-user:restart-product"
+	h := &IMMessageHandler{memory: memory}
+	h.captureProducedDocument(IMUserMessage{UserID: userID, Platform: "desktop"}, []tool.CapabilityNeed{
+		{ID: "need:gen", Capability: agentservice.CapabilityDocumentGenerate, Required: true},
+	}, &IMAgentResponse{LocalFilePath: path})
+	memory.Stop()
+
+	reloaded := agent.NewPersistentConversationMemory(store)
+	defer reloaded.Stop()
+	next := &IMMessageHandler{memory: reloaded}
+	inputs, ok, err := next.semanticProducedDocumentInputsForTurn("root", "turn", "session", userID, "desktop")
+	if err != nil || !ok || len(inputs) != 1 || inputs[0].Payload.Ref.Name != "崇州天气与风土人情.pdf" {
+		t.Fatalf("inputs=%d ok=%v err=%v", len(inputs), ok, err)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(inputs[0].Payload.Base64)
+	if err != nil || string(decoded) != string(body) {
+		t.Fatalf("decoded=%q err=%v", decoded, err)
+	}
+
+	if err := os.WriteFile(path, []byte("%PDF-1.4\nchanged"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, present, err := next.semanticProducedDocumentInputsForTurn("root", "turn-stale", "session", userID, "desktop")
+	if !present || err == nil || !strings.Contains(err.Error(), "produced_document_stale") {
+		t.Fatalf("stale restart product present=%v err=%v", present, err)
+	}
+	if _, found := reloaded.ProducedDocument(userID); found {
+		t.Fatal("stale snapshot stayed in conversation memory")
+	}
+}
+
 func TestDesktopSpecifiedTargetForwardsBoundFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "崇州天气与风土人情.pdf")

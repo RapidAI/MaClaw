@@ -519,7 +519,7 @@ func NewReviewedDynamicCapabilityRegistry() (*coretool.CapabilityRegistry, error
 	if err := registry.Register(coretool.CapabilityDescriptor{
 		ID:      CapabilityBuildVerify,
 		Version: "v1",
-		Summary: "Run one reviewed build, test, or lint task in the bound workspace without supplying a command line.",
+		Summary: "Run one reviewed build, test, or lint task in the bound workspace without supplying a command line. build in a LaTeX directory compiles its documents with the host TeX engine.",
 		Qualifiers: map[string]coretool.QualifierConstraint{
 			"task": {Values: coretool.BuildVerifyTasks()},
 		},

@@ -2961,6 +2961,25 @@ func AvailableCreditsForServiceGroupsForUserID(reg *Registry, userID, email stri
 	return availableCreditsForServiceGroups(reg, newUserAccountRef(userID, email), serviceGroupIDs, now)
 }
 
+// SpendableCreditsForServiceGroupsForUserID is the remaining grant balance on
+// these groups before in-flight holds. Available credits subtract holds and
+// clamp at zero, so adding a hold back onto available inflates the card
+// whenever that hold is larger than the balance.
+func SpendableCreditsForServiceGroupsForUserID(reg *Registry, userID, email string, serviceGroupIDs []string, now time.Time) float64 {
+	if reg == nil {
+		return 0
+	}
+	serviceGroupIDs = normalizeStringSlice(serviceGroupIDs)
+	if len(serviceGroupIDs) == 0 {
+		return 0
+	}
+	serviceGroupSet := map[string]struct{}{}
+	for _, id := range serviceGroupIDs {
+		serviceGroupSet[strings.ToLower(id)] = struct{}{}
+	}
+	return roundCredits(spendableGrantCredits(reg, newUserAccountRef(userID, email), serviceGroupSet, now))
+}
+
 // HeldBillingCreditsForServiceGroupsForUserID reports how many of the owner's
 // credits are currently held by in-flight billing reservations on the given
 // service groups. Admission subtracts these holds from the spendable balance;

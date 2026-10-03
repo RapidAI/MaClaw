@@ -102,7 +102,7 @@ func BuiltinCapabilityOntology() []CapabilityDescriptor {
 			// granting the arbitrary local execution that would carry file and
 			// repository mutation along with it.
 			ID: CapabilityBuildVerifyLocal, Version: "v1", Owner: builtinCapabilityOntologyOwner,
-			Summary: "Run a reviewed build, test, or lint task in the bound workspace.",
+			Summary: "Run a reviewed build, test, or lint task in the bound workspace. build in a LaTeX directory compiles its documents with the host TeX engine.",
 			Qualifiers: map[string]QualifierConstraint{
 				"task": {Values: []string{"build", "test", "lint", "format_check"}},
 			},

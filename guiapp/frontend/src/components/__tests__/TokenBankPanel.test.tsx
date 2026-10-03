@@ -468,6 +468,15 @@ describe('TokenBankPanel', () => {
                     claimed_at: '2026-10-02T00:00:00Z',
                 },
                 {
+                    id: 'gift_revoked',
+                    credits_micro: 17_140_000,
+                    status: 'revoked',
+                    claimed: true,
+                    claimed_by_email: 'phone:17090134628',
+                    claimed_at: '2026-10-03T00:19:00Z',
+                    expires_at: '2026-10-10T00:02:00Z',
+                },
+                {
                     id: 'gift_shut',
                     credits_micro: 100_000,
                     status: 'active',
@@ -492,6 +501,11 @@ describe('TokenBankPanel', () => {
         const done = getByTestId('tbk-gift-claim-gift_done');
         expect(done.textContent).toContain('领取人 sam@example.com');
         expect(done.textContent).toContain('对方已提取到本机');
+        const revoked = getByTestId('tbk-gift-claim-gift_revoked');
+        expect(revoked.textContent).toContain('领取人 phone:17090134628');
+        expect(revoked.textContent).toContain('你已撤销这笔转赠，积分已退回');
+        expect(revoked.textContent).not.toContain('退回时间');
+        expect(getByTestId('tbk-gift-gift_revoked').querySelector('button')).toBeNull();
         const list = getByTestId('tbk-gift-list');
         expect(list.classList.contains('tbk-gift-grid')).toBe(true);
         expect(Array.from(list.children).every((card) => card.classList.contains('tbk-share'))).toBe(true);
@@ -562,6 +576,68 @@ describe('TokenBankPanel', () => {
         showConfirmMock.mockResolvedValue(true);
         fireEvent.click(getByText('Revoke'));
         await waitFor(() => expect(revokeGiftMock).toHaveBeenCalledWith('gift_1'));
+    });
+
+    it('revokes a claimed gift that has not been withdrawn', async () => {
+        listGiftsMock.mockResolvedValue({
+            share_links: [
+                {
+                    id: 'gift_held',
+                    credits_micro: 17_140_000,
+                    status: 'claimed',
+                    claimed: true,
+                    claimed_by_email: 'phone:17090134628',
+                    claimed_at: '2026-10-03T00:19:00Z',
+                    expires_at: '2026-10-10T00:02:00Z',
+                },
+                {
+                    id: 'gift_done',
+                    credits_micro: 1_000_000,
+                    status: 'settled',
+                    claimed: true,
+                    claimed_by_email: 'sam@example.com',
+                },
+            ],
+        });
+        showConfirmMock.mockResolvedValue(false);
+        const { getByTestId, getByText } = render(<TokenBankPanel lang="zh-Hans" />);
+        const held = await waitFor(() => getByTestId('tbk-gift-gift_held'));
+        expect(held.textContent).toContain('未提取');
+        expect(held.textContent).toContain('撤销');
+        expect(getByTestId('tbk-gift-gift_done').textContent).not.toContain('撤销');
+        fireEvent.click(getByText('撤销'));
+        await waitFor(() => expect(showConfirmMock).toHaveBeenCalled());
+        const [message, title] = showConfirmMock.mock.calls[0];
+        expect(String(title)).toContain('撤销这笔转赠');
+        expect(String(message)).toContain('尚未提取');
+        expect(String(message)).toContain(held.querySelector('.tbk-share__name')?.textContent || '17.14');
+        expect(revokeGiftMock).not.toHaveBeenCalled();
+
+        showConfirmMock.mockResolvedValue(true);
+        fireEvent.click(getByText('撤销'));
+        await waitFor(() => expect(revokeGiftMock).toHaveBeenCalledWith('gift_held'));
+    });
+
+    it('drops a held gift when the sender has revoked it', async () => {
+        listGiftsMock
+            .mockResolvedValueOnce({
+                share_links: [],
+                claimed_links: [{
+                    id: 'gift_held',
+                    credits_micro: 17_140_000,
+                    status: 'claimed',
+                    sender_masked: 'a***@x.com',
+                }],
+            })
+            .mockResolvedValue({ share_links: [], claimed_links: [] });
+        withdrawGiftMock.mockRejectedValue(new Error(
+            'Hub rejected the withdrawal: {"code":"TOKEN_BANK_WITHDRAW_FAILED","message":"hub center token bank: gift_revoked: the sender revoked this gift"}',
+        ));
+        showConfirmMock.mockResolvedValue(true);
+        const { findByText, queryByText } = render(<TokenBankPanel lang="zh-Hans" />);
+        fireEvent.click(await findByText('提取这份转赠'));
+        await waitFor(() => expect(showAlertMock).toHaveBeenCalledWith('发送方已撤销这份转赠。', '提取失败'));
+        await waitFor(() => expect(queryByText('提取这份转赠')).toBeNull());
     });
 
     it('claims from a pasted URL and withdraws that gift amount', async () => {
@@ -1547,6 +1623,34 @@ describe('TokenBankPanel', () => {
         expect(traditional.textContent).toContain('發放單已寫入該機器，那裡的助手可以花費。');
         expect(traditional.textContent).toContain('機器 hub-home');
         expect(traditional.textContent).not.toContain('bound');
+    });
+
+    it('does not say a self issued debit is missing from the machine', async () => {
+        listWithdrawalsMock.mockResolvedValue({
+            withdrawals: [{
+                id: 'w-self-issued',
+                request_id: 'tbk-auto:hub-home:owner@example.com:paid:0',
+                hub_id: 'hub-home',
+                amount_micro: 106_655_500,
+                kind: 'self',
+                state: 'issued',
+                created_at: '2026-10-03T01:05:44Z',
+            }],
+        });
+        const hans = render(<TokenBankPanel lang="zh-Hans" />);
+        const card = await waitFor(() => hans.getByTestId('tbk-withdraw-w-self-issued'));
+        expect(card.textContent).toContain('未确认');
+        expect(card.textContent).toContain('银行已扣出这笔积分，该机器尚未把发放单号确认回去。');
+        expect(card.textContent).not.toContain('尚未写入机器');
+        expect(card.textContent).not.toContain('完成这次提取');
+        hans.unmount();
+
+        const en = render(<TokenBankPanel lang="en" />);
+        const english = await waitFor(() => en.getByTestId('tbk-withdraw-w-self-issued'));
+        expect(english.textContent).toContain('Unconfirmed');
+        expect(english.textContent).toContain('That machine has not confirmed the grant id back.');
+        expect(english.textContent).not.toContain('not recorded on the machine yet');
+        expect(english.textContent).not.toContain('Finish this withdrawal');
     });
 
     it('localizes into Chinese', async () => {

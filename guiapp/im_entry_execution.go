@@ -72,6 +72,19 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 		if resp, handled := h.maybeReturnUnfinishedSlotHint(msg, opts.Trimmed, opts.FreshTask, opts.Decision, opts.UnfinishedSlot); handled {
 			return resp
 		}
+		// A slot already marked resumed is still unreviewed when the last
+		// tool was an external send. Read that record before classification
+		// can merge the turn into another delivery plan.
+		if !opts.FreshTask && h.memory != nil {
+			if active := h.memory.ActiveUnfinishedSlot(msg.UserID); unreviewedExternalDeliverySlot(active) {
+				return h.returnExternalDeliveryReview(msg, active)
+			}
+		}
+		// Resolve a closed file-destination utterance before the classifier
+		// can rewrite it into document generation or legacy im_message.
+		if resp, handled := refuseUnpublishedFileDestination(msg); handled {
+			return resp
+		}
 	}
 	gatesDone := time.Since(execStart)
 
@@ -119,6 +132,10 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 		opts.SkipNeedsConfirmGate,
 		opts.AskUserContext != "" || opts.PendingUserReplyContext != "",
 	)
+	// Copied on every inbound message. A reused loop must not keep a previous
+	// wizard opt-out, and the semantic planner reads this field rather than
+	// the workflow router (a cold message never enters that router).
+	loopCtx.NoWorkflowInterception = msg.NoWorkflowInterception
 	h.beginInFlightTurn(msg.UserID, msg.Text, loopCtx)
 	defer h.endInFlightTurn(msg.UserID, loopCtx)
 	if loopCtx.IsCancelled() || h.hasCancelledTaskBoundary(msg.UserID) {
@@ -317,7 +334,7 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 				}
 			}
 		}
-		semanticIntent = projectStoredTurnIntent(msg.UserID, msg.Text, semanticIntent)
+		semanticIntent = projectStoredTurnIntent(msg.UserID, msg.Text, msg.NoWorkflowInterception, semanticIntent)
 		loopCtx.Runtime.Execution = h.continuationKeepsParentExecution(executionProfile, msg.UserID, msg.Text, semanticIntent)
 		loopCtx.Runtime.ClassificationMessage = classifyMsg
 		bindLoopSemanticIntent(loopCtx, semanticIntent)

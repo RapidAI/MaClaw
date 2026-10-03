@@ -2,11 +2,13 @@ package tinytex
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestMissingPackagesAndNames(t *testing.T) {
@@ -40,6 +42,24 @@ func TestMissingPackagesAndNames(t *testing.T) {
 	}
 	if !NeedsBibtex("Please (re)run BibTeX on the file") || !NeedsBiber("Please (re)run Biber") || !NeedsRerun("Rerun to get cross-references right.") {
 		t.Fatal("rerun detectors")
+	}
+	if !NeedsBibtex("LaTeX Warning: Citation `knuth' on page 1 undefined on input line 4.") || !NeedsBibtex("No file main.bbl.") {
+		t.Fatal("kernel bibliography")
+	}
+	if NeedsBibtex("LaTeX Warning: There were undefined references.") || NeedsBibtex("Output written on main.pdf") {
+		t.Fatal("cross-reference is not bibtex")
+	}
+	if NeedsBibtex("No file main.toc.\n(./main.bbl)\nOutput written on main.pdf\n") {
+		t.Fatal("opened bbl is not a missing bbl")
+	}
+	if NeedsBibtex("Package natbib Info: citation style author-year.\nLaTeX Warning: There were undefined references.\n") {
+		t.Fatal("citation elsewhere plus undefined references")
+	}
+	if !NeedsBibtex("No file main.toc.\nNo file main.bbl.\n") {
+		t.Fatal("missing bbl line")
+	}
+	if !NeedsRerun("Rerun to get bibliographical references right") {
+		t.Fatal("backref rerun")
 	}
 	if !NeedsRerun("Package natbib Warning: Citation(s) may have changed. Rerun to get citations correct.") || !NeedsRerun("Package biblatex Warning: Please rerun LaTeX.") {
 		t.Fatal("bibliography rerun")
@@ -270,6 +290,211 @@ func TestPreviewInstallsBibliographyStyle(t *testing.T) {
 	}
 	if !strings.HasSuffix(res.PDFPath, "main.pdf") || engines != 2 || bibs != 2 || strings.Join(installed, ",") != "ieeetran" {
 		t.Fatalf("pdf=%s engines=%d bibs=%d installed=%v", res.PDFPath, engines, bibs, installed)
+	}
+}
+
+func TestPreviewRunsBibtexWhenTheBibliographyIsStale(t *testing.T) {
+	t.Run("newer database", func(t *testing.T) {
+		dir := t.TempDir()
+		writeBibFixture(t, dir, true)
+		future := time.Now().Add(time.Hour)
+		if err := os.Chtimes(filepath.Join(dir, "refs.bib"), future, future); err != nil {
+			t.Fatal(err)
+		}
+		engines, bibs := runPreviewBibtex(t, dir, "")
+		if engines != 2 || bibs != 1 {
+			t.Fatalf("engines=%d bibs=%d", engines, bibs)
+		}
+	})
+	t.Run("missing bbl", func(t *testing.T) {
+		dir := t.TempDir()
+		writeBibFixture(t, dir, false)
+		engines, bibs := runPreviewBibtex(t, dir, "")
+		if engines != 2 || bibs != 1 {
+			t.Fatalf("engines=%d bibs=%d", engines, bibs)
+		}
+	})
+	t.Run("newer style", func(t *testing.T) {
+		dir := t.TempDir()
+		writeBibFixture(t, dir, true)
+		past := time.Now().Add(-time.Hour)
+		if err := os.Chtimes(filepath.Join(dir, "refs.bib"), past, past); err != nil {
+			t.Fatal(err)
+		}
+		style := filepath.Join(dir, "plain.bst")
+		if err := os.WriteFile(style, []byte("ENTRY{}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		future := time.Now().Add(time.Hour)
+		if err := os.Chtimes(style, future, future); err != nil {
+			t.Fatal(err)
+		}
+		engines, bibs := runPreviewBibtex(t, dir, "")
+		if engines != 2 || bibs != 1 {
+			t.Fatalf("engines=%d bibs=%d", engines, bibs)
+		}
+	})
+	t.Run("current bbl", func(t *testing.T) {
+		dir := t.TempDir()
+		writeBibFixture(t, dir, true)
+		past := time.Now().Add(-time.Hour)
+		if err := os.Chtimes(filepath.Join(dir, "refs.bib"), past, past); err != nil {
+			t.Fatal(err)
+		}
+		engines, bibs := runPreviewBibtex(t, dir, "")
+		if engines != 1 || bibs != 0 {
+			t.Fatalf("engines=%d bibs=%d", engines, bibs)
+		}
+	})
+	t.Run("toc beside an opened bbl", func(t *testing.T) {
+		dir := t.TempDir()
+		writeBibFixture(t, dir, true)
+		past := time.Now().Add(-time.Hour)
+		if err := os.Chtimes(filepath.Join(dir, "refs.bib"), past, past); err != nil {
+			t.Fatal(err)
+		}
+		log := "No file main.toc.\n(./main.bbl)\nPackage natbib Info: citation style author-year.\nLaTeX Warning: There were undefined references.\nOutput written on main.pdf\n"
+		engines, bibs := runPreviewBibtex(t, dir, log)
+		if engines != 1 || bibs != 0 {
+			t.Fatalf("engines=%d bibs=%d", engines, bibs)
+		}
+	})
+}
+
+func writeBibFixture(t *testing.T, dir string, withBBL bool) {
+	t.Helper()
+	main := filepath.Join(dir, "main.tex")
+	if err := os.WriteFile(main, []byte("\\documentclass{article}\n\\begin{document}x\\end{document}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "refs.bib"), []byte("@article{a,title={t}}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !withBBL {
+		return
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.bbl"), []byte("\\begin{thebibliography}{1}\n\\end{thebibliography}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func runPreviewBibtex(t *testing.T, dir, engineLog string) (int, int) {
+	t.Helper()
+	if engineLog == "" {
+		engineLog = "Output written on main.pdf\n"
+	}
+	var engines, bibs int
+	res, err := Preview(context.Background(), filepath.Join(dir, "main.tex"), PreviewOptions{
+		Engine: "xelatex",
+		Bibtex: "bibtex",
+		Run: func(_ context.Context, bin, work string, _ ...string) (string, int, error) {
+			if bin == "bibtex" {
+				bibs++
+				return "Database file #1: refs.bib\n", 0, nil
+			}
+			engines++
+			if err := os.WriteFile(filepath.Join(work, "main.pdf"), []byte("%PDF-1.4\n"), 0o644); err != nil {
+				return "", -1, err
+			}
+			aux := "\\bibdata{refs}\n\\bibstyle{plain}\n"
+			if err := os.WriteFile(filepath.Join(work, "main.aux"), []byte(aux), 0o644); err != nil {
+				return "", -1, err
+			}
+			return engineLog, 0, nil
+		},
+	})
+	if err != nil || res.PDFPath == "" {
+		t.Fatalf("result=%+v err=%v", res, err)
+	}
+	return engines, bibs
+}
+
+func TestPreviewKeepsABibtexWarning(t *testing.T) {
+	dir := t.TempDir()
+	writeBibFixture(t, dir, true)
+	future := time.Now().Add(time.Hour)
+	if err := os.Chtimes(filepath.Join(dir, "refs.bib"), future, future); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Preview(context.Background(), filepath.Join(dir, "main.tex"), PreviewOptions{
+		Engine: "xelatex",
+		Bibtex: "bibtex",
+		Run: func(_ context.Context, bin, work string, _ ...string) (string, int, error) {
+			if bin == "bibtex" {
+				return "Warning--empty journal in knuth\nDatabase file #1: refs.bib\n", 0, nil
+			}
+			if err := os.WriteFile(filepath.Join(work, "main.pdf"), []byte("%PDF-1.4\n"), 0o644); err != nil {
+				return "", -1, err
+			}
+			aux := "\\bibdata{refs}\n\\bibstyle{plain}\n"
+			if err := os.WriteFile(filepath.Join(work, "main.aux"), []byte(aux), 0o644); err != nil {
+				return "", -1, err
+			}
+			return "Output written on main.pdf\n", 0, nil
+		},
+	})
+	if err != nil || !strings.Contains(res.Log, "Warning--empty journal in knuth") {
+		t.Fatalf("result=%+v err=%v", res, err)
+	}
+}
+
+func TestPreviewReportsABibtexSyntaxError(t *testing.T) {
+	dir := t.TempDir()
+	writeBibFixture(t, dir, true)
+	future := time.Now().Add(time.Hour)
+	if err := os.Chtimes(filepath.Join(dir, "refs.bib"), future, future); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Preview(context.Background(), filepath.Join(dir, "main.tex"), PreviewOptions{
+		Engine: "xelatex",
+		Bibtex: "bibtex",
+		Run: func(_ context.Context, bin, work string, _ ...string) (string, int, error) {
+			if bin == "bibtex" {
+				return "I was expecting a `,' or a `}'---line 2 of file refs.bib\n", 2, nil
+			}
+			if err := os.WriteFile(filepath.Join(work, "main.pdf"), []byte("%PDF-1.4\n"), 0o644); err != nil {
+				return "", -1, err
+			}
+			aux := "\\bibdata{refs}\n\\bibstyle{plain}\n"
+			if err := os.WriteFile(filepath.Join(work, "main.aux"), []byte(aux), 0o644); err != nil {
+				return "", -1, err
+			}
+			return "Output written on main.pdf\n", 0, nil
+		},
+	})
+	if err == nil || res.PDFPath != "" || !strings.Contains(res.Message, "refs.bib") {
+		t.Fatalf("result=%+v err=%v", res, err)
+	}
+}
+
+func TestPreviewAcceptsADraftWithNoCitations(t *testing.T) {
+	dir := t.TempDir()
+	writeBibFixture(t, dir, true)
+	future := time.Now().Add(time.Hour)
+	if err := os.Chtimes(filepath.Join(dir, "refs.bib"), future, future); err != nil {
+		t.Fatal(err)
+	}
+	var bibs int
+	res, err := Preview(context.Background(), filepath.Join(dir, "main.tex"), PreviewOptions{
+		Engine: "xelatex",
+		Bibtex: "bibtex",
+		Run: func(_ context.Context, bin, work string, _ ...string) (string, int, error) {
+			if bin == "bibtex" {
+				bibs++
+				return "I found no \\citation commands---while reading file main.aux\n", 2, nil
+			}
+			if err := os.WriteFile(filepath.Join(work, "main.pdf"), []byte("%PDF-1.4\n"), 0o644); err != nil {
+				return "", -1, err
+			}
+			aux := "\\bibdata{refs}\n\\bibstyle{plain}\n"
+			if err := os.WriteFile(filepath.Join(work, "main.aux"), []byte(aux), 0o644); err != nil {
+				return "", -1, err
+			}
+			return "Output written on main.pdf\n", 0, nil
+		},
+	})
+	if err != nil || res.PDFPath == "" || bibs != 1 {
+		t.Fatalf("result=%+v err=%v bibs=%d", res, err, bibs)
 	}
 }
 
@@ -548,5 +773,25 @@ func TestRenameReplacingLeavesDestinationWhenSourceIsMissing(t *testing.T) {
 	}
 	if string(body) != "old" {
 		t.Fatalf("destination changed to %q", body)
+	}
+}
+
+func TestPreviewNamesACommandTimeout(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "main.tex")
+	if err := os.WriteFile(main, []byte("\\documentclass{article}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Preview(context.Background(), main, PreviewOptions{
+		Engine: "xelatex",
+		Run: func(context.Context, string, string, ...string) (string, int, error) {
+			return "", -1, context.DeadlineExceeded
+		},
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err=%v", err)
+	}
+	if res.Message != "编译超时" {
+		t.Fatalf("message=%q", res.Message)
 	}
 }

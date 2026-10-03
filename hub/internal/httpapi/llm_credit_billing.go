@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -757,10 +758,12 @@ func prepareLLMPricingQuote(ctx context.Context, reg *llmservice.Registry, provi
 				floor = one
 			}
 			held := insufficientCreditsHeld(reg, userID, email, groups, now)
+			need := llmpool.MicrocreditsToCredits(floor.ReservedMicrocredits)
 			return llmBillingDenial{
 				Code:        "LLM_SERVICE_CREDITS_INSUFFICIENT_FOR_REQUEST",
-				Message:     insufficientCreditsMessage(llmpool.MicrocreditsToCredits(floor.ReservedMicrocredits), available, held),
+				Message:     insufficientCreditsMessage(need, available, held),
 				HeldCredits: held,
+				NeedCredits: need,
 			}, fmt.Errorf("insufficient credits for quoted request")
 		}
 		quote = fitted
@@ -781,6 +784,410 @@ func insufficientCreditsMessage(need, available, held float64) string {
 		message = fmt.Sprintf("%s (%.3f held by in-flight requests)", message, held)
 	}
 	return message
+}
+
+// tokenBankAdmissionPullLimit bounds how many automatic 1/N shares one
+// request may withdraw. The first share often covers the shortfall. Further
+// shares stop once the card can start the call, the bank is empty, or the
+// balance does not rise.
+const tokenBankAdmissionPullLimit = 4
+
+// tokenBankAdmissionPuller withdraws one automatic share into a charged group.
+// *center.Service implements it. A nil puller leaves admission unchanged.
+// callerSpendMicro is the charged card the caller already judged too small.
+type tokenBankAdmissionPuller interface {
+	PullTokenBankForAdmissionShortfall(ctx context.Context, userID, email string, chargedGroupIDs []string, callerSpendMicro int64) (bool, error)
+}
+
+func tokenBankPullerFrom(sources []any) tokenBankAdmissionPuller {
+	for _, source := range sources {
+		puller, ok := source.(tokenBankAdmissionPuller)
+		if ok && puller != nil {
+			return puller
+		}
+	}
+	return nil
+}
+
+// prepareAndReserveLLMPricing freezes the official quote and holds credits.
+// When the card cannot pay for the prompt plus one output token, and the
+// token bank can still fund a group this request charges, it withdraws
+// automatic shares and admits again. Caller output fields are restored on
+// every attempt so a ceiling fitted to the old balance cannot stick.
+func prepareAndReserveLLMPricing(ctx context.Context, system store.SystemSettingsRepository, providerReg *im.LLMProviderRegistry, serviceReg *llmservice.Registry, model *llmservice.AuthorizedModel, body map[string]any, userID, email string, puller tokenBankAdmissionPuller) (*llmservice.Registry, llmBillingDenial, error) {
+	callerCeiling := snapshotOutputLimitFields(body)
+	var lastDenial llmBillingDenial
+	var lastErr error
+	// The handler's registry can still show a balance reserve no longer sees.
+	// Reprice the official quote against the loaded wallet once before any
+	// withdraw; a later share still resets that quote.
+	repriced := false
+	for pulls := 0; pulls <= tokenBankAdmissionPullLimit; {
+		restoreOutputLimitFields(body, callerCeiling)
+		if repriced || pulls > 0 {
+			resetOfficialAdmissionQuote(ctx)
+		}
+		applySelectedModelOutputCeiling(ctx, body, model)
+		if err := prepareOfficialLLMRequestPricingQuote(ctx, serviceReg, providerReg, model, body, userID, email); err != nil {
+			return serviceReg, llmBillingDenial{}, err
+		}
+		denial, err := reserveLLMRequestPricing(ctx, system, userID, email, model)
+		if err == nil {
+			return serviceReg, llmBillingDenial{}, nil
+		}
+		lastDenial, lastErr = denial, err
+		if !llmDenialCodeIs(denial.Code, "LLM_SERVICE_CREDITS_INSUFFICIENT_FOR_REQUEST") {
+			break
+		}
+		groups := admissionChargedGroups(ctx, model)
+		beforeSpend := grossSpendableMicro(serviceReg, userID, email, groups)
+		beforeAvailable := admissionAvailableMicro(serviceReg, userID, email, groups)
+		if system != nil {
+			if fresh, loadErr := loadCachedLLMServiceRegistry(ctx, system); loadErr == nil && fresh != nil {
+				serviceReg = fresh
+			}
+		}
+		walletMoved := grossSpendableMicro(serviceReg, userID, email, groups) != beforeSpend || admissionAvailableMicro(serviceReg, userID, email, groups) != beforeAvailable
+		if !repriced && walletMoved {
+			repriced = true
+			continue
+		}
+		if puller == nil || pulls == tokenBankAdmissionPullLimit {
+			break
+		}
+		before := grossSpendableMicro(serviceReg, userID, email, groups)
+		pulled, pullErr := pullTokenBankForQuoteShortfall(ctx, serviceReg, userID, email, denial.Code, denial.NeedCredits, groups, model, puller)
+		if pullErr != nil {
+			log.Printf("[llm-billing] token bank auto withdraw for admission: %v", pullErr)
+		}
+		if !pulled {
+			break
+		}
+		invalidateLLMRuntimeCaches(system)
+		if fresh, loadErr := loadCachedLLMServiceRegistry(ctx, system); loadErr == nil && fresh != nil {
+			serviceReg = fresh
+		}
+		if grossSpendableMicro(serviceReg, userID, email, groups) <= before {
+			break
+		}
+		repriced = true
+		pulls++
+	}
+	return serviceReg, lastDenial, lastErr
+}
+
+// coverFilteredModelsFromTokenBank pulls when catalog admission rejected every
+// model because the charged card cannot pay, then filters again. Each denied
+// model is judged on its own groups, and providers that bill different groups
+// are judged apart: a rich sibling must not hide a short card. A group the
+// bank does not pay does not stop a later wallet the bank does pay. One
+// successful share is applied before the next filter. Official routes pass
+// this filter and settle the same shortfall in prepareAndReserve.
+func coverFilteredModelsFromTokenBank(ctx context.Context, system store.SystemSettingsRepository, puller tokenBankAdmissionPuller, userID, email string, body map[string]any, providerReg *im.LLMProviderRegistry, models []llmservice.AuthorizedModel, serviceReg *llmservice.Registry, billable []llmservice.AuthorizedModel, denied map[string]llmBillingDenial, first llmBillingDenial) ([]llmservice.AuthorizedModel, map[string]llmBillingDenial, llmBillingDenial, *llmservice.Registry) {
+	if puller == nil || len(billable) > 0 || serviceReg == nil {
+		return billable, denied, first, serviceReg
+	}
+	for attempt := 0; attempt < tokenBankAdmissionPullLimit; attempt++ {
+		if len(billable) > 0 {
+			break
+		}
+		advanced := false
+		for i := range models {
+			key := strings.ToLower(strings.TrimSpace(models[i].Name))
+			denial, ok := denied[key]
+			if !ok || !creditShortfallDenial(denial.Code) {
+				continue
+			}
+			for _, groups := range chargedGroupSetsForModel(&models[i]) {
+				if !quoteShortfallNeedsPull(ctx, serviceReg, userID, email, denial.Code, denial.NeedCredits, groups, &models[i]) {
+					continue
+				}
+				before := grossSpendableMicro(serviceReg, userID, email, groups)
+				pulled, pullErr := pullTokenBankForQuoteShortfall(ctx, serviceReg, userID, email, denial.Code, denial.NeedCredits, groups, &models[i], puller)
+				if errors.Is(pullErr, llmservice.ErrTokenBankGroupNotCharged) {
+					continue
+				}
+				if pullErr != nil {
+					log.Printf("[llm-billing] token bank auto withdraw for admission: %v", pullErr)
+				}
+				if !pulled {
+					return billable, denied, first, serviceReg
+				}
+				invalidateLLMRuntimeCaches(system)
+				if fresh, loadErr := loadCachedLLMServiceRegistry(ctx, system); loadErr == nil && fresh != nil {
+					serviceReg = fresh
+				}
+				if grossSpendableMicro(serviceReg, userID, email, groups) <= before {
+					return billable, denied, first, serviceReg
+				}
+				advanced = true
+				break
+			}
+			if advanced {
+				break
+			}
+		}
+		if !advanced {
+			break
+		}
+		billable, denied, first = filterAuthorizedModelsByBillingEligibility(ctx, serviceReg, providerReg, userID, email, body, models)
+	}
+	return billable, denied, first, serviceReg
+}
+
+func creditShortfallDenial(code string) bool {
+	switch strings.ToUpper(strings.TrimSpace(code)) {
+	case "LLM_SERVICE_CREDITS_INSUFFICIENT_FOR_REQUEST", "LLM_SERVICE_CREDITS_EXHAUSTED", "LLM_SERVICE_CREDITS_REQUIRED":
+		return true
+	default:
+		return false
+	}
+}
+
+func llmDenialCodeIs(code, want string) bool {
+	return strings.EqualFold(strings.TrimSpace(code), want)
+}
+
+// pullTokenBankForQuoteShortfall withdraws when the charged card cannot start
+// the request. An unlimited grant reports available 0 and must not pull. A
+// period window, a queued grant, or an expired grant is not a bank problem.
+// The card is its spendable balance before holds. A floor that balance can
+// pay waits for the holds instead of withdrawing more.
+func pullTokenBankForQuoteShortfall(ctx context.Context, reg *llmservice.Registry, userID, email, code string, needCredits float64, groups []string, model *llmservice.AuthorizedModel, puller tokenBankAdmissionPuller) (bool, error) {
+	if puller == nil || !quoteShortfallNeedsPull(ctx, reg, userID, email, code, needCredits, groups, model) {
+		return false, nil
+	}
+	return puller.PullTokenBankForAdmissionShortfall(ctx, userID, email, groups, grossSpendableMicro(reg, userID, email, groups))
+}
+
+func quoteShortfallNeedsPull(ctx context.Context, reg *llmservice.Registry, userID, email, code string, needCredits float64, groups []string, model *llmservice.AuthorizedModel) bool {
+	if reg == nil || len(groups) == 0 {
+		return false
+	}
+	switch strings.ToUpper(strings.TrimSpace(code)) {
+	case "LLM_SERVICE_PERIOD_LIMITED", "LLM_SERVICE_GRANT_QUEUED", "LLM_SERVICE_GRANT_EXPIRED":
+		return false
+	}
+	now := time.Now().UTC()
+	allowed, _, eligibilityCode, _, available, _, _ := llmservice.BillingEligibilityForServiceGroupsForUserID(reg, userID, email, groups, now)
+	if allowed && available == 0 {
+		return false
+	}
+	if !allowed {
+		switch strings.ToUpper(strings.TrimSpace(eligibilityCode)) {
+		case "LLM_SERVICE_PERIOD_LIMITED", "LLM_SERVICE_GRANT_QUEUED", "LLM_SERVICE_GRANT_EXPIRED":
+			return false
+		}
+	}
+	// A denial that priced a floor already requoted at one output token. A
+	// stored quote fills that in only when it can be requoted the same way.
+	// Its full reservation is not a floor by itself: using an unpriced number
+	// withdraws while the card can still pay for one output token.
+	floorMicro := creditsToMicrocredits(needCredits)
+	if floorMicro <= 0 {
+		if quoted, ok := admissionFloorMicro(ctx, model); ok {
+			floorMicro = quoted
+		}
+	}
+	gross := grossSpendableMicro(reg, userID, email, groups)
+	if floorMicro > 0 {
+		if floorMicro > gross {
+			return true
+		}
+		// The one-token price fits, but reserve holds the stored quote. The
+		// output ceiling is restored to that quote when the capped body cannot
+		// be priced, so the request still cannot start. Withdraw only when
+		// that priced hold is above the whole card and some balance is still
+		// free. A hold that clamps available credits to zero leaves the
+		// spendable card in place; releasing it can pay the floor, and
+		// draining the bank is not required.
+		reserved, reservedOK := admissionPricedReservationMicro(ctx, model)
+		if reservedOK && reserved > gross && admissionAvailableMicro(reg, userID, email, groups) > 0 {
+			return true
+		}
+		return false
+	}
+	// No priced floor. Withdraw only when this card is empty before holds.
+	// A hold that clamps available credits to zero still leaves the balance
+	// on the card, and draining the bank would not be required to start.
+	return !allowed && gross <= 0
+}
+
+// grossSpendableMicro is the charged card before in-flight holds. Available
+// credits clamp at zero, so adding holds onto that number treats an over-hold
+// as extra balance and skips a pull the card can never fund.
+func grossSpendableMicro(reg *llmservice.Registry, userID, email string, groups []string) int64 {
+	if reg == nil || len(groups) == 0 {
+		return 0
+	}
+	return creditsToMicrocredits(llmservice.SpendableCreditsForServiceGroupsForUserID(reg, userID, email, groups, time.Now().UTC()))
+}
+
+// admissionAvailableMicro is the post-hold balance the output ceiling was
+// fitted to. It can move while pre-hold spendable stays put, when another
+// request takes or releases a hold after the handler loaded its registry.
+func admissionAvailableMicro(reg *llmservice.Registry, userID, email string, groups []string) int64 {
+	if reg == nil || len(groups) == 0 {
+		return 0
+	}
+	return creditsToMicrocredits(llmservice.AvailableCreditsForServiceGroupsForUserID(reg, userID, email, groups, time.Now().UTC()))
+}
+
+func admissionFloorMicro(ctx context.Context, model *llmservice.AuthorizedModel) (int64, bool) {
+	chosen, ok := largestAdmissionQuote(ctx, model)
+	if !ok {
+		return 0, false
+	}
+	one, oneOK := requoteAtOutputLimit(chosen, chosen.InputTokenEstimate, 1)
+	if !oneOK || one.ReservedMicrocredits <= 0 {
+		return 0, false
+	}
+	return one.ReservedMicrocredits, true
+}
+
+// admissionPricedReservationMicro is the hold reserve already tried to take.
+// It is returned only when the same quote can be requoted at one output token,
+// so a bare reserved number cannot withdraw by itself.
+func admissionPricedReservationMicro(ctx context.Context, model *llmservice.AuthorizedModel) (int64, bool) {
+	chosen, ok := largestAdmissionQuote(ctx, model)
+	if !ok || chosen.ReservedMicrocredits <= 0 {
+		return 0, false
+	}
+	if _, oneOK := requoteAtOutputLimit(chosen, chosen.InputTokenEstimate, 1); !oneOK {
+		return 0, false
+	}
+	return chosen.ReservedMicrocredits, true
+}
+
+func admissionChargedGroups(ctx context.Context, model *llmservice.AuthorizedModel) []string {
+	if chosen, ok := largestAdmissionQuote(ctx, model); ok && len(chosen.ServiceGroupIDs) > 0 {
+		return append([]string(nil), chosen.ServiceGroupIDs...)
+	}
+	return chargedGroupsForModel(model)
+}
+
+func largestAdmissionQuote(ctx context.Context, model *llmservice.AuthorizedModel) (llmpool.PricingQuoteSnapshot, bool) {
+	state := llmBillingStateFrom(ctx)
+	if state == nil {
+		return llmpool.PricingQuoteSnapshot{}, false
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	name := ""
+	if model != nil {
+		name = strings.TrimSpace(model.Name)
+	}
+	var chosen llmpool.PricingQuoteSnapshot
+	found := false
+	for _, quote := range state.quotes {
+		if name != "" && !strings.EqualFold(strings.TrimSpace(quote.LogicalModel), name) {
+			continue
+		}
+		if !found || quote.ReservedMicrocredits > chosen.ReservedMicrocredits {
+			chosen = quote
+			found = true
+		}
+	}
+	if !found || chosen.ReservedMicrocredits <= 0 {
+		return llmpool.PricingQuoteSnapshot{}, false
+	}
+	return chosen, true
+}
+
+// chargedGroupSetsForModel lists each provider wallet separately. A model
+// whose providers bill different groups must not add those balances together:
+// one provider cannot spend the other provider's card.
+func chargedGroupSetsForModel(model *llmservice.AuthorizedModel) [][]string {
+	if model == nil {
+		return nil
+	}
+	if len(model.ChargedServiceGroupIDs) > 0 || len(model.ProviderIDs) == 0 {
+		groups := chargedGroupsForModel(model)
+		if len(groups) == 0 {
+			return nil
+		}
+		return [][]string{groups}
+	}
+	seen := map[string]struct{}{}
+	sets := make([][]string, 0, len(model.ProviderIDs))
+	for _, providerID := range model.ProviderIDs {
+		groups := llmservice.ChargedServiceGroupIDs(model, providerID)
+		key := groupSetKey(groups)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		sets = append(sets, groups)
+	}
+	return sets
+}
+
+func groupSetKey(groups []string) string {
+	var b strings.Builder
+	for _, id := range groups {
+		id = strings.ToLower(strings.TrimSpace(id))
+		if id == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteByte(0)
+		}
+		b.WriteString(id)
+	}
+	return b.String()
+}
+
+func chargedGroupsForModel(model *llmservice.AuthorizedModel) []string {
+	if model == nil {
+		return nil
+	}
+	providers := model.ProviderIDs
+	if len(providers) == 0 {
+		providers = []string{""}
+	}
+	seen := map[string]struct{}{}
+	groups := make([]string, 0, len(providers))
+	for _, providerID := range providers {
+		for _, groupID := range llmservice.ChargedServiceGroupIDs(model, providerID) {
+			key := strings.ToLower(strings.TrimSpace(groupID))
+			if key == "" {
+				continue
+			}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			groups = append(groups, strings.TrimSpace(groupID))
+		}
+	}
+	return groups
+}
+
+func resetOfficialAdmissionQuote(ctx context.Context) {
+	state := llmBillingStateFrom(ctx)
+	if state == nil {
+		return
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.reservationHeld {
+		return
+	}
+	for key, quote := range state.quotes {
+		if strings.EqualFold(strings.TrimSpace(quote.ProviderID), llmservice.MaClawOfficialProviderID) {
+			delete(state.quotes, key)
+		}
+	}
+	state.officialQuote = nil
+	state.officialAdmissionGroupFactor = 0
+	state.officialAdmissionGroupFactorSet = false
+	if strings.EqualFold(strings.TrimSpace(state.heldQuote.ProviderID), llmservice.MaClawOfficialProviderID) {
+		state.heldQuote = llmpool.PricingQuoteSnapshot{}
+		state.heldQuoteSet = false
+	}
 }
 
 func insufficientCreditsHeld(reg *llmservice.Registry, userID, email string, serviceGroupIDs []string, now time.Time) float64 {
@@ -835,7 +1242,18 @@ func reserveLLMRequestPricing(ctx context.Context, system store.SystemSettingsRe
 	if !ok {
 		available := llmservice.AvailableCreditsForServiceGroupsForUserID(reg, userID, email, chosen.ServiceGroupIDs, now)
 		held := insufficientCreditsHeld(reg, userID, email, chosen.ServiceGroupIDs, now)
-		return llmBillingDenial{Code: "LLM_SERVICE_CREDITS_INSUFFICIENT_FOR_REQUEST", Message: insufficientCreditsMessage(llmpool.MicrocreditsToCredits(chosen.ReservedMicrocredits), available, held), HeldCredits: held}, fmt.Errorf("insufficient credits for quoted request")
+		floorMicro := chosen.ReservedMicrocredits
+		if one, oneOK := requoteAtOutputLimit(chosen, chosen.InputTokenEstimate, 1); oneOK {
+			floorMicro = one.ReservedMicrocredits
+		}
+		// The message keeps the amount reserve tried to hold. NeedCredits is the
+		// prompt-plus-one-token floor, which is what a token-bank pull has to cover.
+		return llmBillingDenial{
+			Code:        "LLM_SERVICE_CREDITS_INSUFFICIENT_FOR_REQUEST",
+			Message:     insufficientCreditsMessage(llmpool.MicrocreditsToCredits(chosen.ReservedMicrocredits), available, held),
+			HeldCredits: held,
+			NeedCredits: llmpool.MicrocreditsToCredits(floorMicro),
+		}, fmt.Errorf("insufficient credits for quoted request")
 	}
 	if reserved > 0 {
 		if err := llmservice.SaveRegistry(ctx, system, reg); err != nil {

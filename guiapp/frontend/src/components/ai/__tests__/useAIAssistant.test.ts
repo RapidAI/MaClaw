@@ -5707,6 +5707,60 @@ describe('useAIAssistant property tests', () => {
         expect(messageContents(result.current.messages)).not.toContain('semantic_capability_unmet');
     });
 
+    it('keeps the dismiss action on an external-delivery host reject', async () => {
+        mockSendResponse = {
+            text: '上一次外部发送的结果还不能确定。这一轮不会再次投递，也不会重放那次发送。',
+            error: 'semantic_external_delivery_review_required',
+            response_source: 'semantic_host_reject',
+            fields: null,
+            actions: [
+                { label: '开始新任务', command: '__dismiss_unfinished__ slot-external', style: 'primary' },
+            ],
+        };
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('继续上次未完成任务');
+        });
+
+        expect(result.current.messages.find(m => m.role === 'error')).toBeUndefined();
+        const assistantMsg = result.current.messages.find(m => m.role === 'assistant');
+        expect(assistantMsg?.content).toContain('不会再次投递');
+        expect(assistantMsg?.actions?.map(action => action.command)).toEqual(['__dismiss_unfinished__ slot-external']);
+    });
+
+    it('removes the external-delivery dismiss button after it is used', async () => {
+        mockSendResponse = {
+            text: '上一次外部发送的结果还不能确定。这一轮不会再次投递，也不会重放那次发送。',
+            error: 'semantic_external_delivery_review_required',
+            response_source: 'semantic_host_reject',
+            fields: null,
+            actions: [
+                { label: '开始新任务', command: '__dismiss_unfinished__ slot-external', style: 'primary' },
+            ],
+        };
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('继续上次未完成任务');
+        });
+        mockSendResponse = { text: '已忽略上次未完成任务。请告诉我新的任务。', error: '', fields: null, actions: null };
+
+        await act(async () => {
+            await result.current.executeAction('__dismiss_unfinished__ slot-external');
+        });
+
+        const review = result.current.messages.find(message => (message.content || '').includes('不会再次投递'));
+        expect(review?.actions?.some(action => action.command.startsWith('__dismiss_unfinished__'))).toBeFalsy();
+        expect(SendAIAssistantMessage).toHaveBeenLastCalledWith(expect.objectContaining({
+            start_new_task: true,
+            dismiss_slot_id: 'slot-external',
+            ui_action: true,
+        }));
+    });
+
     it('keeps Go-style artifact responses visible', async () => {
         mockSendResponse = {
             Text: '',

@@ -783,7 +783,8 @@ func (a *App) TokenBankListGiftLinks() (map[string]interface{}, error) {
 	return a.tokenBankClientDo(http.MethodGet, "/api/v1/credits/share-links", nil)
 }
 
-// TokenBankRevokeGiftLink unfreezes an active link the caller sent.
+// TokenBankRevokeGiftLink unfreezes a link the caller sent while the credits
+// are still frozen. That includes a link someone claimed but has not withdrawn.
 //
 // POST /api/v1/credits/share-links/{id}/revoke
 func (a *App) TokenBankRevokeGiftLink(linkID string) (map[string]interface{}, error) {

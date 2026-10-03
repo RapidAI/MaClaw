@@ -21,6 +21,9 @@ var (
 	ErrGiftLinkOverCap    = errors.New("token bank: gift exceeds the 50% limit")
 	ErrGiftLinkNoBalance  = errors.New("token bank: nothing available to gift")
 	ErrGiftLinkNotClaimed = errors.New("token bank: gift link has not been claimed yet")
+	// Distinct from "not claimed": the sender took a claimed gift back, so a
+	// withdraw has to say that instead of telling the receiver to claim again.
+	ErrGiftLinkRevoked = errors.New("token bank: gift link was revoked")
 	// Anti-abuse limits from §5. Distinct sentinels because the two failures
 	// need different advice: "below the floor" is a typo the user fixes by
 	// typing more, "over the daily limit" is a wait-until-tomorrow.
@@ -341,6 +344,8 @@ func (r *TokenBankRepo) SettleClaimedGift(ctx context.Context, linkID string, no
 		// make a healthy replay look like a failure and could tempt the caller
 		// into a compensating write.
 		return false, tx.Commit()
+	case TokenBankGiftStatusRevoked:
+		return false, ErrGiftLinkRevoked
 	default:
 		return false, ErrGiftLinkNotClaimed
 	}
@@ -397,6 +402,13 @@ func (r *TokenBankRepo) SettleClaimedGift(ctx context.Context, linkID string, no
 	if changed != 1 {
 		// The link left "claimed" after we read it. The ledger rows in this
 		// transaction roll back with it, so a return and a payout cannot both commit.
+		current, readErr := r.giftLinkByID(ctx, tx, linkID)
+		if readErr != nil {
+			return false, readErr
+		}
+		if current.Status == TokenBankGiftStatusRevoked {
+			return false, ErrGiftLinkRevoked
+		}
 		return false, ErrGiftLinkNotClaimed
 	}
 	if err := tx.Commit(); err != nil {
@@ -410,9 +422,16 @@ func (r *TokenBankRepo) SettleClaimedGift(ctx context.Context, linkID string, no
 	return true, nil
 }
 
-// RevokeGiftLink cancels an unclaimed link and releases its freeze. A link that
-// was already claimed cannot be revoked — the claimer owns it now, and the
-// credits will move to them when they withdraw.
+// RevokeGiftLink cancels a link whose credits have not moved and releases its
+// freeze. That is an unclaimed link, or a claimed link the receiver has not
+// withdrawn yet. Settled credits have already been paid to the receiver.
+// Expired and already-revoked links are refused the same way: their freeze
+// is already released.
+//
+// The status update is conditional on the status just read. Settle and the
+// expiry sweep write the same unfreeze ledger key and flip the row in their
+// own transaction. If this update matches nothing, the other writer won and
+// this transaction rolls the unfreeze back.
 //
 // senderUserID is optional: empty means an admin revocation with no ownership
 // check (§6.2 freezes a suspicious link). The unfreeze always credits the
@@ -444,7 +463,7 @@ func (r *TokenBankRepo) RevokeGiftLink(ctx context.Context, linkID, senderUserID
 	if senderUserID != "" && link.SenderUserID != senderUserID {
 		return ErrGiftLinkNotFound
 	}
-	if link.Status != TokenBankGiftStatusActive {
+	if link.Status != TokenBankGiftStatusActive && link.Status != TokenBankGiftStatusClaimed {
 		return ErrGiftLinkNotActive
 	}
 
@@ -452,10 +471,20 @@ func (r *TokenBankRepo) RevokeGiftLink(ctx context.Context, linkID, senderUserID
 	if err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx,
+	res, err := tx.ExecContext(ctx,
 		`UPDATE credit_share_links SET status = ?, revoked_at = ? WHERE id = ? AND status = ?`,
-		TokenBankGiftStatusRevoked, stamp, linkID, TokenBankGiftStatusActive); err != nil {
+		TokenBankGiftStatusRevoked, stamp, linkID, link.Status)
+	if err != nil {
 		return fmt.Errorf("revoke gift link: %w", err)
+	}
+	changed, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed != 1 {
+		// Settle or the expiry sweep flipped the row after we read it. The
+		// unfreeze inserted above rolls back with this transaction.
+		return ErrGiftLinkNotActive
 	}
 	if err := tx.Commit(); err != nil {
 		return err
@@ -615,8 +644,8 @@ func (r *TokenBankRepo) ListGiftLinks(ctx context.Context, senderUserID, status 
 }
 
 // ListClaimedGiftLinks returns gifts this person claimed and has not withdrawn.
-// A passed return time stays in the list until the sweeper changes the status:
-// that is the window the sender is told the claimer can still withdraw.
+// A passed return time stays in the list until the sweeper changes the status.
+// Until then the claimer can still withdraw, and the sender can still revoke.
 // An empty claimer is refused: omitting the predicate would list every claim.
 func (r *TokenBankRepo) ListClaimedGiftLinks(ctx context.Context, claimerUserID string, now time.Time, limit int) ([]TokenBankGiftLink, error) {
 	claimerUserID = strings.TrimSpace(claimerUserID)

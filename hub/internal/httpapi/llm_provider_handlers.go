@@ -1486,6 +1486,7 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 			writeLoggedError(http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
 			return
 		}
+		tokenBankPuller := tokenBankPullerFrom(promptCacheSources)
 		billableModels, deniedByModel, firstDenial := filterAuthorizedModelsByBillingEligibility(ctx, serviceReg, providerReg, principal.UserID, principal.Email, body, models)
 		if len(models) == 0 || (len(billableModels) == 0 && firstDenial.Code != "") {
 			if freshProviderReg, freshModels, freshServiceReg, refreshErr := reloadAuthorizedModelsAfterEntitlementDenial(ctx, r, system, securitySvc, principal.UserID, principal.Email); refreshErr == nil {
@@ -1493,6 +1494,7 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 				billableModels, deniedByModel, firstDenial = filterAuthorizedModelsByBillingEligibility(ctx, serviceReg, providerReg, principal.UserID, principal.Email, body, models)
 			}
 		}
+		billableModels, deniedByModel, firstDenial, serviceReg = coverFilteredModelsFromTokenBank(ctx, system, tokenBankPuller, principal.UserID, principal.Email, body, providerReg, models, serviceReg, billableModels, deniedByModel, firstDenial)
 		authorizedModel, requestedModel, workloadDecision, err := resolveAuthorizedModel(r, body, billableModels, serviceReg)
 		selectedModelDebug := explainModelSelection(body, billableModels, authorizedModel, workloadDecision, requestedModel)
 		r = withOfficialRequestID(applyHubWorkloadSelection(w, r, body, authorizedModel, serviceReg, workloadDecision), requestID)
@@ -1513,13 +1515,14 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 			writeLoggedError(http.StatusForbidden, "LLM_MODEL_FORBIDDEN", err.Error())
 			return
 		}
-		applySelectedModelOutputCeiling(ctx, body, authorizedModel)
-		if err := prepareOfficialLLMRequestPricingQuote(ctx, serviceReg, providerReg, authorizedModel, body, principal.UserID, principal.Email); err != nil {
+		var admitDenial llmBillingDenial
+		serviceReg, admitDenial, err = prepareAndReserveLLMPricing(ctx, system, providerReg, serviceReg, authorizedModel, body, principal.UserID, principal.Email, tokenBankPuller)
+		if err != nil {
+			if admitDenial.Code != "" {
+				writeLoggedBillingDenied(llmBillingDenialHTTPStatus(admitDenial), admitDenial)
+				return
+			}
 			writeLoggedError(http.StatusServiceUnavailable, "LLM_PRICING_QUOTE_INVALID", err.Error())
-			return
-		}
-		if denial, reserveErr := reserveLLMRequestPricing(ctx, system, principal.UserID, principal.Email, authorizedModel); reserveErr != nil {
-			writeLoggedBillingDenied(llmBillingDenialHTTPStatus(denial), denial)
 			return
 		}
 		// A successful upstream path marks settlement before returning. Every
@@ -1826,6 +1829,7 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 			writeLoggedError(http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
 			return
 		}
+		tokenBankPuller := tokenBankPullerFrom(promptCacheSources)
 		billableModels, deniedByModel, firstDenial := filterAuthorizedModelsByBillingEligibility(ctx, serviceReg, providerReg, principal.UserID, principal.Email, chatBody, models)
 		if len(models) == 0 || (len(billableModels) == 0 && firstDenial.Code != "") {
 			if freshProviderReg, freshModels, freshServiceReg, refreshErr := reloadAuthorizedModelsAfterEntitlementDenial(ctx, r, system, securitySvc, principal.UserID, principal.Email); refreshErr == nil {
@@ -1833,6 +1837,7 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 				billableModels, deniedByModel, firstDenial = filterAuthorizedModelsByBillingEligibility(ctx, serviceReg, providerReg, principal.UserID, principal.Email, chatBody, models)
 			}
 		}
+		billableModels, deniedByModel, firstDenial, serviceReg = coverFilteredModelsFromTokenBank(ctx, system, tokenBankPuller, principal.UserID, principal.Email, chatBody, providerReg, models, serviceReg, billableModels, deniedByModel, firstDenial)
 		authorizedModel, requestedModel, workloadDecision, err := resolveAuthorizedModel(r, chatBody, billableModels, serviceReg)
 		selectedModelDebug := explainModelSelection(chatBody, billableModels, authorizedModel, workloadDecision, requestedModel)
 		r = withOfficialRequestID(applyHubWorkloadSelection(w, r, chatBody, authorizedModel, serviceReg, workloadDecision), requestID)
@@ -1862,15 +1867,16 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 			writeLoggedError(http.StatusForbidden, "LLM_MODEL_FORBIDDEN", err.Error())
 			return
 		}
-		applySelectedModelOutputCeiling(ctx, chatBody, authorizedModel)
-		if err := prepareOfficialLLMRequestPricingQuote(ctx, serviceReg, providerReg, authorizedModel, chatBody, principal.UserID, principal.Email); err != nil {
+		var admitDenial llmBillingDenial
+		serviceReg, admitDenial, err = prepareAndReserveLLMPricing(ctx, system, providerReg, serviceReg, authorizedModel, chatBody, principal.UserID, principal.Email, tokenBankPuller)
+		if err != nil {
+			if admitDenial.Code != "" {
+				logStatusCode = llmBillingDenialHTTPStatus(admitDenial)
+				logErrorCode = admitDenial.Code
+				writeLLMBillingDenied(w, admitDenial)
+				return
+			}
 			writeLoggedError(http.StatusServiceUnavailable, "LLM_PRICING_QUOTE_INVALID", err.Error())
-			return
-		}
-		if denial, reserveErr := reserveLLMRequestPricing(ctx, system, principal.UserID, principal.Email, authorizedModel); reserveErr != nil {
-			logStatusCode = llmBillingDenialHTTPStatus(denial)
-			logErrorCode = denial.Code
-			writeLLMBillingDenied(w, denial)
 			return
 		}
 		defer releaseUnsettledLLMBillingReservation(ctx, system)
@@ -5018,6 +5024,10 @@ type llmBillingDenial struct {
 	// reservations; it explains why available can be far below the visible
 	// period window remaining.
 	HeldCredits float64
+	// NeedCredits is the prompt-plus-one-token floor. A token-bank pull is
+	// warranted only when this exceeds the card before holds are subtracted.
+	// Zero means the denial did not price a floor.
+	NeedCredits float64
 }
 
 func llmBillingDenialFields(denial llmBillingDenial) map[string]any {

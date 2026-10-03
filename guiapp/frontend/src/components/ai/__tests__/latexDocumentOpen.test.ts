@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
     OPEN_LATEX_DOCUMENT_EVENT,
     dispatchOpenLatexDocument,
+    latexRelativePathForProject,
     openLatexDocumentFromEvent,
     resetLatexDocumentRequestForTests,
     takePendingLatexDocument,
@@ -50,6 +51,17 @@ describe('openLatexDocumentFromEvent', () => {
         window.addEventListener('maclaw:preview-task-result', listener, { once: true });
         window.dispatchEvent(new CustomEvent('maclaw:preview-task-result', { detail: { path: 'D:/x.pdf' } }));
         expect(openLatexDocumentFromEvent(new CustomEvent('maclaw:preview-task-result', { detail: { path: 'D:/x.pdf' } }))).toBeNull();
+    });
+});
+
+describe('latexRelativePathForProject', () => {
+    it('is empty until a source has actually been opened', () => {
+        resetLatexDocumentRequestForTests();
+        expect(latexRelativePathForProject('D:/tasks/latex')).toBe('');
+        expect(latexRelativePathForProject('')).toBe('');
+        dispatchOpenLatexDocument({ projectPath: 'D:/tasks/latex', relativePath: 'elsarticle/elsarticle-template-num.tex' });
+        expect(latexRelativePathForProject('D:/tasks/latex')).toBe('elsarticle/elsarticle-template-num.tex');
+        expect(latexRelativePathForProject('D:/other')).toBe('');
     });
 });
 

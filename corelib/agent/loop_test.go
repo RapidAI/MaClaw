@@ -4629,6 +4629,26 @@ func TestRunLoopAbandonsPreExecutionCheckpointForInteractivePause(t *testing.T) 
 	}
 }
 
+func TestPreToolCheckpointNamesExternalSend(t *testing.T) {
+	calls := []llm.ToolCall{
+		{Function: llm.ToolCallFunction{Name: "bash"}},
+		{Function: llm.ToolCallFunction{Name: "im_message"}},
+	}
+	if got := preToolCheckpointToolName(calls); got != "im_message" {
+		t.Fatalf("preToolCheckpointToolName = %q, want im_message", got)
+	}
+	if got := preToolSideEffectState(calls); got != "external_uncertain" {
+		t.Fatalf("preToolSideEffectState = %q", got)
+	}
+	readThenWrite := []llm.ToolCall{
+		{Function: llm.ToolCallFunction{Name: "read_file"}},
+		{Function: llm.ToolCallFunction{Name: "write_file"}},
+	}
+	if got := preToolCheckpointToolName(readThenWrite); got != "read_file" {
+		t.Fatalf("preToolCheckpointToolName = %q, want read_file", got)
+	}
+}
+
 func TestSideEffectStateForToolBatchFailsClosedForUnknownTools(t *testing.T) {
 	tests := []struct {
 		name  string

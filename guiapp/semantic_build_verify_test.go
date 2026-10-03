@@ -101,6 +101,29 @@ func TestSemanticBuildVerifyRefusesTargetsOutsideTheWorkspace(t *testing.T) {
 	}
 }
 
+func TestSemanticBuildVerifyRecognisesALatexDirectory(t *testing.T) {
+	workspace := t.TempDir()
+	paper := filepath.Join(workspace, "elsarticle")
+	if err := os.MkdirAll(paper, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "\\documentclass[tikz,border=6pt]{standalone}\n\\begin{document}x\\end{document}\n"
+	if err := os.WriteFile(filepath.Join(paper, "fig-transformer-block.tex"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	kind, ok := tool.BuildVerifyProjectKind(workspace, paper)
+	if !ok || kind != "latex" {
+		t.Fatalf("kind=%q ok=%v", kind, ok)
+	}
+	h := &IMMessageHandler{}
+	principal := desktopUserID + ":" + workspace
+	// test/lint/format_check stay refused. build is the reviewed LaTeX task,
+	// and this assertion stops before the engine so the test does not need TeX.
+	if _, err := h.runTrustedBuildVerify(principal, "test", "elsarticle"); err == nil || !strings.Contains(err.Error(), "trusted_build_verify_task_unsupported") {
+		t.Fatalf("latex test err=%v", err)
+	}
+}
+
 // Guessing a command for a project nobody recognised is how a verification
 // grant turns into running something unreviewed, so an unmarked workspace is a
 // refusal rather than a default.

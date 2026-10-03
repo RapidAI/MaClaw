@@ -8,9 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,7 +19,6 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/tinytex"
-	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 const latexPreviewEvent = "latex-preview-progress"
@@ -174,9 +171,12 @@ func (a *App) CompileLatexPreview(filePath string) (map[string]interface{}, erro
 			a.emitLatexPreview(cleaned, "installing", pkg)
 			cctx, cancelInstall := context.WithTimeout(installCtx, 5*time.Minute)
 			defer cancelInstall()
-			out, runErr := runLatexToolIn(cctx, tlmgr, filepath.Dir(tlmgr), "install", pkg)
+			out, code, runErr := tinytex.RunCommand(cctx, tlmgr, filepath.Dir(tlmgr), "install", pkg)
 			if runErr != nil {
-				return fmt.Errorf("%w: %s", runErr, clipLatexOutput(out))
+				return fmt.Errorf("%w: %s", runErr, clipLatexOutput([]byte(out)))
+			}
+			if code != 0 {
+				return fmt.Errorf("exit status %d: %s", code, clipLatexOutput([]byte(out)))
 			}
 			return nil
 		},
@@ -748,38 +748,5 @@ func latexRepairCandidateTexts(resp *llmSimpleResponse) []string {
 func runLatexPreviewCommand(ctx context.Context, bin, dir string, args ...string) (string, int, error) {
 	cctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
-	out, err := runLatexToolIn(cctx, bin, dir, args...)
-	if err == nil {
-		return string(out), 0, nil
-	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		return string(out), exitErr.ExitCode(), nil
-	}
-	return string(out), -1, err
-}
-
-func runLatexToolIn(ctx context.Context, bin, dir string, args ...string) ([]byte, error) {
-	var cmdName string
-	var cmdArgs []string
-	if runtime.GOOS == "windows" && strings.EqualFold(filepath.Ext(bin), ".bat") {
-		parts := make([]string, 0, len(args)+1)
-		parts = append(parts, quoteCmdArg(bin))
-		for _, arg := range args {
-			parts = append(parts, quoteCmdArg(arg))
-		}
-		cmdName = tool.ResolveCmdExe()
-		cmdArgs = []string{"/d", "/s", "/c", strings.Join(parts, " ")}
-	} else {
-		cmdName = bin
-		cmdArgs = args
-	}
-	cmd := tool.CommandContext(ctx, cmdName, cmdArgs...)
-	if strings.TrimSpace(dir) == "" {
-		dir = filepath.Dir(bin)
-	}
-	cmd.Dir = dir
-	binDir := filepath.Dir(bin)
-	cmd.Env = append(os.Environ(), "PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	return cmd.CombinedOutput()
+	return tinytex.RunCommand(cctx, bin, dir, args...)
 }

@@ -115,6 +115,15 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 	slotActionElapsed = time.Since(lastPhaseAt)
 	lastPhaseAt = time.Now()
 
+	// Structural "no history" and the recovery classifier both run below.
+	// Either one can dismiss this slot and plan another send. The uncertain
+	// send stays until the user explicitly starts a new task.
+	if !result.FreshTask && !msg.IsBackground && !h.isPureCodingWorkbenchSession(msg.UserID) && unreviewedExternalDeliverySlot(result.UnfinishedSlot) {
+		result.Handled = true
+		result.Response = h.returnExternalDeliveryReview(*msg, result.UnfinishedSlot)
+		return result
+	}
+
 	workflowReviewPending := h.workflowReviewPending(msg.UserID, msg.IsBackground)
 	result.WorkflowReviewPending = workflowReviewPending
 	if !workflowReviewPending {

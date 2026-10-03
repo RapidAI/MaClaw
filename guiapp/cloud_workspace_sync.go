@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/cloudworkspaceignore"
@@ -26,6 +27,7 @@ import (
 const (
 	cloudWorkspaceCacheStateDir    = ".maclaw-cloud"
 	cloudWorkspaceCacheStateFile   = "state.json"
+	cloudWorkspaceListingFile      = "listing.json"
 	cloudWorkspaceHashIndexFile    = "hash-index.json"
 	cloudWorkspaceHashIndexVersion = 1
 
@@ -172,68 +174,121 @@ func (p *cloudWorkspaceProtocol) PushOperations(ctx context.Context, root string
 	return writeCloudWorkspaceState(root, state)
 }
 
-// DeletePaths submits per-file remote deletes and drops them from local sync
-// state. It does not upload unrelated local edits.
+// DeletePaths removes paths from the v1 manifest and from the local baseline.
+// v1-sequential has no per-file operation log. A manifest replace drops only
+// the named paths (and their children) and does not upload unrelated local edits.
 func (p *cloudWorkspaceProtocol) DeletePaths(ctx context.Context, root string, paths []string) error {
 	if p == nil || p.Transport == nil {
 		return fmt.Errorf("cloud workspace sync unavailable")
-	}
-	if _, ok := p.Transport.(cloudWorkspaceV2Transport); !ok {
-		return errCloudWorkspaceV2Unavailable
 	}
 	uniq := uniqueCloudWorkspacePaths(paths)
 	if len(uniq) == 0 {
 		return nil
 	}
-	state, err := readCloudWorkspaceLocalState(root)
-	if err != nil {
-		return err
-	}
-	_, _, clientID, _ := p.clientIdentity()
-	if clientID == "" {
-		clientID = "maclaw-gui"
-	}
 	drop := make(map[string]struct{}, len(uniq))
-	persist := func() error {
-		kept := make([]cloudWorkspaceManifestEntry, 0, len(state.LastEntries))
-		for _, entry := range state.LastEntries {
-			if _, ok := drop[entry.Path]; ok {
-				continue
-			}
-			kept = append(kept, entry)
-		}
-		state.LastEntries = kept
-		return writeCloudWorkspaceState(root, state)
-	}
 	for _, path := range uniq {
 		if _, ok := cloudWorkspaceSafeRelPath(path); !ok || codingWorkbenchEntryProtected(path) {
 			continue
 		}
-		op := cloudWorkspaceOperation{
-			OpID:             operationID("delete", path, state.FileRevisions[path], ""),
-			Path:             path,
-			Kind:             "delete",
-			BaseFileRevision: state.FileRevisions[path],
-			ClientInstanceID: clientID,
-		}
-		res, err := p.SubmitOperation(ctx, op)
-		if err != nil {
-			if len(drop) > 0 {
-				_ = persist()
-			}
-			return err
-		}
-		if res.Accepted {
-			drop[path] = struct{}{}
-			delete(state.FileRevisions, path)
+		drop[path] = struct{}{}
+	}
+	if len(drop) == 0 {
+		return nil
+	}
+	remote, err := p.Transport.GetManifest(ctx)
+	if err != nil {
+		return err
+	}
+	if remote == nil {
+		remote = &cloudWorkspaceManifest{}
+	}
+	kept := make([]cloudWorkspaceManifestEntry, 0, len(remote.Entries))
+	removed := 0
+	for _, entry := range remote.Entries {
+		if cloudWorkspacePathDropped(entry.Path, drop) {
+			removed++
 			continue
 		}
-		if len(drop) > 0 {
-			_ = persist()
-		}
-		return p.materializeConflict(ctx, root, op, res)
+		kept = append(kept, entry)
 	}
-	return persist()
+	if removed > 0 {
+		out, err := p.Transport.PutManifest(ctx, remote.Revision, kept)
+		if err != nil {
+			return err
+		}
+		if out != nil {
+			remote = out
+		} else {
+			remote.Entries = kept
+		}
+	}
+	state, err := readCloudWorkspaceLocalState(root)
+	if err != nil {
+		return err
+	}
+	baseline := make([]cloudWorkspaceManifestEntry, 0, len(state.LastEntries))
+	for _, entry := range state.LastEntries {
+		if cloudWorkspacePathDropped(entry.Path, drop) {
+			delete(state.FileRevisions, entry.Path)
+			continue
+		}
+		baseline = append(baseline, entry)
+	}
+	state.LastEntries = baseline
+	// Stamp the revision only when the local baseline is exactly the manifest
+	// just written. A browse cache that has not replicated every object must
+	// not claim that revision, or the next push treats missing files as deletes.
+	written := remote.Entries
+	if removed > 0 && cloudWorkspaceSameEntries(baseline, written) && strings.TrimSpace(remote.Revision) != "" {
+		state.LastPushedRevision = remote.Revision
+	}
+	if err := writeCloudWorkspaceState(root, state); err != nil {
+		return err
+	}
+	// Publish the manifest just read or written. The previous browse index can
+	// be behind that manifest: filtering it would hide files added remotely and
+	// keep files the server has already dropped.
+	if remote.Entries == nil {
+		remote.Entries = []cloudWorkspaceManifestEntry{}
+	}
+	return writeCloudWorkspaceListing(root, remote)
+}
+
+func cloudWorkspacePathDropped(path string, drop map[string]struct{}) bool {
+	for path != "" {
+		if _, ok := drop[path]; ok {
+			return true
+		}
+		slash := strings.LastIndex(path, "/")
+		if slash <= 0 {
+			return false
+		}
+		path = path[:slash]
+	}
+	return false
+}
+
+func cloudWorkspaceSameEntries(left, right []cloudWorkspaceManifestEntry) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	byPath := make(map[string]cloudWorkspaceManifestEntry, len(left))
+	for _, entry := range left {
+		if _, exists := byPath[entry.Path]; exists {
+			return false
+		}
+		byPath[entry.Path] = entry
+	}
+	if len(byPath) != len(right) {
+		return false
+	}
+	for _, entry := range right {
+		prev, ok := byPath[entry.Path]
+		if !ok || prev.SHA256 != entry.SHA256 || prev.Size != entry.Size {
+			return false
+		}
+	}
+	return true
 }
 
 func uniqueCloudWorkspacePaths(paths []string) []string {
@@ -659,6 +714,20 @@ func hashCloudWorkspaceFileContext(ctx context.Context, filePath string) (string
 	return hex.EncodeToString(h.Sum(nil)), n, nil
 }
 
+// cloudWorkspaceFileMatchesEntry reports whether dest is already the remote
+// object. A missing file is not a match. A missing path returns false without
+// an error so the caller can treat it as "not yet replicated".
+func cloudWorkspaceFileMatchesEntry(ctx context.Context, dest string, entry cloudWorkspaceManifestEntry) (bool, error) {
+	sum, size, err := hashCloudWorkspaceFileContext(ctx, dest)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return sum == entry.SHA256 && size == entry.Size, nil
+}
+
 func cloudWorkspaceHashIndexPath(root string) string {
 	return filepath.Join(root, cloudWorkspaceCacheStateDir, cloudWorkspaceHashIndexFile)
 }
@@ -781,6 +850,17 @@ func sameCloudWorkspaceObservedFile(a, b cloudWorkspaceObservedFile) bool {
 	return a.Size == b.Size && a.ModTime == b.ModTime && a.FileID == b.FileID
 }
 
+func cloudWorkspaceObservedHasSHA(idx cloudWorkspaceHashIndex, rel string, current cloudWorkspaceObservedFile, sha string) bool {
+	if !current.Exists || !current.Regular || idx.Entries == nil {
+		return false
+	}
+	indexed, ok := idx.Entries[rel]
+	if !ok || indexed.SHA256 != sha || indexed.Size != current.Size {
+		return false
+	}
+	return indexed.ModTimeUnixNano == current.ModTime && indexed.FileID == current.FileID
+}
+
 func cloudWorkspaceStatePath(root string) string {
 	return filepath.Join(root, cloudWorkspaceCacheStateDir, cloudWorkspaceCacheStateFile)
 }
@@ -848,6 +928,493 @@ func writeCloudWorkspaceManifestState(root string, manifest *cloudWorkspaceManif
 	state.ReconcileReason = ""
 	state.ReconcileAt = ""
 	return writeCloudWorkspaceState(root, state)
+}
+
+// writeCloudWorkspaceListing stores the remote manifest as a browse index.
+// It is not the push baseline: LastEntries stays unchanged so a later Push
+// cannot treat files that have not been replicated yet as deletions.
+func writeCloudWorkspaceListing(root string, manifest *cloudWorkspaceManifest) error {
+	_, err := commitCloudWorkspaceListing(root, nil, manifest)
+	return err
+}
+
+func writeCloudWorkspaceListingIfCurrent(root string, seen uint64, manifest *cloudWorkspaceManifest) (bool, error) {
+	return commitCloudWorkspaceListing(root, &seen, manifest)
+}
+
+func writeCloudWorkspaceListingFile(root string, manifest *cloudWorkspaceManifest) error {
+	root = normalizeProjectSessionPath(root)
+	if root == "" {
+		return fmt.Errorf("cloud workspace cache path is empty")
+	}
+	if manifest == nil {
+		manifest = &cloudWorkspaceManifest{}
+	}
+	dir := filepath.Join(root, cloudWorkspaceCacheStateDir)
+	if err := ensureCloudWorkspaceCacheDirectory(root, dir); err != nil {
+		return err
+	}
+	raw, err := json.Marshal(manifest)
+	if err != nil {
+		return err
+	}
+	filePath := filepath.Join(dir, cloudWorkspaceListingFile)
+	if err := atomicWriteFile(filePath, raw); err != nil {
+		return err
+	}
+	if info, statErr := os.Stat(filePath); statErr == nil {
+		storeCloudWorkspaceListingCache(filePath, info, *manifest)
+	}
+	return nil
+}
+
+// cloudWorkspaceListingPublish remembers which browse index was committed for
+// each cache. A sync that fetched its manifest before a push, pull, or delete
+// published a newer index must not write that older manifest back: the deleted
+// path would reappear, and opening it would download the object again.
+var cloudWorkspaceListingPublish = struct {
+	mu  sync.Mutex
+	gen map[string]uint64
+}{}
+
+func cloudWorkspaceListingPublishGen(root string) uint64 {
+	root = normalizeProjectSessionPath(root)
+	cloudWorkspaceListingPublish.mu.Lock()
+	defer cloudWorkspaceListingPublish.mu.Unlock()
+	if cloudWorkspaceListingPublish.gen == nil {
+		return 0
+	}
+	return cloudWorkspaceListingPublish.gen[root]
+}
+
+func commitCloudWorkspaceListing(root string, seen *uint64, manifest *cloudWorkspaceManifest) (bool, error) {
+	root = normalizeProjectSessionPath(root)
+	cloudWorkspaceListingPublish.mu.Lock()
+	defer cloudWorkspaceListingPublish.mu.Unlock()
+	if cloudWorkspaceListingPublish.gen == nil {
+		cloudWorkspaceListingPublish.gen = map[string]uint64{}
+	}
+	if seen != nil && cloudWorkspaceListingPublish.gen[root] != *seen {
+		return false, nil
+	}
+	if err := writeCloudWorkspaceListingFile(root, manifest); err != nil {
+		return false, err
+	}
+	cloudWorkspaceListingPublish.gen[root]++
+	return true, nil
+}
+
+// Parsed browse indexes for the process. Directory expansion and file open
+// both read the same file; reparsing the whole manifest on every click
+// dominates a large workspace. The writer cache and the read-only cache are
+// different files, so both stay hot. A replace is visible because the key
+// includes size and modification time.
+const cloudWorkspaceListingCacheCap = 4
+
+type cloudWorkspaceListingCacheEntry struct {
+	modNano int64
+	size    int64
+	cached  cloudWorkspaceManifest
+}
+
+var cloudWorkspaceListingCache = struct {
+	mu    sync.Mutex
+	gen   uint64
+	items map[string]cloudWorkspaceListingCacheEntry
+}{}
+
+func cloudWorkspaceListingCacheKey(filePath string) string {
+	if len(filePath) >= 2 && filePath[1] == ':' {
+		return strings.ToLower(filePath)
+	}
+	return filePath
+}
+
+func storeCloudWorkspaceListingCache(filePath string, info os.FileInfo, manifest cloudWorkspaceManifest) {
+	manifest.Entries = append([]cloudWorkspaceManifestEntry(nil), manifest.Entries...)
+	cloudWorkspaceListingCache.mu.Lock()
+	defer cloudWorkspaceListingCache.mu.Unlock()
+	storeCloudWorkspaceListingCacheLocked(filePath, info, manifest)
+}
+
+func storeCloudWorkspaceListingCacheLocked(filePath string, info os.FileInfo, manifest cloudWorkspaceManifest) {
+	key := cloudWorkspaceListingCacheKey(filePath)
+	if cloudWorkspaceListingCache.items == nil {
+		cloudWorkspaceListingCache.items = map[string]cloudWorkspaceListingCacheEntry{}
+	}
+	if _, ok := cloudWorkspaceListingCache.items[key]; !ok && len(cloudWorkspaceListingCache.items) >= cloudWorkspaceListingCacheCap {
+		for existing := range cloudWorkspaceListingCache.items {
+			delete(cloudWorkspaceListingCache.items, existing)
+			break
+		}
+	}
+	cloudWorkspaceListingCache.gen++
+	cloudWorkspaceListingCache.items[key] = cloudWorkspaceListingCacheEntry{
+		modNano: info.ModTime().UnixNano(),
+		size:    info.Size(),
+		cached:  manifest,
+	}
+}
+
+func cloneCloudWorkspaceListing(manifest cloudWorkspaceManifest) *cloudWorkspaceManifest {
+	manifest.Entries = append([]cloudWorkspaceManifestEntry(nil), manifest.Entries...)
+	return &manifest
+}
+
+// publishCloudWorkspaceListing refreshes the browse index after a committed
+// manifest. A failure leaves the previous index in place and does not fail the
+// sync: the replica is already the source of truth.
+func publishCloudWorkspaceListing(root string, manifest *cloudWorkspaceManifest) {
+	if manifest == nil {
+		return
+	}
+	if err := writeCloudWorkspaceListing(root, manifest); err != nil {
+		log.Printf("[cloud_workspace] listing update failed: %v", err)
+	}
+}
+
+func readCloudWorkspaceListing(root string) (*cloudWorkspaceManifest, error) {
+	root = normalizeProjectSessionPath(root)
+	if root == "" {
+		return nil, nil
+	}
+	filePath := filepath.Join(root, cloudWorkspaceCacheStateDir, cloudWorkspaceListingFile)
+	info, err := os.Stat(filePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	modNano := info.ModTime().UnixNano()
+	key := cloudWorkspaceListingCacheKey(filePath)
+	cloudWorkspaceListingCache.mu.Lock()
+	seenGen := cloudWorkspaceListingCache.gen
+	if cached, ok := cloudWorkspaceListingCache.items[key]; ok && cached.modNano == modNano && cached.size == info.Size() {
+		out := cloneCloudWorkspaceListing(cached.cached)
+		cloudWorkspaceListingCache.mu.Unlock()
+		return out, nil
+	}
+	cloudWorkspaceListingCache.mu.Unlock()
+	raw, err := os.ReadFile(filePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var manifest cloudWorkspaceManifest
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		return nil, err
+	}
+	if manifest.Entries == nil {
+		manifest.Entries = []cloudWorkspaceManifestEntry{}
+	}
+	if info2, statErr := os.Stat(filePath); statErr == nil && info2.ModTime().UnixNano() == modNano && info2.Size() == info.Size() {
+		manifest.Entries = append([]cloudWorkspaceManifestEntry(nil), manifest.Entries...)
+		cloudWorkspaceListingCache.mu.Lock()
+		// A write that landed while this file was being parsed owns the cache.
+		// Storing the bytes read earlier would put that older manifest back.
+		if cloudWorkspaceListingCache.gen == seenGen {
+			storeCloudWorkspaceListingCacheLocked(filePath, info2, manifest)
+		}
+		cloudWorkspaceListingCache.mu.Unlock()
+	}
+	return cloneCloudWorkspaceListing(manifest), nil
+}
+
+// cloudWorkspaceManifestChildren projects one directory level from a full
+// manifest. prefix is "" for the root, or a cleaned relative directory.
+func cloudWorkspaceManifestChildren(entries []cloudWorkspaceManifestEntry, prefix string) []CodingWorkbenchDirectoryEntry {
+	prefix = strings.Trim(path.Clean("/"+prefix), "/")
+	if prefix == "." {
+		prefix = ""
+	}
+	dirs := map[string]struct{}{}
+	files := map[string]cloudWorkspaceManifestEntry{}
+	for _, entry := range entries {
+		cleaned, ok := cloudWorkspaceSafeRelPath(entry.Path)
+		if !ok {
+			continue
+		}
+		rest := cleaned
+		if prefix != "" {
+			if cleaned == prefix || !strings.HasPrefix(cleaned, prefix+"/") {
+				continue
+			}
+			rest = strings.TrimPrefix(cleaned, prefix+"/")
+		}
+		name, _, isDir := strings.Cut(rest, "/")
+		if name == "" || name == "." || strings.HasPrefix(name, ".") {
+			continue
+		}
+		if isDir {
+			dirs[name] = struct{}{}
+			continue
+		}
+		files[name] = entry
+	}
+	out := make([]CodingWorkbenchDirectoryEntry, 0, len(dirs)+len(files))
+	for name := range dirs {
+		rel := name
+		if prefix != "" {
+			rel = prefix + "/" + name
+		}
+		out = append(out, CodingWorkbenchDirectoryEntry{
+			Name:  name,
+			Path:  rel,
+			IsDir: true,
+		})
+	}
+	for name := range files {
+		if _, isDir := dirs[name]; isDir {
+			continue
+		}
+		rel := name
+		if prefix != "" {
+			rel = prefix + "/" + name
+		}
+		out = append(out, CodingWorkbenchDirectoryEntry{
+			Name:  name,
+			Path:  rel,
+			IsDir: false,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].IsDir != out[j].IsDir {
+			return out[i].IsDir
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out
+}
+
+func cloudWorkspaceListingContainsDir(entries []cloudWorkspaceManifestEntry, prefix string) bool {
+	prefix = strings.Trim(path.Clean("/"+prefix), "/")
+	if prefix == "." || prefix == "" {
+		return true
+	}
+	for _, entry := range entries {
+		cleaned, ok := cloudWorkspaceSafeRelPath(entry.Path)
+		if !ok {
+			continue
+		}
+		if strings.HasPrefix(cleaned, prefix+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// materializeCloudWorkspaceListedFile downloads one listed object that is not
+// already in the cache. A writable cache keeps a file whose bytes differ: that
+// is a local edit. A read-only cache replaces those bytes with the listed object.
+func (a *App) materializeCloudWorkspaceListedFile(root, rel string) error {
+	if a == nil {
+		return nil
+	}
+	root = normalizeProjectSessionPath(root)
+	id, ok := cloudWorkspaceMaterializeRoot(root)
+	if !ok {
+		return nil
+	}
+	cleaned, ok := cloudWorkspaceSafeRelPath(rel)
+	if !ok {
+		return nil
+	}
+	listing, err := readCloudWorkspaceListing(root)
+	if err != nil || listing == nil {
+		return err
+	}
+	for i := range listing.Entries {
+		if listing.Entries[i].Path != cleaned {
+			continue
+		}
+		return a.materializeCloudWorkspaceEntries(root, id, []cloudWorkspaceManifestEntry{listing.Entries[i]})
+	}
+	return nil
+}
+
+// materializeCloudWorkspaceListedTree fetches the one listed file, or every
+// listed file under a directory, before a caller reads those bytes. Listing
+// itself does not download them.
+func (a *App) materializeCloudWorkspaceListedTree(root, rel string) error {
+	if a == nil {
+		return nil
+	}
+	root = normalizeProjectSessionPath(root)
+	id, ok := cloudWorkspaceMaterializeRoot(root)
+	if !ok {
+		return nil
+	}
+	listing, err := readCloudWorkspaceListing(root)
+	if err != nil || listing == nil {
+		return err
+	}
+	cleaned, ok := cloudWorkspaceSafeRelPath(rel)
+	if !ok {
+		return nil
+	}
+	targets := make([]cloudWorkspaceManifestEntry, 0, 1)
+	for _, entry := range listing.Entries {
+		path, pathOK := cloudWorkspaceSafeRelPath(entry.Path)
+		if !pathOK {
+			continue
+		}
+		if path == cleaned || strings.HasPrefix(path, cleaned+"/") {
+			targets = append(targets, entry)
+		}
+	}
+	return a.materializeCloudWorkspaceEntries(root, id, targets)
+}
+
+func cloudWorkspaceMaterializeRoot(root string) (string, bool) {
+	if id := cloudWorkspaceIDFromPathString(root); id != "" {
+		return id, true
+	}
+	if id := cloudWorkspaceIDFromReadOnlyCachePath(root); id != "" {
+		return id, true
+	}
+	return "", false
+}
+
+func (a *App) materializeCloudWorkspaceEntries(root, id string, entries []cloudWorkspaceManifestEntry) error {
+	if a == nil || len(entries) == 0 {
+		return nil
+	}
+	var mount *cloudWorkspaceHeldMount
+	keepLocalEdit := cloudWorkspaceIDFromReadOnlyCachePath(root) == ""
+	if id != "" {
+		mount = lookupHeldCloudWorkspace(id)
+	}
+	if mount != nil {
+		mount.syncMu.Lock()
+		defer mount.syncMu.Unlock()
+		mount.mu.Lock()
+		keepLocalEdit = !mount.ReadOnly
+		mount.mu.Unlock()
+	}
+	var baseline map[string]struct{}
+	if keepLocalEdit {
+		var err error
+		baseline, err = cloudWorkspaceWritableBaselinePaths(root)
+		if err != nil {
+			return err
+		}
+	}
+	hashIndex := readCloudWorkspaceHashIndex(root)
+	ctx, cancel := a.cloudWorkspaceSyncContext()
+	defer cancel()
+	ctx, cancelEntries := bindCloudWorkspaceTimeout(ctx, cloudWorkspaceEntriesTimeout(entries))
+	defer cancelEntries()
+	indexDirty := false
+	flushIndex := func() {
+		if !indexDirty {
+			return
+		}
+		if err := writeCloudWorkspaceHashIndex(root, hashIndex); err != nil {
+			log.Printf("[cloud_workspace] hash index update failed: %v", err)
+		}
+	}
+	for _, entry := range entries {
+		wrote, err := a.materializeCloudWorkspaceEntry(ctx, id, root, entry, keepLocalEdit, baseline, &hashIndex)
+		if err != nil {
+			flushIndex()
+			return err
+		}
+		if wrote {
+			indexDirty = true
+		}
+	}
+	flushIndex()
+	return nil
+}
+
+func cloudWorkspaceWritableBaselinePaths(root string) (map[string]struct{}, error) {
+	state, err := readCloudWorkspaceLocalState(root)
+	if err != nil {
+		return nil, err
+	}
+	if !state.BaselineInitialized && state.LastEntries == nil {
+		return nil, nil
+	}
+	paths := make(map[string]struct{}, len(state.LastEntries))
+	for _, entry := range state.LastEntries {
+		if entry.Path == "" {
+			continue
+		}
+		paths[entry.Path] = struct{}{}
+	}
+	return paths, nil
+}
+
+func (a *App) materializeCloudWorkspaceEntry(ctx context.Context, id, root string, entry cloudWorkspaceManifestEntry, keepLocalEdit bool, baseline map[string]struct{}, index *cloudWorkspaceHashIndex) (bool, error) {
+	cleaned, ok := cloudWorkspaceSafeRelPath(entry.Path)
+	if !ok {
+		return false, nil
+	}
+	if entry.Size < 0 || entry.Size > cloudWorkspaceObjectMaxBytes || !validCloudWorkspaceSHA256(entry.SHA256) {
+		return false, fmt.Errorf("invalid cloud workspace object metadata for %q", cleaned)
+	}
+	dest := filepath.Join(root, filepath.FromSlash(cleaned))
+	current, statErr := observeCloudWorkspaceFile(dest)
+	if statErr != nil {
+		return false, statErr
+	}
+	if current.Exists && current.Regular {
+		if current.Size == entry.Size && index != nil && cloudWorkspaceObservedHasSHA(*index, cleaned, current, entry.SHA256) {
+			return false, nil
+		}
+		if current.Size == entry.Size {
+			matches, matchErr := cloudWorkspaceFileMatchesEntry(ctx, dest, entry)
+			if matchErr != nil {
+				return false, matchErr
+			}
+			if matches {
+				cloudWorkspaceRememberHash(index, cleaned, current, entry.SHA256)
+				return index != nil, nil
+			}
+		}
+		if keepLocalEdit {
+			return false, nil
+		}
+	} else if keepLocalEdit {
+		if _, held := baseline[cleaned]; held {
+			// Absence of a baselined file is a local delete. Downloading it
+			// again would undo that delete before the next push.
+			return false, nil
+		}
+	}
+	if err := ensureCloudWorkspaceCacheDirectory(root, filepath.Dir(dest)); err != nil {
+		return false, err
+	}
+	data, err := a.cloudWorkspaceProtocol(id).Transport.GetObject(ctx, entry.SHA256, entry.Size)
+	if err != nil {
+		return false, fmt.Errorf("%s: %w", cleaned, err)
+	}
+	sum := sha256.Sum256(data)
+	if hex.EncodeToString(sum[:]) != entry.SHA256 || int64(len(data)) != entry.Size {
+		return false, fmt.Errorf("%s: cloud workspace object hash mismatch", cleaned)
+	}
+	if err := atomicWriteFile(dest, data); err != nil {
+		return false, err
+	}
+	if written, observeErr := observeCloudWorkspaceFile(dest); observeErr == nil {
+		cloudWorkspaceRememberHash(index, cleaned, written, entry.SHA256)
+	}
+	return true, nil
+}
+
+func cloudWorkspaceRememberHash(index *cloudWorkspaceHashIndex, rel string, observed cloudWorkspaceObservedFile, sha string) {
+	if index == nil || !observed.Exists || !observed.Regular || sha == "" {
+		return
+	}
+	if index.Entries == nil {
+		index.Entries = map[string]cloudWorkspaceHashIndexEntry{}
+	}
+	index.Entries[rel] = cloudWorkspaceHashIndexEntry{
+		SHA256: sha, Size: observed.Size, ModTimeUnixNano: observed.ModTime, FileID: observed.FileID,
+	}
 }
 
 // markCloudWorkspaceLocalReconcileRequired persists a watcher self-healing
@@ -1347,6 +1914,7 @@ func (p *cloudWorkspaceProtocol) pushWithProgress(ctx context.Context, root stri
 		if err := writeCloudWorkspaceManifestState(root, remote); err != nil {
 			return nil, err
 		}
+		publishCloudWorkspaceListing(root, remote)
 		return remote, nil
 	}
 	uploaded := map[string]struct{}{}
@@ -1463,6 +2031,7 @@ func (p *cloudWorkspaceProtocol) pushWithProgress(ctx context.Context, root stri
 		if err := writeCloudWorkspaceManifestState(root, out); err != nil {
 			return nil, err
 		}
+		publishCloudWorkspaceListing(root, out)
 	}
 	return out, nil
 }
@@ -1549,6 +2118,17 @@ func (p *cloudWorkspaceProtocol) pullWithProgress(ctx context.Context, root stri
 	defer cancel()
 	keep := make(map[string]struct{}, len(remote.Entries))
 	portablePaths := make(map[string]string, len(remote.Entries))
+	ensuredDirs := make(map[string]struct{})
+	hashIndex := readCloudWorkspaceHashIndex(root)
+	nextIndex := cloudWorkspaceHashIndex{Version: cloudWorkspaceHashIndexVersion, Entries: make(map[string]cloudWorkspaceHashIndexEntry, len(remote.Entries))}
+	rememberHash := func(rel string, observed cloudWorkspaceObservedFile, sha string) {
+		if !observed.Exists || !observed.Regular || sha == "" {
+			return
+		}
+		nextIndex.Entries[rel] = cloudWorkspaceHashIndexEntry{
+			SHA256: sha, Size: observed.Size, ModTimeUnixNano: observed.ModTime, FileID: observed.FileID,
+		}
+	}
 	var downloadedFiles int
 	var downloadedBytes int64
 	for _, e := range remote.Entries {
@@ -1573,36 +2153,37 @@ func (p *cloudWorkspaceProtocol) pullWithProgress(ctx context.Context, root stri
 		portablePaths[portableKey] = cleaned
 		keep[cleaned] = struct{}{}
 		dest := filepath.Join(root, filepath.FromSlash(cleaned))
-		if err := ensureCloudWorkspaceCacheDirectory(root, filepath.Dir(dest)); err != nil {
-			return nil, err
-		}
 		before, existed := initialLocal[cleaned]
 		current, statErr := observeCloudWorkspaceFile(dest)
 		if statErr != nil {
 			return nil, statErr
+		}
+		// A byte-for-byte copy of the remote object is already the replica,
+		// including one written by another pass that finished this path first.
+		// Size and the hash index decide that before a full read. Bytes that
+		// are neither the snapshot nor the remote object are a user edit.
+		if current.Exists && current.Regular && current.Size == e.Size && cloudWorkspaceObservedHasSHA(hashIndex, cleaned, current, e.SHA256) {
+			rememberHash(cleaned, current, e.SHA256)
+			emitDownloadProgress()
+			continue
+		}
+		if current.Exists && current.Regular && current.Size == e.Size {
+			matches, matchErr := cloudWorkspaceFileMatchesEntry(ctx, dest, e)
+			if matchErr != nil {
+				return nil, matchErr
+			}
+			if matches {
+				rememberHash(cleaned, current, e.SHA256)
+				emitDownloadProgress()
+				continue
+			}
 		}
 		if existed {
 			if !sameCloudWorkspaceObservedFile(before, current) {
 				return nil, fmt.Errorf("cloud workspace file changed while downloading %q", cleaned)
 			}
 		} else if current.Exists {
-			// A file appeared after the initial snapshot.  It may be a user's
-			// concurrent edit or a stale artifact; do not overwrite it.
 			return nil, fmt.Errorf("cloud workspace file changed while downloading %q", cleaned)
-		}
-		if info, err := os.Stat(dest); err == nil && info.Mode().IsRegular() {
-			sum, size, err := hashCloudWorkspaceFileContext(ctx, dest)
-			if err == nil && sum == e.SHA256 && size == e.Size {
-				afterHash, statErr := observeCloudWorkspaceFile(dest)
-				if statErr != nil {
-					return nil, statErr
-				}
-				if !sameCloudWorkspaceObservedFile(before, afterHash) {
-					return nil, fmt.Errorf("cloud workspace file changed while downloading %q", cleaned)
-				}
-				emitDownloadProgress()
-				continue
-			}
 		}
 		data, err := p.Transport.GetObject(ctx, e.SHA256, e.Size)
 		if err != nil {
@@ -1619,12 +2200,22 @@ func (p *cloudWorkspaceProtocol) pullWithProgress(ctx context.Context, root stri
 		} else if afterFetch.Exists {
 			return nil, fmt.Errorf("cloud workspace file changed while downloading %q", cleaned)
 		}
+		parent := filepath.Dir(dest)
+		if _, done := ensuredDirs[parent]; !done {
+			if err := ensureCloudWorkspaceCacheDirectory(root, parent); err != nil {
+				return nil, err
+			}
+			ensuredDirs[parent] = struct{}{}
+		}
 		sum := sha256.Sum256(data)
 		if hex.EncodeToString(sum[:]) != e.SHA256 {
 			return nil, fmt.Errorf("%s: cloud workspace object hash mismatch", cleaned)
 		}
 		if err := atomicWriteFile(dest, data); err != nil {
 			return nil, err
+		}
+		if written, statErr := observeCloudWorkspaceFile(dest); statErr == nil {
+			rememberHash(cleaned, written, e.SHA256)
 		}
 		emitDownloadProgress()
 	}
@@ -1670,6 +2261,12 @@ func (p *cloudWorkspaceProtocol) pullWithProgress(ctx context.Context, root stri
 	}
 	if err := writeCloudWorkspaceManifestState(root, remote); err != nil {
 		return nil, err
+	}
+	publishCloudWorkspaceListing(root, remote)
+	// The index is an optimisation. A failed write leaves the next pull to hash
+	// the files; it must not fail a replica that already matches the manifest.
+	if err := writeCloudWorkspaceHashIndex(root, nextIndex); err != nil {
+		log.Printf("[cloud_workspace] hash index update failed: %v", err)
 	}
 	return remote, nil
 }
@@ -1905,43 +2502,6 @@ func (t *cloudWorkspaceHTTPTransport) CompleteObject(ctx context.Context, sha256
 		return cloudWorkspaceAPIError(status, resp)
 	}
 	return nil
-}
-
-func (t *cloudWorkspaceHTTPTransport) SubmitOperation(ctx context.Context, op cloudWorkspaceOperation) (*cloudWorkspaceOperationResult, error) {
-	raw, err := json.Marshal(op)
-	if err != nil {
-		return nil, err
-	}
-	data, status, err := t.app.cloudWorkspaceHubDo(ctx, http.MethodPost, cloudWorkspaceItemPath(t.workspaceID)+"/operations", cloudWorkspaceHTTPOptions{timeout: cloudWorkspaceRequestTimeout, maxRead: cloudWorkspaceResponseMaxSize, accept: "application/json", contentType: "application/json", rawBody: raw})
-	if err != nil {
-		return nil, err
-	}
-	if status >= 300 {
-		return nil, cloudWorkspaceAPIError(status, data)
-	}
-	var out cloudWorkspaceOperationResult
-	if err := json.Unmarshal(data, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-func (t *cloudWorkspaceHTTPTransport) GetEvents(ctx context.Context, after, limit int64) ([]cloudWorkspaceEvent, error) {
-	urlPath := cloudWorkspaceItemPath(t.workspaceID) + "/events?after_seq=" + strconv.FormatInt(after, 10) + "&limit=" + strconv.FormatInt(limit, 10)
-	data, status, err := t.app.cloudWorkspaceHubDo(ctx, http.MethodGet, urlPath, cloudWorkspaceHTTPOptions{timeout: cloudWorkspaceRequestTimeout, maxRead: cloudWorkspaceResponseMaxSize, accept: "application/json"})
-	if err != nil {
-		return nil, err
-	}
-	if status >= 300 {
-		return nil, cloudWorkspaceAPIError(status, data)
-	}
-	var payload struct {
-		Events []cloudWorkspaceEvent `json:"events"`
-	}
-	if err := json.Unmarshal(data, &payload); err != nil {
-		return nil, err
-	}
-	return payload.Events, nil
 }
 
 func (a *App) cloudWorkspaceProtocol(workspaceID string) *cloudWorkspaceProtocol {

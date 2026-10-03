@@ -52,9 +52,11 @@ function isLatexSourcePath(path: string): boolean {
 let pendingLatexDocument: OpenLatexDocumentDetail | null = null;
 const latexRelativeByProject = new Map<string, string>();
 
-/** Last source opened for a task. The preview toggle uses it after the editor was closed. */
+/** Last source opened for a task in this session. Empty when nothing has been
+ * opened: the paper entry comes from the task, and a missing memory must not
+ * pretend the workspace root holds main.tex. */
 export function latexRelativePathForProject(projectPath: string): string {
-    return latexRelativeByProject.get(String(projectPath || "").trim()) || "main.tex";
+    return latexRelativeByProject.get(String(projectPath || "").trim()) || "";
 }
 
 export function dispatchOpenLatexDocument(request: OpenLatexDocumentRequest): void {

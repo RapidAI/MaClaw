@@ -1544,14 +1544,16 @@ func (a *App) CreateLatexDocument(projectPath, templateID, fileName string) (str
 		if err := os.MkdirAll(root, 0o755); err != nil {
 			return "", err
 		}
-		// Reuse an existing document rather than replacing it: this endpoint is
-		// reached on every "start a LaTeX paper" click, and the second click must
-		// not discard the paper written after the first.
-		if existing := latexTemplateExistingDocument(root, requestedName); existing != "" {
-			result.RelativePath = existing
-			result.MainFile = existing
-			result.SourceFiles = []string{existing}
-			return a.finishLatexDocument(projectPath, root, result, false)
+		// Re-opening the expert uses this blank id even when the paper was
+		// started from a template. The entry is the task's recorded source, or
+		// the same main-file choice an import would make. A root main.tex is
+		// only created when the workspace has no paper at all.
+		if entry, record := a.resolveLatexWorkspaceEntry(projectPath, root); entry != "" {
+			removeUntouchedBlankBesideTemplate(root, entry)
+			result.RelativePath = entry
+			result.MainFile = entry
+			result.SourceFiles = []string{entry}
+			return a.finishLatexDocument(projectPath, root, result, false, record)
 		}
 		if err := os.WriteFile(filepath.Join(root, requestedName), []byte(latexBlankTemplateSource), 0o644); err != nil {
 			return "", err
@@ -1561,7 +1563,7 @@ func (a *App) CreateLatexDocument(projectPath, templateID, fileName string) (str
 		result.SourceFiles = []string{requestedName}
 		result.Created = true
 		a.noteCloudWorkspaceWrite(root)
-		return a.finishLatexDocument(projectPath, root, result, true)
+		return a.finishLatexDocument(projectPath, root, result, true, true)
 	}
 
 	latexTemplateMu.Lock()
@@ -1617,13 +1619,17 @@ func (a *App) CreateLatexDocument(projectPath, templateID, fileName string) (str
 	// A template click is an instruction to work on these files. Point the
 	// expert at the directory they were unpacked into, even when an earlier
 	// turn had left its tools on the desktop.
-	return a.finishLatexDocument(projectPath, root, result, true)
+	return a.finishLatexDocument(projectPath, root, result, true, true)
 }
 
 // finishLatexDocument records where the files landed and, when pin is set,
-// makes that directory the LaTeX expert's working directory.
-func (a *App) finishLatexDocument(projectPath, root string, result CreateLatexDocumentResult, pin bool) (string, error) {
+// makes that directory the LaTeX expert's working directory. record is false
+// when the path is only a scan across several samples.
+func (a *App) finishLatexDocument(projectPath, root string, result CreateLatexDocumentResult, pin, record bool) (string, error) {
 	result.WorkspacePath = root
+	if record {
+		a.persistTaskLatexEntry(projectPath, result.RelativePath)
+	}
 	if pin {
 		a.pinLatexExpertWorkspace(projectPath, root)
 	}
@@ -1793,7 +1799,7 @@ func removeUntouchedBlankBesideTemplate(root, entry string) {
 	if !latexTemplateReplaceableBlank(path, info.Size()) {
 		return
 	}
-	if err := os.Remove(path); err != nil {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		log.Printf("[latex_template] remove blank skeleton: %v", err)
 	}
 }
@@ -1812,6 +1818,275 @@ func latexTemplateEntryPresent(root, rel string) bool {
 		return false
 	}
 	return !latexTemplateReplaceableBlank(path, info.Size())
+}
+
+// latexEntryTagPrefix stores the workspace-relative paper entry on the task
+// record. Reopening the expert reads this instead of assuming the paper is
+// named main.tex at the workspace root.
+const latexEntryTagPrefix = "latex_entry:"
+
+func normalizeLatexEntryRelative(rel string) string {
+	rel = strings.TrimSpace(strings.ReplaceAll(rel, "\\", "/"))
+	rel = strings.TrimPrefix(rel, "./")
+	rel = strings.Trim(rel, "/")
+	if rel == "" || filepath.IsAbs(rel) || strings.Contains(rel, ":") {
+		return ""
+	}
+	for _, part := range strings.Split(rel, "/") {
+		if part == "" || part == "." || part == ".." {
+			return ""
+		}
+	}
+	switch strings.ToLower(filepath.Ext(rel)) {
+	case ".tex", ".ltx", ".latex":
+		return rel
+	default:
+		return ""
+	}
+}
+
+func latexEntryFromTags(tags []string) string {
+	for _, tag := range tags {
+		if value := strings.TrimSpace(strings.TrimPrefix(tag, latexEntryTagPrefix)); value != tag {
+			return normalizeLatexEntryRelative(value)
+		}
+	}
+	return ""
+}
+
+func (a *App) taskLatexEntry(projectPath string) string {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if a == nil || projectPath == "" {
+		return ""
+	}
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return ""
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return ""
+	}
+	rec := pi.Get(projectPath)
+	if rec == nil {
+		return ""
+	}
+	return latexEntryFromTags(rec.Tags)
+}
+
+func (a *App) persistTaskLatexEntry(projectPath, rel string) {
+	rel = normalizeLatexEntryRelative(rel)
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if a == nil || rel == "" || projectPath == "" || !a.isManagedRecentTaskWorkspacePath(projectPath) {
+		return
+	}
+	if a.taskLatexEntry(projectPath) == rel {
+		return
+	}
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil || pi.Get(projectPath) == nil {
+		return
+	}
+	pi.ReplacePrefixedTags(projectPath, []string{latexEntryTagPrefix}, []string{latexEntryTagPrefix + rel})
+	a.emitProjectIndexChanged(projectPath)
+	if err := a.memoryStore.Flush(); err != nil {
+		log.Printf("[latex_template] persist entry project=%q entry=%q err=%v", projectPath, rel, err)
+	}
+}
+
+func latexWorkspaceTexFiles(root string) []string {
+	var found []string
+	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info == nil {
+			return nil
+		}
+		if info.IsDir() {
+			if path != root && strings.HasPrefix(info.Name(), ".") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil || rel == "." {
+			return nil
+		}
+		rel = normalizeLatexEntryRelative(filepath.ToSlash(rel))
+		if rel == "" {
+			return nil
+		}
+		found = append(found, rel)
+		return nil
+	})
+	sort.Strings(found)
+	return found
+}
+
+func latexEntryFile(root, rel string) (string, os.FileInfo, bool) {
+	rel = normalizeLatexEntryRelative(rel)
+	if rel == "" {
+		return "", nil, false
+	}
+	path := filepath.Join(root, filepath.FromSlash(rel))
+	info, err := os.Stat(path)
+	if err != nil || info == nil || !info.Mode().IsRegular() {
+		return "", nil, false
+	}
+	return path, info, true
+}
+
+// latexInstalledMainChoice is the workspace file one pack main names.
+// The declared path is durable. So is the single wrapper name the importer
+// already treats as that file. Deeper copies do not hide either one. A lone
+// deeper copy is only an editor hint: recording it would keep that copy after
+// the declared file appears. Several deeper copies are not a hint. The bool
+// is false for that hint.
+func latexInstalledMainChoice(texFiles []string, present map[string]struct{}, main string) (string, bool) {
+	if _, ok := present[main]; ok {
+		return main, true
+	}
+	wrapped := ""
+	suffix := ""
+	suffixes := 0
+	for _, candidate := range texFiles {
+		candidate = filepath.ToSlash(candidate)
+		if latexTemplateWrappedMain(candidate, main) {
+			if wrapped == "" {
+				wrapped = candidate
+			}
+			continue
+		}
+		if !latexTemplateMainMatches(candidate, main) {
+			continue
+		}
+		suffixes++
+		if suffixes == 1 {
+			suffix = candidate
+			continue
+		}
+		suffix = ""
+	}
+	if wrapped != "" {
+		return wrapped, true
+	}
+	if suffixes == 1 {
+		return suffix, false
+	}
+	return "", false
+}
+
+// installedLatexEntryMatches returns the one installed template entry to open.
+// The bool says that choice is the declared file or its wrapper name and may
+// be stored. A deeper copy is returned so the editor does not fall through to
+// an alphabetical sample, and the caller must not store it. Several different
+// files are not a choice.
+func (a *App) installedLatexEntryMatches(texFiles []string) (string, bool) {
+	if a == nil || len(texFiles) == 0 {
+		return "", false
+	}
+	present := make(map[string]struct{}, len(texFiles))
+	for _, rel := range texFiles {
+		present[filepath.ToSlash(rel)] = struct{}{}
+	}
+	latexTemplateMu.Lock()
+	index := a.readLatexTemplateIndex()
+	latexTemplateMu.Unlock()
+	durablePath := make(map[string]bool)
+	var order []string
+	for _, item := range index.Templates {
+		if item.ID == "" || item.ID == latexTemplateSourceBlank {
+			continue
+		}
+		main := normalizeLatexEntryRelative(item.MainFile)
+		if main == "" {
+			continue
+		}
+		chosen, durable := latexInstalledMainChoice(texFiles, present, main)
+		if chosen == "" {
+			continue
+		}
+		if _, seen := durablePath[chosen]; !seen {
+			order = append(order, chosen)
+		}
+		if durable {
+			durablePath[chosen] = true
+		} else if _, seen := durablePath[chosen]; !seen {
+			durablePath[chosen] = false
+		}
+	}
+	var durable, weak []string
+	for _, path := range order {
+		if durablePath[path] {
+			durable = append(durable, path)
+			continue
+		}
+		weak = append(weak, path)
+	}
+	if len(durable) == 1 {
+		return durable[0], true
+	}
+	if len(durable) == 0 && len(weak) == 1 {
+		return weak[0], false
+	}
+	return "", false
+}
+
+// resolveLatexWorkspaceEntry is the paper this workspace is editing. The bool
+// says the choice is durable: a recorded file, the only source, or the one
+// installed pack main. A scan across several \documentclass files is only an
+// editor fallback and must not be written onto the task. The untouched root
+// skeleton is not a paper when any other source exists. This function never
+// writes a file.
+func (a *App) resolveLatexWorkspaceEntry(projectPath, root string) (string, bool) {
+	// The steady state is a recorded paper. One stat answers it; the rest of
+	// the tree does not get a say, and does not need to be walked.
+	recorded := a.taskLatexEntry(projectPath)
+	if path, info, ok := latexEntryFile(root, recorded); ok && !latexTemplateReplaceableBlank(path, info.Size()) {
+		return recorded, true
+	}
+	texFiles := latexWorkspaceTexFiles(root)
+	real := make([]string, 0, len(texFiles))
+	skeleton := ""
+	for _, rel := range texFiles {
+		if rel != "main.tex" {
+			real = append(real, rel)
+			continue
+		}
+		path, info, ok := latexEntryFile(root, rel)
+		if ok && latexTemplateReplaceableBlank(path, info.Size()) {
+			skeleton = rel
+			continue
+		}
+		real = append(real, rel)
+	}
+	if recorded != "" && len(real) == 0 {
+		if _, _, ok := latexEntryFile(root, recorded); ok {
+			return recorded, true
+		}
+	}
+	if len(real) == 0 {
+		return skeleton, skeleton != ""
+	}
+	if match, durable := a.installedLatexEntryMatches(real); match != "" {
+		// match is already the file to open. Resolving it again treats that
+		// path as a preferred name, and a different file that only ends with
+		// it would replace the pack file. A deeper copy is not stored unless
+		// it is the only source in the workspace.
+		if !durable && len(real) == 1 {
+			durable = true
+		}
+		return match, durable
+	}
+	if len(real) == 1 {
+		return real[0], true
+	}
+	return latexTemplateResolveMain(root, real, ""), false
 }
 
 // latexTemplateExistingDocument finds a LaTeX entry point already present in a

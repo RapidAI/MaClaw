@@ -72,7 +72,7 @@ var semanticToolsSearchInventory = []semanticToolsSearchEntry{
 	{"current_datetime", "Read the current date and time.", "information.current_time"},
 	{"git_status", "Inspect repository status and diffs.", "coding.repository.inspect"},
 	{"git_commit", "Commit and push repository changes.", "coding.repository.mutate"},
-	{"build_verify", "Run a reviewed build, test, or lint task.", "coding.build.verify"},
+	{"build_verify", "Run a reviewed build, test, or lint task. A LaTeX directory is compiled by the host TeX engine.", "coding.build.verify"},
 	{"browser", "Drive a web browser session.", "computer.browser"},
 	{"computer_use", "Observe or drive the local desktop.", "computer.desktop"},
 	{"ssh", "Run a command on a remote host over SSH.", "remote.ssh"},

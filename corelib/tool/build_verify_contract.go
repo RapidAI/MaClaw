@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -66,9 +67,12 @@ func BuildVerifyCommand(kind, task string) ([]string, bool) {
 }
 
 // BuildVerifyProjectKinds lists the recognised kinds. It exists so tests can
-// enumerate the table without reaching into it.
+// enumerate the table without reaching into it. latex is recognised here but
+// has no static argv row: the host compiles the directory's documents with
+// the reviewed TeX engine, because a fixed command cannot name those files
+// without handing the model a command line.
 func BuildVerifyProjectKinds() []string {
-	return []string{"go", "rust", "node", "python"}
+	return []string{"go", "rust", "node", "python", "latex"}
 }
 
 var buildVerifyMarkers = []struct {
@@ -104,6 +108,12 @@ func BuildVerifyProjectKind(workspace, runDir string) (string, bool) {
 				return marker.kind, true
 			}
 		}
+		// A LaTeX tree has no manifest equivalent to go.mod. The documents in
+		// this directory are the marker. A code manifest in the same directory
+		// wins, so a module that happens to contain a .tex file stays a module.
+		if latexDirectory(dir) {
+			return "latex", true
+		}
 		if dir == base {
 			return "", false
 		}
@@ -113,6 +123,62 @@ func BuildVerifyProjectKind(workspace, runDir string) (string, bool) {
 		}
 		dir = parent
 	}
+}
+
+// latexReadLimit bounds how much of a .tex file kind detection reads.
+// \documentclass is at the top of a main file; reading a multi-megabyte
+// generated file here would only delay the refusal.
+const latexReadLimit = 1 << 20
+
+func latexDirectory(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		switch strings.ToLower(filepath.Ext(name)) {
+		case ".tex", ".ltx", ".latex":
+		default:
+			continue
+		}
+		path := filepath.Join(dir, name)
+		info, err := os.Lstat(path)
+		if err != nil || info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			continue
+		}
+		body, err := readLatexPrefix(path, info.Size())
+		if err != nil {
+			continue
+		}
+		if LatexDocument(body) {
+			return true
+		}
+	}
+	return false
+}
+
+func readLatexPrefix(path string, size int64) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	limit := size
+	if limit > latexReadLimit {
+		limit = latexReadLimit
+	}
+	if limit < 0 {
+		limit = 0
+	}
+	buf, err := io.ReadAll(io.LimitReader(file, limit))
+	if err != nil {
+		return "", err
+	}
+	return string(buf), nil
 }
 
 // BuildVerifyMaxOutput bounds what either host hands back. Compiler and test

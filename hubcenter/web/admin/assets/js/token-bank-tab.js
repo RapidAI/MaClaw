@@ -897,8 +897,9 @@
         '<div class="item-meta">' + esc(t('tbkColAmount')) + ': ' + esc(creditsFixed(amountMicro, 6)) +
         ' · ' + esc(t('tbkColCreated')) + ': ' + esc(fmtTime(l.created_at || l.CreatedAt)) + '</div>' +
         '<div class="inline-actions">' +
-        // A claimed or already-revoked link cannot be frozen; hiding the button
-        // is how the server's `revocable` flag is honoured rather than guessed.
+        // Settled, expired, and already-revoked links are not revocable. A
+        // claimed link still is, because the credits have not moved. Hiding
+        // the button is how the server's `revocable` flag is honoured.
         (l.revocable ? '<button class="btn-ghost" type="button" onclick="revokeTokenBankCreditShare(' + jsArg(id) + ')">' + esc(t('tbkRevoke')) + '</button>' : '') +
         '</div></div>';
     });

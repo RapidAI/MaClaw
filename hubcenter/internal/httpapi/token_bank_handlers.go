@@ -830,10 +830,20 @@ func giftPreviewPayload(link *sqlite.TokenBankGiftLink, now time.Time, user *ski
 // writeOwnGiftClaimResume answers a repeat claim from the account that already
 // holds the link. It returns true when it has written the response. A settled
 // link is not resumed: settling again is a no-op, and a new withdrawal would
-// debit the rest of that account's balance.
+// debit the rest of that account's balance. A revoked link is answered for
+// every caller, because "already claimed" would send them back to withdraw.
 func (h *SkillMarketHandlers) writeOwnGiftClaimResume(w http.ResponseWriter, r *http.Request, repo tokenBankRepoView, code, userID string) bool {
 	current, err := repo.GiftLinkByCode(r.Context(), code)
-	if err != nil || current.ClaimedByUser != userID {
+	if err != nil {
+		return false
+	}
+	// Revoke is allowed after a claim. A retry must not say "already claimed":
+	// that is the resume path, and it would offer a withdraw that cannot succeed.
+	if current.Status == sqlite.TokenBankGiftStatusRevoked {
+		tbError(w, http.StatusConflict, "gift_revoked", "the sender revoked this gift")
+		return true
+	}
+	if current.ClaimedByUser != userID {
 		return false
 	}
 	switch current.Status {

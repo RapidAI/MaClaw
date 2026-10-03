@@ -1607,12 +1607,25 @@ func (s *Service) startHeartbeatLoop() {
 	s.heartbeatCancel = cancel
 
 	go func() {
+		// One pass is a heartbeat plus the token-bank confirm. A pull failure
+		// must not stop later heartbeats. Sharing this helper keeps the
+		// startup pass and the ticker from drifting apart.
+		runPass := func() {
+			_ = s.sendHeartbeat(ctx)
+			// Confirm an automatic grant that is already local, and top up
+			// only when this hub has nothing left to spend. Waiting for the
+			// first tick would leave that confirm outstanding for a full interval.
+			if err := s.RunTokenBankAutoOnce(ctx); err != nil {
+				log.Printf("[center] token bank auto withdraw: %v", err)
+			}
+		}
+
 		// Send an immediate heartbeat on startup so that
 		// digital_employee_authorization is available as soon as possible,
 		// rather than waiting for the first ticker interval (30s).
-		_ = s.sendHeartbeat(ctx)
+		runPass()
 
-		// Start the ticker after the immediate heartbeat completes, so the
+		// Start the ticker after the immediate pass completes, so the
 		// first tick is a full interval after the initial sync attempt.
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
@@ -1628,13 +1641,9 @@ func (s *Service) startHeartbeatLoop() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				_ = s.sendHeartbeat(ctx)
 				// Automatic Token Bank pulls share this loop so a hub that is
-				// already registered does not grow a second scheduler. A pull
-				// failure must not stop heartbeats.
-				if err := s.RunTokenBankAutoOnce(ctx); err != nil {
-					log.Printf("[center] token bank auto withdraw: %v", err)
-				}
+				// already registered does not grow a second scheduler.
+				runPass()
 			}
 		}
 	}()

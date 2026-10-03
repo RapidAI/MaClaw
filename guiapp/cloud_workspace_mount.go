@@ -1130,6 +1130,12 @@ func (a *App) scheduleCloudWorkspacePush(mount *cloudWorkspaceHeldMount) {
 			}
 		} else {
 			a.emitEvent(cloudWorkspaceSyncProgressEvent, map[string]any{"workspace_id": id, "phase": "done", "status": "completed", "cancelable": false})
+			// The push publishes a new browse index. The event at the start of
+			// this callback still sees the previous index, so refresh again now.
+			a.emitEvent(cloudWorkspaceFilesChangedEvent, map[string]string{
+				"workspace_id": id,
+				"path":         root,
+			})
 			mount.mu.Lock()
 			mount.reconcileRequired = false
 			mount.mu.Unlock()
@@ -1666,8 +1672,10 @@ func (a *App) lookupOnDiskCloudWorkspaceCache(workspaceID string) string {
 	return ""
 }
 
-// SyncCloudWorkspaceFiles mounts the cache if needed and pulls the remote
-// manifest. Event replay is intentionally disabled for v1-sequential.
+// SyncCloudWorkspaceFiles records the remote manifest as a directory listing.
+// Browsing a workspace is not a replica: objects are fetched when a file is
+// opened. A full Pull remains the job of PrepareCloudWorkspace, which must
+// finish before the cache can be pushed.
 func (a *App) SyncCloudWorkspaceFiles(workspaceID string) (PreparedCloudWorkspace, error) {
 	workspaceID = strings.TrimSpace(workspaceID)
 	if !validCloudWorkspaceCacheID(workspaceID) {
@@ -1677,34 +1685,56 @@ func (a *App) SyncCloudWorkspaceFiles(workspaceID string) (PreparedCloudWorkspac
 	if mount := lookupHeldCloudWorkspace(workspaceID); mount != nil {
 		mount.mu.Lock()
 		prepared.LocalPath = mount.LocalPath
-		readOnly := mount.ReadOnly
 		mount.mu.Unlock()
-		// A writer already has the current lease and is the source of truth for
-		// this process. A manual browse sync may still hydrate an empty cache,
-		// but must never overwrite dirty writer files.
-		if !readOnly {
-			empty, emptyErr := cloudWorkspaceUserTreeEmpty(prepared.LocalPath)
-			if emptyErr != nil || !empty {
-				a.emitEvent(cloudWorkspaceFilesChangedEvent, map[string]string{
-					"workspace_id": workspaceID,
-					"path":         prepared.LocalPath,
-				})
-				return prepared, emptyErr
-			}
-		}
 	} else {
-		got, err := a.PrepareCloudWorkspaceReadOnly(workspaceID)
-		if err != nil {
-			return got, err
+		unlock := lockCloudWorkspacePrepare(workspaceID)
+		if mount := lookupHeldCloudWorkspace(workspaceID); mount != nil {
+			mount.mu.Lock()
+			prepared.LocalPath = mount.LocalPath
+			mount.mu.Unlock()
+			unlock()
+		} else {
+			tenantID := a.cloudWorkspaceTenantID()
+			localPath := normalizeProjectSessionPath(a.cloudWorkspaceReadOnlyCachePath(tenantID, workspaceID))
+			if err := ensureCloudWorkspaceCacheDirectory(filepath.Join(a.GetDataDir(), "cloud-workspaces-readonly"), localPath); err != nil {
+				unlock()
+				return PreparedCloudWorkspace{}, err
+			}
+			storeCloudWorkspaceMount(&cloudWorkspaceHeldMount{
+				WorkspaceID:      workspaceID,
+				LocalPath:        localPath,
+				TenantID:         tenantID,
+				ReadOnly:         true,
+				isolatedReadOnly: true,
+			})
+			prepared.LocalPath = localPath
+			unlock()
 		}
-		prepared = got
 	}
 	if strings.TrimSpace(prepared.LocalPath) == "" {
 		return prepared, fmt.Errorf("cloud workspace cache path is empty")
 	}
-	if syncErr := a.syncHeldCloudWorkspaceFiles(workspaceID, prepared.LocalPath); syncErr != nil {
-		log.Printf("[cloud_workspace] browse sync failed id=%s err=%v", workspaceID, syncErr)
-		return prepared, syncErr
+	ctx, cancel := a.cloudWorkspaceSyncContext()
+	defer cancel()
+	wrote := false
+	for attempt := 0; attempt < 2 && !wrote; attempt++ {
+		seen := cloudWorkspaceListingPublishGen(prepared.LocalPath)
+		remote, err := a.cloudWorkspaceProtocol(workspaceID).Transport.GetManifest(ctx)
+		if err != nil {
+			log.Printf("[cloud_workspace] browse sync failed id=%s err=%v", workspaceID, err)
+			return prepared, err
+		}
+		if remote == nil {
+			remote = &cloudWorkspaceManifest{Entries: []cloudWorkspaceManifestEntry{}}
+		}
+		if len(remote.Entries) > cloudWorkspaceMaxManifestEntries {
+			return prepared, fmt.Errorf("cloud workspace file count exceeds %d", cloudWorkspaceMaxManifestEntries)
+		}
+		var writeErr error
+		wrote, writeErr = writeCloudWorkspaceListingIfCurrent(prepared.LocalPath, seen, remote)
+		if writeErr != nil {
+			return prepared, writeErr
+		}
 	}
 	a.emitEvent(cloudWorkspaceFilesChangedEvent, map[string]string{
 		"workspace_id": workspaceID,
@@ -2017,26 +2047,43 @@ func (a *App) prepareCloudWorkspace(workspaceID string, force bool) (PreparedClo
 		}
 		syncKind = kind
 		log.Printf("[cloud_workspace] prepare sync workspace=%s acquired=%s kind=%s", workspaceID, acquired, syncKind)
+		// The listing is a browse index, not the push baseline. Publish it
+		// before the blob pull so a file dialog can walk the tree while this
+		// prepare still owns the replica lock. An index write must not abort
+		// the replica; the pull publishes the same manifest again when it commits.
+		if remote == nil {
+			remote = &cloudWorkspaceManifest{}
+		}
+		publishCloudWorkspaceListing(localPath, remote)
 	}
 
 	syncCtx, syncCancel := a.cloudWorkspaceSyncContext()
 	defer syncCancel()
-	if syncKind == cloudWorkspaceSyncPush {
-		if man, err := proto.Push(syncCtx, localPath); err != nil {
-			return failPrepare(err)
-		} else if man != nil {
-			mount.mu.Lock()
-			mount.LastCommittedRevision = man.Revision
-			mount.mu.Unlock()
+	// One replica at a time. Browse materialize waits instead of writing the
+	// same cache beside this pull. The lock is released before failPrepare and
+	// before the watcher starts, so neither has to take syncMu on this goroutine.
+	syncErr := func() error {
+		mount.syncMu.Lock()
+		defer mount.syncMu.Unlock()
+		if syncKind == cloudWorkspaceSyncPush {
+			man, err := proto.Push(syncCtx, localPath)
+			if err != nil {
+				return err
+			}
+			if man != nil {
+				mount.mu.Lock()
+				mount.LastCommittedRevision = man.Revision
+				mount.mu.Unlock()
+				// Push already published this manifest. A second failure must
+				// not discard a replica that has been committed.
+				publishCloudWorkspaceListing(localPath, man)
+			}
+			return a.flushCloudWorkspaceSidecars(syncCtx, workspaceID)
 		}
-		if err := a.flushCloudWorkspaceSidecars(syncCtx, workspaceID); err != nil {
-			return failPrepare(err)
-		}
-	} else {
 		pulled, err := proto.Pull(syncCtx, localPath)
 		if err != nil {
 			a.recordCloudWorkspaceAudit(cloudWorkspaceAuditEvent{WorkspaceID: workspaceID, Operation: "download", Outcome: "failed", Detail: err.Error()})
-			return failPrepare(err)
+			return err
 		}
 		rev := ""
 		if pulled != nil {
@@ -2044,14 +2091,19 @@ func (a *App) prepareCloudWorkspace(workspaceID string, force bool) (PreparedClo
 			mount.mu.Lock()
 			mount.LastCommittedRevision = rev
 			mount.mu.Unlock()
-		}
-		if pulled != nil {
 			a.recordCloudWorkspaceAudit(cloudWorkspaceAuditEvent{WorkspaceID: workspaceID, Operation: "download", Revision: pulled.Revision, Files: len(pulled.Entries), Bytes: totalEntryBytes(pulled.Entries)})
+			// Pull already published this manifest. Repeating the write covers
+			// a logged failure inside the pull without failing the replica.
+			publishCloudWorkspaceListing(localPath, pulled)
 		}
 		if err := writeCloudWorkspaceLocalState(localPath, rev); err != nil {
-			return failPrepare(err)
+			return err
 		}
 		a.fetchCloudWorkspaceSidecars(syncCtx, workspaceID)
+		return nil
+	}()
+	if syncErr != nil {
+		return failPrepare(syncErr)
 	}
 
 	a.startCloudWorkspaceWatcher(mount)

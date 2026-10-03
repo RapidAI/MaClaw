@@ -1,20 +1,18 @@
 package guiapp
 
 import (
-	"bytes"
 	"context"
+	"errors"
 	"fmt"
-	"os/exec"
 	"strings"
-	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/buildverify"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 const (
 	semanticTrustedBuildVerifyAdapter        = "semantic_run_trusted_build_verify"
 	semanticTrustedBuildVerifyImplementation = "trusted-build-verify-v1"
-	semanticTrustedBuildVerifyTimeout        = 10 * time.Minute
 )
 
 func semanticTrustedBuildVerifyDefinition() map[string]interface{} {
@@ -22,7 +20,7 @@ func semanticTrustedBuildVerifyDefinition() map[string]interface{} {
 		"type": "function",
 		"function": map[string]interface{}{
 			"name":        semanticTrustedBuildVerifyAdapter,
-			"description": "Run one reviewed verification task in the bound workspace. The host picks the command for the detected project type; optionally give target to run it in a workspace subdirectory.",
+			"description": "Run one reviewed verification task in the bound workspace. The host picks the program. build in a LaTeX directory compiles each document there, standalone figures before the file that includes them. Optionally give target as the workspace subdirectory that contains the .tex files.",
 			"parameters":  semanticTrustedBuildVerifyInvocationSchema(),
 		},
 	}
@@ -112,38 +110,28 @@ func (h *IMMessageHandler) runTrustedBuildVerify(principalID, task, target strin
 	if err != nil {
 		return "", err
 	}
-	kind, ok := tool.BuildVerifyProjectKind(workspace, runDir)
-	if !ok {
-		return "", fmt.Errorf("trusted_build_verify_project_unrecognised")
-	}
-	argv, ok := tool.BuildVerifyCommand(kind, task)
-	if !ok {
-		return "", fmt.Errorf("trusted_build_verify_task_unsupported")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), semanticTrustedBuildVerifyTimeout)
-	defer cancel()
-	// Executed directly, never through a shell. There is no command string for
-	// anything to be injected into, so the argv table above is the complete
-	// set of programs this capability can start.
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	cmd.Dir = runDir
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	runErr := cmd.Run()
-	if ctx.Err() == context.DeadlineExceeded {
-		return "", fmt.Errorf("trusted_build_verify_timeout")
-	}
-	out := tool.BuildVerifyProjection(stdout.String(), stderr.String())
-	// A failing build or test is a real answer to the question that was asked,
-	// not a tool malfunction. Reporting it as an adapter error would hide the
-	// diagnostics that are the entire point of running the task.
-	if runErr != nil {
-		return strings.TrimSpace(out + "\n" + runErr.Error()), nil
-	}
-	if strings.TrimSpace(out) == "" {
-		return task + " passed", nil
+	out, err := buildverify.Run(context.Background(), workspace, runDir, task)
+	if err != nil {
+		switch {
+		case errors.Is(err, buildverify.ErrUnrecognised):
+			return "", fmt.Errorf("trusted_build_verify_project_unrecognised")
+		case errors.Is(err, buildverify.ErrUnsupported):
+			return "", fmt.Errorf("trusted_build_verify_task_unsupported")
+		case errors.Is(err, buildverify.ErrTimeout):
+			return "", buildVerifyTimeoutError("trusted_build_verify_timeout", out)
+		default:
+			return "", err
+		}
 	}
 	return out, nil
+}
+
+func buildVerifyTimeoutError(prefix, detail string) error {
+	detail = strings.TrimSpace(detail)
+	if detail == "" {
+		return errors.New(prefix)
+	}
+	return errors.New(prefix + "\n" + detail)
 }
 
 func semanticTrustedBuildVerifyResultProjection(text string) (string, error) {

@@ -959,9 +959,10 @@ func TestTokenBankAdminCreditSharesAuditMasksBothSides(t *testing.T) {
 	if credits, _ := row["credits_micro"].(float64); credits != 30_000_000 {
 		t.Fatalf("credits_micro = %v, want 30000000", row["credits_micro"])
 	}
-	// A claimed link is not revocable: the receiver owns it now.
-	if rev, _ := row["revocable"].(bool); rev {
-		t.Fatalf("revocable = true for a claimed link, want false")
+	// Claimed and not withdrawn is still revocable: the credits are frozen
+	// on the sender until the receiver withdraws them.
+	if rev, _ := row["revocable"].(bool); !rev {
+		t.Fatalf("revocable = false for a claimed link, want true")
 	}
 }
 

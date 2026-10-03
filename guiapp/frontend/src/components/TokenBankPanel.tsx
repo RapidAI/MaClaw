@@ -186,7 +186,31 @@ const WITHDRAW_STATE_DETAIL_UNNAMED: Record<string, [string, string, string]> = 
     ],
 };
 
-function withdrawStateDetail(state: string, hasMachine: boolean): [string, string, string] | undefined {
+// A self debit with no grant id is an unconfirmed ack. The bank has moved the
+// credits; an empty grant id does not mean this machine never wrote them.
+const SELF_ISSUED_STATE_LABEL: [string, string, string] = ['Unconfirmed', '未确认', '未確認'];
+
+const SELF_ISSUED_DETAIL: [string, string, string] = [
+    'The bank already deducted this amount. That machine has not confirmed the grant id back.',
+    '银行已扣出这笔积分，该机器尚未把发放单号确认回去。',
+    '銀行已扣出這筆積分，該機器尚未把發放單號確認回去。',
+];
+
+const SELF_ISSUED_DETAIL_UNNAMED: [string, string, string] = [
+    'The bank already deducted this amount. The grant id has not been confirmed back.',
+    '银行已扣出这笔积分，发放单号尚未确认回去。',
+    '銀行已扣出這筆積分，發放單號尚未確認回去。',
+];
+
+function withdrawStateLabel(kind: string, state: string, fallback: string): [string, string, string] {
+    if (kind !== 'gift' && state === 'issued') return SELF_ISSUED_STATE_LABEL;
+    return WITHDRAW_STATE_LABEL[state] || [fallback, fallback, fallback];
+}
+
+function withdrawStateDetail(kind: string, state: string, hasMachine: boolean): [string, string, string] | undefined {
+    if (kind !== 'gift' && state === 'issued') {
+        return hasMachine ? SELF_ISSUED_DETAIL : SELF_ISSUED_DETAIL_UNNAMED;
+    }
     return (hasMachine ? WITHDRAW_STATE_DETAIL : WITHDRAW_STATE_DETAIL_UNNAMED)[state];
 }
 
@@ -208,6 +232,35 @@ const GIFT_STATUS_LABEL: Record<string, [string, string, string]> = {
 
 function giftRecipient(link: TokenBankGiftLink): string {
     return link.claimed_by_email.trim() || link.claimed_by_user_id.trim();
+}
+
+function giftSenderCanRevoke(status: string): boolean {
+    // Claim binds a person and leaves the credits frozen. They move only when
+    // that person withdraws, so the sender can still take a claimed gift back.
+    return status === 'active' || status === 'claimed';
+}
+
+function giftErrorText(err: unknown): string {
+    return err instanceof Error ? err.message : String(err);
+}
+
+function giftErrorIsRevoked(err: unknown): boolean {
+    return /gift_revoked|sender revoked this gift/i.test(giftErrorText(err));
+}
+
+function giftActionError(
+    t: (en: string, zhHans: string, zhHant?: string) => string,
+    err: unknown,
+    kind: 'revoke' | 'withdraw' | 'claim',
+): string {
+    const raw = giftErrorText(err);
+    if (giftErrorIsRevoked(err)) {
+        return t('The sender revoked this gift.', '发送方已撤销这份转赠。', '發送方已撤銷這份轉贈。');
+    }
+    if (kind === 'revoke' && /"not_active"|no longer active/i.test(raw)) {
+        return t('This gift can no longer be revoked.', '这笔转赠已经不能撤销。', '這筆轉贈已經不能撤銷。');
+    }
+    return raw;
 }
 
 function giftPillClass(status: string, claimClosed = false): string {
@@ -815,14 +868,24 @@ export const TokenBankPanel = ({ lang, showToastMessage, initialClaimCode, initi
     }, [busyKey, giftAmount, notify, refresh, showAlert, summary, t]);
 
     const revokeGift = useCallback(async (link: TokenBankGiftLink) => {
-        if (busyKey || link.status !== 'active') return;
+        if (busyKey || !giftSenderCanRevoke(link.status)) return;
+        const amount = formatCreditsGrouped(link.credits_micro, 2);
+        const claimed = link.status === 'claimed';
         const ok = await showConfirm(
-            t(
-                `${formatCreditsGrouped(link.credits_micro, 2)} credits will be unfrozen. The link will stop working.`,
-                `将解冻 ${formatCreditsGrouped(link.credits_micro, 2)} 积分。该链接将失效。`,
-                `將解凍 ${formatCreditsGrouped(link.credits_micro, 2)} 積分。該連結將失效。`,
-            ),
-            t('Revoke this link?', '撤销这条链接？', '撤銷這條連結？'),
+            claimed
+                ? t(
+                    `${amount} credits have not been withdrawn. Revoking unfreezes them, and the recipient can no longer withdraw them.`,
+                    `对方尚未提取。撤销后将解冻 ${amount} 积分，对方不能再提取。`,
+                    `對方尚未提取。撤銷後將解凍 ${amount} 積分，對方不能再提取。`,
+                )
+                : t(
+                    `${amount} credits will be unfrozen. The link will stop working.`,
+                    `将解冻 ${amount} 积分。该链接将失效。`,
+                    `將解凍 ${amount} 積分。該連結將失效。`,
+                ),
+            claimed
+                ? t('Revoke this gift?', '撤销这笔转赠？', '撤銷這筆轉贈？')
+                : t('Revoke this link?', '撤销这条链接？', '撤銷這條連結？'),
             {
                 confirmText: t('Revoke', '撤销', '撤銷'),
                 cancelText: t('Cancel', '取消', '取消'),
@@ -834,10 +897,19 @@ export const TokenBankPanel = ({ lang, showToastMessage, initialClaimCode, initi
         try {
             await TokenBankRevokeGiftLink(link.id);
             if (createdGift?.id === link.id) setCreatedGift(null);
-            notify(t('Link revoked.', '链接已撤销。', '連結已撤銷。'));
+            notify(claimed
+                ? t('Gift revoked. The credits are unfrozen.', '转赠已撤销，积分已解冻。', '轉贈已撤銷，積分已解凍。')
+                : t('Link revoked.', '链接已撤销。', '連結已撤銷。'));
             await refresh();
         } catch (err) {
-            notify(err instanceof Error ? err.message : String(err));
+            notify(giftActionError(t, err, 'revoke'));
+            // The other side may have withdrawn while this dialog was open.
+            // Leave the card on the status the server has now.
+            try {
+                await refresh();
+            } catch {
+                // The revoke error is already on screen.
+            }
         } finally {
             setBusyKey('');
         }
@@ -1008,12 +1080,15 @@ export const TokenBankPanel = ({ lang, showToastMessage, initialClaimCode, initi
                 resumed ? t('Already claimed', '已经领取', '已經領取') : t('Claimed', '领取成功', '領取成功'),
             );
         } catch (err) {
-            const text = err instanceof Error ? err.message : String(err);
+            const text = giftActionError(t, err, 'claim');
             if (ownsLine()) {
                 setGiftNotice({ tone: 'err', text });
             } else if (lookupGen.current === gen) {
                 setGiftNotice(null);
             }
+            // A sender can revoke between preview and this call. Reload so a
+            // held card from the earlier lookup does not keep offering it.
+            if (giftErrorIsRevoked(err)) await refresh();
             await showAlert(text, t('Claim failed', '领取失败', '領取失敗'));
         } finally {
             setBusyKey((current) => (current === 'gift-claim' ? '' : current));
@@ -1056,7 +1131,14 @@ export const TokenBankPanel = ({ lang, showToastMessage, initialClaimCode, initi
             await refresh();
             await showAlert(text, t('Withdrawn', '提取成功', '提取成功'));
         } catch (err) {
-            const text = err instanceof Error ? err.message : String(err);
+            const text = giftActionError(t, err, 'withdraw');
+            if (giftErrorIsRevoked(err) && link?.id) {
+                const dropped = link.id;
+                setHeldGifts((current) => current.filter((item) => item.id !== dropped));
+                setClaimedGift((current) => (current?.id === dropped ? null : current));
+                setGiftPreview((current) => (current?.id === dropped ? null : current));
+                await refresh();
+            }
             setGiftNotice({ tone: 'err', text });
             await showAlert(text, t('Withdrawal failed', '提取失败', '提取失敗'));
         } finally {
@@ -1284,7 +1366,7 @@ export const TokenBankPanel = ({ lang, showToastMessage, initialClaimCode, initi
                     <ul className="tbk-gift-grid" data-testid="tbk-gift-list">
                         {gifts.map((link) => {
                             const recipient = giftRecipient(link);
-                            const held = link.status === 'claimed' || link.status === 'settled' || (link.status === 'expired' && !!recipient);
+                            const held = link.status === 'claimed' || link.status === 'settled' || ((link.status === 'expired' || link.status === 'revoked') && !!recipient);
                             const returnPassed = link.status === 'claimed' && giftInstantPassed(link.expires_at);
                             // Claim itself checks the timestamp. An active link
                             // past that time can no longer be claimed, even
@@ -1320,7 +1402,13 @@ export const TokenBankPanel = ({ lang, showToastMessage, initialClaimCode, initi
                                                             '对方未提取，积分已退回。',
                                                             '對方未提取，積分已退回。',
                                                         )
-                                                        : returnPassed
+                                                        : link.status === 'revoked'
+                                                            ? t(
+                                                                'You revoked this gift. The credits were returned.',
+                                                                '你已撤销这笔转赠，积分已退回。',
+                                                                '你已撤銷這筆轉贈，積分已退回。',
+                                                            )
+                                                            : returnPassed
                                                             ? t(
                                                                 'The return time has passed and the credits are not back yet. They can still withdraw until the credits are returned.',
                                                                 '已过退回时间，积分尚未退回。积分退回前对方仍可提取。',
@@ -1347,7 +1435,7 @@ export const TokenBankPanel = ({ lang, showToastMessage, initialClaimCode, initi
                                             )}
                                         </div>
                                     ) : null}
-                                    {link.status === 'active' ? (
+                                    {giftSenderCanRevoke(link.status) ? (
                                         <div className="tbk-share__actions">
                                             <button className="btn-link tbk-danger" type="button" onClick={() => void revokeGift(link)} disabled={busyKey === `gift-revoke:${link.id}`}>
                                                 {t('Revoke', '撤销', '撤銷')}
@@ -1670,8 +1758,8 @@ export const TokenBankPanel = ({ lang, showToastMessage, initialClaimCode, initi
                             const kind = (item.kind || '').toLowerCase();
                             const state = (item.state || '').toLowerCase();
                             const kindLabel = WITHDRAW_KIND_LABEL[kind] || [item.kind || '—', item.kind || '—', item.kind || '—'];
-                            const stateLabel = WITHDRAW_STATE_LABEL[state] || [item.state || '—', item.state || '—', item.state || '—'];
-                            const detail = withdrawStateDetail(state, item.hub_id !== '');
+                            const stateLabel = withdrawStateLabel(kind, state, item.state || '—');
+                            const detail = withdrawStateDetail(kind, state, item.hub_id !== '');
                             return (
                                 <li
                                     className="tbk-withdraw"

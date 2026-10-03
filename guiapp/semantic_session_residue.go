@@ -256,7 +256,7 @@ func (h *IMMessageHandler) clearSemanticSessionResidue(key string) {
 		return
 	}
 	h.semanticSessionResidues.Delete(key)
-	h.producedDocuments.Delete(key)
+	h.forgetProducedDocument(key)
 	if h.memory != nil {
 		h.memory.ClearSemanticSessionResidue(key)
 	}

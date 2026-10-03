@@ -297,7 +297,8 @@ func TestGiftRevokeReleasesFreeze(t *testing.T) {
 	if available != 10_000_000 {
 		t.Fatalf("available after double revoke = %d, want 10000000 (must not double-release)", available)
 	}
-	// A claimed link is the claimer's; the sender may not take it back.
+	// Claimed but not withdrawn: the credits are still frozen, so the sender
+	// can take them back. The claimer must not be able to settle afterwards.
 	if _, err := repo.CreateGiftLink(ctx, TokenBankGiftLink{
 		ID: "link-2", Code: "code-2", SenderUserID: "sender", CreditsMicro: 5_000_000,
 	}, GiftLinkPolicy{}, time.Now().UTC()); err != nil {
@@ -306,8 +307,57 @@ func TestGiftRevokeReleasesFreeze(t *testing.T) {
 	if _, err := repo.ClaimGiftLink(ctx, "code-2", "receiver", "r@example.com", time.Now().UTC()); err != nil {
 		t.Fatalf("ClaimGiftLink() error = %v", err)
 	}
+	if err := repo.RevokeGiftLink(ctx, "link-2", "sender", time.Now().UTC()); err != nil {
+		t.Fatalf("RevokeGiftLink(claimed) error = %v", err)
+	}
+	available, _ = repo.AvailableMicro(ctx, "sender")
+	if available != 10_000_000 {
+		t.Fatalf("available after claimed revoke = %d, want 10000000", available)
+	}
+	receiver, err := repo.Balance(ctx, "receiver")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receiver.AvailableMicro() != 0 {
+		t.Fatalf("receiver available = %d, want 0", receiver.AvailableMicro())
+	}
+	if _, err := repo.SettleClaimedGift(ctx, "link-2", time.Now().UTC()); !errors.Is(err, ErrGiftLinkRevoked) {
+		t.Fatalf("SettleClaimedGift(after revoke) error = %v, want ErrGiftLinkRevoked", err)
+	}
 	if err := repo.RevokeGiftLink(ctx, "link-2", "sender", time.Now().UTC()); !errors.Is(err, ErrGiftLinkNotActive) {
-		t.Fatalf("RevokeGiftLink(claimed) error = %v, want ErrGiftLinkNotActive", err)
+		t.Fatalf("RevokeGiftLink(claimed twice) error = %v, want ErrGiftLinkNotActive", err)
+	}
+	available, _ = repo.AvailableMicro(ctx, "sender")
+	if available != 10_000_000 {
+		t.Fatalf("available after second claimed revoke = %d, want 10000000", available)
+	}
+}
+
+func TestGiftRevokeAfterSettleKeepsThePayout(t *testing.T) {
+	repo, _ := newGiftTestRepo(t, "tbk-gift-revoke-settled.db")
+	ctx := context.Background()
+	seedEarnedFor(t, repo, "sender", "req-1", 10_000_000)
+	if _, err := repo.CreateGiftLink(ctx, TokenBankGiftLink{
+		ID: "link-1", Code: "code-1", SenderUserID: "sender", CreditsMicro: 5_000_000,
+	}, GiftLinkPolicy{}, time.Now().UTC()); err != nil {
+		t.Fatalf("CreateGiftLink() error = %v", err)
+	}
+	if _, err := repo.ClaimGiftLink(ctx, "code-1", "receiver", "r@example.com", time.Now().UTC()); err != nil {
+		t.Fatalf("ClaimGiftLink() error = %v", err)
+	}
+	if _, err := repo.SettleClaimedGift(ctx, "link-1", time.Now().UTC()); err != nil {
+		t.Fatalf("SettleClaimedGift() error = %v", err)
+	}
+	if err := repo.RevokeGiftLink(ctx, "link-1", "sender", time.Now().UTC()); !errors.Is(err, ErrGiftLinkNotActive) {
+		t.Fatalf("RevokeGiftLink(settled) error = %v, want ErrGiftLinkNotActive", err)
+	}
+	sender, _ := repo.Balance(ctx, "sender")
+	receiver, _ := repo.Balance(ctx, "receiver")
+	if sender.AvailableMicro() != 5_000_000 {
+		t.Fatalf("sender available = %d, want 5000000", sender.AvailableMicro())
+	}
+	if receiver.AvailableMicro() != 5_000_000 {
+		t.Fatalf("receiver available = %d, want 5000000", receiver.AvailableMicro())
 	}
 }
 

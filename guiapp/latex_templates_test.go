@@ -702,6 +702,546 @@ func TestCreateLatexDocumentKeepsThePackEntryNameWhenNoNameIsRequested(t *testin
 	}
 }
 
+// elsevierNumEntry is the pack main among several \documentclass samples.
+// Alphabetical scan would stop on the Harvard sample; the installed main file
+// is what makes the numeric sample the paper.
+const elsevierNumEntry = "elsarticle/elsarticle-template-num.tex"
+
+func elsevierSampleSources() map[string]string {
+	return map[string]string{
+		"elsarticle/elsarticle-template-harv.tex": "\\documentclass{elsarticle}\n\\begin{document}harv\\end{document}\n",
+		elsevierNumEntry: "\\documentclass{elsarticle}\n\\begin{document}num\\end{document}\n",
+		"elsarticle/elsarticle-template-num-names.tex": "\\documentclass{elsarticle}\n\\begin{document}names\\end{document}\n",
+		"elsarticle/fig-transformer-block.tex":         "\\documentclass[tikz,border=10pt]{standalone}\n\\begin{document}fig\\end{document}\n",
+		"elsarticle/doc/elsdoc.tex":                    "\\documentclass{article}\n\\begin{document}manual\\end{document}\n",
+	}
+}
+
+func importElsevierNumTemplate(t *testing.T, app *App) LatexTemplate {
+	t.Helper()
+	files := elsevierSampleSources()
+	files["template.json"] = `{"name":"Elsevier","main_file":"` + elsevierNumEntry + `"}`
+	raw, err := app.ImportLatexTemplateFromPath(latexTemplateTestZipEntries(t, files))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var imported LatexTemplate
+	if err := json.Unmarshal([]byte(raw), &imported); err != nil {
+		t.Fatal(err)
+	}
+	if imported.MainFile != elsevierNumEntry {
+		t.Fatalf("installed main_file = %q, want %s", imported.MainFile, elsevierNumEntry)
+	}
+	return imported
+}
+
+func writeLatexWorkspaceFiles(t *testing.T, root string, files map[string]string) {
+	t.Helper()
+	for name, body := range files {
+		path := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func decodeCreateLatexDocumentResult(t *testing.T, raw string) CreateLatexDocumentResult {
+	t.Helper()
+	var result CreateLatexDocumentResult
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+
+// TestCreateLatexDocumentBlankReopensInstalledPackEntry is the reopen that used
+// to invent root main.tex. The workspace is not a managed task, so there is no
+// latex_entry tag; the installed pack's main file is the fact that selects the
+// numeric sample over the Harvard sample, the standalone figure and the manual.
+func TestCreateLatexDocumentBlankReopensInstalledPackEntry(t *testing.T) {
+	app := newLatexTemplateTestApp(t)
+	importElsevierNumTemplate(t, app)
+
+	fresh := filepath.Join(t.TempDir(), "fresh")
+	if err := os.MkdirAll(fresh, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	freshRoot, err := app.latexDocumentRoot(fresh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeLatexWorkspaceFiles(t, freshRoot, elsevierSampleSources())
+	opened := decodeCreateLatexDocumentResult(t, mustCreateLatexDocument(t, app, fresh, "", ""))
+	if opened.RelativePath != elsevierNumEntry || opened.Created {
+		t.Fatalf("blank reopen = %+v, want existing %s", opened, elsevierNumEntry)
+	}
+	if _, err := os.Stat(filepath.Join(freshRoot, "main.tex")); !os.IsNotExist(err) {
+		t.Fatalf("blank reopen created root main.tex: %v", err)
+	}
+	if app.taskLatexEntry(fresh) != "" {
+		t.Fatalf("unmanaged workspace stored an entry tag %q", app.taskLatexEntry(fresh))
+	}
+
+	// The untouched skeleton beside a different entry is not a paper.
+	withSkeleton := filepath.Join(t.TempDir(), "skeleton")
+	if err := os.MkdirAll(withSkeleton, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	skeletonRoot, err := app.latexDocumentRoot(withSkeleton)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeLatexWorkspaceFiles(t, skeletonRoot, elsevierSampleSources())
+	if err := os.WriteFile(filepath.Join(skeletonRoot, "main.tex"), []byte(latexBlankTemplateSource), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dropped := decodeCreateLatexDocumentResult(t, mustCreateLatexDocument(t, app, withSkeleton, "", ""))
+	if dropped.RelativePath != elsevierNumEntry || dropped.Created {
+		t.Fatalf("skeleton reopen = %+v", dropped)
+	}
+	if _, err := os.Stat(filepath.Join(skeletonRoot, "main.tex")); !os.IsNotExist(err) {
+		t.Fatalf("untouched skeleton was kept: %v", err)
+	}
+
+	// An edited root main.tex is a real file and stays on disk. It is not the
+	// pack entry, so the paper remains the installed main.
+	editedRoot := filepath.Join(t.TempDir(), "edited")
+	if err := os.MkdirAll(editedRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	editedDir, err := app.latexDocumentRoot(editedRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeLatexWorkspaceFiles(t, editedDir, elsevierSampleSources())
+	userMain := "\\documentclass{article}\\begin{document}user paper\\end{document}\n"
+	if err := os.WriteFile(filepath.Join(editedDir, "main.tex"), []byte(userMain), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	kept := decodeCreateLatexDocumentResult(t, mustCreateLatexDocument(t, app, editedRoot, "", ""))
+	if kept.RelativePath != elsevierNumEntry {
+		t.Fatalf("edited neighbour stole the entry: %+v", kept)
+	}
+	got, err := os.ReadFile(filepath.Join(editedDir, "main.tex"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != userMain {
+		t.Fatalf("edited main.tex changed: %q", string(got))
+	}
+}
+
+// TestCreateLatexDocumentBlankKeepsTheRecordedEntry plants the samples in the
+// task's working directory, which is not the task folder. The first blank
+// reopen records the pack entry. A second installed main in the same tree
+// must not replace that record: a rescan would otherwise pick the new file,
+// which sorts ahead of every elsarticle sample.
+func TestCreateLatexDocumentBlankKeepsTheRecordedEntry(t *testing.T) {
+	app := newLatexTemplateTestApp(t)
+	importElsevierNumTemplate(t, app)
+	work := filepath.Join(t.TempDir(), "latex-paper")
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	created, err := app.createExpertTask(builtinLatexExpertID, "LaTeX", work)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.ProjectPath == "" {
+		t.Fatal("expert task was not created")
+	}
+	root, err := app.latexDocumentRoot(created.ProjectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !latexTestSamePath(root, work) {
+		t.Fatalf("document root = %q, want working dir %q", root, work)
+	}
+	writeLatexWorkspaceFiles(t, root, elsevierSampleSources())
+	if err := os.WriteFile(filepath.Join(root, "main.tex"), []byte(latexBlankTemplateSource), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	first := decodeCreateLatexDocumentResult(t, mustCreateLatexDocument(t, app, created.ProjectPath, "", ""))
+	if first.RelativePath != elsevierNumEntry || first.Created {
+		t.Fatalf("first reopen = %+v", first)
+	}
+	if !latexTestSamePath(first.WorkspacePath, work) {
+		t.Fatalf("workspace = %q, want %q", first.WorkspacePath, work)
+	}
+	if _, err := os.Stat(filepath.Join(root, "main.tex")); !os.IsNotExist(err) {
+		t.Fatalf("untouched skeleton survived reopen: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(created.ProjectPath, "main.tex")); err == nil {
+		t.Fatal("blank reopen wrote main.tex into the task directory")
+	}
+	if _, err := os.Stat(filepath.Join(created.ProjectPath, "workspace", "main.tex")); err == nil {
+		t.Fatal("blank reopen wrote main.tex into the task workspace")
+	}
+	if app.taskLatexEntry(created.ProjectPath) != elsevierNumEntry {
+		t.Fatalf("recorded entry = %q", app.taskLatexEntry(created.ProjectPath))
+	}
+
+	notes := latexTemplateTestZipEntries(t, map[string]string{
+		"template.json": `{"name":"Notes","main_file":"aaa.tex"}`,
+		"aaa.tex":       "\\documentclass{article}\n\\begin{document}aaa\\end{document}\n",
+	})
+	if _, err := app.ImportLatexTemplateFromPath(notes); err != nil {
+		t.Fatal(err)
+	}
+	writeLatexWorkspaceFiles(t, root, map[string]string{
+		"aaa.tex": "\\documentclass{article}\n\\begin{document}aaa\\end{document}\n",
+	})
+	second := decodeCreateLatexDocumentResult(t, mustCreateLatexDocument(t, app, created.ProjectPath, "", ""))
+	if second.RelativePath != elsevierNumEntry || second.Created {
+		t.Fatalf("later sample retargeted the paper: %+v", second)
+	}
+	if app.taskLatexEntry(created.ProjectPath) != elsevierNumEntry {
+		t.Fatalf("recorded entry changed to %q", app.taskLatexEntry(created.ProjectPath))
+	}
+	if _, err := os.Stat(filepath.Join(root, "aaa.tex")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestCreateLatexDocumentBlankDoesNotRecordAnAmbiguousScan keeps a guess off
+// the task. Several samples and no single installed main would otherwise
+// freeze the alphabetical file, and installing the pack later could not
+// correct it. The untouched skeleton is still removed.
+func TestCreateLatexDocumentBlankDoesNotRecordAnAmbiguousScan(t *testing.T) {
+	app := newLatexTemplateTestApp(t)
+	work := filepath.Join(t.TempDir(), "samples")
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	created, err := app.createExpertTask(builtinLatexExpertID, "LaTeX", work)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.ProjectPath == "" {
+		t.Fatal("expert task was not created")
+	}
+	root, err := app.latexDocumentRoot(created.ProjectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeLatexWorkspaceFiles(t, root, elsevierSampleSources())
+	if err := os.WriteFile(filepath.Join(root, "main.tex"), []byte(latexBlankTemplateSource), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	guessed := decodeCreateLatexDocumentResult(t, mustCreateLatexDocument(t, app, created.ProjectPath, "", ""))
+	if guessed.RelativePath != "elsarticle/elsarticle-template-harv.tex" || guessed.Created {
+		t.Fatalf("scan = %+v", guessed)
+	}
+	if app.taskLatexEntry(created.ProjectPath) != "" {
+		t.Fatalf("ambiguous scan was recorded as %q", app.taskLatexEntry(created.ProjectPath))
+	}
+	if _, err := os.Stat(filepath.Join(root, "main.tex")); !os.IsNotExist(err) {
+		t.Fatalf("untouched skeleton survived the scan: %v", err)
+	}
+
+	importElsevierNumTemplate(t, app)
+	chosen := decodeCreateLatexDocumentResult(t, mustCreateLatexDocument(t, app, created.ProjectPath, "", ""))
+	if chosen.RelativePath != elsevierNumEntry || chosen.Created {
+		t.Fatalf("pack main after the scan = %+v", chosen)
+	}
+	if app.taskLatexEntry(created.ProjectPath) != elsevierNumEntry {
+		t.Fatalf("recorded entry = %q", app.taskLatexEntry(created.ProjectPath))
+	}
+}
+
+// TestCreateLatexDocumentBlankKeepsInstalledMainPastSuffixTwin is the pack
+// file itself. A second copy that only ends with the same path sorts first;
+// recording that copy would freeze the wrong paper.
+func TestCreateLatexDocumentBlankKeepsInstalledMainPastSuffixTwin(t *testing.T) {
+	app := newLatexTemplateTestApp(t)
+	const entry = "elsarticle/paper.tex"
+	pack := map[string]string{
+		"template.json": `{"name":"Paper","main_file":"` + entry + `"}`,
+		entry:           "\\documentclass{article}\n\\begin{document}pack\\end{document}\n",
+		"notes.tex":     "\\documentclass{article}\n\\begin{document}notes\\end{document}\n",
+	}
+	if _, err := app.ImportLatexTemplateFromPath(latexTemplateTestZipEntries(t, pack)); err != nil {
+		t.Fatal(err)
+	}
+	work := filepath.Join(t.TempDir(), "latex-paper")
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	created, err := app.createExpertTask(builtinLatexExpertID, "LaTeX", work)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := app.latexDocumentRoot(created.ProjectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeLatexWorkspaceFiles(t, root, map[string]string{
+		entry:                      "\\documentclass{article}\n\\begin{document}pack\\end{document}\n",
+		"aaa/elsarticle/paper.tex": "\\documentclass{article}\n\\begin{document}twin\\end{document}\n",
+		"notes.tex":                "\\documentclass{article}\n\\begin{document}notes\\end{document}\n",
+	})
+	opened := decodeCreateLatexDocumentResult(t, mustCreateLatexDocument(t, app, created.ProjectPath, "", ""))
+	if opened.RelativePath != entry || opened.Created {
+		t.Fatalf("suffix twin stole the entry: %+v", opened)
+	}
+	if app.taskLatexEntry(created.ProjectPath) != entry {
+		t.Fatalf("recorded entry = %q", app.taskLatexEntry(created.ProjectPath))
+	}
+}
+
+// TestCreateLatexDocumentBlankDoesNotRecordAnAmbiguousInstalledMatch is a pack
+// main that is not on disk. Two copies that only end with that path are not
+// the paper, and the first one in sorted order must not be stored. One deeper
+// copy is opened so the editor does not land on another sample, but it is not
+// stored, so the declared file can still replace it. The same copy is stored
+// when it is the only source. A single wrapped name is a real match, and an
+// unrelated pair of copies does not hide a pack file that is present.
+func TestCreateLatexDocumentBlankDoesNotRecordAnAmbiguousInstalledMatch(t *testing.T) {
+	app := newLatexTemplateTestApp(t)
+	const entry = "elsarticle/paper.tex"
+	pack := map[string]string{
+		"template.json": `{"name":"Paper","main_file":"` + entry + `"}`,
+		entry:           "\\documentclass{article}\n\\begin{document}pack\\end{document}\n",
+	}
+	if _, err := app.ImportLatexTemplateFromPath(latexTemplateTestZipEntries(t, pack)); err != nil {
+		t.Fatal(err)
+	}
+	other := map[string]string{
+		"template.json":     `{"name":"Other","main_file":"notes/chapter.tex"}`,
+		"notes/chapter.tex": "\\documentclass{article}\n\\begin{document}chapter\\end{document}\n",
+	}
+	if _, err := app.ImportLatexTemplateFromPath(latexTemplateTestZipEntries(t, other)); err != nil {
+		t.Fatal(err)
+	}
+
+	newTask := func(t *testing.T, name string) (string, string) {
+		t.Helper()
+		work := filepath.Join(t.TempDir(), name)
+		if err := os.MkdirAll(work, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		// Each paper is its own task. createExpertTask would retarget the
+		// newest LaTeX task and carry its latex_entry tag into the next case.
+		created, err := app.createFreshLatexExpertTask("LaTeX", work)
+		if err != nil {
+			t.Fatal(err)
+		}
+		root, err := app.latexDocumentRoot(created.ProjectPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return created.ProjectPath, root
+	}
+
+	project, root := newTask(t, "twins")
+	writeLatexWorkspaceFiles(t, root, map[string]string{
+		"aaa/elsarticle/paper.tex": "\\documentclass{article}\n\\begin{document}aaa\\end{document}\n",
+		"bbb/elsarticle/paper.tex": "\\documentclass{article}\n\\begin{document}bbb\\end{document}\n",
+		"notes.tex":                "\\documentclass{article}\n\\begin{document}notes\\end{document}\n",
+	})
+	if err := os.WriteFile(filepath.Join(root, "main.tex"), []byte(latexBlankTemplateSource), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	guessed := decodeCreateLatexDocumentResult(t, mustCreateLatexDocument(t, app, project, "", ""))
+	if guessed.RelativePath != "aaa/elsarticle/paper.tex" || guessed.Created {
+		t.Fatalf("ambiguous installed match = %+v", guessed)
+	}
+	if app.taskLatexEntry(project) != "" {
+		t.Fatalf("ambiguous installed match was recorded as %q", app.taskLatexEntry(project))
+	}
+	if _, err := os.Stat(filepath.Join(root, "main.tex")); !os.IsNotExist(err) {
+		t.Fatalf("untouched skeleton survived the ambiguous match: %v", err)
+	}
+
+	writeLatexWorkspaceFiles(t, root, map[string]string{
+		entry: "\\documentclass{article}\n\\begin{document}pack\\end{document}\n",
+	})
+	chosen := decodeCreateLatexDocumentResult(t, mustCreateLatexDocument(t, app, project, "", ""))
+	if chosen.RelativePath != entry || chosen.Created {
+		t.Fatalf("declared file after the twins = %+v", chosen)
+	}
+	if app.taskLatexEntry(project) != entry {
+		t.Fatalf("recorded entry = %q", app.taskLatexEntry(project))
+	}
+
+	// notes.tex sorts first, so a documentclass scan would open it. The deeper
+	// copy is the file to show, and it must not become the recorded paper.
+	const nested = "zzz/elsarticle/paper.tex"
+	nestedProject, nestedRoot := newTask(t, "one-copy")
+	writeLatexWorkspaceFiles(t, nestedRoot, map[string]string{
+		nested:      "\\documentclass{article}\n\\begin{document}nested\\end{document}\n",
+		"notes.tex": "\\documentclass{article}\n\\begin{document}notes\\end{document}\n",
+	})
+	hint := decodeCreateLatexDocumentResult(t, mustCreateLatexDocument(t, app, nestedProject, "", ""))
+	if hint.RelativePath != nested || hint.Created {
+		t.Fatalf("single deeper copy = %+v", hint)
+	}
+	if app.taskLatexEntry(nestedProject) != "" {
+		t.Fatalf("deeper copy was recorded as %q", app.taskLatexEntry(nestedProject))
+	}
+	writeLatexWorkspaceFiles(t, nestedRoot, map[string]string{
+		entry: "\\documentclass{article}\n\\begin{document}pack\\end{document}\n",
+	})
+	adopted := decodeCreateLatexDocumentResult(t, mustCreateLatexDocument(t, app, nestedProject, "", ""))
+	if adopted.RelativePath != entry || adopted.Created {
+		t.Fatalf("declared file after the deeper copy = %+v", adopted)
+	}
+	if app.taskLatexEntry(nestedProject) != entry {
+		t.Fatalf("recorded entry = %q", app.taskLatexEntry(nestedProject))
+	}
+
+	onlyProject, onlyRoot := newTask(t, "only-copy")
+	writeLatexWorkspaceFiles(t, onlyRoot, map[string]string{
+		nested: "\\documentclass{article}\n\\begin{document}nested\\end{document}\n",
+	})
+	only := decodeCreateLatexDocumentResult(t, mustCreateLatexDocument(t, app, onlyProject, "", ""))
+	if only.RelativePath != nested || only.Created {
+		t.Fatalf("only deeper copy = %+v", only)
+	}
+	if app.taskLatexEntry(onlyProject) != nested {
+		t.Fatalf("only deeper copy recorded as %q", app.taskLatexEntry(onlyProject))
+	}
+
+	wrappedProject, wrappedRoot := newTask(t, "wrapped")
+	writeLatexWorkspaceFiles(t, wrappedRoot, map[string]string{
+		"paper.tex": "\\documentclass{article}\n\\begin{document}wrapped\\end{document}\n",
+		"notes.tex": "\\documentclass{article}\n\\begin{document}notes\\end{document}\n",
+	})
+	wrapped := decodeCreateLatexDocumentResult(t, mustCreateLatexDocument(t, app, wrappedProject, "", ""))
+	if wrapped.RelativePath != "paper.tex" || wrapped.Created {
+		t.Fatalf("wrapped pack main = %+v", wrapped)
+	}
+	if app.taskLatexEntry(wrappedProject) != "paper.tex" {
+		t.Fatalf("wrapped entry recorded as %q", app.taskLatexEntry(wrappedProject))
+	}
+
+	// Deeper copies sort first and would win a documentclass scan. They must
+	// not hide the wrapper name, and they must not keep it from being stored.
+	wrappedBeside, wrappedBesideRoot := newTask(t, "wrapped-beside-copies")
+	writeLatexWorkspaceFiles(t, wrappedBesideRoot, map[string]string{
+		"paper.tex":                "\\documentclass{article}\n\\begin{document}wrapped\\end{document}\n",
+		"aaa/elsarticle/paper.tex": "\\documentclass{article}\n\\begin{document}aaa\\end{document}\n",
+		"bbb/elsarticle/paper.tex": "\\documentclass{article}\n\\begin{document}bbb\\end{document}\n",
+		"notes.tex":                "\\documentclass{article}\n\\begin{document}notes\\end{document}\n",
+	})
+	beside := decodeCreateLatexDocumentResult(t, mustCreateLatexDocument(t, app, wrappedBeside, "", ""))
+	if beside.RelativePath != "paper.tex" || beside.Created {
+		t.Fatalf("deeper copies hid the wrapper: %+v", beside)
+	}
+	if app.taskLatexEntry(wrappedBeside) != "paper.tex" {
+		t.Fatalf("wrapper recorded as %q", app.taskLatexEntry(wrappedBeside))
+	}
+
+	exactProject, exactRoot := newTask(t, "exact-beside-twins")
+	writeLatexWorkspaceFiles(t, exactRoot, map[string]string{
+		entry:                   "\\documentclass{article}\n\\begin{document}pack\\end{document}\n",
+		"aaa/notes/chapter.tex": "\\documentclass{article}\n\\begin{document}aaa\\end{document}\n",
+		"bbb/notes/chapter.tex": "\\documentclass{article}\n\\begin{document}bbb\\end{document}\n",
+	})
+	exact := decodeCreateLatexDocumentResult(t, mustCreateLatexDocument(t, app, exactProject, "", ""))
+	if exact.RelativePath != entry || exact.Created {
+		t.Fatalf("unrelated twins hid the pack file: %+v", exact)
+	}
+	if app.taskLatexEntry(exactProject) != entry {
+		t.Fatalf("recorded entry = %q", app.taskLatexEntry(exactProject))
+	}
+}
+
+func TestCreateLatexDocumentBlankRecordsTheOnlySource(t *testing.T) {
+	app := newLatexTemplateTestApp(t)
+	created := app.CreateExpertTask(builtinLatexExpertID, "LaTeX")
+	if created.ProjectPath == "" {
+		t.Fatal("expert task was not created")
+	}
+	root, err := app.latexDocumentRoot(created.ProjectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeLatexWorkspaceFiles(t, root, map[string]string{
+		"notes.tex": "\\documentclass{article}\n\\begin{document}notes\\end{document}\n",
+	})
+	opened := decodeCreateLatexDocumentResult(t, mustCreateLatexDocument(t, app, created.ProjectPath, "", ""))
+	if opened.RelativePath != "notes.tex" || opened.Created {
+		t.Fatalf("only source = %+v", opened)
+	}
+	if app.taskLatexEntry(created.ProjectPath) != "notes.tex" {
+		t.Fatalf("recorded entry = %q", app.taskLatexEntry(created.ProjectPath))
+	}
+	if _, err := os.Stat(filepath.Join(root, "main.tex")); !os.IsNotExist(err) {
+		t.Fatalf("blank reopen created main.tex beside the only source: %v", err)
+	}
+}
+
+// TestCreateLatexDocumentTemplateApplyIgnoresStaleBlankEntry records the
+// skeleton first, which is what a blank open persists. Applying a real
+// template must still replace that skeleton; the blank tag belongs only to
+// the blank reopen path.
+func TestCreateLatexDocumentTemplateApplyIgnoresStaleBlankEntry(t *testing.T) {
+	app := newLatexTemplateTestApp(t)
+	imported := importElsevierNumTemplate(t, app)
+	created := app.CreateExpertTask(builtinLatexExpertID, "LaTeX")
+	if created.ProjectPath == "" {
+		t.Fatal("expert task was not created")
+	}
+	root, err := app.latexDocumentRoot(created.ProjectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blank := decodeCreateLatexDocumentResult(t, mustCreateLatexDocument(t, app, created.ProjectPath, "", ""))
+	if blank.RelativePath != "main.tex" || !blank.Created {
+		t.Fatalf("empty workspace = %+v", blank)
+	}
+	if app.taskLatexEntry(created.ProjectPath) != "main.tex" {
+		t.Fatalf("blank entry = %q", app.taskLatexEntry(created.ProjectPath))
+	}
+
+	applied := decodeCreateLatexDocumentResult(t, mustCreateLatexDocument(t, app, created.ProjectPath, imported.ID, ""))
+	if applied.RelativePath != elsevierNumEntry || !applied.Created {
+		t.Fatalf("template apply = %+v", applied)
+	}
+	if _, err := os.Stat(filepath.Join(root, "main.tex")); !os.IsNotExist(err) {
+		t.Fatalf("stale skeleton was kept: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(elsevierNumEntry)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "num") {
+		t.Fatalf("pack entry was not written: %q", string(got))
+	}
+	if app.taskLatexEntry(created.ProjectPath) != elsevierNumEntry {
+		t.Fatalf("entry tag after apply = %q", app.taskLatexEntry(created.ProjectPath))
+	}
+}
+
+func mustCreateLatexDocument(t *testing.T, app *App, projectPath, templateID, fileName string) string {
+	t.Helper()
+	raw, err := app.CreateLatexDocument(projectPath, templateID, fileName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func latexTestSamePath(a, b string) bool {
+	left, leftErr := filepath.Abs(a)
+	right, rightErr := filepath.Abs(b)
+	if leftErr != nil || rightErr != nil {
+		return false
+	}
+	if resolved, err := filepath.EvalSymlinks(left); err == nil {
+		left = resolved
+	}
+	if resolved, err := filepath.EvalSymlinks(right); err == nil {
+		right = resolved
+	}
+	return strings.EqualFold(filepath.Clean(left), filepath.Clean(right))
+}
+
 func TestDeleteLatexTemplateKeepsTheBlankOption(t *testing.T) {
 	app := newLatexTemplateTestApp(t)
 	if err := app.DeleteLatexTemplate(latexTemplateSourceBlank); err == nil {

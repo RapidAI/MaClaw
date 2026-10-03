@@ -1,12 +1,12 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { CreateGroupTabOptions, CreateProjectTabOptions, CreateVETabOptions } from "./useAITabManager";
 import type { AITab, AITabState } from "./AITabTypes";
 import type { VirtualEmployeeEntry } from "./VirtualEmployeeTab";
 import type { ExpertDefinition } from "./expertTypes";
 import { expertTabId, expertWelcomeMessageText } from "./expertTypes";
 import { expertSessionKey } from "./aiAssistantPanelSessionUtils";
-import { dispatchOpenLatexDocument } from "./latexDocumentOpen";
-import { isLatexExpertId } from "../../utils/latexTemplates";
+import { dispatchOpenLatexDocument, latexRelativePathForProject } from "./latexDocumentOpen";
+import { createLatexDocumentForTask, isLatexExpertId, LATEX_BLANK_TEMPLATE_ID } from "../../utils/latexTemplates";
 import { AbandonUnopenedFreshLatexTask, StartWorkflowTemplateInTab } from "../../../wailsjs/go/main/App";
 import { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
 import { isLocalHumanParticipantId } from "./localAIIdentity";
@@ -191,6 +191,8 @@ interface PendingAssistantTabOpenOptions {
     onEnsureExpertTask?: (expert: ExpertDefinition, existing?: { relativePath?: string }) => Promise<EnsuredExpertTask | void> | EnsuredExpertTask | void;
     /** Persist a non-main assistant tab before it is opened. */
     onEnsureAssistantTabTask?: (tabType: string, tabIdentity: string, title: string, projectPath?: string) => Promise<void> | void;
+    /** Write the task's LaTeX entry onto its tab without focusing that tab. */
+    setLatexRelativePath?: (tabId: string, relativePath: string) => void;
     /** User is about to open or focus a project task. Caller may close the idle tab being left. */
     beforeUserProjectOpen?: (projectPath: string, cloudWorkspaceId?: string) => void;
     /** User is about to open or focus an expert task. */
@@ -203,6 +205,14 @@ interface PendingAssistantTabOpenOptions {
     /** Apply the floor recorded by resetExpertConversation once the tab exists. */
     markExpertSessionFloor?: (expertId: string) => void;
 }
+
+/** Whether a restored LaTeX tab is still asking the workspace for its entry.
+ * The editor waits for that answer so a cached main.tex is not opened and
+ * then deleted. */
+export type LatexEntryWatch = {
+    epoch: number;
+    pending: (projectPath: string) => boolean;
+};
 
 export function usePendingAssistantTabOpen({
     lang,
@@ -227,11 +237,12 @@ export function usePendingAssistantTabOpen({
     sendExpertMessage,
     onEnsureExpertTask,
     onEnsureAssistantTabTask,
+    setLatexRelativePath,
     beforeUserProjectOpen,
     beforeUserExpertOpen,
     resetExpertConversation,
     markExpertSessionFloor,
-}: PendingAssistantTabOpenOptions) {
+}: PendingAssistantTabOpenOptions): LatexEntryWatch {
     const openHistoryDiscussion = useCallback(async (discussion: PendingHistoryDiscussionOpen) => {
         const discussionId = String(discussion?.id || "").trim();
         if (!discussionId) return;
@@ -574,6 +585,8 @@ export function usePendingAssistantTabOpen({
     onExpertHandledRef.current = onPendingExpertOpenHandled;
     const ensureExpertTaskRef = useRef(onEnsureExpertTask);
     ensureExpertTaskRef.current = onEnsureExpertTask;
+    const setLatexRelativePathRef = useRef(setLatexRelativePath);
+    setLatexRelativePathRef.current = setLatexRelativePath;
     const beforeUserExpertOpenRef = useRef(beforeUserExpertOpen);
     beforeUserExpertOpenRef.current = beforeUserExpertOpen;
     const sendExpertMessageRef = useRef(sendExpertMessage);
@@ -641,6 +654,75 @@ export function usePendingAssistantTabOpen({
             });
         }
     }, [latexTabsMissingPath]);
+
+    // The tab field is a cache of the task entry. Re-opening used to call the
+    // blank-document path with no path at all, and that path assumed the paper
+    // was root main.tex. Bind whatever the workspace actually resolves to,
+    // without focusing the tab. A path opened earlier in this session already
+    // came from that call, so it is not asked again.
+    const latexEntryBindRef = useRef<Map<string, string>>(new Map());
+    const latexEntryPendingRef = useRef<Set<string>>(new Set());
+    const [latexEntryEpoch, setLatexEntryEpoch] = useState(0);
+    const releaseLatexEntryPending = (projectPath: string) => {
+        if (!latexEntryPendingRef.current.delete(projectPath)) return;
+        setLatexEntryEpoch(value => value + 1);
+    };
+    const latexEntryBindKey = (getTabList?.() || [])
+        .filter(tab => tab.type === "expert" && isLatexExpertId(tab.expertId) && String(tab.projectPath || "").trim())
+        .map(tab => `${tab.id}\0${tab.projectPath || ""}\0${tab.latexRelativePath || ""}`)
+        .join("\n");
+    useEffect(() => {
+        if (!latexEntryBindKey || !setLatexRelativePathRef.current) return;
+        const list = getTabListForExpertRef.current?.() || [];
+        for (const tab of list) {
+            if (tab.type !== "expert" || !isLatexExpertId(tab.expertId)) continue;
+            const projectPath = String(tab.projectPath || "").trim();
+            const tabId = String(tab.id || "").trim();
+            if (!projectPath || !tabId) continue;
+            const current = String(tab.latexRelativePath || "").trim();
+            const bound = latexEntryBindRef.current.get(projectPath);
+            if (bound === "\0pending" || (bound && bound === current)) continue;
+            const sessionPath = latexRelativePathForProject(projectPath);
+            if (sessionPath && sessionPath === current) {
+                latexEntryBindRef.current.set(projectPath, sessionPath);
+                continue;
+            }
+            latexEntryBindRef.current.set(projectPath, "\0pending");
+            latexEntryPendingRef.current.add(projectPath);
+            void createLatexDocumentForTask(projectPath, LATEX_BLANK_TEMPLATE_ID, "", expertLangRef.current).then((document) => {
+                const entry = String(document?.relative_path || "").trim();
+                const live = (getTabListForExpertRef.current?.() || []).find(item => item.id === tabId);
+                const liveProject = String(live?.projectPath || "").trim();
+                const livePath = String(live?.latexRelativePath || "").trim();
+                if (!entry) {
+                    latexEntryBindRef.current.delete(projectPath);
+                    releaseLatexEntryPending(projectPath);
+                    return;
+                }
+                // Resume or the wizard can select a path while this read is still
+                // out. That selection is newer than the cache this read started
+                // from, so a late answer must not move the editor back.
+                if (!live || liveProject !== projectPath || livePath !== current) {
+                    if (live && liveProject === projectPath && livePath) {
+                        latexEntryBindRef.current.set(projectPath, livePath);
+                    } else {
+                        latexEntryBindRef.current.delete(projectPath);
+                    }
+                    releaseLatexEntryPending(projectPath);
+                    return;
+                }
+                latexEntryBindRef.current.set(projectPath, entry);
+                if (livePath !== entry) {
+                    setLatexRelativePathRef.current?.(tabId, entry);
+                }
+                releaseLatexEntryPending(projectPath);
+            }).catch((error) => {
+                latexEntryBindRef.current.delete(projectPath);
+                releaseLatexEntryPending(projectPath);
+                console.error("[task_management] latex entry bind failed:", error);
+            });
+        }
+    }, [latexEntryBindKey]);
 
     useEffect(() => {
         if (!pendingExpertOpen) return;
@@ -756,4 +838,8 @@ export function usePendingAssistantTabOpen({
         });
     }, [pendingExpertOpen]);
     // ↑ ONLY pendingExpertOpen in deps. All callbacks accessed via refs.
+    return {
+        epoch: latexEntryEpoch,
+        pending: (projectPath: string) => latexEntryPendingRef.current.has(String(projectPath || "").trim()),
+    };
 }

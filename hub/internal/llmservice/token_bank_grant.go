@@ -56,6 +56,10 @@ var (
 	// group it asked for: the credits are on the original group, and a new
 	// request id would debit the account again.
 	ErrTokenBankGrantGroupMismatch = errors.New("token bank grant is already issued to a different service group")
+	// ErrTokenBankGroupNotCharged means the configured auto-withdraw group is
+	// not one this request bills. The bank was not contacted. Another model on
+	// the same request may still charge that group.
+	ErrTokenBankGroupNotCharged = errors.New("token bank group is not charged by this request")
 )
 
 // tokenBankGrantMu serializes grant writes and the auto-seq counter on this
@@ -108,6 +112,42 @@ type TokenBankAutoSettings struct {
 	ServiceGroupID string `json:"service_group_id"`
 }
 
+// TokenBankGrantCardID is the registry card id for one pull. It is the
+// request id with a fixed prefix, so a retry finds the grant the first
+// call wrote.
+func TokenBankGrantCardID(requestID string) string {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return ""
+	}
+	return tokenBankGrantCardPrefix + requestID
+}
+
+// TokenBankGrantIDForRequest returns the local grant already stored for this
+// pull. Empty means this hub has not written it. HubCenter can still be
+// waiting on the confirm call; a later credit balance does not mean that
+// confirm happened.
+func TokenBankGrantIDForRequest(reg *Registry, requestID string) string {
+	if reg == nil {
+		return ""
+	}
+	cardID := TokenBankGrantCardID(requestID)
+	if cardID == "" {
+		return ""
+	}
+	for i := range reg.Grants {
+		grant := &reg.Grants[i]
+		if strings.TrimSpace(grant.Source) != TokenBankGrantSource {
+			continue
+		}
+		if strings.TrimSpace(grant.CardID) != cardID {
+			continue
+		}
+		return strings.TrimSpace(grant.ID)
+	}
+	return ""
+}
+
 // IssueTokenBankGrant writes one permanent Source=token_bank grant.
 //
 // It is idempotent on requestID: a second call returns the same grant id and
@@ -145,7 +185,7 @@ func issueTokenBankGrantLocked(ctx context.Context, system SystemSettingsReposit
 		if reg.FindModelServiceGroup(serviceGroupID) == nil {
 			return fmt.Errorf("%w: %s", ErrTokenBankServiceGroupMissing, serviceGroupID)
 		}
-		cardID := tokenBankGrantCardPrefix + requestID
+		cardID := TokenBankGrantCardID(requestID)
 		for i := range reg.Grants {
 			grant := reg.Grants[i]
 			if strings.TrimSpace(grant.Source) != TokenBankGrantSource {
@@ -445,8 +485,9 @@ func TokenBankReconcile(grantMicro, withdrawnMicro int64) (delta int64, within b
 }
 
 // TokenBankAutoRequestID is stable for one user, group, and sequence. The
-// sequence advances only after the grant is confirmed, so a crash retries the
-// same id and does not debit twice.
+// stored sequence advances only after that id's grant is confirmed, so a crash
+// retries the same id and does not debit twice. A later id can be debited
+// while an earlier confirm is still open; that later id is just as stable.
 func TokenBankAutoRequestID(hubID, email, serviceGroupID string, seq int64) string {
 	if seq < 0 {
 		seq = 0

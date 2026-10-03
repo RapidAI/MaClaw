@@ -183,6 +183,13 @@ type LoopContext struct {
 	// set SkipNeedsConfirmGate.
 	WorkflowAgentLoop bool
 
+	// NoWorkflowInterception is the current message's host opt-out. The
+	// new-task wizard sets it when the draft is「无」. Semantic planning
+	// reads it so a catalog workflow_task cannot HostReject a turn the host
+	// already kept in chat. It is per message: a reused LoopContext must
+	// take the value from the inbound message, not from the previous turn.
+	NoWorkflowInterception bool
+
 	// WorkflowDocBuffer accumulates all non-tool text output across iterations
 	// during a V2 workflow agent loop. Used by captureWorkflowDocAfterAgentLoop
 	// to capture the complete phase document instead of relying on resp.Text

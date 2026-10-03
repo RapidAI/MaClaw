@@ -5,9 +5,9 @@ import (
 	"archive/zip"
 	"crypto/sha256"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path"
 	"path/filepath"
@@ -192,6 +192,108 @@ func isCodingWorkbenchHiddenBrowserName(name string) bool {
 	return strings.HasPrefix(strings.TrimSpace(name), ".")
 }
 
+func cloudWorkspaceBrowserRoot(root string) bool {
+	return cloudWorkspaceIDFromPathString(root) != "" || cloudWorkspaceIDFromReadOnlyCachePath(root) != ""
+}
+
+// codingWorkbenchDirectoryFromListing projects one directory level from the
+// browse index and merges names that exist only on disk. A missing index, or
+// a path the index does not contain, leaves listing to the local directory.
+func codingWorkbenchDirectoryFromListing(root, relativePath string) (CodingWorkbenchDirectoryResponse, bool, error) {
+	if !cloudWorkspaceBrowserRoot(root) {
+		return CodingWorkbenchDirectoryResponse{}, false, nil
+	}
+	listing, err := readCloudWorkspaceListing(root)
+	if err != nil {
+		// A damaged index must not hide files already on disk. The next sync
+		// rewrites the index.
+		log.Printf("[cloud_workspace] browse index unreadable, listing disk: %v", err)
+		return CodingWorkbenchDirectoryResponse{}, false, nil
+	}
+	if listing == nil {
+		return CodingWorkbenchDirectoryResponse{}, false, nil
+	}
+	prefix, err := cleanCodingWorkbenchBrowserPath(relativePath)
+	if err != nil {
+		return CodingWorkbenchDirectoryResponse{}, false, err
+	}
+	if !cloudWorkspaceListingContainsDir(listing.Entries, prefix) {
+		return CodingWorkbenchDirectoryResponse{}, false, nil
+	}
+	entries := cloudWorkspaceManifestChildren(listing.Entries, prefix)
+	// The replica treats NFC-lowercase as one path. On a case-insensitive
+	// volume the disk name and the manifest name are the same file.
+	seen := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		seen[cloudWorkspacePortablePathKey(entry.Name)] = struct{}{}
+	}
+	if dir, dirErr := codingWorkbenchBrowserLocalPath(root, prefix); dirErr == nil {
+		if handle, openErr := os.Open(dir); openErr == nil {
+			disk, _, collectErr := collectCodingWorkbenchDirectoryEntries(handle, prefix)
+			handle.Close()
+			if collectErr != nil {
+				// Keep the names already projected from the browse index.
+				log.Printf("[cloud_workspace] disk listing failed, using browse index: %v", collectErr)
+			} else {
+				for _, entry := range disk {
+					if _, ok := seen[cloudWorkspacePortablePathKey(entry.Name)]; ok {
+						continue
+					}
+					entries = append(entries, entry)
+				}
+			}
+		}
+	}
+	sortCodingWorkbenchDirectoryEntries(entries)
+	truncated := false
+	if len(entries) > codingWorkbenchBrowserMaxEntries {
+		entries = entries[:codingWorkbenchBrowserMaxEntries]
+		truncated = true
+	}
+	return CodingWorkbenchDirectoryResponse{
+		Root:      omitCloudWorkspaceAbsPath(root),
+		Path:      prefix,
+		Entries:   entries,
+		Truncated: truncated,
+	}, true, nil
+}
+
+func codingWorkbenchListingProperties(root, relativePath string) (CodingWorkbenchEntryProperties, bool) {
+	if !cloudWorkspaceBrowserRoot(root) {
+		return CodingWorkbenchEntryProperties{}, false
+	}
+	listing, err := readCloudWorkspaceListing(root)
+	if err != nil || listing == nil {
+		return CodingWorkbenchEntryProperties{}, false
+	}
+	cleaned, ok := cloudWorkspaceSafeRelPath(relativePath)
+	if !ok {
+		return CodingWorkbenchEntryProperties{}, false
+	}
+	for _, entry := range listing.Entries {
+		if entry.Path != cleaned {
+			continue
+		}
+		name := path.Base(cleaned)
+		return CodingWorkbenchEntryProperties{
+			Name:      name,
+			Path:      cleaned,
+			IsDir:     false,
+			Size:      entry.Size,
+			SizeKnown: true,
+			Extension: strings.TrimPrefix(path.Ext(name), "."),
+		}, true
+	}
+	if cleaned != "" && cloudWorkspaceListingContainsDir(listing.Entries, cleaned) {
+		return CodingWorkbenchEntryProperties{
+			Name:  path.Base(cleaned),
+			Path:  cleaned,
+			IsDir: true,
+		}, true
+	}
+	return CodingWorkbenchEntryProperties{}, false
+}
+
 // collectCodingWorkbenchDirectoryEntries reads one small page of visible
 // entries. Dot-prefixed names are skipped so they do not consume the page or
 // appear in the explorer. A scan budget keeps a directory of only hidden
@@ -295,6 +397,12 @@ func (a *App) GetCodingWorkbenchDirectory(projectPath, relativePath string) (Cod
 	if err != nil {
 		return CodingWorkbenchDirectoryResponse{}, err
 	}
+	if listed, ok, listErr := codingWorkbenchDirectoryFromListing(root, relativePath); ok || listErr != nil {
+		if listErr != nil {
+			return CodingWorkbenchDirectoryResponse{}, listErr
+		}
+		return listed, nil
+	}
 	dir, err := codingWorkbenchBrowserLocalPath(root, relativePath)
 	if err != nil {
 		return CodingWorkbenchDirectoryResponse{}, err
@@ -386,6 +494,9 @@ func (a *App) GetCodingWorkbenchFilePreview(projectPath, relativePath string) (C
 	if err != nil {
 		return CodingWorkbenchFilePreview{}, err
 	}
+	if err := a.materializeCloudWorkspaceListedFile(root, relativePath); err != nil {
+		return CodingWorkbenchFilePreview{}, err
+	}
 	absPath, err := codingWorkbenchBrowserLocalPath(root, relativePath)
 	if err != nil {
 		return CodingWorkbenchFilePreview{}, err
@@ -428,6 +539,11 @@ func (a *App) GetCodingWorkbenchEntryProperties(projectPath, relativePath string
 	}
 	info, err := os.Stat(absPath)
 	if err != nil {
+		if os.IsNotExist(err) {
+			if props, ok := codingWorkbenchListingProperties(root, relativePath); ok {
+				return props, nil
+			}
+		}
 		return CodingWorkbenchEntryProperties{}, err
 	}
 	return codingWorkbenchEntryProperties(relativePath, absPath, info.Name(), info.IsDir(), info.Size(), info.ModTime().Unix(), fmt.Sprintf("%04o", info.Mode().Perm())), nil
@@ -485,6 +601,9 @@ func (a *App) OpenCodingWorkbenchFileInVSCode(projectPath, relativePath string) 
 	}
 	root, err := codingWorkbenchBrowserLocalRoot(a, projectPath)
 	if err != nil {
+		return false, err
+	}
+	if err := a.materializeCloudWorkspaceListedFile(root, relativePath); err != nil {
 		return false, err
 	}
 	absPath, err := codingWorkbenchBrowserLocalPath(root, relativePath)
@@ -601,27 +720,25 @@ func (a *App) DeleteCodingWorkbenchEntry(projectPath, relativePath string) error
 	ctx, cancel := a.cloudWorkspaceSyncContext()
 	defer cancel()
 	proto := a.cloudWorkspaceProtocol(workspaceID)
-	// Op-based delete first: per-file delete operations need no writable
-	// mount, never upload unrelated local edits, and keep the local cache
-	// in place until the remote delete landed. Accepted deletes stay
-	// durably dropped from sync state even when a later path fails.
-	if err := proto.DeletePaths(ctx, cacheRoot, paths); err == nil {
-		return removeLocal()
-	} else if !errors.Is(err, errCloudWorkspaceV2Unavailable) {
+	// Hold the replica lock around the manifest replace and the local remove.
+	// A watcher push that already scanned this path would otherwise write it back.
+	if mount := lookupHeldCloudWorkspace(workspaceID); mount != nil {
+		mount.syncMu.Lock()
+		defer mount.syncMu.Unlock()
+		mount.mu.Lock()
+		releasing := mount.releasing
+		mount.mu.Unlock()
+		if releasing {
+			return fmt.Errorf("cloud workspace is releasing")
+		}
+	}
+	// v1 delete replaces the manifest with every remote entry except the
+	// requested paths. It does not scan the cache, so unrelated local edits
+	// stay local, and the cache file is removed only after the manifest lands.
+	if err := proto.DeletePaths(ctx, cacheRoot, paths); err != nil {
 		return err
 	}
-	// Legacy Push fallback for Hubs without the v2 operation endpoints.
-	// Legacy Push scans the cache, so the local file must already be gone.
-	if _, ok := heldWritableCloudWorkspacePath(workspaceID); !ok {
-		return fmt.Errorf("cloud workspace is read-only")
-	}
-	if err := removeLocal(); err != nil {
-		return err
-	}
-	if _, err := proto.Push(ctx, cacheRoot); err != nil {
-		return fmt.Errorf("local file deleted, but remote delete failed: %w", err)
-	}
-	return nil
+	return removeLocal()
 }
 
 // cloudWorkspaceDeleteCacheRoot is the directory that owns .maclaw-cloud/state.json.
@@ -728,12 +845,27 @@ func inferCloudWorkspaceDeleteDir(root, cacheRel string) (bool, error) {
 		return false, err
 	}
 	prefix := cacheRel + "/"
-	for _, entry := range state.LastEntries {
-		if entry.Path == cacheRel {
-			return false, nil
+	consider := func(path string) (bool, bool) {
+		if path == cacheRel {
+			return true, false
 		}
-		if strings.HasPrefix(entry.Path, prefix) {
-			return true, nil
+		if strings.HasPrefix(path, prefix) {
+			return true, true
+		}
+		return false, false
+	}
+	for _, entry := range state.LastEntries {
+		if hit, dir := consider(entry.Path); hit {
+			return dir, nil
+		}
+	}
+	listing, err := readCloudWorkspaceListing(root)
+	if err != nil || listing == nil {
+		return false, err
+	}
+	for _, entry := range listing.Entries {
+		if hit, dir := consider(entry.Path); hit {
+			return dir, nil
 		}
 	}
 	return false, nil
@@ -775,6 +907,15 @@ func collectCloudWorkspaceDeletePaths(root, cacheRel string, isDir bool) ([]stri
 			add(entry.Path)
 		}
 	}
+	listing, err := readCloudWorkspaceListing(root)
+	if err != nil {
+		return nil, err
+	}
+	if listing != nil {
+		for _, entry := range listing.Entries {
+			add(entry.Path)
+		}
+	}
 	sort.Strings(paths)
 	return paths, nil
 }
@@ -798,6 +939,9 @@ func (a *App) codingWorkbenchRejectsLocalOpen(projectPath string) bool {
 func (a *App) codingWorkbenchLocalFileToOpen(projectPath, relativePath string) (string, error) {
 	root, err := codingWorkbenchBrowserLocalRoot(a, projectPath)
 	if err != nil {
+		return "", err
+	}
+	if err := a.materializeCloudWorkspaceListedFile(root, relativePath); err != nil {
 		return "", err
 	}
 	return codingWorkbenchLocalFileAbsPath(root, relativePath)
@@ -1461,6 +1605,9 @@ func (a *App) DownloadCodingWorkbenchEntry(projectPath, relativePath string) (st
 	}
 	root, err := codingWorkbenchBrowserLocalRoot(a, projectPath)
 	if err != nil {
+		return "", err
+	}
+	if err := a.materializeCloudWorkspaceListedTree(root, relativePath); err != nil {
 		return "", err
 	}
 	src, err := codingWorkbenchBrowserLocalPath(root, relativePath)

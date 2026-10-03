@@ -107,6 +107,10 @@ func (h *IMMessageHandler) bindSemanticContinuationSlot(userID string, unfinishe
 		log.Printf("[TaskContext] skipped unfinished slot %s for semantic continuation: project mismatch", (*unfinishedSlot).SlotID)
 		return
 	}
+	if unreviewedExternalDeliverySlot(*unfinishedSlot) {
+		log.Printf("[TaskContext] skipped unfinished slot %s for semantic continuation: unreviewed external delivery", (*unfinishedSlot).SlotID)
+		return
+	}
 	slotID := (*unfinishedSlot).SlotID
 	if h.memory.BindUnfinishedSlot(userID, slotID) {
 		*unfinishedSlot = nil

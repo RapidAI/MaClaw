@@ -238,6 +238,8 @@ export interface UseAITabManagerResult {
     clearTabConversation: (tabId: string) => void;
     /** Persist a project tab's conversation history aside before a hard reset. */
     stashProjectTabHistory: (projectPath: string, history: unknown[]) => Promise<void>;
+    /** Record the task's LaTeX entry on its tab without changing which tab is active. */
+    setLatexRelativePath: (tabId: string, relativePath: string) => void;
     /** Record a lower bound (ms) for a tab's session start, used for history filtering. */
     markSessionFloor: (tabId: string, floorMs: number) => void;
     /** Save state for the current active tab before switching */
@@ -1919,6 +1921,20 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         return SaveProjectTabConversation(tabId, archived.history).then(() => undefined).catch(() => undefined);
     }, []);
 
+    const setLatexRelativePath = useCallback((tabId: string, relativePath: string) => {
+        const next = String(relativePath || "").trim();
+        if (!tabId || !next) return;
+        updateTabState(prev => {
+            let changed = false;
+            const tabs = prev.tabs.map(tab => {
+                if (tab.id !== tabId || String(tab.latexRelativePath || "") === next) return tab;
+                changed = true;
+                return { ...tab, latexRelativePath: next };
+            });
+            return changed ? { ...prev, tabs } : prev;
+        });
+    }, [updateTabState]);
+
     const markSessionFloor = useCallback((tabId: string, floorMs: number) => {
         const floor = Number(floorMs || 0);
         if (!tabId || !Number.isFinite(floor) || floor <= 0) return;
@@ -1946,6 +1962,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         discardOrphanProjectTabs,
         clearTabConversation,
         stashProjectTabHistory,
+        setLatexRelativePath,
         markSessionFloor,
         saveTabState,
         getTabState,

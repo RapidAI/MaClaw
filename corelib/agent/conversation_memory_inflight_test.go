@@ -291,6 +291,48 @@ func TestPersistentMemoryPromotesFreshCheckpointOnLoad(t *testing.T) {
 	}
 }
 
+func TestLaterCheckpointKeepsUncertainExternalSend(t *testing.T) {
+	cm := NewConversationMemory()
+	defer cm.Stop()
+	const userID = "desktop-user"
+	if err := cm.PersistInFlightCheckpoint(userID, []ConversationEntry{{Role: "user", Content: "发到微信"}}, "发到微信", "/project", "run-1", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "im_message", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cm.PersistInFlightCheckpoint(userID, []ConversationEntry{
+		{Role: "user", Content: "发到微信"},
+		{Role: "assistant", Content: "searching"},
+		{Role: "tool", Content: "found", ToolName: "bash"},
+	}, "发到微信", "/project", "run-1", InFlightCheckpoint{
+		Sequence: 2, LastToolName: "bash", SideEffectState: "local_committed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recovered := cm.ConsumeInFlightRecovery(userID)
+	if recovered.LastToolName != "im_message" || recovered.SideEffectState != "external_uncertain" || recovered.RecoveryMode != "requires_review" {
+		t.Fatalf("later checkpoint erased the send: %#v", recovered)
+	}
+	if got := cm.Load(userID); len(got) != 3 || got[2].ToolName != "bash" {
+		t.Fatalf("later history was not saved: %#v", got)
+	}
+
+	if err := cm.PersistInFlightCheckpoint(userID, []ConversationEntry{{Role: "user", Content: "search"}}, "search", "/project", "run-2", InFlightCheckpoint{
+		Sequence: 1, LastToolName: "web_search", SideEffectState: "external_uncertain",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cm.PersistInFlightCheckpoint(userID, []ConversationEntry{{Role: "user", Content: "search"}}, "search", "/project", "run-2", InFlightCheckpoint{
+		Sequence: 2, LastToolName: "bash", SideEffectState: "local_committed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recovered = cm.ConsumeInFlightRecovery(userID)
+	if recovered.LastToolName != "bash" || recovered.SideEffectState != "local_committed" {
+		t.Fatalf("non-send checkpoint was frozen: %#v", recovered)
+	}
+}
+
 func TestRecoveryModeForSideEffectRequiresReviewUnlessReadOnly(t *testing.T) {
 	for _, sideEffect := range []string{"", "local_committed", "external_uncertain", "unknown"} {
 		if got := recoveryModeForSideEffect(sideEffect); got != "requires_review" {

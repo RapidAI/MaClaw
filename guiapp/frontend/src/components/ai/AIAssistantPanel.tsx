@@ -4,7 +4,7 @@ import { attachmentInfoFromFilePath, buildAttachmentDisplayText, findLastIndex, 
 import { useVoiceInput } from "./useVoiceInput";
 import { useVoiceTextSubmit } from "./useVoiceTextSubmit";
 import { cloneWorkflowUIState, useWorkflowState, type WorkflowUIState } from "./useWorkflowState";
-import { cloneCodePreviewState, initialState as initialCodePreviewState, latexWorkbenchFromAgentFile, useCodePreviewState, willDismissPreviewAfterClosingAll, willDismissPreviewAfterClosingFile, type CodePreviewUIState } from "./useCodePreviewState";
+import { cloneCodePreviewState, initialState as initialCodePreviewState, useCodePreviewState, willDismissPreviewAfterClosingAll, willDismissPreviewAfterClosingFile, type CodePreviewUIState } from "./useCodePreviewState";
 import { useBufferQueue } from "./useBufferQueue";
 import type { AttachmentInfo } from "./useBufferQueue";
 import { CodingAgentThinkingTimelineItem, reasoningTrailMarkdownOptions, renderMessage } from "./aiAssistantMarkdown";
@@ -120,6 +120,7 @@ export { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
 import { agentViewHiddenFieldValue, canShowAssistantCodingPreviewForTab, codePreviewEventsEnabled, codePreviewHasTaskResult, codePreviewModeFromState, commitRestoredCodePreview, hasRestorableProjectConversation, isWorkflowPhaseRunningStatus, isWorkflowPhaseTerminalStatus, loadRestoredProjectConversationHistory, normalizeRestoredProjectHistoryContent, normalizeWorkflowPhaseStatus, readStoredAssistantPreviewState, shouldApplyRestoredAssistantPreview, shouldReopenTaskResultPreview, shouldShowSourcePreviewForAgentMode, shouldShowSourcePreviewForWorkflow, suppressWorkflowReviewActions, withCodePreviewVisibleIfContent, writeStoredAssistantPreviewState, type ConversationBranchPointLike, type StoredAssistantPreviewState } from "./assistantPreviewState";
 import type { SidebarLLMProviderSummary } from "../../types/appShell";
 import { useAssistantPreviewOpenEvents } from "./useAssistantPreviewOpenEvents";
+import { useLatexPaperPreviewOpen } from "./useLatexPaperPreviewOpen";
 import { dispatchOpenLatexDocument, latexRelativePathForProject } from "./latexDocumentOpen";
 import { isLatexExpertId } from "../../utils/latexTemplates";
 export { canShowAssistantCodingPreviewForTab, codePreviewEventsEnabled, codePreviewModeFromState, shouldApplyRestoredAssistantPreview, shouldShowSourcePreviewForAgentMode, shouldShowSourcePreviewForWorkflow, withCodePreviewVisibleIfContent } from "./assistantPreviewState";
@@ -657,7 +658,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         const pending = (window as any).go?.main?.App?.ResolveSkillRecording?.("cancel", "", "");
         if (pending && typeof pending.catch === "function") pending.catch(() => {});
     }, []);
-    const { tabState, activeTab, activateTab, createVETab, createGroupTab, createProjectTab, createExpertTab, closeTab, discardDeletedProjectTabs, discardDeletedExpertTabs, discardOrphanProjectTabs, clearTabConversation, stashProjectTabHistory, markSessionFloor, saveTabState, getTabState, getTabs, hasProjectTab, upgradeVETabToGroup, renameGroupTab, renameLocalTab, renameProjectTabs, tabLimitError, clearTabLimitError } = useAITabManager();
+    const { tabState, activeTab, activateTab, createVETab, createGroupTab, createProjectTab, createExpertTab, closeTab, discardDeletedProjectTabs, discardDeletedExpertTabs, discardOrphanProjectTabs, clearTabConversation, stashProjectTabHistory, setLatexRelativePath, markSessionFloor, saveTabState, getTabState, getTabs, hasProjectTab, upgradeVETabToGroup, renameGroupTab, renameLocalTab, renameProjectTabs, tabLimitError, clearTabLimitError } = useAITabManager();
     const { requested: workbenchHomeRequested, dismiss: dismissWorkbenchHome } = useWorkbenchLandingMode(startOnWorkbenchHome, activeTab.id, activeTab.type);
     cloudTreeRefreshTabIdRef.current = activeTab.id;
     const projectTabRenameRequestRef = useRef<Map<string, number>>(new Map());
@@ -3589,7 +3590,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     useEffect(() => {
         if (!panelActive) setParticipantInviteTargetTabId(null);
     }, [panelActive]);
-    usePendingAssistantTabOpen({
+    const latexEntryWatch = usePendingAssistantTabOpen({
         lang,
         createVETab,
         createGroupTab,
@@ -3601,6 +3602,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         getTabState,
         saveTabState,
         getTabList: getTabs,
+        setLatexRelativePath,
         hasProjectTab,
         sendMessage: sendProjectMessageAfterPrepare,
         pendingVEOpen,
@@ -3835,31 +3837,16 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             codePreviewStateRef.current = initialCodePreviewState();
         }
     }, [sourcePreviewAllowed, isCloudWorkspaceEnvironment, taskResultPreviewOpen, latexPaperTab, hasTaskResult, codePreviewState.active, codePreviewState.files.size, resetCodePreviewState]);
-    const latexPreviewOpenedKeyRef = useRef("");
-    // A rewrite of the exported template arrives as an ordinary file update
-    // (op modify, no workbench flag). Adopt that file as the paper and open
-    // the pane; otherwise the chat ends with the source changed and nowhere to look.
-    useEffect(() => {
-        if (!latexPaperTab) return;
-        const projectPath = String(activeTab.projectPath || "").trim();
-        let opened = false;
-        for (const file of codePreviewState.files.values()) {
-            const next = latexWorkbenchFromAgentFile(file, projectPath);
-            if (!next) continue;
-            adoptPreviewFile(next);
-            opened = true;
-        }
-        if (opened) setTaskResultPreviewOpen(true);
-    }, [activeTab.projectPath, adoptPreviewFile, codePreviewState.files, latexPaperTab]);
-    useEffect(() => {
-        if (!latexPaperTab) return;
-        const projectPath = String(activeTab.projectPath || "").trim();
-        if (!projectPath || !latexSourcePath) return;
-        const key = `${activeTab.id}\0${projectPath}\0${latexSourcePath}`;
-        if (latexPreviewOpenedKeyRef.current === key) return;
-        latexPreviewOpenedKeyRef.current = key;
-        dispatchOpenLatexDocument({ projectPath, relativePath: latexSourcePath });
-    }, [activeTab.id, activeTab.projectPath, latexPaperTab, latexSourcePath]);
+    useLatexPaperPreviewOpen({
+        tabId: activeTab.id,
+        projectPath: activeTab.projectPath,
+        latexPaperTab,
+        latexSourcePath,
+        entryWatch: latexEntryWatch,
+        files: codePreviewState.files,
+        adoptPreviewFile,
+        setTaskResultPreviewOpen,
+    });
     // Local/remote coding stays closed until the user opens preview. Cloud
     // workspaces auto-open once per tab. Later visits recover leftover files
     // without clearing userClosed.
@@ -3968,6 +3955,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const handleTogglePreviewPanel = useCallback(() => {
         if (!codingPreviewAllowed) return;
         if (isLatexExpertId(activeTab.expertId) && activeTab.projectPath) {
+            if (latexEntryWatch.pending(String(activeTab.projectPath || "").trim())) return;
             if (showCodePreview) {
                 closeCodePreview();
             } else if (shouldReopenTaskResultPreview(codePreviewStateRef.current)) {
@@ -4010,6 +3998,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const handleOpenPreviewPanel = useCallback(() => {
         if (!codingPreviewAllowed) return;
         if (isLatexExpertId(activeTab.expertId) && activeTab.projectPath) {
+            if (latexEntryWatch.pending(String(activeTab.projectPath || "").trim())) return;
             if (!showCodePreview) {
                 if (shouldReopenTaskResultPreview(codePreviewStateRef.current)) {
                     reopenCodePreview();

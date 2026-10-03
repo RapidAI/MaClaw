@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -618,9 +619,26 @@ func TestSyncCloudWorkspaceFilesPullsManifestWhenAlreadyHeld(t *testing.T) {
 	if prepared.LocalPath != created.WorkingDir {
 		t.Fatalf("local=%q want %q", prepared.LocalPath, created.WorkingDir)
 	}
+	if _, err := os.Stat(notes); !os.IsNotExist(err) {
+		t.Fatalf("browse listing must not download notes.md: %v", err)
+	}
+	listed, err := app.GetCodingWorkbenchDirectory(created.ProjectPath, "")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if !codingWorkbenchEntriesContain(listed.Entries, "notes.md") {
+		t.Fatalf("listing=%+v, want notes.md", listed.Entries)
+	}
+	preview, err := app.GetCodingWorkbenchFilePreview(created.ProjectPath, "notes.md")
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if preview.Content != string(body) {
+		t.Fatalf("preview=%q want %q", preview.Content, body)
+	}
 	got, err := os.ReadFile(notes)
 	if err != nil || string(got) != string(body) {
-		t.Fatalf("browse sync should pull already-held files: notes.md=%q err=%v", got, err)
+		t.Fatalf("open should materialize notes.md=%q err=%v", got, err)
 	}
 	hub.mu.Lock()
 	leasesAfter := hub.leaseAcquires
@@ -653,9 +671,19 @@ func TestSyncCloudWorkspaceFilesPullsManifestWhenEventsEmpty(t *testing.T) {
 	if _, err := app.SyncCloudWorkspaceFiles("cws_manifest"); err != nil {
 		t.Fatalf("SyncCloudWorkspaceFiles: %v", err)
 	}
-	got, err := os.ReadFile(readme)
-	if err != nil || string(got) != string(body) {
-		t.Fatalf("empty event log should still pull the remote tree: readme.md=%q err=%v", got, err)
+	if _, err := os.Stat(readme); !os.IsNotExist(err) {
+		t.Fatalf("browse listing must not download readme.md: %v", err)
+	}
+	listed, err := app.GetCodingWorkbenchDirectory(created.ProjectPath, "")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if !codingWorkbenchEntriesContain(listed.Entries, "readme.md") {
+		t.Fatalf("listing=%+v, want readme.md", listed.Entries)
+	}
+	preview, err := app.GetCodingWorkbenchFilePreview(created.ProjectPath, "readme.md")
+	if err != nil || preview.Content != string(body) {
+		t.Fatalf("preview=%q err=%v", preview.Content, err)
 	}
 }
 
@@ -669,6 +697,135 @@ func TestSyncCloudWorkspaceFilesIgnoresLegacyEventsEndpoint(t *testing.T) {
 	}
 	if prepared.LocalPath != created.WorkingDir {
 		t.Fatalf("local=%q want %q", prepared.LocalPath, created.WorkingDir)
+	}
+}
+
+func TestSyncCloudWorkspaceFilesListsOneDirectoryLevel(t *testing.T) {
+	paper := []byte("paper")
+	report := []byte("report")
+	paperSum := cloudWorkspaceSHA256Hex(paper)
+	reportSum := cloudWorkspaceSHA256Hex(report)
+	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	created := mustCreateCloudWorkspaceTask(t, app, "云端任务", "", "coding_dev", "cws_levels")
+	hub.mu.Lock()
+	hub.revision = "rev-levels"
+	hub.objects = map[string][]byte{paperSum: paper, reportSum: report}
+	hub.entries = []cloudWorkspaceManifestEntry{
+		{Path: "papers/a.pdf", SHA256: paperSum, Size: int64(len(paper))},
+		{Path: "report.pdf", SHA256: reportSum, Size: int64(len(report))},
+	}
+	hub.mu.Unlock()
+	if _, err := app.SyncCloudWorkspaceFiles("cws_levels"); err != nil {
+		t.Fatal(err)
+	}
+	root, err := app.GetCodingWorkbenchDirectory(created.ProjectPath, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !codingWorkbenchEntriesContain(root.Entries, "papers") || !codingWorkbenchEntriesContain(root.Entries, "report.pdf") {
+		t.Fatalf("root=%+v", root.Entries)
+	}
+	if codingWorkbenchEntriesContain(root.Entries, "a.pdf") {
+		t.Fatalf("root listed a nested file: %+v", root.Entries)
+	}
+	papers, err := app.GetCodingWorkbenchDirectory(created.ProjectPath, "papers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !codingWorkbenchEntriesContain(papers.Entries, "a.pdf") {
+		t.Fatalf("papers=%+v", papers.Entries)
+	}
+	if _, err := os.Stat(filepath.Join(created.WorkingDir, "report.pdf")); !os.IsNotExist(err) {
+		t.Fatalf("listing downloaded report.pdf: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(created.WorkingDir, "papers", "a.pdf")); !os.IsNotExist(err) {
+		t.Fatalf("listing downloaded papers/a.pdf: %v", err)
+	}
+	preview, err := app.GetCodingWorkbenchFilePreview(created.ProjectPath, "report.pdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(created.WorkingDir, "papers", "a.pdf")); !os.IsNotExist(err) {
+		t.Fatalf("opening report.pdf downloaded papers/a.pdf: %v", err)
+	}
+	if preview.Content != "" && !strings.Contains(preview.Content, "binary") && preview.Content != string(report) {
+		t.Fatalf("preview=%q", preview.Content)
+	}
+	got, err := os.ReadFile(filepath.Join(created.WorkingDir, "report.pdf"))
+	if err != nil || string(got) != string(report) {
+		t.Fatalf("report.pdf=%q err=%v", got, err)
+	}
+}
+
+func TestPreviewDoesNotRestoreLocallyDeletedCloudFile(t *testing.T) {
+	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	created := mustCreateCloudWorkspaceTask(t, app, "云端任务", "", "coding_dev", "cws_local_delete")
+	seedCloudWorkspaceFileForDelete(t, app, hub, "cws_local_delete", created.WorkingDir, "notes.md", "keep-deleted")
+	notes := filepath.Join(created.WorkingDir, "notes.md")
+	if err := os.Remove(notes); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.SyncCloudWorkspaceFiles("cws_local_delete"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.GetCodingWorkbenchFilePreview(created.ProjectPath, "notes.md"); err == nil {
+		t.Fatal("preview recreated a file the writable cache had deleted")
+	}
+	if _, err := os.Stat(notes); !os.IsNotExist(err) {
+		t.Fatalf("local delete was downloaded again: %v", err)
+	}
+}
+
+func TestPushDropsDeletedFileFromBrowseListing(t *testing.T) {
+	hub := &fakeCloudWorkspaceHub{acquired: cloudWorkspaceAcquiredGranted}
+	app := newCloudWorkspaceMountTestApp(t, hub)
+	prepared, err := app.PrepareCloudWorkspace("cws_listing_push")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(prepared.LocalPath, "keep.md"), []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	drop := filepath.Join(prepared.LocalPath, "drop.md")
+	if err := os.WriteFile(drop, []byte("drop"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := app.pushCloudWorkspace(ctx, "cws_listing_push", prepared.LocalPath); err != nil {
+		t.Fatalf("seed push: %v", err)
+	}
+	if err := os.Remove(drop); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.pushCloudWorkspace(ctx, "cws_listing_push", prepared.LocalPath); err != nil {
+		t.Fatalf("delete push: %v", err)
+	}
+	listing, err := readCloudWorkspaceListing(prepared.LocalPath)
+	if err != nil || listing == nil {
+		t.Fatalf("listing err=%v", err)
+	}
+	for _, entry := range listing.Entries {
+		if entry.Path == "drop.md" {
+			t.Fatalf("browse listing still shows the pushed delete: %+v", listing.Entries)
+		}
+	}
+	found := false
+	for _, entry := range listing.Entries {
+		if entry.Path == "keep.md" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("listing lost keep.md: %+v", listing.Entries)
+	}
+	if _, err := app.GetCodingWorkbenchFilePreview(prepared.LocalPath, "drop.md"); err == nil {
+		t.Fatal("preview recreated a file the push already deleted")
+	}
+	if _, err := os.Stat(drop); !os.IsNotExist(err) {
+		t.Fatalf("deleted file came back: %v", err)
 	}
 }
 

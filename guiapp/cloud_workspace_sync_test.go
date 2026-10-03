@@ -10,20 +10,28 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 type cloudWorkspaceMutationTransport struct {
-	root       string
-	entries    []cloudWorkspaceManifestEntry
-	object     []byte
-	mutateRead bool
-	mutateGet  bool
-	putCalls   int
+	root         string
+	entries      []cloudWorkspaceManifestEntry
+	object       []byte
+	mutateRead   bool
+	mutateGet    bool
+	plantReplica bool
+	putCalls     int
+	getCalls     int
 }
 
 func (t *cloudWorkspaceMutationTransport) GetManifest(context.Context) (*cloudWorkspaceManifest, error) {
 	if t.mutateRead {
 		_ = os.WriteFile(filepath.Join(t.root, "a.txt"), []byte("edited-after-scan"), 0o600)
+	}
+	if t.plantReplica {
+		dest := filepath.Join(t.root, "papers", "x.pdf")
+		_ = os.MkdirAll(filepath.Dir(dest), 0o700)
+		_ = os.WriteFile(dest, append([]byte(nil), t.object...), 0o600)
 	}
 	return &cloudWorkspaceManifest{Revision: "rev-1", Entries: t.entries}, nil
 }
@@ -33,6 +41,7 @@ func (t *cloudWorkspaceMutationTransport) PutManifest(context.Context, string, [
 }
 
 func (t *cloudWorkspaceMutationTransport) GetObject(context.Context, string, int64) ([]byte, error) {
+	t.getCalls++
 	if t.mutateGet {
 		_ = os.WriteFile(filepath.Join(t.root, "a.txt"), []byte("edited-during-download"), 0o600)
 	}
@@ -86,6 +95,192 @@ func TestCloudWorkspacePullRejectsFileChangedDuringDownload(t *testing.T) {
 	got, readErr := os.ReadFile(filepath.Join(root, "a.txt"))
 	if readErr != nil || string(got) != "edited-during-download" {
 		t.Fatalf("concurrent local edit was overwritten: %q err=%v", got, readErr)
+	}
+}
+
+func TestCloudWorkspacePathDroppedWalksAncestors(t *testing.T) {
+	drop := map[string]struct{}{"docs": {}, "notes.md": {}}
+	if !cloudWorkspacePathDropped("docs/a.md", drop) || !cloudWorkspacePathDropped("notes.md", drop) {
+		t.Fatal("named path and its children must drop")
+	}
+	if cloudWorkspacePathDropped("docs-extra/a.md", drop) || cloudWorkspacePathDropped("notes.md.bak", drop) {
+		t.Fatal("a shared prefix is not a parent directory")
+	}
+}
+
+func TestCloudWorkspaceListingContainsDirIgnoresSameNamedFile(t *testing.T) {
+	entries := []cloudWorkspaceManifestEntry{{Path: "papers"}, {Path: "papers/a.pdf"}}
+	if !cloudWorkspaceListingContainsDir(entries, "papers") {
+		t.Fatal("a child path means papers is a directory")
+	}
+	if cloudWorkspaceListingContainsDir(entries, "missing") {
+		t.Fatal("missing prefix is not a directory")
+	}
+}
+
+func TestCloudWorkspaceSameEntriesIgnoresOrder(t *testing.T) {
+	left := []cloudWorkspaceManifestEntry{{Path: "b", SHA256: "bb", Size: 2}, {Path: "a", SHA256: "aa", Size: 1}}
+	right := []cloudWorkspaceManifestEntry{{Path: "a", SHA256: "aa", Size: 1}, {Path: "b", SHA256: "bb", Size: 2}}
+	if !cloudWorkspaceSameEntries(left, right) {
+		t.Fatal("same paths and objects must match")
+	}
+	right[0].SHA256 = "zz"
+	if cloudWorkspaceSameEntries(left, right) {
+		t.Fatal("different object must not match")
+	}
+}
+
+func TestDeletePathsPublishesAuthoritativeManifest(t *testing.T) {
+	root := t.TempDir()
+	sum := strings.Repeat("ab", 32)
+	entry := func(path string) cloudWorkspaceManifestEntry {
+		return cloudWorkspaceManifestEntry{Path: path, SHA256: sum, Size: 1}
+	}
+	store := &memCloudWorkspaceTransport{
+		revision: "rev-remote",
+		entries:  []cloudWorkspaceManifestEntry{entry("keep.md"), entry("drop.md"), entry("added.md")},
+	}
+	stale := &cloudWorkspaceManifest{Revision: "rev-old", Entries: []cloudWorkspaceManifestEntry{entry("keep.md"), entry("drop.md"), entry("ghost.md")}}
+	if err := writeCloudWorkspaceListing(root, stale); err != nil {
+		t.Fatal(err)
+	}
+	p := &cloudWorkspaceProtocol{Transport: store}
+	if err := p.DeletePaths(context.Background(), root, []string{"drop.md"}); err != nil {
+		t.Fatal(err)
+	}
+	listing, err := readCloudWorkspaceListing(root)
+	if err != nil || listing == nil {
+		t.Fatalf("listing err=%v", err)
+	}
+	if listing.Revision != "rev-mem" {
+		t.Fatalf("revision=%q", listing.Revision)
+	}
+	got := map[string]bool{}
+	for _, item := range listing.Entries {
+		got[item.Path] = true
+	}
+	if !got["keep.md"] || !got["added.md"] || got["drop.md"] || got["ghost.md"] {
+		t.Fatalf("listing=%v", got)
+	}
+}
+
+func TestStaleBrowseListingDoesNotReplaceCommittedIndex(t *testing.T) {
+	root := t.TempDir()
+	sum := strings.Repeat("ab", 32)
+	entry := func(path string) cloudWorkspaceManifestEntry {
+		return cloudWorkspaceManifestEntry{Path: path, SHA256: sum, Size: 1}
+	}
+	seen := cloudWorkspaceListingPublishGen(root)
+	old := &cloudWorkspaceManifest{Revision: "rev-old", Entries: []cloudWorkspaceManifestEntry{entry("keep.md"), entry("drop.md")}}
+	wrote, err := writeCloudWorkspaceListingIfCurrent(root, seen, old)
+	if err != nil || !wrote {
+		t.Fatalf("initial listing wrote=%v err=%v", wrote, err)
+	}
+	newer := &cloudWorkspaceManifest{Revision: "rev-new", Entries: []cloudWorkspaceManifestEntry{entry("keep.md")}}
+	if err := writeCloudWorkspaceListing(root, newer); err != nil {
+		t.Fatal(err)
+	}
+	wrote, err = writeCloudWorkspaceListingIfCurrent(root, seen, old)
+	if err != nil || wrote {
+		t.Fatalf("stale listing wrote=%v err=%v", wrote, err)
+	}
+	listing, err := readCloudWorkspaceListing(root)
+	if err != nil || listing == nil || listing.Revision != "rev-new" || len(listing.Entries) != 1 || listing.Entries[0].Path != "keep.md" {
+		t.Fatalf("listing=%+v err=%v", listing, err)
+	}
+	seen = cloudWorkspaceListingPublishGen(root)
+	wrote, err = writeCloudWorkspaceListingIfCurrent(root, seen, old)
+	if err != nil || !wrote {
+		t.Fatalf("current listing wrote=%v err=%v", wrote, err)
+	}
+	listing, err = readCloudWorkspaceListing(root)
+	if err != nil || listing == nil || listing.Revision != "rev-old" {
+		t.Fatalf("current write did not land: %+v err=%v", listing, err)
+	}
+}
+
+func TestCloudWorkspaceListingCacheIgnoresCallerMutation(t *testing.T) {
+	root := t.TempDir()
+	sum := strings.Repeat("ab", 32)
+	first := &cloudWorkspaceManifest{Revision: "rev-1", Entries: []cloudWorkspaceManifestEntry{{Path: "a.md", SHA256: sum, Size: 1}}}
+	if err := writeCloudWorkspaceListing(root, first); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readCloudWorkspaceListing(root)
+	if err != nil || got == nil || got.Revision != "rev-1" || len(got.Entries) != 1 {
+		t.Fatalf("listing=%+v err=%v", got, err)
+	}
+	got.Revision = "mutated"
+	got.Entries[0].Path = "mutated.md"
+	again, err := readCloudWorkspaceListing(root)
+	if err != nil || again == nil || again.Revision != "rev-1" || again.Entries[0].Path != "a.md" {
+		t.Fatalf("cache shared caller memory: %+v err=%v", again, err)
+	}
+	second := &cloudWorkspaceManifest{Revision: "rev-2", Entries: []cloudWorkspaceManifestEntry{{Path: "b.md", SHA256: sum, Size: 2}}}
+	raw, err := json.Marshal(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	filePath := filepath.Join(root, cloudWorkspaceCacheStateDir, cloudWorkspaceListingFile)
+	if err := os.WriteFile(filePath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(filePath, future, future); err != nil {
+		t.Fatal(err)
+	}
+	replaced, err := readCloudWorkspaceListing(root)
+	if err != nil || replaced == nil || replaced.Revision != "rev-2" || replaced.Entries[0].Path != "b.md" {
+		t.Fatalf("cache served the replaced listing: %+v err=%v", replaced, err)
+	}
+}
+
+func TestCloudWorkspacePullAcceptsReplicaWrittenAfterSnapshot(t *testing.T) {
+	root := t.TempDir()
+	remote := []byte("remote-pdf")
+	sum := sha256.Sum256(remote)
+	transport := &cloudWorkspaceMutationTransport{
+		root: root, plantReplica: true,
+		entries: []cloudWorkspaceManifestEntry{{Path: "papers/x.pdf", SHA256: hex.EncodeToString(sum[:]), Size: int64(len(remote))}},
+		object:  remote,
+	}
+	if _, err := (&cloudWorkspaceProtocol{Transport: transport}).Pull(context.Background(), root); err != nil {
+		t.Fatalf("Pull err=%v, a replica that already matches the remote object is not a user edit", err)
+	}
+	if transport.getCalls != 0 {
+		t.Fatalf("matching replica was downloaded again, get calls=%d", transport.getCalls)
+	}
+	got, err := os.ReadFile(filepath.Join(root, "papers", "x.pdf"))
+	if err != nil || string(got) != string(remote) {
+		t.Fatalf("replica=%q err=%v", got, err)
+	}
+	indexed, ok := readCloudWorkspaceHashIndex(root).Entries["papers/x.pdf"]
+	if !ok || indexed.SHA256 != hex.EncodeToString(sum[:]) || indexed.Size != int64(len(remote)) {
+		t.Fatalf("hash index=%+v, want the replica so the next pull does not read it again", indexed)
+	}
+}
+
+func TestCloudWorkspaceHTTPTransportIsNotV2(t *testing.T) {
+	var transport cloudWorkspaceSyncTransport = &cloudWorkspaceHTTPTransport{}
+	if _, ok := transport.(cloudWorkspaceV2Transport); ok {
+		t.Fatal("v1 http transport must not call per-file operation or event endpoints")
+	}
+}
+
+func TestCloudWorkspaceManifestChildrenOneLevel(t *testing.T) {
+	entries := []cloudWorkspaceManifestEntry{
+		{Path: "papers/a.pdf", Size: 3},
+		{Path: "papers/nested/b.pdf", Size: 1},
+		{Path: "report.pdf", Size: 2},
+		{Path: ".maclaw-cloud/state.json", Size: 1},
+	}
+	root := cloudWorkspaceManifestChildren(entries, "")
+	if len(root) != 2 || !root[0].IsDir || root[0].Name != "papers" || root[1].IsDir || root[1].Name != "report.pdf" {
+		t.Fatalf("root=%+v", root)
+	}
+	papers := cloudWorkspaceManifestChildren(entries, "papers")
+	if len(papers) != 2 || papers[0].Name != "nested" || !papers[0].IsDir || papers[1].Name != "a.pdf" || papers[1].IsDir {
+		t.Fatalf("papers=%+v", papers)
 	}
 }
 

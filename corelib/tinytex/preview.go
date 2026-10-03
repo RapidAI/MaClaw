@@ -2,12 +2,15 @@ package tinytex
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 const (
@@ -161,10 +164,148 @@ func runBibliography(ctx context.Context, opt PreviewOptions, bin, label, root, 
 	return run()
 }
 
-// NeedsBibtex reports a BibTeX rerun requested by the log.
+// NeedsBibtex reports a BibTeX rerun requested by the log. Natbib says
+// "undefined citations". The kernel only says "Citation `key' undefined",
+// and a missing .bbl is announced as "No file main.bbl". The last two clues
+// have to share a line. "No file main.toc" beside "(./main.bbl)" is an opened
+// bibliography, and "undefined references" beside an unrelated "citation"
+// is a cross-reference.
 func NeedsBibtex(log string) bool {
 	lower := strings.ToLower(log)
-	return strings.Contains(lower, "rerun bibtex") || strings.Contains(lower, "(re)run bibtex") || strings.Contains(lower, "undefined citations")
+	if strings.Contains(lower, "rerun bibtex") || strings.Contains(lower, "(re)run bibtex") || strings.Contains(lower, "undefined citations") {
+		return true
+	}
+	for _, line := range strings.Split(lower, "\n") {
+		if strings.Contains(line, "no file ") && strings.Contains(line, ".bbl") {
+			return true
+		}
+		if strings.Contains(line, "citation") && strings.Contains(line, "undefined") {
+			return true
+		}
+	}
+	return false
+}
+
+// bibliographyNote is the short record of a bibliography that is still wrong:
+// an undefined citation, or a BibTeX "Warning--" line. At most five lines.
+// Ordinary TeX noise (overfull boxes, "undefined references") is not included,
+// so a later up-to-date report can repeat this record without replaying the log.
+func bibliographyNote(log string) string {
+	var kept []string
+	seen := map[string]struct{}{}
+	for _, line := range strings.Split(log, "\n") {
+		trim := strings.TrimSpace(strings.TrimRight(line, "\r"))
+		if !bibliographyNoteLine(trim) {
+			continue
+		}
+		if len(trim) > 200 {
+			trim = trim[:200]
+		}
+		key := strings.ToLower(trim)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		kept = append(kept, trim)
+		if len(kept) == 5 {
+			break
+		}
+	}
+	return strings.Join(kept, "\n")
+}
+
+func bibliographyNoteLine(line string) bool {
+	lower := strings.ToLower(line)
+	if strings.Contains(lower, "undefined citations") {
+		return true
+	}
+	if strings.Contains(lower, "citation") && strings.Contains(lower, "undefined") {
+		return true
+	}
+	return strings.Contains(lower, "warning--")
+}
+
+// bibtexSyntaxFailure is a BibTeX parse error. "I found no \citation commands"
+// also exits 2 and is not one of these: a draft with a database and no \cite
+// still has a usable PDF. The open-file errors are handled separately so the
+// style install can retry before this runs.
+func bibtexSyntaxFailure(log string) string {
+	for _, line := range strings.Split(log, "\n") {
+		trim := strings.TrimSpace(strings.TrimRight(line, "\r"))
+		if strings.Contains(strings.ToLower(trim), "i was expecting") {
+			return trim
+		}
+	}
+	return ""
+}
+
+func withBibNote(log, note string) string {
+	note = strings.TrimSpace(note)
+	if note == "" || strings.Contains(log, note) {
+		return log
+	}
+	if strings.TrimSpace(log) == "" {
+		return note
+	}
+	return strings.TrimSpace(log) + "\n" + note
+}
+
+var (
+	auxBibdataRe  = regexp.MustCompile(`(?m)^\\bibdata\{([^{}]*)\}`)
+	auxBibstyleRe = regexp.MustCompile(`(?m)^\\bibstyle\{([^{}]*)\}`)
+)
+
+// bibliographyStale reports that the .aux asks for BibTeX and the .bbl is
+// missing or older than a bibliography file. A changed .bib still satisfies
+// every citation key, so the log does not ask for BibTeX by itself.
+func bibliographyStale(dir, stem string) bool {
+	aux, err := os.ReadFile(filepath.Join(dir, stem+".aux"))
+	if err != nil {
+		return false
+	}
+	text := string(aux)
+	data := auxBibdataRe.FindAllStringSubmatch(text, -1)
+	if len(data) == 0 {
+		return false
+	}
+	bblInfo, bblErr := os.Stat(filepath.Join(dir, stem+".bbl"))
+	if bblErr != nil || bblInfo.IsDir() {
+		return true
+	}
+	for _, match := range auxBibstyleRe.FindAllStringSubmatch(text, -1) {
+		// A missing .bst is a TeX tree style. Only a copy next to the paper
+		// can be newer than the .bbl.
+		if auxInputNewer(dir, match[1], ".bst", bblInfo, false) {
+			return true
+		}
+	}
+	for _, match := range data {
+		for _, name := range strings.Split(match[1], ",") {
+			if auxInputNewer(dir, name, ".bib", bblInfo, true) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func auxInputNewer(dir, name, ext string, bbl os.FileInfo, missingIsStale bool) bool {
+	name = strings.TrimSpace(strings.ReplaceAll(name, `\`, "/"))
+	if name == "" {
+		return false
+	}
+	if !strings.EqualFold(filepath.Ext(name), ext) {
+		name += ext
+	}
+	path := filepath.FromSlash(name)
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(dir, path)
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return missingIsStale
+	}
+	return info.ModTime().After(bbl.ModTime())
 }
 
 // NeedsBiber reports a Biber rerun requested by the log.
@@ -178,6 +319,7 @@ func NeedsRerun(log string) bool {
 	lower := strings.ToLower(log)
 	return strings.Contains(lower, "rerun to get cross-references right") ||
 		strings.Contains(lower, "rerun to get citations correct") ||
+		strings.Contains(lower, "rerun to get bibliographical references right") ||
 		strings.Contains(lower, "rerun to get outlines right") ||
 		strings.Contains(lower, "please rerun latex") ||
 		strings.Contains(lower, "please (re)run latex")
@@ -437,33 +579,7 @@ func ResolveMain(path string) (string, error) {
 // declaresDocument reports a document-class command at the start of a line.
 // A comment or a sentence that mentions the command is not a main file.
 func declaresDocument(body string) bool {
-	for _, line := range strings.Split(body, "\n") {
-		if lineStartsDocument(texCodePrefix(strings.TrimRight(line, "\r"))) {
-			return true
-		}
-	}
-	return false
-}
-
-func texCodePrefix(line string) string {
-	var b strings.Builder
-	backslashes := 0
-	for _, r := range line {
-		if r == '%' && backslashes%2 == 0 {
-			break
-		}
-		b.WriteRune(r)
-		if r == '\\' {
-			backslashes++
-		} else {
-			backslashes = 0
-		}
-	}
-	return strings.TrimSpace(b.String())
-}
-
-func lineStartsDocument(code string) bool {
-	return strings.HasPrefix(code, `\documentclass`) || strings.HasPrefix(code, `\documentstyle`)
+	return tool.LatexDocument(body)
 }
 
 func findIncludingMain(dir, opened string, depth int) string {
@@ -575,6 +691,7 @@ func Preview(ctx context.Context, texPath string, opt PreviewOptions) (PreviewRe
 	root := filepath.Dir(main)
 	var (
 		lastLog   string
+		bibNote   string
 		repaired  bool
 		installed int
 		repairs   int
@@ -590,26 +707,37 @@ func Preview(ctx context.Context, texPath string, opt PreviewOptions) (PreviewRe
 		log, code, runErr := opt.Run(ctx, opt.Engine, root, "-interaction=nonstopmode", "-halt-on-error", "-file-line-error", filepath.Base(main))
 		lastLog = log
 		if runErr != nil {
-			return PreviewResult{Log: clip(lastLog, 4000), Message: "xelatex 无法启动"}, runErr
+			msg := "xelatex 无法启动"
+			if ctx.Err() != nil {
+				msg = "编译已取消"
+			} else if errors.Is(runErr, context.DeadlineExceeded) {
+				msg = "编译超时"
+			}
+			return PreviewResult{Log: clip(lastLog, 4000), Message: msg}, runErr
 		}
 		if code == 0 {
 			pdf := strings.TrimSuffix(main, filepath.Ext(main)) + ".pdf"
 			if !bibRan {
 				bin, label := "", ""
+				arg := strings.TrimSuffix(filepath.Base(main), filepath.Ext(main))
 				if NeedsBiber(log) && opt.Biber != "" {
 					bin, label = opt.Biber, "biber"
-				} else if NeedsBibtex(log) && opt.Bibtex != "" {
+				} else if opt.Bibtex != "" && (NeedsBibtex(log) || bibliographyStale(root, arg)) {
 					bin, label = opt.Bibtex, "bibtex"
 				}
 				if bin != "" {
 					bibRan = true
-					arg := strings.TrimSuffix(filepath.Base(main), filepath.Ext(main))
 					bibOut := runBibliography(ctx, opt, bin, label, root, arg, &installed, pkgDone)
 					if line := bibOpenFailure(bibOut); line != "" {
 						return PreviewResult{Log: clip(bibOut, 4000), Message: line}, errCompileFailed
 					}
-					if strings.TrimSpace(bibOut) != "" {
-						lastLog = strings.TrimSpace(log) + "\n" + strings.TrimSpace(bibOut)
+					if line := bibtexSyntaxFailure(bibOut); line != "" {
+						return PreviewResult{Log: clip(bibOut, 4000), Message: line}, errCompileFailed
+					}
+					// The next engine pass replaces lastLog. Keep BibTeX's
+					// own warnings, or a rebuilt .bbl still looks clean.
+					if note := bibliographyNote(bibOut); note != "" {
+						bibNote = note
 					}
 					continue
 				}
@@ -619,7 +747,7 @@ func Preview(ctx context.Context, texPath string, opt PreviewOptions) (PreviewRe
 				continue
 			}
 			if st, statErr := os.Stat(pdf); statErr == nil && st.Size() > 0 && !st.IsDir() {
-				return PreviewResult{PDFPath: pdf, Repaired: repaired, Log: clip(lastLog, 4000)}, nil
+				return PreviewResult{PDFPath: pdf, Repaired: repaired, Log: withBibNote(clip(lastLog, 4000), bibNote)}, nil
 			}
 		}
 

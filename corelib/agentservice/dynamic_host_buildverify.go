@@ -1,13 +1,12 @@
 package agentservice
 
 import (
-	"bytes"
 	"context"
+	"errors"
 	"fmt"
-	"os/exec"
 	"strings"
-	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/buildverify"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -15,7 +14,6 @@ const (
 	reviewedHostBuildVerifyProviderID     = "core-buildverify"
 	reviewedHostBuildVerifyImplementation = "local"
 	reviewedHostBuildVerifyAdapterName    = "host_build_verify_local"
-	reviewedHostBuildVerifyTimeout        = 10 * time.Minute
 )
 
 type reviewedHostBuildVerifier interface {
@@ -173,38 +171,22 @@ func (c *coreAgentCallbacks) RunReviewedHostBuildVerify(ctx context.Context, pri
 	if notDir {
 		return "", fmt.Errorf("host_build_verify_target_not_a_directory")
 	}
-	kind, ok := coretool.BuildVerifyProjectKind(c.workspace, runDir)
-	if !ok {
-		return "", fmt.Errorf("host_build_verify_project_unrecognised")
-	}
-	argv, ok := coretool.BuildVerifyCommand(kind, task)
-	if !ok {
-		return "", fmt.Errorf("host_build_verify_task_unsupported")
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	runCtx, cancel := context.WithTimeout(ctx, reviewedHostBuildVerifyTimeout)
-	defer cancel()
-	// Executed directly, never through a shell. There is no command string for
-	// anything to be injected into, so the reviewed argv table is the complete
-	// set of programs this capability can start.
-	cmd := exec.CommandContext(runCtx, argv[0], argv[1:]...)
-	cmd.Dir = runDir
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	runErr := cmd.Run()
-	if runCtx.Err() == context.DeadlineExceeded {
-		return "", fmt.Errorf("host_build_verify_timeout")
-	}
-	out := coretool.BuildVerifyProjection(stdout.String(), stderr.String())
-	// A failing build or test answers the question that was asked. Reporting
-	// it as an adapter error would hide the diagnostics that are the point.
-	if runErr != nil {
-		return strings.TrimSpace(out + "\n" + runErr.Error()), nil
-	}
-	if strings.TrimSpace(out) == "" {
-		return task + " passed", nil
+	out, err := buildverify.Run(ctx, c.workspace, runDir, task)
+	if err != nil {
+		switch {
+		case errors.Is(err, buildverify.ErrUnrecognised):
+			return "", fmt.Errorf("host_build_verify_project_unrecognised")
+		case errors.Is(err, buildverify.ErrUnsupported):
+			return "", fmt.Errorf("host_build_verify_task_unsupported")
+		case errors.Is(err, buildverify.ErrTimeout):
+			detail := strings.TrimSpace(out)
+			if detail == "" {
+				return "", errors.New("host_build_verify_timeout")
+			}
+			return "", errors.New("host_build_verify_timeout\n" + detail)
+		default:
+			return "", err
+		}
 	}
 	return out, nil
 }
